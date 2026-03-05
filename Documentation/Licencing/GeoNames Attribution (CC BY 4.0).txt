@@ -1,0 +1,17 @@
+GeoNames Attribution (allCountries)
+=================================
+
+This extension includes and uses data derived from the GeoNames dataset:
+- File: allCountries.txt (or allCountries.zip)
+- Source: https://download.geonames.org/export/dump/
+- Website: https://www.geonames.org/
+
+License
+-------
+GeoNames data is licensed under Creative Commons Attribution 4.0 International (CC BY 4.0):
+https://creativecommons.org/licenses/by/4.0/
+
+Attribution
+-----------
+Contains information from GeoNames (https://www.geonames.org/), available under
+the Creative Commons Attribution 4.0 International License.

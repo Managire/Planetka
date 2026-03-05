@@ -1,0 +1,10 @@
+schema_version = "1.0.0"
+id = "planetka"
+version = "0.2.0"
+name = "Planetka - the Earth"
+tagline = "Cinematic Earth Visualisation System"
+maintainer = "Tomas Griger <info@planetka.io>"
+type = "add-on"
+blender_version_min = "3.6.0"
+license = ["SPDX:GPL-3.0-or-later"]
+website = "https://www.planetka.io"

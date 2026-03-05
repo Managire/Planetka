@@ -1,0 +1,79 @@
+name: Blender Integration
+
+on:
+  pull_request:
+    paths-ignore:
+      - "Documentation/**"
+      - "**/*.md"
+  workflow_dispatch:
+
+jobs:
+  integration:
+    name: ${{ matrix.os }} / Blender ${{ matrix.blender_version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-13]
+        blender_version: ["3.6.0", "4.2.0", "5.0.1"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run release gate
+        shell: bash
+        run: |
+          python3 tools/release_gate.py
+
+      - name: Install Blender
+        shell: bash
+        run: |
+          python .github/scripts/install_blender.py \
+            --version "${{ matrix.blender_version }}" \
+            --install-dir "${{ runner.temp }}/blender" \
+            --output-file "${{ runner.temp }}/blender-bin.txt"
+
+      - name: Run smoke test (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          "$(cat "${RUNNER_TEMP}/blender-bin.txt")" --background --python tools/planetka_smoke_test.py
+
+      - name: Run schema migration test (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          "$(cat "${RUNNER_TEMP}/blender-bin.txt")" --background --python tools/planetka_schema_migration_test.py
+
+      - name: Run regression test (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          "$(cat "${RUNNER_TEMP}/blender-bin.txt")" --background --python tools/planetka_regression_test.py
+
+      - name: Run smoke test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $blenderBin = (Get-Content "$env:RUNNER_TEMP\blender-bin.txt" -Raw).Trim()
+          & $blenderBin --background --python tools/planetka_smoke_test.py
+
+      - name: Run schema migration test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $blenderBin = (Get-Content "$env:RUNNER_TEMP\blender-bin.txt" -Raw).Trim()
+          & $blenderBin --background --python tools/planetka_schema_migration_test.py
+
+      - name: Run regression test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $blenderBin = (Get-Content "$env:RUNNER_TEMP\blender-bin.txt" -Raw).Trim()
+          & $blenderBin --background --python tools/planetka_regression_test.py

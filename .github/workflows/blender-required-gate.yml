@@ -1,0 +1,43 @@
+name: Blender Required Gate
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+jobs:
+  required-gate:
+    name: Required Gate (Ubuntu / Blender 5.0.1)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    concurrency:
+      group: blender-required-gate-${{ github.ref }}
+      cancel-in-progress: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run release gate
+        shell: bash
+        run: |
+          python3 tools/release_gate.py
+
+      - name: Install Blender
+        shell: bash
+        run: |
+          python .github/scripts/install_blender.py \
+            --version "5.0.1" \
+            --install-dir "${{ runner.temp }}/blender" \
+            --output-file "${{ runner.temp }}/blender-bin.txt"
+
+      - name: Run Blender test gate
+        shell: bash
+        run: |
+          python .github/scripts/run_blender_tests.py \
+            --blender-bin "$(cat "${RUNNER_TEMP}/blender-bin.txt")"
