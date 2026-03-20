@@ -4,10 +4,25 @@ import math
 import os
 import re
 import shutil
+import webbrowser
 from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, StringProperty
 from mathutils import Matrix, Quaternion, Vector
 
-from .asset_builder import ensure_planetka_assets
+from .auth import (
+    AuthApiError,
+    cancel_pending_device_login,
+    clear_auth_session,
+    describe_auth_error,
+    get_device_verification_url,
+    get_login_state,
+    is_authenticated,
+    start_device_login,
+)
+from .asset_builder import (
+    ensure_earth_surface_parent,
+    ensure_planetka_assets,
+    ensure_planetka_root,
+)
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from .extension_prefs import (
     get_earth_object,
@@ -19,8 +34,9 @@ from .extension_prefs import (
 from .operator_utils import ErrorCode, fail, require_planetka_props, require_scene
 from .render_prep import FORCE_EMPTY_RESOLVE_ONCE_KEY
 from .sanity_utils import _normalize_texture_source_path, invalidate_texture_source_health_cache
+from .r2_source import is_remote_source_configured, texture_file_exists
 from .state import (
-    _apply_fake_atmosphere_from_props,
+    apply_renderer_engine_optimization_for_all_preserve_current,
     _initialize_props_from_imported_planetka,
     _sync_idprops_from_props,
     delete_temp_meshes,
@@ -45,8 +61,22 @@ _IMPORT_TILE_FILENAME_RE = re.compile(
 )
 
 
+def _require_authenticated_account(operator, prefs):
+    state = get_login_state(prefs)
+    if state == "pending":
+        operator.report({'ERROR'}, "Finish Planetka login in your browser before continuing.")
+        return False
+    if not is_authenticated(prefs):
+        operator.report({'ERROR'}, "Log in to Planetka before using remote Earth data.")
+        return False
+    return True
+
+
 def _validate_create_earth_texture_source(base_path):
     normalized = _normalize_texture_source_path(base_path)
+    if is_remote_source_configured(normalized):
+        return normalized, ""
+
     if not normalized:
         return "", "Texture source directory is not set."
 
@@ -282,7 +312,7 @@ def _switch_solid_viewports_to_rendered(context):
                 if shading is None:
                     continue
                 try:
-                    if str(getattr(shading, "type", "")) == "SOLID":
+                    if str(getattr(shading, "type", "")) != "RENDERED":
                         shading.type = 'RENDERED'
                         switched = True
                 except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
@@ -671,7 +701,10 @@ def _compute_scene_camera_navigation_values(scene):
     earth_radius = _earth_radius_blender_units(earth_obj)
     hit_local = _ray_sphere_hit_nearest(cam_pos_local, cam_forward_local, earth_radius)
     if hit_local is None:
-        return None
+        cam_len = float(cam_pos_local.length)
+        if cam_len <= 1e-9:
+            return None
+        hit_local = (cam_pos_local / cam_len) * float(earth_radius)
 
     hit_len = max(1e-9, float(hit_local.length))
     lon = math.degrees(math.atan2(float(hit_local.y), float(hit_local.x)))
@@ -692,18 +725,14 @@ def _tile_xy_for_lon_lat(lon_deg, lat_deg, z):
 
 def _best_available_d_for_tile(base_path, x, y, z):
     normalized = _normalize_texture_source_path(base_path)
-    if not normalized:
-        return None
-
-    s2_dir = os.path.join(normalized, "S2")
-    if not os.path.isdir(s2_dir):
+    if not normalized and not is_remote_source_configured(base_path):
         return None
 
     d_candidates = sorted(set(NAV_D_LEVELS_BY_Z.get(int(z), [int(z)])))
     for d in d_candidates:
         d_code = 0 if int(d) == 1440 else int(d)
         file_name = f"S2_x{x:03d}_y{y:03d}_z{int(z):03d}_d{int(d_code):03d}.exr"
-        if os.path.isfile(os.path.join(s2_dir, file_name)):
+        if texture_file_exists(normalized or base_path, "S2", file_name):
             return int(d)
     return None
 
@@ -1193,8 +1222,8 @@ def _populate_navigation_from_scene_camera(scene, props):
     lat, lon, _alt_km = nav_values
     derived = _derive_navigation_shot_from_camera(scene, lon, lat)
     try:
-        props.nav_latitude_deg = max(-90.0, min(90.0, float(lat)))
-        props.nav_longitude_deg = max(-180.0, min(180.0, float(lon)))
+        props.nav_latitude_deg = float(lat)
+        props.nav_longitude_deg = float(lon)
         props.nav_altitude_km = max(0.0, float(derived.get("altitude_km", 0.0)))
         props.nav_azimuth_deg = float(derived.get("azimuth_deg", 0.0))
         props.nav_tilt_deg = float(derived.get("tilt_deg", 0.0))
@@ -1447,6 +1476,137 @@ class PLANETKA_OT_SelectTextureSource(bpy.types.Operator):
         return {'RUNNING_MODAL'}
 
 
+class PLANETKA_OT_AccountLogin(bpy.types.Operator):
+    bl_idname = "planetka.account_login"
+    bl_label = "Activate"
+    bl_description = "Start Planetka pre-release activation in your browser"
+
+    def execute(self, context):
+        prefs = get_prefs()
+        if not prefs:
+            return fail(
+                self,
+                "Planetka preferences not available.",
+                code=ErrorCode.RESOLVE_PREFS_MISSING,
+                logger=logger,
+            )
+
+        try:
+            payload = start_device_login(prefs)
+        except AuthApiError as exc:
+            return fail(
+                self,
+                describe_auth_error(exc),
+                logger=logger,
+                exc=exc,
+            )
+
+        verification_url = str(payload.get("verification_url", "") or "").strip()
+        if not verification_url:
+            return fail(self, "Planetka login URL was not returned by the server.", logger=logger)
+
+        opened = False
+        try:
+            result = bpy.ops.wm.url_open(url=verification_url)
+            opened = "FINISHED" in result
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
+            opened = False
+
+        if not opened:
+            try:
+                opened = bool(webbrowser.open(verification_url))
+            except Exception:
+                opened = False
+
+        if not opened:
+            return fail(
+                self,
+                "Planetka created a login session, but could not open the browser automatically.",
+                logger=logger,
+            )
+
+        self.report({'INFO'}, "Continue Planetka activation in the opened browser window.")
+        return {'FINISHED'}
+
+
+class PLANETKA_OT_AccountOpenLogin(bpy.types.Operator):
+    bl_idname = "planetka.account_open_login"
+    bl_label = "Open Activation Page"
+    bl_description = "Open the active Planetka browser activation page again"
+
+    def execute(self, context):
+        prefs = get_prefs()
+        if not prefs:
+            return fail(
+                self,
+                "Planetka preferences not available.",
+                code=ErrorCode.RESOLVE_PREFS_MISSING,
+                logger=logger,
+            )
+
+        verification_url = get_device_verification_url(prefs)
+        if not verification_url:
+            return fail(self, "No active Planetka browser login is waiting.", logger=logger)
+
+        opened = False
+        try:
+            result = bpy.ops.wm.url_open(url=verification_url)
+            opened = "FINISHED" in result
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
+            opened = False
+
+        if not opened:
+            try:
+                opened = bool(webbrowser.open(verification_url))
+            except Exception:
+                opened = False
+
+        if not opened:
+            return fail(self, "Could not open the active Planetka browser login.", logger=logger)
+
+        return {'FINISHED'}
+
+
+class PLANETKA_OT_AccountCancelLogin(bpy.types.Operator):
+    bl_idname = "planetka.account_cancel_login"
+    bl_label = "Cancel Login"
+    bl_description = "Cancel the current Planetka browser login session"
+
+    def execute(self, context):
+        prefs = get_prefs()
+        if not prefs:
+            return fail(
+                self,
+                "Planetka preferences not available.",
+                code=ErrorCode.RESOLVE_PREFS_MISSING,
+                logger=logger,
+            )
+
+        cancel_pending_device_login(prefs)
+        self.report({'INFO'}, "Planetka browser login cancelled.")
+        return {'FINISHED'}
+
+
+class PLANETKA_OT_AccountLogout(bpy.types.Operator):
+    bl_idname = "planetka.account_logout"
+    bl_label = "Log Out"
+    bl_description = "Remove the local Planetka login session from Blender"
+
+    def execute(self, context):
+        prefs = get_prefs()
+        if not prefs:
+            return fail(
+                self,
+                "Planetka preferences not available.",
+                code=ErrorCode.RESOLVE_PREFS_MISSING,
+                logger=logger,
+            )
+
+        clear_auth_session(prefs)
+        self.report({'INFO'}, "Planetka account disconnected in Blender.")
+        return {'FINISHED'}
+
+
 class PLANETKA_OT_AddEarth(bpy.types.Operator):
     bl_idname = "planetka.add_earth"
     bl_label = "Create Earth"
@@ -1459,31 +1619,6 @@ class PLANETKA_OT_AddEarth(bpy.types.Operator):
         props = require_planetka_props(self, context, logger=logger)
         if props is None:
             return {'CANCELLED'}
-        def _set_default_fake_atmosphere_values():
-            try:
-                props.enable_fake_atmosphere = True
-                props.atmosphere_mode = "QUICK"
-                props.fake_atmosphere_density = (1.0 / 3.0)
-                props.fake_atmosphere_height_km = 50.0
-                props.fake_atmosphere_falloff_exp = 0.05
-                props.fake_atmosphere_color = (0.26225066, 0.44520119, 0.76815115, 1.0)
-                _sync_idprops_from_props(scene)
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-                logger.debug("Planetka: failed setting default atmosphere values for Create Earth", exc_info=True)
-
-        # Create Earth should start with atmosphere enabled and sane defaults.
-        _set_default_fake_atmosphere_values()
-
-        switched_to_cycles = False
-        render = getattr(scene, "render", None)
-        if render is not None:
-            current_engine = str(getattr(render, "engine", ""))
-            if current_engine != "CYCLES":
-                try:
-                    render.engine = "CYCLES"
-                    switched_to_cycles = (str(getattr(render, "engine", "")) == "CYCLES")
-                except (AttributeError, RuntimeError, TypeError, ValueError):
-                    logger.debug("Planetka: failed switching render engine to Cycles", exc_info=True)
 
         prefs = get_prefs()
         if not prefs:
@@ -1505,10 +1640,10 @@ class PLANETKA_OT_AddEarth(bpy.types.Operator):
             self.report({'ERROR'}, path_issue)
             _prompt_texture_source_selection()
             return {'CANCELLED'}
+        if is_remote_source_configured(normalized) and not _require_authenticated_account(self, prefs):
+            return {'CANCELLED'}
         prefs.texture_base_path = normalized
         invalidate_texture_source_health_cache(normalized)
-
-        camera_clip_changed, viewport_clip_changed = _ensure_close_clip_limits(scene, min_clip=0.001)
 
         try:
             ensure_planetka_assets(scene)
@@ -1558,19 +1693,19 @@ class PLANETKA_OT_AddEarth(bpy.types.Operator):
             pass
         mark_earth_object(new_obj)
         try:
-            _apply_fake_atmosphere_from_props(scene)
+            ensure_planetka_root(scene)
+            ensure_earth_surface_parent(scene=scene, earth_surface=new_obj)
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed applying atmosphere defaults before initial resolve", exc_info=True)
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka: failed applying atmosphere defaults before initial resolve", exc_info=True)
+            logger.debug("Planetka: failed parenting bootstrap Earth surface to Planetka Root", exc_info=True)
+        except (RuntimeError, TypeError, ValueError):
+            logger.debug("Planetka: failed parenting bootstrap Earth surface to Planetka Root", exc_info=True)
 
         try:
             scene[FORCE_EMPTY_RESOLVE_ONCE_KEY] = True
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka: failed setting one-shot empty resolve flag", exc_info=True)
 
-        resolve_result = bpy.ops.planetka.load_textures()
-
+        resolve_result = bpy.ops.planetka.load_textures(skip_render_compatibility=True)
         final_surface = get_earth_object() or new_obj
         if final_surface and bool(getattr(props, "show_earth_preview", False)):
             try:
@@ -1586,11 +1721,16 @@ class PLANETKA_OT_AddEarth(bpy.types.Operator):
             self.report({'WARNING'}, "Planetka Earth created, but initial Resolve failed.")
             return {'CANCELLED'}
 
-        _set_default_fake_atmosphere_values()
         try:
-            _apply_fake_atmosphere_from_props(scene)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka: failed reapplying default atmosphere values after initial resolve", exc_info=True)
+            ensure_planetka_root(scene)
+            ensure_earth_surface_parent(scene=scene, earth_surface=get_earth_object() or new_obj)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed parenting resolved Earth surface to Planetka Root", exc_info=True)
+        except (RuntimeError, TypeError, ValueError):
+            logger.debug("Planetka: failed parenting resolved Earth surface to Planetka Root", exc_info=True)
+
+        apply_renderer_engine_optimization_for_all_preserve_current(scene)
+        _switch_solid_viewports_to_rendered(context)
 
         if props is not None:
             suspend_navigation_shot_updates()
@@ -1598,18 +1738,18 @@ class PLANETKA_OT_AddEarth(bpy.types.Operator):
                 _populate_navigation_from_scene_camera(scene, props)
             finally:
                 resume_navigation_shot_updates()
-        _switch_solid_viewports_to_rendered(context)
 
-        if camera_clip_changed or viewport_clip_changed:
-            self.report(
-                {'INFO'},
-                "Planetka adjusted clipping minimum to 0.001 to avoid close-surface image clipping.",
-            )
-        if switched_to_cycles:
-            self.report(
-                {'INFO'},
-                "Planetka switched Blender to Cycles for optimal performance.",
-            )
+        try:
+            post_create_resolve_result = bpy.ops.planetka.load_textures(skip_render_compatibility=True)
+            if "FINISHED" not in post_create_resolve_result:
+                self.report({'WARNING'}, "Planetka Earth created, but final Create Earth Resolve failed.")
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: final Create Earth resolve failed", exc_info=True)
+            self.report({'WARNING'}, "Planetka Earth created, but final Create Earth Resolve failed.")
+        except (RuntimeError, TypeError, ValueError):
+            logger.debug("Planetka: final Create Earth resolve failed", exc_info=True)
+            self.report({'WARNING'}, "Planetka Earth created, but final Create Earth Resolve failed.")
+
         self.report({'INFO'}, "Planetka Earth created successfully.")
         return {'FINISHED'}
 
@@ -1666,9 +1806,6 @@ class PLANETKA_OT_UseCurrentViewNavigation(bpy.types.Operator):
         scene = require_scene(self, context, logger=logger)
         if scene is None:
             return {'CANCELLED'}
-        props = require_planetka_props(self, context, logger=logger)
-        if props is None:
-            return {'CANCELLED'}
 
         camera = getattr(scene, "camera", None)
         if camera is None or getattr(camera, "type", None) != 'CAMERA':
@@ -1698,38 +1835,39 @@ class PLANETKA_OT_UseCurrentViewNavigation(bpy.types.Operator):
                 logger=logger,
             )
 
+        props = getattr(scene, "planetka", None)
+        if props is None:
+            _switch_viewport_to_camera_view(context, scene)
+            if moved_camera:
+                self.report({'INFO'}, "Camera updated to current view.")
+            else:
+                self.report({'INFO'}, "Camera is already in current view.")
+            return {'FINISHED'}
+
         computed = _compute_current_view_navigation_values(scene)
         if computed is None:
-            return fail(
-                self,
-                "Current view telemetry is unavailable. Ensure Earth is visible in the viewport.",
-                code=ErrorCode.NAV_PRECHECK_FAILED,
-                logger=logger,
+            _switch_viewport_to_camera_view(context, scene)
+            self.report(
+                {'WARNING'},
+                "Camera updated, but Planetka controls were not synced (Earth is not visible in current view).",
             )
+            return {'FINISHED'}
         lat, lon, _alt_km = computed
 
         try:
             derived = _derive_navigation_shot_from_camera(scene, lon, lat)
         except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
-            return fail(
-                self,
-                f"Failed to derive shot values from current view: {exc}",
-                code=ErrorCode.NAV_APPLY_FAILED,
-                logger=logger,
-                exc=exc,
-                log_message="Planetka derive shot from camera failed",
-            )
+            _switch_viewport_to_camera_view(context, scene)
+            self.report({'WARNING'}, f"Camera updated, but Planetka controls were not synced: {exc}")
+            return {'FINISHED'}
         except (RuntimeError, TypeError, ValueError) as exc:
-            return fail(
-                self,
-                f"Failed to derive shot values from current view: {exc}",
-                code=ErrorCode.NAV_APPLY_FAILED,
-                logger=logger,
-            )
+            _switch_viewport_to_camera_view(context, scene)
+            self.report({'WARNING'}, f"Camera updated, but Planetka controls were not synced: {exc}")
+            return {'FINISHED'}
 
         try:
-            props.nav_latitude_deg = max(-90.0, min(90.0, float(lat)))
-            props.nav_longitude_deg = max(-180.0, min(180.0, float(lon)))
+            props.nav_latitude_deg = float(lat)
+            props.nav_longitude_deg = float(lon)
             props.nav_altitude_km = max(0.0, float(derived.get("altitude_km", 0.0)))
             props.nav_azimuth_deg = float(derived.get("azimuth_deg", 0.0))
             props.nav_tilt_deg = float(derived.get("tilt_deg", 0.0))
@@ -1744,12 +1882,9 @@ class PLANETKA_OT_UseCurrentViewNavigation(bpy.types.Operator):
                 roll_deg=float(props.nav_roll_deg),
             )
         except (AttributeError, TypeError, ValueError):
-            return fail(
-                self,
-                "Failed to apply current view values to Navigation fields.",
-                code=ErrorCode.NAV_APPLY_FAILED,
-                logger=logger,
-            )
+            _switch_viewport_to_camera_view(context, scene)
+            self.report({'WARNING'}, "Camera updated, but Planetka controls failed to update.")
+            return {'FINISHED'}
 
         _switch_viewport_to_camera_view(context, scene)
         if moved_camera:

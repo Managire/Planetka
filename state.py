@@ -23,7 +23,6 @@ REFRESH_BUTTON_ALERT = False
 
 _IDPROP_SYNCING = False
 _LOGGING_SYNCING = False
-_FAKE_ATMOSPHERE_PROP_SYNCING = False
 
 _SYNC_IDPROP_MAP = {
     "viewport_opt_suspend_subdivision": "planetka_viewport_opt_suspend_subdivision",
@@ -43,12 +42,6 @@ _SYNC_IDPROP_MAP = {
     "nav_saved_location_id": "planetka_nav_saved_location_id",
     "sunlight_longitude_deg": "planetka_sunlight_longitude_deg",
     "sunlight_seasonal_tilt_deg": "planetka_sunlight_seasonal_tilt_deg",
-    "enable_fake_atmosphere": "planetka_enable_fake_atmosphere",
-    "atmosphere_mode": "planetka_atmosphere_mode",
-    "fake_atmosphere_density": "planetka_fake_atmosphere_density",
-    "fake_atmosphere_height_km": "planetka_fake_atmosphere_height_km",
-    "fake_atmosphere_falloff_exp": "planetka_fake_atmosphere_falloff_exp",
-    "fake_atmosphere_color": "planetka_fake_atmosphere_color",
     "anim_camera_preset": "planetka_anim_camera_preset",
     "anim_frame_start": "planetka_anim_frame_start",
     "anim_frame_end": "planetka_anim_frame_end",
@@ -69,13 +62,24 @@ _SYNC_IDPROP_MAP = {
     "anim_ab_b_rotation": "planetka_anim_ab_b_rotation",
     "anim_ab_b_valid": "planetka_anim_ab_b_valid",
     "texture_quality_mode": "planetka_texture_quality_mode",
+    "render_engine_optimization": "planetka_render_engine_optimization",
     "resolution_bias": "planetka_resolution_bias",
     "lock_resolve_during_animation": "planetka_lock_resolve_during_animation",
+    "r2_cache_max_gb": "planetka_r2_cache_max_gb",
     "debug_logging": "planetka_debug_logging",
 }
+_NAVIGATION_SYNC_IDPROP_MAP = (
+    ("nav_longitude_deg", "planetka_nav_longitude_deg"),
+    ("nav_latitude_deg", "planetka_nav_latitude_deg"),
+    ("nav_altitude_km", "planetka_nav_altitude_km"),
+    ("nav_azimuth_deg", "planetka_nav_azimuth_deg"),
+    ("nav_tilt_deg", "planetka_nav_tilt_deg"),
+    ("nav_roll_deg", "planetka_nav_roll_deg"),
+)
 SURFACE_COLLECTION_NAME = "Planetka - Earth Surface Collection"
 _MESH_UTILS_MODULE = None
 _SHADER_UTILS_MODULE = None
+_OPERATORS_MODULE = None
 _LEGACY_SCENE_IDPROPS = (
     "planetka_view_elevation",
     "planetka_sampling_grid_density",
@@ -94,21 +98,22 @@ _LEGACY_SCENE_IDPROPS = (
 )
 _TILE_UTILS_MODULE = None
 
-AUTO_RESOLVE_TIMER_INTERVAL_SEC = 1.0 / 3.0
-AUTO_RESOLVE_TIMER_BUDGET_MS = 20.0
-AUTO_RESOLVE_BUDGET_SKIP_LOG_COOLDOWN_SEC = 5.0
+AUTO_RESOLVE_RETRY_DELAY_SEC = 0.25
 AUTO_RESOLVE_MIN_INTERVAL_SEC_DEFAULT = 1.0
 AUTO_RESOLVE_IDLE_SEC_DEFAULT = 0.6
-
 _AUTO_RESOLVE_TIMER_RUNNING = False
 _AUTO_RESOLVE_IN_FLIGHT = False
 _RENDER_JOB_ACTIVE = False
+_ACTIVE_VIEW_MONITOR_TIMER_RUNNING = False
+_AUTO_RESOLVE_NEXT_DUE_TIME = {}
 _AUTO_RESOLVE_LAST_CAMERA_SIGNATURE = {}
 _AUTO_RESOLVE_LAST_OUTPUT_SIGNATURE = {}
 _AUTO_RESOLVE_LAST_CHANGE_TIME = {}
 _AUTO_RESOLVE_LAST_RESOLVE_TIME = {}
 _AUTO_RESOLVE_LAST_PROCESSED_SIGNATURE = {}
 _AUTO_RESOLVE_PENDING_OUTPUT_CHANGE = {}
+_AUTO_RESOLVE_TRIGGER_LAST_SIGNATURE = {}
+_ACTIVE_VIEW_MONITOR_LAST_SIGNATURE = {}
 _VIEWPORT_OPT_LAST_SIGNATURE = {}
 _SUNLIGHT_LAST_SIGNATURE = {}
 _SUNLIGHT_OBJECT_NAME_CACHE = {}
@@ -116,7 +121,6 @@ _VIEWPORT_SCOPE_LAST = {}
 _VIEWPORT_SCOPE_LAST_RESOLVE_TIME = {}
 _LAST_REALTIME_TELEMETRY = {}
 _TIMELINE_LAST_SIGNATURE = {}
-_AUTO_RESOLVE_LAST_BUDGET_SKIP_LOG_AT = 0.0
 _COVERAGE_MAP = None
 _REAL_EARTH_RADIUS_M = 6371000.0
 _MAX_TERRAIN_HEIGHT_M = 9000.0
@@ -131,16 +135,11 @@ _NAVIGATION_ADAPTIVE_LAST_TOUCH = 0.0
 _NAVIGATION_ADAPTIVE_TIMER_RUNNING = False
 _NAVIGATION_ADAPTIVE_IDLE_SEC = 0.5
 _NAVIGATION_SHOT_SUSPEND_COUNT = 0
+_NAVIGATION_USER_EDIT_LAST_TOUCH = 0.0
+_NAV_CAMERA_CONTROL_LAST_SIGNATURE = {}
+_NAV_CAMERA_CONTROL_SYNCING = False
 _SUNLIGHT_OBJECT_NAME = "Planetka Sunlight"
 _SURFACE_GRADING_GROUP_NAME = "Planetka Surface Grading Group"
-_FAKE_ATMOSPHERE_DENSITY_SOCKET = "Atmosphere Density"
-_FAKE_ATMOSPHERE_DENSITY_SOCKET_LEGACY = "Fake Atmosphere Density"
-_FAKE_ATMOSPHERE_HEIGHT_SOCKET = "Fake Atmosphere Height (km)"
-_FAKE_ATMOSPHERE_FALLOFF_SOCKET = "Atmosphere Exponential Falloff"
-_FAKE_ATMOSPHERE_COLOR_SOCKET = "Atmosphere Color"
-_FAKE_ATMOSPHERE_SURFACE_DENSITY_SCALE = 0.2
-# Linear-space RGBA that displays as sRGB #8CB2E3FF in Blender color UI.
-_FAKE_ATMOSPHERE_DEFAULT_COLOR = (0.26225066, 0.44520119, 0.76815115, 1.0)
 ANIMATION_PREPARED_SEGMENTS_KEY = "planetka_anim_prepared_segments"
 
 
@@ -204,6 +203,17 @@ def _get_shader_utils():
     return _SHADER_UTILS_MODULE or None
 
 
+def _get_operators_module():
+    global _OPERATORS_MODULE
+    if _OPERATORS_MODULE is None:
+        module_name = f"{__package__}.operators" if __package__ else "operators"
+        try:
+            _OPERATORS_MODULE = importlib.import_module(module_name)
+        except ImportError:
+            _OPERATORS_MODULE = False
+    return _OPERATORS_MODULE or None
+
+
 def _get_tile_utils():
     global _TILE_UTILS_MODULE
     if _TILE_UTILS_MODULE is None:
@@ -237,7 +247,27 @@ def _coerce_storage_value(value):
     return value
 
 
-def _sync_idprops_from_props(scene):
+def _iter_sync_idprop_pairs(prop_names=None):
+    if prop_names is None:
+        for prop_name, scene_key in _SYNC_IDPROP_MAP.items():
+            yield prop_name, scene_key
+        return
+
+    if isinstance(prop_names, str):
+        names = (prop_names,)
+    else:
+        names = tuple(prop_names or ())
+
+    for prop_name in names:
+        if not prop_name:
+            continue
+        scene_key = _SYNC_IDPROP_MAP.get(str(prop_name))
+        if scene_key is None:
+            continue
+        yield str(prop_name), scene_key
+
+
+def _sync_idprops_from_props(scene, prop_names=None):
     global _IDPROP_SYNCING
     if _IDPROP_SYNCING:
         return
@@ -246,13 +276,33 @@ def _sync_idprops_from_props(scene):
         return
     _IDPROP_SYNCING = True
     try:
-        for prop_name, scene_key in _SYNC_IDPROP_MAP.items():
+        for prop_name, scene_key in _iter_sync_idprop_pairs(prop_names):
             if not hasattr(props, prop_name):
                 continue
             try:
                 scene[scene_key] = _coerce_storage_value(getattr(props, prop_name))
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka: failed syncing idprop %s", scene_key, exc_info=True)
+    finally:
+        _IDPROP_SYNCING = False
+
+
+def _sync_navigation_idprops_from_props(scene):
+    global _IDPROP_SYNCING
+    if _IDPROP_SYNCING:
+        return
+    props = getattr(scene, "planetka", None) if scene else None
+    if props is None:
+        return
+    _IDPROP_SYNCING = True
+    try:
+        for prop_name, scene_key in _NAVIGATION_SYNC_IDPROP_MAP:
+            if not hasattr(props, prop_name):
+                continue
+            try:
+                scene[scene_key] = _coerce_storage_value(getattr(props, prop_name))
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka: failed syncing navigation idprop %s", scene_key, exc_info=True)
     finally:
         _IDPROP_SYNCING = False
 
@@ -292,8 +342,266 @@ def update_debug_logging(self, context):
     set_planetka_logging(bool(getattr(self, "debug_logging", False)))
     scene = getattr(context, "scene", None) if context else None
     if scene:
-        _sync_idprops_from_props(scene)
-    ensure_auto_resolve_service_running()
+        _sync_idprops_from_props(scene, ("debug_logging",))
+
+
+def update_r2_cache_settings(self, context):
+    scene = getattr(context, "scene", None) if context else None
+    if scene:
+        _sync_idprops_from_props(scene, ("r2_cache_max_gb",))
+
+    module_name = f"{__package__}.r2_source" if __package__ else "r2_source"
+    try:
+        r2_source_module = importlib.import_module(module_name)
+        apply_fn = getattr(r2_source_module, "on_cache_settings_updated", None)
+        if callable(apply_fn):
+            apply_fn(force_prune=True)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed applying R2 cache settings", exc_info=True)
+
+
+def _set_enum_property_safe(owner, prop_name, preferred_identifiers):
+    if owner is None or not hasattr(owner, prop_name):
+        return False
+
+    available = set()
+    try:
+        prop_def = owner.bl_rna.properties.get(prop_name)
+        if prop_def and hasattr(prop_def, "enum_items"):
+            available = {item.identifier for item in prop_def.enum_items}
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        available = set()
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        available = set()
+
+    for identifier in preferred_identifiers:
+        if available and identifier not in available:
+            continue
+        try:
+            setattr(owner, prop_name, identifier)
+            current = str(getattr(owner, prop_name, ""))
+            if current == str(identifier):
+                return True
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            continue
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            continue
+    return False
+
+
+def _set_float_property_safe(owner, prop_name, value):
+    if owner is None or not hasattr(owner, prop_name):
+        return False
+    try:
+        setattr(owner, prop_name, float(value))
+        return True
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        return False
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return False
+
+
+def _set_int_property_safe(owner, prop_name, value):
+    if owner is None or not hasattr(owner, prop_name):
+        return False
+    try:
+        setattr(owner, prop_name, int(value))
+        return True
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        return False
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return False
+
+
+def _set_bool_property_safe(owner, prop_name, value):
+    if owner is None or not hasattr(owner, prop_name):
+        return False
+    try:
+        setattr(owner, prop_name, bool(value))
+        return True
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        return False
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return False
+
+
+def _set_eevee_supplement_visibility(enabled):
+    module_name = f"{__package__}.asset_builder" if __package__ else "asset_builder"
+    object_name = "Atmosphere - EEVEE supplement"
+    try:
+        asset_builder_module = importlib.import_module(module_name)
+        object_name = str(getattr(asset_builder_module, "FAKE_ATMOSPHERE_OBJECT_NAME", object_name))
+    except ImportError:
+        pass
+
+    obj = bpy.data.objects.get(object_name)
+    if obj is None:
+        return
+
+    hidden = not bool(enabled)
+    _set_bool_property_safe(obj, "hide_viewport", hidden)
+    _set_bool_property_safe(obj, "hide_render", hidden)
+
+
+def _render_engine_candidates(render, target):
+    if render is None:
+        return tuple()
+
+    enum_ids = []
+    try:
+        prop_def = render.bl_rna.properties.get("engine")
+        if prop_def and hasattr(prop_def, "enum_items"):
+            enum_ids = [str(item.identifier) for item in prop_def.enum_items]
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        enum_ids = []
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        enum_ids = []
+
+    target_upper = str(target or "").upper()
+    preferred = []
+    if target_upper == "CYCLES":
+        preferred.extend(("CYCLES", "BLENDER_CYCLES"))
+    else:
+        preferred.extend(("BLENDER_EEVEE", "BLENDER_EEVEE_NEXT", "EEVEE"))
+
+    for identifier in enum_ids:
+        ident_upper = identifier.upper()
+        if target_upper == "CYCLES" and "CYCLES" in ident_upper:
+            preferred.append(identifier)
+        if target_upper == "EEVEE" and "EEVEE" in ident_upper:
+            preferred.append(identifier)
+
+    ordered = []
+    seen = set()
+    for identifier in preferred:
+        if not identifier or identifier in seen:
+            continue
+        seen.add(identifier)
+        ordered.append(identifier)
+    return tuple(ordered)
+
+
+def _try_enable_cycles_addon():
+    for module_name in ("cycles", "bl_ext.blender_org.cycles"):
+        try:
+            result = bpy.ops.preferences.addon_enable(module=module_name)
+            if "FINISHED" in result:
+                return True
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            continue
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            continue
+    return False
+
+
+def _set_render_engine_via_context_enum(scene, candidates):
+    if scene is None:
+        return False
+
+    render = getattr(scene, "render", None)
+    if render is None:
+        return False
+
+    context_scene = getattr(bpy.context, "scene", None)
+    if context_scene is not scene:
+        return False
+
+    for identifier in candidates:
+        try:
+            result = bpy.ops.wm.context_set_enum(
+                data_path="scene.render.engine",
+                value=str(identifier),
+            )
+            if "FINISHED" not in result:
+                continue
+            current = str(getattr(render, "engine", ""))
+            if current == str(identifier):
+                return True
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            continue
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            continue
+    return False
+
+
+def _set_render_engine(scene, target):
+    render = getattr(scene, "render", None) if scene else None
+    if render is None:
+        return False
+
+    candidates = _render_engine_candidates(render, target)
+    if _set_enum_property_safe(render, "engine", candidates):
+        return True
+    if _set_render_engine_via_context_enum(scene, candidates):
+        return True
+
+    if str(target or "").upper() != "CYCLES":
+        return False
+    if not _try_enable_cycles_addon():
+        return False
+
+    candidates = _render_engine_candidates(render, target)
+    if _set_enum_property_safe(render, "engine", candidates):
+        return True
+    return _set_render_engine_via_context_enum(scene, candidates)
+
+
+def apply_renderer_engine_optimization(scene, optimization_mode):
+    if scene is None:
+        return
+
+    mode = str(optimization_mode or "EEVEE").upper()
+    render = getattr(scene, "render", None)
+    cycles = getattr(scene, "cycles", None)
+    eevee = getattr(scene, "eevee", None)
+
+    if mode == "CYCLES":
+        _set_render_engine(scene, "CYCLES")
+        _set_bool_property_safe(cycles, "volume_biased", True)
+        _set_int_property_safe(cycles, "volume_max_steps", 16)
+        _set_float_property_safe(cycles, "dicing_rate", 1.25)
+        _set_float_property_safe(cycles, "preview_dicing_rate", 2.0)
+        _set_float_property_safe(cycles, "offscreen_dicing_scale", 8.0)
+        _set_eevee_supplement_visibility(enabled=False)
+        return
+
+    _set_render_engine(scene, "EEVEE")
+    _set_enum_property_safe(eevee, "volumetric_tile_size", ("2", "HALF", "1:2"))
+    _set_float_property_safe(eevee, "volumetric_sample_distribution", 0.0)
+    _set_eevee_supplement_visibility(enabled=True)
+
+
+def apply_renderer_engine_optimization_for_all_preserve_current(scene):
+    if scene is None:
+        return
+
+    render = getattr(scene, "render", None)
+    current_engine = str(getattr(render, "engine", "") or "")
+    current_upper = current_engine.upper()
+
+    apply_renderer_engine_optimization(scene, "EEVEE")
+    apply_renderer_engine_optimization(scene, "CYCLES")
+
+    if "CYCLES" in current_upper:
+        apply_renderer_engine_optimization(scene, "CYCLES")
+        return
+    if "EEVEE" in current_upper:
+        apply_renderer_engine_optimization(scene, "EEVEE")
+        return
+
+    _set_enum_property_safe(render, "engine", (current_engine,))
+
+
+def update_renderer_engine_optimization(self, context):
+    scene = getattr(context, "scene", None) if context else None
+    if scene:
+        _sync_idprops_from_props(scene, ("render_engine_optimization",))
+        apply_renderer_engine_optimization(
+            scene,
+            getattr(self, "render_engine_optimization", "EEVEE"),
+        )
+        _mark_auto_resolve_dirty(scene, immediate=True)
+        request_auto_resolve(scene, immediate=True, mark_dirty=False)
 
 
 def _remove_preview_assets():
@@ -317,7 +625,7 @@ def _remove_preview_assets():
 def update_show_earth_preview(self, context):
     scene = getattr(context, "scene", None) if context else None
     if scene:
-        _sync_idprops_from_props(scene)
+        _sync_idprops_from_props(scene, ("show_earth_preview",))
 
     show_preview = bool(getattr(self, "show_earth_preview", False))
     if show_preview:
@@ -332,7 +640,6 @@ def update_show_earth_preview(self, context):
     else:
         _remove_preview_assets()
 
-    ensure_auto_resolve_service_running()
 
 
 def _navigation_shot_update_timer():
@@ -524,281 +831,6 @@ def _get_planetka_sunlight_object():
     return sunlight
 
 
-def _ensure_surface_fake_atmosphere_nodes():
-    module_name = f"{__package__}.asset_builder" if __package__ else "asset_builder"
-    try:
-        module = importlib.import_module(module_name)
-    except ImportError:
-        return False
-
-    ensure_fn = getattr(module, "ensure_surface_fake_atmosphere_nodes", None)
-    if not callable(ensure_fn):
-        return False
-    try:
-        ensure_fn()
-        return True
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed ensuring fake atmosphere shader nodes", exc_info=True)
-        return False
-    except (RuntimeError, TypeError, ValueError):
-        logger.debug("Planetka: failed ensuring fake atmosphere shader nodes", exc_info=True)
-        return False
-
-
-def _apply_fake_atmosphere_shell(scene, *, enabled, density, height_km, falloff, color):
-    module_name = f"{__package__}.asset_builder" if __package__ else "asset_builder"
-    try:
-        module = importlib.import_module(module_name)
-    except ImportError:
-        return False
-
-    apply_fn = getattr(module, "apply_fake_atmosphere_shell", None)
-    if not callable(apply_fn):
-        return False
-    try:
-        apply_fn(
-            scene=scene,
-            enabled=bool(enabled),
-            density=float(density),
-            height_km=float(height_km),
-            falloff=float(falloff),
-            color=tuple(color),
-        )
-        return True
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed applying atmosphere shell", exc_info=True)
-        return False
-    except (RuntimeError, TypeError, ValueError):
-        logger.debug("Planetka: failed applying atmosphere shell", exc_info=True)
-        return False
-
-
-def _read_fake_atmosphere_shell_inputs(scene):
-    module_name = f"{__package__}.asset_builder" if __package__ else "asset_builder"
-    try:
-        module = importlib.import_module(module_name)
-    except ImportError:
-        return None
-
-    read_fn = getattr(module, "read_fake_atmosphere_shell_inputs", None)
-    if not callable(read_fn):
-        return None
-    try:
-        result = read_fn(scene=scene)
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed reading atmosphere shell inputs", exc_info=True)
-        return None
-    except (RuntimeError, TypeError, ValueError):
-        logger.debug("Planetka: failed reading atmosphere shell inputs", exc_info=True)
-        return None
-    return result if isinstance(result, dict) else None
-
-
-def _sync_fake_atmosphere_props_from_shell(scene):
-    global _FAKE_ATMOSPHERE_PROP_SYNCING
-    if scene is None:
-        return False
-    props = getattr(scene, "planetka", None)
-    if props is None:
-        return False
-    shell_values = _read_fake_atmosphere_shell_inputs(scene)
-    if not shell_values:
-        return False
-
-    changed = False
-    _FAKE_ATMOSPHERE_PROP_SYNCING = True
-    try:
-        density = max(0.0, min(2.0, float(shell_values.get("density", getattr(props, "fake_atmosphere_density", (1.0 / 3.0))))))
-        height_km = max(0.0, min(400.0, float(shell_values.get("height_km", getattr(props, "fake_atmosphere_height_km", 50.0)))))
-        falloff = max(0.0, min(1.0, float(shell_values.get("falloff", getattr(props, "fake_atmosphere_falloff_exp", 0.05)))))
-        color_raw = shell_values.get("color", getattr(props, "fake_atmosphere_color", _FAKE_ATMOSPHERE_DEFAULT_COLOR))
-        color = tuple(max(0.0, min(1.0, float(color_raw[i]))) for i in range(4))
-
-        if abs(float(getattr(props, "fake_atmosphere_density", (1.0 / 3.0))) - density) > 1e-6:
-            props.fake_atmosphere_density = density
-            changed = True
-        if abs(float(getattr(props, "fake_atmosphere_height_km", 50.0)) - height_km) > 1e-6:
-            props.fake_atmosphere_height_km = height_km
-            changed = True
-        if abs(float(getattr(props, "fake_atmosphere_falloff_exp", 0.05)) - falloff) > 1e-6:
-            props.fake_atmosphere_falloff_exp = falloff
-            changed = True
-
-        current_color = tuple(float(getattr(props, "fake_atmosphere_color", _FAKE_ATMOSPHERE_DEFAULT_COLOR)[i]) for i in range(4))
-        if any(abs(current_color[i] - color[i]) > 1e-6 for i in range(4)):
-            props.fake_atmosphere_color = color
-            changed = True
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError, IndexError):
-        logger.debug("Planetka: failed syncing atmosphere props from shell", exc_info=True)
-        changed = False
-    finally:
-        _FAKE_ATMOSPHERE_PROP_SYNCING = False
-
-    if changed:
-        _sync_idprops_from_props(scene)
-    return changed
-
-
-def _iter_group_nodes_recursive(node_tree, group_name, visited=None, depth=0, depth_cap=64):
-    if node_tree is None or depth > depth_cap:
-        return ()
-    if visited is None:
-        visited = set()
-    try:
-        ptr = node_tree.as_pointer()
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        return ()
-    if ptr in visited:
-        return ()
-    visited.add(ptr)
-
-    found = []
-    for node in getattr(node_tree, "nodes", ()):
-        if str(getattr(node, "type", "")) != "GROUP":
-            continue
-        inner_tree = getattr(node, "node_tree", None)
-        if inner_tree is None:
-            continue
-        if str(getattr(inner_tree, "name", "")) == str(group_name):
-            found.append(node)
-        found.extend(_iter_group_nodes_recursive(inner_tree, group_name, visited, depth + 1, depth_cap))
-    return found
-
-
-def _iter_surface_grading_nodes():
-    for material in getattr(bpy.data, "materials", ()):
-        node_tree = getattr(material, "node_tree", None)
-        if node_tree is None:
-            continue
-        for node in _iter_group_nodes_recursive(node_tree, _SURFACE_GRADING_GROUP_NAME):
-            yield node
-
-
-def _effective_fake_atmosphere_density(props):
-    if props is None:
-        return 0.0
-    enabled = bool(getattr(props, "enable_fake_atmosphere", False))
-    if not enabled:
-        return 0.0
-    try:
-        density = float(getattr(props, "fake_atmosphere_density", 0.0))
-    except (TypeError, ValueError):
-        return 0.0
-    return max(0.0, min(2.0, density))
-
-
-def _effective_fake_atmosphere_height_km(props):
-    if props is None:
-        return 0.0
-    enabled = bool(getattr(props, "enable_fake_atmosphere", False))
-    if not enabled:
-        return 0.0
-    try:
-        height_km = float(getattr(props, "fake_atmosphere_height_km", 0.0))
-    except (TypeError, ValueError):
-        return 0.0
-    return max(0.0, min(400.0, height_km))
-
-
-def _effective_fake_atmosphere_falloff(props):
-    if props is None:
-        return 0.0
-    enabled = bool(getattr(props, "enable_fake_atmosphere", False))
-    if not enabled:
-        return 0.0
-    try:
-        falloff = float(getattr(props, "fake_atmosphere_falloff_exp", 0.05))
-    except (TypeError, ValueError):
-        return 0.05
-    return max(0.0, min(1.0, falloff))
-
-
-def _effective_fake_atmosphere_color(props):
-    default = _FAKE_ATMOSPHERE_DEFAULT_COLOR
-    if props is None:
-        return default
-    value = getattr(props, "fake_atmosphere_color", default)
-    try:
-        rgba = [float(value[i]) for i in range(4)]
-    except (TypeError, ValueError, IndexError):
-        return default
-    return (
-        max(0.0, min(1.0, rgba[0])),
-        max(0.0, min(1.0, rgba[1])),
-        max(0.0, min(1.0, rgba[2])),
-        max(0.0, min(1.0, rgba[3])),
-    )
-
-
-def _apply_fake_atmosphere_from_props(scene):
-    props = getattr(scene, "planetka", None) if scene else None
-    if props is None:
-        return
-
-    _ensure_surface_fake_atmosphere_nodes()
-    shell_density = _effective_fake_atmosphere_density(props)
-    shell_height = _effective_fake_atmosphere_height_km(props)
-    shell_falloff = _effective_fake_atmosphere_falloff(props)
-    shell_color = _effective_fake_atmosphere_color(props)
-    enabled = bool(getattr(props, "enable_fake_atmosphere", False))
-    quick_enabled = enabled
-    # Keep shell as primary atmosphere while allowing low-elevation surface haze.
-    target_density = shell_density * float(_FAKE_ATMOSPHERE_SURFACE_DENSITY_SCALE) if quick_enabled else 0.0
-    target_height = shell_height if quick_enabled else 0.0
-    target_falloff = shell_falloff if quick_enabled else 0.0
-    target_color = shell_color
-
-    changed = 0
-    for node in _iter_surface_grading_nodes():
-        try:
-            density_socket = (
-                node.inputs.get(_FAKE_ATMOSPHERE_DENSITY_SOCKET)
-                or node.inputs.get(_FAKE_ATMOSPHERE_DENSITY_SOCKET_LEGACY)
-            )
-            height_socket = node.inputs.get(_FAKE_ATMOSPHERE_HEIGHT_SOCKET)
-            falloff_socket = node.inputs.get(_FAKE_ATMOSPHERE_FALLOFF_SOCKET)
-            color_socket = node.inputs.get(_FAKE_ATMOSPHERE_COLOR_SOCKET)
-        except (AttributeError, TypeError, ValueError):
-            density_socket = None
-            height_socket = None
-            falloff_socket = None
-            color_socket = None
-        if density_socket is None and height_socket is None and falloff_socket is None and color_socket is None:
-            continue
-        try:
-            if density_socket is not None and abs(float(density_socket.default_value) - float(target_density)) > 1e-6:
-                density_socket.default_value = float(target_density)
-                changed += 1
-            if height_socket is not None and abs(float(height_socket.default_value) - float(target_height)) > 1e-6:
-                height_socket.default_value = float(target_height)
-                changed += 1
-            if falloff_socket is not None and abs(float(falloff_socket.default_value) - float(target_falloff)) > 1e-6:
-                falloff_socket.default_value = float(target_falloff)
-                changed += 1
-            if color_socket is not None:
-                current_color = tuple(float(color_socket.default_value[i]) for i in range(4))
-                if any(abs(current_color[i] - float(target_color[i])) > 1e-6 for i in range(4)):
-                    color_socket.default_value = tuple(target_color)
-                    changed += 1
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed setting fake atmosphere settings", exc_info=True)
-        except (AttributeError, RuntimeError, TypeError, ValueError):
-            logger.debug("Planetka: failed setting fake atmosphere settings", exc_info=True)
-
-    if changed > 0:
-        _tag_view3d_redraw()
-    shell_applied = _apply_fake_atmosphere_shell(
-        scene,
-        enabled=quick_enabled,
-        density=shell_density,
-        height_km=shell_height if quick_enabled else 0.0,
-        falloff=shell_falloff if quick_enabled else 0.0,
-        color=shell_color,
-    )
-    if shell_applied and changed == 0:
-        _tag_view3d_redraw()
-
-
 def _apply_sunlight_from_props(scene):
     if scene is None:
         return
@@ -844,33 +876,26 @@ def _apply_sunlight_from_props(scene):
 def update_sunlight_controls(self, context):
     scene = getattr(context, "scene", None) if context else None
     if scene:
-        _sync_idprops_from_props(scene)
+        _sync_idprops_from_props(scene, ("sunlight_longitude_deg", "sunlight_seasonal_tilt_deg"))
         _suspend_adaptive_viewport_during_navigation(scene)
-        ensure_auto_resolve_service_running()
+        request_auto_resolve(scene, immediate=False)
     _apply_sunlight_from_props(scene)
-
-
-def update_fake_atmosphere(self, context):
-    if _FAKE_ATMOSPHERE_PROP_SYNCING:
-        return
-    scene = getattr(context, "scene", None) if context else None
-    if scene:
-        _sync_idprops_from_props(scene)
-    _apply_fake_atmosphere_from_props(scene)
-    ensure_auto_resolve_service_running()
 
 
 def update_navigation_shot(self, context):
     global _NAVIGATION_SHOT_UPDATE_PENDING
-    scene = getattr(context, "scene", None) if context else None
-    if scene:
-        _sync_idprops_from_props(scene)
-        _suspend_adaptive_viewport_during_navigation(scene)
-        ensure_auto_resolve_service_running()
+    global _NAVIGATION_USER_EDIT_LAST_TOUCH
     if _NAVIGATION_SHOT_SUSPEND_COUNT > 0:
         return
     if _IDPROP_SYNCING or _NAVIGATION_SHOT_UPDATE_REENTRANT:
         return
+
+    scene = getattr(context, "scene", None) if context else None
+    if scene:
+        _NAVIGATION_USER_EDIT_LAST_TOUCH = time.monotonic()
+        _sync_navigation_idprops_from_props(scene)
+        _suspend_adaptive_viewport_during_navigation(scene)
+        request_auto_resolve(scene, immediate=False)
     if _apply_navigation_shot_now():
         _NAVIGATION_SHOT_UPDATE_PENDING = False
         return
@@ -921,6 +946,100 @@ def _is_render_job_active():
 
 def _scene_key(scene):
     return int(getattr(scene, "as_pointer", lambda: id(scene))())
+
+
+def _camera_control_sync_signature(scene):
+    if scene is None:
+        return None
+
+    camera = getattr(scene, "camera", None)
+    if camera is None or getattr(camera, "type", None) != 'CAMERA':
+        return None
+    camera_data = getattr(camera, "data", None)
+    if camera_data is None:
+        return None
+
+    try:
+        camera_matrix_signature = tuple(
+            round(float(value), 6)
+            for row in camera.matrix_world
+            for value in row
+        )
+    except (TypeError, ValueError, RuntimeError):
+        return None
+
+    earth = get_earth_object()
+    earth_matrix_signature = None
+    if earth is not None:
+        try:
+            earth_matrix_signature = tuple(
+                round(float(value), 6)
+                for row in earth.matrix_world
+                for value in row
+            )
+        except (TypeError, ValueError, RuntimeError):
+            earth_matrix_signature = None
+
+    return (
+        str(getattr(camera, "name_full", camera.name)),
+        str(getattr(camera_data, "type", "")),
+        round(float(getattr(camera_data, "lens", 0.0)), 6),
+        round(float(getattr(camera_data, "ortho_scale", 0.0)), 6),
+        camera_matrix_signature,
+        earth_matrix_signature,
+    )
+
+
+def _sync_navigation_controls_from_scene_camera(scene):
+    global _NAV_CAMERA_CONTROL_SYNCING
+
+    if scene is None:
+        return
+    if _IDPROP_SYNCING or _NAV_CAMERA_CONTROL_SYNCING:
+        return
+    if _NAVIGATION_SHOT_SUSPEND_COUNT > 0 or _NAVIGATION_SHOT_UPDATE_REENTRANT:
+        return
+
+    props = getattr(scene, "planetka", None)
+    if props is None:
+        return
+
+    scene_id = _scene_key(scene)
+    if get_earth_object() is None:
+        _NAV_CAMERA_CONTROL_LAST_SIGNATURE.pop(scene_id, None)
+        return
+
+    signature = _camera_control_sync_signature(scene)
+    if signature is None:
+        _NAV_CAMERA_CONTROL_LAST_SIGNATURE.pop(scene_id, None)
+        return
+    if _NAV_CAMERA_CONTROL_LAST_SIGNATURE.get(scene_id) == signature:
+        return
+
+    operators_module = _get_operators_module()
+    if operators_module is None:
+        return
+    populate = getattr(operators_module, "_populate_navigation_from_scene_camera", None)
+    if not callable(populate):
+        return
+
+    _NAV_CAMERA_CONTROL_SYNCING = True
+    suspend_navigation_shot_updates()
+    synced = False
+    try:
+        synced = bool(populate(scene, props))
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka camera control sync failed", exc_info=True)
+    except (RuntimeError, TypeError, ValueError):
+        logger.debug("Planetka camera control sync failed", exc_info=True)
+    finally:
+        resume_navigation_shot_updates()
+        _NAV_CAMERA_CONTROL_SYNCING = False
+
+    if synced:
+        _NAV_CAMERA_CONTROL_LAST_SIGNATURE[scene_id] = signature
+    else:
+        _NAV_CAMERA_CONTROL_LAST_SIGNATURE.pop(scene_id, None)
 
 
 def _camera_signature(scene):
@@ -1508,54 +1627,143 @@ def _mark_auto_resolve_dirty(scene, immediate=False):
     _AUTO_RESOLVE_LAST_CHANGE_TIME[scene_id] = now - (AUTO_RESOLVE_IDLE_SEC_DEFAULT if immediate else 0.0)
 
 
+def _auto_resolve_idle_seconds(scene):
+    props = getattr(scene, "planetka", None) if scene is not None else None
+    try:
+        idle_sec = float(getattr(props, "auto_resolve_idle_sec", AUTO_RESOLVE_IDLE_SEC_DEFAULT))
+    except (TypeError, ValueError):
+        idle_sec = AUTO_RESOLVE_IDLE_SEC_DEFAULT
+    return max(0.1, min(3.0, idle_sec))
+
+
+def _is_navigation_user_edit_active(scene):
+    if scene is None:
+        return False
+    now = time.monotonic()
+    idle_window = _auto_resolve_idle_seconds(scene)
+    return (now - float(_NAVIGATION_USER_EDIT_LAST_TOUCH)) < float(idle_window)
+
+
+def _active_view_monitor_interval_seconds(scene):
+    return _auto_resolve_idle_seconds(scene)
+
+
+def _arm_auto_resolve_timer(force_immediate=False):
+    global _AUTO_RESOLVE_TIMER_RUNNING
+    try:
+        if force_immediate and bpy.app.timers.is_registered(_auto_resolve_timer):
+            bpy.app.timers.unregister(_auto_resolve_timer)
+            _AUTO_RESOLVE_TIMER_RUNNING = False
+        if not bpy.app.timers.is_registered(_auto_resolve_timer):
+            bpy.app.timers.register(
+                _auto_resolve_timer,
+                first_interval=0.0 if force_immediate else 0.05,
+                persistent=True,
+            )
+        _AUTO_RESOLVE_TIMER_RUNNING = True
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        _AUTO_RESOLVE_TIMER_RUNNING = False
+        logger.debug("Planetka: failed arming auto-resolve timer", exc_info=True)
+    except (RuntimeError, TypeError, ValueError):
+        _AUTO_RESOLVE_TIMER_RUNNING = False
+        logger.debug("Planetka: failed arming auto-resolve timer", exc_info=True)
+
+
+def request_auto_resolve(scene, immediate=False, mark_dirty=True):
+    if not _can_auto_resolve_run(scene):
+        stop_auto_resolve_service()
+        return
+    if scene is None:
+        return
+
+    ensure_active_view_monitor_running()
+
+    if mark_dirty:
+        _mark_auto_resolve_dirty(scene, immediate=bool(immediate))
+
+    scene_id = _scene_key(scene)
+    now = time.monotonic()
+    delay_sec = 0.0 if immediate else _auto_resolve_idle_seconds(scene)
+    _AUTO_RESOLVE_NEXT_DUE_TIME[scene_id] = now + delay_sec
+    _arm_auto_resolve_timer(force_immediate=bool(immediate))
+
+
+def _can_auto_resolve_run(scene):
+    if scene is None:
+        return False
+    props = getattr(scene, "planetka", None)
+    if props is None:
+        return False
+    if not bool(getattr(props, "auto_resolve", False)):
+        return False
+    if get_earth_object() is None:
+        return False
+    try:
+        if int(scene.get(ANIMATION_PREPARED_SEGMENTS_KEY, 0)) > 0:
+            return False
+    except (TypeError, ValueError):
+        pass
+    return True
+
+
 def update_auto_resolve(self, context):
     scene = getattr(context, "scene", None) if context else None
     if scene:
-        _sync_idprops_from_props(scene)
+        _sync_idprops_from_props(
+            scene,
+            (
+                "viewport_opt_suspend_subdivision",
+                "viewport_opt_subdivision_restore_delay_sec",
+                "viewport_opt_active_view_coarse_textures",
+                "auto_resolve",
+                "auto_resolve_idle_sec",
+                "texture_quality_mode",
+                "resolution_bias",
+                "lock_resolve_during_animation",
+            ),
+        )
         _mark_auto_resolve_dirty(scene, immediate=True)
-    ensure_auto_resolve_service_running()
+    if _can_auto_resolve_run(scene):
+        ensure_active_view_monitor_running()
+        request_auto_resolve(scene, immediate=True, mark_dirty=False)
+    else:
+        stop_auto_resolve_service()
 
 
 def _auto_resolve_tick_once():
     global _AUTO_RESOLVE_IN_FLIGHT
 
     if _AUTO_RESOLVE_IN_FLIGHT:
-        return
+        return 0.1
 
     scene = getattr(bpy.context, "scene", None)
     if scene is None:
-        return
+        return None
 
     props = getattr(scene, "planetka", None)
     if not props or not bool(getattr(props, "auto_resolve", False)):
-        return
+        return None
     try:
         if int(scene.get(ANIMATION_PREPARED_SEGMENTS_KEY, 0)) > 0:
-            return
+            return None
     except (TypeError, ValueError):
         pass
 
     min_interval_sec = AUTO_RESOLVE_MIN_INTERVAL_SEC_DEFAULT
 
-    try:
-        idle_sec = float(getattr(props, "auto_resolve_idle_sec", AUTO_RESOLVE_IDLE_SEC_DEFAULT))
-    except (TypeError, ValueError):
-        idle_sec = AUTO_RESOLVE_IDLE_SEC_DEFAULT
-    idle_sec = max(0.1, min(3.0, idle_sec))
-
     if _is_animation_playing():
         if bool(getattr(props, "lock_resolve_during_animation", True)):
-            return
+            return AUTO_RESOLVE_RETRY_DELAY_SEC
 
     if _is_render_job_active():
-        return
+        return AUTO_RESOLVE_RETRY_DELAY_SEC
 
     if get_earth_object() is None:
-        return
+        return None
 
     camera_signature = _camera_signature(scene)
     if camera_signature is None:
-        return
+        return AUTO_RESOLVE_RETRY_DELAY_SEC
 
     scene_id = _scene_key(scene)
     now = time.monotonic()
@@ -1572,28 +1780,18 @@ def _auto_resolve_tick_once():
     if previous_signature != camera_signature:
         _AUTO_RESOLVE_LAST_CAMERA_SIGNATURE[scene_id] = camera_signature
         _AUTO_RESOLVE_LAST_PROCESSED_SIGNATURE.pop(scene_id, None)
-        _AUTO_RESOLVE_LAST_CHANGE_TIME[scene_id] = now
-        return
-
-    last_change = _AUTO_RESOLVE_LAST_CHANGE_TIME.get(scene_id)
-    if last_change is None:
-        _AUTO_RESOLVE_LAST_CHANGE_TIME[scene_id] = now
-        return
-
-    if now - last_change < idle_sec:
-        return
 
     last_resolve = _AUTO_RESOLVE_LAST_RESOLVE_TIME.get(scene_id, 0.0)
     if now - last_resolve < min_interval_sec:
-        return
+        return max(0.05, min_interval_sec - (now - last_resolve))
 
     pending_output_change = bool(_AUTO_RESOLVE_PENDING_OUTPUT_CHANGE.get(scene_id, False))
     if _AUTO_RESOLVE_LAST_PROCESSED_SIGNATURE.get(scene_id) == camera_signature and not pending_output_change:
-        return
+        return None
 
     tile_utils = _get_tile_utils()
     if tile_utils is None:
-        return
+        return None
 
     try:
         target_tiles = _canonical_tiles(
@@ -1603,15 +1801,15 @@ def _auto_resolve_tick_once():
         )
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka auto-resolve: tile computation failed", exc_info=True)
-        return
+        return AUTO_RESOLVE_RETRY_DELAY_SEC
     except Exception:
         logger.debug("Planetka auto-resolve: unexpected tile computation failure", exc_info=True)
-        return
+        return AUTO_RESOLVE_RETRY_DELAY_SEC
 
     if target_tiles == _last_resolved_tiles(scene) and not pending_output_change:
         _AUTO_RESOLVE_LAST_PROCESSED_SIGNATURE[scene_id] = camera_signature
         _AUTO_RESOLVE_LAST_RESOLVE_TIME[scene_id] = now
-        return
+        return None
 
     _AUTO_RESOLVE_IN_FLIGHT = True
     try:
@@ -1626,108 +1824,186 @@ def _auto_resolve_tick_once():
             _AUTO_RESOLVE_PENDING_OUTPUT_CHANGE.pop(scene_id, None)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka auto-resolve failed", exc_info=True)
+        return AUTO_RESOLVE_RETRY_DELAY_SEC
     except Exception:
         logger.debug("Planetka auto-resolve failed unexpectedly", exc_info=True)
+        return AUTO_RESOLVE_RETRY_DELAY_SEC
     finally:
         _AUTO_RESOLVE_IN_FLIGHT = False
+    return None
 
 
 def _auto_resolve_timer():
     global _AUTO_RESOLVE_TIMER_RUNNING
-    global _AUTO_RESOLVE_LAST_BUDGET_SKIP_LOG_AT
-
-    def _budget_exceeded(timer_start, phase_name):
-        elapsed_ms = (time.perf_counter() - timer_start) * 1000.0
-        if elapsed_ms <= AUTO_RESOLVE_TIMER_BUDGET_MS:
-            return False
-        now = time.monotonic()
-        if now - float(_AUTO_RESOLVE_LAST_BUDGET_SKIP_LOG_AT) >= AUTO_RESOLVE_BUDGET_SKIP_LOG_COOLDOWN_SEC:
-            logger.debug(
-                "Planetka auto-resolve timer over budget after %s (%.2f ms > %.2f ms); "
-                "deferring remaining work to next tick.",
-                phase_name,
-                elapsed_ms,
-                AUTO_RESOLVE_TIMER_BUDGET_MS,
-            )
-            _AUTO_RESOLVE_LAST_BUDGET_SKIP_LOG_AT = now
-        return True
-
     try:
         if not hasattr(bpy.types.Scene, "planetka"):
             _AUTO_RESOLVE_TIMER_RUNNING = False
             return None
 
-        tick_start = time.perf_counter()
         scene = getattr(bpy.context, "scene", None)
+        if scene is None:
+            _AUTO_RESOLVE_TIMER_RUNNING = False
+            return None
+
+        scene_id = _scene_key(scene)
+        due_time = _AUTO_RESOLVE_NEXT_DUE_TIME.get(scene_id)
+        if due_time is None:
+            _AUTO_RESOLVE_TIMER_RUNNING = False
+            return None
+
+        if not _can_auto_resolve_run(scene):
+            _AUTO_RESOLVE_NEXT_DUE_TIME.pop(scene_id, None)
+            _AUTO_RESOLVE_TIMER_RUNNING = False
+            return None
+
+        now = time.monotonic()
+        remaining = float(due_time) - now
+        if remaining > 0.0:
+            return max(0.05, min(remaining, 1.0))
+
         _update_realtime_telemetry(scene)
-        if _budget_exceeded(tick_start, "realtime telemetry"):
-            return AUTO_RESOLVE_TIMER_INTERVAL_SEC
-
-        camera_signature = _camera_signature(scene) if scene is not None else None
-        if _budget_exceeded(tick_start, "camera signature"):
-            return AUTO_RESOLVE_TIMER_INTERVAL_SEC
-
+        camera_signature = _camera_signature(scene)
         _handle_timeline_motion_optimization(scene)
-        if _budget_exceeded(tick_start, "timeline motion optimization"):
-            return AUTO_RESOLVE_TIMER_INTERVAL_SEC
-
         _handle_viewport_motion_optimization(scene, camera_signature)
-        if _budget_exceeded(tick_start, "viewport motion optimization"):
-            return AUTO_RESOLVE_TIMER_INTERVAL_SEC
-
         _handle_sunlight_motion_optimization(scene)
-        if _budget_exceeded(tick_start, "sunlight motion optimization"):
-            return AUTO_RESOLVE_TIMER_INTERVAL_SEC
-
         _handle_view_scope_quality_transition(scene)
-        if _budget_exceeded(tick_start, "view-scope quality transition"):
-            return AUTO_RESOLVE_TIMER_INTERVAL_SEC
+        retry_delay = _auto_resolve_tick_once()
+        if retry_delay is not None:
+            _AUTO_RESOLVE_NEXT_DUE_TIME[scene_id] = time.monotonic() + max(0.05, float(retry_delay))
+            return max(0.05, float(retry_delay))
 
-        _auto_resolve_tick_once()
+        _AUTO_RESOLVE_NEXT_DUE_TIME.pop(scene_id, None)
+        _AUTO_RESOLVE_TIMER_RUNNING = False
+        return None
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka auto-resolve timer tick failed", exc_info=True)
+        _AUTO_RESOLVE_TIMER_RUNNING = False
     except Exception:
         logger.debug("Planetka auto-resolve timer tick failed unexpectedly", exc_info=True)
-    return AUTO_RESOLVE_TIMER_INTERVAL_SEC
+        _AUTO_RESOLVE_TIMER_RUNNING = False
+    return None
+
+
+def _active_view_monitor_timer():
+    global _ACTIVE_VIEW_MONITOR_TIMER_RUNNING
+    try:
+        if not hasattr(bpy.types.Scene, "planetka"):
+            _ACTIVE_VIEW_MONITOR_TIMER_RUNNING = False
+            return None
+
+        scene = getattr(bpy.context, "scene", None)
+        if not _can_auto_resolve_run(scene):
+            _ACTIVE_VIEW_MONITOR_TIMER_RUNNING = False
+            return None
+        if scene is None:
+            _ACTIVE_VIEW_MONITOR_TIMER_RUNNING = False
+            return None
+
+        scene_id = _scene_key(scene)
+        monitor_interval = _active_view_monitor_interval_seconds(scene)
+        scope = _current_view_scope(scene)
+        if scope != "ACTIVE_VIEW":
+            _ACTIVE_VIEW_MONITOR_LAST_SIGNATURE.pop(scene_id, None)
+            return monitor_interval
+
+        signature = _active_view_signature()
+        if signature is None:
+            _ACTIVE_VIEW_MONITOR_LAST_SIGNATURE.pop(scene_id, None)
+            return monitor_interval
+
+        previous_signature = _ACTIVE_VIEW_MONITOR_LAST_SIGNATURE.get(scene_id)
+        _ACTIVE_VIEW_MONITOR_LAST_SIGNATURE[scene_id] = signature
+        if previous_signature is None or previous_signature == signature:
+            return monitor_interval
+
+        _suspend_adaptive_viewport_during_navigation(scene)
+        request_auto_resolve(scene, immediate=False)
+        return monitor_interval
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka active-view monitor timer failed", exc_info=True)
+        _ACTIVE_VIEW_MONITOR_TIMER_RUNNING = False
+    except Exception:
+        logger.debug("Planetka active-view monitor timer failed unexpectedly", exc_info=True)
+        _ACTIVE_VIEW_MONITOR_TIMER_RUNNING = False
+    return None
+
+
+def ensure_active_view_monitor_running():
+    global _ACTIVE_VIEW_MONITOR_TIMER_RUNNING
+    scene = getattr(getattr(bpy, "context", None), "scene", None)
+    if not _can_auto_resolve_run(scene):
+        stop_active_view_monitor()
+        return
+    try:
+        first_interval = _active_view_monitor_interval_seconds(scene)
+        if not bpy.app.timers.is_registered(_active_view_monitor_timer):
+            bpy.app.timers.register(
+                _active_view_monitor_timer,
+                first_interval=max(0.05, float(first_interval)),
+                persistent=True,
+            )
+        _ACTIVE_VIEW_MONITOR_TIMER_RUNNING = True
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed starting active-view monitor timer", exc_info=True)
+        _ACTIVE_VIEW_MONITOR_TIMER_RUNNING = False
+    except (RuntimeError, TypeError, ValueError):
+        logger.debug("Planetka: failed starting active-view monitor timer", exc_info=True)
+        _ACTIVE_VIEW_MONITOR_TIMER_RUNNING = False
+
+
+def stop_active_view_monitor():
+    global _ACTIVE_VIEW_MONITOR_TIMER_RUNNING
+    try:
+        if bpy.app.timers.is_registered(_active_view_monitor_timer):
+            bpy.app.timers.unregister(_active_view_monitor_timer)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed stopping active-view monitor timer", exc_info=True)
+    except (RuntimeError, TypeError, ValueError):
+        logger.debug("Planetka: failed stopping active-view monitor timer", exc_info=True)
+    _ACTIVE_VIEW_MONITOR_TIMER_RUNNING = False
+    _ACTIVE_VIEW_MONITOR_LAST_SIGNATURE.clear()
 
 
 def ensure_auto_resolve_service_running():
-    global _AUTO_RESOLVE_TIMER_RUNNING
-    try:
-        if not bpy.app.timers.is_registered(_auto_resolve_timer):
-            bpy.app.timers.register(
-                _auto_resolve_timer,
-                first_interval=AUTO_RESOLVE_TIMER_INTERVAL_SEC,
-                persistent=True,
-            )
-        _AUTO_RESOLVE_TIMER_RUNNING = True
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed starting auto-resolve timer", exc_info=True)
+    scene = getattr(getattr(bpy, "context", None), "scene", None)
+    if not _can_auto_resolve_run(scene):
+        stop_auto_resolve_service()
+        return
+    if scene is None:
+        return
+    scene_id = _scene_key(scene)
+    if scene_id not in _AUTO_RESOLVE_NEXT_DUE_TIME:
+        ensure_active_view_monitor_running()
+        return
+    ensure_active_view_monitor_running()
+    _arm_auto_resolve_timer(force_immediate=False)
 
 
 def stop_auto_resolve_service():
     global _AUTO_RESOLVE_TIMER_RUNNING
-    global _AUTO_RESOLVE_LAST_BUDGET_SKIP_LOG_AT
     try:
         if bpy.app.timers.is_registered(_auto_resolve_timer):
             bpy.app.timers.unregister(_auto_resolve_timer)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed stopping auto-resolve timer", exc_info=True)
     _AUTO_RESOLVE_TIMER_RUNNING = False
+    stop_active_view_monitor()
+    _AUTO_RESOLVE_NEXT_DUE_TIME.clear()
     _AUTO_RESOLVE_LAST_CAMERA_SIGNATURE.clear()
     _AUTO_RESOLVE_LAST_OUTPUT_SIGNATURE.clear()
     _AUTO_RESOLVE_LAST_CHANGE_TIME.clear()
     _AUTO_RESOLVE_LAST_RESOLVE_TIME.clear()
     _AUTO_RESOLVE_LAST_PROCESSED_SIGNATURE.clear()
     _AUTO_RESOLVE_PENDING_OUTPUT_CHANGE.clear()
+    _AUTO_RESOLVE_TRIGGER_LAST_SIGNATURE.clear()
     _VIEWPORT_OPT_LAST_SIGNATURE.clear()
     _SUNLIGHT_LAST_SIGNATURE.clear()
     _VIEWPORT_SCOPE_LAST.clear()
     _VIEWPORT_SCOPE_LAST_RESOLVE_TIME.clear()
     _LAST_REALTIME_TELEMETRY.clear()
     _TIMELINE_LAST_SIGNATURE.clear()
+    _NAV_CAMERA_CONTROL_LAST_SIGNATURE.clear()
     _SUNLIGHT_OBJECT_NAME_CACHE.clear()
-    _AUTO_RESOLVE_LAST_BUDGET_SKIP_LOG_AT = 0.0
 
 
 def recover_post_render_state(scene=None):
@@ -1748,7 +2024,7 @@ def recover_post_render_state(scene=None):
         scene = getattr(bpy.context, "scene", None)
     if scene is not None:
         _mark_auto_resolve_dirty(scene, immediate=True)
-    ensure_auto_resolve_service_running()
+        request_auto_resolve(scene, immediate=True, mark_dirty=False)
 
 
 def mark_render_job_started():
@@ -1789,7 +2065,51 @@ def _initialize_props_from_imported_planetka(scene):
         return
 
     _sync_idprops_from_props(scene)
-    _apply_fake_atmosphere_from_props(scene)
+
+
+@persistent
+def _planetka_depsgraph_update_post(_scene, _depsgraph):
+    scene = getattr(getattr(bpy, "context", None), "scene", None)
+    if scene is None:
+        return
+
+    if _is_navigation_user_edit_active(scene):
+        return
+
+    _sync_navigation_controls_from_scene_camera(scene)
+
+    if not _can_auto_resolve_run(scene):
+        return
+
+    ensure_active_view_monitor_running()
+
+    _update_realtime_telemetry(scene)
+
+    scene_id = _scene_key(scene)
+    output_signature = _output_resolution_signature(scene)
+    previous_output_signature = _AUTO_RESOLVE_LAST_OUTPUT_SIGNATURE.get(scene_id)
+    if previous_output_signature != output_signature:
+        _AUTO_RESOLVE_LAST_OUTPUT_SIGNATURE[scene_id] = output_signature
+        if previous_output_signature is not None:
+            _AUTO_RESOLVE_PENDING_OUTPUT_CHANGE[scene_id] = True
+            _AUTO_RESOLVE_LAST_PROCESSED_SIGNATURE.pop(scene_id, None)
+            request_auto_resolve(scene, immediate=True, mark_dirty=False)
+
+    camera_signature = _camera_signature(scene)
+    _handle_timeline_motion_optimization(scene)
+    _handle_viewport_motion_optimization(scene, camera_signature)
+    _handle_sunlight_motion_optimization(scene)
+    _handle_view_scope_quality_transition(scene)
+    if camera_signature is None:
+        return
+    previous_camera_signature = _AUTO_RESOLVE_TRIGGER_LAST_SIGNATURE.get(scene_id)
+    if previous_camera_signature is None:
+        _AUTO_RESOLVE_TRIGGER_LAST_SIGNATURE[scene_id] = camera_signature
+        return
+    if previous_camera_signature == camera_signature:
+        return
+    _AUTO_RESOLVE_TRIGGER_LAST_SIGNATURE[scene_id] = camera_signature
+    request_auto_resolve(scene, immediate=False)
 
 
 @persistent
@@ -1797,9 +2117,8 @@ def _planetka_load_post(_dummy):
     for scene in _iter_scenes():
         _sync_props_from_idprops(scene)
         migrate_scene(scene)
-        _apply_fake_atmosphere_from_props(scene)
     _sync_logging_from_scenes()
-    ensure_auto_resolve_service_running()
+    ensure_active_view_monitor_running()
 
 
 def create_temp_mesh(tiles, name="Planetka Earth Surface", collection_policy="inherit_old"):
@@ -1938,7 +2257,6 @@ def cleanup_planetka_unused_data():
             or "/el/" in filepath
             or "/wt/" in filepath
             or "/po/" in filepath
-            or "basic textures" in filepath
             or "fallback images" in filepath
         )
         if not looks_planetka:

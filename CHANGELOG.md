@@ -14,6 +14,18 @@ All notable changes to Planetka are documented in this file.
 ### Fixed
 - Removed outdated release-checklist references to preview parenting.
 
+## [v0.3.0] - 2026-03-20
+
+### Changed
+- Released Planetka `v0.3.0` as a pre-release build focused on Earth-surface workflow testing.
+- Subscription flow is now free pre-release activation (email activation only, no payment gate).
+- Settings panel now uses Cloudflare-only data source presentation.
+
+### Removed
+- Removed Atmosphere panel and atmosphere creation steps from `Create Earth`.
+- Removed cloud controls from addon registration for this pre-release surface-only build.
+- Removed Animation panel and animation operator registration from the public UI.
+
 ## [v0.2.0] - 2026-02-20
 
 ### Added

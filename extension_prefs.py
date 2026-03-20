@@ -1,7 +1,7 @@
 import bpy
 import json
 from bpy.types import AddonPreferences
-from bpy.props import StringProperty
+from bpy.props import EnumProperty, IntProperty, StringProperty
 
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 
@@ -9,7 +9,22 @@ EARTH_OBJECT_DEFAULT_NAME = "Planetka Earth Surface"
 EARTH_ROLE_KEY = "planetka_role"
 EARTH_ROLE_VALUE = "earth_preview"
 FALLBACK_TEXTURE_BASE_PATH_KEY = "planetka_texture_base_path"
+FALLBACK_TEXTURE_SOURCE_MODE_KEY = "planetka_texture_source_mode"
 FALLBACK_SAVED_LOCATIONS_KEY = "planetka_saved_locations_json"
+FALLBACK_AUTH_EMAIL_KEY = "planetka_auth_email"
+FALLBACK_AUTH_ACCESS_TOKEN_KEY = "planetka_auth_access_token"
+FALLBACK_AUTH_REFRESH_TOKEN_KEY = "planetka_auth_refresh_token"
+FALLBACK_AUTH_SUBSCRIPTION_STATUS_KEY = "planetka_auth_subscription_status"
+FALLBACK_AUTH_RENEWS_AT_KEY = "planetka_auth_renews_at"
+FALLBACK_AUTH_TRIAL_ENDS_AT_KEY = "planetka_auth_trial_ends_at"
+FALLBACK_AUTH_LOGIN_STATE_KEY = "planetka_auth_login_state"
+FALLBACK_AUTH_STATUS_MESSAGE_KEY = "planetka_auth_status_message"
+FALLBACK_AUTH_DEVICE_CODE_KEY = "planetka_auth_device_code"
+FALLBACK_AUTH_DEVICE_VERIFICATION_URL_KEY = "planetka_auth_device_verification_url"
+FALLBACK_AUTH_DEVICE_EXPIRES_AT_KEY = "planetka_auth_device_expires_at"
+FALLBACK_AUTH_POLL_INTERVAL_SECONDS_KEY = "planetka_auth_poll_interval_seconds"
+TEXTURE_SOURCE_MODE_DEFAULT = "CLOUDFLARE"
+LOCAL_TEXTURE_BASE_DEFAULT = "/Volumes/SSDA/Planetka Assets/"
 
 
 class PlanetkaExtensionPreferences(AddonPreferences):
@@ -22,6 +37,16 @@ class PlanetkaExtensionPreferences(AddonPreferences):
         name="Texture Files Source Directory",
         subtype='DIR_PATH',
         description="Base folder containing Planetka tile datasets (expects S2, EL, WT, and PO subfolders)",
+        default=LOCAL_TEXTURE_BASE_DEFAULT,
+    )
+
+    texture_source_mode: EnumProperty(
+        name="Texture Source",
+        description="Planetka pre-release streams tile textures from Cloudflare",
+        items=(
+            ("CLOUDFLARE", "Cloudflare", "Stream tiles from Planetka Cloudflare storage"),
+        ),
+        default=TEXTURE_SOURCE_MODE_DEFAULT,
     )
 
     saved_locations_json: StringProperty(
@@ -30,11 +55,32 @@ class PlanetkaExtensionPreferences(AddonPreferences):
         options={'HIDDEN'},
     )
 
+    auth_email: StringProperty(name="Auth Email", default="", options={'HIDDEN'})
+    auth_access_token: StringProperty(name="Auth Access Token", default="", options={'HIDDEN'})
+    auth_refresh_token: StringProperty(name="Auth Refresh Token", default="", options={'HIDDEN'})
+    auth_subscription_status: StringProperty(name="Auth Subscription Status", default="", options={'HIDDEN'})
+    auth_renews_at: StringProperty(name="Auth Renews At", default="", options={'HIDDEN'})
+    auth_trial_ends_at: StringProperty(name="Auth Trial Ends At", default="", options={'HIDDEN'})
+    auth_login_state: StringProperty(name="Auth Login State", default="logged_out", options={'HIDDEN'})
+    auth_status_message: StringProperty(name="Auth Status Message", default="", options={'HIDDEN'})
+    auth_device_code: StringProperty(name="Auth Device Code", default="", options={'HIDDEN'})
+    auth_device_verification_url: StringProperty(
+        name="Auth Device Verification URL",
+        default="",
+        options={'HIDDEN'},
+    )
+    auth_device_expires_at: StringProperty(name="Auth Device Expires At", default="", options={'HIDDEN'})
+    auth_poll_interval_seconds: IntProperty(
+        name="Auth Poll Interval Seconds",
+        default=2,
+        options={'HIDDEN'},
+    )
+
     # File format preference
     def draw(self, context):
         layout = self.layout
         layout.label(text="Planetka Preferences", icon='WORLD')
-        layout.prop(self, "texture_base_path")
+        layout.label(text="Account is managed in the Planetka sidebar.", icon="INFO")
 
 
 def mark_earth_object(obj):
@@ -132,14 +178,35 @@ def get_prefs():
         @property
         def texture_base_path(self):
             try:
-                return str(self._owner.get(FALLBACK_TEXTURE_BASE_PATH_KEY, "") or "")
+                return str(self._owner.get(FALLBACK_TEXTURE_BASE_PATH_KEY, LOCAL_TEXTURE_BASE_DEFAULT) or "")
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                return ""
+                return LOCAL_TEXTURE_BASE_DEFAULT
 
         @texture_base_path.setter
         def texture_base_path(self, value):
             try:
                 self._owner[FALLBACK_TEXTURE_BASE_PATH_KEY] = str(value or "")
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                pass
+
+        @property
+        def texture_source_mode(self):
+            try:
+                value = str(self._owner.get(FALLBACK_TEXTURE_SOURCE_MODE_KEY, TEXTURE_SOURCE_MODE_DEFAULT) or "")
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                value = TEXTURE_SOURCE_MODE_DEFAULT
+            value = value.strip().upper()
+            if value != "CLOUDFLARE":
+                return TEXTURE_SOURCE_MODE_DEFAULT
+            return value
+
+        @texture_source_mode.setter
+        def texture_source_mode(self, value):
+            safe = str(value or "").strip().upper()
+            if safe != "CLOUDFLARE":
+                safe = TEXTURE_SOURCE_MODE_DEFAULT
+            try:
+                self._owner[FALLBACK_TEXTURE_SOURCE_MODE_KEY] = safe
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 pass
 
@@ -156,6 +223,67 @@ def get_prefs():
                 self._owner[FALLBACK_SAVED_LOCATIONS_KEY] = str(value or "[]")
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 pass
+
+        def _get_value(self, key, default=""):
+            try:
+                return str(self._owner.get(key, default) or default)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                return str(default)
+
+        def _set_value(self, key, value):
+            try:
+                self._owner[key] = str(value or "")
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                pass
+
+        auth_email = property(
+            lambda self: self._get_value(FALLBACK_AUTH_EMAIL_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_EMAIL_KEY, value),
+        )
+        auth_access_token = property(
+            lambda self: self._get_value(FALLBACK_AUTH_ACCESS_TOKEN_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_ACCESS_TOKEN_KEY, value),
+        )
+        auth_refresh_token = property(
+            lambda self: self._get_value(FALLBACK_AUTH_REFRESH_TOKEN_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_REFRESH_TOKEN_KEY, value),
+        )
+        auth_subscription_status = property(
+            lambda self: self._get_value(FALLBACK_AUTH_SUBSCRIPTION_STATUS_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_SUBSCRIPTION_STATUS_KEY, value),
+        )
+        auth_renews_at = property(
+            lambda self: self._get_value(FALLBACK_AUTH_RENEWS_AT_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_RENEWS_AT_KEY, value),
+        )
+        auth_trial_ends_at = property(
+            lambda self: self._get_value(FALLBACK_AUTH_TRIAL_ENDS_AT_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_TRIAL_ENDS_AT_KEY, value),
+        )
+        auth_login_state = property(
+            lambda self: self._get_value(FALLBACK_AUTH_LOGIN_STATE_KEY, "logged_out"),
+            lambda self, value: self._set_value(FALLBACK_AUTH_LOGIN_STATE_KEY, value or "logged_out"),
+        )
+        auth_status_message = property(
+            lambda self: self._get_value(FALLBACK_AUTH_STATUS_MESSAGE_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_STATUS_MESSAGE_KEY, value),
+        )
+        auth_device_code = property(
+            lambda self: self._get_value(FALLBACK_AUTH_DEVICE_CODE_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_DEVICE_CODE_KEY, value),
+        )
+        auth_device_verification_url = property(
+            lambda self: self._get_value(FALLBACK_AUTH_DEVICE_VERIFICATION_URL_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_DEVICE_VERIFICATION_URL_KEY, value),
+        )
+        auth_device_expires_at = property(
+            lambda self: self._get_value(FALLBACK_AUTH_DEVICE_EXPIRES_AT_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_DEVICE_EXPIRES_AT_KEY, value),
+        )
+        auth_poll_interval_seconds = property(
+            lambda self: self._get_value(FALLBACK_AUTH_POLL_INTERVAL_SECONDS_KEY, "2"),
+            lambda self, value: self._set_value(FALLBACK_AUTH_POLL_INTERVAL_SECONDS_KEY, value or "2"),
+        )
 
     def _addon_pref_by_name(addons, key):
         if key in addons:
