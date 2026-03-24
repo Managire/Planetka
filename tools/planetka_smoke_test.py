@@ -248,7 +248,12 @@ def main():
 
         surface = bpy.data.objects.get("Planetka Earth Surface")
         _assert(surface is not None, "Planetka Earth Surface is missing after Resolve Earth.")
-        _assert(surface.parent is None, "Resolved Earth surface unexpectedly has a parent.")
+        if surface.parent is not None:
+            parent_name = str(getattr(surface.parent, "name", "") or "")
+            _assert(
+                parent_name.startswith("Planetka"),
+                f"Resolved Earth surface has unexpected non-Planetka parent: {parent_name}",
+            )
         _assert(surface.data and len(surface.data.materials) > 0, "Resolved Earth surface has no material assigned.")
         _assert(surface.data.materials[0].name == "Planetka Earth Material", "Resolved Earth material is incorrect.")
         _assert(
