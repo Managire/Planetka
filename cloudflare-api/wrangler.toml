@@ -1,0 +1,12 @@
+name = "planetkaworker01"
+main = "src/index.js"
+compatibility_date = "2026-03-15"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "planetka-auth"
+database_id = "8dd80102-88df-4105-9884-8e231875bc6d"
+
+[[r2_buckets]]
+binding = "PLANETKA_DATA"
+bucket_name = "planetka-data"

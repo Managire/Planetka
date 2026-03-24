@@ -1,9 +1,34 @@
-import bpy
+"""Planetka UI panels and telemetry rendering."""
 
-from .extension_prefs import get_earth_object, get_prefs
+import bpy
+import datetime
+
+from .auth import (
+    PLAN_CODE_PLANETKA_PRO,
+    PLAN_CODE_PLANETKA_STUDIO,
+    get_allowance_downloaded_period_bytes,
+    get_allowance_included_limit_bytes,
+    get_allowance_period,
+    get_allowance_period_end,
+    get_allowance_total_remaining_bytes,
+    get_allowance_warning_state,
+    get_billing_period_end,
+    get_contact_url,
+    get_commercial_use_allowed,
+    get_connected_email,
+    get_login_state,
+    get_manage_subscription_url,
+    get_plan_code,
+    get_plan_name,
+    get_status_message,
+    get_upgrade_url,
+    is_data_exhausted,
+    is_authenticated,
+)
+from .extension_prefs import get_earth_object
 from .geonames_db import get_search_status_text
-from .sanity_utils import get_texture_source_health
 from .diagnostics import read_diagnostics
+from .r2_source import get_download_progress, is_download_active
 from .animation_tools import (
     ANIMATION_STATS_END_KEY,
     ANIMATION_STATS_SEGMENTS_KEY,
@@ -16,6 +41,7 @@ from .state import (
     REFRESH_BUTTON_ALERT,
     REFRESH_BUTTON_SCALE_X,
     REFRESH_BUTTON_SCALE_Y,
+    get_resolve_runtime_status,
 )
 
 SHOW_INTERNAL_ANIMATION_UI = False
@@ -56,6 +82,22 @@ def _fmt_deg(value):
     except (TypeError, ValueError):
         return "—"
 
+
+def _fmt_reset_datetime(value):
+    text = str(value or "").strip()
+    if not text:
+        return "—"
+    try:
+        normalized = text.replace("Z", "+00:00")
+        parsed = datetime.datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+        local_time = parsed.astimezone()
+        return f"{local_time.day} {local_time.strftime('%B %Y, %I:%M %p')}"
+    except (TypeError, ValueError):
+        return text
+
+
 def _fmt_m(value):
     if value is None:
         return "—"
@@ -74,6 +116,19 @@ def _fmt_mb(value):
         return "—"
 
 
+def _fmt_mbps(downloaded_mb, download_ms):
+    if downloaded_mb is None or download_ms is None:
+        return "—"
+    try:
+        size_mb = float(downloaded_mb)
+        elapsed_ms = float(download_ms)
+        if elapsed_ms <= 0.0:
+            return "—"
+        return f"{size_mb / (elapsed_ms / 1000.0):.2f} MB/s"
+    except (TypeError, ValueError, ZeroDivisionError):
+        return "—"
+
+
 def _fmt_gb_from_mb(value_mb):
     if value_mb is None:
         return "—"
@@ -81,6 +136,46 @@ def _fmt_gb_from_mb(value_mb):
         return f"{float(value_mb) / 1024.0:.2f} GB"
     except (TypeError, ValueError):
         return "—"
+
+
+def _fmt_gb_from_bytes(value_bytes):
+    if value_bytes is None:
+        return "—"
+    try:
+        return f"{float(value_bytes) / float(1024 ** 3):.2f} GB"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _allowance_period_label(period):
+    token = str(period or "").strip().lower()
+    if token.startswith("week"):
+        return "Weekly"
+    if token.startswith("month"):
+        return "Monthly"
+    if token.startswith("day"):
+        return "Daily"
+    return "Monthly"
+
+
+def _status_activity_suffix(running):
+    if not bool(running):
+        return ""
+    phase = int(datetime.datetime.now().timestamp() * 2.0) % 3
+    return "." * (phase + 1)
+
+
+def _status_icon(code):
+    token = str(code or "").upper()
+    if token == "DOWNLOADING":
+        return "IMPORT"
+    if token in {"FINALIZING", "FINALIZE_QUEUED"}:
+        return "MOD_REMESH"
+    if token == "QUEUED":
+        return "SORTTIME"
+    if token == "MONITORING":
+        return "VIEW_CAMERA"
+    return "INFO"
 
 
 class _PLANETKA_PT_BaseSection:
@@ -92,6 +187,24 @@ class _PLANETKA_PT_BaseSection:
 
 def _has_earth():
     return get_earth_object() is not None
+
+
+def _is_connected():
+    from .extension_prefs import get_prefs
+
+    return is_authenticated(get_prefs())
+
+
+def _is_cloud_source_mode():
+    return True
+
+
+def _is_earth_workflow_enabled():
+    if not _has_earth():
+        return False
+    if _is_cloud_source_mode():
+        return _is_connected()
+    return True
 
 
 def _is_animation_prepared(scene):
@@ -115,44 +228,123 @@ def _show_internal_animation_ui():
     return bool(SHOW_INTERNAL_ANIMATION_UI)
 
 
-def _draw_create_new_earth(layout):
-    layout.use_property_split = True
+def _draw_subscription(layout):
+    layout.use_property_split = False
     layout.use_property_decorate = False
 
-    prefs = get_prefs()
-    status_text = "Texture Source: Not Set"
-    status_icon = "ERROR"
-    show_texture_source_fix = False
-    if prefs:
-        health = get_texture_source_health(getattr(prefs, "texture_base_path", ""))
-        status = str(health.get("status", "INVALID"))
-        if status == "INVALID":
-            status_text = "Texture Source: Invalid"
-            status_icon = "ERROR"
-            show_texture_source_fix = True
-        elif status == "PARTIAL":
-            status_text = "Texture Source: Partial"
-            status_icon = "QUESTION"
-        elif status == "READY":
-            status_text = "Texture Source: Ready"
-            status_icon = "CHECKMARK"
-        else:
-            status_text = "Texture Source: Not Set"
-            status_icon = "ERROR"
-            show_texture_source_fix = True
-    layout.label(text=status_text, icon=status_icon)
+    from .extension_prefs import get_prefs
 
-    if show_texture_source_fix:
-        layout.operator(
-            "planetka.select_texture_source",
-            text="Locate Texture Source Directory",
-            icon="FILE_FOLDER",
-        )
+    prefs = get_prefs()
+    total_remaining = get_allowance_total_remaining_bytes(prefs)
+    included_limit = get_allowance_included_limit_bytes(prefs)
+    remaining_pct_text = "—"
+    if (
+        isinstance(total_remaining, int)
+        and isinstance(included_limit, int)
+        and int(included_limit) > 0
+    ):
+        remaining_pct = (max(0, int(total_remaining)) / float(included_limit)) * 100.0
+        remaining_pct_text = f"{remaining_pct:.1f}%"
+    layout.label(text=f"Data Remaining: {remaining_pct_text}", icon="MESH_GRID")
+
+
+def _draw_subscription_details(layout):
+    layout.use_property_split = False
+    layout.use_property_decorate = False
+
+    from .extension_prefs import get_prefs
+
+    prefs = get_prefs()
+    login_state = get_login_state(prefs)
+    connected = is_authenticated(prefs)
+    email = get_connected_email(prefs)
+    plan_code = get_plan_code(prefs)
+    plan_name = get_plan_name(prefs)
+    billing_period_end = get_billing_period_end(prefs)
+    allowance_period = get_allowance_period(prefs)
+    allowance_period_end = get_allowance_period_end(prefs)
+    total_remaining = get_allowance_total_remaining_bytes(prefs)
+    warning_state = get_allowance_warning_state(prefs)
+    exhausted = is_data_exhausted(prefs)
+    commercial_use_allowed = get_commercial_use_allowed(prefs)
+    contact_url = get_contact_url(prefs)
+    upgrade_url = get_upgrade_url(prefs)
+    manage_subscription_url = get_manage_subscription_url(prefs)
+    status_message = get_status_message(prefs)
+
+    if connected:
+        layout.label(text=f"Account: {email}", icon="CHECKMARK")
+        layout.label(text=f"Plan: {plan_name or 'Planetka'}", icon="INFO")
+        if plan_code == PLAN_CODE_PLANETKA_STUDIO:
+            layout.label(text="Planetka Studio: custom/manual plan for high-demand workflows.", icon="INFO")
+        else:
+            layout.label(text="Planetka: free, 100 GB/month, personal / non-commercial use.", icon="INFO")
+        if not commercial_use_allowed:
+            layout.label(text="License: Personal / non-commercial use only.", icon="ERROR")
+
+        allowance_box = layout.box()
+        allowance_box.label(text=f"{_allowance_period_label(allowance_period)} Data Allowance", icon="STICKY_UVS_LOC")
+        remaining_row = allowance_box.row()
+        remaining_row.alert = bool(exhausted or warning_state in {"low", "exhausted"})
+        remaining_row.label(text=f"Remaining Data: {_fmt_gb_from_bytes(total_remaining)}")
+
+        period_end_value = allowance_period_end or billing_period_end
+        if period_end_value:
+            allowance_box.label(text=f"Period ends: {_fmt_reset_datetime(period_end_value)}", icon="TIME")
+
+        if exhausted:
+            exhausted_box = layout.box()
+            exhausted_box.alert = True
+            if plan_code in {PLAN_CODE_PLANETKA_PRO, PLAN_CODE_PLANETKA_STUDIO}:
+                exhausted_box.label(text="Data allowance is currently exhausted.", icon="ERROR")
+                exhausted_box.label(text="Contact me for a one-off boost or a higher recurring allowance.", icon="INFO")
+            else:
+                exhausted_box.label(text="Included data is used up for this period.", icon="ERROR")
+                exhausted_box.label(text="Contact me for more data and briefly describe what you are building.", icon="INFO")
+                exhausted_box.label(text="If possible, include renders/screenshots/showcase material.", icon="INFO")
+        elif warning_state == "low":
+            warning_box = layout.box()
+            warning_box.alert = True
+            if plan_code in {PLAN_CODE_PLANETKA_PRO, PLAN_CODE_PLANETKA_STUDIO}:
+                warning_box.label(text="Low data remaining. Contact me if your workflow needs more.", icon="ERROR")
+            else:
+                warning_box.label(text="Low data remaining. Contact me if you need more data.", icon="ERROR")
+                warning_box.label(text="Please share what you are working on and, if possible, renders/screenshots.", icon="INFO")
+
+        action_row = layout.row(align=True)
+        if plan_code not in {PLAN_CODE_PLANETKA_PRO, PLAN_CODE_PLANETKA_STUDIO} and upgrade_url:
+            action_row.operator("planetka.account_upgrade", text="Upgrade to Pro", icon="URL")
+        if contact_url:
+            action_row.operator("planetka.account_contact", text="Contact Me", icon="URL")
+        if plan_code in {PLAN_CODE_PLANETKA_PRO, PLAN_CODE_PLANETKA_STUDIO} and manage_subscription_url:
+            action_row.operator("planetka.account_manage_subscription", text="Manage Subscription", icon="URL")
+        action_row.operator("planetka.account_logout", text="Log Out", icon="X")
+    elif login_state == "pending":
+        layout.label(text="Account: Waiting for browser sign-in", icon="TIME")
+        auth_row = layout.row(align=True)
+        auth_row.operator("planetka.account_open_login", text="Open Login Page", icon="URL")
+        auth_row.operator("planetka.account_cancel_login", text="Cancel", icon="X")
+    else:
+        layout.label(text="Account: Not Connected", icon="USER")
+        layout.label(text="Sign in to start with Planetka free (100 GB/month).", icon="INFO")
+        layout.label(text="Free Planetka is personal / non-commercial use only.", icon="INFO")
+        auth_row = layout.row(align=True)
+        auth_row.operator("planetka.account_login", text="Sign In / Create Account", icon="URL")
+
+    if status_message:
+        layout.label(text=status_message, icon="INFO")
+
+def _draw_new_earth(layout):
+    layout.use_property_split = False
+    layout.use_property_decorate = False
+    connected = _is_connected()
+    has_earth = _has_earth()
 
     row = layout.row()
     row.scale_x = ADD_EARTH_BUTTON_SCALE_X
     row.scale_y = ADD_EARTH_BUTTON_SCALE_Y
     row.alert = False
+    row.enabled = (not has_earth) and connected
     row.operator("planetka.add_earth", text="Create Earth", icon="WORLD_DATA")
 
 
@@ -160,14 +352,23 @@ def _draw_resolve(layout):
     layout.use_property_split = True
     layout.use_property_decorate = False
     scene = getattr(bpy.context, "scene", None)
+    from .extension_prefs import get_prefs
+
+    prefs = get_prefs()
+    connected = is_authenticated(prefs)
+    status_message = get_status_message(prefs)
     prepared = _is_animation_prepared(scene)
+    workflow_enabled = _has_earth() and connected
+    layout.enabled = workflow_enabled
     if prepared:
         _draw_animation_ready_message(layout)
+    if not connected:
+        layout.label(text=status_message or "Log in to Planetka before resolving Earth data.", icon="INFO")
     row = layout.row()
     row.scale_x = REFRESH_BUTTON_SCALE_X
     row.scale_y = REFRESH_BUTTON_SCALE_Y
     row.alert = REFRESH_BUTTON_ALERT
-    row.enabled = not prepared
+    row.enabled = (not prepared) and workflow_enabled and connected
     row.operator("planetka.load_textures", text="Resolve Earth Surface", icon="MOD_REMESH")
 
 
@@ -175,10 +376,110 @@ def _draw_live_telemetry(layout, scene):
     layout.use_property_split = False
     layout.use_property_decorate = False
     diag = read_diagnostics(scene)
+    resolve_error = ""
+    try:
+        resolve_error = str(scene.get("planetka_last_resolve_error", "") or "") if scene is not None else ""
+    except Exception:
+        resolve_error = ""
+    if resolve_error:
+        error_box = layout.box()
+        error_box.alert = True
+        error_box.label(text="Resolve Error", icon="ERROR")
+        error_box.label(text=resolve_error)
+    note_text = _texture_quality_note_text(scene)
+    if note_text:
+        note_box = layout.box()
+        note_box.alert = False
+        note_box.label(text=note_text, icon="INFO")
     live_col = layout.column(align=True)
     live_col.label(text=f"Latitude: {_fmt_deg(diag.get('view_latitude_deg'))}")
     live_col.label(text=f"Longitude: {_fmt_deg(diag.get('view_longitude_deg'))}")
     live_col.label(text=f"Altitude: {_fmt_km(diag.get('view_altitude_km'))}")
+
+    progress = get_download_progress()
+    active_download = is_download_active()
+    downloaded_bytes = int(progress.get("downloaded_bytes", 0) or 0)
+    total_bytes = int(progress.get("total_bytes", 0) or 0)
+    downloaded_mb = float(downloaded_bytes) / (1024.0 * 1024.0)
+    total_mb = float(total_bytes) / (1024.0 * 1024.0)
+    runtime = get_resolve_runtime_status(scene)
+    runtime_code = str(runtime.get("code", "IDLE") or "IDLE").upper()
+    runtime_text = str(runtime.get("text", "Idle") or "Idle")
+    if active_download and runtime_code not in {"DOWNLOADING", "FINALIZING"}:
+        runtime_code = "DOWNLOADING"
+        runtime_text = "Downloading Data"
+
+    status_box = layout.box()
+    status_box.label(text="Status", icon="INFO")
+    status_box.label(
+        text=f"{runtime_text}{_status_activity_suffix(runtime.get('running', False))}",
+        icon=_status_icon(runtime_code),
+    )
+
+    if runtime_code == "DOWNLOADING":
+        if total_bytes > 0:
+            status_box.label(text=f"{downloaded_mb:.2f} / {total_mb:.2f} MB")
+        else:
+            status_box.label(text=f"{downloaded_mb:.2f} MB")
+    elif runtime_code in {"QUEUED", "FINALIZE_QUEUED"}:
+        request_id = runtime.get("active_request_id")
+        pending_count = int(runtime.get("pending_count", 0) or 0)
+        if request_id is not None:
+            status_box.label(text=f"Request: #{request_id}")
+        if pending_count > 0:
+            status_box.label(text=f"Queued jobs: {pending_count}")
+
+    from .extension_prefs import get_prefs
+
+    prefs = get_prefs()
+    if prefs and is_authenticated(prefs):
+        plan_code = get_plan_code(prefs)
+        allowance_period = get_allowance_period(prefs)
+        allowance_period_end = get_allowance_period_end(prefs)
+        total_remaining = get_allowance_total_remaining_bytes(prefs)
+        warning_state = get_allowance_warning_state(prefs)
+        exhausted = is_data_exhausted(prefs)
+        downloaded_period = get_allowance_downloaded_period_bytes(prefs)
+        contact_url = get_contact_url(prefs)
+        upgrade_url = get_upgrade_url(prefs)
+        manage_subscription_url = get_manage_subscription_url(prefs)
+
+        allowance_box = layout.box()
+        allowance_box.label(text=f"{_allowance_period_label(allowance_period)} Data Remaining", icon="MESH_GRID")
+        remaining_row = allowance_box.row()
+        remaining_row.alert = bool(exhausted or warning_state in {"low", "exhausted"})
+        remaining_row.label(text=f"Remaining Data: {_fmt_gb_from_bytes(total_remaining)}")
+
+        if allowance_period_end:
+            allowance_box.label(text=f"Period ends: {_fmt_reset_datetime(allowance_period_end)}", icon="TIME")
+        if downloaded_period is not None:
+            allowance_box.label(text=f"This period downloaded: {_fmt_gb_from_bytes(downloaded_period)}")
+        allowance_box.label(text=f"Last resolve downloaded: {_fmt_mb(diag.get('resolve_downloaded_mb'))}")
+
+        if exhausted:
+            exhausted_box = layout.box()
+            exhausted_box.alert = True
+            if plan_code in {PLAN_CODE_PLANETKA_PRO, PLAN_CODE_PLANETKA_STUDIO}:
+                exhausted_box.label(text="No data remaining right now.", icon="ERROR")
+                exhausted_box.label(text="Contact me for a one-off boost or higher recurring allowance.", icon="INFO")
+            else:
+                exhausted_box.label(text="Included free data is used up for this period.", icon="ERROR")
+                exhausted_box.label(text="Contact me for more data and briefly describe your project.", icon="INFO")
+                exhausted_box.label(text="If possible, include renders/screenshots/showcase material.", icon="INFO")
+            action_row = exhausted_box.row(align=True)
+            if contact_url:
+                action_row.operator("planetka.account_contact", text="Contact Me", icon="URL")
+            if plan_code not in {PLAN_CODE_PLANETKA_PRO, PLAN_CODE_PLANETKA_STUDIO} and upgrade_url:
+                action_row.operator("planetka.account_upgrade", text="Upgrade to Pro", icon="URL")
+            if plan_code in {PLAN_CODE_PLANETKA_PRO, PLAN_CODE_PLANETKA_STUDIO} and manage_subscription_url:
+                action_row.operator("planetka.account_manage_subscription", text="Manage Subscription", icon="URL")
+        elif warning_state == "low":
+            warning_box = layout.box()
+            warning_box.alert = True
+            if plan_code in {PLAN_CODE_PLANETKA_PRO, PLAN_CODE_PLANETKA_STUDIO}:
+                warning_box.label(text="Low data remaining. Contact me if you need higher allowance.", icon="ERROR")
+            else:
+                warning_box.label(text="Low data remaining. Contact me if you need more data.", icon="ERROR")
 
 
 def _draw_advanced_telemetry(layout, scene):
@@ -186,16 +487,373 @@ def _draw_advanced_telemetry(layout, scene):
     layout.use_property_decorate = False
     diag = read_diagnostics(scene)
     advanced_col = layout.column(align=True)
+    download_size_mb = diag.get("resolve_downloaded_mb")
+    download_time_ms = diag.get("resolve_download_ms")
+    download_thread_ms = diag.get("resolve_download_thread_ms")
     advanced_col.label(text=f"Tiles: {_fmt_int(diag.get('last_tile_count'))}")
-    advanced_col.label(text=f"Last Resolve: {_fmt_ms(diag.get('last_resolve_ms'))}")
     advanced_col.label(text=f"Spatial Resolution: {_fmt_m(diag.get('resolve_required_mpp_m'))}")
-    advanced_col.label(text=f"Text Size: {_fmt_mb(diag.get('resolve_textures_mb'))}")
+    advanced_col.label(text=f"Tiles Size: {_fmt_mb(diag.get('resolve_textures_mb'))}")
+    advanced_col.label(text=f"Pre-calculation Time: {_fmt_ms(diag.get('last_resolve_ms'))}")
+    advanced_col.label(text=f"Download Time (Wall): {_fmt_ms(download_time_ms)}")
+    if download_thread_ms is not None:
+        advanced_col.label(text=f"Download Time (Summed Requests): {_fmt_ms(download_thread_ms)}")
+    advanced_col.label(text=f"Download Size: {_fmt_mb(download_size_mb)}")
+    advanced_col.label(text=f"Effective Download Speed: {_fmt_mbps(download_size_mb, download_time_ms)}")
+
+
+def _texture_quality_note_text(scene):
+    props = getattr(scene, "planetka", None) if scene else None
+    if props is None:
+        return ""
+
+    mode = str(getattr(props, "texture_quality_mode", "FULL") or "FULL").upper()
+    if mode == "HALF":
+        return "Texture Quality set to Half."
+    if mode == "QUARTER":
+        return "Texture Quality set to Quarter."
+    return ""
+
+
+def _draw_navigation(layout, context):
+    layout.use_property_split = True
+    layout.use_property_decorate = False
+
+    scene = getattr(context, "scene", None)
+    props = getattr(scene, "planetka", None) if scene else None
+    prepared = _is_animation_prepared(scene)
+    if not props:
+        layout.label(text="Planetka settings unavailable.", icon="ERROR")
+        return
+
+    if prepared:
+        _draw_animation_ready_message(layout)
+
+    location_box = layout.box()
+    location_box.enabled = not prepared
+    location_box.operator(
+        "planetka.navigation_use_current_view",
+        text="Camera to Current View",
+        icon="VIEWZOOM",
+    )
+    geonames_status = str(get_search_status_text() or "")
+    if geonames_status:
+        status_icon = "ERROR" if "not configured" in geonames_status else "INFO"
+        location_box.label(text=geonames_status, icon=status_icon)
+    location_box.label(text="Location", icon="PINNED")
+    location_box.prop(props, "nav_city_search", text="Place Search")
+    selected_place = str(getattr(props, "nav_city_selected_name", "") or "")
+    if selected_place:
+        location_box.label(text=f"Selected: {selected_place}", icon="BOOKMARKS")
+    location_box.prop(props, "nav_latitude_deg", text="Latitude")
+    location_box.prop(props, "nav_longitude_deg", text="Longitude")
+
+    shot_box = layout.box()
+    shot_box.enabled = not prepared
+    shot_box.label(text="Camera Controls", icon="CAMERA_DATA")
+    shot_box.prop(props, "nav_altitude_km", text="Altitude (km)")
+    shot_box.prop(props, "nav_azimuth_deg", text="Heading (°)")
+    shot_box.prop(props, "nav_tilt_deg", text="Tilt (°)")
+    shot_box.prop(props, "nav_roll_deg", text="Roll (°)")
+
+    preset_box = layout.box()
+    preset_box.enabled = not prepared
+    preset_box.label(text="Altitude Presets", icon="ORIENTATION_GLOBAL")
+    preset_row_top = preset_box.row(align=True)
+    preset_row_top.operator(
+        "planetka.navigation_preset",
+        text="Max Proximity",
+        icon="ZOOM_IN",
+    ).preset = "MAX_PROXIMITY"
+    preset_row_top.operator(
+        "planetka.navigation_preset",
+        text="ISS Orbit",
+        icon="ORIENTATION_GLOBAL",
+    ).preset = "ISS_ORBIT"
+    preset_row_bottom = preset_box.row(align=True)
+    preset_row_bottom.operator(
+        "planetka.navigation_preset",
+        text="Geosynchronous",
+        icon="CON_SIZELIMIT",
+    ).preset = "GEOSYNCHRONOUS"
+    preset_row_bottom.operator(
+        "planetka.navigation_preset",
+        text="Globe View",
+        icon="WORLD_DATA",
+    ).preset = "HIGH_ORBIT"
+
+
+def _iter_surface_grading_nodes():
+    material_name = "Planetka Earth Material"
+    group_name = "Planetka Surface Grading Group"
+    try:
+        from .asset_builder import EARTH_MATERIAL_NAME, SURFACE_GRADING_GROUP_NAME
+
+        material_name = str(EARTH_MATERIAL_NAME or material_name)
+        group_name = str(SURFACE_GRADING_GROUP_NAME or group_name)
+    except Exception:
+        pass
+
+    material = bpy.data.materials.get(material_name)
+    if material is None or not bool(getattr(material, "use_nodes", False)):
+        return []
+    node_tree = getattr(material, "node_tree", None)
+    if node_tree is None:
+        return []
+
+    nodes = []
+    for node in getattr(node_tree, "nodes", ()):
+        if str(getattr(node, "bl_idname", "")) != "ShaderNodeGroup":
+            continue
+        node_group = getattr(node, "node_tree", None)
+        if str(getattr(node_group, "name", "")) == group_name:
+            nodes.append(node)
+    return nodes
+
+
+def _iter_surface_grading_input_sockets(node):
+    sockets = []
+    for socket in getattr(node, "inputs", ()):
+        if bool(getattr(socket, "is_linked", False)):
+            continue
+        if not hasattr(socket, "default_value"):
+            continue
+        socket_type = str(getattr(socket, "bl_socket_idname", "")).strip()
+        if socket_type in {"NodeSocketShader", "NodeSocketVirtual"}:
+            continue
+        sockets.append(socket)
+    return sockets
+
+
+_SURFACE_GRADING_SECTION_ORDER = (
+    "Surface color",
+    "Specular Reflections",
+    "Elevation",
+    "Night Lights",
+    "Extra",
+)
+
+_SURFACE_GRADING_SECTION_SOCKET_MAP = {
+    "Surface color": {
+        "surface brightness",
+        "surface saturation",
+        "saturation",
+    },
+    "Specular Reflections": {
+        "roughness",
+        "ior",
+        "water texture strength",
+    },
+    "Elevation": {
+        "procedural detail scale",
+        "forest detail strength",
+        "rock detail strength",
+        "rock color variation",
+        "micro displacement strength",
+    },
+    "Night Lights": {
+        "intensity",
+    },
+    "Extra": {
+        "water waves on/off",
+        "snow on/off",
+        "snow line (m)",
+        "waves density coefficient",
+        "waves height coefficient",
+    },
+}
+
+
+def _surface_grading_section_for_socket(socket_name):
+    normalized = str(socket_name or "").strip().lower()
+    for section in _SURFACE_GRADING_SECTION_ORDER:
+        names = _SURFACE_GRADING_SECTION_SOCKET_MAP.get(section, set())
+        if normalized in names:
+            return section
+    return "Extra"
+
+
+def _split_surface_grading_sockets(sockets):
+    grouped = {section: [] for section in _SURFACE_GRADING_SECTION_ORDER}
+    for socket in sockets or ():
+        section = _surface_grading_section_for_socket(getattr(socket, "name", ""))
+        grouped.setdefault(section, []).append(socket)
+    return grouped
+
+
+def _draw_surface_grading(layout):
+    layout.use_property_split = True
+    layout.use_property_decorate = False
+
+    nodes = _iter_surface_grading_nodes()
+    if not nodes:
+        layout.label(text="Earth Surface Grading node group not found.", icon="INFO")
+        return
+
+    many_nodes = len(nodes) > 1
+    for index, node in enumerate(nodes, start=1):
+        container = layout.box() if many_nodes else layout
+        if many_nodes:
+            container.label(text=f"Surface Grading Node {index}", icon="NODETREE")
+        sockets = _iter_surface_grading_input_sockets(node)
+        if not sockets:
+            container.label(text="No adjustable inputs found.", icon="INFO")
+            continue
+        grouped = _split_surface_grading_sockets(sockets)
+        for section in _SURFACE_GRADING_SECTION_ORDER:
+            section_sockets = grouped.get(section, [])
+            if not section_sockets:
+                continue
+            section_box = container.box()
+            section_box.label(text=section)
+            for socket in section_sockets:
+                row = section_box.row()
+                try:
+                    row.prop(socket, "default_value", text=str(getattr(socket, "name", "Value")))
+                except (AttributeError, RuntimeError, TypeError, ValueError):
+                    continue
+
+
+def _iter_atmosphere_nodes():
+    object_name = "Atmosphere - Volumetric"
+    group_name = "Planetka Atmosphere Group"
+    try:
+        from .asset_builder import VOLUMETRIC_ATMOSPHERE_GROUP_NAME, VOLUMETRIC_ATMOSPHERE_OBJECT_NAME
+
+        object_name = str(VOLUMETRIC_ATMOSPHERE_OBJECT_NAME or object_name)
+        group_name = str(VOLUMETRIC_ATMOSPHERE_GROUP_NAME or group_name)
+    except Exception:
+        pass
+
+    atmosphere_obj = bpy.data.objects.get(object_name)
+    if atmosphere_obj is None:
+        return []
+
+    nodes = []
+    for slot in getattr(atmosphere_obj, "material_slots", ()):
+        material = getattr(slot, "material", None)
+        if material is None or not bool(getattr(material, "use_nodes", False)):
+            continue
+        node_tree = getattr(material, "node_tree", None)
+        if node_tree is None:
+            continue
+        for node in getattr(node_tree, "nodes", ()):
+            if str(getattr(node, "bl_idname", "")) != "ShaderNodeGroup":
+                continue
+            node_group = getattr(node, "node_tree", None)
+            node_group_name = str(getattr(node_group, "name", ""))
+            lowered = node_group_name.lower()
+            if node_group_name == group_name or ("atmosphere" in lowered and "fake" not in lowered):
+                nodes.append(node)
+    return nodes
+
+
+def _iter_atmosphere_input_sockets(node):
+    sockets = []
+    for socket in getattr(node, "inputs", ()):
+        if bool(getattr(socket, "is_linked", False)):
+            continue
+        if not hasattr(socket, "default_value"):
+            continue
+        socket_type = str(getattr(socket, "bl_socket_idname", "")).strip()
+        if socket_type in {"NodeSocketShader", "NodeSocketVirtual"}:
+            continue
+        sockets.append(socket)
+    return sockets
+
+
+def _draw_atmosphere(layout, context):
+    layout.use_property_split = True
+    layout.use_property_decorate = False
+
+    scene = getattr(context, "scene", None)
+    props = getattr(scene, "planetka", None) if scene else None
+    if not props:
+        layout.label(text="Planetka settings unavailable.", icon="ERROR")
+        return
+
+    layout.prop(props, "atmosphere_enabled", text="Enable Atmosphere")
+
+    nodes = _iter_atmosphere_nodes()
+    if not nodes:
+        layout.label(text="Volumetric atmosphere shader not found.", icon="INFO")
+        return
+
+    many_nodes = len(nodes) > 1
+    for index, node in enumerate(nodes, start=1):
+        container = layout.box() if many_nodes else layout
+        if many_nodes:
+            container.label(text=f"Atmosphere Shader Node {index}", icon="NODETREE")
+        sockets = _iter_atmosphere_input_sockets(node)
+        if not sockets:
+            container.label(text="No adjustable inputs found.", icon="INFO")
+            continue
+        for socket in sockets:
+            row = container.row()
+            try:
+                row.prop(socket, "default_value", text=str(getattr(socket, "name", "Value")))
+            except (AttributeError, RuntimeError, TypeError, ValueError):
+                continue
+
+
+class PLANETKA_PT_SubscriptionPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
+    bl_label = "Account"
+    bl_idname = "PLANETKA_PT_subscription"
+    bl_order = 0
+    bl_options = set()
+
+    @classmethod
+    def poll(cls, context):
+        return not _is_connected()
+
+    def draw(self, context):
+        _draw_subscription(self.layout)
+
+
+class PLANETKA_PT_SubscriptionPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
+    bl_label = "Account"
+    bl_idname = "PLANETKA_PT_subscription_collapsed"
+    bl_order = 0
+
+    @classmethod
+    def poll(cls, context):
+        return _is_connected()
+
+    def draw(self, context):
+        _draw_subscription(self.layout)
+
+
+class PLANETKA_PT_SubscriptionDetailsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
+    bl_label = "Account Details"
+    bl_idname = "PLANETKA_PT_subscription_details"
+    bl_parent_id = "PLANETKA_PT_subscription"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        return not _is_connected()
+
+    def draw(self, context):
+        _draw_subscription_details(self.layout)
+
+
+class PLANETKA_PT_SubscriptionDetailsPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
+    bl_label = "Account Details"
+    bl_idname = "PLANETKA_PT_subscription_details_collapsed"
+    bl_parent_id = "PLANETKA_PT_subscription_collapsed"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        return _is_connected()
+
+    def draw(self, context):
+        _draw_subscription_details(self.layout)
 
 
 class PLANETKA_PT_NewEarthPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Create New Earth"
+    bl_label = "New Earth"
     bl_idname = "PLANETKA_PT_new_earth"
-    bl_order = 0
+    bl_order = 1
     bl_options = set()
 
     @classmethod
@@ -203,20 +861,24 @@ class PLANETKA_PT_NewEarthPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         return not _has_earth()
 
     def draw(self, context):
-        _draw_create_new_earth(self.layout)
+        layout = self.layout
+        layout.enabled = _is_connected()
+        _draw_new_earth(layout)
 
 
 class PLANETKA_PT_NewEarthPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Create New Earth"
+    bl_label = "New Earth"
     bl_idname = "PLANETKA_PT_new_earth_collapsed"
-    bl_order = 0
+    bl_order = 1
 
     @classmethod
     def poll(cls, context):
         return _has_earth()
 
     def draw(self, context):
-        _draw_create_new_earth(self.layout)
+        layout = self.layout
+        layout.enabled = _is_connected()
+        _draw_new_earth(layout)
 
 
 class PLANETKA_PT_ResolvePanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
@@ -227,7 +889,7 @@ class PLANETKA_PT_ResolvePanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        return _has_earth()
+        return _is_earth_workflow_enabled()
 
     def draw(self, context):
         _draw_resolve(self.layout)
@@ -240,7 +902,7 @@ class PLANETKA_PT_ResolvePanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Pane
 
     @classmethod
     def poll(cls, context):
-        return not _has_earth()
+        return not _is_earth_workflow_enabled()
 
     def draw(self, context):
         _draw_resolve(self.layout)
@@ -253,7 +915,7 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        return _has_earth()
+        return True
 
     def draw(self, context):
         layout = self.layout
@@ -263,18 +925,24 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         scene = getattr(context, "scene", None)
         props = getattr(scene, "planetka", None) if scene else None
         prepared = _is_animation_prepared(scene)
+        workflow_enabled = _is_earth_workflow_enabled()
+
+        from .extension_prefs import get_prefs
+        prefs = get_prefs()
 
         if props:
             resolve_box = layout.box()
             resolve_box.label(text="Resolve Settings", icon="MOD_REMESH")
             if prepared:
                 _draw_animation_ready_message(resolve_box)
-            resolve_box.operator(
+            resolve_op = resolve_box.operator(
                 "planetka.load_textures",
                 text="Resolve Earth Surface",
                 icon="MOD_REMESH",
             )
-            resolve_box.enabled = not prepared
+            # Keep Blender responsive while downloading; finalize resolve after download completes.
+            resolve_op.defer_download = True
+            resolve_box.enabled = workflow_enabled and (not prepared)
             row = resolve_box.row()
             row.use_property_split = False
             row.prop(
@@ -300,12 +968,33 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
                     toggle=True,
                 )
 
+            render_engine_box = layout.box()
+            render_engine_box.label(text="Renderer Optimization", icon="RENDER_STILL")
+            render_engine_box.label(text="Switch and Optimize for:")
+            render_engine_box.enabled = workflow_enabled
+            render_toggle_row = render_engine_box.row(align=True)
+            render_toggle_row.use_property_split = False
+            render_toggle_row.prop_enum(
+                props,
+                "render_engine_optimization",
+                "EEVEE",
+                text="EEVEE",
+            )
+            render_toggle_row.prop_enum(
+                props,
+                "render_engine_optimization",
+                "CYCLES",
+                text="Cycles",
+            )
+
             quality_box = layout.box()
             quality_box.label(text="Texture Quality", icon="TEXTURE")
+            quality_box.enabled = workflow_enabled
             quality_box.prop(props, "texture_quality_mode", text="Texture Quality")
 
             viewport_box = layout.box()
             viewport_box.label(text="Viewport Optimization", icon="VIEW3D")
+            viewport_box.enabled = workflow_enabled
             viewport_box.prop(
                 props,
                 "viewport_opt_active_view_coarse_textures",
@@ -327,37 +1016,15 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
                 slider=True,
             )
 
-            source_box = layout.box()
-            source_box.label(text="Texture Source", icon="FILE_FOLDER")
-            source_box.operator(
-                "planetka.select_texture_source",
-                text="Set Texture Source Directory",
-                icon="FILE_FOLDER",
-            )
-            source_box.operator(
-                "planetka.import_new_data",
-                text="Import New Data",
-                icon="IMPORT",
-            )
-            source_box.operator(
-                "planetka.validate_texture_source",
-                text="Validate Texture Source",
-                icon="CHECKMARK",
-            )
-
             objects_box = layout.box()
             objects_box.label(text="Scene Objects", icon="OUTLINER_OB_EMPTY")
+            objects_box.enabled = workflow_enabled
             objects_box.prop(
                 props,
                 "show_earth_preview",
                 text="Show Earth Preview",
                 toggle=True,
             )
-
-            telemetry_box = layout.box()
-            telemetry_box.label(text="Advanced Telemetry", icon="INFO")
-            _draw_advanced_telemetry(telemetry_box, scene)
-
 
 class PLANETKA_PT_LiveTelemetryPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
     bl_label = "Telemetry"
@@ -367,9 +1034,10 @@ class PLANETKA_PT_LiveTelemetryPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        return _has_earth()
+        return _is_earth_workflow_enabled()
 
     def draw(self, context):
+        self.layout.enabled = _is_earth_workflow_enabled()
         scene = getattr(context, "scene", None)
         _draw_live_telemetry(self.layout, scene)
 
@@ -381,11 +1049,45 @@ class PLANETKA_PT_LiveTelemetryPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.type
 
     @classmethod
     def poll(cls, context):
+        return not _is_earth_workflow_enabled()
+
+    def draw(self, context):
+        self.layout.enabled = False
+        scene = getattr(context, "scene", None)
+        _draw_live_telemetry(self.layout, scene)
+
+
+class PLANETKA_PT_LiveTelemetryAdvancedPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
+    bl_label = "Advanced Telemetry"
+    bl_idname = "PLANETKA_PT_live_telemetry_advanced"
+    bl_parent_id = "PLANETKA_PT_live_telemetry"
+    bl_options = {'DEFAULT_CLOSED'}
+    bl_order = 1
+
+    @classmethod
+    def poll(cls, context):
         return False
 
     def draw(self, context):
         scene = getattr(context, "scene", None)
-        _draw_live_telemetry(self.layout, scene)
+        _draw_advanced_telemetry(self.layout, scene)
+
+
+class PLANETKA_PT_LiveTelemetryAdvancedPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
+    bl_label = "Advanced Telemetry"
+    bl_idname = "PLANETKA_PT_live_telemetry_advanced_collapsed"
+    bl_parent_id = "PLANETKA_PT_live_telemetry_collapsed"
+    bl_options = {'DEFAULT_CLOSED'}
+    bl_order = 1
+
+    @classmethod
+    def poll(cls, context):
+        return False
+
+    def draw(self, context):
+        self.layout.enabled = False
+        scene = getattr(context, "scene", None)
+        _draw_advanced_telemetry(self.layout, scene)
 
 
 class PLANETKA_PT_LinksPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
@@ -395,10 +1097,11 @@ class PLANETKA_PT_LinksPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        return _has_earth()
+        return True
 
     def draw(self, context):
         layout = self.layout
+        layout.enabled = _is_earth_workflow_enabled()
         layout.use_property_split = True
         layout.use_property_decorate = False
 
@@ -424,75 +1127,27 @@ class PLANETKA_PT_NavigationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        return _has_earth()
+        return _is_earth_workflow_enabled()
 
     def draw(self, context):
         layout = self.layout
-        layout.use_property_split = True
-        layout.use_property_decorate = False
+        layout.enabled = _is_earth_workflow_enabled()
+        _draw_navigation(layout, context)
 
-        scene = getattr(context, "scene", None)
-        props = getattr(scene, "planetka", None) if scene else None
-        prepared = _is_animation_prepared(scene)
-        if not props:
-            layout.label(text="Planetka settings unavailable.", icon="ERROR")
-            return
 
-        if prepared:
-            _draw_animation_ready_message(layout)
+class PLANETKA_PT_NavigationPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
+    bl_label = "Navigation"
+    bl_idname = "PLANETKA_PT_navigation_collapsed"
+    bl_order = 4
 
-        location_box = layout.box()
-        location_box.enabled = not prepared
-        location_box.operator(
-            "planetka.navigation_use_current_view",
-            text="Camera to Current View",
-            icon="VIEWZOOM",
-        )
-        geonames_status = str(get_search_status_text() or "")
-        if geonames_status:
-            status_icon = "ERROR" if "not configured" in geonames_status else "INFO"
-            location_box.label(text=geonames_status, icon=status_icon)
-        location_box.label(text="Location", icon="PINNED")
-        location_box.prop(props, "nav_city_search", text="Place Search")
-        selected_place = str(getattr(props, "nav_city_selected_name", "") or "")
-        if selected_place:
-            location_box.label(text=f"Selected: {selected_place}", icon="BOOKMARKS")
-        location_box.prop(props, "nav_latitude_deg", text="Latitude")
-        location_box.prop(props, "nav_longitude_deg", text="Longitude")
+    @classmethod
+    def poll(cls, context):
+        return not _is_earth_workflow_enabled()
 
-        shot_box = layout.box()
-        shot_box.enabled = not prepared
-        shot_box.label(text="Camera Controls", icon="CAMERA_DATA")
-        shot_box.prop(props, "nav_altitude_km", text="Altitude (km)")
-        shot_box.prop(props, "nav_azimuth_deg", text="Heading (°)")
-        shot_box.prop(props, "nav_tilt_deg", text="Tilt (°)")
-        shot_box.prop(props, "nav_roll_deg", text="Roll (°)")
-
-        preset_box = layout.box()
-        preset_box.enabled = not prepared
-        preset_box.label(text="Altitude Presets", icon="ORIENTATION_GLOBAL")
-        preset_row_top = preset_box.row(align=True)
-        preset_row_top.operator(
-            "planetka.navigation_preset",
-            text="Max Proximity",
-            icon="ZOOM_IN",
-        ).preset = "MAX_PROXIMITY"
-        preset_row_top.operator(
-            "planetka.navigation_preset",
-            text="ISS Orbit",
-            icon="ORIENTATION_GLOBAL",
-        ).preset = "ISS_ORBIT"
-        preset_row_bottom = preset_box.row(align=True)
-        preset_row_bottom.operator(
-            "planetka.navigation_preset",
-            text="Geosynchronous",
-            icon="CON_SIZELIMIT",
-        ).preset = "GEOSYNCHRONOUS"
-        preset_row_bottom.operator(
-            "planetka.navigation_preset",
-            text="Globe View",
-            icon="WORLD_DATA",
-        ).preset = "HIGH_ORBIT"
+    def draw(self, context):
+        layout = self.layout
+        layout.enabled = False
+        _draw_navigation(layout, context)
 
 
 class PLANETKA_PT_NavigationSavedLocationsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
@@ -504,10 +1159,11 @@ class PLANETKA_PT_NavigationSavedLocationsPanel(_PLANETKA_PT_BaseSection, bpy.ty
 
     @classmethod
     def poll(cls, context):
-        return _has_earth()
+        return False
 
     def draw(self, context):
         layout = self.layout
+        layout.enabled = _is_earth_workflow_enabled()
         layout.use_property_split = True
         layout.use_property_decorate = False
 
@@ -537,6 +1193,109 @@ class PLANETKA_PT_NavigationSavedLocationsPanel(_PLANETKA_PT_BaseSection, bpy.ty
         )
 
 
+class PLANETKA_PT_NavigationSavedLocationsPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
+    bl_label = "Save / Load Location"
+    bl_idname = "PLANETKA_PT_navigation_saved_locations_collapsed"
+    bl_parent_id = "PLANETKA_PT_navigation_collapsed"
+    bl_options = {'DEFAULT_CLOSED'}
+    bl_order = 10
+
+    @classmethod
+    def poll(cls, context):
+        return False
+
+    def draw(self, context):
+        layout = self.layout
+        layout.enabled = False
+        layout.use_property_split = True
+        layout.use_property_decorate = False
+
+        scene = getattr(context, "scene", None)
+        props = getattr(scene, "planetka", None) if scene else None
+        if not props:
+            layout.label(text="Planetka settings unavailable.", icon="ERROR")
+            return
+
+        layout.prop(props, "nav_saved_location_name", text="Location Name")
+        save_row = layout.row(align=True)
+        save_row.operator(
+            "planetka.save_location",
+            text="Save Location",
+            icon="ADD",
+        )
+        save_row.operator(
+            "planetka.delete_saved_location",
+            text="",
+            icon="TRASH",
+        )
+        layout.prop(props, "nav_saved_location_id", text="Saved Locations")
+        layout.operator(
+            "planetka.load_saved_location",
+            text="Load Saved Location",
+            icon="IMPORT",
+        )
+
+
+class PLANETKA_PT_SurfaceGradingPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
+    bl_label = "Surface Grading"
+    bl_idname = "PLANETKA_PT_surface_grading"
+    bl_order = 5
+
+    @classmethod
+    def poll(cls, context):
+        return _is_earth_workflow_enabled()
+
+    def draw(self, context):
+        layout = self.layout
+        layout.enabled = _is_earth_workflow_enabled()
+        _draw_surface_grading(layout)
+
+
+class PLANETKA_PT_SurfaceGradingPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
+    bl_label = "Surface Grading"
+    bl_idname = "PLANETKA_PT_surface_grading_collapsed"
+    bl_order = 5
+
+    @classmethod
+    def poll(cls, context):
+        return not _is_earth_workflow_enabled()
+
+    def draw(self, context):
+        layout = self.layout
+        layout.enabled = False
+        _draw_surface_grading(layout)
+
+
+class PLANETKA_PT_AtmospherePanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
+    bl_label = "Atmosphere"
+    bl_idname = "PLANETKA_PT_atmosphere"
+    bl_order = 5
+
+    @classmethod
+    def poll(cls, context):
+        return _is_earth_workflow_enabled()
+
+    def draw(self, context):
+        layout = self.layout
+        layout.enabled = _is_earth_workflow_enabled()
+        _draw_atmosphere(layout, context)
+
+
+class PLANETKA_PT_AtmospherePanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
+    bl_label = "Atmosphere"
+    bl_idname = "PLANETKA_PT_atmosphere_collapsed"
+    bl_order = 5
+
+    @classmethod
+    def poll(cls, context):
+        return not _is_earth_workflow_enabled()
+
+    def draw(self, context):
+        layout = self.layout
+        layout.enabled = False
+        _draw_atmosphere(layout, context)
+
+
 class PLANETKA_PT_SunlightPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
     bl_label = "Sunlight"
     bl_idname = "PLANETKA_PT_sunlight"
@@ -545,10 +1304,11 @@ class PLANETKA_PT_SunlightPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        return _has_earth()
+        return True
 
     def draw(self, context):
         layout = self.layout
+        layout.enabled = _is_earth_workflow_enabled()
         layout.use_property_split = True
         layout.use_property_decorate = False
 
@@ -585,43 +1345,6 @@ class PLANETKA_PT_SunlightPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         row5.operator("planetka.sunlight_preset", text="Night").preset = "NIGHT"
 
 
-class PLANETKA_PT_AtmospherePanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Atmosphere"
-    bl_idname = "PLANETKA_PT_atmosphere"
-    bl_order = 5
-    bl_options = {'DEFAULT_CLOSED'}
-
-    @classmethod
-    def poll(cls, context):
-        return _has_earth()
-
-    def draw(self, context):
-        layout = self.layout
-        layout.use_property_split = True
-        layout.use_property_decorate = False
-
-        scene = getattr(context, "scene", None)
-        props = getattr(scene, "planetka", None) if scene else None
-        if not props:
-            layout.label(text="Planetka settings unavailable.", icon="ERROR")
-            return
-
-        row = layout.row()
-        row.use_property_split = False
-        row.prop(props, "enable_fake_atmosphere", text="Enable Atmosphere", toggle=True)
-
-        density_row = layout.row()
-        density_row.enabled = bool(getattr(props, "enable_fake_atmosphere", False))
-        density_row.prop(props, "fake_atmosphere_density", text="Atmosphere Density", slider=True)
-
-        height_row = layout.row()
-        height_row.enabled = bool(getattr(props, "enable_fake_atmosphere", False))
-        height_row.prop(props, "fake_atmosphere_height_km", text="Atmosphere Height (km)", slider=True)
-
-        color_row = layout.row()
-        color_row.enabled = bool(getattr(props, "enable_fake_atmosphere", False))
-        color_row.prop(props, "fake_atmosphere_color", text="Atmosphere Color")
-
 class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
     bl_label = "Animation"
     bl_idname = "PLANETKA_PT_animation"
@@ -631,10 +1354,11 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
     @classmethod
     def poll(cls, context):
         # Cinematic presets are part of the public UI; render-setup stays internal-only.
-        return _has_earth()
+        return True
 
     def draw(self, context):
         layout = self.layout
+        layout.enabled = _is_earth_workflow_enabled()
         layout.use_property_split = True
         layout.use_property_decorate = False
 

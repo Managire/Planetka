@@ -6,7 +6,7 @@ Use this file when configuring GitHub branch protection for the default branch.
 
 Set these checks as **required**:
 
-- `Blender Required Gate / Required Gate (Ubuntu / Blender 5.0.1)`
+- `Blender Required Gate / Required Gate (Ubuntu / Blender 5.1.0)`
 
 This gate runs:
 

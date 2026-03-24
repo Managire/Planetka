@@ -2,6 +2,7 @@ import os
 import bpy
 
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
+from .r2_source import is_remote_source_configured, texture_file_exists
 
 _REQUIRED_TEXTURE_SOURCE_RULES = {
     "S2": {"prefix": "S2_", "ext": ".exr", "min_count": 2},
@@ -121,6 +122,9 @@ def _validate_texture_source_path(base_path):
     issues = []
     normalized_path = _normalize_texture_source_path(base_path)
 
+    if is_remote_source_configured(normalized_path):
+        return normalized_path, issues
+
     if not normalized_path:
         issues.append(("ERROR", "TEXTURE_PATH_MISSING", "Texture source directory is not set."))
         return normalized_path, issues
@@ -188,6 +192,8 @@ def _validate_texture_source_path(base_path):
 
 def get_texture_source_health(base_path):
     normalized_path = _normalize_texture_source_path(base_path)
+    if is_remote_source_configured(normalized_path):
+        return {"status": "READY", "normalized_path": normalized_path, "issues": []}
     if not normalized_path:
         return {"status": "NOT_SET", "normalized_path": "", "issues": []}
 
@@ -253,6 +259,35 @@ def validate_known_good_texture_source(base_path):
         "known_good_s2_present": [],
         "known_good_s2_missing": [],
     }
+
+    if is_remote_source_configured(normalized_path):
+        remote_check_error = ""
+        for name in _KNOWN_GOOD_S2_SENTINELS:
+            try:
+                exists = bool(texture_file_exists(normalized_path, "S2", name))
+            except RuntimeError as exc:
+                remote_check_error = str(exc)
+                exists = False
+            if exists:
+                details["known_good_s2_present"].append(name)
+                continue
+            details["known_good_s2_missing"].append(name)
+        if details["known_good_s2_missing"]:
+            details["issues"].append((
+                "WARNING",
+                "TEXTURE_SOURCE_SENTINEL_MISSING",
+                (
+                    "Remote source is configured but known-good S2 sentinel tiles are missing "
+                    f"({len(details['known_good_s2_missing'])}/2)."
+                ),
+            ))
+        if remote_check_error:
+            details["issues"].append((
+                "WARNING",
+                "TEXTURE_SOURCE_REMOTE_CHECK_FAILED",
+                f"Planetka could not verify remote texture health: {remote_check_error}",
+            ))
+        return details
 
     if not normalized_path or not os.path.isdir(normalized_path):
         return details

@@ -7,13 +7,24 @@ from mathutils import Vector
 from .extension_prefs import get_prefs, read_saved_locations
 from .geonames_db import get_cached_place_by_display, search_places
 from .state import (
+    resume_navigation_shot_updates,
+    suspend_navigation_shot_updates,
+    update_atmosphere_enabled,
     update_auto_resolve,
     update_debug_logging,
-    update_fake_atmosphere,
+    update_renderer_engine_optimization,
     update_navigation_shot,
+    update_r2_cache_settings,
     update_show_earth_preview,
     update_sunlight_controls,
 )
+from .clouds_local import (
+    _local_cloud_texture_items,
+    update_enable_local_clouds,
+    update_view_cloud_subdivision,
+)
+from .clouds_global import update_enable_global_clouds
+from .clouds_vdb import update_enable_vdb_clouds
 
 NAV_DEFAULT_ALTITUDE_KM = 400.0
 NAV_DEFAULT_AZIMUTH_DEG = 0.0
@@ -172,7 +183,10 @@ def _set_nav_city_search(self, value):
         self["nav_city_selected_name"] = ""
         return
 
+    nav_suspended = False
     try:
+        suspend_navigation_shot_updates()
+        nav_suspended = True
         self.nav_latitude_deg = float(place.get("latitude", 0.0))
         self.nav_longitude_deg = float(place.get("longitude", 0.0))
         self.nav_altitude_km = NAV_DEFAULT_ALTITUDE_KM
@@ -181,12 +195,24 @@ def _set_nav_city_search(self, value):
         self.nav_roll_deg = NAV_DEFAULT_ROLL_DEG
         self["nav_city_selected_name"] = str(place.get("display_name", text))
         self["nav_city_search"] = str(place.get("display_name", text))
+    except (TypeError, ValueError, AttributeError):
+        return
+    finally:
+        if nav_suspended:
+            resume_navigation_shot_updates()
 
-        # Always avoid new locations appearing at night: switch to "Early Morning" sun.
-        sun = _sunlight_early_morning_for_location(self.nav_longitude_deg, self.nav_latitude_deg)
-        if sun:
-            self.sunlight_longitude_deg = float(sun[0])
-            self.sunlight_seasonal_tilt_deg = float(sun[1])
+    # Apply all navigation values in one pass to avoid repeated camera updates/resolves.
+    update_navigation_shot(self, bpy.context)
+
+    # Always avoid new locations appearing at night: switch to "Early Morning" sun.
+    sun = _sunlight_early_morning_for_location(self.nav_longitude_deg, self.nav_latitude_deg)
+    if not sun:
+        return
+    try:
+        # Set both values first, then run a single sunlight update.
+        self["sunlight_longitude_deg"] = float(sun[0])
+        self["sunlight_seasonal_tilt_deg"] = float(sun[1])
+        update_sunlight_controls(self, bpy.context)
     except (TypeError, ValueError, AttributeError):
         return
 
@@ -235,6 +261,54 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         update=update_show_earth_preview,
     )
 
+    atmosphere_enabled: BoolProperty(
+        name="Enable Atmosphere",
+        default=True,
+        description="Show or hide the Atmosphere collection (volumetric + EEVEE supplement)",
+        update=update_atmosphere_enabled,
+    )
+
+    enable_global_clouds: BoolProperty(
+        name="Enable Global Clouds",
+        default=True,
+        description="Include Global Clouds collection in viewport and render",
+        update=update_enable_global_clouds,
+    )
+
+    enable_local_clouds: BoolProperty(
+        name="Enable Local Clouds",
+        default=False,
+        description="Include Local Clouds collection in viewport and render",
+        update=update_enable_local_clouds,
+    )
+
+    enable_vdb_clouds: BoolProperty(
+        name="Enable VDB Clouds",
+        default=False,
+        description="Include VDB Clouds collection in viewport and render",
+        update=update_enable_vdb_clouds,
+    )
+
+    view_cloud_subdivision: BoolProperty(
+        name="Cloud Final Look",
+        default=False,
+        description="Universal cloud mode: Final Look (on) or Preview (off) for Local and VDB clouds",
+        update=update_view_cloud_subdivision,
+    )
+
+    local_cloud_texture: EnumProperty(
+        name="Local Cloud Texture",
+        description="Select a local cloud texture",
+        items=_local_cloud_texture_items,
+    )
+
+    vdb_cloud_file: StringProperty(
+        name="VDB Cloud File",
+        subtype='FILE_PATH',
+        description="VDB file used when adding a new VDB cloud",
+        default="",
+    )
+
     auto_resolve: BoolProperty(
         name="Auto Resolve",
         default=True,
@@ -255,22 +329,26 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
     nav_longitude_deg: FloatProperty(
         name="Longitude",
         default=0.0,
-        min=-180.0,
-        max=180.0,
+        min=-1000000.0,
+        max=1000000.0,
+        soft_min=-180.0,
+        soft_max=180.0,
         step=1,
         precision=4,
-        description="Navigation target longitude in degrees (-180 to 180)",
+        description="Navigation target longitude in degrees (soft range: -180 to 180)",
         update=update_navigation_shot,
     )
 
     nav_latitude_deg: FloatProperty(
         name="Latitude",
         default=0.0,
-        min=-90.0,
-        max=90.0,
+        min=-1000000.0,
+        max=1000000.0,
+        soft_min=-90.0,
+        soft_max=90.0,
         step=1,
         precision=4,
-        description="Navigation target latitude in degrees (-90 to 90)",
+        description="Navigation target latitude in degrees (soft range: -90 to 90)",
         update=update_navigation_shot,
     )
 
@@ -359,64 +437,6 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
             "Slider is soft-limited to Earth's axial tilt (±23.44°)."
         ),
         update=update_sunlight_controls,
-    )
-
-    enable_fake_atmosphere: BoolProperty(
-        name="Enable Atmosphere",
-        default=True,
-        description="Enable quick atmosphere rendering",
-        update=update_fake_atmosphere,
-    )
-
-    atmosphere_mode: EnumProperty(
-        name="Atmosphere Mode",
-        items=(
-            ("QUICK", "Quick", "Fast atmosphere"),
-        ),
-        default="QUICK",
-        description="Atmosphere rendering mode",
-        update=update_fake_atmosphere,
-    )
-
-    fake_atmosphere_density: FloatProperty(
-        name="Atmosphere Density",
-        default=(1.0 / 3.0),
-        min=0.0,
-        max=2.0,
-        precision=3,
-        description="Overall strength of atmospheric haze and rim glow",
-        update=update_fake_atmosphere,
-    )
-
-    fake_atmosphere_height_km: FloatProperty(
-        name="Atmosphere Height (km)",
-        default=50.0,
-        min=0.0,
-        max=400.0,
-        precision=1,
-        description="Effective haze height in kilometers; higher values widen the horizon band",
-        update=update_fake_atmosphere,
-    )
-
-    fake_atmosphere_color: FloatVectorProperty(
-        name="Atmosphere Color",
-        subtype='COLOR',
-        size=4,
-        min=0.0,
-        max=1.0,
-        default=(0.26225066, 0.44520119, 0.76815115, 1.0),
-        description="Tint color used for atmospheric haze and shell glow",
-        update=update_fake_atmosphere,
-    )
-
-    fake_atmosphere_falloff_exp: FloatProperty(
-        name="Atmosphere Exponential Falloff",
-        default=0.05,
-        min=0.0,
-        max=1.0,
-        precision=3,
-        description="Haze falloff curve from surface to space (0.0 = near linear, 1.0 = strongly exponential)",
-        update=update_fake_atmosphere,
     )
 
     anim_camera_preset: EnumProperty(
@@ -640,6 +660,32 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         update=update_auto_resolve,
     )
 
+    render_engine_optimization: EnumProperty(
+        name="Render Engine Optimization",
+        items=(
+            (
+                "EEVEE",
+                "EEVEE",
+                "Switch to EEVEE and optimize settings.\n"
+                "Volumes > Resolution: 1:2\n"
+                "Volumes > Distribution: 0",
+            ),
+            (
+                "CYCLES",
+                "Cycles",
+                "Switch to Cycles and optimize settings.\n"
+                "Volumes > Biased: Yes\n"
+                "Volumes > Max Steps: 16\n"
+                "Subdivision > Dicing Rate Render: 1.25\n"
+                "Subdivision > Dicing Rate Viewport: 2.00\n"
+                "Subdivision > Offscreen Scale: 8.00",
+            ),
+        ),
+        default="EEVEE",
+        description="Select a renderer and automatically apply Planetka render optimization settings",
+        update=update_renderer_engine_optimization,
+    )
+
     resolution_bias: FloatProperty(
         name="Resolution Bias",
         default=0.0,
@@ -655,6 +701,15 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         default=True,
         description="Prevent Resolve updates while timeline playback is running",
         update=update_auto_resolve,
+    )
+
+    r2_cache_max_gb: IntProperty(
+        name="Data Cache Limit (GB)",
+        default=5,
+        min=1,
+        max=10,
+        description="Maximum on-disk tile cache size in GB (old entries are pruned automatically)",
+        update=update_r2_cache_settings,
     )
 
     debug_logging: BoolProperty(

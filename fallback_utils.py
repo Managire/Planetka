@@ -1,8 +1,8 @@
 # fallback_utils.py
 
-import os
 import logging
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
+from .r2_source import texture_file_exists
 
 # ------------------------
 # Z-level fallback chains
@@ -48,9 +48,11 @@ def snap_to_parent(x, y, child_z, parent_z):
 def s2_exists_on_disk(x, y, z, d, base_path):
     d_code = 0 if int(d) == 1440 else int(d)
     filename = f"S2_x{x:03d}_y{y:03d}_z{z:03d}_d{d_code:03d}.exr"
-    path = os.path.join(base_path, "S2", filename)
-    exists = os.path.exists(path)
-    return exists
+    try:
+        return texture_file_exists(base_path, "S2", filename)
+    except RuntimeError:
+        logger.debug("Planetka: failed checking S2 tile existence for fallback", exc_info=True)
+        return False
 
 
 def is_land_tile(x, y, z, coverage):

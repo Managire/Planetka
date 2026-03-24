@@ -111,7 +111,7 @@ class PLANETKA_OT_ReportBug(bpy.types.Operator):
 class PLANETKA_OT_ValidateTextureSource(bpy.types.Operator):
     bl_idname = "planetka.validate_texture_source"
     bl_label = "Validate Texture Source"
-    bl_description = "Validate the configured texture source directory against Planetka dataset requirements"
+    bl_description = "Validate Planetka cloud source access and sentinel availability"
 
     def execute(self, context):
         prefs = get_prefs()
@@ -156,7 +156,7 @@ class PLANETKA_OT_ValidateTextureSource(bpy.types.Operator):
             if len(issues) > 4:
                 lines.append(f"... and {len(issues) - 4} more issue(s)")
         else:
-            lines.append("No path-structure issues detected.")
+            lines.append("No cloud-source issues detected.")
 
         if has_errors:
             _show_popup_lines(context, "Texture Source Check", "ERROR", lines)

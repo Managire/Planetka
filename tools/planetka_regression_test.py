@@ -154,25 +154,25 @@ def _purge_existing_planetka_data():
 
 def _make_texture_source_tree(base_dir, include_supporting=True):
     os.makedirs(base_dir, exist_ok=True)
-    basic = os.path.join(_addon_root(), "Resources", "Basic Textures")
-    s2_source = os.path.join(basic, "S2_x000_y000_z360_d360.exr")
-    _assert(os.path.isfile(s2_source), f"Missing bundled S2 sample: {s2_source}")
+    fallback = os.path.join(_addon_root(), "Resources", "Fallback Images")
+    s2_source = os.path.join(fallback, "ocean_pixel_final_20.exr")
+    _assert(os.path.isfile(s2_source), f"Missing bundled fallback S2 sample: {s2_source}")
     s2_folder = os.path.join(base_dir, "S2")
     os.makedirs(s2_folder, exist_ok=True)
     shutil.copyfile(s2_source, os.path.join(s2_folder, "S2_x000_y000_z360_d360.exr"))
     shutil.copyfile(s2_source, os.path.join(s2_folder, "S2_x180_y000_z180_d180.exr"))
+    os.makedirs(os.path.join(base_dir, "PO"), exist_ok=True)
 
     if not include_supporting:
         return
 
     rules = (
-        ("EL", "EL_", ".exr", "EL_x000_y000_z360_d360.exr"),
-        ("WT", "WT_", ".exr", "WT_x000_y000_z360_d360.exr"),
-        ("PO", "PO_", ".tif", "PO_x000_y000_z360_d360.tif"),
+        ("EL", "EL_", ".exr", "black_pixel_20.exr"),
+        ("WT", "WT_", ".exr", "blue_pixel_20.exr"),
     )
     for folder_name, prefix, ext, source_name in rules:
-        source = os.path.join(basic, source_name)
-        _assert(os.path.isfile(source), f"Missing bundled texture sample: {source}")
+        source = os.path.join(fallback, source_name)
+        _assert(os.path.isfile(source), f"Missing bundled fallback texture sample: {source}")
         folder = os.path.join(base_dir, folder_name)
         os.makedirs(folder, exist_ok=True)
         shutil.copyfile(source, os.path.join(folder, f"{prefix}x000_y000_z360_d360{ext}"))
@@ -257,7 +257,39 @@ def main():
         _assert_close(baseline_scale[1], 2.0, 0.01, "Baseline scale Y")
         _assert_close(baseline_scale[2], 2.0, 0.01, "Baseline scale Z")
 
-        _log("Scenario 2: resolve preserves old collection placement")
+        _log("Scenario 2: external camera move syncs Navigation controls")
+        props = getattr(scene, "planetka", None)
+        _assert(props is not None, "Planetka scene properties are missing.")
+        camera = scene.camera
+        _assert(camera is not None and getattr(camera, "type", None) == "CAMERA", "Active camera is missing.")
+        before_nav = (
+            float(getattr(props, "nav_latitude_deg", 0.0)),
+            float(getattr(props, "nav_longitude_deg", 0.0)),
+            float(getattr(props, "nav_altitude_km", 0.0)),
+            float(getattr(props, "nav_azimuth_deg", 0.0)),
+            float(getattr(props, "nav_tilt_deg", 0.0)),
+            float(getattr(props, "nav_roll_deg", 0.0)),
+        )
+        camera.location.x += 4.0
+        camera.location.y += 3.0
+        camera.location.z += 2.0
+        camera.rotation_euler.z += math.radians(20.0)
+        bpy.context.view_layer.update()
+        state._sync_navigation_controls_from_scene_camera(scene)
+        after_nav = (
+            float(getattr(props, "nav_latitude_deg", 0.0)),
+            float(getattr(props, "nav_longitude_deg", 0.0)),
+            float(getattr(props, "nav_altitude_km", 0.0)),
+            float(getattr(props, "nav_azimuth_deg", 0.0)),
+            float(getattr(props, "nav_tilt_deg", 0.0)),
+            float(getattr(props, "nav_roll_deg", 0.0)),
+        )
+        _assert(
+            any(abs(float(after_nav[i]) - float(before_nav[i])) > 1e-5 for i in range(len(before_nav))),
+            "Navigation controls did not update after external camera move.",
+        )
+
+        _log("Scenario 3: resolve preserves old collection placement")
         custom_collection = bpy.data.collections.new("Regression Custom Surface")
         scene.collection.children.link(custom_collection)
         for col in list(surface.users_collection):
@@ -273,9 +305,7 @@ def main():
             "Resolve Earth did not preserve old mesh collection placement.",
         )
 
-        _log("Scenario 3: cinematic circle keeps stable altitude")
-        props = getattr(scene, "planetka", None)
-        _assert(props is not None, "Planetka scene properties are missing.")
+        _log("Scenario 4: cinematic circle keeps stable altitude")
         props.anim_camera_preset = "ORBIT"
         props.anim_frame_start = 1
         props.anim_frame_end = 20
@@ -298,7 +328,7 @@ def main():
         drift = max(distances) - min(distances) if distances else 0.0
         _assert(drift < 1e-6, f"Camera altitude drift too high: {drift}")
 
-        _log("Scenario 4: repeated close-range rebuilds do not shrink surface")
+        _log("Scenario 5: repeated close-range rebuilds do not shrink surface")
         close_tiles = ["x000_y000_z030_d030", "x030_y000_z030_d030"]
         for _ in range(3):
             new_obj = state.create_temp_mesh(
@@ -319,7 +349,7 @@ def main():
         _assert_close(final_scale[1], baseline_scale[1], 0.01, "Scale Y after close-range rebuilds")
         _assert_close(final_scale[2], baseline_scale[2], 0.01, "Scale Z after close-range rebuilds")
 
-        _log("Scenario 5: S2-only source resolves using support fallbacks")
+        _log("Scenario 6: S2-only source resolves using support fallbacks")
         s2_only_source = tempfile.mkdtemp(prefix="planetka_regression_s2_only_")
         temp_dirs.append(s2_only_source)
         _make_texture_source_tree(s2_only_source, include_supporting=False)

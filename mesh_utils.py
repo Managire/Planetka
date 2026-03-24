@@ -3,10 +3,12 @@ import re
 import bmesh
 import logging
 import hashlib
+import os
 from collections import OrderedDict
 from mathutils import Matrix
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
-from .extension_prefs import get_earth_object
+from .extension_prefs import get_earth_object, get_prefs
+from .r2_source import resolve_texture_file
 
 # Precompile regex for speed
 TILE_RE = re.compile(r"x(\d+)_y(\d+)_z(\d+)_d(\d+)")
@@ -31,6 +33,16 @@ PREVIEW_MATERIAL_NAME = "Planetka Preview Material"
 PREVIEW_SEGMENTS = 36
 PREVIEW_RING_COUNT = 18
 PREVIEW_SCALE_FACTOR = 0.999
+_PREVIEW_GLOBAL_TILE_CANDIDATES = (
+    "x000_y000_z360_d720",
+    "x000_y000_z360_d360",
+    "x000_y000_z360_d000",
+)
+_PREVIEW_TEXTURE_BINDINGS = (
+    ("S2", "Preview S2", (".exr",), "Linear Rec.709"),
+    ("WT", "Preview WT", (".exr",), "Linear Rec.709"),
+    ("PO", "Preview PO", (".tif",), "Linear Rec.709"),
+)
 _RESOLVED_MESH_CACHE = OrderedDict()
 _RESOLVED_CACHE_CLEANED = False
 _ADAPTIVE_ENUM_WARNING_EMITTED = False
@@ -130,6 +142,28 @@ def _enable_adaptive_subdivision(obj, subsurf_mod):
                 pass
 
     return adaptive_enabled
+
+
+def _ensure_material_displacement_and_bump(material):
+    if material is None:
+        return False
+    changed = False
+    if hasattr(material, "displacement_method"):
+        changed = _set_enum_property_safe(
+            material,
+            "displacement_method",
+            ("BOTH", "DISPLACEMENT_BUMP", "DISPLACEMENT_AND_BUMP"),
+        ) or changed
+
+    cycles_settings = getattr(material, "cycles", None)
+    if cycles_settings is None:
+        return changed
+    changed = _set_enum_property_safe(
+        cycles_settings,
+        "displacement_method",
+        ("BOTH", "DISPLACEMENT_BUMP", "DISPLACEMENT_AND_BUMP"),
+    ) or changed
+    return changed
 
 
 def parse_tile(tile):
@@ -430,6 +464,112 @@ def _remove_object_and_unused_mesh(obj):
         logger.debug("Planetka: failed removing unused mesh data", exc_info=True)
 
 
+def _set_image_colorspace_safe(image, colorspace):
+    if image is None or not colorspace:
+        return
+    settings = getattr(image, "colorspace_settings", None)
+    if settings is None or not hasattr(settings, "name"):
+        return
+    try:
+        settings.name = str(colorspace)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        pass
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        pass
+
+
+def _load_preview_image(path, image_name, colorspace):
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        image = bpy.data.images.load(path, check_existing=True)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed loading preview texture image %s", path, exc_info=True)
+        return None
+    except (RuntimeError, TypeError, ValueError):
+        logger.debug("Planetka: failed loading preview texture image %s", path, exc_info=True)
+        return None
+
+    try:
+        if image_name:
+            image.name = str(image_name)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        pass
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        pass
+
+    _set_image_colorspace_safe(image, colorspace)
+    return image
+
+
+def _resolve_preview_texture_path(base_path, folder, extensions):
+    for tile_id in _PREVIEW_GLOBAL_TILE_CANDIDATES:
+        try:
+            path = resolve_texture_file(
+                base_path=base_path,
+                folder=folder,
+                prefix=folder,
+                filename=tile_id,
+                extensions=extensions,
+            )
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: preview texture resolve failed for %s_%s", folder, tile_id, exc_info=True)
+            continue
+        except (RuntimeError, TypeError, ValueError):
+            logger.debug("Planetka: preview texture resolve failed for %s_%s", folder, tile_id, exc_info=True)
+            continue
+        if path and os.path.isfile(path):
+            return str(path), str(tile_id)
+    return "", ""
+
+
+def _assign_preview_texture_images(preview_material):
+    if not preview_material or not getattr(preview_material, "use_nodes", False):
+        return
+    node_tree = getattr(preview_material, "node_tree", None)
+    if node_tree is None:
+        return
+    loading_node = node_tree.nodes.get("Planetka Textures Loading")
+    if loading_node is None or getattr(loading_node, "bl_idname", "") != "ShaderNodeGroup":
+        return
+
+    loading_group = getattr(loading_node, "node_tree", None)
+    if loading_group is None:
+        return
+
+    prefs = get_prefs()
+    base_path = str(getattr(prefs, "texture_base_path", "") or "") if prefs else ""
+
+    for folder, node_name, extensions, colorspace in _PREVIEW_TEXTURE_BINDINGS:
+        tex_node = loading_group.nodes.get(node_name)
+        if tex_node is None or getattr(tex_node, "bl_idname", "") != "ShaderNodeTexImage":
+            continue
+        existing_image = getattr(tex_node, "image", None)
+        if existing_image is not None:
+            existing_path = str(
+                getattr(existing_image, "filepath_raw", "") or getattr(existing_image, "filepath", "")
+            )
+            existing_abs_path = bpy.path.abspath(existing_path) if existing_path else ""
+            existing_name = os.path.basename(existing_abs_path).lower() if existing_abs_path else ""
+            if (
+                existing_abs_path
+                and os.path.isfile(existing_abs_path)
+                and existing_name.startswith(f"{folder.lower()}_x000_y000_z360_d")
+            ):
+                continue
+        path, tile_id = _resolve_preview_texture_path(base_path, folder, extensions)
+        if not path:
+            continue
+        image = _load_preview_image(
+            path,
+            image_name=f"{folder}_{tile_id}_preview",
+            colorspace=colorspace,
+        )
+        if image is None:
+            continue
+        tex_node.image = image
+
+
 def ensure_preview_object(parent_surface):
     if not parent_surface or getattr(parent_surface, "type", None) != 'MESH':
         return None
@@ -447,6 +587,7 @@ def ensure_preview_object(parent_surface):
     preview_material = bpy.data.materials.get(PREVIEW_MATERIAL_NAME)
     if not preview_material:
         raise RuntimeError(f"Planetka: material '{PREVIEW_MATERIAL_NAME}' not found.")
+    _assign_preview_texture_images(preview_material)
 
     preview.data.materials.clear()
     preview.data.materials.append(preview_material)
@@ -741,6 +882,7 @@ def create_temp_mesh_for_all_tiles(tiles, name="Planetka Earth Surface", collect
     planetka_surface = bpy.data.materials.get("Planetka Earth Material")
     if not planetka_surface:
         raise RuntimeError("Planetka: Material 'Planetka Earth Material' not found")
+    _ensure_material_displacement_and_bump(planetka_surface)
 
     temp.data.materials.clear()
     temp.data.materials.append(planetka_surface)

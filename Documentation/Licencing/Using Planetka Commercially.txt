@@ -1,0 +1,37 @@
+Using Planetka Commercially
+===========================
+
+1. Planetka free plan is for personal / non-commercial use.
+2. Commercial use is included with Planetka Pro (and Studio/custom plans).
+3. If you need more data allowance than your current plan includes, contact
+   Planetka support from the addon Account panel.
+4. If you publish images or animations, include attribution in the accompanying
+   text or credits.
+5. The easiest way to do that is to use:
+   `Attribution for User Renders.txt`
+
+Required attribution summary
+----------------------------
+Published renders should include credit covering these bundled data sources:
+
+- Contains modified Copernicus Sentinel data (2023).
+- Credit: AW3D30 (ALOS World 3D - 30m) (JAXA).
+
+Include this additional line if Night Lights are visible in the published work:
+
+- World Settlement Footprint 2015 (WSF2015 v2), DLR (German Aerospace Center),
+  licensed under CC BY 4.0; modified by Planetka.
+
+Planetka credit
+---------------
+A separate credit to Planetka / Tomas Griger is not required, but appreciated.
+
+Private work
+------------
+If you do not publish your work, the attribution text is generally not relevant
+to your private workflow.
+
+Detailed records
+----------------
+If you need the source-by-source records, they are in:
+- `Compliance/`

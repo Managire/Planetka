@@ -1,0 +1,31 @@
+Copernicus Sentinel-2 Attribution (Planetka S2 Earth Surface)
+============================================================
+
+This product includes and uses Earth Surface image textures derived from
+Copernicus Sentinel-2 data ("S2" tiles in Planetka texture datasets).
+
+Source
+------
+- Copernicus Sentinel programme (ESA / European Union)
+- Sentinel Data Legal Notice (source + required acknowledgement):
+  https://sentinels.copernicus.eu/documents/247904/690755/Sentinel_Data_Legal_Notice
+
+Required Acknowledgement (verbatim strings)
+------------------------------------------
+The Sentinel Data Legal Notice states that users shall acknowledge the source by
+mentioning:
+- "Copernicus Sentinel data [year]"
+
+When Sentinel data is modified, the user shall clearly state:
+- "Contains modified Copernicus Sentinel data [year]"
+
+Attribution Text (example)
+-------------------------
+- Contains modified Copernicus Sentinel data (2023).
+
+Notes
+-----
+- Planetka textures are modified/retouched derivatives (e.g. declouded,
+  coastline retouched, artifacts removed, color graded, gaps reconstructed).
+- The year in the acknowledgement is typically the publication/release year of
+  the distributed dataset or product. Planetka uses 2023.

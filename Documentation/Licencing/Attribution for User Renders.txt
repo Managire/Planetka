@@ -1,0 +1,40 @@
+Attribution for User Renders (Images / Animations)
+==================================================
+
+When users publish images/animations created with Planetka Earth Surface
+textures, they are publishing works derived from third-party datasets.
+Those dataset terms require attribution/credit when making derivatives public:
+
+- Copernicus Sentinel-2: requires the notice when communicating to the public or
+  distributing the data, and a different notice for modified data.
+- JAXA Research Data Terms: require crediting JAXA and the research name when
+  distributing derivatives or making them public.
+- WSF2015 v2 (DLR): CC BY 4.0 requires appropriate credit, link to license, and
+  indication of changes when this dataset is visible in the published work
+  (for Planetka, this is the Night Lights contribution).
+
+Attribution Text (example)
+-------------------------
+
+Earth surface imagery/masks include modified data from:
+- Contains modified Copernicus Sentinel data (2023).
+- Credit: AW3D30 (ALOS World 3D - 30m) (JAXA).
+
+Include the following additional line if Night Lights are visible:
+- World Settlement Footprint 2015 (WSF2015 v2), DLR (German Aerospace Center),
+  licensed under CC BY 4.0; modified by Planetka.
+
+Attribution Text (expanded)
+--------------------------
+- Copernicus Sentinel: Contains modified Copernicus Sentinel data (2023).
+- JAXA: Credit: AW3D30 (ALOS World 3D - 30m) (JAXA).
+- If Night Lights are visible: WSF2015 v2: Include credit to DLR + dataset name
+  (WSF2015 v2), and link CC BY 4.0.
+
+Notes
+-----
+- Some dataset terms require attribution when communicating the data or
+  derivatives to the public. The examples above are provided to satisfy those
+  attribution requirements for typical publishing workflows.
+- A separate credit to Planetka / Tomas Griger is appreciated, but it is not
+  part of the third-party dataset attribution requirements summarized here.

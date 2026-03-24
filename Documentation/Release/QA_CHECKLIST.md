@@ -4,7 +4,7 @@
 
 - [ ] Extension loads without Python errors in Blender.
 - [ ] `Create New Earth`, `Resolve`, and `Knowledge Base` panels are visible.
-- [ ] Basic texture samples exist in `Resources/Basic Textures`.
+- [ ] Fallback texture samples exist in `Resources/Fallback Images`.
 
 ## 2. Core Functional Gates (Must Pass)
 

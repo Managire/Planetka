@@ -18,9 +18,9 @@ Current payload includes:
 ## Runtime Location
 
 - Operator implementation:
-  - `/Users/tomasgriger/Library/Application Support/Blender/5.0/extensions/user_default/Planetka/validation.py`
+  - `validation.py`
 
 ## Notes
 
 - This is intentionally minimal for public support workflows.
-- It does not include legacy driver/rig/atmosphere diagnostics.
+- It does not include legacy driver/rig/shading diagnostics.

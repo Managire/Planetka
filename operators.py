@@ -4,10 +4,31 @@ import math
 import os
 import re
 import shutil
+import webbrowser
 from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, StringProperty
 from mathutils import Matrix, Quaternion, Vector
 
-from .asset_builder import ensure_planetka_assets
+from .auth import (
+    AuthApiError,
+    cancel_pending_device_login,
+    clear_auth_session,
+    describe_auth_error,
+    get_contact_url,
+    get_device_verification_url,
+    get_login_state,
+    get_manage_subscription_url,
+    get_upgrade_url,
+    is_authenticated,
+    start_device_login,
+)
+from .asset_builder import (
+    ensure_earth_surface_parent,
+    ensure_planetka_assets,
+    ensure_planetka_root,
+    ensure_static_fake_atmosphere,
+    ensure_volumetric_atmosphere,
+    set_atmosphere_collection_enabled,
+)
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from .extension_prefs import (
     get_earth_object,
@@ -17,10 +38,10 @@ from .extension_prefs import (
     write_saved_locations,
 )
 from .operator_utils import ErrorCode, fail, require_planetka_props, require_scene
-from .render_prep import FORCE_EMPTY_RESOLVE_ONCE_KEY
 from .sanity_utils import _normalize_texture_source_path, invalidate_texture_source_health_cache
+from .r2_source import is_remote_source_configured, texture_file_exists
 from .state import (
-    _apply_fake_atmosphere_from_props,
+    apply_renderer_engine_optimization_for_all_preserve_current,
     _initialize_props_from_imported_planetka,
     _sync_idprops_from_props,
     delete_temp_meshes,
@@ -45,34 +66,23 @@ _IMPORT_TILE_FILENAME_RE = re.compile(
 )
 
 
+def _require_authenticated_account(operator, prefs):
+    state = get_login_state(prefs)
+    if state == "pending":
+        operator.report({'ERROR'}, "Finish Planetka login in your browser before continuing.")
+        return False
+    if not is_authenticated(prefs):
+        operator.report({'ERROR'}, "Log in to Planetka before using remote Earth data.")
+        return False
+    return True
+
+
 def _validate_create_earth_texture_source(base_path):
     normalized = _normalize_texture_source_path(base_path)
-    if not normalized:
-        return "", "Texture source directory is not set."
+    if is_remote_source_configured(normalized):
+        return normalized, ""
 
-    if not os.path.isdir(normalized):
-        return "", f"Texture source directory is not a valid path: {normalized}"
-
-    required_folders = ("S2", "EL", "WT", "PO")
-    missing = [name for name in required_folders if not os.path.isdir(os.path.join(normalized, name))]
-    if missing:
-        return "", (
-            "Texture source is invalid: missing required folder(s): "
-            + ", ".join(missing)
-        )
-
-    s2_dir = os.path.join(normalized, "S2")
-    try:
-        has_s2_exr = any(
-            entry.lower().endswith(".exr") and os.path.isfile(os.path.join(s2_dir, entry))
-            for entry in os.listdir(s2_dir)
-        )
-    except (OSError, TypeError, ValueError):
-        has_s2_exr = False
-    if not has_s2_exr:
-        return "", "Texture source is invalid: folder 'S2' must contain at least one .exr file."
-
-    return normalized, ""
+    return "", "Local texture directories are disabled. Planetka uses Cloudflare source only."
 
 
 def _paths_equivalent(path_a, path_b):
@@ -282,12 +292,76 @@ def _switch_solid_viewports_to_rendered(context):
                 if shading is None:
                     continue
                 try:
-                    if str(getattr(shading, "type", "")) == "SOLID":
+                    if str(getattr(shading, "type", "")) != "RENDERED":
                         shading.type = 'RENDERED'
                         switched = True
                 except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
                     continue
     return switched
+
+
+def _float_close(value, target, tol=1e-4):
+    try:
+        return abs(float(value) - float(target)) <= float(tol)
+    except (TypeError, ValueError):
+        return False
+
+
+def _set_default_world_background_to_black(scene):
+    world = getattr(scene, "world", None) if scene else None
+    if world is None:
+        return False
+
+    default_gray = 0.050876
+    changed = False
+
+    if bool(getattr(world, "use_nodes", False)):
+        node_tree = getattr(world, "node_tree", None)
+        nodes = getattr(node_tree, "nodes", None) if node_tree else None
+        background = nodes.get("Background") if nodes else None
+        if background is None:
+            return False
+        color_socket = background.inputs[0] if len(background.inputs) > 0 else None
+        strength_socket = background.inputs[1] if len(background.inputs) > 1 else None
+        if color_socket is None or strength_socket is None:
+            return False
+
+        color = getattr(color_socket, "default_value", None)
+        if color is None or len(color) < 4:
+            return False
+        is_default = (
+            _float_close(color[0], default_gray)
+            and _float_close(color[1], default_gray)
+            and _float_close(color[2], default_gray)
+            and _float_close(color[3], 1.0)
+            and _float_close(getattr(strength_socket, "default_value", 1.0), 1.0)
+        )
+        if not is_default:
+            return False
+
+        try:
+            color_socket.default_value = (0.0, 0.0, 0.0, 1.0)
+            changed = True
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+            changed = False
+        return changed
+
+    world_color = getattr(world, "color", None)
+    if world_color is None or len(world_color) < 3:
+        return False
+    is_default = (
+        _float_close(world_color[0], default_gray)
+        and _float_close(world_color[1], default_gray)
+        and _float_close(world_color[2], default_gray)
+    )
+    if not is_default:
+        return False
+    try:
+        world.color = (0.0, 0.0, 0.0)
+        changed = True
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+        changed = False
+    return changed
 
 
 def _create_placeholder_surface_object(scene):
@@ -671,7 +745,10 @@ def _compute_scene_camera_navigation_values(scene):
     earth_radius = _earth_radius_blender_units(earth_obj)
     hit_local = _ray_sphere_hit_nearest(cam_pos_local, cam_forward_local, earth_radius)
     if hit_local is None:
-        return None
+        cam_len = float(cam_pos_local.length)
+        if cam_len <= 1e-9:
+            return None
+        hit_local = (cam_pos_local / cam_len) * float(earth_radius)
 
     hit_len = max(1e-9, float(hit_local.length))
     lon = math.degrees(math.atan2(float(hit_local.y), float(hit_local.x)))
@@ -692,19 +769,19 @@ def _tile_xy_for_lon_lat(lon_deg, lat_deg, z):
 
 def _best_available_d_for_tile(base_path, x, y, z):
     normalized = _normalize_texture_source_path(base_path)
-    if not normalized:
-        return None
-
-    s2_dir = os.path.join(normalized, "S2")
-    if not os.path.isdir(s2_dir):
+    if not normalized and not is_remote_source_configured(base_path):
         return None
 
     d_candidates = sorted(set(NAV_D_LEVELS_BY_Z.get(int(z), [int(z)])))
     for d in d_candidates:
         d_code = 0 if int(d) == 1440 else int(d)
         file_name = f"S2_x{x:03d}_y{y:03d}_z{int(z):03d}_d{int(d_code):03d}.exr"
-        if os.path.isfile(os.path.join(s2_dir, file_name)):
-            return int(d)
+        try:
+            if texture_file_exists(normalized or base_path, "S2", file_name):
+                return int(d)
+        except RuntimeError:
+            logger.debug("Planetka: failed checking available S2 detail level for navigation", exc_info=True)
+            return None
     return None
 
 
@@ -925,7 +1002,37 @@ def _ensure_shot_anchor_object(scene):
                 target_collection.objects.link(anchor_obj)
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             pass
+    try:
+        anchor_obj.hide_viewport = True
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        pass
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        pass
+    try:
+        anchor_obj.hide_set(True)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        pass
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        pass
     return anchor_obj
+
+
+def _hide_shot_anchor_in_viewport():
+    anchor_obj = bpy.data.objects.get(SHOT_ANCHOR_OBJECT_NAME)
+    if anchor_obj is None:
+        return
+    try:
+        anchor_obj.hide_viewport = True
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        pass
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        pass
+    try:
+        anchor_obj.hide_set(True)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        pass
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        pass
 
 
 def _update_shot_anchor_object(scene, anchor_world, east_world, north_world, up_world):
@@ -1193,8 +1300,8 @@ def _populate_navigation_from_scene_camera(scene, props):
     lat, lon, _alt_km = nav_values
     derived = _derive_navigation_shot_from_camera(scene, lon, lat)
     try:
-        props.nav_latitude_deg = max(-90.0, min(90.0, float(lat)))
-        props.nav_longitude_deg = max(-180.0, min(180.0, float(lon)))
+        props.nav_latitude_deg = float(lat)
+        props.nav_longitude_deg = float(lon)
         props.nav_altitude_km = max(0.0, float(derived.get("altitude_km", 0.0)))
         props.nav_azimuth_deg = float(derived.get("azimuth_deg", 0.0))
         props.nav_tilt_deg = float(derived.get("tilt_deg", 0.0))
@@ -1236,79 +1343,23 @@ def _get_saved_location_by_name(locations, name):
 class PLANETKA_OT_ImportNewData(bpy.types.Operator):
     bl_idname = "planetka.import_new_data"
     bl_label = "Import New Data"
-    bl_description = "Import downloaded tile files into the current Texture Source directory"
+    bl_description = "Disabled: Planetka uses Cloudflare source only"
 
     directory: StringProperty(subtype='DIR_PATH')
 
     def execute(self, context):
-        prefs = get_prefs()
-        if not prefs:
-            return fail(
-                self,
-                "Planetka preferences not available.",
-                code=ErrorCode.RESOLVE_PREFS_MISSING,
-                logger=logger,
-            )
-
-        destination_directory = _normalize_texture_source_path(getattr(prefs, "texture_base_path", ""))
-        if not destination_directory:
-            self.report({'ERROR'}, "Texture source directory is not set. Set it first in Settings.")
-            return {'CANCELLED'}
-        if not os.path.isdir(destination_directory):
-            self.report({'ERROR'}, f"Texture source directory is not a valid path: {destination_directory}")
-            return {'CANCELLED'}
-
-        source_directory = _normalize_texture_source_path(self.directory)
-        if not source_directory or not os.path.isdir(source_directory):
-            self.report({'ERROR'}, "Select a valid folder with downloaded texture files.")
-            return {'CANCELLED'}
-        if _paths_equivalent(source_directory, destination_directory):
-            self.report({'ERROR'}, "Selected folder is already the Texture Source directory.")
-            return {'CANCELLED'}
-
-        plan = _build_texture_import_plan(source_directory, destination_directory)
-        if not plan["jobs"]:
-            self.report({'WARNING'}, "No importable texture files were found in the selected folder.")
-            return {'CANCELLED'}
-
-        try:
-            result = bpy.ops.planetka.confirm_import_new_data(
-                'INVOKE_DEFAULT',
-                source_directory=source_directory,
-                destination_directory=destination_directory,
-            )
-        except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
-            return fail(
-                self,
-                f"Failed to start import confirmation: {exc}",
-                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-                logger=logger,
-            )
-        except (RuntimeError, TypeError, ValueError) as exc:
-            return fail(
-                self,
-                f"Failed to start import confirmation: {exc}",
-                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-                logger=logger,
-            )
-
-        if "CANCELLED" in result:
-            return {'CANCELLED'}
-        return {'FINISHED'}
+        self.report({'ERROR'}, "Local texture import is disabled. Planetka uses Cloudflare source only.")
+        return {'CANCELLED'}
 
     def invoke(self, context, event):
-        wm = getattr(context, "window_manager", None)
-        if wm is None:
-            return {'CANCELLED'}
-        self.directory = ""
-        wm.fileselect_add(self)
-        return {'RUNNING_MODAL'}
+        self.report({'ERROR'}, "Local texture import is disabled. Planetka uses Cloudflare source only.")
+        return {'CANCELLED'}
 
 
 class PLANETKA_OT_ConfirmImportNewData(bpy.types.Operator):
     bl_idname = "planetka.confirm_import_new_data"
     bl_label = "Confirm Data Import"
-    bl_description = "Review import changes and confirm copy into the Texture Source directory"
+    bl_description = "Disabled: Planetka uses Cloudflare source only"
 
     source_directory: StringProperty(subtype='DIR_PATH', options={'HIDDEN'})
     destination_directory: StringProperty(subtype='DIR_PATH', options={'HIDDEN'})
@@ -1335,18 +1386,8 @@ class PLANETKA_OT_ConfirmImportNewData(bpy.types.Operator):
         return plan, ""
 
     def invoke(self, context, event):
-        plan, issue = self._refresh_preview()
-        if issue:
-            self.report({'ERROR'}, issue)
-            return {'CANCELLED'}
-        if not plan.get("jobs"):
-            self.report({'WARNING'}, "No importable texture files were found in the selected folder.")
-            return {'CANCELLED'}
-
-        wm = getattr(context, "window_manager", None)
-        if wm is None:
-            return {'CANCELLED'}
-        return wm.invoke_props_dialog(self, width=520)
+        self.report({'ERROR'}, "Local texture import is disabled. Planetka uses Cloudflare source only.")
+        return {'CANCELLED'}
 
     def draw(self, context):
         layout = self.layout
@@ -1362,58 +1403,30 @@ class PLANETKA_OT_ConfirmImportNewData(bpy.types.Operator):
             col.label(text=f"Duplicate source tiles detected: {int(self.duplicate_count)} (newest file kept)")
 
     def execute(self, context):
-        plan, issue = self._refresh_preview()
-        if issue:
-            return fail(
-                self,
-                issue,
-                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-                logger=logger,
-            )
-        jobs = list(plan.get("jobs", ()))
-        if not jobs:
-            self.report({'WARNING'}, "No importable texture files were found to copy.")
-            return {'CANCELLED'}
-
-        copied = 0
-        for job in jobs:
-            source_path = job.get("source_path", "")
-            destination_path = job.get("destination_path", "")
-            if not source_path or not destination_path:
-                continue
-            try:
-                os.makedirs(os.path.dirname(destination_path), exist_ok=True)
-                shutil.copy2(source_path, destination_path)
-                copied += 1
-            except (OSError, TypeError, ValueError, RuntimeError) as exc:
-                return fail(
-                    self,
-                    f"Import failed while copying '{os.path.basename(source_path)}': {exc}",
-                    code=ErrorCode.RESOLVE_REFRESH_FAILED,
-                    logger=logger,
-                )
-
-        destination_directory = _normalize_texture_source_path(self.destination_directory)
-        if destination_directory:
-            invalidate_texture_source_health_cache(destination_directory)
-
-        self.report(
-            {'INFO'},
-            (
-                f"Imported {copied} files "
-                f"({int(self.new_file_count)} new, {int(self.update_file_count)} updated; "
-                f"+{float(self.added_size_gb):.3f} GB)."
-            ),
-        )
-        return {'FINISHED'}
+        self.report({'ERROR'}, "Local texture import is disabled. Planetka uses Cloudflare source only.")
+        return {'CANCELLED'}
 
 
 class PLANETKA_OT_SelectTextureSource(bpy.types.Operator):
     bl_idname = "planetka.select_texture_source"
-    bl_label = "Set Texture Source Directory"
-    bl_description = "Select Planetka's base texture directory (must contain S2, EL, WT, and PO folders)"
+    bl_label = "Set Texture Source"
+    bl_description = "Disabled: Planetka uses Cloudflare source only"
 
     directory: StringProperty(subtype='DIR_PATH')
+
+    def execute(self, context):
+        self.report({'ERROR'}, "Local texture directories are disabled. Planetka uses Cloudflare source only.")
+        return {'CANCELLED'}
+
+    def invoke(self, context, event):
+        self.report({'ERROR'}, "Local texture directories are disabled. Planetka uses Cloudflare source only.")
+        return {'CANCELLED'}
+
+
+class PLANETKA_OT_AccountLogin(bpy.types.Operator):
+    bl_idname = "planetka.account_login"
+    bl_label = "Log In"
+    bl_description = "Start Planetka account sign-in in your browser"
 
     def execute(self, context):
         prefs = get_prefs()
@@ -1425,26 +1438,216 @@ class PLANETKA_OT_SelectTextureSource(bpy.types.Operator):
                 logger=logger,
             )
 
-        normalized, issue = _validate_create_earth_texture_source(self.directory)
-        if issue:
-            self.report({'ERROR'}, issue)
-            self.report({'INFO'}, "Select a directory that contains S2, EL, WT, and PO folders.")
-            return {'CANCELLED'}
+        try:
+            payload = start_device_login(prefs)
+        except AuthApiError as exc:
+            return fail(
+                self,
+                describe_auth_error(exc),
+                logger=logger,
+                exc=exc,
+            )
 
-        prefs.texture_base_path = normalized
-        invalidate_texture_source_health_cache(normalized)
-        self.report({'INFO'}, "Texture source directory updated.")
+        verification_url = str(payload.get("verification_url", "") or "").strip()
+        if not verification_url:
+            return fail(self, "Planetka login URL was not returned by the server.", logger=logger)
+
+        opened = False
+        try:
+            result = bpy.ops.wm.url_open(url=verification_url)
+            opened = "FINISHED" in result
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
+            opened = False
+
+        if not opened:
+            try:
+                opened = bool(webbrowser.open(verification_url))
+            except Exception:
+                opened = False
+
+        if not opened:
+            return fail(
+                self,
+                "Planetka created a login session, but could not open the browser automatically.",
+                logger=logger,
+            )
+
+        self.report({'INFO'}, "Continue Planetka sign-in in the opened browser window.")
         return {'FINISHED'}
 
-    def invoke(self, context, event):
+
+class PLANETKA_OT_AccountOpenLogin(bpy.types.Operator):
+    bl_idname = "planetka.account_open_login"
+    bl_label = "Open Login Page"
+    bl_description = "Open the active Planetka browser sign-in page again"
+
+    def execute(self, context):
         prefs = get_prefs()
-        if prefs:
-            self.directory = _normalize_texture_source_path(getattr(prefs, "texture_base_path", "")) or ""
-        wm = getattr(context, "window_manager", None)
-        if wm is None:
-            return {'CANCELLED'}
-        wm.fileselect_add(self)
-        return {'RUNNING_MODAL'}
+        if not prefs:
+            return fail(
+                self,
+                "Planetka preferences not available.",
+                code=ErrorCode.RESOLVE_PREFS_MISSING,
+                logger=logger,
+            )
+
+        verification_url = get_device_verification_url(prefs)
+        if not verification_url:
+            return fail(self, "No active Planetka browser login is waiting.", logger=logger)
+
+        opened = False
+        try:
+            result = bpy.ops.wm.url_open(url=verification_url)
+            opened = "FINISHED" in result
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
+            opened = False
+
+        if not opened:
+            try:
+                opened = bool(webbrowser.open(verification_url))
+            except Exception:
+                opened = False
+
+        if not opened:
+            return fail(self, "Could not open the active Planetka browser login.", logger=logger)
+
+        return {'FINISHED'}
+
+
+class PLANETKA_OT_AccountCancelLogin(bpy.types.Operator):
+    bl_idname = "planetka.account_cancel_login"
+    bl_label = "Cancel Login"
+    bl_description = "Cancel the current Planetka browser sign-in session"
+
+    def execute(self, context):
+        prefs = get_prefs()
+        if not prefs:
+            return fail(
+                self,
+                "Planetka preferences not available.",
+                code=ErrorCode.RESOLVE_PREFS_MISSING,
+                logger=logger,
+            )
+
+        cancel_pending_device_login(prefs)
+        self.report({'INFO'}, "Planetka browser login cancelled.")
+        return {'FINISHED'}
+
+
+class PLANETKA_OT_AccountLogout(bpy.types.Operator):
+    bl_idname = "planetka.account_logout"
+    bl_label = "Log Out"
+    bl_description = "Remove the local Planetka login session from Blender"
+
+    def execute(self, context):
+        prefs = get_prefs()
+        if not prefs:
+            return fail(
+                self,
+                "Planetka preferences not available.",
+                code=ErrorCode.RESOLVE_PREFS_MISSING,
+                logger=logger,
+            )
+
+        clear_auth_session(prefs)
+        self.report({'INFO'}, "Planetka account disconnected in Blender.")
+        return {'FINISHED'}
+
+
+def _open_account_url(url):
+    safe_url = str(url or "").strip()
+    if not safe_url:
+        return False
+
+    opened = False
+    try:
+        result = bpy.ops.wm.url_open(url=safe_url)
+        opened = "FINISHED" in result
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
+        opened = False
+
+    if not opened:
+        try:
+            opened = bool(webbrowser.open(safe_url))
+        except Exception:
+            opened = False
+
+    return bool(opened)
+
+
+class PLANETKA_OT_AccountUpgrade(bpy.types.Operator):
+    bl_idname = "planetka.account_upgrade"
+    bl_label = "Upgrade to Pro"
+    bl_description = "Open Planetka Pro upgrade page (commercial rights + larger monthly allowance)"
+
+    def execute(self, context):
+        prefs = get_prefs()
+        if not prefs:
+            return fail(
+                self,
+                "Planetka preferences not available.",
+                code=ErrorCode.RESOLVE_PREFS_MISSING,
+                logger=logger,
+            )
+
+        upgrade_url = get_upgrade_url(prefs)
+        if not upgrade_url:
+            return fail(self, "Planetka upgrade URL is not configured.", logger=logger)
+        if not _open_account_url(upgrade_url):
+            return fail(self, "Could not open Planetka Pro upgrade page.", logger=logger)
+        self.report({'INFO'}, "Planetka Pro upgrade page opened in browser (includes commercial rights).")
+        return {'FINISHED'}
+
+
+class PLANETKA_OT_AccountContact(bpy.types.Operator):
+    bl_idname = "planetka.account_contact"
+    bl_label = "Contact Me"
+    bl_description = "Open Planetka contact page for allowance support and special workflows"
+
+    def execute(self, context):
+        prefs = get_prefs()
+        if not prefs:
+            return fail(
+                self,
+                "Planetka preferences not available.",
+                code=ErrorCode.RESOLVE_PREFS_MISSING,
+                logger=logger,
+            )
+
+        contact_url = get_contact_url(prefs)
+        if not contact_url:
+            return fail(self, "Planetka contact URL is not configured.", logger=logger)
+        if not _open_account_url(contact_url):
+            return fail(self, "Could not open Planetka contact page.", logger=logger)
+        self.report({'INFO'}, "Planetka contact page opened in browser.")
+        return {'FINISHED'}
+
+
+class PLANETKA_OT_AccountManageSubscription(bpy.types.Operator):
+    bl_idname = "planetka.account_manage_subscription"
+    bl_label = "Manage Subscription"
+    bl_description = "Open Planetka billing and subscription management page"
+
+    def execute(self, context):
+        prefs = get_prefs()
+        if not prefs:
+            return fail(
+                self,
+                "Planetka preferences not available.",
+                code=ErrorCode.RESOLVE_PREFS_MISSING,
+                logger=logger,
+            )
+
+        if not is_authenticated(prefs):
+            return fail(self, "Sign in to Planetka before managing subscription.", logger=logger)
+
+        manage_url = get_manage_subscription_url(prefs)
+        if not manage_url:
+            return fail(self, "Planetka subscription management URL is not configured.", logger=logger)
+        if not _open_account_url(manage_url):
+            return fail(self, "Could not open Planetka subscription management page.", logger=logger)
+        self.report({'INFO'}, "Planetka subscription management page opened in browser.")
+        return {'FINISHED'}
 
 
 class PLANETKA_OT_AddEarth(bpy.types.Operator):
@@ -1459,31 +1662,6 @@ class PLANETKA_OT_AddEarth(bpy.types.Operator):
         props = require_planetka_props(self, context, logger=logger)
         if props is None:
             return {'CANCELLED'}
-        def _set_default_fake_atmosphere_values():
-            try:
-                props.enable_fake_atmosphere = True
-                props.atmosphere_mode = "QUICK"
-                props.fake_atmosphere_density = (1.0 / 3.0)
-                props.fake_atmosphere_height_km = 50.0
-                props.fake_atmosphere_falloff_exp = 0.05
-                props.fake_atmosphere_color = (0.26225066, 0.44520119, 0.76815115, 1.0)
-                _sync_idprops_from_props(scene)
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-                logger.debug("Planetka: failed setting default atmosphere values for Create Earth", exc_info=True)
-
-        # Create Earth should start with atmosphere enabled and sane defaults.
-        _set_default_fake_atmosphere_values()
-
-        switched_to_cycles = False
-        render = getattr(scene, "render", None)
-        if render is not None:
-            current_engine = str(getattr(render, "engine", ""))
-            if current_engine != "CYCLES":
-                try:
-                    render.engine = "CYCLES"
-                    switched_to_cycles = (str(getattr(render, "engine", "")) == "CYCLES")
-                except (AttributeError, RuntimeError, TypeError, ValueError):
-                    logger.debug("Planetka: failed switching render engine to Cycles", exc_info=True)
 
         prefs = get_prefs()
         if not prefs:
@@ -1497,18 +1675,14 @@ class PLANETKA_OT_AddEarth(bpy.types.Operator):
         if path_issue:
             self.report(
                 {'ERROR'},
-                (
-                    "Create Earth requires a valid Texture Source Directory "
-                    "(folders S2, EL, WT, PO; and at least one .exr in S2)."
-                ),
+                "Create Earth requires Planetka Cloudflare source.",
             )
             self.report({'ERROR'}, path_issue)
-            _prompt_texture_source_selection()
+            return {'CANCELLED'}
+        if is_remote_source_configured(normalized) and not _require_authenticated_account(self, prefs):
             return {'CANCELLED'}
         prefs.texture_base_path = normalized
         invalidate_texture_source_health_cache(normalized)
-
-        camera_clip_changed, viewport_clip_changed = _ensure_close_clip_limits(scene, min_clip=0.001)
 
         try:
             ensure_planetka_assets(scene)
@@ -1558,19 +1732,18 @@ class PLANETKA_OT_AddEarth(bpy.types.Operator):
             pass
         mark_earth_object(new_obj)
         try:
-            _apply_fake_atmosphere_from_props(scene)
+            ensure_planetka_root(scene)
+            ensure_earth_surface_parent(scene=scene, earth_surface=new_obj)
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed applying atmosphere defaults before initial resolve", exc_info=True)
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka: failed applying atmosphere defaults before initial resolve", exc_info=True)
-
+            logger.debug("Planetka: failed parenting bootstrap Earth surface to Planetka Root", exc_info=True)
+        except (RuntimeError, TypeError, ValueError):
+            logger.debug("Planetka: failed parenting bootstrap Earth surface to Planetka Root", exc_info=True)
         try:
-            scene[FORCE_EMPTY_RESOLVE_ONCE_KEY] = True
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed setting one-shot empty resolve flag", exc_info=True)
+            _set_default_world_background_to_black(scene)
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+            logger.debug("Planetka: failed updating default world background to black", exc_info=True)
 
-        resolve_result = bpy.ops.planetka.load_textures()
-
+        resolve_result = bpy.ops.planetka.load_textures(skip_render_compatibility=True)
         final_surface = get_earth_object() or new_obj
         if final_surface and bool(getattr(props, "show_earth_preview", False)):
             try:
@@ -1586,11 +1759,19 @@ class PLANETKA_OT_AddEarth(bpy.types.Operator):
             self.report({'WARNING'}, "Planetka Earth created, but initial Resolve failed.")
             return {'CANCELLED'}
 
-        _set_default_fake_atmosphere_values()
         try:
-            _apply_fake_atmosphere_from_props(scene)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka: failed reapplying default atmosphere values after initial resolve", exc_info=True)
+            ensure_planetka_root(scene)
+            ensure_earth_surface_parent(scene=scene, earth_surface=get_earth_object() or new_obj)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed parenting resolved Earth surface to Planetka Root", exc_info=True)
+        except (RuntimeError, TypeError, ValueError):
+            logger.debug("Planetka: failed parenting resolved Earth surface to Planetka Root", exc_info=True)
+
+        # Atmosphere and cloud runtime loading is intentionally disabled for now.
+        # Keep implementation code in-place for future re-enable.
+
+        apply_renderer_engine_optimization_for_all_preserve_current(scene)
+        _switch_solid_viewports_to_rendered(context)
 
         if props is not None:
             suspend_navigation_shot_updates()
@@ -1598,18 +1779,9 @@ class PLANETKA_OT_AddEarth(bpy.types.Operator):
                 _populate_navigation_from_scene_camera(scene, props)
             finally:
                 resume_navigation_shot_updates()
-        _switch_solid_viewports_to_rendered(context)
 
-        if camera_clip_changed or viewport_clip_changed:
-            self.report(
-                {'INFO'},
-                "Planetka adjusted clipping minimum to 0.001 to avoid close-surface image clipping.",
-            )
-        if switched_to_cycles:
-            self.report(
-                {'INFO'},
-                "Planetka switched Blender to Cycles for optimal performance.",
-            )
+        _hide_shot_anchor_in_viewport()
+
         self.report({'INFO'}, "Planetka Earth created successfully.")
         return {'FINISHED'}
 
@@ -1666,9 +1838,6 @@ class PLANETKA_OT_UseCurrentViewNavigation(bpy.types.Operator):
         scene = require_scene(self, context, logger=logger)
         if scene is None:
             return {'CANCELLED'}
-        props = require_planetka_props(self, context, logger=logger)
-        if props is None:
-            return {'CANCELLED'}
 
         camera = getattr(scene, "camera", None)
         if camera is None or getattr(camera, "type", None) != 'CAMERA':
@@ -1698,38 +1867,39 @@ class PLANETKA_OT_UseCurrentViewNavigation(bpy.types.Operator):
                 logger=logger,
             )
 
+        props = getattr(scene, "planetka", None)
+        if props is None:
+            _switch_viewport_to_camera_view(context, scene)
+            if moved_camera:
+                self.report({'INFO'}, "Camera updated to current view.")
+            else:
+                self.report({'INFO'}, "Camera is already in current view.")
+            return {'FINISHED'}
+
         computed = _compute_current_view_navigation_values(scene)
         if computed is None:
-            return fail(
-                self,
-                "Current view telemetry is unavailable. Ensure Earth is visible in the viewport.",
-                code=ErrorCode.NAV_PRECHECK_FAILED,
-                logger=logger,
+            _switch_viewport_to_camera_view(context, scene)
+            self.report(
+                {'WARNING'},
+                "Camera updated, but Planetka controls were not synced (Earth is not visible in current view).",
             )
+            return {'FINISHED'}
         lat, lon, _alt_km = computed
 
         try:
             derived = _derive_navigation_shot_from_camera(scene, lon, lat)
         except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
-            return fail(
-                self,
-                f"Failed to derive shot values from current view: {exc}",
-                code=ErrorCode.NAV_APPLY_FAILED,
-                logger=logger,
-                exc=exc,
-                log_message="Planetka derive shot from camera failed",
-            )
+            _switch_viewport_to_camera_view(context, scene)
+            self.report({'WARNING'}, f"Camera updated, but Planetka controls were not synced: {exc}")
+            return {'FINISHED'}
         except (RuntimeError, TypeError, ValueError) as exc:
-            return fail(
-                self,
-                f"Failed to derive shot values from current view: {exc}",
-                code=ErrorCode.NAV_APPLY_FAILED,
-                logger=logger,
-            )
+            _switch_viewport_to_camera_view(context, scene)
+            self.report({'WARNING'}, f"Camera updated, but Planetka controls were not synced: {exc}")
+            return {'FINISHED'}
 
         try:
-            props.nav_latitude_deg = max(-90.0, min(90.0, float(lat)))
-            props.nav_longitude_deg = max(-180.0, min(180.0, float(lon)))
+            props.nav_latitude_deg = float(lat)
+            props.nav_longitude_deg = float(lon)
             props.nav_altitude_km = max(0.0, float(derived.get("altitude_km", 0.0)))
             props.nav_azimuth_deg = float(derived.get("azimuth_deg", 0.0))
             props.nav_tilt_deg = float(derived.get("tilt_deg", 0.0))
@@ -1744,12 +1914,9 @@ class PLANETKA_OT_UseCurrentViewNavigation(bpy.types.Operator):
                 roll_deg=float(props.nav_roll_deg),
             )
         except (AttributeError, TypeError, ValueError):
-            return fail(
-                self,
-                "Failed to apply current view values to Navigation fields.",
-                code=ErrorCode.NAV_APPLY_FAILED,
-                logger=logger,
-            )
+            _switch_viewport_to_camera_view(context, scene)
+            self.report({'WARNING'}, "Camera updated, but Planetka controls failed to update.")
+            return {'FINISHED'}
 
         _switch_viewport_to_camera_view(context, scene)
         if moved_camera:

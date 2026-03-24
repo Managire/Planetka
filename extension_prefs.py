@@ -1,7 +1,7 @@
 import bpy
 import json
 from bpy.types import AddonPreferences
-from bpy.props import StringProperty
+from bpy.props import EnumProperty, IntProperty, StringProperty
 
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 
@@ -9,7 +9,43 @@ EARTH_OBJECT_DEFAULT_NAME = "Planetka Earth Surface"
 EARTH_ROLE_KEY = "planetka_role"
 EARTH_ROLE_VALUE = "earth_preview"
 FALLBACK_TEXTURE_BASE_PATH_KEY = "planetka_texture_base_path"
+FALLBACK_TEXTURE_SOURCE_MODE_KEY = "planetka_texture_source_mode"
 FALLBACK_SAVED_LOCATIONS_KEY = "planetka_saved_locations_json"
+FALLBACK_AUTH_EMAIL_KEY = "planetka_auth_email"
+FALLBACK_AUTH_ACCESS_TOKEN_KEY = "planetka_auth_access_token"
+FALLBACK_AUTH_REFRESH_TOKEN_KEY = "planetka_auth_refresh_token"
+FALLBACK_AUTH_ACCOUNT_TIER_KEY = "planetka_auth_account_tier"
+FALLBACK_AUTH_COMMERCIAL_USE_ALLOWED_KEY = "planetka_auth_commercial_use_allowed"
+FALLBACK_AUTH_PLAN_CODE_KEY = "planetka_auth_plan_code"
+FALLBACK_AUTH_PLAN_NAME_KEY = "planetka_auth_plan_name"
+FALLBACK_AUTH_BILLING_PERIOD_END_KEY = "planetka_auth_billing_period_end"
+FALLBACK_AUTH_CONTACT_URL_KEY = "planetka_auth_contact_url"
+FALLBACK_AUTH_UPGRADE_URL_KEY = "planetka_auth_upgrade_url"
+FALLBACK_AUTH_TOPUP_URL_KEY = "planetka_auth_topup_url"
+FALLBACK_AUTH_MANAGE_SUBSCRIPTION_URL_KEY = "planetka_auth_manage_subscription_url"
+FALLBACK_AUTH_TILE_QUOTA_USED_KEY = "planetka_auth_tile_quota_used"
+FALLBACK_AUTH_TILE_QUOTA_LIMIT_KEY = "planetka_auth_tile_quota_limit"
+FALLBACK_AUTH_TILE_QUOTA_RESET_AT_KEY = "planetka_auth_tile_quota_reset_at"
+FALLBACK_AUTH_TILE_QUOTA_PERIOD_KEY = "planetka_auth_tile_quota_period"
+FALLBACK_AUTH_TILE_QUOTA_RULE_KEY = "planetka_auth_tile_quota_rule"
+FALLBACK_AUTH_ALLOWANCE_INCLUDED_LIMIT_BYTES_KEY = "planetka_auth_allowance_included_limit_bytes"
+FALLBACK_AUTH_ALLOWANCE_INCLUDED_REMAINING_BYTES_KEY = "planetka_auth_allowance_included_remaining_bytes"
+FALLBACK_AUTH_ALLOWANCE_TOPUP_REMAINING_BYTES_KEY = "planetka_auth_allowance_topup_remaining_bytes"
+FALLBACK_AUTH_ALLOWANCE_TOTAL_REMAINING_BYTES_KEY = "planetka_auth_allowance_total_remaining_bytes"
+FALLBACK_AUTH_ALLOWANCE_PERIOD_END_KEY = "planetka_auth_allowance_period_end"
+FALLBACK_AUTH_ALLOWANCE_PERIOD_KEY = "planetka_auth_allowance_period"
+FALLBACK_AUTH_ALLOWANCE_COUNTING_RULE_KEY = "planetka_auth_allowance_counting_rule"
+FALLBACK_AUTH_ALLOWANCE_WARNING_STATE_KEY = "planetka_auth_allowance_warning_state"
+FALLBACK_AUTH_ALLOWANCE_EXHAUSTED_KEY = "planetka_auth_allowance_exhausted"
+FALLBACK_AUTH_ALLOWANCE_DOWNLOADED_PERIOD_BYTES_KEY = "planetka_auth_allowance_downloaded_period_bytes"
+FALLBACK_AUTH_LOGIN_STATE_KEY = "planetka_auth_login_state"
+FALLBACK_AUTH_STATUS_MESSAGE_KEY = "planetka_auth_status_message"
+FALLBACK_AUTH_DEVICE_CODE_KEY = "planetka_auth_device_code"
+FALLBACK_AUTH_DEVICE_VERIFICATION_URL_KEY = "planetka_auth_device_verification_url"
+FALLBACK_AUTH_DEVICE_EXPIRES_AT_KEY = "planetka_auth_device_expires_at"
+FALLBACK_AUTH_POLL_INTERVAL_SECONDS_KEY = "planetka_auth_poll_interval_seconds"
+TEXTURE_SOURCE_MODE_DEFAULT = "CLOUDFLARE"
+REMOTE_TEXTURE_BASE_DEFAULT = "remote"
 
 
 class PlanetkaExtensionPreferences(AddonPreferences):
@@ -19,9 +55,19 @@ class PlanetkaExtensionPreferences(AddonPreferences):
 
     # Base directory for textures
     texture_base_path: StringProperty(
-        name="Texture Files Source Directory",
+        name="Texture Source",
         subtype='DIR_PATH',
-        description="Base folder containing Planetka tile datasets (expects S2, EL, WT, and PO subfolders)",
+        description="Internal Planetka source marker (Cloudflare only)",
+        default=REMOTE_TEXTURE_BASE_DEFAULT,
+    )
+
+    texture_source_mode: EnumProperty(
+        name="Texture Source",
+        description="Planetka resolves tile textures from Cloudflare",
+        items=(
+            ("CLOUDFLARE", "Cloudflare", "Stream tiles from Planetka Cloudflare storage"),
+        ),
+        default=TEXTURE_SOURCE_MODE_DEFAULT,
     )
 
     saved_locations_json: StringProperty(
@@ -30,11 +76,53 @@ class PlanetkaExtensionPreferences(AddonPreferences):
         options={'HIDDEN'},
     )
 
+    auth_email: StringProperty(name="Auth Email", default="", options={'HIDDEN'})
+    auth_access_token: StringProperty(name="Auth Access Token", default="", options={'HIDDEN'})
+    auth_refresh_token: StringProperty(name="Auth Refresh Token", default="", options={'HIDDEN'})
+    auth_account_tier: StringProperty(name="Auth Account Tier", default="", options={'HIDDEN'})
+    auth_commercial_use_allowed: StringProperty(name="Auth Commercial Use Allowed", default="", options={'HIDDEN'})
+    auth_plan_code: StringProperty(name="Auth Plan Code", default="", options={'HIDDEN'})
+    auth_plan_name: StringProperty(name="Auth Plan Name", default="", options={'HIDDEN'})
+    auth_billing_period_end: StringProperty(name="Auth Billing Period End", default="", options={'HIDDEN'})
+    auth_contact_url: StringProperty(name="Auth Contact URL", default="", options={'HIDDEN'})
+    auth_upgrade_url: StringProperty(name="Auth Upgrade URL", default="", options={'HIDDEN'})
+    auth_topup_url: StringProperty(name="Auth Top-Up URL", default="", options={'HIDDEN'})
+    auth_manage_subscription_url: StringProperty(name="Auth Manage Subscription URL", default="", options={'HIDDEN'})
+    auth_tile_quota_used: StringProperty(name="Auth Tile Quota Used", default="", options={'HIDDEN'})
+    auth_tile_quota_limit: StringProperty(name="Auth Tile Quota Limit", default="", options={'HIDDEN'})
+    auth_tile_quota_reset_at: StringProperty(name="Auth Tile Quota Reset At", default="", options={'HIDDEN'})
+    auth_tile_quota_period: StringProperty(name="Auth Tile Quota Period", default="", options={'HIDDEN'})
+    auth_tile_quota_rule: StringProperty(name="Auth Tile Quota Rule", default="", options={'HIDDEN'})
+    auth_allowance_included_limit_bytes: StringProperty(name="Auth Included Limit Bytes", default="", options={'HIDDEN'})
+    auth_allowance_included_remaining_bytes: StringProperty(name="Auth Included Remaining Bytes", default="", options={'HIDDEN'})
+    auth_allowance_topup_remaining_bytes: StringProperty(name="Auth Topup Remaining Bytes", default="", options={'HIDDEN'})
+    auth_allowance_total_remaining_bytes: StringProperty(name="Auth Total Remaining Bytes", default="", options={'HIDDEN'})
+    auth_allowance_period_end: StringProperty(name="Auth Allowance Period End", default="", options={'HIDDEN'})
+    auth_allowance_period: StringProperty(name="Auth Allowance Period", default="", options={'HIDDEN'})
+    auth_allowance_counting_rule: StringProperty(name="Auth Allowance Counting Rule", default="", options={'HIDDEN'})
+    auth_allowance_warning_state: StringProperty(name="Auth Allowance Warning State", default="", options={'HIDDEN'})
+    auth_allowance_exhausted: StringProperty(name="Auth Allowance Exhausted", default="", options={'HIDDEN'})
+    auth_allowance_downloaded_period_bytes: StringProperty(name="Auth Allowance Downloaded Period Bytes", default="", options={'HIDDEN'})
+    auth_login_state: StringProperty(name="Auth Login State", default="logged_out", options={'HIDDEN'})
+    auth_status_message: StringProperty(name="Auth Status Message", default="", options={'HIDDEN'})
+    auth_device_code: StringProperty(name="Auth Device Code", default="", options={'HIDDEN'})
+    auth_device_verification_url: StringProperty(
+        name="Auth Device Verification URL",
+        default="",
+        options={'HIDDEN'},
+    )
+    auth_device_expires_at: StringProperty(name="Auth Device Expires At", default="", options={'HIDDEN'})
+    auth_poll_interval_seconds: IntProperty(
+        name="Auth Poll Interval Seconds",
+        default=2,
+        options={'HIDDEN'},
+    )
+
     # File format preference
     def draw(self, context):
         layout = self.layout
         layout.label(text="Planetka Preferences", icon='WORLD')
-        layout.prop(self, "texture_base_path")
+        layout.label(text="Account is managed in the Planetka sidebar.", icon="INFO")
 
 
 def mark_earth_object(obj):
@@ -132,14 +220,35 @@ def get_prefs():
         @property
         def texture_base_path(self):
             try:
-                return str(self._owner.get(FALLBACK_TEXTURE_BASE_PATH_KEY, "") or "")
+                return str(self._owner.get(FALLBACK_TEXTURE_BASE_PATH_KEY, REMOTE_TEXTURE_BASE_DEFAULT) or "")
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                return ""
+                return REMOTE_TEXTURE_BASE_DEFAULT
 
         @texture_base_path.setter
         def texture_base_path(self, value):
             try:
                 self._owner[FALLBACK_TEXTURE_BASE_PATH_KEY] = str(value or "")
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                pass
+
+        @property
+        def texture_source_mode(self):
+            try:
+                value = str(self._owner.get(FALLBACK_TEXTURE_SOURCE_MODE_KEY, TEXTURE_SOURCE_MODE_DEFAULT) or "")
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                value = TEXTURE_SOURCE_MODE_DEFAULT
+            value = value.strip().upper()
+            if value != "CLOUDFLARE":
+                return TEXTURE_SOURCE_MODE_DEFAULT
+            return "CLOUDFLARE"
+
+        @texture_source_mode.setter
+        def texture_source_mode(self, value):
+            safe = str(value or "").strip().upper()
+            if safe != "CLOUDFLARE":
+                safe = TEXTURE_SOURCE_MODE_DEFAULT
+            try:
+                self._owner[FALLBACK_TEXTURE_SOURCE_MODE_KEY] = safe
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 pass
 
@@ -156,6 +265,151 @@ def get_prefs():
                 self._owner[FALLBACK_SAVED_LOCATIONS_KEY] = str(value or "[]")
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 pass
+
+        def _get_value(self, key, default=""):
+            try:
+                return str(self._owner.get(key, default) or default)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                return str(default)
+
+        def _set_value(self, key, value):
+            try:
+                self._owner[key] = str(value or "")
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                pass
+
+        auth_email = property(
+            lambda self: self._get_value(FALLBACK_AUTH_EMAIL_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_EMAIL_KEY, value),
+        )
+        auth_access_token = property(
+            lambda self: self._get_value(FALLBACK_AUTH_ACCESS_TOKEN_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_ACCESS_TOKEN_KEY, value),
+        )
+        auth_refresh_token = property(
+            lambda self: self._get_value(FALLBACK_AUTH_REFRESH_TOKEN_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_REFRESH_TOKEN_KEY, value),
+        )
+        auth_account_tier = property(
+            lambda self: self._get_value(FALLBACK_AUTH_ACCOUNT_TIER_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_ACCOUNT_TIER_KEY, value),
+        )
+        auth_commercial_use_allowed = property(
+            lambda self: self._get_value(FALLBACK_AUTH_COMMERCIAL_USE_ALLOWED_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_COMMERCIAL_USE_ALLOWED_KEY, value),
+        )
+        auth_plan_code = property(
+            lambda self: self._get_value(FALLBACK_AUTH_PLAN_CODE_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_PLAN_CODE_KEY, value),
+        )
+        auth_plan_name = property(
+            lambda self: self._get_value(FALLBACK_AUTH_PLAN_NAME_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_PLAN_NAME_KEY, value),
+        )
+        auth_billing_period_end = property(
+            lambda self: self._get_value(FALLBACK_AUTH_BILLING_PERIOD_END_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_BILLING_PERIOD_END_KEY, value),
+        )
+        auth_contact_url = property(
+            lambda self: self._get_value(FALLBACK_AUTH_CONTACT_URL_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_CONTACT_URL_KEY, value),
+        )
+        auth_upgrade_url = property(
+            lambda self: self._get_value(FALLBACK_AUTH_UPGRADE_URL_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_UPGRADE_URL_KEY, value),
+        )
+        auth_topup_url = property(
+            lambda self: self._get_value(FALLBACK_AUTH_TOPUP_URL_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_TOPUP_URL_KEY, value),
+        )
+        auth_manage_subscription_url = property(
+            lambda self: self._get_value(FALLBACK_AUTH_MANAGE_SUBSCRIPTION_URL_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_MANAGE_SUBSCRIPTION_URL_KEY, value),
+        )
+        auth_tile_quota_used = property(
+            lambda self: self._get_value(FALLBACK_AUTH_TILE_QUOTA_USED_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_TILE_QUOTA_USED_KEY, value),
+        )
+        auth_tile_quota_limit = property(
+            lambda self: self._get_value(FALLBACK_AUTH_TILE_QUOTA_LIMIT_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_TILE_QUOTA_LIMIT_KEY, value),
+        )
+        auth_tile_quota_reset_at = property(
+            lambda self: self._get_value(FALLBACK_AUTH_TILE_QUOTA_RESET_AT_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_TILE_QUOTA_RESET_AT_KEY, value),
+        )
+        auth_tile_quota_period = property(
+            lambda self: self._get_value(FALLBACK_AUTH_TILE_QUOTA_PERIOD_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_TILE_QUOTA_PERIOD_KEY, value),
+        )
+        auth_tile_quota_rule = property(
+            lambda self: self._get_value(FALLBACK_AUTH_TILE_QUOTA_RULE_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_TILE_QUOTA_RULE_KEY, value),
+        )
+        auth_allowance_included_limit_bytes = property(
+            lambda self: self._get_value(FALLBACK_AUTH_ALLOWANCE_INCLUDED_LIMIT_BYTES_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_ALLOWANCE_INCLUDED_LIMIT_BYTES_KEY, value),
+        )
+        auth_allowance_included_remaining_bytes = property(
+            lambda self: self._get_value(FALLBACK_AUTH_ALLOWANCE_INCLUDED_REMAINING_BYTES_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_ALLOWANCE_INCLUDED_REMAINING_BYTES_KEY, value),
+        )
+        auth_allowance_topup_remaining_bytes = property(
+            lambda self: self._get_value(FALLBACK_AUTH_ALLOWANCE_TOPUP_REMAINING_BYTES_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_ALLOWANCE_TOPUP_REMAINING_BYTES_KEY, value),
+        )
+        auth_allowance_total_remaining_bytes = property(
+            lambda self: self._get_value(FALLBACK_AUTH_ALLOWANCE_TOTAL_REMAINING_BYTES_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_ALLOWANCE_TOTAL_REMAINING_BYTES_KEY, value),
+        )
+        auth_allowance_period_end = property(
+            lambda self: self._get_value(FALLBACK_AUTH_ALLOWANCE_PERIOD_END_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_ALLOWANCE_PERIOD_END_KEY, value),
+        )
+        auth_allowance_period = property(
+            lambda self: self._get_value(FALLBACK_AUTH_ALLOWANCE_PERIOD_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_ALLOWANCE_PERIOD_KEY, value),
+        )
+        auth_allowance_counting_rule = property(
+            lambda self: self._get_value(FALLBACK_AUTH_ALLOWANCE_COUNTING_RULE_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_ALLOWANCE_COUNTING_RULE_KEY, value),
+        )
+        auth_allowance_warning_state = property(
+            lambda self: self._get_value(FALLBACK_AUTH_ALLOWANCE_WARNING_STATE_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_ALLOWANCE_WARNING_STATE_KEY, value),
+        )
+        auth_allowance_exhausted = property(
+            lambda self: self._get_value(FALLBACK_AUTH_ALLOWANCE_EXHAUSTED_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_ALLOWANCE_EXHAUSTED_KEY, value),
+        )
+        auth_allowance_downloaded_period_bytes = property(
+            lambda self: self._get_value(FALLBACK_AUTH_ALLOWANCE_DOWNLOADED_PERIOD_BYTES_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_ALLOWANCE_DOWNLOADED_PERIOD_BYTES_KEY, value),
+        )
+        auth_login_state = property(
+            lambda self: self._get_value(FALLBACK_AUTH_LOGIN_STATE_KEY, "logged_out"),
+            lambda self, value: self._set_value(FALLBACK_AUTH_LOGIN_STATE_KEY, value or "logged_out"),
+        )
+        auth_status_message = property(
+            lambda self: self._get_value(FALLBACK_AUTH_STATUS_MESSAGE_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_STATUS_MESSAGE_KEY, value),
+        )
+        auth_device_code = property(
+            lambda self: self._get_value(FALLBACK_AUTH_DEVICE_CODE_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_DEVICE_CODE_KEY, value),
+        )
+        auth_device_verification_url = property(
+            lambda self: self._get_value(FALLBACK_AUTH_DEVICE_VERIFICATION_URL_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_DEVICE_VERIFICATION_URL_KEY, value),
+        )
+        auth_device_expires_at = property(
+            lambda self: self._get_value(FALLBACK_AUTH_DEVICE_EXPIRES_AT_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_DEVICE_EXPIRES_AT_KEY, value),
+        )
+        auth_poll_interval_seconds = property(
+            lambda self: self._get_value(FALLBACK_AUTH_POLL_INTERVAL_SECONDS_KEY, "2"),
+            lambda self, value: self._set_value(FALLBACK_AUTH_POLL_INTERVAL_SECONDS_KEY, value or "2"),
+        )
 
     def _addon_pref_by_name(addons, key):
         if key in addons:

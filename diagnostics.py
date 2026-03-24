@@ -25,6 +25,9 @@ DIAG_KEY_VIEW_ESTIMATED_SAFETY_STATE = "planetka_diag_view_estimated_safety_stat
 DIAG_KEY_RESOLVE_REQUIRED_MPP_M = "planetka_diag_resolve_required_mpp_m"
 DIAG_KEY_RESOLVE_SAFETY_STATE = "planetka_diag_resolve_safety_state"
 DIAG_KEY_RESOLVE_TEXTURES_MB = "planetka_diag_resolve_textures_mb"
+DIAG_KEY_RESOLVE_DOWNLOAD_MS = "planetka_diag_resolve_download_ms"
+DIAG_KEY_RESOLVE_DOWNLOADED_MB = "planetka_diag_resolve_downloaded_mb"
+DIAG_KEY_RESOLVE_DOWNLOAD_THREAD_MS = "planetka_diag_resolve_download_thread_ms"
 
 
 def _set_scene_value(scene, key, value):
@@ -125,6 +128,9 @@ def write_resolve_diagnostics(scene, tile_count, resolve_ms, fallback_count, bre
     _set_scene_value(scene, DIAG_KEY_RESOLVE_REQUIRED_MPP_M, breakdown.get("required_mpp_m"))
     _set_scene_value(scene, DIAG_KEY_RESOLVE_SAFETY_STATE, breakdown.get("resolution_safety"))
     _set_scene_value(scene, DIAG_KEY_RESOLVE_TEXTURES_MB, breakdown.get("loaded_textures_mb"))
+    _set_scene_value(scene, DIAG_KEY_RESOLVE_DOWNLOAD_MS, breakdown.get("download_ms"))
+    _set_scene_value(scene, DIAG_KEY_RESOLVE_DOWNLOADED_MB, breakdown.get("downloaded_mb"))
+    _set_scene_value(scene, DIAG_KEY_RESOLVE_DOWNLOAD_THREAD_MS, breakdown.get("download_thread_ms"))
 
 
 def read_diagnostics(scene):
@@ -153,4 +159,7 @@ def read_diagnostics(scene):
         "resolve_required_mpp_m": _get_scene_value(scene, DIAG_KEY_RESOLVE_REQUIRED_MPP_M),
         "resolve_safety_state": _get_scene_value(scene, DIAG_KEY_RESOLVE_SAFETY_STATE),
         "resolve_textures_mb": _get_scene_value(scene, DIAG_KEY_RESOLVE_TEXTURES_MB),
+        "resolve_download_ms": _get_scene_value(scene, DIAG_KEY_RESOLVE_DOWNLOAD_MS),
+        "resolve_downloaded_mb": _get_scene_value(scene, DIAG_KEY_RESOLVE_DOWNLOADED_MB),
+        "resolve_download_thread_ms": _get_scene_value(scene, DIAG_KEY_RESOLVE_DOWNLOAD_THREAD_MS),
     }

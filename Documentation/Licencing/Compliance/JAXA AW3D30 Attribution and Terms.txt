@@ -1,0 +1,111 @@
+JAXA AW3D30 Attribution and Terms (Planetka EL/WT Earth Surface)
+===============================================================
+
+This product includes and uses elevation-related textures derived from:
+- AW3D30 (ALOS World 3D - 30m), provided by JAXA.
+  Planetka: "EL" (elevation) and "WT" (water/terrain mask) tiles.
+
+Primary Terms (JAXA)
+--------------------
+AW3D30 is usable for commercial and non-commercial purposes free of charge under
+JAXA's terms for use / data usage policy:
+- AW3D30 dataset page (points to terms for use):
+  https://www.eorc.jaxa.jp/ALOS/en/dataset/aw3d30/aw3d30_e.htm
+- Terms of Use of Research Data (includes commercial-purpose notification):
+  https://earth.jaxa.jp/en/data/policy/
+
+Required Credit (what it must contain)
+--------------------------------------
+JAXA requires you to indicate the sources so JAXA can be acknowledged as the
+original distributor. For AW3D30, the credit includes:
+- JAXA
+- AW3D30 (ALOS World 3D - 30m)
+
+Contact (as published by JAXA)
+------------------------------
+- Email: earth@ml.jaxa.jp
+
+Commercial-purpose use notification (record)
+--------------------------------------------
+To: earth@ml.jaxa.jp
+Subject: Commercial-purpose use notification: AW3D30 (ALOS World 3D - 30m) in Planetka (Blender extension)
+Sent: 2026-03-05 12:10:04 CET
+
+Hello JAXA Earth Observation Center team,
+
+I am writing to inform JAXA in advance about our intended commercial-purpose use of the
+AW3D30 (ALOS World 3D - 30m) dataset, in accordance with JAXA’s Terms of Use of Research Data.
+
+Product name:
+- Planetka (Blender extension) / "Planetka - the Earth"
+
+Product link:
+- https://www.planetka.io
+- https://superhivemarket.com/products/planetka-256k (planned product page; not released yet)
+
+Data used:
+- AW3D30 (ALOS World 3D - 30m) provided by JAXA
+- Used to generate derived raster textures (tiles) for elevation and related masks in the
+  extension (Planetka texture dataset folders "EL" and "WT").
+
+How it is used:
+- End users install the Planetka extension for Blender and use the included derived textures
+  to render still images and animations of the Earth surface.
+
+Distribution / commercial context:
+- The Planetka extension (including the derived AW3D30-based textures) is sold commercially
+  as a digital product (Blender add-on).
+
+Modifications:
+- The AW3D30-derived textures are retouched/processed for visual clarity and performance
+  (e.g., artifact/error removal and optimization for fast loading).
+
+Attribution:
+- We will credit the source as: "AW3D30 (ALOS World 3D - 30m) provided by JAXA."
+
+If you need any additional details (e.g., exact geographic coverage, file list, or
+release/version identifiers), please let me know and I will provide them.
+
+Best regards,
+Tomas Griger
+www.planetka.io
+info@planetka.io
+
+JAXA response (record)
+----------------------
+From: ALOS Science Project, JAXA
+Received: 2026-03-06 07:24 CET (Bratislava time)
+
+Dear Tomas Griger,
+
+This is ALOS Science Project, JAXA.
+Thank you for your email to earth@ml.jaxa.jp and the commercial-purpose use
+notification of AW3D30 in Planetka.
+We would like to let you know that there is no problem to use the data for
+commercial use as long as complying with the terms of use of research data:
+https://earth.jaxa.jp/en/data/policy/
+
+If you have any questions, please do not hesitate to ask us.
+
+Thank you.
+
+Best regards,
+
+ALOS Science Project
+Earth Observation Research Center (EORC)
+Japan Aerospace Exploration Agency (JAXA)
+2-1-1, Sengen, Tsukuba, Ibaraki 305-8505 Japan
+Tel: +81-70-1170-2615
+Fax: +81-29-868-2961
+E-mail: aproject@jaxa.jp
+
+Attribution Text (example)
+-------------------------
+- Contains modified data from "AW3D30 (ALOS World 3D - 30m) provided by JAXA."
+
+Notes
+-----
+- Planetka tiles are modified/retouched derivatives (e.g. errors/artifacts removed,
+  especially in WT; optimized for fast load).
+- JAXA also requires following the Terms of Use on JAXA’s Site Policy page (as
+  referenced by the Terms of Use of Research Data).

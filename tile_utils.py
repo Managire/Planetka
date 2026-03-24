@@ -1292,9 +1292,13 @@ def main(scope_mode="AUTO", edge_boost=False):
         root,
     )
 
-    candidate_z_levels = [z_level for z_level in Z_LEVELS if int(target_z) <= int(z_level) <= 180]
+    max_available_z = int(max(Z_LEVELS))
+    candidate_z_levels = [
+        z_level for z_level in Z_LEVELS
+        if int(target_z) <= int(z_level) <= max_available_z
+    ]
     if not candidate_z_levels:
-        candidate_z_levels = [180]
+        candidate_z_levels = [max_available_z]
 
     selected_tiles = set()
     selected_z = None

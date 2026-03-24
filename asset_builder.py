@@ -5,7 +5,6 @@ import os
 import tempfile
 
 import bpy
-import bmesh
 
 from .embedded_material_library import (
     MATERIAL_LIBRARY_MATERIALS,
@@ -13,7 +12,6 @@ from .embedded_material_library import (
     MATERIAL_LIBRARY_SHA256,
     get_material_library_bytes,
 )
-from .extension_prefs import get_earth_object
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 
 
@@ -28,6 +26,28 @@ TEXTURE_LOADING_GROUP_NAME = "Planetka Textures Loading Group"
 PREVIEW_TEXTURE_LOADING_GROUP_NAME = "Planetka Preview Textures Loading Group"
 NIGHTDAY_GROUP_NAME = "Planetka NightDay Transition Group"
 SUNLIGHT_OBJECT_NAME = "Planetka Sunlight"
+PLANETKA_ROOT_OBJECT_NAME = "Planetka Root"
+FAKE_ATMOSPHERE_OBJECT_NAME = "Atmosphere - EEVEE supplement"
+FAKE_ATMOSPHERE_MATERIAL_NAME = "Planetka Atmosphere Fake Material"
+FAKE_ATMOSPHERE_GROUP_NAME = "Planetka Atmosphere Fake Group"
+FAKE_ATMOSPHERE_TEXTURE_GROUP_NAME = "Planetka Fake Atmosphere Textures Group"
+FAKE_ATMOSPHERE_COLLECTION_NAME = "Atmosphere"
+FAKE_ATMOSPHERE_ROLE_KEY = "planetka_role"
+FAKE_ATMOSPHERE_ROLE_VALUE = "fake_atmosphere"
+FAKE_ATMOSPHERE_SOURCE_OBJECT_NAME = "Planetka Atmosphere Fake"
+FAKE_ATMOSPHERE_SCALE_FACTOR = 2.01
+_LEGACY_FAKE_ATMOSPHERE_COLLECTION_NAMES = ("Atmpshere",)
+_LEGACY_FAKE_ATMOSPHERE_OBJECT_NAMES = (
+    "Planetka Atmosphere Fake",
+    "Atmosphere - Fake",
+    "Fake Atmosphere",
+)
+VOLUMETRIC_ATMOSPHERE_OBJECT_NAME = "Atmosphere - Volumetric"
+VOLUMETRIC_ATMOSPHERE_SOURCE_OBJECT_NAME = "Planetka Atmosphere"
+VOLUMETRIC_ATMOSPHERE_MATERIAL_NAME = "Planetka Atmosphere Material"
+VOLUMETRIC_ATMOSPHERE_GROUP_NAME = "Planetka Atmosphere Group"
+VOLUMETRIC_ATMOSPHERE_ROLE_VALUE = "atmosphere_volumetric"
+VOLUMETRIC_ATMOSPHERE_SCALE_FACTOR = 2.0
 DEFAULT_ELEVATION_COEFFICIENT = 1.0
 ELEVATION_SCALE_MULTIPLIER = 0.012
 _LIBRARY_SIGNATURE_KEY = "planetka_embedded_material_sha256"
@@ -35,35 +55,21 @@ _PREVIEW_TEXTURE_GROUP_VERSION_KEY = "planetka_preview_texture_group_v"
 _PREVIEW_TEXTURE_GROUP_VERSION = 1
 _ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 _LEGACY_LIBRARY_RELATIVE_PATH = ("Resources", "planetka_material_lib_45.blend")
+_FAKE_ATMOSPHERE_LIBRARY_RELATIVE_PATH = ("Resources", "planetka_fake_atmosphere.blend")
+_VOLUMETRIC_ATMOSPHERE_LIBRARY_RELATIVE_PATH = ("Resources", "planetka_volumetric_atmosphere.blend")
+_LEGACY_VOLUMETRIC_ATMOSPHERE_SOURCE_BLEND_PATH = (
+    "/Volumes/SSDA/Projects/Planetka Mini/Planetka 32K/Planetka_Mini_32K.blend"
+)
 _SURFACE_DETAIL_VERSION_KEY = "planetka_surface_detail_v"
 _SURFACE_DETAIL_VERSION = 1
-_SURFACE_FAKE_ATMOSPHERE_VERSION_KEY = "planetka_surface_fake_atmosphere_v"
-_SURFACE_FAKE_ATMOSPHERE_VERSION = 1
 _SURFACE_SHADER_UPDATE_VERSION_KEY = "planetka_surface_shader_update_v"
 _SURFACE_SHADER_UPDATE_VERSION = 2
-ATMOSPHERE_GRADING_GROUP_NAME = "Planetka Atmosphere Grading Group"
-ATMOSPHERE_SHELL_OBJECT_NAME = "Planetka Atmosphere Shell"
-ATMOSPHERE_SHELL_MESH_NAME = "Planetka Atmosphere Shell Mesh"
-ATMOSPHERE_SHELL_MATERIAL_NAME = "Planetka Atmosphere Shell Material"
-ATMOSPHERE_SHELL_SHADING_GROUP_NAME = "Planetka Atmosphere Shell Shading Group"
-ATMOSPHERE_SHELL_MESH_VERSION_KEY = "planetka_atmosphere_shell_mesh_v"
-ATMOSPHERE_SHELL_MESH_VERSION = 2
-ATMOSPHERE_SHELL_MATERIAL_VERSION_KEY = "planetka_atmosphere_shell_material_v"
-ATMOSPHERE_SHELL_MATERIAL_VERSION = 12
 
 _DETAIL_SOCKET_SCALE = "Procedural Detail Scale"
 _DETAIL_SOCKET_FOREST = "Forest Detail Strength"
 _DETAIL_SOCKET_ROCK = "Rock Detail Strength"
 _DETAIL_SOCKET_ROCK_COLOR = "Rock Color Variation"
 _DETAIL_SOCKET_MICRO_DISP = "Micro Displacement Strength"
-_FAKE_ATMOSPHERE_DENSITY_SOCKET = "Atmosphere Density"
-_FAKE_ATMOSPHERE_DENSITY_SOCKET_LEGACY = "Fake Atmosphere Density"
-_FAKE_ATMOSPHERE_HEIGHT_SOCKET = "Fake Atmosphere Height (km)"
-_FAKE_ATMOSPHERE_FALLOFF_SOCKET = "Atmosphere Exponential Falloff"
-_FAKE_ATMOSPHERE_COLOR_SOCKET = "Atmosphere Color"
-_FAKE_ATMOSPHERE_DENSITY_UI_TO_SHADER = 0.25
-# Linear-space RGBA that displays as sRGB #8CB2E3FF in Blender color UI.
-_FAKE_ATMOSPHERE_DEFAULT_COLOR = (0.26225066, 0.44520119, 0.76815115, 1.0)
 
 _SURFACE_DEFAULT_INPUT_SPECS = (
     ("Surface Brightness", 3.0, 0.0, 10.0),
@@ -85,7 +91,6 @@ _SURFACE_EXTRA_INPUT_SPECS = (
 _SURFACE_PANEL_EXTRA = "Extra"
 _SURFACE_PANEL_SNOW = "Snow"
 _SURFACE_PANEL_WAVES = "Waves"
-_SURFACE_PANEL_ATMOSPHERE = "Atmosphere"
 _SHADER_INPUT_DESCRIPTIONS = {
     "Surface Brightness": "Multiplier for land/base-color brightness before final shading.",
     "Surface Saturation": "Multiplier for land/base-color saturation.",
@@ -104,40 +109,16 @@ _SHADER_INPUT_DESCRIPTIONS = {
     "Rock Detail Strength": "Strength of procedural rocky micro detail.",
     "Rock Color Variation": "Amount of procedural rock color variation.",
     "Micro Displacement Strength": "Additional micro displacement amplitude from procedural detail.",
-    "Atmosphere Density": "Overall strength of atmospheric haze and rim glow.",
-    "Fake Atmosphere Height (km)": "Effective haze height in kilometers.",
-    "Atmosphere Exponential Falloff": "Atmosphere falloff curve (0 = linear, 1 = strongly exponential).",
-    "Atmosphere Color": "Tint color for atmospheric haze and rim glow.",
 }
 
 _STATIC_IMAGE_SPECS = {
-    "S2_x000_y000_z360_d360.exr": {
-        "relative_path": ("Resources", "Basic Textures", "S2_x000_y000_z360_d360.exr"),
-        "colorspace": "Linear Rec.709",
-        "alpha_mode": "PREMUL",
-    },
-    "EL_x000_y000_z360_d360.exr": {
-        "relative_path": ("Resources", "Basic Textures", "EL_x000_y000_z360_d360.exr"),
-        "colorspace": "Non-Color",
-        "alpha_mode": "PREMUL",
-    },
-    "WT_x000_y000_z360_d360.exr": {
-        "relative_path": ("Resources", "Basic Textures", "WT_x000_y000_z360_d360.exr"),
-        "colorspace": "Linear Rec.709",
-        "alpha_mode": "PREMUL",
-    },
-    "PO_x000_y000_z360_d360.tif": {
-        "relative_path": ("Resources", "Basic Textures", "PO_x000_y000_z360_d360.tif"),
-        "colorspace": "sRGB",
-        "alpha_mode": "STRAIGHT",
-    },
-    "WF_x000_y000_z360_d360.exr": {
-        "relative_path": ("Resources", "Basic Textures", "WF_x000_y000_z360_d360.exr"),
-        "colorspace": "Linear Rec.709",
-        "alpha_mode": "PREMUL",
-    },
     "ocean_pixel_final_20.exr": {
         "relative_path": ("Resources", "Fallback Images", "ocean_pixel_final_20.exr"),
+        "colorspace": "Linear Rec.709",
+        "alpha_mode": "PREMUL",
+    },
+    "black_pixel_20.exr": {
+        "relative_path": ("Resources", "Fallback Images", "black_pixel_20.exr"),
         "colorspace": "Linear Rec.709",
         "alpha_mode": "PREMUL",
     },
@@ -149,17 +130,140 @@ _STATIC_IMAGE_SPECS = {
 }
 
 _PREVIEW_IMAGE_BINDINGS = (
-    ("Image Texture", "S2_x000_y000_z360_d360.exr"),
-    ("Image Texture.001", "EL_x000_y000_z360_d360.exr"),
-    ("Image Texture.002", "WT_x000_y000_z360_d360.exr"),
-    ("Image Texture.003", "PO_x000_y000_z360_d360.tif"),
+    ("Image Texture", "ocean_pixel_final_20.exr"),
+    ("Image Texture.001", "black_pixel_20.exr"),
+    ("Image Texture.002", "blue_pixel_20.exr"),
+    ("Image Texture.003", "black_pixel_20.exr"),
 )
 
 _SURFACE_GROUP_IMAGE_BINDINGS = (
     ("Image Texture", "ocean_pixel_final_20.exr"),
     ("Image Texture.001", "blue_pixel_20.exr"),
-    ("Image Texture.002", "WF_x000_y000_z360_d360.exr"),
 )
+
+_FAKE_ATMOSPHERE_IMAGE_BINDINGS = (
+    ("surface", "ocean_pixel_final_20.exr"),
+    ("elevation", "black_pixel_20.exr"),
+    ("mask", "black_pixel_20.exr"),
+)
+
+
+def _hide_unconnected_group_input_sockets(node_tree):
+    if node_tree is None:
+        return
+    nodes = getattr(node_tree, "nodes", None)
+    if nodes is None:
+        return
+
+    for node in nodes:
+        if str(getattr(node, "type", "")) != "GROUP_INPUT":
+            continue
+        for socket in getattr(node, "outputs", ()):
+            try:
+                linked = bool(getattr(socket, "is_linked", False))
+                if not linked:
+                    linked = bool(getattr(socket, "links", ()))
+                socket.hide = not linked
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+                logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+
+def _hide_unconnected_group_input_sockets_everywhere():
+    seen = set()
+
+    for material in getattr(bpy.data, "materials", ()):
+        if not bool(getattr(material, "use_nodes", False)):
+            continue
+        node_tree = getattr(material, "node_tree", None)
+        if node_tree is None:
+            continue
+        ptr = int(getattr(node_tree, "as_pointer", lambda: id(node_tree))())
+        if ptr in seen:
+            continue
+        seen.add(ptr)
+        _hide_unconnected_group_input_sockets(node_tree)
+
+    for node_group in getattr(bpy.data, "node_groups", ()):
+        if str(getattr(node_group, "bl_idname", "")) != "ShaderNodeTree":
+            continue
+        ptr = int(getattr(node_group, "as_pointer", lambda: id(node_group))())
+        if ptr in seen:
+            continue
+        seen.add(ptr)
+        _hide_unconnected_group_input_sockets(node_group)
+
+
+def _is_fallback_static_image(image_name):
+    spec = _STATIC_IMAGE_SPECS.get(str(image_name))
+    if not isinstance(spec, dict):
+        return False
+    rel = spec.get("relative_path")
+    if not isinstance(rel, (tuple, list)):
+        return False
+    rel_text = "/".join(str(part).strip().lower() for part in rel if part is not None)
+    return "fallback images" in rel_text
+
+
+def _set_tex_image_node_interpolation(node, use_fallback):
+    if not node or str(getattr(node, "bl_idname", "")) != "ShaderNodeTexImage":
+        return
+    try:
+        node.interpolation = "Closest" if bool(use_fallback) else "Linear"
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+
+def _set_material_displacement_and_bump(material):
+    if material is None:
+        return False
+
+    changed = False
+
+    # Blender 5.x path.
+    if hasattr(material, "displacement_method"):
+        preferred_material = ("BOTH", "DISPLACEMENT_BUMP", "DISPLACEMENT_AND_BUMP")
+        available = set()
+        try:
+            prop_def = material.bl_rna.properties.get("displacement_method")
+            if prop_def and hasattr(prop_def, "enum_items"):
+                available = {item.identifier for item in prop_def.enum_items}
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+            available = set()
+
+        for identifier in preferred_material:
+            if available and identifier not in available:
+                continue
+            try:
+                material.displacement_method = identifier
+                changed = True
+                break
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+                continue
+
+    # Legacy path.
+    cycles_settings = getattr(material, "cycles", None)
+    if cycles_settings is None or not hasattr(cycles_settings, "displacement_method"):
+        return changed
+
+    preferred_cycles = ("BOTH", "DISPLACEMENT_BUMP", "DISPLACEMENT_AND_BUMP")
+    available = set()
+    try:
+        prop_def = cycles_settings.bl_rna.properties.get("displacement_method")
+        if prop_def and hasattr(prop_def, "enum_items"):
+            available = {item.identifier for item in prop_def.enum_items}
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+        available = set()
+
+    for identifier in preferred_cycles:
+        if available and identifier not in available:
+            continue
+        try:
+            cycles_settings.displacement_method = identifier
+            changed = True
+            break
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+            continue
+    return changed
 
 
 def _normalize_surface_elevation_defaults(material):
@@ -367,433 +471,6 @@ def _socket_output_by_name_or_index(sockets, name, fallback_index=0):
 
 def _socket_input_by_name_or_index(sockets, name, fallback_index=None):
     return _socket_by_name_or_index(sockets, name, fallback_index)
-
-
-def _ensure_planetka_atmosphere_grading_group():
-    group = bpy.data.node_groups.get(ATMOSPHERE_GRADING_GROUP_NAME)
-    if group is None:
-        try:
-            group = bpy.data.node_groups.new(ATMOSPHERE_GRADING_GROUP_NAME, "ShaderNodeTree")
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            return None
-        except (RuntimeError, TypeError, ValueError):
-            return None
-
-    _remove_interface_input_socket(group, _FAKE_ATMOSPHERE_DENSITY_SOCKET_LEGACY)
-
-    _ensure_interface_socket(group, "Base Color", in_out="INPUT", socket_type="NodeSocketColor")
-    _ensure_interface_socket(group, "EL", in_out="INPUT", socket_type="NodeSocketColor")
-    density_item = _ensure_interface_socket(
-        group,
-        _FAKE_ATMOSPHERE_DENSITY_SOCKET,
-        in_out="INPUT",
-        socket_type="NodeSocketFloat",
-        description=_SHADER_INPUT_DESCRIPTIONS.get(_FAKE_ATMOSPHERE_DENSITY_SOCKET, ""),
-    )
-    height_item = _ensure_interface_socket(
-        group,
-        _FAKE_ATMOSPHERE_HEIGHT_SOCKET,
-        in_out="INPUT",
-        socket_type="NodeSocketFloat",
-        description=_SHADER_INPUT_DESCRIPTIONS.get(_FAKE_ATMOSPHERE_HEIGHT_SOCKET, ""),
-    )
-    falloff_item = _ensure_interface_socket(
-        group,
-        _FAKE_ATMOSPHERE_FALLOFF_SOCKET,
-        in_out="INPUT",
-        socket_type="NodeSocketFloat",
-        description=_SHADER_INPUT_DESCRIPTIONS.get(_FAKE_ATMOSPHERE_FALLOFF_SOCKET, ""),
-    )
-    color_item = _ensure_interface_socket(
-        group,
-        _FAKE_ATMOSPHERE_COLOR_SOCKET,
-        in_out="INPUT",
-        socket_type="NodeSocketColor",
-        description=_SHADER_INPUT_DESCRIPTIONS.get(_FAKE_ATMOSPHERE_COLOR_SOCKET, ""),
-    )
-    _ensure_interface_socket(group, "Color", in_out="OUTPUT", socket_type="NodeSocketColor")
-
-    if density_item and hasattr(density_item, "default_value"):
-        try:
-            density_item.default_value = 0.0
-            density_item.min_value = 0.0
-            density_item.max_value = 2.0
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-    if height_item and hasattr(height_item, "default_value"):
-        try:
-            height_item.default_value = 50.0
-            height_item.min_value = 0.0
-            height_item.max_value = 400.0
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-    if falloff_item and hasattr(falloff_item, "default_value"):
-        try:
-            falloff_item.default_value = 0.05
-            falloff_item.min_value = 0.0
-            falloff_item.max_value = 1.0
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-    if color_item and hasattr(color_item, "default_value"):
-        try:
-            color_item.default_value = _FAKE_ATMOSPHERE_DEFAULT_COLOR
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-
-    nodes = group.nodes
-    links = group.links
-    group_input = _ensure_node(nodes, "Group Input", "NodeGroupInput")
-    group_output = _ensure_node(nodes, "Group Output", "NodeGroupOutput")
-    if group_input is None or group_output is None:
-        return group
-
-    haze_mix = _ensure_node(nodes, "PKA Atmo Color Mix", "ShaderNodeMix")
-    camera_data = _ensure_node(nodes, "PKA Atmo Camera Data", "ShaderNodeCameraData")
-    distance_range = _ensure_node(nodes, "PKA Atmo Distance", "ShaderNodeMapRange")
-    layer_weight = _ensure_node(nodes, "PKA Atmo Layer Weight", "ShaderNodeLayerWeight")
-    horizon_invert = _ensure_node(nodes, "PKA Atmo Horizon Invert", "ShaderNodeMath")
-    height_range = _ensure_node(nodes, "PKA Atmo Height Range", "ShaderNodeMapRange")
-    horizon_height = _ensure_node(nodes, "PKA Atmo Horizon Height", "ShaderNodeMath")
-    distance_horizon = _ensure_node(nodes, "PKA Atmo Distance Horizon", "ShaderNodeMath")
-    el_separate = _ensure_node(nodes, "PKA Atmo Elevation Separate", "ShaderNodeSeparateColor")
-    elevation_mask = _ensure_node(nodes, "PKA Atmo Elevation Mask", "ShaderNodeMapRange")
-    falloff_power = _ensure_node(nodes, "PKA Atmo Falloff Power", "ShaderNodeMapRange")
-    elevation_falloff = _ensure_node(nodes, "PKA Atmo Elevation Falloff", "ShaderNodeMath")
-    elev_distance_mul = _ensure_node(nodes, "PKA Atmo Elevation Distance", "ShaderNodeMath")
-    haze_density = _ensure_node(nodes, "PKA Atmo Density", "ShaderNodeMath")
-
-    _safe_setattr(haze_mix, "data_type", "RGBA")
-    _safe_setattr(haze_mix, "blend_type", "MIX")
-    _safe_setattr(distance_range, "clamp", True)
-    _safe_setattr(height_range, "clamp", True)
-    _safe_setattr(elevation_mask, "clamp", True)
-    _safe_setattr(falloff_power, "clamp", True)
-    _safe_setattr(horizon_invert, "operation", "SUBTRACT")
-    _safe_setattr(horizon_height, "operation", "MULTIPLY")
-    _safe_setattr(distance_horizon, "operation", "MAXIMUM")
-    _safe_setattr(elevation_falloff, "operation", "POWER")
-    _safe_setattr(elev_distance_mul, "operation", "MULTIPLY")
-    _safe_setattr(haze_density, "operation", "MULTIPLY")
-    _safe_setattr(haze_density, "use_clamp", True)
-    _safe_setattr(el_separate, "mode", "RGB")
-
-    try:
-        distance_range.inputs[1].default_value = 0.05
-        distance_range.inputs[2].default_value = 2.0
-        distance_range.inputs[3].default_value = 0.0
-        distance_range.inputs[4].default_value = 1.0
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, IndexError, AttributeError):
-        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-    try:
-        horizon_invert.inputs[0].default_value = 1.0
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, IndexError, AttributeError):
-        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-    try:
-        height_range.inputs[1].default_value = 0.0
-        height_range.inputs[2].default_value = 150.0
-        height_range.inputs[3].default_value = 0.75
-        height_range.inputs[4].default_value = 2.5
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, IndexError, AttributeError):
-        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-    try:
-        elevation_mask.inputs[1].default_value = 0.42
-        elevation_mask.inputs[2].default_value = 0.72
-        elevation_mask.inputs[3].default_value = 1.0
-        elevation_mask.inputs[4].default_value = 0.0
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, IndexError, AttributeError):
-        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-    try:
-        falloff_power.inputs[1].default_value = 0.0
-        falloff_power.inputs[2].default_value = 1.0
-        falloff_power.inputs[3].default_value = 1.0
-        falloff_power.inputs[4].default_value = 8.0
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, IndexError, AttributeError):
-        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-
-    mix_factor_in = _socket_input_by_name_or_index(haze_mix.inputs, "Factor", 0)
-    mix_color_a = _socket_input_by_name_or_index(haze_mix.inputs, "A", 6)
-    mix_color_b = _socket_input_by_name_or_index(haze_mix.inputs, "B", 7)
-    mix_result = _socket_output_by_name_or_index(haze_mix.outputs, "Result", 2)
-    if mix_color_b is not None:
-        try:
-            mix_color_b.default_value = _FAKE_ATMOSPHERE_DEFAULT_COLOR
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-
-    _replace_input_link(
-        links,
-        _socket_input_by_name_or_index(distance_range.inputs, "Value", 0),
-        _socket_output_by_name_or_index(camera_data.outputs, "View Distance"),
-    )
-    _replace_input_link(
-        links,
-        _socket_input_by_name_or_index(horizon_invert.inputs, "Value", 1),
-        _socket_output_by_name_or_index(layer_weight.outputs, "Facing"),
-    )
-    _replace_input_link(
-        links,
-        _socket_input_by_name_or_index(height_range.inputs, "Value", 0),
-        _socket_output_by_name_or_index(group_input.outputs, _FAKE_ATMOSPHERE_HEIGHT_SOCKET),
-    )
-    _replace_input_link(
-        links,
-        _socket_input_by_name_or_index(horizon_height.inputs, "Value", 0),
-        _socket_output_by_name_or_index(horizon_invert.outputs, "Value", 0),
-    )
-    _replace_input_link(
-        links,
-        _socket_input_by_name_or_index(horizon_height.inputs, "Value", 1),
-        _socket_output_by_name_or_index(height_range.outputs, "Result", 0),
-    )
-    _replace_input_link(
-        links,
-        _socket_input_by_name_or_index(distance_horizon.inputs, "Value", 0),
-        _socket_output_by_name_or_index(distance_range.outputs, "Result", 0),
-    )
-    _replace_input_link(
-        links,
-        _socket_input_by_name_or_index(distance_horizon.inputs, "Value", 1),
-        _socket_output_by_name_or_index(horizon_height.outputs, "Value", 0),
-    )
-    _replace_input_link(
-        links,
-        _socket_input_by_name_or_index(el_separate.inputs, "Color"),
-        _socket_output_by_name_or_index(group_input.outputs, "EL"),
-    )
-    _replace_input_link(
-        links,
-        _socket_input_by_name_or_index(elevation_mask.inputs, "Value", 0),
-        _socket_output_by_name_or_index(el_separate.outputs, "Red", 0),
-    )
-    _replace_input_link(
-        links,
-        _socket_input_by_name_or_index(falloff_power.inputs, "Value", 0),
-        _socket_output_by_name_or_index(group_input.outputs, _FAKE_ATMOSPHERE_FALLOFF_SOCKET),
-    )
-    _replace_input_link(
-        links,
-        _socket_input_by_name_or_index(elevation_falloff.inputs, "Value", 0),
-        _socket_output_by_name_or_index(elevation_mask.outputs, "Result", 0),
-    )
-    _replace_input_link(
-        links,
-        _socket_input_by_name_or_index(elevation_falloff.inputs, "Value", 1),
-        _socket_output_by_name_or_index(falloff_power.outputs, "Result", 0),
-    )
-    _replace_input_link(
-        links,
-        _socket_input_by_name_or_index(elev_distance_mul.inputs, "Value", 0),
-        _socket_output_by_name_or_index(distance_horizon.outputs, "Value", 0),
-    )
-    _replace_input_link(
-        links,
-        _socket_input_by_name_or_index(elev_distance_mul.inputs, "Value", 1),
-        _socket_output_by_name_or_index(elevation_falloff.outputs, "Value", 0),
-    )
-    _replace_input_link(
-        links,
-        _socket_input_by_name_or_index(haze_density.inputs, "Value", 0),
-        _socket_output_by_name_or_index(elev_distance_mul.outputs, "Value", 0),
-    )
-    _replace_input_link(
-        links,
-        _socket_input_by_name_or_index(haze_density.inputs, "Value", 1),
-        _socket_output_by_name_or_index(group_input.outputs, _FAKE_ATMOSPHERE_DENSITY_SOCKET),
-    )
-    _replace_input_link(links, mix_factor_in, _socket_output_by_name_or_index(haze_density.outputs, "Value", 0))
-    _replace_input_link(links, mix_color_a, _socket_output_by_name_or_index(group_input.outputs, "Base Color"))
-    _replace_input_link(links, mix_color_b, _socket_output_by_name_or_index(group_input.outputs, _FAKE_ATMOSPHERE_COLOR_SOCKET))
-    _replace_input_link(links, _socket_input_by_name_or_index(group_output.inputs, "Color"), mix_result)
-
-    _safe_set_node_location(group_input, -1200.0, 0.0)
-    _safe_set_node_location(camera_data, -930.0, 120.0)
-    _safe_set_node_location(distance_range, -700.0, 120.0)
-    _safe_set_node_location(layer_weight, -930.0, -40.0)
-    _safe_set_node_location(horizon_invert, -700.0, -40.0)
-    _safe_set_node_location(height_range, -930.0, -240.0)
-    _safe_set_node_location(horizon_height, -470.0, -20.0)
-    _safe_set_node_location(distance_horizon, -230.0, 70.0)
-    _safe_set_node_location(el_separate, -700.0, -380.0)
-    _safe_set_node_location(elevation_mask, -470.0, -380.0)
-    _safe_set_node_location(falloff_power, -470.0, -540.0)
-    _safe_set_node_location(elevation_falloff, -230.0, -380.0)
-    _safe_set_node_location(elev_distance_mul, -10.0, -40.0)
-    _safe_set_node_location(haze_density, 200.0, -40.0)
-    _safe_set_node_location(haze_mix, 420.0, 20.0)
-    _safe_set_node_location(group_output, 650.0, 0.0)
-    return group
-
-
-def _ensure_surface_fake_atmosphere_nodes():
-    node_group = bpy.data.node_groups.get(SURFACE_GRADING_GROUP_NAME)
-    if not node_group or not getattr(node_group, "nodes", None) or not getattr(node_group, "links", None):
-        return
-
-    atmosphere_group = _ensure_planetka_atmosphere_grading_group()
-    if atmosphere_group is None:
-        return
-
-    nodes = node_group.nodes
-    links = node_group.links
-    _remove_interface_input_socket(node_group, _FAKE_ATMOSPHERE_DENSITY_SOCKET_LEGACY)
-    _ensure_interface_float_socket(
-        node_group,
-        _FAKE_ATMOSPHERE_DENSITY_SOCKET,
-        default=0.0,
-        min_value=0.0,
-        max_value=2.0,
-        description=_SHADER_INPUT_DESCRIPTIONS.get(_FAKE_ATMOSPHERE_DENSITY_SOCKET, ""),
-    )
-    _ensure_interface_float_socket(
-        node_group,
-        _FAKE_ATMOSPHERE_HEIGHT_SOCKET,
-        default=50.0,
-        min_value=0.0,
-        max_value=400.0,
-        description=_SHADER_INPUT_DESCRIPTIONS.get(_FAKE_ATMOSPHERE_HEIGHT_SOCKET, ""),
-    )
-    _ensure_interface_float_socket(
-        node_group,
-        _FAKE_ATMOSPHERE_FALLOFF_SOCKET,
-        default=0.05,
-        min_value=0.0,
-        max_value=1.0,
-        description=_SHADER_INPUT_DESCRIPTIONS.get(_FAKE_ATMOSPHERE_FALLOFF_SOCKET, ""),
-    )
-    color_item = _ensure_interface_socket(
-        node_group,
-        _FAKE_ATMOSPHERE_COLOR_SOCKET,
-        in_out="INPUT",
-        socket_type="NodeSocketColor",
-        description=_SHADER_INPUT_DESCRIPTIONS.get(_FAKE_ATMOSPHERE_COLOR_SOCKET, ""),
-    )
-    if color_item and hasattr(color_item, "default_value"):
-        try:
-            color_item.default_value = _FAKE_ATMOSPHERE_DEFAULT_COLOR
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-
-    legacy_haze_nodes = (
-        "PKA Haze Color Mix",
-        "PKA Haze Camera Data",
-        "PKA Haze Distance",
-        "PKA Haze Layer Weight",
-        "PKA Haze Horizon Invert",
-        "PKA Haze Horizon Strength",
-        "PKA Haze Distance Horizon",
-        "PKA Haze Elevation Separate",
-        "PKA Haze Elevation Mask",
-        "PKA Haze Elevation Distance",
-        "PKA Haze Density",
-    )
-    for node_name in legacy_haze_nodes:
-        node = nodes.get(node_name)
-        if node is None:
-            continue
-        try:
-            nodes.remove(node)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-
-    group_input = nodes.get("Group Input.001") or nodes.get("Group Input")
-    principled = nodes.get("Principled BSDF")
-    if group_input is None or principled is None:
-        return
-
-    base_color_in = _socket_input_by_name_or_index(principled.inputs, "Base Color")
-    if base_color_in is None:
-        return
-
-    atmo_node = _ensure_node(nodes, ATMOSPHERE_GRADING_GROUP_NAME, "ShaderNodeGroup")
-    if atmo_node is None:
-        return
-    try:
-        atmo_node.node_tree = atmosphere_group
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        return
-    except (AttributeError, RuntimeError, TypeError, ValueError):
-        return
-
-    atmo_color_out = _socket_output_by_name_or_index(atmo_node.outputs, "Color", 0)
-    atmo_color_in = _socket_input_by_name_or_index(atmo_node.inputs, "Base Color", 0)
-    atmo_el_in = _socket_input_by_name_or_index(atmo_node.inputs, "EL")
-    atmo_density_in = _socket_input_by_name_or_index(atmo_node.inputs, _FAKE_ATMOSPHERE_DENSITY_SOCKET)
-    atmo_height_in = _socket_input_by_name_or_index(atmo_node.inputs, _FAKE_ATMOSPHERE_HEIGHT_SOCKET)
-    atmo_falloff_in = _socket_input_by_name_or_index(atmo_node.inputs, _FAKE_ATMOSPHERE_FALLOFF_SOCKET)
-    atmo_haze_color_in = _socket_input_by_name_or_index(atmo_node.inputs, _FAKE_ATMOSPHERE_COLOR_SOCKET)
-
-    base_source = None
-    if getattr(base_color_in, "is_linked", False):
-        try:
-            current_from = base_color_in.links[0].from_socket
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, IndexError, TypeError, ValueError):
-            current_from = None
-
-        if (
-            current_from is not None
-            and atmo_color_out is not None
-            and current_from == atmo_color_out
-            and atmo_color_in is not None
-            and getattr(atmo_color_in, "is_linked", False)
-        ):
-            try:
-                base_source = atmo_color_in.links[0].from_socket
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, IndexError, TypeError, ValueError):
-                base_source = None
-        else:
-            base_source = current_from
-
-    if base_source is not None and atmo_color_in is not None:
-        _replace_input_link(links, atmo_color_in, base_source)
-    elif atmo_color_in is not None:
-        try:
-            atmo_color_in.default_value = tuple(base_color_in.default_value)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-
-    _replace_input_link(
-        links,
-        atmo_el_in,
-        _socket_output_by_name_or_index(group_input.outputs, "EL"),
-    )
-    _replace_input_link(
-        links,
-        atmo_density_in,
-        _socket_output_by_name_or_index(group_input.outputs, _FAKE_ATMOSPHERE_DENSITY_SOCKET),
-    )
-    _replace_input_link(
-        links,
-        atmo_height_in,
-        _socket_output_by_name_or_index(group_input.outputs, _FAKE_ATMOSPHERE_HEIGHT_SOCKET),
-    )
-    _replace_input_link(
-        links,
-        atmo_falloff_in,
-        _socket_output_by_name_or_index(group_input.outputs, _FAKE_ATMOSPHERE_FALLOFF_SOCKET),
-    )
-    _replace_input_link(
-        links,
-        atmo_haze_color_in,
-        _socket_output_by_name_or_index(group_input.outputs, _FAKE_ATMOSPHERE_COLOR_SOCKET),
-    )
-    _replace_input_link(links, base_color_in, atmo_color_out)
-
-    try:
-        node_group[_SURFACE_FAKE_ATMOSPHERE_VERSION_KEY] = int(_SURFACE_FAKE_ATMOSPHERE_VERSION)
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-
-    try:
-        x0, y0 = principled.location
-    except Exception:
-        x0, y0 = 0.0, 0.0
-    _safe_set_node_location(atmo_node, x0 - 270.0, y0 + 40.0)
-    _organize_surface_group_interface(node_group)
-
-
-def ensure_surface_fake_atmosphere_nodes():
-    _apply_surface_shader_updates()
-    _ensure_surface_fake_atmosphere_nodes()
 
 
 def _ensure_surface_detail_nodes():
@@ -1374,13 +1051,6 @@ def _organize_surface_group_interface(node_group):
         parent=extra_panel,
         default_closed=True,
     )
-    atmosphere_panel = _ensure_interface_panel(
-        interface,
-        _SURFACE_PANEL_ATMOSPHERE,
-        parent=None,
-        default_closed=True,
-    )
-
     for socket_name in ("Snow On/Off", "Snow Line (m)"):
         _move_interface_item_to_panel(
             interface,
@@ -1393,19 +1063,6 @@ def _organize_surface_group_interface(node_group):
             _find_interface_input_socket_item(interface, socket_name),
             waves_panel,
         )
-    for socket_name in (
-        _FAKE_ATMOSPHERE_DENSITY_SOCKET,
-        _FAKE_ATMOSPHERE_HEIGHT_SOCKET,
-        _FAKE_ATMOSPHERE_FALLOFF_SOCKET,
-        _FAKE_ATMOSPHERE_COLOR_SOCKET,
-    ):
-        _move_interface_item_to_panel(
-            interface,
-            _find_interface_input_socket_item(interface, socket_name),
-            atmosphere_panel,
-        )
-
-
 def _find_group_input_output_socket(node_group, socket_name):
     nodes = getattr(node_group, "nodes", None) if node_group else None
     if nodes is None:
@@ -1526,7 +1183,6 @@ def _remove_surface_detail_nodes(node_group):
 def _apply_surface_group_input_defaults(surface_group):
     if surface_group is None:
         return
-    _remove_interface_input_socket(surface_group, _FAKE_ATMOSPHERE_DENSITY_SOCKET_LEGACY)
     for socket_name, default, min_value, max_value in _SURFACE_DEFAULT_INPUT_SPECS:
         _ensure_interface_float_socket(
             surface_group,
@@ -1704,12 +1360,84 @@ def _legacy_material_library_path():
     return os.path.join(os.path.dirname(__file__), *_LEGACY_LIBRARY_RELATIVE_PATH)
 
 
+def _fake_atmosphere_library_path():
+    return os.path.join(os.path.dirname(__file__), *_FAKE_ATMOSPHERE_LIBRARY_RELATIVE_PATH)
+
+
+def _volumetric_atmosphere_library_path():
+    return os.path.join(os.path.dirname(__file__), *_VOLUMETRIC_ATMOSPHERE_LIBRARY_RELATIVE_PATH)
+
+
+def _volumetric_atmosphere_library_candidates():
+    candidates = [_volumetric_atmosphere_library_path(), _LEGACY_VOLUMETRIC_ATMOSPHERE_SOURCE_BLEND_PATH]
+    ordered = []
+    seen = set()
+    for path in candidates:
+        normalized = os.path.abspath(str(path))
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        if os.path.isfile(normalized):
+            ordered.append(normalized)
+    return ordered
+
+
 def _append_material_library_from_blend(blend_path):
     with bpy.data.libraries.load(blend_path, link=False) as (data_from, data_to):
         available_materials = set(data_from.materials)
         available_groups = set(data_from.node_groups)
         data_to.materials = [name for name in MATERIAL_LIBRARY_MATERIALS if name in available_materials]
         data_to.node_groups = [name for name in MATERIAL_LIBRARY_NODE_GROUPS if name in available_groups]
+
+
+def _append_fake_atmosphere_assets_from_blend(blend_path):
+    with bpy.data.libraries.load(blend_path, link=False) as (data_from, data_to):
+        available_objects = set(data_from.objects)
+        available_materials = set(data_from.materials)
+        available_groups = set(data_from.node_groups)
+
+        object_names = []
+        if FAKE_ATMOSPHERE_SOURCE_OBJECT_NAME in available_objects:
+            object_names.append(FAKE_ATMOSPHERE_SOURCE_OBJECT_NAME)
+        else:
+            object_names.extend(
+                name
+                for name in data_from.objects
+                if "atmosphere" in str(name).lower() and "fake" in str(name).lower()
+            )
+        if not object_names:
+            raise RuntimeError(
+                f"Planetka: fake atmosphere object is missing in reference blend '{blend_path}'."
+            )
+        data_to.objects = [object_names[0]]
+
+        data_to.materials = [FAKE_ATMOSPHERE_MATERIAL_NAME] if FAKE_ATMOSPHERE_MATERIAL_NAME in available_materials else []
+        data_to.node_groups = [
+            name
+            for name in (FAKE_ATMOSPHERE_GROUP_NAME, FAKE_ATMOSPHERE_TEXTURE_GROUP_NAME)
+            if name in available_groups
+        ]
+
+
+def _append_volumetric_atmosphere_assets_from_blend(blend_path):
+    with bpy.data.libraries.load(blend_path, link=False) as (data_from, data_to):
+        available_objects = set(data_from.objects)
+        object_names = []
+        if VOLUMETRIC_ATMOSPHERE_SOURCE_OBJECT_NAME in available_objects:
+            object_names.append(VOLUMETRIC_ATMOSPHERE_SOURCE_OBJECT_NAME)
+        else:
+            for name in data_from.objects:
+                lowered = str(name).lower()
+                if "atmosphere" not in lowered:
+                    continue
+                if any(token in lowered for token in ("fake", "suplement", "supplement", "eevee")):
+                    continue
+                object_names.append(name)
+        if not object_names:
+            raise RuntimeError(
+                f"Planetka: volumetric atmosphere object is missing in reference blend '{blend_path}'."
+            )
+        data_to.objects = [object_names[0]]
 
 
 def _ensure_collection(parent_collection, name):
@@ -1723,6 +1451,572 @@ def _ensure_collection(parent_collection, name):
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
     return collection
+
+
+def ensure_planetka_root(scene=None):
+    scene = scene or getattr(bpy.context, "scene", None)
+    if scene is None:
+        return None
+    root_collection = getattr(scene, "collection", None)
+    if root_collection is None:
+        return None
+
+    root = bpy.data.objects.get(PLANETKA_ROOT_OBJECT_NAME)
+    if root is None or str(getattr(root, "type", "")) != "EMPTY":
+        if root is not None:
+            try:
+                bpy.data.objects.remove(root, do_unlink=True)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        root = bpy.data.objects.new(PLANETKA_ROOT_OBJECT_NAME, None)
+
+    try:
+        if root.name not in root_collection.objects:
+            root_collection.objects.link(root)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+    try:
+        root.empty_display_type = 'PLAIN_AXES'
+        root.empty_display_size = 0.25
+        root.location = (0.0, 0.0, 0.0)
+        root.rotation_euler = (0.0, 0.0, 0.0)
+        root.scale = (1.0, 1.0, 1.0)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+    return root
+
+
+def ensure_earth_surface_parent(scene=None, earth_surface=None):
+    scene = scene or getattr(bpy.context, "scene", None)
+    earth_surface = _resolve_surface_object_for_fake_atmosphere(earth_surface)
+    if scene is None or earth_surface is None:
+        return earth_surface
+    root = ensure_planetka_root(scene)
+    if root is None:
+        return earth_surface
+
+    try:
+        if getattr(earth_surface, "parent", None) is not root:
+            earth_surface.parent = root
+            earth_surface.matrix_parent_inverse = root.matrix_world.inverted()
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+    return earth_surface
+
+
+def _set_object_collections(obj, collections):
+    if obj is None:
+        return
+
+    desired = [col for col in collections if col]
+    desired_ids = {id(col) for col in desired}
+
+    for col in list(getattr(obj, "users_collection", ())):
+        if id(col) in desired_ids:
+            continue
+        try:
+            col.objects.unlink(obj)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+    for col in desired:
+        try:
+            if obj.name not in col.objects:
+                col.objects.link(obj)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+
+def _find_fake_atmosphere_object():
+    candidates = _iter_fake_atmosphere_objects()
+    if not candidates:
+        return None
+
+    for obj in candidates:
+        if str(getattr(obj, "name", "")) == FAKE_ATMOSPHERE_OBJECT_NAME:
+            return obj
+
+    for obj in candidates:
+        try:
+            if obj.get(FAKE_ATMOSPHERE_ROLE_KEY) == FAKE_ATMOSPHERE_ROLE_VALUE:
+                return obj
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            continue
+
+    for obj in candidates:
+        if _object_uses_fake_atmosphere_material(obj):
+            return obj
+
+    return candidates[0]
+
+
+def _find_volumetric_atmosphere_object():
+    by_name = bpy.data.objects.get(VOLUMETRIC_ATMOSPHERE_OBJECT_NAME)
+    if by_name and str(getattr(by_name, "type", "")) == "MESH":
+        return by_name
+
+    for obj in getattr(bpy.data, "objects", ()):
+        if str(getattr(obj, "type", "")) != "MESH":
+            continue
+        try:
+            if obj.get(FAKE_ATMOSPHERE_ROLE_KEY) == VOLUMETRIC_ATMOSPHERE_ROLE_VALUE:
+                return obj
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            continue
+
+    for obj in getattr(bpy.data, "objects", ()):
+        if str(getattr(obj, "type", "")) != "MESH":
+            continue
+        name = str(getattr(obj, "name", ""))
+        lowered = name.lower()
+        if name == FAKE_ATMOSPHERE_OBJECT_NAME or name.startswith(f"{FAKE_ATMOSPHERE_OBJECT_NAME}."):
+            continue
+        if "atmosphere" not in lowered:
+            continue
+        if any(token in lowered for token in ("fake", "suplement", "supplement", "eevee")):
+            continue
+        return obj
+    return None
+
+
+def _object_uses_fake_atmosphere_material(obj):
+    materials = getattr(getattr(obj, "data", None), "materials", None)
+    if not materials:
+        return False
+    for mat in materials:
+        if mat and str(getattr(mat, "name", "")) == FAKE_ATMOSPHERE_MATERIAL_NAME:
+            return True
+    return False
+
+
+def _is_fake_atmosphere_candidate(obj):
+    if obj is None or str(getattr(obj, "type", "")) != "MESH":
+        return False
+
+    name = str(getattr(obj, "name", ""))
+    lowered = name.lower()
+    legacy_names = {item.lower() for item in _LEGACY_FAKE_ATMOSPHERE_OBJECT_NAMES}
+    if (
+        name == FAKE_ATMOSPHERE_OBJECT_NAME
+        or name.startswith(f"{FAKE_ATMOSPHERE_OBJECT_NAME}.")
+        or lowered in legacy_names
+        or ("atmosphere" in lowered and "fake" in lowered)
+    ):
+        return True
+
+    try:
+        if obj.get(FAKE_ATMOSPHERE_ROLE_KEY) == FAKE_ATMOSPHERE_ROLE_VALUE:
+            return True
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        pass
+
+    return _object_uses_fake_atmosphere_material(obj)
+
+
+def _iter_fake_atmosphere_objects():
+    results = []
+    seen = set()
+    for obj in getattr(bpy.data, "objects", ()):
+        if not _is_fake_atmosphere_candidate(obj):
+            continue
+        try:
+            key = int(obj.as_pointer())
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            key = id(obj)
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append(obj)
+    return results
+
+
+def _resolve_fake_atmosphere_object(ensure_exists=False):
+    fake_obj = _find_fake_atmosphere_object()
+    if fake_obj is not None:
+        return fake_obj
+    if not ensure_exists:
+        return None
+
+    blend_path = _fake_atmosphere_library_path()
+    if not os.path.isfile(blend_path):
+        raise RuntimeError(f"Planetka: fake atmosphere reference blend is missing: {blend_path}")
+
+    _append_fake_atmosphere_assets_from_blend(blend_path)
+    fake_obj = _find_fake_atmosphere_object()
+    if fake_obj is None:
+        for obj in getattr(bpy.data, "objects", ()):
+            if str(getattr(obj, "type", "")) != "MESH":
+                continue
+            materials = getattr(getattr(obj, "data", None), "materials", None)
+            if any(mat and mat.name == FAKE_ATMOSPHERE_MATERIAL_NAME for mat in (materials or ())):
+                fake_obj = obj
+                break
+    if fake_obj is None:
+        raise RuntimeError("Planetka: failed importing fake atmosphere object from reference blend.")
+
+    try:
+        fake_obj.name = FAKE_ATMOSPHERE_OBJECT_NAME
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+    try:
+        fake_obj[FAKE_ATMOSPHERE_ROLE_KEY] = FAKE_ATMOSPHERE_ROLE_VALUE
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+    return fake_obj
+
+
+def _resolve_volumetric_atmosphere_object(ensure_exists=False):
+    obj = _find_volumetric_atmosphere_object()
+    if obj is not None:
+        return obj
+    if not ensure_exists:
+        return None
+
+    candidates = _volumetric_atmosphere_library_candidates()
+    if not candidates:
+        raise RuntimeError(
+            "Planetka: volumetric atmosphere reference blend is missing. Expected either "
+            "'Resources/planetka_volumetric_atmosphere.blend' or the Planetka Mini source blend."
+        )
+
+    errors = []
+    for blend_path in candidates:
+        try:
+            _append_volumetric_atmosphere_assets_from_blend(blend_path)
+            obj = _find_volumetric_atmosphere_object()
+            if obj is not None:
+                break
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError) as exc:
+            errors.append(f"{blend_path}: {exc}")
+            continue
+
+    if obj is None:
+        error_text = "; ".join(errors) if errors else "unknown append error"
+        raise RuntimeError(f"Planetka: failed importing volumetric atmosphere object ({error_text}).")
+    return obj
+
+
+def _bind_fake_atmosphere_images():
+    texture_group = bpy.data.node_groups.get(FAKE_ATMOSPHERE_TEXTURE_GROUP_NAME)
+    if texture_group is None:
+        return
+
+    for node in texture_group.nodes:
+        if str(getattr(node, "bl_idname", "")) != "ShaderNodeTexImage":
+            continue
+        node_name = str(getattr(node, "name", "")).lower()
+        image_name = None
+        for label, candidate_image in _FAKE_ATMOSPHERE_IMAGE_BINDINGS:
+            if label in node_name:
+                image_name = candidate_image
+                break
+        if image_name is None:
+            continue
+        node.image = _load_static_image(image_name)
+        _set_tex_image_node_interpolation(
+            node,
+            use_fallback=_is_fallback_static_image(image_name),
+        )
+
+
+def _bind_fake_atmosphere_sunlight_object():
+    sunlight_obj = bpy.data.objects.get(SUNLIGHT_OBJECT_NAME)
+    if sunlight_obj is None:
+        return
+
+    target_groups = (
+        bpy.data.node_groups.get(FAKE_ATMOSPHERE_GROUP_NAME),
+        bpy.data.node_groups.get(FAKE_ATMOSPHERE_TEXTURE_GROUP_NAME),
+    )
+    for node_group in target_groups:
+        if node_group is None:
+            continue
+
+        target_nodes = []
+        named_node = node_group.nodes.get("Texture Coordinate")
+        if named_node and getattr(named_node, "bl_idname", "") == "ShaderNodeTexCoord":
+            target_nodes.append(named_node)
+        else:
+            target_nodes.extend(
+                node for node in node_group.nodes
+                if getattr(node, "bl_idname", "") == "ShaderNodeTexCoord"
+            )
+
+        for node in target_nodes:
+            try:
+                node.object = sunlight_obj
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+
+def _resolve_surface_object_for_fake_atmosphere(earth_surface):
+    if (
+        earth_surface
+        and str(getattr(earth_surface, "type", "")) == "MESH"
+        and len(getattr(getattr(earth_surface, "data", None), "vertices", ())) > 0
+    ):
+        return earth_surface
+    by_name = bpy.data.objects.get("Planetka Earth Surface")
+    if (
+        by_name
+        and str(getattr(by_name, "type", "")) == "MESH"
+        and len(getattr(getattr(by_name, "data", None), "vertices", ())) > 0
+    ):
+        return by_name
+    return None
+
+
+def _ensure_fake_atmosphere_collection(scene):
+    scene = scene or getattr(bpy.context, "scene", None)
+    root = getattr(scene, "collection", None) if scene else None
+    if root is None:
+        return None
+
+    target = bpy.data.collections.get(FAKE_ATMOSPHERE_COLLECTION_NAME)
+    if target is None:
+        for legacy_name in _LEGACY_FAKE_ATMOSPHERE_COLLECTION_NAMES:
+            legacy = bpy.data.collections.get(legacy_name)
+            if legacy is None:
+                continue
+            try:
+                legacy.name = FAKE_ATMOSPHERE_COLLECTION_NAME
+                target = legacy
+                break
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+                target = legacy
+                break
+    if target is None:
+        target = _ensure_collection(root, FAKE_ATMOSPHERE_COLLECTION_NAME)
+    else:
+        try:
+            if target.name not in root.children:
+                root.children.link(target)
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+    return target
+
+
+def _configure_fake_atmosphere_object(fake_obj):
+    if fake_obj is None:
+        return
+    try:
+        if str(getattr(fake_obj, "name", "")) != FAKE_ATMOSPHERE_OBJECT_NAME:
+            fake_obj.name = FAKE_ATMOSPHERE_OBJECT_NAME
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+    # Keep supplement shell smooth to avoid faceted artifact bands.
+    try:
+        mesh = getattr(fake_obj, "data", None)
+        if mesh is not None and hasattr(mesh, "polygons"):
+            for poly in mesh.polygons:
+                if not bool(getattr(poly, "use_smooth", False)):
+                    poly.use_smooth = True
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+    # Prevent noisy Eevee shadow artifacts from the transparent shell.
+    try:
+        if hasattr(fake_obj, "visible_shadow") and bool(getattr(fake_obj, "visible_shadow", True)):
+            fake_obj.visible_shadow = False
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+
+def _configure_volumetric_atmosphere_object(obj):
+    if obj is None:
+        return
+    try:
+        if str(getattr(obj, "name", "")) != VOLUMETRIC_ATMOSPHERE_OBJECT_NAME:
+            obj.name = VOLUMETRIC_ATMOSPHERE_OBJECT_NAME
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+    try:
+        obj[FAKE_ATMOSPHERE_ROLE_KEY] = VOLUMETRIC_ATMOSPHERE_ROLE_VALUE
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+
+def ensure_static_fake_atmosphere(scene=None, earth_surface=None):
+    scene = scene or getattr(bpy.context, "scene", None)
+    if scene is None:
+        return None
+
+    earth_surface = ensure_earth_surface_parent(scene=scene, earth_surface=earth_surface)
+    root = ensure_planetka_root(scene)
+
+    fake_obj = _find_fake_atmosphere_object() or _resolve_fake_atmosphere_object(ensure_exists=True)
+    if fake_obj is None:
+        return None
+
+    fake_material = bpy.data.materials.get(FAKE_ATMOSPHERE_MATERIAL_NAME)
+    if (
+        fake_material is not None
+        and str(getattr(fake_obj, "type", "")) == "MESH"
+        and getattr(getattr(fake_obj, "data", None), "materials", None) is not None
+    ):
+        try:
+            fake_obj.data.materials.clear()
+            fake_obj.data.materials.append(fake_material)
+            for poly in fake_obj.data.polygons:
+                poly.material_index = 0
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+    _bind_fake_atmosphere_images()
+    _bind_fake_atmosphere_sunlight_object()
+    _configure_fake_atmosphere_object(fake_obj)
+
+    fake_collection = _ensure_fake_atmosphere_collection(scene)
+    target_collections = [fake_collection] if fake_collection is not None else []
+    _set_object_collections(fake_obj, target_collections)
+
+    try:
+        if root is not None:
+            fake_obj.parent = root
+            fake_obj.matrix_parent_inverse = root.matrix_world.inverted()
+            fake_obj.location = (0.0, 0.0, 0.0)
+            fake_obj.rotation_euler = (0.0, 0.0, 0.0)
+            fake_obj.scale = (
+                float(FAKE_ATMOSPHERE_SCALE_FACTOR),
+                float(FAKE_ATMOSPHERE_SCALE_FACTOR),
+                float(FAKE_ATMOSPHERE_SCALE_FACTOR),
+            )
+        elif earth_surface is not None:
+            fake_obj.parent = earth_surface
+            fake_obj.matrix_parent_inverse = earth_surface.matrix_world.inverted()
+            fake_obj.location = (0.0, 0.0, 0.0)
+            fake_obj.rotation_euler = (0.0, 0.0, 0.0)
+            fake_obj.scale = (
+                float(FAKE_ATMOSPHERE_SCALE_FACTOR),
+                float(FAKE_ATMOSPHERE_SCALE_FACTOR),
+                float(FAKE_ATMOSPHERE_SCALE_FACTOR),
+            )
+        else:
+            fake_obj.parent = None
+            fake_obj.scale = (
+                float(FAKE_ATMOSPHERE_SCALE_FACTOR),
+                float(FAKE_ATMOSPHERE_SCALE_FACTOR),
+                float(FAKE_ATMOSPHERE_SCALE_FACTOR),
+            )
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+    try:
+        fake_obj[FAKE_ATMOSPHERE_ROLE_KEY] = FAKE_ATMOSPHERE_ROLE_VALUE
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+    return fake_obj
+
+
+def ensure_volumetric_atmosphere(scene=None, earth_surface=None):
+    scene = scene or getattr(bpy.context, "scene", None)
+    if scene is None:
+        return None
+
+    earth_surface = ensure_earth_surface_parent(scene=scene, earth_surface=earth_surface)
+    root = ensure_planetka_root(scene)
+    atmosphere_obj = _find_volumetric_atmosphere_object() or _resolve_volumetric_atmosphere_object(ensure_exists=True)
+    if atmosphere_obj is None:
+        return None
+
+    _configure_volumetric_atmosphere_object(atmosphere_obj)
+
+    atmosphere_collection = _ensure_fake_atmosphere_collection(scene)
+    target_collections = [atmosphere_collection] if atmosphere_collection is not None else []
+    _set_object_collections(atmosphere_obj, target_collections)
+
+    try:
+        if root is not None:
+            atmosphere_obj.parent = root
+            atmosphere_obj.matrix_parent_inverse = root.matrix_world.inverted()
+            atmosphere_obj.location = (0.0, 0.0, 0.0)
+            atmosphere_obj.rotation_euler = (0.0, 0.0, 0.0)
+            atmosphere_obj.scale = (
+                float(VOLUMETRIC_ATMOSPHERE_SCALE_FACTOR),
+                float(VOLUMETRIC_ATMOSPHERE_SCALE_FACTOR),
+                float(VOLUMETRIC_ATMOSPHERE_SCALE_FACTOR),
+            )
+        elif earth_surface is not None:
+            atmosphere_obj.parent = earth_surface
+            atmosphere_obj.matrix_parent_inverse = earth_surface.matrix_world.inverted()
+            atmosphere_obj.location = (0.0, 0.0, 0.0)
+            atmosphere_obj.rotation_euler = (0.0, 0.0, 0.0)
+            atmosphere_obj.scale = (
+                float(VOLUMETRIC_ATMOSPHERE_SCALE_FACTOR),
+                float(VOLUMETRIC_ATMOSPHERE_SCALE_FACTOR),
+                float(VOLUMETRIC_ATMOSPHERE_SCALE_FACTOR),
+            )
+        else:
+            atmosphere_obj.scale = (
+                float(VOLUMETRIC_ATMOSPHERE_SCALE_FACTOR),
+                float(VOLUMETRIC_ATMOSPHERE_SCALE_FACTOR),
+                float(VOLUMETRIC_ATMOSPHERE_SCALE_FACTOR),
+            )
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+    return atmosphere_obj
+
+
+def set_atmosphere_collection_enabled(scene=None, enabled=True):
+    scene = scene or getattr(bpy.context, "scene", None)
+    collection = _ensure_fake_atmosphere_collection(scene) if scene is not None else bpy.data.collections.get(
+        FAKE_ATMOSPHERE_COLLECTION_NAME
+    )
+    if collection is None:
+        return False
+    hidden = not bool(enabled)
+    try:
+        if bool(getattr(collection, "hide_viewport", False)) != hidden:
+            collection.hide_viewport = hidden
+        if bool(getattr(collection, "hide_render", False)) != hidden:
+            collection.hide_render = hidden
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+    return True
 
 
 def _ensure_planetka_sunlight(surface_collection):
@@ -1780,1040 +2074,6 @@ def _ensure_planetka_sunlight(surface_collection):
     return sunlight_obj
 
 
-def _ensure_atmosphere_shell_mesh():
-    mesh = bpy.data.meshes.get(ATMOSPHERE_SHELL_MESH_NAME)
-    if mesh is not None and len(getattr(mesh, "vertices", ())) > 0:
-        try:
-            if int(mesh.get(ATMOSPHERE_SHELL_MESH_VERSION_KEY, 0)) == int(ATMOSPHERE_SHELL_MESH_VERSION):
-                return mesh
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-    if mesh is not None:
-        try:
-            bpy.data.meshes.remove(mesh)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-
-    try:
-        mesh = bpy.data.meshes.new(ATMOSPHERE_SHELL_MESH_NAME)
-        bm = bmesh.new()
-        bmesh.ops.create_uvsphere(bm, u_segments=64, v_segments=32, radius=1.0)
-        try:
-            bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError):
-            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-        bm.normal_update()
-        orientation_sum = 0.0
-        for face in bm.faces:
-            orientation_sum += float(face.normal.dot(face.calc_center_median()))
-        if orientation_sum < 0.0:
-            try:
-                bmesh.ops.reverse_faces(bm, faces=bm.faces)
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError):
-                logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-            bm.normal_update()
-        bm.to_mesh(mesh)
-        bm.free()
-        for poly in mesh.polygons:
-            poly.use_smooth = True
-        try:
-            mesh[ATMOSPHERE_SHELL_MESH_VERSION_KEY] = int(ATMOSPHERE_SHELL_MESH_VERSION)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError):
-            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-        mesh.update()
-        return mesh
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        return None
-    except (RuntimeError, TypeError, ValueError):
-        return None
-
-
-def _ensure_atmosphere_shell_shading_group():
-    group = bpy.data.node_groups.get(ATMOSPHERE_SHELL_SHADING_GROUP_NAME)
-    if group is None:
-        try:
-            group = bpy.data.node_groups.new(ATMOSPHERE_SHELL_SHADING_GROUP_NAME, "ShaderNodeTree")
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            return None
-        except (RuntimeError, TypeError, ValueError):
-            return None
-
-    density_item = _ensure_interface_socket(
-        group,
-        _FAKE_ATMOSPHERE_DENSITY_SOCKET,
-        in_out="INPUT",
-        socket_type="NodeSocketFloat",
-        description=_SHADER_INPUT_DESCRIPTIONS.get(_FAKE_ATMOSPHERE_DENSITY_SOCKET, ""),
-    )
-    height_item = _ensure_interface_socket(
-        group,
-        _FAKE_ATMOSPHERE_HEIGHT_SOCKET,
-        in_out="INPUT",
-        socket_type="NodeSocketFloat",
-        description=_SHADER_INPUT_DESCRIPTIONS.get(_FAKE_ATMOSPHERE_HEIGHT_SOCKET, ""),
-    )
-    falloff_item = _ensure_interface_socket(
-        group,
-        _FAKE_ATMOSPHERE_FALLOFF_SOCKET,
-        in_out="INPUT",
-        socket_type="NodeSocketFloat",
-        description=_SHADER_INPUT_DESCRIPTIONS.get(_FAKE_ATMOSPHERE_FALLOFF_SOCKET, ""),
-    )
-    color_item = _ensure_interface_socket(
-        group,
-        _FAKE_ATMOSPHERE_COLOR_SOCKET,
-        in_out="INPUT",
-        socket_type="NodeSocketColor",
-        description=_SHADER_INPUT_DESCRIPTIONS.get(_FAKE_ATMOSPHERE_COLOR_SOCKET, ""),
-    )
-
-    _ensure_interface_socket(group, "Shader", in_out="OUTPUT", socket_type="NodeSocketShader")
-    _ensure_interface_socket(group, _FAKE_ATMOSPHERE_DENSITY_SOCKET, in_out="OUTPUT", socket_type="NodeSocketFloat")
-    _ensure_interface_socket(group, _FAKE_ATMOSPHERE_HEIGHT_SOCKET, in_out="OUTPUT", socket_type="NodeSocketFloat")
-    _ensure_interface_socket(group, _FAKE_ATMOSPHERE_FALLOFF_SOCKET, in_out="OUTPUT", socket_type="NodeSocketFloat")
-    _ensure_interface_socket(group, _FAKE_ATMOSPHERE_COLOR_SOCKET, in_out="OUTPUT", socket_type="NodeSocketColor")
-
-    if density_item and hasattr(density_item, "default_value"):
-        try:
-            density_item.default_value = (1.0 / 3.0)
-            density_item.min_value = 0.0
-            density_item.max_value = 2.0
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-    if height_item and hasattr(height_item, "default_value"):
-        try:
-            height_item.default_value = 50.0
-            height_item.min_value = 0.0
-            height_item.max_value = 400.0
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-    if falloff_item and hasattr(falloff_item, "default_value"):
-        try:
-            falloff_item.default_value = 0.05
-            falloff_item.min_value = 0.0
-            falloff_item.max_value = 1.0
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-    if color_item and hasattr(color_item, "default_value"):
-        try:
-            color_item.default_value = _FAKE_ATMOSPHERE_DEFAULT_COLOR
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-
-    nodes = group.nodes
-    links = group.links
-    for node in list(nodes):
-        try:
-            nodes.remove(node)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            continue
-        except (RuntimeError, TypeError, ValueError):
-            continue
-    group_input = nodes.new("NodeGroupInput")
-    group_output = nodes.new("NodeGroupOutput")
-    transparent = nodes.new("ShaderNodeBsdfTransparent")
-    transparent.name = "PKA Atmosphere Transparent"
-    emission = nodes.new("ShaderNodeEmission")
-    emission.name = "PKA Atmosphere Emission"
-    day_mask_fallback = nodes.new("ShaderNodeValue")
-    day_mask_fallback.name = "PKA Atmosphere Day Mask Fallback"
-    space_color_mix = nodes.new("ShaderNodeMix")
-    space_color_mix.name = "PKA Atmosphere Space Color"
-    horizon_color_mix = nodes.new("ShaderNodeMix")
-    horizon_color_mix.name = "PKA Atmosphere Horizon Color"
-    color_gradient_mix = nodes.new("ShaderNodeMix")
-    color_gradient_mix.name = "PKA Atmosphere Color Gradient"
-    layer_weight = nodes.new("ShaderNodeLayerWeight")
-    layer_weight.name = "PKA Atmosphere Layer Weight"
-    rim = nodes.new("ShaderNodeMapRange")
-    rim.name = "PKA Atmosphere Rim"
-    rim_power = nodes.new("ShaderNodeMath")
-    rim_power.name = "PKA Atmosphere Rim Power"
-    density_ui_scale = nodes.new("ShaderNodeMath")
-    density_ui_scale.name = "PKA Atmosphere Density UiScale"
-    density_scale = nodes.new("ShaderNodeMath")
-    density_scale.name = "PKA Atmosphere Density Scale"
-    height_scale = nodes.new("ShaderNodeMapRange")
-    height_scale.name = "PKA Atmosphere Height Scale"
-    falloff_power = nodes.new("ShaderNodeMapRange")
-    falloff_power.name = "PKA Atmosphere Falloff Power"
-    legacy_exp_scale = nodes.new("ShaderNodeMapRange")
-    legacy_exp_scale.name = "PKA Atmosphere Legacy Exp Scale"
-    geometry = nodes.new("ShaderNodeNewGeometry")
-    geometry.name = "PKA Atmosphere Geometry"
-    view_dot = nodes.new("ShaderNodeVectorMath")
-    view_dot.name = "PKA Atmosphere View Dot"
-    dot_abs = nodes.new("ShaderNodeMath")
-    dot_abs.name = "PKA Atmosphere Dot Abs"
-    cos_sq = nodes.new("ShaderNodeMath")
-    cos_sq.name = "PKA Atmosphere Cos Squared"
-    sin_sq = nodes.new("ShaderNodeMath")
-    sin_sq.name = "PKA Atmosphere Sin Squared"
-    height_norm = nodes.new("ShaderNodeMath")
-    height_norm.name = "PKA Atmosphere Height Norm"
-    outer_ratio = nodes.new("ShaderNodeMath")
-    outer_ratio.name = "PKA Atmosphere Outer Ratio"
-    inner_ratio = nodes.new("ShaderNodeMath")
-    inner_ratio.name = "PKA Atmosphere Inner Ratio"
-    inner_ratio_sq = nodes.new("ShaderNodeMath")
-    inner_ratio_sq.name = "PKA Atmosphere Inner Ratio Sq"
-    inner_disc = nodes.new("ShaderNodeMath")
-    inner_disc.name = "PKA Atmosphere Inner Disc"
-    inner_disc_max = nodes.new("ShaderNodeMath")
-    inner_disc_max.name = "PKA Atmosphere Inner Disc Max"
-    inner_term = nodes.new("ShaderNodeMath")
-    inner_term.name = "PKA Atmosphere Inner Term"
-    optical_depth = nodes.new("ShaderNodeMath")
-    optical_depth.name = "PKA Atmosphere Optical Depth"
-    optical_depth_max = nodes.new("ShaderNodeMath")
-    optical_depth_max.name = "PKA Atmosphere Optical Depth Max"
-    exp_exponent = nodes.new("ShaderNodeMath")
-    exp_exponent.name = "PKA Atmosphere Exp Exponent"
-    exp_decay = nodes.new("ShaderNodeMath")
-    exp_decay.name = "PKA Atmosphere Exp Decay"
-    exp_profile = nodes.new("ShaderNodeMath")
-    exp_profile.name = "PKA Atmosphere Exp Profile"
-    optical_profile = nodes.new("ShaderNodeMath")
-    optical_profile.name = "PKA Atmosphere Optical Profile"
-    opacity_raw_mul = nodes.new("ShaderNodeMath")
-    opacity_raw_mul.name = "PKA Atmosphere Opacity Raw"
-    opacity_mul = nodes.new("ShaderNodeMath")
-    opacity_mul.name = "PKA Atmosphere Opacity"
-    emission_strength_mul = nodes.new("ShaderNodeMath")
-    emission_strength_mul.name = "PKA Atmosphere Emission Strength"
-    emission_strength_add = nodes.new("ShaderNodeMath")
-    emission_strength_add.name = "PKA Atmosphere Emission Offset"
-    emission_rim_scale = nodes.new("ShaderNodeMapRange")
-    emission_rim_scale.name = "PKA Atmosphere Emission Rim Scale"
-    emission_day_mul = nodes.new("ShaderNodeMath")
-    emission_day_mul.name = "PKA Atmosphere Emission Day"
-    emission_total_mul = nodes.new("ShaderNodeMath")
-    emission_total_mul.name = "PKA Atmosphere Emission Total"
-    mix_shader = nodes.new("ShaderNodeMixShader")
-    mix_shader.name = "PKA Atmosphere Mix"
-
-    try:
-        day_mask_fallback.outputs[0].default_value = 1.0
-        emission.inputs["Color"].default_value = _FAKE_ATMOSPHERE_DEFAULT_COLOR
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, KeyError, IndexError, AttributeError):
-        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-
-    _safe_setattr(space_color_mix, "data_type", "RGBA")
-    _safe_setattr(space_color_mix, "blend_type", "MIX")
-    _safe_setattr(horizon_color_mix, "data_type", "RGBA")
-    _safe_setattr(horizon_color_mix, "blend_type", "MIX")
-    _safe_setattr(color_gradient_mix, "data_type", "RGBA")
-    _safe_setattr(color_gradient_mix, "blend_type", "MIX")
-    _safe_setattr(rim, "clamp", True)
-    _safe_setattr(height_scale, "clamp", True)
-    _safe_setattr(falloff_power, "clamp", True)
-    _safe_setattr(legacy_exp_scale, "clamp", True)
-    _safe_setattr(emission_rim_scale, "clamp", True)
-    _safe_setattr(rim_power, "operation", "POWER")
-    _safe_setattr(view_dot, "operation", "DOT_PRODUCT")
-    _safe_setattr(dot_abs, "operation", "ABSOLUTE")
-    _safe_setattr(cos_sq, "operation", "MULTIPLY")
-    _safe_setattr(sin_sq, "operation", "SUBTRACT")
-    _safe_setattr(height_norm, "operation", "DIVIDE")
-    _safe_setattr(outer_ratio, "operation", "ADD")
-    _safe_setattr(inner_ratio, "operation", "DIVIDE")
-    _safe_setattr(inner_ratio_sq, "operation", "MULTIPLY")
-    _safe_setattr(inner_disc, "operation", "SUBTRACT")
-    _safe_setattr(inner_disc_max, "operation", "MAXIMUM")
-    _safe_setattr(inner_term, "operation", "SQRT")
-    _safe_setattr(optical_depth, "operation", "SUBTRACT")
-    _safe_setattr(optical_depth_max, "operation", "MAXIMUM")
-    _safe_setattr(exp_exponent, "operation", "MULTIPLY")
-    _safe_setattr(exp_decay, "operation", "POWER")
-    _safe_setattr(exp_profile, "operation", "SUBTRACT")
-    _safe_setattr(optical_profile, "operation", "MULTIPLY")
-    _safe_setattr(density_ui_scale, "operation", "MULTIPLY")
-    _safe_setattr(density_scale, "operation", "MULTIPLY")
-    _safe_setattr(density_scale, "use_clamp", True)
-    _safe_setattr(opacity_raw_mul, "operation", "MULTIPLY")
-    _safe_setattr(opacity_raw_mul, "use_clamp", True)
-    _safe_setattr(opacity_mul, "operation", "MULTIPLY")
-    _safe_setattr(opacity_mul, "use_clamp", True)
-    _safe_setattr(emission_strength_mul, "operation", "MULTIPLY")
-    _safe_setattr(emission_strength_add, "operation", "ADD")
-    _safe_setattr(emission_day_mul, "operation", "MULTIPLY")
-    _safe_setattr(emission_total_mul, "operation", "MULTIPLY")
-
-    try:
-        rim.inputs[1].default_value = 0.0
-        rim.inputs[2].default_value = 1.0
-        rim.inputs[3].default_value = 0.0
-        rim.inputs[4].default_value = 1.0
-
-        height_scale.inputs[1].default_value = 0.0
-        height_scale.inputs[2].default_value = 400.0
-        height_scale.inputs[3].default_value = 0.65
-        height_scale.inputs[4].default_value = 1.35
-
-        falloff_power.inputs[1].default_value = 0.0
-        falloff_power.inputs[2].default_value = 1.0
-        falloff_power.inputs[3].default_value = 1.0
-        falloff_power.inputs[4].default_value = 8.0
-
-        legacy_exp_scale.inputs[1].default_value = 0.0
-        legacy_exp_scale.inputs[2].default_value = 1.0
-        legacy_exp_scale.inputs[3].default_value = 16.0
-        legacy_exp_scale.inputs[4].default_value = 4.0
-
-        sin_sq.inputs[0].default_value = 1.0
-        height_norm.inputs[1].default_value = 6371.0
-        outer_ratio.inputs[0].default_value = 1.0
-        inner_ratio.inputs[0].default_value = 1.0
-        inner_disc_max.inputs[1].default_value = 0.0
-        optical_depth_max.inputs[1].default_value = 0.0
-        exp_decay.inputs[0].default_value = 0.5
-        exp_profile.inputs[0].default_value = 1.0
-
-        density_ui_scale.inputs[1].default_value = float(_FAKE_ATMOSPHERE_DENSITY_UI_TO_SHADER)
-
-        space_color_mix.inputs[0].default_value = 0.72
-        _socket_input_by_name_or_index(space_color_mix.inputs, "B", 7).default_value = (0.03, 0.05, 0.10, 1.0)
-        horizon_color_mix.inputs[0].default_value = 0.85
-        _socket_input_by_name_or_index(horizon_color_mix.inputs, "B", 7).default_value = (1.0, 1.0, 1.0, 1.0)
-
-        emission_rim_scale.inputs[1].default_value = 0.0
-        emission_rim_scale.inputs[2].default_value = 1.0
-        emission_rim_scale.inputs[3].default_value = 1.0
-        emission_rim_scale.inputs[4].default_value = 3.0
-        density_scale.inputs[1].default_value = 1.0
-        emission_strength_mul.inputs[1].default_value = 10.0
-        emission_strength_add.inputs[0].default_value = 0.35
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, IndexError, AttributeError):
-        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-
-    def _input_idx(node, idx):
-        try:
-            return node.inputs[idx]
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError, IndexError):
-            return None
-
-    links.new(layer_weight.outputs.get("Fresnel"), rim.inputs[0])
-    _replace_input_link(
-        links,
-        _socket_input_by_name_or_index(density_ui_scale.inputs, "Value", 0),
-        _socket_output_by_name_or_index(group_input.outputs, _FAKE_ATMOSPHERE_DENSITY_SOCKET),
-    )
-    links.new(density_ui_scale.outputs[0], density_scale.inputs[0])
-    _replace_input_link(
-        links,
-        _socket_input_by_name_or_index(height_scale.inputs, "Value", 0),
-        _socket_output_by_name_or_index(group_input.outputs, _FAKE_ATMOSPHERE_HEIGHT_SOCKET),
-    )
-    links.new(height_scale.outputs.get("Result"), density_scale.inputs[1])
-    _replace_input_link(
-        links,
-        _socket_input_by_name_or_index(falloff_power.inputs, "Value", 0),
-        _socket_output_by_name_or_index(group_input.outputs, _FAKE_ATMOSPHERE_FALLOFF_SOCKET),
-    )
-    _replace_input_link(
-        links,
-        _socket_input_by_name_or_index(legacy_exp_scale.inputs, "Value", 0),
-        _socket_output_by_name_or_index(group_input.outputs, _FAKE_ATMOSPHERE_FALLOFF_SOCKET),
-    )
-    links.new(falloff_power.outputs.get("Result"), rim_power.inputs[1])
-    links.new(rim.outputs.get("Result"), rim_power.inputs[0])
-
-    _replace_input_link(
-        links,
-        _input_idx(view_dot, 0),
-        _socket_output_by_name_or_index(geometry.outputs, "Normal", 1),
-    )
-    _replace_input_link(
-        links,
-        _input_idx(view_dot, 1),
-        _socket_output_by_name_or_index(geometry.outputs, "Incoming", 4),
-    )
-    _replace_input_link(
-        links,
-        _input_idx(dot_abs, 0),
-        _socket_output_by_name_or_index(view_dot.outputs, "Value", 1),
-    )
-    _replace_input_link(
-        links,
-        _input_idx(cos_sq, 0),
-        _socket_output_by_name_or_index(dot_abs.outputs, "Value", 0),
-    )
-    _replace_input_link(
-        links,
-        _input_idx(cos_sq, 1),
-        _socket_output_by_name_or_index(dot_abs.outputs, "Value", 0),
-    )
-    _replace_input_link(
-        links,
-        _input_idx(sin_sq, 1),
-        _socket_output_by_name_or_index(cos_sq.outputs, "Value", 0),
-    )
-    _replace_input_link(
-        links,
-        _input_idx(height_norm, 0),
-        _socket_output_by_name_or_index(group_input.outputs, _FAKE_ATMOSPHERE_HEIGHT_SOCKET),
-    )
-    _replace_input_link(
-        links,
-        _input_idx(outer_ratio, 1),
-        _socket_output_by_name_or_index(height_norm.outputs, "Value", 0),
-    )
-    _replace_input_link(
-        links,
-        _input_idx(inner_ratio, 1),
-        _socket_output_by_name_or_index(outer_ratio.outputs, "Value", 0),
-    )
-    _replace_input_link(
-        links,
-        _input_idx(inner_ratio_sq, 0),
-        _socket_output_by_name_or_index(inner_ratio.outputs, "Value", 0),
-    )
-    _replace_input_link(
-        links,
-        _input_idx(inner_ratio_sq, 1),
-        _socket_output_by_name_or_index(inner_ratio.outputs, "Value", 0),
-    )
-    _replace_input_link(
-        links,
-        _input_idx(inner_disc, 0),
-        _socket_output_by_name_or_index(inner_ratio_sq.outputs, "Value", 0),
-    )
-    _replace_input_link(
-        links,
-        _input_idx(inner_disc, 1),
-        _socket_output_by_name_or_index(sin_sq.outputs, "Value", 0),
-    )
-    _replace_input_link(
-        links,
-        _input_idx(inner_disc_max, 0),
-        _socket_output_by_name_or_index(inner_disc.outputs, "Value", 0),
-    )
-    _replace_input_link(
-        links,
-        _input_idx(inner_term, 0),
-        _socket_output_by_name_or_index(inner_disc_max.outputs, "Value", 0),
-    )
-    _replace_input_link(
-        links,
-        _input_idx(optical_depth, 0),
-        _socket_output_by_name_or_index(dot_abs.outputs, "Value", 0),
-    )
-    _replace_input_link(
-        links,
-        _input_idx(optical_depth, 1),
-        _socket_output_by_name_or_index(inner_term.outputs, "Value", 0),
-    )
-    _replace_input_link(
-        links,
-        _input_idx(optical_depth_max, 0),
-        _socket_output_by_name_or_index(optical_depth.outputs, "Value", 0),
-    )
-    _replace_input_link(
-        links,
-        _input_idx(exp_exponent, 0),
-        _socket_output_by_name_or_index(optical_depth_max.outputs, "Value", 0),
-    )
-    _replace_input_link(
-        links,
-        _input_idx(exp_exponent, 1),
-        _socket_output_by_name_or_index(legacy_exp_scale.outputs, "Result", 0),
-    )
-    _replace_input_link(
-        links,
-        _input_idx(exp_decay, 1),
-        _socket_output_by_name_or_index(exp_exponent.outputs, "Value", 0),
-    )
-    _replace_input_link(
-        links,
-        _input_idx(exp_profile, 1),
-        _socket_output_by_name_or_index(exp_decay.outputs, "Value", 0),
-    )
-    _replace_input_link(
-        links,
-        _input_idx(optical_profile, 0),
-        _socket_output_by_name_or_index(exp_profile.outputs, "Value", 0),
-    )
-    _replace_input_link(
-        links,
-        _input_idx(optical_profile, 1),
-        _socket_output_by_name_or_index(rim_power.outputs, "Value", 0),
-    )
-    links.new(optical_profile.outputs.get("Value"), opacity_raw_mul.inputs[0])
-    links.new(density_scale.outputs[0], opacity_raw_mul.inputs[1])
-
-    day_mask_output = _socket_output_by_name_or_index(day_mask_fallback.outputs, "Value", 0)
-    _replace_input_link(
-        links,
-        _input_idx(opacity_mul, 0),
-        _socket_output_by_name_or_index(opacity_raw_mul.outputs, "Value", 0),
-    )
-    _replace_input_link(
-        links,
-        _input_idx(opacity_mul, 1),
-        day_mask_output,
-    )
-    _replace_input_link(
-        links,
-        _socket_input_by_name_or_index(space_color_mix.inputs, "A", 6),
-        _socket_output_by_name_or_index(group_input.outputs, _FAKE_ATMOSPHERE_COLOR_SOCKET),
-    )
-    _replace_input_link(
-        links,
-        _socket_input_by_name_or_index(horizon_color_mix.inputs, "A", 6),
-        _socket_output_by_name_or_index(group_input.outputs, _FAKE_ATMOSPHERE_COLOR_SOCKET),
-    )
-    _replace_input_link(
-        links,
-        _socket_input_by_name_or_index(color_gradient_mix.inputs, "Factor", 0),
-        _socket_output_by_name_or_index(rim_power.outputs, "Value", 0),
-    )
-    _replace_input_link(
-        links,
-        _socket_input_by_name_or_index(color_gradient_mix.inputs, "A", 6),
-        _socket_output_by_name_or_index(space_color_mix.outputs, "Result", 2),
-    )
-    _replace_input_link(
-        links,
-        _socket_input_by_name_or_index(color_gradient_mix.inputs, "B", 7),
-        _socket_output_by_name_or_index(horizon_color_mix.outputs, "Result", 2),
-    )
-    _replace_input_link(
-        links,
-        emission.inputs.get("Color"),
-        _socket_output_by_name_or_index(color_gradient_mix.outputs, "Result", 2),
-    )
-    _replace_input_link(
-        links,
-        _input_idx(mix_shader, 0),
-        _socket_output_by_name_or_index(opacity_mul.outputs, "Value", 0),
-    )
-    _replace_input_link(
-        links,
-        _input_idx(mix_shader, 1),
-        _socket_output_by_name_or_index(transparent.outputs, "BSDF", 0),
-    )
-    _replace_input_link(
-        links,
-        _input_idx(mix_shader, 2),
-        _socket_output_by_name_or_index(emission.outputs, "Emission", 0),
-    )
-    _replace_input_link(
-        links,
-        _socket_input_by_name_or_index(group_output.inputs, "Shader"),
-        _socket_output_by_name_or_index(mix_shader.outputs, "Shader", 0),
-    )
-    links.new(density_scale.outputs[0], emission_strength_mul.inputs[0])
-    links.new(emission_strength_mul.outputs[0], emission_strength_add.inputs[1])
-    links.new(optical_profile.outputs.get("Value"), emission_rim_scale.inputs[0])
-    _replace_input_link(
-        links,
-        _input_idx(emission_day_mul, 0),
-        _socket_output_by_name_or_index(emission_strength_add.outputs, "Value", 0),
-    )
-    _replace_input_link(
-        links,
-        _input_idx(emission_day_mul, 1),
-        day_mask_output,
-    )
-    links.new(emission_day_mul.outputs[0], emission_total_mul.inputs[0])
-    links.new(emission_rim_scale.outputs.get("Result"), emission_total_mul.inputs[1])
-    links.new(emission_total_mul.outputs[0], emission.inputs.get("Strength"))
-
-    _replace_input_link(
-        links,
-        _socket_input_by_name_or_index(group_output.inputs, _FAKE_ATMOSPHERE_DENSITY_SOCKET),
-        _socket_output_by_name_or_index(group_input.outputs, _FAKE_ATMOSPHERE_DENSITY_SOCKET),
-    )
-    _replace_input_link(
-        links,
-        _socket_input_by_name_or_index(group_output.inputs, _FAKE_ATMOSPHERE_HEIGHT_SOCKET),
-        _socket_output_by_name_or_index(group_input.outputs, _FAKE_ATMOSPHERE_HEIGHT_SOCKET),
-    )
-    _replace_input_link(
-        links,
-        _socket_input_by_name_or_index(group_output.inputs, _FAKE_ATMOSPHERE_FALLOFF_SOCKET),
-        _socket_output_by_name_or_index(group_input.outputs, _FAKE_ATMOSPHERE_FALLOFF_SOCKET),
-    )
-    _replace_input_link(
-        links,
-        _socket_input_by_name_or_index(group_output.inputs, _FAKE_ATMOSPHERE_COLOR_SOCKET),
-        _socket_output_by_name_or_index(group_input.outputs, _FAKE_ATMOSPHERE_COLOR_SOCKET),
-    )
-
-    _safe_set_node_location(group_input, -1330.0, -40.0)
-    _safe_set_node_location(day_mask_fallback, -1120.0, -640.0)
-    _safe_set_node_location(space_color_mix, -880.0, 470.0)
-    _safe_set_node_location(horizon_color_mix, -880.0, 330.0)
-    _safe_set_node_location(color_gradient_mix, -650.0, 400.0)
-    _safe_set_node_location(layer_weight, -1120.0, 160.0)
-    _safe_set_node_location(rim, -650.0, 160.0)
-    _safe_set_node_location(rim_power, -430.0, 160.0)
-    _safe_set_node_location(geometry, -1120.0, -560.0)
-    _safe_set_node_location(view_dot, -880.0, -560.0)
-    _safe_set_node_location(dot_abs, -650.0, -560.0)
-    _safe_set_node_location(cos_sq, -430.0, -560.0)
-    _safe_set_node_location(sin_sq, -210.0, -560.0)
-    _safe_set_node_location(height_norm, -880.0, -760.0)
-    _safe_set_node_location(outer_ratio, -650.0, -760.0)
-    _safe_set_node_location(inner_ratio, -430.0, -760.0)
-    _safe_set_node_location(inner_ratio_sq, -210.0, -760.0)
-    _safe_set_node_location(inner_disc, 10.0, -760.0)
-    _safe_set_node_location(inner_disc_max, 230.0, -760.0)
-    _safe_set_node_location(inner_term, 450.0, -760.0)
-    _safe_set_node_location(optical_depth, 450.0, -560.0)
-    _safe_set_node_location(optical_depth_max, 670.0, -560.0)
-    _safe_set_node_location(legacy_exp_scale, 670.0, -760.0)
-    _safe_set_node_location(exp_exponent, 900.0, -650.0)
-    _safe_set_node_location(exp_decay, 1120.0, -650.0)
-    _safe_set_node_location(exp_profile, 1340.0, -650.0)
-    _safe_set_node_location(optical_profile, 1560.0, -500.0)
-    _safe_set_node_location(density_ui_scale, -880.0, -40.0)
-    _safe_set_node_location(density_scale, -650.0, -40.0)
-    _safe_set_node_location(height_scale, -410.0, -40.0)
-    _safe_set_node_location(falloff_power, -650.0, -420.0)
-    _safe_set_node_location(opacity_raw_mul, -190.0, -40.0)
-    _safe_set_node_location(opacity_mul, 40.0, -40.0)
-    _safe_set_node_location(transparent, 40.0, 10.0)
-    _safe_set_node_location(emission, 40.0, 230.0)
-    _safe_set_node_location(emission_strength_mul, -410.0, -230.0)
-    _safe_set_node_location(emission_strength_add, -190.0, -230.0)
-    _safe_set_node_location(emission_rim_scale, -430.0, -110.0)
-    _safe_set_node_location(emission_day_mul, 20.0, -230.0)
-    _safe_set_node_location(emission_total_mul, 240.0, -180.0)
-    _safe_set_node_location(mix_shader, 270.0, 90.0)
-    _safe_set_node_location(group_output, 510.0, 90.0)
-
-    group.use_fake_user = True
-    return group
-
-
-def _get_atmosphere_shell_shading_node(node_tree):
-    if node_tree is None or not hasattr(node_tree, "nodes"):
-        return None
-    nodes = node_tree.nodes
-    node = nodes.get("PKA Atmosphere Shell Shading")
-    if (
-        node is not None
-        and str(getattr(node, "bl_idname", "")) == "ShaderNodeGroup"
-        and str(getattr(getattr(node, "node_tree", None), "name", "")) == ATMOSPHERE_SHELL_SHADING_GROUP_NAME
-    ):
-        return node
-    for candidate in nodes:
-        if str(getattr(candidate, "bl_idname", "")) != "ShaderNodeGroup":
-            continue
-        if str(getattr(getattr(candidate, "node_tree", None), "name", "")) == ATMOSPHERE_SHELL_SHADING_GROUP_NAME:
-            return candidate
-    return None
-
-
-def _read_atmosphere_shell_values_from_material(material):
-    defaults = {
-        "density": (1.0 / 3.0),
-        "height_km": 50.0,
-        "falloff": 0.05,
-        "color": _FAKE_ATMOSPHERE_DEFAULT_COLOR,
-    }
-    node_tree = getattr(material, "node_tree", None) if material else None
-    nodes = getattr(node_tree, "nodes", None) if node_tree else None
-    if nodes is None:
-        return defaults
-
-    shell_node = _get_atmosphere_shell_shading_node(node_tree)
-    try:
-        if shell_node is not None:
-            density_in = _socket_input_by_name_or_index(shell_node.inputs, _FAKE_ATMOSPHERE_DENSITY_SOCKET)
-            height_in = _socket_input_by_name_or_index(shell_node.inputs, _FAKE_ATMOSPHERE_HEIGHT_SOCKET)
-            falloff_in = _socket_input_by_name_or_index(shell_node.inputs, _FAKE_ATMOSPHERE_FALLOFF_SOCKET)
-            color_in = _socket_input_by_name_or_index(shell_node.inputs, _FAKE_ATMOSPHERE_COLOR_SOCKET)
-            if density_in is not None:
-                defaults["density"] = float(density_in.default_value)
-            if height_in is not None:
-                defaults["height_km"] = float(height_in.default_value)
-            if falloff_in is not None:
-                defaults["falloff"] = float(falloff_in.default_value)
-            if color_in is not None:
-                defaults["color"] = tuple(float(color_in.default_value[i]) for i in range(4))
-        else:
-            density_node = nodes.get("PKA Atmosphere Density")
-            height_node = nodes.get("PKA Atmosphere HeightKm")
-            falloff_node = nodes.get("PKA Atmosphere Falloff")
-            color_node = nodes.get("PKA Atmosphere Color")
-            if density_node and density_node.outputs:
-                defaults["density"] = float(density_node.outputs[0].default_value)
-            if height_node and height_node.outputs:
-                defaults["height_km"] = float(height_node.outputs[0].default_value)
-            if falloff_node and falloff_node.outputs:
-                defaults["falloff"] = float(falloff_node.outputs[0].default_value)
-            if color_node and color_node.outputs:
-                defaults["color"] = tuple(float(color_node.outputs[0].default_value[i]) for i in range(4))
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-    return defaults
-
-
-def _enforce_atmosphere_shell_mix_links(material):
-    node_tree = getattr(material, "node_tree", None) if material else None
-    nodes = getattr(node_tree, "nodes", None) if node_tree else None
-    links = getattr(node_tree, "links", None) if node_tree else None
-    if nodes is None or links is None:
-        return
-
-    opacity_mul = nodes.get("PKA Atmosphere Opacity")
-    transparent = nodes.get("PKA Atmosphere Transparent")
-    emission = nodes.get("PKA Atmosphere Emission")
-    output = nodes.get("PKA Atmosphere Output")
-    mix_shaders = [node for node in nodes if str(getattr(node, "bl_idname", "")) == "ShaderNodeMixShader"]
-    if not mix_shaders:
-        return
-
-    preferred_mix = nodes.get("PKA Atmosphere Mix")
-    if preferred_mix not in mix_shaders:
-        preferred_mix = mix_shaders[0]
-
-    for mix_shader in mix_shaders:
-        mix_inputs = getattr(mix_shader, "inputs", None)
-        if mix_inputs is None:
-            continue
-        try:
-            fac_in = mix_inputs[0] if len(mix_inputs) > 0 else None
-            shader1_in = mix_inputs[1] if len(mix_inputs) > 1 else None
-            shader2_in = mix_inputs[2] if len(mix_inputs) > 2 else None
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError, IndexError):
-            fac_in = None
-            shader1_in = None
-            shader2_in = None
-
-        _replace_input_link(
-            links,
-            fac_in,
-            _socket_output_by_name_or_index(getattr(opacity_mul, "outputs", None), "Value", 0),
-        )
-        _replace_input_link(
-            links,
-            shader1_in,
-            _socket_output_by_name_or_index(getattr(transparent, "outputs", None), "BSDF", 0),
-        )
-        _replace_input_link(
-            links,
-            shader2_in,
-            _socket_output_by_name_or_index(getattr(emission, "outputs", None), "Emission", 0),
-        )
-
-    _replace_input_link(
-        links,
-        _socket_input_by_name_or_index(getattr(output, "inputs", None), "Surface", 0),
-        _socket_output_by_name_or_index(getattr(preferred_mix, "outputs", None), "Shader", 0),
-    )
-
-
-def _ensure_atmosphere_shell_material():
-    material = bpy.data.materials.get(ATMOSPHERE_SHELL_MATERIAL_NAME)
-    if material is None:
-        try:
-            material = bpy.data.materials.new(ATMOSPHERE_SHELL_MATERIAL_NAME)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            return None
-        except (RuntimeError, TypeError, ValueError):
-            return None
-
-    material.use_nodes = True
-    node_tree = getattr(material, "node_tree", None)
-    if node_tree is None:
-        return None
-    nodes = node_tree.nodes
-    links = node_tree.links
-
-    for node in list(nodes):
-        try:
-            nodes.remove(node)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            continue
-
-    shell_group = _ensure_atmosphere_shell_shading_group()
-    output = nodes.new("ShaderNodeOutputMaterial")
-    output.name = "PKA Atmosphere Output"
-    shell_node = nodes.new("ShaderNodeGroup")
-    shell_node.name = "PKA Atmosphere Shell Shading"
-    if shell_group is not None:
-        try:
-            shell_node.node_tree = shell_group
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-    _replace_input_link(
-        links,
-        _socket_input_by_name_or_index(output.inputs, "Surface", 0),
-        _socket_output_by_name_or_index(shell_node.outputs, "Shader", 0),
-    )
-
-    _safe_set_node_location(shell_node, -180.0, 90.0)
-    _safe_set_node_location(output, 80.0, 90.0)
-
-    if hasattr(material, "blend_method"):
-        try:
-            material.blend_method = 'HASHED'
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError):
-            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-    if hasattr(material, "shadow_method"):
-        try:
-            material.shadow_method = 'NONE'
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError):
-            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-    if hasattr(material, "use_backface_culling"):
-        try:
-            material.use_backface_culling = False
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError):
-            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-    if hasattr(material, "show_transparent_back"):
-        try:
-            material.show_transparent_back = True
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError):
-            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-
-    try:
-        material[ATMOSPHERE_SHELL_MATERIAL_VERSION_KEY] = int(ATMOSPHERE_SHELL_MATERIAL_VERSION)
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-
-    material.use_fake_user = True
-    return material
-
-
-def _ensure_atmosphere_shell_object(surface_collection, earth_obj):
-    shell_obj = bpy.data.objects.get(ATMOSPHERE_SHELL_OBJECT_NAME)
-    if shell_obj is not None and str(getattr(shell_obj, "type", "")) != "MESH":
-        try:
-            bpy.data.objects.remove(shell_obj, do_unlink=True)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            return None
-        shell_obj = None
-
-    mesh = _ensure_atmosphere_shell_mesh()
-    if mesh is None:
-        return None
-
-    if shell_obj is None:
-        try:
-            shell_obj = bpy.data.objects.new(ATMOSPHERE_SHELL_OBJECT_NAME, mesh)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            return None
-        except (RuntimeError, TypeError, ValueError):
-            return None
-    else:
-        shell_obj.data = mesh
-
-    if surface_collection is not None:
-        for collection in list(getattr(shell_obj, "users_collection", ())):
-            if collection is surface_collection:
-                continue
-            try:
-                collection.objects.unlink(shell_obj)
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-        if shell_obj.name not in surface_collection.objects:
-            try:
-                surface_collection.objects.link(shell_obj)
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-
-    material = _ensure_atmosphere_shell_material()
-    if material is not None:
-        mats = getattr(getattr(shell_obj, "data", None), "materials", None)
-        if mats is not None:
-            try:
-                if len(mats) == 0:
-                    mats.append(material)
-                else:
-                    mats[0] = material
-                while len(mats) > 1:
-                    mats.pop(index=len(mats) - 1)
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-        try:
-            shell_obj.active_material = material
-            if hasattr(shell_obj, "active_material_index"):
-                shell_obj.active_material_index = 0
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-
-    if earth_obj is not None:
-        try:
-            if shell_obj.parent is not earth_obj:
-                shell_obj.parent = earth_obj
-            shell_obj.location = (0.0, 0.0, 0.0)
-            shell_obj.rotation_euler = (0.0, 0.0, 0.0)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-
-    if hasattr(shell_obj, "visible_shadow"):
-        try:
-            shell_obj.visible_shadow = False
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError):
-            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-
-    return shell_obj
-
-
-def _earth_surface_local_radius(earth_obj):
-    if earth_obj is None:
-        return 1.0
-    try:
-        stored = float(earth_obj.get("planetka_surface_local_radius", 0.0))
-        if stored > 1e-6:
-            return stored
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-
-    mesh_data = getattr(earth_obj, "data", None)
-    vertices = getattr(mesh_data, "vertices", None) if mesh_data is not None else None
-    if vertices:
-        try:
-            inferred = max(v.co.length for v in vertices)
-            if inferred > 1e-6:
-                return float(inferred)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
-            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-    return 1.0
-
-
-def apply_fake_atmosphere_shell(
-    scene=None,
-    enabled=False,
-    density=0.0,
-    height_km=50.0,
-    falloff=0.05,
-    color=_FAKE_ATMOSPHERE_DEFAULT_COLOR,
-):
-    scene = scene or getattr(bpy.context, "scene", None)
-    earth_obj = get_earth_object()
-    if earth_obj is None:
-        return None
-
-    root = getattr(scene, "collection", None) if scene else None
-    surface_collection = _ensure_collection(root, SURFACE_COLLECTION_NAME) if root is not None else bpy.data.collections.get(SURFACE_COLLECTION_NAME)
-    shell_obj = _ensure_atmosphere_shell_object(surface_collection, earth_obj)
-    if shell_obj is None:
-        return None
-
-    density_value = max(0.0, min(2.0, float(density)))
-    height_value = max(0.0, min(400.0, float(height_km)))
-    falloff_value = max(0.0, min(1.0, float(falloff)))
-    try:
-        color_value = (
-            max(0.0, min(1.0, float(color[0]))),
-            max(0.0, min(1.0, float(color[1]))),
-            max(0.0, min(1.0, float(color[2]))),
-            max(0.0, min(1.0, float(color[3]))),
-        )
-    except (TypeError, ValueError, IndexError):
-        color_value = _FAKE_ATMOSPHERE_DEFAULT_COLOR
-    earth_local_radius = _earth_surface_local_radius(earth_obj)
-    scale_mult = earth_local_radius * (1.0 + (height_value / 6371.0))
-
-    try:
-        shell_obj.scale = (scale_mult, scale_mult, scale_mult)
-        shell_obj.hide_viewport = not bool(enabled)
-        shell_obj.hide_render = not bool(enabled)
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-
-    material = getattr(shell_obj, "active_material", None)
-    node_tree = getattr(material, "node_tree", None) if material else None
-    nodes = getattr(node_tree, "nodes", None) if node_tree else None
-    if nodes is not None:
-        try:
-            shell_node = _get_atmosphere_shell_shading_node(node_tree)
-            if shell_node is not None:
-                density_socket = _socket_input_by_name_or_index(shell_node.inputs, _FAKE_ATMOSPHERE_DENSITY_SOCKET)
-                height_socket = _socket_input_by_name_or_index(shell_node.inputs, _FAKE_ATMOSPHERE_HEIGHT_SOCKET)
-                falloff_socket = _socket_input_by_name_or_index(shell_node.inputs, _FAKE_ATMOSPHERE_FALLOFF_SOCKET)
-                color_socket = _socket_input_by_name_or_index(shell_node.inputs, _FAKE_ATMOSPHERE_COLOR_SOCKET)
-                if density_socket is not None:
-                    density_socket.default_value = density_value
-                if height_socket is not None:
-                    height_socket.default_value = height_value
-                if falloff_socket is not None:
-                    falloff_socket.default_value = falloff_value
-                if color_socket is not None:
-                    color_socket.default_value = color_value
-            else:
-                # Legacy fallback for old materials before group migration.
-                density_node = nodes.get("PKA Atmosphere Density")
-                height_node = nodes.get("PKA Atmosphere HeightKm")
-                falloff_node = nodes.get("PKA Atmosphere Falloff")
-                color_node = nodes.get("PKA Atmosphere Color")
-                if density_node is not None and getattr(density_node, "outputs", None):
-                    density_node.outputs[0].default_value = density_value
-                if height_node is not None and getattr(height_node, "outputs", None):
-                    height_node.outputs[0].default_value = height_value
-                if falloff_node is not None and getattr(falloff_node, "outputs", None):
-                    falloff_node.outputs[0].default_value = falloff_value
-                if color_node is not None and getattr(color_node, "outputs", None):
-                    color_node.outputs[0].default_value = color_value
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError, IndexError):
-            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-    return shell_obj
-
-
-def read_fake_atmosphere_shell_inputs(scene=None):
-    _scene = scene or getattr(bpy.context, "scene", None)
-    shell_obj = bpy.data.objects.get(ATMOSPHERE_SHELL_OBJECT_NAME)
-    if shell_obj is None and _scene is not None:
-        surface_collection = bpy.data.collections.get(SURFACE_COLLECTION_NAME)
-        if surface_collection is not None:
-            shell_obj = surface_collection.objects.get(ATMOSPHERE_SHELL_OBJECT_NAME)
-    if shell_obj is None:
-        return None
-
-    material = getattr(shell_obj, "active_material", None)
-    node_tree = getattr(material, "node_tree", None) if material else None
-    nodes = getattr(node_tree, "nodes", None) if node_tree else None
-    if nodes is None:
-        return None
-
-    result = {
-        "enabled": not bool(getattr(shell_obj, "hide_viewport", False)),
-        "density": (1.0 / 3.0),
-        "height_km": 50.0,
-        "falloff": 0.05,
-        "color": _FAKE_ATMOSPHERE_DEFAULT_COLOR,
-    }
-    try:
-        shell_node = _get_atmosphere_shell_shading_node(node_tree)
-        if shell_node is not None:
-            density_socket = _socket_input_by_name_or_index(shell_node.inputs, _FAKE_ATMOSPHERE_DENSITY_SOCKET)
-            height_socket = _socket_input_by_name_or_index(shell_node.inputs, _FAKE_ATMOSPHERE_HEIGHT_SOCKET)
-            falloff_socket = _socket_input_by_name_or_index(shell_node.inputs, _FAKE_ATMOSPHERE_FALLOFF_SOCKET)
-            color_socket = _socket_input_by_name_or_index(shell_node.inputs, _FAKE_ATMOSPHERE_COLOR_SOCKET)
-            if density_socket is not None:
-                result["density"] = float(density_socket.default_value)
-            if height_socket is not None:
-                result["height_km"] = float(height_socket.default_value)
-            if falloff_socket is not None:
-                result["falloff"] = float(falloff_socket.default_value)
-            if color_socket is not None:
-                result["color"] = tuple(float(color_socket.default_value[i]) for i in range(4))
-        else:
-            density_node = nodes.get("PKA Atmosphere Density")
-            height_node = nodes.get("PKA Atmosphere HeightKm")
-            falloff_node = nodes.get("PKA Atmosphere Falloff")
-            color_node = nodes.get("PKA Atmosphere Color")
-            if density_node is not None and getattr(density_node, "outputs", None):
-                result["density"] = float(density_node.outputs[0].default_value)
-            if height_node is not None and getattr(height_node, "outputs", None):
-                result["height_km"] = float(height_node.outputs[0].default_value)
-            if falloff_node is not None and getattr(falloff_node, "outputs", None):
-                result["falloff"] = float(falloff_node.outputs[0].default_value)
-            if color_node is not None and getattr(color_node, "outputs", None):
-                result["color"] = tuple(float(color_node.outputs[0].default_value[i]) for i in range(4))
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError, IndexError):
-        return None
-    return result
-
-
 def _set_library_signature(id_block):
     if not id_block:
         return
@@ -2838,6 +2098,26 @@ def _remove_material_if_exists(name):
         return
     try:
         bpy.data.materials.remove(material, do_unlink=True)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+
+def _remove_mesh_if_exists(name):
+    mesh = bpy.data.meshes.get(name)
+    if mesh is None:
+        return
+    try:
+        bpy.data.meshes.remove(mesh, do_unlink=True)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+
+def _remove_object_if_exists(name):
+    obj = bpy.data.objects.get(name)
+    if obj is None:
+        return
+    try:
+        bpy.data.objects.remove(obj, do_unlink=True)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
 
@@ -2926,6 +2206,22 @@ def _bind_static_images():
                 f"Planetka: expected image node '{node_name}' in node group '{SURFACE_GRADING_GROUP_NAME}' was not found."
             )
         node.image = _load_static_image(image_name)
+        _set_tex_image_node_interpolation(
+            node,
+            use_fallback=_is_fallback_static_image(image_name),
+        )
+    required_surface_nodes = {name for name, _image_name in _SURFACE_GROUP_IMAGE_BINDINGS}
+    for node in list(surface_group.nodes):
+        if str(getattr(node, "bl_idname", "")) != "ShaderNodeTexImage":
+            continue
+        if str(getattr(node, "name", "") or "") in required_surface_nodes:
+            continue
+        try:
+            surface_group.nodes.remove(node)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
 
 
 def _build_preview_texture_loading_group():
@@ -2958,19 +2254,19 @@ def _build_preview_texture_loading_group():
     node_s2.name = "Preview S2"
     node_s2.label = "Preview S2"
     node_s2.location = (-640.0, 260.0)
-    node_s2.image = _load_static_image("S2_x000_y000_z360_d360.exr")
+    node_s2.image = _load_static_image("ocean_pixel_final_20.exr")
 
     node_wt = group.nodes.new("ShaderNodeTexImage")
     node_wt.name = "Preview WT"
     node_wt.label = "Preview WT"
     node_wt.location = (-640.0, -20.0)
-    node_wt.image = _load_static_image("WT_x000_y000_z360_d360.exr")
+    node_wt.image = _load_static_image("blue_pixel_20.exr")
 
     node_po = group.nodes.new("ShaderNodeTexImage")
     node_po.name = "Preview PO"
     node_po.label = "Preview PO"
     node_po.location = (-640.0, -300.0)
-    node_po.image = _load_static_image("PO_x000_y000_z360_d360.tif")
+    node_po.image = _load_static_image("black_pixel_20.exr")
 
     node_el = group.nodes.new("ShaderNodeValue")
     node_el.name = "Preview EL"
@@ -3009,9 +2305,9 @@ def _ensure_preview_texture_loading_group():
     group = bpy.data.node_groups.get(PREVIEW_TEXTURE_LOADING_GROUP_NAME)
     if _is_preview_texture_loading_group_ready(group):
         for node_name, image_name in (
-            ("Preview S2", "S2_x000_y000_z360_d360.exr"),
-            ("Preview WT", "WT_x000_y000_z360_d360.exr"),
-            ("Preview PO", "PO_x000_y000_z360_d360.tif"),
+            ("Preview S2", "ocean_pixel_final_20.exr"),
+            ("Preview WT", "blue_pixel_20.exr"),
+            ("Preview PO", "black_pixel_20.exr"),
         ):
             node = group.nodes.get(node_name)
             if node and node.bl_idname == "ShaderNodeTexImage":
@@ -3132,14 +2428,16 @@ def _ensure_embedded_material_library():
         _load_embedded_material_library()
     _bind_static_images()
     _apply_surface_shader_updates()
-    _ensure_surface_fake_atmosphere_nodes()
 
     earth_material = bpy.data.materials.get(EARTH_MATERIAL_NAME)
     if not earth_material:
         raise RuntimeError("Planetka: embedded materials are missing after load.")
     _normalize_surface_elevation_defaults(earth_material)
+    _set_material_displacement_and_bump(earth_material)
     preview_material = _ensure_preview_material(earth_material)
     _normalize_surface_elevation_defaults(preview_material)
+    _set_material_displacement_and_bump(preview_material)
+    _hide_unconnected_group_input_sockets_everywhere()
     return preview_material, earth_material
 
 
@@ -3153,20 +2451,6 @@ def ensure_planetka_assets(scene=None):
 
     preview_material, earth_material = _ensure_embedded_material_library()
     sunlight_object = _ensure_planetka_sunlight(surface_collection)
-    props = getattr(scene, "planetka", None) if scene else None
-    enabled = bool(getattr(props, "enable_fake_atmosphere", False)) if props else False
-    density = float(getattr(props, "fake_atmosphere_density", 0.0)) if props else 0.0
-    height_km = float(getattr(props, "fake_atmosphere_height_km", 50.0)) if props else 50.0
-    falloff = float(getattr(props, "fake_atmosphere_falloff_exp", 0.05)) if props else 0.05
-    color = tuple(getattr(props, "fake_atmosphere_color", _FAKE_ATMOSPHERE_DEFAULT_COLOR)) if props else _FAKE_ATMOSPHERE_DEFAULT_COLOR
-    atmosphere_shell_object = apply_fake_atmosphere_shell(
-        scene=scene,
-        enabled=enabled,
-        density=density,
-        height_km=height_km,
-        falloff=falloff,
-        color=color,
-    )
 
     return {
         "collection": surface_collection,
@@ -3175,5 +2459,4 @@ def ensure_planetka_assets(scene=None):
         "preview_material": preview_material,
         "earth_material": earth_material,
         "sunlight_object": sunlight_object,
-        "atmosphere_shell_object": atmosphere_shell_object,
     }

@@ -63,12 +63,17 @@ def ensure_adaptive_subdivision_compat(scene, return_details=False):
 
     earth_material = bpy.data.materials.get("Planetka Earth Material")
     if earth_material is not None:
+        changed |= _set_enum_property_safe(
+            earth_material,
+            "displacement_method",
+            ("BOTH", "DISPLACEMENT_BUMP", "DISPLACEMENT_AND_BUMP"),
+        )
         cycles_settings = getattr(earth_material, "cycles", None)
         if cycles_settings is not None:
             changed |= _set_enum_property_safe(
                 cycles_settings,
                 "displacement_method",
-                ("DISPLACEMENT", "BOTH", "DISPLACEMENT_BUMP"),
+                ("BOTH", "DISPLACEMENT_BUMP", "DISPLACEMENT_AND_BUMP"),
             )
 
     if return_details:

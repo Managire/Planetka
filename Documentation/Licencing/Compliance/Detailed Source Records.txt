@@ -1,0 +1,17 @@
+Detailed Source Records
+=======================
+
+This file identifies the detailed source records contained in this folder.
+
+Contents
+--------
+- `Earth Surface Data Sources.txt`: summary of the bundled dataset sources.
+- `Copernicus Sentinel-2 Attribution.txt`: Sentinel attribution wording and legal notice reference.
+- `JAXA AW3D30 Attribution and Terms.txt`: JAXA terms reference, notification record, and JAXA response record.
+- `DLR World Settlement Footprint 2015 Attribution (CC BY 4.0).txt`: WSF2015 v2 attribution and CC BY 4.0 reference.
+- `GeoNames Attribution (CC BY 4.0).txt`: attribution for bundled location-search data.
+
+Most users do not need these detailed records for normal rendering workflows.
+The short user-facing overview is available in:
+- `../Using Planetka Commercially.txt`
+- `../Attribution for User Renders.txt`

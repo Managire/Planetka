@@ -30,7 +30,7 @@ except Exception:  # pragma: no cover - optional dependency
 
 DEFAULT_ROOT = Path("/Volumes/SSDA/Planetka Assets")
 DEFAULT_EXTS = {".exr", ".tif", ".tiff"}
-KNOWN_TILE_FOLDERS = {"S2", "WT", "EL", "PO", "WF"}
+KNOWN_TILE_FOLDERS = {"S2", "WT", "EL", "PO"}
 TILE_NAME_RE = re.compile(r"^[A-Z0-9]+_x\d{3}_y\d{3}_z\d{3}_d\d{3}\.[A-Za-z0-9]+$")
 
 

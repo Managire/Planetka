@@ -8,9 +8,9 @@ This note defines how runtime errors should be handled in Planetka Python module
 
 1. Do not use broad `except Exception` in addon runtime code.
 2. Use typed exception handling with `PLANETKA_RECOVERABLE_EXCEPTIONS` from:
-   - `/Users/tomasgriger/Library/Application Support/Blender/5.0/extensions/user_default/Planetka/error_utils.py`
+   - `error_utils.py`
 3. For operator failures, use `fail(...)` from:
-   - `/Users/tomasgriger/Library/Application Support/Blender/5.0/extensions/user_default/Planetka/operator_utils.py`
+   - `operator_utils.py`
 4. Always include a stable error code (`PKA-...`) for user-facing error reports.
 5. Log internal details with `logger.exception(...)` only when needed for debugging.
 6. Keep warnings recoverable and non-blocking where possible (for non-core steps).

@@ -1,0 +1,56 @@
+Planetka Earth Surface - Data Sources and Attribution
+=====================================================
+
+Planetka's Earth Surface texture datasets are organized into subfolders:
+- S2 (imagery)
+- EL (elevation)
+- WT (water/terrain mask)
+- PO (population/built-up proxy)
+
+The datasets are derived from third-party sources and include modifications and
+optimizations by the Planetka author (e.g. declouding, retouching, artifact
+removal, color grading, gap filling, format optimization).
+
+1) S2 (Imagery): Copernicus Sentinel-2
+-------------------------------------
+Required acknowledgement (Copernicus Sentinel Data Legal Notice):
+- "Copernicus Sentinel data [year]"
+For modified data:
+- "Contains modified Copernicus Sentinel data [year]"
+
+Attribution Text (example):
+- Contains modified Copernicus Sentinel data (2023).
+
+See:
+- Documentation/Licencing/Compliance/Copernicus Sentinel-2 Attribution.txt
+
+2) EL/WT (Elevation / Mask): JAXA AW3D30 (ALOS World 3D - 30m)
+-------------------------------------------------------------
+Required acknowledgement (must mention JAXA + AW3D30):
+- "AW3D30 (ALOS World 3D - 30m) provided by JAXA."
+
+Commercial-purpose use:
+JAXA’s terms include an advance-notification requirement for commercial-purpose
+use. Planetka sent a commercial-purpose use notification email to JAXA on:
+- 2026-03-05 12:10:04 CET
+
+See:
+- Documentation/Licencing/Compliance/JAXA AW3D30 Attribution and Terms.txt
+
+3) PO (Built-up proxy): DLR World Settlement Footprint 2015 (WSF2015 v2)
+------------------------------------------------------------------------
+WSF2015 v2 is licensed under CC BY 4.0 (commercial use allowed with attribution,
+license link, and change notice).
+
+Attribution Text (example):
+- Contains modified data from World Settlement Footprint 2015 (WSF2015 v2),
+  DLR (German Aerospace Center), licensed under CC BY 4.0.
+  DOI: 10.15489/6n5h1ezef920
+
+See:
+- Documentation/Licencing/Compliance/DLR World Settlement Footprint 2015 Attribution (CC BY 4.0).txt
+
+End-user renders (images/animations)
+-----------------------------------
+See:
+- Documentation/Licencing/Attribution for User Renders.txt

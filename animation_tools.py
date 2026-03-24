@@ -9,6 +9,7 @@ from mathutils import Matrix, Quaternion, Vector
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from .extension_prefs import get_earth_object, get_prefs
 from .operator_utils import ErrorCode, fail, require_planetka_props, require_scene
+from .r2_source import is_remote_source_configured
 from .state import (
     create_temp_mesh,
     cleanup_planetka_unused_data,
@@ -1637,10 +1638,10 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
 
         prefs = get_prefs()
         base_path = str(getattr(prefs, "texture_base_path", "") or "") if prefs else ""
-        if not base_path or not os.path.isdir(base_path):
+        if (not base_path or not os.path.isdir(base_path)) and not is_remote_source_configured(base_path):
             fail(
                 self,
-                "Set a valid Texture Source Directory before rendering.",
+                "Planetka Cloudflare source is not available. Log in and retry.",
                 code=ErrorCode.RESOLVE_PATH_INVALID,
                 logger=logger,
             )
@@ -1735,6 +1736,7 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             _segment_display_name(max_segment.get("start"), max_segment.get("end")) if isinstance(max_segment, dict) else "—"
         )
         self._preview_max_segment_mb = float(max(0, int(max_bytes))) / (1024.0 * 1024.0) if max_bytes >= 0 else 0.0
+        self._preview_texture_quality_mode = str(getattr(props, "texture_quality_mode", "FULL") or "FULL").upper()
         return True
 
     def invoke(self, context, event):
@@ -1759,6 +1761,7 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         segment_lines = getattr(self, "_preview_segment_lines", None) or ()
         max_name = str(getattr(self, "_preview_max_segment_name", "—") or "—")
         max_mb = float(getattr(self, "_preview_max_segment_mb", 0.0) or 0.0)
+        texture_quality_mode = str(getattr(self, "_preview_texture_quality_mode", "FULL") or "FULL").upper()
 
         layout.label(text="Confirm Animation Render", icon="RENDER_ANIMATION")
         layout.separator()
@@ -1773,6 +1776,14 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             layout.label(text=f"Format: {output_format}", icon="FILE")
         layout.label(text=f"Frames to render: {frames_total} ({frame_start:04d}-{frame_end:04d})")
         layout.label(text=f"Time segments: {len(segments)}")
+        if texture_quality_mode in {"HALF", "QUARTER"}:
+            warning_box = layout.box()
+            warning_box.alert = True
+            warning_box.label(
+                text=f"WARNING: Texture Quality is {texture_quality_mode}.",
+                icon="ERROR",
+            )
+            warning_box.label(text="This will reduce final animation render quality.")
         layout.separator()
 
         layout.label(text=f"Most expensive segment: {max_name} ({max_mb:.1f} MB textures)", icon="INFO")
@@ -1806,10 +1817,10 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
 
         prefs = get_prefs()
         base_path = str(getattr(prefs, "texture_base_path", "") or "") if prefs else ""
-        if not base_path or not os.path.isdir(base_path):
+        if (not base_path or not os.path.isdir(base_path)) and not is_remote_source_configured(base_path):
             return fail(
                 self,
-                "Set a valid Texture Source Directory before rendering.",
+                "Planetka Cloudflare source is not available. Log in and retry.",
                 code=ErrorCode.RESOLVE_PATH_INVALID,
                 logger=logger,
             )
@@ -2097,10 +2108,10 @@ class PLANETKA_OT_AnimationMakeReady(bpy.types.Operator):
                     logger=logger,
                 )
             base_path = str(getattr(prefs, "texture_base_path", "") or "")
-            if not base_path or not os.path.isdir(base_path):
+            if (not base_path or not os.path.isdir(base_path)) and not is_remote_source_configured(base_path):
                 return fail(
                     self,
-                    "Set a valid Texture Source Directory before preparing animation render setup.",
+                    "Planetka Cloudflare source is not available. Log in and retry.",
                     code=ErrorCode.RESOLVE_PATH_INVALID,
                     logger=logger,
                 )

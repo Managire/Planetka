@@ -1,0 +1,35 @@
+DLR World Settlement Footprint 2015 (WSF2015 v2) Attribution (CC BY 4.0)
+========================================================================
+
+This product includes and uses textures derived from:
+- World Settlement Footprint 2015 (WSF 2015 v2)
+  (10 m settlement mask / built-up proxy), produced by DLR (German Aerospace Center).
+  Planetka: "PO" tiles.
+
+Source
+------
+- Dataset page: https://geoservice.dlr.de/web/datasets/wsf_2015
+- DOI (as listed on the dataset page): 10.15489/6n5h1ezef920
+
+License
+-------
+The dataset page states that WSF 2015 v2 is licensed under:
+- Creative Commons Attribution 4.0 International (CC BY 4.0)
+  https://creativecommons.org/licenses/by/4.0/
+
+What CC BY 4.0 requires for your use
+------------------------------------
+- Give appropriate credit (DLR + dataset name).
+- Provide a link to the license.
+- Indicate if changes were made (Planetka tiles are modified/optimized derivatives).
+
+Attribution Text (example)
+-------------------------
+- Contains modified data from World Settlement Footprint 2015 (WSF2015 v2),
+  DLR (German Aerospace Center), licensed under CC BY 4.0.
+  DOI: 10.15489/6n5h1ezef920
+
+Recommended citation (optional but encouraged by the dataset page)
+-----------------------------------------------------------------
+Marconcini, M. et al. (2020). Outlining where humans live, the World Settlement
+Footprint 2015. Scientific Data 7, 242. doi:10.1038/s41597-020-00580-5

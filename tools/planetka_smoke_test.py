@@ -174,21 +174,23 @@ def _purge_existing_planetka_data():
 
 def _make_texture_source_tree(base_dir):
     os.makedirs(base_dir, exist_ok=True)
-    basic = os.path.join(_addon_root(), "Resources", "Basic Textures")
+    fallback = os.path.join(_addon_root(), "Resources", "Fallback Images")
 
     rules = (
-        ("S2", "S2_", ".exr", "S2_x000_y000_z360_d360.exr"),
-        ("EL", "EL_", ".exr", "EL_x000_y000_z360_d360.exr"),
-        ("WT", "WT_", ".exr", "WT_x000_y000_z360_d360.exr"),
-        ("PO", "PO_", ".tif", "PO_x000_y000_z360_d360.tif"),
+        ("S2", "S2_", ".exr", "ocean_pixel_final_20.exr"),
+        ("EL", "EL_", ".exr", "black_pixel_20.exr"),
+        ("WT", "WT_", ".exr", "blue_pixel_20.exr"),
     )
     for folder_name, prefix, ext, source_name in rules:
-        source = os.path.join(basic, source_name)
-        _assert(os.path.isfile(source), f"Missing bundled texture sample: {source}")
+        source = os.path.join(fallback, source_name)
+        _assert(os.path.isfile(source), f"Missing bundled fallback texture sample: {source}")
         folder = os.path.join(base_dir, folder_name)
         os.makedirs(folder, exist_ok=True)
         shutil.copyfile(source, os.path.join(folder, f"{prefix}x000_y000_z360_d360{ext}"))
         shutil.copyfile(source, os.path.join(folder, f"{prefix}x180_y000_z180_d180{ext}"))
+
+    # Create Earth validation requires the PO folder to exist, even when no PO tiles are present.
+    os.makedirs(os.path.join(base_dir, "PO"), exist_ok=True)
 
 
 def _ensure_active_camera(scene):
