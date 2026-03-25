@@ -13,11 +13,13 @@ from .auth import (
     cancel_pending_device_login,
     clear_auth_session,
     describe_auth_error,
+    get_commercial_use_allowed,
     get_contact_url,
     get_device_verification_url,
     get_login_state,
     get_upgrade_url,
     is_authenticated,
+    is_pro_account,
     start_device_login,
 )
 from .asset_builder import (
@@ -1671,6 +1673,11 @@ class PLANETKA_OT_AddEarth(bpy.types.Operator):
 
         _initialize_props_from_imported_planetka(scene)
         _sync_idprops_from_props(scene)
+        if bool(is_pro_account(prefs) or get_commercial_use_allowed(prefs)):
+            try:
+                props.texture_quality_mode = "FULL"
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+                logger.debug("Planetka: failed setting Pro default texture quality to Full", exc_info=True)
         warm_base_sphere_mesh_cache()
 
         surface_collection = ensure_planetka_temp_collection()

@@ -222,8 +222,10 @@ def _draw_subscription(layout):
 
     if commercial_use_allowed or plan_code in {PLAN_CODE_PLANETKA_PRO, PLAN_CODE_PLANETKA_STUDIO}:
         license_text = "Pro - Commercial"
+        is_pro_license = True
     else:
         license_text = "Free - Personal use only"
+        is_pro_license = False
 
     layout.label(text=f"Account: {email}", icon="CHECKMARK")
     layout.label(text=f"Licence: {license_text}", icon="INFO")
@@ -231,6 +233,13 @@ def _draw_subscription(layout):
     action_row = layout.row(align=True)
     action_row.operator("wm.url_open", text="Contact me", icon="URL").url = "https://www.planetka.io/contact-me"
     action_row.operator("planetka.account_logout", text="Log Out", icon="X")
+    if not is_pro_license:
+        upgrade_row = layout.row()
+        upgrade_row.operator(
+            "wm.url_open",
+            text="Upgrade to Pro",
+            icon="URL",
+        ).url = "https://www.planetka.io/blender-addon/pricing/"
 
     if status_message:
         layout.label(text=status_message, icon="INFO")
