@@ -2,6 +2,9 @@ name = "planetkaworker01"
 main = "src/index.js"
 compatibility_date = "2026-03-15"
 
+[vars]
+R2_PREFIX = "planetka-assets"
+
 [[d1_databases]]
 binding = "DB"
 database_name = "planetka-auth"

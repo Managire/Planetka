@@ -2023,6 +2023,61 @@ def _mark_manual_queued_resolve_error(scene, message):
         logger.debug("Planetka: failed storing queued resolve error on scene", exc_info=True)
 
 
+def _read_scene_last_resolve_error(scene):
+    if scene is None:
+        return ""
+    try:
+        return str(scene.get("planetka_last_resolve_error", "") or "").strip()
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        return ""
+    except (RuntimeError, TypeError, ValueError):
+        return ""
+
+
+def _is_non_retryable_resolve_error(message):
+    text = str(message or "").strip().lower()
+    if not text:
+        return False
+    return any(
+        token in text
+        for token in (
+            "pka-res-006",
+            "download completed with missing files",
+            "resolve integrity check failed",
+            "no fallback parent found",
+            "does not currently have access to this remote data request",
+            "does not have access to remote earth data",
+            "account blocked",
+        )
+    )
+
+
+def _mark_auto_resolve_terminal_failure(scene, scene_id, job, message):
+    if scene is None:
+        return
+    text = str(message or "Planetka auto-resolve failed.").strip() or "Planetka auto-resolve failed."
+    try:
+        scene["planetka_last_resolve_error"] = text
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed storing auto-resolve terminal error on scene", exc_info=True)
+    except (RuntimeError, TypeError, ValueError):
+        logger.debug("Planetka: failed storing auto-resolve terminal error on scene", exc_info=True)
+
+    now = time.monotonic()
+    latest_signature = None
+    if isinstance(job, dict):
+        latest_signature = job.get("camera_signature")
+    if latest_signature is None:
+        latest_signature = _camera_signature(scene)
+    if latest_signature is not None:
+        _AUTO_RESOLVE_LAST_CAMERA_SIGNATURE[scene_id] = latest_signature
+        _AUTO_RESOLVE_LAST_PROCESSED_SIGNATURE[scene_id] = latest_signature
+    _AUTO_RESOLVE_LAST_RESOLVE_TIME[scene_id] = now
+    _AUTO_RESOLVE_LAST_CHANGE_TIME[scene_id] = now
+    _AUTO_RESOLVE_PENDING_OUTPUT_CHANGE.pop(scene_id, None)
+    _VIEWPORT_SCOPE_LAST_RESOLVE_TIME[scene_id] = now
+
+
 def _handle_auto_resolve_download_failure(job, error_message):
     try:
         scene_id = int(job.get("scene_id", 0) or 0)
@@ -2044,6 +2099,21 @@ def _handle_auto_resolve_download_failure(job, error_message):
         )
         if error_message:
             logger.warning("Planetka manual resolve download failed: %s", error_message)
+        return
+
+    if _is_non_retryable_resolve_error(error_message):
+        _resolve_trace(
+            "Download finished with terminal error "
+            f"(request_id={job.get('request_id')}, error={str(error_message or '').strip() or 'unknown'})"
+        )
+        _mark_auto_resolve_terminal_failure(
+            scene,
+            scene_id,
+            job,
+            f"Download failed: {str(error_message or '').strip() or 'Unknown error'}",
+        )
+        if error_message:
+            logger.warning("Planetka auto-resolve download terminal failure: %s", error_message)
         return
 
     _AUTO_RESOLVE_LAST_PROCESSED_SIGNATURE.pop(scene_id, None)
@@ -2150,6 +2220,8 @@ def _handle_auto_resolve_download_complete(result):
             _resolve_trace(
                 f"Shader update failed (request_id={job.get('request_id')} op_result={str(op_result)})"
             )
+            scene_error = _read_scene_last_resolve_error(scene)
+            apply_error = scene_error or f"Apply operator returned {str(op_result)} for {len(job_target_tiles)} tile(s)."
             logger.warning(
                 "Planetka queued resolve apply returned %s for %d tile(s).",
                 str(op_result),
@@ -2158,30 +2230,43 @@ def _handle_auto_resolve_download_complete(result):
             if manual_request:
                 _mark_manual_queued_resolve_error(
                     scene,
-                    f"Apply operator returned {str(op_result)} for {len(job_target_tiles)} tile(s).",
+                    apply_error,
                 )
             else:
-                request_auto_resolve(scene, immediate=False, mark_dirty=False)
+                if _is_non_retryable_resolve_error(apply_error):
+                    _mark_auto_resolve_terminal_failure(scene, scene_id, job, apply_error)
+                else:
+                    request_auto_resolve(scene, immediate=False, mark_dirty=False)
             return True
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         _resolve_trace(
             f"Shader update failed with recoverable exception (request_id={job.get('request_id')})"
         )
         logger.debug("Planetka auto-resolve apply failed", exc_info=True)
+        scene_error = _read_scene_last_resolve_error(scene)
+        apply_error = scene_error or "Apply failed with recoverable exception."
         if manual_request:
-            _mark_manual_queued_resolve_error(scene, "Apply failed with recoverable exception.")
+            _mark_manual_queued_resolve_error(scene, apply_error)
         else:
-            request_auto_resolve(scene, immediate=False, mark_dirty=False)
+            if _is_non_retryable_resolve_error(apply_error):
+                _mark_auto_resolve_terminal_failure(scene, scene_id, job, apply_error)
+            else:
+                request_auto_resolve(scene, immediate=False, mark_dirty=False)
         return True
     except Exception:
         _resolve_trace(
             f"Shader update failed with unexpected exception (request_id={job.get('request_id')})"
         )
         logger.debug("Planetka auto-resolve apply failed unexpectedly", exc_info=True)
+        scene_error = _read_scene_last_resolve_error(scene)
+        apply_error = scene_error or "Apply failed with unexpected exception."
         if manual_request:
-            _mark_manual_queued_resolve_error(scene, "Apply failed with unexpected exception.")
+            _mark_manual_queued_resolve_error(scene, apply_error)
         else:
-            request_auto_resolve(scene, immediate=False, mark_dirty=False)
+            if _is_non_retryable_resolve_error(apply_error):
+                _mark_auto_resolve_terminal_failure(scene, scene_id, job, apply_error)
+            else:
+                request_auto_resolve(scene, immediate=False, mark_dirty=False)
         return True
     finally:
         _AUTO_RESOLVE_IN_FLIGHT = False
@@ -2195,14 +2280,14 @@ def _handle_auto_resolve_download_complete(result):
     _AUTO_RESOLVE_LAST_PROCESSED_SIGNATURE[scene_id] = latest_signature
     _AUTO_RESOLVE_PENDING_OUTPUT_CHANGE.pop(scene_id, None)
     _VIEWPORT_SCOPE_LAST_RESOLVE_TIME[scene_id] = resolved_at
+    try:
+        if "planetka_last_resolve_error" in scene:
+            del scene["planetka_last_resolve_error"]
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed clearing queued resolve error marker", exc_info=True)
+    except (RuntimeError, TypeError, ValueError):
+        logger.debug("Planetka: failed clearing queued resolve error marker", exc_info=True)
     if manual_request:
-        try:
-            if "planetka_last_resolve_error" in scene:
-                del scene["planetka_last_resolve_error"]
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed clearing queued resolve error marker", exc_info=True)
-        except (RuntimeError, TypeError, ValueError):
-            logger.debug("Planetka: failed clearing queued resolve error marker", exc_info=True)
         logger.warning(
             "Planetka queued resolve applied successfully (%d tile(s)).",
             len(job_target_tiles),

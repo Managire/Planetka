@@ -21,7 +21,7 @@ from .auth import get_login_state, is_authenticated, sync_account_profile
 from .asset_builder import ensure_planetka_assets
 from .compatibility_utils import ensure_adaptive_subdivision_compat
 from .diagnostics import write_resolve_diagnostics, write_tile_view_diagnostics
-from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
+from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS, with_error_code
 from .extension_prefs import get_earth_object, get_earth_surface_candidates, get_prefs, mark_earth_object
 from .operator_utils import ErrorCode, fail, require_planetka_props, require_scene
 from .r2_source import (
@@ -446,6 +446,8 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         ocean_tiles_override = None
         prefetch_missing_count = 0
         prefetch_resolved_count = 0
+        prefetch_error_count = 0
+        prefetch_missing_details = []
         prefetch_cancelled = False
         download_capture = {
             "downloaded_bytes": 0,
@@ -480,6 +482,13 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                     prefetch_resolved_count = int(prefetch_payload.get("resolved_count", 0) or 0)
                 except (TypeError, ValueError):
                     prefetch_resolved_count = 0
+                try:
+                    prefetch_error_count = int(prefetch_payload.get("error_count", 0) or 0)
+                except (TypeError, ValueError):
+                    prefetch_error_count = 0
+                details_payload = prefetch_payload.get("missing_details", ())
+                if isinstance(details_payload, (list, tuple)):
+                    prefetch_missing_details = [dict(item) for item in details_payload if isinstance(item, dict)]
                 prefetch_cancelled = bool(prefetch_payload.get("cancelled", False))
             capture_payload = stream_payload.get("download_capture", {})
             if isinstance(capture_payload, dict):
@@ -528,12 +537,32 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 )
                 if "FINISHED" in retry_result:
                     return {'FINISHED'}
+            if prefetch_missing_details:
+                for entry in prefetch_missing_details:
+                    logger.error(
+                        "Planetka prefetch missing asset: key=%s tile=%s cache_exists=%s remote_exists=%s fetch_error=%s remote_error=%s",
+                        str(entry.get("key", "") or ""),
+                        str(entry.get("tile", "") or ""),
+                        bool(entry.get("cache_exists", False)),
+                        entry.get("remote_exists"),
+                        str(entry.get("fetch_error", "") or ""),
+                        str(entry.get("remote_error", "") or ""),
+                    )
+            missing_message = (
+                "Planetka resolve download completed with missing files "
+                f"({int(prefetch_missing_count)} missing, {int(prefetch_resolved_count)} resolved, "
+                f"{int(prefetch_error_count)} errors)."
+            )
+            coded_missing_message = with_error_code(ErrorCode.RESOLVE_REFRESH_FAILED, missing_message)
+            try:
+                scene["planetka_last_resolve_error"] = coded_missing_message
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka: failed storing missing-file resolve error on scene", exc_info=True)
+            except (RuntimeError, TypeError, ValueError):
+                logger.debug("Planetka: failed storing missing-file resolve error on scene", exc_info=True)
             return fail(
                 self,
-                (
-                    "Planetka resolve download completed with missing files "
-                    f"({int(prefetch_missing_count)} missing, {int(prefetch_resolved_count)} resolved)."
-                ),
+                missing_message,
                 code=ErrorCode.RESOLVE_REFRESH_FAILED,
                 logger=logger,
             )
@@ -726,16 +755,32 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 )
                 if "FINISHED" in retry_result:
                     return {'FINISHED'}
+            integrity_message = (
+                "Planetka resolve integrity check failed "
+                f"(missing node images: {int(missing_node_images)}, "
+                f"missing texture assignments: {int(shader_missing_texture_count)})."
+            )
+            coded_integrity_message = with_error_code(ErrorCode.RESOLVE_REFRESH_FAILED, integrity_message)
+            try:
+                scene["planetka_last_resolve_error"] = coded_integrity_message
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka: failed storing integrity resolve error on scene", exc_info=True)
+            except (RuntimeError, TypeError, ValueError):
+                logger.debug("Planetka: failed storing integrity resolve error on scene", exc_info=True)
             return fail(
                 self,
-                (
-                    "Planetka resolve integrity check failed "
-                    f"(missing node images: {int(missing_node_images)}, "
-                    f"missing texture assignments: {int(shader_missing_texture_count)})."
-                ),
+                integrity_message,
                 code=ErrorCode.RESOLVE_REFRESH_FAILED,
                 logger=logger,
             )
+
+        try:
+            if "planetka_last_resolve_error" in scene:
+                del scene["planetka_last_resolve_error"]
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed clearing resolve error marker after successful resolve", exc_info=True)
+        except (RuntimeError, TypeError, ValueError):
+            logger.debug("Planetka: failed clearing resolve error marker after successful resolve", exc_info=True)
 
         if is_remote_source_configured(normalized) and is_authenticated(prefs):
             try:

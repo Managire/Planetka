@@ -3,6 +3,7 @@
 import hashlib
 import hmac
 import json
+import logging
 import os
 import threading
 import time
@@ -15,6 +16,8 @@ from collections import OrderedDict
 
 from .auth import AuthApiError, get_authorized_headers, get_api_base_url, refresh_auth_session, sync_account_profile
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
+
+logger = logging.getLogger(__name__)
 
 
 _R2_TIMEOUT_SECONDS = 30
@@ -949,10 +952,14 @@ def resolve_texture_file(base_path, folder, prefix, filename, extensions):
 def prefetch_resolve_downloads(requests, base_path=None, cancel_event=None):
     resolved_count = 0
     missing_count = 0
+    error_count = 0
     cancelled = False
     seen = set()
     resolved_base_path = str(base_path or "")
     tasks = []
+    diagnostics_max = _parse_positive_int(_env("PLANETKA_R2_PREFETCH_DIAGNOSTICS_MAX_KEYS"), 24)
+    diagnostics_max = max(1, int(diagnostics_max))
+    missing_details = []
 
     for request in requests or ():
         if cancel_event is not None and getattr(cancel_event, "is_set", None) and cancel_event.is_set():
@@ -985,30 +992,84 @@ def prefetch_resolve_downloads(requests, base_path=None, cancel_event=None):
     _maybe_prune_cache(cfg, force=False)
     _suspend_cache_prune()
 
+    def _probe_missing_asset(task_folder, task_prefix, task_filename, task_ext, task_error=""):
+        file_name = f"{task_prefix}_{task_filename}{task_ext}"
+        key = _remote_key(task_folder, file_name)
+        cache_path = _cached_remote_path(task_folder, file_name)
+        cache_exists = bool(cache_path and os.path.isfile(cache_path))
+        remote_exists = None
+        remote_error = ""
+        if key and not cache_exists:
+            try:
+                remote_exists = bool(_r2_request("HEAD", key))
+            except Exception as exc:
+                remote_exists = None
+                remote_error = str(exc)
+        return {
+            "folder": str(task_folder),
+            "prefix": str(task_prefix),
+            "tile": str(task_filename),
+            "ext": str(task_ext),
+            "key": str(key or ""),
+            "cache_path": str(cache_path or ""),
+            "cache_exists": bool(cache_exists),
+            "remote_exists": remote_exists,
+            "remote_error": str(remote_error or ""),
+            "fetch_error": str(task_error or ""),
+        }
+
+    def _append_missing_details(task, task_error=""):
+        nonlocal missing_details
+        if len(missing_details) >= diagnostics_max:
+            return
+        task_folder, task_prefix, task_filename, task_exts = task
+        for task_ext in task_exts:
+            if len(missing_details) >= diagnostics_max:
+                break
+            missing_details.append(
+                _probe_missing_asset(task_folder, task_prefix, task_filename, task_ext, task_error=task_error)
+            )
+
     def _fetch_one(task):
         task_folder, task_prefix, task_filename, task_exts = task
         if cancel_event is not None and getattr(cancel_event, "is_set", None) and cancel_event.is_set():
-            return None
-        path = resolve_texture_file(
-            base_path=resolved_base_path,
-            folder=task_folder,
-            prefix=task_prefix,
-            filename=task_filename,
-            extensions=task_exts,
-        )
-        return bool(path and os.path.isfile(path))
+            return {"state": "cancelled", "task": task}
+        try:
+            path = resolve_texture_file(
+                base_path=resolved_base_path,
+                folder=task_folder,
+                prefix=task_prefix,
+                filename=task_filename,
+                extensions=task_exts,
+            )
+            if path and os.path.isfile(path):
+                return {"state": "resolved", "task": task}
+            return {"state": "missing", "task": task}
+        except RuntimeError as exc:
+            return {"state": "error", "task": task, "error": str(exc)}
+        except Exception as exc:
+            return {"state": "error", "task": task, "error": str(exc)}
 
     try:
         if worker_count <= 1:
             for task in tasks:
                 result = _fetch_one(task)
-                if result is None:
+                if not isinstance(result, dict):
+                    error_count += 1
+                    missing_count += 1
+                    _append_missing_details(task, task_error="invalid_prefetch_result")
+                    continue
+                state = str(result.get("state", "") or "")
+                if state == "cancelled":
                     cancelled = True
                     break
-                if result:
+                if state == "resolved":
                     resolved_count += 1
                 else:
                     missing_count += 1
+                    if state == "error":
+                        error_count += 1
+                    _append_missing_details(task, task_error=str(result.get("error", "") or ""))
         else:
             with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="planetka-r2") as executor:
                 futures = [executor.submit(_fetch_one, task) for task in tasks]
@@ -1025,20 +1086,41 @@ def prefetch_resolve_downloads(requests, base_path=None, cancel_event=None):
                         try:
                             result = future.result()
                         except Exception:
-                            result = False
-                        if result is None:
+                            result = {"state": "error", "task": None, "error": "future_result_failed"}
+                        if not isinstance(result, dict):
+                            error_count += 1
+                            missing_count += 1
+                            continue
+                        state = str(result.get("state", "") or "")
+                        if state == "cancelled":
                             cancelled = True
                             continue
-                        if result:
+                        if state == "resolved":
                             resolved_count += 1
                         else:
                             missing_count += 1
+                            if state == "error":
+                                error_count += 1
+                            task = result.get("task")
+                            if isinstance(task, (tuple, list)) and len(task) == 4:
+                                _append_missing_details(tuple(task), task_error=str(result.get("error", "") or ""))
     finally:
         _resume_cache_prune()
+
+    if missing_details:
+        logger.error(
+            "Planetka resolve prefetch diagnostics: missing=%d resolved=%d error=%d sample=%s",
+            int(missing_count),
+            int(resolved_count),
+            int(error_count),
+            json.dumps(missing_details, ensure_ascii=True),
+        )
 
     return {
         "resolved_count": int(resolved_count),
         "missing_count": int(missing_count),
+        "error_count": int(error_count),
+        "missing_details": list(missing_details),
         "cancelled": bool(cancelled),
     }
 

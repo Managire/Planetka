@@ -64,6 +64,7 @@ def is_land_tile(x, y, z, coverage):
         return False
     return (x, y) in level
 
+
 # ------------------------
 # Core resolution logic
 # ------------------------
@@ -87,9 +88,7 @@ def resolve_tile_in_chain(tile, chain, coverage, base_path, warn_on_missing=True
 
     for parent_z in chain[start_index:]:
         px, py = snap_to_parent(x, y, z, parent_z)
-
         pd = max(d, parent_z)
-
         if s2_exists_on_disk(px, py, parent_z, pd, base_path):
             resolved = format_tile(px, py, parent_z, pd)
             if resolved != tile:
@@ -97,7 +96,10 @@ def resolve_tile_in_chain(tile, chain, coverage, base_path, warn_on_missing=True
             return resolved
 
     if warn_on_missing:
-        logger.warning("Land tile missing on disk (no fallback parent found): %s", tile)
+        logger.warning(
+            "Land tile unavailable in cache/remote lookup (no fallback parent found): %s",
+            tile,
+        )
     return None
 
 # ------------------------
