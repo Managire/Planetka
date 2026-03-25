@@ -2083,7 +2083,7 @@ class PLANETKA_PT_LocalCloudsPanel(bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        return _is_workflow_enabled()
+        return False
 
     def draw(self, context):
         layout = self.layout
@@ -2197,7 +2197,7 @@ class PLANETKA_PT_VDBCloudsPanel(bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        return _is_workflow_enabled()
+        return False
 
     def draw(self, context):
         layout = self.layout

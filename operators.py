@@ -25,9 +25,6 @@ from .asset_builder import (
     ensure_earth_surface_parent,
     ensure_planetka_assets,
     ensure_planetka_root,
-    ensure_static_fake_atmosphere,
-    ensure_volumetric_atmosphere,
-    set_atmosphere_collection_enabled,
 )
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from .extension_prefs import (
@@ -41,7 +38,7 @@ from .operator_utils import ErrorCode, fail, require_planetka_props, require_sce
 from .sanity_utils import _normalize_texture_source_path, invalidate_texture_source_health_cache
 from .r2_source import is_remote_source_configured, texture_file_exists
 from .state import (
-    apply_renderer_engine_optimization_for_all_preserve_current,
+    apply_renderer_engine_optimization,
     _initialize_props_from_imported_planetka,
     _sync_idprops_from_props,
     delete_temp_meshes,
@@ -1747,6 +1744,14 @@ class PLANETKA_OT_AddEarth(bpy.types.Operator):
         except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
             logger.debug("Planetka: failed updating default world background to black", exc_info=True)
 
+        render = getattr(scene, "render", None)
+        current_engine = str(getattr(render, "engine", "") or "").upper() if render else ""
+        if "CYCLES" not in current_engine:
+            apply_renderer_engine_optimization(scene, "CYCLES")
+            self.report({'INFO'}, "Planetka switched renderer to Cycles (EEVEE is currently unstable).")
+        else:
+            apply_renderer_engine_optimization(scene, "CYCLES")
+
         resolve_result = bpy.ops.planetka.load_textures(skip_render_compatibility=True)
         final_surface = get_earth_object() or new_obj
         if final_surface and bool(getattr(props, "show_earth_preview", False)):
@@ -1774,7 +1779,6 @@ class PLANETKA_OT_AddEarth(bpy.types.Operator):
         # Atmosphere and cloud runtime loading is intentionally disabled for now.
         # Keep implementation code in-place for future re-enable.
 
-        apply_renderer_engine_optimization_for_all_preserve_current(scene)
         _switch_solid_viewports_to_rendered(context)
 
         if props is not None:

@@ -997,25 +997,6 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
                 slider=True,
             )
 
-            render_engine_box = layout.box()
-            render_engine_box.label(text="Renderer Optimization", icon="RENDER_STILL")
-            render_engine_box.label(text="Switch and Optimize for:")
-            render_engine_box.enabled = workflow_enabled
-            render_toggle_row = render_engine_box.row(align=True)
-            render_toggle_row.use_property_split = False
-            render_toggle_row.prop_enum(
-                props,
-                "render_engine_optimization",
-                "EEVEE",
-                text="EEVEE",
-            )
-            render_toggle_row.prop_enum(
-                props,
-                "render_engine_optimization",
-                "CYCLES",
-                text="Cycles",
-            )
-
             viewport_box = layout.box()
             viewport_box.label(text="Viewport Optimization", icon="VIEW3D")
             viewport_box.enabled = workflow_enabled
@@ -1291,7 +1272,7 @@ class PLANETKA_PT_AtmospherePanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        return _is_earth_workflow_enabled()
+        return False
 
     def draw(self, context):
         layout = self.layout
@@ -1306,7 +1287,7 @@ class PLANETKA_PT_AtmospherePanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.P
 
     @classmethod
     def poll(cls, context):
-        return not _is_earth_workflow_enabled()
+        return False
 
     def draw(self, context):
         layout = self.layout

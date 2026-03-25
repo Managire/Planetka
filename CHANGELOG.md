@@ -10,6 +10,7 @@ All notable changes to Planetka are documented in this file.
 ### Changed
 - Updated release QA docs to match the simplified Create/Resolve-only workflow.
 - Improved Earth surface shading with procedural forest and rock detail (bump, optional micro-displacement) driven by satellite color/slope masks.
+- Marked EEVEE as unsupported/unstable for Planetka rendering in release documentation and UI warnings; Cycles is now auto-selected on `Create Earth`.
 
 ### Fixed
 - Removed outdated release-checklist references to preview parenting.

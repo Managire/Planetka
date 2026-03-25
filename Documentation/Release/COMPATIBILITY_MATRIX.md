@@ -23,7 +23,7 @@ Last matrix update: `2026-03-17`
 
 | Component | Status | Notes |
 | --- | --- | --- |
-| EEVEE (Rendered viewport) | Caution | Some GPU/driver combos can crash in texture upload path; test target hardware. On macOS/Metal, high tile counts can exceed shader sampler limits and cause missing/pink/solid tile artifacts. |
+| EEVEE (Rendered viewport) | Unsupported / Unstable | Known limitation for this release. EEVEE can produce corrupted frames (missing/pink/solid tiles), especially on macOS/Metal at higher tile counts. Use Cycles for reliable output. |
 | Solid viewport | Verified | Resolve workflow validated. |
 | OpenGL/Cycles preview | Verified by user reports | Stable in reported scenarios. |
 

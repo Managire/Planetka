@@ -160,7 +160,7 @@ class PLANETKA_PT_GlobalCloudsPanel(bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        return _local._is_workflow_enabled()
+        return False
 
     def draw(self, context):
         layout = self.layout

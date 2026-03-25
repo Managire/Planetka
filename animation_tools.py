@@ -2047,6 +2047,15 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             text=f"Output: {output_path}",
             icon="FILE_FOLDER",
         )
+        if str(engine_text or "").lower().startswith("eevee"):
+            eevee_warning = layout.box()
+            eevee_warning.alert = True
+            eevee_warning.label(
+                text="WARNING: Renderer is EEVEE, which is unstable for Planetka.",
+                icon="ERROR",
+            )
+            eevee_warning.label(text="This may result in corrupted frames.", icon="ERROR")
+            eevee_warning.label(text="Switching to Cycles is highly recommended.", icon="INFO")
         if output_format:
             layout.label(text=f"Format: {output_format}", icon="FILE")
         layout.label(text=f"Frames to render: {frames_total} ({frame_start:04d}-{frame_end:04d})")
@@ -2135,6 +2144,12 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
 
         render = getattr(scene, "render", None)
         cycles = getattr(scene, "cycles", None)
+        render_engine = str(getattr(render, "engine", "") or "").upper() if render else ""
+        if "EEVEE" in render_engine:
+            self.report(
+                {'WARNING'},
+                "Renderer is EEVEE (unstable for Planetka and may produce corrupted frames). Switching to Cycles is highly recommended.",
+            )
 
         original_settings = {
             "frame_start": int(getattr(scene, "frame_start", frame_start)),
