@@ -256,19 +256,6 @@ def _draw_subscription(layout):
     email = get_connected_email(prefs)
     plan_code = get_plan_code(prefs)
     commercial_use_allowed = get_commercial_use_allowed(prefs)
-    total_remaining = get_allowance_total_remaining_bytes(prefs)
-    included_limit = get_allowance_included_limit_bytes(prefs)
-    billing_period_end = get_billing_period_end(prefs)
-    allowance_period_end = get_allowance_period_end(prefs)
-
-    remaining_pct_text = "—"
-    if (
-        isinstance(total_remaining, int)
-        and isinstance(included_limit, int)
-        and int(included_limit) > 0
-    ):
-        remaining_pct = (max(0, int(total_remaining)) / float(included_limit)) * 100.0
-        remaining_pct_text = f"{remaining_pct:.1f}%"
 
     if commercial_use_allowed or plan_code in {PLAN_CODE_PLANETKA_PRO, PLAN_CODE_PLANETKA_STUDIO}:
         license_text = "Pro - Commercial"
@@ -277,14 +264,6 @@ def _draw_subscription(layout):
 
     layout.label(text=f"Account: {email}", icon="CHECKMARK")
     layout.label(text=f"Licence: {license_text}", icon="INFO")
-    layout.label(
-        text=f"Remaining Data: {remaining_pct_text} / {_fmt_gb_from_bytes(total_remaining)}",
-        icon="MESH_GRID",
-    )
-
-    period_end_value = allowance_period_end or billing_period_end
-    if period_end_value:
-        layout.label(text=f"Period ends: {_fmt_reset_datetime(period_end_value)}", icon="TIME")
 
     action_row = layout.row(align=True)
     action_row.operator("wm.url_open", text="Contact me", icon="URL").url = "https://www.planetka.io/contact-me"
@@ -292,6 +271,50 @@ def _draw_subscription(layout):
 
     if status_message:
         layout.label(text=status_message, icon="INFO")
+
+
+def _draw_data_usage(layout, context):
+    layout.use_property_split = False
+    layout.use_property_decorate = False
+
+    scene = getattr(context, "scene", None)
+    props = getattr(scene, "planetka", None) if scene else None
+    diag = read_diagnostics(scene)
+
+    from .extension_prefs import get_prefs
+
+    prefs = get_prefs()
+    connected = is_authenticated(prefs)
+
+    if connected:
+        total_remaining = get_allowance_total_remaining_bytes(prefs)
+        included_limit = get_allowance_included_limit_bytes(prefs)
+        billing_period_end = get_billing_period_end(prefs)
+        allowance_period_end = get_allowance_period_end(prefs)
+
+        remaining_pct_text = "—"
+        if (
+            isinstance(total_remaining, int)
+            and isinstance(included_limit, int)
+            and int(included_limit) > 0
+        ):
+            remaining_pct = (max(0, int(total_remaining)) / float(included_limit)) * 100.0
+            remaining_pct_text = f"{remaining_pct:.1f}%"
+
+        layout.label(
+            text=f"Remaining Data: {remaining_pct_text} / {_fmt_gb_from_bytes(total_remaining)}",
+            icon="MESH_GRID",
+        )
+        period_end_value = allowance_period_end or billing_period_end
+        if period_end_value:
+            layout.label(text=f"Period ends: {_fmt_reset_datetime(period_end_value)}", icon="TIME")
+    else:
+        layout.label(text="Sign in to view data usage", icon="INFO")
+
+    layout.label(text=f"Last Resolve downloaded: {_fmt_mb(diag.get('resolve_downloaded_mb'))}")
+
+    if props is not None:
+        layout.prop(props, "texture_quality_mode", text="Texture Quality")
 
 
 def _draw_subscription_details(layout):
@@ -440,7 +463,6 @@ def _draw_live_telemetry(layout, scene):
         text=f"{runtime_text}{_status_activity_suffix(runtime.get('running', False))}",
         icon=_status_icon(runtime_code),
     )
-    layout.label(text=f"Last resolve downloaded: {_fmt_mb(diag.get('resolve_downloaded_mb'))}")
 
     if runtime_code == "DOWNLOADING":
         if total_bytes > 0:
@@ -555,6 +577,31 @@ def _draw_navigation(layout, context):
         text="Globe View",
         icon="WORLD_DATA",
     ).preset = "HIGH_ORBIT"
+
+    resolve_box = layout.box()
+    resolve_box.enabled = not prepared
+    resolve_box.label(text="Resolve Settings", icon="MOD_REMESH")
+    resolve_op = resolve_box.operator(
+        "planetka.load_textures",
+        text="Resolve Earth Surface",
+        icon="MOD_REMESH",
+    )
+    # Keep Blender responsive while downloading; finalize resolve after download completes.
+    resolve_op.defer_download = True
+    resolve_box.prop(
+        props,
+        "auto_resolve",
+        text="Auto Resolve",
+        toggle=True,
+        icon="FILE_REFRESH",
+    )
+    if _show_internal_animation_ui():
+        resolve_box.prop(
+            props,
+            "lock_resolve_during_animation",
+            text="Lock Resolve During Animation",
+            toggle=True,
+        )
 
 
 def _iter_surface_grading_nodes():
@@ -784,6 +831,20 @@ class PLANETKA_PT_SubscriptionPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         _draw_subscription(self.layout)
 
 
+class PLANETKA_PT_DataUsagePanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
+    bl_label = "Data Usage"
+    bl_idname = "PLANETKA_PT_data_usage"
+    bl_order = 1
+    bl_options = set()
+
+    @classmethod
+    def poll(cls, context):
+        return True
+
+    def draw(self, context):
+        _draw_data_usage(self.layout, context)
+
+
 class PLANETKA_PT_SubscriptionPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
     bl_label = "Account"
     bl_idname = "PLANETKA_PT_subscription_collapsed"
@@ -829,7 +890,7 @@ class PLANETKA_PT_SubscriptionDetailsPanelCollapsed(_PLANETKA_PT_BaseSection, bp
 class PLANETKA_PT_NewEarthPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
     bl_label = "New Earth"
     bl_idname = "PLANETKA_PT_new_earth"
-    bl_order = 1
+    bl_order = 2
     bl_options = set()
 
     @classmethod
@@ -845,7 +906,7 @@ class PLANETKA_PT_NewEarthPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 class PLANETKA_PT_NewEarthPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
     bl_label = "New Earth"
     bl_idname = "PLANETKA_PT_new_earth_collapsed"
-    bl_order = 1
+    bl_order = 2
 
     @classmethod
     def poll(cls, context):
@@ -860,7 +921,7 @@ class PLANETKA_PT_NewEarthPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Pan
 class PLANETKA_PT_ResolvePanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
     bl_label = "Resolve"
     bl_idname = "PLANETKA_PT_resolve"
-    bl_order = 2
+    bl_order = 3
     bl_options = set()
 
     @classmethod
@@ -874,7 +935,7 @@ class PLANETKA_PT_ResolvePanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 class PLANETKA_PT_ResolvePanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
     bl_label = "Resolve"
     bl_idname = "PLANETKA_PT_resolve_collapsed"
-    bl_order = 2
+    bl_order = 3
 
     @classmethod
     def poll(cls, context):
@@ -907,42 +968,15 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         prefs = get_prefs()
 
         if props:
-            resolve_box = layout.box()
-            resolve_box.label(text="Resolve Settings", icon="MOD_REMESH")
-            if prepared:
-                _draw_animation_ready_message(resolve_box)
-            resolve_op = resolve_box.operator(
-                "planetka.load_textures",
-                text="Resolve Earth Surface",
-                icon="MOD_REMESH",
-            )
-            # Keep Blender responsive while downloading; finalize resolve after download completes.
-            resolve_op.defer_download = True
-            resolve_box.enabled = workflow_enabled and (not prepared)
-            row = resolve_box.row()
-            row.use_property_split = False
-            row.prop(
-                props,
-                "auto_resolve",
-                text="Auto Resolve",
-                toggle=True,
-                icon="FILE_REFRESH",
-            )
-            idle_row = resolve_box.row()
-            idle_row.enabled = bool(getattr(props, "auto_resolve", False))
-            idle_row.prop(
+            auto_resolve_box = layout.box()
+            auto_resolve_box.label(text="Auto Resolve", icon="FILE_REFRESH")
+            auto_resolve_box.enabled = workflow_enabled and bool(getattr(props, "auto_resolve", False))
+            auto_resolve_box.prop(
                 props,
                 "auto_resolve_idle_sec",
                 text="Auto Resolve Idle Delay (s)",
                 slider=True,
             )
-            if _show_internal_animation_ui():
-                resolve_box.prop(
-                    props,
-                    "lock_resolve_during_animation",
-                    text="Lock Resolve During Animation",
-                    toggle=True,
-                )
 
             render_engine_box = layout.box()
             render_engine_box.label(text="Renderer Optimization", icon="RENDER_STILL")
@@ -963,20 +997,9 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
                 text="Cycles",
             )
 
-            quality_box = layout.box()
-            quality_box.label(text="Texture Quality", icon="TEXTURE")
-            quality_box.enabled = workflow_enabled
-            quality_box.prop(props, "texture_quality_mode", text="Texture Quality")
-
             viewport_box = layout.box()
             viewport_box.label(text="Viewport Optimization", icon="VIEW3D")
             viewport_box.enabled = workflow_enabled
-            viewport_box.prop(
-                props,
-                "viewport_opt_active_view_coarse_textures",
-                text="Use Lower Texture Quality in Active View",
-                toggle=True,
-            )
             viewport_box.prop(
                 props,
                 "viewport_opt_suspend_subdivision",
@@ -1005,7 +1028,7 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 class PLANETKA_PT_LiveTelemetryPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
     bl_label = "Status Check"
     bl_idname = "PLANETKA_PT_live_telemetry"
-    bl_order = 3
+    bl_order = 4
     bl_options = set()
 
     @classmethod
@@ -1021,7 +1044,7 @@ class PLANETKA_PT_LiveTelemetryPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 class PLANETKA_PT_LiveTelemetryPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
     bl_label = "Status Check"
     bl_idname = "PLANETKA_PT_live_telemetry_collapsed"
-    bl_order = 3
+    bl_order = 4
 
     @classmethod
     def poll(cls, context):
@@ -1098,7 +1121,7 @@ class PLANETKA_PT_LinksPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 class PLANETKA_PT_NavigationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
     bl_label = "Navigation"
     bl_idname = "PLANETKA_PT_navigation"
-    bl_order = 4
+    bl_order = 5
     bl_options = set()
 
     @classmethod
@@ -1114,7 +1137,7 @@ class PLANETKA_PT_NavigationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 class PLANETKA_PT_NavigationPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
     bl_label = "Navigation"
     bl_idname = "PLANETKA_PT_navigation_collapsed"
-    bl_order = 4
+    bl_order = 5
 
     @classmethod
     def poll(cls, context):
