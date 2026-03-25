@@ -235,8 +235,30 @@ def _draw_subscription(layout):
     from .extension_prefs import get_prefs
 
     prefs = get_prefs()
+    login_state = get_login_state(prefs)
+    connected = is_authenticated(prefs)
+    status_message = get_status_message(prefs)
+
+    if not connected:
+        layout.label(text="Sign in to start using Planetka", icon="INFO")
+        auth_row = layout.row(align=True)
+        if login_state == "pending":
+            auth_row.operator("planetka.account_open_login", text="Open Login Page", icon="URL")
+            auth_row.operator("planetka.account_cancel_login", text="Cancel", icon="X")
+        else:
+            auth_row.operator("planetka.account_login", text="Sign In / Create Account", icon="URL")
+        if status_message:
+            layout.label(text=status_message, icon="INFO")
+        return
+
+    email = get_connected_email(prefs)
+    plan_code = get_plan_code(prefs)
+    commercial_use_allowed = get_commercial_use_allowed(prefs)
     total_remaining = get_allowance_total_remaining_bytes(prefs)
     included_limit = get_allowance_included_limit_bytes(prefs)
+    billing_period_end = get_billing_period_end(prefs)
+    allowance_period_end = get_allowance_period_end(prefs)
+
     remaining_pct_text = "—"
     if (
         isinstance(total_remaining, int)
@@ -245,7 +267,29 @@ def _draw_subscription(layout):
     ):
         remaining_pct = (max(0, int(total_remaining)) / float(included_limit)) * 100.0
         remaining_pct_text = f"{remaining_pct:.1f}%"
-    layout.label(text=f"Data Remaining: {remaining_pct_text}", icon="MESH_GRID")
+
+    if commercial_use_allowed or plan_code in {PLAN_CODE_PLANETKA_PRO, PLAN_CODE_PLANETKA_STUDIO}:
+        license_text = "Pro - Commercial"
+    else:
+        license_text = "Free - Personal use only"
+
+    layout.label(text=f"Account: {email}", icon="CHECKMARK")
+    layout.label(text=f"Licence: {license_text}", icon="INFO")
+    layout.label(
+        text=f"Remaining Data: {remaining_pct_text} / {_fmt_gb_from_bytes(total_remaining)}",
+        icon="MESH_GRID",
+    )
+
+    period_end_value = allowance_period_end or billing_period_end
+    if period_end_value:
+        layout.label(text=f"Period ends: {_fmt_reset_datetime(period_end_value)}", icon="TIME")
+
+    action_row = layout.row(align=True)
+    action_row.operator("wm.url_open", text="Contact me", icon="URL").url = "https://www.planetka.io/contact-me"
+    action_row.operator("planetka.account_logout", text="Log Out", icon="X")
+
+    if status_message:
+        layout.label(text=status_message, icon="INFO")
 
 
 def _draw_subscription_details(layout):
@@ -803,7 +847,7 @@ class PLANETKA_PT_SubscriptionPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        return not _is_connected()
+        return True
 
     def draw(self, context):
         _draw_subscription(self.layout)
@@ -813,10 +857,11 @@ class PLANETKA_PT_SubscriptionPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types
     bl_label = "Account"
     bl_idname = "PLANETKA_PT_subscription_collapsed"
     bl_order = 0
+    bl_options = set()
 
     @classmethod
     def poll(cls, context):
-        return _is_connected()
+        return False
 
     def draw(self, context):
         _draw_subscription(self.layout)
@@ -830,7 +875,7 @@ class PLANETKA_PT_SubscriptionDetailsPanel(_PLANETKA_PT_BaseSection, bpy.types.P
 
     @classmethod
     def poll(cls, context):
-        return not _is_connected()
+        return False
 
     def draw(self, context):
         _draw_subscription_details(self.layout)
@@ -844,7 +889,7 @@ class PLANETKA_PT_SubscriptionDetailsPanelCollapsed(_PLANETKA_PT_BaseSection, bp
 
     @classmethod
     def poll(cls, context):
-        return _is_connected()
+        return False
 
     def draw(self, context):
         _draw_subscription_details(self.layout)
@@ -1094,6 +1139,7 @@ class PLANETKA_PT_LinksPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
     bl_label = "Knowledge Base"
     bl_idname = "PLANETKA_PT_links"
     bl_order = 1000
+    bl_options = set()
 
     @classmethod
     def poll(cls, context):
@@ -1101,7 +1147,6 @@ class PLANETKA_PT_LinksPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        layout.enabled = _is_earth_workflow_enabled()
         layout.use_property_split = True
         layout.use_property_decorate = False
 
