@@ -1007,67 +1007,79 @@ def get_authorized_headers(prefs=None, allow_refresh=True):
 
 def _device_login_timer():
     global _DEVICE_LOGIN_TIMER_REGISTERED
-    prefs = get_prefs()
-    if prefs is None:
-        _DEVICE_LOGIN_TIMER_REGISTERED = False
-        return None
-
-    if get_login_state(prefs) != "pending":
-        _DEVICE_LOGIN_TIMER_REGISTERED = False
-        return None
-
-    device_code = str(getattr(prefs, "auth_device_code", "") or "").strip()
-    if not device_code:
-        prefs.auth_login_state = "logged_out"
-        prefs.auth_status_message = ""
-        _DEVICE_LOGIN_TIMER_REGISTERED = False
-        _tag_ui_redraw()
-        return None
-
-    expires_at = str(getattr(prefs, "auth_device_expires_at", "") or "").strip()
-    if expires_at:
-        try:
-            if time.time() >= float(expires_at):
-                clear_auth_session(prefs, state="logged_out", status_message="Browser session timed out. Connect again.")
-                _DEVICE_LOGIN_TIMER_REGISTERED = False
-                return None
-        except (TypeError, ValueError):
-            pass
-
-    interval = max(1.0, float(getattr(prefs, "auth_poll_interval_seconds", 2) or 2))
     try:
-        _status, payload = _json_request("POST", "/device/poll", {"device_code": device_code})
-    except AuthApiError as exc:
-        if exc.status in {404, 410, 408}:
-            clear_auth_session(prefs, state="logged_out", status_message="Browser session expired. Connect again.")
+        prefs = get_prefs()
+        if prefs is None:
             _DEVICE_LOGIN_TIMER_REGISTERED = False
             return None
+
+        if get_login_state(prefs) != "pending":
+            _DEVICE_LOGIN_TIMER_REGISTERED = False
+            return None
+
+        device_code = str(getattr(prefs, "auth_device_code", "") or "").strip()
+        if not device_code:
+            prefs.auth_login_state = "logged_out"
+            prefs.auth_status_message = ""
+            _DEVICE_LOGIN_TIMER_REGISTERED = False
+            _tag_ui_redraw()
+            return None
+
+        expires_at = str(getattr(prefs, "auth_device_expires_at", "") or "").strip()
+        if expires_at:
+            try:
+                if time.time() >= float(expires_at):
+                    clear_auth_session(prefs, state="logged_out", status_message="Browser session timed out. Connect again.")
+                    _DEVICE_LOGIN_TIMER_REGISTERED = False
+                    return None
+            except (TypeError, ValueError):
+                pass
+
+        interval = max(1.0, float(getattr(prefs, "auth_poll_interval_seconds", 2) or 2))
+        try:
+            _status, payload = _json_request("POST", "/device/poll", {"device_code": device_code})
+        except AuthApiError as exc:
+            if exc.status in {404, 410, 408}:
+                clear_auth_session(prefs, state="logged_out", status_message="Browser session expired. Connect again.")
+                _DEVICE_LOGIN_TIMER_REGISTERED = False
+                return None
+            prefs.auth_status_message = PENDING_AUTH_MESSAGE
+            _tag_ui_redraw()
+            return interval
+
+        status = str(payload.get("status", "") or "").strip().lower()
+        if status == "completed":
+            _apply_auth_payload(prefs, payload, login_state="authenticated")
+            _DEVICE_LOGIN_TIMER_REGISTERED = False
+            return None
+
         prefs.auth_status_message = PENDING_AUTH_MESSAGE
         _tag_ui_redraw()
         return interval
-
-    status = str(payload.get("status", "") or "").strip().lower()
-    if status == "completed":
-        _apply_auth_payload(prefs, payload, login_state="authenticated")
+    except Exception:
+        # Keep polling alive on unexpected runtime errors instead of silently stalling login.
         _DEVICE_LOGIN_TIMER_REGISTERED = False
+        prefs = get_prefs()
+        if prefs is not None and get_login_state(prefs) == "pending":
+            prefs.auth_status_message = PENDING_AUTH_MESSAGE
+            _tag_ui_redraw()
+            return max(1.0, float(getattr(prefs, "auth_poll_interval_seconds", 2) or 2))
         return None
-
-    prefs.auth_status_message = PENDING_AUTH_MESSAGE
-    _tag_ui_redraw()
-    return interval
 
 
 def ensure_device_login_polling():
     global _DEVICE_LOGIN_TIMER_REGISTERED
-    if _DEVICE_LOGIN_TIMER_REGISTERED:
-        return
-
     try:
         import bpy
     except Exception:
         return
 
     try:
+        # Self-heal stale in-memory flag after timer interruptions/add-on reloads.
+        if _DEVICE_LOGIN_TIMER_REGISTERED and not bpy.app.timers.is_registered(_device_login_timer):
+            _DEVICE_LOGIN_TIMER_REGISTERED = False
+        if _DEVICE_LOGIN_TIMER_REGISTERED:
+            return
         if not bpy.app.timers.is_registered(_device_login_timer):
             bpy.app.timers.register(_device_login_timer, first_interval=1.0)
         _DEVICE_LOGIN_TIMER_REGISTERED = True

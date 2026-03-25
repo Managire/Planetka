@@ -13,6 +13,7 @@ from .auth import (
     cancel_pending_device_login,
     clear_auth_session,
     describe_auth_error,
+    ensure_device_login_polling,
     get_commercial_use_allowed,
     get_contact_url,
     get_device_verification_url,
@@ -1496,6 +1497,7 @@ class PLANETKA_OT_AccountOpenLogin(bpy.types.Operator):
         verification_url = get_device_verification_url(prefs)
         if not verification_url:
             return fail(self, "No active Planetka browser login is waiting.", logger=logger)
+        ensure_device_login_polling()
 
         opened = False
         try:
