@@ -1015,6 +1015,11 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
                 "CYCLES",
                 text="Cycles",
             )
+            render_engine_box.prop(
+                props,
+                "experimental_udim_sampling",
+                text="Experimental UDIM Sampling",
+            )
 
             viewport_box = layout.box()
             viewport_box.label(text="Viewport Optimization", icon="VIEW3D")

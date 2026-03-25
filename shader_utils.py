@@ -3,6 +3,8 @@ import os
 import gc
 import importlib
 import logging
+import hashlib
+import shutil
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 
 from .extension_prefs import get_prefs
@@ -28,6 +30,7 @@ TEXTURE_LOADING_CHANNELS_RGBA = ("S2", "WT", "SE")
 TEXTURE_LOADING_CHANNELS_SCALAR = ("EL", "Alpha")
 _COVERAGE_MAP = None
 BASE_EMBEDDED_TILE_GROUP_COUNT = 32
+UDIM_COLUMNS = 10
 
 
 # ------------------------------------------------------------
@@ -229,6 +232,146 @@ def _image_file_size_bytes(image):
         return int(os.path.getsize(abs_path))
     except (OSError, TypeError, ValueError):
         return 0
+
+
+def _safe_file_size_bytes(path):
+    abs_path = bpy.path.abspath(str(path or ""))
+    if not abs_path or not os.path.isfile(abs_path):
+        return 0
+    try:
+        return int(os.path.getsize(abs_path))
+    except (OSError, TypeError, ValueError):
+        return 0
+
+
+def _ensure_directory(path):
+    try:
+        os.makedirs(path, exist_ok=True)
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def _link_or_copy_file(source_path, destination_path):
+    try:
+        if os.path.lexists(destination_path):
+            return True
+        os.symlink(source_path, destination_path)
+        return True
+    except (OSError, AttributeError, NotImplementedError):
+        try:
+            shutil.copy2(source_path, destination_path)
+            return True
+        except (OSError, shutil.Error):
+            return False
+
+
+def _udim_slot_for_index(index):
+    idx = max(0, int(index))
+    col = idx % UDIM_COLUMNS
+    row = idx // UDIM_COLUMNS
+    number = 1001 + col + row * UDIM_COLUMNS
+    return col, row, number
+
+
+def _udim_cache_root():
+    temp_root = str(getattr(bpy.app, "tempdir", "") or "")
+    if not temp_root:
+        temp_root = os.path.join(os.path.expanduser("~"), ".cache", "planetka")
+    return os.path.join(temp_root, "planetka_udim_cache")
+
+
+def _build_udim_image(
+    channel,
+    tile_paths,
+    request_key,
+):
+    channel_name = str(channel or "").upper()
+    if channel_name not in TEXTURE_TYPES:
+        return None
+    normalized_paths = [str(path or "") for path in (tile_paths or ())]
+    if not normalized_paths:
+        return None
+
+    first_path = ""
+    first_ext = ".exr"
+    for candidate in normalized_paths:
+        if candidate and os.path.isfile(candidate):
+            first_path = candidate
+            first_ext = os.path.splitext(candidate)[1] or first_ext
+            break
+    if not first_path:
+        return None
+
+    bundle_dir = os.path.join(_udim_cache_root(), str(request_key or "default"), channel_name)
+    if not _ensure_directory(bundle_dir):
+        return None
+
+    ext = first_ext
+    for candidate in normalized_paths:
+        if candidate:
+            candidate_ext = os.path.splitext(candidate)[1]
+            if candidate_ext:
+                ext = candidate_ext
+                break
+
+    pattern_path = os.path.join(bundle_dir, f"{channel_name}_<UDIM>{ext}")
+    generated_any = False
+    for index, source_path in enumerate(normalized_paths):
+        src_abs = bpy.path.abspath(str(source_path or ""))
+        if not src_abs or not os.path.isfile(src_abs):
+            continue
+        _, _, tile_number = _udim_slot_for_index(index)
+        tile_path = pattern_path.replace("<UDIM>", str(tile_number))
+        if _link_or_copy_file(src_abs, tile_path):
+            generated_any = True
+    if not generated_any:
+        return None
+
+    image_name = f"{channel_name}_UDIM_{request_key}"
+    image = bpy.data.images.get(image_name)
+    try:
+        if image is None:
+            image = bpy.data.images.load(pattern_path.replace("<UDIM>", "1001"), check_existing=False)
+            image.name = image_name
+        image.source = "TILED"
+        image.filepath = pattern_path
+        image.reload()
+        image.use_fake_user = False
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.warning("Planetka: failed preparing UDIM image %s", image_name, exc_info=True)
+        return None
+    except (RuntimeError, TypeError, ValueError):
+        logger.warning("Planetka: failed preparing UDIM image %s", image_name, exc_info=True)
+        return None
+    return image
+
+
+def _set_node_udim_offset(img_node, col, row):
+    mapping = getattr(img_node, "texture_mapping", None)
+    if mapping is None:
+        return
+    try:
+        translation = list(getattr(mapping, "translation", (0.0, 0.0, 0.0)))
+        while len(translation) < 3:
+            translation.append(0.0)
+        translation[0] = float(col)
+        translation[1] = float(row)
+        translation[2] = 0.0
+        mapping.translation = translation
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, AttributeError):
+        return
+
+
+def _use_experimental_udim_sampling():
+    env_toggle = str(os.getenv("PLANETKA_EXPERIMENTAL_UDIM", "") or "").strip().lower()
+    if env_toggle in {"1", "true", "yes", "on"}:
+        return True
+    scene = getattr(getattr(bpy, "context", None), "scene", None)
+    props = getattr(scene, "planetka", None) if scene is not None else None
+    if props is None:
+        return False
+    return bool(getattr(props, "experimental_udim_sampling", False))
 
 
 def _iter_tile_group_nodes(node_tree):
@@ -1205,6 +1348,196 @@ def update_shader_nodes(
     return stats
 
 
+def update_shader_nodes_udim(
+    visible_tiles,
+    material_name="Planetka Earth Material",
+    force_remove_datablocks=False,
+    allow_slot_shrink=True,
+    ocean_tiles=None,
+    resolved_paths=None,
+):
+    stats = {
+        "higher_z_fallback_count": 0,
+        "missing_texture_count": 0,
+        "loaded_texture_bytes": 0,
+    }
+
+    material = bpy.data.materials.get(material_name)
+    if not material or not material.node_tree:
+        logger.error("Planetka: material %r missing or invalid", material_name)
+        return stats
+
+    nodes = material.node_tree.nodes
+    group = nodes.get("Planetka Textures Loading")
+    if not group or not group.node_tree:
+        logger.error("Planetka: texture loading group missing in material %r", material_name)
+        return stats
+
+    try:
+        tile_nodes = _ensure_dynamic_texture_loading_slots(
+            group.node_tree,
+            len(visible_tiles),
+            allow_shrink=allow_slot_shrink,
+        )
+    except (RuntimeError, TypeError, ValueError) as exc:
+        logger.error("Planetka: failed to build dynamic tile slots: %s", exc)
+        return stats
+    if len(tile_nodes) < len(visible_tiles):
+        logger.error(
+            "Planetka: dynamic tile slot build returned %d slots for %d tiles",
+            len(tile_nodes),
+            len(visible_tiles),
+        )
+        return stats
+
+    # Keep alpha-mask routing stable after slot rebinding.
+    for tile_node in tile_nodes:
+        try:
+            _stabilize_tile_group_mask_sources(getattr(tile_node, "node_tree", None))
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            pass
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            pass
+
+    extension_dir = os.path.dirname(os.path.abspath(__file__))
+    fallback_dir = os.path.join(extension_dir, "Resources", "Fallback Images")
+    fallback_paths = {
+        "S2": os.path.join(fallback_dir, "ocean_pixel_final_20.exr"),
+        "EL": os.path.join(fallback_dir, "black_pixel_20.exr"),
+        "WT": os.path.join(fallback_dir, "blue_pixel_20.exr"),
+        "PO": os.path.join(fallback_dir, "black_pixel_20.exr"),
+    }
+
+    tile_path_map = {img_type: [] for img_type in TEXTURE_TYPES}
+    seen_data_paths = set()
+    request_fingerprint = hashlib.sha1()
+
+    for index, tile in enumerate(visible_tiles):
+        tile_str = str(tile or "")
+        parsed = parse_tile(tile_str)
+        is_ocean_tile = bool(ocean_tiles and tile_str in ocean_tiles)
+
+        for img_type in TEXTURE_TYPES:
+            source_path = ""
+            if not is_ocean_tile and parsed is not None:
+                prefetched_key = (tile_str, img_type)
+                if isinstance(resolved_paths, dict) and prefetched_key in resolved_paths:
+                    source_path = str(resolved_paths.get(prefetched_key, "") or "")
+                if not source_path and img_type == "EL":
+                    x, y, z, d = parsed
+                    if int(z) == 1 and int(d) == 2:
+                        alt_tile = tile_str.replace("d002", "d001")
+                        alt_key = (alt_tile, img_type)
+                        if isinstance(resolved_paths, dict) and alt_key in resolved_paths:
+                            source_path = str(resolved_paths.get(alt_key, "") or "")
+
+            source_abs = bpy.path.abspath(source_path) if source_path else ""
+            if not source_abs or not os.path.isfile(source_abs):
+                source_abs = bpy.path.abspath(fallback_paths.get(img_type, ""))
+                if not source_abs or not os.path.isfile(source_abs):
+                    source_abs = ""
+                if not is_ocean_tile:
+                    stats["missing_texture_count"] += 1
+
+            tile_path_map[img_type].append(source_abs)
+            request_fingerprint.update(f"{img_type}|{index}|{tile_str}|{source_abs}\n".encode("utf-8", "ignore"))
+            if source_abs and source_abs not in seen_data_paths:
+                seen_data_paths.add(source_abs)
+                stats["loaded_texture_bytes"] += _safe_file_size_bytes(source_abs)
+
+    request_key = request_fingerprint.hexdigest()[:16]
+    udim_images = {}
+    for img_type in TEXTURE_TYPES:
+        image = _build_udim_image(
+            img_type,
+            tile_path_map.get(img_type, []),
+            request_key=request_key,
+        )
+        if image is None:
+            logger.warning("Planetka: UDIM image build failed for %s; falling back to per-tile textures.", img_type)
+            return update_shader_nodes(
+                visible_tiles=visible_tiles,
+                material_name=material_name,
+                force_remove_datablocks=force_remove_datablocks,
+                allow_slot_shrink=allow_slot_shrink,
+                ocean_tiles=ocean_tiles,
+                resolved_paths=resolved_paths,
+            )
+        _set_image_colorspace_safe(image, "Non-Color" if img_type == "EL" else "Linear Rec.709")
+        udim_images[img_type] = image
+
+    for i, tile in enumerate(visible_tiles):
+        node = tile_nodes[i]
+        mask_node = group.node_tree.nodes.get(f"{TILE_MASK_NODE_PREFIX}{i + 1:03d}")
+        parsed = parse_tile(tile)
+        if not parsed:
+            node.mute = True
+            node.label = "Invalid"
+            if mask_node is not None:
+                mask_node.mute = True
+            continue
+        x, y, z, d = parsed
+        node.mute = False
+        node.label = str(tile)
+        node.inputs[0].default_value = x
+        node.inputs[1].default_value = y
+        node.inputs[2].default_value = z
+        node.inputs[3].default_value = d
+        if mask_node is not None:
+            mask_node.mute = False
+            mask_node.inputs[0].default_value = x
+            mask_node.inputs[1].default_value = y
+            mask_node.inputs[2].default_value = z
+            mask_node.inputs[3].default_value = d
+
+        udim_col, udim_row, _tile_number = _udim_slot_for_index(i)
+        tile_tree = getattr(node, "node_tree", None)
+        tile_tree_nodes = getattr(tile_tree, "nodes", None) if tile_tree else None
+        if tile_tree_nodes is None:
+            continue
+        for img_type in TEXTURE_TYPES:
+            img_node = tile_tree_nodes.get(img_type)
+            if not img_node:
+                continue
+            _assign_image_to_node(
+                img_node,
+                udim_images.get(img_type),
+                img_type=img_type,
+                use_fallback=False,
+            )
+            _set_node_udim_offset(img_node, udim_col, udim_row)
+
+    for index, node in enumerate(tile_nodes[len(visible_tiles):], start=len(visible_tiles) + 1):
+        node.mute = True
+        node.label = "Empty"
+        mask_node = group.node_tree.nodes.get(f"{TILE_MASK_NODE_PREFIX}{index:03d}")
+        if mask_node is not None:
+            mask_node.mute = True
+        tile_tree = getattr(node, "node_tree", None)
+        tile_tree_nodes = getattr(tile_tree, "nodes", None) if tile_tree else None
+        if tile_tree_nodes is None:
+            continue
+        for img_type in TEXTURE_TYPES:
+            img_node = tile_tree_nodes.get(img_type)
+            if not img_node:
+                continue
+            _assign_image_to_node(
+                img_node,
+                udim_images.get(img_type),
+                img_type=img_type,
+                use_fallback=False,
+            )
+            _set_node_udim_offset(img_node, 0, 0)
+
+    if force_remove_datablocks:
+        try:
+            bpy.context.view_layer.update()
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: view layer update before surface hard-offload failed", exc_info=True)
+    cleanup_planetka_images(force_remove_datablocks=force_remove_datablocks)
+    return stats
+
+
 # ------------------------------------------------------------
 # Main entry
 # ------------------------------------------------------------
@@ -1229,14 +1562,26 @@ def main(
         resolved_tiles = list(resolved_tiles_override or ())
         ocean_tiles = set(ocean_tiles_override or ())
     requested_tiles = list(visible_tiles)
-    result = update_shader_nodes(
-        resolved_tiles,
-        material_name=material_name,
-        force_remove_datablocks=force_remove_datablocks,
-        allow_slot_shrink=allow_slot_shrink,
-        ocean_tiles=ocean_tiles,
-        resolved_paths=resolved_paths,
-    )
+    use_udim = _use_experimental_udim_sampling()
+    if use_udim:
+        logger.info("Planetka: using experimental UDIM shader sampling path.")
+        result = update_shader_nodes_udim(
+            resolved_tiles,
+            material_name=material_name,
+            force_remove_datablocks=force_remove_datablocks,
+            allow_slot_shrink=allow_slot_shrink,
+            ocean_tiles=ocean_tiles,
+            resolved_paths=resolved_paths,
+        )
+    else:
+        result = update_shader_nodes(
+            resolved_tiles,
+            material_name=material_name,
+            force_remove_datablocks=force_remove_datablocks,
+            allow_slot_shrink=allow_slot_shrink,
+            ocean_tiles=ocean_tiles,
+            resolved_paths=resolved_paths,
+        )
     result["higher_z_fallback_count"] = len(set(resolved_tiles) - set(requested_tiles))
     result["resolved_tiles"] = list(resolved_tiles)
     result["requested_tiles"] = list(requested_tiles)
