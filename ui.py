@@ -647,25 +647,29 @@ def _iter_surface_grading_input_sockets(node):
 
 
 _SURFACE_GRADING_SECTION_ORDER = (
-    "Surface color",
-    "Specular Reflections",
+    "Global",
+    "Water",
     "Elevation",
     "Night Lights",
-    "Extra",
 )
 
 _SURFACE_GRADING_SECTION_SOCKET_MAP = {
-    "Surface color": {
+    "Global": {
         "surface brightness",
         "surface saturation",
-        "saturation",
     },
-    "Specular Reflections": {
+    "Water": {
         "roughness",
         "ior",
+        "saturation",
         "water texture strength",
+        "hue",
+        "brightness",
     },
     "Elevation": {
+        "coefficient",
+        "waves density coefficient",
+        "waves height coefficient",
         "procedural detail scale",
         "forest detail strength",
         "rock detail strength",
@@ -674,13 +678,7 @@ _SURFACE_GRADING_SECTION_SOCKET_MAP = {
     },
     "Night Lights": {
         "intensity",
-    },
-    "Extra": {
-        "water waves on/off",
-        "snow on/off",
-        "snow line (m)",
-        "waves density coefficient",
-        "waves height coefficient",
+        "color temperature",
     },
 }
 
@@ -691,15 +689,26 @@ def _surface_grading_section_for_socket(socket_name):
         names = _SURFACE_GRADING_SECTION_SOCKET_MAP.get(section, set())
         if normalized in names:
             return section
-    return "Extra"
+    return None
 
 
 def _split_surface_grading_sockets(sockets):
     grouped = {section: [] for section in _SURFACE_GRADING_SECTION_ORDER}
     for socket in sockets or ():
         section = _surface_grading_section_for_socket(getattr(socket, "name", ""))
+        if section is None:
+            continue
         grouped.setdefault(section, []).append(socket)
     return grouped
+
+
+def _surface_grading_socket_label(socket_name):
+    normalized = str(socket_name or "").strip().lower()
+    if normalized == "surface brightness":
+        return "Brightness"
+    if normalized == "surface saturation":
+        return "Saturation"
+    return str(socket_name or "Value")
 
 
 def _draw_surface_grading(layout):
@@ -730,7 +739,7 @@ def _draw_surface_grading(layout):
             for socket in section_sockets:
                 row = section_box.row()
                 try:
-                    row.prop(socket, "default_value", text=str(getattr(socket, "name", "Value")))
+                    row.prop(socket, "default_value", text=_surface_grading_socket_label(getattr(socket, "name", "")))
                 except (AttributeError, RuntimeError, TypeError, ValueError):
                     continue
 
@@ -1248,7 +1257,7 @@ class PLANETKA_PT_NavigationSavedLocationsPanelCollapsed(_PLANETKA_PT_BaseSectio
 
 
 class PLANETKA_PT_SurfaceGradingPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Surface Grading"
+    bl_label = "Surface Settings"
     bl_idname = "PLANETKA_PT_surface_grading"
     bl_order = 5
 
@@ -1263,7 +1272,7 @@ class PLANETKA_PT_SurfaceGradingPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel)
 
 
 class PLANETKA_PT_SurfaceGradingPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Surface Grading"
+    bl_label = "Surface Settings"
     bl_idname = "PLANETKA_PT_surface_grading_collapsed"
     bl_order = 5
 
