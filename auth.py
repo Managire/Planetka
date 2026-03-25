@@ -1101,13 +1101,23 @@ def start_device_login(prefs=None):
 
     existing_url = get_device_verification_url(prefs)
     if get_login_state(prefs) == "pending" and existing_url:
-        ensure_device_login_polling()
-        return {
-            "verification_url": existing_url,
-            "device_code": str(getattr(prefs, "auth_device_code", "") or "").strip(),
-            "expires_at": str(getattr(prefs, "auth_device_expires_at", "") or "").strip(),
-            "interval_seconds": int(getattr(prefs, "auth_poll_interval_seconds", 2) or 2),
-        }
+        existing_code = str(getattr(prefs, "auth_device_code", "") or "").strip()
+        existing_expires_at = str(getattr(prefs, "auth_device_expires_at", "") or "").strip()
+        session_is_fresh = bool(existing_code)
+        if session_is_fresh and existing_expires_at:
+            try:
+                session_is_fresh = float(existing_expires_at) > time.time()
+            except (TypeError, ValueError):
+                session_is_fresh = True
+        if session_is_fresh:
+            ensure_device_login_polling()
+            return {
+                "verification_url": existing_url,
+                "device_code": existing_code,
+                "expires_at": existing_expires_at,
+                "interval_seconds": int(getattr(prefs, "auth_poll_interval_seconds", 2) or 2),
+            }
+        clear_auth_session(prefs, state="logged_out", status_message="Previous browser session expired. Starting a new one.")
 
     _status, payload = _json_request("POST", "/device/start", {})
     clear_auth_session(prefs, state="pending", status_message=PENDING_AUTH_MESSAGE)
