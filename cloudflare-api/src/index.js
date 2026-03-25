@@ -1647,7 +1647,8 @@ function renderDeviceLoginPage(env, deviceCode = "") {
           show("Verifying login...", "info");
           try {
             await post("/auth/verify", { token, device_code: DEVICE_CODE });
-            show("Blender is now connected. You can return to Blender.", "success");
+            button.textContent = "Verified";
+            show("Verified. Blender is now connected. You can return to Blender.", "success");
           } catch (error) {
             console.error("planetka auth/verify failed", error);
             show("This login link is invalid or expired. Please request a new one.", "error");
