@@ -1300,12 +1300,16 @@ def _populate_navigation_from_scene_camera(scene, props):
     lat, lon, _alt_km = nav_values
     derived = _derive_navigation_shot_from_camera(scene, lon, lat)
     try:
+        camera = getattr(scene, "camera", None)
+        camera_data = getattr(camera, "data", None) if camera is not None else None
         props.nav_latitude_deg = float(lat)
         props.nav_longitude_deg = float(lon)
         props.nav_altitude_km = max(0.0, float(derived.get("altitude_km", 0.0)))
         props.nav_azimuth_deg = float(derived.get("azimuth_deg", 0.0))
         props.nav_tilt_deg = float(derived.get("tilt_deg", 0.0))
         props.nav_roll_deg = float(derived.get("roll_deg", 0.0))
+        if camera_data is not None:
+            props.nav_focal_length_mm = max(1.0, float(getattr(camera_data, "lens", 50.0)))
         _store_last_navigation_values(
             scene,
             lon_deg=float(props.nav_longitude_deg),
@@ -1898,12 +1902,15 @@ class PLANETKA_OT_UseCurrentViewNavigation(bpy.types.Operator):
             return {'FINISHED'}
 
         try:
+            camera_data = getattr(camera, "data", None)
             props.nav_latitude_deg = float(lat)
             props.nav_longitude_deg = float(lon)
             props.nav_altitude_km = max(0.0, float(derived.get("altitude_km", 0.0)))
             props.nav_azimuth_deg = float(derived.get("azimuth_deg", 0.0))
             props.nav_tilt_deg = float(derived.get("tilt_deg", 0.0))
             props.nav_roll_deg = float(derived.get("roll_deg", 0.0))
+            if camera_data is not None:
+                props.nav_focal_length_mm = max(1.0, float(getattr(camera_data, "lens", 50.0)))
             _store_last_navigation_values(
                 scene,
                 lon_deg=float(props.nav_longitude_deg),

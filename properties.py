@@ -14,6 +14,7 @@ from .state import (
     update_debug_logging,
     update_renderer_engine_optimization,
     update_navigation_shot,
+    update_navigation_focal_length,
     update_r2_cache_settings,
     update_show_earth_preview,
     update_sunlight_controls,
@@ -388,6 +389,16 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         precision=2,
         description="Navigation camera roll angle around the viewing axis",
         update=update_navigation_shot,
+    )
+
+    nav_focal_length_mm: FloatProperty(
+        name="Focal Length (mm)",
+        default=50.0,
+        min=1.0,
+        max=5000.0,
+        precision=2,
+        description="Camera focal length in millimeters",
+        update=update_navigation_focal_length,
     )
 
     nav_city_search: StringProperty(

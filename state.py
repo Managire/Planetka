@@ -55,6 +55,7 @@ _SYNC_IDPROP_MAP = {
     "nav_azimuth_deg": "planetka_nav_azimuth_deg",
     "nav_tilt_deg": "planetka_nav_tilt_deg",
     "nav_roll_deg": "planetka_nav_roll_deg",
+    "nav_focal_length_mm": "planetka_nav_focal_length_mm",
     "nav_city_search": "planetka_nav_city_search",
     "nav_saved_location_name": "planetka_nav_saved_location_name",
     "nav_saved_location_id": "planetka_nav_saved_location_id",
@@ -93,6 +94,7 @@ _NAVIGATION_SYNC_IDPROP_MAP = (
     ("nav_azimuth_deg", "planetka_nav_azimuth_deg"),
     ("nav_tilt_deg", "planetka_nav_tilt_deg"),
     ("nav_roll_deg", "planetka_nav_roll_deg"),
+    ("nav_focal_length_mm", "planetka_nav_focal_length_mm"),
 )
 SURFACE_COLLECTION_NAME = "Planetka - Earth Surface Collection"
 _MESH_UTILS_MODULE = None
@@ -971,6 +973,35 @@ def update_navigation_shot(self, context):
         _NAVIGATION_SHOT_UPDATE_PENDING = False
     except (RuntimeError, TypeError, ValueError):
         _NAVIGATION_SHOT_UPDATE_PENDING = False
+
+
+def update_navigation_focal_length(self, context):
+    global _NAVIGATION_USER_EDIT_LAST_TOUCH
+    if _NAVIGATION_SHOT_SUSPEND_COUNT > 0:
+        return
+    if _IDPROP_SYNCING or _NAVIGATION_SHOT_UPDATE_REENTRANT or _NAV_CAMERA_CONTROL_SYNCING:
+        return
+
+    scene = getattr(context, "scene", None) if context else None
+    if scene is None:
+        return
+
+    _NAVIGATION_USER_EDIT_LAST_TOUCH = time.monotonic()
+    _sync_navigation_idprops_from_props(scene)
+    _suspend_adaptive_viewport_during_navigation(scene)
+
+    camera = getattr(scene, "camera", None)
+    camera_data = getattr(camera, "data", None) if camera is not None else None
+    if camera is not None and getattr(camera, "type", None) == 'CAMERA' and camera_data is not None:
+        try:
+            lens_mm = max(1.0, float(getattr(self, "nav_focal_length_mm", 50.0)))
+            camera_data.lens = lens_mm
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed applying camera focal length", exc_info=True)
+        except (RuntimeError, TypeError, ValueError):
+            logger.debug("Planetka: failed applying camera focal length", exc_info=True)
+
+    request_auto_resolve(scene, immediate=False)
 
 
 def _is_animation_playing():

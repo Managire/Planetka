@@ -175,6 +175,8 @@ def _status_icon(code):
         return "SORTTIME"
     if token == "MONITORING":
         return "VIEW_CAMERA"
+    if token == "IDLE":
+        return "CHECKMARK"
     return "INFO"
 
 
@@ -420,25 +422,6 @@ def _draw_live_telemetry(layout, scene):
     layout.use_property_split = False
     layout.use_property_decorate = False
     diag = read_diagnostics(scene)
-    resolve_error = ""
-    try:
-        resolve_error = str(scene.get("planetka_last_resolve_error", "") or "") if scene is not None else ""
-    except Exception:
-        resolve_error = ""
-    if resolve_error:
-        error_box = layout.box()
-        error_box.alert = True
-        error_box.label(text="Resolve Error", icon="ERROR")
-        error_box.label(text=resolve_error)
-    note_text = _texture_quality_note_text(scene)
-    if note_text:
-        note_box = layout.box()
-        note_box.alert = False
-        note_box.label(text=note_text, icon="INFO")
-    live_col = layout.column(align=True)
-    live_col.label(text=f"Latitude: {_fmt_deg(diag.get('view_latitude_deg'))}")
-    live_col.label(text=f"Longitude: {_fmt_deg(diag.get('view_longitude_deg'))}")
-    live_col.label(text=f"Altitude: {_fmt_km(diag.get('view_altitude_km'))}")
 
     progress = get_download_progress()
     active_download = is_download_active()
@@ -453,77 +436,24 @@ def _draw_live_telemetry(layout, scene):
         runtime_code = "DOWNLOADING"
         runtime_text = "Downloading Data"
 
-    status_box = layout.box()
-    status_box.label(text="Status", icon="INFO")
-    status_box.label(
+    layout.label(
         text=f"{runtime_text}{_status_activity_suffix(runtime.get('running', False))}",
         icon=_status_icon(runtime_code),
     )
+    layout.label(text=f"Last resolve downloaded: {_fmt_mb(diag.get('resolve_downloaded_mb'))}")
 
     if runtime_code == "DOWNLOADING":
         if total_bytes > 0:
-            status_box.label(text=f"{downloaded_mb:.2f} / {total_mb:.2f} MB")
+            layout.label(text=f"{downloaded_mb:.2f} / {total_mb:.2f} MB")
         else:
-            status_box.label(text=f"{downloaded_mb:.2f} MB")
+            layout.label(text=f"{downloaded_mb:.2f} MB")
     elif runtime_code in {"QUEUED", "FINALIZE_QUEUED"}:
         request_id = runtime.get("active_request_id")
         pending_count = int(runtime.get("pending_count", 0) or 0)
         if request_id is not None:
-            status_box.label(text=f"Request: #{request_id}")
+            layout.label(text=f"Request: #{request_id}")
         if pending_count > 0:
-            status_box.label(text=f"Queued jobs: {pending_count}")
-
-    from .extension_prefs import get_prefs
-
-    prefs = get_prefs()
-    if prefs and is_authenticated(prefs):
-        plan_code = get_plan_code(prefs)
-        allowance_period = get_allowance_period(prefs)
-        allowance_period_end = get_allowance_period_end(prefs)
-        total_remaining = get_allowance_total_remaining_bytes(prefs)
-        warning_state = get_allowance_warning_state(prefs)
-        exhausted = is_data_exhausted(prefs)
-        downloaded_period = get_allowance_downloaded_period_bytes(prefs)
-        contact_url = get_contact_url(prefs)
-        upgrade_url = get_upgrade_url(prefs)
-        manage_subscription_url = get_manage_subscription_url(prefs)
-
-        allowance_box = layout.box()
-        allowance_box.label(text=f"{_allowance_period_label(allowance_period)} Data Remaining", icon="MESH_GRID")
-        remaining_row = allowance_box.row()
-        remaining_row.alert = bool(exhausted or warning_state in {"low", "exhausted"})
-        remaining_row.label(text=f"Remaining Data: {_fmt_gb_from_bytes(total_remaining)}")
-
-        if allowance_period_end:
-            allowance_box.label(text=f"Period ends: {_fmt_reset_datetime(allowance_period_end)}", icon="TIME")
-        if downloaded_period is not None:
-            allowance_box.label(text=f"This period downloaded: {_fmt_gb_from_bytes(downloaded_period)}")
-        allowance_box.label(text=f"Last resolve downloaded: {_fmt_mb(diag.get('resolve_downloaded_mb'))}")
-
-        if exhausted:
-            exhausted_box = layout.box()
-            exhausted_box.alert = True
-            if plan_code in {PLAN_CODE_PLANETKA_PRO, PLAN_CODE_PLANETKA_STUDIO}:
-                exhausted_box.label(text="No data remaining right now.", icon="ERROR")
-                exhausted_box.label(text="Contact me for a one-off boost or higher recurring allowance.", icon="INFO")
-            else:
-                exhausted_box.label(text="Included free data is used up for this period.", icon="ERROR")
-                exhausted_box.label(text="Contact me for more data and briefly describe your project.", icon="INFO")
-                exhausted_box.label(text="If possible, include renders/screenshots/showcase material.", icon="INFO")
-            action_row = exhausted_box.row(align=True)
-            if contact_url:
-                action_row.operator("planetka.account_contact", text="Contact Me", icon="URL")
-            if plan_code not in {PLAN_CODE_PLANETKA_PRO, PLAN_CODE_PLANETKA_STUDIO} and upgrade_url:
-                action_row.operator("planetka.account_upgrade", text="Upgrade to Pro", icon="URL")
-            if plan_code in {PLAN_CODE_PLANETKA_PRO, PLAN_CODE_PLANETKA_STUDIO} and manage_subscription_url:
-                action_row.operator("planetka.account_manage_subscription", text="Manage Subscription", icon="URL")
-        elif warning_state == "low":
-            warning_box = layout.box()
-            warning_box.alert = True
-            if plan_code in {PLAN_CODE_PLANETKA_PRO, PLAN_CODE_PLANETKA_STUDIO}:
-                warning_box.label(text="Low data remaining. Contact me if you need higher allowance.", icon="ERROR")
-            else:
-                warning_box.label(text="Low data remaining. Contact me if you need more data.", icon="ERROR")
+            layout.label(text=f"Queued jobs: {pending_count}")
 
 
 def _draw_advanced_telemetry(layout, scene):
@@ -598,6 +528,7 @@ def _draw_navigation(layout, context):
     shot_box.prop(props, "nav_azimuth_deg", text="Heading (°)")
     shot_box.prop(props, "nav_tilt_deg", text="Tilt (°)")
     shot_box.prop(props, "nav_roll_deg", text="Roll (°)")
+    shot_box.prop(props, "nav_focal_length_mm", text="Focal Length (mm)")
 
     preset_box = layout.box()
     preset_box.enabled = not prepared
@@ -1072,7 +1003,7 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             )
 
 class PLANETKA_PT_LiveTelemetryPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Telemetry"
+    bl_label = "Status Check"
     bl_idname = "PLANETKA_PT_live_telemetry"
     bl_order = 3
     bl_options = set()
@@ -1088,7 +1019,7 @@ class PLANETKA_PT_LiveTelemetryPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
 
 class PLANETKA_PT_LiveTelemetryPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Telemetry"
+    bl_label = "Status Check"
     bl_idname = "PLANETKA_PT_live_telemetry_collapsed"
     bl_order = 3
 
