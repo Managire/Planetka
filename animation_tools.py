@@ -6,10 +6,15 @@ import bpy
 from bpy.props import EnumProperty
 from mathutils import Matrix, Quaternion, Vector
 
+from .auth import get_allowance_total_remaining_bytes
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from .extension_prefs import get_earth_object, get_prefs
 from .operator_utils import ErrorCode, fail, require_planetka_props, require_scene
-from .r2_source import is_remote_source_configured
+from .r2_source import (
+    get_remote_cache_folder,
+    is_remote_source_configured,
+    plan_resolve_downloads,
+)
 from .state import (
     create_temp_mesh,
     cleanup_planetka_unused_data,
@@ -131,24 +136,154 @@ def _iter_texture_paths_for_tile(base_path, tile):
         yield path
 
 
-def _estimate_texture_bytes_for_segments(segments, base_path):
+def _iter_texture_requests_for_tile(tile):
+    parsed = _parse_tile(tile)
+    if not parsed:
+        return
+    _x, _y, z, d = parsed
+    for texture_type in TEXTURE_TYPES:
+        tile_code = str(tile)
+        if texture_type == "EL" and int(z) == 1 and int(d) == 2:
+            tile_code = tile_code.replace("_d002", "_d001")
+        extension = TEXTURE_EXTENSIONS.get(texture_type, ".exr")
+        yield (texture_type, texture_type, tile_code, (extension,))
+
+
+def _estimate_local_texture_bytes_for_requests(base_path, requests):
     unique_paths = set()
     total_bytes = 0
-    for segment in segments:
-        for tile in segment.get("tiles", ()):
-            if not _is_land_tile(tile):
+    for request in requests or ():
+        if not isinstance(request, (tuple, list)) or len(request) != 4:
+            continue
+        folder, prefix, filename, extensions = request
+        folder = str(folder or "").strip()
+        prefix = str(prefix or "").strip()
+        filename = str(filename or "").strip()
+        if not folder or not prefix or not filename:
+            continue
+        exts = tuple(extensions or (".exr",))
+        for ext in exts:
+            path = os.path.join(base_path, folder, f"{prefix}_{filename}{str(ext or '')}")
+            abs_path = os.path.abspath(path)
+            if abs_path in unique_paths:
                 continue
-            for path in _iter_texture_paths_for_tile(base_path, tile):
-                abs_path = os.path.abspath(path)
-                if abs_path in unique_paths:
-                    continue
-                unique_paths.add(abs_path)
-                if os.path.isfile(abs_path):
-                    try:
-                        total_bytes += int(os.path.getsize(abs_path))
-                    except (OSError, TypeError, ValueError):
-                        logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
+            unique_paths.add(abs_path)
+            if os.path.isfile(abs_path):
+                try:
+                    total_bytes += int(os.path.getsize(abs_path))
+                except (OSError, TypeError, ValueError):
+                    logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
     return int(total_bytes)
+
+
+def _estimate_remote_texture_bytes_for_requests(requests):
+    deduped = []
+    seen = set()
+    for request in requests or ():
+        if not isinstance(request, (tuple, list)) or len(request) != 4:
+            continue
+        folder, prefix, filename, extensions = request
+        normalized = (
+            str(folder or "").strip(),
+            str(prefix or "").strip(),
+            str(filename or "").strip(),
+            tuple(extensions or (".exr",)),
+        )
+        if not normalized[0] or not normalized[1] or not normalized[2]:
+            continue
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(normalized)
+
+    cached_bytes = 0
+    unresolved = []
+    for folder, prefix, filename, exts in deduped:
+        cache_folder = get_remote_cache_folder(folder)
+        found_cached = False
+        if cache_folder:
+            for ext in exts:
+                candidate = os.path.join(cache_folder, f"{prefix}_{filename}{str(ext or '')}")
+                if not os.path.isfile(candidate):
+                    continue
+                found_cached = True
+                try:
+                    cached_bytes += int(os.path.getsize(candidate))
+                except (OSError, TypeError, ValueError):
+                    logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
+                break
+        if not found_cached:
+            unresolved.append((folder, prefix, filename, exts))
+
+    planned_total = 0
+    unknown_files = 0
+    if unresolved:
+        try:
+            plan = plan_resolve_downloads(unresolved)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            plan = {}
+        except (RuntimeError, TypeError, ValueError):
+            plan = {}
+        planned_total = int(plan.get("planned_total_bytes", 0) or 0)
+        unknown_files = int(plan.get("unknown_file_count", 0) or 0)
+
+    return int(max(0, cached_bytes + planned_total)), int(max(0, unknown_files))
+
+
+def _estimate_remote_download_bytes_for_requests(requests):
+    deduped = []
+    seen = set()
+    for request in requests or ():
+        if not isinstance(request, (tuple, list)) or len(request) != 4:
+            continue
+        folder, prefix, filename, extensions = request
+        normalized = (
+            str(folder or "").strip(),
+            str(prefix or "").strip(),
+            str(filename or "").strip(),
+            tuple(extensions or (".exr",)),
+        )
+        if not normalized[0] or not normalized[1] or not normalized[2]:
+            continue
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(normalized)
+
+    if not deduped:
+        return 0, 0
+
+    try:
+        plan = plan_resolve_downloads(deduped)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        plan = {}
+    except (RuntimeError, TypeError, ValueError):
+        plan = {}
+
+    return (
+        int(max(0, int(plan.get("planned_total_bytes", 0) or 0))),
+        int(max(0, int(plan.get("unknown_file_count", 0) or 0))),
+    )
+
+
+def _build_texture_requests_for_tiles(tiles):
+    requests = []
+    for tile in tiles or ():
+        if not _is_land_tile(tile):
+            continue
+        requests.extend(_iter_texture_requests_for_tile(tile))
+    return requests
+
+
+def _estimate_texture_bytes_for_segments(segments, base_path):
+    requests = []
+    for segment in segments or ():
+        requests.extend(_build_texture_requests_for_tiles(segment.get("tiles", ())))
+
+    if is_remote_source_configured(base_path) and (not base_path or not os.path.isdir(base_path)):
+        total_bytes, _unknown = _estimate_remote_texture_bytes_for_requests(requests)
+        return int(total_bytes)
+    return int(_estimate_local_texture_bytes_for_requests(base_path, requests))
 
 
 def _ensure_collection(scene, name):
@@ -349,22 +484,13 @@ def _segment_display_name(segment_start, segment_end):
 
 
 def _estimate_texture_bytes_for_tiles(tiles, base_path):
-    unique_paths = set()
-    total_bytes = 0
-    for tile in tiles or ():
-        if not _is_land_tile(tile):
-            continue
-        for path in _iter_texture_paths_for_tile(base_path, tile):
-            abs_path = os.path.abspath(path)
-            if abs_path in unique_paths:
-                continue
-            unique_paths.add(abs_path)
-            if os.path.isfile(abs_path):
-                try:
-                    total_bytes += int(os.path.getsize(abs_path))
-                except (OSError, TypeError, ValueError):
-                    logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
-    return int(total_bytes)
+    requests = _build_texture_requests_for_tiles(tiles)
+    if is_remote_source_configured(base_path) and (not base_path or not os.path.isdir(base_path)):
+        total_bytes, unknown_files = _estimate_remote_texture_bytes_for_requests(requests)
+        if int(total_bytes) <= 0 and int(unknown_files) > 0:
+            return None
+        return int(total_bytes)
+    return int(_estimate_local_texture_bytes_for_requests(base_path, requests))
 
 
 def _restore_base_surface_visibility(scene):
@@ -1715,12 +1841,30 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
 
         max_segment = None
         max_bytes = -1
+        max_unknown = False
+        all_requests = []
         for seg in segments:
             seg_tiles = list(seg.get("tiles", ()))
+            all_requests.extend(_build_texture_requests_for_tiles(seg_tiles))
             seg_bytes = _estimate_texture_bytes_for_tiles(seg_tiles, base_path)
+            if seg_bytes is None:
+                if max_segment is None:
+                    max_segment = seg
+                    max_unknown = True
+                continue
             if seg_bytes > max_bytes:
                 max_bytes = seg_bytes
                 max_segment = seg
+                max_unknown = False
+
+        estimated_download_bytes = 0
+        estimated_download_unknown_files = 0
+        if is_remote_source_configured(base_path) and (not base_path or not os.path.isdir(base_path)):
+            estimated_download_bytes, estimated_download_unknown_files = _estimate_remote_download_bytes_for_requests(all_requests)
+
+        remaining_allowance_bytes = get_allowance_total_remaining_bytes(prefs)
+        if not isinstance(remaining_allowance_bytes, int):
+            remaining_allowance_bytes = None
 
         self._preview_res_x = int(res_x)
         self._preview_res_y = int(res_y)
@@ -1735,7 +1879,12 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         self._preview_max_segment_name = (
             _segment_display_name(max_segment.get("start"), max_segment.get("end")) if isinstance(max_segment, dict) else "—"
         )
-        self._preview_max_segment_mb = float(max(0, int(max_bytes))) / (1024.0 * 1024.0) if max_bytes >= 0 else 0.0
+        self._preview_max_segment_mb = (
+            None if max_unknown else (float(max(0, int(max_bytes))) / (1024.0 * 1024.0) if max_bytes >= 0 else 0.0)
+        )
+        self._preview_estimated_download_bytes = int(max(0, int(estimated_download_bytes)))
+        self._preview_estimated_download_unknown_files = int(max(0, int(estimated_download_unknown_files)))
+        self._preview_remaining_allowance_bytes = remaining_allowance_bytes
         self._preview_texture_quality_mode = str(getattr(props, "texture_quality_mode", "FULL") or "FULL").upper()
         return True
 
@@ -1760,7 +1909,22 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         segments = getattr(self, "_preview_segments", None) or ()
         segment_lines = getattr(self, "_preview_segment_lines", None) or ()
         max_name = str(getattr(self, "_preview_max_segment_name", "—") or "—")
-        max_mb = float(getattr(self, "_preview_max_segment_mb", 0.0) or 0.0)
+        max_mb_raw = getattr(self, "_preview_max_segment_mb", None)
+        max_mb = None
+        if max_mb_raw is not None:
+            try:
+                max_mb = float(max_mb_raw)
+            except (TypeError, ValueError):
+                max_mb = None
+        estimated_download_bytes = int(max(0, int(getattr(self, "_preview_estimated_download_bytes", 0) or 0)))
+        estimated_download_unknown_files = int(max(0, int(getattr(self, "_preview_estimated_download_unknown_files", 0) or 0)))
+        remaining_allowance_raw = getattr(self, "_preview_remaining_allowance_bytes", None)
+        remaining_allowance_bytes = None
+        try:
+            if remaining_allowance_raw is not None:
+                remaining_allowance_bytes = int(remaining_allowance_raw)
+        except (TypeError, ValueError):
+            remaining_allowance_bytes = None
         texture_quality_mode = str(getattr(self, "_preview_texture_quality_mode", "FULL") or "FULL").upper()
 
         layout.label(text="Confirm Animation Render", icon="RENDER_ANIMATION")
@@ -1786,7 +1950,26 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             warning_box.label(text="This will reduce final animation render quality.")
         layout.separator()
 
-        layout.label(text=f"Most expensive segment: {max_name} ({max_mb:.1f} MB textures)", icon="INFO")
+        if max_mb is None:
+            layout.label(text=f"Most expensive segment: {max_name} (size estimate unavailable)", icon="INFO")
+        else:
+            layout.label(text=f"Most expensive segment: {max_name} ({max_mb:.1f} MB textures)", icon="INFO")
+        estimated_download_mb = float(estimated_download_bytes) / (1024.0 * 1024.0)
+        layout.label(text=f"Estimated data download: {estimated_download_mb:.1f} MB", icon="IMPORT")
+        if estimated_download_unknown_files > 0:
+            layout.label(
+                text=f"Unknown-size files in estimate: {estimated_download_unknown_files}",
+                icon="INFO",
+            )
+        if isinstance(remaining_allowance_bytes, int):
+            remaining_mb = float(max(0, remaining_allowance_bytes)) / (1024.0 * 1024.0)
+            layout.label(text=f"Remaining data allowance: {remaining_mb:.1f} MB", icon="MESH_GRID")
+            if estimated_download_bytes > max(0, remaining_allowance_bytes):
+                shortage_mb = float(estimated_download_bytes - max(0, remaining_allowance_bytes)) / (1024.0 * 1024.0)
+                warning_box = layout.box()
+                warning_box.alert = True
+                warning_box.label(text="WARNING: Estimated download exceeds remaining data.", icon="ERROR")
+                warning_box.label(text=f"Estimated shortage: {shortage_mb:.1f} MB", icon="ERROR")
 
         seg_box = layout.box()
         seg_box.label(text="Segments", icon="OUTLINER")
