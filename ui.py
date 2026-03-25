@@ -825,7 +825,7 @@ class PLANETKA_PT_SubscriptionPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        return True
+        return not _is_connected()
 
     def draw(self, context):
         _draw_subscription(self.layout)
@@ -839,7 +839,20 @@ class PLANETKA_PT_DataUsagePanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        return True
+        return _is_connected()
+
+    def draw(self, context):
+        _draw_data_usage(self.layout, context)
+
+
+class PLANETKA_PT_DataUsagePanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
+    bl_label = "Data Usage"
+    bl_idname = "PLANETKA_PT_data_usage_collapsed"
+    bl_order = 1
+
+    @classmethod
+    def poll(cls, context):
+        return not _is_connected()
 
     def draw(self, context):
         _draw_data_usage(self.layout, context)
@@ -849,11 +862,10 @@ class PLANETKA_PT_SubscriptionPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types
     bl_label = "Account"
     bl_idname = "PLANETKA_PT_subscription_collapsed"
     bl_order = 0
-    bl_options = set()
 
     @classmethod
     def poll(cls, context):
-        return False
+        return _is_connected()
 
     def draw(self, context):
         _draw_subscription(self.layout)

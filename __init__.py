@@ -66,6 +66,7 @@ from .state import (
 )
 from .ui import (
     PLANETKA_PT_DataUsagePanel,
+    PLANETKA_PT_DataUsagePanelCollapsed,
     PLANETKA_PT_LiveTelemetryPanel,
     PLANETKA_PT_LiveTelemetryAdvancedPanel,
     PLANETKA_PT_LiveTelemetryAdvancedPanelCollapsed,
@@ -141,6 +142,7 @@ classes = (
     PLANETKA_PT_SubscriptionDetailsPanel,
     PLANETKA_PT_SubscriptionDetailsPanelCollapsed,
     PLANETKA_PT_DataUsagePanel,
+    PLANETKA_PT_DataUsagePanelCollapsed,
     PLANETKA_PT_NewEarthPanel,
     PLANETKA_PT_NewEarthPanelCollapsed,
     PLANETKA_PT_NavigationPanelCollapsed,

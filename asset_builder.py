@@ -1460,6 +1460,9 @@ def ensure_planetka_root(scene=None):
     root_collection = getattr(scene, "collection", None)
     if root_collection is None:
         return None
+    surface_collection = _ensure_collection(root_collection, SURFACE_COLLECTION_NAME)
+    if surface_collection is None:
+        return None
 
     root = bpy.data.objects.get(PLANETKA_ROOT_OBJECT_NAME)
     if root is None or str(getattr(root, "type", "")) != "EMPTY":
@@ -1472,9 +1475,19 @@ def ensure_planetka_root(scene=None):
                 logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
         root = bpy.data.objects.new(PLANETKA_ROOT_OBJECT_NAME, None)
 
+    for collection in tuple(getattr(root, "users_collection", ())):
+        if collection == surface_collection:
+            continue
+        try:
+            collection.objects.unlink(root)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
     try:
-        if root.name not in root_collection.objects:
-            root_collection.objects.link(root)
+        if root.name not in surface_collection.objects:
+            surface_collection.objects.link(root)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
     except (RuntimeError, TypeError, ValueError, AttributeError):
