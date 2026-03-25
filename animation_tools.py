@@ -6,7 +6,6 @@ import bpy
 from bpy.props import EnumProperty
 from mathutils import Matrix, Quaternion, Vector
 
-from .auth import get_allowance_total_remaining_bytes
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from .extension_prefs import get_earth_object, get_prefs
 from .operator_utils import ErrorCode, fail, require_planetka_props, require_scene
@@ -1950,33 +1949,6 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             for seg in segments:
                 segment_lines.append(_segment_display_name(seg.get("start"), seg.get("end")))
 
-        max_segment = None
-        max_bytes = -1
-        max_unknown = False
-        all_requests = []
-        for seg in segments:
-            seg_tiles = list(seg.get("tiles", ()))
-            all_requests.extend(_build_texture_requests_for_tiles(seg_tiles))
-            seg_bytes = _estimate_texture_bytes_for_tiles(seg_tiles, base_path)
-            if seg_bytes is None:
-                if max_segment is None:
-                    max_segment = seg
-                    max_unknown = True
-                continue
-            if seg_bytes > max_bytes:
-                max_bytes = seg_bytes
-                max_segment = seg
-                max_unknown = False
-
-        estimated_download_bytes = 0
-        estimated_download_unknown_files = 0
-        if is_remote_source_configured(base_path) and (not base_path or not os.path.isdir(base_path)):
-            estimated_download_bytes, estimated_download_unknown_files = _estimate_remote_download_bytes_for_requests(all_requests)
-
-        remaining_allowance_bytes = get_allowance_total_remaining_bytes(prefs)
-        if not isinstance(remaining_allowance_bytes, int):
-            remaining_allowance_bytes = None
-
         self._preview_res_x = int(res_x)
         self._preview_res_y = int(res_y)
         self._preview_output_path = str(output_path or "—")
@@ -1987,16 +1959,7 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         self._preview_frames_total = int(frame_end - frame_start + 1)
         self._preview_segments = list(segments)
         self._preview_segment_lines = list(segment_lines)
-        self._preview_max_segment_name = (
-            _segment_display_name(max_segment.get("start"), max_segment.get("end")) if isinstance(max_segment, dict) else "—"
-        )
-        self._preview_max_segment_mb = (
-            None if max_unknown else (float(max(0, int(max_bytes))) / (1024.0 * 1024.0) if max_bytes >= 0 else 0.0)
-        )
-        self._preview_estimated_download_bytes = int(max(0, int(estimated_download_bytes)))
-        self._preview_estimated_download_unknown_files = int(max(0, int(estimated_download_unknown_files)))
-        self._preview_remaining_allowance_bytes = remaining_allowance_bytes
-        self._preview_texture_quality_mode = str(getattr(props, "texture_quality_mode", "FULL") or "FULL").upper()
+        self._preview_texture_quality_mode = str(getattr(props, "texture_quality_mode", "HALF") or "HALF").upper()
         return True
 
     def invoke(self, context, event):
@@ -2019,24 +1982,7 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         frames_total = int(getattr(self, "_preview_frames_total", 0))
         segments = getattr(self, "_preview_segments", None) or ()
         segment_lines = getattr(self, "_preview_segment_lines", None) or ()
-        max_name = str(getattr(self, "_preview_max_segment_name", "—") or "—")
-        max_mb_raw = getattr(self, "_preview_max_segment_mb", None)
-        max_mb = None
-        if max_mb_raw is not None:
-            try:
-                max_mb = float(max_mb_raw)
-            except (TypeError, ValueError):
-                max_mb = None
-        estimated_download_bytes = int(max(0, int(getattr(self, "_preview_estimated_download_bytes", 0) or 0)))
-        estimated_download_unknown_files = int(max(0, int(getattr(self, "_preview_estimated_download_unknown_files", 0) or 0)))
-        remaining_allowance_raw = getattr(self, "_preview_remaining_allowance_bytes", None)
-        remaining_allowance_bytes = None
-        try:
-            if remaining_allowance_raw is not None:
-                remaining_allowance_bytes = int(remaining_allowance_raw)
-        except (TypeError, ValueError):
-            remaining_allowance_bytes = None
-        texture_quality_mode = str(getattr(self, "_preview_texture_quality_mode", "FULL") or "FULL").upper()
+        texture_quality_mode = str(getattr(self, "_preview_texture_quality_mode", "HALF") or "HALF").upper()
 
         layout.label(text="Confirm Animation Render", icon="RENDER_ANIMATION")
         layout.separator()
@@ -2068,28 +2014,6 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
                 icon="ERROR",
             )
             warning_box.label(text="This will reduce final animation render quality.")
-        layout.separator()
-
-        if max_mb is None:
-            layout.label(text=f"Most expensive segment: {max_name} (size estimate unavailable)", icon="INFO")
-        else:
-            layout.label(text=f"Most expensive segment: {max_name} ({max_mb:.1f} MB textures)", icon="INFO")
-        estimated_download_mb = float(estimated_download_bytes) / (1024.0 * 1024.0)
-        layout.label(text=f"Estimated data download: {estimated_download_mb:.1f} MB", icon="IMPORT")
-        if estimated_download_unknown_files > 0:
-            layout.label(
-                text=f"Unknown-size files in estimate: {estimated_download_unknown_files}",
-                icon="INFO",
-            )
-        if isinstance(remaining_allowance_bytes, int):
-            remaining_mb = float(max(0, remaining_allowance_bytes)) / (1024.0 * 1024.0)
-            layout.label(text=f"Remaining data allowance: {remaining_mb:.1f} MB", icon="MESH_GRID")
-            if estimated_download_bytes > max(0, remaining_allowance_bytes):
-                shortage_mb = float(estimated_download_bytes - max(0, remaining_allowance_bytes)) / (1024.0 * 1024.0)
-                warning_box = layout.box()
-                warning_box.alert = True
-                warning_box.label(text="WARNING: Estimated download exceeds remaining data.", icon="ERROR")
-                warning_box.label(text=f"Estimated shortage: {shortage_mb:.1f} MB", icon="ERROR")
 
         seg_box = layout.box()
         seg_box.label(text="Segments", icon="OUTLINER")

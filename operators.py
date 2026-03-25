@@ -16,7 +16,6 @@ from .auth import (
     get_contact_url,
     get_device_verification_url,
     get_login_state,
-    get_manage_subscription_url,
     get_upgrade_url,
     is_authenticated,
     start_device_login,
@@ -1579,7 +1578,7 @@ def _open_account_url(url):
 class PLANETKA_OT_AccountUpgrade(bpy.types.Operator):
     bl_idname = "planetka.account_upgrade"
     bl_label = "Upgrade to Pro"
-    bl_description = "Open Planetka Pro upgrade page (commercial rights + larger monthly allowance)"
+    bl_description = "Open Planetka Pro upgrade page (one-time commercial license)"
 
     def execute(self, context):
         prefs = get_prefs()
@@ -1596,14 +1595,14 @@ class PLANETKA_OT_AccountUpgrade(bpy.types.Operator):
             return fail(self, "Planetka upgrade URL is not configured.", logger=logger)
         if not _open_account_url(upgrade_url):
             return fail(self, "Could not open Planetka Pro upgrade page.", logger=logger)
-        self.report({'INFO'}, "Planetka Pro upgrade page opened in browser (includes commercial rights).")
+        self.report({'INFO'}, "Planetka Pro upgrade page opened in browser.")
         return {'FINISHED'}
 
 
 class PLANETKA_OT_AccountContact(bpy.types.Operator):
     bl_idname = "planetka.account_contact"
     bl_label = "Contact Me"
-    bl_description = "Open Planetka contact page for allowance support and special workflows"
+    bl_description = "Open Planetka contact page"
 
     def execute(self, context):
         prefs = get_prefs()
@@ -1621,33 +1620,6 @@ class PLANETKA_OT_AccountContact(bpy.types.Operator):
         if not _open_account_url(contact_url):
             return fail(self, "Could not open Planetka contact page.", logger=logger)
         self.report({'INFO'}, "Planetka contact page opened in browser.")
-        return {'FINISHED'}
-
-
-class PLANETKA_OT_AccountManageSubscription(bpy.types.Operator):
-    bl_idname = "planetka.account_manage_subscription"
-    bl_label = "Manage Subscription"
-    bl_description = "Open Planetka billing and subscription management page"
-
-    def execute(self, context):
-        prefs = get_prefs()
-        if not prefs:
-            return fail(
-                self,
-                "Planetka preferences not available.",
-                code=ErrorCode.RESOLVE_PREFS_MISSING,
-                logger=logger,
-            )
-
-        if not is_authenticated(prefs):
-            return fail(self, "Sign in to Planetka before managing subscription.", logger=logger)
-
-        manage_url = get_manage_subscription_url(prefs)
-        if not manage_url:
-            return fail(self, "Planetka subscription management URL is not configured.", logger=logger)
-        if not _open_account_url(manage_url):
-            return fail(self, "Could not open Planetka subscription management page.", logger=logger)
-        self.report({'INFO'}, "Planetka subscription management page opened in browser.")
         return {'FINISHED'}
 
 

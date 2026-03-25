@@ -4,6 +4,7 @@ import math
 from bpy.props import BoolProperty, EnumProperty, FloatProperty, FloatVectorProperty, IntProperty, StringProperty
 from mathutils import Vector
 
+from .auth import get_commercial_use_allowed, is_pro_account
 from .extension_prefs import get_prefs, read_saved_locations
 from .geonames_db import get_cached_place_by_display, search_places
 from .state import (
@@ -33,6 +34,28 @@ NAV_DEFAULT_AZIMUTH_DEG = 0.0
 NAV_DEFAULT_TILT_DEG = 25.0
 NAV_DEFAULT_ROLL_DEG = 0.0
 SEASONAL_TILT_PRESET_LIMIT_DEG = 23.5
+_TEXTURE_QUALITY_UPDATE_GUARD = False
+
+
+def _full_texture_quality_allowed():
+    prefs = get_prefs()
+    if prefs is None:
+        return False
+    return bool(is_pro_account(prefs) or get_commercial_use_allowed(prefs))
+
+
+def update_texture_quality_mode(self, context):
+    global _TEXTURE_QUALITY_UPDATE_GUARD
+    if _TEXTURE_QUALITY_UPDATE_GUARD:
+        return
+    mode = str(getattr(self, "texture_quality_mode", "HALF") or "HALF").upper()
+    if mode == "FULL" and not _full_texture_quality_allowed():
+        try:
+            _TEXTURE_QUALITY_UPDATE_GUARD = True
+            self.texture_quality_mode = "HALF"
+        finally:
+            _TEXTURE_QUALITY_UPDATE_GUARD = False
+    update_auto_resolve(self, context)
 
 
 def _compute_max_proximity_altitude_km(scene, props):
@@ -677,9 +700,9 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
             ("HALF", "Half", "Reduced quality using about 1/4 of Full texture data size"),
             ("QUARTER", "Quarter", "Reduced quality using about 1/16 of Full texture data size"),
         ),
-        default="FULL",
+        default="HALF",
         description="Texture quality level used by Resolve for viewport and final rendering",
-        update=update_auto_resolve,
+        update=update_texture_quality_mode,
     )
 
     render_engine_optimization: EnumProperty(

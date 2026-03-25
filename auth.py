@@ -23,7 +23,7 @@ DEFAULT_MANAGE_SUBSCRIPTION_URL = str(
 DEFAULT_CONTACT_URL = str(
     os.getenv("PLANETKA_CONTACT_URL")
     or os.getenv("PLANETKA_SUPPORT_URL")
-    or "mailto:info@planetka.io?subject=Planetka%20data%20allowance%20request"
+    or "mailto:info@planetka.io?subject=Planetka%20support%20request"
 ).strip()
 DEFAULT_TOPUP_URL = str(
     os.getenv("PLANETKA_TOPUP_URL")
@@ -89,7 +89,7 @@ def describe_auth_error(error):
     if "missing_stripe_payment_link_url" in lowered:
         return "Planetka upgrade checkout URL is not configured on the API."
     if "allowance" in lowered or "quota_exceeded" in lowered or "insufficient_data" in lowered:
-        return "Planetka data allowance is exhausted. Open Planetka > Account to request more data or upgrade to Planetka Pro."
+        return "Planetka account access for this request was denied. Verify your account status and try again."
     return f"Planetka login failed: {message.replace('_', ' ')}."
 
 

@@ -6,24 +6,13 @@ import datetime
 from .auth import (
     PLAN_CODE_PLANETKA_PRO,
     PLAN_CODE_PLANETKA_STUDIO,
-    get_allowance_downloaded_period_bytes,
-    get_allowance_included_limit_bytes,
-    get_allowance_period,
-    get_allowance_period_end,
-    get_allowance_total_remaining_bytes,
-    get_allowance_warning_state,
-    get_billing_period_end,
-    get_contact_url,
     get_commercial_use_allowed,
     get_connected_email,
     get_login_state,
-    get_manage_subscription_url,
     get_plan_code,
-    get_plan_name,
     get_status_message,
-    get_upgrade_url,
-    is_data_exhausted,
     is_authenticated,
+    is_pro_account,
 )
 from .extension_prefs import get_earth_object
 from .geonames_db import get_search_status_text
@@ -83,21 +72,6 @@ def _fmt_deg(value):
         return "—"
 
 
-def _fmt_reset_datetime(value):
-    text = str(value or "").strip()
-    if not text:
-        return "—"
-    try:
-        normalized = text.replace("Z", "+00:00")
-        parsed = datetime.datetime.fromisoformat(normalized)
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=datetime.timezone.utc)
-        local_time = parsed.astimezone()
-        return f"{local_time.day} {local_time.strftime('%B %Y, %I:%M %p')}"
-    except (TypeError, ValueError):
-        return text
-
-
 def _fmt_m(value):
     if value is None:
         return "—"
@@ -138,26 +112,6 @@ def _fmt_gb_from_mb(value_mb):
         return "—"
 
 
-def _fmt_gb_from_bytes(value_bytes):
-    if value_bytes is None:
-        return "—"
-    try:
-        return f"{float(value_bytes) / float(1024 ** 3):.2f} GB"
-    except (TypeError, ValueError):
-        return "—"
-
-
-def _allowance_period_label(period):
-    token = str(period or "").strip().lower()
-    if token.startswith("week"):
-        return "Weekly"
-    if token.startswith("month"):
-        return "Monthly"
-    if token.startswith("day"):
-        return "Daily"
-    return "Monthly"
-
-
 def _status_activity_suffix(running):
     if not bool(running):
         return ""
@@ -195,6 +149,15 @@ def _is_connected():
     from .extension_prefs import get_prefs
 
     return is_authenticated(get_prefs())
+
+
+def _full_texture_quality_allowed():
+    from .extension_prefs import get_prefs
+
+    prefs = get_prefs()
+    if prefs is None:
+        return False
+    return bool(is_pro_account(prefs) or get_commercial_use_allowed(prefs))
 
 
 def _is_cloud_source_mode():
@@ -272,136 +235,6 @@ def _draw_subscription(layout):
     if status_message:
         layout.label(text=status_message, icon="INFO")
 
-
-def _draw_data_usage(layout, context):
-    layout.use_property_split = False
-    layout.use_property_decorate = False
-
-    scene = getattr(context, "scene", None)
-    props = getattr(scene, "planetka", None) if scene else None
-    diag = read_diagnostics(scene)
-
-    from .extension_prefs import get_prefs
-
-    prefs = get_prefs()
-    connected = is_authenticated(prefs)
-
-    if connected:
-        total_remaining = get_allowance_total_remaining_bytes(prefs)
-        included_limit = get_allowance_included_limit_bytes(prefs)
-        billing_period_end = get_billing_period_end(prefs)
-        allowance_period_end = get_allowance_period_end(prefs)
-
-        remaining_pct_text = "—"
-        if (
-            isinstance(total_remaining, int)
-            and isinstance(included_limit, int)
-            and int(included_limit) > 0
-        ):
-            remaining_pct = (max(0, int(total_remaining)) / float(included_limit)) * 100.0
-            remaining_pct_text = f"{remaining_pct:.1f}%"
-
-        layout.label(
-            text=f"Remaining Data: {remaining_pct_text} / {_fmt_gb_from_bytes(total_remaining)}",
-            icon="MESH_GRID",
-        )
-        period_end_value = allowance_period_end or billing_period_end
-        if period_end_value:
-            layout.label(text=f"Period ends: {_fmt_reset_datetime(period_end_value)}", icon="TIME")
-    else:
-        layout.label(text="Sign in to view data usage", icon="INFO")
-
-    layout.label(text=f"Last Resolve downloaded: {_fmt_mb(diag.get('resolve_downloaded_mb'))}")
-
-    if props is not None:
-        layout.prop(props, "texture_quality_mode", text="Texture Quality")
-
-
-def _draw_subscription_details(layout):
-    layout.use_property_split = False
-    layout.use_property_decorate = False
-
-    from .extension_prefs import get_prefs
-
-    prefs = get_prefs()
-    login_state = get_login_state(prefs)
-    connected = is_authenticated(prefs)
-    email = get_connected_email(prefs)
-    plan_code = get_plan_code(prefs)
-    plan_name = get_plan_name(prefs)
-    billing_period_end = get_billing_period_end(prefs)
-    allowance_period = get_allowance_period(prefs)
-    allowance_period_end = get_allowance_period_end(prefs)
-    total_remaining = get_allowance_total_remaining_bytes(prefs)
-    warning_state = get_allowance_warning_state(prefs)
-    exhausted = is_data_exhausted(prefs)
-    commercial_use_allowed = get_commercial_use_allowed(prefs)
-    contact_url = get_contact_url(prefs)
-    upgrade_url = get_upgrade_url(prefs)
-    manage_subscription_url = get_manage_subscription_url(prefs)
-    status_message = get_status_message(prefs)
-
-    if connected:
-        layout.label(text=f"Account: {email}", icon="CHECKMARK")
-        layout.label(text=f"Plan: {plan_name or 'Planetka'}", icon="INFO")
-        if plan_code == PLAN_CODE_PLANETKA_STUDIO:
-            layout.label(text="Planetka Studio: custom/manual plan for high-demand workflows.", icon="INFO")
-        else:
-            layout.label(text="Planetka: free, 100 GB/month, personal / non-commercial use.", icon="INFO")
-        if not commercial_use_allowed:
-            layout.label(text="License: Personal / non-commercial use only.", icon="ERROR")
-
-        allowance_box = layout.box()
-        allowance_box.label(text=f"{_allowance_period_label(allowance_period)} Data Allowance", icon="STICKY_UVS_LOC")
-        remaining_row = allowance_box.row()
-        remaining_row.alert = bool(exhausted or warning_state in {"low", "exhausted"})
-        remaining_row.label(text=f"Remaining Data: {_fmt_gb_from_bytes(total_remaining)}")
-
-        period_end_value = allowance_period_end or billing_period_end
-        if period_end_value:
-            allowance_box.label(text=f"Period ends: {_fmt_reset_datetime(period_end_value)}", icon="TIME")
-
-        if exhausted:
-            exhausted_box = layout.box()
-            exhausted_box.alert = True
-            if plan_code in {PLAN_CODE_PLANETKA_PRO, PLAN_CODE_PLANETKA_STUDIO}:
-                exhausted_box.label(text="Data allowance is currently exhausted.", icon="ERROR")
-                exhausted_box.label(text="Contact me for a one-off boost or a higher recurring allowance.", icon="INFO")
-            else:
-                exhausted_box.label(text="Included data is used up for this period.", icon="ERROR")
-                exhausted_box.label(text="Contact me for more data and briefly describe what you are building.", icon="INFO")
-                exhausted_box.label(text="If possible, include renders/screenshots/showcase material.", icon="INFO")
-        elif warning_state == "low":
-            warning_box = layout.box()
-            warning_box.alert = True
-            if plan_code in {PLAN_CODE_PLANETKA_PRO, PLAN_CODE_PLANETKA_STUDIO}:
-                warning_box.label(text="Low data remaining. Contact me if your workflow needs more.", icon="ERROR")
-            else:
-                warning_box.label(text="Low data remaining. Contact me if you need more data.", icon="ERROR")
-                warning_box.label(text="Please share what you are working on and, if possible, renders/screenshots.", icon="INFO")
-
-        action_row = layout.row(align=True)
-        if plan_code not in {PLAN_CODE_PLANETKA_PRO, PLAN_CODE_PLANETKA_STUDIO} and upgrade_url:
-            action_row.operator("planetka.account_upgrade", text="Upgrade to Pro", icon="URL")
-        if contact_url:
-            action_row.operator("planetka.account_contact", text="Contact Me", icon="URL")
-        if plan_code in {PLAN_CODE_PLANETKA_PRO, PLAN_CODE_PLANETKA_STUDIO} and manage_subscription_url:
-            action_row.operator("planetka.account_manage_subscription", text="Manage Subscription", icon="URL")
-        action_row.operator("planetka.account_logout", text="Log Out", icon="X")
-    elif login_state == "pending":
-        layout.label(text="Account: Waiting for browser sign-in", icon="TIME")
-        auth_row = layout.row(align=True)
-        auth_row.operator("planetka.account_open_login", text="Open Login Page", icon="URL")
-        auth_row.operator("planetka.account_cancel_login", text="Cancel", icon="X")
-    else:
-        layout.label(text="Account: Not Connected", icon="USER")
-        layout.label(text="Sign in to start with Planetka free (100 GB/month).", icon="INFO")
-        layout.label(text="Free Planetka is personal / non-commercial use only.", icon="INFO")
-        auth_row = layout.row(align=True)
-        auth_row.operator("planetka.account_login", text="Sign In / Create Account", icon="URL")
-
-    if status_message:
-        layout.label(text=status_message, icon="INFO")
 
 def _draw_new_earth(layout):
     layout.use_property_split = False
@@ -495,19 +328,6 @@ def _draw_advanced_telemetry(layout, scene):
         advanced_col.label(text=f"Download Time (Summed Requests): {_fmt_ms(download_thread_ms)}")
     advanced_col.label(text=f"Download Size: {_fmt_mb(download_size_mb)}")
     advanced_col.label(text=f"Effective Download Speed: {_fmt_mbps(download_size_mb, download_time_ms)}")
-
-
-def _texture_quality_note_text(scene):
-    props = getattr(scene, "planetka", None) if scene else None
-    if props is None:
-        return ""
-
-    mode = str(getattr(props, "texture_quality_mode", "FULL") or "FULL").upper()
-    if mode == "HALF":
-        return "Texture Quality set to Half."
-    if mode == "QUARTER":
-        return "Texture Quality set to Quarter."
-    return ""
 
 
 def _draw_navigation(layout, context):
@@ -838,33 +658,6 @@ class PLANETKA_PT_SubscriptionPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         _draw_subscription(self.layout)
 
 
-class PLANETKA_PT_DataUsagePanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Data Usage"
-    bl_idname = "PLANETKA_PT_data_usage"
-    bl_order = 1
-    bl_options = set()
-
-    @classmethod
-    def poll(cls, context):
-        return _is_connected()
-
-    def draw(self, context):
-        _draw_data_usage(self.layout, context)
-
-
-class PLANETKA_PT_DataUsagePanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Data Usage"
-    bl_idname = "PLANETKA_PT_data_usage_collapsed"
-    bl_order = 1
-
-    @classmethod
-    def poll(cls, context):
-        return not _is_connected()
-
-    def draw(self, context):
-        _draw_data_usage(self.layout, context)
-
-
 class PLANETKA_PT_SubscriptionPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
     bl_label = "Account"
     bl_idname = "PLANETKA_PT_subscription_collapsed"
@@ -876,34 +669,6 @@ class PLANETKA_PT_SubscriptionPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types
 
     def draw(self, context):
         _draw_subscription(self.layout)
-
-
-class PLANETKA_PT_SubscriptionDetailsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Account Details"
-    bl_idname = "PLANETKA_PT_subscription_details"
-    bl_parent_id = "PLANETKA_PT_subscription"
-    bl_options = {'DEFAULT_CLOSED'}
-
-    @classmethod
-    def poll(cls, context):
-        return False
-
-    def draw(self, context):
-        _draw_subscription_details(self.layout)
-
-
-class PLANETKA_PT_SubscriptionDetailsPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Account Details"
-    bl_idname = "PLANETKA_PT_subscription_details_collapsed"
-    bl_parent_id = "PLANETKA_PT_subscription_collapsed"
-    bl_options = {'DEFAULT_CLOSED'}
-
-    @classmethod
-    def poll(cls, context):
-        return False
-
-    def draw(self, context):
-        _draw_subscription_details(self.layout)
 
 
 class PLANETKA_PT_NewEarthPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
@@ -996,6 +761,19 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
                 text="Auto Resolve Idle Delay (s)",
                 slider=True,
             )
+
+            texture_quality_box = layout.box()
+            texture_quality_box.label(text="Texture Quality", icon="TEXTURE")
+            texture_quality_box.enabled = workflow_enabled
+            quality_row = texture_quality_box.row(align=True)
+            quality_row.use_property_split = False
+            full_row = quality_row.row(align=True)
+            full_row.enabled = _full_texture_quality_allowed()
+            full_row.prop_enum(props, "texture_quality_mode", "FULL", text="Full")
+            quality_row.prop_enum(props, "texture_quality_mode", "HALF", text="Half")
+            quality_row.prop_enum(props, "texture_quality_mode", "QUARTER", text="Quarter")
+            if not _full_texture_quality_allowed():
+                texture_quality_box.label(text="Full quality is available for Pro licence only.", icon="INFO")
 
             viewport_box = layout.box()
             viewport_box.label(text="Viewport Optimization", icon="VIEW3D")

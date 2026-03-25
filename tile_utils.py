@@ -7,9 +7,10 @@ import bpy
 import mathutils
 from mathutils import Vector
 
+from .auth import get_commercial_use_allowed, is_pro_account
 from .diagnostics import write_tile_view_diagnostics
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
-from .extension_prefs import get_earth_object
+from .extension_prefs import get_earth_object, get_prefs
 
 logger = logging.getLogger(__name__)
 
@@ -333,19 +334,24 @@ def _resolution_bias_factor(scene):
 def _texture_quality_mode(scene):
     props = getattr(scene, "planetka", None) if scene else None
     if props is None:
-        return "FULL"
+        return "HALF"
     mode = str(
         getattr(
             props,
             "texture_quality_mode",
-            "FULL",
+            "HALF",
         )
-        or "FULL"
+        or "HALF"
     ).upper()
     if mode in {"NORMAL", "DOUBLE"}:
         mode = "FULL"
     if mode not in TEXTURE_QUALITY_MODES:
-        return "FULL"
+        return "HALF"
+    if mode == "FULL":
+        prefs = get_prefs()
+        full_allowed = bool(prefs and (is_pro_account(prefs) or get_commercial_use_allowed(prefs)))
+        if not full_allowed:
+            return "HALF"
     return mode
 
 

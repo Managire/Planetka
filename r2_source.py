@@ -814,7 +814,7 @@ def _r2_request(method, key, destination_path=None):
                     except Exception:
                         pass
                     raise RuntimeError(
-                        "Planetka data allowance is exhausted. Open Planetka > Account to request more data. Planetka Pro includes commercial use and a larger monthly allowance."
+                        "Planetka account does not currently have access to this remote data request."
                     )
                 if error_message:
                     raise RuntimeError(f"Planetka request limit reached: {error_message}")
@@ -827,7 +827,7 @@ def _r2_request(method, key, destination_path=None):
                     except Exception:
                         pass
                     raise RuntimeError(
-                        "Planetka data allowance is exhausted. Open Planetka > Account to request more data. Planetka Pro includes commercial use and a larger monthly allowance."
+                        "Planetka account does not currently have access to this remote data request."
                     )
                 if error_message:
                     raise RuntimeError(f"Planetka account does not have access to remote Earth data: {error_message}")

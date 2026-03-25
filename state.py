@@ -1287,11 +1287,11 @@ def _output_resolution_signature(scene):
     if render is None:
         return None
     props = getattr(scene, "planetka", None) if scene is not None else None
-    texture_quality_mode = "FULL"
+    texture_quality_mode = "HALF"
     try:
-        texture_quality_mode = str(getattr(props, "texture_quality_mode", "FULL") or "FULL").upper()
+        texture_quality_mode = str(getattr(props, "texture_quality_mode", "HALF") or "HALF").upper()
     except (TypeError, ValueError, RuntimeError):
-        texture_quality_mode = "FULL"
+        texture_quality_mode = "HALF"
     try:
         return (
             int(getattr(render, "resolution_x", 1920)),
