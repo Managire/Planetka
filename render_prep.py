@@ -189,20 +189,6 @@ def _count_missing_tile_loading_images(material_name="Planetka Earth Material"):
             if not image_path:
                 missing += 1
                 continue
-            if str(getattr(image, "source", "") or "").upper() == "TILED" and "<UDIM>" in image_path:
-                tiled_ok = False
-                for image_tile in getattr(image, "tiles", ()):
-                    tile_number = int(getattr(image_tile, "number", 0) or 0)
-                    if tile_number <= 0:
-                        continue
-                    candidate_path = image_path.replace("<UDIM>", str(tile_number))
-                    candidate_abs = bpy.path.abspath(candidate_path)
-                    if candidate_abs and os.path.isfile(candidate_abs):
-                        tiled_ok = True
-                        break
-                if not tiled_ok:
-                    missing += 1
-                continue
             abs_path = bpy.path.abspath(image_path)
             if abs_path and not os.path.isfile(abs_path):
                 missing += 1

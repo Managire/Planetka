@@ -682,13 +682,6 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         update=update_auto_resolve,
     )
 
-    experimental_udim_sampling: BoolProperty(
-        name="Experimental UDIM Sampling",
-        default=False,
-        description="Experimental sampler-reduction path for EEVEE stability testing",
-        update=update_auto_resolve,
-    )
-
     render_engine_optimization: EnumProperty(
         name="Render Engine Optimization",
         items=(
