@@ -1329,6 +1329,7 @@ class PLANETKA_PT_SunlightPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             layout.label(text="Planetka settings unavailable.", icon="ERROR")
             return
 
+        layout.prop(props, "sunlight_strength", text="Strength")
         layout.prop(props, "sunlight_longitude_deg", text="Longitude (°)")
         layout.prop(props, "sunlight_seasonal_tilt_deg", text="Seasonal Tilt (°)")
 

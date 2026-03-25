@@ -18,6 +18,7 @@ from .state import (
     update_r2_cache_settings,
     update_show_earth_preview,
     update_sunlight_controls,
+    update_sunlight_strength,
 )
 from .clouds_local import (
     _local_cloud_texture_items,
@@ -433,6 +434,16 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         precision=2,
         description="Subsolar longitude in degrees; rotates the day/night terminator around Earth",
         update=update_sunlight_controls,
+    )
+
+    sunlight_strength: FloatProperty(
+        name="Sun Strength",
+        default=10.0,
+        min=0.0,
+        max=100000.0,
+        precision=3,
+        description="Light strength of Planetka Sunlight",
+        update=update_sunlight_strength,
     )
 
     sunlight_seasonal_tilt_deg: FloatProperty(

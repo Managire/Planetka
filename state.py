@@ -61,6 +61,7 @@ _SYNC_IDPROP_MAP = {
     "nav_saved_location_id": "planetka_nav_saved_location_id",
     "sunlight_longitude_deg": "planetka_sunlight_longitude_deg",
     "sunlight_seasonal_tilt_deg": "planetka_sunlight_seasonal_tilt_deg",
+    "sunlight_strength": "planetka_sunlight_strength",
     "anim_camera_preset": "planetka_anim_camera_preset",
     "anim_frame_start": "planetka_anim_frame_start",
     "anim_frame_end": "planetka_anim_frame_end",
@@ -938,6 +939,33 @@ def _apply_sunlight_from_props(scene):
         logger.debug("Planetka: failed applying sunlight transform", exc_info=True)
 
 
+def _apply_sunlight_strength_from_props(scene):
+    if scene is None:
+        return
+    props = getattr(scene, "planetka", None)
+    if props is None:
+        return
+    sunlight = _get_planetka_sunlight_object()
+    if sunlight is None:
+        return
+
+    light_data = getattr(sunlight, "data", None)
+    if light_data is None:
+        return
+
+    try:
+        strength = max(0.0, float(getattr(props, "sunlight_strength", 10.0)))
+    except (TypeError, ValueError):
+        return
+
+    try:
+        light_data.energy = strength
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed applying sunlight strength", exc_info=True)
+    except (RuntimeError, TypeError, ValueError):
+        logger.debug("Planetka: failed applying sunlight strength", exc_info=True)
+
+
 def update_sunlight_controls(self, context):
     scene = getattr(context, "scene", None) if context else None
     if scene:
@@ -945,6 +973,15 @@ def update_sunlight_controls(self, context):
         _suspend_adaptive_viewport_during_navigation(scene)
         request_auto_resolve(scene, immediate=False)
     _apply_sunlight_from_props(scene)
+    _apply_sunlight_strength_from_props(scene)
+
+
+def update_sunlight_strength(self, context):
+    scene = getattr(context, "scene", None) if context else None
+    if scene:
+        _sync_idprops_from_props(scene, ("sunlight_strength",))
+        _suspend_adaptive_viewport_during_navigation(scene)
+    _apply_sunlight_strength_from_props(scene)
 
 
 def update_navigation_shot(self, context):
