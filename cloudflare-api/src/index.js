@@ -2100,31 +2100,31 @@ export default {
       }
 
       if (request.method === "POST" && path === "/auth/start") {
-        return handleAuthStart(request, env);
+        return await handleAuthStart(request, env);
       }
 
       if (request.method === "POST" && path === "/auth/verify") {
-        return handleAuthVerify(request, env);
+        return await handleAuthVerify(request, env);
       }
 
       if (request.method === "POST" && path === "/auth/refresh") {
-        return handleAuthRefresh(request, env);
+        return await handleAuthRefresh(request, env);
       }
 
       if (request.method === "GET" && path === "/me") {
-        return handleMe(request, env);
+        return await handleMe(request, env);
       }
 
       if (request.method === "POST" && path === "/device/start") {
-        return handleDeviceStart(request, env);
+        return await handleDeviceStart(request, env);
       }
 
       if (request.method === "POST" && path === "/device/poll") {
-        return handleDevicePoll(request, env);
+        return await handleDevicePoll(request, env);
       }
 
       if (request.method === "GET" && path === "/device/login") {
-        return handleDeviceLoginPage(request, env);
+        return await handleDeviceLoginPage(request, env);
       }
 
       if (request.method === "GET" && path === "/billing/portal") {
@@ -2132,11 +2132,11 @@ export default {
       }
 
       if ((request.method === "GET" || request.method === "HEAD") && path.startsWith("/tiles/")) {
-        return handleTileRequest(request, env, path, ctx);
+        return await handleTileRequest(request, env, path, ctx);
       }
 
       if (request.method === "POST" && path === "/stripe/webhook") {
-        return handleStripeWebhook(request, env);
+        return await handleStripeWebhook(request, env);
       }
 
       return json(
