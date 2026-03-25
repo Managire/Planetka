@@ -14,7 +14,9 @@ logger = logging.getLogger(__name__)
 # Constants
 # ------------------------------------------------------------
 
-MAX_SHADER_TILES = 32
+MAX_SHADER_TILES = 128
+EEVEE_SAFE_MAX_SHADER_TILES = 2
+CYCLES_SAFE_MAX_SHADER_TILES = 5
 POWER_Z = {1, 2, 4, 8, 16, 32, 64}
 TEXTURE_TYPES = ("S2", "EL", "WT", "PO")
 TEXTURE_EXTENSIONS = {
@@ -97,6 +99,53 @@ def _normalize_requested_tiles(visible_tiles):
             continue
         normalized.append(tile_str)
     return normalized
+
+
+def _format_tile(x, y, z, d):
+    d_code = 0 if int(d) == 1440 else int(d)
+    return f"x{int(x):03d}_y{int(y):03d}_z{int(z):03d}_d{int(d_code):03d}"
+
+
+def _engine_shader_tile_budget():
+    scene = getattr(getattr(bpy, "context", None), "scene", None)
+    render = getattr(scene, "render", None) if scene else None
+    engine = str(getattr(render, "engine", "") or "").upper() if render else ""
+    if engine in {"BLENDER_EEVEE", "BLENDER_EEVEE_NEXT"}:
+        return int(EEVEE_SAFE_MAX_SHADER_TILES)
+    if engine == "CYCLES":
+        return int(CYCLES_SAFE_MAX_SHADER_TILES)
+    return int(MAX_SHADER_TILES)
+
+
+def _parent_tile(tile):
+    parsed = parse_tile(tile)
+    if not parsed:
+        return str(tile)
+    x, y, z, _d = parsed
+    if int(z) >= 360:
+        return _format_tile(0, 0, 360, 360)
+    parent_z = min(360, int(z) * 2)
+    parent_x = (int(x) // parent_z) * parent_z
+    parent_y = (int(y) // parent_z) * parent_z
+    parent_y = max(0, min(max(0, 180 - parent_z), parent_y))
+    return _format_tile(parent_x, parent_y, parent_z, parent_z)
+
+
+def _coarsen_tiles_to_budget(tiles, budget):
+    target = max(1, int(budget))
+    current = sorted(set(str(tile) for tile in (tiles or ())), key=_tile_sort_key)
+    if len(current) <= target:
+        return list(current)
+    for _ in range(8):
+        merged = sorted(set(_parent_tile(tile) for tile in current), key=_tile_sort_key)
+        if len(merged) >= len(current):
+            break
+        current = merged
+        if len(current) <= target:
+            break
+    if len(current) > target:
+        current = current[:target]
+    return list(current)
 
 
 def _get_coverage_map():
@@ -719,11 +768,18 @@ def _resolve_tiles_for_shader(visible_tiles, base_path):
         resolved_tiles = list(requested_tiles)
 
     resolved_tiles = sorted(set(resolved_tiles), key=_tile_sort_key)
-    if len(resolved_tiles) > MAX_SHADER_TILES:
-        logger.warning("Planetka: %d tiles detected; limiting shader to %d", len(resolved_tiles), MAX_SHADER_TILES)
-        resolved_tiles = resolved_tiles[:MAX_SHADER_TILES]
+    budget = min(int(MAX_SHADER_TILES), int(_engine_shader_tile_budget()))
+    if len(resolved_tiles) > budget:
+        coarsened_tiles = _coarsen_tiles_to_budget(resolved_tiles, budget)
+        logger.warning(
+            "Planetka: coarsening shader tiles for engine budget (%d -> %d, budget=%d).",
+            len(resolved_tiles),
+            len(coarsened_tiles),
+            budget,
+        )
+        resolved_tiles = list(coarsened_tiles)
 
-    ocean_tile_set = set(resolved_ocean).intersection(resolved_tiles)
+    ocean_tile_set = {tile for tile in resolved_tiles if not _is_land_tile(tile, coverage)}
     return resolved_tiles, ocean_tile_set
 
 

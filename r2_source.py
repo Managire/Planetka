@@ -55,6 +55,7 @@ _HEAD_SIZE_CACHE = OrderedDict()
 _HEAD_SIZE_CACHE_LOCK = threading.Lock()
 _METRICS_LOCK = threading.Lock()
 _CACHE_PRUNE_LOCK = threading.Lock()
+_CACHE_PRUNE_SUSPEND_LOCK = threading.Lock()
 _ACTIVE_DOWNLOADS = 0
 _ACTIVE_DOWNLOAD_BYTES = 0
 _ACTIVE_EXPECTED_BYTES = 0
@@ -74,6 +75,7 @@ _AUTH_CHECK_LOCK = threading.Lock()
 _AUTH_LAST_BEARER = ""
 _AUTH_LAST_CHECKED_AT = 0.0
 _AUTH_CHECK_TTL_SECONDS = 15.0
+_CACHE_PRUNE_SUSPEND_COUNT = 0
 
 
 def _env(name, fallback=None):
@@ -632,6 +634,10 @@ def _prune_cache_root(cache_root, max_bytes, target_ratio):
 
 def _maybe_prune_cache(cfg, force=False):
     global _LAST_CACHE_PRUNE_AT
+    with _CACHE_PRUNE_SUSPEND_LOCK:
+        suspended = int(_CACHE_PRUNE_SUSPEND_COUNT) > 0
+    if suspended and not force:
+        return
     if cfg is None or cfg.cache_max_bytes <= 0:
         return
 
@@ -650,6 +656,18 @@ def _maybe_prune_cache(cfg, force=False):
         )
     finally:
         _CACHE_PRUNE_LOCK.release()
+
+
+def _suspend_cache_prune():
+    global _CACHE_PRUNE_SUSPEND_COUNT
+    with _CACHE_PRUNE_SUSPEND_LOCK:
+        _CACHE_PRUNE_SUSPEND_COUNT = int(_CACHE_PRUNE_SUSPEND_COUNT) + 1
+
+
+def _resume_cache_prune():
+    global _CACHE_PRUNE_SUSPEND_COUNT
+    with _CACHE_PRUNE_SUSPEND_LOCK:
+        _CACHE_PRUNE_SUSPEND_COUNT = max(0, int(_CACHE_PRUNE_SUSPEND_COUNT) - 1)
 
 
 def _aws_sign(key, msg):
@@ -957,6 +975,12 @@ def prefetch_resolve_downloads(requests, base_path=None, cancel_event=None):
 
     worker_cap = _parse_positive_int(_env("PLANETKA_R2_PREFETCH_WORKERS"), _R2_PREFETCH_MAX_WORKERS)
     worker_count = max(1, min(worker_cap, len(tasks) if tasks else 1))
+    cfg = _get_config()
+    # Pre-prune stale cache entries once before the resolve prefetch starts.
+    # During a resolve prefetch we suspend pruning to avoid evicting files needed
+    # by the same in-flight resolve (which can cause fallback tiles/pink textures).
+    _maybe_prune_cache(cfg, force=False)
+    _suspend_cache_prune()
 
     def _fetch_one(task):
         task_folder, task_prefix, task_filename, task_exts = task
@@ -971,40 +995,43 @@ def prefetch_resolve_downloads(requests, base_path=None, cancel_event=None):
         )
         return bool(path and os.path.isfile(path))
 
-    if worker_count <= 1:
-        for task in tasks:
-            result = _fetch_one(task)
-            if result is None:
-                cancelled = True
-                break
-            if result:
-                resolved_count += 1
-            else:
-                missing_count += 1
-    else:
-        with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="planetka-r2") as executor:
-            futures = [executor.submit(_fetch_one, task) for task in tasks]
-            pending = set(futures)
-            while pending:
-                done, pending = wait(pending, timeout=0.05, return_when=FIRST_COMPLETED)
-                _request_ui_redraw()
-                if cancel_event is not None and getattr(cancel_event, "is_set", None) and cancel_event.is_set():
+    try:
+        if worker_count <= 1:
+            for task in tasks:
+                result = _fetch_one(task)
+                if result is None:
                     cancelled = True
-                    for pending_future in pending:
-                        pending_future.cancel()
                     break
-                for future in done:
-                    try:
-                        result = future.result()
-                    except Exception:
-                        result = False
-                    if result is None:
+                if result:
+                    resolved_count += 1
+                else:
+                    missing_count += 1
+        else:
+            with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="planetka-r2") as executor:
+                futures = [executor.submit(_fetch_one, task) for task in tasks]
+                pending = set(futures)
+                while pending:
+                    done, pending = wait(pending, timeout=0.05, return_when=FIRST_COMPLETED)
+                    _request_ui_redraw()
+                    if cancel_event is not None and getattr(cancel_event, "is_set", None) and cancel_event.is_set():
                         cancelled = True
-                        continue
-                    if result:
-                        resolved_count += 1
-                    else:
-                        missing_count += 1
+                        for pending_future in pending:
+                            pending_future.cancel()
+                        break
+                    for future in done:
+                        try:
+                            result = future.result()
+                        except Exception:
+                            result = False
+                        if result is None:
+                            cancelled = True
+                            continue
+                        if result:
+                            resolved_count += 1
+                        else:
+                            missing_count += 1
+    finally:
+        _resume_cache_prune()
 
     return {
         "resolved_count": int(resolved_count),

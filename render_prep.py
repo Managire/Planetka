@@ -52,6 +52,7 @@ _TILE_UTILS_MODULE = None
 FORCE_EMPTY_RESOLVE_ONCE_KEY = "planetka_force_empty_resolve_once"
 LAST_REQUIRED_MPP_KEY = "planetka_last_required_mpp_m"
 ANIMATION_PREPARED_SEGMENTS_KEY = "planetka_anim_prepared_segments"
+_RESOLVE_REPAIR_MAX_RETRIES = 2
 
 
 _TILE_ZD_PATTERN = re.compile(r"_z(\d+)_d(\d+)$")
@@ -442,6 +443,9 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         resolved_paths = {}
         resolved_tiles_override = None
         ocean_tiles_override = None
+        prefetch_missing_count = 0
+        prefetch_resolved_count = 0
+        prefetch_cancelled = False
         download_capture = {
             "downloaded_bytes": 0,
             "download_ms": 0.0,
@@ -465,6 +469,17 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             resolved_paths = dict(stream_payload.get("resolved_paths", {}) or {})
             resolved_tiles_override = list(stream_payload.get("resolved_tiles", ()) or ())
             ocean_tiles_override = set(stream_payload.get("ocean_tiles", ()) or ())
+            prefetch_payload = stream_payload.get("prefetch_result", {})
+            if isinstance(prefetch_payload, dict):
+                try:
+                    prefetch_missing_count = int(prefetch_payload.get("missing_count", 0) or 0)
+                except (TypeError, ValueError):
+                    prefetch_missing_count = 0
+                try:
+                    prefetch_resolved_count = int(prefetch_payload.get("resolved_count", 0) or 0)
+                except (TypeError, ValueError):
+                    prefetch_resolved_count = 0
+                prefetch_cancelled = bool(prefetch_payload.get("cancelled", False))
             capture_payload = stream_payload.get("download_capture", {})
             if isinstance(capture_payload, dict):
                 download_capture = capture_payload
@@ -481,6 +496,43 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             return fail(
                 self,
                 f"Planetka resolve download failed: {exc}",
+                code=ErrorCode.RESOLVE_REFRESH_FAILED,
+                logger=logger,
+            )
+        if prefetch_cancelled:
+            return fail(
+                self,
+                "Planetka resolve download was cancelled.",
+                code=ErrorCode.RESOLVE_REFRESH_FAILED,
+                logger=logger,
+            )
+        if int(prefetch_missing_count) > 0:
+            retry_depth = int(getattr(self, "repair_retry_depth", 0) or 0)
+            retry_tiles_json = json.dumps([str(tile) for tile in (tiles or ()) if str(tile or "").strip()])
+            if retry_depth < _RESOLVE_REPAIR_MAX_RETRIES:
+                logger.warning(
+                    "Planetka: resolve prefetch missing files (missing=%d resolved=%d). Retrying (%d/%d).",
+                    int(prefetch_missing_count),
+                    int(prefetch_resolved_count),
+                    int(retry_depth + 1),
+                    int(_RESOLVE_REPAIR_MAX_RETRIES),
+                )
+                retry_result = bpy.ops.planetka.load_textures(
+                    scope_mode=str(getattr(self, "scope_mode", "AUTO") or "AUTO"),
+                    silent=True,
+                    skip_render_compatibility=True,
+                    defer_download=False,
+                    tiles_override_json=retry_tiles_json,
+                    repair_retry_depth=retry_depth + 1,
+                )
+                if "FINISHED" in retry_result:
+                    return {'FINISHED'}
+            return fail(
+                self,
+                (
+                    "Planetka resolve download completed with missing files "
+                    f"({int(prefetch_missing_count)} missing, {int(prefetch_resolved_count)} resolved)."
+                ),
                 code=ErrorCode.RESOLVE_REFRESH_FAILED,
                 logger=logger,
             )
@@ -648,26 +700,41 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 "Planetka: detected %d texture node(s) without image assignment after resolve.",
                 int(missing_node_images),
             )
-            if int(getattr(self, "repair_retry_depth", 0)) < 1:
-                retry_tiles_json = json.dumps([str(tile) for tile in (tiles or ()) if str(tile or "").strip()])
+        shader_missing_texture_count = 0
+        if isinstance(shader_result, dict):
+            try:
+                shader_missing_texture_count = int(shader_result.get("missing_texture_count", 0) or 0)
+            except (TypeError, ValueError):
+                shader_missing_texture_count = 0
+        if int(shader_missing_texture_count) > 0:
+            logger.warning(
+                "Planetka: detected %d missing tile texture assignment(s) after resolve.",
+                int(shader_missing_texture_count),
+            )
+        if int(missing_node_images) > 0 or int(shader_missing_texture_count) > 0:
+            retry_depth = int(getattr(self, "repair_retry_depth", 0) or 0)
+            retry_tiles_json = json.dumps([str(tile) for tile in (tiles or ()) if str(tile or "").strip()])
+            if retry_depth < _RESOLVE_REPAIR_MAX_RETRIES:
                 retry_result = bpy.ops.planetka.load_textures(
                     scope_mode=str(getattr(self, "scope_mode", "AUTO") or "AUTO"),
                     silent=True,
                     skip_render_compatibility=True,
                     defer_download=False,
                     tiles_override_json=retry_tiles_json,
-                    repair_retry_depth=int(getattr(self, "repair_retry_depth", 0)) + 1,
+                    repair_retry_depth=retry_depth + 1,
                 )
-                if "FINISHED" not in retry_result:
-                    self.report(
-                        {'WARNING'},
-                        "Planetka detected missing texture node images and retry resolve did not finish.",
-                    )
-            else:
-                self.report(
-                    {'WARNING'},
-                    "Planetka detected missing texture node images after retry.",
-                )
+                if "FINISHED" in retry_result:
+                    return {'FINISHED'}
+            return fail(
+                self,
+                (
+                    "Planetka resolve integrity check failed "
+                    f"(missing node images: {int(missing_node_images)}, "
+                    f"missing texture assignments: {int(shader_missing_texture_count)})."
+                ),
+                code=ErrorCode.RESOLVE_REFRESH_FAILED,
+                logger=logger,
+            )
 
         if is_remote_source_configured(normalized) and is_authenticated(prefs):
             try:

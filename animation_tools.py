@@ -1330,6 +1330,117 @@ def _is_movie_output(scene):
     return fmt in {"FFMPEG", "AVI_JPEG", "AVI_RAW"}
 
 
+def _count_missing_tile_loading_images(material_name="Planetka Earth Material"):
+    material = bpy.data.materials.get(str(material_name or ""))
+    if material is None or not bool(getattr(material, "use_nodes", False)):
+        return 0
+    node_tree = getattr(material, "node_tree", None)
+    nodes = getattr(node_tree, "nodes", None) if node_tree else None
+    if nodes is None:
+        return 0
+
+    loading_group_node = nodes.get("Planetka Textures Loading")
+    loading_group = getattr(loading_group_node, "node_tree", None) if loading_group_node else None
+    group_nodes = getattr(loading_group, "nodes", None) if loading_group else None
+    if group_nodes is None:
+        return 0
+
+    missing = 0
+    for node in group_nodes:
+        if str(getattr(node, "type", "")) != "GROUP":
+            continue
+        node_name = str(getattr(node, "name", "") or "")
+        if not node_name.startswith(("Tile_", "Planetka Tile_")):
+            continue
+        if bool(getattr(node, "mute", False)):
+            continue
+        tile_tree = getattr(node, "node_tree", None)
+        tile_nodes = getattr(tile_tree, "nodes", None) if tile_tree else None
+        if tile_nodes is None:
+            continue
+        for image_type in ("S2", "EL", "WT", "PO"):
+            image_node = tile_nodes.get(image_type)
+            if image_node is None:
+                continue
+            image = getattr(image_node, "image", None)
+            if image is None:
+                missing += 1
+                continue
+            image_path = str(getattr(image, "filepath_raw", "") or getattr(image, "filepath", ""))
+            if not image_path:
+                missing += 1
+                continue
+            abs_path = bpy.path.abspath(image_path)
+            if abs_path and not os.path.isfile(abs_path):
+                missing += 1
+    return int(missing)
+
+
+def _image_has_blender_pink(path, min_pixels=32, sample_limit=400000):
+    image_path = str(path or "").strip()
+    if not image_path or not os.path.isfile(image_path):
+        return False
+
+    image = None
+    try:
+        image = bpy.data.images.load(image_path, check_existing=False)
+        size = getattr(image, "size", None)
+        width = int(size[0]) if size and len(size) >= 2 else 0
+        height = int(size[1]) if size and len(size) >= 2 else 0
+        total_pixels = max(0, width * height)
+        if total_pixels <= 0:
+            return False
+        pixels = image.pixels[:]
+        if not pixels:
+            return False
+        step = max(1, int(total_pixels / max(1, int(sample_limit))))
+        pink_hits = 0
+        for pixel_index in range(0, total_pixels, step):
+            base = int(pixel_index) * 4
+            if base + 2 >= len(pixels):
+                break
+            r = float(pixels[base + 0])
+            g = float(pixels[base + 1])
+            b = float(pixels[base + 2])
+            if r >= 0.95 and b >= 0.95 and g <= 0.20:
+                pink_hits += 1
+                if pink_hits >= int(max(1, min_pixels)):
+                    return True
+        return False
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
+        return False
+    except (RuntimeError, TypeError, ValueError):
+        logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
+        return False
+    finally:
+        if image is not None:
+            try:
+                bpy.data.images.remove(image)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
+            except (RuntimeError, TypeError, ValueError):
+                logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
+
+
+def _collect_pink_frames(scene, frame_start, frame_end):
+    if scene is None or _is_movie_output(scene):
+        return []
+    pink_frames = []
+    for frame in range(int(frame_start), int(frame_end) + 1):
+        try:
+            frame_path = bpy.path.abspath(scene.render.frame_path(frame=int(frame)))
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
+            continue
+        except (RuntimeError, TypeError, ValueError):
+            logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
+            continue
+        if _image_has_blender_pink(frame_path):
+            pink_frames.append(int(frame))
+    return pink_frames
+
+
 def _movie_extension(scene):
     render = getattr(scene, "render", None) if scene else None
     image_settings = getattr(render, "image_settings", None) if render else None
@@ -2098,6 +2209,43 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             segment_starts = sorted({int(seg.get("start", frame_start)) for seg in segments if isinstance(seg, dict)})
             pending_starts = {s for s in segment_starts if s > int(frame_start)}
 
+            def _resolve_frame_with_integrity(frame_value, max_attempts=3):
+                frame_int = int(frame_value)
+                attempts = max(1, int(max_attempts))
+                last_message = ""
+                for attempt in range(1, attempts + 1):
+                    try:
+                        scene.frame_set(frame_int)
+                        bpy.context.view_layer.update()
+                    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                        logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
+                    except (RuntimeError, TypeError, ValueError):
+                        logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
+                    try:
+                        result = bpy.ops.planetka.load_textures(scope_mode='CAMERA', silent=True)
+                    except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
+                        last_message = f"Resolve failed at frame {frame_int:04d}: {exc}"
+                        continue
+                    except (RuntimeError, TypeError, ValueError) as exc:
+                        last_message = f"Resolve failed at frame {frame_int:04d}: {exc}"
+                        continue
+                    if "FINISHED" not in result:
+                        last_message = f"Resolve operator returned {result} at frame {frame_int:04d}"
+                        continue
+                    missing_images = _count_missing_tile_loading_images(material_name="Planetka Earth Material")
+                    if int(missing_images) > 0:
+                        last_message = (
+                            f"Resolve left {int(missing_images)} missing shader image assignment(s) "
+                            f"at frame {frame_int:04d}"
+                        )
+                        continue
+                    try:
+                        cleanup_planetka_unused_data()
+                    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                        logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
+                    return True, ""
+                return False, (last_message or f"Resolve failed at frame {frame_int:04d}")
+
             try:
                 scene.frame_start = int(frame_start)
                 scene.frame_end = int(frame_end)
@@ -2111,18 +2259,14 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
                 bpy.context.view_layer.update()
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
-            resolve_result = bpy.ops.planetka.load_textures(scope_mode='CAMERA', silent=True)
-            if "FINISHED" not in resolve_result:
+            initial_ok, initial_message = _resolve_frame_with_integrity(int(frame_start), max_attempts=3)
+            if not initial_ok:
                 return fail(
                     self,
-                    f"Resolve failed at frame {int(frame_start)}.",
+                    initial_message or f"Resolve failed at frame {int(frame_start)}.",
                     code=ErrorCode.RESOLVE_REFRESH_FAILED,
                     logger=logger,
                 )
-            try:
-                cleanup_planetka_unused_data()
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
 
             guard = {"in_handler": False}
 
@@ -2138,31 +2282,15 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
                 guard["in_handler"] = True
                 try:
                     print(f"[Planetka] Segment boundary at frame {current:04d}: resolving…")
-                    try:
-                        result = bpy.ops.planetka.load_textures(scope_mode='CAMERA', silent=True)
-                    except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
-                        message = f"Resolve failed at frame {current:04d}: {exc}"
-                        print(f"[Planetka] WARNING: {message}")
-                        segment_boundary_failures.append(message)
-                        return
-                    except (RuntimeError, TypeError, ValueError) as exc:
-                        message = f"Resolve failed at frame {current:04d}: {exc}"
-                        print(f"[Planetka] WARNING: {message}")
-                        segment_boundary_failures.append(message)
-                        return
-
-                    if "FINISHED" in result:
-                        try:
-                            cleanup_planetka_unused_data()
-                        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                            logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
+                    ok, message = _resolve_frame_with_integrity(current, max_attempts=3)
+                    if ok:
                         if not bool(getattr(props, "anim_render_persistent_data", True)):
                             try:
                                 shader_utils.cleanup_planetka_images(force_remove_datablocks=True)
                             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                                 logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
                     else:
-                        message = f"Resolve operator returned {result} at frame {current:04d}"
+                        message = message or f"Resolve failed at frame {current:04d}"
                         print(f"[Planetka] WARNING: {message}")
                         segment_boundary_failures.append(message)
                     pending_starts.discard(current)
@@ -2177,6 +2305,71 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
                 return fail(
                     self,
                     "Render cancelled.",
+                    code=ErrorCode.RENDER_FAILED,
+                    logger=logger,
+                )
+            try:
+                if frame_change_handler and frame_change_handler in bpy.app.handlers.frame_change_pre:
+                    bpy.app.handlers.frame_change_pre.remove(frame_change_handler)
+                    frame_change_handler = None
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
+            except (RuntimeError, TypeError, ValueError):
+                logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
+
+            pink_frames = _collect_pink_frames(scene, frame_start, frame_end)
+            if pink_frames:
+                print(
+                    f"[Planetka] Pink frame detection: {len(pink_frames)} frame(s) flagged. "
+                    "Running repair resolve + re-render."
+                )
+            unrepaired_frames = []
+            repaired_frames = []
+            for frame in pink_frames:
+                repaired = False
+                for attempt in range(1, 4):
+                    ok, message = _resolve_frame_with_integrity(frame, max_attempts=3)
+                    if not ok:
+                        if attempt == 3:
+                            unrepaired_frames.append(int(frame))
+                            segment_boundary_failures.append(message or f"Resolve failed at frame {int(frame):04d}")
+                        continue
+                    rerender_result = bpy.ops.render.render(write_still=True, use_viewport=False)
+                    if "FINISHED" not in rerender_result:
+                        if attempt == 3:
+                            unrepaired_frames.append(int(frame))
+                            segment_boundary_failures.append(
+                                f"Frame re-render cancelled for frame {int(frame):04d}."
+                            )
+                        continue
+                    frame_path = ""
+                    try:
+                        frame_path = bpy.path.abspath(scene.render.frame_path(frame=int(frame)))
+                    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                        logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
+                    except (RuntimeError, TypeError, ValueError):
+                        logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
+                    if frame_path and _image_has_blender_pink(frame_path):
+                        if attempt == 3:
+                            unrepaired_frames.append(int(frame))
+                            segment_boundary_failures.append(
+                                f"Frame {int(frame):04d} still contains pink-texture pixels after retries."
+                            )
+                        continue
+                    repaired = True
+                    repaired_frames.append(int(frame))
+                    break
+                if not repaired and int(frame) not in unrepaired_frames:
+                    unrepaired_frames.append(int(frame))
+            if repaired_frames:
+                self.report({'INFO'}, f"Planetka repaired {len(repaired_frames)} pink frame(s).")
+            if unrepaired_frames:
+                return fail(
+                    self,
+                    (
+                        f"Planetka could not auto-repair {len(unrepaired_frames)} frame(s): "
+                        + ", ".join(str(int(f)) for f in sorted(set(unrepaired_frames))[:20])
+                    ),
                     code=ErrorCode.RENDER_FAILED,
                     logger=logger,
                 )
