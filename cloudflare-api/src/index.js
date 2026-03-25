@@ -753,12 +753,21 @@ async function upsertUserByEmail(db, email, status = PLAN_CODE_PLANETKA) {
   const normalizedEmail = normalizeEmail(email);
   let user = await findUserByEmail(db, normalizedEmail);
   if (user) {
+    const currentStatus = String(user.status || "").trim().toLowerCase();
+    const nextStatus = String(status || "").trim().toLowerCase() || PLAN_CODE_PLANETKA;
+    // Never downgrade paid plans when this helper is called from other flows.
+    const protectedStatus = (
+      (currentStatus === PLAN_CODE_PLANETKA_PRO || currentStatus === PLAN_CODE_PLANETKA_STUDIO)
+      && nextStatus === PLAN_CODE_PLANETKA
+    )
+      ? currentStatus
+      : nextStatus;
     await dbRun(
       db,
       `UPDATE users SET status = ? WHERE id = ?`,
-      [status, user.id],
+      [protectedStatus, user.id],
     );
-    return { ...user, status };
+    return { ...user, status: protectedStatus };
   }
 
   const id = crypto.randomUUID();
@@ -1769,6 +1778,27 @@ async function handleStripeWebhook(request, env) {
     return json({ ok: false, error: "missing_customer_email" }, 400, env);
   }
 
+  const paymentStatus = String(session.payment_status || "").trim().toLowerCase();
+  const paidCheckout = paymentStatus === "paid" || paymentStatus === "no_payment_required";
+  if (!paidCheckout) {
+    console.log(
+      "stripe.webhook.ignored_unpaid_checkout",
+      JSON.stringify({ event_type: eventType, email, payment_status: paymentStatus }),
+    );
+    return json(
+      {
+        ok: true,
+        ignored: true,
+        reason: "unpaid_checkout_session",
+        event_type: eventType,
+        email,
+        payment_status: paymentStatus,
+      },
+      200,
+      env,
+    );
+  }
+
   const user = await upsertUserByEmail(db, email, PLAN_CODE_PLANETKA_PRO);
   const stripeCustomerId = String(session.customer || "").trim() || null;
   const stripeSubscriptionId = String(session.subscription || "").trim() || null;
@@ -1776,7 +1806,7 @@ async function handleStripeWebhook(request, env) {
   let trialEndsAt = null;
   let renewsAt = null;
   let currentPeriodEnd = null;
-  let subscriptionStatus = session.payment_status === "paid" ? "active" : "trialing";
+  let subscriptionStatus = "active";
 
   if (stripeSubscriptionId) {
     const stripeSubscription = await fetchStripeSubscription(env, stripeSubscriptionId);
