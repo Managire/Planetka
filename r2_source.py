@@ -25,7 +25,7 @@ _R2_DEFAULT_PREFIX = "planetka-assets"
 _R2_CACHE_PRUNE_INTERVAL_SECONDS = 30.0
 _HEAD_CACHE_MAX_ENTRIES = 20000
 _STREAM_HEALTH_CACHE_TTL_SECONDS = 120.0
-_STREAM_HEALTH_SENTINEL = ("EL", "EL_x002_y158_z002_d002.exr")
+_STREAM_HEALTH_SENTINEL = None
 _R2_READ_CHUNK_BYTES = 4 * 1024 * 1024
 _R2_PROGRESS_FLUSH_BYTES = 4 * 1024 * 1024
 _R2_PROGRESS_FLUSH_INTERVAL_SECONDS = 0.25
@@ -302,23 +302,24 @@ def _ensure_remote_authentication(allow_cached_on_network_error=False):
     if not auth_header:
         raise RuntimeError("Planetka login expired. Log in again.")
 
-    folder, file_name = _STREAM_HEALTH_SENTINEL
-    key = _remote_key(folder, file_name)
-    url = cfg.endpoint.rstrip("/") + "/tiles/" + urllib.parse.quote(key, safe="/-_.~")
-    request = urllib.request.Request(url, method="HEAD", headers=headers)
-    try:
-        with urllib.request.urlopen(request, timeout=_R2_TIMEOUT_SECONDS):
-            pass
-    except urllib.error.HTTPError as exc:
-        if int(getattr(exc, "code", 0)) in {401, 403}:
-            raise RuntimeError("Planetka login expired. Log in again.") from exc
-        if int(getattr(exc, "code", 0)) != 404:
-            raise RuntimeError(f"Planetka could not verify login session: HTTP {exc.code}.") from exc
-    except (urllib.error.URLError, OSError, ValueError) as exc:
-        if allow_cached_on_network_error:
-            # Keep already-cached files usable while temporarily offline.
-            return auth_header
-        raise RuntimeError("Planetka could not verify login session. Check internet connection and retry.") from exc
+    if _STREAM_HEALTH_SENTINEL:
+        folder, file_name = _STREAM_HEALTH_SENTINEL
+        key = _remote_key(folder, file_name)
+        url = cfg.endpoint.rstrip("/") + "/tiles/" + urllib.parse.quote(key, safe="/-_.~")
+        request = urllib.request.Request(url, method="HEAD", headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=_R2_TIMEOUT_SECONDS):
+                pass
+        except urllib.error.HTTPError as exc:
+            if int(getattr(exc, "code", 0)) in {401, 403}:
+                raise RuntimeError("Planetka login expired. Log in again.") from exc
+            if int(getattr(exc, "code", 0)) != 404:
+                raise RuntimeError(f"Planetka could not verify login session: HTTP {exc.code}.") from exc
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            if allow_cached_on_network_error:
+                # Keep already-cached files usable while temporarily offline.
+                return auth_header
+            raise RuntimeError("Planetka could not verify login session. Check internet connection and retry.") from exc
 
     with _AUTH_CHECK_LOCK:
         _AUTH_LAST_BEARER = auth_header
@@ -379,6 +380,8 @@ def verify_remote_stream_health(force=False):
     cfg = _get_config()
     if cfg is None:
         return False, "Planetka API endpoint is not configured."
+    if not _STREAM_HEALTH_SENTINEL:
+        return True, ""
 
     now_ts = time.time()
     if not force and _STREAM_HEALTH_OK is not None:

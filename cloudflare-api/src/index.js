@@ -68,6 +68,22 @@ function normalizeEmail(value) {
   return String(value || "").trim().toLowerCase();
 }
 
+function isBlockedStatus(statusValue) {
+  return String(statusValue || "").trim().toLowerCase() === "blocked";
+}
+
+function blockedAccountResponse(env, message = "Planetka account is blocked. Contact info@planetka.io.") {
+  return json(
+    {
+      ok: false,
+      error: "account_blocked",
+      message,
+    },
+    403,
+    env,
+  );
+}
+
 function parsePositiveNumber(value, fallback) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) {
@@ -799,6 +815,99 @@ function isSubscriptionActive(subscription) {
   return false;
 }
 
+function parseTileQualityFromFileName(fileName) {
+  const match = /^([A-Za-z0-9]+)_x(\d{3})_y(\d{3})_z(\d{3})_d(\d{3})\.(exr|tif|tiff|png|jpe?g)$/i.exec(
+    String(fileName || "").trim(),
+  );
+  if (!match) {
+    return null;
+  }
+  const z = Number.parseInt(match[4], 10);
+  const rawD = Number.parseInt(match[5], 10);
+  if (!Number.isFinite(z) || !Number.isFinite(rawD)) {
+    return null;
+  }
+  const d = rawD === 0 ? 1440 : rawD;
+  return { z, d, textureType: String(match[1] || "").toUpperCase() };
+}
+
+async function sendSecurityAlertEmail(env, subject, lines) {
+  const apiKey = String(env.EMAIL_API_KEY || "").trim();
+  if (!apiKey) {
+    console.error("security.alert.email_missing_api_key", JSON.stringify({ subject }));
+    return false;
+  }
+
+  const from = String(env.EMAIL_FROM || "info@planetka.io").trim();
+  const to = String(env.SECURITY_ALERT_EMAIL || "info@planetka.io").trim() || "info@planetka.io";
+  const bodyLines = Array.isArray(lines) ? lines.map((line) => String(line)) : [String(lines || "")];
+  const textBody = bodyLines.join("\n");
+  const htmlBody = `<pre style="white-space:pre-wrap;font-family:monospace;">${textBody
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")}</pre>`;
+
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      from,
+      to: [to],
+      subject: String(subject || "Planetka Security Alert"),
+      text: textBody,
+      html: htmlBody,
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    console.error(
+      "security.alert.email_failed",
+      JSON.stringify({ status: response.status, body: String(body || "").slice(0, 500) }),
+    );
+    return false;
+  }
+  return true;
+}
+
+async function blockUserForAbuse(db, user, env, details = {}) {
+  if (!user || !user.id) {
+    return;
+  }
+  const blockedAt = nowIso();
+  await dbRun(db, `UPDATE users SET status = 'blocked' WHERE id = ?`, [user.id]);
+  await dbRun(
+    db,
+    `UPDATE refresh_sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`,
+    [blockedAt, user.id],
+  );
+
+  const email = String(user.email || "").trim();
+  const detailLines = [
+    "Planetka security block triggered.",
+    `time_utc=${blockedAt}`,
+    `user_id=${user.id}`,
+    `email=${email || "unknown"}`,
+    `reason=${String(details.reason || "unknown")}`,
+    `path=${String(details.path || "")}`,
+    `file_name=${String(details.file_name || "")}`,
+    `z=${String(details.z ?? "")}`,
+    `d=${String(details.d ?? "")}`,
+    `plan_code=${String(details.plan_code || "")}`,
+    `ip=${String(details.ip || "")}`,
+    `user_agent=${String(details.user_agent || "")}`,
+  ];
+  console.error("security.account_blocked", JSON.stringify({ user_id: user.id, email, details }));
+  try {
+    await sendSecurityAlertEmail(env, "Planetka Security: account blocked for full-quality abuse", detailLines);
+  } catch (error) {
+    console.error("security.alert.email_exception", String(error && error.message ? error.message : error));
+  }
+}
+
 async function sendMagicLinkEmail(env, email, token, magicUrlOverride = "") {
   const apiKey = requireSecret(env, "EMAIL_API_KEY");
   const from = String(env.EMAIL_FROM || "info@planetka.io").trim();
@@ -997,6 +1106,8 @@ async function handleAuthStart(request, env) {
   let user = await findUserByEmail(db, email);
   if (!user) {
     user = await upsertUserByEmail(db, email, PLAN_CODE_PLANETKA);
+  } else if (isBlockedStatus(user.status)) {
+    return genericAuthStartResponse(env);
   }
 
   const token = randomToken(32);
@@ -1049,6 +1160,9 @@ async function handleAuthVerify(request, env) {
   );
   if (!magicLink) {
     return json({ ok: false, error: "invalid_token" }, 400, env);
+  }
+  if (isBlockedStatus(magicLink.user_status)) {
+    return blockedAccountResponse(env);
   }
   if (magicLink.used_at) {
     return json({ ok: false, error: "token_already_used" }, 400, env);
@@ -1168,6 +1282,9 @@ async function handleAuthRefresh(request, env) {
   if (!session) {
     return json({ ok: false, error: "invalid_refresh_token" }, 400, env);
   }
+  if (isBlockedStatus(session.status)) {
+    return blockedAccountResponse(env);
+  }
   if (session.revoked_at) {
     return json({ ok: false, error: "refresh_token_revoked" }, 400, env);
   }
@@ -1236,6 +1353,9 @@ async function handleMe(request, env) {
   );
   if (!user) {
     return json({ ok: false, error: "user_not_found" }, 404, env);
+  }
+  if (isBlockedStatus(user.status)) {
+    return blockedAccountResponse(env);
   }
   const subscription = await findSubscriptionByUserId(db, user.id);
   const accountState = await buildAllowanceState(db, user, subscription, env);
@@ -1632,7 +1752,11 @@ async function handleTileRequest(request, env, path, ctx) {
   if (!user) {
     return json({ ok: false, error: "user_not_found" }, 404, env);
   }
+  if (isBlockedStatus(user.status)) {
+    return blockedAccountResponse(env);
+  }
   const subscription = await findSubscriptionByUserId(db, access.sub);
+  const planCode = resolvePlanCode(user, subscription);
 
   const parts = path.replace(/^\/tiles\//, "").split("/");
   if (parts.length !== 2 || !parts[0] || !parts[1]) {
@@ -1651,6 +1775,24 @@ async function handleTileRequest(request, env, path, ctx) {
   }
   const prefix = String(env.R2_PREFIX || "").trim().replace(/^\/+|\/+$/g, "");
   const key = prefix ? `${prefix}/${folder}/${fileName}` : `${folder}/${fileName}`;
+
+  const parsedTile = parseTileQualityFromFileName(fileName);
+  if (request.method === "GET" && planCode === PLAN_CODE_PLANETKA && parsedTile && parsedTile.z === parsedTile.d) {
+    await blockUserForAbuse(db, user, env, {
+      reason: "free_account_full_quality_tile_request",
+      path,
+      file_name: fileName,
+      z: parsedTile.z,
+      d: parsedTile.d,
+      plan_code: planCode,
+      ip: request.headers.get("CF-Connecting-IP") || "",
+      user_agent: request.headers.get("User-Agent") || "",
+    });
+    return blockedAccountResponse(
+      env,
+      "Attempt to download full quality texture under Free Account licence detected. Account Blocked.",
+    );
+  }
 
   if (request.method === "HEAD") {
     const objectHead = await env.PLANETKA_DATA.head(key);

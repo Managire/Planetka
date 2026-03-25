@@ -6,6 +6,7 @@ import bpy
 from bpy.props import EnumProperty
 from mathutils import Matrix, Quaternion, Vector
 
+from .auth import get_commercial_use_allowed, is_pro_account
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from .extension_prefs import get_earth_object, get_prefs
 from .operator_utils import ErrorCode, fail, require_planetka_props, require_scene
@@ -48,6 +49,25 @@ TILE_GROUP_NODE_PREFIXES = ("Planetka Tile_", "Tile_")
 _COVERAGE_MAP = None
 _TILE_UTILS_MODULE = None
 _OPERATORS_MODULE = None
+
+
+def _has_pro_feature_access(prefs=None):
+    prefs_obj = prefs if prefs is not None else get_prefs()
+    if prefs_obj is None:
+        return False
+    return bool(is_pro_account(prefs_obj) or get_commercial_use_allowed(prefs_obj))
+
+
+def _require_pro_animation_render_access(operator, prefs=None):
+    if _has_pro_feature_access(prefs):
+        return True
+    fail(
+        operator,
+        "Upgrade to Pro to unlock Animation Rendering.",
+        code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+        logger=logger,
+    )
+    return False
 
 
 def _canonical_tiles(tiles):
@@ -1873,6 +1893,8 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             return False
 
         prefs = get_prefs()
+        if not _require_pro_animation_render_access(self, prefs):
+            return False
         base_path = str(getattr(prefs, "texture_base_path", "") or "") if prefs else ""
         if (not base_path or not os.path.isdir(base_path)) and not is_remote_source_configured(base_path):
             fail(
@@ -2043,6 +2065,8 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             )
 
         prefs = get_prefs()
+        if not _require_pro_animation_render_access(self, prefs):
+            return {'CANCELLED'}
         base_path = str(getattr(prefs, "texture_base_path", "") or "") if prefs else ""
         if (not base_path or not os.path.isdir(base_path)) and not is_remote_source_configured(base_path):
             return fail(
@@ -2422,6 +2446,8 @@ class PLANETKA_OT_AnimationMakeReady(bpy.types.Operator):
                     code=ErrorCode.RESOLVE_PREFS_MISSING,
                     logger=logger,
                 )
+            if not _require_pro_animation_render_access(self, prefs):
+                return {'CANCELLED'}
             base_path = str(getattr(prefs, "texture_base_path", "") or "")
             if (not base_path or not os.path.isdir(base_path)) and not is_remote_source_configured(base_path):
                 return fail(

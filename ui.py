@@ -782,7 +782,7 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             quality_row.prop_enum(props, "texture_quality_mode", "HALF", text="Half")
             quality_row.prop_enum(props, "texture_quality_mode", "QUARTER", text="Quarter")
             if not _full_texture_quality_allowed():
-                texture_quality_box.label(text="Full quality is available for Pro licence only.", icon="INFO")
+                texture_quality_box.label(text="Upgrade to Pro to unlock Full Quality.", icon="INFO")
 
             viewport_box = layout.box()
             viewport_box.label(text="Viewport Optimization", icon="VIEW3D")
@@ -1195,27 +1195,38 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
         render_box = layout.box()
         render_box.label(text="Rendering", icon="RENDER_ANIMATION")
-        if _is_animation_prepared(scene):
-            render_box.label(text="Prepared animation setup will be cleared.", icon="INFO")
+        render_enabled = _full_texture_quality_allowed()
+        if not render_enabled:
+            render_box.label(text="Upgrade to Pro to unlock", icon="LOCKED")
+            render_box.operator(
+                "wm.url_open",
+                text="Upgrade to Pro",
+                icon="URL",
+            ).url = "https://www.planetka.io/blender-addon/pricing/"
 
-        preset_row = render_box.row(align=True)
+        render_content = render_box.column()
+        render_content.enabled = render_enabled
+        if _is_animation_prepared(scene):
+            render_content.label(text="Prepared animation setup will be cleared.", icon="INFO")
+
+        preset_row = render_content.row(align=True)
         preset_row.use_property_split = False
         preset_row.prop_enum(props, "anim_render_preset", "SPEED", text="Speed Optimized")
         preset_row.prop_enum(props, "anim_render_preset", "MEMORY", text="Memory Optimized")
 
-        render_box.separator()
-        subdiv_box = render_box.box()
+        render_content.separator()
+        subdiv_box = render_content.box()
         subdiv_box.label(text="Subdivision", icon="MOD_SUBSURF")
         subdiv_box.prop(props, "anim_render_dicing_rate", text="Dicing Rate Render")
         subdiv_box.prop(props, "anim_render_offscreen_scale", text="Offscreen Scale")
 
-        perf_box = render_box.box()
+        perf_box = render_content.box()
         perf_box.label(text="Performance", icon="TIME")
         perf_box.prop(props, "anim_render_persistent_data", text="Persistent Data")
 
-        render_box.separator()
-        render_box.label(text="Blender will be unresponsive during render", icon="INFO")
-        render_row = render_box.row()
+        render_content.separator()
+        render_content.label(text="Blender will be unresponsive during render", icon="INFO")
+        render_row = render_content.row()
         render_row.scale_y = 1.2
         render_row.operator(
             "planetka.animation_render_headless",
