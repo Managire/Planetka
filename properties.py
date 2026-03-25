@@ -662,9 +662,9 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
     texture_quality_mode: EnumProperty(
         name="Texture Quality",
         items=(
-            ("FULL", "Full", "Highest available quality"),
-            ("HALF", "Half", "Use one d-level coarser textures"),
-            ("QUARTER", "Quarter", "Use two d-levels coarser textures"),
+            ("FULL", "Full", "Highest available quality (100% texture data)"),
+            ("HALF", "Half", "Reduced quality using about 1/4 of Full texture data size"),
+            ("QUARTER", "Quarter", "Reduced quality using about 1/16 of Full texture data size"),
         ),
         default="FULL",
         description="Texture quality level used by Resolve for viewport and final rendering",
