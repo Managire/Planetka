@@ -316,11 +316,11 @@ function resolvePlanCode(user, subscription) {
   if (userStatus === PLAN_CODE_PLANETKA_PRO || userStatus === "pro") {
     return PLAN_CODE_PLANETKA_PRO;
   }
-  if (userStatus === PLAN_CODE_PLANETKA || userStatus === "free" || userStatus === "personal") {
-    return PLAN_CODE_PLANETKA;
-  }
   if (subscription && isSubscriptionActive(subscription) && String(subscription.stripe_subscription_id || "").trim()) {
     return PLAN_CODE_PLANETKA_PRO;
+  }
+  if (userStatus === PLAN_CODE_PLANETKA || userStatus === "free" || userStatus === "personal") {
+    return PLAN_CODE_PLANETKA;
   }
   return PLAN_CODE_PLANETKA;
 }
@@ -749,7 +749,7 @@ async function ensureDeviceSessionsTable(db) {
   );
 }
 
-async function upsertUserByEmail(db, email, status = "active") {
+async function upsertUserByEmail(db, email, status = PLAN_CODE_PLANETKA) {
   const normalizedEmail = normalizeEmail(email);
   let user = await findUserByEmail(db, normalizedEmail);
   if (user) {
@@ -943,7 +943,7 @@ function genericAuthStartResponse(env) {
   return json(
     {
       ok: true,
-      message: "If your account exists and is active, a login link has been sent.",
+      message: "If the email is valid, a Planetka login link has been sent.",
     },
     200,
     env,
@@ -985,14 +985,9 @@ async function handleAuthStart(request, env) {
     }
   }
 
-  const user = await findUserByEmail(db, email);
+  let user = await findUserByEmail(db, email);
   if (!user) {
-    return genericAuthStartResponse(env);
-  }
-
-  const subscription = await findSubscriptionByUserId(db, user.id);
-  if (!isSubscriptionActive(subscription)) {
-    return genericAuthStartResponse(env);
+    user = await upsertUserByEmail(db, email, PLAN_CODE_PLANETKA);
   }
 
   const token = randomToken(32);
@@ -1054,9 +1049,7 @@ async function handleAuthVerify(request, env) {
   }
 
   const subscription = await findSubscriptionByUserId(db, magicLink.user_id);
-  if (!isSubscriptionActive(subscription)) {
-    return json({ ok: false, error: "subscription_inactive" }, 403, env);
-  }
+  const subscriptionStatus = subscription ? String(subscription.status || "inactive") : "inactive";
 
   const usedAt = nowIso();
   await dbRun(
@@ -1066,14 +1059,14 @@ async function handleAuthVerify(request, env) {
   );
   await dbRun(
     db,
-    `UPDATE users SET last_login_at = ?, status = 'active' WHERE id = ?`,
+    `UPDATE users SET last_login_at = ? WHERE id = ?`,
     [usedAt, magicLink.user_id],
   );
 
   const user = {
     id: magicLink.user_id,
     email: magicLink.email,
-    status: magicLink.user_status || "active",
+    status: magicLink.user_status || PLAN_CODE_PLANETKA,
   };
   const accessToken = await createAccessToken(env, user, subscription);
   const refreshToken = await createRefreshSession(db, magicLink.user_id);
@@ -1111,9 +1104,9 @@ async function handleAuthVerify(request, env) {
           user.email,
           accessToken,
           refreshToken,
-          subscription.status,
-          subscription.renews_at,
-          subscription.trial_ends_at,
+          subscriptionStatus,
+          subscription ? subscription.renews_at : null,
+          subscription ? subscription.trial_ends_at : null,
           usedAt,
           deviceSession.id,
         ],
@@ -1127,9 +1120,9 @@ async function handleAuthVerify(request, env) {
       access_token: accessToken,
       refresh_token: refreshToken,
       email: user.email,
-      subscription_status: subscription.status,
-      renews_at: subscription.renews_at,
-      trial_ends_at: subscription.trial_ends_at,
+      subscription_status: subscriptionStatus,
+      renews_at: subscription ? subscription.renews_at : null,
+      trial_ends_at: subscription ? subscription.trial_ends_at : null,
       ...serializeAccountState(accountState),
     },
     200,
@@ -1174,9 +1167,7 @@ async function handleAuthRefresh(request, env) {
   }
 
   const subscription = await findSubscriptionByUserId(db, session.user_id);
-  if (!isSubscriptionActive(subscription)) {
-    return json({ ok: false, error: "subscription_inactive" }, 403, env);
-  }
+  const subscriptionStatus = subscription ? String(subscription.status || "inactive") : "inactive";
 
   await dbRun(
     db,
@@ -1202,9 +1193,9 @@ async function handleAuthRefresh(request, env) {
       access_token: accessToken,
       refresh_token: nextRefreshToken,
       email: session.email,
-      subscription_status: subscription.status,
-      renews_at: subscription.renews_at,
-      trial_ends_at: subscription.trial_ends_at,
+      subscription_status: subscriptionStatus,
+      renews_at: subscription ? subscription.renews_at : null,
+      trial_ends_at: subscription ? subscription.trial_ends_at : null,
       ...serializeAccountState(accountState),
     },
     200,
@@ -1633,9 +1624,6 @@ async function handleTileRequest(request, env, path, ctx) {
     return json({ ok: false, error: "user_not_found" }, 404, env);
   }
   const subscription = await findSubscriptionByUserId(db, access.sub);
-  if (!isSubscriptionActive(subscription)) {
-    return json({ ok: false, error: "subscription_inactive" }, 403, env);
-  }
 
   const parts = path.replace(/^\/tiles\//, "").split("/");
   if (parts.length !== 2 || !parts[0] || !parts[1]) {
@@ -1781,7 +1769,7 @@ async function handleStripeWebhook(request, env) {
     return json({ ok: false, error: "missing_customer_email" }, 400, env);
   }
 
-  const user = await upsertUserByEmail(db, email, "active");
+  const user = await upsertUserByEmail(db, email, PLAN_CODE_PLANETKA_PRO);
   const stripeCustomerId = String(session.customer || "").trim() || null;
   const stripeSubscriptionId = String(session.subscription || "").trim() || null;
   const createdAt = nowIso();
