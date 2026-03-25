@@ -668,8 +668,6 @@ _SURFACE_GRADING_SECTION_SOCKET_MAP = {
     },
     "Elevation": {
         "coefficient",
-        "waves density coefficient",
-        "waves height coefficient",
         "procedural detail scale",
         "forest detail strength",
         "rock detail strength",
@@ -1130,7 +1128,7 @@ class PLANETKA_PT_LinksPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         row.operator("wm.url_open", text="Tutorials", icon="PLAY").url = "https://www.planetka.io/blender/tutorials/"
         row = layout.row(align=True)
         row.operator("planetka.report_bug", text="Report Bug", icon="ERROR")
-        row.operator("wm.url_open", text="Discord", icon="URL").url = "https://www.planetka.io"
+        row.operator("wm.url_open", text="Discord", icon="URL").url = "https://discord.com/channels/1484086341099589742/1484087649722699846"
 
         layout.operator(
             "wm.url_open",
@@ -1257,7 +1255,7 @@ class PLANETKA_PT_NavigationSavedLocationsPanelCollapsed(_PLANETKA_PT_BaseSectio
 
 
 class PLANETKA_PT_SurfaceGradingPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Surface Settings"
+    bl_label = "Earth Grading"
     bl_idname = "PLANETKA_PT_surface_grading"
     bl_order = 5
 
@@ -1272,7 +1270,7 @@ class PLANETKA_PT_SurfaceGradingPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel)
 
 
 class PLANETKA_PT_SurfaceGradingPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Surface Settings"
+    bl_label = "Earth Grading"
     bl_idname = "PLANETKA_PT_surface_grading_collapsed"
     bl_order = 5
 
