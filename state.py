@@ -1184,25 +1184,12 @@ def _camera_control_sync_signature(scene):
     except (TypeError, ValueError, RuntimeError):
         return None
 
-    earth = get_earth_object()
-    earth_matrix_signature = None
-    if earth is not None:
-        try:
-            earth_matrix_signature = tuple(
-                round(float(value), 6)
-                for row in earth.matrix_world
-                for value in row
-            )
-        except (TypeError, ValueError, RuntimeError):
-            earth_matrix_signature = None
-
     return (
         str(getattr(camera, "name_full", camera.name)),
         str(getattr(camera_data, "type", "")),
         round(float(getattr(camera_data, "lens", 0.0)), 6),
         round(float(getattr(camera_data, "ortho_scale", 0.0)), 6),
         camera_matrix_signature,
-        earth_matrix_signature,
     )
 
 
@@ -1267,10 +1254,6 @@ def _camera_signature(scene):
         return None
 
     matrix_signature = tuple(round(float(value), 6) for row in camera.matrix_world for value in row)
-    earth = get_earth_object()
-    earth_matrix_signature = None
-    if earth is not None:
-        earth_matrix_signature = tuple(round(float(value), 6) for row in earth.matrix_world for value in row)
 
     return (
         str(getattr(camera, "name_full", camera.name)),
@@ -1278,8 +1261,22 @@ def _camera_signature(scene):
         round(float(getattr(camera_data, "lens", 0.0)), 6),
         round(float(getattr(camera_data, "ortho_scale", 0.0)), 6),
         matrix_signature,
-        earth_matrix_signature,
     )
+
+
+def _is_resolve_pipeline_busy():
+    if _AUTO_RESOLVE_IN_FLIGHT:
+        return True
+    if _AUTO_RESOLVE_DOWNLOAD_THREAD is not None:
+        return True
+    with _AUTO_RESOLVE_DOWNLOAD_LOCK:
+        if isinstance(_AUTO_RESOLVE_DOWNLOAD_ACTIVE_JOB, dict):
+            return True
+        if isinstance(_AUTO_RESOLVE_DOWNLOAD_PENDING_JOB, dict):
+            return True
+        if isinstance(_AUTO_RESOLVE_DOWNLOAD_COMPLETED, dict):
+            return True
+    return False
 
 
 def _output_resolution_signature(scene):
@@ -2806,6 +2803,11 @@ def _planetka_depsgraph_update_post(_scene, _depsgraph):
     ensure_active_view_monitor_running()
 
     _update_realtime_telemetry(scene)
+
+    # Ignore depsgraph-triggered requeue while resolve/download pipeline is working.
+    # Internal mesh/shader swaps during finalize can otherwise self-trigger endless cycles.
+    if _is_resolve_pipeline_busy():
+        return
 
     scene_id = _scene_key(scene)
     output_signature = _output_resolution_signature(scene)
