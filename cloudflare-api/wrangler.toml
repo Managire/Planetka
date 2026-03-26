@@ -2,6 +2,9 @@ name = "planetkaworker01"
 main = "src/index.js"
 compatibility_date = "2026-03-15"
 
+[triggers]
+crons = ["0 * * * *"]
+
 [vars]
 R2_PREFIX = "planetka-assets"
 

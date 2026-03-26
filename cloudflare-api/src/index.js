@@ -26,6 +26,7 @@ const DEFAULT_RATE_LIMIT_DEVICE_POLL_IP_LIMIT = 300;
 const DEFAULT_RATE_LIMIT_DEVICE_POLL_IP_WINDOW_SECONDS = 60;
 const DEFAULT_RATE_LIMIT_DEVICE_POLL_CODE_LIMIT = 120;
 const DEFAULT_RATE_LIMIT_DEVICE_POLL_CODE_WINDOW_SECONDS = 60;
+const DEFAULT_REFRESH_SESSION_CLEANUP_RETENTION_DAYS = 30;
 const RATE_LIMIT_PRUNE_INTERVAL_SECONDS = 300;
 const RATE_LIMIT_ENTRY_TTL_SECONDS = 172800;
 let manualCreditModeCache = "";
@@ -326,6 +327,24 @@ async function dbRun(db, sql, bindings = []) {
   return db.prepare(sql).bind(...bindings).run();
 }
 
+function dbMetaChanges(result) {
+  return clampNonNegativeInt(result && result.meta && result.meta.changes);
+}
+
+async function dbTableExists(db, tableName) {
+  const row = await dbGet(
+    db,
+    `
+      SELECT name
+      FROM sqlite_master
+      WHERE type = 'table' AND name = ?
+      LIMIT 1
+    `,
+    [String(tableName || "").trim()],
+  );
+  return Boolean(row && row.name);
+}
+
 function parseRateLimitInteger(value, fallback) {
   return Math.max(0, parseNonNegativeInteger(value, fallback));
 }
@@ -438,6 +457,67 @@ function rateLimitedResponse(env, code, message, retryAfterSeconds) {
     env,
     { "Retry-After": String(retryAfter) },
   );
+}
+
+async function cleanupAuthTables(db, env, nowTimestamp) {
+  const summary = {
+    started_at: nowTimestamp,
+    refresh_session_retention_days: Math.max(
+      0,
+      parseNonNegativeInteger(
+        env.CLEANUP_REFRESH_SESSION_RETENTION_DAYS,
+        DEFAULT_REFRESH_SESSION_CLEANUP_RETENTION_DAYS,
+      ),
+    ),
+    magic_links_deleted: 0,
+    refresh_sessions_deleted: 0,
+    device_sessions_deleted: 0,
+  };
+  const refreshSessionCutoff = addDaysFromIso(
+    nowTimestamp,
+    -summary.refresh_session_retention_days,
+  );
+
+  if (await dbTableExists(db, "magic_links")) {
+    const magicLinksResult = await dbRun(
+      db,
+      `
+        DELETE FROM magic_links
+        WHERE expires_at < ?
+      `,
+      [nowTimestamp],
+    );
+    summary.magic_links_deleted = dbMetaChanges(magicLinksResult);
+  }
+
+  if (await dbTableExists(db, "refresh_sessions")) {
+    const refreshSessionsResult = await dbRun(
+      db,
+      `
+        DELETE FROM refresh_sessions
+        WHERE
+          (expires_at IS NOT NULL AND expires_at != '' AND expires_at < ?)
+          OR
+          (revoked_at IS NOT NULL AND revoked_at != '' AND revoked_at < ?)
+      `,
+      [refreshSessionCutoff, refreshSessionCutoff],
+    );
+    summary.refresh_sessions_deleted = dbMetaChanges(refreshSessionsResult);
+  }
+
+  if (await dbTableExists(db, "device_sessions")) {
+    const deviceSessionsResult = await dbRun(
+      db,
+      `
+        DELETE FROM device_sessions
+        WHERE expires_at < ?
+      `,
+      [nowTimestamp],
+    );
+    summary.device_sessions_deleted = dbMetaChanges(deviceSessionsResult);
+  }
+
+  return summary;
 }
 
 async function ensureAllowanceTables(db) {
@@ -2900,5 +2980,30 @@ export default {
         env,
       );
     }
+  },
+  async scheduled(controller, env, ctx) {
+    const runStartedAt = nowIso();
+    const scheduledAt = new Date(controller.scheduledTime || Date.now()).toISOString();
+    ctx.waitUntil((async () => {
+      try {
+        const db = requireDb(env);
+        const summary = await cleanupAuthTables(db, env, runStartedAt);
+        console.log(
+          "worker.db_cleanup.completed",
+          JSON.stringify({
+            scheduled_at: scheduledAt,
+            ...summary,
+          }),
+        );
+      } catch (error) {
+        console.error(
+          "worker.db_cleanup.error",
+          JSON.stringify({
+            scheduled_at: scheduledAt,
+            error: String(error && error.message || "cleanup_failed"),
+          }),
+        );
+      }
+    })());
   },
 };
