@@ -777,6 +777,50 @@ async function ensureDeviceSessionsTable(db) {
   );
 }
 
+async function ensureNewsletterSubscribersTable(db) {
+  await dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS newsletter_subscribers (
+        id TEXT PRIMARY KEY,
+        email TEXT NOT NULL UNIQUE,
+        source TEXT NOT NULL DEFAULT 'unknown',
+        opted_in_at TEXT NOT NULL,
+        last_opt_in_at TEXT NOT NULL
+      )
+    `,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_newsletter_subscribers_last_opt_in ON newsletter_subscribers(last_opt_in_at DESC)`,
+  );
+}
+
+async function recordNewsletterOptIn(db, email, source = "unknown") {
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail || !normalizedEmail.includes("@")) {
+    return;
+  }
+  await ensureNewsletterSubscribersTable(db);
+  const now = nowIso();
+  await dbRun(
+    db,
+    `
+      INSERT INTO newsletter_subscribers (
+        id,
+        email,
+        source,
+        opted_in_at,
+        last_opt_in_at
+      ) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(email) DO UPDATE SET
+        source = excluded.source,
+        last_opt_in_at = excluded.last_opt_in_at
+    `,
+    [crypto.randomUUID(), normalizedEmail, String(source || "unknown"), now, now],
+  );
+}
+
 async function ensureUserConsentColumns(db) {
   if (userConsentColumnsReady) {
     return;
@@ -1151,6 +1195,7 @@ async function handleAuthStart(request, env) {
   const deviceCode = String(body.device_code || "").trim();
   const acceptTerms = parseBooleanFlag(body.accept_terms);
   const acceptPrivacy = parseBooleanFlag(body.accept_privacy);
+  const optInNews = parseBooleanFlag(body.opt_in_news);
   const legalVersion = String(env.TERMS_VERSION || env.LEGAL_VERSION || DEFAULT_LEGAL_VERSION).trim() || DEFAULT_LEGAL_VERSION;
   const privacyVersion = String(env.PRIVACY_VERSION || env.LEGAL_VERSION || DEFAULT_LEGAL_VERSION).trim() || DEFAULT_LEGAL_VERSION;
   if (!email || !email.includes("@")) {
@@ -1203,6 +1248,11 @@ async function handleAuthStart(request, env) {
       `,
       [acceptedAt, acceptedAt, legalVersion, privacyVersion, user.id],
     );
+  }
+
+  if (optInNews) {
+    const source = deviceCode ? "device_login_page" : "auth_start";
+    await recordNewsletterOptIn(db, email, source);
   }
 
   const token = randomToken(32);
@@ -1648,6 +1698,28 @@ function renderDeviceLoginPage(env, deviceCode = "") {
         flex: 0 0 auto;
       }
       .consent a { color: #e5edf7; }
+      .optin {
+        margin-top: 12px;
+        padding: 12px;
+        border-radius: 12px;
+        border: 1px solid rgba(148, 163, 184, 0.28);
+        background: rgba(15, 23, 42, 0.6);
+      }
+      .optin label {
+        display: flex;
+        gap: 10px;
+        align-items: flex-start;
+        margin: 0;
+        font-size: 14px;
+        line-height: 1.4;
+        color: #e2e8f0;
+      }
+      .optin input[type="checkbox"] {
+        width: 18px;
+        height: 18px;
+        margin-top: 1px;
+        flex: 0 0 auto;
+      }
       button {
         margin-top: 14px;
         width: 100%;
@@ -1682,6 +1754,12 @@ function renderDeviceLoginPage(env, deviceCode = "") {
           <span>I agree to the <a href="${termsUrl}" target="_blank" rel="noopener noreferrer">Terms and Conditions</a> and <a href="${privacyUrl}" target="_blank" rel="noopener noreferrer">Privacy Policy</a>.</span>
         </label>
       </div>
+      <div class="optin">
+        <label for="planetka-news-optin">
+          <input id="planetka-news-optin" type="checkbox" />
+          <span>Opt in to receive news about Planetka by email.</span>
+        </label>
+      </div>
       <button id="planetka-send-link">Send Login Link</button>
       <div id="planetka-status" class="status"></div>
     </div>
@@ -1691,6 +1769,7 @@ function renderDeviceLoginPage(env, deviceCode = "") {
         const DEVICE_CODE = ${JSON.stringify(deviceCode)};
         const email = document.getElementById("planetka-email");
         const consent = document.getElementById("planetka-consent");
+        const newsOptIn = document.getElementById("planetka-news-optin");
         const button = document.getElementById("planetka-send-link");
         const status = document.getElementById("planetka-status");
         let busy = false;
@@ -1751,6 +1830,7 @@ function renderDeviceLoginPage(env, deviceCode = "") {
               device_code: DEVICE_CODE,
               accept_terms: true,
               accept_privacy: true,
+              opt_in_news: Boolean(newsOptIn && newsOptIn.checked),
             });
             show("Check your inbox. We sent you a secure login link.", "success");
           } catch (error) {
