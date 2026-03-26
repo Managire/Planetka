@@ -3,6 +3,7 @@ const BYTES_PER_GB = 1024 * 1024 * 1024;
 const PLAN_CODE_PLANETKA = "planetka";
 const PLAN_CODE_PLANETKA_PRO = "planetka_pro";
 const PLAN_CODE_PLANETKA_STUDIO = "planetka_studio";
+const SPECIAL_PRO_EMAIL = "tom.griger@gmail.com";
 const DEFAULT_ALLOWANCE_COUNTING_RULE =
   "Only newly downloaded data counts. Reused local cache does not consume allowance.";
 const DEFAULT_PERIOD_DAYS = 30;
@@ -70,6 +71,45 @@ function addDaysFromIso(isoValue, days) {
 
 function normalizeEmail(value) {
   return String(value || "").trim().toLowerCase();
+}
+
+function normalizeUserStatus(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === PLAN_CODE_PLANETKA_PRO || normalized === "pro") {
+    return PLAN_CODE_PLANETKA_PRO;
+  }
+  if (normalized === PLAN_CODE_PLANETKA_STUDIO || normalized === "studio") {
+    return PLAN_CODE_PLANETKA_STUDIO;
+  }
+  if (normalized === PLAN_CODE_PLANETKA || normalized === "free" || normalized === "personal") {
+    return PLAN_CODE_PLANETKA;
+  }
+  return normalized;
+}
+
+function hasPaidSubscriptionAccess(subscription) {
+  return Boolean(
+    subscription
+    && isSubscriptionActive(subscription)
+    && String(subscription.stripe_subscription_id || "").trim(),
+  );
+}
+
+function isSpecialProEmail(email) {
+  return normalizeEmail(email) === SPECIAL_PRO_EMAIL;
+}
+
+function resolvePolicyPlanCode(user, subscription) {
+  if (user && isBlockedStatus(user.status)) {
+    return "blocked";
+  }
+  if (isSpecialProEmail(user && user.email)) {
+    return PLAN_CODE_PLANETKA_PRO;
+  }
+  if (hasPaidSubscriptionAccess(subscription)) {
+    return PLAN_CODE_PLANETKA_PRO;
+  }
+  return PLAN_CODE_PLANETKA;
 }
 
 function parseBooleanFlag(value) {
@@ -337,18 +377,9 @@ function buildPlanConfig(env) {
 }
 
 function resolvePlanCode(user, subscription) {
-  const userStatus = String(user && user.status ? user.status : "").trim().toLowerCase();
-  if (userStatus === PLAN_CODE_PLANETKA_STUDIO || userStatus === "studio") {
-    return PLAN_CODE_PLANETKA_STUDIO;
-  }
-  if (userStatus === PLAN_CODE_PLANETKA_PRO || userStatus === "pro") {
+  const policyPlan = resolvePolicyPlanCode(user, subscription);
+  if (policyPlan === PLAN_CODE_PLANETKA_PRO) {
     return PLAN_CODE_PLANETKA_PRO;
-  }
-  if (subscription && isSubscriptionActive(subscription) && String(subscription.stripe_subscription_id || "").trim()) {
-    return PLAN_CODE_PLANETKA_PRO;
-  }
-  if (userStatus === PLAN_CODE_PLANETKA || userStatus === "free" || userStatus === "personal") {
-    return PLAN_CODE_PLANETKA;
   }
   return PLAN_CODE_PLANETKA;
 }
@@ -914,6 +945,26 @@ async function upsertUserByEmail(db, email, status = PLAN_CODE_PLANETKA, options
   return user;
 }
 
+async function enforceUserPlanPolicy(db, user, subscription = null) {
+  if (!user || !user.id || isBlockedStatus(user.status)) {
+    return user;
+  }
+  const targetPlan = resolvePolicyPlanCode(user, subscription);
+  if (targetPlan !== PLAN_CODE_PLANETKA && targetPlan !== PLAN_CODE_PLANETKA_PRO) {
+    return user;
+  }
+  const currentStatus = normalizeUserStatus(user.status);
+  if (currentStatus === targetPlan) {
+    return { ...user, status: targetPlan };
+  }
+  await dbRun(
+    db,
+    `UPDATE users SET status = ? WHERE id = ?`,
+    [targetPlan, user.id],
+  );
+  return { ...user, status: targetPlan };
+}
+
 function isSubscriptionActive(subscription) {
   if (!subscription) {
     return false;
@@ -1220,6 +1271,7 @@ async function handleAuthStart(request, env) {
   }
 
   let user = await findUserByEmail(db, email);
+  let subscription = null;
   if (!user) {
     if (!acceptTerms || !acceptPrivacy) {
       return json({ ok: false, error: "terms_consent_required" }, 400, env);
@@ -1248,6 +1300,10 @@ async function handleAuthStart(request, env) {
       `,
       [acceptedAt, acceptedAt, legalVersion, privacyVersion, user.id],
     );
+  }
+  if (user && !isBlockedStatus(user.status)) {
+    subscription = await findSubscriptionByUserId(db, user.id);
+    user = await enforceUserPlanPolicy(db, user, subscription);
   }
 
   if (optInNews) {
@@ -1331,11 +1387,12 @@ async function handleAuthVerify(request, env) {
     [usedAt, magicLink.user_id],
   );
 
-  const user = {
+  let user = {
     id: magicLink.user_id,
     email: magicLink.email,
     status: magicLink.user_status || PLAN_CODE_PLANETKA,
   };
+  user = await enforceUserPlanPolicy(db, user, subscription);
   const accessToken = await createAccessToken(env, user, subscription);
   const refreshToken = await createRefreshSession(db, magicLink.user_id);
   const accountState = await buildAllowanceState(db, user, subscription, env);
@@ -1439,31 +1496,28 @@ async function handleAuthRefresh(request, env) {
 
   const subscription = await findSubscriptionByUserId(db, session.user_id);
   const subscriptionStatus = subscription ? String(subscription.status || "inactive") : "inactive";
+  let user = {
+    id: session.user_id,
+    email: session.email,
+    status: session.status || PLAN_CODE_PLANETKA,
+  };
+  user = await enforceUserPlanPolicy(db, user, subscription);
 
   await dbRun(
     db,
     `UPDATE refresh_sessions SET revoked_at = ? WHERE id = ?`,
     [nowIso(), session.id],
   );
-  const accessToken = await createAccessToken(
-    env,
-    { id: session.user_id, email: session.email, status: session.status || "active" },
-    subscription,
-  );
+  const accessToken = await createAccessToken(env, user, subscription);
   const nextRefreshToken = await createRefreshSession(db, session.user_id);
-  const accountState = await buildAllowanceState(
-    db,
-    { id: session.user_id, email: session.email, status: session.status || "active" },
-    subscription,
-    env,
-  );
+  const accountState = await buildAllowanceState(db, user, subscription, env);
 
   return json(
     {
       ok: true,
       access_token: accessToken,
       refresh_token: nextRefreshToken,
-      email: session.email,
+      email: user.email,
       subscription_status: subscriptionStatus,
       renews_at: subscription ? subscription.renews_at : null,
       trial_ends_at: subscription ? subscription.trial_ends_at : null,
@@ -1486,7 +1540,7 @@ async function handleMe(request, env) {
     return json({ ok: false, error: "missing_bearer_token" }, 401, env);
   }
 
-  const user = await dbGet(
+  let user = await dbGet(
     db,
     `
       SELECT id, email, status, created_at, last_login_at
@@ -1503,6 +1557,7 @@ async function handleMe(request, env) {
     return blockedAccountResponse(env);
   }
   const subscription = await findSubscriptionByUserId(db, user.id);
+  user = await enforceUserPlanPolicy(db, user, subscription);
   const accountState = await buildAllowanceState(db, user, subscription, env);
 
   return json(
@@ -1609,9 +1664,10 @@ async function handleDevicePoll(request, env) {
 
   let accountPayload = {};
   try {
-    const user = await findUserByEmail(db, normalizeEmail(session.email));
+    let user = await findUserByEmail(db, normalizeEmail(session.email));
     const subscription = user ? await findSubscriptionByUserId(db, user.id) : null;
     if (user) {
+      user = await enforceUserPlanPolicy(db, user, subscription);
       const accountState = await buildAllowanceState(db, user, subscription, env);
       accountPayload = serializeAccountState(accountState);
     }
@@ -1636,9 +1692,13 @@ async function handleDevicePoll(request, env) {
   );
 }
 
-function renderDeviceLoginPage(env, deviceCode = "") {
+function renderDeviceLoginPage(env, deviceCode = "", verifyMode = false) {
   const termsUrl = String(env.TERMS_URL || DEFAULT_TERMS_URL).trim() || DEFAULT_TERMS_URL;
   const privacyUrl = String(env.PRIVACY_URL || DEFAULT_PRIVACY_URL).trim() || DEFAULT_PRIVACY_URL;
+  const contactUrl = String(env.CONTACT_URL || "https://www.planetka.io/contact-me").trim();
+  const loginSectionStyle = verifyMode ? "display:none;" : "";
+  const verifySectionStyle = verifyMode ? "" : "display:none;";
+  const verifyEmailInitial = verifyMode ? "Verifying email address..." : "";
   return `<!doctype html>
 <html lang="en">
   <head>
@@ -1698,28 +1758,6 @@ function renderDeviceLoginPage(env, deviceCode = "") {
         flex: 0 0 auto;
       }
       .consent a { color: #e5edf7; }
-      .optin {
-        margin-top: 12px;
-        padding: 12px;
-        border-radius: 12px;
-        border: 1px solid rgba(148, 163, 184, 0.28);
-        background: rgba(15, 23, 42, 0.6);
-      }
-      .optin label {
-        display: flex;
-        gap: 10px;
-        align-items: flex-start;
-        margin: 0;
-        font-size: 14px;
-        line-height: 1.4;
-        color: #e2e8f0;
-      }
-      .optin input[type="checkbox"] {
-        width: 18px;
-        height: 18px;
-        margin-top: 1px;
-        flex: 0 0 auto;
-      }
       button {
         margin-top: 14px;
         width: 100%;
@@ -1740,58 +1778,87 @@ function renderDeviceLoginPage(env, deviceCode = "") {
         font-size: 14px;
         line-height: 1.5;
       }
+      .verify-email {
+        margin: 0 0 10px;
+        color: #e2e8f0;
+      }
+      .contact-help {
+        margin-top: 16px;
+        font-size: 14px;
+        color: #cbd5e1;
+      }
+      .contact-help a {
+        color: #e5edf7;
+      }
     </style>
   </head>
   <body>
     <div class="card">
-      <h1>Log In to Planetka</h1>
-      <p>For free access, enter your email address and Blender will connect automatically after you confirm the login email.</p>
-      <label for="planetka-email">Email</label>
-      <input id="planetka-email" type="email" placeholder="you@example.com" />
-      <div class="consent">
-        <label for="planetka-consent">
-          <input id="planetka-consent" type="checkbox" />
-          <span>I agree to the <a href="${termsUrl}" target="_blank" rel="noopener noreferrer">Terms and Conditions</a> and <a href="${privacyUrl}" target="_blank" rel="noopener noreferrer">Privacy Policy</a>.</span>
-        </label>
+      <div id="planetka-login-section" style="${loginSectionStyle}">
+        <h1>Log In to Planetka</h1>
+        <p>For free access, enter your email address and Blender will connect automatically after you confirm the login email.</p>
+        <label for="planetka-email">Email</label>
+        <input id="planetka-email" type="email" placeholder="you@example.com" />
+        <div class="consent">
+          <label for="planetka-consent">
+            <input id="planetka-consent" type="checkbox" />
+            <span>I agree to the <a href="${termsUrl}" target="_blank" rel="noopener noreferrer">Terms and Conditions</a> and <a href="${privacyUrl}" target="_blank" rel="noopener noreferrer">Privacy Policy</a>.</span>
+          </label>
+        </div>
+        <div class="consent">
+          <label for="planetka-news-optin">
+            <input id="planetka-news-optin" type="checkbox" />
+            <span>Opt in to receive news about Planetka by email.</span>
+          </label>
+        </div>
+        <button id="planetka-send-link">Send Login Link</button>
+        <div id="planetka-status" class="status"></div>
       </div>
-      <div class="optin">
-        <label for="planetka-news-optin">
-          <input id="planetka-news-optin" type="checkbox" />
-          <span>Opt in to receive news about Planetka by email.</span>
-        </label>
+      <div id="planetka-verify-section" style="${verifySectionStyle}">
+        <h1>Email Verified</h1>
+        <p id="planetka-verify-email" class="verify-email">${verifyEmailInitial}</p>
+        <div id="planetka-verify-status" class="status"></div>
+        <p class="contact-help">Problem connecting? <a href="${contactUrl}" target="_blank" rel="noopener noreferrer">Contact Me</a></p>
       </div>
-      <button id="planetka-send-link">Send Login Link</button>
-      <div id="planetka-status" class="status"></div>
     </div>
     <script>
       (() => {
         const API = "${String(env.API_BASE_URL || "https://api.planetka.io").trim()}";
         const DEVICE_CODE = ${JSON.stringify(deviceCode)};
+        const loginSection = document.getElementById("planetka-login-section");
+        const verifySection = document.getElementById("planetka-verify-section");
         const email = document.getElementById("planetka-email");
         const consent = document.getElementById("planetka-consent");
         const newsOptIn = document.getElementById("planetka-news-optin");
         const button = document.getElementById("planetka-send-link");
         const status = document.getElementById("planetka-status");
+        const verifyEmail = document.getElementById("planetka-verify-email");
+        const verifyStatus = document.getElementById("planetka-verify-status");
         let busy = false;
 
-        function show(message, type = "info") {
-          status.textContent = message || "";
-          status.style.display = message ? "block" : "none";
+        function showStatus(target, message, type = "info") {
+          if (!target) return;
+          target.textContent = message || "";
+          target.style.display = message ? "block" : "none";
           if (type === "error") {
-            status.style.background = "rgba(127,29,29,.18)";
-            status.style.border = "1px solid rgba(248,113,113,.35)";
-            status.style.color = "#fecaca";
+            target.style.background = "rgba(127,29,29,.18)";
+            target.style.border = "1px solid rgba(248,113,113,.35)";
+            target.style.color = "#fecaca";
             return;
           }
           if (type === "success") {
-            status.style.background = "rgba(20,83,45,.18)";
-            status.style.border = "1px solid rgba(74,222,128,.35)";
-            status.style.color = "#bbf7d0";
+            target.style.background = "rgba(20,83,45,.18)";
+            target.style.border = "1px solid rgba(74,222,128,.35)";
+            target.style.color = "#bbf7d0";
             return;
           }
-          status.style.background = "rgba(30,41,59,.35)";
-          status.style.border = "1px solid rgba(148,163,184,.25)";
-          status.style.color = "#e2e8f0";
+          target.style.background = "rgba(30,41,59,.35)";
+          target.style.border = "1px solid rgba(148,163,184,.25)";
+          target.style.color = "#e2e8f0";
+        }
+
+        function show(message, type = "info") {
+          showStatus(status, message, type);
         }
 
         function validEmail(value) {
@@ -1850,20 +1917,26 @@ function renderDeviceLoginPage(env, deviceCode = "") {
         async function verifyToken() {
           const token = new URLSearchParams(window.location.search).get("token");
           if (!token) return;
+          loginSection.style.display = "none";
+          verifySection.style.display = "block";
+          verifyEmail.textContent = "Verifying email address...";
+          showStatus(verifyStatus, "Verifying login...", "info");
           busy = true;
-          button.disabled = true;
-          button.textContent = "Verifying...";
-          show("Verifying login...", "info");
           try {
-            await post("/auth/verify", { token, device_code: DEVICE_CODE });
-            button.textContent = "Verified";
-            show("Verified. Blender is now connected. You can return to Blender.", "success");
+            const data = await post("/auth/verify", { token, device_code: DEVICE_CODE });
+            const verifiedEmail = String((data && data.email) || "").trim();
+            if (verifiedEmail) {
+              verifyEmail.textContent = "Email address " + verifiedEmail + " has been verified.";
+            } else {
+              verifyEmail.textContent = "Your email address has been verified.";
+            }
+            showStatus(verifyStatus, "Blender is now connected. You can return to Blender.", "success");
           } catch (error) {
             console.error("planetka auth/verify failed", error);
-            show("This login link is invalid or expired. Please request a new one.", "error");
+            verifyEmail.textContent = "Verification failed.";
+            showStatus(verifyStatus, "This login link is invalid or expired. Please request a new one.", "error");
+          } finally {
             busy = false;
-            button.disabled = false;
-            button.textContent = "Send Login Link";
           }
         }
 
@@ -1891,8 +1964,10 @@ async function handleDeviceLoginPage(request, env) {
   await ensureDeviceSessionsTable(db);
   const url = new URL(request.url);
   const deviceCode = String(url.searchParams.get("device_code") || "").trim();
+  const token = String(url.searchParams.get("token") || "").trim();
+  const verifyMode = Boolean(token);
   if (!deviceCode) {
-    return html(renderDeviceLoginPage(env, ""), 200, env);
+    return html(renderDeviceLoginPage(env, "", verifyMode), 200, env);
   }
 
   const session = await dbGet(
@@ -1906,10 +1981,10 @@ async function handleDeviceLoginPage(request, env) {
     [deviceCode],
   );
   if (!session || session.claimed_at || Date.parse(session.expires_at) < Date.now()) {
-    return html(renderDeviceLoginPage(env, ""), 410, env);
+    return html(renderDeviceLoginPage(env, "", verifyMode), 410, env);
   }
 
-  return html(renderDeviceLoginPage(env, deviceCode), 200, env);
+  return html(renderDeviceLoginPage(env, deviceCode, verifyMode), 200, env);
 }
 
 function resolveLegalDocumentConfig(path, env) {
@@ -2005,7 +2080,7 @@ async function handleTileRequest(request, env, path, ctx) {
   }
 
   const db = requireDb(env);
-  const user = await findUserById(db, access.sub);
+  let user = await findUserById(db, access.sub);
   if (!user) {
     return json({ ok: false, error: "user_not_found" }, 404, env);
   }
@@ -2013,6 +2088,7 @@ async function handleTileRequest(request, env, path, ctx) {
     return blockedAccountResponse(env);
   }
   const subscription = await findSubscriptionByUserId(db, access.sub);
+  user = await enforceUserPlanPolicy(db, user, subscription);
   const planCode = resolvePlanCode(user, subscription);
 
   const parts = path.replace(/^\/tiles\//, "").split("/");
