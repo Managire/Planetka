@@ -14,7 +14,11 @@ const DEFAULT_LOW_WARNING_GB = 10;
 const DEFAULT_LOW_WARNING_RATIO = 0.1;
 const DEFAULT_UPGRADE_URL = "https://www.planetka.io/signup";
 const DEFAULT_CONTACT_URL = "https://www.planetka.io/contact";
+const DEFAULT_TERMS_URL = "https://api.planetka.io/legal/terms-of-service.pdf";
+const DEFAULT_PRIVACY_URL = "https://api.planetka.io/legal/privacy-policy.pdf";
+const DEFAULT_LEGAL_VERSION = "2026-03-26";
 let manualCreditModeCache = "";
+let userConsentColumnsReady = false;
 
 function corsHeaders(env) {
   return {
@@ -66,6 +70,14 @@ function addDaysFromIso(isoValue, days) {
 
 function normalizeEmail(value) {
   return String(value || "").trim().toLowerCase();
+}
+
+function parseBooleanFlag(value) {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
 }
 
 function isBlockedStatus(statusValue) {
@@ -765,8 +777,45 @@ async function ensureDeviceSessionsTable(db) {
   );
 }
 
-async function upsertUserByEmail(db, email, status = PLAN_CODE_PLANETKA) {
+async function ensureUserConsentColumns(db) {
+  if (userConsentColumnsReady) {
+    return;
+  }
+  const pragma = await db.prepare(`PRAGMA table_info(users)`).all();
+  const rows = Array.isArray(pragma && pragma.results) ? pragma.results : [];
+  if (!rows.length) {
+    return;
+  }
+  const names = new Set(rows.map((row) => String(row && row.name || "").trim().toLowerCase()));
+  const statements = [];
+  if (!names.has("terms_accepted_at")) {
+    statements.push(`ALTER TABLE users ADD COLUMN terms_accepted_at TEXT`);
+  }
+  if (!names.has("privacy_accepted_at")) {
+    statements.push(`ALTER TABLE users ADD COLUMN privacy_accepted_at TEXT`);
+  }
+  if (!names.has("terms_version")) {
+    statements.push(`ALTER TABLE users ADD COLUMN terms_version TEXT`);
+  }
+  if (!names.has("privacy_version")) {
+    statements.push(`ALTER TABLE users ADD COLUMN privacy_version TEXT`);
+  }
+  for (const statement of statements) {
+    try {
+      await dbRun(db, statement);
+    } catch (error) {
+      const message = String(error && error.message || "");
+      if (!message.toLowerCase().includes("duplicate column")) {
+        throw error;
+      }
+    }
+  }
+  userConsentColumnsReady = true;
+}
+
+async function upsertUserByEmail(db, email, status = PLAN_CODE_PLANETKA, options = {}) {
   const normalizedEmail = normalizeEmail(email);
+  await ensureUserConsentColumns(db);
   let user = await findUserByEmail(db, normalizedEmail);
   if (user) {
     const currentStatus = String(user.status || "").trim().toLowerCase();
@@ -788,6 +837,10 @@ async function upsertUserByEmail(db, email, status = PLAN_CODE_PLANETKA) {
 
   const id = crypto.randomUUID();
   const createdAt = nowIso();
+  const termsAcceptedAt = options.termsAcceptedAt ? String(options.termsAcceptedAt) : null;
+  const privacyAcceptedAt = options.privacyAcceptedAt ? String(options.privacyAcceptedAt) : null;
+  const termsVersion = options.termsVersion ? String(options.termsVersion) : null;
+  const privacyVersion = options.privacyVersion ? String(options.privacyVersion) : null;
   await dbRun(
     db,
     `
@@ -795,10 +848,23 @@ async function upsertUserByEmail(db, email, status = PLAN_CODE_PLANETKA) {
         id,
         email,
         status,
-        created_at
-      ) VALUES (?, ?, ?, ?)
+        created_at,
+        terms_accepted_at,
+        privacy_accepted_at,
+        terms_version,
+        privacy_version
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `,
-    [id, normalizedEmail, status, createdAt],
+    [
+      id,
+      normalizedEmail,
+      status,
+      createdAt,
+      termsAcceptedAt,
+      privacyAcceptedAt,
+      termsVersion,
+      privacyVersion,
+    ],
   );
   user = await findUserByEmail(db, normalizedEmail);
   return user;
@@ -1079,9 +1145,14 @@ function buildMagicLinkUrl(env, token, deviceCode = "") {
 
 async function handleAuthStart(request, env) {
   const db = requireDb(env);
+  await ensureUserConsentColumns(db);
   const body = await parseJson(request);
   const email = normalizeEmail(body.email);
   const deviceCode = String(body.device_code || "").trim();
+  const acceptTerms = parseBooleanFlag(body.accept_terms);
+  const acceptPrivacy = parseBooleanFlag(body.accept_privacy);
+  const legalVersion = String(env.TERMS_VERSION || env.LEGAL_VERSION || DEFAULT_LEGAL_VERSION).trim() || DEFAULT_LEGAL_VERSION;
+  const privacyVersion = String(env.PRIVACY_VERSION || env.LEGAL_VERSION || DEFAULT_LEGAL_VERSION).trim() || DEFAULT_LEGAL_VERSION;
   if (!email || !email.includes("@")) {
     return json({ ok: false, error: "invalid_email" }, 400, env);
   }
@@ -1105,9 +1176,33 @@ async function handleAuthStart(request, env) {
 
   let user = await findUserByEmail(db, email);
   if (!user) {
-    user = await upsertUserByEmail(db, email, PLAN_CODE_PLANETKA);
+    if (!acceptTerms || !acceptPrivacy) {
+      return json({ ok: false, error: "terms_consent_required" }, 400, env);
+    }
+    const acceptedAt = nowIso();
+    user = await upsertUserByEmail(db, email, PLAN_CODE_PLANETKA, {
+      termsAcceptedAt: acceptedAt,
+      privacyAcceptedAt: acceptedAt,
+      termsVersion: legalVersion,
+      privacyVersion,
+    });
   } else if (isBlockedStatus(user.status)) {
     return genericAuthStartResponse(env);
+  } else if (acceptTerms && acceptPrivacy) {
+    const acceptedAt = nowIso();
+    await dbRun(
+      db,
+      `
+        UPDATE users
+        SET
+          terms_accepted_at = COALESCE(terms_accepted_at, ?),
+          privacy_accepted_at = COALESCE(privacy_accepted_at, ?),
+          terms_version = COALESCE(terms_version, ?),
+          privacy_version = COALESCE(privacy_version, ?)
+        WHERE id = ?
+      `,
+      [acceptedAt, acceptedAt, legalVersion, privacyVersion, user.id],
+    );
   }
 
   const token = randomToken(32);
@@ -1492,7 +1587,8 @@ async function handleDevicePoll(request, env) {
 }
 
 function renderDeviceLoginPage(env, deviceCode = "") {
-  const signupUrl = String(env.SIGNUP_URL || "https://www.planetka.io/signup").trim();
+  const termsUrl = String(env.TERMS_URL || DEFAULT_TERMS_URL).trim() || DEFAULT_TERMS_URL;
+  const privacyUrl = String(env.PRIVACY_URL || DEFAULT_PRIVACY_URL).trim() || DEFAULT_PRIVACY_URL;
   return `<!doctype html>
 <html lang="en">
   <head>
@@ -1534,6 +1630,24 @@ function renderDeviceLoginPage(env, deviceCode = "") {
         font-size: 16px;
         outline: none;
       }
+      .consent {
+        margin-top: 14px;
+      }
+      .consent label {
+        display: flex;
+        gap: 10px;
+        align-items: flex-start;
+        margin: 0;
+        font-size: 13px;
+        line-height: 1.4;
+      }
+      .consent input[type="checkbox"] {
+        width: 16px;
+        height: 16px;
+        margin-top: 2px;
+        flex: 0 0 auto;
+      }
+      .consent a { color: #e5edf7; }
       button {
         margin-top: 14px;
         width: 100%;
@@ -1554,27 +1668,29 @@ function renderDeviceLoginPage(env, deviceCode = "") {
         font-size: 14px;
         line-height: 1.5;
       }
-      .footer { margin-top: 16px; font-size: 13px; color: #94a3b8; }
-      .footer a { color: #e5edf7; }
     </style>
   </head>
   <body>
     <div class="card">
       <h1>Log In to Planetka</h1>
-      <p>Enter the same email you used for checkout. Blender will connect automatically after you confirm the login email.</p>
+      <p>For free access, enter your email address and Blender will connect automatically after you confirm the login email.</p>
       <label for="planetka-email">Email</label>
       <input id="planetka-email" type="email" placeholder="you@example.com" />
+      <div class="consent">
+        <label for="planetka-consent">
+          <input id="planetka-consent" type="checkbox" />
+          <span>I agree to the <a href="${termsUrl}" target="_blank" rel="noopener noreferrer">Terms and Conditions</a> and <a href="${privacyUrl}" target="_blank" rel="noopener noreferrer">Privacy Policy</a>.</span>
+        </label>
+      </div>
       <button id="planetka-send-link">Send Login Link</button>
       <div id="planetka-status" class="status"></div>
-      <div class="footer">
-        Need an account? <a href="${signupUrl}">Start Free Trial</a>
-      </div>
     </div>
     <script>
       (() => {
         const API = "${String(env.API_BASE_URL || "https://api.planetka.io").trim()}";
         const DEVICE_CODE = ${JSON.stringify(deviceCode)};
         const email = document.getElementById("planetka-email");
+        const consent = document.getElementById("planetka-consent");
         const button = document.getElementById("planetka-send-link");
         const status = document.getElementById("planetka-status");
         let busy = false;
@@ -1621,15 +1737,28 @@ function renderDeviceLoginPage(env, deviceCode = "") {
             show("Enter a valid email address.", "error");
             return;
           }
+          if (!consent.checked) {
+            show("Please accept Terms and Privacy to continue.", "error");
+            return;
+          }
           busy = true;
           button.disabled = true;
           button.textContent = "Sending...";
           show("");
           try {
-            await post("/auth/start", { email: value, device_code: DEVICE_CODE });
+            await post("/auth/start", {
+              email: value,
+              device_code: DEVICE_CODE,
+              accept_terms: true,
+              accept_privacy: true,
+            });
             show("Check your inbox. We sent you a secure login link.", "success");
           } catch (error) {
             console.error("planetka auth/start failed", error);
+            if (String(error && error.message || "") === "terms_consent_required") {
+              show("Please accept Terms and Privacy to continue.", "error");
+              return;
+            }
             show("Login request failed. Please try again.", "error");
           } finally {
             busy = false;
@@ -1701,6 +1830,53 @@ async function handleDeviceLoginPage(request, env) {
   }
 
   return html(renderDeviceLoginPage(env, deviceCode), 200, env);
+}
+
+function resolveLegalDocumentConfig(path, env) {
+  const normalized = String(path || "").trim().toLowerCase();
+  if (normalized === "/legal/terms-of-service.pdf") {
+    return {
+      key: String(env.LEGAL_TERMS_KEY || "legal/terms-of-service.pdf").trim() || "legal/terms-of-service.pdf",
+      fileName: "Planetka-Terms-of-Service.pdf",
+    };
+  }
+  if (normalized === "/legal/privacy-policy.pdf") {
+    return {
+      key: String(env.LEGAL_PRIVACY_KEY || "legal/privacy-policy.pdf").trim() || "legal/privacy-policy.pdf",
+      fileName: "Planetka-Privacy-Policy.pdf",
+    };
+  }
+  return null;
+}
+
+async function handleLegalDocumentRequest(request, env, path) {
+  if (!env.PLANETKA_DATA) {
+    return json({ ok: false, error: "missing_r2_binding" }, 500, env);
+  }
+  const doc = resolveLegalDocumentConfig(path, env);
+  if (!doc) {
+    return json({ ok: false, error: "not_found" }, 404, env);
+  }
+  const object = await env.PLANETKA_DATA.get(doc.key);
+  if (!object) {
+    return json({ ok: false, error: "legal_document_not_found" }, 404, env);
+  }
+  const headers = new Headers({
+    ...corsHeaders(env),
+    "Content-Type": "application/pdf",
+    "Content-Disposition": `inline; filename="${doc.fileName}"`,
+    "Cache-Control": "public, max-age=300, s-maxage=86400",
+  });
+  if (Number.isFinite(Number(object.size))) {
+    headers.set("Content-Length", String(Math.max(0, Number(object.size))));
+  }
+  if (object.httpEtag) {
+    headers.set("ETag", String(object.httpEtag));
+  }
+  if (request.method === "HEAD") {
+    return new Response(null, { status: 200, headers });
+  }
+  return new Response(object.body, { status: 200, headers });
 }
 
 function guessContentType(fileName) {
@@ -2126,6 +2302,10 @@ export default {
 
       if (request.method === "GET" && path === "/device/login") {
         return await handleDeviceLoginPage(request, env);
+      }
+
+      if ((request.method === "GET" || request.method === "HEAD") && path.startsWith("/legal/")) {
+        return await handleLegalDocumentRequest(request, env, path);
       }
 
       if (request.method === "GET" && path === "/billing/portal") {

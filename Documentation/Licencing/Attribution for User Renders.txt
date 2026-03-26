@@ -36,5 +36,6 @@ Notes
 - Some dataset terms require attribution when communicating the data or
   derivatives to the public. The examples above are provided to satisfy those
   attribution requirements for typical publishing workflows.
-- A separate credit to Planetka / Tomas Griger is appreciated, but it is not
-  part of the third-party dataset attribution requirements summarized here.
+- A separate credit to Planetka (for example, "Created with Planetka for
+  Blender") is strongly encouraged, but it is not part of the third-party
+  dataset attribution requirements summarized here.
