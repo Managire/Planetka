@@ -5,6 +5,7 @@ This folder contains release-process documents for public extension builds:
 - `VERSIONING_POLICY.md`
 - `CHANGELOG_DISCIPLINE.md`
 - `QA_CHECKLIST.md`
+- `FREE_TEST_GROUP_RELEASE_CHECKLIST.md`
 - `RELEASE_NOTES_TEMPLATE.md`
 - `COMPATIBILITY_MATRIX.md`
 - `ROLLBACK_SAFE_UPDATE_TESTING.md`
