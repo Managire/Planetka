@@ -18,10 +18,22 @@ const DEFAULT_CONTACT_URL = "https://www.planetka.io/contact";
 const DEFAULT_TERMS_URL = "https://api.planetka.io/legal/terms-of-service.pdf";
 const DEFAULT_PRIVACY_URL = "https://api.planetka.io/legal/privacy-policy.pdf";
 const DEFAULT_LEGAL_VERSION = "2026-03-26";
+const DEFAULT_RATE_LIMIT_AUTH_START_IP_LIMIT = 20;
+const DEFAULT_RATE_LIMIT_AUTH_START_IP_WINDOW_SECONDS = 60;
+const DEFAULT_RATE_LIMIT_AUTH_START_EMAIL_LIMIT = 6;
+const DEFAULT_RATE_LIMIT_AUTH_START_EMAIL_WINDOW_SECONDS = 900;
+const DEFAULT_RATE_LIMIT_DEVICE_POLL_IP_LIMIT = 300;
+const DEFAULT_RATE_LIMIT_DEVICE_POLL_IP_WINDOW_SECONDS = 60;
+const DEFAULT_RATE_LIMIT_DEVICE_POLL_CODE_LIMIT = 120;
+const DEFAULT_RATE_LIMIT_DEVICE_POLL_CODE_WINDOW_SECONDS = 60;
+const RATE_LIMIT_PRUNE_INTERVAL_SECONDS = 300;
+const RATE_LIMIT_ENTRY_TTL_SECONDS = 172800;
 let manualCreditModeCache = "";
 let userConsentColumnsReady = false;
 let magicLinksTokenIndexReady = false;
 let stripeWebhookEventsTableReady = false;
+let rateLimitsTableReady = false;
+let rateLimitsLastPruneAt = 0;
 
 function corsHeaders(env) {
   return {
@@ -47,6 +59,17 @@ function html(markup, status = 200, env = {}) {
     headers: {
       "Content-Type": "text/html; charset=utf-8",
       ...corsHeaders(env),
+    },
+  });
+}
+
+function jsonWithHeaders(data, status = 200, env = {}, extraHeaders = {}) {
+  return new Response(JSON.stringify(data, null, 2), {
+    status,
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      ...corsHeaders(env),
+      ...extraHeaders,
     },
   });
 }
@@ -301,6 +324,120 @@ async function dbGet(db, sql, bindings = []) {
 
 async function dbRun(db, sql, bindings = []) {
   return db.prepare(sql).bind(...bindings).run();
+}
+
+function parseRateLimitInteger(value, fallback) {
+  return Math.max(0, parseNonNegativeInteger(value, fallback));
+}
+
+function requestClientIp(request) {
+  const direct = String(request.headers.get("CF-Connecting-IP") || request.headers.get("True-Client-IP") || "").trim();
+  if (direct) {
+    return direct;
+  }
+  const forwarded = String(request.headers.get("X-Forwarded-For") || "").trim();
+  if (forwarded) {
+    const first = forwarded.split(",")[0];
+    return String(first || "").trim() || "unknown";
+  }
+  return "unknown";
+}
+
+async function ensureRateLimitsTable(db) {
+  if (rateLimitsTableReady) {
+    return;
+  }
+  await dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS rate_limits (
+        key TEXT PRIMARY KEY,
+        window_start INTEGER NOT NULL,
+        count INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL
+      )
+    `,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_rate_limits_updated_at ON rate_limits(updated_at DESC)`,
+  );
+  rateLimitsTableReady = true;
+}
+
+async function maybePruneRateLimits(db, nowSeconds) {
+  if ((nowSeconds - rateLimitsLastPruneAt) < RATE_LIMIT_PRUNE_INTERVAL_SECONDS) {
+    return;
+  }
+  rateLimitsLastPruneAt = nowSeconds;
+  try {
+    await dbRun(
+      db,
+      `DELETE FROM rate_limits WHERE updated_at < ?`,
+      [Math.max(0, nowSeconds - RATE_LIMIT_ENTRY_TTL_SECONDS)],
+    );
+  } catch (_error) {
+    // Prune is best-effort and must never block request handling.
+  }
+}
+
+async function consumeRateLimitWindow(db, scope, rawKey, limit, windowSeconds) {
+  if (limit <= 0 || windowSeconds <= 0) {
+    return { allowed: true, count: 0, limit, retryAfterSeconds: 0 };
+  }
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  await maybePruneRateLimits(db, nowSeconds);
+  const bucketStart = nowSeconds - (nowSeconds % windowSeconds);
+  const normalizedRawKey = String(rawKey || "").trim() || "unknown";
+  const hashedKey = await sha256Hex(`${scope}:${normalizedRawKey}`);
+  const storageKey = `${scope}:${hashedKey}`;
+  const row = await dbGet(
+    db,
+    `
+      INSERT INTO rate_limits (
+        key,
+        window_start,
+        count,
+        updated_at
+      ) VALUES (?, ?, 1, ?)
+      ON CONFLICT(key) DO UPDATE SET
+        window_start = CASE
+          WHEN rate_limits.window_start = excluded.window_start THEN rate_limits.window_start
+          ELSE excluded.window_start
+        END,
+        count = CASE
+          WHEN rate_limits.window_start = excluded.window_start THEN rate_limits.count + 1
+          ELSE 1
+        END,
+        updated_at = excluded.updated_at
+      RETURNING count, window_start
+    `,
+    [storageKey, bucketStart, nowSeconds],
+  );
+  const count = clampNonNegativeInt(row && row.count);
+  const effectiveWindowStart = parseNonNegativeInteger(row && row.window_start, bucketStart);
+  const retryAfterSeconds = Math.max(1, (effectiveWindowStart + windowSeconds) - nowSeconds);
+  return {
+    allowed: count <= limit,
+    count,
+    limit,
+    retryAfterSeconds,
+  };
+}
+
+function rateLimitedResponse(env, code, message, retryAfterSeconds) {
+  const retryAfter = Math.max(1, clampNonNegativeInt(retryAfterSeconds));
+  return jsonWithHeaders(
+    {
+      ok: false,
+      error: code,
+      message,
+      retry_after_seconds: retryAfter,
+    },
+    429,
+    env,
+    { "Retry-After": String(retryAfter) },
+  );
 }
 
 async function ensureAllowanceTables(db) {
@@ -1228,8 +1365,56 @@ async function handleAuthStart(request, env) {
   const db = requireDb(env);
   await ensureUserConsentColumns(db);
   await ensureMagicLinksTokenIndex(db);
+  await ensureRateLimitsTable(db);
   const body = await parseJson(request);
   const email = normalizeEmail(body.email);
+  const clientIp = requestClientIp(request);
+  const authStartIpWindowSeconds = parseRateLimitInteger(
+    env.RATE_LIMIT_AUTH_START_IP_WINDOW_SECONDS,
+    DEFAULT_RATE_LIMIT_AUTH_START_IP_WINDOW_SECONDS,
+  );
+  const authStartIpLimit = parseRateLimitInteger(
+    env.RATE_LIMIT_AUTH_START_IP_LIMIT,
+    DEFAULT_RATE_LIMIT_AUTH_START_IP_LIMIT,
+  );
+  const authStartIpRate = await consumeRateLimitWindow(
+    db,
+    "auth_start_ip",
+    clientIp,
+    authStartIpLimit,
+    authStartIpWindowSeconds,
+  );
+  if (!authStartIpRate.allowed) {
+    return rateLimitedResponse(
+      env,
+      "auth_start_ip_rate_limited",
+      "Too many login requests. Please try again shortly.",
+      authStartIpRate.retryAfterSeconds,
+    );
+  }
+  const authStartEmailWindowSeconds = parseRateLimitInteger(
+    env.RATE_LIMIT_AUTH_START_EMAIL_WINDOW_SECONDS,
+    DEFAULT_RATE_LIMIT_AUTH_START_EMAIL_WINDOW_SECONDS,
+  );
+  const authStartEmailLimit = parseRateLimitInteger(
+    env.RATE_LIMIT_AUTH_START_EMAIL_LIMIT,
+    DEFAULT_RATE_LIMIT_AUTH_START_EMAIL_LIMIT,
+  );
+  const authStartEmailRate = await consumeRateLimitWindow(
+    db,
+    "auth_start_email",
+    email || "unknown",
+    authStartEmailLimit,
+    authStartEmailWindowSeconds,
+  );
+  if (!authStartEmailRate.allowed) {
+    return rateLimitedResponse(
+      env,
+      "auth_start_email_rate_limited",
+      "Too many login requests for this email. Please try again later.",
+      authStartEmailRate.retryAfterSeconds,
+    );
+  }
   const deviceCode = String(body.device_code || "").trim();
   const acceptTerms = parseBooleanFlag(body.accept_terms);
   const acceptPrivacy = parseBooleanFlag(body.accept_privacy);
@@ -1635,10 +1820,58 @@ async function handleDeviceStart(request, env) {
 async function handleDevicePoll(request, env) {
   const db = requireDb(env);
   await ensureDeviceSessionsTable(db);
+  await ensureRateLimitsTable(db);
   const body = await parseJson(request);
   const deviceCode = String(body.device_code || "").trim();
+  const clientIp = requestClientIp(request);
+  const devicePollIpWindowSeconds = parseRateLimitInteger(
+    env.RATE_LIMIT_DEVICE_POLL_IP_WINDOW_SECONDS,
+    DEFAULT_RATE_LIMIT_DEVICE_POLL_IP_WINDOW_SECONDS,
+  );
+  const devicePollIpLimit = parseRateLimitInteger(
+    env.RATE_LIMIT_DEVICE_POLL_IP_LIMIT,
+    DEFAULT_RATE_LIMIT_DEVICE_POLL_IP_LIMIT,
+  );
+  const devicePollIpRate = await consumeRateLimitWindow(
+    db,
+    "device_poll_ip",
+    clientIp,
+    devicePollIpLimit,
+    devicePollIpWindowSeconds,
+  );
+  if (!devicePollIpRate.allowed) {
+    return rateLimitedResponse(
+      env,
+      "device_poll_ip_rate_limited",
+      "Too many polling requests. Please slow down and try again shortly.",
+      devicePollIpRate.retryAfterSeconds,
+    );
+  }
   if (!deviceCode) {
     return json({ ok: false, error: "missing_device_code" }, 400, env);
+  }
+  const devicePollCodeWindowSeconds = parseRateLimitInteger(
+    env.RATE_LIMIT_DEVICE_POLL_CODE_WINDOW_SECONDS,
+    DEFAULT_RATE_LIMIT_DEVICE_POLL_CODE_WINDOW_SECONDS,
+  );
+  const devicePollCodeLimit = parseRateLimitInteger(
+    env.RATE_LIMIT_DEVICE_POLL_CODE_LIMIT,
+    DEFAULT_RATE_LIMIT_DEVICE_POLL_CODE_LIMIT,
+  );
+  const devicePollCodeRate = await consumeRateLimitWindow(
+    db,
+    "device_poll_code",
+    deviceCode,
+    devicePollCodeLimit,
+    devicePollCodeWindowSeconds,
+  );
+  if (!devicePollCodeRate.allowed) {
+    return rateLimitedResponse(
+      env,
+      "device_poll_code_rate_limited",
+      "Too many polling requests for this device session. Please slow down and try again shortly.",
+      devicePollCodeRate.retryAfterSeconds,
+    );
   }
 
   const session = await dbGet(
