@@ -786,7 +786,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 sync_account_profile(prefs)
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka: failed syncing account profile after resolve", exc_info=True)
-            except Exception:
+            except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
                 logger.debug("Planetka: failed syncing account profile after resolve", exc_info=True)
         return {'FINISHED'}
 

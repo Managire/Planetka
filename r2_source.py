@@ -136,7 +136,7 @@ def _scene_cache_max_gb():
 
     try:
         import bpy  # Imported lazily so non-Blender contexts can still import this module.
-    except Exception:
+    except (ImportError, ModuleNotFoundError):
         return None
 
     try:
@@ -151,7 +151,11 @@ def _scene_cache_max_gb():
             props = getattr(data_scene, "planetka", None)
             if props is not None and hasattr(props, "r2_cache_max_gb"):
                 return _parse_positive_float(getattr(props, "r2_cache_max_gb", None), _R2_DEFAULT_CACHE_MAX_GB)
-    except Exception:
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed reading scene cache size setting", exc_info=True)
+        return None
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed reading scene cache size setting", exc_info=True)
         return None
 
     return None
@@ -486,7 +490,8 @@ def _lookup_remote_texture_size(folder, file_name):
         with urllib.request.urlopen(request, timeout=_R2_TIMEOUT_SECONDS) as response:
             raw_length = response.headers.get("Content-Length", "")
         size = int(max(0, int(raw_length or 0)))
-    except Exception:
+    except (AuthApiError, urllib.error.HTTPError, urllib.error.URLError, RuntimeError, TypeError, ValueError, OSError):
+        logger.debug("Planetka: failed reading remote tile size with HEAD request", exc_info=True)
         size = None
 
     with _HEAD_SIZE_CACHE_LOCK:
@@ -576,7 +581,7 @@ def _request_ui_redraw(force=False):
 
     try:
         import bpy  # Imported lazily so non-Blender contexts can still import this module.
-    except Exception:
+    except (ImportError, ModuleNotFoundError):
         return
 
     try:
@@ -595,7 +600,11 @@ def _request_ui_redraw(force=False):
         redraw_timer = getattr(wm_ops, "redraw_timer", None)
         if redraw_timer is not None:
             redraw_timer(type="DRAW_WIN_SWAP", iterations=1)
-    except Exception:
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed requesting UI redraw", exc_info=True)
+        return
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed requesting UI redraw", exc_info=True)
         return
 
 
@@ -784,7 +793,7 @@ def _r2_request(method, key, destination_path=None):
             error_code = ""
             try:
                 raw = exc.read()
-            except Exception:
+            except (RuntimeError, ValueError, OSError):
                 raw = b""
             if raw:
                 text = raw.decode("utf-8", errors="replace").strip()
@@ -817,7 +826,7 @@ def _r2_request(method, key, destination_path=None):
                 if any(token in combined for token in ("allowance", "quota", "insufficient", "exhausted", "topup", "top_up", "top-up")):
                     try:
                         sync_account_profile()
-                    except Exception:
+                    except (AuthApiError, RuntimeError, TypeError, ValueError, AttributeError, OSError):
                         logger.debug("Planetka: failed syncing account profile after request-limit response", exc_info=True)
                     raise RuntimeError(
                         "Planetka account does not currently have access to this remote data request."
@@ -832,7 +841,7 @@ def _r2_request(method, key, destination_path=None):
                 if any(token in combined for token in ("allowance", "quota", "insufficient", "exhausted", "topup", "top_up", "top-up")):
                     try:
                         sync_account_profile()
-                    except Exception:
+                    except (AuthApiError, RuntimeError, TypeError, ValueError, AttributeError, OSError):
                         logger.debug("Planetka: failed syncing account profile after access-denied response", exc_info=True)
                     raise RuntimeError(
                         "Planetka account does not currently have access to this remote data request."
@@ -1021,7 +1030,7 @@ def prefetch_resolve_downloads(requests, base_path=None, cancel_event=None):
         if key and not cache_exists:
             try:
                 remote_exists = bool(_r2_request("HEAD", key))
-            except Exception as exc:
+            except (AuthApiError, urllib.error.HTTPError, urllib.error.URLError, RuntimeError, TypeError, ValueError, OSError) as exc:
                 remote_exists = None
                 remote_error = str(exc)
         return {
@@ -1069,7 +1078,7 @@ def prefetch_resolve_downloads(requests, base_path=None, cancel_event=None):
             if _is_fatal_prefetch_error(error_text):
                 return {"state": "fatal", "task": task, "error": error_text}
             return {"state": "error", "task": task, "error": error_text}
-        except Exception as exc:
+        except (AuthApiError, urllib.error.HTTPError, urllib.error.URLError, RuntimeError, TypeError, ValueError, OSError) as exc:
             return {"state": "error", "task": task, "error": str(exc)}
 
     try:
@@ -1112,7 +1121,8 @@ def prefetch_resolve_downloads(requests, base_path=None, cancel_event=None):
                     for future in done:
                         try:
                             result = future.result()
-                        except Exception:
+                        except (AuthApiError, urllib.error.HTTPError, urllib.error.URLError, RuntimeError, TypeError, ValueError, OSError):
+                            logger.debug("Planetka: prefetch worker future failed", exc_info=True)
                             result = {"state": "error", "task": None, "error": "future_result_failed"}
                         if not isinstance(result, dict):
                             error_count += 1

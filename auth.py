@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 import os
 import time
 import urllib.error
@@ -7,6 +8,8 @@ import urllib.request
 
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from .extension_prefs import get_prefs
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_API_BASE_URL = str(os.getenv("PLANETKA_API_BASE_URL") or "https://api.planetka.io").rstrip("/")
@@ -419,7 +422,7 @@ def get_api_base_url():
 def _tag_ui_redraw():
     try:
         import bpy
-    except Exception:
+    except (ImportError, ModuleNotFoundError):
         return
 
     try:
@@ -434,20 +437,28 @@ def _tag_ui_redraw():
             for area in screen.areas:
                 if area.type == "VIEW_3D":
                     area.tag_redraw()
-    except Exception:
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed triggering auth UI redraw", exc_info=True)
+        return
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed triggering auth UI redraw", exc_info=True)
         return
 
 
 def _save_user_prefs():
     try:
         import bpy
-    except Exception:
+    except (ImportError, ModuleNotFoundError):
         return False
 
     try:
         result = bpy.ops.wm.save_userpref()
         return "FINISHED" in result
-    except Exception:
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed saving user preferences after auth state change", exc_info=True)
+        return False
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed saving user preferences after auth state change", exc_info=True)
         return False
 
 
@@ -771,7 +782,8 @@ def _decode_jwt_payload(token):
     try:
         decoded = base64.b64decode(payload.encode("ascii"))
         return json.loads(decoded.decode("utf-8"))
-    except Exception:
+    except (TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        logger.debug("Planetka: failed decoding JWT payload", exc_info=True)
         return {}
 
 
@@ -805,7 +817,7 @@ def _json_request(method, path, body=None, headers=None, timeout=30):
         text = raw.decode("utf-8", errors="replace") if raw else "{}"
         try:
             data = json.loads(text or "{}")
-        except Exception:
+        except (TypeError, ValueError, json.JSONDecodeError):
             data = {"error": text or f"http_{exc.code}"}
         raise AuthApiError(exc.code, data.get("error") or f"http_{exc.code}", payload=data) from exc
     except urllib.error.URLError as exc:
@@ -1045,6 +1057,13 @@ def _device_login_timer():
                 clear_auth_session(prefs, state="logged_out", status_message="Browser session expired. Connect again.")
                 _DEVICE_LOGIN_TIMER_REGISTERED = False
                 return None
+            if exc.status == 429:
+                retry_after = 0.0
+                try:
+                    retry_after = float((exc.payload or {}).get("retry_after_seconds", 0) or 0)
+                except (TypeError, ValueError):
+                    retry_after = 0.0
+                interval = max(interval, max(1.0, retry_after))
             prefs.auth_status_message = PENDING_AUTH_MESSAGE
             _tag_ui_redraw()
             return interval
@@ -1058,8 +1077,19 @@ def _device_login_timer():
         prefs.auth_status_message = PENDING_AUTH_MESSAGE
         _tag_ui_redraw()
         return interval
-    except Exception:
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         # Keep polling alive on unexpected runtime errors instead of silently stalling login.
+        logger.debug("Planetka: auth device polling loop failed", exc_info=True)
+        _DEVICE_LOGIN_TIMER_REGISTERED = False
+        prefs = get_prefs()
+        if prefs is not None and get_login_state(prefs) == "pending":
+            prefs.auth_status_message = PENDING_AUTH_MESSAGE
+            _tag_ui_redraw()
+            return max(1.0, float(getattr(prefs, "auth_poll_interval_seconds", 2) or 2))
+        return None
+    except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
+        # Keep polling alive on unexpected runtime errors instead of silently stalling login.
+        logger.debug("Planetka: auth device polling loop failed", exc_info=True)
         _DEVICE_LOGIN_TIMER_REGISTERED = False
         prefs = get_prefs()
         if prefs is not None and get_login_state(prefs) == "pending":
@@ -1073,7 +1103,7 @@ def ensure_device_login_polling():
     global _DEVICE_LOGIN_TIMER_REGISTERED
     try:
         import bpy
-    except Exception:
+    except (ImportError, ModuleNotFoundError):
         return
 
     try:
@@ -1085,7 +1115,11 @@ def ensure_device_login_polling():
         if not bpy.app.timers.is_registered(_device_login_timer):
             bpy.app.timers.register(_device_login_timer, first_interval=1.0)
         _DEVICE_LOGIN_TIMER_REGISTERED = True
-    except Exception:
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed registering auth device polling timer", exc_info=True)
+        _DEVICE_LOGIN_TIMER_REGISTERED = False
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed registering auth device polling timer", exc_info=True)
         _DEVICE_LOGIN_TIMER_REGISTERED = False
 
 

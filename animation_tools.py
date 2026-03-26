@@ -682,7 +682,8 @@ def _prepare_segments(scene, segments, frame_start, frame_end):
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         clear_prepared_animation_assets(scene)
         raise
-    except Exception:
+    except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
+        logger.debug("Planetka animation: failed preparing segment assets", exc_info=True)
         clear_prepared_animation_assets(scene)
         raise
 
@@ -1691,7 +1692,7 @@ def _concat_movie_segments_vse(scene, segment_movie_paths, final_movie_base, fin
                     frag = base.split("Frames_", 1)[1]
                     start_str = frag.split("-", 1)[0]
                     insert_at = int(start_str)
-            except Exception:
+            except (TypeError, ValueError, IndexError):
                 insert_at = None
             if insert_at is None:
                 insert_at = int(concat_scene.frame_start)
@@ -1708,7 +1709,7 @@ def _concat_movie_segments_vse(scene, segment_movie_paths, final_movie_base, fin
             override = bpy.context.copy()
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             override = {}
-        except Exception:
+        except (RuntimeError, TypeError, ValueError, AttributeError):
             override = {}
         if override is None:
             override = {}
@@ -1722,7 +1723,7 @@ def _concat_movie_segments_vse(scene, segment_movie_paths, final_movie_base, fin
                 override["screen"] = window.screen
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
-        except Exception:
+        except (RuntimeError, TypeError, ValueError, AttributeError):
             logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
 
         with bpy.context.temp_override(**override):

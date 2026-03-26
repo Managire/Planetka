@@ -33,7 +33,11 @@ def _apply_global_cloud_texture(material):
             _local.REMOTE_GLOBAL_CLOUDS_FOLDER,
             _local.REMOTE_GLOBAL_CLOUD_TEXTURE_FILE,
         )
-    except Exception:
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka clouds: failed resolving global cloud texture", exc_info=True)
+        texture_path = ""
+    except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
+        logger.debug("Planetka clouds: failed resolving global cloud texture", exc_info=True)
         texture_path = ""
     if not texture_path or not os.path.isfile(texture_path):
         return

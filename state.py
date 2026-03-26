@@ -926,7 +926,7 @@ def _apply_sunlight_from_props(scene):
         if direction.length < 1e-9:
             return
         direction.normalize()
-    except Exception:
+    except (RuntimeError, TypeError, ValueError, AttributeError):
         return
 
     try:
@@ -1506,7 +1506,7 @@ def _handle_view_scope_quality_transition(scene):
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka scope transition resolve: tile computation failed", exc_info=True)
         return
-    except Exception:
+    except (RuntimeError, TypeError, ValueError, AttributeError):
         logger.debug("Planetka scope transition resolve: unexpected tile computation failure", exc_info=True)
         return
 
@@ -2253,7 +2253,7 @@ def _handle_auto_resolve_download_complete(result):
             else:
                 request_auto_resolve(scene, immediate=False, mark_dirty=False)
         return True
-    except Exception:
+    except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
         _resolve_trace(
             f"Shader update failed with unexpected exception (request_id={job.get('request_id')})"
         )
@@ -2370,7 +2370,7 @@ def _auto_resolve_download_worker(job):
         _resolve_trace(
             f"Download failed with recoverable exception (request_id={job.get('request_id')}, error={str(exc)})"
         )
-    except Exception as exc:
+    except (RuntimeError, TypeError, ValueError, AttributeError, OSError) as exc:
         result["error"] = str(exc)
         _resolve_trace(
             f"Download failed with unexpected exception (request_id={job.get('request_id')}, error={str(exc)})"
@@ -2449,7 +2449,7 @@ def _auto_resolve_download_pump_timer():
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         _resolve_trace("Pump failed with recoverable exception")
         logger.debug("Planetka auto-resolve download timer failed", exc_info=True)
-    except Exception:
+    except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
         _resolve_trace("Pump failed with unexpected exception")
         logger.debug("Planetka auto-resolve download timer failed unexpectedly", exc_info=True)
 
@@ -2635,7 +2635,7 @@ def _auto_resolve_tick_once():
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka auto-resolve: tile computation failed", exc_info=True)
         return AUTO_RESOLVE_RETRY_DELAY_SEC
-    except Exception:
+    except (RuntimeError, TypeError, ValueError, AttributeError):
         logger.debug("Planetka auto-resolve: unexpected tile computation failure", exc_info=True)
         return AUTO_RESOLVE_RETRY_DELAY_SEC
 
@@ -2697,7 +2697,7 @@ def _auto_resolve_timer():
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka auto-resolve timer tick failed", exc_info=True)
         _AUTO_RESOLVE_TIMER_RUNNING = False
-    except Exception:
+    except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
         logger.debug("Planetka auto-resolve timer tick failed unexpectedly", exc_info=True)
         _AUTO_RESOLVE_TIMER_RUNNING = False
     return None
@@ -2741,7 +2741,7 @@ def _active_view_monitor_timer():
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka active-view monitor timer failed", exc_info=True)
         _ACTIVE_VIEW_MONITOR_TIMER_RUNNING = False
-    except Exception:
+    except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
         logger.debug("Planetka active-view monitor timer failed unexpectedly", exc_info=True)
         _ACTIVE_VIEW_MONITOR_TIMER_RUNNING = False
     return None

@@ -175,7 +175,8 @@ def _refresh_remote_local_cloud_assets(force=False):
         if not path and force:
             try:
                 path = resolve_remote_asset(REMOTE_LOCAL_CLOUDS_FOLDER, file_name)
-            except Exception:
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError, OSError):
+                logger.debug("Planetka clouds: failed resolving local cloud texture asset", exc_info=True)
                 path = ""
         if path and os.path.isfile(path):
             resolved[file_name] = path
@@ -200,7 +201,8 @@ def _refresh_remote_vdb_cloud_assets(force=False):
         if not path and force:
             try:
                 path = resolve_remote_asset(REMOTE_VDB_CLOUDS_FOLDER, file_name)
-            except Exception:
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError, OSError):
+                logger.debug("Planetka clouds: failed resolving VDB cloud asset", exc_info=True)
                 path = ""
         if path and os.path.isfile(path):
             resolved[file_name] = path

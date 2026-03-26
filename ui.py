@@ -449,7 +449,7 @@ def _iter_surface_grading_nodes():
 
         material_name = str(EARTH_MATERIAL_NAME or material_name)
         group_name = str(SURFACE_GRADING_GROUP_NAME or group_name)
-    except Exception:
+    except (ImportError, ModuleNotFoundError):
         logger.debug("Planetka: failed loading surface grading identifiers", exc_info=True)
 
     material = bpy.data.materials.get(material_name)
@@ -587,7 +587,7 @@ def _iter_atmosphere_nodes():
 
         object_name = str(VOLUMETRIC_ATMOSPHERE_OBJECT_NAME or object_name)
         group_name = str(VOLUMETRIC_ATMOSPHERE_GROUP_NAME or group_name)
-    except Exception:
+    except (ImportError, ModuleNotFoundError):
         logger.debug("Planetka: failed loading atmosphere identifiers", exc_info=True)
 
     atmosphere_obj = bpy.data.objects.get(object_name)

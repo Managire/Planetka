@@ -27,6 +27,12 @@ const DEFAULT_RATE_LIMIT_DEVICE_POLL_IP_WINDOW_SECONDS = 60;
 const DEFAULT_RATE_LIMIT_DEVICE_POLL_CODE_LIMIT = 120;
 const DEFAULT_RATE_LIMIT_DEVICE_POLL_CODE_WINDOW_SECONDS = 60;
 const DEFAULT_REFRESH_SESSION_CLEANUP_RETENTION_DAYS = 30;
+const DEFAULT_ALERT_AUTH_429_THRESHOLD = 10;
+const DEFAULT_ALERT_AUTH_429_WINDOW_SECONDS = 60;
+const DEFAULT_ALERT_DEVICE_POLL_429_THRESHOLD = 30;
+const DEFAULT_ALERT_DEVICE_POLL_429_WINDOW_SECONDS = 60;
+const DEFAULT_ALERT_AUTH_ERROR_THRESHOLD = 5;
+const DEFAULT_ALERT_AUTH_ERROR_WINDOW_SECONDS = 300;
 const RATE_LIMIT_PRUNE_INTERVAL_SECONDS = 300;
 const RATE_LIMIT_ENTRY_TTL_SECONDS = 172800;
 let manualCreditModeCache = "";
@@ -232,6 +238,10 @@ function randomToken(byteLength = 32) {
   return base64UrlEncode(bytes);
 }
 
+function isValidDeviceCode(value) {
+  return /^[A-Za-z0-9_-]{32}$/.test(String(value || "").trim());
+}
+
 async function sha256Hex(value) {
   const digest = await crypto.subtle.digest("SHA-256", encoder.encode(String(value || "")));
   const bytes = new Uint8Array(digest);
@@ -313,7 +323,15 @@ function requireSecret(env, name) {
 async function parseJson(request) {
   try {
     return await request.json();
-  } catch (_error) {
+  } catch (error) {
+    console.debug(
+      "worker.request.invalid_json",
+      JSON.stringify({
+        method: request.method,
+        url: request.url,
+        error: String(error && error.message || "invalid_json"),
+      }),
+    );
     return {};
   }
 }
@@ -347,6 +365,40 @@ async function dbTableExists(db, tableName) {
 
 function parseRateLimitInteger(value, fallback) {
   return Math.max(0, parseNonNegativeInteger(value, fallback));
+}
+
+async function trackThresholdAlertDb(db, eventName, threshold, windowSeconds, payload = {}) {
+  if (!db || !eventName || threshold <= 0 || windowSeconds <= 0) {
+    return;
+  }
+  await ensureRateLimitsTable(db);
+  const counter = await consumeRateLimitWindow(
+    db,
+    "alert_counter",
+    String(eventName || ""),
+    2147483647,
+    windowSeconds,
+  );
+  const count = clampNonNegativeInt(counter && counter.count);
+  const shouldLog = count === threshold || (count > threshold && (count % threshold) === 0);
+  if (!shouldLog) {
+    return;
+  }
+  console.warn(
+    "worker.alert.threshold_exceeded",
+    JSON.stringify({
+      event: eventName,
+      threshold,
+      window_seconds: windowSeconds,
+      count,
+      ...payload,
+    }),
+  );
+}
+
+function isAuthOrDevicePath(path) {
+  const normalized = String(path || "").trim();
+  return normalized.startsWith("/auth/") || normalized.startsWith("/device/");
 }
 
 function requestClientIp(request) {
@@ -395,8 +447,14 @@ async function maybePruneRateLimits(db, nowSeconds) {
       `DELETE FROM rate_limits WHERE updated_at < ?`,
       [Math.max(0, nowSeconds - RATE_LIMIT_ENTRY_TTL_SECONDS)],
     );
-  } catch (_error) {
+  } catch (error) {
     // Prune is best-effort and must never block request handling.
+    console.debug(
+      "worker.rate_limits.prune_failed",
+      JSON.stringify({
+        error: String(error && error.message || "rate_limit_prune_failed"),
+      }),
+    );
   }
 }
 
@@ -1465,6 +1523,13 @@ async function handleAuthStart(request, env) {
     authStartIpWindowSeconds,
   );
   if (!authStartIpRate.allowed) {
+    await trackThresholdAlertDb(
+      db,
+      "auth_429_spike",
+      parseRateLimitInteger(env.LOG_ALERT_AUTH_429_THRESHOLD, DEFAULT_ALERT_AUTH_429_THRESHOLD),
+      parseRateLimitInteger(env.LOG_ALERT_AUTH_429_WINDOW_SECONDS, DEFAULT_ALERT_AUTH_429_WINDOW_SECONDS),
+      { route: "/auth/start", scope: "ip", code: "auth_start_ip_rate_limited" },
+    );
     return rateLimitedResponse(
       env,
       "auth_start_ip_rate_limited",
@@ -1488,6 +1553,13 @@ async function handleAuthStart(request, env) {
     authStartEmailWindowSeconds,
   );
   if (!authStartEmailRate.allowed) {
+    await trackThresholdAlertDb(
+      db,
+      "auth_429_spike",
+      parseRateLimitInteger(env.LOG_ALERT_AUTH_429_THRESHOLD, DEFAULT_ALERT_AUTH_429_THRESHOLD),
+      parseRateLimitInteger(env.LOG_ALERT_AUTH_429_WINDOW_SECONDS, DEFAULT_ALERT_AUTH_429_WINDOW_SECONDS),
+      { route: "/auth/start", scope: "email", code: "auth_start_email_rate_limited" },
+    );
     return rateLimitedResponse(
       env,
       "auth_start_email_rate_limited",
@@ -1506,6 +1578,9 @@ async function handleAuthStart(request, env) {
   }
 
   if (deviceCode) {
+    if (!isValidDeviceCode(deviceCode)) {
+      return json({ ok: false, error: "device_session_invalid" }, 400, env);
+    }
     await ensureDeviceSessionsTable(db);
     const deviceSession = await dbGet(
       db,
@@ -1920,6 +1995,13 @@ async function handleDevicePoll(request, env) {
     devicePollIpWindowSeconds,
   );
   if (!devicePollIpRate.allowed) {
+    await trackThresholdAlertDb(
+      db,
+      "device_poll_429_spike",
+      parseRateLimitInteger(env.LOG_ALERT_DEVICE_POLL_429_THRESHOLD, DEFAULT_ALERT_DEVICE_POLL_429_THRESHOLD),
+      parseRateLimitInteger(env.LOG_ALERT_DEVICE_POLL_429_WINDOW_SECONDS, DEFAULT_ALERT_DEVICE_POLL_429_WINDOW_SECONDS),
+      { route: "/device/poll", scope: "ip", code: "device_poll_ip_rate_limited" },
+    );
     return rateLimitedResponse(
       env,
       "device_poll_ip_rate_limited",
@@ -1930,28 +2012,8 @@ async function handleDevicePoll(request, env) {
   if (!deviceCode) {
     return json({ ok: false, error: "missing_device_code" }, 400, env);
   }
-  const devicePollCodeWindowSeconds = parseRateLimitInteger(
-    env.RATE_LIMIT_DEVICE_POLL_CODE_WINDOW_SECONDS,
-    DEFAULT_RATE_LIMIT_DEVICE_POLL_CODE_WINDOW_SECONDS,
-  );
-  const devicePollCodeLimit = parseRateLimitInteger(
-    env.RATE_LIMIT_DEVICE_POLL_CODE_LIMIT,
-    DEFAULT_RATE_LIMIT_DEVICE_POLL_CODE_LIMIT,
-  );
-  const devicePollCodeRate = await consumeRateLimitWindow(
-    db,
-    "device_poll_code",
-    deviceCode,
-    devicePollCodeLimit,
-    devicePollCodeWindowSeconds,
-  );
-  if (!devicePollCodeRate.allowed) {
-    return rateLimitedResponse(
-      env,
-      "device_poll_code_rate_limited",
-      "Too many polling requests for this device session. Please slow down and try again shortly.",
-      devicePollCodeRate.retryAfterSeconds,
-    );
+  if (!isValidDeviceCode(deviceCode)) {
+    return json({ ok: false, error: "invalid_device_code" }, 400, env);
   }
 
   const session = await dbGet(
@@ -1978,6 +2040,38 @@ async function handleDevicePoll(request, env) {
   if (!session) {
     return json({ ok: false, error: "device_session_not_found" }, 404, env);
   }
+
+  const devicePollCodeWindowSeconds = parseRateLimitInteger(
+    env.RATE_LIMIT_DEVICE_POLL_CODE_WINDOW_SECONDS,
+    DEFAULT_RATE_LIMIT_DEVICE_POLL_CODE_WINDOW_SECONDS,
+  );
+  const devicePollCodeLimit = parseRateLimitInteger(
+    env.RATE_LIMIT_DEVICE_POLL_CODE_LIMIT,
+    DEFAULT_RATE_LIMIT_DEVICE_POLL_CODE_LIMIT,
+  );
+  const devicePollCodeRate = await consumeRateLimitWindow(
+    db,
+    "device_poll_code",
+    session.id,
+    devicePollCodeLimit,
+    devicePollCodeWindowSeconds,
+  );
+  if (!devicePollCodeRate.allowed) {
+    await trackThresholdAlertDb(
+      db,
+      "device_poll_429_spike",
+      parseRateLimitInteger(env.LOG_ALERT_DEVICE_POLL_429_THRESHOLD, DEFAULT_ALERT_DEVICE_POLL_429_THRESHOLD),
+      parseRateLimitInteger(env.LOG_ALERT_DEVICE_POLL_429_WINDOW_SECONDS, DEFAULT_ALERT_DEVICE_POLL_429_WINDOW_SECONDS),
+      { route: "/device/poll", scope: "device_session", code: "device_poll_code_rate_limited" },
+    );
+    return rateLimitedResponse(
+      env,
+      "device_poll_code_rate_limited",
+      "Too many polling requests for this device session. Please slow down and try again shortly.",
+      devicePollCodeRate.retryAfterSeconds,
+    );
+  }
+
   if (session.claimed_at) {
     return json({ ok: false, error: "device_session_claimed" }, 410, env);
   }
@@ -2002,7 +2096,14 @@ async function handleDevicePoll(request, env) {
       const accountState = await buildAllowanceState(db, user, null, env);
       accountPayload = serializeAccountState(accountState);
     }
-  } catch (_error) {
+  } catch (error) {
+    console.warn(
+      "worker.device_poll.account_payload_failed",
+      JSON.stringify({
+        session_id: String(session.id || ""),
+        error: String(error && error.message || "account_payload_failed"),
+      }),
+    );
     accountPayload = {};
   }
 
@@ -2026,7 +2127,7 @@ async function handleDevicePoll(request, env) {
 function renderDeviceLoginPage(env, deviceCode = "", verifyMode = false) {
   const termsUrl = String(env.TERMS_URL || DEFAULT_TERMS_URL).trim() || DEFAULT_TERMS_URL;
   const privacyUrl = String(env.PRIVACY_URL || DEFAULT_PRIVACY_URL).trim() || DEFAULT_PRIVACY_URL;
-  const contactUrl = String(env.CONTACT_URL || "https://www.planetka.io/contact-me").trim();
+  const contactUrl = String(env.CONTACT_URL || DEFAULT_CONTACT_URL).trim() || DEFAULT_CONTACT_URL;
   const loginSectionStyle = verifyMode ? "display:none;" : "";
   const verifySectionStyle = verifyMode ? "" : "display:none;";
   const verifyEmailInitial = verifyMode ? "Verifying email address..." : "";
@@ -2963,6 +3064,32 @@ export default {
         env,
       );
     } catch (error) {
+      if (isAuthOrDevicePath(path)) {
+        try {
+          const db = requireDb(env);
+          await trackThresholdAlertDb(
+            db,
+            "auth_endpoint_error_spike",
+            parseRateLimitInteger(env.LOG_ALERT_AUTH_ERROR_THRESHOLD, DEFAULT_ALERT_AUTH_ERROR_THRESHOLD),
+            parseRateLimitInteger(env.LOG_ALERT_AUTH_ERROR_WINDOW_SECONDS, DEFAULT_ALERT_AUTH_ERROR_WINDOW_SECONDS),
+            {
+              route: path,
+              method: request.method,
+              error: String(error && error.message || "internal_error"),
+            },
+          );
+        } catch (alertError) {
+          // Alert tracking is best-effort and must never alter API error responses.
+          console.debug(
+            "worker.alert.tracking_failed",
+            JSON.stringify({
+              route: path,
+              method: request.method,
+              error: String(alertError && alertError.message || "alert_tracking_failed"),
+            }),
+          );
+        }
+      }
       console.error(
         "worker.request.error",
         JSON.stringify({

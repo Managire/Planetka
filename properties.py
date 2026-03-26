@@ -1,5 +1,6 @@
 import bpy
 import importlib
+import logging
 import math
 from bpy.props import BoolProperty, EnumProperty, FloatProperty, FloatVectorProperty, IntProperty, StringProperty
 from mathutils import Vector
@@ -35,6 +36,7 @@ NAV_DEFAULT_TILT_DEG = 25.0
 NAV_DEFAULT_ROLL_DEG = 0.0
 SEASONAL_TILT_PRESET_LIMIT_DEG = 23.5
 _TEXTURE_QUALITY_UPDATE_GUARD = False
+logger = logging.getLogger(__name__)
 
 
 def _full_texture_quality_allowed():
@@ -63,7 +65,8 @@ def _compute_max_proximity_altitude_km(scene, props):
         return None
     try:
         from .extension_prefs import get_earth_object
-    except Exception:
+    except (ImportError, ModuleNotFoundError):
+        logger.debug("Planetka: failed importing get_earth_object for proximity calculation", exc_info=True)
         return None
 
     earth_obj = get_earth_object()
@@ -89,7 +92,8 @@ def _compute_max_proximity_altitude_km(scene, props):
         if max_km is None:
             return None
         return max(0.0, float(max_km))
-    except Exception:
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed computing max proximity altitude", exc_info=True)
         return None
 
 
@@ -123,7 +127,8 @@ def _update_anim_preset_defaults(self, context):
         elif preset == "FLYBY":
             altitude_km = max(0.0, float(getattr(self, "nav_altitude_km", 0.0)))
             self.anim_flyby_degrees = max(0.1, min(20.0, altitude_km / 200.0))
-    except Exception:
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed applying animation camera preset defaults", exc_info=True)
         return
 
 
@@ -137,7 +142,8 @@ def _update_anim_render_preset_defaults(self, _context):
         else:
             self.anim_render_offscreen_scale = 2.0
             self.anim_render_persistent_data = True
-    except Exception:
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed applying animation render preset defaults", exc_info=True)
         return
 
 
@@ -193,7 +199,8 @@ def _sunlight_early_morning_for_location(lon_deg, lat_deg):
         sun_lat = math.degrees(math.asin(max(-1.0, min(1.0, float(sun_dir.z)))))
         sun_lat = max(-SEASONAL_TILT_PRESET_LIMIT_DEG, min(SEASONAL_TILT_PRESET_LIMIT_DEG, float(sun_lat)))
         return float(sun_lon), float(sun_lat)
-    except Exception:
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed deriving early-morning sunlight vector", exc_info=True)
         return None
 
 

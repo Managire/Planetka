@@ -25,6 +25,10 @@
   - `/Applications/Blender.app/Contents/MacOS/Blender --background --python tools/planetka_regression_test.py`
 - [ ] Schema migration test pass:
   - `/Applications/Blender.app/Contents/MacOS/Blender --background --python tools/planetka_schema_migration_test.py`
+- [ ] Worker auth/device integration test pass:
+  - `python3 tools/worker_auth_integration_test.py`
+- [ ] Cloudflare API env vars reviewed against:
+  - `Documentation/Developer/CLOUDFLARE_API_ENV_VARS.md`
 
 ## 4. Texture Source Validation
 

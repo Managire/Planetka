@@ -59,7 +59,8 @@ def get_earth_radius_blender_units(earth_obj):
 
     try:
         stored_local_radius = float(earth_obj.get("planetka_surface_local_radius", 0.0))
-    except Exception:
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed reading stored Earth local radius metadata", exc_info=True)
         stored_local_radius = 0.0
     if stored_local_radius > 1e-9:
         world_scale = earth_obj.matrix_world.to_scale()
@@ -75,7 +76,7 @@ def get_earth_radius_blender_units(earth_obj):
                 world_scale = earth_obj.matrix_world.to_scale()
                 max_scale = max(abs(world_scale.x), abs(world_scale.y), abs(world_scale.z), 1e-9)
                 return float(local_radius) * float(max_scale)
-        except Exception:
+        except (RuntimeError, TypeError, ValueError, AttributeError):
             logger.debug("Planetka: vertex-based Earth radius inference failed", exc_info=True)
 
     scale = earth_obj.matrix_world.to_scale()

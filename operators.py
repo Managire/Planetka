@@ -1466,7 +1466,8 @@ class PLANETKA_OT_AccountLogin(bpy.types.Operator):
         if not opened:
             try:
                 opened = bool(webbrowser.open(verification_url))
-            except Exception:
+            except (RuntimeError, TypeError, ValueError, OSError):
+                logger.debug("Planetka: failed opening account login URL in system browser", exc_info=True)
                 opened = False
 
         if not opened:
@@ -1510,7 +1511,8 @@ class PLANETKA_OT_AccountOpenLogin(bpy.types.Operator):
         if not opened:
             try:
                 opened = bool(webbrowser.open(verification_url))
-            except Exception:
+            except (RuntimeError, TypeError, ValueError, OSError):
+                logger.debug("Planetka: failed reopening account login URL in system browser", exc_info=True)
                 opened = False
 
         if not opened:
@@ -1574,7 +1576,8 @@ def _open_account_url(url):
     if not opened:
         try:
             opened = bool(webbrowser.open(safe_url))
-        except Exception:
+        except (RuntimeError, TypeError, ValueError, OSError):
+            logger.debug("Planetka: failed opening account URL in system browser", exc_info=True)
             opened = False
 
     return bool(opened)

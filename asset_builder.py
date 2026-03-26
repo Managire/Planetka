@@ -918,7 +918,7 @@ def _ensure_surface_detail_nodes():
     # Best-effort node placement (cosmetic only).
     try:
         x0, y0 = principled.location
-    except Exception:
+    except (RuntimeError, TypeError, ValueError, AttributeError):
         x0, y0 = 0.0, 0.0
     _safe_set_node_location(sep_s2, x0 - 1050.0, y0 + 280.0)
     _safe_set_node_location(luma, x0 - 1050.0, y0 + 40.0)
@@ -1341,14 +1341,14 @@ def _get_embedded_material_library_payload():
     if payload.startswith(_ZSTD_MAGIC):
         try:
             import zstandard as zstd
-        except Exception as exc:
+        except (ImportError, ModuleNotFoundError) as exc:
             raise RuntimeError(
                 "Planetka: embedded material library uses zstd compression but zstandard module is unavailable."
             ) from exc
         try:
             with zstd.ZstdDecompressor().stream_reader(io.BytesIO(payload)) as reader:
                 payload = reader.read()
-        except Exception as exc:
+        except (RuntimeError, TypeError, ValueError, OSError) as exc:
             raise RuntimeError("Planetka: failed to decompress embedded material library payload.") from exc
 
     if not payload.startswith(b"BLENDER"):
