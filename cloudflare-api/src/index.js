@@ -20,6 +20,7 @@ const DEFAULT_PRIVACY_URL = "https://api.planetka.io/legal/privacy-policy.pdf";
 const DEFAULT_LEGAL_VERSION = "2026-03-26";
 let manualCreditModeCache = "";
 let userConsentColumnsReady = false;
+let magicLinksTokenIndexReady = false;
 
 function corsHeaders(env) {
   return {
@@ -759,6 +760,17 @@ async function ensureNewsletterSubscribersTable(db) {
   );
 }
 
+async function ensureMagicLinksTokenIndex(db) {
+  if (magicLinksTokenIndexReady) {
+    return;
+  }
+  await dbRun(
+    db,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_magic_links_token_hash ON magic_links(token_hash)`,
+  );
+  magicLinksTokenIndexReady = true;
+}
+
 async function recordNewsletterOptIn(db, email, source = "unknown") {
   const normalizedEmail = normalizeEmail(email);
   if (!normalizedEmail || !normalizedEmail.includes("@")) {
@@ -1090,6 +1102,7 @@ function buildMagicLinkUrl(env, token, deviceCode = "") {
 async function handleAuthStart(request, env) {
   const db = requireDb(env);
   await ensureUserConsentColumns(db);
+  await ensureMagicLinksTokenIndex(db);
   const body = await parseJson(request);
   const email = normalizeEmail(body.email);
   const deviceCode = String(body.device_code || "").trim();
@@ -1181,6 +1194,7 @@ async function handleAuthStart(request, env) {
 
 async function handleAuthVerify(request, env) {
   const db = requireDb(env);
+  await ensureMagicLinksTokenIndex(db);
   const body = await parseJson(request);
   const token = String(body.token || "").trim();
   const deviceCode = String(body.device_code || "").trim();
@@ -1189,9 +1203,30 @@ async function handleAuthVerify(request, env) {
   }
 
   const tokenHash = await sha256Hex(token);
-  const magicLink = await dbGet(
+  const usedAt = nowIso();
+  const claimedMagicLink = await dbGet(
     db,
     `
+      UPDATE magic_links
+      SET used_at = ?
+      WHERE token_hash = ?
+        AND used_at IS NULL
+        AND expires_at >= ?
+        AND user_id IN (
+          SELECT id
+          FROM users
+          WHERE LOWER(COALESCE(status, '')) != 'blocked'
+        )
+      RETURNING id, user_id
+    `,
+    [usedAt, tokenHash, usedAt],
+  );
+
+  let magicLink = null;
+  if (!claimedMagicLink) {
+    magicLink = await dbGet(
+      db,
+      `
       SELECT
         ml.id,
         ml.user_id,
@@ -1204,42 +1239,57 @@ async function handleAuthVerify(request, env) {
       WHERE ml.token_hash = ?
       LIMIT 1
     `,
-    [tokenHash],
-  );
-  if (!magicLink) {
+      [tokenHash],
+    );
+    if (!magicLink) {
+      return json({ ok: false, error: "invalid_token" }, 400, env);
+    }
+    if (isBlockedStatus(magicLink.user_status)) {
+      return blockedAccountResponse(env);
+    }
+    if (magicLink.used_at) {
+      return json({ ok: false, error: "token_already_used" }, 400, env);
+    }
+    if (Date.parse(magicLink.expires_at) < Date.now()) {
+      return json({ ok: false, error: "token_expired" }, 400, env);
+    }
     return json({ ok: false, error: "invalid_token" }, 400, env);
   }
-  if (isBlockedStatus(magicLink.user_status)) {
+
+  const userRecord = await dbGet(
+    db,
+    `
+      SELECT
+        u.id,
+        u.email,
+        u.status AS user_status
+      FROM users u
+      WHERE u.id = ?
+      LIMIT 1
+    `,
+    [claimedMagicLink.user_id],
+  );
+  if (!userRecord) {
+    return json({ ok: false, error: "user_not_found" }, 404, env);
+  }
+  if (isBlockedStatus(userRecord.user_status)) {
     return blockedAccountResponse(env);
   }
-  if (magicLink.used_at) {
-    return json({ ok: false, error: "token_already_used" }, 400, env);
-  }
-  if (Date.parse(magicLink.expires_at) < Date.now()) {
-    return json({ ok: false, error: "token_expired" }, 400, env);
-  }
-
-  const usedAt = nowIso();
-  await dbRun(
-    db,
-    `UPDATE magic_links SET used_at = ? WHERE id = ?`,
-    [usedAt, magicLink.id],
-  );
   await dbRun(
     db,
     `UPDATE users SET last_login_at = ? WHERE id = ?`,
-    [usedAt, magicLink.user_id],
+    [usedAt, userRecord.id],
   );
 
   let user = {
-    id: magicLink.user_id,
-    email: magicLink.email,
-    status: magicLink.user_status || PLAN_CODE_PLANETKA,
+    id: userRecord.id,
+    email: userRecord.email,
+    status: userRecord.user_status || PLAN_CODE_PLANETKA,
   };
   user = await enforceUserPlanPolicy(db, user, null);
   const subscriptionStatus = subscriptionStatusForUser(user);
   const accessToken = await createAccessToken(env, user, null);
-  const refreshToken = await createRefreshSession(db, magicLink.user_id);
+  const refreshToken = await createRefreshSession(db, userRecord.id);
   const accountState = await buildAllowanceState(db, user, null, env);
 
   if (deviceCode) {
