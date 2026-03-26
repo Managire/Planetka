@@ -43,6 +43,12 @@ That intended use includes normal interactive work such as:
 - rendering animation sequences
 - normal caching required for those workflows
 
+Standard free and listed paid Planetka plans do not include rights to use
+Planetka-hosted services or Planetka-provided data for artificial
+intelligence, machine learning, or similar model-development workflows. Those
+rights are available only under a separate custom license released by
+Planetka in writing.
+
 ## 4. Allowed Use
 
 Subject to these Terms, you may use Planetka-hosted services for the intended
@@ -64,6 +70,22 @@ You must not:
 - use Planetka-hosted services as a generic data-delivery API
 - resell, sublicense, rent, lease, or provide Planetka-hosted service access
   to third parties
+- use Planetka-hosted services or Planetka-provided data, under the free
+  license or under any listed standard paid license, to train, pre-train,
+  fine-tune, adapt, align, benchmark, validate, or evaluate any artificial
+  intelligence, machine learning, computer vision, generative, or similar
+  model or system
+- use Planetka-hosted services or Planetka-provided data, under the free
+  license or under any listed standard paid license, to create, enrich,
+  prepare, transform, or supply datasets, labels, captions, embeddings,
+  synthetic pairs, ground-truth assets, or other structured inputs primarily
+  intended for artificial intelligence, machine learning, or similar
+  model-development workflows
+- use rendered outputs, tiles, cached files, or extracted data from Planetka-
+  hosted services, under the free license or under any listed standard paid
+  license, as training material or evaluation material for artificial
+  intelligence, machine learning, or similar systems where Planetka-hosted
+  services or Planetka-provided data are a material input to that workflow
 - probe, stress, or abuse the service in a way that degrades availability
 - use bots or scripts to build bulk local copies of the underlying source data
 - circumvent account limits, authentication, rate controls, or enforcement
@@ -71,6 +93,9 @@ You must not:
 
 Any attempt to use Planetka primarily as a source-data extraction tool rather
 than a Blender rendering tool is prohibited.
+
+Artificial intelligence / machine learning use may be permitted only if
+Planetka releases a separate custom license for that use in writing.
 
 ## 6. Enforcement
 
@@ -155,3 +180,6 @@ Questions about these Terms can be sent to:
 
 - info@planetka.io
 - https://www.planetka.io/contact-me
+
+Requests for AI / machine learning training rights should be sent as a custom
+license inquiry to the same contact details above.

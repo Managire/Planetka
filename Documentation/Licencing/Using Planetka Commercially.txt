@@ -10,6 +10,10 @@ Using Planetka Commercially
    `Attribution for User Renders.txt`
 5. Service access, account use, and prohibited scraping / abusive use are
    governed by `TERMS_OF_SERVICE.md`.
+6. AI / machine learning use is not included in the free license or in listed
+   standard paid licenses. That includes training, fine-tuning, evaluation,
+   benchmarking, and dataset preparation. Those uses require a separate custom
+   license from Planetka.
 
 Required attribution summary
 ----------------------------
