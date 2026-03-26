@@ -21,6 +21,7 @@ const DEFAULT_LEGAL_VERSION = "2026-03-26";
 let manualCreditModeCache = "";
 let userConsentColumnsReady = false;
 let magicLinksTokenIndexReady = false;
+let stripeWebhookEventsTableReady = false;
 
 function corsHeaders(env) {
   return {
@@ -771,6 +772,29 @@ async function ensureMagicLinksTokenIndex(db) {
   magicLinksTokenIndexReady = true;
 }
 
+async function ensureStripeWebhookEventsTable(db) {
+  if (stripeWebhookEventsTableReady) {
+    return;
+  }
+  await dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS stripe_webhook_events (
+        id TEXT PRIMARY KEY,
+        event_id TEXT NOT NULL UNIQUE,
+        event_type TEXT NOT NULL,
+        stripe_created INTEGER,
+        received_at TEXT NOT NULL
+      )
+    `,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_stripe_webhook_events_received_at ON stripe_webhook_events(received_at DESC)`,
+  );
+  stripeWebhookEventsTableReady = true;
+}
+
 async function recordNewsletterOptIn(db, email, source = "unknown") {
   const normalizedEmail = normalizeEmail(email);
   if (!normalizedEmail || !normalizedEmail.includes("@")) {
@@ -1018,7 +1042,12 @@ function stripeSignatureHeaderParts(header) {
   for (const part of parts) {
     const [key, value] = part.split("=", 2);
     if (key && value) {
-      values[key.trim()] = value.trim();
+      const normalizedKey = key.trim();
+      const normalizedValue = value.trim();
+      if (!values[normalizedKey]) {
+        values[normalizedKey] = [];
+      }
+      values[normalizedKey].push(normalizedValue);
     }
   }
   return values;
@@ -1032,19 +1061,61 @@ async function verifyStripeWebhook(request, env, rawBody) {
   }
 
   const parts = stripeSignatureHeaderParts(signatureHeader);
-  const timestamp = String(parts.t || "");
-  const expectedSignature = String(parts.v1 || "");
-  if (!timestamp || !expectedSignature) {
+  const timestamp = String((parts.t && parts.t[0]) || "");
+  const expectedSignatures = Array.isArray(parts.v1)
+    ? parts.v1.filter((value) => String(value || "").trim())
+    : [];
+  if (!timestamp || expectedSignatures.length === 0) {
     throw new Error("invalid_stripe_signature_header");
+  }
+  const parsedTimestamp = Number.parseInt(timestamp, 10);
+  if (!Number.isFinite(parsedTimestamp)) {
+    throw new Error("invalid_stripe_signature_header");
+  }
+  const toleranceSeconds = Math.max(
+    1,
+    Math.floor(parsePositiveNumber(env.STRIPE_WEBHOOK_TOLERANCE_SECONDS, 300)),
+  );
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  if (Math.abs(nowSeconds - parsedTimestamp) > toleranceSeconds) {
+    throw new Error("stripe_signature_tolerance_exceeded");
   }
 
   const signedPayload = `${timestamp}.${rawBody}`;
   const computed = await hmacSha256Hex(secret, signedPayload);
-  if (computed !== expectedSignature) {
+  if (!expectedSignatures.includes(computed)) {
     throw new Error("invalid_stripe_signature");
   }
 
   return JSON.parse(rawBody);
+}
+
+async function claimStripeWebhookEvent(db, event) {
+  const eventId = String(event && event.id || "").trim();
+  if (!eventId) {
+    return { inserted: false, eventId: "" };
+  }
+  const eventType = String(event && event.type || "").trim() || "unknown";
+  const stripeCreatedRaw = Number(event && event.created);
+  const stripeCreated = Number.isFinite(stripeCreatedRaw)
+    ? Math.floor(stripeCreatedRaw)
+    : null;
+  const result = await dbRun(
+    db,
+    `
+      INSERT INTO stripe_webhook_events (
+        id,
+        event_id,
+        event_type,
+        stripe_created,
+        received_at
+      ) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(event_id) DO NOTHING
+    `,
+    [crypto.randomUUID(), eventId, eventType, stripeCreated, nowIso()],
+  );
+  const inserted = Number(result && result.meta && result.meta.changes) > 0;
+  return { inserted, eventId, eventType };
 }
 
 function parseCsvSet(value) {
@@ -2319,10 +2390,30 @@ async function handleSupportBugReport(request, env) {
 
 async function handleStripeWebhook(request, env) {
   const db = requireDb(env);
+  await ensureStripeWebhookEventsTable(db);
   const rawBody = await request.text();
   const event = await verifyStripeWebhook(request, env, rawBody);
+  const claimedEvent = await claimStripeWebhookEvent(db, event);
   const eventType = String(event.type || "");
-  console.log("stripe.webhook.received", JSON.stringify({ event_type: eventType }));
+  const eventId = String(claimedEvent.eventId || "").trim();
+  if (!eventId) {
+    return json({ ok: false, error: "missing_stripe_event_id" }, 400, env);
+  }
+  if (!claimedEvent.inserted) {
+    console.log("stripe.webhook.duplicate", JSON.stringify({ event_type: eventType, event_id: eventId }));
+    return json(
+      {
+        ok: true,
+        ignored: true,
+        reason: "duplicate_event",
+        event_type: eventType,
+        event_id: eventId,
+      },
+      200,
+      env,
+    );
+  }
+  console.log("stripe.webhook.received", JSON.stringify({ event_type: eventType, event_id: eventId }));
 
   if (eventType !== "checkout.session.completed") {
     console.log("stripe.webhook.ignored", JSON.stringify({ event_type: eventType }));
