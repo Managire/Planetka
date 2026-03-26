@@ -3,7 +3,6 @@ const BYTES_PER_GB = 1024 * 1024 * 1024;
 const PLAN_CODE_PLANETKA = "planetka";
 const PLAN_CODE_PLANETKA_PRO = "planetka_pro";
 const PLAN_CODE_PLANETKA_STUDIO = "planetka_studio";
-const SPECIAL_PRO_EMAIL = "tom.griger@gmail.com";
 const DEFAULT_ALLOWANCE_COUNTING_RULE =
   "Only newly downloaded data counts. Reused local cache does not consume allowance.";
 const DEFAULT_PERIOD_DAYS = 30;
@@ -13,6 +12,7 @@ const DEFAULT_PRO_ROLLOVER_CAP_GB = 3000;
 const DEFAULT_STUDIO_INCLUDED_GB = 10000;
 const DEFAULT_LOW_WARNING_GB = 10;
 const DEFAULT_LOW_WARNING_RATIO = 0.1;
+const UNLIMITED_ALLOWANCE_BYTES = Number.MAX_SAFE_INTEGER;
 const DEFAULT_UPGRADE_URL = "https://www.planetka.io/signup";
 const DEFAULT_CONTACT_URL = "https://www.planetka.io/contact";
 const DEFAULT_TERMS_URL = "https://api.planetka.io/legal/terms-of-service.pdf";
@@ -87,26 +87,25 @@ function normalizeUserStatus(value) {
   return normalized;
 }
 
-function hasPaidSubscriptionAccess(subscription) {
-  return Boolean(
-    subscription
-    && isSubscriptionActive(subscription)
-    && String(subscription.stripe_subscription_id || "").trim(),
-  );
+function hasPermanentProAccess(user) {
+  const status = normalizeUserStatus(user && user.status);
+  return status === PLAN_CODE_PLANETKA_PRO || status === PLAN_CODE_PLANETKA_STUDIO;
 }
 
-function isSpecialProEmail(email) {
-  return normalizeEmail(email) === SPECIAL_PRO_EMAIL;
+function subscriptionStatusForUser(user) {
+  return hasPermanentProAccess(user) ? "active" : "inactive";
 }
 
 function resolvePolicyPlanCode(user, subscription) {
+  void subscription;
   if (user && isBlockedStatus(user.status)) {
     return "blocked";
   }
-  if (isSpecialProEmail(user && user.email)) {
-    return PLAN_CODE_PLANETKA_PRO;
+  const status = normalizeUserStatus(user && user.status);
+  if (status === PLAN_CODE_PLANETKA_STUDIO) {
+    return PLAN_CODE_PLANETKA_STUDIO;
   }
-  if (hasPaidSubscriptionAccess(subscription)) {
+  if (status === PLAN_CODE_PLANETKA_PRO) {
     return PLAN_CODE_PLANETKA_PRO;
   }
   return PLAN_CODE_PLANETKA;
@@ -168,8 +167,20 @@ function base64UrlEncode(bytes) {
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
+function base64EncodeBytes(bytes) {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 1) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
 function base64UrlEncodeString(value) {
   return base64UrlEncode(encoder.encode(value));
+}
+
+function base64EncodeString(value) {
+  return base64EncodeBytes(encoder.encode(String(value || "")));
 }
 
 function base64UrlDecodeToString(value) {
@@ -378,7 +389,7 @@ function buildPlanConfig(env) {
 
 function resolvePlanCode(user, subscription) {
   const policyPlan = resolvePolicyPlanCode(user, subscription);
-  if (policyPlan === PLAN_CODE_PLANETKA_PRO) {
+  if (policyPlan === PLAN_CODE_PLANETKA_PRO || policyPlan === PLAN_CODE_PLANETKA_STUDIO) {
     return PLAN_CODE_PLANETKA_PRO;
   }
   return PLAN_CODE_PLANETKA;
@@ -542,26 +553,15 @@ function computeWarningState(totalRemainingBytes, includedLimitBytes, cfg) {
 }
 
 async function buildAllowanceState(db, user, subscription, env) {
+  void db;
   const cfg = buildPlanConfig(env);
   const planCode = resolvePlanCode(user, subscription);
-  const period = await ensureCurrentUsagePeriod(db, user.id, planCode, cfg);
-  const includedLimitBytesBase = clampNonNegativeInt(period && period.included_limit_bytes);
-  const includedConsumedBytes = clampNonNegativeInt(period && period.included_consumed_bytes);
-  const includedRemainingBytesBase = Math.max(0, includedLimitBytesBase - includedConsumedBytes);
-  const nowTs = nowIso();
-  const manualCreditRemainingBytes = await getManualCreditRemaining(db, user.id, nowTs);
-  // Product UX uses one monthly pool. Manual credits are folded into monthly allowance.
-  const includedLimitBytes = Math.max(0, includedLimitBytesBase + manualCreditRemainingBytes);
-  const includedRemainingBytes = Math.max(0, includedRemainingBytesBase + manualCreditRemainingBytes);
-  const totalRemainingBytes = includedRemainingBytes;
-  const downloadedPeriodBytes = await getDownloadedPeriodBytes(
-    db,
-    user.id,
-    String(period.period_start || nowTs),
-    String(period.period_end || nowTs),
-  );
-  const warningState = computeWarningState(totalRemainingBytes, includedLimitBytes, cfg);
-  const exhausted = totalRemainingBytes <= 0;
+  const includedLimitBytes = UNLIMITED_ALLOWANCE_BYTES;
+  const includedRemainingBytes = UNLIMITED_ALLOWANCE_BYTES;
+  const totalRemainingBytes = UNLIMITED_ALLOWANCE_BYTES;
+  const downloadedPeriodBytes = 0;
+  const warningState = "ok";
+  const exhausted = false;
 
   return {
     planCode,
@@ -575,14 +575,14 @@ async function buildAllowanceState(db, user, subscription, env) {
       topup_remaining_bytes: 0,
       total_remaining_bytes: totalRemainingBytes,
       downloaded_period_bytes: downloadedPeriodBytes,
-      period: "monthly",
-      period_end: String(period.period_end || ""),
+      period: "lifetime",
+      period_end: "",
       warning_state: warningState,
       exhausted,
-      counting_rule: cfg.countingRule,
+      counting_rule: "Unlimited access for this release; no periodic allowance is applied.",
     },
-    includedRemainingBytesBase,
-    periodId: String(period.id || ""),
+    includedRemainingBytesBase: includedRemainingBytes,
+    periodId: "",
   };
 }
 
@@ -677,53 +677,7 @@ async function consumeManualCredits(db, userId, bytesToConsume, nowTimestamp) {
 }
 
 async function consumeAllowanceBytes(db, user, subscription, env, bytesUsed) {
-  const chargeBytes = clampNonNegativeInt(bytesUsed);
-  if (chargeBytes <= 0) {
-    return buildAllowanceState(db, user, subscription, env);
-  }
-
-  const state = await buildAllowanceState(db, user, subscription, env);
-  if (state.dataAllowance.total_remaining_bytes < chargeBytes) {
-    throw new Error("allowance_exhausted");
-  }
-
-  let remaining = chargeBytes;
-  const useIncluded = Math.min(
-    clampNonNegativeInt(state.includedRemainingBytesBase),
-    remaining,
-  );
-  const nowTimestamp = nowIso();
-  if (useIncluded > 0) {
-    await dbRun(
-      db,
-      `
-        UPDATE usage_periods
-        SET
-          included_consumed_bytes = included_consumed_bytes + ?,
-          updated_at = ?
-        WHERE id = ?
-      `,
-      [useIncluded, nowTimestamp, state.periodId],
-    );
-    remaining -= useIncluded;
-  }
-  if (remaining > 0) {
-    const consumedManual = await consumeManualCredits(db, user.id, remaining, nowTimestamp);
-    remaining -= consumedManual;
-  }
-  if (remaining > 0) {
-    throw new Error("allowance_exhausted");
-  }
-
-  await dbRun(
-    db,
-    `
-      INSERT INTO usage_charges (id, user_id, period_id, bytes_used, created_at)
-      VALUES (?, ?, ?, ?, ?)
-    `,
-    [crypto.randomUUID(), user.id, state.periodId, chargeBytes, nowTimestamp],
-  );
-
+  void bytesUsed;
   return buildAllowanceState(db, user, subscription, env);
 }
 
@@ -757,28 +711,6 @@ async function findUserById(db, userId) {
         u.last_login_at
       FROM users u
       WHERE u.id = ?
-      LIMIT 1
-    `,
-    [userId],
-  );
-}
-
-async function findSubscriptionByUserId(db, userId) {
-  return dbGet(
-    db,
-    `
-      SELECT
-        id,
-        user_id,
-        status,
-        trial_ends_at,
-        renews_at,
-        current_period_end,
-        stripe_customer_id,
-        stripe_subscription_id
-      FROM subscriptions
-      WHERE user_id = ?
-      ORDER BY updated_at DESC, created_at DESC
       LIMIT 1
     `,
     [userId],
@@ -950,7 +882,11 @@ async function enforceUserPlanPolicy(db, user, subscription = null) {
     return user;
   }
   const targetPlan = resolvePolicyPlanCode(user, subscription);
-  if (targetPlan !== PLAN_CODE_PLANETKA && targetPlan !== PLAN_CODE_PLANETKA_PRO) {
+  if (
+    targetPlan !== PLAN_CODE_PLANETKA
+    && targetPlan !== PLAN_CODE_PLANETKA_PRO
+    && targetPlan !== PLAN_CODE_PLANETKA_STUDIO
+  ) {
     return user;
   }
   const currentStatus = normalizeUserStatus(user.status);
@@ -963,17 +899,6 @@ async function enforceUserPlanPolicy(db, user, subscription = null) {
     [targetPlan, user.id],
   );
   return { ...user, status: targetPlan };
-}
-
-function isSubscriptionActive(subscription) {
-  if (!subscription) {
-    return false;
-  }
-  const status = String(subscription.status || "").toLowerCase();
-  if (status === "active" || status === "trialing") {
-    return true;
-  }
-  return false;
 }
 
 function parseTileQualityFromFileName(fileName) {
@@ -990,83 +915,6 @@ function parseTileQualityFromFileName(fileName) {
   }
   const d = rawD === 0 ? 1440 : rawD;
   return { z, d, textureType: String(match[1] || "").toUpperCase() };
-}
-
-async function sendSecurityAlertEmail(env, subject, lines) {
-  const apiKey = String(env.EMAIL_API_KEY || "").trim();
-  if (!apiKey) {
-    console.error("security.alert.email_missing_api_key", JSON.stringify({ subject }));
-    return false;
-  }
-
-  const from = String(env.EMAIL_FROM || "info@planetka.io").trim();
-  const to = String(env.SECURITY_ALERT_EMAIL || "info@planetka.io").trim() || "info@planetka.io";
-  const bodyLines = Array.isArray(lines) ? lines.map((line) => String(line)) : [String(lines || "")];
-  const textBody = bodyLines.join("\n");
-  const htmlBody = `<pre style="white-space:pre-wrap;font-family:monospace;">${textBody
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")}</pre>`;
-
-  const response = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      from,
-      to: [to],
-      subject: String(subject || "Planetka Security Alert"),
-      text: textBody,
-      html: htmlBody,
-    }),
-  });
-
-  if (!response.ok) {
-    const body = await response.text();
-    console.error(
-      "security.alert.email_failed",
-      JSON.stringify({ status: response.status, body: String(body || "").slice(0, 500) }),
-    );
-    return false;
-  }
-  return true;
-}
-
-async function blockUserForAbuse(db, user, env, details = {}) {
-  if (!user || !user.id) {
-    return;
-  }
-  const blockedAt = nowIso();
-  await dbRun(db, `UPDATE users SET status = 'blocked' WHERE id = ?`, [user.id]);
-  await dbRun(
-    db,
-    `UPDATE refresh_sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`,
-    [blockedAt, user.id],
-  );
-
-  const email = String(user.email || "").trim();
-  const detailLines = [
-    "Planetka security block triggered.",
-    `time_utc=${blockedAt}`,
-    `user_id=${user.id}`,
-    `email=${email || "unknown"}`,
-    `reason=${String(details.reason || "unknown")}`,
-    `path=${String(details.path || "")}`,
-    `file_name=${String(details.file_name || "")}`,
-    `z=${String(details.z ?? "")}`,
-    `d=${String(details.d ?? "")}`,
-    `plan_code=${String(details.plan_code || "")}`,
-    `ip=${String(details.ip || "")}`,
-    `user_agent=${String(details.user_agent || "")}`,
-  ];
-  console.error("security.account_blocked", JSON.stringify({ user_id: user.id, email, details }));
-  try {
-    await sendSecurityAlertEmail(env, "Planetka Security: account blocked for full-quality abuse", detailLines);
-  } catch (error) {
-    console.error("security.alert.email_exception", String(error && error.message ? error.message : error));
-  }
 }
 
 async function sendMagicLinkEmail(env, email, token, magicUrlOverride = "") {
@@ -1115,6 +963,7 @@ async function sendMagicLinkEmail(env, email, token, magicUrlOverride = "") {
 }
 
 async function createAccessToken(env, user, subscription) {
+  void subscription;
   const secret = requireSecret(env, "JWT_SIGNING_SECRET");
   const exp = Math.floor(Date.now() / 1000) + (60 * 60);
   return signJwt(
@@ -1122,7 +971,7 @@ async function createAccessToken(env, user, subscription) {
       type: "access",
       sub: user.id,
       email: user.email,
-      subscription_status: subscription ? subscription.status : "inactive",
+      subscription_status: subscriptionStatusForUser(user),
       exp,
     },
     secret,
@@ -1271,7 +1120,6 @@ async function handleAuthStart(request, env) {
   }
 
   let user = await findUserByEmail(db, email);
-  let subscription = null;
   if (!user) {
     if (!acceptTerms || !acceptPrivacy) {
       return json({ ok: false, error: "terms_consent_required" }, 400, env);
@@ -1302,8 +1150,7 @@ async function handleAuthStart(request, env) {
     );
   }
   if (user && !isBlockedStatus(user.status)) {
-    subscription = await findSubscriptionByUserId(db, user.id);
-    user = await enforceUserPlanPolicy(db, user, subscription);
+    user = await enforceUserPlanPolicy(db, user, null);
   }
 
   if (optInNews) {
@@ -1372,9 +1219,6 @@ async function handleAuthVerify(request, env) {
     return json({ ok: false, error: "token_expired" }, 400, env);
   }
 
-  const subscription = await findSubscriptionByUserId(db, magicLink.user_id);
-  const subscriptionStatus = subscription ? String(subscription.status || "inactive") : "inactive";
-
   const usedAt = nowIso();
   await dbRun(
     db,
@@ -1392,10 +1236,11 @@ async function handleAuthVerify(request, env) {
     email: magicLink.email,
     status: magicLink.user_status || PLAN_CODE_PLANETKA,
   };
-  user = await enforceUserPlanPolicy(db, user, subscription);
-  const accessToken = await createAccessToken(env, user, subscription);
+  user = await enforceUserPlanPolicy(db, user, null);
+  const subscriptionStatus = subscriptionStatusForUser(user);
+  const accessToken = await createAccessToken(env, user, null);
   const refreshToken = await createRefreshSession(db, magicLink.user_id);
-  const accountState = await buildAllowanceState(db, user, subscription, env);
+  const accountState = await buildAllowanceState(db, user, null, env);
 
   if (deviceCode) {
     await ensureDeviceSessionsTable(db);
@@ -1430,8 +1275,8 @@ async function handleAuthVerify(request, env) {
           accessToken,
           refreshToken,
           subscriptionStatus,
-          subscription ? subscription.renews_at : null,
-          subscription ? subscription.trial_ends_at : null,
+          null,
+          null,
           usedAt,
           deviceSession.id,
         ],
@@ -1446,8 +1291,8 @@ async function handleAuthVerify(request, env) {
       refresh_token: refreshToken,
       email: user.email,
       subscription_status: subscriptionStatus,
-      renews_at: subscription ? subscription.renews_at : null,
-      trial_ends_at: subscription ? subscription.trial_ends_at : null,
+      renews_at: null,
+      trial_ends_at: null,
       ...serializeAccountState(accountState),
     },
     200,
@@ -1494,23 +1339,22 @@ async function handleAuthRefresh(request, env) {
     return json({ ok: false, error: "refresh_token_expired" }, 400, env);
   }
 
-  const subscription = await findSubscriptionByUserId(db, session.user_id);
-  const subscriptionStatus = subscription ? String(subscription.status || "inactive") : "inactive";
   let user = {
     id: session.user_id,
     email: session.email,
     status: session.status || PLAN_CODE_PLANETKA,
   };
-  user = await enforceUserPlanPolicy(db, user, subscription);
+  user = await enforceUserPlanPolicy(db, user, null);
+  const subscriptionStatus = subscriptionStatusForUser(user);
 
   await dbRun(
     db,
     `UPDATE refresh_sessions SET revoked_at = ? WHERE id = ?`,
     [nowIso(), session.id],
   );
-  const accessToken = await createAccessToken(env, user, subscription);
+  const accessToken = await createAccessToken(env, user, null);
   const nextRefreshToken = await createRefreshSession(db, session.user_id);
-  const accountState = await buildAllowanceState(db, user, subscription, env);
+  const accountState = await buildAllowanceState(db, user, null, env);
 
   return json(
     {
@@ -1519,8 +1363,8 @@ async function handleAuthRefresh(request, env) {
       refresh_token: nextRefreshToken,
       email: user.email,
       subscription_status: subscriptionStatus,
-      renews_at: subscription ? subscription.renews_at : null,
-      trial_ends_at: subscription ? subscription.trial_ends_at : null,
+      renews_at: null,
+      trial_ends_at: null,
       ...serializeAccountState(accountState),
     },
     200,
@@ -1556,18 +1400,18 @@ async function handleMe(request, env) {
   if (isBlockedStatus(user.status)) {
     return blockedAccountResponse(env);
   }
-  const subscription = await findSubscriptionByUserId(db, user.id);
-  user = await enforceUserPlanPolicy(db, user, subscription);
-  const accountState = await buildAllowanceState(db, user, subscription, env);
+  user = await enforceUserPlanPolicy(db, user, null);
+  const accountState = await buildAllowanceState(db, user, null, env);
+  const subscriptionStatus = subscriptionStatusForUser(user);
 
   return json(
     {
       ok: true,
       email: user.email,
       user_status: user.status,
-      subscription_status: subscription ? subscription.status : "inactive",
-      trial_ends_at: subscription ? subscription.trial_ends_at : null,
-      renews_at: subscription ? subscription.renews_at : null,
+      subscription_status: subscriptionStatus,
+      trial_ends_at: null,
+      renews_at: null,
       ...serializeAccountState(accountState),
     },
     200,
@@ -1665,10 +1509,9 @@ async function handleDevicePoll(request, env) {
   let accountPayload = {};
   try {
     let user = await findUserByEmail(db, normalizeEmail(session.email));
-    const subscription = user ? await findSubscriptionByUserId(db, user.id) : null;
     if (user) {
-      user = await enforceUserPlanPolicy(db, user, subscription);
-      const accountState = await buildAllowanceState(db, user, subscription, env);
+      user = await enforceUserPlanPolicy(db, user, null);
+      const accountState = await buildAllowanceState(db, user, null, env);
       accountPayload = serializeAccountState(accountState);
     }
   } catch (_error) {
@@ -2087,9 +1930,8 @@ async function handleTileRequest(request, env, path, ctx) {
   if (isBlockedStatus(user.status)) {
     return blockedAccountResponse(env);
   }
-  const subscription = await findSubscriptionByUserId(db, access.sub);
-  user = await enforceUserPlanPolicy(db, user, subscription);
-  const planCode = resolvePlanCode(user, subscription);
+  user = await enforceUserPlanPolicy(db, user, null);
+  const planCode = resolvePlanCode(user, null);
 
   const parts = path.replace(/^\/tiles\//, "").split("/");
   if (parts.length !== 2 || !parts[0] || !parts[1]) {
@@ -2106,26 +1948,30 @@ async function handleTileRequest(request, env, path, ctx) {
   ) {
     return json({ ok: false, error: "invalid_tile_path" }, 400, env);
   }
-  const prefix = String(env.R2_PREFIX || "").trim().replace(/^\/+|\/+$/g, "");
-  const key = prefix ? `${prefix}/${folder}/${fileName}` : `${folder}/${fileName}`;
 
-  const parsedTile = parseTileQualityFromFileName(fileName);
-  if (request.method === "GET" && planCode === PLAN_CODE_PLANETKA && parsedTile && parsedTile.z === parsedTile.d) {
-    await blockUserForAbuse(db, user, env, {
-      reason: "free_account_full_quality_tile_request",
-      path,
-      file_name: fileName,
-      z: parsedTile.z,
-      d: parsedTile.d,
-      plan_code: planCode,
-      ip: request.headers.get("CF-Connecting-IP") || "",
-      user_agent: request.headers.get("User-Agent") || "",
-    });
-    return blockedAccountResponse(
+  const tileQuality = parseTileQualityFromFileName(fileName);
+  const isFreePlan = planCode === PLAN_CODE_PLANETKA;
+  const isFullQualityS2Tile = Boolean(
+    tileQuality
+      && tileQuality.textureType === "S2"
+      && Number.isFinite(tileQuality.z)
+      && Number.isFinite(tileQuality.d)
+      && tileQuality.z === tileQuality.d,
+  );
+  if (isFreePlan && isFullQualityS2Tile) {
+    return json(
+      {
+        ok: false,
+        error: "quality_not_allowed",
+        message: "Requested texture quality is not available for this account.",
+      },
+      403,
       env,
-      "Attempt to download full quality texture under Free Account licence detected. Account Blocked.",
     );
   }
+
+  const prefix = String(env.R2_PREFIX || "").trim().replace(/^\/+|\/+$/g, "");
+  const key = prefix ? `${prefix}/${folder}/${fileName}` : `${folder}/${fileName}`;
 
   if (request.method === "HEAD") {
     const objectHead = await env.PLANETKA_DATA.head(key);
@@ -2174,7 +2020,7 @@ async function handleTileRequest(request, env, path, ctx) {
     responseBody = cacheableResponse.body;
   }
 
-  const allowanceState = await buildAllowanceState(db, user, subscription, env);
+  const allowanceState = await buildAllowanceState(db, user, null, env);
   if (allowanceState.dataAllowance.total_remaining_bytes < objectSize) {
     return json(
       {
@@ -2190,7 +2036,7 @@ async function handleTileRequest(request, env, path, ctx) {
 
   let updatedAllowance;
   try {
-    updatedAllowance = await consumeAllowanceBytes(db, user, subscription, env, objectSize);
+    updatedAllowance = await consumeAllowanceBytes(db, user, null, env, objectSize);
   } catch (error) {
     if (String(error && error.message || "") === "allowance_exhausted") {
       return json(
@@ -2198,7 +2044,7 @@ async function handleTileRequest(request, env, path, ctx) {
           ok: false,
           error: "allowance_exhausted",
           message: "Data allowance is exhausted. Contact Planetka for more data.",
-          ...serializeAccountState(await buildAllowanceState(db, user, subscription, env)),
+          ...serializeAccountState(await buildAllowanceState(db, user, null, env)),
         },
         402,
         env,
@@ -2224,6 +2070,147 @@ async function handleTileRequest(request, env, path, ctx) {
     status: 200,
     headers: responseHeaders,
   });
+}
+
+function sanitizeAttachmentFileName(value, fallback = "planetka_bug_report.json") {
+  const raw = String(value || "").trim();
+  const safe = raw.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120);
+  if (!safe) {
+    return fallback;
+  }
+  return safe.toLowerCase().endsWith(".json") ? safe : `${safe}.json`;
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+async function handleSupportBugReport(request, env) {
+  const db = requireDb(env);
+  let access;
+  try {
+    access = await readBearerUser(request, env);
+  } catch (error) {
+    return json({ ok: false, error: String(error.message || "invalid_access_token") }, 401, env);
+  }
+  if (!access) {
+    return json({ ok: false, error: "missing_bearer_token" }, 401, env);
+  }
+
+  const user = await findUserById(db, access.sub);
+  if (!user) {
+    return json({ ok: false, error: "user_not_found" }, 404, env);
+  }
+  if (isBlockedStatus(user.status)) {
+    return blockedAccountResponse(env);
+  }
+
+  const body = await parseJson(request);
+  const reportJson = String(body.report_json || "").trim();
+  if (!reportJson) {
+    return json({ ok: false, error: "missing_report_json" }, 400, env);
+  }
+  if (reportJson.length > 500000) {
+    return json({ ok: false, error: "report_json_too_large" }, 413, env);
+  }
+  try {
+    JSON.parse(reportJson);
+  } catch (_error) {
+    return json({ ok: false, error: "invalid_report_json" }, 400, env);
+  }
+
+  const reportFileName = sanitizeAttachmentFileName(body.report_filename, "planetka_bug_report.json");
+  const issueWhat = String(body.issue_what_happened || "").trim();
+  const issueSteps = String(body.issue_steps_to_reproduce || "").trim();
+  const issueExpected = String(body.issue_expected_behavior || "").trim();
+  const sourcePath = String(body.report_path || "").trim();
+
+  const apiKey = requireSecret(env, "EMAIL_API_KEY");
+  const from = String(env.EMAIL_FROM || "info@planetka.io").trim();
+  const to = String(env.BUG_REPORT_EMAIL || env.SECURITY_ALERT_EMAIL || "info@planetka.io").trim() || "info@planetka.io";
+  const sentAt = nowIso();
+  const reporterEmail = String(user.email || "").trim();
+
+  const textBody = [
+    "Planetka bug report submitted from Blender.",
+    "",
+    `reported_at_utc=${sentAt}`,
+    `reporter_email=${reporterEmail || "unknown"}`,
+    `reporter_user_id=${String(user.id || "")}`,
+    `report_file_name=${reportFileName}`,
+    `local_report_path=${sourcePath || "n/a"}`,
+    "",
+    "Issue description:",
+    `- What happened: ${issueWhat || "(not provided)"}`,
+    `- Steps to reproduce: ${issueSteps || "(not provided)"}`,
+    `- Expected behavior: ${issueExpected || "(not provided)"}`,
+    "",
+    "Attached: JSON debug report",
+  ].join("\n");
+
+  const htmlBody = `
+    <div style="font-family:Arial,sans-serif;line-height:1.5;color:#111827;">
+      <h2 style="margin:0 0 12px 0;">Planetka Bug Report</h2>
+      <p><strong>Reported at (UTC):</strong> ${escapeHtml(sentAt)}<br/>
+      <strong>Reporter email:</strong> ${escapeHtml(reporterEmail || "unknown")}<br/>
+      <strong>User ID:</strong> ${escapeHtml(String(user.id || ""))}<br/>
+      <strong>Report file:</strong> ${escapeHtml(reportFileName)}<br/>
+      <strong>Local report path:</strong> ${escapeHtml(sourcePath || "n/a")}</p>
+      <h3 style="margin:16px 0 8px 0;">Issue Description</h3>
+      <p><strong>What happened:</strong> ${escapeHtml(issueWhat || "(not provided)")}<br/>
+      <strong>Steps to reproduce:</strong> ${escapeHtml(issueSteps || "(not provided)")}<br/>
+      <strong>Expected behavior:</strong> ${escapeHtml(issueExpected || "(not provided)")}</p>
+      <p>Attached: JSON debug report</p>
+    </div>
+  `;
+
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      from,
+      to: [to],
+      subject: `Planetka Bug Report - ${reporterEmail || "unknown"}`,
+      text: textBody,
+      html: htmlBody,
+      attachments: [
+        {
+          filename: reportFileName,
+          content: base64EncodeString(reportJson),
+        },
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    const resendBody = await response.text();
+    return json(
+      {
+        ok: false,
+        error: `bug_report_email_failed_${response.status}`,
+        detail: String(resendBody || "").slice(0, 500),
+      },
+      502,
+      env,
+    );
+  }
+
+  return json(
+    {
+      ok: true,
+      sent: true,
+      reporter_email: reporterEmail,
+      report_file_name: reportFileName,
+    },
+    200,
+    env,
+  );
 }
 
 async function handleStripeWebhook(request, env) {
@@ -2275,97 +2262,8 @@ async function handleStripeWebhook(request, env) {
   }
 
   const user = await upsertUserByEmail(db, email, PLAN_CODE_PLANETKA_PRO);
-  const stripeCustomerId = String(session.customer || "").trim() || null;
-  const stripeSubscriptionId = String(session.subscription || "").trim() || null;
-  const createdAt = nowIso();
-  let trialEndsAt = null;
-  let renewsAt = null;
-  let currentPeriodEnd = null;
-  let subscriptionStatus = "active";
-
-  if (stripeSubscriptionId) {
-    const stripeSubscription = await fetchStripeSubscription(env, stripeSubscriptionId);
-    subscriptionStatus = String(stripeSubscription.status || subscriptionStatus || "active");
-    trialEndsAt = stripeSubscription.trial_end
-      ? new Date(Number(stripeSubscription.trial_end) * 1000).toISOString()
-      : null;
-    renewsAt = stripeSubscription.current_period_end
-      ? new Date(Number(stripeSubscription.current_period_end) * 1000).toISOString()
-      : null;
-    currentPeriodEnd = renewsAt;
-  }
-
-  let existingSubscription = null;
-  if (stripeSubscriptionId) {
-    existingSubscription = await dbGet(
-      db,
-      `
-        SELECT id
-        FROM subscriptions
-        WHERE stripe_subscription_id = ?
-        LIMIT 1
-      `,
-      [stripeSubscriptionId],
-    );
-  }
-
-  if (existingSubscription) {
-    await dbRun(
-      db,
-      `
-        UPDATE subscriptions
-        SET
-          user_id = ?,
-          stripe_customer_id = ?,
-          status = ?,
-          trial_ends_at = COALESCE(trial_ends_at, ?),
-          renews_at = COALESCE(renews_at, ?),
-          current_period_end = COALESCE(current_period_end, ?),
-          updated_at = ?
-        WHERE id = ?
-      `,
-      [
-        user.id,
-        stripeCustomerId,
-        subscriptionStatus,
-        trialEndsAt,
-        renewsAt,
-        currentPeriodEnd,
-        createdAt,
-        existingSubscription.id,
-      ],
-    );
-  } else {
-    await dbRun(
-      db,
-      `
-        INSERT INTO subscriptions (
-          id,
-          user_id,
-        stripe_customer_id,
-        stripe_subscription_id,
-        status,
-        trial_ends_at,
-        renews_at,
-          current_period_end,
-          created_at,
-          updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `,
-      [
-        crypto.randomUUID(),
-        user.id,
-        stripeCustomerId,
-        stripeSubscriptionId,
-        subscriptionStatus,
-        trialEndsAt,
-        renewsAt,
-        currentPeriodEnd,
-        createdAt,
-        createdAt,
-      ],
-    );
-  }
+  const stripeCustomerId = String(session.customer || "").trim() || "";
+  const stripeSubscriptionId = String(session.subscription || "").trim() || "";
 
   console.log(
     "stripe.webhook.processed",
@@ -2374,7 +2272,7 @@ async function handleStripeWebhook(request, env) {
       email,
       stripe_customer_id: stripeCustomerId,
       stripe_subscription_id: stripeSubscriptionId,
-      subscription_status: subscriptionStatus,
+      user_status: String(user && user.status || PLAN_CODE_PLANETKA_PRO),
     }),
   );
 
@@ -2466,6 +2364,10 @@ export default {
 
       if (request.method === "GET" && path === "/billing/portal") {
         return notImplemented("/billing/portal", env);
+      }
+
+      if (request.method === "POST" && path === "/support/bug-report") {
+        return await handleSupportBugReport(request, env);
       }
 
       if ((request.method === "GET" || request.method === "HEAD") && path.startsWith("/tiles/")) {
