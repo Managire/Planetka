@@ -1047,19 +1047,73 @@ async function verifyStripeWebhook(request, env, rawBody) {
   return JSON.parse(rawBody);
 }
 
-async function fetchStripeSubscription(env, subscriptionId) {
-  const secretKey = requireSecret(env, "STRIPE_SECRET_KEY");
-  const response = await fetch(`https://api.stripe.com/v1/subscriptions/${encodeURIComponent(subscriptionId)}`, {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${secretKey}`,
-    },
-  });
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`stripe_subscription_fetch_failed_${response.status}_${body}`);
+function parseCsvSet(value) {
+  const set = new Set();
+  for (const token of String(value || "").split(",")) {
+    const normalized = String(token || "").trim();
+    if (normalized) {
+      set.add(normalized);
+    }
   }
-  return response.json();
+  return set;
+}
+
+function collectStripeLineItemEntitlements(lineItems) {
+  const priceIds = new Set();
+  const productIds = new Set();
+  for (const item of Array.isArray(lineItems) ? lineItems : []) {
+    const price = item && typeof item === "object" ? item.price : null;
+    if (!price || typeof price !== "object") {
+      continue;
+    }
+    const priceId = String(price.id || "").trim();
+    if (priceId) {
+      priceIds.add(priceId);
+    }
+    const productId = String(price.product || "").trim();
+    if (productId) {
+      productIds.add(productId);
+    }
+  }
+  return {
+    priceIds: Array.from(priceIds),
+    productIds: Array.from(productIds),
+  };
+}
+
+async function fetchStripeCheckoutSessionLineItems(env, sessionId) {
+  const secretKey = requireSecret(env, "STRIPE_SECRET_KEY");
+  const baseUrl = `https://api.stripe.com/v1/checkout/sessions/${encodeURIComponent(sessionId)}/line_items`;
+  let nextUrl = `${baseUrl}?limit=100`;
+  const lineItems = [];
+
+  while (nextUrl) {
+    const response = await fetch(nextUrl, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${secretKey}`,
+      },
+    });
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`stripe_line_items_fetch_failed_${response.status}_${body}`);
+    }
+    const payload = await response.json();
+    const pageItems = Array.isArray(payload && payload.data) ? payload.data : [];
+    lineItems.push(...pageItems);
+
+    if (!Boolean(payload && payload.has_more) || pageItems.length === 0) {
+      break;
+    }
+    const lastItem = pageItems[pageItems.length - 1];
+    const lastId = String(lastItem && lastItem.id || "").trim();
+    if (!lastId) {
+      break;
+    }
+    nextUrl = `${baseUrl}?limit=100&starting_after=${encodeURIComponent(lastId)}`;
+  }
+
+  return lineItems;
 }
 
 async function readBearerUser(request, env) {
@@ -2279,6 +2333,10 @@ async function handleStripeWebhook(request, env) {
   if (!session) {
     return json({ ok: false, error: "missing_checkout_session" }, 400, env);
   }
+  const sessionId = String(session.id || "").trim();
+  if (!sessionId) {
+    return json({ ok: false, error: "missing_checkout_session_id" }, 400, env);
+  }
 
   const email = normalizeEmail(
     session.customer_details && session.customer_details.email
@@ -2288,6 +2346,26 @@ async function handleStripeWebhook(request, env) {
   if (!email) {
     console.error("stripe.webhook.missing_email", JSON.stringify({ event_type: eventType }));
     return json({ ok: false, error: "missing_customer_email" }, 400, env);
+  }
+
+  const sessionMode = String(session.mode || "").trim().toLowerCase();
+  if (sessionMode !== "payment") {
+    console.log(
+      "stripe.webhook.ignored_mode",
+      JSON.stringify({ event_type: eventType, email, mode: sessionMode }),
+    );
+    return json(
+      {
+        ok: true,
+        ignored: true,
+        reason: "unsupported_checkout_mode",
+        event_type: eventType,
+        email,
+        mode: sessionMode,
+      },
+      200,
+      env,
+    );
   }
 
   const paymentStatus = String(session.payment_status || "").trim().toLowerCase();
@@ -2311,6 +2389,45 @@ async function handleStripeWebhook(request, env) {
     );
   }
 
+  const allowedPriceIds = parseCsvSet(env.STRIPE_ALLOWED_PRICE_IDS);
+  const allowedProductIds = parseCsvSet(env.STRIPE_ALLOWED_PRODUCT_IDS);
+  if (allowedPriceIds.size === 0 && allowedProductIds.size === 0) {
+    console.error(
+      "stripe.webhook.misconfigured_entitlement_allowlist",
+      JSON.stringify({ event_type: eventType, email, session_id: sessionId }),
+    );
+    return json({ ok: false, error: "missing_stripe_entitlement_allowlist" }, 500, env);
+  }
+
+  const lineItems = await fetchStripeCheckoutSessionLineItems(env, sessionId);
+  const entitlements = collectStripeLineItemEntitlements(lineItems);
+  const hasAllowedPrice = entitlements.priceIds.some((priceId) => allowedPriceIds.has(priceId));
+  const hasAllowedProduct = entitlements.productIds.some((productId) => allowedProductIds.has(productId));
+  const entitlementMatched = hasAllowedPrice || hasAllowedProduct;
+  if (!entitlementMatched) {
+    console.log(
+      "stripe.webhook.ignored_disallowed_line_items",
+      JSON.stringify({
+        event_type: eventType,
+        email,
+        session_id: sessionId,
+        purchased_price_ids: entitlements.priceIds.slice(0, 25),
+        purchased_product_ids: entitlements.productIds.slice(0, 25),
+      }),
+    );
+    return json(
+      {
+        ok: true,
+        ignored: true,
+        reason: "disallowed_checkout_items",
+        event_type: eventType,
+        email,
+      },
+      200,
+      env,
+    );
+  }
+
   const user = await upsertUserByEmail(db, email, PLAN_CODE_PLANETKA_PRO);
   const stripeCustomerId = String(session.customer || "").trim() || "";
   const stripeSubscriptionId = String(session.subscription || "").trim() || "";
@@ -2320,8 +2437,12 @@ async function handleStripeWebhook(request, env) {
     JSON.stringify({
       event_type: eventType,
       email,
+      session_mode: sessionMode,
+      session_id: sessionId,
       stripe_customer_id: stripeCustomerId,
       stripe_subscription_id: stripeSubscriptionId,
+      matched_price_ids: entitlements.priceIds.filter((priceId) => allowedPriceIds.has(priceId)).slice(0, 25),
+      matched_product_ids: entitlements.productIds.filter((productId) => allowedProductIds.has(productId)).slice(0, 25),
       user_status: String(user && user.status || PLAN_CODE_PLANETKA_PRO),
     }),
   );
