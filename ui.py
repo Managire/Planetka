@@ -240,7 +240,7 @@ def _draw_subscription(layout):
         upgrade_row = layout.row()
         upgrade_row.operator(
             "wm.url_open",
-            text="Upgrade to Pro",
+            text="Upgrade Licence",
             icon="URL",
         ).url = "https://www.planetka.io/blender-addon/pricing/"
 
@@ -785,7 +785,7 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             quality_row.prop_enum(props, "texture_quality_mode", "HALF", text="Half")
             quality_row.prop_enum(props, "texture_quality_mode", "QUARTER", text="Quarter")
             if not _full_texture_quality_allowed():
-                texture_quality_box.label(text="Upgrade to Pro to unlock Full Quality.", icon="INFO")
+                texture_quality_box.label(text="Upgrade Licence to unlock Full Quality.", icon="INFO")
 
             viewport_box = layout.box()
             viewport_box.label(text="Viewport Optimization", icon="VIEW3D")
@@ -1200,10 +1200,10 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         render_box.label(text="Rendering", icon="RENDER_ANIMATION")
         render_enabled = _full_texture_quality_allowed()
         if not render_enabled:
-            render_box.label(text="Upgrade to Pro to unlock", icon="LOCKED")
+            render_box.label(text="Upgrade Licence to unlock", icon="LOCKED")
             render_box.operator(
                 "wm.url_open",
-                text="Upgrade to Pro",
+                text="Upgrade Licence",
                 icon="URL",
             ).url = "https://www.planetka.io/blender-addon/pricing/"
 

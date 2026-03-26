@@ -42,16 +42,36 @@ def snap_to_parent(x, y, child_z, parent_z):
     return (x // parent_z) * parent_z, (y // parent_z) * parent_z
 
 # ------------------------
-# Disk helpers (S2 only)
+# Disk helpers
 # ------------------------
 
-def s2_exists_on_disk(x, y, z, d, base_path):
-    d_code = 0 if int(d) == 1440 else int(d)
-    filename = f"S2_x{x:03d}_y{y:03d}_z{z:03d}_d{d_code:03d}.exr"
+_TEXTURE_EXT = {
+    "S2": ".exr",
+    "EL": ".exr",
+    "WT": ".exr",
+    "PO": ".tif",
+}
+
+
+def _asset_file_name(prefix, x, y, z, d):
+    d_value = int(d)
+    # EL z001_d002 is intentionally remapped to d001 in shader/streaming logic.
+    if str(prefix) == "EL" and int(z) == 1 and d_value == 2:
+        d_value = 1
+    d_code = 0 if d_value == 1440 else d_value
+    ext = _TEXTURE_EXT.get(str(prefix), ".exr")
+    return f"{prefix}_x{x:03d}_y{y:03d}_z{z:03d}_d{d_code:03d}{ext}"
+
+
+def tile_assets_exist_on_disk(x, y, z, d, base_path):
     try:
-        return texture_file_exists(base_path, "S2", filename)
+        for prefix in ("S2", "EL", "WT", "PO"):
+            file_name = _asset_file_name(prefix, x, y, z, d)
+            if not texture_file_exists(base_path, prefix, file_name):
+                return False
+        return True
     except RuntimeError:
-        logger.debug("Planetka: failed checking S2 tile existence for fallback", exc_info=True)
+        logger.debug("Planetka: failed checking tile asset existence for fallback", exc_info=True)
         return False
 
 
@@ -89,7 +109,7 @@ def resolve_tile_in_chain(tile, chain, coverage, base_path, warn_on_missing=True
     for parent_z in chain[start_index:]:
         px, py = snap_to_parent(x, y, z, parent_z)
         pd = max(d, parent_z)
-        if s2_exists_on_disk(px, py, parent_z, pd, base_path):
+        if tile_assets_exist_on_disk(px, py, parent_z, pd, base_path):
             resolved = format_tile(px, py, parent_z, pd)
             if resolved != tile:
                 logger.debug("Tile fallback: %s -> %s", tile, resolved)
@@ -134,41 +154,7 @@ def resolve_overlaps(tiles):
 # ------------------------
 
 def ecosystem_safe_fallback(normalized_tiles, ecosystem, coverage, base_path):
-
-    logger.debug("Ecosystem: %s", ecosystem)
-    resolved = []
-
-    # ---- 1. POWER ecosystem pass ----
-    if ecosystem == "power":
-        unresolved = []
-        for tile in normalized_tiles:
-            r = resolve_tile_in_chain(tile, POWER_CHAIN, coverage, base_path, warn_on_missing=False)
-            if r:
-                resolved.append(r)
-            else:
-                unresolved.append(tile)
-
-        if unresolved:
-            logger.debug(
-                "POWER unresolved tiles: %d, trying DECIMAL fallback for those tiles",
-                len(unresolved),
-            )
-            for tile in unresolved:
-                r = resolve_tile_in_chain(tile, DECIMAL_CHAIN, coverage, base_path)
-                if r:
-                    resolved.append(r)
-
-        resolved = resolve_overlaps(set(resolved))
-        if resolved:
-            logger.debug("Resolved in POWER/DECIMAL chain: %d", len(resolved))
-        return resolved
-
-    # ---- 2. DECIMAL ecosystem fallback ----
-    for tile in normalized_tiles:
-        r = resolve_tile_in_chain(tile, DECIMAL_CHAIN, coverage, base_path)
-        if r:
-            resolved.append(r)
-
-    resolved = resolve_overlaps(set(resolved))
-
-    return resolved
+    del ecosystem, coverage, base_path
+    # Resolve integrity rule: never replace requested tiles with parent candidates.
+    # If any requested tile asset is missing, prefetch must fail fast and stop resolve.
+    return list(normalized_tiles or [])

@@ -178,6 +178,7 @@ def prefetch_resolve_plan(plan_payload, base_path, cancel_event=None, capture=Fa
     capture_result = {}
     cancelled = False
     prefetch_failed = False
+    prefetch_error_text = ""
 
     if capture:
         begin_resolve_download_capture()
@@ -189,11 +190,13 @@ def prefetch_resolve_plan(plan_payload, base_path, cancel_event=None, capture=Fa
                 base_path=str(base_path or ""),
                 cancel_event=cancel_event,
             )
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
             prefetch_failed = True
+            prefetch_error_text = str(exc)
             logger.debug("Planetka: resolve prefetch failed", exc_info=True)
-        except (RuntimeError, TypeError, ValueError):
+        except (RuntimeError, TypeError, ValueError) as exc:
             prefetch_failed = True
+            prefetch_error_text = str(exc)
             logger.debug("Planetka: resolve prefetch failed", exc_info=True)
     finally:
         if capture:
@@ -201,7 +204,40 @@ def prefetch_resolve_plan(plan_payload, base_path, cancel_event=None, capture=Fa
 
     if isinstance(prefetch_result, dict):
         cancelled = bool(prefetch_result.get("cancelled", False))
-    resolved_paths = _build_prefetched_paths(index, base_path, allow_fallback=prefetch_failed and not cancelled)
+    else:
+        prefetch_result = {}
+
+    # Resolve integrity:
+    # - no post-prefetch fallback fetches here (shader fallback images handle EL/WT/PO misses)
+    # - only missing S2 is fatal; missing EL/WT/PO proceeds with fallback images
+    resolved_paths = _build_prefetched_paths(index, base_path, allow_fallback=False)
+    unresolved_s2_required = sum(
+        1
+        for key, path in resolved_paths.items()
+        if isinstance(key, tuple)
+        and len(key) == 2
+        and str(key[1] or "") == "S2"
+        and not str(path or "").strip()
+    )
+    if unresolved_s2_required > 0:
+        prefetch_result["missing_count"] = max(
+            int(prefetch_result.get("missing_count", 0) or 0),
+            int(unresolved_s2_required),
+        )
+        prefetch_result["resolved_count"] = int(prefetch_result.get("resolved_count", 0) or 0)
+        prefetch_result["error_count"] = max(int(prefetch_result.get("error_count", 0) or 0), 0)
+        if not str(prefetch_result.get("fatal_error", "") or "").strip():
+            prefetch_result["fatal_error"] = (
+                "Planetka resolve requires S2 tile assets. "
+                "One or more required S2 files are unavailable."
+            )
+    if prefetch_failed and not cancelled:
+        prefetch_result["fatal_error"] = str(prefetch_result.get("fatal_error", "") or "").strip() or (
+            str(prefetch_error_text or "").strip() or "Planetka resolve prefetch failed."
+        )
+        prefetch_result["error_count"] = max(int(prefetch_result.get("error_count", 0) or 0), 1)
+    prefetch_result["cancelled"] = bool(cancelled)
+
     return {
         "resolved_tiles": list(resolved_tiles),
         "ocean_tiles": list(ocean_tiles),

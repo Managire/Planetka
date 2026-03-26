@@ -63,7 +63,7 @@ def _require_pro_animation_render_access(operator, prefs=None):
         return True
     fail(
         operator,
-        "Upgrade to Pro to unlock Animation Rendering.",
+        "Upgrade Licence to unlock Animation Rendering.",
         code=ErrorCode.RESOLVE_PRECHECK_FAILED,
         logger=logger,
     )
@@ -2160,9 +2160,9 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             if cycles is not None:
                 try:
                     if hasattr(cycles, "dicing_rate"):
-                        cycles.dicing_rate = float(getattr(props, "anim_render_dicing_rate", 1.5))
+                        cycles.dicing_rate = float(getattr(props, "anim_render_dicing_rate", 1.0))
                     if hasattr(cycles, "offscreen_dicing_scale"):
-                        cycles.offscreen_dicing_scale = float(getattr(props, "anim_render_offscreen_scale", 1.5))
+                        cycles.offscreen_dicing_scale = float(getattr(props, "anim_render_offscreen_scale", 2.0))
                 except PLANETKA_RECOVERABLE_EXCEPTIONS:
                     logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
                 except (RuntimeError, TypeError, ValueError):

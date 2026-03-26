@@ -4,16 +4,19 @@ This folder is organized in two levels:
 
 ## Start here
 
-If you use Planetka to create still images or animations, these are the only
+If you use Planetka to create still images or animations, these are the main
 documents you usually need:
 
 - `Using Planetka Commercially.txt`
 - `Attribution for User Renders.txt`
+- `TERMS_OF_SERVICE.md`
+- `PRIVACY_POLICY.md`
 
-Plan entitlement note:
-- Planetka free is personal / non-commercial use.
-- Commercial use is included with Planetka Pro (and Studio/custom plans).
-- If users need more data allowance, the path is manual support/contact (not a self-serve top-up flow).
+Service terms note:
+- The add-on code is licensed under GPL-3.0-or-later.
+- Planetka account access and hosted tile delivery are governed separately by
+  `TERMS_OF_SERVICE.md`.
+- Privacy and telemetry handling are described in `PRIVACY_POLICY.md`.
 
 ## Detailed records
 
@@ -29,4 +32,6 @@ references, and provenance records for the bundled datasets:
 
 ## Software license
 
-- Add-on code: `LICENSE` (MIT)
+- Add-on code: `LICENSE` (GPL-3.0-or-later)
+- Planetka hosted service terms: `TERMS_OF_SERVICE.md`
+- Planetka privacy policy: `PRIVACY_POLICY.md`

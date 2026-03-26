@@ -1581,8 +1581,8 @@ def _open_account_url(url):
 
 class PLANETKA_OT_AccountUpgrade(bpy.types.Operator):
     bl_idname = "planetka.account_upgrade"
-    bl_label = "Upgrade to Pro"
-    bl_description = "Open Planetka Pro upgrade page (one-time commercial license)"
+    bl_label = "Upgrade Licence"
+    bl_description = "Open Planetka licence upgrade page (one-time commercial license)"
 
     def execute(self, context):
         prefs = get_prefs()
@@ -1598,8 +1598,8 @@ class PLANETKA_OT_AccountUpgrade(bpy.types.Operator):
         if not upgrade_url:
             return fail(self, "Planetka upgrade URL is not configured.", logger=logger)
         if not _open_account_url(upgrade_url):
-            return fail(self, "Could not open Planetka Pro upgrade page.", logger=logger)
-        self.report({'INFO'}, "Planetka Pro upgrade page opened in browser.")
+            return fail(self, "Could not open Planetka licence upgrade page.", logger=logger)
+        self.report({'INFO'}, "Planetka licence upgrade page opened in browser.")
         return {'FINISHED'}
 
 

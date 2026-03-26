@@ -80,6 +80,8 @@ class AuthApiError(RuntimeError):
 def describe_auth_error(error):
     message = str(getattr(error, "error", error) or "login_failed")
     lowered = message.lower()
+    if "account_blocked" in lowered or "account is blocked" in lowered:
+        return "Planetka account is blocked. Contact info@planetka.io."
     if "1010" in lowered:
         return "Planetka API access is blocked by API gateway. Disable Browser Integrity Check for api.planetka.io."
     if "device_session_invalid" in lowered or "device_session_expired" in lowered:

@@ -3,10 +3,17 @@ import os
 import platform
 import sys
 from datetime import datetime, timezone
-from urllib.parse import quote
+import urllib.error
+import urllib.request
 
 import bpy
 
+from .auth import (
+    AuthApiError,
+    get_api_base_url,
+    get_authorized_headers,
+    is_authenticated,
+)
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from .extension_prefs import get_prefs
 from .operator_utils import ErrorCode, fail
@@ -40,17 +47,33 @@ def _build_minimal_report(context):
     }
 
 
-def _open_bug_mail_draft(report_path):
+def _open_bug_mail_draft(
+    report_path,
+    report_json_text,
+    issue_what_happened="",
+    issue_steps_to_reproduce="",
+    issue_expected_behavior="",
+):
     subject = "Planetka Blender Bug Report"
+    max_json_chars = 6000
+    safe_json = str(report_json_text or "").strip()
+    if len(safe_json) > max_json_chars:
+        safe_json = (
+            safe_json[:max_json_chars]
+            + "\n... [truncated in email body; see exported JSON file path below for full report]"
+        )
     body = (
         "Hi Planetka team,\n\n"
-        "Please find attached the Planetka debug report.\n\n"
-        "Debug report path:\n"
+        "Planetka debug report JSON:\n\n"
+        f"{safe_json}\n\n"
+        "Local debug report path (full file):\n"
         f"{report_path}\n\n"
+        "Debug report path:\n"
+        "(included above)\n\n"
         "Issue description:\n"
-        "- What happened:\n"
-        "- Steps to reproduce:\n"
-        "- Expected behavior:\n"
+        f"- What happened: {str(issue_what_happened or '').strip()}\n"
+        f"- Steps to reproduce: {str(issue_steps_to_reproduce or '').strip()}\n"
+        f"- Expected behavior: {str(issue_expected_behavior or '').strip()}\n"
     )
     mailto_url = (
         "mailto:info@planetka.io"
@@ -62,6 +85,57 @@ def _open_bug_mail_draft(report_path):
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         return False
     return True
+
+
+def _send_bug_report_via_api(
+    report_path,
+    report_json_text,
+    issue_what_happened="",
+    issue_steps_to_reproduce="",
+    issue_expected_behavior="",
+):
+    prefs = get_prefs()
+    if not is_authenticated(prefs):
+        return False, "Account is not connected."
+
+    url = f"{get_api_base_url()}/support/bug-report"
+    payload = {
+        "report_json": str(report_json_text or ""),
+        "report_filename": os.path.basename(str(report_path or "")) or "planetka_bug_report.json",
+        "report_path": str(report_path or ""),
+        "issue_what_happened": str(issue_what_happened or "").strip(),
+        "issue_steps_to_reproduce": str(issue_steps_to_reproduce or "").strip(),
+        "issue_expected_behavior": str(issue_expected_behavior or "").strip(),
+    }
+    body = json.dumps(payload).encode("utf-8")
+    headers = dict(get_authorized_headers(prefs=prefs, allow_refresh=True))
+    headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(url, data=body, method="POST", headers=headers)
+
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            raw = response.read()
+            text = raw.decode("utf-8", errors="replace") if raw else "{}"
+            response_payload = json.loads(text or "{}")
+            if not bool(response_payload.get("ok", False)):
+                error_text = str(response_payload.get("error", "unknown_api_error") or "unknown_api_error")
+                return False, error_text
+            return True, ""
+    except urllib.error.HTTPError as exc:
+        raw = exc.read()
+        text = raw.decode("utf-8", errors="replace") if raw else ""
+        try:
+            payload = json.loads(text or "{}")
+            error_text = str(payload.get("error", "") or "").strip()
+            if error_text:
+                return False, f"http_{exc.code}_{error_text}"
+        except (TypeError, ValueError):
+            pass
+        return False, f"http_{exc.code}"
+    except urllib.error.URLError as exc:
+        return False, f"network_error_{exc.reason}"
+    except AuthApiError as exc:
+        return False, str(getattr(exc, "error", "") or "auth_error")
 
 
 def _show_popup_lines(context, title, icon, lines):
@@ -82,14 +156,46 @@ def _show_popup_lines(context, title, icon, lines):
 class PLANETKA_OT_ReportBug(bpy.types.Operator):
     bl_idname = "planetka.report_bug"
     bl_label = "Report Bug"
-    bl_description = "Export a compact debug report JSON and open an email draft to info@planetka.io"
+    bl_description = "Describe the issue and send a compact debug report JSON to Planetka support"
+
+    issue_what_happened: bpy.props.StringProperty(
+        name="What happened",
+        description="Describe what went wrong",
+        default="",
+    )
+    issue_steps_to_reproduce: bpy.props.StringProperty(
+        name="Steps to reproduce",
+        description="How we can reproduce this issue",
+        default="",
+    )
+    issue_expected_behavior: bpy.props.StringProperty(
+        name="Expected behavior",
+        description="What you expected to happen",
+        default="",
+    )
+
+    def invoke(self, context, event):
+        del event
+        wm = getattr(context, "window_manager", None)
+        if wm is None:
+            return self.execute(context)
+        return wm.invoke_props_dialog(self, width=520)
+
+    def draw(self, context):
+        del context
+        layout = self.layout
+        layout.label(text="Describe the issue before sending.")
+        layout.prop(self, "issue_what_happened")
+        layout.prop(self, "issue_steps_to_reproduce")
+        layout.prop(self, "issue_expected_behavior")
 
     def execute(self, context):
         target_path = _default_bug_report_path()
         try:
             report = _build_minimal_report(context)
+            report_json_text = json.dumps(report, indent=2, sort_keys=False)
             with open(target_path, "w", encoding="utf-8") as handle:
-                json.dump(report, handle, indent=2, sort_keys=False)
+                handle.write(report_json_text)
         except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
             return fail(
                 self,
@@ -103,9 +209,49 @@ class PLANETKA_OT_ReportBug(bpy.types.Operator):
                 code=ErrorCode.IO_DEBUG_REPORT_FAILED,
             )
 
-        _open_bug_mail_draft(os.path.abspath(target_path))
-        self.report({'INFO'}, "Bug report draft opened. Attach the exported JSON if needed.")
-        return {'FINISHED'}
+        report_path_abs = os.path.abspath(target_path)
+        issue_what = str(getattr(self, "issue_what_happened", "") or "").strip()
+        issue_steps = str(getattr(self, "issue_steps_to_reproduce", "") or "").strip()
+        issue_expected = str(getattr(self, "issue_expected_behavior", "") or "").strip()
+        sent, send_error = _send_bug_report_via_api(
+            report_path_abs,
+            report_json_text,
+            issue_what_happened=issue_what,
+            issue_steps_to_reproduce=issue_steps,
+            issue_expected_behavior=issue_expected,
+        )
+        if sent:
+            _show_popup_lines(
+                context,
+                "Report Sent",
+                "CHECKMARK",
+                [
+                    "Planetka bug report was sent successfully.",
+                    "Thank you for reporting the issue.",
+                ],
+            )
+            self.report({'INFO'}, "Bug report sent with attached JSON report.")
+            return {'FINISHED'}
+
+        fallback_opened = _open_bug_mail_draft(
+            report_path_abs,
+            report_json_text,
+            issue_what_happened=issue_what,
+            issue_steps_to_reproduce=issue_steps,
+            issue_expected_behavior=issue_expected,
+        )
+        if fallback_opened:
+            self.report(
+                {'WARNING'},
+                f"Bug report email draft opened (API send failed: {send_error or 'unknown_error'}).",
+            )
+            return {'FINISHED'}
+
+        return fail(
+            self,
+            f"Bug report send failed: {send_error or 'unknown_error'}",
+            code=ErrorCode.IO_DEBUG_REPORT_FAILED,
+        )
 
 
 class PLANETKA_OT_ValidateTextureSource(bpy.types.Operator):

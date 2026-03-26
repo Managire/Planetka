@@ -130,11 +130,12 @@ def _update_anim_preset_defaults(self, context):
 def _update_anim_render_preset_defaults(self, _context):
     preset = str(getattr(self, "anim_render_preset", "") or "").upper()
     try:
+        self.anim_render_dicing_rate = 1.0
         if preset == "MEMORY":
-            self.anim_render_offscreen_scale = 4.0
+            self.anim_render_offscreen_scale = 8.0
             self.anim_render_persistent_data = False
         else:
-            self.anim_render_offscreen_scale = 1.5
+            self.anim_render_offscreen_scale = 2.0
             self.anim_render_persistent_data = True
     except Exception:
         return
@@ -631,7 +632,7 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
 
     anim_render_dicing_rate: FloatProperty(
         name="Dicing Rate Render",
-        default=1.5,
+        default=1.0,
         min=0.1,
         max=64.0,
         precision=2,
@@ -640,7 +641,7 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
 
     anim_render_offscreen_scale: FloatProperty(
         name="Offscreen Scale",
-        default=1.5,
+        default=2.0,
         min=0.1,
         max=64.0,
         precision=2,

@@ -827,6 +827,8 @@ def _r2_request(method, key, destination_path=None):
                 raise RuntimeError("Planetka request limit reached for this account.")
             if exc.code == 403:
                 combined = f"{error_code} {error_message}".lower()
+                if "account_blocked" in combined or "account is blocked" in combined:
+                    raise RuntimeError("Planetka account is blocked. Contact info@planetka.io.")
                 if any(token in combined for token in ("allowance", "quota", "insufficient", "exhausted", "topup", "top_up", "top-up")):
                     try:
                         sync_account_profile()
@@ -960,6 +962,23 @@ def prefetch_resolve_downloads(requests, base_path=None, cancel_event=None):
     diagnostics_max = _parse_positive_int(_env("PLANETKA_R2_PREFETCH_DIAGNOSTICS_MAX_KEYS"), 24)
     diagnostics_max = max(1, int(diagnostics_max))
     missing_details = []
+    fatal_error = ""
+
+    def _is_fatal_prefetch_error(message):
+        text = str(message or "").strip().lower()
+        if not text:
+            return False
+        return any(
+            token in text
+            for token in (
+                "account blocked",
+                "account_blocked",
+                "login expired",
+                "log in again",
+                "does not have access to remote earth data",
+                "does not currently have access to this remote data request",
+            )
+        )
 
     for request in requests or ():
         if cancel_event is not None and getattr(cancel_event, "is_set", None) and cancel_event.is_set():
@@ -1046,7 +1065,10 @@ def prefetch_resolve_downloads(requests, base_path=None, cancel_event=None):
                 return {"state": "resolved", "task": task}
             return {"state": "missing", "task": task}
         except RuntimeError as exc:
-            return {"state": "error", "task": task, "error": str(exc)}
+            error_text = str(exc)
+            if _is_fatal_prefetch_error(error_text):
+                return {"state": "fatal", "task": task, "error": error_text}
+            return {"state": "error", "task": task, "error": error_text}
         except Exception as exc:
             return {"state": "error", "task": task, "error": str(exc)}
 
@@ -1061,6 +1083,11 @@ def prefetch_resolve_downloads(requests, base_path=None, cancel_event=None):
                     continue
                 state = str(result.get("state", "") or "")
                 if state == "cancelled":
+                    cancelled = True
+                    break
+                if state == "fatal":
+                    fatal_error = str(result.get("error", "") or "Planetka resolve download failed.")
+                    _append_missing_details(task, task_error=fatal_error)
                     cancelled = True
                     break
                 if state == "resolved":
@@ -1095,6 +1122,15 @@ def prefetch_resolve_downloads(requests, base_path=None, cancel_event=None):
                         if state == "cancelled":
                             cancelled = True
                             continue
+                        if state == "fatal":
+                            fatal_error = str(result.get("error", "") or "Planetka resolve download failed.")
+                            task = result.get("task")
+                            if isinstance(task, (tuple, list)) and len(task) == 4:
+                                _append_missing_details(tuple(task), task_error=fatal_error)
+                            cancelled = True
+                            for pending_future in pending:
+                                pending_future.cancel()
+                            break
                         if state == "resolved":
                             resolved_count += 1
                         else:
@@ -1104,6 +1140,8 @@ def prefetch_resolve_downloads(requests, base_path=None, cancel_event=None):
                             task = result.get("task")
                             if isinstance(task, (tuple, list)) and len(task) == 4:
                                 _append_missing_details(tuple(task), task_error=str(result.get("error", "") or ""))
+                    if cancelled:
+                        break
     finally:
         _resume_cache_prune()
 
@@ -1122,6 +1160,7 @@ def prefetch_resolve_downloads(requests, base_path=None, cancel_event=None):
         "error_count": int(error_count),
         "missing_details": list(missing_details),
         "cancelled": bool(cancelled),
+        "fatal_error": str(fatal_error or ""),
     }
 
 
