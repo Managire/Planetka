@@ -30,6 +30,7 @@ from .operators import (
     PLANETKA_OT_NavigationPreset,
     PLANETKA_OT_SaveLocation,
     PLANETKA_OT_SelectTextureSource,
+    PLANETKA_OT_SwitchToCycles,
     PLANETKA_OT_SunlightPreset,
     PLANETKA_OT_UseCurrentViewNavigation,
 )
@@ -105,6 +106,7 @@ classes = (
     PLANETKA_OT_AccountLogout,
     PLANETKA_OT_AccountContact,
     PLANETKA_OT_AccountUpgrade,
+    PLANETKA_OT_SwitchToCycles,
     PLANETKA_OT_AddEarth,
     PLANETKA_OT_SaveLocation,
     PLANETKA_OT_LoadSavedLocation,

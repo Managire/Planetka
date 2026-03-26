@@ -41,6 +41,7 @@ from .sanity_utils import _normalize_texture_source_path, invalidate_texture_sou
 from .r2_source import is_remote_source_configured, texture_file_exists
 from .state import (
     apply_renderer_engine_optimization,
+    apply_renderer_engine_optimization_for_all_preserve_current,
     _initialize_props_from_imported_planetka,
     _sync_idprops_from_props,
     delete_temp_meshes,
@@ -1627,6 +1628,42 @@ class PLANETKA_OT_AccountContact(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class PLANETKA_OT_SwitchToCycles(bpy.types.Operator):
+    bl_idname = "planetka.switch_to_cycles"
+    bl_label = "Switch to Cycles"
+    bl_description = (
+        "Switch renderer to Cycles and optimize render settings:\n"
+        "Volumes: Biased = On, Max Steps = 16\n"
+        "Subdivision Dicing Rate: Viewport = 2.00, Render = 1.25, Offscreen Scale = 8.00"
+    )
+
+    def execute(self, context):
+        scene = require_scene(self, context, logger=logger)
+        if scene is None:
+            return {'CANCELLED'}
+        try:
+            apply_renderer_engine_optimization(scene, "CYCLES")
+            props = getattr(scene, "planetka", None)
+            if props is not None:
+                props.render_engine_optimization = "CYCLES"
+        except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
+            return fail(
+                self,
+                f"Switch to Cycles failed: {exc}",
+                logger=logger,
+                exc=exc,
+                log_message="Planetka switch-to-cycles failed",
+            )
+        except (RuntimeError, TypeError, ValueError) as exc:
+            return fail(
+                self,
+                f"Switch to Cycles failed: {exc}",
+                logger=logger,
+            )
+        self.report({'INFO'}, "Planetka switched renderer to Cycles and optimized settings.")
+        return {'FINISHED'}
+
+
 class PLANETKA_OT_AddEarth(bpy.types.Operator):
     bl_idname = "planetka.add_earth"
     bl_label = "Create Earth"
@@ -1725,13 +1762,7 @@ class PLANETKA_OT_AddEarth(bpy.types.Operator):
         except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
             logger.debug("Planetka: failed updating default world background to black", exc_info=True)
 
-        render = getattr(scene, "render", None)
-        current_engine = str(getattr(render, "engine", "") or "").upper() if render else ""
-        if "CYCLES" not in current_engine:
-            apply_renderer_engine_optimization(scene, "CYCLES")
-            self.report({'INFO'}, "Planetka switched renderer to Cycles (EEVEE is currently unstable).")
-        else:
-            apply_renderer_engine_optimization(scene, "CYCLES")
+        apply_renderer_engine_optimization_for_all_preserve_current(scene)
 
         resolve_result = bpy.ops.planetka.load_textures(skip_render_compatibility=True)
         final_surface = get_earth_object() or new_obj

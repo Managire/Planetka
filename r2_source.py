@@ -818,7 +818,7 @@ def _r2_request(method, key, destination_path=None):
                     try:
                         sync_account_profile()
                     except Exception:
-                        pass
+                        logger.debug("Planetka: failed syncing account profile after request-limit response", exc_info=True)
                     raise RuntimeError(
                         "Planetka account does not currently have access to this remote data request."
                     )
@@ -833,7 +833,7 @@ def _r2_request(method, key, destination_path=None):
                     try:
                         sync_account_profile()
                     except Exception:
-                        pass
+                        logger.debug("Planetka: failed syncing account profile after access-denied response", exc_info=True)
                     raise RuntimeError(
                         "Planetka account does not currently have access to this remote data request."
                     )

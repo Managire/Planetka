@@ -32,6 +32,7 @@ from .state import (
     REFRESH_BUTTON_SCALE_X,
     REFRESH_BUTTON_SCALE_Y,
     get_resolve_runtime_status,
+    logger,
 )
 
 SHOW_INTERNAL_ANIMATION_UI = False
@@ -261,6 +262,10 @@ def _draw_new_earth(layout):
     row.enabled = (not has_earth) and connected
     row.operator("planetka.add_earth", text="Create Earth", icon="WORLD_DATA")
 
+    cycles_row = layout.row()
+    cycles_row.enabled = connected
+    cycles_row.operator("planetka.switch_to_cycles", text="Switch to Cycles (recommended)", icon="RENDER_STILL")
+
 
 def _draw_resolve(layout):
     layout.use_property_split = True
@@ -445,7 +450,7 @@ def _iter_surface_grading_nodes():
         material_name = str(EARTH_MATERIAL_NAME or material_name)
         group_name = str(SURFACE_GRADING_GROUP_NAME or group_name)
     except Exception:
-        pass
+        logger.debug("Planetka: failed loading surface grading identifiers", exc_info=True)
 
     material = bpy.data.materials.get(material_name)
     if material is None or not bool(getattr(material, "use_nodes", False)):
@@ -583,7 +588,7 @@ def _iter_atmosphere_nodes():
         object_name = str(VOLUMETRIC_ATMOSPHERE_OBJECT_NAME or object_name)
         group_name = str(VOLUMETRIC_ATMOSPHERE_GROUP_NAME or group_name)
     except Exception:
-        pass
+        logger.debug("Planetka: failed loading atmosphere identifiers", exc_info=True)
 
     atmosphere_obj = bpy.data.objects.get(object_name)
     if atmosphere_obj is None:
@@ -703,6 +708,7 @@ class PLANETKA_PT_NewEarthPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Pan
     bl_label = "New Earth"
     bl_idname = "PLANETKA_PT_new_earth_collapsed"
     bl_order = 2
+    bl_options = set()
 
     @classmethod
     def poll(cls, context):
