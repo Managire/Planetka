@@ -1,5 +1,6 @@
 import hashlib
 import os
+import re
 import sqlite3
 import tempfile
 import threading
@@ -24,6 +25,7 @@ _TOP_TERRAIN_COUNT = 5000
 _QUERY_CACHE = {}
 _QUERY_CACHE_DB_PATH = ""
 _QUERY_CACHE_LIMIT = 256
+_COUNTRY_HINT_RE = re.compile(r"^[A-Za-z]{2}$")
 
 _INDEX_LOCK = threading.Lock()
 _INDEX_THREAD = None
@@ -527,19 +529,47 @@ def get_cached_place_by_display(display_name):
     entry = _RECENT_BY_DISPLAY.get(key)
     if entry:
         return entry
-    return _RECENT_BY_DISPLAY_LOWER.get(key.lower())
+    key_lower = key.lower()
+    entry = _RECENT_BY_DISPLAY_LOWER.get(key_lower)
+    if entry:
+        return entry
+    normalized_key = _normalize_display_lookup_key(key)
+    if normalized_key and normalized_key.lower() != key_lower:
+        return _RECENT_BY_DISPLAY_LOWER.get(normalized_key.lower())
+    return None
 
 
 def _entry_from_row(row):
     name = str(row[1])
     admin1_code = str(row[2])
     country_code = str(row[3])
+    population = _parse_int(row[6], default=0) if len(row) > 6 else 0
     return {
         "geonameid": str(row[0]),
+        "name": str(name),
+        "admin1_code": str(admin1_code),
+        "country_code": str(country_code),
+        "population": int(population),
         "display_name": _display_name(name, admin1_code, country_code),
         "latitude": float(row[4]),
         "longitude": float(row[5]),
     }
+
+
+def _result_label_for_entry(entry, duplicate_display_names):
+    base_label = str(entry.get("display_name", "") or "")
+    if duplicate_display_names.get(base_label, 0) <= 1:
+        return base_label
+
+    name = str(entry.get("name", "") or "").strip()
+    admin1_code = str(entry.get("admin1_code", "") or "").strip()
+    country_code = str(entry.get("country_code", "") or "").strip()
+
+    if admin1_code and country_code:
+        return f"{name}, {admin1_code}, {country_code}"
+    if admin1_code:
+        return f"{name}, {admin1_code}"
+    return base_label
 
 
 def _close_read_connection():
@@ -597,11 +627,69 @@ def _normalized_result_limit(max_results, default=20):
     return max(1, min(200, value))
 
 
+def _split_query_country_hint(query_text):
+    raw = str(query_text or "").strip()
+    if not raw:
+        return "", ""
+
+    if "," in raw:
+        left, right = raw.rsplit(",", 1)
+        country_hint = str(right or "").strip().upper()
+        place_hint = str(left or "").strip()
+        if _COUNTRY_HINT_RE.fullmatch(country_hint) and place_hint:
+            return place_hint, country_hint
+        return raw, ""
+
+    parts = raw.rsplit(" ", 1)
+    if len(parts) == 2:
+        country_hint = str(parts[1] or "").strip().upper()
+        place_hint = str(parts[0] or "").strip()
+        if _COUNTRY_HINT_RE.fullmatch(country_hint) and place_hint:
+            return place_hint, country_hint
+
+    return raw, ""
+
+
+def _normalize_display_lookup_key(display_name):
+    key = str(display_name or "").strip()
+    if not key:
+        return ""
+    place_hint, country_hint = _split_query_country_hint(key)
+    if country_hint:
+        return f"{place_hint}, {country_hint}"
+    return key
+
+
+def _split_display_lookup_hints(display_name):
+    raw = str(display_name or "").strip()
+    if not raw:
+        return "", "", ""
+
+    parts = [str(part or "").strip() for part in raw.split(",")]
+    parts = [part for part in parts if part]
+    if len(parts) >= 3:
+        country_hint = str(parts[-1] or "").strip().upper()
+        if _COUNTRY_HINT_RE.fullmatch(country_hint):
+            name_hint = str(parts[0] or "").strip()
+            admin1_hint = str(parts[1] or "").strip()
+            return name_hint, country_hint, admin1_hint
+
+    name_hint, country_hint = _split_query_country_hint(raw)
+    admin1_hint = ""
+    if "," in str(name_hint or ""):
+        left, right = str(name_hint).split(",", 1)
+        name_hint = str(left or "").strip()
+        admin1_hint = str(right or "").strip()
+    return str(name_hint or "").strip(), str(country_hint or "").strip(), admin1_hint
+
+
 def search_places(query_text, max_results=20):
     if not load_geonames_database():
         return []
 
-    query = str(query_text or "").strip().lower()
+    raw_query = str(query_text or "").strip()
+    query_name, country_hint = _split_query_country_hint(raw_query)
+    query = str(query_name or "").strip().lower()
     if len(query) < _MIN_QUERY_LENGTH:
         return []
 
@@ -614,7 +702,7 @@ def search_places(query_text, max_results=20):
         _clear_query_cache(db_path)
 
     limit = _normalized_result_limit(max_results)
-    cache_key = (query, limit)
+    cache_key = (query, str(country_hint or ""), limit)
     results = []
     cached = _QUERY_CACHE.get(cache_key)
     if cached is not None:
@@ -625,23 +713,53 @@ def search_places(query_text, max_results=20):
         if connection is None:
             return []
         cursor = connection.cursor()
-        cursor.execute(
-            """
-            SELECT geonameid, name, admin1_code, country_code, latitude, longitude
-            FROM places
-            WHERE search_lower >= ? AND search_lower < ?
-            ORDER BY population DESC
-            LIMIT ?
-            """,
-            (lower_bound, upper_bound, limit),
-        )
+        if country_hint:
+            fetch_limit = max(100, min(500, int(limit * 10)))
+            cursor.execute(
+                """
+                SELECT geonameid, name, admin1_code, country_code, latitude, longitude, population
+                FROM places
+                WHERE search_lower >= ? AND search_lower < ? AND country_code = ?
+                ORDER BY
+                    CASE WHEN lower(name) = ? THEN 0 ELSE 1 END,
+                    population DESC
+                LIMIT ?
+                """,
+                (lower_bound, upper_bound, country_hint, query, fetch_limit),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT geonameid, name, admin1_code, country_code, latitude, longitude, population
+                FROM places
+                WHERE search_lower >= ? AND search_lower < ?
+                ORDER BY
+                    CASE WHEN lower(name) = ? THEN 0 ELSE 1 END,
+                    population DESC
+                LIMIT ?
+                """,
+                (lower_bound, upper_bound, query, limit),
+            )
         rows = cursor.fetchall()
     except (sqlite3.Error, OSError, PLANETKA_RECOVERABLE_EXCEPTIONS):
         _close_read_connection()
         return []
 
-    for row in rows:
-        entry = _entry_from_row(row)
+    entries = [_entry_from_row(row) for row in rows]
+    duplicate_display_names = {}
+    for entry in entries:
+        label = str(entry.get("display_name", "") or "")
+        duplicate_display_names[label] = int(duplicate_display_names.get(label, 0)) + 1
+
+    used_labels = set()
+    for entry in entries:
+        label = _result_label_for_entry(entry, duplicate_display_names)
+        if label in used_labels:
+            geonameid = str(entry.get("geonameid", "") or "").strip()
+            if geonameid:
+                label = f"{label} ({geonameid})"
+        used_labels.add(label)
+        entry["display_name"] = label
         _remember_entry(entry)
         results.append((entry["display_name"], entry["geonameid"]))
     _QUERY_CACHE[cache_key] = list(results)
@@ -656,16 +774,13 @@ def search_cities(query_text, max_results=20):
 
 
 def get_place_by_display(display_name):
-    key = str(display_name or "").strip()
+    key = _normalize_display_lookup_key(display_name)
     if not key:
         return None
 
     cached = get_cached_place_by_display(key)
     if cached:
         return cached
-
-    if "," not in key:
-        return None
 
     if not load_geonames_database():
         return None
@@ -675,7 +790,9 @@ def get_place_by_display(display_name):
     if not db_path:
         return None
 
-    name_hint = str(key.split(",", 1)[0]).strip().lower()
+    name_hint_raw, country_hint, admin1_hint_raw = _split_display_lookup_hints(key)
+    name_hint = str(name_hint_raw or "").strip().lower()
+    admin1_hint = str(admin1_hint_raw or "").strip().lower()
     if not name_hint:
         return None
     lower_bound, upper_bound = _prefix_bounds(name_hint)
@@ -685,27 +802,68 @@ def get_place_by_display(display_name):
         if connection is None:
             return None
         cursor = connection.cursor()
-        cursor.execute(
-            """
-            SELECT geonameid, name, admin1_code, country_code, latitude, longitude
-            FROM places
-            WHERE search_lower >= ? AND search_lower < ?
-            ORDER BY population DESC
-            LIMIT 200
-            """,
-            (lower_bound, upper_bound),
-        )
+        if country_hint:
+            cursor.execute(
+                """
+                SELECT geonameid, name, admin1_code, country_code, latitude, longitude, population
+                FROM places
+                WHERE search_lower >= ? AND search_lower < ? AND country_code = ?
+                ORDER BY
+                    CASE WHEN lower(name) = ? THEN 0 ELSE 1 END,
+                    population DESC
+                LIMIT 400
+                """,
+                (lower_bound, upper_bound, country_hint, name_hint),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT geonameid, name, admin1_code, country_code, latitude, longitude, population
+                FROM places
+                WHERE search_lower >= ? AND search_lower < ?
+                ORDER BY
+                    CASE WHEN lower(name) = ? THEN 0 ELSE 1 END,
+                    population DESC
+                LIMIT 200
+                """,
+                (lower_bound, upper_bound, name_hint),
+            )
         rows = cursor.fetchall()
     except (sqlite3.Error, OSError, PLANETKA_RECOVERABLE_EXCEPTIONS):
         _close_read_connection()
         return None
 
     key_lower = key.lower()
+    best_candidate = None
+    best_rank = None
+    best_admin_candidate = None
+    best_admin_rank = None
     for row in rows:
         entry = _entry_from_row(row)
-        if str(entry["display_name"]).lower() == key_lower:
+        entry_display_lower = str(entry["display_name"]).lower()
+        if entry_display_lower == key_lower:
             _remember_entry(entry)
             return entry
+        entry_name_lower = str(entry.get("name", "")).strip().lower()
+        if country_hint and str(entry.get("country_code", "")).strip().upper() != country_hint:
+            continue
+        if entry_name_lower != name_hint:
+            continue
+        rank = (0, -int(entry.get("population", 0) or 0))
+        entry_admin1 = str(entry.get("admin1_code", "") or "").strip().lower()
+        if admin1_hint and entry_admin1 == admin1_hint:
+            if best_admin_rank is None or rank < best_admin_rank:
+                best_admin_rank = rank
+                best_admin_candidate = entry
+        if best_rank is None or rank < best_rank:
+            best_rank = rank
+            best_candidate = entry
+    if best_admin_candidate:
+        _remember_entry(best_admin_candidate)
+        return best_admin_candidate
+    if best_candidate:
+        _remember_entry(best_candidate)
+        return best_candidate
     return None
 
 

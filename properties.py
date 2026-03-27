@@ -7,7 +7,7 @@ from mathutils import Vector
 
 from .auth import get_commercial_use_allowed, is_pro_account
 from .extension_prefs import get_prefs, read_saved_locations
-from .geonames_db import get_cached_place_by_display, search_places
+from .geonames_db import get_cached_place_by_display, get_place_by_display, search_places
 from .state import (
     resume_navigation_shot_updates,
     suspend_navigation_shot_updates,
@@ -212,6 +212,8 @@ def _set_nav_city_search(self, value):
         return
 
     place = get_cached_place_by_display(text)
+    if not place:
+        place = get_place_by_display(text)
     if not place:
         self["nav_city_selected_name"] = ""
         return
