@@ -3,6 +3,7 @@ import logging
 import os
 import threading
 import time
+import uuid
 
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from .r2_source import (
@@ -11,6 +12,7 @@ from .r2_source import (
     get_remote_cache_folder,
     plan_resolve_downloads,
     prefetch_resolve_downloads,
+    resolve_request_context,
     resolve_texture_file,
 )
 
@@ -168,7 +170,7 @@ def build_resolve_download_requests_for_visible_tiles(visible_tiles, base_path):
     }
 
 
-def prefetch_resolve_plan(plan_payload, base_path, cancel_event=None, capture=False):
+def prefetch_resolve_plan(plan_payload, base_path, cancel_event=None, capture=False, resolve_id=""):
     resolved_tiles = list(plan_payload.get("resolved_tiles", ())) if isinstance(plan_payload, dict) else []
     ocean_tiles = list(plan_payload.get("ocean_tiles", ())) if isinstance(plan_payload, dict) else []
     requests = list(plan_payload.get("requests", ())) if isinstance(plan_payload, dict) else []
@@ -179,25 +181,29 @@ def prefetch_resolve_plan(plan_payload, base_path, cancel_event=None, capture=Fa
     cancelled = False
     prefetch_failed = False
     prefetch_error_text = ""
+    normalized_resolve_id = str(resolve_id or "").strip()[:128]
+    if not normalized_resolve_id:
+        normalized_resolve_id = str(uuid.uuid4())
 
     if capture:
         begin_resolve_download_capture()
     try:
-        try:
-            plan_resolve_downloads(requests)
-            prefetch_result = prefetch_resolve_downloads(
-                requests,
-                base_path=str(base_path or ""),
-                cancel_event=cancel_event,
-            )
-        except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
-            prefetch_failed = True
-            prefetch_error_text = str(exc)
-            logger.debug("Planetka: resolve prefetch failed", exc_info=True)
-        except (RuntimeError, TypeError, ValueError) as exc:
-            prefetch_failed = True
-            prefetch_error_text = str(exc)
-            logger.debug("Planetka: resolve prefetch failed", exc_info=True)
+        with resolve_request_context(normalized_resolve_id):
+            try:
+                plan_resolve_downloads(requests)
+                prefetch_result = prefetch_resolve_downloads(
+                    requests,
+                    base_path=str(base_path or ""),
+                    cancel_event=cancel_event,
+                )
+            except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
+                prefetch_failed = True
+                prefetch_error_text = str(exc)
+                logger.debug("Planetka: resolve prefetch failed", exc_info=True)
+            except (RuntimeError, TypeError, ValueError) as exc:
+                prefetch_failed = True
+                prefetch_error_text = str(exc)
+                logger.debug("Planetka: resolve prefetch failed", exc_info=True)
     finally:
         if capture:
             capture_result = end_resolve_download_capture() or {}
@@ -239,6 +245,7 @@ def prefetch_resolve_plan(plan_payload, base_path, cancel_event=None, capture=Fa
     prefetch_result["cancelled"] = bool(cancelled)
 
     return {
+        "resolve_id": normalized_resolve_id,
         "resolved_tiles": list(resolved_tiles),
         "ocean_tiles": list(ocean_tiles),
         "requests": list(requests),
@@ -249,13 +256,14 @@ def prefetch_resolve_plan(plan_payload, base_path, cancel_event=None, capture=Fa
     }
 
 
-def prepare_resolve_streaming_for_visible_tiles(visible_tiles, base_path, cancel_event=None, capture=False):
+def prepare_resolve_streaming_for_visible_tiles(visible_tiles, base_path, cancel_event=None, capture=False, resolve_id=""):
     plan_payload = build_resolve_download_requests_for_visible_tiles(visible_tiles, base_path)
     prefetch_payload = prefetch_resolve_plan(
         plan_payload,
         base_path=base_path,
         cancel_event=cancel_event,
         capture=capture,
+        resolve_id=resolve_id,
     )
     result = dict(plan_payload)
     result.update(prefetch_payload)

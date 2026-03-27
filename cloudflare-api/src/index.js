@@ -33,6 +33,9 @@ const DEFAULT_ALERT_DEVICE_POLL_429_THRESHOLD = 30;
 const DEFAULT_ALERT_DEVICE_POLL_429_WINDOW_SECONDS = 60;
 const DEFAULT_ALERT_AUTH_ERROR_THRESHOLD = 5;
 const DEFAULT_ALERT_AUTH_ERROR_WINDOW_SECONDS = 300;
+const DEFAULT_ANALYTICS_WINDOW_MINUTES = 60;
+const MAX_ANALYTICS_WINDOW_MINUTES = 10080;
+const DEFAULT_ANALYTICS_ADMIN_EMAILS = "info@planetka.io,tom.griger@gmail.com";
 const DEFAULT_TILE_BROWSER_MAX_AGE_SECONDS = 86400;
 const DEFAULT_TILE_EDGE_MAX_AGE_SECONDS = 604800;
 const MAX_TILE_MAX_AGE_SECONDS = 31536000;
@@ -43,6 +46,7 @@ let userConsentColumnsReady = false;
 let magicLinksTokenIndexReady = false;
 let stripeWebhookEventsTableReady = false;
 let rateLimitsTableReady = false;
+let tileRequestEventsTableReady = false;
 let rateLimitsLastPruneAt = 0;
 
 function corsHeaders(env) {
@@ -362,6 +366,11 @@ async function dbRun(db, sql, bindings = []) {
   return db.prepare(sql).bind(...bindings).run();
 }
 
+async function dbAll(db, sql, bindings = []) {
+  const result = await db.prepare(sql).bind(...bindings).all();
+  return Array.isArray(result && result.results) ? result.results : [];
+}
+
 function dbMetaChanges(result) {
   return clampNonNegativeInt(result && result.meta && result.meta.changes);
 }
@@ -431,6 +440,33 @@ function requestClientIp(request) {
   return "unknown";
 }
 
+function requestCountry(request) {
+  const country = String(request.headers.get("CF-IPCountry") || "").trim().toUpperCase();
+  if (!country || country === "XX" || country === "T1") {
+    return "UNKNOWN";
+  }
+  return country;
+}
+
+function parseAdminEmailSet(env) {
+  const raw = String(env.ANALYTICS_ADMIN_EMAILS || DEFAULT_ANALYTICS_ADMIN_EMAILS).trim();
+  const set = new Set();
+  for (const part of raw.split(",")) {
+    const email = normalizeEmail(part);
+    if (email && email.includes("@")) {
+      set.add(email);
+    }
+  }
+  return set;
+}
+
+function isAnalyticsAdmin(user, env) {
+  if (!user || !user.email) {
+    return false;
+  }
+  return parseAdminEmailSet(env).has(normalizeEmail(user.email));
+}
+
 async function ensureRateLimitsTable(db) {
   if (rateLimitsTableReady) {
     return;
@@ -451,6 +487,246 @@ async function ensureRateLimitsTable(db) {
     `CREATE INDEX IF NOT EXISTS idx_rate_limits_updated_at ON rate_limits(updated_at DESC)`,
   );
   rateLimitsTableReady = true;
+}
+
+async function ensureTileRequestEventsTable(db) {
+  if (tileRequestEventsTableReady) {
+    return;
+  }
+  await dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS tile_request_events (
+        id TEXT PRIMARY KEY,
+        created_at TEXT NOT NULL,
+        created_at_unix INTEGER NOT NULL,
+        user_id TEXT NOT NULL,
+        user_email TEXT NOT NULL,
+        resolve_id TEXT,
+        method TEXT NOT NULL,
+        path TEXT NOT NULL,
+        folder TEXT,
+        file_name TEXT,
+        tile_key TEXT,
+        status_code INTEGER NOT NULL,
+        bytes_served INTEGER NOT NULL DEFAULT 0,
+        cache_status TEXT,
+        duration_ms INTEGER NOT NULL DEFAULT 0,
+        cf_ray TEXT,
+        cf_country TEXT,
+        client_ip TEXT,
+        error_code TEXT
+      )
+    `,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_tile_request_events_created_unix ON tile_request_events(created_at_unix DESC)`,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_tile_request_events_user_created_unix ON tile_request_events(user_id, created_at_unix DESC)`,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_tile_request_events_resolve_id ON tile_request_events(resolve_id)`,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_tile_request_events_status_code ON tile_request_events(status_code)`,
+  );
+  tileRequestEventsTableReady = true;
+}
+
+async function recordTileRequestEvent(db, payload) {
+  try {
+    await ensureTileRequestEventsTable(db);
+    const createdAt = String(payload.created_at || nowIso());
+    const createdAtUnix = parseNonNegativeInteger(payload.created_at_unix, Math.floor(Date.now() / 1000));
+    await dbRun(
+      db,
+      `
+        INSERT INTO tile_request_events (
+          id,
+          created_at,
+          created_at_unix,
+          user_id,
+          user_email,
+          resolve_id,
+          method,
+          path,
+          folder,
+          file_name,
+          tile_key,
+          status_code,
+          bytes_served,
+          cache_status,
+          duration_ms,
+          cf_ray,
+          cf_country,
+          client_ip,
+          error_code
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        crypto.randomUUID(),
+        createdAt,
+        createdAtUnix,
+        String(payload.user_id || ""),
+        normalizeEmail(payload.user_email || ""),
+        String(payload.resolve_id || ""),
+        String(payload.method || "GET").toUpperCase(),
+        String(payload.path || ""),
+        String(payload.folder || ""),
+        String(payload.file_name || ""),
+        String(payload.tile_key || ""),
+        parseNonNegativeInteger(payload.status_code, 0),
+        clampNonNegativeInt(payload.bytes_served),
+        String(payload.cache_status || ""),
+        clampNonNegativeInt(payload.duration_ms),
+        String(payload.cf_ray || ""),
+        String(payload.cf_country || ""),
+        String(payload.client_ip || ""),
+        String(payload.error_code || ""),
+      ],
+    );
+  } catch (error) {
+    console.debug(
+      "worker.analytics.tile_request_write_failed",
+      JSON.stringify({
+        error: String(error && error.message || "tile_request_write_failed"),
+      }),
+    );
+  }
+}
+
+function sanitizeAnalyticsMinutes(value, fallback = DEFAULT_ANALYTICS_WINDOW_MINUTES) {
+  const parsed = parseNonNegativeInteger(value, fallback);
+  if (parsed <= 0) {
+    return fallback;
+  }
+  return Math.min(MAX_ANALYTICS_WINDOW_MINUTES, parsed);
+}
+
+async function collectAnalyticsSnapshot(db, minutes) {
+  await ensureTileRequestEventsTable(db);
+  const nowUnix = Math.floor(Date.now() / 1000);
+  const windowMinutes = sanitizeAnalyticsMinutes(minutes, DEFAULT_ANALYTICS_WINDOW_MINUTES);
+  const windowStartUnix = Math.max(0, nowUnix - (windowMinutes * 60));
+
+  const summary = await dbGet(
+    db,
+    `
+      SELECT
+        COUNT(*) AS request_count,
+        COALESCE(SUM(bytes_served), 0) AS bytes_served,
+        COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0) AS error_count,
+        COALESCE(SUM(CASE WHEN UPPER(COALESCE(cache_status, '')) = 'HIT' THEN 1 ELSE 0 END), 0) AS cache_hit_count,
+        COALESCE(SUM(CASE WHEN resolve_id IS NOT NULL AND resolve_id != '' THEN 1 ELSE 0 END), 0) AS tagged_request_count,
+        COALESCE(COUNT(DISTINCT CASE WHEN resolve_id IS NOT NULL AND resolve_id != '' THEN resolve_id END), 0) AS tagged_resolve_count
+      FROM tile_request_events
+      WHERE created_at_unix >= ?
+    `,
+    [windowStartUnix],
+  );
+
+  const active5m = await dbGet(
+    db,
+    `SELECT COUNT(DISTINCT user_id) AS active_users FROM tile_request_events WHERE created_at_unix >= ?`,
+    [Math.max(0, nowUnix - 300)],
+  );
+  const active15m = await dbGet(
+    db,
+    `SELECT COUNT(DISTINCT user_id) AS active_users FROM tile_request_events WHERE created_at_unix >= ?`,
+    [Math.max(0, nowUnix - 900)],
+  );
+  const active60m = await dbGet(
+    db,
+    `SELECT COUNT(DISTINCT user_id) AS active_users FROM tile_request_events WHERE created_at_unix >= ?`,
+    [Math.max(0, nowUnix - 3600)],
+  );
+  const activeNow = await dbGet(
+    db,
+    `SELECT COUNT(*) AS active_download_rows FROM tile_request_events WHERE created_at_unix >= ?`,
+    [Math.max(0, nowUnix - 10)],
+  );
+
+  const topUsers = await dbAll(
+    db,
+    `
+      SELECT
+        user_id,
+        user_email,
+        COUNT(*) AS request_count,
+        COALESCE(SUM(bytes_served), 0) AS bytes_served,
+        COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0) AS error_count,
+        MAX(created_at) AS last_seen_at
+      FROM tile_request_events
+      WHERE created_at_unix >= ?
+      GROUP BY user_id, user_email
+      ORDER BY request_count DESC
+      LIMIT 20
+    `,
+    [windowStartUnix],
+  );
+
+  const topTiles = await dbAll(
+    db,
+    `
+      SELECT
+        tile_key,
+        COUNT(*) AS request_count,
+        COALESCE(SUM(bytes_served), 0) AS bytes_served
+      FROM tile_request_events
+      WHERE created_at_unix >= ? AND tile_key IS NOT NULL AND tile_key != ''
+      GROUP BY tile_key
+      ORDER BY request_count DESC
+      LIMIT 20
+    `,
+    [windowStartUnix],
+  );
+
+  const recentFailures = await dbAll(
+    db,
+    `
+      SELECT
+        created_at,
+        user_email,
+        tile_key,
+        status_code,
+        error_code,
+        cache_status,
+        duration_ms
+      FROM tile_request_events
+      WHERE status_code >= 400
+      ORDER BY created_at_unix DESC
+      LIMIT 50
+    `,
+    [],
+  );
+
+  return {
+    generated_at: nowIso(),
+    window_minutes: windowMinutes,
+    window_start_unix: windowStartUnix,
+    summary: {
+      request_count: clampNonNegativeInt(summary && summary.request_count),
+      bytes_served: clampNonNegativeInt(summary && summary.bytes_served),
+      error_count: clampNonNegativeInt(summary && summary.error_count),
+      cache_hit_count: clampNonNegativeInt(summary && summary.cache_hit_count),
+      tagged_request_count: clampNonNegativeInt(summary && summary.tagged_request_count),
+      tagged_resolve_count: clampNonNegativeInt(summary && summary.tagged_resolve_count),
+    },
+    active: {
+      users_5m: clampNonNegativeInt(active5m && active5m.active_users),
+      users_15m: clampNonNegativeInt(active15m && active15m.active_users),
+      users_60m: clampNonNegativeInt(active60m && active60m.active_users),
+      tile_events_10s: clampNonNegativeInt(activeNow && activeNow.active_download_rows),
+    },
+    top_users: Array.isArray(topUsers) ? topUsers : [],
+    top_tiles: Array.isArray(topTiles) ? topTiles : [],
+    recent_failures: Array.isArray(recentFailures) ? recentFailures : [],
+  };
 }
 
 async function maybePruneRateLimits(db, nowSeconds) {
@@ -2538,143 +2814,384 @@ async function handleTileRequest(request, env, path, ctx) {
   user = await enforceUserPlanPolicy(db, user, null);
   const planCode = resolvePlanCode(user, null);
 
-  const parts = path.replace(/^\/tiles\//, "").split("/");
-  if (parts.length !== 2 || !parts[0] || !parts[1]) {
-    return json({ ok: false, error: "invalid_tile_path" }, 400, env);
-  }
+  const requestStartedAtMs = Date.now();
+  const clientIp = requestClientIp(request);
+  const cfCountry = requestCountry(request);
+  const cfRay = String(request.headers.get("CF-Ray") || "").trim();
+  const resolveId = String(request.headers.get("X-Planetka-Resolve-Id") || "").trim().slice(0, 128);
+  let eventStatusCode = 0;
+  let eventBytesServed = 0;
+  let eventCacheStatus = "";
+  let eventErrorCode = "";
+  let eventFolder = "";
+  let eventFileName = "";
+  let eventTileKey = "";
 
-  const folder = decodeURIComponent(parts[0]);
-  const fileName = decodeURIComponent(parts[1]);
-  if (
-    folder.includes("/") ||
-    fileName.includes("/") ||
-    folder.includes("..") ||
-    fileName.includes("..")
-  ) {
-    return json({ ok: false, error: "invalid_tile_path" }, 400, env);
-  }
-
-  const tileQuality = parseTileQualityFromFileName(fileName);
-  const isFreePlan = planCode === PLAN_CODE_PLANETKA;
-  const isFullQualityS2Tile = Boolean(
-    tileQuality
-      && tileQuality.textureType === "S2"
-      && Number.isFinite(tileQuality.z)
-      && Number.isFinite(tileQuality.d)
-      && tileQuality.z === tileQuality.d,
-  );
-  if (isFreePlan && isFullQualityS2Tile) {
-    return json(
-      {
-        ok: false,
-        error: "quality_not_allowed",
-        message: "Requested texture quality is not available for this account.",
-      },
-      403,
-      env,
-    );
-  }
-
-  const prefix = String(env.R2_PREFIX || "").trim().replace(/^\/+|\/+$/g, "");
-  const key = prefix ? `${prefix}/${folder}/${fileName}` : `${folder}/${fileName}`;
-
-  if (request.method === "HEAD") {
-    const objectHead = await env.PLANETKA_DATA.head(key);
-    if (!objectHead) {
-      return new Response(null, { status: 404, headers: corsHeaders(env) });
-    }
-    return new Response(null, {
-      status: 200,
-      headers: {
-        ...corsHeaders(env),
-        "Content-Length": String(objectHead.size || 0),
-        "Content-Type": guessContentType(fileName),
-      },
-    });
-  }
-
-  const cache = caches.default;
-  const cacheKeyRequest = buildTileEdgeCacheKey(request, key);
-  const cached = await cache.match(cacheKeyRequest);
-  let objectSize = 0;
-  let contentType = guessContentType(fileName);
-  let etag = "";
-  let responseBody = null;
-  let cacheStatus = "MISS";
-
-  if (cached) {
-    cacheStatus = "HIT";
-    objectSize = clampNonNegativeInt(cached.headers.get("Content-Length"));
-    contentType = String(cached.headers.get("Content-Type") || contentType);
-    etag = String(cached.headers.get("ETag") || "");
-    responseBody = cached.body;
-  } else {
-    const object = await env.PLANETKA_DATA.get(key);
-    if (!object) {
-      return new Response("Not Found", { status: 404, headers: corsHeaders(env) });
-    }
-    objectSize = clampNonNegativeInt(object.size);
-    etag = String(object.httpEtag || "");
-    const cacheableHeaders = buildTileResponseHeaders(env, fileName, objectSize, etag);
-    const cacheableResponse = new Response(object.body, { status: 200, headers: cacheableHeaders });
-    if (ctx && typeof ctx.waitUntil === "function") {
-      ctx.waitUntil(cache.put(cacheKeyRequest, cacheableResponse.clone()));
-    } else {
-      await cache.put(cacheKeyRequest, cacheableResponse.clone());
-    }
-    responseBody = cacheableResponse.body;
-  }
-
-  const allowanceState = await buildAllowanceState(db, user, null, env);
-  if (allowanceState.dataAllowance.total_remaining_bytes < objectSize) {
-    return json(
-      {
-        ok: false,
-        error: "allowance_exhausted",
-        message: "Data allowance is exhausted. Contact Planetka for more data.",
-        ...serializeAccountState(allowanceState),
-      },
-      402,
-      env,
-    );
-  }
-
-  let updatedAllowance;
   try {
-    updatedAllowance = await consumeAllowanceBytes(db, user, null, env, objectSize);
-  } catch (error) {
-    if (String(error && error.message || "") === "allowance_exhausted") {
+    const parts = path.replace(/^\/tiles\//, "").split("/");
+    if (parts.length !== 2 || !parts[0] || !parts[1]) {
+      eventStatusCode = 400;
+      eventErrorCode = "invalid_tile_path";
+      return json({ ok: false, error: "invalid_tile_path" }, 400, env);
+    }
+
+    const folder = decodeURIComponent(parts[0]);
+    const fileName = decodeURIComponent(parts[1]);
+    eventFolder = folder;
+    eventFileName = fileName;
+    if (
+      folder.includes("/") ||
+      fileName.includes("/") ||
+      folder.includes("..") ||
+      fileName.includes("..")
+    ) {
+      eventStatusCode = 400;
+      eventErrorCode = "invalid_tile_path";
+      return json({ ok: false, error: "invalid_tile_path" }, 400, env);
+    }
+
+    const tileQuality = parseTileQualityFromFileName(fileName);
+    const isFreePlan = planCode === PLAN_CODE_PLANETKA;
+    const isFullQualityS2Tile = Boolean(
+      tileQuality
+        && tileQuality.textureType === "S2"
+        && Number.isFinite(tileQuality.z)
+        && Number.isFinite(tileQuality.d)
+        && tileQuality.z === tileQuality.d,
+    );
+    if (isFreePlan && isFullQualityS2Tile) {
+      eventStatusCode = 403;
+      eventErrorCode = "quality_not_allowed";
+      return json(
+        {
+          ok: false,
+          error: "quality_not_allowed",
+          message: "Requested texture quality is not available for this account.",
+        },
+        403,
+        env,
+      );
+    }
+
+    const prefix = String(env.R2_PREFIX || "").trim().replace(/^\/+|\/+$/g, "");
+    const key = prefix ? `${prefix}/${folder}/${fileName}` : `${folder}/${fileName}`;
+    eventTileKey = key;
+
+    if (request.method === "HEAD") {
+      const objectHead = await env.PLANETKA_DATA.head(key);
+      if (!objectHead) {
+        eventStatusCode = 404;
+        eventErrorCode = "tile_not_found";
+        return new Response(null, { status: 404, headers: corsHeaders(env) });
+      }
+      eventStatusCode = 200;
+      eventBytesServed = clampNonNegativeInt(objectHead.size);
+      return new Response(null, {
+        status: 200,
+        headers: {
+          ...corsHeaders(env),
+          "Content-Length": String(objectHead.size || 0),
+          "Content-Type": guessContentType(fileName),
+        },
+      });
+    }
+
+    const cache = caches.default;
+    const cacheKeyRequest = buildTileEdgeCacheKey(request, key);
+    const cached = await cache.match(cacheKeyRequest);
+    let objectSize = 0;
+    let contentType = guessContentType(fileName);
+    let etag = "";
+    let responseBody = null;
+    let cacheStatus = "MISS";
+
+    if (cached) {
+      cacheStatus = "HIT";
+      objectSize = clampNonNegativeInt(cached.headers.get("Content-Length"));
+      contentType = String(cached.headers.get("Content-Type") || contentType);
+      etag = String(cached.headers.get("ETag") || "");
+      responseBody = cached.body;
+    } else {
+      const object = await env.PLANETKA_DATA.get(key);
+      if (!object) {
+        eventStatusCode = 404;
+        eventErrorCode = "tile_not_found";
+        return new Response("Not Found", { status: 404, headers: corsHeaders(env) });
+      }
+      objectSize = clampNonNegativeInt(object.size);
+      etag = String(object.httpEtag || "");
+      const cacheableHeaders = buildTileResponseHeaders(env, fileName, objectSize, etag);
+      const cacheableResponse = new Response(object.body, { status: 200, headers: cacheableHeaders });
+      if (ctx && typeof ctx.waitUntil === "function") {
+        ctx.waitUntil(cache.put(cacheKeyRequest, cacheableResponse.clone()));
+      } else {
+        await cache.put(cacheKeyRequest, cacheableResponse.clone());
+      }
+      responseBody = cacheableResponse.body;
+    }
+
+    const allowanceState = await buildAllowanceState(db, user, null, env);
+    if (allowanceState.dataAllowance.total_remaining_bytes < objectSize) {
+      eventStatusCode = 402;
+      eventErrorCode = "allowance_exhausted";
       return json(
         {
           ok: false,
           error: "allowance_exhausted",
           message: "Data allowance is exhausted. Contact Planetka for more data.",
-          ...serializeAccountState(await buildAllowanceState(db, user, null, env)),
+          ...serializeAccountState(allowanceState),
         },
         402,
         env,
       );
     }
-    throw error;
-  }
 
-  const responseHeaders = new Headers({
-    ...corsHeaders(env),
-    "Content-Type": contentType,
-    "Content-Length": String(objectSize),
-    "Cache-Control": resolveTileCacheControl(env),
-    "X-Planetka-Remaining-Bytes": String(updatedAllowance.dataAllowance.total_remaining_bytes),
-    "X-Planetka-Warning-State": String(updatedAllowance.dataAllowance.warning_state || "ok"),
-    "X-Planetka-Cache": cacheStatus,
-  });
-  if (etag) {
-    responseHeaders.set("ETag", etag);
-  }
+    let updatedAllowance;
+    try {
+      updatedAllowance = await consumeAllowanceBytes(db, user, null, env, objectSize);
+    } catch (error) {
+      if (String(error && error.message || "") === "allowance_exhausted") {
+        eventStatusCode = 402;
+        eventErrorCode = "allowance_exhausted";
+        return json(
+          {
+            ok: false,
+            error: "allowance_exhausted",
+            message: "Data allowance is exhausted. Contact Planetka for more data.",
+            ...serializeAccountState(await buildAllowanceState(db, user, null, env)),
+          },
+          402,
+          env,
+        );
+      }
+      throw error;
+    }
 
-  return new Response(responseBody, {
-    status: 200,
-    headers: responseHeaders,
-  });
+    const responseHeaders = new Headers({
+      ...corsHeaders(env),
+      "Content-Type": contentType,
+      "Content-Length": String(objectSize),
+      "Cache-Control": resolveTileCacheControl(env),
+      "X-Planetka-Remaining-Bytes": String(updatedAllowance.dataAllowance.total_remaining_bytes),
+      "X-Planetka-Warning-State": String(updatedAllowance.dataAllowance.warning_state || "ok"),
+      "X-Planetka-Cache": cacheStatus,
+    });
+    if (etag) {
+      responseHeaders.set("ETag", etag);
+    }
+
+    eventStatusCode = 200;
+    eventBytesServed = objectSize;
+    eventCacheStatus = cacheStatus;
+    return new Response(responseBody, {
+      status: 200,
+      headers: responseHeaders,
+    });
+  } finally {
+    const durationMs = Math.max(0, Date.now() - requestStartedAtMs);
+    const statusCode = eventStatusCode > 0 ? eventStatusCode : 500;
+    const errorCode = String(eventErrorCode || (statusCode >= 400 ? "internal_error" : ""));
+    await recordTileRequestEvent(db, {
+      created_at: nowIso(),
+      created_at_unix: Math.floor(Date.now() / 1000),
+      user_id: String(user.id || ""),
+      user_email: String(user.email || ""),
+      resolve_id: resolveId,
+      method: String(request.method || "GET"),
+      path,
+      folder: eventFolder,
+      file_name: eventFileName,
+      tile_key: eventTileKey,
+      status_code: statusCode,
+      bytes_served: eventBytesServed,
+      cache_status: eventCacheStatus,
+      duration_ms: durationMs,
+      cf_ray: cfRay,
+      cf_country: cfCountry,
+      client_ip: clientIp,
+      error_code: errorCode,
+    });
+  }
+}
+
+async function requireAnalyticsAdmin(request, env) {
+  const db = requireDb(env);
+  let access;
+  try {
+    access = await readBearerUser(request, env);
+  } catch (error) {
+    return { error: json({ ok: false, error: String(error.message || "invalid_access_token") }, 401, env) };
+  }
+  if (!access) {
+    return { error: json({ ok: false, error: "missing_bearer_token" }, 401, env) };
+  }
+  let user = await findUserById(db, access.sub);
+  if (!user) {
+    return { error: json({ ok: false, error: "user_not_found" }, 404, env) };
+  }
+  if (isBlockedStatus(user.status)) {
+    return { error: blockedAccountResponse(env) };
+  }
+  user = await enforceUserPlanPolicy(db, user, null);
+  if (!isAnalyticsAdmin(user, env)) {
+    return { error: json({ ok: false, error: "admin_access_required" }, 403, env) };
+  }
+  return { db, user };
+}
+
+async function handleAdminAnalyticsData(request, env) {
+  const auth = await requireAnalyticsAdmin(request, env);
+  if (auth.error) {
+    return auth.error;
+  }
+  const { db, user } = auth;
+  const url = new URL(request.url);
+  const windowMinutes = sanitizeAnalyticsMinutes(url.searchParams.get("minutes"), DEFAULT_ANALYTICS_WINDOW_MINUTES);
+  const snapshot = await collectAnalyticsSnapshot(db, windowMinutes);
+  return json(
+    {
+      ok: true,
+      admin_email: String(user.email || ""),
+      ...snapshot,
+    },
+    200,
+    env,
+  );
+}
+
+async function handleAdminAnalyticsPage(request, env) {
+  const auth = await requireAnalyticsAdmin(request, env);
+  if (auth.error) {
+    return auth.error;
+  }
+  const { user } = auth;
+  const htmlContent = `
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Planetka Analytics</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; margin: 20px; background: #0b1020; color: #e5e7eb; }
+    h1 { margin: 0 0 8px; font-size: 24px; }
+    .muted { color: #9ca3af; font-size: 13px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin: 16px 0 20px; }
+    .card { background: #111827; border: 1px solid #1f2937; border-radius: 10px; padding: 12px; }
+    .label { color: #93c5fd; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+    .value { font-size: 22px; margin-top: 6px; font-weight: 600; }
+    .controls { display:flex; gap:10px; align-items:center; margin: 8px 0 16px; }
+    select, button { background:#111827; color:#e5e7eb; border:1px solid #374151; border-radius:8px; padding:7px 10px; }
+    table { width:100%; border-collapse: collapse; margin: 8px 0 16px; font-size: 13px; }
+    th, td { border-bottom: 1px solid #1f2937; padding: 8px 6px; text-align:left; }
+    th { color:#93c5fd; font-weight:600; }
+    .section { margin-top: 20px; }
+    .error { color: #fca5a5; }
+  </style>
+</head>
+<body>
+  <h1>Planetka Analytics</h1>
+  <div class="muted">Signed in as ${escapeHtml(String(user.email || ""))}. Auto-refresh every 15 seconds.</div>
+  <div class="controls">
+    <label for="window">Window:</label>
+    <select id="window">
+      <option value="15">15 min</option>
+      <option value="60" selected>60 min</option>
+      <option value="360">6 hours</option>
+      <option value="1440">24 hours</option>
+      <option value="10080">7 days</option>
+    </select>
+    <button id="refresh">Refresh now</button>
+    <span id="status" class="muted"></span>
+  </div>
+
+  <div class="grid">
+    <div class="card"><div class="label">Active users (5m)</div><div id="active5" class="value">-</div></div>
+    <div class="card"><div class="label">Active users (15m)</div><div id="active15" class="value">-</div></div>
+    <div class="card"><div class="label">Active users (60m)</div><div id="active60" class="value">-</div></div>
+    <div class="card"><div class="label">Live tile events (10s)</div><div id="live10s" class="value">-</div></div>
+    <div class="card"><div class="label">Tile requests (window)</div><div id="reqCount" class="value">-</div></div>
+    <div class="card"><div class="label">Bytes served (window)</div><div id="bytesServed" class="value">-</div></div>
+    <div class="card"><div class="label">Errors (window)</div><div id="errors" class="value">-</div></div>
+    <div class="card"><div class="label">Cache hit ratio</div><div id="hitRatio" class="value">-</div></div>
+    <div class="card"><div class="label">Tagged resolves</div><div id="resolveCount" class="value">-</div></div>
+  </div>
+
+  <div class="section">
+    <h3>Top Users</h3>
+    <table id="usersTable"><thead><tr><th>Email</th><th>Requests</th><th>GB</th><th>Errors</th><th>Last seen</th></tr></thead><tbody></tbody></table>
+  </div>
+  <div class="section">
+    <h3>Top Tiles</h3>
+    <table id="tilesTable"><thead><tr><th>Tile key</th><th>Requests</th><th>GB</th></tr></thead><tbody></tbody></table>
+  </div>
+  <div class="section">
+    <h3>Recent Failures</h3>
+    <table id="failsTable"><thead><tr><th>Time</th><th>User</th><th>Status</th><th>Error</th><th>Tile</th><th>Cache</th><th>ms</th></tr></thead><tbody></tbody></table>
+  </div>
+
+  <script>
+    const statusEl = document.getElementById("status");
+    const windowEl = document.getElementById("window");
+    const refreshBtn = document.getElementById("refresh");
+    const setText = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    const fmtInt = (v) => Number(v || 0).toLocaleString();
+    const fmtBytes = (v) => {
+      let n = Number(v || 0);
+      const units = ["B","KB","MB","GB","TB"];
+      let i = 0;
+      while (n >= 1024 && i < units.length - 1) { n /= 1024; i += 1; }
+      return n.toFixed(i === 0 ? 0 : 2) + " " + units[i];
+    };
+    const fmtGb = (v) => (Number(v || 0) / (1024 * 1024 * 1024)).toFixed(3);
+    function renderRows(tableId, rows, rowBuilder) {
+      const tbody = document.querySelector("#" + tableId + " tbody");
+      if (!tbody) return;
+      tbody.innerHTML = "";
+      for (const row of rows || []) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = rowBuilder(row);
+        tbody.appendChild(tr);
+      }
+    }
+    async function loadAnalytics() {
+      const minutes = windowEl.value || "60";
+      statusEl.textContent = "Loading...";
+      try {
+        const res = await fetch("/admin/analytics/data?minutes=" + encodeURIComponent(minutes), { credentials: "same-origin" });
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error((data && data.error) || ("HTTP " + res.status));
+        const s = data.summary || {};
+        const a = data.active || {};
+        setText("active5", fmtInt(a.users_5m));
+        setText("active15", fmtInt(a.users_15m));
+        setText("active60", fmtInt(a.users_60m));
+        setText("live10s", fmtInt(a.tile_events_10s));
+        setText("reqCount", fmtInt(s.request_count));
+        setText("bytesServed", fmtBytes(s.bytes_served));
+        setText("errors", fmtInt(s.error_count));
+        const hitRatio = Number(s.request_count || 0) > 0 ? (100 * Number(s.cache_hit_count || 0) / Number(s.request_count || 1)) : 0;
+        setText("hitRatio", hitRatio.toFixed(2) + "%");
+        setText("resolveCount", fmtInt(s.tagged_resolve_count));
+        renderRows("usersTable", data.top_users, (row) => \`<td>\${row.user_email || ""}</td><td>\${fmtInt(row.request_count)}</td><td>\${fmtGb(row.bytes_served)}</td><td>\${fmtInt(row.error_count)}</td><td>\${row.last_seen_at || ""}</td>\`);
+        renderRows("tilesTable", data.top_tiles, (row) => \`<td>\${row.tile_key || ""}</td><td>\${fmtInt(row.request_count)}</td><td>\${fmtGb(row.bytes_served)}</td>\`);
+        renderRows("failsTable", data.recent_failures, (row) => \`<td>\${row.created_at || ""}</td><td>\${row.user_email || ""}</td><td>\${row.status_code || ""}</td><td>\${row.error_code || ""}</td><td>\${row.tile_key || ""}</td><td>\${row.cache_status || ""}</td><td>\${row.duration_ms || ""}</td>\`);
+        statusEl.textContent = "Updated " + new Date().toLocaleTimeString();
+        statusEl.className = "muted";
+      } catch (error) {
+        statusEl.textContent = "Error: " + String(error && error.message || error);
+        statusEl.className = "error";
+      }
+    }
+    refreshBtn.addEventListener("click", loadAnalytics);
+    windowEl.addEventListener("change", loadAnalytics);
+    loadAnalytics();
+    setInterval(loadAnalytics, 15000);
+  </script>
+</body>
+</html>
+  `;
+  return html(htmlContent, 200, env);
 }
 
 function sanitizeAttachmentFileName(value, fallback = "planetka_bug_report.json") {
@@ -3060,6 +3577,14 @@ export default {
 
       if (request.method === "POST" && path === "/support/bug-report") {
         return await handleSupportBugReport(request, env);
+      }
+
+      if (request.method === "GET" && path === "/admin/analytics") {
+        return await handleAdminAnalyticsPage(request, env);
+      }
+
+      if (request.method === "GET" && path === "/admin/analytics/data") {
+        return await handleAdminAnalyticsData(request, env);
       }
 
       if ((request.method === "GET" || request.method === "HEAD") && path.startsWith("/tiles/")) {

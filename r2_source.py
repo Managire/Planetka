@@ -7,6 +7,7 @@ import logging
 import os
 import threading
 import time
+from contextlib import contextmanager
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -79,6 +80,8 @@ _AUTH_LAST_BEARER = ""
 _AUTH_LAST_CHECKED_AT = 0.0
 _AUTH_CHECK_TTL_SECONDS = 15.0
 _CACHE_PRUNE_SUSPEND_COUNT = 0
+_REQUEST_CONTEXT_LOCK = threading.Lock()
+_REQUEST_CONTEXT_RESOLVE_ID = ""
 
 
 def _env(name, fallback=None):
@@ -696,12 +699,35 @@ def _aws_signing_key(secret_key, date_stamp, region, service):
     return _aws_sign(k_service, "aws4_request")
 
 
+def set_resolve_request_context(resolve_id=""):
+    global _REQUEST_CONTEXT_RESOLVE_ID
+    with _REQUEST_CONTEXT_LOCK:
+        _REQUEST_CONTEXT_RESOLVE_ID = str(resolve_id or "").strip()[:128]
+
+
+def clear_resolve_request_context():
+    set_resolve_request_context("")
+
+
+@contextmanager
+def resolve_request_context(resolve_id=""):
+    set_resolve_request_context(resolve_id)
+    try:
+        yield
+    finally:
+        clear_resolve_request_context()
+
+
 def _signed_headers(cfg, method, key, allow_refresh=True):
     del method
     headers = {
         "User-Agent": "Planetka-Blender",
         **get_authorized_headers(allow_refresh=allow_refresh),
     }
+    with _REQUEST_CONTEXT_LOCK:
+        resolve_id = str(_REQUEST_CONTEXT_RESOLVE_ID or "").strip()
+    if resolve_id:
+        headers["X-Planetka-Resolve-Id"] = resolve_id
     url = cfg.endpoint.rstrip("/") + "/tiles/" + urllib.parse.quote(key, safe="/-_.~")
     return url, headers
 

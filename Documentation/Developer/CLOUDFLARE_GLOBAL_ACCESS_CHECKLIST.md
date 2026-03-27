@@ -18,6 +18,26 @@ These changes are already applied in the Worker source:
   - `TILE_BROWSER_MAX_AGE_SECONDS = "86400"`
   - `TILE_EDGE_MAX_AGE_SECONDS = "604800"`
   - `TILE_CACHE_IMMUTABLE = "1"`
+  - `ANALYTICS_ADMIN_EMAILS = "info@planetka.io,tom.griger@gmail.com"`
+
+## Analytics dashboard (implemented)
+
+New admin endpoints:
+
+- `GET /admin/analytics` (live dashboard UI)
+- `GET /admin/analytics/data?minutes=60` (JSON payload)
+
+Access control:
+
+- requires Bearer token
+- email must be listed in `ANALYTICS_ADMIN_EMAILS`
+
+Tracked telemetry:
+
+- per-tile request events: user, tile key, status code, bytes served, cache hit/miss, request duration, country, ray id, optional resolve id
+- active users (5/15/60 min)
+- live tile event rate (last 10 seconds)
+- top users, top tiles, recent failures
 
 ## Deploy these code changes
 
