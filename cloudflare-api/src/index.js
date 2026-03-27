@@ -3016,9 +3016,21 @@ async function handleTileRequest(request, env, path, ctx) {
 
 async function requireAnalyticsAdmin(request, env) {
   const db = requireDb(env);
-  let access;
+  let access = null;
   try {
     access = await readBearerUser(request, env);
+    if (!access) {
+      const url = new URL(request.url);
+      const queryToken = String(url.searchParams.get("access_token") || url.searchParams.get("token") || "").trim();
+      if (queryToken) {
+        const secret = requireSecret(env, "JWT_SIGNING_SECRET");
+        const payload = await verifyJwt(queryToken, secret);
+        if (payload.type !== "access" || !payload.sub) {
+          throw new Error("invalid_access_token");
+        }
+        access = payload;
+      }
+    }
   } catch (error) {
     return { error: json({ ok: false, error: String(error.message || "invalid_access_token") }, 401, env) };
   }
@@ -3154,11 +3166,14 @@ async function handleAdminAnalyticsPage(request, env) {
         tbody.appendChild(tr);
       }
     }
+    const urlParams = new URLSearchParams(window.location.search || "");
+    const accessToken = String(urlParams.get("access_token") || urlParams.get("token") || "");
     async function loadAnalytics() {
       const minutes = windowEl.value || "60";
       statusEl.textContent = "Loading...";
       try {
-        const res = await fetch("/admin/analytics/data?minutes=" + encodeURIComponent(minutes), { credentials: "same-origin" });
+        const tokenQuery = accessToken ? ("&access_token=" + encodeURIComponent(accessToken)) : "";
+        const res = await fetch("/admin/analytics/data?minutes=" + encodeURIComponent(minutes) + tokenQuery, { credentials: "same-origin" });
         const data = await res.json();
         if (!res.ok || !data.ok) throw new Error((data && data.error) || ("HTTP " + res.status));
         const s = data.summary || {};
