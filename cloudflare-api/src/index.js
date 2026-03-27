@@ -2991,7 +2991,7 @@ async function handleTileRequest(request, env, path, ctx) {
     const durationMs = Math.max(0, Date.now() - requestStartedAtMs);
     const statusCode = eventStatusCode > 0 ? eventStatusCode : 500;
     const errorCode = String(eventErrorCode || (statusCode >= 400 ? "internal_error" : ""));
-    await recordTileRequestEvent(db, {
+    const telemetryWrite = recordTileRequestEvent(db, {
       created_at: nowIso(),
       created_at_unix: Math.floor(Date.now() / 1000),
       user_id: String(user.id || ""),
@@ -3011,6 +3011,11 @@ async function handleTileRequest(request, env, path, ctx) {
       client_ip: clientIp,
       error_code: errorCode,
     });
+    if (ctx && typeof ctx.waitUntil === "function") {
+      ctx.waitUntil(telemetryWrite);
+    } else {
+      await telemetryWrite;
+    }
   }
 }
 
