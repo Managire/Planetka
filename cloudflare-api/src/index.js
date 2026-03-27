@@ -33,6 +33,9 @@ const DEFAULT_ALERT_DEVICE_POLL_429_THRESHOLD = 30;
 const DEFAULT_ALERT_DEVICE_POLL_429_WINDOW_SECONDS = 60;
 const DEFAULT_ALERT_AUTH_ERROR_THRESHOLD = 5;
 const DEFAULT_ALERT_AUTH_ERROR_WINDOW_SECONDS = 300;
+const DEFAULT_TILE_BROWSER_MAX_AGE_SECONDS = 86400;
+const DEFAULT_TILE_EDGE_MAX_AGE_SECONDS = 604800;
+const MAX_TILE_MAX_AGE_SECONDS = 31536000;
 const RATE_LIMIT_PRUNE_INTERVAL_SECONDS = 300;
 const RATE_LIMIT_ENTRY_TTL_SECONDS = 172800;
 let manualCreditModeCache = "";
@@ -189,6 +192,20 @@ function toBytesFromGb(gbValue) {
 
 function clampNonNegativeInt(value) {
   return Math.max(0, parseNonNegativeInteger(value, 0));
+}
+
+function resolveTileCacheControl(env) {
+  const browserMaxAge = Math.min(
+    MAX_TILE_MAX_AGE_SECONDS,
+    parseNonNegativeInteger(env.TILE_BROWSER_MAX_AGE_SECONDS, DEFAULT_TILE_BROWSER_MAX_AGE_SECONDS),
+  );
+  const edgeMaxAgeRaw = parseNonNegativeInteger(env.TILE_EDGE_MAX_AGE_SECONDS, DEFAULT_TILE_EDGE_MAX_AGE_SECONDS);
+  const edgeMaxAge = Math.min(MAX_TILE_MAX_AGE_SECONDS, Math.max(browserMaxAge, edgeMaxAgeRaw));
+  const immutable = String(env.TILE_CACHE_IMMUTABLE ?? "1").trim().toLowerCase();
+  const immutableEnabled = !["0", "false", "no", "off"].includes(immutable);
+  return immutableEnabled
+    ? `public, max-age=${browserMaxAge}, s-maxage=${edgeMaxAge}, immutable`
+    : `public, max-age=${browserMaxAge}, s-maxage=${edgeMaxAge}`;
 }
 
 function base64UrlEncode(bytes) {
@@ -2487,8 +2504,7 @@ function buildTileResponseHeaders(env, fileName, sizeBytes, etag) {
     ...corsHeaders(env),
     "Content-Type": guessContentType(fileName),
     "Content-Length": String(clampNonNegativeInt(sizeBytes)),
-    // Shared edge cache enabled for immutable tile assets.
-    "Cache-Control": "public, max-age=3600, s-maxage=86400",
+    "Cache-Control": resolveTileCacheControl(env),
   });
   if (etag) {
     headers.set("ETag", String(etag));
@@ -2646,7 +2662,7 @@ async function handleTileRequest(request, env, path, ctx) {
     ...corsHeaders(env),
     "Content-Type": contentType,
     "Content-Length": String(objectSize),
-    "Cache-Control": "public, max-age=3600, s-maxage=86400",
+    "Cache-Control": resolveTileCacheControl(env),
     "X-Planetka-Remaining-Bytes": String(updatedAllowance.dataAllowance.total_remaining_bytes),
     "X-Planetka-Warning-State": String(updatedAllowance.dataAllowance.warning_state || "ok"),
     "X-Planetka-Cache": cacheStatus,
