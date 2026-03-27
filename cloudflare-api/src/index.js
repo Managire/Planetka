@@ -36,9 +36,14 @@ const DEFAULT_ALERT_AUTH_ERROR_WINDOW_SECONDS = 300;
 const DEFAULT_ANALYTICS_WINDOW_MINUTES = 60;
 const MAX_ANALYTICS_WINDOW_MINUTES = 10080;
 const DEFAULT_ANALYTICS_ADMIN_EMAILS = "info@planetka.io,tom.griger@gmail.com";
+const DEFAULT_PERMANENT_PRO_EMAILS = "tom.griger@gmail.com";
 const DEFAULT_TILE_BROWSER_MAX_AGE_SECONDS = 86400;
 const DEFAULT_TILE_EDGE_MAX_AGE_SECONDS = 604800;
 const MAX_TILE_MAX_AGE_SECONDS = 31536000;
+const DEFAULT_FREE_API_KEY_VALID_DAYS = 30;
+const DEFAULT_PRO_GRACE_HOURS = 24;
+const DEFAULT_API_KEY_DEVICE_ACTIVE_WINDOW_SECONDS = 900;
+const DEFAULT_API_KEY_REQUEST_MIN_AGE_SECONDS = 2;
 const RATE_LIMIT_PRUNE_INTERVAL_SECONDS = 300;
 const RATE_LIMIT_ENTRY_TTL_SECONDS = 172800;
 let manualCreditModeCache = "";
@@ -47,13 +52,16 @@ let magicLinksTokenIndexReady = false;
 let stripeWebhookEventsTableReady = false;
 let rateLimitsTableReady = false;
 let tileRequestEventsTableReady = false;
+let apiKeyTablesReady = false;
+let userProvisionalColumnsReady = false;
+let refreshSessionColumnsReady = false;
 let rateLimitsLastPruneAt = 0;
 
 function corsHeaders(env) {
   return {
     "Access-Control-Allow-Origin": env.APP_ORIGIN || "*",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type",
+    "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Planetka-Device-Id",
   };
 }
 
@@ -126,6 +134,34 @@ function normalizeUserStatus(value) {
   return normalized;
 }
 
+function normalizePlanCode(value) {
+  return normalizeUserStatus(value);
+}
+
+function parseCsvEmailSet(value, fallback = "") {
+  const set = new Set();
+  const source = String(value || fallback || "").trim();
+  if (!source) {
+    return set;
+  }
+  for (const token of source.split(",")) {
+    const email = normalizeEmail(token);
+    if (email && email.includes("@")) {
+      set.add(email);
+    }
+  }
+  return set;
+}
+
+function isPermanentProEmail(email, env) {
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail) {
+    return false;
+  }
+  const set = parseCsvEmailSet(env.PERMANENT_PRO_EMAILS, DEFAULT_PERMANENT_PRO_EMAILS);
+  return set.has(normalizedEmail);
+}
+
 function hasPermanentProAccess(user) {
   const status = normalizeUserStatus(user && user.status);
   return status === PLAN_CODE_PLANETKA_PRO || status === PLAN_CODE_PLANETKA_STUDIO;
@@ -135,12 +171,23 @@ function subscriptionStatusForUser(user) {
   return hasPermanentProAccess(user) ? "active" : "inactive";
 }
 
-function resolvePolicyPlanCode(user, subscription) {
+function resolvePolicyPlanCode(user, subscription, env = {}) {
   void subscription;
   if (user && isBlockedStatus(user.status)) {
     return "blocked";
   }
+  if (isPermanentProEmail(user && user.email, env)) {
+    return PLAN_CODE_PLANETKA_PRO;
+  }
   const status = normalizeUserStatus(user && user.status);
+  const provisionalExpiresAt = String(user && user.provisional_expires_at || "").trim();
+  const confirmedAt = String(user && user.pro_confirmed_at || "").trim();
+  if ((status === PLAN_CODE_PLANETKA_PRO || status === PLAN_CODE_PLANETKA_STUDIO) && provisionalExpiresAt && !confirmedAt) {
+    const expiresAtMs = Date.parse(provisionalExpiresAt);
+    if (Number.isFinite(expiresAtMs) && expiresAtMs < Date.now()) {
+      return PLAN_CODE_PLANETKA;
+    }
+  }
   if (status === PLAN_CODE_PLANETKA_STUDIO) {
     return PLAN_CODE_PLANETKA_STUDIO;
   }
@@ -261,6 +308,61 @@ function randomToken(byteLength = 32) {
 
 function isValidDeviceCode(value) {
   return /^[A-Za-z0-9_-]{32}$/.test(String(value || "").trim());
+}
+
+function isValidApiKey(value) {
+  return /^pka_[A-Za-z0-9_-]{24,128}$/.test(String(value || "").trim());
+}
+
+function normalizeRequestedPlan(value) {
+  const normalized = normalizePlanCode(value);
+  if (normalized === PLAN_CODE_PLANETKA_PRO) {
+    return PLAN_CODE_PLANETKA_PRO;
+  }
+  if (normalized === PLAN_CODE_PLANETKA_STUDIO) {
+    return PLAN_CODE_PLANETKA_STUDIO;
+  }
+  return PLAN_CODE_PLANETKA;
+}
+
+function computeApiKeyExpiryIso(planCode, env) {
+  const safePlan = normalizeRequestedPlan(planCode);
+  if (safePlan === PLAN_CODE_PLANETKA_PRO || safePlan === PLAN_CODE_PLANETKA_STUDIO) {
+    return "";
+  }
+  const validityDays = Math.max(
+    1,
+    Math.floor(parsePositiveNumber(env.FREE_API_KEY_VALID_DAYS, DEFAULT_FREE_API_KEY_VALID_DAYS)),
+  );
+  return addDaysIso(validityDays);
+}
+
+function computeProvisionalExpiryIso(env) {
+  const graceHours = Math.max(
+    1,
+    Math.floor(parsePositiveNumber(env.PRO_LICENSE_GRACE_HOURS, DEFAULT_PRO_GRACE_HOURS)),
+  );
+  return new Date(Date.now() + (graceHours * 60 * 60 * 1000)).toISOString();
+}
+
+function maskApiKey(value) {
+  const key = String(value || "").trim();
+  if (!key) {
+    return "";
+  }
+  if (key.length <= 12) {
+    return `${key.slice(0, 4)}***`;
+  }
+  return `${key.slice(0, 8)}...${key.slice(-4)}`;
+}
+
+function normalizeDeviceId(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return "";
+  }
+  const safe = raw.replace(/[^A-Za-z0-9._:-]/g, "").slice(0, 128);
+  return safe;
 }
 
 async function sha256Hex(value) {
@@ -424,7 +526,7 @@ async function trackThresholdAlertDb(db, eventName, threshold, windowSeconds, pa
 
 function isAuthOrDevicePath(path) {
   const normalized = String(path || "").trim();
-  return normalized.startsWith("/auth/") || normalized.startsWith("/device/");
+  return normalized.startsWith("/auth/") || normalized.startsWith("/device/") || normalized.startsWith("/api-key");
 }
 
 function requestClientIp(request) {
@@ -823,6 +925,8 @@ async function cleanupAuthTables(db, env, nowTimestamp) {
     magic_links_deleted: 0,
     refresh_sessions_deleted: 0,
     device_sessions_deleted: 0,
+    api_key_requests_deleted: 0,
+    api_key_device_activity_deleted: 0,
   };
   const refreshSessionCutoff = addDaysFromIso(
     nowTimestamp,
@@ -866,6 +970,38 @@ async function cleanupAuthTables(db, env, nowTimestamp) {
       [nowTimestamp],
     );
     summary.device_sessions_deleted = dbMetaChanges(deviceSessionsResult);
+  }
+
+  if (await dbTableExists(db, "api_key_requests")) {
+    const apiKeyRequestsResult = await dbRun(
+      db,
+      `
+        DELETE FROM api_key_requests
+        WHERE
+          expires_at < ?
+          OR (used_at IS NOT NULL AND used_at != '' AND used_at < ?)
+      `,
+      [nowTimestamp, refreshSessionCutoff],
+    );
+    summary.api_key_requests_deleted = dbMetaChanges(apiKeyRequestsResult);
+  }
+
+  if (await dbTableExists(db, "api_key_device_activity")) {
+    const activeWindowSeconds = Math.max(
+      60,
+      Math.floor(parsePositiveNumber(env.API_KEY_DEVICE_ACTIVE_WINDOW_SECONDS, DEFAULT_API_KEY_DEVICE_ACTIVE_WINDOW_SECONDS)),
+    );
+    const nowUnix = Math.floor(Date.parse(nowTimestamp) / 1000) || Math.floor(Date.now() / 1000);
+    const cutoffUnix = Math.max(0, nowUnix - (activeWindowSeconds * 4));
+    const deviceActivityResult = await dbRun(
+      db,
+      `
+        DELETE FROM api_key_device_activity
+        WHERE last_seen_unix < ?
+      `,
+      [cutoffUnix],
+    );
+    summary.api_key_device_activity_deleted = dbMetaChanges(deviceActivityResult);
   }
 
   return summary;
@@ -957,8 +1093,8 @@ function buildPlanConfig(env) {
   };
 }
 
-function resolvePlanCode(user, subscription) {
-  const policyPlan = resolvePolicyPlanCode(user, subscription);
+function resolvePlanCode(user, subscription, env = {}) {
+  const policyPlan = resolvePolicyPlanCode(user, subscription, env);
   if (policyPlan === PLAN_CODE_PLANETKA_PRO || policyPlan === PLAN_CODE_PLANETKA_STUDIO) {
     return PLAN_CODE_PLANETKA_PRO;
   }
@@ -1125,7 +1261,7 @@ function computeWarningState(totalRemainingBytes, includedLimitBytes, cfg) {
 async function buildAllowanceState(db, user, subscription, env) {
   void db;
   const cfg = buildPlanConfig(env);
-  const planCode = resolvePlanCode(user, subscription);
+  const planCode = resolvePlanCode(user, subscription, env);
   const includedLimitBytes = UNLIMITED_ALLOWANCE_BYTES;
   const includedRemainingBytes = UNLIMITED_ALLOWANCE_BYTES;
   const totalRemainingBytes = UNLIMITED_ALLOWANCE_BYTES;
@@ -1259,6 +1395,9 @@ async function findUserByEmail(db, email) {
         u.id,
         u.email,
         u.status,
+        u.provisional_plan_code,
+        u.provisional_expires_at,
+        u.pro_confirmed_at,
         u.created_at,
         u.last_login_at
       FROM users u
@@ -1277,6 +1416,9 @@ async function findUserById(db, userId) {
         u.id,
         u.email,
         u.status,
+        u.provisional_plan_code,
+        u.provisional_expires_at,
+        u.pro_confirmed_at,
         u.created_at,
         u.last_login_at
       FROM users u
@@ -1424,13 +1566,175 @@ async function ensureUserConsentColumns(db) {
   userConsentColumnsReady = true;
 }
 
-async function upsertUserByEmail(db, email, status = PLAN_CODE_PLANETKA, options = {}) {
+async function ensureUserProvisionalColumns(db) {
+  if (userProvisionalColumnsReady) {
+    return;
+  }
+  const pragma = await db.prepare(`PRAGMA table_info(users)`).all();
+  const rows = Array.isArray(pragma && pragma.results) ? pragma.results : [];
+  if (!rows.length) {
+    return;
+  }
+  const names = new Set(rows.map((row) => String(row && row.name || "").trim().toLowerCase()));
+  const statements = [];
+  if (!names.has("provisional_plan_code")) {
+    statements.push(`ALTER TABLE users ADD COLUMN provisional_plan_code TEXT`);
+  }
+  if (!names.has("provisional_expires_at")) {
+    statements.push(`ALTER TABLE users ADD COLUMN provisional_expires_at TEXT`);
+  }
+  if (!names.has("pro_confirmed_at")) {
+    statements.push(`ALTER TABLE users ADD COLUMN pro_confirmed_at TEXT`);
+  }
+  for (const statement of statements) {
+    try {
+      await dbRun(db, statement);
+    } catch (error) {
+      const message = String(error && error.message || "");
+      if (!message.toLowerCase().includes("duplicate column")) {
+        throw error;
+      }
+    }
+  }
+  userProvisionalColumnsReady = true;
+}
+
+async function ensureApiKeyTables(db) {
+  if (apiKeyTablesReady) {
+    return;
+  }
+  await ensureUserProvisionalColumns(db);
+  await dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS api_key_requests (
+        id TEXT PRIMARY KEY,
+        email TEXT NOT NULL,
+        requested_plan TEXT NOT NULL DEFAULT 'planetka',
+        token_hash TEXT NOT NULL UNIQUE,
+        expires_at TEXT NOT NULL,
+        used_at TEXT,
+        accept_terms INTEGER NOT NULL DEFAULT 0,
+        accept_privacy INTEGER NOT NULL DEFAULT 0,
+        opt_in_news INTEGER NOT NULL DEFAULT 0,
+        submitted_at_ms INTEGER NOT NULL DEFAULT 0,
+        request_ip TEXT,
+        created_at TEXT NOT NULL
+      )
+    `,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_api_key_requests_email_created ON api_key_requests(email, created_at DESC)`,
+  );
+  await dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS api_keys (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        key_hash TEXT NOT NULL UNIQUE,
+        key_prefix TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        plan_code TEXT NOT NULL DEFAULT 'planetka',
+        expires_at TEXT,
+        provisional INTEGER NOT NULL DEFAULT 0,
+        provisional_expires_at TEXT,
+        confirmed_at TEXT,
+        issued_at TEXT NOT NULL,
+        last_used_at TEXT,
+        revoked_at TEXT
+      )
+    `,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_api_keys_user_status ON api_keys(user_id, status, issued_at DESC)`,
+  );
+  await dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS api_key_device_activity (
+        id TEXT PRIMARY KEY,
+        api_key_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        device_id TEXT NOT NULL,
+        first_seen_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL,
+        last_seen_unix INTEGER NOT NULL,
+        last_ip TEXT,
+        last_country TEXT
+      )
+    `,
+  );
+  await dbRun(
+    db,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_api_key_device_activity_unique ON api_key_device_activity(api_key_id, device_id)`,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_api_key_device_activity_seen ON api_key_device_activity(last_seen_unix DESC)`,
+  );
+  apiKeyTablesReady = true;
+}
+
+async function ensureRefreshSessionColumns(db) {
+  if (refreshSessionColumnsReady) {
+    return;
+  }
+  await dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS refresh_sessions (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        refresh_token_hash TEXT NOT NULL UNIQUE,
+        expires_at TEXT NOT NULL,
+        revoked_at TEXT,
+        created_at TEXT NOT NULL,
+        auth_method TEXT,
+        api_key_id TEXT,
+        device_id TEXT
+      )
+    `,
+  );
+  const pragma = await db.prepare(`PRAGMA table_info(refresh_sessions)`).all();
+  const rows = Array.isArray(pragma && pragma.results) ? pragma.results : [];
+  const names = new Set(rows.map((row) => String(row && row.name || "").trim().toLowerCase()));
+  const statements = [];
+  if (!names.has("auth_method")) {
+    statements.push(`ALTER TABLE refresh_sessions ADD COLUMN auth_method TEXT`);
+  }
+  if (!names.has("api_key_id")) {
+    statements.push(`ALTER TABLE refresh_sessions ADD COLUMN api_key_id TEXT`);
+  }
+  if (!names.has("device_id")) {
+    statements.push(`ALTER TABLE refresh_sessions ADD COLUMN device_id TEXT`);
+  }
+  for (const statement of statements) {
+    try {
+      await dbRun(db, statement);
+    } catch (error) {
+      const message = String(error && error.message || "");
+      if (!message.toLowerCase().includes("duplicate column")) {
+        throw error;
+      }
+    }
+  }
+  refreshSessionColumnsReady = true;
+}
+
+async function upsertUserByEmail(db, email, status = PLAN_CODE_PLANETKA, options = {}, env = {}) {
   const normalizedEmail = normalizeEmail(email);
   await ensureUserConsentColumns(db);
+  await ensureUserProvisionalColumns(db);
+  const requestedStatus = normalizePlanCode(status) || PLAN_CODE_PLANETKA;
+  const forceProByEmail = isPermanentProEmail(normalizedEmail, env);
+  const finalRequestedStatus = forceProByEmail ? PLAN_CODE_PLANETKA_PRO : requestedStatus;
   let user = await findUserByEmail(db, normalizedEmail);
   if (user) {
     const currentStatus = String(user.status || "").trim().toLowerCase();
-    const nextStatus = String(status || "").trim().toLowerCase() || PLAN_CODE_PLANETKA;
+    const nextStatus = String(finalRequestedStatus || "").trim().toLowerCase() || PLAN_CODE_PLANETKA;
     // Never downgrade paid plans when this helper is called from other flows.
     const protectedStatus = (
       (currentStatus === PLAN_CODE_PLANETKA_PRO || currentStatus === PLAN_CODE_PLANETKA_STUDIO)
@@ -1438,10 +1742,30 @@ async function upsertUserByEmail(db, email, status = PLAN_CODE_PLANETKA, options
     )
       ? currentStatus
       : nextStatus;
+    const provisionalPlanCode = normalizeRequestedPlan(options.provisionalPlanCode || "");
+    const provisionalExpiresAt = String(options.provisionalExpiresAt || "").trim();
+    const proConfirmedAt = String(options.proConfirmedAt || "").trim();
     await dbRun(
       db,
-      `UPDATE users SET status = ? WHERE id = ?`,
-      [protectedStatus, user.id],
+      `
+        UPDATE users
+        SET
+          status = ?,
+          provisional_plan_code = CASE WHEN ? != '' THEN ? ELSE provisional_plan_code END,
+          provisional_expires_at = CASE WHEN ? != '' THEN ? ELSE provisional_expires_at END,
+          pro_confirmed_at = CASE WHEN ? != '' THEN ? ELSE pro_confirmed_at END
+        WHERE id = ?
+      `,
+      [
+        protectedStatus,
+        provisionalPlanCode,
+        provisionalPlanCode,
+        provisionalExpiresAt,
+        provisionalExpiresAt,
+        proConfirmedAt,
+        proConfirmedAt,
+        user.id,
+      ],
     );
     return { ...user, status: protectedStatus };
   }
@@ -1452,6 +1776,9 @@ async function upsertUserByEmail(db, email, status = PLAN_CODE_PLANETKA, options
   const privacyAcceptedAt = options.privacyAcceptedAt ? String(options.privacyAcceptedAt) : null;
   const termsVersion = options.termsVersion ? String(options.termsVersion) : null;
   const privacyVersion = options.privacyVersion ? String(options.privacyVersion) : null;
+  const provisionalPlanCode = normalizeRequestedPlan(options.provisionalPlanCode || "");
+  const provisionalExpiresAt = options.provisionalExpiresAt ? String(options.provisionalExpiresAt) : null;
+  const proConfirmedAt = options.proConfirmedAt ? String(options.proConfirmedAt) : null;
   await dbRun(
     db,
     `
@@ -1463,29 +1790,35 @@ async function upsertUserByEmail(db, email, status = PLAN_CODE_PLANETKA, options
         terms_accepted_at,
         privacy_accepted_at,
         terms_version,
-        privacy_version
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        privacy_version,
+        provisional_plan_code,
+        provisional_expires_at,
+        pro_confirmed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     [
       id,
       normalizedEmail,
-      status,
+      finalRequestedStatus,
       createdAt,
       termsAcceptedAt,
       privacyAcceptedAt,
       termsVersion,
       privacyVersion,
+      provisionalPlanCode || null,
+      provisionalExpiresAt || null,
+      proConfirmedAt || null,
     ],
   );
   user = await findUserByEmail(db, normalizedEmail);
   return user;
 }
 
-async function enforceUserPlanPolicy(db, user, subscription = null) {
+async function enforceUserPlanPolicy(db, user, subscription = null, env = {}) {
   if (!user || !user.id || isBlockedStatus(user.status)) {
     return user;
   }
-  const targetPlan = resolvePolicyPlanCode(user, subscription);
+  const targetPlan = resolvePolicyPlanCode(user, subscription, env);
   if (
     targetPlan !== PLAN_CODE_PLANETKA
     && targetPlan !== PLAN_CODE_PLANETKA_PRO
@@ -1566,28 +1899,325 @@ async function sendMagicLinkEmail(env, email, token, magicUrlOverride = "") {
   }
 }
 
-async function createAccessToken(env, user, subscription) {
+async function sendApiKeyActivationEmail(env, email, token) {
+  const apiKey = requireSecret(env, "EMAIL_API_KEY");
+  const from = String(env.EMAIL_FROM || "info@planetka.io").trim();
+  const apiBaseUrl = String(env.API_BASE_URL || "https://api.planetka.io").trim().replace(/\/+$/, "");
+  const activationUrl = `${apiBaseUrl}/api-key/activate?token=${encodeURIComponent(token)}`;
+
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      from,
+      to: [email],
+      subject: "Your Planetka API key activation link",
+      text: [
+        "Planetka API key request received.",
+        "",
+        "Open this activation link to generate your key:",
+        activationUrl,
+        "",
+        "The link expires in 30 minutes.",
+      ].join("\n"),
+      html: `
+        <div style="font-family: Arial, sans-serif; line-height: 1.5; color: #111827;">
+          <h2 style="margin-bottom: 16px;">Activate your Planetka API key</h2>
+          <p>Use the button below to generate your API key for Blender.</p>
+          <p style="margin: 24px 0;">
+            <a href="${activationUrl}" style="background:#111827;color:#ffffff;padding:12px 18px;text-decoration:none;border-radius:8px;display:inline-block;">
+              Activate API Key
+            </a>
+          </p>
+          <p>If the button does not work, open this link:</p>
+          <p><a href="${activationUrl}">${activationUrl}</a></p>
+          <p>This link expires in 30 minutes.</p>
+        </div>
+      `,
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`resend_error_${response.status}_${body}`);
+  }
+}
+
+async function sendApiKeyIssuedEmail(env, email, apiKeyValue, planCode, expiresAt = "") {
+  const apiKey = requireSecret(env, "EMAIL_API_KEY");
+  const from = String(env.EMAIL_FROM || "info@planetka.io").trim();
+  const safePlan = normalizeRequestedPlan(planCode);
+  const displayPlan = safePlan === PLAN_CODE_PLANETKA ? "Free" : (safePlan === PLAN_CODE_PLANETKA_STUDIO ? "Studio" : "Pro");
+  const expiryText = String(expiresAt || "").trim()
+    ? `Expires at: ${String(expiresAt || "").trim()}`
+    : "Expires at: never";
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      from,
+      to: [email],
+      subject: "Your Planetka API key",
+      text: [
+        "Your Planetka API key is ready.",
+        "",
+        `Plan: ${displayPlan}`,
+        expiryText,
+        "",
+        "API key:",
+        apiKeyValue,
+        "",
+        "Paste this key in Blender > Planetka > Account.",
+      ].join("\n"),
+      html: `
+        <div style="font-family: Arial, sans-serif; line-height: 1.5; color: #111827;">
+          <h2 style="margin-bottom: 16px;">Your Planetka API key</h2>
+          <p><strong>Plan:</strong> ${displayPlan}<br/>
+          <strong>${escapeHtml(expiryText)}</strong></p>
+          <p style="margin: 16px 0;">Paste this key in Blender &rarr; Planetka &rarr; Account:</p>
+          <pre style="padding:12px;border-radius:8px;background:#111827;color:#e5e7eb;overflow:auto;">${escapeHtml(apiKeyValue)}</pre>
+        </div>
+      `,
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`resend_error_${response.status}_${body}`);
+  }
+}
+
+async function issueApiKeyForUser(db, env, user, planCode, options = {}) {
+  await ensureApiKeyTables(db);
+  const safePlan = normalizeRequestedPlan(planCode || user.status || PLAN_CODE_PLANETKA);
+  const token = `pka_${randomToken(36)}`;
+  const keyHash = await sha256Hex(token);
+  const keyPrefix = String(token.slice(0, 16));
+  const issuedAt = nowIso();
+  const provisional = parseBooleanFlag(options.provisional) ? 1 : 0;
+  const provisionalExpiresAt = String(options.provisionalExpiresAt || "").trim();
+  const confirmedAt = String(options.confirmedAt || "").trim();
+  const expiresAt = String(options.expiresAt || computeApiKeyExpiryIso(safePlan, env) || "").trim();
+  await dbRun(
+    db,
+    `
+      INSERT INTO api_keys (
+        id,
+        user_id,
+        key_hash,
+        key_prefix,
+        status,
+        plan_code,
+        expires_at,
+        provisional,
+        provisional_expires_at,
+        confirmed_at,
+        issued_at
+      ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)
+    `,
+    [
+      crypto.randomUUID(),
+      user.id,
+      keyHash,
+      keyPrefix,
+      safePlan,
+      expiresAt || null,
+      provisional,
+      provisionalExpiresAt || null,
+      confirmedAt || null,
+      issuedAt,
+    ],
+  );
+
+  return {
+    apiKey: token,
+    keyPrefix,
+    planCode: safePlan,
+    expiresAt,
+  };
+}
+
+async function findActiveApiKeyRecord(db, apiKeyValue) {
+  await ensureApiKeyTables(db);
+  const keyHash = await sha256Hex(apiKeyValue);
+  return dbGet(
+    db,
+    `
+      SELECT
+        ak.id AS api_key_id,
+        ak.user_id,
+        ak.status AS api_key_status,
+        ak.plan_code AS api_key_plan_code,
+        ak.expires_at AS api_key_expires_at,
+        ak.provisional AS api_key_provisional,
+        ak.provisional_expires_at AS api_key_provisional_expires_at,
+        ak.confirmed_at AS api_key_confirmed_at,
+        ak.key_prefix,
+        u.id,
+        u.email,
+        u.status,
+        u.provisional_plan_code,
+        u.provisional_expires_at,
+        u.pro_confirmed_at
+      FROM api_keys ak
+      JOIN users u ON u.id = ak.user_id
+      WHERE ak.key_hash = ?
+      LIMIT 1
+    `,
+    [keyHash],
+  );
+}
+
+function maxDevicesForPlan(planCode) {
+  const safePlan = normalizeRequestedPlan(planCode);
+  if (safePlan === PLAN_CODE_PLANETKA_PRO || safePlan === PLAN_CODE_PLANETKA_STUDIO) {
+    return 2;
+  }
+  return 1;
+}
+
+async function touchApiKeyDeviceActivity(db, apiKeyId, userId, deviceId, request, env) {
+  await ensureApiKeyTables(db);
+  const nowUnix = Math.floor(Date.now() / 1000);
+  const now = nowIso();
+  const ip = requestClientIp(request);
+  const country = requestCountry(request);
+  const existing = await dbGet(
+    db,
+    `
+      SELECT id
+      FROM api_key_device_activity
+      WHERE api_key_id = ? AND device_id = ?
+      LIMIT 1
+    `,
+    [apiKeyId, deviceId],
+  );
+  if (existing && existing.id) {
+    await dbRun(
+      db,
+      `
+        UPDATE api_key_device_activity
+        SET
+          last_seen_at = ?,
+          last_seen_unix = ?,
+          last_ip = ?,
+          last_country = ?
+        WHERE id = ?
+      `,
+      [now, nowUnix, ip, country, existing.id],
+    );
+    return existing.id;
+  }
+  await dbRun(
+    db,
+    `
+      INSERT INTO api_key_device_activity (
+        id,
+        api_key_id,
+        user_id,
+        device_id,
+        first_seen_at,
+        last_seen_at,
+        last_seen_unix,
+        last_ip,
+        last_country
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    [crypto.randomUUID(), apiKeyId, userId, deviceId, now, now, nowUnix, ip, country],
+  );
+  return "";
+}
+
+async function enforceApiKeyDeviceLimit(db, apiKeyId, userId, planCode, deviceId, request, env) {
+  await ensureApiKeyTables(db);
+  const safeDeviceId = normalizeDeviceId(deviceId);
+  if (!safeDeviceId) {
+    throw new Error("missing_device_id");
+  }
+  const nowUnix = Math.floor(Date.now() / 1000);
+  const activeWindowSeconds = Math.max(
+    60,
+    Math.floor(parsePositiveNumber(env.API_KEY_DEVICE_ACTIVE_WINDOW_SECONDS, DEFAULT_API_KEY_DEVICE_ACTIVE_WINDOW_SECONDS)),
+  );
+  const windowStart = Math.max(0, nowUnix - activeWindowSeconds);
+
+  await dbRun(
+    db,
+    `
+      DELETE FROM api_key_device_activity
+      WHERE last_seen_unix < ?
+    `,
+    [Math.max(0, nowUnix - (activeWindowSeconds * 4))],
+  );
+
+  const rows = await dbAll(
+    db,
+    `
+      SELECT device_id
+      FROM api_key_device_activity
+      WHERE api_key_id = ?
+        AND last_seen_unix >= ?
+    `,
+    [apiKeyId, windowStart],
+  );
+  const activeDeviceIds = new Set(
+    rows.map((row) => normalizeDeviceId(row && row.device_id)).filter((value) => Boolean(value)),
+  );
+  const alreadyActive = activeDeviceIds.has(safeDeviceId);
+  const maxDevices = maxDevicesForPlan(planCode);
+  if (!alreadyActive && activeDeviceIds.size >= maxDevices) {
+    throw new Error("device_limit_exceeded");
+  }
+
+  await touchApiKeyDeviceActivity(db, apiKeyId, userId, safeDeviceId, request, env);
+  return {
+    activeDeviceCount: activeDeviceIds.has(safeDeviceId) ? activeDeviceIds.size : (activeDeviceIds.size + 1),
+    maxDevices,
+  };
+}
+
+async function createAccessToken(env, user, subscription, extraClaims = {}) {
   void subscription;
   const secret = requireSecret(env, "JWT_SIGNING_SECRET");
   const exp = Math.floor(Date.now() / 1000) + (60 * 60);
+  const basePayload = {
+    type: "access",
+    sub: user.id,
+    email: user.email,
+    subscription_status: subscriptionStatusForUser(user),
+    exp,
+  };
+  const payload = { ...basePayload };
+  if (extraClaims && typeof extraClaims === "object") {
+    for (const [key, value] of Object.entries(extraClaims)) {
+      if (value === undefined || value === null || key === "sub" || key === "email" || key === "exp") {
+        continue;
+      }
+      payload[key] = value;
+    }
+  }
   return signJwt(
-    {
-      type: "access",
-      sub: user.id,
-      email: user.email,
-      subscription_status: subscriptionStatusForUser(user),
-      exp,
-    },
+    payload,
     secret,
   );
 }
 
-async function createRefreshSession(db, userId) {
+async function createRefreshSession(db, userId, expiresAtOverride = "", metadata = {}) {
+  await ensureRefreshSessionColumns(db);
   const refreshToken = randomToken(48);
   const refreshHash = await sha256Hex(refreshToken);
   const refreshSessionId = crypto.randomUUID();
   const createdAt = nowIso();
-  const expiresAt = addDaysIso(30);
+  const expiresAt = String(expiresAtOverride || "").trim() || addDaysIso(30);
+  const authMethod = String(metadata.auth_method || metadata.authMethod || "").trim();
+  const apiKeyId = String(metadata.api_key_id || metadata.apiKeyId || "").trim();
+  const deviceId = normalizeDeviceId(metadata.device_id || metadata.deviceId || "");
   await dbRun(
     db,
     `
@@ -1596,10 +2226,13 @@ async function createRefreshSession(db, userId) {
         user_id,
         refresh_token_hash,
         expires_at,
-        created_at
-      ) VALUES (?, ?, ?, ?, ?)
+        created_at,
+        auth_method,
+        api_key_id,
+        device_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `,
-    [refreshSessionId, userId, refreshHash, expiresAt, createdAt],
+    [refreshSessionId, userId, refreshHash, expiresAt, createdAt, authMethod || null, apiKeyId || null, deviceId || null],
   );
   return refreshToken;
 }
@@ -1792,6 +2425,549 @@ function buildMagicLinkUrl(env, token, deviceCode = "") {
   return `${loginUrl}?token=${encodeURIComponent(token)}`;
 }
 
+function renderApiKeyRequestPage(env, message = "", requestedPlan = PLAN_CODE_PLANETKA) {
+  const termsUrl = String(env.TERMS_URL || DEFAULT_TERMS_URL).trim() || DEFAULT_TERMS_URL;
+  const privacyUrl = String(env.PRIVACY_URL || DEFAULT_PRIVACY_URL).trim() || DEFAULT_PRIVACY_URL;
+  const contactUrl = String(env.CONTACT_URL || DEFAULT_CONTACT_URL).trim() || DEFAULT_CONTACT_URL;
+  const safeMessage = String(message || "").trim();
+  const messageMarkup = safeMessage
+    ? `<p id="status" style="margin-top:14px;color:#86efac;">${escapeHtml(safeMessage)}</p>`
+    : `<p id="status" style="margin-top:14px;color:#cbd5e1;"></p>`;
+  const safePlan = normalizeRequestedPlan(requestedPlan || PLAN_CODE_PLANETKA);
+  const isPaidPlan = safePlan === PLAN_CODE_PLANETKA_PRO || safePlan === PLAN_CODE_PLANETKA_STUDIO;
+  const subTitle = isPaidPlan
+    ? "Enter your purchase email to receive your API key. Paid access is provisional for 24 hours until manually confirmed."
+    : "Enter your email address and we will send you a one-click activation link.";
+  return html(`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Planetka API Key</title>
+    <style>
+      :root { color-scheme: dark; }
+      body { margin:0; min-height:100vh; display:grid; place-items:center; background:linear-gradient(180deg,#07111f 0%, #0b1424 100%); font-family: Inter, system-ui, sans-serif; color:#e5edf7; }
+      .card { width:min(92vw,520px); padding:28px; border-radius:18px; background:rgba(8,15,29,.82); border:1px solid rgba(148,163,184,.2); box-shadow:0 20px 60px rgba(0,0,0,.35); }
+      h1 { margin:0 0 10px; font-size:30px; }
+      p { margin:0 0 16px; color:#cbd5e1; line-height:1.5; }
+      label { display:block; margin:0 0 8px; color:#cbd5e1; font-size:14px; }
+      input[type="email"] { width:100%; box-sizing:border-box; padding:14px 16px; border-radius:10px; border:1px solid rgba(148,163,184,.35); background:rgba(15,23,42,.85); color:#f8fafc; font-size:16px; margin-bottom:14px; }
+      .checkbox { display:flex; gap:8px; align-items:flex-start; margin:10px 0; font-size:14px; color:#cbd5e1; }
+      .checkbox input { margin-top:3px; }
+      .checkbox a { color:#93c5fd; text-decoration:underline; }
+      button { margin-top:14px; width:100%; border:none; border-radius:12px; padding:13px 16px; background:#1d4ed8; color:#fff; font-size:16px; font-weight:600; cursor:pointer; }
+      button:disabled { opacity:.6; cursor:wait; }
+      .help { margin-top:12px; font-size:13px; color:#94a3b8; }
+      .help a { color:#93c5fd; }
+      .hidden { display:none !important; }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <h1>Request Planetka API Key</h1>
+      <p>${escapeHtml(subTitle)}</p>
+      <form id="form">
+        <label for="email">Email</label>
+        <input id="email" type="email" placeholder="you@example.com" required />
+        <div class="checkbox">
+          <input id="terms" type="checkbox" required />
+          <label for="terms">I agree to the <a href="${termsUrl}" target="_blank" rel="noopener noreferrer">Terms and Conditions</a> and <a href="${privacyUrl}" target="_blank" rel="noopener noreferrer">Privacy Policy</a>.</label>
+        </div>
+        <div class="checkbox">
+          <input id="news" type="checkbox" />
+          <label for="news">Opt in to receive news about Planetka by email.</label>
+        </div>
+        <input id="website" class="hidden" type="text" autocomplete="off" tabindex="-1" />
+        <button id="submit" type="submit">Send API Key Link</button>
+      </form>
+      ${messageMarkup}
+      <p class="help">Problem connecting? <a href="${contactUrl}" target="_blank" rel="noopener noreferrer">Contact Me</a></p>
+    </main>
+    <script>
+      const startedAt = Date.now();
+      const form = document.getElementById("form");
+      const status = document.getElementById("status");
+      const submit = document.getElementById("submit");
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        submit.disabled = true;
+        status.style.color = "#cbd5e1";
+        status.textContent = "Sending...";
+        try {
+          const payload = {
+            email: String(document.getElementById("email").value || "").trim(),
+            accept_terms: document.getElementById("terms").checked,
+            accept_privacy: document.getElementById("terms").checked,
+            opt_in_news: document.getElementById("news").checked,
+            website: String(document.getElementById("website").value || ""),
+            submitted_at_ms: Date.now() - startedAt,
+            requested_plan: "${safePlan}",
+          };
+          const response = await fetch("/auth/api-key/request", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          const data = await response.json();
+          if (!response.ok || !data.ok) {
+            throw new Error(String((data && data.error) || ("http_" + response.status)));
+          }
+          status.style.color = "#86efac";
+          status.textContent = "Check your email for the activation link.";
+        } catch (error) {
+          status.style.color = "#fca5a5";
+          status.textContent = "Request failed. Please try again.";
+          console.error("planetka api-key request failed", error);
+        } finally {
+          submit.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>`, 200, env);
+}
+
+function renderApiKeyActivatedPage(env, data = {}) {
+  const contactUrl = String(env.CONTACT_URL || DEFAULT_CONTACT_URL).trim() || DEFAULT_CONTACT_URL;
+  const key = String(data.apiKey || "").trim();
+  const keyMask = key ? maskApiKey(key) : "";
+  const email = String(data.email || "").trim();
+  const planCode = normalizeRequestedPlan(data.planCode || PLAN_CODE_PLANETKA);
+  const planLabel = planCode === PLAN_CODE_PLANETKA ? "Free" : (planCode === PLAN_CODE_PLANETKA_STUDIO ? "Studio" : "Pro");
+  const expiry = String(data.expiresAt || "").trim() || "never";
+  return html(`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Planetka API Key Ready</title>
+    <style>
+      :root { color-scheme: dark; }
+      body { margin:0; min-height:100vh; display:grid; place-items:center; background:linear-gradient(180deg,#07111f 0%, #0b1424 100%); font-family: Inter, system-ui, sans-serif; color:#e5edf7; }
+      .card { width:min(92vw,560px); padding:28px; border-radius:18px; background:rgba(8,15,29,.82); border:1px solid rgba(148,163,184,.2); box-shadow:0 20px 60px rgba(0,0,0,.35); }
+      h1 { margin:0 0 12px; font-size:30px; }
+      p { margin:0 0 12px; color:#cbd5e1; line-height:1.5; }
+      pre { margin:10px 0 12px; padding:12px; border-radius:10px; background:#0f172a; border:1px solid rgba(148,163,184,.28); color:#f8fafc; overflow:auto; }
+      button { border:none; border-radius:10px; background:#1d4ed8; color:#fff; padding:10px 14px; cursor:pointer; font-weight:600; }
+      a { color:#93c5fd; }
+      .muted { color:#94a3b8; font-size:13px; }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <h1>API key generated</h1>
+      <p>Email: <strong>${escapeHtml(email || "unknown")}</strong></p>
+      <p>Plan: <strong>${escapeHtml(planLabel)}</strong></p>
+      <p>Expires: <strong>${escapeHtml(expiry)}</strong></p>
+      <pre id="apiKey">${escapeHtml(key)}</pre>
+      <button id="copyBtn" type="button">Copy API key</button>
+      <p class="muted" id="copyStatus">Key mask: ${escapeHtml(keyMask)}</p>
+      <p>Paste this key in Blender: Planetka &rarr; Account.</p>
+      <p>Problem connecting? <a href="${contactUrl}" target="_blank" rel="noopener noreferrer">Contact Me</a></p>
+    </main>
+    <script>
+      const btn = document.getElementById("copyBtn");
+      const status = document.getElementById("copyStatus");
+      btn.addEventListener("click", async () => {
+        const text = document.getElementById("apiKey").textContent || "";
+        try {
+          await navigator.clipboard.writeText(text);
+          status.textContent = "Copied to clipboard.";
+          status.style.color = "#86efac";
+        } catch (error) {
+          status.textContent = "Copy failed. Select and copy manually.";
+          status.style.color = "#fca5a5";
+        }
+      });
+    </script>
+  </body>
+</html>`, 200, env);
+}
+
+async function sendProvisionalPlanAlert(env, email, requestedPlan, provisionalExpiresAt) {
+  try {
+    const apiKey = requireSecret(env, "EMAIL_API_KEY");
+    const from = String(env.EMAIL_FROM || "info@planetka.io").trim();
+    const to = String(env.SECURITY_ALERT_EMAIL || "info@planetka.io").trim() || "info@planetka.io";
+    await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from,
+        to: [to],
+        subject: "Planetka provisional paid access request",
+        text: [
+          "A user requested provisional paid access.",
+          `email=${normalizeEmail(email)}`,
+          `requested_plan=${normalizeRequestedPlan(requestedPlan)}`,
+          `provisional_expires_at=${String(provisionalExpiresAt || "").trim()}`,
+          "",
+          "If payment is confirmed, mark the user as confirmed in D1 before expiry.",
+        ].join("\n"),
+      }),
+    });
+  } catch (error) {
+    console.warn(
+      "worker.provisional_alert_email_failed",
+      JSON.stringify({
+        email: normalizeEmail(email),
+        error: String(error && error.message || "alert_email_failed"),
+      }),
+    );
+  }
+}
+
+async function handleApiKeyRequest(request, env) {
+  const db = requireDb(env);
+  await ensureApiKeyTables(db);
+  await ensureRateLimitsTable(db);
+  const body = await parseJson(request);
+  const email = normalizeEmail(body.email);
+  const requestedPlan = normalizeRequestedPlan(body.requested_plan || PLAN_CODE_PLANETKA);
+  const acceptTerms = parseBooleanFlag(body.accept_terms);
+  const acceptPrivacy = parseBooleanFlag(body.accept_privacy);
+  const optInNews = parseBooleanFlag(body.opt_in_news);
+  const honeypot = String(body.website || "").trim();
+  const submittedAtMs = parseNonNegativeInteger(body.submitted_at_ms, 0);
+  const minFormAgeMs = Math.max(
+    0,
+    Math.floor(parsePositiveNumber(env.API_KEY_REQUEST_MIN_AGE_SECONDS, DEFAULT_API_KEY_REQUEST_MIN_AGE_SECONDS) * 1000),
+  );
+  if (honeypot) {
+    return genericAuthStartResponse(env);
+  }
+  if (submittedAtMs > 0 && submittedAtMs < minFormAgeMs) {
+    return genericAuthStartResponse(env);
+  }
+  if (!email || !email.includes("@")) {
+    return json({ ok: false, error: "invalid_email" }, 400, env);
+  }
+  if (!acceptTerms || !acceptPrivacy) {
+    return json({ ok: false, error: "terms_consent_required" }, 400, env);
+  }
+
+  const clientIp = requestClientIp(request);
+  const authStartIpRate = await consumeRateLimitWindow(
+    db,
+    "api_key_request_ip",
+    clientIp,
+    parseRateLimitInteger(env.RATE_LIMIT_AUTH_START_IP_LIMIT, DEFAULT_RATE_LIMIT_AUTH_START_IP_LIMIT),
+    parseRateLimitInteger(env.RATE_LIMIT_AUTH_START_IP_WINDOW_SECONDS, DEFAULT_RATE_LIMIT_AUTH_START_IP_WINDOW_SECONDS),
+  );
+  if (!authStartIpRate.allowed) {
+    return rateLimitedResponse(
+      env,
+      "api_key_request_ip_rate_limited",
+      "Too many requests. Please try again shortly.",
+      authStartIpRate.retryAfterSeconds,
+    );
+  }
+  const authStartEmailRate = await consumeRateLimitWindow(
+    db,
+    "api_key_request_email",
+    email,
+    parseRateLimitInteger(env.RATE_LIMIT_AUTH_START_EMAIL_LIMIT, DEFAULT_RATE_LIMIT_AUTH_START_EMAIL_LIMIT),
+    parseRateLimitInteger(env.RATE_LIMIT_AUTH_START_EMAIL_WINDOW_SECONDS, DEFAULT_RATE_LIMIT_AUTH_START_EMAIL_WINDOW_SECONDS),
+  );
+  if (!authStartEmailRate.allowed) {
+    return rateLimitedResponse(
+      env,
+      "api_key_request_email_rate_limited",
+      "Too many requests for this email. Please try again later.",
+      authStartEmailRate.retryAfterSeconds,
+    );
+  }
+
+  const legalVersion = String(env.TERMS_VERSION || env.LEGAL_VERSION || DEFAULT_LEGAL_VERSION).trim() || DEFAULT_LEGAL_VERSION;
+  const privacyVersion = String(env.PRIVACY_VERSION || env.LEGAL_VERSION || DEFAULT_LEGAL_VERSION).trim() || DEFAULT_LEGAL_VERSION;
+  const acceptedAt = nowIso();
+  await upsertUserByEmail(
+    db,
+    email,
+    PLAN_CODE_PLANETKA,
+    {
+      termsAcceptedAt: acceptedAt,
+      privacyAcceptedAt: acceptedAt,
+      termsVersion: legalVersion,
+      privacyVersion,
+    },
+    env,
+  );
+  if (optInNews) {
+    await recordNewsletterOptIn(db, email, "api_key_request");
+  }
+
+  const token = randomToken(36);
+  const tokenHash = await sha256Hex(token);
+  await dbRun(
+    db,
+    `
+      INSERT INTO api_key_requests (
+        id,
+        email,
+        requested_plan,
+        token_hash,
+        expires_at,
+        accept_terms,
+        accept_privacy,
+        opt_in_news,
+        submitted_at_ms,
+        request_ip,
+        created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    [
+      crypto.randomUUID(),
+      email,
+      requestedPlan,
+      tokenHash,
+      addMinutesIso(30),
+      acceptTerms ? 1 : 0,
+      acceptPrivacy ? 1 : 0,
+      optInNews ? 1 : 0,
+      submittedAtMs,
+      clientIp,
+      nowIso(),
+    ],
+  );
+  await sendApiKeyActivationEmail(env, email, token);
+  return json(
+    {
+      ok: true,
+      message: "If the email is valid, a Planetka API key activation link has been sent.",
+    },
+    200,
+    env,
+  );
+}
+
+async function activateApiKeyFromToken(db, env, rawToken) {
+  await ensureApiKeyTables(db);
+  const token = String(rawToken || "").trim();
+  if (!token) {
+    throw new Error("missing_token");
+  }
+  const tokenHash = await sha256Hex(token);
+  const now = nowIso();
+  const requestRow = await dbGet(
+    db,
+    `
+      UPDATE api_key_requests
+      SET used_at = ?
+      WHERE token_hash = ?
+        AND used_at IS NULL
+        AND expires_at >= ?
+      RETURNING id, email, requested_plan, opt_in_news
+    `,
+    [now, tokenHash, now],
+  );
+  if (!requestRow) {
+    throw new Error("invalid_or_expired_token");
+  }
+
+  const requestedPlan = normalizeRequestedPlan(requestRow.requested_plan || PLAN_CODE_PLANETKA);
+  const email = normalizeEmail(requestRow.email);
+  let provisionalPlanCode = "";
+  let provisionalExpiresAt = "";
+  let proConfirmedAt = "";
+  let statusToSet = PLAN_CODE_PLANETKA;
+
+  if (requestedPlan === PLAN_CODE_PLANETKA_PRO || requestedPlan === PLAN_CODE_PLANETKA_STUDIO) {
+    statusToSet = requestedPlan;
+    if (!isPermanentProEmail(email, env)) {
+      provisionalPlanCode = requestedPlan;
+      provisionalExpiresAt = computeProvisionalExpiryIso(env);
+    } else {
+      proConfirmedAt = nowIso();
+    }
+  }
+
+  let user = await upsertUserByEmail(
+    db,
+    email,
+    statusToSet,
+    {
+      provisionalPlanCode,
+      provisionalExpiresAt,
+      proConfirmedAt,
+    },
+    env,
+  );
+  user = await enforceUserPlanPolicy(db, user, null, env);
+  const effectivePlanCode = resolvePlanCode(user, null, env);
+
+  const issued = await issueApiKeyForUser(
+    db,
+    env,
+    user,
+    effectivePlanCode,
+    {
+      provisional: Boolean(provisionalPlanCode),
+      provisionalExpiresAt,
+      confirmedAt: proConfirmedAt,
+    },
+  );
+
+  await sendApiKeyIssuedEmail(env, email, issued.apiKey, issued.planCode, issued.expiresAt);
+  if (provisionalPlanCode && provisionalExpiresAt) {
+    await sendProvisionalPlanAlert(env, email, requestedPlan, provisionalExpiresAt);
+  }
+  return {
+    email,
+    apiKey: issued.apiKey,
+    planCode: issued.planCode,
+    expiresAt: issued.expiresAt,
+  };
+}
+
+async function handleApiKeyActivate(request, env) {
+  const db = requireDb(env);
+  const body = await parseJson(request);
+  try {
+    const activated = await activateApiKeyFromToken(db, env, body.token);
+    return json(
+      {
+        ok: true,
+        email: activated.email,
+        api_key: activated.apiKey,
+        plan_code: activated.planCode,
+        expires_at: activated.expiresAt,
+      },
+      200,
+      env,
+    );
+  } catch (error) {
+    return json({ ok: false, error: String(error && error.message || "activation_failed") }, 400, env);
+  }
+}
+
+async function handleApiKeyActivatePage(request, env) {
+  const url = new URL(request.url);
+  const token = String(url.searchParams.get("token") || "").trim();
+  if (!token) {
+    return renderApiKeyRequestPage(env, "Missing activation token.");
+  }
+  const db = requireDb(env);
+  try {
+    const activated = await activateApiKeyFromToken(db, env, token);
+    return renderApiKeyActivatedPage(env, activated);
+  } catch (_error) {
+    return renderApiKeyRequestPage(env, "Activation link is invalid or expired. Request a new key.");
+  }
+}
+
+async function handleApiKeyExchange(request, env) {
+  const db = requireDb(env);
+  const body = await parseJson(request);
+  const apiKey = String(body.api_key || "").trim();
+  const deviceId = normalizeDeviceId(body.device_id || "");
+  if (!isValidApiKey(apiKey)) {
+    return json({ ok: false, error: "invalid_api_key" }, 400, env);
+  }
+  if (!deviceId) {
+    return json({ ok: false, error: "missing_device_id" }, 400, env);
+  }
+
+  let record = await findActiveApiKeyRecord(db, apiKey);
+  if (!record) {
+    return json({ ok: false, error: "invalid_api_key" }, 401, env);
+  }
+  if (String(record.api_key_status || "").trim().toLowerCase() !== "active") {
+    return json({ ok: false, error: "api_key_revoked" }, 401, env);
+  }
+  const keyExpiresAt = String(record.api_key_expires_at || "").trim();
+  if (keyExpiresAt && Date.parse(keyExpiresAt) < Date.now()) {
+    return json({ ok: false, error: "api_key_expired" }, 401, env);
+  }
+  if (isBlockedStatus(record.status)) {
+    return blockedAccountResponse(env);
+  }
+
+  let user = {
+    id: record.id,
+    email: record.email,
+    status: record.status || PLAN_CODE_PLANETKA,
+    provisional_plan_code: record.provisional_plan_code || "",
+    provisional_expires_at: record.provisional_expires_at || "",
+    pro_confirmed_at: record.pro_confirmed_at || "",
+  };
+  user = await enforceUserPlanPolicy(db, user, null, env);
+  const effectivePlanCode = resolvePlanCode(user, null, env);
+  try {
+    await enforceApiKeyDeviceLimit(db, String(record.api_key_id || ""), String(user.id || ""), effectivePlanCode, deviceId, request, env);
+  } catch (error) {
+    const code = String(error && error.message || "device_limit_exceeded");
+    if (code === "missing_device_id") {
+      return json({ ok: false, error: "missing_device_id" }, 400, env);
+    }
+    return json(
+      {
+        ok: false,
+        error: "device_limit_exceeded",
+        message: effectivePlanCode === PLAN_CODE_PLANETKA
+          ? "Free API key can be active on one computer at a time."
+          : "This API key reached the maximum number of active computers.",
+      },
+      429,
+      env,
+    );
+  }
+
+  const now = nowIso();
+  await dbRun(db, `UPDATE users SET last_login_at = ? WHERE id = ?`, [now, user.id]);
+  await dbRun(db, `UPDATE api_keys SET last_used_at = ? WHERE id = ?`, [now, record.api_key_id]);
+
+  let refreshExpiresAt = addDaysIso(7);
+  if (keyExpiresAt) {
+    const keyExpMs = Date.parse(keyExpiresAt);
+    const refreshExpMs = Date.parse(refreshExpiresAt);
+    if (Number.isFinite(keyExpMs) && Number.isFinite(refreshExpMs) && keyExpMs < refreshExpMs) {
+      refreshExpiresAt = new Date(keyExpMs).toISOString();
+    }
+  }
+
+  const accessToken = await createAccessToken(
+    env,
+    user,
+    null,
+    {
+      api_key_id: String(record.api_key_id || ""),
+      device_id: deviceId,
+      auth_method: "api_key",
+    },
+  );
+  const refreshToken = await createRefreshSession(
+    db,
+    user.id,
+    refreshExpiresAt,
+    {
+      auth_method: "api_key",
+      api_key_id: String(record.api_key_id || ""),
+      device_id: deviceId,
+    },
+  );
+  const accountState = await buildAllowanceState(db, user, null, env);
+
+  return json(
+    {
+      ok: true,
+      email: user.email,
+      access_token: accessToken,
+      refresh_token: refreshToken,
+      subscription_status: subscriptionStatusForUser(user),
+      renews_at: "",
+      trial_ends_at: "",
+      api_key_mask: maskApiKey(apiKey),
+      ...serializeAccountState(accountState),
+    },
+    200,
+    env,
+  );
+}
+
 async function handleAuthStart(request, env) {
   const db = requireDb(env);
   await ensureUserConsentColumns(db);
@@ -1901,7 +3077,7 @@ async function handleAuthStart(request, env) {
       privacyAcceptedAt: acceptedAt,
       termsVersion: legalVersion,
       privacyVersion,
-    });
+    }, env);
   } else if (isBlockedStatus(user.status)) {
     return genericAuthStartResponse(env);
   } else if (acceptTerms && acceptPrivacy) {
@@ -1921,7 +3097,7 @@ async function handleAuthStart(request, env) {
     );
   }
   if (user && !isBlockedStatus(user.status)) {
-    user = await enforceUserPlanPolicy(db, user, null);
+    user = await enforceUserPlanPolicy(db, user, null, env);
   }
 
   if (optInNews) {
@@ -2020,7 +3196,10 @@ async function handleAuthVerify(request, env) {
       SELECT
         u.id,
         u.email,
-        u.status AS user_status
+        u.status AS user_status,
+        u.provisional_plan_code,
+        u.provisional_expires_at,
+        u.pro_confirmed_at
       FROM users u
       WHERE u.id = ?
       LIMIT 1
@@ -2043,8 +3222,11 @@ async function handleAuthVerify(request, env) {
     id: userRecord.id,
     email: userRecord.email,
     status: userRecord.user_status || PLAN_CODE_PLANETKA,
+    provisional_plan_code: userRecord.provisional_plan_code || "",
+    provisional_expires_at: userRecord.provisional_expires_at || "",
+    pro_confirmed_at: userRecord.pro_confirmed_at || "",
   };
-  user = await enforceUserPlanPolicy(db, user, null);
+  user = await enforceUserPlanPolicy(db, user, null, env);
   const subscriptionStatus = subscriptionStatusForUser(user);
   const accessToken = await createAccessToken(env, user, null);
   const refreshToken = await createRefreshSession(db, userRecord.id);
@@ -2125,8 +3307,14 @@ async function handleAuthRefresh(request, env) {
         rs.user_id,
         rs.expires_at,
         rs.revoked_at,
+        rs.auth_method,
+        rs.api_key_id,
+        rs.device_id,
         u.email,
-        u.status
+        u.status,
+        u.provisional_plan_code,
+        u.provisional_expires_at,
+        u.pro_confirmed_at
       FROM refresh_sessions rs
       JOIN users u ON u.id = rs.user_id
       WHERE rs.refresh_token_hash = ?
@@ -2151,8 +3339,11 @@ async function handleAuthRefresh(request, env) {
     id: session.user_id,
     email: session.email,
     status: session.status || PLAN_CODE_PLANETKA,
+    provisional_plan_code: session.provisional_plan_code || "",
+    provisional_expires_at: session.provisional_expires_at || "",
+    pro_confirmed_at: session.pro_confirmed_at || "",
   };
-  user = await enforceUserPlanPolicy(db, user, null);
+  user = await enforceUserPlanPolicy(db, user, null, env);
   const subscriptionStatus = subscriptionStatusForUser(user);
 
   await dbRun(
@@ -2160,8 +3351,26 @@ async function handleAuthRefresh(request, env) {
     `UPDATE refresh_sessions SET revoked_at = ? WHERE id = ?`,
     [nowIso(), session.id],
   );
-  const accessToken = await createAccessToken(env, user, null);
-  const nextRefreshToken = await createRefreshSession(db, session.user_id);
+  const accessToken = await createAccessToken(
+    env,
+    user,
+    null,
+    {
+      auth_method: String(session.auth_method || "").trim(),
+      api_key_id: String(session.api_key_id || "").trim(),
+      device_id: String(session.device_id || "").trim(),
+    },
+  );
+  const nextRefreshToken = await createRefreshSession(
+    db,
+    session.user_id,
+    "",
+    {
+      auth_method: String(session.auth_method || "").trim(),
+      api_key_id: String(session.api_key_id || "").trim(),
+      device_id: String(session.device_id || "").trim(),
+    },
+  );
   const accountState = await buildAllowanceState(db, user, null, env);
 
   return json(
@@ -2195,7 +3404,15 @@ async function handleMe(request, env) {
   let user = await dbGet(
     db,
     `
-      SELECT id, email, status, created_at, last_login_at
+      SELECT
+        id,
+        email,
+        status,
+        provisional_plan_code,
+        provisional_expires_at,
+        pro_confirmed_at,
+        created_at,
+        last_login_at
       FROM users
       WHERE id = ?
       LIMIT 1
@@ -2208,7 +3425,7 @@ async function handleMe(request, env) {
   if (isBlockedStatus(user.status)) {
     return blockedAccountResponse(env);
   }
-  user = await enforceUserPlanPolicy(db, user, null);
+  user = await enforceUserPlanPolicy(db, user, null, env);
   const accountState = await buildAllowanceState(db, user, null, env);
   const subscriptionStatus = subscriptionStatusForUser(user);
 
@@ -2385,7 +3602,7 @@ async function handleDevicePoll(request, env) {
   try {
     let user = await findUserByEmail(db, normalizeEmail(session.email));
     if (user) {
-      user = await enforceUserPlanPolicy(db, user, null);
+      user = await enforceUserPlanPolicy(db, user, null, env);
       const accountState = await buildAllowanceState(db, user, null, env);
       accountPayload = serializeAccountState(accountState);
     }
@@ -2811,8 +4028,25 @@ async function handleTileRequest(request, env, path, ctx) {
   if (isBlockedStatus(user.status)) {
     return blockedAccountResponse(env);
   }
-  user = await enforceUserPlanPolicy(db, user, null);
-  const planCode = resolvePlanCode(user, null);
+  user = await enforceUserPlanPolicy(db, user, null, env);
+  const planCode = resolvePlanCode(user, null, env);
+  const authMethod = String(access.auth_method || "").trim().toLowerCase();
+  const tokenApiKeyId = String(access.api_key_id || "").trim();
+  const tokenDeviceId = normalizeDeviceId(access.device_id || request.headers.get("X-Planetka-Device-Id") || "");
+  if (authMethod === "api_key" && tokenApiKeyId) {
+    try {
+      await enforceApiKeyDeviceLimit(db, tokenApiKeyId, String(user.id || ""), planCode, tokenDeviceId, request, env);
+    } catch (error) {
+      const code = String(error && error.message || "device_limit_exceeded");
+      const statusCode = code === "missing_device_id" ? 400 : 429;
+      const message = code === "missing_device_id"
+        ? "Missing device identifier for API key session."
+        : (planCode === PLAN_CODE_PLANETKA
+          ? "Free API key can be active on one computer at a time."
+          : "This API key reached the maximum number of active computers.");
+      return json({ ok: false, error: code, message }, statusCode, env);
+    }
+  }
 
   const requestStartedAtMs = Date.now();
   const clientIp = requestClientIp(request);
@@ -3049,7 +4283,7 @@ async function requireAnalyticsAdmin(request, env) {
   if (isBlockedStatus(user.status)) {
     return { error: blockedAccountResponse(env) };
   }
-  user = await enforceUserPlanPolicy(db, user, null);
+  user = await enforceUserPlanPolicy(db, user, null, env);
   if (!isAnalyticsAdmin(user, env)) {
     return { error: json({ ok: false, error: "admin_access_required" }, 403, env) };
   }
@@ -3486,7 +4720,7 @@ async function handleStripeWebhook(request, env) {
     );
   }
 
-  const user = await upsertUserByEmail(db, email, PLAN_CODE_PLANETKA_PRO);
+  const user = await upsertUserByEmail(db, email, PLAN_CODE_PLANETKA_PRO, {}, env);
   const stripeCustomerId = String(session.customer || "").trim() || "";
   const stripeSubscriptionId = String(session.subscription || "").trim() || "";
 
@@ -3559,8 +4793,29 @@ export default {
         );
       }
 
+      if (request.method === "GET" && path === "/api-key") {
+        const requestedPlan = normalizeRequestedPlan(url.searchParams.get("plan") || PLAN_CODE_PLANETKA);
+        return renderApiKeyRequestPage(env, "", requestedPlan);
+      }
+
+      if (request.method === "GET" && path === "/api-key/activate") {
+        return await handleApiKeyActivatePage(request, env);
+      }
+
       if (request.method === "POST" && path === "/auth/start") {
         return await handleAuthStart(request, env);
+      }
+
+      if (request.method === "POST" && path === "/auth/api-key/request") {
+        return await handleApiKeyRequest(request, env);
+      }
+
+      if (request.method === "POST" && path === "/auth/api-key/activate") {
+        return await handleApiKeyActivate(request, env);
+      }
+
+      if (request.method === "POST" && path === "/auth/api-key/exchange") {
+        return await handleApiKeyExchange(request, env);
       }
 
       if (request.method === "POST" && path === "/auth/verify") {

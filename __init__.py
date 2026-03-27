@@ -3,7 +3,6 @@ from bpy.props import PointerProperty
 
 # Includes data from GeoNames (allCountries) licensed under CC BY 4.0.
 
-from .auth import ensure_device_login_polling, get_login_state
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from .animation_tools import (
     PLANETKA_OT_AnimationClearPrepared,
@@ -13,7 +12,6 @@ from .animation_tools import (
     PLANETKA_OT_AnimationSaveView,
 )
 from .extension_prefs import PlanetkaExtensionPreferences
-from .extension_prefs import get_prefs
 from .operators import (
     PLANETKA_OT_AddEarth,
     PLANETKA_OT_AccountCancelLogin,
@@ -252,9 +250,6 @@ def register():
         _sync_props_from_idprops(scene)
         migrate_scene(scene)
     _sync_logging_from_scenes()
-    if get_login_state(get_prefs()) == "pending":
-        ensure_device_login_polling()
-
     _remove_load_post_handler()
     _remove_depsgraph_post_handler()
     bpy.app.handlers.load_post.append(_planetka_load_post)

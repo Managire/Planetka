@@ -6,10 +6,9 @@ import datetime
 from .auth import (
     PLAN_CODE_PLANETKA_PRO,
     PLAN_CODE_PLANETKA_STUDIO,
-    ensure_device_login_polling,
+    get_api_key_mask,
     get_commercial_use_allowed,
     get_connected_email,
-    get_login_state,
     get_plan_code,
     get_status_message,
     is_authenticated,
@@ -202,20 +201,15 @@ def _draw_subscription(layout):
     from .extension_prefs import get_prefs
 
     prefs = get_prefs()
-    login_state = get_login_state(prefs)
     connected = is_authenticated(prefs)
     status_message = get_status_message(prefs)
 
     if not connected:
-        layout.label(text="Sign in to start using Planetka", icon="INFO")
+        layout.label(text="Paste API key to start using Planetka", icon="INFO")
+        layout.prop(prefs, "auth_api_key_input", text="API Key")
         auth_row = layout.row(align=True)
-        if login_state == "pending":
-            # Keep polling armed if timer state was interrupted while login is pending.
-            ensure_device_login_polling()
-            auth_row.operator("planetka.account_open_login", text="Open Login Page", icon="URL")
-            auth_row.operator("planetka.account_cancel_login", text="Cancel", icon="X")
-        else:
-            auth_row.operator("planetka.account_login", text="Sign In / Create Account", icon="URL")
+        auth_row.operator("planetka.account_open_login", text="Connect API Key", icon="CHECKMARK")
+        auth_row.operator("planetka.account_login", text="Request API Key", icon="URL")
         if status_message:
             layout.label(text=status_message, icon="INFO")
         return
@@ -233,10 +227,15 @@ def _draw_subscription(layout):
 
     layout.label(text=f"Account: {email}", icon="CHECKMARK")
     layout.label(text=f"Licence: {license_text}", icon="INFO")
+    key_mask = get_api_key_mask(prefs)
+    if key_mask:
+        layout.label(text=f"API Key: {key_mask}", icon="KEYINGSET")
 
     action_row = layout.row(align=True)
     action_row.operator("wm.url_open", text="Contact me", icon="URL").url = "https://www.planetka.io/contact-me"
     action_row.operator("planetka.account_logout", text="Log Out", icon="X")
+    key_row = layout.row()
+    key_row.operator("planetka.account_login", text="Regenerate API Key", icon="URL")
     if not is_pro_license:
         upgrade_row = layout.row()
         upgrade_row.operator(

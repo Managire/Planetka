@@ -2,7 +2,9 @@ import base64
 import json
 import logging
 import os
+import platform
 import time
+import uuid
 import urllib.error
 import urllib.request
 
@@ -32,6 +34,10 @@ DEFAULT_TOPUP_URL = str(
     os.getenv("PLANETKA_TOPUP_URL")
     or os.getenv("PLANETKA_DATA_TOPUP_URL")
     or "https://www.planetka.io/signup"
+).strip()
+DEFAULT_API_KEY_REQUEST_URL = str(
+    os.getenv("PLANETKA_API_KEY_REQUEST_URL")
+    or f"{DEFAULT_API_BASE_URL}/api-key"
 ).strip()
 
 
@@ -83,6 +89,16 @@ class AuthApiError(RuntimeError):
 def describe_auth_error(error):
     message = str(getattr(error, "error", error) or "login_failed")
     lowered = message.lower()
+    if "invalid_api_key" in lowered:
+        return "Invalid Planetka API key."
+    if "api_key_expired" in lowered:
+        return "Planetka API key expired. Request a new key."
+    if "api_key_revoked" in lowered:
+        return "Planetka API key is revoked. Request a new key."
+    if "device_limit_exceeded" in lowered:
+        return "This API key is already active on the maximum number of computers."
+    if "missing_device_id" in lowered:
+        return "Planetka device identity is missing. Restart Blender and try again."
     if "account_blocked" in lowered or "account is blocked" in lowered:
         return "Planetka account is blocked. Contact info@planetka.io."
     if "1010" in lowered:
@@ -475,6 +491,9 @@ def clear_auth_session(prefs=None, state="logged_out", status_message=""):
         return
 
     prefs.auth_email = ""
+    prefs.auth_api_key = ""
+    prefs.auth_api_key_mask = ""
+    prefs.auth_api_key_input = ""
     prefs.auth_access_token = ""
     prefs.auth_refresh_token = ""
     prefs.auth_account_tier = ""
@@ -504,6 +523,27 @@ def clear_auth_session(prefs=None, state="logged_out", status_message=""):
     prefs.auth_login_state = str(state or "logged_out")
     prefs.auth_status_message = str(status_message or "")
     _clear_pending_login_fields(prefs)
+    _save_user_prefs()
+    _tag_ui_redraw()
+
+
+def _clear_auth_session_preserve_api_key(prefs=None, state="logged_out", status_message=""):
+    prefs = prefs or get_prefs()
+    if prefs is None:
+        return
+    api_key = str(getattr(prefs, "auth_api_key", "") or "").strip()
+    api_key_input = str(getattr(prefs, "auth_api_key_input", "") or "").strip()
+    api_key_mask = str(getattr(prefs, "auth_api_key_mask", "") or "").strip()
+    device_id = str(getattr(prefs, "auth_device_id", "") or "").strip()
+    clear_auth_session(prefs=prefs, state=state, status_message=status_message)
+    if api_key:
+        prefs.auth_api_key = api_key
+    if api_key_input:
+        prefs.auth_api_key_input = api_key_input
+    if api_key_mask:
+        prefs.auth_api_key_mask = api_key_mask
+    if device_id:
+        prefs.auth_device_id = device_id
     _save_user_prefs()
     _tag_ui_redraw()
 
@@ -544,6 +584,17 @@ def get_device_verification_url(prefs=None):
     if prefs is None:
         return ""
     return str(getattr(prefs, "auth_device_verification_url", "") or "").strip()
+
+
+def get_api_key_request_url():
+    return DEFAULT_API_KEY_REQUEST_URL
+
+
+def get_api_key_mask(prefs=None):
+    prefs = prefs or get_prefs()
+    if prefs is None:
+        return ""
+    return str(getattr(prefs, "auth_api_key_mask", "") or "").strip()
 
 
 def get_account_tier(prefs=None):
@@ -772,6 +823,41 @@ def get_allowance_downloaded_period_bytes(prefs=None):
     return _parse_int_or_none(getattr(prefs, "auth_allowance_downloaded_period_bytes", ""))
 
 
+def _mask_api_key(value):
+    token = str(value or "").strip()
+    if not token:
+        return ""
+    if len(token) <= 12:
+        return f"{token[:4]}***"
+    return f"{token[:8]}...{token[-4:]}"
+
+
+def _ensure_device_id(prefs=None):
+    prefs = prefs or get_prefs()
+    if prefs is None:
+        return ""
+    current = str(getattr(prefs, "auth_device_id", "") or "").strip()
+    if current:
+        return current
+    generated = str(uuid.uuid4())
+    prefs.auth_device_id = generated
+    _save_user_prefs()
+    return generated
+
+
+def _build_device_name():
+    try:
+        machine = str(platform.node() or "").strip()
+    except (RuntimeError, TypeError, ValueError):
+        machine = ""
+    try:
+        system = str(platform.system() or "").strip()
+    except (RuntimeError, TypeError, ValueError):
+        system = ""
+    safe = " ".join(part for part in (machine, system) if part)
+    return safe[:80]
+
+
 def _decode_jwt_payload(token):
     parts = str(token or "").split(".")
     if len(parts) != 3:
@@ -826,6 +912,53 @@ def _json_request(method, path, body=None, headers=None, timeout=30):
         raise AuthApiError(0, "invalid_json_response") from exc
 
 
+def connect_with_api_key(api_key, prefs=None):
+    prefs = prefs or get_prefs()
+    if prefs is None:
+        raise AuthApiError(0, "prefs_unavailable")
+
+    token = str(api_key or "").strip()
+    if not token:
+        raise AuthApiError(400, "invalid_api_key")
+
+    device_id = _ensure_device_id(prefs)
+    payload = {
+        "api_key": token,
+        "device_id": device_id,
+        "device_name": _build_device_name(),
+    }
+    _status, response = _json_request("POST", "/auth/api-key/exchange", payload)
+    _apply_auth_payload(prefs, response, login_state="authenticated")
+    prefs.auth_api_key = token
+    prefs.auth_api_key_input = token
+    prefs.auth_api_key_mask = _mask_api_key(token)
+    _save_user_prefs()
+    _tag_ui_redraw()
+    return response
+
+
+def _reauth_with_api_key(prefs=None):
+    prefs = prefs or get_prefs()
+    if prefs is None:
+        raise AuthApiError(0, "prefs_unavailable")
+    api_key = str(getattr(prefs, "auth_api_key", "") or "").strip()
+    if not api_key:
+        raise AuthApiError(401, "missing_api_key")
+    return connect_with_api_key(api_key, prefs=prefs)
+
+
+def connect_with_prefs_api_key(prefs=None):
+    prefs = prefs or get_prefs()
+    if prefs is None:
+        raise AuthApiError(0, "prefs_unavailable")
+    entered = str(getattr(prefs, "auth_api_key_input", "") or "").strip()
+    if not entered:
+        entered = str(getattr(prefs, "auth_api_key", "") or "").strip()
+    if not entered:
+        raise AuthApiError(400, "invalid_api_key")
+    return connect_with_api_key(entered, prefs=prefs)
+
+
 def _apply_data_allowance_fields(prefs, payload):
     allowance = _extract_data_allowance(payload)
     prefs.auth_allowance_included_limit_bytes = allowance["included_limit_bytes"]
@@ -850,6 +983,9 @@ def _apply_auth_payload(prefs, payload, login_state="authenticated", status_mess
     prefs.auth_email = str(payload.get("email", "") or "").strip()
     prefs.auth_access_token = str(payload.get("access_token", "") or "").strip()
     prefs.auth_refresh_token = str(payload.get("refresh_token", "") or "").strip()
+    api_key_mask = str(payload.get("api_key_mask", "") or "").strip()
+    if api_key_mask:
+        prefs.auth_api_key_mask = api_key_mask
     plan = _extract_plan(payload)
     prefs.auth_plan_code = plan["code"]
     prefs.auth_plan_name = plan["name"]
@@ -982,16 +1118,24 @@ def refresh_auth_session(prefs=None):
 
     refresh_token = str(getattr(prefs, "auth_refresh_token", "") or "").strip()
     if not refresh_token:
-        clear_auth_session(prefs, state="logged_out", status_message="")
-        raise AuthApiError(401, "missing_refresh_token")
+        try:
+            _reauth_with_api_key(prefs)
+            return str(getattr(prefs, "auth_access_token", "") or "").strip()
+        except AuthApiError:
+            _clear_auth_session_preserve_api_key(prefs, state="logged_out", status_message="")
+            raise AuthApiError(401, "missing_refresh_token")
 
     _status = None
     payload = None
     try:
         _status, payload = _json_request("POST", "/auth/refresh", {"refresh_token": refresh_token})
-    except AuthApiError:
-        clear_auth_session(prefs, state="logged_out", status_message="Session expired. Connect again.")
-        raise
+    except AuthApiError as refresh_error:
+        try:
+            _reauth_with_api_key(prefs)
+            return str(getattr(prefs, "auth_access_token", "") or "").strip()
+        except AuthApiError:
+            _clear_auth_session_preserve_api_key(prefs, state="logged_out", status_message="Session expired. Connect again.")
+            raise refresh_error
 
     _apply_auth_payload(prefs, payload, login_state="authenticated")
     return str(getattr(prefs, "auth_access_token", "") or "").strip()
@@ -1008,15 +1152,24 @@ def get_access_token(prefs=None, allow_refresh=True):
     if access_token and not allow_refresh:
         return access_token
     if not str(getattr(prefs, "auth_refresh_token", "") or "").strip():
-        return access_token
+        try:
+            _reauth_with_api_key(prefs)
+            return str(getattr(prefs, "auth_access_token", "") or "").strip()
+        except AuthApiError:
+            return access_token
     return refresh_auth_session(prefs)
 
 
 def get_authorized_headers(prefs=None, allow_refresh=True):
+    prefs = prefs or get_prefs()
     token = get_access_token(prefs=prefs, allow_refresh=allow_refresh)
     if not token:
         raise AuthApiError(401, "account_not_connected")
-    return {"Authorization": f"Bearer {token}"}
+    headers = {"Authorization": f"Bearer {token}"}
+    device_id = _ensure_device_id(prefs)
+    if device_id:
+        headers["X-Planetka-Device-Id"] = device_id
+    return headers
 
 
 def _device_login_timer():

@@ -10,18 +10,15 @@ from mathutils import Matrix, Quaternion, Vector
 
 from .auth import (
     AuthApiError,
-    cancel_pending_device_login,
     clear_auth_session,
+    connect_with_prefs_api_key,
     describe_auth_error,
-    ensure_device_login_polling,
     get_commercial_use_allowed,
     get_contact_url,
-    get_device_verification_url,
-    get_login_state,
+    get_api_key_request_url,
     get_upgrade_url,
     is_authenticated,
     is_pro_account,
-    start_device_login,
 )
 from .asset_builder import (
     ensure_earth_surface_parent,
@@ -67,12 +64,8 @@ _IMPORT_TILE_FILENAME_RE = re.compile(
 
 
 def _require_authenticated_account(operator, prefs):
-    state = get_login_state(prefs)
-    if state == "pending":
-        operator.report({'ERROR'}, "Finish Planetka login in your browser before continuing.")
-        return False
     if not is_authenticated(prefs):
-        operator.report({'ERROR'}, "Log in to Planetka before using remote Earth data.")
+        operator.report({'ERROR'}, "Connect Planetka API key before using remote Earth data.")
         return False
     return True
 
@@ -1429,8 +1422,52 @@ class PLANETKA_OT_SelectTextureSource(bpy.types.Operator):
 
 class PLANETKA_OT_AccountLogin(bpy.types.Operator):
     bl_idname = "planetka.account_login"
-    bl_label = "Log In"
-    bl_description = "Start Planetka account sign-in in your browser"
+    bl_label = "Request API Key"
+    bl_description = "Open Planetka API key request page"
+
+    def execute(self, context):
+        prefs = get_prefs()
+        if not prefs:
+            return fail(
+                self,
+                "Planetka preferences not available.",
+                code=ErrorCode.RESOLVE_PREFS_MISSING,
+                logger=logger,
+            )
+
+        verification_url = str(get_api_key_request_url() or "").strip()
+        if not verification_url:
+            return fail(self, "Planetka API key request URL is not configured.", logger=logger)
+
+        opened = False
+        try:
+            result = bpy.ops.wm.url_open(url=verification_url)
+            opened = "FINISHED" in result
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
+            opened = False
+
+        if not opened:
+            try:
+                opened = bool(webbrowser.open(verification_url))
+            except (RuntimeError, TypeError, ValueError, OSError):
+                logger.debug("Planetka: failed opening API key request URL in system browser", exc_info=True)
+                opened = False
+
+        if not opened:
+            return fail(
+                self,
+                "Planetka could not open API key request page automatically.",
+                logger=logger,
+            )
+
+        self.report({'INFO'}, "Request API key in browser, then paste it into Blender.")
+        return {'FINISHED'}
+
+
+class PLANETKA_OT_AccountOpenLogin(bpy.types.Operator):
+    bl_idname = "planetka.account_open_login"
+    bl_label = "Connect API Key"
+    bl_description = "Connect Planetka using the pasted API key"
 
     def execute(self, context):
         prefs = get_prefs()
@@ -1443,7 +1480,7 @@ class PLANETKA_OT_AccountLogin(bpy.types.Operator):
             )
 
         try:
-            payload = start_device_login(prefs)
+            connect_with_prefs_api_key(prefs)
         except AuthApiError as exc:
             return fail(
                 self,
@@ -1451,80 +1488,14 @@ class PLANETKA_OT_AccountLogin(bpy.types.Operator):
                 logger=logger,
                 exc=exc,
             )
-
-        verification_url = str(payload.get("verification_url", "") or "").strip()
-        if not verification_url:
-            return fail(self, "Planetka login URL was not returned by the server.", logger=logger)
-
-        opened = False
-        try:
-            result = bpy.ops.wm.url_open(url=verification_url)
-            opened = "FINISHED" in result
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
-            opened = False
-
-        if not opened:
-            try:
-                opened = bool(webbrowser.open(verification_url))
-            except (RuntimeError, TypeError, ValueError, OSError):
-                logger.debug("Planetka: failed opening account login URL in system browser", exc_info=True)
-                opened = False
-
-        if not opened:
-            return fail(
-                self,
-                "Planetka created a login session, but could not open the browser automatically.",
-                logger=logger,
-            )
-
-        self.report({'INFO'}, "Continue Planetka sign-in in the opened browser window.")
-        return {'FINISHED'}
-
-
-class PLANETKA_OT_AccountOpenLogin(bpy.types.Operator):
-    bl_idname = "planetka.account_open_login"
-    bl_label = "Open Login Page"
-    bl_description = "Open the active Planetka browser sign-in page again"
-
-    def execute(self, context):
-        prefs = get_prefs()
-        if not prefs:
-            return fail(
-                self,
-                "Planetka preferences not available.",
-                code=ErrorCode.RESOLVE_PREFS_MISSING,
-                logger=logger,
-            )
-
-        verification_url = get_device_verification_url(prefs)
-        if not verification_url:
-            return fail(self, "No active Planetka browser login is waiting.", logger=logger)
-        ensure_device_login_polling()
-
-        opened = False
-        try:
-            result = bpy.ops.wm.url_open(url=verification_url)
-            opened = "FINISHED" in result
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
-            opened = False
-
-        if not opened:
-            try:
-                opened = bool(webbrowser.open(verification_url))
-            except (RuntimeError, TypeError, ValueError, OSError):
-                logger.debug("Planetka: failed reopening account login URL in system browser", exc_info=True)
-                opened = False
-
-        if not opened:
-            return fail(self, "Could not open the active Planetka browser login.", logger=logger)
-
+        self.report({'INFO'}, "Planetka API key connected.")
         return {'FINISHED'}
 
 
 class PLANETKA_OT_AccountCancelLogin(bpy.types.Operator):
     bl_idname = "planetka.account_cancel_login"
-    bl_label = "Cancel Login"
-    bl_description = "Cancel the current Planetka browser sign-in session"
+    bl_label = "Clear API Key"
+    bl_description = "Clear the API key text field without logging out"
 
     def execute(self, context):
         prefs = get_prefs()
@@ -1536,8 +1507,8 @@ class PLANETKA_OT_AccountCancelLogin(bpy.types.Operator):
                 logger=logger,
             )
 
-        cancel_pending_device_login(prefs)
-        self.report({'INFO'}, "Planetka browser login cancelled.")
+        prefs.auth_api_key_input = ""
+        self.report({'INFO'}, "Planetka API key field cleared.")
         return {'FINISHED'}
 
 

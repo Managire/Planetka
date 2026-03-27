@@ -17,7 +17,7 @@ import re
 import bpy
 from bpy.props import BoolProperty, EnumProperty, StringProperty
 
-from .auth import get_login_state, is_authenticated, sync_account_profile
+from .auth import is_authenticated, sync_account_profile
 from .asset_builder import ensure_planetka_assets
 from .compatibility_utils import ensure_adaptive_subdivision_compat
 from .diagnostics import write_resolve_diagnostics, write_tile_view_diagnostics
@@ -316,17 +316,10 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 logger=logger,
             )
         if is_remote_source_configured(normalized):
-            if get_login_state(prefs) == "pending":
-                return fail(
-                    self,
-                    "Finish Planetka login in your browser before resolving Earth data.",
-                    code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-                    logger=logger,
-                )
             if not is_authenticated(prefs):
                 return fail(
                     self,
-                    "Log in to Planetka before resolving remote Earth data.",
+                    "Connect Planetka API key before resolving remote Earth data.",
                     code=ErrorCode.RESOLVE_PRECHECK_FAILED,
                     logger=logger,
                 )

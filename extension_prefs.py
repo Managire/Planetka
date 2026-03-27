@@ -12,6 +12,10 @@ FALLBACK_TEXTURE_BASE_PATH_KEY = "planetka_texture_base_path"
 FALLBACK_TEXTURE_SOURCE_MODE_KEY = "planetka_texture_source_mode"
 FALLBACK_SAVED_LOCATIONS_KEY = "planetka_saved_locations_json"
 FALLBACK_AUTH_EMAIL_KEY = "planetka_auth_email"
+FALLBACK_AUTH_API_KEY_KEY = "planetka_auth_api_key"
+FALLBACK_AUTH_API_KEY_INPUT_KEY = "planetka_auth_api_key_input"
+FALLBACK_AUTH_API_KEY_MASK_KEY = "planetka_auth_api_key_mask"
+FALLBACK_AUTH_DEVICE_ID_KEY = "planetka_auth_device_id"
 FALLBACK_AUTH_ACCESS_TOKEN_KEY = "planetka_auth_access_token"
 FALLBACK_AUTH_REFRESH_TOKEN_KEY = "planetka_auth_refresh_token"
 FALLBACK_AUTH_ACCOUNT_TIER_KEY = "planetka_auth_account_tier"
@@ -77,6 +81,10 @@ class PlanetkaExtensionPreferences(AddonPreferences):
     )
 
     auth_email: StringProperty(name="Auth Email", default="", options={'HIDDEN'})
+    auth_api_key: StringProperty(name="Auth API Key", default="", options={'HIDDEN'})
+    auth_api_key_input: StringProperty(name="Auth API Key Input", default="", options={'HIDDEN'})
+    auth_api_key_mask: StringProperty(name="Auth API Key Mask", default="", options={'HIDDEN'})
+    auth_device_id: StringProperty(name="Auth Device ID", default="", options={'HIDDEN'})
     auth_access_token: StringProperty(name="Auth Access Token", default="", options={'HIDDEN'})
     auth_refresh_token: StringProperty(name="Auth Refresh Token", default="", options={'HIDDEN'})
     auth_account_tier: StringProperty(name="Auth Account Tier", default="", options={'HIDDEN'})
@@ -281,6 +289,22 @@ def get_prefs():
         auth_email = property(
             lambda self: self._get_value(FALLBACK_AUTH_EMAIL_KEY, ""),
             lambda self, value: self._set_value(FALLBACK_AUTH_EMAIL_KEY, value),
+        )
+        auth_api_key = property(
+            lambda self: self._get_value(FALLBACK_AUTH_API_KEY_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_API_KEY_KEY, value),
+        )
+        auth_api_key_input = property(
+            lambda self: self._get_value(FALLBACK_AUTH_API_KEY_INPUT_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_API_KEY_INPUT_KEY, value),
+        )
+        auth_api_key_mask = property(
+            lambda self: self._get_value(FALLBACK_AUTH_API_KEY_MASK_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_API_KEY_MASK_KEY, value),
+        )
+        auth_device_id = property(
+            lambda self: self._get_value(FALLBACK_AUTH_DEVICE_ID_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_DEVICE_ID_KEY, value),
         )
         auth_access_token = property(
             lambda self: self._get_value(FALLBACK_AUTH_ACCESS_TOKEN_KEY, ""),
