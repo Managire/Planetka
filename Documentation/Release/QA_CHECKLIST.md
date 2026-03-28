@@ -27,6 +27,8 @@
   - `/Applications/Blender.app/Contents/MacOS/Blender --background --python tools/planetka_schema_migration_test.py`
 - [ ] Worker auth/device integration test pass:
   - `python3 tools/worker_auth_integration_test.py`
+- [ ] Worker abuse simulation pass (plan tampering, token-query rejection, legacy-auth disabled, high-volume tile flood sanity):
+  - `python3 tools/worker_abuse_simulation.py --base-url https://api.planetka.io`
 - [ ] Cloudflare API env vars reviewed against:
   - `Documentation/Developer/CLOUDFLARE_API_ENV_VARS.md`
 

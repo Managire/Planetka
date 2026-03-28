@@ -26,11 +26,10 @@ New admin endpoints:
 
 - `GET /admin/analytics` (live dashboard UI)
 - `GET /admin/analytics/data?minutes=60` (JSON payload)
-- `GET /admin/analytics?access_token=<JWT_ACCESS_TOKEN>` (browser-friendly access)
 
 Access control:
 
-- requires Bearer token
+- requires Bearer token (query token is rejected by design)
 - email must be listed in `ANALYTICS_ADMIN_EMAILS`
 
 Tracked telemetry:

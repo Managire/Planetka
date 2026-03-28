@@ -31,10 +31,11 @@ Scope: free-version pilot release for a small tester group, optimized for single
 
 ## 5. API Security Basics (Right-Sized)
 
-- [ ] `/auth/start` rate limiting enabled and returning `429` under abuse.
-- [ ] `/device/poll` rate limiting enabled and returning `429` under abuse.
+- [ ] `/auth/api-key/request` plan-tampering protection enabled (`paid_claim_order_id_required` on paid claim without order ID).
+- [ ] `/admin/analytics` rejects query token (`query_token_not_allowed`) and requires Bearer/cookie admin auth.
+- [ ] Legacy magic-link auth routes (`/auth/start`, `/device/*`) are disabled in production.
 - [ ] Stripe webhook allowlist + signature validation enabled.
-- [ ] DB cleanup cron is active for `magic_links`, `refresh_sessions`, and `device_sessions`.
+- [ ] DB cleanup cron is active for `magic_links`, `refresh_sessions`, `device_sessions`, and tile telemetry retention tables.
 
 ## 6. Observability and Support
 

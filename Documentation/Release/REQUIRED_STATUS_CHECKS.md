@@ -15,6 +15,13 @@ This gate runs:
 - `tools/planetka_schema_migration_test.py`
 - `tools/planetka_regression_test.py`
 
+`tools/release_gate.py` now also hard-fails on release-safety guards:
+- paid-claim elevation safeguards present
+- admin analytics query-token rejection present
+- legacy magic-link auth default-off in production
+- required fallback assets present and deprecated `red_pixel_20.exr` absent
+- telemetry retention cleanup wiring present
+
 ## Optional (recommended) additional check group
 
 Keep matrix coverage enabled for broader platform/version confidence:

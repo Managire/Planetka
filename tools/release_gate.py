@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Planetka release-gate checks for versioning and release docs."""
+"""Planetka release-gate checks for docs, auth hardening, and release safety."""
 
 from __future__ import annotations
 
@@ -40,6 +40,15 @@ def find_changelog_releases(changelog_text: str) -> list[str]:
     return versions
 
 
+def parse_bool_like(value: object) -> bool | None:
+    raw = str(value or "").strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
 def main() -> int:
     root = Path(__file__).resolve().parents[1]
 
@@ -48,6 +57,9 @@ def main() -> int:
     compatibility_path = root / "Documentation" / "Release" / "COMPATIBILITY_MATRIX.md"
     checklist_path = root / "Documentation" / "Release" / "QA_CHECKLIST.md"
     template_path = root / "Documentation" / "Release" / "RELEASE_NOTES_TEMPLATE.md"
+    worker_path = root / "cloudflare-api" / "src" / "index.js"
+    wrangler_path = root / "cloudflare-api" / "wrangler.toml"
+    fallback_dir = root / "Resources" / "Fallback Images"
 
     errors: list[str] = []
     warnings: list[str] = []
@@ -116,6 +128,94 @@ def main() -> int:
             "Version is pre-1.0; MINOR bumps may still include breaking changes, "
             "but release notes must document them explicitly."
         )
+
+    worker_src = ""
+    if not worker_path.exists():
+        errors.append("Missing cloudflare-api/src/index.js")
+    else:
+        worker_src = read_text(worker_path)
+
+    # 6) Paid-elevation hardening must be present (no direct paid bypass)
+    if worker_src:
+        required_paid_guard_markers = [
+            ("paid claim requires order ID", "paid_claim_order_id_required"),
+            ("paid claims start pending review", "CLAIM_REVIEW_PENDING"),
+            ("provisional expiry computation is present", "computeProvisionalExpiryIso"),
+            ("permanent-pro email allowlist guard is present", "isPermanentProEmail"),
+            ("provisional activation audit marker is present", "claim_activated_provisional"),
+            ("claim cooldown guard is present", "paid_claim_cooldown_active"),
+        ]
+        for label, marker in required_paid_guard_markers:
+            if marker not in worker_src:
+                errors.append(f"Paid elevation safeguard missing: {label} ('{marker}')")
+
+        if "OR (request_type = ? AND review_status = ?)" not in worker_src:
+            errors.append(
+                "Paid claim activation path missing pending-review guard "
+                "(expected request_type/review_status check in activation query)."
+            )
+
+    # 7) Admin analytics must reject token query params
+    if worker_src:
+        query_token_reject_count = worker_src.count("query_token_not_allowed")
+        if query_token_reject_count < 2:
+            errors.append(
+                "Admin analytics query-token rejection appears incomplete "
+                "(expected checks for both /admin/analytics and /admin/analytics/data)."
+            )
+
+    # 8) Legacy magic-link auth must be disabled by default in production
+    if worker_src and "const DEFAULT_ENABLE_MAGIC_LINK_AUTH = false;" not in worker_src:
+        errors.append(
+            "Legacy magic-link default is not explicitly disabled "
+            "(expected DEFAULT_ENABLE_MAGIC_LINK_AUTH = false)."
+        )
+
+    if wrangler_path.exists() and tomllib is not None:
+        try:
+            wrangler = tomllib.loads(read_text(wrangler_path))
+            vars_table = wrangler.get("vars", {}) if isinstance(wrangler, dict) else {}
+            if isinstance(vars_table, dict) and "ENABLE_MAGIC_LINK_AUTH" in vars_table:
+                enabled = parse_bool_like(vars_table.get("ENABLE_MAGIC_LINK_AUTH"))
+                if enabled is True:
+                    errors.append(
+                        "wrangler.toml enables legacy magic-link auth "
+                        "(ENABLE_MAGIC_LINK_AUTH=true)."
+                    )
+        except Exception as exc:  # noqa: BLE001 - release gate hard-fail
+            errors.append(f"wrangler.toml parse failed: {exc}")
+
+    # 9) Required fallback assets must exist; deprecated red fallback must be absent
+    required_fallback_assets = [
+        "black_pixel_20.exr",
+        "blue_pixel_20.exr",
+        "ocean_pixel_final_20.exr",
+    ]
+    for name in required_fallback_assets:
+        asset_path = fallback_dir / name
+        if not asset_path.exists():
+            errors.append(f"Missing required fallback asset: Resources/Fallback Images/{name}")
+
+    deprecated_red_asset = fallback_dir / "red_pixel_20.exr"
+    if deprecated_red_asset.exists():
+        errors.append(
+            "Deprecated fallback asset still present: Resources/Fallback Images/red_pixel_20.exr "
+            "(remove it to avoid packaging drift)."
+        )
+
+    # 10) Telemetry retention cleanup must be present and wired to scheduled job
+    if worker_src:
+        retention_markers = [
+            "CLEANUP_TILE_EVENT_RETENTION_DAYS",
+            "DELETE FROM tile_request_events",
+            "DELETE FROM tile_request_rollup_hourly_account",
+            "DELETE FROM tile_request_rollup_daily_account",
+            "summary = await cleanupAuthTables(",
+            "async scheduled(",
+        ]
+        for marker in retention_markers:
+            if marker not in worker_src:
+                errors.append(f"Retention/cleanup guard missing in worker source: '{marker}'")
 
     print("Planetka Release Gate")
     print(f"- manifest version: {manifest_version or '<unavailable>'}")

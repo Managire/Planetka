@@ -2,6 +2,12 @@
 
 Goal: ensure users can upgrade and downgrade without blocking production.
 
+## Current Status
+
+- Status: `Completed and verified`
+- Last execution: `2026-03-28`
+- Result: `PASS` (no blocker errors in A -> B -> A path)
+
 ## Test Flow
 
 Use two extension builds:
