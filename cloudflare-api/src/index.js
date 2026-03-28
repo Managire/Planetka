@@ -42,10 +42,21 @@ const DEFAULT_TILE_EDGE_MAX_AGE_SECONDS = 604800;
 const MAX_TILE_MAX_AGE_SECONDS = 31536000;
 const DEFAULT_FREE_API_KEY_VALID_DAYS = 30;
 const DEFAULT_PRO_GRACE_HOURS = 24;
+const DEFAULT_PENDING_CLAIM_COOLDOWN_DAYS = 7;
 const DEFAULT_API_KEY_DEVICE_ACTIVE_WINDOW_SECONDS = 900;
 const DEFAULT_API_KEY_REQUEST_MIN_AGE_SECONDS = 2;
+const DEFAULT_RATE_LIMIT_PAID_CLAIM_IP_DAILY_LIMIT = 20;
+const DEFAULT_RATE_LIMIT_PAID_CLAIM_IP_DAILY_WINDOW_SECONDS = 86400;
+const DEFAULT_REJECTED_CLAIM_ALERT_THRESHOLD = 3;
+const DEFAULT_REJECTED_CLAIM_ALERT_WINDOW_SECONDS = 86400;
+const DEFAULT_PAID_CLAIM_RETENTION_DAYS = 180;
 const RATE_LIMIT_PRUNE_INTERVAL_SECONDS = 300;
 const RATE_LIMIT_ENTRY_TTL_SECONDS = 172800;
+const API_KEY_REQUEST_TYPE_FREE = "free";
+const API_KEY_REQUEST_TYPE_PAID_CLAIM = "paid_claim";
+const CLAIM_REVIEW_PENDING = "pending";
+const CLAIM_REVIEW_APPROVED = "approved";
+const CLAIM_REVIEW_REJECTED = "rejected";
 let manualCreditModeCache = "";
 let userConsentColumnsReady = false;
 let magicLinksTokenIndexReady = false;
@@ -162,39 +173,96 @@ function isPermanentProEmail(email, env) {
   return set.has(normalizedEmail);
 }
 
-function hasPermanentProAccess(user) {
+function resolveEntitlementState(user, env = {}) {
   const status = normalizeUserStatus(user && user.status);
-  return status === PLAN_CODE_PLANETKA_PRO || status === PLAN_CODE_PLANETKA_STUDIO;
+  const email = normalizeEmail(user && user.email);
+  const provisionalPlanCode = normalizeRequestedPlan(
+    String(user && user.provisional_plan_code || status || PLAN_CODE_PLANETKA),
+  );
+  const provisionalExpiresAt = String(user && user.provisional_expires_at || "").trim();
+  const confirmedAt = String(user && user.pro_confirmed_at || "").trim();
+  const provisionalExpiresAtMs = Date.parse(provisionalExpiresAt);
+  const provisionalHasTimestamp = Number.isFinite(provisionalExpiresAtMs);
+  const isStatusPaid = status === PLAN_CODE_PLANETKA_PRO || status === PLAN_CODE_PLANETKA_STUDIO;
+  const isProvisionalPaidPlan = isPaidRequestedPlan(provisionalPlanCode);
+  const defaultResult = {
+    state: "free",
+    plan_code: PLAN_CODE_PLANETKA,
+    commercial_use_allowed: false,
+    subscription_status: "inactive",
+    is_permanent_paid: false,
+    is_provisional_paid: false,
+    is_expired_provisional: false,
+    source: "free",
+    email,
+  };
+  if (user && isBlockedStatus(user.status)) {
+    return {
+      ...defaultResult,
+      state: "blocked",
+      plan_code: "blocked",
+      source: "blocked",
+    };
+  }
+  if (isPermanentProEmail(email, env)) {
+    return {
+      ...defaultResult,
+      state: "permanent_paid",
+      plan_code: PLAN_CODE_PLANETKA_PRO,
+      commercial_use_allowed: true,
+      subscription_status: "active",
+      is_permanent_paid: true,
+      source: "allowlist",
+    };
+  }
+  if (confirmedAt && (isStatusPaid || isProvisionalPaidPlan)) {
+    const confirmedPlanCode = status === PLAN_CODE_PLANETKA_STUDIO
+      ? PLAN_CODE_PLANETKA_STUDIO
+      : (isProvisionalPaidPlan ? provisionalPlanCode : PLAN_CODE_PLANETKA_PRO);
+    return {
+      ...defaultResult,
+      state: "permanent_paid",
+      plan_code: confirmedPlanCode,
+      commercial_use_allowed: true,
+      subscription_status: "active",
+      is_permanent_paid: true,
+      source: "confirmed",
+    };
+  }
+  if (isProvisionalPaidPlan && provisionalHasTimestamp) {
+    if (provisionalExpiresAtMs >= Date.now()) {
+      return {
+        ...defaultResult,
+        state: "provisional_paid",
+        plan_code: provisionalPlanCode,
+        commercial_use_allowed: true,
+        subscription_status: "active",
+        is_provisional_paid: true,
+        source: "provisional",
+      };
+    }
+    return {
+      ...defaultResult,
+      state: "expired_provisional",
+      is_expired_provisional: true,
+      source: "expired_provisional",
+    };
+  }
+  return defaultResult;
 }
 
-function subscriptionStatusForUser(user) {
-  return hasPermanentProAccess(user) ? "active" : "inactive";
+function subscriptionStatusForUser(user, env = {}) {
+  const entitlement = resolveEntitlementState(user, env);
+  return String(entitlement.subscription_status || "inactive");
 }
 
 function resolvePolicyPlanCode(user, subscription, env = {}) {
   void subscription;
-  if (user && isBlockedStatus(user.status)) {
+  const entitlement = resolveEntitlementState(user, env);
+  if (entitlement.state === "blocked") {
     return "blocked";
   }
-  if (isPermanentProEmail(user && user.email, env)) {
-    return PLAN_CODE_PLANETKA_PRO;
-  }
-  const status = normalizeUserStatus(user && user.status);
-  const provisionalExpiresAt = String(user && user.provisional_expires_at || "").trim();
-  const confirmedAt = String(user && user.pro_confirmed_at || "").trim();
-  if ((status === PLAN_CODE_PLANETKA_PRO || status === PLAN_CODE_PLANETKA_STUDIO) && provisionalExpiresAt && !confirmedAt) {
-    const expiresAtMs = Date.parse(provisionalExpiresAt);
-    if (Number.isFinite(expiresAtMs) && expiresAtMs < Date.now()) {
-      return PLAN_CODE_PLANETKA;
-    }
-  }
-  if (status === PLAN_CODE_PLANETKA_STUDIO) {
-    return PLAN_CODE_PLANETKA_STUDIO;
-  }
-  if (status === PLAN_CODE_PLANETKA_PRO) {
-    return PLAN_CODE_PLANETKA_PRO;
-  }
-  return PLAN_CODE_PLANETKA;
+  return normalizeRequestedPlan(entitlement.plan_code || PLAN_CODE_PLANETKA);
 }
 
 function parseBooleanFlag(value) {
@@ -323,6 +391,43 @@ function normalizeRequestedPlan(value) {
     return PLAN_CODE_PLANETKA_STUDIO;
   }
   return PLAN_CODE_PLANETKA;
+}
+
+function isPaidRequestedPlan(planCode) {
+  const normalized = normalizeRequestedPlan(planCode);
+  return normalized === PLAN_CODE_PLANETKA_PRO || normalized === PLAN_CODE_PLANETKA_STUDIO;
+}
+
+function normalizeOrderId(value) {
+  return String(value || "").trim().replace(/\s+/g, " ").slice(0, 128);
+}
+
+function parseClaimCooldownDays(env) {
+  return Math.max(
+    1,
+    Math.floor(parsePositiveNumber(env.PENDING_CLAIM_COOLDOWN_DAYS, DEFAULT_PENDING_CLAIM_COOLDOWN_DAYS)),
+  );
+}
+
+function computePendingClaimCooldownIso(env) {
+  return addDaysIso(parseClaimCooldownDays(env));
+}
+
+function thresholdHit(count, threshold) {
+  if (threshold <= 0) {
+    return false;
+  }
+  return count === threshold || (count > threshold && (count % threshold) === 0);
+}
+
+function isUnconfirmedProvisionalActive(user) {
+  const entitlement = resolveEntitlementState(user);
+  return entitlement.state === "provisional_paid";
+}
+
+function isUnconfirmedProvisionalExpired(user) {
+  const entitlement = resolveEntitlementState(user);
+  return entitlement.state === "expired_provisional";
 }
 
 function computeApiKeyExpiryIso(planCode, env) {
@@ -927,10 +1032,15 @@ async function cleanupAuthTables(db, env, nowTimestamp) {
     device_sessions_deleted: 0,
     api_key_requests_deleted: 0,
     api_key_device_activity_deleted: 0,
+    provisional_claim_audit_deleted: 0,
   };
   const refreshSessionCutoff = addDaysFromIso(
     nowTimestamp,
     -summary.refresh_session_retention_days,
+  );
+  const paidClaimRetentionCutoff = addDaysFromIso(
+    nowTimestamp,
+    -Math.max(30, parseNonNegativeInteger(env.PAID_CLAIM_RETENTION_DAYS, DEFAULT_PAID_CLAIM_RETENTION_DAYS)),
   );
 
   if (await dbTableExists(db, "magic_links")) {
@@ -973,15 +1083,40 @@ async function cleanupAuthTables(db, env, nowTimestamp) {
   }
 
   if (await dbTableExists(db, "api_key_requests")) {
+    await ensureApiKeyTables(db);
     const apiKeyRequestsResult = await dbRun(
       db,
       `
         DELETE FROM api_key_requests
         WHERE
-          expires_at < ?
-          OR (used_at IS NOT NULL AND used_at != '' AND used_at < ?)
+          (
+            (request_type IS NULL OR request_type = '' OR request_type = ?)
+            AND (
+              expires_at < ?
+              OR (used_at IS NOT NULL AND used_at != '' AND used_at < ?)
+            )
+          )
+          OR (
+            request_type = ?
+            AND used_at IS NULL
+            AND expires_at < ?
+          )
+          OR (
+            request_type = ?
+            AND review_status != ?
+            AND COALESCE(reviewed_at, created_at) < ?
+          )
       `,
-      [nowTimestamp, refreshSessionCutoff],
+      [
+        API_KEY_REQUEST_TYPE_FREE,
+        nowTimestamp,
+        refreshSessionCutoff,
+        API_KEY_REQUEST_TYPE_PAID_CLAIM,
+        nowTimestamp,
+        API_KEY_REQUEST_TYPE_PAID_CLAIM,
+        CLAIM_REVIEW_PENDING,
+        paidClaimRetentionCutoff,
+      ],
     );
     summary.api_key_requests_deleted = dbMetaChanges(apiKeyRequestsResult);
   }
@@ -1002,6 +1137,18 @@ async function cleanupAuthTables(db, env, nowTimestamp) {
       [cutoffUnix],
     );
     summary.api_key_device_activity_deleted = dbMetaChanges(deviceActivityResult);
+  }
+
+  if (await dbTableExists(db, "provisional_claim_audit")) {
+    const claimAuditResult = await dbRun(
+      db,
+      `
+        DELETE FROM provisional_claim_audit
+        WHERE created_at < ?
+      `,
+      [paidClaimRetentionCutoff],
+    );
+    summary.provisional_claim_audit_deleted = dbMetaChanges(claimAuditResult);
   }
 
   return summary;
@@ -1094,7 +1241,9 @@ function buildPlanConfig(env) {
 }
 
 function resolvePlanCode(user, subscription, env = {}) {
-  const policyPlan = resolvePolicyPlanCode(user, subscription, env);
+  void subscription;
+  const entitlement = resolveEntitlementState(user, env);
+  const policyPlan = normalizeRequestedPlan(entitlement.plan_code || PLAN_CODE_PLANETKA);
   if (policyPlan === PLAN_CODE_PLANETKA_PRO || policyPlan === PLAN_CODE_PLANETKA_STUDIO) {
     return PLAN_CODE_PLANETKA_PRO;
   }
@@ -1611,21 +1760,83 @@ async function ensureApiKeyTables(db) {
         id TEXT PRIMARY KEY,
         email TEXT NOT NULL,
         requested_plan TEXT NOT NULL DEFAULT 'planetka',
+        request_type TEXT NOT NULL DEFAULT 'free',
+        claimed_plan_code TEXT,
+        order_id TEXT,
         token_hash TEXT NOT NULL UNIQUE,
         expires_at TEXT NOT NULL,
         used_at TEXT,
+        review_status TEXT NOT NULL DEFAULT 'pending',
+        reviewed_at TEXT,
+        reviewed_by TEXT,
+        review_note TEXT,
+        cooldown_until TEXT,
         accept_terms INTEGER NOT NULL DEFAULT 0,
         accept_privacy INTEGER NOT NULL DEFAULT 0,
         opt_in_news INTEGER NOT NULL DEFAULT 0,
         submitted_at_ms INTEGER NOT NULL DEFAULT 0,
         request_ip TEXT,
+        request_device_id TEXT,
         created_at TEXT NOT NULL
       )
     `,
   );
+  const apiKeyRequestPragma = await db.prepare(`PRAGMA table_info(api_key_requests)`).all();
+  const apiKeyRequestRows = Array.isArray(apiKeyRequestPragma && apiKeyRequestPragma.results)
+    ? apiKeyRequestPragma.results
+    : [];
+  const apiKeyRequestNames = new Set(
+    apiKeyRequestRows.map((row) => String(row && row.name || "").trim().toLowerCase()),
+  );
+  const apiKeyRequestStatements = [];
+  if (!apiKeyRequestNames.has("request_type")) {
+    apiKeyRequestStatements.push(`ALTER TABLE api_key_requests ADD COLUMN request_type TEXT NOT NULL DEFAULT 'free'`);
+  }
+  if (!apiKeyRequestNames.has("claimed_plan_code")) {
+    apiKeyRequestStatements.push(`ALTER TABLE api_key_requests ADD COLUMN claimed_plan_code TEXT`);
+  }
+  if (!apiKeyRequestNames.has("order_id")) {
+    apiKeyRequestStatements.push(`ALTER TABLE api_key_requests ADD COLUMN order_id TEXT`);
+  }
+  if (!apiKeyRequestNames.has("review_status")) {
+    apiKeyRequestStatements.push(`ALTER TABLE api_key_requests ADD COLUMN review_status TEXT NOT NULL DEFAULT 'pending'`);
+  }
+  if (!apiKeyRequestNames.has("reviewed_at")) {
+    apiKeyRequestStatements.push(`ALTER TABLE api_key_requests ADD COLUMN reviewed_at TEXT`);
+  }
+  if (!apiKeyRequestNames.has("reviewed_by")) {
+    apiKeyRequestStatements.push(`ALTER TABLE api_key_requests ADD COLUMN reviewed_by TEXT`);
+  }
+  if (!apiKeyRequestNames.has("review_note")) {
+    apiKeyRequestStatements.push(`ALTER TABLE api_key_requests ADD COLUMN review_note TEXT`);
+  }
+  if (!apiKeyRequestNames.has("cooldown_until")) {
+    apiKeyRequestStatements.push(`ALTER TABLE api_key_requests ADD COLUMN cooldown_until TEXT`);
+  }
+  if (!apiKeyRequestNames.has("request_device_id")) {
+    apiKeyRequestStatements.push(`ALTER TABLE api_key_requests ADD COLUMN request_device_id TEXT`);
+  }
+  for (const statement of apiKeyRequestStatements) {
+    try {
+      await dbRun(db, statement);
+    } catch (error) {
+      const message = String(error && error.message || "");
+      if (!message.toLowerCase().includes("duplicate column")) {
+        throw error;
+      }
+    }
+  }
   await dbRun(
     db,
     `CREATE INDEX IF NOT EXISTS idx_api_key_requests_email_created ON api_key_requests(email, created_at DESC)`,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_api_key_requests_claim_state ON api_key_requests(email, request_type, review_status, created_at DESC)`,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_api_key_requests_claim_cooldown ON api_key_requests(email, request_type, cooldown_until DESC)`,
   );
   await dbRun(
     db,
@@ -1675,7 +1886,182 @@ async function ensureApiKeyTables(db) {
     db,
     `CREATE INDEX IF NOT EXISTS idx_api_key_device_activity_seen ON api_key_device_activity(last_seen_unix DESC)`,
   );
+  await dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS provisional_claim_audit (
+        id TEXT PRIMARY KEY,
+        created_at TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        email TEXT,
+        user_id TEXT,
+        claim_id TEXT,
+        order_id TEXT,
+        plan_code TEXT,
+        ip TEXT,
+        device_id TEXT,
+        details_json TEXT
+      )
+    `,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_provisional_claim_audit_created ON provisional_claim_audit(created_at DESC)`,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_provisional_claim_audit_email_created ON provisional_claim_audit(email, created_at DESC)`,
+  );
   apiKeyTablesReady = true;
+}
+
+async function appendProvisionalClaimAudit(db, eventType, payload = {}) {
+  if (!db || !eventType) {
+    return;
+  }
+  await ensureApiKeyTables(db);
+  const detailsJson = (() => {
+    try {
+      return JSON.stringify(payload && payload.details ? payload.details : {});
+    } catch (_error) {
+      return "{}";
+    }
+  })();
+  await dbRun(
+    db,
+    `
+      INSERT INTO provisional_claim_audit (
+        id,
+        created_at,
+        event_type,
+        email,
+        user_id,
+        claim_id,
+        order_id,
+        plan_code,
+        ip,
+        device_id,
+        details_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    [
+      crypto.randomUUID(),
+      nowIso(),
+      String(eventType || "").trim().slice(0, 96),
+      normalizeEmail(payload.email || "") || null,
+      String(payload.userId || "").trim() || null,
+      String(payload.claimId || "").trim() || null,
+      normalizeOrderId(payload.orderId || "") || null,
+      normalizeRequestedPlan(payload.planCode || PLAN_CODE_PLANETKA),
+      String(payload.ip || "").trim() || null,
+      normalizeDeviceId(payload.deviceId || "") || null,
+      detailsJson,
+    ],
+  );
+}
+
+async function findLatestPaidClaimByEmail(db, email) {
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail) {
+    return null;
+  }
+  return dbGet(
+    db,
+    `
+      SELECT
+        id,
+        email,
+        requested_plan,
+        claimed_plan_code,
+        request_type,
+        order_id,
+        review_status,
+        reviewed_at,
+        reviewed_by,
+        review_note,
+        cooldown_until,
+        used_at,
+        request_ip,
+        request_device_id,
+        created_at
+      FROM api_key_requests
+      WHERE email = ?
+        AND request_type = ?
+      ORDER BY created_at DESC
+      LIMIT 1
+    `,
+    [normalizedEmail, API_KEY_REQUEST_TYPE_PAID_CLAIM],
+  );
+}
+
+async function findPendingPaidClaimByEmail(db, email) {
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail) {
+    return null;
+  }
+  const now = nowIso();
+  return dbGet(
+    db,
+    `
+      SELECT
+        id,
+        email,
+        requested_plan,
+        claimed_plan_code,
+        request_type,
+        order_id,
+        review_status,
+        cooldown_until,
+        used_at,
+        request_ip,
+        request_device_id,
+        created_at
+      FROM api_key_requests
+      WHERE email = ?
+        AND request_type = ?
+        AND review_status = ?
+        AND (used_at IS NOT NULL OR expires_at >= ?)
+      ORDER BY created_at DESC
+      LIMIT 1
+    `,
+    [normalizedEmail, API_KEY_REQUEST_TYPE_PAID_CLAIM, CLAIM_REVIEW_PENDING, now],
+  );
+}
+
+async function markPaidClaimReviewed(db, claimId, reviewStatus, options = {}) {
+  const normalizedClaimId = String(claimId || "").trim();
+  if (!normalizedClaimId) {
+    return;
+  }
+  const safeStatus = String(reviewStatus || "").trim().toLowerCase() || CLAIM_REVIEW_REJECTED;
+  const reviewedAt = String(options.reviewedAt || nowIso()).trim();
+  const reviewedBy = String(options.reviewedBy || "").trim();
+  const reviewNote = String(options.reviewNote || "").trim();
+  const cooldownUntil = String(options.cooldownUntil || "").trim();
+  await dbRun(
+    db,
+    `
+      UPDATE api_key_requests
+      SET
+        review_status = ?,
+        reviewed_at = ?,
+        reviewed_by = CASE WHEN ? != '' THEN ? ELSE reviewed_by END,
+        review_note = CASE WHEN ? != '' THEN ? ELSE review_note END,
+        cooldown_until = CASE WHEN ? != '' THEN ? ELSE cooldown_until END
+      WHERE id = ?
+    `,
+    [
+      safeStatus,
+      reviewedAt,
+      reviewedBy,
+      reviewedBy,
+      reviewNote,
+      reviewNote,
+      cooldownUntil,
+      cooldownUntil,
+      normalizedClaimId,
+    ],
+  );
 }
 
 async function ensureRefreshSessionColumns(db) {
@@ -1729,22 +2115,33 @@ async function upsertUserByEmail(db, email, status = PLAN_CODE_PLANETKA, options
   await ensureUserConsentColumns(db);
   await ensureUserProvisionalColumns(db);
   const requestedStatus = normalizePlanCode(status) || PLAN_CODE_PLANETKA;
+  const provisionalPlanCode = normalizeRequestedPlan(options.provisionalPlanCode || "");
+  const provisionalExpiresAt = String(options.provisionalExpiresAt || "").trim();
+  const proConfirmedAt = String(options.proConfirmedAt || "").trim();
+  const requestedPaidStatus = requestedStatus === PLAN_CODE_PLANETKA_PRO || requestedStatus === PLAN_CODE_PLANETKA_STUDIO;
+  const hasServerEntitlementSignal = Boolean(
+    proConfirmedAt
+    || (isPaidRequestedPlan(provisionalPlanCode) && provisionalExpiresAt)
+    || isPermanentProEmail(normalizedEmail, env),
+  );
+  const gatedRequestedStatus = (requestedPaidStatus && !hasServerEntitlementSignal)
+    ? PLAN_CODE_PLANETKA
+    : requestedStatus;
   const forceProByEmail = isPermanentProEmail(normalizedEmail, env);
-  const finalRequestedStatus = forceProByEmail ? PLAN_CODE_PLANETKA_PRO : requestedStatus;
+  const finalRequestedStatus = forceProByEmail ? PLAN_CODE_PLANETKA_PRO : gatedRequestedStatus;
   let user = await findUserByEmail(db, normalizedEmail);
   if (user) {
     const currentStatus = String(user.status || "").trim().toLowerCase();
     const nextStatus = String(finalRequestedStatus || "").trim().toLowerCase() || PLAN_CODE_PLANETKA;
-    // Never downgrade paid plans when this helper is called from other flows.
+    const currentEntitlement = resolveEntitlementState(user, env);
+    // Keep currently entitled paid status when this helper is called with free status by non-entitlement flows.
     const protectedStatus = (
-      (currentStatus === PLAN_CODE_PLANETKA_PRO || currentStatus === PLAN_CODE_PLANETKA_STUDIO)
+      Boolean(currentEntitlement && currentEntitlement.commercial_use_allowed)
+      && (currentStatus === PLAN_CODE_PLANETKA_PRO || currentStatus === PLAN_CODE_PLANETKA_STUDIO)
       && nextStatus === PLAN_CODE_PLANETKA
     )
       ? currentStatus
       : nextStatus;
-    const provisionalPlanCode = normalizeRequestedPlan(options.provisionalPlanCode || "");
-    const provisionalExpiresAt = String(options.provisionalExpiresAt || "").trim();
-    const proConfirmedAt = String(options.proConfirmedAt || "").trim();
     await dbRun(
       db,
       `
@@ -1770,15 +2167,12 @@ async function upsertUserByEmail(db, email, status = PLAN_CODE_PLANETKA, options
     return { ...user, status: protectedStatus };
   }
 
-  const id = crypto.randomUUID();
+	  const id = crypto.randomUUID();
   const createdAt = nowIso();
   const termsAcceptedAt = options.termsAcceptedAt ? String(options.termsAcceptedAt) : null;
   const privacyAcceptedAt = options.privacyAcceptedAt ? String(options.privacyAcceptedAt) : null;
   const termsVersion = options.termsVersion ? String(options.termsVersion) : null;
   const privacyVersion = options.privacyVersion ? String(options.privacyVersion) : null;
-  const provisionalPlanCode = normalizeRequestedPlan(options.provisionalPlanCode || "");
-  const provisionalExpiresAt = options.provisionalExpiresAt ? String(options.provisionalExpiresAt) : null;
-  const proConfirmedAt = options.proConfirmedAt ? String(options.proConfirmedAt) : null;
   await dbRun(
     db,
     `
@@ -1814,9 +2208,133 @@ async function upsertUserByEmail(db, email, status = PLAN_CODE_PLANETKA, options
   return user;
 }
 
+async function applyExpiredProvisionalFallback(db, user, env = {}) {
+  if (!user || !user.id || !isUnconfirmedProvisionalExpired(user)) {
+    return;
+  }
+  const now = nowIso();
+  const cooldownUntil = computePendingClaimCooldownIso(env);
+  const latestClaim = await findLatestPaidClaimByEmail(db, user.email);
+  if (latestClaim && String(latestClaim.review_status || "").trim().toLowerCase() === CLAIM_REVIEW_PENDING) {
+    await markPaidClaimReviewed(
+      db,
+      latestClaim.id,
+      CLAIM_REVIEW_REJECTED,
+      {
+        reviewedAt: now,
+        reviewedBy: "system_timeout",
+        reviewNote: "auto_fallback_to_free_after_provisional_expiry",
+        cooldownUntil,
+      },
+    );
+    await appendProvisionalClaimAudit(
+      db,
+      "claim_auto_fallback_to_free",
+      {
+        email: user.email,
+        userId: user.id,
+        claimId: String(latestClaim.id || "").trim(),
+        orderId: String(latestClaim.order_id || "").trim(),
+        planCode: latestClaim.claimed_plan_code || latestClaim.requested_plan || PLAN_CODE_PLANETKA,
+        ip: String(latestClaim.request_ip || "").trim(),
+        deviceId: String(latestClaim.request_device_id || "").trim(),
+        details: {
+          cooldown_until: cooldownUntil,
+        },
+      },
+    );
+    await signalRejectedClaimAttempt(
+      db,
+      env,
+      {
+        email: user.email,
+        ip: String(latestClaim.request_ip || "").trim(),
+        deviceId: String(latestClaim.request_device_id || "").trim(),
+        orderId: String(latestClaim.order_id || "").trim(),
+        requestedPlan: latestClaim.claimed_plan_code || latestClaim.requested_plan || PLAN_CODE_PLANETKA,
+        claimId: String(latestClaim.id || "").trim(),
+        reason: "claim_expired_no_manual_decision",
+      },
+    );
+    try {
+      await sendOpsAlertEmail(
+        env,
+        "Planetka provisional paid access auto-fallback",
+        [
+          "Provisional paid access expired without manual confirmation.",
+          `email=${normalizeEmail(user.email || "")}`,
+          `claim_id=${String(latestClaim.id || "").trim()}`,
+          `order_id=${normalizeOrderId(latestClaim.order_id || "")}`,
+          `requested_plan=${normalizeRequestedPlan(latestClaim.claimed_plan_code || latestClaim.requested_plan || PLAN_CODE_PLANETKA)}`,
+          `request_ip=${String(latestClaim.request_ip || "").trim()}`,
+          `request_device_id=${normalizeDeviceId(latestClaim.request_device_id || "")}`,
+          `cooldown_until=${cooldownUntil}`,
+        ],
+      );
+    } catch (error) {
+      console.warn(
+        "worker.claim_auto_fallback_alert_email_failed",
+        JSON.stringify({
+          email: normalizeEmail(user.email || ""),
+          error: String(error && error.message || "claim_auto_fallback_alert_email_failed"),
+        }),
+      );
+    }
+  }
+  await dbRun(
+    db,
+    `
+      UPDATE api_keys
+      SET
+        provisional = 0,
+        provisional_expires_at = NULL,
+        plan_code = ?,
+        confirmed_at = NULL
+      WHERE user_id = ?
+        AND status = 'active'
+        AND provisional = 1
+    `,
+    [PLAN_CODE_PLANETKA, user.id],
+  );
+}
+
 async function enforceUserPlanPolicy(db, user, subscription = null, env = {}) {
   if (!user || !user.id || isBlockedStatus(user.status)) {
     return user;
+  }
+  if (isUnconfirmedProvisionalExpired(user)) {
+    await applyExpiredProvisionalFallback(db, user, env);
+    user = await findUserById(db, user.id);
+    if (!user) {
+      return null;
+    }
+  }
+  if (String(user.pro_confirmed_at || "").trim()) {
+    const latestClaim = await findLatestPaidClaimByEmail(db, user.email);
+    if (latestClaim && String(latestClaim.review_status || "").trim().toLowerCase() === CLAIM_REVIEW_PENDING) {
+      await markPaidClaimReviewed(
+        db,
+        latestClaim.id,
+        CLAIM_REVIEW_APPROVED,
+        {
+          reviewedBy: "system_confirmed",
+          reviewNote: "user_confirmed_paid_claim",
+        },
+      );
+      await appendProvisionalClaimAudit(
+        db,
+        "claim_marked_approved_after_confirmation",
+        {
+          email: user.email,
+          userId: user.id,
+          claimId: String(latestClaim.id || "").trim(),
+          orderId: String(latestClaim.order_id || "").trim(),
+          planCode: latestClaim.claimed_plan_code || latestClaim.requested_plan || PLAN_CODE_PLANETKA,
+          ip: String(latestClaim.request_ip || "").trim(),
+          deviceId: String(latestClaim.request_device_id || "").trim(),
+        },
+      );
+    }
   }
   const targetPlan = resolvePolicyPlanCode(user, subscription, env);
   if (
@@ -1830,11 +2348,27 @@ async function enforceUserPlanPolicy(db, user, subscription = null, env = {}) {
   if (currentStatus === targetPlan) {
     return { ...user, status: targetPlan };
   }
-  await dbRun(
-    db,
-    `UPDATE users SET status = ? WHERE id = ?`,
-    [targetPlan, user.id],
-  );
+  if (targetPlan === PLAN_CODE_PLANETKA) {
+    await dbRun(
+      db,
+      `
+        UPDATE users
+        SET
+          status = ?,
+          provisional_plan_code = NULL,
+          provisional_expires_at = NULL
+        WHERE id = ?
+      `,
+      [targetPlan, user.id],
+    );
+    return {
+      ...user,
+      status: targetPlan,
+      provisional_plan_code: "",
+      provisional_expires_at: "",
+    };
+  }
+  await dbRun(db, `UPDATE users SET status = ? WHERE id = ?`, [targetPlan, user.id]);
   return { ...user, status: targetPlan };
 }
 
@@ -2170,7 +2704,27 @@ async function enforceApiKeyDeviceLimit(db, apiKeyId, userId, planCode, deviceId
     rows.map((row) => normalizeDeviceId(row && row.device_id)).filter((value) => Boolean(value)),
   );
   const alreadyActive = activeDeviceIds.has(safeDeviceId);
-  const maxDevices = maxDevicesForPlan(planCode);
+  const apiKeyState = await dbGet(
+    db,
+    `
+      SELECT
+        ak.provisional,
+        ak.confirmed_at,
+        u.pro_confirmed_at
+      FROM api_keys ak
+      LEFT JOIN users u ON u.id = ak.user_id
+      WHERE ak.id = ?
+      LIMIT 1
+    `,
+    [apiKeyId],
+  );
+  const provisionalPending = Boolean(
+    apiKeyState
+    && clampNonNegativeInt(apiKeyState.provisional) === 1
+    && !String(apiKeyState.confirmed_at || "").trim()
+    && !String(apiKeyState.pro_confirmed_at || "").trim(),
+  );
+  const maxDevices = provisionalPending ? 1 : maxDevicesForPlan(planCode);
   if (!alreadyActive && activeDeviceIds.size >= maxDevices) {
     throw new Error("device_limit_exceeded");
   }
@@ -2179,6 +2733,7 @@ async function enforceApiKeyDeviceLimit(db, apiKeyId, userId, planCode, deviceId
   return {
     activeDeviceCount: activeDeviceIds.has(safeDeviceId) ? activeDeviceIds.size : (activeDeviceIds.size + 1),
     maxDevices,
+    provisionalRestricted: provisionalPending,
   };
 }
 
@@ -2190,7 +2745,7 @@ async function createAccessToken(env, user, subscription, extraClaims = {}) {
     type: "access",
     sub: user.id,
     email: user.email,
-    subscription_status: subscriptionStatusForUser(user),
+    subscription_status: subscriptionStatusForUser(user, env),
     exp,
   };
   const payload = { ...basePayload };
@@ -2436,8 +2991,14 @@ function renderApiKeyRequestPage(env, message = "", requestedPlan = PLAN_CODE_PL
   const safePlan = normalizeRequestedPlan(requestedPlan || PLAN_CODE_PLANETKA);
   const isPaidPlan = safePlan === PLAN_CODE_PLANETKA_PRO || safePlan === PLAN_CODE_PLANETKA_STUDIO;
   const subTitle = isPaidPlan
-    ? "Enter your purchase email to receive your API key. Paid access is provisional for 24 hours until manually confirmed."
+    ? "Enter your purchase email and order ID to receive your API key."
     : "Enter your email address and we will send you a one-click activation link.";
+  const orderFieldMarkup = isPaidPlan
+    ? `
+        <label for="orderId">Order ID</label>
+        <input id="orderId" type="text" placeholder="Enter your order ID" required />
+      `
+    : ``;
   return html(`<!doctype html>
 <html lang="en">
   <head>
@@ -2451,7 +3012,7 @@ function renderApiKeyRequestPage(env, message = "", requestedPlan = PLAN_CODE_PL
       h1 { margin:0 0 10px; font-size:30px; }
       p { margin:0 0 16px; color:#cbd5e1; line-height:1.5; }
       label { display:block; margin:0 0 8px; color:#cbd5e1; font-size:14px; }
-      input[type="email"] { width:100%; box-sizing:border-box; padding:14px 16px; border-radius:10px; border:1px solid rgba(148,163,184,.35); background:rgba(15,23,42,.85); color:#f8fafc; font-size:16px; margin-bottom:14px; }
+      input[type="email"], input[type="text"] { width:100%; box-sizing:border-box; padding:14px 16px; border-radius:10px; border:1px solid rgba(148,163,184,.35); background:rgba(15,23,42,.85); color:#f8fafc; font-size:16px; margin-bottom:14px; }
       .checkbox { display:flex; gap:8px; align-items:flex-start; margin:10px 0; font-size:14px; color:#cbd5e1; }
       .checkbox input { margin-top:3px; }
       .checkbox a { color:#93c5fd; text-decoration:underline; }
@@ -2469,6 +3030,7 @@ function renderApiKeyRequestPage(env, message = "", requestedPlan = PLAN_CODE_PL
       <form id="form">
         <label for="email">Email</label>
         <input id="email" type="email" placeholder="you@example.com" required />
+        ${orderFieldMarkup}
         <div class="checkbox">
           <input id="terms" type="checkbox" required />
           <label for="terms">I agree to the <a href="${termsUrl}" target="_blank" rel="noopener noreferrer">Terms and Conditions</a> and <a href="${privacyUrl}" target="_blank" rel="noopener noreferrer">Privacy Policy</a>.</label>
@@ -2502,6 +3064,7 @@ function renderApiKeyRequestPage(env, message = "", requestedPlan = PLAN_CODE_PL
             website: String(document.getElementById("website").value || ""),
             submitted_at_ms: Date.now() - startedAt,
             requested_plan: "${safePlan}",
+            order_id: String((document.getElementById("orderId") || {}).value || "").trim(),
           };
           const response = await fetch("/auth/api-key/request", {
             method: "POST",
@@ -2584,37 +3147,141 @@ function renderApiKeyActivatedPage(env, data = {}) {
 </html>`, 200, env);
 }
 
-async function sendProvisionalPlanAlert(env, email, requestedPlan, provisionalExpiresAt) {
+async function sendOpsAlertEmail(env, subject, lines = []) {
+  const apiKey = requireSecret(env, "EMAIL_API_KEY");
+  const from = String(env.EMAIL_FROM || "info@planetka.io").trim();
+  const to = String(env.SECURITY_ALERT_EMAIL || "info@planetka.io").trim() || "info@planetka.io";
+  await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      from,
+      to: [to],
+      subject: String(subject || "Planetka security alert").trim(),
+      text: Array.isArray(lines) ? lines.join("\n") : String(lines || ""),
+    }),
+  });
+}
+
+async function sendProvisionalPlanAlert(env, details = {}) {
   try {
-    const apiKey = requireSecret(env, "EMAIL_API_KEY");
-    const from = String(env.EMAIL_FROM || "info@planetka.io").trim();
-    const to = String(env.SECURITY_ALERT_EMAIL || "info@planetka.io").trim() || "info@planetka.io";
-    await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        from,
-        to: [to],
-        subject: "Planetka provisional paid access request",
-        text: [
-          "A user requested provisional paid access.",
-          `email=${normalizeEmail(email)}`,
-          `requested_plan=${normalizeRequestedPlan(requestedPlan)}`,
-          `provisional_expires_at=${String(provisionalExpiresAt || "").trim()}`,
-          "",
-          "If payment is confirmed, mark the user as confirmed in D1 before expiry.",
-        ].join("\n"),
-      }),
-    });
+    await sendOpsAlertEmail(
+      env,
+      "Planetka provisional paid access request",
+      [
+        "A user requested provisional paid access.",
+        `email=${normalizeEmail(details.email || "")}`,
+        `requested_plan=${normalizeRequestedPlan(details.requestedPlan || PLAN_CODE_PLANETKA)}`,
+        `order_id=${normalizeOrderId(details.orderId || "")}`,
+        `request_ip=${String(details.ip || "").trim()}`,
+        `request_device_id=${normalizeDeviceId(details.deviceId || "")}`,
+        `claim_id=${String(details.claimId || "").trim()}`,
+        `provisional_expires_at=${String(details.provisionalExpiresAt || "").trim()}`,
+        "",
+        "If payment is confirmed, mark the user as confirmed in D1 before expiry.",
+      ],
+    );
   } catch (error) {
     console.warn(
       "worker.provisional_alert_email_failed",
       JSON.stringify({
-        email: normalizeEmail(email),
+        email: normalizeEmail(details.email || ""),
         error: String(error && error.message || "alert_email_failed"),
+      }),
+    );
+  }
+}
+
+async function signalRejectedClaimAttempt(db, env, details = {}) {
+  await ensureRateLimitsTable(db);
+  const normalizedEmail = normalizeEmail(details.email || "");
+  const ip = String(details.ip || "").trim();
+  const deviceId = normalizeDeviceId(details.deviceId || "");
+  const threshold = parseRateLimitInteger(
+    env.REJECTED_CLAIM_ALERT_THRESHOLD,
+    DEFAULT_REJECTED_CLAIM_ALERT_THRESHOLD,
+  );
+  const windowSeconds = parseRateLimitInteger(
+    env.REJECTED_CLAIM_ALERT_WINDOW_SECONDS,
+    DEFAULT_REJECTED_CLAIM_ALERT_WINDOW_SECONDS,
+  );
+  if (threshold <= 0 || windowSeconds <= 0) {
+    return;
+  }
+  const signals = [];
+  if (normalizedEmail) {
+    signals.push({ keyType: "email", keyValue: normalizedEmail });
+  }
+  if (ip) {
+    signals.push({ keyType: "ip", keyValue: ip });
+  }
+  if (deviceId) {
+    signals.push({ keyType: "device", keyValue: deviceId });
+  }
+  if (!signals.length) {
+    return;
+  }
+  const triggered = [];
+  for (const signal of signals) {
+    const rate = await consumeRateLimitWindow(
+      db,
+      `claim_reject_${signal.keyType}`,
+      signal.keyValue,
+      2147483647,
+      windowSeconds,
+    );
+    if (thresholdHit(clampNonNegativeInt(rate && rate.count), threshold)) {
+      triggered.push({
+        keyType: signal.keyType,
+        keyValue: signal.keyValue,
+        count: clampNonNegativeInt(rate && rate.count),
+      });
+    }
+  }
+  await appendProvisionalClaimAudit(
+    db,
+    "claim_rejected_signal",
+    {
+      email: normalizedEmail,
+      orderId: details.orderId || "",
+      planCode: details.requestedPlan || PLAN_CODE_PLANETKA,
+      ip,
+      deviceId,
+      details: {
+        reason: String(details.reason || "").trim(),
+        claim_id: String(details.claimId || "").trim(),
+        triggered,
+      },
+    },
+  );
+  if (!triggered.length) {
+    return;
+  }
+  try {
+    await sendOpsAlertEmail(
+      env,
+      "Planetka repeated rejected paid-claim activity",
+      [
+        "Repeated rejected paid-claim activity detected.",
+        `email=${normalizedEmail}`,
+        `ip=${ip}`,
+        `device_id=${deviceId}`,
+        `order_id=${normalizeOrderId(details.orderId || "")}`,
+        `requested_plan=${normalizeRequestedPlan(details.requestedPlan || PLAN_CODE_PLANETKA)}`,
+        `reason=${String(details.reason || "").trim()}`,
+        `claim_id=${String(details.claimId || "").trim()}`,
+        `triggered=${JSON.stringify(triggered)}`,
+      ],
+    );
+  } catch (error) {
+    console.warn(
+      "worker.rejected_claim_alert_email_failed",
+      JSON.stringify({
+        email: normalizedEmail,
+        error: String(error && error.message || "rejected_claim_alert_email_failed"),
       }),
     );
   }
@@ -2627,6 +3294,9 @@ async function handleApiKeyRequest(request, env) {
   const body = await parseJson(request);
   const email = normalizeEmail(body.email);
   const requestedPlan = normalizeRequestedPlan(body.requested_plan || PLAN_CODE_PLANETKA);
+  const isPaidClaim = isPaidRequestedPlan(requestedPlan);
+  const orderId = normalizeOrderId(body.order_id || "");
+  const requestDeviceId = normalizeDeviceId(body.device_id || "");
   const acceptTerms = parseBooleanFlag(body.accept_terms);
   const acceptPrivacy = parseBooleanFlag(body.accept_privacy);
   const optInNews = parseBooleanFlag(body.opt_in_news);
@@ -2647,6 +3317,9 @@ async function handleApiKeyRequest(request, env) {
   }
   if (!acceptTerms || !acceptPrivacy) {
     return json({ ok: false, error: "terms_consent_required" }, 400, env);
+  }
+  if (isPaidClaim && !orderId) {
+    return json({ ok: false, error: "paid_claim_order_id_required" }, 400, env);
   }
 
   const clientIp = requestClientIp(request);
@@ -2680,6 +3353,100 @@ async function handleApiKeyRequest(request, env) {
       authStartEmailRate.retryAfterSeconds,
     );
   }
+  if (isPaidClaim) {
+    const paidClaimIpDailyRate = await consumeRateLimitWindow(
+      db,
+      "paid_claim_request_ip_day",
+      clientIp,
+      parseRateLimitInteger(
+        env.RATE_LIMIT_PAID_CLAIM_IP_DAILY_LIMIT,
+        DEFAULT_RATE_LIMIT_PAID_CLAIM_IP_DAILY_LIMIT,
+      ),
+      parseRateLimitInteger(
+        env.RATE_LIMIT_PAID_CLAIM_IP_DAILY_WINDOW_SECONDS,
+        DEFAULT_RATE_LIMIT_PAID_CLAIM_IP_DAILY_WINDOW_SECONDS,
+      ),
+    );
+    if (!paidClaimIpDailyRate.allowed) {
+      await signalRejectedClaimAttempt(
+        db,
+        env,
+        {
+          email,
+          ip: clientIp,
+          deviceId: requestDeviceId,
+          orderId,
+          requestedPlan,
+          reason: "paid_claim_ip_daily_rate_limited",
+        },
+      );
+      return rateLimitedResponse(
+        env,
+        "paid_claim_ip_daily_rate_limited",
+        "Too many paid-claim attempts from this IP. Please try again later.",
+        paidClaimIpDailyRate.retryAfterSeconds,
+      );
+    }
+  }
+
+  let existingUser = await findUserByEmail(db, email);
+  if (existingUser && !isBlockedStatus(existingUser.status)) {
+    existingUser = await enforceUserPlanPolicy(db, existingUser, null, env);
+  }
+  if (isPaidClaim) {
+    const latestPaidClaim = await findLatestPaidClaimByEmail(db, email);
+    if (latestPaidClaim) {
+      const cooldownUntil = String(latestPaidClaim.cooldown_until || "").trim();
+      const cooldownMs = Date.parse(cooldownUntil);
+      if (Number.isFinite(cooldownMs) && cooldownMs > Date.now()) {
+        await signalRejectedClaimAttempt(
+          db,
+          env,
+          {
+            email,
+            ip: clientIp,
+            deviceId: requestDeviceId,
+            orderId,
+            requestedPlan,
+            claimId: String(latestPaidClaim.id || "").trim(),
+            reason: "paid_claim_cooldown_active",
+          },
+        );
+        const retryAfterSeconds = Math.max(1, Math.ceil((cooldownMs - Date.now()) / 1000));
+        return rateLimitedResponse(
+          env,
+          "paid_claim_cooldown_active",
+          "Paid claim is in cooldown. Try again after cooldown ends.",
+          retryAfterSeconds,
+        );
+      }
+    }
+    const pendingPaidClaim = await findPendingPaidClaimByEmail(db, email);
+    if (pendingPaidClaim) {
+      await signalRejectedClaimAttempt(
+        db,
+        env,
+        {
+          email,
+          ip: clientIp,
+          deviceId: requestDeviceId,
+          orderId,
+          requestedPlan,
+          claimId: String(pendingPaidClaim.id || "").trim(),
+          reason: "paid_claim_pending_review",
+        },
+      );
+      return json(
+        {
+          ok: false,
+          error: "paid_claim_pending_review",
+          message: "A paid claim is already pending review for this account.",
+        },
+        409,
+        env,
+      );
+    }
+  }
 
   const legalVersion = String(env.TERMS_VERSION || env.LEGAL_VERSION || DEFAULT_LEGAL_VERSION).trim() || DEFAULT_LEGAL_VERSION;
   const privacyVersion = String(env.PRIVACY_VERSION || env.LEGAL_VERSION || DEFAULT_LEGAL_VERSION).trim() || DEFAULT_LEGAL_VERSION;
@@ -2702,6 +3469,10 @@ async function handleApiKeyRequest(request, env) {
 
   const token = randomToken(36);
   const tokenHash = await sha256Hex(token);
+  const requestType = isPaidClaim ? API_KEY_REQUEST_TYPE_PAID_CLAIM : API_KEY_REQUEST_TYPE_FREE;
+  const reviewStatus = isPaidClaim ? CLAIM_REVIEW_PENDING : CLAIM_REVIEW_APPROVED;
+  const claimPlanCode = isPaidClaim ? requestedPlan : PLAN_CODE_PLANETKA;
+  const claimId = crypto.randomUUID();
   await dbRun(
     db,
     `
@@ -2709,30 +3480,57 @@ async function handleApiKeyRequest(request, env) {
         id,
         email,
         requested_plan,
+        request_type,
+        claimed_plan_code,
+        order_id,
         token_hash,
         expires_at,
+        review_status,
         accept_terms,
         accept_privacy,
         opt_in_news,
         submitted_at_ms,
         request_ip,
+        request_device_id,
         created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     [
-      crypto.randomUUID(),
+      claimId,
       email,
-      requestedPlan,
+      claimPlanCode,
+      requestType,
+      claimPlanCode,
+      orderId || null,
       tokenHash,
       addMinutesIso(30),
+      reviewStatus,
       acceptTerms ? 1 : 0,
       acceptPrivacy ? 1 : 0,
       optInNews ? 1 : 0,
       submittedAtMs,
       clientIp,
+      requestDeviceId || null,
       nowIso(),
     ],
   );
+  if (isPaidClaim) {
+    await appendProvisionalClaimAudit(
+      db,
+      "claim_requested",
+      {
+        email,
+        claimId,
+        orderId,
+        planCode: requestedPlan,
+        ip: clientIp,
+        deviceId: requestDeviceId,
+        details: {
+          review_status: reviewStatus,
+        },
+      },
+    );
+  }
   await sendApiKeyActivationEmail(env, email, token);
   return json(
     {
@@ -2760,22 +3558,50 @@ async function activateApiKeyFromToken(db, env, rawToken) {
       WHERE token_hash = ?
         AND used_at IS NULL
         AND expires_at >= ?
-      RETURNING id, email, requested_plan, opt_in_news
+        AND (
+          request_type IS NULL
+          OR request_type = ''
+          OR request_type = ?
+          OR (request_type = ? AND review_status = ?)
+        )
+      RETURNING
+        id,
+        email,
+        requested_plan,
+        claimed_plan_code,
+        request_type,
+        order_id,
+        request_ip,
+        request_device_id,
+        review_status,
+        opt_in_news
     `,
-    [now, tokenHash, now],
+    [
+      now,
+      tokenHash,
+      now,
+      API_KEY_REQUEST_TYPE_FREE,
+      API_KEY_REQUEST_TYPE_PAID_CLAIM,
+      CLAIM_REVIEW_PENDING,
+    ],
   );
   if (!requestRow) {
     throw new Error("invalid_or_expired_token");
   }
 
-  const requestedPlan = normalizeRequestedPlan(requestRow.requested_plan || PLAN_CODE_PLANETKA);
+  const requestType = String(requestRow.request_type || API_KEY_REQUEST_TYPE_FREE).trim().toLowerCase();
+  const requestedPlan = requestType === API_KEY_REQUEST_TYPE_PAID_CLAIM
+    ? normalizeRequestedPlan(requestRow.claimed_plan_code || requestRow.requested_plan || PLAN_CODE_PLANETKA)
+    : PLAN_CODE_PLANETKA;
   const email = normalizeEmail(requestRow.email);
+  const orderId = normalizeOrderId(requestRow.order_id || "");
+  const claimId = String(requestRow.id || "").trim();
   let provisionalPlanCode = "";
   let provisionalExpiresAt = "";
   let proConfirmedAt = "";
   let statusToSet = PLAN_CODE_PLANETKA;
 
-  if (requestedPlan === PLAN_CODE_PLANETKA_PRO || requestedPlan === PLAN_CODE_PLANETKA_STUDIO) {
+  if (isPaidRequestedPlan(requestedPlan)) {
     statusToSet = requestedPlan;
     if (!isPermanentProEmail(email, env)) {
       provisionalPlanCode = requestedPlan;
@@ -2812,8 +3638,49 @@ async function activateApiKeyFromToken(db, env, rawToken) {
   );
 
   await sendApiKeyIssuedEmail(env, email, issued.apiKey, issued.planCode, issued.expiresAt);
+  if (requestType === API_KEY_REQUEST_TYPE_PAID_CLAIM) {
+    if (!provisionalPlanCode || !provisionalExpiresAt) {
+      await markPaidClaimReviewed(
+        db,
+        claimId,
+        CLAIM_REVIEW_APPROVED,
+        {
+          reviewedBy: "system_auto_confirmed",
+          reviewNote: "auto_confirmed_permanent_pro",
+        },
+      );
+    }
+    await appendProvisionalClaimAudit(
+      db,
+      provisionalPlanCode && provisionalExpiresAt ? "claim_activated_provisional" : "claim_activated_confirmed",
+      {
+        email,
+        userId: String(user && user.id || "").trim(),
+        claimId,
+        orderId,
+        planCode: requestedPlan,
+        ip: String(requestRow.request_ip || "").trim(),
+        deviceId: String(requestRow.request_device_id || "").trim(),
+        details: {
+          issued_plan_code: issued.planCode,
+          provisional_expires_at: provisionalExpiresAt,
+        },
+      },
+    );
+  }
   if (provisionalPlanCode && provisionalExpiresAt) {
-    await sendProvisionalPlanAlert(env, email, requestedPlan, provisionalExpiresAt);
+    await sendProvisionalPlanAlert(
+      env,
+      {
+        email,
+        requestedPlan,
+        provisionalExpiresAt,
+        orderId,
+        ip: String(requestRow.request_ip || "").trim(),
+        deviceId: String(requestRow.request_device_id || "").trim(),
+        claimId,
+      },
+    );
   }
   return {
     email,
@@ -2896,8 +3763,21 @@ async function handleApiKeyExchange(request, env) {
   };
   user = await enforceUserPlanPolicy(db, user, null, env);
   const effectivePlanCode = resolvePlanCode(user, null, env);
+  const provisionalRestricted = (
+    clampNonNegativeInt(record.api_key_provisional) === 1
+    && !String(record.api_key_confirmed_at || "").trim()
+    && !String(record.pro_confirmed_at || "").trim()
+  );
   try {
-    await enforceApiKeyDeviceLimit(db, String(record.api_key_id || ""), String(user.id || ""), effectivePlanCode, deviceId, request, env);
+    await enforceApiKeyDeviceLimit(
+      db,
+      String(record.api_key_id || ""),
+      String(user.id || ""),
+      effectivePlanCode,
+      deviceId,
+      request,
+      env,
+    );
   } catch (error) {
     const code = String(error && error.message || "device_limit_exceeded");
     if (code === "missing_device_id") {
@@ -2907,9 +3787,11 @@ async function handleApiKeyExchange(request, env) {
       {
         ok: false,
         error: "device_limit_exceeded",
-        message: effectivePlanCode === PLAN_CODE_PLANETKA
+        message: provisionalRestricted
+          ? "This API key can be active on one computer at a time."
+          : (effectivePlanCode === PLAN_CODE_PLANETKA
           ? "Free API key can be active on one computer at a time."
-          : "This API key reached the maximum number of active computers.",
+          : "This API key reached the maximum number of active computers."),
       },
       429,
       env,
@@ -2957,7 +3839,7 @@ async function handleApiKeyExchange(request, env) {
       email: user.email,
       access_token: accessToken,
       refresh_token: refreshToken,
-      subscription_status: subscriptionStatusForUser(user),
+      subscription_status: subscriptionStatusForUser(user, env),
       renews_at: "",
       trial_ends_at: "",
       api_key_mask: maskApiKey(apiKey),
@@ -3227,7 +4109,7 @@ async function handleAuthVerify(request, env) {
     pro_confirmed_at: userRecord.pro_confirmed_at || "",
   };
   user = await enforceUserPlanPolicy(db, user, null, env);
-  const subscriptionStatus = subscriptionStatusForUser(user);
+  const subscriptionStatus = subscriptionStatusForUser(user, env);
   const accessToken = await createAccessToken(env, user, null);
   const refreshToken = await createRefreshSession(db, userRecord.id);
   const accountState = await buildAllowanceState(db, user, null, env);
@@ -3344,7 +4226,7 @@ async function handleAuthRefresh(request, env) {
     pro_confirmed_at: session.pro_confirmed_at || "",
   };
   user = await enforceUserPlanPolicy(db, user, null, env);
-  const subscriptionStatus = subscriptionStatusForUser(user);
+  const subscriptionStatus = subscriptionStatusForUser(user, env);
 
   await dbRun(
     db,
@@ -3426,14 +4308,15 @@ async function handleMe(request, env) {
     return blockedAccountResponse(env);
   }
   user = await enforceUserPlanPolicy(db, user, null, env);
+  const effectiveUserStatus = resolvePolicyPlanCode(user, null, env);
   const accountState = await buildAllowanceState(db, user, null, env);
-  const subscriptionStatus = subscriptionStatusForUser(user);
+  const subscriptionStatus = subscriptionStatusForUser(user, env);
 
   return json(
     {
       ok: true,
       email: user.email,
-      user_status: user.status,
+      user_status: effectiveUserStatus,
       subscription_status: subscriptionStatus,
       trial_ends_at: null,
       renews_at: null,
@@ -4030,6 +4913,7 @@ async function handleTileRequest(request, env, path, ctx) {
   }
   user = await enforceUserPlanPolicy(db, user, null, env);
   const planCode = resolvePlanCode(user, null, env);
+  const provisionalRestricted = isUnconfirmedProvisionalActive(user);
   const authMethod = String(access.auth_method || "").trim().toLowerCase();
   const tokenApiKeyId = String(access.api_key_id || "").trim();
   const tokenDeviceId = normalizeDeviceId(access.device_id || request.headers.get("X-Planetka-Device-Id") || "");
@@ -4041,9 +4925,11 @@ async function handleTileRequest(request, env, path, ctx) {
       const statusCode = code === "missing_device_id" ? 400 : 429;
       const message = code === "missing_device_id"
         ? "Missing device identifier for API key session."
-        : (planCode === PLAN_CODE_PLANETKA
+        : (provisionalRestricted
+          ? "This API key can be active on one computer at a time."
+          : (planCode === PLAN_CODE_PLANETKA
           ? "Free API key can be active on one computer at a time."
-          : "This API key reached the maximum number of active computers.");
+          : "This API key reached the maximum number of active computers."));
       return json({ ok: false, error: code, message }, statusCode, env);
     }
   }
@@ -4720,7 +5606,17 @@ async function handleStripeWebhook(request, env) {
     );
   }
 
-  const user = await upsertUserByEmail(db, email, PLAN_CODE_PLANETKA_PRO, {}, env);
+  const user = await upsertUserByEmail(
+    db,
+    email,
+    PLAN_CODE_PLANETKA_PRO,
+    {
+      proConfirmedAt: nowIso(),
+      provisionalPlanCode: "",
+      provisionalExpiresAt: "",
+    },
+    env,
+  );
   const stripeCustomerId = String(session.customer || "").trim() || "";
   const stripeSubscriptionId = String(session.subscription || "").trim() || "";
 
