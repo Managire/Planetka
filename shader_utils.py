@@ -27,7 +27,7 @@ TILE_MASK_NODE_PREFIX = "TileMask_"
 TEXTURE_LOADING_CHANNELS_RGBA = ("S2", "WT", "SE")
 TEXTURE_LOADING_CHANNELS_SCALAR = ("EL", "Alpha")
 _COVERAGE_MAP = None
-BASE_EMBEDDED_TILE_GROUP_COUNT = 32
+BASE_EMBEDDED_TILE_GROUP_COUNT = 1
 
 
 # ------------------------------------------------------------

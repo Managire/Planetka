@@ -60,10 +60,17 @@ _VOLUMETRIC_ATMOSPHERE_LIBRARY_RELATIVE_PATH = ("Resources", "planetka_volumetri
 _LEGACY_VOLUMETRIC_ATMOSPHERE_SOURCE_BLEND_PATH = (
     "/Volumes/SSDA/Projects/Planetka Mini/Planetka 32K/Planetka_Mini_32K.blend"
 )
+_LEGACY_LIBRARY_MATERIALS_TO_PURGE = (
+    LEGACY_PREVIEW_MATERIAL_NAME,
+)
+_LEGACY_LIBRARY_GROUPS_TO_PURGE = (
+    "Planetka Ocean Shader Group",
+    PREVIEW_TEXTURE_LOADING_GROUP_NAME,
+)
 _SURFACE_DETAIL_VERSION_KEY = "planetka_surface_detail_v"
 _SURFACE_DETAIL_VERSION = 1
 _SURFACE_SHADER_UPDATE_VERSION_KEY = "planetka_surface_shader_update_v"
-_SURFACE_SHADER_UPDATE_VERSION = 2
+_SURFACE_SHADER_UPDATE_VERSION = 3
 
 _DETAIL_SOCKET_SCALE = "Procedural Detail Scale"
 _DETAIL_SOCKET_FOREST = "Forest Detail Strength"
@@ -79,6 +86,7 @@ _SURFACE_DEFAULT_INPUT_SPECS = (
     ("Saturation", 1.0, 0.0, 2.0),
     ("Water Texture Strength", 0.5, 0.0, 1.0),
     ("Intensity", 1.0, 0.0, 10.0),
+    ("Night Terminator Shift", 0.0, -25.0, 25.0),
 )
 
 _SURFACE_EXTRA_INPUT_SPECS = (
@@ -99,6 +107,10 @@ _SHADER_INPUT_DESCRIPTIONS = {
     "Saturation": "Water color saturation adjustment.",
     "Water Texture Strength": "Blend strength of water texture detail.",
     "Intensity": "Night-lights emission intensity multiplier.",
+    "Night Terminator Shift": (
+        "Offsets the day/night transition used by city lights. "
+        "Internal shader scales this by 1/100 for practical UI range."
+    ),
     "Water Waves On/Off": "Enable procedural ocean-wave contribution (0 = off, 1 = on).",
     "Snow On/Off": "Enable snow coverage contribution (0 = off, 1 = on).",
     "Snow Line (m)": "Altitude threshold for snow coverage in meters.",
@@ -1015,6 +1027,35 @@ def _ensure_interface_panel(interface, panel_name, *, parent=None, default_close
     return panel
 
 
+def _remove_interface_socket(node_group, socket_name, *, in_out):
+    if node_group is None:
+        return False
+    interface = getattr(node_group, "interface", None)
+    items = getattr(interface, "items_tree", None) if interface else None
+    if items is None:
+        return False
+    target = None
+    for item in items:
+        if getattr(item, "item_type", None) != "SOCKET":
+            continue
+        if str(getattr(item, "in_out", "")) != str(in_out):
+            continue
+        if str(getattr(item, "name", "")) == str(socket_name):
+            target = item
+            break
+    if target is None:
+        return False
+    try:
+        interface.remove(target)
+        return True
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        return False
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        return False
+
+
 def _move_interface_item_to_panel(interface, item, panel):
     if interface is None or item is None or panel is None:
         return
@@ -1233,6 +1274,7 @@ def _wire_surface_extra_feature_inputs(surface_group):
     snow_line_out = _find_group_input_output_socket(surface_group, "Snow Line (m)")
     waves_density_out = _find_group_input_output_socket(surface_group, "Waves Density Coefficient")
     waves_height_out = _find_group_input_output_socket(surface_group, "Waves Height Coefficient")
+    night_terminator_shift_out = _find_group_input_output_socket(surface_group, "Night Terminator Shift")
 
     _rewire_value_node_output(surface_group, "Waves_On_Off", waves_toggle_out)
     _rewire_value_node_output(surface_group, "Snow_On_Off", snow_toggle_out)
@@ -1254,6 +1296,275 @@ def _wire_surface_extra_feature_inputs(surface_group):
             _socket_input_by_name_or_index(node.inputs, "Waves Height Coefficient"),
             waves_height_out,
         )
+
+    for node in nodes:
+        if str(getattr(node, "bl_idname", "")) != "ShaderNodeGroup":
+            continue
+        node_tree = getattr(node, "node_tree", None)
+        node_tree_name = str(getattr(node_tree, "name", ""))
+        if not (
+            node_tree_name == NIGHTDAY_GROUP_NAME
+            or node_tree_name.startswith(f"{NIGHTDAY_GROUP_NAME}.")
+        ):
+            continue
+        _replace_input_link(
+            links,
+            _socket_input_by_name_or_index(node.inputs, "Terminator Shift"),
+            night_terminator_shift_out,
+        )
+
+
+def _iter_nightday_groups():
+    for group in getattr(bpy.data, "node_groups", ()):
+        group_name = str(getattr(group, "name", ""))
+        if group_name == NIGHTDAY_GROUP_NAME or group_name.startswith(f"{NIGHTDAY_GROUP_NAME}."):
+            yield group
+
+
+def _nightday_variant_suffix(name):
+    group_name = str(name or "")
+    if group_name == NIGHTDAY_GROUP_NAME:
+        return -1
+    prefix = f"{NIGHTDAY_GROUP_NAME}."
+    if not group_name.startswith(prefix):
+        return -2
+    suffix = group_name[len(prefix):]
+    try:
+        return int(suffix)
+    except (TypeError, ValueError):
+        return -2
+
+
+def _iter_node_trees_for_group_relink():
+    for material in getattr(bpy.data, "materials", ()):
+        if not bool(getattr(material, "use_nodes", False)):
+            continue
+        node_tree = getattr(material, "node_tree", None)
+        if node_tree is not None:
+            yield node_tree
+    for world in getattr(bpy.data, "worlds", ()):
+        if not bool(getattr(world, "use_nodes", False)):
+            continue
+        node_tree = getattr(world, "node_tree", None)
+        if node_tree is not None:
+            yield node_tree
+    for node_group in getattr(bpy.data, "node_groups", ()):
+        if node_group is not None:
+            yield node_group
+
+
+def _canonicalize_nightday_group_variants():
+    variants = list(_iter_nightday_groups())
+    if not variants:
+        return None
+
+    preferred = None
+    surface_group = bpy.data.node_groups.get(SURFACE_GRADING_GROUP_NAME)
+    if surface_group is not None and getattr(surface_group, "nodes", None):
+        night_node = surface_group.nodes.get("Night_day")
+        night_tree = getattr(night_node, "node_tree", None) if night_node is not None else None
+        if night_tree in variants:
+            preferred = night_tree
+    if preferred is None:
+        preferred = max(variants, key=lambda grp: _nightday_variant_suffix(getattr(grp, "name", "")))
+
+    # Re-link every group node using any NightDay variant to the preferred group.
+    for node_tree in _iter_node_trees_for_group_relink():
+        nodes = getattr(node_tree, "nodes", None)
+        if nodes is None:
+            continue
+        for node in nodes:
+            if str(getattr(node, "bl_idname", "")) != "ShaderNodeGroup":
+                continue
+            node_group = getattr(node, "node_tree", None)
+            node_group_name = str(getattr(node_group, "name", ""))
+            if not (
+                node_group_name == NIGHTDAY_GROUP_NAME
+                or node_group_name.startswith(f"{NIGHTDAY_GROUP_NAME}.")
+            ):
+                continue
+            if node_group is preferred:
+                continue
+            try:
+                node.node_tree = preferred
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+    # Remove old variants now that links are normalized.
+    for group in list(_iter_nightday_groups()):
+        if group is preferred:
+            continue
+        try:
+            bpy.data.node_groups.remove(group, do_unlink=True)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        except (RuntimeError, TypeError, ValueError):
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+    # Force canonical name without .001/.002.
+    existing = bpy.data.node_groups.get(NIGHTDAY_GROUP_NAME)
+    if existing is not None and existing is not preferred:
+        try:
+            bpy.data.node_groups.remove(existing, do_unlink=True)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        except (RuntimeError, TypeError, ValueError):
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+    try:
+        preferred.name = NIGHTDAY_GROUP_NAME
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+    except (RuntimeError, TypeError, ValueError):
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+    return bpy.data.node_groups.get(NIGHTDAY_GROUP_NAME) or preferred
+
+
+def _wire_nightday_terminator_shift():
+    for nightday_group in _iter_nightday_groups():
+        _ensure_interface_float_socket(
+            nightday_group,
+            "Terminator Shift",
+            default=0.0,
+            min_value=-25.0,
+            max_value=25.0,
+            description=(
+                "Shift of day/night transition used for city-lights masking "
+                "(positive = toward day, negative = toward night)."
+            ),
+        )
+        _remove_interface_socket(nightday_group, "Result", in_out="OUTPUT")
+
+        nodes = getattr(nightday_group, "nodes", None)
+        links = getattr(nightday_group, "links", None)
+        if nodes is None or links is None:
+            continue
+
+        color_ramp = nodes.get("Color Ramp")
+        if color_ramp is None:
+            continue
+
+        group_input = None
+        for node in nodes:
+            if str(getattr(node, "bl_idname", "")) == "NodeGroupInput":
+                group_input = node
+                break
+        if group_input is None:
+            try:
+                group_input = nodes.new("NodeGroupInput")
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                continue
+            except (RuntimeError, TypeError, ValueError):
+                continue
+
+        shift_socket = _socket_output_by_name_or_index(getattr(group_input, "outputs", None), "Terminator Shift")
+        if shift_socket is None:
+            continue
+
+        # Find current source driving Color Ramp factor (typically Normal.001 Dot).
+        source_socket = None
+        fac_input = _socket_input_by_name_or_index(getattr(color_ramp, "inputs", None), "Fac", 0)
+        if fac_input is None:
+            continue
+        if fac_input.links:
+            source_socket = fac_input.links[0].from_socket
+        if source_socket is None:
+            normal_node = nodes.get("Normal.001")
+            if normal_node is not None:
+                source_socket = _socket_output_by_name_or_index(getattr(normal_node, "outputs", None), "Dot")
+        if source_socket is None:
+            continue
+
+        shift_add = nodes.get("PKA Terminator Shift Add")
+        if shift_add is None or str(getattr(shift_add, "bl_idname", "")) != "ShaderNodeMath":
+            if shift_add is not None:
+                try:
+                    nodes.remove(shift_add)
+                except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                    pass
+                except (RuntimeError, TypeError, ValueError):
+                    pass
+            try:
+                shift_add = nodes.new("ShaderNodeMath")
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                continue
+            except (RuntimeError, TypeError, ValueError):
+                continue
+            shift_add.name = "PKA Terminator Shift Add"
+        try:
+            shift_add.operation = "ADD"
+            shift_add.use_clamp = True
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+        shift_scale = nodes.get("PKA Terminator Shift Scale")
+        if shift_scale is None or str(getattr(shift_scale, "bl_idname", "")) != "ShaderNodeMath":
+            if shift_scale is not None:
+                try:
+                    nodes.remove(shift_scale)
+                except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                    pass
+                except (RuntimeError, TypeError, ValueError):
+                    pass
+            try:
+                shift_scale = nodes.new("ShaderNodeMath")
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                continue
+            except (RuntimeError, TypeError, ValueError):
+                continue
+            shift_scale.name = "PKA Terminator Shift Scale"
+        try:
+            shift_scale.operation = "DIVIDE"
+            shift_scale.use_clamp = False
+            shift_scale.inputs[1].default_value = 100.0
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+        try:
+            shift_add.location = (float(color_ramp.location[0]) - 240.0, float(color_ramp.location[1]))
+            shift_scale.location = (float(shift_add.location[0]) - 220.0, float(shift_add.location[1]) + 120.0)
+            group_input.location = (float(shift_scale.location[0]) - 220.0, float(shift_scale.location[1]) + 40.0)
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            pass
+
+        # Remove legacy unused Map Range node if present.
+        legacy_map_range = nodes.get("Map Range")
+        if legacy_map_range is not None and str(getattr(legacy_map_range, "bl_idname", "")) == "ShaderNodeMapRange":
+            try:
+                nodes.remove(legacy_map_range)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+        for link in list(getattr(fac_input, "links", ())):
+            try:
+                links.remove(link)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                continue
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                continue
+
+        # Slightly smoother day/night transition edge.
+        try:
+            ramp = getattr(color_ramp, "color_ramp", None)
+            elements = getattr(ramp, "elements", None) if ramp else None
+            if elements and len(elements) >= 2:
+                elements[1].position = 0.017104
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+        try:
+            links.new(source_socket, shift_add.inputs[0])
+            links.new(shift_socket, shift_scale.inputs[0])
+            links.new(shift_scale.outputs[0], shift_add.inputs[1])
+            links.new(shift_add.outputs[0], fac_input)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
 
 
 def _apply_surface_group_node_defaults():
@@ -1286,9 +1597,11 @@ def _apply_surface_shader_updates():
     except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, AttributeError):
         logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
 
+    _wire_nightday_terminator_shift()
     _remove_surface_detail_nodes(surface_group)
     _apply_surface_group_input_defaults(surface_group)
     _wire_surface_extra_feature_inputs(surface_group)
+    _canonicalize_nightday_group_variants()
     _organize_surface_group_interface(surface_group)
     _apply_surface_group_node_defaults()
     try:
@@ -2067,8 +2380,7 @@ def _ensure_planetka_sunlight(surface_collection):
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
 
-    nightday_group = bpy.data.node_groups.get(NIGHTDAY_GROUP_NAME)
-    if nightday_group:
+    for nightday_group in _iter_nightday_groups():
         target_nodes = []
         named_node = nightday_group.nodes.get("Texture Coordinate")
         if named_node and getattr(named_node, "bl_idname", "") == "ShaderNodeTexCoord":
@@ -2200,14 +2512,6 @@ def _load_static_image(image_name):
 
 
 def _bind_static_images():
-    preview_material = bpy.data.materials.get(LEGACY_PREVIEW_MATERIAL_NAME)
-    if preview_material and preview_material.use_nodes and preview_material.node_tree:
-        for node_name, image_name in _PREVIEW_IMAGE_BINDINGS:
-            node = preview_material.node_tree.nodes.get(node_name)
-            if not node or node.bl_idname != "ShaderNodeTexImage":
-                continue
-            node.image = _load_static_image(image_name)
-
     surface_group = bpy.data.node_groups.get(SURFACE_GRADING_GROUP_NAME)
     if not surface_group:
         raise RuntimeError(f"Planetka: node group '{SURFACE_GRADING_GROUP_NAME}' is missing.")
@@ -2215,26 +2519,12 @@ def _bind_static_images():
     for node_name, image_name in _SURFACE_GROUP_IMAGE_BINDINGS:
         node = surface_group.nodes.get(node_name)
         if not node or node.bl_idname != "ShaderNodeTexImage":
-            raise RuntimeError(
-                f"Planetka: expected image node '{node_name}' in node group '{SURFACE_GRADING_GROUP_NAME}' was not found."
-            )
+            continue
         node.image = _load_static_image(image_name)
         _set_tex_image_node_interpolation(
             node,
             use_fallback=_is_fallback_static_image(image_name),
         )
-    required_surface_nodes = {name for name, _image_name in _SURFACE_GROUP_IMAGE_BINDINGS}
-    for node in list(surface_group.nodes):
-        if str(getattr(node, "bl_idname", "")) != "ShaderNodeTexImage":
-            continue
-        if str(getattr(node, "name", "") or "") in required_surface_nodes:
-            continue
-        try:
-            surface_group.nodes.remove(node)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
 
 
 def _build_preview_texture_loading_group():
@@ -2378,14 +2668,28 @@ def _is_embedded_material_library_ready():
         node_group = bpy.data.node_groups.get(group_name)
         if not node_group or not _has_library_signature(node_group):
             return False
+    for legacy_material in _LEGACY_LIBRARY_MATERIALS_TO_PURGE:
+        if bpy.data.materials.get(legacy_material) is not None:
+            return False
+    for legacy_group in _LEGACY_LIBRARY_GROUPS_TO_PURGE:
+        if bpy.data.node_groups.get(legacy_group) is not None:
+            return False
+    for node_group in getattr(bpy.data, "node_groups", ()):
+        group_name = str(getattr(node_group, "name", ""))
+        if group_name.startswith(f"{NIGHTDAY_GROUP_NAME}."):
+            return False
     return True
 
 
 def _load_embedded_material_library():
-    for material_name in MATERIAL_LIBRARY_MATERIALS:
+    for material_name in set(MATERIAL_LIBRARY_MATERIALS).union(_LEGACY_LIBRARY_MATERIALS_TO_PURGE):
         _remove_material_if_exists(material_name)
-    for group_name in MATERIAL_LIBRARY_NODE_GROUPS:
+    for group_name in set(MATERIAL_LIBRARY_NODE_GROUPS).union(_LEGACY_LIBRARY_GROUPS_TO_PURGE):
         _remove_node_group_if_exists(group_name)
+    for node_group in list(getattr(bpy.data, "node_groups", ())):
+        group_name = str(getattr(node_group, "name", ""))
+        if group_name.startswith(f"{NIGHTDAY_GROUP_NAME}."):
+            _remove_node_group_if_exists(group_name)
 
     legacy_path = _legacy_material_library_path()
     if bpy.app.version < (5, 0, 0) and os.path.isfile(legacy_path):
@@ -2421,8 +2725,6 @@ def _load_embedded_material_library():
             f"(materials missing: {missing_materials}, node groups missing: {missing_groups})"
         )
 
-    _sanitize_embedded_assets()
-
     for material_name in MATERIAL_LIBRARY_MATERIALS:
         material = bpy.data.materials.get(material_name)
         if material:
@@ -2440,14 +2742,19 @@ def _ensure_embedded_material_library():
     if not _is_embedded_material_library_ready():
         _load_embedded_material_library()
     _bind_static_images()
-    _apply_surface_shader_updates()
 
     earth_material = bpy.data.materials.get(EARTH_MATERIAL_NAME)
     if not earth_material:
-        raise RuntimeError("Planetka: embedded materials are missing after load.")
+        raise RuntimeError("Planetka: embedded shader materials are missing after load.")
     _normalize_surface_elevation_defaults(earth_material)
     _set_material_displacement_and_bump(earth_material)
-    preview_material = _ensure_preview_material(earth_material)
+    preview_material = bpy.data.materials.get(PREVIEW_MATERIAL_NAME)
+    if preview_material is None:
+        preview_material = bpy.data.materials.get(LEGACY_PREVIEW_MATERIAL_NAME)
+        if preview_material is not None:
+            preview_material.name = PREVIEW_MATERIAL_NAME
+    if preview_material is None:
+        raise RuntimeError("Planetka: preview material is missing after loading reference shaders.")
     _normalize_surface_elevation_defaults(preview_material)
     _set_material_displacement_and_bump(preview_material)
     _hide_unconnected_group_input_sockets_everywhere()

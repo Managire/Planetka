@@ -7,8 +7,7 @@ import os
 from collections import OrderedDict
 from mathutils import Matrix
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
-from .extension_prefs import get_earth_object, get_prefs
-from .r2_source import resolve_texture_file
+from .extension_prefs import get_earth_object
 
 # Precompile regex for speed
 TILE_RE = re.compile(r"x(\d+)_y(\d+)_z(\d+)_d(\d+)")
@@ -33,15 +32,12 @@ PREVIEW_MATERIAL_NAME = "Planetka Preview Material"
 PREVIEW_SEGMENTS = 36
 PREVIEW_RING_COUNT = 18
 PREVIEW_SCALE_FACTOR = 0.999
-_PREVIEW_GLOBAL_TILE_CANDIDATES = (
-    "x000_y000_z360_d720",
-    "x000_y000_z360_d360",
-    "x000_y000_z360_d000",
-)
-_PREVIEW_TEXTURE_BINDINGS = (
-    ("S2", "Preview S2", (".exr",), "Linear Rec.709"),
-    ("WT", "Preview WT", (".exr",), "Linear Rec.709"),
-    ("PO", "Preview PO", (".tif",), "Linear Rec.709"),
+_PREVIEW_TEXTURES_RELATIVE_DIR = ("Resources", "Preview Textures")
+_PREVIEW_STATIC_BINDINGS = (
+    ("S2_x000_y000_z360_d000.exr", "Linear Rec.709", ("Image Texture", "Preview S2")),
+    ("EL_x000_y000_z360_d000.exr", "Linear Rec.709", ("Image Texture.001", "Preview EL")),
+    ("WT_x000_y000_z360_d000.exr", "Linear Rec.709", ("Image Texture.002", "Preview WT")),
+    ("PO_x000_y000_z360_d000.tif", "Linear Rec.709", ("Image Texture.003", "Preview PO")),
 )
 _RESOLVED_MESH_CACHE = OrderedDict()
 _RESOLVED_CACHE_CLEANED = False
@@ -502,25 +498,8 @@ def _load_preview_image(path, image_name, colorspace):
     return image
 
 
-def _resolve_preview_texture_path(base_path, folder, extensions):
-    for tile_id in _PREVIEW_GLOBAL_TILE_CANDIDATES:
-        try:
-            path = resolve_texture_file(
-                base_path=base_path,
-                folder=folder,
-                prefix=folder,
-                filename=tile_id,
-                extensions=extensions,
-            )
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: preview texture resolve failed for %s_%s", folder, tile_id, exc_info=True)
-            continue
-        except (RuntimeError, TypeError, ValueError):
-            logger.debug("Planetka: preview texture resolve failed for %s_%s", folder, tile_id, exc_info=True)
-            continue
-        if path and os.path.isfile(path):
-            return str(path), str(tile_id)
-    return "", ""
+def _preview_texture_static_path(file_name):
+    return os.path.join(os.path.dirname(__file__), *_PREVIEW_TEXTURES_RELATIVE_DIR, str(file_name))
 
 
 def _assign_preview_texture_images(preview_material):
@@ -529,45 +508,28 @@ def _assign_preview_texture_images(preview_material):
     node_tree = getattr(preview_material, "node_tree", None)
     if node_tree is None:
         return
+
+    loading_group = None
     loading_node = node_tree.nodes.get("Planetka Textures Loading")
-    if loading_node is None or getattr(loading_node, "bl_idname", "") != "ShaderNodeGroup":
-        return
+    if loading_node is not None and getattr(loading_node, "bl_idname", "") == "ShaderNodeGroup":
+        loading_group = getattr(loading_node, "node_tree", None)
 
-    loading_group = getattr(loading_node, "node_tree", None)
-    if loading_group is None:
-        return
-
-    prefs = get_prefs()
-    base_path = str(getattr(prefs, "texture_base_path", "") or "") if prefs else ""
-
-    for folder, node_name, extensions, colorspace in _PREVIEW_TEXTURE_BINDINGS:
-        tex_node = loading_group.nodes.get(node_name)
-        if tex_node is None or getattr(tex_node, "bl_idname", "") != "ShaderNodeTexImage":
-            continue
-        existing_image = getattr(tex_node, "image", None)
-        if existing_image is not None:
-            existing_path = str(
-                getattr(existing_image, "filepath_raw", "") or getattr(existing_image, "filepath", "")
-            )
-            existing_abs_path = bpy.path.abspath(existing_path) if existing_path else ""
-            existing_name = os.path.basename(existing_abs_path).lower() if existing_abs_path else ""
-            if (
-                existing_abs_path
-                and os.path.isfile(existing_abs_path)
-                and existing_name.startswith(f"{folder.lower()}_x000_y000_z360_d")
-            ):
-                continue
-        path, tile_id = _resolve_preview_texture_path(base_path, folder, extensions)
+    for file_name, colorspace, node_names in _PREVIEW_STATIC_BINDINGS:
+        path = _preview_texture_static_path(file_name)
         if not path:
             continue
-        image = _load_preview_image(
-            path,
-            image_name=f"{folder}_{tile_id}_preview",
-            colorspace=colorspace,
-        )
+        image = _load_preview_image(path, image_name=file_name, colorspace=colorspace)
         if image is None:
             continue
-        tex_node.image = image
+        for node_name in node_names:
+            tex_node = node_tree.nodes.get(node_name)
+            if tex_node is not None and getattr(tex_node, "bl_idname", "") == "ShaderNodeTexImage":
+                tex_node.image = image
+            if loading_group is None:
+                continue
+            loading_tex_node = loading_group.nodes.get(node_name)
+            if loading_tex_node is not None and getattr(loading_tex_node, "bl_idname", "") == "ShaderNodeTexImage":
+                loading_tex_node.image = image
 
 
 def ensure_preview_object(parent_surface):

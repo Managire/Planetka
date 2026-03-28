@@ -513,6 +513,7 @@ _SURFACE_GRADING_SECTION_SOCKET_MAP = {
     "Night Lights": {
         "intensity",
         "color temperature",
+        "night terminator shift",
     },
 }
 
@@ -542,6 +543,8 @@ def _surface_grading_socket_label(socket_name):
         return "Brightness"
     if normalized == "surface saturation":
         return "Saturation"
+    if normalized == "night terminator shift":
+        return "Terminator Shift"
     return str(socket_name or "Value")
 
 
