@@ -1884,6 +1884,14 @@ async function ensureApiKeyTables(db) {
   );
   await dbRun(
     db,
+    `CREATE INDEX IF NOT EXISTS idx_api_key_device_activity_user_seen ON api_key_device_activity(user_id, last_seen_unix DESC)`,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_api_key_device_activity_user_device ON api_key_device_activity(user_id, device_id)`,
+  );
+  await dbRun(
+    db,
     `CREATE INDEX IF NOT EXISTS idx_api_key_device_activity_seen ON api_key_device_activity(last_seen_unix DESC)`,
   );
   await dbRun(
@@ -2609,70 +2617,15 @@ async function findActiveApiKeyRecord(db, apiKeyValue) {
 }
 
 function maxDevicesForPlan(planCode) {
-  const safePlan = normalizeRequestedPlan(planCode);
-  if (safePlan === PLAN_CODE_PLANETKA_PRO || safePlan === PLAN_CODE_PLANETKA_STUDIO) {
-    return 2;
-  }
+  void normalizeRequestedPlan(planCode);
   return 1;
 }
 
-async function touchApiKeyDeviceActivity(db, apiKeyId, userId, deviceId, request, env) {
+async function listActiveApiKeyDevicesForUser(db, userId, env) {
   await ensureApiKeyTables(db);
-  const nowUnix = Math.floor(Date.now() / 1000);
-  const now = nowIso();
-  const ip = requestClientIp(request);
-  const country = requestCountry(request);
-  const existing = await dbGet(
-    db,
-    `
-      SELECT id
-      FROM api_key_device_activity
-      WHERE api_key_id = ? AND device_id = ?
-      LIMIT 1
-    `,
-    [apiKeyId, deviceId],
-  );
-  if (existing && existing.id) {
-    await dbRun(
-      db,
-      `
-        UPDATE api_key_device_activity
-        SET
-          last_seen_at = ?,
-          last_seen_unix = ?,
-          last_ip = ?,
-          last_country = ?
-        WHERE id = ?
-      `,
-      [now, nowUnix, ip, country, existing.id],
-    );
-    return existing.id;
-  }
-  await dbRun(
-    db,
-    `
-      INSERT INTO api_key_device_activity (
-        id,
-        api_key_id,
-        user_id,
-        device_id,
-        first_seen_at,
-        last_seen_at,
-        last_seen_unix,
-        last_ip,
-        last_country
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `,
-    [crypto.randomUUID(), apiKeyId, userId, deviceId, now, now, nowUnix, ip, country],
-  );
-  return "";
-}
-
-async function enforceApiKeyDeviceLimit(db, apiKeyId, userId, planCode, deviceId, request, env) {
-  await ensureApiKeyTables(db);
-  const safeDeviceId = normalizeDeviceId(deviceId);
-  if (!safeDeviceId) {
-    throw new Error("missing_device_id");
+  const safeUserId = String(userId || "").trim();
+  if (!safeUserId) {
+    return new Set();
   }
   const nowUnix = Math.floor(Date.now() / 1000);
   const activeWindowSeconds = Math.max(
@@ -2693,47 +2646,130 @@ async function enforceApiKeyDeviceLimit(db, apiKeyId, userId, planCode, deviceId
   const rows = await dbAll(
     db,
     `
-      SELECT device_id
+      SELECT DISTINCT device_id
       FROM api_key_device_activity
-      WHERE api_key_id = ?
+      WHERE user_id = ?
         AND last_seen_unix >= ?
     `,
-    [apiKeyId, windowStart],
+    [safeUserId, windowStart],
   );
-  const activeDeviceIds = new Set(
+  return new Set(
     rows.map((row) => normalizeDeviceId(row && row.device_id)).filter((value) => Boolean(value)),
   );
-  const alreadyActive = activeDeviceIds.has(safeDeviceId);
-  const apiKeyState = await dbGet(
+}
+
+async function enforceApiKeyIssueDeviceLimit(db, userId, planCode, deviceId, env) {
+  const safeUserId = String(userId || "").trim();
+  if (!safeUserId) {
+    return { activeDeviceCount: 0, maxDevices: maxDevicesForPlan(planCode), matchedDevice: false };
+  }
+  const safeDeviceId = normalizeDeviceId(deviceId);
+  const activeDeviceIds = await listActiveApiKeyDevicesForUser(db, safeUserId, env);
+  const maxDevices = maxDevicesForPlan(planCode);
+  const matchedDevice = Boolean(safeDeviceId && activeDeviceIds.has(safeDeviceId));
+  if (activeDeviceIds.size >= maxDevices && !matchedDevice) {
+    throw new Error("device_limit_exceeded");
+  }
+  return {
+    activeDeviceCount: activeDeviceIds.size,
+    maxDevices,
+    matchedDevice,
+  };
+}
+
+async function touchApiKeyDeviceActivity(db, apiKeyId, userId, deviceId, request, env) {
+  await ensureApiKeyTables(db);
+  const safeUserId = String(userId || "").trim();
+  const safeDeviceId = normalizeDeviceId(deviceId);
+  if (!safeUserId || !safeDeviceId) {
+    throw new Error("missing_device_id");
+  }
+  const nowUnix = Math.floor(Date.now() / 1000);
+  const now = nowIso();
+  const ip = requestClientIp(request);
+  const country = requestCountry(request);
+  const existingRows = await dbAll(
     db,
     `
-      SELECT
-        ak.provisional,
-        ak.confirmed_at,
-        u.pro_confirmed_at
-      FROM api_keys ak
-      LEFT JOIN users u ON u.id = ak.user_id
-      WHERE ak.id = ?
-      LIMIT 1
+      SELECT id
+      FROM api_key_device_activity
+      WHERE user_id = ? AND device_id = ?
+      ORDER BY last_seen_unix DESC
     `,
-    [apiKeyId],
+    [safeUserId, safeDeviceId],
   );
-  const provisionalPending = Boolean(
-    apiKeyState
-    && clampNonNegativeInt(apiKeyState.provisional) === 1
-    && !String(apiKeyState.confirmed_at || "").trim()
-    && !String(apiKeyState.pro_confirmed_at || "").trim(),
+  const primaryExisting = Array.isArray(existingRows) && existingRows.length > 0 ? existingRows[0] : null;
+  if (primaryExisting && primaryExisting.id) {
+    await dbRun(
+      db,
+      `
+        UPDATE api_key_device_activity
+        SET
+          api_key_id = ?,
+          last_seen_at = ?,
+          last_seen_unix = ?,
+          last_ip = ?,
+          last_country = ?
+        WHERE id = ?
+      `,
+      [apiKeyId, now, nowUnix, ip, country, primaryExisting.id],
+    );
+    if (existingRows.length > 1) {
+      await dbRun(
+        db,
+        `
+          DELETE FROM api_key_device_activity
+          WHERE user_id = ?
+            AND device_id = ?
+            AND id != ?
+        `,
+        [safeUserId, safeDeviceId, primaryExisting.id],
+      );
+    }
+    return primaryExisting.id;
+  }
+  await dbRun(
+    db,
+    `
+      INSERT INTO api_key_device_activity (
+        id,
+        api_key_id,
+        user_id,
+        device_id,
+        first_seen_at,
+        last_seen_at,
+        last_seen_unix,
+        last_ip,
+        last_country
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    [crypto.randomUUID(), apiKeyId, safeUserId, safeDeviceId, now, now, nowUnix, ip, country],
   );
-  const maxDevices = provisionalPending ? 1 : maxDevicesForPlan(planCode);
+  return "";
+}
+
+async function enforceApiKeyDeviceLimit(db, apiKeyId, userId, planCode, deviceId, request, env) {
+  await ensureApiKeyTables(db);
+  const safeUserId = String(userId || "").trim();
+  if (!safeUserId) {
+    throw new Error("user_not_found");
+  }
+  const safeDeviceId = normalizeDeviceId(deviceId);
+  if (!safeDeviceId) {
+    throw new Error("missing_device_id");
+  }
+  const activeDeviceIds = await listActiveApiKeyDevicesForUser(db, safeUserId, env);
+  const alreadyActive = activeDeviceIds.has(safeDeviceId);
+  const maxDevices = maxDevicesForPlan(planCode);
   if (!alreadyActive && activeDeviceIds.size >= maxDevices) {
     throw new Error("device_limit_exceeded");
   }
 
-  await touchApiKeyDeviceActivity(db, apiKeyId, userId, safeDeviceId, request, env);
+  await touchApiKeyDeviceActivity(db, apiKeyId, safeUserId, safeDeviceId, request, env);
   return {
     activeDeviceCount: activeDeviceIds.has(safeDeviceId) ? activeDeviceIds.size : (activeDeviceIds.size + 1),
     maxDevices,
-    provisionalRestricted: provisionalPending,
+    provisionalRestricted: false,
   };
 }
 
@@ -3392,6 +3428,29 @@ async function handleApiKeyRequest(request, env) {
   let existingUser = await findUserByEmail(db, email);
   if (existingUser && !isBlockedStatus(existingUser.status)) {
     existingUser = await enforceUserPlanPolicy(db, existingUser, null, env);
+    try {
+      await enforceApiKeyIssueDeviceLimit(
+        db,
+        String(existingUser.id || "").trim(),
+        resolvePlanCode(existingUser, null, env),
+        requestDeviceId,
+        env,
+      );
+    } catch (error) {
+      const code = String(error && error.message || "device_limit_exceeded");
+      if (code === "device_limit_exceeded") {
+        return json(
+          {
+            ok: false,
+            error: "device_limit_exceeded",
+            message: "This Planetka account can be active on one computer at a time.",
+          },
+          429,
+          env,
+        );
+      }
+      throw error;
+    }
   }
   if (isPaidClaim) {
     const latestPaidClaim = await findLatestPaidClaimByEmail(db, email);
@@ -3788,10 +3847,8 @@ async function handleApiKeyExchange(request, env) {
         ok: false,
         error: "device_limit_exceeded",
         message: provisionalRestricted
-          ? "This API key can be active on one computer at a time."
-          : (effectivePlanCode === PLAN_CODE_PLANETKA
-          ? "Free API key can be active on one computer at a time."
-          : "This API key reached the maximum number of active computers."),
+          ? "This Planetka account can be active on one computer at a time."
+          : "This Planetka account can be active on one computer at a time.",
       },
       429,
       env,
@@ -4926,10 +4983,8 @@ async function handleTileRequest(request, env, path, ctx) {
       const message = code === "missing_device_id"
         ? "Missing device identifier for API key session."
         : (provisionalRestricted
-          ? "This API key can be active on one computer at a time."
-          : (planCode === PLAN_CODE_PLANETKA
-          ? "Free API key can be active on one computer at a time."
-          : "This API key reached the maximum number of active computers."));
+          ? "This Planetka account can be active on one computer at a time."
+          : "This Planetka account can be active on one computer at a time.");
       return json({ ok: false, error: code, message }, statusCode, env);
     }
   }
