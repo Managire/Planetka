@@ -1021,7 +1021,7 @@ def _ensure_local_cloud_cap_geometry(obj):
 
 
 def _configure_local_cloud_material_for_cap(material):
-    if material is None or not bool(getattr(material, "use_nodes", False)):
+    if material is None or getattr(material, "node_tree", None) is None:
         return
     node_tree = getattr(material, "node_tree", None)
     if node_tree is None:
@@ -1233,7 +1233,7 @@ def _ensure_vdb_cloud_template(scene=None):
 
 
 def _apply_local_cloud_material_controls(obj, material, final_look=False):
-    if material is None or not bool(getattr(material, "use_nodes", False)):
+    if material is None or getattr(material, "node_tree", None) is None:
         return
     node_tree = getattr(material, "node_tree", None)
     if node_tree is None:
@@ -1342,7 +1342,7 @@ def _set_vdb_cloud_filepath(obj, filepath):
 
 def _apply_vdb_cloud_material_density(obj):
     material = _resolve_object_material(obj)
-    if material is None or not bool(getattr(material, "use_nodes", False)):
+    if material is None or getattr(material, "node_tree", None) is None:
         return
     node_tree = getattr(material, "node_tree", None)
     if node_tree is None:

@@ -2475,7 +2475,7 @@ def stop_auto_resolve_download_pipeline():
                 try:
                     cancel_event.set()
                 except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                    pass
+                    logger.debug("[PKA-STATE-001] Planetka: failed signaling resolve cancel event", exc_info=True)
 
         _AUTO_RESOLVE_DOWNLOAD_ACTIVE_JOB = None
         _AUTO_RESOLVE_DOWNLOAD_PENDING_JOB = None

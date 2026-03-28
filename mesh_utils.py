@@ -490,9 +490,9 @@ def _load_preview_image(path, image_name, colorspace):
         if image_name:
             image.name = str(image_name)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        pass
+        logger.debug("[PKA-MESH-001] Planetka: failed setting preview image name", exc_info=True)
     except (RuntimeError, TypeError, ValueError, AttributeError):
-        pass
+        logger.debug("[PKA-MESH-001] Planetka: failed setting preview image name", exc_info=True)
 
     _set_image_colorspace_safe(image, colorspace)
     return image
@@ -503,7 +503,7 @@ def _preview_texture_static_path(file_name):
 
 
 def _assign_preview_texture_images(preview_material):
-    if not preview_material or not getattr(preview_material, "use_nodes", False):
+    if not preview_material or getattr(preview_material, "node_tree", None) is None:
         return
     node_tree = getattr(preview_material, "node_tree", None)
     if node_tree is None:

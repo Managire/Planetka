@@ -350,7 +350,7 @@ def _clear_earth_role_tag(obj):
 
 
 def _make_texture_groups_unique(material, segment_index):
-    if not material or not material.use_nodes or not material.node_tree:
+    if not material or not material.node_tree:
         raise RuntimeError("Segment material node tree is missing.")
     loading_node = material.node_tree.nodes.get("Planetka Textures Loading")
     if not loading_node or not getattr(loading_node, "node_tree", None):
@@ -1352,7 +1352,7 @@ def _is_movie_output(scene):
 
 def _count_missing_tile_loading_images(material_name="Planetka Earth Material"):
     material = bpy.data.materials.get(str(material_name or ""))
-    if material is None or not bool(getattr(material, "use_nodes", False)):
+    if material is None or getattr(material, "node_tree", None) is None:
         return 0
     node_tree = getattr(material, "node_tree", None)
     nodes = getattr(node_tree, "nodes", None) if node_tree else None
@@ -1428,19 +1428,14 @@ def _image_has_blender_pink(path, min_pixels=32, sample_limit=400000):
                     return True
         return False
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
-        return False
-    except (RuntimeError, TypeError, ValueError):
-        logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
+        logger.debug("[PKA-ANIM-001] Planetka animation: failed pink-frame probe", exc_info=True)
         return False
     finally:
         if image is not None:
             try:
                 bpy.data.images.remove(image)
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
-            except (RuntimeError, TypeError, ValueError):
-                logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
+                logger.debug("[PKA-ANIM-002] Planetka animation: failed removing probe image", exc_info=True)
 
 
 def _collect_pink_frames(scene, frame_start, frame_end):
@@ -1451,10 +1446,7 @@ def _collect_pink_frames(scene, frame_start, frame_end):
         try:
             frame_path = bpy.path.abspath(scene.render.frame_path(frame=int(frame)))
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
-            continue
-        except (RuntimeError, TypeError, ValueError):
-            logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
+            logger.debug("[PKA-ANIM-003] Planetka animation: failed resolving frame path", exc_info=True)
             continue
         if _image_has_blender_pink(frame_path):
             pink_frames.append(int(frame))

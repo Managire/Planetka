@@ -308,7 +308,7 @@ def _set_default_world_background_to_black(scene):
     default_gray = 0.050876
     changed = False
 
-    if bool(getattr(world, "use_nodes", False)):
+    if getattr(world, "node_tree", None) is not None:
         node_tree = getattr(world, "node_tree", None)
         nodes = getattr(node_tree, "nodes", None) if node_tree else None
         background = nodes.get("Background") if nodes else None

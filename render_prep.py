@@ -151,7 +151,7 @@ def _parse_tiles_override(raw_json):
 
 def _count_missing_tile_loading_images(material_name="Planetka Earth Material"):
     material = bpy.data.materials.get(str(material_name or ""))
-    if material is None or not bool(getattr(material, "use_nodes", False)):
+    if material is None or getattr(material, "node_tree", None) is None:
         return 0
     node_tree = getattr(material, "node_tree", None)
     nodes = getattr(node_tree, "nodes", None) if node_tree else None

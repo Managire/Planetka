@@ -184,7 +184,7 @@ def _hide_unconnected_group_input_sockets_everywhere():
     seen = set()
 
     for material in getattr(bpy.data, "materials", ()):
-        if not bool(getattr(material, "use_nodes", False)):
+        if getattr(material, "node_tree", None) is None:
             continue
         node_tree = getattr(material, "node_tree", None)
         if node_tree is None:
@@ -279,7 +279,7 @@ def _set_material_displacement_and_bump(material):
 
 
 def _normalize_surface_elevation_defaults(material):
-    if material is None or not getattr(material, "use_nodes", False):
+    if material is None or getattr(material, "node_tree", None) is None:
         return
     node_tree = getattr(material, "node_tree", None)
     if node_tree is None:
@@ -1337,13 +1337,13 @@ def _nightday_variant_suffix(name):
 
 def _iter_node_trees_for_group_relink():
     for material in getattr(bpy.data, "materials", ()):
-        if not bool(getattr(material, "use_nodes", False)):
+        if getattr(material, "node_tree", None) is None:
             continue
         node_tree = getattr(material, "node_tree", None)
         if node_tree is not None:
             yield node_tree
     for world in getattr(bpy.data, "worlds", ()):
-        if not bool(getattr(world, "use_nodes", False)):
+        if getattr(world, "node_tree", None) is None:
             continue
         node_tree = getattr(world, "node_tree", None)
         if node_tree is not None:
@@ -2479,7 +2479,7 @@ def _sanitize_embedded_assets():
 
     for material_name in MATERIAL_LIBRARY_MATERIALS:
         material = bpy.data.materials.get(material_name)
-        if not material or not material.use_nodes or not material.node_tree:
+        if not material or not material.node_tree:
             continue
         _clear_animation_data(material)
         _clear_animation_data(material.node_tree)
@@ -2620,13 +2620,13 @@ def _ensure_preview_texture_loading_group():
 
 
 def _ensure_preview_material(earth_material):
-    if not earth_material or not earth_material.use_nodes or not earth_material.node_tree:
+    if not earth_material or not earth_material.node_tree:
         raise RuntimeError("Planetka: earth material node tree is missing.")
 
     preview_material = bpy.data.materials.get(PREVIEW_MATERIAL_NAME)
     needs_rebuild = not (
         preview_material
-        and preview_material.use_nodes
+        and preview_material.node_tree is not None
         and preview_material.node_tree
         and preview_material.node_tree.nodes.get("Planetka Textures Loading")
     )

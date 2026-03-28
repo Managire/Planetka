@@ -37,9 +37,12 @@ const DEFAULT_ANALYTICS_WINDOW_MINUTES = 60;
 const MAX_ANALYTICS_WINDOW_MINUTES = 10080;
 const DEFAULT_ANALYTICS_ADMIN_EMAILS = "info@planetka.io,tom.griger@gmail.com";
 const DEFAULT_PERMANENT_PRO_EMAILS = "tom.griger@gmail.com";
+const DEFAULT_TILE_EVENT_RETENTION_DAYS = 30;
+const DEFAULT_TILE_ROLLUP_RETENTION_DAYS = 365;
 const DEFAULT_TILE_BROWSER_MAX_AGE_SECONDS = 86400;
 const DEFAULT_TILE_EDGE_MAX_AGE_SECONDS = 604800;
 const MAX_TILE_MAX_AGE_SECONDS = 31536000;
+const DEFAULT_ENABLE_MAGIC_LINK_AUTH = false;
 const DEFAULT_FREE_API_KEY_VALID_DAYS = 30;
 const DEFAULT_PRO_GRACE_HOURS = 24;
 const DEFAULT_PENDING_CLAIM_COOLDOWN_DAYS = 7;
@@ -271,6 +274,14 @@ function parseBooleanFlag(value) {
   }
   const normalized = String(value || "").trim().toLowerCase();
   return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
+function isMagicLinkAuthEnabled(env = {}) {
+  const raw = env.ENABLE_MAGIC_LINK_AUTH;
+  if (raw === undefined || raw === null || String(raw).trim() === "") {
+    return DEFAULT_ENABLE_MAGIC_LINK_AUTH;
+  }
+  return parseBooleanFlag(raw);
 }
 
 function isBlockedStatus(statusValue) {
@@ -742,7 +753,156 @@ async function ensureTileRequestEventsTable(db) {
     db,
     `CREATE INDEX IF NOT EXISTS idx_tile_request_events_status_code ON tile_request_events(status_code)`,
   );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_tile_request_events_created_at ON tile_request_events(created_at DESC)`,
+  );
+  await ensureTileRequestRollupTables(db);
   tileRequestEventsTableReady = true;
+}
+
+async function ensureTileRequestRollupTables(db) {
+  await dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS tile_request_rollup_hourly_account (
+        bucket_start_unix INTEGER NOT NULL,
+        bucket_start TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        user_email TEXT NOT NULL,
+        request_count INTEGER NOT NULL DEFAULT 0,
+        bytes_served INTEGER NOT NULL DEFAULT 0,
+        error_count INTEGER NOT NULL DEFAULT 0,
+        cache_hit_count INTEGER NOT NULL DEFAULT 0,
+        tagged_request_count INTEGER NOT NULL DEFAULT 0,
+        last_event_unix INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (bucket_start_unix, user_id)
+      )
+    `,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_tile_rollup_hourly_account_bucket ON tile_request_rollup_hourly_account(bucket_start_unix DESC)`,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_tile_rollup_hourly_account_user ON tile_request_rollup_hourly_account(user_id, bucket_start_unix DESC)`,
+  );
+  await dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS tile_request_rollup_daily_account (
+        day_start_unix INTEGER NOT NULL,
+        day_start TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        user_email TEXT NOT NULL,
+        request_count INTEGER NOT NULL DEFAULT 0,
+        bytes_served INTEGER NOT NULL DEFAULT 0,
+        error_count INTEGER NOT NULL DEFAULT 0,
+        cache_hit_count INTEGER NOT NULL DEFAULT 0,
+        tagged_request_count INTEGER NOT NULL DEFAULT 0,
+        last_event_unix INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (day_start_unix, user_id)
+      )
+    `,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_tile_rollup_daily_account_day ON tile_request_rollup_daily_account(day_start_unix DESC)`,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_tile_rollup_daily_account_user ON tile_request_rollup_daily_account(user_id, day_start_unix DESC)`,
+  );
+}
+
+function startOfHourUnix(epochSeconds) {
+  const safe = Math.max(0, parseNonNegativeInteger(epochSeconds, Math.floor(Date.now() / 1000)));
+  return safe - (safe % 3600);
+}
+
+function startOfDayUnix(epochSeconds) {
+  const safe = Math.max(0, parseNonNegativeInteger(epochSeconds, Math.floor(Date.now() / 1000)));
+  return safe - (safe % 86400);
+}
+
+async function recordTileRequestRollups(db, payload) {
+  await ensureTileRequestRollupTables(db);
+  const createdAtUnix = parseNonNegativeInteger(payload.created_at_unix, Math.floor(Date.now() / 1000));
+  const bucketHour = startOfHourUnix(createdAtUnix);
+  const bucketDay = startOfDayUnix(createdAtUnix);
+  const bucketHourIso = new Date(bucketHour * 1000).toISOString();
+  const bucketDayIso = new Date(bucketDay * 1000).toISOString();
+  const userId = String(payload.user_id || "").trim();
+  const userEmail = normalizeEmail(payload.user_email || "");
+  const statusCode = parseNonNegativeInteger(payload.status_code, 0);
+  const bytesServed = clampNonNegativeInt(payload.bytes_served);
+  const cacheStatus = String(payload.cache_status || "").trim().toUpperCase();
+  const taggedRequest = String(payload.resolve_id || "").trim() ? 1 : 0;
+  const errorCount = statusCode >= 400 ? 1 : 0;
+  const cacheHitCount = cacheStatus === "HIT" ? 1 : 0;
+
+  await dbRun(
+    db,
+    `
+      INSERT INTO tile_request_rollup_hourly_account (
+        bucket_start_unix,
+        bucket_start,
+        user_id,
+        user_email,
+        request_count,
+        bytes_served,
+        error_count,
+        cache_hit_count,
+        tagged_request_count,
+        last_event_unix
+      ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+      ON CONFLICT(bucket_start_unix, user_id) DO UPDATE SET
+        user_email = excluded.user_email,
+        request_count = tile_request_rollup_hourly_account.request_count + 1,
+        bytes_served = tile_request_rollup_hourly_account.bytes_served + excluded.bytes_served,
+        error_count = tile_request_rollup_hourly_account.error_count + excluded.error_count,
+        cache_hit_count = tile_request_rollup_hourly_account.cache_hit_count + excluded.cache_hit_count,
+        tagged_request_count = tile_request_rollup_hourly_account.tagged_request_count + excluded.tagged_request_count,
+        last_event_unix = CASE
+          WHEN excluded.last_event_unix > tile_request_rollup_hourly_account.last_event_unix
+            THEN excluded.last_event_unix
+          ELSE tile_request_rollup_hourly_account.last_event_unix
+        END
+    `,
+    [bucketHour, bucketHourIso, userId, userEmail, bytesServed, errorCount, cacheHitCount, taggedRequest, createdAtUnix],
+  );
+
+  await dbRun(
+    db,
+    `
+      INSERT INTO tile_request_rollup_daily_account (
+        day_start_unix,
+        day_start,
+        user_id,
+        user_email,
+        request_count,
+        bytes_served,
+        error_count,
+        cache_hit_count,
+        tagged_request_count,
+        last_event_unix
+      ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+      ON CONFLICT(day_start_unix, user_id) DO UPDATE SET
+        user_email = excluded.user_email,
+        request_count = tile_request_rollup_daily_account.request_count + 1,
+        bytes_served = tile_request_rollup_daily_account.bytes_served + excluded.bytes_served,
+        error_count = tile_request_rollup_daily_account.error_count + excluded.error_count,
+        cache_hit_count = tile_request_rollup_daily_account.cache_hit_count + excluded.cache_hit_count,
+        tagged_request_count = tile_request_rollup_daily_account.tagged_request_count + excluded.tagged_request_count,
+        last_event_unix = CASE
+          WHEN excluded.last_event_unix > tile_request_rollup_daily_account.last_event_unix
+            THEN excluded.last_event_unix
+          ELSE tile_request_rollup_daily_account.last_event_unix
+        END
+    `,
+    [bucketDay, bucketDayIso, userId, userEmail, bytesServed, errorCount, cacheHitCount, taggedRequest, createdAtUnix],
+  );
 }
 
 async function recordTileRequestEvent(db, payload) {
@@ -797,6 +957,15 @@ async function recordTileRequestEvent(db, payload) {
         String(payload.error_code || ""),
       ],
     );
+    await recordTileRequestRollups(db, {
+      created_at_unix: createdAtUnix,
+      user_id: String(payload.user_id || ""),
+      user_email: normalizeEmail(payload.user_email || ""),
+      resolve_id: String(payload.resolve_id || ""),
+      status_code: parseNonNegativeInteger(payload.status_code, 0),
+      bytes_served: clampNonNegativeInt(payload.bytes_served),
+      cache_status: String(payload.cache_status || ""),
+    });
   } catch (error) {
     console.debug(
       "worker.analytics.tile_request_write_failed",
@@ -817,9 +986,11 @@ function sanitizeAnalyticsMinutes(value, fallback = DEFAULT_ANALYTICS_WINDOW_MIN
 
 async function collectAnalyticsSnapshot(db, minutes) {
   await ensureTileRequestEventsTable(db);
+  await ensureTileRequestRollupTables(db);
   const nowUnix = Math.floor(Date.now() / 1000);
   const windowMinutes = sanitizeAnalyticsMinutes(minutes, DEFAULT_ANALYTICS_WINDOW_MINUTES);
   const windowStartUnix = Math.max(0, nowUnix - (windowMinutes * 60));
+  const rollupStart30d = Math.max(0, nowUnix - (30 * 86400));
 
   const summary = await dbGet(
     db,
@@ -912,6 +1083,41 @@ async function collectAnalyticsSnapshot(db, minutes) {
     [],
   );
 
+  const rollup30d = await dbGet(
+    db,
+    `
+      SELECT
+        COALESCE(SUM(request_count), 0) AS request_count,
+        COALESCE(SUM(bytes_served), 0) AS bytes_served,
+        COALESCE(SUM(error_count), 0) AS error_count,
+        COALESCE(SUM(cache_hit_count), 0) AS cache_hit_count,
+        COALESCE(SUM(tagged_request_count), 0) AS tagged_request_count,
+        COUNT(DISTINCT user_id) AS active_users
+      FROM tile_request_rollup_daily_account
+      WHERE day_start_unix >= ?
+    `,
+    [rollupStart30d],
+  );
+
+  const topAccounts30d = await dbAll(
+    db,
+    `
+      SELECT
+        user_id,
+        user_email,
+        COALESCE(SUM(request_count), 0) AS request_count,
+        COALESCE(SUM(bytes_served), 0) AS bytes_served,
+        COALESCE(SUM(error_count), 0) AS error_count,
+        MAX(last_event_unix) AS last_event_unix
+      FROM tile_request_rollup_daily_account
+      WHERE day_start_unix >= ?
+      GROUP BY user_id, user_email
+      ORDER BY request_count DESC
+      LIMIT 20
+    `,
+    [rollupStart30d],
+  );
+
   return {
     generated_at: nowIso(),
     window_minutes: windowMinutes,
@@ -933,6 +1139,23 @@ async function collectAnalyticsSnapshot(db, minutes) {
     top_users: Array.isArray(topUsers) ? topUsers : [],
     top_tiles: Array.isArray(topTiles) ? topTiles : [],
     recent_failures: Array.isArray(recentFailures) ? recentFailures : [],
+    rollup_30d: {
+      window_days: 30,
+      request_count: clampNonNegativeInt(rollup30d && rollup30d.request_count),
+      bytes_served: clampNonNegativeInt(rollup30d && rollup30d.bytes_served),
+      error_count: clampNonNegativeInt(rollup30d && rollup30d.error_count),
+      cache_hit_count: clampNonNegativeInt(rollup30d && rollup30d.cache_hit_count),
+      tagged_request_count: clampNonNegativeInt(rollup30d && rollup30d.tagged_request_count),
+      active_users: clampNonNegativeInt(rollup30d && rollup30d.active_users),
+      top_accounts: Array.isArray(topAccounts30d)
+        ? topAccounts30d.map((row) => ({
+          ...row,
+          last_seen_at: Number.isFinite(Number(row && row.last_event_unix))
+            ? new Date(Number(row.last_event_unix) * 1000).toISOString()
+            : "",
+        }))
+        : [],
+    },
   };
 }
 
@@ -1018,6 +1241,7 @@ function rateLimitedResponse(env, code, message, retryAfterSeconds) {
 }
 
 async function cleanupAuthTables(db, env, nowTimestamp) {
+  const nowUnix = Math.floor(Date.parse(nowTimestamp) / 1000) || Math.floor(Date.now() / 1000);
   const summary = {
     started_at: nowTimestamp,
     refresh_session_retention_days: Math.max(
@@ -1033,6 +1257,17 @@ async function cleanupAuthTables(db, env, nowTimestamp) {
     api_key_requests_deleted: 0,
     api_key_device_activity_deleted: 0,
     provisional_claim_audit_deleted: 0,
+    tile_event_retention_days: Math.max(
+      14,
+      parseNonNegativeInteger(env.CLEANUP_TILE_EVENT_RETENTION_DAYS, DEFAULT_TILE_EVENT_RETENTION_DAYS),
+    ),
+    tile_rollup_retention_days: Math.max(
+      60,
+      parseNonNegativeInteger(env.CLEANUP_TILE_ROLLUP_RETENTION_DAYS, DEFAULT_TILE_ROLLUP_RETENTION_DAYS),
+    ),
+    tile_request_events_deleted: 0,
+    tile_rollup_hourly_deleted: 0,
+    tile_rollup_daily_deleted: 0,
   };
   const refreshSessionCutoff = addDaysFromIso(
     nowTimestamp,
@@ -1042,6 +1277,8 @@ async function cleanupAuthTables(db, env, nowTimestamp) {
     nowTimestamp,
     -Math.max(30, parseNonNegativeInteger(env.PAID_CLAIM_RETENTION_DAYS, DEFAULT_PAID_CLAIM_RETENTION_DAYS)),
   );
+  const tileEventsCutoffUnix = Math.max(0, nowUnix - (summary.tile_event_retention_days * 86400));
+  const tileRollupCutoffUnix = Math.max(0, nowUnix - (summary.tile_rollup_retention_days * 86400));
 
   if (await dbTableExists(db, "magic_links")) {
     const magicLinksResult = await dbRun(
@@ -1149,6 +1386,42 @@ async function cleanupAuthTables(db, env, nowTimestamp) {
       [paidClaimRetentionCutoff],
     );
     summary.provisional_claim_audit_deleted = dbMetaChanges(claimAuditResult);
+  }
+
+  if (await dbTableExists(db, "tile_request_events")) {
+    const tileEventsResult = await dbRun(
+      db,
+      `
+        DELETE FROM tile_request_events
+        WHERE created_at_unix < ?
+      `,
+      [tileEventsCutoffUnix],
+    );
+    summary.tile_request_events_deleted = dbMetaChanges(tileEventsResult);
+  }
+
+  if (await dbTableExists(db, "tile_request_rollup_hourly_account")) {
+    const hourlyRollupResult = await dbRun(
+      db,
+      `
+        DELETE FROM tile_request_rollup_hourly_account
+        WHERE bucket_start_unix < ?
+      `,
+      [tileRollupCutoffUnix],
+    );
+    summary.tile_rollup_hourly_deleted = dbMetaChanges(hourlyRollupResult);
+  }
+
+  if (await dbTableExists(db, "tile_request_rollup_daily_account")) {
+    const dailyRollupResult = await dbRun(
+      db,
+      `
+        DELETE FROM tile_request_rollup_daily_account
+        WHERE day_start_unix < ?
+      `,
+      [tileRollupCutoffUnix],
+    );
+    summary.tile_rollup_daily_deleted = dbMetaChanges(dailyRollupResult);
   }
 
   return summary;
@@ -4071,6 +4344,9 @@ async function handleApiKeyExchange(request, env) {
 }
 
 async function handleAuthStart(request, env) {
+  if (!isMagicLinkAuthEnabled(env)) {
+    return json({ ok: false, error: "magic_link_auth_disabled" }, 404, env);
+  }
   const db = requireDb(env);
   await ensureUserConsentColumns(db);
   await ensureMagicLinksTokenIndex(db);
@@ -4229,6 +4505,9 @@ async function handleAuthStart(request, env) {
 }
 
 async function handleAuthVerify(request, env) {
+  if (!isMagicLinkAuthEnabled(env)) {
+    return json({ ok: false, error: "magic_link_auth_disabled" }, 404, env);
+  }
   const db = requireDb(env);
   await ensureMagicLinksTokenIndex(db);
   const body = await parseJson(request);
@@ -4501,42 +4780,15 @@ async function handleAuthRefresh(request, env) {
 }
 
 async function handleMe(request, env) {
-  const db = requireDb(env);
-  let access;
-  try {
-    access = await readBearerUser(request, env);
-  } catch (error) {
-    return json({ ok: false, error: String(error.message || "invalid_access_token") }, 401, env);
-  }
-  if (!access) {
-    return json({ ok: false, error: "missing_bearer_token" }, 401, env);
-  }
-
-  let user = await dbGet(
-    db,
-    `
-      SELECT
-        id,
-        email,
-        status,
-        provisional_plan_code,
-        provisional_expires_at,
-        pro_confirmed_at,
-        created_at,
-        last_login_at
-      FROM users
-      WHERE id = ?
-      LIMIT 1
-    `,
-    [access.sub],
+  const auth = await requireAuthenticatedUserContext(
+    request,
+    env,
+    { enforceApiKeyDevicePolicy: true },
   );
-  if (!user) {
-    return json({ ok: false, error: "user_not_found" }, 404, env);
+  if (auth.error) {
+    return auth.error;
   }
-  if (isBlockedStatus(user.status)) {
-    return blockedAccountResponse(env);
-  }
-  user = await enforceUserPlanPolicy(db, user, null, env);
+  const { db, user } = auth;
   const effectiveUserStatus = resolvePolicyPlanCode(user, null, env);
   const accountState = await buildAllowanceState(db, user, null, env);
   const subscriptionStatus = subscriptionStatusForUser(user, env);
@@ -4557,6 +4809,9 @@ async function handleMe(request, env) {
 }
 
 async function handleDeviceStart(request, env) {
+  if (!isMagicLinkAuthEnabled(env)) {
+    return json({ ok: false, error: "magic_link_auth_disabled" }, 404, env);
+  }
   const db = requireDb(env);
   await ensureDeviceSessionsTable(db);
   const deviceCode = randomToken(24);
@@ -4595,6 +4850,9 @@ async function handleDeviceStart(request, env) {
 }
 
 async function handleDevicePoll(request, env) {
+  if (!isMagicLinkAuthEnabled(env)) {
+    return json({ ok: false, error: "magic_link_auth_disabled" }, 404, env);
+  }
   const db = requireDb(env);
   await ensureDeviceSessionsTable(db);
   await ensureRateLimitsTable(db);
@@ -5014,6 +5272,9 @@ function renderDeviceLoginPage(env, deviceCode = "", verifyMode = false) {
 }
 
 async function handleDeviceLoginPage(request, env) {
+  if (!isMagicLinkAuthEnabled(env)) {
+    return json({ ok: false, error: "magic_link_auth_disabled" }, 404, env);
+  }
   const db = requireDb(env);
   await ensureDeviceSessionsTable(db);
   const url = new URL(request.url);
@@ -5122,48 +5383,15 @@ async function handleTileRequest(request, env, path, ctx) {
     return json({ ok: false, error: "missing_r2_binding" }, 500, env);
   }
 
-  let access;
-  try {
-    access = await readBearerUser(request, env);
-  } catch (error) {
-    return json({ ok: false, error: String(error.message || "invalid_access_token") }, 401, env);
+  const auth = await requireAuthenticatedUserContext(
+    request,
+    env,
+    { enforceApiKeyDevicePolicy: true },
+  );
+  if (auth.error) {
+    return auth.error;
   }
-  if (!access) {
-    return json({ ok: false, error: "missing_bearer_token" }, 401, env);
-  }
-
-  const db = requireDb(env);
-  let user = await findUserById(db, access.sub);
-  if (!user) {
-    return json({ ok: false, error: "user_not_found" }, 404, env);
-  }
-  if (isBlockedStatus(user.status)) {
-    return blockedAccountResponse(env);
-  }
-  user = await enforceUserPlanPolicy(db, user, null, env);
-  const planCode = resolvePlanCode(user, null, env);
-  const provisionalRestricted = isUnconfirmedProvisionalActive(user);
-  const authMethod = String(access.auth_method || "").trim().toLowerCase();
-  const tokenApiKeyId = String(access.api_key_id || "").trim();
-  const tokenDeviceId = normalizeDeviceId(access.device_id || request.headers.get("X-Planetka-Device-Id") || "");
-  if (authMethod === "api_key" && tokenApiKeyId) {
-    const keyUsable = await isApiKeyUsableById(db, tokenApiKeyId, String(user.id || ""));
-    if (!keyUsable) {
-      return json({ ok: false, error: "api_key_revoked", message: "API key is no longer active." }, 401, env);
-    }
-    try {
-      await enforceApiKeyDeviceLimit(db, tokenApiKeyId, String(user.id || ""), planCode, tokenDeviceId, request, env);
-    } catch (error) {
-      const code = String(error && error.message || "device_limit_exceeded");
-      const statusCode = code === "missing_device_id" ? 400 : 429;
-      const message = code === "missing_device_id"
-        ? "Missing device identifier for API key session."
-        : (provisionalRestricted
-          ? "This Planetka account can be active on one computer at a time."
-          : "This Planetka account can be active on one computer at a time.");
-      return json({ ok: false, error: code, message }, statusCode, env);
-    }
-  }
+  const { db, user, planCode } = auth;
 
   const requestStartedAtMs = Date.now();
   const clientIp = requestClientIp(request);
@@ -5370,29 +5598,73 @@ async function handleTileRequest(request, env, path, ctx) {
   }
 }
 
-async function requireAnalyticsAdmin(request, env) {
+function readCookieValue(request, cookieName) {
+  const safeName = String(cookieName || "").trim();
+  if (!safeName) {
+    return "";
+  }
+  const cookieHeader = String(request.headers.get("Cookie") || "");
+  if (!cookieHeader) {
+    return "";
+  }
+  const parts = cookieHeader.split(";");
+  for (const part of parts) {
+    const [nameRaw, ...rest] = String(part || "").split("=");
+    const name = String(nameRaw || "").trim();
+    if (name !== safeName) {
+      continue;
+    }
+    return decodeURIComponent(String(rest.join("=") || "").trim());
+  }
+  return "";
+}
+
+function buildAdminSessionCookie(token) {
+  const safe = encodeURIComponent(String(token || "").trim());
+  return `planetka_admin_token=${safe}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=3600`;
+}
+
+async function requireAuthenticatedUserContext(request, env, options = {}) {
   const db = requireDb(env);
+  const allowCookieToken = parseBooleanFlag(options.allowCookieToken);
+  const requireAdmin = parseBooleanFlag(options.requireAdmin);
+  const enforceApiKeyDevicePolicy = options.enforceApiKeyDevicePolicy !== false;
+
   let access = null;
+  let tokenSource = "";
+  let bearerError = "";
   try {
     access = await readBearerUser(request, env);
-    if (!access) {
-      const url = new URL(request.url);
-      const queryToken = String(url.searchParams.get("access_token") || url.searchParams.get("token") || "").trim();
-      if (queryToken) {
-        const secret = requireSecret(env, "JWT_SIGNING_SECRET");
-        const payload = await verifyJwt(queryToken, secret);
-        if (payload.type !== "access" || !payload.sub) {
-          throw new Error("invalid_access_token");
-        }
-        access = payload;
-      }
+    if (access) {
+      tokenSource = "bearer";
     }
   } catch (error) {
-    return { error: json({ ok: false, error: String(error.message || "invalid_access_token") }, 401, env) };
+    bearerError = String(error && error.message || "invalid_access_token");
+  }
+  if (!access && allowCookieToken) {
+    const cookieToken = String(readCookieValue(request, "planetka_admin_token") || "").trim();
+    if (cookieToken) {
+      try {
+        const secret = requireSecret(env, "JWT_SIGNING_SECRET");
+        const payload = await verifyJwt(cookieToken, secret);
+        if (payload.type === "access" && payload.sub) {
+          access = payload;
+          tokenSource = "admin_cookie";
+        } else {
+          bearerError = "invalid_access_token";
+        }
+      } catch (error) {
+        bearerError = String(error && error.message || "invalid_access_token");
+      }
+    }
   }
   if (!access) {
+    if (bearerError) {
+      return { error: json({ ok: false, error: bearerError }, 401, env) };
+    }
     return { error: json({ ok: false, error: "missing_bearer_token" }, 401, env) };
   }
+
   let user = await findUserById(db, access.sub);
   if (!user) {
     return { error: json({ ok: false, error: "user_not_found" }, 404, env) };
@@ -5401,19 +5673,77 @@ async function requireAnalyticsAdmin(request, env) {
     return { error: blockedAccountResponse(env) };
   }
   user = await enforceUserPlanPolicy(db, user, null, env);
-  if (!isAnalyticsAdmin(user, env)) {
+  if (!user) {
+    return { error: json({ ok: false, error: "user_not_found" }, 404, env) };
+  }
+  const planCode = resolvePlanCode(user, null, env);
+  const authMethod = String(access.auth_method || "").trim().toLowerCase();
+  const apiKeyId = String(access.api_key_id || "").trim();
+  const deviceId = normalizeDeviceId(
+    access.device_id || request.headers.get("X-Planetka-Device-Id") || "",
+  );
+  let devicePolicy = null;
+  if (enforceApiKeyDevicePolicy && authMethod === "api_key" && apiKeyId) {
+    const keyUsable = await isApiKeyUsableById(db, apiKeyId, String(user.id || ""));
+    if (!keyUsable) {
+      return { error: json({ ok: false, error: "api_key_revoked", message: "API key is no longer active." }, 401, env) };
+    }
+    const provisionalRestricted = isUnconfirmedProvisionalActive(user);
+    try {
+      devicePolicy = await enforceApiKeyDeviceLimit(
+        db,
+        apiKeyId,
+        String(user.id || ""),
+        planCode,
+        deviceId,
+        request,
+        env,
+      );
+    } catch (error) {
+      const code = String(error && error.message || "device_limit_exceeded");
+      const statusCode = code === "missing_device_id" ? 400 : 429;
+      const message = code === "missing_device_id"
+        ? "Missing device identifier for API key session."
+        : (provisionalRestricted
+          ? "This Planetka account can be active on one computer at a time."
+          : "This Planetka account can be active on one computer at a time.");
+      return { error: json({ ok: false, error: code, message }, statusCode, env) };
+    }
+  }
+  if (requireAdmin && !isAnalyticsAdmin(user, env)) {
     return { error: json({ ok: false, error: "admin_access_required" }, 403, env) };
   }
-  return { db, user };
+  return {
+    db,
+    user,
+    access,
+    planCode,
+    authMethod,
+    apiKeyId,
+    deviceId,
+    devicePolicy,
+    tokenSource,
+  };
+}
+
+async function requireAnalyticsAdmin(request, env) {
+  return requireAuthenticatedUserContext(
+    request,
+    env,
+    { requireAdmin: true, allowCookieToken: true, enforceApiKeyDevicePolicy: true },
+  );
 }
 
 async function handleAdminAnalyticsData(request, env) {
+  const url = new URL(request.url);
+  if (String(url.searchParams.get("access_token") || url.searchParams.get("token") || "").trim()) {
+    return json({ ok: false, error: "query_token_not_allowed" }, 400, env);
+  }
   const auth = await requireAnalyticsAdmin(request, env);
   if (auth.error) {
     return auth.error;
   }
   const { db, user } = auth;
-  const url = new URL(request.url);
   const windowMinutes = sanitizeAnalyticsMinutes(url.searchParams.get("minutes"), DEFAULT_ANALYTICS_WINDOW_MINUTES);
   const snapshot = await collectAnalyticsSnapshot(db, windowMinutes);
   return json(
@@ -5428,11 +5758,15 @@ async function handleAdminAnalyticsData(request, env) {
 }
 
 async function handleAdminAnalyticsPage(request, env) {
+  const url = new URL(request.url);
+  if (String(url.searchParams.get("access_token") || url.searchParams.get("token") || "").trim()) {
+    return json({ ok: false, error: "query_token_not_allowed" }, 400, env);
+  }
   const auth = await requireAnalyticsAdmin(request, env);
   if (auth.error) {
     return auth.error;
   }
-  const { user } = auth;
+  const { user, tokenSource } = auth;
   const htmlContent = `
 <!doctype html>
 <html>
@@ -5522,14 +5856,11 @@ async function handleAdminAnalyticsPage(request, env) {
         tbody.appendChild(tr);
       }
     }
-    const urlParams = new URLSearchParams(window.location.search || "");
-    const accessToken = String(urlParams.get("access_token") || urlParams.get("token") || "");
     async function loadAnalytics() {
       const minutes = windowEl.value || "60";
       statusEl.textContent = "Loading...";
       try {
-        const tokenQuery = accessToken ? ("&access_token=" + encodeURIComponent(accessToken)) : "";
-        const res = await fetch("/admin/analytics/data?minutes=" + encodeURIComponent(minutes) + tokenQuery, { credentials: "same-origin" });
+        const res = await fetch("/admin/analytics/data?minutes=" + encodeURIComponent(minutes), { credentials: "same-origin" });
         const data = await res.json();
         if (!res.ok || !data.ok) throw new Error((data && data.error) || ("HTTP " + res.status));
         const s = data.summary || {};
@@ -5562,6 +5893,22 @@ async function handleAdminAnalyticsPage(request, env) {
 </body>
 </html>
   `;
+  if (tokenSource === "bearer") {
+    const authHeader = String(request.headers.get("Authorization") || "");
+    if (authHeader.startsWith("Bearer ")) {
+      const token = authHeader.slice("Bearer ".length).trim();
+      if (token) {
+        return new Response(htmlContent, {
+          status: 200,
+          headers: {
+            "Content-Type": "text/html; charset=utf-8",
+            ...corsHeaders(env),
+            "Set-Cookie": buildAdminSessionCookie(token),
+          },
+        });
+      }
+    }
+  }
   return html(htmlContent, 200, env);
 }
 
@@ -5582,24 +5929,15 @@ function escapeHtml(value) {
 }
 
 async function handleSupportBugReport(request, env) {
-  const db = requireDb(env);
-  let access;
-  try {
-    access = await readBearerUser(request, env);
-  } catch (error) {
-    return json({ ok: false, error: String(error.message || "invalid_access_token") }, 401, env);
+  const auth = await requireAuthenticatedUserContext(
+    request,
+    env,
+    { enforceApiKeyDevicePolicy: true },
+  );
+  if (auth.error) {
+    return auth.error;
   }
-  if (!access) {
-    return json({ ok: false, error: "missing_bearer_token" }, 401, env);
-  }
-
-  const user = await findUserById(db, access.sub);
-  if (!user) {
-    return json({ ok: false, error: "user_not_found" }, 404, env);
-  }
-  if (isBlockedStatus(user.status)) {
-    return blockedAccountResponse(env);
-  }
+  const { db, user } = auth;
 
   const body = await parseJson(request);
   const reportJson = String(body.report_json || "").trim();
@@ -5905,13 +6243,17 @@ export default {
 
     try {
       if (request.method === "GET" && path === "/health") {
+        const magicLinkEnabled = isMagicLinkAuthEnabled(env);
         return json(
           {
             ok: true,
             service: "planetka-api",
             api_base_url: env.API_BASE_URL || "https://api.planetka.io",
             login_url: env.LOGIN_URL || "https://www.planetka.io/login",
-            device_login_url: `${env.API_BASE_URL || "https://api.planetka.io"}/device/login`,
+            device_login_url: magicLinkEnabled
+              ? `${env.API_BASE_URL || "https://api.planetka.io"}/device/login`
+              : "",
+            magic_link_auth_enabled: magicLinkEnabled,
             db_bound: Boolean(env.DB),
             r2_bound: Boolean(env.PLANETKA_DATA),
           },
@@ -5930,6 +6272,9 @@ export default {
       }
 
       if (request.method === "POST" && path === "/auth/start") {
+        if (!isMagicLinkAuthEnabled(env)) {
+          return json({ ok: false, error: "magic_link_auth_disabled" }, 404, env);
+        }
         return await handleAuthStart(request, env);
       }
 
@@ -5946,6 +6291,9 @@ export default {
       }
 
       if (request.method === "POST" && path === "/auth/verify") {
+        if (!isMagicLinkAuthEnabled(env)) {
+          return json({ ok: false, error: "magic_link_auth_disabled" }, 404, env);
+        }
         return await handleAuthVerify(request, env);
       }
 
@@ -5958,14 +6306,23 @@ export default {
       }
 
       if (request.method === "POST" && path === "/device/start") {
+        if (!isMagicLinkAuthEnabled(env)) {
+          return json({ ok: false, error: "magic_link_auth_disabled" }, 404, env);
+        }
         return await handleDeviceStart(request, env);
       }
 
       if (request.method === "POST" && path === "/device/poll") {
+        if (!isMagicLinkAuthEnabled(env)) {
+          return json({ ok: false, error: "magic_link_auth_disabled" }, 404, env);
+        }
         return await handleDevicePoll(request, env);
       }
 
       if (request.method === "GET" && path === "/device/login") {
+        if (!isMagicLinkAuthEnabled(env)) {
+          return json({ ok: false, error: "magic_link_auth_disabled" }, 404, env);
+        }
         return await handleDeviceLoginPage(request, env);
       }
 

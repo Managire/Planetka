@@ -25,7 +25,7 @@ def _is_global_cloud_object(obj):
 
 
 def _apply_global_cloud_texture(material):
-    if material is None or not bool(getattr(material, "use_nodes", False)):
+    if material is None or getattr(material, "node_tree", None) is None:
         return
     texture_path = ""
     try:

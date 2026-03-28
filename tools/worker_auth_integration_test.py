@@ -11,6 +11,22 @@ import urllib.error
 import urllib.request
 
 
+def _get_json(url: str, timeout: float = 20.0) -> tuple[int, dict, dict]:
+    request = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = response.read().decode("utf-8", errors="replace")
+            parsed = json.loads(body) if body.strip() else {}
+            return int(response.status), parsed if isinstance(parsed, dict) else {}, dict(response.headers.items())
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(body) if body.strip() else {}
+        except Exception:
+            parsed = {}
+        return int(exc.code), parsed if isinstance(parsed, dict) else {}, dict(exc.headers.items() if exc.headers else {})
+
+
 def _post_json(url: str, payload: dict, timeout: float = 20.0) -> tuple[int, dict, dict]:
     request = urllib.request.Request(
         url,
@@ -73,6 +89,28 @@ def main() -> int:
     failures = 0
     print(f"Planetka Worker Auth Integration Test")
     print(f"- base_url: {base_url}")
+    health_status, health_payload, _ = _get_json(f"{base_url}/health")
+    magic_link_enabled = bool(health_status == 200 and health_payload.get("magic_link_auth_enabled"))
+    print(f"- magic_link_auth_enabled: {magic_link_enabled}")
+
+    if not magic_link_enabled:
+        status, payload, _headers = _post_json(f"{base_url}/auth/start", {"email": f"probe-{int(time.time())}@example.com"})
+        auth_disabled_ok = status == 404 and str(payload.get("error", "")).strip() == "magic_link_auth_disabled"
+        _print_result(auth_disabled_ok, "/auth/start disabled when legacy magic-link auth is off")
+        if not auth_disabled_ok:
+            failures += 1
+
+        status, payload, _headers = _post_json(f"{base_url}/device/start", {})
+        device_disabled_ok = status == 404 and str(payload.get("error", "")).strip() == "magic_link_auth_disabled"
+        _print_result(device_disabled_ok, "/device/start disabled when legacy magic-link auth is off")
+        if not device_disabled_ok:
+            failures += 1
+
+        if failures:
+            print(f"Integration test failed with {failures} issue(s).")
+            return 1
+        print("Integration test passed.")
+        return 0
 
     # 1) auth/start basic shape + 429 behavior using invalid email (no email is sent)
     auth_statuses: list[int] = []

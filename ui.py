@@ -452,7 +452,7 @@ def _iter_surface_grading_nodes():
         logger.debug("Planetka: failed loading surface grading identifiers", exc_info=True)
 
     material = bpy.data.materials.get(material_name)
-    if material is None or not bool(getattr(material, "use_nodes", False)):
+    if material is None or getattr(material, "node_tree", None) is None:
         return []
     node_tree = getattr(material, "node_tree", None)
     if node_tree is None:
@@ -599,7 +599,7 @@ def _iter_atmosphere_nodes():
     nodes = []
     for slot in getattr(atmosphere_obj, "material_slots", ()):
         material = getattr(slot, "material", None)
-        if material is None or not bool(getattr(material, "use_nodes", False)):
+        if material is None or getattr(material, "node_tree", None) is None:
             continue
         node_tree = getattr(material, "node_tree", None)
         if node_tree is None:
