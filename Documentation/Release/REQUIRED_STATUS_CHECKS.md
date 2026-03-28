@@ -15,6 +15,7 @@ This gate runs:
 - `tools/planetka_schema_migration_test.py`
 - `tools/planetka_regression_test.py`
 - `tools/worker_abuse_simulation.py --base-url https://api.planetka.io --tile-requests 60`
+- `tools/worker_abuse_simulation.py --base-url https://api.planetka.io --tile-requests 60 --analytics-minutes 60` (authenticated; requires GitHub secret `PLANETKA_CI_BEARER_TOKEN`)
 
 `tools/release_gate.py` now also hard-fails on release-safety guards:
 - paid-claim elevation safeguards present
