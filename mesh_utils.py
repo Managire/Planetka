@@ -13,6 +13,16 @@ from .extension_prefs import get_earth_object
 TILE_RE = re.compile(r"x(\d+)_y(\d+)_z(\d+)_d(\d+)")
 
 logger = logging.getLogger(__name__)
+_RECOVERABLE_LOG_COUNTS = {}
+
+
+def _log_recoverable_once(code, message):
+    count = int(_RECOVERABLE_LOG_COUNTS.get(code, 0))
+    if count < 3:
+        logger.debug("[%s] %s", code, message, exc_info=True)
+    elif count == 3:
+        logger.debug("[%s] %s (further occurrences suppressed)", code, message)
+    _RECOVERABLE_LOG_COUNTS[code] = count + 1
 
 
 SURFACE_CULL_MOD_NAME = "Camera Cull Surface"
@@ -114,7 +124,7 @@ def _enable_adaptive_subdivision(obj, subsurf_mod):
             subsurf_mod.use_adaptive_subdivision = True
             adaptive_enabled = bool(getattr(subsurf_mod, "use_adaptive_subdivision", False))
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            pass
+            _log_recoverable_once("PKA-MESH-002", "Failed enabling adaptive subdivision on subsurf modifier")
 
     obj_cycles = getattr(obj, "cycles", None) if obj is not None else None
     if obj_cycles is not None:
@@ -125,17 +135,17 @@ def _enable_adaptive_subdivision(obj, subsurf_mod):
                     getattr(obj_cycles, "use_adaptive_subdivision", False)
                 )
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                pass
+                _log_recoverable_once("PKA-MESH-003", "Failed enabling adaptive subdivision on object cycles settings")
         if hasattr(obj_cycles, "dicing_rate"):
             try:
                 obj_cycles.dicing_rate = 1.0
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                pass
+                _log_recoverable_once("PKA-MESH-004", "Failed setting cycles dicing_rate")
         if hasattr(obj_cycles, "preview_dicing_rate"):
             try:
                 obj_cycles.preview_dicing_rate = 1.0
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                pass
+                _log_recoverable_once("PKA-MESH-005", "Failed setting cycles preview_dicing_rate")
 
     return adaptive_enabled
 
@@ -184,7 +194,7 @@ def ensure_surface_collection():
         try:
             scene.collection.children.link(surface_col)
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            pass
+            _log_recoverable_once("PKA-MESH-006", "Failed relinking surface collection to scene root")
     return surface_col
 
 
@@ -469,9 +479,9 @@ def _set_image_colorspace_safe(image, colorspace):
     try:
         settings.name = str(colorspace)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        pass
+        _log_recoverable_once("PKA-MESH-007", "Failed setting preview image colorspace")
     except (AttributeError, RuntimeError, TypeError, ValueError):
-        pass
+        _log_recoverable_once("PKA-MESH-008", "Failed setting preview image colorspace")
 
 
 def _load_preview_image(path, image_name, colorspace):
@@ -576,7 +586,7 @@ def ensure_preview_object(parent_surface):
     try:
         preview.display_type = 'TEXTURED'
     except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError):
-        pass
+        _log_recoverable_once("PKA-MESH-009", "Failed setting preview object display type")
 
     return preview
 
@@ -899,7 +909,7 @@ def create_temp_mesh_for_all_tiles(tiles, name="Planetka Earth Surface", collect
             try:
                 temp.modifiers.remove(subsurf_mod)
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                pass
+                _log_recoverable_once("PKA-MESH-010", "Failed removing non-subsurf modifier named Adaptive Subdivision")
         subsurf_mod = temp.modifiers.new(name="Adaptive Subdivision", type='SUBSURF')
     _set_enum_property_safe(subsurf_mod, "subdivision_type", ("CATMULL_CLARK",))
     subsurf_mod.levels = 1

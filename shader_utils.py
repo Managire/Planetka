@@ -9,6 +9,16 @@ from .extension_prefs import get_prefs
 from .fallback_utils import ecosystem_safe_fallback
 
 logger = logging.getLogger(__name__)
+_RECOVERABLE_LOG_COUNTS = {}
+
+
+def _log_recoverable_once(code, message):
+    count = int(_RECOVERABLE_LOG_COUNTS.get(code, 0))
+    if count < 3:
+        logger.debug("[%s] %s", code, message, exc_info=True)
+    elif count == 3:
+        logger.debug("[%s] %s (further occurrences suppressed)", code, message)
+    _RECOVERABLE_LOG_COUNTS[code] = count + 1
 
 # ------------------------------------------------------------
 # Constants
@@ -131,7 +141,7 @@ def _load_image_cached(path, cache_by_path, image_name=None):
         try:
             img.use_fake_user = False
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            pass
+            _log_recoverable_once("PKA-SHADER-001", "Failed to clear fake-user on loaded image")
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.warning("Planetka: failed loading image '%s'", path, exc_info=True)
         img = None
@@ -145,11 +155,11 @@ def _assign_image_to_node(img_node, image, img_type, use_fallback):
     try:
         img_node.interpolation = "Closest" if use_fallback else "Linear"
     except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, AttributeError):
-        pass
+        _log_recoverable_once("PKA-SHADER-002", "Failed setting image node interpolation")
     try:
         img_node.extension = "EXTEND"
     except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, AttributeError):
-        pass
+        _log_recoverable_once("PKA-SHADER-003", "Failed setting image node extension")
 
     if image is None:
         return
@@ -294,7 +304,7 @@ def _ensure_tile_group_for_index(index):
     try:
         new_group.use_fake_user = True
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        pass
+        _log_recoverable_once("PKA-SHADER-004", "Failed to set fake-user on dynamic tile group")
     return new_group
 
 
@@ -426,7 +436,7 @@ def _stabilize_tile_group_mask_sources(tile_group):
                 try:
                     nodes.remove(separate)
                 except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                    pass
+                    _log_recoverable_once("PKA-SHADER-005", "Failed removing stale alpha-mask separate node")
             separate = nodes.new("ShaderNodeSeparateXYZ")
             separate.name = "PKA AlphaMask Separate"
         _set_node_location_safe(separate, mapping_x + 220.0, mapping_y)
@@ -437,7 +447,7 @@ def _stabilize_tile_group_mask_sources(tile_group):
                 try:
                     nodes.remove(x_gt)
                 except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                    pass
+                    _log_recoverable_once("PKA-SHADER-006", "Failed removing stale alpha-mask XMin node")
             x_gt = nodes.new("ShaderNodeMath")
             x_gt.name = "PKA AlphaMask XMin"
         x_gt.operation = "GREATER_THAN"
@@ -450,7 +460,7 @@ def _stabilize_tile_group_mask_sources(tile_group):
                 try:
                     nodes.remove(x_lt)
                 except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                    pass
+                    _log_recoverable_once("PKA-SHADER-007", "Failed removing stale alpha-mask XMax node")
             x_lt = nodes.new("ShaderNodeMath")
             x_lt.name = "PKA AlphaMask XMax"
         x_lt.operation = "LESS_THAN"
@@ -463,7 +473,7 @@ def _stabilize_tile_group_mask_sources(tile_group):
                 try:
                     nodes.remove(y_gt)
                 except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                    pass
+                    _log_recoverable_once("PKA-SHADER-008", "Failed removing stale alpha-mask YMin node")
             y_gt = nodes.new("ShaderNodeMath")
             y_gt.name = "PKA AlphaMask YMin"
         y_gt.operation = "GREATER_THAN"
@@ -476,7 +486,7 @@ def _stabilize_tile_group_mask_sources(tile_group):
                 try:
                     nodes.remove(y_lt)
                 except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                    pass
+                    _log_recoverable_once("PKA-SHADER-009", "Failed removing stale alpha-mask YMax node")
             y_lt = nodes.new("ShaderNodeMath")
             y_lt.name = "PKA AlphaMask YMax"
         y_lt.operation = "LESS_THAN"
@@ -489,7 +499,7 @@ def _stabilize_tile_group_mask_sources(tile_group):
                 try:
                     nodes.remove(mul_x)
                 except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                    pass
+                    _log_recoverable_once("PKA-SHADER-010", "Failed removing stale alpha-mask MulX node")
             mul_x = nodes.new("ShaderNodeMath")
             mul_x.name = "PKA AlphaMask MulX"
         mul_x.operation = "MULTIPLY"
@@ -501,7 +511,7 @@ def _stabilize_tile_group_mask_sources(tile_group):
                 try:
                     nodes.remove(mul_y)
                 except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                    pass
+                    _log_recoverable_once("PKA-SHADER-011", "Failed removing stale alpha-mask MulY node")
             mul_y = nodes.new("ShaderNodeMath")
             mul_y.name = "PKA AlphaMask MulY"
         mul_y.operation = "MULTIPLY"
@@ -513,7 +523,7 @@ def _stabilize_tile_group_mask_sources(tile_group):
                 try:
                     nodes.remove(mul_xy)
                 except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                    pass
+                    _log_recoverable_once("PKA-SHADER-012", "Failed removing stale alpha-mask MulXY node")
             mul_xy = nodes.new("ShaderNodeMath")
             mul_xy.name = "PKA AlphaMask MulXY"
         mul_xy.operation = "MULTIPLY"
@@ -636,9 +646,9 @@ def _stabilize_tile_group_mask_sources(tile_group):
                     links.remove(old_link)
                 links.new(alpha_z360.outputs[0], alpha_input)
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            pass
+            _log_recoverable_once("PKA-SHADER-013", "Failed wiring z360/native UV stabilization links")
         except (RuntimeError, TypeError, ValueError, AttributeError):
-            pass
+            _log_recoverable_once("PKA-SHADER-014", "Failed wiring z360/native UV stabilization links")
 
         # Remove legacy tight-mask gating nodes (introduced experimentally for WT seams).
         try:
@@ -666,9 +676,9 @@ def _stabilize_tile_group_mask_sources(tile_group):
                 if str(getattr(node, "name", "") or "").startswith("PKA TightMask"):
                     nodes.remove(node)
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            pass
+            _log_recoverable_once("PKA-SHADER-015", "Failed removing legacy tight-mask nodes")
         except (RuntimeError, TypeError, ValueError, AttributeError):
-            pass
+            _log_recoverable_once("PKA-SHADER-016", "Failed removing legacy tight-mask nodes")
 
         _layout_tile_group_readable(
             nodes=nodes,
@@ -1066,9 +1076,9 @@ def update_shader_nodes(
         try:
             _stabilize_tile_group_mask_sources(getattr(tile_node, "node_tree", None))
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            pass
+            _log_recoverable_once("PKA-SHADER-017", "Failed stabilizing tile-group alpha mask sources")
         except (RuntimeError, TypeError, ValueError, AttributeError):
-            pass
+            _log_recoverable_once("PKA-SHADER-018", "Failed stabilizing tile-group alpha mask sources")
 
     extension_dir = os.path.dirname(os.path.abspath(__file__))
     fallback_dir = os.path.join(extension_dir, "Resources", "Fallback Images")

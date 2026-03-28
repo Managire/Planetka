@@ -17,6 +17,16 @@ from .r2_source import get_remote_cache_folder, resolve_remote_asset
 
 
 logger = logging.getLogger(__name__)
+_RECOVERABLE_LOG_COUNTS = {}
+
+
+def _log_recoverable_once(code, message):
+    count = int(_RECOVERABLE_LOG_COUNTS.get(code, 0))
+    if count < 3:
+        logger.debug("[%s] %s", code, message, exc_info=True)
+    elif count == 3:
+        logger.debug("[%s] %s (further occurrences suppressed)", code, message)
+    _RECOVERABLE_LOG_COUNTS[code] = count + 1
 
 PRO_REFERENCE_BLEND_PATH = "/Volumes/SSDA/Projects/planetka_pro/Planetka.blend"
 GLOBAL_CLOUD_REFERENCE_BLEND_PATH = os.path.join(
@@ -285,7 +295,7 @@ def _free_local_cloud_previews():
         try:
             bpy.utils.previews.remove(_local_cloud_preview_collection)
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            pass
+            _log_recoverable_once("PKA-CLOUDL-001", "Failed removing local cloud preview collection")
         _local_cloud_preview_collection = None
     _local_cloud_preview_signature = None
     _local_cloud_enum_items = []
@@ -521,7 +531,7 @@ def _is_local_cloud_object(obj):
         if str(obj.get(CLOUD_ROLE_KEY, "")) == LOCAL_CLOUD_ROLE:
             return True
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        pass
+        _log_recoverable_once("PKA-CLOUDL-002", "Failed reading local-cloud role custom property")
     if str(getattr(obj, "name", "")).startswith(LOCAL_CLOUD_NUMBERED_PREFIX):
         return True
     coll = bpy.data.collections.get(LOCAL_CLOUDS_COLLECTION_NAME)
@@ -537,7 +547,7 @@ def _is_vdb_cloud_object(obj):
         if str(obj.get(CLOUD_ROLE_KEY, "")) == VDB_CLOUD_ROLE:
             return True
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        pass
+        _log_recoverable_once("PKA-CLOUDL-003", "Failed reading VDB-cloud role custom property")
     if str(getattr(obj, "name", "")).startswith(VDB_CLOUD_NUMBERED_PREFIX):
         return True
     coll = bpy.data.collections.get(VDB_CLOUDS_COLLECTION_NAME)
@@ -1213,7 +1223,7 @@ def _ensure_vdb_cloud_template(scene=None):
     try:
         source_obj[CLOUD_ROLE_KEY] = VDB_CLOUD_TEMPLATE_ROLE
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        pass
+        _log_recoverable_once("PKA-CLOUDL-004", "Failed tagging VDB template with cloud role")
 
     try:
         source_obj.hide_viewport = True
@@ -1635,12 +1645,12 @@ class PLANETKA_OT_AddLocalCloud(bpy.types.Operator):
             try:
                 bpy.data.objects.remove(new_obj, do_unlink=True)
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                pass
+                _log_recoverable_once("PKA-CLOUDL-005", "Failed cleanup-removing local cloud object after link failure")
             if mesh is not None and int(getattr(mesh, "users", 0)) == 0:
                 try:
                     bpy.data.meshes.remove(mesh)
                 except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                    pass
+                    _log_recoverable_once("PKA-CLOUDL-006", "Failed cleanup-removing local cloud mesh after link failure")
             self.report({'ERROR'}, f"Failed linking local cloud: {exc}")
             return {'CANCELLED'}
 
@@ -1670,7 +1680,7 @@ class PLANETKA_OT_AddLocalCloud(bpy.types.Operator):
             new_obj.hide_viewport = False
             new_obj.hide_render = False
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            pass
+            _log_recoverable_once("PKA-CLOUDL-007", "Failed setting local cloud role/visibility flags")
 
         lon, lat, _alt_km = _scene_target_lon_lat_alt(scene)
 
@@ -1704,7 +1714,7 @@ class PLANETKA_OT_AddLocalCloud(bpy.types.Operator):
             context.view_layer.objects.active = new_obj
             new_obj.select_set(True)
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            pass
+            _log_recoverable_once("PKA-CLOUDL-008", "Failed selecting newly created local cloud object")
 
         self.report({'INFO'}, f"Added local cloud: {new_obj.name}")
         return {'FINISHED'}
@@ -1857,11 +1867,11 @@ class PLANETKA_OT_AddVDBCloud(bpy.types.Operator):
             try:
                 new_obj.data = source_obj.data.copy()
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                pass
+                _log_recoverable_once("PKA-CLOUDL-009", "Failed duplicating VDB cloud mesh data; using shared data")
         try:
             new_obj.animation_data_clear()
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            pass
+            _log_recoverable_once("PKA-CLOUDL-010", "Failed clearing animation data on duplicated VDB cloud")
         _remove_cloud_cull_modifiers(new_obj)
         new_obj.name = _next_vdb_cloud_name()
 
@@ -1877,7 +1887,7 @@ class PLANETKA_OT_AddVDBCloud(bpy.types.Operator):
             try:
                 col.objects.unlink(new_obj)
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                pass
+                _log_recoverable_once("PKA-CLOUDL-011", "Failed unlinking VDB cloud from non-target collection")
 
         template_mat = _resolve_object_material(source_obj) or bpy.data.materials.get(VDB_CLOUD_MATERIAL_TEMPLATE_NAME)
         if template_mat is None:
@@ -1885,7 +1895,7 @@ class PLANETKA_OT_AddVDBCloud(bpy.types.Operator):
             try:
                 bpy.data.objects.remove(new_obj, do_unlink=True)
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                pass
+                _log_recoverable_once("PKA-CLOUDL-012", "Failed cleanup-removing VDB cloud object after material error")
             return {'CANCELLED'}
 
         new_mat = template_mat.copy()
@@ -1914,7 +1924,7 @@ class PLANETKA_OT_AddVDBCloud(bpy.types.Operator):
             new_obj.hide_viewport = False
             new_obj.hide_render = False
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            pass
+            _log_recoverable_once("PKA-CLOUDL-013", "Failed setting VDB cloud role/visibility flags")
 
         earth = get_earth_object()
         earth_radius = _earth_radius_blender_units(earth)
@@ -1957,7 +1967,7 @@ class PLANETKA_OT_AddVDBCloud(bpy.types.Operator):
             context.view_layer.objects.active = new_obj
             new_obj.select_set(True)
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            pass
+            _log_recoverable_once("PKA-CLOUDL-014", "Failed selecting newly created VDB cloud object")
 
         self.report({'INFO'}, f"Added VDB cloud: {new_obj.name}")
         return {'FINISHED'}

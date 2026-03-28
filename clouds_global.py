@@ -11,6 +11,16 @@ from . import clouds_local as _local
 
 
 logger = logging.getLogger(__name__)
+_RECOVERABLE_LOG_COUNTS = {}
+
+
+def _log_recoverable_once(code, message):
+    count = int(_RECOVERABLE_LOG_COUNTS.get(code, 0))
+    if count < 3:
+        logger.debug("[%s] %s", code, message, exc_info=True)
+    elif count == 3:
+        logger.debug("[%s] %s (further occurrences suppressed)", code, message)
+    _RECOVERABLE_LOG_COUNTS[code] = count + 1
 
 
 def _is_global_cloud_object(obj):
@@ -20,7 +30,7 @@ def _is_global_cloud_object(obj):
         if str(obj.get(_local.CLOUD_ROLE_KEY, "")) == _local.GLOBAL_CLOUD_ROLE:
             return True
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        pass
+        _log_recoverable_once("PKA-CLOUDG-001", "Failed reading global-cloud role custom property")
     return str(getattr(obj, "name", "")) == _local.GLOBAL_CLOUD_LAYER_NAME
 
 
@@ -136,7 +146,7 @@ def ensure_global_cloud_layer(scene=None):
         source_obj.hide_viewport = False
         source_obj.hide_render = False
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        pass
+        _log_recoverable_once("PKA-CLOUDG-002", "Failed setting global cloud role/visibility flags")
 
     apply_global_cloud_object(source_obj, scene=scene)
     return source_obj

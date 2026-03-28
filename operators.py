@@ -61,6 +61,16 @@ _IMPORT_TILE_FILENAME_RE = re.compile(
     r"^(S2|EL|WT|PO)_x(\d{3})_y(\d{3})_z(\d{3})_d(\d{3})\.(exr|tif)$",
     re.IGNORECASE,
 )
+_RECOVERABLE_LOG_COUNTS = {}
+
+
+def _log_recoverable_once(code, message):
+    count = int(_RECOVERABLE_LOG_COUNTS.get(code, 0))
+    if count < 3:
+        logger.debug("[%s] %s", code, message, exc_info=True)
+    elif count == 3:
+        logger.debug("[%s] %s (further occurrences suppressed)", code, message)
+    _RECOVERABLE_LOG_COUNTS[code] = count + 1
 
 
 def _require_authenticated_account(operator, prefs):
@@ -198,9 +208,9 @@ def _prompt_texture_source_selection():
         if "RUNNING_MODAL" in result:
             return True
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        pass
+        _log_recoverable_once("PKA-OPS-001", "Failed invoking texture-source selector operator")
     except (RuntimeError, TypeError, ValueError):
-        pass
+        _log_recoverable_once("PKA-OPS-002", "Failed invoking texture-source selector operator")
 
     module_name = __package__ or __name__
     try:
@@ -426,9 +436,9 @@ def _store_last_navigation_values(scene, lon_deg, lat_deg, altitude_km, heading_
         scene[NAV_LAST_APPLIED_KEYS["tilt"]] = float(tilt_deg)
         scene[NAV_LAST_APPLIED_KEYS["roll"]] = float(roll_deg)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        pass
+        _log_recoverable_once("PKA-OPS-003", "Failed storing last navigation values to scene idprops")
     except (TypeError, ValueError, AttributeError):
-        pass
+        _log_recoverable_once("PKA-OPS-004", "Failed storing last navigation values to scene idprops")
 
 
 def _get_coverage_map():
@@ -631,7 +641,7 @@ def _switch_viewport_to_camera_view(context, scene):
             rv3d.view_perspective = 'CAMERA'
             switched = True
         except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
-            pass
+            _log_recoverable_once("PKA-OPS-016", "Failed switching active viewport to camera perspective")
 
     wm = getattr(context, "window_manager", None)
     if wm:
@@ -989,24 +999,24 @@ def _ensure_shot_anchor_object(scene):
             try:
                 collection.objects.unlink(anchor_obj)
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                pass
+                _log_recoverable_once("PKA-OPS-005", "Failed unlinking shot anchor from non-target collection")
         try:
             if anchor_obj.name not in target_collection.objects:
                 target_collection.objects.link(anchor_obj)
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            pass
+            _log_recoverable_once("PKA-OPS-006", "Failed linking shot anchor to target collection")
     try:
         anchor_obj.hide_viewport = True
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        pass
+        _log_recoverable_once("PKA-OPS-007", "Failed hiding shot anchor in viewport")
     except (AttributeError, RuntimeError, TypeError, ValueError):
-        pass
+        _log_recoverable_once("PKA-OPS-008", "Failed hiding shot anchor in viewport")
     try:
         anchor_obj.hide_set(True)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        pass
+        _log_recoverable_once("PKA-OPS-009", "Failed hide_set on shot anchor")
     except (AttributeError, RuntimeError, TypeError, ValueError):
-        pass
+        _log_recoverable_once("PKA-OPS-010", "Failed hide_set on shot anchor")
     return anchor_obj
 
 
@@ -1017,15 +1027,15 @@ def _hide_shot_anchor_in_viewport():
     try:
         anchor_obj.hide_viewport = True
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        pass
+        _log_recoverable_once("PKA-OPS-011", "Failed hiding existing shot anchor in viewport")
     except (AttributeError, RuntimeError, TypeError, ValueError):
-        pass
+        _log_recoverable_once("PKA-OPS-012", "Failed hiding existing shot anchor in viewport")
     try:
         anchor_obj.hide_set(True)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        pass
+        _log_recoverable_once("PKA-OPS-013", "Failed hide_set on existing shot anchor")
     except (AttributeError, RuntimeError, TypeError, ValueError):
-        pass
+        _log_recoverable_once("PKA-OPS-014", "Failed hide_set on existing shot anchor")
 
 
 def _update_shot_anchor_object(scene, anchor_world, east_world, north_world, up_world):
@@ -1036,7 +1046,7 @@ def _update_shot_anchor_object(scene, anchor_world, east_world, north_world, up_
     try:
         anchor_obj.matrix_world = Matrix.LocRotScale(anchor_world, frame_rotation, Vector((1.0, 1.0, 1.0)))
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        pass
+        _log_recoverable_once("PKA-OPS-015", "Failed updating shot anchor transform")
 
 
 def _signed_angle_around_axis(from_vec, to_vec, axis):
