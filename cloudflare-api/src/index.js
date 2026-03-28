@@ -2535,12 +2535,149 @@ async function sendApiKeyIssuedEmail(env, email, apiKeyValue, planCode, expiresA
   }
 }
 
+async function revokeOtherActiveApiKeysForUser(db, userId, keepApiKeyId = "", reason = "superseded") {
+  await ensureApiKeyTables(db);
+  await ensureRefreshSessionColumns(db);
+  const safeUserId = String(userId || "").trim();
+  if (!safeUserId) {
+    return 0;
+  }
+  const safeKeepApiKeyId = String(keepApiKeyId || "").trim();
+  const activeRows = await dbAll(
+    db,
+    `
+      SELECT id
+      FROM api_keys
+      WHERE user_id = ?
+        AND status = 'active'
+    `,
+    [safeUserId],
+  );
+  const idsToRevoke = activeRows
+    .map((row) => String(row && row.id || "").trim())
+    .filter((id) => Boolean(id) && id !== safeKeepApiKeyId);
+  if (idsToRevoke.length === 0) {
+    return 0;
+  }
+  const revokedAt = nowIso();
+  for (const apiKeyId of idsToRevoke) {
+    await dbRun(
+      db,
+      `
+        UPDATE api_keys
+        SET
+          status = 'revoked',
+          revoked_at = ?
+        WHERE id = ?
+      `,
+      [revokedAt, apiKeyId],
+    );
+    await dbRun(
+      db,
+      `
+        UPDATE refresh_sessions
+        SET revoked_at = ?
+        WHERE api_key_id = ?
+          AND (revoked_at IS NULL OR revoked_at = '')
+      `,
+      [revokedAt, apiKeyId],
+    );
+  }
+  try {
+    console.log(
+      "api_key.revoke_other_active",
+      JSON.stringify({
+        user_id: safeUserId,
+        keep_api_key_id: safeKeepApiKeyId,
+        revoked_count: idsToRevoke.length,
+        reason: String(reason || "").trim() || "superseded",
+      }),
+    );
+  } catch (_error) {
+    // no-op logging guard
+  }
+  return idsToRevoke.length;
+}
+
+async function enforceSingleActiveFreeApiKey(db, userId, preferredApiKeyId = "") {
+  await ensureApiKeyTables(db);
+  const safeUserId = String(userId || "").trim();
+  const safePreferredApiKeyId = String(preferredApiKeyId || "").trim();
+  if (!safeUserId) {
+    return { allowed: true, keepApiKeyId: "", revokedCount: 0 };
+  }
+  const activeRows = await dbAll(
+    db,
+    `
+      SELECT id
+      FROM api_keys
+      WHERE user_id = ?
+        AND status = 'active'
+      ORDER BY issued_at DESC, id DESC
+    `,
+    [safeUserId],
+  );
+  if (!Array.isArray(activeRows) || activeRows.length === 0) {
+    return { allowed: true, keepApiKeyId: "", revokedCount: 0 };
+  }
+  const keepApiKeyId = String(activeRows[0] && activeRows[0].id || "").trim();
+  if (!keepApiKeyId) {
+    return { allowed: true, keepApiKeyId: "", revokedCount: 0 };
+  }
+  const revokedCount = await revokeOtherActiveApiKeysForUser(
+    db,
+    safeUserId,
+    keepApiKeyId,
+    "single_active_free_key_reconciliation",
+  );
+  const allowed = !safePreferredApiKeyId || safePreferredApiKeyId === keepApiKeyId;
+  return {
+    allowed,
+    keepApiKeyId,
+    revokedCount,
+  };
+}
+
+async function isApiKeyUsableById(db, apiKeyId, expectedUserId = "") {
+  await ensureApiKeyTables(db);
+  const safeApiKeyId = String(apiKeyId || "").trim();
+  if (!safeApiKeyId) {
+    return false;
+  }
+  const row = await dbGet(
+    db,
+    `
+      SELECT id, user_id, status, expires_at
+      FROM api_keys
+      WHERE id = ?
+      LIMIT 1
+    `,
+    [safeApiKeyId],
+  );
+  if (!row || !row.id) {
+    return false;
+  }
+  if (String(row.status || "").trim().toLowerCase() !== "active") {
+    return false;
+  }
+  const safeExpectedUserId = String(expectedUserId || "").trim();
+  if (safeExpectedUserId && String(row.user_id || "").trim() !== safeExpectedUserId) {
+    return false;
+  }
+  const expiresAt = String(row.expires_at || "").trim();
+  if (expiresAt && Date.parse(expiresAt) < Date.now()) {
+    return false;
+  }
+  return true;
+}
+
 async function issueApiKeyForUser(db, env, user, planCode, options = {}) {
   await ensureApiKeyTables(db);
   const safePlan = normalizeRequestedPlan(planCode || user.status || PLAN_CODE_PLANETKA);
   const token = `pka_${randomToken(36)}`;
   const keyHash = await sha256Hex(token);
   const keyPrefix = String(token.slice(0, 16));
+  const keyId = crypto.randomUUID();
   const issuedAt = nowIso();
   const provisional = parseBooleanFlag(options.provisional) ? 1 : 0;
   const provisionalExpiresAt = String(options.provisionalExpiresAt || "").trim();
@@ -2564,7 +2701,7 @@ async function issueApiKeyForUser(db, env, user, planCode, options = {}) {
       ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)
     `,
     [
-      crypto.randomUUID(),
+      keyId,
       user.id,
       keyHash,
       keyPrefix,
@@ -2576,9 +2713,17 @@ async function issueApiKeyForUser(db, env, user, planCode, options = {}) {
       issuedAt,
     ],
   );
+  if (safePlan === PLAN_CODE_PLANETKA) {
+    await enforceSingleActiveFreeApiKey(
+      db,
+      String(user && user.id || "").trim(),
+      keyId,
+    );
+  }
 
   return {
     apiKey: token,
+    apiKeyId: keyId,
     keyPrefix,
     planCode: safePlan,
     expiresAt,
@@ -3822,6 +3967,24 @@ async function handleApiKeyExchange(request, env) {
   };
   user = await enforceUserPlanPolicy(db, user, null, env);
   const effectivePlanCode = resolvePlanCode(user, null, env);
+  if (effectivePlanCode === PLAN_CODE_PLANETKA) {
+    const freePolicy = await enforceSingleActiveFreeApiKey(
+      db,
+      String(user.id || ""),
+      String(record.api_key_id || ""),
+    );
+    if (!freePolicy.allowed) {
+      return json(
+        {
+          ok: false,
+          error: "api_key_revoked",
+          message: "This API key has been replaced. Request a new API key.",
+        },
+        401,
+        env,
+      );
+    }
+  }
   const provisionalRestricted = (
     clampNonNegativeInt(record.api_key_provisional) === 1
     && !String(record.api_key_confirmed_at || "").trim()
@@ -4272,6 +4435,15 @@ async function handleAuthRefresh(request, env) {
   }
   if (Date.parse(session.expires_at) < Date.now()) {
     return json({ ok: false, error: "refresh_token_expired" }, 400, env);
+  }
+  if (
+    String(session.auth_method || "").trim().toLowerCase() === "api_key"
+    && String(session.api_key_id || "").trim()
+  ) {
+    const keyUsable = await isApiKeyUsableById(db, session.api_key_id, session.user_id);
+    if (!keyUsable) {
+      return json({ ok: false, error: "api_key_revoked" }, 401, env);
+    }
   }
 
   let user = {
@@ -4975,6 +5147,10 @@ async function handleTileRequest(request, env, path, ctx) {
   const tokenApiKeyId = String(access.api_key_id || "").trim();
   const tokenDeviceId = normalizeDeviceId(access.device_id || request.headers.get("X-Planetka-Device-Id") || "");
   if (authMethod === "api_key" && tokenApiKeyId) {
+    const keyUsable = await isApiKeyUsableById(db, tokenApiKeyId, String(user.id || ""));
+    if (!keyUsable) {
+      return json({ ok: false, error: "api_key_revoked", message: "API key is no longer active." }, 401, env);
+    }
     try {
       await enforceApiKeyDeviceLimit(db, tokenApiKeyId, String(user.id || ""), planCode, tokenDeviceId, request, env);
     } catch (error) {
