@@ -14,6 +14,7 @@ This gate runs:
 - `tools/planetka_smoke_test.py`
 - `tools/planetka_schema_migration_test.py`
 - `tools/planetka_regression_test.py`
+- `tools/worker_abuse_simulation.py --base-url https://api.planetka.io --tile-requests 60`
 
 `tools/release_gate.py` now also hard-fails on release-safety guards:
 - paid-claim elevation safeguards present

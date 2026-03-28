@@ -41,3 +41,8 @@ jobs:
         run: |
           python .github/scripts/run_blender_tests.py \
             --blender-bin "$(cat "${RUNNER_TEMP}/blender-bin.txt")"
+
+      - name: Run abuse simulation gate
+        shell: bash
+        run: |
+          python3 tools/worker_abuse_simulation.py --base-url "https://api.planetka.io" --tile-requests 60
