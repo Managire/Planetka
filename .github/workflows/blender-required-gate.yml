@@ -63,3 +63,10 @@ jobs:
           PLANETKA_BEARER_TOKEN: ${{ secrets.PLANETKA_CI_BEARER_TOKEN }}
         run: |
           python3 tools/worker_abuse_simulation.py --base-url "https://api.planetka.io" --tile-requests 60 --analytics-minutes 60
+
+      - name: Run paid-claim lifecycle integration gate
+        shell: bash
+        env:
+          PLANETKA_BEARER_TOKEN: ${{ secrets.PLANETKA_CI_BEARER_TOKEN }}
+        run: |
+          python3 tools/worker_paid_claim_lifecycle_test.py --base-url "https://api.planetka.io"

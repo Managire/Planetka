@@ -26,6 +26,8 @@ const DEFAULT_RATE_LIMIT_DEVICE_POLL_IP_LIMIT = 300;
 const DEFAULT_RATE_LIMIT_DEVICE_POLL_IP_WINDOW_SECONDS = 60;
 const DEFAULT_RATE_LIMIT_DEVICE_POLL_CODE_LIMIT = 120;
 const DEFAULT_RATE_LIMIT_DEVICE_POLL_CODE_WINDOW_SECONDS = 60;
+const DEFAULT_RATE_LIMIT_ADMIN_LOGIN_IP_LIMIT = 20;
+const DEFAULT_RATE_LIMIT_ADMIN_LOGIN_IP_WINDOW_SECONDS = 300;
 const DEFAULT_REFRESH_SESSION_CLEANUP_RETENTION_DAYS = 30;
 const DEFAULT_ALERT_AUTH_429_THRESHOLD = 10;
 const DEFAULT_ALERT_AUTH_429_WINDOW_SECONDS = 60;
@@ -33,9 +35,21 @@ const DEFAULT_ALERT_DEVICE_POLL_429_THRESHOLD = 30;
 const DEFAULT_ALERT_DEVICE_POLL_429_WINDOW_SECONDS = 60;
 const DEFAULT_ALERT_AUTH_ERROR_THRESHOLD = 5;
 const DEFAULT_ALERT_AUTH_ERROR_WINDOW_SECONDS = 300;
+const DEFAULT_ALERT_PROD_403_THRESHOLD = 25;
+const DEFAULT_ALERT_PROD_403_WINDOW_SECONDS = 300;
+const DEFAULT_ALERT_PROD_429_THRESHOLD = 25;
+const DEFAULT_ALERT_PROD_429_WINDOW_SECONDS = 300;
+const DEFAULT_ALERT_PROD_TILE_MISS_THRESHOLD = 25;
+const DEFAULT_ALERT_PROD_TILE_MISS_WINDOW_SECONDS = 300;
+const DEFAULT_ALERT_PROD_TILE_ERROR_THRESHOLD = 10;
+const DEFAULT_ALERT_PROD_TILE_ERROR_WINDOW_SECONDS = 300;
+const DEFAULT_ALERT_PROD_CLAIM_REJECTION_THRESHOLD = 5;
+const DEFAULT_ALERT_PROD_CLAIM_REJECTION_WINDOW_SECONDS = 3600;
+const DEFAULT_ALERT_PROD_COOLDOWN_SECONDS = 900;
 const DEFAULT_ANALYTICS_WINDOW_MINUTES = 60;
 const MAX_ANALYTICS_WINDOW_MINUTES = 10080;
 const DEFAULT_ANALYTICS_ADMIN_EMAILS = "info@planetka.io,tom.griger@gmail.com";
+const DEFAULT_ADMIN_LOGIN_EMAIL = "tom.griger@gmail.com";
 const DEFAULT_PERMANENT_PRO_EMAILS = "tom.griger@gmail.com";
 const DEFAULT_TILE_EVENT_RETENTION_DAYS = 30;
 const DEFAULT_TILE_ROLLUP_RETENTION_DAYS = 365;
@@ -420,6 +434,14 @@ function parseClaimCooldownDays(env) {
   );
 }
 
+function parseClaimCooldownDaysOverride(value, env) {
+  const parsed = parseNonNegativeInteger(value, 0);
+  if (parsed > 0) {
+    return parsed;
+  }
+  return parseClaimCooldownDays(env);
+}
+
 function computePendingClaimCooldownIso(env) {
   return addDaysIso(parseClaimCooldownDays(env));
 }
@@ -429,6 +451,17 @@ function thresholdHit(count, threshold) {
     return false;
   }
   return count === threshold || (count > threshold && (count % threshold) === 0);
+}
+
+function normalizeClaimReviewStatus(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === CLAIM_REVIEW_APPROVED) {
+    return CLAIM_REVIEW_APPROVED;
+  }
+  if (normalized === CLAIM_REVIEW_REJECTED) {
+    return CLAIM_REVIEW_REJECTED;
+  }
+  return CLAIM_REVIEW_PENDING;
 }
 
 function isUnconfirmedProvisionalActive(user) {
@@ -676,6 +709,51 @@ function parseAdminEmailSet(env) {
     }
   }
   return set;
+}
+
+function resolveAdminLoginEmail(env) {
+  const configured = normalizeEmail(env.ADMIN_LOGIN_EMAIL || DEFAULT_ADMIN_LOGIN_EMAIL);
+  const adminSet = parseAdminEmailSet(env);
+  if (configured && configured.includes("@")) {
+    if (adminSet.has(configured)) {
+      return configured;
+    }
+    // Enforce that login email is also an analytics admin.
+    return "";
+  }
+  for (const email of adminSet) {
+    if (email && email.includes("@")) {
+      return email;
+    }
+  }
+  return "";
+}
+
+function secureStringEquals(leftValue, rightValue) {
+  const left = encoder.encode(String(leftValue || ""));
+  const right = encoder.encode(String(rightValue || ""));
+  const maxLength = Math.max(left.length, right.length);
+  let diff = left.length ^ right.length;
+  for (let index = 0; index < maxLength; index += 1) {
+    const leftByte = index < left.length ? left[index] : 0;
+    const rightByte = index < right.length ? right[index] : 0;
+    diff |= (leftByte ^ rightByte);
+  }
+  return diff === 0;
+}
+
+async function verifyAdminDashboardPassword(env, submittedPassword) {
+  const provided = String(submittedPassword || "");
+  const expectedHash = String(env.ADMIN_DASHBOARD_PASSWORD_HASH || "").trim().toLowerCase();
+  const expectedPlain = String(env.ADMIN_DASHBOARD_PASSWORD || "");
+  if (expectedHash) {
+    const submittedHash = (await sha256Hex(provided)).toLowerCase();
+    return secureStringEquals(submittedHash, expectedHash);
+  }
+  if (expectedPlain) {
+    return secureStringEquals(provided, expectedPlain);
+  }
+  throw new Error("missing_admin_dashboard_password");
 }
 
 function isAnalyticsAdmin(user, env) {
@@ -1427,6 +1505,180 @@ async function cleanupAuthTables(db, env, nowTimestamp) {
   return summary;
 }
 
+async function countRowsFromQuery(db, sql, bindings = []) {
+  const row = await dbGet(db, sql, bindings);
+  return clampNonNegativeInt(row && (row.count ?? row.total ?? 0));
+}
+
+async function runProductionAlertChecks(db, env, nowTimestamp) {
+  const nowUnix = Math.floor(Date.parse(nowTimestamp) / 1000) || Math.floor(Date.now() / 1000);
+  const nowIsoValue = String(nowTimestamp || nowIso());
+  const cooldownSeconds = Math.max(
+    60,
+    parseRateLimitInteger(env.PROD_ALERT_COOLDOWN_SECONDS, DEFAULT_ALERT_PROD_COOLDOWN_SECONDS),
+  );
+  const summary = {
+    started_at: nowIsoValue,
+    cooldown_seconds: cooldownSeconds,
+    metrics: [],
+  };
+
+  const hasTileEvents = await dbTableExists(db, "tile_request_events");
+  const hasClaimAudit = await dbTableExists(db, "provisional_claim_audit");
+  const metricSpecs = [
+    {
+      key: "http_403_spike",
+      label: "HTTP 403 spike",
+      threshold: parseRateLimitInteger(env.PROD_ALERT_403_THRESHOLD, DEFAULT_ALERT_PROD_403_THRESHOLD),
+      windowSeconds: parseRateLimitInteger(env.PROD_ALERT_403_WINDOW_SECONDS, DEFAULT_ALERT_PROD_403_WINDOW_SECONDS),
+      tableAvailable: hasTileEvents,
+      countSql: `SELECT COUNT(*) AS count FROM tile_request_events WHERE created_at_unix >= ? AND status_code = 403`,
+      countBindings: (windowStartUnix) => [windowStartUnix],
+    },
+    {
+      key: "http_429_spike",
+      label: "HTTP 429 spike",
+      threshold: parseRateLimitInteger(env.PROD_ALERT_429_THRESHOLD, DEFAULT_ALERT_PROD_429_THRESHOLD),
+      windowSeconds: parseRateLimitInteger(env.PROD_ALERT_429_WINDOW_SECONDS, DEFAULT_ALERT_PROD_429_WINDOW_SECONDS),
+      tableAvailable: hasTileEvents,
+      countSql: `SELECT COUNT(*) AS count FROM tile_request_events WHERE created_at_unix >= ? AND status_code = 429`,
+      countBindings: (windowStartUnix) => [windowStartUnix],
+    },
+    {
+      key: "tile_miss_burst",
+      label: "Tile miss burst",
+      threshold: parseRateLimitInteger(env.PROD_ALERT_TILE_MISS_THRESHOLD, DEFAULT_ALERT_PROD_TILE_MISS_THRESHOLD),
+      windowSeconds: parseRateLimitInteger(env.PROD_ALERT_TILE_MISS_WINDOW_SECONDS, DEFAULT_ALERT_PROD_TILE_MISS_WINDOW_SECONDS),
+      tableAvailable: hasTileEvents,
+      countSql: `
+        SELECT COUNT(*) AS count
+        FROM tile_request_events
+        WHERE created_at_unix >= ?
+          AND (
+            error_code = 'tile_not_found'
+            OR (status_code = 404 AND (error_code IS NULL OR error_code = '' OR error_code = 'tile_not_found'))
+          )
+      `,
+      countBindings: (windowStartUnix) => [windowStartUnix],
+    },
+    {
+      key: "tile_error_burst",
+      label: "Tile error burst",
+      threshold: parseRateLimitInteger(env.PROD_ALERT_TILE_ERROR_THRESHOLD, DEFAULT_ALERT_PROD_TILE_ERROR_THRESHOLD),
+      windowSeconds: parseRateLimitInteger(env.PROD_ALERT_TILE_ERROR_WINDOW_SECONDS, DEFAULT_ALERT_PROD_TILE_ERROR_WINDOW_SECONDS),
+      tableAvailable: hasTileEvents,
+      countSql: `
+        SELECT COUNT(*) AS count
+        FROM tile_request_events
+        WHERE created_at_unix >= ?
+          AND (
+            status_code >= 500
+            OR error_code = 'internal_error'
+          )
+      `,
+      countBindings: (windowStartUnix) => [windowStartUnix],
+    },
+    {
+      key: "claim_rejection_burst",
+      label: "Claim rejection burst",
+      threshold: parseRateLimitInteger(
+        env.PROD_ALERT_CLAIM_REJECTION_THRESHOLD,
+        DEFAULT_ALERT_PROD_CLAIM_REJECTION_THRESHOLD,
+      ),
+      windowSeconds: parseRateLimitInteger(
+        env.PROD_ALERT_CLAIM_REJECTION_WINDOW_SECONDS,
+        DEFAULT_ALERT_PROD_CLAIM_REJECTION_WINDOW_SECONDS,
+      ),
+      tableAvailable: hasClaimAudit,
+      countSql: `
+        SELECT COUNT(*) AS count
+        FROM provisional_claim_audit
+        WHERE created_at >= ?
+          AND event_type IN ('claim_rejected_signal', 'claim_review_rejected', 'claim_auto_fallback_to_free')
+      `,
+      countBindings: (windowStartUnix) => [new Date(windowStartUnix * 1000).toISOString()],
+    },
+  ];
+
+  for (const metric of metricSpecs) {
+    const metricSummary = {
+      key: metric.key,
+      label: metric.label,
+      threshold: clampNonNegativeInt(metric.threshold),
+      window_seconds: clampNonNegativeInt(metric.windowSeconds),
+      count: 0,
+      triggered: false,
+      suppressed_by_cooldown: false,
+      disabled: false,
+      unavailable: false,
+      error: "",
+    };
+    try {
+      if (!metric.tableAvailable) {
+        metricSummary.unavailable = true;
+        summary.metrics.push(metricSummary);
+        continue;
+      }
+      if (metricSummary.threshold <= 0 || metricSummary.window_seconds <= 0) {
+        metricSummary.disabled = true;
+        summary.metrics.push(metricSummary);
+        continue;
+      }
+      const windowStartUnix = Math.max(0, nowUnix - metricSummary.window_seconds);
+      metricSummary.count = await countRowsFromQuery(
+        db,
+        metric.countSql,
+        metric.countBindings(windowStartUnix),
+      );
+      if (metricSummary.count < metricSummary.threshold) {
+        summary.metrics.push(metricSummary);
+        continue;
+      }
+
+      await ensureRateLimitsTable(db);
+      const alertRate = await consumeRateLimitWindow(
+        db,
+        "prod_alert_mail",
+        metric.key,
+        1,
+        cooldownSeconds,
+      );
+      if (!alertRate.allowed || clampNonNegativeInt(alertRate.count) > 1) {
+        metricSummary.suppressed_by_cooldown = true;
+        summary.metrics.push(metricSummary);
+        continue;
+      }
+
+      metricSummary.triggered = true;
+      const metricWindowStart = new Date(Math.max(0, nowUnix - metricSummary.window_seconds) * 1000).toISOString();
+      await sendOpsAlertEmail(
+        env,
+        `Planetka production alert: ${metric.label}`,
+        [
+          `metric=${metric.key}`,
+          `count=${metricSummary.count}`,
+          `threshold=${metricSummary.threshold}`,
+          `window_seconds=${metricSummary.window_seconds}`,
+          `window_start_utc=${metricWindowStart}`,
+          `window_end_utc=${nowIsoValue}`,
+          `cooldown_seconds=${cooldownSeconds}`,
+        ],
+      );
+    } catch (error) {
+      metricSummary.error = String(error && error.message || "metric_alert_failed");
+      console.warn(
+        "worker.production_alert.metric_failed",
+        JSON.stringify({
+          metric: metric.key,
+          error: metricSummary.error,
+        }),
+      );
+    }
+    summary.metrics.push(metricSummary);
+  }
+  return summary;
+}
+
 async function ensureAllowanceTables(db) {
   await dbRun(
     db,
@@ -2071,6 +2323,9 @@ async function ensureApiKeyTables(db) {
   if (!apiKeyRequestNames.has("order_id")) {
     apiKeyRequestStatements.push(`ALTER TABLE api_key_requests ADD COLUMN order_id TEXT`);
   }
+  if (!apiKeyRequestNames.has("request_ip")) {
+    apiKeyRequestStatements.push(`ALTER TABLE api_key_requests ADD COLUMN request_ip TEXT`);
+  }
   if (!apiKeyRequestNames.has("review_status")) {
     apiKeyRequestStatements.push(`ALTER TABLE api_key_requests ADD COLUMN review_status TEXT NOT NULL DEFAULT 'pending'`);
   }
@@ -2086,8 +2341,23 @@ async function ensureApiKeyTables(db) {
   if (!apiKeyRequestNames.has("cooldown_until")) {
     apiKeyRequestStatements.push(`ALTER TABLE api_key_requests ADD COLUMN cooldown_until TEXT`);
   }
+  if (!apiKeyRequestNames.has("accept_terms")) {
+    apiKeyRequestStatements.push(`ALTER TABLE api_key_requests ADD COLUMN accept_terms INTEGER NOT NULL DEFAULT 0`);
+  }
+  if (!apiKeyRequestNames.has("accept_privacy")) {
+    apiKeyRequestStatements.push(`ALTER TABLE api_key_requests ADD COLUMN accept_privacy INTEGER NOT NULL DEFAULT 0`);
+  }
+  if (!apiKeyRequestNames.has("opt_in_news")) {
+    apiKeyRequestStatements.push(`ALTER TABLE api_key_requests ADD COLUMN opt_in_news INTEGER NOT NULL DEFAULT 0`);
+  }
+  if (!apiKeyRequestNames.has("submitted_at_ms")) {
+    apiKeyRequestStatements.push(`ALTER TABLE api_key_requests ADD COLUMN submitted_at_ms INTEGER NOT NULL DEFAULT 0`);
+  }
   if (!apiKeyRequestNames.has("request_device_id")) {
     apiKeyRequestStatements.push(`ALTER TABLE api_key_requests ADD COLUMN request_device_id TEXT`);
+  }
+  if (!apiKeyRequestNames.has("created_at")) {
+    apiKeyRequestStatements.push(`ALTER TABLE api_key_requests ADD COLUMN created_at TEXT`);
   }
   for (const statement of apiKeyRequestStatements) {
     try {
@@ -2098,6 +2368,23 @@ async function ensureApiKeyTables(db) {
         throw error;
       }
     }
+  }
+  if (!apiKeyRequestNames.has("created_at")) {
+    await dbRun(
+      db,
+      `
+        UPDATE api_key_requests
+        SET created_at = COALESCE(
+          NULLIF(created_at, ''),
+          NULLIF(reviewed_at, ''),
+          NULLIF(used_at, ''),
+          NULLIF(expires_at, ''),
+          ?
+        )
+        WHERE created_at IS NULL OR created_at = ''
+      `,
+      [nowIso()],
+    );
   }
   await dbRun(
     db,
@@ -2185,6 +2472,65 @@ async function ensureApiKeyTables(db) {
       )
     `,
   );
+  const claimAuditPragma = await db.prepare(`PRAGMA table_info(provisional_claim_audit)`).all();
+  const claimAuditRows = Array.isArray(claimAuditPragma && claimAuditPragma.results)
+    ? claimAuditPragma.results
+    : [];
+  const claimAuditNames = new Set(
+    claimAuditRows.map((row) => String(row && row.name || "").trim().toLowerCase()),
+  );
+  const claimAuditStatements = [];
+  if (!claimAuditNames.has("created_at")) {
+    claimAuditStatements.push(`ALTER TABLE provisional_claim_audit ADD COLUMN created_at TEXT`);
+  }
+  if (!claimAuditNames.has("event_type")) {
+    claimAuditStatements.push(`ALTER TABLE provisional_claim_audit ADD COLUMN event_type TEXT`);
+  }
+  if (!claimAuditNames.has("email")) {
+    claimAuditStatements.push(`ALTER TABLE provisional_claim_audit ADD COLUMN email TEXT`);
+  }
+  if (!claimAuditNames.has("user_id")) {
+    claimAuditStatements.push(`ALTER TABLE provisional_claim_audit ADD COLUMN user_id TEXT`);
+  }
+  if (!claimAuditNames.has("claim_id")) {
+    claimAuditStatements.push(`ALTER TABLE provisional_claim_audit ADD COLUMN claim_id TEXT`);
+  }
+  if (!claimAuditNames.has("order_id")) {
+    claimAuditStatements.push(`ALTER TABLE provisional_claim_audit ADD COLUMN order_id TEXT`);
+  }
+  if (!claimAuditNames.has("plan_code")) {
+    claimAuditStatements.push(`ALTER TABLE provisional_claim_audit ADD COLUMN plan_code TEXT`);
+  }
+  if (!claimAuditNames.has("ip")) {
+    claimAuditStatements.push(`ALTER TABLE provisional_claim_audit ADD COLUMN ip TEXT`);
+  }
+  if (!claimAuditNames.has("device_id")) {
+    claimAuditStatements.push(`ALTER TABLE provisional_claim_audit ADD COLUMN device_id TEXT`);
+  }
+  if (!claimAuditNames.has("details_json")) {
+    claimAuditStatements.push(`ALTER TABLE provisional_claim_audit ADD COLUMN details_json TEXT`);
+  }
+  for (const statement of claimAuditStatements) {
+    try {
+      await dbRun(db, statement);
+    } catch (error) {
+      const message = String(error && error.message || "");
+      if (!message.toLowerCase().includes("duplicate column")) {
+        throw error;
+      }
+    }
+  }
+  if (!claimAuditNames.has("created_at")) {
+    await dbRun(
+      db,
+      `
+        UPDATE provisional_claim_audit
+        SET created_at = COALESCE(NULLIF(created_at, ''), ?)
+        WHERE created_at IS NULL OR created_at = ''
+      `,
+      [nowIso()],
+    );
+  }
   await dbRun(
     db,
     `CREATE INDEX IF NOT EXISTS idx_provisional_claim_audit_created ON provisional_claim_audit(created_at DESC)`,
@@ -2309,16 +2655,266 @@ async function findPendingPaidClaimByEmail(db, email) {
   );
 }
 
+async function findPaidClaimById(db, claimId) {
+  const normalizedClaimId = String(claimId || "").trim();
+  if (!normalizedClaimId) {
+    return null;
+  }
+  return dbGet(
+    db,
+    `
+      SELECT
+        id,
+        email,
+        requested_plan,
+        claimed_plan_code,
+        request_type,
+        order_id,
+        review_status,
+        reviewed_at,
+        reviewed_by,
+        review_note,
+        cooldown_until,
+        used_at,
+        request_ip,
+        request_device_id,
+        created_at
+      FROM api_key_requests
+      WHERE id = ?
+        AND request_type = ?
+      LIMIT 1
+    `,
+    [normalizedClaimId, API_KEY_REQUEST_TYPE_PAID_CLAIM],
+  );
+}
+
+async function buildPaidClaimLifecycleSnapshot(db, env, claim) {
+  if (!claim) {
+    return null;
+  }
+  const email = normalizeEmail(claim.email || "");
+  const user = email ? await findUserByEmail(db, email) : null;
+  const normalizedClaim = {
+    id: String(claim.id || "").trim(),
+    email,
+    request_type: String(claim.request_type || "").trim().toLowerCase(),
+    requested_plan: normalizeRequestedPlan(claim.requested_plan || PLAN_CODE_PLANETKA),
+    claimed_plan_code: normalizeRequestedPlan(claim.claimed_plan_code || claim.requested_plan || PLAN_CODE_PLANETKA),
+    order_id: normalizeOrderId(claim.order_id || ""),
+    review_status: normalizeClaimReviewStatus(claim.review_status),
+    reviewed_at: String(claim.reviewed_at || "").trim(),
+    reviewed_by: String(claim.reviewed_by || "").trim(),
+    review_note: String(claim.review_note || "").trim(),
+    cooldown_until: String(claim.cooldown_until || "").trim(),
+    used_at: String(claim.used_at || "").trim(),
+    created_at: String(claim.created_at || "").trim(),
+    request_ip: String(claim.request_ip || "").trim(),
+    request_device_id: normalizeDeviceId(claim.request_device_id || ""),
+  };
+  if (!user) {
+    return {
+      claim: normalizedClaim,
+      user: null,
+      api_key: null,
+      entitlement: resolveEntitlementState(null, env),
+    };
+  }
+  const activeKey = await dbGet(
+    db,
+    `
+      SELECT
+        id,
+        status,
+        plan_code,
+        provisional,
+        provisional_expires_at,
+        confirmed_at,
+        expires_at,
+        issued_at AS created_at,
+        last_used_at,
+        key_prefix
+      FROM api_keys
+      WHERE user_id = ?
+        AND status = 'active'
+      ORDER BY issued_at DESC
+      LIMIT 1
+    `,
+    [String(user.id || "").trim()],
+  );
+  return {
+    claim: normalizedClaim,
+    user: {
+      id: String(user.id || "").trim(),
+      email: normalizeEmail(user.email || ""),
+      status: normalizeUserStatus(user.status || PLAN_CODE_PLANETKA),
+      provisional_plan_code: normalizeRequestedPlan(user.provisional_plan_code || PLAN_CODE_PLANETKA),
+      provisional_expires_at: String(user.provisional_expires_at || "").trim(),
+      pro_confirmed_at: String(user.pro_confirmed_at || "").trim(),
+      last_login_at: String(user.last_login_at || "").trim(),
+    },
+    entitlement: resolveEntitlementState(user, env),
+    api_key: activeKey
+      ? {
+        id: String(activeKey.id || "").trim(),
+        status: String(activeKey.status || "").trim().toLowerCase(),
+        plan_code: normalizeRequestedPlan(activeKey.plan_code || PLAN_CODE_PLANETKA),
+        provisional: clampNonNegativeInt(activeKey.provisional) === 1,
+        provisional_expires_at: String(activeKey.provisional_expires_at || "").trim(),
+        confirmed_at: String(activeKey.confirmed_at || "").trim(),
+        expires_at: String(activeKey.expires_at || "").trim(),
+        created_at: String(activeKey.created_at || "").trim(),
+        last_used_at: String(activeKey.last_used_at || "").trim(),
+        key_prefix: String(activeKey.key_prefix || "").trim(),
+      }
+      : null,
+  };
+}
+
+async function activatePaidClaimById(db, env, claimId, options = {}) {
+  const claim = await findPaidClaimById(db, claimId);
+  if (!claim) {
+    throw new Error("paid_claim_not_found");
+  }
+  if (normalizeClaimReviewStatus(claim.review_status) !== CLAIM_REVIEW_PENDING) {
+    throw new Error("paid_claim_not_pending");
+  }
+  if (String(claim.used_at || "").trim()) {
+    throw new Error("paid_claim_already_activated");
+  }
+  const cooldownUntil = String(claim.cooldown_until || "").trim();
+  const cooldownUntilMs = Date.parse(cooldownUntil);
+  if (Number.isFinite(cooldownUntilMs) && cooldownUntilMs > Date.now()) {
+    throw new Error("paid_claim_cooldown_active");
+  }
+
+  const now = nowIso();
+  await dbRun(
+    db,
+    `
+      UPDATE api_key_requests
+      SET used_at = ?
+      WHERE id = ?
+        AND used_at IS NULL
+    `,
+    [now, String(claim.id || "").trim()],
+  );
+
+  const requestedPlan = normalizeRequestedPlan(claim.claimed_plan_code || claim.requested_plan || PLAN_CODE_PLANETKA_PRO);
+  if (!isPaidRequestedPlan(requestedPlan)) {
+    throw new Error("paid_claim_plan_invalid");
+  }
+  const email = normalizeEmail(claim.email || "");
+  if (!email) {
+    throw new Error("paid_claim_email_invalid");
+  }
+  const orderId = normalizeOrderId(claim.order_id || "");
+
+  let provisionalPlanCode = "";
+  let provisionalExpiresAt = "";
+  let proConfirmedAt = "";
+  let statusToSet = requestedPlan;
+  if (!isPermanentProEmail(email, env)) {
+    provisionalPlanCode = requestedPlan;
+    provisionalExpiresAt = computeProvisionalExpiryIso(env);
+  } else {
+    proConfirmedAt = now;
+  }
+
+  let user = await upsertUserByEmail(
+    db,
+    email,
+    statusToSet,
+    {
+      provisionalPlanCode,
+      provisionalExpiresAt,
+      proConfirmedAt,
+    },
+    env,
+  );
+  user = await enforceUserPlanPolicy(db, user, null, env);
+  const effectivePlanCode = resolvePlanCode(user, null, env);
+
+  const issued = await issueApiKeyForUser(
+    db,
+    env,
+    user,
+    effectivePlanCode,
+    {
+      provisional: Boolean(provisionalPlanCode),
+      provisionalExpiresAt,
+      confirmedAt: proConfirmedAt,
+    },
+  );
+
+  if (parseBooleanFlag(options.sendIssuedEmail)) {
+    await sendApiKeyIssuedEmail(env, email, issued.apiKey, issued.planCode, issued.expiresAt);
+  }
+  if (!provisionalPlanCode || !provisionalExpiresAt) {
+    await markPaidClaimReviewed(
+      db,
+      String(claim.id || "").trim(),
+      CLAIM_REVIEW_APPROVED,
+      {
+        reviewedBy: String(options.reviewedBy || "system_auto_confirmed").trim() || "system_auto_confirmed",
+        reviewNote: String(options.reviewNote || "auto_confirmed_permanent_pro").trim() || "auto_confirmed_permanent_pro",
+        clearCooldown: true,
+      },
+    );
+  }
+  await appendProvisionalClaimAudit(
+    db,
+    provisionalPlanCode && provisionalExpiresAt ? "claim_activated_provisional" : "claim_activated_confirmed",
+    {
+      email,
+      userId: String(user && user.id || "").trim(),
+      claimId: String(claim.id || "").trim(),
+      orderId,
+      planCode: requestedPlan,
+      ip: String(claim.request_ip || "").trim(),
+      deviceId: normalizeDeviceId(claim.request_device_id || ""),
+      details: {
+        issued_plan_code: issued.planCode,
+        provisional_expires_at: provisionalExpiresAt,
+        activation_source: String(options.activationSource || "admin").trim() || "admin",
+      },
+    },
+  );
+  if (provisionalPlanCode && provisionalExpiresAt && parseBooleanFlag(options.sendProvisionalAlert)) {
+    await sendProvisionalPlanAlert(
+      env,
+      {
+        email,
+        requestedPlan,
+        provisionalExpiresAt,
+        orderId,
+        ip: String(claim.request_ip || "").trim(),
+        deviceId: normalizeDeviceId(claim.request_device_id || ""),
+        claimId: String(claim.id || "").trim(),
+      },
+    );
+  }
+
+  const updatedClaim = await findPaidClaimById(db, String(claim.id || "").trim());
+  return {
+    email,
+    apiKey: issued.apiKey,
+    planCode: issued.planCode,
+    expiresAt: issued.expiresAt,
+    claim: updatedClaim,
+  };
+}
+
 async function markPaidClaimReviewed(db, claimId, reviewStatus, options = {}) {
   const normalizedClaimId = String(claimId || "").trim();
   if (!normalizedClaimId) {
     return;
   }
-  const safeStatus = String(reviewStatus || "").trim().toLowerCase() || CLAIM_REVIEW_REJECTED;
+  const safeStatus = normalizeClaimReviewStatus(reviewStatus) || CLAIM_REVIEW_REJECTED;
   const reviewedAt = String(options.reviewedAt || nowIso()).trim();
   const reviewedBy = String(options.reviewedBy || "").trim();
   const reviewNote = String(options.reviewNote || "").trim();
   const cooldownUntil = String(options.cooldownUntil || "").trim();
+  const clearCooldown = parseBooleanFlag(options.clearCooldown);
   await dbRun(
     db,
     `
@@ -2328,7 +2924,11 @@ async function markPaidClaimReviewed(db, claimId, reviewStatus, options = {}) {
         reviewed_at = ?,
         reviewed_by = CASE WHEN ? != '' THEN ? ELSE reviewed_by END,
         review_note = CASE WHEN ? != '' THEN ? ELSE review_note END,
-        cooldown_until = CASE WHEN ? != '' THEN ? ELSE cooldown_until END
+        cooldown_until = CASE
+          WHEN ? = 1 THEN NULL
+          WHEN ? != '' THEN ?
+          ELSE cooldown_until
+        END
       WHERE id = ?
     `,
     [
@@ -2338,6 +2938,7 @@ async function markPaidClaimReviewed(db, claimId, reviewStatus, options = {}) {
       reviewedBy,
       reviewNote,
       reviewNote,
+      clearCooldown ? 1 : 0,
       cooldownUntil,
       cooldownUntil,
       normalizedClaimId,
@@ -2445,6 +3046,10 @@ async function upsertUserByEmail(db, email, status = PLAN_CODE_PLANETKA, options
         user.id,
       ],
     );
+    const refreshedUser = await findUserById(db, user.id);
+    if (refreshedUser) {
+      return refreshedUser;
+    }
     return { ...user, status: protectedStatus };
   }
 
@@ -2600,6 +3205,7 @@ async function enforceUserPlanPolicy(db, user, subscription = null, env = {}) {
         {
           reviewedBy: "system_confirmed",
           reviewNote: "user_confirmed_paid_claim",
+          clearCooldown: true,
         },
       );
       await appendProvisionalClaimAudit(
@@ -4124,6 +4730,7 @@ async function activateApiKeyFromToken(db, env, rawToken) {
         {
           reviewedBy: "system_auto_confirmed",
           reviewNote: "auto_confirmed_permanent_pro",
+          clearCooldown: true,
         },
       );
     }
@@ -5912,6 +6519,684 @@ async function handleAdminAnalyticsPage(request, env) {
   return html(htmlContent, 200, env);
 }
 
+function renderAdminSessionStartPage(env) {
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Planetka Admin Session</title>
+    <style>
+      body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; margin: 0; min-height: 100vh; display: grid; place-items: center; background: #0b1020; color: #e5e7eb; }
+      .card { width: min(92vw, 640px); padding: 24px; border: 1px solid #1f2937; border-radius: 12px; background: #111827; }
+      h1 { margin: 0 0 8px; font-size: 22px; }
+      p { margin: 8px 0; color: #cbd5e1; }
+      .muted { color: #9ca3af; font-size: 13px; }
+      input { width: 100%; box-sizing: border-box; background: #0f172a; color: #e5e7eb; border: 1px solid #374151; border-radius: 8px; padding: 10px; margin-top: 10px; }
+      button { margin-top: 10px; background: #2563eb; color: #fff; border: none; border-radius: 8px; padding: 10px 14px; cursor: pointer; font-weight: 600; }
+      button[disabled] { opacity: 0.6; cursor: default; }
+      .status { margin-top: 12px; font-size: 14px; }
+      .ok { color: #86efac; }
+      .err { color: #fca5a5; }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <h1>Start Admin Session</h1>
+      <p>Paste admin bearer token and click <strong>Open Analytics</strong>.</p>
+      <p class="muted">Tip: one-click link format:<br><code>/admin/session/start#access_token=YOUR_TOKEN</code></p>
+      <input id="token" type="password" autocomplete="off" placeholder="Paste bearer token" />
+      <button id="startBtn" type="button">Open Analytics</button>
+      <div id="status" class="status muted"></div>
+    </main>
+    <script>
+      (function () {
+        const tokenInput = document.getElementById("token");
+        const startBtn = document.getElementById("startBtn");
+        const statusEl = document.getElementById("status");
+
+        function showStatus(message, type) {
+          statusEl.textContent = message;
+          statusEl.className = "status " + (type || "muted");
+        }
+
+        function parseHashToken() {
+          const raw = String(window.location.hash || "").replace(/^#/, "");
+          if (!raw) return "";
+          const params = new URLSearchParams(raw);
+          return String(params.get("access_token") || params.get("token") || "").trim();
+        }
+
+        async function startSession() {
+          const token = String(tokenInput.value || "").trim();
+          if (!token) {
+            showStatus("Missing token.", "err");
+            return;
+          }
+          startBtn.disabled = true;
+          showStatus("Starting admin session...", "muted");
+          try {
+            const res = await fetch("/admin/session/start", {
+              method: "POST",
+              headers: { Authorization: "Bearer " + token },
+              credentials: "same-origin",
+            });
+            const payload = await res.json().catch(() => ({}));
+            if (!res.ok || !payload.ok) {
+              throw new Error(String((payload && payload.error) || ("HTTP " + res.status)));
+            }
+            showStatus("Session started. Redirecting...", "ok");
+            window.location.href = "/admin/analytics";
+          } catch (error) {
+            showStatus("Failed to start session: " + String(error && error.message || error), "err");
+            startBtn.disabled = false;
+          }
+        }
+
+        startBtn.addEventListener("click", function () {
+          startSession();
+        });
+        tokenInput.addEventListener("keydown", function (event) {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            startSession();
+          }
+        });
+
+        const hashToken = parseHashToken();
+        if (hashToken) {
+          tokenInput.value = hashToken;
+          window.history.replaceState({}, document.title, "/admin/session/start");
+          startSession();
+        }
+      })();
+    </script>
+  </body>
+</html>`;
+}
+
+async function handleAdminSessionStartPage(request, env) {
+  return html(renderAdminSessionStartPage(env), 200, env);
+}
+
+async function handleAdminSessionStart(request, env) {
+  const authHeader = String(request.headers.get("Authorization") || "");
+  if (!authHeader.startsWith("Bearer ")) {
+    return json({ ok: false, error: "missing_bearer_token" }, 401, env);
+  }
+  const token = authHeader.slice("Bearer ".length).trim();
+  if (!token) {
+    return json({ ok: false, error: "missing_bearer_token" }, 401, env);
+  }
+  const auth = await requireAuthenticatedUserContext(
+    request,
+    env,
+    { requireAdmin: true, allowCookieToken: false, enforceApiKeyDevicePolicy: true },
+  );
+  if (auth.error) {
+    return auth.error;
+  }
+  return jsonWithHeaders(
+    {
+      ok: true,
+      redirect: "/admin/analytics",
+    },
+    200,
+    env,
+    {
+      "Set-Cookie": buildAdminSessionCookie(token),
+    },
+  );
+}
+
+function renderAdminPasswordLoginPage() {
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Planetka Admin Login</title>
+    <style>
+      body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; margin: 0; min-height: 100vh; display: grid; place-items: center; background: #0b1020; color: #e5e7eb; }
+      .card { width: min(92vw, 520px); padding: 24px; border: 1px solid #1f2937; border-radius: 12px; background: #111827; }
+      h1 { margin: 0 0 8px; font-size: 22px; }
+      p { margin: 8px 0; color: #cbd5e1; }
+      input { width: 100%; box-sizing: border-box; background: #0f172a; color: #e5e7eb; border: 1px solid #374151; border-radius: 8px; padding: 10px; margin-top: 10px; }
+      button { margin-top: 10px; background: #2563eb; color: #fff; border: none; border-radius: 8px; padding: 10px 14px; cursor: pointer; font-weight: 600; }
+      button[disabled] { opacity: 0.6; cursor: default; }
+      .status { margin-top: 12px; font-size: 14px; color: #9ca3af; }
+      .ok { color: #86efac; }
+      .err { color: #fca5a5; }
+      .muted { color: #9ca3af; font-size: 13px; }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <h1>Admin Login</h1>
+      <p>Enter password to open Planetka analytics dashboard.</p>
+      <input id="password" type="password" autocomplete="current-password" placeholder="Password" />
+      <button id="loginBtn" type="button">Open Analytics</button>
+      <div id="status" class="status"></div>
+      <p class="muted">Session stays active for about 1 hour on this browser.</p>
+    </main>
+    <script>
+      (function () {
+        const passwordInput = document.getElementById("password");
+        const loginBtn = document.getElementById("loginBtn");
+        const statusEl = document.getElementById("status");
+        function showStatus(message, type) {
+          statusEl.textContent = message;
+          statusEl.className = "status " + (type || "");
+        }
+        async function login() {
+          const password = String(passwordInput.value || "");
+          if (!password) {
+            showStatus("Missing password.", "err");
+            return;
+          }
+          loginBtn.disabled = true;
+          showStatus("Signing in...");
+          try {
+            const res = await fetch("/admin/login", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              credentials: "same-origin",
+              body: JSON.stringify({ password }),
+            });
+            const payload = await res.json().catch(() => ({}));
+            if (!res.ok || !payload.ok) {
+              throw new Error(String((payload && payload.error) || ("HTTP " + res.status)));
+            }
+            showStatus("Success. Redirecting...", "ok");
+            window.location.href = "/admin/analytics";
+          } catch (error) {
+            showStatus("Login failed: " + String(error && error.message || error), "err");
+            loginBtn.disabled = false;
+          }
+        }
+        loginBtn.addEventListener("click", function () { login(); });
+        passwordInput.addEventListener("keydown", function (event) {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            login();
+          }
+        });
+      })();
+    </script>
+  </body>
+</html>`;
+}
+
+async function handleAdminLoginPage(request, env) {
+  void request;
+  return html(renderAdminPasswordLoginPage(), 200, env);
+}
+
+async function handleAdminPasswordLogin(request, env) {
+  const db = requireDb(env);
+  await ensureRateLimitsTable(db);
+  const clientIp = requestClientIp(request);
+  const rate = await consumeRateLimitWindow(
+    db,
+    "admin_login_ip",
+    clientIp,
+    parseRateLimitInteger(env.RATE_LIMIT_ADMIN_LOGIN_IP_LIMIT, DEFAULT_RATE_LIMIT_ADMIN_LOGIN_IP_LIMIT),
+    parseRateLimitInteger(
+      env.RATE_LIMIT_ADMIN_LOGIN_IP_WINDOW_SECONDS,
+      DEFAULT_RATE_LIMIT_ADMIN_LOGIN_IP_WINDOW_SECONDS,
+    ),
+  );
+  if (!rate.allowed) {
+    return rateLimitedResponse(
+      env,
+      "admin_login_rate_limited",
+      "Too many admin login attempts. Please try again later.",
+      rate.retryAfterSeconds,
+    );
+  }
+
+  const body = await parseJson(request);
+  const password = String(body.password || "");
+  if (!password) {
+    return json({ ok: false, error: "missing_password" }, 400, env);
+  }
+  let valid = false;
+  try {
+    valid = await verifyAdminDashboardPassword(env, password);
+  } catch (error) {
+    return json({ ok: false, error: String(error && error.message || "admin_login_misconfigured") }, 500, env);
+  }
+  if (!valid) {
+    await trackThresholdAlertDb(
+      db,
+      "admin_login_invalid_spike",
+      5,
+      300,
+      { scope: "ip", ip: clientIp },
+    );
+    return json({ ok: false, error: "invalid_admin_password" }, 401, env);
+  }
+
+  const adminEmail = resolveAdminLoginEmail(env);
+  if (!adminEmail) {
+    return json({ ok: false, error: "admin_login_email_misconfigured" }, 500, env);
+  }
+
+  let user = await upsertUserByEmail(
+    db,
+    adminEmail,
+    PLAN_CODE_PLANETKA_PRO,
+    { proConfirmedAt: nowIso() },
+    env,
+  );
+  user = await enforceUserPlanPolicy(db, user, null, env);
+  if (!user || !isAnalyticsAdmin(user, env)) {
+    return json({ ok: false, error: "admin_access_required" }, 403, env);
+  }
+  const accessToken = await createAccessToken(
+    env,
+    user,
+    null,
+    {
+      auth_method: "admin_password",
+      admin_login: 1,
+    },
+  );
+  return jsonWithHeaders(
+    {
+      ok: true,
+      email: String(user.email || ""),
+      redirect: "/admin/analytics",
+    },
+    200,
+    env,
+    {
+      "Set-Cookie": buildAdminSessionCookie(accessToken),
+    },
+  );
+}
+
+async function handleAdminClaimLatest(request, env) {
+  const auth = await requireAnalyticsAdmin(request, env);
+  if (auth.error) {
+    return auth.error;
+  }
+  const { db } = auth;
+  const url = new URL(request.url);
+  const email = normalizeEmail(url.searchParams.get("email") || "");
+  if (!email || !email.includes("@")) {
+    return json({ ok: false, error: "invalid_email" }, 400, env);
+  }
+  const claim = await findLatestPaidClaimByEmail(db, email);
+  if (!claim) {
+    return json({ ok: true, claim: null, lifecycle: null }, 200, env);
+  }
+  const lifecycle = await buildPaidClaimLifecycleSnapshot(db, env, claim);
+  return json(
+    {
+      ok: true,
+      claim_id: String(claim.id || "").trim(),
+      lifecycle,
+    },
+    200,
+    env,
+  );
+}
+
+async function handleAdminClaimCreate(request, env) {
+  const auth = await requireAnalyticsAdmin(request, env);
+  if (auth.error) {
+    return auth.error;
+  }
+  const { db, user: adminUser } = auth;
+  await ensureApiKeyTables(db);
+  const body = await parseJson(request);
+  const email = normalizeEmail(body.email || "");
+  const requestedPlan = normalizeRequestedPlan(body.requested_plan || PLAN_CODE_PLANETKA_PRO);
+  const orderId = normalizeOrderId(body.order_id || "");
+  const requestDeviceId = normalizeDeviceId(body.device_id || "");
+  const requestIp = String(body.request_ip || "admin").trim().slice(0, 128) || "admin";
+  if (!email || !email.includes("@")) {
+    return json({ ok: false, error: "invalid_email" }, 400, env);
+  }
+  if (!isPaidRequestedPlan(requestedPlan)) {
+    return json({ ok: false, error: "paid_claim_plan_required" }, 400, env);
+  }
+  if (!orderId) {
+    return json({ ok: false, error: "paid_claim_order_id_required" }, 400, env);
+  }
+  const latestPaidClaim = await findLatestPaidClaimByEmail(db, email);
+  if (latestPaidClaim) {
+    const cooldownUntil = String(latestPaidClaim.cooldown_until || "").trim();
+    const cooldownMs = Date.parse(cooldownUntil);
+    if (Number.isFinite(cooldownMs) && cooldownMs > Date.now()) {
+      const retryAfterSeconds = Math.max(1, Math.ceil((cooldownMs - Date.now()) / 1000));
+      return rateLimitedResponse(
+        env,
+        "paid_claim_cooldown_active",
+        "Paid claim is in cooldown. Try again after cooldown ends.",
+        retryAfterSeconds,
+      );
+    }
+  }
+  const pendingClaim = await findPendingPaidClaimByEmail(db, email);
+  if (pendingClaim) {
+    return json(
+      {
+        ok: false,
+        error: "paid_claim_pending_review",
+        message: "A paid claim is already pending review for this account.",
+      },
+      409,
+      env,
+    );
+  }
+
+  const acceptedAt = nowIso();
+  await upsertUserByEmail(
+    db,
+    email,
+    PLAN_CODE_PLANETKA,
+    {
+      termsAcceptedAt: acceptedAt,
+      privacyAcceptedAt: acceptedAt,
+      termsVersion: String(env.TERMS_VERSION || env.LEGAL_VERSION || DEFAULT_LEGAL_VERSION).trim() || DEFAULT_LEGAL_VERSION,
+      privacyVersion: String(env.PRIVACY_VERSION || env.LEGAL_VERSION || DEFAULT_LEGAL_VERSION).trim() || DEFAULT_LEGAL_VERSION,
+    },
+    env,
+  );
+
+  const claimId = crypto.randomUUID();
+  const token = randomToken(36);
+  const tokenHash = await sha256Hex(token);
+  await dbRun(
+    db,
+    `
+      INSERT INTO api_key_requests (
+        id,
+        email,
+        requested_plan,
+        request_type,
+        claimed_plan_code,
+        order_id,
+        token_hash,
+        expires_at,
+        review_status,
+        accept_terms,
+        accept_privacy,
+        opt_in_news,
+        submitted_at_ms,
+        request_ip,
+        request_device_id,
+        created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 0, ?, ?, ?, ?)
+    `,
+    [
+      claimId,
+      email,
+      requestedPlan,
+      API_KEY_REQUEST_TYPE_PAID_CLAIM,
+      requestedPlan,
+      orderId,
+      tokenHash,
+      addMinutesIso(30),
+      CLAIM_REVIEW_PENDING,
+      Date.now(),
+      requestIp,
+      requestDeviceId || null,
+      acceptedAt,
+    ],
+  );
+  await appendProvisionalClaimAudit(
+    db,
+    "claim_requested",
+    {
+      email,
+      claimId,
+      orderId,
+      planCode: requestedPlan,
+      ip: requestIp,
+      deviceId: requestDeviceId,
+      details: {
+        review_status: CLAIM_REVIEW_PENDING,
+        source: "admin_claim_create",
+        admin_email: normalizeEmail(adminUser && adminUser.email || ""),
+      },
+    },
+  );
+
+  const claim = await findPaidClaimById(db, claimId);
+  const lifecycle = await buildPaidClaimLifecycleSnapshot(db, env, claim);
+  return json(
+    {
+      ok: true,
+      claim_id: claimId,
+      lifecycle,
+    },
+    200,
+    env,
+  );
+}
+
+async function handleAdminClaimActivate(request, env) {
+  const auth = await requireAnalyticsAdmin(request, env);
+  if (auth.error) {
+    return auth.error;
+  }
+  const { db, user: adminUser } = auth;
+  const body = await parseJson(request);
+  const claimId = String(body.claim_id || "").trim();
+  if (!claimId) {
+    return json({ ok: false, error: "missing_claim_id" }, 400, env);
+  }
+  try {
+    const activated = await activatePaidClaimById(
+      db,
+      env,
+      claimId,
+      {
+        activationSource: "admin_activation",
+        reviewedBy: normalizeEmail(adminUser && adminUser.email || "") || "admin",
+        sendIssuedEmail: false,
+        sendProvisionalAlert: false,
+      },
+    );
+    const lifecycle = await buildPaidClaimLifecycleSnapshot(db, env, activated.claim);
+    return json(
+      {
+        ok: true,
+        claim_id: claimId,
+        email: activated.email,
+        plan_code: activated.planCode,
+        expires_at: activated.expiresAt,
+        api_key_mask: maskApiKey(activated.apiKey),
+        lifecycle,
+      },
+      200,
+      env,
+    );
+  } catch (error) {
+    return json({ ok: false, error: String(error && error.message || "claim_activation_failed") }, 400, env);
+  }
+}
+
+async function handleAdminClaimReview(request, env) {
+  const auth = await requireAnalyticsAdmin(request, env);
+  if (auth.error) {
+    return auth.error;
+  }
+  const { db, user: adminUser } = auth;
+  await ensureApiKeyTables(db);
+  const body = await parseJson(request);
+  const claimId = String(body.claim_id || "").trim();
+  const decision = normalizeClaimReviewStatus(body.decision || body.review_status || CLAIM_REVIEW_REJECTED);
+  const reviewNote = String(body.review_note || body.note || "").trim();
+  if (!claimId) {
+    return json({ ok: false, error: "missing_claim_id" }, 400, env);
+  }
+  if (decision !== CLAIM_REVIEW_APPROVED && decision !== CLAIM_REVIEW_REJECTED) {
+    return json({ ok: false, error: "invalid_review_decision" }, 400, env);
+  }
+  const claim = await findPaidClaimById(db, claimId);
+  if (!claim) {
+    return json({ ok: false, error: "paid_claim_not_found" }, 404, env);
+  }
+  const email = normalizeEmail(claim.email || "");
+  let targetUser = await findUserByEmail(db, email);
+  if (!targetUser) {
+    targetUser = await upsertUserByEmail(db, email, PLAN_CODE_PLANETKA, {}, env);
+  }
+  if (!targetUser) {
+    return json({ ok: false, error: "user_not_found" }, 404, env);
+  }
+  const now = nowIso();
+  const reviewedBy = normalizeEmail(adminUser && adminUser.email || "") || "admin";
+  const requestedPlan = normalizeRequestedPlan(claim.claimed_plan_code || claim.requested_plan || PLAN_CODE_PLANETKA_PRO);
+
+  if (decision === CLAIM_REVIEW_APPROVED) {
+    await dbRun(
+      db,
+      `
+        UPDATE users
+        SET
+          status = ?,
+          provisional_plan_code = NULL,
+          provisional_expires_at = NULL,
+          pro_confirmed_at = ?
+        WHERE id = ?
+      `,
+      [requestedPlan, now, targetUser.id],
+    );
+    await dbRun(
+      db,
+      `
+        UPDATE api_keys
+        SET
+          plan_code = ?,
+          provisional = 0,
+          provisional_expires_at = NULL,
+          confirmed_at = ?
+        WHERE user_id = ?
+          AND status = 'active'
+      `,
+      [requestedPlan, now, targetUser.id],
+    );
+    await markPaidClaimReviewed(
+      db,
+      claimId,
+      CLAIM_REVIEW_APPROVED,
+      {
+        reviewedAt: now,
+        reviewedBy,
+        reviewNote: reviewNote || "manual_claim_approved",
+        clearCooldown: true,
+      },
+    );
+    await appendProvisionalClaimAudit(
+      db,
+      "claim_review_approved",
+      {
+        email,
+        userId: String(targetUser.id || "").trim(),
+        claimId,
+        orderId: String(claim.order_id || "").trim(),
+        planCode: requestedPlan,
+        ip: String(claim.request_ip || "").trim(),
+        deviceId: normalizeDeviceId(claim.request_device_id || ""),
+        details: {
+          reviewed_by: reviewedBy,
+          review_note: reviewNote || "manual_claim_approved",
+        },
+      },
+    );
+  } else {
+    const cooldownDays = parseClaimCooldownDaysOverride(body.cooldown_days, env);
+    const cooldownUntil = addDaysIso(cooldownDays);
+    await dbRun(
+      db,
+      `
+        UPDATE users
+        SET
+          status = ?,
+          provisional_plan_code = NULL,
+          provisional_expires_at = NULL,
+          pro_confirmed_at = NULL
+        WHERE id = ?
+      `,
+      [PLAN_CODE_PLANETKA, targetUser.id],
+    );
+    await dbRun(
+      db,
+      `
+        UPDATE api_keys
+        SET
+          plan_code = ?,
+          provisional = 0,
+          provisional_expires_at = NULL,
+          confirmed_at = NULL
+        WHERE user_id = ?
+          AND status = 'active'
+      `,
+      [PLAN_CODE_PLANETKA, targetUser.id],
+    );
+    await markPaidClaimReviewed(
+      db,
+      claimId,
+      CLAIM_REVIEW_REJECTED,
+      {
+        reviewedAt: now,
+        reviewedBy,
+        reviewNote: reviewNote || "manual_claim_rejected",
+        cooldownUntil,
+      },
+    );
+    await appendProvisionalClaimAudit(
+      db,
+      "claim_review_rejected",
+      {
+        email,
+        userId: String(targetUser.id || "").trim(),
+        claimId,
+        orderId: String(claim.order_id || "").trim(),
+        planCode: requestedPlan,
+        ip: String(claim.request_ip || "").trim(),
+        deviceId: normalizeDeviceId(claim.request_device_id || ""),
+        details: {
+          reviewed_by: reviewedBy,
+          review_note: reviewNote || "manual_claim_rejected",
+          cooldown_until: cooldownUntil,
+        },
+      },
+    );
+    await signalRejectedClaimAttempt(
+      db,
+      env,
+      {
+        email,
+        ip: String(claim.request_ip || "").trim(),
+        deviceId: normalizeDeviceId(claim.request_device_id || ""),
+        orderId: String(claim.order_id || "").trim(),
+        requestedPlan,
+        claimId,
+        reason: "manual_claim_rejected",
+      },
+    );
+  }
+
+  const updatedClaim = await findPaidClaimById(db, claimId);
+  const lifecycle = await buildPaidClaimLifecycleSnapshot(db, env, updatedClaim);
+  return json(
+    {
+      ok: true,
+      claim_id: claimId,
+      decision,
+      lifecycle,
+    },
+    200,
+    env,
+  );
+}
+
 function sanitizeAttachmentFileName(value, fallback = "planetka_bug_report.json") {
   const raw = String(value || "").trim();
   const safe = raw.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120);
@@ -6240,8 +7525,13 @@ export default {
 
     const url = new URL(request.url);
     const path = url.pathname;
+    const queryToken = String(url.searchParams.get("access_token") || url.searchParams.get("token") || "").trim();
 
     try {
+      if (path.startsWith("/admin/") && queryToken) {
+        return json({ ok: false, error: "query_token_not_allowed" }, 400, env);
+      }
+
       if (request.method === "GET" && path === "/health") {
         const magicLinkEnabled = isMagicLinkAuthEnabled(env);
         return json(
@@ -6346,6 +7636,38 @@ export default {
         return await handleAdminAnalyticsData(request, env);
       }
 
+      if (request.method === "GET" && path === "/admin/login") {
+        return await handleAdminLoginPage(request, env);
+      }
+
+      if (request.method === "POST" && path === "/admin/login") {
+        return await handleAdminPasswordLogin(request, env);
+      }
+
+      if (request.method === "GET" && path === "/admin/session/start") {
+        return await handleAdminSessionStartPage(request, env);
+      }
+
+      if (request.method === "POST" && path === "/admin/session/start") {
+        return await handleAdminSessionStart(request, env);
+      }
+
+      if (request.method === "GET" && path === "/admin/claims/latest") {
+        return await handleAdminClaimLatest(request, env);
+      }
+
+      if (request.method === "POST" && path === "/admin/claims/create") {
+        return await handleAdminClaimCreate(request, env);
+      }
+
+      if (request.method === "POST" && path === "/admin/claims/activate") {
+        return await handleAdminClaimActivate(request, env);
+      }
+
+      if (request.method === "POST" && path === "/admin/claims/review") {
+        return await handleAdminClaimReview(request, env);
+      }
+
       if ((request.method === "GET" || request.method === "HEAD") && path.startsWith("/tiles/")) {
         return await handleTileRequest(request, env, path, ctx);
       }
@@ -6415,11 +7737,13 @@ export default {
       try {
         const db = requireDb(env);
         const summary = await cleanupAuthTables(db, env, runStartedAt);
+        const alertSummary = await runProductionAlertChecks(db, env, runStartedAt);
         console.log(
           "worker.db_cleanup.completed",
           JSON.stringify({
             scheduled_at: scheduledAt,
             ...summary,
+            production_alert_summary: alertSummary,
           }),
         );
       } catch (error) {
