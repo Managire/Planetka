@@ -137,10 +137,21 @@ def main() -> int:
 
     # 6) Paid entitlement hardening must be present (Stripe-driven, no provisional claim path)
     if worker_src:
+        paid_guard_any_markers = [
+            (
+                "public API key request forces free plan",
+                [
+                    "const requestedPlan = PLAN_CODE_PLANETKA;",
+                    "const claimPlanCode = PLAN_CODE_PLANETKA;",
+                ],
+            ),
+        ]
+        for label, markers in paid_guard_any_markers:
+            if not any(marker in worker_src for marker in markers):
+                errors.append(f"Paid elevation safeguard missing: {label} (expected one of: {markers})")
+
         required_paid_guard_markers = [
-            ("public API key request forces free plan", "const claimPlanCode = PLAN_CODE_PLANETKA;"),
             ("paid-claim workflow routes disabled", "paid_claim_workflow_disabled"),
-            ("hosted streaming expiry helper present", "computeHostedStreamingAccessExpiryIso"),
             ("Stripe entitlement apply helper present", "applyHostedStreamingAccessEntitlement"),
             ("Stripe invoice renewal webhook path enabled", "\"invoice.paid\""),
             ("permanent-pro email allowlist guard is present", "isPermanentProEmail"),

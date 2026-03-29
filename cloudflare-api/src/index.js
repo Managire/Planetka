@@ -85,7 +85,6 @@ const DEFAULT_TILE_EDGE_MAX_AGE_SECONDS = 604800;
 const MAX_TILE_MAX_AGE_SECONDS = 31536000;
 const DEFAULT_ENABLE_MAGIC_LINK_AUTH = false;
 const DEFAULT_FREE_API_KEY_VALID_DAYS = 30;
-const DEFAULT_PRO_HOSTED_STREAMING_DAYS = 365;
 const DEFAULT_PRO_GRACE_HOURS = 24;
 const DEFAULT_PENDING_CLAIM_COOLDOWN_DAYS = 7;
 const DEFAULT_API_KEY_DEVICE_ACTIVE_WINDOW_SECONDS = 900;
@@ -5627,13 +5626,13 @@ function renderApiKeyRequestPage(env, message = "", requestedPlan = PLAN_CODE_PL
     : `<p id="status" style="margin-top:14px;color:#cbd5e1;"></p>`;
   void requestedPlan;
   const safePlan = PLAN_CODE_PLANETKA;
-  const subTitle = "Enter your email and we will send a one-click activation link for your API key.";
+  const subTitle = "Enter your email and we will send a one-click activation link for free access.";
   return html(`<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Planetka API Key</title>
+    <title>Planetka Free Access</title>
     <style>
       :root { color-scheme: dark; }
       body { margin:0; min-height:100vh; display:grid; place-items:center; background:linear-gradient(180deg,#07111f 0%, #0b1424 100%); font-family: Inter, system-ui, sans-serif; color:#e5edf7; }
@@ -5654,7 +5653,7 @@ function renderApiKeyRequestPage(env, message = "", requestedPlan = PLAN_CODE_PL
   </head>
   <body>
     <main class="card">
-      <h1>Request Planetka API Key</h1>
+      <h1>Request Free Access</h1>
       <p>${escapeHtml(subTitle)}</p>
       <form id="form">
         <label for="email">Email</label>
@@ -5668,7 +5667,7 @@ function renderApiKeyRequestPage(env, message = "", requestedPlan = PLAN_CODE_PL
           <label for="news">Opt in to receive news about Planetka by email.</label>
         </div>
         <input id="website" class="hidden" type="text" autocomplete="off" tabindex="-1" />
-        <button id="submit" type="submit">Send API Key Link</button>
+        <button id="submit" type="submit">Request Free Access</button>
       </form>
       ${messageMarkup}
       <p class="help">Problem connecting? <a href="${contactUrl}" target="_blank" rel="noopener noreferrer">Contact Me</a></p>
@@ -9824,7 +9823,16 @@ export default {
         );
       }
 
-      if (request.method === "GET" && path === "/api-key") {
+      if ((request.method === "GET" || request.method === "HEAD") && path === "/api-key") {
+        if (request.method === "HEAD") {
+          return new Response(null, {
+            status: 200,
+            headers: {
+              ...corsHeaders(env),
+              "Content-Type": "text/html; charset=utf-8",
+            },
+          });
+        }
         return renderApiKeyRequestPage(env, "", PLAN_CODE_PLANETKA);
       }
 
