@@ -35,6 +35,7 @@ from .streaming_utils import (
     prepare_resolve_streaming_for_visible_tiles,
 )
 from .state import (
+    _force_restore_navigation_adaptive_state,
     _is_animation_playing,
     create_temp_mesh,
     cleanup_planetka_unused_data,
@@ -164,6 +165,42 @@ def _count_missing_tile_loading_images(material_name="Planetka Earth Material"):
     if group_nodes is None:
         return 0
 
+    group_name = str(getattr(group_tree, "name", "") or "")
+    testing_mode = group_name.strip() == "Planetka Textures Loading Group - Testing"
+    image_types = ("S2", "EL", "WT", "PO")
+
+    if testing_mode:
+        missing = 0
+        for node in group_nodes:
+            if str(getattr(node, "type", "")) != "GROUP":
+                continue
+            node_name = str(getattr(node, "name", "") or "")
+            if not node_name.startswith("Tile_"):
+                continue
+            if bool(getattr(node, "mute", False)):
+                continue
+            suffix = node_name.split("_", 1)[1] if "_" in node_name else ""
+            if not suffix.isdigit():
+                continue
+            index = int(suffix)
+            for image_type in image_types:
+                img_node = group_nodes.get(f"TileImg_{index:03d}_{image_type}")
+                if img_node is None:
+                    missing += 1
+                    continue
+                image = getattr(img_node, "image", None)
+                if image is None:
+                    missing += 1
+                    continue
+                image_path = str(getattr(image, "filepath_raw", "") or getattr(image, "filepath", ""))
+                if not image_path:
+                    missing += 1
+                    continue
+                abs_path = bpy.path.abspath(image_path)
+                if abs_path and not os.path.isfile(abs_path):
+                    missing += 1
+        return int(missing)
+
     missing = 0
     for node in group_nodes:
         if str(getattr(node, "type", "")) != "GROUP":
@@ -177,7 +214,7 @@ def _count_missing_tile_loading_images(material_name="Planetka Earth Material"):
         tile_nodes = getattr(tile_tree, "nodes", None) if tile_tree else None
         if tile_nodes is None:
             continue
-        for image_type in ("S2", "EL", "WT", "PO"):
+        for image_type in image_types:
             image_node = tile_nodes.get(image_type)
             if image_node is None:
                 continue
@@ -247,6 +284,15 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         phase_post_mark_ms = 0.0
         phase_post_preview_ms = 0.0
         phase_unaccounted_ms = 0.0
+
+        # Resolve should never leave adaptive subdivision visually suspended from
+        # prior navigation state, even when the current resolve exits early.
+        try:
+            _force_restore_navigation_adaptive_state()
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed pre-resolve adaptive viewport restore", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed pre-resolve adaptive viewport restore", exc_info=True)
 
         phase_start = time.perf_counter()
         scene = require_scene(self, context, logger=logger)
@@ -587,6 +633,12 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
             if new_obj:
                 remove_object_and_unused_mesh(new_obj)
+            try:
+                _force_restore_navigation_adaptive_state()
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka: failed restoring adaptive viewport after resolve error", exc_info=True)
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka: failed restoring adaptive viewport after resolve error", exc_info=True)
             return fail(
                 self,
                 f"Planetka resolve failed: {exc}",
@@ -781,6 +833,12 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 logger.debug("Planetka: failed syncing account profile after resolve", exc_info=True)
             except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
                 logger.debug("Planetka: failed syncing account profile after resolve", exc_info=True)
+        try:
+            _force_restore_navigation_adaptive_state()
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed post-resolve adaptive viewport restore", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed post-resolve adaptive viewport restore", exc_info=True)
         return {'FINISHED'}
 
 
