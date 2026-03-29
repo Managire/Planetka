@@ -22,19 +22,20 @@ Scope: beta release for a small tester group, optimized for single-developer sup
 - [ ] Resolve uses full-quality pipeline with no tier-based functional restrictions.
 - [ ] Animation render path works without tier-based feature lockouts.
 
-## 4. Trial and Hosted Access Rules
+## 4. Preview + Credits Rules
 
-- [ ] New accounts start with `25 GB` trial allowance.
-- [ ] After trial is exhausted, tile delivery is denied until Hosted Data Access is active.
-- [ ] Stripe webhook grants Hosted Data Access automatically.
-- [ ] Hosted Data Access validity is enforced by `pro_access_expires_at` (one-year period per successful payment event).
+- [ ] New accounts start with `25 GB` Full Quality starter credits.
+- [ ] Preview mode is free and does not consume credits.
+- [ ] Full Quality tile downloads consume credits by downloaded bytes.
+- [ ] Stripe webhook grants top-up credits automatically from mapped packages.
+- [ ] If credits are depleted, Full Quality requests return `allowance_exhausted` while Preview remains available.
 
 ## 5. API Security Basics (Right-Sized)
 
-- [ ] `/auth/api-key/request` always starts trial access (no client-side paid elevation path).
+- [ ] `/auth/api-key/request` always starts base access (no client-side paid elevation path).
 - [ ] `/admin/analytics` rejects query token (`query_token_not_allowed`) and requires Bearer/cookie admin auth.
 - [ ] Legacy magic-link auth routes (`/auth/start`, `/device/*`) are disabled in production.
-- [ ] Stripe webhook allowlist + signature validation enabled for Hosted Data Access entitlement grants.
+- [ ] Stripe webhook allowlist + signature validation enabled for credit top-up grants.
 - [ ] DB cleanup cron is active for `magic_links`, `refresh_sessions`, `device_sessions`, and tile telemetry retention tables.
 
 ## 6. Observability and Support
@@ -52,7 +53,7 @@ Scope: beta release for a small tester group, optimized for single-developer sup
 ## 8. Tester Communication
 
 - [ ] Share a short known-issues list with testers.
-- [ ] Provide clear expected behavior for trial allowance and Hosted Data Access.
+- [ ] Provide clear expected behavior for Preview mode and Full Quality credits.
 - [ ] Provide support contact path and expected response time.
 
 ## 9. Release-Day Runbook

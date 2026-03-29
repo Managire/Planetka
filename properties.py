@@ -686,10 +686,11 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
     texture_quality_mode: EnumProperty(
         name="Texture Quality",
         items=(
-            ("FULL", "Full", "Highest available quality (100% texture data)"),
+            ("FULL", "Full Quality", "Highest quality texture data (uses credits for new downloads)"),
+            ("HALF", "Preview", "Reduced resolution preview mode (free)"),
         ),
-        default="FULL",
-        description="Texture quality used by Resolve (fixed to Full in current production model)",
+        default="HALF",
+        description="Preview is free. Full Quality consumes credits for newly downloaded data",
         update=update_texture_quality_mode,
     )
 

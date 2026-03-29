@@ -28,6 +28,7 @@ DIAG_KEY_RESOLVE_TEXTURES_MB = "planetka_diag_resolve_textures_mb"
 DIAG_KEY_RESOLVE_DOWNLOAD_MS = "planetka_diag_resolve_download_ms"
 DIAG_KEY_RESOLVE_DOWNLOADED_MB = "planetka_diag_resolve_downloaded_mb"
 DIAG_KEY_RESOLVE_DOWNLOAD_THREAD_MS = "planetka_diag_resolve_download_thread_ms"
+DIAG_KEY_RESOLVE_FULL_QUALITY_COST_BYTES = "planetka_diag_resolve_full_quality_cost_bytes"
 
 
 def _set_scene_value(scene, key, value):
@@ -131,6 +132,7 @@ def write_resolve_diagnostics(scene, tile_count, resolve_ms, fallback_count, bre
     _set_scene_value(scene, DIAG_KEY_RESOLVE_DOWNLOAD_MS, breakdown.get("download_ms"))
     _set_scene_value(scene, DIAG_KEY_RESOLVE_DOWNLOADED_MB, breakdown.get("downloaded_mb"))
     _set_scene_value(scene, DIAG_KEY_RESOLVE_DOWNLOAD_THREAD_MS, breakdown.get("download_thread_ms"))
+    _set_scene_value(scene, DIAG_KEY_RESOLVE_FULL_QUALITY_COST_BYTES, breakdown.get("full_quality_cost_bytes"))
 
 
 def read_diagnostics(scene):
@@ -162,4 +164,5 @@ def read_diagnostics(scene):
         "resolve_download_ms": _get_scene_value(scene, DIAG_KEY_RESOLVE_DOWNLOAD_MS),
         "resolve_downloaded_mb": _get_scene_value(scene, DIAG_KEY_RESOLVE_DOWNLOADED_MB),
         "resolve_download_thread_ms": _get_scene_value(scene, DIAG_KEY_RESOLVE_DOWNLOAD_THREAD_MS),
+        "resolve_full_quality_cost_bytes": _get_scene_value(scene, DIAG_KEY_RESOLVE_FULL_QUALITY_COST_BYTES),
     }

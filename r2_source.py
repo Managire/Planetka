@@ -82,6 +82,7 @@ _AUTH_CHECK_TTL_SECONDS = 15.0
 _CACHE_PRUNE_SUSPEND_COUNT = 0
 _REQUEST_CONTEXT_LOCK = threading.Lock()
 _REQUEST_CONTEXT_RESOLVE_ID = ""
+_REQUEST_CONTEXT_TEXTURE_MODE = ""
 
 
 def _env(name, fallback=None):
@@ -699,19 +700,28 @@ def _aws_signing_key(secret_key, date_stamp, region, service):
     return _aws_sign(k_service, "aws4_request")
 
 
-def set_resolve_request_context(resolve_id=""):
+def set_resolve_request_context(resolve_id="", texture_quality_mode=""):
     global _REQUEST_CONTEXT_RESOLVE_ID
+    global _REQUEST_CONTEXT_TEXTURE_MODE
     with _REQUEST_CONTEXT_LOCK:
         _REQUEST_CONTEXT_RESOLVE_ID = str(resolve_id or "").strip()[:128]
+        safe_mode = str(texture_quality_mode or "").strip().lower()
+        if safe_mode == "half":
+            safe_mode = "preview"
+        elif safe_mode == "full":
+            safe_mode = "full"
+        elif safe_mode != "preview":
+            safe_mode = ""
+        _REQUEST_CONTEXT_TEXTURE_MODE = safe_mode
 
 
 def clear_resolve_request_context():
-    set_resolve_request_context("")
+    set_resolve_request_context("", "")
 
 
 @contextmanager
-def resolve_request_context(resolve_id=""):
-    set_resolve_request_context(resolve_id)
+def resolve_request_context(resolve_id="", texture_quality_mode=""):
+    set_resolve_request_context(resolve_id, texture_quality_mode=texture_quality_mode)
     try:
         yield
     finally:
@@ -726,8 +736,11 @@ def _signed_headers(cfg, method, key, allow_refresh=True):
     }
     with _REQUEST_CONTEXT_LOCK:
         resolve_id = str(_REQUEST_CONTEXT_RESOLVE_ID or "").strip()
+        quality_mode = str(_REQUEST_CONTEXT_TEXTURE_MODE or "").strip().lower()
     if resolve_id:
         headers["X-Planetka-Resolve-Id"] = resolve_id
+    if quality_mode in {"full", "preview"}:
+        headers["X-Planetka-Quality-Mode"] = quality_mode
     url = cfg.endpoint.rstrip("/") + "/tiles/" + urllib.parse.quote(key, safe="/-_.~")
     return url, headers
 

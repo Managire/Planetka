@@ -1,107 +1,70 @@
-# Cloudflare Setup: Planetka Hosted Data Access (Current Model)
+# Cloudflare Setup: Preview + Credits Model
 
-This document reflects the current production access model.
+## 1) Access Model
 
-## 1) Access Model (Current)
+- One addon tier for all users (personal + commercial use).
+- Preview quality is free.
+- Full Quality consumes credits for newly downloaded data.
+- Reused local cached data does not consume credits.
+- New accounts receive `25 GB` starter credits (`TRIAL_INCLUDED_GB=25`).
+- Additional credits are granted via Stripe checkout webhook mapping.
+- Credits do not expire.
 
-- Single addon tier for all users (full functionality always enabled).
-- New users start with a `25 GB` trial allowance.
-- After trial is exhausted, user must buy Hosted Data Access to continue tile streaming.
-- Hosted Data Access is granted automatically from Stripe webhook events.
-- Hosted Data Access is valid for one year per successful payment event.
-- Repeated payment events extend the active end date.
+## 2) Enforcement Rules
 
-Terminology:
-- User-facing text should use **Hosted Data Access** (or **Hosted Streaming Access** for compatibility labels).
-- Avoid user-facing “subscription” wording where possible.
+- Tile requests with `X-Planetka-Quality-Mode: preview` do **not** consume
+  credits.
+- Tile requests with `X-Planetka-Quality-Mode: full` consume credits by served
+  bytes.
+- When Full Quality credits are depleted, tile API returns `402
+  allowance_exhausted` with account state payload.
 
-## 2) Plan Enforcement
+## 3) Stripe Credit Flow
 
-- Trial and paid accounts both have the same full functional feature set.
-- Daily high-volume thresholds:
-  - Trial account: `25 GB / rolling 24h`
-  - Active Hosted Data Access account: disabled by default (`DOWNLOAD_THROTTLE_PRO_DAILY_GB=0`)
-    and configurable if needed.
+1. User buys a credit package on Stripe.
+2. Worker receives `checkout.session.completed`.
+3. Worker fetches checkout line items.
+4. Worker maps line items to credits with:
+   - `STRIPE_CREDIT_PRICE_GB_MAP` (preferred), and/or
+   - `STRIPE_CREDIT_PRODUCT_GB_MAP`.
+5. Worker writes credit grant to `manual_allowance_credits`.
+6. Credits are available immediately.
 
-When threshold is exceeded:
-- account is auto-throttled for `24h`
-- user receives notification email
-- ops/security receives alert email
-
-## 3) Stripe Entitlement Flow
-
-Required behavior in Worker:
-
-1. User purchases on Stripe checkout.
-2. Stripe webhook (`checkout.session.completed` / `invoice.paid`) is verified.
-3. Allowed product/price IDs are matched.
-4. User hosted-access state is set to active immediately.
-5. Access validity end date is set/extended by one year.
-
-Public API key request path must always start in trial mode:
-- `/auth/api-key/request` ignores any client paid-plan tampering.
-- Paid elevation is server-side only via Stripe webhook entitlement.
+No client-side parameter may grant paid/full entitlement.
 
 ## 4) Required Worker Variables
 
-Core:
-- `STRIPE_ALLOWED_PRICE_IDS`
-- `STRIPE_ALLOWED_PRODUCT_IDS`
 - `TRIAL_INCLUDED_GB=25`
-- `HOSTED_ACCESS_DURATION_DAYS=365`
-- `EMAIL_API_KEY`
-- `EMAIL_FROM`
-- `SECURITY_ALERT_EMAIL`
-
-Rate/security:
-- `DOWNLOAD_THROTTLE_FREE_DAILY_GB=25`
-- `DOWNLOAD_THROTTLE_PRO_DAILY_GB=0` (disabled by default)
-- `DOWNLOAD_THROTTLE_DURATION_MINUTES=1440`
-- `DOWNLOAD_THROTTLED_DELAY_MS=30000`
-- `DOWNLOAD_ALERT_EMAIL_COOLDOWN_SECONDS=300`
-- `PROD_ALERT_COOLDOWN_SECONDS=300`
-
-Contact endpoint:
+- `STRIPE_SECRET_KEY` (secret)
+- `STRIPE_WEBHOOK_SECRET` (secret)
+- `STRIPE_CREDIT_PRICE_GB_MAP` (e.g. `price_abc:10,price_def:100`)
+- `STRIPE_CREDIT_PRODUCT_GB_MAP` (optional fallback)
+- `STRIPE_DEFAULT_TOPUP_GB` (optional catch-all fallback)
+- `TOPUP_URL` or `PURCHASE_TOPUP_URL`
 - `PLANETKA_CONTACT_URL=https://www.planetka.io/contact-me`
 
-## 5) API Contract Expected by Addon
+Recommended:
 
-Auth/profile endpoints should expose:
+- `DOWNLOAD_THROTTLE_FREE_DAILY_GB=0`
+- `DOWNLOAD_THROTTLE_PRO_DAILY_GB=0`
+- Keep real-time abuse detection enabled for scraping patterns.
 
-- `plan.code`
-- `commercial_use_allowed`
-- `upgrade_url`
-- `contact_url`
-- `data_allowance` object
-- `throttled_until` (when active)
-- `is_throttled` (boolean)
+## 5) API Contract Used by Addon
 
-Used by addon for:
-- account panel status
-- trial vs active hosted-access messaging
-- throttled status visibility in Status Check
+`/me` and auth responses should include:
 
-## 6) Abuse and Telemetry Notes
+- `data_allowance.included_remaining_bytes`
+- `data_allowance.topup_remaining_bytes`
+- `data_allowance.total_remaining_bytes`
+- `data_allowance.counting_rule`
+- `topup_url`
+- `throttled_until` / `is_throttled`
 
-- Raw tile telemetry retention is enforced by scheduled cleanup.
-- Rollups are used for analytics longevity.
-- Admin analytics query-token access is disabled.
-- Legacy magic-link auth is disabled in production.
+## 6) Validation Checklist
 
-## 7) Operational Validation Checklist
-
-- `/health` reports:
-  - `magic_link_auth_enabled=false`
-  - `db_bound=true`
-  - `r2_bound=true`
-- `release_gate.py` passes.
-- `worker_abuse_simulation.py` passes.
-- `worker_auth_integration_test.py` passes.
-
-## 8) User-Facing Contact Path
-
-Use only:
-- `https://www.planetka.io/contact-me`
-
-Do not use:
-- `/contact`
+- `/health` confirms DB/R2 bindings and production settings.
+- `node --check cloudflare-api/src/index.js` passes.
+- `tools/release_gate.py` passes.
+- Stripe webhook test event grants credits for mapped price/product IDs.
+- Preview mode tiles do not reduce `total_remaining_bytes`.
+- Full Quality tiles reduce `total_remaining_bytes`.

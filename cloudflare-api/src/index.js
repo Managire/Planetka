@@ -4,7 +4,7 @@ const PLAN_CODE_PLANETKA = "planetka";
 const PLAN_CODE_PLANETKA_PRO = "planetka_pro";
 const PLAN_CODE_PLANETKA_STUDIO = "planetka_studio";
 const DEFAULT_ALLOWANCE_COUNTING_RULE =
-  "Only newly downloaded data counts. Reused local cache does not consume allowance.";
+  "Preview mode is free. Full Quality consumes credits for newly downloaded data; reused local cache does not consume credits.";
 const DEFAULT_TRIAL_INCLUDED_GB = 25;
 const DEFAULT_HOSTED_ACCESS_DURATION_DAYS = 365;
 const DEFAULT_PERIOD_DAYS = 30;
@@ -58,7 +58,7 @@ const DEFAULT_TILE_FARM_ALERT_UNTAGGED_MIN_REQUESTS = 120;
 const DEFAULT_TILE_FARM_ALERT_UNTAGGED_PERCENT = 90;
 const DEFAULT_TILE_FARM_ALERT_EMAIL_COOLDOWN_SECONDS = 300;
 const DEFAULT_DOWNLOAD_MARK_STEP_GB = 100;
-const DEFAULT_DOWNLOAD_THROTTLE_FREE_DAILY_GB = 25;
+const DEFAULT_DOWNLOAD_THROTTLE_FREE_DAILY_GB = 0;
 const DEFAULT_DOWNLOAD_THROTTLE_PRO_DAILY_GB = 0;
 const DEFAULT_DOWNLOAD_THROTTLE_DURATION_MINUTES = 1440;
 const DEFAULT_DOWNLOAD_THROTTLED_REQUESTS_PER_MINUTE = 0;
@@ -327,17 +327,19 @@ function resolveEntitlementState(user, env = {}) {
 }
 
 function subscriptionStatusForUser(user, env = {}) {
-  const entitlement = resolveEntitlementState(user, env);
-  return String(entitlement.subscription_status || "inactive");
+  void env;
+  if (user && isBlockedStatus(user.status)) {
+    return "inactive";
+  }
+  return "active";
 }
 
 function resolvePolicyPlanCode(user, subscription, env = {}) {
   void subscription;
-  const entitlement = resolveEntitlementState(user, env);
-  if (entitlement.state === "blocked") {
+  if (user && isBlockedStatus(user.status)) {
     return "blocked";
   }
-  return normalizeRequestedPlan(entitlement.plan_code || PLAN_CODE_PLANETKA);
+  return PLAN_CODE_PLANETKA;
 }
 
 function parseBooleanFlag(value) {
@@ -3231,29 +3233,21 @@ async function ensureAllowanceTables(db) {
 }
 
 function buildPlanConfig(env) {
-  const periodDays = Math.max(1, Math.floor(parsePositiveNumber(env.ALLOWANCE_PERIOD_DAYS, DEFAULT_PERIOD_DAYS)));
   const trialIncludedBytes = toBytesFromGb(parsePositiveNumber(env.TRIAL_INCLUDED_GB, DEFAULT_TRIAL_INCLUDED_GB));
-  const freeIncludedBytes = toBytesFromGb(parsePositiveNumber(env.ALLOWANCE_FREE_INCLUDED_GB, DEFAULT_FREE_INCLUDED_GB));
-  const proIncludedBytes = toBytesFromGb(parsePositiveNumber(env.ALLOWANCE_PRO_INCLUDED_GB, DEFAULT_PRO_INCLUDED_GB));
-  const proRolloverCapBytes = toBytesFromGb(parsePositiveNumber(env.ALLOWANCE_PRO_ROLLOVER_CAP_GB, DEFAULT_PRO_ROLLOVER_CAP_GB));
-  const studioIncludedBytes = toBytesFromGb(parsePositiveNumber(env.ALLOWANCE_STUDIO_INCLUDED_GB, DEFAULT_STUDIO_INCLUDED_GB));
   const lowWarningBytes = toBytesFromGb(parsePositiveNumber(env.ALLOWANCE_LOW_WARNING_GB, DEFAULT_LOW_WARNING_GB));
   const lowWarningRatio = parsePositiveNumber(env.ALLOWANCE_LOW_WARNING_RATIO, DEFAULT_LOW_WARNING_RATIO);
   const countingRule = String(env.ALLOWANCE_COUNTING_RULE || DEFAULT_ALLOWANCE_COUNTING_RULE).trim();
   const upgradeUrl = String(env.UPGRADE_URL || DEFAULT_UPGRADE_URL).trim();
+  const topupUrl = String(env.TOPUP_URL || env.PURCHASE_TOPUP_URL || upgradeUrl).trim();
   const manageSubscriptionUrl = String(env.MANAGE_SUBSCRIPTION_URL || "").trim();
   const contactUrl = normalizeContactUrl(env.PLANETKA_CONTACT_URL || env.ALLOWANCE_SUPPORT_URL || DEFAULT_CONTACT_URL);
   return {
-    periodDays,
     trialIncludedBytes,
-    freeIncludedBytes,
-    proIncludedBytes,
-    proRolloverCapBytes,
-    studioIncludedBytes,
     lowWarningBytes,
     lowWarningRatio,
     countingRule,
     upgradeUrl,
+    topupUrl,
     manageSubscriptionUrl,
     contactUrl,
   };
@@ -3261,10 +3255,6 @@ function buildPlanConfig(env) {
 
 function resolvePlanCode(user, subscription, env = {}) {
   void subscription;
-  const entitlement = resolveEntitlementState(user, env);
-  if (String(entitlement.subscription_status || "").trim().toLowerCase() === "active") {
-    return PLAN_CODE_PLANETKA_PRO;
-  }
   return PLAN_CODE_PLANETKA;
 }
 
@@ -3428,7 +3418,6 @@ function computeWarningState(totalRemainingBytes, includedLimitBytes, cfg) {
 
 async function buildAllowanceState(db, user, subscription, env) {
   const cfg = buildPlanConfig(env);
-  const entitlement = resolveEntitlementState(user, env);
   const planCode = resolvePlanCode(user, subscription, env);
   const userId = String(user && user.id || "").trim();
   const counter = userId ? await findUserDownloadCounter(db, userId) : null;
@@ -3440,51 +3429,33 @@ async function buildAllowanceState(db, user, subscription, env) {
   const throttleReason = throttledUntil
     ? String(counter && counter.throttle_reason || "").trim()
     : "";
-  const lifetimeDownloadedBytes = clampNonNegativeInt(counter && counter.lifetime_bytes);
-  const hasActiveHostedAccess = String(entitlement.subscription_status || "").trim().toLowerCase() === "active";
+  const nowTimestamp = nowIso();
+  const lifetimeDownloadedBytes = userId
+    ? await getDownloadedPeriodBytes(db, userId, "1970-01-01T00:00:00.000Z", "9999-12-31T23:59:59.999Z")
+    : 0;
+  const manualRemainingBytes = userId ? await getManualCreditRemaining(db, userId, nowTimestamp) : 0;
 
-  let includedLimitBytes = 0;
-  let includedRemainingBytes = 0;
-  let totalRemainingBytes = 0;
-  let downloadedPeriodBytes = 0;
-  let warningState = "unknown";
-  let exhausted = false;
-  let period = "trial";
-  let periodEnd = "";
-  let countingRule = "25 GB free trial. Buy unlimited Hosted Data Access to continue.";
-
-  if (hasActiveHostedAccess) {
-    includedLimitBytes = UNLIMITED_ALLOWANCE_BYTES;
-    includedRemainingBytes = UNLIMITED_ALLOWANCE_BYTES;
-    totalRemainingBytes = UNLIMITED_ALLOWANCE_BYTES;
-    downloadedPeriodBytes = lifetimeDownloadedBytes;
-    warningState = "ok";
-    exhausted = false;
-    period = "year";
-    periodEnd = String(entitlement.hosted_streaming_access_expires_at || "").trim();
-    countingRule = "Hosted Data Access active. Unlimited downloads during active access period.";
-  } else {
-    includedLimitBytes = Math.max(1, clampNonNegativeInt(cfg.trialIncludedBytes));
-    includedRemainingBytes = Math.max(0, includedLimitBytes - lifetimeDownloadedBytes);
-    totalRemainingBytes = includedRemainingBytes;
-    downloadedPeriodBytes = lifetimeDownloadedBytes;
-    warningState = computeWarningState(totalRemainingBytes, includedLimitBytes, cfg);
-    exhausted = totalRemainingBytes <= 0;
-    period = "trial";
-    periodEnd = "";
-    countingRule = "25 GB free trial. Buy unlimited Hosted Data Access to continue.";
-  }
+  const includedLimitBytes = Math.max(1, clampNonNegativeInt(cfg.trialIncludedBytes));
+  const includedRemainingBytes = Math.max(0, includedLimitBytes - lifetimeDownloadedBytes);
+  const totalRemainingBytes = Math.max(0, includedRemainingBytes + manualRemainingBytes);
+  const downloadedPeriodBytes = lifetimeDownloadedBytes;
+  const warningState = computeWarningState(totalRemainingBytes, includedLimitBytes, cfg);
+  const exhausted = totalRemainingBytes <= 0;
+  const period = "lifetime";
+  const periodEnd = "";
+  const countingRule = cfg.countingRule || DEFAULT_ALLOWANCE_COUNTING_RULE;
 
   return {
     planCode,
     commercialUseAllowed: commercialUseAllowed(planCode),
     upgradeUrl: cfg.upgradeUrl,
+    topupUrl: cfg.topupUrl || cfg.upgradeUrl,
     manageSubscriptionUrl: cfg.manageSubscriptionUrl,
     contactUrl: cfg.contactUrl,
     dataAllowance: {
       included_limit_bytes: includedLimitBytes,
       included_remaining_bytes: includedRemainingBytes,
-      topup_remaining_bytes: 0,
+      topup_remaining_bytes: manualRemainingBytes,
       total_remaining_bytes: totalRemainingBytes,
       downloaded_period_bytes: downloadedPeriodBytes,
       period,
@@ -3508,6 +3479,7 @@ function serializeAccountState(state) {
     plan_code: state.planCode,
     commercial_use_allowed: Boolean(state.commercialUseAllowed),
     upgrade_url: state.upgradeUrl,
+    topup_url: state.topupUrl || state.upgradeUrl,
     manage_subscription_url: state.manageSubscriptionUrl,
     manage_hosted_streaming_access_url: state.manageSubscriptionUrl,
     contact_url: state.contactUrl,
@@ -3594,8 +3566,94 @@ async function consumeManualCredits(db, userId, bytesToConsume, nowTimestamp) {
   return consumed;
 }
 
+async function grantManualAllowanceCredits(db, userId, bytesTotal, note = "", expiresAt = "") {
+  const safeUserId = String(userId || "").trim();
+  const safeBytes = clampNonNegativeInt(bytesTotal);
+  if (!safeUserId || safeBytes <= 0) {
+    return { grantedBytes: 0 };
+  }
+  const mode = await detectManualCreditMode(db);
+  const now = nowIso();
+  const safeNote = String(note || "").trim().slice(0, 512);
+  const safeExpiresAt = String(expiresAt || "").trim() || null;
+  if (mode === "remaining") {
+    await dbRun(
+      db,
+      `
+        INSERT INTO manual_allowance_credits (
+          id,
+          user_id,
+          bytes_total,
+          bytes_remaining,
+          expires_at,
+          note,
+          created_at,
+          updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [crypto.randomUUID(), safeUserId, safeBytes, safeBytes, safeExpiresAt, safeNote || null, now, now],
+    );
+  } else {
+    await dbRun(
+      db,
+      `
+        INSERT INTO manual_allowance_credits (
+          id,
+          user_id,
+          bytes_total,
+          bytes_consumed,
+          expires_at,
+          note,
+          created_at,
+          updated_at
+        ) VALUES (?, ?, ?, 0, ?, ?, ?, ?)
+      `,
+      [crypto.randomUUID(), safeUserId, safeBytes, safeExpiresAt, safeNote || null, now, now],
+    );
+  }
+  return { grantedBytes: safeBytes };
+}
+
 async function consumeAllowanceBytes(db, user, subscription, env, bytesUsed) {
-  void bytesUsed;
+  const safeBytesUsed = clampNonNegativeInt(bytesUsed);
+  if (safeBytesUsed <= 0) {
+    return buildAllowanceState(db, user, subscription, env);
+  }
+  const userId = String(user && user.id || "").trim();
+  if (!userId) {
+    throw new Error("user_not_found");
+  }
+  const allowanceBefore = await buildAllowanceState(db, user, subscription, env);
+  const totalRemaining = clampNonNegativeInt(allowanceBefore && allowanceBefore.dataAllowance && allowanceBefore.dataAllowance.total_remaining_bytes);
+  if (totalRemaining < safeBytesUsed) {
+    throw new Error("allowance_exhausted");
+  }
+
+  const includedRemaining = clampNonNegativeInt(allowanceBefore && allowanceBefore.includedRemainingBytesBase);
+  const consumeIncludedBytes = Math.min(includedRemaining, safeBytesUsed);
+  const consumeManualBytes = Math.max(0, safeBytesUsed - consumeIncludedBytes);
+  const now = nowIso();
+  if (consumeIncludedBytes > 0) {
+    await dbRun(
+      db,
+      `
+        INSERT INTO usage_charges (
+          id,
+          user_id,
+          period_id,
+          bytes_used,
+          created_at
+        ) VALUES (?, ?, ?, ?, ?)
+      `,
+      [crypto.randomUUID(), userId, "trial_lifetime", consumeIncludedBytes, now],
+    );
+  }
+  if (consumeManualBytes > 0) {
+    const consumedManual = await consumeManualCredits(db, userId, consumeManualBytes, now);
+    if (consumedManual < consumeManualBytes) {
+      throw new Error("allowance_exhausted");
+    }
+  }
   return buildAllowanceState(db, user, subscription, env);
 }
 
@@ -4920,7 +4978,7 @@ async function sendApiKeyActivationEmail(env, email, token) {
       to: [email],
       subject: "Your Planetka API key activation link",
       text: [
-        "Planetka trial access request received.",
+        "Planetka free access request received.",
         "",
         "Open this activation link to generate your key:",
         activationUrl,
@@ -4954,7 +5012,7 @@ async function sendApiKeyIssuedEmail(env, email, apiKeyValue, planCode, expiresA
   const apiKey = requireSecret(env, "EMAIL_API_KEY");
   const from = String(env.EMAIL_FROM || "info@planetka.io").trim();
   const safePlan = normalizeRequestedPlan(planCode);
-  const displayPlan = safePlan === PLAN_CODE_PLANETKA ? "Trial (25 GB)" : "Hosted Data Access Active";
+  const displayPlan = safePlan === PLAN_CODE_PLANETKA ? "Planetka Access" : "Planetka Access";
   void expiresAt;
   const response = await fetch("https://api.resend.com/emails", {
     method: "POST",
@@ -4969,7 +5027,8 @@ async function sendApiKeyIssuedEmail(env, email, apiKeyValue, planCode, expiresA
       text: [
         "Your Planetka API key is ready.",
         "",
-        `Plan: ${displayPlan}`,
+        `Access: ${displayPlan}`,
+        "Preview mode is free. Full Quality consumes credits for newly downloaded data.",
         "",
         "API key:",
         apiKeyValue,
@@ -4979,7 +5038,8 @@ async function sendApiKeyIssuedEmail(env, email, apiKeyValue, planCode, expiresA
       html: `
         <div style="font-family: Arial, sans-serif; line-height: 1.5; color: #111827;">
           <h2 style="margin-bottom: 16px;">Your Planetka API key</h2>
-          <p><strong>Plan:</strong> ${displayPlan}</p>
+          <p><strong>Access:</strong> ${displayPlan}</p>
+          <p>Preview mode is free. Full Quality consumes credits for newly downloaded data.</p>
           <p style="margin: 16px 0;">Paste this key in Blender &rarr; Planetka &rarr; Account:</p>
           <pre style="padding:12px;border-radius:8px;background:#111827;color:#e5e7eb;overflow:auto;">${escapeHtml(apiKeyValue)}</pre>
         </div>
@@ -5526,6 +5586,28 @@ function parseCsvSet(value) {
   return set;
 }
 
+function parseStripeCreditMap(value) {
+  const map = new Map();
+  const source = String(value || "").trim();
+  if (!source) {
+    return map;
+  }
+  for (const token of source.split(",")) {
+    const pair = String(token || "").trim();
+    if (!pair) {
+      continue;
+    }
+    const [idRaw, amountRaw] = pair.split(":", 2);
+    const id = String(idRaw || "").trim();
+    const amount = Number(amountRaw);
+    if (!id || !Number.isFinite(amount) || amount <= 0) {
+      continue;
+    }
+    map.set(id, amount);
+  }
+  return map;
+}
+
 function collectStripeLineItemEntitlements(lineItems) {
   const priceIds = new Set();
   const productIds = new Set();
@@ -5546,6 +5628,63 @@ function collectStripeLineItemEntitlements(lineItems) {
   return {
     priceIds: Array.from(priceIds),
     productIds: Array.from(productIds),
+  };
+}
+
+function collectStripeLineItemsWithQuantity(lineItems) {
+  const rows = [];
+  for (const item of Array.isArray(lineItems) ? lineItems : []) {
+    const price = item && typeof item === "object" ? item.price : null;
+    if (!price || typeof price !== "object") {
+      continue;
+    }
+    const priceId = String(price.id || "").trim();
+    const productId = String(price.product || "").trim();
+    const quantityRaw = Number(item && item.quantity);
+    const quantity = Number.isFinite(quantityRaw) && quantityRaw > 0 ? Math.floor(quantityRaw) : 1;
+    rows.push({
+      priceId,
+      productId,
+      quantity,
+    });
+  }
+  return rows;
+}
+
+function computeStripeCreditGrantBytes(lineItems, env) {
+  const byPrice = parseStripeCreditMap(env.STRIPE_CREDIT_PRICE_GB_MAP);
+  const byProduct = parseStripeCreditMap(env.STRIPE_CREDIT_PRODUCT_GB_MAP);
+  const defaultTopupGb = Math.max(0, Number(env.STRIPE_DEFAULT_TOPUP_GB || 0));
+  let totalGb = 0;
+  const matched = [];
+
+  for (const item of collectStripeLineItemsWithQuantity(lineItems)) {
+    let perItemGb = 0;
+    if (item.priceId && byPrice.has(item.priceId)) {
+      perItemGb = Number(byPrice.get(item.priceId) || 0);
+    } else if (item.productId && byProduct.has(item.productId)) {
+      perItemGb = Number(byProduct.get(item.productId) || 0);
+    } else if (defaultTopupGb > 0 && (item.priceId || item.productId)) {
+      perItemGb = defaultTopupGb;
+    }
+    if (!Number.isFinite(perItemGb) || perItemGb <= 0) {
+      continue;
+    }
+    const lineGb = perItemGb * Math.max(1, item.quantity);
+    totalGb += lineGb;
+    matched.push({
+      price_id: item.priceId,
+      product_id: item.productId,
+      quantity: item.quantity,
+      gb_per_item: perItemGb,
+      gb_total: lineGb,
+    });
+  }
+
+  return {
+    creditsGb: totalGb,
+    creditsBytes: toBytesFromGb(totalGb),
+    matched,
   };
 }
 
@@ -5692,13 +5831,16 @@ function renderApiKeyRequestPage(env, message = "", requestedPlan = PLAN_CODE_PL
     : `<p id="status" style="margin-top:14px;color:#cbd5e1;"></p>`;
   void requestedPlan;
   const safePlan = PLAN_CODE_PLANETKA;
-  const subTitle = "Enter your email and we will send a one-click activation link for a 25 GB trial.";
+  const subTitle =
+    "Planetka Preview mode is free with unlimited use. " +
+    "Request an API key to connect Blender. " +
+    "Switch to Full Quality anytime by topping up credits.";
   return html(`<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Planetka Trial Access</title>
+    <title>Planetka Free Access</title>
     <style>
       :root { color-scheme: dark; }
       body { margin:0; min-height:100vh; display:grid; place-items:center; background:linear-gradient(180deg,#07111f 0%, #0b1424 100%); font-family: Inter, system-ui, sans-serif; color:#e5edf7; }
@@ -5719,7 +5861,7 @@ function renderApiKeyRequestPage(env, message = "", requestedPlan = PLAN_CODE_PL
   </head>
   <body>
     <main class="card">
-      <h1>Request Trial Access</h1>
+      <h1>Request Free Access</h1>
       <p>${escapeHtml(subTitle)}</p>
       <form id="form">
         <label for="email">Email</label>
@@ -5733,7 +5875,7 @@ function renderApiKeyRequestPage(env, message = "", requestedPlan = PLAN_CODE_PL
           <label for="news">Opt in to receive news about Planetka by email.</label>
         </div>
         <input id="website" class="hidden" type="text" autocomplete="off" tabindex="-1" />
-        <button id="submit" type="submit">Request Trial Access</button>
+        <button id="submit" type="submit">Request Free Access</button>
       </form>
       ${messageMarkup}
       <p class="help">Problem connecting? <a href="${contactUrl}" target="_blank" rel="noopener noreferrer">Contact Me</a></p>
@@ -5788,9 +5930,9 @@ function renderApiKeyActivatedPage(env, data = {}) {
   const keyMask = key ? maskApiKey(key) : "";
   const email = String(data.email || "").trim();
   const planCode = normalizeRequestedPlan(data.planCode || PLAN_CODE_PLANETKA);
-  const planLabel = planCode === PLAN_CODE_PLANETKA
-    ? "Trial (25 GB)"
-    : "Hosted Data Access Active";
+  const creditsRemainingBytes = clampNonNegativeInt(data.creditsRemainingBytes);
+  const creditsRemainingGb = Number(creditsRemainingBytes / BYTES_PER_GB).toFixed(3);
+  const planLabel = planCode === PLAN_CODE_PLANETKA ? "Planetka Access" : "Planetka Access";
   return html(`<!doctype html>
 <html lang="en">
   <head>
@@ -5813,7 +5955,9 @@ function renderApiKeyActivatedPage(env, data = {}) {
     <main class="card">
       <h1>API key generated</h1>
       <p>Email: <strong>${escapeHtml(email || "unknown")}</strong></p>
-      <p>Plan: <strong>${escapeHtml(planLabel)}</strong></p>
+      <p>Access: <strong>${escapeHtml(planLabel)}</strong></p>
+      <p>Preview mode is free. Full Quality uses credits for newly downloaded data.</p>
+      <p>Available Full Quality credits: <strong>${escapeHtml(creditsRemainingGb)} GB</strong></p>
       <pre id="apiKey">${escapeHtml(key)}</pre>
       <button id="copyBtn" type="button">Copy API key</button>
       <p class="muted" id="copyStatus">Key mask: ${escapeHtml(keyMask)}</p>
@@ -5989,8 +6133,8 @@ async function handleApiKeyRequest(request, env) {
   const acceptTerms = parseBooleanFlag(body.accept_terms);
   const acceptPrivacy = parseBooleanFlag(body.accept_privacy);
   const optInNews = parseBooleanFlag(body.opt_in_news);
-  // Public API-key request flow always starts trial access.
-  // Paid hosted access is granted only by Stripe webhook entitlement.
+  // Public API-key request flow always issues base access.
+  // Full Quality credits are granted only through Stripe top-up webhook events.
   const requestedPlan = PLAN_CODE_PLANETKA;
   const honeypot = String(body.website || "").trim();
   const submittedAtMs = parseNonNegativeInteger(body.submitted_at_ms, 0);
@@ -6213,6 +6357,7 @@ async function activateApiKeyFromToken(db, env, rawToken) {
     effectivePlanCode,
     {},
   );
+  const accountState = await buildAllowanceState(db, user, null, env);
 
   await sendApiKeyIssuedEmail(env, email, issued.apiKey, issued.planCode, issued.expiresAt);
   return {
@@ -6220,6 +6365,11 @@ async function activateApiKeyFromToken(db, env, rawToken) {
     apiKey: issued.apiKey,
     planCode: issued.planCode,
     expiresAt: issued.expiresAt,
+    creditsRemainingBytes: clampNonNegativeInt(
+      accountState
+      && accountState.dataAllowance
+      && accountState.dataAllowance.total_remaining_bytes,
+    ),
   };
 }
 
@@ -6235,6 +6385,7 @@ async function handleApiKeyActivate(request, env) {
         api_key: activated.apiKey,
         plan_code: activated.planCode,
         expires_at: activated.expiresAt,
+        credits_remaining_bytes: activated.creditsRemainingBytes,
       },
       200,
       env,
@@ -7576,41 +7727,47 @@ async function handleTileRequest(request, env, path, ctx) {
       responseBody = cacheableResponse.body;
     }
 
-    const allowanceState = await buildAllowanceState(db, user, null, env);
-    if (allowanceState.dataAllowance.total_remaining_bytes < objectSize) {
-      eventStatusCode = 402;
-      eventErrorCode = "allowance_exhausted";
-      return json(
-        {
-          ok: false,
-          error: "allowance_exhausted",
-          message: "Trial limit reached. Buy unlimited Hosted Data Access to continue.",
-          ...serializeAccountState(allowanceState),
-        },
-        402,
-        env,
-      );
-    }
+    const qualityModeRaw = String(request.headers.get("X-Planetka-Quality-Mode") || "").trim().toLowerCase();
+    const qualityMode = qualityModeRaw === "full" ? "full" : "preview";
+    const chargeCredits = qualityMode === "full";
 
-    let updatedAllowance;
-    try {
-      updatedAllowance = await consumeAllowanceBytes(db, user, null, env, objectSize);
-    } catch (error) {
-      if (String(error && error.message || "") === "allowance_exhausted") {
+    const allowanceState = await buildAllowanceState(db, user, null, env);
+    let updatedAllowance = allowanceState;
+    if (chargeCredits) {
+      if (allowanceState.dataAllowance.total_remaining_bytes < objectSize) {
         eventStatusCode = 402;
         eventErrorCode = "allowance_exhausted";
         return json(
           {
             ok: false,
             error: "allowance_exhausted",
-            message: "Trial limit reached. Buy unlimited Hosted Data Access to continue.",
-            ...serializeAccountState(await buildAllowanceState(db, user, null, env)),
+            message: "Full Quality credits are depleted. Switch to Preview or top up credits.",
+            ...serializeAccountState(allowanceState),
           },
           402,
           env,
         );
       }
-      throw error;
+
+      try {
+        updatedAllowance = await consumeAllowanceBytes(db, user, null, env, objectSize);
+      } catch (error) {
+        if (String(error && error.message || "") === "allowance_exhausted") {
+          eventStatusCode = 402;
+          eventErrorCode = "allowance_exhausted";
+          return json(
+            {
+              ok: false,
+              error: "allowance_exhausted",
+              message: "Full Quality credits are depleted. Switch to Preview or top up credits.",
+              ...serializeAccountState(await buildAllowanceState(db, user, null, env)),
+            },
+            402,
+            env,
+          );
+        }
+        throw error;
+      }
     }
 
     const responseHeaders = new Headers({
@@ -7621,6 +7778,7 @@ async function handleTileRequest(request, env, path, ctx) {
       "X-Planetka-Remaining-Bytes": String(updatedAllowance.dataAllowance.total_remaining_bytes),
       "X-Planetka-Warning-State": String(updatedAllowance.dataAllowance.warning_state || "ok"),
       "X-Planetka-Cache": cacheStatus,
+      "X-Planetka-Quality-Mode": qualityMode,
     });
     if (etag) {
       responseHeaders.set("ETag", etag);
@@ -7931,8 +8089,7 @@ async function handleAdminAnalyticsPage(request, env) {
     <label for="planFilter">User type:</label>
     <select id="planFilter">
       <option value="all" selected>All</option>
-      <option value="trial">Trial</option>
-      <option value="active">Hosted Access Active</option>
+      <option value="trial">Planetka Access</option>
     </select>
     <label for="heavySort">Rank by:</label>
     <select id="heavySort">
@@ -8363,9 +8520,7 @@ async function handleAdminAnalyticsPage(request, env) {
           const userEmail = encodeDataValue(row.user_email || "");
           const planCode = encodeDataValue(row.plan_code || "planetka");
           const rawPlanCode = String(row.plan_code || "planetka").trim().toLowerCase();
-          const planLabel = (rawPlanCode === "planetka_pro" || rawPlanCode === "planetka_studio")
-            ? "Hosted Access Active"
-            : "Trial";
+          const planLabel = "Planetka Access";
           const userStatus = String(row.user_status || row.plan_code || "").trim().toLowerCase();
           const throttledUntilRaw = String(row.throttled_until || "").trim();
           const throttledUntilMs = Date.parse(throttledUntilRaw);
@@ -9576,6 +9731,7 @@ async function applyHostedStreamingAccessEntitlement(db, env, details = {}) {
 
 async function handleStripeWebhook(request, env) {
   const db = requireDb(env);
+  await ensureAllowanceTables(db);
   await ensureStripeWebhookEventsTable(db);
   const rawBody = await request.text();
   const event = await verifyStripeWebhook(request, env, rawBody);
@@ -9601,191 +9757,65 @@ async function handleStripeWebhook(request, env) {
   }
   console.log("stripe.webhook.received", JSON.stringify({ event_type: eventType, event_id: eventId }));
 
-  const supportedTypes = new Set([
-    "checkout.session.completed",
-    "invoice.paid",
-    "invoice.payment_succeeded",
-  ]);
-  if (!supportedTypes.has(eventType)) {
+  if (eventType !== "checkout.session.completed") {
     console.log("stripe.webhook.ignored", JSON.stringify({ event_type: eventType }));
     return json({ ok: true, ignored: true, event_type: eventType }, 200, env);
   }
-  const allowedPriceIds = parseCsvSet(env.STRIPE_ALLOWED_PRICE_IDS);
-  const allowedProductIds = parseCsvSet(env.STRIPE_ALLOWED_PRODUCT_IDS);
-  if (allowedPriceIds.size === 0 && allowedProductIds.size === 0) {
-    console.error(
-      "stripe.webhook.misconfigured_entitlement_allowlist",
-      JSON.stringify({ event_type: eventType }),
+
+  const session = event.data && event.data.object ? event.data.object : null;
+  if (!session) {
+    return json({ ok: false, error: "missing_checkout_session" }, 400, env);
+  }
+  const sessionId = String(session.id || "").trim();
+  if (!sessionId) {
+    return json({ ok: false, error: "missing_checkout_session_id" }, 400, env);
+  }
+  const email = normalizeEmail(
+    session.customer_details && session.customer_details.email
+      ? session.customer_details.email
+      : session.customer_email,
+  );
+  if (!email) {
+    console.error("stripe.webhook.missing_email", JSON.stringify({ event_type: eventType }));
+    return json({ ok: false, error: "missing_customer_email" }, 400, env);
+  }
+  const paymentStatus = String(session.payment_status || "").trim().toLowerCase();
+  const paidCheckout = paymentStatus === "paid" || paymentStatus === "no_payment_required";
+  if (!paidCheckout) {
+    console.log(
+      "stripe.webhook.ignored_unpaid_checkout",
+      JSON.stringify({ event_type: eventType, email, payment_status: paymentStatus }),
     );
-    return json({ ok: false, error: "missing_stripe_entitlement_allowlist" }, 500, env);
+    return json(
+      {
+        ok: true,
+        ignored: true,
+        reason: "unpaid_checkout_session",
+        event_type: eventType,
+        email,
+        payment_status: paymentStatus,
+      },
+      200,
+      env,
+    );
   }
 
-  if (eventType === "checkout.session.completed") {
-    const session = event.data && event.data.object ? event.data.object : null;
-    if (!session) {
-      return json({ ok: false, error: "missing_checkout_session" }, 400, env);
-    }
-    const sessionId = String(session.id || "").trim();
-    if (!sessionId) {
-      return json({ ok: false, error: "missing_checkout_session_id" }, 400, env);
-    }
-    const email = normalizeEmail(
-      session.customer_details && session.customer_details.email
-        ? session.customer_details.email
-        : session.customer_email,
-    );
-    if (!email) {
-      console.error("stripe.webhook.missing_email", JSON.stringify({ event_type: eventType }));
-      return json({ ok: false, error: "missing_customer_email" }, 400, env);
-    }
-    const sessionMode = String(session.mode || "").trim().toLowerCase();
-    const paymentStatus = String(session.payment_status || "").trim().toLowerCase();
-    const paidCheckout = paymentStatus === "paid" || paymentStatus === "no_payment_required";
-    if (!paidCheckout) {
-      console.log(
-        "stripe.webhook.ignored_unpaid_checkout",
-        JSON.stringify({ event_type: eventType, email, payment_status: paymentStatus }),
-      );
-      return json(
-        {
-          ok: true,
-          ignored: true,
-          reason: "unpaid_checkout_session",
-          event_type: eventType,
-          email,
-          payment_status: paymentStatus,
-        },
-        200,
-        env,
-      );
-    }
-    const lineItems = await fetchStripeCheckoutSessionLineItems(env, sessionId);
-    const entitlements = collectStripeLineItemEntitlements(lineItems);
-    const hasAllowedPrice = entitlements.priceIds.some((priceId) => allowedPriceIds.has(priceId));
-    const hasAllowedProduct = entitlements.productIds.some((productId) => allowedProductIds.has(productId));
-    if (!hasAllowedPrice && !hasAllowedProduct) {
-      console.log(
-        "stripe.webhook.ignored_disallowed_line_items",
-        JSON.stringify({
-          event_type: eventType,
-          email,
-          session_id: sessionId,
-          purchased_price_ids: entitlements.priceIds.slice(0, 25),
-          purchased_product_ids: entitlements.productIds.slice(0, 25),
-        }),
-      );
-      return json(
-        {
-          ok: true,
-          ignored: true,
-          reason: "disallowed_checkout_items",
-          event_type: eventType,
-          email,
-        },
-        200,
-        env,
-      );
-    }
-    const stripeCustomerId = String(session.customer || "").trim() || "";
-    const stripeSubscriptionId = String(session.subscription || "").trim() || "";
-    const applied = await applyHostedStreamingAccessEntitlement(
-      db,
-      env,
-      {
-        email,
-        planCode: PLAN_CODE_PLANETKA_PRO,
-      },
-    );
+  const lineItems = await fetchStripeCheckoutSessionLineItems(env, sessionId);
+  const grant = computeStripeCreditGrantBytes(lineItems, env);
+  if (grant.creditsBytes <= 0) {
     console.log(
-      "stripe.webhook.processed",
+      "stripe.webhook.ignored_no_credit_mapping",
       JSON.stringify({
         event_type: eventType,
         email,
-        session_mode: sessionMode,
         session_id: sessionId,
-        stripe_customer_id: stripeCustomerId,
-        stripe_subscription_id: stripeSubscriptionId,
-        access_expires_at: String(applied.accessExpiresAt || "").trim(),
-        matched_price_ids: entitlements.priceIds.filter((priceId) => allowedPriceIds.has(priceId)).slice(0, 25),
-        matched_product_ids: entitlements.productIds.filter((productId) => allowedProductIds.has(productId)).slice(0, 25),
-        user_status: String(applied.user && applied.user.status || PLAN_CODE_PLANETKA_PRO),
       }),
     );
     return json(
       {
         ok: true,
-        processed: true,
-        event_type: eventType,
-        email,
-        hosted_streaming_access_expires_at: String(applied.accessExpiresAt || "").trim() || null,
-      },
-      200,
-      env,
-    );
-  }
-
-  const invoice = event.data && event.data.object ? event.data.object : null;
-  if (!invoice) {
-    return json({ ok: false, error: "missing_invoice" }, 400, env);
-  }
-  const stripeSubscriptionId = String(invoice.subscription || "").trim() || "";
-  const stripeCustomerId = String(invoice.customer || "").trim() || "";
-  const paymentStatus = String(invoice.status || "").trim().toLowerCase();
-  if (eventType === "invoice.paid" && paymentStatus !== "paid") {
-    return json({ ok: true, ignored: true, reason: "invoice_not_paid", event_type: eventType }, 200, env);
-  }
-  let email = normalizeEmail(
-    invoice.customer_email
-      || (invoice.customer_details && invoice.customer_details.email)
-      || "",
-  );
-  if (!email && stripeCustomerId) {
-    try {
-      email = await fetchStripeCustomerEmail(env, stripeCustomerId);
-    } catch (error) {
-      console.warn(
-        "stripe.webhook.customer_lookup_failed",
-        JSON.stringify({
-          event_type: eventType,
-          customer_id: stripeCustomerId,
-          error: String(error && error.message || "customer_lookup_failed"),
-        }),
-      );
-    }
-  }
-  if (!email) {
-    return json({ ok: false, error: "missing_customer_email" }, 400, env);
-  }
-
-  const invoiceLineItems = Array.isArray(invoice && invoice.lines && invoice.lines.data)
-    ? invoice.lines.data
-    : [];
-  let entitlements = collectStripeLineItemEntitlements(invoiceLineItems);
-  let subscriptionPayload = null;
-  if ((!entitlements.priceIds.length && !entitlements.productIds.length) && stripeSubscriptionId) {
-    try {
-      subscriptionPayload = await fetchStripeSubscription(env, stripeSubscriptionId);
-      entitlements = collectStripeSubscriptionEntitlements(subscriptionPayload);
-    } catch (error) {
-      console.warn(
-        "stripe.webhook.subscription_lookup_failed",
-        JSON.stringify({
-          event_type: eventType,
-          email,
-          subscription_id: stripeSubscriptionId,
-          error: String(error && error.message || "subscription_lookup_failed"),
-        }),
-      );
-    }
-  }
-  const hasAllowedPrice = entitlements.priceIds.some((priceId) => allowedPriceIds.has(priceId));
-  const hasAllowedProduct = entitlements.productIds.some((productId) => allowedProductIds.has(productId));
-  if (!hasAllowedPrice && !hasAllowedProduct) {
-    return json(
-      {
-        ok: true,
         ignored: true,
-        reason: "disallowed_invoice_items",
+        reason: "no_credit_mapping",
         event_type: eventType,
         email,
       },
@@ -9794,26 +9824,24 @@ async function handleStripeWebhook(request, env) {
     );
   }
 
-  const applied = await applyHostedStreamingAccessEntitlement(
-    db,
-    env,
-    {
-      email,
-      planCode: PLAN_CODE_PLANETKA_PRO,
-    },
-  );
+  let user = await upsertUserByEmail(db, email, PLAN_CODE_PLANETKA, {}, env);
+  user = await enforceUserPlanPolicy(db, user, null, env);
+  if (!user || !user.id) {
+    return json({ ok: false, error: "user_upsert_failed" }, 500, env);
+  }
+  const note = `stripe_checkout:${eventId}:${sessionId}`;
+  await grantManualAllowanceCredits(db, String(user.id || ""), grant.creditsBytes, note, "");
+
   console.log(
     "stripe.webhook.processed",
     JSON.stringify({
       event_type: eventType,
       email,
-      invoice_id: String(invoice.id || "").trim(),
-      stripe_customer_id: stripeCustomerId,
-      stripe_subscription_id: stripeSubscriptionId,
-      access_expires_at: String(applied.accessExpiresAt || "").trim(),
-      matched_price_ids: entitlements.priceIds.filter((priceId) => allowedPriceIds.has(priceId)).slice(0, 25),
-      matched_product_ids: entitlements.productIds.filter((productId) => allowedProductIds.has(productId)).slice(0, 25),
-      user_status: String(applied.user && applied.user.status || PLAN_CODE_PLANETKA_PRO),
+      session_id: sessionId,
+      credits_gb: grant.creditsGb,
+      credits_bytes: grant.creditsBytes,
+      matched: grant.matched.slice(0, 50),
+      user_status: String(user.status || PLAN_CODE_PLANETKA),
     }),
   );
   return json(
@@ -9822,7 +9850,8 @@ async function handleStripeWebhook(request, env) {
       processed: true,
       event_type: eventType,
       email,
-      hosted_streaming_access_expires_at: String(applied.accessExpiresAt || "").trim() || null,
+      credits_granted_gb: grant.creditsGb,
+      credits_granted_bytes: grant.creditsBytes,
     },
     200,
     env,

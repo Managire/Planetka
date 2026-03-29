@@ -32,6 +32,7 @@ from .r2_source import (
 from .sanity_utils import _normalize_texture_source_path
 from .streaming_utils import (
     consume_staged_prefetch_payload,
+    estimate_remote_download_bytes_for_visible_tiles,
     prepare_resolve_streaming_for_visible_tiles,
 )
 from .state import (
@@ -424,6 +425,13 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             )
 
         tiles_override = _parse_tiles_override(getattr(self, "tiles_override_json", ""))
+        texture_quality_mode = "HALF"
+        try:
+            texture_quality_mode = str(getattr(props, "texture_quality_mode", "HALF") or "HALF").upper()
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            texture_quality_mode = "HALF"
+        if texture_quality_mode not in {"FULL", "HALF"}:
+            texture_quality_mode = "HALF"
         phase_start = time.perf_counter()
         if tiles_override is not None:
             tiles = [] if force_empty_once else list(tiles_override)
@@ -473,6 +481,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         resolved_paths = {}
         resolved_tiles_override = None
         ocean_tiles_override = None
+        full_quality_cost_bytes = 0
         prefetch_missing_count = 0
         prefetch_resolved_count = 0
         prefetch_error_count = 0
@@ -485,12 +494,24 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         }
         phase_start = time.perf_counter()
         try:
-            stream_payload = consume_staged_prefetch_payload(tiles, normalized)
+            stream_payload = consume_staged_prefetch_payload(
+                tiles,
+                normalized,
+                texture_quality_mode=texture_quality_mode,
+            )
             if not isinstance(stream_payload, dict):
                 stream_payload = prepare_resolve_streaming_for_visible_tiles(
                     tiles,
                     normalized,
                     capture=True,
+                    texture_quality_mode=texture_quality_mode,
+                )
+            elif str(stream_payload.get("texture_quality_mode", "HALF") or "HALF").upper() != texture_quality_mode:
+                stream_payload = prepare_resolve_streaming_for_visible_tiles(
+                    tiles,
+                    normalized,
+                    capture=True,
+                    texture_quality_mode=texture_quality_mode,
                 )
             if bool(stream_payload.get("cancelled", False)):
                 return fail(
@@ -524,6 +545,20 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             capture_payload = stream_payload.get("download_capture", {})
             if isinstance(capture_payload, dict):
                 download_capture = capture_payload
+            if texture_quality_mode == "HALF" and tiles_override is None:
+                try:
+                    full_tiles = list(
+                        tile_utils.main(
+                            scope_mode=str(getattr(self, "scope_mode", "AUTO") or "AUTO"),
+                            texture_quality_mode_override="FULL",
+                        )
+                    )
+                    estimate = estimate_remote_download_bytes_for_visible_tiles(full_tiles, normalized)
+                    full_quality_cost_bytes = int(estimate.get("planned_total_bytes", 0) or 0)
+                except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                    logger.debug("Planetka: failed estimating full-quality resolve cost", exc_info=True)
+                except (RuntimeError, TypeError, ValueError, AttributeError):
+                    logger.debug("Planetka: failed estimating full-quality resolve cost", exc_info=True)
         except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
             return fail(
                 self,
@@ -767,6 +802,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 "download_ms": downloaded_ms,
                 "download_thread_ms": downloaded_thread_ms,
                 "downloaded_mb": downloaded_mb,
+                "full_quality_cost_bytes": int(max(0, int(full_quality_cost_bytes or 0))),
             },
         )
 

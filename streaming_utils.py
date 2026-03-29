@@ -41,8 +41,12 @@ def _normalize_base_path(base_path):
     return text.rstrip("/\\")
 
 
-def _staged_prefetch_key(visible_tiles, base_path):
-    return (_normalize_tiles(visible_tiles), _normalize_base_path(base_path))
+def _staged_prefetch_key(visible_tiles, base_path, texture_quality_mode="HALF"):
+    return (
+        _normalize_tiles(visible_tiles),
+        _normalize_base_path(base_path),
+        _normalize_texture_quality_mode(texture_quality_mode),
+    )
 
 
 def _prune_staged_prefetch_locked(now_ts):
@@ -55,10 +59,10 @@ def _prune_staged_prefetch_locked(now_ts):
         _STAGED_PREFETCH.pop(key, None)
 
 
-def stage_prefetch_payload(visible_tiles, base_path, payload):
+def stage_prefetch_payload(visible_tiles, base_path, payload, texture_quality_mode="HALF"):
     if not isinstance(payload, dict):
         return
-    key = _staged_prefetch_key(visible_tiles, base_path)
+    key = _staged_prefetch_key(visible_tiles, base_path, texture_quality_mode=texture_quality_mode)
     now_ts = time.monotonic()
     with _STAGED_PREFETCH_LOCK:
         _prune_staged_prefetch_locked(now_ts)
@@ -68,8 +72,8 @@ def stage_prefetch_payload(visible_tiles, base_path, payload):
         }
 
 
-def consume_staged_prefetch_payload(visible_tiles, base_path):
-    key = _staged_prefetch_key(visible_tiles, base_path)
+def consume_staged_prefetch_payload(visible_tiles, base_path, texture_quality_mode="HALF"):
+    key = _staged_prefetch_key(visible_tiles, base_path, texture_quality_mode=texture_quality_mode)
     now_ts = time.monotonic()
     with _STAGED_PREFETCH_LOCK:
         _prune_staged_prefetch_locked(now_ts)
@@ -106,6 +110,13 @@ def _build_resolve_download_requests(resolved_tiles, ocean_tiles=None):
                 filename = tile_text.replace("d002", "d001")
             requests.append((image_type, image_type, filename, TEXTURE_EXTENSIONS.get(image_type, (".exr",))))
     return requests
+
+
+def _normalize_texture_quality_mode(value):
+    token = str(value or "").strip().upper()
+    if token == "FULL":
+        return "FULL"
+    return "HALF"
 
 
 def _prefetch_index(resolved_tiles, ocean_tiles=None):
@@ -170,7 +181,14 @@ def build_resolve_download_requests_for_visible_tiles(visible_tiles, base_path):
     }
 
 
-def prefetch_resolve_plan(plan_payload, base_path, cancel_event=None, capture=False, resolve_id=""):
+def prefetch_resolve_plan(
+    plan_payload,
+    base_path,
+    cancel_event=None,
+    capture=False,
+    resolve_id="",
+    texture_quality_mode="HALF",
+):
     resolved_tiles = list(plan_payload.get("resolved_tiles", ())) if isinstance(plan_payload, dict) else []
     ocean_tiles = list(plan_payload.get("ocean_tiles", ())) if isinstance(plan_payload, dict) else []
     requests = list(plan_payload.get("requests", ())) if isinstance(plan_payload, dict) else []
@@ -185,10 +203,15 @@ def prefetch_resolve_plan(plan_payload, base_path, cancel_event=None, capture=Fa
     if not normalized_resolve_id:
         normalized_resolve_id = str(uuid.uuid4())
 
+    normalized_quality_mode = _normalize_texture_quality_mode(texture_quality_mode)
+
     if capture:
         begin_resolve_download_capture()
     try:
-        with resolve_request_context(normalized_resolve_id):
+        with resolve_request_context(
+            normalized_resolve_id,
+            texture_quality_mode=normalized_quality_mode,
+        ):
             try:
                 plan_resolve_downloads(requests)
                 prefetch_result = prefetch_resolve_downloads(
@@ -246,6 +269,7 @@ def prefetch_resolve_plan(plan_payload, base_path, cancel_event=None, capture=Fa
 
     return {
         "resolve_id": normalized_resolve_id,
+        "texture_quality_mode": normalized_quality_mode,
         "resolved_tiles": list(resolved_tiles),
         "ocean_tiles": list(ocean_tiles),
         "requests": list(requests),
@@ -256,7 +280,14 @@ def prefetch_resolve_plan(plan_payload, base_path, cancel_event=None, capture=Fa
     }
 
 
-def prepare_resolve_streaming_for_visible_tiles(visible_tiles, base_path, cancel_event=None, capture=False, resolve_id=""):
+def prepare_resolve_streaming_for_visible_tiles(
+    visible_tiles,
+    base_path,
+    cancel_event=None,
+    capture=False,
+    resolve_id="",
+    texture_quality_mode="HALF",
+):
     plan_payload = build_resolve_download_requests_for_visible_tiles(visible_tiles, base_path)
     prefetch_payload = prefetch_resolve_plan(
         plan_payload,
@@ -264,7 +295,25 @@ def prepare_resolve_streaming_for_visible_tiles(visible_tiles, base_path, cancel
         cancel_event=cancel_event,
         capture=capture,
         resolve_id=resolve_id,
+        texture_quality_mode=texture_quality_mode,
     )
     result = dict(plan_payload)
     result.update(prefetch_payload)
     return result
+
+
+def estimate_remote_download_bytes_for_visible_tiles(visible_tiles, base_path):
+    plan_payload = build_resolve_download_requests_for_visible_tiles(visible_tiles, base_path)
+    requests = list(plan_payload.get("requests", ()) or ())
+    estimate = plan_resolve_downloads(requests)
+    if not isinstance(estimate, dict):
+        return {
+            "planned_total_bytes": 0,
+            "planned_file_count": 0,
+            "unknown_file_count": 0,
+        }
+    return {
+        "planned_total_bytes": int(estimate.get("planned_total_bytes", 0) or 0),
+        "planned_file_count": int(estimate.get("planned_file_count", 0) or 0),
+        "unknown_file_count": int(estimate.get("unknown_file_count", 0) or 0),
+    }

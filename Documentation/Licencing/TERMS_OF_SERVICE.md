@@ -18,17 +18,19 @@ you agree to these Terms and to the Planetka Privacy Policy.
 If you do not agree, do not create an account and do not use Planetka-hosted
 services.
 
-## 2. Trial and Hosted Data Access
+## 2. Access and Credits
 
-Planetka uses one functional addon tier for all users.
+Planetka uses one functional add-on tier for all users (personal and
+commercial use are both allowed).
 
-- New accounts start with a 25 GB hosted-data trial allowance.
-- Trial access is tied to one specific email address.
-- Trial access is allowed on one computer at one time.
-- After the 25 GB trial allowance is used, continued hosted-data use requires
-  paid Hosted Data Access.
-- Hosted Data Access is purchased separately and is valid for one year per
-  successful payment period.
+- New accounts start with 25 GB of Full Quality credits.
+- Preview quality is free and can be used without a fixed data cap (subject to
+  fair usage policy and abuse protections).
+- Full Quality consumes credits only for newly downloaded data.
+- Reused local cached data does not consume credits.
+- Additional credits can be purchased as top-up packages.
+- Credits do not expire.
+- Access is tied to one specific email address and one computer at one time.
 
 ## 3. Intended Use
 
@@ -115,14 +117,12 @@ error-free, or suitable for any specific purpose.
 
 Planetka gives no guarantee of uninterrupted future availability.
 
-## 9. Access Period and Continuity
+## 9. Access Continuity
 
-Trial access is limited by trial data allowance and may be changed in future
-releases.
+Preview and Full Quality access are provided on an "as available" basis.
 
-Paid Hosted Data Access is granted for the purchased period, but this does not
-create any obligation to provide uninterrupted uptime or minimum service
-levels unless explicitly stated in separate written terms.
+Planetka may change technical limits, anti-abuse safeguards, or fair-usage
+protections over time to keep service available for all users.
 
 ## 10. Telemetry and Internal Analytics
 

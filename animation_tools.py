@@ -60,7 +60,7 @@ def _require_pro_animation_render_access(operator, prefs=None):
         return True
     fail(
         operator,
-        "Buy unlimited Hosted Data Access to continue Animation Rendering.",
+        "Animation rendering requires Planetka access.",
         code=ErrorCode.RESOLVE_PRECHECK_FAILED,
         logger=logger,
     )
@@ -432,7 +432,7 @@ def _set_constant_visibility_keyframes(obj, segment_start, segment_end, timeline
             keyframe_point.interpolation = 'CONSTANT'
 
 
-def _resolve_tiles_for_frame(scene, frame):
+def _resolve_tiles_for_frame(scene, frame, texture_quality_mode_override=None):
     tile_utils = _get_tile_utils()
     if tile_utils is None:
         raise RuntimeError("Tile utilities are unavailable.")
@@ -442,7 +442,12 @@ def _resolve_tiles_for_frame(scene, frame):
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
     try:
-        return list(tile_utils.main(scope_mode="CAMERA"))
+        return list(
+            tile_utils.main(
+                scope_mode="CAMERA",
+                texture_quality_mode_override=texture_quality_mode_override,
+            )
+        )
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka animation: tile resolve failed at frame %s", frame, exc_info=True)
         return []
@@ -451,19 +456,31 @@ def _resolve_tiles_for_frame(scene, frame):
         return []
 
 
-def _build_segments(scene, frame_start, frame_end, frame_step):
+def _build_segments(scene, frame_start, frame_end, frame_step, texture_quality_mode_override=None):
     frames = list(range(int(frame_start), int(frame_end) + 1, max(1, int(frame_step))))
     if not frames:
         return []
 
     segments = []
     current_start = int(frames[0])
-    current_tiles = _canonical_tiles(_resolve_tiles_for_frame(scene, current_start))
+    current_tiles = _canonical_tiles(
+        _resolve_tiles_for_frame(
+            scene,
+            current_start,
+            texture_quality_mode_override=texture_quality_mode_override,
+        )
+    )
     segment_index = 1
 
     for index in range(1, len(frames)):
         frame = int(frames[index])
-        sampled_tiles = _canonical_tiles(_resolve_tiles_for_frame(scene, frame))
+        sampled_tiles = _canonical_tiles(
+            _resolve_tiles_for_frame(
+                scene,
+                frame,
+                texture_quality_mode_override=texture_quality_mode_override,
+            )
+        )
         if sampled_tiles != current_tiles:
             previous_frame = int(frames[index - 1])
             segments.append(
@@ -1932,6 +1949,13 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         original_frame = int(getattr(scene, "frame_current", frame_start))
         try:
             segments = _build_segments(scene, frame_start, frame_end, frame_step=1)
+            full_segments = _build_segments(
+                scene,
+                frame_start,
+                frame_end,
+                frame_step=1,
+                texture_quality_mode_override="FULL",
+            )
         finally:
             try:
                 scene.frame_set(original_frame)
@@ -1947,6 +1971,21 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
                 logger=logger,
             )
             return False
+
+        full_quality_cost_bytes = 0
+        try:
+            full_quality_requests = []
+            for segment in full_segments or ():
+                full_quality_requests.extend(_build_texture_requests_for_tiles(segment.get("tiles", ())))
+            if is_remote_source_configured(base_path) and (not base_path or not os.path.isdir(base_path)):
+                planned_bytes, _unknown_files = _estimate_remote_download_bytes_for_requests(full_quality_requests)
+                full_quality_cost_bytes = int(max(0, int(planned_bytes)))
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka animation: failed computing full-quality animation credit estimate", exc_info=True)
+            full_quality_cost_bytes = 0
+        except (RuntimeError, TypeError, ValueError):
+            logger.debug("Planetka animation: failed computing full-quality animation credit estimate", exc_info=True)
+            full_quality_cost_bytes = 0
 
         segment_lines = []
         if len(segments) > 10:
@@ -1972,6 +2011,7 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         self._preview_segments = list(segments)
         self._preview_segment_lines = list(segment_lines)
         self._preview_texture_quality_mode = str(getattr(props, "texture_quality_mode", "HALF") or "HALF").upper()
+        self._preview_full_quality_cost_bytes = int(max(0, int(full_quality_cost_bytes)))
         return True
 
     def invoke(self, context, event):
@@ -1995,6 +2035,7 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         segments = getattr(self, "_preview_segments", None) or ()
         segment_lines = getattr(self, "_preview_segment_lines", None) or ()
         texture_quality_mode = str(getattr(self, "_preview_texture_quality_mode", "HALF") or "HALF").upper()
+        full_quality_cost_bytes = int(getattr(self, "_preview_full_quality_cost_bytes", 0) or 0)
 
         layout.label(text="Confirm Animation Render", icon="RENDER_ANIMATION")
         layout.separator()
@@ -2018,14 +2059,23 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             layout.label(text=f"Format: {output_format}", icon="FILE")
         layout.label(text=f"Frames to render: {frames_total} ({frame_start:04d}-{frame_end:04d})")
         layout.label(text=f"Time segments: {len(segments)}")
-        if texture_quality_mode in {"HALF", "QUARTER"}:
+        if texture_quality_mode == "HALF":
             warning_box = layout.box()
             warning_box.alert = True
             warning_box.label(
-                text=f"WARNING: Texture Quality is {texture_quality_mode}.",
+                text="WARNING: Animation is in Preview mode.",
                 icon="ERROR",
             )
-            warning_box.label(text="This will reduce final animation render quality.")
+            warning_box.label(text="Preview can show flickering or tile transitions.")
+            warning_box.label(text="Switch to Full Quality for seamless animation rendering.")
+        if full_quality_cost_bytes > 0:
+            layout.label(
+                text=(
+                    "Cost of animation in Full Quality: "
+                    f"{(float(full_quality_cost_bytes) / float(1024 ** 3)):.3f} credits"
+                ),
+                icon="INFO",
+            )
 
         seg_box = layout.box()
         seg_box.label(text="Segments", icon="OUTLINER")

@@ -91,7 +91,7 @@ Alert email is sent to `SECURITY_ALERT_EMAIL` when suspicious patterns are detec
 These controls are used for heavy-user monitoring, milestone alerts, and automatic speed throttling.
 
 - `DOWNLOAD_MARK_STEP_GB` (default: `100`)
-- `DOWNLOAD_THROTTLE_FREE_DAILY_GB` (default: `25`)
+- `DOWNLOAD_THROTTLE_FREE_DAILY_GB` (default: `0`, disabled)
 - `DOWNLOAD_THROTTLE_PRO_DAILY_GB` (default: `0`, disabled)
 - `DOWNLOAD_THROTTLE_DURATION_MINUTES` (default: `1440`)
 - `DOWNLOAD_THROTTLED_REQUESTS_PER_MINUTE` (default: `0`; disabled when `0`)
@@ -103,27 +103,28 @@ Behavior:
 
 - Per-account counters track `lifetime`, `month`, `week`, `day`, and `hour` bytes.
 - Ops milestone alerts trigger when crossing each `DOWNLOAD_MARK_STEP_GB` mark.
-- If rolling 24-hour bytes exceed threshold (`DOWNLOAD_THROTTLE_FREE_DAILY_GB` for trial users, `DOWNLOAD_THROTTLE_PRO_DAILY_GB` for active Hosted Data Access users), user is automatically throttled.
+- If rolling 24-hour bytes exceed configured threshold, user is automatically throttled.
 - A value of `0` disables that specific threshold.
 - While throttled, requests are delayed (`DOWNLOAD_THROTTLED_DELAY_MS`) to slow sustained scraping.
 - Optional per-minute cap can be enabled by setting `DOWNLOAD_THROTTLED_REQUESTS_PER_MINUTE` above `0`.
 - Throttled users receive an email notification; ops receives a security alert.
 
-## Hosted Streaming Access Entitlements
+## Full Quality Credits (Stripe Top-ups)
 
-- `STRIPE_ALLOWED_PRICE_IDS` (required for paid entitlement matching)
-- `STRIPE_ALLOWED_PRODUCT_IDS` (required for paid entitlement matching)
 - `TRIAL_INCLUDED_GB` (default: `25`)
-- `HOSTED_ACCESS_DURATION_DAYS` (default: `365`)
+- `STRIPE_CREDIT_PRICE_GB_MAP` (e.g. `price_abc:10,price_def:100`)
+- `STRIPE_CREDIT_PRODUCT_GB_MAP` (optional fallback)
+- `STRIPE_DEFAULT_TOPUP_GB` (optional fallback)
+- `TOPUP_URL` / `PURCHASE_TOPUP_URL`
 
 Behavior:
 
-- New accounts start in trial mode with `TRIAL_INCLUDED_GB` included.
-- Trial and paid accounts use the same full addon functionality.
-- When trial allowance reaches zero, tile delivery is denied until payment is detected.
-- Paid entitlement is granted automatically from Stripe webhooks.
-- Each successful paid event grants or extends Hosted Data Access by `HOSTED_ACCESS_DURATION_DAYS`.
-- API-key request flow never grants paid status directly; paid status is server-side only.
+- New accounts receive starter Full Quality credits from `TRIAL_INCLUDED_GB`.
+- Preview mode is free.
+- Full Quality consumes credits for newly downloaded bytes only.
+- Credits are granted automatically from Stripe `checkout.session.completed` webhook events.
+- Credits do not expire by default (unless an explicit expiry is set on a grant).
+- API-key request flow cannot self-elevate plan/access through client parameters.
 
 ## Monthly Cost Estimate Alerts (Ops)
 

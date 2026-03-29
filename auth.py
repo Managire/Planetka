@@ -34,7 +34,7 @@ DEFAULT_CONTACT_URL = str(
 DEFAULT_TOPUP_URL = str(
     os.getenv("PLANETKA_TOPUP_URL")
     or os.getenv("PLANETKA_DATA_TOPUP_URL")
-    or "https://www.planetka.io/signup"
+    or "https://www.planetka.io/blender-addon/pricing/"
 ).strip()
 DEFAULT_API_KEY_REQUEST_URL = str(
     os.getenv("PLANETKA_API_KEY_REQUEST_URL")
@@ -71,9 +71,9 @@ ACCOUNT_TIER_STUDIO = "studio"
 PLAN_CODE_PLANETKA = "planetka"
 PLAN_CODE_PLANETKA_PRO = "planetka_pro"
 PLAN_CODE_PLANETKA_STUDIO = "planetka_studio"
-PLAN_NAME_PLANETKA = "Planetka Trial"
-PLAN_NAME_PLANETKA_PRO = "Planetka Hosted Data Access"
-PLAN_NAME_PLANETKA_STUDIO = "Planetka Hosted Data Access"
+PLAN_NAME_PLANETKA = "Planetka Access"
+PLAN_NAME_PLANETKA_PRO = "Planetka Access"
+PLAN_NAME_PLANETKA_STUDIO = "Planetka Access"
 DEFAULT_DATA_COUNTING_RULE = "Only newly downloaded data counts. Reused local cache does not consume allowance."
 PENDING_AUTH_MESSAGE = "Waiting for browser sign-in..."
 _DEVICE_LOGIN_TIMER_REGISTERED = False
@@ -110,9 +110,9 @@ def describe_auth_error(error):
     if "network_error" in lowered:
         return "Planetka could not reach the API. Check the internet connection and Worker deployment."
     if "missing_stripe_payment_link_url" in lowered:
-        return "Planetka Hosted Data Access checkout URL is not configured on the API."
+        return "Planetka credits checkout URL is not configured on the API."
     if "allowance" in lowered or "quota_exceeded" in lowered or "insufficient_data" in lowered:
-        return "Trial limit reached. Buy unlimited Hosted Data Access to continue."
+        return "Full Quality credits are depleted. Top up credits or switch to Preview."
     return f"Planetka login failed: {message.replace('_', ' ')}."
 
 

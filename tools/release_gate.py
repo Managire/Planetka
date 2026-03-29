@@ -135,30 +135,31 @@ def main() -> int:
     else:
         worker_src = read_text(worker_path)
 
-    # 6) Paid entitlement hardening must be present (Stripe-driven, no provisional claim path)
+    # 6) Credit model hardening must be present (Stripe top-up, no client self-elevation)
     if worker_src:
-        paid_guard_any_markers = [
+        credit_guard_any_markers = [
             (
-                "public API key request forces free plan",
+                "public API key request forces base plan",
                 [
                     "const requestedPlan = PLAN_CODE_PLANETKA;",
                     "const claimPlanCode = PLAN_CODE_PLANETKA;",
                 ],
             ),
         ]
-        for label, markers in paid_guard_any_markers:
+        for label, markers in credit_guard_any_markers:
             if not any(marker in worker_src for marker in markers):
-                errors.append(f"Paid elevation safeguard missing: {label} (expected one of: {markers})")
+                errors.append(f"Credit-model safeguard missing: {label} (expected one of: {markers})")
 
-        required_paid_guard_markers = [
-            ("paid-claim workflow routes disabled", "paid_claim_workflow_disabled"),
-            ("Stripe entitlement apply helper present", "applyHostedStreamingAccessEntitlement"),
-            ("Stripe invoice renewal webhook path enabled", "\"invoice.paid\""),
-            ("permanent-pro email allowlist guard is present", "isPermanentProEmail"),
+        required_credit_guard_markers = [
+            ("Stripe checkout webhook path enabled", "\"checkout.session.completed\""),
+            ("Stripe credit mapping helper present", "computeStripeCreditGrantBytes"),
+            ("manual credit grant helper present", "grantManualAllowanceCredits"),
+            ("tile requests read quality mode header", "X-Planetka-Quality-Mode"),
+            ("preview mode is free marker present", "const chargeCredits = qualityMode === \"full\";"),
         ]
-        for label, marker in required_paid_guard_markers:
+        for label, marker in required_credit_guard_markers:
             if marker not in worker_src:
-                errors.append(f"Paid elevation safeguard missing: {label} ('{marker}')")
+                errors.append(f"Credit-model safeguard missing: {label} ('{marker}')")
 
     # 7) Admin analytics must reject token query params
     if worker_src:

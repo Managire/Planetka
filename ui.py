@@ -4,9 +4,11 @@ import bpy
 import datetime
 
 from .auth import (
+    get_allowance_counting_rule,
+    get_allowance_total_remaining_bytes,
     get_connected_email,
-    get_plan_code,
     get_status_message,
+    get_topup_url,
     is_authenticated,
 )
 from .extension_prefs import get_earth_object
@@ -108,6 +110,16 @@ def _fmt_gb_from_mb(value_mb):
         return "—"
 
 
+def _fmt_credits_from_bytes(value_bytes):
+    if value_bytes is None:
+        return "—"
+    try:
+        credits = float(value_bytes) / float(1024 ** 3)
+        return f"{credits:.3f} credits"
+    except (TypeError, ValueError):
+        return "—"
+
+
 def _status_activity_suffix(running):
     if not bool(running):
         return ""
@@ -193,41 +205,38 @@ def _draw_subscription(layout):
     prefs = get_prefs()
     connected = is_authenticated(prefs)
     status_message = get_status_message(prefs)
+    total_remaining_bytes = get_allowance_total_remaining_bytes(prefs)
+    topup_url = str(get_topup_url(prefs) or "").strip()
 
     if not connected:
         layout.label(text="Paste API key to connect Planetka", icon="INFO")
         layout.prop(prefs, "auth_api_key_input", text="API Key")
         connect_row = layout.row(align=True)
         connect_row.operator("planetka.account_open_login", text="Connect API Key", icon="CHECKMARK")
-        trial_row = layout.row()
-        trial_row.operator("planetka.account_login", text="Request Trial Access", icon="URL")
+        free_row = layout.row()
+        free_row.operator("planetka.account_login", text="Request Free Access", icon="URL")
+        if topup_url:
+            topup_row = layout.row()
+            topup_row.operator("wm.url_open", text="Top Up Credits", icon="URL").url = topup_url
         if status_message:
             layout.label(text=status_message, icon="INFO")
         return
 
     email = get_connected_email(prefs)
-    plan_code = get_plan_code(prefs)
-    has_unlimited_access = plan_code in {"planetka_pro", "planetka_studio"}
-
     layout.label(text=f"Account: {email}", icon="CHECKMARK")
-    if has_unlimited_access:
-        layout.label(text="Hosted Data Access: Active", icon="CHECKMARK")
-    else:
-        layout.label(text="Trial: 25 GB included", icon="INFO")
     layout.label(text="Status: Connected", icon="LINKED")
+    layout.label(text=f"Credits Available: {_fmt_credits_from_bytes(total_remaining_bytes)}", icon="ASSET_MANAGER")
 
     action_row = layout.row(align=True)
     action_row.operator("wm.url_open", text="Contact me", icon="URL").url = "https://www.planetka.io/contact-me"
     action_row.operator("planetka.account_logout", text="Log Out", icon="X")
     key_row = layout.row()
     key_row.operator("planetka.account_login", text="Regenerate API Key", icon="URL")
-    if not has_unlimited_access:
-        upgrade_row = layout.row(align=True)
-        upgrade_row.operator(
-            "wm.url_open",
-            text="Buy Unlimited Data Access",
-            icon="URL",
-        ).url = "https://www.planetka.io/blender-addon/pricing/"
+    topup_row = layout.row(align=True)
+    if topup_url:
+        topup_row.operator("wm.url_open", text="Top Up Credits", icon="URL").url = topup_url
+    else:
+        topup_row.operator("planetka.account_upgrade", text="Top Up Credits", icon="URL")
 
     if status_message:
         layout.label(text=status_message, icon="INFO")
@@ -298,6 +307,42 @@ def _draw_live_telemetry(layout, scene):
         icon=_status_icon(runtime_code),
     )
 
+    props = getattr(scene, "planetka", None) if scene else None
+    from .extension_prefs import get_prefs
+    prefs = get_prefs()
+    if props is not None and is_authenticated(prefs):
+        quality_box = layout.box()
+        quality_box.label(text="Texture Quality", icon="TEXTURE")
+        quality_row = quality_box.row(align=True)
+        quality_row.use_property_split = False
+        quality_row.prop_enum(props, "texture_quality_mode", "HALF", text="Preview")
+        quality_row.prop_enum(props, "texture_quality_mode", "FULL", text="Full Quality")
+        remaining_bytes = get_allowance_total_remaining_bytes(prefs)
+        quality_box.label(text=f"Credits Available: {_fmt_credits_from_bytes(remaining_bytes)}", icon="ASSET_MANAGER")
+        full_cost_bytes = diag.get("resolve_full_quality_cost_bytes")
+        try:
+            full_cost_int = int(full_cost_bytes or 0)
+        except (TypeError, ValueError):
+            full_cost_int = 0
+        if full_cost_int > 0:
+            quality_box.label(
+                text=f"Cost in Full resolution: {_fmt_credits_from_bytes(full_cost_int)}",
+                icon="INFO",
+            )
+        if str(getattr(props, "texture_quality_mode", "HALF") or "HALF").upper() == "HALF":
+            quality_box.label(text="Preview mode is free for all resolves.", icon="CHECKMARK")
+        else:
+            quality_box.label(text="Full Quality uses credits for newly downloaded tiles.", icon="INFO")
+        topup_url = str(get_topup_url(prefs) or "").strip()
+        topup_row = quality_box.row()
+        if topup_url:
+            topup_row.operator("wm.url_open", text="Top Up Credits", icon="URL").url = topup_url
+        else:
+            topup_row.operator("planetka.account_upgrade", text="Top Up Credits", icon="URL")
+        counting_rule = str(get_allowance_counting_rule(prefs) or "").strip()
+        if counting_rule:
+            quality_box.label(text=counting_rule, icon="INFO")
+
     if runtime_code == "DOWNLOADING":
         if total_bytes > 0:
             layout.label(text=f"{downloaded_mb:.2f} / {total_mb:.2f} MB")
@@ -310,8 +355,7 @@ def _draw_live_telemetry(layout, scene):
             layout.label(text=f"Request: #{request_id}")
         if pending_count > 0:
             layout.label(text=f"Queued jobs: {pending_count}")
-    from .extension_prefs import get_prefs
-    throttle_message = str(get_status_message(get_prefs()) or "").strip()
+    throttle_message = str(get_status_message(prefs) or "").strip()
     if throttle_message and "throttl" in throttle_message.lower():
         alert_box = layout.box()
         alert_box.alert = True
@@ -759,9 +803,6 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         prepared = _is_animation_prepared(scene)
         workflow_enabled = _is_earth_workflow_enabled()
 
-        from .extension_prefs import get_prefs
-        prefs = get_prefs()
-
         if props:
             auto_resolve_box = layout.box()
             auto_resolve_box.label(text="Auto Resolve", icon="FILE_REFRESH")
@@ -772,14 +813,6 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
                 text="Auto Resolve Idle Delay (s)",
                 slider=True,
             )
-
-            texture_quality_box = layout.box()
-            texture_quality_box.label(text="Texture Quality", icon="TEXTURE")
-            texture_quality_box.enabled = workflow_enabled
-            quality_row = texture_quality_box.row(align=True)
-            quality_row.use_property_split = False
-            quality_row.enabled = False
-            quality_row.label(text="Full (fixed)", icon="CHECKMARK")
 
             viewport_box = layout.box()
             viewport_box.label(text="Viewport Optimization", icon="VIEW3D")

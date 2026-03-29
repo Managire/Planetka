@@ -48,7 +48,7 @@ LAST_REQUIRED_MPP_KEY = "planetka_last_required_mpp_m"
 LAST_TARGET_D_KEY = "planetka_last_target_d"
 LAST_SCOPE_USED_KEY = "planetka_last_scope_used"
 MAX_SHADER_TILE_BUDGET = 12
-TEXTURE_QUALITY_MODES = {"FULL"}
+TEXTURE_QUALITY_MODES = {"FULL", "HALF"}
 VIEWPORT_RESOLUTION_X = 1920.0
 VIEWPORT_RESOLUTION_Y = 1080.0
 LAST_TILE_BUDGET_TRACE = []
@@ -474,9 +474,18 @@ def _resolution_bias_factor(scene):
     return 1.0
 
 
-def _texture_quality_mode(scene):
-    # Single production quality path: always resolve full quality tiles.
-    return "FULL"
+def _texture_quality_mode(scene, override_mode=None):
+    if override_mode is not None:
+        mode = str(override_mode or "").upper()
+        if mode in TEXTURE_QUALITY_MODES:
+            return mode
+    props = getattr(scene, "planetka", None) if scene else None
+    if props is None:
+        return "HALF"
+    mode = str(getattr(props, "texture_quality_mode", "HALF") or "HALF").upper()
+    if mode not in TEXTURE_QUALITY_MODES:
+        return "HALF"
+    return mode
 
 
 def _use_active_view_coarse_textures(scene):
@@ -1187,8 +1196,10 @@ def _coarsen_tiles_n_d_levels(tiles, steps):
     return result
 
 
-def _apply_texture_quality_mode(tiles, scene):
-    _ = _texture_quality_mode(scene)
+def _apply_texture_quality_mode(tiles, scene, override_mode=None):
+    mode = _texture_quality_mode(scene, override_mode=override_mode)
+    if mode == "HALF":
+        return _coarsen_tiles_n_d_levels(tiles, 1)
     return list(tiles or [])
 
 
@@ -1337,7 +1348,7 @@ def get_camera_info(scene, scope_mode="AUTO"):
     }
 
 
-def main(scope_mode="AUTO", edge_boost=False):
+def main(scope_mode="AUTO", edge_boost=False, texture_quality_mode_override=None):
     global LAST_TILE_BUDGET_TRACE, LAST_TILE_BUDGET_INPUT, LAST_TILE_BUDGET_OUTPUT
     scene = bpy.context.scene
     camera_info = get_camera_info(scene, scope_mode=scope_mode)
@@ -1506,7 +1517,7 @@ def main(scope_mode="AUTO", edge_boost=False):
         ortho_scale=ortho_scale,
         frustum_margin=frustum_margin,
     )
-    final_tiles = _apply_texture_quality_mode(final_tiles, scene)
+    final_tiles = _apply_texture_quality_mode(final_tiles, scene, override_mode=texture_quality_mode_override)
     if scope_used == "ACTIVE_VIEW" and _use_active_view_coarse_textures(scene):
         final_tiles = _coarsen_tiles_one_d_level(final_tiles)
     LAST_TILE_BUDGET_INPUT = list(final_tiles)

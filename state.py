@@ -1284,13 +1284,13 @@ def _output_resolution_signature(scene):
     if render is None:
         return None
     props = getattr(scene, "planetka", None) if scene is not None else None
-    texture_quality_mode = "FULL"
+    texture_quality_mode = "HALF"
     try:
-        texture_quality_mode = str(getattr(props, "texture_quality_mode", "FULL") or "FULL").upper()
+        texture_quality_mode = str(getattr(props, "texture_quality_mode", "HALF") or "HALF").upper()
     except (TypeError, ValueError, RuntimeError):
-        texture_quality_mode = "FULL"
-    if texture_quality_mode != "FULL":
-        texture_quality_mode = "FULL"
+        texture_quality_mode = "HALF"
+    if texture_quality_mode not in {"FULL", "HALF"}:
+        texture_quality_mode = "HALF"
     try:
         return (
             int(getattr(render, "resolution_x", 1920)),
@@ -1876,6 +1876,7 @@ def _auto_resolve_download_job_signature(job):
         tuple(job.get("target_tiles", ())),
         job.get("camera_signature"),
         job.get("output_signature"),
+        str(job.get("texture_quality_mode", "HALF") or "HALF").upper(),
     )
 
 
@@ -1934,7 +1935,15 @@ def _schedule_auto_resolve_download(
 
     scene_id = _scene_key(scene)
     prefs = get_prefs()
+    props = getattr(scene, "planetka", None)
     base_path = str(getattr(prefs, "texture_base_path", "") or "") if prefs else ""
+    texture_quality_mode = "HALF"
+    try:
+        texture_quality_mode = str(getattr(props, "texture_quality_mode", "HALF") or "HALF").upper()
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        texture_quality_mode = "HALF"
+    if texture_quality_mode not in {"FULL", "HALF"}:
+        texture_quality_mode = "HALF"
     target_tiles_tuple = tuple(target_tiles or ())
 
     job_to_start = None
@@ -1952,6 +1961,7 @@ def _schedule_auto_resolve_download(
             "output_signature": output_signature,
             "manual_request": bool(manual_request),
             "base_path": base_path,
+            "texture_quality_mode": texture_quality_mode,
             "cancel_event": threading.Event(),
             "created_at": time.monotonic(),
         }
@@ -2341,6 +2351,7 @@ def _auto_resolve_download_worker(job):
             str(job.get("base_path", "") or ""),
             cancel_event=job.get("cancel_event"),
             capture=True,
+            texture_quality_mode=str(job.get("texture_quality_mode", "HALF") or "HALF"),
         )
         cancelled = (
             bool(prepared_payload.get("cancelled", False))
@@ -2352,6 +2363,7 @@ def _auto_resolve_download_worker(job):
                 tuple(job.get("target_tiles", ())),
                 str(job.get("base_path", "") or ""),
                 prepared_payload,
+                texture_quality_mode=str(job.get("texture_quality_mode", "HALF") or "HALF"),
             )
         result["success"] = not cancelled
         result["cancelled"] = cancelled
