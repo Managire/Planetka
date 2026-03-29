@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Planetka paid-claim lifecycle integration test.
+"""Planetka entitlement flow compatibility test.
 
-Validates pending -> provisional -> approved / rejected + cooldown behavior
-through authenticated admin endpoints.
+This keeps the historical script entrypoint but validates the new model:
+- provisional/manual paid-claim endpoints are disabled
+- public API-key request ignores paid-plan tampering and stays on free flow
 """
 
 from __future__ import annotations
@@ -64,27 +65,8 @@ def _print_check(ok: bool, message: str) -> None:
     print(f"{'[PASS]' if ok else '[FAIL]'} {message}")
 
 
-def _expect(ok: bool, message: str, failures: list[str]) -> None:
-    _print_check(ok, message)
-    if not ok:
-        failures.append(message)
-
-
-def _auth_headers(token: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {token}"}
-
-
-def _extract_claim_id(payload: dict) -> str:
-    return str(payload.get("claim_id") or "").strip()
-
-
-def _extract_lifecycle(payload: dict) -> dict:
-    value = payload.get("lifecycle")
-    return value if isinstance(value, dict) else {}
-
-
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Planetka paid-claim lifecycle integration test")
+    parser = argparse.ArgumentParser(description="Planetka entitlement flow compatibility test")
     parser.add_argument(
         "--base-url",
         default=str(os.getenv("PLANETKA_API_BASE_URL") or "https://api.planetka.io").rstrip("/"),
@@ -93,7 +75,7 @@ def main() -> int:
     parser.add_argument(
         "--bearer-token",
         default=str(os.getenv("PLANETKA_BEARER_TOKEN") or "").strip(),
-        help="Admin bearer token (default: PLANETKA_BEARER_TOKEN env)",
+        help="Admin bearer token for disabled claim-route checks",
     )
     args = parser.parse_args()
 
@@ -102,170 +84,68 @@ def main() -> int:
     if not base_url.startswith("http"):
         print("[FAIL] Invalid --base-url")
         return 1
-    if not token:
-        print("[FAIL] Missing --bearer-token (or PLANETKA_BEARER_TOKEN).")
-        return 1
 
-    failures: list[str] = []
-    auth_headers = _auth_headers(token)
-    ts = int(time.time())
-    email_approve = f"ci-paid-approve-{ts}@example.com"
-    email_reject = f"ci-paid-reject-{ts}@example.com"
-    email_pending = f"ci-paid-pending-{ts}@example.com"
+    failures = 0
+    checks = 0
+    auth_headers = {"Authorization": f"Bearer {token}"} if token else {}
 
-    # 1) pending lifecycle + single pending guard
-    status, payload = _post_json(
-        f"{base_url}/admin/claims/create",
-        {
-            "email": email_pending,
-            "requested_plan": "planetka_pro",
-            "order_id": f"ORDER-PENDING-{ts}",
-            "device_id": "ci-device-pending",
-        },
-        headers=auth_headers,
-    )
-    claim_pending_id = _extract_claim_id(payload)
-    lifecycle = _extract_lifecycle(payload)
-    _expect(status == 200 and bool(claim_pending_id), "Create paid claim enters pending state", failures)
-    _expect(
-        str(((lifecycle.get("claim") or {}).get("review_status") or "")).strip().lower() == "pending",
-        "New claim review_status is pending",
-        failures,
-    )
-
-    status, payload = _post_json(
-        f"{base_url}/admin/claims/create",
-        {
-            "email": email_pending,
-            "requested_plan": "planetka_pro",
-            "order_id": f"ORDER-PENDING-SECOND-{ts}",
-            "device_id": "ci-device-pending-2",
-        },
-        headers=auth_headers,
-    )
-    _expect(
-        status == 409 and str(payload.get("error") or "").strip() == "paid_claim_pending_review",
-        "Second pending paid claim is blocked",
-        failures,
-    )
-
-    # 2) pending -> provisional -> approved
-    status, payload = _post_json(
-        f"{base_url}/admin/claims/create",
-        {
-            "email": email_approve,
-            "requested_plan": "planetka_pro",
-            "order_id": f"ORDER-APPROVE-{ts}",
-            "device_id": "ci-device-approve",
-        },
-        headers=auth_headers,
-    )
-    claim_approve_id = _extract_claim_id(payload)
-    _expect(status == 200 and bool(claim_approve_id), "Create approvable paid claim", failures)
-
-    status, payload = _post_json(
-        f"{base_url}/admin/claims/activate",
-        {"claim_id": claim_approve_id},
-        headers=auth_headers,
-    )
-    lifecycle = _extract_lifecycle(payload)
-    entitlement_state = str(((lifecycle.get("entitlement") or {}).get("state") or "")).strip().lower()
-    _expect(status == 200, "Activate paid claim succeeded", failures)
-    _expect(entitlement_state == "provisional_paid", "Claim activation enters provisional state", failures)
-
-    status, payload = _post_json(
-        f"{base_url}/admin/claims/review",
-        {
-            "claim_id": claim_approve_id,
-            "decision": "approved",
-            "review_note": "ci_lifecycle_approved",
-        },
-        headers=auth_headers,
-    )
-    lifecycle = _extract_lifecycle(payload)
-    approved_review = str(((lifecycle.get("claim") or {}).get("review_status") or "")).strip().lower()
-    approved_entitlement = str(((lifecycle.get("entitlement") or {}).get("state") or "")).strip().lower()
-    approved_confirmed_at = str(((lifecycle.get("user") or {}).get("pro_confirmed_at") or "")).strip()
-    _expect(status == 200, "Approve paid claim succeeded", failures)
-    _expect(approved_review == "approved", "Approved claim review_status persisted", failures)
-    _expect(approved_entitlement == "permanent_paid", "Approved claim becomes permanent paid", failures)
-    _expect(bool(approved_confirmed_at), "Approved claim sets pro_confirmed_at", failures)
-
-    # 3) pending -> provisional -> rejected -> cooldown
-    status, payload = _post_json(
-        f"{base_url}/admin/claims/create",
-        {
-            "email": email_reject,
-            "requested_plan": "planetka_studio",
-            "order_id": f"ORDER-REJECT-{ts}",
-            "device_id": "ci-device-reject",
-        },
-        headers=auth_headers,
-    )
-    claim_reject_id = _extract_claim_id(payload)
-    _expect(status == 200 and bool(claim_reject_id), "Create rejectable paid claim", failures)
-
-    status, payload = _post_json(
-        f"{base_url}/admin/claims/activate",
-        {"claim_id": claim_reject_id},
-        headers=auth_headers,
-    )
-    lifecycle = _extract_lifecycle(payload)
-    rejected_activation_state = str(((lifecycle.get("entitlement") or {}).get("state") or "")).strip().lower()
-    _expect(status == 200, "Activate rejectable paid claim succeeded", failures)
-    _expect(rejected_activation_state == "provisional_paid", "Rejectable claim activation is provisional", failures)
-
-    status, payload = _post_json(
-        f"{base_url}/admin/claims/review",
-        {
-            "claim_id": claim_reject_id,
-            "decision": "rejected",
-            "review_note": "ci_lifecycle_rejected",
-            "cooldown_days": 7,
-        },
-        headers=auth_headers,
-    )
-    lifecycle = _extract_lifecycle(payload)
-    rejected_review = str(((lifecycle.get("claim") or {}).get("review_status") or "")).strip().lower()
-    rejected_cooldown = str(((lifecycle.get("claim") or {}).get("cooldown_until") or "")).strip()
-    rejected_status = str(((lifecycle.get("user") or {}).get("status") or "")).strip().lower()
-    _expect(status == 200, "Reject paid claim succeeded", failures)
-    _expect(rejected_review == "rejected", "Rejected claim review_status persisted", failures)
-    _expect(bool(rejected_cooldown), "Rejected claim sets cooldown_until", failures)
-    _expect(rejected_status == "planetka", "Rejected claim falls back to free status", failures)
-
-    # Cooldown guard in public request flow.
+    # 1) Public API key request ignores requested paid plan and still succeeds.
+    checks += 1
     status, payload = _post_json(
         f"{base_url}/auth/api-key/request",
         {
-            "email": email_reject,
+            "email": f"ci-free-{int(time.time())}@example.com",
             "requested_plan": "planetka_pro",
-            "order_id": f"ORDER-COOLDOWN-RETRY-{ts}",
             "accept_terms": True,
             "accept_privacy": True,
             "opt_in_news": False,
-            "submitted_at_ms": int(time.time() * 1000),
-            "device_id": "ci-device-reject-retry",
+            "submitted_at_ms": 9999,
         },
     )
-    _expect(
-        status == 429 and str(payload.get("error") or "").strip() == "paid_claim_cooldown_active",
-        "Cooldown blocks new paid claim request",
-        failures,
-    )
+    ok = status == 200 and bool(payload.get("ok"))
+    _print_check(ok, "Public key request succeeds when paid plan is requested (forced free flow)")
+    if not ok:
+        failures += 1
 
-    # Fetch latest lifecycle snapshot endpoint sanity.
-    status, payload = _get_json(
-        f"{base_url}/admin/claims/latest?email={email_approve}",
+    # 2) Legacy paid-claim admin routes are disabled.
+    checks += 1
+    status, payload = _get_json(f"{base_url}/admin/claims/latest?email=ci@example.com", headers=auth_headers)
+    ok = status == 410 and str(payload.get("error") or "").strip() == "paid_claim_workflow_disabled"
+    _print_check(ok, "Admin claims latest endpoint disabled")
+    if not ok:
+        failures += 1
+
+    checks += 1
+    status, payload = _post_json(
+        f"{base_url}/admin/claims/create",
+        {
+            "email": "ci@example.com",
+            "requested_plan": "planetka_pro",
+            "order_id": "ORDER-CI",
+        },
         headers=auth_headers,
     )
-    lifecycle = _extract_lifecycle(payload)
-    _expect(status == 200 and bool(lifecycle), "Latest claim lifecycle endpoint returns data", failures)
+    ok = status == 410 and str(payload.get("error") or "").strip() == "paid_claim_workflow_disabled"
+    _print_check(ok, "Admin claims create endpoint disabled")
+    if not ok:
+        failures += 1
 
+    checks += 1
+    status, payload = _post_json(
+        f"{base_url}/admin/claims/review",
+        {"claim_id": "00000000-0000-0000-0000-000000000000", "decision": "approved"},
+        headers=auth_headers,
+    )
+    ok = status == 410 and str(payload.get("error") or "").strip() == "paid_claim_workflow_disabled"
+    _print_check(ok, "Admin claims review endpoint disabled")
+    if not ok:
+        failures += 1
+
+    print(f"\nSummary: {checks - failures}/{checks} checks passed")
     if failures:
-        print(f"\nLifecycle integration failed with {len(failures)} issue(s).")
+        print(f"Compatibility test failed with {failures} issue(s).")
         return 1
-    print("\nLifecycle integration passed.")
+    print("Compatibility test passed.")
     return 0
 
 

@@ -27,14 +27,14 @@ Scope: free-version pilot release for a small tester group, optimized for single
 - [ ] Free users can use `Half` texture quality.
 - [ ] Free users cannot use `Full` texture quality.
 - [ ] Free users can authenticate and use the product without time limits.
-- [ ] No subscription-renewal/trial logic is required for free users in this release.
+- [ ] No Hosted Streaming Access end-date logic is required for free users in this release.
 
 ## 5. API Security Basics (Right-Sized)
 
-- [ ] `/auth/api-key/request` plan-tampering protection enabled (`paid_claim_order_id_required` on paid claim without order ID).
+- [ ] `/auth/api-key/request` remains free-flow only (no client-side paid elevation path).
 - [ ] `/admin/analytics` rejects query token (`query_token_not_allowed`) and requires Bearer/cookie admin auth.
 - [ ] Legacy magic-link auth routes (`/auth/start`, `/device/*`) are disabled in production.
-- [ ] Stripe webhook allowlist + signature validation enabled.
+- [ ] Stripe webhook allowlist + signature validation enabled for one-time Pro entitlement grants.
 - [ ] DB cleanup cron is active for `magic_links`, `refresh_sessions`, `device_sessions`, and tile telemetry retention tables.
 
 ## 6. Observability and Support

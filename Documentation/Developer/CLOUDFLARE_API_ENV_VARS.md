@@ -36,7 +36,7 @@ Notes:
 - `CLEANUP_TILE_EVENT_RETENTION_DAYS` (default: `30`)
 - `CLEANUP_TILE_ROLLUP_RETENTION_DAYS` (default: `365`)
 - `PAID_CLAIM_RETENTION_DAYS` (default: `180`)
-- These are applied by the scheduled cleanup to keep `tile_request_events`, rollup tables, and claim audit tables bounded.
+- These are applied by the scheduled cleanup to keep `tile_request_events`, rollup tables, and legacy claim-audit tables bounded.
 
 ## Log Alert Thresholds
 
@@ -63,9 +63,83 @@ These are checked by the Worker scheduled job and notify `SECURITY_ALERT_EMAIL`.
 - `PROD_ALERT_TILE_ERROR_WINDOW_SECONDS` (default: `300`)
 - `PROD_ALERT_CLAIM_REJECTION_THRESHOLD` (default: `5`)
 - `PROD_ALERT_CLAIM_REJECTION_WINDOW_SECONDS` (default: `3600`)
-- `PROD_ALERT_COOLDOWN_SECONDS` (default: `900`)
+- `PROD_ALERT_COOLDOWN_SECONDS` (default: `300`)
 
 Set a threshold to `0` to disable that metric.
+
+## Real-Time Tile Farming Alerts
+
+These run on tile request traffic (immediate detection), not only on cron.
+
+- `TILE_FARM_ALERT_WINDOW_SECONDS` (default: `300`)
+- `TILE_FARM_ALERT_USER_REQUEST_THRESHOLD` (default: `300`)
+- `TILE_FARM_ALERT_IP_REQUEST_THRESHOLD` (default: `500`)
+- `TILE_FARM_ALERT_UNIQUE_TILE_THRESHOLD` (default: `200`)
+- `TILE_FARM_ALERT_UNTAGGED_MIN_REQUESTS` (default: `120`)
+- `TILE_FARM_ALERT_UNTAGGED_PERCENT` (default: `90`)
+- `TILE_FARM_ALERT_EMAIL_COOLDOWN_SECONDS` (default: `300`)
+
+Alert email is sent to `SECURITY_ALERT_EMAIL` when suspicious patterns are detected, including:
+
+- high request velocity per account
+- high request velocity per IP
+- high new-unique tile velocity per account
+- high untagged tile ratio (many requests without `X-Planetka-Resolve-Id`)
+
+## Download Volume Monitoring & Auto-Throttle
+
+These controls are used for heavy-user monitoring, milestone alerts, and automatic speed throttling.
+
+- `DOWNLOAD_MARK_STEP_GB` (default: `100`)
+- `DOWNLOAD_THROTTLE_FREE_DAILY_GB` (default: `25`)
+- `DOWNLOAD_THROTTLE_PRO_DAILY_GB` (default: `100`)
+- `DOWNLOAD_THROTTLE_DURATION_MINUTES` (default: `1440`)
+- `DOWNLOAD_THROTTLED_REQUESTS_PER_MINUTE` (default: `0`; disabled when `0`)
+- `DOWNLOAD_THROTTLED_DELAY_MS` (default: `30000`)
+- `DOWNLOAD_ALERT_EMAIL_COOLDOWN_SECONDS` (default: `300`)
+- `DOWNLOAD_ALERT_WHITELIST_EMAILS` (default: empty; admin/permanent-pro emails are always implicitly whitelisted)
+
+Behavior:
+
+- Per-account counters track `lifetime`, `month`, `week`, `day`, and `hour` bytes.
+- Ops milestone alerts trigger when crossing each `DOWNLOAD_MARK_STEP_GB` mark.
+- If rolling 24-hour bytes exceed plan threshold (`DOWNLOAD_THROTTLE_FREE_DAILY_GB` for Free, `DOWNLOAD_THROTTLE_PRO_DAILY_GB` for Pro/Studio), user is automatically throttled.
+- While throttled, requests are delayed (`DOWNLOAD_THROTTLED_DELAY_MS`) to slow sustained scraping.
+- Optional per-minute cap can be enabled by setting `DOWNLOAD_THROTTLED_REQUESTS_PER_MINUTE` above `0`.
+- Throttled users receive an email notification; ops receives a security alert.
+
+## Hosted Streaming Access Entitlements
+
+- `STRIPE_ALLOWED_PRICE_IDS` (required for paid entitlement matching)
+- `STRIPE_ALLOWED_PRODUCT_IDS` (required for paid entitlement matching)
+
+Behavior:
+
+- Free accounts stay on free flow in `/auth/api-key/request` (plan tampering ignored).
+- Paid entitlement is granted automatically from Stripe webhooks.
+- Paid entitlement is one-time purchase based and grants Pro access permanently for that account.
+- No Hosted Streaming Access renewal or end date is applied in this model.
+
+## Monthly Cost Estimate Alerts (Ops)
+
+These controls estimate monthly R2 cost and notify ops when estimate crosses threshold marks.
+
+- `MONTHLY_COST_ALERT_BASE_USD` (default: `50`)
+- `MONTHLY_COST_ALERT_STEP_USD` (default: `10`)
+- `R2_ESTIMATED_STORAGE_GB` (default: `2600`)
+- `R2_STORAGE_PRICE_PER_GB_MONTH_USD` (default: `0.015`)
+- `R2_STORAGE_FREE_GB_MONTH` (default: `10`)
+- `R2_CLASS_A_PRICE_PER_MILLION_USD` (default: `4.5`)
+- `R2_CLASS_B_PRICE_PER_MILLION_USD` (default: `0.36`)
+- `R2_CLASS_A_FREE_OPS_PER_MONTH` (default: `1000000`)
+- `R2_CLASS_B_FREE_OPS_PER_MONTH` (default: `10000000`)
+- `R2_ESTIMATED_CLASS_A_OPS_MONTH` (default: `0`)
+
+Behavior:
+
+- Hourly cron computes month-to-date Class B ops from `tile_request_events`.
+- Storage and Class A are estimated from configured env values.
+- Ops email is sent whenever estimated monthly total crosses `base + N * step` (for example: `$60`, `$70`, `$80` when base is `$50` and step is `$10`).
 
 ## Related Test Script
 
@@ -84,7 +158,7 @@ python3 tools/worker_auth_integration_test.py \
   --device-poll-rate-limit-attempts 140
 ```
 
-Paid-claim lifecycle check:
+Entitlement compatibility check:
 
 ```bash
 PLANETKA_BEARER_TOKEN="<admin_access_token>" \

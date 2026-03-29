@@ -78,7 +78,7 @@ def _run_static_guard_checks(root: Path) -> tuple[int, int]:
         ("all plans enforce single-device runtime", "function maxDevicesForPlan(planCode)"),
         ("max device count hardcoded to 1", "return 1;"),
         ("issue-time device-limit enforcement exists", "await enforceApiKeyIssueDeviceLimit("),
-        ("paid claim requires order id", "paid_claim_order_id_required"),
+        ("public API key request forces free plan", "const requestedPlan = PLAN_CODE_PLANETKA;"),
         ("admin query-token rejection enabled", "query_token_not_allowed"),
     ]
 
@@ -160,7 +160,7 @@ def main() -> int:
     if not ok:
         failures += 1
 
-    # 2) Plan tampering check (paid claim without order id)
+    # 2) Plan tampering check (requested paid plan is ignored in public flow)
     checks += 1
     tamper_payload = {
         "email": f"tamper-{int(time.time())}-{random.randint(1000, 9999)}@example.com",
@@ -171,8 +171,8 @@ def main() -> int:
         "submitted_at_ms": int(time.time() * 1000),
     }
     status, payload, _ = _post_json(f"{base_url}/auth/api-key/request", tamper_payload)
-    ok = status == 400 and str(payload.get("error", "")).strip() == "paid_claim_order_id_required"
-    _print_check(ok, "Plan tampering blocked: paid claim requires order ID")
+    ok = status == 200 and bool(payload.get("ok"))
+    _print_check(ok, "Plan tampering neutralized: public request path stays free")
     if not ok:
         failures += 1
 

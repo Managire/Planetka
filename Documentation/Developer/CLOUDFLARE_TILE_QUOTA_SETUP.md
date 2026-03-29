@@ -36,7 +36,7 @@ Set these on production Worker:
 Optional:
 - `ALLOWANCE_LOW_WARNING_GB=10`
 - `ALLOWANCE_LOW_WARNING_RATIO=0.10`
-- `ALLOWANCE_SUPPORT_URL=https://www.planetka.io/contact` (or your preferred contact endpoint)
+- `ALLOWANCE_SUPPORT_URL=https://www.planetka.io/contact-me` (or your preferred contact endpoint)
 
 ## 3) D1 Schema (Required)
 
@@ -116,7 +116,7 @@ On authenticated requests (or scheduled job), if `now >= period_ends_at`:
 
 Required behavior:
 - New users default to `plan_code='planetka'`.
-- Pro subscription activation/upgrades set `plan_code='planetka_pro'`.
+- Pro Hosted Streaming Access activation/upgrades set `plan_code='planetka_pro'`.
 - Pro cancellation/downgrade follows your billing policy for next cycle.
 - `commercial_use_allowed`:
   - `0` for `planetka`
@@ -156,8 +156,8 @@ Return these fields from:
     "name": "Planetka"
   },
   "upgrade_url": "https://www.planetka.io/signup",
-  "manage_subscription_url": "https://www.planetka.io/account",
-  "contact_url": "https://www.planetka.io/contact",
+  "manage_hosted_streaming_access_url": "https://www.planetka.io/account",
+  "contact_url": "https://www.planetka.io/contact-me",
   "billing_period_end": "2026-04-01T00:00:00Z",
   "data_allowance": {
     "period": "month",

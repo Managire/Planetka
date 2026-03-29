@@ -135,25 +135,19 @@ def main() -> int:
     else:
         worker_src = read_text(worker_path)
 
-    # 6) Paid-elevation hardening must be present (no direct paid bypass)
+    # 6) Paid entitlement hardening must be present (Stripe-driven, no provisional claim path)
     if worker_src:
         required_paid_guard_markers = [
-            ("paid claim requires order ID", "paid_claim_order_id_required"),
-            ("paid claims start pending review", "CLAIM_REVIEW_PENDING"),
-            ("provisional expiry computation is present", "computeProvisionalExpiryIso"),
+            ("public API key request forces free plan", "const claimPlanCode = PLAN_CODE_PLANETKA;"),
+            ("paid-claim workflow routes disabled", "paid_claim_workflow_disabled"),
+            ("hosted streaming expiry helper present", "computeHostedStreamingAccessExpiryIso"),
+            ("Stripe entitlement apply helper present", "applyHostedStreamingAccessEntitlement"),
+            ("Stripe invoice renewal webhook path enabled", "\"invoice.paid\""),
             ("permanent-pro email allowlist guard is present", "isPermanentProEmail"),
-            ("provisional activation audit marker is present", "claim_activated_provisional"),
-            ("claim cooldown guard is present", "paid_claim_cooldown_active"),
         ]
         for label, marker in required_paid_guard_markers:
             if marker not in worker_src:
                 errors.append(f"Paid elevation safeguard missing: {label} ('{marker}')")
-
-        if "OR (request_type = ? AND review_status = ?)" not in worker_src:
-            errors.append(
-                "Paid claim activation path missing pending-review guard "
-                "(expected request_type/review_status check in activation query)."
-            )
 
     # 7) Admin analytics must reject token query params
     if worker_src:
