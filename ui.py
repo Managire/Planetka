@@ -6,7 +6,6 @@ import datetime
 from .auth import (
     PLAN_CODE_PLANETKA_PRO,
     PLAN_CODE_PLANETKA_STUDIO,
-    get_api_key_mask,
     get_commercial_use_allowed,
     get_connected_email,
     get_plan_code,
@@ -207,9 +206,16 @@ def _draw_subscription(layout):
     if not connected:
         layout.label(text="Paste API key to start using Planetka", icon="INFO")
         layout.prop(prefs, "auth_api_key_input", text="API Key")
-        auth_row = layout.row(align=True)
-        auth_row.operator("planetka.account_open_login", text="Connect API Key", icon="CHECKMARK")
-        auth_row.operator("planetka.account_login", text="Request API Key", icon="URL")
+        connect_row = layout.row(align=True)
+        connect_row.operator("planetka.account_open_login", text="Connect API Key", icon="CHECKMARK")
+        free_row = layout.row()
+        free_row.operator("planetka.account_login", text="Request Free Access", icon="URL")
+        purchase_row = layout.row()
+        purchase_row.operator(
+            "wm.url_open",
+            text="Purchase Pro Licence",
+            icon="URL",
+        ).url = "https://www.planetka.io/blender-addon/pricing/"
         if status_message:
             layout.label(text=status_message, icon="INFO")
         return
@@ -227,9 +233,7 @@ def _draw_subscription(layout):
 
     layout.label(text=f"Account: {email}", icon="CHECKMARK")
     layout.label(text=f"Licence: {license_text}", icon="INFO")
-    key_mask = get_api_key_mask(prefs)
-    if key_mask:
-        layout.label(text=f"API Key: {key_mask}", icon="KEYINGSET")
+    layout.label(text="Status: Connected", icon="LINKED")
 
     action_row = layout.row(align=True)
     action_row.operator("wm.url_open", text="Contact me", icon="URL").url = "https://www.planetka.io/contact-me"
@@ -325,6 +329,12 @@ def _draw_live_telemetry(layout, scene):
             layout.label(text=f"Request: #{request_id}")
         if pending_count > 0:
             layout.label(text=f"Queued jobs: {pending_count}")
+    from .extension_prefs import get_prefs
+    throttle_message = str(get_status_message(get_prefs()) or "").strip()
+    if throttle_message and "throttl" in throttle_message.lower():
+        alert_box = layout.box()
+        alert_box.alert = True
+        alert_box.label(text=throttle_message, icon="ERROR")
 
 
 def _draw_advanced_telemetry(layout, scene):

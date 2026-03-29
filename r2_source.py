@@ -849,6 +849,14 @@ def _r2_request(method, key, destination_path=None):
                 return False
             if exc.code in {402, 429}:
                 combined = f"{error_code} {error_message}".lower()
+                if "download_throttled" in combined or "throttl" in combined:
+                    try:
+                        sync_account_profile()
+                    except (AuthApiError, RuntimeError, TypeError, ValueError, AttributeError, OSError):
+                        logger.debug("Planetka: failed syncing account profile after throttling response", exc_info=True)
+                    raise RuntimeError(
+                        "Planetka account is temporarily throttled due to high data volume."
+                    )
                 if any(token in combined for token in ("allowance", "quota", "insufficient", "exhausted", "topup", "top_up", "top-up")):
                     try:
                         sync_account_profile()

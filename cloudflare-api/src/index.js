@@ -14,7 +14,9 @@ const DEFAULT_LOW_WARNING_GB = 10;
 const DEFAULT_LOW_WARNING_RATIO = 0.1;
 const UNLIMITED_ALLOWANCE_BYTES = Number.MAX_SAFE_INTEGER;
 const DEFAULT_UPGRADE_URL = "https://www.planetka.io/signup";
-const DEFAULT_CONTACT_URL = "https://www.planetka.io/contact";
+const DEFAULT_CONTACT_URL = "https://www.planetka.io/contact-me";
+const DEFAULT_ADMIN_ANALYTICS_TILE_MAP_KEY = "planetka-assets/Admin/world_map_720x360.jpg";
+const DEFAULT_ADMIN_SUPPORT_MISSING_MANIFEST_KEY = "planetka-assets/Admin/support_missing_manifest.json";
 const DEFAULT_TERMS_URL = "https://api.planetka.io/legal/terms-of-service.pdf";
 const DEFAULT_PRIVACY_URL = "https://api.planetka.io/legal/privacy-policy.pdf";
 const DEFAULT_LEGAL_VERSION = "2026-03-26";
@@ -45,9 +47,34 @@ const DEFAULT_ALERT_PROD_TILE_ERROR_THRESHOLD = 10;
 const DEFAULT_ALERT_PROD_TILE_ERROR_WINDOW_SECONDS = 300;
 const DEFAULT_ALERT_PROD_CLAIM_REJECTION_THRESHOLD = 5;
 const DEFAULT_ALERT_PROD_CLAIM_REJECTION_WINDOW_SECONDS = 3600;
-const DEFAULT_ALERT_PROD_COOLDOWN_SECONDS = 900;
+const DEFAULT_ALERT_PROD_COOLDOWN_SECONDS = 300;
+const DEFAULT_TILE_FARM_ALERT_WINDOW_SECONDS = 300;
+const DEFAULT_TILE_FARM_ALERT_USER_REQUEST_THRESHOLD = 300;
+const DEFAULT_TILE_FARM_ALERT_IP_REQUEST_THRESHOLD = 500;
+const DEFAULT_TILE_FARM_ALERT_UNIQUE_TILE_THRESHOLD = 200;
+const DEFAULT_TILE_FARM_ALERT_UNTAGGED_MIN_REQUESTS = 120;
+const DEFAULT_TILE_FARM_ALERT_UNTAGGED_PERCENT = 90;
+const DEFAULT_TILE_FARM_ALERT_EMAIL_COOLDOWN_SECONDS = 300;
+const DEFAULT_DOWNLOAD_MARK_STEP_GB = 100;
+const DEFAULT_DOWNLOAD_THROTTLE_FREE_DAILY_GB = 25;
+const DEFAULT_DOWNLOAD_THROTTLE_PRO_DAILY_GB = 100;
+const DEFAULT_DOWNLOAD_THROTTLE_DURATION_MINUTES = 1440;
+const DEFAULT_DOWNLOAD_THROTTLED_REQUESTS_PER_MINUTE = 0;
+const DEFAULT_DOWNLOAD_THROTTLED_DELAY_MS = 30000;
+const DEFAULT_DOWNLOAD_ALERT_EMAIL_COOLDOWN_SECONDS = 300;
+const DEFAULT_MONTHLY_COST_ALERT_BASE_USD = 50;
+const DEFAULT_MONTHLY_COST_ALERT_STEP_USD = 10;
+const DEFAULT_R2_ESTIMATED_STORAGE_GB = 2600;
+const DEFAULT_R2_STORAGE_PRICE_PER_GB_MONTH_USD = 0.015;
+const DEFAULT_R2_STORAGE_FREE_GB_MONTH = 10;
+const DEFAULT_R2_CLASS_A_PRICE_PER_MILLION_USD = 4.5;
+const DEFAULT_R2_CLASS_B_PRICE_PER_MILLION_USD = 0.36;
+const DEFAULT_R2_CLASS_A_FREE_OPS_PER_MONTH = 1000000;
+const DEFAULT_R2_CLASS_B_FREE_OPS_PER_MONTH = 10000000;
 const DEFAULT_ANALYTICS_WINDOW_MINUTES = 60;
 const MAX_ANALYTICS_WINDOW_MINUTES = 10080;
+const DEFAULT_LIVE_TILE_MAP_WINDOW_MINUTES = 1;
+const ALLOWED_LIVE_TILE_MAP_WINDOW_MINUTES = new Set([1, 3, 10]);
 const DEFAULT_ANALYTICS_ADMIN_EMAILS = "info@planetka.io,tom.griger@gmail.com";
 const DEFAULT_ADMIN_LOGIN_EMAIL = "tom.griger@gmail.com";
 const DEFAULT_PERMANENT_PRO_EMAILS = "tom.griger@gmail.com";
@@ -58,6 +85,7 @@ const DEFAULT_TILE_EDGE_MAX_AGE_SECONDS = 604800;
 const MAX_TILE_MAX_AGE_SECONDS = 31536000;
 const DEFAULT_ENABLE_MAGIC_LINK_AUTH = false;
 const DEFAULT_FREE_API_KEY_VALID_DAYS = 30;
+const DEFAULT_PRO_HOSTED_STREAMING_DAYS = 365;
 const DEFAULT_PRO_GRACE_HOURS = 24;
 const DEFAULT_PENDING_CLAIM_COOLDOWN_DAYS = 7;
 const DEFAULT_API_KEY_DEVICE_ACTIVE_WINDOW_SECONDS = 900;
@@ -84,6 +112,14 @@ let apiKeyTablesReady = false;
 let userProvisionalColumnsReady = false;
 let refreshSessionColumnsReady = false;
 let rateLimitsLastPruneAt = 0;
+let supportMissingManifestCache = {
+  loadedAtMs: 0,
+  expiresAtMs: 0,
+  key: "",
+  version: "",
+  generatedAt: "",
+  byLayer: {},
+};
 
 function corsHeaders(env) {
   return {
@@ -144,8 +180,31 @@ function addDaysFromIso(isoValue, days) {
   return new Date(base + (days * 24 * 60 * 60 * 1000)).toISOString();
 }
 
+function sleepMs(delayMs) {
+  const safeDelay = Math.max(0, parseNonNegativeInteger(delayMs, 0));
+  if (safeDelay <= 0) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    setTimeout(resolve, safeDelay);
+  });
+}
+
 function normalizeEmail(value) {
   return String(value || "").trim().toLowerCase();
+}
+
+function normalizeContactUrl(value) {
+  const fallback = DEFAULT_CONTACT_URL;
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return fallback;
+  }
+  const trimmed = raw.replace(/\/+$/, "");
+  if (trimmed === "https://www.planetka.io/contact") {
+    return fallback;
+  }
+  return raw;
 }
 
 function normalizeUserStatus(value) {
@@ -193,15 +252,8 @@ function isPermanentProEmail(email, env) {
 function resolveEntitlementState(user, env = {}) {
   const status = normalizeUserStatus(user && user.status);
   const email = normalizeEmail(user && user.email);
-  const provisionalPlanCode = normalizeRequestedPlan(
-    String(user && user.provisional_plan_code || status || PLAN_CODE_PLANETKA),
-  );
-  const provisionalExpiresAt = String(user && user.provisional_expires_at || "").trim();
   const confirmedAt = String(user && user.pro_confirmed_at || "").trim();
-  const provisionalExpiresAtMs = Date.parse(provisionalExpiresAt);
-  const provisionalHasTimestamp = Number.isFinite(provisionalExpiresAtMs);
   const isStatusPaid = status === PLAN_CODE_PLANETKA_PRO || status === PLAN_CODE_PLANETKA_STUDIO;
-  const isProvisionalPaidPlan = isPaidRequestedPlan(provisionalPlanCode);
   const defaultResult = {
     state: "free",
     plan_code: PLAN_CODE_PLANETKA,
@@ -212,6 +264,7 @@ function resolveEntitlementState(user, env = {}) {
     is_expired_provisional: false,
     source: "free",
     email,
+    hosted_streaming_access_expires_at: "",
   };
   if (user && isBlockedStatus(user.status)) {
     return {
@@ -230,12 +283,13 @@ function resolveEntitlementState(user, env = {}) {
       subscription_status: "active",
       is_permanent_paid: true,
       source: "allowlist",
+      hosted_streaming_access_expires_at: "",
     };
   }
-  if (confirmedAt && (isStatusPaid || isProvisionalPaidPlan)) {
+  if (confirmedAt || isStatusPaid) {
     const confirmedPlanCode = status === PLAN_CODE_PLANETKA_STUDIO
       ? PLAN_CODE_PLANETKA_STUDIO
-      : (isProvisionalPaidPlan ? provisionalPlanCode : PLAN_CODE_PLANETKA_PRO);
+      : PLAN_CODE_PLANETKA_PRO;
     return {
       ...defaultResult,
       state: "permanent_paid",
@@ -243,26 +297,7 @@ function resolveEntitlementState(user, env = {}) {
       commercial_use_allowed: true,
       subscription_status: "active",
       is_permanent_paid: true,
-      source: "confirmed",
-    };
-  }
-  if (isProvisionalPaidPlan && provisionalHasTimestamp) {
-    if (provisionalExpiresAtMs >= Date.now()) {
-      return {
-        ...defaultResult,
-        state: "provisional_paid",
-        plan_code: provisionalPlanCode,
-        commercial_use_allowed: true,
-        subscription_status: "active",
-        is_provisional_paid: true,
-        source: "provisional",
-      };
-    }
-    return {
-      ...defaultResult,
-      state: "expired_provisional",
-      is_expired_provisional: true,
-      source: "expired_provisional",
+      source: confirmedAt ? "confirmed" : "status",
     };
   }
   return defaultResult;
@@ -475,15 +510,17 @@ function isUnconfirmedProvisionalExpired(user) {
 }
 
 function computeApiKeyExpiryIso(planCode, env) {
-  const safePlan = normalizeRequestedPlan(planCode);
-  if (safePlan === PLAN_CODE_PLANETKA_PRO || safePlan === PLAN_CODE_PLANETKA_STUDIO) {
-    return "";
-  }
-  const validityDays = Math.max(
-    1,
-    Math.floor(parsePositiveNumber(env.FREE_API_KEY_VALID_DAYS, DEFAULT_FREE_API_KEY_VALID_DAYS)),
-  );
-  return addDaysIso(validityDays);
+  void planCode;
+  void env;
+  // API keys are non-expiring for this release.
+  return "";
+}
+
+function computeHostedStreamingAccessExpiryIso(env, startMs = Date.now()) {
+  void env;
+  void startMs;
+  // Hosted Streaming Access is perpetual once paid.
+  return "";
 }
 
 function computeProvisionalExpiryIso(env) {
@@ -711,6 +748,28 @@ function parseAdminEmailSet(env) {
   return set;
 }
 
+function parseDownloadAlertWhitelistSet(env) {
+  const explicit = parseCsvEmailSet(env.DOWNLOAD_ALERT_WHITELIST_EMAILS, "");
+  const adminSet = parseAdminEmailSet(env);
+  const permanentSet = parseCsvEmailSet(env.PERMANENT_PRO_EMAILS, DEFAULT_PERMANENT_PRO_EMAILS);
+  for (const email of adminSet) {
+    explicit.add(email);
+  }
+  for (const email of permanentSet) {
+    explicit.add(email);
+  }
+  return explicit;
+}
+
+function isDownloadAlertWhitelisted(email, env) {
+  const normalized = normalizeEmail(email);
+  if (!normalized) {
+    return false;
+  }
+  const whitelist = parseDownloadAlertWhitelistSet(env);
+  return whitelist.has(normalized);
+}
+
 function resolveAdminLoginEmail(env) {
   const configured = normalizeEmail(env.ADMIN_LOGIN_EMAIL || DEFAULT_ADMIN_LOGIN_EMAIL);
   const adminSet = parseAdminEmailSet(env);
@@ -894,6 +953,215 @@ async function ensureTileRequestRollupTables(db) {
   );
 }
 
+async function ensureUserDownloadCountersTable(db) {
+  await dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS user_download_counters (
+        user_id TEXT PRIMARY KEY,
+        user_email TEXT NOT NULL,
+        plan_code TEXT NOT NULL DEFAULT 'planetka',
+        lifetime_bytes INTEGER NOT NULL DEFAULT 0,
+        hour_bucket_start_unix INTEGER NOT NULL DEFAULT 0,
+        hour_bytes INTEGER NOT NULL DEFAULT 0,
+        day_bucket_start_unix INTEGER NOT NULL DEFAULT 0,
+        day_bytes INTEGER NOT NULL DEFAULT 0,
+        week_bucket_start_unix INTEGER NOT NULL DEFAULT 0,
+        week_bytes INTEGER NOT NULL DEFAULT 0,
+        month_bucket_start TEXT NOT NULL DEFAULT '',
+        month_bytes INTEGER NOT NULL DEFAULT 0,
+        last_notified_lifetime_mark INTEGER NOT NULL DEFAULT 0,
+        last_notified_hour_mark INTEGER NOT NULL DEFAULT 0,
+        last_notified_day_mark INTEGER NOT NULL DEFAULT 0,
+        last_notified_week_mark INTEGER NOT NULL DEFAULT 0,
+        last_notified_month_mark INTEGER NOT NULL DEFAULT 0,
+        throttled_until TEXT,
+        throttle_reason TEXT,
+        last_request_at TEXT,
+        last_ip TEXT,
+        last_device_id TEXT,
+        last_country TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_user_download_counters_plan ON user_download_counters(plan_code, lifetime_bytes DESC)`,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_user_download_counters_updated ON user_download_counters(updated_at DESC)`,
+  );
+}
+
+async function ensureMonthlyCostAlertStateTable(db) {
+  await dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS monthly_cost_alert_state (
+        month_key TEXT PRIMARY KEY,
+        last_notified_mark_usd INTEGER NOT NULL DEFAULT 0,
+        last_estimated_usd REAL NOT NULL DEFAULT 0,
+        last_alert_at TEXT,
+        updated_at TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      )
+    `,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_monthly_cost_alert_state_updated ON monthly_cost_alert_state(updated_at DESC)`,
+  );
+}
+
+async function findUserDownloadCounter(db, userId) {
+  const safeUserId = String(userId || "").trim();
+  if (!safeUserId) {
+    return null;
+  }
+  await ensureUserDownloadCountersTable(db);
+  return dbGet(
+    db,
+    `
+      SELECT
+        user_id,
+        user_email,
+        plan_code,
+        lifetime_bytes,
+        hour_bucket_start_unix,
+        hour_bytes,
+        day_bucket_start_unix,
+        day_bytes,
+        week_bucket_start_unix,
+        week_bytes,
+        month_bucket_start,
+        month_bytes,
+        last_notified_lifetime_mark,
+        last_notified_hour_mark,
+        last_notified_day_mark,
+        last_notified_week_mark,
+        last_notified_month_mark,
+        throttled_until,
+        throttle_reason,
+        last_request_at,
+        last_ip,
+        last_device_id,
+        last_country,
+        created_at,
+        updated_at
+      FROM user_download_counters
+      WHERE user_id = ?
+      LIMIT 1
+    `,
+    [safeUserId],
+  );
+}
+
+async function findUserDownloadCounterByEmail(db, email) {
+  const safeEmail = normalizeEmail(email);
+  if (!safeEmail) {
+    return null;
+  }
+  await ensureUserDownloadCountersTable(db);
+  return dbGet(
+    db,
+    `
+      SELECT
+        user_id,
+        user_email,
+        plan_code,
+        lifetime_bytes,
+        hour_bucket_start_unix,
+        hour_bytes,
+        day_bucket_start_unix,
+        day_bytes,
+        week_bucket_start_unix,
+        week_bytes,
+        month_bucket_start,
+        month_bytes,
+        last_notified_lifetime_mark,
+        last_notified_hour_mark,
+        last_notified_day_mark,
+        last_notified_week_mark,
+        last_notified_month_mark,
+        throttled_until,
+        throttle_reason,
+        last_request_at,
+        last_ip,
+        last_device_id,
+        last_country,
+        created_at,
+        updated_at
+      FROM user_download_counters
+      WHERE user_email = ?
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `,
+    [safeEmail],
+  );
+}
+
+async function clearUserDownloadThrottle(db, userId, options = {}) {
+  const safeUserId = String(userId || "").trim();
+  if (!safeUserId) {
+    return null;
+  }
+  const resetHour = options.resetHour !== false;
+  const now = nowIso();
+  const nowUnix = Math.floor(Date.now() / 1000);
+  const currentHourStart = startOfHourUnix(nowUnix);
+  await ensureUserDownloadCountersTable(db);
+  await dbRun(
+    db,
+    `
+      UPDATE user_download_counters
+      SET
+        throttled_until = NULL,
+        throttle_reason = 'manual_unthrottle',
+        hour_bucket_start_unix = CASE WHEN ? = 1 THEN ? ELSE hour_bucket_start_unix END,
+        hour_bytes = CASE WHEN ? = 1 THEN 0 ELSE hour_bytes END,
+        updated_at = ?
+      WHERE user_id = ?
+    `,
+    [resetHour ? 1 : 0, currentHourStart, resetHour ? 1 : 0, now, safeUserId],
+  );
+  return findUserDownloadCounter(db, safeUserId);
+}
+
+async function setUserDownloadThrottle(db, userId, options = {}) {
+  const safeUserId = String(userId || "").trim();
+  if (!safeUserId) {
+    return null;
+  }
+  const now = nowIso();
+  const durationMinutes = Math.max(
+    1,
+    parseNonNegativeInteger(options.durationMinutes, DEFAULT_DOWNLOAD_THROTTLE_DURATION_MINUTES),
+  );
+  const nowUnix = Math.floor(Date.now() / 1000);
+  const resetHour = options.resetHour === true;
+  const currentHourStart = startOfHourUnix(nowUnix);
+  const throttledUntil = new Date((nowUnix + (durationMinutes * 60)) * 1000).toISOString();
+  await ensureUserDownloadCountersTable(db);
+  await dbRun(
+    db,
+    `
+      UPDATE user_download_counters
+      SET
+        throttled_until = ?,
+        throttle_reason = 'manual_admin_throttle',
+        hour_bucket_start_unix = CASE WHEN ? = 1 THEN ? ELSE hour_bucket_start_unix END,
+        hour_bytes = CASE WHEN ? = 1 THEN 0 ELSE hour_bytes END,
+        updated_at = ?
+      WHERE user_id = ?
+    `,
+    [throttledUntil, resetHour ? 1 : 0, currentHourStart, resetHour ? 1 : 0, now, safeUserId],
+  );
+  return findUserDownloadCounter(db, safeUserId);
+}
+
 function startOfHourUnix(epochSeconds) {
   const safe = Math.max(0, parseNonNegativeInteger(epochSeconds, Math.floor(Date.now() / 1000)));
   return safe - (safe % 3600);
@@ -902,6 +1170,62 @@ function startOfHourUnix(epochSeconds) {
 function startOfDayUnix(epochSeconds) {
   const safe = Math.max(0, parseNonNegativeInteger(epochSeconds, Math.floor(Date.now() / 1000)));
   return safe - (safe % 86400);
+}
+
+function startOfWeekUnix(epochSeconds) {
+  const safe = Math.max(0, parseNonNegativeInteger(epochSeconds, Math.floor(Date.now() / 1000)));
+  const date = new Date(safe * 1000);
+  date.setUTCHours(0, 0, 0, 0);
+  const mondayOffsetDays = (date.getUTCDay() + 6) % 7;
+  const mondayStartMs = date.getTime() - (mondayOffsetDays * 86400 * 1000);
+  return Math.max(0, Math.floor(mondayStartMs / 1000));
+}
+
+function monthBucketKey(epochSeconds) {
+  const safe = Math.max(0, parseNonNegativeInteger(epochSeconds, Math.floor(Date.now() / 1000)));
+  const date = new Date(safe * 1000);
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  return `${year}-${month}`;
+}
+
+function resolveDailyThrottleThresholdGbForPlan(planCode, env = {}) {
+  const safePlanCode = normalizeRequestedPlan(planCode || PLAN_CODE_PLANETKA);
+  if (safePlanCode === PLAN_CODE_PLANETKA) {
+    return parsePositiveNumber(
+      env.DOWNLOAD_THROTTLE_FREE_DAILY_GB,
+      DEFAULT_DOWNLOAD_THROTTLE_FREE_DAILY_GB,
+    );
+  }
+  return parsePositiveNumber(
+    env.DOWNLOAD_THROTTLE_PRO_DAILY_GB,
+    DEFAULT_DOWNLOAD_THROTTLE_PRO_DAILY_GB,
+  );
+}
+
+function resolveDailyThrottleThresholdBytesForPlan(planCode, env = {}) {
+  return Math.max(1, toBytesFromGb(resolveDailyThrottleThresholdGbForPlan(planCode, env)));
+}
+
+async function getRolling24hBytesForUser(db, userId, nowUnix) {
+  await ensureTileRequestRollupTables(db);
+  const safeUserId = String(userId || "").trim();
+  if (!safeUserId) {
+    return 0;
+  }
+  const safeNowUnix = Math.max(0, parseNonNegativeInteger(nowUnix, Math.floor(Date.now() / 1000)));
+  const windowStartUnix = Math.max(0, safeNowUnix - (24 * 60 * 60));
+  const row = await dbGet(
+    db,
+    `
+      SELECT COALESCE(SUM(bytes_served), 0) AS bytes_served
+      FROM tile_request_rollup_hourly_account
+      WHERE user_id = ?
+        AND bucket_start_unix >= ?
+    `,
+    [safeUserId, windowStartUnix],
+  );
+  return clampNonNegativeInt(row && row.bytes_served);
 }
 
 async function recordTileRequestRollups(db, payload) {
@@ -1062,13 +1386,134 @@ function sanitizeAnalyticsMinutes(value, fallback = DEFAULT_ANALYTICS_WINDOW_MIN
   return Math.min(MAX_ANALYTICS_WINDOW_MINUTES, parsed);
 }
 
-async function collectAnalyticsSnapshot(db, minutes) {
+function sanitizeLiveTileMapMinutes(value, fallback = DEFAULT_LIVE_TILE_MAP_WINDOW_MINUTES) {
+  const parsed = parseNonNegativeInteger(value, fallback);
+  if (!ALLOWED_LIVE_TILE_MAP_WINDOW_MINUTES.has(parsed)) {
+    return fallback;
+  }
+  return parsed;
+}
+
+function _normalizeErrorCode(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function _isTileNotFoundRow(row) {
+  const statusCode = parseNonNegativeInteger(row && row.status_code, 0);
+  if (statusCode !== 404) {
+    return false;
+  }
+  const errorCode = _normalizeErrorCode(row && row.error_code);
+  return !errorCode || errorCode === "tile_not_found";
+}
+
+async function loadSupportMissingManifest(env) {
+  const manifestKey = String(
+    env.ADMIN_SUPPORT_MISSING_MANIFEST_KEY || DEFAULT_ADMIN_SUPPORT_MISSING_MANIFEST_KEY,
+  ).trim();
+  const nowMs = Date.now();
+  if (
+    supportMissingManifestCache.key === manifestKey
+    && nowMs < supportMissingManifestCache.expiresAtMs
+    && supportMissingManifestCache.byLayer
+  ) {
+    return supportMissingManifestCache;
+  }
+  const bucket = env.PLANETKA_DATA;
+  if (!bucket || !manifestKey) {
+    supportMissingManifestCache = {
+      loadedAtMs: nowMs,
+      expiresAtMs: nowMs + (5 * 60 * 1000),
+      key: manifestKey,
+      version: "",
+      generatedAt: "",
+      byLayer: {},
+    };
+    return supportMissingManifestCache;
+  }
+  try {
+    const object = await bucket.get(manifestKey);
+    if (!object || !object.body) {
+      supportMissingManifestCache = {
+        loadedAtMs: nowMs,
+        expiresAtMs: nowMs + (5 * 60 * 1000),
+        key: manifestKey,
+        version: "",
+        generatedAt: "",
+        byLayer: {},
+      };
+      return supportMissingManifestCache;
+    }
+    const raw = await object.text();
+    const parsed = JSON.parse(String(raw || "{}"));
+    const expected = parsed && parsed.expected_missing && typeof parsed.expected_missing === "object"
+      ? parsed.expected_missing
+      : {};
+    const byLayer = {};
+    for (const layer of ["PO", "EL", "WT"]) {
+      const entries = Array.isArray(expected[layer]) ? expected[layer] : [];
+      byLayer[layer] = new Set(entries.map((item) => String(item || "").trim()).filter(Boolean));
+    }
+    supportMissingManifestCache = {
+      loadedAtMs: nowMs,
+      expiresAtMs: nowMs + (10 * 60 * 1000),
+      key: manifestKey,
+      version: String(parsed && parsed.version || ""),
+      generatedAt: String(parsed && parsed.generated_at || ""),
+      byLayer,
+    };
+    return supportMissingManifestCache;
+  } catch (_error) {
+    supportMissingManifestCache = {
+      loadedAtMs: nowMs,
+      expiresAtMs: nowMs + (5 * 60 * 1000),
+      key: manifestKey,
+      version: "",
+      generatedAt: "",
+      byLayer: {},
+    };
+    return supportMissingManifestCache;
+  }
+}
+
+function isExpectedSupportFallbackMiss(row, supportMissingManifest) {
+  if (!_isTileNotFoundRow(row)) {
+    return false;
+  }
+  const folder = String(row && row.folder || "").trim().toUpperCase();
+  if (!["PO", "EL", "WT"].includes(folder)) {
+    return false;
+  }
+  const fileName = String(row && row.file_name || "").trim();
+  if (!fileName) {
+    return true;
+  }
+  const byLayer = supportMissingManifest && supportMissingManifest.byLayer
+    ? supportMissingManifest.byLayer
+    : {};
+  const layerSet = byLayer[folder];
+  if (!(layerSet instanceof Set) || layerSet.size <= 0) {
+    // No manifest loaded: default to support-layer fallback behavior.
+    return true;
+  }
+  return layerSet.has(fileName);
+}
+
+async function collectAnalyticsSnapshot(
+  db,
+  minutes,
+  planFilter = "all",
+  liveTileMapWindowMinutes = DEFAULT_LIVE_TILE_MAP_WINDOW_MINUTES,
+  env = {},
+) {
   await ensureTileRequestEventsTable(db);
   await ensureTileRequestRollupTables(db);
+  await ensureUserDownloadCountersTable(db);
   const nowUnix = Math.floor(Date.now() / 1000);
   const windowMinutes = sanitizeAnalyticsMinutes(minutes, DEFAULT_ANALYTICS_WINDOW_MINUTES);
   const windowStartUnix = Math.max(0, nowUnix - (windowMinutes * 60));
   const rollupStart30d = Math.max(0, nowUnix - (30 * 86400));
+  const safePlanFilter = parseHeavyUserPlanFilter(planFilter);
 
   const summary = await dbGet(
     db,
@@ -1114,6 +1559,7 @@ async function collectAnalyticsSnapshot(db, minutes) {
         user_id,
         user_email,
         COUNT(*) AS request_count,
+        COALESCE(COUNT(DISTINCT CASE WHEN resolve_id IS NOT NULL AND resolve_id != '' THEN resolve_id END), 0) AS resolve_count,
         COALESCE(SUM(bytes_served), 0) AS bytes_served,
         COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0) AS error_count,
         MAX(created_at) AS last_seen_at
@@ -1142,12 +1588,80 @@ async function collectAnalyticsSnapshot(db, minutes) {
     [windowStartUnix],
   );
 
-  const recentFailures = await dbAll(
+  const tileMapWindowSeconds = Math.max(
+    60,
+    sanitizeLiveTileMapMinutes(liveTileMapWindowMinutes, DEFAULT_LIVE_TILE_MAP_WINDOW_MINUTES) * 60,
+  );
+  const tileMapStartUnix = Math.max(0, nowUnix - tileMapWindowSeconds);
+  const tileMapRowLimit = 2500;
+  const tileActivityFilter = buildTileActivityPlanFilterSql(safePlanFilter);
+  const tileMapRows = await dbAll(
+    db,
+    `
+      SELECT
+        e.user_id,
+        e.user_email,
+        e.tile_key,
+        MAX(e.created_at_unix) AS last_seen_unix,
+        COUNT(*) AS request_count,
+        COALESCE(SUM(e.bytes_served), 0) AS bytes_served,
+        COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) AS user_status
+      FROM tile_request_events e
+      LEFT JOIN users u ON u.id = e.user_id
+      WHERE
+        e.created_at_unix >= ?
+        AND e.status_code < 400
+        AND e.tile_key IS NOT NULL
+        AND e.tile_key != ''
+        ${tileActivityFilter.clause}
+      GROUP BY
+        e.user_id,
+        e.user_email,
+        e.tile_key,
+        COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?)
+      ORDER BY last_seen_unix DESC
+      LIMIT ${tileMapRowLimit}
+    `,
+    [
+      PLAN_CODE_PLANETKA,
+      tileMapStartUnix,
+      ...tileActivityFilter.bindings,
+      PLAN_CODE_PLANETKA,
+    ],
+  );
+  const activeTileUsersSet = new Set();
+  const activeTileKeysSet = new Set();
+  const normalizedTileMapRows = Array.isArray(tileMapRows) ? tileMapRows.map((row) => {
+    const userId = String(row && row.user_id || "").trim();
+    const userEmail = normalizeEmail(row && row.user_email || "");
+    const userKey = userId || userEmail;
+    if (userKey) {
+      activeTileUsersSet.add(userKey);
+    }
+    const tileKey = String(row && row.tile_key || "").trim();
+    if (tileKey) {
+      activeTileKeysSet.add(tileKey);
+    }
+    return {
+      user_id: userId,
+      user_email: userEmail,
+      user_status: String(row && row.user_status || PLAN_CODE_PLANETKA).trim().toLowerCase() || PLAN_CODE_PLANETKA,
+      tile_key: tileKey,
+      last_seen_unix: clampNonNegativeInt(row && row.last_seen_unix),
+      request_count: clampNonNegativeInt(row && row.request_count),
+      bytes_served: clampNonNegativeInt(row && row.bytes_served),
+    };
+  }) : [];
+
+  const supportMissingManifest = await loadSupportMissingManifest(env);
+  const recentFailuresRaw = await dbAll(
     db,
     `
       SELECT
         created_at,
         user_email,
+        folder,
+        file_name,
         tile_key,
         status_code,
         error_code,
@@ -1160,6 +1674,15 @@ async function collectAnalyticsSnapshot(db, minutes) {
     `,
     [],
   );
+  const recentFailures = [];
+  const recentFallbackMisses = [];
+  for (const row of (Array.isArray(recentFailuresRaw) ? recentFailuresRaw : [])) {
+    if (isExpectedSupportFallbackMiss(row, supportMissingManifest)) {
+      recentFallbackMisses.push(row);
+      continue;
+    }
+    recentFailures.push(row);
+  }
 
   const rollup30d = await dbGet(
     db,
@@ -1196,6 +1719,97 @@ async function collectAnalyticsSnapshot(db, minutes) {
     [rollupStart30d],
   );
 
+  const heavyFilter = buildHeavyUserFilterSql(safePlanFilter);
+  const heavyBaseSql = `
+      SELECT
+        c.user_id,
+        c.user_email,
+        c.plan_code,
+        COALESCE(u.status, c.plan_code) AS user_status,
+        c.lifetime_bytes,
+        c.month_bytes,
+        c.week_bytes,
+        c.day_bytes,
+        c.hour_bytes,
+        c.throttled_until,
+        c.last_request_at,
+        c.last_ip,
+        c.last_device_id,
+        c.last_country
+      FROM user_download_counters c
+      LEFT JOIN users u ON u.id = c.user_id
+      ${heavyFilter.clause}
+    `;
+  const heavyBindings = [...heavyFilter.bindings];
+  const topHeavyLifetime = await dbAll(
+    db,
+    `${heavyBaseSql} ORDER BY lifetime_bytes DESC LIMIT 50`,
+    heavyBindings,
+  );
+  const topHeavyMonth = await dbAll(
+    db,
+    `${heavyBaseSql} ORDER BY month_bytes DESC LIMIT 50`,
+    heavyBindings,
+  );
+  const topHeavyWeek = await dbAll(
+    db,
+    `${heavyBaseSql} ORDER BY week_bytes DESC LIMIT 50`,
+    heavyBindings,
+  );
+  const topHeavyDay = await dbAll(
+    db,
+    `${heavyBaseSql} ORDER BY day_bytes DESC LIMIT 50`,
+    heavyBindings,
+  );
+  const topHeavyHour = await dbAll(
+    db,
+    `${heavyBaseSql} ORDER BY hour_bytes DESC LIMIT 50`,
+    heavyBindings,
+  );
+  const heavyResolveCountByUserId = new Map();
+  const heavyUserIds = Array.from(
+    new Set(
+      [
+        ...(Array.isArray(topHeavyLifetime) ? topHeavyLifetime : []),
+        ...(Array.isArray(topHeavyMonth) ? topHeavyMonth : []),
+        ...(Array.isArray(topHeavyWeek) ? topHeavyWeek : []),
+        ...(Array.isArray(topHeavyDay) ? topHeavyDay : []),
+        ...(Array.isArray(topHeavyHour) ? topHeavyHour : []),
+      ].map((row) => String(row && row.user_id || "").trim()).filter(Boolean),
+    ),
+  );
+  if (heavyUserIds.length > 0) {
+    const placeholders = heavyUserIds.map(() => "?").join(",");
+    const heavyResolveRows = await dbAll(
+      db,
+      `
+        SELECT
+          user_id,
+          COUNT(DISTINCT resolve_id) AS resolve_count
+        FROM tile_request_events
+        WHERE
+          user_id IN (${placeholders})
+          AND resolve_id IS NOT NULL
+          AND resolve_id != ''
+        GROUP BY user_id
+      `,
+      heavyUserIds,
+    );
+    for (const row of heavyResolveRows || []) {
+      const userId = String(row && row.user_id || "").trim();
+      if (!userId) continue;
+      heavyResolveCountByUserId.set(userId, clampNonNegativeInt(row && row.resolve_count));
+    }
+  }
+  const attachHeavyResolveCounts = (rows) =>
+    (Array.isArray(rows) ? rows : []).map((row) => {
+      const userId = String(row && row.user_id || "").trim();
+      return {
+        ...row,
+        resolve_count: clampNonNegativeInt(heavyResolveCountByUserId.get(userId) || 0),
+      };
+    });
+
   return {
     generated_at: nowIso(),
     window_minutes: windowMinutes,
@@ -1217,6 +1831,12 @@ async function collectAnalyticsSnapshot(db, minutes) {
     top_users: Array.isArray(topUsers) ? topUsers : [],
     top_tiles: Array.isArray(topTiles) ? topTiles : [],
     recent_failures: Array.isArray(recentFailures) ? recentFailures : [],
+    recent_fallback_misses: Array.isArray(recentFallbackMisses) ? recentFallbackMisses : [],
+    support_missing_manifest: {
+      key: String(supportMissingManifest && supportMissingManifest.key || ""),
+      version: String(supportMissingManifest && supportMissingManifest.version || ""),
+      generated_at: String(supportMissingManifest && supportMissingManifest.generatedAt || ""),
+    },
     rollup_30d: {
       window_days: 30,
       request_count: clampNonNegativeInt(rollup30d && rollup30d.request_count),
@@ -1233,6 +1853,23 @@ async function collectAnalyticsSnapshot(db, minutes) {
             : "",
         }))
         : [],
+    },
+    heavy_users: {
+      plan_filter: safePlanFilter,
+      top_lifetime: attachHeavyResolveCounts(topHeavyLifetime),
+      top_month: attachHeavyResolveCounts(topHeavyMonth),
+      top_week: attachHeavyResolveCounts(topHeavyWeek),
+      top_day: attachHeavyResolveCounts(topHeavyDay),
+      top_hour: attachHeavyResolveCounts(topHeavyHour),
+    },
+    live_tile_map: {
+      generated_at: nowIso(),
+      window_seconds: tileMapWindowSeconds,
+      plan_filter: safePlanFilter,
+      users_active: activeTileUsersSet.size,
+      tiles_active: activeTileKeysSet.size,
+      row_limit: tileMapRowLimit,
+      rows: normalizedTileMapRows,
     },
   };
 }
@@ -1318,6 +1955,638 @@ function rateLimitedResponse(env, code, message, retryAfterSeconds) {
   );
 }
 
+async function maybeSignalTileFarmingActivity(db, env, details = {}) {
+  if (!db) {
+    return;
+  }
+  await ensureRateLimitsTable(db);
+  const statusCode = parseNonNegativeInteger(details.statusCode, 0);
+  if (statusCode <= 0) {
+    return;
+  }
+
+  const userId = String(details.userId || "").trim();
+  const userEmail = normalizeEmail(details.userEmail || "");
+  if (userEmail && isDownloadAlertWhitelisted(userEmail, env)) {
+    return;
+  }
+  const userKey = userId || userEmail || "unknown";
+  const ip = String(details.ip || "").trim() || "unknown";
+  const deviceId = normalizeDeviceId(details.deviceId || "");
+  const tileKey = String(details.tileKey || "").trim();
+  const resolveId = String(details.resolveId || "").trim();
+  const method = String(details.method || "GET").toUpperCase();
+  const path = String(details.path || "").trim();
+
+  const windowSeconds = Math.max(
+    30,
+    parseRateLimitInteger(env.TILE_FARM_ALERT_WINDOW_SECONDS, DEFAULT_TILE_FARM_ALERT_WINDOW_SECONDS),
+  );
+  const userRequestThreshold = Math.max(
+    0,
+    parseRateLimitInteger(env.TILE_FARM_ALERT_USER_REQUEST_THRESHOLD, DEFAULT_TILE_FARM_ALERT_USER_REQUEST_THRESHOLD),
+  );
+  const ipRequestThreshold = Math.max(
+    0,
+    parseRateLimitInteger(env.TILE_FARM_ALERT_IP_REQUEST_THRESHOLD, DEFAULT_TILE_FARM_ALERT_IP_REQUEST_THRESHOLD),
+  );
+  const uniqueTileThreshold = Math.max(
+    0,
+    parseRateLimitInteger(env.TILE_FARM_ALERT_UNIQUE_TILE_THRESHOLD, DEFAULT_TILE_FARM_ALERT_UNIQUE_TILE_THRESHOLD),
+  );
+  const untaggedMinRequests = Math.max(
+    0,
+    parseRateLimitInteger(env.TILE_FARM_ALERT_UNTAGGED_MIN_REQUESTS, DEFAULT_TILE_FARM_ALERT_UNTAGGED_MIN_REQUESTS),
+  );
+  const untaggedPercentThreshold = Math.min(
+    100,
+    Math.max(1, parseRateLimitInteger(env.TILE_FARM_ALERT_UNTAGGED_PERCENT, DEFAULT_TILE_FARM_ALERT_UNTAGGED_PERCENT)),
+  );
+  const emailCooldownSeconds = Math.max(
+    30,
+    parseRateLimitInteger(
+      env.TILE_FARM_ALERT_EMAIL_COOLDOWN_SECONDS,
+      DEFAULT_TILE_FARM_ALERT_EMAIL_COOLDOWN_SECONDS,
+    ),
+  );
+
+  const userRate = await consumeRateLimitWindow(db, "tile_farm_user_req", userKey, 2147483647, windowSeconds);
+  const userCount = clampNonNegativeInt(userRate && userRate.count);
+  const ipRate = await consumeRateLimitWindow(db, "tile_farm_ip_req", ip, 2147483647, windowSeconds);
+  const ipCount = clampNonNegativeInt(ipRate && ipRate.count);
+
+  let uniqueTileCount = 0;
+  if (tileKey) {
+    const tileSeen = await consumeRateLimitWindow(
+      db,
+      "tile_farm_user_tile_seen",
+      `${userKey}:${tileKey}`,
+      2147483647,
+      windowSeconds,
+    );
+    if (clampNonNegativeInt(tileSeen && tileSeen.count) === 1) {
+      const uniqueRate = await consumeRateLimitWindow(
+        db,
+        "tile_farm_user_unique",
+        userKey,
+        2147483647,
+        windowSeconds,
+      );
+      uniqueTileCount = clampNonNegativeInt(uniqueRate && uniqueRate.count);
+    }
+  }
+
+  let untaggedCount = 0;
+  if (!resolveId) {
+    const untaggedRate = await consumeRateLimitWindow(
+      db,
+      "tile_farm_user_untagged",
+      userKey,
+      2147483647,
+      windowSeconds,
+    );
+    untaggedCount = clampNonNegativeInt(untaggedRate && untaggedRate.count);
+  }
+
+  const reasons = [];
+  if (userRequestThreshold > 0 && thresholdHit(userCount, userRequestThreshold)) {
+    reasons.push(`user_request_rate:${userCount}/${userRequestThreshold}`);
+  }
+  if (ipRequestThreshold > 0 && thresholdHit(ipCount, ipRequestThreshold)) {
+    reasons.push(`ip_request_rate:${ipCount}/${ipRequestThreshold}`);
+  }
+  if (uniqueTileThreshold > 0 && uniqueTileCount > 0 && thresholdHit(uniqueTileCount, uniqueTileThreshold)) {
+    reasons.push(`unique_tiles:${uniqueTileCount}/${uniqueTileThreshold}`);
+  }
+  if (
+    untaggedCount > 0
+    && userCount >= untaggedMinRequests
+    && ((untaggedCount * 100) / Math.max(1, userCount)) >= untaggedPercentThreshold
+  ) {
+    reasons.push(`untagged_ratio:${untaggedCount}/${userCount}>=${untaggedPercentThreshold}%`);
+  }
+  if (!reasons.length) {
+    return;
+  }
+
+  const alertGate = await consumeRateLimitWindow(
+    db,
+    "tile_farm_alert_mail",
+    `${userKey}:${ip}`,
+    1,
+    emailCooldownSeconds,
+  );
+  if (!alertGate.allowed) {
+    return;
+  }
+
+  try {
+    await sendOpsAlertEmail(
+      env,
+      "Planetka suspected tile farming activity",
+      [
+        "Potential tile farming pattern detected (real-time).",
+        `reasons=${reasons.join(",")}`,
+        `user_id=${userId}`,
+        `email=${userEmail}`,
+        `ip=${ip}`,
+        `device_id=${deviceId}`,
+        `status_code=${statusCode}`,
+        `method=${method}`,
+        `path=${path}`,
+        `tile_key=${tileKey}`,
+        `resolve_id=${resolveId}`,
+        `window_seconds=${windowSeconds}`,
+        `user_count=${userCount}`,
+        `ip_count=${ipCount}`,
+        `unique_tile_count=${uniqueTileCount}`,
+        `untagged_count=${untaggedCount}`,
+      ],
+    );
+  } catch (error) {
+    console.warn(
+      "worker.tile_farm_alert_email_failed",
+      JSON.stringify({
+        user_id: userId,
+        email: userEmail,
+        ip,
+        error: String(error && error.message || "tile_farm_alert_email_failed"),
+      }),
+    );
+  }
+}
+
+function parseHeavyUserPlanFilter(value) {
+  const normalized = String(value || "all").trim().toLowerCase();
+  if (normalized === "free") {
+    return "free";
+  }
+  if (normalized === "paid") {
+    return "paid";
+  }
+  return "all";
+}
+
+function buildHeavyUserFilterSql(planFilter) {
+  if (planFilter === "free") {
+    return { clause: "WHERE c.plan_code = ?", bindings: [PLAN_CODE_PLANETKA] };
+  }
+  if (planFilter === "paid") {
+    return {
+      clause: "WHERE c.plan_code IN (?, ?)",
+      bindings: [PLAN_CODE_PLANETKA_PRO, PLAN_CODE_PLANETKA_STUDIO],
+    };
+  }
+  return { clause: "", bindings: [] };
+}
+
+function buildTileActivityPlanFilterSql(planFilter) {
+  if (planFilter === "free") {
+    return {
+      clause: `
+        AND COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) = ?
+      `,
+      bindings: [PLAN_CODE_PLANETKA, PLAN_CODE_PLANETKA],
+    };
+  }
+  if (planFilter === "paid") {
+    return {
+      clause: `
+        AND COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) IN (?, ?)
+      `,
+      bindings: [PLAN_CODE_PLANETKA, PLAN_CODE_PLANETKA_PRO, PLAN_CODE_PLANETKA_STUDIO],
+    };
+  }
+  return { clause: "", bindings: [] };
+}
+
+async function sendUserThrottledEmail(env, email, details = {}) {
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail) {
+    return;
+  }
+  const apiKey = requireSecret(env, "EMAIL_API_KEY");
+  const from = String(env.EMAIL_FROM || "info@planetka.io").trim();
+  const contactUrl = normalizeContactUrl(env.PLANETKA_CONTACT_URL || DEFAULT_CONTACT_URL);
+  const recentWindowGb = Number(details.recentWindowGb || 0).toFixed(2);
+  const thresholdGb = Number(details.thresholdGb || 0).toFixed(2);
+  const windowLabel = String(details.windowLabel || "24h").trim() || "24h";
+  const throttledUntil = String(details.throttledUntil || "").trim() || "soon";
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      from,
+      to: [normalizedEmail],
+      subject: "Planetka account temporarily throttled",
+      text: [
+        "Your Planetka account has been temporarily throttled due to unusually high data volume.",
+        "",
+        `Recent ${windowLabel} volume: ${recentWindowGb} GB`,
+        `Throttle threshold: ${thresholdGb} GB/${windowLabel}`,
+        `Throttle active until: ${throttledUntil}`,
+        "",
+        "If this is expected usage, contact us so we can review and assist:",
+        contactUrl,
+      ].join("\n"),
+      html: `
+        <div style="font-family: Arial, sans-serif; line-height: 1.5; color: #111827;">
+          <h2 style="margin-bottom: 12px;">Planetka account temporarily throttled</h2>
+          <p>Your Planetka account was temporarily throttled due to unusually high data volume.</p>
+          <ul>
+            <li><strong>Recent ${escapeHtml(windowLabel)} volume:</strong> ${escapeHtml(recentWindowGb)} GB</li>
+            <li><strong>Throttle threshold:</strong> ${escapeHtml(thresholdGb)} GB/${escapeHtml(windowLabel)}</li>
+            <li><strong>Throttle active until:</strong> ${escapeHtml(throttledUntil)}</li>
+          </ul>
+          <p>If this usage is expected, please contact us so we can review and assist:</p>
+          <p><a href="${escapeHtml(contactUrl)}">${escapeHtml(contactUrl)}</a></p>
+        </div>
+      `,
+    }),
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`resend_error_${response.status}_${body}`);
+  }
+}
+
+async function maybeProcessDownloadMonitoring(db, env, details = {}) {
+  if (!db) {
+    return;
+  }
+  const userId = String(details.userId || "").trim();
+  const userEmail = normalizeEmail(details.userEmail || "");
+  if (!userId || !userEmail) {
+    return;
+  }
+  const bytesUsed = clampNonNegativeInt(details.bytesUsed);
+  if (bytesUsed <= 0) {
+    return;
+  }
+
+  await ensureUserDownloadCountersTable(db);
+  await ensureRateLimitsTable(db);
+  const nowUnix = parseNonNegativeInteger(details.createdAtUnix, Math.floor(Date.now() / 1000));
+  const now = new Date(nowUnix * 1000).toISOString();
+  const safePlanCode = normalizeRequestedPlan(details.planCode || PLAN_CODE_PLANETKA);
+  const ip = String(details.ip || "").trim();
+  const deviceId = normalizeDeviceId(details.deviceId || "");
+  const country = String(details.country || "").trim().toUpperCase();
+  const whitelisted = isDownloadAlertWhitelisted(userEmail, env);
+
+  const hourBucket = startOfHourUnix(nowUnix);
+  const dayBucket = startOfDayUnix(nowUnix);
+  const weekBucket = startOfWeekUnix(nowUnix);
+  const monthBucket = monthBucketKey(nowUnix);
+  const existing = await findUserDownloadCounter(db, userId);
+
+  const lifetimeBytes = clampNonNegativeInt(existing && existing.lifetime_bytes) + bytesUsed;
+  const hourBytes = (
+    parseNonNegativeInteger(existing && existing.hour_bucket_start_unix, hourBucket) === hourBucket
+      ? clampNonNegativeInt(existing && existing.hour_bytes)
+      : 0
+  ) + bytesUsed;
+  const dayBytes = (
+    parseNonNegativeInteger(existing && existing.day_bucket_start_unix, dayBucket) === dayBucket
+      ? clampNonNegativeInt(existing && existing.day_bytes)
+      : 0
+  ) + bytesUsed;
+  const weekBytes = (
+    parseNonNegativeInteger(existing && existing.week_bucket_start_unix, weekBucket) === weekBucket
+      ? clampNonNegativeInt(existing && existing.week_bytes)
+      : 0
+  ) + bytesUsed;
+  const monthBytes = (
+    String(existing && existing.month_bucket_start || "") === monthBucket
+      ? clampNonNegativeInt(existing && existing.month_bytes)
+      : 0
+  ) + bytesUsed;
+
+  const rolling24hBytes = await getRolling24hBytesForUser(db, userId, nowUnix);
+  const thresholdBytes = resolveDailyThrottleThresholdBytesForPlan(safePlanCode, env);
+  const throttleDurationMinutes = Math.max(
+    5,
+    parseRateLimitInteger(env.DOWNLOAD_THROTTLE_DURATION_MINUTES, DEFAULT_DOWNLOAD_THROTTLE_DURATION_MINUTES),
+  );
+  const currentThrottleUntil = String(existing && existing.throttled_until || "").trim();
+  const currentThrottleUntilMs = Date.parse(currentThrottleUntil);
+  const throttleShouldActivate = !whitelisted && thresholdBytes > 0 && rolling24hBytes >= thresholdBytes;
+  const nextThrottleUntilMs = throttleShouldActivate
+    ? Math.max(
+      Number.isFinite(currentThrottleUntilMs) ? currentThrottleUntilMs : 0,
+      (nowUnix + (throttleDurationMinutes * 60)) * 1000,
+    )
+    : (Number.isFinite(currentThrottleUntilMs) ? currentThrottleUntilMs : 0);
+  const throttledUntil = nextThrottleUntilMs > (nowUnix * 1000)
+    ? new Date(nextThrottleUntilMs).toISOString()
+    : "";
+
+  await dbRun(
+    db,
+    `
+      INSERT INTO user_download_counters (
+        user_id,
+        user_email,
+        plan_code,
+        lifetime_bytes,
+        hour_bucket_start_unix,
+        hour_bytes,
+        day_bucket_start_unix,
+        day_bytes,
+        week_bucket_start_unix,
+        week_bytes,
+        month_bucket_start,
+        month_bytes,
+        last_notified_lifetime_mark,
+        last_notified_hour_mark,
+        last_notified_day_mark,
+        last_notified_week_mark,
+        last_notified_month_mark,
+        throttled_until,
+        throttle_reason,
+        last_request_at,
+        last_ip,
+        last_device_id,
+        last_country,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(user_id) DO UPDATE SET
+        user_email = excluded.user_email,
+        plan_code = excluded.plan_code,
+        lifetime_bytes = excluded.lifetime_bytes,
+        hour_bucket_start_unix = excluded.hour_bucket_start_unix,
+        hour_bytes = excluded.hour_bytes,
+        day_bucket_start_unix = excluded.day_bucket_start_unix,
+        day_bytes = excluded.day_bytes,
+        week_bucket_start_unix = excluded.week_bucket_start_unix,
+        week_bytes = excluded.week_bytes,
+        month_bucket_start = excluded.month_bucket_start,
+        month_bytes = excluded.month_bytes,
+        throttled_until = excluded.throttled_until,
+        throttle_reason = excluded.throttle_reason,
+        last_request_at = excluded.last_request_at,
+        last_ip = excluded.last_ip,
+        last_device_id = excluded.last_device_id,
+        last_country = excluded.last_country,
+        updated_at = excluded.updated_at
+    `,
+    [
+      userId,
+      userEmail,
+      safePlanCode,
+      lifetimeBytes,
+      hourBucket,
+      hourBytes,
+      dayBucket,
+      dayBytes,
+      weekBucket,
+      weekBytes,
+      monthBucket,
+      monthBytes,
+      clampNonNegativeInt(existing && existing.last_notified_lifetime_mark),
+      clampNonNegativeInt(existing && existing.last_notified_hour_mark),
+      clampNonNegativeInt(existing && existing.last_notified_day_mark),
+      clampNonNegativeInt(existing && existing.last_notified_week_mark),
+      clampNonNegativeInt(existing && existing.last_notified_month_mark),
+      throttledUntil || null,
+      throttleShouldActivate ? "high_daily_download_24h" : String(existing && existing.throttle_reason || ""),
+      now,
+      ip || null,
+      deviceId || null,
+      country || null,
+      String(existing && existing.created_at || now),
+      now,
+    ],
+  );
+
+  const markStepBytes = Math.max(
+    1,
+    toBytesFromGb(parsePositiveNumber(env.DOWNLOAD_MARK_STEP_GB, DEFAULT_DOWNLOAD_MARK_STEP_GB)),
+  );
+  const marksNow = {
+    lifetime: Math.floor(lifetimeBytes / markStepBytes),
+    hour: Math.floor(hourBytes / markStepBytes),
+    day: Math.floor(dayBytes / markStepBytes),
+    week: Math.floor(weekBytes / markStepBytes),
+    month: Math.floor(monthBytes / markStepBytes),
+  };
+  const marksPrev = {
+    lifetime: clampNonNegativeInt(existing && existing.last_notified_lifetime_mark),
+    hour: clampNonNegativeInt(existing && existing.last_notified_hour_mark),
+    day: clampNonNegativeInt(existing && existing.last_notified_day_mark),
+    week: clampNonNegativeInt(existing && existing.last_notified_week_mark),
+    month: clampNonNegativeInt(existing && existing.last_notified_month_mark),
+  };
+  const crossed = {
+    lifetime: marksNow.lifetime > marksPrev.lifetime,
+    hour: marksNow.hour > marksPrev.hour,
+    day: marksNow.day > marksPrev.day,
+    week: marksNow.week > marksPrev.week,
+    month: marksNow.month > marksPrev.month,
+  };
+  const crossedAny = Object.values(crossed).some((value) => Boolean(value));
+
+  if (crossedAny && !whitelisted) {
+    const opsCooldownSeconds = Math.max(
+      30,
+      parseRateLimitInteger(
+        env.DOWNLOAD_ALERT_EMAIL_COOLDOWN_SECONDS,
+        DEFAULT_DOWNLOAD_ALERT_EMAIL_COOLDOWN_SECONDS,
+      ),
+    );
+    const markGate = await consumeRateLimitWindow(
+      db,
+      "download_mark_ops_mail",
+      userId,
+      1,
+      opsCooldownSeconds,
+    );
+    if (markGate.allowed) {
+      try {
+        await sendOpsAlertEmail(
+          env,
+          "Planetka high-volume download milestone reached",
+          [
+            "User crossed download milestone marks.",
+            `email=${userEmail}`,
+            `plan=${safePlanCode}`,
+            `lifetime_gb=${(lifetimeBytes / BYTES_PER_GB).toFixed(2)}`,
+            `month_gb=${(monthBytes / BYTES_PER_GB).toFixed(2)}`,
+            `week_gb=${(weekBytes / BYTES_PER_GB).toFixed(2)}`,
+            `day_gb=${(dayBytes / BYTES_PER_GB).toFixed(2)}`,
+            `hour_gb=${(hourBytes / BYTES_PER_GB).toFixed(2)}`,
+            `marks_crossed=${JSON.stringify(crossed)}`,
+            `ip=${ip}`,
+            `device_id=${deviceId}`,
+          ],
+        );
+        await dbRun(
+          db,
+          `
+            UPDATE user_download_counters
+            SET
+              last_notified_lifetime_mark = ?,
+              last_notified_hour_mark = ?,
+              last_notified_day_mark = ?,
+              last_notified_week_mark = ?,
+              last_notified_month_mark = ?,
+              updated_at = ?
+            WHERE user_id = ?
+          `,
+          [marksNow.lifetime, marksNow.hour, marksNow.day, marksNow.week, marksNow.month, nowIso(), userId],
+        );
+      } catch (error) {
+        console.warn(
+          "worker.download_milestone_alert_email_failed",
+          JSON.stringify({
+            user_id: userId,
+            email: userEmail,
+            error: String(error && error.message || "download_milestone_alert_email_failed"),
+          }),
+        );
+      }
+    }
+  }
+
+  if (throttleShouldActivate && !whitelisted) {
+    const opsCooldownSeconds = Math.max(
+      30,
+      parseRateLimitInteger(
+        env.DOWNLOAD_ALERT_EMAIL_COOLDOWN_SECONDS,
+        DEFAULT_DOWNLOAD_ALERT_EMAIL_COOLDOWN_SECONDS,
+      ),
+    );
+    const throttleOpsGate = await consumeRateLimitWindow(
+      db,
+      "download_throttle_ops_mail",
+      userId,
+      1,
+      opsCooldownSeconds,
+    );
+    if (throttleOpsGate.allowed) {
+      try {
+        await sendOpsAlertEmail(
+          env,
+          "Planetka user automatically throttled",
+          [
+            "User exceeded rolling 24-hour download threshold and was throttled.",
+            `email=${userEmail}`,
+            `plan=${safePlanCode}`,
+            `rolling_24h_gb=${(rolling24hBytes / BYTES_PER_GB).toFixed(2)}`,
+            `threshold_gb=${(thresholdBytes / BYTES_PER_GB).toFixed(2)}`,
+            `throttled_until=${throttledUntil}`,
+            `ip=${ip}`,
+            `device_id=${deviceId}`,
+          ],
+        );
+      } catch (error) {
+        console.warn(
+          "worker.download_throttle_ops_email_failed",
+          JSON.stringify({
+            user_id: userId,
+            email: userEmail,
+            error: String(error && error.message || "download_throttle_ops_email_failed"),
+          }),
+        );
+      }
+    }
+
+    const throttleUserGate = await consumeRateLimitWindow(
+      db,
+      "download_throttle_user_mail",
+      userId,
+      1,
+      opsCooldownSeconds,
+    );
+    if (throttleUserGate.allowed) {
+      try {
+        await sendUserThrottledEmail(env, userEmail, {
+          recentWindowGb: rolling24hBytes / BYTES_PER_GB,
+          thresholdGb: thresholdBytes / BYTES_PER_GB,
+          windowLabel: "24h",
+          throttledUntil,
+        });
+      } catch (error) {
+        console.warn(
+          "worker.download_throttle_user_email_failed",
+          JSON.stringify({
+            user_id: userId,
+            email: userEmail,
+            error: String(error && error.message || "download_throttle_user_email_failed"),
+          }),
+        );
+      }
+    }
+  }
+}
+
+async function enforceDownloadThrottleGate(db, env, user, requestDeviceId = "", requestIp = "") {
+  if (!db || !user || !user.id) {
+    return null;
+  }
+  const userEmail = normalizeEmail(user.email || "");
+  if (isDownloadAlertWhitelisted(userEmail, env)) {
+    return null;
+  }
+  const counter = await findUserDownloadCounter(db, String(user.id || "").trim());
+  if (!counter) {
+    return null;
+  }
+  const throttledUntil = String(counter.throttled_until || "").trim();
+  const throttledUntilMs = Date.parse(throttledUntil);
+  if (!Number.isFinite(throttledUntilMs) || throttledUntilMs <= Date.now()) {
+    return null;
+  }
+  const perMinuteLimit = parseRateLimitInteger(
+    env.DOWNLOAD_THROTTLED_REQUESTS_PER_MINUTE,
+    DEFAULT_DOWNLOAD_THROTTLED_REQUESTS_PER_MINUTE,
+  );
+  if (perMinuteLimit <= 0) {
+    return {
+      isThrottled: true,
+      blocked: false,
+      retryAfterSeconds: 0,
+      throttledUntil,
+      userEmail,
+      requestDeviceId: normalizeDeviceId(requestDeviceId),
+      requestIp: String(requestIp || "").trim(),
+    };
+  }
+  const rate = await consumeRateLimitWindow(
+    db,
+    "download_throttled_req_minute",
+    String(user.id || "").trim(),
+    perMinuteLimit,
+    60,
+  );
+  if (rate.allowed) {
+    return {
+      isThrottled: true,
+      blocked: false,
+      retryAfterSeconds: 0,
+      throttledUntil,
+      userEmail,
+      requestDeviceId: normalizeDeviceId(requestDeviceId),
+      requestIp: String(requestIp || "").trim(),
+    };
+  }
+  return {
+    isThrottled: true,
+    blocked: true,
+    code: "download_throttled",
+    retryAfterSeconds: clampNonNegativeInt(rate.retryAfterSeconds) || 1,
+    message: "High-volume data use detected. Download speed is temporarily throttled. Contact Planetka support if needed.",
+    throttledUntil,
+    userEmail,
+    requestDeviceId: normalizeDeviceId(requestDeviceId),
+    requestIp: String(requestIp || "").trim(),
+  };
+}
+
 async function cleanupAuthTables(db, env, nowTimestamp) {
   const nowUnix = Math.floor(Date.parse(nowTimestamp) / 1000) || Math.floor(Date.now() / 1000);
   const summary = {
@@ -1346,6 +2615,7 @@ async function cleanupAuthTables(db, env, nowTimestamp) {
     tile_request_events_deleted: 0,
     tile_rollup_hourly_deleted: 0,
     tile_rollup_daily_deleted: 0,
+    monthly_cost_alert_state_deleted: 0,
   };
   const refreshSessionCutoff = addDaysFromIso(
     nowTimestamp,
@@ -1500,6 +2770,19 @@ async function cleanupAuthTables(db, env, nowTimestamp) {
       [tileRollupCutoffUnix],
     );
     summary.tile_rollup_daily_deleted = dbMetaChanges(dailyRollupResult);
+  }
+
+  if (await dbTableExists(db, "monthly_cost_alert_state")) {
+    const monthlyStateCutoff = new Date(Date.parse(nowTimestamp) - (730 * 86400 * 1000)).toISOString().slice(0, 7);
+    const monthlyStateResult = await dbRun(
+      db,
+      `
+        DELETE FROM monthly_cost_alert_state
+        WHERE month_key < ?
+      `,
+      [monthlyStateCutoff],
+    );
+    summary.monthly_cost_alert_state_deleted = dbMetaChanges(monthlyStateResult);
   }
 
   return summary;
@@ -1679,6 +2962,182 @@ async function runProductionAlertChecks(db, env, nowTimestamp) {
   return summary;
 }
 
+function monthKeyFromUnix(epochSeconds) {
+  const safeUnix = Math.max(0, parseNonNegativeInteger(epochSeconds, Math.floor(Date.now() / 1000)));
+  return new Date(safeUnix * 1000).toISOString().slice(0, 7);
+}
+
+function monthStartUnix(epochSeconds) {
+  const safeUnix = Math.max(0, parseNonNegativeInteger(epochSeconds, Math.floor(Date.now() / 1000)));
+  const date = new Date(safeUnix * 1000);
+  const year = date.getUTCFullYear();
+  const month = date.getUTCMonth();
+  return Math.floor(Date.UTC(year, month, 1, 0, 0, 0) / 1000);
+}
+
+function estimateR2MonthlyCostUsd(env, monthlyClassBOps) {
+  const storageGb = parsePositiveNumber(env.R2_ESTIMATED_STORAGE_GB, DEFAULT_R2_ESTIMATED_STORAGE_GB);
+  const storagePricePerGbMonth = parsePositiveNumber(
+    env.R2_STORAGE_PRICE_PER_GB_MONTH_USD,
+    DEFAULT_R2_STORAGE_PRICE_PER_GB_MONTH_USD,
+  );
+  const storageFreeGb = parseNonNegativeInteger(env.R2_STORAGE_FREE_GB_MONTH, DEFAULT_R2_STORAGE_FREE_GB_MONTH);
+  const classAPricePerMillion = parsePositiveNumber(
+    env.R2_CLASS_A_PRICE_PER_MILLION_USD,
+    DEFAULT_R2_CLASS_A_PRICE_PER_MILLION_USD,
+  );
+  const classBPricePerMillion = parsePositiveNumber(
+    env.R2_CLASS_B_PRICE_PER_MILLION_USD,
+    DEFAULT_R2_CLASS_B_PRICE_PER_MILLION_USD,
+  );
+  const classAFreeOps = parseNonNegativeInteger(env.R2_CLASS_A_FREE_OPS_PER_MONTH, DEFAULT_R2_CLASS_A_FREE_OPS_PER_MONTH);
+  const classBFreeOps = parseNonNegativeInteger(env.R2_CLASS_B_FREE_OPS_PER_MONTH, DEFAULT_R2_CLASS_B_FREE_OPS_PER_MONTH);
+  const estimatedClassAOps = parseNonNegativeInteger(env.R2_ESTIMATED_CLASS_A_OPS_MONTH, 0);
+  const classBOps = Math.max(0, clampNonNegativeInt(monthlyClassBOps));
+
+  const billableStorageGb = Math.max(0, Math.ceil(storageGb - storageFreeGb));
+  const billableClassAOps = Math.max(0, estimatedClassAOps - classAFreeOps);
+  const billableClassBOps = Math.max(0, classBOps - classBFreeOps);
+  const billableClassAMillion = billableClassAOps > 0 ? Math.ceil(billableClassAOps / 1000000) : 0;
+  const billableClassBMillion = billableClassBOps > 0 ? Math.ceil(billableClassBOps / 1000000) : 0;
+
+  const storageCostUsd = billableStorageGb * storagePricePerGbMonth;
+  const classACostUsd = billableClassAMillion * classAPricePerMillion;
+  const classBCostUsd = billableClassBMillion * classBPricePerMillion;
+  const totalCostUsd = storageCostUsd + classACostUsd + classBCostUsd;
+
+  return {
+    storage_gb_estimate: storageGb,
+    storage_gb_free: storageFreeGb,
+    storage_gb_billable_rounded: billableStorageGb,
+    storage_cost_usd: storageCostUsd,
+    class_a_ops_estimate: estimatedClassAOps,
+    class_a_ops_free: classAFreeOps,
+    class_a_ops_billable: billableClassAOps,
+    class_a_million_billable_rounded: billableClassAMillion,
+    class_a_cost_usd: classACostUsd,
+    class_b_ops_month: classBOps,
+    class_b_ops_free: classBFreeOps,
+    class_b_ops_billable: billableClassBOps,
+    class_b_million_billable_rounded: billableClassBMillion,
+    class_b_cost_usd: classBCostUsd,
+    total_cost_usd: totalCostUsd,
+  };
+}
+
+async function runMonthlyCostEstimateAlerts(db, env, nowTimestamp) {
+  await ensureRateLimitsTable(db);
+  await ensureMonthlyCostAlertStateTable(db);
+  await ensureTileRequestEventsTable(db);
+  const nowUnix = Math.floor(Date.parse(String(nowTimestamp || nowIso())) / 1000) || Math.floor(Date.now() / 1000);
+  const nowIsoValue = String(nowTimestamp || nowIso());
+  const monthStart = monthStartUnix(nowUnix);
+  const monthKey = monthKeyFromUnix(nowUnix);
+  const monthClassBOps = await countRowsFromQuery(
+    db,
+    `
+      SELECT COUNT(*) AS count
+      FROM tile_request_events
+      WHERE created_at_unix >= ?
+        AND path LIKE '/tiles/%'
+    `,
+    [monthStart],
+  );
+  const estimate = estimateR2MonthlyCostUsd(env, monthClassBOps);
+
+  const baseUsd = Math.max(0, parseNonNegativeInteger(env.MONTHLY_COST_ALERT_BASE_USD, DEFAULT_MONTHLY_COST_ALERT_BASE_USD));
+  const stepUsd = Math.max(1, parseNonNegativeInteger(env.MONTHLY_COST_ALERT_STEP_USD, DEFAULT_MONTHLY_COST_ALERT_STEP_USD));
+  const state = await dbGet(
+    db,
+    `
+      SELECT
+        month_key,
+        last_notified_mark_usd,
+        last_estimated_usd,
+        last_alert_at,
+        updated_at
+      FROM monthly_cost_alert_state
+      WHERE month_key = ?
+      LIMIT 1
+    `,
+    [monthKey],
+  );
+  const lastNotifiedMark = clampNonNegativeInt(state && state.last_notified_mark_usd);
+  const totalCostRounded = Number(estimate.total_cost_usd.toFixed(2));
+  let highestCrossedMark = 0;
+  if (totalCostRounded >= (baseUsd + stepUsd)) {
+    const markIndex = Math.floor((totalCostRounded - baseUsd) / stepUsd);
+    highestCrossedMark = baseUsd + (markIndex * stepUsd);
+  }
+
+  let notifiedMarkUsd = lastNotifiedMark;
+  if (highestCrossedMark > lastNotifiedMark) {
+    await sendOpsAlertEmail(
+      env,
+      "Planetka estimated monthly Cloudflare cost crossed threshold",
+      [
+        `month=${monthKey}`,
+        `estimated_total_usd=${totalCostRounded.toFixed(2)}`,
+        `threshold_crossed_usd=${highestCrossedMark}`,
+        `base_usd=${baseUsd}`,
+        `step_usd=${stepUsd}`,
+        `r2_storage_gb_estimate=${estimate.storage_gb_estimate}`,
+        `r2_storage_gb_billable_rounded=${estimate.storage_gb_billable_rounded}`,
+        `r2_storage_cost_usd=${estimate.storage_cost_usd.toFixed(2)}`,
+        `r2_class_a_ops_estimate=${estimate.class_a_ops_estimate}`,
+        `r2_class_a_million_billable_rounded=${estimate.class_a_million_billable_rounded}`,
+        `r2_class_a_cost_usd=${estimate.class_a_cost_usd.toFixed(2)}`,
+        `r2_class_b_ops_month=${estimate.class_b_ops_month}`,
+        `r2_class_b_million_billable_rounded=${estimate.class_b_million_billable_rounded}`,
+        `r2_class_b_cost_usd=${estimate.class_b_cost_usd.toFixed(2)}`,
+        "note=Estimate based on configured R2 storage GB and monthly tile operation telemetry.",
+      ],
+    );
+    notifiedMarkUsd = highestCrossedMark;
+  }
+
+  const updatedAt = nowIso();
+  await dbRun(
+    db,
+    `
+      INSERT INTO monthly_cost_alert_state (
+        month_key,
+        last_notified_mark_usd,
+        last_estimated_usd,
+        last_alert_at,
+        updated_at,
+        created_at
+      ) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(month_key) DO UPDATE SET
+        last_notified_mark_usd = excluded.last_notified_mark_usd,
+        last_estimated_usd = excluded.last_estimated_usd,
+        last_alert_at = excluded.last_alert_at,
+        updated_at = excluded.updated_at
+    `,
+    [
+      monthKey,
+      notifiedMarkUsd,
+      totalCostRounded,
+      highestCrossedMark > lastNotifiedMark ? updatedAt : String(state && state.last_alert_at || ""),
+      updatedAt,
+      updatedAt,
+    ],
+  );
+
+  return {
+    month: monthKey,
+    base_usd: baseUsd,
+    step_usd: stepUsd,
+    estimated_total_usd: totalCostRounded,
+    last_notified_mark_usd: notifiedMarkUsd,
+    threshold_crossed_usd: highestCrossedMark > lastNotifiedMark ? highestCrossedMark : 0,
+    storage_cost_usd: Number(estimate.storage_cost_usd.toFixed(2)),
+    class_a_cost_usd: Number(estimate.class_a_cost_usd.toFixed(2)),
+    class_b_cost_usd: Number(estimate.class_b_cost_usd.toFixed(2)),
+    class_b_ops_month: estimate.class_b_ops_month,
+  };
+}
+
 async function ensureAllowanceTables(db) {
   await dbRun(
     db,
@@ -1749,7 +3208,7 @@ function buildPlanConfig(env) {
   const countingRule = String(env.ALLOWANCE_COUNTING_RULE || DEFAULT_ALLOWANCE_COUNTING_RULE).trim();
   const upgradeUrl = String(env.UPGRADE_URL || DEFAULT_UPGRADE_URL).trim();
   const manageSubscriptionUrl = String(env.MANAGE_SUBSCRIPTION_URL || "").trim();
-  const contactUrl = String(env.PLANETKA_CONTACT_URL || env.ALLOWANCE_SUPPORT_URL || DEFAULT_CONTACT_URL).trim();
+  const contactUrl = normalizeContactUrl(env.PLANETKA_CONTACT_URL || env.ALLOWANCE_SUPPORT_URL || DEFAULT_CONTACT_URL);
   return {
     periodDays,
     freeIncludedBytes,
@@ -1933,9 +3392,18 @@ function computeWarningState(totalRemainingBytes, includedLimitBytes, cfg) {
 }
 
 async function buildAllowanceState(db, user, subscription, env) {
-  void db;
   const cfg = buildPlanConfig(env);
   const planCode = resolvePlanCode(user, subscription, env);
+  const userId = String(user && user.id || "").trim();
+  const counter = userId ? await findUserDownloadCounter(db, userId) : null;
+  const throttledUntilRaw = String(counter && counter.throttled_until || "").trim();
+  const throttledUntilMs = Date.parse(throttledUntilRaw);
+  const throttledUntil = Number.isFinite(throttledUntilMs) && throttledUntilMs > Date.now()
+    ? throttledUntilRaw
+    : "";
+  const throttleReason = throttledUntil
+    ? String(counter && counter.throttle_reason || "").trim()
+    : "";
   const includedLimitBytes = UNLIMITED_ALLOWANCE_BYTES;
   const includedRemainingBytes = UNLIMITED_ALLOWANCE_BYTES;
   const totalRemainingBytes = UNLIMITED_ALLOWANCE_BYTES;
@@ -1961,6 +3429,8 @@ async function buildAllowanceState(db, user, subscription, env) {
       exhausted,
       counting_rule: "Unlimited access for this release; no periodic allowance is applied.",
     },
+    throttledUntil,
+    throttleReason,
     includedRemainingBytesBase: includedRemainingBytes,
     periodId: "",
   };
@@ -1975,9 +3445,13 @@ function serializeAccountState(state) {
     commercial_use_allowed: Boolean(state.commercialUseAllowed),
     upgrade_url: state.upgradeUrl,
     manage_subscription_url: state.manageSubscriptionUrl,
+    manage_hosted_streaming_access_url: state.manageSubscriptionUrl,
     contact_url: state.contactUrl,
     billing_period_end: state.dataAllowance.period_end,
     data_allowance: state.dataAllowance,
+    throttled_until: String(state.throttledUntil || "").trim(),
+    throttle_reason: String(state.throttleReason || "").trim(),
+    is_throttled: Boolean(state.throttledUntil),
   };
 }
 
@@ -2062,6 +3536,7 @@ async function consumeAllowanceBytes(db, user, subscription, env, bytesUsed) {
 }
 
 async function findUserByEmail(db, email) {
+  await ensureUserProvisionalColumns(db);
   return dbGet(
     db,
     `
@@ -2072,6 +3547,7 @@ async function findUserByEmail(db, email) {
         u.provisional_plan_code,
         u.provisional_expires_at,
         u.pro_confirmed_at,
+        u.pro_access_expires_at,
         u.created_at,
         u.last_login_at
       FROM users u
@@ -2083,6 +3559,7 @@ async function findUserByEmail(db, email) {
 }
 
 async function findUserById(db, userId) {
+  await ensureUserProvisionalColumns(db);
   return dbGet(
     db,
     `
@@ -2093,6 +3570,7 @@ async function findUserById(db, userId) {
         u.provisional_plan_code,
         u.provisional_expires_at,
         u.pro_confirmed_at,
+        u.pro_access_expires_at,
         u.created_at,
         u.last_login_at
       FROM users u
@@ -2259,6 +3737,9 @@ async function ensureUserProvisionalColumns(db) {
   }
   if (!names.has("pro_confirmed_at")) {
     statements.push(`ALTER TABLE users ADD COLUMN pro_confirmed_at TEXT`);
+  }
+  if (!names.has("pro_access_expires_at")) {
+    statements.push(`ALTER TABLE users ADD COLUMN pro_access_expires_at TEXT`);
   }
   for (const statement of statements) {
     try {
@@ -2750,6 +4231,7 @@ async function buildPaidClaimLifecycleSnapshot(db, env, claim) {
       provisional_plan_code: normalizeRequestedPlan(user.provisional_plan_code || PLAN_CODE_PLANETKA),
       provisional_expires_at: String(user.provisional_expires_at || "").trim(),
       pro_confirmed_at: String(user.pro_confirmed_at || "").trim(),
+      pro_access_expires_at: String(user.pro_access_expires_at || "").trim(),
       last_login_at: String(user.last_login_at || "").trim(),
     },
     entitlement: resolveEntitlementState(user, env),
@@ -3000,9 +4482,11 @@ async function upsertUserByEmail(db, email, status = PLAN_CODE_PLANETKA, options
   const provisionalPlanCode = normalizeRequestedPlan(options.provisionalPlanCode || "");
   const provisionalExpiresAt = String(options.provisionalExpiresAt || "").trim();
   const proConfirmedAt = String(options.proConfirmedAt || "").trim();
+  const proAccessExpiresAt = String(options.proAccessExpiresAt || "").trim();
   const requestedPaidStatus = requestedStatus === PLAN_CODE_PLANETKA_PRO || requestedStatus === PLAN_CODE_PLANETKA_STUDIO;
   const hasServerEntitlementSignal = Boolean(
     proConfirmedAt
+    || proAccessExpiresAt
     || (isPaidRequestedPlan(provisionalPlanCode) && provisionalExpiresAt)
     || isPermanentProEmail(normalizedEmail, env),
   );
@@ -3032,7 +4516,8 @@ async function upsertUserByEmail(db, email, status = PLAN_CODE_PLANETKA, options
           status = ?,
           provisional_plan_code = CASE WHEN ? != '' THEN ? ELSE provisional_plan_code END,
           provisional_expires_at = CASE WHEN ? != '' THEN ? ELSE provisional_expires_at END,
-          pro_confirmed_at = CASE WHEN ? != '' THEN ? ELSE pro_confirmed_at END
+          pro_confirmed_at = CASE WHEN ? != '' THEN ? ELSE pro_confirmed_at END,
+          pro_access_expires_at = CASE WHEN ? != '' THEN ? ELSE pro_access_expires_at END
         WHERE id = ?
       `,
       [
@@ -3043,6 +4528,8 @@ async function upsertUserByEmail(db, email, status = PLAN_CODE_PLANETKA, options
         provisionalExpiresAt,
         proConfirmedAt,
         proConfirmedAt,
+        proAccessExpiresAt,
+        proAccessExpiresAt,
         user.id,
       ],
     );
@@ -3073,8 +4560,9 @@ async function upsertUserByEmail(db, email, status = PLAN_CODE_PLANETKA, options
         privacy_version,
         provisional_plan_code,
         provisional_expires_at,
-        pro_confirmed_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        pro_confirmed_at,
+        pro_access_expires_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     [
       id,
@@ -3088,6 +4576,7 @@ async function upsertUserByEmail(db, email, status = PLAN_CODE_PLANETKA, options
       provisionalPlanCode || null,
       provisionalExpiresAt || null,
       proConfirmedAt || null,
+      proAccessExpiresAt || null,
     ],
   );
   user = await findUserByEmail(db, normalizedEmail);
@@ -3248,6 +4737,21 @@ async function enforceUserPlanPolicy(db, user, subscription = null, env = {}) {
       `,
       [targetPlan, user.id],
     );
+    await dbRun(
+      db,
+      `
+        UPDATE api_keys
+        SET
+          plan_code = ?,
+          expires_at = NULL,
+          provisional = 0,
+          provisional_expires_at = NULL,
+          confirmed_at = NULL
+        WHERE user_id = ?
+          AND status = 'active'
+      `,
+      [PLAN_CODE_PLANETKA, user.id],
+    );
     return {
       ...user,
       status: targetPlan,
@@ -3256,6 +4760,21 @@ async function enforceUserPlanPolicy(db, user, subscription = null, env = {}) {
     };
   }
   await dbRun(db, `UPDATE users SET status = ? WHERE id = ?`, [targetPlan, user.id]);
+  await dbRun(
+    db,
+    `
+      UPDATE api_keys
+      SET
+        plan_code = ?,
+        expires_at = NULL,
+        provisional = 0,
+        provisional_expires_at = NULL,
+        confirmed_at = CASE WHEN ? != '' THEN ? ELSE confirmed_at END
+      WHERE user_id = ?
+        AND status = 'active'
+    `,
+    [targetPlan, String(user && user.pro_confirmed_at || "").trim(), String(user && user.pro_confirmed_at || "").trim(), user.id],
+  );
   return { ...user, status: targetPlan };
 }
 
@@ -3372,9 +4891,7 @@ async function sendApiKeyIssuedEmail(env, email, apiKeyValue, planCode, expiresA
   const from = String(env.EMAIL_FROM || "info@planetka.io").trim();
   const safePlan = normalizeRequestedPlan(planCode);
   const displayPlan = safePlan === PLAN_CODE_PLANETKA ? "Free" : (safePlan === PLAN_CODE_PLANETKA_STUDIO ? "Studio" : "Pro");
-  const expiryText = String(expiresAt || "").trim()
-    ? `Expires at: ${String(expiresAt || "").trim()}`
-    : "Expires at: never";
+  void expiresAt;
   const response = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: {
@@ -3389,7 +4906,6 @@ async function sendApiKeyIssuedEmail(env, email, apiKeyValue, planCode, expiresA
         "Your Planetka API key is ready.",
         "",
         `Plan: ${displayPlan}`,
-        expiryText,
         "",
         "API key:",
         apiKeyValue,
@@ -3399,8 +4915,7 @@ async function sendApiKeyIssuedEmail(env, email, apiKeyValue, planCode, expiresA
       html: `
         <div style="font-family: Arial, sans-serif; line-height: 1.5; color: #111827;">
           <h2 style="margin-bottom: 16px;">Your Planetka API key</h2>
-          <p><strong>Plan:</strong> ${displayPlan}<br/>
-          <strong>${escapeHtml(expiryText)}</strong></p>
+          <p><strong>Plan:</strong> ${displayPlan}</p>
           <p style="margin: 16px 0;">Paste this key in Blender &rarr; Planetka &rarr; Account:</p>
           <pre style="padding:12px;border-radius:8px;background:#111827;color:#e5e7eb;overflow:auto;">${escapeHtml(apiKeyValue)}</pre>
         </div>
@@ -3543,10 +5058,6 @@ async function isApiKeyUsableById(db, apiKeyId, expectedUserId = "") {
   if (safeExpectedUserId && String(row.user_id || "").trim() !== safeExpectedUserId) {
     return false;
   }
-  const expiresAt = String(row.expires_at || "").trim();
-  if (expiresAt && Date.parse(expiresAt) < Date.now()) {
-    return false;
-  }
   return true;
 }
 
@@ -3630,7 +5141,8 @@ async function findActiveApiKeyRecord(db, apiKeyValue) {
         u.status,
         u.provisional_plan_code,
         u.provisional_expires_at,
-        u.pro_confirmed_at
+        u.pro_confirmed_at,
+        u.pro_access_expires_at
       FROM api_keys ak
       JOIN users u ON u.id = ak.user_id
       WHERE ak.key_hash = ?
@@ -3801,11 +5313,15 @@ async function createAccessToken(env, user, subscription, extraClaims = {}) {
   void subscription;
   const secret = requireSecret(env, "JWT_SIGNING_SECRET");
   const exp = Math.floor(Date.now() / 1000) + (60 * 60);
+  const hostedStreamingAccessStatus = subscriptionStatusForUser(user, env);
+  const hostedStreamingAccessValidUntil = "";
   const basePayload = {
     type: "access",
     sub: user.id,
     email: user.email,
-    subscription_status: subscriptionStatusForUser(user, env),
+    subscription_status: hostedStreamingAccessStatus,
+    hosted_streaming_access_status: hostedStreamingAccessStatus,
+    hosted_streaming_access_valid_until: hostedStreamingAccessValidUntil || null,
     exp,
   };
   const payload = { ...basePayload };
@@ -3968,6 +5484,14 @@ function collectStripeLineItemEntitlements(lineItems) {
   };
 }
 
+function collectStripeSubscriptionEntitlements(subscription) {
+  const items = Array.isArray(subscription && subscription.items && subscription.items.data)
+    ? subscription.items.data
+    : [];
+  const lineItems = items.map((item) => ({ price: item && item.price ? item.price : null }));
+  return collectStripeLineItemEntitlements(lineItems);
+}
+
 async function fetchStripeCheckoutSessionLineItems(env, sessionId) {
   const secretKey = requireSecret(env, "STRIPE_SECRET_KEY");
   const baseUrl = `https://api.stripe.com/v1/checkout/sessions/${encodeURIComponent(sessionId)}/line_items`;
@@ -4001,6 +5525,59 @@ async function fetchStripeCheckoutSessionLineItems(env, sessionId) {
   }
 
   return lineItems;
+}
+
+async function fetchStripeSubscription(env, subscriptionId) {
+  const safeSubscriptionId = String(subscriptionId || "").trim();
+  if (!safeSubscriptionId) {
+    return null;
+  }
+  const secretKey = requireSecret(env, "STRIPE_SECRET_KEY");
+  const response = await fetch(
+    `https://api.stripe.com/v1/subscriptions/${encodeURIComponent(safeSubscriptionId)}`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${secretKey}`,
+      },
+    },
+  );
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`stripe_subscription_fetch_failed_${response.status}_${body}`);
+  }
+  return response.json();
+}
+
+async function fetchStripeCustomerEmail(env, customerId) {
+  const safeCustomerId = String(customerId || "").trim();
+  if (!safeCustomerId) {
+    return "";
+  }
+  const secretKey = requireSecret(env, "STRIPE_SECRET_KEY");
+  const response = await fetch(
+    `https://api.stripe.com/v1/customers/${encodeURIComponent(safeCustomerId)}`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${secretKey}`,
+      },
+    },
+  );
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`stripe_customer_fetch_failed_${response.status}_${body}`);
+  }
+  const payload = await response.json();
+  return normalizeEmail(payload && payload.email);
+}
+
+function isoFromUnixSeconds(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return "";
+  }
+  return new Date(Math.floor(parsed) * 1000).toISOString();
 }
 
 async function readBearerUser(request, env) {
@@ -4043,22 +5620,14 @@ function buildMagicLinkUrl(env, token, deviceCode = "") {
 function renderApiKeyRequestPage(env, message = "", requestedPlan = PLAN_CODE_PLANETKA) {
   const termsUrl = String(env.TERMS_URL || DEFAULT_TERMS_URL).trim() || DEFAULT_TERMS_URL;
   const privacyUrl = String(env.PRIVACY_URL || DEFAULT_PRIVACY_URL).trim() || DEFAULT_PRIVACY_URL;
-  const contactUrl = String(env.CONTACT_URL || DEFAULT_CONTACT_URL).trim() || DEFAULT_CONTACT_URL;
+  const contactUrl = normalizeContactUrl(env.CONTACT_URL || DEFAULT_CONTACT_URL);
   const safeMessage = String(message || "").trim();
   const messageMarkup = safeMessage
     ? `<p id="status" style="margin-top:14px;color:#86efac;">${escapeHtml(safeMessage)}</p>`
     : `<p id="status" style="margin-top:14px;color:#cbd5e1;"></p>`;
-  const safePlan = normalizeRequestedPlan(requestedPlan || PLAN_CODE_PLANETKA);
-  const isPaidPlan = safePlan === PLAN_CODE_PLANETKA_PRO || safePlan === PLAN_CODE_PLANETKA_STUDIO;
-  const subTitle = isPaidPlan
-    ? "Enter your purchase email and order ID to receive your API key."
-    : "Enter your email address and we will send you a one-click activation link.";
-  const orderFieldMarkup = isPaidPlan
-    ? `
-        <label for="orderId">Order ID</label>
-        <input id="orderId" type="text" placeholder="Enter your order ID" required />
-      `
-    : ``;
+  void requestedPlan;
+  const safePlan = PLAN_CODE_PLANETKA;
+  const subTitle = "Enter your email and we will send a one-click activation link for your API key.";
   return html(`<!doctype html>
 <html lang="en">
   <head>
@@ -4090,7 +5659,6 @@ function renderApiKeyRequestPage(env, message = "", requestedPlan = PLAN_CODE_PL
       <form id="form">
         <label for="email">Email</label>
         <input id="email" type="email" placeholder="you@example.com" required />
-        ${orderFieldMarkup}
         <div class="checkbox">
           <input id="terms" type="checkbox" required />
           <label for="terms">I agree to the <a href="${termsUrl}" target="_blank" rel="noopener noreferrer">Terms and Conditions</a> and <a href="${privacyUrl}" target="_blank" rel="noopener noreferrer">Privacy Policy</a>.</label>
@@ -4124,7 +5692,6 @@ function renderApiKeyRequestPage(env, message = "", requestedPlan = PLAN_CODE_PL
             website: String(document.getElementById("website").value || ""),
             submitted_at_ms: Date.now() - startedAt,
             requested_plan: "${safePlan}",
-            order_id: String((document.getElementById("orderId") || {}).value || "").trim(),
           };
           const response = await fetch("/auth/api-key/request", {
             method: "POST",
@@ -4151,13 +5718,12 @@ function renderApiKeyRequestPage(env, message = "", requestedPlan = PLAN_CODE_PL
 }
 
 function renderApiKeyActivatedPage(env, data = {}) {
-  const contactUrl = String(env.CONTACT_URL || DEFAULT_CONTACT_URL).trim() || DEFAULT_CONTACT_URL;
+  const contactUrl = normalizeContactUrl(env.CONTACT_URL || DEFAULT_CONTACT_URL);
   const key = String(data.apiKey || "").trim();
   const keyMask = key ? maskApiKey(key) : "";
   const email = String(data.email || "").trim();
   const planCode = normalizeRequestedPlan(data.planCode || PLAN_CODE_PLANETKA);
   const planLabel = planCode === PLAN_CODE_PLANETKA ? "Free" : (planCode === PLAN_CODE_PLANETKA_STUDIO ? "Studio" : "Pro");
-  const expiry = String(data.expiresAt || "").trim() || "never";
   return html(`<!doctype html>
 <html lang="en">
   <head>
@@ -4181,7 +5747,6 @@ function renderApiKeyActivatedPage(env, data = {}) {
       <h1>API key generated</h1>
       <p>Email: <strong>${escapeHtml(email || "unknown")}</strong></p>
       <p>Plan: <strong>${escapeHtml(planLabel)}</strong></p>
-      <p>Expires: <strong>${escapeHtml(expiry)}</strong></p>
       <pre id="apiKey">${escapeHtml(key)}</pre>
       <button id="copyBtn" type="button">Copy API key</button>
       <p class="muted" id="copyStatus">Key mask: ${escapeHtml(keyMask)}</p>
@@ -4353,13 +5918,12 @@ async function handleApiKeyRequest(request, env) {
   await ensureRateLimitsTable(db);
   const body = await parseJson(request);
   const email = normalizeEmail(body.email);
-  const requestedPlan = normalizeRequestedPlan(body.requested_plan || PLAN_CODE_PLANETKA);
-  const isPaidClaim = isPaidRequestedPlan(requestedPlan);
-  const orderId = normalizeOrderId(body.order_id || "");
   const requestDeviceId = normalizeDeviceId(body.device_id || "");
   const acceptTerms = parseBooleanFlag(body.accept_terms);
   const acceptPrivacy = parseBooleanFlag(body.accept_privacy);
   const optInNews = parseBooleanFlag(body.opt_in_news);
+  // Public API-key request flow is always Free. Paid elevation only comes from Stripe webhook entitlement.
+  const requestedPlan = PLAN_CODE_PLANETKA;
   const honeypot = String(body.website || "").trim();
   const submittedAtMs = parseNonNegativeInteger(body.submitted_at_ms, 0);
   const minFormAgeMs = Math.max(
@@ -4377,9 +5941,6 @@ async function handleApiKeyRequest(request, env) {
   }
   if (!acceptTerms || !acceptPrivacy) {
     return json({ ok: false, error: "terms_consent_required" }, 400, env);
-  }
-  if (isPaidClaim && !orderId) {
-    return json({ ok: false, error: "paid_claim_order_id_required" }, 400, env);
   }
 
   const clientIp = requestClientIp(request);
@@ -4413,41 +5974,6 @@ async function handleApiKeyRequest(request, env) {
       authStartEmailRate.retryAfterSeconds,
     );
   }
-  if (isPaidClaim) {
-    const paidClaimIpDailyRate = await consumeRateLimitWindow(
-      db,
-      "paid_claim_request_ip_day",
-      clientIp,
-      parseRateLimitInteger(
-        env.RATE_LIMIT_PAID_CLAIM_IP_DAILY_LIMIT,
-        DEFAULT_RATE_LIMIT_PAID_CLAIM_IP_DAILY_LIMIT,
-      ),
-      parseRateLimitInteger(
-        env.RATE_LIMIT_PAID_CLAIM_IP_DAILY_WINDOW_SECONDS,
-        DEFAULT_RATE_LIMIT_PAID_CLAIM_IP_DAILY_WINDOW_SECONDS,
-      ),
-    );
-    if (!paidClaimIpDailyRate.allowed) {
-      await signalRejectedClaimAttempt(
-        db,
-        env,
-        {
-          email,
-          ip: clientIp,
-          deviceId: requestDeviceId,
-          orderId,
-          requestedPlan,
-          reason: "paid_claim_ip_daily_rate_limited",
-        },
-      );
-      return rateLimitedResponse(
-        env,
-        "paid_claim_ip_daily_rate_limited",
-        "Too many paid-claim attempts from this IP. Please try again later.",
-        paidClaimIpDailyRate.retryAfterSeconds,
-      );
-    }
-  }
 
   let existingUser = await findUserByEmail(db, email);
   if (existingUser && !isBlockedStatus(existingUser.status)) {
@@ -4476,60 +6002,6 @@ async function handleApiKeyRequest(request, env) {
       throw error;
     }
   }
-  if (isPaidClaim) {
-    const latestPaidClaim = await findLatestPaidClaimByEmail(db, email);
-    if (latestPaidClaim) {
-      const cooldownUntil = String(latestPaidClaim.cooldown_until || "").trim();
-      const cooldownMs = Date.parse(cooldownUntil);
-      if (Number.isFinite(cooldownMs) && cooldownMs > Date.now()) {
-        await signalRejectedClaimAttempt(
-          db,
-          env,
-          {
-            email,
-            ip: clientIp,
-            deviceId: requestDeviceId,
-            orderId,
-            requestedPlan,
-            claimId: String(latestPaidClaim.id || "").trim(),
-            reason: "paid_claim_cooldown_active",
-          },
-        );
-        const retryAfterSeconds = Math.max(1, Math.ceil((cooldownMs - Date.now()) / 1000));
-        return rateLimitedResponse(
-          env,
-          "paid_claim_cooldown_active",
-          "Paid claim is in cooldown. Try again after cooldown ends.",
-          retryAfterSeconds,
-        );
-      }
-    }
-    const pendingPaidClaim = await findPendingPaidClaimByEmail(db, email);
-    if (pendingPaidClaim) {
-      await signalRejectedClaimAttempt(
-        db,
-        env,
-        {
-          email,
-          ip: clientIp,
-          deviceId: requestDeviceId,
-          orderId,
-          requestedPlan,
-          claimId: String(pendingPaidClaim.id || "").trim(),
-          reason: "paid_claim_pending_review",
-        },
-      );
-      return json(
-        {
-          ok: false,
-          error: "paid_claim_pending_review",
-          message: "A paid claim is already pending review for this account.",
-        },
-        409,
-        env,
-      );
-    }
-  }
 
   const legalVersion = String(env.TERMS_VERSION || env.LEGAL_VERSION || DEFAULT_LEGAL_VERSION).trim() || DEFAULT_LEGAL_VERSION;
   const privacyVersion = String(env.PRIVACY_VERSION || env.LEGAL_VERSION || DEFAULT_LEGAL_VERSION).trim() || DEFAULT_LEGAL_VERSION;
@@ -4537,7 +6009,7 @@ async function handleApiKeyRequest(request, env) {
   await upsertUserByEmail(
     db,
     email,
-    PLAN_CODE_PLANETKA,
+    requestedPlan,
     {
       termsAcceptedAt: acceptedAt,
       privacyAcceptedAt: acceptedAt,
@@ -4552,9 +6024,9 @@ async function handleApiKeyRequest(request, env) {
 
   const token = randomToken(36);
   const tokenHash = await sha256Hex(token);
-  const requestType = isPaidClaim ? API_KEY_REQUEST_TYPE_PAID_CLAIM : API_KEY_REQUEST_TYPE_FREE;
-  const reviewStatus = isPaidClaim ? CLAIM_REVIEW_PENDING : CLAIM_REVIEW_APPROVED;
-  const claimPlanCode = isPaidClaim ? requestedPlan : PLAN_CODE_PLANETKA;
+  const requestType = API_KEY_REQUEST_TYPE_FREE;
+  const reviewStatus = CLAIM_REVIEW_APPROVED;
+  const claimPlanCode = requestedPlan;
   const claimId = crypto.randomUUID();
   await dbRun(
     db,
@@ -4584,7 +6056,7 @@ async function handleApiKeyRequest(request, env) {
       claimPlanCode,
       requestType,
       claimPlanCode,
-      orderId || null,
+      null,
       tokenHash,
       addMinutesIso(30),
       reviewStatus,
@@ -4597,23 +6069,6 @@ async function handleApiKeyRequest(request, env) {
       nowIso(),
     ],
   );
-  if (isPaidClaim) {
-    await appendProvisionalClaimAudit(
-      db,
-      "claim_requested",
-      {
-        email,
-        claimId,
-        orderId,
-        planCode: requestedPlan,
-        ip: clientIp,
-        deviceId: requestDeviceId,
-        details: {
-          review_status: reviewStatus,
-        },
-      },
-    );
-  }
   await sendApiKeyActivationEmail(env, email, token);
   return json(
     {
@@ -4665,44 +6120,19 @@ async function activateApiKeyFromToken(db, env, rawToken) {
       now,
       API_KEY_REQUEST_TYPE_FREE,
       API_KEY_REQUEST_TYPE_PAID_CLAIM,
-      CLAIM_REVIEW_PENDING,
+      CLAIM_REVIEW_APPROVED,
     ],
   );
   if (!requestRow) {
     throw new Error("invalid_or_expired_token");
   }
 
-  const requestType = String(requestRow.request_type || API_KEY_REQUEST_TYPE_FREE).trim().toLowerCase();
-  const requestedPlan = requestType === API_KEY_REQUEST_TYPE_PAID_CLAIM
-    ? normalizeRequestedPlan(requestRow.claimed_plan_code || requestRow.requested_plan || PLAN_CODE_PLANETKA)
-    : PLAN_CODE_PLANETKA;
   const email = normalizeEmail(requestRow.email);
-  const orderId = normalizeOrderId(requestRow.order_id || "");
-  const claimId = String(requestRow.id || "").trim();
-  let provisionalPlanCode = "";
-  let provisionalExpiresAt = "";
-  let proConfirmedAt = "";
-  let statusToSet = PLAN_CODE_PLANETKA;
-
-  if (isPaidRequestedPlan(requestedPlan)) {
-    statusToSet = requestedPlan;
-    if (!isPermanentProEmail(email, env)) {
-      provisionalPlanCode = requestedPlan;
-      provisionalExpiresAt = computeProvisionalExpiryIso(env);
-    } else {
-      proConfirmedAt = nowIso();
-    }
-  }
-
   let user = await upsertUserByEmail(
     db,
     email,
-    statusToSet,
-    {
-      provisionalPlanCode,
-      provisionalExpiresAt,
-      proConfirmedAt,
-    },
+    PLAN_CODE_PLANETKA,
+    {},
     env,
   );
   user = await enforceUserPlanPolicy(db, user, null, env);
@@ -4713,59 +6143,10 @@ async function activateApiKeyFromToken(db, env, rawToken) {
     env,
     user,
     effectivePlanCode,
-    {
-      provisional: Boolean(provisionalPlanCode),
-      provisionalExpiresAt,
-      confirmedAt: proConfirmedAt,
-    },
+    {},
   );
 
   await sendApiKeyIssuedEmail(env, email, issued.apiKey, issued.planCode, issued.expiresAt);
-  if (requestType === API_KEY_REQUEST_TYPE_PAID_CLAIM) {
-    if (!provisionalPlanCode || !provisionalExpiresAt) {
-      await markPaidClaimReviewed(
-        db,
-        claimId,
-        CLAIM_REVIEW_APPROVED,
-        {
-          reviewedBy: "system_auto_confirmed",
-          reviewNote: "auto_confirmed_permanent_pro",
-          clearCooldown: true,
-        },
-      );
-    }
-    await appendProvisionalClaimAudit(
-      db,
-      provisionalPlanCode && provisionalExpiresAt ? "claim_activated_provisional" : "claim_activated_confirmed",
-      {
-        email,
-        userId: String(user && user.id || "").trim(),
-        claimId,
-        orderId,
-        planCode: requestedPlan,
-        ip: String(requestRow.request_ip || "").trim(),
-        deviceId: String(requestRow.request_device_id || "").trim(),
-        details: {
-          issued_plan_code: issued.planCode,
-          provisional_expires_at: provisionalExpiresAt,
-        },
-      },
-    );
-  }
-  if (provisionalPlanCode && provisionalExpiresAt) {
-    await sendProvisionalPlanAlert(
-      env,
-      {
-        email,
-        requestedPlan,
-        provisionalExpiresAt,
-        orderId,
-        ip: String(requestRow.request_ip || "").trim(),
-        deviceId: String(requestRow.request_device_id || "").trim(),
-        claimId,
-      },
-    );
-  }
   return {
     email,
     apiKey: issued.apiKey,
@@ -4829,10 +6210,6 @@ async function handleApiKeyExchange(request, env) {
   if (String(record.api_key_status || "").trim().toLowerCase() !== "active") {
     return json({ ok: false, error: "api_key_revoked" }, 401, env);
   }
-  const keyExpiresAt = String(record.api_key_expires_at || "").trim();
-  if (keyExpiresAt && Date.parse(keyExpiresAt) < Date.now()) {
-    return json({ ok: false, error: "api_key_expired" }, 401, env);
-  }
   if (isBlockedStatus(record.status)) {
     return blockedAccountResponse(env);
   }
@@ -4844,6 +6221,7 @@ async function handleApiKeyExchange(request, env) {
     provisional_plan_code: record.provisional_plan_code || "",
     provisional_expires_at: record.provisional_expires_at || "",
     pro_confirmed_at: record.pro_confirmed_at || "",
+    pro_access_expires_at: record.pro_access_expires_at || "",
   };
   user = await enforceUserPlanPolicy(db, user, null, env);
   const effectivePlanCode = resolvePlanCode(user, null, env);
@@ -4902,14 +6280,7 @@ async function handleApiKeyExchange(request, env) {
   await dbRun(db, `UPDATE users SET last_login_at = ? WHERE id = ?`, [now, user.id]);
   await dbRun(db, `UPDATE api_keys SET last_used_at = ? WHERE id = ?`, [now, record.api_key_id]);
 
-  let refreshExpiresAt = addDaysIso(7);
-  if (keyExpiresAt) {
-    const keyExpMs = Date.parse(keyExpiresAt);
-    const refreshExpMs = Date.parse(refreshExpiresAt);
-    if (Number.isFinite(keyExpMs) && Number.isFinite(refreshExpMs) && keyExpMs < refreshExpMs) {
-      refreshExpiresAt = new Date(keyExpMs).toISOString();
-    }
-  }
+  const refreshExpiresAt = addDaysIso(7);
 
   const accessToken = await createAccessToken(
     env,
@@ -4940,6 +6311,8 @@ async function handleApiKeyExchange(request, env) {
       access_token: accessToken,
       refresh_token: refreshToken,
       subscription_status: subscriptionStatusForUser(user, env),
+      hosted_streaming_access_status: subscriptionStatusForUser(user, env),
+      hosted_streaming_access_valid_until: null,
       renews_at: "",
       trial_ends_at: "",
       api_key_mask: maskApiKey(apiKey),
@@ -5116,6 +6489,7 @@ async function handleAuthVerify(request, env) {
     return json({ ok: false, error: "magic_link_auth_disabled" }, 404, env);
   }
   const db = requireDb(env);
+  await ensureUserProvisionalColumns(db);
   await ensureMagicLinksTokenIndex(db);
   const body = await parseJson(request);
   const token = String(body.token || "").trim();
@@ -5187,7 +6561,8 @@ async function handleAuthVerify(request, env) {
         u.status AS user_status,
         u.provisional_plan_code,
         u.provisional_expires_at,
-        u.pro_confirmed_at
+        u.pro_confirmed_at,
+        u.pro_access_expires_at
       FROM users u
       WHERE u.id = ?
       LIMIT 1
@@ -5213,6 +6588,7 @@ async function handleAuthVerify(request, env) {
     provisional_plan_code: userRecord.provisional_plan_code || "",
     provisional_expires_at: userRecord.provisional_expires_at || "",
     pro_confirmed_at: userRecord.pro_confirmed_at || "",
+    pro_access_expires_at: userRecord.pro_access_expires_at || "",
   };
   user = await enforceUserPlanPolicy(db, user, null, env);
   const subscriptionStatus = subscriptionStatusForUser(user, env);
@@ -5269,6 +6645,8 @@ async function handleAuthVerify(request, env) {
       refresh_token: refreshToken,
       email: user.email,
       subscription_status: subscriptionStatus,
+      hosted_streaming_access_status: subscriptionStatus,
+      hosted_streaming_access_valid_until: null,
       renews_at: null,
       trial_ends_at: null,
       ...serializeAccountState(accountState),
@@ -5280,6 +6658,7 @@ async function handleAuthVerify(request, env) {
 
 async function handleAuthRefresh(request, env) {
   const db = requireDb(env);
+  await ensureUserProvisionalColumns(db);
   const body = await parseJson(request);
   const refreshToken = String(body.refresh_token || "").trim();
   if (!refreshToken) {
@@ -5302,7 +6681,8 @@ async function handleAuthRefresh(request, env) {
         u.status,
         u.provisional_plan_code,
         u.provisional_expires_at,
-        u.pro_confirmed_at
+        u.pro_confirmed_at,
+        u.pro_access_expires_at
       FROM refresh_sessions rs
       JOIN users u ON u.id = rs.user_id
       WHERE rs.refresh_token_hash = ?
@@ -5339,6 +6719,7 @@ async function handleAuthRefresh(request, env) {
     provisional_plan_code: session.provisional_plan_code || "",
     provisional_expires_at: session.provisional_expires_at || "",
     pro_confirmed_at: session.pro_confirmed_at || "",
+    pro_access_expires_at: session.pro_access_expires_at || "",
   };
   user = await enforceUserPlanPolicy(db, user, null, env);
   const subscriptionStatus = subscriptionStatusForUser(user, env);
@@ -5377,6 +6758,8 @@ async function handleAuthRefresh(request, env) {
       refresh_token: nextRefreshToken,
       email: user.email,
       subscription_status: subscriptionStatus,
+      hosted_streaming_access_status: subscriptionStatus,
+      hosted_streaming_access_valid_until: null,
       renews_at: null,
       trial_ends_at: null,
       ...serializeAccountState(accountState),
@@ -5406,6 +6789,8 @@ async function handleMe(request, env) {
       email: user.email,
       user_status: effectiveUserStatus,
       subscription_status: subscriptionStatus,
+      hosted_streaming_access_status: subscriptionStatus,
+      hosted_streaming_access_valid_until: null,
       trial_ends_at: null,
       renews_at: null,
       ...serializeAccountState(accountState),
@@ -5602,6 +6987,8 @@ async function handleDevicePoll(request, env) {
       access_token: session.access_token,
       refresh_token: session.refresh_token,
       subscription_status: session.subscription_status,
+      hosted_streaming_access_status: session.subscription_status,
+      hosted_streaming_access_valid_until: null,
       renews_at: session.renews_at,
       trial_ends_at: session.trial_ends_at,
       ...accountPayload,
@@ -5614,7 +7001,7 @@ async function handleDevicePoll(request, env) {
 function renderDeviceLoginPage(env, deviceCode = "", verifyMode = false) {
   const termsUrl = String(env.TERMS_URL || DEFAULT_TERMS_URL).trim() || DEFAULT_TERMS_URL;
   const privacyUrl = String(env.PRIVACY_URL || DEFAULT_PRIVACY_URL).trim() || DEFAULT_PRIVACY_URL;
-  const contactUrl = String(env.CONTACT_URL || DEFAULT_CONTACT_URL).trim() || DEFAULT_CONTACT_URL;
+  const contactUrl = normalizeContactUrl(env.CONTACT_URL || DEFAULT_CONTACT_URL);
   const loginSectionStyle = verifyMode ? "display:none;" : "";
   const verifySectionStyle = verifyMode ? "" : "display:none;";
   const verifyEmailInitial = verifyMode ? "Verifying email address..." : "";
@@ -5998,7 +7385,7 @@ async function handleTileRequest(request, env, path, ctx) {
   if (auth.error) {
     return auth.error;
   }
-  const { db, user, planCode } = auth;
+  const { db, user, planCode, deviceId } = auth;
 
   const requestStartedAtMs = Date.now();
   const clientIp = requestClientIp(request);
@@ -6012,6 +7399,32 @@ async function handleTileRequest(request, env, path, ctx) {
   let eventFolder = "";
   let eventFileName = "";
   let eventTileKey = "";
+  const throttleGate = await enforceDownloadThrottleGate(db, env, user, deviceId, clientIp);
+  if (throttleGate && throttleGate.blocked) {
+    eventStatusCode = 429;
+    eventErrorCode = String(throttleGate.code || "download_throttled");
+    return rateLimitedResponse(
+      env,
+      "download_throttled",
+      "High-volume data use detected. Download speed is temporarily throttled. Contact Planetka support if needed.",
+      clampNonNegativeInt(throttleGate.retryAfterSeconds) || 1,
+    );
+  }
+  if (throttleGate && throttleGate.isThrottled) {
+    const throttledDelayMs = Math.min(
+      30000,
+      Math.max(
+        0,
+        parseRateLimitInteger(
+          env.DOWNLOAD_THROTTLED_DELAY_MS,
+          DEFAULT_DOWNLOAD_THROTTLED_DELAY_MS,
+        ),
+      ),
+    );
+    if (throttledDelayMs > 0) {
+      await sleepMs(throttledDelayMs);
+    }
+  }
 
   try {
     const parts = path.replace(/^\/tiles\//, "").split("/");
@@ -6197,10 +7610,38 @@ async function handleTileRequest(request, env, path, ctx) {
       client_ip: clientIp,
       error_code: errorCode,
     });
-    if (ctx && typeof ctx.waitUntil === "function") {
-      ctx.waitUntil(telemetryWrite);
-    } else {
+    const processSignals = async () => {
       await telemetryWrite;
+      await Promise.all([
+        maybeSignalTileFarmingActivity(db, env, {
+          userId: String(user.id || ""),
+          userEmail: String(user.email || ""),
+          ip: clientIp,
+          deviceId: String(deviceId || ""),
+          resolveId,
+          tileKey: eventTileKey,
+          method: String(request.method || "GET"),
+          path,
+          statusCode,
+        }),
+        (statusCode === 200 && eventBytesServed > 0)
+          ? maybeProcessDownloadMonitoring(db, env, {
+            userId: String(user.id || ""),
+            userEmail: String(user.email || ""),
+            planCode,
+            bytesUsed: eventBytesServed,
+            createdAtUnix: Math.floor(Date.now() / 1000),
+            ip: clientIp,
+            deviceId: String(deviceId || ""),
+            country: cfCountry,
+          })
+          : Promise.resolve(),
+      ]);
+    };
+    if (ctx && typeof ctx.waitUntil === "function") {
+      ctx.waitUntil(processSignals());
+    } else {
+      await processSignals();
     }
   }
 }
@@ -6352,7 +7793,12 @@ async function handleAdminAnalyticsData(request, env) {
   }
   const { db, user } = auth;
   const windowMinutes = sanitizeAnalyticsMinutes(url.searchParams.get("minutes"), DEFAULT_ANALYTICS_WINDOW_MINUTES);
-  const snapshot = await collectAnalyticsSnapshot(db, windowMinutes);
+  const tileMapMinutes = sanitizeLiveTileMapMinutes(
+    url.searchParams.get("tile_map_minutes"),
+    DEFAULT_LIVE_TILE_MAP_WINDOW_MINUTES,
+  );
+  const planFilter = parseHeavyUserPlanFilter(url.searchParams.get("plan_filter"));
+  const snapshot = await collectAnalyticsSnapshot(db, windowMinutes, planFilter, tileMapMinutes, env);
   return json(
     {
       ok: true,
@@ -6362,6 +7808,27 @@ async function handleAdminAnalyticsData(request, env) {
     200,
     env,
   );
+}
+
+async function handleAdminAnalyticsTileMapImage(request, env) {
+  const key = String(env.ADMIN_ANALYTICS_TILE_MAP_KEY || DEFAULT_ADMIN_ANALYTICS_TILE_MAP_KEY).trim();
+  if (!key) {
+    return json({ ok: false, error: "tile_map_key_not_configured" }, 500, env);
+  }
+  const bucket = env.PLANETKA_DATA;
+  if (!bucket) {
+    return json({ ok: false, error: "r2_not_bound" }, 500, env);
+  }
+  const object = await bucket.get(key);
+  if (!object || !object.body) {
+    return json({ ok: false, error: "tile_map_image_not_found" }, 404, env);
+  }
+  const headers = {
+    ...corsHeaders(env),
+    "Content-Type": String(object.httpMetadata && object.httpMetadata.contentType || "image/jpeg"),
+    "Cache-Control": "public, max-age=3600",
+  };
+  return new Response(object.body, { status: 200, headers });
 }
 
 async function handleAdminAnalyticsPage(request, env) {
@@ -6391,6 +7858,10 @@ async function handleAdminAnalyticsPage(request, env) {
     .value { font-size: 22px; margin-top: 6px; font-weight: 600; }
     .controls { display:flex; gap:10px; align-items:center; margin: 8px 0 16px; }
     select, button { background:#111827; color:#e5e7eb; border:1px solid #374151; border-radius:8px; padding:7px 10px; }
+    .action-btn { font-size: 12px; padding: 4px 8px; margin-right: 6px; margin-bottom: 4px; cursor: pointer; }
+    .action-btn.warn { border-color: #9a3412; color: #fed7aa; }
+    .action-btn.danger { border-color: #991b1b; color: #fecaca; }
+    .action-wrap { white-space: nowrap; }
     table { width:100%; border-collapse: collapse; margin: 8px 0 16px; font-size: 13px; }
     th, td { border-bottom: 1px solid #1f2937; padding: 8px 6px; text-align:left; }
     th { color:#93c5fd; font-weight:600; }
@@ -6410,6 +7881,26 @@ async function handleAdminAnalyticsPage(request, env) {
       <option value="1440">24 hours</option>
       <option value="10080">7 days</option>
     </select>
+    <label for="planFilter">User type:</label>
+    <select id="planFilter">
+      <option value="all" selected>All</option>
+      <option value="free">Free</option>
+      <option value="paid">Paid</option>
+    </select>
+    <label for="heavySort">Rank by:</label>
+    <select id="heavySort">
+      <option value="lifetime" selected>Lifetime GB</option>
+      <option value="month">Month GB</option>
+      <option value="week">Week GB</option>
+      <option value="day">Day GB</option>
+      <option value="hour">Hour GB</option>
+    </select>
+    <label for="tileMapWindow">Live map:</label>
+    <select id="tileMapWindow">
+      <option value="1" selected>1 min</option>
+      <option value="3">3 min</option>
+      <option value="10">10 min</option>
+    </select>
     <button id="refresh">Refresh now</button>
     <span id="status" class="muted"></span>
   </div>
@@ -6428,7 +7919,17 @@ async function handleAdminAnalyticsPage(request, env) {
 
   <div class="section">
     <h3>Top Users</h3>
-    <table id="usersTable"><thead><tr><th>Email</th><th>Requests</th><th>GB</th><th>Errors</th><th>Last seen</th></tr></thead><tbody></tbody></table>
+    <table id="usersTable"><thead><tr><th>Email</th><th>Requests</th><th>Resolves</th><th>GB</th><th>Errors</th><th>Last seen</th></tr></thead><tbody></tbody></table>
+  </div>
+  <div class="section">
+    <h3>Heavy Users (GB Ranked)</h3>
+    <table id="heavyTable"><thead><tr><th>Email</th><th>Plan</th><th>Resolves</th><th>Lifetime GB</th><th>Month GB</th><th>Week GB</th><th>Day GB</th><th>Hour GB</th><th>Throttled Until</th><th>Last Seen</th><th>Actions</th></tr></thead><tbody></tbody></table>
+  </div>
+  <div class="section">
+    <h3>Live Tile Activity Map</h3>
+    <div class="muted" id="tileMapMeta">Loading map...</div>
+    <canvas id="tileMapCanvas" width="720" height="360" style="width: 100%; max-width: 980px; margin-top: 8px; border: 1px solid #1f2937; border-radius: 8px; background: #0a1628;"></canvas>
+    <table id="tileMapUsersTable" style="max-width: 980px;"><thead><tr><th>User</th><th>Color</th><th>Tiles (window)</th><th>Requests (window)</th><th>GB (window)</th></tr></thead><tbody></tbody></table>
   </div>
   <div class="section">
     <h3>Top Tiles</h3>
@@ -6438,10 +7939,17 @@ async function handleAdminAnalyticsPage(request, env) {
     <h3>Recent Failures</h3>
     <table id="failsTable"><thead><tr><th>Time</th><th>User</th><th>Status</th><th>Error</th><th>Tile</th><th>Cache</th><th>ms</th></tr></thead><tbody></tbody></table>
   </div>
+  <div class="section">
+    <h3>Expected Support Fallback Misses (Not Failures)</h3>
+    <table id="fallbackMissesTable"><thead><tr><th>Time</th><th>User</th><th>Layer</th><th>File</th><th>Status</th><th>Error</th><th>ms</th></tr></thead><tbody></tbody></table>
+  </div>
 
   <script>
     const statusEl = document.getElementById("status");
     const windowEl = document.getElementById("window");
+    const planFilterEl = document.getElementById("planFilter");
+    const heavySortEl = document.getElementById("heavySort");
+    const tileMapWindowEl = document.getElementById("tileMapWindow");
     const refreshBtn = document.getElementById("refresh");
     const setText = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
     const fmtInt = (v) => Number(v || 0).toLocaleString();
@@ -6453,6 +7961,14 @@ async function handleAdminAnalyticsPage(request, env) {
       return n.toFixed(i === 0 ? 0 : 2) + " " + units[i];
     };
     const fmtGb = (v) => (Number(v || 0) / (1024 * 1024 * 1024)).toFixed(3);
+    const decodeDataValue = (v) => {
+      try {
+        return decodeURIComponent(String(v || ""));
+      } catch (_error) {
+        return String(v || "");
+      }
+    };
+    const encodeDataValue = (v) => encodeURIComponent(String(v || ""));
     function renderRows(tableId, rows, rowBuilder) {
       const tbody = document.querySelector("#" + tableId + " tbody");
       if (!tbody) return;
@@ -6463,11 +7979,315 @@ async function handleAdminAnalyticsPage(request, env) {
         tbody.appendChild(tr);
       }
     }
+    const TILE_MAP_USER_COLORS = [
+      "#22c55e", "#3b82f6", "#ef4444", "#eab308", "#a855f7", "#14b8a6", "#f97316", "#ec4899", "#84cc16", "#06b6d4",
+      "#10b981", "#0ea5e9", "#f43f5e", "#f59e0b", "#6366f1", "#06b6d4", "#f97316", "#d946ef", "#65a30d", "#0284c7",
+      "#16a34a", "#2563eb", "#dc2626", "#ca8a04", "#7c3aed", "#0891b2", "#ea580c", "#db2777", "#4d7c0f", "#0369a1",
+      "#059669", "#1d4ed8", "#b91c1c", "#a16207", "#6d28d9", "#0e7490", "#c2410c", "#be185d", "#3f6212", "#075985",
+      "#34d399", "#60a5fa", "#fb7185", "#fbbf24", "#a78bfa", "#22d3ee", "#fb923c", "#f472b6", "#a3e635", "#38bdf8",
+      "#4ade80", "#93c5fd", "#fca5a5", "#fcd34d", "#c4b5fd", "#67e8f9", "#fdba74", "#f9a8d4", "#bef264", "#7dd3fc",
+      "#15803d", "#1e40af", "#991b1b", "#854d0e", "#5b21b6", "#155e75", "#9a3412", "#9d174d", "#365314", "#0c4a6e",
+      "#86efac", "#bfdbfe", "#fecaca", "#fde68a", "#ddd6fe", "#a5f3fc", "#fed7aa", "#fbcfe8", "#d9f99d", "#bae6fd",
+    ];
+    const TILE_MAP_BASEMAP_URL = "/admin/analytics/world-map.jpg";
+    let tileMapBaseImage = null;
+    let tileMapBaseImageState = "idle";
+    let tileMapLastPayload = null;
+    function parseTileKey(tileKey) {
+      const text = String(tileKey || "").trim();
+      const match = /_x(\\d{3})_y(\\d{3})_z(\\d{3})_d(\\d{3})\\.(?:exr|tif|tiff|png|jpe?g)$/i.exec(text);
+      if (!match) return null;
+      const x = Number.parseInt(match[1], 10);
+      const y = Number.parseInt(match[2], 10);
+      const z = Number.parseInt(match[3], 10);
+      const d = Number.parseInt(match[4], 10);
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z) || !Number.isFinite(d)) return null;
+      if (x < 0 || x > 359 || y < 0 || y > 179 || z <= 0 || z > 360) return null;
+      return { x, y, z, d };
+    }
+    function hexToRgb(hex) {
+      const raw = String(hex || "").trim().replace("#", "");
+      if (!raw) return null;
+      const normalized = raw.length === 3
+        ? raw.split("").map((ch) => ch + ch).join("")
+        : raw;
+      if (!/^[0-9a-fA-F]{6}$/.test(normalized)) return null;
+      return {
+        r: Number.parseInt(normalized.slice(0, 2), 16),
+        g: Number.parseInt(normalized.slice(2, 4), 16),
+        b: Number.parseInt(normalized.slice(4, 6), 16),
+      };
+    }
+    function scaledColor(hex, brightness, alpha) {
+      const rgb = hexToRgb(hex) || { r: 255, g: 255, b: 255 };
+      const level = Math.max(0, Math.min(1, Number(brightness || 0)));
+      const a = Math.max(0, Math.min(1, Number(alpha || 1)));
+      const r = Math.max(0, Math.min(255, Math.round(rgb.r * level)));
+      const g = Math.max(0, Math.min(255, Math.round(rgb.g * level)));
+      const b = Math.max(0, Math.min(255, Math.round(rgb.b * level)));
+      return "rgba(" + r + "," + g + "," + b + "," + a + ")";
+    }
+    function userHash(userKey) {
+      const text = String(userKey || "unknown");
+      let hash = 0;
+      for (let i = 0; i < text.length; i += 1) {
+        hash = ((hash * 31) + text.charCodeAt(i)) | 0;
+      }
+      return Math.abs(hash);
+    }
+    function userColorByOrdinal(index) {
+      const safeIndex = Math.max(0, Number(index || 0));
+      if (safeIndex < TILE_MAP_USER_COLORS.length) {
+        return TILE_MAP_USER_COLORS[safeIndex];
+      }
+      // Deterministic fallback: spread hues by golden-angle stepping.
+      const hue = (safeIndex * 137.508) % 360;
+      const sat = 68 + (safeIndex % 5) * 5;
+      const light = 52 + ((Math.floor(safeIndex / 5)) % 4) * 4;
+      return "hsl(" + hue.toFixed(1) + " " + sat.toFixed(0) + "% " + light.toFixed(0) + "%)";
+    }
+    function buildUserColorMap(preparedRows) {
+      const userKeys = [];
+      const seen = new Set();
+      for (const item of preparedRows || []) {
+        const row = item && item.row ? item.row : {};
+        const userId = String(row.user_id || "").trim();
+        const userEmail = String(row.user_email || "").trim();
+        const userKey = userId || userEmail || "unknown";
+        if (seen.has(userKey)) continue;
+        seen.add(userKey);
+        userKeys.push(userKey);
+      }
+      userKeys.sort((a, b) => {
+        const hashDiff = userHash(a) - userHash(b);
+        if (hashDiff !== 0) return hashDiff;
+        return a.localeCompare(b);
+      });
+      const colorMap = new Map();
+      for (let i = 0; i < userKeys.length; i += 1) {
+        colorMap.set(userKeys[i], userColorByOrdinal(i));
+      }
+      return colorMap;
+    }
+    function tileAlphaByD(parsed) {
+      if (!parsed) return 0;
+      const rawD = Number(parsed.d || 0);
+      const d = rawD > 0 ? rawD : 1;
+      return Math.max(0, Math.min(1, 1 / Math.max(1, d)));
+    }
+    function ensureTileMapBasemapLoaded() {
+      if (tileMapBaseImageState === "ready" || tileMapBaseImageState === "loading") {
+        return;
+      }
+      tileMapBaseImageState = "loading";
+      const image = new Image();
+      image.decoding = "async";
+      image.onload = () => {
+        tileMapBaseImage = image;
+        tileMapBaseImageState = "ready";
+        if (tileMapLastPayload) {
+          renderLiveTileMap(tileMapLastPayload);
+        }
+      };
+      image.onerror = () => {
+        tileMapBaseImage = null;
+        tileMapBaseImageState = "error";
+      };
+      image.src = TILE_MAP_BASEMAP_URL;
+    }
+    function drawTileMapBackground(ctx, width, height) {
+      ctx.clearRect(0, 0, width, height);
+      if (tileMapBaseImageState === "ready" && tileMapBaseImage) {
+        ctx.filter = "brightness(2500%)";
+        ctx.globalAlpha = 1;
+        ctx.drawImage(tileMapBaseImage, 0, 0, width, height);
+        ctx.filter = "none";
+        ctx.globalAlpha = 1;
+      } else {
+        const gradient = ctx.createLinearGradient(0, 0, 0, height);
+        gradient.addColorStop(0, "#0b1f35");
+        gradient.addColorStop(0.5, "#102642");
+        gradient.addColorStop(1, "#0a1a2d");
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, 0, width, height);
+      }
+      ctx.strokeStyle = "rgba(148, 163, 184, 0.35)";
+      ctx.lineWidth = 0.5;
+      ctx.strokeRect(0.5, 0.5, width - 1, height - 1);
+    }
+    function renderLiveTileMap(tileMapData) {
+      tileMapLastPayload = tileMapData || {};
+      ensureTileMapBasemapLoaded();
+      const canvas = document.getElementById("tileMapCanvas");
+      const metaEl = document.getElementById("tileMapMeta");
+      if (!canvas || !metaEl) {
+        return;
+      }
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        return;
+      }
+      const width = canvas.width;
+      const height = canvas.height;
+      drawTileMapBackground(ctx, width, height);
+
+      const rows = Array.isArray(tileMapData && tileMapData.rows) ? tileMapData.rows : [];
+      const scaleX = width / 360.0;
+      const scaleY = height / 180.0;
+      const userStats = new Map();
+      let plotted = 0;
+      const seenByUserTile = new Set();
+      const preparedRows = [];
+      for (const row of rows) {
+        const parsed = parseTileKey(row && row.tile_key);
+        if (!parsed) continue;
+        if (Number(parsed.z || 0) === 360) continue;
+        preparedRows.push({ row, parsed });
+      }
+      const userColorMap = buildUserColorMap(preparedRows);
+      // Draw larger/coarser tiles first, then finer tiles on top.
+      preparedRows.sort((left, right) => {
+        const zDiff = Number(right.parsed.z || 0) - Number(left.parsed.z || 0);
+        if (zDiff !== 0) return zDiff;
+        return Number(right.row && right.row.last_seen_unix || 0) - Number(left.row && left.row.last_seen_unix || 0);
+      });
+
+      for (const item of preparedRows) {
+        const row = item.row;
+        const parsed = item.parsed;
+        const userId = String(row && row.user_id || "").trim();
+        const userEmail = String(row && row.user_email || "").trim();
+        const userKey = userId || userEmail || "unknown";
+        const userColor = String(userColorMap.get(userKey) || "#ffffff");
+        const alpha = tileAlphaByD(parsed);
+        const x = parsed.x * scaleX;
+        const y = (180 - (parsed.y + parsed.z)) * scaleY;
+        const w = parsed.z * scaleX;
+        const h = parsed.z * scaleY;
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(w) || !Number.isFinite(h)) {
+          continue;
+        }
+        if ((x + w) <= 0 || (y + h) <= 0 || x >= width || y >= height) {
+          continue;
+        }
+        ctx.fillStyle = scaledColor(userColor, 1, alpha);
+        ctx.strokeStyle = scaledColor(userColor, 1, 1);
+        ctx.lineWidth = 0.5;
+        ctx.fillRect(x, y, w, h);
+        ctx.strokeRect(x, y, w, h);
+        plotted += 1;
+
+        const dedupeKey = userKey + "::" + parsed.x + ":" + parsed.y + ":" + parsed.z;
+        let stat = userStats.get(userKey);
+        if (!stat) {
+          stat = {
+            email: userEmail || userKey,
+            color: userColor,
+            tileCount: 0,
+            requestCount: 0,
+            bytesServed: 0,
+          };
+          userStats.set(userKey, stat);
+        }
+        if (!seenByUserTile.has(dedupeKey)) {
+          seenByUserTile.add(dedupeKey);
+          stat.tileCount += 1;
+        }
+        stat.requestCount += Number(row && row.request_count || 0);
+        stat.bytesServed += Number(row && row.bytes_served || 0);
+      }
+
+      const windowSeconds = Number(tileMapData && tileMapData.window_seconds || 60);
+      const usersActive = Number(tileMapData && tileMapData.users_active || userStats.size || 0);
+      const tilesActive = Number(tileMapData && tileMapData.tiles_active || 0);
+      const generatedAt = String(tileMapData && tileMapData.generated_at || "");
+      const generatedLabel = generatedAt ? new Date(generatedAt).toLocaleTimeString() : "-";
+      metaEl.textContent =
+        "Window: " + windowSeconds + "s | " +
+        "Active users: " + fmtInt(usersActive) + " | " +
+        "Active tiles: " + fmtInt(tilesActive) + " | " +
+        "Plotted rectangles: " + fmtInt(plotted) + " | " +
+        "Updated: " + generatedLabel;
+
+      const userRows = Array.from(userStats.values())
+        .sort((a, b) => (b.bytesServed - a.bytesServed) || (b.requestCount - a.requestCount))
+        .slice(0, 50);
+      renderRows("tileMapUsersTable", userRows, (row) =>
+        \`<td>\${row.email || ""}</td><td><span style="display:inline-block;width:14px;height:14px;border-radius:3px;background:\${row.color};border:1px solid #111827;"></span> \${row.color || ""}</td><td>\${fmtInt(row.tileCount)}</td><td>\${fmtInt(row.requestCount)}</td><td>\${fmtGb(row.bytesServed)}</td>\`
+      );
+    }
+    async function performUserAction(action, userId, userEmail, planCode) {
+      const safeAction = String(action || "").trim();
+      const safeUserId = String(userId || "").trim();
+      const safeUserEmail = String(userEmail || "").trim();
+      const safePlanCode = String(planCode || "").trim().toLowerCase();
+      if (!safeAction || !safeUserId) {
+        statusEl.textContent = "Action failed: missing user id.";
+        statusEl.className = "error";
+        return;
+      }
+      const endpointByAction = {
+        unthrottle: "/admin/users/unthrottle",
+        throttle: "/admin/users/throttle",
+        block: "/admin/users/block",
+        unblock: "/admin/users/unblock",
+      };
+      const endpoint = endpointByAction[safeAction];
+      if (!endpoint) {
+        statusEl.textContent = "Action failed: unknown action.";
+        statusEl.className = "error";
+        return;
+      }
+      const confirmation = {
+        unthrottle: "Unthrottle this account now?",
+        throttle: "Throttle this account now for 24 hours?",
+        block: "Block this user account now?",
+        unblock: "Unblock this user account now?",
+      };
+      if (!window.confirm(confirmation[safeAction] || "Confirm action?")) {
+        return;
+      }
+      const payload = { user_id: safeUserId, email: safeUserEmail };
+      if (safeAction === "throttle") {
+        payload.duration_minutes = 1440;
+      }
+      if (safeAction === "unblock") {
+        payload.plan_code = safePlanCode || "planetka";
+      }
+      statusEl.textContent = "Applying action...";
+      statusEl.className = "muted";
+      try {
+        const res = await fetch(endpoint, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          throw new Error((data && data.error) || ("HTTP " + res.status));
+        }
+        statusEl.textContent = "Action applied: " + safeAction + " (" + safeUserEmail + ")";
+        statusEl.className = "muted";
+        await loadAnalytics();
+      } catch (error) {
+        statusEl.textContent = "Action failed: " + String(error && error.message || error);
+        statusEl.className = "error";
+      }
+    }
     async function loadAnalytics() {
       const minutes = windowEl.value || "60";
+      const planFilter = planFilterEl.value || "all";
+      const heavySort = heavySortEl.value || "lifetime";
+      const tileMapMinutes = tileMapWindowEl.value || "1";
       statusEl.textContent = "Loading...";
       try {
-        const res = await fetch("/admin/analytics/data?minutes=" + encodeURIComponent(minutes), { credentials: "same-origin" });
+        const res = await fetch(
+          "/admin/analytics/data?minutes=" + encodeURIComponent(minutes) +
+          "&plan_filter=" + encodeURIComponent(planFilter) +
+          "&tile_map_minutes=" + encodeURIComponent(tileMapMinutes),
+          { credentials: "same-origin" },
+        );
         const data = await res.json();
         if (!res.ok || !data.ok) throw new Error((data && data.error) || ("HTTP " + res.status));
         const s = data.summary || {};
@@ -6482,9 +8302,39 @@ async function handleAdminAnalyticsPage(request, env) {
         const hitRatio = Number(s.request_count || 0) > 0 ? (100 * Number(s.cache_hit_count || 0) / Number(s.request_count || 1)) : 0;
         setText("hitRatio", hitRatio.toFixed(2) + "%");
         setText("resolveCount", fmtInt(s.tagged_resolve_count));
-        renderRows("usersTable", data.top_users, (row) => \`<td>\${row.user_email || ""}</td><td>\${fmtInt(row.request_count)}</td><td>\${fmtGb(row.bytes_served)}</td><td>\${fmtInt(row.error_count)}</td><td>\${row.last_seen_at || ""}</td>\`);
+        renderRows("usersTable", data.top_users, (row) => \`<td>\${row.user_email || ""}</td><td>\${fmtInt(row.request_count)}</td><td>\${fmtInt(row.resolve_count)}</td><td>\${fmtGb(row.bytes_served)}</td><td>\${fmtInt(row.error_count)}</td><td>\${row.last_seen_at || ""}</td>\`);
+        const heavyRowsBySortKey = {
+          lifetime: "top_lifetime",
+          month: "top_month",
+          week: "top_week",
+          day: "top_day",
+          hour: "top_hour",
+        };
+        const heavyRowsKey = heavyRowsBySortKey[heavySort] || "top_lifetime";
+        renderRows("heavyTable", (data.heavy_users && data.heavy_users[heavyRowsKey]) || [], (row) => {
+          const userId = encodeDataValue(row.user_id || "");
+          const userEmail = encodeDataValue(row.user_email || "");
+          const planCode = encodeDataValue(row.plan_code || "planetka");
+          const userStatus = String(row.user_status || row.plan_code || "").trim().toLowerCase();
+          const throttledUntilRaw = String(row.throttled_until || "").trim();
+          const throttledUntilMs = Date.parse(throttledUntilRaw);
+          const throttledActive = Number.isFinite(throttledUntilMs) && throttledUntilMs > Date.now();
+          let actionButtons = "";
+          if (userStatus === "blocked") {
+            actionButtons = \`<button class="action-btn warn" data-action="unblock" data-user-id="\${userId}" data-user-email="\${userEmail}" data-plan-code="\${planCode}">Unblock user</button>\`;
+          } else {
+            const throttleButton = throttledActive
+              ? \`<button class="action-btn" data-action="unthrottle" data-user-id="\${userId}" data-user-email="\${userEmail}" data-plan-code="\${planCode}">Unthrottle</button>\`
+              : \`<button class="action-btn warn" data-action="throttle" data-user-id="\${userId}" data-user-email="\${userEmail}" data-plan-code="\${planCode}">Throttle 24h</button>\`;
+            const blockButton = \`<button class="action-btn danger" data-action="block" data-user-id="\${userId}" data-user-email="\${userEmail}" data-plan-code="\${planCode}">Block user</button>\`;
+            actionButtons = \`\${throttleButton}\${blockButton}\`;
+          }
+          return \`<td>\${row.user_email || ""}</td><td>\${row.plan_code || ""}</td><td>\${fmtInt(row.resolve_count)}</td><td>\${fmtGb(row.lifetime_bytes)}</td><td>\${fmtGb(row.month_bytes)}</td><td>\${fmtGb(row.week_bytes)}</td><td>\${fmtGb(row.day_bytes)}</td><td>\${fmtGb(row.hour_bytes)}</td><td>\${throttledUntilRaw}</td><td>\${row.last_request_at || ""}</td><td class="action-wrap">\${actionButtons}</td>\`;
+        });
+        renderLiveTileMap(data.live_tile_map || {});
         renderRows("tilesTable", data.top_tiles, (row) => \`<td>\${row.tile_key || ""}</td><td>\${fmtInt(row.request_count)}</td><td>\${fmtGb(row.bytes_served)}</td>\`);
         renderRows("failsTable", data.recent_failures, (row) => \`<td>\${row.created_at || ""}</td><td>\${row.user_email || ""}</td><td>\${row.status_code || ""}</td><td>\${row.error_code || ""}</td><td>\${row.tile_key || ""}</td><td>\${row.cache_status || ""}</td><td>\${row.duration_ms || ""}</td>\`);
+        renderRows("fallbackMissesTable", data.recent_fallback_misses, (row) => \`<td>\${row.created_at || ""}</td><td>\${row.user_email || ""}</td><td>\${row.folder || ""}</td><td>\${row.file_name || ""}</td><td>\${row.status_code || ""}</td><td>\${row.error_code || ""}</td><td>\${row.duration_ms || ""}</td>\`);
         statusEl.textContent = "Updated " + new Date().toLocaleTimeString();
         statusEl.className = "muted";
       } catch (error) {
@@ -6494,6 +8344,20 @@ async function handleAdminAnalyticsPage(request, env) {
     }
     refreshBtn.addEventListener("click", loadAnalytics);
     windowEl.addEventListener("change", loadAnalytics);
+    planFilterEl.addEventListener("change", loadAnalytics);
+    heavySortEl.addEventListener("change", loadAnalytics);
+    tileMapWindowEl.addEventListener("change", loadAnalytics);
+    document.addEventListener("click", (event) => {
+      const button = event.target && event.target.closest ? event.target.closest("button.action-btn") : null;
+      if (!button) {
+        return;
+      }
+      const action = String(button.getAttribute("data-action") || "").trim();
+      const userId = decodeDataValue(button.getAttribute("data-user-id"));
+      const userEmail = decodeDataValue(button.getAttribute("data-user-email"));
+      const planCode = decodeDataValue(button.getAttribute("data-plan-code"));
+      performUserAction(action, userId, userEmail, planCode);
+    });
     loadAnalytics();
     setInterval(loadAnalytics, 15000);
   </script>
@@ -7197,6 +9061,285 @@ async function handleAdminClaimReview(request, env) {
   );
 }
 
+async function resolveDownloadCounterTarget(db, userId, email) {
+  const requestedUserId = String(userId || "").trim();
+  const requestedEmail = normalizeEmail(email || "");
+  if (!requestedUserId && !requestedEmail) {
+    return null;
+  }
+  let counter = requestedUserId ? await findUserDownloadCounter(db, requestedUserId) : null;
+  if (!counter && requestedEmail) {
+    counter = await findUserDownloadCounterByEmail(db, requestedEmail);
+  }
+  return counter;
+}
+
+async function handleAdminUserUnthrottle(request, env) {
+  const auth = await requireAnalyticsAdmin(request, env);
+  if (auth.error) {
+    return auth.error;
+  }
+  const { db } = auth;
+  await ensureUserDownloadCountersTable(db);
+  const body = await parseJson(request);
+  const hasResetHourFlag = Object.prototype.hasOwnProperty.call(body, "reset_hour");
+  const resetHour = hasResetHourFlag ? parseBooleanFlag(body.reset_hour) : true;
+  const counter = await resolveDownloadCounterTarget(db, body.user_id, body.email);
+  if (!counter) {
+    return json({ ok: false, error: "download_counter_not_found" }, 404, env);
+  }
+  const previousThrottledUntil = String(counter.throttled_until || "").trim();
+  const updated = await clearUserDownloadThrottle(db, String(counter.user_id || "").trim(), { resetHour });
+  if (!updated) {
+    return json({ ok: false, error: "download_counter_not_found" }, 404, env);
+  }
+  return json(
+    {
+      ok: true,
+      action: "unthrottle",
+      user_id: String(updated.user_id || ""),
+      user_email: String(updated.user_email || ""),
+      reset_hour: resetHour,
+      previous_throttled_until: previousThrottledUntil || null,
+      throttled_until: String(updated.throttled_until || "").trim() || null,
+      hour_bytes: clampNonNegativeInt(updated.hour_bytes),
+      hour_bucket_start_unix: clampNonNegativeInt(updated.hour_bucket_start_unix),
+      updated_at: String(updated.updated_at || nowIso()),
+    },
+    200,
+    env,
+  );
+}
+
+async function handleAdminUserThrottle(request, env) {
+  const auth = await requireAnalyticsAdmin(request, env);
+  if (auth.error) {
+    return auth.error;
+  }
+  const { db } = auth;
+  await ensureUserDownloadCountersTable(db);
+  const body = await parseJson(request);
+  const hasResetHourFlag = Object.prototype.hasOwnProperty.call(body, "reset_hour");
+  const resetHour = hasResetHourFlag ? parseBooleanFlag(body.reset_hour) : false;
+  const durationMinutes = Math.max(
+    1,
+    parseNonNegativeInteger(body.duration_minutes, DEFAULT_DOWNLOAD_THROTTLE_DURATION_MINUTES),
+  );
+  const counter = await resolveDownloadCounterTarget(db, body.user_id, body.email);
+  if (!counter) {
+    return json({ ok: false, error: "download_counter_not_found" }, 404, env);
+  }
+  const updated = await setUserDownloadThrottle(
+    db,
+    String(counter.user_id || "").trim(),
+    { durationMinutes, resetHour },
+  );
+  if (!updated) {
+    return json({ ok: false, error: "download_counter_not_found" }, 404, env);
+  }
+  return json(
+    {
+      ok: true,
+      action: "throttle",
+      user_id: String(updated.user_id || ""),
+      user_email: String(updated.user_email || ""),
+      duration_minutes: durationMinutes,
+      reset_hour: resetHour,
+      throttled_until: String(updated.throttled_until || "").trim() || null,
+      hour_bytes: clampNonNegativeInt(updated.hour_bytes),
+      hour_bucket_start_unix: clampNonNegativeInt(updated.hour_bucket_start_unix),
+      updated_at: String(updated.updated_at || nowIso()),
+    },
+    200,
+    env,
+  );
+}
+
+async function handleAdminUserBlock(request, env) {
+  const auth = await requireAnalyticsAdmin(request, env);
+  if (auth.error) {
+    return auth.error;
+  }
+  const { db, user: adminUser } = auth;
+  await ensureApiKeyTables(db);
+  await ensureRefreshSessionColumns(db);
+  await ensureUserProvisionalColumns(db);
+  await ensureUserDownloadCountersTable(db);
+  const body = await parseJson(request);
+  const requestedUserId = String(body.user_id || "").trim();
+  const requestedEmail = normalizeEmail(body.email || "");
+  if (!requestedUserId && !requestedEmail) {
+    return json({ ok: false, error: "missing_user_id_or_email" }, 400, env);
+  }
+  let targetUser = requestedUserId ? await findUserById(db, requestedUserId) : null;
+  if (!targetUser && requestedEmail) {
+    targetUser = await findUserByEmail(db, requestedEmail);
+  }
+  if (!targetUser) {
+    return json({ ok: false, error: "user_not_found" }, 404, env);
+  }
+  const targetUserId = String(targetUser.id || "").trim();
+  const targetEmail = normalizeEmail(targetUser.email || "");
+  const now = nowIso();
+  await dbRun(
+    db,
+    `
+      UPDATE users
+      SET
+        status = 'blocked',
+        provisional_plan_code = NULL,
+        provisional_expires_at = NULL,
+        pro_confirmed_at = NULL
+      WHERE id = ?
+    `,
+    [targetUserId],
+  );
+  const revokedKeysResult = await dbRun(
+    db,
+    `
+      UPDATE api_keys
+      SET
+        status = 'revoked',
+        revoked_at = ?
+      WHERE user_id = ?
+        AND status = 'active'
+    `,
+    [now, targetUserId],
+  );
+  const revokedSessionsResult = await dbRun(
+    db,
+    `
+      UPDATE refresh_sessions
+      SET revoked_at = ?
+      WHERE user_id = ?
+        AND (revoked_at IS NULL OR revoked_at = '')
+    `,
+    [now, targetUserId],
+  );
+  const updatedCounter = await clearUserDownloadThrottle(db, targetUserId, { resetHour: true });
+  try {
+    console.log(
+      "admin.user_blocked",
+      JSON.stringify({
+        user_id: targetUserId,
+        user_email: targetEmail,
+        admin_email: normalizeEmail(adminUser && adminUser.email || ""),
+      }),
+    );
+  } catch (_error) {
+    // no-op logging guard
+  }
+  return json(
+    {
+      ok: true,
+      action: "block_user",
+      user_id: targetUserId,
+      user_email: targetEmail,
+      status: "blocked",
+      revoked_api_keys: dbMetaChanges(revokedKeysResult),
+      revoked_sessions: dbMetaChanges(revokedSessionsResult),
+      throttled_until: String(updatedCounter && updatedCounter.throttled_until || "").trim() || null,
+      updated_at: String(updatedCounter && updatedCounter.updated_at || now),
+    },
+    200,
+    env,
+  );
+}
+
+async function handleAdminUserUnblock(request, env) {
+  const auth = await requireAnalyticsAdmin(request, env);
+  if (auth.error) {
+    return auth.error;
+  }
+  const { db, user: adminUser } = auth;
+  await ensureApiKeyTables(db);
+  await ensureRefreshSessionColumns(db);
+  await ensureUserProvisionalColumns(db);
+  await ensureUserDownloadCountersTable(db);
+  const body = await parseJson(request);
+  const requestedUserId = String(body.user_id || "").trim();
+  const requestedEmail = normalizeEmail(body.email || "");
+  if (!requestedUserId && !requestedEmail) {
+    return json({ ok: false, error: "missing_user_id_or_email" }, 400, env);
+  }
+  let targetUser = requestedUserId ? await findUserById(db, requestedUserId) : null;
+  if (!targetUser && requestedEmail) {
+    targetUser = await findUserByEmail(db, requestedEmail);
+  }
+  if (!targetUser) {
+    return json({ ok: false, error: "user_not_found" }, 404, env);
+  }
+  const targetUserId = String(targetUser.id || "").trim();
+  const targetEmail = normalizeEmail(targetUser.email || "");
+  const targetPlan = normalizeRequestedPlan(body.plan_code || PLAN_CODE_PLANETKA);
+  const now = nowIso();
+  const proConfirmedAt = isPaidRequestedPlan(targetPlan) ? now : null;
+  await dbRun(
+    db,
+    `
+      UPDATE users
+      SET
+        status = ?,
+        provisional_plan_code = NULL,
+        provisional_expires_at = NULL,
+        pro_confirmed_at = ?
+      WHERE id = ?
+    `,
+    [targetPlan, proConfirmedAt, targetUserId],
+  );
+  const apiKeysResult = await dbRun(
+    db,
+    `
+      UPDATE api_keys
+      SET
+        plan_code = ?,
+        provisional = 0,
+        provisional_expires_at = NULL,
+        confirmed_at = ?
+      WHERE user_id = ?
+        AND status = 'active'
+    `,
+    [targetPlan, proConfirmedAt, targetUserId],
+  );
+  await dbRun(
+    db,
+    `
+      UPDATE user_download_counters
+      SET plan_code = ?, updated_at = ?
+      WHERE user_id = ?
+    `,
+    [targetPlan, now, targetUserId],
+  );
+  const updatedCounter = await clearUserDownloadThrottle(db, targetUserId, { resetHour: true });
+  try {
+    console.log(
+      "admin.user_unblocked",
+      JSON.stringify({
+        user_id: targetUserId,
+        user_email: targetEmail,
+        plan_code: targetPlan,
+        admin_email: normalizeEmail(adminUser && adminUser.email || ""),
+      }),
+    );
+  } catch (_error) {
+    // no-op logging guard
+  }
+  return json(
+    {
+      ok: true,
+      action: "unblock_user",
+      user_id: targetUserId,
+      user_email: targetEmail,
+      status: targetPlan,
+      updated_active_api_keys: dbMetaChanges(apiKeysResult),
+      throttled_until: String(updatedCounter && updatedCounter.throttled_until || "").trim() || null,
+      updated_at: String(updatedCounter && updatedCounter.updated_at || now),
+    },
+    200,
+    env,
+  );
+}
+
 function sanitizeAttachmentFileName(value, fallback = "planetka_bug_report.json") {
   const raw = String(value || "").trim();
   const safe = raw.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120);
@@ -7329,6 +9472,52 @@ async function handleSupportBugReport(request, env) {
   );
 }
 
+async function applyHostedStreamingAccessEntitlement(db, env, details = {}) {
+  const email = normalizeEmail(details.email || "");
+  if (!email) {
+    throw new Error("missing_customer_email");
+  }
+  const now = nowIso();
+  const requestedPlan = normalizeRequestedPlan(details.planCode || PLAN_CODE_PLANETKA_PRO);
+  const planCode = requestedPlan === PLAN_CODE_PLANETKA_STUDIO
+    ? PLAN_CODE_PLANETKA_STUDIO
+    : PLAN_CODE_PLANETKA_PRO;
+  const accessExpiresAt = "";
+  let user = await upsertUserByEmail(
+    db,
+    email,
+    planCode,
+    {
+      proConfirmedAt: now,
+      proAccessExpiresAt: accessExpiresAt,
+      provisionalPlanCode: "",
+      provisionalExpiresAt: "",
+    },
+    env,
+  );
+  user = await enforceUserPlanPolicy(db, user, null, env);
+  await dbRun(
+    db,
+    `
+      UPDATE api_keys
+      SET
+        plan_code = ?,
+        expires_at = NULL,
+        provisional = 0,
+        provisional_expires_at = NULL,
+        confirmed_at = ?
+      WHERE user_id = ?
+        AND status = 'active'
+    `,
+    [planCode, now, String(user && user.id || "").trim()],
+  );
+  return {
+    user,
+    planCode,
+    accessExpiresAt,
+  };
+}
+
 async function handleStripeWebhook(request, env) {
   const db = requireDb(env);
   await ensureStripeWebhookEventsTable(db);
@@ -7356,102 +9545,191 @@ async function handleStripeWebhook(request, env) {
   }
   console.log("stripe.webhook.received", JSON.stringify({ event_type: eventType, event_id: eventId }));
 
-  if (eventType !== "checkout.session.completed") {
+  const supportedTypes = new Set([
+    "checkout.session.completed",
+    "invoice.paid",
+    "invoice.payment_succeeded",
+  ]);
+  if (!supportedTypes.has(eventType)) {
     console.log("stripe.webhook.ignored", JSON.stringify({ event_type: eventType }));
     return json({ ok: true, ignored: true, event_type: eventType }, 200, env);
   }
-
-  const session = event.data && event.data.object ? event.data.object : null;
-  if (!session) {
-    return json({ ok: false, error: "missing_checkout_session" }, 400, env);
-  }
-  const sessionId = String(session.id || "").trim();
-  if (!sessionId) {
-    return json({ ok: false, error: "missing_checkout_session_id" }, 400, env);
-  }
-
-  const email = normalizeEmail(
-    session.customer_details && session.customer_details.email
-      ? session.customer_details.email
-      : session.customer_email,
-  );
-  if (!email) {
-    console.error("stripe.webhook.missing_email", JSON.stringify({ event_type: eventType }));
-    return json({ ok: false, error: "missing_customer_email" }, 400, env);
-  }
-
-  const sessionMode = String(session.mode || "").trim().toLowerCase();
-  if (sessionMode !== "payment") {
-    console.log(
-      "stripe.webhook.ignored_mode",
-      JSON.stringify({ event_type: eventType, email, mode: sessionMode }),
-    );
-    return json(
-      {
-        ok: true,
-        ignored: true,
-        reason: "unsupported_checkout_mode",
-        event_type: eventType,
-        email,
-        mode: sessionMode,
-      },
-      200,
-      env,
-    );
-  }
-
-  const paymentStatus = String(session.payment_status || "").trim().toLowerCase();
-  const paidCheckout = paymentStatus === "paid" || paymentStatus === "no_payment_required";
-  if (!paidCheckout) {
-    console.log(
-      "stripe.webhook.ignored_unpaid_checkout",
-      JSON.stringify({ event_type: eventType, email, payment_status: paymentStatus }),
-    );
-    return json(
-      {
-        ok: true,
-        ignored: true,
-        reason: "unpaid_checkout_session",
-        event_type: eventType,
-        email,
-        payment_status: paymentStatus,
-      },
-      200,
-      env,
-    );
-  }
-
   const allowedPriceIds = parseCsvSet(env.STRIPE_ALLOWED_PRICE_IDS);
   const allowedProductIds = parseCsvSet(env.STRIPE_ALLOWED_PRODUCT_IDS);
   if (allowedPriceIds.size === 0 && allowedProductIds.size === 0) {
     console.error(
       "stripe.webhook.misconfigured_entitlement_allowlist",
-      JSON.stringify({ event_type: eventType, email, session_id: sessionId }),
+      JSON.stringify({ event_type: eventType }),
     );
     return json({ ok: false, error: "missing_stripe_entitlement_allowlist" }, 500, env);
   }
 
-  const lineItems = await fetchStripeCheckoutSessionLineItems(env, sessionId);
-  const entitlements = collectStripeLineItemEntitlements(lineItems);
-  const hasAllowedPrice = entitlements.priceIds.some((priceId) => allowedPriceIds.has(priceId));
-  const hasAllowedProduct = entitlements.productIds.some((productId) => allowedProductIds.has(productId));
-  const entitlementMatched = hasAllowedPrice || hasAllowedProduct;
-  if (!entitlementMatched) {
+  if (eventType === "checkout.session.completed") {
+    const session = event.data && event.data.object ? event.data.object : null;
+    if (!session) {
+      return json({ ok: false, error: "missing_checkout_session" }, 400, env);
+    }
+    const sessionId = String(session.id || "").trim();
+    if (!sessionId) {
+      return json({ ok: false, error: "missing_checkout_session_id" }, 400, env);
+    }
+    const email = normalizeEmail(
+      session.customer_details && session.customer_details.email
+        ? session.customer_details.email
+        : session.customer_email,
+    );
+    if (!email) {
+      console.error("stripe.webhook.missing_email", JSON.stringify({ event_type: eventType }));
+      return json({ ok: false, error: "missing_customer_email" }, 400, env);
+    }
+    const sessionMode = String(session.mode || "").trim().toLowerCase();
+    const paymentStatus = String(session.payment_status || "").trim().toLowerCase();
+    const paidCheckout = paymentStatus === "paid" || paymentStatus === "no_payment_required";
+    if (!paidCheckout) {
+      console.log(
+        "stripe.webhook.ignored_unpaid_checkout",
+        JSON.stringify({ event_type: eventType, email, payment_status: paymentStatus }),
+      );
+      return json(
+        {
+          ok: true,
+          ignored: true,
+          reason: "unpaid_checkout_session",
+          event_type: eventType,
+          email,
+          payment_status: paymentStatus,
+        },
+        200,
+        env,
+      );
+    }
+    const lineItems = await fetchStripeCheckoutSessionLineItems(env, sessionId);
+    const entitlements = collectStripeLineItemEntitlements(lineItems);
+    const hasAllowedPrice = entitlements.priceIds.some((priceId) => allowedPriceIds.has(priceId));
+    const hasAllowedProduct = entitlements.productIds.some((productId) => allowedProductIds.has(productId));
+    if (!hasAllowedPrice && !hasAllowedProduct) {
+      console.log(
+        "stripe.webhook.ignored_disallowed_line_items",
+        JSON.stringify({
+          event_type: eventType,
+          email,
+          session_id: sessionId,
+          purchased_price_ids: entitlements.priceIds.slice(0, 25),
+          purchased_product_ids: entitlements.productIds.slice(0, 25),
+        }),
+      );
+      return json(
+        {
+          ok: true,
+          ignored: true,
+          reason: "disallowed_checkout_items",
+          event_type: eventType,
+          email,
+        },
+        200,
+        env,
+      );
+    }
+    const stripeCustomerId = String(session.customer || "").trim() || "";
+    const stripeSubscriptionId = String(session.subscription || "").trim() || "";
+    const applied = await applyHostedStreamingAccessEntitlement(
+      db,
+      env,
+      {
+        email,
+        planCode: PLAN_CODE_PLANETKA_PRO,
+      },
+    );
     console.log(
-      "stripe.webhook.ignored_disallowed_line_items",
+      "stripe.webhook.processed",
       JSON.stringify({
         event_type: eventType,
         email,
+        session_mode: sessionMode,
         session_id: sessionId,
-        purchased_price_ids: entitlements.priceIds.slice(0, 25),
-        purchased_product_ids: entitlements.productIds.slice(0, 25),
+        stripe_customer_id: stripeCustomerId,
+        stripe_subscription_id: stripeSubscriptionId,
+        access_expires_at: "",
+        matched_price_ids: entitlements.priceIds.filter((priceId) => allowedPriceIds.has(priceId)).slice(0, 25),
+        matched_product_ids: entitlements.productIds.filter((productId) => allowedProductIds.has(productId)).slice(0, 25),
+        user_status: String(applied.user && applied.user.status || PLAN_CODE_PLANETKA_PRO),
       }),
     );
     return json(
       {
         ok: true,
+        processed: true,
+        event_type: eventType,
+        email,
+        hosted_streaming_access_expires_at: "",
+      },
+      200,
+      env,
+    );
+  }
+
+  const invoice = event.data && event.data.object ? event.data.object : null;
+  if (!invoice) {
+    return json({ ok: false, error: "missing_invoice" }, 400, env);
+  }
+  const stripeSubscriptionId = String(invoice.subscription || "").trim() || "";
+  const stripeCustomerId = String(invoice.customer || "").trim() || "";
+  const paymentStatus = String(invoice.status || "").trim().toLowerCase();
+  if (eventType === "invoice.paid" && paymentStatus !== "paid") {
+    return json({ ok: true, ignored: true, reason: "invoice_not_paid", event_type: eventType }, 200, env);
+  }
+  let email = normalizeEmail(
+    invoice.customer_email
+      || (invoice.customer_details && invoice.customer_details.email)
+      || "",
+  );
+  if (!email && stripeCustomerId) {
+    try {
+      email = await fetchStripeCustomerEmail(env, stripeCustomerId);
+    } catch (error) {
+      console.warn(
+        "stripe.webhook.customer_lookup_failed",
+        JSON.stringify({
+          event_type: eventType,
+          customer_id: stripeCustomerId,
+          error: String(error && error.message || "customer_lookup_failed"),
+        }),
+      );
+    }
+  }
+  if (!email) {
+    return json({ ok: false, error: "missing_customer_email" }, 400, env);
+  }
+
+  const invoiceLineItems = Array.isArray(invoice && invoice.lines && invoice.lines.data)
+    ? invoice.lines.data
+    : [];
+  let entitlements = collectStripeLineItemEntitlements(invoiceLineItems);
+  let subscriptionPayload = null;
+  if ((!entitlements.priceIds.length && !entitlements.productIds.length) && stripeSubscriptionId) {
+    try {
+      subscriptionPayload = await fetchStripeSubscription(env, stripeSubscriptionId);
+      entitlements = collectStripeSubscriptionEntitlements(subscriptionPayload);
+    } catch (error) {
+      console.warn(
+        "stripe.webhook.subscription_lookup_failed",
+        JSON.stringify({
+          event_type: eventType,
+          email,
+          subscription_id: stripeSubscriptionId,
+          error: String(error && error.message || "subscription_lookup_failed"),
+        }),
+      );
+    }
+  }
+  const hasAllowedPrice = entitlements.priceIds.some((priceId) => allowedPriceIds.has(priceId));
+  const hasAllowedProduct = entitlements.productIds.some((productId) => allowedProductIds.has(productId));
+  if (!hasAllowedPrice && !hasAllowedProduct) {
+    return json(
+      {
+        ok: true,
         ignored: true,
-        reason: "disallowed_checkout_items",
+        reason: "disallowed_invoice_items",
         event_type: eventType,
         email,
       },
@@ -7460,41 +9738,35 @@ async function handleStripeWebhook(request, env) {
     );
   }
 
-  const user = await upsertUserByEmail(
+  const applied = await applyHostedStreamingAccessEntitlement(
     db,
-    email,
-    PLAN_CODE_PLANETKA_PRO,
-    {
-      proConfirmedAt: nowIso(),
-      provisionalPlanCode: "",
-      provisionalExpiresAt: "",
-    },
     env,
+    {
+      email,
+      planCode: PLAN_CODE_PLANETKA_PRO,
+    },
   );
-  const stripeCustomerId = String(session.customer || "").trim() || "";
-  const stripeSubscriptionId = String(session.subscription || "").trim() || "";
-
   console.log(
     "stripe.webhook.processed",
     JSON.stringify({
       event_type: eventType,
       email,
-      session_mode: sessionMode,
-      session_id: sessionId,
+      invoice_id: String(invoice.id || "").trim(),
       stripe_customer_id: stripeCustomerId,
       stripe_subscription_id: stripeSubscriptionId,
+      access_expires_at: "",
       matched_price_ids: entitlements.priceIds.filter((priceId) => allowedPriceIds.has(priceId)).slice(0, 25),
       matched_product_ids: entitlements.productIds.filter((productId) => allowedProductIds.has(productId)).slice(0, 25),
-      user_status: String(user && user.status || PLAN_CODE_PLANETKA_PRO),
+      user_status: String(applied.user && applied.user.status || PLAN_CODE_PLANETKA_PRO),
     }),
   );
-
   return json(
     {
       ok: true,
       processed: true,
       event_type: eventType,
       email,
+      hosted_streaming_access_expires_at: "",
     },
     200,
     env,
@@ -7553,8 +9825,7 @@ export default {
       }
 
       if (request.method === "GET" && path === "/api-key") {
-        const requestedPlan = normalizeRequestedPlan(url.searchParams.get("plan") || PLAN_CODE_PLANETKA);
-        return renderApiKeyRequestPage(env, "", requestedPlan);
+        return renderApiKeyRequestPage(env, "", PLAN_CODE_PLANETKA);
       }
 
       if (request.method === "GET" && path === "/api-key/activate") {
@@ -7636,6 +9907,10 @@ export default {
         return await handleAdminAnalyticsData(request, env);
       }
 
+      if (request.method === "GET" && path === "/admin/analytics/world-map.jpg") {
+        return await handleAdminAnalyticsTileMapImage(request, env);
+      }
+
       if (request.method === "GET" && path === "/admin/login") {
         return await handleAdminLoginPage(request, env);
       }
@@ -7653,19 +9928,35 @@ export default {
       }
 
       if (request.method === "GET" && path === "/admin/claims/latest") {
-        return await handleAdminClaimLatest(request, env);
+        return json({ ok: false, error: "paid_claim_workflow_disabled" }, 410, env);
       }
 
       if (request.method === "POST" && path === "/admin/claims/create") {
-        return await handleAdminClaimCreate(request, env);
+        return json({ ok: false, error: "paid_claim_workflow_disabled" }, 410, env);
       }
 
       if (request.method === "POST" && path === "/admin/claims/activate") {
-        return await handleAdminClaimActivate(request, env);
+        return json({ ok: false, error: "paid_claim_workflow_disabled" }, 410, env);
       }
 
       if (request.method === "POST" && path === "/admin/claims/review") {
-        return await handleAdminClaimReview(request, env);
+        return json({ ok: false, error: "paid_claim_workflow_disabled" }, 410, env);
+      }
+
+      if (request.method === "POST" && path === "/admin/users/unthrottle") {
+        return await handleAdminUserUnthrottle(request, env);
+      }
+
+      if (request.method === "POST" && path === "/admin/users/throttle") {
+        return await handleAdminUserThrottle(request, env);
+      }
+
+      if (request.method === "POST" && path === "/admin/users/block") {
+        return await handleAdminUserBlock(request, env);
+      }
+
+      if (request.method === "POST" && path === "/admin/users/unblock") {
+        return await handleAdminUserUnblock(request, env);
       }
 
       if ((request.method === "GET" || request.method === "HEAD") && path.startsWith("/tiles/")) {
@@ -7738,12 +10029,14 @@ export default {
         const db = requireDb(env);
         const summary = await cleanupAuthTables(db, env, runStartedAt);
         const alertSummary = await runProductionAlertChecks(db, env, runStartedAt);
+        const monthlyCostSummary = await runMonthlyCostEstimateAlerts(db, env, runStartedAt);
         console.log(
           "worker.db_cleanup.completed",
           JSON.stringify({
             scheduled_at: scheduledAt,
             ...summary,
             production_alert_summary: alertSummary,
+            monthly_cost_summary: monthlyCostSummary,
           }),
         );
       } catch (error) {

@@ -79,8 +79,8 @@ _DETAIL_SOCKET_ROCK_COLOR = "Rock Color Variation"
 _DETAIL_SOCKET_MICRO_DISP = "Micro Displacement Strength"
 
 _SURFACE_DEFAULT_INPUT_SPECS = (
-    ("Surface Brightness", 3.0, 0.0, 10.0),
-    ("Surface Saturation", 1.1, 0.0, 5.0),
+    ("Surface Brightness", 5.0, 0.0, 10.0),
+    ("Surface Saturation", 1.25, 0.0, 5.0),
     ("Roughness", 0.25, 0.0, 1.0),
     ("IOR", 1.333, 0.0, 3.0),
     ("Saturation", 1.0, 0.0, 2.0),

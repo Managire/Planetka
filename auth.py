@@ -1,4 +1,5 @@
 import base64
+import datetime
 import json
 import logging
 import os
@@ -76,6 +77,7 @@ PLAN_NAME_PLANETKA_STUDIO = "Planetka Studio"
 DEFAULT_DATA_COUNTING_RULE = "Only newly downloaded data counts. Reused local cache does not consume allowance."
 PENDING_AUTH_MESSAGE = "Waiting for browser sign-in..."
 _DEVICE_LOGIN_TIMER_REGISTERED = False
+THROTTLE_STATUS_PREFIX = "Account throttled until "
 
 
 class AuthApiError(RuntimeError):
@@ -429,6 +431,47 @@ def _extract_data_allowance(payload):
         "exhausted": "1" if (exhausted_flag or warning_state == "exhausted") else "0",
         "downloaded_period_bytes": "" if downloaded_period_value is None else str(max(0, int(downloaded_period_value))),
     }
+
+
+def _parse_iso_timestamp_seconds(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return float(parsed.timestamp())
+
+
+def _extract_throttled_until(payload):
+    if not isinstance(payload, dict):
+        return ""
+    for key in ("throttled_until", "download_throttled_until"):
+        value = str(payload.get(key, "") or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _build_throttle_status_message(payload):
+    throttled_until = _extract_throttled_until(payload)
+    if not throttled_until:
+        return ""
+    expiry_seconds = _parse_iso_timestamp_seconds(throttled_until)
+    if expiry_seconds is not None and expiry_seconds <= float(time.time()):
+        return ""
+    return (
+        f"{THROTTLE_STATUS_PREFIX}{throttled_until}. "
+        "High-volume data use detected. Download speed is temporarily reduced."
+    )
+
+
+def _is_throttle_status_message(message):
+    text = str(message or "").strip().lower()
+    return text.startswith(THROTTLE_STATUS_PREFIX.lower())
 
 
 def get_api_base_url():
@@ -1021,7 +1064,11 @@ def _apply_auth_payload(prefs, payload, login_state="authenticated", status_mess
     prefs.auth_tile_quota_rule = quota["rule"]
     _apply_data_allowance_fields(prefs, payload)
     prefs.auth_login_state = str(login_state or "authenticated")
-    prefs.auth_status_message = str(status_message or "")
+    throttle_status_message = _build_throttle_status_message(payload)
+    if throttle_status_message:
+        prefs.auth_status_message = throttle_status_message
+    else:
+        prefs.auth_status_message = str(status_message or "")
     _clear_pending_login_fields(prefs)
     _save_user_prefs()
     _tag_ui_redraw()
@@ -1094,6 +1141,11 @@ def _apply_account_profile_fields(prefs, payload):
     prefs.auth_tile_quota_period = quota["period"]
     prefs.auth_tile_quota_rule = quota["rule"]
     _apply_data_allowance_fields(prefs, payload)
+    throttle_status_message = _build_throttle_status_message(payload)
+    if throttle_status_message:
+        prefs.auth_status_message = throttle_status_message
+    elif _is_throttle_status_message(getattr(prefs, "auth_status_message", "")):
+        prefs.auth_status_message = ""
 
 
 def sync_account_profile(prefs=None):
