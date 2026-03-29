@@ -24,6 +24,7 @@ Last matrix update: `2026-03-28`
 | Component | Status | Notes |
 | --- | --- | --- |
 | EEVEE (Rendered viewport) | Unsupported / Unstable | Known limitation for this release. EEVEE can produce corrupted frames (missing/pink/solid tiles), especially on macOS/Metal at higher tile counts. Use Cycles for reliable output. |
+| Cycles SVM stack budget | Mitigated | Planetka enforces a pre-shader dynamic tile budget of `12` tiles to avoid Cycles SVM overflow in heavy camera views. See `Documentation/Developer/CYCLES_SVM_TILE_LIMIT.md`. |
 | Solid viewport | Verified | Resolve workflow validated. |
 | OpenGL/Cycles preview | Verified by user reports | Stable in reported scenarios. |
 

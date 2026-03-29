@@ -14,6 +14,7 @@
 - [ ] `Create Earth` places surface only in `Planetka - Earth Surface Collection`.
 - [ ] `Resolve Earth` preserves the previous surface collection placement.
 - [ ] Adaptive subdivision modifier exists and uses Catmull-Clark.
+- [ ] Dynamic tile budget enforcement active (`<= 12` tiles at shader stage) with no missing visible coverage.
 
 ## 3. Automated Validation
 
@@ -56,6 +57,7 @@
 
 - [ ] Resolved surface shading appears with expected texture blending.
 - [ ] Repeated close-range resolves do not shrink Earth size.
+- [ ] High-detail camera view (e.g. Cairo reproduction) resolves and renders in Cycles without SVM stack overflow.
 
 ## 8. Release Decision
 

@@ -48,9 +48,13 @@ ONE_PASS_REFINEMENT_CHILD_Z = {
 LAST_REQUIRED_MPP_KEY = "planetka_last_required_mpp_m"
 LAST_TARGET_D_KEY = "planetka_last_target_d"
 LAST_SCOPE_USED_KEY = "planetka_last_scope_used"
+MAX_SHADER_TILE_BUDGET = 12
 TEXTURE_QUALITY_MODES = {"FULL", "HALF", "QUARTER"}
 VIEWPORT_RESOLUTION_X = 1920.0
 VIEWPORT_RESOLUTION_Y = 1080.0
+LAST_TILE_BUDGET_TRACE = []
+LAST_TILE_BUDGET_INPUT = []
+LAST_TILE_BUDGET_OUTPUT = []
 
 
 def get_earth_radius_blender_units(earth_obj):
@@ -251,6 +255,145 @@ def find_optimizable_tiles(tiles):
         return (d, d / z)
 
     return sorted(final_tiles, key=sort_key)
+
+
+def _equivalent_d(a, b):
+    return {int(a), int(b)} in ({15, 16}, {30, 32}, {60, 64})
+
+
+def _quality_not_worse(parent_d, child_d):
+    parent_d = int(parent_d)
+    child_d = int(child_d)
+    return parent_d <= child_d or _equivalent_d(parent_d, child_d)
+
+
+def _sort_tiles_for_apply(tiles):
+    def _sort_key(tile):
+        parsed = parse_tile(tile)
+        if not parsed:
+            return (10_000, 10_000, str(tile))
+        _, _, z, d = parsed
+        ratio = float(d) / max(1.0, float(z))
+        return (int(d), ratio, str(tile))
+
+    return sorted(set(tiles), key=_sort_key)
+
+
+def _select_parent_d_for_merge(parent_z, child_ds):
+    parent_z = int(parent_z)
+    child_ds = [int(d) for d in child_ds]
+    if not child_ds:
+        return None
+    allowed = sorted({int(d) for d in D_LEVELS_BY_Z.get(parent_z, [parent_z])})
+    candidates = [d for d in allowed if all(_quality_not_worse(d, cd) for cd in child_ds)]
+    if candidates:
+        return max(candidates)
+    # Fallback for equivalent sets in mixed decimal/power ecosystems.
+    relaxed = []
+    for d in allowed:
+        ok = True
+        for cd in child_ds:
+            if not (_quality_not_worse(d, cd) or _equivalent_d(d, cd)):
+                ok = False
+                break
+        if ok:
+            relaxed.append(d)
+    if relaxed:
+        return max(relaxed)
+    return None
+
+
+def _build_budget_merge_proposals(current_tiles):
+    parsed = {}
+    for tile in current_tiles:
+        info = parse_tile(tile)
+        if info:
+            parsed[tile] = info
+
+    buckets = defaultdict(list)
+    for tile, (x, y, z, d) in parsed.items():
+        if not is_mergeable(z):
+            continue
+        parent_z = int(z) * 2
+        parent_x = (int(x) // parent_z) * parent_z
+        parent_y = (int(y) // parent_z) * parent_z
+        key = (parent_x, parent_y, parent_z)
+        buckets[key].append((tile, int(d)))
+
+    proposals = []
+    for (parent_x, parent_y, parent_z), children in buckets.items():
+        if len(children) < 2:
+            continue
+        child_tiles = sorted({tile for tile, _d in children})
+        child_ds = [d for _tile, d in children]
+        parent_d = _select_parent_d_for_merge(parent_z, child_ds)
+        if parent_d is None:
+            continue
+        parent_tile = format_tile(parent_x, parent_y, parent_z, parent_d)
+        reduction = len(child_tiles) - 1
+        if reduction <= 0:
+            continue
+        proposals.append(
+            {
+                "parent_tile": parent_tile,
+                "parent_d": int(parent_d),
+                "parent_z": int(parent_z),
+                "children": child_tiles,
+                "child_ds": child_ds,
+                "reduction": int(reduction),
+            }
+        )
+
+    proposals.sort(
+        key=lambda p: (
+            -int(p["reduction"]),
+            int(p["parent_d"]),
+            -int(p["parent_z"]),
+            str(p["parent_tile"]),
+        )
+    )
+    return proposals
+
+
+def _enforce_shader_tile_budget(tiles, max_tiles=MAX_SHADER_TILE_BUDGET):
+    max_tiles = max(1, int(max_tiles))
+    current = set(_sort_tiles_for_apply(tiles))
+    trace = []
+
+    if len(current) <= max_tiles:
+        return _sort_tiles_for_apply(current), trace, True
+
+    for _ in range(128):
+        if len(current) <= max_tiles:
+            break
+        proposals = _build_budget_merge_proposals(current)
+        if not proposals:
+            break
+        changed = False
+        for proposal in proposals:
+            if len(current) <= max_tiles:
+                break
+            children = proposal["children"]
+            if any(child not in current for child in children):
+                continue
+            for child in children:
+                current.discard(child)
+            current.add(proposal["parent_tile"])
+            trace.append(
+                {
+                    "children": list(children),
+                    "parent": str(proposal["parent_tile"]),
+                    "parent_d": int(proposal["parent_d"]),
+                    "parent_z": int(proposal["parent_z"]),
+                    "reduction": int(proposal["reduction"]),
+                }
+            )
+            changed = True
+        if not changed:
+            break
+
+    success = len(current) <= max_tiles
+    return _sort_tiles_for_apply(current), trace, success
 
 
 def lonlat_to_cartesian(lon, lat, radius):
@@ -1219,6 +1362,7 @@ def get_camera_info(scene, scope_mode="AUTO"):
 
 
 def main(scope_mode="AUTO", edge_boost=False):
+    global LAST_TILE_BUDGET_TRACE, LAST_TILE_BUDGET_INPUT, LAST_TILE_BUDGET_OUTPUT
     scene = bpy.context.scene
     camera_info = get_camera_info(scene, scope_mode=scope_mode)
     cam_pos_world = camera_info["position"]
@@ -1389,6 +1533,29 @@ def main(scope_mode="AUTO", edge_boost=False):
     final_tiles = _apply_texture_quality_mode(final_tiles, scene)
     if scope_used == "ACTIVE_VIEW" and _use_active_view_coarse_textures(scene):
         final_tiles = _coarsen_tiles_one_d_level(final_tiles)
+    LAST_TILE_BUDGET_INPUT = list(final_tiles)
+    budgeted_tiles, budget_trace, budget_success = _enforce_shader_tile_budget(
+        final_tiles,
+        max_tiles=MAX_SHADER_TILE_BUDGET,
+    )
+    LAST_TILE_BUDGET_TRACE = list(budget_trace)
+    LAST_TILE_BUDGET_OUTPUT = list(budgeted_tiles)
+    if budget_trace:
+        logger.info(
+            "Planetka: tile budget optimization applied merges=%d input=%d output=%d budget=%d",
+            len(budget_trace),
+            len(final_tiles),
+            len(budgeted_tiles),
+            int(MAX_SHADER_TILE_BUDGET),
+        )
+    if not budget_success:
+        logger.warning(
+            "Planetka: unable to satisfy tile budget (budget=%d input=%d output=%d). Keeping quality constraints.",
+            int(MAX_SHADER_TILE_BUDGET),
+            len(final_tiles),
+            len(budgeted_tiles),
+        )
+    final_tiles = list(budgeted_tiles)
     write_tile_view_diagnostics(
         scene=scene,
         camera_altitude_bu=float(camera_altitude),
@@ -1396,3 +1563,12 @@ def main(scope_mode="AUTO", edge_boost=False):
         earth_radius_bu=earth_radius,
     )
     return final_tiles
+
+
+def get_last_tile_budget_trace():
+    return {
+        "input_tiles": list(LAST_TILE_BUDGET_INPUT),
+        "output_tiles": list(LAST_TILE_BUDGET_OUTPUT),
+        "merges": list(LAST_TILE_BUDGET_TRACE),
+        "budget": int(MAX_SHADER_TILE_BUDGET),
+    }

@@ -34,8 +34,14 @@ TEXTURE_EXTENSIONS = {
 }
 TILE_GROUP_NODE_PREFIXES = ("Planetka Tile_", "Tile_")
 TILE_MASK_NODE_PREFIX = "TileMask_"
+TEXTURE_LOADING_TEST_GROUP_NAME = "Planetka Textures Loading Group - Testing"
+TILE_PLACEMENT_GROUP_NAME = "Planetka Tile Placement"
+TILE_PLACEMENT_GROUP_360_NAME = "Planetka Tile Placement 360"
+TEST_TILE_IMAGE_NODE_PREFIX = "TileImg_"
+TILE_PLACEMENT_GROUP_SCHEMA_VERSION = 2
 TEXTURE_LOADING_CHANNELS_RGBA = ("S2", "WT", "SE")
 TEXTURE_LOADING_CHANNELS_SCALAR = ("EL", "Alpha")
+SHADER_TILE_BUDGET_EXPECTED = 12
 _COVERAGE_MAP = None
 BASE_EMBEDDED_TILE_GROUP_COUNT = 1
 
@@ -271,7 +277,19 @@ def _tile_group_name_candidates(index):
     )
 
 
-def _get_tile_group_by_index(index):
+def _tile_group_name_for_variant(index, variant="regular"):
+    idx = int(index)
+    if str(variant or "regular").lower() == "z360":
+        return f"Planetka Tile360_{idx:03d}"
+    return f"Planetka Tile_{idx:03d}"
+
+
+def _get_tile_group_by_index(index, variant="regular"):
+    if str(variant or "regular").lower() == "z360":
+        group = bpy.data.node_groups.get(_tile_group_name_for_variant(index, variant="z360"))
+        if group is not None:
+            return group
+        return None
     for name in _tile_group_name_candidates(index):
         group = bpy.data.node_groups.get(name)
         if group is not None:
@@ -290,9 +308,78 @@ def _get_tile_group_template():
     return None
 
 
-def _ensure_tile_group_for_index(index):
-    group = _get_tile_group_by_index(index)
+def _strip_z360_logic_from_tile_group(tile_group):
+    if tile_group is None:
+        return
+    nodes = getattr(tile_group, "nodes", None)
+    links = getattr(tile_group, "links", None)
+    if nodes is None or links is None:
+        return
+
+    mapping_node = nodes.get("Mapping.001")
+    if mapping_node is None:
+        mapping_node = nodes.get("Mapping")
+    if mapping_node is None:
+        return
+
+    group_output = next((node for node in nodes if node.type == "GROUP_OUTPUT"), None)
+    alpha_input = group_output.inputs.get("Alpha") if group_output is not None else None
+    mul_xy = nodes.get("PKA AlphaMask MulXY")
+
+    for node in list(nodes):
+        node_name = str(getattr(node, "name", "") or "")
+        if node_name.startswith("PKA Z360 "):
+            try:
+                nodes.remove(node)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                _log_recoverable_once("PKA-SHADER-020", "Failed removing z360 helper node from regular tile group")
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                _log_recoverable_once("PKA-SHADER-021", "Failed removing z360 helper node from regular tile group")
+            continue
+        if node_name == "PKA AlphaMask Z360 Mix":
+            try:
+                nodes.remove(node)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                _log_recoverable_once("PKA-SHADER-022", "Failed removing z360 alpha mix node from regular tile group")
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                _log_recoverable_once("PKA-SHADER-023", "Failed removing z360 alpha mix node from regular tile group")
+
+    texture_nodes = []
+    for img_type in TEXTURE_TYPES:
+        tex_node = nodes.get(img_type)
+        if tex_node is not None and str(getattr(tex_node, "bl_idname", "")) == "ShaderNodeTexImage":
+            texture_nodes.append(tex_node)
+
+    for tex_node in texture_nodes:
+        vector_input = tex_node.inputs.get("Vector") if hasattr(tex_node, "inputs") else None
+        if vector_input is None:
+            continue
+        try:
+            for old_link in list(vector_input.links):
+                links.remove(old_link)
+            links.new(mapping_node.outputs["Vector"], vector_input)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            _log_recoverable_once("PKA-SHADER-024", "Failed rewiring regular tile vector input")
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            _log_recoverable_once("PKA-SHADER-025", "Failed rewiring regular tile vector input")
+
+    if alpha_input is not None and mul_xy is not None:
+        try:
+            for old_link in list(alpha_input.links):
+                links.remove(old_link)
+            links.new(mul_xy.outputs[0], alpha_input)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            _log_recoverable_once("PKA-SHADER-026", "Failed rewiring regular tile alpha mask")
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            _log_recoverable_once("PKA-SHADER-027", "Failed rewiring regular tile alpha mask")
+
+
+def _ensure_tile_group_for_index(index, variant="regular"):
+    variant_text = str(variant or "regular").lower()
+    group = _get_tile_group_by_index(index, variant=variant_text)
     if group is not None:
+        if variant_text != "z360":
+            _strip_z360_logic_from_tile_group(group)
         return group
 
     template = _get_tile_group_template()
@@ -300,12 +387,300 @@ def _ensure_tile_group_for_index(index):
         raise RuntimeError("Planetka: no tile node group template is available.")
 
     new_group = template.copy()
-    new_group.name = f"Planetka Tile_{int(index):03d}"
+    new_group.name = _tile_group_name_for_variant(index, variant=variant_text)
     try:
         new_group.use_fake_user = True
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         _log_recoverable_once("PKA-SHADER-004", "Failed to set fake-user on dynamic tile group")
+    if variant_text != "z360":
+        _strip_z360_logic_from_tile_group(new_group)
     return new_group
+
+
+def _ensure_testing_texture_loading_group(source_group):
+    if source_group is None:
+        return None
+    existing = bpy.data.node_groups.get(TEXTURE_LOADING_TEST_GROUP_NAME)
+    if existing is not None:
+        return existing
+    testing_group = source_group.copy()
+    testing_group.name = TEXTURE_LOADING_TEST_GROUP_NAME
+    try:
+        testing_group.use_fake_user = True
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        _log_recoverable_once("PKA-SHADER-019", "Failed to set fake-user on testing texture loading group")
+    return testing_group
+
+
+def _get_socket_by_name_or_index(socket_collection, socket_name, fallback_index):
+    if socket_collection is None:
+        return None
+    socket = socket_collection.get(str(socket_name)) if hasattr(socket_collection, "get") else None
+    if socket is not None:
+        return socket
+    sockets = list(socket_collection)
+    if 0 <= int(fallback_index) < len(sockets):
+        return sockets[int(fallback_index)]
+    return None
+
+
+def _build_regular_tile_placement_group(target_name):
+    template = _ensure_tile_group_for_index(1, variant="regular")
+    if template is None:
+        raise RuntimeError("Planetka: no regular tile group template is available for placement group.")
+
+    placement = template.copy()
+    placement.name = str(target_name)
+    try:
+        placement.use_fake_user = True
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        _log_recoverable_once("PKA-SHADER-028", "Failed setting fake-user on tile placement group")
+
+    nodes = placement.nodes
+    links = placement.links
+
+    group_input = next((node for node in nodes if node.type == "GROUP_INPUT"), None)
+    group_output = next((node for node in nodes if node.type == "GROUP_OUTPUT"), None)
+    texcoord = nodes.get("Texture Coordinate") or next(
+        (node for node in nodes if str(getattr(node, "bl_idname", "")) == "ShaderNodeTexCoord"),
+        None,
+    )
+    mapping = nodes.get("Mapping.001") or nodes.get("Mapping") or next(
+        (node for node in nodes if str(getattr(node, "bl_idname", "")) == "ShaderNodeMapping"),
+        None,
+    )
+    if group_input is None or group_output is None or texcoord is None or mapping is None:
+        raise RuntimeError("Planetka: failed preparing regular tile placement core nodes.")
+
+    for link in list(links):
+        links.remove(link)
+    for node in list(nodes):
+        if node in {group_input, group_output, texcoord, mapping}:
+            continue
+        nodes.remove(node)
+
+    x_input = _get_socket_by_name_or_index(getattr(group_input, "outputs", None), "x", 0)
+    y_input = _get_socket_by_name_or_index(getattr(group_input, "outputs", None), "y", 1)
+    z_input = _get_socket_by_name_or_index(getattr(group_input, "outputs", None), "z", 2)
+    if x_input is None or y_input is None or z_input is None:
+        raise RuntimeError("Planetka: tile placement group inputs x/y/z are unavailable.")
+
+    s2_output = _get_socket_by_name_or_index(getattr(group_output, "inputs", None), "S2", 0)
+    alpha_output = _get_socket_by_name_or_index(getattr(group_output, "inputs", None), "Alpha", 3)
+    if s2_output is None or alpha_output is None:
+        raise RuntimeError("Planetka: tile placement group outputs S2/Alpha are unavailable.")
+
+    inv_z = nodes.new("ShaderNodeMath")
+    inv_z.name = "PKA Pl InvZ"
+    inv_z.operation = "DIVIDE"
+    inv_z.inputs[0].default_value = 1.0
+
+    scale_x = nodes.new("ShaderNodeMath")
+    scale_x.name = "PKA Pl ScaleX"
+    scale_x.operation = "MULTIPLY"
+    scale_x.inputs[1].default_value = 360.0
+
+    scale_y = nodes.new("ShaderNodeMath")
+    scale_y.name = "PKA Pl ScaleY"
+    scale_y.operation = "MULTIPLY"
+    scale_y.inputs[1].default_value = 180.0
+
+    combine_scale = nodes.new("ShaderNodeCombineXYZ")
+    combine_scale.name = "PKA Pl CombineScale"
+    combine_scale.inputs[2].default_value = 1.0
+
+    combine_xy = nodes.new("ShaderNodeCombineXYZ")
+    combine_xy.name = "PKA Pl CombineXY"
+    combine_xy.inputs[2].default_value = 0.0
+
+    xy_scale = nodes.new("ShaderNodeVectorMath")
+    xy_scale.name = "PKA Pl XYScale"
+    xy_scale.operation = "SCALE"
+
+    xy_neg = nodes.new("ShaderNodeVectorMath")
+    xy_neg.name = "PKA Pl XYNeg"
+    xy_neg.operation = "SCALE"
+    xy_neg.inputs[3].default_value = -1.0
+
+    alpha_max = nodes.new("ShaderNodeVectorMath")
+    alpha_max.name = "PKA Pl AlphaMax"
+    alpha_max.operation = "MAXIMUM"
+    alpha_max.inputs[1].default_value = (0.0, 0.0, 0.0)
+
+    alpha_min = nodes.new("ShaderNodeVectorMath")
+    alpha_min.name = "PKA Pl AlphaMin"
+    alpha_min.operation = "MINIMUM"
+    alpha_min.inputs[1].default_value = (1.0, 1.0, 1.0)
+
+    alpha_delta = nodes.new("ShaderNodeVectorMath")
+    alpha_delta.name = "PKA Pl AlphaDelta"
+    alpha_delta.operation = "SUBTRACT"
+
+    alpha_len = nodes.new("ShaderNodeVectorMath")
+    alpha_len.name = "PKA Pl AlphaLen"
+    alpha_len.operation = "LENGTH"
+
+    alpha_cmp = nodes.new("ShaderNodeMath")
+    alpha_cmp.name = "PKA Pl AlphaCmp"
+    alpha_cmp.operation = "LESS_THAN"
+    alpha_cmp.inputs[1].default_value = 1e-6
+
+    links.new(z_input, inv_z.inputs[1])
+    links.new(inv_z.outputs[0], scale_x.inputs[0])
+    links.new(inv_z.outputs[0], scale_y.inputs[0])
+    links.new(scale_x.outputs[0], combine_scale.inputs[0])
+    links.new(scale_y.outputs[0], combine_scale.inputs[1])
+
+    links.new(x_input, combine_xy.inputs[0])
+    links.new(y_input, combine_xy.inputs[1])
+    links.new(combine_xy.outputs[0], xy_scale.inputs[0])
+    links.new(inv_z.outputs[0], xy_scale.inputs[3])
+    links.new(xy_scale.outputs[0], xy_neg.inputs[0])
+
+    links.new(texcoord.outputs["UV"], mapping.inputs["Vector"])
+    links.new(combine_scale.outputs[0], mapping.inputs["Scale"])
+    links.new(xy_neg.outputs[0], mapping.inputs["Location"])
+
+    links.new(mapping.outputs["Vector"], s2_output)
+
+    links.new(mapping.outputs["Vector"], alpha_max.inputs[0])
+    links.new(alpha_max.outputs[0], alpha_min.inputs[0])
+    links.new(mapping.outputs["Vector"], alpha_delta.inputs[0])
+    links.new(alpha_min.outputs[0], alpha_delta.inputs[1])
+    links.new(alpha_delta.outputs[0], alpha_len.inputs[0])
+    links.new(alpha_len.outputs[1], alpha_cmp.inputs[0])
+    links.new(alpha_cmp.outputs[0], alpha_output)
+
+    _set_node_location_safe(group_input, -1420.0, 120.0)
+    _set_node_location_safe(texcoord, -1420.0, -220.0)
+    _set_node_location_safe(inv_z, -1160.0, 160.0)
+    _set_node_location_safe(scale_x, -920.0, 260.0)
+    _set_node_location_safe(scale_y, -920.0, 140.0)
+    _set_node_location_safe(combine_scale, -680.0, 220.0)
+    _set_node_location_safe(combine_xy, -920.0, -40.0)
+    _set_node_location_safe(xy_scale, -680.0, -40.0)
+    _set_node_location_safe(xy_neg, -460.0, -40.0)
+    _set_node_location_safe(mapping, -220.0, 20.0)
+    _set_node_location_safe(alpha_max, 20.0, -200.0)
+    _set_node_location_safe(alpha_min, 260.0, -200.0)
+    _set_node_location_safe(alpha_delta, 500.0, -200.0)
+    _set_node_location_safe(alpha_len, 740.0, -200.0)
+    _set_node_location_safe(alpha_cmp, 980.0, -200.0)
+    _set_node_location_safe(group_output, 1240.0, 20.0)
+
+    placement["planetka_variant"] = "regular"
+    placement["planetka_schema_v"] = int(TILE_PLACEMENT_GROUP_SCHEMA_VERSION)
+    _hide_unconnected_group_input_sockets(placement)
+    return placement
+
+
+def _ensure_tile_placement_group(variant="regular"):
+    variant_text = str(variant or "regular").lower()
+    target_name = TILE_PLACEMENT_GROUP_360_NAME if variant_text == "z360" else TILE_PLACEMENT_GROUP_NAME
+    existing = bpy.data.node_groups.get(target_name)
+    if existing is not None:
+        if variant_text == "regular":
+            try:
+                existing_variant = str(existing.get("planetka_variant", "") or "").lower()
+                existing_schema = int(existing.get("planetka_schema_v", 0) or 0)
+            except (TypeError, ValueError):
+                existing_variant = ""
+                existing_schema = 0
+            if existing_variant == "regular" and existing_schema >= int(TILE_PLACEMENT_GROUP_SCHEMA_VERSION):
+                return existing
+            try:
+                bpy.data.node_groups.remove(existing, do_unlink=True)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                _log_recoverable_once("PKA-SHADER-039", "Failed replacing outdated regular tile placement group")
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                _log_recoverable_once("PKA-SHADER-040", "Failed replacing outdated regular tile placement group")
+        else:
+            return existing
+
+    if variant_text == "regular":
+        return _build_regular_tile_placement_group(target_name)
+
+    if variant_text == "z360":
+        template = _get_tile_group_template()
+    else:
+        template = _ensure_tile_group_for_index(1, variant="regular")
+    if template is None:
+        raise RuntimeError("Planetka: no tile node group template is available for placement group.")
+
+    placement = template.copy()
+    placement.name = target_name
+    try:
+        placement.use_fake_user = True
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        _log_recoverable_once("PKA-SHADER-028", "Failed setting fake-user on tile placement group")
+
+    # Keep mapping/mask/z360 math, remove texture samplers.
+    nodes = placement.nodes
+    links = placement.links
+    for node_name in ("S2", "EL", "WT", "PO", "Separate Color"):
+        node = nodes.get(node_name)
+        if node is not None:
+            try:
+                nodes.remove(node)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                _log_recoverable_once("PKA-SHADER-029", "Failed removing texture node from placement group")
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                _log_recoverable_once("PKA-SHADER-030", "Failed removing texture node from placement group")
+
+    _stabilize_tile_group_mask_sources(placement, enable_z360=(variant_text == "z360"))
+
+    output_node = next((node for node in nodes if node.type == "GROUP_OUTPUT"), None)
+    if output_node is None:
+        return placement
+
+    output_inputs = {socket.name: socket for socket in output_node.inputs}
+    if variant_text == "z360":
+        vector_out = nodes.get("PKA Z360 Vector Mix")
+        alpha_out = nodes.get("PKA AlphaMask Z360 Mix") or nodes.get("PKA AlphaMask MulXY")
+    else:
+        vector_out = nodes.get("Mapping.001") or nodes.get("Mapping")
+        alpha_out = nodes.get("PKA AlphaMask MulXY")
+
+    # Rewire outputs so existing sockets carry placement data:
+    # - S2 socket carries UV vector (RGBA->Vector is accepted by Blender links)
+    # - Alpha socket carries tile alpha mask
+    s2_socket = output_inputs.get("S2")
+    alpha_socket = output_inputs.get("Alpha")
+    if s2_socket is not None and vector_out is not None:
+        try:
+            for link in list(s2_socket.links):
+                links.remove(link)
+            links.new(vector_out.outputs[0], s2_socket)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            _log_recoverable_once("PKA-SHADER-031", "Failed rewiring placement vector output")
+        except (RuntimeError, TypeError, ValueError, AttributeError, IndexError):
+            _log_recoverable_once("PKA-SHADER-032", "Failed rewiring placement vector output")
+    if alpha_socket is not None and alpha_out is not None:
+        try:
+            for link in list(alpha_socket.links):
+                links.remove(link)
+            links.new(alpha_out.outputs[0], alpha_socket)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            _log_recoverable_once("PKA-SHADER-033", "Failed rewiring placement alpha output")
+        except (RuntimeError, TypeError, ValueError, AttributeError, IndexError):
+            _log_recoverable_once("PKA-SHADER-034", "Failed rewiring placement alpha output")
+
+    # Explicitly disconnect texture-specific outputs not used by placement variant.
+    for name in ("EL", "WT", "SE"):
+        socket = output_inputs.get(name)
+        if socket is None:
+            continue
+        try:
+            for link in list(socket.links):
+                links.remove(link)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            _log_recoverable_once("PKA-SHADER-035", "Failed disconnecting unused placement output")
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            _log_recoverable_once("PKA-SHADER-036", "Failed disconnecting unused placement output")
+
+    placement["planetka_variant"] = "z360"
+    placement["planetka_schema_v"] = int(TILE_PLACEMENT_GROUP_SCHEMA_VERSION)
+    return placement
 
 
 def _layout_tile_group_readable(nodes, mapping_node, group_input, group_output, texture_nodes):
@@ -401,7 +776,7 @@ def _layout_tile_group_readable(nodes, mapping_node, group_input, group_output, 
         el_sep_offset += 160.0
 
 
-def _stabilize_tile_group_mask_sources(tile_group):
+def _stabilize_tile_group_mask_sources(tile_group, enable_z360=True):
     if tile_group is None:
         return
     nodes = getattr(tile_group, "nodes", None)
@@ -551,14 +926,15 @@ def _stabilize_tile_group_mask_sources(tile_group):
             # z360 tiles bypass XY tile mapping and use native UVs directly.
             # A 360x180 texture already matches sphere UVs and should not be remapped.
             z_input_socket = None
-            if group_input is not None:
-                z_input_socket = group_input.outputs.get("Z") or group_input.outputs.get("z")
-                if z_input_socket is None:
-                    group_outputs = list(getattr(group_input, "outputs", ()))
-                    if len(group_outputs) > 2:
-                        z_input_socket = group_outputs[2]
+            if bool(enable_z360):
+                if group_input is not None:
+                    z_input_socket = group_input.outputs.get("Z") or group_input.outputs.get("z")
+                    if z_input_socket is None:
+                        group_outputs = list(getattr(group_input, "outputs", ()))
+                        if len(group_outputs) > 2:
+                            z_input_socket = group_outputs[2]
 
-            if z_input_socket is not None and texture_nodes:
+            if bool(enable_z360) and z_input_socket is not None and texture_nodes:
                 texcoord = nodes.get("PKA Z360 TexCoord")
                 if texcoord is None or texcoord.bl_idname != "ShaderNodeTexCoord":
                     if texcoord is not None:
@@ -645,6 +1021,8 @@ def _stabilize_tile_group_mask_sources(tile_group):
                 for old_link in list(alpha_input.links):
                     links.remove(old_link)
                 links.new(alpha_z360.outputs[0], alpha_input)
+            elif not bool(enable_z360):
+                _strip_z360_logic_from_tile_group(tile_group)
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             _log_recoverable_once("PKA-SHADER-013", "Failed wiring z360/native UV stabilization links")
         except (RuntimeError, TypeError, ValueError, AttributeError):
@@ -742,19 +1120,35 @@ def _build_rgba_add_chain(nodes, links, sockets, *, x_start=200.0, y=0.0, x_step
     if len(sockets) == 1:
         return sockets[0]
 
-    current = sockets[0]
-    for index, source in enumerate(sockets[1:], start=1):
-        mix = nodes.new("ShaderNodeMix")
-        mix.data_type = "RGBA"
-        mix.blend_type = "ADD"
-        mix.inputs[0].default_value = 1.0  # Factor
-        if hasattr(mix, "clamp_factor"):
-            mix.clamp_factor = True
-        _set_node_location_safe(mix, x_start + float(index - 1) * float(x_step), y)
-        links.new(current, mix.inputs[6])  # A (RGBA)
-        links.new(source, mix.inputs[7])   # B (RGBA)
-        current = mix.outputs[2]           # Result (RGBA)
-    return current
+    # Build a balanced binary ADD tree instead of a linear chain.
+    # This reduces shader stack depth in Cycles for larger tile counts.
+    current_level = list(sockets)
+    level_index = 0
+    while len(current_level) > 1:
+        next_level = []
+        pair_count = len(current_level) // 2
+        for pair_idx in range(pair_count):
+            source_a = current_level[pair_idx * 2]
+            source_b = current_level[pair_idx * 2 + 1]
+            mix = nodes.new("ShaderNodeMix")
+            mix.data_type = "RGBA"
+            mix.blend_type = "ADD"
+            mix.inputs[0].default_value = 1.0  # Factor
+            if hasattr(mix, "clamp_factor"):
+                mix.clamp_factor = True
+            _set_node_location_safe(
+                mix,
+                x_start + float(level_index) * float(x_step),
+                y - float(pair_idx) * 46.0,
+            )
+            links.new(source_a, mix.inputs[6])  # A (RGBA)
+            links.new(source_b, mix.inputs[7])  # B (RGBA)
+            next_level.append(mix.outputs[2])   # Result (RGBA)
+        if len(current_level) % 2 == 1:
+            next_level.append(current_level[-1])
+        current_level = next_level
+        level_index += 1
+    return current_level[0]
 
 
 def _build_scalar_add_chain(nodes, links, sockets, *, x_start=200.0, y=0.0, x_step=220.0):
@@ -763,18 +1157,36 @@ def _build_scalar_add_chain(nodes, links, sockets, *, x_start=200.0, y=0.0, x_st
     if len(sockets) == 1:
         return sockets[0]
 
-    current = sockets[0]
-    for index, source in enumerate(sockets[1:], start=1):
-        math = nodes.new("ShaderNodeMath")
-        math.operation = "ADD"
-        _set_node_location_safe(math, x_start + float(index - 1) * float(x_step), y)
-        links.new(current, math.inputs[0])
-        links.new(source, math.inputs[1])
-        current = math.outputs[0]
-    return current
+    # Balanced binary ADD tree to keep scalar merge depth low.
+    current_level = list(sockets)
+    level_index = 0
+    while len(current_level) > 1:
+        next_level = []
+        pair_count = len(current_level) // 2
+        for pair_idx in range(pair_count):
+            source_a = current_level[pair_idx * 2]
+            source_b = current_level[pair_idx * 2 + 1]
+            math = nodes.new("ShaderNodeMath")
+            math.operation = "ADD"
+            _set_node_location_safe(
+                math,
+                x_start + float(level_index) * float(x_step),
+                y - float(pair_idx) * 42.0,
+            )
+            links.new(source_a, math.inputs[0])
+            links.new(source_b, math.inputs[1])
+            next_level.append(math.outputs[0])
+        if len(current_level) % 2 == 1:
+            next_level.append(current_level[-1])
+        current_level = next_level
+        level_index += 1
+    return current_level[0]
 
 
 def _ensure_dynamic_texture_loading_slots(group_tree, slot_count, allow_shrink=True):
+    if str(getattr(group_tree, "name", "") or "").strip() == TEXTURE_LOADING_TEST_GROUP_NAME:
+        return _ensure_dynamic_texture_loading_slots_testing(group_tree, slot_count, allow_shrink=allow_shrink)
+
     slot_count = max(1, int(slot_count))
     existing_tiles = _sorted_tile_group_nodes(group_tree)
     if not allow_shrink and len(existing_tiles) >= slot_count:
@@ -800,10 +1212,12 @@ def _ensure_dynamic_texture_loading_slots(group_tree, slot_count, allow_shrink=T
             nodes.remove(node)
 
     tile_nodes = []
-    tile_mask_nodes = []
-    tile_node_groups = [_ensure_tile_group_for_index(index) for index in range(1, slot_count + 1)]
+    tile_node_groups = [
+        _ensure_tile_group_for_index(index, variant="regular")
+        for index in range(1, slot_count + 1)
+    ]
     for tile_group in tile_node_groups:
-        _stabilize_tile_group_mask_sources(tile_group)
+        _stabilize_tile_group_mask_sources(tile_group, enable_z360=False)
 
     y_start = 420.0
     y_step = 520.0
@@ -818,20 +1232,6 @@ def _ensure_dynamic_texture_loading_slots(group_tree, slot_count, allow_shrink=T
         tile_node.inputs[2].default_value = 1
         tile_node.inputs[3].default_value = 1
         tile_nodes.append(tile_node)
-
-        # Hidden companion node: keeps per-tile alpha mask stable even if user mutes the visible tile node.
-        mask_node = nodes.new("ShaderNodeGroup")
-        mask_node.name = f"{TILE_MASK_NODE_PREFIX}{index:03d}"
-        mask_node.label = mask_node.name
-        mask_node.node_tree = tile_group
-        mask_node.location = (-980.0, y_start - (index - 1) * y_step)
-        mask_node.hide = True
-        mask_node.mute = False
-        mask_node.inputs[0].default_value = 0
-        mask_node.inputs[1].default_value = 0
-        mask_node.inputs[2].default_value = 1
-        mask_node.inputs[3].default_value = 1
-        tile_mask_nodes.append(mask_node)
 
     chain_x_start = 200.0
     chain_x_step = 240.0
@@ -851,7 +1251,7 @@ def _ensure_dynamic_texture_loading_slots(group_tree, slot_count, allow_shrink=T
     lane_y["Alpha"] = base_y - float(len(TEXTURE_LOADING_CHANNELS_RGBA)) * lane_step
     lane_y["EL"] = lane_y["Alpha"] - lane_step
 
-    alpha_sockets = [node.outputs["Alpha"] for node in tile_mask_nodes]
+    alpha_sockets = [node.outputs["Alpha"] for node in tile_nodes]
     el_sockets = [node.outputs["EL"] for node in tile_nodes]
     scalar_results = {}
 
@@ -984,6 +1384,228 @@ def _ensure_dynamic_texture_loading_slots(group_tree, slot_count, allow_shrink=T
     return _sorted_tile_group_nodes(group_tree)
 
 
+def _ensure_dynamic_texture_loading_slots_testing(group_tree, slot_count, allow_shrink=True):
+    del allow_shrink
+    slot_count = max(1, int(slot_count))
+
+    nodes = group_tree.nodes
+    links = group_tree.links
+    output_node = next((node for node in nodes if node.type == "GROUP_OUTPUT"), None)
+    if output_node is None:
+        raise RuntimeError("Planetka: texture loading group output node is missing.")
+
+    # Rebuild generated testing graph each pass to keep structure deterministic.
+    for node in list(nodes):
+        if node == output_node:
+            continue
+        nodes.remove(node)
+    for link in list(links):
+        links.remove(link)
+
+    placement_group = _ensure_tile_placement_group(variant="regular")
+
+    tile_nodes = []
+    alpha_sockets = []
+    el_sockets = []
+    rgba_weighted_sockets = {channel: [] for channel in TEXTURE_LOADING_CHANNELS_RGBA}
+
+    y_start = 420.0
+    y_step = 520.0
+    chain_x_start = 200.0
+    chain_x_step = 240.0
+
+    for index in range(1, slot_count + 1):
+        tile_y = y_start - float(index - 1) * y_step
+
+        placement_node = nodes.new("ShaderNodeGroup")
+        placement_node.name = f"Tile_{index:03d}"
+        placement_node.label = placement_node.name
+        placement_node.node_tree = placement_group
+        placement_node.location = (-980.0, tile_y)
+        placement_node.inputs[0].default_value = 0
+        placement_node.inputs[1].default_value = 0
+        placement_node.inputs[2].default_value = 1
+        placement_node.inputs[3].default_value = 1
+        tile_nodes.append(placement_node)
+        alpha_socket = placement_node.outputs.get("Alpha")
+        vector_socket = placement_node.outputs.get("S2")
+        alpha_sockets.append(alpha_socket)
+
+        # Direct per-tile image samplers in testing loading group.
+        image_nodes = {}
+        image_y_offset = {"S2": 180.0, "EL": 40.0, "WT": -100.0, "PO": -240.0}
+        for img_type in TEXTURE_TYPES:
+            img_node = nodes.new("ShaderNodeTexImage")
+            img_node.name = f"{TEST_TILE_IMAGE_NODE_PREFIX}{index:03d}_{img_type}"
+            img_node.label = img_node.name
+            _set_node_location_safe(
+                img_node,
+                -620.0,
+                tile_y + float(image_y_offset.get(img_type, 0.0)),
+            )
+            if vector_socket is not None:
+                links.new(vector_socket, img_node.inputs["Vector"])
+            image_nodes[img_type] = img_node
+
+        # EL is scalar from red channel.
+        el_sep = nodes.new("ShaderNodeSeparateColor")
+        el_sep.name = f"TileSep_{index:03d}_EL"
+        el_sep.label = el_sep.name
+        _set_node_location_safe(el_sep, -360.0, tile_y + 40.0)
+        links.new(image_nodes["EL"].outputs["Color"], el_sep.inputs["Color"])
+        el_scalar = el_sep.outputs["Red"]
+        el_sockets.append(el_scalar)
+
+        # RGBA vector channels.
+        channel_sources = {
+            "S2": image_nodes["S2"].outputs["Color"],
+            "WT": image_nodes["WT"].outputs["Color"],
+            "SE": image_nodes["PO"].outputs["Color"],
+        }
+        rgba_weight_y_offset = {"S2": 120.0, "WT": 0.0, "SE": -120.0}
+        for channel, source_socket in channel_sources.items():
+            color_weight = nodes.new("ShaderNodeVectorMath")
+            color_weight.operation = "SCALE"
+            _set_node_location_safe(
+                color_weight,
+                chain_x_start - 280.0,
+                tile_y + float(rgba_weight_y_offset.get(channel, 0.0)),
+            )
+            links.new(source_socket, color_weight.inputs[0])
+            if alpha_socket is not None:
+                links.new(alpha_socket, color_weight.inputs[3])
+            else:
+                color_weight.inputs[3].default_value = 0.0
+            rgba_weighted_sockets[channel].append(color_weight.outputs[0])
+
+    # Cosmetic node layout lanes (for readability in Shader Editor).
+    lane_y = {}
+    base_y = 300.0
+    lane_step = 240.0
+    for idx, channel in enumerate(TEXTURE_LOADING_CHANNELS_RGBA, start=0):
+        lane_y[channel] = base_y - float(idx) * lane_step
+    lane_y["Alpha"] = base_y - float(len(TEXTURE_LOADING_CHANNELS_RGBA)) * lane_step
+    lane_y["EL"] = lane_y["Alpha"] - lane_step
+
+    rgba_results = {}
+    for channel in TEXTURE_LOADING_CHANNELS_RGBA:
+        rgba_results[channel] = _build_rgba_add_chain(
+            nodes,
+            links,
+            rgba_weighted_sockets.get(channel, []),
+            x_start=chain_x_start,
+            y=lane_y.get(channel, 0.0),
+            x_step=chain_x_step,
+        )
+
+    scalar_results = {}
+    scalar_results["Alpha"] = _build_scalar_add_chain(
+        nodes,
+        links,
+        [sock for sock in alpha_sockets if sock is not None],
+        x_start=chain_x_start,
+        y=lane_y.get("Alpha", -200.0),
+        x_step=chain_x_step,
+    )
+
+    weighted_el_sockets = []
+    for idx, (el_socket, alpha_socket) in enumerate(zip(el_sockets, alpha_sockets), start=1):
+        if el_socket is None:
+            continue
+        el_weight = nodes.new("ShaderNodeMath")
+        el_weight.operation = "MULTIPLY"
+        try:
+            tile_y = float(tile_nodes[idx - 1].location[1])
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, IndexError):
+            tile_y = 0.0
+        _set_node_location_safe(el_weight, chain_x_start - 360.0, tile_y - 220.0)
+        links.new(el_socket, el_weight.inputs[0])
+        if alpha_socket is not None:
+            links.new(alpha_socket, el_weight.inputs[1])
+        else:
+            el_weight.inputs[1].default_value = 0.0
+        weighted_el_sockets.append(el_weight.outputs[0])
+    scalar_results["EL"] = _build_scalar_add_chain(
+        nodes,
+        links,
+        weighted_el_sockets,
+        x_start=chain_x_start,
+        y=lane_y.get("EL", -500.0),
+        x_step=chain_x_step,
+    )
+
+    chain_tail_x = chain_x_start + float(max(0, len(tile_nodes) - 2)) * chain_x_step
+    post_x_1 = chain_tail_x + 300.0
+    post_x_2 = post_x_1 + 260.0
+    post_x_3 = post_x_2 + 260.0
+    output_x = post_x_3 + 360.0
+    _set_node_location_safe(output_node, output_x, -220.0)
+
+    alpha_raw_socket = scalar_results.get("Alpha")
+    alpha_den_socket = None
+    if alpha_raw_socket is not None:
+        alpha_max = nodes.new("ShaderNodeMath")
+        alpha_max.operation = "MAXIMUM"
+        alpha_max.inputs[1].default_value = 0.0
+        _set_node_location_safe(alpha_max, post_x_1, lane_y.get("Alpha", -200.0) + 60.0)
+        links.new(alpha_raw_socket, alpha_max.inputs[0])
+
+        alpha_clamp = nodes.new("ShaderNodeMath")
+        alpha_clamp.operation = "MINIMUM"
+        alpha_clamp.inputs[1].default_value = 1.0
+        _set_node_location_safe(alpha_clamp, post_x_2, lane_y.get("Alpha", -200.0) + 60.0)
+        links.new(alpha_max.outputs[0], alpha_clamp.inputs[0])
+        scalar_results["Alpha"] = alpha_clamp.outputs[0]
+
+        alpha_den = nodes.new("ShaderNodeMath")
+        alpha_den.operation = "MAXIMUM"
+        alpha_den.inputs[1].default_value = 1.0
+        _set_node_location_safe(alpha_den, post_x_1, lane_y.get("Alpha", -200.0) - 40.0)
+        links.new(alpha_raw_socket, alpha_den.inputs[0])
+        alpha_den_socket = alpha_den.outputs[0]
+
+        inv_alpha_den = nodes.new("ShaderNodeMath")
+        inv_alpha_den.operation = "DIVIDE"
+        inv_alpha_den.inputs[0].default_value = 1.0
+        _set_node_location_safe(inv_alpha_den, post_x_2, lane_y.get("Alpha", -200.0) - 40.0)
+        links.new(alpha_den_socket, inv_alpha_den.inputs[1])
+
+        for channel, result_socket in list(rgba_results.items()):
+            if result_socket is None:
+                continue
+            color_scale = nodes.new("ShaderNodeVectorMath")
+            color_scale.operation = "SCALE"
+            _set_node_location_safe(color_scale, post_x_3, lane_y.get(channel, 0.0))
+            links.new(result_socket, color_scale.inputs[0])
+            links.new(inv_alpha_den.outputs[0], color_scale.inputs[3])
+            rgba_results[channel] = color_scale.outputs[0]
+
+    el_socket = scalar_results.get("EL")
+    if el_socket is not None and alpha_raw_socket is not None:
+        el_norm = nodes.new("ShaderNodeMath")
+        el_norm.operation = "DIVIDE"
+        _set_node_location_safe(el_norm, post_x_3, lane_y.get("EL", -500.0))
+        links.new(el_socket, el_norm.inputs[0])
+        if alpha_den_socket is not None:
+            links.new(alpha_den_socket, el_norm.inputs[1])
+        else:
+            el_norm.inputs[1].default_value = 1.0
+        scalar_results["EL"] = el_norm.outputs[0]
+
+    output_socket_map = {socket.name: socket for socket in output_node.inputs}
+    for channel, result_socket in rgba_results.items():
+        out_socket = output_socket_map.get(channel)
+        if out_socket and result_socket:
+            links.new(result_socket, out_socket)
+    for channel, result_socket in scalar_results.items():
+        out_socket = output_socket_map.get(channel)
+        if out_socket and result_socket:
+            links.new(result_socket, out_socket)
+
+    _hide_unconnected_group_input_sockets(group_tree)
+    return tile_nodes
+
+
 # ------------------------------------------------------------
 # Memory cleanup (extension-safe)
 # ------------------------------------------------------------
@@ -1041,6 +1663,8 @@ def update_shader_nodes(
         "missing_texture_count": 0,
         "loaded_texture_bytes": 0,
     }
+    visible_tiles = list(visible_tiles or ())
+    stats["applied_tiles"] = list(visible_tiles)
     seen_image_paths = set()
 
     material = bpy.data.materials.get(material_name)
@@ -1050,13 +1674,31 @@ def update_shader_nodes(
 
     nodes = material.node_tree.nodes
     group = nodes.get("Planetka Textures Loading")
-    if not group or not group.node_tree:
+    if not group:
         logger.error("Planetka: texture loading group missing in material %r", material_name)
         return stats
+    source_group_tree = getattr(group, "node_tree", None)
+    if source_group_tree is None:
+        logger.error("Planetka: texture loading group tree missing in material %r", material_name)
+        return stats
+    testing_group = _ensure_testing_texture_loading_group(source_group_tree)
+    if testing_group is not None and getattr(group, "node_tree", None) != testing_group:
+        try:
+            group.node_tree = testing_group
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed assigning testing texture loading group", exc_info=True)
+        except (RuntimeError, TypeError, ValueError):
+            logger.debug("Planetka: failed assigning testing texture loading group", exc_info=True)
+    active_group_tree = getattr(group, "node_tree", None)
+    if active_group_tree is None:
+        logger.error("Planetka: active texture loading group tree is unavailable in material %r", material_name)
+        return stats
+
+    testing_mode = str(getattr(active_group_tree, "name", "") or "").strip() == TEXTURE_LOADING_TEST_GROUP_NAME
 
     try:
         tile_nodes = _ensure_dynamic_texture_loading_slots(
-            group.node_tree,
+            active_group_tree,
             len(visible_tiles),
             allow_shrink=allow_slot_shrink,
         )
@@ -1071,14 +1713,11 @@ def update_shader_nodes(
         )
         return stats
 
-    # Ensure alpha mask stability on every update (not only when slot count changes).
-    for tile_node in tile_nodes:
-        try:
-            _stabilize_tile_group_mask_sources(getattr(tile_node, "node_tree", None))
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            _log_recoverable_once("PKA-SHADER-017", "Failed stabilizing tile-group alpha mask sources")
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            _log_recoverable_once("PKA-SHADER-018", "Failed stabilizing tile-group alpha mask sources")
+    def _testing_img_node(slot_index, img_type):
+        if not testing_mode:
+            return None
+        node_name = f"{TEST_TILE_IMAGE_NODE_PREFIX}{int(slot_index):03d}_{str(img_type)}"
+        return active_group_tree.nodes.get(node_name)
 
     extension_dir = os.path.dirname(os.path.abspath(__file__))
     fallback_dir = os.path.join(extension_dir, "Resources", "Fallback Images")
@@ -1100,15 +1739,47 @@ def update_shader_nodes(
 
     for i, tile in enumerate(visible_tiles):
         node = tile_nodes[i]
-        mask_node = group.node_tree.nodes.get(f"{TILE_MASK_NODE_PREFIX}{i + 1:03d}")
         parsed = parse_tile(tile)
+        if testing_mode:
+            placement_variant = "regular"
+            if parsed:
+                try:
+                    if int(parsed[2]) >= 360:
+                        placement_variant = "z360"
+                except (TypeError, ValueError, IndexError):
+                    placement_variant = "regular"
+            try:
+                expected_group = _ensure_tile_placement_group(variant=placement_variant)
+                if getattr(node, "node_tree", None) != expected_group:
+                    node.node_tree = expected_group
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                _log_recoverable_once("PKA-SHADER-037", "Failed assigning testing placement group variant")
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                _log_recoverable_once("PKA-SHADER-038", "Failed assigning testing placement group variant")
+        if not testing_mode:
+            variant = "regular"
+            if parsed:
+                _, _, parsed_z, _ = parsed
+                if int(parsed_z) >= 360:
+                    variant = "z360"
+            try:
+                expected_group = _ensure_tile_group_for_index(i + 1, variant=variant)
+                if getattr(node, "node_tree", None) != expected_group:
+                    node.node_tree = expected_group
+                _stabilize_tile_group_mask_sources(
+                    getattr(node, "node_tree", None),
+                    enable_z360=(variant == "z360"),
+                )
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                _log_recoverable_once("PKA-SHADER-017", "Failed stabilizing tile-group alpha mask sources")
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                _log_recoverable_once("PKA-SHADER-018", "Failed stabilizing tile-group alpha mask sources")
+
         if not parsed:
             node.mute = True
             node.label = "Invalid"
-            if mask_node is not None:
-                mask_node.mute = True
             for img_type in TEXTURE_TYPES:
-                img_node = node.node_tree.nodes.get(img_type)
+                img_node = _testing_img_node(i + 1, img_type) if testing_mode else node.node_tree.nodes.get(img_type)
                 if not img_node:
                     continue
                 _assign_image_to_node(
@@ -1125,16 +1796,10 @@ def update_shader_nodes(
         node.inputs[1].default_value = y
         node.inputs[2].default_value = z
         node.inputs[3].default_value = d
-        if mask_node is not None:
-            mask_node.mute = False
-            mask_node.inputs[0].default_value = x
-            mask_node.inputs[1].default_value = y
-            mask_node.inputs[2].default_value = z
-            mask_node.inputs[3].default_value = d
         is_ocean_tile = bool(ocean_tiles and tile in ocean_tiles)
 
         for img_type in TEXTURE_TYPES:
-            img_node = node.node_tree.nodes.get(img_type)
+            img_node = _testing_img_node(i + 1, img_type) if testing_mode else node.node_tree.nodes.get(img_type)
             if not img_node:
                 continue
 
@@ -1187,14 +1852,11 @@ def update_shader_nodes(
                     seen_image_paths.add(abs_path)
                     stats["loaded_texture_bytes"] += _image_file_size_bytes(img)
 
-    for index, node in enumerate(tile_nodes[len(visible_tiles):], start=len(visible_tiles) + 1):
+    for extra_index, node in enumerate(tile_nodes[len(visible_tiles):], start=len(visible_tiles) + 1):
         node.mute = True
         node.label = "Empty"
-        mask_node = group.node_tree.nodes.get(f"{TILE_MASK_NODE_PREFIX}{index:03d}")
-        if mask_node is not None:
-            mask_node.mute = True
         for img_type in TEXTURE_TYPES:
-            img_node = node.node_tree.nodes.get(img_type)
+            img_node = _testing_img_node(extra_index, img_type) if testing_mode else node.node_tree.nodes.get(img_type)
             if not img_node:
                 continue
             _assign_image_to_node(
@@ -1229,6 +1891,16 @@ def main(
     ocean_tiles_override=None,
 ):
     logger.debug("Planetka visible tiles: %s", visible_tiles)
+    try:
+        incoming_count = len(list(visible_tiles or ()))
+        if incoming_count > int(SHADER_TILE_BUDGET_EXPECTED):
+            logger.error(
+                "Planetka: shader received %d tiles (expected <= %d). Upstream tile selection should enforce budget.",
+                int(incoming_count),
+                int(SHADER_TILE_BUDGET_EXPECTED),
+            )
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, RuntimeError):
+        logger.debug("Planetka: failed validating incoming tile budget", exc_info=True)
     prefs = get_prefs()
     base_path = prefs.texture_base_path
     logger.debug("Texture base path: %s", base_path)
@@ -1247,8 +1919,10 @@ def main(
         ocean_tiles=ocean_tiles,
         resolved_paths=resolved_paths,
     )
-    result["higher_z_fallback_count"] = len(set(resolved_tiles) - set(requested_tiles))
-    result["resolved_tiles"] = list(resolved_tiles)
+    applied_tiles = list(result.get("applied_tiles", resolved_tiles))
+    result["higher_z_fallback_count"] = len(set(applied_tiles) - set(requested_tiles))
+    result["resolved_tiles"] = list(applied_tiles)
+    result["resolved_tiles_full"] = list(resolved_tiles)
     result["requested_tiles"] = list(requested_tiles)
     cleanup_planetka_images(force_remove_datablocks=force_remove_datablocks)
     return result
