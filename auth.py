@@ -19,7 +19,7 @@ DEFAULT_API_BASE_URL = str(os.getenv("PLANETKA_API_BASE_URL") or "https://api.pl
 DEFAULT_UPGRADE_URL = str(
     os.getenv("PLANETKA_UPGRADE_URL")
     or os.getenv("PLANETKA_PRICING_URL")
-    or "https://www.planetka.io/pricing"
+    or "https://www.planetka.io/blender-addon/pricing/"
 ).strip()
 DEFAULT_MANAGE_SUBSCRIPTION_URL = str(
     os.getenv("PLANETKA_MANAGE_SUBSCRIPTION_URL")
@@ -71,9 +71,9 @@ ACCOUNT_TIER_STUDIO = "studio"
 PLAN_CODE_PLANETKA = "planetka"
 PLAN_CODE_PLANETKA_PRO = "planetka_pro"
 PLAN_CODE_PLANETKA_STUDIO = "planetka_studio"
-PLAN_NAME_PLANETKA = "Planetka"
-PLAN_NAME_PLANETKA_PRO = "Planetka Pro"
-PLAN_NAME_PLANETKA_STUDIO = "Planetka Studio"
+PLAN_NAME_PLANETKA = "Planetka Trial"
+PLAN_NAME_PLANETKA_PRO = "Planetka Hosted Data Access"
+PLAN_NAME_PLANETKA_STUDIO = "Planetka Hosted Data Access"
 DEFAULT_DATA_COUNTING_RULE = "Only newly downloaded data counts. Reused local cache does not consume allowance."
 PENDING_AUTH_MESSAGE = "Waiting for browser sign-in..."
 _DEVICE_LOGIN_TIMER_REGISTERED = False
@@ -110,9 +110,9 @@ def describe_auth_error(error):
     if "network_error" in lowered:
         return "Planetka could not reach the API. Check the internet connection and Worker deployment."
     if "missing_stripe_payment_link_url" in lowered:
-        return "Planetka upgrade checkout URL is not configured on the API."
+        return "Planetka Hosted Data Access checkout URL is not configured on the API."
     if "allowance" in lowered or "quota_exceeded" in lowered or "insufficient_data" in lowered:
-        return "Planetka account access for this request was denied. Verify your account status and try again."
+        return "Trial limit reached. Buy unlimited Hosted Data Access to continue."
     return f"Planetka login failed: {message.replace('_', ' ')}."
 
 
@@ -233,7 +233,7 @@ def _extract_plan(payload):
 
 def _derive_commercial_use_allowed(plan_code):
     safe = _normalize_plan_code(plan_code)
-    return bool(safe in {PLAN_CODE_PLANETKA_PRO, PLAN_CODE_PLANETKA_STUDIO})
+    return bool(safe in {PLAN_CODE_PLANETKA, PLAN_CODE_PLANETKA_PRO, PLAN_CODE_PLANETKA_STUDIO})
 
 
 def _extract_commercial_use_allowed(payload, plan=None):
@@ -262,8 +262,6 @@ def _extract_commercial_use_allowed(payload, plan=None):
     ):
         parsed = _parse_optional_bool(candidate)
         if parsed is not None:
-            if plan_code == PLAN_CODE_PLANETKA:
-                return False
             return bool(parsed)
 
     if plan_code:
@@ -693,7 +691,7 @@ def get_commercial_use_allowed(prefs=None):
     explicit = _parse_optional_bool(getattr(prefs, "auth_commercial_use_allowed", ""))
     if explicit is not None:
         return bool(explicit)
-    return _derive_commercial_use_allowed(get_plan_code(prefs))
+    return True
 
 
 def get_billing_period_end(prefs=None):

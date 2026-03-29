@@ -13,12 +13,10 @@ from .auth import (
     clear_auth_session,
     connect_with_prefs_api_key,
     describe_auth_error,
-    get_commercial_use_allowed,
     get_contact_url,
     get_api_key_request_url,
     get_upgrade_url,
     is_authenticated,
-    is_pro_account,
 )
 from .asset_builder import (
     ensure_earth_surface_parent,
@@ -1432,8 +1430,8 @@ class PLANETKA_OT_SelectTextureSource(bpy.types.Operator):
 
 class PLANETKA_OT_AccountLogin(bpy.types.Operator):
     bl_idname = "planetka.account_login"
-    bl_label = "Request API Key"
-    bl_description = "Open Planetka API key request page"
+    bl_label = "Request Trial Access"
+    bl_description = "Open Planetka trial API key request page"
 
     def execute(self, context):
         prefs = get_prefs()
@@ -1470,7 +1468,7 @@ class PLANETKA_OT_AccountLogin(bpy.types.Operator):
                 logger=logger,
             )
 
-        self.report({'INFO'}, "Request API key in browser, then paste it into Blender.")
+        self.report({'INFO'}, "Request trial API key in browser, then paste it into Blender.")
         return {'FINISHED'}
 
 
@@ -1566,8 +1564,8 @@ def _open_account_url(url):
 
 class PLANETKA_OT_AccountUpgrade(bpy.types.Operator):
     bl_idname = "planetka.account_upgrade"
-    bl_label = "Upgrade Licence"
-    bl_description = "Open Planetka licence upgrade page (one-time commercial license)"
+    bl_label = "Buy Unlimited Data Access"
+    bl_description = "Open Planetka Hosted Data Access purchase page"
 
     def execute(self, context):
         prefs = get_prefs()
@@ -1581,10 +1579,10 @@ class PLANETKA_OT_AccountUpgrade(bpy.types.Operator):
 
         upgrade_url = get_upgrade_url(prefs)
         if not upgrade_url:
-            return fail(self, "Planetka upgrade URL is not configured.", logger=logger)
+            return fail(self, "Planetka purchase URL is not configured.", logger=logger)
         if not _open_account_url(upgrade_url):
-            return fail(self, "Could not open Planetka licence upgrade page.", logger=logger)
-        self.report({'INFO'}, "Planetka licence upgrade page opened in browser.")
+            return fail(self, "Could not open Planetka Hosted Data Access page.", logger=logger)
+        self.report({'INFO'}, "Planetka Hosted Data Access page opened in browser.")
         return {'FINISHED'}
 
 
@@ -1696,11 +1694,10 @@ class PLANETKA_OT_AddEarth(bpy.types.Operator):
 
         _initialize_props_from_imported_planetka(scene)
         _sync_idprops_from_props(scene)
-        if bool(is_pro_account(prefs) or get_commercial_use_allowed(prefs)):
-            try:
-                props.texture_quality_mode = "FULL"
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
-                logger.debug("Planetka: failed setting Pro default texture quality to Full", exc_info=True)
+        try:
+            props.texture_quality_mode = "FULL"
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+            logger.debug("Planetka: failed setting default texture quality to Full", exc_info=True)
         warm_base_sphere_mesh_cache()
 
         surface_collection = ensure_planetka_temp_collection()

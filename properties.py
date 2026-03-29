@@ -5,7 +5,6 @@ import math
 from bpy.props import BoolProperty, EnumProperty, FloatProperty, FloatVectorProperty, IntProperty, StringProperty
 from mathutils import Vector
 
-from .auth import get_commercial_use_allowed, is_pro_account
 from .extension_prefs import get_prefs, read_saved_locations
 from .geonames_db import get_cached_place_by_display, get_place_by_display, search_places
 from .state import (
@@ -35,28 +34,9 @@ NAV_DEFAULT_AZIMUTH_DEG = 0.0
 NAV_DEFAULT_TILT_DEG = 25.0
 NAV_DEFAULT_ROLL_DEG = 0.0
 SEASONAL_TILT_PRESET_LIMIT_DEG = 23.5
-_TEXTURE_QUALITY_UPDATE_GUARD = False
 logger = logging.getLogger(__name__)
 
-
-def _full_texture_quality_allowed():
-    prefs = get_prefs()
-    if prefs is None:
-        return False
-    return bool(is_pro_account(prefs) or get_commercial_use_allowed(prefs))
-
-
 def update_texture_quality_mode(self, context):
-    global _TEXTURE_QUALITY_UPDATE_GUARD
-    if _TEXTURE_QUALITY_UPDATE_GUARD:
-        return
-    mode = str(getattr(self, "texture_quality_mode", "HALF") or "HALF").upper()
-    if mode == "FULL" and not _full_texture_quality_allowed():
-        try:
-            _TEXTURE_QUALITY_UPDATE_GUARD = True
-            self.texture_quality_mode = "HALF"
-        finally:
-            _TEXTURE_QUALITY_UPDATE_GUARD = False
     update_auto_resolve(self, context)
 
 
@@ -707,11 +687,9 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         name="Texture Quality",
         items=(
             ("FULL", "Full", "Highest available quality (100% texture data)"),
-            ("HALF", "Half", "Reduced quality using about 1/4 of Full texture data size"),
-            ("QUARTER", "Quarter", "Reduced quality using about 1/16 of Full texture data size"),
         ),
-        default="HALF",
-        description="Texture quality level used by Resolve for viewport and final rendering",
+        default="FULL",
+        description="Texture quality used by Resolve (fixed to Full in current production model)",
         update=update_texture_quality_mode,
     )
 

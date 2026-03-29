@@ -7,7 +7,6 @@ import bpy
 import mathutils
 from mathutils import Vector
 
-from .auth import get_commercial_use_allowed, is_pro_account
 from .diagnostics import write_tile_view_diagnostics
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from .extension_prefs import get_earth_object, get_prefs
@@ -49,7 +48,7 @@ LAST_REQUIRED_MPP_KEY = "planetka_last_required_mpp_m"
 LAST_TARGET_D_KEY = "planetka_last_target_d"
 LAST_SCOPE_USED_KEY = "planetka_last_scope_used"
 MAX_SHADER_TILE_BUDGET = 12
-TEXTURE_QUALITY_MODES = {"FULL", "HALF", "QUARTER"}
+TEXTURE_QUALITY_MODES = {"FULL"}
 VIEWPORT_RESOLUTION_X = 1920.0
 VIEWPORT_RESOLUTION_Y = 1080.0
 LAST_TILE_BUDGET_TRACE = []
@@ -476,27 +475,8 @@ def _resolution_bias_factor(scene):
 
 
 def _texture_quality_mode(scene):
-    props = getattr(scene, "planetka", None) if scene else None
-    if props is None:
-        return "HALF"
-    mode = str(
-        getattr(
-            props,
-            "texture_quality_mode",
-            "HALF",
-        )
-        or "HALF"
-    ).upper()
-    if mode in {"NORMAL", "DOUBLE"}:
-        mode = "FULL"
-    if mode not in TEXTURE_QUALITY_MODES:
-        return "HALF"
-    if mode == "FULL":
-        prefs = get_prefs()
-        full_allowed = bool(prefs and (is_pro_account(prefs) or get_commercial_use_allowed(prefs)))
-        if not full_allowed:
-            return "HALF"
-    return mode
+    # Single production quality path: always resolve full quality tiles.
+    return "FULL"
 
 
 def _use_active_view_coarse_textures(scene):
@@ -1208,11 +1188,7 @@ def _coarsen_tiles_n_d_levels(tiles, steps):
 
 
 def _apply_texture_quality_mode(tiles, scene):
-    mode = _texture_quality_mode(scene)
-    if mode == "HALF":
-        return _coarsen_tiles_n_d_levels(tiles, 1)
-    if mode == "QUARTER":
-        return _coarsen_tiles_n_d_levels(tiles, 2)
+    _ = _texture_quality_mode(scene)
     return list(tiles or [])
 
 

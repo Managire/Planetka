@@ -92,7 +92,7 @@ These controls are used for heavy-user monitoring, milestone alerts, and automat
 
 - `DOWNLOAD_MARK_STEP_GB` (default: `100`)
 - `DOWNLOAD_THROTTLE_FREE_DAILY_GB` (default: `25`)
-- `DOWNLOAD_THROTTLE_PRO_DAILY_GB` (default: `100`)
+- `DOWNLOAD_THROTTLE_PRO_DAILY_GB` (default: `0`, disabled)
 - `DOWNLOAD_THROTTLE_DURATION_MINUTES` (default: `1440`)
 - `DOWNLOAD_THROTTLED_REQUESTS_PER_MINUTE` (default: `0`; disabled when `0`)
 - `DOWNLOAD_THROTTLED_DELAY_MS` (default: `30000`)
@@ -103,7 +103,8 @@ Behavior:
 
 - Per-account counters track `lifetime`, `month`, `week`, `day`, and `hour` bytes.
 - Ops milestone alerts trigger when crossing each `DOWNLOAD_MARK_STEP_GB` mark.
-- If rolling 24-hour bytes exceed plan threshold (`DOWNLOAD_THROTTLE_FREE_DAILY_GB` for Free, `DOWNLOAD_THROTTLE_PRO_DAILY_GB` for Pro/Studio), user is automatically throttled.
+- If rolling 24-hour bytes exceed threshold (`DOWNLOAD_THROTTLE_FREE_DAILY_GB` for trial users, `DOWNLOAD_THROTTLE_PRO_DAILY_GB` for active Hosted Data Access users), user is automatically throttled.
+- A value of `0` disables that specific threshold.
 - While throttled, requests are delayed (`DOWNLOAD_THROTTLED_DELAY_MS`) to slow sustained scraping.
 - Optional per-minute cap can be enabled by setting `DOWNLOAD_THROTTLED_REQUESTS_PER_MINUTE` above `0`.
 - Throttled users receive an email notification; ops receives a security alert.
@@ -112,13 +113,17 @@ Behavior:
 
 - `STRIPE_ALLOWED_PRICE_IDS` (required for paid entitlement matching)
 - `STRIPE_ALLOWED_PRODUCT_IDS` (required for paid entitlement matching)
+- `TRIAL_INCLUDED_GB` (default: `25`)
+- `HOSTED_ACCESS_DURATION_DAYS` (default: `365`)
 
 Behavior:
 
-- Free accounts stay on free flow in `/auth/api-key/request` (plan tampering ignored).
+- New accounts start in trial mode with `TRIAL_INCLUDED_GB` included.
+- Trial and paid accounts use the same full addon functionality.
+- When trial allowance reaches zero, tile delivery is denied until payment is detected.
 - Paid entitlement is granted automatically from Stripe webhooks.
-- Paid entitlement is one-time purchase based and grants Pro access permanently for that account.
-- No Hosted Streaming Access renewal or end date is applied in this model.
+- Each successful paid event grants or extends Hosted Data Access by `HOSTED_ACCESS_DURATION_DAYS`.
+- API-key request flow never grants paid status directly; paid status is server-side only.
 
 ## Monthly Cost Estimate Alerts (Ops)
 

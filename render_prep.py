@@ -74,8 +74,7 @@ def _validate_texture_source(base_path):
     if not is_remote_source_configured(normalized):
         return "", "Planetka Cloudflare source is not configured."
 
-    # Free accounts must never request z==d full-quality sentinels during precheck.
-    # Validate against half/quarter-quality-compatible S2 sentinels instead.
+    # Validate against stable S2 sentinel tiles to confirm remote source health.
     try:
         has_s2 = texture_file_exists(normalized, "S2", "S2_x199_y150_z001_d004.exr") or texture_file_exists(
             normalized,

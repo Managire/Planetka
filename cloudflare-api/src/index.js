@@ -5,6 +5,8 @@ const PLAN_CODE_PLANETKA_PRO = "planetka_pro";
 const PLAN_CODE_PLANETKA_STUDIO = "planetka_studio";
 const DEFAULT_ALLOWANCE_COUNTING_RULE =
   "Only newly downloaded data counts. Reused local cache does not consume allowance.";
+const DEFAULT_TRIAL_INCLUDED_GB = 25;
+const DEFAULT_HOSTED_ACCESS_DURATION_DAYS = 365;
 const DEFAULT_PERIOD_DAYS = 30;
 const DEFAULT_FREE_INCLUDED_GB = 100;
 const DEFAULT_PRO_INCLUDED_GB = 1000;
@@ -13,7 +15,7 @@ const DEFAULT_STUDIO_INCLUDED_GB = 10000;
 const DEFAULT_LOW_WARNING_GB = 10;
 const DEFAULT_LOW_WARNING_RATIO = 0.1;
 const UNLIMITED_ALLOWANCE_BYTES = Number.MAX_SAFE_INTEGER;
-const DEFAULT_UPGRADE_URL = "https://www.planetka.io/signup";
+const DEFAULT_UPGRADE_URL = "https://www.planetka.io/blender-addon/pricing/";
 const DEFAULT_CONTACT_URL = "https://www.planetka.io/contact-me";
 const DEFAULT_ADMIN_ANALYTICS_TILE_MAP_KEY = "planetka-assets/Admin/world_map_720x360.jpg";
 const DEFAULT_ADMIN_SUPPORT_MISSING_MANIFEST_KEY = "planetka-assets/Admin/support_missing_manifest.json";
@@ -57,7 +59,7 @@ const DEFAULT_TILE_FARM_ALERT_UNTAGGED_PERCENT = 90;
 const DEFAULT_TILE_FARM_ALERT_EMAIL_COOLDOWN_SECONDS = 300;
 const DEFAULT_DOWNLOAD_MARK_STEP_GB = 100;
 const DEFAULT_DOWNLOAD_THROTTLE_FREE_DAILY_GB = 25;
-const DEFAULT_DOWNLOAD_THROTTLE_PRO_DAILY_GB = 100;
+const DEFAULT_DOWNLOAD_THROTTLE_PRO_DAILY_GB = 0;
 const DEFAULT_DOWNLOAD_THROTTLE_DURATION_MINUTES = 1440;
 const DEFAULT_DOWNLOAD_THROTTLED_REQUESTS_PER_MINUTE = 0;
 const DEFAULT_DOWNLOAD_THROTTLED_DELAY_MS = 30000;
@@ -252,16 +254,21 @@ function resolveEntitlementState(user, env = {}) {
   const status = normalizeUserStatus(user && user.status);
   const email = normalizeEmail(user && user.email);
   const confirmedAt = String(user && user.pro_confirmed_at || "").trim();
+  const hostedAccessExpiresAt = String(user && user.pro_access_expires_at || "").trim();
+  const hostedAccessExpiresAtMs = Date.parse(hostedAccessExpiresAt);
   const isStatusPaid = status === PLAN_CODE_PLANETKA_PRO || status === PLAN_CODE_PLANETKA_STUDIO;
+  const hasPaidSignal = Boolean(confirmedAt || isStatusPaid || hostedAccessExpiresAt);
+  const hasFutureHostedAccessExpiry = Number.isFinite(hostedAccessExpiresAtMs) && hostedAccessExpiresAtMs > Date.now();
+  const hasExpiredHostedAccess = Number.isFinite(hostedAccessExpiresAtMs) && hostedAccessExpiresAtMs <= Date.now();
   const defaultResult = {
-    state: "free",
+    state: "trial",
     plan_code: PLAN_CODE_PLANETKA,
-    commercial_use_allowed: false,
+    commercial_use_allowed: true,
     subscription_status: "inactive",
     is_permanent_paid: false,
     is_provisional_paid: false,
     is_expired_provisional: false,
-    source: "free",
+    source: "trial",
     email,
     hosted_streaming_access_expires_at: "",
   };
@@ -285,7 +292,15 @@ function resolveEntitlementState(user, env = {}) {
       hosted_streaming_access_expires_at: "",
     };
   }
-  if (confirmedAt || isStatusPaid) {
+  if (hasPaidSignal && hasExpiredHostedAccess) {
+    return {
+      ...defaultResult,
+      state: "expired_paid",
+      source: "expired",
+      hosted_streaming_access_expires_at: hostedAccessExpiresAt,
+    };
+  }
+  if (hasFutureHostedAccessExpiry) {
     const confirmedPlanCode = status === PLAN_CODE_PLANETKA_STUDIO
       ? PLAN_CODE_PLANETKA_STUDIO
       : PLAN_CODE_PLANETKA_PRO;
@@ -296,7 +311,16 @@ function resolveEntitlementState(user, env = {}) {
       commercial_use_allowed: true,
       subscription_status: "active",
       is_permanent_paid: true,
-      source: confirmedAt ? "confirmed" : "status",
+      source: confirmedAt ? "confirmed" : "expiry",
+      hosted_streaming_access_expires_at: hostedAccessExpiresAt,
+    };
+  }
+  if (hasPaidSignal) {
+    return {
+      ...defaultResult,
+      state: "trial",
+      source: "paid_signal_without_active_access",
+      hosted_streaming_access_expires_at: hostedAccessExpiresAt,
     };
   }
   return defaultResult;
@@ -516,10 +540,14 @@ function computeApiKeyExpiryIso(planCode, env) {
 }
 
 function computeHostedStreamingAccessExpiryIso(env, startMs = Date.now()) {
-  void env;
-  void startMs;
-  // Hosted Streaming Access is perpetual once paid.
-  return "";
+  const durationDays = Math.max(
+    1,
+    Math.floor(parsePositiveNumber(env.HOSTED_ACCESS_DURATION_DAYS, DEFAULT_HOSTED_ACCESS_DURATION_DAYS)),
+  );
+  const safeStartMs = Number.isFinite(Number(startMs))
+    ? Math.max(0, Math.floor(Number(startMs)))
+    : Date.now();
+  return new Date(safeStartMs + (durationDays * 24 * 60 * 60 * 1000)).toISOString();
 }
 
 function computeProvisionalExpiryIso(env) {
@@ -1191,19 +1219,25 @@ function monthBucketKey(epochSeconds) {
 function resolveDailyThrottleThresholdGbForPlan(planCode, env = {}) {
   const safePlanCode = normalizeRequestedPlan(planCode || PLAN_CODE_PLANETKA);
   if (safePlanCode === PLAN_CODE_PLANETKA) {
-    return parsePositiveNumber(
-      env.DOWNLOAD_THROTTLE_FREE_DAILY_GB,
-      DEFAULT_DOWNLOAD_THROTTLE_FREE_DAILY_GB,
-    );
+    const trialConfigured = Number(env.DOWNLOAD_THROTTLE_FREE_DAILY_GB);
+    if (Number.isFinite(trialConfigured) && trialConfigured > 0) {
+      return trialConfigured;
+    }
+    return DEFAULT_DOWNLOAD_THROTTLE_FREE_DAILY_GB;
   }
-  return parsePositiveNumber(
-    env.DOWNLOAD_THROTTLE_PRO_DAILY_GB,
-    DEFAULT_DOWNLOAD_THROTTLE_PRO_DAILY_GB,
-  );
+  const activeConfigured = Number(env.DOWNLOAD_THROTTLE_PRO_DAILY_GB);
+  if (Number.isFinite(activeConfigured) && activeConfigured >= 0) {
+    return activeConfigured;
+  }
+  return DEFAULT_DOWNLOAD_THROTTLE_PRO_DAILY_GB;
 }
 
 function resolveDailyThrottleThresholdBytesForPlan(planCode, env = {}) {
-  return Math.max(1, toBytesFromGb(resolveDailyThrottleThresholdGbForPlan(planCode, env)));
+  const thresholdGb = resolveDailyThrottleThresholdGbForPlan(planCode, env);
+  if (!Number.isFinite(thresholdGb) || thresholdGb <= 0) {
+    return 0;
+  }
+  return Math.max(1, toBytesFromGb(thresholdGb));
 }
 
 async function getRolling24hBytesForUser(db, userId, nowUnix) {
@@ -2117,20 +2151,20 @@ async function maybeSignalTileFarmingActivity(db, env, details = {}) {
 
 function parseHeavyUserPlanFilter(value) {
   const normalized = String(value || "all").trim().toLowerCase();
-  if (normalized === "free") {
-    return "free";
+  if (normalized === "trial" || normalized === "free") {
+    return "trial";
   }
-  if (normalized === "paid") {
-    return "paid";
+  if (normalized === "active" || normalized === "paid") {
+    return "active";
   }
   return "all";
 }
 
 function buildHeavyUserFilterSql(planFilter) {
-  if (planFilter === "free") {
+  if (planFilter === "trial") {
     return { clause: "WHERE c.plan_code = ?", bindings: [PLAN_CODE_PLANETKA] };
   }
-  if (planFilter === "paid") {
+  if (planFilter === "active") {
     return {
       clause: "WHERE c.plan_code IN (?, ?)",
       bindings: [PLAN_CODE_PLANETKA_PRO, PLAN_CODE_PLANETKA_STUDIO],
@@ -2140,7 +2174,7 @@ function buildHeavyUserFilterSql(planFilter) {
 }
 
 function buildTileActivityPlanFilterSql(planFilter) {
-  if (planFilter === "free") {
+  if (planFilter === "trial") {
     return {
       clause: `
         AND COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) = ?
@@ -2148,7 +2182,7 @@ function buildTileActivityPlanFilterSql(planFilter) {
       bindings: [PLAN_CODE_PLANETKA, PLAN_CODE_PLANETKA],
     };
   }
-  if (planFilter === "paid") {
+  if (planFilter === "active") {
     return {
       clause: `
         AND COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) IN (?, ?)
@@ -3198,6 +3232,7 @@ async function ensureAllowanceTables(db) {
 
 function buildPlanConfig(env) {
   const periodDays = Math.max(1, Math.floor(parsePositiveNumber(env.ALLOWANCE_PERIOD_DAYS, DEFAULT_PERIOD_DAYS)));
+  const trialIncludedBytes = toBytesFromGb(parsePositiveNumber(env.TRIAL_INCLUDED_GB, DEFAULT_TRIAL_INCLUDED_GB));
   const freeIncludedBytes = toBytesFromGb(parsePositiveNumber(env.ALLOWANCE_FREE_INCLUDED_GB, DEFAULT_FREE_INCLUDED_GB));
   const proIncludedBytes = toBytesFromGb(parsePositiveNumber(env.ALLOWANCE_PRO_INCLUDED_GB, DEFAULT_PRO_INCLUDED_GB));
   const proRolloverCapBytes = toBytesFromGb(parsePositiveNumber(env.ALLOWANCE_PRO_ROLLOVER_CAP_GB, DEFAULT_PRO_ROLLOVER_CAP_GB));
@@ -3210,6 +3245,7 @@ function buildPlanConfig(env) {
   const contactUrl = normalizeContactUrl(env.PLANETKA_CONTACT_URL || env.ALLOWANCE_SUPPORT_URL || DEFAULT_CONTACT_URL);
   return {
     periodDays,
+    trialIncludedBytes,
     freeIncludedBytes,
     proIncludedBytes,
     proRolloverCapBytes,
@@ -3226,15 +3262,15 @@ function buildPlanConfig(env) {
 function resolvePlanCode(user, subscription, env = {}) {
   void subscription;
   const entitlement = resolveEntitlementState(user, env);
-  const policyPlan = normalizeRequestedPlan(entitlement.plan_code || PLAN_CODE_PLANETKA);
-  if (policyPlan === PLAN_CODE_PLANETKA_PRO || policyPlan === PLAN_CODE_PLANETKA_STUDIO) {
+  if (String(entitlement.subscription_status || "").trim().toLowerCase() === "active") {
     return PLAN_CODE_PLANETKA_PRO;
   }
   return PLAN_CODE_PLANETKA;
 }
 
 function commercialUseAllowed(planCode) {
-  return planCode === PLAN_CODE_PLANETKA_PRO || planCode === PLAN_CODE_PLANETKA_STUDIO;
+  void planCode;
+  return true;
 }
 
 function includedLimitForPlan(planCode, cfg, previousPeriod) {
@@ -3392,6 +3428,7 @@ function computeWarningState(totalRemainingBytes, includedLimitBytes, cfg) {
 
 async function buildAllowanceState(db, user, subscription, env) {
   const cfg = buildPlanConfig(env);
+  const entitlement = resolveEntitlementState(user, env);
   const planCode = resolvePlanCode(user, subscription, env);
   const userId = String(user && user.id || "").trim();
   const counter = userId ? await findUserDownloadCounter(db, userId) : null;
@@ -3403,12 +3440,40 @@ async function buildAllowanceState(db, user, subscription, env) {
   const throttleReason = throttledUntil
     ? String(counter && counter.throttle_reason || "").trim()
     : "";
-  const includedLimitBytes = UNLIMITED_ALLOWANCE_BYTES;
-  const includedRemainingBytes = UNLIMITED_ALLOWANCE_BYTES;
-  const totalRemainingBytes = UNLIMITED_ALLOWANCE_BYTES;
-  const downloadedPeriodBytes = 0;
-  const warningState = "ok";
-  const exhausted = false;
+  const lifetimeDownloadedBytes = clampNonNegativeInt(counter && counter.lifetime_bytes);
+  const hasActiveHostedAccess = String(entitlement.subscription_status || "").trim().toLowerCase() === "active";
+
+  let includedLimitBytes = 0;
+  let includedRemainingBytes = 0;
+  let totalRemainingBytes = 0;
+  let downloadedPeriodBytes = 0;
+  let warningState = "unknown";
+  let exhausted = false;
+  let period = "trial";
+  let periodEnd = "";
+  let countingRule = "25 GB free trial. Buy unlimited Hosted Data Access to continue.";
+
+  if (hasActiveHostedAccess) {
+    includedLimitBytes = UNLIMITED_ALLOWANCE_BYTES;
+    includedRemainingBytes = UNLIMITED_ALLOWANCE_BYTES;
+    totalRemainingBytes = UNLIMITED_ALLOWANCE_BYTES;
+    downloadedPeriodBytes = lifetimeDownloadedBytes;
+    warningState = "ok";
+    exhausted = false;
+    period = "year";
+    periodEnd = String(entitlement.hosted_streaming_access_expires_at || "").trim();
+    countingRule = "Hosted Data Access active. Unlimited downloads during active access period.";
+  } else {
+    includedLimitBytes = Math.max(1, clampNonNegativeInt(cfg.trialIncludedBytes));
+    includedRemainingBytes = Math.max(0, includedLimitBytes - lifetimeDownloadedBytes);
+    totalRemainingBytes = includedRemainingBytes;
+    downloadedPeriodBytes = lifetimeDownloadedBytes;
+    warningState = computeWarningState(totalRemainingBytes, includedLimitBytes, cfg);
+    exhausted = totalRemainingBytes <= 0;
+    period = "trial";
+    periodEnd = "";
+    countingRule = "25 GB free trial. Buy unlimited Hosted Data Access to continue.";
+  }
 
   return {
     planCode,
@@ -3422,11 +3487,11 @@ async function buildAllowanceState(db, user, subscription, env) {
       topup_remaining_bytes: 0,
       total_remaining_bytes: totalRemainingBytes,
       downloaded_period_bytes: downloadedPeriodBytes,
-      period: "lifetime",
-      period_end: "",
+      period,
+      period_end: periodEnd,
       warning_state: warningState,
       exhausted,
-      counting_rule: "Unlimited access for this release; no periodic allowance is applied.",
+      counting_rule: countingRule,
     },
     throttledUntil,
     throttleReason,
@@ -4855,7 +4920,7 @@ async function sendApiKeyActivationEmail(env, email, token) {
       to: [email],
       subject: "Your Planetka API key activation link",
       text: [
-        "Planetka API key request received.",
+        "Planetka trial access request received.",
         "",
         "Open this activation link to generate your key:",
         activationUrl,
@@ -4889,7 +4954,7 @@ async function sendApiKeyIssuedEmail(env, email, apiKeyValue, planCode, expiresA
   const apiKey = requireSecret(env, "EMAIL_API_KEY");
   const from = String(env.EMAIL_FROM || "info@planetka.io").trim();
   const safePlan = normalizeRequestedPlan(planCode);
-  const displayPlan = safePlan === PLAN_CODE_PLANETKA ? "Free" : (safePlan === PLAN_CODE_PLANETKA_STUDIO ? "Studio" : "Pro");
+  const displayPlan = safePlan === PLAN_CODE_PLANETKA ? "Trial (25 GB)" : "Hosted Data Access Active";
   void expiresAt;
   const response = await fetch("https://api.resend.com/emails", {
     method: "POST",
@@ -5312,8 +5377,9 @@ async function createAccessToken(env, user, subscription, extraClaims = {}) {
   void subscription;
   const secret = requireSecret(env, "JWT_SIGNING_SECRET");
   const exp = Math.floor(Date.now() / 1000) + (60 * 60);
-  const hostedStreamingAccessStatus = subscriptionStatusForUser(user, env);
-  const hostedStreamingAccessValidUntil = "";
+  const entitlement = resolveEntitlementState(user, env);
+  const hostedStreamingAccessStatus = String(entitlement.subscription_status || "inactive");
+  const hostedStreamingAccessValidUntil = String(entitlement.hosted_streaming_access_expires_at || "").trim();
   const basePayload = {
     type: "access",
     sub: user.id,
@@ -5626,13 +5692,13 @@ function renderApiKeyRequestPage(env, message = "", requestedPlan = PLAN_CODE_PL
     : `<p id="status" style="margin-top:14px;color:#cbd5e1;"></p>`;
   void requestedPlan;
   const safePlan = PLAN_CODE_PLANETKA;
-  const subTitle = "Enter your email and we will send a one-click activation link for free access.";
+  const subTitle = "Enter your email and we will send a one-click activation link for a 25 GB trial.";
   return html(`<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Planetka Free Access</title>
+    <title>Planetka Trial Access</title>
     <style>
       :root { color-scheme: dark; }
       body { margin:0; min-height:100vh; display:grid; place-items:center; background:linear-gradient(180deg,#07111f 0%, #0b1424 100%); font-family: Inter, system-ui, sans-serif; color:#e5edf7; }
@@ -5653,7 +5719,7 @@ function renderApiKeyRequestPage(env, message = "", requestedPlan = PLAN_CODE_PL
   </head>
   <body>
     <main class="card">
-      <h1>Request Free Access</h1>
+      <h1>Request Trial Access</h1>
       <p>${escapeHtml(subTitle)}</p>
       <form id="form">
         <label for="email">Email</label>
@@ -5667,7 +5733,7 @@ function renderApiKeyRequestPage(env, message = "", requestedPlan = PLAN_CODE_PL
           <label for="news">Opt in to receive news about Planetka by email.</label>
         </div>
         <input id="website" class="hidden" type="text" autocomplete="off" tabindex="-1" />
-        <button id="submit" type="submit">Request Free Access</button>
+        <button id="submit" type="submit">Request Trial Access</button>
       </form>
       ${messageMarkup}
       <p class="help">Problem connecting? <a href="${contactUrl}" target="_blank" rel="noopener noreferrer">Contact Me</a></p>
@@ -5722,7 +5788,9 @@ function renderApiKeyActivatedPage(env, data = {}) {
   const keyMask = key ? maskApiKey(key) : "";
   const email = String(data.email || "").trim();
   const planCode = normalizeRequestedPlan(data.planCode || PLAN_CODE_PLANETKA);
-  const planLabel = planCode === PLAN_CODE_PLANETKA ? "Free" : (planCode === PLAN_CODE_PLANETKA_STUDIO ? "Studio" : "Pro");
+  const planLabel = planCode === PLAN_CODE_PLANETKA
+    ? "Trial (25 GB)"
+    : "Hosted Data Access Active";
   return html(`<!doctype html>
 <html lang="en">
   <head>
@@ -5921,7 +5989,8 @@ async function handleApiKeyRequest(request, env) {
   const acceptTerms = parseBooleanFlag(body.accept_terms);
   const acceptPrivacy = parseBooleanFlag(body.accept_privacy);
   const optInNews = parseBooleanFlag(body.opt_in_news);
-  // Public API-key request flow is always Free. Paid elevation only comes from Stripe webhook entitlement.
+  // Public API-key request flow always starts trial access.
+  // Paid hosted access is granted only by Stripe webhook entitlement.
   const requestedPlan = PLAN_CODE_PLANETKA;
   const honeypot = String(body.website || "").trim();
   const submittedAtMs = parseNonNegativeInteger(body.submitted_at_ms, 0);
@@ -6311,7 +6380,7 @@ async function handleApiKeyExchange(request, env) {
       refresh_token: refreshToken,
       subscription_status: subscriptionStatusForUser(user, env),
       hosted_streaming_access_status: subscriptionStatusForUser(user, env),
-      hosted_streaming_access_valid_until: null,
+      hosted_streaming_access_valid_until: accountState.dataAllowance.period_end || null,
       renews_at: "",
       trial_ends_at: "",
       api_key_mask: maskApiKey(apiKey),
@@ -6645,7 +6714,7 @@ async function handleAuthVerify(request, env) {
       email: user.email,
       subscription_status: subscriptionStatus,
       hosted_streaming_access_status: subscriptionStatus,
-      hosted_streaming_access_valid_until: null,
+      hosted_streaming_access_valid_until: accountState.dataAllowance.period_end || null,
       renews_at: null,
       trial_ends_at: null,
       ...serializeAccountState(accountState),
@@ -6758,7 +6827,7 @@ async function handleAuthRefresh(request, env) {
       email: user.email,
       subscription_status: subscriptionStatus,
       hosted_streaming_access_status: subscriptionStatus,
-      hosted_streaming_access_valid_until: null,
+      hosted_streaming_access_valid_until: accountState.dataAllowance.period_end || null,
       renews_at: null,
       trial_ends_at: null,
       ...serializeAccountState(accountState),
@@ -6789,7 +6858,7 @@ async function handleMe(request, env) {
       user_status: effectiveUserStatus,
       subscription_status: subscriptionStatus,
       hosted_streaming_access_status: subscriptionStatus,
-      hosted_streaming_access_valid_until: null,
+      hosted_streaming_access_valid_until: accountState.dataAllowance.period_end || null,
       trial_ends_at: null,
       renews_at: null,
       ...serializeAccountState(accountState),
@@ -6987,7 +7056,9 @@ async function handleDevicePoll(request, env) {
       refresh_token: session.refresh_token,
       subscription_status: session.subscription_status,
       hosted_streaming_access_status: session.subscription_status,
-      hosted_streaming_access_valid_until: null,
+      hosted_streaming_access_valid_until: accountPayload && accountPayload.data_allowance
+        ? String(accountPayload.data_allowance.period_end || "").trim() || null
+        : null,
       renews_at: session.renews_at,
       trial_ends_at: session.trial_ends_at,
       ...accountPayload,
@@ -7448,29 +7519,6 @@ async function handleTileRequest(request, env, path, ctx) {
       return json({ ok: false, error: "invalid_tile_path" }, 400, env);
     }
 
-    const tileQuality = parseTileQualityFromFileName(fileName);
-    const isFreePlan = planCode === PLAN_CODE_PLANETKA;
-    const isFullQualityS2Tile = Boolean(
-      tileQuality
-        && tileQuality.textureType === "S2"
-        && Number.isFinite(tileQuality.z)
-        && Number.isFinite(tileQuality.d)
-        && tileQuality.z === tileQuality.d,
-    );
-    if (isFreePlan && isFullQualityS2Tile) {
-      eventStatusCode = 403;
-      eventErrorCode = "quality_not_allowed";
-      return json(
-        {
-          ok: false,
-          error: "quality_not_allowed",
-          message: "Requested texture quality is not available for this account.",
-        },
-        403,
-        env,
-      );
-    }
-
     const prefix = String(env.R2_PREFIX || "").trim().replace(/^\/+|\/+$/g, "");
     const key = prefix ? `${prefix}/${folder}/${fileName}` : `${folder}/${fileName}`;
     eventTileKey = key;
@@ -7536,7 +7584,7 @@ async function handleTileRequest(request, env, path, ctx) {
         {
           ok: false,
           error: "allowance_exhausted",
-          message: "Data allowance is exhausted. Contact Planetka for more data.",
+          message: "Trial limit reached. Buy unlimited Hosted Data Access to continue.",
           ...serializeAccountState(allowanceState),
         },
         402,
@@ -7555,7 +7603,7 @@ async function handleTileRequest(request, env, path, ctx) {
           {
             ok: false,
             error: "allowance_exhausted",
-            message: "Data allowance is exhausted. Contact Planetka for more data.",
+            message: "Trial limit reached. Buy unlimited Hosted Data Access to continue.",
             ...serializeAccountState(await buildAllowanceState(db, user, null, env)),
           },
           402,
@@ -7883,8 +7931,8 @@ async function handleAdminAnalyticsPage(request, env) {
     <label for="planFilter">User type:</label>
     <select id="planFilter">
       <option value="all" selected>All</option>
-      <option value="free">Free</option>
-      <option value="paid">Paid</option>
+      <option value="trial">Trial</option>
+      <option value="active">Hosted Access Active</option>
     </select>
     <label for="heavySort">Rank by:</label>
     <select id="heavySort">
@@ -8314,6 +8362,10 @@ async function handleAdminAnalyticsPage(request, env) {
           const userId = encodeDataValue(row.user_id || "");
           const userEmail = encodeDataValue(row.user_email || "");
           const planCode = encodeDataValue(row.plan_code || "planetka");
+          const rawPlanCode = String(row.plan_code || "planetka").trim().toLowerCase();
+          const planLabel = (rawPlanCode === "planetka_pro" || rawPlanCode === "planetka_studio")
+            ? "Hosted Access Active"
+            : "Trial";
           const userStatus = String(row.user_status || row.plan_code || "").trim().toLowerCase();
           const throttledUntilRaw = String(row.throttled_until || "").trim();
           const throttledUntilMs = Date.parse(throttledUntilRaw);
@@ -8328,7 +8380,7 @@ async function handleAdminAnalyticsPage(request, env) {
             const blockButton = \`<button class="action-btn danger" data-action="block" data-user-id="\${userId}" data-user-email="\${userEmail}" data-plan-code="\${planCode}">Block user</button>\`;
             actionButtons = \`\${throttleButton}\${blockButton}\`;
           }
-          return \`<td>\${row.user_email || ""}</td><td>\${row.plan_code || ""}</td><td>\${fmtInt(row.resolve_count)}</td><td>\${fmtGb(row.lifetime_bytes)}</td><td>\${fmtGb(row.month_bytes)}</td><td>\${fmtGb(row.week_bytes)}</td><td>\${fmtGb(row.day_bytes)}</td><td>\${fmtGb(row.hour_bytes)}</td><td>\${throttledUntilRaw}</td><td>\${row.last_request_at || ""}</td><td class="action-wrap">\${actionButtons}</td>\`;
+          return \`<td>\${row.user_email || ""}</td><td>\${planLabel}</td><td>\${fmtInt(row.resolve_count)}</td><td>\${fmtGb(row.lifetime_bytes)}</td><td>\${fmtGb(row.month_bytes)}</td><td>\${fmtGb(row.week_bytes)}</td><td>\${fmtGb(row.day_bytes)}</td><td>\${fmtGb(row.hour_bytes)}</td><td>\${throttledUntilRaw}</td><td>\${row.last_request_at || ""}</td><td class="action-wrap">\${actionButtons}</td>\`;
         });
         renderLiveTileMap(data.live_tile_map || {});
         renderRows("tilesTable", data.top_tiles, (row) => \`<td>\${row.tile_key || ""}</td><td>\${fmtInt(row.request_count)}</td><td>\${fmtGb(row.bytes_served)}</td>\`);
@@ -9477,11 +9529,16 @@ async function applyHostedStreamingAccessEntitlement(db, env, details = {}) {
     throw new Error("missing_customer_email");
   }
   const now = nowIso();
+  const existingUser = await findUserByEmail(db, email);
+  const existingExpiryMs = Date.parse(String(existingUser && existingUser.pro_access_expires_at || "").trim());
+  const entitlementStartMs = Number.isFinite(existingExpiryMs) && existingExpiryMs > Date.now()
+    ? existingExpiryMs
+    : Date.now();
   const requestedPlan = normalizeRequestedPlan(details.planCode || PLAN_CODE_PLANETKA_PRO);
   const planCode = requestedPlan === PLAN_CODE_PLANETKA_STUDIO
     ? PLAN_CODE_PLANETKA_STUDIO
     : PLAN_CODE_PLANETKA_PRO;
-  const accessExpiresAt = "";
+  const accessExpiresAt = computeHostedStreamingAccessExpiryIso(env, entitlementStartMs);
   let user = await upsertUserByEmail(
     db,
     email,
@@ -9648,7 +9705,7 @@ async function handleStripeWebhook(request, env) {
         session_id: sessionId,
         stripe_customer_id: stripeCustomerId,
         stripe_subscription_id: stripeSubscriptionId,
-        access_expires_at: "",
+        access_expires_at: String(applied.accessExpiresAt || "").trim(),
         matched_price_ids: entitlements.priceIds.filter((priceId) => allowedPriceIds.has(priceId)).slice(0, 25),
         matched_product_ids: entitlements.productIds.filter((productId) => allowedProductIds.has(productId)).slice(0, 25),
         user_status: String(applied.user && applied.user.status || PLAN_CODE_PLANETKA_PRO),
@@ -9660,7 +9717,7 @@ async function handleStripeWebhook(request, env) {
         processed: true,
         event_type: eventType,
         email,
-        hosted_streaming_access_expires_at: "",
+        hosted_streaming_access_expires_at: String(applied.accessExpiresAt || "").trim() || null,
       },
       200,
       env,
@@ -9753,7 +9810,7 @@ async function handleStripeWebhook(request, env) {
       invoice_id: String(invoice.id || "").trim(),
       stripe_customer_id: stripeCustomerId,
       stripe_subscription_id: stripeSubscriptionId,
-      access_expires_at: "",
+      access_expires_at: String(applied.accessExpiresAt || "").trim(),
       matched_price_ids: entitlements.priceIds.filter((priceId) => allowedPriceIds.has(priceId)).slice(0, 25),
       matched_product_ids: entitlements.productIds.filter((productId) => allowedProductIds.has(productId)).slice(0, 25),
       user_status: String(applied.user && applied.user.status || PLAN_CODE_PLANETKA_PRO),
@@ -9765,7 +9822,7 @@ async function handleStripeWebhook(request, env) {
       processed: true,
       event_type: eventType,
       email,
-      hosted_streaming_access_expires_at: "",
+      hosted_streaming_access_expires_at: String(applied.accessExpiresAt || "").trim() || null,
     },
     200,
     env,

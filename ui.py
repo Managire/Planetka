@@ -4,14 +4,10 @@ import bpy
 import datetime
 
 from .auth import (
-    PLAN_CODE_PLANETKA_PRO,
-    PLAN_CODE_PLANETKA_STUDIO,
-    get_commercial_use_allowed,
     get_connected_email,
     get_plan_code,
     get_status_message,
     is_authenticated,
-    is_pro_account,
 )
 from .extension_prefs import get_earth_object
 from .geonames_db import get_search_status_text
@@ -152,12 +148,7 @@ def _is_connected():
 
 
 def _full_texture_quality_allowed():
-    from .extension_prefs import get_prefs
-
-    prefs = get_prefs()
-    if prefs is None:
-        return False
-    return bool(is_pro_account(prefs) or get_commercial_use_allowed(prefs))
+    return True
 
 
 def _is_cloud_source_mode():
@@ -204,35 +195,25 @@ def _draw_subscription(layout):
     status_message = get_status_message(prefs)
 
     if not connected:
-        layout.label(text="Paste API key to start using Planetka", icon="INFO")
+        layout.label(text="Paste API key to connect Planetka", icon="INFO")
         layout.prop(prefs, "auth_api_key_input", text="API Key")
         connect_row = layout.row(align=True)
         connect_row.operator("planetka.account_open_login", text="Connect API Key", icon="CHECKMARK")
-        free_row = layout.row()
-        free_row.operator("planetka.account_login", text="Request Free Access", icon="URL")
-        purchase_row = layout.row()
-        purchase_row.operator(
-            "wm.url_open",
-            text="Purchase Pro Licence",
-            icon="URL",
-        ).url = "https://www.planetka.io/blender-addon/pricing/"
+        trial_row = layout.row()
+        trial_row.operator("planetka.account_login", text="Request Trial Access", icon="URL")
         if status_message:
             layout.label(text=status_message, icon="INFO")
         return
 
     email = get_connected_email(prefs)
     plan_code = get_plan_code(prefs)
-    commercial_use_allowed = get_commercial_use_allowed(prefs)
-
-    if commercial_use_allowed or plan_code in {PLAN_CODE_PLANETKA_PRO, PLAN_CODE_PLANETKA_STUDIO}:
-        license_text = "Pro - Commercial"
-        is_pro_license = True
-    else:
-        license_text = "Free - Personal use only"
-        is_pro_license = False
+    has_unlimited_access = plan_code in {"planetka_pro", "planetka_studio"}
 
     layout.label(text=f"Account: {email}", icon="CHECKMARK")
-    layout.label(text=f"Licence: {license_text}", icon="INFO")
+    if has_unlimited_access:
+        layout.label(text="Hosted Data Access: Active", icon="CHECKMARK")
+    else:
+        layout.label(text="Trial: 25 GB included", icon="INFO")
     layout.label(text="Status: Connected", icon="LINKED")
 
     action_row = layout.row(align=True)
@@ -240,11 +221,11 @@ def _draw_subscription(layout):
     action_row.operator("planetka.account_logout", text="Log Out", icon="X")
     key_row = layout.row()
     key_row.operator("planetka.account_login", text="Regenerate API Key", icon="URL")
-    if not is_pro_license:
-        upgrade_row = layout.row()
+    if not has_unlimited_access:
+        upgrade_row = layout.row(align=True)
         upgrade_row.operator(
             "wm.url_open",
-            text="Upgrade Licence",
+            text="Buy Unlimited Data Access",
             icon="URL",
         ).url = "https://www.planetka.io/blender-addon/pricing/"
 
@@ -797,13 +778,8 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             texture_quality_box.enabled = workflow_enabled
             quality_row = texture_quality_box.row(align=True)
             quality_row.use_property_split = False
-            full_row = quality_row.row(align=True)
-            full_row.enabled = _full_texture_quality_allowed()
-            full_row.prop_enum(props, "texture_quality_mode", "FULL", text="Full")
-            quality_row.prop_enum(props, "texture_quality_mode", "HALF", text="Half")
-            quality_row.prop_enum(props, "texture_quality_mode", "QUARTER", text="Quarter")
-            if not _full_texture_quality_allowed():
-                texture_quality_box.label(text="Upgrade Licence to unlock Full Quality.", icon="INFO")
+            quality_row.enabled = False
+            quality_row.label(text="Full (fixed)", icon="CHECKMARK")
 
             viewport_box = layout.box()
             viewport_box.label(text="Viewport Optimization", icon="VIEW3D")
@@ -1216,17 +1192,8 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
         render_box = layout.box()
         render_box.label(text="Rendering", icon="RENDER_ANIMATION")
-        render_enabled = _full_texture_quality_allowed()
-        if not render_enabled:
-            render_box.label(text="Upgrade Licence to unlock", icon="LOCKED")
-            render_box.operator(
-                "wm.url_open",
-                text="Upgrade Licence",
-                icon="URL",
-            ).url = "https://www.planetka.io/blender-addon/pricing/"
-
         render_content = render_box.column()
-        render_content.enabled = render_enabled
+        render_content.enabled = True
         if _is_animation_prepared(scene):
             render_content.label(text="Prepared animation setup will be cleared.", icon="INFO")
 

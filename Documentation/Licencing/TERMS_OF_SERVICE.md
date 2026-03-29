@@ -18,19 +18,17 @@ you agree to these Terms and to the Planetka Privacy Policy.
 If you do not agree, do not create an account and do not use Planetka-hosted
 services.
 
-## 2. Free License
+## 2. Trial and Hosted Data Access
 
-The free Planetka license is:
+Planetka uses one functional addon tier for all users.
 
-- non-exclusive
-- revocable for breach of these Terms
-- tied to one specific email address
-- intended for one natural person
-- allowed on one computer at one time
-- valid indefinitely unless terminated under these Terms
-
-The free version is provided without any promise of future availability,
-continued hosting, minimum uptime, or future updates.
+- New accounts start with a 25 GB hosted-data trial allowance.
+- Trial access is tied to one specific email address.
+- Trial access is allowed on one computer at one time.
+- After the 25 GB trial allowance is used, continued hosted-data use requires
+  paid Hosted Data Access.
+- Hosted Data Access is purchased separately and is valid for one year per
+  successful payment period.
 
 ## 3. Intended Use
 
@@ -43,11 +41,10 @@ That intended use includes normal interactive work such as:
 - rendering animation sequences
 - normal caching required for those workflows
 
-Standard free and listed paid Planetka plans do not include rights to use
-Planetka-hosted services or Planetka-provided data for artificial
-intelligence, machine learning, or similar model-development workflows. Those
-rights are available only under a separate custom license released by
-Planetka in writing.
+Standard Planetka access does not include rights to use Planetka-hosted
+services or Planetka-provided data for artificial intelligence, machine
+learning, or similar model-development workflows. Those rights are available
+only under a separate custom license released by Planetka in writing.
 
 ## 4. Allowed Use
 
@@ -66,24 +63,21 @@ You must not:
 - use automated requests to harvest tiles or datasets outside normal rendering
   use
 - attempt to bypass technical or account controls
-- share one free license across multiple simultaneous computers or users
+- share one account across multiple simultaneous computers or users
 - use Planetka-hosted services as a generic data-delivery API
 - resell, sublicense, rent, lease, or provide Planetka-hosted service access
   to third parties
-- use Planetka-hosted services or Planetka-provided data, under the free
-  license or under any listed standard paid license, to train, pre-train,
+- use Planetka-hosted services or Planetka-provided data to train, pre-train,
   fine-tune, adapt, align, benchmark, validate, or evaluate any artificial
   intelligence, machine learning, computer vision, generative, or similar
   model or system
-- use Planetka-hosted services or Planetka-provided data, under the free
-  license or under any listed standard paid license, to create, enrich,
+- use Planetka-hosted services or Planetka-provided data to create, enrich,
   prepare, transform, or supply datasets, labels, captions, embeddings,
   synthetic pairs, ground-truth assets, or other structured inputs primarily
   intended for artificial intelligence, machine learning, or similar
   model-development workflows
 - use rendered outputs, tiles, cached files, or extracted data from Planetka-
-  hosted services, under the free license or under any listed standard paid
-  license, as training material or evaluation material for artificial
+  hosted services as training material or evaluation material for artificial
   intelligence, machine learning, or similar systems where Planetka-hosted
   services or Planetka-provided data are a material input to that workflow
 - probe, stress, or abuse the service in a way that degrades availability
@@ -119,18 +113,16 @@ Planetka-hosted services are provided on an "as is" and "as available" basis.
 No warranty is given that the service will always be available, uninterrupted,
 error-free, or suitable for any specific purpose.
 
-For the free version in particular, Planetka gives no guarantee of continued
-future availability.
+Planetka gives no guarantee of uninterrupted future availability.
 
-## 9. Limitation of Use Guarantee
+## 9. Access Period and Continuity
 
-The free version may be used indefinitely while it remains available, but that
-does not create any obligation on Planetka to continue hosting the service for
-any minimum period of time.
+Trial access is limited by trial data allowance and may be changed in future
+releases.
 
-If Planetka later offers paid plans with support or availability guarantees,
-those guarantees will apply only if expressly stated in separate paid-plan
-terms.
+Paid Hosted Data Access is granted for the purchased period, but this does not
+create any obligation to provide uninterrupted uptime or minimum service
+levels unless explicitly stated in separate written terms.
 
 ## 10. Telemetry and Internal Analytics
 
@@ -166,7 +158,7 @@ When sharing Planetka-based work publicly, crediting Planetka is strongly
 encouraged (for example: "Created with Planetka for Blender").
 
 This Planetka credit is requested for visibility and sustainability and helps
-support keeping the service free long-term. It is encouraged, but not a
+support keeping the service sustainable long-term. It is encouraged, but not a
 separate third-party source-data requirement.
 
 ## 13. Changes

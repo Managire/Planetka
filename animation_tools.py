@@ -6,7 +6,6 @@ import bpy
 from bpy.props import EnumProperty
 from mathutils import Matrix, Quaternion, Vector
 
-from .auth import get_commercial_use_allowed, is_pro_account
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from .extension_prefs import get_earth_object, get_prefs
 from .operator_utils import ErrorCode, fail, require_planetka_props, require_scene
@@ -52,10 +51,8 @@ _OPERATORS_MODULE = None
 
 
 def _has_pro_feature_access(prefs=None):
-    prefs_obj = prefs if prefs is not None else get_prefs()
-    if prefs_obj is None:
-        return False
-    return bool(is_pro_account(prefs_obj) or get_commercial_use_allowed(prefs_obj))
+    _ = prefs
+    return True
 
 
 def _require_pro_animation_render_access(operator, prefs=None):
@@ -63,7 +60,7 @@ def _require_pro_animation_render_access(operator, prefs=None):
         return True
     fail(
         operator,
-        "Upgrade Licence to unlock Animation Rendering.",
+        "Buy unlimited Hosted Data Access to continue Animation Rendering.",
         code=ErrorCode.RESOLVE_PRECHECK_FAILED,
         logger=logger,
     )
