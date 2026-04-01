@@ -25,6 +25,8 @@ def _log_recoverable_once(code, message):
 # ------------------------------------------------------------
 
 POWER_Z = {1, 2, 4, 8, 16, 32, 64}
+POLE_CAP_Z_LEVELS = frozenset({1, 2, 4, 8})
+PAD_TILE_PREFIX = "__PKA_PAD_TILE"
 TEXTURE_TYPES = ("S2", "EL", "WT", "PO")
 TEXTURE_EXTENSIONS = {
     "S2": (".exr",),
@@ -34,9 +36,12 @@ TEXTURE_EXTENSIONS = {
 }
 TILE_GROUP_NODE_PREFIXES = ("Planetka Tile_", "Tile_")
 TILE_MASK_NODE_PREFIX = "TileMask_"
-TEXTURE_LOADING_TEST_GROUP_NAME = "Planetka Textures Loading Group - Testing"
+TEXTURE_LOADING_GROUP_NAME = "Planetka Textures Loading Group"
+LEGACY_TEXTURE_LOADING_TEST_GROUP_NAME = "Planetka Textures Loading Group - Testing"
 TILE_PLACEMENT_GROUP_NAME = "Planetka Tile Placement"
 TILE_PLACEMENT_GROUP_360_NAME = "Planetka Tile Placement 360"
+SURFACE_GRADING_GROUP_NAME = "Planetka Surface Grading Group"
+SURFACE_GRADING_SAMPLER_OPT_KEY = "planetka_surface_static_rgb_v1"
 TEST_TILE_IMAGE_NODE_PREFIX = "TileImg_"
 TILE_PLACEMENT_GROUP_SCHEMA_VERSION = 2
 TEXTURE_LOADING_CHANNELS_RGBA = ("S2", "WT", "SE")
@@ -44,11 +49,21 @@ TEXTURE_LOADING_CHANNELS_SCALAR = ("EL", "Alpha")
 SHADER_TILE_BUDGET_EXPECTED = 12
 _COVERAGE_MAP = None
 BASE_EMBEDDED_TILE_GROUP_COUNT = 1
+TESTING_STATIC_SLOT_COUNT = int(SHADER_TILE_BUDGET_EXPECTED)
+TESTING_LOADER_SCHEMA_VERSION_KEY = "planetka_testing_loader_schema_v"
+TESTING_LOADER_SCHEMA_VERSION = 2
 
 
 # ------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------
+
+def _is_dynamic_texture_loading_group_name(name):
+    token = str(name or "").strip()
+    return token in {
+        TEXTURE_LOADING_GROUP_NAME,
+        LEGACY_TEXTURE_LOADING_TEST_GROUP_NAME,
+    }
 
 def parse_tile(tile):
     try:
@@ -105,6 +120,9 @@ def _normalize_requested_tiles(visible_tiles):
     warned = False
     for tile in visible_tiles or ():
         tile_str = str(tile)
+        if tile_str.startswith(PAD_TILE_PREFIX):
+            normalized.append(tile_str)
+            continue
         if parse_tile(tile_str) is None:
             if not warned:
                 logger.warning("Planetka: ignoring malformed tile id(s) in shader input")
@@ -112,6 +130,25 @@ def _normalize_requested_tiles(visible_tiles):
             continue
         normalized.append(tile_str)
     return normalized
+
+
+def _pole_cap_kind(tile):
+    parsed = parse_tile(tile)
+    if not parsed:
+        return ""
+    _x, y, z, _d = parsed
+    try:
+        z_i = int(z)
+        y_i = int(y)
+    except (TypeError, ValueError):
+        return ""
+    if z_i not in POLE_CAP_Z_LEVELS:
+        return ""
+    if y_i <= 0:
+        return "south"
+    if (y_i + z_i) >= 180:
+        return "north"
+    return ""
 
 
 def _get_coverage_map():
@@ -124,9 +161,12 @@ def _get_coverage_map():
 
 
 def detect_ecosystem(tiles):
-    for t in tiles:
-        z = int(t.split("_")[2][1:])
-        if z in POWER_Z:
+    for t in tiles or ():
+        parsed = parse_tile(t)
+        if not parsed:
+            continue
+        _x, _y, z, _d = parsed
+        if int(z) in POWER_Z:
             return "power"
     return "decimal"
 
@@ -201,6 +241,88 @@ def _set_image_colorspace_safe(image, colorspace):
             return
         except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError):
             continue
+
+
+def _first_image_rgb(image, default_rgb):
+    if image is None:
+        return tuple(default_rgb)
+    try:
+        pixels = getattr(image, "pixels", None)
+        if pixels is None or len(pixels) < 3:
+            return tuple(default_rgb)
+        return (float(pixels[0]), float(pixels[1]), float(pixels[2]))
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
+        return tuple(default_rgb)
+
+
+def _ensure_surface_grading_static_rgb_sources():
+    surface_group = bpy.data.node_groups.get(SURFACE_GRADING_GROUP_NAME)
+    if surface_group is None:
+        return
+    try:
+        if int(surface_group.get(SURFACE_GRADING_SAMPLER_OPT_KEY, 0) or 0) >= 1:
+            return
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError):
+        pass
+
+    extension_dir = os.path.dirname(os.path.abspath(__file__))
+    fallback_dir = os.path.join(extension_dir, "Resources", "Fallback Images")
+    image_cache = {}
+    bindings = (
+        ("Image Texture", os.path.join(fallback_dir, "ocean_pixel_final_20.exr"), (0.0, 0.0, 0.0)),
+        ("Image Texture.001", os.path.join(fallback_dir, "blue_pixel_20.exr"), (0.0, 0.0, 1.0)),
+    )
+
+    for node_name, image_path, default_rgb in bindings:
+        node = surface_group.nodes.get(node_name)
+        if node is None:
+            continue
+        if node.bl_idname == "ShaderNodeRGB":
+            continue
+        if node.bl_idname != "ShaderNodeTexImage":
+            continue
+
+        image = _load_image_cached(image_path, image_cache, image_name=os.path.basename(image_path))
+        rgb = _first_image_rgb(image, default_rgb)
+        old_location = tuple(getattr(node, "location", (0.0, 0.0)))
+        old_parent = getattr(node, "parent", None)
+        to_sockets = []
+        try:
+            color_output = node.outputs.get("Color")
+            if color_output is not None:
+                to_sockets = [link.to_socket for link in color_output.links]
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            to_sockets = []
+
+        try:
+            surface_group.nodes.remove(node)
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            _log_recoverable_once("PKA-SHADER-041", "Failed replacing surface grading texture sampler")
+            continue
+
+        rgb_node = surface_group.nodes.new("ShaderNodeRGB")
+        rgb_node.name = node_name
+        rgb_node.label = node_name
+        rgb_node.outputs[0].default_value = (float(rgb[0]), float(rgb[1]), float(rgb[2]), 1.0)
+        try:
+            rgb_node.location = old_location
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
+            pass
+        try:
+            rgb_node.parent = old_parent
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
+            pass
+
+        for to_socket in to_sockets:
+            try:
+                surface_group.links.new(rgb_node.outputs[0], to_socket)
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                _log_recoverable_once("PKA-SHADER-042", "Failed reconnecting surface grading RGB constant")
+
+    try:
+        surface_group[SURFACE_GRADING_SAMPLER_OPT_KEY] = 1
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        pass
 
 
 def _set_node_location_safe(node, x, y):
@@ -400,11 +522,20 @@ def _ensure_tile_group_for_index(index, variant="regular"):
 def _ensure_testing_texture_loading_group(source_group):
     if source_group is None:
         return None
-    existing = bpy.data.node_groups.get(TEXTURE_LOADING_TEST_GROUP_NAME)
+    existing = bpy.data.node_groups.get(TEXTURE_LOADING_GROUP_NAME)
     if existing is not None:
         return existing
+    legacy = bpy.data.node_groups.get(LEGACY_TEXTURE_LOADING_TEST_GROUP_NAME)
+    if legacy is not None:
+        try:
+            legacy.name = TEXTURE_LOADING_GROUP_NAME
+            return legacy
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            _log_recoverable_once("PKA-SHADER-019A", "Failed renaming legacy testing texture loading group")
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            _log_recoverable_once("PKA-SHADER-019B", "Failed renaming legacy testing texture loading group")
     testing_group = source_group.copy()
-    testing_group.name = TEXTURE_LOADING_TEST_GROUP_NAME
+    testing_group.name = TEXTURE_LOADING_GROUP_NAME
     try:
         testing_group.use_fake_user = True
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
@@ -579,23 +710,20 @@ def _ensure_tile_placement_group(variant="regular"):
     target_name = TILE_PLACEMENT_GROUP_360_NAME if variant_text == "z360" else TILE_PLACEMENT_GROUP_NAME
     existing = bpy.data.node_groups.get(target_name)
     if existing is not None:
-        if variant_text == "regular":
-            try:
-                existing_variant = str(existing.get("planetka_variant", "") or "").lower()
-                existing_schema = int(existing.get("planetka_schema_v", 0) or 0)
-            except (TypeError, ValueError):
-                existing_variant = ""
-                existing_schema = 0
-            if existing_variant == "regular" and existing_schema >= int(TILE_PLACEMENT_GROUP_SCHEMA_VERSION):
-                return existing
-            try:
-                bpy.data.node_groups.remove(existing, do_unlink=True)
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                _log_recoverable_once("PKA-SHADER-039", "Failed replacing outdated regular tile placement group")
-            except (RuntimeError, TypeError, ValueError, AttributeError):
-                _log_recoverable_once("PKA-SHADER-040", "Failed replacing outdated regular tile placement group")
-        else:
+        try:
+            existing_variant = str(existing.get("planetka_variant", "") or "").lower()
+            existing_schema = int(existing.get("planetka_schema_v", 0) or 0)
+        except (TypeError, ValueError):
+            existing_variant = ""
+            existing_schema = 0
+        if existing_variant == variant_text and existing_schema >= int(TILE_PLACEMENT_GROUP_SCHEMA_VERSION):
             return existing
+        try:
+            bpy.data.node_groups.remove(existing, do_unlink=True)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            _log_recoverable_once("PKA-SHADER-039", "Failed replacing outdated tile placement group")
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            _log_recoverable_once("PKA-SHADER-040", "Failed replacing outdated tile placement group")
 
     if variant_text == "regular":
         return _build_regular_tile_placement_group(target_name)
@@ -1184,7 +1312,7 @@ def _build_scalar_add_chain(nodes, links, sockets, *, x_start=200.0, y=0.0, x_st
 
 
 def _ensure_dynamic_texture_loading_slots(group_tree, slot_count, allow_shrink=True):
-    if str(getattr(group_tree, "name", "") or "").strip() == TEXTURE_LOADING_TEST_GROUP_NAME:
+    if _is_dynamic_texture_loading_group_name(getattr(group_tree, "name", "")):
         return _ensure_dynamic_texture_loading_slots_testing(group_tree, slot_count, allow_shrink=allow_shrink)
 
     slot_count = max(1, int(slot_count))
@@ -1387,6 +1515,7 @@ def _ensure_dynamic_texture_loading_slots(group_tree, slot_count, allow_shrink=T
 def _ensure_dynamic_texture_loading_slots_testing(group_tree, slot_count, allow_shrink=True):
     del allow_shrink
     slot_count = max(1, int(slot_count))
+    static_slot_count = max(1, int(TESTING_STATIC_SLOT_COUNT))
 
     nodes = group_tree.nodes
     links = group_tree.links
@@ -1394,7 +1523,32 @@ def _ensure_dynamic_texture_loading_slots_testing(group_tree, slot_count, allow_
     if output_node is None:
         raise RuntimeError("Planetka: texture loading group output node is missing.")
 
-    # Rebuild generated testing graph each pass to keep structure deterministic.
+    try:
+        existing_schema = int(group_tree.get(TESTING_LOADER_SCHEMA_VERSION_KEY, 0) or 0)
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, AttributeError):
+        existing_schema = 0
+
+    def _collect_existing_tile_nodes():
+        collected = []
+        for index in range(1, static_slot_count + 1):
+            node = nodes.get(f"Tile_{index:03d}")
+            if node is None or str(getattr(node, "bl_idname", "")) != "ShaderNodeGroup":
+                return []
+            active_node = nodes.get(f"TileActive_{index:03d}")
+            if active_node is None or str(getattr(active_node, "bl_idname", "")) != "ShaderNodeValue":
+                return []
+            collected.append(node)
+        return collected
+
+    tile_nodes = _collect_existing_tile_nodes()
+    if (
+        tile_nodes
+        and int(len(tile_nodes)) == int(static_slot_count)
+        and int(existing_schema) >= int(TESTING_LOADER_SCHEMA_VERSION)
+    ):
+        return tile_nodes
+
+    # Rebuild generated testing graph only when schema is missing/outdated.
     for node in list(nodes):
         if node == output_node:
             continue
@@ -1414,7 +1568,7 @@ def _ensure_dynamic_texture_loading_slots_testing(group_tree, slot_count, allow_
     chain_x_start = 200.0
     chain_x_step = 240.0
 
-    for index in range(1, slot_count + 1):
+    for index in range(1, static_slot_count + 1):
         tile_y = y_start - float(index - 1) * y_step
 
         placement_node = nodes.new("ShaderNodeGroup")
@@ -1429,7 +1583,34 @@ def _ensure_dynamic_texture_loading_slots_testing(group_tree, slot_count, allow_
         tile_nodes.append(placement_node)
         alpha_socket = placement_node.outputs.get("Alpha")
         vector_socket = placement_node.outputs.get("S2")
-        alpha_sockets.append(alpha_socket)
+        if vector_socket is None:
+            outputs = list(getattr(placement_node, "outputs", ()))
+            if outputs:
+                vector_socket = outputs[0]
+        if alpha_socket is None:
+            outputs = list(getattr(placement_node, "outputs", ()))
+            if len(outputs) > 3:
+                alpha_socket = outputs[3]
+
+        active_node = nodes.new("ShaderNodeValue")
+        active_node.name = f"TileActive_{index:03d}"
+        active_node.label = active_node.name
+        _set_node_location_safe(active_node, -1260.0, tile_y + 260.0)
+        try:
+            active_node.outputs[0].default_value = 0.0
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError, IndexError):
+            pass
+
+        alpha_effective = nodes.new("ShaderNodeMath")
+        alpha_effective.operation = "MULTIPLY"
+        alpha_effective.name = f"TileAlpha_{index:03d}"
+        _set_node_location_safe(alpha_effective, -760.0, tile_y + 260.0)
+        if alpha_socket is not None:
+            links.new(alpha_socket, alpha_effective.inputs[0])
+        else:
+            alpha_effective.inputs[0].default_value = 0.0
+        links.new(active_node.outputs[0], alpha_effective.inputs[1])
+        alpha_sockets.append(alpha_effective.outputs[0])
 
         # Direct per-tile image samplers in testing loading group.
         image_nodes = {}
@@ -1602,6 +1783,11 @@ def _ensure_dynamic_texture_loading_slots_testing(group_tree, slot_count, allow_
         if out_socket and result_socket:
             links.new(result_socket, out_socket)
 
+    try:
+        group_tree[TESTING_LOADER_SCHEMA_VERSION_KEY] = int(TESTING_LOADER_SCHEMA_VERSION)
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        _log_recoverable_once("PKA-SHADER-043", "Failed writing testing loader schema version")
+
     _hide_unconnected_group_input_sockets(group_tree)
     return tile_nodes
 
@@ -1671,6 +1857,7 @@ def update_shader_nodes(
     if not material or not material.node_tree:
         logger.error("Planetka: material %r missing or invalid", material_name)
         return stats
+    _ensure_surface_grading_static_rgb_sources()
 
     nodes = material.node_tree.nodes
     group = nodes.get("Planetka Textures Loading")
@@ -1694,7 +1881,7 @@ def update_shader_nodes(
         logger.error("Planetka: active texture loading group tree is unavailable in material %r", material_name)
         return stats
 
-    testing_mode = str(getattr(active_group_tree, "name", "") or "").strip() == TEXTURE_LOADING_TEST_GROUP_NAME
+    testing_mode = _is_dynamic_texture_loading_group_name(getattr(active_group_tree, "name", ""))
 
     try:
         tile_nodes = _ensure_dynamic_texture_loading_slots(
@@ -1719,6 +1906,20 @@ def update_shader_nodes(
         node_name = f"{TEST_TILE_IMAGE_NODE_PREFIX}{int(slot_index):03d}_{str(img_type)}"
         return active_group_tree.nodes.get(node_name)
 
+    def _testing_active_node(slot_index):
+        if not testing_mode:
+            return None
+        return active_group_tree.nodes.get(f"TileActive_{int(slot_index):03d}")
+
+    def _set_testing_slot_active(slot_index, enabled):
+        active_node = _testing_active_node(slot_index)
+        if active_node is None:
+            return
+        try:
+            active_node.outputs[0].default_value = 1.0 if bool(enabled) else 0.0
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError, IndexError):
+            _log_recoverable_once("PKA-SHADER-044", "Failed setting testing slot active state")
+
     extension_dir = os.path.dirname(os.path.abspath(__file__))
     fallback_dir = os.path.join(extension_dir, "Resources", "Fallback Images")
 
@@ -1727,6 +1928,8 @@ def update_shader_nodes(
         "EL": os.path.join(fallback_dir, "black_pixel_20.exr"),
         "WT": os.path.join(fallback_dir, "blue_pixel_20.exr"),
         "PO": os.path.join(fallback_dir, "black_pixel_20.exr"),
+        "S2_WHITE": os.path.join(fallback_dir, "white_pixel_20.exr"),
+        "EL_SOUTH": os.path.join(fallback_dir, "el_south_cap_pixel_20.exr"),
     }
     image_cache_by_path = {}
     fallback_images = {}
@@ -1776,31 +1979,75 @@ def update_shader_nodes(
                 _log_recoverable_once("PKA-SHADER-018", "Failed stabilizing tile-group alpha mask sources")
 
         if not parsed:
-            node.mute = True
-            node.label = "Invalid"
+            node.mute = False
+            _set_testing_slot_active(i + 1, False)
+            tile_text = str(tile or "")
+            is_placeholder = tile_text.startswith(PAD_TILE_PREFIX)
+            node.label = "Placeholder" if is_placeholder else "Invalid"
             for img_type in TEXTURE_TYPES:
                 img_node = _testing_img_node(i + 1, img_type) if testing_mode else node.node_tree.nodes.get(img_type)
                 if not img_node:
                     continue
+                fallback_img = fallback_images.get(img_type)
+                if is_placeholder and img_type in {"S2", "WT"}:
+                    # Placeholder slots must stay visually neutral.
+                    fallback_img = fallback_images.get("EL") or fallback_img
                 _assign_image_to_node(
                     img_node,
-                    fallback_images.get(img_type),
+                    fallback_img,
                     img_type=img_type,
                     use_fallback=True,
                 )
             continue
         x, y, z, d = parsed
         node.mute = False
+        _set_testing_slot_active(i + 1, True)
         node.label = tile
         node.inputs[0].default_value = x
         node.inputs[1].default_value = y
         node.inputs[2].default_value = z
         node.inputs[3].default_value = d
         is_ocean_tile = bool(ocean_tiles and tile in ocean_tiles)
+        pole_cap_kind = _pole_cap_kind(tile)
+
+        def _cap_image_for(img_type):
+            if pole_cap_kind == "north":
+                if img_type == "S2":
+                    return fallback_images.get("S2")
+                if img_type == "EL":
+                    return fallback_images.get("EL")
+                if img_type == "WT":
+                    return fallback_images.get("WT")
+                return fallback_images.get("PO")
+            if pole_cap_kind == "south":
+                if img_type == "S2":
+                    return fallback_images.get("S2_WHITE") or fallback_images.get("S2")
+                if img_type == "EL":
+                    return fallback_images.get("EL_SOUTH") or fallback_images.get("EL")
+                if img_type == "WT":
+                    return fallback_images.get("PO") or fallback_images.get("EL")
+                return fallback_images.get("PO")
+            return None
 
         for img_type in TEXTURE_TYPES:
             img_node = _testing_img_node(i + 1, img_type) if testing_mode else node.node_tree.nodes.get(img_type)
             if not img_node:
+                continue
+
+            if pole_cap_kind:
+                img = _cap_image_for(img_type)
+                _assign_image_to_node(
+                    img_node,
+                    img,
+                    img_type=img_type,
+                    use_fallback=True,
+                )
+                if img is not None:
+                    raw_path = str(getattr(img, "filepath_raw", "") or getattr(img, "filepath", ""))
+                    abs_path = bpy.path.abspath(raw_path) if raw_path else ""
+                    if abs_path and abs_path not in seen_image_paths:
+                        seen_image_paths.add(abs_path)
+                        stats["loaded_texture_bytes"] += _image_file_size_bytes(img)
                 continue
 
             if is_ocean_tile:
@@ -1853,15 +2100,20 @@ def update_shader_nodes(
                     stats["loaded_texture_bytes"] += _image_file_size_bytes(img)
 
     for extra_index, node in enumerate(tile_nodes[len(visible_tiles):], start=len(visible_tiles) + 1):
-        node.mute = True
+        node.mute = False
+        _set_testing_slot_active(extra_index, False)
         node.label = "Empty"
         for img_type in TEXTURE_TYPES:
             img_node = _testing_img_node(extra_index, img_type) if testing_mode else node.node_tree.nodes.get(img_type)
             if not img_node:
                 continue
+            extra_fallback = fallback_images.get(img_type)
+            if testing_mode:
+                # Keep static unused slots neutral-black across all channels.
+                extra_fallback = fallback_images.get("EL") or extra_fallback
             _assign_image_to_node(
                 img_node,
-                fallback_images.get(img_type),
+                extra_fallback,
                 img_type=img_type,
                 use_fallback=True,
             )
