@@ -3,7 +3,7 @@ import math
 import os
 
 import bpy
-from bpy.props import EnumProperty
+from bpy.props import EnumProperty, IntProperty
 from mathutils import Matrix, Quaternion, Vector
 
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
@@ -15,10 +15,16 @@ from .r2_source import (
     plan_resolve_downloads,
 )
 from .state import (
+    _apply_sunlight_from_props,
+    _apply_sunlight_strength_from_props,
     create_temp_mesh,
     cleanup_planetka_unused_data,
     logger,
+    purge_disabled_atmosphere_and_cloud_assets,
     remove_object_and_unused_mesh,
+    resume_navigation_shot_updates,
+    suspend_navigation_shot_updates,
+    update_navigation_shot,
 )
 from . import shader_utils
 
@@ -627,6 +633,11 @@ def clear_prepared_animation_assets(scene):
             logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
 
     try:
+        purge_disabled_atmosphere_and_cloud_assets(scene=scene)
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka animation: failed purge of disabled atmosphere/cloud assets", exc_info=True)
+
+    try:
         shader_utils.cleanup_planetka_images(force_remove_datablocks=True)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka animation: cleanup images failed", exc_info=True)
@@ -739,7 +750,8 @@ def _eased_progress(t, motion_curve):
     if curve == "EASE_OUT":
         inv = 1.0 - value
         return 1.0 - (inv * inv)
-    return value * value * (3.0 - (2.0 * value))
+    # Use smootherstep for C2 continuity (smoother acceleration/deceleration at segment ends).
+    return (value * value * value) * (value * ((value * 6.0) - 15.0) + 10.0)
 
 
 def _interpolate_shot(start, end, t):
@@ -877,7 +889,18 @@ def _set_camera_from_shot(scene, shot, frame, look_target_override=None, up_hint
         up_hint_override=up_hint_override,
     )
     scene.frame_set(int(frame))
-    camera.matrix_world = Matrix.LocRotScale(pose["location"], pose["rotation"], pose["scale"])
+    camera.location = Vector(pose["location"])
+    try:
+        previous_euler = camera.rotation_euler.copy()
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        previous_euler = None
+    try:
+        if previous_euler is not None:
+            camera.rotation_euler = pose["rotation"].to_euler(camera.rotation_mode, previous_euler)
+        else:
+            camera.rotation_euler = pose["rotation"].to_euler(camera.rotation_mode)
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        camera.matrix_world = Matrix.LocRotScale(pose["location"], pose["rotation"], pose["scale"])
     camera.keyframe_insert(data_path="location", frame=int(frame))
     camera.keyframe_insert(data_path="rotation_euler", frame=int(frame))
     return pose
@@ -892,6 +915,35 @@ def _set_camera_transform_keyframe(scene, frame, location, rotation_euler):
     camera.rotation_euler = rotation_euler
     camera.keyframe_insert(data_path="location", frame=int(frame))
     camera.keyframe_insert(data_path="rotation_euler", frame=int(frame))
+
+
+def _set_camera_linear_interpolation_in_range(scene, frame_start, frame_end):
+    camera = getattr(scene, "camera", None)
+    anim = getattr(camera, "animation_data", None) if camera else None
+    action = getattr(anim, "action", None) if anim else None
+    if action is None:
+        return
+    start = int(frame_start)
+    end = int(frame_end)
+    lo = min(start, end) - 1e-6
+    hi = max(start, end) + 1e-6
+    for fcurve in _iter_action_fcurves(action):
+        if str(getattr(fcurve, "data_path", "")) not in {"location", "rotation_euler"}:
+            continue
+        keyframe_points = getattr(fcurve, "keyframe_points", None)
+        if not keyframe_points:
+            continue
+        for keyframe_point in keyframe_points:
+            try:
+                frame = float(getattr(keyframe_point, "co", (0.0, 0.0))[0])
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                continue
+            if frame < lo or frame > hi:
+                continue
+            try:
+                keyframe_point.interpolation = 'LINEAR'
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                continue
 
 
 def _clear_camera_preview_keyframes(scene, frame_start, frame_end):
@@ -1085,9 +1137,94 @@ def _current_camera_base_shot(scene, props):
     return default_shot
 
 
+def _waypoint_index_label(index):
+    idx = int(max(0, int(index)))
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    base = len(alphabet)
+    label = ""
+    while True:
+        label = alphabet[idx % base] + label
+        idx = (idx // base) - 1
+        if idx < 0:
+            break
+    return label
+
+
+def _waypoint_shot_from_item(item):
+    return {
+        "lon": _normalize_longitude(float(getattr(item, "longitude_deg", 0.0))),
+        "lat": _clamp_latitude(float(getattr(item, "latitude_deg", 0.0))),
+        "alt_km": max(0.0, float(getattr(item, "altitude_km", 0.0))),
+        "heading_deg": float(getattr(item, "heading_deg", 0.0)),
+        "tilt_deg": float(getattr(item, "tilt_deg", 0.0)),
+        "roll_deg": float(getattr(item, "roll_deg", 0.0)),
+    }
+
+
+def _build_waypoint_shots(props):
+    waypoints = getattr(props, "anim_waypoints", None)
+    if waypoints is None:
+        return []
+    shots = []
+    for waypoint in waypoints:
+        try:
+            shots.append(_waypoint_shot_from_item(waypoint))
+        except (TypeError, ValueError, AttributeError):
+            continue
+    return shots
+
+
+def _apply_waypoints_preview(scene, waypoint_shots, start_frame, end_frame, motion_curve):
+    shots = list(waypoint_shots or ())
+    if not shots:
+        raise RuntimeError("Add at least one waypoint first.")
+    if len(shots) == 1:
+        _set_camera_from_shot(scene, shots[0], int(start_frame))
+        _set_camera_from_shot(scene, shots[0], int(end_frame))
+        return
+
+    total = max(1, int(end_frame) - int(start_frame))
+    segment_count = max(1, len(shots) - 1)
+    for frame in range(int(start_frame), int(end_frame) + 1):
+        global_t = 0.0 if total <= 0 else float(frame - int(start_frame)) / float(total)
+        segment_f = min(float(segment_count), max(0.0, global_t * float(segment_count)))
+        segment_idx = min(segment_count - 1, int(math.floor(segment_f)))
+        local_raw_t = min(1.0, max(0.0, segment_f - float(segment_idx)))
+        local_t = _eased_progress(local_raw_t, motion_curve)
+        shot = _interpolate_shot(shots[segment_idx], shots[segment_idx + 1], local_t)
+        _set_camera_from_shot(scene, shot, frame)
+
+
+def _clamp_waypoint_active_index(props):
+    waypoints = getattr(props, "anim_waypoints", None)
+    count = len(waypoints) if waypoints is not None else 0
+    if count <= 0:
+        props.anim_waypoint_active_index = 0
+        return 0
+    active = int(getattr(props, "anim_waypoint_active_index", 0))
+    active = max(0, min(count - 1, active))
+    props.anim_waypoint_active_index = active
+    return active
+
+
+def _apply_keyed_runtime_scene_state(scene, props):
+    if scene is None:
+        return
+    _apply_sunlight_from_props(scene)
+    _apply_sunlight_strength_from_props(scene)
+    camera = getattr(scene, "camera", None)
+    camera_data = getattr(camera, "data", None) if camera is not None else None
+    if camera is not None and getattr(camera, "type", None) == 'CAMERA' and camera_data is not None:
+        try:
+            lens_mm = max(1.0, float(getattr(props, "nav_focal_length_mm", 50.0)))
+            camera_data.lens = lens_mm
+        except (TypeError, ValueError, AttributeError):
+            pass
+
+
 def _build_shot_pair(scene, props):
     preset = str(getattr(props, "anim_camera_preset", "ORBIT")).upper()
-    strength = max(0.1, float(getattr(props, "anim_camera_strength", 1.0)))
+    strength = 1.0
     base = _current_camera_base_shot(scene, props)
     base_lon = float(base.get("lon", 0.0))
     base_lat = float(base.get("lat", 0.0))
@@ -1149,7 +1286,7 @@ def _build_shot_pair(scene, props):
 
 
 def _build_simple_flyby(scene, props):
-    strength = max(0.1, float(getattr(props, "anim_camera_strength", 1.0)))
+    strength = 1.0
     base = _current_camera_base_shot(scene, props)
     return {
         "lon": _normalize_longitude(float(base.get("lon", 0.0))),
@@ -1220,7 +1357,18 @@ def _apply_simple_flyby_preview(scene, flyby, start_frame, end_frame, motion_cur
         t = _eased_progress(raw_t, motion_curve)
         position = start_position.lerp(end_position, t)
         scene.frame_set(int(frame))
-        camera.matrix_world = Matrix.LocRotScale(position, base_rotation, camera_scale)
+        camera.location = position
+        try:
+            previous_euler = camera.rotation_euler.copy()
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            previous_euler = None
+        try:
+            if previous_euler is not None:
+                camera.rotation_euler = base_rotation.to_euler(camera.rotation_mode, previous_euler)
+            else:
+                camera.rotation_euler = base_rotation.to_euler(camera.rotation_mode)
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            camera.matrix_world = Matrix.LocRotScale(position, base_rotation, camera_scale)
         camera.keyframe_insert(data_path="location", frame=int(frame))
         camera.keyframe_insert(data_path="rotation_euler", frame=int(frame))
 
@@ -1269,6 +1417,13 @@ def apply_cinematic_preview(scene, props):
     elif preset == "FLYBY":
         flyby = _build_simple_flyby(scene, props)
         _apply_simple_flyby_preview(scene, flyby, start_frame, end_frame, motion_curve)
+        _set_camera_linear_interpolation_in_range(scene, start_frame, end_frame)
+    elif preset == "WAYPOINTS":
+        waypoint_shots = _build_waypoint_shots(props)
+        if len(waypoint_shots) < 2:
+            raise RuntimeError("Add at least two waypoints first.")
+        _apply_waypoints_preview(scene, waypoint_shots, start_frame, end_frame, motion_curve)
+        _set_camera_linear_interpolation_in_range(scene, start_frame, end_frame)
     else:
         start_shot, end_shot = _build_shot_pair(scene, props)
         _apply_sampled_navigation_preview(
@@ -1279,6 +1434,7 @@ def apply_cinematic_preview(scene, props):
             end_frame,
             motion_curve,
         )
+        _set_camera_linear_interpolation_in_range(scene, start_frame, end_frame)
 
     scene.frame_set(start_frame)
     try:
@@ -1756,6 +1912,62 @@ def _concat_movie_segments_vse(scene, segment_movie_paths, final_movie_base, fin
             logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
 
 
+def _ensure_saved_blend_before_animation_render(operator, prompt_if_unsaved=False):
+    blend_path = str(getattr(bpy.data, "filepath", "") or "").strip()
+    if not blend_path:
+        if bool(prompt_if_unsaved):
+            try:
+                bpy.ops.wm.save_mainfile('INVOKE_DEFAULT')
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                pass
+            except (RuntimeError, TypeError, ValueError):
+                pass
+            fail(
+                operator,
+                "Save the .blend file first, then run Animation Render again.",
+                code=ErrorCode.RENDER_FAILED,
+                logger=logger,
+            )
+            return False
+        fail(
+            operator,
+            "Save the .blend file first, then run Animation Render again.",
+            code=ErrorCode.RENDER_FAILED,
+            logger=logger,
+        )
+        return False
+
+    try:
+        save_result = bpy.ops.wm.save_mainfile()
+    except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
+        fail(
+            operator,
+            f"Failed saving .blend before render: {exc}",
+            code=ErrorCode.RENDER_FAILED,
+            logger=logger,
+            exc=exc,
+            log_message="Planetka animation save-before-render failed",
+        )
+        return False
+    except (RuntimeError, TypeError, ValueError) as exc:
+        fail(
+            operator,
+            f"Failed saving .blend before render: {exc}",
+            code=ErrorCode.RENDER_FAILED,
+            logger=logger,
+        )
+        return False
+    if "FINISHED" not in save_result:
+        fail(
+            operator,
+            "Saving .blend was cancelled. Animation render did not start.",
+            code=ErrorCode.RENDER_FAILED,
+            logger=logger,
+        )
+        return False
+    return True
+
+
 class PLANETKA_OT_AnimationSaveView(bpy.types.Operator):
     bl_idname = "planetka.animation_save_view"
     bl_label = "Save Animation View"
@@ -1800,6 +2012,166 @@ class PLANETKA_OT_AnimationSaveView(bpy.types.Operator):
             props.anim_ab_b_valid = True
 
         self.report({'INFO'}, f"Saved camera view {slot}.")
+        return {'FINISHED'}
+
+
+class PLANETKA_OT_AnimationWaypointAdd(bpy.types.Operator):
+    bl_idname = "planetka.animation_waypoint_add"
+    bl_label = "Add Waypoint"
+    bl_description = "Add a new waypoint based on current Navigation/camera state"
+
+    def execute(self, context):
+        scene = require_scene(self, context, logger=logger)
+        if scene is None:
+            return {'CANCELLED'}
+        props = require_planetka_props(self, context, logger=logger)
+        if props is None:
+            return {'CANCELLED'}
+
+        shot = _current_camera_base_shot(scene, props)
+        waypoint = props.anim_waypoints.add()
+        waypoint.latitude_deg = float(shot.get("lat", 0.0))
+        waypoint.longitude_deg = float(shot.get("lon", 0.0))
+        waypoint.altitude_km = float(shot.get("alt_km", 400.0))
+        waypoint.heading_deg = float(shot.get("heading_deg", 0.0))
+        waypoint.tilt_deg = float(shot.get("tilt_deg", 25.0))
+        waypoint.roll_deg = float(shot.get("roll_deg", 0.0))
+        waypoint.expanded = True
+        props.anim_waypoint_active_index = max(0, len(props.anim_waypoints) - 1)
+        label = _waypoint_index_label(props.anim_waypoint_active_index)
+        self.report({'INFO'}, f"Waypoint {label} added.")
+        return {'FINISHED'}
+
+
+class PLANETKA_OT_AnimationWaypointRemove(bpy.types.Operator):
+    bl_idname = "planetka.animation_waypoint_remove"
+    bl_label = "Remove Waypoint"
+    bl_description = "Remove a waypoint from the cinematic path"
+
+    index: IntProperty(default=-1, options={'HIDDEN', 'SKIP_SAVE'})
+
+    def execute(self, context):
+        scene = require_scene(self, context, logger=logger)
+        if scene is None:
+            return {'CANCELLED'}
+        props = require_planetka_props(self, context, logger=logger)
+        if props is None:
+            return {'CANCELLED'}
+
+        waypoints = getattr(props, "anim_waypoints", None)
+        if waypoints is None or len(waypoints) == 0:
+            return {'CANCELLED'}
+        index = int(getattr(self, "index", -1))
+        if index < 0 or index >= len(waypoints):
+            index = int(getattr(props, "anim_waypoint_active_index", 0))
+        if index < 0 or index >= len(waypoints):
+            return {'CANCELLED'}
+        label = _waypoint_index_label(index)
+        waypoints.remove(index)
+        _clamp_waypoint_active_index(props)
+        self.report({'INFO'}, f"Waypoint {label} removed.")
+        return {'FINISHED'}
+
+
+class PLANETKA_OT_AnimationWaypointCaptureCurrent(bpy.types.Operator):
+    bl_idname = "planetka.animation_waypoint_capture_current"
+    bl_label = "Capture Current View"
+    bl_description = "Overwrite a waypoint with the current camera/navigation state"
+
+    index: IntProperty(default=-1, options={'HIDDEN', 'SKIP_SAVE'})
+
+    def execute(self, context):
+        scene = require_scene(self, context, logger=logger)
+        if scene is None:
+            return {'CANCELLED'}
+        props = require_planetka_props(self, context, logger=logger)
+        if props is None:
+            return {'CANCELLED'}
+
+        waypoints = getattr(props, "anim_waypoints", None)
+        if waypoints is None or len(waypoints) == 0:
+            return fail(
+                self,
+                "Add at least one waypoint first.",
+                code=ErrorCode.NAV_PRECHECK_FAILED,
+                logger=logger,
+            )
+        index = int(getattr(self, "index", -1))
+        if index < 0 or index >= len(waypoints):
+            index = _clamp_waypoint_active_index(props)
+        waypoint = waypoints[index]
+        shot = _current_camera_base_shot(scene, props)
+        waypoint.latitude_deg = float(shot.get("lat", 0.0))
+        waypoint.longitude_deg = float(shot.get("lon", 0.0))
+        waypoint.altitude_km = float(shot.get("alt_km", 400.0))
+        waypoint.heading_deg = float(shot.get("heading_deg", 0.0))
+        waypoint.tilt_deg = float(shot.get("tilt_deg", 25.0))
+        waypoint.roll_deg = float(shot.get("roll_deg", 0.0))
+        props.anim_waypoint_active_index = int(index)
+        self.report({'INFO'}, f"Waypoint {_waypoint_index_label(index)} updated from current view.")
+        return {'FINISHED'}
+
+
+class PLANETKA_OT_AnimationWaypointApply(bpy.types.Operator):
+    bl_idname = "planetka.animation_waypoint_apply"
+    bl_label = "Go To Waypoint"
+    bl_description = "Apply selected waypoint to Navigation and move camera"
+
+    index: IntProperty(default=-1, options={'HIDDEN', 'SKIP_SAVE'})
+
+    def execute(self, context):
+        scene = require_scene(self, context, logger=logger)
+        if scene is None:
+            return {'CANCELLED'}
+        props = require_planetka_props(self, context, logger=logger)
+        if props is None:
+            return {'CANCELLED'}
+
+        waypoints = getattr(props, "anim_waypoints", None)
+        if waypoints is None or len(waypoints) == 0:
+            return fail(
+                self,
+                "Add at least one waypoint first.",
+                code=ErrorCode.NAV_PRECHECK_FAILED,
+                logger=logger,
+            )
+        index = int(getattr(self, "index", -1))
+        if index < 0 or index >= len(waypoints):
+            index = _clamp_waypoint_active_index(props)
+        waypoint = waypoints[index]
+        nav_suspended = False
+        try:
+            suspend_navigation_shot_updates()
+            nav_suspended = True
+            props.nav_latitude_deg = float(getattr(waypoint, "latitude_deg", 0.0))
+            props.nav_longitude_deg = float(getattr(waypoint, "longitude_deg", 0.0))
+            props.nav_altitude_km = max(0.0, float(getattr(waypoint, "altitude_km", 0.0)))
+            props.nav_azimuth_deg = float(getattr(waypoint, "heading_deg", 0.0))
+            props.nav_tilt_deg = float(getattr(waypoint, "tilt_deg", 0.0))
+            props.nav_roll_deg = float(getattr(waypoint, "roll_deg", 0.0))
+        except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
+            return fail(
+                self,
+                f"Failed applying waypoint: {exc}",
+                code=ErrorCode.NAV_APPLY_FAILED,
+                logger=logger,
+                exc=exc,
+                log_message="Planetka animation waypoint apply failed",
+            )
+        except (RuntimeError, TypeError, ValueError) as exc:
+            return fail(
+                self,
+                f"Failed applying waypoint: {exc}",
+                code=ErrorCode.NAV_APPLY_FAILED,
+                logger=logger,
+            )
+        finally:
+            if nav_suspended:
+                resume_navigation_shot_updates()
+
+        update_navigation_shot(props, context)
+        props.anim_waypoint_active_index = int(index)
+        self.report({'INFO'}, f"Waypoint {_waypoint_index_label(index)} applied.")
         return {'FINISHED'}
 
 
@@ -1949,13 +2321,6 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         original_frame = int(getattr(scene, "frame_current", frame_start))
         try:
             segments = _build_segments(scene, frame_start, frame_end, frame_step=1)
-            full_segments = _build_segments(
-                scene,
-                frame_start,
-                frame_end,
-                frame_step=1,
-                texture_quality_mode_override="FULL",
-            )
         finally:
             try:
                 scene.frame_set(original_frame)
@@ -1971,21 +2336,6 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
                 logger=logger,
             )
             return False
-
-        full_quality_cost_bytes = 0
-        try:
-            full_quality_requests = []
-            for segment in full_segments or ():
-                full_quality_requests.extend(_build_texture_requests_for_tiles(segment.get("tiles", ())))
-            if is_remote_source_configured(base_path) and (not base_path or not os.path.isdir(base_path)):
-                planned_bytes, _unknown_files = _estimate_remote_download_bytes_for_requests(full_quality_requests)
-                full_quality_cost_bytes = int(max(0, int(planned_bytes)))
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka animation: failed computing full-quality animation credit estimate", exc_info=True)
-            full_quality_cost_bytes = 0
-        except (RuntimeError, TypeError, ValueError):
-            logger.debug("Planetka animation: failed computing full-quality animation credit estimate", exc_info=True)
-            full_quality_cost_bytes = 0
 
         segment_lines = []
         if len(segments) > 10:
@@ -2011,10 +2361,13 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         self._preview_segments = list(segments)
         self._preview_segment_lines = list(segment_lines)
         self._preview_texture_quality_mode = str(getattr(props, "texture_quality_mode", "HALF") or "HALF").upper()
-        self._preview_full_quality_cost_bytes = int(max(0, int(full_quality_cost_bytes)))
+        self._preview_persistent_data_enabled = bool(getattr(render, "use_persistent_data", False)) if render else False
+        self._preview_persistent_data_forced = bool(render is not None and hasattr(render, "use_persistent_data"))
         return True
 
     def invoke(self, context, event):
+        if not _ensure_saved_blend_before_animation_render(self, prompt_if_unsaved=True):
+            return {'CANCELLED'}
         if not self._build_preview_data(context):
             return {'CANCELLED'}
         return context.window_manager.invoke_props_dialog(self, width=520)
@@ -2035,7 +2388,8 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         segments = getattr(self, "_preview_segments", None) or ()
         segment_lines = getattr(self, "_preview_segment_lines", None) or ()
         texture_quality_mode = str(getattr(self, "_preview_texture_quality_mode", "HALF") or "HALF").upper()
-        full_quality_cost_bytes = int(getattr(self, "_preview_full_quality_cost_bytes", 0) or 0)
+        persistent_data_enabled = bool(getattr(self, "_preview_persistent_data_enabled", False))
+        persistent_data_forced = bool(getattr(self, "_preview_persistent_data_forced", False))
 
         layout.label(text="Confirm Animation Render", icon="RENDER_ANIMATION")
         layout.separator()
@@ -2046,15 +2400,6 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             text=f"Output: {output_path}",
             icon="FILE_FOLDER",
         )
-        if str(engine_text or "").lower().startswith("eevee"):
-            eevee_warning = layout.box()
-            eevee_warning.alert = True
-            eevee_warning.label(
-                text="WARNING: Renderer is EEVEE, which is unstable for Planetka.",
-                icon="ERROR",
-            )
-            eevee_warning.label(text="This may result in corrupted frames.", icon="ERROR")
-            eevee_warning.label(text="Switching to Cycles is highly recommended.", icon="INFO")
         if output_format:
             layout.label(text=f"Format: {output_format}", icon="FILE")
         layout.label(text=f"Frames to render: {frames_total} ({frame_start:04d}-{frame_end:04d})")
@@ -2068,15 +2413,11 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             )
             warning_box.label(text="Preview can show flickering or tile transitions.")
             warning_box.label(text="Switch to Full Quality for seamless animation rendering.")
-        if full_quality_cost_bytes > 0:
-            layout.label(
-                text=(
-                    "Cost of animation in Full Quality: "
-                    f"{(float(full_quality_cost_bytes) / float(1024 ** 3)):.3f} credits"
-                ),
-                icon="INFO",
-            )
-
+        if (not persistent_data_enabled) and persistent_data_forced:
+            persistent_box = layout.box()
+            persistent_box.alert = True
+            persistent_box.label(text="Persistent Data is OFF in scene settings.", icon="ERROR")
+            persistent_box.label(text="Planetka will enable it for this render and restore your setting after.")
         seg_box = layout.box()
         seg_box.label(text="Segments", icon="OUTLINER")
         col = seg_box.column(align=True)
@@ -2093,6 +2434,12 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             return {'CANCELLED'}
         props = require_planetka_props(self, context, logger=logger)
         if props is None:
+            return {'CANCELLED'}
+        try:
+            purge_disabled_atmosphere_and_cloud_assets(scene=scene)
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka animation: failed pre-render purge of disabled atmosphere/cloud assets", exc_info=True)
+        if not _ensure_saved_blend_before_animation_render(self, prompt_if_unsaved=False):
             return {'CANCELLED'}
 
         camera = getattr(scene, "camera", None)
@@ -2132,13 +2479,6 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
 
         render = getattr(scene, "render", None)
         cycles = getattr(scene, "cycles", None)
-        render_engine = str(getattr(render, "engine", "") or "").upper() if render else ""
-        if "EEVEE" in render_engine:
-            self.report(
-                {'WARNING'},
-                "Renderer is EEVEE (unstable for Planetka and may produce corrupted frames). Switching to Cycles is highly recommended.",
-            )
-
         original_settings = {
             "frame_start": int(getattr(scene, "frame_start", frame_start)),
             "frame_end": int(getattr(scene, "frame_end", frame_end)),
@@ -2160,6 +2500,7 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         segments = []
         frame_change_handler = None
         segment_boundary_failures = []
+        forced_persistent_data = False
         try:
             if bool(scene.get(ANIMATION_STATS_SEGMENTS_KEY, 0)):
                 clear_prepared_animation_assets(scene)
@@ -2186,7 +2527,14 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
 
             if render is not None:
                 if hasattr(render, "use_persistent_data"):
-                    render.use_persistent_data = bool(getattr(props, "anim_render_persistent_data", True))
+                    try:
+                        if not bool(getattr(render, "use_persistent_data", False)):
+                            forced_persistent_data = True
+                        render.use_persistent_data = True
+                    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                        logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
+                    except (RuntimeError, TypeError, ValueError):
+                        logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
                 if hasattr(render, "use_lock_interface"):
                     render.use_lock_interface = True
                 if hasattr(render, "display_mode"):
@@ -2224,6 +2572,7 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
                         logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
                     except (RuntimeError, TypeError, ValueError):
                         logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
+                    _apply_keyed_runtime_scene_state(scene, props)
                     try:
                         result = bpy.ops.planetka.load_textures(scope_mode='CAMERA', silent=True)
                     except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
@@ -2280,6 +2629,7 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
                     current = int(getattr(_scene, "frame_current", 0))
                 except (TypeError, ValueError):
                     return
+                _apply_keyed_runtime_scene_state(_scene, props)
                 if current not in pending_starts:
                     return
                 guard["in_handler"] = True
@@ -2287,7 +2637,7 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
                     print(f"[Planetka] Segment boundary at frame {current:04d}: resolving…")
                     ok, message = _resolve_frame_with_integrity(current, max_attempts=3)
                     if ok:
-                        if not bool(getattr(props, "anim_render_persistent_data", True)):
+                        if render is not None and not bool(getattr(render, "use_persistent_data", False)):
                             try:
                                 shader_utils.cleanup_planetka_images(force_remove_datablocks=True)
                             except PLANETKA_RECOVERABLE_EXCEPTIONS:
@@ -2453,6 +2803,8 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
                     logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
 
         self.report({'INFO'}, f"Animation render complete ({len(segments)} segments).")
+        if forced_persistent_data:
+            self.report({'INFO'}, "Persistent Data was enabled automatically for this render.")
         if segment_boundary_failures:
             self.report(
                 {'WARNING'},

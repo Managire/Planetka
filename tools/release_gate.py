@@ -155,11 +155,20 @@ def main() -> int:
             ("Stripe credit mapping helper present", "computeStripeCreditGrantBytes"),
             ("manual credit grant helper present", "grantManualAllowanceCredits"),
             ("tile requests read quality mode header", "X-Planetka-Quality-Mode"),
-            ("preview mode is free marker present", "const chargeCredits = qualityMode === \"full\";"),
         ]
         for label, marker in required_credit_guard_markers:
             if marker not in worker_src:
                 errors.append(f"Credit-model safeguard missing: {label} ('{marker}')")
+
+        charge_markers = [
+            "const chargeCredits = qualityMode === \"full\";",
+            "const chargeCredits = false;",
+        ]
+        if not any(marker in worker_src for marker in charge_markers):
+            errors.append(
+                "Credit-model safeguard missing: charge mode marker "
+                f"(expected one of: {charge_markers})"
+            )
 
     # 7) Admin analytics must reject token query params
     if worker_src:

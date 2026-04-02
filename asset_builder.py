@@ -81,7 +81,7 @@ _DETAIL_SOCKET_MICRO_DISP = "Micro Displacement Strength"
 _SURFACE_DEFAULT_INPUT_SPECS = (
     ("Surface Brightness", 5.0, 0.0, 10.0),
     ("Surface Saturation", 1.25, 0.0, 5.0),
-    ("Roughness", 0.25, 0.0, 1.0),
+    ("Roughness", 0.6, 0.0, 1.0),
     ("IOR", 1.333, 0.0, 3.0),
     ("Saturation", 1.0, 0.0, 2.0),
     ("Water Texture Strength", 0.5, 0.0, 1.0),
@@ -1778,6 +1778,7 @@ def ensure_planetka_root(scene=None):
         return None
 
     root = bpy.data.objects.get(PLANETKA_ROOT_OBJECT_NAME)
+    created_new = False
     if root is None or str(getattr(root, "type", "")) != "EMPTY":
         if root is not None:
             try:
@@ -1787,6 +1788,7 @@ def ensure_planetka_root(scene=None):
             except (RuntimeError, TypeError, ValueError, AttributeError):
                 logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
         root = bpy.data.objects.new(PLANETKA_ROOT_OBJECT_NAME, None)
+        created_new = True
 
     for collection in tuple(getattr(root, "users_collection", ())):
         if collection == surface_collection:
@@ -1809,9 +1811,10 @@ def ensure_planetka_root(scene=None):
     try:
         root.empty_display_type = 'PLAIN_AXES'
         root.empty_display_size = 0.25
-        root.location = (0.0, 0.0, 0.0)
-        root.rotation_euler = (0.0, 0.0, 0.0)
-        root.scale = (1.0, 1.0, 1.0)
+        if created_new:
+            root.location = (0.0, 0.0, 0.0)
+            root.rotation_euler = (0.0, 0.0, 0.0)
+            root.scale = (1.0, 1.0, 1.0)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
     except (RuntimeError, TypeError, ValueError, AttributeError):
