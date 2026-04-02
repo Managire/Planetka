@@ -240,7 +240,6 @@ def _draw_subscription(layout):
             layout.label(text="Update check failed. Retrying later.", icon="INFO")
         if status_message:
             layout.label(text=status_message, icon="INFO")
-        _draw_system_requirements(layout)
         return
 
     email = get_connected_email(prefs)
@@ -270,19 +269,6 @@ def _draw_subscription(layout):
 
     if status_message:
         layout.label(text=status_message, icon="INFO")
-
-    _draw_system_requirements(layout)
-
-
-def _draw_system_requirements(layout):
-    box = layout.box()
-    box.label(text="System Requirements", icon="TOOL_SETTINGS")
-    box.label(text="Internet connection (Planetka data is streamed online).", icon="CHECKMARK")
-    box.label(text="Blender 4.5.7 or later.", icon="CHECKMARK")
-    box.label(text="16 GB RAM minimum, 32 GB recommended.", icon="CHECKMARK")
-    box.label(text="Dedicated GPU is optional, but improves performance.", icon="CHECKMARK")
-    box.label(text="64-bit operating system.", icon="CHECKMARK")
-    box.label(text="At least 10 GB free SSD space for local cache.", icon="CHECKMARK")
 
 
 def _draw_new_earth(layout):
