@@ -41,7 +41,7 @@ NAV_DEFAULT_ALTITUDE_KM = 400.0
 NAV_DEFAULT_AZIMUTH_DEG = 0.0
 NAV_DEFAULT_TILT_DEG = 25.0
 NAV_DEFAULT_ROLL_DEG = 0.0
-SEASONAL_TILT_PRESET_LIMIT_DEG = 23.5
+SEASONAL_TILT_PRESET_LIMIT_DEG = 23.44
 logger = logging.getLogger(__name__)
 
 def update_texture_quality_mode(self, context):
@@ -329,7 +329,7 @@ class PlanetkaAnimationWaypoint(bpy.types.PropertyGroup):
         name="Altitude (km)",
         default=NAV_DEFAULT_ALTITUDE_KM,
         min=0.0,
-        max=50000.0,
+        soft_max=25.0,
         precision=2,
         description="Waypoint camera altitude above Earth in kilometers",
     )
@@ -493,7 +493,7 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         name="Altitude (km)",
         default=NAV_DEFAULT_ALTITUDE_KM,
         min=0.0,
-        max=50000.0,
+        soft_max=25.0,
         precision=2,
         step=10,
         description="Navigation camera altitude above Earth surface in kilometers",
@@ -584,14 +584,14 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
     sunlight_seasonal_tilt_deg: FloatProperty(
         name="Seasonal Tilt (°)",
         default=0.0,
-        min=-90.0,
-        max=90.0,
+        min=-23.44,
+        max=23.44,
         soft_min=-23.44,
         soft_max=23.44,
         precision=2,
         description=(
             "Subsolar latitude (solar declination) in degrees. "
-            "Slider is soft-limited to Earth's axial tilt (±23.44°)."
+            "Range is limited to Earth's axial tilt (±23.44°)."
         ),
         update=update_sunlight_controls,
     )

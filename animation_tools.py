@@ -1913,6 +1913,7 @@ def _concat_movie_segments_vse(scene, segment_movie_paths, final_movie_base, fin
 
 
 def _ensure_saved_blend_before_animation_render(operator, prompt_if_unsaved=False):
+    save_required_message = "Save the .blend file first, then run Animation Render again."
     blend_path = str(getattr(bpy.data, "filepath", "") or "").strip()
     if not blend_path:
         if bool(prompt_if_unsaved):
@@ -1922,19 +1923,9 @@ def _ensure_saved_blend_before_animation_render(operator, prompt_if_unsaved=Fals
                 pass
             except (RuntimeError, TypeError, ValueError):
                 pass
-            fail(
-                operator,
-                "Save the .blend file first, then run Animation Render again.",
-                code=ErrorCode.RENDER_FAILED,
-                logger=logger,
-            )
+            operator.report({'INFO'}, save_required_message)
             return False
-        fail(
-            operator,
-            "Save the .blend file first, then run Animation Render again.",
-            code=ErrorCode.RENDER_FAILED,
-            logger=logger,
-        )
+        operator.report({'INFO'}, save_required_message)
         return False
 
     try:
@@ -2350,10 +2341,14 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             for seg in segments:
                 segment_lines.append(_segment_display_name(seg.get("start"), seg.get("end")))
 
+        render_engine_code = str(getattr(render, "engine", "") or "") if render else ""
+        preview_is_cycles = render_engine_code == "CYCLES"
+
         self._preview_res_x = int(res_x)
         self._preview_res_y = int(res_y)
         self._preview_output_path = str(output_path or "—")
         self._preview_engine_text = str(engine_text or "—")
+        self._preview_is_cycles = bool(preview_is_cycles)
         self._preview_output_format = str(file_format or "")
         self._preview_frame_start = int(frame_start)
         self._preview_frame_end = int(frame_end)
@@ -2362,7 +2357,9 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         self._preview_segment_lines = list(segment_lines)
         self._preview_texture_quality_mode = str(getattr(props, "texture_quality_mode", "HALF") or "HALF").upper()
         self._preview_persistent_data_enabled = bool(getattr(render, "use_persistent_data", False)) if render else False
-        self._preview_persistent_data_forced = bool(render is not None and hasattr(render, "use_persistent_data"))
+        self._preview_persistent_data_forced = bool(
+            preview_is_cycles and render is not None and hasattr(render, "use_persistent_data")
+        )
         return True
 
     def invoke(self, context, event):
@@ -2388,6 +2385,7 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         segments = getattr(self, "_preview_segments", None) or ()
         segment_lines = getattr(self, "_preview_segment_lines", None) or ()
         texture_quality_mode = str(getattr(self, "_preview_texture_quality_mode", "HALF") or "HALF").upper()
+        preview_is_cycles = bool(getattr(self, "_preview_is_cycles", False))
         persistent_data_enabled = bool(getattr(self, "_preview_persistent_data_enabled", False))
         persistent_data_forced = bool(getattr(self, "_preview_persistent_data_forced", False))
 
@@ -2413,10 +2411,10 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             )
             warning_box.label(text="Preview can show flickering or tile transitions.")
             warning_box.label(text="Switch to Full Quality for seamless animation rendering.")
-        if (not persistent_data_enabled) and persistent_data_forced:
+        if preview_is_cycles and (not persistent_data_enabled) and persistent_data_forced:
             persistent_box = layout.box()
-            persistent_box.alert = True
-            persistent_box.label(text="Persistent Data is OFF in scene settings.", icon="ERROR")
+            persistent_box.alert = False
+            persistent_box.label(text="Persistent Data is OFF in scene settings.", icon="INFO")
             persistent_box.label(text="Planetka will enable it for this render and restore your setting after.")
         seg_box = layout.box()
         seg_box.label(text="Segments", icon="OUTLINER")
@@ -2501,6 +2499,8 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         frame_change_handler = None
         segment_boundary_failures = []
         forced_persistent_data = False
+        render_engine_code = str(getattr(render, "engine", "") or "") if render else ""
+        render_is_cycles = render_engine_code == "CYCLES"
         try:
             if bool(scene.get(ANIMATION_STATS_SEGMENTS_KEY, 0)):
                 clear_prepared_animation_assets(scene)
@@ -2526,7 +2526,7 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
                 )
 
             if render is not None:
-                if hasattr(render, "use_persistent_data"):
+                if render_is_cycles and hasattr(render, "use_persistent_data"):
                     try:
                         if not bool(getattr(render, "use_persistent_data", False)):
                             forced_persistent_data = True

@@ -549,7 +549,6 @@ _SURFACE_GRADING_SECTION_SOCKET_MAP = {
         "roughness",
         "ior",
         "saturation",
-        "water texture strength",
         "hue",
         "brightness",
     },
@@ -781,7 +780,7 @@ class PLANETKA_PT_NewEarthPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Pan
     bl_label = "New Earth"
     bl_idname = "PLANETKA_PT_new_earth_collapsed"
     bl_order = 2
-    bl_options = set()
+    bl_options = {'DEFAULT_CLOSED'}
 
     @classmethod
     def poll(cls, context):
@@ -823,7 +822,7 @@ class PLANETKA_PT_ResolvePanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Pane
 class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
     bl_label = "Settings"
     bl_idname = "PLANETKA_PT_settings"
-    bl_order = 6
+    bl_order = 9
 
     @classmethod
     def poll(cls, context):
@@ -1091,7 +1090,7 @@ class PLANETKA_PT_NavigationSavedLocationsPanelCollapsed(_PLANETKA_PT_BaseSectio
 class PLANETKA_PT_SurfaceGradingPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
     bl_label = "Earth Grading"
     bl_idname = "PLANETKA_PT_surface_grading"
-    bl_order = 8
+    bl_order = 7
 
     @classmethod
     def poll(cls, context):
@@ -1106,7 +1105,7 @@ class PLANETKA_PT_SurfaceGradingPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel)
 class PLANETKA_PT_SurfaceGradingPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
     bl_label = "Earth Grading"
     bl_idname = "PLANETKA_PT_surface_grading_collapsed"
-    bl_order = 8
+    bl_order = 7
 
     @classmethod
     def poll(cls, context):
@@ -1121,7 +1120,7 @@ class PLANETKA_PT_SurfaceGradingPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.typ
 class PLANETKA_PT_EarthTransformPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
     bl_label = "Earth Transform"
     bl_idname = "PLANETKA_PT_earth_transform"
-    bl_order = 7
+    bl_order = 6
 
     @classmethod
     def poll(cls, context):
@@ -1137,7 +1136,7 @@ class PLANETKA_PT_EarthTransformPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel)
 class PLANETKA_PT_EarthTransformPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
     bl_label = "Earth Transform"
     bl_idname = "PLANETKA_PT_earth_transform_collapsed"
-    bl_order = 7
+    bl_order = 6
 
     @classmethod
     def poll(cls, context):
@@ -1233,7 +1232,7 @@ class PLANETKA_PT_SunlightPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
     bl_label = "Animation"
     bl_idname = "PLANETKA_PT_animation"
-    bl_order = 5
+    bl_order = 8
     bl_options = {'DEFAULT_CLOSED'}
 
     @classmethod

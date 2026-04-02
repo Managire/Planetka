@@ -50,6 +50,8 @@ VOLUMETRIC_ATMOSPHERE_ROLE_VALUE = "atmosphere_volumetric"
 VOLUMETRIC_ATMOSPHERE_SCALE_FACTOR = 2.0
 DEFAULT_ELEVATION_COEFFICIENT = 1.0
 ELEVATION_SCALE_MULTIPLIER = 0.012
+DEFAULT_SURFACE_SATURATION = 1.2
+DEFAULT_WATER_ROUGHNESS = 0.6
 _LIBRARY_SIGNATURE_KEY = "planetka_embedded_material_sha256"
 _PREVIEW_TEXTURE_GROUP_VERSION_KEY = "planetka_preview_texture_group_v"
 _PREVIEW_TEXTURE_GROUP_VERSION = 1
@@ -80,7 +82,7 @@ _DETAIL_SOCKET_MICRO_DISP = "Micro Displacement Strength"
 
 _SURFACE_DEFAULT_INPUT_SPECS = (
     ("Surface Brightness", 5.0, 0.0, 10.0),
-    ("Surface Saturation", 1.25, 0.0, 5.0),
+    ("Surface Saturation", 1.2, 0.0, 5.0),
     ("Roughness", 0.6, 0.0, 1.0),
     ("IOR", 1.333, 0.0, 3.0),
     ("Saturation", 1.0, 0.0, 2.0),
@@ -306,23 +308,65 @@ def _normalize_surface_elevation_defaults(material):
             coeff_socket = node.inputs.get("Coefficient")
         except (AttributeError, TypeError, ValueError):
             coeff_socket = None
-        if coeff_socket is None:
-            continue
-        try:
-            current = float(coeff_socket.default_value)
-        except (AttributeError, TypeError, ValueError):
-            continue
-        # Keep custom user edits untouched; normalize known defaults to 1.0.
-        if (
-            abs(current - 1.0) <= 1e-6
-            or abs(current - 0.905) <= 1e-6
-            or abs(current - 0.83335673) <= 1e-6
-            or abs(current - 0.41667837) <= 1e-6
-        ):
+        if coeff_socket is not None:
             try:
-                coeff_socket.default_value = float(DEFAULT_ELEVATION_COEFFICIENT)
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, TypeError, ValueError):
-                continue
+                current = float(coeff_socket.default_value)
+            except (AttributeError, TypeError, ValueError):
+                current = None
+            # Keep custom user edits untouched; normalize known defaults to 1.0.
+            if current is not None and (
+                abs(current - 1.0) <= 1e-6
+                or abs(current - 0.905) <= 1e-6
+                or abs(current - 0.83335673) <= 1e-6
+                or abs(current - 0.41667837) <= 1e-6
+            ):
+                try:
+                    coeff_socket.default_value = float(DEFAULT_ELEVATION_COEFFICIENT)
+                except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, TypeError, ValueError):
+                    pass
+
+        roughness_socket = None
+        try:
+            roughness_socket = node.inputs.get("Roughness")
+        except (AttributeError, TypeError, ValueError):
+            roughness_socket = None
+        if roughness_socket is not None:
+            try:
+                roughness_value = float(roughness_socket.default_value)
+            except (AttributeError, TypeError, ValueError):
+                roughness_value = None
+            # Preserve custom user edits; normalize only legacy defaults to 0.6.
+            if roughness_value is not None and (
+                abs(roughness_value - 0.6) <= 1e-6
+                or abs(roughness_value - 0.5) <= 1e-6
+                or abs(roughness_value - 0.4) <= 1e-6
+                or abs(roughness_value - 0.25) <= 1e-6
+            ):
+                try:
+                    roughness_socket.default_value = float(DEFAULT_WATER_ROUGHNESS)
+                except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, TypeError, ValueError):
+                    pass
+
+        surface_sat_socket = None
+        try:
+            surface_sat_socket = node.inputs.get("Surface Saturation")
+        except (AttributeError, TypeError, ValueError):
+            surface_sat_socket = None
+        if surface_sat_socket is not None:
+            try:
+                surface_sat_value = float(surface_sat_socket.default_value)
+            except (AttributeError, TypeError, ValueError):
+                surface_sat_value = None
+            # Preserve custom user edits; normalize old defaults to 1.2.
+            if surface_sat_value is not None and (
+                abs(surface_sat_value - 1.2) <= 1e-6
+                or abs(surface_sat_value - 1.25) <= 1e-6
+                or abs(surface_sat_value - 1.1) <= 1e-6
+            ):
+                try:
+                    surface_sat_socket.default_value = float(DEFAULT_SURFACE_SATURATION)
+                except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, TypeError, ValueError):
+                    pass
 
 
 def _ensure_interface_float_socket(node_group, name, *, default, min_value=0.0, max_value=1.0, description=""):

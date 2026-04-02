@@ -152,6 +152,7 @@ _VIEWPORT_SCOPE_LAST = {}
 _VIEWPORT_SCOPE_LAST_RESOLVE_TIME = {}
 _LAST_REALTIME_TELEMETRY = {}
 _TIMELINE_LAST_SIGNATURE = {}
+_FRAME_KEYED_RUNTIME_LAST_SIGNATURE = {}
 _COVERAGE_MAP = None
 _R2_SOURCE_MODULE = None
 _REAL_EARTH_RADIUS_M = 6371000.0
@@ -1558,6 +1559,44 @@ def _timeline_signature(scene):
     except (TypeError, ValueError, RuntimeError):
         subframe = 0.0
     return (frame, subframe)
+
+
+def _keyed_runtime_signature(scene):
+    if scene is None:
+        return None
+    props = getattr(scene, "planetka", None)
+    if props is None:
+        return None
+
+    def _as_float(value, fallback=0.0):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float(fallback)
+
+    nav_lon = _as_float(getattr(props, "nav_longitude_deg", 0.0), 0.0)
+    nav_lat = _as_float(getattr(props, "nav_latitude_deg", 0.0), 0.0)
+    nav_alt = max(0.0, _as_float(getattr(props, "nav_altitude_km", 0.0), 0.0))
+    nav_heading = _as_float(getattr(props, "nav_azimuth_deg", 0.0), 0.0)
+    nav_tilt = _as_float(getattr(props, "nav_tilt_deg", 0.0), 0.0)
+    nav_roll = _as_float(getattr(props, "nav_roll_deg", 0.0), 0.0)
+    nav_focal = max(1.0, _as_float(getattr(props, "nav_focal_length_mm", 50.0), 50.0))
+    sun_lon = _as_float(getattr(props, "sunlight_longitude_deg", 0.0), 0.0)
+    sun_tilt = _as_float(getattr(props, "sunlight_seasonal_tilt_deg", 0.0), 0.0)
+    sun_strength = max(0.0, _as_float(getattr(props, "sunlight_strength", 10.0), 10.0))
+
+    return (
+        round(nav_lon, 6),
+        round(nav_lat, 6),
+        round(nav_alt, 6),
+        round(nav_heading, 6),
+        round(nav_tilt, 6),
+        round(nav_roll, 6),
+        round(nav_focal, 6),
+        round(sun_lon, 6),
+        round(sun_tilt, 6),
+        round(sun_strength, 6),
+    )
 
 
 def _handle_timeline_motion_optimization(scene):
@@ -3180,6 +3219,7 @@ def stop_auto_resolve_service():
     _VIEWPORT_SCOPE_LAST_RESOLVE_TIME.clear()
     _LAST_REALTIME_TELEMETRY.clear()
     _TIMELINE_LAST_SIGNATURE.clear()
+    _FRAME_KEYED_RUNTIME_LAST_SIGNATURE.clear()
     _NAV_CAMERA_CONTROL_LAST_SIGNATURE.clear()
     _SUNLIGHT_OBJECT_NAME_CACHE.clear()
 
@@ -3313,7 +3353,55 @@ def _planetka_depsgraph_update_post(_scene, _depsgraph):
 
 
 @persistent
+def _planetka_frame_change_post(scene, _depsgraph=None):
+    global _NAVIGATION_USER_EDIT_LAST_TOUCH
+    target_scene = scene
+    if target_scene is None:
+        target_scene = getattr(getattr(bpy, "context", None), "scene", None)
+    if target_scene is None:
+        return
+
+    signature = _keyed_runtime_signature(target_scene)
+    scene_id = _scene_key(target_scene)
+    if signature is None:
+        _FRAME_KEYED_RUNTIME_LAST_SIGNATURE.pop(scene_id, None)
+        return
+
+    previous = _FRAME_KEYED_RUNTIME_LAST_SIGNATURE.get(scene_id)
+    if previous == signature:
+        return
+    _FRAME_KEYED_RUNTIME_LAST_SIGNATURE[scene_id] = signature
+
+    nav_signature = signature[:7]
+    prev_nav_signature = previous[:7] if isinstance(previous, tuple) and len(previous) >= 7 else None
+    nav_changed = previous is None or prev_nav_signature != nav_signature
+    focal_changed = previous is None or prev_nav_signature is None or prev_nav_signature[6] != nav_signature[6]
+
+    if nav_changed:
+        # Prevent frame-scrub camera updates from triggering auto-resolve.
+        _NAVIGATION_USER_EDIT_LAST_TOUCH = time.monotonic()
+        _suspend_adaptive_viewport_during_navigation(target_scene)
+        _apply_navigation_shot_now()
+
+    if focal_changed:
+        props = getattr(target_scene, "planetka", None)
+        camera = getattr(target_scene, "camera", None)
+        camera_data = getattr(camera, "data", None) if camera is not None else None
+        if props is not None and camera is not None and getattr(camera, "type", None) == 'CAMERA' and camera_data is not None:
+            try:
+                camera_data.lens = max(1.0, float(getattr(props, "nav_focal_length_mm", 50.0)))
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka: failed applying keyed focal length on frame change", exc_info=True)
+            except (RuntimeError, TypeError, ValueError):
+                logger.debug("Planetka: failed applying keyed focal length on frame change", exc_info=True)
+
+    _apply_sunlight_from_props(target_scene)
+    _apply_sunlight_strength_from_props(target_scene)
+
+
+@persistent
 def _planetka_load_post(_dummy):
+    _FRAME_KEYED_RUNTIME_LAST_SIGNATURE.clear()
     for scene in _iter_scenes():
         _sync_props_from_idprops(scene)
         migrate_scene(scene)

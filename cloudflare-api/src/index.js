@@ -5,7 +5,7 @@ const PLAN_CODE_PLANETKA = "planetka";
 const PLAN_CODE_PLANETKA_PRO = "planetka_pro";
 const PLAN_CODE_PLANETKA_STUDIO = "planetka_studio";
 const DEFAULT_ALLOWANCE_COUNTING_RULE =
-  "Preview mode is free. Full Quality consumes credits for newly downloaded data; reused local cache does not consume credits.";
+  "Planetka is currently free to use. Downloaded data and reused local cache do not consume credits.";
 const DEFAULT_TRIAL_INCLUDED_GB = 25;
 const DEFAULT_HOSTED_ACCESS_DURATION_DAYS = 365;
 const DEFAULT_PERIOD_DAYS = 30;
@@ -150,6 +150,8 @@ function html(markup, status = 200, env = {}) {
     status,
     headers: {
       "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+      Pragma: "no-cache",
       ...corsHeaders(env),
     },
   });
@@ -5033,7 +5035,7 @@ async function sendApiKeyIssuedEmail(env, email, apiKeyValue, planCode, expiresA
         "Your Planetka API key is ready.",
         "",
         `Access: ${displayPlan}`,
-        "Preview mode is free. Full Quality consumes credits for newly downloaded data.",
+        "Planetka is currently fully free to use, including Full Quality.",
         "",
         "API key:",
         apiKeyValue,
@@ -5044,7 +5046,7 @@ async function sendApiKeyIssuedEmail(env, email, apiKeyValue, planCode, expiresA
         <div style="font-family: Arial, sans-serif; line-height: 1.5; color: #111827;">
           <h2 style="margin-bottom: 16px;">Your Planetka API key</h2>
           <p><strong>Access:</strong> ${displayPlan}</p>
-          <p>Preview mode is free. Full Quality consumes credits for newly downloaded data.</p>
+          <p>Planetka is currently fully free to use, including Full Quality.</p>
           <p style="margin: 16px 0;">Paste this key in Blender &rarr; Planetka &rarr; Account:</p>
           <pre style="padding:12px;border-radius:8px;background:#111827;color:#e5e7eb;overflow:auto;">${escapeHtml(apiKeyValue)}</pre>
         </div>
@@ -5837,9 +5839,8 @@ function renderApiKeyRequestPage(env, message = "", requestedPlan = PLAN_CODE_PL
   void requestedPlan;
   const safePlan = PLAN_CODE_PLANETKA;
   const subTitle =
-    "Planetka Preview mode is free with unlimited use. " +
-    "Request an API key to connect Blender. " +
-    "Switch to Full Quality anytime by topping up credits.";
+    "Planetka is currently fully free to use. " +
+    "Request an API key to connect Blender and start rendering.";
   return html(`<!doctype html>
 <html lang="en">
   <head>
@@ -5959,8 +5960,6 @@ function renderApiKeyActivatedPage(env, data = {}) {
   const keyMask = key ? maskApiKey(key) : "";
   const email = String(data.email || "").trim();
   const planCode = normalizeRequestedPlan(data.planCode || PLAN_CODE_PLANETKA);
-  const creditsRemainingBytes = clampNonNegativeInt(data.creditsRemainingBytes);
-  const creditsRemainingGb = Number(creditsRemainingBytes / BYTES_PER_GB).toFixed(3);
   const planLabel = planCode === PLAN_CODE_PLANETKA ? "Planetka Access" : "Planetka Access";
   return html(`<!doctype html>
 <html lang="en">
@@ -5985,8 +5984,7 @@ function renderApiKeyActivatedPage(env, data = {}) {
       <h1>API key generated</h1>
       <p>Email: <strong>${escapeHtml(email || "unknown")}</strong></p>
       <p>Access: <strong>${escapeHtml(planLabel)}</strong></p>
-      <p>Preview mode is free. Full Quality uses credits for newly downloaded data.</p>
-      <p>Available Full Quality credits: <strong>${escapeHtml(creditsRemainingGb)} GB</strong></p>
+      <p>Planetka is currently fully free to use, including Full Quality.</p>
       <pre id="apiKey">${escapeHtml(key)}</pre>
       <button id="copyBtn" type="button">Copy API key</button>
       <p class="muted" id="copyStatus">Key mask: ${escapeHtml(keyMask)}</p>

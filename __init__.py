@@ -68,6 +68,7 @@ from .render_prep import PLANETKA_OT_LoadTextures
 from .state import (
     _iter_scenes,
     _planetka_depsgraph_update_post,
+    _planetka_frame_change_post,
     _planetka_load_post,
     purge_disabled_atmosphere_and_cloud_assets,
     _sync_logging_from_scenes,
@@ -215,6 +216,16 @@ def _remove_depsgraph_post_handler():
             handlers.remove(handler)
 
 
+def _remove_frame_change_post_handler():
+    handlers = bpy.app.handlers.frame_change_post
+    for handler in list(handlers):
+        if (
+            handler is _planetka_frame_change_post
+            or getattr(handler, "__name__", "") == "_planetka_frame_change_post"
+        ):
+            handlers.remove(handler)
+
+
 def _planetka_render_post(_dummy):
     recover_post_render_state(getattr(bpy.context, "scene", None))
 
@@ -282,8 +293,10 @@ def register():
     _sync_logging_from_scenes()
     _remove_load_post_handler()
     _remove_depsgraph_post_handler()
+    _remove_frame_change_post_handler()
     bpy.app.handlers.load_post.append(_planetka_load_post)
     bpy.app.handlers.depsgraph_update_post.append(_planetka_depsgraph_update_post)
+    bpy.app.handlers.frame_change_post.append(_planetka_frame_change_post)
     _remove_render_handlers()
     bpy.app.handlers.render_pre.append(_planetka_render_pre)
     bpy.app.handlers.render_post.append(_planetka_render_post)
@@ -301,6 +314,7 @@ def unregister():
     _unregister_keymaps()
     _remove_load_post_handler()
     _remove_depsgraph_post_handler()
+    _remove_frame_change_post_handler()
     _remove_render_handlers()
     stop_auto_resolve_service()
     if hasattr(bpy.types.Scene, "planetka"):
