@@ -3,18 +3,17 @@
 import bpy
 import datetime
 
+from .asset_builder import PLANETKA_ROOT_OBJECT_NAME
 from .auth import (
-    get_allowance_counting_rule,
-    get_allowance_total_remaining_bytes,
     get_connected_email,
     get_status_message,
-    get_topup_url,
     is_authenticated,
 )
 from .extension_prefs import get_earth_object
 from .geonames_db import get_search_status_text
 from .diagnostics import read_diagnostics
 from .r2_source import get_download_progress, is_download_active
+from .updater import get_public_status as get_updater_public_status
 from .animation_tools import (
     ANIMATION_STATS_END_KEY,
     ANIMATION_STATS_SEGMENTS_KEY,
@@ -110,14 +109,20 @@ def _fmt_gb_from_mb(value_mb):
         return "—"
 
 
-def _fmt_credits_from_bytes(value_bytes):
-    if value_bytes is None:
-        return "—"
+def _waypoint_label(index):
     try:
-        credits = float(value_bytes) / float(1024 ** 3)
-        return f"{credits:.3f} credits"
+        idx = int(max(0, int(index)))
     except (TypeError, ValueError):
-        return "—"
+        idx = 0
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    base = len(alphabet)
+    label = ""
+    while True:
+        label = alphabet[idx % base] + label
+        idx = (idx // base) - 1
+        if idx < 0:
+            break
+    return label
 
 
 def _status_activity_suffix(running):
@@ -205,9 +210,13 @@ def _draw_subscription(layout):
     prefs = get_prefs()
     connected = is_authenticated(prefs)
     status_message = get_status_message(prefs)
-    total_remaining_bytes = get_allowance_total_remaining_bytes(prefs)
-    topup_url = str(get_topup_url(prefs) or "").strip()
-
+    updater = get_updater_public_status()
+    updater_message = str(updater.get("message") or "").strip()
+    updater_error = str(updater.get("last_error") or "").strip()
+    updater_checking = bool(updater.get("checking", False))
+    updater_ready = bool(updater.get("update_ready", False))
+    latest_version = str(updater.get("latest_version") or "").strip()
+    current_version = str(updater.get("current_version") or "").strip()
     if not connected:
         layout.label(text="Paste API key to connect Planetka", icon="INFO")
         layout.prop(prefs, "auth_api_key_input", text="API Key")
@@ -215,31 +224,65 @@ def _draw_subscription(layout):
         connect_row.operator("planetka.account_open_login", text="Connect API Key", icon="CHECKMARK")
         free_row = layout.row()
         free_row.operator("planetka.account_login", text="Request Free Access", icon="URL")
-        if topup_url:
-            topup_row = layout.row()
-            topup_row.operator("wm.url_open", text="Top Up Credits", icon="URL").url = topup_url
+        update_row = layout.row(align=True)
+        update_row.operator("planetka.check_updates", text="Check for Updates", icon="FILE_REFRESH")
+        if current_version:
+            layout.label(text=f"Addon version: {current_version}", icon="BLENDER")
+        if updater_checking:
+            layout.label(text="Checking for updates…", icon="TIME")
+        elif updater_ready and latest_version:
+            row = layout.row()
+            row.alert = True
+            row.label(text=f"Update {latest_version} ready. Restart Blender.", icon="INFO")
+        elif updater_message:
+            layout.label(text=updater_message, icon="INFO")
+        elif updater_error:
+            layout.label(text="Update check failed. Retrying later.", icon="INFO")
         if status_message:
             layout.label(text=status_message, icon="INFO")
+        _draw_system_requirements(layout)
         return
 
     email = get_connected_email(prefs)
     layout.label(text=f"Account: {email}", icon="CHECKMARK")
     layout.label(text="Status: Connected", icon="LINKED")
-    layout.label(text=f"Credits Available: {_fmt_credits_from_bytes(total_remaining_bytes)}", icon="ASSET_MANAGER")
 
     action_row = layout.row(align=True)
     action_row.operator("wm.url_open", text="Contact me", icon="URL").url = "https://www.planetka.io/contact-me"
     action_row.operator("planetka.account_logout", text="Log Out", icon="X")
     key_row = layout.row()
     key_row.operator("planetka.account_login", text="Regenerate API Key", icon="URL")
-    topup_row = layout.row(align=True)
-    if topup_url:
-        topup_row.operator("wm.url_open", text="Top Up Credits", icon="URL").url = topup_url
-    else:
-        topup_row.operator("planetka.account_upgrade", text="Top Up Credits", icon="URL")
+    update_row = layout.row(align=True)
+    update_row.operator("planetka.check_updates", text="Check for Updates", icon="FILE_REFRESH")
+
+    if current_version:
+        layout.label(text=f"Addon version: {current_version}", icon="BLENDER")
+    if updater_checking:
+        layout.label(text="Checking for updates…", icon="TIME")
+    elif updater_ready and latest_version:
+        row = layout.row()
+        row.alert = True
+        row.label(text=f"Update {latest_version} ready. Restart Blender.", icon="INFO")
+    elif updater_message:
+        layout.label(text=updater_message, icon="INFO")
+    elif updater_error:
+        layout.label(text="Update check failed. Retrying later.", icon="INFO")
 
     if status_message:
         layout.label(text=status_message, icon="INFO")
+
+    _draw_system_requirements(layout)
+
+
+def _draw_system_requirements(layout):
+    box = layout.box()
+    box.label(text="System Requirements", icon="TOOL_SETTINGS")
+    box.label(text="Internet connection (Planetka data is streamed online).", icon="CHECKMARK")
+    box.label(text="Blender 4.5.7 or later.", icon="CHECKMARK")
+    box.label(text="16 GB RAM minimum, 32 GB recommended.", icon="CHECKMARK")
+    box.label(text="Dedicated GPU is optional, but improves performance.", icon="CHECKMARK")
+    box.label(text="64-bit operating system.", icon="CHECKMARK")
+    box.label(text="At least 10 GB free SSD space for local cache.", icon="CHECKMARK")
 
 
 def _draw_new_earth(layout):
@@ -254,11 +297,6 @@ def _draw_new_earth(layout):
     row.alert = False
     row.enabled = (not has_earth) and connected
     row.operator("planetka.add_earth", text="Create Earth", icon="WORLD_DATA")
-
-    cycles_row = layout.row()
-    cycles_row.enabled = connected
-    cycles_row.operator("planetka.switch_to_cycles", text="Switch to Cycles (recommended)", icon="RENDER_STILL")
-
 
 def _draw_resolve(layout):
     layout.use_property_split = True
@@ -302,7 +340,9 @@ def _draw_live_telemetry(layout, scene):
         runtime_code = "DOWNLOADING"
         runtime_text = "Downloading Data"
 
-    layout.label(
+    status_row = layout.row()
+    status_row.alert = runtime_code in {"DOWNLOADING", "FINALIZING", "FINALIZE_QUEUED", "QUEUED"}
+    status_row.label(
         text=f"{runtime_text}{_status_activity_suffix(runtime.get('running', False))}",
         icon=_status_icon(runtime_code),
     )
@@ -310,38 +350,6 @@ def _draw_live_telemetry(layout, scene):
     props = getattr(scene, "planetka", None) if scene else None
     from .extension_prefs import get_prefs
     prefs = get_prefs()
-    if props is not None and is_authenticated(prefs):
-        quality_box = layout.box()
-        quality_box.label(text="Texture Quality", icon="TEXTURE")
-        quality_row = quality_box.row(align=True)
-        quality_row.use_property_split = False
-        quality_row.prop_enum(props, "texture_quality_mode", "HALF", text="Preview")
-        quality_row.prop_enum(props, "texture_quality_mode", "FULL", text="Full Quality")
-        remaining_bytes = get_allowance_total_remaining_bytes(prefs)
-        quality_box.label(text=f"Credits Available: {_fmt_credits_from_bytes(remaining_bytes)}", icon="ASSET_MANAGER")
-        full_cost_bytes = diag.get("resolve_full_quality_cost_bytes")
-        try:
-            full_cost_int = int(full_cost_bytes or 0)
-        except (TypeError, ValueError):
-            full_cost_int = 0
-        if full_cost_int > 0:
-            quality_box.label(
-                text=f"Cost in Full resolution: {_fmt_credits_from_bytes(full_cost_int)}",
-                icon="INFO",
-            )
-        if str(getattr(props, "texture_quality_mode", "HALF") or "HALF").upper() == "HALF":
-            quality_box.label(text="Preview mode is free for all resolves.", icon="CHECKMARK")
-        else:
-            quality_box.label(text="Full Quality uses credits for newly downloaded tiles.", icon="INFO")
-        topup_url = str(get_topup_url(prefs) or "").strip()
-        topup_row = quality_box.row()
-        if topup_url:
-            topup_row.operator("wm.url_open", text="Top Up Credits", icon="URL").url = topup_url
-        else:
-            topup_row.operator("planetka.account_upgrade", text="Top Up Credits", icon="URL")
-        counting_rule = str(get_allowance_counting_rule(prefs) or "").strip()
-        if counting_rule:
-            quality_box.label(text=counting_rule, icon="INFO")
 
     if runtime_code == "DOWNLOADING":
         if total_bytes > 0:
@@ -355,6 +363,14 @@ def _draw_live_telemetry(layout, scene):
             layout.label(text=f"Request: #{request_id}")
         if pending_count > 0:
             layout.label(text=f"Queued jobs: {pending_count}")
+
+    if props is not None and is_authenticated(prefs):
+        quality_box = layout.box()
+        quality_box.label(text="Texture Quality", icon="TEXTURE")
+        quality_row = quality_box.row(align=True)
+        quality_row.use_property_split = False
+        quality_row.prop_enum(props, "texture_quality_mode", "HALF", text="Preview")
+        quality_row.prop_enum(props, "texture_quality_mode", "FULL", text="Full Quality")
     throttle_message = str(get_status_message(prefs) or "").strip()
     if throttle_message and "throttl" in throttle_message.lower():
         alert_box = layout.box()
@@ -614,6 +630,26 @@ def _draw_surface_grading(layout):
                     row.prop(socket, "default_value", text=_surface_grading_socket_label(getattr(socket, "name", "")))
                 except (AttributeError, RuntimeError, TypeError, ValueError):
                     continue
+
+
+def _draw_earth_transform(layout, scene):
+    layout.use_property_split = True
+    layout.use_property_decorate = False
+
+    root = bpy.data.objects.get(PLANETKA_ROOT_OBJECT_NAME)
+    if root is None:
+        layout.label(text="Planetka Root not found. Create Earth first.", icon="INFO")
+        return
+    if str(getattr(root, "type", "")) != "EMPTY":
+        layout.label(text="Planetka Root has invalid type.", icon="ERROR")
+        return
+    if scene is None or root not in tuple(getattr(scene, "objects", ())):
+        layout.label(text="Planetka Root is not in active scene.", icon="INFO")
+        return
+
+    layout.prop(root, "location", text="Location")
+    layout.prop(root, "rotation_euler", text="Rotation")
+    layout.prop(root, "scale", text="Scale")
 
 
 def _iter_atmosphere_nodes():
@@ -1055,7 +1091,7 @@ class PLANETKA_PT_NavigationSavedLocationsPanelCollapsed(_PLANETKA_PT_BaseSectio
 class PLANETKA_PT_SurfaceGradingPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
     bl_label = "Earth Grading"
     bl_idname = "PLANETKA_PT_surface_grading"
-    bl_order = 5
+    bl_order = 8
 
     @classmethod
     def poll(cls, context):
@@ -1070,7 +1106,7 @@ class PLANETKA_PT_SurfaceGradingPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel)
 class PLANETKA_PT_SurfaceGradingPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
     bl_label = "Earth Grading"
     bl_idname = "PLANETKA_PT_surface_grading_collapsed"
-    bl_order = 5
+    bl_order = 8
 
     @classmethod
     def poll(cls, context):
@@ -1080,6 +1116,38 @@ class PLANETKA_PT_SurfaceGradingPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.typ
         layout = self.layout
         layout.enabled = False
         _draw_surface_grading(layout)
+
+
+class PLANETKA_PT_EarthTransformPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
+    bl_label = "Earth Transform"
+    bl_idname = "PLANETKA_PT_earth_transform"
+    bl_order = 7
+
+    @classmethod
+    def poll(cls, context):
+        return _is_earth_workflow_enabled()
+
+    def draw(self, context):
+        layout = self.layout
+        layout.enabled = _is_earth_workflow_enabled()
+        scene = getattr(context, "scene", None)
+        _draw_earth_transform(layout, scene)
+
+
+class PLANETKA_PT_EarthTransformPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
+    bl_label = "Earth Transform"
+    bl_idname = "PLANETKA_PT_earth_transform_collapsed"
+    bl_order = 7
+
+    @classmethod
+    def poll(cls, context):
+        return not _is_earth_workflow_enabled()
+
+    def draw(self, context):
+        layout = self.layout
+        layout.enabled = False
+        scene = getattr(context, "scene", None)
+        _draw_earth_transform(layout, scene)
 
 
 class PLANETKA_PT_AtmospherePanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
@@ -1190,7 +1258,6 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         cinematic_box.prop(props, "anim_camera_preset", text="Preset")
         cinematic_box.prop(props, "anim_frame_start", text="Start Frame")
         cinematic_box.prop(props, "anim_frame_end", text="End Frame")
-        cinematic_box.prop(props, "anim_camera_strength", text="Preset Strength")
         cinematic_box.prop(props, "anim_motion_curve", text="Motion Curve")
 
         preset = str(getattr(props, "anim_camera_preset", "ORBIT")).upper()
@@ -1214,6 +1281,48 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             status_b = "Ready" if bool(getattr(props, "anim_ab_b_valid", False)) else "Not Set"
             cinematic_box.label(text=f"View A: {status_a}")
             cinematic_box.label(text=f"View B: {status_b}")
+        if preset == "WAYPOINTS":
+            waypoints = getattr(props, "anim_waypoints", None)
+            count = len(waypoints) if waypoints is not None else 0
+            tools_row = cinematic_box.row(align=True)
+            tools_row.operator("planetka.animation_waypoint_add", text="Add Waypoint", icon="ADD")
+            capture_active = tools_row.operator(
+                "planetka.animation_waypoint_capture_current",
+                text="Capture Current",
+                icon="IMPORT",
+            )
+            capture_active.index = int(getattr(props, "anim_waypoint_active_index", 0))
+            if count <= 0:
+                cinematic_box.label(text="No waypoints yet. Add waypoint A.", icon="INFO")
+            for index, waypoint in enumerate(waypoints or ()):
+                label = _waypoint_label(index)
+                wp_box = cinematic_box.box()
+                header = wp_box.row(align=True)
+                header.prop(
+                    waypoint,
+                    "expanded",
+                    text=f"Waypoint {label}",
+                    icon="TRIA_DOWN" if bool(getattr(waypoint, "expanded", True)) else "TRIA_RIGHT",
+                    emboss=True,
+                )
+                apply_op = header.operator("planetka.animation_waypoint_apply", text="", icon="VIEW_CAMERA")
+                apply_op.index = int(index)
+                capture_op = header.operator("planetka.animation_waypoint_capture_current", text="", icon="IMPORT")
+                capture_op.index = int(index)
+                remove_op = header.operator("planetka.animation_waypoint_remove", text="", icon="TRASH")
+                remove_op.index = int(index)
+                if not bool(getattr(waypoint, "expanded", True)):
+                    continue
+                wp_box.prop(waypoint, "city_search", text="Place Search")
+                selected_place = str(getattr(waypoint, "city_selected_name", "") or "")
+                if selected_place:
+                    wp_box.label(text=f"Selected: {selected_place}", icon="BOOKMARKS")
+                wp_box.prop(waypoint, "latitude_deg", text="Latitude")
+                wp_box.prop(waypoint, "longitude_deg", text="Longitude")
+                wp_box.prop(waypoint, "altitude_km", text="Altitude (km)")
+                wp_box.prop(waypoint, "heading_deg", text="Heading (°)")
+                wp_box.prop(waypoint, "tilt_deg", text="Tilt (°)")
+                wp_box.prop(waypoint, "roll_deg", text="Roll (°)")
 
         preview_row = cinematic_box.row()
         preview_row.scale_y = 1.15
@@ -1223,31 +1332,10 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             icon="PLAY",
         )
 
-        render_box = layout.box()
-        render_box.label(text="Rendering", icon="RENDER_ANIMATION")
-        render_content = render_box.column()
-        render_content.enabled = True
         if _is_animation_prepared(scene):
-            render_content.label(text="Prepared animation setup will be cleared.", icon="INFO")
+            layout.label(text="Prepared animation setup will be cleared.", icon="INFO")
 
-        preset_row = render_content.row(align=True)
-        preset_row.use_property_split = False
-        preset_row.prop_enum(props, "anim_render_preset", "SPEED", text="Speed Optimized")
-        preset_row.prop_enum(props, "anim_render_preset", "MEMORY", text="Memory Optimized")
-
-        render_content.separator()
-        subdiv_box = render_content.box()
-        subdiv_box.label(text="Subdivision", icon="MOD_SUBSURF")
-        subdiv_box.prop(props, "anim_render_dicing_rate", text="Dicing Rate Render")
-        subdiv_box.prop(props, "anim_render_offscreen_scale", text="Offscreen Scale")
-
-        perf_box = render_content.box()
-        perf_box.label(text="Performance", icon="TIME")
-        perf_box.prop(props, "anim_render_persistent_data", text="Persistent Data")
-
-        render_content.separator()
-        render_content.label(text="Blender will be unresponsive during render", icon="INFO")
-        render_row = render_content.row()
+        render_row = layout.row()
         render_row.scale_y = 1.2
         render_row.operator(
             "planetka.animation_render_headless",

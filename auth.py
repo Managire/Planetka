@@ -110,9 +110,9 @@ def describe_auth_error(error):
     if "network_error" in lowered:
         return "Planetka could not reach the API. Check the internet connection and Worker deployment."
     if "missing_stripe_payment_link_url" in lowered:
-        return "Planetka credits checkout URL is not configured on the API."
+        return "Planetka checkout URL is not configured on the API."
     if "allowance" in lowered or "quota_exceeded" in lowered or "insufficient_data" in lowered:
-        return "Full Quality credits are depleted. Top up credits or switch to Preview."
+        return "Account data allowance has been reached."
     return f"Planetka login failed: {message.replace('_', ' ')}."
 
 

@@ -3,7 +3,7 @@ Planetka overnight stress test runner (free-account focused).
 
 Flow:
 1. Enable addon and verify existing logged-in account session.
-2. Create Earth, switch to Cycles, enable GPU, set HD render output.
+2. Create Earth, set renderer (Cycles or EEVEE), set HD render output.
 3. Run a long case set:
    - 500 random places from GeoNames database
    - Pole special locations (north/south at 30km and 3000km)
@@ -28,6 +28,9 @@ Optional env:
   PLANETKA_STRESS_SEED=20260327
   PLANETKA_RANDOM_PLACE_COUNT=500
   PLANETKA_CAPITALS_MODE=all|none   (default: all)
+  PLANETKA_RENDER_ENGINE=CYCLES|EEVEE   (default: CYCLES)
+  PLANETKA_INCLUDE_POLES=1|0            (default: 1)
+  PLANETKA_MAX_ALLOWED_TILES=12         (default: 12)
 """
 
 import importlib
@@ -47,6 +50,7 @@ TAG = "[Planetka Overnight Stress]"
 DEFAULT_RENDER_DIR = "/Volumes/SSDA/Renders"
 DEFAULT_SEED = 20260327
 DEFAULT_RANDOM_PLACE_COUNT = 500
+DEFAULT_MAX_ALLOWED_TILES = 12
 
 SUNLIGHT_PRESETS = (
     "DAWN",
@@ -545,6 +549,7 @@ def _run_case(
     render_prefix,
     state_module,
     geonames_module,
+    max_allowed_tiles,
     fixed_altitude_km=None,
     direct_longitude_deg=None,
     direct_latitude_deg=None,
@@ -656,6 +661,23 @@ def _run_case(
     analysis = _analyze_render_image(render_path)
 
     diag = diagnostics_module.read_diagnostics(scene)
+    try:
+        resolved_tile_count = int(diag.get("last_tile_count", 0) or 0)
+    except (TypeError, ValueError):
+        resolved_tile_count = 0
+    if int(resolved_tile_count) > int(max_allowed_tiles):
+        return {
+            "case": int(case_index),
+            "kind": str(case_kind),
+            "label": str(label),
+            "selected_place": str(selected_name),
+            "ok": False,
+            "error": "tile_budget_exceeded",
+            "resolve_tile_count": int(resolved_tile_count),
+            "max_allowed_tiles": int(max_allowed_tiles),
+            "warnings": warnings,
+            "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 3),
+        }
     ok = (not analysis.get("mostly_black")) and (not analysis.get("pink_corrupt"))
     case_payload = {
         "case": int(case_index),
@@ -672,7 +694,7 @@ def _run_case(
         "camera_signature_before": camera_before,
         "camera_signature_after_nav": camera_after_nav,
         "render_path": render_path,
-        "resolve_tile_count": diag.get("last_tile_count"),
+        "resolve_tile_count": int(resolved_tile_count),
         "resolve_downloaded_mb": diag.get("resolve_downloaded_mb"),
         "resolve_download_ms": diag.get("resolve_download_ms"),
         "resolve_stage": diag.get("resolve_stage"),
@@ -691,6 +713,12 @@ def main():
     run_seed = int(os.environ.get("PLANETKA_STRESS_SEED") or str(DEFAULT_SEED))
     random_place_count = max(1, int(os.environ.get("PLANETKA_RANDOM_PLACE_COUNT") or str(DEFAULT_RANDOM_PLACE_COUNT)))
     capitals_mode = str(os.environ.get("PLANETKA_CAPITALS_MODE") or "all").strip().lower()
+    render_engine_mode = str(os.environ.get("PLANETKA_RENDER_ENGINE") or "CYCLES").strip().upper()
+    include_poles = str(os.environ.get("PLANETKA_INCLUDE_POLES") or "1").strip().lower() not in {"0", "false", "no"}
+    max_allowed_tiles = max(
+        1,
+        int(os.environ.get("PLANETKA_MAX_ALLOWED_TILES") or str(DEFAULT_MAX_ALLOWED_TILES)),
+    )
 
     os.makedirs(render_dir, exist_ok=True)
     ts = time.strftime("%Y%m%d_%H%M%S")
@@ -710,6 +738,7 @@ def main():
         geonames_module = _import_submodule(base_module_name, "geonames_db")
         diagnostics_module = _import_submodule(base_module_name, "diagnostics")
         state_module = _import_submodule(base_module_name, "state")
+        tile_utils_module = _import_submodule(base_module_name, "tile_utils")
 
         prefs = extension_prefs.get_prefs()
         _assert(prefs is not None, "Planetka preferences unavailable.")
@@ -737,32 +766,57 @@ def main():
         scene.render.image_settings.file_format = "PNG"
         scene.render.film_transparent = False
         scene.render.use_simplify = True
-        scene.cycles.samples = 24
-        scene.cycles.preview_samples = 8
-        scene.cycles.use_denoising = False
-        scene.cycles.use_adaptive_sampling = True
+        if render_engine_mode == "CYCLES":
+            scene.cycles.samples = 24
+            scene.cycles.preview_samples = 8
+            scene.cycles.use_denoising = False
+            scene.cycles.use_adaptive_sampling = True
+
+        if tile_utils_module is not None:
+            try:
+                tile_utils_module.MAX_SHADER_TILE_BUDGET = int(max_allowed_tiles)
+                _log(f"Tile budget cap forced to {int(max_allowed_tiles)}")
+            except Exception:
+                _log("WARN: failed to set tile budget cap in tile_utils module")
 
         create_result = bpy.ops.planetka.add_earth()
         _assert("FINISHED" in create_result, f"Create Earth failed: {create_result}")
-        switch_result = bpy.ops.planetka.switch_to_cycles()
-        _assert("FINISHED" in switch_result, f"Switch to Cycles failed: {switch_result}")
-        _assert(str(scene.render.engine) == "CYCLES", f"Render engine is not CYCLES: {scene.render.engine}")
-        gpu_info = _configure_cycles_gpu(scene)
-        _assert(bool(gpu_info.get("gpu_enabled")), "Cycles GPU is not available/enabled.")
-        _assert(str(gpu_info.get("scene_cycles_device")) == "GPU", "Cycles scene device is not GPU.")
-        _log(f"Cycles GPU enabled: backend={gpu_info.get('backend')} devices={gpu_info.get('devices')}")
+        gpu_info = {}
+        if render_engine_mode == "CYCLES":
+            switch_result = bpy.ops.planetka.switch_to_cycles()
+            _assert("FINISHED" in switch_result, f"Switch to Cycles failed: {switch_result}")
+            _assert(str(scene.render.engine) == "CYCLES", f"Render engine is not CYCLES: {scene.render.engine}")
+            gpu_info = _configure_cycles_gpu(scene)
+            _assert(bool(gpu_info.get("gpu_enabled")), "Cycles GPU is not available/enabled.")
+            _assert(str(gpu_info.get("scene_cycles_device")) == "GPU", "Cycles scene device is not GPU.")
+            _log(f"Cycles GPU enabled: backend={gpu_info.get('backend')} devices={gpu_info.get('devices')}")
+        elif render_engine_mode in {"EEVEE", "BLENDER_EEVEE", "BLENDER_EEVEE_NEXT"}:
+            target = "BLENDER_EEVEE_NEXT"
+            try:
+                enum_items = scene.render.bl_rna.properties["engine"].enum_items.keys()
+                if target not in enum_items:
+                    target = "BLENDER_EEVEE"
+            except Exception:
+                target = "BLENDER_EEVEE"
+            scene.render.engine = target
+            _assert("EEVEE" in str(scene.render.engine), f"Render engine is not EEVEE: {scene.render.engine}")
+            _log(f"EEVEE enabled: engine={scene.render.engine}")
+        else:
+            _fail(f"Unsupported PLANETKA_RENDER_ENGINE={render_engine_mode}. Use CYCLES or EEVEE.")
 
         _wait_for_geonames_ready(geonames_module)
         connection, db_path = _open_geonames_connection(geonames_module)
         random_places = _sample_random_places(connection, random_place_count, rng)
         _assert(len(random_places) > 0, "No random places could be sampled.")
 
-        pole_cases = [
-            ("North Pole, 3000km", 0.0, 89.95, 3000.0),
-            ("North Pole, 30km", 0.0, 89.95, 30.0),
-            ("South Pole, 3000km", 0.0, -89.95, 3000.0),
-            ("South Pole, 30km", 0.0, -89.95, 30.0),
-        ]
+        pole_cases = []
+        if include_poles:
+            pole_cases = [
+                ("North Pole, 3000km", 0.0, 89.95, 3000.0),
+                ("North Pole, 30km", 0.0, 89.95, 30.0),
+                ("South Pole, 3000km", 0.0, -89.95, 3000.0),
+                ("South Pole, 30km", 0.0, -89.95, 30.0),
+            ]
 
         capital_cases = []
         if capitals_mode != "none":
@@ -808,6 +862,7 @@ def main():
                 render_prefix=render_prefix,
                 state_module=state_module,
                 geonames_module=geonames_module,
+                max_allowed_tiles=max_allowed_tiles,
                 fixed_altitude_km=None,
             )
             cases.append(case_payload)
@@ -832,6 +887,7 @@ def main():
                 render_prefix=render_prefix,
                 state_module=state_module,
                 geonames_module=geonames_module,
+                max_allowed_tiles=max_allowed_tiles,
                 fixed_altitude_km=pole_altitude,
                 direct_longitude_deg=pole_lon,
                 direct_latitude_deg=pole_lat,
@@ -871,6 +927,7 @@ def main():
                     render_prefix=render_prefix,
                     state_module=state_module,
                     geonames_module=geonames_module,
+                    max_allowed_tiles=max_allowed_tiles,
                     fixed_altitude_km=float(cap.get("altitude_km", 30.0)),
                 )
                 case_payload["capital_query"] = str(cap.get("query"))
@@ -896,6 +953,9 @@ def main():
             "report_path": report_path,
             "geonames_index_db_path": db_path,
             "gpu_info": gpu_info,
+            "render_engine_mode": render_engine_mode,
+            "include_poles": bool(include_poles),
+            "max_allowed_tiles": int(max_allowed_tiles),
             "counts": {
                 "random_places_requested": int(random_place_count),
                 "random_places_completed": len(random_places),

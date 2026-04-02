@@ -4,23 +4,37 @@ from bpy.props import PointerProperty
 # Includes data from GeoNames (allCountries) licensed under CC BY 4.0.
 
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
+from . import updater as _planetka_updater
+
+try:
+    _planetka_updater.apply_pending_update_on_import()
+except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
+    # Updater bootstrap must never block addon import/registration.
+    pass
+
 from .animation_tools import (
     PLANETKA_OT_AnimationClearPrepared,
     PLANETKA_OT_AnimationMakeReady,
     PLANETKA_OT_AnimationPreviewShot,
     PLANETKA_OT_AnimationRenderHeadless,
     PLANETKA_OT_AnimationSaveView,
+    PLANETKA_OT_AnimationWaypointAdd,
+    PLANETKA_OT_AnimationWaypointApply,
+    PLANETKA_OT_AnimationWaypointCaptureCurrent,
+    PLANETKA_OT_AnimationWaypointRemove,
 )
 from .extension_prefs import PlanetkaExtensionPreferences
 from .operators import (
     PLANETKA_OT_AddEarth,
     PLANETKA_OT_AccountCancelLogin,
+    PLANETKA_OT_CheckUpdates,
     PLANETKA_OT_AccountContact,
     PLANETKA_OT_AccountLogin,
     PLANETKA_OT_AccountLogout,
     PLANETKA_OT_AccountOpenLogin,
     PLANETKA_OT_AccountUpgrade,
     PLANETKA_OT_ConfirmImportNewData,
+    PLANETKA_OT_DownloadStatusPopup,
     PLANETKA_OT_DeleteSavedLocation,
     PLANETKA_OT_ImportNewData,
     PLANETKA_OT_LoadSavedLocation,
@@ -49,12 +63,13 @@ from .clouds_vdb import (
     PLANETKA_OT_ResetVDBCloudToCameraView,
     PLANETKA_PT_VDBCloudsPanel,
 )
-from .properties import PlanetkaProperties
+from .properties import PlanetkaAnimationWaypoint, PlanetkaProperties
 from .render_prep import PLANETKA_OT_LoadTextures
 from .state import (
     _iter_scenes,
     _planetka_depsgraph_update_post,
     _planetka_load_post,
+    purge_disabled_atmosphere_and_cloud_assets,
     _sync_logging_from_scenes,
     _sync_props_from_idprops,
     mark_render_job_started,
@@ -69,6 +84,8 @@ from .ui import (
     PLANETKA_PT_LiveTelemetryPanelCollapsed,
     PLANETKA_PT_LinksPanel,
     PLANETKA_PT_AnimationPanel,
+    PLANETKA_PT_EarthTransformPanel,
+    PLANETKA_PT_EarthTransformPanelCollapsed,
     PLANETKA_PT_NavigationPanel,
     PLANETKA_PT_NavigationPanelCollapsed,
     PLANETKA_PT_NavigationSavedLocationsPanel,
@@ -97,14 +114,17 @@ bl_info = {
 
 classes = (
     PlanetkaExtensionPreferences,
+    PlanetkaAnimationWaypoint,
     PlanetkaProperties,
     PLANETKA_OT_AccountLogin,
+    PLANETKA_OT_CheckUpdates,
     PLANETKA_OT_AccountOpenLogin,
     PLANETKA_OT_AccountCancelLogin,
     PLANETKA_OT_AccountLogout,
     PLANETKA_OT_AccountContact,
     PLANETKA_OT_AccountUpgrade,
     PLANETKA_OT_SwitchToCycles,
+    PLANETKA_OT_DownloadStatusPopup,
     PLANETKA_OT_AddEarth,
     PLANETKA_OT_SaveLocation,
     PLANETKA_OT_LoadSavedLocation,
@@ -121,6 +141,10 @@ classes = (
     PLANETKA_OT_ResetVDBCloudToCameraView,
     PLANETKA_OT_DeleteVDBCloud,
     PLANETKA_OT_AnimationSaveView,
+    PLANETKA_OT_AnimationWaypointAdd,
+    PLANETKA_OT_AnimationWaypointRemove,
+    PLANETKA_OT_AnimationWaypointCaptureCurrent,
+    PLANETKA_OT_AnimationWaypointApply,
     PLANETKA_OT_AnimationPreviewShot,
     PLANETKA_OT_AnimationRenderHeadless,
     PLANETKA_OT_AnimationMakeReady,
@@ -144,6 +168,8 @@ classes = (
     PLANETKA_PT_NavigationSavedLocationsPanel,
     PLANETKA_PT_NavigationSavedLocationsPanelCollapsed,
     PLANETKA_PT_SunlightPanel,
+    PLANETKA_PT_EarthTransformPanel,
+    PLANETKA_PT_EarthTransformPanelCollapsed,
     PLANETKA_PT_SurfaceGradingPanel,
     PLANETKA_PT_SurfaceGradingPanelCollapsed,
     PLANETKA_PT_AnimationPanel,
@@ -249,6 +275,10 @@ def register():
     for scene in _iter_scenes():
         _sync_props_from_idprops(scene)
         migrate_scene(scene)
+        try:
+            purge_disabled_atmosphere_and_cloud_assets(scene=scene)
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            pass
     _sync_logging_from_scenes()
     _remove_load_post_handler()
     _remove_depsgraph_post_handler()
@@ -261,6 +291,10 @@ def register():
     bpy.app.handlers.render_cancel.append(_planetka_render_post)
     _unregister_keymaps()
     _register_keymaps()
+    try:
+        _planetka_updater.kickoff_background_update_check(force=False)
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
+        pass
 
 
 def unregister():

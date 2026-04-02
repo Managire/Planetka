@@ -20,6 +20,7 @@ from .auth import (
     is_authenticated,
 )
 from .asset_builder import (
+    PLANETKA_ROOT_OBJECT_NAME,
     ensure_earth_surface_parent,
     ensure_planetka_assets,
     ensure_planetka_root,
@@ -34,7 +35,12 @@ from .extension_prefs import (
 )
 from .operator_utils import ErrorCode, fail, require_planetka_props, require_scene
 from .sanity_utils import _normalize_texture_source_path, invalidate_texture_source_health_cache
-from .r2_source import is_remote_source_configured, texture_file_exists
+from .r2_source import (
+    get_download_progress,
+    is_download_active,
+    is_remote_source_configured,
+    texture_file_exists,
+)
 from .state import (
     apply_renderer_engine_optimization,
     apply_renderer_engine_optimization_for_all_preserve_current,
@@ -44,11 +50,13 @@ from .state import (
     ensure_preview_object,
     ensure_planetka_temp_collection,
     logger,
+    purge_disabled_atmosphere_and_cloud_assets,
     remove_object_and_unused_mesh,
     resume_navigation_shot_updates,
     suspend_navigation_shot_updates,
     warm_base_sphere_mesh_cache,
 )
+from .updater import kickoff_background_update_check
 
 _IMPORT_TEXTURE_EXTENSIONS = {
     "S2": ".exr",
@@ -61,6 +69,9 @@ _IMPORT_TILE_FILENAME_RE = re.compile(
     re.IGNORECASE,
 )
 _RECOVERABLE_LOG_COUNTS = {}
+PLANETKA_CAMERA_OBJECT_NAME = "Planetka Camera"
+PLANETKA_CAMERA_DATA_NAME = "Planetka Camera Data"
+_DOWNLOAD_POPUP_WM_FLAG = "planetka_download_popup_running"
 
 
 def _log_recoverable_once(code, message):
@@ -233,6 +244,147 @@ def _persist_user_preferences():
     except (RuntimeError, TypeError, ValueError):
         logger.debug("Planetka: failed saving user preferences", exc_info=True)
         return False
+
+
+def _is_pristine_default_scene(scene):
+    if scene is None:
+        return False
+    try:
+        scene_objects = tuple(getattr(scene, "objects", ()))
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        return False
+    if len(scene_objects) != 3:
+        return False
+    required = {
+        "Cube": "MESH",
+        "Camera": "CAMERA",
+        "Light": "LIGHT",
+    }
+    scene_names = {str(getattr(obj, "name", "")) for obj in scene_objects}
+    if scene_names != set(required.keys()):
+        return False
+    for name, expected_type in required.items():
+        obj = bpy.data.objects.get(name)
+        if obj is None or obj not in scene_objects:
+            return False
+        if str(getattr(obj, "type", "")) != expected_type:
+            return False
+
+    root_collection = getattr(scene, "collection", None)
+    if root_collection is None:
+        return False
+    children = tuple(getattr(root_collection, "children", ()))
+    if len(children) != 1:
+        return False
+    child = children[0]
+    if str(getattr(child, "name", "")) != "Collection":
+        return False
+    child_names = {str(getattr(obj, "name", "")) for obj in tuple(getattr(child, "objects", ()))}
+    return child_names == set(required.keys())
+
+
+def _cleanup_pristine_default_scene(scene):
+    if not _is_pristine_default_scene(scene):
+        return False
+
+    removed_any = False
+    for object_name in ("Cube", "Camera", "Light"):
+        obj = bpy.data.objects.get(object_name)
+        if obj is None:
+            continue
+        try:
+            bpy.data.objects.remove(obj, do_unlink=True)
+            removed_any = True
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            _log_recoverable_once("PKA-OPS-027", f"Failed removing default object '{object_name}'")
+
+    default_collection = bpy.data.collections.get("Collection")
+    root_collection = getattr(scene, "collection", None)
+    if default_collection is not None and root_collection is not None:
+        try:
+            if (
+                default_collection in tuple(getattr(root_collection, "children", ()))
+                and len(tuple(getattr(default_collection, "objects", ()))) == 0
+                and len(tuple(getattr(default_collection, "children", ()))) == 0
+            ):
+                root_collection.children.unlink(default_collection)
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            _log_recoverable_once("PKA-OPS-028", "Failed unlinking default collection from scene root")
+        try:
+            if (
+                len(tuple(getattr(default_collection, "users_scene", ()))) == 0
+                and len(tuple(getattr(default_collection, "users_collection", ()))) == 0
+            ):
+                bpy.data.collections.remove(default_collection)
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            _log_recoverable_once("PKA-OPS-029", "Failed deleting empty default collection")
+
+    return removed_any
+
+
+def _ensure_planetka_camera(scene, root=None, reset_pose=False):
+    if scene is None:
+        return None
+
+    camera_obj = bpy.data.objects.get(PLANETKA_CAMERA_OBJECT_NAME)
+    if camera_obj is not None and str(getattr(camera_obj, "type", "")) != "CAMERA":
+        try:
+            bpy.data.objects.remove(camera_obj, do_unlink=True)
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            _log_recoverable_once("PKA-OPS-030", "Failed removing non-camera Planetka Camera object")
+        camera_obj = None
+
+    created_new = False
+    if camera_obj is None:
+        camera_data = bpy.data.cameras.get(PLANETKA_CAMERA_DATA_NAME)
+        if camera_data is None:
+            camera_data = bpy.data.cameras.new(PLANETKA_CAMERA_DATA_NAME)
+        camera_obj = bpy.data.objects.new(PLANETKA_CAMERA_OBJECT_NAME, camera_data)
+        created_new = True
+
+    target_collection = ensure_planetka_temp_collection() or getattr(scene, "collection", None)
+    if target_collection is not None:
+        for collection in tuple(getattr(camera_obj, "users_collection", ())):
+            if collection is target_collection:
+                continue
+            try:
+                collection.objects.unlink(camera_obj)
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                _log_recoverable_once("PKA-OPS-031", "Failed unlinking Planetka Camera from non-target collection")
+        try:
+            if camera_obj.name not in target_collection.objects:
+                target_collection.objects.link(camera_obj)
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            _log_recoverable_once("PKA-OPS-032", "Failed linking Planetka Camera to target collection")
+
+    if root is not None:
+        try:
+            if getattr(camera_obj, "parent", None) is not root:
+                camera_obj.parent = root
+                camera_obj.matrix_parent_inverse = root.matrix_world.inverted()
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            _log_recoverable_once("PKA-OPS-033", "Failed parenting Planetka Camera to Planetka Root")
+
+    if created_new or bool(reset_pose):
+        location = Vector((0.0, -4.0, 0.0))
+        look_direction = (Vector((0.0, 0.0, 0.0)) - location).normalized()
+        cam_rotation = look_direction.to_track_quat('-Z', 'Y')
+        try:
+            camera_obj.matrix_world = Matrix.LocRotScale(location, cam_rotation, Vector((1.0, 1.0, 1.0)))
+            camera_data = getattr(camera_obj, "data", None)
+            if camera_data is not None:
+                camera_data.lens = 50.0
+                camera_data.clip_start = min(float(getattr(camera_data, "clip_start", 0.001)), 0.001)
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            _log_recoverable_once("PKA-OPS-034", "Failed initializing Planetka Camera transform")
+
+    try:
+        if getattr(scene, "camera", None) is not camera_obj:
+            scene.camera = camera_obj
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        _log_recoverable_once("PKA-OPS-035", "Failed activating Planetka Camera on scene")
+
+    return camera_obj
 
 
 def _ensure_close_clip_limits(scene, min_clip=0.001):
@@ -1016,6 +1168,15 @@ def _ensure_shot_anchor_object(scene):
         _log_recoverable_once("PKA-OPS-009", "Failed hide_set on shot anchor")
     except (AttributeError, RuntimeError, TypeError, ValueError):
         _log_recoverable_once("PKA-OPS-010", "Failed hide_set on shot anchor")
+    try:
+        root = ensure_planetka_root(scene)
+        if root is not None and getattr(anchor_obj, "parent", None) is not root:
+            anchor_obj.parent = root
+            anchor_obj.matrix_parent_inverse = root.matrix_world.inverted()
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        _log_recoverable_once("PKA-OPS-036", "Failed parenting shot anchor to Planetka Root")
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        _log_recoverable_once("PKA-OPS-037", "Failed parenting shot anchor to Planetka Root")
     return anchor_obj
 
 
@@ -1501,6 +1662,23 @@ class PLANETKA_OT_AccountOpenLogin(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class PLANETKA_OT_CheckUpdates(bpy.types.Operator):
+    bl_idname = "planetka.check_updates"
+    bl_label = "Check for Updates"
+    bl_description = "Check Cloudflare for newer Planetka addon version"
+
+    force: BoolProperty(default=True, options={'HIDDEN', 'SKIP_SAVE'})
+
+    def execute(self, context):
+        del context
+        started = kickoff_background_update_check(force=bool(getattr(self, "force", True)))
+        if started:
+            self.report({'INFO'}, "Planetka update check started.")
+        else:
+            self.report({'INFO'}, "Planetka update check is already running or recently completed.")
+        return {'FINISHED'}
+
+
 class PLANETKA_OT_AccountCancelLogin(bpy.types.Operator):
     bl_idname = "planetka.account_cancel_login"
     bl_label = "Clear API Key"
@@ -1565,8 +1743,8 @@ def _open_account_url(url):
 
 class PLANETKA_OT_AccountUpgrade(bpy.types.Operator):
     bl_idname = "planetka.account_upgrade"
-    bl_label = "Top Up Credits"
-    bl_description = "Open Planetka credits top-up page"
+    bl_label = "Open Billing"
+    bl_description = "Open Planetka billing page"
 
     def execute(self, context):
         prefs = get_prefs()
@@ -1582,10 +1760,10 @@ class PLANETKA_OT_AccountUpgrade(bpy.types.Operator):
         if not upgrade_url:
             upgrade_url = get_upgrade_url(prefs)
         if not upgrade_url:
-            return fail(self, "Planetka credits top-up URL is not configured.", logger=logger)
+            return fail(self, "Planetka billing URL is not configured.", logger=logger)
         if not _open_account_url(upgrade_url):
-            return fail(self, "Could not open Planetka credits top-up page.", logger=logger)
-        self.report({'INFO'}, "Planetka credits top-up page opened in browser.")
+            return fail(self, "Could not open Planetka billing page.", logger=logger)
+        self.report({'INFO'}, "Planetka billing page opened in browser.")
         return {'FINISHED'}
 
 
@@ -1649,6 +1827,110 @@ class PLANETKA_OT_SwitchToCycles(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class PLANETKA_OT_DownloadStatusPopup(bpy.types.Operator):
+    bl_idname = "planetka.download_status_popup"
+    bl_label = "Planetka Download"
+    bl_description = "Shows active Planetka download progress"
+    bl_options = {'INTERNAL'}
+
+    _timer = None
+
+    @classmethod
+    def poll(cls, context):
+        return context is not None and not bool(getattr(bpy.app, "background", False))
+
+    def _clear_running_flag(self, context):
+        wm = getattr(context, "window_manager", None) if context is not None else None
+        if wm is None:
+            return
+        try:
+            if _DOWNLOAD_POPUP_WM_FLAG in wm:
+                del wm[_DOWNLOAD_POPUP_WM_FLAG]
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            _log_recoverable_once("PKA-OPS-038", "Failed clearing download popup running flag")
+
+    def _finish(self, context):
+        wm = getattr(context, "window_manager", None) if context is not None else None
+        if wm is not None and self._timer is not None:
+            try:
+                wm.event_timer_remove(self._timer)
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                _log_recoverable_once("PKA-OPS-039", "Failed removing download popup timer")
+        self._timer = None
+        self._clear_running_flag(context)
+
+    def invoke(self, context, _event):
+        wm = getattr(context, "window_manager", None)
+        if wm is None:
+            return {'CANCELLED'}
+
+        try:
+            if bool(wm.get(_DOWNLOAD_POPUP_WM_FLAG, False)):
+                return {'CANCELLED'}
+            wm[_DOWNLOAD_POPUP_WM_FLAG] = True
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            _log_recoverable_once("PKA-OPS-040", "Failed setting download popup running flag")
+
+        if not is_download_active():
+            self._clear_running_flag(context)
+            return {'CANCELLED'}
+
+        try:
+            self._timer = wm.event_timer_add(0.2, window=getattr(context, "window", None))
+            wm.modal_handler_add(self)
+            return wm.invoke_popup(self, width=280)
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            self._finish(context)
+            return {'CANCELLED'}
+
+    def modal(self, context, event):
+        if event.type != 'TIMER':
+            return {'PASS_THROUGH'}
+        if not is_download_active():
+            self._finish(context)
+            return {'FINISHED'}
+        try:
+            for window in tuple(getattr(getattr(context, "window_manager", None), "windows", ())):
+                screen = getattr(window, "screen", None)
+                if screen is None:
+                    continue
+                for area in tuple(getattr(screen, "areas", ())):
+                    if str(getattr(area, "type", "")) in {"VIEW_3D", "PROPERTIES"}:
+                        area.tag_redraw()
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            pass
+        return {'RUNNING_MODAL'}
+
+    def cancel(self, context):
+        self._finish(context)
+
+    def draw(self, _context):
+        layout = self.layout
+        layout.use_property_split = False
+        layout.use_property_decorate = False
+        progress = get_download_progress()
+        downloaded_bytes = int(progress.get("downloaded_bytes", 0) or 0)
+        total_bytes = int(progress.get("total_bytes", 0) or 0)
+        downloaded_mb = float(downloaded_bytes) / (1024.0 * 1024.0)
+        total_mb = float(total_bytes) / (1024.0 * 1024.0)
+
+        row = layout.row()
+        row.alert = True
+        row.label(text="Downloading Planetka data…", icon='IMPORT')
+        if total_bytes > 0:
+            fraction = max(0.0, min(1.0, float(downloaded_bytes) / float(max(1, total_bytes))))
+            if hasattr(layout, "progress"):
+                layout.progress(factor=fraction, type='BAR', text=f"{downloaded_mb:.1f} / {total_mb:.1f} MB")
+            else:
+                layout.label(text=f"{downloaded_mb:.1f} / {total_mb:.1f} MB")
+        else:
+            if hasattr(layout, "progress"):
+                layout.progress(factor=0.0, type='BAR', text=f"{downloaded_mb:.1f} MB")
+            else:
+                layout.label(text=f"{downloaded_mb:.1f} MB")
+        layout.label(text="Window closes automatically when download completes.", icon='INFO')
+
+
 class PLANETKA_OT_AddEarth(bpy.types.Operator):
     bl_idname = "planetka.add_earth"
     bl_label = "Create Earth"
@@ -1670,6 +1952,10 @@ class PLANETKA_OT_AddEarth(bpy.types.Operator):
                 code=ErrorCode.RESOLVE_PREFS_MISSING,
                 logger=logger,
             )
+        try:
+            kickoff_background_update_check(force=True)
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
+            logger.debug("Planetka: updater check kickoff failed", exc_info=True)
         normalized, path_issue = _validate_create_earth_texture_source(getattr(prefs, "texture_base_path", ""))
         if path_issue:
             self.report(
@@ -1682,6 +1968,11 @@ class PLANETKA_OT_AddEarth(bpy.types.Operator):
             return {'CANCELLED'}
         prefs.texture_base_path = normalized
         invalidate_texture_source_health_cache(normalized)
+        cleaned_default_scene = _cleanup_pristine_default_scene(scene)
+        try:
+            purge_disabled_atmosphere_and_cloud_assets(scene=scene)
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed pre-Create-Earth purge of disabled atmosphere/cloud assets", exc_info=True)
 
         try:
             ensure_planetka_assets(scene)
@@ -1697,6 +1988,21 @@ class PLANETKA_OT_AddEarth(bpy.types.Operator):
 
         _initialize_props_from_imported_planetka(scene)
         _sync_idprops_from_props(scene)
+        root_object = None
+        try:
+            root_object = ensure_planetka_root(scene)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed ensuring Planetka Root before camera setup", exc_info=True)
+        except (RuntimeError, TypeError, ValueError):
+            logger.debug("Planetka: failed ensuring Planetka Root before camera setup", exc_info=True)
+
+        try:
+            _ensure_planetka_camera(scene, root=root_object, reset_pose=bool(cleaned_default_scene))
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed ensuring Planetka Camera", exc_info=True)
+        except (RuntimeError, TypeError, ValueError):
+            logger.debug("Planetka: failed ensuring Planetka Camera", exc_info=True)
+
         try:
             props.texture_quality_mode = "HALF"
         except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
@@ -1776,15 +2082,39 @@ class PLANETKA_OT_AddEarth(bpy.types.Operator):
         # Keep implementation code in-place for future re-enable.
 
         _switch_solid_viewports_to_rendered(context)
+        try:
+            _switch_viewport_to_camera_view(context, scene)
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed switching viewport to Planetka Camera", exc_info=True)
 
         if props is not None:
             suspend_navigation_shot_updates()
             try:
-                _populate_navigation_from_scene_camera(scene, props)
+                props.nav_latitude_deg = 46.0
+                props.nav_longitude_deg = 15.0
+                props.nav_altitude_km = 6000.0
+                props.nav_azimuth_deg = 0.0
+                props.nav_tilt_deg = 25.0
+                props.nav_roll_deg = 0.0
+                props.nav_focal_length_mm = 50.0
             finally:
                 resume_navigation_shot_updates()
 
+            try:
+                _apply_navigation_shot(context, scene, props)
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka: failed applying Create Earth default camera shot", exc_info=True)
+
+            try:
+                bpy.ops.planetka.sunlight_preset(preset="MID_MORNING")
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka: failed applying Create Earth default sunlight preset", exc_info=True)
+
         _hide_shot_anchor_in_viewport()
+        try:
+            purge_disabled_atmosphere_and_cloud_assets(scene=scene)
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed post-Create-Earth purge of disabled atmosphere/cloud assets", exc_info=True)
 
         self.report({'INFO'}, "Planetka Earth created successfully.")
         return {'FINISHED'}

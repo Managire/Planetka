@@ -83,6 +83,7 @@ _CACHE_PRUNE_SUSPEND_COUNT = 0
 _REQUEST_CONTEXT_LOCK = threading.Lock()
 _REQUEST_CONTEXT_RESOLVE_ID = ""
 _REQUEST_CONTEXT_TEXTURE_MODE = ""
+_REQUEST_CONTEXT_CANCEL_EVENT = None
 
 
 def _env(name, fallback=None):
@@ -537,9 +538,10 @@ def plan_resolve_downloads(requests):
             ext_text = str(ext or "")
             candidate_file_name = f"{prefix}_{filename}{ext_text}"
             cached_path = _cached_remote_path(folder, candidate_file_name)
-            if cached_path and os.path.isfile(cached_path):
+            if cached_path and _is_cache_file_usable(cached_path):
                 selected_file_name = ""
                 break
+            _remove_invalid_cache_file(cached_path)
             selected_file_name = candidate_file_name
             break
 
@@ -700,9 +702,10 @@ def _aws_signing_key(secret_key, date_stamp, region, service):
     return _aws_sign(k_service, "aws4_request")
 
 
-def set_resolve_request_context(resolve_id="", texture_quality_mode=""):
+def set_resolve_request_context(resolve_id="", texture_quality_mode="", cancel_event=None):
     global _REQUEST_CONTEXT_RESOLVE_ID
     global _REQUEST_CONTEXT_TEXTURE_MODE
+    global _REQUEST_CONTEXT_CANCEL_EVENT
     with _REQUEST_CONTEXT_LOCK:
         _REQUEST_CONTEXT_RESOLVE_ID = str(resolve_id or "").strip()[:128]
         safe_mode = str(texture_quality_mode or "").strip().lower()
@@ -713,19 +716,38 @@ def set_resolve_request_context(resolve_id="", texture_quality_mode=""):
         elif safe_mode != "preview":
             safe_mode = ""
         _REQUEST_CONTEXT_TEXTURE_MODE = safe_mode
+        _REQUEST_CONTEXT_CANCEL_EVENT = cancel_event
 
 
 def clear_resolve_request_context():
-    set_resolve_request_context("", "")
+    set_resolve_request_context("", "", cancel_event=None)
 
 
 @contextmanager
-def resolve_request_context(resolve_id="", texture_quality_mode=""):
-    set_resolve_request_context(resolve_id, texture_quality_mode=texture_quality_mode)
+def resolve_request_context(resolve_id="", texture_quality_mode="", cancel_event=None):
+    set_resolve_request_context(
+        resolve_id,
+        texture_quality_mode=texture_quality_mode,
+        cancel_event=cancel_event,
+    )
     try:
         yield
     finally:
         clear_resolve_request_context()
+
+
+def _is_request_cancelled():
+    with _REQUEST_CONTEXT_LOCK:
+        event = _REQUEST_CONTEXT_CANCEL_EVENT
+    if event is None:
+        return False
+    is_set = getattr(event, "is_set", None)
+    if not callable(is_set):
+        return False
+    try:
+        return bool(is_set())
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return False
 
 
 def _signed_headers(cfg, method, key, allow_refresh=True):
@@ -755,9 +777,13 @@ def _r2_request(method, key, destination_path=None):
     cfg = _get_config()
     if cfg is None:
         return False
+    if _is_request_cancelled():
+        raise RuntimeError("Planetka resolve request cancelled.")
 
     last_error = None
     for _ in range(_R2_RETRIES + 1):
+        if _is_request_cancelled():
+            raise RuntimeError("Planetka resolve request cancelled.")
         refreshed = False
         capture_download = bool(method == "GET" and destination_path is not None)
         attempt_downloaded = 0
@@ -791,27 +817,40 @@ def _r2_request(method, key, destination_path=None):
                             _ACTIVE_EXPECTED_BYTES += attempt_expected
                 if destination_path is not None:
                     os.makedirs(os.path.dirname(destination_path), exist_ok=True)
-                    with open(destination_path, "wb") as handle:
-                        while True:
-                            chunk = response.read(_R2_READ_CHUNK_BYTES)
-                            if not chunk:
-                                break
-                            handle.write(chunk)
-                            if capture_download:
-                                chunk_len = int(len(chunk))
-                                attempt_downloaded += chunk_len
-                                pending_progress_bytes += chunk_len
-                                now = time.perf_counter()
-                                should_flush = (
-                                    pending_progress_bytes >= _R2_PROGRESS_FLUSH_BYTES
-                                    or (now - last_progress_flush_at) >= _R2_PROGRESS_FLUSH_INTERVAL_SECONDS
-                                )
-                                if should_flush:
-                                    with _METRICS_LOCK:
-                                        _ACTIVE_DOWNLOAD_BYTES += int(max(0, pending_progress_bytes))
-                                    pending_progress_bytes = 0
-                                    last_progress_flush_at = now
-                                    _request_ui_redraw()
+                    temp_path = f"{destination_path}.part.{os.getpid()}.{threading.get_ident()}.{int(time.time() * 1_000_000)}"
+                    try:
+                        with open(temp_path, "wb") as handle:
+                            while True:
+                                if _is_request_cancelled():
+                                    raise RuntimeError("Planetka resolve request cancelled.")
+                                chunk = response.read(_R2_READ_CHUNK_BYTES)
+                                if not chunk:
+                                    break
+                                handle.write(chunk)
+                                if capture_download:
+                                    chunk_len = int(len(chunk))
+                                    attempt_downloaded += chunk_len
+                                    pending_progress_bytes += chunk_len
+                                    now = time.perf_counter()
+                                    should_flush = (
+                                        pending_progress_bytes >= _R2_PROGRESS_FLUSH_BYTES
+                                        or (now - last_progress_flush_at) >= _R2_PROGRESS_FLUSH_INTERVAL_SECONDS
+                                    )
+                                    if should_flush:
+                                        with _METRICS_LOCK:
+                                            _ACTIVE_DOWNLOAD_BYTES += int(max(0, pending_progress_bytes))
+                                        pending_progress_bytes = 0
+                                        last_progress_flush_at = now
+                                        _request_ui_redraw()
+                        if _is_request_cancelled():
+                            raise RuntimeError("Planetka resolve request cancelled.")
+                        os.replace(temp_path, destination_path)
+                    finally:
+                        try:
+                            if os.path.isfile(temp_path):
+                                os.remove(temp_path)
+                        except (OSError, RuntimeError, TypeError, ValueError, AttributeError):
+                            pass
                     if capture_download and pending_progress_bytes > 0:
                         with _METRICS_LOCK:
                             _ACTIVE_DOWNLOAD_BYTES += int(max(0, pending_progress_bytes))
@@ -943,6 +982,27 @@ def _cached_remote_path(folder, file_name):
     return os.path.join(cfg.cache_root, folder, file_name)
 
 
+def _is_cache_file_usable(path):
+    safe_path = str(path or "").strip()
+    if not safe_path:
+        return False
+    try:
+        return bool(os.path.isfile(safe_path) and int(os.path.getsize(safe_path)) > 0)
+    except (OSError, RuntimeError, TypeError, ValueError, AttributeError):
+        return False
+
+
+def _remove_invalid_cache_file(path):
+    safe_path = str(path or "").strip()
+    if not safe_path:
+        return
+    try:
+        if os.path.isfile(safe_path) and int(os.path.getsize(safe_path)) <= 0:
+            os.remove(safe_path)
+    except (OSError, RuntimeError, TypeError, ValueError, AttributeError):
+        return
+
+
 def get_remote_cache_folder(folder):
     cfg = _get_config()
     if cfg is None:
@@ -964,16 +1024,17 @@ def resolve_remote_asset(folder, file_name):
         return ""
 
     cached_path = _cached_remote_path(safe_folder, safe_name)
-    if cached_path and os.path.isfile(cached_path):
+    if cached_path and _is_cache_file_usable(cached_path):
         _ensure_remote_authentication(allow_cached_on_network_error=True)
         return cached_path
+    _remove_invalid_cache_file(cached_path)
 
     _ensure_remote_authentication()
 
     key = _remote_key(safe_folder, safe_name)
     if key and cached_path:
         downloaded = _r2_request("GET", key, destination_path=cached_path)
-        if downloaded and os.path.isfile(cached_path):
+        if downloaded and _is_cache_file_usable(cached_path):
             return cached_path
     return ""
 
@@ -989,9 +1050,10 @@ def resolve_texture_file(base_path, folder, prefix, filename, extensions):
     for ext in exts:
         file_name = f"{prefix}_{filename}{ext}"
         cached_path = _cached_remote_path(folder, file_name)
-        if cached_path and os.path.isfile(cached_path):
+        if cached_path and _is_cache_file_usable(cached_path):
             _ensure_remote_authentication(allow_cached_on_network_error=True)
             return cached_path
+        _remove_invalid_cache_file(cached_path)
 
     _ensure_remote_authentication()
 
@@ -1001,7 +1063,7 @@ def resolve_texture_file(base_path, folder, prefix, filename, extensions):
         key = _remote_key(folder, file_name)
         if key and cached_path:
             downloaded = _r2_request("GET", key, destination_path=cached_path)
-            if downloaded and os.path.isfile(cached_path):
+            if downloaded and _is_cache_file_usable(cached_path):
                 return cached_path
 
     return ""
@@ -1035,6 +1097,12 @@ def prefetch_resolve_downloads(requests, base_path=None, cancel_event=None):
                 "does not currently have access to this remote data request",
             )
         )
+
+    def _is_cancelled_prefetch_error(message):
+        text = str(message or "").strip().lower()
+        if not text:
+            return False
+        return ("cancel" in text) and ("resolve" in text or "request" in text)
 
     for request in requests or ():
         if cancel_event is not None and getattr(cancel_event, "is_set", None) and cancel_event.is_set():
@@ -1071,7 +1139,9 @@ def prefetch_resolve_downloads(requests, base_path=None, cancel_event=None):
         file_name = f"{task_prefix}_{task_filename}{task_ext}"
         key = _remote_key(task_folder, file_name)
         cache_path = _cached_remote_path(task_folder, file_name)
-        cache_exists = bool(cache_path and os.path.isfile(cache_path))
+        cache_exists = bool(cache_path and _is_cache_file_usable(cache_path))
+        if cache_path and not cache_exists:
+            _remove_invalid_cache_file(cache_path)
         remote_exists = None
         remote_error = ""
         if key and not cache_exists:
@@ -1117,11 +1187,13 @@ def prefetch_resolve_downloads(requests, base_path=None, cancel_event=None):
                 filename=task_filename,
                 extensions=task_exts,
             )
-            if path and os.path.isfile(path):
+            if path and _is_cache_file_usable(path):
                 return {"state": "resolved", "task": task}
             return {"state": "missing", "task": task}
         except RuntimeError as exc:
             error_text = str(exc)
+            if _is_cancelled_prefetch_error(error_text):
+                return {"state": "cancelled", "task": task}
             if _is_fatal_prefetch_error(error_text):
                 return {"state": "fatal", "task": task, "error": error_text}
             return {"state": "error", "task": task, "error": error_text}
@@ -1233,9 +1305,10 @@ def texture_file_exists(base_path, folder, file_name):
         return False
 
     cached_path = _cached_remote_path(safe_folder, safe_name)
-    if cached_path and os.path.isfile(cached_path):
+    if cached_path and _is_cache_file_usable(cached_path):
         _ensure_remote_authentication(allow_cached_on_network_error=True)
         return True
+    _remove_invalid_cache_file(cached_path)
 
     _ensure_remote_authentication()
 

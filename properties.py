@@ -2,7 +2,15 @@ import bpy
 import importlib
 import logging
 import math
-from bpy.props import BoolProperty, EnumProperty, FloatProperty, FloatVectorProperty, IntProperty, StringProperty
+from bpy.props import (
+    BoolProperty,
+    CollectionProperty,
+    EnumProperty,
+    FloatProperty,
+    FloatVectorProperty,
+    IntProperty,
+    StringProperty,
+)
 from mathutils import Vector
 
 from .extension_prefs import get_prefs, read_saved_locations
@@ -236,6 +244,120 @@ def _get_nav_city_selected_name(self):
     return str(self.get("nav_city_selected_name", ""))
 
 
+def _get_waypoint_city_search(self):
+    return str(self.get("city_search", ""))
+
+
+def _set_waypoint_city_search(self, value):
+    text = str(value or "")
+    self["city_search"] = text
+    if not text:
+        self["city_selected_name"] = ""
+        return
+
+    place = get_cached_place_by_display(text)
+    if not place:
+        place = get_place_by_display(text)
+    if not place:
+        self["city_selected_name"] = ""
+        return
+
+    try:
+        self.latitude_deg = float(place.get("latitude", 0.0))
+        self.longitude_deg = float(place.get("longitude", 0.0))
+        self.altitude_km = NAV_DEFAULT_ALTITUDE_KM
+        self.heading_deg = NAV_DEFAULT_AZIMUTH_DEG
+        self.tilt_deg = NAV_DEFAULT_TILT_DEG
+        self.roll_deg = NAV_DEFAULT_ROLL_DEG
+        selected = str(place.get("display_name", text))
+        self["city_selected_name"] = selected
+        self["city_search"] = selected
+    except (TypeError, ValueError, AttributeError):
+        return
+
+
+def _get_waypoint_city_selected_name(self):
+    return str(self.get("city_selected_name", ""))
+
+
+class PlanetkaAnimationWaypoint(bpy.types.PropertyGroup):
+    __slots__ = ()
+
+    expanded: BoolProperty(
+        name="Expanded",
+        default=True,
+        description="Show or hide waypoint details",
+    )
+
+    city_search: StringProperty(
+        name="Place Search",
+        description="Search GeoNames places and apply selected location to this waypoint",
+        search=_search_city_names,
+        get=_get_waypoint_city_search,
+        set=_set_waypoint_city_search,
+    )
+
+    city_selected_name: StringProperty(
+        name="Selected Place",
+        description="Display name of the place selected for this waypoint",
+        get=_get_waypoint_city_selected_name,
+    )
+
+    latitude_deg: FloatProperty(
+        name="Latitude",
+        default=0.0,
+        min=-1000000.0,
+        max=1000000.0,
+        soft_min=-90.0,
+        soft_max=90.0,
+        precision=4,
+        description="Waypoint latitude in degrees",
+    )
+
+    longitude_deg: FloatProperty(
+        name="Longitude",
+        default=0.0,
+        min=-1000000.0,
+        max=1000000.0,
+        soft_min=-180.0,
+        soft_max=180.0,
+        precision=4,
+        description="Waypoint longitude in degrees",
+    )
+
+    altitude_km: FloatProperty(
+        name="Altitude (km)",
+        default=NAV_DEFAULT_ALTITUDE_KM,
+        min=0.0,
+        max=50000.0,
+        precision=2,
+        description="Waypoint camera altitude above Earth in kilometers",
+    )
+
+    heading_deg: FloatProperty(
+        name="Heading (°)",
+        default=NAV_DEFAULT_AZIMUTH_DEG,
+        precision=2,
+        description="Waypoint camera heading around selected location",
+    )
+
+    tilt_deg: FloatProperty(
+        name="Tilt (°)",
+        default=NAV_DEFAULT_TILT_DEG,
+        min=-90.0,
+        max=90.0,
+        precision=3,
+        description="Waypoint camera tilt",
+    )
+
+    roll_deg: FloatProperty(
+        name="Roll (°)",
+        default=NAV_DEFAULT_ROLL_DEG,
+        precision=2,
+        description="Waypoint camera roll",
+    )
+
+
 class PlanetkaProperties(bpy.types.PropertyGroup):
     __slots__ = ()
 
@@ -278,14 +400,14 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
 
     atmosphere_enabled: BoolProperty(
         name="Enable Atmosphere",
-        default=True,
+        default=False,
         description="Show or hide the Atmosphere collection (volumetric + EEVEE supplement)",
         update=update_atmosphere_enabled,
     )
 
     enable_global_clouds: BoolProperty(
         name="Enable Global Clouds",
-        default=True,
+        default=False,
         description="Include Global Clouds collection in viewport and render",
         update=update_enable_global_clouds,
     )
@@ -486,6 +608,7 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
             ("HELIX_UP", "Helix Up", "Spiral up away from the target while circling"),
             ("FLYBY", "Flyby", "Simple forward flyby across the selected location"),
             ("A_TO_B", "A to B", "Interpolate between saved camera views A and B"),
+            ("WAYPOINTS", "Waypoints", "Travel through waypoints A, B, C..."),
         ),
         default="ORBIT",
         description="Cinematic camera movement preset used for preview/make-ready keyframe generation",
@@ -683,14 +806,27 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         options={'HIDDEN'},
     )
 
+    anim_waypoints: CollectionProperty(
+        name="Waypoints",
+        type=PlanetkaAnimationWaypoint,
+        description="Waypoints used by the Waypoints cinematic preset",
+    )
+
+    anim_waypoint_active_index: IntProperty(
+        name="Active Waypoint",
+        default=0,
+        min=0,
+        description="Active waypoint index for editing operations",
+    )
+
     texture_quality_mode: EnumProperty(
         name="Texture Quality",
         items=(
-            ("FULL", "Full Quality", "Highest quality texture data (uses credits for new downloads)"),
-            ("HALF", "Preview", "Reduced resolution preview mode (free)"),
+            ("FULL", "Full Quality", "Highest quality texture data"),
+            ("HALF", "Preview", "Reduced resolution preview mode"),
         ),
         default="HALF",
-        description="Preview is free. Full Quality consumes credits for newly downloaded data",
+        description="Choose Preview or Full Quality texture mode",
         update=update_texture_quality_mode,
     )
 

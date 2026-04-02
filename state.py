@@ -15,6 +15,7 @@ import threading
 import time
 
 import bpy
+import blf
 from bpy.app.handlers import persistent
 from mathutils import Vector
 
@@ -152,6 +153,7 @@ _VIEWPORT_SCOPE_LAST_RESOLVE_TIME = {}
 _LAST_REALTIME_TELEMETRY = {}
 _TIMELINE_LAST_SIGNATURE = {}
 _COVERAGE_MAP = None
+_R2_SOURCE_MODULE = None
 _REAL_EARTH_RADIUS_M = 6371000.0
 _MAX_TERRAIN_HEIGHT_M = 9000.0
 _DATASET_MPP_BASE_D1 = 10.0
@@ -172,6 +174,20 @@ _SUNLIGHT_OBJECT_NAME = "Planetka Sunlight"
 _SURFACE_GRADING_GROUP_NAME = "Planetka Surface Grading Group"
 ANIMATION_PREPARED_SEGMENTS_KEY = "planetka_anim_prepared_segments"
 _RESOLVE_TRACE_ENABLED = False
+_DOWNLOAD_OVERLAY_DRAW_HANDLE = None
+_DOWNLOAD_OVERLAY_TEXT = ""
+_DOWNLOAD_OVERLAY_VISIBLE = False
+
+
+def _get_r2_source():
+    global _R2_SOURCE_MODULE
+    if _R2_SOURCE_MODULE is None:
+        module_name = f"{__package__}.r2_source" if __package__ else "r2_source"
+        try:
+            _R2_SOURCE_MODULE = importlib.import_module(module_name)
+        except ImportError:
+            _R2_SOURCE_MODULE = False
+    return _R2_SOURCE_MODULE or None
 
 
 def _resolve_trace(message):
@@ -484,19 +500,221 @@ def _set_eevee_supplement_visibility(enabled):
 
 
 def _set_atmosphere_collection_enabled(scene, enabled):
-    module_name = f"{__package__}.asset_builder" if __package__ else "asset_builder"
+    # Atmosphere runtime loading is disabled in current release.
+    # Keep callback as no-op to prevent accidental collection creation.
+    _ = (scene, enabled)
+
+
+def _remove_object_and_unused_data_any_type(obj):
+    if obj is None:
+        return False
+    obj_type = str(getattr(obj, "type", "") or "")
+    data_block = getattr(obj, "data", None)
     try:
-        asset_builder_module = importlib.import_module(module_name)
-    except ImportError:
-        return
-    apply_fn = getattr(asset_builder_module, "set_atmosphere_collection_enabled", None)
-    if callable(apply_fn):
+        bpy.data.objects.remove(obj, do_unlink=True)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka cleanup: failed removing object %s", getattr(obj, "name", "<unknown>"), exc_info=True)
+        return False
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka cleanup: failed removing object %s", getattr(obj, "name", "<unknown>"), exc_info=True)
+        return False
+
+    try:
+        if data_block is None or int(getattr(data_block, "users", 0)) > 0:
+            return True
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        return True
+
+    try:
+        if obj_type == "MESH":
+            bpy.data.meshes.remove(data_block)
+        elif obj_type == "VOLUME" and hasattr(bpy.data, "volumes"):
+            bpy.data.volumes.remove(data_block)
+        elif obj_type == "LIGHT" and hasattr(bpy.data, "lights"):
+            bpy.data.lights.remove(data_block)
+        elif obj_type == "CURVE" and hasattr(bpy.data, "curves"):
+            bpy.data.curves.remove(data_block)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka cleanup: failed removing data block for %s", getattr(obj, "name", "<unknown>"), exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka cleanup: failed removing data block for %s", getattr(obj, "name", "<unknown>"), exc_info=True)
+    return True
+
+
+def _remove_collection_if_exists(collection_name):
+    collection = bpy.data.collections.get(str(collection_name or ""))
+    if collection is None:
+        return False
+    try:
+        for parent in list(getattr(bpy.data, "collections", ())):
+            try:
+                if collection.name in tuple(getattr(parent, "children", ()).keys()):
+                    parent.children.unlink(collection)
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                continue
+        for scene in list(getattr(bpy.data, "scenes", ())):
+            root = getattr(scene, "collection", None)
+            if root is None:
+                continue
+            try:
+                if collection.name in tuple(getattr(root, "children", ()).keys()):
+                    root.children.unlink(collection)
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                continue
+        bpy.data.collections.remove(collection)
+        return True
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka cleanup: failed removing collection %s", collection_name, exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka cleanup: failed removing collection %s", collection_name, exc_info=True)
+    return False
+
+
+def purge_disabled_atmosphere_and_cloud_assets(scene=None):
+    """Hard-disable atmosphere/cloud assets in current release by removing them from data-blocks."""
+    _ = scene
+
+    object_names = {
+        "Atmosphere - EEVEE supplement",
+        "Atmosphere - Volumetric",
+        "Planetka Atmosphere",
+        "Planetka Atmosphere Fake",
+        "Planetka Global Cloud Layer",
+        "Planetka Cloud VDB",
+    }
+    object_prefixes = (
+        "Local Cloud No ",
+        "VDB Cloud No ",
+        "Planetka Local Cloud Cap Mesh",
+    )
+    collection_names = {
+        "Atmosphere",
+        "Atmpshere",
+        "Clouds",
+        "Global Clouds",
+        "Local Clouds",
+        "VDB Clouds",
+    }
+    material_exact = {
+        "Planetka Atmosphere Fake Material",
+        "Planetka Atmosphere Material",
+        "Planetka Global Clouds Shader",
+        "Planetka Local Clouds Shader",
+        "Planetka VDB Cloud Shader",
+    }
+    material_prefixes = (
+        "Planetka Local Clouds Shader",
+        "Planetka VDB Cloud Shader",
+    )
+    node_group_exact = {
+        "Planetka Atmosphere Group",
+        "Planetka Atmosphere Fake Group",
+        "Planetka Fake Atmosphere Textures Group",
+        "Planetka Global Clouds Shader Group",
+        "Planetka Local Clouds Shader Group",
+        "Cloud Preview Switch",
+    }
+
+    try:
+        asset_builder_module = importlib.import_module(f"{__package__}.asset_builder" if __package__ else "asset_builder")
+        for attr in (
+            "FAKE_ATMOSPHERE_OBJECT_NAME",
+            "FAKE_ATMOSPHERE_SOURCE_OBJECT_NAME",
+            "VOLUMETRIC_ATMOSPHERE_OBJECT_NAME",
+            "VOLUMETRIC_ATMOSPHERE_SOURCE_OBJECT_NAME",
+        ):
+            value = str(getattr(asset_builder_module, attr, "") or "").strip()
+            if value:
+                object_names.add(value)
+        for attr in (
+            "FAKE_ATMOSPHERE_COLLECTION_NAME",
+            "_LEGACY_FAKE_ATMOSPHERE_COLLECTION_NAMES",
+        ):
+            value = getattr(asset_builder_module, attr, None)
+            if isinstance(value, (list, tuple, set)):
+                for item in value:
+                    text = str(item or "").strip()
+                    if text:
+                        collection_names.add(text)
+            else:
+                text = str(value or "").strip()
+                if text:
+                    collection_names.add(text)
+    except (ImportError, PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        pass
+
+    try:
+        clouds_module = importlib.import_module(f"{__package__}.clouds_local" if __package__ else "clouds_local")
+        for attr in (
+            "CLOUDS_ROOT_COLLECTION_NAME",
+            "GLOBAL_CLOUDS_COLLECTION_NAME",
+            "LOCAL_CLOUDS_COLLECTION_NAME",
+            "VDB_CLOUDS_COLLECTION_NAME",
+            "GLOBAL_CLOUD_LAYER_NAME",
+            "VDB_CLOUD_TEMPLATE_OBJECT_NAME",
+        ):
+            text = str(getattr(clouds_module, attr, "") or "").strip()
+            if not text:
+                continue
+            if "COLLECTION" in attr:
+                collection_names.add(text)
+            else:
+                object_names.add(text)
+    except (ImportError, PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        pass
+
+    removed_objects = 0
+    removed_collections = 0
+    removed_materials = 0
+    removed_node_groups = 0
+
+    for obj in list(getattr(bpy.data, "objects", ())):
+        name = str(getattr(obj, "name", "") or "")
+        role = str(obj.get("planetka_role", "") or "")
+        cloud_role = str(obj.get("planetka_cloud_role", "") or "")
+        should_remove = (
+            name in object_names
+            or any(name.startswith(prefix) for prefix in object_prefixes)
+            or role in {"fake_atmosphere", "atmosphere_volumetric"}
+            or bool(cloud_role)
+        )
+        if not should_remove:
+            continue
+        if _remove_object_and_unused_data_any_type(obj):
+            removed_objects += 1
+
+    for name in sorted(collection_names):
+        if _remove_collection_if_exists(name):
+            removed_collections += 1
+
+    for material in list(getattr(bpy.data, "materials", ())):
+        name = str(getattr(material, "name", "") or "")
+        if not (name in material_exact or any(name.startswith(prefix) for prefix in material_prefixes)):
+            continue
         try:
-            apply_fn(scene=scene, enabled=bool(enabled))
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed applying atmosphere collection visibility", exc_info=True)
-        except (RuntimeError, TypeError, ValueError):
-            logger.debug("Planetka: failed applying atmosphere collection visibility", exc_info=True)
+            if int(getattr(material, "users", 0)) == 0:
+                bpy.data.materials.remove(material)
+                removed_materials += 1
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka cleanup: failed removing atmosphere/cloud material %s", name, exc_info=True)
+
+    for group in list(getattr(bpy.data, "node_groups", ())):
+        name = str(getattr(group, "name", "") or "")
+        if name not in node_group_exact:
+            continue
+        try:
+            if int(getattr(group, "users", 0)) == 0:
+                bpy.data.node_groups.remove(group)
+                removed_node_groups += 1
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka cleanup: failed removing atmosphere/cloud node group %s", name, exc_info=True)
+
+    return {
+        "objects": int(removed_objects),
+        "collections": int(removed_collections),
+        "materials": int(removed_materials),
+        "node_groups": int(removed_node_groups),
+    }
 
 
 def _render_engine_candidates(render, target):
@@ -1651,6 +1869,127 @@ def _tag_view3d_redraw():
                 area.tag_redraw()
 
 
+def _download_overlay_draw_callback():
+    if not bool(_DOWNLOAD_OVERLAY_VISIBLE):
+        return
+    text = str(_DOWNLOAD_OVERLAY_TEXT or "").strip()
+    if not text:
+        return
+    region = getattr(getattr(bpy, "context", None), "region", None)
+    if region is None:
+        return
+    region_h = int(getattr(region, "height", 0) or 0)
+    if region_h <= 0:
+        return
+    font_id = 0
+    x = 16.0
+    y = float(max(16, region_h - 34))
+    try:
+        blf.size(font_id, 15.0)
+        blf.enable(font_id, blf.SHADOW)
+        blf.shadow(font_id, 3, 0, 0, 0, 180)
+        blf.shadow_offset(font_id, 1, -1)
+        blf.color(font_id, 1.0, 0.72, 0.18, 1.0)
+        blf.position(font_id, x, y, 0.0)
+        blf.draw(font_id, text)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        return
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return
+    finally:
+        try:
+            blf.disable(font_id, blf.SHADOW)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            pass
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            pass
+
+
+def _ensure_download_overlay_handler():
+    global _DOWNLOAD_OVERLAY_DRAW_HANDLE
+    if _DOWNLOAD_OVERLAY_DRAW_HANDLE is not None:
+        return
+    if bool(getattr(bpy.app, "background", False)):
+        return
+    try:
+        _DOWNLOAD_OVERLAY_DRAW_HANDLE = bpy.types.SpaceView3D.draw_handler_add(
+            _download_overlay_draw_callback,
+            (),
+            'WINDOW',
+            'POST_PIXEL',
+        )
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed adding download overlay draw handler", exc_info=True)
+        _DOWNLOAD_OVERLAY_DRAW_HANDLE = None
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed adding download overlay draw handler", exc_info=True)
+        _DOWNLOAD_OVERLAY_DRAW_HANDLE = None
+
+
+def _remove_download_overlay_handler():
+    global _DOWNLOAD_OVERLAY_DRAW_HANDLE
+    if _DOWNLOAD_OVERLAY_DRAW_HANDLE is None:
+        return
+    try:
+        bpy.types.SpaceView3D.draw_handler_remove(_DOWNLOAD_OVERLAY_DRAW_HANDLE, 'WINDOW')
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed removing download overlay draw handler", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed removing download overlay draw handler", exc_info=True)
+    _DOWNLOAD_OVERLAY_DRAW_HANDLE = None
+
+
+def _set_download_overlay(text=None):
+    global _DOWNLOAD_OVERLAY_TEXT
+    global _DOWNLOAD_OVERLAY_VISIBLE
+    cleaned = str(text or "").strip()
+    if cleaned:
+        _DOWNLOAD_OVERLAY_TEXT = cleaned
+        _DOWNLOAD_OVERLAY_VISIBLE = True
+        _ensure_download_overlay_handler()
+    else:
+        _DOWNLOAD_OVERLAY_TEXT = ""
+        _DOWNLOAD_OVERLAY_VISIBLE = False
+        _remove_download_overlay_handler()
+    _tag_view3d_redraw()
+
+
+def _update_download_overlay_indicator(scene=None):
+    runtime = get_resolve_runtime_status(scene)
+    code = str(runtime.get("code", "IDLE") or "IDLE").upper()
+    if code == "DOWNLOADING":
+        downloaded_mb = None
+        total_mb = None
+        r2_source = _get_r2_source()
+        if r2_source is not None:
+            get_progress = getattr(r2_source, "get_download_progress", None)
+            if callable(get_progress):
+                try:
+                    progress = get_progress() or {}
+                    downloaded_bytes = int(progress.get("downloaded_bytes", 0) or 0)
+                    total_bytes = int(progress.get("total_bytes", 0) or 0)
+                    downloaded_mb = float(downloaded_bytes) / (1024.0 * 1024.0)
+                    total_mb = float(total_bytes) / (1024.0 * 1024.0)
+                except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                    downloaded_mb = None
+                    total_mb = None
+                except (RuntimeError, TypeError, ValueError, AttributeError):
+                    downloaded_mb = None
+                    total_mb = None
+        if downloaded_mb is not None and total_mb is not None and total_mb > 0.0:
+            _set_download_overlay(f"Planetka: Downloading data {downloaded_mb:.1f} / {total_mb:.1f} MB")
+            return
+        _set_download_overlay("Planetka: Downloading data...")
+        return
+    if code in {"FINALIZING", "FINALIZE_QUEUED"}:
+        _set_download_overlay("Planetka: Finalizing resolve...")
+        return
+    if code == "QUEUED":
+        _set_download_overlay("Planetka: Resolve queued...")
+        return
+    _set_download_overlay(None)
+
+
 def _tile_xy_for_lon_lat(lon_deg, lat_deg, z):
     lon_shift = (float(lon_deg) + 180.0) % 360.0
     lat_shift = max(0.0, min(179.999999, float(lat_deg) + 90.0))
@@ -1917,6 +2256,14 @@ def _start_auto_resolve_download_thread(job):
     )
     _AUTO_RESOLVE_DOWNLOAD_THREAD = worker
     worker.start()
+    _show_download_status_popup()
+
+
+def _show_download_status_popup():
+    # Disabled due Blender 5.1 native crash inside popup cancel path:
+    # wm_operator_ui_popup_cancel -> ui_popup_handler (SIGSEGV).
+    # Keep runtime status in Status Check panel only until a safer overlay path is implemented.
+    return
 
 
 def _schedule_auto_resolve_download(
@@ -1985,8 +2332,17 @@ def _schedule_auto_resolve_download(
             )
         else:
             _AUTO_RESOLVE_DOWNLOAD_PENDING_JOB = new_job
-            # Do not cancel an in-flight download when a newer request arrives.
-            # Let the active download finish and process the latest pending request next.
+            # Cancel in-flight download immediately when a newer request arrives.
+            # The latest request should start as soon as possible.
+            if isinstance(_AUTO_RESOLVE_DOWNLOAD_ACTIVE_JOB, dict):
+                active_cancel_event = _AUTO_RESOLVE_DOWNLOAD_ACTIVE_JOB.get("cancel_event")
+                if active_cancel_event is not None:
+                    try:
+                        active_cancel_event.set()
+                    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                        logger.debug("Planetka: failed signaling active resolve cancellation", exc_info=True)
+                    except (RuntimeError, TypeError, ValueError, AttributeError):
+                        logger.debug("Planetka: failed signaling active resolve cancellation", exc_info=True)
             if _AUTO_RESOLVE_DOWNLOAD_ACTIVE_JOB is None:
                 _AUTO_RESOLVE_DOWNLOAD_ACTIVE_JOB = _AUTO_RESOLVE_DOWNLOAD_PENDING_JOB
                 _AUTO_RESOLVE_DOWNLOAD_PENDING_JOB = None
@@ -2451,9 +2807,11 @@ def _auto_resolve_download_pump_timer():
         scene = getattr(bpy.context, "scene", None)
         if scene is not None:
             _update_realtime_telemetry(scene)
+            _update_download_overlay_indicator(scene)
             _tag_view3d_redraw()
 
         if not has_active and not has_pending and not has_completed:
+            _set_download_overlay(None)
             _AUTO_RESOLVE_DOWNLOAD_TIMER_RUNNING = False
             _resolve_trace("Pump stop: no active/pending/completed jobs")
             return None
@@ -2468,6 +2826,7 @@ def _auto_resolve_download_pump_timer():
         logger.debug("Planetka auto-resolve download timer failed unexpectedly", exc_info=True)
 
     _AUTO_RESOLVE_DOWNLOAD_TIMER_RUNNING = False
+    _set_download_overlay(None)
     return None
 
 
@@ -2504,6 +2863,7 @@ def stop_auto_resolve_download_pipeline():
         logger.debug("Planetka: failed stopping auto-resolve download timer", exc_info=True)
 
     _AUTO_RESOLVE_DOWNLOAD_TIMER_RUNNING = False
+    _set_download_overlay(None)
 
 
 def request_auto_resolve(scene, immediate=False, mark_dirty=True):
@@ -2840,6 +3200,10 @@ def recover_post_render_state(scene=None):
 
     if scene is None:
         scene = getattr(bpy.context, "scene", None)
+    try:
+        purge_disabled_atmosphere_and_cloud_assets(scene=scene)
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed purging disabled atmosphere/cloud assets after render", exc_info=True)
     if scene is not None:
         _mark_auto_resolve_dirty(scene, immediate=True)
         request_auto_resolve(scene, immediate=True, mark_dirty=False)
@@ -2882,7 +3246,20 @@ def _initialize_props_from_imported_planetka(scene):
     if not props:
         return
 
+    try:
+        # Atmosphere/cloud runtime features are disabled in this release.
+        scene["planetka_atmosphere_enabled"] = False
+        scene["planetka_enable_global_clouds"] = False
+        scene["planetka_enable_local_clouds"] = False
+        scene["planetka_enable_vdb_clouds"] = False
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed forcing atmosphere/cloud scene idprops off", exc_info=True)
+
     _sync_idprops_from_props(scene)
+    try:
+        purge_disabled_atmosphere_and_cloud_assets(scene=scene)
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed purging disabled atmosphere/cloud assets on init", exc_info=True)
 
 
 @persistent
@@ -2940,6 +3317,10 @@ def _planetka_load_post(_dummy):
     for scene in _iter_scenes():
         _sync_props_from_idprops(scene)
         migrate_scene(scene)
+        try:
+            purge_disabled_atmosphere_and_cloud_assets(scene=scene)
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed purging disabled atmosphere/cloud assets on file load", exc_info=True)
     _sync_logging_from_scenes()
     ensure_active_view_monitor_running()
 

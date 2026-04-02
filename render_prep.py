@@ -166,7 +166,11 @@ def _count_missing_tile_loading_images(material_name="Planetka Earth Material"):
         return 0
 
     group_name = str(getattr(group_tree, "name", "") or "")
-    testing_mode = group_name.strip() == "Planetka Textures Loading Group - Testing"
+    group_name = group_name.strip()
+    testing_mode = group_name in {
+        "Planetka Textures Loading Group",
+        "Planetka Textures Loading Group - Testing",
+    }
     image_types = ("S2", "EL", "WT", "PO")
 
     if testing_mode:

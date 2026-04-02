@@ -162,16 +162,19 @@ class PLANETKA_OT_ReportBug(bpy.types.Operator):
         name="What happened",
         description="Describe what went wrong",
         default="",
+        options={'TEXTEDIT_UPDATE'},
     )
     issue_steps_to_reproduce: bpy.props.StringProperty(
         name="Steps to reproduce",
         description="How we can reproduce this issue",
         default="",
+        options={'TEXTEDIT_UPDATE'},
     )
     issue_expected_behavior: bpy.props.StringProperty(
         name="Expected behavior",
         description="What you expected to happen",
         default="",
+        options={'TEXTEDIT_UPDATE'},
     )
 
     def invoke(self, context, event):
@@ -179,15 +182,32 @@ class PLANETKA_OT_ReportBug(bpy.types.Operator):
         wm = getattr(context, "window_manager", None)
         if wm is None:
             return self.execute(context)
-        return wm.invoke_props_dialog(self, width=520)
+        return wm.invoke_props_dialog(self, width=760)
 
     def draw(self, context):
         del context
         layout = self.layout
+        layout.use_property_split = False
+        layout.use_property_decorate = False
         layout.label(text="Describe the issue before sending.")
-        layout.prop(self, "issue_what_happened")
-        layout.prop(self, "issue_steps_to_reproduce")
-        layout.prop(self, "issue_expected_behavior")
+
+        what_box = layout.box()
+        what_box.label(text="What happened")
+        what_row = what_box.row()
+        what_row.scale_y = 1.0
+        what_row.prop(self, "issue_what_happened", text="")
+
+        steps_box = layout.box()
+        steps_box.label(text="Steps to reproduce")
+        steps_row = steps_box.row()
+        steps_row.scale_y = 1.0
+        steps_row.prop(self, "issue_steps_to_reproduce", text="")
+
+        expected_box = layout.box()
+        expected_box.label(text="Expected behavior")
+        expected_row = expected_box.row()
+        expected_row.scale_y = 1.0
+        expected_row.prop(self, "issue_expected_behavior", text="")
 
     def execute(self, context):
         target_path = _default_bug_report_path()

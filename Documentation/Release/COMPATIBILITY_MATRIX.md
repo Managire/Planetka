@@ -1,17 +1,16 @@
 # Planetka Compatibility Matrix
 
 Current extension release candidate: `v0.2.0`
-Last matrix update: `2026-03-28`
+Last matrix update: `2026-04-02`
 
 | Blender Version | Status | Automated Tests | Notes |
 | --- | --- | --- | --- |
-| 3.6+ | Supported baseline | Smoke + Schema migration + Regression | Public support floor. Versions below 3.6 are unsupported. |
-| 3.6.0 | CI target | Smoke + Schema migration + Regression | Added to CI matrix for compatibility coverage. |
-| 4.2.0 | CI target | Smoke + Schema migration + Regression | Added to CI matrix for compatibility coverage. |
+| 4.5.7+ | Supported baseline | Smoke + Schema migration + Regression | Public support floor. Versions below 4.5.7 are unsupported. |
+| 4.5.7 | Verified (local) | Smoke + Schema migration + Regression | Adaptive subdivision requires Experimental features on pre-5.0 Blender and is enabled automatically by Planetka where needed. |
 | 5.0.0 | Verified | Smoke + Schema migration + Regression | Core workflows validated. |
 | 5.0.1 | Verified (CI) | Smoke + Schema migration + Regression | Keep renderer/GPU caveat checks in manual QA. |
 | 5.1.0 | Verified (local) + CI target | Smoke + Schema migration + Regression | Verified locally on macOS on release day; required gate updated to 5.1.0. |
-| Other 3.x/4.x | Expected supported | Not in CI | Re-test recommended before release sign-off. |
+| 4.2.x / 3.6.x | Unsupported | Not in CI | Material library compatibility is not guaranteed; no release support target for these versions. |
 
 ## Extension Release Validation
 
@@ -23,10 +22,10 @@ Last matrix update: `2026-03-28`
 
 | Component | Status | Notes |
 | --- | --- | --- |
-| EEVEE (Rendered viewport) | Unsupported / Unstable | Known limitation for this release. EEVEE can produce corrupted frames (missing/pink/solid tiles), especially on macOS/Metal at higher tile counts. Use Cycles for reliable output. |
-| Cycles SVM stack budget | Mitigated | Planetka enforces a pre-shader dynamic tile budget of `12` tiles to avoid Cycles SVM overflow in heavy camera views. See `Documentation/Developer/CYCLES_SVM_TILE_LIMIT.md`. |
+| EEVEE (Rendered viewport) | Supported | EEVEE is supported for Planetka workflows in this release. |
+| Cycles/EEVEE dynamic tile window | Mitigated | Planetka enforces a pre-shader dynamic tile window of `0..12` tiles (real tiles only, no synthetic floor padding) to avoid EEVEE sampler overflow and Cycles SVM overflow in heavy views. See `Documentation/Developer/CYCLES_SVM_TILE_LIMIT.md`. |
 | Solid viewport | Verified | Resolve workflow validated. |
-| OpenGL/Cycles preview | Verified by user reports | Stable in reported scenarios. |
+| OpenGL/Cycles/EEVEE preview | Verified by user reports | Stable in reported scenarios. |
 
 ## Pre-Publish Requirement
 

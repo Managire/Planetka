@@ -14,7 +14,7 @@
 - [ ] `Create Earth` places surface only in `Planetka - Earth Surface Collection`.
 - [ ] `Resolve Earth` preserves the previous surface collection placement.
 - [ ] Adaptive subdivision modifier exists and uses Catmull-Clark.
-- [ ] Dynamic tile budget enforcement active (`<= 12` tiles at shader stage) with no missing visible coverage.
+- [ ] Dynamic tile window enforcement active (`5..12` tiles at shader stage when dynamic tiles are present) with no missing visible coverage.
 
 ## 3. Automated Validation
 
@@ -30,6 +30,8 @@
   - `python3 tools/worker_auth_integration_test.py`
 - [ ] Worker abuse simulation pass (plan tampering, token-query rejection, legacy-auth disabled, high-volume tile flood sanity):
   - `python3 tools/worker_abuse_simulation.py --base-url https://api.planetka.io`
+- [ ] Addon auto-updater manifest endpoint responds:
+  - `curl -sS https://api.planetka.io/addon/update-manifest | jq .`
 - [ ] Cloudflare API env vars reviewed against:
   - `Documentation/Developer/CLOUDFLARE_API_ENV_VARS.md`
 

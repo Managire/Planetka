@@ -19,6 +19,7 @@ QUALITY_SAFETY_MARGIN = 0.9
 MAX_TERRAIN_HEIGHT_M = 9000.0
 DEFAULT_PLANET_RADIUS_BU = 1.0
 Z_LEVELS = (1, 2, 4, 8, 15, 30, 60, 90, 180, 360)
+MAX_RESOLVE_Z_LEVEL = 180
 D_LEVELS_BY_Z = {
     1: [1, 2, 4, 8, 15, 30, 60],
     2: [2, 4, 8, 15, 30, 60],
@@ -48,6 +49,11 @@ LAST_REQUIRED_MPP_KEY = "planetka_last_required_mpp_m"
 LAST_TARGET_D_KEY = "planetka_last_target_d"
 LAST_SCOPE_USED_KEY = "planetka_last_scope_used"
 MAX_SHADER_TILE_BUDGET = 12
+# Padding low tile counts with synthetic placeholder slots can trigger
+# EEVEE/Metal sampler overflow in some camera states (e.g. Cairo frame 105).
+# Keep only real resolved tiles unless future renderer-safe padding is introduced.
+MIN_SHADER_TILE_FLOOR = 0
+SHADER_PAD_TILE_PREFIX = "__PKA_PAD_TILE"
 TEXTURE_QUALITY_MODES = {"FULL", "HALF"}
 VIEWPORT_RESOLUTION_X = 1920.0
 VIEWPORT_RESOLUTION_Y = 1080.0
@@ -393,6 +399,31 @@ def _enforce_shader_tile_budget(tiles, max_tiles=MAX_SHADER_TILE_BUDGET):
 
     success = len(current) <= max_tiles
     return _sort_tiles_for_apply(current), trace, success
+
+
+def _enforce_shader_tile_floor(tiles, min_tiles=MIN_SHADER_TILE_FLOOR, max_tiles=MAX_SHADER_TILE_BUDGET):
+    min_tiles = max(0, int(min_tiles))
+    max_tiles = max(1, int(max_tiles))
+    target = min(min_tiles, max_tiles)
+
+    current = list(_sort_tiles_for_apply(tiles))
+    if not current:
+        return current, []
+    if len(current) >= target:
+        return current, []
+
+    existing = set(current)
+    added = []
+    pad_index = 1
+    while len(current) < target:
+        pad_tile = f"{SHADER_PAD_TILE_PREFIX}_{int(pad_index):02d}"
+        pad_index += 1
+        if pad_tile in existing:
+            continue
+        existing.add(pad_tile)
+        current.append(pad_tile)
+        added.append(pad_tile)
+    return current, added
 
 
 def lonlat_to_cartesian(lon, lat, radius):
@@ -1430,7 +1461,7 @@ def main(scope_mode="AUTO", edge_boost=False, texture_quality_mode_override=None
         root,
     )
 
-    max_available_z = int(max(Z_LEVELS))
+    max_available_z = int(min(max(Z_LEVELS), int(MAX_RESOLVE_Z_LEVEL)))
     candidate_z_levels = [
         z_level for z_level in Z_LEVELS
         if int(target_z) <= int(z_level) <= max_available_z
@@ -1526,7 +1557,6 @@ def main(scope_mode="AUTO", edge_boost=False, texture_quality_mode_override=None
         max_tiles=MAX_SHADER_TILE_BUDGET,
     )
     LAST_TILE_BUDGET_TRACE = list(budget_trace)
-    LAST_TILE_BUDGET_OUTPUT = list(budgeted_tiles)
     if budget_trace:
         logger.info(
             "Planetka: tile budget optimization applied merges=%d input=%d output=%d budget=%d",
@@ -1543,6 +1573,21 @@ def main(scope_mode="AUTO", edge_boost=False, texture_quality_mode_override=None
             len(budgeted_tiles),
         )
     final_tiles = list(budgeted_tiles)
+    final_tiles, floor_added_tiles = _enforce_shader_tile_floor(
+        final_tiles,
+        min_tiles=MIN_SHADER_TILE_FLOOR,
+        max_tiles=MAX_SHADER_TILE_BUDGET,
+    )
+    if floor_added_tiles:
+        logger.info(
+            "Planetka: tile floor padding applied added=%d input=%d output=%d floor=%d budget=%d",
+            len(floor_added_tiles),
+            len(budgeted_tiles),
+            len(final_tiles),
+            int(MIN_SHADER_TILE_FLOOR),
+            int(MAX_SHADER_TILE_BUDGET),
+        )
+    LAST_TILE_BUDGET_OUTPUT = list(final_tiles)
     write_tile_view_diagnostics(
         scene=scene,
         camera_altitude_bu=float(camera_altitude),
@@ -1557,5 +1602,6 @@ def get_last_tile_budget_trace():
         "input_tiles": list(LAST_TILE_BUDGET_INPUT),
         "output_tiles": list(LAST_TILE_BUDGET_OUTPUT),
         "merges": list(LAST_TILE_BUDGET_TRACE),
+        "min_floor": int(MIN_SHADER_TILE_FLOOR),
         "budget": int(MAX_SHADER_TILE_BUDGET),
     }

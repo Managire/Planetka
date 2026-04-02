@@ -26,6 +26,7 @@ TEXTURE_EXTENSIONS = {
     "WT": (".exr",),
     "PO": (".tif",),
 }
+POLE_CAP_Z_LEVELS = frozenset({1, 2, 4, 8})
 
 _STAGED_PREFETCH_LOCK = threading.Lock()
 _STAGED_PREFETCH = {}
@@ -96,6 +97,8 @@ def _build_resolve_download_requests(resolved_tiles, ocean_tiles=None):
         tile_text = str(tile)
         if tile_text in ocean_lookup:
             continue
+        if _tile_uses_pole_cap(tile_text):
+            continue
         parts = tile_text.split("_")
         if len(parts) != 4:
             continue
@@ -126,6 +129,8 @@ def _prefetch_index(resolved_tiles, ocean_tiles=None):
         tile_text = str(tile)
         if tile_text in ocean_lookup:
             continue
+        if _tile_uses_pole_cap(tile_text):
+            continue
         parts = tile_text.split("_")
         if len(parts) != 4:
             continue
@@ -141,6 +146,24 @@ def _prefetch_index(resolved_tiles, ocean_tiles=None):
             exts = TEXTURE_EXTENSIONS.get(image_type, (".exr",))
             index.append((tile_text, image_type, filename, exts))
     return index
+
+
+def _tile_uses_pole_cap(tile_text):
+    parts = str(tile_text or "").split("_")
+    if len(parts) != 4:
+        return False
+    try:
+        y_value = int(parts[1][1:])
+        z_value = int(parts[2][1:])
+    except (TypeError, ValueError, IndexError):
+        return False
+    if z_value not in POLE_CAP_Z_LEVELS:
+        return False
+    if y_value <= 0:
+        return True
+    if (y_value + z_value) >= 180:
+        return True
+    return False
 
 
 def _build_prefetched_paths(index, base_path, allow_fallback=False):
@@ -211,6 +234,7 @@ def prefetch_resolve_plan(
         with resolve_request_context(
             normalized_resolve_id,
             texture_quality_mode=normalized_quality_mode,
+            cancel_event=cancel_event,
         ):
             try:
                 plan_resolve_downloads(requests)

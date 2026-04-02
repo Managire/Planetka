@@ -20,6 +20,9 @@ TRIAL_INCLUDED_GB = "25"
 MONTHLY_COST_ALERT_BASE_USD = "50"
 MONTHLY_COST_ALERT_STEP_USD = "10"
 R2_ESTIMATED_STORAGE_GB = "2600"
+ADDON_UPDATE_VERSION = "0.2.0"
+ADDON_UPDATE_RELEASE_NOTES_URL = "https://www.planetka.io/blender/documentation/"
+ADDON_UPDATE_CHANNEL = "stable"
 
 [[d1_databases]]
 binding = "DB"

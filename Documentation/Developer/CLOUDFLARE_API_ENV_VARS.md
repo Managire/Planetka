@@ -147,6 +147,30 @@ Behavior:
 - Storage and Class A are estimated from configured env values.
 - Ops email is sent whenever estimated monthly total crosses `base + N * step` (for example: `$60`, `$70`, `$80` when base is `$50` and step is `$10`).
 
+## Addon Auto-Update Manifest
+
+These power the addon update manifest endpoint at:
+
+- `GET /addon/update-manifest`
+
+Used by Blender addon auto-updater to check/download new package versions.
+
+- `ADDON_UPDATE_VERSION` (default: `0.2.0`)
+- `ADDON_UPDATE_DOWNLOAD_URL` (default: empty; when empty, `available=false`)
+- `ADDON_UPDATE_SHA256` (optional, expected SHA-256 of update zip)
+- `ADDON_UPDATE_RELEASE_NOTES_URL` (default: `https://www.planetka.io/blender/documentation/`)
+- `ADDON_UPDATE_CHANNEL` (default: `stable`)
+- `ADDON_UPDATE_MIN_BLENDER` (default: `4.5.7`)
+- `ADDON_UPDATE_MANDATORY` (default: `false`)
+- `ADDON_UPDATE_PUBLISHED_AT` (optional ISO timestamp)
+- `ADDON_UPDATE_MANIFEST_MAX_AGE_SECONDS` (default: `300`)
+
+Notes:
+
+- Keep `ADDON_UPDATE_VERSION` equal to the package’s `blender_manifest.toml` version.
+- Use `ADDON_UPDATE_SHA256` whenever possible for integrity verification.
+- The addon downloads updates in background and applies staged update on next Blender start.
+
 ## Related Test Script
 
 Run:

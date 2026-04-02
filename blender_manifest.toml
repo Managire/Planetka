@@ -5,6 +5,6 @@ name = "Planetka - the Earth"
 tagline = "Cinematic Earth Visualisation System"
 maintainer = "Tomas Griger <info@planetka.io>"
 type = "add-on"
-blender_version_min = "3.6.0"
+blender_version_min = "4.5.7"
 license = ["SPDX:GPL-3.0-or-later"]
 website = "https://www.planetka.io"

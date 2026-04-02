@@ -1,4 +1,5 @@
 const encoder = new TextEncoder();
+const ADDON_ID = "planetka";
 const BYTES_PER_GB = 1024 * 1024 * 1024;
 const PLAN_CODE_PLANETKA = "planetka";
 const PLAN_CODE_PLANETKA_PRO = "planetka_pro";
@@ -22,6 +23,10 @@ const DEFAULT_ADMIN_SUPPORT_MISSING_MANIFEST_KEY = "planetka-assets/Admin/suppor
 const DEFAULT_TERMS_URL = "https://api.planetka.io/legal/terms-of-service.pdf";
 const DEFAULT_PRIVACY_URL = "https://api.planetka.io/legal/privacy-policy.pdf";
 const DEFAULT_LEGAL_VERSION = "2026-03-26";
+const DEFAULT_ADDON_UPDATE_MANIFEST_VERSION = "0.2.0";
+const DEFAULT_ADDON_UPDATE_CHANNEL = "stable";
+const DEFAULT_ADDON_UPDATE_MANIFEST_MAX_AGE_SECONDS = 300;
+const DEFAULT_ADDON_UPDATE_RELEASE_NOTES_URL = "https://www.planetka.io/blender/documentation/";
 const DEFAULT_RATE_LIMIT_AUTH_START_IP_LIMIT = 20;
 const DEFAULT_RATE_LIMIT_AUTH_START_IP_WINDOW_SECONDS = 60;
 const DEFAULT_RATE_LIMIT_AUTH_START_EMAIL_LIMIT = 6;
@@ -5885,6 +5890,28 @@ function renderApiKeyRequestPage(env, message = "", requestedPlan = PLAN_CODE_PL
       const form = document.getElementById("form");
       const status = document.getElementById("status");
       const submit = document.getElementById("submit");
+      function errorMessageFromCode(code, fallbackMessage) {
+        const normalized = String(code || "").trim().toLowerCase();
+        if (normalized === "invalid_email") {
+          return "Invalid email address. Please check the format (for example: name@example.com).";
+        }
+        if (normalized === "terms_consent_required") {
+          return "Please accept Terms and Privacy to continue.";
+        }
+        if (normalized === "api_key_request_ip_rate_limited") {
+          return "Too many requests from this network. Please try again shortly.";
+        }
+        if (normalized === "api_key_request_email_rate_limited") {
+          return "Too many requests for this email. Please try again later.";
+        }
+        if (normalized === "device_limit_exceeded") {
+          return String(fallbackMessage || "This account is already active on another computer.");
+        }
+        if (normalized === "blocked_account") {
+          return String(fallbackMessage || "This account is blocked. Contact support.");
+        }
+        return String(fallbackMessage || "Request failed. Please try again.");
+      }
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
         submit.disabled = true;
@@ -5907,13 +5934,15 @@ function renderApiKeyRequestPage(env, message = "", requestedPlan = PLAN_CODE_PL
           });
           const data = await response.json();
           if (!response.ok || !data.ok) {
-            throw new Error(String((data && data.error) || ("http_" + response.status)));
+            const errorCode = String((data && data.error) || ("http_" + response.status));
+            const errorMessage = errorMessageFromCode(errorCode, data && data.message);
+            throw new Error(String(errorMessage || "Request failed."));
           }
           status.style.color = "#86efac";
           status.textContent = "Check your email for the activation link.";
         } catch (error) {
           status.style.color = "#fca5a5";
-          status.textContent = "Request failed. Please try again.";
+          status.textContent = String(error && error.message || "Request failed. Please try again.");
           console.error("planetka api-key request failed", error);
         } finally {
           submit.disabled = false;
@@ -7729,7 +7758,8 @@ async function handleTileRequest(request, env, path, ctx) {
 
     const qualityModeRaw = String(request.headers.get("X-Planetka-Quality-Mode") || "").trim().toLowerCase();
     const qualityMode = qualityModeRaw === "full" ? "full" : "preview";
-    const chargeCredits = qualityMode === "full";
+    // Beta mode: keep allowance measurement state, but do not charge downloads in either quality mode.
+    const chargeCredits = false;
 
     const allowanceState = await buildAllowanceState(db, user, null, env);
     let updatedAllowance = allowanceState;
@@ -9871,6 +9901,71 @@ function notImplemented(route, env) {
   );
 }
 
+function normalizeAddonUpdateVersion(value, fallback = DEFAULT_ADDON_UPDATE_MANIFEST_VERSION) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return String(fallback || "").trim() || DEFAULT_ADDON_UPDATE_MANIFEST_VERSION;
+  }
+  return text;
+}
+
+function parseAddonUpdateSha256(value) {
+  const token = String(value || "").trim().toLowerCase();
+  if (!token) {
+    return "";
+  }
+  if (/^[a-f0-9]{64}$/.test(token)) {
+    return token;
+  }
+  return "";
+}
+
+async function handleAddonUpdateManifest(request, env) {
+  const localVersion = normalizeAddonUpdateVersion(
+    env.ADDON_UPDATE_VERSION || env.EXTENSION_VERSION || env.ADDON_VERSION,
+    DEFAULT_ADDON_UPDATE_MANIFEST_VERSION,
+  );
+  const channel = String(env.ADDON_UPDATE_CHANNEL || DEFAULT_ADDON_UPDATE_CHANNEL).trim().toLowerCase() || DEFAULT_ADDON_UPDATE_CHANNEL;
+  const downloadUrl = String(env.ADDON_UPDATE_DOWNLOAD_URL || "").trim();
+  const sha256 = parseAddonUpdateSha256(env.ADDON_UPDATE_SHA256);
+  const releaseNotesUrl = String(env.ADDON_UPDATE_RELEASE_NOTES_URL || DEFAULT_ADDON_UPDATE_RELEASE_NOTES_URL).trim();
+  const minBlenderVersion = String(env.ADDON_UPDATE_MIN_BLENDER || "4.5.7").trim();
+  const publishedAt = String(env.ADDON_UPDATE_PUBLISHED_AT || "").trim() || nowIso();
+  const mandatory = String(env.ADDON_UPDATE_MANDATORY || "").trim().toLowerCase() === "true";
+  const maxAge = Math.max(
+    30,
+    parseNonNegativeInteger(env.ADDON_UPDATE_MANIFEST_MAX_AGE_SECONDS, DEFAULT_ADDON_UPDATE_MANIFEST_MAX_AGE_SECONDS),
+  );
+
+  const payload = {
+    ok: true,
+    addon_id: ADDON_ID,
+    channel,
+    version: localVersion,
+    download_url: downloadUrl,
+    sha256,
+    release_notes_url: releaseNotesUrl,
+    min_blender_version: minBlenderVersion,
+    mandatory,
+    published_at: publishedAt,
+    available: Boolean(downloadUrl),
+  };
+
+  if (request.method === "HEAD") {
+    return new Response(null, {
+      status: 200,
+      headers: {
+        ...corsHeaders(env),
+        "Cache-Control": `public, max-age=${maxAge}`,
+      },
+    });
+  }
+
+  return jsonWithHeaders(payload, 200, env, {
+    "Cache-Control": `public, max-age=${maxAge}`,
+  });
+}
+
 export default {
   async fetch(request, env, ctx) {
     if (request.method === "OPTIONS") {
@@ -9907,6 +10002,10 @@ export default {
           200,
           env,
         );
+      }
+
+      if ((request.method === "GET" || request.method === "HEAD") && path === "/addon/update-manifest") {
+        return await handleAddonUpdateManifest(request, env);
       }
 
       if ((request.method === "GET" || request.method === "HEAD") && path === "/api-key") {
