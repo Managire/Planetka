@@ -34,6 +34,12 @@ _R2_READ_CHUNK_BYTES = 4 * 1024 * 1024
 _R2_PROGRESS_FLUSH_BYTES = 4 * 1024 * 1024
 _R2_PROGRESS_FLUSH_INTERVAL_SECONDS = 0.25
 _R2_PREFETCH_MAX_WORKERS = 8
+_CACHE_PROTECTED_RELATIVE_PATHS = {
+    "S2/S2_x000_y000_z360_d000.exr",
+    "EL/EL_x000_y000_z360_d000.exr",
+    "WT/WT_x000_y000_z360_d000.exr",
+    "PO/PO_x000_y000_z360_d000.tif",
+}
 
 
 @dataclass(frozen=True)
@@ -629,6 +635,12 @@ def _prune_cache_root(cache_root, max_bytes, target_ratio):
                 continue
             size = int(max(0, stat.st_size))
             total_bytes += size
+            try:
+                rel_path = os.path.relpath(path, cache_root).replace("\\", "/")
+            except (OSError, RuntimeError, TypeError, ValueError, AttributeError):
+                rel_path = ""
+            if rel_path in _CACHE_PROTECTED_RELATIVE_PATHS:
+                continue
             entries.append((stat.st_mtime, path, size))
 
     if total_bytes <= max_bytes:

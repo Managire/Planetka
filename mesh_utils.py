@@ -8,6 +8,7 @@ from collections import OrderedDict
 from mathutils import Matrix
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from .extension_prefs import get_earth_object
+from .r2_source import resolve_remote_asset
 
 # Precompile regex for speed
 TILE_RE = re.compile(r"x(\d+)_y(\d+)_z(\d+)_d(\d+)")
@@ -42,12 +43,11 @@ PREVIEW_MATERIAL_NAME = "Planetka Preview Material"
 PREVIEW_SEGMENTS = 36
 PREVIEW_RING_COUNT = 18
 PREVIEW_SCALE_FACTOR = 0.999
-_PREVIEW_TEXTURES_RELATIVE_DIR = ("Resources", "Preview Textures")
 _PREVIEW_STATIC_BINDINGS = (
-    ("S2_x000_y000_z360_d000.exr", "Linear Rec.709", ("Image Texture", "Preview S2")),
-    ("EL_x000_y000_z360_d000.exr", "Linear Rec.709", ("Image Texture.001", "Preview EL")),
-    ("WT_x000_y000_z360_d000.exr", "Linear Rec.709", ("Image Texture.002", "Preview WT")),
-    ("PO_x000_y000_z360_d000.tif", "Linear Rec.709", ("Image Texture.003", "Preview PO")),
+    ("S2", "S2_x000_y000_z360_d000.exr", "Linear Rec.709", ("Image Texture", "Preview S2")),
+    ("EL", "EL_x000_y000_z360_d000.exr", "Linear Rec.709", ("Image Texture.001", "Preview EL")),
+    ("WT", "WT_x000_y000_z360_d000.exr", "Linear Rec.709", ("Image Texture.002", "Preview WT")),
+    ("PO", "PO_x000_y000_z360_d000.tif", "Linear Rec.709", ("Image Texture.003", "Preview PO")),
 )
 _RESOLVED_MESH_CACHE = OrderedDict()
 _RESOLVED_CACHE_CLEANED = False
@@ -509,7 +509,29 @@ def _load_preview_image(path, image_name, colorspace):
 
 
 def _preview_texture_static_path(file_name):
-    return os.path.join(os.path.dirname(__file__), *_PREVIEW_TEXTURES_RELATIVE_DIR, str(file_name))
+    return os.path.join(
+        os.path.dirname(__file__),
+        "Resources",
+        "Preview Textures",
+        str(file_name),
+    )
+
+
+def _resolve_preview_texture_path(folder, file_name):
+    safe_folder = str(folder or "").strip()
+    safe_name = str(file_name or "").strip()
+    if not safe_folder or not safe_name:
+        return ""
+
+    remote_path = resolve_remote_asset(safe_folder, safe_name)
+    if remote_path and os.path.isfile(remote_path):
+        return remote_path
+
+    # Local fallback is kept only for developer environments.
+    local_path = _preview_texture_static_path(safe_name)
+    if local_path and os.path.isfile(local_path):
+        return local_path
+    return ""
 
 
 def _assign_preview_texture_images(preview_material):
@@ -524,8 +546,8 @@ def _assign_preview_texture_images(preview_material):
     if loading_node is not None and getattr(loading_node, "bl_idname", "") == "ShaderNodeGroup":
         loading_group = getattr(loading_node, "node_tree", None)
 
-    for file_name, colorspace, node_names in _PREVIEW_STATIC_BINDINGS:
-        path = _preview_texture_static_path(file_name)
+    for folder, file_name, colorspace, node_names in _PREVIEW_STATIC_BINDINGS:
+        path = _resolve_preview_texture_path(folder, file_name)
         if not path:
             continue
         image = _load_preview_image(path, image_name=file_name, colorspace=colorspace)
