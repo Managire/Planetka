@@ -1,17 +1,15 @@
 Using Planetka Commercially
 ===========================
 
-1. Planetka free license is intended for personal / non-commercial use.
-2. Commercial use requires a separate Planetka commercial permission or future
-   paid-plan terms published by Planetka.
+1. Planetka is currently in public beta and intended for personal / non-commercial use.
+2. Commercial use during beta requires separate written permission from Planetka.
 3. If you publish images or animations, include attribution in the accompanying
    text or credits.
 4. The easiest way to do that is to use:
    `Attribution for User Renders.txt`
 5. Service access, account use, and prohibited scraping / abusive use are
    governed by `TERMS_OF_SERVICE.md`.
-6. AI / machine learning use is not included in the free license or in listed
-   standard paid licenses. That includes training, fine-tuning, evaluation,
+6. AI / machine learning use is not included. That includes training, fine-tuning, evaluation,
    benchmarking, and dataset preparation. Those uses require a separate custom
    license from Planetka.
 

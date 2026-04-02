@@ -1,6 +1,6 @@
 # Planetka Terms of Service
 
-Last updated: 2026-03-26
+Last updated: 2026-04-02
 
 These Terms of Service govern access to the Planetka service layer, including
 Planetka account login, Planetka-hosted tile delivery, and related web/API
@@ -18,19 +18,14 @@ you agree to these Terms and to the Planetka Privacy Policy.
 If you do not agree, do not create an account and do not use Planetka-hosted
 services.
 
-## 2. Access and Credits
+## 2. Beta Access Model
 
-Planetka uses one functional add-on tier for all users (personal and
-commercial use are both allowed).
+Planetka is currently released as a **public beta**.
 
-- New accounts start with 25 GB of Full Quality credits.
-- Preview quality is free and can be used without a fixed data cap (subject to
-  fair usage policy and abuse protections).
-- Full Quality consumes credits only for newly downloaded data.
-- Reused local cached data does not consume credits.
-- Additional credits can be purchased as top-up packages.
-- Credits do not expire.
+- Access is currently intended for beta testing and feedback.
 - Access is tied to one specific email address and one computer at one time.
+- Planetka may change beta limits, access rules, and feature behavior during
+  this beta period.
 
 ## 3. Intended Use
 
@@ -48,10 +43,10 @@ services or Planetka-provided data for artificial intelligence, machine
 learning, or similar model-development workflows. Those rights are available
 only under a separate custom license released by Planetka in writing.
 
-## 4. Allowed Use
+## 4. Allowed Use (Beta)
 
-Subject to these Terms, you may use Planetka-hosted services for the intended
-Blender rendering workflow described above.
+Subject to these Terms, you may use Planetka-hosted services for personal,
+non-commercial Blender rendering workflows described above.
 
 You may keep and use your own rendered outputs, subject to any attribution or
 source-data obligations described in the licensing documentation shipped with
@@ -86,6 +81,8 @@ You must not:
 - use bots or scripts to build bulk local copies of the underlying source data
 - circumvent account limits, authentication, rate controls, or enforcement
   logic
+- use Planetka beta for commercial production, paid client work, resale, or
+  enterprise deployment without explicit written approval from Planetka
 
 Any attempt to use Planetka primarily as a source-data extraction tool rather
 than a Blender rendering tool is prohibited.
@@ -119,10 +116,11 @@ Planetka gives no guarantee of uninterrupted future availability.
 
 ## 9. Access Continuity
 
-Preview and Full Quality access are provided on an "as available" basis.
+Beta access is provided on an "as available" basis.
 
-Planetka may change technical limits, anti-abuse safeguards, or fair-usage
-protections over time to keep service available for all users.
+Planetka may change technical limits, anti-abuse safeguards, fair-usage
+protections, and beta access conditions over time to keep service available for
+all users.
 
 ## 10. Telemetry and Internal Analytics
 

@@ -11,6 +11,13 @@ This folder contains release-process documents for public extension builds:
 - `COMPATIBILITY_MATRIX.md`
 - `ROLLBACK_SAFE_UPDATE_TESTING.md`
 
+## Current Release State
+
+Planetka is currently in **Public Beta**.
+
+- Beta distribution is for tester feedback and stability validation.
+- Terms for beta access are in `Documentation/Licencing/TERMS_OF_SERVICE.md`.
+
 ## Required Release Gate
 
 Run this before publishing:

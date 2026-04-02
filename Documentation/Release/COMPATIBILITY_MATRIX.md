@@ -1,6 +1,6 @@
 # Planetka Compatibility Matrix
 
-Current extension release candidate: `v0.2.0`
+Current extension release candidate: `v0.3.0`
 Last matrix update: `2026-04-02`
 
 | Blender Version | Status | Automated Tests | Notes |
@@ -16,7 +16,7 @@ Last matrix update: `2026-04-02`
 
 | Extension Version | Blender Versions Verified | Release Gate | Rollback Test | Notes |
 | --- | --- | --- | --- | --- |
-| v0.2.0 | 5.0.0, 5.1.0 | Pass | Pass | Initial public release candidate; rollback-safe update flow A -> B -> A executed on 2026-03-28 without blocker errors. |
+| v0.3.0 | 5.0.0, 5.1.0 | Pass | Pass | First public beta release candidate; rollback-safe update flow A -> B -> A executed on 2026-03-28 without blocker errors. |
 
 ## Hardware / Renderer Notes
 

@@ -22,13 +22,12 @@ Scope: beta release for a small tester group, optimized for single-developer sup
 - [ ] Resolve uses full-quality pipeline with no tier-based functional restrictions.
 - [ ] Animation render path works without tier-based feature lockouts.
 
-## 4. Preview + Credits Rules
+## 4. Public Beta Access Rules
 
-- [ ] New accounts start with `25 GB` Full Quality starter credits.
-- [ ] Preview mode is free and does not consume credits.
-- [ ] Full Quality tile downloads consume credits by downloaded bytes.
-- [ ] Stripe webhook grants top-up credits automatically from mapped packages.
-- [ ] If credits are depleted, Full Quality requests return `allowance_exhausted` while Preview remains available.
+- [ ] Beta build is marked personal-use beta in Terms and user-facing docs.
+- [ ] Core workflows (Preview and Full Quality toggles) are available for tester validation.
+- [ ] No production payment/top-up flow is required for this beta cycle.
+- [ ] Fair-usage and anti-abuse protections remain active in backend.
 
 ## 5. API Security Basics (Right-Sized)
 

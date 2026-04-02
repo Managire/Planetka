@@ -15,6 +15,16 @@ All notable changes to Planetka are documented in this file.
 ### Fixed
 - Removed outdated release-checklist references to preview parenting.
 
+## [v0.3.0] - 2026-04-02
+
+### Added
+- Marked this build as the first public beta release.
+- Added beta-focused legal/release documentation updates for tester distribution.
+
+### Changed
+- Set extension manifest version to `0.3.0` for the public beta package.
+- Updated compatibility/release docs to reflect the public beta state.
+
 ## [v0.2.0] - 2026-02-20
 
 ### Added
