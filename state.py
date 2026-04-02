@@ -179,6 +179,28 @@ _DOWNLOAD_OVERLAY_DRAW_HANDLE = None
 _DOWNLOAD_OVERLAY_TEXT = ""
 _DOWNLOAD_OVERLAY_VISIBLE = False
 
+_KEYED_RUNTIME_NAV_PROP_PATHS = (
+    "planetka.nav_longitude_deg",
+    "planetka.nav_latitude_deg",
+    "planetka.nav_altitude_km",
+    "planetka.nav_azimuth_deg",
+    "planetka.nav_tilt_deg",
+    "planetka.nav_roll_deg",
+)
+_KEYED_RUNTIME_FOCAL_PROP_PATHS = (
+    "planetka.nav_focal_length_mm",
+)
+_KEYED_RUNTIME_SUN_PROP_PATHS = (
+    "planetka.sunlight_longitude_deg",
+    "planetka.sunlight_seasonal_tilt_deg",
+    "planetka.sunlight_strength",
+)
+_KEYED_RUNTIME_ALL_PROP_PATHS = (
+    _KEYED_RUNTIME_NAV_PROP_PATHS
+    + _KEYED_RUNTIME_FOCAL_PROP_PATHS
+    + _KEYED_RUNTIME_SUN_PROP_PATHS
+)
+
 
 def _get_r2_source():
     global _R2_SOURCE_MODULE
@@ -1597,6 +1619,58 @@ def _keyed_runtime_signature(scene):
         round(sun_tilt, 6),
         round(sun_strength, 6),
     )
+
+
+def _iter_scene_animation_fcurves(scene):
+    if scene is None:
+        return
+    animation_data = getattr(scene, "animation_data", None)
+    if animation_data is None:
+        return
+    seen = set()
+
+    def _yield_action_fcurves(action):
+        fcurves = getattr(action, "fcurves", None) if action is not None else None
+        if not fcurves:
+            return
+        for fcurve in fcurves:
+            if fcurve is None:
+                continue
+            try:
+                token = int(fcurve.as_pointer())
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                token = id(fcurve)
+            if token in seen:
+                continue
+            seen.add(token)
+            yield fcurve
+
+    action = getattr(animation_data, "action", None)
+    for fcurve in _yield_action_fcurves(action):
+        yield fcurve
+
+    nla_tracks = getattr(animation_data, "nla_tracks", None)
+    if not nla_tracks:
+        return
+    for track in nla_tracks:
+        strips = getattr(track, "strips", None)
+        if not strips:
+            continue
+        for strip in strips:
+            strip_action = getattr(strip, "action", None)
+            for fcurve in _yield_action_fcurves(strip_action):
+                yield fcurve
+
+
+def _scene_has_keyed_runtime_path(scene, accepted_paths):
+    allowed = {str(path or "").strip() for path in (accepted_paths or ()) if str(path or "").strip()}
+    if not allowed:
+        return False
+    for fcurve in _iter_scene_animation_fcurves(scene):
+        data_path = str(getattr(fcurve, "data_path", "") or "").strip()
+        if data_path in allowed:
+            return True
+    return False
 
 
 def _handle_timeline_motion_optimization(scene):
@@ -3311,7 +3385,11 @@ def _planetka_depsgraph_update_post(_scene, _depsgraph):
     if _is_navigation_user_edit_active(scene):
         return
 
-    _sync_navigation_controls_from_scene_camera(scene)
+    keyed_runtime_active = _scene_has_keyed_runtime_path(scene, _KEYED_RUNTIME_ALL_PROP_PATHS)
+    # During playback/render and for keyed runtime scenes, keep camera->nav sync disabled
+    # to avoid feedback loops that can cause "stuck then jump" camera motion in renders.
+    if not (_is_render_job_active() or _is_animation_playing() or keyed_runtime_active):
+        _sync_navigation_controls_from_scene_camera(scene)
 
     if not _can_auto_resolve_run(scene):
         return
@@ -3372,10 +3450,21 @@ def _planetka_frame_change_post(scene, _depsgraph=None):
         return
     _FRAME_KEYED_RUNTIME_LAST_SIGNATURE[scene_id] = signature
 
+    nav_keyed = _scene_has_keyed_runtime_path(target_scene, _KEYED_RUNTIME_NAV_PROP_PATHS)
+    focal_keyed = _scene_has_keyed_runtime_path(target_scene, _KEYED_RUNTIME_FOCAL_PROP_PATHS)
+    sun_keyed = _scene_has_keyed_runtime_path(target_scene, _KEYED_RUNTIME_SUN_PROP_PATHS)
+    if not (nav_keyed or focal_keyed or sun_keyed):
+        return
+
     nav_signature = signature[:7]
     prev_nav_signature = previous[:7] if isinstance(previous, tuple) and len(previous) >= 7 else None
-    nav_changed = previous is None or prev_nav_signature != nav_signature
-    focal_changed = previous is None or prev_nav_signature is None or prev_nav_signature[6] != nav_signature[6]
+    nav_changed = nav_keyed and (previous is None or prev_nav_signature != nav_signature)
+    focal_changed = focal_keyed and (
+        previous is None or prev_nav_signature is None or prev_nav_signature[6] != nav_signature[6]
+    )
+    sun_signature = signature[7:]
+    prev_sun_signature = previous[7:] if isinstance(previous, tuple) and len(previous) >= 10 else None
+    sun_changed = sun_keyed and (previous is None or prev_sun_signature != sun_signature)
 
     if nav_changed:
         # Prevent frame-scrub camera updates from triggering auto-resolve.
@@ -3395,8 +3484,9 @@ def _planetka_frame_change_post(scene, _depsgraph=None):
             except (RuntimeError, TypeError, ValueError):
                 logger.debug("Planetka: failed applying keyed focal length on frame change", exc_info=True)
 
-    _apply_sunlight_from_props(target_scene)
-    _apply_sunlight_strength_from_props(target_scene)
+    if sun_changed:
+        _apply_sunlight_from_props(target_scene)
+        _apply_sunlight_strength_from_props(target_scene)
 
 
 @persistent
