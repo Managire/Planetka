@@ -82,6 +82,7 @@ const DEFAULT_ANALYTICS_WINDOW_MINUTES = 60;
 const MAX_ANALYTICS_WINDOW_MINUTES = 10080;
 const DEFAULT_LIVE_TILE_MAP_WINDOW_MINUTES = 1;
 const ALLOWED_LIVE_TILE_MAP_WINDOW_MINUTES = new Set([1, 3, 10]);
+const DEFAULT_ANALYTICS_EXCLUDED_EMAIL_PATTERNS = "stressfree%";
 const DEFAULT_ANALYTICS_ADMIN_EMAILS = "info@planetka.io,tom.griger@gmail.com";
 const DEFAULT_ADMIN_LOGIN_EMAIL = "tom.griger@gmail.com";
 const DEFAULT_PERMANENT_PRO_EMAILS = "tom.griger@gmail.com";
@@ -1556,6 +1557,10 @@ async function collectAnalyticsSnapshot(
   const windowStartUnix = Math.max(0, nowUnix - (windowMinutes * 60));
   const rollupStart30d = Math.max(0, nowUnix - (30 * 86400));
   const safePlanFilter = parseHeavyUserPlanFilter(planFilter);
+  const eventEmailFilter = buildAnalyticsExcludedEmailFilter("user_email", env);
+  const eventEmailFilterAliasE = buildAnalyticsExcludedEmailFilter("e.user_email", env);
+  const rollupEmailFilter = buildAnalyticsExcludedEmailFilter("user_email", env);
+  const heavyEmailFilter = buildAnalyticsExcludedEmailFilter("c.user_email", env);
 
   const summary = await dbGet(
     db,
@@ -1569,29 +1574,50 @@ async function collectAnalyticsSnapshot(
         COALESCE(COUNT(DISTINCT CASE WHEN resolve_id IS NOT NULL AND resolve_id != '' THEN resolve_id END), 0) AS tagged_resolve_count
       FROM tile_request_events
       WHERE created_at_unix >= ?
+      ${eventEmailFilter.condition ? `AND ${eventEmailFilter.condition}` : ""}
     `,
-    [windowStartUnix],
+    [windowStartUnix, ...eventEmailFilter.bindings],
   );
 
   const active5m = await dbGet(
     db,
-    `SELECT COUNT(DISTINCT user_id) AS active_users FROM tile_request_events WHERE created_at_unix >= ?`,
-    [Math.max(0, nowUnix - 300)],
+    `
+      SELECT COUNT(DISTINCT user_id) AS active_users
+      FROM tile_request_events
+      WHERE created_at_unix >= ?
+      ${eventEmailFilter.condition ? `AND ${eventEmailFilter.condition}` : ""}
+    `,
+    [Math.max(0, nowUnix - 300), ...eventEmailFilter.bindings],
   );
   const active15m = await dbGet(
     db,
-    `SELECT COUNT(DISTINCT user_id) AS active_users FROM tile_request_events WHERE created_at_unix >= ?`,
-    [Math.max(0, nowUnix - 900)],
+    `
+      SELECT COUNT(DISTINCT user_id) AS active_users
+      FROM tile_request_events
+      WHERE created_at_unix >= ?
+      ${eventEmailFilter.condition ? `AND ${eventEmailFilter.condition}` : ""}
+    `,
+    [Math.max(0, nowUnix - 900), ...eventEmailFilter.bindings],
   );
   const active60m = await dbGet(
     db,
-    `SELECT COUNT(DISTINCT user_id) AS active_users FROM tile_request_events WHERE created_at_unix >= ?`,
-    [Math.max(0, nowUnix - 3600)],
+    `
+      SELECT COUNT(DISTINCT user_id) AS active_users
+      FROM tile_request_events
+      WHERE created_at_unix >= ?
+      ${eventEmailFilter.condition ? `AND ${eventEmailFilter.condition}` : ""}
+    `,
+    [Math.max(0, nowUnix - 3600), ...eventEmailFilter.bindings],
   );
   const activeNow = await dbGet(
     db,
-    `SELECT COUNT(*) AS active_download_rows FROM tile_request_events WHERE created_at_unix >= ?`,
-    [Math.max(0, nowUnix - 10)],
+    `
+      SELECT COUNT(*) AS active_download_rows
+      FROM tile_request_events
+      WHERE created_at_unix >= ?
+      ${eventEmailFilter.condition ? `AND ${eventEmailFilter.condition}` : ""}
+    `,
+    [Math.max(0, nowUnix - 10), ...eventEmailFilter.bindings],
   );
 
   const topUsers = await dbAll(
@@ -1607,11 +1633,12 @@ async function collectAnalyticsSnapshot(
         MAX(created_at) AS last_seen_at
       FROM tile_request_events
       WHERE created_at_unix >= ?
+      ${eventEmailFilter.condition ? `AND ${eventEmailFilter.condition}` : ""}
       GROUP BY user_id, user_email
       ORDER BY request_count DESC
       LIMIT 20
     `,
-    [windowStartUnix],
+    [windowStartUnix, ...eventEmailFilter.bindings],
   );
 
   const topTiles = await dbAll(
@@ -1623,11 +1650,12 @@ async function collectAnalyticsSnapshot(
         COALESCE(SUM(bytes_served), 0) AS bytes_served
       FROM tile_request_events
       WHERE created_at_unix >= ? AND tile_key IS NOT NULL AND tile_key != ''
+      ${eventEmailFilter.condition ? `AND ${eventEmailFilter.condition}` : ""}
       GROUP BY tile_key
       ORDER BY request_count DESC
       LIMIT 20
     `,
-    [windowStartUnix],
+    [windowStartUnix, ...eventEmailFilter.bindings],
   );
 
   const tileMapWindowSeconds = Math.max(
@@ -1655,6 +1683,7 @@ async function collectAnalyticsSnapshot(
         AND e.status_code < 400
         AND e.tile_key IS NOT NULL
         AND e.tile_key != ''
+        ${eventEmailFilterAliasE.condition ? `AND ${eventEmailFilterAliasE.condition}` : ""}
         ${tileActivityFilter.clause}
       GROUP BY
         e.user_id,
@@ -1667,6 +1696,7 @@ async function collectAnalyticsSnapshot(
     [
       PLAN_CODE_PLANETKA,
       tileMapStartUnix,
+      ...eventEmailFilterAliasE.bindings,
       ...tileActivityFilter.bindings,
       PLAN_CODE_PLANETKA,
     ],
@@ -1711,16 +1741,15 @@ async function collectAnalyticsSnapshot(
         duration_ms
       FROM tile_request_events
       WHERE status_code >= 400
+      ${eventEmailFilter.condition ? `AND ${eventEmailFilter.condition}` : ""}
       ORDER BY created_at_unix DESC
       LIMIT 50
     `,
-    [],
+    [...eventEmailFilter.bindings],
   );
   const recentFailures = [];
-  const recentFallbackMisses = [];
   for (const row of (Array.isArray(recentFailuresRaw) ? recentFailuresRaw : [])) {
     if (isExpectedSupportFallbackMiss(row, supportMissingManifest)) {
-      recentFallbackMisses.push(row);
       continue;
     }
     recentFailures.push(row);
@@ -1738,8 +1767,9 @@ async function collectAnalyticsSnapshot(
         COUNT(DISTINCT user_id) AS active_users
       FROM tile_request_rollup_daily_account
       WHERE day_start_unix >= ?
+      ${rollupEmailFilter.condition ? `AND ${rollupEmailFilter.condition}` : ""}
     `,
-    [rollupStart30d],
+    [rollupStart30d, ...rollupEmailFilter.bindings],
   );
 
   const topAccounts30d = await dbAll(
@@ -1754,14 +1784,26 @@ async function collectAnalyticsSnapshot(
         MAX(last_event_unix) AS last_event_unix
       FROM tile_request_rollup_daily_account
       WHERE day_start_unix >= ?
+      ${rollupEmailFilter.condition ? `AND ${rollupEmailFilter.condition}` : ""}
       GROUP BY user_id, user_email
       ORDER BY request_count DESC
       LIMIT 20
     `,
-    [rollupStart30d],
+    [rollupStart30d, ...rollupEmailFilter.bindings],
   );
 
   const heavyFilter = buildHeavyUserFilterSql(safePlanFilter);
+  const heavyWhereParts = [];
+  const heavyBindings = [];
+  if (heavyFilter.clause) {
+    heavyWhereParts.push(String(heavyFilter.clause).replace(/^WHERE\\s+/i, "").trim());
+    heavyBindings.push(...heavyFilter.bindings);
+  }
+  if (heavyEmailFilter.condition) {
+    heavyWhereParts.push(heavyEmailFilter.condition);
+    heavyBindings.push(...heavyEmailFilter.bindings);
+  }
+  const heavyWhereSql = heavyWhereParts.length ? `WHERE ${heavyWhereParts.join(" AND ")}` : "";
   const heavyBaseSql = `
       SELECT
         c.user_id,
@@ -1780,9 +1822,8 @@ async function collectAnalyticsSnapshot(
         c.last_country
       FROM user_download_counters c
       LEFT JOIN users u ON u.id = c.user_id
-      ${heavyFilter.clause}
+      ${heavyWhereSql}
     `;
-  const heavyBindings = [...heavyFilter.bindings];
   const topHeavyLifetime = await dbAll(
     db,
     `${heavyBaseSql} ORDER BY lifetime_bytes DESC LIMIT 50`,
@@ -1873,12 +1914,6 @@ async function collectAnalyticsSnapshot(
     top_users: Array.isArray(topUsers) ? topUsers : [],
     top_tiles: Array.isArray(topTiles) ? topTiles : [],
     recent_failures: Array.isArray(recentFailures) ? recentFailures : [],
-    recent_fallback_misses: Array.isArray(recentFallbackMisses) ? recentFallbackMisses : [],
-    support_missing_manifest: {
-      key: String(supportMissingManifest && supportMissingManifest.key || ""),
-      version: String(supportMissingManifest && supportMissingManifest.version || ""),
-      generated_at: String(supportMissingManifest && supportMissingManifest.generatedAt || ""),
-    },
     rollup_30d: {
       window_days: 30,
       request_count: clampNonNegativeInt(rollup30d && rollup30d.request_count),
@@ -2167,6 +2202,34 @@ function parseHeavyUserPlanFilter(value) {
     return "active";
   }
   return "all";
+}
+
+function parseAnalyticsExcludedEmailPatterns(env = {}) {
+  const source = String(
+    env.ANALYTICS_EXCLUDED_EMAIL_PATTERNS || DEFAULT_ANALYTICS_EXCLUDED_EMAIL_PATTERNS,
+  ).trim();
+  if (!source) {
+    return [];
+  }
+  const unique = new Set();
+  for (const token of source.split(",")) {
+    const pattern = String(token || "").trim().toLowerCase();
+    if (!pattern) continue;
+    unique.add(pattern);
+  }
+  return Array.from(unique);
+}
+
+function buildAnalyticsExcludedEmailFilter(emailColumnSql, env = {}) {
+  const patterns = parseAnalyticsExcludedEmailPatterns(env);
+  if (!patterns.length) {
+    return { condition: "", bindings: [] };
+  }
+  const safeColumn = String(emailColumnSql || "").trim() || "user_email";
+  const condition = patterns
+    .map(() => `LOWER(COALESCE(${safeColumn}, '')) NOT LIKE ?`)
+    .join(" AND ");
+  return { condition, bindings: patterns };
 }
 
 function buildHeavyUserFilterSql(planFilter) {
@@ -4708,6 +4771,25 @@ async function upsertUserByEmail(db, email, status = PLAN_CODE_PLANETKA, options
       proAccessExpiresAt || null,
     ],
   );
+  if (!parseBooleanFlag(options.suppressNewUserAlert)) {
+    try {
+      await sendNewUserLoginAlert(env, {
+        email: normalizedEmail,
+        source: String(options.signupSource || options.source || "unknown").trim() || "unknown",
+        planCode: finalRequestedStatus,
+        createdAt,
+      });
+    } catch (error) {
+      console.warn(
+        "worker.new_user_alert_email_failed",
+        JSON.stringify({
+          email: normalizedEmail,
+          source: String(options.signupSource || options.source || "unknown").trim() || "unknown",
+          error: String(error && error.message || "new_user_alert_email_failed"),
+        }),
+      );
+    }
+  }
   user = await findUserByEmail(db, normalizedEmail);
   return user;
 }
@@ -6029,6 +6111,27 @@ async function sendOpsAlertEmail(env, subject, lines = []) {
   });
 }
 
+async function sendNewUserLoginAlert(env, details = {}) {
+  const email = normalizeEmail(details.email || "");
+  if (!email) {
+    return;
+  }
+  const source = String(details.source || "unknown").trim() || "unknown";
+  const createdAt = String(details.createdAt || nowIso()).trim() || nowIso();
+  const planCode = normalizePlanCode(details.planCode || PLAN_CODE_PLANETKA) || PLAN_CODE_PLANETKA;
+  await sendOpsAlertEmail(
+    env,
+    "New Planetka user signup/login",
+    [
+      "A new Planetka user account was created.",
+      `email=${email}`,
+      `source=${source}`,
+      `plan_code=${planCode}`,
+      `created_at=${createdAt}`,
+    ],
+  );
+}
+
 async function sendProvisionalPlanAlert(env, details = {}) {
   try {
     await sendOpsAlertEmail(
@@ -6254,6 +6357,7 @@ async function handleApiKeyRequest(request, env) {
       privacyAcceptedAt: acceptedAt,
       termsVersion: legalVersion,
       privacyVersion,
+      signupSource: "api_key_request",
     },
     env,
   );
@@ -6681,6 +6785,7 @@ async function handleAuthStart(request, env) {
       privacyAcceptedAt: acceptedAt,
       termsVersion: legalVersion,
       privacyVersion,
+      signupSource: deviceCode ? "device_login" : "magic_link_auth_start",
     }, env);
   } else if (isBlockedStatus(user.status)) {
     return genericAuthStartResponse(env);
@@ -8171,10 +8276,6 @@ async function handleAdminAnalyticsPage(request, env) {
     <h3>Recent Failures</h3>
     <table id="failsTable"><thead><tr><th>Time</th><th>User</th><th>Status</th><th>Error</th><th>Tile</th><th>Cache</th><th>ms</th></tr></thead><tbody></tbody></table>
   </div>
-  <div class="section">
-    <h3>Expected Support Fallback Misses (Not Failures)</h3>
-    <table id="fallbackMissesTable"><thead><tr><th>Time</th><th>User</th><th>Layer</th><th>File</th><th>Status</th><th>Error</th><th>ms</th></tr></thead><tbody></tbody></table>
-  </div>
 
   <script>
     const statusEl = document.getElementById("status");
@@ -8568,7 +8669,6 @@ async function handleAdminAnalyticsPage(request, env) {
         renderLiveTileMap(data.live_tile_map || {});
         renderRows("tilesTable", data.top_tiles, (row) => \`<td>\${row.tile_key || ""}</td><td>\${fmtInt(row.request_count)}</td><td>\${fmtGb(row.bytes_served)}</td>\`);
         renderRows("failsTable", data.recent_failures, (row) => \`<td>\${row.created_at || ""}</td><td>\${row.user_email || ""}</td><td>\${row.status_code || ""}</td><td>\${row.error_code || ""}</td><td>\${row.tile_key || ""}</td><td>\${row.cache_status || ""}</td><td>\${row.duration_ms || ""}</td>\`);
-        renderRows("fallbackMissesTable", data.recent_fallback_misses, (row) => \`<td>\${row.created_at || ""}</td><td>\${row.user_email || ""}</td><td>\${row.folder || ""}</td><td>\${row.file_name || ""}</td><td>\${row.status_code || ""}</td><td>\${row.error_code || ""}</td><td>\${row.duration_ms || ""}</td>\`);
         statusEl.textContent = "Updated " + new Date().toLocaleTimeString();
         statusEl.className = "muted";
       } catch (error) {
