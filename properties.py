@@ -41,6 +41,8 @@ NAV_DEFAULT_ALTITUDE_KM = 400.0
 NAV_DEFAULT_AZIMUTH_DEG = 0.0
 NAV_DEFAULT_TILT_DEG = 25.0
 NAV_DEFAULT_ROLL_DEG = 0.0
+PLACE_SEARCH_DEFAULT_ALTITUDE_KM = 60.0
+PLACE_SEARCH_DEFAULT_TILT_DEG = 45.0
 SEASONAL_TILT_PRESET_LIMIT_DEG = 23.44
 logger = logging.getLogger(__name__)
 
@@ -158,7 +160,7 @@ def _get_nav_city_search(self):
     return str(self.get("nav_city_search", ""))
 
 
-def _sunlight_early_morning_for_location(lon_deg, lat_deg):
+def _sunlight_mid_morning_for_location(lon_deg, lat_deg):
     try:
         lon = math.radians(float(lon_deg))
         lat = math.radians(float(lat_deg))
@@ -177,7 +179,7 @@ def _sunlight_early_morning_for_location(lon_deg, lat_deg):
             east = Vector((0.0, 1.0, 0.0))
         east.normalize()
 
-        elev = math.radians(25.0)  # matches EARLY_MORNING preset
+        elev = math.radians(45.0)  # matches MID_MORNING preset
         sun_dir = (east * math.cos(elev)) + (up * math.sin(elev))
         if sun_dir.length < 1e-9:
             sun_dir = up
@@ -188,7 +190,7 @@ def _sunlight_early_morning_for_location(lon_deg, lat_deg):
         sun_lat = max(-SEASONAL_TILT_PRESET_LIMIT_DEG, min(SEASONAL_TILT_PRESET_LIMIT_DEG, float(sun_lat)))
         return float(sun_lon), float(sun_lat)
     except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed deriving early-morning sunlight vector", exc_info=True)
+        logger.debug("Planetka: failed deriving mid-morning sunlight vector", exc_info=True)
         return None
 
 
@@ -212,9 +214,9 @@ def _set_nav_city_search(self, value):
         nav_suspended = True
         self.nav_latitude_deg = float(place.get("latitude", 0.0))
         self.nav_longitude_deg = float(place.get("longitude", 0.0))
-        self.nav_altitude_km = NAV_DEFAULT_ALTITUDE_KM
+        self.nav_altitude_km = PLACE_SEARCH_DEFAULT_ALTITUDE_KM
         self.nav_azimuth_deg = NAV_DEFAULT_AZIMUTH_DEG
-        self.nav_tilt_deg = NAV_DEFAULT_TILT_DEG
+        self.nav_tilt_deg = PLACE_SEARCH_DEFAULT_TILT_DEG
         self.nav_roll_deg = NAV_DEFAULT_ROLL_DEG
         self["nav_city_selected_name"] = str(place.get("display_name", text))
         self["nav_city_search"] = str(place.get("display_name", text))
@@ -227,8 +229,8 @@ def _set_nav_city_search(self, value):
     # Apply all navigation values in one pass to avoid repeated camera updates/resolves.
     update_navigation_shot(self, bpy.context)
 
-    # Always avoid new locations appearing at night: switch to "Early Morning" sun.
-    sun = _sunlight_early_morning_for_location(self.nav_longitude_deg, self.nav_latitude_deg)
+    # Always avoid new locations appearing at night: switch to "Mid-morning" sun.
+    sun = _sunlight_mid_morning_for_location(self.nav_longitude_deg, self.nav_latitude_deg)
     if not sun:
         return
     try:
@@ -265,9 +267,9 @@ def _set_waypoint_city_search(self, value):
     try:
         self.latitude_deg = float(place.get("latitude", 0.0))
         self.longitude_deg = float(place.get("longitude", 0.0))
-        self.altitude_km = NAV_DEFAULT_ALTITUDE_KM
+        self.altitude_km = PLACE_SEARCH_DEFAULT_ALTITUDE_KM
         self.heading_deg = NAV_DEFAULT_AZIMUTH_DEG
-        self.tilt_deg = NAV_DEFAULT_TILT_DEG
+        self.tilt_deg = PLACE_SEARCH_DEFAULT_TILT_DEG
         self.roll_deg = NAV_DEFAULT_ROLL_DEG
         selected = str(place.get("display_name", text))
         self["city_selected_name"] = selected
