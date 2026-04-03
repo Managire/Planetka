@@ -185,6 +185,8 @@ def _safe_register_class(cls):
     except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
         message = str(exc)
         if "already registered as a subclass" in message:
+            _safe_unregister_class(cls)
+            bpy.utils.register_class(cls)
             return
         raise
 
@@ -276,9 +278,30 @@ def _unregister_keymaps():
     _addon_keymaps.clear()
 
 
+def _tag_view3d_ui_redraw():
+    context = getattr(bpy, "context", None)
+    wm = getattr(context, "window_manager", None) if context else None
+    if wm is None:
+        return None
+
+    for window in getattr(wm, "windows", ()):
+        screen = getattr(window, "screen", None)
+        if screen is None:
+            continue
+        for area in getattr(screen, "areas", ()):
+            if str(getattr(area, "type", "")) != "VIEW_3D":
+                continue
+            try:
+                area.tag_redraw()
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                continue
+    return None
+
+
 def register():
     register_cloud_object_properties()
     for cls in classes:
+        _safe_unregister_class(cls)
         _safe_register_class(cls)
     if not hasattr(bpy.types.Scene, "planetka"):
         bpy.types.Scene.planetka = PointerProperty(type=PlanetkaProperties)
@@ -307,6 +330,10 @@ def register():
     try:
         _planetka_updater.kickoff_background_update_check(force=False)
     except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
+        pass
+    try:
+        bpy.app.timers.register(_tag_view3d_ui_redraw, first_interval=0.05)
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
         pass
 
 
