@@ -863,6 +863,14 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
                 toggle=True,
             )
 
+            cache_box = layout.box()
+            cache_box.label(text="Data Cache", icon="PREFERENCES")
+            cache_box.prop(
+                props,
+                "r2_cache_max_gb",
+                text="Data Cache Limit (GB)",
+            )
+
 class PLANETKA_PT_LiveTelemetryPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
     bl_label = "Status Check"
     bl_idname = "PLANETKA_PT_live_telemetry"

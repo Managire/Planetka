@@ -12,6 +12,7 @@ All notable changes to Planetka are documented in this file.
 - Improved Earth surface shading with procedural forest and rock detail (bump, optional micro-displacement) driven by satellite color/slope masks.
 - Marked EEVEE as unsupported/unstable for Planetka rendering in release documentation and UI warnings; Cycles is now auto-selected on `Create Earth`.
 - Increased user-editable tile cache limit range to `1–100 GB`.
+- Exposed `Data Cache Limit (GB)` in the Settings panel so users can edit it directly in UI.
 
 ### Fixed
 - Removed outdated release-checklist references to preview parenting.
