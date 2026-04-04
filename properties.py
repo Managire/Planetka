@@ -879,7 +879,7 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         name="Data Cache Limit (GB)",
         default=5,
         min=1,
-        max=10,
+        max=100,
         description="Maximum on-disk tile cache size in GB (old entries are pruned automatically)",
         update=update_r2_cache_settings,
     )
