@@ -982,10 +982,10 @@ class PLANETKA_PT_LinksPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
         row = layout.row(align=True)
         row.operator("wm.url_open", text="Documentation", icon="HELP").url = "https://www.planetka.io/blender/documentation/"
-        row.operator("wm.url_open", text="Tutorials", icon="PLAY").url = "https://www.planetka.io/blender/tutorials/"
+        row.operator("wm.url_open", text="Tutorials", icon="PLAY").url = "https://www.youtube.com/@tomasgriger-planetka/videos"
         row = layout.row(align=True)
         row.operator("planetka.report_bug", text="Report Bug", icon="ERROR")
-        row.operator("wm.url_open", text="Discord", icon="URL").url = "https://discord.com/channels/1484086341099589742/1484087649722699846"
+        row.operator("wm.url_open", text="Discord", icon="URL").url = "https://discord.gg/JnpPS8xfHZ"
 
         layout.operator(
             "wm.url_open",
