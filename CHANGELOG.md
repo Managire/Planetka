@@ -28,6 +28,19 @@ All notable changes to Planetka are documented in this file.
 ### Fixed
 - Removed outdated release-checklist references to preview parenting.
 
+## [v0.4.1] - 2026-04-06
+
+### Changed
+- Status Check now keeps a stable layout while downloading by rendering progress inline in the status text.
+- Status label text shortened from `Downloading Data` to `Downloading`.
+- Auto Resolve Idle Delay default set to `0.5s`.
+
+### Fixed
+- Adaptive subdivision navigation suspension now force-restores immediately when:
+  - `Suspend Adaptive Subdivision While Navigating` is turned off, or
+  - render engine is not Cycles.
+- Prevented stale suspended state from persisting after toggle/engine changes.
+
 ## [v0.4.0] - 2026-04-06
 
 ### Changed

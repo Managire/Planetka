@@ -1,7 +1,7 @@
 # Planetka Compatibility Matrix
 
-Current extension release candidate: `v0.3.0`
-Last matrix update: `2026-04-02`
+Current extension release candidate: `v0.4.1`
+Last matrix update: `2026-04-06`
 
 | Blender Version | Status | Automated Tests | Notes |
 | --- | --- | --- | --- |
@@ -16,6 +16,7 @@ Last matrix update: `2026-04-02`
 
 | Extension Version | Blender Versions Verified | Release Gate | Rollback Test | Notes |
 | --- | --- | --- | --- | --- |
+| v0.4.1 | 4.5.7, 5.0.0, 5.1.0 | Pass | Pass | Status Check layout stabilized during download progress, adaptive subdivision suspend toggle restore fix, and auto-resolve idle default set to 0.5s. |
 | v0.3.0 | 5.0.0, 5.1.0 | Pass | Pass | First public beta release candidate; rollback-safe update flow A -> B -> A executed on 2026-03-28 without blocker errors. |
 
 ## Hardware / Renderer Notes

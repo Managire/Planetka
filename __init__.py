@@ -101,7 +101,7 @@ from .validation import PLANETKA_OT_ReportBug, PLANETKA_OT_ValidateTextureSource
 bl_info = {
     "name": "Planetka - the Earth",
     "author": "Tomas Griger",
-    "version": (0, 4, 0),
+    "version": (0, 4, 1),
     "blender": (3, 6, 0),
     "location": "View3D > Sidebar > Planetka",
     "description": "Cinematic Earth visualisation system",

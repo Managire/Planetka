@@ -305,7 +305,7 @@ def _draw_resolve(layout):
     row.scale_y = REFRESH_BUTTON_SCALE_Y
     row.alert = REFRESH_BUTTON_ALERT
     row.enabled = (not prepared) and workflow_enabled and connected
-    row.operator("planetka.load_textures", text="Resolve Earth Surface", icon="MOD_REMESH")
+    row.operator("planetka.load_textures", text="Manual Resolve", icon="MOD_REMESH")
 
 
 def _draw_live_telemetry(layout, scene):
@@ -324,7 +324,13 @@ def _draw_live_telemetry(layout, scene):
     runtime_text = str(runtime.get("text", "Idle") or "Idle")
     if active_download and runtime_code not in {"DOWNLOADING", "FINALIZING"}:
         runtime_code = "DOWNLOADING"
-        runtime_text = "Downloading Data"
+        runtime_text = "Downloading"
+    if runtime_code == "DOWNLOADING":
+        runtime_text = "Downloading"
+        if total_bytes > 0:
+            runtime_text = f"{runtime_text} ({downloaded_mb:.2f} / {total_mb:.2f} MB)"
+        else:
+            runtime_text = f"{runtime_text} ({downloaded_mb:.2f} MB)"
 
     status_row = layout.row()
     status_row.alert = runtime_code in {"DOWNLOADING", "FINALIZING", "FINALIZE_QUEUED", "QUEUED"}
@@ -337,12 +343,7 @@ def _draw_live_telemetry(layout, scene):
     from .extension_prefs import get_prefs
     prefs = get_prefs()
 
-    if runtime_code == "DOWNLOADING":
-        if total_bytes > 0:
-            layout.label(text=f"{downloaded_mb:.2f} / {total_mb:.2f} MB")
-        else:
-            layout.label(text=f"{downloaded_mb:.2f} MB")
-    elif runtime_code in {"QUEUED", "FINALIZE_QUEUED"}:
+    if runtime_code in {"QUEUED", "FINALIZE_QUEUED"}:
         request_id = runtime.get("active_request_id")
         pending_count = int(runtime.get("pending_count", 0) or 0)
         if request_id is not None:
@@ -355,7 +356,7 @@ def _draw_live_telemetry(layout, scene):
         quality_box.label(text="Texture Quality", icon="TEXTURE")
         quality_row = quality_box.row(align=True)
         quality_row.use_property_split = False
-        quality_row.prop_enum(props, "texture_quality_mode", "HALF", text="Preview")
+        quality_row.prop_enum(props, "texture_quality_mode", "HALF", text="1/2 Quality")
         quality_row.prop_enum(props, "texture_quality_mode", "FULL", text="Full Quality")
     throttle_message = str(get_status_message(prefs) or "").strip()
     if throttle_message and "throttl" in throttle_message.lower():
@@ -456,7 +457,7 @@ def _draw_navigation(layout, context):
     resolve_box.label(text="Resolve Settings", icon="MOD_REMESH")
     resolve_op = resolve_box.operator(
         "planetka.load_textures",
-        text="Resolve Earth Surface",
+        text="Manual Resolve",
         icon="MOD_REMESH",
     )
     # Keep Blender responsive while downloading; finalize resolve after download completes.
@@ -475,6 +476,16 @@ def _draw_navigation(layout, context):
             text="Lock Resolve During Animation",
             toggle=True,
         )
+
+    preview_box = layout.box()
+    preview_box.enabled = not prepared
+    preview_box.label(text="Scene Objects", icon="OUTLINER_OB_EMPTY")
+    preview_box.prop(
+        props,
+        "show_earth_preview",
+        text="Show Earth Preview",
+        toggle=True,
+    )
 
 
 def _iter_surface_grading_nodes():
@@ -883,16 +894,6 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
                 slider=True,
             )
 
-            objects_box = layout.box()
-            objects_box.label(text="Scene Objects", icon="OUTLINER_OB_EMPTY")
-            objects_box.enabled = workflow_enabled
-            objects_box.prop(
-                props,
-                "show_earth_preview",
-                text="Show Earth Preview",
-                toggle=True,
-            )
-
             cache_box = layout.box()
             cache_box.label(text="Data Cache", icon="PREFERENCES")
             cache_box.prop(
@@ -1284,11 +1285,11 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         cinematic_box.prop(props, "anim_motion_curve", text="Motion Curve")
 
         preset = str(getattr(props, "anim_camera_preset", "ORBIT")).upper()
-        if preset in {"ORBIT", "ARC_LEFT", "ARC_RIGHT", "HELIX_DOWN", "HELIX_UP"}:
+        if preset in {"ORBIT", "ARC_LEFT", "ARC_RIGHT"}:
             cinematic_box.prop(props, "anim_orbit_degrees", text="Orbit Degrees")
-        if preset in {"ORBIT", "HELIX_DOWN", "HELIX_UP"}:
+        if preset in {"ORBIT"}:
             cinematic_box.prop(props, "anim_circle_direction", text="Direction")
-        if preset in {"PUSH_IN", "PULL_BACK", "HELIX_DOWN", "HELIX_UP"}:
+        if preset in {"PUSH_IN", "PULL_BACK"}:
             cinematic_box.prop(props, "anim_start_altitude_km", text="Start Altitude (km)")
             cinematic_box.prop(props, "anim_end_altitude_km", text="End Altitude (km)")
         if preset in {"PUSH_IN", "PULL_BACK"}:
@@ -1304,49 +1305,6 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             status_b = "Ready" if bool(getattr(props, "anim_ab_b_valid", False)) else "Not Set"
             cinematic_box.label(text=f"View A: {status_a}")
             cinematic_box.label(text=f"View B: {status_b}")
-        if preset == "WAYPOINTS":
-            waypoints = getattr(props, "anim_waypoints", None)
-            count = len(waypoints) if waypoints is not None else 0
-            tools_row = cinematic_box.row(align=True)
-            tools_row.operator("planetka.animation_waypoint_add", text="Add Waypoint", icon="ADD")
-            capture_active = tools_row.operator(
-                "planetka.animation_waypoint_capture_current",
-                text="Capture Current",
-                icon="IMPORT",
-            )
-            capture_active.index = int(getattr(props, "anim_waypoint_active_index", 0))
-            if count <= 0:
-                cinematic_box.label(text="No waypoints yet. Add waypoint A.", icon="INFO")
-            for index, waypoint in enumerate(waypoints or ()):
-                label = _waypoint_label(index)
-                wp_box = cinematic_box.box()
-                header = wp_box.row(align=True)
-                header.prop(
-                    waypoint,
-                    "expanded",
-                    text=f"Waypoint {label}",
-                    icon="TRIA_DOWN" if bool(getattr(waypoint, "expanded", True)) else "TRIA_RIGHT",
-                    emboss=True,
-                )
-                apply_op = header.operator("planetka.animation_waypoint_apply", text="", icon="VIEW_CAMERA")
-                apply_op.index = int(index)
-                capture_op = header.operator("planetka.animation_waypoint_capture_current", text="", icon="IMPORT")
-                capture_op.index = int(index)
-                remove_op = header.operator("planetka.animation_waypoint_remove", text="", icon="TRASH")
-                remove_op.index = int(index)
-                if not bool(getattr(waypoint, "expanded", True)):
-                    continue
-                wp_box.prop(waypoint, "city_search", text="Place Search")
-                selected_place = str(getattr(waypoint, "city_selected_name", "") or "")
-                if selected_place:
-                    wp_box.label(text=f"Selected: {selected_place}", icon="BOOKMARKS")
-                wp_box.prop(waypoint, "latitude_deg", text="Latitude")
-                wp_box.prop(waypoint, "longitude_deg", text="Longitude")
-                wp_box.prop(waypoint, "altitude_km", text="Altitude (km)")
-                wp_box.prop(waypoint, "heading_deg", text="Heading (°)")
-                wp_box.prop(waypoint, "tilt_deg", text="Tilt (°)")
-                wp_box.prop(waypoint, "roll_deg", text="Roll (°)")
-
         preview_row = cinematic_box.row()
         preview_row.scale_y = 1.15
         preview_row.operator(

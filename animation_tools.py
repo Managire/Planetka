@@ -1263,18 +1263,6 @@ def _build_shot_pair(scene, props):
         start["alt_km"] = min(start_alt, end_alt)
         end["alt_km"] = max(start_alt, end_alt)
         end["heading_deg"] = float(base_heading + zoom_rotate_degrees)
-    elif preset == "HELIX_DOWN":
-        direction = str(getattr(props, "anim_circle_direction", "CLOCKWISE")).upper()
-        orbit_sign = 1.0 if direction != "COUNTERCLOCKWISE" else -1.0
-        start["alt_km"] = max(start_alt, end_alt)
-        end["alt_km"] = min(start_alt, end_alt)
-        end["heading_deg"] = float(base_heading + (orbit_degrees * orbit_sign))
-    elif preset == "HELIX_UP":
-        direction = str(getattr(props, "anim_circle_direction", "CLOCKWISE")).upper()
-        orbit_sign = 1.0 if direction != "COUNTERCLOCKWISE" else -1.0
-        start["alt_km"] = min(start_alt, end_alt)
-        end["alt_km"] = max(start_alt, end_alt)
-        end["heading_deg"] = float(base_heading + (orbit_degrees * orbit_sign))
 
     return start, end
 

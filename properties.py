@@ -157,14 +157,6 @@ def _update_anim_preset_defaults(self, context):
         elif preset == "PULL_BACK":
             self.anim_start_altitude_km = float(max_prox_km)
             self.anim_end_altitude_km = float(max_prox_km * 8.0)
-        elif preset == "HELIX_DOWN":
-            self.anim_start_altitude_km = float(max_prox_km * 8.0)
-            self.anim_end_altitude_km = float(max_prox_km)
-            self.anim_orbit_degrees = 720.0
-        elif preset == "HELIX_UP":
-            self.anim_start_altitude_km = float(max_prox_km)
-            self.anim_end_altitude_km = float(max_prox_km * 8.0)
-            self.anim_orbit_degrees = 720.0
         elif preset == "FLYBY":
             altitude_km = max(0.0, float(getattr(self, "nav_altitude_km", 0.0)))
             self.anim_flyby_degrees = max(0.1, min(20.0, altitude_km / 200.0))
@@ -508,7 +500,7 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
 
     auto_resolve_idle_sec: FloatProperty(
         name="Auto Resolve Idle Delay (s)",
-        default=0.6,
+        default=0.5,
         min=0.1,
         max=3.0,
         precision=2,
@@ -668,11 +660,8 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
             ("PULL_BACK", "Zoom Out", "Move from lower altitude to a wider view"),
             ("ARC_LEFT", "Arc Left", "Curved move around target toward left side"),
             ("ARC_RIGHT", "Arc Right", "Curved move around target toward right side"),
-            ("HELIX_DOWN", "Helix Down", "Spiral down toward the target while circling"),
-            ("HELIX_UP", "Helix Up", "Spiral up away from the target while circling"),
             ("FLYBY", "Flyby", "Simple forward flyby across the selected location"),
             ("A_TO_B", "A to B", "Interpolate between saved camera views A and B"),
-            ("WAYPOINTS", "Waypoints", "Travel through waypoints A, B, C..."),
         ),
         default="ORBIT",
         description="Cinematic camera movement preset used for preview/make-ready keyframe generation",
@@ -887,10 +876,10 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         name="Texture Quality",
         items=(
             ("FULL", "Full Quality", "Highest quality texture data"),
-            ("HALF", "Preview", "Reduced resolution preview mode"),
+            ("HALF", "1/2 Quality", "Reduced resolution 1/2 quality mode"),
         ),
         default="HALF",
-        description="Choose Preview or Full Quality texture mode",
+        description="Choose 1/2 Quality or Full Quality texture mode",
         update=update_texture_quality_mode,
     )
 

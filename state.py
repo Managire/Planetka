@@ -122,7 +122,7 @@ _TILE_UTILS_MODULE = None
 
 AUTO_RESOLVE_RETRY_DELAY_SEC = 0.25
 AUTO_RESOLVE_MIN_INTERVAL_SEC_DEFAULT = 1.0
-AUTO_RESOLVE_IDLE_SEC_DEFAULT = 0.6
+AUTO_RESOLVE_IDLE_SEC_DEFAULT = 0.5
 _AUTO_RESOLVE_TIMER_RUNNING = False
 _AUTO_RESOLVE_IN_FLIGHT = False
 _RENDER_JOB_ACTIVE = False
@@ -1076,9 +1076,11 @@ def _suspend_adaptive_viewport_during_navigation(scene):
 
     render = getattr(scene, "render", None) if scene else None
     if str(getattr(render, "engine", "")) != "CYCLES":
+        _force_restore_navigation_adaptive_state()
         return
     props = getattr(scene, "planetka", None) if scene else None
     if props is not None and not bool(getattr(props, "viewport_opt_suspend_subdivision", True)):
+        _force_restore_navigation_adaptive_state()
         return
     if props is not None:
         try:
@@ -3045,6 +3047,9 @@ def update_auto_resolve(self, context):
                 "lock_resolve_during_animation",
             ),
         )
+        props = getattr(scene, "planetka", None)
+        if props is not None and not bool(getattr(props, "viewport_opt_suspend_subdivision", True)):
+            _force_restore_navigation_adaptive_state()
         _mark_auto_resolve_dirty(scene, immediate=True, force_resolve=True)
     if _can_auto_resolve_run(scene):
         ensure_active_view_monitor_running()
