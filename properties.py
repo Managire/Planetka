@@ -13,7 +13,7 @@ from bpy.props import (
 )
 from mathutils import Vector
 
-from .extension_prefs import get_prefs, read_saved_locations
+from .extension_prefs import get_earth_object, get_prefs, read_saved_locations
 from .geonames_db import get_cached_place_by_display, get_place_by_display, search_places
 from .state import (
     resume_navigation_shot_updates,
@@ -48,6 +48,57 @@ logger = logging.getLogger(__name__)
 
 def update_texture_quality_mode(self, context):
     update_auto_resolve(self, context)
+
+
+def _get_earth_radius_bu(self):
+    try:
+        stored_radius = float(self.get("earth_radius_bu", 0.0))
+        if stored_radius > 1e-6:
+            return stored_radius
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        stored_radius = 0.0
+
+    earth = get_earth_object()
+    if earth is not None:
+        module_name = f"{__package__}.operators" if __package__ else "operators"
+        try:
+            operators = importlib.import_module(module_name)
+            radius_fn = getattr(operators, "_earth_radius_blender_units", None)
+            if callable(radius_fn):
+                radius = float(radius_fn(earth))
+                if radius > 1e-6:
+                    try:
+                        self["earth_radius_bu"] = float(radius)
+                    except (RuntimeError, TypeError, ValueError, AttributeError):
+                        pass
+                    return radius
+        except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed reading Earth radius", exc_info=True)
+
+    try:
+        return max(1e-6, float(self.get("earth_radius_bu", 2.0)))
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return 2.0
+
+
+def _set_earth_radius_bu(self, value):
+    try:
+        target = max(1e-6, float(value))
+    except (RuntimeError, TypeError, ValueError):
+        return
+
+    self["earth_radius_bu"] = float(target)
+    module_name = f"{__package__}.operators" if __package__ else "operators"
+    try:
+        operators = importlib.import_module(module_name)
+        set_radius_fn = getattr(operators, "_set_planetka_earth_radius_bu", None)
+        if callable(set_radius_fn):
+            scene = getattr(self, "id_data", None)
+            if scene is None or not isinstance(scene, bpy.types.Scene):
+                scene = getattr(bpy.context, "scene", None)
+            set_radius_fn(scene, float(target))
+    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed applying Earth radius change", exc_info=True)
 
 
 def _compute_max_proximity_altitude_km(scene, props):
@@ -537,6 +588,17 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         precision=2,
         description="Camera focal length in millimeters",
         update=update_navigation_focal_length,
+    )
+
+    earth_radius_bu: FloatProperty(
+        name="Earth Radius",
+        default=2.0,
+        min=1e-6,
+        soft_min=0.1,
+        precision=4,
+        description="Planetka Earth radius in Blender units",
+        get=_get_earth_radius_bu,
+        set=_set_earth_radius_bu,
     )
 
     nav_city_search: StringProperty(

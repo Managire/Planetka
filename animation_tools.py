@@ -20,7 +20,6 @@ from .state import (
     create_temp_mesh,
     cleanup_planetka_unused_data,
     logger,
-    purge_disabled_atmosphere_and_cloud_assets,
     remove_object_and_unused_mesh,
     resume_navigation_shot_updates,
     suspend_navigation_shot_updates,
@@ -631,11 +630,6 @@ def clear_prepared_animation_assets(scene):
             logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
         except (RuntimeError, TypeError, ValueError):
             logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
-
-    try:
-        purge_disabled_atmosphere_and_cloud_assets(scene=scene)
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka animation: failed purge of disabled atmosphere/cloud assets", exc_info=True)
 
     try:
         shader_utils.cleanup_planetka_images(force_remove_datablocks=True)
@@ -1466,53 +1460,6 @@ def _try_start_preview_playback():
         return
 
 
-def _force_viewports_to_solid_shading():
-    """
-    Best-effort switch all VIEW_3D spaces to Solid shading to reduce memory usage
-    during heavy animation renders. Returns a list of (space, previous_type) for restore.
-    """
-    restored = []
-    wm = getattr(bpy.context, "window_manager", None)
-    if wm is None:
-        return restored
-    for window in getattr(wm, "windows", ()):
-        screen = getattr(window, "screen", None)
-        if screen is None:
-            continue
-        for area in getattr(screen, "areas", ()):
-            if getattr(area, "type", None) != 'VIEW_3D':
-                continue
-            for space in getattr(area, "spaces", ()):
-                if getattr(space, "type", None) != 'VIEW_3D':
-                    continue
-                shading = getattr(space, "shading", None)
-                if shading is None:
-                    continue
-                try:
-                    prev = str(getattr(shading, "type", "") or "")
-                    if prev and prev != "SOLID":
-                        restored.append((space, prev))
-                        shading.type = 'SOLID'
-                except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                    continue
-                except (RuntimeError, TypeError, ValueError, AttributeError):
-                    continue
-    return restored
-
-
-def _restore_viewports_shading(shading_backup):
-    for space, shading_type in shading_backup or ():
-        shading = getattr(space, "shading", None)
-        if shading is None:
-            continue
-        try:
-            shading.type = str(shading_type)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            continue
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            continue
-
-
 def _is_movie_output(scene):
     render = getattr(scene, "render", None) if scene else None
     image_settings = getattr(render, "image_settings", None) if render else None
@@ -2254,6 +2201,13 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
     bl_label = "Prepare Animation Render"
     bl_description = "Render animation with segment-boundary Resolve updates to reduce peak memory usage"
 
+    def _is_blend_file_saved(self):
+        try:
+            filepath = str(getattr(bpy.data, "filepath", "") or "").strip()
+            return bool(filepath)
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            return False
+
     def _build_preview_data(self, context):
         scene = require_scene(self, context, logger=logger)
         if scene is None:
@@ -2357,14 +2311,10 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         self._preview_segment_lines = list(segment_lines)
         self._preview_texture_quality_mode = str(getattr(props, "texture_quality_mode", "HALF") or "HALF").upper()
         self._preview_persistent_data_enabled = bool(getattr(render, "use_persistent_data", False)) if render else False
-        self._preview_persistent_data_forced = bool(
-            preview_is_cycles and render is not None and hasattr(render, "use_persistent_data")
-        )
+        self._preview_file_saved = bool(self._is_blend_file_saved())
         return True
 
     def invoke(self, context, event):
-        if not _ensure_saved_blend_before_animation_render(self, prompt_if_unsaved=True):
-            return {'CANCELLED'}
         if not self._build_preview_data(context):
             return {'CANCELLED'}
         return context.window_manager.invoke_props_dialog(self, width=520)
@@ -2387,7 +2337,7 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         texture_quality_mode = str(getattr(self, "_preview_texture_quality_mode", "HALF") or "HALF").upper()
         preview_is_cycles = bool(getattr(self, "_preview_is_cycles", False))
         persistent_data_enabled = bool(getattr(self, "_preview_persistent_data_enabled", False))
-        persistent_data_forced = bool(getattr(self, "_preview_persistent_data_forced", False))
+        preview_file_saved = bool(getattr(self, "_preview_file_saved", False))
 
         layout.label(text="Confirm Animation Render", icon="RENDER_ANIMATION")
         layout.separator()
@@ -2411,11 +2361,16 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             )
             warning_box.label(text="Preview can show flickering or tile transitions.")
             warning_box.label(text="Switch to Full Quality for seamless animation rendering.")
-        if preview_is_cycles and (not persistent_data_enabled) and persistent_data_forced:
+        if preview_is_cycles and (not persistent_data_enabled):
             persistent_box = layout.box()
             persistent_box.alert = False
             persistent_box.label(text="Persistent Data is OFF in scene settings.", icon="INFO")
-            persistent_box.label(text="Planetka will enable it for this render and restore your setting after.")
+            persistent_box.label(text="Turn it ON for faster animation renders.")
+        if not preview_file_saved:
+            save_box = layout.box()
+            save_box.alert = False
+            save_box.label(text="File not saved", icon="INFO")
+            save_box.label(text="Save .blend first if you want reliable output paths.")
         seg_box = layout.box()
         seg_box.label(text="Segments", icon="OUTLINER")
         col = seg_box.column(align=True)
@@ -2433,13 +2388,6 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         props = require_planetka_props(self, context, logger=logger)
         if props is None:
             return {'CANCELLED'}
-        try:
-            purge_disabled_atmosphere_and_cloud_assets(scene=scene)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka animation: failed pre-render purge of disabled atmosphere/cloud assets", exc_info=True)
-        if not _ensure_saved_blend_before_animation_render(self, prompt_if_unsaved=False):
-            return {'CANCELLED'}
-
         camera = getattr(scene, "camera", None)
         if camera is None or str(getattr(camera, "type", "")) != "CAMERA":
             return fail(
@@ -2473,8 +2421,6 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
 
         original_frame = int(getattr(scene, "frame_current", frame_start))
         original_auto_resolve = bool(getattr(props, "auto_resolve", True))
-        viewport_shading_backup = _force_viewports_to_solid_shading()
-
         render = getattr(scene, "render", None)
         cycles = getattr(scene, "cycles", None)
         original_settings = {
@@ -2498,9 +2444,6 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         segments = []
         frame_change_handler = None
         segment_boundary_failures = []
-        forced_persistent_data = False
-        render_engine_code = str(getattr(render, "engine", "") or "") if render else ""
-        render_is_cycles = render_engine_code == "CYCLES"
         try:
             if bool(scene.get(ANIMATION_STATS_SEGMENTS_KEY, 0)):
                 clear_prepared_animation_assets(scene)
@@ -2524,37 +2467,6 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
                     code=ErrorCode.RESOLVE_PRECHECK_FAILED,
                     logger=logger,
                 )
-
-            if render is not None:
-                if render_is_cycles and hasattr(render, "use_persistent_data"):
-                    try:
-                        if not bool(getattr(render, "use_persistent_data", False)):
-                            forced_persistent_data = True
-                        render.use_persistent_data = True
-                    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                        logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
-                    except (RuntimeError, TypeError, ValueError):
-                        logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
-                if hasattr(render, "use_lock_interface"):
-                    render.use_lock_interface = True
-                if hasattr(render, "display_mode"):
-                    try:
-                        render.display_mode = 'NONE'
-                    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                        logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
-                    except (RuntimeError, TypeError, ValueError):
-                        logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
-
-            if cycles is not None:
-                try:
-                    if hasattr(cycles, "dicing_rate"):
-                        cycles.dicing_rate = float(getattr(props, "anim_render_dicing_rate", 1.0))
-                    if hasattr(cycles, "offscreen_dicing_scale"):
-                        cycles.offscreen_dicing_scale = float(getattr(props, "anim_render_offscreen_scale", 2.0))
-                except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                    logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
-                except (RuntimeError, TypeError, ValueError):
-                    logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
 
             # Resolve once at the first frame, then only on segment boundaries.
             segment_starts = sorted({int(seg.get("start", frame_start)) for seg in segments if isinstance(seg, dict)})
@@ -2751,7 +2663,6 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             except (RuntimeError, TypeError, ValueError):
                 logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
 
-            _restore_viewports_shading(viewport_shading_backup)
             try:
                 props.auto_resolve = bool(original_auto_resolve)
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
@@ -2803,8 +2714,6 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
                     logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
 
         self.report({'INFO'}, f"Animation render complete ({len(segments)} segments).")
-        if forced_persistent_data:
-            self.report({'INFO'}, "Persistent Data was enabled automatically for this render.")
         if segment_boundary_failures:
             self.report(
                 {'WARNING'},

@@ -8,6 +8,17 @@ All notable changes to Planetka are documented in this file.
 - Added `tools/planetka_regression_test.py` to validate collection behavior, size stability, and S2-only support fallback.
 
 ### Changed
+- Removed hidden scene/view/render mutations from `Create Earth` and `Prepare Animation Render` flows:
+  - no default-scene object deletion on Create Earth
+  - no automatic viewport mode switches in Create Earth/animation confirm
+  - no automatic Persistent Data/dicing/display-mode/lock-interface overrides when confirming animation render
+- Navigation now uses explicit `Bring Camera to View` behavior: Planetka Camera is activated and aligned only when user clicks that action.
+- Earth Transform now exposes `Earth Radius` (mesh-radius control) instead of object scale controls.
+- Updated default Earth grading values:
+  - `Surface Saturation` default to `1.0`
+  - `Roughness` default to `0.4`
+- Default material displacement mode is now `Displacement` (instead of `Displacement and Bump`), and user displacement-mode edits are preserved across Resolve.
+- Preserved user Earth-surface material edits across Resolve by applying default normalization/migration only once per material.
 - Updated release QA docs to match the simplified Create/Resolve-only workflow.
 - Improved Earth surface shading with procedural forest and rock detail (bump, optional micro-displacement) driven by satellite color/slope masks.
 - Marked EEVEE as unsupported/unstable for Planetka rendering in release documentation and UI warnings; Cycles is now auto-selected on `Create Earth`.
@@ -16,6 +27,19 @@ All notable changes to Planetka are documented in this file.
 
 ### Fixed
 - Removed outdated release-checklist references to preview parenting.
+
+## [v0.4.0] - 2026-04-06
+
+### Changed
+- Removed hidden scene/view/render mutations from Create Earth and Prepare Animation Render confirmation.
+- Create Earth no longer deletes Blender default scene objects/collection.
+- Navigation now uses explicit `Bring Camera to View` action to activate/move Planetka Camera.
+- Replaced Earth Transform scale controls with `Earth Radius` control.
+- Updated Earth grading defaults: `Surface Saturation = 1.0`, `Roughness = 0.4`.
+- Default Earth material displacement mode is now `Displacement` (not `Displacement and Bump`).
+
+### Fixed
+- Preserved user-edited displacement mode and grading values across Resolve by avoiding repeated default overrides.
 
 ## [v0.3.0] - 2026-04-02
 

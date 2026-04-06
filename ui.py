@@ -401,7 +401,7 @@ def _draw_navigation(layout, context):
     location_box.enabled = not prepared
     location_box.operator(
         "planetka.navigation_use_current_view",
-        text="Camera to Current View",
+        text="Bring Camera to View",
         icon="VIEWZOOM",
     )
     geonames_status = str(get_search_status_text() or "")
@@ -632,9 +632,39 @@ def _draw_earth_transform(layout, scene):
         layout.label(text="Planetka Root is not in active scene.", icon="INFO")
         return
 
+    props = getattr(scene, "planetka", None) if scene else None
+    if props is not None:
+        layout.prop(props, "earth_radius_bu", text="Earth Radius")
+        try:
+            earth_radius = float(getattr(props, "earth_radius_bu", 2.0))
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            earth_radius = 2.0
+
+        camera_clip_end = None
+        active_camera = getattr(scene, "camera", None) if scene is not None else None
+        camera_data = getattr(active_camera, "data", None) if active_camera is not None else None
+        try:
+            if active_camera is not None and str(getattr(active_camera, "type", "")) == "CAMERA" and camera_data is not None:
+                camera_clip_end = float(getattr(camera_data, "clip_end", 0.0))
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            camera_clip_end = None
+
+        if earth_radius >= 100.0 and camera_clip_end is not None and camera_clip_end <= 1000.0:
+            warn_box = layout.box()
+            warn_box.alert = True
+            warn_box.use_property_split = False
+            warn_box.label(
+                text="Clip End is low for large Earth Radius.",
+                icon="ERROR",
+            )
+            warn_box.label(
+                text="Recommended: increase Camera and Viewport clipping values",
+            )
+            warn_box.label(
+                text="to avoid unexpected cut-offs.",
+            )
     layout.prop(root, "location", text="Location")
     layout.prop(root, "rotation_euler", text="Rotation")
-    layout.prop(root, "scale", text="Scale")
 
 
 def _iter_atmosphere_nodes():

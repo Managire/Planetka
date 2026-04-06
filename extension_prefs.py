@@ -196,12 +196,10 @@ def get_earth_object():
         return None
 
     if len(candidates) == 1:
-        mark_earth_object(candidates[0])
         return candidates[0]
 
     for obj in candidates:
         if obj.name == EARTH_OBJECT_DEFAULT_NAME and getattr(obj, "type", None) == 'MESH':
-            mark_earth_object(obj)
             return obj
 
     role_candidates = []
@@ -213,7 +211,6 @@ def get_earth_object():
             continue
 
     if len(role_candidates) == 1:
-        mark_earth_object(role_candidates[0])
         return role_candidates[0]
 
     return None

@@ -48,6 +48,10 @@ ONE_PASS_REFINEMENT_CHILD_Z = {
 LAST_REQUIRED_MPP_KEY = "planetka_last_required_mpp_m"
 LAST_TARGET_D_KEY = "planetka_last_target_d"
 LAST_SCOPE_USED_KEY = "planetka_last_scope_used"
+LAST_PANORAMA_MODE_KEY = "planetka_last_panorama_mode"
+LAST_PANORAMA_LIMIT_EXCEEDED_KEY = "planetka_last_panorama_limit_exceeded"
+LAST_PANORAMA_REQUIRED_TILES_KEY = "planetka_last_panorama_required_tiles"
+LAST_PANORAMA_REQUIRED_Z_KEY = "planetka_last_panorama_required_z"
 MAX_SHADER_TILE_BUDGET = 12
 # Padding low tile counts with synthetic placeholder slots can trigger
 # EEVEE/Metal sampler overflow in some camera states (e.g. Cairo frame 105).
@@ -1350,7 +1354,11 @@ def get_camera_info(scene, scope_mode="AUTO"):
     cam_up = cam_matrix.col[1].xyz.normalized()
     res_x, res_y = _render_resolution_px(scene)
 
-    if cam.data.type == "PERSP":
+    cam_data_type = str(getattr(cam.data, "type", "PERSP"))
+    panorama_type = str(getattr(cam.data, "panorama_type", ""))
+    is_panorama_equirect = cam_data_type == "PANO" and panorama_type == "EQUIRECTANGULAR"
+
+    if cam_data_type == "PERSP":
         h_fov = cam.data.angle_x
         v_fov = cam.data.angle_y
     else:
@@ -1371,7 +1379,8 @@ def get_camera_info(scene, scope_mode="AUTO"):
         "up": cam_up,
         "h_fov": h_fov,
         "v_fov": v_fov,
-        "camera_type": str(getattr(cam.data, "type", "PERSP")),
+        "camera_type": cam_data_type,
+        "is_panorama_equirect": bool(is_panorama_equirect),
         "ortho_scale": float(getattr(cam.data, "ortho_scale", 1.0)),
         "res_x": res_x,
         "res_y": res_y,
@@ -1387,6 +1396,7 @@ def main(scope_mode="AUTO", edge_boost=False, texture_quality_mode_override=None
     h_fov = camera_info["h_fov"]
     v_fov = camera_info["v_fov"]
     camera_type = camera_info["camera_type"]
+    is_panorama_equirect = bool(camera_info.get("is_panorama_equirect", False))
     ortho_scale = float(camera_info["ortho_scale"])
     res_x = float(camera_info["res_x"])
     res_y = float(camera_info["res_y"])
@@ -1398,6 +1408,13 @@ def main(scope_mode="AUTO", edge_boost=False, texture_quality_mode_override=None
         scene[LAST_SCOPE_USED_KEY] = scope_used
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed storing resolve scope in scene diagnostics", exc_info=True)
+    try:
+        scene[LAST_PANORAMA_MODE_KEY] = bool(is_panorama_equirect)
+        scene[LAST_PANORAMA_LIMIT_EXCEEDED_KEY] = False
+        scene[LAST_PANORAMA_REQUIRED_TILES_KEY] = 0
+        scene[LAST_PANORAMA_REQUIRED_Z_KEY] = 0
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed storing panorama resolve diagnostics", exc_info=True)
     bias_factor = _resolution_bias_factor(scene)
 
     earth = get_earth_object()
@@ -1475,30 +1492,68 @@ def main(scope_mode="AUTO", edge_boost=False, texture_quality_mode_override=None
     frustum_margin = ACTIVE_VIEW_FRUSTUM_MARGIN if scope_used == "ACTIVE_VIEW" else FRUSTUM_MARGIN
     visibility_edge_boost = bool(edge_boost or scope_used == "ACTIVE_VIEW")
 
-    for z_level in candidate_z_levels:
-        visible_tiles, nearest_distance = _collect_visible_tiles(
-            z=z_level,
-            cam_pos_local=cam_pos_local,
-            cam_forward_local=cam_forward_local,
-            cam_right_local=cam_right_local,
-            cam_up_local=cam_up_local,
-            earth_radius=earth_radius,
-            camera_type=camera_type,
-            h_fov=h_fov,
-            v_fov=v_fov,
-            res_x=res_x,
-            res_y=res_y,
-            ortho_scale=ortho_scale,
-            bias_factor=bias_factor,
-            frustum_margin=frustum_margin,
-            edge_boost=visibility_edge_boost,
-        )
-        if not visible_tiles:
-            continue
-        selected_z = int(z_level)
-        selected_nearest_distance = nearest_distance
-        selected_tiles = set(visible_tiles)
-        break
+    if is_panorama_equirect:
+        requested_z = int(candidate_z_levels[0]) if candidate_z_levels else int(max_available_z)
+        selected_z = int(requested_z)
+        tile_count = len(range(0, 360, int(selected_z))) * len(range(0, 180, int(selected_z)))
+        if int(tile_count) > int(MAX_SHADER_TILE_BUDGET):
+            for z_level in candidate_z_levels[1:]:
+                candidate_count = len(range(0, 360, int(z_level))) * len(range(0, 180, int(z_level)))
+                if int(candidate_count) <= int(MAX_SHADER_TILE_BUDGET):
+                    selected_z = int(z_level)
+                    tile_count = int(candidate_count)
+                    break
+            else:
+                # Defensive fallback: choose the coarsest available level.
+                selected_z = int(candidate_z_levels[-1]) if candidate_z_levels else int(max_available_z)
+                tile_count = len(range(0, 360, int(selected_z))) * len(range(0, 180, int(selected_z)))
+        try:
+            scene[LAST_PANORAMA_REQUIRED_TILES_KEY] = int(tile_count)
+            scene[LAST_PANORAMA_REQUIRED_Z_KEY] = int(selected_z)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed writing panorama required tile diagnostics", exc_info=True)
+        try:
+            scene[LAST_PANORAMA_LIMIT_EXCEEDED_KEY] = bool(int(tile_count) > int(MAX_SHADER_TILE_BUDGET))
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed setting panorama limit exceeded flag", exc_info=True)
+        if int(selected_z) != int(requested_z):
+            logger.info(
+                "Planetka panorama resolve: coarsened z from %03d to %03d to satisfy tile budget (%d <= %d).",
+                int(requested_z),
+                int(selected_z),
+                int(tile_count),
+                int(MAX_SHADER_TILE_BUDGET),
+            )
+        d_value = compute_d_value(required_mpp_near, selected_z, bias_factor=bias_factor)
+        for x in range(0, 360, int(selected_z)):
+            for y in range(0, 180, int(selected_z)):
+                selected_tiles.add(format_tile(x, y, int(selected_z), int(d_value)))
+        selected_nearest_distance = float(max(0.0, float(camera_altitude)))
+    else:
+        for z_level in candidate_z_levels:
+            visible_tiles, nearest_distance = _collect_visible_tiles(
+                z=z_level,
+                cam_pos_local=cam_pos_local,
+                cam_forward_local=cam_forward_local,
+                cam_right_local=cam_right_local,
+                cam_up_local=cam_up_local,
+                earth_radius=earth_radius,
+                camera_type=camera_type,
+                h_fov=h_fov,
+                v_fov=v_fov,
+                res_x=res_x,
+                res_y=res_y,
+                ortho_scale=ortho_scale,
+                bias_factor=bias_factor,
+                frustum_margin=frustum_margin,
+                edge_boost=visibility_edge_boost,
+            )
+            if not visible_tiles:
+                continue
+            selected_z = int(z_level)
+            selected_nearest_distance = nearest_distance
+            selected_tiles = set(visible_tiles)
+            break
 
     if selected_z is None or not selected_tiles:
         try:

@@ -49,10 +49,14 @@ VOLUMETRIC_ATMOSPHERE_GROUP_NAME = "Planetka Atmosphere Group"
 VOLUMETRIC_ATMOSPHERE_ROLE_VALUE = "atmosphere_volumetric"
 VOLUMETRIC_ATMOSPHERE_SCALE_FACTOR = 2.0
 DEFAULT_ELEVATION_COEFFICIENT = 1.0
-ELEVATION_SCALE_MULTIPLIER = 0.012
-DEFAULT_SURFACE_SATURATION = 1.2
-DEFAULT_WATER_ROUGHNESS = 0.6
+ELEVATION_SCALE_MULTIPLIER = 0.024
+DEFAULT_SURFACE_SATURATION = 1.0
+DEFAULT_WATER_ROUGHNESS = 0.4
 _LIBRARY_SIGNATURE_KEY = "planetka_embedded_material_sha256"
+_MATERIAL_DEFAULTS_VERSION_KEY = "planetka_surface_defaults_v"
+_MATERIAL_DEFAULTS_VERSION = 1
+_MATERIAL_DISPLACEMENT_MODE_VERSION_KEY = "planetka_material_displacement_mode_v"
+_MATERIAL_DISPLACEMENT_MODE_VERSION = 1
 _PREVIEW_TEXTURE_GROUP_VERSION_KEY = "planetka_preview_texture_group_v"
 _PREVIEW_TEXTURE_GROUP_VERSION = 1
 _ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
@@ -82,8 +86,8 @@ _DETAIL_SOCKET_MICRO_DISP = "Micro Displacement Strength"
 
 _SURFACE_DEFAULT_INPUT_SPECS = (
     ("Surface Brightness", 5.0, 0.0, 10.0),
-    ("Surface Saturation", 1.2, 0.0, 5.0),
-    ("Roughness", 0.6, 0.0, 1.0),
+    ("Surface Saturation", 1.0, 0.0, 5.0),
+    ("Roughness", 0.4, 0.0, 1.0),
     ("IOR", 1.333, 0.0, 3.0),
     ("Saturation", 1.0, 0.0, 2.0),
     ("Water Texture Strength", 0.5, 0.0, 1.0),
@@ -231,11 +235,17 @@ def _set_material_displacement_and_bump(material):
     if material is None:
         return False
 
+    try:
+        if int(material.get(_MATERIAL_DISPLACEMENT_MODE_VERSION_KEY, 0)) >= int(_MATERIAL_DISPLACEMENT_MODE_VERSION):
+            return False
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
     changed = False
 
     # Blender 5.x path.
     if hasattr(material, "displacement_method"):
-        preferred_material = ("BOTH", "DISPLACEMENT_BUMP", "DISPLACEMENT_AND_BUMP")
+        preferred_material = ("DISPLACEMENT", "DISPLACEMENT_ONLY")
         available = set()
         try:
             prop_def = material.bl_rna.properties.get("displacement_method")
@@ -257,9 +267,13 @@ def _set_material_displacement_and_bump(material):
     # Legacy path.
     cycles_settings = getattr(material, "cycles", None)
     if cycles_settings is None or not hasattr(cycles_settings, "displacement_method"):
+        try:
+            material[_MATERIAL_DISPLACEMENT_MODE_VERSION_KEY] = int(_MATERIAL_DISPLACEMENT_MODE_VERSION)
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
         return changed
 
-    preferred_cycles = ("BOTH", "DISPLACEMENT_BUMP", "DISPLACEMENT_AND_BUMP")
+    preferred_cycles = ("DISPLACEMENT", "DISPLACEMENT_ONLY")
     available = set()
     try:
         prop_def = cycles_settings.bl_rna.properties.get("displacement_method")
@@ -277,12 +291,21 @@ def _set_material_displacement_and_bump(material):
             break
         except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
             continue
+    try:
+        material[_MATERIAL_DISPLACEMENT_MODE_VERSION_KEY] = int(_MATERIAL_DISPLACEMENT_MODE_VERSION)
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
     return changed
 
 
 def _normalize_surface_elevation_defaults(material):
     if material is None or getattr(material, "node_tree", None) is None:
         return
+    try:
+        if int(material.get(_MATERIAL_DEFAULTS_VERSION_KEY, 0)) >= int(_MATERIAL_DEFAULTS_VERSION):
+            return
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
     node_tree = getattr(material, "node_tree", None)
     if node_tree is None:
         return
@@ -335,11 +358,10 @@ def _normalize_surface_elevation_defaults(material):
                 roughness_value = float(roughness_socket.default_value)
             except (AttributeError, TypeError, ValueError):
                 roughness_value = None
-            # Preserve custom user edits; normalize only legacy defaults to 0.6.
+            # Preserve user edits; migrate known legacy defaults once.
             if roughness_value is not None and (
                 abs(roughness_value - 0.6) <= 1e-6
                 or abs(roughness_value - 0.5) <= 1e-6
-                or abs(roughness_value - 0.4) <= 1e-6
                 or abs(roughness_value - 0.25) <= 1e-6
             ):
                 try:
@@ -357,7 +379,7 @@ def _normalize_surface_elevation_defaults(material):
                 surface_sat_value = float(surface_sat_socket.default_value)
             except (AttributeError, TypeError, ValueError):
                 surface_sat_value = None
-            # Preserve custom user edits; normalize old defaults to 1.2.
+            # Preserve user edits; migrate known legacy defaults once.
             if surface_sat_value is not None and (
                 abs(surface_sat_value - 1.2) <= 1e-6
                 or abs(surface_sat_value - 1.25) <= 1e-6
@@ -367,6 +389,53 @@ def _normalize_surface_elevation_defaults(material):
                     surface_sat_socket.default_value = float(DEFAULT_SURFACE_SATURATION)
                 except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, TypeError, ValueError):
                     pass
+
+    try:
+        material[_MATERIAL_DEFAULTS_VERSION_KEY] = int(_MATERIAL_DEFAULTS_VERSION)
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+
+def sync_surface_elevation_scale_for_radius(earth_radius_bu):
+    """Keep displacement world-height response consistent for custom Earth radius.
+
+    Baseline tuning was authored at radius=2.0 BU using ELEVATION_SCALE_MULTIPLIER.
+    """
+    try:
+        radius = max(1e-6, float(earth_radius_bu))
+    except (TypeError, ValueError):
+        radius = 2.0
+    scale_value = float(ELEVATION_SCALE_MULTIPLIER) * (radius / 2.0)
+
+    changed = False
+    target_group_names = {
+        str(SURFACE_GRADING_GROUP_NAME),
+        f"{SURFACE_GRADING_GROUP_NAME}.001",
+        f"{SURFACE_GRADING_GROUP_NAME}.002",
+    }
+    for node_group in tuple(getattr(bpy.data, "node_groups", ())):
+        group_name = str(getattr(node_group, "name", "") or "")
+        if group_name not in target_group_names:
+            continue
+        nodes = getattr(node_group, "nodes", None)
+        if nodes is None:
+            continue
+        scale_node = nodes.get("Math.011")
+        if scale_node is None or str(getattr(scale_node, "bl_idname", "")) != "ShaderNodeMath":
+            continue
+        try:
+            current = float(scale_node.inputs[1].default_value)
+        except (AttributeError, TypeError, ValueError, IndexError):
+            current = None
+        if current is not None and abs(current - scale_value) <= 1e-9:
+            continue
+        try:
+            scale_node.inputs[1].default_value = float(scale_value)
+            changed = True
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, TypeError, ValueError, IndexError):
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+    return float(scale_value), bool(changed)
 
 
 def _ensure_interface_float_socket(node_group, name, *, default, min_value=0.0, max_value=1.0, description=""):

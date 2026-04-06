@@ -10,6 +10,7 @@ This module executes the Earth resolve flow:
 
 import importlib
 import json
+import math
 import os
 import time
 import re
@@ -18,11 +19,11 @@ import bpy
 from bpy.props import BoolProperty, EnumProperty, StringProperty
 
 from .auth import is_authenticated, sync_account_profile
-from .asset_builder import ensure_planetka_assets
+from .asset_builder import sync_surface_elevation_scale_for_radius
 from .compatibility_utils import ensure_adaptive_subdivision_compat
 from .diagnostics import write_resolve_diagnostics, write_tile_view_diagnostics
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS, with_error_code
-from .extension_prefs import get_earth_object, get_earth_surface_candidates, get_prefs, mark_earth_object
+from .extension_prefs import get_earth_object, get_earth_surface_candidates, get_prefs
 from .operator_utils import ErrorCode, fail, require_planetka_props, require_scene
 from .r2_source import (
     is_remote_source_configured,
@@ -54,6 +55,10 @@ _TILE_UTILS_MODULE = None
 FORCE_EMPTY_RESOLVE_ONCE_KEY = "planetka_force_empty_resolve_once"
 LAST_REQUIRED_MPP_KEY = "planetka_last_required_mpp_m"
 ANIMATION_PREPARED_SEGMENTS_KEY = "planetka_anim_prepared_segments"
+LAST_PANORAMA_MODE_KEY = "planetka_last_panorama_mode"
+LAST_PANORAMA_LIMIT_EXCEEDED_KEY = "planetka_last_panorama_limit_exceeded"
+LAST_PANORAMA_REQUIRED_TILES_KEY = "planetka_last_panorama_required_tiles"
+LAST_PANORAMA_REQUIRED_Z_KEY = "planetka_last_panorama_required_z"
 
 
 _TILE_ZD_PATTERN = re.compile(r"_z(\d+)_d(\d+)$")
@@ -150,6 +155,24 @@ def _parse_tiles_override(raw_json):
     return [str(tile) for tile in payload if str(tile or "").strip()]
 
 
+def _show_popup_lines(context, title, icon, lines):
+    wm = getattr(context, "window_manager", None) if context else None
+    if wm is None:
+        return
+
+    def _draw(_self, popup_context):
+        layout = getattr(_self, "layout", None)
+        if layout is None:
+            return
+        for line in lines:
+            layout.label(text=str(line))
+
+    try:
+        wm.popup_menu(_draw, title=str(title or "Planetka"), icon=str(icon or "INFO"))
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed showing popup warning", exc_info=True)
+
+
 def _count_missing_tile_loading_images(material_name="Planetka Earth Material"):
     material = bpy.data.materials.get(str(material_name or ""))
     if material is None or getattr(material, "node_tree", None) is None:
@@ -234,6 +257,63 @@ def _count_missing_tile_loading_images(material_name="Planetka Earth Material"):
             if abs_path and not os.path.isfile(abs_path):
                 missing += 1
     return int(missing)
+
+
+def _earth_radius_blender_units(earth_obj):
+    if earth_obj is None:
+        return 2.0
+    try:
+        stored_local_radius = float(earth_obj.get("planetka_surface_local_radius", 0.0))
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        stored_local_radius = 0.0
+    try:
+        world_scale = earth_obj.matrix_world.to_scale()
+        max_scale = max(abs(world_scale.x), abs(world_scale.y), abs(world_scale.z), 1e-9)
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        max_scale = 1.0
+    if stored_local_radius > 1e-9:
+        return float(stored_local_radius) * float(max_scale)
+    mesh_data = getattr(earth_obj, "data", None)
+    vertices = getattr(mesh_data, "vertices", None)
+    if vertices:
+        try:
+            local_radius = max(float(v.co.length) for v in vertices)
+            if local_radius > 1e-9:
+                return float(local_radius) * float(max_scale)
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            pass
+    return max(float(max_scale), 1.0)
+
+
+def _validate_resolve_scene_integrity(earth_surface):
+    if earth_surface is None:
+        return "Resolve requires an existing Earth surface object."
+    if str(getattr(earth_surface, "type", "")) != "MESH":
+        return "Earth surface object must be a mesh."
+
+    material = bpy.data.materials.get("Planetka Earth Material")
+    if material is None:
+        return "Missing required material: Planetka Earth Material."
+    node_tree = getattr(material, "node_tree", None)
+    if node_tree is None:
+        return "Planetka Earth Material has no node tree."
+
+    material_slots = tuple(getattr(getattr(earth_surface, "data", None), "materials", ()) or ())
+    if material not in material_slots:
+        return (
+            f"Earth surface object '{earth_surface.name}' is not using 'Planetka Earth Material'. "
+            "Restore required material assignments and retry."
+        )
+
+    loading_node = getattr(node_tree, "nodes", None).get("Planetka Textures Loading") if getattr(node_tree, "nodes", None) else None
+    if loading_node is None:
+        return "Planetka Earth Material is missing node 'Planetka Textures Loading'."
+    if str(getattr(loading_node, "type", "")) != "GROUP":
+        return "Node 'Planetka Textures Loading' has invalid type."
+    if getattr(loading_node, "node_tree", None) is None:
+        return "Node 'Planetka Textures Loading' is missing its group tree."
+
+    return ""
 
 
 class PLANETKA_OT_LoadTextures(bpy.types.Operator):
@@ -323,18 +403,17 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             return {'CANCELLED'}
 
         try:
-            ensure_planetka_assets(scene)
             compat_info = {}
             if not bool(getattr(self, "skip_render_compatibility", False)):
                 compat_info = ensure_adaptive_subdivision_compat(scene, return_details=True)
         except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
             return fail(
                 self,
-                f"Resolve precheck failed while rebuilding Planetka assets: {exc}",
+                f"Resolve precheck failed: {exc}",
                 code=ErrorCode.RESOLVE_PRECHECK_FAILED,
                 logger=logger,
                 exc=exc,
-                log_message="Planetka Resolve asset rebuild failed",
+                log_message="Planetka Resolve precheck failed",
             )
         if (
             not bool(getattr(self, "skip_render_compatibility", False))
@@ -418,6 +497,49 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 code=ErrorCode.RESOLVE_PRECHECK_FAILED,
                 logger=logger,
             )
+        integrity_issue = _validate_resolve_scene_integrity(earth_surface)
+        if integrity_issue:
+            return fail(
+                self,
+                integrity_issue,
+                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                logger=logger,
+            )
+        target_surface_name = str(getattr(earth_surface, "name", "") or "Planetka Earth Surface")
+        # Apply requested Earth Radius on resolve as a safe fallback in case the UI
+        # setter was invoked in a context where direct mesh update could not run.
+        try:
+            desired_radius = float(getattr(props, "earth_radius_bu", 2.0))
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            desired_radius = 2.0
+        if not math.isfinite(desired_radius):
+            desired_radius = 2.0
+        desired_radius = max(1e-6, float(desired_radius))
+        try:
+            current_radius = float(_earth_radius_blender_units(earth_surface))
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            current_radius = desired_radius
+        if math.isfinite(current_radius) and abs(current_radius - desired_radius) > 1e-6:
+            try:
+                operators_module = importlib.import_module(f"{__package__}.operators" if __package__ else "operators")
+                set_radius_fn = getattr(operators_module, "_set_planetka_earth_radius_bu", None)
+                if callable(set_radius_fn):
+                    set_radius_fn(scene, desired_radius)
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka: failed applying deferred Earth Radius during resolve", exc_info=True)
+        try:
+            earth_radius_bu = _earth_radius_blender_units(earth_surface)
+            scale_value, scale_changed = sync_surface_elevation_scale_for_radius(earth_radius_bu)
+            if scale_changed:
+                logger.debug(
+                    "Planetka: synchronized elevation displacement scale for Earth radius %.6f (scale=%.9f).",
+                    float(earth_radius_bu),
+                    float(scale_value),
+                )
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed syncing elevation displacement scale from Earth radius", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed syncing elevation displacement scale from Earth radius", exc_info=True)
 
         tile_utils = _get_tile_utils()
         if tile_utils is None:
@@ -465,6 +587,41 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 tiles = []
                 self.report({'WARNING'}, "No active camera/view found; resolving to no visible tiles.")
         phase_tile_select_ms = (time.perf_counter() - phase_start) * 1000.0
+
+        try:
+            panorama_mode = bool(scene.get(LAST_PANORAMA_MODE_KEY, False))
+            panorama_limit_exceeded = bool(scene.get(LAST_PANORAMA_LIMIT_EXCEEDED_KEY, False))
+            panorama_required_tiles = int(scene.get(LAST_PANORAMA_REQUIRED_TILES_KEY, 0) or 0)
+            panorama_required_z = int(scene.get(LAST_PANORAMA_REQUIRED_Z_KEY, 0) or 0)
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            panorama_mode = False
+            panorama_limit_exceeded = False
+            panorama_required_tiles = 0
+            panorama_required_z = 0
+
+        if panorama_mode and panorama_limit_exceeded:
+            panorama_message = (
+                f"Panorama resolve exceeds tile limit: {int(panorama_required_tiles)} required "
+                f"(limit 12, z{int(panorama_required_z):03d})."
+            )
+            coded_panorama_message = with_error_code(ErrorCode.RESOLVE_PRECHECK_FAILED, panorama_message)
+            try:
+                scene["planetka_last_resolve_error"] = coded_panorama_message
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka: failed storing panorama tile-limit resolve error", exc_info=True)
+            _show_popup_lines(
+                context,
+                "Panorama Resolve Warning",
+                "ERROR",
+                (
+                    "Equirectangular panorama needs too many tiles for this view.",
+                    f"Required tiles: {int(panorama_required_tiles)} at z{int(panorama_required_z):03d}.",
+                    "Current shader limit is 12 tiles.",
+                    "Increase camera altitude or reduce required quality and resolve again.",
+                ),
+            )
+            self.report({'WARNING'}, panorama_message)
+            return {'CANCELLED'}
 
         if bool(getattr(self, "defer_download", False)):
             queued = queue_resolve_download(
@@ -692,10 +849,9 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
 
         phase_start = time.perf_counter()
         try:
-            new_obj.name = "Planetka Earth Surface"
+            new_obj.name = str(target_surface_name or "Planetka Earth Surface")
         except (AttributeError, RuntimeError, TypeError, ValueError):
             logger.debug("Planetka: failed renaming resolved Earth surface object", exc_info=True)
-        mark_earth_object(new_obj)
         phase_post_mark_ms = (time.perf_counter() - phase_start) * 1000.0
 
         try:

@@ -66,15 +66,11 @@ from .clouds_vdb import (
 from .properties import PlanetkaAnimationWaypoint, PlanetkaProperties
 from .render_prep import PLANETKA_OT_LoadTextures
 from .state import (
-    _iter_scenes,
     _planetka_depsgraph_update_post,
     _planetka_frame_change_post,
     _planetka_load_post,
-    purge_disabled_atmosphere_and_cloud_assets,
     _sync_logging_from_scenes,
-    _sync_props_from_idprops,
     mark_render_job_started,
-    migrate_scene,
     recover_post_render_state,
     stop_auto_resolve_service,
 )
@@ -105,7 +101,7 @@ from .validation import PLANETKA_OT_ReportBug, PLANETKA_OT_ValidateTextureSource
 bl_info = {
     "name": "Planetka - the Earth",
     "author": "Tomas Griger",
-    "version": (0, 3, 2),
+    "version": (0, 4, 0),
     "blender": (3, 6, 0),
     "location": "View3D > Sidebar > Planetka",
     "description": "Cinematic Earth visualisation system",
@@ -306,13 +302,6 @@ def register():
     if not hasattr(bpy.types.Scene, "planetka"):
         bpy.types.Scene.planetka = PointerProperty(type=PlanetkaProperties)
 
-    for scene in _iter_scenes():
-        _sync_props_from_idprops(scene)
-        migrate_scene(scene)
-        try:
-            purge_disabled_atmosphere_and_cloud_assets(scene=scene)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-            pass
     _sync_logging_from_scenes()
     _remove_load_post_handler()
     _remove_depsgraph_post_handler()

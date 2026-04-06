@@ -920,6 +920,8 @@ def _remove_preview_assets():
 
 
 def update_show_earth_preview(self, context):
+    if _IDPROP_SYNCING:
+        return
     scene = getattr(context, "scene", None) if context else None
     if scene:
         _sync_idprops_from_props(scene, ("show_earth_preview",))
@@ -2525,6 +2527,7 @@ def _is_non_retryable_resolve_error(message):
             "pka-res-006",
             "download completed with missing files",
             "resolve integrity check failed",
+            "panorama resolve exceeds tile limit",
             "no fallback parent found",
             "does not currently have access to this remote data request",
             "does not have access to remote earth data",
@@ -3314,10 +3317,6 @@ def recover_post_render_state(scene=None):
 
     if scene is None:
         scene = getattr(bpy.context, "scene", None)
-    try:
-        purge_disabled_atmosphere_and_cloud_assets(scene=scene)
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed purging disabled atmosphere/cloud assets after render", exc_info=True)
     if scene is not None:
         _mark_auto_resolve_dirty(scene, immediate=True)
         request_auto_resolve(scene, immediate=True, mark_dirty=False)
@@ -3370,10 +3369,6 @@ def _initialize_props_from_imported_planetka(scene):
         logger.debug("Planetka: failed forcing atmosphere/cloud scene idprops off", exc_info=True)
 
     _sync_idprops_from_props(scene)
-    try:
-        purge_disabled_atmosphere_and_cloud_assets(scene=scene)
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed purging disabled atmosphere/cloud assets on init", exc_info=True)
 
 
 @persistent
@@ -3492,13 +3487,6 @@ def _planetka_frame_change_post(scene, _depsgraph=None):
 @persistent
 def _planetka_load_post(_dummy):
     _FRAME_KEYED_RUNTIME_LAST_SIGNATURE.clear()
-    for scene in _iter_scenes():
-        _sync_props_from_idprops(scene)
-        migrate_scene(scene)
-        try:
-            purge_disabled_atmosphere_and_cloud_assets(scene=scene)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka: failed purging disabled atmosphere/cloud assets on file load", exc_info=True)
     _sync_logging_from_scenes()
     ensure_active_view_monitor_running()
 

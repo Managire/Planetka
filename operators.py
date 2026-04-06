@@ -43,14 +43,12 @@ from .r2_source import (
 )
 from .state import (
     apply_renderer_engine_optimization,
-    apply_renderer_engine_optimization_for_all_preserve_current,
     _initialize_props_from_imported_planetka,
     _sync_idprops_from_props,
     delete_temp_meshes,
     ensure_preview_object,
     ensure_planetka_temp_collection,
     logger,
-    purge_disabled_atmosphere_and_cloud_assets,
     remove_object_and_unused_mesh,
     resume_navigation_shot_updates,
     suspend_navigation_shot_updates,
@@ -69,8 +67,6 @@ _IMPORT_TILE_FILENAME_RE = re.compile(
     re.IGNORECASE,
 )
 _RECOVERABLE_LOG_COUNTS = {}
-PLANETKA_CAMERA_OBJECT_NAME = "Planetka Camera"
-PLANETKA_CAMERA_DATA_NAME = "Planetka Camera Data"
 _DOWNLOAD_POPUP_WM_FLAG = "planetka_download_popup_running"
 
 
@@ -322,69 +318,37 @@ def _cleanup_pristine_default_scene(scene):
     return removed_any
 
 
-def _ensure_planetka_camera(scene, root=None, reset_pose=False):
+def _pick_scene_camera(scene, context=None):
     if scene is None:
         return None
 
-    camera_obj = bpy.data.objects.get(PLANETKA_CAMERA_OBJECT_NAME)
-    if camera_obj is not None and str(getattr(camera_obj, "type", "")) != "CAMERA":
-        try:
-            bpy.data.objects.remove(camera_obj, do_unlink=True)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-            _log_recoverable_once("PKA-OPS-030", "Failed removing non-camera Planetka Camera object")
-        camera_obj = None
+    camera = getattr(scene, "camera", None)
+    if camera is not None and getattr(camera, "type", None) == 'CAMERA':
+        return camera
 
-    created_new = False
-    if camera_obj is None:
-        camera_data = bpy.data.cameras.get(PLANETKA_CAMERA_DATA_NAME)
-        if camera_data is None:
-            camera_data = bpy.data.cameras.new(PLANETKA_CAMERA_DATA_NAME)
-        camera_obj = bpy.data.objects.new(PLANETKA_CAMERA_OBJECT_NAME, camera_data)
-        created_new = True
-
-    target_collection = ensure_planetka_temp_collection() or getattr(scene, "collection", None)
-    if target_collection is not None:
-        for collection in tuple(getattr(camera_obj, "users_collection", ())):
-            if collection is target_collection:
-                continue
-            try:
-                collection.objects.unlink(camera_obj)
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-                _log_recoverable_once("PKA-OPS-031", "Failed unlinking Planetka Camera from non-target collection")
-        try:
-            if camera_obj.name not in target_collection.objects:
-                target_collection.objects.link(camera_obj)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-            _log_recoverable_once("PKA-OPS-032", "Failed linking Planetka Camera to target collection")
-
-    if root is not None:
-        try:
-            if getattr(camera_obj, "parent", None) is not root:
-                camera_obj.parent = root
-                camera_obj.matrix_parent_inverse = root.matrix_world.inverted()
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-            _log_recoverable_once("PKA-OPS-033", "Failed parenting Planetka Camera to Planetka Root")
-
-    if created_new or bool(reset_pose):
-        location = Vector((0.0, -4.0, 0.0))
-        look_direction = (Vector((0.0, 0.0, 0.0)) - location).normalized()
-        cam_rotation = look_direction.to_track_quat('-Z', 'Y')
-        try:
-            camera_obj.matrix_world = Matrix.LocRotScale(location, cam_rotation, Vector((1.0, 1.0, 1.0)))
-            camera_data = getattr(camera_obj, "data", None)
-            if camera_data is not None:
-                camera_data.lens = 50.0
-                camera_data.clip_start = min(float(getattr(camera_data, "clip_start", 0.001)), 0.001)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-            _log_recoverable_once("PKA-OPS-034", "Failed initializing Planetka Camera transform")
-
+    active_obj = None
     try:
-        if getattr(scene, "camera", None) is not camera_obj:
-            scene.camera = camera_obj
+        view_layer = getattr(context, "view_layer", None) if context is not None else None
+        active_obj = getattr(view_layer.objects, "active", None) if view_layer is not None else None
     except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-        _log_recoverable_once("PKA-OPS-035", "Failed activating Planetka Camera on scene")
+        active_obj = None
+    if active_obj is not None and getattr(active_obj, "type", None) == 'CAMERA':
+        try:
+            if active_obj in tuple(getattr(scene, "objects", ())):
+                scene.camera = active_obj
+                return active_obj
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            pass
 
-    return camera_obj
+    for obj in tuple(getattr(scene, "objects", ())):
+        if getattr(obj, "type", None) == 'CAMERA':
+            try:
+                scene.camera = obj
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                pass
+            return obj
+
+    return None
 
 
 def _ensure_close_clip_limits(scene, min_clip=0.001):
@@ -524,8 +488,16 @@ def _create_placeholder_surface_object(scene):
     scene.collection.objects.link(obj)
     obj.location = (0.0, 0.0, 0.0)
     obj.rotation_euler = (0.0, 0.0, 0.0)
-    obj.scale = (2.0, 2.0, 2.0)
-    obj["planetka_surface_local_radius"] = 1.0
+    obj.scale = (1.0, 1.0, 1.0)
+    obj["planetka_surface_local_radius"] = 2.0
+    # Keep bootstrap surface valid for strict resolve precheck.
+    planetka_surface = bpy.data.materials.get("Planetka Earth Material")
+    if planetka_surface is not None:
+        try:
+            obj.data.materials.clear()
+            obj.data.materials.append(planetka_surface)
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed assigning Earth material to bootstrap surface", exc_info=True)
     return obj
 
 
@@ -629,6 +601,72 @@ def _earth_radius_blender_units(earth_obj):
 
     scale = earth_obj.matrix_world.to_scale()
     return max(abs(scale.x), abs(scale.y), abs(scale.z), 1.0)
+
+
+def _set_planetka_earth_radius_bu(scene, target_radius_bu):
+    earth_obj = get_earth_object()
+    if earth_obj is None or str(getattr(earth_obj, "type", "")) != "MESH":
+        return False
+
+    mesh_data = getattr(earth_obj, "data", None)
+    vertices = getattr(mesh_data, "vertices", None)
+    if mesh_data is None or not vertices:
+        return False
+
+    target_radius = max(1e-6, float(target_radius_bu))
+
+    changed = False
+    try:
+        sx, sy, sz = (float(v) for v in tuple(getattr(earth_obj, "scale", (1.0, 1.0, 1.0))))
+    except (TypeError, ValueError, AttributeError):
+        sx, sy, sz = 1.0, 1.0, 1.0
+    if not math.isfinite(sx):
+        sx = 1.0
+    if not math.isfinite(sy):
+        sy = 1.0
+    if not math.isfinite(sz):
+        sz = 1.0
+
+    # Keep object scale neutral and encode size directly in mesh radius.
+    if abs(sx - 1.0) > 1e-9 or abs(sy - 1.0) > 1e-9 or abs(sz - 1.0) > 1e-9:
+        # Prevent accidental mesh collapse when an axis scale is (near) zero.
+        bake_sx = sx if abs(sx) > 1e-6 else 1.0
+        bake_sy = sy if abs(sy) > 1e-6 else 1.0
+        bake_sz = sz if abs(sz) > 1e-6 else 1.0
+        try:
+            mesh_data.transform(Matrix.Diagonal((bake_sx, bake_sy, bake_sz, 1.0)))
+            earth_obj.scale = (1.0, 1.0, 1.0)
+            changed = True
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            _log_recoverable_once("PKA-OPS-036", "Failed normalizing Earth object scale while applying radius")
+
+    try:
+        current_local_radius = max(float(v.co.length) for v in vertices)
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        current_local_radius = 0.0
+
+    if current_local_radius <= 1e-9:
+        current_local_radius = 1.0
+
+    ratio = float(target_radius) / float(current_local_radius)
+    if abs(ratio - 1.0) > 1e-9:
+        try:
+            mesh_data.transform(Matrix.Scale(float(ratio), 4))
+            changed = True
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            _log_recoverable_once("PKA-OPS-037", "Failed scaling Earth mesh to requested radius")
+
+    try:
+        mesh_data.update()
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        pass
+
+    try:
+        earth_obj["planetka_surface_local_radius"] = float(target_radius)
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        _log_recoverable_once("PKA-OPS-038", "Failed storing Earth local radius metadata")
+
+    return bool(changed)
 
 
 def _meters_per_blender_unit(earth_radius_bu):
@@ -1968,11 +2006,6 @@ class PLANETKA_OT_AddEarth(bpy.types.Operator):
             return {'CANCELLED'}
         prefs.texture_base_path = normalized
         invalidate_texture_source_health_cache(normalized)
-        cleaned_default_scene = _cleanup_pristine_default_scene(scene)
-        try:
-            purge_disabled_atmosphere_and_cloud_assets(scene=scene)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka: failed pre-Create-Earth purge of disabled atmosphere/cloud assets", exc_info=True)
 
         try:
             ensure_planetka_assets(scene)
@@ -1988,20 +2021,12 @@ class PLANETKA_OT_AddEarth(bpy.types.Operator):
 
         _initialize_props_from_imported_planetka(scene)
         _sync_idprops_from_props(scene)
-        root_object = None
         try:
-            root_object = ensure_planetka_root(scene)
+            ensure_planetka_root(scene)
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed ensuring Planetka Root before camera setup", exc_info=True)
+            logger.debug("Planetka: failed ensuring Planetka Root before Create Earth", exc_info=True)
         except (RuntimeError, TypeError, ValueError):
-            logger.debug("Planetka: failed ensuring Planetka Root before camera setup", exc_info=True)
-
-        try:
-            _ensure_planetka_camera(scene, root=root_object, reset_pose=bool(cleaned_default_scene))
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed ensuring Planetka Camera", exc_info=True)
-        except (RuntimeError, TypeError, ValueError):
-            logger.debug("Planetka: failed ensuring Planetka Camera", exc_info=True)
+            logger.debug("Planetka: failed ensuring Planetka Root before Create Earth", exc_info=True)
 
         try:
             props.texture_quality_mode = "HALF"
@@ -2052,8 +2077,6 @@ class PLANETKA_OT_AddEarth(bpy.types.Operator):
         except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
             logger.debug("Planetka: failed updating default world background to black", exc_info=True)
 
-        apply_renderer_engine_optimization_for_all_preserve_current(scene)
-
         resolve_result = bpy.ops.planetka.load_textures(skip_render_compatibility=True)
         final_surface = get_earth_object() or new_obj
         if final_surface and bool(getattr(props, "show_earth_preview", False)):
@@ -2081,12 +2104,6 @@ class PLANETKA_OT_AddEarth(bpy.types.Operator):
         # Atmosphere and cloud runtime loading is intentionally disabled for now.
         # Keep implementation code in-place for future re-enable.
 
-        _switch_solid_viewports_to_rendered(context)
-        try:
-            _switch_viewport_to_camera_view(context, scene)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka: failed switching viewport to Planetka Camera", exc_info=True)
-
         if props is not None:
             suspend_navigation_shot_updates()
             try:
@@ -2101,20 +2118,11 @@ class PLANETKA_OT_AddEarth(bpy.types.Operator):
                 resume_navigation_shot_updates()
 
             try:
-                _apply_navigation_shot(context, scene, props)
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-                logger.debug("Planetka: failed applying Create Earth default camera shot", exc_info=True)
-
-            try:
                 bpy.ops.planetka.sunlight_preset(preset="MID_MORNING")
             except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
                 logger.debug("Planetka: failed applying Create Earth default sunlight preset", exc_info=True)
 
         _hide_shot_anchor_in_viewport()
-        try:
-            purge_disabled_atmosphere_and_cloud_assets(scene=scene)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka: failed post-Create-Earth purge of disabled atmosphere/cloud assets", exc_info=True)
 
         self.report({'INFO'}, "Planetka Earth created successfully.")
         return {'FINISHED'}
@@ -2165,19 +2173,19 @@ class PLANETKA_OT_NavigationApplyShot(bpy.types.Operator):
 
 class PLANETKA_OT_UseCurrentViewNavigation(bpy.types.Operator):
     bl_idname = "planetka.navigation_use_current_view"
-    bl_label = "Camera to Current View"
-    bl_description = "Read the active viewport camera transform and sync it into Navigation shot values"
+    bl_label = "Bring Camera to View"
+    bl_description = "Move active camera to current viewport view and sync Navigation values"
 
     def execute(self, context):
         scene = require_scene(self, context, logger=logger)
         if scene is None:
             return {'CANCELLED'}
 
-        camera = getattr(scene, "camera", None)
+        camera = _pick_scene_camera(scene, context=context)
         if camera is None or getattr(camera, "type", None) != 'CAMERA':
             return fail(
                 self,
-                "Scene camera is missing. Set an active camera and retry.",
+                "No active camera found. Select a camera (or add one) and retry.",
                 code=ErrorCode.NAV_PRECHECK_FAILED,
                 logger=logger,
             )
@@ -2187,16 +2195,16 @@ class PLANETKA_OT_UseCurrentViewNavigation(bpy.types.Operator):
         except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
             return fail(
                 self,
-                f"Camera to Current View failed: {exc}",
+                f"Bring Camera to View failed: {exc}",
                 code=ErrorCode.NAV_APPLY_FAILED,
                 logger=logger,
                 exc=exc,
-                log_message="Planetka camera_to_current_view failed",
+                log_message="Planetka bring_camera_to_view failed",
             )
         except (RuntimeError, TypeError, ValueError) as exc:
             return fail(
                 self,
-                f"Camera to Current View failed: {exc}",
+                f"Bring Camera to View failed: {exc}",
                 code=ErrorCode.NAV_APPLY_FAILED,
                 logger=logger,
             )
@@ -2205,7 +2213,7 @@ class PLANETKA_OT_UseCurrentViewNavigation(bpy.types.Operator):
         if props is None:
             _switch_viewport_to_camera_view(context, scene)
             if moved_camera:
-                self.report({'INFO'}, "Camera updated to current view.")
+                self.report({'INFO'}, "Camera brought to current view.")
             else:
                 self.report({'INFO'}, "Camera is already in current view.")
             return {'FINISHED'}

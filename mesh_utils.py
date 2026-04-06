@@ -28,8 +28,8 @@ def _log_recoverable_once(code, message):
 
 SURFACE_CULL_MOD_NAME = "Camera Cull Surface"
 SURFACE_COLLECTION_NAME = "Planetka - Earth Surface Collection"
-EARTH_SURFACE_DEFAULT_RADIUS = 1.0
-EARTH_SURFACE_DEFAULT_SCALE = (2.0, 2.0, 2.0)
+EARTH_SURFACE_DEFAULT_RADIUS = 2.0
+EARTH_SURFACE_DEFAULT_SCALE = (1.0, 1.0, 1.0)
 BASE_SPHERE_CACHE_MESH_NAME = "Planetka__BaseSphereMeshCache_v1"
 BASE_SPHERE_CACHE_MIN_VERTS = 10000
 RESOLVED_MESH_CACHE_PREFIX = "Planetka__ResolvedMeshCache_v1__"
@@ -153,23 +153,8 @@ def _enable_adaptive_subdivision(obj, subsurf_mod):
 def _ensure_material_displacement_and_bump(material):
     if material is None:
         return False
-    changed = False
-    if hasattr(material, "displacement_method"):
-        changed = _set_enum_property_safe(
-            material,
-            "displacement_method",
-            ("BOTH", "DISPLACEMENT_BUMP", "DISPLACEMENT_AND_BUMP"),
-        ) or changed
-
-    cycles_settings = getattr(material, "cycles", None)
-    if cycles_settings is None:
-        return changed
-    changed = _set_enum_property_safe(
-        cycles_settings,
-        "displacement_method",
-        ("BOTH", "DISPLACEMENT_BUMP", "DISPLACEMENT_AND_BUMP"),
-    ) or changed
-    return changed
+    # Keep user-selected displacement mode unchanged during Resolve.
+    return False
 
 
 def parse_tile(tile):
@@ -876,8 +861,6 @@ def create_temp_mesh_for_all_tiles(tiles, name="Planetka Earth Surface", collect
     planetka_surface = bpy.data.materials.get("Planetka Earth Material")
     if not planetka_surface:
         raise RuntimeError("Planetka: Material 'Planetka Earth Material' not found")
-    _ensure_material_displacement_and_bump(planetka_surface)
-
     temp.data.materials.clear()
     temp.data.materials.append(planetka_surface)
     for poly in temp.data.polygons:
