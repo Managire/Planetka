@@ -2934,7 +2934,7 @@ async function runProductionAlertChecks(db, env, nowTimestamp) {
     },
     {
       key: "tile_miss_burst",
-      label: "Tile miss burst",
+      label: "S2 tile miss burst",
       threshold: parseRateLimitInteger(env.PROD_ALERT_TILE_MISS_THRESHOLD, DEFAULT_ALERT_PROD_TILE_MISS_THRESHOLD),
       windowSeconds: parseRateLimitInteger(env.PROD_ALERT_TILE_MISS_WINDOW_SECONDS, DEFAULT_ALERT_PROD_TILE_MISS_WINDOW_SECONDS),
       tableAvailable: hasTileEvents,
@@ -2942,6 +2942,7 @@ async function runProductionAlertChecks(db, env, nowTimestamp) {
         SELECT COUNT(*) AS count
         FROM tile_request_events
         WHERE created_at_unix >= ?
+          AND tile_key LIKE '%/S2/%'
           AND (
             error_code = 'tile_not_found'
             OR (status_code = 404 AND (error_code IS NULL OR error_code = '' OR error_code = 'tile_not_found'))

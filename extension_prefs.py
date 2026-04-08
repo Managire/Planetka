@@ -48,6 +48,7 @@ FALLBACK_AUTH_DEVICE_CODE_KEY = "planetka_auth_device_code"
 FALLBACK_AUTH_DEVICE_VERIFICATION_URL_KEY = "planetka_auth_device_verification_url"
 FALLBACK_AUTH_DEVICE_EXPIRES_AT_KEY = "planetka_auth_device_expires_at"
 FALLBACK_AUTH_POLL_INTERVAL_SECONDS_KEY = "planetka_auth_poll_interval_seconds"
+FALLBACK_STARTUP_SETUP_PROFILE_JSON_KEY = "planetka_startup_setup_profile_json"
 TEXTURE_SOURCE_MODE_DEFAULT = "CLOUDFLARE"
 REMOTE_TEXTURE_BASE_DEFAULT = "remote"
 
@@ -123,6 +124,11 @@ class PlanetkaExtensionPreferences(AddonPreferences):
     auth_poll_interval_seconds: IntProperty(
         name="Auth Poll Interval Seconds",
         default=2,
+        options={'HIDDEN'},
+    )
+    startup_setup_profile_json: StringProperty(
+        name="Startup Setup Profile",
+        default="",
         options={'HIDDEN'},
     )
 
@@ -430,6 +436,10 @@ def get_prefs():
         auth_poll_interval_seconds = property(
             lambda self: self._get_value(FALLBACK_AUTH_POLL_INTERVAL_SECONDS_KEY, "2"),
             lambda self, value: self._set_value(FALLBACK_AUTH_POLL_INTERVAL_SECONDS_KEY, value or "2"),
+        )
+        startup_setup_profile_json = property(
+            lambda self: self._get_value(FALLBACK_STARTUP_SETUP_PROFILE_JSON_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_STARTUP_SETUP_PROFILE_JSON_KEY, value),
         )
 
     def _addon_pref_by_name(addons, key):

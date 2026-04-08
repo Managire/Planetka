@@ -36,7 +36,9 @@ D_LEVELS_BY_Z = {
 }
 
 FRUSTUM_MARGIN = 1.05
-ACTIVE_VIEW_FRUSTUM_MARGIN = 1.25
+# Active View intentionally over-scans to reduce edge dropouts when the user
+# orbits in perspective viewport (treat as ~2x wider capture window).
+ACTIVE_VIEW_FRUSTUM_MARGIN = 2.0
 HORIZON_DOT_MARGIN = 0.995
 ONE_PASS_REFINEMENT_CHILD_Z = {
     60: 30,
@@ -58,7 +60,7 @@ MAX_SHADER_TILE_BUDGET = 12
 # Keep only real resolved tiles unless future renderer-safe padding is introduced.
 MIN_SHADER_TILE_FLOOR = 0
 SHADER_PAD_TILE_PREFIX = "__PKA_PAD_TILE"
-TEXTURE_QUALITY_MODES = {"FULL", "HALF"}
+TEXTURE_QUALITY_MODES = {"FULL", "BALANCED", "PREVIEW"}
 VIEWPORT_RESOLUTION_X = 1920.0
 VIEWPORT_RESOLUTION_Y = 1080.0
 LAST_TILE_BUDGET_TRACE = []
@@ -510,17 +512,20 @@ def _resolution_bias_factor(scene):
 
 
 def _texture_quality_mode(scene, override_mode=None):
+    def _normalize_quality_token(value):
+        token = str(value or "").strip().upper()
+        if token == "HALF":
+            return "BALANCED"
+        if token in TEXTURE_QUALITY_MODES:
+            return token
+        return "BALANCED"
+
     if override_mode is not None:
-        mode = str(override_mode or "").upper()
-        if mode in TEXTURE_QUALITY_MODES:
-            return mode
+        return _normalize_quality_token(override_mode)
     props = getattr(scene, "planetka", None) if scene else None
     if props is None:
-        return "HALF"
-    mode = str(getattr(props, "texture_quality_mode", "HALF") or "HALF").upper()
-    if mode not in TEXTURE_QUALITY_MODES:
-        return "HALF"
-    return mode
+        return "BALANCED"
+    return _normalize_quality_token(getattr(props, "texture_quality_mode", "BALANCED"))
 
 
 def _use_active_view_coarse_textures(scene):
@@ -1233,8 +1238,10 @@ def _coarsen_tiles_n_d_levels(tiles, steps):
 
 def _apply_texture_quality_mode(tiles, scene, override_mode=None):
     mode = _texture_quality_mode(scene, override_mode=override_mode)
-    if mode == "HALF":
+    if mode == "BALANCED":
         return _coarsen_tiles_n_d_levels(tiles, 1)
+    if mode == "PREVIEW":
+        return _coarsen_tiles_n_d_levels(tiles, 2)
     return list(tiles or [])
 
 

@@ -28,6 +28,11 @@ All notable changes to Planetka are documented in this file.
 ### Fixed
 - Removed outdated release-checklist references to preview parenting.
 
+## [v0.5.0] - 2026-04-08
+
+### Changed
+- Bumped addon package/update version to `0.5.0`.
+
 ## [v0.4.1] - 2026-04-06
 
 ### Changed

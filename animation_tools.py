@@ -1,6 +1,7 @@
 import importlib
 import math
 import os
+import time
 
 import bpy
 from bpy.props import EnumProperty, IntProperty
@@ -13,6 +14,7 @@ from .r2_source import (
     get_remote_cache_folder,
     is_remote_source_configured,
     plan_resolve_downloads,
+    prefetch_resolve_downloads,
 )
 from .state import (
     _apply_sunlight_from_props,
@@ -1723,6 +1725,82 @@ def _render_engine_display(scene):
     return engine or "—"
 
 
+def _set_enum_property_if_available(target, prop_name, preferred_values):
+    if target is None or not hasattr(target, prop_name):
+        return False
+    candidates = [str(v or "").strip() for v in (preferred_values or ()) if str(v or "").strip()]
+    if not candidates:
+        return False
+    available = set()
+    try:
+        rna = getattr(target, "bl_rna", None)
+        properties = getattr(rna, "properties", None) if rna is not None else None
+        prop_def = properties.get(prop_name) if properties is not None else None
+        if prop_def and hasattr(prop_def, "enum_items"):
+            available = {str(item.identifier) for item in prop_def.enum_items}
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        available = set()
+    for identifier in candidates:
+        if available and identifier not in available:
+            continue
+        try:
+            setattr(target, prop_name, identifier)
+            return True
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            continue
+    return False
+
+
+def _capture_earth_material_displacement_mode_state(material):
+    state = {}
+    if material is None:
+        return state
+    try:
+        if hasattr(material, "displacement_method"):
+            state["material"] = str(getattr(material, "displacement_method", "") or "")
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        pass
+    cycles_settings = getattr(material, "cycles", None)
+    try:
+        if cycles_settings is not None and hasattr(cycles_settings, "displacement_method"):
+            state["cycles"] = str(getattr(cycles_settings, "displacement_method", "") or "")
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        pass
+    return state
+
+
+def _set_earth_material_bump_only_for_eevee(material):
+    if material is None:
+        return False
+    changed_any = False
+    # Blender 5.x material-level property.
+    changed_any = _set_enum_property_if_available(
+        material,
+        "displacement_method",
+        ("BUMP", "BUMP_ONLY"),
+    ) or changed_any
+    # Legacy cycles-level property (kept for compatibility).
+    cycles_settings = getattr(material, "cycles", None)
+    changed_any = _set_enum_property_if_available(
+        cycles_settings,
+        "displacement_method",
+        ("BUMP", "BUMP_ONLY"),
+    ) or changed_any
+    return changed_any
+
+
+def _restore_earth_material_displacement_mode_state(material, state):
+    if material is None or not isinstance(state, dict):
+        return
+    material_mode = str(state.get("material", "") or "").strip()
+    if material_mode:
+        _set_enum_property_if_available(material, "displacement_method", (material_mode,))
+    cycles_settings = getattr(material, "cycles", None)
+    cycles_mode = str(state.get("cycles", "") or "").strip()
+    if cycles_mode:
+        _set_enum_property_if_available(cycles_settings, "displacement_method", (cycles_mode,))
+
+
 def _concat_movie_segments_vse(scene, segment_movie_paths, final_movie_base, final_ext, frame_start, frame_end):
     if not segment_movie_paths:
         return False, "No segment movies to combine."
@@ -2103,8 +2181,152 @@ class PLANETKA_OT_AnimationWaypointApply(bpy.types.Operator):
 
 class PLANETKA_OT_AnimationPreviewShot(bpy.types.Operator):
     bl_idname = "planetka.animation_preview_shot"
-    bl_label = "Preview Shot"
-    bl_description = "Generate preview keyframes for the selected cinematic preset on the timeline"
+    bl_label = "Preview Animation"
+    bl_description = "Preview camera animation on currently loaded tiles (no resolve/prefetch)"
+
+    _timer = None
+    _frame_change_handler = None
+    _running = False
+    _scene = None
+    _props = None
+    _frame_start = 0
+    _frame_end = 0
+    _pending_starts = None
+    _last_frame = None
+    _handler_last_frame = None
+    _boundary_pause_until = 0.0
+    _boundary_failures = None
+    _original_auto_resolve = True
+    _original_use_preview_range = False
+    _original_preview_start = 0
+    _original_preview_end = 0
+
+    def _dedupe_requests(self, requests):
+        deduped = []
+        seen = set()
+        for request in requests or ():
+            if not isinstance(request, (tuple, list)) or len(request) != 4:
+                continue
+            folder, prefix, filename, exts = request
+            key = (
+                str(folder or "").strip(),
+                str(prefix or "").strip(),
+                str(filename or "").strip(),
+                tuple(exts or (".exr",)),
+            )
+            if not key[0] or not key[1] or not key[2] or key in seen:
+                continue
+            seen.add(key)
+            deduped.append(key)
+        return deduped
+
+    def _resolve_frame_with_integrity(self, scene, props, frame_value, max_attempts=3):
+        frame_int = int(frame_value)
+        attempts = max(1, int(max_attempts))
+        last_message = ""
+        for _attempt in range(1, attempts + 1):
+            try:
+                scene.frame_set(frame_int)
+                bpy.context.view_layer.update()
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka animation preview: suppressed recoverable exception", exc_info=True)
+            except (RuntimeError, TypeError, ValueError):
+                logger.debug("Planetka animation preview: suppressed recoverable exception", exc_info=True)
+            _apply_keyed_runtime_scene_state(scene, props)
+            try:
+                result = bpy.ops.planetka.load_textures(scope_mode='CAMERA', silent=True)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
+                last_message = f"Resolve failed at frame {frame_int:04d}: {exc}"
+                continue
+            except (RuntimeError, TypeError, ValueError) as exc:
+                last_message = f"Resolve failed at frame {frame_int:04d}: {exc}"
+                continue
+            if "FINISHED" not in result:
+                last_message = f"Resolve returned {result} at frame {frame_int:04d}"
+                continue
+            missing_images = _count_missing_tile_loading_images(material_name="Planetka Earth Material")
+            if int(missing_images) > 0:
+                last_message = (
+                    f"Resolve left {int(missing_images)} missing shader image assignment(s) at frame {frame_int:04d}"
+                )
+                continue
+            return True, ""
+        return False, (last_message or f"Resolve failed at frame {frame_int:04d}")
+
+    def _stop_playback(self):
+        if _is_animation_playing():
+            try:
+                bpy.ops.screen.animation_play()
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka animation preview: failed stopping playback", exc_info=True)
+            except (RuntimeError, TypeError, ValueError):
+                logger.debug("Planetka animation preview: failed stopping playback", exc_info=True)
+
+    def _cleanup_preview_runtime(self, context):
+        wm = getattr(context, "window_manager", None)
+        if self._timer is not None and wm is not None:
+            try:
+                wm.event_timer_remove(self._timer)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka animation preview: failed removing modal timer", exc_info=True)
+            except (RuntimeError, TypeError, ValueError):
+                logger.debug("Planetka animation preview: failed removing modal timer", exc_info=True)
+        self._timer = None
+
+        if self._frame_change_handler is not None:
+            try:
+                if self._frame_change_handler in bpy.app.handlers.frame_change_pre:
+                    bpy.app.handlers.frame_change_pre.remove(self._frame_change_handler)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka animation preview: failed removing frame-change handler", exc_info=True)
+            except (RuntimeError, TypeError, ValueError):
+                logger.debug("Planetka animation preview: failed removing frame-change handler", exc_info=True)
+        self._frame_change_handler = None
+
+        scene = self._scene
+        props = self._props
+        if scene is not None:
+            try:
+                scene.use_preview_range = bool(self._original_use_preview_range)
+                scene.frame_preview_start = int(self._original_preview_start)
+                scene.frame_preview_end = int(self._original_preview_end)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka animation preview: failed restoring preview-range settings", exc_info=True)
+            except (RuntimeError, TypeError, ValueError):
+                logger.debug("Planetka animation preview: failed restoring preview-range settings", exc_info=True)
+        if props is not None:
+            try:
+                props.auto_resolve = bool(self._original_auto_resolve)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka animation preview: failed restoring auto-resolve", exc_info=True)
+            except (RuntimeError, TypeError, ValueError):
+                logger.debug("Planetka animation preview: failed restoring auto-resolve", exc_info=True)
+
+        self._scene = None
+        self._props = None
+        self._pending_starts = set()
+        self._boundary_failures = []
+        self._handler_last_frame = None
+        self._running = False
+
+    def _finish_preview(self, context, cancelled=False):
+        self._stop_playback()
+        failures = list(self._boundary_failures or ())
+        self._cleanup_preview_runtime(context)
+        if cancelled:
+            self.report({'INFO'}, "Animation preview cancelled.")
+            return {'CANCELLED'}
+        if failures:
+            self.report(
+                {'WARNING'},
+                (
+                    f"Animation preview finished with {len(failures)} segment resolve issue(s). "
+                    "See system console for details."
+                ),
+            )
+        else:
+            self.report({'INFO'}, "Animation preview finished.")
+        return {'FINISHED'}
 
     def execute(self, context):
         if _is_animation_playing():
@@ -2126,7 +2348,7 @@ class PLANETKA_OT_AnimationPreviewShot(bpy.types.Operator):
                     code=ErrorCode.NAV_APPLY_FAILED,
                     logger=logger,
                 )
-            self.report({'INFO'}, "Cinematic preview paused.")
+            self.report({'INFO'}, "Animation preview paused.")
             return {'FINISHED'}
 
         scene = require_scene(self, context, logger=logger)
@@ -2136,28 +2358,73 @@ class PLANETKA_OT_AnimationPreviewShot(bpy.types.Operator):
         if props is None:
             return {'CANCELLED'}
 
+        prefs = get_prefs()
+        if not _require_pro_animation_render_access(self, prefs):
+            return {'CANCELLED'}
         try:
             start_frame, end_frame = apply_cinematic_preview(scene, props)
         except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
             return fail(
                 self,
-                f"Preview shot failed: {exc}",
+                f"Preview animation failed: {exc}",
                 code=ErrorCode.NAV_APPLY_FAILED,
                 logger=logger,
                 exc=exc,
-                log_message="Planetka animation preview failed",
+                log_message="Planetka animation preview setup failed",
             )
         except (RuntimeError, TypeError, ValueError) as exc:
             return fail(
                 self,
-                f"Preview shot failed: {exc}",
+                f"Preview animation failed: {exc}",
                 code=ErrorCode.NAV_APPLY_FAILED,
                 logger=logger,
             )
 
+        try:
+            scene.use_preview_range = True
+            scene.frame_preview_start = int(start_frame)
+            scene.frame_preview_end = int(end_frame)
+            scene.frame_set(int(start_frame))
+            bpy.context.view_layer.update()
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka animation preview: failed setting playback range", exc_info=True)
+        except (RuntimeError, TypeError, ValueError):
+            logger.debug("Planetka animation preview: failed setting playback range", exc_info=True)
+
         _try_start_preview_playback()
-        self.report({'INFO'}, f"Cinematic preview set on frames {int(start_frame)}-{int(end_frame)}.")
+        self.report({'INFO'}, "Preview animation started on currently loaded tiles.")
         return {'FINISHED'}
+
+    def modal(self, context, event):
+        if not self._running:
+            return {'CANCELLED'}
+        if event.type in {'ESC', 'RIGHTMOUSE'}:
+            return self._finish_preview(context, cancelled=True)
+        if event.type != 'TIMER':
+            return {'PASS_THROUGH'}
+
+        scene = self._scene
+        if scene is None:
+            return self._finish_preview(context, cancelled=True)
+
+        now = time.monotonic()
+        current_frame = int(getattr(scene, "frame_current", self._frame_start))
+        wrapped = (self._last_frame is not None and current_frame < int(self._last_frame))
+        reached_end = current_frame >= int(self._frame_end)
+        self._last_frame = int(current_frame)
+
+        if wrapped or reached_end:
+            return self._finish_preview(context, cancelled=False)
+
+        # If playback is temporarily paused during boundary resolve, wait a bit.
+        if (not _is_animation_playing()) and now < float(self._boundary_pause_until):
+            return {'RUNNING_MODAL'}
+
+        # User paused preview manually before end -> finish gracefully.
+        if not _is_animation_playing():
+            return self._finish_preview(context, cancelled=False)
+
+        return {'RUNNING_MODAL'}
 
 
 class PLANETKA_OT_AnimationClearPrepared(bpy.types.Operator):
@@ -2297,7 +2564,7 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         self._preview_frames_total = int(frame_end - frame_start + 1)
         self._preview_segments = list(segments)
         self._preview_segment_lines = list(segment_lines)
-        self._preview_texture_quality_mode = str(getattr(props, "texture_quality_mode", "HALF") or "HALF").upper()
+        self._preview_texture_quality_mode = str(getattr(props, "texture_quality_mode", "PREVIEW") or "PREVIEW").upper()
         self._preview_persistent_data_enabled = bool(getattr(render, "use_persistent_data", False)) if render else False
         self._preview_file_saved = bool(self._is_blend_file_saved())
         return True
@@ -2322,7 +2589,7 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         frames_total = int(getattr(self, "_preview_frames_total", 0))
         segments = getattr(self, "_preview_segments", None) or ()
         segment_lines = getattr(self, "_preview_segment_lines", None) or ()
-        texture_quality_mode = str(getattr(self, "_preview_texture_quality_mode", "HALF") or "HALF").upper()
+        texture_quality_mode = str(getattr(self, "_preview_texture_quality_mode", "PREVIEW") or "PREVIEW").upper()
         preview_is_cycles = bool(getattr(self, "_preview_is_cycles", False))
         persistent_data_enabled = bool(getattr(self, "_preview_persistent_data_enabled", False))
         preview_file_saved = bool(getattr(self, "_preview_file_saved", False))
@@ -2340,15 +2607,20 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             layout.label(text=f"Format: {output_format}", icon="FILE")
         layout.label(text=f"Frames to render: {frames_total} ({frame_start:04d}-{frame_end:04d})")
         layout.label(text=f"Time segments: {len(segments)}")
-        if texture_quality_mode == "HALF":
+        if texture_quality_mode in {"PREVIEW", "BALANCED", "HALF", "FAST_LOADING"}:
             warning_box = layout.box()
             warning_box.alert = True
-            warning_box.label(
-                text="WARNING: Animation is in Preview mode.",
-                icon="ERROR",
-            )
-            warning_box.label(text="Preview can show flickering or tile transitions.")
-            warning_box.label(text="Switch to Full Quality for seamless animation rendering.")
+            if texture_quality_mode == "PREVIEW":
+                mode_label = "Preview"
+            elif texture_quality_mode == "BALANCED":
+                mode_label = "Balanced"
+            elif texture_quality_mode == "FAST_LOADING":
+                mode_label = "Fast Loading"
+            else:
+                mode_label = "Preview"
+            warning_box.label(text=f"WARNING: Animation is in {mode_label} mode.", icon="ERROR")
+            warning_box.label(text="Preview/Balanced can show flickering or tile transitions.")
+            warning_box.label(text="Full Quality mode recommended.")
         if preview_is_cycles and (not persistent_data_enabled):
             persistent_box = layout.box()
             persistent_box.alert = False
@@ -2358,7 +2630,6 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             save_box = layout.box()
             save_box.alert = False
             save_box.label(text="File not saved", icon="INFO")
-            save_box.label(text="Save .blend first if you want reliable output paths.")
         seg_box = layout.box()
         seg_box.label(text="Segments", icon="OUTLINER")
         col = seg_box.column(align=True)
@@ -2411,6 +2682,7 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         original_auto_resolve = bool(getattr(props, "auto_resolve", True))
         render = getattr(scene, "render", None)
         cycles = getattr(scene, "cycles", None)
+        eevee_temp_displacement_state = None
         original_settings = {
             "frame_start": int(getattr(scene, "frame_start", frame_start)),
             "frame_end": int(getattr(scene, "frame_end", frame_end)),
@@ -2418,14 +2690,8 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             "use_file_extension": bool(getattr(render, "use_file_extension", True))
             if render and hasattr(render, "use_file_extension")
             else None,
-            "use_persistent_data": bool(getattr(render, "use_persistent_data", False)) if render else None,
-            "display_mode": str(getattr(render, "display_mode", "")) if render and hasattr(render, "display_mode") else None,
             "use_lock_interface": bool(getattr(render, "use_lock_interface", False))
             if render and hasattr(render, "use_lock_interface")
-            else None,
-            "cycles_dicing_rate": float(getattr(cycles, "dicing_rate", 0.0)) if cycles and hasattr(cycles, "dicing_rate") else None,
-            "cycles_offscreen_scale": float(getattr(cycles, "offscreen_dicing_scale", 0.0))
-            if cycles and hasattr(cycles, "offscreen_dicing_scale")
             else None,
         }
 
@@ -2505,6 +2771,18 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
                 logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
             except (RuntimeError, TypeError, ValueError):
                 logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
+
+            # EEVEE animation safety mode:
+            # Temporarily force Earth material displacement to Bump Only so tile
+            # displacement does not shift between segment boundary resolves.
+            try:
+                render_engine = str(getattr(render, "engine", "") or "").strip().upper()
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                render_engine = ""
+            if render_engine in {"BLENDER_EEVEE", "BLENDER_EEVEE_NEXT"}:
+                earth_material = bpy.data.materials.get("Planetka Earth Material")
+                eevee_temp_displacement_state = _capture_earth_material_displacement_mode_state(earth_material)
+                _set_earth_material_bump_only_for_eevee(earth_material)
 
             try:
                 scene.frame_set(int(frame_start))
@@ -2679,10 +2957,6 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
                         render.filepath = str(original_settings["render_filepath"])
                     if original_settings["use_file_extension"] is not None and hasattr(render, "use_file_extension"):
                         render.use_file_extension = bool(original_settings["use_file_extension"])
-                    if original_settings["use_persistent_data"] is not None and hasattr(render, "use_persistent_data"):
-                        render.use_persistent_data = bool(original_settings["use_persistent_data"])
-                    if original_settings["display_mode"] is not None and hasattr(render, "display_mode"):
-                        render.display_mode = str(original_settings["display_mode"])
                     if original_settings["use_lock_interface"] is not None and hasattr(render, "use_lock_interface"):
                         render.use_lock_interface = bool(original_settings["use_lock_interface"])
                 except PLANETKA_RECOVERABLE_EXCEPTIONS:
@@ -2690,16 +2964,12 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
                 except (RuntimeError, TypeError, ValueError):
                     logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
 
-            if cycles is not None:
+            if eevee_temp_displacement_state is not None:
                 try:
-                    if original_settings["cycles_dicing_rate"] is not None and hasattr(cycles, "dicing_rate"):
-                        cycles.dicing_rate = float(original_settings["cycles_dicing_rate"])
-                    if original_settings["cycles_offscreen_scale"] is not None and hasattr(cycles, "offscreen_dicing_scale"):
-                        cycles.offscreen_dicing_scale = float(original_settings["cycles_offscreen_scale"])
-                except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                    logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
-                except (RuntimeError, TypeError, ValueError):
-                    logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
+                    earth_material = bpy.data.materials.get("Planetka Earth Material")
+                    _restore_earth_material_displacement_mode_state(earth_material, eevee_temp_displacement_state)
+                except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                    logger.debug("Planetka animation: failed restoring Earth displacement mode after EEVEE render", exc_info=True)
 
         self.report({'INFO'}, f"Animation render complete ({len(segments)} segments).")
         if segment_boundary_failures:

@@ -49,6 +49,7 @@ _SYNC_IDPROP_MAP = {
     "local_cloud_texture": "planetka_local_cloud_texture",
     "vdb_cloud_file": "planetka_vdb_cloud_file",
     "auto_resolve": "planetka_auto_resolve",
+    "auto_resolve_active_view": "planetka_auto_resolve_active_view",
     "auto_resolve_idle_sec": "planetka_auto_resolve_idle_sec",
     "nav_longitude_deg": "planetka_nav_longitude_deg",
     "nav_latitude_deg": "planetka_nav_latitude_deg",
@@ -171,6 +172,7 @@ _NAVIGATION_SHOT_SUSPEND_COUNT = 0
 _NAVIGATION_USER_EDIT_LAST_TOUCH = 0.0
 _NAV_CAMERA_CONTROL_LAST_SIGNATURE = {}
 _NAV_CAMERA_CONTROL_SYNCING = False
+_NAV_CAMERA_CONTROL_SYNC_GRACE_SEC = 1.5
 _SUNLIGHT_OBJECT_NAME = "Planetka Sunlight"
 _SURFACE_GRADING_GROUP_NAME = "Planetka Surface Grading Group"
 ANIMATION_PREPARED_SEGMENTS_KEY = "planetka_anim_prepared_segments"
@@ -1375,9 +1377,22 @@ def get_resolve_runtime_status(scene=None):
         return status
 
     if thread_running and isinstance(active_job, dict):
+        preparing = False
+        try:
+            r2_source = _get_r2_source()
+            get_progress = getattr(r2_source, "get_download_progress", None) if r2_source is not None else None
+            if callable(get_progress):
+                progress = get_progress() or {}
+                active_requests = int(progress.get("active_requests", 0) or 0)
+                downloaded_bytes = int(progress.get("downloaded_bytes", 0) or 0)
+                preparing = bool(active_requests <= 0 and downloaded_bytes <= 0)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            preparing = False
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            preparing = False
         status.update({
-            "code": "DOWNLOADING",
-            "text": "Downloading Data",
+            "code": "PREPARING" if preparing else "DOWNLOADING",
+            "text": "Preparing Download" if preparing else "Downloading Data",
             "running": True,
         })
         return status
@@ -1467,6 +1482,16 @@ def _sync_navigation_controls_from_scene_camera(scene):
     operators_module = _get_operators_module()
     if operators_module is None:
         return
+    is_below_surface = getattr(operators_module, "_is_scene_camera_below_surface", None)
+    if callable(is_below_surface):
+        try:
+            if bool(is_below_surface(scene)):
+                _NAV_CAMERA_CONTROL_LAST_SIGNATURE[scene_id] = signature
+                return
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka camera control surface-state check failed", exc_info=True)
+        except (RuntimeError, TypeError, ValueError):
+            logger.debug("Planetka camera control surface-state check failed", exc_info=True)
     populate = getattr(operators_module, "_populate_navigation_from_scene_camera", None)
     if not callable(populate):
         return
@@ -1524,18 +1549,25 @@ def _is_resolve_pipeline_busy():
     return False
 
 
+def _normalize_texture_quality_mode(value):
+    token = str(value or "").strip().upper()
+    if token == "HALF":
+        return "BALANCED"
+    if token in {"FULL", "BALANCED", "PREVIEW"}:
+        return token
+    return "BALANCED"
+
+
 def _output_resolution_signature(scene):
     render = getattr(scene, "render", None) if scene is not None else None
     if render is None:
         return None
     props = getattr(scene, "planetka", None) if scene is not None else None
-    texture_quality_mode = "HALF"
+    texture_quality_mode = "BALANCED"
     try:
-        texture_quality_mode = str(getattr(props, "texture_quality_mode", "HALF") or "HALF").upper()
+        texture_quality_mode = _normalize_texture_quality_mode(getattr(props, "texture_quality_mode", "BALANCED"))
     except (TypeError, ValueError, RuntimeError):
-        texture_quality_mode = "HALF"
-    if texture_quality_mode not in {"FULL", "HALF"}:
-        texture_quality_mode = "HALF"
+        texture_quality_mode = "BALANCED"
     try:
         return (
             int(getattr(render, "resolution_x", 1920)),
@@ -1550,6 +1582,22 @@ def _output_resolution_signature(scene):
 def _current_view_scope(scene):
     active_sig = _active_view_signature()
     if active_sig is not None and str(active_sig[0]) != "CAMERA":
+        return "ACTIVE_VIEW"
+    if getattr(scene, "camera", None) is not None:
+        return "CAMERA"
+    return "NONE"
+
+
+def _run_auto_resolve_in_active_view(scene):
+    props = getattr(scene, "planetka", None) if scene is not None else None
+    if props is None:
+        return False
+    return bool(getattr(props, "auto_resolve_active_view", False))
+
+
+def _auto_resolve_scope_mode(scene):
+    current_scope = _current_view_scope(scene)
+    if current_scope == "ACTIVE_VIEW" and _run_auto_resolve_in_active_view(scene):
         return "ACTIVE_VIEW"
     if getattr(scene, "camera", None) is not None:
         return "CAMERA"
@@ -1818,9 +1866,9 @@ def _handle_view_scope_quality_transition(scene):
 
     if previous_scope != "ACTIVE_VIEW" or current_scope != "CAMERA":
         return
-    if not bool(getattr(props, "auto_resolve", False)):
+    if not _run_auto_resolve_in_active_view(scene):
         return
-    if not bool(getattr(props, "viewport_opt_active_view_coarse_textures", True)):
+    if not bool(getattr(props, "auto_resolve", False)):
         return
     if _AUTO_RESOLVE_IN_FLIGHT:
         return
@@ -1834,25 +1882,8 @@ def _handle_view_scope_quality_transition(scene):
     if now - float(last_transition_resolve) < 0.2:
         return
 
-    tile_utils = _get_tile_utils()
-    if tile_utils is None:
-        return
-
-    try:
-        target_tiles = _canonical_tiles(tile_utils.main(scope_mode="CAMERA"))
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka scope transition resolve: tile computation failed", exc_info=True)
-        return
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka scope transition resolve: unexpected tile computation failure", exc_info=True)
-        return
-
-    if target_tiles == _last_resolved_tiles(scene):
-        _VIEWPORT_SCOPE_LAST_RESOLVE_TIME[scene_id] = now
-        return
-
-    # Route through the regular auto-resolve trigger path so execution stays
-    # consistent with manual resolve (same operator, different trigger).
+    # Always re-resolve on Active View -> Camera transition so Camera view
+    # is guaranteed to refresh with camera-scope tiles/settings.
     request_auto_resolve(scene, immediate=True, mark_dirty=True)
 
 
@@ -2074,6 +2105,9 @@ def _set_download_overlay(text=None):
 def _update_download_overlay_indicator(scene=None):
     runtime = get_resolve_runtime_status(scene)
     code = str(runtime.get("code", "IDLE") or "IDLE").upper()
+    if code == "PREPARING":
+        _set_download_overlay("Planetka: Preparing download...")
+        return
     if code == "DOWNLOADING":
         downloaded_mb = None
         total_mb = None
@@ -2296,7 +2330,8 @@ def _is_navigation_user_edit_active(scene):
         return False
     now = time.monotonic()
     idle_window = _auto_resolve_idle_seconds(scene)
-    return (now - float(_NAVIGATION_USER_EDIT_LAST_TOUCH)) < float(idle_window)
+    guard_window = max(float(idle_window), float(_NAV_CAMERA_CONTROL_SYNC_GRACE_SEC))
+    return (now - float(_NAVIGATION_USER_EDIT_LAST_TOUCH)) < guard_window
 
 
 def _active_view_monitor_interval_seconds(scene):
@@ -2332,7 +2367,7 @@ def _auto_resolve_download_job_signature(job):
         tuple(job.get("target_tiles", ())),
         job.get("camera_signature"),
         job.get("output_signature"),
-        str(job.get("texture_quality_mode", "HALF") or "HALF").upper(),
+        _normalize_texture_quality_mode(job.get("texture_quality_mode", "BALANCED")),
     )
 
 
@@ -2401,13 +2436,11 @@ def _schedule_auto_resolve_download(
     prefs = get_prefs()
     props = getattr(scene, "planetka", None)
     base_path = str(getattr(prefs, "texture_base_path", "") or "") if prefs else ""
-    texture_quality_mode = "HALF"
+    texture_quality_mode = "BALANCED"
     try:
-        texture_quality_mode = str(getattr(props, "texture_quality_mode", "HALF") or "HALF").upper()
+        texture_quality_mode = _normalize_texture_quality_mode(getattr(props, "texture_quality_mode", "BALANCED"))
     except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-        texture_quality_mode = "HALF"
-    if texture_quality_mode not in {"FULL", "HALF"}:
-        texture_quality_mode = "HALF"
+        texture_quality_mode = "BALANCED"
     target_tiles_tuple = tuple(target_tiles or ())
 
     job_to_start = None
@@ -2825,7 +2858,7 @@ def _auto_resolve_download_worker(job):
             str(job.get("base_path", "") or ""),
             cancel_event=job.get("cancel_event"),
             capture=True,
-            texture_quality_mode=str(job.get("texture_quality_mode", "HALF") or "HALF"),
+            texture_quality_mode=_normalize_texture_quality_mode(job.get("texture_quality_mode", "BALANCED")),
         )
         cancelled = (
             bool(prepared_payload.get("cancelled", False))
@@ -2837,7 +2870,7 @@ def _auto_resolve_download_worker(job):
                 tuple(job.get("target_tiles", ())),
                 str(job.get("base_path", "") or ""),
                 prepared_payload,
-                texture_quality_mode=str(job.get("texture_quality_mode", "HALF") or "HALF"),
+                texture_quality_mode=_normalize_texture_quality_mode(job.get("texture_quality_mode", "BALANCED")),
             )
         result["success"] = not cancelled
         result["cancelled"] = cancelled
@@ -3001,6 +3034,9 @@ def request_auto_resolve(scene, immediate=False, mark_dirty=True):
     if scene is None:
         return
 
+    if _auto_resolve_scope_mode(scene) == "NONE":
+        return
+
     ensure_active_view_monitor_running()
 
     if mark_dirty:
@@ -3041,6 +3077,7 @@ def update_auto_resolve(self, context):
                 "viewport_opt_subdivision_restore_delay_sec",
                 "viewport_opt_active_view_coarse_textures",
                 "auto_resolve",
+                "auto_resolve_active_view",
                 "auto_resolve_idle_sec",
                 "texture_quality_mode",
                 "resolution_bias",
@@ -3071,6 +3108,14 @@ def _auto_resolve_tick_once():
     props = getattr(scene, "planetka", None)
     if not props or not bool(getattr(props, "auto_resolve", False)):
         return None
+
+    # Track viewport scope transitions on every timer tick, not only on depsgraph
+    # events. View switches (Active View <-> Camera) may not emit depsgraph updates.
+    _handle_view_scope_quality_transition(scene)
+
+    scope_mode = _auto_resolve_scope_mode(scene)
+    if scope_mode == "NONE":
+        return None
     try:
         if int(scene.get(ANIMATION_PREPARED_SEGMENTS_KEY, 0)) > 0:
             return None
@@ -3089,8 +3134,17 @@ def _auto_resolve_tick_once():
     if get_earth_object() is None:
         return None
 
+    scope = scope_mode
+    active_view_signature = None
+    if scope == "ACTIVE_VIEW":
+        active_view_signature = _active_view_signature()
     camera_signature = _camera_signature(scene)
-    if camera_signature is None:
+    resolve_signature = (
+        ("ACTIVE_VIEW", active_view_signature)
+        if active_view_signature is not None
+        else camera_signature
+    )
+    if resolve_signature is None:
         return AUTO_RESOLVE_RETRY_DELAY_SEC
 
     scene_id = _scene_key(scene)
@@ -3105,8 +3159,8 @@ def _auto_resolve_tick_once():
             _AUTO_RESOLVE_LAST_CHANGE_TIME[scene_id] = now
 
     previous_signature = _AUTO_RESOLVE_LAST_CAMERA_SIGNATURE.get(scene_id)
-    if previous_signature != camera_signature:
-        _AUTO_RESOLVE_LAST_CAMERA_SIGNATURE[scene_id] = camera_signature
+    if previous_signature != resolve_signature:
+        _AUTO_RESOLVE_LAST_CAMERA_SIGNATURE[scene_id] = resolve_signature
         _AUTO_RESOLVE_LAST_PROCESSED_SIGNATURE.pop(scene_id, None)
 
     last_resolve = _AUTO_RESOLVE_LAST_RESOLVE_TIME.get(scene_id, 0.0)
@@ -3114,7 +3168,7 @@ def _auto_resolve_tick_once():
         return max(0.05, min_interval_sec - (now - last_resolve))
 
     pending_output_change = bool(_AUTO_RESOLVE_PENDING_OUTPUT_CHANGE.get(scene_id, False))
-    if _AUTO_RESOLVE_LAST_PROCESSED_SIGNATURE.get(scene_id) == camera_signature and not pending_output_change:
+    if _AUTO_RESOLVE_LAST_PROCESSED_SIGNATURE.get(scene_id) == resolve_signature and not pending_output_change:
         return None
 
     tile_utils = _get_tile_utils()
@@ -3124,7 +3178,7 @@ def _auto_resolve_tick_once():
     try:
         target_tiles = _canonical_tiles(
             tile_utils.main(
-                scope_mode="CAMERA",
+                scope_mode="ACTIVE_VIEW" if (scope == "ACTIVE_VIEW" and active_view_signature is not None) else "CAMERA",
             )
         )
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
@@ -3135,12 +3189,12 @@ def _auto_resolve_tick_once():
         return AUTO_RESOLVE_RETRY_DELAY_SEC
 
     if target_tiles == _last_resolved_tiles(scene) and not pending_output_change:
-        _AUTO_RESOLVE_LAST_PROCESSED_SIGNATURE[scene_id] = camera_signature
+        _AUTO_RESOLVE_LAST_PROCESSED_SIGNATURE[scene_id] = resolve_signature
         _AUTO_RESOLVE_LAST_RESOLVE_TIME[scene_id] = now
         return None
 
     output_signature = _output_resolution_signature(scene)
-    queued = _schedule_auto_resolve_download(scene, target_tiles, camera_signature, output_signature)
+    queued = _schedule_auto_resolve_download(scene, target_tiles, resolve_signature, output_signature)
     if not queued:
         return AUTO_RESOLVE_RETRY_DELAY_SEC
     _AUTO_RESOLVE_LAST_CHANGE_TIME[scene_id] = time.monotonic()
@@ -3215,6 +3269,9 @@ def _active_view_monitor_timer():
 
         scene_id = _scene_key(scene)
         monitor_interval = _active_view_monitor_interval_seconds(scene)
+        if not _run_auto_resolve_in_active_view(scene):
+            _ACTIVE_VIEW_MONITOR_LAST_SIGNATURE.pop(scene_id, None)
+            return monitor_interval
         scope = _current_view_scope(scene)
         if scope != "ACTIVE_VIEW":
             _ACTIVE_VIEW_MONITOR_LAST_SIGNATURE.pop(scene_id, None)
@@ -3244,9 +3301,26 @@ def _active_view_monitor_timer():
 
 def ensure_active_view_monitor_running():
     global _ACTIVE_VIEW_MONITOR_TIMER_RUNNING
-    # Active-view auto-resolve is intentionally disabled.
-    stop_active_view_monitor()
-    _ACTIVE_VIEW_MONITOR_TIMER_RUNNING = False
+    scene = getattr(bpy.context, "scene", None)
+    if not _can_auto_resolve_run(scene) or not _run_auto_resolve_in_active_view(scene):
+        stop_active_view_monitor()
+        _ACTIVE_VIEW_MONITOR_TIMER_RUNNING = False
+        return
+    if _ACTIVE_VIEW_MONITOR_TIMER_RUNNING and bpy.app.timers.is_registered(_active_view_monitor_timer):
+        return
+    try:
+        bpy.app.timers.register(
+            _active_view_monitor_timer,
+            first_interval=max(0.05, _active_view_monitor_interval_seconds(scene)),
+            persistent=True,
+        )
+        _ACTIVE_VIEW_MONITOR_TIMER_RUNNING = True
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed starting active-view monitor timer", exc_info=True)
+        _ACTIVE_VIEW_MONITOR_TIMER_RUNNING = False
+    except (RuntimeError, TypeError, ValueError):
+        logger.debug("Planetka: failed starting active-view monitor timer", exc_info=True)
+        _ACTIVE_VIEW_MONITOR_TIMER_RUNNING = False
 
 
 def stop_active_view_monitor():
@@ -3413,20 +3487,27 @@ def _planetka_depsgraph_update_post(_scene, _depsgraph):
             _AUTO_RESOLVE_LAST_PROCESSED_SIGNATURE.pop(scene_id, None)
             request_auto_resolve(scene, immediate=True, mark_dirty=False)
 
-    camera_signature = _camera_signature(scene)
+    trigger_signature = _camera_signature(scene)
+    if _auto_resolve_scope_mode(scene) == "ACTIVE_VIEW":
+        active_signature = _active_view_signature()
+        if active_signature is not None:
+            trigger_signature = ("ACTIVE_VIEW", active_signature)
     _handle_timeline_motion_optimization(scene)
-    _handle_viewport_motion_optimization(scene, camera_signature)
+    _handle_viewport_motion_optimization(
+        scene,
+        _camera_signature(scene),
+    )
     _handle_sunlight_motion_optimization(scene)
     _handle_view_scope_quality_transition(scene)
-    if camera_signature is None:
+    if trigger_signature is None:
         return
-    previous_camera_signature = _AUTO_RESOLVE_TRIGGER_LAST_SIGNATURE.get(scene_id)
-    if previous_camera_signature is None:
-        _AUTO_RESOLVE_TRIGGER_LAST_SIGNATURE[scene_id] = camera_signature
+    previous_trigger_signature = _AUTO_RESOLVE_TRIGGER_LAST_SIGNATURE.get(scene_id)
+    if previous_trigger_signature is None:
+        _AUTO_RESOLVE_TRIGGER_LAST_SIGNATURE[scene_id] = trigger_signature
         return
-    if previous_camera_signature == camera_signature:
+    if previous_trigger_signature == trigger_signature:
         return
-    _AUTO_RESOLVE_TRIGGER_LAST_SIGNATURE[scene_id] = camera_signature
+    _AUTO_RESOLVE_TRIGGER_LAST_SIGNATURE[scene_id] = trigger_signature
     request_auto_resolve(scene, immediate=False)
 
 

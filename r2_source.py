@@ -5,6 +5,8 @@ import hmac
 import json
 import logging
 import os
+import re
+import sqlite3
 import threading
 import time
 from contextlib import contextmanager
@@ -79,6 +81,11 @@ _LAST_UI_REDRAW_AT = 0.0
 _LAST_CACHE_PRUNE_AT = 0.0
 _LOCAL_SIZE_CACHE = {}
 _LOCAL_SIZE_CACHE_LOCK = threading.Lock()
+_TILE_SIZE_DB_LOCK = threading.Lock()
+_TILE_SIZE_DB_CONN = None
+_TILE_SIZE_DB_PATH = ""
+_TILE_SIZE_DB_MODE = ""
+_TILE_SIZE_DB_FAILURE_KEYS = set()
 _STREAM_HEALTH_OK = None
 _STREAM_HEALTH_CHECKED_AT = 0.0
 _AUTH_CHECK_LOCK = threading.Lock()
@@ -90,6 +97,10 @@ _REQUEST_CONTEXT_LOCK = threading.Lock()
 _REQUEST_CONTEXT_RESOLVE_ID = ""
 _REQUEST_CONTEXT_TEXTURE_MODE = ""
 _REQUEST_CONTEXT_CANCEL_EVENT = None
+_TILE_FILE_RE = re.compile(
+    r"^(S2|EL|WT|PO)_x(\d{3})_y(\d{3})_z(\d{3})_d(\d{3})\.(exr|tif)$",
+    re.IGNORECASE,
+)
 
 
 def _env(name, fallback=None):
@@ -127,6 +138,17 @@ def _parse_positive_int(value, default):
     except (TypeError, ValueError):
         pass
     return int(default)
+
+
+def _parse_bool_env(name, default=False):
+    raw = str(_env(name) or "").strip().lower()
+    if not raw:
+        return bool(default)
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return bool(default)
 
 
 def _parse_cache_max_bytes(max_bytes_raw, max_gb_raw, default_gb):
@@ -251,12 +273,28 @@ def _get_config():
 def reset_config_cache():
     global _CONFIG_CACHE
     global _LAST_CACHE_PRUNE_AT
+    global _TILE_SIZE_DB_CONN
+    global _TILE_SIZE_DB_PATH
+    global _TILE_SIZE_DB_MODE
     with _CONFIG_LOCK:
         _CONFIG_CACHE = None
     with _HEAD_CACHE_LOCK:
         _HEAD_CACHE.clear()
     with _HEAD_SIZE_CACHE_LOCK:
         _HEAD_SIZE_CACHE.clear()
+    with _LOCAL_SIZE_CACHE_LOCK:
+        _LOCAL_SIZE_CACHE.clear()
+    with _TILE_SIZE_DB_LOCK:
+        conn = _TILE_SIZE_DB_CONN
+        _TILE_SIZE_DB_CONN = None
+        _TILE_SIZE_DB_PATH = ""
+        _TILE_SIZE_DB_MODE = ""
+        _TILE_SIZE_DB_FAILURE_KEYS.clear()
+    if conn is not None:
+        try:
+            conn.close()
+        except (sqlite3.Error, RuntimeError, TypeError, ValueError, OSError):
+            logger.debug("Planetka: failed closing tile-size sqlite connection", exc_info=True)
     _LAST_CACHE_PRUNE_AT = 0.0
 
 
@@ -432,13 +470,18 @@ def verify_remote_stream_health(force=False):
 
 def get_download_progress():
     with _METRICS_LOCK:
+        active_requests = int(max(0, _ACTIVE_DOWNLOADS))
+        capture_enabled = bool(_CAPTURE_ENABLED)
         downloaded_bytes = int(max(0, _CAPTURE_DOWNLOAD_BYTES + _ACTIVE_DOWNLOAD_BYTES))
         if _CAPTURE_PLANNED_TOTAL_BYTES > 0:
             total_bytes = int(max(downloaded_bytes, _CAPTURE_PLANNED_TOTAL_BYTES))
         else:
             total_bytes = int(max(downloaded_bytes, _CAPTURE_TOTAL_BYTES + _ACTIVE_EXPECTED_BYTES))
         return {
-            "download_active": bool(_ACTIVE_DOWNLOADS > 0 or _CAPTURE_ENABLED),
+            "download_active": bool(active_requests > 0 or capture_enabled),
+            "active_requests": active_requests,
+            "capture_enabled": capture_enabled,
+            "preparing": bool(capture_enabled and active_requests <= 0),
             "downloaded_bytes": downloaded_bytes,
             "total_bytes": total_bytes,
         }
@@ -451,6 +494,146 @@ def _texture_size_source_root():
     return ""
 
 
+def _bundled_texture_size_db_path():
+    try:
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), "Resources", "tile_sizes.sqlite")
+    except (RuntimeError, TypeError, ValueError, OSError):
+        return ""
+
+
+def _texture_size_db_path():
+    configured = _env("PLANETKA_TEXTURE_SIZE_DB_PATH")
+    if configured:
+        return configured
+
+    source_root = _texture_size_source_root()
+    if source_root:
+        candidate = os.path.join(source_root, "tile_sizes.sqlite")
+        if os.path.isfile(candidate):
+            return candidate
+
+    bundled = _bundled_texture_size_db_path()
+    if bundled and os.path.isfile(bundled):
+        return bundled
+    return ""
+
+
+def _tile_size_db_connect(path):
+    uri = f"file:{urllib.parse.quote(os.path.abspath(path))}?mode=ro"
+    conn = sqlite3.connect(uri, uri=True, check_same_thread=False, timeout=1.5)
+    try:
+        conn.execute("PRAGMA query_only=ON")
+    except sqlite3.Error:
+        pass
+    conn.execute("SELECT 1 FROM tile_sizes LIMIT 1")
+    return conn
+
+
+def _detect_tile_size_db_mode(conn):
+    rows = conn.execute("PRAGMA table_info(tile_sizes)").fetchall()
+    columns = {str(row[1] or "").strip().lower() for row in rows if isinstance(row, (tuple, list)) and len(row) > 1}
+    if {"key", "size_bytes"}.issubset(columns):
+        return "key"
+    if {"folder", "x", "y", "z", "d", "ext", "size_bytes"}.issubset(columns):
+        return "dense"
+    raise sqlite3.DatabaseError("Unsupported tile_sizes schema")
+
+
+def _get_tile_size_db_connection():
+    global _TILE_SIZE_DB_CONN
+    global _TILE_SIZE_DB_PATH
+    global _TILE_SIZE_DB_MODE
+
+    db_path = _texture_size_db_path()
+    if not db_path:
+        return None, ""
+
+    normalized = os.path.abspath(db_path)
+    with _TILE_SIZE_DB_LOCK:
+        if _TILE_SIZE_DB_CONN is not None and _TILE_SIZE_DB_PATH == normalized:
+            return _TILE_SIZE_DB_CONN, str(_TILE_SIZE_DB_MODE or "")
+
+        if _TILE_SIZE_DB_CONN is not None:
+            try:
+                _TILE_SIZE_DB_CONN.close()
+            except (sqlite3.Error, RuntimeError, TypeError, ValueError, OSError):
+                logger.debug("Planetka: failed closing stale tile-size sqlite connection", exc_info=True)
+            _TILE_SIZE_DB_CONN = None
+            _TILE_SIZE_DB_PATH = ""
+
+        failure_key = f"open::{normalized}"
+        if failure_key in _TILE_SIZE_DB_FAILURE_KEYS:
+            return None, ""
+
+        try:
+            conn = _tile_size_db_connect(normalized)
+            mode = _detect_tile_size_db_mode(conn)
+            _TILE_SIZE_DB_CONN = conn
+            _TILE_SIZE_DB_PATH = normalized
+            _TILE_SIZE_DB_MODE = mode
+            return _TILE_SIZE_DB_CONN, str(_TILE_SIZE_DB_MODE or "")
+        except (sqlite3.Error, RuntimeError, TypeError, ValueError, OSError):
+            logger.debug("Planetka: failed opening tile-size sqlite index '%s'", normalized, exc_info=True)
+            _TILE_SIZE_DB_FAILURE_KEYS.add(failure_key)
+            _TILE_SIZE_DB_CONN = None
+            _TILE_SIZE_DB_PATH = ""
+            _TILE_SIZE_DB_MODE = ""
+            return None, ""
+
+
+def _lookup_indexed_texture_size(folder, file_name):
+    safe_folder = str(folder or "").strip().strip("/").replace("\\", "/")
+    safe_name = os.path.basename(str(file_name or ""))
+    if not safe_folder or not safe_name:
+        return None
+
+    conn, mode = _get_tile_size_db_connection()
+    if conn is None:
+        return None
+
+    key = f"{safe_folder}/{safe_name}"
+    failure_key = f"query::{key}"
+    if failure_key in _TILE_SIZE_DB_FAILURE_KEYS:
+        return None
+
+    try:
+        with _TILE_SIZE_DB_LOCK:
+            if mode == "dense":
+                match = _TILE_FILE_RE.match(safe_name)
+                if not match:
+                    return None
+                _prefix, x_text, y_text, z_text, d_text, ext_text = match.groups()
+                row = conn.execute(
+                    """
+                    SELECT size_bytes
+                    FROM tile_sizes
+                    WHERE folder = ? AND x = ? AND y = ? AND z = ? AND d = ? AND ext = ?
+                    LIMIT 1
+                    """,
+                    (
+                        safe_folder.upper(),
+                        int(x_text),
+                        int(y_text),
+                        int(z_text),
+                        int(d_text),
+                        str(ext_text or "").lower(),
+                    ),
+                ).fetchone()
+            else:
+                row = conn.execute("SELECT size_bytes FROM tile_sizes WHERE key = ? LIMIT 1", (key,)).fetchone()
+    except (sqlite3.Error, RuntimeError, TypeError, ValueError, OSError):
+        logger.debug("Planetka: tile-size sqlite lookup failed for key '%s'", key, exc_info=True)
+        _TILE_SIZE_DB_FAILURE_KEYS.add(failure_key)
+        return None
+
+    if not row:
+        return None
+    try:
+        return int(max(0, int(row[0] or 0)))
+    except (TypeError, ValueError):
+        return None
+
+
 def _lookup_local_texture_size(folder, file_name):
     key = f"{folder}/{file_name}"
     with _LOCAL_SIZE_CACHE_LOCK:
@@ -459,6 +642,12 @@ def _lookup_local_texture_size(folder, file_name):
             if cached is None:
                 return None
             return int(cached)
+
+    indexed_size = _lookup_indexed_texture_size(folder, file_name)
+    if indexed_size is not None:
+        with _LOCAL_SIZE_CACHE_LOCK:
+            _LOCAL_SIZE_CACHE[key] = int(indexed_size)
+        return int(indexed_size)
 
     source_root = _texture_size_source_root()
     if not source_root:
@@ -513,8 +702,14 @@ def _lookup_remote_texture_size(folder, file_name):
     return size
 
 
-def plan_resolve_downloads(requests):
+def plan_resolve_downloads(requests, allow_remote_probe=None):
     global _CAPTURE_PLANNED_TOTAL_BYTES
+
+    if allow_remote_probe is None:
+        # Avoid remote HEAD probes during resolve preflight by default.
+        # This keeps "download start" latency low for small Preview resolves.
+        allow_remote_probe = _parse_bool_env("PLANETKA_R2_PLAN_REMOTE_HEAD", default=False)
+    allow_remote_probe = bool(allow_remote_probe)
 
     if not is_remote_source_configured(None):
         return {"planned_total_bytes": 0, "planned_file_count": 0, "unknown_file_count": 0}
@@ -562,6 +757,9 @@ def plan_resolve_downloads(requests):
 
         local_size = _lookup_local_texture_size(folder, selected_file_name)
         if local_size is None:
+            if not allow_remote_probe:
+                unknown_files += 1
+                continue
             remote_size = _lookup_remote_texture_size(folder, selected_file_name)
             if remote_size is None:
                 unknown_files += 1
@@ -1037,11 +1235,8 @@ def resolve_remote_asset(folder, file_name):
 
     cached_path = _cached_remote_path(safe_folder, safe_name)
     if cached_path and _is_cache_file_usable(cached_path):
-        _ensure_remote_authentication(allow_cached_on_network_error=True)
         return cached_path
     _remove_invalid_cache_file(cached_path)
-
-    _ensure_remote_authentication()
 
     key = _remote_key(safe_folder, safe_name)
     if key and cached_path:
@@ -1063,11 +1258,8 @@ def resolve_texture_file(base_path, folder, prefix, filename, extensions):
         file_name = f"{prefix}_{filename}{ext}"
         cached_path = _cached_remote_path(folder, file_name)
         if cached_path and _is_cache_file_usable(cached_path):
-            _ensure_remote_authentication(allow_cached_on_network_error=True)
             return cached_path
         _remove_invalid_cache_file(cached_path)
-
-    _ensure_remote_authentication()
 
     for ext in exts:
         file_name = f"{prefix}_{filename}{ext}"
@@ -1318,11 +1510,8 @@ def texture_file_exists(base_path, folder, file_name):
 
     cached_path = _cached_remote_path(safe_folder, safe_name)
     if cached_path and _is_cache_file_usable(cached_path):
-        _ensure_remote_authentication(allow_cached_on_network_error=True)
         return True
     _remove_invalid_cache_file(cached_path)
-
-    _ensure_remote_authentication()
 
     key = _remote_key(safe_folder, safe_name)
     if key:

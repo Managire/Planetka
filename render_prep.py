@@ -19,8 +19,7 @@ import bpy
 from bpy.props import BoolProperty, EnumProperty, StringProperty
 
 from .auth import is_authenticated, sync_account_profile
-from .asset_builder import sync_surface_elevation_scale_for_radius
-from .compatibility_utils import ensure_adaptive_subdivision_compat
+from .asset_builder import ensure_earth_surface_parent, sync_surface_elevation_scale_for_radius
 from .diagnostics import write_resolve_diagnostics, write_tile_view_diagnostics
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS, with_error_code
 from .extension_prefs import get_earth_object, get_earth_surface_candidates, get_prefs
@@ -33,7 +32,6 @@ from .r2_source import (
 from .sanity_utils import _normalize_texture_source_path
 from .streaming_utils import (
     consume_staged_prefetch_payload,
-    estimate_remote_download_bytes_for_visible_tiles,
     prepare_resolve_streaming_for_visible_tiles,
 )
 from .state import (
@@ -62,6 +60,15 @@ LAST_PANORAMA_REQUIRED_Z_KEY = "planetka_last_panorama_required_z"
 
 
 _TILE_ZD_PATTERN = re.compile(r"_z(\d+)_d(\d+)$")
+
+
+def _normalize_texture_quality_mode(value):
+    token = str(value or "").strip().upper()
+    if token == "HALF":
+        return "BALANCED"
+    if token in {"FULL", "BALANCED", "PREVIEW"}:
+        return token
+    return "BALANCED"
 
 
 def _get_tile_utils():
@@ -259,6 +266,21 @@ def _count_missing_tile_loading_images(material_name="Planetka Earth Material"):
     return int(missing)
 
 
+def _set_object_hidden_state(obj, viewport_hidden=None, render_hidden=None):
+    if obj is None:
+        return
+    try:
+        if viewport_hidden is not None and hasattr(obj, "hide_viewport"):
+            obj.hide_viewport = bool(viewport_hidden)
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed setting object viewport hidden state", exc_info=True)
+    try:
+        if render_hidden is not None and hasattr(obj, "hide_render"):
+            obj.hide_render = bool(render_hidden)
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed setting object render hidden state", exc_info=True)
+
+
 def _earth_radius_blender_units(earth_obj):
     if earth_obj is None:
         return 2.0
@@ -402,28 +424,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             self.report({'WARNING'}, "Resolve skipped during animation playback (disabled in Settings).")
             return {'CANCELLED'}
 
-        try:
-            compat_info = {}
-            if not bool(getattr(self, "skip_render_compatibility", False)):
-                compat_info = ensure_adaptive_subdivision_compat(scene, return_details=True)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
-            return fail(
-                self,
-                f"Resolve precheck failed: {exc}",
-                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-                logger=logger,
-                exc=exc,
-                log_message="Planetka Resolve precheck failed",
-            )
-        if (
-            not bool(getattr(self, "skip_render_compatibility", False))
-            and isinstance(compat_info, dict)
-            and bool(compat_info.get("viewport_dicing_adjusted", False))
-        ):
-            self.report(
-                {'INFO'},
-                "Planetka set Cycles Viewport Dicing Rate to 2.0 for better surface quality.",
-            )
         phase_assets_ms = (time.perf_counter() - phase_start) * 1000.0
 
         prefs = get_prefs()
@@ -551,13 +551,11 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             )
 
         tiles_override = _parse_tiles_override(getattr(self, "tiles_override_json", ""))
-        texture_quality_mode = "HALF"
+        texture_quality_mode = "BALANCED"
         try:
-            texture_quality_mode = str(getattr(props, "texture_quality_mode", "HALF") or "HALF").upper()
+            texture_quality_mode = _normalize_texture_quality_mode(getattr(props, "texture_quality_mode", "BALANCED"))
         except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-            texture_quality_mode = "HALF"
-        if texture_quality_mode not in {"FULL", "HALF"}:
-            texture_quality_mode = "HALF"
+            texture_quality_mode = "BALANCED"
         phase_start = time.perf_counter()
         if tiles_override is not None:
             tiles = [] if force_empty_once else list(tiles_override)
@@ -667,7 +665,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                     capture=True,
                     texture_quality_mode=texture_quality_mode,
                 )
-            elif str(stream_payload.get("texture_quality_mode", "HALF") or "HALF").upper() != texture_quality_mode:
+            elif _normalize_texture_quality_mode(stream_payload.get("texture_quality_mode", "BALANCED")) != texture_quality_mode:
                 stream_payload = prepare_resolve_streaming_for_visible_tiles(
                     tiles,
                     normalized,
@@ -706,20 +704,8 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             capture_payload = stream_payload.get("download_capture", {})
             if isinstance(capture_payload, dict):
                 download_capture = capture_payload
-            if texture_quality_mode == "HALF" and tiles_override is None:
-                try:
-                    full_tiles = list(
-                        tile_utils.main(
-                            scope_mode=str(getattr(self, "scope_mode", "AUTO") or "AUTO"),
-                            texture_quality_mode_override="FULL",
-                        )
-                    )
-                    estimate = estimate_remote_download_bytes_for_visible_tiles(full_tiles, normalized)
-                    full_quality_cost_bytes = int(estimate.get("planned_total_bytes", 0) or 0)
-                except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                    logger.debug("Planetka: failed estimating full-quality resolve cost", exc_info=True)
-                except (RuntimeError, TypeError, ValueError, AttributeError):
-                    logger.debug("Planetka: failed estimating full-quality resolve cost", exc_info=True)
+            # Full-quality cost estimation intentionally disabled.
+            # Resolve should avoid extra planning work and start downloads immediately.
         except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
             return fail(
                 self,
@@ -805,6 +791,8 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
 
         ensure_planetka_temp_collection()
         new_obj = None
+        old_surface_viewport_hidden = bool(getattr(earth_surface, "hide_viewport", False))
+        old_surface_render_hidden = bool(getattr(earth_surface, "hide_render", False))
         try:
             phase_start = time.perf_counter()
             new_obj = create_temp_mesh(
@@ -814,6 +802,10 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             )
             if not new_obj:
                 raise RuntimeError("Failed to create new Earth surface mesh")
+            # Keep the existing resolved surface visible while we build/rebind the new
+            # surface in the background. Hiding both surfaces can cause visible white/black
+            # flashes in Active View because there is a frame with no textured surface.
+            _set_object_hidden_state(new_obj, viewport_hidden=True, render_hidden=True)
             phase_mesh_ms = (time.perf_counter() - phase_start) * 1000.0
 
             phase_start = time.perf_counter()
@@ -844,15 +836,25 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             )
 
         phase_start = time.perf_counter()
-        delete_temp_meshes(keep_obj=new_obj)
-        phase_post_delete_ms = (time.perf_counter() - phase_start) * 1000.0
-
-        phase_start = time.perf_counter()
         try:
             new_obj.name = str(target_surface_name or "Planetka Earth Surface")
         except (AttributeError, RuntimeError, TypeError, ValueError):
             logger.debug("Planetka: failed renaming resolved Earth surface object", exc_info=True)
+        try:
+            ensure_earth_surface_parent(scene=scene, earth_surface=new_obj)
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed parenting resolved Earth surface to Planetka Root", exc_info=True)
+        # Reveal the new surface first, then remove old surfaces to avoid blank-frame flashes.
+        _set_object_hidden_state(
+            new_obj,
+            viewport_hidden=old_surface_viewport_hidden,
+            render_hidden=old_surface_render_hidden,
+        )
         phase_post_mark_ms = (time.perf_counter() - phase_start) * 1000.0
+
+        phase_start = time.perf_counter()
+        delete_temp_meshes(keep_obj=new_obj)
+        phase_post_delete_ms = (time.perf_counter() - phase_start) * 1000.0
 
         try:
             scene["planetka_last_resolved_tiles"] = list(tiles)

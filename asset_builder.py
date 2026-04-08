@@ -2496,6 +2496,23 @@ def _ensure_planetka_sunlight(surface_collection):
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
 
+    # Keep sunlight under Planetka Root so root transforms remain coherent.
+    scene = getattr(bpy.context, "scene", None)
+    if scene is None:
+        scene = next(iter(getattr(bpy.data, "scenes", []) or []), None)
+    if scene is not None:
+        root = ensure_planetka_root(scene)
+        if root is not None and getattr(sunlight_obj, "parent", None) is not root:
+            try:
+                world_matrix = sunlight_obj.matrix_world.copy()
+                sunlight_obj.parent = root
+                sunlight_obj.matrix_parent_inverse = root.matrix_world.inverted()
+                sunlight_obj.matrix_world = world_matrix
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
     for nightday_group in _iter_nightday_groups():
         target_nodes = []
         named_node = nightday_group.nodes.get("Texture Coordinate")

@@ -438,7 +438,7 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
 
     show_earth_preview: BoolProperty(
         name="Show Earth Preview",
-        default=False,
+        default=True,
         description="Show or hide the low-detail Earth preview helper mesh",
         update=update_show_earth_preview,
     )
@@ -498,6 +498,16 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         update=update_auto_resolve,
     )
 
+    auto_resolve_active_view: BoolProperty(
+        name="Allow Resolve in Active View",
+        default=True,
+        description=(
+            "When enabled, Resolve follows Active View while in Active View. "
+            "When disabled, Resolve always uses Camera View."
+        ),
+        update=update_auto_resolve,
+    )
+
     auto_resolve_idle_sec: FloatProperty(
         name="Auto Resolve Idle Delay (s)",
         default=0.5,
@@ -540,7 +550,7 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         min=0.0,
         soft_max=25.0,
         precision=2,
-        step=10,
+        step=1,
         description="Navigation camera altitude above Earth surface in kilometers",
         update=update_navigation_shot,
     )
@@ -876,10 +886,19 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         name="Texture Quality",
         items=(
             ("FULL", "Full Quality", "Highest quality texture data"),
-            ("HALF", "1/2 Quality", "Reduced resolution 1/2 quality mode"),
+            (
+                "BALANCED",
+                "Balanced",
+                "Uses 1/2 width x 1/2 height of Full Quality textures (effective 1/4 resolution)",
+            ),
+            (
+                "PREVIEW",
+                "Preview",
+                "Uses two higher d-levels than Full Quality (effective 1/16 resolution); fastest download with lowest memory and recalculation cost",
+            ),
         ),
-        default="HALF",
-        description="Choose 1/2 Quality or Full Quality texture mode",
+        default="BALANCED",
+        description="Choose Preview, Balanced, or Full Quality texture mode",
         update=update_texture_quality_mode,
     )
 

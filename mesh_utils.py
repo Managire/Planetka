@@ -42,7 +42,7 @@ PREVIEW_OBJECT_NAME = "Planetka Preview Object"
 PREVIEW_MATERIAL_NAME = "Planetka Preview Material"
 PREVIEW_SEGMENTS = 36
 PREVIEW_RING_COUNT = 18
-PREVIEW_SCALE_FACTOR = 0.999
+PREVIEW_SCALE_FACTOR = 0.998
 _PREVIEW_STATIC_BINDINGS = (
     ("S2", "S2_x000_y000_z360_d000.exr", "Linear Rec.709", ("Image Texture", "Preview S2")),
     ("EL", "EL_x000_y000_z360_d000.exr", "Linear Rec.709", ("Image Texture.001", "Preview EL")),
@@ -136,17 +136,6 @@ def _enable_adaptive_subdivision(obj, subsurf_mod):
                 )
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 _log_recoverable_once("PKA-MESH-003", "Failed enabling adaptive subdivision on object cycles settings")
-        if hasattr(obj_cycles, "dicing_rate"):
-            try:
-                obj_cycles.dicing_rate = 1.0
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                _log_recoverable_once("PKA-MESH-004", "Failed setting cycles dicing_rate")
-        if hasattr(obj_cycles, "preview_dicing_rate"):
-            try:
-                obj_cycles.preview_dicing_rate = 1.0
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                _log_recoverable_once("PKA-MESH-005", "Failed setting cycles preview_dicing_rate")
-
     return adaptive_enabled
 
 
@@ -549,6 +538,59 @@ def _assign_preview_texture_images(preview_material):
                 loading_tex_node.image = image
 
 
+def _surface_local_radius(parent_surface):
+    if parent_surface is None:
+        return 1.0
+    try:
+        stored = float(parent_surface.get("planetka_surface_local_radius", 0.0))
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        stored = 0.0
+    if stored > 1e-9:
+        return float(stored)
+
+    mesh = getattr(parent_surface, "data", None)
+    vertices = getattr(mesh, "vertices", None)
+    if vertices:
+        try:
+            inferred = max(float(v.co.length) for v in vertices)
+            if inferred > 1e-9:
+                return float(inferred)
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed inferring surface local radius for preview scale", exc_info=True)
+    return 1.0
+
+
+def _mesh_local_radius(mesh):
+    vertices = getattr(mesh, "vertices", None)
+    if not vertices:
+        return 0.0
+    try:
+        return max(float(v.co.length) for v in vertices)
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed inferring preview mesh local radius", exc_info=True)
+    return 0.0
+
+
+def _sync_preview_mesh_radius(preview_obj, target_radius):
+    if preview_obj is None:
+        return
+    mesh = getattr(preview_obj, "data", None)
+    if mesh is None:
+        return
+    current_radius = _mesh_local_radius(mesh)
+    target = max(1e-6, float(target_radius))
+    if current_radius <= 1e-9:
+        return
+    ratio = float(target) / float(current_radius)
+    if abs(ratio - 1.0) <= 1e-9:
+        return
+    try:
+        mesh.transform(Matrix.Scale(float(ratio), 4))
+        mesh.update()
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed syncing preview mesh radius", exc_info=True)
+
+
 def ensure_preview_object(parent_surface):
     if not parent_surface or getattr(parent_surface, "type", None) != 'MESH':
         return None
@@ -587,8 +629,10 @@ def ensure_preview_object(parent_surface):
     preview.matrix_parent_inverse = Matrix.Identity(4)
     preview.location = (0.0, 0.0, 0.0)
     preview.rotation_euler = (0.0, 0.0, 0.0)
+    _sync_preview_mesh_radius(preview, _surface_local_radius(parent_surface))
     preview.scale = (PREVIEW_SCALE_FACTOR, PREVIEW_SCALE_FACTOR, PREVIEW_SCALE_FACTOR)
-    preview.hide_render = False
+    # Preview sphere is viewport-only and must never appear in final renders.
+    preview.hide_render = True
     preview.hide_viewport = False
     try:
         preview.display_type = 'TEXTURED'
@@ -916,9 +960,11 @@ def create_temp_mesh_for_all_tiles(tiles, name="Planetka Earth Surface", collect
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 _log_recoverable_once("PKA-MESH-010", "Failed removing non-subsurf modifier named Adaptive Subdivision")
         subsurf_mod = temp.modifiers.new(name="Adaptive Subdivision", type='SUBSURF')
-    _set_enum_property_safe(subsurf_mod, "subdivision_type", ("CATMULL_CLARK",))
-    subsurf_mod.levels = 1
-    subsurf_mod.render_levels = 1
+    _set_enum_property_safe(subsurf_mod, "subdivision_type", ("CATMULL_CLARK", "SIMPLE"))
+    # Testing profile: keep subdivision levels at 0/0 to minimize EEVEE sampler
+    # pressure and viewport memory usage on wide-coverage shots.
+    subsurf_mod.levels = 0
+    subsurf_mod.render_levels = 0
     _enable_adaptive_subdivision(temp, subsurf_mod)
     subsurf_mod.show_render = True
     subsurf_mod.show_viewport = True

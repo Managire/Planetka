@@ -1,6 +1,6 @@
 # Cycles SVM Tile Limit (Planetka Earth Material)
 
-Last updated: `2026-04-01`
+Last updated: `2026-04-07`
 
 ## Summary
 
@@ -20,6 +20,21 @@ Additional renderer stress observations (including EEVEE/Metal path) showed that
 - minimum floor: `0` (no synthetic placeholders)
 - maximum budget: `12`
 - static loader slots: `12` (topology fixed; only assignments/active masks change per resolve)
+
+Adaptive subdivision caveat (EEVEE animation stability):
+
+- For `Planetka Earth Surface`, `Adaptive Subdivision` modifier levels above `0` (`levels > 0` and/or `render_levels > 0`) were observed to introduce visible artifacts in EEVEE animation outputs.
+- Current safe baseline for EEVEE animation workflows is `levels = 0`, `render_levels = 0`.
+- Keep this as a regression checkpoint whenever subdivision/render pipeline logic changes.
+
+EEVEE displacement caveat (segment-boundary stability):
+
+- In EEVEE animation workflows, keeping Earth material in true displacement mode can produce visible tile height popping/jitter at resolve segment boundaries.
+- The effect is most visible when neighboring tiles are added/removed by a new resolve and EL-driven displacement context shifts between segments.
+- Current mitigation in headless EEVEE animation render path:
+  - temporarily force Earth material displacement to `BUMP` during the render run
+  - restore the user's original displacement mode at the end of the run
+- This avoids visible elevation jumps while preserving the user's material setting outside animation render execution.
 
 ## Root Cause (Observed)
 
@@ -69,6 +84,7 @@ For material/tile logic changes, re-run a Cairo-style reproduction and confirm:
 3. Cycles render completes without SVM overflow.
 4. No coverage holes are introduced by merge replacements.
 5. EEVEE segment-boundary renders do not emit `sampler(...) out of bounds` and do not show placeholder-driven brightness shifts.
+6. EEVEE animation segment boundaries do not show displacement-driven tile popping/jitter (temporary BUMP safety mode active during render).
 
 For wiring details, see:
 

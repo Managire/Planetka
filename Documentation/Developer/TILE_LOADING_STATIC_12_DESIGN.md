@@ -1,6 +1,6 @@
 # Tile Loading Static-12 Design (Cycles + EEVEE)
 
-Last updated: `2026-04-01`
+Last updated: `2026-04-07`
 
 ## Purpose
 
@@ -93,6 +93,28 @@ When unused slots relied on mute/fallback behavior alone, segment-to-segment bri
 
 Explicit slot active masking (`TileActive_###`) fixed this by forcing zero alpha contribution for unused slots.
 
+### Issue D: EEVEE displacement popping at segment boundaries
+
+Even with stable static slots, EEVEE animation can show vertical tile popping when true displacement is active:
+
+- a segment boundary triggers resolve
+- neighboring tile set changes
+- EL displacement context changes between segments
+- visible tiles jump up/down relative to prior segment
+
+Observed behavior:
+
+- Cycles is much less affected in the same scenes
+- EEVEE shows the strongest artifact in motion sequences
+
+Current mitigation (implemented in animation render path):
+
+- if render engine is EEVEE, temporarily set Earth material displacement mode to `BUMP`
+- run segmented animation render
+- restore original displacement mode after render completion/failure
+
+This mitigation is intentionally runtime-scoped and does not permanently rewrite the user's material preference.
+
 ## Validation Checklist
 
 For any tile-loader edit, verify:
@@ -104,6 +126,10 @@ For any tile-loader edit, verify:
    - Change unused slot images aggressively.
    - Keep `TileActive_### = 0`.
    - Confirm visible output remains unchanged (aside from normal EEVEE run-to-run noise).
+5. EEVEE segment-boundary animation test:
+   - Run segmented headless animation in EEVEE.
+   - Confirm no displacement-driven tile height popping/jitter between segments.
+   - Confirm Earth material displacement mode is restored after render.
 
 ## Guardrails (Do Not Change Without Full Revalidation)
 
@@ -111,4 +137,3 @@ For any tile-loader edit, verify:
 2. Do not reintroduce synthetic floor padding as a primary mechanism.
 3. Keep slot-active masking in the shader graph for unused slots.
 4. Keep tile budget enforcement upstream in `tile_utils.py` (selection layer), not by silently dropping shader slots.
-

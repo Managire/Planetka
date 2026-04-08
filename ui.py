@@ -134,6 +134,8 @@ def _status_activity_suffix(running):
 
 def _status_icon(code):
     token = str(code or "").upper()
+    if token == "PREPARING":
+        return "TIME"
     if token == "DOWNLOADING":
         return "IMPORT"
     if token in {"FINALIZING", "FINALIZE_QUEUED"}:
@@ -145,6 +147,186 @@ def _status_icon(code):
     if token == "IDLE":
         return "CHECKMARK"
     return "INFO"
+
+
+def _earth_radius_bu_for_ui(scene):
+    earth = get_earth_object()
+    if earth is None:
+        return None
+    try:
+        operators_module = __import__(f"{__package__}.operators", fromlist=["_earth_radius_blender_units"])
+        radius_fn = getattr(operators_module, "_earth_radius_blender_units", None)
+        if callable(radius_fn):
+            radius = float(radius_fn(earth))
+            if radius > 0.0:
+                return radius
+    except (ImportError, AttributeError, RuntimeError, TypeError, ValueError):
+        pass
+    try:
+        stored_local_radius = float(earth.get("planetka_surface_local_radius", 0.0))
+        if stored_local_radius > 0.0:
+            world_scale = earth.matrix_world.to_scale()
+            max_scale = max(abs(world_scale.x), abs(world_scale.y), abs(world_scale.z), 1e-9)
+            return float(stored_local_radius) * float(max_scale)
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        pass
+    return None
+
+
+def _clipping_warning_for_status(scene):
+    if scene is None:
+        return None
+    earth = get_earth_object()
+    if earth is None:
+        return None
+
+    try:
+        earth_center = earth.matrix_world.translation.copy()
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return None
+
+    earth_radius = _earth_radius_bu_for_ui(scene)
+    if earth_radius is None or earth_radius <= 0.0:
+        return None
+
+    probe_pos = None
+    clip_start = None
+    clip_end = None
+    warning_text = None
+    mode = None
+
+    space = getattr(bpy.context, "space_data", None)
+    rv3d = getattr(space, "region_3d", None) if space is not None else None
+    is_view3d = bool(space is not None and str(getattr(space, "type", "")) == "VIEW_3D")
+    in_camera_view = bool(rv3d is not None and str(getattr(rv3d, "view_perspective", "")) == "CAMERA")
+
+    if is_view3d and not in_camera_view and rv3d is not None:
+        try:
+            view_matrix = rv3d.view_matrix.inverted()
+            probe_pos = view_matrix.translation.copy()
+            clip_start = float(getattr(space, "clip_start", 0.0))
+            clip_end = float(getattr(space, "clip_end", 0.0))
+            warning_text = "Outside Viewport Clipping Range"
+            mode = "VIEWPORT"
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            probe_pos = None
+    else:
+        camera = getattr(scene, "camera", None)
+        camera_data = getattr(camera, "data", None) if camera is not None else None
+        if camera is None or str(getattr(camera, "type", "")) != "CAMERA" or camera_data is None:
+            return None
+        try:
+            probe_pos = camera.matrix_world.translation.copy()
+            clip_start = float(getattr(camera_data, "clip_start", 0.0))
+            clip_end = float(getattr(camera_data, "clip_end", 0.0))
+            warning_text = "Outside Camera Clipping Range"
+            mode = "CAMERA"
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            return None
+
+    if probe_pos is None:
+        return None
+    if clip_start is None or clip_end is None or clip_start <= 0.0 or clip_end <= 0.0 or clip_end <= clip_start:
+        return None
+
+    try:
+        proximity_bu = float((probe_pos - earth_center).length) - float(earth_radius)
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return None
+
+    if proximity_bu < 0.0:
+        return {
+            "warning_text": "Negative altitude",
+            "mode": str(mode or "CAMERA"),
+            "negative_altitude": True,
+            "proximity_bu": float(proximity_bu),
+            "clip_start": float(clip_start),
+            "clip_end": float(clip_end),
+        }
+
+    breach_min = proximity_bu < float(clip_start)
+    breach_max = proximity_bu > float(clip_end)
+    if breach_min or breach_max:
+        return {
+            "warning_text": str(warning_text or "Outside Clipping Range"),
+            "mode": str(mode or "CAMERA"),
+            "breach_min": bool(breach_min),
+            "breach_max": bool(breach_max),
+            "proximity_bu": float(proximity_bu),
+            "clip_start": float(clip_start),
+            "clip_end": float(clip_end),
+        }
+    return None
+
+
+def _non_black_background_warning(scene):
+    if scene is None:
+        return None
+    world = getattr(scene, "world", None)
+    if world is None or not bool(getattr(world, "use_nodes", False)):
+        return None
+
+    node_tree = getattr(world, "node_tree", None)
+    nodes = getattr(node_tree, "nodes", None) if node_tree is not None else None
+    if nodes is None:
+        return None
+
+    background = nodes.get("Background")
+    if background is None:
+        for node in nodes:
+            if str(getattr(node, "bl_idname", "")) == "ShaderNodeBackground":
+                background = node
+                break
+    if background is None:
+        return None
+
+    color_socket = background.inputs[0] if len(background.inputs) > 0 else None
+    strength_socket = background.inputs[1] if len(background.inputs) > 1 else None
+    if color_socket is None or strength_socket is None:
+        return None
+
+    if bool(getattr(color_socket, "is_linked", False)):
+        return None
+
+    try:
+        strength = float(getattr(strength_socket, "default_value", 0.0))
+    except (TypeError, ValueError):
+        return None
+    if strength <= 0.0:
+        return None
+
+    color = getattr(color_socket, "default_value", None)
+    if color is None or len(color) < 3:
+        return None
+    try:
+        is_black = abs(float(color[0])) <= 1e-6 and abs(float(color[1])) <= 1e-6 and abs(float(color[2])) <= 1e-6
+    except (TypeError, ValueError):
+        return None
+
+    if is_black:
+        return None
+
+    return {"warning_text": "Non-black background color"}
+
+
+def _clipping_button_text(clipping_warning):
+    if not isinstance(clipping_warning, dict):
+        return "Change Clipping Automatically"
+    try:
+        clip_start = float(clipping_warning.get("clip_start", 0.0))
+        clip_end = float(clipping_warning.get("clip_end", 0.0))
+    except (TypeError, ValueError):
+        return "Change Clipping Automatically"
+
+    breach_min = bool(clipping_warning.get("breach_min", False))
+    breach_max = bool(clipping_warning.get("breach_max", False))
+    if breach_min:
+        new_start = max(1e-9, clip_start / 10.0)
+        return f"Change Clip Start to {new_start:.6g}"
+    if breach_max:
+        new_end = max(max(1e-9, clip_start) * 1.000001, clip_end * 10.0)
+        return f"Change Clip End to {new_end:.6g}"
+    return "Change Clipping Automatically"
 
 
 class _PLANETKA_PT_BaseSection:
@@ -322,9 +504,11 @@ def _draw_live_telemetry(layout, scene):
     runtime = get_resolve_runtime_status(scene)
     runtime_code = str(runtime.get("code", "IDLE") or "IDLE").upper()
     runtime_text = str(runtime.get("text", "Idle") or "Idle")
-    if active_download and runtime_code not in {"DOWNLOADING", "FINALIZING"}:
+    if active_download and runtime_code in {"IDLE", "MONITORING"}:
         runtime_code = "DOWNLOADING"
         runtime_text = "Downloading"
+    if runtime_code == "PREPARING":
+        runtime_text = "Preparing Download"
     if runtime_code == "DOWNLOADING":
         runtime_text = "Downloading"
         if total_bytes > 0:
@@ -333,7 +517,7 @@ def _draw_live_telemetry(layout, scene):
             runtime_text = f"{runtime_text} ({downloaded_mb:.2f} MB)"
 
     status_row = layout.row()
-    status_row.alert = runtime_code in {"DOWNLOADING", "FINALIZING", "FINALIZE_QUEUED", "QUEUED"}
+    status_row.alert = runtime_code in {"PREPARING", "DOWNLOADING", "FINALIZING", "FINALIZE_QUEUED", "QUEUED"}
     status_row.label(
         text=f"{runtime_text}{_status_activity_suffix(runtime.get('running', False))}",
         icon=_status_icon(runtime_code),
@@ -351,12 +535,36 @@ def _draw_live_telemetry(layout, scene):
         if pending_count > 0:
             layout.label(text=f"Queued jobs: {pending_count}")
 
+    clipping_warning = _clipping_warning_for_status(scene)
+    if isinstance(clipping_warning, dict):
+        clipping_box = layout.box()
+        clipping_box.alert = True
+        clipping_box.label(text=str(clipping_warning.get("warning_text", "Outside Clipping Range")), icon="ERROR")
+        if not bool(clipping_warning.get("negative_altitude", False)):
+            clip_button_text = _clipping_button_text(clipping_warning)
+            clipping_box.operator("planetka.auto_adjust_clipping", text=clip_button_text, icon="SETTINGS")
+
+    background_warning = _non_black_background_warning(scene)
+    if isinstance(background_warning, dict):
+        bg_box = layout.box()
+        warn_row = bg_box.row()
+        warn_row.alert = True
+        warn_row.label(text=str(background_warning.get("warning_text", "Non-black background color")), icon="ERROR")
+        action_row = bg_box.row()
+        action_row.alert = False
+        action_row.operator(
+            "planetka.set_background_black",
+            text="Change Background to Black",
+            icon="SHADING_RENDERED",
+        )
+
     if props is not None and is_authenticated(prefs):
         quality_box = layout.box()
         quality_box.label(text="Texture Quality", icon="TEXTURE")
         quality_row = quality_box.row(align=True)
         quality_row.use_property_split = False
-        quality_row.prop_enum(props, "texture_quality_mode", "HALF", text="1/2 Quality")
+        quality_row.prop_enum(props, "texture_quality_mode", "PREVIEW", text="Preview")
+        quality_row.prop_enum(props, "texture_quality_mode", "BALANCED", text="Balanced")
         quality_row.prop_enum(props, "texture_quality_mode", "FULL", text="Full Quality")
     throttle_message = str(get_status_message(prefs) or "").strip()
     if throttle_message and "throttl" in throttle_message.lower():
@@ -651,29 +859,6 @@ def _draw_earth_transform(layout, scene):
         except (AttributeError, RuntimeError, TypeError, ValueError):
             earth_radius = 2.0
 
-        camera_clip_end = None
-        active_camera = getattr(scene, "camera", None) if scene is not None else None
-        camera_data = getattr(active_camera, "data", None) if active_camera is not None else None
-        try:
-            if active_camera is not None and str(getattr(active_camera, "type", "")) == "CAMERA" and camera_data is not None:
-                camera_clip_end = float(getattr(camera_data, "clip_end", 0.0))
-        except (AttributeError, RuntimeError, TypeError, ValueError):
-            camera_clip_end = None
-
-        if earth_radius >= 100.0 and camera_clip_end is not None and camera_clip_end <= 1000.0:
-            warn_box = layout.box()
-            warn_box.alert = True
-            warn_box.use_property_split = False
-            warn_box.label(
-                text="Clip End is low for large Earth Radius.",
-                icon="ERROR",
-            )
-            warn_box.label(
-                text="Recommended: increase Camera and Viewport clipping values",
-            )
-            warn_box.label(
-                text="to avoid unexpected cut-offs.",
-            )
     layout.prop(root, "location", text="Location")
     layout.prop(root, "rotation_euler", text="Rotation")
 
@@ -847,7 +1032,7 @@ class PLANETKA_PT_ResolvePanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Pane
 
 
 class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Settings"
+    bl_label = "Advanced Settings"
     bl_idname = "PLANETKA_PT_settings"
     bl_order = 9
 
@@ -868,8 +1053,18 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         if props:
             auto_resolve_box = layout.box()
             auto_resolve_box.label(text="Auto Resolve", icon="FILE_REFRESH")
-            auto_resolve_box.enabled = workflow_enabled and bool(getattr(props, "auto_resolve", False))
-            auto_resolve_box.prop(
+            auto_resolve_box.enabled = workflow_enabled
+            active_view_row = auto_resolve_box.row()
+            active_view_row.enabled = bool(getattr(props, "auto_resolve", False))
+            active_view_row.prop(
+                props,
+                "auto_resolve_active_view",
+                text="Allow Resolve in Active View",
+                toggle=True,
+            )
+            idle_row = auto_resolve_box.row()
+            idle_row.enabled = bool(getattr(props, "auto_resolve", False))
+            idle_row.prop(
                 props,
                 "auto_resolve_idle_sec",
                 text="Auto Resolve Idle Delay (s)",
@@ -900,6 +1095,21 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
                 props,
                 "r2_cache_max_gb",
                 text="Data Cache Limit (GB)",
+            )
+
+            startup_box = layout.box()
+            startup_box.label(text="Startup Setup", icon="TOOL_SETTINGS")
+            save_row = startup_box.row()
+            save_row.enabled = workflow_enabled
+            save_row.operator(
+                "planetka.save_startup_setup",
+                text="Save Current Setup as Startup Default",
+                icon="FILE_TICK",
+            )
+            startup_box.operator(
+                "planetka.reset_startup_setup_factory",
+                text="Reset Startup Setup",
+                icon="LOOP_BACK",
             )
 
 class PLANETKA_PT_LiveTelemetryPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
@@ -1112,39 +1322,29 @@ class PLANETKA_PT_NavigationSavedLocationsPanelCollapsed(_PLANETKA_PT_BaseSectio
         )
 
 
-class PLANETKA_PT_SurfaceGradingPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Earth Grading"
-    bl_idname = "PLANETKA_PT_surface_grading"
-    bl_order = 7
+def _draw_earth_settings(layout, scene, enabled):
+    layout.enabled = bool(enabled)
+    layout.use_property_split = True
+    layout.use_property_decorate = False
 
-    @classmethod
-    def poll(cls, context):
-        return _is_earth_workflow_enabled()
+    if hasattr(layout, "panel"):
+        header, body = layout.panel("planetka_earth_transform_section", default_closed=True)
+        header.label(text="Earth Transform", icon="EMPTY_AXIS")
+        if body is not None:
+            body.enabled = bool(enabled)
+            _draw_earth_transform(body, scene)
+    else:
+        transform_box = layout.box()
+        transform_box.label(text="Earth Transform", icon="EMPTY_AXIS")
+        transform_box.enabled = bool(enabled)
+        _draw_earth_transform(transform_box, scene)
 
-    def draw(self, context):
-        layout = self.layout
-        layout.enabled = _is_earth_workflow_enabled()
-        _draw_surface_grading(layout)
-
-
-class PLANETKA_PT_SurfaceGradingPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Earth Grading"
-    bl_idname = "PLANETKA_PT_surface_grading_collapsed"
-    bl_order = 7
-
-    @classmethod
-    def poll(cls, context):
-        return not _is_earth_workflow_enabled()
-
-    def draw(self, context):
-        layout = self.layout
-        layout.enabled = False
-        _draw_surface_grading(layout)
+    _draw_surface_grading(layout)
 
 
-class PLANETKA_PT_EarthTransformPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Earth Transform"
-    bl_idname = "PLANETKA_PT_earth_transform"
+class PLANETKA_PT_EarthSettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
+    bl_label = "Earth Settings"
+    bl_idname = "PLANETKA_PT_earth_settings"
     bl_order = 6
 
     @classmethod
@@ -1152,15 +1352,13 @@ class PLANETKA_PT_EarthTransformPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel)
         return _is_earth_workflow_enabled()
 
     def draw(self, context):
-        layout = self.layout
-        layout.enabled = _is_earth_workflow_enabled()
         scene = getattr(context, "scene", None)
-        _draw_earth_transform(layout, scene)
+        _draw_earth_settings(self.layout, scene, enabled=True)
 
 
-class PLANETKA_PT_EarthTransformPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Earth Transform"
-    bl_idname = "PLANETKA_PT_earth_transform_collapsed"
+class PLANETKA_PT_EarthSettingsPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
+    bl_label = "Earth Settings"
+    bl_idname = "PLANETKA_PT_earth_settings_collapsed"
     bl_order = 6
 
     @classmethod
@@ -1168,10 +1366,8 @@ class PLANETKA_PT_EarthTransformPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.typ
         return not _is_earth_workflow_enabled()
 
     def draw(self, context):
-        layout = self.layout
-        layout.enabled = False
         scene = getattr(context, "scene", None)
-        _draw_earth_transform(layout, scene)
+        _draw_earth_settings(self.layout, scene, enabled=False)
 
 
 class PLANETKA_PT_AtmospherePanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
@@ -1309,7 +1505,7 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         preview_row.scale_y = 1.15
         preview_row.operator(
             "planetka.animation_preview_shot",
-            text="Preview Shot",
+            text="Preview Animation",
             icon="PLAY",
         )
 

@@ -42,7 +42,7 @@ def _normalize_base_path(base_path):
     return text.rstrip("/\\")
 
 
-def _staged_prefetch_key(visible_tiles, base_path, texture_quality_mode="HALF"):
+def _staged_prefetch_key(visible_tiles, base_path, texture_quality_mode="BALANCED"):
     return (
         _normalize_tiles(visible_tiles),
         _normalize_base_path(base_path),
@@ -60,7 +60,7 @@ def _prune_staged_prefetch_locked(now_ts):
         _STAGED_PREFETCH.pop(key, None)
 
 
-def stage_prefetch_payload(visible_tiles, base_path, payload, texture_quality_mode="HALF"):
+def stage_prefetch_payload(visible_tiles, base_path, payload, texture_quality_mode="BALANCED"):
     if not isinstance(payload, dict):
         return
     key = _staged_prefetch_key(visible_tiles, base_path, texture_quality_mode=texture_quality_mode)
@@ -73,7 +73,7 @@ def stage_prefetch_payload(visible_tiles, base_path, payload, texture_quality_mo
         }
 
 
-def consume_staged_prefetch_payload(visible_tiles, base_path, texture_quality_mode="HALF"):
+def consume_staged_prefetch_payload(visible_tiles, base_path, texture_quality_mode="BALANCED"):
     key = _staged_prefetch_key(visible_tiles, base_path, texture_quality_mode=texture_quality_mode)
     now_ts = time.monotonic()
     with _STAGED_PREFETCH_LOCK:
@@ -117,9 +117,13 @@ def _build_resolve_download_requests(resolved_tiles, ocean_tiles=None):
 
 def _normalize_texture_quality_mode(value):
     token = str(value or "").strip().upper()
+    if token == "HALF":
+        return "BALANCED"
     if token == "FULL":
         return "FULL"
-    return "HALF"
+    if token == "PREVIEW":
+        return "PREVIEW"
+    return "BALANCED"
 
 
 def _prefetch_index(resolved_tiles, ocean_tiles=None):
@@ -210,7 +214,7 @@ def prefetch_resolve_plan(
     cancel_event=None,
     capture=False,
     resolve_id="",
-    texture_quality_mode="HALF",
+    texture_quality_mode="BALANCED",
 ):
     resolved_tiles = list(plan_payload.get("resolved_tiles", ())) if isinstance(plan_payload, dict) else []
     ocean_tiles = list(plan_payload.get("ocean_tiles", ())) if isinstance(plan_payload, dict) else []
@@ -237,7 +241,9 @@ def prefetch_resolve_plan(
             cancel_event=cancel_event,
         ):
             try:
-                plan_resolve_downloads(requests)
+                # Fast resolve path: skip remote HEAD preflight size probes so first GET
+                # requests start immediately.
+                plan_resolve_downloads(requests, allow_remote_probe=False)
                 prefetch_result = prefetch_resolve_downloads(
                     requests,
                     base_path=str(base_path or ""),
@@ -310,7 +316,7 @@ def prepare_resolve_streaming_for_visible_tiles(
     cancel_event=None,
     capture=False,
     resolve_id="",
-    texture_quality_mode="HALF",
+    texture_quality_mode="BALANCED",
 ):
     plan_payload = build_resolve_download_requests_for_visible_tiles(visible_tiles, base_path)
     prefetch_payload = prefetch_resolve_plan(
@@ -329,7 +335,7 @@ def prepare_resolve_streaming_for_visible_tiles(
 def estimate_remote_download_bytes_for_visible_tiles(visible_tiles, base_path):
     plan_payload = build_resolve_download_requests_for_visible_tiles(visible_tiles, base_path)
     requests = list(plan_payload.get("requests", ()) or ())
-    estimate = plan_resolve_downloads(requests)
+    estimate = plan_resolve_downloads(requests, allow_remote_probe=False)
     if not isinstance(estimate, dict):
         return {
             "planned_total_bytes": 0,

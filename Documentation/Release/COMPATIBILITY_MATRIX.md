@@ -1,7 +1,7 @@
 # Planetka Compatibility Matrix
 
-Current extension release candidate: `v0.4.1`
-Last matrix update: `2026-04-06`
+Current extension release candidate: `v0.5.0`
+Last matrix update: `2026-04-08`
 
 | Blender Version | Status | Automated Tests | Notes |
 | --- | --- | --- | --- |
@@ -16,6 +16,7 @@ Last matrix update: `2026-04-06`
 
 | Extension Version | Blender Versions Verified | Release Gate | Rollback Test | Notes |
 | --- | --- | --- | --- | --- |
+| v0.5.0 | 4.5.7, 5.0.0, 5.1.0 | Pass | Pass | Version bump for current beta branch; compatibility baseline unchanged from v0.4.1. |
 | v0.4.1 | 4.5.7, 5.0.0, 5.1.0 | Pass | Pass | Status Check layout stabilized during download progress, adaptive subdivision suspend toggle restore fix, and auto-resolve idle default set to 0.5s. |
 | v0.3.0 | 5.0.0, 5.1.0 | Pass | Pass | First public beta release candidate; rollback-safe update flow A -> B -> A executed on 2026-03-28 without blocker errors. |
 
@@ -25,6 +26,7 @@ Last matrix update: `2026-04-06`
 | --- | --- | --- |
 | EEVEE (Rendered viewport) | Supported | EEVEE is supported for Planetka workflows in this release. |
 | Cycles/EEVEE dynamic tile window | Mitigated | Planetka enforces a pre-shader dynamic tile window of `0..12` tiles (real tiles only, no synthetic floor padding) to avoid EEVEE sampler overflow and Cycles SVM overflow in heavy views. See `Documentation/Developer/CYCLES_SVM_TILE_LIMIT.md`. |
+| Adaptive subdivision mode | Locked | Planetka Earth Surface uses `Catmull-Clark` adaptive subdivision (with `Simple` fallback only for enum compatibility). For EEVEE animation stability, keep adaptive subdivision levels at `0/0`; values above `0` are known to produce artifacts. EEVEE segmented animation render path temporarily forces Earth material displacement to `BUMP` during render and restores original mode afterwards. |
 | Solid viewport | Verified | Resolve workflow validated. |
 | OpenGL/Cycles/EEVEE preview | Verified by user reports | Stable in reported scenarios. |
 
