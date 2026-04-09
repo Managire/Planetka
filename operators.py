@@ -40,6 +40,7 @@ from .operator_utils import ErrorCode, fail, require_planetka_props, require_sce
 from .sanity_utils import _normalize_texture_source_path, invalidate_texture_source_health_cache
 from .r2_source import (
     get_download_progress,
+    get_persisted_cache_root,
     is_download_active,
     is_remote_source_configured,
     texture_file_exists,
@@ -111,6 +112,7 @@ _STARTUP_PROFILE_PROP_NAMES = (
     "anim_ab_b_rotation",
     "anim_ab_b_valid",
     "r2_cache_max_gb",
+    "r2_cache_dir",
 )
 _STARTUP_PROFILE_FACTORY_PROP_VALUES = {
     # Create Earth baseline defaults (pre-startup-profile behavior).
@@ -150,7 +152,8 @@ _STARTUP_PROFILE_FACTORY_PROP_VALUES = {
     "anim_ab_b_location": [0.0, 0.0, 0.0],
     "anim_ab_b_rotation": [0.0, 0.0, 0.0],
     "anim_ab_b_valid": False,
-    "r2_cache_max_gb": 5,
+    "r2_cache_max_gb": 1,
+    "r2_cache_dir": "",
 }
 _SURFACE_GRADING_FACTORY_VALUES = {
     # Canonical Create Earth defaults from Planetka Earth Material node defaults.
@@ -327,6 +330,9 @@ def _build_factory_startup_setup_profile(scene, props):
         if encoded is None:
             continue
         profile_props[prop_name] = encoded
+    persisted_cache_dir = str(get_persisted_cache_root() or "").strip()
+    if persisted_cache_dir:
+        profile_props["r2_cache_dir"] = persisted_cache_dir
     # Keep Texture Quality explicitly pinned in the startup profile payload.
     profile_props["texture_quality_mode"] = _normalize_startup_texture_quality_mode(
         profile_props.get("texture_quality_mode", "BALANCED")
@@ -418,6 +424,31 @@ def _store_startup_setup_profile(prefs, profile):
         return True
     except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
         return False
+
+
+def persist_cache_dir_in_startup_profile(scene, cache_dir):
+    """Persist cache folder immediately into startup setup defaults for this Blender profile."""
+    if scene is None:
+        return False
+    props = getattr(scene, "planetka", None)
+    if props is None:
+        return False
+    prefs = get_prefs()
+    if prefs is None:
+        return False
+
+    profile = _load_saved_startup_setup_profile(prefs)
+    if not isinstance(profile, dict):
+        profile = _build_factory_startup_setup_profile(scene, props)
+    if not isinstance(profile, dict):
+        return False
+
+    prop_values = profile.get("props")
+    if not isinstance(prop_values, dict):
+        prop_values = {}
+    prop_values["r2_cache_dir"] = str(cache_dir or "").strip()
+    profile["props"] = prop_values
+    return bool(_store_startup_setup_profile(prefs, profile))
 
 
 def _apply_startup_setup_profile(scene, props, profile, apply_navigation_shot=True):
@@ -533,6 +564,13 @@ def _apply_startup_setup_for_create_earth(scene, props):
         profile,
         apply_navigation_shot=apply_navigation_shot,
     )
+    if hasattr(props, "r2_cache_dir"):
+        try:
+            persisted_cache_dir = str(get_persisted_cache_root() or "").strip()
+            if persisted_cache_dir:
+                props.r2_cache_dir = persisted_cache_dir
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+            logger.debug("Planetka: failed applying persisted cache folder", exc_info=True)
     if (not apply_navigation_shot) and applied:
         try:
             _populate_navigation_from_scene_camera(scene, props)

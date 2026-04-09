@@ -28,6 +28,18 @@ All notable changes to Planetka are documented in this file.
 ### Fixed
 - Removed outdated release-checklist references to preview parenting.
 
+## [v0.5.1] - 2026-04-09
+
+### Added
+- Added `Data Cache Folder` setting in `Advanced Settings -> Data Cache` so users can choose cache location.
+
+### Changed
+- Cache folder selection now persists globally (outside Blender version folders) and is auto-applied as startup default.
+- Data cache size defaults/limits changed to:
+  - default: `1 GB`
+  - range: `1..25 GB`
+- Animation Checklist now warns in both `Preview` and `Balanced` quality modes with `Full Quality mode recommended.`
+
 ## [v0.5.0] - 2026-04-08
 
 ### Changed

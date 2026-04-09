@@ -374,7 +374,6 @@ class PlanetkaAnimationWaypoint(bpy.types.PropertyGroup):
         name="Altitude (km)",
         default=NAV_DEFAULT_ALTITUDE_KM,
         min=0.0,
-        soft_max=25.0,
         precision=2,
         description="Waypoint camera altitude above Earth in kilometers",
     )
@@ -548,7 +547,6 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         name="Altitude (km)",
         default=NAV_DEFAULT_ALTITUDE_KM,
         min=0.0,
-        soft_max=25.0,
         precision=2,
         step=1,
         description="Navigation camera altitude above Earth surface in kilometers",
@@ -947,10 +945,18 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
 
     r2_cache_max_gb: IntProperty(
         name="Data Cache Limit (GB)",
-        default=5,
+        default=1,
         min=1,
-        max=100,
+        max=25,
         description="Maximum on-disk tile cache size in GB (old entries are pruned automatically)",
+        update=update_r2_cache_settings,
+    )
+
+    r2_cache_dir: StringProperty(
+        name="Data Cache Folder",
+        default="",
+        subtype='DIR_PATH',
+        description="Custom folder for streamed tile cache. Leave empty to use the default Planetka cache folder.",
         update=update_r2_cache_settings,
     )
 

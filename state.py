@@ -88,6 +88,7 @@ _SYNC_IDPROP_MAP = {
     "resolution_bias": "planetka_resolution_bias",
     "lock_resolve_during_animation": "planetka_lock_resolve_during_animation",
     "r2_cache_max_gb": "planetka_r2_cache_max_gb",
+    "r2_cache_dir": "planetka_r2_cache_dir",
     "debug_logging": "planetka_debug_logging",
 }
 _NAVIGATION_SYNC_IDPROP_MAP = (
@@ -429,16 +430,34 @@ def update_debug_logging(self, context):
 def update_r2_cache_settings(self, context):
     scene = getattr(context, "scene", None) if context else None
     if scene:
-        _sync_idprops_from_props(scene, ("r2_cache_max_gb",))
+        _sync_idprops_from_props(scene, ("r2_cache_max_gb", "r2_cache_dir"))
 
     module_name = f"{__package__}.r2_source" if __package__ else "r2_source"
     try:
         r2_source_module = importlib.import_module(module_name)
+        persist_cache_root_fn = getattr(r2_source_module, "set_persisted_cache_root", None)
+        if callable(persist_cache_root_fn):
+            cache_dir = str(getattr(self, "r2_cache_dir", "") or "").strip()
+            persist_cache_root_fn(cache_dir)
         apply_fn = getattr(r2_source_module, "on_cache_settings_updated", None)
         if callable(apply_fn):
             apply_fn(force_prune=True)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed applying R2 cache settings", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed applying R2 cache settings", exc_info=True)
+
+    if scene:
+        operators_module_name = f"{__package__}.operators" if __package__ else "operators"
+        try:
+            operators_module = importlib.import_module(operators_module_name)
+            persist_startup_fn = getattr(operators_module, "persist_cache_dir_in_startup_profile", None)
+            if callable(persist_startup_fn):
+                persist_startup_fn(scene, str(getattr(self, "r2_cache_dir", "") or "").strip())
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed persisting cache folder into startup profile", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed persisting cache folder into startup profile", exc_info=True)
 
 
 def _set_enum_property_safe(owner, prop_name, preferred_identifiers):

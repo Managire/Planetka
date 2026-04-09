@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 _R2_TIMEOUT_SECONDS = 30
 _R2_RETRIES = 2
-_R2_DEFAULT_CACHE_MAX_GB = 5.0
+_R2_DEFAULT_CACHE_MAX_GB = 1.0
 _R2_DEFAULT_CACHE_PRUNE_TARGET_RATIO = 0.9
 _R2_DEFAULT_PREFIX = "planetka-assets"
 _R2_CACHE_PRUNE_INTERVAL_SECONDS = 30.0
@@ -86,6 +86,7 @@ _TILE_SIZE_DB_CONN = None
 _TILE_SIZE_DB_PATH = ""
 _TILE_SIZE_DB_MODE = ""
 _TILE_SIZE_DB_FAILURE_KEYS = set()
+_USER_SETTINGS_LOCK = threading.Lock()
 _STREAM_HEALTH_OK = None
 _STREAM_HEALTH_CHECKED_AT = 0.0
 _AUTH_CHECK_LOCK = threading.Lock()
@@ -101,6 +102,78 @@ _TILE_FILE_RE = re.compile(
     r"^(S2|EL|WT|PO)_x(\d{3})_y(\d{3})_z(\d{3})_d(\d{3})\.(exr|tif)$",
     re.IGNORECASE,
 )
+
+
+def _user_settings_file_path():
+    home = os.path.expanduser("~")
+    base = os.path.join(home if home and home != "~" else os.path.abspath(os.path.expanduser("~")), ".planetka")
+    return os.path.join(base, "user_settings.json")
+
+
+def _read_user_settings():
+    path = _user_settings_file_path()
+    try:
+        if not os.path.isfile(path):
+            return {}
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        return payload if isinstance(payload, dict) else {}
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed reading user settings file", exc_info=True)
+        return {}
+    except (OSError, ValueError, TypeError):
+        logger.debug("Planetka: failed reading user settings file", exc_info=True)
+        return {}
+
+
+def _write_user_settings(settings):
+    path = _user_settings_file_path()
+    directory = os.path.dirname(path)
+    try:
+        os.makedirs(directory, exist_ok=True)
+        tmp_path = path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as handle:
+            json.dump(settings if isinstance(settings, dict) else {}, handle, separators=(",", ":"))
+        os.replace(tmp_path, path)
+        return True
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed writing user settings file", exc_info=True)
+        return False
+    except (OSError, ValueError, TypeError):
+        logger.debug("Planetka: failed writing user settings file", exc_info=True)
+        return False
+
+
+def _normalize_cache_dir_path(raw_value):
+    text = str(raw_value or "").strip()
+    if not text:
+        return ""
+    expanded = os.path.expanduser(text)
+    if not expanded:
+        return ""
+    return os.path.abspath(expanded)
+
+
+def get_persisted_cache_root():
+    with _USER_SETTINGS_LOCK:
+        settings = _read_user_settings()
+    value = settings.get("r2_cache_dir", "")
+    normalized = _normalize_cache_dir_path(value)
+    return str(normalized or "")
+
+
+def set_persisted_cache_root(cache_root):
+    normalized = _normalize_cache_dir_path(cache_root)
+    with _USER_SETTINGS_LOCK:
+        settings = _read_user_settings()
+        if normalized:
+            settings["r2_cache_dir"] = normalized
+        else:
+            settings.pop("r2_cache_dir", None)
+        ok = _write_user_settings(settings)
+    if ok:
+        reset_config_cache()
+    return bool(ok)
 
 
 def _env(name, fallback=None):
@@ -193,6 +266,50 @@ def _scene_cache_max_gb():
 
     return None
 
+
+def _scene_cache_root():
+    if threading.current_thread() is not threading.main_thread():
+        return None
+
+    try:
+        import bpy  # Imported lazily so non-Blender contexts can still import this module.
+    except (ImportError, ModuleNotFoundError):
+        return None
+
+    def _clean_path(raw_value):
+        normalized = _normalize_cache_dir_path(raw_value)
+        return normalized if normalized else None
+
+    try:
+        context = getattr(bpy, "context", None)
+        scene = getattr(context, "scene", None) if context else None
+        props = getattr(scene, "planetka", None) if scene else None
+        if props is not None and hasattr(props, "r2_cache_dir"):
+            cleaned = _clean_path(getattr(props, "r2_cache_dir", ""))
+            if cleaned:
+                return cleaned
+
+        data = getattr(bpy, "data", None)
+        for data_scene in getattr(data, "scenes", ()):
+            props = getattr(data_scene, "planetka", None)
+            if props is not None and hasattr(props, "r2_cache_dir"):
+                cleaned = _clean_path(getattr(props, "r2_cache_dir", ""))
+                if cleaned:
+                    return cleaned
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed reading scene cache folder setting", exc_info=True)
+        return None
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed reading scene cache folder setting", exc_info=True)
+        return None
+
+    persisted = get_persisted_cache_root()
+    if persisted:
+        return persisted
+
+    return None
+
+
 def _build_config():
     env_cfg = {
         "bucket": "planetka-api",
@@ -219,6 +336,10 @@ def _build_config():
     region = str(merged.get("region", "auto") or "auto").strip()
     prefix = str(merged.get("prefix", _R2_DEFAULT_PREFIX) or _R2_DEFAULT_PREFIX).strip("/")
     cache_root = str(merged.get("cache_root", _default_cache_root()) or _default_cache_root())
+    scene_cache_root = _scene_cache_root()
+    if scene_cache_root:
+        # UI setting should be the primary user control in Blender.
+        cache_root = str(scene_cache_root)
     scene_cache_max_gb = _scene_cache_max_gb()
     cache_max_bytes_raw = merged.get("cache_max_bytes")
     cache_max_gb_raw = merged.get("cache_max_gb")

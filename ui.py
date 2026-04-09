@@ -1096,6 +1096,11 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
                 "r2_cache_max_gb",
                 text="Data Cache Limit (GB)",
             )
+            cache_box.prop(
+                props,
+                "r2_cache_dir",
+                text="Data Cache Folder",
+            )
 
             startup_box = layout.box()
             startup_box.label(text="Startup Setup", icon="TOOL_SETTINGS")
