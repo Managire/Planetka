@@ -31,6 +31,16 @@ from .state import (
 )
 
 SHOW_INTERNAL_ANIMATION_UI = False
+BACKGROUND_AUTO_BLACK_NOTICE_KEY = "planetka_status_bg_auto_black_notice"
+CLIPPING_AUTO_NOTICE_KEY = "planetka_status_clip_auto_notice"
+CACHE_NOTICE_KEY = "planetka_status_cache_notice"
+
+
+def _float_close(value, target, tol=1e-4):
+    try:
+        return abs(float(value) - float(target)) <= float(tol)
+    except (TypeError, ValueError):
+        return False
 
 
 def _fmt_int(value):
@@ -173,140 +183,14 @@ def _earth_radius_bu_for_ui(scene):
     return None
 
 
-def _clipping_warning_for_status(scene):
-    if scene is None:
-        return None
-    earth = get_earth_object()
-    if earth is None:
-        return None
-
-    try:
-        earth_center = earth.matrix_world.translation.copy()
-    except (AttributeError, RuntimeError, TypeError, ValueError):
-        return None
-
-    earth_radius = _earth_radius_bu_for_ui(scene)
-    if earth_radius is None or earth_radius <= 0.0:
-        return None
-
-    probe_pos = None
-    clip_start = None
-    clip_end = None
-    warning_text = None
-    mode = None
-
-    space = getattr(bpy.context, "space_data", None)
-    rv3d = getattr(space, "region_3d", None) if space is not None else None
-    is_view3d = bool(space is not None and str(getattr(space, "type", "")) == "VIEW_3D")
-    in_camera_view = bool(rv3d is not None and str(getattr(rv3d, "view_perspective", "")) == "CAMERA")
-
-    if is_view3d and not in_camera_view and rv3d is not None:
-        try:
-            view_matrix = rv3d.view_matrix.inverted()
-            probe_pos = view_matrix.translation.copy()
-            clip_start = float(getattr(space, "clip_start", 0.0))
-            clip_end = float(getattr(space, "clip_end", 0.0))
-            warning_text = "Outside Viewport Clipping Range"
-            mode = "VIEWPORT"
-        except (AttributeError, RuntimeError, TypeError, ValueError):
-            probe_pos = None
-    else:
-        camera = getattr(scene, "camera", None)
-        camera_data = getattr(camera, "data", None) if camera is not None else None
-        if camera is None or str(getattr(camera, "type", "")) != "CAMERA" or camera_data is None:
-            return None
-        try:
-            probe_pos = camera.matrix_world.translation.copy()
-            clip_start = float(getattr(camera_data, "clip_start", 0.0))
-            clip_end = float(getattr(camera_data, "clip_end", 0.0))
-            warning_text = "Outside Camera Clipping Range"
-            mode = "CAMERA"
-        except (AttributeError, RuntimeError, TypeError, ValueError):
-            return None
-
-    if probe_pos is None:
-        return None
-    if clip_start is None or clip_end is None or clip_start <= 0.0 or clip_end <= 0.0 or clip_end <= clip_start:
-        return None
-
-    try:
-        proximity_bu = float((probe_pos - earth_center).length) - float(earth_radius)
-    except (AttributeError, RuntimeError, TypeError, ValueError):
-        return None
-
-    if proximity_bu < 0.0:
-        return {
-            "warning_text": "Negative altitude",
-            "mode": str(mode or "CAMERA"),
-            "negative_altitude": True,
-            "proximity_bu": float(proximity_bu),
-            "clip_start": float(clip_start),
-            "clip_end": float(clip_end),
-        }
-
-    breach_min = proximity_bu < float(clip_start)
-    breach_max = proximity_bu > float(clip_end)
-    if breach_min or breach_max:
-        return {
-            "warning_text": str(warning_text or "Outside Clipping Range"),
-            "mode": str(mode or "CAMERA"),
-            "breach_min": bool(breach_min),
-            "breach_max": bool(breach_max),
-            "proximity_bu": float(proximity_bu),
-            "clip_start": float(clip_start),
-            "clip_end": float(clip_end),
-        }
-    return None
+def _auto_adjust_clipping_for_status(scene):
+    _ = scene
+    return []
 
 
 def _non_black_background_warning(scene):
-    if scene is None:
-        return None
-    world = getattr(scene, "world", None)
-    if world is None or not bool(getattr(world, "use_nodes", False)):
-        return None
-
-    node_tree = getattr(world, "node_tree", None)
-    nodes = getattr(node_tree, "nodes", None) if node_tree is not None else None
-    if nodes is None:
-        return None
-
-    background = nodes.get("Background")
-    if background is None:
-        for node in nodes:
-            if str(getattr(node, "bl_idname", "")) == "ShaderNodeBackground":
-                background = node
-                break
-    if background is None:
-        return None
-
-    color_socket = background.inputs[0] if len(background.inputs) > 0 else None
-    strength_socket = background.inputs[1] if len(background.inputs) > 1 else None
-    if color_socket is None or strength_socket is None:
-        return None
-
-    if bool(getattr(color_socket, "is_linked", False)):
-        return None
-
-    try:
-        strength = float(getattr(strength_socket, "default_value", 0.0))
-    except (TypeError, ValueError):
-        return None
-    if strength <= 0.0:
-        return None
-
-    color = getattr(color_socket, "default_value", None)
-    if color is None or len(color) < 3:
-        return None
-    try:
-        is_black = abs(float(color[0])) <= 1e-6 and abs(float(color[1])) <= 1e-6 and abs(float(color[2])) <= 1e-6
-    except (TypeError, ValueError):
-        return None
-
-    if is_black:
-        return None
-
-    return {"warning_text": "Non-black background color"}
+    _ = scene
+    return None
 
 
 def _clipping_button_text(clipping_warning):
@@ -535,28 +419,30 @@ def _draw_live_telemetry(layout, scene):
         if pending_count > 0:
             layout.label(text=f"Queued jobs: {pending_count}")
 
-    clipping_warning = _clipping_warning_for_status(scene)
-    if isinstance(clipping_warning, dict):
-        clipping_box = layout.box()
-        clipping_box.alert = True
-        clipping_box.label(text=str(clipping_warning.get("warning_text", "Outside Clipping Range")), icon="ERROR")
-        if not bool(clipping_warning.get("negative_altitude", False)):
-            clip_button_text = _clipping_button_text(clipping_warning)
-            clipping_box.operator("planetka.auto_adjust_clipping", text=clip_button_text, icon="SETTINGS")
+    # Keep informational auto-fix notices visible until the next resolve starts.
+    if runtime_code in {"PREPARING", "DOWNLOADING", "FINALIZING", "FINALIZE_QUEUED", "QUEUED"}:
+        try:
+            if scene is not None and BACKGROUND_AUTO_BLACK_NOTICE_KEY in scene:
+                del scene[BACKGROUND_AUTO_BLACK_NOTICE_KEY]
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            pass
+        try:
+            if scene is not None and CLIPPING_AUTO_NOTICE_KEY in scene:
+                del scene[CLIPPING_AUTO_NOTICE_KEY]
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            pass
 
-    background_warning = _non_black_background_warning(scene)
-    if isinstance(background_warning, dict):
-        bg_box = layout.box()
-        warn_row = bg_box.row()
-        warn_row.alert = True
-        warn_row.label(text=str(background_warning.get("warning_text", "Non-black background color")), icon="ERROR")
-        action_row = bg_box.row()
-        action_row.alert = False
-        action_row.operator(
-            "planetka.set_background_black",
-            text="Change Background to Black",
-            icon="SHADING_RENDERED",
-        )
+    sticky_notice = str(getattr(scene, "get", lambda *_: "")(BACKGROUND_AUTO_BLACK_NOTICE_KEY, "") or "").strip() if scene else ""
+    if sticky_notice:
+        layout.label(text=sticky_notice, icon="INFO")
+
+    clip_sticky_notice = str(getattr(scene, "get", lambda *_: "")(CLIPPING_AUTO_NOTICE_KEY, "") or "").strip() if scene else ""
+    if clip_sticky_notice:
+        layout.label(text=clip_sticky_notice, icon="INFO")
+
+    cache_sticky_notice = str(getattr(scene, "get", lambda *_: "")(CACHE_NOTICE_KEY, "") or "").strip() if scene else ""
+    if cache_sticky_notice:
+        layout.label(text=cache_sticky_notice, icon="INFO")
 
     if props is not None and is_authenticated(prefs):
         quality_box = layout.box()

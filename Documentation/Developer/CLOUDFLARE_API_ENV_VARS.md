@@ -155,7 +155,7 @@ These power the addon update manifest endpoint at:
 
 Used by Blender addon auto-updater to check/download new package versions.
 
-- `ADDON_UPDATE_VERSION` (default: `0.5.1`)
+- `ADDON_UPDATE_VERSION` (default: `0.5.3`)
 - `ADDON_UPDATE_DOWNLOAD_URL` (default: empty; when empty, `available=false`)
 - `ADDON_UPDATE_SHA256` (optional, expected SHA-256 of update zip)
 - `ADDON_UPDATE_RELEASE_NOTES_URL` (default: `https://www.planetka.io/blender/documentation/`)

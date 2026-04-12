@@ -181,6 +181,13 @@ _RESOLVE_TRACE_ENABLED = False
 _DOWNLOAD_OVERLAY_DRAW_HANDLE = None
 _DOWNLOAD_OVERLAY_TEXT = ""
 _DOWNLOAD_OVERLAY_VISIBLE = False
+_STATUS_NOTICE_KEYS = (
+    "planetka_status_bg_auto_black_notice",
+    "planetka_status_clip_auto_notice",
+    "planetka_status_cache_notice",
+)
+_STATUS_NOTICE_CLEAR_SKIP_KEY = "planetka_status_notice_clear_skip_count"
+_R2_CACHE_SETTINGS_SYNCING = False
 
 _KEYED_RUNTIME_NAV_PROP_PATHS = (
     "planetka.nav_longitude_deg",
@@ -223,6 +230,29 @@ def _resolve_trace(message):
     if not text:
         return
     print(f"Planetka Resolve: {text}")
+
+
+def _clear_status_notices(scene):
+    if scene is None:
+        return
+    try:
+        skip_count = int(scene.get(_STATUS_NOTICE_CLEAR_SKIP_KEY, 0) or 0)
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        skip_count = 0
+    if skip_count > 0:
+        try:
+            scene[_STATUS_NOTICE_CLEAR_SKIP_KEY] = max(0, int(skip_count) - 1)
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            pass
+        return
+    for key in _STATUS_NOTICE_KEYS:
+        try:
+            if key in scene:
+                del scene[key]
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed clearing status notice key %s", key, exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed clearing status notice key %s", key, exc_info=True)
 
 
 def _active_view_signature():
@@ -428,16 +458,75 @@ def update_debug_logging(self, context):
 
 
 def update_r2_cache_settings(self, context):
+    global _R2_CACHE_SETTINGS_SYNCING
+    if _R2_CACHE_SETTINGS_SYNCING:
+        return
+
     scene = getattr(context, "scene", None) if context else None
+    requested_cache_dir = str(getattr(self, "r2_cache_dir", "") or "").strip()
+    resolved_cache_dir = requested_cache_dir
+
+    module_name = f"{__package__}.r2_source" if __package__ else "r2_source"
+    r2_source_module = None
+    try:
+        r2_source_module = importlib.import_module(module_name)
+        validate_cache_root_fn = getattr(r2_source_module, "validate_cache_root_for_write", None)
+        if callable(validate_cache_root_fn):
+            valid, normalized_cache_dir, reason = validate_cache_root_fn(requested_cache_dir)
+            if not valid:
+                fallback_dir = ""
+                if scene is not None:
+                    try:
+                        fallback_dir = str(scene.get("planetka_r2_cache_dir", "") or "").strip()
+                    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                        fallback_dir = ""
+                if not fallback_dir:
+                    persisted_cache_root_fn = getattr(r2_source_module, "get_persisted_cache_root", None)
+                    if callable(persisted_cache_root_fn):
+                        try:
+                            fallback_dir = str(persisted_cache_root_fn() or "").strip()
+                        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                            fallback_dir = ""
+                try:
+                    _R2_CACHE_SETTINGS_SYNCING = True
+                    setattr(self, "r2_cache_dir", fallback_dir)
+                finally:
+                    _R2_CACHE_SETTINGS_SYNCING = False
+                if scene is not None:
+                    try:
+                        scene["planetka_status_cache_notice"] = (
+                            "Cache folder is not writable. Previous cache folder kept."
+                        )
+                        scene[_STATUS_NOTICE_CLEAR_SKIP_KEY] = 1
+                    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                        pass
+                logger.warning(
+                    "Planetka: rejected cache folder update (path=%s reason=%s)",
+                    str(requested_cache_dir),
+                    str(reason or "not writable"),
+                )
+                return
+            resolved_cache_dir = str(normalized_cache_dir or "").strip()
+            if resolved_cache_dir != requested_cache_dir:
+                try:
+                    _R2_CACHE_SETTINGS_SYNCING = True
+                    setattr(self, "r2_cache_dir", resolved_cache_dir)
+                finally:
+                    _R2_CACHE_SETTINGS_SYNCING = False
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed validating cache folder", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed validating cache folder", exc_info=True)
+
     if scene:
         _sync_idprops_from_props(scene, ("r2_cache_max_gb", "r2_cache_dir"))
 
-    module_name = f"{__package__}.r2_source" if __package__ else "r2_source"
     try:
-        r2_source_module = importlib.import_module(module_name)
+        if r2_source_module is None:
+            r2_source_module = importlib.import_module(module_name)
         persist_cache_root_fn = getattr(r2_source_module, "set_persisted_cache_root", None)
         if callable(persist_cache_root_fn):
-            cache_dir = str(getattr(self, "r2_cache_dir", "") or "").strip()
+            cache_dir = str(resolved_cache_dir or "")
             persist_cache_root_fn(cache_dir)
         apply_fn = getattr(r2_source_module, "on_cache_settings_updated", None)
         if callable(apply_fn):
@@ -453,7 +542,7 @@ def update_r2_cache_settings(self, context):
             operators_module = importlib.import_module(operators_module_name)
             persist_startup_fn = getattr(operators_module, "persist_cache_dir_in_startup_profile", None)
             if callable(persist_startup_fn):
-                persist_startup_fn(scene, str(getattr(self, "r2_cache_dir", "") or "").strip())
+                persist_startup_fn(scene, str(resolved_cache_dir or "").strip())
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka: failed persisting cache folder into startup profile", exc_info=True)
         except (RuntimeError, TypeError, ValueError, AttributeError):
@@ -1574,7 +1663,7 @@ def _normalize_texture_quality_mode(value):
         return "BALANCED"
     if token in {"FULL", "BALANCED", "PREVIEW"}:
         return token
-    return "BALANCED"
+    return "PREVIEW"
 
 
 def _output_resolution_signature(scene):
@@ -1582,11 +1671,11 @@ def _output_resolution_signature(scene):
     if render is None:
         return None
     props = getattr(scene, "planetka", None) if scene is not None else None
-    texture_quality_mode = "BALANCED"
+    texture_quality_mode = "PREVIEW"
     try:
-        texture_quality_mode = _normalize_texture_quality_mode(getattr(props, "texture_quality_mode", "BALANCED"))
+        texture_quality_mode = _normalize_texture_quality_mode(getattr(props, "texture_quality_mode", "PREVIEW"))
     except (TypeError, ValueError, RuntimeError):
-        texture_quality_mode = "BALANCED"
+        texture_quality_mode = "PREVIEW"
     try:
         return (
             int(getattr(render, "resolution_x", 1920)),
@@ -2386,7 +2475,7 @@ def _auto_resolve_download_job_signature(job):
         tuple(job.get("target_tiles", ())),
         job.get("camera_signature"),
         job.get("output_signature"),
-        _normalize_texture_quality_mode(job.get("texture_quality_mode", "BALANCED")),
+        _normalize_texture_quality_mode(job.get("texture_quality_mode", "PREVIEW")),
     )
 
 
@@ -2451,15 +2540,18 @@ def _schedule_auto_resolve_download(
     if scene is None:
         return False
 
+    # Keep auto-fix notices visible only until the next resolve request starts.
+    _clear_status_notices(scene)
+
     scene_id = _scene_key(scene)
     prefs = get_prefs()
     props = getattr(scene, "planetka", None)
     base_path = str(getattr(prefs, "texture_base_path", "") or "") if prefs else ""
-    texture_quality_mode = "BALANCED"
+    texture_quality_mode = "PREVIEW"
     try:
-        texture_quality_mode = _normalize_texture_quality_mode(getattr(props, "texture_quality_mode", "BALANCED"))
+        texture_quality_mode = _normalize_texture_quality_mode(getattr(props, "texture_quality_mode", "PREVIEW"))
     except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-        texture_quality_mode = "BALANCED"
+        texture_quality_mode = "PREVIEW"
     target_tiles_tuple = tuple(target_tiles or ())
 
     job_to_start = None
@@ -2877,7 +2969,7 @@ def _auto_resolve_download_worker(job):
             str(job.get("base_path", "") or ""),
             cancel_event=job.get("cancel_event"),
             capture=True,
-            texture_quality_mode=_normalize_texture_quality_mode(job.get("texture_quality_mode", "BALANCED")),
+            texture_quality_mode=_normalize_texture_quality_mode(job.get("texture_quality_mode", "PREVIEW")),
         )
         cancelled = (
             bool(prepared_payload.get("cancelled", False))
@@ -2889,7 +2981,7 @@ def _auto_resolve_download_worker(job):
                 tuple(job.get("target_tiles", ())),
                 str(job.get("base_path", "") or ""),
                 prepared_payload,
-                texture_quality_mode=_normalize_texture_quality_mode(job.get("texture_quality_mode", "BALANCED")),
+                texture_quality_mode=_normalize_texture_quality_mode(job.get("texture_quality_mode", "PREVIEW")),
             )
         result["success"] = not cancelled
         result["cancelled"] = cancelled

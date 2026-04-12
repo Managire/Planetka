@@ -2,6 +2,8 @@ import json
 import os
 import platform
 import sys
+import base64
+import mimetypes
 from datetime import datetime, timezone
 import urllib.error
 import urllib.request
@@ -19,6 +21,13 @@ from .extension_prefs import get_prefs
 from .operator_utils import ErrorCode, fail
 from .sanity_utils import invalidate_texture_source_health_cache, validate_known_good_texture_source
 
+_BUG_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024
+_BUG_ATTACHMENT_ALLOWED_MIME = {
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+}
+
 
 def _default_bug_report_path():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -30,6 +39,48 @@ def _default_bug_report_path():
     if temp_dir and os.path.isdir(temp_dir):
         return os.path.join(temp_dir, filename)
     return filename
+
+
+def _encode_optional_bug_attachment(file_path):
+    normalized = str(file_path or "").strip()
+    if not normalized:
+        return None, ""
+    abs_path = os.path.abspath(bpy.path.abspath(normalized))
+    if not os.path.isfile(abs_path):
+        return None, "attachment_not_found"
+    try:
+        size_bytes = int(os.path.getsize(abs_path))
+    except (OSError, TypeError, ValueError):
+        return None, "attachment_unreadable"
+    if size_bytes <= 0:
+        return None, "attachment_empty"
+    if size_bytes > _BUG_ATTACHMENT_MAX_BYTES:
+        return None, "attachment_too_large"
+
+    mime_type, _encoding = mimetypes.guess_type(abs_path)
+    mime_type = str(mime_type or "").strip().lower()
+    if mime_type not in _BUG_ATTACHMENT_ALLOWED_MIME:
+        return None, "attachment_unsupported_type"
+
+    try:
+        with open(abs_path, "rb") as handle:
+            data = handle.read()
+    except (OSError, TypeError, ValueError):
+        return None, "attachment_unreadable"
+    if not data:
+        return None, "attachment_empty"
+    if len(data) > _BUG_ATTACHMENT_MAX_BYTES:
+        return None, "attachment_too_large"
+
+    encoded = base64.b64encode(data).decode("ascii")
+    payload = {
+        "attachment_filename": os.path.basename(abs_path),
+        "attachment_mime": mime_type,
+        "attachment_base64": encoded,
+        "attachment_size_bytes": len(data),
+        "attachment_path": abs_path,
+    }
+    return payload, ""
 
 
 def _build_minimal_report(context):
@@ -53,6 +104,7 @@ def _open_bug_mail_draft(
     issue_what_happened="",
     issue_steps_to_reproduce="",
     issue_expected_behavior="",
+    attachment_path="",
 ):
     subject = "Planetka Blender Bug Report"
     max_json_chars = 6000
@@ -74,6 +126,7 @@ def _open_bug_mail_draft(
         f"- What happened: {str(issue_what_happened or '').strip()}\n"
         f"- Steps to reproduce: {str(issue_steps_to_reproduce or '').strip()}\n"
         f"- Expected behavior: {str(issue_expected_behavior or '').strip()}\n"
+        f"- Attachment path: {str(attachment_path or '').strip() or '(none)'}\n"
     )
     mailto_url = (
         "mailto:info@planetka.io"
@@ -93,6 +146,7 @@ def _send_bug_report_via_api(
     issue_what_happened="",
     issue_steps_to_reproduce="",
     issue_expected_behavior="",
+    attachment_payload=None,
 ):
     prefs = get_prefs()
     if not is_authenticated(prefs):
@@ -107,6 +161,15 @@ def _send_bug_report_via_api(
         "issue_steps_to_reproduce": str(issue_steps_to_reproduce or "").strip(),
         "issue_expected_behavior": str(issue_expected_behavior or "").strip(),
     }
+    if isinstance(attachment_payload, dict):
+        payload.update(
+            {
+                "attachment_filename": str(attachment_payload.get("attachment_filename", "") or "").strip(),
+                "attachment_mime": str(attachment_payload.get("attachment_mime", "") or "").strip(),
+                "attachment_base64": str(attachment_payload.get("attachment_base64", "") or "").strip(),
+                "attachment_size_bytes": int(attachment_payload.get("attachment_size_bytes", 0) or 0),
+            }
+        )
     body = json.dumps(payload).encode("utf-8")
     headers = dict(get_authorized_headers(prefs=prefs, allow_refresh=True))
     headers["Content-Type"] = "application/json"
@@ -176,6 +239,13 @@ class PLANETKA_OT_ReportBug(bpy.types.Operator):
         default="",
         options={'TEXTEDIT_UPDATE'},
     )
+    attachment_file: bpy.props.StringProperty(
+        name="Attachment",
+        description="Optional screenshot/image attachment (PNG/JPG/WEBP, max 10 MB)",
+        default="",
+        subtype='FILE_PATH',
+        options={'TEXTEDIT_UPDATE'},
+    )
 
     def invoke(self, context, event):
         del event
@@ -209,6 +279,11 @@ class PLANETKA_OT_ReportBug(bpy.types.Operator):
         expected_row.scale_y = 1.0
         expected_row.prop(self, "issue_expected_behavior", text="")
 
+        attachment_box = layout.box()
+        attachment_box.label(text="Attachment (optional screenshot/image)")
+        attachment_row = attachment_box.row()
+        attachment_row.prop(self, "attachment_file", text="")
+
     def execute(self, context):
         target_path = _default_bug_report_path()
         try:
@@ -233,12 +308,29 @@ class PLANETKA_OT_ReportBug(bpy.types.Operator):
         issue_what = str(getattr(self, "issue_what_happened", "") or "").strip()
         issue_steps = str(getattr(self, "issue_steps_to_reproduce", "") or "").strip()
         issue_expected = str(getattr(self, "issue_expected_behavior", "") or "").strip()
+        attachment_payload, attachment_error = _encode_optional_bug_attachment(
+            str(getattr(self, "attachment_file", "") or "").strip()
+        )
+        if attachment_error:
+            attachment_error_messages = {
+                "attachment_not_found": "Attachment file was not found.",
+                "attachment_unreadable": "Attachment file could not be read.",
+                "attachment_empty": "Attachment file is empty.",
+                "attachment_too_large": "Attachment exceeds 10 MB limit.",
+                "attachment_unsupported_type": "Attachment must be PNG, JPG/JPEG, or WEBP.",
+            }
+            return fail(
+                self,
+                attachment_error_messages.get(attachment_error, "Invalid attachment."),
+                code=ErrorCode.IO_DEBUG_REPORT_FAILED,
+            )
         sent, send_error = _send_bug_report_via_api(
             report_path_abs,
             report_json_text,
             issue_what_happened=issue_what,
             issue_steps_to_reproduce=issue_steps,
             issue_expected_behavior=issue_expected,
+            attachment_payload=attachment_payload,
         )
         if sent:
             _show_popup_lines(
@@ -259,6 +351,7 @@ class PLANETKA_OT_ReportBug(bpy.types.Operator):
             issue_what_happened=issue_what,
             issue_steps_to_reproduce=issue_steps,
             issue_expected_behavior=issue_expected,
+            attachment_path=(attachment_payload or {}).get("attachment_path", ""),
         )
         if fallback_opened:
             self.report(

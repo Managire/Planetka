@@ -802,6 +802,10 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             )
             if not new_obj:
                 raise RuntimeError("Failed to create new Earth surface mesh")
+            try:
+                ensure_earth_surface_parent(scene=scene, earth_surface=new_obj)
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka: failed early-parenting staging Earth surface to Planetka Root", exc_info=True)
             # Keep the existing resolved surface visible while we build/rebind the new
             # surface in the background. Hiding both surfaces can cause visible white/black
             # flashes in Active View because there is a frame with no textured surface.
@@ -833,6 +837,23 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 logger=logger,
                 exc=exc,
                 log_message="Planetka resolve failed",
+            )
+        except Exception as exc:
+            if new_obj:
+                remove_object_and_unused_mesh(new_obj)
+            try:
+                _force_restore_navigation_adaptive_state()
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka: failed restoring adaptive viewport after resolve error", exc_info=True)
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka: failed restoring adaptive viewport after resolve error", exc_info=True)
+            return fail(
+                self,
+                f"Planetka resolve failed unexpectedly: {exc}",
+                code=ErrorCode.RESOLVE_REFRESH_FAILED,
+                logger=logger,
+                exc=exc,
+                log_message="Planetka resolve failed unexpectedly",
             )
 
         phase_start = time.perf_counter()

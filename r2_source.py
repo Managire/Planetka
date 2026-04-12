@@ -163,7 +163,9 @@ def get_persisted_cache_root():
 
 
 def set_persisted_cache_root(cache_root):
-    normalized = _normalize_cache_dir_path(cache_root)
+    valid, normalized, _reason = validate_cache_root_for_write(cache_root)
+    if not valid:
+        return False
     with _USER_SETTINGS_LOCK:
         settings = _read_user_settings()
         if normalized:
@@ -174,6 +176,37 @@ def set_persisted_cache_root(cache_root):
     if ok:
         reset_config_cache()
     return bool(ok)
+
+
+def validate_cache_root_for_write(cache_root):
+    normalized = _normalize_cache_dir_path(cache_root)
+    if not normalized:
+        return True, "", ""
+
+    try:
+        os.makedirs(normalized, exist_ok=True)
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        return False, normalized, str(exc)
+
+    probe_name = (
+        f".planetka_cache_probe_{int(time.time() * 1_000_000)}"
+        f"_{os.getpid()}_{threading.get_ident()}.tmp"
+    )
+    probe_path = os.path.join(normalized, probe_name)
+    try:
+        with open(probe_path, "wb") as handle:
+            handle.write(b"planetka-cache-write-probe")
+        with open(probe_path, "rb") as handle:
+            _ = handle.read(1)
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        return False, normalized, str(exc)
+    finally:
+        try:
+            if os.path.isfile(probe_path):
+                os.remove(probe_path)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            pass
+    return True, normalized, ""
 
 
 def _env(name, fallback=None):

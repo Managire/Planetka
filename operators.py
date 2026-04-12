@@ -134,7 +134,7 @@ _STARTUP_PROFILE_FACTORY_PROP_VALUES = {
     "auto_resolve_idle_sec": 0.5,
     "viewport_opt_suspend_subdivision": True,
     "viewport_opt_subdivision_restore_delay_sec": 0.5,
-    "texture_quality_mode": "BALANCED",
+    "texture_quality_mode": "PREVIEW",
     "anim_camera_preset": "ORBIT",
     "anim_frame_start": 1,
     "anim_frame_end": 250,
@@ -214,7 +214,7 @@ def _property_default_value(owner, prop_name):
 def _normalize_startup_texture_quality_mode(value):
     token = str(value or "").strip().upper()
     if token not in {"PREVIEW", "BALANCED", "FULL"}:
-        token = "BALANCED"
+        token = "PREVIEW"
     return token
 
 
@@ -335,7 +335,7 @@ def _build_factory_startup_setup_profile(scene, props):
         profile_props["r2_cache_dir"] = persisted_cache_dir
     # Keep Texture Quality explicitly pinned in the startup profile payload.
     profile_props["texture_quality_mode"] = _normalize_startup_texture_quality_mode(
-        profile_props.get("texture_quality_mode", "BALANCED")
+        profile_props.get("texture_quality_mode", "PREVIEW")
     )
 
     return {
@@ -366,10 +366,10 @@ def _serialize_current_startup_setup_profile(scene, props):
     if hasattr(props, "texture_quality_mode"):
         try:
             profile_props["texture_quality_mode"] = _normalize_startup_texture_quality_mode(
-                getattr(props, "texture_quality_mode", "BALANCED")
+                getattr(props, "texture_quality_mode", "PREVIEW")
             )
         except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
-            profile_props["texture_quality_mode"] = "BALANCED"
+            profile_props["texture_quality_mode"] = "PREVIEW"
 
     root_data = {
         "location": [0.0, 0.0, 0.0],
@@ -480,7 +480,7 @@ def _apply_startup_setup_profile(scene, props, profile, apply_navigation_shot=Tr
         if hasattr(props, "texture_quality_mode"):
             try:
                 desired_mode = _normalize_startup_texture_quality_mode(
-                    prop_values.get("texture_quality_mode", "BALANCED")
+                    prop_values.get("texture_quality_mode", "PREVIEW")
                 )
                 props.texture_quality_mode = desired_mode
             except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
@@ -878,6 +878,163 @@ def _ensure_close_clip_limits(scene, min_clip=0.001):
     _ = scene
     _ = min_clip
     return False, False
+
+
+def _is_planetka_managed_object(obj):
+    if obj is None:
+        return False
+    try:
+        name = str(getattr(obj, "name", "") or "")
+    except (TypeError, ValueError):
+        name = ""
+    if name.startswith("Planetka"):
+        return True
+    if name in {"Atmosphere - EEVEE supplement", "Atmosphere - Volumetric"}:
+        return True
+    try:
+        role_value = str(obj.get("planetka_role", "") or "").strip()
+        if role_value:
+            return True
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        pass
+    try:
+        for key in tuple(obj.keys()):
+            if str(key).startswith("planetka_"):
+                return True
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        pass
+    return False
+
+
+def _scene_allows_automatic_clipping(scene):
+    if scene is None:
+        return False
+    allowed_default_names = {"Cube", "Camera", "Light"}
+    try:
+        scene_objects = tuple(getattr(scene, "objects", ()))
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        return False
+    for obj in scene_objects:
+        try:
+            name = str(getattr(obj, "name", "") or "")
+        except (TypeError, ValueError):
+            name = ""
+        if name in allowed_default_names:
+            continue
+        if _is_planetka_managed_object(obj):
+            continue
+        return False
+    return True
+
+
+def _clip_limits_for_radius_steps(earth_radius_bu):
+    """Map Earth radius to stable clipping ranges using decade steps."""
+    try:
+        safe_radius = max(1e-9, float(earth_radius_bu))
+    except (TypeError, ValueError):
+        safe_radius = 1.0
+    exponent = math.floor(math.log10(safe_radius))
+    scale = math.pow(10.0, exponent)
+    clip_start = 0.001 * scale
+    clip_end = 1000.0 * scale
+    return float(clip_start), float(clip_end)
+
+
+def _apply_clipping_limits(scene, clip_start, clip_end, notice_text=None):
+    if scene is None:
+        return False
+    if not _scene_allows_automatic_clipping(scene):
+        return False
+    try:
+        new_start = max(1e-9, float(clip_start))
+        new_end = max(new_start * 1.000001, float(clip_end))
+    except (TypeError, ValueError):
+        return False
+
+    changed = False
+    camera = getattr(scene, "camera", None)
+    camera_data = getattr(camera, "data", None) if camera is not None else None
+    if camera_data is not None and str(getattr(camera, "type", "")) == "CAMERA":
+        try:
+            old_start = float(getattr(camera_data, "clip_start", 0.0))
+            old_end = float(getattr(camera_data, "clip_end", 0.0))
+            if (not _float_close(old_start, new_start, tol=1e-9)) or (not _float_close(old_end, new_end, tol=1e-9)):
+                camera_data.clip_start = float(new_start)
+                camera_data.clip_end = float(new_end)
+                changed = True
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            pass
+
+    try:
+        wm = getattr(bpy.context, "window_manager", None)
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        wm = None
+    if wm is not None:
+        for window in tuple(getattr(wm, "windows", ())):
+            screen = getattr(window, "screen", None)
+            if screen is None:
+                continue
+            for area in tuple(getattr(screen, "areas", ())):
+                if str(getattr(area, "type", "")) != "VIEW_3D":
+                    continue
+                for space in tuple(getattr(area, "spaces", ())):
+                    if str(getattr(space, "type", "")) != "VIEW_3D":
+                        continue
+                    try:
+                        old_start = float(getattr(space, "clip_start", 0.0))
+                        old_end = float(getattr(space, "clip_end", 0.0))
+                        if (not _float_close(old_start, new_start, tol=1e-9)) or (not _float_close(old_end, new_end, tol=1e-9)):
+                            space.clip_start = float(new_start)
+                            space.clip_end = float(new_end)
+                            changed = True
+                    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                        continue
+
+    if changed and notice_text:
+        try:
+            scene["planetka_status_clip_auto_notice"] = str(notice_text)
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            pass
+    return bool(changed)
+
+
+def _format_clip_notice_value(value):
+    try:
+        val = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if _float_close(val, round(val), tol=1e-9):
+        ival = int(round(val))
+        if abs(ival) >= 1000:
+            return f"{ival:,}"
+        return str(ival)
+    return f"{val:.6g}"
+
+
+def _clip_notice_text(clip_start, clip_end):
+    return (
+        "Clipping values adjusted: "
+        f"{_format_clip_notice_value(clip_start)} - {_format_clip_notice_value(clip_end)}"
+    )
+
+
+def _apply_create_earth_clipping_defaults(scene):
+    return _apply_clipping_limits(
+        scene,
+        0.001,
+        1000.0,
+        notice_text=_clip_notice_text(0.001, 1000.0),
+    )
+
+
+def _apply_radius_based_clipping(scene, earth_radius_bu):
+    clip_start, clip_end = _clip_limits_for_radius_steps(earth_radius_bu)
+    return _apply_clipping_limits(
+        scene,
+        clip_start,
+        clip_end,
+        notice_text=_clip_notice_text(clip_start, clip_end),
+    )
 
 
 def _switch_solid_viewports_to_rendered(context):
@@ -2678,9 +2835,9 @@ class PLANETKA_OT_AddEarth(bpy.types.Operator):
             logger.debug("Planetka: failed ensuring Planetka Root before Create Earth", exc_info=True)
 
         try:
-            props.texture_quality_mode = "BALANCED"
+            props.texture_quality_mode = "PREVIEW"
         except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
-            logger.debug("Planetka: failed setting default texture quality to Balanced", exc_info=True)
+            logger.debug("Planetka: failed setting default texture quality to Preview", exc_info=True)
         warm_base_sphere_mesh_cache()
 
         surface_collection = ensure_planetka_temp_collection()
@@ -2726,6 +2883,20 @@ class PLANETKA_OT_AddEarth(bpy.types.Operator):
             _apply_startup_setup_for_create_earth(scene, props)
         except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
             logger.debug("Planetka: failed applying startup setup profile", exc_info=True)
+        try:
+            if _set_default_world_background_to_black(scene):
+                scene["planetka_status_bg_auto_black_notice"] = "Background color changed to black."
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed applying default world background override", exc_info=True)
+        try:
+            _apply_create_earth_clipping_defaults(scene)
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed applying create-earth clipping defaults", exc_info=True)
+        try:
+            # Preserve Create Earth informational notices through the initial queued resolve.
+            scene["planetka_status_notice_clear_skip_count"] = 1
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            pass
 
         # Queue initial resolve download in background so Create Earth stays responsive.
         resolve_result = bpy.ops.planetka.load_textures(

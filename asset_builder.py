@@ -1948,11 +1948,22 @@ def ensure_earth_surface_parent(scene=None, earth_surface=None):
     try:
         if getattr(earth_surface, "parent", None) is not root:
             earth_surface.parent = root
-            earth_surface.matrix_parent_inverse = root.matrix_world.inverted()
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
     except (RuntimeError, TypeError, ValueError, AttributeError):
         logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+    if getattr(earth_surface, "parent", None) is root:
+        try:
+            matrix_world = getattr(root, "matrix_world", None)
+            if matrix_world is not None and hasattr(matrix_world, "inverted_safe"):
+                earth_surface.matrix_parent_inverse = matrix_world.inverted_safe()
+            elif matrix_world is not None:
+                earth_surface.matrix_parent_inverse = matrix_world.inverted()
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
     return earth_surface
 
 

@@ -28,6 +28,19 @@ All notable changes to Planetka are documented in this file.
 ### Fixed
 - Removed outdated release-checklist references to preview parenting.
 
+## [v0.5.3] - 2026-04-12
+
+### Changed
+- Default texture quality after `Create Earth` is now `Preview`.
+- Added cache-folder write validation before applying user-selected cache directory.
+- Added scene-safe clipping auto-adjust flow and status notices for supported scenes.
+- Added automatic default-world gray-to-black background normalization with status notice.
+
+### Fixed
+- Hardened Earth-surface parenting to reduce rare orphan surface outcomes during mesh replacement.
+- Improved staging-mesh cleanup on unexpected resolve replacement exceptions.
+- Added safeguards around cache-folder persistence fallback when selected path is not writable.
+
 ## [v0.5.1] - 2026-04-09
 
 ### Added

@@ -97,6 +97,9 @@ def _set_earth_radius_bu(self, value):
             if scene is None or not isinstance(scene, bpy.types.Scene):
                 scene = getattr(bpy.context, "scene", None)
             set_radius_fn(scene, float(target))
+            apply_clip_fn = getattr(operators, "_apply_radius_based_clipping", None)
+            if callable(apply_clip_fn):
+                apply_clip_fn(scene, float(target))
     except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
         logger.debug("Planetka: failed applying Earth radius change", exc_info=True)
 
@@ -895,7 +898,7 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
                 "Uses two higher d-levels than Full Quality (effective 1/16 resolution); fastest download with lowest memory and recalculation cost",
             ),
         ),
-        default="BALANCED",
+        default="PREVIEW",
         description="Choose Preview, Balanced, or Full Quality texture mode",
         update=update_texture_quality_mode,
     )

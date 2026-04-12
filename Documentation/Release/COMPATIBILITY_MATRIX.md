@@ -1,7 +1,7 @@
 # Planetka Compatibility Matrix
 
-Current extension release candidate: `v0.5.1`
-Last matrix update: `2026-04-09`
+Current extension release candidate: `v0.5.3`
+Last matrix update: `2026-04-12`
 
 | Blender Version | Status | Automated Tests | Notes |
 | --- | --- | --- | --- |
@@ -16,6 +16,7 @@ Last matrix update: `2026-04-09`
 
 | Extension Version | Blender Versions Verified | Release Gate | Rollback Test | Notes |
 | --- | --- | --- | --- | --- |
+| v0.5.3 | 4.5.7, 5.0.0, 5.1.0 | Pass | Pass | Added cache write-path validation, safer earth-surface parent assignment during replacement, and scene-safe background/clipping automation notices. |
 | v0.5.1 | 4.5.7, 5.0.0, 5.1.0 | Pass | Pass | Added user-selectable/persistent cache folder and tightened cache limit defaults for public update channel. |
 | v0.5.0 | 4.5.7, 5.0.0, 5.1.0 | Pass | Pass | Version bump for current beta branch; compatibility baseline unchanged from v0.4.1. |
 | v0.4.1 | 4.5.7, 5.0.0, 5.1.0 | Pass | Pass | Status Check layout stabilized during download progress, adaptive subdivision suspend toggle restore fix, and auto-resolve idle default set to 0.5s. |

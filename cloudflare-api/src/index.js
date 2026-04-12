@@ -87,7 +87,9 @@ const DEFAULT_ANALYTICS_ADMIN_EMAILS = "info@planetka.io,tom.griger@gmail.com";
 const DEFAULT_ADMIN_LOGIN_EMAIL = "tom.griger@gmail.com";
 const DEFAULT_PERMANENT_PRO_EMAILS = "tom.griger@gmail.com";
 const DEFAULT_TILE_EVENT_RETENTION_DAYS = 30;
+const DEFAULT_AUTH_REFRESH_EVENT_RETENTION_DAYS = 30;
 const DEFAULT_TILE_ROLLUP_RETENTION_DAYS = 365;
+const BUG_REPORT_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 const DEFAULT_TILE_BROWSER_MAX_AGE_SECONDS = 86400;
 const DEFAULT_TILE_EDGE_MAX_AGE_SECONDS = 604800;
 const MAX_TILE_MAX_AGE_SECONDS = 31536000;
@@ -115,6 +117,7 @@ let magicLinksTokenIndexReady = false;
 let stripeWebhookEventsTableReady = false;
 let rateLimitsTableReady = false;
 let tileRequestEventsTableReady = false;
+let authRefreshEventsTableReady = false;
 let apiKeyTablesReady = false;
 let userProvisionalColumnsReady = false;
 let refreshSessionColumnsReady = false;
@@ -935,6 +938,113 @@ async function ensureTileRequestEventsTable(db) {
   tileRequestEventsTableReady = true;
 }
 
+async function ensureAuthRefreshEventsTable(db) {
+  if (authRefreshEventsTableReady) {
+    return;
+  }
+  await dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS auth_refresh_events (
+        id TEXT PRIMARY KEY,
+        created_at TEXT NOT NULL,
+        created_at_unix INTEGER NOT NULL,
+        user_id TEXT,
+        user_email TEXT,
+        auth_method TEXT,
+        api_key_id TEXT,
+        device_id TEXT,
+        client_ip TEXT,
+        cf_country TEXT,
+        cf_ray TEXT,
+        outcome TEXT NOT NULL,
+        error_code TEXT,
+        http_status INTEGER NOT NULL DEFAULT 0,
+        details_json TEXT
+      )
+    `,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_auth_refresh_events_created_unix ON auth_refresh_events(created_at_unix DESC)`,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_auth_refresh_events_outcome_created_unix ON auth_refresh_events(outcome, created_at_unix DESC)`,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_auth_refresh_events_user_created_unix ON auth_refresh_events(user_id, created_at_unix DESC)`,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_auth_refresh_events_email_created_unix ON auth_refresh_events(user_email, created_at_unix DESC)`,
+  );
+  authRefreshEventsTableReady = true;
+}
+
+async function logAuthRefreshEvent(db, event = {}) {
+  try {
+    await ensureAuthRefreshEventsTable(db);
+    const createdAt = nowIso();
+    const createdAtUnix = Math.floor(Date.parse(createdAt) / 1000) || Math.floor(Date.now() / 1000);
+    const outcome = String(event.outcome || "error").trim().toLowerCase() || "error";
+    const errorCode = String(event.error_code || "").trim().slice(0, 128);
+    const detailsJson = event.details && typeof event.details === "object"
+      ? JSON.stringify(event.details)
+      : "";
+    await dbRun(
+      db,
+      `
+        INSERT INTO auth_refresh_events (
+          id,
+          created_at,
+          created_at_unix,
+          user_id,
+          user_email,
+          auth_method,
+          api_key_id,
+          device_id,
+          client_ip,
+          cf_country,
+          cf_ray,
+          outcome,
+          error_code,
+          http_status,
+          details_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        crypto.randomUUID(),
+        createdAt,
+        createdAtUnix,
+        String(event.user_id || "").trim() || null,
+        normalizeEmail(event.user_email || "") || null,
+        String(event.auth_method || "").trim().toLowerCase() || null,
+        String(event.api_key_id || "").trim() || null,
+        normalizeDeviceId(event.device_id || "") || null,
+        String(event.client_ip || "").trim() || null,
+        String(event.cf_country || "").trim().toUpperCase() || null,
+        String(event.cf_ray || "").trim() || null,
+        outcome,
+        errorCode || null,
+        clampNonNegativeInt(event.http_status),
+        detailsJson || null,
+      ],
+    );
+  } catch (error) {
+    console.warn(
+      "worker.auth_refresh_event_log_failed",
+      JSON.stringify({
+        error: String(error && error.message || "auth_refresh_event_log_failed"),
+        outcome: String(event && event.outcome || "unknown"),
+        error_code: String(event && event.error_code || ""),
+      }),
+    );
+  }
+}
+
 async function ensureTileRequestRollupTables(db) {
   await dbRun(
     db,
@@ -1552,15 +1662,22 @@ async function collectAnalyticsSnapshot(
   await ensureTileRequestEventsTable(db);
   await ensureTileRequestRollupTables(db);
   await ensureUserDownloadCountersTable(db);
+  await ensureAuthRefreshEventsTable(db);
   const nowUnix = Math.floor(Date.now() / 1000);
   const windowMinutes = sanitizeAnalyticsMinutes(minutes, DEFAULT_ANALYTICS_WINDOW_MINUTES);
   const windowStartUnix = Math.max(0, nowUnix - (windowMinutes * 60));
   const rollupStart30d = Math.max(0, nowUnix - (30 * 86400));
   const safePlanFilter = parseHeavyUserPlanFilter(planFilter);
+  const authRefreshWindowSeconds = Math.max(
+    3600,
+    parseNonNegativeInteger(env.AUTH_REFRESH_HEALTH_WINDOW_SECONDS, 12 * 3600),
+  );
+  const authRefreshWindowStartUnix = Math.max(0, nowUnix - authRefreshWindowSeconds);
   const eventEmailFilter = buildAnalyticsExcludedEmailFilter("user_email", env);
   const eventEmailFilterAliasE = buildAnalyticsExcludedEmailFilter("e.user_email", env);
   const rollupEmailFilter = buildAnalyticsExcludedEmailFilter("user_email", env);
   const heavyEmailFilter = buildAnalyticsExcludedEmailFilter("c.user_email", env);
+  const authRefreshEmailFilter = buildAnalyticsExcludedEmailFilter("user_email", env);
 
   const summary = await dbGet(
     db,
@@ -1755,6 +1872,57 @@ async function collectAnalyticsSnapshot(
     recentFailures.push(row);
   }
 
+  const authRefreshSummary = await dbGet(
+    db,
+    `
+      SELECT
+        COUNT(*) AS total_count,
+        COALESCE(SUM(CASE WHEN outcome = 'success' THEN 1 ELSE 0 END), 0) AS success_count,
+        COALESCE(SUM(CASE WHEN outcome != 'success' THEN 1 ELSE 0 END), 0) AS failure_count,
+        COALESCE(COUNT(DISTINCT CASE WHEN outcome != 'success' AND user_id IS NOT NULL AND user_id != '' THEN user_id END), 0) AS failed_user_count
+      FROM auth_refresh_events
+      WHERE created_at_unix >= ?
+      ${authRefreshEmailFilter.condition ? `AND ${authRefreshEmailFilter.condition}` : ""}
+    `,
+    [authRefreshWindowStartUnix, ...authRefreshEmailFilter.bindings],
+  );
+  const authRefreshTopFailureUsers = await dbAll(
+    db,
+    `
+      SELECT
+        user_id,
+        user_email,
+        COUNT(*) AS failure_count,
+        MAX(created_at) AS last_failure_at
+      FROM auth_refresh_events
+      WHERE
+        created_at_unix >= ?
+        AND outcome != 'success'
+        ${authRefreshEmailFilter.condition ? `AND ${authRefreshEmailFilter.condition}` : ""}
+      GROUP BY user_id, user_email
+      ORDER BY failure_count DESC
+      LIMIT 20
+    `,
+    [authRefreshWindowStartUnix, ...authRefreshEmailFilter.bindings],
+  );
+  const authRefreshErrorBreakdown = await dbAll(
+    db,
+    `
+      SELECT
+        COALESCE(NULLIF(TRIM(error_code), ''), 'unknown_error') AS error_code,
+        COUNT(*) AS count
+      FROM auth_refresh_events
+      WHERE
+        created_at_unix >= ?
+        AND outcome != 'success'
+        ${authRefreshEmailFilter.condition ? `AND ${authRefreshEmailFilter.condition}` : ""}
+      GROUP BY COALESCE(NULLIF(TRIM(error_code), ''), 'unknown_error')
+      ORDER BY count DESC
+      LIMIT 20
+    `,
+    [authRefreshWindowStartUnix, ...authRefreshEmailFilter.bindings],
+  );
+
   const rollup30d = await dbGet(
     db,
     `
@@ -1914,6 +2082,16 @@ async function collectAnalyticsSnapshot(
     top_users: Array.isArray(topUsers) ? topUsers : [],
     top_tiles: Array.isArray(topTiles) ? topTiles : [],
     recent_failures: Array.isArray(recentFailures) ? recentFailures : [],
+    auth_refresh_health: {
+      window_seconds: authRefreshWindowSeconds,
+      window_start_unix: authRefreshWindowStartUnix,
+      total_count: clampNonNegativeInt(authRefreshSummary && authRefreshSummary.total_count),
+      success_count: clampNonNegativeInt(authRefreshSummary && authRefreshSummary.success_count),
+      failure_count: clampNonNegativeInt(authRefreshSummary && authRefreshSummary.failure_count),
+      failed_user_count: clampNonNegativeInt(authRefreshSummary && authRefreshSummary.failed_user_count),
+      top_failure_users: Array.isArray(authRefreshTopFailureUsers) ? authRefreshTopFailureUsers : [],
+      error_breakdown: Array.isArray(authRefreshErrorBreakdown) ? authRefreshErrorBreakdown : [],
+    },
     rollup_30d: {
       window_days: 30,
       request_count: clampNonNegativeInt(rollup30d && rollup30d.request_count),
@@ -2709,6 +2887,13 @@ async function cleanupAuthTables(db, env, nowTimestamp) {
     api_key_requests_deleted: 0,
     api_key_device_activity_deleted: 0,
     provisional_claim_audit_deleted: 0,
+    auth_refresh_event_retention_days: Math.max(
+      7,
+      parseNonNegativeInteger(
+        env.CLEANUP_AUTH_REFRESH_EVENT_RETENTION_DAYS,
+        DEFAULT_AUTH_REFRESH_EVENT_RETENTION_DAYS,
+      ),
+    ),
     tile_event_retention_days: Math.max(
       14,
       parseNonNegativeInteger(env.CLEANUP_TILE_EVENT_RETENTION_DAYS, DEFAULT_TILE_EVENT_RETENTION_DAYS),
@@ -2721,6 +2906,7 @@ async function cleanupAuthTables(db, env, nowTimestamp) {
     tile_rollup_hourly_deleted: 0,
     tile_rollup_daily_deleted: 0,
     monthly_cost_alert_state_deleted: 0,
+    auth_refresh_events_deleted: 0,
   };
   const refreshSessionCutoff = addDaysFromIso(
     nowTimestamp,
@@ -2731,6 +2917,10 @@ async function cleanupAuthTables(db, env, nowTimestamp) {
     -Math.max(30, parseNonNegativeInteger(env.PAID_CLAIM_RETENTION_DAYS, DEFAULT_PAID_CLAIM_RETENTION_DAYS)),
   );
   const tileEventsCutoffUnix = Math.max(0, nowUnix - (summary.tile_event_retention_days * 86400));
+  const authRefreshEventsCutoffUnix = Math.max(
+    0,
+    nowUnix - (summary.auth_refresh_event_retention_days * 86400),
+  );
   const tileRollupCutoffUnix = Math.max(0, nowUnix - (summary.tile_rollup_retention_days * 86400));
 
   if (await dbTableExists(db, "magic_links")) {
@@ -2839,6 +3029,18 @@ async function cleanupAuthTables(db, env, nowTimestamp) {
       [paidClaimRetentionCutoff],
     );
     summary.provisional_claim_audit_deleted = dbMetaChanges(claimAuditResult);
+  }
+
+  if (await dbTableExists(db, "auth_refresh_events")) {
+    const authRefreshEventsResult = await dbRun(
+      db,
+      `
+        DELETE FROM auth_refresh_events
+        WHERE created_at_unix < ?
+      `,
+      [authRefreshEventsCutoffUnix],
+    );
+    summary.auth_refresh_events_deleted = dbMetaChanges(authRefreshEventsResult);
   }
 
   if (await dbTableExists(db, "tile_request_events")) {
@@ -7011,10 +7213,49 @@ async function handleAuthVerify(request, env) {
 async function handleAuthRefresh(request, env) {
   const db = requireDb(env);
   await ensureUserProvisionalColumns(db);
+  const refreshEventBase = {
+    client_ip: requestClientIp(request),
+    cf_country: requestCountry(request),
+    cf_ray: String(request.headers.get("CF-Ray") || "").trim(),
+  };
+  const recordRefreshEvent = async ({
+    outcome = "error",
+    errorCode = "",
+    httpStatus = 0,
+    userId = "",
+    userEmail = "",
+    sessionRow = null,
+    details = null,
+  } = {}) => {
+    await logAuthRefreshEvent(db, {
+      ...refreshEventBase,
+      user_id: userId,
+      user_email: userEmail,
+      auth_method: sessionRow ? String(sessionRow.auth_method || "").trim() : "",
+      api_key_id: sessionRow ? String(sessionRow.api_key_id || "").trim() : "",
+      device_id: sessionRow ? String(sessionRow.device_id || "").trim() : "",
+      outcome,
+      error_code: errorCode,
+      http_status: httpStatus,
+      details,
+    });
+  };
+  const errorResponse = async (errorCode, httpStatus, sessionRow = null, details = null) => {
+    await recordRefreshEvent({
+      outcome: "error",
+      errorCode,
+      httpStatus,
+      userId: sessionRow ? String(sessionRow.user_id || "").trim() : "",
+      userEmail: sessionRow ? normalizeEmail(sessionRow.email || "") : "",
+      sessionRow,
+      details,
+    });
+    return json({ ok: false, error: errorCode }, httpStatus, env);
+  };
   const body = await parseJson(request);
   const refreshToken = String(body.refresh_token || "").trim();
   if (!refreshToken) {
-    return json({ ok: false, error: "missing_refresh_token" }, 400, env);
+    return errorResponse("missing_refresh_token", 400, null, { has_body: Boolean(body && Object.keys(body).length) });
   }
 
   const refreshHash = await sha256Hex(refreshToken);
@@ -7043,16 +7284,24 @@ async function handleAuthRefresh(request, env) {
     [refreshHash],
   );
   if (!session) {
-    return json({ ok: false, error: "invalid_refresh_token" }, 400, env);
+    return errorResponse("invalid_refresh_token", 400);
   }
   if (isBlockedStatus(session.status)) {
+    await recordRefreshEvent({
+      outcome: "error",
+      errorCode: "account_blocked",
+      httpStatus: 403,
+      userId: String(session.user_id || "").trim(),
+      userEmail: normalizeEmail(session.email || ""),
+      sessionRow: session,
+    });
     return blockedAccountResponse(env);
   }
   if (session.revoked_at) {
-    return json({ ok: false, error: "refresh_token_revoked" }, 400, env);
+    return errorResponse("refresh_token_revoked", 400, session);
   }
   if (Date.parse(session.expires_at) < Date.now()) {
-    return json({ ok: false, error: "refresh_token_expired" }, 400, env);
+    return errorResponse("refresh_token_expired", 400, session);
   }
   if (
     String(session.auth_method || "").trim().toLowerCase() === "api_key"
@@ -7060,7 +7309,7 @@ async function handleAuthRefresh(request, env) {
   ) {
     const keyUsable = await isApiKeyUsableById(db, session.api_key_id, session.user_id);
     if (!keyUsable) {
-      return json({ ok: false, error: "api_key_revoked" }, 401, env);
+      return errorResponse("api_key_revoked", 401, session);
     }
   }
 
@@ -7102,6 +7351,14 @@ async function handleAuthRefresh(request, env) {
     },
   );
   const accountState = await buildAllowanceState(db, user, null, env);
+  await recordRefreshEvent({
+    outcome: "success",
+    errorCode: "",
+    httpStatus: 200,
+    userId: String(user.id || "").trim(),
+    userEmail: normalizeEmail(user.email || ""),
+    sessionRow: session,
+  });
 
   return json(
     {
@@ -8253,6 +8510,9 @@ async function handleAdminAnalyticsPage(request, env) {
     <div class="card"><div class="label">Errors (window)</div><div id="errors" class="value">-</div></div>
     <div class="card"><div class="label">Cache hit ratio</div><div id="hitRatio" class="value">-</div></div>
     <div class="card"><div class="label">Tagged resolves</div><div id="resolveCount" class="value">-</div></div>
+    <div class="card"><div class="label">Refresh Attempts (12h)</div><div id="authRefreshTotal" class="value">-</div></div>
+    <div class="card"><div class="label">Refresh Failures (12h)</div><div id="authRefreshFailures" class="value">-</div></div>
+    <div class="card"><div class="label">Refresh Failure Rate</div><div id="authRefreshFailureRate" class="value">-</div></div>
   </div>
 
   <div class="section">
@@ -8272,6 +8532,11 @@ async function handleAdminAnalyticsPage(request, env) {
   <div class="section">
     <h3>Top Tiles</h3>
     <table id="tilesTable"><thead><tr><th>Tile key</th><th>Requests</th><th>GB</th></tr></thead><tbody></tbody></table>
+  </div>
+  <div class="section">
+    <h3>Auth Refresh Health (12h)</h3>
+    <table id="authRefreshUsersTable"><thead><tr><th>User</th><th>Failure Count</th><th>Last Failure</th></tr></thead><tbody></tbody></table>
+    <table id="authRefreshErrorsTable"><thead><tr><th>Error</th><th>Count</th></tr></thead><tbody></tbody></table>
   </div>
   <div class="section">
     <h3>Recent Failures</h3>
@@ -8636,6 +8901,13 @@ async function handleAdminAnalyticsPage(request, env) {
         const hitRatio = Number(s.request_count || 0) > 0 ? (100 * Number(s.cache_hit_count || 0) / Number(s.request_count || 1)) : 0;
         setText("hitRatio", hitRatio.toFixed(2) + "%");
         setText("resolveCount", fmtInt(s.tagged_resolve_count));
+        const refreshHealth = data.auth_refresh_health || {};
+        const refreshTotal = Number(refreshHealth.total_count || 0);
+        const refreshFailures = Number(refreshHealth.failure_count || 0);
+        const refreshFailureRate = refreshTotal > 0 ? (100 * refreshFailures / refreshTotal) : 0;
+        setText("authRefreshTotal", fmtInt(refreshTotal));
+        setText("authRefreshFailures", fmtInt(refreshFailures));
+        setText("authRefreshFailureRate", refreshFailureRate.toFixed(2) + "%");
         renderRows("usersTable", data.top_users, (row) => \`<td>\${row.user_email || ""}</td><td>\${fmtInt(row.request_count)}</td><td>\${fmtInt(row.resolve_count)}</td><td>\${fmtGb(row.bytes_served)}</td><td>\${fmtInt(row.error_count)}</td><td>\${row.last_seen_at || ""}</td>\`);
         const heavyRowsBySortKey = {
           lifetime: "top_lifetime",
@@ -8669,6 +8941,8 @@ async function handleAdminAnalyticsPage(request, env) {
         });
         renderLiveTileMap(data.live_tile_map || {});
         renderRows("tilesTable", data.top_tiles, (row) => \`<td>\${row.tile_key || ""}</td><td>\${fmtInt(row.request_count)}</td><td>\${fmtGb(row.bytes_served)}</td>\`);
+        renderRows("authRefreshUsersTable", refreshHealth.top_failure_users || [], (row) => \`<td>\${row.user_email || row.user_id || ""}</td><td>\${fmtInt(row.failure_count)}</td><td>\${row.last_failure_at || ""}</td>\`);
+        renderRows("authRefreshErrorsTable", refreshHealth.error_breakdown || [], (row) => \`<td>\${row.error_code || ""}</td><td>\${fmtInt(row.count)}</td>\`);
         renderRows("failsTable", data.recent_failures, (row) => \`<td>\${row.created_at || ""}</td><td>\${row.user_email || ""}</td><td>\${row.status_code || ""}</td><td>\${row.error_code || ""}</td><td>\${row.tile_key || ""}</td><td>\${row.cache_status || ""}</td><td>\${row.duration_ms || ""}</td>\`);
         statusEl.textContent = "Updated " + new Date().toLocaleTimeString();
         statusEl.className = "muted";
@@ -9684,6 +9958,38 @@ function sanitizeAttachmentFileName(value, fallback = "planetka_bug_report.json"
   return safe.toLowerCase().endsWith(".json") ? safe : `${safe}.json`;
 }
 
+function sanitizeImageAttachmentFileName(value, fallback = "planetka_bug_screenshot.png") {
+  const raw = String(value || "").trim();
+  const safe = raw.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120);
+  const candidate = safe || fallback;
+  const lower = candidate.toLowerCase();
+  if (lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".webp")) {
+    return candidate;
+  }
+  return fallback;
+}
+
+function normalizeBugReportImageMime(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "image/png" || normalized === "image/jpeg" || normalized === "image/webp") {
+    return normalized;
+  }
+  return "";
+}
+
+function base64DecodeToBytes(value) {
+  const compact = String(value || "").replace(/\s+/g, "");
+  if (!compact) {
+    return new Uint8Array();
+  }
+  const binary = atob(compact);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index) & 0xff;
+  }
+  return bytes;
+}
+
 function escapeHtml(value) {
   return String(value || "")
     .replace(/&/g, "&amp;")
@@ -9721,6 +10027,32 @@ async function handleSupportBugReport(request, env) {
   const issueSteps = String(body.issue_steps_to_reproduce || "").trim();
   const issueExpected = String(body.issue_expected_behavior || "").trim();
   const sourcePath = String(body.report_path || "").trim();
+  const attachmentBase64 = String(body.attachment_base64 || "").trim();
+  let imageAttachment = null;
+  if (attachmentBase64) {
+    const mime = normalizeBugReportImageMime(body.attachment_mime);
+    if (!mime) {
+      return json({ ok: false, error: "invalid_attachment_mime" }, 400, env);
+    }
+    let imageBytes;
+    try {
+      imageBytes = base64DecodeToBytes(attachmentBase64);
+    } catch (_error) {
+      return json({ ok: false, error: "invalid_attachment_base64" }, 400, env);
+    }
+    if (!imageBytes || imageBytes.length <= 0) {
+      return json({ ok: false, error: "empty_attachment" }, 400, env);
+    }
+    if (imageBytes.length > BUG_REPORT_IMAGE_MAX_BYTES) {
+      return json({ ok: false, error: "attachment_too_large" }, 413, env);
+    }
+    imageAttachment = {
+      filename: sanitizeImageAttachmentFileName(body.attachment_filename, "planetka_bug_screenshot.png"),
+      contentType: mime,
+      content: base64EncodeBytes(imageBytes),
+      sizeBytes: imageBytes.length,
+    };
+  }
 
   const apiKey = requireSecret(env, "EMAIL_API_KEY");
   const from = String(env.EMAIL_FROM || "info@planetka.io").trim();
@@ -9741,8 +10073,11 @@ async function handleSupportBugReport(request, env) {
     `- What happened: ${issueWhat || "(not provided)"}`,
     `- Steps to reproduce: ${issueSteps || "(not provided)"}`,
     `- Expected behavior: ${issueExpected || "(not provided)"}`,
+    `- Screenshot attached: ${imageAttachment ? "yes" : "no"}`,
+    ...(imageAttachment ? [`- Screenshot file: ${imageAttachment.filename} (${imageAttachment.sizeBytes} bytes)`] : []),
     "",
     "Attached: JSON debug report",
+    ...(imageAttachment ? ["Attached: Screenshot/image"] : []),
   ].join("\n");
 
   const htmlBody = `
@@ -9756,10 +10091,26 @@ async function handleSupportBugReport(request, env) {
       <h3 style="margin:16px 0 8px 0;">Issue Description</h3>
       <p><strong>What happened:</strong> ${escapeHtml(issueWhat || "(not provided)")}<br/>
       <strong>Steps to reproduce:</strong> ${escapeHtml(issueSteps || "(not provided)")}<br/>
-      <strong>Expected behavior:</strong> ${escapeHtml(issueExpected || "(not provided)")}</p>
+      <strong>Expected behavior:</strong> ${escapeHtml(issueExpected || "(not provided)")}<br/>
+      <strong>Screenshot attached:</strong> ${imageAttachment ? "yes" : "no"}${imageAttachment ? `<br/><strong>Screenshot file:</strong> ${escapeHtml(imageAttachment.filename)} (${imageAttachment.sizeBytes} bytes)` : ""}</p>
       <p>Attached: JSON debug report</p>
+      ${imageAttachment ? "<p>Attached: Screenshot/image</p>" : ""}
     </div>
   `;
+
+  const attachments = [
+    {
+      filename: reportFileName,
+      content: base64EncodeString(reportJson),
+    },
+  ];
+  if (imageAttachment) {
+    attachments.push({
+      filename: imageAttachment.filename,
+      content: imageAttachment.content,
+      contentType: imageAttachment.contentType,
+    });
+  }
 
   const response = await fetch("https://api.resend.com/emails", {
     method: "POST",
@@ -9773,12 +10124,7 @@ async function handleSupportBugReport(request, env) {
       subject: `Planetka Bug Report - ${reporterEmail || "unknown"}`,
       text: textBody,
       html: htmlBody,
-      attachments: [
-        {
-          filename: reportFileName,
-          content: base64EncodeString(reportJson),
-        },
-      ],
+      attachments,
     }),
   });
 
@@ -9801,6 +10147,7 @@ async function handleSupportBugReport(request, env) {
       sent: true,
       reporter_email: reporterEmail,
       report_file_name: reportFileName,
+      image_attachment: Boolean(imageAttachment),
     },
     200,
     env,
