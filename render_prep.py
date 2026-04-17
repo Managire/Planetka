@@ -18,7 +18,7 @@ import re
 import bpy
 from bpy.props import BoolProperty, EnumProperty, StringProperty
 
-from .auth import is_authenticated, sync_account_profile
+from .auth import allows_balanced_full_quality_for_context, get_account_tier, is_authenticated, sync_account_profile
 from .asset_builder import ensure_earth_surface_parent, sync_surface_elevation_scale_for_radius
 from .diagnostics import write_resolve_diagnostics, write_tile_view_diagnostics
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS, with_error_code
@@ -26,10 +26,11 @@ from .extension_prefs import get_earth_object, get_earth_surface_candidates, get
 from .operator_utils import ErrorCode, fail, require_planetka_props, require_scene
 from .r2_source import (
     is_remote_source_configured,
+    retain_recent_resolve_cache,
     texture_file_exists,
     verify_remote_stream_health,
 )
-from .sanity_utils import _normalize_texture_source_path
+from .sanity_utils import _normalize_texture_source_path, validate_known_good_texture_source
 from .streaming_utils import (
     consume_staged_prefetch_payload,
     prepare_resolve_streaming_for_visible_tiles,
@@ -68,7 +69,7 @@ def _normalize_texture_quality_mode(value):
         return "BALANCED"
     if token in {"FULL", "BALANCED", "PREVIEW"}:
         return token
-    return "BALANCED"
+    return "PREVIEW"
 
 
 def _get_tile_utils():
@@ -85,7 +86,13 @@ def _get_tile_utils():
 def _validate_texture_source(base_path):
     normalized = _normalize_texture_source_path(base_path)
     if not is_remote_source_configured(normalized):
-        return "", "Planetka Cloudflare source is not configured."
+        details = validate_known_good_texture_source(normalized)
+        normalized = str(details.get("normalized_path", "") or normalized)
+        issues = list(details.get("issues", ()) or ())
+        for level, _code, message in issues:
+            if str(level).upper() == "ERROR":
+                return "", str(message or "Unsupported local texture source is invalid.")
+        return normalized, ""
 
     # Validate against stable S2 sentinel tiles to confirm remote source health.
     try:
@@ -97,6 +104,19 @@ def _validate_texture_source(base_path):
     except RuntimeError as exc:
         return "", str(exc)
     if not has_s2:
+        # Free/Personal accounts can be geo-restricted outside NZ and may not be allowed
+        # to access these global sentinel probes. Do not fail Create Earth for those tiers.
+        try:
+            prefs = get_prefs()
+            tier = str(get_account_tier(prefs) or "").strip().lower()
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            tier = ""
+        if tier in {"free", "lite"}:
+            logger.info(
+                "Planetka: skipping strict sentinel gate for restricted tier '%s' (S2 sentinel unavailable).",
+                tier,
+            )
+            return normalized, ""
         return "", "Planetka Cloudflare source is reachable but required S2 sentinel tiles are missing."
 
     return normalized, ""
@@ -551,11 +571,43 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             )
 
         tiles_override = _parse_tiles_override(getattr(self, "tiles_override_json", ""))
-        texture_quality_mode = "BALANCED"
+        texture_quality_mode = "PREVIEW"
         try:
-            texture_quality_mode = _normalize_texture_quality_mode(getattr(props, "texture_quality_mode", "BALANCED"))
+            texture_quality_mode = _normalize_texture_quality_mode(getattr(props, "texture_quality_mode", "PREVIEW"))
         except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-            texture_quality_mode = "BALANCED"
+            texture_quality_mode = "PREVIEW"
+        try:
+            nav_latitude_deg = float(getattr(props, "nav_latitude_deg", 0.0))
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            nav_latitude_deg = 0.0
+        try:
+            nav_longitude_deg = float(getattr(props, "nav_longitude_deg", 0.0))
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            nav_longitude_deg = 0.0
+        try:
+            nav_altitude_km = max(0.0, float(getattr(props, "nav_altitude_km", 0.0)))
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            nav_altitude_km = 0.0
+        if not allows_balanced_full_quality_for_context(
+            prefs=prefs,
+            source=props,
+            requested_mode=texture_quality_mode,
+        ):
+            fallback_quality_mode = "PREVIEW"
+            if (
+                str(texture_quality_mode).upper() == "FULL"
+                and allows_balanced_full_quality_for_context(
+                    prefs=prefs,
+                    source=props,
+                    requested_mode="BALANCED",
+                )
+            ):
+                fallback_quality_mode = "BALANCED"
+            texture_quality_mode = fallback_quality_mode
+            try:
+                props.texture_quality_mode = fallback_quality_mode
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka: failed writing downgraded texture quality mode", exc_info=True)
         phase_start = time.perf_counter()
         if tiles_override is not None:
             tiles = [] if force_empty_once else list(tiles_override)
@@ -664,13 +716,19 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                     normalized,
                     capture=True,
                     texture_quality_mode=texture_quality_mode,
+                    nav_latitude_deg=nav_latitude_deg,
+                    nav_longitude_deg=nav_longitude_deg,
+                    nav_altitude_km=nav_altitude_km,
                 )
-            elif _normalize_texture_quality_mode(stream_payload.get("texture_quality_mode", "BALANCED")) != texture_quality_mode:
+            elif _normalize_texture_quality_mode(stream_payload.get("texture_quality_mode", "PREVIEW")) != texture_quality_mode:
                 stream_payload = prepare_resolve_streaming_for_visible_tiles(
                     tiles,
                     normalized,
                     capture=True,
                     texture_quality_mode=texture_quality_mode,
+                    nav_latitude_deg=nav_latitude_deg,
+                    nav_longitude_deg=nav_longitude_deg,
+                    nav_altitude_km=nav_altitude_km,
                 )
             if bool(stream_payload.get("cancelled", False)):
                 return fail(
@@ -876,11 +934,23 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         phase_start = time.perf_counter()
         delete_temp_meshes(keep_obj=new_obj)
         phase_post_delete_ms = (time.perf_counter() - phase_start) * 1000.0
+        # Final naming pass after old surfaces are deleted.
+        # This removes Blender suffixes such as ".001" that can appear when the
+        # first rename happens before temporary/old surfaces are removed.
+        try:
+            new_obj.name = "Planetka Earth Surface"
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            logger.debug("Planetka: failed final canonical rename for Earth surface object", exc_info=True)
 
         try:
             scene["planetka_last_resolved_tiles"] = list(tiles)
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka: failed caching resolved tiles", exc_info=True)
+
+        try:
+            retain_recent_resolve_cache(resolved_paths, keep_count=2)
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed pruning cache to current+previous resolve snapshots", exc_info=True)
 
         if not force_empty_once and bool(getattr(props, "show_earth_preview", False)):
             phase_start = time.perf_counter()

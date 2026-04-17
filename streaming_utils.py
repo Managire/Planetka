@@ -10,6 +10,7 @@ from .r2_source import (
     begin_resolve_download_capture,
     end_resolve_download_capture,
     get_remote_cache_folder,
+    is_remote_source_configured,
     plan_resolve_downloads,
     prefetch_resolve_downloads,
     resolve_request_context,
@@ -42,7 +43,7 @@ def _normalize_base_path(base_path):
     return text.rstrip("/\\")
 
 
-def _staged_prefetch_key(visible_tiles, base_path, texture_quality_mode="BALANCED"):
+def _staged_prefetch_key(visible_tiles, base_path, texture_quality_mode="PREVIEW"):
     return (
         _normalize_tiles(visible_tiles),
         _normalize_base_path(base_path),
@@ -60,7 +61,7 @@ def _prune_staged_prefetch_locked(now_ts):
         _STAGED_PREFETCH.pop(key, None)
 
 
-def stage_prefetch_payload(visible_tiles, base_path, payload, texture_quality_mode="BALANCED"):
+def stage_prefetch_payload(visible_tiles, base_path, payload, texture_quality_mode="PREVIEW"):
     if not isinstance(payload, dict):
         return
     key = _staged_prefetch_key(visible_tiles, base_path, texture_quality_mode=texture_quality_mode)
@@ -73,7 +74,7 @@ def stage_prefetch_payload(visible_tiles, base_path, payload, texture_quality_mo
         }
 
 
-def consume_staged_prefetch_payload(visible_tiles, base_path, texture_quality_mode="BALANCED"):
+def consume_staged_prefetch_payload(visible_tiles, base_path, texture_quality_mode="PREVIEW"):
     key = _staged_prefetch_key(visible_tiles, base_path, texture_quality_mode=texture_quality_mode)
     now_ts = time.monotonic()
     with _STAGED_PREFETCH_LOCK:
@@ -123,7 +124,7 @@ def _normalize_texture_quality_mode(value):
         return "FULL"
     if token == "PREVIEW":
         return "PREVIEW"
-    return "BALANCED"
+    return "PREVIEW"
 
 
 def _prefetch_index(resolved_tiles, ocean_tiles=None):
@@ -172,10 +173,11 @@ def _tile_uses_pole_cap(tile_text):
 
 def _build_prefetched_paths(index, base_path, allow_fallback=False):
     resolved_paths = {}
+    use_remote = bool(is_remote_source_configured(base_path))
     for tile, image_type, filename, exts in index:
         cached_path = ""
-        cache_folder = str(get_remote_cache_folder(image_type) or "")
-        if cache_folder:
+        cache_folder = str(get_remote_cache_folder(image_type) or "") if use_remote else ""
+        if use_remote and cache_folder:
             for ext in exts:
                 candidate = os.path.join(cache_folder, f"{image_type}_{filename}{ext}")
                 if os.path.isfile(candidate):
@@ -214,7 +216,10 @@ def prefetch_resolve_plan(
     cancel_event=None,
     capture=False,
     resolve_id="",
-    texture_quality_mode="BALANCED",
+    texture_quality_mode="PREVIEW",
+    nav_latitude_deg="",
+    nav_longitude_deg="",
+    nav_altitude_km="",
 ):
     resolved_tiles = list(plan_payload.get("resolved_tiles", ())) if isinstance(plan_payload, dict) else []
     ocean_tiles = list(plan_payload.get("ocean_tiles", ())) if isinstance(plan_payload, dict) else []
@@ -231,34 +236,39 @@ def prefetch_resolve_plan(
         normalized_resolve_id = str(uuid.uuid4())
 
     normalized_quality_mode = _normalize_texture_quality_mode(texture_quality_mode)
+    use_remote = bool(is_remote_source_configured(base_path))
 
-    if capture:
+    if capture and use_remote:
         begin_resolve_download_capture()
     try:
-        with resolve_request_context(
-            normalized_resolve_id,
-            texture_quality_mode=normalized_quality_mode,
-            cancel_event=cancel_event,
-        ):
-            try:
-                # Fast resolve path: skip remote HEAD preflight size probes so first GET
-                # requests start immediately.
-                plan_resolve_downloads(requests, allow_remote_probe=False)
-                prefetch_result = prefetch_resolve_downloads(
-                    requests,
-                    base_path=str(base_path or ""),
-                    cancel_event=cancel_event,
-                )
-            except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
-                prefetch_failed = True
-                prefetch_error_text = str(exc)
-                logger.debug("Planetka: resolve prefetch failed", exc_info=True)
-            except (RuntimeError, TypeError, ValueError) as exc:
-                prefetch_failed = True
-                prefetch_error_text = str(exc)
-                logger.debug("Planetka: resolve prefetch failed", exc_info=True)
+        if use_remote:
+            with resolve_request_context(
+                normalized_resolve_id,
+                texture_quality_mode=normalized_quality_mode,
+                cancel_event=cancel_event,
+                nav_latitude_deg=nav_latitude_deg,
+                nav_longitude_deg=nav_longitude_deg,
+                nav_altitude_km=nav_altitude_km,
+            ):
+                try:
+                    # Fast resolve path: skip remote HEAD preflight size probes so first GET
+                    # requests start immediately.
+                    plan_resolve_downloads(requests, allow_remote_probe=False)
+                    prefetch_result = prefetch_resolve_downloads(
+                        requests,
+                        base_path=str(base_path or ""),
+                        cancel_event=cancel_event,
+                    )
+                except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
+                    prefetch_failed = True
+                    prefetch_error_text = str(exc)
+                    logger.debug("Planetka: resolve prefetch failed", exc_info=True)
+                except (RuntimeError, TypeError, ValueError) as exc:
+                    prefetch_failed = True
+                    prefetch_error_text = str(exc)
+                    logger.debug("Planetka: resolve prefetch failed", exc_info=True)
     finally:
-        if capture:
+        if capture and use_remote:
             capture_result = end_resolve_download_capture() or {}
 
     if isinstance(prefetch_result, dict):
@@ -269,7 +279,7 @@ def prefetch_resolve_plan(
     # Resolve integrity:
     # - no post-prefetch fallback fetches here (shader fallback images handle EL/WT/PO misses)
     # - only missing S2 is fatal; missing EL/WT/PO proceeds with fallback images
-    resolved_paths = _build_prefetched_paths(index, base_path, allow_fallback=False)
+    resolved_paths = _build_prefetched_paths(index, base_path, allow_fallback=not use_remote)
     unresolved_s2_required = sum(
         1
         for key, path in resolved_paths.items()
@@ -316,7 +326,10 @@ def prepare_resolve_streaming_for_visible_tiles(
     cancel_event=None,
     capture=False,
     resolve_id="",
-    texture_quality_mode="BALANCED",
+    texture_quality_mode="PREVIEW",
+    nav_latitude_deg="",
+    nav_longitude_deg="",
+    nav_altitude_km="",
 ):
     plan_payload = build_resolve_download_requests_for_visible_tiles(visible_tiles, base_path)
     prefetch_payload = prefetch_resolve_plan(
@@ -326,6 +339,9 @@ def prepare_resolve_streaming_for_visible_tiles(
         capture=capture,
         resolve_id=resolve_id,
         texture_quality_mode=texture_quality_mode,
+        nav_latitude_deg=nav_latitude_deg,
+        nav_longitude_deg=nav_longitude_deg,
+        nav_altitude_km=nav_altitude_km,
     )
     result = dict(plan_payload)
     result.update(prefetch_payload)
@@ -333,6 +349,12 @@ def prepare_resolve_streaming_for_visible_tiles(
 
 
 def estimate_remote_download_bytes_for_visible_tiles(visible_tiles, base_path):
+    if not is_remote_source_configured(base_path):
+        return {
+            "planned_total_bytes": 0,
+            "planned_file_count": 0,
+            "unknown_file_count": 0,
+        }
     plan_payload = build_resolve_download_requests_for_visible_tiles(visible_tiles, base_path)
     requests = list(plan_payload.get("requests", ()) or ())
     estimate = plan_resolve_downloads(requests, allow_remote_probe=False)

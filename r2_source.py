@@ -8,6 +8,7 @@ import os
 import re
 import sqlite3
 import threading
+import tempfile
 import time
 from contextlib import contextmanager
 import urllib.error
@@ -19,6 +20,11 @@ from collections import OrderedDict
 
 from .auth import AuthApiError, get_authorized_headers, get_api_base_url, refresh_auth_session, sync_account_profile
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
+from .unsupported import (
+    get_unsupported_cache_max_gb,
+    get_unsupported_cache_root,
+    get_unsupported_texture_source_mode,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +74,7 @@ _HEAD_SIZE_CACHE_LOCK = threading.Lock()
 _METRICS_LOCK = threading.Lock()
 _CACHE_PRUNE_LOCK = threading.Lock()
 _CACHE_PRUNE_SUSPEND_LOCK = threading.Lock()
+_CACHE_RECENT_RESOLVES_LOCK = threading.Lock()
 _ACTIVE_DOWNLOADS = 0
 _ACTIVE_DOWNLOAD_BYTES = 0
 _ACTIVE_EXPECTED_BYTES = 0
@@ -94,14 +101,30 @@ _AUTH_LAST_BEARER = ""
 _AUTH_LAST_CHECKED_AT = 0.0
 _AUTH_CHECK_TTL_SECONDS = 15.0
 _CACHE_PRUNE_SUSPEND_COUNT = 0
+_CACHE_RECENT_RESOLVE_PATH_SETS = []
+_CACHE_RUNTIME_PROTECTED_RELATIVE_PATHS = set()
 _REQUEST_CONTEXT_LOCK = threading.Lock()
 _REQUEST_CONTEXT_RESOLVE_ID = ""
 _REQUEST_CONTEXT_TEXTURE_MODE = ""
 _REQUEST_CONTEXT_CANCEL_EVENT = None
+_REQUEST_CONTEXT_NAV_LAT = ""
+_REQUEST_CONTEXT_NAV_LON = ""
+_REQUEST_CONTEXT_NAV_ALT_KM = ""
 _TILE_FILE_RE = re.compile(
     r"^(S2|EL|WT|PO)_x(\d{3})_y(\d{3})_z(\d{3})_d(\d{3})\.(exr|tif)$",
     re.IGNORECASE,
 )
+
+# Unsupported advanced cache overrides (use at your own risk):
+# --------------------------------------------------------------
+# Planetka officially manages cache internally in OS temp and keeps only
+# current+previous resolve assets. If you still want to override cache behavior,
+# edit ONLY these values:
+# - CACHE_ROOT_OVERRIDE_UNSUPPORTED: absolute path, or "" for default temp cache
+# - CACHE_MAX_GB_OVERRIDE_UNSUPPORTED: >0 enables extra size-based pruning
+#   (in addition to 2-resolve retention). 0 disables size-based pruning.
+CACHE_ROOT_OVERRIDE_UNSUPPORTED = ""
+CACHE_MAX_GB_OVERRIDE_UNSUPPORTED = 0.0
 
 
 def _user_settings_file_path():
@@ -220,10 +243,7 @@ def _env(name, fallback=None):
 
 
 def _default_cache_root():
-    home = os.path.expanduser("~")
-    if home and home != "~":
-        return os.path.join(home, "Library", "Caches", "Planetka", "r2_cache")
-    return os.path.join(os.path.abspath(os.path.expanduser("~")), ".planetka", "r2_cache")
+    return os.path.join(str(tempfile.gettempdir() or "/tmp"), "planetka_cache")
 
 
 def _parse_positive_float(value, default):
@@ -351,9 +371,6 @@ def _build_config():
         "secret_access_key": "planetka-api",
         "region": "auto",
         "prefix": _env("PLANETKA_R2_PREFIX") or _R2_DEFAULT_PREFIX,
-        "cache_root": _env("PLANETKA_R2_CACHE_DIR") or _default_cache_root(),
-        "cache_max_bytes": _env("PLANETKA_R2_CACHE_MAX_BYTES"),
-        "cache_max_gb": _env("PLANETKA_R2_CACHE_MAX_GB", fallback=("R2_CACHE_MAX_GB",)),
         "cache_prune_target_ratio": _env("PLANETKA_R2_CACHE_PRUNE_TARGET_RATIO"),
         # Force remote-only texture loading; local source files are never used by resolver.
         "prefer_remote": True,
@@ -368,25 +385,17 @@ def _build_config():
     secret_access_key = str(merged.get("secret_access_key", "")).strip()
     region = str(merged.get("region", "auto") or "auto").strip()
     prefix = str(merged.get("prefix", _R2_DEFAULT_PREFIX) or _R2_DEFAULT_PREFIX).strip("/")
-    cache_root = str(merged.get("cache_root", _default_cache_root()) or _default_cache_root())
     scene_cache_root = _scene_cache_root()
-    if scene_cache_root:
-        # UI setting should be the primary user control in Blender.
-        cache_root = str(scene_cache_root)
-    scene_cache_max_gb = _scene_cache_max_gb()
-    cache_max_bytes_raw = merged.get("cache_max_bytes")
-    cache_max_gb_raw = merged.get("cache_max_gb")
-    if scene_cache_max_gb:
-        # UI setting should be the primary user control in Blender.
-        cache_max_bytes_raw = ""
-        cache_max_gb_raw = scene_cache_max_gb
-
-    default_cache_max_gb = scene_cache_max_gb if scene_cache_max_gb else _R2_DEFAULT_CACHE_MAX_GB
-    cache_max_bytes = _parse_cache_max_bytes(
-        cache_max_bytes_raw,
-        cache_max_gb_raw,
-        default_cache_max_gb,
-    )
+    unsupported_cache_root = _normalize_cache_dir_path(get_unsupported_cache_root())
+    cache_root = unsupported_cache_root or scene_cache_root or _normalize_cache_dir_path(CACHE_ROOT_OVERRIDE_UNSUPPORTED) or _default_cache_root()
+    cache_max_gb = float(get_unsupported_cache_max_gb() or 0.0)
+    if cache_max_gb <= 0.0:
+        cache_max_gb = float(_scene_cache_max_gb() or 0.0)
+    if cache_max_gb <= 0.0 and float(CACHE_MAX_GB_OVERRIDE_UNSUPPORTED or 0.0) > 0.0:
+        cache_max_gb = float(CACHE_MAX_GB_OVERRIDE_UNSUPPORTED)
+    if cache_max_gb <= 0.0:
+        cache_max_gb = float(_R2_DEFAULT_CACHE_MAX_GB)
+    cache_max_bytes = int(cache_max_gb * (1024 ** 3))
     cache_prune_target_ratio = _parse_positive_float(
         merged.get("cache_prune_target_ratio"),
         _R2_DEFAULT_CACHE_PRUNE_TARGET_RATIO,
@@ -430,6 +439,8 @@ def reset_config_cache():
     global _TILE_SIZE_DB_CONN
     global _TILE_SIZE_DB_PATH
     global _TILE_SIZE_DB_MODE
+    global _CACHE_RECENT_RESOLVE_PATH_SETS
+    global _CACHE_RUNTIME_PROTECTED_RELATIVE_PATHS
     with _CONFIG_LOCK:
         _CONFIG_CACHE = None
     with _HEAD_CACHE_LOCK:
@@ -449,6 +460,9 @@ def reset_config_cache():
             conn.close()
         except (sqlite3.Error, RuntimeError, TypeError, ValueError, OSError):
             logger.debug("Planetka: failed closing tile-size sqlite connection", exc_info=True)
+    with _CACHE_RECENT_RESOLVES_LOCK:
+        _CACHE_RECENT_RESOLVE_PATH_SETS = []
+        _CACHE_RUNTIME_PROTECTED_RELATIVE_PATHS = set()
     _LAST_CACHE_PRUNE_AT = 0.0
 
 
@@ -472,13 +486,17 @@ def _looks_like_remote_source(base_path):
 
 
 def _get_texture_source_mode():
-    # Local-disk texture source mode is deprecated. Planetka always streams
-    # through Cloudflare/API so users cannot accidentally resolve from stale
-    # local datasets.
+    mode = str(get_unsupported_texture_source_mode() or "CLOUD").strip().upper()
+    if mode == "LOCAL":
+        return "LOCAL"
     return "CLOUDFLARE"
 
 
 def is_remote_source_configured(base_path=None):
+    if _get_texture_source_mode() == "LOCAL":
+        if base_path is not None and _looks_like_remote_source(base_path):
+            return True
+        return False
     if _get_config() is None:
         return False
     if base_path is not None and str(base_path).strip():
@@ -991,7 +1009,7 @@ def _prune_cache_root(cache_root, max_bytes, target_ratio):
                 rel_path = os.path.relpath(path, cache_root).replace("\\", "/")
             except (OSError, RuntimeError, TypeError, ValueError, AttributeError):
                 rel_path = ""
-            if rel_path in _CACHE_PROTECTED_RELATIVE_PATHS:
+            if rel_path in _get_cache_protected_relative_paths():
                 continue
             entries.append((stat.st_mtime, path, size))
 
@@ -1043,6 +1061,117 @@ def _maybe_prune_cache(cfg, force=False):
         _CACHE_PRUNE_LOCK.release()
 
 
+def _get_cache_protected_relative_paths():
+    with _CACHE_RECENT_RESOLVES_LOCK:
+        runtime_paths = set(_CACHE_RUNTIME_PROTECTED_RELATIVE_PATHS)
+    return set(_CACHE_PROTECTED_RELATIVE_PATHS).union(runtime_paths)
+
+
+def _normalize_cache_relative_path(cache_root, file_path):
+    root = str(cache_root or "").strip()
+    path = str(file_path or "").strip()
+    if not root or not path:
+        return ""
+    try:
+        abs_root = os.path.abspath(root)
+        abs_path = os.path.abspath(path)
+    except (OSError, RuntimeError, TypeError, ValueError, AttributeError):
+        return ""
+    if not _is_cache_file_usable(abs_path):
+        return ""
+    try:
+        common = os.path.commonpath([abs_root, abs_path])
+    except (OSError, RuntimeError, TypeError, ValueError, AttributeError):
+        return ""
+    if common != abs_root:
+        return ""
+    try:
+        rel = os.path.relpath(abs_path, abs_root).replace("\\", "/")
+    except (OSError, RuntimeError, TypeError, ValueError, AttributeError):
+        return ""
+    return str(rel or "").strip()
+
+
+def _resolve_paths_to_cache_relpaths(cache_root, resolved_paths):
+    rel_paths = set()
+    values_iter = ()
+    if isinstance(resolved_paths, dict):
+        values_iter = resolved_paths.values()
+    elif isinstance(resolved_paths, (list, tuple, set)):
+        values_iter = resolved_paths
+    for path_value in values_iter:
+        rel = _normalize_cache_relative_path(cache_root, path_value)
+        if rel:
+            rel_paths.add(rel)
+    return rel_paths
+
+
+def _prune_cache_to_allowed_paths(cache_root, allowed_relative_paths):
+    root = str(cache_root or "").strip()
+    if not root:
+        return {"removed_files": 0}
+    allowed = set(str(item or "").strip() for item in (allowed_relative_paths or ()) if str(item or "").strip())
+    removed_files = 0
+    for dir_path, _, file_names in os.walk(root):
+        for file_name in file_names:
+            full_path = os.path.join(dir_path, file_name)
+            try:
+                rel_path = os.path.relpath(full_path, root).replace("\\", "/")
+            except (OSError, RuntimeError, TypeError, ValueError, AttributeError):
+                continue
+            rel_path = str(rel_path or "").strip()
+            if not rel_path:
+                continue
+            rel_parts = rel_path.split("/", 1)
+            if len(rel_parts) != 2:
+                continue
+            rel_folder, rel_file = rel_parts
+            rel_folder = str(rel_folder or "").strip().upper()
+            rel_file = str(rel_file or "").strip()
+            if rel_folder not in {"S2", "EL", "WT", "PO"}:
+                continue
+            if not _TILE_FILE_RE.match(rel_file):
+                continue
+            if rel_path in allowed:
+                continue
+            try:
+                os.remove(full_path)
+                removed_files += 1
+            except (OSError, RuntimeError, TypeError, ValueError, AttributeError):
+                continue
+    return {"removed_files": int(max(0, removed_files))}
+
+
+def retain_recent_resolve_cache(resolved_paths, keep_count=2):
+    cfg = _get_config()
+    if cfg is None:
+        return {"kept_snapshots": 0, "kept_files": 0, "removed_files": 0}
+    safe_keep_count = max(1, int(keep_count or 2))
+    current_set = _resolve_paths_to_cache_relpaths(cfg.cache_root, resolved_paths)
+    with _CACHE_RECENT_RESOLVES_LOCK:
+        global _CACHE_RECENT_RESOLVE_PATH_SETS
+        global _CACHE_RUNTIME_PROTECTED_RELATIVE_PATHS
+        existing = list(_CACHE_RECENT_RESOLVE_PATH_SETS or [])
+        snapshots = [set(current_set)] + [
+            set(item) for item in existing
+            if set(item) != set(current_set)
+        ]
+        snapshots = snapshots[:safe_keep_count]
+        _CACHE_RECENT_RESOLVE_PATH_SETS = snapshots
+        runtime_protected = set()
+        for snap in snapshots:
+            runtime_protected.update(snap)
+        _CACHE_RUNTIME_PROTECTED_RELATIVE_PATHS = runtime_protected
+        allowed = set(_CACHE_PROTECTED_RELATIVE_PATHS).union(runtime_protected)
+
+    removed = _prune_cache_to_allowed_paths(cfg.cache_root, allowed)
+    return {
+        "kept_snapshots": int(len(_CACHE_RECENT_RESOLVE_PATH_SETS)),
+        "kept_files": int(len(allowed)),
+        "removed_files": int(max(0, int(removed.get("removed_files", 0) or 0))),
+    }
+
+
 def _suspend_cache_prune():
     global _CACHE_PRUNE_SUSPEND_COUNT
     with _CACHE_PRUNE_SUSPEND_LOCK:
@@ -1066,33 +1195,67 @@ def _aws_signing_key(secret_key, date_stamp, region, service):
     return _aws_sign(k_service, "aws4_request")
 
 
-def set_resolve_request_context(resolve_id="", texture_quality_mode="", cancel_event=None):
+def set_resolve_request_context(
+    resolve_id="",
+    texture_quality_mode="",
+    cancel_event=None,
+    nav_latitude_deg="",
+    nav_longitude_deg="",
+    nav_altitude_km="",
+):
     global _REQUEST_CONTEXT_RESOLVE_ID
     global _REQUEST_CONTEXT_TEXTURE_MODE
     global _REQUEST_CONTEXT_CANCEL_EVENT
+    global _REQUEST_CONTEXT_NAV_LAT
+    global _REQUEST_CONTEXT_NAV_LON
+    global _REQUEST_CONTEXT_NAV_ALT_KM
     with _REQUEST_CONTEXT_LOCK:
         _REQUEST_CONTEXT_RESOLVE_ID = str(resolve_id or "").strip()[:128]
         safe_mode = str(texture_quality_mode or "").strip().lower()
         if safe_mode == "half":
-            safe_mode = "preview"
+            safe_mode = "balanced"
         elif safe_mode == "full":
             safe_mode = "full"
+        elif safe_mode == "balanced":
+            safe_mode = "balanced"
         elif safe_mode != "preview":
             safe_mode = ""
         _REQUEST_CONTEXT_TEXTURE_MODE = safe_mode
         _REQUEST_CONTEXT_CANCEL_EVENT = cancel_event
+        try:
+            _REQUEST_CONTEXT_NAV_LAT = str(float(nav_latitude_deg)).strip()
+        except (TypeError, ValueError):
+            _REQUEST_CONTEXT_NAV_LAT = ""
+        try:
+            _REQUEST_CONTEXT_NAV_LON = str(float(nav_longitude_deg)).strip()
+        except (TypeError, ValueError):
+            _REQUEST_CONTEXT_NAV_LON = ""
+        try:
+            _REQUEST_CONTEXT_NAV_ALT_KM = str(max(0.0, float(nav_altitude_km))).strip()
+        except (TypeError, ValueError):
+            _REQUEST_CONTEXT_NAV_ALT_KM = ""
 
 
 def clear_resolve_request_context():
-    set_resolve_request_context("", "", cancel_event=None)
+    set_resolve_request_context("", "", cancel_event=None, nav_latitude_deg="", nav_longitude_deg="", nav_altitude_km="")
 
 
 @contextmanager
-def resolve_request_context(resolve_id="", texture_quality_mode="", cancel_event=None):
+def resolve_request_context(
+    resolve_id="",
+    texture_quality_mode="",
+    cancel_event=None,
+    nav_latitude_deg="",
+    nav_longitude_deg="",
+    nav_altitude_km="",
+):
     set_resolve_request_context(
         resolve_id,
         texture_quality_mode=texture_quality_mode,
         cancel_event=cancel_event,
+        nav_latitude_deg=nav_latitude_deg,
+        nav_longitude_deg=nav_longitude_deg,
+        nav_altitude_km=nav_altitude_km,
     )
     try:
         yield
@@ -1123,10 +1286,19 @@ def _signed_headers(cfg, method, key, allow_refresh=True):
     with _REQUEST_CONTEXT_LOCK:
         resolve_id = str(_REQUEST_CONTEXT_RESOLVE_ID or "").strip()
         quality_mode = str(_REQUEST_CONTEXT_TEXTURE_MODE or "").strip().lower()
+        nav_lat = str(_REQUEST_CONTEXT_NAV_LAT or "").strip()
+        nav_lon = str(_REQUEST_CONTEXT_NAV_LON or "").strip()
+        nav_alt = str(_REQUEST_CONTEXT_NAV_ALT_KM or "").strip()
     if resolve_id:
         headers["X-Planetka-Resolve-Id"] = resolve_id
-    if quality_mode in {"full", "preview"}:
+    if quality_mode in {"full", "balanced", "preview"}:
         headers["X-Planetka-Quality-Mode"] = quality_mode
+    if nav_lat:
+        headers["X-Planetka-Nav-Latitude"] = nav_lat
+    if nav_lon:
+        headers["X-Planetka-Nav-Longitude"] = nav_lon
+    if nav_alt:
+        headers["X-Planetka-Nav-Altitude-Km"] = nav_alt
     url = cfg.endpoint.rstrip("/") + "/tiles/" + urllib.parse.quote(key, safe="/-_.~")
     return url, headers
 
@@ -1401,8 +1573,15 @@ def resolve_remote_asset(folder, file_name):
 
 
 def resolve_texture_file(base_path, folder, prefix, filename, extensions):
-    del base_path
     exts = tuple(extensions or (".exr",))
+
+    if not is_remote_source_configured(base_path):
+        for ext in exts:
+            file_name = f"{prefix}_{filename}{ext}"
+            for candidate in _local_candidate_paths(base_path, folder, file_name):
+                if _is_cache_file_usable(candidate):
+                    return candidate
+        return ""
 
     cfg = _get_config()
     if cfg is None:
@@ -1652,10 +1831,15 @@ def prefetch_resolve_downloads(requests, base_path=None, cancel_event=None):
 
 
 def texture_file_exists(base_path, folder, file_name):
-    del base_path
     safe_folder = str(folder or "").strip().strip("/").replace("\\", "/")
     safe_name = os.path.basename(str(file_name or ""))
     if not safe_folder or not safe_name:
+        return False
+
+    if not is_remote_source_configured(base_path):
+        for candidate in _local_candidate_paths(base_path, safe_folder, safe_name):
+            if _is_cache_file_usable(candidate):
+                return True
         return False
 
     cfg = _get_config()

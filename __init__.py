@@ -38,9 +38,11 @@ from .operators import (
     PLANETKA_OT_DeleteSavedLocation,
     PLANETKA_OT_ImportNewData,
     PLANETKA_OT_LoadSavedLocation,
+    PLANETKA_OT_GoToNewZealand,
     PLANETKA_OT_NavigationApplyShot,
     PLANETKA_OT_AutoAdjustClipping,
     PLANETKA_OT_SetBackgroundBlack,
+    PLANETKA_OT_SetTextureQualityAndResolve,
     PLANETKA_OT_NavigationPreset,
     PLANETKA_OT_ResetStartupSetupFactory,
     PLANETKA_OT_SaveStartupSetup,
@@ -82,8 +84,8 @@ from .ui import (
     PLANETKA_PT_LiveTelemetryPanel,
     PLANETKA_PT_LiveTelemetryAdvancedPanel,
     PLANETKA_PT_LiveTelemetryAdvancedPanelCollapsed,
-    PLANETKA_PT_LiveTelemetryPanelCollapsed,
     PLANETKA_PT_LinksPanel,
+    PLANETKA_PT_LinksPanelCollapsed,
     PLANETKA_PT_AnimationPanel,
     PLANETKA_PT_EarthSettingsPanel,
     PLANETKA_PT_EarthSettingsPanelCollapsed,
@@ -103,7 +105,7 @@ from .validation import PLANETKA_OT_ReportBug, PLANETKA_OT_ValidateTextureSource
 bl_info = {
     "name": "Planetka - the Earth",
     "author": "Tomas Griger",
-    "version": (0, 5, 1),
+    "version": (0, 7, 0),
     "blender": (3, 6, 0),
     "location": "View3D > Sidebar > Planetka",
     "description": "Cinematic Earth visualisation system",
@@ -128,9 +130,11 @@ classes = (
     PLANETKA_OT_SaveLocation,
     PLANETKA_OT_LoadSavedLocation,
     PLANETKA_OT_DeleteSavedLocation,
+    PLANETKA_OT_GoToNewZealand,
     PLANETKA_OT_NavigationApplyShot,
     PLANETKA_OT_AutoAdjustClipping,
     PLANETKA_OT_SetBackgroundBlack,
+    PLANETKA_OT_SetTextureQualityAndResolve,
     PLANETKA_OT_UseCurrentViewNavigation,
     PLANETKA_OT_NavigationPreset,
     PLANETKA_OT_SunlightPreset,
@@ -164,7 +168,6 @@ classes = (
     PLANETKA_PT_NewEarthPanelCollapsed,
     PLANETKA_PT_NavigationPanelCollapsed,
     PLANETKA_PT_LiveTelemetryPanel,
-    PLANETKA_PT_LiveTelemetryPanelCollapsed,
     PLANETKA_PT_LiveTelemetryAdvancedPanel,
     PLANETKA_PT_LiveTelemetryAdvancedPanelCollapsed,
     PLANETKA_PT_NavigationPanel,
@@ -176,6 +179,7 @@ classes = (
     PLANETKA_PT_AnimationPanel,
     PLANETKA_PT_SettingsPanel,
     PLANETKA_PT_LinksPanel,
+    PLANETKA_PT_LinksPanelCollapsed,
 )
 _addon_keymaps = []
 
@@ -323,6 +327,11 @@ def register():
     try:
         _planetka_updater.kickoff_background_update_check(force=False)
     except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
+        pass
+    try:
+        from .unsupported import apply_runtime_unsupported_overrides
+        apply_runtime_unsupported_overrides()
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError, ImportError):
         pass
     try:
         bpy.app.timers.register(_tag_view3d_ui_redraw, first_interval=0.05)

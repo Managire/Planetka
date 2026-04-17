@@ -19,6 +19,7 @@ import blf
 from bpy.app.handlers import persistent
 from mathutils import Vector
 
+from .auth import allows_balanced_full_quality_for_context
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from .extension_prefs import get_earth_object, get_prefs
 from .diagnostics import write_realtime_view_diagnostics
@@ -1666,6 +1667,25 @@ def _normalize_texture_quality_mode(value):
     return "PREVIEW"
 
 
+def _enforce_texture_quality_mode_for_account(scene, requested_mode):
+    mode = _normalize_texture_quality_mode(requested_mode)
+    if mode in {"BALANCED", "FULL"}:
+        prefs = get_prefs()
+        props = getattr(scene, "planetka", None) if scene is not None else None
+        if not allows_balanced_full_quality_for_context(
+            prefs,
+            source=props,
+            requested_mode=mode,
+        ):
+            try:
+                if props is not None and getattr(props, "texture_quality_mode", "PREVIEW") != "PREVIEW":
+                    props.texture_quality_mode = "PREVIEW"
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka: failed forcing Preview texture mode for current account context", exc_info=True)
+            return "PREVIEW"
+    return mode
+
+
 def _output_resolution_signature(scene):
     render = getattr(scene, "render", None) if scene is not None else None
     if render is None:
@@ -1673,7 +1693,10 @@ def _output_resolution_signature(scene):
     props = getattr(scene, "planetka", None) if scene is not None else None
     texture_quality_mode = "PREVIEW"
     try:
-        texture_quality_mode = _normalize_texture_quality_mode(getattr(props, "texture_quality_mode", "PREVIEW"))
+        texture_quality_mode = _enforce_texture_quality_mode_for_account(
+            scene,
+            getattr(props, "texture_quality_mode", "PREVIEW"),
+        )
     except (TypeError, ValueError, RuntimeError):
         texture_quality_mode = "PREVIEW"
     try:
@@ -2549,10 +2572,25 @@ def _schedule_auto_resolve_download(
     base_path = str(getattr(prefs, "texture_base_path", "") or "") if prefs else ""
     texture_quality_mode = "PREVIEW"
     try:
-        texture_quality_mode = _normalize_texture_quality_mode(getattr(props, "texture_quality_mode", "PREVIEW"))
+        texture_quality_mode = _enforce_texture_quality_mode_for_account(
+            scene,
+            getattr(props, "texture_quality_mode", "PREVIEW"),
+        )
     except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
         texture_quality_mode = "PREVIEW"
     target_tiles_tuple = tuple(target_tiles or ())
+    try:
+        nav_latitude_deg = float(getattr(props, "nav_latitude_deg", 0.0)) if props is not None else 0.0
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        nav_latitude_deg = 0.0
+    try:
+        nav_longitude_deg = float(getattr(props, "nav_longitude_deg", 0.0)) if props is not None else 0.0
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        nav_longitude_deg = 0.0
+    try:
+        nav_altitude_km = max(0.0, float(getattr(props, "nav_altitude_km", 0.0))) if props is not None else 0.0
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        nav_altitude_km = 0.0
 
     job_to_start = None
     should_arm_timer = False
@@ -2570,6 +2608,9 @@ def _schedule_auto_resolve_download(
             "manual_request": bool(manual_request),
             "base_path": base_path,
             "texture_quality_mode": texture_quality_mode,
+            "nav_latitude_deg": nav_latitude_deg,
+            "nav_longitude_deg": nav_longitude_deg,
+            "nav_altitude_km": nav_altitude_km,
             "cancel_event": threading.Event(),
             "created_at": time.monotonic(),
         }
@@ -2970,6 +3011,9 @@ def _auto_resolve_download_worker(job):
             cancel_event=job.get("cancel_event"),
             capture=True,
             texture_quality_mode=_normalize_texture_quality_mode(job.get("texture_quality_mode", "PREVIEW")),
+            nav_latitude_deg=job.get("nav_latitude_deg", ""),
+            nav_longitude_deg=job.get("nav_longitude_deg", ""),
+            nav_altitude_km=job.get("nav_altitude_km", ""),
         )
         cancelled = (
             bool(prepared_payload.get("cancelled", False))
@@ -3685,6 +3729,16 @@ def _planetka_frame_change_post(scene, _depsgraph=None):
 def _planetka_load_post(_dummy):
     _FRAME_KEYED_RUNTIME_LAST_SIGNATURE.clear()
     _sync_logging_from_scenes()
+    try:
+        module_name = f"{__package__}.unsupported" if __package__ else "unsupported"
+        unsupported_module = importlib.import_module(module_name)
+        apply_fn = getattr(unsupported_module, "apply_runtime_unsupported_overrides", None)
+        if callable(apply_fn):
+            apply_fn()
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed applying unsupported startup overrides", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError, ImportError):
+        logger.debug("Planetka: failed applying unsupported startup overrides", exc_info=True)
     ensure_active_view_monitor_running()
 
 

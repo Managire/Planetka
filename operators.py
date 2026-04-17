@@ -11,6 +11,7 @@ from mathutils import Matrix, Quaternion, Vector
 
 from .auth import (
     AuthApiError,
+    allows_balanced_full_quality_for_context,
     clear_auth_session,
     connect_with_prefs_api_key,
     describe_auth_error,
@@ -19,6 +20,7 @@ from .auth import (
     get_topup_url,
     get_upgrade_url,
     is_authenticated,
+    logout_remote_session,
 )
 from .asset_builder import (
     EARTH_MATERIAL_NAME,
@@ -37,7 +39,11 @@ from .extension_prefs import (
     write_saved_locations,
 )
 from .operator_utils import ErrorCode, fail, require_planetka_props, require_scene
-from .sanity_utils import _normalize_texture_source_path, invalidate_texture_source_health_cache
+from .sanity_utils import (
+    _normalize_texture_source_path,
+    invalidate_texture_source_health_cache,
+    validate_known_good_texture_source,
+)
 from .r2_source import (
     get_download_progress,
     get_persisted_cache_root,
@@ -176,6 +182,9 @@ _SURFACE_GRADING_FACTORY_VALUES = {
     "Waves Density Coefficient": 2.0,
     "Waves Height Coefficient": 0.75,
 }
+
+_LAKE_TEKAPO_LATITUDE_DEG = -44.005
+_LAKE_TEKAPO_LONGITUDE_DEG = 170.477
 
 
 def _profile_value_to_json(value):
@@ -611,8 +620,13 @@ def _validate_create_earth_texture_source(base_path):
     normalized = _normalize_texture_source_path(base_path)
     if is_remote_source_configured(normalized):
         return normalized, ""
-
-    return "", "Local texture directories are disabled. Planetka uses Cloudflare source only."
+    details = validate_known_good_texture_source(normalized)
+    normalized = str(details.get("normalized_path", "") or normalized)
+    issues = list(details.get("issues", ()) or ())
+    for level, _code, message in issues:
+        if str(level).upper() == "ERROR":
+            return "", str(message or "Unsupported local texture source is invalid.")
+    return normalized, ""
 
 
 def _paths_equivalent(path_a, path_b):
@@ -2465,6 +2479,70 @@ class PLANETKA_OT_CheckUpdates(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
+    bl_idname = "planetka.set_texture_quality_and_resolve"
+    bl_label = "Set Texture Quality"
+    bl_description = "Set texture quality mode and run a manual resolve"
+
+    texture_quality_mode: EnumProperty(
+        name="Texture Quality",
+        items=(
+            ("PREVIEW", "Preview", ""),
+            ("BALANCED", "Balanced", ""),
+            ("FULL", "Full Quality", ""),
+        ),
+        default="PREVIEW",
+        options={'HIDDEN', 'SKIP_SAVE'},
+    )
+
+    def execute(self, context):
+        scene = require_scene(self, context, logger=logger)
+        if scene is None:
+            return {'CANCELLED'}
+        props = require_planetka_props(self, context, logger=logger)
+        if props is None:
+            return {'CANCELLED'}
+
+        prefs = get_prefs()
+        if not prefs:
+            return fail(
+                self,
+                "Planetka preferences not available.",
+                code=ErrorCode.RESOLVE_PREFS_MISSING,
+                logger=logger,
+            )
+
+        target_mode = _normalize_startup_texture_quality_mode(getattr(self, "texture_quality_mode", "PREVIEW"))
+
+        if not allows_balanced_full_quality_for_context(
+            prefs=prefs,
+            source=props,
+            requested_mode=target_mode,
+        ):
+            return fail(
+                self,
+                "Selected texture quality is not available for this account/location.",
+                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                logger=logger,
+            )
+
+        try:
+            props.texture_quality_mode = target_mode
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed setting texture quality mode via Data Control", exc_info=True)
+            return fail(
+                self,
+                "Unable to set texture quality mode.",
+                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                logger=logger,
+            )
+
+        result = bpy.ops.planetka.load_textures(skip_render_compatibility=True, defer_download=True)
+        if "FINISHED" not in result:
+            return {'CANCELLED'}
+        return {'FINISHED'}
+
+
 class PLANETKA_OT_AccountCancelLogin(bpy.types.Operator):
     bl_idname = "planetka.account_cancel_login"
     bl_label = "Clear API Key"
@@ -2500,6 +2578,10 @@ class PLANETKA_OT_AccountLogout(bpy.types.Operator):
                 logger=logger,
             )
 
+        try:
+            logout_remote_session(prefs)
+        except Exception:
+            logger.debug("Planetka: remote logout request failed", exc_info=True)
         clear_auth_session(prefs)
         self.report({'INFO'}, "Planetka account disconnected in Blender.")
         return {'FINISHED'}
@@ -2804,7 +2886,7 @@ class PLANETKA_OT_AddEarth(bpy.types.Operator):
         if path_issue:
             self.report(
                 {'ERROR'},
-                "Create Earth requires Planetka Cloudflare source.",
+                "Create Earth texture source is invalid.",
             )
             self.report({'ERROR'}, path_issue)
             return _return_with_selection({'CANCELLED'})
@@ -3151,6 +3233,76 @@ class PLANETKA_OT_UseCurrentViewNavigation(bpy.types.Operator):
             self.report({'INFO'}, "Camera and Navigation fields updated from current view.")
         else:
             self.report({'INFO'}, "Camera is already in current view. Navigation fields synced.")
+        return {'FINISHED'}
+
+
+class PLANETKA_OT_GoToNewZealand(bpy.types.Operator):
+    bl_idname = "planetka.go_to_new_zealand"
+    bl_label = "Go to New Zealand"
+    bl_description = "Move active camera to Lake Tekapo and update Planetka navigation values"
+
+    def execute(self, context):
+        scene = require_scene(self, context, logger=logger)
+        if scene is None:
+            return {'CANCELLED'}
+        props = require_planetka_props(self, context, logger=logger)
+        if props is None:
+            return {'CANCELLED'}
+
+        camera = _pick_scene_camera(scene, context=context)
+        if camera is None or getattr(camera, "type", None) != 'CAMERA':
+            return fail(
+                self,
+                "No active camera found. Select a camera (or add one) and retry.",
+                code=ErrorCode.NAV_PRECHECK_FAILED,
+                logger=logger,
+            )
+
+        try:
+            if getattr(scene, "camera", None) is not camera:
+                scene.camera = camera
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            return fail(
+                self,
+                "Unable to set active scene camera.",
+                code=ErrorCode.NAV_PRECHECK_FAILED,
+                logger=logger,
+            )
+
+        suspend_navigation_shot_updates()
+        try:
+            props.nav_latitude_deg = float(_LAKE_TEKAPO_LATITUDE_DEG)
+            props.nav_longitude_deg = float(_LAKE_TEKAPO_LONGITUDE_DEG)
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            return fail(
+                self,
+                "Failed to update navigation coordinates.",
+                code=ErrorCode.NAV_APPLY_FAILED,
+                logger=logger,
+            )
+        finally:
+            resume_navigation_shot_updates()
+
+        try:
+            _apply_navigation_shot(context, scene, props)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
+            return fail(
+                self,
+                f"Go to New Zealand failed: {exc}",
+                code=ErrorCode.NAV_APPLY_FAILED,
+                logger=logger,
+                exc=exc,
+                log_message="Planetka go_to_new_zealand apply failed",
+            )
+        except (RuntimeError, TypeError, ValueError) as exc:
+            return fail(
+                self,
+                f"Go to New Zealand failed: {exc}",
+                code=ErrorCode.NAV_APPLY_FAILED,
+                logger=logger,
+            )
+
+        self.report({'INFO'}, "Moved camera to Lake Tekapo, New Zealand.")
         return {'FINISHED'}
 
 
