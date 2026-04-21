@@ -300,7 +300,7 @@ def _configure_render(scene, render_engine):
     mode = str(render_engine or "CYCLES").upper()
     if mode == "CYCLES":
         try:
-            bpy.ops.planetka.switch_to_cycles()
+            scene.render.engine = "CYCLES"
         except Exception:
             scene.render.engine = "CYCLES"
         if "CYCLES" not in str(scene.render.engine):

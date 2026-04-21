@@ -11,6 +11,7 @@ import logging
 import importlib
 import math
 import json
+import os
 import threading
 import time
 
@@ -19,7 +20,6 @@ import blf
 from bpy.app.handlers import persistent
 from mathutils import Vector
 
-from .auth import allows_balanced_full_quality_for_context
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from .extension_prefs import get_earth_object, get_prefs
 from .diagnostics import write_realtime_view_diagnostics
@@ -33,6 +33,9 @@ ADD_EARTH_BUTTON_SCALE_Y = 1.2
 REFRESH_BUTTON_SCALE_X = 1.2
 REFRESH_BUTTON_SCALE_Y = 1.6
 REFRESH_BUTTON_ALERT = False
+
+_NAV_FORCE_CAMERA_ONCE_KEY = "planetka_nav_force_camera_once"
+_NAV_SYNC_ACTIVE_VIEW_ONCE_KEY = "planetka_nav_sync_active_view_once"
 
 _IDPROP_SYNCING = False
 _LOGGING_SYNCING = False
@@ -50,7 +53,6 @@ _SYNC_IDPROP_MAP = {
     "local_cloud_texture": "planetka_local_cloud_texture",
     "vdb_cloud_file": "planetka_vdb_cloud_file",
     "auto_resolve": "planetka_auto_resolve",
-    "auto_resolve_active_view": "planetka_auto_resolve_active_view",
     "auto_resolve_idle_sec": "planetka_auto_resolve_idle_sec",
     "nav_longitude_deg": "planetka_nav_longitude_deg",
     "nav_latitude_deg": "planetka_nav_latitude_deg",
@@ -59,6 +61,7 @@ _SYNC_IDPROP_MAP = {
     "nav_tilt_deg": "planetka_nav_tilt_deg",
     "nav_roll_deg": "planetka_nav_roll_deg",
     "nav_focal_length_mm": "planetka_nav_focal_length_mm",
+    "nav_custom_preset_altitude_km": "planetka_nav_custom_preset_altitude_km",
     "nav_city_search": "planetka_nav_city_search",
     "nav_saved_location_name": "planetka_nav_saved_location_name",
     "nav_saved_location_id": "planetka_nav_saved_location_id",
@@ -81,15 +84,16 @@ _SYNC_IDPROP_MAP = {
     "anim_ab_a_location": "planetka_anim_ab_a_location",
     "anim_ab_a_rotation": "planetka_anim_ab_a_rotation",
     "anim_ab_a_valid": "planetka_anim_ab_a_valid",
+    "anim_ab_a_capture_frame": "planetka_anim_ab_a_capture_frame",
+    "anim_ab_a_capture_timecode": "planetka_anim_ab_a_capture_timecode",
     "anim_ab_b_location": "planetka_anim_ab_b_location",
     "anim_ab_b_rotation": "planetka_anim_ab_b_rotation",
     "anim_ab_b_valid": "planetka_anim_ab_b_valid",
+    "anim_ab_b_capture_frame": "planetka_anim_ab_b_capture_frame",
+    "anim_ab_b_capture_timecode": "planetka_anim_ab_b_capture_timecode",
     "texture_quality_mode": "planetka_texture_quality_mode",
-    "render_engine_optimization": "planetka_render_engine_optimization",
     "resolution_bias": "planetka_resolution_bias",
     "lock_resolve_during_animation": "planetka_lock_resolve_during_animation",
-    "r2_cache_max_gb": "planetka_r2_cache_max_gb",
-    "r2_cache_dir": "planetka_r2_cache_dir",
     "debug_logging": "planetka_debug_logging",
 }
 _NAVIGATION_SYNC_IDPROP_MAP = (
@@ -110,6 +114,7 @@ _LEGACY_SCENE_IDPROPS = (
     "planetka_sampling_grid_density",
     "planetka_mesh_expansion",
     "planetka_auto_resolve_interval_sec",
+    "planetka_auto_resolve_active_view",
     "planetka_resolve_scope",
     "planetka_nav_look_offset_km",
     "planetka_nav_keep_facing_anchor",
@@ -120,8 +125,10 @@ _LEGACY_SCENE_IDPROPS = (
     "planetka_nav_look_offset_vertical_km",
     "planetka_anim_prepare_frame_step",
     "planetka_anim_flyby_look_mode",
+    "planetka_render_engine_optimization",
 )
 _TILE_UTILS_MODULE = None
+_STREAMING_UTILS_MODULE = None
 
 AUTO_RESOLVE_RETRY_DELAY_SEC = 0.25
 AUTO_RESOLVE_MIN_INTERVAL_SEC_DEFAULT = 1.0
@@ -129,6 +136,9 @@ AUTO_RESOLVE_IDLE_SEC_DEFAULT = 0.5
 _AUTO_RESOLVE_TIMER_RUNNING = False
 _AUTO_RESOLVE_IN_FLIGHT = False
 _RENDER_JOB_ACTIVE = False
+_RENDER_JOB_EPOCH = 0
+_RENDER_JOB_LAST_ENDED_EPOCH = 0
+_RENDER_JOB_LAST_CANCELLED_EPOCH = 0
 _ACTIVE_VIEW_MONITOR_TIMER_RUNNING = False
 _AUTO_RESOLVE_NEXT_DUE_TIME = {}
 _AUTO_RESOLVE_LAST_CAMERA_SIGNATURE = {}
@@ -147,6 +157,13 @@ _AUTO_RESOLVE_DOWNLOAD_COMPLETED = None
 _AUTO_RESOLVE_DOWNLOAD_REQUEST_COUNTER = 0
 _AUTO_RESOLVE_DOWNLOAD_EPOCH = 0
 _AUTO_RESOLVE_DOWNLOAD_PUMP_INTERVAL_SEC = 0.2
+LAST_RESOLVE_TILE_COUNT_KEY = "planetka_last_manual_resolve_tile_count"
+LAST_RESOLVE_DOWNLOADED_MB_KEY = "planetka_last_manual_resolve_downloaded_mb"
+LAST_RESOLVE_DOWNLOADED_GB_KEY = "planetka_last_manual_resolve_downloaded_gb"
+LAST_RESOLVE_TOTAL_SECONDS_KEY = "planetka_last_manual_resolve_total_seconds"
+RESOLVE_ESTIMATE_FULL_BYTES_KEY = "planetka_resolve_estimate_full_bytes"
+RESOLVE_ESTIMATE_BALANCED_BYTES_KEY = "planetka_resolve_estimate_balanced_bytes"
+RESOLVE_ESTIMATE_PREVIEW_BYTES_KEY = "planetka_resolve_estimate_preview_bytes"
 _ACTIVE_VIEW_MONITOR_LAST_SIGNATURE = {}
 _VIEWPORT_OPT_LAST_SIGNATURE = {}
 _SUNLIGHT_LAST_SIGNATURE = {}
@@ -174,6 +191,7 @@ _NAVIGATION_SHOT_SUSPEND_COUNT = 0
 _NAVIGATION_USER_EDIT_LAST_TOUCH = 0.0
 _NAV_CAMERA_CONTROL_LAST_SIGNATURE = {}
 _NAV_CAMERA_CONTROL_SYNCING = False
+_NAV_CAMERA_CONTROL_SYNC_SUSPEND_COUNT = 0
 _NAV_CAMERA_CONTROL_SYNC_GRACE_SEC = 1.5
 _SUNLIGHT_OBJECT_NAME = "Planetka Sunlight"
 _SURFACE_GRADING_GROUP_NAME = "Planetka Surface Grading Group"
@@ -188,7 +206,12 @@ _STATUS_NOTICE_KEYS = (
     "planetka_status_cache_notice",
 )
 _STATUS_NOTICE_CLEAR_SKIP_KEY = "planetka_status_notice_clear_skip_count"
-_R2_CACHE_SETTINGS_SYNCING = False
+_RECOVERY_FALLBACK_FILES_BY_TYPE = {
+    "S2": "ocean_pixel_final_20.exr",
+    "EL": "black_pixel_20.exr",
+    "WT": "blue_pixel_20.exr",
+    "PO": "black_pixel_20.exr",
+}
 
 _KEYED_RUNTIME_NAV_PROP_PATHS = (
     "planetka.nav_longitude_deg",
@@ -222,6 +245,353 @@ def _get_r2_source():
         except ImportError:
             _R2_SOURCE_MODULE = False
     return _R2_SOURCE_MODULE or None
+
+
+def _infer_planetka_image_type(image):
+    candidates = []
+    if image is not None:
+        candidates.append(str(getattr(image, "name", "") or ""))
+        raw_path = str(getattr(image, "filepath_raw", "") or getattr(image, "filepath", "") or "")
+        if raw_path:
+            candidates.append(os.path.basename(raw_path))
+    for candidate in candidates:
+        prefix = str(candidate).strip().split("_", 1)[0].upper()
+        if prefix in {"S2", "EL", "WT", "PO"}:
+            return prefix
+    return ""
+
+
+def _fallback_image_path_for_type(image_type):
+    kind = str(image_type or "").strip().upper()
+    file_name = _RECOVERY_FALLBACK_FILES_BY_TYPE.get(kind, "")
+    if not file_name:
+        return ""
+    extension_dir = os.path.dirname(os.path.abspath(__file__))
+    fallback_path = os.path.join(extension_dir, "Resources", "Fallback Images", file_name)
+    if not os.path.isfile(fallback_path):
+        return ""
+    return fallback_path
+
+
+def _normalized_abs_fs_path(path_value):
+    raw = str(path_value or "").strip()
+    if not raw:
+        return ""
+    try:
+        absolute = bpy.path.abspath(raw)
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        absolute = raw
+    if not absolute:
+        return ""
+    try:
+        normalized = os.path.normcase(os.path.abspath(str(absolute)))
+    except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
+        return ""
+    return str(normalized)
+
+
+def _path_is_within_root(path_value, root_value):
+    path_norm = _normalized_abs_fs_path(path_value)
+    root_norm = _normalized_abs_fs_path(root_value)
+    if not path_norm or not root_norm:
+        return False
+    try:
+        return os.path.commonpath((path_norm, root_norm)) == root_norm
+    except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
+        return False
+
+
+def _planetka_cache_roots():
+    roots = set()
+    r2_source = _get_r2_source()
+    if r2_source is not None:
+        get_cache_folder = getattr(r2_source, "get_remote_cache_folder", None)
+        if callable(get_cache_folder):
+            try:
+                root = _normalized_abs_fs_path(get_cache_folder(""))
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                root = ""
+            if root:
+                roots.add(root)
+    return tuple(sorted(roots))
+
+
+def _is_planetka_cache_path(path_value):
+    path_norm = _normalized_abs_fs_path(path_value)
+    if not path_norm:
+        return False
+    for cache_root in _planetka_cache_roots():
+        if _path_is_within_root(path_norm, cache_root):
+            return True
+    return "/planetka_cache/" in str(path_norm).replace("\\", "/").lower()
+
+
+def _is_missing_planetka_cache_image(image):
+    if image is None:
+        return False
+    if getattr(image, "packed_file", None) is not None:
+        return False
+    raw_path = str(getattr(image, "filepath_raw", "") or getattr(image, "filepath", "") or "").strip()
+    if not raw_path:
+        return False
+    try:
+        abs_path = bpy.path.abspath(raw_path)
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        return False
+    if not abs_path:
+        return False
+    if not _is_planetka_cache_path(abs_path):
+        return False
+    return not os.path.isfile(abs_path)
+
+
+def _cache_request_from_missing_image(image):
+    if image is None:
+        return None
+    raw_path = str(getattr(image, "filepath_raw", "") or getattr(image, "filepath", "") or "").strip()
+    if not raw_path:
+        return None
+    abs_path = _normalized_abs_fs_path(raw_path)
+    if not abs_path or not _is_planetka_cache_path(abs_path):
+        return None
+    file_name = os.path.basename(abs_path)
+    stem, ext = os.path.splitext(file_name)
+    if not stem or not ext:
+        return None
+
+    prefix, sep, suffix = stem.partition("_")
+    prefix = str(prefix or "").strip().upper()
+    suffix = str(suffix or "").strip()
+    if not sep or not prefix or not suffix:
+        return None
+    if prefix not in {"S2", "EL", "WT", "PO"}:
+        inferred = _infer_planetka_image_type(image)
+        inferred = str(inferred or "").strip().upper()
+        if inferred in {"S2", "EL", "WT", "PO"} and stem.upper().startswith(f"{inferred}_"):
+            prefix = inferred
+            suffix = stem[len(inferred) + 1 :]
+        else:
+            return None
+
+    folder = os.path.basename(os.path.dirname(abs_path)).strip().upper()
+    if folder not in {"S2", "EL", "WT", "PO"}:
+        folder = prefix
+    if folder != prefix:
+        folder = prefix
+
+    return (folder, prefix, suffix, ext)
+
+
+def _rebind_image_to_file(image, file_path):
+    target = _normalized_abs_fs_path(file_path)
+    if image is None or not target or not os.path.isfile(target):
+        return False
+    try:
+        image.source = "FILE"
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed switching image source to FILE during render self-heal", exc_info=True)
+    try:
+        image.filepath_raw = target
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed assigning filepath_raw during render self-heal", exc_info=True)
+    try:
+        image.filepath = target
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed assigning filepath during render self-heal", exc_info=True)
+    try:
+        image.reload()
+        return True
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed reloading image during render self-heal", exc_info=True)
+        return False
+
+
+def _attempt_render_self_heal_for_image(image, base_path, request_cache):
+    request = _cache_request_from_missing_image(image)
+    if request is None:
+        return False
+    folder, prefix, suffix, ext = request
+    cache_key = (str(base_path or ""), folder, prefix, suffix, ext.lower())
+
+    healed_path = str(request_cache.get(cache_key, "") or "").strip()
+    if not healed_path:
+        r2_source = _get_r2_source()
+        if r2_source is None:
+            return False
+        resolve_texture_file = getattr(r2_source, "resolve_texture_file", None)
+        resolve_remote_asset = getattr(r2_source, "resolve_remote_asset", None)
+        if callable(resolve_texture_file):
+            try:
+                healed_path = str(
+                    resolve_texture_file(
+                        base_path,
+                        folder,
+                        prefix,
+                        suffix,
+                        (ext,),
+                    )
+                    or ""
+                ).strip()
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError, OSError):
+                logger.debug("Planetka: resolve_texture_file failed during render self-heal", exc_info=True)
+                healed_path = ""
+        if not healed_path and callable(resolve_remote_asset):
+            try:
+                healed_path = str(
+                    resolve_remote_asset(folder, f"{prefix}_{suffix}{ext}") or ""
+                ).strip()
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError, OSError):
+                logger.debug("Planetka: resolve_remote_asset failed during render self-heal", exc_info=True)
+                healed_path = ""
+        request_cache[cache_key] = healed_path
+
+    if not healed_path:
+        return False
+    return bool(_rebind_image_to_file(image, healed_path))
+
+
+def self_heal_missing_cache_images_for_render(scene=None):
+    _ = scene
+    missing_count = 0
+    healed_count = 0
+    failed_count = 0
+    request_cache = {}
+
+    prefs = get_prefs()
+    base_path = str(getattr(prefs, "texture_base_path", "") or "").strip() if prefs is not None else ""
+
+    for image in list(getattr(bpy.data, "images", ())):
+        if not _is_missing_planetka_cache_image(image):
+            continue
+        missing_count += 1
+        if _attempt_render_self_heal_for_image(image, base_path, request_cache):
+            healed_count += 1
+        else:
+            failed_count += 1
+
+    if healed_count > 0:
+        logger.warning(
+            "Planetka: render self-heal restored %d/%d missing cached tile image(s)%s.",
+            int(healed_count),
+            int(missing_count),
+            f" ({int(failed_count)} failed)" if int(failed_count) > 0 else "",
+        )
+    elif missing_count > 0:
+        logger.warning(
+            "Planetka: render self-heal detected %d missing cached tile image(s), none restored.",
+            int(missing_count),
+        )
+    return int(missing_count), int(healed_count), int(failed_count)
+
+
+def _recover_missing_cache_image_paths_to_fallback():
+    missing_count = 0
+    recovered_count = 0
+    for image in list(getattr(bpy.data, "images", ())):
+        if not _is_missing_planetka_cache_image(image):
+            continue
+        missing_count += 1
+        image_type = _infer_planetka_image_type(image)
+        fallback_path = _fallback_image_path_for_type(image_type)
+        if not fallback_path:
+            continue
+        try:
+            image.source = "FILE"
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed switching image source to FILE during load recovery", exc_info=True)
+        try:
+            image.filepath_raw = fallback_path
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed assigning fallback filepath_raw during load recovery", exc_info=True)
+        try:
+            image.filepath = fallback_path
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed assigning fallback filepath during load recovery", exc_info=True)
+        try:
+            image.reload()
+            recovered_count += 1
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed reloading fallback image during load recovery", exc_info=True)
+    return int(missing_count), int(recovered_count)
+
+
+def _queue_manual_resolve_download_for_scene(scene):
+    if scene is None:
+        return False
+    props = getattr(scene, "planetka", None)
+    if props is None:
+        return False
+    if get_earth_object() is None:
+        return False
+    try:
+        if int(scene.get(ANIMATION_PREPARED_SEGMENTS_KEY, 0) or 0) > 0:
+            return False
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        pass
+
+    wm = getattr(getattr(bpy, "context", None), "window_manager", None)
+    windows = list(getattr(wm, "windows", ()) or ())
+    if not windows:
+        return False
+    window = windows[0]
+    override = None
+    try:
+        override = bpy.context.copy()
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        override = {}
+    if override is None:
+        override = {}
+    override["window"] = window
+    override["screen"] = getattr(window, "screen", None)
+    override["scene"] = scene
+    override["view_layer"] = scene.view_layers[0] if getattr(scene, "view_layers", None) else None
+
+    try:
+        with bpy.context.temp_override(**override):
+            try:
+                result = bpy.ops.planetka.load_textures(
+                    'EXEC_DEFAULT',
+                    scope_mode='CAMERA',
+                    silent=True,
+                    skip_render_compatibility=True,
+                    defer_download=True,
+                )
+            except TypeError:
+                result = bpy.ops.planetka.load_textures(
+                    scope_mode='CAMERA',
+                    silent=True,
+                    skip_render_compatibility=True,
+                    defer_download=True,
+                )
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed queueing load-time recovery resolve", exc_info=True)
+        return False
+    return bool("FINISHED" in result or "RUNNING_MODAL" in result)
+
+
+def _schedule_load_recovery_resolve(scene):
+    target_scene_name = str(getattr(scene, "name", "") or "").strip()
+    if not target_scene_name:
+        return
+    attempts_remaining = {"count": 25}
+
+    def _attempt_recovery():
+        scene_ref = bpy.data.scenes.get(target_scene_name)
+        if scene_ref is None:
+            return None
+        if _queue_manual_resolve_download_for_scene(scene_ref):
+            logger.info("Planetka: queued recovery resolve after opening scene '%s'.", target_scene_name)
+            return None
+        attempts_remaining["count"] = int(attempts_remaining.get("count", 0)) - 1
+        if attempts_remaining["count"] <= 0:
+            logger.warning("Planetka: could not queue recovery resolve for scene '%s'.", target_scene_name)
+            return None
+        return 0.25
+
+    try:
+        bpy.app.timers.register(_attempt_recovery, first_interval=0.15, persistent=False)
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed scheduling load-time recovery resolve", exc_info=True)
 
 
 def _resolve_trace(message):
@@ -336,6 +706,17 @@ def _get_tile_utils():
         except ImportError:
             _TILE_UTILS_MODULE = False
     return _TILE_UTILS_MODULE or None
+
+
+def _get_streaming_utils():
+    global _STREAMING_UTILS_MODULE
+    if _STREAMING_UTILS_MODULE is None:
+        module_name = f"{__package__}.streaming_utils" if __package__ else "streaming_utils"
+        try:
+            _STREAMING_UTILS_MODULE = importlib.import_module(module_name)
+        except ImportError:
+            _STREAMING_UTILS_MODULE = False
+    return _STREAMING_UTILS_MODULE or None
 
 
 def _get_coverage_map():
@@ -456,181 +837,6 @@ def update_debug_logging(self, context):
     scene = getattr(context, "scene", None) if context else None
     if scene:
         _sync_idprops_from_props(scene, ("debug_logging",))
-
-
-def update_r2_cache_settings(self, context):
-    global _R2_CACHE_SETTINGS_SYNCING
-    if _R2_CACHE_SETTINGS_SYNCING:
-        return
-
-    scene = getattr(context, "scene", None) if context else None
-    requested_cache_dir = str(getattr(self, "r2_cache_dir", "") or "").strip()
-    resolved_cache_dir = requested_cache_dir
-
-    module_name = f"{__package__}.r2_source" if __package__ else "r2_source"
-    r2_source_module = None
-    try:
-        r2_source_module = importlib.import_module(module_name)
-        validate_cache_root_fn = getattr(r2_source_module, "validate_cache_root_for_write", None)
-        if callable(validate_cache_root_fn):
-            valid, normalized_cache_dir, reason = validate_cache_root_fn(requested_cache_dir)
-            if not valid:
-                fallback_dir = ""
-                if scene is not None:
-                    try:
-                        fallback_dir = str(scene.get("planetka_r2_cache_dir", "") or "").strip()
-                    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-                        fallback_dir = ""
-                if not fallback_dir:
-                    persisted_cache_root_fn = getattr(r2_source_module, "get_persisted_cache_root", None)
-                    if callable(persisted_cache_root_fn):
-                        try:
-                            fallback_dir = str(persisted_cache_root_fn() or "").strip()
-                        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-                            fallback_dir = ""
-                try:
-                    _R2_CACHE_SETTINGS_SYNCING = True
-                    setattr(self, "r2_cache_dir", fallback_dir)
-                finally:
-                    _R2_CACHE_SETTINGS_SYNCING = False
-                if scene is not None:
-                    try:
-                        scene["planetka_status_cache_notice"] = (
-                            "Cache folder is not writable. Previous cache folder kept."
-                        )
-                        scene[_STATUS_NOTICE_CLEAR_SKIP_KEY] = 1
-                    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-                        pass
-                logger.warning(
-                    "Planetka: rejected cache folder update (path=%s reason=%s)",
-                    str(requested_cache_dir),
-                    str(reason or "not writable"),
-                )
-                return
-            resolved_cache_dir = str(normalized_cache_dir or "").strip()
-            if resolved_cache_dir != requested_cache_dir:
-                try:
-                    _R2_CACHE_SETTINGS_SYNCING = True
-                    setattr(self, "r2_cache_dir", resolved_cache_dir)
-                finally:
-                    _R2_CACHE_SETTINGS_SYNCING = False
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed validating cache folder", exc_info=True)
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed validating cache folder", exc_info=True)
-
-    if scene:
-        _sync_idprops_from_props(scene, ("r2_cache_max_gb", "r2_cache_dir"))
-
-    try:
-        if r2_source_module is None:
-            r2_source_module = importlib.import_module(module_name)
-        persist_cache_root_fn = getattr(r2_source_module, "set_persisted_cache_root", None)
-        if callable(persist_cache_root_fn):
-            cache_dir = str(resolved_cache_dir or "")
-            persist_cache_root_fn(cache_dir)
-        apply_fn = getattr(r2_source_module, "on_cache_settings_updated", None)
-        if callable(apply_fn):
-            apply_fn(force_prune=True)
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed applying R2 cache settings", exc_info=True)
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed applying R2 cache settings", exc_info=True)
-
-    if scene:
-        operators_module_name = f"{__package__}.operators" if __package__ else "operators"
-        try:
-            operators_module = importlib.import_module(operators_module_name)
-            persist_startup_fn = getattr(operators_module, "persist_cache_dir_in_startup_profile", None)
-            if callable(persist_startup_fn):
-                persist_startup_fn(scene, str(resolved_cache_dir or "").strip())
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed persisting cache folder into startup profile", exc_info=True)
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka: failed persisting cache folder into startup profile", exc_info=True)
-
-
-def _set_enum_property_safe(owner, prop_name, preferred_identifiers):
-    if owner is None or not hasattr(owner, prop_name):
-        return False
-
-    available = set()
-    try:
-        prop_def = owner.bl_rna.properties.get(prop_name)
-        if prop_def and hasattr(prop_def, "enum_items"):
-            available = {item.identifier for item in prop_def.enum_items}
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        available = set()
-    except (AttributeError, RuntimeError, TypeError, ValueError):
-        available = set()
-
-    for identifier in preferred_identifiers:
-        if available and identifier not in available:
-            continue
-        try:
-            setattr(owner, prop_name, identifier)
-            current = str(getattr(owner, prop_name, ""))
-            if current == str(identifier):
-                return True
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            continue
-        except (AttributeError, RuntimeError, TypeError, ValueError):
-            continue
-    return False
-
-
-def _set_float_property_safe(owner, prop_name, value):
-    if owner is None or not hasattr(owner, prop_name):
-        return False
-    try:
-        setattr(owner, prop_name, float(value))
-        return True
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        return False
-    except (AttributeError, RuntimeError, TypeError, ValueError):
-        return False
-
-
-def _set_int_property_safe(owner, prop_name, value):
-    if owner is None or not hasattr(owner, prop_name):
-        return False
-    try:
-        setattr(owner, prop_name, int(value))
-        return True
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        return False
-    except (AttributeError, RuntimeError, TypeError, ValueError):
-        return False
-
-
-def _set_bool_property_safe(owner, prop_name, value):
-    if owner is None or not hasattr(owner, prop_name):
-        return False
-    try:
-        setattr(owner, prop_name, bool(value))
-        return True
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        return False
-    except (AttributeError, RuntimeError, TypeError, ValueError):
-        return False
-
-
-def _set_eevee_supplement_visibility(enabled):
-    module_name = f"{__package__}.asset_builder" if __package__ else "asset_builder"
-    object_name = "Atmosphere - EEVEE supplement"
-    try:
-        asset_builder_module = importlib.import_module(module_name)
-        object_name = str(getattr(asset_builder_module, "FAKE_ATMOSPHERE_OBJECT_NAME", object_name))
-    except ImportError:
-        pass
-
-    obj = bpy.data.objects.get(object_name)
-    if obj is None:
-        return
-
-    hidden = not bool(enabled)
-    _set_bool_property_safe(obj, "hide_viewport", hidden)
-    _set_bool_property_safe(obj, "hide_render", hidden)
 
 
 def _set_atmosphere_collection_enabled(scene, enabled):
@@ -851,167 +1057,6 @@ def purge_disabled_atmosphere_and_cloud_assets(scene=None):
     }
 
 
-def _render_engine_candidates(render, target):
-    if render is None:
-        return tuple()
-
-    enum_ids = []
-    try:
-        prop_def = render.bl_rna.properties.get("engine")
-        if prop_def and hasattr(prop_def, "enum_items"):
-            enum_ids = [str(item.identifier) for item in prop_def.enum_items]
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        enum_ids = []
-    except (AttributeError, RuntimeError, TypeError, ValueError):
-        enum_ids = []
-
-    target_upper = str(target or "").upper()
-    preferred = []
-    if target_upper == "CYCLES":
-        preferred.extend(("CYCLES", "BLENDER_CYCLES"))
-    else:
-        preferred.extend(("BLENDER_EEVEE", "BLENDER_EEVEE_NEXT", "EEVEE"))
-
-    for identifier in enum_ids:
-        ident_upper = identifier.upper()
-        if target_upper == "CYCLES" and "CYCLES" in ident_upper:
-            preferred.append(identifier)
-        if target_upper == "EEVEE" and "EEVEE" in ident_upper:
-            preferred.append(identifier)
-
-    ordered = []
-    seen = set()
-    for identifier in preferred:
-        if not identifier or identifier in seen:
-            continue
-        seen.add(identifier)
-        ordered.append(identifier)
-    return tuple(ordered)
-
-
-def _try_enable_cycles_addon():
-    for module_name in ("cycles", "bl_ext.blender_org.cycles"):
-        try:
-            result = bpy.ops.preferences.addon_enable(module=module_name)
-            if "FINISHED" in result:
-                return True
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            continue
-        except (AttributeError, RuntimeError, TypeError, ValueError):
-            continue
-    return False
-
-
-def _set_render_engine_via_context_enum(scene, candidates):
-    if scene is None:
-        return False
-
-    render = getattr(scene, "render", None)
-    if render is None:
-        return False
-
-    context_scene = getattr(bpy.context, "scene", None)
-    if context_scene is not scene:
-        return False
-
-    for identifier in candidates:
-        try:
-            result = bpy.ops.wm.context_set_enum(
-                data_path="scene.render.engine",
-                value=str(identifier),
-            )
-            if "FINISHED" not in result:
-                continue
-            current = str(getattr(render, "engine", ""))
-            if current == str(identifier):
-                return True
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            continue
-        except (AttributeError, RuntimeError, TypeError, ValueError):
-            continue
-    return False
-
-
-def _set_render_engine(scene, target):
-    render = getattr(scene, "render", None) if scene else None
-    if render is None:
-        return False
-
-    candidates = _render_engine_candidates(render, target)
-    if _set_enum_property_safe(render, "engine", candidates):
-        return True
-    if _set_render_engine_via_context_enum(scene, candidates):
-        return True
-
-    if str(target or "").upper() != "CYCLES":
-        return False
-    if not _try_enable_cycles_addon():
-        return False
-
-    candidates = _render_engine_candidates(render, target)
-    if _set_enum_property_safe(render, "engine", candidates):
-        return True
-    return _set_render_engine_via_context_enum(scene, candidates)
-
-
-def apply_renderer_engine_optimization(scene, optimization_mode):
-    if scene is None:
-        return
-
-    mode = str(optimization_mode or "EEVEE").upper()
-    render = getattr(scene, "render", None)
-    cycles = getattr(scene, "cycles", None)
-    eevee = getattr(scene, "eevee", None)
-
-    if mode == "CYCLES":
-        _set_render_engine(scene, "CYCLES")
-        _set_bool_property_safe(cycles, "volume_biased", True)
-        _set_int_property_safe(cycles, "volume_max_steps", 16)
-        _set_float_property_safe(cycles, "dicing_rate", 1.25)
-        _set_float_property_safe(cycles, "preview_dicing_rate", 2.0)
-        _set_float_property_safe(cycles, "offscreen_dicing_scale", 8.0)
-        _set_eevee_supplement_visibility(enabled=False)
-        return
-
-    _set_render_engine(scene, "EEVEE")
-    _set_enum_property_safe(eevee, "volumetric_tile_size", ("2", "HALF", "1:2"))
-    _set_float_property_safe(eevee, "volumetric_sample_distribution", 0.0)
-    _set_eevee_supplement_visibility(enabled=True)
-
-
-def apply_renderer_engine_optimization_for_all_preserve_current(scene):
-    if scene is None:
-        return
-
-    render = getattr(scene, "render", None)
-    current_engine = str(getattr(render, "engine", "") or "")
-    current_upper = current_engine.upper()
-
-    apply_renderer_engine_optimization(scene, "EEVEE")
-    apply_renderer_engine_optimization(scene, "CYCLES")
-
-    if "CYCLES" in current_upper:
-        apply_renderer_engine_optimization(scene, "CYCLES")
-        return
-    if "EEVEE" in current_upper:
-        apply_renderer_engine_optimization(scene, "EEVEE")
-        return
-
-    _set_enum_property_safe(render, "engine", (current_engine,))
-
-
-def update_renderer_engine_optimization(self, context):
-    scene = getattr(context, "scene", None) if context else None
-    if scene:
-        _sync_idprops_from_props(scene, ("render_engine_optimization",))
-        apply_renderer_engine_optimization(
-            scene,
-            getattr(self, "render_engine_optimization", "EEVEE"),
-        )
-        _mark_auto_resolve_dirty(scene, immediate=True, force_resolve=True)
-        request_auto_resolve(scene, immediate=True, mark_dirty=False)
-
-
 def _remove_preview_assets():
     preview_obj = bpy.data.objects.get("Planetka Preview Object")
     if preview_obj is not None:
@@ -1094,7 +1139,28 @@ def _apply_navigation_shot_now():
         return False
     _NAVIGATION_SHOT_UPDATE_REENTRANT = True
     try:
-        result = bpy.ops.planetka.navigation_apply_shot(silent=True)
+        force_camera_view = True
+        sync_active_view_when_not_camera = False
+        context = getattr(bpy, "context", None)
+        scene = getattr(context, "scene", None) if context else None
+        if scene is not None:
+            try:
+                if _NAV_FORCE_CAMERA_ONCE_KEY in scene:
+                    force_camera_view = bool(scene.get(_NAV_FORCE_CAMERA_ONCE_KEY, True))
+                    del scene[_NAV_FORCE_CAMERA_ONCE_KEY]
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka: failed reading one-shot nav force-camera override", exc_info=True)
+            try:
+                if _NAV_SYNC_ACTIVE_VIEW_ONCE_KEY in scene:
+                    sync_active_view_when_not_camera = bool(scene.get(_NAV_SYNC_ACTIVE_VIEW_ONCE_KEY, False))
+                    del scene[_NAV_SYNC_ACTIVE_VIEW_ONCE_KEY]
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka: failed reading one-shot nav sync-active-view override", exc_info=True)
+        result = bpy.ops.planetka.navigation_apply_shot(
+            silent=True,
+            force_camera_view=force_camera_view,
+            sync_active_view_when_not_camera=sync_active_view_when_not_camera,
+        )
         return "FINISHED" in result
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: immediate navigation shot update failed", exc_info=True)
@@ -1104,6 +1170,21 @@ def _apply_navigation_shot_now():
         return False
     finally:
         _NAVIGATION_SHOT_UPDATE_REENTRANT = False
+
+
+def request_next_navigation_apply_behavior(scene, *, force_camera_view=None, sync_active_view_when_not_camera=None):
+    if scene is None:
+        return
+    if force_camera_view is not None:
+        try:
+            scene[_NAV_FORCE_CAMERA_ONCE_KEY] = bool(force_camera_view)
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed storing one-shot nav force-camera override", exc_info=True)
+    if sync_active_view_when_not_camera is not None:
+        try:
+            scene[_NAV_SYNC_ACTIVE_VIEW_ONCE_KEY] = bool(sync_active_view_when_not_camera)
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed storing one-shot nav sync-active-view override", exc_info=True)
 
 
 def _resolve_navigation_adaptive_modifier():
@@ -1239,6 +1320,38 @@ def suspend_navigation_shot_updates():
 def resume_navigation_shot_updates():
     global _NAVIGATION_SHOT_SUSPEND_COUNT
     _NAVIGATION_SHOT_SUSPEND_COUNT = max(0, int(_NAVIGATION_SHOT_SUSPEND_COUNT) - 1)
+
+
+def suspend_navigation_camera_control_sync():
+    global _NAV_CAMERA_CONTROL_SYNC_SUSPEND_COUNT
+    _NAV_CAMERA_CONTROL_SYNC_SUSPEND_COUNT += 1
+
+
+def resume_navigation_camera_control_sync():
+    global _NAV_CAMERA_CONTROL_SYNC_SUSPEND_COUNT
+    _NAV_CAMERA_CONTROL_SYNC_SUSPEND_COUNT = max(0, int(_NAV_CAMERA_CONTROL_SYNC_SUSPEND_COUNT) - 1)
+
+
+def is_navigation_or_camera_sync_suspended():
+    return bool(
+        _NAVIGATION_SHOT_SUSPEND_COUNT > 0
+        or _NAV_CAMERA_CONTROL_SYNCING
+        or int(_NAV_CAMERA_CONTROL_SYNC_SUSPEND_COUNT) > 0
+    )
+
+
+def mark_navigation_camera_control_signature(scene=None):
+    target_scene = scene
+    if target_scene is None:
+        target_scene = getattr(getattr(bpy, "context", None), "scene", None)
+    if target_scene is None:
+        return
+    scene_id = _scene_key(target_scene)
+    signature = _camera_control_sync_signature(target_scene)
+    if signature is None:
+        _NAV_CAMERA_CONTROL_LAST_SIGNATURE.pop(scene_id, None)
+        return
+    _NAV_CAMERA_CONTROL_LAST_SIGNATURE[scene_id] = signature
 
 
 def _get_planetka_sunlight_object():
@@ -1585,6 +1698,11 @@ def _sync_navigation_controls_from_scene_camera(scene):
     if signature is None:
         _NAV_CAMERA_CONTROL_LAST_SIGNATURE.pop(scene_id, None)
         return
+    if int(_NAV_CAMERA_CONTROL_SYNC_SUSPEND_COUNT) > 0:
+        # During scripted camera-keyframe edits (for example animation preset updates),
+        # keep navigation controls frozen and consume signature deltas.
+        _NAV_CAMERA_CONTROL_LAST_SIGNATURE[scene_id] = signature
+        return
     if _NAV_CAMERA_CONTROL_LAST_SIGNATURE.get(scene_id) == signature:
         return
 
@@ -1668,22 +1786,8 @@ def _normalize_texture_quality_mode(value):
 
 
 def _enforce_texture_quality_mode_for_account(scene, requested_mode):
-    mode = _normalize_texture_quality_mode(requested_mode)
-    if mode in {"BALANCED", "FULL"}:
-        prefs = get_prefs()
-        props = getattr(scene, "planetka", None) if scene is not None else None
-        if not allows_balanced_full_quality_for_context(
-            prefs,
-            source=props,
-            requested_mode=mode,
-        ):
-            try:
-                if props is not None and getattr(props, "texture_quality_mode", "PREVIEW") != "PREVIEW":
-                    props.texture_quality_mode = "PREVIEW"
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-                logger.debug("Planetka: failed forcing Preview texture mode for current account context", exc_info=True)
-            return "PREVIEW"
-    return mode
+    del scene
+    return _normalize_texture_quality_mode(requested_mode)
 
 
 def _output_resolution_signature(scene):
@@ -1719,16 +1823,9 @@ def _current_view_scope(scene):
     return "NONE"
 
 
-def _run_auto_resolve_in_active_view(scene):
-    props = getattr(scene, "planetka", None) if scene is not None else None
-    if props is None:
-        return False
-    return bool(getattr(props, "auto_resolve_active_view", False))
-
-
 def _auto_resolve_scope_mode(scene):
     current_scope = _current_view_scope(scene)
-    if current_scope == "ACTIVE_VIEW" and _run_auto_resolve_in_active_view(scene):
+    if current_scope == "ACTIVE_VIEW":
         return "ACTIVE_VIEW"
     if getattr(scene, "camera", None) is not None:
         return "CAMERA"
@@ -1997,8 +2094,6 @@ def _handle_view_scope_quality_transition(scene):
 
     if previous_scope != "ACTIVE_VIEW" or current_scope != "CAMERA":
         return
-    if not _run_auto_resolve_in_active_view(scene):
-        return
     if not bool(getattr(props, "auto_resolve", False)):
         return
     if _AUTO_RESOLVE_IN_FLIGHT:
@@ -2259,7 +2354,7 @@ def _update_download_overlay_indicator(scene=None):
                     downloaded_mb = None
                     total_mb = None
         if downloaded_mb is not None and total_mb is not None and total_mb > 0.0:
-            _set_download_overlay(f"Planetka: Downloading data {downloaded_mb:.1f} / {total_mb:.1f} MB")
+            _set_download_overlay(f"Planetka: Downloading data {downloaded_mb:.2f} / {total_mb:.2f} MB")
             return
         _set_download_overlay("Planetka: Downloading data...")
         return
@@ -2424,6 +2519,175 @@ def _canonical_tiles(tiles):
     if not isinstance(tiles, (list, tuple)):
         return tuple()
     return tuple(sorted(str(tile) for tile in tiles if tile))
+
+
+def _clear_resolve_size_estimates(scene):
+    if scene is None:
+        return
+    for key in (
+        RESOLVE_ESTIMATE_FULL_BYTES_KEY,
+        RESOLVE_ESTIMATE_BALANCED_BYTES_KEY,
+        RESOLVE_ESTIMATE_PREVIEW_BYTES_KEY,
+    ):
+        try:
+            if key in scene:
+                del scene[key]
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed clearing resolve-size estimate key '%s'", key, exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed clearing resolve-size estimate key '%s'", key, exc_info=True)
+
+
+def _estimate_download_bytes_for_visible_tiles(tiles, base_path, texture_quality_mode="PREVIEW"):
+    safe_tiles = _canonical_tiles(tiles)
+    if not safe_tiles:
+        return 0
+    streaming_utils = _get_streaming_utils()
+    if streaming_utils is None:
+        return 0
+    estimate_fn = getattr(streaming_utils, "estimate_remote_download_bytes_for_visible_tiles", None)
+    if not callable(estimate_fn):
+        return 0
+    normalized_mode = _normalize_texture_quality_mode(texture_quality_mode)
+    try:
+        estimate = estimate_fn(
+            safe_tiles,
+            str(base_path or ""),
+            allow_remote_probe=True,
+            texture_quality_mode=normalized_mode,
+        )
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: resolve-size estimate failed", exc_info=True)
+        return 0
+    except TypeError:
+        # Backward compatibility for older function signatures.
+        try:
+            estimate = estimate_fn(
+                safe_tiles,
+                str(base_path or ""),
+                allow_remote_probe=True,
+            )
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: resolve-size estimate failed", exc_info=True)
+            return 0
+        except TypeError:
+            try:
+                estimate = estimate_fn(safe_tiles, str(base_path or ""))
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka: resolve-size estimate failed", exc_info=True)
+                return 0
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka: resolve-size estimate failed", exc_info=True)
+                return 0
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: resolve-size estimate failed", exc_info=True)
+            return 0
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: resolve-size estimate failed", exc_info=True)
+        return 0
+    if not isinstance(estimate, dict):
+        return 0
+    try:
+        return int(max(0, int(estimate.get("planned_total_bytes", 0) or 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def update_resolve_size_estimates(scene, scope_mode="CAMERA", base_path="", full_tiles_override=None):
+    if scene is None:
+        return False
+    tile_utils = _get_tile_utils()
+    if tile_utils is None:
+        _clear_resolve_size_estimates(scene)
+        return False
+
+    scope_token = str(scope_mode or "CAMERA").strip().upper()
+    if scope_token not in {"CAMERA", "ACTIVE_VIEW", "AUTO"}:
+        scope_token = "CAMERA"
+
+    def _compute_mode_tiles(mode, override_tiles=None):
+        normalized_mode = _normalize_texture_quality_mode(mode)
+        if override_tiles is not None:
+            return _canonical_tiles(override_tiles)
+        try:
+            return _canonical_tiles(
+                tile_utils.main(
+                    scope_mode=scope_token,
+                    texture_quality_mode_override=normalized_mode,
+                )
+            )
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug(
+                "Planetka: failed computing %s tiles for resolve-size estimate",
+                normalized_mode,
+                exc_info=True,
+            )
+            return None
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug(
+                "Planetka: failed computing %s tiles for resolve-size estimate",
+                normalized_mode,
+                exc_info=True,
+            )
+            return None
+
+    full_tiles = _compute_mode_tiles("FULL", override_tiles=full_tiles_override)
+    balanced_tiles = _compute_mode_tiles("BALANCED")
+    preview_tiles = _compute_mode_tiles("PREVIEW")
+
+    if full_tiles is None or balanced_tiles is None or preview_tiles is None:
+        _clear_resolve_size_estimates(scene)
+        return False
+
+    full_bytes = _estimate_download_bytes_for_visible_tiles(
+        full_tiles,
+        base_path,
+        texture_quality_mode="FULL",
+    )
+    balanced_bytes = _estimate_download_bytes_for_visible_tiles(
+        balanced_tiles,
+        base_path,
+        texture_quality_mode="BALANCED",
+    )
+    preview_bytes = _estimate_download_bytes_for_visible_tiles(
+        preview_tiles,
+        base_path,
+        texture_quality_mode="PREVIEW",
+    )
+
+    try:
+        scene[RESOLVE_ESTIMATE_FULL_BYTES_KEY] = int(max(0, int(full_bytes)))
+        scene[RESOLVE_ESTIMATE_BALANCED_BYTES_KEY] = int(max(0, int(balanced_bytes)))
+        scene[RESOLVE_ESTIMATE_PREVIEW_BYTES_KEY] = int(max(0, int(preview_bytes)))
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed storing resolve-size estimates", exc_info=True)
+        return False
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed storing resolve-size estimates", exc_info=True)
+        return False
+    return True
+
+
+def get_resolve_size_estimates(scene=None):
+    target_scene = scene if scene is not None else getattr(getattr(bpy, "context", None), "scene", None)
+    if target_scene is None:
+        return {"FULL": None, "BALANCED": None, "PREVIEW": None}
+
+    def _read_int(key):
+        try:
+            if key not in target_scene:
+                return None
+            return int(max(0, int(target_scene.get(key, 0) or 0)))
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            return None
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            return None
+
+    return {
+        "FULL": _read_int(RESOLVE_ESTIMATE_FULL_BYTES_KEY),
+        "BALANCED": _read_int(RESOLVE_ESTIMATE_BALANCED_BYTES_KEY),
+        "PREVIEW": _read_int(RESOLVE_ESTIMATE_PREVIEW_BYTES_KEY),
+    }
 
 
 def _last_resolved_tiles(scene):
@@ -2704,6 +2968,25 @@ def _read_scene_last_resolve_error(scene):
         return ""
 
 
+def _write_last_resolve_summary(scene, tile_count, summary_total_bytes, total_seconds):
+    if scene is None:
+        return
+    try:
+        scene[LAST_RESOLVE_TILE_COUNT_KEY] = int(max(0, int(tile_count)))
+        scene[LAST_RESOLVE_DOWNLOADED_MB_KEY] = float(
+            max(0.0, float(summary_total_bytes) / float(1024.0 ** 2))
+        )
+        # Keep legacy key updated for backward compatibility with older UI builds.
+        scene[LAST_RESOLVE_DOWNLOADED_GB_KEY] = float(
+            max(0.0, float(summary_total_bytes) / float(1024.0 ** 3))
+        )
+        scene[LAST_RESOLVE_TOTAL_SECONDS_KEY] = float(max(0.0, float(total_seconds)))
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed storing queued/auto resolve summary", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed storing queued/auto resolve summary", exc_info=True)
+
+
 def _is_non_retryable_resolve_error(message):
     text = str(message or "").strip().lower()
     if not text:
@@ -2880,6 +3163,9 @@ def _handle_auto_resolve_download_complete(result):
             "skip_render_compatibility": True,
             "defer_download": False,
             "tiles_override_json": json.dumps(list(job_target_tiles)),
+            "texture_quality_mode_override": _normalize_texture_quality_mode(
+                job.get("texture_quality_mode", "PREVIEW")
+            ),
         }
         context_scene = getattr(bpy.context, "scene", None)
         if context_scene is scene or not hasattr(bpy.context, "temp_override"):
@@ -2943,6 +3229,41 @@ def _handle_auto_resolve_download_complete(result):
         _AUTO_RESOLVE_IN_FLIGHT = False
 
     resolved_at = time.monotonic()
+    summary_total_bytes = 0
+    try:
+        summary_total_bytes = int(
+            max(
+                0,
+                int(
+                    _estimate_download_bytes_for_visible_tiles(
+                        job_target_tiles,
+                        str(job.get("base_path", "") or ""),
+                        texture_quality_mode=_normalize_texture_quality_mode(
+                            job.get("texture_quality_mode", "PREVIEW")
+                        ),
+                    )
+                    or 0
+                ),
+            )
+        )
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        summary_total_bytes = 0
+    if summary_total_bytes <= 0:
+        downloaded_bytes = 0
+        capture = result.get("download_capture", {}) if isinstance(result, dict) else {}
+        if isinstance(capture, dict):
+            try:
+                downloaded_bytes = int(capture.get("downloaded_bytes", 0) or 0)
+            except (TypeError, ValueError):
+                downloaded_bytes = 0
+        summary_total_bytes = int(max(0, int(downloaded_bytes)))
+    try:
+        created_at = float(job.get("created_at", resolved_at) or resolved_at)
+    except (TypeError, ValueError):
+        created_at = resolved_at
+    total_seconds = max(0.0, float(resolved_at) - float(created_at))
+    _write_last_resolve_summary(scene, len(job_target_tiles), summary_total_bytes, total_seconds)
+
     scene_id = _scene_key(scene)
     _AUTO_RESOLVE_LAST_RESOLVE_TIME[scene_id] = resolved_at
     _AUTO_RESOLVE_LAST_CHANGE_TIME[scene_id] = resolved_at
@@ -3232,7 +3553,6 @@ def update_auto_resolve(self, context):
                 "viewport_opt_subdivision_restore_delay_sec",
                 "viewport_opt_active_view_coarse_textures",
                 "auto_resolve",
-                "auto_resolve_active_view",
                 "auto_resolve_idle_sec",
                 "texture_quality_mode",
                 "resolution_bias",
@@ -3343,6 +3663,23 @@ def _auto_resolve_tick_once():
         logger.debug("Planetka auto-resolve: unexpected tile computation failure", exc_info=True)
         return AUTO_RESOLVE_RETRY_DELAY_SEC
 
+    estimation_scope = "ACTIVE_VIEW" if (scope == "ACTIVE_VIEW" and active_view_signature is not None) else "CAMERA"
+    base_path_for_estimate = ""
+    try:
+        prefs = get_prefs()
+        if prefs is not None:
+            base_path_for_estimate = str(getattr(prefs, "texture_base_path", "") or "")
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        base_path_for_estimate = ""
+    current_quality_mode = _normalize_texture_quality_mode(getattr(props, "texture_quality_mode", "PREVIEW"))
+    full_tiles_override = target_tiles if current_quality_mode == "FULL" else None
+    update_resolve_size_estimates(
+        scene,
+        scope_mode=estimation_scope,
+        base_path=base_path_for_estimate,
+        full_tiles_override=full_tiles_override,
+    )
+
     if target_tiles == _last_resolved_tiles(scene) and not pending_output_change:
         _AUTO_RESOLVE_LAST_PROCESSED_SIGNATURE[scene_id] = resolve_signature
         _AUTO_RESOLVE_LAST_RESOLVE_TIME[scene_id] = now
@@ -3424,9 +3761,6 @@ def _active_view_monitor_timer():
 
         scene_id = _scene_key(scene)
         monitor_interval = _active_view_monitor_interval_seconds(scene)
-        if not _run_auto_resolve_in_active_view(scene):
-            _ACTIVE_VIEW_MONITOR_LAST_SIGNATURE.pop(scene_id, None)
-            return monitor_interval
         scope = _current_view_scope(scene)
         if scope != "ACTIVE_VIEW":
             _ACTIVE_VIEW_MONITOR_LAST_SIGNATURE.pop(scene_id, None)
@@ -3457,7 +3791,7 @@ def _active_view_monitor_timer():
 def ensure_active_view_monitor_running():
     global _ACTIVE_VIEW_MONITOR_TIMER_RUNNING
     scene = getattr(bpy.context, "scene", None)
-    if not _can_auto_resolve_run(scene) or not _run_auto_resolve_in_active_view(scene):
+    if not _can_auto_resolve_run(scene):
         stop_active_view_monitor()
         _ACTIVE_VIEW_MONITOR_TIMER_RUNNING = False
         return
@@ -3535,18 +3869,25 @@ def stop_auto_resolve_service():
     _SUNLIGHT_OBJECT_NAME_CACHE.clear()
 
 
-def recover_post_render_state(scene=None):
+def recover_post_render_state(scene=None, cancelled=False):
     global _AUTO_RESOLVE_IN_FLIGHT
     global _RENDER_JOB_ACTIVE
+    global _RENDER_JOB_LAST_ENDED_EPOCH
+    global _RENDER_JOB_LAST_CANCELLED_EPOCH
     global _NAVIGATION_SHOT_UPDATE_PENDING
     global _NAVIGATION_SHOT_UPDATE_REENTRANT
     global _NAVIGATION_SHOT_SUSPEND_COUNT
+    global _NAV_CAMERA_CONTROL_SYNC_SUSPEND_COUNT
 
     _AUTO_RESOLVE_IN_FLIGHT = False
     _RENDER_JOB_ACTIVE = False
+    _RENDER_JOB_LAST_ENDED_EPOCH = int(_RENDER_JOB_EPOCH)
+    if bool(cancelled):
+        _RENDER_JOB_LAST_CANCELLED_EPOCH = int(_RENDER_JOB_EPOCH)
     _NAVIGATION_SHOT_UPDATE_PENDING = False
     _NAVIGATION_SHOT_UPDATE_REENTRANT = False
     _NAVIGATION_SHOT_SUSPEND_COUNT = 0
+    _NAV_CAMERA_CONTROL_SYNC_SUSPEND_COUNT = 0
     _force_restore_navigation_adaptive_state()
 
     if scene is None:
@@ -3558,7 +3899,28 @@ def recover_post_render_state(scene=None):
 
 def mark_render_job_started():
     global _RENDER_JOB_ACTIVE
+    global _RENDER_JOB_EPOCH
+    try:
+        self_heal_missing_cache_images_for_render(getattr(getattr(bpy, "context", None), "scene", None))
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError, OSError):
+        logger.debug("Planetka: render self-heal preflight failed", exc_info=True)
+    _RENDER_JOB_EPOCH = int(_RENDER_JOB_EPOCH) + 1
     _RENDER_JOB_ACTIVE = True
+    return int(_RENDER_JOB_EPOCH)
+
+
+def current_render_job_epoch():
+    return int(_RENDER_JOB_EPOCH)
+
+
+def was_render_job_cancelled(epoch=None):
+    try:
+        render_epoch = int(epoch if epoch is not None else _RENDER_JOB_EPOCH)
+    except (TypeError, ValueError):
+        return False
+    if render_epoch <= 0:
+        return False
+    return int(_RENDER_JOB_LAST_CANCELLED_EPOCH) >= render_epoch
 
 
 def _sync_logging_from_scenes():
@@ -3615,9 +3977,23 @@ def _planetka_depsgraph_update_post(_scene, _depsgraph):
         return
 
     keyed_runtime_active = _scene_has_keyed_runtime_path(scene, _KEYED_RUNTIME_ALL_PROP_PATHS)
+    props = getattr(scene, "planetka", None)
+    preset_active = False
+    if props is not None:
+        try:
+            preset_token = str(getattr(props, "anim_camera_preset", "NONE") or "NONE").strip().upper()
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            preset_token = "NONE"
+        if preset_token in {"PUSH_IN", "PULL_BACK"}:
+            preset_token = "ZOOM"
+        elif preset_token in {"ARC_LEFT", "ARC_RIGHT"}:
+            preset_token = "ARC"
+        elif preset_token == "FLYBY":
+            preset_token = "NONE"
+        preset_active = preset_token not in {"", "NONE"}
     # During playback/render and for keyed runtime scenes, keep camera->nav sync disabled
     # to avoid feedback loops that can cause "stuck then jump" camera motion in renders.
-    if not (_is_render_job_active() or _is_animation_playing() or keyed_runtime_active):
+    if not (_is_render_job_active() or _is_animation_playing() or keyed_runtime_active or preset_active):
         _sync_navigation_controls_from_scene_camera(scene)
 
     if not _can_auto_resolve_run(scene):
@@ -3691,44 +4067,27 @@ def _planetka_frame_change_post(scene, _depsgraph=None):
     sun_keyed = _scene_has_keyed_runtime_path(target_scene, _KEYED_RUNTIME_SUN_PROP_PATHS)
     if not (nav_keyed or focal_keyed or sun_keyed):
         return
-
-    nav_signature = signature[:7]
-    prev_nav_signature = previous[:7] if isinstance(previous, tuple) and len(previous) >= 7 else None
-    nav_changed = nav_keyed and (previous is None or prev_nav_signature != nav_signature)
-    focal_changed = focal_keyed and (
-        previous is None or prev_nav_signature is None or prev_nav_signature[6] != nav_signature[6]
-    )
-    sun_signature = signature[7:]
-    prev_sun_signature = previous[7:] if isinstance(previous, tuple) and len(previous) >= 10 else None
-    sun_changed = sun_keyed and (previous is None or prev_sun_signature != sun_signature)
-
-    if nav_changed:
-        # Prevent frame-scrub camera updates from triggering auto-resolve.
-        _NAVIGATION_USER_EDIT_LAST_TOUCH = time.monotonic()
-        _suspend_adaptive_viewport_during_navigation(target_scene)
-        _apply_navigation_shot_now()
-
-    if focal_changed:
-        props = getattr(target_scene, "planetka", None)
-        camera = getattr(target_scene, "camera", None)
-        camera_data = getattr(camera, "data", None) if camera is not None else None
-        if props is not None and camera is not None and getattr(camera, "type", None) == 'CAMERA' and camera_data is not None:
-            try:
-                camera_data.lens = max(1.0, float(getattr(props, "nav_focal_length_mm", 50.0)))
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                logger.debug("Planetka: failed applying keyed focal length on frame change", exc_info=True)
-            except (RuntimeError, TypeError, ValueError):
-                logger.debug("Planetka: failed applying keyed focal length on frame change", exc_info=True)
-
-    if sun_changed:
-        _apply_sunlight_from_props(target_scene)
-        _apply_sunlight_strength_from_props(target_scene)
+    # Strict rule: timeline playback/scrubbing must never mutate Navigation,
+    # camera-control props, sunlight props, or animation preset values.
+    return
 
 
 @persistent
 def _planetka_load_post(_dummy):
     _FRAME_KEYED_RUNTIME_LAST_SIGNATURE.clear()
     _sync_logging_from_scenes()
+    missing_cache_images, recovered_cache_images = _recover_missing_cache_image_paths_to_fallback()
+    if int(missing_cache_images) > 0:
+        logger.warning(
+            "Planetka: detected %d missing cached tile image(s) on file load; redirected %d to fallback placeholders.",
+            int(missing_cache_images),
+            int(recovered_cache_images),
+        )
+        scene = getattr(getattr(bpy, "context", None), "scene", None)
+        if scene is None:
+            scene = next(iter(_iter_scenes()), None)
+        if scene is not None:
+            _schedule_load_recovery_resolve(scene)
     try:
         module_name = f"{__package__}.unsupported" if __package__ else "unsupported"
         unsupported_module = importlib.import_module(module_name)

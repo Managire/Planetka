@@ -170,7 +170,7 @@ class PLANETKA_PT_GlobalCloudsPanel(bpy.types.Panel):
     bl_region_type = "UI"
     bl_category = "Planetka"
     bl_options = {'DEFAULT_CLOSED'}
-    bl_order = 6
+    bl_order = 9006
 
     @classmethod
     def poll(cls, context):

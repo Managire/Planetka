@@ -17,9 +17,11 @@ from .auth import (
     is_authenticated,
 )
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
-from .extension_prefs import get_prefs
+from .extension_prefs import get_earth_object, get_prefs
 from .operator_utils import ErrorCode, fail
 from .sanity_utils import invalidate_texture_source_health_cache, validate_known_good_texture_source
+from .asset_builder import EARTH_MATERIAL_NAME, PLANETKA_ROOT_OBJECT_NAME, SUNLIGHT_OBJECT_NAME
+from .r2_source import is_remote_source_configured
 
 _BUG_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024
 _BUG_ATTACHMENT_ALLOWED_MIME = {
@@ -27,6 +29,8 @@ _BUG_ATTACHMENT_ALLOWED_MIME = {
     "image/jpeg",
     "image/webp",
 }
+_ANIMATION_PREPARED_SEGMENTS_KEY = "planetka_anim_prepared_segments"
+_ANIMATION_PREPARED_COLLECTION_NAME = "Planetka Animation Prepared"
 
 
 def _default_bug_report_path():
@@ -426,4 +430,177 @@ class PLANETKA_OT_ValidateTextureSource(bpy.types.Operator):
         else:
             _show_popup_lines(context, "Texture Source Check", "CHECKMARK", lines)
             self.report({'INFO'}, "Texture source validation passed.")
+        return {'FINISHED'}
+
+
+def _is_planetka_runtime_image(image):
+    if image is None:
+        return False
+    try:
+        name = str(getattr(image, "name", "") or "").strip().upper()
+    except (TypeError, ValueError, AttributeError):
+        name = ""
+    if name.startswith(("S2_", "EL_", "WT_", "PO_")):
+        return True
+    try:
+        raw_path = str(getattr(image, "filepath_raw", "") or getattr(image, "filepath", "") or "").strip()
+    except (TypeError, ValueError, AttributeError):
+        raw_path = ""
+    if not raw_path:
+        return False
+    return "planetka_cache" in raw_path.replace("\\", "/").lower()
+
+
+def _is_missing_file_image(image):
+    if image is None:
+        return False
+    if getattr(image, "packed_file", None) is not None:
+        return False
+    try:
+        raw_path = str(getattr(image, "filepath_raw", "") or getattr(image, "filepath", "") or "").strip()
+    except (TypeError, ValueError, AttributeError):
+        return False
+    if not raw_path:
+        return False
+    try:
+        absolute = os.path.abspath(bpy.path.abspath(raw_path))
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError, OSError):
+        return False
+    if not absolute:
+        return False
+    return not os.path.isfile(absolute)
+
+
+def _camera_has_transform_keys(camera):
+    if camera is None:
+        return False
+    animation_data = getattr(camera, "animation_data", None)
+    action = getattr(animation_data, "action", None) if animation_data is not None else None
+    if action is None:
+        return False
+    fcurves = getattr(action, "fcurves", None) or ()
+    for fcurve in fcurves:
+        data_path = str(getattr(fcurve, "data_path", "") or "")
+        if data_path not in {"location", "rotation_euler"}:
+            continue
+        points = getattr(fcurve, "keyframe_points", None)
+        if points and len(points) > 0:
+            return True
+    return False
+
+
+class PLANETKA_OT_SceneHealthCheck(bpy.types.Operator):
+    bl_idname = "planetka.scene_health_check"
+    bl_label = "Scene Health Check"
+    bl_description = "Check for missing Planetka assets, invalid paths, and stale animation state"
+
+    def execute(self, context):
+        scene = getattr(context, "scene", None)
+        prefs = get_prefs()
+        props = getattr(scene, "planetka", None) if scene is not None else None
+
+        errors = []
+        warnings = []
+        info = []
+
+        earth = get_earth_object()
+        root = bpy.data.objects.get(PLANETKA_ROOT_OBJECT_NAME)
+        material = bpy.data.materials.get(EARTH_MATERIAL_NAME)
+        sunlight = bpy.data.objects.get(SUNLIGHT_OBJECT_NAME)
+        camera = getattr(scene, "camera", None) if scene is not None else None
+
+        if earth is None and root is None and material is None:
+            info.append("Earth not created in this scene yet.")
+        else:
+            if earth is None:
+                errors.append("Earth surface object is missing.")
+            if root is None:
+                errors.append("Planetka Root object is missing.")
+            if material is None:
+                errors.append("Planetka Earth Material is missing.")
+            if sunlight is None:
+                warnings.append("Planetka Sunlight object is missing.")
+
+        if camera is None or str(getattr(camera, "type", "")) != "CAMERA":
+            warnings.append("Active scene camera is missing or invalid.")
+
+        base_path = str(getattr(prefs, "texture_base_path", "") or "").strip() if prefs is not None else ""
+        remote_ready = bool(is_remote_source_configured(base_path))
+        if remote_ready:
+            info.append("Data source: Cloudflare.")
+        else:
+            if not base_path:
+                errors.append("Texture source path is empty.")
+            else:
+                try:
+                    normalized_base_path = os.path.abspath(bpy.path.abspath(base_path))
+                except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError, OSError):
+                    normalized_base_path = ""
+                if not normalized_base_path or not os.path.isdir(normalized_base_path):
+                    errors.append("Texture source path is invalid or missing on disk.")
+                else:
+                    info.append(f"Data source: {normalized_base_path}")
+
+        missing_runtime_images = 0
+        for image in tuple(getattr(bpy.data, "images", ())):
+            if not _is_planetka_runtime_image(image):
+                continue
+            if _is_missing_file_image(image):
+                missing_runtime_images += 1
+        if missing_runtime_images > 0:
+            warnings.append(f"{missing_runtime_images} Planetka runtime image file(s) are missing on disk.")
+
+        if props is not None:
+            frame_start = int(getattr(props, "anim_frame_start", 1) or 1)
+            frame_end = int(getattr(props, "anim_frame_end", 1) or 1)
+            if frame_end <= frame_start:
+                warnings.append("Animation frame range is invalid (End must be greater than Start).")
+
+            preset = str(getattr(props, "anim_camera_preset", "NONE") or "NONE").strip().upper()
+            if preset == "A_TO_B":
+                has_a = bool(getattr(props, "anim_ab_a_valid", False))
+                has_b = bool(getattr(props, "anim_ab_b_valid", False))
+                if not (has_a and has_b):
+                    warnings.append("A-to-B preset is selected but View A/B capture is incomplete.")
+
+            if preset not in {"", "NONE"} and not _camera_has_transform_keys(camera):
+                warnings.append("Animation preset is selected but camera keyframes are not present.")
+
+        prepared_segments = 0
+        if scene is not None:
+            try:
+                prepared_segments = int(scene.get(_ANIMATION_PREPARED_SEGMENTS_KEY, 0) or 0)
+            except (TypeError, ValueError, AttributeError):
+                prepared_segments = 0
+        prepared_collection = bpy.data.collections.get(_ANIMATION_PREPARED_COLLECTION_NAME)
+        prepared_object_count = len(getattr(prepared_collection, "objects", ())) if prepared_collection is not None else 0
+        if prepared_segments > 0 and prepared_collection is None:
+            warnings.append("Prepared animation segment state exists, but prepared collection is missing.")
+        elif prepared_segments <= 0 and prepared_collection is not None and prepared_object_count > 0:
+            warnings.append("Prepared animation collection has stale objects, but prepared state is not active.")
+
+        summary = []
+        summary.append(
+            f"Errors: {len(errors)} | Warnings: {len(warnings)} | Info: {len(info)}"
+        )
+        for line in errors[:4]:
+            summary.append(f"ERROR: {line}")
+        if len(errors) > 4:
+            summary.append(f"... and {len(errors) - 4} more error(s)")
+        for line in warnings[:4]:
+            summary.append(f"WARNING: {line}")
+        if len(warnings) > 4:
+            summary.append(f"... and {len(warnings) - 4} more warning(s)")
+        for line in info[:3]:
+            summary.append(f"INFO: {line}")
+
+        if errors:
+            _show_popup_lines(context, "Scene Health Check", "ERROR", summary)
+            self.report({'ERROR'}, f"Scene Health Check found {len(errors)} error(s).")
+        elif warnings:
+            _show_popup_lines(context, "Scene Health Check", "QUESTION", summary)
+            self.report({'WARNING'}, f"Scene Health Check found {len(warnings)} warning(s).")
+        else:
+            _show_popup_lines(context, "Scene Health Check", "CHECKMARK", summary + ["No issues detected."])
+            self.report({'INFO'}, "Scene Health Check passed.")
         return {'FINISHED'}

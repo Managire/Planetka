@@ -9,6 +9,7 @@ from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from .r2_source import (
     begin_resolve_download_capture,
     end_resolve_download_capture,
+    estimate_total_resolve_bytes,
     get_remote_cache_folder,
     is_remote_source_configured,
     plan_resolve_downloads,
@@ -120,11 +121,48 @@ def _normalize_texture_quality_mode(value):
     token = str(value or "").strip().upper()
     if token == "HALF":
         return "BALANCED"
+    if token == "BALANCED":
+        return "BALANCED"
     if token == "FULL":
         return "FULL"
     if token == "PREVIEW":
         return "PREVIEW"
     return "PREVIEW"
+
+
+def _apply_fixed_z180_quality_targets(visible_tiles, texture_quality_mode="PREVIEW"):
+    mode = _normalize_texture_quality_mode(texture_quality_mode)
+    target_by_mode = {
+        "PREVIEW": 720,
+        "BALANCED": 360,
+        "FULL": 180,
+    }
+    target_d = int(target_by_mode.get(mode, 720))
+    out = []
+    for tile in visible_tiles or ():
+        tile_text = str(tile or "").strip()
+        if not tile_text:
+            continue
+        parts = tile_text.split("_")
+        if len(parts) != 4:
+            out.append(tile_text)
+            continue
+        try:
+            x_value = int(parts[0][1:])
+            y_value = int(parts[1][1:])
+            z_value = int(parts[2][1:])
+            d_value = int(parts[3][1:])
+            if d_value == 0:
+                d_value = 1440
+        except (TypeError, ValueError, IndexError):
+            out.append(tile_text)
+            continue
+        if z_value == 180 and d_value != target_d:
+            d_code = 0 if target_d == 1440 else int(target_d)
+            out.append(f"x{x_value:03d}_y{y_value:03d}_z{z_value:03d}_d{d_code:03d}")
+            continue
+        out.append(tile_text)
+    return out
 
 
 def _prefetch_index(resolved_tiles, ocean_tiles=None):
@@ -195,13 +233,22 @@ def _build_prefetched_paths(index, base_path, allow_fallback=False):
     return resolved_paths
 
 
-def build_resolve_download_requests_for_visible_tiles(visible_tiles, base_path):
+def build_resolve_download_requests_for_visible_tiles(
+    visible_tiles,
+    base_path,
+    texture_quality_mode="PREVIEW",
+):
     shader_utils = _get_shader_utils_module()
     resolve_tiles_fn = getattr(shader_utils, "resolve_tiles_for_shader", None)
     if not callable(resolve_tiles_fn):
         raise RuntimeError("Planetka shader tile resolve helper is unavailable.")
 
-    resolved_tiles, ocean_tiles = resolve_tiles_fn(visible_tiles, base_path)
+    normalized_quality_mode = _normalize_texture_quality_mode(texture_quality_mode)
+    visible_tiles_adjusted = _apply_fixed_z180_quality_targets(
+        visible_tiles,
+        texture_quality_mode=normalized_quality_mode,
+    )
+    resolved_tiles, ocean_tiles = resolve_tiles_fn(visible_tiles_adjusted, base_path)
     requests = _build_resolve_download_requests(resolved_tiles, ocean_tiles)
     return {
         "resolved_tiles": list(resolved_tiles),
@@ -331,7 +378,11 @@ def prepare_resolve_streaming_for_visible_tiles(
     nav_longitude_deg="",
     nav_altitude_km="",
 ):
-    plan_payload = build_resolve_download_requests_for_visible_tiles(visible_tiles, base_path)
+    plan_payload = build_resolve_download_requests_for_visible_tiles(
+        visible_tiles,
+        base_path,
+        texture_quality_mode=texture_quality_mode,
+    )
     prefetch_payload = prefetch_resolve_plan(
         plan_payload,
         base_path=base_path,
@@ -348,16 +399,27 @@ def prepare_resolve_streaming_for_visible_tiles(
     return result
 
 
-def estimate_remote_download_bytes_for_visible_tiles(visible_tiles, base_path):
+def estimate_remote_download_bytes_for_visible_tiles(
+    visible_tiles,
+    base_path,
+    allow_remote_probe=False,
+    texture_quality_mode="PREVIEW",
+):
     if not is_remote_source_configured(base_path):
         return {
             "planned_total_bytes": 0,
             "planned_file_count": 0,
             "unknown_file_count": 0,
         }
-    plan_payload = build_resolve_download_requests_for_visible_tiles(visible_tiles, base_path)
+    plan_payload = build_resolve_download_requests_for_visible_tiles(
+        visible_tiles,
+        base_path,
+        texture_quality_mode=texture_quality_mode,
+    )
     requests = list(plan_payload.get("requests", ()) or ())
-    estimate = plan_resolve_downloads(requests, allow_remote_probe=False)
+    # Estimate full dataset size for the currently required tile set,
+    # independent of what's already cached locally.
+    estimate = estimate_total_resolve_bytes(requests, allow_remote_probe=bool(allow_remote_probe))
     if not isinstance(estimate, dict):
         return {
             "planned_total_bytes": 0,

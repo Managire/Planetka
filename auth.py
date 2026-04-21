@@ -66,18 +66,29 @@ DEFAULT_LOW_DATA_WARNING_GB = max(1, _env_int("PLANETKA_LOW_DATA_WARNING_GB", 10
 DEFAULT_LOW_DATA_WARNING_RATIO = min(max(_env_float("PLANETKA_LOW_DATA_WARNING_RATIO", 0.10), 0.01), 0.95)
 DEFAULT_LOW_DATA_WARNING_BYTES = int(DEFAULT_LOW_DATA_WARNING_GB * (1024 ** 3))
 ACCOUNT_TIER_FREE = "free"
+ACCOUNT_TIER_LITE = "lite"
 ACCOUNT_TIER_PRO = "pro"
-ACCOUNT_TIER_STUDIO = "studio"
+PLAN_CODE_FREE = "free"
+PLAN_CODE_LITE = "lite"
+PLAN_CODE_PRO = "pro"
 PLAN_CODE_PLANETKA = "planetka"
 PLAN_CODE_PLANETKA_PRO = "planetka_pro"
-PLAN_CODE_PLANETKA_STUDIO = "planetka_studio"
-PLAN_NAME_PLANETKA = "Planetka Access"
-PLAN_NAME_PLANETKA_PRO = "Planetka Access"
-PLAN_NAME_PLANETKA_STUDIO = "Planetka Access"
+PLAN_NAME_FREE = "Planetka Free"
+PLAN_NAME_PERSONAL = "Planetka Personal"
+PLAN_NAME_PRO = "Planetka Pro"
 DEFAULT_DATA_COUNTING_RULE = "Only newly downloaded data counts. Reused local cache does not consume allowance."
 PENDING_AUTH_MESSAGE = "Waiting for browser sign-in..."
 _DEVICE_LOGIN_TIMER_REGISTERED = False
 THROTTLE_STATUS_PREFIX = "Account throttled until "
+NEW_ZEALAND_HIGH_QUALITY_MAX_ALTITUDE_KM = 2000.0
+NEW_ZEALAND_MAIN_LON_MIN = 165.0
+NEW_ZEALAND_MAIN_LON_MAX = 180.0
+NEW_ZEALAND_MAIN_LAT_MIN = -49.5
+NEW_ZEALAND_MAIN_LAT_MAX = -32.0
+NEW_ZEALAND_DATELINE_LON_MIN = -180.0
+NEW_ZEALAND_DATELINE_LON_MAX = -170.0
+NEW_ZEALAND_DATELINE_LAT_MIN = -50.0
+NEW_ZEALAND_DATELINE_LAT_MAX = -32.0
 
 
 class AuthApiError(RuntimeError):
@@ -118,15 +129,17 @@ def describe_auth_error(error):
 
 def _normalize_account_tier(value):
     plan_code = _normalize_plan_code(value)
-    if plan_code == PLAN_CODE_PLANETKA_PRO:
+    if plan_code == PLAN_CODE_PRO:
         return ACCOUNT_TIER_PRO
-    if plan_code == PLAN_CODE_PLANETKA_STUDIO:
-        return ACCOUNT_TIER_STUDIO
-    if plan_code == PLAN_CODE_PLANETKA:
+    if plan_code == PLAN_CODE_LITE:
+        return ACCOUNT_TIER_LITE
+    if plan_code == PLAN_CODE_FREE:
         return ACCOUNT_TIER_FREE
     tier = str(value or "").strip().lower()
-    if tier in {ACCOUNT_TIER_FREE, ACCOUNT_TIER_PRO, ACCOUNT_TIER_STUDIO}:
+    if tier in {ACCOUNT_TIER_FREE, ACCOUNT_TIER_LITE, ACCOUNT_TIER_PRO}:
         return tier
+    if tier in {"indie", "studio"}:
+        return ACCOUNT_TIER_LITE if tier == "indie" else ACCOUNT_TIER_PRO
     return ""
 
 
@@ -134,23 +147,27 @@ def _normalize_plan_code(value):
     token = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
     if token in {"", "none", "null"}:
         return ""
-    if token in {PLAN_CODE_PLANETKA, "free", "basic"}:
-        return PLAN_CODE_PLANETKA
-    if token in {PLAN_CODE_PLANETKA_PRO, "pro", "planetkapro", "planetka_pro_monthly"}:
-        return PLAN_CODE_PLANETKA_PRO
-    if token in {PLAN_CODE_PLANETKA_STUDIO, "studio", "enterprise"}:
-        return PLAN_CODE_PLANETKA_STUDIO
+    if token in {PLAN_CODE_FREE, "trial"}:
+        return PLAN_CODE_FREE
+    if token in {"indie", "creator"}:
+        return PLAN_CODE_LITE
+    if token in {PLAN_CODE_LITE, PLAN_CODE_PLANETKA, "basic", "personal"}:
+        return PLAN_CODE_LITE
+    if token in {PLAN_CODE_PRO, PLAN_CODE_PLANETKA_PRO, "pro", "planetkapro", "planetka_pro_monthly"}:
+        return PLAN_CODE_PRO
+    if token in {"planetka_studio", "studio", "enterprise"}:
+        return PLAN_CODE_PRO
     return token
 
 
 def _plan_name_for_code(plan_code):
     safe = _normalize_plan_code(plan_code)
-    if safe == PLAN_CODE_PLANETKA_PRO:
-        return PLAN_NAME_PLANETKA_PRO
-    if safe == PLAN_CODE_PLANETKA_STUDIO:
-        return PLAN_NAME_PLANETKA_STUDIO
-    if safe == PLAN_CODE_PLANETKA:
-        return PLAN_NAME_PLANETKA
+    if safe == PLAN_CODE_PRO:
+        return PLAN_NAME_PRO
+    if safe == PLAN_CODE_FREE:
+        return PLAN_NAME_FREE
+    if safe == PLAN_CODE_LITE:
+        return PLAN_NAME_PERSONAL
     return ""
 
 
@@ -201,7 +218,7 @@ def _extract_account_tier(payload):
 
 def _extract_plan(payload):
     if not isinstance(payload, dict):
-        return {"code": PLAN_CODE_PLANETKA, "name": PLAN_NAME_PLANETKA}
+        return {"code": PLAN_CODE_FREE, "name": PLAN_NAME_FREE}
 
     plan_obj = payload.get("plan")
     if not isinstance(plan_obj, dict):
@@ -217,7 +234,7 @@ def _extract_plan(payload):
         ),
     )
     if not code:
-        code = PLAN_CODE_PLANETKA
+        code = PLAN_CODE_FREE
 
     name = _first_non_empty(
         plan_obj.get("name"),
@@ -227,18 +244,18 @@ def _extract_plan(payload):
 
     return {
         "code": code,
-        "name": name or _plan_name_for_code(code) or PLAN_NAME_PLANETKA,
+        "name": name or _plan_name_for_code(code) or PLAN_NAME_FREE,
     }
 
 
 def _derive_commercial_use_allowed(plan_code):
     safe = _normalize_plan_code(plan_code)
-    return bool(safe in {PLAN_CODE_PLANETKA, PLAN_CODE_PLANETKA_PRO, PLAN_CODE_PLANETKA_STUDIO})
+    return bool(safe in {PLAN_CODE_PRO})
 
 
 def _extract_commercial_use_allowed(payload, plan=None):
     if not isinstance(payload, dict):
-        code = plan["code"] if isinstance(plan, dict) else PLAN_CODE_PLANETKA
+        code = plan["code"] if isinstance(plan, dict) else PLAN_CODE_LITE
         return _derive_commercial_use_allowed(code)
 
     plan_obj = payload.get("plan")
@@ -503,20 +520,8 @@ def _tag_ui_redraw():
 
 
 def _save_user_prefs():
-    try:
-        import bpy
-    except (ImportError, ModuleNotFoundError):
-        return False
-
-    try:
-        result = bpy.ops.wm.save_userpref()
-        return "FINISHED" in result
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed saving user preferences after auth state change", exc_info=True)
-        return False
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed saving user preferences after auth state change", exc_info=True)
-        return False
+    # Planetka must not write Blender's global user preferences automatically.
+    return False
 
 
 def _clear_pending_login_fields(prefs):
@@ -655,7 +660,140 @@ def is_pro_account(prefs=None):
 
 
 def is_studio_account(prefs=None):
-    return get_account_tier(prefs) == ACCOUNT_TIER_STUDIO
+    return False
+
+
+def is_free_account(prefs=None):
+    return get_account_tier(prefs) == ACCOUNT_TIER_FREE
+
+
+def is_lite_account(prefs=None):
+    return get_account_tier(prefs) == ACCOUNT_TIER_LITE
+
+
+def is_indie_account(prefs=None):
+    return False
+
+
+def allows_balanced_full_quality(prefs=None):
+    del prefs
+    return True
+
+
+def _normalize_texture_quality_token(value):
+    token = str(value or "").strip().upper()
+    if token == "HALF":
+        return "BALANCED"
+    if token in {"PREVIEW", "BALANCED", "FULL"}:
+        return token
+    return "PREVIEW"
+
+
+def _is_high_quality_mode(value):
+    return _normalize_texture_quality_token(value) in {"BALANCED", "FULL"}
+
+
+def _safe_float(value, fallback=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(fallback)
+
+
+def _normalize_longitude_180(value):
+    lon = _safe_float(value, 0.0)
+    while lon > 180.0:
+        lon -= 360.0
+    while lon < -180.0:
+        lon += 360.0
+    return lon
+
+
+def _extract_nav_pose(source):
+    if source is None:
+        return 0.0, 0.0, 0.0
+    return (
+        _safe_float(getattr(source, "nav_latitude_deg", 0.0), 0.0),
+        _normalize_longitude_180(getattr(source, "nav_longitude_deg", 0.0)),
+        max(0.0, _safe_float(getattr(source, "nav_altitude_km", 0.0), 0.0)),
+    )
+
+
+def _is_pose_inside_box(lat, lon, lat_min, lat_max, lon_min, lon_max):
+    return (
+        float(lat_min) <= float(lat) <= float(lat_max)
+        and float(lon_min) <= float(lon) <= float(lon_max)
+    )
+
+
+def is_new_zealand_high_quality_exception(source=None, lat_deg=None, lon_deg=None, altitude_km=None):
+    if source is not None:
+        lat, lon, _alt = _extract_nav_pose(source)
+    else:
+        lat = _safe_float(lat_deg, 0.0)
+        lon = _normalize_longitude_180(lon_deg if lon_deg is not None else 0.0)
+        _alt = max(0.0, _safe_float(altitude_km, 0.0))
+
+    in_main_box = (
+        float(NEW_ZEALAND_MAIN_LAT_MIN) <= lat <= float(NEW_ZEALAND_MAIN_LAT_MAX)
+        and float(NEW_ZEALAND_MAIN_LON_MIN) <= lon <= float(NEW_ZEALAND_MAIN_LON_MAX)
+    )
+    if in_main_box:
+        return True
+
+    in_dateline_box = (
+        float(NEW_ZEALAND_DATELINE_LAT_MIN) <= lat <= float(NEW_ZEALAND_DATELINE_LAT_MAX)
+        and float(NEW_ZEALAND_DATELINE_LON_MIN) <= lon <= float(NEW_ZEALAND_DATELINE_LON_MAX)
+    )
+    return bool(in_dateline_box)
+
+
+def is_lite_high_quality_exception(source=None, lat_deg=None, lon_deg=None, altitude_km=None):
+    return bool(
+        is_new_zealand_high_quality_exception(
+            source=source,
+            lat_deg=lat_deg,
+            lon_deg=lon_deg,
+            altitude_km=altitude_km,
+        )
+    )
+
+
+def is_new_zealand_testing_area(source=None, lat_deg=None, lon_deg=None, altitude_km=None):
+    del altitude_km
+    return bool(
+        is_new_zealand_high_quality_exception(
+            source=source,
+            lat_deg=lat_deg,
+            lon_deg=lon_deg,
+            altitude_km=0.0,
+        )
+    )
+
+
+def allows_balanced_for_context(prefs=None, source=None):
+    del prefs, source
+    return True
+
+
+def allows_full_quality_for_context(prefs=None, source=None):
+    del prefs, source
+    return True
+
+
+def allows_animation_render_for_context(prefs=None, source=None):
+    del prefs, source
+    return True
+
+
+def requires_d090_cap_for_context(prefs=None, source=None):
+    del prefs, source
+    return False
+
+
+def allows_balanced_full_quality_for_context(prefs=None, source=None, requested_mode="PREVIEW"):
+    del prefs, source, requested_mode
+    return True
 
 
 def get_plan_code(prefs=None):
@@ -667,7 +805,7 @@ def get_plan_code(prefs=None):
     value = _normalize_plan_code(getattr(prefs, "auth_plan_code", ""))
     if value:
         return value
-    return _normalize_plan_code(getattr(prefs, "auth_account_tier", "")) or PLAN_CODE_PLANETKA
+    return _normalize_plan_code(getattr(prefs, "auth_account_tier", "")) or PLAN_CODE_FREE
 
 
 def get_plan_name(prefs=None):
@@ -679,7 +817,7 @@ def get_plan_name(prefs=None):
     value = str(getattr(prefs, "auth_plan_name", "") or "").strip()
     if value:
         return value
-    return _plan_name_for_code(get_plan_code(prefs)) or PLAN_NAME_PLANETKA
+    return _plan_name_for_code(get_plan_code(prefs)) or PLAN_NAME_FREE
 
 
 def get_commercial_use_allowed(prefs=None):
@@ -691,7 +829,7 @@ def get_commercial_use_allowed(prefs=None):
     explicit = _parse_optional_bool(getattr(prefs, "auth_commercial_use_allowed", ""))
     if explicit is not None:
         return bool(explicit)
-    return True
+    return bool(_derive_commercial_use_allowed(get_plan_code(prefs)))
 
 
 def get_billing_period_end(prefs=None):
@@ -1220,6 +1358,42 @@ def get_authorized_headers(prefs=None, allow_refresh=True):
     if device_id:
         headers["X-Planetka-Device-Id"] = device_id
     return headers
+
+
+def logout_remote_session(prefs=None):
+    prefs = prefs or get_prefs()
+    if prefs is None:
+        return False
+
+    refresh_token = str(getattr(prefs, "auth_refresh_token", "") or "").strip()
+    access_token = str(getattr(prefs, "auth_access_token", "") or "").strip()
+    device_id = str(getattr(prefs, "auth_device_id", "") or "").strip()
+
+    payload = {}
+    if refresh_token:
+        payload["refresh_token"] = refresh_token
+    if device_id:
+        payload["device_id"] = device_id
+
+    headers = {}
+    if access_token:
+        headers["Authorization"] = f"Bearer {access_token}"
+    if device_id:
+        headers["X-Planetka-Device-Id"] = device_id
+
+    try:
+        _json_request("POST", "/auth/logout", payload, headers=headers, timeout=10)
+        return True
+    except AuthApiError as exc:
+        # Keep logout resilient with older/backward-incompatible backends and
+        # expired tokens; local logout should always proceed.
+        if int(exc.status or 0) in {400, 401, 404}:
+            return False
+        logger.debug("Planetka: remote logout failed", exc_info=True)
+        return False
+    except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
+        logger.debug("Planetka: remote logout failed", exc_info=True)
+        return False
 
 
 def _device_login_timer():

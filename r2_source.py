@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import sqlite3
 import threading
 import tempfile
@@ -21,8 +22,6 @@ from collections import OrderedDict
 from .auth import AuthApiError, get_authorized_headers, get_api_base_url, refresh_auth_session, sync_account_profile
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from .unsupported import (
-    get_unsupported_cache_max_gb,
-    get_unsupported_cache_root,
     get_unsupported_texture_source_mode,
 )
 
@@ -47,7 +46,16 @@ _CACHE_PROTECTED_RELATIVE_PATHS = {
     "EL/EL_x000_y000_z360_d000.exr",
     "WT/WT_x000_y000_z360_d000.exr",
     "PO/PO_x000_y000_z360_d000.tif",
+    "S2/S2_x000_y000_z180_d720.exr",
+    "S2/S2_x180_y000_z180_d720.exr",
+    "EL/EL_x000_y000_z180_d720.exr",
+    "EL/EL_x180_y000_z180_d720.exr",
+    "WT/WT_x000_y000_z180_d720.exr",
+    "WT/WT_x180_y000_z180_d720.exr",
+    "PO/PO_x000_y000_z180_d720.tif",
+    "PO/PO_x180_y000_z180_d720.tif",
 }
+_BOOTSTRAP_CACHE_ROOT = os.path.join(os.path.dirname(__file__), "Resources", "Bootstrap Cache")
 
 
 @dataclass(frozen=True)
@@ -93,7 +101,6 @@ _TILE_SIZE_DB_CONN = None
 _TILE_SIZE_DB_PATH = ""
 _TILE_SIZE_DB_MODE = ""
 _TILE_SIZE_DB_FAILURE_KEYS = set()
-_USER_SETTINGS_LOCK = threading.Lock()
 _STREAM_HEALTH_OK = None
 _STREAM_HEALTH_CHECKED_AT = 0.0
 _AUTH_CHECK_LOCK = threading.Lock()
@@ -114,123 +121,6 @@ _TILE_FILE_RE = re.compile(
     r"^(S2|EL|WT|PO)_x(\d{3})_y(\d{3})_z(\d{3})_d(\d{3})\.(exr|tif)$",
     re.IGNORECASE,
 )
-
-# Unsupported advanced cache overrides (use at your own risk):
-# --------------------------------------------------------------
-# Planetka officially manages cache internally in OS temp and keeps only
-# current+previous resolve assets. If you still want to override cache behavior,
-# edit ONLY these values:
-# - CACHE_ROOT_OVERRIDE_UNSUPPORTED: absolute path, or "" for default temp cache
-# - CACHE_MAX_GB_OVERRIDE_UNSUPPORTED: >0 enables extra size-based pruning
-#   (in addition to 2-resolve retention). 0 disables size-based pruning.
-CACHE_ROOT_OVERRIDE_UNSUPPORTED = ""
-CACHE_MAX_GB_OVERRIDE_UNSUPPORTED = 0.0
-
-
-def _user_settings_file_path():
-    home = os.path.expanduser("~")
-    base = os.path.join(home if home and home != "~" else os.path.abspath(os.path.expanduser("~")), ".planetka")
-    return os.path.join(base, "user_settings.json")
-
-
-def _read_user_settings():
-    path = _user_settings_file_path()
-    try:
-        if not os.path.isfile(path):
-            return {}
-        with open(path, "r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-        return payload if isinstance(payload, dict) else {}
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed reading user settings file", exc_info=True)
-        return {}
-    except (OSError, ValueError, TypeError):
-        logger.debug("Planetka: failed reading user settings file", exc_info=True)
-        return {}
-
-
-def _write_user_settings(settings):
-    path = _user_settings_file_path()
-    directory = os.path.dirname(path)
-    try:
-        os.makedirs(directory, exist_ok=True)
-        tmp_path = path + ".tmp"
-        with open(tmp_path, "w", encoding="utf-8") as handle:
-            json.dump(settings if isinstance(settings, dict) else {}, handle, separators=(",", ":"))
-        os.replace(tmp_path, path)
-        return True
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed writing user settings file", exc_info=True)
-        return False
-    except (OSError, ValueError, TypeError):
-        logger.debug("Planetka: failed writing user settings file", exc_info=True)
-        return False
-
-
-def _normalize_cache_dir_path(raw_value):
-    text = str(raw_value or "").strip()
-    if not text:
-        return ""
-    expanded = os.path.expanduser(text)
-    if not expanded:
-        return ""
-    return os.path.abspath(expanded)
-
-
-def get_persisted_cache_root():
-    with _USER_SETTINGS_LOCK:
-        settings = _read_user_settings()
-    value = settings.get("r2_cache_dir", "")
-    normalized = _normalize_cache_dir_path(value)
-    return str(normalized or "")
-
-
-def set_persisted_cache_root(cache_root):
-    valid, normalized, _reason = validate_cache_root_for_write(cache_root)
-    if not valid:
-        return False
-    with _USER_SETTINGS_LOCK:
-        settings = _read_user_settings()
-        if normalized:
-            settings["r2_cache_dir"] = normalized
-        else:
-            settings.pop("r2_cache_dir", None)
-        ok = _write_user_settings(settings)
-    if ok:
-        reset_config_cache()
-    return bool(ok)
-
-
-def validate_cache_root_for_write(cache_root):
-    normalized = _normalize_cache_dir_path(cache_root)
-    if not normalized:
-        return True, "", ""
-
-    try:
-        os.makedirs(normalized, exist_ok=True)
-    except (OSError, RuntimeError, TypeError, ValueError) as exc:
-        return False, normalized, str(exc)
-
-    probe_name = (
-        f".planetka_cache_probe_{int(time.time() * 1_000_000)}"
-        f"_{os.getpid()}_{threading.get_ident()}.tmp"
-    )
-    probe_path = os.path.join(normalized, probe_name)
-    try:
-        with open(probe_path, "wb") as handle:
-            handle.write(b"planetka-cache-write-probe")
-        with open(probe_path, "rb") as handle:
-            _ = handle.read(1)
-    except (OSError, RuntimeError, TypeError, ValueError) as exc:
-        return False, normalized, str(exc)
-    finally:
-        try:
-            if os.path.isfile(probe_path):
-                os.remove(probe_path)
-        except (OSError, RuntimeError, TypeError, ValueError):
-            pass
-    return True, normalized, ""
-
 
 def _env(name, fallback=None):
     value = os.getenv(name)
@@ -277,92 +167,6 @@ def _parse_bool_env(name, default=False):
     return bool(default)
 
 
-def _parse_cache_max_bytes(max_bytes_raw, max_gb_raw, default_gb):
-    if str(max_bytes_raw or "").strip():
-        try:
-            parsed = int(float(str(max_bytes_raw).strip()))
-            if parsed > 0:
-                return parsed
-        except (TypeError, ValueError):
-            pass
-    max_gb = _parse_positive_float(max_gb_raw, default_gb)
-    return int(max_gb * (1024 ** 3))
-
-
-def _scene_cache_max_gb():
-    if threading.current_thread() is not threading.main_thread():
-        return None
-
-    try:
-        import bpy  # Imported lazily so non-Blender contexts can still import this module.
-    except (ImportError, ModuleNotFoundError):
-        return None
-
-    try:
-        context = getattr(bpy, "context", None)
-        scene = getattr(context, "scene", None) if context else None
-        props = getattr(scene, "planetka", None) if scene else None
-        if props is not None and hasattr(props, "r2_cache_max_gb"):
-            return _parse_positive_float(getattr(props, "r2_cache_max_gb", None), _R2_DEFAULT_CACHE_MAX_GB)
-
-        data = getattr(bpy, "data", None)
-        for data_scene in getattr(data, "scenes", ()):
-            props = getattr(data_scene, "planetka", None)
-            if props is not None and hasattr(props, "r2_cache_max_gb"):
-                return _parse_positive_float(getattr(props, "r2_cache_max_gb", None), _R2_DEFAULT_CACHE_MAX_GB)
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed reading scene cache size setting", exc_info=True)
-        return None
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed reading scene cache size setting", exc_info=True)
-        return None
-
-    return None
-
-
-def _scene_cache_root():
-    if threading.current_thread() is not threading.main_thread():
-        return None
-
-    try:
-        import bpy  # Imported lazily so non-Blender contexts can still import this module.
-    except (ImportError, ModuleNotFoundError):
-        return None
-
-    def _clean_path(raw_value):
-        normalized = _normalize_cache_dir_path(raw_value)
-        return normalized if normalized else None
-
-    try:
-        context = getattr(bpy, "context", None)
-        scene = getattr(context, "scene", None) if context else None
-        props = getattr(scene, "planetka", None) if scene else None
-        if props is not None and hasattr(props, "r2_cache_dir"):
-            cleaned = _clean_path(getattr(props, "r2_cache_dir", ""))
-            if cleaned:
-                return cleaned
-
-        data = getattr(bpy, "data", None)
-        for data_scene in getattr(data, "scenes", ()):
-            props = getattr(data_scene, "planetka", None)
-            if props is not None and hasattr(props, "r2_cache_dir"):
-                cleaned = _clean_path(getattr(props, "r2_cache_dir", ""))
-                if cleaned:
-                    return cleaned
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed reading scene cache folder setting", exc_info=True)
-        return None
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed reading scene cache folder setting", exc_info=True)
-        return None
-
-    persisted = get_persisted_cache_root()
-    if persisted:
-        return persisted
-
-    return None
-
-
 def _build_config():
     env_cfg = {
         "bucket": "planetka-api",
@@ -385,17 +189,8 @@ def _build_config():
     secret_access_key = str(merged.get("secret_access_key", "")).strip()
     region = str(merged.get("region", "auto") or "auto").strip()
     prefix = str(merged.get("prefix", _R2_DEFAULT_PREFIX) or _R2_DEFAULT_PREFIX).strip("/")
-    scene_cache_root = _scene_cache_root()
-    unsupported_cache_root = _normalize_cache_dir_path(get_unsupported_cache_root())
-    cache_root = unsupported_cache_root or scene_cache_root or _normalize_cache_dir_path(CACHE_ROOT_OVERRIDE_UNSUPPORTED) or _default_cache_root()
-    cache_max_gb = float(get_unsupported_cache_max_gb() or 0.0)
-    if cache_max_gb <= 0.0:
-        cache_max_gb = float(_scene_cache_max_gb() or 0.0)
-    if cache_max_gb <= 0.0 and float(CACHE_MAX_GB_OVERRIDE_UNSUPPORTED or 0.0) > 0.0:
-        cache_max_gb = float(CACHE_MAX_GB_OVERRIDE_UNSUPPORTED)
-    if cache_max_gb <= 0.0:
-        cache_max_gb = float(_R2_DEFAULT_CACHE_MAX_GB)
-    cache_max_bytes = int(cache_max_gb * (1024 ** 3))
+    cache_root = _default_cache_root()
+    cache_max_bytes = int(float(_R2_DEFAULT_CACHE_MAX_GB) * (1024 ** 3))
     cache_prune_target_ratio = _parse_positive_float(
         merged.get("cache_prune_target_ratio"),
         _R2_DEFAULT_CACHE_PRUNE_TARGET_RATIO,
@@ -576,7 +371,13 @@ def end_resolve_download_capture():
     global _CAPTURE_STARTED_AT
     with _METRICS_LOCK:
         downloaded_bytes = int(max(0, _CAPTURE_DOWNLOAD_BYTES))
-        total_bytes = int(max(downloaded_bytes, _CAPTURE_PLANNED_TOTAL_BYTES, _CAPTURE_TOTAL_BYTES))
+        # Prefer real per-request totals collected from response headers (or
+        # download fallback) over preflight planning estimates. This keeps the
+        # final total aligned with what was actually transferred in this resolve.
+        if int(_CAPTURE_TOTAL_BYTES) > 0:
+            total_bytes = int(max(downloaded_bytes, _CAPTURE_TOTAL_BYTES))
+        else:
+            total_bytes = int(max(downloaded_bytes, _CAPTURE_PLANNED_TOTAL_BYTES))
         thread_ms = float(max(0.0, _CAPTURE_DOWNLOAD_MS))
         wall_ms = 0.0
         if _CAPTURE_STARTED_AT > 0.0:
@@ -645,10 +446,13 @@ def get_download_progress():
         active_requests = int(max(0, _ACTIVE_DOWNLOADS))
         capture_enabled = bool(_CAPTURE_ENABLED)
         downloaded_bytes = int(max(0, _CAPTURE_DOWNLOAD_BYTES + _ACTIVE_DOWNLOAD_BYTES))
-        if _CAPTURE_PLANNED_TOTAL_BYTES > 0:
-            total_bytes = int(max(downloaded_bytes, _CAPTURE_PLANNED_TOTAL_BYTES))
+        # Use actual totals from in-flight/completed responses when available.
+        # Fall back to planned total only before any real response sizes exist.
+        actual_total_bytes = int(max(0, _CAPTURE_TOTAL_BYTES + _ACTIVE_EXPECTED_BYTES))
+        if actual_total_bytes > 0:
+            total_bytes = int(max(downloaded_bytes, actual_total_bytes))
         else:
-            total_bytes = int(max(downloaded_bytes, _CAPTURE_TOTAL_BYTES + _ACTIVE_EXPECTED_BYTES))
+            total_bytes = int(max(downloaded_bytes, _CAPTURE_PLANNED_TOTAL_BYTES))
         return {
             "download_active": bool(active_requests > 0 or capture_enabled),
             "active_requests": active_requests,
@@ -943,6 +747,75 @@ def plan_resolve_downloads(requests, allow_remote_probe=None):
     with _METRICS_LOCK:
         if _CAPTURE_ENABLED:
             _CAPTURE_PLANNED_TOTAL_BYTES = int(max(0, planned_total))
+
+    return {
+        "planned_total_bytes": int(max(0, planned_total)),
+        "planned_file_count": int(max(0, planned_files)),
+        "unknown_file_count": int(max(0, unknown_files)),
+    }
+
+
+def estimate_total_resolve_bytes(requests, allow_remote_probe=None):
+    """Estimate total dataset bytes for resolve requests, ignoring cache hit state."""
+    if allow_remote_probe is None:
+        allow_remote_probe = _parse_bool_env("PLANETKA_R2_PLAN_REMOTE_HEAD", default=False)
+    allow_remote_probe = bool(allow_remote_probe)
+
+    if not is_remote_source_configured(None):
+        return {"planned_total_bytes": 0, "planned_file_count": 0, "unknown_file_count": 0}
+
+    cfg = _get_config()
+    if cfg is None:
+        return {"planned_total_bytes": 0, "planned_file_count": 0, "unknown_file_count": 0}
+
+    seen = set()
+    planned_total = 0
+    planned_files = 0
+    unknown_files = 0
+
+    for request in requests or ():
+        if not isinstance(request, (tuple, list)) or len(request) != 4:
+            continue
+        folder, prefix, filename, extensions = request
+        folder = str(folder or "").strip()
+        prefix = str(prefix or "").strip()
+        filename = str(filename or "").strip()
+        if not folder or not prefix or not filename:
+            continue
+        exts = tuple(extensions or (".exr",))
+
+        selected_file_name = ""
+        selected_size = None
+        for ext in exts:
+            ext_text = str(ext or "")
+            candidate_file_name = f"{prefix}_{filename}{ext_text}"
+            if not selected_file_name:
+                selected_file_name = candidate_file_name
+            local_size = _lookup_local_texture_size(folder, candidate_file_name)
+            if local_size is not None:
+                selected_file_name = candidate_file_name
+                selected_size = int(max(0, int(local_size)))
+                break
+            if allow_remote_probe:
+                remote_size = _lookup_remote_texture_size(folder, candidate_file_name)
+                if remote_size is not None:
+                    selected_file_name = candidate_file_name
+                    selected_size = int(max(0, int(remote_size)))
+                    break
+
+        if not selected_file_name:
+            continue
+
+        dedupe_key = f"{folder}/{selected_file_name}"
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        planned_files += 1
+
+        if selected_size is None:
+            unknown_files += 1
+            continue
+        planned_total += int(max(0, selected_size))
 
     return {
         "planned_total_bytes": int(max(0, planned_total)),
@@ -1518,6 +1391,45 @@ def _cached_remote_path(folder, file_name):
     return os.path.join(cfg.cache_root, folder, file_name)
 
 
+def _bootstrap_seed_path(folder, file_name):
+    safe_folder = str(folder or "").strip().strip("/").replace("\\", "/")
+    safe_name = os.path.basename(str(file_name or "").strip())
+    if not safe_folder or not safe_name:
+        return ""
+    seed_path = os.path.join(_BOOTSTRAP_CACHE_ROOT, safe_folder, safe_name)
+    if _is_cache_file_usable(seed_path):
+        return seed_path
+    return ""
+
+
+def _seed_cache_from_bootstrap(folder, file_name, destination_path):
+    source_path = _bootstrap_seed_path(folder, file_name)
+    target_path = str(destination_path or "").strip()
+    if not source_path or not target_path:
+        return False
+    if _is_cache_file_usable(target_path):
+        return True
+
+    target_dir = os.path.dirname(target_path)
+    if not target_dir:
+        return False
+    temp_path = f"{target_path}.seed.{os.getpid()}.{threading.get_ident()}.{int(time.time() * 1_000_000)}"
+    try:
+        os.makedirs(target_dir, exist_ok=True)
+        shutil.copyfile(source_path, temp_path)
+        os.replace(temp_path, target_path)
+        return _is_cache_file_usable(target_path)
+    except (OSError, RuntimeError, TypeError, ValueError, AttributeError, PLANETKA_RECOVERABLE_EXCEPTIONS):
+        logger.debug("Planetka: failed seeding cache from bundled startup tile", exc_info=True)
+        return False
+    finally:
+        try:
+            if os.path.isfile(temp_path):
+                os.remove(temp_path)
+        except (OSError, RuntimeError, TypeError, ValueError, AttributeError):
+            pass
+
+
 def _is_cache_file_usable(path):
     safe_path = str(path or "").strip()
     if not safe_path:
@@ -1593,6 +1505,8 @@ def resolve_texture_file(base_path, folder, prefix, filename, extensions):
         if cached_path and _is_cache_file_usable(cached_path):
             return cached_path
         _remove_invalid_cache_file(cached_path)
+        if cached_path and _seed_cache_from_bootstrap(folder, file_name, cached_path):
+            return cached_path
 
     for ext in exts:
         file_name = f"{prefix}_{filename}{ext}"

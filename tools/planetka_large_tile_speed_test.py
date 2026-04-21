@@ -408,8 +408,8 @@ def main():
 
         props.auto_resolve = False
         props.texture_quality_mode = "FULL"
-        props.render_engine_optimization = "CYCLES"
         props.show_earth_preview = False
+        scene.render.engine = "CYCLES"
         prefs.texture_base_path = "planetka-remote"
 
         create_result = bpy.ops.planetka.add_earth()

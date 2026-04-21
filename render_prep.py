@@ -18,7 +18,7 @@ import re
 import bpy
 from bpy.props import BoolProperty, EnumProperty, StringProperty
 
-from .auth import allows_balanced_full_quality_for_context, get_account_tier, is_authenticated, sync_account_profile
+from .auth import is_authenticated, sync_account_profile
 from .asset_builder import ensure_earth_surface_parent, sync_surface_elevation_scale_for_radius
 from .diagnostics import write_resolve_diagnostics, write_tile_view_diagnostics
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS, with_error_code
@@ -37,6 +37,7 @@ from .streaming_utils import (
 )
 from .state import (
     _force_restore_navigation_adaptive_state,
+    _estimate_download_bytes_for_visible_tiles,
     _is_animation_playing,
     create_temp_mesh,
     cleanup_planetka_unused_data,
@@ -47,6 +48,7 @@ from .state import (
     queue_resolve_download,
     remove_object_and_unused_mesh,
     replace_tiles,
+    update_resolve_size_estimates,
 )
 
 
@@ -58,6 +60,12 @@ LAST_PANORAMA_MODE_KEY = "planetka_last_panorama_mode"
 LAST_PANORAMA_LIMIT_EXCEEDED_KEY = "planetka_last_panorama_limit_exceeded"
 LAST_PANORAMA_REQUIRED_TILES_KEY = "planetka_last_panorama_required_tiles"
 LAST_PANORAMA_REQUIRED_Z_KEY = "planetka_last_panorama_required_z"
+RESOLVE_FAILURE_FLAG_KEY = "planetka_resolve_integrity_failed"
+RESOLVE_FAILURE_MESSAGE_KEY = "planetka_resolve_integrity_message"
+LAST_MANUAL_RESOLVE_TILE_COUNT_KEY = "planetka_last_manual_resolve_tile_count"
+LAST_MANUAL_RESOLVE_DOWNLOADED_MB_KEY = "planetka_last_manual_resolve_downloaded_mb"
+LAST_MANUAL_RESOLVE_DOWNLOADED_GB_KEY = "planetka_last_manual_resolve_downloaded_gb"
+LAST_MANUAL_RESOLVE_TOTAL_SECONDS_KEY = "planetka_last_manual_resolve_total_seconds"
 
 
 _TILE_ZD_PATTERN = re.compile(r"_z(\d+)_d(\d+)$")
@@ -104,19 +112,6 @@ def _validate_texture_source(base_path):
     except RuntimeError as exc:
         return "", str(exc)
     if not has_s2:
-        # Free/Personal accounts can be geo-restricted outside NZ and may not be allowed
-        # to access these global sentinel probes. Do not fail Create Earth for those tiers.
-        try:
-            prefs = get_prefs()
-            tier = str(get_account_tier(prefs) or "").strip().lower()
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-            tier = ""
-        if tier in {"free", "lite"}:
-            logger.info(
-                "Planetka: skipping strict sentinel gate for restricted tier '%s' (S2 sentinel unavailable).",
-                tier,
-            )
-            return normalized, ""
         return "", "Planetka Cloudflare source is reachable but required S2 sentinel tiles are missing."
 
     return normalized, ""
@@ -198,6 +193,58 @@ def _show_popup_lines(context, title, icon, lines):
         wm.popup_menu(_draw, title=str(title or "Planetka"), icon=str(icon or "INFO"))
     except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
         logger.debug("Planetka: failed showing popup warning", exc_info=True)
+
+
+def _wrap_popup_text_lines(text, width=86):
+    raw = str(text or "").strip()
+    if not raw:
+        return ()
+    tokens = raw.split()
+    if not tokens:
+        return ()
+    lines = []
+    current = []
+    current_len = 0
+    for token in tokens:
+        token_len = len(token)
+        sep = 1 if current else 0
+        if current and (current_len + sep + token_len) > int(max(20, int(width))):
+            lines.append(" ".join(current))
+            current = [token]
+            current_len = token_len
+        else:
+            if current:
+                current_len += 1 + token_len
+                current.append(token)
+            else:
+                current = [token]
+                current_len = token_len
+    if current:
+        lines.append(" ".join(current))
+    return tuple(lines)
+
+
+def _set_resolve_failure_notice(scene, message):
+    if scene is None:
+        return
+    safe_message = str(message or "").strip() or "Resolve failed. Please click Rebuild Earth."
+    try:
+        scene[RESOLVE_FAILURE_FLAG_KEY] = True
+        scene[RESOLVE_FAILURE_MESSAGE_KEY] = safe_message
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed storing resolve failure notice on scene", exc_info=True)
+
+
+def _clear_resolve_failure_notice(scene):
+    if scene is None:
+        return
+    try:
+        if RESOLVE_FAILURE_FLAG_KEY in scene:
+            del scene[RESOLVE_FAILURE_FLAG_KEY]
+        if RESOLVE_FAILURE_MESSAGE_KEY in scene:
+            del scene[RESOLVE_FAILURE_MESSAGE_KEY]
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed clearing resolve failure notice on scene", exc_info=True)
 
 
 def _count_missing_tile_loading_images(material_name="Planetka Earth Material"):
@@ -358,6 +405,63 @@ def _validate_resolve_scene_integrity(earth_surface):
     return ""
 
 
+def _validate_resolve_completion_integrity(scene, earth_surface, requested_tiles, shader_result, missing_node_images):
+    issues = []
+    final_surface = get_earth_object() or earth_surface
+    if final_surface is None:
+        issues.append("Earth surface object is missing after resolve.")
+        return issues
+
+    scene_integrity_issue = _validate_resolve_scene_integrity(final_surface)
+    if scene_integrity_issue:
+        issues.append(scene_integrity_issue)
+
+    mesh_data = getattr(final_surface, "data", None)
+    try:
+        vertex_count = len(getattr(mesh_data, "vertices", ()) or ())
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        vertex_count = 0
+    if int(vertex_count) <= 0:
+        issues.append("Earth surface mesh has no vertices after resolve.")
+
+    try:
+        users_collection = tuple(getattr(final_surface, "users_collection", ()) or ())
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        users_collection = ()
+    if not users_collection:
+        issues.append("Earth surface object is not linked to any collection.")
+
+    try:
+        missing_count = int(missing_node_images or 0)
+    except (TypeError, ValueError):
+        missing_count = 0
+    if missing_count > 0:
+        issues.append(f"Texture node images missing after resolve: {missing_count}.")
+
+    requested_count = 0
+    for tile in requested_tiles or ():
+        if str(tile or "").strip():
+            requested_count += 1
+    applied_tiles = ()
+    if isinstance(shader_result, dict):
+        payload = shader_result.get("resolved_tiles", None)
+        if payload is None:
+            payload = shader_result.get("applied_tiles", ())
+        if isinstance(payload, (list, tuple, set)):
+            applied_tiles = tuple(str(tile) for tile in payload if str(tile or "").strip())
+    if requested_count > 0 and len(applied_tiles) <= 0:
+        issues.append("Shader did not apply any resolved tiles.")
+
+    if scene is not None:
+        try:
+            scene_root = getattr(scene, "collection", None)
+            if scene_root is None:
+                issues.append("Scene root collection is unavailable after resolve.")
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            issues.append("Scene root collection is unavailable after resolve.")
+    return issues
+
+
 class PLANETKA_OT_LoadTextures(bpy.types.Operator):
     bl_idname = "planetka.load_textures"
     bl_label = "Resolve Earth"
@@ -398,6 +502,12 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         options={'HIDDEN', 'SKIP_SAVE'},
     )
 
+    texture_quality_mode_override: StringProperty(
+        name="Texture Quality Override",
+        default="",
+        options={'HIDDEN', 'SKIP_SAVE'},
+    )
+
     def execute(self, context):
         resolve_start = time.perf_counter()
         phase_assets_ms = 0.0
@@ -427,6 +537,10 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         props = require_planetka_props(self, context, logger=logger)
         if props is None:
             return {'CANCELLED'}
+        manual_summary_requested = (
+            not bool(getattr(self, "silent", False))
+            and not bool(getattr(self, "defer_download", False))
+        )
 
         try:
             prepared_segments = int(scene.get(ANIMATION_PREPARED_SEGMENTS_KEY, 0))
@@ -573,7 +687,13 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         tiles_override = _parse_tiles_override(getattr(self, "tiles_override_json", ""))
         texture_quality_mode = "PREVIEW"
         try:
-            texture_quality_mode = _normalize_texture_quality_mode(getattr(props, "texture_quality_mode", "PREVIEW"))
+            override_mode = str(getattr(self, "texture_quality_mode_override", "") or "").strip()
+            if override_mode:
+                texture_quality_mode = _normalize_texture_quality_mode(override_mode)
+            else:
+                texture_quality_mode = _normalize_texture_quality_mode(
+                    getattr(props, "texture_quality_mode", "PREVIEW")
+                )
         except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
             texture_quality_mode = "PREVIEW"
         try:
@@ -588,26 +708,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             nav_altitude_km = max(0.0, float(getattr(props, "nav_altitude_km", 0.0)))
         except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
             nav_altitude_km = 0.0
-        if not allows_balanced_full_quality_for_context(
-            prefs=prefs,
-            source=props,
-            requested_mode=texture_quality_mode,
-        ):
-            fallback_quality_mode = "PREVIEW"
-            if (
-                str(texture_quality_mode).upper() == "FULL"
-                and allows_balanced_full_quality_for_context(
-                    prefs=prefs,
-                    source=props,
-                    requested_mode="BALANCED",
-                )
-            ):
-                fallback_quality_mode = "BALANCED"
-            texture_quality_mode = fallback_quality_mode
-            try:
-                props.texture_quality_mode = fallback_quality_mode
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-                logger.debug("Planetka: failed writing downgraded texture quality mode", exc_info=True)
         phase_start = time.perf_counter()
         if tiles_override is not None:
             tiles = [] if force_empty_once else list(tiles_override)
@@ -674,6 +774,16 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             return {'CANCELLED'}
 
         if bool(getattr(self, "defer_download", False)):
+            full_tiles_override = tuple(tiles or ()) if texture_quality_mode == "FULL" else None
+            try:
+                update_resolve_size_estimates(
+                    scene,
+                    scope_mode=str(getattr(self, "scope_mode", "AUTO") or "AUTO"),
+                    base_path=normalized,
+                    full_tiles_override=full_tiles_override,
+                )
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka: failed updating resolve-size estimates before queued resolve", exc_info=True)
             queued = queue_resolve_download(
                 scene,
                 [str(tile) for tile in (tiles or ()) if str(tile or "").strip()],
@@ -1058,6 +1168,35 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 "full_quality_cost_bytes": int(max(0, int(full_quality_cost_bytes or 0))),
             },
         )
+        if manual_summary_requested:
+            try:
+                summary_total_bytes = int(
+                    max(
+                        0,
+                        int(
+                            _estimate_download_bytes_for_visible_tiles(
+                                tiles,
+                                normalized,
+                                texture_quality_mode=texture_quality_mode,
+                            )
+                            or 0
+                        ),
+                    )
+                )
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                summary_total_bytes = int(max(0, int(downloaded_bytes)))
+            try:
+                scene[LAST_MANUAL_RESOLVE_TILE_COUNT_KEY] = int(max(0, int(len(tiles))))
+                scene[LAST_MANUAL_RESOLVE_DOWNLOADED_MB_KEY] = float(
+                    max(0.0, float(summary_total_bytes) / float(1024.0 ** 2))
+                )
+                # Keep legacy key updated for backward compatibility with older UI builds.
+                scene[LAST_MANUAL_RESOLVE_DOWNLOADED_GB_KEY] = float(
+                    max(0.0, float(summary_total_bytes) / float(1024.0 ** 3))
+                )
+                scene[LAST_MANUAL_RESOLVE_TOTAL_SECONDS_KEY] = float(max(0.0, float(resolve_total_ms) / 1000.0))
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka: failed storing manual resolve summary stats", exc_info=True)
 
         if int(missing_node_images) > 0:
             logger.warning(
@@ -1082,15 +1221,19 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 "Planetka: resolve used fallback textures (missing_texture_assignments=%d).",
                 int(shader_missing_texture_count),
             )
-        if int(missing_node_images) > 0:
-            logger.error(
-                "Planetka: resolve integrity failure (missing_node_images=%d). "
-                "Failing immediately because node images are unassigned.",
-                int(missing_node_images),
-            )
+        integrity_issues = _validate_resolve_completion_integrity(
+            scene=scene,
+            earth_surface=new_obj,
+            requested_tiles=tiles,
+            shader_result=shader_result,
+            missing_node_images=missing_node_images,
+        )
+        if integrity_issues:
+            for issue in integrity_issues:
+                logger.error("Planetka resolve integrity detail: %s", str(issue))
             integrity_message = (
-                "Planetka resolve integrity check failed "
-                f"(missing node images: {int(missing_node_images)})."
+                "Planetka resolve integrity check failed: "
+                f"{str(integrity_issues[0] or '').strip() or 'Unknown integrity issue.'}"
             )
             coded_integrity_message = with_error_code(ErrorCode.RESOLVE_REFRESH_FAILED, integrity_message)
             try:
@@ -1099,9 +1242,11 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 logger.debug("Planetka: failed storing integrity resolve error on scene", exc_info=True)
             except (RuntimeError, TypeError, ValueError):
                 logger.debug("Planetka: failed storing integrity resolve error on scene", exc_info=True)
+            _set_resolve_failure_notice(scene, integrity_message)
+            user_message = "Resolve failed. Please click Rebuild Earth in the New Earth panel."
             return fail(
                 self,
-                integrity_message,
+                user_message,
                 code=ErrorCode.RESOLVE_REFRESH_FAILED,
                 logger=logger,
             )
@@ -1113,6 +1258,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             logger.debug("Planetka: failed clearing resolve error marker after successful resolve", exc_info=True)
         except (RuntimeError, TypeError, ValueError):
             logger.debug("Planetka: failed clearing resolve error marker after successful resolve", exc_info=True)
+        _clear_resolve_failure_notice(scene)
 
         if is_remote_source_configured(normalized) and is_authenticated(prefs):
             try:

@@ -2885,6 +2885,10 @@ def _load_embedded_material_library():
 def _ensure_embedded_material_library():
     if not _is_embedded_material_library_ready():
         _load_embedded_material_library()
+    # Hard reset image-node bindings on every Create Earth asset ensure so
+    # stale/missing cached paths from prior sessions cannot trigger GPU texture
+    # creation errors before queued resolve or preview rebinding completes.
+    _sanitize_embedded_assets()
     _bind_static_images()
 
     earth_material = bpy.data.materials.get(EARTH_MATERIAL_NAME)

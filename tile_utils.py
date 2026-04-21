@@ -15,7 +15,9 @@ logger = logging.getLogger(__name__)
 
 REAL_EARTH_RADIUS_M = 6371000.0
 DATASET_MPP_BASE_D1 = 10.0
-QUALITY_SAFETY_MARGIN = 0.9
+# Bias tile upgrades to happen a bit earlier than strict mathematical minimum.
+# 0.75 means target detail is requested at 75% of nominal threshold distance.
+QUALITY_SAFETY_MARGIN = 0.75
 MAX_TERRAIN_HEIGHT_M = 9000.0
 DEFAULT_PLANET_RADIUS_BU = 1.0
 Z_LEVELS = (1, 2, 4, 8, 15, 30, 60, 90, 180, 360)
@@ -54,6 +56,9 @@ LAST_PANORAMA_MODE_KEY = "planetka_last_panorama_mode"
 LAST_PANORAMA_LIMIT_EXCEEDED_KEY = "planetka_last_panorama_limit_exceeded"
 LAST_PANORAMA_REQUIRED_TILES_KEY = "planetka_last_panorama_required_tiles"
 LAST_PANORAMA_REQUIRED_Z_KEY = "planetka_last_panorama_required_z"
+LAST_SELECTED_Z_LEVEL_KEY = "planetka_last_selected_z_level"
+LAST_Z_SWITCH_DISTANCE_KEY = "planetka_last_z_switch_distance_bu"
+TEMPORAL_HYSTERESIS_DISTANCE_RATIO = 0.05  # 5%
 MAX_SHADER_TILE_BUDGET = 12
 # Padding low tile counts with synthetic placeholder slots can trigger
 # EEVEE/Metal sampler overflow in some camera states (e.g. Cairo frame 105).
@@ -511,6 +516,53 @@ def _resolution_bias_factor(scene):
     return 1.0
 
 
+def _apply_temporal_z_hysteresis(scene, requested_z, distance_value):
+    """Keep z-level stable near threshold using a tiny distance hysteresis band."""
+    try:
+        requested_z = int(requested_z)
+    except (TypeError, ValueError):
+        return requested_z
+
+    if scene is None:
+        return requested_z
+
+    try:
+        previous_z = int(scene.get(LAST_SELECTED_Z_LEVEL_KEY, 0) or 0)
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        previous_z = 0
+
+    if previous_z <= 0 or previous_z == requested_z:
+        return requested_z
+
+    try:
+        current_distance = max(0.0, float(distance_value))
+    except (TypeError, ValueError):
+        current_distance = 0.0
+
+    try:
+        switch_distance = max(
+            0.0,
+            float(scene.get(LAST_Z_SWITCH_DISTANCE_KEY, current_distance) or current_distance),
+        )
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        switch_distance = current_distance
+
+    band = float(switch_distance) * float(TEMPORAL_HYSTERESIS_DISTANCE_RATIO)
+
+    # Requested finer tiles (smaller z): require moving a bit closer than the
+    # prior switch threshold.
+    if requested_z < previous_z:
+        if current_distance >= max(0.0, switch_distance - band):
+            return previous_z
+        return requested_z
+
+    # Requested coarser tiles (larger z): require moving a bit farther than the
+    # prior switch threshold.
+    if current_distance <= (switch_distance + band):
+        return previous_z
+    return requested_z
+
+
 def _texture_quality_mode(scene, override_mode=None):
     def _normalize_quality_token(value):
         token = str(value or "").strip().upper()
@@ -518,14 +570,15 @@ def _texture_quality_mode(scene, override_mode=None):
             return "BALANCED"
         if token in TEXTURE_QUALITY_MODES:
             return token
-        return "BALANCED"
+        return "PREVIEW"
 
     if override_mode is not None:
         return _normalize_quality_token(override_mode)
     props = getattr(scene, "planetka", None) if scene else None
     if props is None:
-        return "BALANCED"
-    return _normalize_quality_token(getattr(props, "texture_quality_mode", "BALANCED"))
+        return "PREVIEW"
+    mode = _normalize_quality_token(getattr(props, "texture_quality_mode", "PREVIEW"))
+    return mode
 
 
 def _use_active_view_coarse_textures(scene):
@@ -1236,13 +1289,75 @@ def _coarsen_tiles_n_d_levels(tiles, steps):
     return result
 
 
+def _enforce_minimum_d_level(tiles, min_d):
+    safe_min_d = max(1, int(min_d))
+    adjusted = []
+    for tile in (tiles or []):
+        parsed = parse_tile(tile)
+        if not parsed:
+            adjusted.append(tile)
+            continue
+        x, y, z, d = parsed
+        target = int(d)
+        floor = max(int(z), safe_min_d)
+        if target < floor:
+            allowed = sorted(set(D_LEVELS_BY_Z.get(int(z), [int(z)])))
+            if int(target) not in allowed:
+                allowed.append(int(target))
+                allowed = sorted(set(allowed))
+            replacement = None
+            for candidate in allowed:
+                if int(candidate) >= int(floor):
+                    replacement = int(candidate)
+                    break
+            if replacement is None:
+                replacement = int(max(allowed)) if allowed else int(floor)
+            target = int(replacement)
+        adjusted.append(format_tile(x, y, z, target))
+    return sorted(
+        list(dict.fromkeys(adjusted)),
+        key=lambda tile: (
+            parse_tile(tile)[3] if parse_tile(tile) else 10**9,
+            (parse_tile(tile)[3] / parse_tile(tile)[2]) if parse_tile(tile) else 10**9,
+            tile,
+        ),
+    )
+
+
 def _apply_texture_quality_mode(tiles, scene, override_mode=None):
     mode = _texture_quality_mode(scene, override_mode=override_mode)
+    result = list(tiles or [])
     if mode == "BALANCED":
-        return _coarsen_tiles_n_d_levels(tiles, 1)
-    if mode == "PREVIEW":
-        return _coarsen_tiles_n_d_levels(tiles, 2)
-    return list(tiles or [])
+        result = _coarsen_tiles_n_d_levels(tiles, 1)
+    elif mode == "PREVIEW":
+        result = _coarsen_tiles_n_d_levels(tiles, 2)
+    return _sort_tiles_for_apply(result)
+
+
+def _apply_fixed_z180_quality_targets(tiles, mode):
+    # Fixed z180 texture-quality targets regardless of camera altitude/distance.
+    # As soon as a z180 tile is used, enforce:
+    # - Preview  -> d720
+    # - Balanced -> d360
+    # - Full     -> d180
+    target_by_mode = {
+        "PREVIEW": 720,
+        "BALANCED": 360,
+        "FULL": 180,
+    }
+    target_d = int(target_by_mode.get(str(mode or "").strip().upper(), 720))
+    adjusted = []
+    for tile in (tiles or []):
+        parsed = parse_tile(tile)
+        if not parsed:
+            adjusted.append(tile)
+            continue
+        x, y, z, d = parsed
+        if int(z) == 180 and int(d) != target_d:
+            adjusted.append(format_tile(x, y, z, target_d))
+        else:
+            adjusted.append(tile)
+    return _sort_tiles_for_apply(adjusted)
 
 
 def _find_active_view3d_context():
@@ -1469,12 +1584,26 @@ def main(scope_mode="AUTO", edge_boost=False, texture_quality_mode_override=None
         ortho_scale=ortho_scale,
     )
     target_z_mpp = int(compute_z_value(required_mpp_near, bias_factor=bias_factor))
-    target_z = target_z_mpp
+    target_z = int(
+        _apply_temporal_z_hysteresis(
+            scene,
+            target_z_mpp,
+            max(0.0, float(camera_altitude)),
+        )
+    )
     logger.debug(
         "z target: %s (mpp=%s)",
         target_z,
         target_z_mpp,
     )
+    if int(target_z) != int(target_z_mpp):
+        logger.debug(
+            "Planetka: temporal z hysteresis held target z at %03d (raw %03d, camera_altitude_bu=%.6f, band=%.4f%%).",
+            int(target_z),
+            int(target_z_mpp),
+            float(max(0.0, float(camera_altitude))),
+            float(TEMPORAL_HYSTERESIS_DISTANCE_RATIO) * 100.0,
+        )
 
     cam_pos_local, cam_forward_local, cam_right_local, cam_up_local = _transform_to_planet_space(
         cam_pos_world,
@@ -1576,6 +1705,22 @@ def main(scope_mode="AUTO", edge_boost=False, texture_quality_mode_override=None
         )
         return []
 
+    try:
+        previous_selected_z = int(scene.get(LAST_SELECTED_Z_LEVEL_KEY, 0) or 0)
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        previous_selected_z = 0
+    try:
+        scene[LAST_SELECTED_Z_LEVEL_KEY] = int(selected_z)
+        reference_distance = (
+            float(selected_nearest_distance)
+            if selected_nearest_distance is not None
+            else float(max(0.0, float(camera_altitude)))
+        )
+        if int(previous_selected_z) != int(selected_z):
+            scene[LAST_Z_SWITCH_DISTANCE_KEY] = max(0.0, float(reference_distance))
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed storing temporal z hysteresis diagnostics", exc_info=True)
+
     required_mpp_selected = required_mpp_near
     if selected_nearest_distance is not None:
         required_mpp_selected = _required_mpp_from_distance(
@@ -1593,6 +1738,8 @@ def main(scope_mode="AUTO", edge_boost=False, texture_quality_mode_override=None
         scene[LAST_TARGET_D_KEY] = int(_target_d_from_required_mpp(required_mpp_selected))
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed writing selected tile diagnostics", exc_info=True)
+
+    quality_mode = _texture_quality_mode(scene, override_mode=texture_quality_mode_override)
 
     final_tiles = find_optimizable_tiles(list(selected_tiles))
     final_tiles = _one_pass_selective_refinement(
@@ -1649,6 +1796,7 @@ def main(scope_mode="AUTO", edge_boost=False, texture_quality_mode_override=None
             int(MIN_SHADER_TILE_FLOOR),
             int(MAX_SHADER_TILE_BUDGET),
         )
+    final_tiles = _apply_fixed_z180_quality_targets(final_tiles, quality_mode)
     LAST_TILE_BUDGET_OUTPUT = list(final_tiles)
     write_tile_view_diagnostics(
         scene=scene,

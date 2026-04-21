@@ -49,6 +49,7 @@ FALLBACK_AUTH_DEVICE_VERIFICATION_URL_KEY = "planetka_auth_device_verification_u
 FALLBACK_AUTH_DEVICE_EXPIRES_AT_KEY = "planetka_auth_device_expires_at"
 FALLBACK_AUTH_POLL_INTERVAL_SECONDS_KEY = "planetka_auth_poll_interval_seconds"
 FALLBACK_STARTUP_SETUP_PROFILE_JSON_KEY = "planetka_startup_setup_profile_json"
+FALLBACK_CREATE_EARTH_PREFLIGHT_SEEN_VERSION_KEY = "planetka_create_earth_preflight_seen_version"
 TEXTURE_SOURCE_MODE_DEFAULT = "CLOUDFLARE"
 REMOTE_TEXTURE_BASE_DEFAULT = "remote"
 
@@ -131,6 +132,11 @@ class PlanetkaExtensionPreferences(AddonPreferences):
         default="",
         options={'HIDDEN'},
     )
+    create_earth_preflight_seen_version: StringProperty(
+        name="Create Earth Preflight Seen Version",
+        default="",
+        options={'HIDDEN'},
+    )
 
     # File format preference
     def draw(self, context):
@@ -168,58 +174,18 @@ def get_earth_surface_candidates():
     if objects is None:
         return []
 
-    candidates = []
+    # Strict identity rule:
+    # Only an object with the canonical name is considered the active Earth surface.
+    # If the user renames it, Planetka treats the surface as missing.
     by_name = objects.get(EARTH_OBJECT_DEFAULT_NAME)
     if by_name and getattr(by_name, "type", None) == 'MESH':
-        candidates.append(by_name)
-
-    for obj in objects:
-        if getattr(obj, "type", None) != 'MESH':
-            continue
-        try:
-            if obj.get(EARTH_ROLE_KEY) == EARTH_ROLE_VALUE:
-                candidates.append(obj)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            continue
-
-    for obj in objects:
-        if getattr(obj, "type", None) != 'MESH':
-            continue
-        mats = getattr(getattr(obj, "data", None), "materials", None)
-        if not mats:
-            continue
-        for mat in mats:
-            if mat and mat.name == "Planetka Earth Material":
-                candidates.append(obj)
-                break
-
-    return _deduplicate_objects(candidates)
+        return [by_name]
+    return []
 
 
 def get_earth_object():
     candidates = get_earth_surface_candidates()
-    if not candidates:
-        return None
-
-    if len(candidates) == 1:
-        return candidates[0]
-
-    for obj in candidates:
-        if obj.name == EARTH_OBJECT_DEFAULT_NAME and getattr(obj, "type", None) == 'MESH':
-            return obj
-
-    role_candidates = []
-    for obj in candidates:
-        try:
-            if obj.get(EARTH_ROLE_KEY) == EARTH_ROLE_VALUE:
-                role_candidates.append(obj)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            continue
-
-    if len(role_candidates) == 1:
-        return role_candidates[0]
-
-    return None
+    return candidates[0] if candidates else None
 
 def get_prefs():
     class _FallbackPrefs:
@@ -440,6 +406,10 @@ def get_prefs():
         startup_setup_profile_json = property(
             lambda self: self._get_value(FALLBACK_STARTUP_SETUP_PROFILE_JSON_KEY, ""),
             lambda self, value: self._set_value(FALLBACK_STARTUP_SETUP_PROFILE_JSON_KEY, value),
+        )
+        create_earth_preflight_seen_version = property(
+            lambda self: self._get_value(FALLBACK_CREATE_EARTH_PREFLIGHT_SEEN_VERSION_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_CREATE_EARTH_PREFLIGHT_SEEN_VERSION_KEY, value),
         )
 
     def _addon_pref_by_name(addons, key):

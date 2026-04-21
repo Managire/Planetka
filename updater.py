@@ -41,7 +41,11 @@ _RUNTIME = {
     "current_version": "",
     "update_ready": False,
     "last_error": "",
+    "last_check_at": 0,
     "release_notes_url": "",
+    "phase": "idle",
+    "downloaded_bytes": 0,
+    "download_total_bytes": 0,
 }
 
 
@@ -163,8 +167,32 @@ def _set_runtime(**kwargs):
 def get_public_status():
     with _LOCK:
         status = dict(_RUNTIME)
+    state = _load_state()
+    if int(status.get("last_check_at", 0) or 0) <= 0:
+        try:
+            last_check_at = int(state.get("last_check_at", 0) or 0)
+        except (TypeError, ValueError):
+            last_check_at = 0
+        if last_check_at > 0:
+            status["last_check_at"] = last_check_at
+            _set_runtime(last_check_at=last_check_at)
     current = str(status.get("current_version") or "").strip() or get_local_version()
     status["current_version"] = current
+    if not bool(status.get("update_ready", False)):
+        available = state.get("available_update")
+        if isinstance(available, dict):
+            available_version = str(available.get("version") or "").strip()
+            if available_version and _is_newer_version(available_version, current):
+                status["update_ready"] = True
+                status["latest_version"] = available_version
+                release_notes_url = str(available.get("release_notes_url") or "").strip()
+                if release_notes_url:
+                    status["release_notes_url"] = release_notes_url
+                _set_runtime(
+                    update_ready=True,
+                    latest_version=available_version,
+                    release_notes_url=release_notes_url,
+                )
     return status
 
 
@@ -215,7 +243,16 @@ def _sha256_file(path):
     return hasher.hexdigest().lower()
 
 
-def _download_file(url, target_path):
+def _format_mb_progress(downloaded_bytes, total_bytes):
+    downloaded_mb = float(max(0, int(downloaded_bytes or 0))) / (1024.0 * 1024.0)
+    total = int(total_bytes or 0)
+    if total > 0:
+        total_mb = float(total) / (1024.0 * 1024.0)
+        return f"{downloaded_mb:.2f} / {total_mb:.2f} MB"
+    return f"{downloaded_mb:.2f} MB"
+
+
+def _download_file(url, target_path, progress_callback=None):
     request = urllib.request.Request(
         url,
         method="GET",
@@ -224,14 +261,33 @@ def _download_file(url, target_path):
         },
     )
     tmp_path = f"{target_path}.tmp"
+    downloaded_bytes = 0
+    total_bytes = 0
+    last_report_at = 0.0
     with urllib.request.urlopen(request, timeout=max(5, int(DEFAULT_REQUEST_TIMEOUT_SECONDS) * 6)) as response:
+        try:
+            total_bytes = int(response.headers.get("Content-Length", "0") or 0)
+        except (TypeError, ValueError):
+            total_bytes = 0
+        if callable(progress_callback):
+            progress_callback(downloaded_bytes, total_bytes, False)
         with open(tmp_path, "wb") as handle:
             while True:
                 chunk = response.read(1024 * 1024)
                 if not chunk:
                     break
                 handle.write(chunk)
+                downloaded_bytes += len(chunk)
+                now = time.monotonic()
+                should_report = (now - last_report_at) >= 0.15
+                if total_bytes > 0 and downloaded_bytes >= total_bytes:
+                    should_report = True
+                if should_report and callable(progress_callback):
+                    progress_callback(downloaded_bytes, total_bytes, False)
+                    last_report_at = now
     os.replace(tmp_path, target_path)
+    if callable(progress_callback):
+        progress_callback(downloaded_bytes, total_bytes, True)
 
 
 def _safe_zip_relpath(member_name, root_prefix):
@@ -412,7 +468,16 @@ def _run_update_check_worker(force=False):
     state = _load_state()
     now_ts = int(time.time())
     local_version = get_local_version()
-    _set_runtime(checking=True, current_version=local_version, last_error="")
+    _set_runtime(
+        checking=True,
+        current_version=local_version,
+        last_check_at=int(state.get("last_check_at", 0) or 0),
+        last_error="",
+        message="Checking for updates…",
+        phase="checking_manifest",
+        downloaded_bytes=0,
+        download_total_bytes=0,
+    )
     try:
         manifest = _fetch_manifest()
         latest_version = manifest.get("version", "")
@@ -428,41 +493,39 @@ def _run_update_check_worker(force=False):
                 latest_version=str(latest_version or ""),
                 release_notes_url=str(release_notes_url or ""),
                 update_ready=False,
+                last_check_at=now_ts,
                 message="",
+                phase="idle",
+                downloaded_bytes=0,
+                download_total_bytes=0,
             )
+            state["available_update"] = None
             _save_state(state)
             return
 
         if not _is_newer_version(latest_version, local_version):
+            state["available_update"] = None
             state["pending"] = None
             _save_state(state)
             _set_runtime(
                 checking=False,
-                latest_version=str(latest_version or ""),
-                release_notes_url=str(release_notes_url or ""),
+                latest_version="",
+                release_notes_url="",
                 update_ready=False,
+                last_check_at=now_ts,
                 message="",
+                phase="idle",
+                downloaded_bytes=0,
+                download_total_bytes=0,
             )
             return
 
-        download_dir = os.path.join(_cache_root(), DOWNLOAD_DIR_NAME)
-        os.makedirs(download_dir, exist_ok=True)
-        zip_path = os.path.join(download_dir, f"planetka_{str(latest_version).strip()}.zip")
-        _download_file(manifest["download_url"], zip_path)
-
-        expected_sha = str(manifest.get("sha256") or "").strip().lower()
-        if expected_sha:
-            actual_sha = _sha256_file(zip_path)
-            if actual_sha != expected_sha:
-                raise RuntimeError("update_sha256_mismatch")
-
-        state["pending"] = {
+        state["available_update"] = {
             "version": str(latest_version or "").strip(),
-            "zip_path": str(zip_path),
-            "sha256": expected_sha,
             "download_url": str(manifest.get("download_url") or "").strip(),
+            "sha256": str(manifest.get("sha256") or "").strip().lower(),
             "release_notes_url": str(release_notes_url or "").strip(),
-            "downloaded_at": now_ts,
+            "checked_at": now_ts,
         }
         _save_state(state)
         _set_runtime(
@@ -470,34 +533,68 @@ def _run_update_check_worker(force=False):
             latest_version=str(latest_version or ""),
             release_notes_url=str(release_notes_url or ""),
             update_ready=True,
-            message=f"Update {str(latest_version or '').strip()} downloaded. Restart Blender to apply.",
+            last_check_at=now_ts,
+            message=f"Update available: {str(latest_version or '').strip()}",
             last_error="",
+            phase="ready",
+            downloaded_bytes=0,
+            download_total_bytes=0,
         )
-        logger.info("Planetka updater: downloaded version %s", str(latest_version or "").strip())
+        return
+
     except urllib.error.HTTPError as exc:
         state["last_check_at"] = now_ts
         if int(getattr(exc, "code", 0) or 0) == 404:
             # Endpoint not deployed yet: stay silent and retry on next interval.
             state["last_error"] = ""
             _save_state(state)
-            _set_runtime(checking=False, last_error="", message="", update_ready=False)
+            _set_runtime(
+                checking=False,
+                last_error="",
+                last_check_at=now_ts,
+                message="",
+                update_ready=False,
+                latest_version="",
+                release_notes_url="",
+                phase="idle",
+                downloaded_bytes=0,
+                download_total_bytes=0,
+            )
             logger.debug("Planetka updater: manifest endpoint not found (404)")
             return
         state["last_error"] = f"network:{exc}"
         _save_state(state)
-        _set_runtime(checking=False, last_error=str(state["last_error"]))
+        _set_runtime(
+            checking=False,
+            last_error=str(state["last_error"]),
+            last_check_at=now_ts,
+            message="Update check failed (network).",
+            phase="error",
+        )
         logger.debug("Planetka updater: update check failed (http)", exc_info=True)
     except (urllib.error.URLError, TimeoutError) as exc:
         state["last_check_at"] = now_ts
         state["last_error"] = f"network:{exc}"
         _save_state(state)
-        _set_runtime(checking=False, last_error=str(state["last_error"]))
+        _set_runtime(
+            checking=False,
+            last_error=str(state["last_error"]),
+            last_check_at=now_ts,
+            message="Update check failed (network timeout).",
+            phase="error",
+        )
         logger.debug("Planetka updater: update check failed (network)", exc_info=True)
     except Exception as exc:
         state["last_check_at"] = now_ts
         state["last_error"] = str(exc)
         _save_state(state)
-        _set_runtime(checking=False, last_error=str(exc))
+        _set_runtime(
+            checking=False,
+            last_error=str(exc),
+            last_check_at=now_ts,
+            message="Update check failed.",
+            phase="error",
+        )
         logger.debug("Planetka updater: update check failed", exc_info=True)
     finally:
         with _LOCK:
@@ -520,6 +617,217 @@ def kickoff_background_update_check(force=False):
             target=_run_update_check_worker,
             kwargs={"force": bool(force)},
             name="planetka-updater-check",
+            daemon=True,
+        )
+        _CHECK_THREAD.start()
+        return True
+
+
+def _run_update_install_worker(force=False):
+    del force
+    state = _load_state()
+    now_ts = int(time.time())
+    local_version = get_local_version()
+    _set_runtime(
+        checking=True,
+        current_version=local_version,
+        last_check_at=int(state.get("last_check_at", 0) or 0),
+        last_error="",
+        message="Preparing update…",
+        phase="checking_manifest",
+        downloaded_bytes=0,
+        download_total_bytes=0,
+    )
+    try:
+        manifest = _fetch_manifest()
+        latest_version = str(manifest.get("version") or "").strip()
+        release_notes_url = str(manifest.get("release_notes_url") or "").strip()
+        download_url = str(manifest.get("download_url") or "").strip()
+        expected_sha = str(manifest.get("sha256") or "").strip().lower()
+
+        state["last_manifest"] = manifest.get("raw", {})
+        state["last_check_at"] = now_ts
+        state["last_error"] = ""
+        state["current_version"] = local_version
+
+        if not download_url or not _is_newer_version(latest_version, local_version):
+            state["available_update"] = None
+            state["pending"] = None
+            _save_state(state)
+            _set_runtime(
+                checking=False,
+                latest_version="",
+                release_notes_url="",
+                update_ready=False,
+                last_check_at=now_ts,
+                message="",
+                last_error="",
+                phase="idle",
+                downloaded_bytes=0,
+                download_total_bytes=0,
+            )
+            return
+
+        download_dir = os.path.join(_cache_root(), DOWNLOAD_DIR_NAME)
+        os.makedirs(download_dir, exist_ok=True)
+        zip_path = os.path.join(download_dir, f"planetka_{latest_version}.zip")
+
+        _set_runtime(
+            checking=True,
+            latest_version=latest_version,
+            release_notes_url=release_notes_url,
+            update_ready=False,
+            message=f"Downloading update {latest_version}…",
+            phase="downloading",
+            downloaded_bytes=0,
+            download_total_bytes=0,
+        )
+
+        def _progress(downloaded_bytes, total_bytes, done):
+            progress_text = _format_mb_progress(downloaded_bytes, total_bytes)
+            message = f"Downloading update {latest_version}… ({progress_text})"
+            if done:
+                message = f"Downloaded update {latest_version} ({progress_text})."
+            _set_runtime(
+                checking=True,
+                latest_version=latest_version,
+                release_notes_url=release_notes_url,
+                update_ready=False,
+                message=message,
+                phase="downloading",
+                downloaded_bytes=int(downloaded_bytes or 0),
+                download_total_bytes=int(total_bytes or 0),
+            )
+
+        _download_file(download_url, zip_path, progress_callback=_progress)
+
+        _set_runtime(
+            checking=True,
+            latest_version=latest_version,
+            release_notes_url=release_notes_url,
+            update_ready=False,
+            message="Verifying update package…",
+            phase="verifying",
+        )
+
+        if expected_sha:
+            actual_sha = _sha256_file(zip_path)
+            if actual_sha != expected_sha:
+                raise RuntimeError("update_sha256_mismatch")
+
+        _set_runtime(
+            checking=True,
+            latest_version=latest_version,
+            release_notes_url=release_notes_url,
+            update_ready=False,
+            message="Installing update…",
+            phase="installing",
+        )
+        try:
+            _apply_zip_update(zip_path, expected_version=latest_version)
+            refreshed = get_local_version()
+            installed_version = str(refreshed or latest_version).strip()
+            state["pending"] = None
+            state["available_update"] = None
+            state["last_apply_at"] = now_ts
+            state["last_applied_version"] = installed_version
+            state["current_version"] = installed_version
+            state["last_error"] = ""
+            _save_state(state)
+            _set_runtime(
+                checking=False,
+                current_version=installed_version,
+                latest_version="",
+                release_notes_url="",
+                update_ready=False,
+                last_check_at=now_ts,
+                message=f"Updated to {installed_version}. Restart Blender to load the new code.",
+                last_error="",
+                phase="idle",
+                downloaded_bytes=0,
+                download_total_bytes=0,
+            )
+            logger.info("Planetka updater: installed version %s", installed_version)
+        except Exception:
+            # Safe fallback: keep staged package for import-time apply.
+            state["pending"] = {
+                "version": latest_version,
+                "zip_path": str(zip_path),
+                "sha256": expected_sha,
+                "download_url": download_url,
+                "release_notes_url": release_notes_url,
+                "downloaded_at": now_ts,
+            }
+            state["available_update"] = None
+            _save_state(state)
+            _set_runtime(
+                checking=False,
+                latest_version="",
+                release_notes_url="",
+                update_ready=False,
+                last_check_at=now_ts,
+                message=f"Update {latest_version} downloaded. Restart Blender to apply.",
+                last_error="",
+                phase="ready",
+                downloaded_bytes=0,
+                download_total_bytes=0,
+            )
+            logger.debug("Planetka updater: live install failed, staged for restart apply", exc_info=True)
+    except urllib.error.HTTPError as exc:
+        state["last_check_at"] = now_ts
+        state["last_error"] = f"network:{exc}"
+        _save_state(state)
+        _set_runtime(
+            checking=False,
+            last_error=str(state["last_error"]),
+            last_check_at=now_ts,
+            message="Update failed (network).",
+            phase="error",
+            update_ready=bool(get_public_status().get("update_ready", False)),
+        )
+        logger.debug("Planetka updater: update install failed (http)", exc_info=True)
+    except (urllib.error.URLError, TimeoutError) as exc:
+        state["last_check_at"] = now_ts
+        state["last_error"] = f"network:{exc}"
+        _save_state(state)
+        _set_runtime(
+            checking=False,
+            last_error=str(state["last_error"]),
+            last_check_at=now_ts,
+            message="Update failed (network timeout).",
+            phase="error",
+            update_ready=bool(get_public_status().get("update_ready", False)),
+        )
+        logger.debug("Planetka updater: update install failed (network)", exc_info=True)
+    except Exception as exc:
+        state["last_check_at"] = now_ts
+        state["last_error"] = str(exc)
+        _save_state(state)
+        _set_runtime(
+            checking=False,
+            last_error=str(exc),
+            last_check_at=now_ts,
+            message="Update failed.",
+            phase="error",
+            update_ready=bool(get_public_status().get("update_ready", False)),
+        )
+        logger.debug("Planetka updater: update install failed", exc_info=True)
+    finally:
+        with _LOCK:
+            global _CHECK_THREAD
+            _CHECK_THREAD = None
+
+
+def kickoff_background_update_install(force=False):
+    del force
+    with _LOCK:
+        global _CHECK_THREAD
+        if _CHECK_THREAD is not None and _CHECK_THREAD.is_alive():
+            return False
+        _CHECK_THREAD = threading.Thread(
+            target=_run_update_install_worker,
+            kwargs={"force": True},
+            name="planetka-updater-install",
             daemon=True,
         )
         _CHECK_THREAD.start()

@@ -17,6 +17,7 @@ from .animation_tools import (
     PLANETKA_OT_AnimationMakeReady,
     PLANETKA_OT_AnimationPreviewShot,
     PLANETKA_OT_AnimationRenderHeadless,
+    PLANETKA_OT_AnimationRenderInfo,
     PLANETKA_OT_AnimationSaveView,
     PLANETKA_OT_AnimationWaypointAdd,
     PLANETKA_OT_AnimationWaypointApply,
@@ -34,21 +35,23 @@ from .operators import (
     PLANETKA_OT_AccountOpenLogin,
     PLANETKA_OT_AccountUpgrade,
     PLANETKA_OT_ConfirmImportNewData,
+    PLANETKA_OT_UpdateNow,
     PLANETKA_OT_DownloadStatusPopup,
     PLANETKA_OT_DeleteSavedLocation,
     PLANETKA_OT_ImportNewData,
     PLANETKA_OT_LoadSavedLocation,
-    PLANETKA_OT_GoToNewZealand,
     PLANETKA_OT_NavigationApplyShot,
+    PLANETKA_OT_ResetEarthTransform,
+    PLANETKA_OT_ResetSurfaceGradingSection,
     PLANETKA_OT_AutoAdjustClipping,
     PLANETKA_OT_SetBackgroundBlack,
     PLANETKA_OT_SetTextureQualityAndResolve,
     PLANETKA_OT_NavigationPreset,
+    PLANETKA_OT_RebuildEarth,
     PLANETKA_OT_ResetStartupSetupFactory,
     PLANETKA_OT_SaveStartupSetup,
     PLANETKA_OT_SaveLocation,
     PLANETKA_OT_SelectTextureSource,
-    PLANETKA_OT_SwitchToCycles,
     PLANETKA_OT_SunlightPreset,
     PLANETKA_OT_UseCurrentViewNavigation,
 )
@@ -82,8 +85,8 @@ from .state import (
 )
 from .ui import (
     PLANETKA_PT_LiveTelemetryPanel,
-    PLANETKA_PT_LiveTelemetryAdvancedPanel,
-    PLANETKA_PT_LiveTelemetryAdvancedPanelCollapsed,
+    PLANETKA_PT_LiveTelemetryPanelFailure,
+    PLANETKA_PT_LiveTelemetryPanelCollapsed,
     PLANETKA_PT_LinksPanel,
     PLANETKA_PT_LinksPanelCollapsed,
     PLANETKA_PT_AnimationPanel,
@@ -91,16 +94,20 @@ from .ui import (
     PLANETKA_PT_EarthSettingsPanelCollapsed,
     PLANETKA_PT_NavigationPanel,
     PLANETKA_PT_NavigationPanelCollapsed,
-    PLANETKA_PT_NavigationSavedLocationsPanel,
-    PLANETKA_PT_NavigationSavedLocationsPanelCollapsed,
     PLANETKA_PT_NewEarthPanel,
     PLANETKA_PT_NewEarthPanelCollapsed,
+    PLANETKA_PT_NewEarthPanelFailure,
     PLANETKA_PT_SubscriptionPanel,
     PLANETKA_PT_SubscriptionPanelCollapsed,
+    PLANETKA_PT_SubscriptionPanelUpdate,
     PLANETKA_PT_SunlightPanel,
     PLANETKA_PT_SettingsPanel,
 )
-from .validation import PLANETKA_OT_ReportBug, PLANETKA_OT_ValidateTextureSource
+from .validation import (
+    PLANETKA_OT_ReportBug,
+    PLANETKA_OT_SceneHealthCheck,
+    PLANETKA_OT_ValidateTextureSource,
+)
 
 bl_info = {
     "name": "Planetka - the Earth",
@@ -119,19 +126,21 @@ classes = (
     PlanetkaProperties,
     PLANETKA_OT_AccountLogin,
     PLANETKA_OT_CheckUpdates,
+    PLANETKA_OT_UpdateNow,
     PLANETKA_OT_AccountOpenLogin,
     PLANETKA_OT_AccountCancelLogin,
     PLANETKA_OT_AccountLogout,
     PLANETKA_OT_AccountContact,
     PLANETKA_OT_AccountUpgrade,
-    PLANETKA_OT_SwitchToCycles,
     PLANETKA_OT_DownloadStatusPopup,
     PLANETKA_OT_AddEarth,
+    PLANETKA_OT_RebuildEarth,
     PLANETKA_OT_SaveLocation,
     PLANETKA_OT_LoadSavedLocation,
     PLANETKA_OT_DeleteSavedLocation,
-    PLANETKA_OT_GoToNewZealand,
     PLANETKA_OT_NavigationApplyShot,
+    PLANETKA_OT_ResetEarthTransform,
+    PLANETKA_OT_ResetSurfaceGradingSection,
     PLANETKA_OT_AutoAdjustClipping,
     PLANETKA_OT_SetBackgroundBlack,
     PLANETKA_OT_SetTextureQualityAndResolve,
@@ -152,6 +161,7 @@ classes = (
     PLANETKA_OT_AnimationWaypointApply,
     PLANETKA_OT_AnimationPreviewShot,
     PLANETKA_OT_AnimationRenderHeadless,
+    PLANETKA_OT_AnimationRenderInfo,
     PLANETKA_OT_AnimationMakeReady,
     PLANETKA_OT_AnimationClearPrepared,
     PLANETKA_OT_SelectTextureSource,
@@ -159,20 +169,21 @@ classes = (
     PLANETKA_OT_ConfirmImportNewData,
     PLANETKA_OT_LoadTextures,
     PLANETKA_OT_ValidateTextureSource,
+    PLANETKA_OT_SceneHealthCheck,
     PLANETKA_OT_ReportBug,
     PLANETKA_OT_SaveStartupSetup,
     PLANETKA_OT_ResetStartupSetupFactory,
     PLANETKA_PT_SubscriptionPanel,
     PLANETKA_PT_SubscriptionPanelCollapsed,
+    PLANETKA_PT_SubscriptionPanelUpdate,
     PLANETKA_PT_NewEarthPanel,
+    PLANETKA_PT_NewEarthPanelFailure,
     PLANETKA_PT_NewEarthPanelCollapsed,
     PLANETKA_PT_NavigationPanelCollapsed,
+    PLANETKA_PT_LiveTelemetryPanelCollapsed,
+    PLANETKA_PT_LiveTelemetryPanelFailure,
     PLANETKA_PT_LiveTelemetryPanel,
-    PLANETKA_PT_LiveTelemetryAdvancedPanel,
-    PLANETKA_PT_LiveTelemetryAdvancedPanelCollapsed,
     PLANETKA_PT_NavigationPanel,
-    PLANETKA_PT_NavigationSavedLocationsPanel,
-    PLANETKA_PT_NavigationSavedLocationsPanelCollapsed,
     PLANETKA_PT_SunlightPanel,
     PLANETKA_PT_EarthSettingsPanel,
     PLANETKA_PT_EarthSettingsPanelCollapsed,
@@ -233,7 +244,11 @@ def _remove_frame_change_post_handler():
 
 
 def _planetka_render_post(_dummy):
-    recover_post_render_state(getattr(bpy.context, "scene", None))
+    recover_post_render_state(getattr(bpy.context, "scene", None), cancelled=False)
+
+
+def _planetka_render_cancel(_dummy):
+    recover_post_render_state(getattr(bpy.context, "scene", None), cancelled=True)
 
 
 def _planetka_render_pre(_dummy):
@@ -252,6 +267,9 @@ def _remove_render_handlers():
                 handler_list.remove(handler)
                 continue
             if handler is _planetka_render_post or getattr(handler, "__name__", "") == "_planetka_render_post":
+                handler_list.remove(handler)
+                continue
+            if handler is _planetka_render_cancel or getattr(handler, "__name__", "") == "_planetka_render_cancel":
                 handler_list.remove(handler)
 
 
@@ -321,7 +339,7 @@ def register():
     bpy.app.handlers.render_pre.append(_planetka_render_pre)
     bpy.app.handlers.render_post.append(_planetka_render_post)
     bpy.app.handlers.render_complete.append(_planetka_render_post)
-    bpy.app.handlers.render_cancel.append(_planetka_render_post)
+    bpy.app.handlers.render_cancel.append(_planetka_render_cancel)
     _unregister_keymaps()
     _register_keymaps()
     try:

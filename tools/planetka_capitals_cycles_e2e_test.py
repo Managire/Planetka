@@ -5,7 +5,7 @@ Flow:
 1. Enable addon in a fresh Blender process.
 2. Authenticate (existing prefs session or PLANETKA_AUTH_PAYLOAD override).
 3. Create Earth.
-4. Press "Switch to Cycles" operator.
+4. Set render engine to Cycles.
 5. For 50 random capital-city queries:
    - Place Search query
    - Random altitude [30, 3000] km
@@ -401,8 +401,7 @@ def main():
         create_result = bpy.ops.planetka.add_earth()
         _assert("FINISHED" in create_result, f"Create Earth failed: {create_result}")
 
-        switch_result = bpy.ops.planetka.switch_to_cycles()
-        _assert("FINISHED" in switch_result, f"Switch to Cycles failed: {switch_result}")
+        scene.render.engine = "CYCLES"
         _assert(str(scene.render.engine) == "CYCLES", f"Render engine is not CYCLES after switch: {scene.render.engine}")
         gpu_info = _configure_cycles_gpu(scene)
         _assert(bool(gpu_info.get("gpu_enabled")), "Cycles GPU is not available/enabled on this machine.")

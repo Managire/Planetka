@@ -343,8 +343,8 @@ def main():
         props = scene.planetka
         props.auto_resolve = False
         props.texture_quality_mode = "FULL"
-        props.render_engine_optimization = "CYCLES"
         props.show_earth_preview = False
+        scene.render.engine = "CYCLES"
 
         scene.render.resolution_x = 1920
         scene.render.resolution_y = 1080

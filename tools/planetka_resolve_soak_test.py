@@ -761,8 +761,7 @@ def main():
 
         create_result = bpy.ops.planetka.add_earth()
         _assert("FINISHED" in create_result, f"Create Earth failed: {create_result}")
-        switch_result = bpy.ops.planetka.switch_to_cycles()
-        _assert("FINISHED" in switch_result, f"Switch to Cycles failed: {switch_result}")
+        scene.render.engine = "CYCLES"
         _assert(str(scene.render.engine) == "CYCLES", f"Render engine is not CYCLES: {scene.render.engine}")
         gpu_info = _configure_cycles_gpu(scene)
         _log(f"Cycles backend={gpu_info.get('backend')} gpu_enabled={gpu_info.get('gpu_enabled')} devices={gpu_info.get('devices')}")

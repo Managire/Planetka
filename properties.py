@@ -2,6 +2,7 @@ import bpy
 import importlib
 import logging
 import math
+import re
 from bpy.props import (
     BoolProperty,
     CollectionProperty,
@@ -16,15 +17,15 @@ from mathutils import Vector
 from .extension_prefs import get_earth_object, get_prefs, read_saved_locations
 from .geonames_db import get_cached_place_by_display, get_place_by_display, search_places
 from .state import (
+    is_navigation_or_camera_sync_suspended,
+    request_next_navigation_apply_behavior,
     resume_navigation_shot_updates,
     suspend_navigation_shot_updates,
     update_atmosphere_enabled,
     update_auto_resolve,
     update_debug_logging,
-    update_renderer_engine_optimization,
     update_navigation_shot,
     update_navigation_focal_length,
-    update_r2_cache_settings,
     update_show_earth_preview,
     update_sunlight_controls,
     update_sunlight_strength,
@@ -45,9 +46,40 @@ PLACE_SEARCH_DEFAULT_ALTITUDE_KM = 60.0
 PLACE_SEARCH_DEFAULT_TILT_DEG = 45.0
 SEASONAL_TILT_PRESET_LIMIT_DEG = 23.44
 logger = logging.getLogger(__name__)
+_ANIM_PREVIEW_UPDATE_GUARD = False
+_PREVIEW_TILE_ZD_RE = re.compile(r"_z(\d+)_d(\d+)\.", re.IGNORECASE)
 
 def update_texture_quality_mode(self, context):
     update_auto_resolve(self, context)
+
+
+def _show_earth_preview_description():
+    base = "Show or hide the low-detail Earth preview helper mesh"
+    module_name = f"{__package__}.mesh_utils" if __package__ else "mesh_utils"
+    try:
+        mesh_utils = importlib.import_module(module_name)
+        bindings = tuple(getattr(mesh_utils, "_PREVIEW_STATIC_BINDINGS", ()) or ())
+    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+        bindings = ()
+
+    zd_tokens = []
+    seen = set()
+    for binding in bindings:
+        if not isinstance(binding, (tuple, list)) or len(binding) < 2:
+            continue
+        filename = str(binding[1] or "")
+        match = _PREVIEW_TILE_ZD_RE.search(filename)
+        if not match:
+            continue
+        token = f"z{int(match.group(1)):03d}/d{int(match.group(2)):03d}"
+        if token in seen:
+            continue
+        seen.add(token)
+        zd_tokens.append(token)
+
+    if zd_tokens:
+        return f"{base}. Current preview texture resolution: {', '.join(zd_tokens)}."
+    return f"{base}."
 
 
 def _get_earth_radius_bu(self):
@@ -142,30 +174,102 @@ def _compute_max_proximity_altitude_km(scene, props):
 
 
 def _update_anim_preset_defaults(self, context):
+    global _ANIM_PREVIEW_UPDATE_GUARD
+    if _ANIM_PREVIEW_UPDATE_GUARD:
+        return
     scene = getattr(context, "scene", None) if context else None
     preset = str(getattr(self, "anim_camera_preset", "")).upper()
+    if preset in {"PUSH_IN", "PULL_BACK"}:
+        preset = "ZOOM"
+    elif preset in {"ARC_LEFT", "ARC_RIGHT"}:
+        preset = "ARC"
+    elif preset == "FLYBY":
+        preset = "NONE"
+    if preset in {"", "NONE"}:
+        return
 
     max_prox_km = _compute_max_proximity_altitude_km(scene, self)
     if max_prox_km is None or max_prox_km <= 0.0:
         max_prox_km = 100.0
 
     try:
-        if preset == "ORBIT":
+        _ANIM_PREVIEW_UPDATE_GUARD = True
+        if preset == "ZOOM":
             current_alt = max(0.0, float(getattr(self, "nav_altitude_km", 400.0)))
-            self.anim_start_altitude_km = float(current_alt)
-            self.anim_end_altitude_km = float(current_alt)
-        if preset == "PUSH_IN":
-            self.anim_start_altitude_km = float(max_prox_km * 8.0)
-            self.anim_end_altitude_km = float(max_prox_km)
-        elif preset == "PULL_BACK":
-            self.anim_start_altitude_km = float(max_prox_km)
-            self.anim_end_altitude_km = float(max_prox_km * 8.0)
-        elif preset == "FLYBY":
-            altitude_km = max(0.0, float(getattr(self, "nav_altitude_km", 0.0)))
-            self.anim_flyby_degrees = max(0.1, min(20.0, altitude_km / 200.0))
+            default_zoom_end = max(current_alt * 2.0, max_prox_km * 4.0)
+            self.anim_end_altitude_km = float(default_zoom_end)
     except (RuntimeError, TypeError, ValueError, AttributeError):
         logger.debug("Planetka: failed applying animation camera preset defaults", exc_info=True)
         return
+    finally:
+        _ANIM_PREVIEW_UPDATE_GUARD = False
+
+    _update_anim_preview_keyframes(self, context)
+
+
+def _update_anim_preview_keyframes(self, context):
+    global _ANIM_PREVIEW_UPDATE_GUARD
+    if _ANIM_PREVIEW_UPDATE_GUARD:
+        return
+    if is_navigation_or_camera_sync_suspended():
+        return
+
+    preset = str(getattr(self, "anim_camera_preset", "NONE") or "NONE").strip().upper()
+    if preset in {"PUSH_IN", "PULL_BACK"}:
+        preset = "ZOOM"
+    elif preset in {"ARC_LEFT", "ARC_RIGHT"}:
+        preset = "ARC"
+    elif preset == "FLYBY":
+        preset = "NONE"
+    if preset in {"", "NONE"}:
+        return
+
+    scene = getattr(context, "scene", None) if context else None
+    if scene is None:
+        scene = getattr(self, "id_data", None)
+    if scene is None:
+        return
+    scene_props = getattr(scene, "planetka", None)
+    if scene_props is None:
+        return
+    try:
+        self_ptr = int(self.as_pointer())
+        scene_ptr = int(scene_props.as_pointer())
+        if self_ptr != scene_ptr:
+            return
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        # Fallback: continue when pointer comparison is not available.
+        pass
+
+    try:
+        is_job_running = getattr(getattr(bpy, "app", None), "is_job_running", None)
+        if callable(is_job_running) and bool(is_job_running("RENDER")):
+            return
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return
+
+    module_name = f"{__package__}.animation_tools" if __package__ else "animation_tools"
+    try:
+        animation_tools = importlib.import_module(module_name)
+        apply_preview = getattr(animation_tools, "apply_cinematic_preview", None)
+        if not callable(apply_preview):
+            return
+        _ANIM_PREVIEW_UPDATE_GUARD = True
+        apply_preview(scene, self)
+    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed auto-updating cinematic keyframes from property change", exc_info=True)
+    finally:
+        _ANIM_PREVIEW_UPDATE_GUARD = False
+
+
+def _update_navigation_shot_and_anim_preview(self, context):
+    update_navigation_shot(self, context)
+    _update_anim_preview_keyframes(self, context)
+
+
+def _update_navigation_focal_and_anim_preview(self, context):
+    update_navigation_focal_length(self, context)
+    _update_anim_preview_keyframes(self, context)
 
 
 def _update_anim_render_preset_defaults(self, _context):
@@ -241,6 +345,7 @@ def _sunlight_mid_morning_for_location(lon_deg, lat_deg):
 
 
 def _set_nav_city_search(self, value):
+    global _ANIM_PREVIEW_UPDATE_GUARD
     text = str(value or "")
     self["nav_city_search"] = text
     if not text:
@@ -256,6 +361,7 @@ def _set_nav_city_search(self, value):
 
     nav_suspended = False
     try:
+        _ANIM_PREVIEW_UPDATE_GUARD = True
         suspend_navigation_shot_updates()
         nav_suspended = True
         self.nav_latitude_deg = float(place.get("latitude", 0.0))
@@ -271,9 +377,18 @@ def _set_nav_city_search(self, value):
     finally:
         if nav_suspended:
             resume_navigation_shot_updates()
+        _ANIM_PREVIEW_UPDATE_GUARD = False
 
     # Apply all navigation values in one pass to avoid repeated camera updates/resolves.
+    scene = getattr(self, "id_data", None)
+    if scene is not None:
+        request_next_navigation_apply_behavior(
+            scene,
+            force_camera_view=True,
+            sync_active_view_when_not_camera=False,
+        )
     update_navigation_shot(self, bpy.context)
+    _update_anim_preview_keyframes(self, bpy.context)
 
     # Always avoid new locations appearing at night: switch to "Mid-morning" sun.
     sun = _sunlight_mid_morning_for_location(self.nav_longitude_deg, self.nav_latitude_deg)
@@ -358,7 +473,7 @@ class PlanetkaAnimationWaypoint(bpy.types.PropertyGroup):
         max=1000000.0,
         soft_min=-90.0,
         soft_max=90.0,
-        precision=4,
+        precision=2,
         description="Waypoint latitude in degrees",
     )
 
@@ -369,7 +484,7 @@ class PlanetkaAnimationWaypoint(bpy.types.PropertyGroup):
         max=1000000.0,
         soft_min=-180.0,
         soft_max=180.0,
-        precision=4,
+        precision=2,
         description="Waypoint longitude in degrees",
     )
 
@@ -393,7 +508,7 @@ class PlanetkaAnimationWaypoint(bpy.types.PropertyGroup):
         default=NAV_DEFAULT_TILT_DEG,
         min=-90.0,
         max=90.0,
-        precision=3,
+        precision=2,
         description="Waypoint camera tilt",
     )
 
@@ -441,7 +556,7 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
     show_earth_preview: BoolProperty(
         name="Show Earth Preview",
         default=True,
-        description="Show or hide the low-detail Earth preview helper mesh",
+        description=_show_earth_preview_description(),
         update=update_show_earth_preview,
     )
 
@@ -500,16 +615,6 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         update=update_auto_resolve,
     )
 
-    auto_resolve_active_view: BoolProperty(
-        name="Allow Resolve in Active View",
-        default=True,
-        description=(
-            "When enabled, Resolve follows Active View while in Active View. "
-            "When disabled, Resolve always uses Camera View."
-        ),
-        update=update_auto_resolve,
-    )
-
     auto_resolve_idle_sec: FloatProperty(
         name="Auto Resolve Idle Delay (s)",
         default=0.5,
@@ -520,6 +625,18 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         update=update_auto_resolve,
     )
 
+    auto_adjust_clipping_values: BoolProperty(
+        name="Auto-adjust clipping",
+        default=True,
+        description="Automatically apply recommended Camera/Viewport clipping values during Create Earth",
+    )
+
+    auto_black_background_new_files: BoolProperty(
+        name="Auto-black background",
+        default=True,
+        description="On Create Earth in a new file, change default gray World background to black space",
+    )
+
     nav_longitude_deg: FloatProperty(
         name="Longitude",
         default=0.0,
@@ -528,9 +645,9 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         soft_min=-180.0,
         soft_max=180.0,
         step=1,
-        precision=4,
+        precision=2,
         description="Navigation target longitude in degrees (soft range: -180 to 180)",
-        update=update_navigation_shot,
+        update=_update_navigation_shot_and_anim_preview,
     )
 
     nav_latitude_deg: FloatProperty(
@@ -541,9 +658,9 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         soft_min=-90.0,
         soft_max=90.0,
         step=1,
-        precision=4,
+        precision=2,
         description="Navigation target latitude in degrees (soft range: -90 to 90)",
-        update=update_navigation_shot,
+        update=_update_navigation_shot_and_anim_preview,
     )
 
     nav_altitude_km: FloatProperty(
@@ -553,15 +670,16 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         precision=2,
         step=1,
         description="Navigation camera altitude above Earth surface in kilometers",
-        update=update_navigation_shot,
+        update=_update_navigation_shot_and_anim_preview,
     )
 
     nav_azimuth_deg: FloatProperty(
         name="Heading",
         default=NAV_DEFAULT_AZIMUTH_DEG,
+        step=1,
         precision=2,
         description="Navigation heading around selected location (0° = north, 90° = east)",
-        update=update_navigation_shot,
+        update=_update_navigation_shot_and_anim_preview,
     )
 
     nav_tilt_deg: FloatProperty(
@@ -570,17 +688,18 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         min=-90.0,
         max=90.0,
         step=1,
-        precision=3,
+        precision=2,
         description="Navigation tilt from top-down (0°) toward horizon while looking at the anchor",
-        update=update_navigation_shot,
+        update=_update_navigation_shot_and_anim_preview,
     )
 
     nav_roll_deg: FloatProperty(
         name="Roll",
         default=NAV_DEFAULT_ROLL_DEG,
+        step=1,
         precision=2,
         description="Navigation camera roll angle around the viewing axis",
-        update=update_navigation_shot,
+        update=_update_navigation_shot_and_anim_preview,
     )
 
     nav_focal_length_mm: FloatProperty(
@@ -588,9 +707,19 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         default=50.0,
         min=1.0,
         max=5000.0,
+        step=1,
         precision=2,
         description="Camera focal length in millimeters",
-        update=update_navigation_focal_length,
+        update=_update_navigation_focal_and_anim_preview,
+    )
+
+    nav_custom_preset_altitude_km: FloatProperty(
+        name="Custom Preset Altitude (km)",
+        default=6000.0,
+        min=0.0,
+        precision=2,
+        step=1,
+        description="Altitude in kilometers used by the Custom entry in Altitude Presets",
     )
 
     earth_radius_bu: FloatProperty(
@@ -644,7 +773,7 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         min=0.0,
         max=100000.0,
         precision=3,
-        description="Light strength of Planetka Sunlight",
+        description="Light strength of Planetka Sunlight.",
         update=update_sunlight_strength,
     )
 
@@ -663,18 +792,23 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         update=update_sunlight_controls,
     )
 
+    sunlight_last_preset: StringProperty(
+        name="Last Sunlight Preset",
+        default="",
+        description="Internal: most recently applied sunlight preset",
+        options={'HIDDEN'},
+    )
+
     anim_camera_preset: EnumProperty(
         name="Cinematic Preset",
         items=(
+            ("NONE", "Select Preset", "No animation preset selected"),
             ("ORBIT", "Circle", "Circle around current location"),
-            ("PUSH_IN", "Zoom In", "Move from higher altitude down toward target"),
-            ("PULL_BACK", "Zoom Out", "Move from lower altitude to a wider view"),
-            ("ARC_LEFT", "Arc Left", "Curved move around target toward left side"),
-            ("ARC_RIGHT", "Arc Right", "Curved move around target toward right side"),
-            ("FLYBY", "Flyby", "Simple forward flyby across the selected location"),
+            ("ZOOM", "Zoom", "Animate from current camera altitude toward End Altitude"),
+            ("ARC", "Arc", "Curved move around the target"),
             ("A_TO_B", "A to B", "Interpolate between saved camera views A and B"),
         ),
-        default="ORBIT",
+        default="NONE",
         description="Cinematic camera movement preset used for preview/make-ready keyframe generation",
         update=_update_anim_preset_defaults,
     )
@@ -684,6 +818,7 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         default=1,
         min=0,
         description="Start frame used for cinematic preview and animation render workflows",
+        update=_update_anim_preview_keyframes,
     )
 
     anim_frame_end: IntProperty(
@@ -691,6 +826,7 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         default=250,
         min=1,
         description="End frame used for cinematic preview and animation render workflows",
+        update=_update_anim_preview_keyframes,
     )
 
     anim_camera_strength: FloatProperty(
@@ -700,6 +836,7 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         max=5.0,
         precision=2,
         description="Global multiplier for cinematic movement intensity",
+        update=_update_anim_preview_keyframes,
     )
 
     anim_motion_curve: EnumProperty(
@@ -712,6 +849,18 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         ),
         default="EASE_IN_OUT",
         description="Interpolation style used for cinematic preview keyframes",
+        update=_update_anim_preview_keyframes,
+    )
+
+    anim_render_texture_quality: EnumProperty(
+        name="Animation Texture Quality",
+        items=(
+            ("PREVIEW", "Preview", "Fast preview quality; visible tile LOD swapping"),
+            ("BALANCED", "Balanced", "Recommended when RAM/VRAM is limited"),
+            ("FULL", "Full Quality", "Highly recommended for final renders"),
+        ),
+        default="BALANCED",
+        description="Texture quality used by Planetka - Render Animation",
     )
 
     anim_start_altitude_km: FloatProperty(
@@ -721,6 +870,7 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         max=50000.0,
         precision=2,
         description="Start altitude for altitude-based cinematic presets (Zoom In / Zoom Out)",
+        update=_update_anim_preview_keyframes,
     )
 
     anim_end_altitude_km: FloatProperty(
@@ -729,7 +879,8 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         min=0.0,
         max=50000.0,
         precision=2,
-        description="End altitude for altitude-based cinematic presets (Zoom In / Zoom Out)",
+        description="End altitude for the Zoom cinematic preset",
+        update=_update_anim_preview_keyframes,
     )
 
     anim_orbit_degrees: FloatProperty(
@@ -739,6 +890,7 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         max=360.0,
         precision=2,
         description="Total heading rotation in degrees for Circle/Orbit-style movement",
+        update=_update_anim_preview_keyframes,
     )
 
     anim_circle_direction: EnumProperty(
@@ -749,6 +901,7 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         ),
         default="CLOCKWISE",
         description="Direction used by the Circle cinematic preset",
+        update=_update_anim_preview_keyframes,
     )
 
     anim_flyby_degrees: FloatProperty(
@@ -758,6 +911,7 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         max=120.0,
         precision=2,
         description="Angular travel distance in degrees for the Flyby path",
+        update=_update_anim_preview_keyframes,
     )
 
     anim_flyby_camera_heading_deg: FloatProperty(
@@ -767,6 +921,7 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         soft_max=180.0,
         precision=2,
         description="Camera yaw offset during Flyby. 0° = look forward along flight, 180° = look backward. Does not change flight direction.",
+        update=_update_anim_preview_keyframes,
     )
 
     anim_zoom_rotate_degrees: FloatProperty(
@@ -775,7 +930,8 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         min=-360.0,
         max=360.0,
         precision=2,
-        description="Additional heading rotation applied over Zoom In / Zoom Out movement",
+        description="Additional camera roll (twist) applied over Zoom movement",
+        update=_update_anim_preview_keyframes,
     )
 
     anim_prepare_max_segments: IntProperty(
@@ -850,6 +1006,19 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         options={'HIDDEN'},
     )
 
+    anim_ab_a_capture_frame: IntProperty(
+        name="View A Capture Frame",
+        default=0,
+        min=0,
+        options={'HIDDEN'},
+    )
+
+    anim_ab_a_capture_timecode: StringProperty(
+        name="View A Capture Timecode",
+        default="",
+        options={'HIDDEN'},
+    )
+
     anim_ab_b_location: FloatVectorProperty(
         name="View B Location",
         size=3,
@@ -867,6 +1036,19 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
     anim_ab_b_valid: BoolProperty(
         name="View B Valid",
         default=False,
+        options={'HIDDEN'},
+    )
+
+    anim_ab_b_capture_frame: IntProperty(
+        name="View B Capture Frame",
+        default=0,
+        min=0,
+        options={'HIDDEN'},
+    )
+
+    anim_ab_b_capture_timecode: StringProperty(
+        name="View B Capture Timecode",
+        default="",
         options={'HIDDEN'},
     )
 
@@ -890,43 +1072,17 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
             (
                 "BALANCED",
                 "Balanced",
-                "Uses 1/2 width x 1/2 height of Full Quality textures (effective 1/4 resolution)",
+                "Uses 1/2 size of Full Quality on each axis (effective 1/4 resolution)",
             ),
             (
                 "PREVIEW",
                 "Preview",
-                "Uses two higher d-levels than Full Quality (effective 1/16 resolution); fastest download with lowest memory and recalculation cost",
+                "Uses 1/4 size of Full Quality on each axis (effective 1/16 resolution); fastest download with lowest memory and recalculation cost",
             ),
         ),
         default="PREVIEW",
         description="Choose Preview, Balanced, or Full Quality texture mode",
         update=update_texture_quality_mode,
-    )
-
-    render_engine_optimization: EnumProperty(
-        name="Render Engine Optimization",
-        items=(
-            (
-                "EEVEE",
-                "EEVEE",
-                "Switch to EEVEE and optimize settings.\n"
-                "Volumes > Resolution: 1:2\n"
-                "Volumes > Distribution: 0",
-            ),
-            (
-                "CYCLES",
-                "Cycles",
-                "Switch to Cycles and optimize settings.\n"
-                "Volumes > Biased: Yes\n"
-                "Volumes > Max Steps: 16\n"
-                "Subdivision > Dicing Rate Render: 1.25\n"
-                "Subdivision > Dicing Rate Viewport: 2.00\n"
-                "Subdivision > Offscreen Scale: 8.00",
-            ),
-        ),
-        default="EEVEE",
-        description="Select a renderer and automatically apply Planetka render optimization settings",
-        update=update_renderer_engine_optimization,
     )
 
     resolution_bias: FloatProperty(
@@ -944,23 +1100,6 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         default=True,
         description="Prevent Resolve updates while timeline playback is running",
         update=update_auto_resolve,
-    )
-
-    r2_cache_max_gb: IntProperty(
-        name="Data Cache Limit (GB)",
-        default=1,
-        min=1,
-        max=25,
-        description="Maximum on-disk tile cache size in GB (old entries are pruned automatically)",
-        update=update_r2_cache_settings,
-    )
-
-    r2_cache_dir: StringProperty(
-        name="Data Cache Folder",
-        default="",
-        subtype='DIR_PATH',
-        description="Custom folder for streamed tile cache. Leave empty to use the default Planetka cache folder.",
-        update=update_r2_cache_settings,
     )
 
     debug_logging: BoolProperty(

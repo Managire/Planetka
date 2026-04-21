@@ -783,8 +783,7 @@ def main():
         _assert("FINISHED" in create_result, f"Create Earth failed: {create_result}")
         gpu_info = {}
         if render_engine_mode == "CYCLES":
-            switch_result = bpy.ops.planetka.switch_to_cycles()
-            _assert("FINISHED" in switch_result, f"Switch to Cycles failed: {switch_result}")
+            scene.render.engine = "CYCLES"
             _assert(str(scene.render.engine) == "CYCLES", f"Render engine is not CYCLES: {scene.render.engine}")
             gpu_info = _configure_cycles_gpu(scene)
             _assert(bool(gpu_info.get("gpu_enabled")), "Cycles GPU is not available/enabled.")

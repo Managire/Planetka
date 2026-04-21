@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import re
 import sqlite3
@@ -10,6 +11,7 @@ from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 
 _ZIP_MEMBER_NAME = "allCountries.txt"
 _PREBUILT_INDEX_NAME = "allCountries.idx.sqlite3"
+_EXTRA_PLACES_NAME = "planetka_places_extra.json"
 _MIN_QUERY_LENGTH = 3
 _RECENT_BY_DISPLAY = {}
 _RECENT_BY_DISPLAY_LOWER = {}
@@ -26,6 +28,10 @@ _QUERY_CACHE = {}
 _QUERY_CACHE_DB_PATH = ""
 _QUERY_CACHE_LIMIT = 256
 _COUNTRY_HINT_RE = re.compile(r"^[A-Za-z]{2}$")
+_PLACE_TYPE_SUFFIX_RE = re.compile(
+    r"^(?P<base>.+?)\s*-\s*(?P<ptype>country|state|city|island|mountain|place)\s*$",
+    flags=re.IGNORECASE,
+)
 
 _INDEX_LOCK = threading.Lock()
 _INDEX_THREAD = None
@@ -35,6 +41,19 @@ _INDEX_DB_PATH = ""
 _INDEX_SOURCE_PATH = ""
 _READ_CONNECTION = None
 _READ_CONNECTION_PATH = ""
+_EXTRA_PLACES = []
+_EXTRA_PLACES_BY_DISPLAY = {}
+_EXTRA_PLACES_BY_DISPLAY_LOWER = {}
+_EXTRA_PLACES_BY_GEOID = {}
+_EXTRA_LOADED = False
+_EXTRA_LOADED_PATH = ""
+
+
+def _effective_min_query_length(query_text):
+    text = str(query_text or "").strip()
+    if len(text) >= 2 and any(ch.isdigit() for ch in text):
+        return 2
+    return _MIN_QUERY_LENGTH
 
 
 def _candidate_database_paths():
@@ -44,6 +63,11 @@ def _candidate_database_paths():
         os.path.join(addon_dir, "Resources", "GeoNames", "allCountries.txt"),
         os.path.join(addon_dir, "Resources", "GeoNames", "allCountries.zip"),
     )
+
+
+def _extra_places_path():
+    addon_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(addon_dir, "Resources", "GeoNames", _EXTRA_PLACES_NAME)
 
 
 def get_database_path():
@@ -556,8 +580,160 @@ def _entry_from_row(row):
     }
 
 
+def _normalize_extra_place_entry(raw):
+    if not isinstance(raw, dict):
+        return None
+    name = str(raw.get("name", "") or "").strip()
+    if not name:
+        return None
+    country_code = str(raw.get("country_code", "") or "").strip().upper()
+    admin1_code = str(raw.get("admin1_code", "") or "").strip()
+    geonameid = str(raw.get("geonameid", "") or "").strip()
+    if not geonameid:
+        return None
+    try:
+        latitude = float(raw.get("latitude", 0.0))
+        longitude = float(raw.get("longitude", 0.0))
+    except (TypeError, ValueError):
+        return None
+    population = _parse_int(raw.get("population", 0), default=0)
+    aliases = []
+    for alias in raw.get("aliases", []) or []:
+        text = str(alias or "").strip()
+        if len(text) < _effective_min_query_length(text):
+            continue
+        aliases.append(text)
+    display_name = _display_name(name, admin1_code, country_code)
+    entry = {
+        "geonameid": geonameid,
+        "name": name,
+        "admin1_code": admin1_code,
+        "country_code": country_code,
+        "population": int(population),
+        "display_name": display_name,
+        "latitude": latitude,
+        "longitude": longitude,
+        "aliases": aliases,
+        "category": str(raw.get("category", "") or "").strip().lower(),
+    }
+    return entry
+
+
+def _load_extra_places():
+    global _EXTRA_LOADED, _EXTRA_PLACES, _EXTRA_PLACES_BY_DISPLAY
+    global _EXTRA_PLACES_BY_DISPLAY_LOWER, _EXTRA_PLACES_BY_GEOID, _EXTRA_LOADED_PATH
+    extra_path = _extra_places_path()
+    if _EXTRA_LOADED and _EXTRA_LOADED_PATH == extra_path:
+        return
+
+    _EXTRA_PLACES = []
+    _EXTRA_PLACES_BY_DISPLAY = {}
+    _EXTRA_PLACES_BY_DISPLAY_LOWER = {}
+    _EXTRA_PLACES_BY_GEOID = {}
+    _EXTRA_LOADED = True
+    _EXTRA_LOADED_PATH = extra_path
+    if not os.path.isfile(extra_path):
+        return
+    try:
+        with open(extra_path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError, TypeError):
+        return
+
+    entries = payload if isinstance(payload, list) else []
+    for raw in entries:
+        entry = _normalize_extra_place_entry(raw)
+        if not entry:
+            continue
+        geonameid = str(entry.get("geonameid", "") or "")
+        if geonameid in _EXTRA_PLACES_BY_GEOID:
+            continue
+        _EXTRA_PLACES.append(entry)
+        _EXTRA_PLACES_BY_GEOID[geonameid] = entry
+        display_name = str(entry.get("display_name", "") or "")
+        if display_name:
+            _EXTRA_PLACES_BY_DISPLAY[display_name] = entry
+            _EXTRA_PLACES_BY_DISPLAY_LOWER[display_name.lower()] = entry
+
+
+def _search_extra_places(query, country_hint="", limit=20):
+    _load_extra_places()
+    if not _EXTRA_PLACES:
+        return []
+    q = str(query or "").strip().lower()
+    if len(q) < _effective_min_query_length(q):
+        return []
+    safe_country_hint = str(country_hint or "").strip().upper()
+
+    matched = []
+    for entry in _EXTRA_PLACES:
+        country_code = str(entry.get("country_code", "") or "").strip().upper()
+        if safe_country_hint and country_code != safe_country_hint:
+            continue
+        name = str(entry.get("name", "") or "").strip()
+        name_lower = name.lower()
+        aliases = [str(alias or "").strip() for alias in entry.get("aliases", []) or []]
+        alias_lowers = [alias.lower() for alias in aliases if alias]
+        alias_match = any(alias.startswith(q) for alias in alias_lowers)
+        name_match = name_lower.startswith(q)
+        if not (name_match or alias_match):
+            continue
+        exact = 0 if (name_lower == q or q in alias_lowers) else 1
+        population_rank = -int(entry.get("population", 0) or 0)
+        matched.append((exact, population_rank, entry))
+
+    matched.sort(key=lambda item: (item[0], item[1], str(item[2].get("name", "")).lower()))
+    results = []
+    seen_geonameids = set()
+    for _exact, _population_rank, entry in matched:
+        geonameid = str(entry.get("geonameid", "") or "")
+        if not geonameid or geonameid in seen_geonameids:
+            continue
+        seen_geonameids.add(geonameid)
+        results.append(entry)
+        if len(results) >= int(limit):
+            break
+    return results
+
+
+def _get_extra_place_by_display(display_name):
+    key = str(display_name or "").strip()
+    if not key:
+        return None
+    _load_extra_places()
+    if not _EXTRA_PLACES:
+        return None
+    entry = _EXTRA_PLACES_BY_DISPLAY.get(key)
+    if entry:
+        return entry
+    entry = _EXTRA_PLACES_BY_DISPLAY_LOWER.get(key.lower())
+    if entry:
+        return entry
+    name_hint_raw, country_hint, _admin1_hint_raw = _split_display_lookup_hints(key)
+    name_hint = str(name_hint_raw or "").strip().lower()
+    if len(name_hint) < _effective_min_query_length(name_hint):
+        return None
+    matches = _search_extra_places(name_hint, country_hint=country_hint, limit=10)
+    for item in matches:
+        if str(item.get("display_name", "") or "").lower() == key.lower():
+            return item
+        if str(item.get("name", "") or "").strip().lower() == name_hint:
+            return item
+        for alias in item.get("aliases", []) or []:
+            if str(alias or "").strip().lower() == name_hint:
+                return item
+    return None
+
+
+def _entry_base_label(entry):
+    name = str(entry.get("name", "") or "").strip()
+    admin1_code = str(entry.get("admin1_code", "") or "").strip()
+    country_code = str(entry.get("country_code", "") or "").strip()
+    return _display_name(name, admin1_code, country_code)
+
+
 def _result_label_for_entry(entry, duplicate_display_names):
-    base_label = str(entry.get("display_name", "") or "")
+    base_label = _entry_base_label(entry)
     if duplicate_display_names.get(base_label, 0) <= 1:
         return base_label
 
@@ -570,6 +746,23 @@ def _result_label_for_entry(entry, duplicate_display_names):
     if admin1_code:
         return f"{name}, {admin1_code}"
     return base_label
+
+
+def _entry_query_rank(entry, query_text):
+    query = str(query_text or "").strip().lower()
+    if not query:
+        return (2, 0, "")
+    name = str(entry.get("name", "") or "").strip().lower()
+    aliases = [str(alias or "").strip().lower() for alias in entry.get("aliases", []) or []]
+
+    if name == query or query in aliases:
+        bucket = 0
+    elif name.startswith(query) or any(alias.startswith(query) for alias in aliases):
+        bucket = 1
+    else:
+        bucket = 2
+    population = int(entry.get("population", 0) or 0)
+    return (bucket, -population, name)
 
 
 def _close_read_connection():
@@ -632,26 +825,47 @@ def _split_query_country_hint(query_text):
     if not raw:
         return "", ""
 
+    def _explicit_country_hint(token):
+        raw_token = str(token or "").strip()
+        if not _COUNTRY_HINT_RE.fullmatch(raw_token):
+            return ""
+        # Avoid false positives for common lowercase particles in place names
+        # (e.g. "Rio de Janeiro", "Sierra de ..."). Country suffix matching
+        # should be explicit (uppercase), such as "Paris FR" or "Paris, FR".
+        if raw_token != raw_token.upper():
+            return ""
+        return raw_token.upper()
+
     if "," in raw:
         left, right = raw.rsplit(",", 1)
-        country_hint = str(right or "").strip().upper()
+        country_hint = _explicit_country_hint(right)
         place_hint = str(left or "").strip()
-        if _COUNTRY_HINT_RE.fullmatch(country_hint) and place_hint:
+        if country_hint and place_hint:
             return place_hint, country_hint
         return raw, ""
 
     parts = raw.rsplit(" ", 1)
     if len(parts) == 2:
-        country_hint = str(parts[1] or "").strip().upper()
+        country_hint = _explicit_country_hint(parts[1])
         place_hint = str(parts[0] or "").strip()
-        if _COUNTRY_HINT_RE.fullmatch(country_hint) and place_hint:
+        if country_hint and place_hint:
             return place_hint, country_hint
 
     return raw, ""
 
 
-def _normalize_display_lookup_key(display_name):
+def _strip_place_type_suffix(display_name):
     key = str(display_name or "").strip()
+    if not key:
+        return ""
+    match = _PLACE_TYPE_SUFFIX_RE.match(key)
+    if match:
+        return str(match.group("base") or "").strip()
+    return key
+
+
+def _normalize_display_lookup_key(display_name):
+    key = _strip_place_type_suffix(display_name)
     if not key:
         return ""
     place_hint, country_hint = _split_query_country_hint(key)
@@ -660,8 +874,24 @@ def _normalize_display_lookup_key(display_name):
     return key
 
 
+def _entry_place_type(entry):
+    category = str(entry.get("category", "") or "").strip().lower()
+    if category == "country":
+        return "Country"
+    if category == "state":
+        return "State"
+    if category == "island":
+        return "Island"
+    if category.startswith("mountain"):
+        return "Mountain"
+    population = _parse_int(entry.get("population", 0), default=0)
+    if population > 0:
+        return "City"
+    return "Place"
+
+
 def _split_display_lookup_hints(display_name):
-    raw = str(display_name or "").strip()
+    raw = _strip_place_type_suffix(display_name)
     if not raw:
         return "", "", ""
 
@@ -690,7 +920,7 @@ def search_places(query_text, max_results=20):
     raw_query = str(query_text or "").strip()
     query_name, country_hint = _split_query_country_hint(raw_query)
     query = str(query_name or "").strip().lower()
-    if len(query) < _MIN_QUERY_LENGTH:
+    if len(query) < _effective_min_query_length(query):
         return []
 
     with _INDEX_LOCK:
@@ -746,18 +976,56 @@ def search_places(query_text, max_results=20):
         return []
 
     entries = [_entry_from_row(row) for row in rows]
+    extras = _search_extra_places(query, country_hint=country_hint, limit=limit * 4)
+    if extras:
+        existing_by_geonameid = {
+            str(entry.get("geonameid", "") or ""): entry
+            for entry in entries
+            if str(entry.get("geonameid", "") or "")
+        }
+        for extra in extras:
+            geonameid = str(extra.get("geonameid", "") or "")
+            if geonameid and geonameid in existing_by_geonameid:
+                base_entry = existing_by_geonameid.get(geonameid)
+                if isinstance(base_entry, dict):
+                    extra_category = str(extra.get("category", "") or "").strip().lower()
+                    if extra_category:
+                        base_entry["category"] = extra_category
+                    extra_aliases = list(extra.get("aliases", []) or [])
+                    if extra_aliases:
+                        base_aliases = list(base_entry.get("aliases", []) or [])
+                        merged = []
+                        seen_alias = set()
+                        for alias in base_aliases + extra_aliases:
+                            text = str(alias or "").strip()
+                            if not text:
+                                continue
+                            key = text.lower()
+                            if key in seen_alias:
+                                continue
+                            seen_alias.add(key)
+                            merged.append(text)
+                        if merged:
+                            base_entry["aliases"] = merged
+                continue
+            entries.append(extra)
+    entries.sort(key=lambda entry: _entry_query_rank(entry, query))
     duplicate_display_names = {}
     for entry in entries:
-        label = str(entry.get("display_name", "") or "")
+        label = _entry_base_label(entry)
         duplicate_display_names[label] = int(duplicate_display_names.get(label, 0)) + 1
 
     used_labels = set()
     for entry in entries:
         label = _result_label_for_entry(entry, duplicate_display_names)
+        place_type = _entry_place_type(entry)
+        if place_type:
+            label = f"{label} - {place_type}"
+
+        # Deduplicate by the final user-facing label so users never see
+        # indistinguishable duplicates in the dropdown.
         if label in used_labels:
-            geonameid = str(entry.get("geonameid", "") or "").strip()
-            if geonameid:
-                label = f"{label} ({geonameid})"
+            continue
         used_labels.add(label)
         entry["display_name"] = label
         _remember_entry(entry)
@@ -781,6 +1049,11 @@ def get_place_by_display(display_name):
     cached = get_cached_place_by_display(key)
     if cached:
         return cached
+
+    extra = _get_extra_place_by_display(key)
+    if extra:
+        _remember_entry(extra)
+        return extra
 
     if not load_geonames_database():
         return None
@@ -864,6 +1137,10 @@ def get_place_by_display(display_name):
     if best_candidate:
         _remember_entry(best_candidate)
         return best_candidate
+    extra = _get_extra_place_by_display(key)
+    if extra:
+        _remember_entry(extra)
+        return extra
     return None
 
 
