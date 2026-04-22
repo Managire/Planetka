@@ -14,6 +14,7 @@ import json
 import os
 import threading
 import time
+from dataclasses import dataclass
 
 import bpy
 from bpy.app.handlers import persistent
@@ -231,6 +232,19 @@ _KEYED_RUNTIME_ALL_PROP_PATHS = (
     + _KEYED_RUNTIME_FOCAL_PROP_PATHS
     + _KEYED_RUNTIME_SUN_PROP_PATHS
 )
+
+
+@dataclass
+class SceneAutoResolveState:
+    scene_id: int
+    next_due_time: object = None
+    last_camera_signature: object = None
+    last_output_signature: object = None
+    last_change_time: object = None
+    last_resolve_time: object = None
+    last_processed_signature: object = None
+    pending_output_change: bool = False
+    trigger_last_signature: object = None
 
 
 def _get_r2_source():
@@ -1559,6 +1573,62 @@ def _scene_from_key(scene_id):
     return None
 
 
+def _coerce_scene_id(scene_or_id):
+    if scene_or_id is None:
+        return None
+    if isinstance(scene_or_id, int):
+        return int(scene_or_id)
+    try:
+        return int(_scene_key(scene_or_id))
+    except (TypeError, ValueError, RuntimeError, AttributeError):
+        return None
+
+
+def _set_scene_auto_resolve_map_entry(target_map, scene_id, value):
+    if value is None:
+        target_map.pop(scene_id, None)
+        return
+    target_map[scene_id] = value
+
+
+def _read_scene_auto_resolve_state(scene_or_id):
+    scene_id = _coerce_scene_id(scene_or_id)
+    if scene_id is None:
+        return None
+    return SceneAutoResolveState(
+        scene_id=scene_id,
+        next_due_time=_AUTO_RESOLVE_NEXT_DUE_TIME.get(scene_id),
+        last_camera_signature=_AUTO_RESOLVE_LAST_CAMERA_SIGNATURE.get(scene_id),
+        last_output_signature=_AUTO_RESOLVE_LAST_OUTPUT_SIGNATURE.get(scene_id),
+        last_change_time=_AUTO_RESOLVE_LAST_CHANGE_TIME.get(scene_id),
+        last_resolve_time=_AUTO_RESOLVE_LAST_RESOLVE_TIME.get(scene_id),
+        last_processed_signature=_AUTO_RESOLVE_LAST_PROCESSED_SIGNATURE.get(scene_id),
+        pending_output_change=bool(_AUTO_RESOLVE_PENDING_OUTPUT_CHANGE.get(scene_id, False)),
+        trigger_last_signature=_AUTO_RESOLVE_TRIGGER_LAST_SIGNATURE.get(scene_id),
+    )
+
+
+def _write_scene_auto_resolve_state(state):
+    if not isinstance(state, SceneAutoResolveState):
+        return
+    scene_id = int(state.scene_id)
+    _set_scene_auto_resolve_map_entry(_AUTO_RESOLVE_NEXT_DUE_TIME, scene_id, state.next_due_time)
+    _set_scene_auto_resolve_map_entry(_AUTO_RESOLVE_LAST_CAMERA_SIGNATURE, scene_id, state.last_camera_signature)
+    _set_scene_auto_resolve_map_entry(_AUTO_RESOLVE_LAST_OUTPUT_SIGNATURE, scene_id, state.last_output_signature)
+    _set_scene_auto_resolve_map_entry(_AUTO_RESOLVE_LAST_CHANGE_TIME, scene_id, state.last_change_time)
+    _set_scene_auto_resolve_map_entry(_AUTO_RESOLVE_LAST_RESOLVE_TIME, scene_id, state.last_resolve_time)
+    _set_scene_auto_resolve_map_entry(
+        _AUTO_RESOLVE_LAST_PROCESSED_SIGNATURE,
+        scene_id,
+        state.last_processed_signature,
+    )
+    if bool(state.pending_output_change):
+        _AUTO_RESOLVE_PENDING_OUTPUT_CHANGE[scene_id] = True
+    else:
+        _AUTO_RESOLVE_PENDING_OUTPUT_CHANGE.pop(scene_id, None)
+    _set_scene_auto_resolve_map_entry(_AUTO_RESOLVE_TRIGGER_LAST_SIGNATURE, scene_id, state.trigger_last_signature)
+
+
 def get_resolve_runtime_status(scene=None):
     """Return current resolve runtime stage for telemetry UI."""
     if scene is None:
@@ -2573,15 +2643,16 @@ def _last_resolved_tiles(scene):
 def _mark_auto_resolve_dirty(scene, immediate=False, force_resolve=False):
     if not scene:
         return
-    scene_id = _scene_key(scene)
+    scene_state = _read_scene_auto_resolve_state(scene)
+    if scene_state is None:
+        return
     now = time.monotonic()
-    _AUTO_RESOLVE_LAST_CAMERA_SIGNATURE.pop(scene_id, None)
-    _AUTO_RESOLVE_LAST_OUTPUT_SIGNATURE.pop(scene_id, None)
-    _AUTO_RESOLVE_LAST_PROCESSED_SIGNATURE.pop(scene_id, None)
-    _AUTO_RESOLVE_PENDING_OUTPUT_CHANGE.pop(scene_id, None)
-    if force_resolve:
-        _AUTO_RESOLVE_PENDING_OUTPUT_CHANGE[scene_id] = True
-    _AUTO_RESOLVE_LAST_CHANGE_TIME[scene_id] = now - (AUTO_RESOLVE_IDLE_SEC_DEFAULT if immediate else 0.0)
+    scene_state.last_camera_signature = None
+    scene_state.last_output_signature = None
+    scene_state.last_processed_signature = None
+    scene_state.pending_output_change = bool(force_resolve)
+    scene_state.last_change_time = now - (AUTO_RESOLVE_IDLE_SEC_DEFAULT if immediate else 0.0)
+    _write_scene_auto_resolve_state(scene_state)
 
 
 def _auto_resolve_idle_seconds(scene):
@@ -2896,12 +2967,15 @@ def _mark_auto_resolve_terminal_failure(scene, scene_id, job, message):
         latest_signature = job.get("camera_signature")
     if latest_signature is None:
         latest_signature = _camera_signature(scene)
-    if latest_signature is not None:
-        _AUTO_RESOLVE_LAST_CAMERA_SIGNATURE[scene_id] = latest_signature
-        _AUTO_RESOLVE_LAST_PROCESSED_SIGNATURE[scene_id] = latest_signature
-    _AUTO_RESOLVE_LAST_RESOLVE_TIME[scene_id] = now
-    _AUTO_RESOLVE_LAST_CHANGE_TIME[scene_id] = now
-    _AUTO_RESOLVE_PENDING_OUTPUT_CHANGE.pop(scene_id, None)
+    scene_state = _read_scene_auto_resolve_state(scene_id)
+    if scene_state is not None:
+        if latest_signature is not None:
+            scene_state.last_camera_signature = latest_signature
+            scene_state.last_processed_signature = latest_signature
+        scene_state.last_resolve_time = now
+        scene_state.last_change_time = now
+        scene_state.pending_output_change = False
+        _write_scene_auto_resolve_state(scene_state)
     _VIEWPORT_SCOPE_LAST_RESOLVE_TIME[scene_id] = now
 
 
@@ -2943,8 +3017,11 @@ def _handle_auto_resolve_download_failure(job, error_message):
             logger.warning("Planetka auto-resolve download terminal failure: %s", error_message)
         return
 
-    _AUTO_RESOLVE_LAST_PROCESSED_SIGNATURE.pop(scene_id, None)
-    _AUTO_RESOLVE_LAST_CHANGE_TIME[scene_id] = time.monotonic()
+    scene_state = _read_scene_auto_resolve_state(scene_id)
+    if scene_state is not None:
+        scene_state.last_processed_signature = None
+        scene_state.last_change_time = time.monotonic()
+        _write_scene_auto_resolve_state(scene_state)
     request_auto_resolve(scene, immediate=False, mark_dirty=False)
     if error_message:
         logger.debug("Planetka auto-resolve download failed: %s", error_message)
@@ -3138,12 +3215,15 @@ def _handle_auto_resolve_download_complete(result):
     _write_last_resolve_summary(scene, len(job_target_tiles), summary_total_bytes, total_seconds)
 
     scene_id = _scene_key(scene)
-    _AUTO_RESOLVE_LAST_RESOLVE_TIME[scene_id] = resolved_at
-    _AUTO_RESOLVE_LAST_CHANGE_TIME[scene_id] = resolved_at
     latest_signature = _camera_signature(scene) or job.get("camera_signature")
-    _AUTO_RESOLVE_LAST_CAMERA_SIGNATURE[scene_id] = latest_signature
-    _AUTO_RESOLVE_LAST_PROCESSED_SIGNATURE[scene_id] = latest_signature
-    _AUTO_RESOLVE_PENDING_OUTPUT_CHANGE.pop(scene_id, None)
+    scene_state = _read_scene_auto_resolve_state(scene_id)
+    if scene_state is not None:
+        scene_state.last_resolve_time = resolved_at
+        scene_state.last_change_time = resolved_at
+        scene_state.last_camera_signature = latest_signature
+        scene_state.last_processed_signature = latest_signature
+        scene_state.pending_output_change = False
+        _write_scene_auto_resolve_state(scene_state)
     _VIEWPORT_SCOPE_LAST_RESOLVE_TIME[scene_id] = resolved_at
     try:
         if "planetka_last_resolve_error" in scene:
@@ -3387,10 +3467,13 @@ def request_auto_resolve(scene, immediate=False, mark_dirty=True):
     if mark_dirty:
         _mark_auto_resolve_dirty(scene, immediate=bool(immediate))
 
-    scene_id = _scene_key(scene)
+    scene_state = _read_scene_auto_resolve_state(scene)
+    if scene_state is None:
+        return
     now = time.monotonic()
     delay_sec = 0.0 if immediate else _auto_resolve_idle_seconds(scene)
-    _AUTO_RESOLVE_NEXT_DUE_TIME[scene_id] = now + delay_sec
+    scene_state.next_due_time = now + delay_sec
+    _write_scene_auto_resolve_state(scene_state)
     _arm_auto_resolve_timer(force_immediate=bool(immediate))
 
 
@@ -3491,28 +3574,37 @@ def _auto_resolve_tick_once():
     if resolve_signature is None:
         return AUTO_RESOLVE_RETRY_DELAY_SEC
 
-    scene_id = _scene_key(scene)
+    scene_state = _read_scene_auto_resolve_state(scene)
+    if scene_state is None:
+        return None
+    scene_id = int(scene_state.scene_id)
     now = time.monotonic()
     output_signature = _output_resolution_signature(scene)
-    previous_output_signature = _AUTO_RESOLVE_LAST_OUTPUT_SIGNATURE.get(scene_id)
+    previous_output_signature = scene_state.last_output_signature
+    state_dirty = False
     if previous_output_signature != output_signature:
-        _AUTO_RESOLVE_LAST_OUTPUT_SIGNATURE[scene_id] = output_signature
+        scene_state.last_output_signature = output_signature
+        state_dirty = True
         if previous_output_signature is not None:
-            _AUTO_RESOLVE_PENDING_OUTPUT_CHANGE[scene_id] = True
-            _AUTO_RESOLVE_LAST_PROCESSED_SIGNATURE.pop(scene_id, None)
-            _AUTO_RESOLVE_LAST_CHANGE_TIME[scene_id] = now
+            scene_state.pending_output_change = True
+            scene_state.last_processed_signature = None
+            scene_state.last_change_time = now
 
-    previous_signature = _AUTO_RESOLVE_LAST_CAMERA_SIGNATURE.get(scene_id)
+    previous_signature = scene_state.last_camera_signature
     if previous_signature != resolve_signature:
-        _AUTO_RESOLVE_LAST_CAMERA_SIGNATURE[scene_id] = resolve_signature
-        _AUTO_RESOLVE_LAST_PROCESSED_SIGNATURE.pop(scene_id, None)
+        scene_state.last_camera_signature = resolve_signature
+        scene_state.last_processed_signature = None
+        state_dirty = True
 
-    last_resolve = _AUTO_RESOLVE_LAST_RESOLVE_TIME.get(scene_id, 0.0)
+    if state_dirty:
+        _write_scene_auto_resolve_state(scene_state)
+
+    last_resolve = float(scene_state.last_resolve_time or 0.0)
     if now - last_resolve < min_interval_sec:
         return max(0.05, min_interval_sec - (now - last_resolve))
 
-    pending_output_change = bool(_AUTO_RESOLVE_PENDING_OUTPUT_CHANGE.get(scene_id, False))
-    if _AUTO_RESOLVE_LAST_PROCESSED_SIGNATURE.get(scene_id) == resolve_signature and not pending_output_change:
+    pending_output_change = bool(scene_state.pending_output_change)
+    if scene_state.last_processed_signature == resolve_signature and not pending_output_change:
         return None
 
     tile_utils = _get_tile_utils()
@@ -3550,15 +3642,17 @@ def _auto_resolve_tick_once():
     )
 
     if target_tiles == _last_resolved_tiles(scene) and not pending_output_change:
-        _AUTO_RESOLVE_LAST_PROCESSED_SIGNATURE[scene_id] = resolve_signature
-        _AUTO_RESOLVE_LAST_RESOLVE_TIME[scene_id] = now
+        scene_state.last_processed_signature = resolve_signature
+        scene_state.last_resolve_time = now
+        _write_scene_auto_resolve_state(scene_state)
         return None
 
     output_signature = _output_resolution_signature(scene)
     queued = _schedule_auto_resolve_download(scene, target_tiles, resolve_signature, output_signature)
     if not queued:
         return AUTO_RESOLVE_RETRY_DELAY_SEC
-    _AUTO_RESOLVE_LAST_CHANGE_TIME[scene_id] = time.monotonic()
+    scene_state.last_change_time = time.monotonic()
+    _write_scene_auto_resolve_state(scene_state)
     return None
 
 
@@ -3574,14 +3668,18 @@ def _auto_resolve_timer():
             _AUTO_RESOLVE_TIMER_RUNNING = False
             return None
 
-        scene_id = _scene_key(scene)
-        due_time = _AUTO_RESOLVE_NEXT_DUE_TIME.get(scene_id)
+        scene_state = _read_scene_auto_resolve_state(scene)
+        if scene_state is None:
+            _AUTO_RESOLVE_TIMER_RUNNING = False
+            return None
+        due_time = scene_state.next_due_time
         if due_time is None:
             _AUTO_RESOLVE_TIMER_RUNNING = False
             return None
 
         if not _can_auto_resolve_run(scene):
-            _AUTO_RESOLVE_NEXT_DUE_TIME.pop(scene_id, None)
+            scene_state.next_due_time = None
+            _write_scene_auto_resolve_state(scene_state)
             _AUTO_RESOLVE_TIMER_RUNNING = False
             return None
 
@@ -3598,10 +3696,12 @@ def _auto_resolve_timer():
         _handle_view_scope_quality_transition(scene)
         retry_delay = _auto_resolve_tick_once()
         if retry_delay is not None:
-            _AUTO_RESOLVE_NEXT_DUE_TIME[scene_id] = time.monotonic() + max(0.05, float(retry_delay))
+            scene_state.next_due_time = time.monotonic() + max(0.05, float(retry_delay))
+            _write_scene_auto_resolve_state(scene_state)
             return max(0.05, float(retry_delay))
 
-        _AUTO_RESOLVE_NEXT_DUE_TIME.pop(scene_id, None)
+        scene_state.next_due_time = None
+        _write_scene_auto_resolve_state(scene_state)
         _AUTO_RESOLVE_TIMER_RUNNING = False
         return None
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
@@ -3868,14 +3968,19 @@ def _planetka_depsgraph_update_post(_scene, _depsgraph):
     if _is_resolve_pipeline_busy():
         return
 
-    scene_id = _scene_key(scene)
+    scene_state = _read_scene_auto_resolve_state(scene)
+    if scene_state is None:
+        return
+    scene_id = int(scene_state.scene_id)
     output_signature = _output_resolution_signature(scene)
-    previous_output_signature = _AUTO_RESOLVE_LAST_OUTPUT_SIGNATURE.get(scene_id)
+    previous_output_signature = scene_state.last_output_signature
     if previous_output_signature != output_signature:
-        _AUTO_RESOLVE_LAST_OUTPUT_SIGNATURE[scene_id] = output_signature
+        scene_state.last_output_signature = output_signature
         if previous_output_signature is not None:
-            _AUTO_RESOLVE_PENDING_OUTPUT_CHANGE[scene_id] = True
-            _AUTO_RESOLVE_LAST_PROCESSED_SIGNATURE.pop(scene_id, None)
+            scene_state.pending_output_change = True
+            scene_state.last_processed_signature = None
+        _write_scene_auto_resolve_state(scene_state)
+        if previous_output_signature is not None:
             request_auto_resolve(scene, immediate=True, mark_dirty=False)
 
     trigger_signature = _camera_signature(scene)
@@ -3892,13 +3997,15 @@ def _planetka_depsgraph_update_post(_scene, _depsgraph):
     _handle_view_scope_quality_transition(scene)
     if trigger_signature is None:
         return
-    previous_trigger_signature = _AUTO_RESOLVE_TRIGGER_LAST_SIGNATURE.get(scene_id)
+    previous_trigger_signature = scene_state.trigger_last_signature
     if previous_trigger_signature is None:
-        _AUTO_RESOLVE_TRIGGER_LAST_SIGNATURE[scene_id] = trigger_signature
+        scene_state.trigger_last_signature = trigger_signature
+        _write_scene_auto_resolve_state(scene_state)
         return
     if previous_trigger_signature == trigger_signature:
         return
-    _AUTO_RESOLVE_TRIGGER_LAST_SIGNATURE[scene_id] = trigger_signature
+    scene_state.trigger_last_signature = trigger_signature
+    _write_scene_auto_resolve_state(scene_state)
     request_auto_resolve(scene, immediate=False)
 
 
