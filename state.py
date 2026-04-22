@@ -3027,16 +3027,7 @@ def _handle_auto_resolve_download_failure(job, error_message):
         logger.debug("Planetka auto-resolve download failed: %s", error_message)
 
 
-def _handle_auto_resolve_download_complete(result):
-    global _AUTO_RESOLVE_IN_FLIGHT
-
-    if not isinstance(result, dict):
-        return True
-    job = result.get("job")
-    if not isinstance(job, dict):
-        return True
-    manual_request = bool(job.get("manual_request", False))
-
+def _auto_resolve_completion_epoch_state(job):
     try:
         job_epoch = int(job.get("epoch", -1))
     except (TypeError, ValueError):
@@ -3044,9 +3035,10 @@ def _handle_auto_resolve_download_complete(result):
     with _AUTO_RESOLVE_DOWNLOAD_LOCK:
         current_epoch = int(_AUTO_RESOLVE_DOWNLOAD_EPOCH)
         pending_job = _AUTO_RESOLVE_DOWNLOAD_PENDING_JOB
-    if job_epoch != current_epoch:
-        return True
+    return (job_epoch == current_epoch), pending_job
 
+
+def _auto_resolve_handle_cancel_or_failure(result, job, manual_request):
     if bool(result.get("cancelled", False)):
         _resolve_trace(
             f"Download finished cancelled (request_id={job.get('request_id')}, manual={manual_request})"
@@ -3057,6 +3049,10 @@ def _handle_auto_resolve_download_complete(result):
         _handle_auto_resolve_download_failure(job, str(result.get("error", "") or ""))
         return True
 
+    return False
+
+
+def _auto_resolve_log_pending_request_overlap(job, pending_job):
     # Never drop a completed download just because a newer request exists.
     # Finalize this resolve first; pending jobs will run immediately after.
     if isinstance(pending_job, dict):
@@ -3072,6 +3068,8 @@ def _handle_auto_resolve_download_complete(result):
         except (TypeError, ValueError):
             pass
 
+
+def _auto_resolve_prepare_apply_context(job, manual_request):
     scene_id = int(job.get("scene_id", 0) or 0)
     scene = _scene_from_key(scene_id)
     if scene is None:
@@ -3079,7 +3077,7 @@ def _handle_auto_resolve_download_complete(result):
         _resolve_trace(
             f"Download finished but scene context unavailable yet (request_id={job.get('request_id')}); waiting"
         )
-        return False
+        return False, None, None, None
     job_target_tiles = _canonical_tiles(job.get("target_tiles", ()))
 
     if _is_render_job_active():
@@ -3087,7 +3085,7 @@ def _handle_auto_resolve_download_complete(result):
             _mark_manual_queued_resolve_error(scene, "Blocked by active render job.")
         else:
             request_auto_resolve(scene, immediate=False, mark_dirty=False)
-        return True
+        return True, None, None, None
 
     props = getattr(scene, "planetka", None)
     if _is_animation_playing() and bool(getattr(props, "lock_resolve_during_animation", True)):
@@ -3095,13 +3093,17 @@ def _handle_auto_resolve_download_complete(result):
             _mark_manual_queued_resolve_error(scene, "Blocked by animation playback lock.")
         else:
             request_auto_resolve(scene, immediate=False, mark_dirty=False)
-        return True
+        return True, None, None, None
 
     if manual_request:
         current_output_signature = _output_resolution_signature(scene)
         if current_output_signature != job.get("output_signature"):
             logger.warning("Planetka queued resolve continuing despite output signature change.")
+    return True, scene, scene_id, job_target_tiles
 
+
+def _auto_resolve_apply_downloaded_tiles(scene, scene_id, job, manual_request, job_target_tiles):
+    global _AUTO_RESOLVE_IN_FLIGHT
     _AUTO_RESOLVE_IN_FLIGHT = True
     try:
         _resolve_trace(
@@ -3144,7 +3146,7 @@ def _handle_auto_resolve_download_complete(result):
                     _mark_auto_resolve_terminal_failure(scene, scene_id, job, apply_error)
                 else:
                     request_auto_resolve(scene, immediate=False, mark_dirty=False)
-            return True
+            return False
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         _resolve_trace(
             f"Shader update failed with recoverable exception (request_id={job.get('request_id')})"
@@ -3159,7 +3161,7 @@ def _handle_auto_resolve_download_complete(result):
                 _mark_auto_resolve_terminal_failure(scene, scene_id, job, apply_error)
             else:
                 request_auto_resolve(scene, immediate=False, mark_dirty=False)
-        return True
+        return False
     except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
         _resolve_trace(
             f"Shader update failed with unexpected exception (request_id={job.get('request_id')})"
@@ -3174,11 +3176,13 @@ def _handle_auto_resolve_download_complete(result):
                 _mark_auto_resolve_terminal_failure(scene, scene_id, job, apply_error)
             else:
                 request_auto_resolve(scene, immediate=False, mark_dirty=False)
-        return True
+        return False
     finally:
         _AUTO_RESOLVE_IN_FLIGHT = False
+    return True
 
-    resolved_at = time.monotonic()
+
+def _auto_resolve_summary_total_bytes(job_target_tiles, job, result):
     summary_total_bytes = 0
     try:
         summary_total_bytes = int(
@@ -3207,6 +3211,10 @@ def _handle_auto_resolve_download_complete(result):
             except (TypeError, ValueError):
                 downloaded_bytes = 0
         summary_total_bytes = int(max(0, int(downloaded_bytes)))
+    return summary_total_bytes
+
+
+def _finalize_auto_resolve_apply(scene, scene_id, job, manual_request, job_target_tiles, resolved_at, summary_total_bytes):
     try:
         created_at = float(job.get("created_at", resolved_at) or resolved_at)
     except (TypeError, ValueError):
@@ -3249,6 +3257,45 @@ def _handle_auto_resolve_download_complete(result):
             request_auto_resolve(scene, immediate=False, mark_dirty=True)
     _resolve_trace(
         f"Shader update finished (request_id={job.get('request_id')}, tiles={len(job_target_tiles)})"
+    )
+
+
+def _handle_auto_resolve_download_complete(result):
+    if not isinstance(result, dict):
+        return True
+    job = result.get("job")
+    if not isinstance(job, dict):
+        return True
+    manual_request = bool(job.get("manual_request", False))
+
+    epoch_matches, pending_job = _auto_resolve_completion_epoch_state(job)
+    if not epoch_matches:
+        return True
+
+    if _auto_resolve_handle_cancel_or_failure(result, job, manual_request):
+        return True
+
+    _auto_resolve_log_pending_request_overlap(job, pending_job)
+
+    consume, scene, scene_id, job_target_tiles = _auto_resolve_prepare_apply_context(job, manual_request)
+    if not consume:
+        return False
+    if scene is None:
+        return True
+
+    if not _auto_resolve_apply_downloaded_tiles(scene, scene_id, job, manual_request, job_target_tiles):
+        return True
+
+    resolved_at = time.monotonic()
+    summary_total_bytes = _auto_resolve_summary_total_bytes(job_target_tiles, job, result)
+    _finalize_auto_resolve_apply(
+        scene,
+        scene_id,
+        job,
+        manual_request,
+        job_target_tiles,
+        resolved_at,
+        summary_total_bytes,
     )
     return True
 
