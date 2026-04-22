@@ -14,7 +14,7 @@ import zipfile
 
 try:
     import tomllib  # Python 3.11+
-except Exception:  # pragma: no cover
+except ImportError:  # pragma: no cover
     tomllib = None
 
 
@@ -47,6 +47,20 @@ _RUNTIME = {
     "downloaded_bytes": 0,
     "download_total_bytes": 0,
 }
+
+_UPDATER_RUNTIME_EXCEPTIONS = (
+    OSError,
+    RuntimeError,
+    TypeError,
+    ValueError,
+    AttributeError,
+    KeyError,
+    LookupError,
+    ReferenceError,
+    shutil.Error,
+    zipfile.BadZipFile,
+    zipfile.LargeZipFile,
+)
 
 
 def _addon_root():
@@ -398,7 +412,7 @@ def _apply_zip_update(zip_path, expected_version=""):
                 with open(tmp_destination, "wb") as handle:
                     handle.write(data)
                 os.replace(tmp_destination, destination)
-    except Exception:
+    except _UPDATER_RUNTIME_EXCEPTIONS:
         logger.exception("Planetka updater: failed applying staged update, rolling back")
         for path in written_new_files:
             try:
@@ -455,7 +469,7 @@ def apply_pending_update_on_import():
         )
         logger.info("Planetka updater: applied staged update to version %s", str(refreshed or version or "").strip())
         return True
-    except Exception as exc:
+    except _UPDATER_RUNTIME_EXCEPTIONS as exc:
         state["last_error"] = f"apply_failed:{exc}"
         state["pending"] = None
         _save_state(state)
@@ -584,7 +598,7 @@ def _run_update_check_worker(force=False):
             phase="error",
         )
         logger.debug("Planetka updater: update check failed (network)", exc_info=True)
-    except Exception as exc:
+    except _UPDATER_RUNTIME_EXCEPTIONS as exc:
         state["last_check_at"] = now_ts
         state["last_error"] = str(exc)
         _save_state(state)
@@ -748,7 +762,7 @@ def _run_update_install_worker(force=False):
                 download_total_bytes=0,
             )
             logger.info("Planetka updater: installed version %s", installed_version)
-        except Exception:
+        except _UPDATER_RUNTIME_EXCEPTIONS:
             # Safe fallback: keep staged package for import-time apply.
             state["pending"] = {
                 "version": latest_version,
@@ -799,7 +813,7 @@ def _run_update_install_worker(force=False):
             update_ready=bool(get_public_status().get("update_ready", False)),
         )
         logger.debug("Planetka updater: update install failed (network)", exc_info=True)
-    except Exception as exc:
+    except _UPDATER_RUNTIME_EXCEPTIONS as exc:
         state["last_check_at"] = now_ts
         state["last_error"] = str(exc)
         _save_state(state)

@@ -88,6 +88,7 @@ _PLANETKA_CREATE_CAMERA_NAME = "Planetka Camera"
 _PLANETKA_RUNTIME_NAME_PREFIX = "Planetka"
 _PLANETKA_STANDALONE_NAME_PREFIX = "PlanetkaStandalone"
 _STARTUP_SETUP_PROFILE_VERSION = 1
+_LOGOUT_RECOVERABLE_EXCEPTIONS = (AuthApiError,) + PLANETKA_RECOVERABLE_EXCEPTIONS
 _STARTUP_PROFILE_PROP_NAMES = (
     "nav_longitude_deg",
     "nav_latitude_deg",
@@ -3476,7 +3477,7 @@ class PLANETKA_OT_AccountLogout(bpy.types.Operator):
 
         try:
             logout_remote_session(prefs)
-        except Exception:
+        except _LOGOUT_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka: remote logout request failed", exc_info=True)
         clear_auth_session(prefs)
         self.report({'INFO'}, "Planetka account disconnected in Blender.")
