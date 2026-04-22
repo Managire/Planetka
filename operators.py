@@ -5,6 +5,8 @@ import math
 import os
 import re
 import shutil
+import subprocess
+import tempfile
 import webbrowser
 from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, StringProperty
 from mathutils import Matrix, Quaternion, Vector
@@ -50,6 +52,7 @@ from .r2_source import (
     texture_file_exists,
 )
 from .state import (
+    ACCOUNT_PANEL_DEFAULT_COLLAPSED_KEY,
     _apply_sunlight_from_props,
     _apply_sunlight_strength_from_props,
     _is_render_job_active,
@@ -80,6 +83,10 @@ _IMPORT_TILE_FILENAME_RE = re.compile(
 _RECOVERABLE_LOG_COUNTS = {}
 _DOWNLOAD_POPUP_WM_FLAG = "planetka_download_popup_running"
 _SKIP_CAMERA_CHANGES_ON_CREATE_EARTH_KEY = "planetka_skip_camera_changes_on_create_earth"
+_DEFAULT_SCENE_REMOVED_KEY = "planetka_default_scene_removed"
+_PLANETKA_CREATE_CAMERA_NAME = "Planetka Camera"
+_PLANETKA_RUNTIME_NAME_PREFIX = "Planetka"
+_PLANETKA_STANDALONE_NAME_PREFIX = "PlanetkaStandalone"
 _STARTUP_SETUP_PROFILE_VERSION = 1
 _STARTUP_PROFILE_PROP_NAMES = (
     "nav_longitude_deg",
@@ -176,7 +183,10 @@ _SURFACE_GRADING_FACTORY_VALUES = {
     "Surface Saturation": 1.0,
     "Roughness": 0.4,
     "IOR": 1.333,
+    "Hue": 0.5,
     "Saturation": 1.0,
+    "Brightness": 0.5,
+    "Coefficient": 1.0,
     "Water Texture Strength": 0.5,
     "Intensity": 1.0,
     "Color Temperature": 4500.0,
@@ -196,15 +206,12 @@ _SURFACE_GRADING_SECTION_SOCKET_NAMES = {
     "WATER": {
         "roughness",
         "ior",
+        "hue",
         "saturation",
-        "water texture strength",
-        "water waves on/off",
-        "waves density coefficient",
-        "waves height coefficient",
+        "brightness",
     },
     "ELEVATION": {
-        "snow on/off",
-        "snow line (m)",
+        "coefficient",
     },
     "NIGHT": {
         "intensity",
@@ -552,11 +559,9 @@ def _apply_startup_setup_profile(scene, props, profile, apply_navigation_shot=Tr
 def _apply_startup_setup_for_create_earth(scene, props):
     prefs = get_prefs()
     profile = _load_saved_startup_setup_profile(prefs)
-    apply_navigation_shot = True
+    apply_navigation_shot = False
     if profile is None:
         profile = _build_factory_startup_setup_profile(scene, props)
-        # Factory behavior should not reposition camera on Create Earth.
-        apply_navigation_shot = False
     try:
         if bool(scene.get(_SKIP_CAMERA_CHANGES_ON_CREATE_EARTH_KEY, False)):
             apply_navigation_shot = False
@@ -576,11 +581,6 @@ def _apply_startup_setup_for_create_earth(scene, props):
             props.anim_camera_preset = "NONE"
     except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
         logger.debug("Planetka: failed forcing animation preset to Select Preset on Create Earth", exc_info=True)
-    if (not apply_navigation_shot) and applied:
-        try:
-            _populate_navigation_from_scene_camera(scene, props)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka: failed syncing navigation props from current camera", exc_info=True)
     return applied
 
 
@@ -759,6 +759,56 @@ def _persist_user_preferences():
     return False
 
 
+def _is_default_world_shader(scene):
+    if scene is None:
+        return False
+    world = getattr(scene, "world", None)
+    if world is None:
+        return False
+    if str(getattr(world, "name", "") or "") != "World":
+        return False
+    node_tree = getattr(world, "node_tree", None)
+    if node_tree is None:
+        return False
+    nodes = getattr(node_tree, "nodes", None)
+    links = getattr(node_tree, "links", None)
+    if nodes is None or links is None:
+        return False
+
+    background = nodes.get("Background")
+    output = nodes.get("World Output")
+    if background is None or output is None:
+        return False
+    if str(getattr(background, "bl_idname", "")) != "ShaderNodeBackground":
+        return False
+    if str(getattr(output, "bl_idname", "")) != "ShaderNodeOutputWorld":
+        return False
+    if len(tuple(nodes)) != 2:
+        return False
+    if len(tuple(links)) != 1:
+        return False
+
+    surface_input = output.inputs.get("Surface")
+    color_socket = background.inputs[0] if len(background.inputs) > 0 else None
+    strength_socket = background.inputs[1] if len(background.inputs) > 1 else None
+    if surface_input is None or color_socket is None or strength_socket is None:
+        return False
+    if not bool(getattr(surface_input, "is_linked", False)):
+        return False
+
+    color = getattr(color_socket, "default_value", None)
+    if color is None or len(color) < 4:
+        return False
+    default_gray = 0.050876
+    return bool(
+        _float_close(color[0], default_gray)
+        and _float_close(color[1], default_gray)
+        and _float_close(color[2], default_gray)
+        and _float_close(color[3], 1.0)
+        and _float_close(getattr(strength_socket, "default_value", 1.0), 1.0)
+    )
+
+
 def _is_pristine_default_scene(scene):
     if scene is None:
         return False
@@ -793,7 +843,11 @@ def _is_pristine_default_scene(scene):
     if str(getattr(child, "name", "")) != "Collection":
         return False
     child_names = {str(getattr(obj, "name", "")) for obj in tuple(getattr(child, "objects", ()))}
-    return child_names == set(required.keys())
+    if child_names != set(required.keys()):
+        return False
+    if not _is_default_world_shader(scene):
+        return False
+    return True
 
 
 def _cleanup_pristine_default_scene(scene):
@@ -832,6 +886,19 @@ def _cleanup_pristine_default_scene(scene):
         except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
             _log_recoverable_once("PKA-OPS-029", "Failed deleting empty default collection")
 
+    world = getattr(scene, "world", None)
+    if world is not None and _is_default_world_shader(scene):
+        try:
+            scene.world = None
+            removed_any = True
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            _log_recoverable_once("PKA-OPS-062", "Failed unlinking default World shader from scene")
+        try:
+            if int(getattr(world, "users", 0) or 0) == 0:
+                bpy.data.worlds.remove(world)
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            _log_recoverable_once("PKA-OPS-063", "Failed removing default World datablock")
+
     return removed_any
 
 
@@ -868,12 +935,115 @@ def _pick_scene_camera(scene, context=None):
     return None
 
 
+def _is_planetka_create_camera(obj):
+    if obj is None or str(getattr(obj, "type", "")) != "CAMERA":
+        return False
+    try:
+        if str(getattr(obj, "name", "") or "").startswith(_PLANETKA_CREATE_CAMERA_NAME):
+            return True
+    except (TypeError, ValueError, AttributeError):
+        pass
+    try:
+        return str(obj.get("planetka_role", "") or "").strip().lower() == "camera"
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        return False
+
+
+def _ensure_planetka_create_camera(scene):
+    if scene is None:
+        return None
+
+    camera_obj = None
+    named = bpy.data.objects.get(_PLANETKA_CREATE_CAMERA_NAME)
+    if named is not None and str(getattr(named, "type", "")) == "CAMERA":
+        camera_obj = named
+
+    if camera_obj is None:
+        for obj in tuple(getattr(scene, "objects", ())):
+            if _is_planetka_create_camera(obj):
+                camera_obj = obj
+                break
+
+    if camera_obj is None:
+        camera_data = bpy.data.cameras.new(f"{_PLANETKA_CREATE_CAMERA_NAME} Data")
+        camera_obj = bpy.data.objects.new(_PLANETKA_CREATE_CAMERA_NAME, camera_data)
+        scene.collection.objects.link(camera_obj)
+
+    if camera_obj not in tuple(getattr(scene, "objects", ())):
+        scene.collection.objects.link(camera_obj)
+
+    try:
+        camera_obj["planetka_role"] = "camera"
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed tagging Planetka Camera role", exc_info=True)
+
+    try:
+        root = ensure_planetka_root(scene)
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        root = None
+    if root is not None:
+        try:
+            world_matrix = camera_obj.matrix_world.copy()
+            if getattr(camera_obj, "parent", None) is not root:
+                camera_obj.parent = root
+                camera_obj.matrix_parent_inverse = root.matrix_world.inverted()
+                camera_obj.matrix_world = world_matrix
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed parenting Planetka Camera to Planetka Root", exc_info=True)
+
+    return camera_obj
+
+
+def _position_planetka_create_camera(scene, props, camera_obj, activate=False):
+    if scene is None or props is None or camera_obj is None:
+        return False
+    if str(getattr(camera_obj, "type", "")) != "CAMERA":
+        return False
+
+    previous_camera = getattr(scene, "camera", None)
+    try:
+        scene.camera = camera_obj
+        _apply_navigation_shot(
+            bpy.context,
+            scene,
+            props,
+            switch_viewport_to_camera=False,
+            sync_active_view_when_not_camera=False,
+        )
+        camera_data = getattr(camera_obj, "data", None)
+        if camera_data is not None:
+            camera_data.lens = max(1.0, float(getattr(props, "nav_focal_length_mm", 50.0)))
+    finally:
+        if bool(activate):
+            try:
+                scene.camera = camera_obj
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka: failed activating Planetka Camera", exc_info=True)
+        else:
+            try:
+                scene.camera = previous_camera
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka: failed restoring previously active scene camera", exc_info=True)
+
+    return True
+
+
 def _ensure_close_clip_limits(scene, min_clip=0.001):
     # Intentionally no-op: Planetka must not modify Camera/Viewport clipping.
     # Users control clip ranges manually.
     _ = scene
     _ = min_clip
     return False, False
+
+
+def _is_planetka_runtime_name(name):
+    try:
+        text = str(name or "")
+    except (TypeError, ValueError):
+        return False
+    if not text.startswith(_PLANETKA_RUNTIME_NAME_PREFIX):
+        return False
+    return not text.startswith(_PLANETKA_STANDALONE_NAME_PREFIX)
 
 
 def _is_planetka_managed_object(obj):
@@ -883,7 +1053,7 @@ def _is_planetka_managed_object(obj):
         name = str(getattr(obj, "name", "") or "")
     except (TypeError, ValueError):
         name = ""
-    if name.startswith("Planetka"):
+    if _is_planetka_runtime_name(name):
         return True
     if name in {"Atmosphere - EEVEE supplement", "Atmosphere - Volumetric"}:
         return True
@@ -911,7 +1081,7 @@ def _is_planetka_managed_collection(collection):
         name = ""
     if not name:
         return False
-    if name.startswith("Planetka"):
+    if _is_planetka_runtime_name(name):
         return True
     return name == "Collection Planetka"
 
@@ -924,7 +1094,9 @@ def _is_planetka_managed_image(image):
         filepath = str(getattr(image, "filepath_raw", "") or getattr(image, "filepath", "") or "").lower()
     except (TypeError, ValueError):
         return False
-    if name.startswith(("S2_", "EL_", "WT_", "PO_", "Planetka")):
+    if name.startswith(("S2_", "EL_", "WT_", "PO_")):
+        return True
+    if _is_planetka_runtime_name(name):
         return True
     return (
         "/planetka_cache/" in filepath
@@ -961,7 +1133,7 @@ def _remove_planetka_objects_preserving_cameras():
         name = str(getattr(obj, "name", "") or "")
         if not (
             _is_planetka_managed_object(obj)
-            or name.startswith("Planetka")
+            or _is_planetka_runtime_name(name)
             or name.startswith("Earth Surface")
         ):
             continue
@@ -1027,7 +1199,7 @@ def _remove_unused_planetka_datablocks():
 
     for mesh_data in list(getattr(bpy.data, "meshes", ())):
         name = str(getattr(mesh_data, "name", "") or "")
-        if not (name.startswith("Planetka") or name.startswith("Earth Surface")):
+        if not (_is_planetka_runtime_name(name) or name.startswith("Earth Surface")):
             continue
         try:
             mesh_data.use_fake_user = False
@@ -1056,7 +1228,7 @@ def _remove_unused_planetka_datablocks():
 
     for material in list(getattr(bpy.data, "materials", ())):
         name = str(getattr(material, "name", "") or "")
-        if not name.startswith("Planetka"):
+        if not _is_planetka_runtime_name(name):
             continue
         try:
             material.use_fake_user = False
@@ -1071,7 +1243,7 @@ def _remove_unused_planetka_datablocks():
 
     for node_group in list(getattr(bpy.data, "node_groups", ())):
         name = str(getattr(node_group, "name", "") or "")
-        if not name.startswith("Planetka"):
+        if not _is_planetka_runtime_name(name):
             continue
         try:
             node_group.use_fake_user = False
@@ -1086,7 +1258,7 @@ def _remove_unused_planetka_datablocks():
 
     for light_data in list(getattr(bpy.data, "lights", ())):
         name = str(getattr(light_data, "name", "") or "")
-        if not name.startswith("Planetka"):
+        if not _is_planetka_runtime_name(name):
             continue
         try:
             light_data.use_fake_user = False
@@ -1200,6 +1372,103 @@ def _snapshot_camera_state_for_rebuild(scene, camera):
                 int(frame_count),
             )
     return snapshot
+
+
+def _snapshot_earth_settings_for_rebuild(scene, props):
+    snapshot = {
+        "earth_radius_bu": None,
+        "root_location": None,
+        "root_rotation_euler": None,
+        "surface_grading": {},
+    }
+
+    if props is not None and hasattr(props, "earth_radius_bu"):
+        try:
+            snapshot["earth_radius_bu"] = max(1e-6, float(getattr(props, "earth_radius_bu", 2.0)))
+        except _REBUILD_EXCEPTIONS:
+            snapshot["earth_radius_bu"] = None
+
+    root = bpy.data.objects.get(PLANETKA_ROOT_OBJECT_NAME)
+    if root is not None:
+        try:
+            snapshot["root_location"] = (
+                float(root.location.x),
+                float(root.location.y),
+                float(root.location.z),
+            )
+        except _REBUILD_EXCEPTIONS:
+            snapshot["root_location"] = None
+        try:
+            snapshot["root_rotation_euler"] = (
+                float(root.rotation_euler.x),
+                float(root.rotation_euler.y),
+                float(root.rotation_euler.z),
+            )
+        except _REBUILD_EXCEPTIONS:
+            snapshot["root_rotation_euler"] = None
+
+    try:
+        grading_values = _serialize_surface_grading_values()
+        if isinstance(grading_values, dict):
+            snapshot["surface_grading"] = dict(grading_values)
+    except _REBUILD_EXCEPTIONS:
+        logger.debug("Planetka: failed snapshotting surface grading for rebuild", exc_info=True)
+
+    return snapshot
+
+
+def _restore_earth_settings_after_rebuild(scene, props, snapshot):
+    if not isinstance(snapshot, dict):
+        return False
+
+    restored_any = False
+    target_radius = snapshot.get("earth_radius_bu", None)
+    if target_radius is not None and props is not None and hasattr(props, "earth_radius_bu"):
+        try:
+            props.earth_radius_bu = max(1e-6, float(target_radius))
+            restored_any = True
+        except _REBUILD_EXCEPTIONS:
+            logger.debug("Planetka: failed restoring Earth radius after rebuild", exc_info=True)
+
+    root = bpy.data.objects.get(PLANETKA_ROOT_OBJECT_NAME)
+    if root is not None:
+        root_location = snapshot.get("root_location", None)
+        if isinstance(root_location, (tuple, list)) and len(root_location) >= 3:
+            try:
+                root.location = (
+                    float(root_location[0]),
+                    float(root_location[1]),
+                    float(root_location[2]),
+                )
+                restored_any = True
+            except _REBUILD_EXCEPTIONS:
+                logger.debug("Planetka: failed restoring Planetka Root location after rebuild", exc_info=True)
+        root_rotation = snapshot.get("root_rotation_euler", None)
+        if isinstance(root_rotation, (tuple, list)) and len(root_rotation) >= 3:
+            try:
+                root.rotation_euler = (
+                    float(root_rotation[0]),
+                    float(root_rotation[1]),
+                    float(root_rotation[2]),
+                )
+                restored_any = True
+            except _REBUILD_EXCEPTIONS:
+                logger.debug("Planetka: failed restoring Planetka Root rotation after rebuild", exc_info=True)
+
+    grading_values = snapshot.get("surface_grading", {})
+    if isinstance(grading_values, dict) and grading_values:
+        try:
+            _apply_surface_grading_values(grading_values)
+            restored_any = True
+        except _REBUILD_EXCEPTIONS:
+            logger.debug("Planetka: failed restoring surface grading after rebuild", exc_info=True)
+
+    try:
+        _sync_idprops_from_props(scene)
+    except _REBUILD_EXCEPTIONS:
+        logger.debug("Planetka: failed syncing props after restore in rebuild", exc_info=True)
+
+    return restored_any
 
 
 def _restore_camera_state_after_rebuild(scene, snapshot):
@@ -1767,8 +2036,7 @@ def _set_planetka_earth_radius_bu(scene, target_radius_bu):
 
     mesh_data = getattr(earth_obj, "data", None)
     vertices = getattr(mesh_data, "vertices", None)
-    if mesh_data is None or not vertices:
-        return False
+    can_resize_mesh = bool(mesh_data is not None and vertices)
 
     target_radius = max(1e-6, float(target_radius_bu))
 
@@ -1784,39 +2052,40 @@ def _set_planetka_earth_radius_bu(scene, target_radius_bu):
     if not math.isfinite(sz):
         sz = 1.0
 
-    # Keep object scale neutral and encode size directly in mesh radius.
-    if abs(sx - 1.0) > 1e-9 or abs(sy - 1.0) > 1e-9 or abs(sz - 1.0) > 1e-9:
-        # Prevent accidental mesh collapse when an axis scale is (near) zero.
-        bake_sx = sx if abs(sx) > 1e-6 else 1.0
-        bake_sy = sy if abs(sy) > 1e-6 else 1.0
-        bake_sz = sz if abs(sz) > 1e-6 else 1.0
+    if can_resize_mesh:
+        # Keep object scale neutral and encode size directly in mesh radius.
+        if abs(sx - 1.0) > 1e-9 or abs(sy - 1.0) > 1e-9 or abs(sz - 1.0) > 1e-9:
+            # Prevent accidental mesh collapse when an axis scale is (near) zero.
+            bake_sx = sx if abs(sx) > 1e-6 else 1.0
+            bake_sy = sy if abs(sy) > 1e-6 else 1.0
+            bake_sz = sz if abs(sz) > 1e-6 else 1.0
+            try:
+                mesh_data.transform(Matrix.Diagonal((bake_sx, bake_sy, bake_sz, 1.0)))
+                earth_obj.scale = (1.0, 1.0, 1.0)
+                changed = True
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                _log_recoverable_once("PKA-OPS-036", "Failed normalizing Earth object scale while applying radius")
+
         try:
-            mesh_data.transform(Matrix.Diagonal((bake_sx, bake_sy, bake_sz, 1.0)))
-            earth_obj.scale = (1.0, 1.0, 1.0)
-            changed = True
+            current_local_radius = max(float(v.co.length) for v in vertices)
         except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-            _log_recoverable_once("PKA-OPS-036", "Failed normalizing Earth object scale while applying radius")
+            current_local_radius = 0.0
 
-    try:
-        current_local_radius = max(float(v.co.length) for v in vertices)
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-        current_local_radius = 0.0
+        if current_local_radius <= 1e-9:
+            current_local_radius = 1.0
 
-    if current_local_radius <= 1e-9:
-        current_local_radius = 1.0
+        ratio = float(target_radius) / float(current_local_radius)
+        if abs(ratio - 1.0) > 1e-9:
+            try:
+                mesh_data.transform(Matrix.Scale(float(ratio), 4))
+                changed = True
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                _log_recoverable_once("PKA-OPS-037", "Failed scaling Earth mesh to requested radius")
 
-    ratio = float(target_radius) / float(current_local_radius)
-    if abs(ratio - 1.0) > 1e-9:
         try:
-            mesh_data.transform(Matrix.Scale(float(ratio), 4))
-            changed = True
+            mesh_data.update()
         except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-            _log_recoverable_once("PKA-OPS-037", "Failed scaling Earth mesh to requested radius")
-
-    try:
-        mesh_data.update()
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-        pass
+            pass
 
     try:
         earth_obj["planetka_surface_local_radius"] = float(target_radius)
@@ -1830,6 +2099,61 @@ def _set_planetka_earth_radius_bu(scene, target_radius_bu):
             ensure_preview_object(earth_obj)
     except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
         _log_recoverable_once("PKA-OPS-039", "Failed syncing preview radius after Earth radius change")
+
+    # Keep Planetka camera in the same relative navigation shot immediately
+    # after radius change (without requiring a manual UI nudge), regardless
+    # of which scene camera is currently active.
+    try:
+        scene_for_camera = scene if isinstance(scene, bpy.types.Scene) else getattr(bpy.context, "scene", None)
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        scene_for_camera = None
+    if scene_for_camera is not None:
+        previous_scene_camera = None
+        camera_swapped = False
+        try:
+            props = getattr(scene_for_camera, "planetka", None)
+            previous_scene_camera = getattr(scene_for_camera, "camera", None)
+            planetka_camera = None
+            if (
+                previous_scene_camera is not None
+                and str(getattr(previous_scene_camera, "type", "")) == "CAMERA"
+                and _is_planetka_create_camera(previous_scene_camera)
+            ):
+                planetka_camera = previous_scene_camera
+            if planetka_camera is None:
+                for obj in tuple(getattr(scene_for_camera, "objects", ())):
+                    if (
+                        obj is not None
+                        and str(getattr(obj, "type", "")) == "CAMERA"
+                        and _is_planetka_create_camera(obj)
+                    ):
+                        planetka_camera = obj
+                        break
+            if props is not None and planetka_camera is not None:
+                if getattr(scene_for_camera, "camera", None) is not planetka_camera:
+                    scene_for_camera.camera = planetka_camera
+                    camera_swapped = True
+                _apply_navigation_shot(
+                    bpy.context,
+                    scene_for_camera,
+                    props,
+                    switch_viewport_to_camera=False,
+                    sync_active_view_when_not_camera=False,
+                )
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            _log_recoverable_once(
+                "PKA-OPS-064",
+                "Failed reapplying Planetka camera shot after Earth radius change",
+            )
+        finally:
+            if camera_swapped:
+                try:
+                    scene_for_camera.camera = previous_scene_camera
+                except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                    _log_recoverable_once(
+                        "PKA-OPS-065",
+                        "Failed restoring active scene camera after Planetka camera radius sync",
+                    )
 
     return bool(changed)
 
@@ -2959,6 +3283,13 @@ class PLANETKA_OT_AccountOpenLogin(bpy.types.Operator):
             prefs.auth_status_message = ""
         except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
             logger.debug("Planetka: failed clearing API key auth status message", exc_info=True)
+        scene = getattr(context, "scene", None) if context is not None else None
+        if scene is not None:
+            try:
+                if ACCOUNT_PANEL_DEFAULT_COLLAPSED_KEY in scene:
+                    del scene[ACCOUNT_PANEL_DEFAULT_COLLAPSED_KEY]
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka: failed clearing account panel default-collapsed marker", exc_info=True)
         self.report({'INFO'}, "Planetka API key connected.")
         return {'FINISHED'}
 
@@ -3374,6 +3705,54 @@ class PLANETKA_OT_SetBackgroundBlack(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class PLANETKA_OT_RemoveDefaultScene(bpy.types.Operator):
+    bl_idname = "planetka.remove_default_scene"
+    bl_label = "Remove Default Cube Scene"
+    bl_description = (
+        "Remove default Collection/Cube/Camera/Light and default World shader "
+        "when the scene is still pristine Blender startup state"
+    )
+
+    @classmethod
+    def poll(cls, context):
+        scene = getattr(context, "scene", None)
+        if scene is None:
+            return False
+        if get_earth_object() is not None:
+            return False
+        return _is_pristine_default_scene(scene)
+
+    def execute(self, context):
+        scene = require_scene(self, context, logger=logger)
+        if scene is None:
+            return {'CANCELLED'}
+
+        if not _is_pristine_default_scene(scene):
+            return fail(
+                self,
+                "Remove Default Cube Scene is available only for untouched Blender default startup scene.",
+                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                logger=logger,
+            )
+
+        removed = bool(_cleanup_pristine_default_scene(scene))
+        if not removed:
+            return fail(
+                self,
+                "Unable to remove default scene items.",
+                code=ErrorCode.RESOLVE_REFRESH_FAILED,
+                logger=logger,
+            )
+
+        try:
+            scene[_DEFAULT_SCENE_REMOVED_KEY] = True
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed tagging scene as default-cleaned", exc_info=True)
+
+        self.report({'INFO'}, "Default startup scene removed.")
+        return {'FINISHED'}
+
+
 class PLANETKA_OT_RebuildEarth(bpy.types.Operator):
     bl_idname = "planetka.rebuild_earth"
     bl_label = "Rebuild Earth"
@@ -3398,6 +3777,7 @@ class PLANETKA_OT_RebuildEarth(bpy.types.Operator):
 
         camera = _pick_scene_camera(scene, context=context)
         camera_snapshot = _snapshot_camera_state_for_rebuild(scene, camera)
+        earth_settings_snapshot = _snapshot_earth_settings_for_rebuild(scene, props)
         temp_camera_obj = None
         temp_camera_data = None
 
@@ -3467,6 +3847,7 @@ class PLANETKA_OT_RebuildEarth(bpy.types.Operator):
             except _REBUILD_EXCEPTIONS:
                 logger.debug("Planetka: failed removing temporary rebuild camera data", exc_info=True)
 
+        _restore_earth_settings_after_rebuild(scene, props, earth_settings_snapshot)
         _restore_camera_state_after_rebuild(scene, camera_snapshot)
 
         if "FINISHED" not in rebuild_result:
@@ -3515,6 +3896,16 @@ class PLANETKA_OT_AddEarth(bpy.types.Operator):
         if props is None:
             return {'CANCELLED'}
         selected_names_before, active_name_before = _snapshot_view_selection(context)
+        preexisting_active_camera = getattr(scene, "camera", None)
+        preexisting_cameras = [
+            obj for obj in tuple(getattr(scene, "objects", ()))
+            if str(getattr(obj, "type", "")) == "CAMERA"
+        ]
+        preexisting_non_planetka_cameras = [
+            obj for obj in preexisting_cameras
+            if not _is_planetka_create_camera(obj)
+        ]
+        activate_planetka_camera = not bool(preexisting_non_planetka_cameras)
 
         def _return_with_selection(result):
             _restore_view_selection(context, scene, selected_names_before, active_name_before)
@@ -3615,6 +4006,19 @@ class PLANETKA_OT_AddEarth(bpy.types.Operator):
             _apply_startup_setup_for_create_earth(scene, props)
         except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
             logger.debug("Planetka: failed applying startup setup profile", exc_info=True)
+        planetka_camera = _ensure_planetka_create_camera(scene)
+        if planetka_camera is None:
+            logger.debug("Planetka: failed creating Planetka Camera", exc_info=True)
+        else:
+            try:
+                _position_planetka_create_camera(
+                    scene,
+                    props,
+                    planetka_camera,
+                    activate=bool(activate_planetka_camera),
+                )
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka: failed positioning Planetka Camera on Create Earth", exc_info=True)
         # Create Earth default must remain Preview even if a saved startup profile
         # contains a different texture quality mode.
         try:
@@ -3629,7 +4033,23 @@ class PLANETKA_OT_AddEarth(bpy.types.Operator):
                 logger.debug("Planetka: failed applying default world background override", exc_info=True)
         if bool(getattr(props, "auto_adjust_clipping_values", True)):
             try:
-                _apply_create_earth_clipping_defaults(scene)
+                camera_before_clip = getattr(scene, "camera", None)
+                try:
+                    if planetka_camera is not None and str(getattr(planetka_camera, "type", "")) == "CAMERA":
+                        scene.camera = planetka_camera
+                    _apply_create_earth_clipping_defaults(scene)
+                finally:
+                    if (
+                        not bool(activate_planetka_camera)
+                        and preexisting_active_camera is not None
+                        and str(getattr(preexisting_active_camera, "type", "")) == "CAMERA"
+                    ):
+                        scene.camera = preexisting_active_camera
+                    elif (
+                        not bool(activate_planetka_camera)
+                        and preexisting_active_camera is None
+                    ):
+                        scene.camera = camera_before_clip
             except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
                 logger.debug("Planetka: failed applying create-earth clipping defaults", exc_info=True)
         try:
@@ -3685,9 +4105,289 @@ class PLANETKA_OT_AddEarth(bpy.types.Operator):
         # Keep implementation code in-place for future re-enable.
 
         _hide_shot_anchor_in_viewport()
+        try:
+            if _DEFAULT_SCENE_REMOVED_KEY in scene:
+                del scene[_DEFAULT_SCENE_REMOVED_KEY]
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed clearing default-scene removal marker", exc_info=True)
 
         self.report({'INFO'}, "Planetka Earth created successfully.")
         return _return_with_selection({'FINISHED'})
+
+
+class PLANETKA_OT_CreateStandaloneFile(bpy.types.Operator):
+    bl_idname = "planetka.create_standalone_file"
+    bl_label = "Create Standalone File"
+    bl_description = (
+        "Create a portable .blend copy with packed resources for use on machines "
+        "without Planetka addon or on render farms"
+    )
+
+    filename_ext = ".blend"
+
+    filter_glob: StringProperty(
+        default="*.blend",
+        options={'HIDDEN'},
+    )
+    filepath: StringProperty(
+        subtype='FILE_PATH',
+    )
+
+    def invoke(self, context, event):
+        del event
+        source_path = str(getattr(bpy.data, "filepath", "") or "").strip()
+        if source_path:
+            source_abs = os.path.abspath(source_path)
+            source_dir = os.path.dirname(source_abs)
+            source_name = os.path.splitext(os.path.basename(source_abs))[0] or "PlanetkaScene"
+        else:
+            source_dir = os.path.expanduser("~")
+            source_name = "PlanetkaScene"
+        self.filepath = os.path.join(source_dir, f"{source_name}_standalone.blend")
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context):
+        del context
+        source_path = str(getattr(bpy.data, "filepath", "") or "").strip()
+        source_abs = os.path.abspath(source_path) if source_path else ""
+        output_path = os.path.abspath(os.path.expanduser(str(getattr(self, "filepath", "") or "").strip()))
+        if not output_path:
+            return fail(self, "Pick output .blend path for standalone file.", logger=logger)
+        if not output_path.lower().endswith(".blend"):
+            output_path = f"{output_path}.blend"
+        if source_abs and os.path.normcase(output_path) == os.path.normcase(source_abs):
+            return fail(self, "Standalone file path must be different from current .blend.", logger=logger)
+
+        output_dir = os.path.dirname(output_path)
+        if not output_dir:
+            return fail(self, "Output folder is invalid.", logger=logger)
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return fail(self, f"Cannot create output folder: {output_dir}", logger=logger)
+
+        blender_binary = str(getattr(bpy.app, "binary_path", "") or "").strip()
+        if not blender_binary or not os.path.isfile(blender_binary):
+            return fail(self, "Could not locate Blender executable for standalone export.", logger=logger)
+
+        script_path = ""
+        temp_source_path = ""
+        try:
+            source_for_export = source_abs
+            source_missing = not source_for_export or not os.path.isfile(source_for_export)
+            if source_missing or bool(getattr(bpy.data, "is_dirty", False)):
+                fd, temp_source_path = tempfile.mkstemp(suffix="_planetka_standalone_source.blend")
+                os.close(fd)
+                save_copy_result = bpy.ops.wm.save_as_mainfile(filepath=temp_source_path, copy=True)
+                if "FINISHED" not in save_copy_result:
+                    return fail(self, "Could not prepare standalone export source copy.", logger=logger)
+                source_for_export = temp_source_path
+
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                suffix="_planetka_standalone_pack.py",
+                delete=False,
+                encoding="utf-8",
+            ) as script_file:
+                script_path = script_file.name
+                script_content = (
+                    "import bpy\n"
+                    "import os\n"
+                    "import sys\n"
+                    "\n"
+                    "def _output_path():\n"
+                    "    argv = sys.argv\n"
+                    "    if '--' not in argv:\n"
+                    "        return ''\n"
+                    "    idx = argv.index('--')\n"
+                    "    if idx + 1 >= len(argv):\n"
+                    "        return ''\n"
+                    "    return str(argv[idx + 1] or '').strip()\n"
+                    "\n"
+                    "def _idprop_keys(id_block):\n"
+                    "    try:\n"
+                    "        return list(id_block.keys())\n"
+                    "    except Exception:\n"
+                    "        return []\n"
+                    "\n"
+                    "def _has_planetka_runtime_key(id_block):\n"
+                    "    for key in _idprop_keys(id_block):\n"
+                    "        if str(key).startswith('planetka_'):\n"
+                    "            return True\n"
+                    "    return False\n"
+                    "\n"
+                    "def _strip_planetka_runtime_keys(id_block):\n"
+                    "    for key in _idprop_keys(id_block):\n"
+                    "        if str(key).startswith('planetka_'):\n"
+                    "            try:\n"
+                    "                del id_block[key]\n"
+                    "            except Exception:\n"
+                    "                pass\n"
+                    "\n"
+                    "def _standalone_name(name):\n"
+                    "    text = str(name or '').strip()\n"
+                    "    if not text:\n"
+                    "        return 'PlanetkaStandalone'\n"
+                    "    if text.startswith('PlanetkaStandalone'):\n"
+                    "        return text\n"
+                    "    if 'Planetka' in text:\n"
+                    "        return text.replace('Planetka', 'PlanetkaStandalone', 1)\n"
+                    "    return f'PlanetkaStandalone {text}'\n"
+                    "\n"
+                    "def _rename_datablock(id_block, force_prefix=False):\n"
+                    "    if id_block is None:\n"
+                    "        return\n"
+                    "    try:\n"
+                    "        current_name = str(getattr(id_block, 'name', '') or '')\n"
+                    "    except Exception:\n"
+                    "        return\n"
+                    "    if not current_name:\n"
+                    "        return\n"
+                    "    if (not force_prefix) and ('Planetka' not in current_name):\n"
+                    "        return\n"
+                    "    new_name = _standalone_name(current_name)\n"
+                    "    if new_name == current_name:\n"
+                    "        return\n"
+                    "    try:\n"
+                    "        id_block.name = new_name\n"
+                    "    except Exception:\n"
+                    "        pass\n"
+                    "\n"
+                    "def _rename_and_strip(id_collection, force_predicate=None):\n"
+                    "    for datablock in list(id_collection):\n"
+                    "        force_prefix = False\n"
+                    "        try:\n"
+                    "            force_prefix = bool(force_predicate(datablock)) if callable(force_predicate) else False\n"
+                    "        except Exception:\n"
+                    "            force_prefix = False\n"
+                    "        if _has_planetka_runtime_key(datablock):\n"
+                    "            force_prefix = True\n"
+                    "        _rename_datablock(datablock, force_prefix=force_prefix)\n"
+                    "        _strip_planetka_runtime_keys(datablock)\n"
+                    "\n"
+                    "def _is_standalone_name(name):\n"
+                    "    text = str(name or '').strip()\n"
+                    "    return text.startswith('PlanetkaStandalone')\n"
+                    "\n"
+                    "def _object_force_prefix(obj):\n"
+                    "    try:\n"
+                    "        role = str(obj.get('planetka_role', '') or '').strip()\n"
+                    "    except Exception:\n"
+                    "        role = ''\n"
+                    "    if role:\n"
+                    "        return True\n"
+                    "    name = str(getattr(obj, 'name', '') or '')\n"
+                    "    if 'Planetka' in name:\n"
+                    "        return True\n"
+                    "    if name in {'Atmosphere - Volumetric', 'Atmosphere - EEVEE supplement'}:\n"
+                    "        return True\n"
+                    "    return False\n"
+                    "\n"
+                    "def _rename_object_bound_data():\n"
+                    "    for obj in list(bpy.data.objects):\n"
+                    "        obj_name = str(getattr(obj, 'name', '') or '')\n"
+                    "        if not _is_standalone_name(obj_name):\n"
+                    "            continue\n"
+                    "        _rename_datablock(getattr(obj, 'data', None), force_prefix=True)\n"
+                    "        for slot in tuple(getattr(obj, 'material_slots', ())):\n"
+                    "            _rename_datablock(getattr(slot, 'material', None), force_prefix=True)\n"
+                    "\n"
+                    "def _detach_planetka_identity():\n"
+                    "    _rename_and_strip(bpy.data.objects, force_predicate=_object_force_prefix)\n"
+                    "    _rename_object_bound_data()\n"
+                    "    for attr_name in (\n"
+                    "        'collections',\n"
+                    "        'meshes',\n"
+                    "        'materials',\n"
+                    "        'node_groups',\n"
+                    "        'images',\n"
+                    "        'cameras',\n"
+                    "        'lights',\n"
+                    "        'worlds',\n"
+                    "        'textures',\n"
+                    "        'actions',\n"
+                    "        'curves',\n"
+                    "        'armatures',\n"
+                    "        'volumes',\n"
+                    "    ):\n"
+                    "        id_collection = getattr(bpy.data, attr_name, None)\n"
+                    "        if id_collection is None:\n"
+                    "            continue\n"
+                    "        _rename_and_strip(id_collection)\n"
+                    "    for scene in list(bpy.data.scenes):\n"
+                    "        _strip_planetka_runtime_keys(scene)\n"
+                    "\n"
+                    "def _run(path):\n"
+                    "    if not path:\n"
+                    "        raise RuntimeError('Missing standalone output path.')\n"
+                    "    path = os.path.abspath(os.path.expanduser(path))\n"
+                    "    out_dir = os.path.dirname(path)\n"
+                    "    if out_dir:\n"
+                    "        os.makedirs(out_dir, exist_ok=True)\n"
+                    "    _detach_planetka_identity()\n"
+                    "    try:\n"
+                    "        bpy.ops.file.make_paths_absolute()\n"
+                    "    except Exception:\n"
+                    "        pass\n"
+                    "    try:\n"
+                    "        bpy.ops.file.pack_all()\n"
+                    "    except Exception as exc:\n"
+                    "        raise RuntimeError(f'pack_all failed: {exc}')\n"
+                    "    result = bpy.ops.wm.save_as_mainfile(filepath=path, copy=False)\n"
+                    "    if 'FINISHED' not in result:\n"
+                    "        raise RuntimeError('save_as_mainfile failed.')\n"
+                    "\n"
+                    "if __name__ == '__main__':\n"
+                    "    _run(_output_path())\n"
+                )
+                script_file.write(script_content)
+
+            cmd = [
+                blender_binary,
+                "-b",
+                source_for_export,
+                "--python",
+                script_path,
+                "--",
+                output_path,
+            ]
+            completed = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            if completed.returncode != 0 or not os.path.isfile(output_path):
+                log_tail = ""
+                try:
+                    lines = str(completed.stdout or "").splitlines()
+                    if lines:
+                        log_tail = " | ".join(lines[-6:])
+                except (RuntimeError, TypeError, ValueError):
+                    log_tail = ""
+                message = "Standalone export failed."
+                if log_tail:
+                    message = f"{message} {log_tail}"
+                return fail(self, message, logger=logger)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
+            return fail(self, f"Standalone export failed: {exc}", logger=logger)
+        except (RuntimeError, TypeError, ValueError, OSError) as exc:
+            return fail(self, f"Standalone export failed: {exc}", logger=logger)
+        finally:
+            if script_path:
+                try:
+                    os.remove(script_path)
+                except (OSError, RuntimeError, TypeError, ValueError):
+                    pass
+            if temp_source_path:
+                try:
+                    os.remove(temp_source_path)
+                except (OSError, RuntimeError, TypeError, ValueError):
+                    pass
+
+        self.report({'INFO'}, f"Standalone file created: {output_path}")
+        return {'FINISHED'}
 
 
 class PLANETKA_OT_SaveStartupSetup(bpy.types.Operator):

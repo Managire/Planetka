@@ -16,7 +16,6 @@ import threading
 import time
 
 import bpy
-import blf
 from bpy.app.handlers import persistent
 from mathutils import Vector
 
@@ -197,15 +196,13 @@ _SUNLIGHT_OBJECT_NAME = "Planetka Sunlight"
 _SURFACE_GRADING_GROUP_NAME = "Planetka Surface Grading Group"
 ANIMATION_PREPARED_SEGMENTS_KEY = "planetka_anim_prepared_segments"
 _RESOLVE_TRACE_ENABLED = False
-_DOWNLOAD_OVERLAY_DRAW_HANDLE = None
-_DOWNLOAD_OVERLAY_TEXT = ""
-_DOWNLOAD_OVERLAY_VISIBLE = False
 _STATUS_NOTICE_KEYS = (
     "planetka_status_bg_auto_black_notice",
     "planetka_status_clip_auto_notice",
     "planetka_status_cache_notice",
 )
 _STATUS_NOTICE_CLEAR_SKIP_KEY = "planetka_status_notice_clear_skip_count"
+ACCOUNT_PANEL_DEFAULT_COLLAPSED_KEY = "planetka_ui_account_default_collapsed"
 _RECOVERY_FALLBACK_FILES_BY_TYPE = {
     "S2": "ocean_pixel_final_20.exr",
     "EL": "black_pixel_20.exr",
@@ -2243,130 +2240,6 @@ def _tag_view3d_redraw():
                 area.tag_redraw()
 
 
-def _download_overlay_draw_callback():
-    if not bool(_DOWNLOAD_OVERLAY_VISIBLE):
-        return
-    text = str(_DOWNLOAD_OVERLAY_TEXT or "").strip()
-    if not text:
-        return
-    region = getattr(getattr(bpy, "context", None), "region", None)
-    if region is None:
-        return
-    region_h = int(getattr(region, "height", 0) or 0)
-    if region_h <= 0:
-        return
-    font_id = 0
-    x = 16.0
-    y = float(max(16, region_h - 34))
-    try:
-        blf.size(font_id, 15.0)
-        blf.enable(font_id, blf.SHADOW)
-        blf.shadow(font_id, 3, 0, 0, 0, 180)
-        blf.shadow_offset(font_id, 1, -1)
-        blf.color(font_id, 1.0, 0.72, 0.18, 1.0)
-        blf.position(font_id, x, y, 0.0)
-        blf.draw(font_id, text)
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        return
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        return
-    finally:
-        try:
-            blf.disable(font_id, blf.SHADOW)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            pass
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            pass
-
-
-def _ensure_download_overlay_handler():
-    global _DOWNLOAD_OVERLAY_DRAW_HANDLE
-    if _DOWNLOAD_OVERLAY_DRAW_HANDLE is not None:
-        return
-    if bool(getattr(bpy.app, "background", False)):
-        return
-    try:
-        _DOWNLOAD_OVERLAY_DRAW_HANDLE = bpy.types.SpaceView3D.draw_handler_add(
-            _download_overlay_draw_callback,
-            (),
-            'WINDOW',
-            'POST_PIXEL',
-        )
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed adding download overlay draw handler", exc_info=True)
-        _DOWNLOAD_OVERLAY_DRAW_HANDLE = None
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed adding download overlay draw handler", exc_info=True)
-        _DOWNLOAD_OVERLAY_DRAW_HANDLE = None
-
-
-def _remove_download_overlay_handler():
-    global _DOWNLOAD_OVERLAY_DRAW_HANDLE
-    if _DOWNLOAD_OVERLAY_DRAW_HANDLE is None:
-        return
-    try:
-        bpy.types.SpaceView3D.draw_handler_remove(_DOWNLOAD_OVERLAY_DRAW_HANDLE, 'WINDOW')
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed removing download overlay draw handler", exc_info=True)
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed removing download overlay draw handler", exc_info=True)
-    _DOWNLOAD_OVERLAY_DRAW_HANDLE = None
-
-
-def _set_download_overlay(text=None):
-    global _DOWNLOAD_OVERLAY_TEXT
-    global _DOWNLOAD_OVERLAY_VISIBLE
-    cleaned = str(text or "").strip()
-    if cleaned:
-        _DOWNLOAD_OVERLAY_TEXT = cleaned
-        _DOWNLOAD_OVERLAY_VISIBLE = True
-        _ensure_download_overlay_handler()
-    else:
-        _DOWNLOAD_OVERLAY_TEXT = ""
-        _DOWNLOAD_OVERLAY_VISIBLE = False
-        _remove_download_overlay_handler()
-    _tag_view3d_redraw()
-
-
-def _update_download_overlay_indicator(scene=None):
-    runtime = get_resolve_runtime_status(scene)
-    code = str(runtime.get("code", "IDLE") or "IDLE").upper()
-    if code == "PREPARING":
-        _set_download_overlay("Planetka: Preparing download...")
-        return
-    if code == "DOWNLOADING":
-        downloaded_mb = None
-        total_mb = None
-        r2_source = _get_r2_source()
-        if r2_source is not None:
-            get_progress = getattr(r2_source, "get_download_progress", None)
-            if callable(get_progress):
-                try:
-                    progress = get_progress() or {}
-                    downloaded_bytes = int(progress.get("downloaded_bytes", 0) or 0)
-                    total_bytes = int(progress.get("total_bytes", 0) or 0)
-                    downloaded_mb = float(downloaded_bytes) / (1024.0 * 1024.0)
-                    total_mb = float(total_bytes) / (1024.0 * 1024.0)
-                except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                    downloaded_mb = None
-                    total_mb = None
-                except (RuntimeError, TypeError, ValueError, AttributeError):
-                    downloaded_mb = None
-                    total_mb = None
-        if downloaded_mb is not None and total_mb is not None and total_mb > 0.0:
-            _set_download_overlay(f"Planetka: Downloading data {downloaded_mb:.2f} / {total_mb:.2f} MB")
-            return
-        _set_download_overlay("Planetka: Downloading data...")
-        return
-    if code in {"FINALIZING", "FINALIZE_QUEUED"}:
-        _set_download_overlay("Planetka: Finalizing resolve...")
-        return
-    if code == "QUEUED":
-        _set_download_overlay("Planetka: Resolve queued...")
-        return
-    _set_download_overlay(None)
-
-
 def _tile_xy_for_lon_lat(lon_deg, lat_deg, z):
     lon_shift = (float(lon_deg) + 180.0) % 360.0
     lat_shift = max(0.0, min(179.999999, float(lat_deg) + 90.0))
@@ -3434,11 +3307,9 @@ def _auto_resolve_download_pump_timer():
         scene = getattr(bpy.context, "scene", None)
         if scene is not None:
             _update_realtime_telemetry(scene)
-            _update_download_overlay_indicator(scene)
             _tag_view3d_redraw()
 
         if not has_active and not has_pending and not has_completed:
-            _set_download_overlay(None)
             _AUTO_RESOLVE_DOWNLOAD_TIMER_RUNNING = False
             _resolve_trace("Pump stop: no active/pending/completed jobs")
             return None
@@ -3453,7 +3324,6 @@ def _auto_resolve_download_pump_timer():
         logger.debug("Planetka auto-resolve download timer failed unexpectedly", exc_info=True)
 
     _AUTO_RESOLVE_DOWNLOAD_TIMER_RUNNING = False
-    _set_download_overlay(None)
     return None
 
 
@@ -3490,7 +3360,6 @@ def stop_auto_resolve_download_pipeline():
         logger.debug("Planetka: failed stopping auto-resolve download timer", exc_info=True)
 
     _AUTO_RESOLVE_DOWNLOAD_TIMER_RUNNING = False
-    _set_download_overlay(None)
 
 
 def request_auto_resolve(scene, immediate=False, mark_dirty=True):
@@ -4098,6 +3967,22 @@ def _planetka_load_post(_dummy):
         logger.debug("Planetka: failed applying unsupported startup overrides", exc_info=True)
     except (RuntimeError, TypeError, ValueError, AttributeError, ImportError):
         logger.debug("Planetka: failed applying unsupported startup overrides", exc_info=True)
+    try:
+        from .auth import is_authenticated
+
+        prefs = get_prefs()
+        connected = bool(is_authenticated(prefs))
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError, ImportError):
+        connected = False
+
+    for scene in _iter_scenes():
+        try:
+            if connected:
+                scene[ACCOUNT_PANEL_DEFAULT_COLLAPSED_KEY] = True
+            elif ACCOUNT_PANEL_DEFAULT_COLLAPSED_KEY in scene:
+                del scene[ACCOUNT_PANEL_DEFAULT_COLLAPSED_KEY]
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed syncing account panel default-collapsed state", exc_info=True)
     ensure_active_view_monitor_running()
 
 
@@ -4168,6 +4053,14 @@ def remove_object_and_unused_mesh(obj):
         logger.debug("Planetka: failed removing unused mesh data", exc_info=True)
 
 
+def _is_planetka_runtime_name(name):
+    try:
+        text = str(name or "")
+    except (TypeError, ValueError):
+        return False
+    return text.startswith("Planetka") and (not text.startswith("PlanetkaStandalone"))
+
+
 def delete_temp_meshes(keep_obj=None):
     for obj in list(getattr(bpy.data, "objects", ())):
         if obj is keep_obj:
@@ -4220,7 +4113,7 @@ def cleanup_planetka_unused_data():
     for mesh_data in list(getattr(bpy.data, "meshes", ())):
         name = str(getattr(mesh_data, "name", ""))
         if not (
-            name.startswith("Planetka")
+            _is_planetka_runtime_name(name)
             or name.startswith("Earth Surface")
             or name.startswith("Planetka__ResolvedMeshCache")
         ):
@@ -4236,9 +4129,10 @@ def cleanup_planetka_unused_data():
     for image in list(getattr(bpy.data, "images", ())):
         name = str(getattr(image, "name", ""))
         filepath = str(getattr(image, "filepath", "")).lower()
+        name_lower = name.lower()
         looks_planetka = (
             name.startswith(image_prefixes)
-            or "planetka" in name.lower()
+            or ("planetka" in name_lower and "planetkastandalone" not in name_lower)
             or "/s2/" in filepath
             or "/el/" in filepath
             or "/wt/" in filepath
@@ -4256,7 +4150,7 @@ def cleanup_planetka_unused_data():
 
     for material in list(getattr(bpy.data, "materials", ())):
         name = str(getattr(material, "name", ""))
-        if not name.startswith("Planetka"):
+        if not _is_planetka_runtime_name(name):
             continue
         try:
             if int(getattr(material, "users", 0)) == 0:
@@ -4267,7 +4161,7 @@ def cleanup_planetka_unused_data():
 
     for node_group in list(getattr(bpy.data, "node_groups", ())):
         name = str(getattr(node_group, "name", ""))
-        if not name.startswith("Planetka"):
+        if not _is_planetka_runtime_name(name):
             continue
         try:
             if int(getattr(node_group, "users", 0)) == 0:
