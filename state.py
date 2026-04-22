@@ -139,7 +139,6 @@ _RENDER_JOB_ACTIVE = False
 _RENDER_JOB_EPOCH = 0
 _RENDER_JOB_LAST_ENDED_EPOCH = 0
 _RENDER_JOB_LAST_CANCELLED_EPOCH = 0
-_ACTIVE_VIEW_MONITOR_TIMER_RUNNING = False
 _AUTO_RESOLVE_NEXT_DUE_TIME = {}
 _AUTO_RESOLVE_LAST_CAMERA_SIGNATURE = {}
 _AUTO_RESOLVE_LAST_OUTPUT_SIGNATURE = {}
@@ -164,7 +163,6 @@ LAST_RESOLVE_TOTAL_SECONDS_KEY = "planetka_last_manual_resolve_total_seconds"
 RESOLVE_ESTIMATE_FULL_BYTES_KEY = "planetka_resolve_estimate_full_bytes"
 RESOLVE_ESTIMATE_BALANCED_BYTES_KEY = "planetka_resolve_estimate_balanced_bytes"
 RESOLVE_ESTIMATE_PREVIEW_BYTES_KEY = "planetka_resolve_estimate_preview_bytes"
-_ACTIVE_VIEW_MONITOR_LAST_SIGNATURE = {}
 _VIEWPORT_OPT_LAST_SIGNATURE = {}
 _SUNLIGHT_LAST_SIGNATURE = {}
 _SUNLIGHT_OBJECT_NAME_CACHE = {}
@@ -1752,14 +1750,6 @@ def get_resolve_runtime_status(scene=None):
             "code": "QUEUED",
             "text": "Resolve queued",
             "running": True,
-        })
-        return status
-
-    if scene is not None and _AUTO_RESOLVE_TIMER_RUNNING and _can_auto_resolve_run(scene):
-        status.update({
-            "code": "MONITORING",
-            "text": "Monitoring camera for auto-resolve",
-            "running": False,
         })
         return status
 
@@ -3545,7 +3535,6 @@ def stop_auto_resolve_download_pipeline():
 def request_auto_resolve(scene, immediate=False, mark_dirty=True):
     global _AUTO_RESOLVE_TIMER_RUNNING
     if not _can_auto_resolve_run(scene):
-        stop_active_view_monitor()
         _AUTO_RESOLVE_NEXT_DUE_TIME.clear()
         _AUTO_RESOLVE_TIMER_RUNNING = False
         try:
@@ -3561,8 +3550,6 @@ def request_auto_resolve(scene, immediate=False, mark_dirty=True):
 
     if _auto_resolve_scope_mode(scene) == "NONE":
         return
-
-    ensure_active_view_monitor_running()
 
     if mark_dirty:
         _mark_auto_resolve_dirty(scene, immediate=bool(immediate))
@@ -3616,7 +3603,6 @@ def update_auto_resolve(self, context):
             _force_restore_navigation_adaptive_state()
         _mark_auto_resolve_dirty(scene, immediate=True, force_resolve=True)
     if _can_auto_resolve_run(scene):
-        ensure_active_view_monitor_running()
         request_auto_resolve(scene, immediate=True, mark_dirty=False)
     else:
         stop_auto_resolve_service()
@@ -3772,10 +3758,12 @@ def _auto_resolve_timer():
         if scene_state is None:
             _AUTO_RESOLVE_TIMER_RUNNING = False
             return None
+        monitor_interval = max(0.05, _active_view_monitor_interval_seconds(scene))
         due_time = scene_state.next_due_time
         if due_time is None:
-            _AUTO_RESOLVE_TIMER_RUNNING = False
-            return None
+            scene_state.next_due_time = time.monotonic()
+            _write_scene_auto_resolve_state(scene_state)
+            due_time = scene_state.next_due_time
 
         if not _can_auto_resolve_run(scene):
             scene_state.next_due_time = None
@@ -3800,10 +3788,9 @@ def _auto_resolve_timer():
             _write_scene_auto_resolve_state(scene_state)
             return max(0.05, float(retry_delay))
 
-        scene_state.next_due_time = None
+        scene_state.next_due_time = time.monotonic() + monitor_interval
         _write_scene_auto_resolve_state(scene_state)
-        _AUTO_RESOLVE_TIMER_RUNNING = False
-        return None
+        return monitor_interval
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka auto-resolve timer tick failed", exc_info=True)
         _AUTO_RESOLVE_TIMER_RUNNING = False
@@ -3813,87 +3800,6 @@ def _auto_resolve_timer():
     return None
 
 
-def _active_view_monitor_timer():
-    global _ACTIVE_VIEW_MONITOR_TIMER_RUNNING
-    try:
-        if not hasattr(bpy.types.Scene, "planetka"):
-            _ACTIVE_VIEW_MONITOR_TIMER_RUNNING = False
-            return None
-
-        scene = getattr(bpy.context, "scene", None)
-        if not _can_auto_resolve_run(scene):
-            _ACTIVE_VIEW_MONITOR_TIMER_RUNNING = False
-            return None
-        if scene is None:
-            _ACTIVE_VIEW_MONITOR_TIMER_RUNNING = False
-            return None
-
-        scene_id = _scene_key(scene)
-        monitor_interval = _active_view_monitor_interval_seconds(scene)
-        scope = _current_view_scope(scene)
-        if scope != "ACTIVE_VIEW":
-            _ACTIVE_VIEW_MONITOR_LAST_SIGNATURE.pop(scene_id, None)
-            return monitor_interval
-
-        signature = _active_view_signature()
-        if signature is None:
-            _ACTIVE_VIEW_MONITOR_LAST_SIGNATURE.pop(scene_id, None)
-            return monitor_interval
-
-        previous_signature = _ACTIVE_VIEW_MONITOR_LAST_SIGNATURE.get(scene_id)
-        _ACTIVE_VIEW_MONITOR_LAST_SIGNATURE[scene_id] = signature
-        if previous_signature is None or previous_signature == signature:
-            return monitor_interval
-
-        _suspend_adaptive_viewport_during_navigation(scene)
-        request_auto_resolve(scene, immediate=False)
-        return monitor_interval
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka active-view monitor timer failed", exc_info=True)
-        _ACTIVE_VIEW_MONITOR_TIMER_RUNNING = False
-    except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
-        logger.debug("Planetka active-view monitor timer failed unexpectedly", exc_info=True)
-        _ACTIVE_VIEW_MONITOR_TIMER_RUNNING = False
-    return None
-
-
-def ensure_active_view_monitor_running():
-    global _ACTIVE_VIEW_MONITOR_TIMER_RUNNING
-    scene = getattr(bpy.context, "scene", None)
-    if not _can_auto_resolve_run(scene):
-        stop_active_view_monitor()
-        _ACTIVE_VIEW_MONITOR_TIMER_RUNNING = False
-        return
-    if _ACTIVE_VIEW_MONITOR_TIMER_RUNNING and bpy.app.timers.is_registered(_active_view_monitor_timer):
-        return
-    try:
-        bpy.app.timers.register(
-            _active_view_monitor_timer,
-            first_interval=max(0.05, _active_view_monitor_interval_seconds(scene)),
-            persistent=True,
-        )
-        _ACTIVE_VIEW_MONITOR_TIMER_RUNNING = True
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed starting active-view monitor timer", exc_info=True)
-        _ACTIVE_VIEW_MONITOR_TIMER_RUNNING = False
-    except (RuntimeError, TypeError, ValueError):
-        logger.debug("Planetka: failed starting active-view monitor timer", exc_info=True)
-        _ACTIVE_VIEW_MONITOR_TIMER_RUNNING = False
-
-
-def stop_active_view_monitor():
-    global _ACTIVE_VIEW_MONITOR_TIMER_RUNNING
-    try:
-        if bpy.app.timers.is_registered(_active_view_monitor_timer):
-            bpy.app.timers.unregister(_active_view_monitor_timer)
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed stopping active-view monitor timer", exc_info=True)
-    except (RuntimeError, TypeError, ValueError):
-        logger.debug("Planetka: failed stopping active-view monitor timer", exc_info=True)
-    _ACTIVE_VIEW_MONITOR_TIMER_RUNNING = False
-    _ACTIVE_VIEW_MONITOR_LAST_SIGNATURE.clear()
-
-
 def ensure_auto_resolve_service_running():
     scene = getattr(getattr(bpy, "context", None), "scene", None)
     if not _can_auto_resolve_run(scene):
@@ -3901,11 +3807,12 @@ def ensure_auto_resolve_service_running():
         return
     if scene is None:
         return
-    scene_id = _scene_key(scene)
-    if scene_id not in _AUTO_RESOLVE_NEXT_DUE_TIME:
-        ensure_active_view_monitor_running()
+    scene_state = _read_scene_auto_resolve_state(scene)
+    if scene_state is None:
         return
-    ensure_active_view_monitor_running()
+    if scene_state.next_due_time is None:
+        scene_state.next_due_time = time.monotonic() + max(0.05, _active_view_monitor_interval_seconds(scene))
+        _write_scene_auto_resolve_state(scene_state)
     _arm_auto_resolve_timer(force_immediate=False)
 
 
@@ -3918,7 +3825,6 @@ def stop_auto_resolve_service():
         logger.debug("Planetka: failed stopping auto-resolve timer", exc_info=True)
     _AUTO_RESOLVE_TIMER_RUNNING = False
     stop_auto_resolve_download_pipeline()
-    stop_active_view_monitor()
     _AUTO_RESOLVE_NEXT_DUE_TIME.clear()
     _AUTO_RESOLVE_LAST_CAMERA_SIGNATURE.clear()
     _AUTO_RESOLVE_LAST_OUTPUT_SIGNATURE.clear()
@@ -4059,7 +3965,7 @@ def _planetka_depsgraph_update_post(_scene, _depsgraph):
     if not _can_auto_resolve_run(scene):
         return
 
-    ensure_active_view_monitor_running()
+    ensure_auto_resolve_service_running()
 
     _update_realtime_telemetry(scene)
 
@@ -4150,7 +4056,7 @@ def _planetka_load_post(_dummy):
                 del scene[ACCOUNT_PANEL_DEFAULT_COLLAPSED_KEY]
         except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
             logger.debug("Planetka: failed syncing account panel default-collapsed state", exc_info=True)
-    ensure_active_view_monitor_running()
+    ensure_auto_resolve_service_running()
 
 
 def create_temp_mesh(tiles, name="Planetka Earth Surface", collection_policy="inherit_old"):
