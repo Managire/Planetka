@@ -3769,6 +3769,11 @@ def recover_post_render_state(scene=None, cancelled=False):
 def mark_render_job_started():
     global _RENDER_JOB_ACTIVE
     global _RENDER_JOB_EPOCH
+    if _RENDER_JOB_ACTIVE:
+        # Blender calls render_pre per frame during animation renders.
+        # Treat the whole animation as one render job to avoid per-frame
+        # self-heal churn and epoch flips during segment rendering.
+        return int(_RENDER_JOB_EPOCH)
     try:
         self_heal_missing_cache_images_for_render(getattr(getattr(bpy, "context", None), "scene", None))
     except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError, OSError):

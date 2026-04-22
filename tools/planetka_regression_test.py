@@ -252,10 +252,12 @@ def main():
 
         baseline_radius = _surface_local_radius(surface)
         baseline_scale = tuple(surface.scale)
-        _assert_close(baseline_radius, 1.0, 0.02, "Baseline local radius")
-        _assert_close(baseline_scale[0], 2.0, 0.01, "Baseline scale X")
-        _assert_close(baseline_scale[1], 2.0, 0.01, "Baseline scale Y")
-        _assert_close(baseline_scale[2], 2.0, 0.01, "Baseline scale Z")
+        # Current runtime keeps Earth mesh radius directly in local geometry and
+        # keeps object scale neutral.
+        _assert_close(baseline_radius, 2.0, 0.02, "Baseline local radius")
+        _assert_close(baseline_scale[0], 1.0, 0.01, "Baseline scale X")
+        _assert_close(baseline_scale[1], 1.0, 0.01, "Baseline scale Y")
+        _assert_close(baseline_scale[2], 1.0, 0.01, "Baseline scale Z")
 
         _log("Scenario 2: external camera move syncs Navigation controls")
         props = getattr(scene, "planetka", None)

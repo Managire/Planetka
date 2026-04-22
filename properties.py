@@ -859,8 +859,8 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
             ("BALANCED", "Balanced", "Recommended when RAM/VRAM is limited"),
             ("FULL", "Full Quality", "Highly recommended for final renders"),
         ),
-        default="BALANCED",
-        description="Texture quality used by Planetka - Render Animation",
+        default="FULL",
+        description="Texture quality used by Render Animation",
     )
 
     anim_start_altitude_km: FloatProperty(
@@ -936,9 +936,9 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
 
     anim_prepare_max_segments: IntProperty(
         name="Max Segments",
-        default=64,
+        default=99,
         min=1,
-        max=500,
+        max=99,
         description="Maximum number of prepared segment meshes allowed in Make Ready mode",
     )
 

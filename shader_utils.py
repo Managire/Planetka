@@ -52,6 +52,7 @@ BASE_EMBEDDED_TILE_GROUP_COUNT = 1
 TESTING_STATIC_SLOT_COUNT = int(SHADER_TILE_BUDGET_EXPECTED)
 TESTING_LOADER_SCHEMA_VERSION_KEY = "planetka_testing_loader_schema_v"
 TESTING_LOADER_SCHEMA_VERSION = 2
+ANIMATION_SEGMENT_GROUP_TAG_KEY = "planetka_animation_segment_group"
 
 
 # ------------------------------------------------------------
@@ -60,10 +61,52 @@ TESTING_LOADER_SCHEMA_VERSION = 2
 
 def _is_dynamic_texture_loading_group_name(name):
     token = str(name or "").strip()
-    return token in {
-        TEXTURE_LOADING_GROUP_NAME,
-        LEGACY_TEXTURE_LOADING_TEST_GROUP_NAME,
-    }
+    if not token:
+        return False
+    return bool(
+        token in {
+            TEXTURE_LOADING_GROUP_NAME,
+            LEGACY_TEXTURE_LOADING_TEST_GROUP_NAME,
+        }
+        or token.startswith(f"{TEXTURE_LOADING_GROUP_NAME}_")
+        or token.startswith(f"{LEGACY_TEXTURE_LOADING_TEST_GROUP_NAME}_")
+    )
+
+
+def _is_testing_texture_loading_group(group_tree):
+    if group_tree is None:
+        return False
+    if _is_dynamic_texture_loading_group_name(getattr(group_tree, "name", "")):
+        return True
+    try:
+        schema = int(group_tree.get(TESTING_LOADER_SCHEMA_VERSION_KEY, 0) or 0)
+        if schema >= 1:
+            return True
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        pass
+    try:
+        nodes = getattr(group_tree, "nodes", None)
+        if nodes is None:
+            return False
+        if nodes.get(f"{TEST_TILE_IMAGE_NODE_PREFIX}001_S2") is not None:
+            return True
+        if nodes.get("TileActive_001") is not None:
+            return True
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        pass
+    return False
+
+
+def _is_animation_segment_group(group_tree):
+    if group_tree is None:
+        return False
+    try:
+        if bool(group_tree.get(ANIMATION_SEGMENT_GROUP_TAG_KEY, False)):
+            return True
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        pass
+    name = str(getattr(group_tree, "name", "") or "")
+    return "_frames_" in name and "Planetka Textures Loading Group" in name
 
 def parse_tile(tile):
     try:
@@ -1312,7 +1355,7 @@ def _build_scalar_add_chain(nodes, links, sockets, *, x_start=200.0, y=0.0, x_st
 
 
 def _ensure_dynamic_texture_loading_slots(group_tree, slot_count, allow_shrink=True):
-    if _is_dynamic_texture_loading_group_name(getattr(group_tree, "name", "")):
+    if _is_testing_texture_loading_group(group_tree) or _is_animation_segment_group(group_tree):
         return _ensure_dynamic_texture_loading_slots_testing(group_tree, slot_count, allow_shrink=allow_shrink)
 
     slot_count = max(1, int(slot_count))
@@ -1868,20 +1911,26 @@ def update_shader_nodes(
     if source_group_tree is None:
         logger.error("Planetka: texture loading group tree missing in material %r", material_name)
         return stats
-    testing_group = _ensure_testing_texture_loading_group(source_group_tree)
-    if testing_group is not None and getattr(group, "node_tree", None) != testing_group:
-        try:
-            group.node_tree = testing_group
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed assigning testing texture loading group", exc_info=True)
-        except (RuntimeError, TypeError, ValueError):
-            logger.debug("Planetka: failed assigning testing texture loading group", exc_info=True)
+    if _is_animation_segment_group(source_group_tree):
+        testing_group = source_group_tree
+    else:
+        testing_group = _ensure_testing_texture_loading_group(source_group_tree)
+        if testing_group is not None and getattr(group, "node_tree", None) != testing_group:
+            try:
+                group.node_tree = testing_group
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka: failed assigning testing texture loading group", exc_info=True)
+            except (RuntimeError, TypeError, ValueError):
+                logger.debug("Planetka: failed assigning testing texture loading group", exc_info=True)
     active_group_tree = getattr(group, "node_tree", None)
     if active_group_tree is None:
         logger.error("Planetka: active texture loading group tree is unavailable in material %r", material_name)
         return stats
 
-    testing_mode = _is_dynamic_texture_loading_group_name(getattr(active_group_tree, "name", ""))
+    testing_mode = bool(
+        _is_testing_texture_loading_group(active_group_tree)
+        or _is_animation_segment_group(active_group_tree)
+    )
 
     try:
         tile_nodes = _ensure_dynamic_texture_loading_slots(

@@ -549,7 +549,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         if prepared_segments > 0:
             return fail(
                 self,
-                "Animation is prepared for render. Use Clear Prepared before resolving/navigating again.",
+                "Animation Quick Preview is active. Use Clear Quick Preview before resolving/navigating again.",
                 code=ErrorCode.RESOLVE_PRECHECK_FAILED,
                 logger=logger,
             )

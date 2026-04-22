@@ -144,7 +144,7 @@ def _build_base_tile(mod, x: int, y: int, z: int):
         raise RuntimeError(err)
 
 
-def _rebuild_d_from_lowest(mod, x: int, y: int, z: int, d_levels: list[int]):
+def _rebuild_d_from_lowest(mod, x: int, y: int, z: int, d_levels: list[int], skip_existing: bool = False):
     base_d = 1 if int(z) == 1 else int(z)
 
     src_path = mod._tile_path(x, y, z, _encode_d_for_name(base_d))
@@ -173,6 +173,8 @@ def _rebuild_d_from_lowest(mod, x: int, y: int, z: int, d_levels: list[int]):
         dst_h = max(1, int(round(float(src_h) * scale)))
         out = mod._resize(src, dst_w, dst_h)
         dst_path = mod._tile_path(x, y, z, _encode_d_for_name(d_eff))
+        if skip_existing and os.path.isfile(dst_path):
+            continue
         mod._write_s2_exr(dst_path, out)
         rebuilt += 1
     return rebuilt
@@ -216,6 +218,11 @@ def _parse_args() -> argparse.Namespace:
         "--only-z",
         default="",
         help="Optional comma-separated z levels to process (example: 2,4,8,15)",
+    )
+    parser.add_argument(
+        "--skip-existing-d",
+        action="store_true",
+        help="Skip writing d-variant outputs that already exist.",
     )
     return parser.parse_args()
 
@@ -274,7 +281,7 @@ def main() -> int:
         d_levels = d_levels_by_z.get(z, [])
         z_rebuilt = 0
         for idx, (x, y) in enumerate(coords, start=1):
-            z_rebuilt += _rebuild_d_from_lowest(mod, x, y, z, d_levels)
+            z_rebuilt += _rebuild_d_from_lowest(mod, x, y, z, d_levels, skip_existing=bool(args.skip_existing_d))
             if idx % 20 == 0 or idx == len(coords):
                 print(f"[d-z{z:03d}] {idx}/{len(coords)} rebuilt={z_rebuilt}")
         d_done += z_rebuilt

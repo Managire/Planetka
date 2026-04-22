@@ -44,6 +44,8 @@ from .operators import (
     PLANETKA_OT_ResetEarthTransform,
     PLANETKA_OT_ResetSurfaceGradingSection,
     PLANETKA_OT_AutoAdjustClipping,
+    PLANETKA_OT_CreateStandaloneFile,
+    PLANETKA_OT_RemoveDefaultScene,
     PLANETKA_OT_SetBackgroundBlack,
     PLANETKA_OT_SetTextureQualityAndResolve,
     PLANETKA_OT_NavigationPreset,
@@ -106,6 +108,7 @@ from .ui import (
 from .validation import (
     PLANETKA_OT_ReportBug,
     PLANETKA_OT_SceneHealthCheck,
+    PLANETKA_OT_SceneHealthReport,
     PLANETKA_OT_ValidateTextureSource,
 )
 
@@ -133,6 +136,7 @@ classes = (
     PLANETKA_OT_AccountContact,
     PLANETKA_OT_AccountUpgrade,
     PLANETKA_OT_DownloadStatusPopup,
+    PLANETKA_OT_RemoveDefaultScene,
     PLANETKA_OT_AddEarth,
     PLANETKA_OT_RebuildEarth,
     PLANETKA_OT_SaveLocation,
@@ -142,6 +146,7 @@ classes = (
     PLANETKA_OT_ResetEarthTransform,
     PLANETKA_OT_ResetSurfaceGradingSection,
     PLANETKA_OT_AutoAdjustClipping,
+    PLANETKA_OT_CreateStandaloneFile,
     PLANETKA_OT_SetBackgroundBlack,
     PLANETKA_OT_SetTextureQualityAndResolve,
     PLANETKA_OT_UseCurrentViewNavigation,
@@ -170,6 +175,7 @@ classes = (
     PLANETKA_OT_LoadTextures,
     PLANETKA_OT_ValidateTextureSource,
     PLANETKA_OT_SceneHealthCheck,
+    PLANETKA_OT_SceneHealthReport,
     PLANETKA_OT_ReportBug,
     PLANETKA_OT_SaveStartupSetup,
     PLANETKA_OT_ResetStartupSetupFactory,
@@ -243,7 +249,7 @@ def _remove_frame_change_post_handler():
             handlers.remove(handler)
 
 
-def _planetka_render_post(_dummy):
+def _planetka_render_complete(_dummy):
     recover_post_render_state(getattr(bpy.context, "scene", None), cancelled=False)
 
 
@@ -266,7 +272,10 @@ def _remove_render_handlers():
             if handler is _planetka_render_pre or getattr(handler, "__name__", "") == "_planetka_render_pre":
                 handler_list.remove(handler)
                 continue
-            if handler is _planetka_render_post or getattr(handler, "__name__", "") == "_planetka_render_post":
+            if handler is _planetka_render_complete or getattr(handler, "__name__", "") == "_planetka_render_complete":
+                handler_list.remove(handler)
+                continue
+            if getattr(handler, "__name__", "") == "_planetka_render_post":
                 handler_list.remove(handler)
                 continue
             if handler is _planetka_render_cancel or getattr(handler, "__name__", "") == "_planetka_render_cancel":
@@ -337,8 +346,7 @@ def register():
     bpy.app.handlers.frame_change_post.append(_planetka_frame_change_post)
     _remove_render_handlers()
     bpy.app.handlers.render_pre.append(_planetka_render_pre)
-    bpy.app.handlers.render_post.append(_planetka_render_post)
-    bpy.app.handlers.render_complete.append(_planetka_render_post)
+    bpy.app.handlers.render_complete.append(_planetka_render_complete)
     bpy.app.handlers.render_cancel.append(_planetka_render_cancel)
     _unregister_keymaps()
     _register_keymaps()

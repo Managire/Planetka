@@ -28,6 +28,7 @@ from .render_prep import (
     LAST_MANUAL_RESOLVE_TOTAL_SECONDS_KEY,
 )
 from .state import (
+    ACCOUNT_PANEL_DEFAULT_COLLAPSED_KEY,
     ADD_EARTH_BUTTON_SCALE_X,
     ADD_EARTH_BUTTON_SCALE_Y,
     get_resolve_size_estimates,
@@ -317,6 +318,18 @@ def _is_update_available():
         return False
 
 
+def _account_panel_should_default_collapsed(context=None):
+    if not _is_connected():
+        return False
+    target_scene = getattr(context, "scene", None) if context is not None else getattr(getattr(bpy, "context", None), "scene", None)
+    if target_scene is None:
+        return False
+    try:
+        return bool(target_scene.get(ACCOUNT_PANEL_DEFAULT_COLLAPSED_KEY, False))
+    except (TypeError, ValueError, RuntimeError, AttributeError):
+        return False
+
+
 def _connected_account_tier():
     prefs = get_prefs()
     return str(get_account_tier(prefs) or "").strip().lower()
@@ -356,8 +369,8 @@ def _is_animation_prepared(scene):
 def _draw_animation_ready_message(layout):
     message = layout.box()
     message.alert = False
-    message.label(text="Preview Animation Cache Ready.", icon="CHECKMARK")
-    message.label(text="Clear Preview Cache to return to normal editing.", icon="INFO")
+    message.label(text="Quick Preview Ready.", icon="CHECKMARK")
+    message.label(text="Clear Quick Preview to return to normal editing.", icon="INFO")
     return message
 
 
@@ -516,14 +529,20 @@ def _draw_new_earth(layout):
     row.scale_y = ADD_EARTH_BUTTON_SCALE_Y
     row.alert = False
     row.enabled = (not has_earth) and connected
+    row.operator("planetka.remove_default_scene", text="Remove Default Cube Scene", icon="TRASH")
+
+    row = layout.row()
+    row.scale_x = ADD_EARTH_BUTTON_SCALE_X
+    row.scale_y = ADD_EARTH_BUTTON_SCALE_Y
+    row.alert = False
+    row.enabled = (not has_earth) and connected
     row.operator("planetka.add_earth", text="Create Earth", icon="WORLD_DATA")
-    if has_earth:
-        rebuild_row = layout.row()
-        rebuild_row.scale_x = ADD_EARTH_BUTTON_SCALE_X
-        rebuild_row.scale_y = ADD_EARTH_BUTTON_SCALE_Y
-        rebuild_row.alert = False
-        rebuild_row.enabled = connected
-        rebuild_row.operator("planetka.rebuild_earth", text="Rebuild Earth", icon="FILE_REFRESH")
+    rebuild_row = layout.row()
+    rebuild_row.scale_x = ADD_EARTH_BUTTON_SCALE_X
+    rebuild_row.scale_y = ADD_EARTH_BUTTON_SCALE_Y
+    rebuild_row.alert = False
+    rebuild_row.enabled = connected and has_earth
+    rebuild_row.operator("planetka.rebuild_earth", text="Rebuild Earth", icon="FILE_REFRESH")
 
 def _last_resolve_summary_text(scene, include_prefix=False):
     summary_tile_count = None
@@ -880,15 +899,12 @@ _SURFACE_GRADING_SECTION_SOCKET_MAP = {
     "Water": {
         "roughness",
         "ior",
+        "hue",
         "saturation",
-        "water texture strength",
-        "water waves on/off",
-        "waves density coefficient",
-        "waves height coefficient",
+        "brightness",
     },
     "Elevation": {
-        "snow on/off",
-        "snow line (m)",
+        "coefficient",
     },
     "Night Lights": {
         "intensity",
@@ -1113,8 +1129,7 @@ class PLANETKA_PT_SubscriptionPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        del context
-        return (not _is_connected()) and (not _is_update_available())
+        return (not _is_update_available()) and (not _account_panel_should_default_collapsed(context))
 
     def draw(self, context):
         _draw_subscription(self.layout)
@@ -1127,8 +1142,7 @@ class PLANETKA_PT_SubscriptionPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types
 
     @classmethod
     def poll(cls, context):
-        del context
-        return _is_connected() and (not _is_update_available())
+        return _account_panel_should_default_collapsed(context)
 
     def draw(self, context):
         _draw_subscription(self.layout)
@@ -1142,8 +1156,7 @@ class PLANETKA_PT_SubscriptionPanelUpdate(_PLANETKA_PT_BaseSection, bpy.types.Pa
 
     @classmethod
     def poll(cls, context):
-        del context
-        return _is_update_available()
+        return _is_update_available() and (not _account_panel_should_default_collapsed(context))
 
     def draw(self, context):
         _draw_subscription(self.layout)
@@ -1263,12 +1276,26 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
                 icon="LOOP_BACK",
             )
 
+            standalone_box = layout.box()
+            standalone_box.label(text="Standalone Export", icon="PACKAGE")
+            standalone_box.enabled = _has_earth()
+            standalone_box.operator(
+                "planetka.create_standalone_file",
+                text="Create Standalone File",
+                icon="FILE_BLEND",
+            )
+
             diagnostics_box = layout.box()
             diagnostics_box.label(text="Diagnostics", icon="CHECKMARK")
             diagnostics_box.operator(
                 "planetka.scene_health_check",
                 text="Scene Health Check",
                 icon="CHECKMARK",
+            )
+            diagnostics_box.operator(
+                "planetka.scene_health_report",
+                text="Scene Health Report",
+                icon="INFO",
             )
 
             scene_objects_box = layout.box()
@@ -1644,11 +1671,34 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
                     meta_row_b.scale_y = 0.82
                     meta_row_b.label(text=f"View B last captured: {meta_b}", icon="TIME")
 
-        if _show_internal_animation_ui() and _is_animation_prepared(scene):
-            layout.label(text="Prepared animation setup will be cleared.", icon="INFO")
+        prepared = _is_animation_prepared(scene)
+        quick_preview_box = layout.box()
+        quick_preview_box.label(text="Quick Preview", icon="SHADING_RENDERED")
 
-        quality_box = layout.box()
-        quality_box.label(text="Texture Quality for Animation Rendering", icon="IMAGE_DATA")
+        if _show_internal_animation_ui():
+            quick_preview_box.prop(props, "anim_prepare_max_segments", text="Max Segments")
+            quick_preview_box.prop(props, "anim_prepare_max_textures_mb", text="Max Textures (MB)")
+
+        build_row = quick_preview_box.row(align=True)
+        build_row.scale_y = 1.15
+        build_row.operator(
+            "planetka.animation_make_ready",
+            text=("Rebuild Quick Preview" if prepared else "Build Quick Preview"),
+            icon="SHADING_RENDERED",
+        )
+        clear_row = quick_preview_box.row(align=True)
+        clear_row.scale_y = 1.05
+        clear_row.enabled = bool(prepared)
+        clear_row.operator(
+            "planetka.animation_clear_prepared",
+            text="Clear Quick Preview",
+            icon="TRASH",
+        )
+
+        final_render_box = layout.box()
+        final_render_box.label(text="Final Animation Render", icon="RENDER_ANIMATION")
+        quality_box = final_render_box.box()
+        quality_box.label(text="Texture Quality for Animation", icon="IMAGE_DATA")
         quality_row = quality_box.row(align=True)
         quality_row.use_property_split = False
         quality_row.use_property_decorate = False
@@ -1656,13 +1706,12 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         quality_row.prop_enum(props, "anim_render_texture_quality", "BALANCED", text="Balanced")
         quality_row.prop_enum(props, "anim_render_texture_quality", "FULL", text="Full Quality")
 
-        render_button_text = "Planetka - Render Animation"
-        render_row = layout.row(align=True)
+        render_row = final_render_box.row(align=True)
         render_button_row = render_row.row(align=True)
         render_button_row.scale_y = 1.2
         render_button_row.operator(
             "planetka.animation_render_headless",
-            text=render_button_text,
+            text="Render Animation",
             icon="RENDER_ANIMATION",
         )
         render_info_row = render_row.row(align=True)
@@ -1672,39 +1721,3 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             text="",
             icon="QUESTION",
         )
-
-        if _show_internal_animation_ui():
-            prepared = _is_animation_prepared(scene)
-            prep_box = layout.box()
-            prep_box.label(text="Preview Animation Cache", icon="SHADING_RENDERED")
-            prep_box.label(text="Preloads segments in Preview quality and keys visibility.", icon="INFO")
-            if prepared:
-                _draw_animation_ready_message(prep_box)
-            prep_box.prop(props, "anim_prepare_max_segments", text="Max Segments")
-            prep_box.prop(props, "anim_prepare_max_textures_mb", text="Max Textures (MB)")
-            make_ready_row = prep_box.row()
-            make_ready_row.scale_y = 1.15
-            make_ready_row.enabled = not prepared
-            make_ready_row.operator(
-                "planetka.animation_make_ready",
-                text="Prepare Preview Animation",
-                icon="SHADING_RENDERED",
-            )
-            clear_row = prep_box.row()
-            clear_row.scale_y = 1.05
-            clear_row.enabled = bool(prepared)
-            clear_row.operator(
-                "planetka.animation_clear_prepared",
-                text="Clear Preview Cache",
-                icon="TRASH",
-            )
-
-            prepared_segments = scene.get(ANIMATION_STATS_SEGMENTS_KEY)
-            prepared_mb = scene.get(ANIMATION_STATS_TEXTURE_MB_KEY)
-            prepared_start = scene.get(ANIMATION_STATS_START_KEY)
-            prepared_end = scene.get(ANIMATION_STATS_END_KEY)
-            if prepared_segments is not None:
-                prep_box.separator()
-                prep_box.label(text=f"Prepared Segments: {_fmt_int(prepared_segments)}")
-                prep_box.label(text=f"Prepared Textures: {_fmt_mb(prepared_mb)}")
-                prep_box.label(text=f"Prepared Frames: {_fmt_int(prepared_start)}-{_fmt_int(prepared_end)}")

@@ -1,4 +1,5 @@
 import importlib
+import json
 import math
 import os
 import time
@@ -35,8 +36,9 @@ from .state import (
 from . import shader_utils
 
 
-ANIMATION_COLLECTION_NAME = "Planetka Animation Prepared"
-ANIMATION_SEGMENT_OBJECT_PREFIX = "Planetka Anim Frames"
+ANIMATION_COLLECTION_NAME = "Planetka Animation Preview"
+LEGACY_ANIMATION_COLLECTION_NAMES = ("Planetka Animation Prepared",)
+ANIMATION_SEGMENT_OBJECT_PREFIX = "Planetka Anim Preview"
 ANIMATION_SEGMENT_MATERIAL_PREFIX = "Planetka Anim Material"
 ANIMATION_SEGMENT_TAG_KEY = "planetka_animation_segment"
 ANIMATION_SEGMENT_GROUP_TAG_KEY = "planetka_animation_segment_group"
@@ -49,6 +51,7 @@ ANIMATION_PREPARED_AUTO_RESOLVE_PREV_KEY = "planetka_anim_prepared_auto_resolve_
 ANIMATION_BASE_SURFACE_NAME_KEY = "planetka_anim_base_surface_name"
 ANIMATION_BASE_SURFACE_HIDE_RENDER_KEY = "planetka_anim_base_surface_hide_render"
 ANIMATION_BASE_SURFACE_HIDE_VIEWPORT_KEY = "planetka_anim_base_surface_hide_viewport"
+QUICK_PREVIEW_MAX_SEGMENTS = 99
 TEXTURE_TYPES = ("S2", "EL", "WT", "PO")
 TEXTURE_EXTENSIONS = {
     "S2": ".exr",
@@ -60,6 +63,7 @@ TILE_GROUP_NODE_PREFIXES = ("Planetka Tile_", "Tile_")
 _COVERAGE_MAP = None
 _TILE_UTILS_MODULE = None
 _OPERATORS_MODULE = None
+_STREAMING_UTILS_MODULE = None
 
 
 def _format_frame_timecode(scene, frame_value):
@@ -150,6 +154,17 @@ def _get_operators_module():
         except ImportError:
             _OPERATORS_MODULE = False
     return _OPERATORS_MODULE or None
+
+
+def _get_streaming_utils_module():
+    global _STREAMING_UTILS_MODULE
+    if _STREAMING_UTILS_MODULE is None:
+        module_name = f"{__package__}.streaming_utils" if __package__ else "streaming_utils"
+        try:
+            _STREAMING_UTILS_MODULE = importlib.import_module(module_name)
+        except ImportError:
+            _STREAMING_UTILS_MODULE = False
+    return _STREAMING_UTILS_MODULE or None
 
 
 def _get_coverage_map():
@@ -379,16 +394,21 @@ def _clear_earth_role_tag(obj):
         logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
 
 
-def _make_texture_groups_unique(material, segment_index):
+def _make_texture_groups_unique(material, segment_index, segment_start=None, segment_end=None):
     if not material or not material.node_tree:
         raise RuntimeError("Segment material node tree is missing.")
     loading_node = material.node_tree.nodes.get("Planetka Textures Loading")
     if not loading_node or not getattr(loading_node, "node_tree", None):
         raise RuntimeError("Segment material is missing 'Planetka Textures Loading'.")
 
+    if segment_start is not None and segment_end is not None:
+        segment_tag = f"{int(segment_start):04d}-{int(segment_end):04d}"
+    else:
+        segment_tag = f"{int(segment_index):04d}"
+
     created_groups = []
     loading_tree = loading_node.node_tree.copy()
-    loading_tree.name = f"{loading_tree.name}_anim_{int(segment_index):04d}"
+    loading_tree.name = f"{loading_tree.name}_frames_{segment_tag}"
     loading_node.node_tree = loading_tree
     try:
         loading_tree.use_fake_user = False
@@ -403,7 +423,7 @@ def _make_texture_groups_unique(material, segment_index):
         if not node.name.startswith(TILE_GROUP_NODE_PREFIXES):
             continue
         tile_tree = node.node_tree.copy()
-        tile_tree.name = f"{tile_tree.name}_anim_{int(segment_index):04d}"
+        tile_tree.name = f"{tile_tree.name}_frames_{segment_tag}"
         node.node_tree = tile_tree
         try:
             tile_tree.use_fake_user = False
@@ -414,14 +434,24 @@ def _make_texture_groups_unique(material, segment_index):
     return created_groups
 
 
-def _create_segment_material(segment_index):
+def _create_segment_material(segment_index, segment_start=None, segment_end=None):
     base_material = bpy.data.materials.get("Planetka Earth Material")
     if base_material is None:
         raise RuntimeError("Base material 'Planetka Earth Material' is missing.")
     segment_material = base_material.copy()
-    segment_material.name = f"{ANIMATION_SEGMENT_MATERIAL_PREFIX} {int(segment_index):04d}"
+    if segment_start is not None and segment_end is not None:
+        segment_material.name = (
+            f"{ANIMATION_SEGMENT_MATERIAL_PREFIX} {int(segment_start):04d}-{int(segment_end):04d}"
+        )
+    else:
+        segment_material.name = f"{ANIMATION_SEGMENT_MATERIAL_PREFIX} {int(segment_index):04d}"
     segment_material[ANIMATION_SEGMENT_MATERIAL_TAG_KEY] = True
-    _make_texture_groups_unique(segment_material, segment_index)
+    _make_texture_groups_unique(
+        segment_material,
+        segment_index,
+        segment_start=segment_start,
+        segment_end=segment_end,
+    )
     return segment_material
 
 
@@ -616,8 +646,16 @@ def clear_prepared_animation_assets(scene):
         except (RuntimeError, TypeError, ValueError):
             continue
 
-    collection = bpy.data.collections.get(ANIMATION_COLLECTION_NAME)
-    if collection is not None and not collection.objects:
+    collection_names = [str(ANIMATION_COLLECTION_NAME or "").strip()]
+    collection_names.extend(
+        str(name or "").strip()
+        for name in tuple(LEGACY_ANIMATION_COLLECTION_NAMES or ())
+        if str(name or "").strip()
+    )
+    for collection_name in dict.fromkeys(collection_names):
+        collection = bpy.data.collections.get(collection_name)
+        if collection is None or collection.objects:
+            continue
         try:
             for parent in bpy.data.collections:
                 if collection.name in parent.children:
@@ -665,7 +703,7 @@ def clear_prepared_animation_assets(scene):
         logger.debug("Planetka animation: cleanup images failed", exc_info=True)
 
 
-def _prepare_segments(scene, segments, frame_start, frame_end):
+def _prepare_segments(scene, segments, frame_start, frame_end, base_path="", texture_quality_mode="PREVIEW"):
     source_surface = get_earth_object()
     if source_surface is None:
         raise RuntimeError("Create Earth first, then prepare animation render setup.")
@@ -685,6 +723,27 @@ def _prepare_segments(scene, segments, frame_start, frame_end):
             segment_tiles = list(segment.get("tiles", ()))
             if not segment_tiles:
                 continue
+            resolved_paths = {}
+            resolved_tiles_override = list(segment_tiles)
+            ocean_tiles_override = set()
+            streaming_utils = _get_streaming_utils_module()
+            if streaming_utils is not None:
+                prepare_streaming_fn = getattr(streaming_utils, "prepare_resolve_streaming_for_visible_tiles", None)
+                if callable(prepare_streaming_fn):
+                    stream_payload = prepare_streaming_fn(
+                        segment_tiles,
+                        str(base_path or ""),
+                        texture_quality_mode=str(texture_quality_mode or "PREVIEW"),
+                    )
+                    if isinstance(stream_payload, dict):
+                        if bool(stream_payload.get("cancelled", False)):
+                            raise RuntimeError("Quick Preview download was cancelled.")
+                        fatal_error = str(stream_payload.get("prefetch_result", {}).get("fatal_error", "") or "").strip()
+                        if fatal_error:
+                            raise RuntimeError(fatal_error)
+                        resolved_paths = dict(stream_payload.get("resolved_paths", {}) or {})
+                        resolved_tiles_override = list(stream_payload.get("resolved_tiles", ()) or resolved_tiles_override)
+                        ocean_tiles_override = set(stream_payload.get("ocean_tiles", ()) or ocean_tiles_override)
             segment_index = int(segment.get("index", 0))
             segment_start = int(segment.get("start", frame_start))
             segment_end = int(segment.get("end", frame_end))
@@ -710,13 +769,20 @@ def _prepare_segments(scene, segments, frame_start, frame_end):
             segment_obj["planetka_segment_start"] = segment_start
             segment_obj["planetka_segment_end"] = segment_end
 
-            segment_material = _create_segment_material(segment_index)
+            segment_material = _create_segment_material(
+                segment_index,
+                segment_start=segment_start,
+                segment_end=segment_end,
+            )
             _assign_material(segment_obj, segment_material)
             shader_utils.main(
                 segment_tiles,
                 material_name=segment_material.name,
                 force_remove_datablocks=False,
                 allow_slot_shrink=True,
+                resolved_paths=resolved_paths,
+                resolved_tiles_override=resolved_tiles_override,
+                ocean_tiles_override=ocean_tiles_override,
             )
             _set_constant_visibility_keyframes(
                 segment_obj,
@@ -1715,7 +1781,9 @@ def apply_cinematic_preview(scene, props):
         motion_curve = str(getattr(props, "anim_motion_curve", "EASE_IN_OUT")).upper()
         preset = _normalize_cinematic_preset(getattr(props, "anim_camera_preset", "NONE"))
         if preset in {"", "NONE"}:
-            raise RuntimeError("Select animation preset first.")
+            # Support custom user camera rigs/animation with no Planetka preset selected.
+            # In this mode, keep user keyframes untouched and use timeline range as-is.
+            return start_frame, end_frame
 
         # Always use current Navigation controls as the preset reference.
         # Timeline scrubbing must never redefine the animation anchor.
@@ -2818,7 +2886,7 @@ class PLANETKA_OT_AnimationPreviewShot(bpy.types.Operator):
 
 class PLANETKA_OT_AnimationClearPrepared(bpy.types.Operator):
     bl_idname = "planetka.animation_clear_prepared"
-    bl_label = "Clear Prepared Animation"
+    bl_label = "Clear Quick Preview"
     bl_description = "Remove prepared segment assets and restore the normal Earth rendering workflow"
 
     def execute(self, context):
@@ -2842,7 +2910,7 @@ class PLANETKA_OT_AnimationClearPrepared(bpy.types.Operator):
 
 class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
     bl_idname = "planetka.animation_render_headless"
-    bl_label = "Planetka - Render Animation"
+    bl_label = "Render Animation"
     bl_description = "Render animation in UI, segment-by-segment, using texture quality selected in the Animation panel"
 
     _timer = None
@@ -2863,168 +2931,19 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
     _eevee_temp_displacement_state = None
     _segment_failures = None
     _prefetch_attempted_segments = None
+    _prefetch_results = None
     _prefetch_segment_window = 3
-    _preflight_data = None
-
-    def _collect_preflight(self, context):
-        scene = getattr(context, "scene", None)
-        props = getattr(scene, "planetka", None) if scene is not None else None
-        prefs = get_prefs()
-
-        render = getattr(scene, "render", None) if scene is not None else None
-        image_settings = getattr(render, "image_settings", None) if render is not None else None
-        output_format = str(getattr(image_settings, "file_format", "UNKNOWN") or "UNKNOWN")
-        output_path = ""
-        if render is not None:
-            try:
-                output_path = str(bpy.path.abspath(getattr(render, "filepath", "") or "")).strip()
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-                output_path = str(getattr(render, "filepath", "") or "").strip()
-
-        camera = getattr(scene, "camera", None) if scene is not None else None
-        camera_ready = camera is not None and str(getattr(camera, "type", "")) == "CAMERA"
-
-        base_path = str(getattr(prefs, "texture_base_path", "") or "") if prefs is not None else ""
-        remote_source_ready = bool(is_remote_source_configured(base_path))
-        local_source_ready = bool(base_path) and bool(os.path.isdir(base_path))
-        source_ready = bool(remote_source_ready or local_source_ready)
-
-        preset = _normalize_cinematic_preset(
-            str(getattr(props, "anim_camera_preset", "NONE") or "NONE").strip().upper()
-        ) if props else "NONE"
-        preset_ready = preset not in {"", "NONE"}
-        a_ready = bool(getattr(props, "anim_ab_a_valid", False)) if props else False
-        b_ready = bool(getattr(props, "anim_ab_b_valid", False)) if props else False
-        ab_ready = (preset != "A_TO_B") or (a_ready and b_ready)
-
-        frame_start, frame_end = _active_timeline_frame_range(scene)
-        frame_range_ok = frame_end > frame_start
-        frame_count = max(0, (frame_end - frame_start + 1)) if frame_range_ok else 0
-
-        movie_output = bool(_is_movie_output(scene)) if scene is not None else True
-        output_ready = not movie_output
-        selected_quality = self._get_selected_texture_quality_mode(props) if props is not None else "BALANCED"
-        render_engine = str(getattr(render, "engine", "UNKNOWN") or "UNKNOWN")
-
-        blocking_messages = []
-        if not camera_ready:
-            blocking_messages.append("Set an active Camera.")
-        if not source_ready:
-            blocking_messages.append("Planetka source data is not available.")
-        if not output_ready:
-            blocking_messages.append("Use image-sequence output (PNG/EXR), not a movie container.")
-        if not preset_ready:
-            blocking_messages.append("Select an Animation preset.")
-        if not frame_range_ok:
-            blocking_messages.append("Timeline End Frame must be greater than Start Frame.")
-        if not ab_ready:
-            blocking_messages.append("A-to-B preset requires both View A and View B.")
-
-        return {
-            "camera_ready": bool(camera_ready),
-            "source_ready": bool(source_ready),
-            "output_ready": bool(output_ready),
-            "output_format": output_format,
-            "output_path": output_path or "(unspecified)",
-            "preset_ready": bool(preset_ready),
-            "preset": preset,
-            "ab_ready": bool(ab_ready),
-            "frame_start": int(frame_start),
-            "frame_end": int(frame_end),
-            "frame_range_ok": bool(frame_range_ok),
-            "frame_count": int(frame_count),
-            "selected_quality": selected_quality,
-            "render_engine": render_engine,
-            "blocking_messages": tuple(blocking_messages),
-        }
-
-    def _draw_preflight_check_row(self, layout, title, ok, detail):
-        row = layout.row()
-        row.label(text=title, icon="CHECKMARK" if bool(ok) else "ERROR")
-        row.label(text=str(detail or ""))
 
     def invoke(self, context, event):
         del event
-        self._preflight_data = self._collect_preflight(context)
-        wm = getattr(context, "window_manager", None)
-        if wm is None:
-            return self.execute(context)
-        try:
-            return wm.invoke_props_dialog(self, width=560, confirm_text="Start Render")
-        except TypeError:
-            return wm.invoke_props_dialog(self, width=560)
-
-    def draw(self, context):
-        layout = self.layout
-        data = self._preflight_data if isinstance(self._preflight_data, dict) else self._collect_preflight(context)
-
-        summary = layout.box()
-        summary.label(text="Preflight Diagnostics", icon="INFO")
-        summary.label(text=f"Render Engine: {str(data.get('render_engine', 'UNKNOWN'))}")
-        summary.label(text=f"Texture Quality: {str(data.get('selected_quality', 'BALANCED')).title()}")
-        summary.label(
-            text=(
-                f"Frame Range: {int(data.get('frame_start', 1))}-{int(data.get('frame_end', 1))} "
-                f"({int(data.get('frame_count', 0))} frame(s))"
-            )
-        )
-
-        checks = layout.box()
-        checks.label(text="Checks")
-        self._draw_preflight_check_row(
-            checks,
-            "Camera",
-            bool(data.get("camera_ready", False)),
-            "Active camera is ready" if bool(data.get("camera_ready", False)) else "Active camera is missing",
-        )
-        self._draw_preflight_check_row(
-            checks,
-            "Output Format",
-            bool(data.get("output_ready", False)),
-            (
-                f"{str(data.get('output_format', 'UNKNOWN'))} (image sequence)"
-                if bool(data.get("output_ready", False))
-                else f"{str(data.get('output_format', 'UNKNOWN'))} (movie output not supported)"
-            ),
-        )
-        self._draw_preflight_check_row(
-            checks,
-            "Animation Preset",
-            bool(data.get("preset_ready", False)),
-            str(data.get("preset", "NONE")).replace("_", " ").title(),
-        )
-        self._draw_preflight_check_row(
-            checks,
-            "Frame Range",
-            bool(data.get("frame_range_ok", False)),
-            (
-                "Valid"
-                if bool(data.get("frame_range_ok", False))
-                else "End Frame must be greater than Start Frame"
-            ),
-        )
-
-        output_box = layout.box()
-        output_box.label(text="Output Path")
-        output_box.label(text=str(data.get("output_path", "(unspecified)")))
-
-        blocking = tuple(data.get("blocking_messages", ()) or ())
-        if blocking:
-            warn = layout.box()
-            warn.alert = True
-            warn.label(text="Fix these before rendering:", icon="ERROR")
-            for message in blocking:
-                warn.label(text=str(message))
-        else:
-            ok_box = layout.box()
-            ok_box.label(text="Preflight passed. Start render when ready.", icon="CHECKMARK")
+        return self.execute(context)
 
     def _get_selected_texture_quality_mode(self, props):
         selected = str(getattr(props, "anim_render_texture_quality", "") or "").strip().upper()
         if selected not in {"PREVIEW", "BALANCED", "FULL"}:
-            selected = str(getattr(props, "texture_quality_mode", "BALANCED") or "BALANCED").strip().upper()
+            selected = str(getattr(props, "texture_quality_mode", "FULL") or "FULL").strip().upper()
         if selected not in {"PREVIEW", "BALANCED", "FULL"}:
-            selected = "BALANCED"
+            selected = "FULL"
         return selected
 
     def _remove_timer(self, context):
@@ -3080,6 +2999,7 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         self._render_launch_time = 0.0
         self._render_launch_wall_time = 0.0
         self._prefetch_attempted_segments = set()
+        self._prefetch_results = {}
 
     def _cancel_with_error(self, context, message):
         text = str(message or "Animation render failed.").strip() or "Animation render failed."
@@ -3125,25 +3045,61 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             deduped.append(key)
         return deduped
 
-    def _prefetch_segment_downloads(self, segment_index):
+    def _segment_texture_requests(self, segment_index):
         segments = list(self._segments or ())
         if segment_index < 0 or segment_index >= len(segments):
-            return
+            return []
         segment = segments[segment_index]
         if not isinstance(segment, dict):
-            return
+            return []
         segment_tiles = list(segment.get("tiles", ()) or ())
         if not segment_tiles:
-            return
+            return []
+        return self._dedupe_texture_requests(_build_texture_requests_for_tiles(segment_tiles))
+
+    def _prefetch_segment_downloads(self, segment_index, force=False):
+        attempted = self._prefetch_attempted_segments
+        if not isinstance(attempted, set):
+            attempted = set()
+            self._prefetch_attempted_segments = attempted
+        results = self._prefetch_results
+        if not isinstance(results, dict):
+            results = {}
+            self._prefetch_results = results
+
+        if (not force) and int(segment_index) in results:
+            return dict(results.get(int(segment_index), {}) or {})
+
+        requests = self._segment_texture_requests(segment_index)
+        if not requests:
+            result = {
+                "done": True,
+                "ready": True,
+                "cancelled": False,
+                "missing_count": 0,
+                "resolved_count": 0,
+                "error_count": 0,
+                "fatal_error": "",
+            }
+            attempted.add(int(segment_index))
+            results[int(segment_index)] = dict(result)
+            return dict(result)
 
         prefs = get_prefs()
         base_path = str(getattr(prefs, "texture_base_path", "") or "")
         if not is_remote_source_configured(base_path):
-            return
-
-        requests = self._dedupe_texture_requests(_build_texture_requests_for_tiles(segment_tiles))
-        if not requests:
-            return
+            result = {
+                "done": True,
+                "ready": True,
+                "cancelled": False,
+                "missing_count": 0,
+                "resolved_count": 0,
+                "error_count": 0,
+                "fatal_error": "",
+            }
+            attempted.add(int(segment_index))
+            results[int(segment_index)] = dict(result)
+            return dict(result)
 
         prefetch_result = {}
         try:
@@ -3155,10 +3111,32 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             prefetch_result = prefetch_resolve_downloads(requests, base_path=base_path)
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka animation: next-segment prefetch failed", exc_info=True)
-            return
+            result = {
+                "done": True,
+                "ready": False,
+                "cancelled": False,
+                "missing_count": 0,
+                "resolved_count": 0,
+                "error_count": 1,
+                "fatal_error": "Planetka prefetch failed.",
+            }
+            attempted.add(int(segment_index))
+            results[int(segment_index)] = dict(result)
+            return dict(result)
         except (RuntimeError, TypeError, ValueError):
             logger.debug("Planetka animation: next-segment prefetch failed", exc_info=True)
-            return
+            result = {
+                "done": True,
+                "ready": False,
+                "cancelled": False,
+                "missing_count": 0,
+                "resolved_count": 0,
+                "error_count": 1,
+                "fatal_error": "Planetka prefetch failed.",
+            }
+            attempted.add(int(segment_index))
+            results[int(segment_index)] = dict(result)
+            return dict(result)
         finally:
             try:
                 end_resolve_download_capture()
@@ -3166,12 +3144,100 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
                 logger.debug("Planetka animation: next-segment prefetch capture finalize failed", exc_info=True)
 
         if not isinstance(prefetch_result, dict):
-            return
-        if str(prefetch_result.get("fatal_error", "") or "").strip():
+            prefetch_result = {}
+        missing_count = int(prefetch_result.get("missing_count", 0) or 0)
+        resolved_count = int(prefetch_result.get("resolved_count", 0) or 0)
+        error_count = int(prefetch_result.get("error_count", 0) or 0)
+        cancelled = bool(prefetch_result.get("cancelled", False))
+        fatal_error = str(prefetch_result.get("fatal_error", "") or "").strip()
+        ready = (not cancelled) and (not fatal_error) and int(missing_count) <= 0
+        result = {
+            "done": True,
+            "ready": bool(ready),
+            "cancelled": bool(cancelled),
+            "missing_count": int(max(0, missing_count)),
+            "resolved_count": int(max(0, resolved_count)),
+            "error_count": int(max(0, error_count)),
+            "fatal_error": str(fatal_error),
+        }
+        attempted.add(int(segment_index))
+        results[int(segment_index)] = dict(result)
+        if str(fatal_error):
             logger.warning(
                 "Planetka animation: next-segment prefetch reported fatal_error for segment %d: %s",
                 int(segment_index) + 1,
-                str(prefetch_result.get("fatal_error", "") or "").strip(),
+                str(fatal_error),
+            )
+        elif (not ready):
+            logger.warning(
+                "Planetka animation: next-segment prefetch incomplete for segment %d (missing=%d, resolved=%d, errors=%d).",
+                int(segment_index) + 1,
+                int(max(0, missing_count)),
+                int(max(0, resolved_count)),
+                int(max(0, error_count)),
+            )
+        return dict(result)
+
+    def _ensure_segment_download_ready(self, segment_index):
+        results = self._prefetch_results
+        if isinstance(results, dict):
+            existing = dict(results.get(int(segment_index), {}) or {})
+            if bool(existing.get("ready", False)):
+                return True, ""
+        status = self._prefetch_segment_downloads(segment_index, force=True)
+        if bool(status.get("ready", False)):
+            return True, ""
+        if bool(status.get("cancelled", False)):
+            return False, f"Segment {int(segment_index) + 1} download was cancelled."
+        fatal = str(status.get("fatal_error", "") or "").strip()
+        if fatal:
+            return False, f"Segment {int(segment_index) + 1} download failed: {fatal}"
+        missing = int(status.get("missing_count", 0) or 0)
+        errors = int(status.get("error_count", 0) or 0)
+        resolved = int(status.get("resolved_count", 0) or 0)
+        return (
+            False,
+            (
+                f"Segment {int(segment_index) + 1} download incomplete "
+                f"(missing={missing}, resolved={resolved}, errors={errors})."
+            ),
+        )
+
+    def _cleanup_completed_segment_cache(self, segment_index):
+        prefs = get_prefs()
+        base_path = str(getattr(prefs, "texture_base_path", "") or "")
+        if not is_remote_source_configured(base_path):
+            return
+        segments = list(self._segments or ())
+        if int(segment_index) < 0 or int(segment_index) >= len(segments):
+            return
+        current_requests = self._segment_texture_requests(int(segment_index))
+        next_requests = self._segment_texture_requests(int(segment_index) + 1)
+        if not current_requests:
+            return
+        keep_keys = set(next_requests or ())
+        removed_files = 0
+        for request in current_requests:
+            if request in keep_keys:
+                continue
+            folder, prefix, filename, exts = request
+            cache_folder = str(get_remote_cache_folder(folder) or "")
+            if not cache_folder:
+                continue
+            for ext in (exts or (".exr",)):
+                cache_path = os.path.join(cache_folder, f"{prefix}_{filename}{str(ext or '')}")
+                if not os.path.isfile(cache_path):
+                    continue
+                try:
+                    os.remove(cache_path)
+                    removed_files += 1
+                except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, OSError):
+                    logger.debug("Planetka animation: failed deleting completed-segment cache file", exc_info=True)
+        if removed_files > 0:
+            logger.debug(
+                "Planetka animation: removed %d cache file(s) after segment %d.",
+                int(removed_files),
+                int(segment_index) + 1,
             )
 
     def _prefetch_next_segment_if_needed(self):
@@ -3182,17 +3248,25 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         if not isinstance(attempted, set):
             attempted = set()
             self._prefetch_attempted_segments = attempted
+        results = self._prefetch_results
+        if not isinstance(results, dict):
+            results = {}
+            self._prefetch_results = results
 
         current_index = int(self._segment_index)
         prefetch_window = max(1, int(getattr(self, "_prefetch_segment_window", 1)))
         for offset in range(1, prefetch_window + 1):
             next_index = current_index + offset
-            if next_index >= len(segments) or next_index in attempted:
+            if next_index >= len(segments):
                 continue
-            attempted.add(next_index)
-            self._prefetch_segment_downloads(next_index)
+            known_status = dict(results.get(int(next_index), {}) or {})
+            if bool(known_status.get("ready", False)):
+                continue
+            # Keep trying nearest segments first; retry only incomplete prefetches.
+            force_retry = bool(known_status) or bool(next_index in attempted)
+            self._prefetch_segment_downloads(next_index, force=force_retry)
 
-    def _resolve_segment_frame(self, frame_value):
+    def _resolve_segment_frame(self, frame_value, tiles_override=None):
         scene = self._scene
         props = self._props
         frame_int = int(frame_value)
@@ -3204,8 +3278,21 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
             logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
         _apply_keyed_runtime_scene_state(scene, props)
+        op_kwargs = {
+            "scope_mode": "CAMERA",
+            "silent": True,
+        }
+        selected_mode = self._get_selected_texture_quality_mode(props)
+        if selected_mode in {"PREVIEW", "BALANCED", "FULL"}:
+            op_kwargs["texture_quality_mode_override"] = str(selected_mode)
+        normalized_tiles = [str(tile or "").strip() for tile in (tiles_override or ()) if str(tile or "").strip()]
+        if normalized_tiles:
+            try:
+                op_kwargs["tiles_override_json"] = json.dumps(normalized_tiles, separators=(",", ":"))
+            except (TypeError, ValueError):
+                logger.debug("Planetka animation: failed serializing segment tile override", exc_info=True)
         try:
-            result = bpy.ops.planetka.load_textures(scope_mode='CAMERA', silent=True)
+            result = bpy.ops.planetka.load_textures(**op_kwargs)
         except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
             return False, f"Resolve failed at frame {frame_int:04d}: {exc}"
         except (RuntimeError, TypeError, ValueError) as exc:
@@ -3292,6 +3379,29 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         props = require_planetka_props(self, context, logger=logger)
         if props is None:
             return {'CANCELLED'}
+        try:
+            prepared_segments = int(scene.get(ANIMATION_STATS_SEGMENTS_KEY, 0) or 0)
+        except (TypeError, ValueError, AttributeError):
+            prepared_segments = 0
+        if prepared_segments > 0:
+            try:
+                clear_prepared_animation_assets(scene)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
+                return fail(
+                    self,
+                    f"Failed to clear Quick Preview before rendering: {exc}",
+                    code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                    logger=logger,
+                    exc=exc,
+                    log_message="Planetka animation render failed clearing Quick Preview state",
+                )
+            except (RuntimeError, TypeError, ValueError) as exc:
+                return fail(
+                    self,
+                    f"Failed to clear Quick Preview before rendering: {exc}",
+                    code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                    logger=logger,
+                )
         camera = getattr(scene, "camera", None)
         if camera is None or str(getattr(camera, "type", "")) != "CAMERA":
             return fail(
@@ -3315,7 +3425,7 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         if _is_movie_output(scene):
             return fail(
                 self,
-                "Planetka - Render Animation requires image-sequence output (PNG/EXR).",
+                "Render Animation requires image-sequence output (PNG/EXR).",
                 code=ErrorCode.RENDER_FAILED,
                 logger=logger,
             )
@@ -3414,19 +3524,20 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             self._eevee_temp_displacement_state = eevee_temp_displacement_state
             self._segment_failures = []
             self._prefetch_attempted_segments = set()
+            self._prefetch_results = {}
 
             wm = getattr(context, "window_manager", None)
             if wm is None:
                 self._restore_runtime_state()
                 return fail(
                     self,
-                    "Window manager unavailable. Planetka - Render Animation requires Blender UI mode.",
+                    "Window manager unavailable. Render Animation requires Blender UI mode.",
                     code=ErrorCode.RENDER_FAILED,
                     logger=logger,
                 )
             self._timer = wm.event_timer_add(0.2, window=context.window)
             wm.modal_handler_add(self)
-            self.report({'INFO'}, f"Planetka - Render Animation started ({len(self._segments)} segments).")
+            self.report({'INFO'}, f"Render Animation started ({len(self._segments)} segments).")
             return {'RUNNING_MODAL'}
         except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
             self._restore_runtime_state()
@@ -3449,7 +3560,7 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
 
     def modal(self, context, event):
         if event.type in {'ESC', 'RIGHTMOUSE'}:
-            self.report({'INFO'}, "Planetka - Render Animation cancelled.")
+            self.report({'INFO'}, "Render Animation cancelled.")
             self._cleanup(context)
             return {'CANCELLED'}
         if event.type != 'TIMER':
@@ -3467,7 +3578,10 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             seg_start = int(segment.get("start", 1))
             seg_end = int(segment.get("end", seg_start))
             print(f"[Planetka] Segment {self._segment_index + 1}/{len(self._segments)}: resolve {seg_start:04d}-{seg_end:04d}")
-            ok, message = self._resolve_segment_frame(seg_start)
+            ready, ready_message = self._ensure_segment_download_ready(self._segment_index)
+            if not ready:
+                return self._cancel_with_error(context, ready_message)
+            ok, message = self._resolve_segment_frame(seg_start, tiles_override=segment.get("tiles", ()))
             if not ok:
                 return self._cancel_with_error(context, message)
             ok, message = self._launch_segment_render(segment, invoke_ui=True)
@@ -3495,6 +3609,7 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
                 # User closed/cancelled the render window before segment completed.
                 self._cleanup(context)
                 return {'CANCELLED'}
+            self._cleanup_completed_segment_cache(self._segment_index)
             self._segment_index += 1
             self._active_segment = None
             self._state = "RESOLVE"
@@ -3518,7 +3633,7 @@ class PLANETKA_OT_AnimationRenderInfo(bpy.types.Operator):
             return {'FINISHED'}
 
         lines = (
-            "Planetka - Render Animation dynamically loads LODs (new tiles)",
+            "Render Animation dynamically loads LODs (new tiles)",
             "during the rendering process.",
             "",
             "Blender built-in Render Animation renders what is already in the scene",
@@ -3548,8 +3663,11 @@ class PLANETKA_OT_AnimationRenderInfo(bpy.types.Operator):
 
 class PLANETKA_OT_AnimationMakeReady(bpy.types.Operator):
     bl_idname = "planetka.animation_make_ready"
-    bl_label = "Prepare Preview Animation"
-    bl_description = "Preload preview-quality segment meshes/materials and key visibility for smooth timeline preview"
+    bl_label = "Build Quick Preview"
+    bl_description = (
+        "Download Preview-quality data for all animation segments, build segment meshes/materials, "
+        "and key visibility for smooth timeline playback"
+    )
 
     def execute(self, context):
         scene = require_scene(self, context, logger=logger)
@@ -3633,13 +3751,15 @@ class PLANETKA_OT_AnimationMakeReady(bpy.types.Operator):
                     logger=logger,
                 )
 
-            max_segments = max(1, int(getattr(props, "anim_prepare_max_segments", 64)))
+            max_segments = min(
+                int(QUICK_PREVIEW_MAX_SEGMENTS),
+                max(1, int(getattr(props, "anim_prepare_max_segments", QUICK_PREVIEW_MAX_SEGMENTS))),
+            )
             if len(segments) > max_segments:
                 return fail(
                     self,
                     (
-                        f"Animation requires {len(segments)} segments, exceeding limit {max_segments}. "
-                        "Increase Max Segments or simplify movement."
+                        f"Animation requires {len(segments)} segments, exceeding Preview limit {max_segments}."
                     ),
                     code=ErrorCode.RESOLVE_PRECHECK_FAILED,
                     logger=logger,
@@ -3660,7 +3780,14 @@ class PLANETKA_OT_AnimationMakeReady(bpy.types.Operator):
                 )
 
             try:
-                created_count = _prepare_segments(scene, segments, start_frame, end_frame)
+                created_count = _prepare_segments(
+                    scene,
+                    segments,
+                    start_frame,
+                    end_frame,
+                    base_path=base_path,
+                    texture_quality_mode="PREVIEW",
+                )
             except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
                 return fail(
                     self,
@@ -3698,9 +3825,9 @@ class PLANETKA_OT_AnimationMakeReady(bpy.types.Operator):
             self.report(
                 {'INFO'},
                 (
-                    f"Preview animation cache ready: {len(segments)} segments "
+                    f"Quick Preview ready: {len(segments)} segments "
                     f"({created_count} mesh assets), ~{texture_mb:.0f} MB textures. "
-                    "Preview quality preloaded. Auto Resolve disabled; preview timeline playback now."
+                    "Preview quality preloaded. Auto Resolve disabled; use timeline playback."
                 ),
             )
             return {'FINISHED'}

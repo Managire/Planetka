@@ -45,3 +45,21 @@ Current implementation reference:
 
 - `tools/s2_clamp_rebuild.py`
 - `tools/wt_fix_rebuild.py`
+- `tools/rebuild_all_tiles_direct_lowd_resumable.py`
+
+## Full Rebuild Execution System
+
+- Use `tools/rebuild_all_tiles_direct_lowd_resumable.py` for long single-core production rebuilds across:
+  - `S2`, `EL`, `WT`, `PO`
+- The script is resumable by design:
+  - Persistent SQLite state in: `/Volumes/SSDA/Planetka Assets/.rebuild_direct_lowd_state/state.sqlite3`
+  - Text log: `/Volumes/SSDA/Planetka Assets/.rebuild_direct_lowd_state/rebuild.log`
+  - Event log: `/Volumes/SSDA/Planetka Assets/.rebuild_direct_lowd_state/events.jsonl`
+  - In-progress tasks are reset to pending after crash/restart.
+- Protected source tiles:
+  - Never modify `z001_d001` for any dataset.
+- No-new-files rule:
+  - Task set is derived from existing remote manifest (Cloudflare object list).
+  - Files not in manifest are treated as extras and can be pruned locally.
+- Upload behavior:
+  - Every rebuilt file is uploaded to Cloudflare immediately after local write.

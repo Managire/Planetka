@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # Texture source override.
 # Allowed values: "CLOUD", "LOCAL"
-TEXTURE_SOURCE_MODE_UNSUPPORTED = "LOCAL"
+TEXTURE_SOURCE_MODE_UNSUPPORTED = "CLOUD"
 
 # Used only when TEXTURE_SOURCE_MODE_UNSUPPORTED = "LOCAL".
 LOCAL_TEXTURES_ROOT_UNSUPPORTED = "/Volumes/SSDA/Planetka Assets/"
