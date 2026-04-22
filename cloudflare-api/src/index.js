@@ -12,11 +12,6 @@ const DEFAULT_ALLOWANCE_COUNTING_RULE =
   "No data metering is enforced. Personal and Pro tiers are unlimited.";
 const DEFAULT_TRIAL_INCLUDED_GB = 25;
 const DEFAULT_HOSTED_ACCESS_DURATION_DAYS = 365;
-const DEFAULT_PERIOD_DAYS = 30;
-const DEFAULT_FREE_INCLUDED_GB = 100;
-const DEFAULT_PRO_INCLUDED_GB = 1000;
-const DEFAULT_PRO_ROLLOVER_CAP_GB = 3000;
-const DEFAULT_STUDIO_INCLUDED_GB = 10000;
 const DEFAULT_LOW_WARNING_GB = 10;
 const DEFAULT_LOW_WARNING_RATIO = 0.1;
 const UNLIMITED_ALLOWANCE_BYTES = Number.MAX_SAFE_INTEGER;
@@ -105,13 +100,10 @@ const DEFAULT_TILE_BROWSER_MAX_AGE_SECONDS = 86400;
 const DEFAULT_TILE_EDGE_MAX_AGE_SECONDS = 604800;
 const MAX_TILE_MAX_AGE_SECONDS = 31536000;
 const DEFAULT_ENABLE_MAGIC_LINK_AUTH = false;
-const DEFAULT_FREE_API_KEY_VALID_DAYS = 30;
 const DEFAULT_PRO_GRACE_HOURS = 24;
 const DEFAULT_PENDING_CLAIM_COOLDOWN_DAYS = 7;
 const DEFAULT_API_KEY_DEVICE_ACTIVE_WINDOW_SECONDS = 900;
 const DEFAULT_API_KEY_REQUEST_MIN_AGE_SECONDS = 2;
-const DEFAULT_RATE_LIMIT_PAID_CLAIM_IP_DAILY_LIMIT = 20;
-const DEFAULT_RATE_LIMIT_PAID_CLAIM_IP_DAILY_WINDOW_SECONDS = 86400;
 const DEFAULT_REJECTED_CLAIM_ALERT_THRESHOLD = 3;
 const DEFAULT_REJECTED_CLAIM_ALERT_WINDOW_SECONDS = 86400;
 const DEFAULT_PAID_CLAIM_RETENTION_DAYS = 180;
@@ -588,30 +580,6 @@ function normalizeRequestedPlan(value) {
 function isPaidRequestedPlan(planCode) {
   const normalized = normalizeRequestedPlan(planCode);
   return normalized === PLAN_CODE_PLANETKA_PRO;
-}
-
-function normalizeLongitude180(value) {
-  let lon = Number(value);
-  if (!Number.isFinite(lon)) {
-    lon = 0;
-  }
-  while (lon > 180) {
-    lon -= 360;
-  }
-  while (lon < -180) {
-    lon += 360;
-  }
-  return lon;
-}
-
-function normalizeLatitude90(value) {
-  let lat = Number(value);
-  if (!Number.isFinite(lat)) {
-    lat = 0;
-  }
-  if (lat > 90) lat = 90;
-  if (lat < -90) lat = -90;
-  return lat;
 }
 
 function normalizeOrderId(value) {
@@ -4908,20 +4876,6 @@ async function getDownloadedPeriodBytes(db, userId, periodStart, periodEnd) {
   return clampNonNegativeInt(row && row.downloaded);
 }
 
-function computeWarningState(totalRemainingBytes, includedLimitBytes, cfg) {
-  if (totalRemainingBytes <= 0) {
-    return "exhausted";
-  }
-  const threshold = Math.max(
-    cfg.lowWarningBytes,
-    Math.floor(clampNonNegativeInt(includedLimitBytes) * cfg.lowWarningRatio),
-  );
-  if (totalRemainingBytes <= Math.max(1, threshold)) {
-    return "low";
-  }
-  return "ok";
-}
-
 async function buildAllowanceState(db, user, subscription, env) {
   const cfg = buildPlanConfig(env);
   const planCode = resolvePlanCode(user, subscription, env);
@@ -6447,38 +6401,6 @@ function parseTileQualityFromFileName(fileName) {
   return { z, d, textureType: String(match[1] || "").toUpperCase() };
 }
 
-function isFullQualityTileFileName(fileName) {
-  const quality = parseTileQualityFromFileName(fileName);
-  if (!quality) {
-    return false;
-  }
-  return Number(quality.z) === Number(quality.d);
-}
-
-function capTileFileNameMinimumD(fileName, minD = 90) {
-  const match = /^([A-Za-z0-9]+)_x(\d{3})_y(\d{3})_z(\d{3})_d(\d{3})\.(exr|tif|tiff|png|jpe?g)$/i.exec(
-    String(fileName || "").trim(),
-  );
-  if (!match) {
-    return String(fileName || "");
-  }
-  const rawD = Number.parseInt(match[5], 10);
-  const currentD = rawD === 0 ? 1440 : rawD;
-  if (!Number.isFinite(currentD) || currentD >= Number(minD)) {
-    return String(fileName || "");
-  }
-  const dLevels = [1, 2, 4, 8, 15, 30, 60, 90, 120, 180, 360, 720, 1440];
-  let nextD = 1440;
-  for (const level of dLevels) {
-    if (Number(level) >= Number(minD) && Number(level) >= Number(currentD)) {
-      nextD = Number(level);
-      break;
-    }
-  }
-  const dCode = nextD === 1440 ? 0 : nextD;
-  return `${match[1]}_x${match[2]}_y${match[3]}_z${match[4]}_d${String(dCode).padStart(3, "0")}.${match[6]}`;
-}
-
 async function sendMagicLinkEmail(env, email, token, magicUrlOverride = "") {
   const apiKey = requireSecret(env, "EMAIL_API_KEY");
   const from = String(env.EMAIL_FROM || "info@planetka.io").trim();
@@ -7151,17 +7073,6 @@ async function claimStripeWebhookEvent(db, event) {
   return { inserted, eventId, eventType };
 }
 
-function parseCsvSet(value) {
-  const set = new Set();
-  for (const token of String(value || "").split(",")) {
-    const normalized = String(token || "").trim();
-    if (normalized) {
-      set.add(normalized);
-    }
-  }
-  return set;
-}
-
 function parseStripeCreditMap(value) {
   const map = new Map();
   const source = String(value || "").trim();
@@ -7328,14 +7239,6 @@ function computeStripeCreditGrantBytes(lineItems, env) {
   };
 }
 
-function collectStripeSubscriptionEntitlements(subscription) {
-  const items = Array.isArray(subscription && subscription.items && subscription.items.data)
-    ? subscription.items.data
-    : [];
-  const lineItems = items.map((item) => ({ price: item && item.price ? item.price : null }));
-  return collectStripeLineItemEntitlements(lineItems);
-}
-
 async function fetchStripeCheckoutSessionLineItems(env, sessionId) {
   const secretKey = requireSecret(env, "STRIPE_SECRET_KEY");
   const baseUrl = `https://api.stripe.com/v1/checkout/sessions/${encodeURIComponent(sessionId)}/line_items`;
@@ -7414,14 +7317,6 @@ async function fetchStripeCustomerEmail(env, customerId) {
   }
   const payload = await response.json();
   return normalizeEmail(payload && payload.email);
-}
-
-function isoFromUnixSeconds(value) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return "";
-  }
-  return new Date(Math.floor(parsed) * 1000).toISOString();
 }
 
 async function readBearerUser(request, env) {

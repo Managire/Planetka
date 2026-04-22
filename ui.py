@@ -586,15 +586,6 @@ def _last_resolve_summary_text(scene, include_prefix=False):
     return text
 
 
-def _draw_resolve(layout):
-    layout.use_property_split = True
-    layout.use_property_decorate = False
-    scene = getattr(bpy.context, "scene", None)
-    summary_text = _last_resolve_summary_text(scene, include_prefix=True)
-    if summary_text:
-        layout.label(text=summary_text, icon="INFO")
-
-
 def _draw_live_telemetry(layout, scene):
     layout.use_property_split = False
     layout.use_property_decorate = False
@@ -1210,35 +1201,6 @@ class PLANETKA_PT_NewEarthPanelFailure(_PLANETKA_PT_BaseSection, bpy.types.Panel
         layout = self.layout
         layout.enabled = _is_connected()
         _draw_new_earth(layout)
-
-
-class PLANETKA_PT_ResolvePanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Resolve"
-    bl_idname = "PLANETKA_PT_resolve"
-    bl_order = 9003
-    bl_options = set()
-
-    @classmethod
-    def poll(cls, context):
-        _ = context
-        return False
-
-    def draw(self, context):
-        _draw_resolve(self.layout)
-
-
-class PLANETKA_PT_ResolvePanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Resolve"
-    bl_idname = "PLANETKA_PT_resolve_collapsed"
-    bl_order = 9003
-
-    @classmethod
-    def poll(cls, context):
-        _ = context
-        return False
-
-    def draw(self, context):
-        _draw_resolve(self.layout)
 
 
 class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):

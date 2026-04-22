@@ -3783,20 +3783,6 @@ def mark_render_job_started():
     return int(_RENDER_JOB_EPOCH)
 
 
-def current_render_job_epoch():
-    return int(_RENDER_JOB_EPOCH)
-
-
-def was_render_job_cancelled(epoch=None):
-    try:
-        render_epoch = int(epoch if epoch is not None else _RENDER_JOB_EPOCH)
-    except (TypeError, ValueError):
-        return False
-    if render_epoch <= 0:
-        return False
-    return int(_RENDER_JOB_LAST_CANCELLED_EPOCH) >= render_epoch
-
-
 def _sync_logging_from_scenes():
     global _LOGGING_SYNCING
     if _LOGGING_SYNCING:

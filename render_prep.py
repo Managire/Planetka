@@ -1122,7 +1122,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                     cleanup_obj=new_obj,
                 )
             }
-        except Exception as exc:
+        except (RuntimeError, TypeError, ValueError, AttributeError, OSError) as exc:
             return {
                 "response": self._abort_resolve(
                     f"Planetka resolve failed unexpectedly: {exc}",
