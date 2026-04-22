@@ -1629,6 +1629,59 @@ def _write_scene_auto_resolve_state(state):
     _set_scene_auto_resolve_map_entry(_AUTO_RESOLVE_TRIGGER_LAST_SIGNATURE, scene_id, state.trigger_last_signature)
 
 
+def _make_depsgraph_trigger_signature(scene):
+    resolve_signature = _camera_signature(scene)
+    if _auto_resolve_scope_mode(scene) == "ACTIVE_VIEW":
+        active_signature = _active_view_signature()
+        if active_signature is not None:
+            resolve_signature = ("ACTIVE_VIEW", active_signature)
+    if resolve_signature is None:
+        return None
+    output_signature = _output_resolution_signature(scene)
+    return ("TRIGGER_V2", resolve_signature, output_signature)
+
+
+def _depsgraph_trigger_output_signature(signature):
+    if (
+        isinstance(signature, tuple)
+        and len(signature) == 3
+        and str(signature[0]) == "TRIGGER_V2"
+    ):
+        return signature[2]
+    return None
+
+
+def _mark_auto_resolve_from_depsgraph_trigger(scene, trigger_signature):
+    if scene is None or trigger_signature is None:
+        return False
+    scene_state = _read_scene_auto_resolve_state(scene)
+    if scene_state is None:
+        return False
+
+    previous_trigger_signature = scene_state.trigger_last_signature
+    if previous_trigger_signature is None:
+        scene_state.trigger_last_signature = trigger_signature
+        _write_scene_auto_resolve_state(scene_state)
+        return False
+    if previous_trigger_signature == trigger_signature:
+        return False
+
+    immediate = False
+    previous_output_signature = _depsgraph_trigger_output_signature(previous_trigger_signature)
+    current_output_signature = _depsgraph_trigger_output_signature(trigger_signature)
+    if (
+        previous_output_signature is not None
+        and current_output_signature is not None
+        and previous_output_signature != current_output_signature
+    ):
+        immediate = True
+
+    scene_state.trigger_last_signature = trigger_signature
+    _write_scene_auto_resolve_state(scene_state)
+    request_auto_resolve(scene, immediate=bool(immediate), mark_dirty=False)
+    return True
+
+
 def get_resolve_runtime_status(scene=None):
     """Return current resolve runtime stage for telemetry UI."""
     if scene is None:
@@ -4015,45 +4068,14 @@ def _planetka_depsgraph_update_post(_scene, _depsgraph):
     if _is_resolve_pipeline_busy():
         return
 
-    scene_state = _read_scene_auto_resolve_state(scene)
-    if scene_state is None:
-        return
-    scene_id = int(scene_state.scene_id)
-    output_signature = _output_resolution_signature(scene)
-    previous_output_signature = scene_state.last_output_signature
-    if previous_output_signature != output_signature:
-        scene_state.last_output_signature = output_signature
-        if previous_output_signature is not None:
-            scene_state.pending_output_change = True
-            scene_state.last_processed_signature = None
-        _write_scene_auto_resolve_state(scene_state)
-        if previous_output_signature is not None:
-            request_auto_resolve(scene, immediate=True, mark_dirty=False)
-
-    trigger_signature = _camera_signature(scene)
-    if _auto_resolve_scope_mode(scene) == "ACTIVE_VIEW":
-        active_signature = _active_view_signature()
-        if active_signature is not None:
-            trigger_signature = ("ACTIVE_VIEW", active_signature)
+    trigger_signature = _make_depsgraph_trigger_signature(scene)
     _handle_timeline_motion_optimization(scene)
     _handle_viewport_motion_optimization(
         scene,
         _camera_signature(scene),
     )
     _handle_sunlight_motion_optimization(scene)
-    _handle_view_scope_quality_transition(scene)
-    if trigger_signature is None:
-        return
-    previous_trigger_signature = scene_state.trigger_last_signature
-    if previous_trigger_signature is None:
-        scene_state.trigger_last_signature = trigger_signature
-        _write_scene_auto_resolve_state(scene_state)
-        return
-    if previous_trigger_signature == trigger_signature:
-        return
-    scene_state.trigger_last_signature = trigger_signature
-    _write_scene_auto_resolve_state(scene_state)
-    request_auto_resolve(scene, immediate=False)
+    _mark_auto_resolve_from_depsgraph_trigger(scene, trigger_signature)
 
 
 @persistent
