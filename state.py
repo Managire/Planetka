@@ -3653,6 +3653,65 @@ def update_auto_resolve(self, context):
         stop_auto_resolve_service()
 
 
+def _auto_resolve_collect_scope_signatures(scene, scope_mode):
+    scope = str(scope_mode or "NONE")
+    active_view_signature = None
+    if scope == "ACTIVE_VIEW":
+        active_view_signature = _active_view_signature()
+    camera_signature = _camera_signature(scene)
+    resolve_signature = (
+        ("ACTIVE_VIEW", active_view_signature)
+        if active_view_signature is not None
+        else camera_signature
+    )
+    return scope, active_view_signature, resolve_signature
+
+
+def _auto_resolve_sync_state_signatures(scene_state, resolve_signature, output_signature, now_monotonic):
+    state_dirty = False
+    previous_output_signature = scene_state.last_output_signature
+    if previous_output_signature != output_signature:
+        scene_state.last_output_signature = output_signature
+        state_dirty = True
+        if previous_output_signature is not None:
+            scene_state.pending_output_change = True
+            scene_state.last_processed_signature = None
+            scene_state.last_change_time = now_monotonic
+
+    previous_signature = scene_state.last_camera_signature
+    if previous_signature != resolve_signature:
+        scene_state.last_camera_signature = resolve_signature
+        scene_state.last_processed_signature = None
+        state_dirty = True
+
+    if state_dirty:
+        _write_scene_auto_resolve_state(scene_state)
+    return bool(scene_state.pending_output_change)
+
+
+def _auto_resolve_update_size_estimation(scene, scope, active_view_signature, target_tiles, props):
+    estimation_scope = "ACTIVE_VIEW" if (scope == "ACTIVE_VIEW" and active_view_signature is not None) else "CAMERA"
+    base_path_for_estimate = ""
+    try:
+        prefs = get_prefs()
+        if prefs is not None:
+            base_path_for_estimate = str(getattr(prefs, "texture_base_path", "") or "")
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        base_path_for_estimate = ""
+
+    current_quality_mode = _normalize_texture_quality_mode(getattr(props, "texture_quality_mode", "PREVIEW"))
+    full_tiles_override = target_tiles if current_quality_mode == "FULL" else None
+    try:
+        update_resolve_size_estimates(
+            scene,
+            scope_mode=estimation_scope,
+            base_path=base_path_for_estimate,
+            full_tiles_override=full_tiles_override,
+        )
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka auto-resolve: failed updating resolve size estimates", exc_info=True)
+
+
 def _auto_resolve_tick_once():
     global _AUTO_RESOLVE_IN_FLIGHT
 
@@ -3687,49 +3746,26 @@ def _auto_resolve_tick_once():
     if get_earth_object() is None:
         return None
 
-    scope = scope_mode
-    active_view_signature = None
-    if scope == "ACTIVE_VIEW":
-        active_view_signature = _active_view_signature()
-    camera_signature = _camera_signature(scene)
-    resolve_signature = (
-        ("ACTIVE_VIEW", active_view_signature)
-        if active_view_signature is not None
-        else camera_signature
-    )
+    scope, active_view_signature, resolve_signature = _auto_resolve_collect_scope_signatures(scene, scope_mode)
     if resolve_signature is None:
         return AUTO_RESOLVE_RETRY_DELAY_SEC
 
     scene_state = _read_scene_auto_resolve_state(scene)
     if scene_state is None:
         return None
-    scene_id = int(scene_state.scene_id)
     now = time.monotonic()
     output_signature = _output_resolution_signature(scene)
-    previous_output_signature = scene_state.last_output_signature
-    state_dirty = False
-    if previous_output_signature != output_signature:
-        scene_state.last_output_signature = output_signature
-        state_dirty = True
-        if previous_output_signature is not None:
-            scene_state.pending_output_change = True
-            scene_state.last_processed_signature = None
-            scene_state.last_change_time = now
-
-    previous_signature = scene_state.last_camera_signature
-    if previous_signature != resolve_signature:
-        scene_state.last_camera_signature = resolve_signature
-        scene_state.last_processed_signature = None
-        state_dirty = True
-
-    if state_dirty:
-        _write_scene_auto_resolve_state(scene_state)
+    pending_output_change = _auto_resolve_sync_state_signatures(
+        scene_state,
+        resolve_signature,
+        output_signature,
+        now,
+    )
 
     last_resolve = float(scene_state.last_resolve_time or 0.0)
     if now - last_resolve < min_interval_sec:
         return max(0.05, min_interval_sec - (now - last_resolve))
 
-    pending_output_change = bool(scene_state.pending_output_change)
     if scene_state.last_processed_signature == resolve_signature and not pending_output_change:
         return None
 
@@ -3750,22 +3786,7 @@ def _auto_resolve_tick_once():
         logger.debug("Planetka auto-resolve: unexpected tile computation failure", exc_info=True)
         return AUTO_RESOLVE_RETRY_DELAY_SEC
 
-    estimation_scope = "ACTIVE_VIEW" if (scope == "ACTIVE_VIEW" and active_view_signature is not None) else "CAMERA"
-    base_path_for_estimate = ""
-    try:
-        prefs = get_prefs()
-        if prefs is not None:
-            base_path_for_estimate = str(getattr(prefs, "texture_base_path", "") or "")
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-        base_path_for_estimate = ""
-    current_quality_mode = _normalize_texture_quality_mode(getattr(props, "texture_quality_mode", "PREVIEW"))
-    full_tiles_override = target_tiles if current_quality_mode == "FULL" else None
-    update_resolve_size_estimates(
-        scene,
-        scope_mode=estimation_scope,
-        base_path=base_path_for_estimate,
-        full_tiles_override=full_tiles_override,
-    )
+    _auto_resolve_update_size_estimation(scene, scope, active_view_signature, target_tiles, props)
 
     if target_tiles == _last_resolved_tiles(scene) and not pending_output_change:
         scene_state.last_processed_signature = resolve_signature
