@@ -5,6 +5,8 @@ import datetime
 
 from .asset_builder import PLANETKA_ROOT_OBJECT_NAME
 from .auth import (
+    allows_animation_render_for_context,
+    allows_balanced_full_quality_for_context,
     get_account_tier,
     get_connected_email,
     get_status_message,
@@ -335,14 +337,23 @@ def _connected_account_tier():
     return str(get_account_tier(prefs) or "").strip().lower()
 
 
+def _account_tier_label(tier):
+    safe_tier = str(tier or "").strip().lower()
+    if safe_tier in {"personal", "lite"}:
+        return "Personal"
+    if safe_tier == "pro":
+        return "Commercial"
+    return "Free"
+
+
 def _is_paid_connected_account():
     if not _is_connected():
         return False
-    return _connected_account_tier() in {"lite", "pro"}
+    return _connected_account_tier() in {"lite", "personal", "pro"}
 
 
 def _full_texture_quality_allowed():
-    return True
+    return _connected_account_tier() == "pro"
 
 
 def _is_cloud_source_mode():
@@ -399,14 +410,6 @@ def _api_key_inline_status(prefs, connected, status_message):
     return "Connect failed", "ERROR", True
 
 
-def _connect_api_key_inline_status(connected, status_message):
-    if connected:
-        return "", "NONE", False
-    if str(status_message or "").strip():
-        return "Connect failed", "ERROR", True
-    return "", "NONE", False
-
-
 def _draw_subscription(layout):
     layout.use_property_split = False
     layout.use_property_decorate = False
@@ -426,11 +429,6 @@ def _draw_subscription(layout):
         status_message,
     )
 
-    connect_status_text, connect_status_icon, connect_status_alert = _connect_api_key_inline_status(
-        connected,
-        status_message,
-    )
-
     if not connected:
         layout.label(text="Paste API key to connect Planetka", icon="INFO")
         key_row = layout.row(align=True)
@@ -439,14 +437,8 @@ def _draw_subscription(layout):
             key_status = key_row.row(align=True)
             key_status.alert = bool(inline_status_alert)
             key_status.label(text=inline_status_text, icon=inline_status_icon)
-        connect_row = layout.row(align=True)
-        connect_row.operator("planetka.account_open_login", text="Connect API Key", icon="CHECKMARK")
-        if connect_status_text:
-            connect_status = connect_row.row(align=True)
-            connect_status.alert = bool(connect_status_alert)
-            connect_status.label(text=connect_status_text, icon=connect_status_icon)
         free_row = layout.row()
-        free_row.operator("planetka.account_login", text="Request Free Access", icon="URL")
+        free_row.operator("planetka.account_login", text="Request API Key", icon="URL")
         layout.label(text=f"Addon version: {current_version or 'unknown'}", icon="BLENDER")
         if updater_ready and latest_version:
             row = layout.row()
@@ -458,10 +450,14 @@ def _draw_subscription(layout):
         return
 
     email = get_connected_email(prefs)
+    tier = str(get_account_tier(prefs) or "").strip().lower()
     layout.label(text=f"Account: {email}", icon="CHECKMARK")
+    layout.label(text=f"Account Type: {_account_tier_label(tier)}", icon="USER")
 
     action_row = layout.row()
     action_row.operator("planetka.account_logout", text="Log Out", icon="X")
+    if tier in {"free", "personal", "lite"}:
+        action_row.operator("planetka.account_upgrade", text="Upgrade Licence", icon="URL")
     layout.label(text=f"Addon version: {current_version or 'unknown'}", icon="BLENDER")
     if updater_ready and latest_version:
         row = layout.row()
@@ -654,37 +650,50 @@ def _draw_live_telemetry(layout, scene):
 
         quality_row = quality_box.row(align=True)
         quality_row.use_property_split = False
+
+        preview_allowed = allows_balanced_full_quality_for_context(prefs=prefs, source=props, requested_mode="PREVIEW")
+        balanced_allowed = allows_balanced_full_quality_for_context(prefs=prefs, source=props, requested_mode="BALANCED")
+        full_allowed = allows_balanced_full_quality_for_context(prefs=prefs, source=props, requested_mode="FULL")
+        effective_mode = str(current_mode or "PREVIEW").strip().upper()
+        if effective_mode == "FULL" and not full_allowed:
+            effective_mode = "BALANCED" if balanced_allowed else "PREVIEW"
+        elif effective_mode == "BALANCED" and not balanced_allowed:
+            effective_mode = "PREVIEW"
+
         preview_col = quality_row.column(align=True)
+        preview_col.enabled = bool(preview_allowed)
         preview_col.operator(
             "planetka.set_texture_quality_and_resolve",
             text="Preview",
-            depress=(current_mode == "PREVIEW"),
+            depress=(effective_mode == "PREVIEW"),
         ).texture_quality_mode = "PREVIEW"
         preview_size_row = preview_col.row(align=True)
         preview_size_row.alignment = 'CENTER'
-        preview_size_row.enabled = (current_mode == "PREVIEW")
+        preview_size_row.enabled = (effective_mode == "PREVIEW")
         preview_size_row.label(text=_estimate_label("PREVIEW"))
 
         balanced_col = quality_row.column(align=True)
+        balanced_col.enabled = bool(balanced_allowed)
         balanced_col.operator(
             "planetka.set_texture_quality_and_resolve",
             text="Balanced",
-            depress=(current_mode == "BALANCED"),
+            depress=(effective_mode == "BALANCED"),
         ).texture_quality_mode = "BALANCED"
         balanced_size_row = balanced_col.row(align=True)
         balanced_size_row.alignment = 'CENTER'
-        balanced_size_row.enabled = (current_mode == "BALANCED")
+        balanced_size_row.enabled = (effective_mode == "BALANCED")
         balanced_size_row.label(text=_estimate_label("BALANCED"))
 
         full_col = quality_row.column(align=True)
+        full_col.enabled = bool(full_allowed)
         full_col.operator(
             "planetka.set_texture_quality_and_resolve",
             text="Full Quality",
-            depress=(current_mode == "FULL"),
+            depress=(effective_mode == "FULL"),
         ).texture_quality_mode = "FULL"
         full_size_row = full_col.row(align=True)
         full_size_row.alignment = 'CENTER'
-        full_size_row.enabled = (current_mode == "FULL")
+        full_size_row.enabled = (effective_mode == "FULL")
         full_size_row.label(text=_estimate_label("FULL"))
 
         runtime, runtime_code, runtime_text = _resolve_runtime_display(scene)
@@ -1667,10 +1676,13 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         quality_row.prop_enum(props, "anim_render_texture_quality", "PREVIEW", text="Preview")
         quality_row.prop_enum(props, "anim_render_texture_quality", "BALANCED", text="Balanced")
         quality_row.prop_enum(props, "anim_render_texture_quality", "FULL", text="Full Quality")
+        final_render_allowed = allows_animation_render_for_context(prefs=get_prefs(), source=props)
+        quality_row.enabled = bool(final_render_allowed)
 
         render_row = final_render_box.row(align=True)
         render_button_row = render_row.row(align=True)
         render_button_row.scale_y = 1.2
+        render_button_row.enabled = bool(final_render_allowed)
         render_button_row.operator(
             "planetka.animation_render_headless",
             text="Render Animation",
@@ -1683,3 +1695,5 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             text="",
             icon="QUESTION",
         )
+        if not final_render_allowed:
+            final_render_box.label(text="Final Animation Rendering requires Commercial licence.", icon="INFO")

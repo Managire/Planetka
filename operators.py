@@ -13,12 +13,12 @@ from mathutils import Matrix, Quaternion, Vector
 
 from .auth import (
     AuthApiError,
+    allows_balanced_full_quality_for_context,
     clear_auth_session,
     connect_with_prefs_api_key,
     describe_auth_error,
     get_contact_url,
     get_api_key_request_url,
-    get_topup_url,
     get_upgrade_url,
     is_authenticated,
     logout_remote_session,
@@ -3384,6 +3384,31 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
             )
 
         target_mode = _normalize_startup_texture_quality_mode(getattr(self, "texture_quality_mode", "PREVIEW"))
+        if not allows_balanced_full_quality_for_context(
+            prefs=prefs,
+            source=props,
+            requested_mode=target_mode,
+        ):
+            if target_mode == "BALANCED":
+                return fail(
+                    self,
+                    "Balanced quality requires Personal or Commercial licence.",
+                    code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                    logger=logger,
+                )
+            if target_mode == "FULL":
+                return fail(
+                    self,
+                    "Full Quality requires Commercial licence.",
+                    code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                    logger=logger,
+                )
+            return fail(
+                self,
+                "Selected texture quality is not available for this account tier.",
+                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                logger=logger,
+            )
 
         try:
             props.texture_quality_mode = target_mode
@@ -3508,8 +3533,8 @@ def _open_account_url(url):
 
 class PLANETKA_OT_AccountUpgrade(bpy.types.Operator):
     bl_idname = "planetka.account_upgrade"
-    bl_label = "Open Billing"
-    bl_description = "Open Planetka billing page"
+    bl_label = "Upgrade Licence"
+    bl_description = "Open Planetka pricing page"
 
     def execute(self, context):
         prefs = get_prefs()
@@ -3521,14 +3546,12 @@ class PLANETKA_OT_AccountUpgrade(bpy.types.Operator):
                 logger=logger,
             )
 
-        upgrade_url = get_topup_url(prefs)
+        upgrade_url = get_upgrade_url(prefs)
         if not upgrade_url:
-            upgrade_url = get_upgrade_url(prefs)
-        if not upgrade_url:
-            return fail(self, "Planetka billing URL is not configured.", logger=logger)
+            return fail(self, "Planetka pricing URL is not configured.", logger=logger)
         if not _open_account_url(upgrade_url):
-            return fail(self, "Could not open Planetka billing page.", logger=logger)
-        self.report({'INFO'}, "Planetka billing page opened in browser.")
+            return fail(self, "Could not open Planetka pricing page.", logger=logger)
+        self.report({'INFO'}, "Planetka pricing page opened in browser.")
         return {'FINISHED'}
 
 

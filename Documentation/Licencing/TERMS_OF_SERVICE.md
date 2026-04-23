@@ -1,6 +1,6 @@
 # Planetka Terms of Service
 
-Last updated: 2026-04-02
+Last updated: 2026-04-23
 
 These Terms of Service govern access to the Planetka service layer, including
 Planetka account login, Planetka-hosted tile delivery, and related web/API
@@ -26,6 +26,8 @@ Planetka is currently released as a **public beta**.
 - Access is tied to one specific email address and one computer at one time.
 - Planetka may change beta limits, access rules, and feature behavior during
   this beta period.
+- Planetka currently offers three account tiers: **Free**, **Personal**, and
+  **Commercial**.
 
 ## 3. Intended Use
 
@@ -43,14 +45,23 @@ services or Planetka-provided data for artificial intelligence, machine
 learning, or similar model-development workflows. Those rights are available
 only under a separate custom license released by Planetka in writing.
 
-## 4. Allowed Use (Beta)
+## 4. License Scope by Account Tier
 
-Subject to these Terms, you may use Planetka-hosted services for personal,
-non-commercial Blender rendering workflows described above.
+Subject to these Terms, Planetka-hosted service use is licensed per account
+tier as follows:
 
-You may keep and use your own rendered outputs, subject to any attribution or
-source-data obligations described in the licensing documentation shipped with
-Planetka.
+- **Free**: personal, non-commercial Blender rendering workflows only.
+- **Personal**: personal, non-commercial Blender rendering workflows only.
+- **Commercial**: personal and commercial Blender rendering workflows.
+
+For clarity:
+
+- Free and Personal do **not** include commercial use rights.
+- Commercial includes commercial use rights, subject to all other Terms in this
+  document.
+
+You may keep and use your own rendered outputs, subject to attribution and
+source-data obligations described in Planetka licensing documentation.
 
 ## 5. Prohibited Use
 
@@ -81,8 +92,8 @@ You must not:
 - use bots or scripts to build bulk local copies of the underlying source data
 - circumvent account limits, authentication, rate controls, or enforcement
   logic
-- use Planetka beta for commercial production, paid client work, resale, or
-  enterprise deployment without explicit written approval from Planetka
+- use Free or Personal tier access for commercial production, paid client work,
+  paid deliverables, resale, enterprise deployment, or other business use
 
 Any attempt to use Planetka primarily as a source-data extraction tool rather
 than a Blender rendering tool is prohibited.
@@ -105,6 +116,9 @@ You are responsible for activity under your account and for keeping access to
 your email account secure.
 
 You must provide a valid email address that you control.
+
+You are responsible for selecting and using the correct account tier for your
+intended use (personal/non-commercial vs commercial).
 
 ## 8. No Warranty; Service Availability
 

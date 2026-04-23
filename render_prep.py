@@ -18,7 +18,7 @@ import re
 import bpy
 from bpy.props import BoolProperty, EnumProperty, StringProperty
 
-from .auth import is_authenticated, sync_account_profile
+from .auth import allows_balanced_full_quality_for_context, is_authenticated, sync_account_profile
 from .asset_builder import ensure_earth_surface_parent, sync_surface_elevation_scale_for_radius
 from .diagnostics import write_resolve_diagnostics, write_tile_view_diagnostics
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS, with_error_code
@@ -740,6 +740,25 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 texture_quality_mode = _normalize_texture_quality_mode(
                     getattr(props, "texture_quality_mode", "PREVIEW")
                 )
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            texture_quality_mode = "PREVIEW"
+        try:
+            if not allows_balanced_full_quality_for_context(
+                prefs=get_prefs(),
+                source=props,
+                requested_mode=texture_quality_mode,
+            ):
+                if (
+                    texture_quality_mode == "FULL"
+                    and allows_balanced_full_quality_for_context(
+                        prefs=get_prefs(),
+                        source=props,
+                        requested_mode="BALANCED",
+                    )
+                ):
+                    texture_quality_mode = "BALANCED"
+                else:
+                    texture_quality_mode = "PREVIEW"
         except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
             texture_quality_mode = "PREVIEW"
         try:

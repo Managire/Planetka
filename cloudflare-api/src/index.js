@@ -10,13 +10,17 @@ const PLAN_CODE_PLANETKA_INDIE = PLAN_CODE_PLANETKA;
 const PLAN_CODE_PLANETKA_STUDIO = PLAN_CODE_PLANETKA_PRO;
 const DEFAULT_BETA_FORCE_PRO_TIER = false;
 const DEFAULT_ALLOWANCE_COUNTING_RULE =
-  "No data metering is enforced. Personal and Pro tiers are unlimited.";
+  "No data metering is enforced. Personal and Commercial tiers are unlimited.";
+const DEFAULT_DAILY_RESOLVE_LIMIT_FREE_BALANCED_FULL = 10;
+const DEFAULT_DAILY_RESOLVE_LIMIT_PERSONAL_FULL = 50;
+const TIER_QUOTA_LONDON_TIMEZONE = "Europe/London";
+const TIER_QUOTA_MIN_ADDON_VERSION = "0.7.0";
 const DEFAULT_TRIAL_INCLUDED_GB = 25;
 const DEFAULT_HOSTED_ACCESS_DURATION_DAYS = 365;
 const DEFAULT_LOW_WARNING_GB = 10;
 const DEFAULT_LOW_WARNING_RATIO = 0.1;
 const UNLIMITED_ALLOWANCE_BYTES = Number.MAX_SAFE_INTEGER;
-const DEFAULT_UPGRADE_URL = "https://www.planetka.io/blender-addon/pricing/";
+const DEFAULT_UPGRADE_URL = "https://www.planetka.io/blender/pricing";
 const DEFAULT_CONTACT_URL = "https://www.planetka.io/contact-me";
 const DEFAULT_ADMIN_ANALYTICS_TILE_MAP_KEY = "planetka-assets/Admin/world_map_720x360.jpg";
 const DEFAULT_ADMIN_SUPPORT_MISSING_MANIFEST_KEY = "planetka-assets/Admin/support_missing_manifest.json";
@@ -38,6 +42,7 @@ const DEFAULT_RATE_LIMIT_DEVICE_POLL_CODE_WINDOW_SECONDS = 60;
 const DEFAULT_RATE_LIMIT_ADMIN_LOGIN_IP_LIMIT = 20;
 const DEFAULT_RATE_LIMIT_ADMIN_LOGIN_IP_WINDOW_SECONDS = 300;
 const DEFAULT_REFRESH_SESSION_CLEANUP_RETENTION_DAYS = 30;
+const DEFAULT_DAILY_RESOLVE_QUOTA_RETENTION_DAYS = 45;
 const DEFAULT_ALERT_AUTH_429_THRESHOLD = 10;
 const DEFAULT_ALERT_AUTH_429_WINDOW_SECONDS = 60;
 const DEFAULT_ALERT_DEVICE_POLL_429_THRESHOLD = 30;
@@ -127,6 +132,7 @@ let userProvisionalColumnsReady = false;
 let refreshSessionColumnsReady = false;
 let userBestQualityTileTablesReady = false;
 let adminHardBlocksTableReady = false;
+let userDailyResolveQuotaTableReady = false;
 let rateLimitsLastPruneAt = 0;
 let supportMissingManifestCache = {
   loadedAtMs: 0,
@@ -141,12 +147,16 @@ let cloudflareR2BillableUsageCache = {
   cacheKey: "",
   value: null,
 };
+let londonQuotaResetCache = {
+  monthKey: "",
+  resetIso: "",
+};
 
 function corsHeaders(env) {
   return {
     "Access-Control-Allow-Origin": env.APP_ORIGIN || "*",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Planetka-Device-Id",
+    "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Planetka-Device-Id, X-Planetka-Addon-Version, X-Planetka-Resolve-Id, X-Planetka-Quality-Mode",
   };
 }
 
@@ -585,6 +595,165 @@ function normalizeRequestedPlan(value) {
     return PLAN_CODE_PLANETKA_FREE;
   }
   return PLAN_CODE_PLANETKA_FREE;
+}
+
+function parseSemverTuple(value) {
+  const text = String(value || "").trim();
+  const match = text.match(/^(\d+)\.(\d+)\.(\d+)/);
+  if (!match) {
+    return null;
+  }
+  return [
+    parseNonNegativeInteger(match[1], 0),
+    parseNonNegativeInteger(match[2], 0),
+    parseNonNegativeInteger(match[3], 0),
+  ];
+}
+
+function compareSemverTuples(left, right) {
+  for (let index = 0; index < 3; index += 1) {
+    const leftValue = parseNonNegativeInteger(left && left[index], 0);
+    const rightValue = parseNonNegativeInteger(right && right[index], 0);
+    if (leftValue > rightValue) return 1;
+    if (leftValue < rightValue) return -1;
+  }
+  return 0;
+}
+
+function isAddonVersionAtLeast(value, minimumVersion) {
+  const versionTuple = parseSemverTuple(value);
+  const minimumTuple = parseSemverTuple(minimumVersion);
+  if (!versionTuple || !minimumTuple) {
+    return false;
+  }
+  return compareSemverTuples(versionTuple, minimumTuple) >= 0;
+}
+
+function isDailyResolveQuotaEnforcedForRequest(request, env = {}) {
+  const forceAllVersions = parseBooleanFlag(env.ENFORCE_DAILY_RESOLVE_QUOTA_ALL_VERSIONS || "0");
+  if (forceAllVersions) {
+    return true;
+  }
+  const rawVersion = String(request.headers.get("X-Planetka-Addon-Version") || "").trim();
+  if (!rawVersion) {
+    return false;
+  }
+  return isAddonVersionAtLeast(rawVersion, TIER_QUOTA_MIN_ADDON_VERSION);
+}
+
+const londonMonthFormatter = new Intl.DateTimeFormat("en-GB", {
+  timeZone: TIER_QUOTA_LONDON_TIMEZONE,
+  year: "numeric",
+  month: "2-digit",
+});
+
+function londonMonthKey(epochMs = Date.now()) {
+  const parts = londonMonthFormatter.formatToParts(new Date(epochMs));
+  let month = "";
+  let year = "";
+  for (const part of parts) {
+    if (part.type === "month") month = String(part.value || "").padStart(2, "0");
+    if (part.type === "year") year = String(part.value || "");
+  }
+  if (year && month) {
+    return `${year}-${month}`;
+  }
+  return String(new Date(epochMs).toISOString().slice(0, 7));
+}
+
+function londonNextMonthBoundaryIso(epochMs = Date.now()) {
+  const currentKey = londonMonthKey(epochMs);
+  if (londonQuotaResetCache.monthKey === currentKey && londonQuotaResetCache.resetIso) {
+    return londonQuotaResetCache.resetIso;
+  }
+  let probe = epochMs + (7 * 24 * 60 * 60 * 1000);
+  while (londonMonthKey(probe) === currentKey) {
+    probe += (7 * 24 * 60 * 60 * 1000);
+    if ((probe - epochMs) > (400 * 24 * 60 * 60 * 1000)) {
+      const fallback = addDaysIso(1);
+      londonQuotaResetCache = { monthKey: currentKey, resetIso: fallback };
+      return fallback;
+    }
+  }
+  let low = epochMs;
+  let high = probe;
+  for (let iteration = 0; iteration < 32; iteration += 1) {
+    const mid = Math.floor((low + high) / 2);
+    if (londonMonthKey(mid) === currentKey) {
+      low = mid + 1;
+    } else {
+      high = mid;
+    }
+  }
+  const resetIso = new Date(high).toISOString();
+  londonQuotaResetCache = { monthKey: currentKey, resetIso };
+  return resetIso;
+}
+
+function resolveDailyResolveLimits(env = {}) {
+  return {
+    freeBalancedFull: Math.max(
+      0,
+      parseRateLimitInteger(
+        (env.MONTHLY_RESOLVE_LIMIT_FREE_BALANCED_FULL || env.DAILY_RESOLVE_LIMIT_FREE_BALANCED_FULL),
+        DEFAULT_DAILY_RESOLVE_LIMIT_FREE_BALANCED_FULL,
+      ),
+    ),
+    personalFull: Math.max(
+      0,
+      parseRateLimitInteger(
+        (env.MONTHLY_RESOLVE_LIMIT_PERSONAL_FULL || env.DAILY_RESOLVE_LIMIT_PERSONAL_FULL),
+        DEFAULT_DAILY_RESOLVE_LIMIT_PERSONAL_FULL,
+      ),
+    ),
+  };
+}
+
+function resolveDailyResolveQuotaPolicy(planCode, qualityMode, env = {}) {
+  void planCode;
+  void qualityMode;
+  void env;
+  return null;
+}
+
+function resolveDailyResolveQuotaPolicyForPlan(planCode, env = {}) {
+  void planCode;
+  void env;
+  return null;
+}
+
+function normalizeQualityMode(value) {
+  const safe = String(value || "").trim().toLowerCase();
+  if (safe === "full") return "full";
+  if (safe === "balanced") return "balanced";
+  return "preview";
+}
+
+function isQualityModeAllowedForPlan(planCode, qualityMode) {
+  const safePlanCode = normalizeRequestedPlan(planCode);
+  const safeMode = normalizeQualityMode(qualityMode);
+  if (safeMode === "preview") {
+    return true;
+  }
+  if (safeMode === "balanced") {
+    return safePlanCode === PLAN_CODE_PLANETKA || safePlanCode === PLAN_CODE_PLANETKA_PRO;
+  }
+  if (safeMode === "full") {
+    return safePlanCode === PLAN_CODE_PLANETKA_PRO;
+  }
+  return false;
+}
+
+function qualityModeNotAllowedMessage(planCode, qualityMode) {
+  const safePlanCode = normalizeRequestedPlan(planCode);
+  const safeMode = normalizeQualityMode(qualityMode);
+  if (safePlanCode === PLAN_CODE_PLANETKA_FREE) {
+    return "Free tier supports Preview only. Upgrade Licence for Balanced or Full Quality.";
+  }
+  if (safePlanCode === PLAN_CODE_PLANETKA && safeMode === "full") {
+    return "Personal tier supports Preview and Balanced. Upgrade Licence for Full Quality.";
+  }
+  return "Selected texture quality is not available for this account tier.";
 }
 
 function isPaidRequestedPlan(planCode) {
@@ -1392,6 +1561,200 @@ async function ensureUserBestQualityTileTables(db) {
     `,
   );
   userBestQualityTileTablesReady = true;
+}
+
+async function ensureUserDailyResolveQuotaTable(db) {
+  if (userDailyResolveQuotaTableReady) {
+    return;
+  }
+  await dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS user_daily_resolve_quota (
+        user_id TEXT NOT NULL,
+        period_key TEXT NOT NULL,
+        quota_scope TEXT NOT NULL,
+        resolve_id TEXT NOT NULL,
+        quality_mode TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (user_id, period_key, quota_scope, resolve_id)
+      )
+    `,
+  );
+  await dbRun(
+    db,
+    `
+      CREATE INDEX IF NOT EXISTS idx_user_daily_resolve_quota_user_period_scope
+      ON user_daily_resolve_quota(user_id, period_key, quota_scope)
+    `,
+  );
+  await dbRun(
+    db,
+    `
+      CREATE INDEX IF NOT EXISTS idx_user_daily_resolve_quota_period_created
+      ON user_daily_resolve_quota(period_key, created_at DESC)
+    `,
+  );
+  userDailyResolveQuotaTableReady = true;
+}
+
+async function countUserDailyResolveQuotaUsage(db, userId, periodKey, quotaScope) {
+  const row = await dbGet(
+    db,
+    `
+      SELECT COUNT(*) AS used
+      FROM user_daily_resolve_quota
+      WHERE user_id = ?
+        AND period_key = ?
+        AND quota_scope = ?
+    `,
+    [String(userId || "").trim(), String(periodKey || "").trim(), String(quotaScope || "").trim()],
+  );
+  return clampNonNegativeInt(row && row.used);
+}
+
+async function buildDailyResolveQuotaState(db, userId, planCode, env = {}, nowEpochMs = Date.now()) {
+  const policy = resolveDailyResolveQuotaPolicyForPlan(planCode, env);
+  const resetAt = londonNextMonthBoundaryIso(nowEpochMs);
+  if (!policy || !Number.isFinite(policy.limit) || policy.limit <= 0) {
+    return {
+      used: 0,
+      limit: null,
+      remaining: null,
+      resetAt,
+      period: "month_london",
+      unlimited: true,
+      rule: "No monthly resolve cap for this tier.",
+      scope: "",
+      label: "Unlimited",
+    };
+  }
+  const safeUserId = String(userId || "").trim();
+  const periodKey = londonMonthKey(nowEpochMs);
+  let used = 0;
+  if (safeUserId) {
+    await ensureUserDailyResolveQuotaTable(db);
+    used = await countUserDailyResolveQuotaUsage(db, safeUserId, periodKey, policy.scope);
+  }
+  const limit = Math.max(0, clampNonNegativeInt(policy.limit));
+  return {
+    used,
+    limit,
+    remaining: Math.max(0, limit - used),
+    resetAt,
+    period: String(policy.period || "month_london"),
+    unlimited: false,
+    rule: String(policy.rule || "").trim(),
+    scope: String(policy.scope || "").trim(),
+    label: String(policy.label || "").trim(),
+  };
+}
+
+async function enforceDailyResolveQuota(db, userId, planCode, qualityMode, resolveId, env = {}) {
+  const policy = resolveDailyResolveQuotaPolicy(planCode, qualityMode, env);
+  if (!policy) {
+    return { ok: true, enforced: false, quota: await buildDailyResolveQuotaState(db, userId, planCode, env) };
+  }
+  const safeResolveId = String(resolveId || "").trim();
+  if (!safeResolveId) {
+    const quota = await buildDailyResolveQuotaState(db, userId, planCode, env);
+    return {
+      ok: false,
+      enforced: true,
+      code: "missing_resolve_id",
+      message: "Resolve ID is required for tier-limited quality requests.",
+      quota,
+    };
+  }
+  const safeUserId = String(userId || "").trim();
+  if (!safeUserId) {
+    return {
+      ok: false,
+      enforced: true,
+      code: "missing_user_id",
+      message: "Unable to validate monthly resolve quota for this account.",
+      quota: null,
+    };
+  }
+
+  const periodKey = londonMonthKey(Date.now());
+  const scope = String(policy.scope || "").trim();
+  const limit = Math.max(0, clampNonNegativeInt(policy.limit));
+  await ensureUserDailyResolveQuotaTable(db);
+  const existing = await dbGet(
+    db,
+    `
+      SELECT 1 AS seen
+      FROM user_daily_resolve_quota
+      WHERE user_id = ?
+        AND period_key = ?
+        AND quota_scope = ?
+        AND resolve_id = ?
+      LIMIT 1
+    `,
+    [safeUserId, periodKey, scope, safeResolveId],
+  );
+  if (!existing) {
+    const usedBefore = await countUserDailyResolveQuotaUsage(db, safeUserId, periodKey, scope);
+    if (usedBefore >= limit) {
+      const quota = await buildDailyResolveQuotaState(db, safeUserId, planCode, env);
+      return {
+        ok: false,
+        enforced: true,
+        code: "daily_resolve_quota_exceeded",
+        message: `${policy.label} resolve quota reached for this month.`,
+        quota,
+      };
+    }
+    await dbRun(
+      db,
+      `
+        INSERT OR IGNORE INTO user_daily_resolve_quota (
+          user_id,
+          period_key,
+          quota_scope,
+          resolve_id,
+          quality_mode,
+          created_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+      `,
+      [
+        safeUserId,
+        periodKey,
+        scope,
+        safeResolveId,
+        String(qualityMode || "").trim().toLowerCase(),
+        nowIso(),
+      ],
+    );
+  }
+  const usedAfter = await countUserDailyResolveQuotaUsage(db, safeUserId, periodKey, scope);
+  if (usedAfter > limit) {
+    await dbRun(
+      db,
+      `
+        DELETE FROM user_daily_resolve_quota
+        WHERE user_id = ?
+          AND period_key = ?
+          AND quota_scope = ?
+          AND resolve_id = ?
+      `,
+      [safeUserId, periodKey, scope, safeResolveId],
+    );
+    const quota = await buildDailyResolveQuotaState(db, safeUserId, planCode, env);
+    return {
+      ok: false,
+      enforced: true,
+      code: "daily_resolve_quota_exceeded",
+      message: `${policy.label} resolve quota reached for this month.`,
+      quota,
+    };
+  }
+  return {
+    ok: true,
+    enforced: true,
+    quota: await buildDailyResolveQuotaState(db, safeUserId, planCode, env),
+  };
 }
 
 async function findBestQualityTileTracking(db, userId, accountTier) {
@@ -3484,9 +3847,17 @@ async function cleanupAuthTables(db, env, nowTimestamp) {
       60,
       parseNonNegativeInteger(env.CLEANUP_TILE_ROLLUP_RETENTION_DAYS, DEFAULT_TILE_ROLLUP_RETENTION_DAYS),
     ),
+    daily_resolve_quota_retention_days: Math.max(
+      7,
+      parseNonNegativeInteger(
+        env.CLEANUP_DAILY_RESOLVE_QUOTA_RETENTION_DAYS,
+        DEFAULT_DAILY_RESOLVE_QUOTA_RETENTION_DAYS,
+      ),
+    ),
     tile_request_events_deleted: 0,
     tile_rollup_hourly_deleted: 0,
     tile_rollup_daily_deleted: 0,
+    daily_resolve_quota_deleted: 0,
     monthly_cost_alert_state_deleted: 0,
     auth_refresh_events_deleted: 0,
   };
@@ -3504,6 +3875,10 @@ async function cleanupAuthTables(db, env, nowTimestamp) {
     nowUnix - (summary.auth_refresh_event_retention_days * 86400),
   );
   const tileRollupCutoffUnix = Math.max(0, nowUnix - (summary.tile_rollup_retention_days * 86400));
+  const dailyResolveQuotaCutoffIso = addDaysFromIso(
+    nowTimestamp,
+    -summary.daily_resolve_quota_retention_days,
+  );
 
   if (await dbTableExists(db, "magic_links")) {
     const magicLinksResult = await dbRun(
@@ -3659,6 +4034,18 @@ async function cleanupAuthTables(db, env, nowTimestamp) {
       [tileRollupCutoffUnix],
     );
     summary.tile_rollup_daily_deleted = dbMetaChanges(dailyRollupResult);
+  }
+
+  if (await dbTableExists(db, "user_daily_resolve_quota")) {
+    const dailyResolveQuotaResult = await dbRun(
+      db,
+      `
+        DELETE FROM user_daily_resolve_quota
+        WHERE created_at < ?
+      `,
+      [dailyResolveQuotaCutoffIso],
+    );
+    summary.daily_resolve_quota_deleted = dbMetaChanges(dailyResolveQuotaResult);
   }
 
   if (await dbTableExists(db, "monthly_cost_alert_state")) {
@@ -4473,7 +4860,7 @@ function accountTierForPlanCode(planCode) {
 
 function planDisplayName(planCode) {
   const normalized = normalizeRequestedPlan(planCode);
-  if (normalized === PLAN_CODE_PLANETKA_PRO) return "Planetka Pro";
+  if (normalized === PLAN_CODE_PLANETKA_PRO) return "Planetka Commercial";
   if (normalized === PLAN_CODE_PLANETKA) return "Planetka Personal";
   return "Planetka Free";
 }
@@ -4481,12 +4868,12 @@ function planDisplayName(planCode) {
 function planAccessSummary(planCode) {
   const normalized = normalizeRequestedPlan(planCode);
   if (normalized === PLAN_CODE_PLANETKA_PRO) {
-    return "Pro includes global Preview, Balanced, Full Quality, and animation rendering.";
+    return "Commercial includes unlimited global Preview, Balanced, Full Quality, and animation rendering.";
   }
   if (normalized === PLAN_CODE_PLANETKA) {
-    return "Personal includes global Preview, Balanced, Full Quality, and animation rendering.";
+    return "Personal includes Preview and Balanced texture quality.";
   }
-  return "Free includes global Preview, Balanced, Full Quality, and animation rendering.";
+  return "Free includes Preview texture quality only.";
 }
 
 function includedLimitForPlan(planCode, cfg, previousPeriod) {
@@ -4625,7 +5012,7 @@ async function getDownloadedPeriodBytes(db, userId, periodStart, periodEnd) {
   return clampNonNegativeInt(row && row.downloaded);
 }
 
-async function buildAllowanceState(db, user, subscription, env) {
+async function buildAllowanceState(db, user, subscription, env, options = {}) {
   const cfg = buildPlanConfig(env);
   const planCode = resolvePlanCode(user, subscription, env);
   const userId = String(user && user.id || "").trim();
@@ -4648,6 +5035,20 @@ async function buildAllowanceState(db, user, subscription, env) {
   const period = "lifetime";
   const periodEnd = "";
   const countingRule = cfg.countingRule || DEFAULT_ALLOWANCE_COUNTING_RULE;
+  const includeTileQuota = !(options && options.includeTileQuota === false);
+  const tileQuota = includeTileQuota
+    ? await buildDailyResolveQuotaState(db, userId, planCode, env)
+    : {
+      used: 0,
+      limit: null,
+      remaining: null,
+      resetAt: "",
+      period: "month_london",
+      unlimited: true,
+      rule: "",
+      scope: "",
+      label: "",
+    };
 
   return {
     planCode,
@@ -4672,11 +5073,13 @@ async function buildAllowanceState(db, user, subscription, env) {
     throttleReason,
     includedRemainingBytesBase: includedRemainingBytes,
     periodId: "",
+    tileQuota,
   };
 }
 
 function serializeAccountState(state) {
   const tier = accountTierForPlanCode(state.planCode);
+  const tileQuota = state && state.tileQuota ? state.tileQuota : null;
   return {
     plan: {
       code: state.planCode,
@@ -4691,6 +5094,21 @@ function serializeAccountState(state) {
     contact_url: state.contactUrl,
     billing_period_end: state.dataAllowance.period_end,
     data_allowance: state.dataAllowance,
+    tile_quota: {
+      used: clampNonNegativeInt(tileQuota && tileQuota.used),
+      limit: (tileQuota && Number.isFinite(tileQuota.limit) && tileQuota.limit >= 0)
+        ? clampNonNegativeInt(tileQuota.limit)
+        : null,
+      remaining: (tileQuota && Number.isFinite(tileQuota.remaining) && tileQuota.remaining >= 0)
+        ? clampNonNegativeInt(tileQuota.remaining)
+        : null,
+      reset_at: String(tileQuota && tileQuota.resetAt || ""),
+      period: String(tileQuota && tileQuota.period || "month_london"),
+      unlimited: Boolean(tileQuota && tileQuota.unlimited),
+      rule: String(tileQuota && tileQuota.rule || ""),
+      scope: String(tileQuota && tileQuota.scope || ""),
+      label: String(tileQuota && tileQuota.label || ""),
+    },
     throttled_until: String(state.throttledUntil || "").trim(),
     throttle_reason: String(state.throttleReason || "").trim(),
     is_throttled: Boolean(state.throttledUntil),
@@ -6858,7 +7276,7 @@ function renderApiKeyRequestPage(env, message = "", requestedPlan = PLAN_CODE_PL
   </head>
   <body>
     <main class="card">
-      <h1>Request Free Access</h1>
+      <h1>Request API Key</h1>
       <p>${escapeHtml(subTitle)}</p>
       <form id="form">
         <label for="email">Email</label>
@@ -6872,7 +7290,7 @@ function renderApiKeyRequestPage(env, message = "", requestedPlan = PLAN_CODE_PL
           <label for="news">Opt in for quarterly Planetka updates by email. Email addresses are not shared with third parties.</label>
         </div>
         <input id="website" class="hidden" type="text" autocomplete="off" tabindex="-1" />
-        <button id="submit" type="submit">Request Free Access</button>
+        <button id="submit" type="submit">Request API Key</button>
       </form>
       ${messageMarkup}
       <p class="help">Problem connecting? <a href="${contactUrl}" target="_blank" rel="noopener noreferrer">Contact Me</a></p>
@@ -8943,10 +9361,24 @@ async function handleTileRequest(request, env, path, ctx) {
     let key = prefix ? `${prefix}/${folder}/${fileName}` : `${folder}/${fileName}`;
     eventTileKey = key;
     const qualityModeRaw = String(request.headers.get("X-Planetka-Quality-Mode") || "").trim().toLowerCase();
-    const qualityMode = qualityModeRaw === "full"
-      ? "full"
-      : (qualityModeRaw === "balanced" ? "balanced" : "preview");
-    void qualityMode;
+    const effectiveQualityMode = normalizeQualityMode(qualityModeRaw);
+    if ((request.method === "GET" || request.method === "HEAD")
+      && !isQualityModeAllowedForPlan(planCode, effectiveQualityMode)) {
+      eventStatusCode = 403;
+      eventErrorCode = "quality_mode_not_allowed_for_tier";
+      const accountState = await buildAllowanceState(db, user, null, env);
+      return json(
+        {
+          ok: false,
+          error: "quality_mode_not_allowed_for_tier",
+          message: qualityModeNotAllowedMessage(planCode, effectiveQualityMode),
+          requested_quality_mode: effectiveQualityMode,
+          ...serializeAccountState(accountState),
+        },
+        403,
+        env,
+      );
+    }
 
     if (request.method === "HEAD") {
       const objectHead = await env.PLANETKA_DATA.head(key);
@@ -9004,7 +9436,7 @@ async function handleTileRequest(request, env, path, ctx) {
     // Beta mode: keep allowance measurement state, but do not charge downloads in either quality mode.
     const chargeCredits = false;
 
-    const allowanceState = await buildAllowanceState(db, user, null, env);
+    const allowanceState = await buildAllowanceState(db, user, null, env, { includeTileQuota: false });
     let updatedAllowance = allowanceState;
     if (chargeCredits) {
       if (allowanceState.dataAllowance.total_remaining_bytes < objectSize) {
@@ -9051,7 +9483,7 @@ async function handleTileRequest(request, env, path, ctx) {
       "X-Planetka-Remaining-Bytes": String(updatedAllowance.dataAllowance.total_remaining_bytes),
       "X-Planetka-Warning-State": String(updatedAllowance.dataAllowance.warning_state || "ok"),
       "X-Planetka-Cache": cacheStatus,
-      "X-Planetka-Quality-Mode": qualityMode,
+      "X-Planetka-Quality-Mode": effectiveQualityMode,
     });
     if (etag) {
       responseHeaders.set("ETag", etag);
@@ -9410,7 +9842,7 @@ async function handleAdminAnalyticsPage(request, env) {
   };
   const tierLabelFromStatus = (statusValue) => {
     const tierCode = tierCodeFromStatus(statusValue);
-    if (tierCode === "pro") return "Pro";
+    if (tierCode === "pro") return "Commercial";
     if (tierCode === "personal") return "Personal";
     return "Free";
   };
@@ -9572,7 +10004,7 @@ async function handleAdminAnalyticsUsersPage(request, env) {
   };
   const tierLabelFromStatus = (statusValue) => {
     const tierCode = tierCodeFromStatus(statusValue);
-    if (tierCode === "pro") return "Pro";
+    if (tierCode === "pro") return "Commercial";
     if (tierCode === "personal") return "Personal";
     return "Free";
   };
@@ -9606,11 +10038,11 @@ async function handleAdminAnalyticsUsersPage(request, env) {
     const throttledActive = Number.isFinite(throttledUntilMs) && throttledUntilMs > Date.now();
     let actionButtons = "";
     if (status === "blocked") {
-      actionButtons = `<button class="action-btn warn" data-action="unblock" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}" data-plan-code="${encodeURIComponent(planCodeRaw)}">Unblock</button><button class="action-btn" data-action="set-lite" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Personal</button><button class="action-btn" data-action="set-pro" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Pro</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
+      actionButtons = `<button class="action-btn warn" data-action="unblock" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}" data-plan-code="${encodeURIComponent(planCodeRaw)}">Unblock</button><button class="action-btn" data-action="set-lite" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Personal</button><button class="action-btn" data-action="set-pro" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Commercial</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
     } else {
       const planButton = tierCodeFromStatus(status || planCode) === "pro"
         ? `<button class="action-btn" data-action="set-lite" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Personal</button>`
-        : `<button class="action-btn" data-action="set-pro" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Pro</button>`;
+        : `<button class="action-btn" data-action="set-pro" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Commercial</button>`;
       const throttleButton = throttledActive
         ? `<button class="action-btn" data-action="unthrottle" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Unthrottle</button>`
         : `<button class="action-btn warn" data-action="throttle" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Throttle 24h</button>`;
@@ -9726,7 +10158,7 @@ async function handleAdminAnalyticsUsersPage(request, env) {
         block: "Block this user account now?",
         unblock: "Unblock this user account now?",
         "set-lite": "Set this account to Personal?",
-        "set-pro": "Set this account to Pro?",
+        "set-pro": "Set this account to Commercial?",
         "hard-block": "Hard block this user and block same-computer attempts?",
       };
       const endpoint = endpointByAction[safeAction];

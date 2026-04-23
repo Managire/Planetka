@@ -8,6 +8,10 @@ import time
 import uuid
 import urllib.error
 import urllib.request
+try:
+    import tomllib
+except (ImportError, ModuleNotFoundError):
+    tomllib = None
 
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from .extension_prefs import get_prefs
@@ -19,7 +23,7 @@ DEFAULT_API_BASE_URL = str(os.getenv("PLANETKA_API_BASE_URL") or "https://api.pl
 DEFAULT_UPGRADE_URL = str(
     os.getenv("PLANETKA_UPGRADE_URL")
     or os.getenv("PLANETKA_PRICING_URL")
-    or "https://www.planetka.io/blender-addon/pricing/"
+    or "https://www.planetka.io/blender/pricing"
 ).strip()
 DEFAULT_MANAGE_SUBSCRIPTION_URL = str(
     os.getenv("PLANETKA_MANAGE_SUBSCRIPTION_URL")
@@ -34,7 +38,7 @@ DEFAULT_CONTACT_URL = str(
 DEFAULT_TOPUP_URL = str(
     os.getenv("PLANETKA_TOPUP_URL")
     or os.getenv("PLANETKA_DATA_TOPUP_URL")
-    or "https://www.planetka.io/blender-addon/pricing/"
+    or "https://www.planetka.io/blender/pricing"
 ).strip()
 DEFAULT_API_KEY_REQUEST_URL = str(
     os.getenv("PLANETKA_API_KEY_REQUEST_URL")
@@ -66,6 +70,8 @@ DEFAULT_LOW_DATA_WARNING_GB = max(1, _env_int("PLANETKA_LOW_DATA_WARNING_GB", 10
 DEFAULT_LOW_DATA_WARNING_RATIO = min(max(_env_float("PLANETKA_LOW_DATA_WARNING_RATIO", 0.10), 0.01), 0.95)
 DEFAULT_LOW_DATA_WARNING_BYTES = int(DEFAULT_LOW_DATA_WARNING_GB * (1024 ** 3))
 ACCOUNT_TIER_FREE = "free"
+ACCOUNT_TIER_PERSONAL = "personal"
+# Backward-compat alias for older local prefs/payloads.
 ACCOUNT_TIER_LITE = "lite"
 ACCOUNT_TIER_PRO = "pro"
 PLAN_CODE_FREE = "free"
@@ -75,10 +81,11 @@ PLAN_CODE_PLANETKA = "planetka"
 PLAN_CODE_PLANETKA_PRO = "planetka_pro"
 PLAN_NAME_FREE = "Planetka Free"
 PLAN_NAME_PERSONAL = "Planetka Personal"
-PLAN_NAME_PRO = "Planetka Pro"
+PLAN_NAME_PRO = "Planetka Commercial"
 DEFAULT_DATA_COUNTING_RULE = "Only newly downloaded data counts. Reused local cache does not consume allowance."
 PENDING_AUTH_MESSAGE = "Waiting for browser sign-in..."
 _DEVICE_LOGIN_TIMER_REGISTERED = False
+_ADDON_VERSION_CACHE = None
 THROTTLE_STATUS_PREFIX = "Account throttled until "
 NEW_ZEALAND_HIGH_QUALITY_MAX_ALTITUDE_KM = 2000.0
 NEW_ZEALAND_MAIN_LON_MIN = 165.0
@@ -124,6 +131,10 @@ def describe_auth_error(error):
         return "Planetka checkout URL is not configured on the API."
     if "allowance" in lowered or "quota_exceeded" in lowered or "insufficient_data" in lowered:
         return "Account data allowance has been reached."
+    if "daily_resolve_quota_exceeded" in lowered or "monthly_resolve_quota_exceeded" in lowered:
+        return "Monthly resolve quota reached for the selected texture quality."
+    if "missing_resolve_id" in lowered:
+        return "Resolve metadata is missing. Retry Resolve and ensure Planetka is up to date."
     return f"Planetka login failed: {message.replace('_', ' ')}."
 
 
@@ -132,14 +143,14 @@ def _normalize_account_tier(value):
     if plan_code == PLAN_CODE_PRO:
         return ACCOUNT_TIER_PRO
     if plan_code == PLAN_CODE_LITE:
-        return ACCOUNT_TIER_LITE
+        return ACCOUNT_TIER_PERSONAL
     if plan_code == PLAN_CODE_FREE:
         return ACCOUNT_TIER_FREE
     tier = str(value or "").strip().lower()
-    if tier in {ACCOUNT_TIER_FREE, ACCOUNT_TIER_LITE, ACCOUNT_TIER_PRO}:
-        return tier
+    if tier in {ACCOUNT_TIER_FREE, ACCOUNT_TIER_PRO, ACCOUNT_TIER_PERSONAL, ACCOUNT_TIER_LITE}:
+        return ACCOUNT_TIER_PERSONAL if tier in {ACCOUNT_TIER_PERSONAL, ACCOUNT_TIER_LITE} else tier
     if tier in {"indie", "studio"}:
-        return ACCOUNT_TIER_LITE if tier == "indie" else ACCOUNT_TIER_PRO
+        return ACCOUNT_TIER_PERSONAL if tier == "indie" else ACCOUNT_TIER_PRO
     return ""
 
 
@@ -153,7 +164,16 @@ def _normalize_plan_code(value):
         return PLAN_CODE_LITE
     if token in {PLAN_CODE_LITE, PLAN_CODE_PLANETKA, "basic", "personal"}:
         return PLAN_CODE_LITE
-    if token in {PLAN_CODE_PRO, PLAN_CODE_PLANETKA_PRO, "pro", "planetkapro", "planetka_pro_monthly"}:
+    if token in {
+        PLAN_CODE_PRO,
+        PLAN_CODE_PLANETKA_PRO,
+        "pro",
+        "planetkapro",
+        "planetka_pro_monthly",
+        "commercial",
+        "planetka_commercial",
+        "planetka_commercial_monthly",
+    }:
         return PLAN_CODE_PRO
     if token in {"planetka_studio", "studio", "enterprise"}:
         return PLAN_CODE_PRO
@@ -304,7 +324,7 @@ def _extract_tile_quota(payload):
     used_raw = quota_obj.get("used", payload.get("tile_quota_used", payload.get("monthly_tiles_used", payload.get("tiles_used", ""))))
     limit_raw = quota_obj.get("limit", payload.get("tile_quota_limit", payload.get("monthly_tiles_limit", payload.get("free_tiles_limit", ""))))
     reset_raw = quota_obj.get("reset_at", payload.get("tile_quota_reset_at", payload.get("monthly_tiles_reset_at", payload.get("reset_at", ""))))
-    period_raw = quota_obj.get("period", payload.get("tile_quota_period", payload.get("tiles_period", "month")))
+    period_raw = quota_obj.get("period", payload.get("tile_quota_period", payload.get("tiles_period", "month_london")))
     unlimited_raw = quota_obj.get("unlimited", payload.get("tile_quota_unlimited", ""))
     rule_raw = quota_obj.get(
         "rule",
@@ -319,7 +339,7 @@ def _extract_tile_quota(payload):
         "used": "" if used_value is None else str(max(0, int(used_value))),
         "limit": "" if (is_unlimited or limit_value is None) else str(max(0, int(limit_value))),
         "reset_at": str(reset_raw or "").strip(),
-        "period": str(period_raw or "month").strip().lower() or "month",
+        "period": str(period_raw or "month_london").strip().lower() or "month_london",
         "rule": str(rule_raw or "").strip(),
     }
 
@@ -668,7 +688,11 @@ def is_free_account(prefs=None):
 
 
 def is_lite_account(prefs=None):
-    return get_account_tier(prefs) == ACCOUNT_TIER_LITE
+    return get_account_tier(prefs) in {ACCOUNT_TIER_PERSONAL, ACCOUNT_TIER_LITE}
+
+
+def is_personal_account(prefs=None):
+    return get_account_tier(prefs) == ACCOUNT_TIER_PERSONAL
 
 
 def is_indie_account(prefs=None):
@@ -676,8 +700,7 @@ def is_indie_account(prefs=None):
 
 
 def allows_balanced_full_quality(prefs=None):
-    del prefs
-    return True
+    return is_lite_account(prefs) or is_pro_account(prefs)
 
 
 def _normalize_texture_quality_token(value):
@@ -772,18 +795,19 @@ def is_new_zealand_testing_area(source=None, lat_deg=None, lon_deg=None, altitud
 
 
 def allows_balanced_for_context(prefs=None, source=None):
-    del prefs, source
-    return True
+    del source
+    tier = get_account_tier(prefs)
+    return tier in {ACCOUNT_TIER_PERSONAL, ACCOUNT_TIER_LITE, ACCOUNT_TIER_PRO}
 
 
 def allows_full_quality_for_context(prefs=None, source=None):
-    del prefs, source
-    return True
+    del source
+    return get_account_tier(prefs) == ACCOUNT_TIER_PRO
 
 
 def allows_animation_render_for_context(prefs=None, source=None):
-    del prefs, source
-    return True
+    del source
+    return get_account_tier(prefs) == ACCOUNT_TIER_PRO
 
 
 def requires_d090_cap_for_context(prefs=None, source=None):
@@ -792,8 +816,16 @@ def requires_d090_cap_for_context(prefs=None, source=None):
 
 
 def allows_balanced_full_quality_for_context(prefs=None, source=None, requested_mode="PREVIEW"):
-    del prefs, source, requested_mode
-    return True
+    del source
+    mode = _normalize_texture_quality_token(requested_mode)
+    tier = get_account_tier(prefs)
+    if mode == "PREVIEW":
+        return True
+    if mode == "BALANCED":
+        return tier in {ACCOUNT_TIER_PERSONAL, ACCOUNT_TIER_LITE, ACCOUNT_TIER_PRO}
+    if mode == "FULL":
+        return tier == ACCOUNT_TIER_PRO
+    return False
 
 
 def get_plan_code(prefs=None):
@@ -895,9 +927,9 @@ def get_tile_quota_reset_at(prefs=None):
 def get_tile_quota_period(prefs=None):
     prefs = prefs or get_prefs()
     if prefs is None:
-        return "month"
+        return "month_london"
     value = str(getattr(prefs, "auth_tile_quota_period", "") or "").strip().lower()
-    return value or "month"
+    return value or "month_london"
 
 
 def get_tile_quota_rule(prefs=None):
@@ -905,6 +937,25 @@ def get_tile_quota_rule(prefs=None):
     if prefs is None:
         return ""
     return str(getattr(prefs, "auth_tile_quota_rule", "") or "").strip()
+
+
+def get_tile_quota_remaining(prefs=None):
+    used = get_tile_quota_used(prefs)
+    limit = get_tile_quota_limit(prefs)
+    if not isinstance(limit, int):
+        return None
+    safe_used = max(0, int(used or 0))
+    return max(0, int(limit) - safe_used)
+
+
+def get_quality_mode_daily_quota_remaining(mode, prefs=None):
+    del mode, prefs
+    return None
+
+
+def get_quality_mode_monthly_quota_remaining(mode, prefs=None):
+    # Alias for clarity in newer UI/runtime paths.
+    return get_quality_mode_daily_quota_remaining(mode, prefs)
 
 
 def get_allowance_included_limit_bytes(prefs=None):
@@ -1089,6 +1140,24 @@ def _json_request(method, path, body=None, headers=None, timeout=30):
         raise AuthApiError(0, f"network_error_{exc.reason}") from exc
     except ValueError as exc:
         raise AuthApiError(0, "invalid_json_response") from exc
+
+
+def _read_local_addon_version():
+    global _ADDON_VERSION_CACHE
+    cached = _ADDON_VERSION_CACHE
+    if isinstance(cached, str):
+        return cached
+    version_text = ""
+    if tomllib is not None:
+        try:
+            manifest_path = os.path.join(os.path.dirname(__file__), "blender_manifest.toml")
+            with open(manifest_path, "rb") as handle:
+                payload = tomllib.load(handle)
+            version_text = str((payload or {}).get("version", "") or "").strip()
+        except (OSError, RuntimeError, TypeError, ValueError, AttributeError):
+            version_text = ""
+    _ADDON_VERSION_CACHE = version_text
+    return version_text
 
 
 def connect_with_api_key(api_key, prefs=None):
@@ -1357,6 +1426,9 @@ def get_authorized_headers(prefs=None, allow_refresh=True):
     device_id = _ensure_device_id(prefs)
     if device_id:
         headers["X-Planetka-Device-Id"] = device_id
+    addon_version = _read_local_addon_version()
+    if addon_version:
+        headers["X-Planetka-Addon-Version"] = addon_version
     return headers
 
 

@@ -1893,7 +1893,27 @@ def _normalize_texture_quality_mode(value):
 
 def _enforce_texture_quality_mode_for_account(scene, requested_mode):
     del scene
-    return _normalize_texture_quality_mode(requested_mode)
+    mode = _normalize_texture_quality_mode(requested_mode)
+    if mode == "PREVIEW":
+        return mode
+    try:
+        from .auth import get_account_tier
+        prefs = get_prefs()
+        tier = str(get_account_tier(prefs) or "").strip().lower()
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError, ImportError):
+        tier = ""
+
+    if mode == "BALANCED":
+        if tier in {"personal", "lite", "pro"}:
+            return "BALANCED"
+        return "PREVIEW"
+
+    # FULL mode
+    if tier == "pro":
+        return "FULL"
+    if tier in {"personal", "lite"}:
+        return "BALANCED"
+    return "PREVIEW"
 
 
 def _output_resolution_signature(scene):

@@ -17,6 +17,10 @@ Service terms note:
 - Planetka account access and hosted tile delivery are governed separately by
   `TERMS_OF_SERVICE.md`.
 - Privacy and telemetry handling are described in `PRIVACY_POLICY.md`.
+- Commercial-use scope by tier:
+  - Free: personal / non-commercial use only
+  - Personal: personal / non-commercial use only
+  - Commercial: commercial use allowed
 
 ## Detailed records
 

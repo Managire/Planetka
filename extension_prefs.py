@@ -1,5 +1,7 @@
 import bpy
 import json
+import logging
+import time
 from bpy.types import AddonPreferences
 from bpy.props import EnumProperty, IntProperty, StringProperty
 
@@ -53,6 +55,137 @@ FALLBACK_CREATE_EARTH_PREFLIGHT_SEEN_VERSION_KEY = "planetka_create_earth_prefli
 TEXTURE_SOURCE_MODE_DEFAULT = "CLOUDFLARE"
 REMOTE_TEXTURE_BASE_DEFAULT = "remote"
 
+logger = logging.getLogger(__name__)
+
+_API_KEY_AUTO_CONNECT_TIMER_ACTIVE = False
+_API_KEY_AUTO_CONNECT_PENDING_TOKEN = ""
+_API_KEY_AUTO_CONNECT_PENDING_AT = 0.0
+_API_KEY_AUTO_CONNECT_LAST_ATTEMPT_TOKEN = ""
+_API_KEY_AUTO_CONNECT_DEBOUNCE_SECONDS = 0.45
+_API_KEY_AUTO_CONNECT_MIN_LENGTH = 20
+
+
+def _looks_like_api_key_candidate(token):
+    safe = str(token or "").strip()
+    if len(safe) < int(_API_KEY_AUTO_CONNECT_MIN_LENGTH):
+        return False
+    if any(ch.isspace() for ch in safe):
+        return False
+    return True
+
+
+def _run_api_key_auto_connect():
+    global _API_KEY_AUTO_CONNECT_TIMER_ACTIVE
+    global _API_KEY_AUTO_CONNECT_PENDING_TOKEN
+    global _API_KEY_AUTO_CONNECT_PENDING_AT
+    global _API_KEY_AUTO_CONNECT_LAST_ATTEMPT_TOKEN
+
+    try:
+        prefs = get_prefs()
+        if prefs is None:
+            _API_KEY_AUTO_CONNECT_TIMER_ACTIVE = False
+            return None
+
+        current_token = str(getattr(prefs, "auth_api_key_input", "") or "").strip()
+        pending_token = str(_API_KEY_AUTO_CONNECT_PENDING_TOKEN or "").strip()
+        if not pending_token:
+            _API_KEY_AUTO_CONNECT_TIMER_ACTIVE = False
+            return None
+
+        if current_token != pending_token:
+            if _looks_like_api_key_candidate(current_token):
+                _API_KEY_AUTO_CONNECT_PENDING_TOKEN = current_token
+                _API_KEY_AUTO_CONNECT_PENDING_AT = time.time()
+                return float(_API_KEY_AUTO_CONNECT_DEBOUNCE_SECONDS)
+            _API_KEY_AUTO_CONNECT_PENDING_TOKEN = ""
+            _API_KEY_AUTO_CONNECT_PENDING_AT = 0.0
+            _API_KEY_AUTO_CONNECT_TIMER_ACTIVE = False
+            return None
+
+        elapsed = float(time.time() - float(_API_KEY_AUTO_CONNECT_PENDING_AT or 0.0))
+        remaining = float(_API_KEY_AUTO_CONNECT_DEBOUNCE_SECONDS) - elapsed
+        if remaining > 0.0:
+            return max(0.05, remaining)
+
+        from .auth import connect_with_prefs_api_key, describe_auth_error, is_authenticated
+
+        if is_authenticated(prefs):
+            _API_KEY_AUTO_CONNECT_PENDING_TOKEN = ""
+            _API_KEY_AUTO_CONNECT_PENDING_AT = 0.0
+            _API_KEY_AUTO_CONNECT_TIMER_ACTIVE = False
+            return None
+
+        _API_KEY_AUTO_CONNECT_LAST_ATTEMPT_TOKEN = current_token
+        try:
+            connect_with_prefs_api_key(prefs)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
+            try:
+                prefs.auth_status_message = describe_auth_error(exc)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                pass
+        except (RuntimeError, TypeError, ValueError, AttributeError, OSError) as exc:
+            logger.debug("Planetka: auto-connect with API key failed", exc_info=True)
+            try:
+                prefs.auth_status_message = describe_auth_error(exc)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                pass
+
+        _API_KEY_AUTO_CONNECT_PENDING_TOKEN = ""
+        _API_KEY_AUTO_CONNECT_PENDING_AT = 0.0
+        _API_KEY_AUTO_CONNECT_TIMER_ACTIVE = False
+        return None
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        _API_KEY_AUTO_CONNECT_TIMER_ACTIVE = False
+        return None
+    except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
+        logger.debug("Planetka: API key auto-connect timer failed", exc_info=True)
+        _API_KEY_AUTO_CONNECT_TIMER_ACTIVE = False
+        return None
+
+
+def _on_auth_api_key_input_updated(_self, _context):
+    global _API_KEY_AUTO_CONNECT_TIMER_ACTIVE
+    global _API_KEY_AUTO_CONNECT_PENDING_TOKEN
+    global _API_KEY_AUTO_CONNECT_PENDING_AT
+    global _API_KEY_AUTO_CONNECT_LAST_ATTEMPT_TOKEN
+
+    try:
+        prefs = get_prefs()
+        if prefs is None:
+            return
+
+        from .auth import is_authenticated
+
+        if is_authenticated(prefs):
+            return
+
+        token = str(getattr(prefs, "auth_api_key_input", "") or "").strip()
+        if not _looks_like_api_key_candidate(token):
+            if not token:
+                _API_KEY_AUTO_CONNECT_LAST_ATTEMPT_TOKEN = ""
+            _API_KEY_AUTO_CONNECT_PENDING_TOKEN = ""
+            _API_KEY_AUTO_CONNECT_PENDING_AT = 0.0
+            return
+        if token == str(_API_KEY_AUTO_CONNECT_LAST_ATTEMPT_TOKEN or "").strip():
+            return
+
+        _API_KEY_AUTO_CONNECT_PENDING_TOKEN = token
+        _API_KEY_AUTO_CONNECT_PENDING_AT = time.time()
+        if not _API_KEY_AUTO_CONNECT_TIMER_ACTIVE:
+            _API_KEY_AUTO_CONNECT_TIMER_ACTIVE = True
+            try:
+                bpy.app.timers.register(_run_api_key_auto_connect, first_interval=float(_API_KEY_AUTO_CONNECT_DEBOUNCE_SECONDS))
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                _API_KEY_AUTO_CONNECT_TIMER_ACTIVE = False
+            except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
+                logger.debug("Planetka: failed registering API key auto-connect timer", exc_info=True)
+                _API_KEY_AUTO_CONNECT_TIMER_ACTIVE = False
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        return
+    except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
+        logger.debug("Planetka: API key input update hook failed", exc_info=True)
+        return
+
 
 class PlanetkaExtensionPreferences(AddonPreferences):
     __slots__ = ()
@@ -84,7 +217,12 @@ class PlanetkaExtensionPreferences(AddonPreferences):
 
     auth_email: StringProperty(name="Auth Email", default="", options={'HIDDEN'})
     auth_api_key: StringProperty(name="Auth API Key", default="", options={'HIDDEN'})
-    auth_api_key_input: StringProperty(name="Auth API Key Input", default="", options={'HIDDEN'})
+    auth_api_key_input: StringProperty(
+        name="Auth API Key Input",
+        default="",
+        options={'HIDDEN'},
+        update=_on_auth_api_key_input_updated,
+    )
     auth_api_key_mask: StringProperty(name="Auth API Key Mask", default="", options={'HIDDEN'})
     auth_device_id: StringProperty(name="Auth Device ID", default="", options={'HIDDEN'})
     auth_access_token: StringProperty(name="Auth Access Token", default="", options={'HIDDEN'})
