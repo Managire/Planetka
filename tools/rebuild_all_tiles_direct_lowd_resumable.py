@@ -929,17 +929,9 @@ class Pipeline:
         if kind != "base":
             return self._run_task_list(tasks, int(workers), processed, started, total)
 
-        # Base-stage worker policy requested by user:
-        # z002=8, z004=2, z008=4, z015=2, z030=8, z060=4, all other higher-z=2.
-        workers_by_z = {
-            2: 8,
-            4: 2,
-            8: 4,
-            15: 2,
-            30: 8,
-            60: 4,
-        }
-        default_higher_z_workers = 2
+        # Base-stage worker policy: use the stage worker count for all z-levels.
+        workers_by_z: dict[int, int] = {}
+        default_higher_z_workers = int(workers)
         by_z: dict[int, list[Task]] = {}
         for t in tasks:
             z = int(t.z)
@@ -951,7 +943,7 @@ class Pipeline:
             batch = by_z.get(z, [])
             if not batch:
                 continue
-            z_workers = int(workers_by_z.get(int(z), default_higher_z_workers if int(z) > 4 else int(workers)))
+            z_workers = int(workers_by_z.get(int(z), default_higher_z_workers))
             self._log(f"[run] substage=base_z{int(z):03d} workers={z_workers} tasks={len(batch)}")
             processed, failed = self._run_task_list(batch, z_workers, processed, started, total)
             failed_stage += failed

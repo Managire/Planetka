@@ -40,7 +40,8 @@ _STREAM_HEALTH_SENTINEL = None
 _R2_READ_CHUNK_BYTES = 4 * 1024 * 1024
 _R2_PROGRESS_FLUSH_BYTES = 4 * 1024 * 1024
 _R2_PROGRESS_FLUSH_INTERVAL_SECONDS = 0.25
-_R2_PREFETCH_MAX_WORKERS = 8
+_R2_PREFETCH_MAX_WORKERS = 16
+_R2_PREFETCH_ABSOLUTE_MAX_WORKERS = 32
 _CACHE_PROTECTED_RELATIVE_PATHS = {
     "S2/S2_x000_y000_z360_d000.exr",
     "EL/EL_x000_y000_z360_d000.exr",
@@ -446,13 +447,10 @@ def get_download_progress():
         active_requests = int(max(0, _ACTIVE_DOWNLOADS))
         capture_enabled = bool(_CAPTURE_ENABLED)
         downloaded_bytes = int(max(0, _CAPTURE_DOWNLOAD_BYTES + _ACTIVE_DOWNLOAD_BYTES))
-        # Use actual totals from in-flight/completed responses when available.
-        # Fall back to planned total only before any real response sizes exist.
-        actual_total_bytes = int(max(0, _CAPTURE_TOTAL_BYTES + _ACTIVE_EXPECTED_BYTES))
-        if actual_total_bytes > 0:
-            total_bytes = int(max(downloaded_bytes, actual_total_bytes))
-        else:
-            total_bytes = int(max(downloaded_bytes, _CAPTURE_PLANNED_TOTAL_BYTES))
+        # Keep UI total fixed to the preplanned estimate from local size DB so
+        # "X / Y MB" remains stable during the whole download. Only downloaded
+        # bytes should move while a resolve is in progress.
+        total_bytes = int(max(0, _CAPTURE_PLANNED_TOTAL_BYTES))
         return {
             "download_active": bool(active_requests > 0 or capture_enabled),
             "active_requests": active_requests,
@@ -1578,6 +1576,7 @@ def prefetch_resolve_downloads(requests, base_path=None, cancel_event=None):
         tasks.append((folder, prefix, filename, exts))
 
     worker_cap = _parse_positive_int(_env("PLANETKA_R2_PREFETCH_WORKERS"), _R2_PREFETCH_MAX_WORKERS)
+    worker_cap = max(1, min(int(worker_cap), int(_R2_PREFETCH_ABSOLUTE_MAX_WORKERS)))
     worker_count = max(1, min(worker_cap, len(tasks) if tasks else 1))
     cfg = _get_config()
     # Pre-prune stale cache entries once before the resolve prefetch starts.
