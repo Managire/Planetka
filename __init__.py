@@ -1,3 +1,5 @@
+import os
+
 import bpy
 from bpy.props import PointerProperty
 
@@ -51,23 +53,6 @@ from .operators import (
     PLANETKA_OT_SunlightPreset,
     PLANETKA_OT_UseCurrentViewNavigation,
 )
-from .clouds_local import (
-    PLANETKA_OT_AddLocalCloud,
-    PLANETKA_OT_DeleteLocalCloud,
-    PLANETKA_OT_ResetLocalCloudToCameraView,
-    PLANETKA_OT_SetCloudViewMode,
-    PLANETKA_PT_LocalCloudsPanel,
-    register_object_properties as register_cloud_object_properties,
-    sync_cloud_system_scene,
-    unregister_object_properties as unregister_cloud_object_properties,
-)
-from .clouds_global import PLANETKA_PT_GlobalCloudsPanel
-from .clouds_vdb import (
-    PLANETKA_OT_AddVDBCloud,
-    PLANETKA_OT_DeleteVDBCloud,
-    PLANETKA_OT_ResetVDBCloudToCameraView,
-    PLANETKA_PT_VDBCloudsPanel,
-)
 from .properties import PlanetkaAnimationWaypoint, PlanetkaProperties
 from .render_prep import PLANETKA_OT_LoadTextures
 from .state import (
@@ -117,6 +102,50 @@ bl_info = {
 }
 
 
+def _feature_flag_enabled(name, default=False):
+    fallback = "1" if bool(default) else "0"
+    token = str(os.getenv(name, fallback) or fallback).strip().lower()
+    return token in {"1", "true", "yes", "on"}
+
+
+_CLOUD_RUNTIME_ENABLED = _feature_flag_enabled("PLANETKA_ENABLE_CLOUD_RUNTIME", default=False)
+
+if _CLOUD_RUNTIME_ENABLED:
+    from .clouds_local import (
+        PLANETKA_OT_AddLocalCloud,
+        PLANETKA_OT_DeleteLocalCloud,
+        PLANETKA_OT_ResetLocalCloudToCameraView,
+        PLANETKA_OT_SetCloudViewMode,
+        register_object_properties as register_cloud_object_properties,
+        unregister_object_properties as unregister_cloud_object_properties,
+    )
+    from .clouds_vdb import (
+        PLANETKA_OT_AddVDBCloud,
+        PLANETKA_OT_DeleteVDBCloud,
+        PLANETKA_OT_ResetVDBCloudToCameraView,
+    )
+
+    _CLOUD_CLASSES = (
+        PLANETKA_OT_SetCloudViewMode,
+        PLANETKA_OT_AddLocalCloud,
+        PLANETKA_OT_ResetLocalCloudToCameraView,
+        PLANETKA_OT_DeleteLocalCloud,
+        PLANETKA_OT_AddVDBCloud,
+        PLANETKA_OT_ResetVDBCloudToCameraView,
+        PLANETKA_OT_DeleteVDBCloud,
+    )
+else:
+    def register_cloud_object_properties():
+        return None
+
+
+    def unregister_cloud_object_properties():
+        return None
+
+
+    _CLOUD_CLASSES = ()
+
+
 classes = (
     PlanetkaExtensionPreferences,
     PlanetkaAnimationWaypoint,
@@ -146,13 +175,7 @@ classes = (
     PLANETKA_OT_UseCurrentViewNavigation,
     PLANETKA_OT_NavigationPreset,
     PLANETKA_OT_SunlightPreset,
-    PLANETKA_OT_SetCloudViewMode,
-    PLANETKA_OT_AddLocalCloud,
-    PLANETKA_OT_ResetLocalCloudToCameraView,
-    PLANETKA_OT_DeleteLocalCloud,
-    PLANETKA_OT_AddVDBCloud,
-    PLANETKA_OT_ResetVDBCloudToCameraView,
-    PLANETKA_OT_DeleteVDBCloud,
+    *_CLOUD_CLASSES,
     PLANETKA_OT_AnimationSaveView,
     PLANETKA_OT_AnimationWaypointAdd,
     PLANETKA_OT_AnimationWaypointRemove,
