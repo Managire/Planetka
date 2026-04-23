@@ -30,6 +30,9 @@ TILE_RE = re.compile(
 
 DATASETS = ("S2", "EL", "WT", "PO")
 Z_ORDER = (1, 2, 4, 8, 15, 16, 30, 32, 60, 90, 180, 360)
+EXCLUDED_FILES = {
+    ("EL", "EL_x093_y137_z001_d002.exr"),
+}
 
 # Higher-z base source map requested by user.
 Z_BASE_SOURCE = {
@@ -268,6 +271,7 @@ class Pipeline:
             rows = self._load_remote_manifest(ds)
             if not rows:
                 self._log(f"[manifest] warning: no remote rows for dataset={ds}")
+            rows = [row for row in rows if (ds, str(row[0])) not in EXCLUDED_FILES]
             cur.executemany(
                 """
                 INSERT OR REPLACE INTO manifest (dataset, filename, x, y, z, d_eff, ext, remote_key)
@@ -286,6 +290,8 @@ class Pipeline:
         for row in cur.execute("SELECT dataset, filename, ext, remote_key FROM manifest"):
             ds = str(row["dataset"])
             fn = str(row["filename"])
+            if (ds, fn) in EXCLUDED_FILES:
+                continue
             ext = str(row["ext"]).lower()
             self.remote_key_by_name[(ds, fn)] = str(row["remote_key"])
             if ds not in self.dataset_ext:
@@ -311,6 +317,8 @@ class Pipeline:
         for row in rows:
             ds = str(row["dataset"])
             fn = str(row["filename"])
+            if (ds, fn) in EXCLUDED_FILES:
+                continue
             z = int(row["z"])
             d_eff = int(row["d_eff"])
             # Protected source: never touch z001_d001.
@@ -683,26 +691,30 @@ class Pipeline:
             raise RuntimeError(f"invalid base task z={task.z}")
         if int(task.z) % int(src_z) != 0:
             raise RuntimeError(f"z/source mismatch target_z={task.z} src_z={src_z}")
-        ratio = int(task.z) // int(src_z)
+        ratio_x = int(task.z) // int(src_z)
+        # z360 spans full longitude but only half latitude (2:1), so Y source grid is half of X.
+        ratio_y = ratio_x // 2 if int(task.z) == 360 else ratio_x
+        if ratio_y <= 0:
+            raise RuntimeError(f"invalid source ratio target_z={task.z} src_z={src_z}")
         tw, th, ch = self._ensure_target_spec(task, local_path)
-        x_edges = _edge_positions(tw, ratio)
-        y_edges = _edge_positions(th, ratio)
+        x_edges = _edge_positions(tw, ratio_x)
+        y_edges = _edge_positions(th, ratio_y)
 
         if task.dataset in ("S2", "WT"):
             out = np.zeros((th, tw, 3), dtype=np.float32)
         else:
             out = np.zeros((th, tw), dtype=np.float32)
 
-        for y_idx in range(ratio):
-            for x_idx in range(ratio):
+        for y_idx in range(ratio_y):
+            for x_idx in range(ratio_x):
                 sx = int(task.x) + x_idx * src_z
                 sy = int(task.y) + y_idx * src_z
                 src = self._read_or_fallback(task.dataset, sx, sy, src_z, src_z)
                 dx0 = int(x_edges[x_idx])
                 dx1 = int(x_edges[x_idx + 1])
                 # Invert Y placement to match existing generation orientation.
-                dy0 = int(y_edges[ratio - 1 - y_idx])
-                dy1 = int(y_edges[ratio - y_idx])
+                dy0 = int(y_edges[ratio_y - 1 - y_idx])
+                dy1 = int(y_edges[ratio_y - y_idx])
                 cw = max(1, dx1 - dx0)
                 chh = max(1, dy1 - dy0)
                 rs = self._resize(task.dataset, src, cw, chh)
