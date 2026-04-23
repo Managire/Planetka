@@ -55,7 +55,6 @@ from .state import (
 _TILE_UTILS_MODULE = None
 FORCE_EMPTY_RESOLVE_ONCE_KEY = "planetka_force_empty_resolve_once"
 LAST_REQUIRED_MPP_KEY = "planetka_last_required_mpp_m"
-ANIMATION_PREPARED_SEGMENTS_KEY = "planetka_anim_prepared_segments"
 LAST_PANORAMA_MODE_KEY = "planetka_last_panorama_mode"
 LAST_PANORAMA_LIMIT_EXCEEDED_KEY = "planetka_last_panorama_limit_exceeded"
 LAST_PANORAMA_REQUIRED_TILES_KEY = "planetka_last_panorama_required_tiles"
@@ -571,20 +570,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             not bool(getattr(self, "silent", False))
             and not bool(getattr(self, "defer_download", False))
         )
-
-        try:
-            prepared_segments = int(scene.get(ANIMATION_PREPARED_SEGMENTS_KEY, 0))
-        except (TypeError, ValueError):
-            prepared_segments = 0
-        if prepared_segments > 0:
-            return {
-                "response": fail(
-                    self,
-                    "Animation Quick Preview is active. Use Clear Quick Preview before resolving/navigating again.",
-                    code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-                    logger=logger,
-                )
-            }
 
         if bool(getattr(props, "lock_resolve_during_animation", True)) and _is_animation_playing():
             self.report({'WARNING'}, "Resolve skipped during animation playback (disabled in Settings).")

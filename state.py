@@ -156,6 +156,8 @@ _AUTO_RESOLVE_DOWNLOAD_COMPLETED = None
 _AUTO_RESOLVE_DOWNLOAD_REQUEST_COUNTER = 0
 _AUTO_RESOLVE_DOWNLOAD_EPOCH = 0
 _AUTO_RESOLVE_DOWNLOAD_PUMP_INTERVAL_SEC = 0.2
+_AUTO_RESOLVE_DOWNLOAD_SCENE_WAIT_SEC = 1.5
+_AUTO_RESOLVE_DOWNLOAD_COMPLETED_MAX_AGE_SEC = 15.0
 LAST_RESOLVE_TILE_COUNT_KEY = "planetka_last_manual_resolve_tile_count"
 LAST_RESOLVE_DOWNLOADED_MB_KEY = "planetka_last_manual_resolve_downloaded_mb"
 LAST_RESOLVE_DOWNLOADED_GB_KEY = "planetka_last_manual_resolve_downloaded_gb"
@@ -193,7 +195,6 @@ _NAV_CAMERA_CONTROL_SYNC_SUSPEND_COUNT = 0
 _NAV_CAMERA_CONTROL_SYNC_GRACE_SEC = 1.5
 _SUNLIGHT_OBJECT_NAME = "Planetka Sunlight"
 _SURFACE_GRADING_GROUP_NAME = "Planetka Surface Grading Group"
-ANIMATION_PREPARED_SEGMENTS_KEY = "planetka_anim_prepared_segments"
 _RESOLVE_TRACE_ENABLED = False
 _STATUS_NOTICE_KEYS = (
     "planetka_status_bg_auto_black_notice",
@@ -532,11 +533,6 @@ def _queue_manual_resolve_download_for_scene(scene):
         return False
     if get_earth_object() is None:
         return False
-    try:
-        if int(scene.get(ANIMATION_PREPARED_SEGMENTS_KEY, 0) or 0) > 0:
-            return False
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-        pass
 
     wm = getattr(getattr(bpy, "context", None), "window_manager", None)
     windows = list(getattr(wm, "windows", ()) or ())
@@ -2189,11 +2185,6 @@ def _handle_view_scope_quality_transition(scene):
         return
     if get_earth_object() is None:
         return
-    try:
-        if int(scene.get(ANIMATION_PREPARED_SEGMENTS_KEY, 0)) > 0:
-            return
-    except (TypeError, ValueError):
-        pass
 
     scene_id = _scene_key(scene)
     current_scope = _current_view_scope(scene)
@@ -3116,11 +3107,43 @@ def _auto_resolve_prepare_apply_context(job, manual_request):
     scene_id = int(job.get("scene_id", 0) or 0)
     scene = _scene_from_key(scene_id)
     if scene is None:
-        # Keep completion payload for next timer tick when scene context is available.
+        # Grace period: Blender can briefly lose scene context around file/load/UI transitions.
+        # If context does not return quickly, consume/drop this completion to avoid a stuck pump loop.
+        now = time.monotonic()
+        try:
+            missing_since = float(job.get("_scene_missing_since", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            missing_since = 0.0
+        if missing_since <= 0.0:
+            missing_since = now
+        try:
+            attempts = int(job.get("_scene_missing_attempts", 0) or 0) + 1
+        except (TypeError, ValueError):
+            attempts = 1
+        job["_scene_missing_since"] = float(missing_since)
+        job["_scene_missing_attempts"] = int(max(1, attempts))
+        waited_sec = max(0.0, float(now) - float(missing_since))
+        if waited_sec < float(_AUTO_RESOLVE_DOWNLOAD_SCENE_WAIT_SEC):
+            _resolve_trace(
+                "Download finished but scene context unavailable yet "
+                f"(request_id={job.get('request_id')}, waited={waited_sec:.2f}s, attempts={attempts}); waiting"
+            )
+            return False, None, None, None
         _resolve_trace(
-            f"Download finished but scene context unavailable yet (request_id={job.get('request_id')}); waiting"
+            "Download completion dropped due stale missing scene context "
+            f"(request_id={job.get('request_id')}, waited={waited_sec:.2f}s, attempts={attempts})"
         )
-        return False, None, None, None
+        logger.debug(
+            "Planetka: dropping completed auto-resolve payload because scene context did not return "
+            "(request_id=%s, waited=%.2fs, attempts=%d).",
+            str(job.get("request_id", "")),
+            float(waited_sec),
+            int(attempts),
+        )
+        return True, None, None, None
+    if isinstance(job, dict):
+        job.pop("_scene_missing_since", None)
+        job.pop("_scene_missing_attempts", None)
     job_target_tiles = _canonical_tiles(job.get("target_tiles", ()))
 
     if _is_render_job_active():
@@ -3416,6 +3439,7 @@ def _auto_resolve_download_worker(job):
             f"Download failed with unexpected exception (request_id={job.get('request_id')}, error={str(exc)})"
         )
     finally:
+        result["completed_at"] = float(time.monotonic())
         with _AUTO_RESOLVE_DOWNLOAD_LOCK:
             if _AUTO_RESOLVE_DOWNLOAD_ACTIVE_JOB is job:
                 _AUTO_RESOLVE_DOWNLOAD_ACTIVE_JOB = None
@@ -3452,12 +3476,38 @@ def _auto_resolve_download_pump_timer():
         if isinstance(completed, dict):
             completed_job = completed.get("job") if isinstance(completed, dict) else None
             completed_request_id = completed_job.get("request_id") if isinstance(completed_job, dict) else None
-            _resolve_trace(f"Pump received completed download (request_id={completed_request_id})")
-            consume_completed = bool(_handle_auto_resolve_download_complete(completed))
-            if consume_completed:
+            now = time.monotonic()
+            try:
+                completed_at = float(completed.get("completed_at", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                completed_at = 0.0
+            if completed_at <= 0.0:
+                try:
+                    completed_at = float(completed.get("_pump_seen_at", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    completed_at = 0.0
+                if completed_at <= 0.0:
+                    completed_at = float(now)
+                    completed["_pump_seen_at"] = float(completed_at)
+            completed_age = max(0.0, float(now) - float(completed_at))
+            if completed_age >= float(_AUTO_RESOLVE_DOWNLOAD_COMPLETED_MAX_AGE_SEC):
+                _resolve_trace(
+                    "Pump dropped stale completed download payload "
+                    f"(request_id={completed_request_id}, age={completed_age:.2f}s)"
+                )
                 with _AUTO_RESOLVE_DOWNLOAD_LOCK:
                     if _AUTO_RESOLVE_DOWNLOAD_COMPLETED is completed:
                         _AUTO_RESOLVE_DOWNLOAD_COMPLETED = None
+                completed = None
+            else:
+                _resolve_trace(
+                    f"Pump received completed download (request_id={completed_request_id}, age={completed_age:.2f}s)"
+                )
+                consume_completed = bool(_handle_auto_resolve_download_complete(completed))
+                if consume_completed:
+                    with _AUTO_RESOLVE_DOWNLOAD_LOCK:
+                        if _AUTO_RESOLVE_DOWNLOAD_COMPLETED is completed:
+                            _AUTO_RESOLVE_DOWNLOAD_COMPLETED = None
 
         job_to_start = None
         with _AUTO_RESOLVE_DOWNLOAD_LOCK:
@@ -3574,11 +3624,6 @@ def _can_auto_resolve_run(scene):
         return False
     if get_earth_object() is None:
         return False
-    try:
-        if int(scene.get(ANIMATION_PREPARED_SEGMENTS_KEY, 0)) > 0:
-            return False
-    except (TypeError, ValueError):
-        pass
     return True
 
 
@@ -3629,11 +3674,6 @@ def _auto_resolve_tick_once():
     scope_mode = _auto_resolve_scope_mode(scene)
     if scope_mode == "NONE":
         return None
-    try:
-        if int(scene.get(ANIMATION_PREPARED_SEGMENTS_KEY, 0)) > 0:
-            return None
-    except (TypeError, ValueError):
-        pass
 
     min_interval_sec = AUTO_RESOLVE_MIN_INTERVAL_SEC_DEFAULT
 
