@@ -443,6 +443,15 @@ function parseBooleanFlag(value) {
   return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
 }
 
+function isTileHotPathMonitoringEnabled(env = {}) {
+  const raw = env.ENABLE_TILE_HOT_PATH_MONITORING;
+  if (raw === undefined || raw === null || String(raw).trim() === "") {
+    // Default off: keep tile request path focused on serving data.
+    return false;
+  }
+  return parseBooleanFlag(raw);
+}
+
 function isMagicLinkAuthEnabled(env = {}) {
   const raw = env.ENABLE_MAGIC_LINK_AUTH;
   if (raw === undefined || raw === null || String(raw).trim() === "") {
@@ -591,14 +600,6 @@ function parseClaimCooldownDays(env) {
     1,
     Math.floor(parsePositiveNumber(env.PENDING_CLAIM_COOLDOWN_DAYS, DEFAULT_PENDING_CLAIM_COOLDOWN_DAYS)),
   );
-}
-
-function parseClaimCooldownDaysOverride(value, env) {
-  const parsed = parseNonNegativeInteger(value, 0);
-  if (parsed > 0) {
-    return parsed;
-  }
-  return parseClaimCooldownDays(env);
 }
 
 function computePendingClaimCooldownIso(env) {
@@ -5681,290 +5682,6 @@ async function findLatestPaidClaimByEmail(db, email) {
   );
 }
 
-async function findPendingPaidClaimByEmail(db, email) {
-  const normalizedEmail = normalizeEmail(email);
-  if (!normalizedEmail) {
-    return null;
-  }
-  const now = nowIso();
-  return dbGet(
-    db,
-    `
-      SELECT
-        id,
-        email,
-        requested_plan,
-        claimed_plan_code,
-        request_type,
-        order_id,
-        review_status,
-        cooldown_until,
-        used_at,
-        request_ip,
-        request_device_id,
-        created_at
-      FROM api_key_requests
-      WHERE email = ?
-        AND request_type = ?
-        AND review_status = ?
-        AND (used_at IS NOT NULL OR expires_at >= ?)
-      ORDER BY created_at DESC
-      LIMIT 1
-    `,
-    [normalizedEmail, API_KEY_REQUEST_TYPE_PAID_CLAIM, CLAIM_REVIEW_PENDING, now],
-  );
-}
-
-async function findPaidClaimById(db, claimId) {
-  const normalizedClaimId = String(claimId || "").trim();
-  if (!normalizedClaimId) {
-    return null;
-  }
-  return dbGet(
-    db,
-    `
-      SELECT
-        id,
-        email,
-        requested_plan,
-        claimed_plan_code,
-        request_type,
-        order_id,
-        review_status,
-        reviewed_at,
-        reviewed_by,
-        review_note,
-        cooldown_until,
-        used_at,
-        request_ip,
-        request_device_id,
-        created_at
-      FROM api_key_requests
-      WHERE id = ?
-        AND request_type = ?
-      LIMIT 1
-    `,
-    [normalizedClaimId, API_KEY_REQUEST_TYPE_PAID_CLAIM],
-  );
-}
-
-async function buildPaidClaimLifecycleSnapshot(db, env, claim) {
-  if (!claim) {
-    return null;
-  }
-  const email = normalizeEmail(claim.email || "");
-  const user = email ? await findUserByEmail(db, email) : null;
-  const normalizedClaim = {
-    id: String(claim.id || "").trim(),
-    email,
-    request_type: String(claim.request_type || "").trim().toLowerCase(),
-    requested_plan: normalizeRequestedPlan(claim.requested_plan || PLAN_CODE_PLANETKA),
-    claimed_plan_code: normalizeRequestedPlan(claim.claimed_plan_code || claim.requested_plan || PLAN_CODE_PLANETKA),
-    order_id: normalizeOrderId(claim.order_id || ""),
-    review_status: normalizeClaimReviewStatus(claim.review_status),
-    reviewed_at: String(claim.reviewed_at || "").trim(),
-    reviewed_by: String(claim.reviewed_by || "").trim(),
-    review_note: String(claim.review_note || "").trim(),
-    cooldown_until: String(claim.cooldown_until || "").trim(),
-    used_at: String(claim.used_at || "").trim(),
-    created_at: String(claim.created_at || "").trim(),
-    request_ip: String(claim.request_ip || "").trim(),
-    request_device_id: normalizeDeviceId(claim.request_device_id || ""),
-  };
-  if (!user) {
-    return {
-      claim: normalizedClaim,
-      user: null,
-      api_key: null,
-      entitlement: resolveEntitlementState(null, env),
-    };
-  }
-  const activeKey = await dbGet(
-    db,
-    `
-      SELECT
-        id,
-        status,
-        plan_code,
-        provisional,
-        provisional_expires_at,
-        confirmed_at,
-        expires_at,
-        issued_at AS created_at,
-        last_used_at,
-        key_prefix
-      FROM api_keys
-      WHERE user_id = ?
-        AND status = 'active'
-      ORDER BY issued_at DESC
-      LIMIT 1
-    `,
-    [String(user.id || "").trim()],
-  );
-  return {
-    claim: normalizedClaim,
-    user: {
-      id: String(user.id || "").trim(),
-      email: normalizeEmail(user.email || ""),
-      status: normalizeUserStatus(user.status || PLAN_CODE_PLANETKA),
-      provisional_plan_code: normalizeRequestedPlan(user.provisional_plan_code || PLAN_CODE_PLANETKA),
-      provisional_expires_at: String(user.provisional_expires_at || "").trim(),
-      pro_confirmed_at: String(user.pro_confirmed_at || "").trim(),
-      pro_access_expires_at: String(user.pro_access_expires_at || "").trim(),
-      last_login_at: String(user.last_login_at || "").trim(),
-    },
-    entitlement: resolveEntitlementState(user, env),
-    api_key: activeKey
-      ? {
-        id: String(activeKey.id || "").trim(),
-        status: String(activeKey.status || "").trim().toLowerCase(),
-        plan_code: normalizeRequestedPlan(activeKey.plan_code || PLAN_CODE_PLANETKA),
-        provisional: clampNonNegativeInt(activeKey.provisional) === 1,
-        provisional_expires_at: String(activeKey.provisional_expires_at || "").trim(),
-        confirmed_at: String(activeKey.confirmed_at || "").trim(),
-        expires_at: String(activeKey.expires_at || "").trim(),
-        created_at: String(activeKey.created_at || "").trim(),
-        last_used_at: String(activeKey.last_used_at || "").trim(),
-        key_prefix: String(activeKey.key_prefix || "").trim(),
-      }
-      : null,
-  };
-}
-
-async function activatePaidClaimById(db, env, claimId, options = {}) {
-  const claim = await findPaidClaimById(db, claimId);
-  if (!claim) {
-    throw new Error("paid_claim_not_found");
-  }
-  if (normalizeClaimReviewStatus(claim.review_status) !== CLAIM_REVIEW_PENDING) {
-    throw new Error("paid_claim_not_pending");
-  }
-  if (String(claim.used_at || "").trim()) {
-    throw new Error("paid_claim_already_activated");
-  }
-  const cooldownUntil = String(claim.cooldown_until || "").trim();
-  const cooldownUntilMs = Date.parse(cooldownUntil);
-  if (Number.isFinite(cooldownUntilMs) && cooldownUntilMs > Date.now()) {
-    throw new Error("paid_claim_cooldown_active");
-  }
-
-  const now = nowIso();
-  await dbRun(
-    db,
-    `
-      UPDATE api_key_requests
-      SET used_at = ?
-      WHERE id = ?
-        AND used_at IS NULL
-    `,
-    [now, String(claim.id || "").trim()],
-  );
-
-  const requestedPlan = normalizeRequestedPlan(claim.claimed_plan_code || claim.requested_plan || PLAN_CODE_PLANETKA_PRO);
-  if (!isPaidRequestedPlan(requestedPlan)) {
-    throw new Error("paid_claim_plan_invalid");
-  }
-  const email = normalizeEmail(claim.email || "");
-  if (!email) {
-    throw new Error("paid_claim_email_invalid");
-  }
-  const orderId = normalizeOrderId(claim.order_id || "");
-
-  let provisionalPlanCode = "";
-  let provisionalExpiresAt = "";
-  let proConfirmedAt = "";
-  let statusToSet = requestedPlan;
-  if (!isPermanentProEmail(email, env)) {
-    provisionalPlanCode = requestedPlan;
-    provisionalExpiresAt = computeProvisionalExpiryIso(env);
-  } else {
-    proConfirmedAt = now;
-  }
-
-  let user = await upsertUserByEmail(
-    db,
-    email,
-    statusToSet,
-    {
-      provisionalPlanCode,
-      provisionalExpiresAt,
-      proConfirmedAt,
-    },
-    env,
-  );
-  user = await enforceUserPlanPolicy(db, user, null, env);
-  const effectivePlanCode = resolvePlanCode(user, null, env);
-
-  const issued = await issueApiKeyForUser(
-    db,
-    env,
-    user,
-    effectivePlanCode,
-    {
-      provisional: Boolean(provisionalPlanCode),
-      provisionalExpiresAt,
-      confirmedAt: proConfirmedAt,
-    },
-  );
-
-  if (parseBooleanFlag(options.sendIssuedEmail)) {
-    await sendApiKeyIssuedEmail(env, email, issued.apiKey, issued.planCode, issued.expiresAt);
-  }
-  if (!provisionalPlanCode || !provisionalExpiresAt) {
-    await markPaidClaimReviewed(
-      db,
-      String(claim.id || "").trim(),
-      CLAIM_REVIEW_APPROVED,
-      {
-        reviewedBy: String(options.reviewedBy || "system_auto_confirmed").trim() || "system_auto_confirmed",
-        reviewNote: String(options.reviewNote || "auto_confirmed_permanent_pro").trim() || "auto_confirmed_permanent_pro",
-        clearCooldown: true,
-      },
-    );
-  }
-  await appendProvisionalClaimAudit(
-    db,
-    provisionalPlanCode && provisionalExpiresAt ? "claim_activated_provisional" : "claim_activated_confirmed",
-    {
-      email,
-      userId: String(user && user.id || "").trim(),
-      claimId: String(claim.id || "").trim(),
-      orderId,
-      planCode: requestedPlan,
-      ip: String(claim.request_ip || "").trim(),
-      deviceId: normalizeDeviceId(claim.request_device_id || ""),
-      details: {
-        issued_plan_code: issued.planCode,
-        provisional_expires_at: provisionalExpiresAt,
-        activation_source: String(options.activationSource || "admin").trim() || "admin",
-      },
-    },
-  );
-  if (provisionalPlanCode && provisionalExpiresAt && parseBooleanFlag(options.sendProvisionalAlert)) {
-    await sendProvisionalPlanAlert(
-      env,
-      {
-        email,
-        requestedPlan,
-        provisionalExpiresAt,
-        orderId,
-        ip: String(claim.request_ip || "").trim(),
-        deviceId: normalizeDeviceId(claim.request_device_id || ""),
-        claimId: String(claim.id || "").trim(),
-      },
-    );
-  }
-
-  const updatedClaim = await findPaidClaimById(db, String(claim.id || "").trim());
-  return {
-    email,
-    apiKey: issued.apiKey,
-    planCode: issued.planCode,
-    expiresAt: issued.expiresAt,
-    claim: updatedClaim,
-  };
-}
-
 async function markPaidClaimReviewed(db, claimId, reviewStatus, options = {}) {
   const normalizedClaimId = String(claimId || "").trim();
   if (!normalizedClaimId) {
@@ -9603,6 +9320,7 @@ async function handleTileRequest(request, env, path, ctx) {
     const durationMs = Math.max(0, Date.now() - requestStartedAtMs);
     const statusCode = eventStatusCode > 0 ? eventStatusCode : 500;
     const errorCode = String(eventErrorCode || (statusCode >= 400 ? "internal_error" : ""));
+    const monitoringEnabled = isTileHotPathMonitoringEnabled(env);
     const telemetryWrite = recordTileRequestEvent(db, {
       created_at: nowIso(),
       created_at_unix: Math.floor(Date.now() / 1000),
@@ -9625,6 +9343,9 @@ async function handleTileRequest(request, env, path, ctx) {
     });
     const processSignals = async () => {
       await telemetryWrite;
+      if (!monitoringEnabled) {
+        return;
+      }
       const downloadMonitoringPipeline = async () => {
         if (!(statusCode === 200 && eventBytesServed > 0)) {
           return;
@@ -11321,387 +11042,6 @@ async function handleAdminPasswordLogin(request, env) {
   );
 }
 
-async function handleAdminClaimLatest(request, env) {
-  const auth = await requireAnalyticsAdmin(request, env);
-  if (auth.error) {
-    return auth.error;
-  }
-  const { db } = auth;
-  const url = new URL(request.url);
-  const email = normalizeEmail(url.searchParams.get("email") || "");
-  if (!email || !email.includes("@")) {
-    return json({ ok: false, error: "invalid_email" }, 400, env);
-  }
-  const claim = await findLatestPaidClaimByEmail(db, email);
-  if (!claim) {
-    return json({ ok: true, claim: null, lifecycle: null }, 200, env);
-  }
-  const lifecycle = await buildPaidClaimLifecycleSnapshot(db, env, claim);
-  return json(
-    {
-      ok: true,
-      claim_id: String(claim.id || "").trim(),
-      lifecycle,
-    },
-    200,
-    env,
-  );
-}
-
-async function handleAdminClaimCreate(request, env) {
-  const auth = await requireAnalyticsAdmin(request, env);
-  if (auth.error) {
-    return auth.error;
-  }
-  const { db, user: adminUser } = auth;
-  await ensureApiKeyTables(db);
-  const body = await parseJson(request);
-  const email = normalizeEmail(body.email || "");
-  const requestedPlan = normalizeRequestedPlan(body.requested_plan || PLAN_CODE_PLANETKA_PRO);
-  const orderId = normalizeOrderId(body.order_id || "");
-  const requestDeviceId = normalizeDeviceId(body.device_id || "");
-  const requestIp = String(body.request_ip || "admin").trim().slice(0, 128) || "admin";
-  if (!email || !email.includes("@")) {
-    return json({ ok: false, error: "invalid_email" }, 400, env);
-  }
-  if (!isPaidRequestedPlan(requestedPlan)) {
-    return json({ ok: false, error: "paid_claim_plan_required" }, 400, env);
-  }
-  if (!orderId) {
-    return json({ ok: false, error: "paid_claim_order_id_required" }, 400, env);
-  }
-  const latestPaidClaim = await findLatestPaidClaimByEmail(db, email);
-  if (latestPaidClaim) {
-    const cooldownUntil = String(latestPaidClaim.cooldown_until || "").trim();
-    const cooldownMs = Date.parse(cooldownUntil);
-    if (Number.isFinite(cooldownMs) && cooldownMs > Date.now()) {
-      const retryAfterSeconds = Math.max(1, Math.ceil((cooldownMs - Date.now()) / 1000));
-      return rateLimitedResponse(
-        env,
-        "paid_claim_cooldown_active",
-        "Paid claim is in cooldown. Try again after cooldown ends.",
-        retryAfterSeconds,
-      );
-    }
-  }
-  const pendingClaim = await findPendingPaidClaimByEmail(db, email);
-  if (pendingClaim) {
-    return json(
-      {
-        ok: false,
-        error: "paid_claim_pending_review",
-        message: "A paid claim is already pending review for this account.",
-      },
-      409,
-      env,
-    );
-  }
-
-  const acceptedAt = nowIso();
-  await upsertUserByEmail(
-    db,
-    email,
-    PLAN_CODE_PLANETKA,
-    {
-      termsAcceptedAt: acceptedAt,
-      privacyAcceptedAt: acceptedAt,
-      termsVersion: String(env.TERMS_VERSION || env.LEGAL_VERSION || DEFAULT_LEGAL_VERSION).trim() || DEFAULT_LEGAL_VERSION,
-      privacyVersion: String(env.PRIVACY_VERSION || env.LEGAL_VERSION || DEFAULT_LEGAL_VERSION).trim() || DEFAULT_LEGAL_VERSION,
-    },
-    env,
-  );
-
-  const claimId = crypto.randomUUID();
-  const token = randomToken(36);
-  const tokenHash = await sha256Hex(token);
-  await dbRun(
-    db,
-    `
-      INSERT INTO api_key_requests (
-        id,
-        email,
-        requested_plan,
-        request_type,
-        claimed_plan_code,
-        order_id,
-        token_hash,
-        expires_at,
-        review_status,
-        accept_terms,
-        accept_privacy,
-        opt_in_news,
-        submitted_at_ms,
-        request_ip,
-        request_device_id,
-        created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 0, ?, ?, ?, ?)
-    `,
-    [
-      claimId,
-      email,
-      requestedPlan,
-      API_KEY_REQUEST_TYPE_PAID_CLAIM,
-      requestedPlan,
-      orderId,
-      tokenHash,
-      addMinutesIso(30),
-      CLAIM_REVIEW_PENDING,
-      Date.now(),
-      requestIp,
-      requestDeviceId || null,
-      acceptedAt,
-    ],
-  );
-  await appendProvisionalClaimAudit(
-    db,
-    "claim_requested",
-    {
-      email,
-      claimId,
-      orderId,
-      planCode: requestedPlan,
-      ip: requestIp,
-      deviceId: requestDeviceId,
-      details: {
-        review_status: CLAIM_REVIEW_PENDING,
-        source: "admin_claim_create",
-        admin_email: normalizeEmail(adminUser && adminUser.email || ""),
-      },
-    },
-  );
-
-  const claim = await findPaidClaimById(db, claimId);
-  const lifecycle = await buildPaidClaimLifecycleSnapshot(db, env, claim);
-  return json(
-    {
-      ok: true,
-      claim_id: claimId,
-      lifecycle,
-    },
-    200,
-    env,
-  );
-}
-
-async function handleAdminClaimActivate(request, env) {
-  const auth = await requireAnalyticsAdmin(request, env);
-  if (auth.error) {
-    return auth.error;
-  }
-  const { db, user: adminUser } = auth;
-  const body = await parseJson(request);
-  const claimId = String(body.claim_id || "").trim();
-  if (!claimId) {
-    return json({ ok: false, error: "missing_claim_id" }, 400, env);
-  }
-  try {
-    const activated = await activatePaidClaimById(
-      db,
-      env,
-      claimId,
-      {
-        activationSource: "admin_activation",
-        reviewedBy: normalizeEmail(adminUser && adminUser.email || "") || "admin",
-        sendIssuedEmail: false,
-        sendProvisionalAlert: false,
-      },
-    );
-    const lifecycle = await buildPaidClaimLifecycleSnapshot(db, env, activated.claim);
-    return json(
-      {
-        ok: true,
-        claim_id: claimId,
-        email: activated.email,
-        plan_code: activated.planCode,
-        expires_at: activated.expiresAt,
-        api_key_mask: maskApiKey(activated.apiKey),
-        lifecycle,
-      },
-      200,
-      env,
-    );
-  } catch (error) {
-    return json({ ok: false, error: String(error && error.message || "claim_activation_failed") }, 400, env);
-  }
-}
-
-async function handleAdminClaimReview(request, env) {
-  const auth = await requireAnalyticsAdmin(request, env);
-  if (auth.error) {
-    return auth.error;
-  }
-  const { db, user: adminUser } = auth;
-  await ensureApiKeyTables(db);
-  const body = await parseJson(request);
-  const claimId = String(body.claim_id || "").trim();
-  const decision = normalizeClaimReviewStatus(body.decision || body.review_status || CLAIM_REVIEW_REJECTED);
-  const reviewNote = String(body.review_note || body.note || "").trim();
-  if (!claimId) {
-    return json({ ok: false, error: "missing_claim_id" }, 400, env);
-  }
-  if (decision !== CLAIM_REVIEW_APPROVED && decision !== CLAIM_REVIEW_REJECTED) {
-    return json({ ok: false, error: "invalid_review_decision" }, 400, env);
-  }
-  const claim = await findPaidClaimById(db, claimId);
-  if (!claim) {
-    return json({ ok: false, error: "paid_claim_not_found" }, 404, env);
-  }
-  const email = normalizeEmail(claim.email || "");
-  let targetUser = await findUserByEmail(db, email);
-  if (!targetUser) {
-    targetUser = await upsertUserByEmail(db, email, PLAN_CODE_PLANETKA, {}, env);
-  }
-  if (!targetUser) {
-    return json({ ok: false, error: "user_not_found" }, 404, env);
-  }
-  const now = nowIso();
-  const reviewedBy = normalizeEmail(adminUser && adminUser.email || "") || "admin";
-  const requestedPlan = normalizeRequestedPlan(claim.claimed_plan_code || claim.requested_plan || PLAN_CODE_PLANETKA_PRO);
-
-  if (decision === CLAIM_REVIEW_APPROVED) {
-    await dbRun(
-      db,
-      `
-        UPDATE users
-        SET
-          status = ?,
-          provisional_plan_code = NULL,
-          provisional_expires_at = NULL,
-          pro_confirmed_at = ?
-        WHERE id = ?
-      `,
-      [requestedPlan, now, targetUser.id],
-    );
-    await dbRun(
-      db,
-      `
-        UPDATE api_keys
-        SET
-          plan_code = ?,
-          provisional = 0,
-          provisional_expires_at = NULL,
-          confirmed_at = ?
-        WHERE user_id = ?
-          AND status = 'active'
-      `,
-      [requestedPlan, now, targetUser.id],
-    );
-    await markPaidClaimReviewed(
-      db,
-      claimId,
-      CLAIM_REVIEW_APPROVED,
-      {
-        reviewedAt: now,
-        reviewedBy,
-        reviewNote: reviewNote || "manual_claim_approved",
-        clearCooldown: true,
-      },
-    );
-    await appendProvisionalClaimAudit(
-      db,
-      "claim_review_approved",
-      {
-        email,
-        userId: String(targetUser.id || "").trim(),
-        claimId,
-        orderId: String(claim.order_id || "").trim(),
-        planCode: requestedPlan,
-        ip: String(claim.request_ip || "").trim(),
-        deviceId: normalizeDeviceId(claim.request_device_id || ""),
-        details: {
-          reviewed_by: reviewedBy,
-          review_note: reviewNote || "manual_claim_approved",
-        },
-      },
-    );
-  } else {
-    const cooldownDays = parseClaimCooldownDaysOverride(body.cooldown_days, env);
-    const cooldownUntil = addDaysIso(cooldownDays);
-    await dbRun(
-      db,
-      `
-        UPDATE users
-        SET
-          status = ?,
-          provisional_plan_code = NULL,
-          provisional_expires_at = NULL,
-          pro_confirmed_at = NULL
-        WHERE id = ?
-      `,
-      [PLAN_CODE_PLANETKA, targetUser.id],
-    );
-    await dbRun(
-      db,
-      `
-        UPDATE api_keys
-        SET
-          plan_code = ?,
-          provisional = 0,
-          provisional_expires_at = NULL,
-          confirmed_at = NULL
-        WHERE user_id = ?
-          AND status = 'active'
-      `,
-      [PLAN_CODE_PLANETKA, targetUser.id],
-    );
-    await markPaidClaimReviewed(
-      db,
-      claimId,
-      CLAIM_REVIEW_REJECTED,
-      {
-        reviewedAt: now,
-        reviewedBy,
-        reviewNote: reviewNote || "manual_claim_rejected",
-        cooldownUntil,
-      },
-    );
-    await appendProvisionalClaimAudit(
-      db,
-      "claim_review_rejected",
-      {
-        email,
-        userId: String(targetUser.id || "").trim(),
-        claimId,
-        orderId: String(claim.order_id || "").trim(),
-        planCode: requestedPlan,
-        ip: String(claim.request_ip || "").trim(),
-        deviceId: normalizeDeviceId(claim.request_device_id || ""),
-        details: {
-          reviewed_by: reviewedBy,
-          review_note: reviewNote || "manual_claim_rejected",
-          cooldown_until: cooldownUntil,
-        },
-      },
-    );
-    await signalRejectedClaimAttempt(
-      db,
-      env,
-      {
-        email,
-        ip: String(claim.request_ip || "").trim(),
-        deviceId: normalizeDeviceId(claim.request_device_id || ""),
-        orderId: String(claim.order_id || "").trim(),
-        requestedPlan,
-        claimId,
-        reason: "manual_claim_rejected",
-      },
-    );
-  }
-
-  const updatedClaim = await findPaidClaimById(db, claimId);
-  const lifecycle = await buildPaidClaimLifecycleSnapshot(db, env, updatedClaim);
-  return json(
-    {
-      ok: true,
-      claim_id: claimId,
-      decision,
-      lifecycle,
-    },
-    200,
-    env,
-  );
-}
-
 async function resolveDownloadCounterTarget(db, userId, email) {
   const requestedUserId = String(userId || "").trim();
   const requestedEmail = normalizeEmail(email || "");
@@ -12726,19 +12066,6 @@ async function handleStripeWebhook(request, env) {
   );
 }
 
-function notImplemented(route, env) {
-  return json(
-    {
-      ok: false,
-      error: "not_implemented",
-      route,
-      message: "This route is scaffolded but not implemented yet.",
-    },
-    501,
-    env,
-  );
-}
-
 function normalizeAddonUpdateVersion(value, fallback = DEFAULT_ADDON_UPDATE_MANIFEST_VERSION) {
   const text = String(value || "").trim();
   if (!text) {
@@ -12804,6 +12131,281 @@ async function handleAddonUpdateManifest(request, env) {
   });
 }
 
+function magicLinkAuthDisabledResponse(env) {
+  return json({ ok: false, error: "magic_link_auth_disabled" }, 404, env);
+}
+
+async function routeHealth(env) {
+  const magicLinkEnabled = isMagicLinkAuthEnabled(env);
+  return json(
+    {
+      ok: true,
+      service: "planetka-api",
+      api_base_url: env.API_BASE_URL || "https://api.planetka.io",
+      login_url: env.LOGIN_URL || "https://www.planetka.io/login",
+      device_login_url: magicLinkEnabled
+        ? `${env.API_BASE_URL || "https://api.planetka.io"}/device/login`
+        : "",
+      magic_link_auth_enabled: magicLinkEnabled,
+      db_bound: Boolean(env.DB),
+      r2_bound: Boolean(env.PLANETKA_DATA),
+    },
+    200,
+    env,
+  );
+}
+
+function routeApiKeyPage(request, env) {
+  if (request.method === "HEAD") {
+    return new Response(null, {
+      status: 200,
+      headers: {
+        ...corsHeaders(env),
+        "Content-Type": "text/html; charset=utf-8",
+      },
+    });
+  }
+  return renderApiKeyRequestPage(env, "", PLAN_CODE_PLANETKA);
+}
+
+async function dispatchExactRoute(request, env, path) {
+  switch (path) {
+    case "/health":
+      if (request.method === "GET") {
+        return routeHealth(env);
+      }
+      return null;
+    case "/addon/update-manifest":
+      if (request.method === "GET" || request.method === "HEAD") {
+        return await handleAddonUpdateManifest(request, env);
+      }
+      return null;
+    case "/api-key":
+      if (request.method === "GET" || request.method === "HEAD") {
+        return routeApiKeyPage(request, env);
+      }
+      return null;
+    case "/api-key/activate":
+      if (request.method === "GET") {
+        return await handleApiKeyActivatePage(request, env);
+      }
+      return null;
+    case "/auth/start":
+      if (request.method === "POST") {
+        if (!isMagicLinkAuthEnabled(env)) {
+          return magicLinkAuthDisabledResponse(env);
+        }
+        return await handleAuthStart(request, env);
+      }
+      return null;
+    case "/auth/api-key/request":
+      if (request.method === "POST") {
+        return await handleApiKeyRequest(request, env);
+      }
+      return null;
+    case "/auth/api-key/activate":
+      if (request.method === "POST") {
+        return await handleApiKeyActivate(request, env);
+      }
+      return null;
+    case "/auth/api-key/exchange":
+      if (request.method === "POST") {
+        return await handleApiKeyExchange(request, env);
+      }
+      return null;
+    case "/auth/verify":
+      if (request.method === "POST") {
+        if (!isMagicLinkAuthEnabled(env)) {
+          return magicLinkAuthDisabledResponse(env);
+        }
+        return await handleAuthVerify(request, env);
+      }
+      return null;
+    case "/auth/refresh":
+      if (request.method === "POST") {
+        return await handleAuthRefresh(request, env);
+      }
+      return null;
+    case "/auth/logout":
+      if (request.method === "POST") {
+        return await handleAuthLogout(request, env);
+      }
+      return null;
+    case "/me":
+      if (request.method === "GET") {
+        return await handleMe(request, env);
+      }
+      return null;
+    case "/device/start":
+      if (request.method === "POST") {
+        if (!isMagicLinkAuthEnabled(env)) {
+          return magicLinkAuthDisabledResponse(env);
+        }
+        return await handleDeviceStart(request, env);
+      }
+      return null;
+    case "/device/poll":
+      if (request.method === "POST") {
+        if (!isMagicLinkAuthEnabled(env)) {
+          return magicLinkAuthDisabledResponse(env);
+        }
+        return await handleDevicePoll(request, env);
+      }
+      return null;
+    case "/device/login":
+      if (request.method === "GET") {
+        if (!isMagicLinkAuthEnabled(env)) {
+          return magicLinkAuthDisabledResponse(env);
+        }
+        return await handleDeviceLoginPage(request, env);
+      }
+      return null;
+    case "/support/bug-report":
+      if (request.method === "POST") {
+        return await handleSupportBugReport(request, env);
+      }
+      return null;
+    case "/admin/analytics":
+      if (request.method === "GET") {
+        return await handleAdminAnalyticsPage(request, env);
+      }
+      return null;
+    case "/admin/analytics/users":
+      if (request.method === "GET") {
+        return await handleAdminAnalyticsUsersPage(request, env);
+      }
+      return null;
+    case "/admin/analytics/data":
+      if (request.method === "GET") {
+        return await handleAdminAnalyticsData(request, env);
+      }
+      return null;
+    case "/admin/analytics/world-map.jpg":
+      if (request.method === "GET") {
+        return await handleAdminAnalyticsTileMapImage(request, env);
+      }
+      return null;
+    case "/admin/login":
+      if (request.method === "GET") {
+        return await handleAdminLoginPage(request, env);
+      }
+      if (request.method === "POST") {
+        return await handleAdminPasswordLogin(request, env);
+      }
+      return null;
+    case "/admin/session/start":
+      if (request.method === "GET") {
+        return await handleAdminSessionStartPage(request, env);
+      }
+      if (request.method === "POST") {
+        return await handleAdminSessionStart(request, env);
+      }
+      return null;
+    case "/admin/session/logout":
+      if (request.method === "GET") {
+        return await handleAdminSessionLogout(request, env);
+      }
+      return null;
+    case "/admin/users/unthrottle":
+      if (request.method === "POST") {
+        return await handleAdminUserUnthrottle(request, env);
+      }
+      return null;
+    case "/admin/users/throttle":
+      if (request.method === "POST") {
+        return await handleAdminUserThrottle(request, env);
+      }
+      return null;
+    case "/admin/users/block":
+      if (request.method === "POST") {
+        return await handleAdminUserBlock(request, env);
+      }
+      return null;
+    case "/admin/users/unblock":
+      if (request.method === "POST") {
+        return await handleAdminUserUnblock(request, env);
+      }
+      return null;
+    case "/admin/users/hard-block":
+      if (request.method === "POST") {
+        return await handleAdminUserHardBlock(request, env);
+      }
+      return null;
+    case "/admin/users/set-plan":
+      if (request.method === "POST") {
+        return await handleAdminUserSetPlan(request, env);
+      }
+      return null;
+    case "/stripe/webhook":
+      if (request.method === "POST") {
+        return await handleStripeWebhook(request, env);
+      }
+      return null;
+    default:
+      return null;
+  }
+}
+
+async function dispatchPrefixRoute(request, env, path, ctx) {
+  if ((request.method === "GET" || request.method === "HEAD") && path.startsWith("/legal/")) {
+    return await handleLegalDocumentRequest(request, env, path);
+  }
+  if ((request.method === "GET" || request.method === "HEAD") && path.startsWith("/tiles/")) {
+    return await handleTileRequest(request, env, path, ctx);
+  }
+  return null;
+}
+
+async function dispatchRequest(request, env, path, ctx) {
+  const exactMatch = await dispatchExactRoute(request, env, path);
+  if (exactMatch) {
+    return exactMatch;
+  }
+  const prefixMatch = await dispatchPrefixRoute(request, env, path, ctx);
+  if (prefixMatch) {
+    return prefixMatch;
+  }
+  return json(
+    {
+      ok: false,
+      error: "not_found",
+      path,
+    },
+    404,
+    env,
+  );
+}
+
+async function trackAuthEndpointError(path, method, env, error) {
+  if (!isAuthOrDevicePath(path)) {
+    return;
+  }
+  try {
+    const db = requireDb(env);
+    await trackThresholdAlertDb(
+      db,
+      "auth_endpoint_error_spike",
+      parseRateLimitInteger(env.LOG_ALERT_AUTH_ERROR_THRESHOLD, DEFAULT_ALERT_AUTH_ERROR_THRESHOLD),
+      parseRateLimitInteger(env.LOG_ALERT_AUTH_ERROR_WINDOW_SECONDS, DEFAULT_ALERT_AUTH_ERROR_WINDOW_SECONDS),
+      {
+        route: path,
+        method,
+        error: String(error && error.message || "internal_error"),
+      },
+    );
+  } catch (alertError) {
+    // Alert tracking is best-effort and must never alter API error responses.
+    console.debug(
+      "worker.alert.tracking_failed",
+      JSON.stringify({
+        route: path,
+        method,
+        error: String(alertError && alertError.message || "alert_tracking_failed"),
+      }),
+    );
+  }
+}
+
 export default {
   async fetch(request, env, ctx) {
     if (request.method === "OPTIONS") {
@@ -12821,235 +12423,9 @@ export default {
       if (path.startsWith("/admin/") && queryToken) {
         return json({ ok: false, error: "query_token_not_allowed" }, 400, env);
       }
-
-      if (request.method === "GET" && path === "/health") {
-        const magicLinkEnabled = isMagicLinkAuthEnabled(env);
-        return json(
-          {
-            ok: true,
-            service: "planetka-api",
-            api_base_url: env.API_BASE_URL || "https://api.planetka.io",
-            login_url: env.LOGIN_URL || "https://www.planetka.io/login",
-            device_login_url: magicLinkEnabled
-              ? `${env.API_BASE_URL || "https://api.planetka.io"}/device/login`
-              : "",
-            magic_link_auth_enabled: magicLinkEnabled,
-            db_bound: Boolean(env.DB),
-            r2_bound: Boolean(env.PLANETKA_DATA),
-          },
-          200,
-          env,
-        );
-      }
-
-      if ((request.method === "GET" || request.method === "HEAD") && path === "/addon/update-manifest") {
-        return await handleAddonUpdateManifest(request, env);
-      }
-
-      if ((request.method === "GET" || request.method === "HEAD") && path === "/api-key") {
-        if (request.method === "HEAD") {
-          return new Response(null, {
-            status: 200,
-            headers: {
-              ...corsHeaders(env),
-              "Content-Type": "text/html; charset=utf-8",
-            },
-          });
-        }
-        return renderApiKeyRequestPage(env, "", PLAN_CODE_PLANETKA);
-      }
-
-      if (request.method === "GET" && path === "/api-key/activate") {
-        return await handleApiKeyActivatePage(request, env);
-      }
-
-      if (request.method === "POST" && path === "/auth/start") {
-        if (!isMagicLinkAuthEnabled(env)) {
-          return json({ ok: false, error: "magic_link_auth_disabled" }, 404, env);
-        }
-        return await handleAuthStart(request, env);
-      }
-
-      if (request.method === "POST" && path === "/auth/api-key/request") {
-        return await handleApiKeyRequest(request, env);
-      }
-
-      if (request.method === "POST" && path === "/auth/api-key/activate") {
-        return await handleApiKeyActivate(request, env);
-      }
-
-      if (request.method === "POST" && path === "/auth/api-key/exchange") {
-        return await handleApiKeyExchange(request, env);
-      }
-
-      if (request.method === "POST" && path === "/auth/verify") {
-        if (!isMagicLinkAuthEnabled(env)) {
-          return json({ ok: false, error: "magic_link_auth_disabled" }, 404, env);
-        }
-        return await handleAuthVerify(request, env);
-      }
-
-      if (request.method === "POST" && path === "/auth/refresh") {
-        return await handleAuthRefresh(request, env);
-      }
-
-      if (request.method === "POST" && path === "/auth/logout") {
-        return await handleAuthLogout(request, env);
-      }
-
-      if (request.method === "GET" && path === "/me") {
-        return await handleMe(request, env);
-      }
-
-      if (request.method === "POST" && path === "/device/start") {
-        if (!isMagicLinkAuthEnabled(env)) {
-          return json({ ok: false, error: "magic_link_auth_disabled" }, 404, env);
-        }
-        return await handleDeviceStart(request, env);
-      }
-
-      if (request.method === "POST" && path === "/device/poll") {
-        if (!isMagicLinkAuthEnabled(env)) {
-          return json({ ok: false, error: "magic_link_auth_disabled" }, 404, env);
-        }
-        return await handleDevicePoll(request, env);
-      }
-
-      if (request.method === "GET" && path === "/device/login") {
-        if (!isMagicLinkAuthEnabled(env)) {
-          return json({ ok: false, error: "magic_link_auth_disabled" }, 404, env);
-        }
-        return await handleDeviceLoginPage(request, env);
-      }
-
-      if ((request.method === "GET" || request.method === "HEAD") && path.startsWith("/legal/")) {
-        return await handleLegalDocumentRequest(request, env, path);
-      }
-
-      if (request.method === "GET" && path === "/billing/portal") {
-        return notImplemented("/billing/portal", env);
-      }
-
-      if (request.method === "POST" && path === "/support/bug-report") {
-        return await handleSupportBugReport(request, env);
-      }
-
-      if (request.method === "GET" && path === "/admin/analytics") {
-        return await handleAdminAnalyticsPage(request, env);
-      }
-      if (request.method === "GET" && path === "/admin/analytics/users") {
-        return await handleAdminAnalyticsUsersPage(request, env);
-      }
-
-      if (request.method === "GET" && path === "/admin/analytics/data") {
-        return await handleAdminAnalyticsData(request, env);
-      }
-
-      if (request.method === "GET" && path === "/admin/analytics/world-map.jpg") {
-        return await handleAdminAnalyticsTileMapImage(request, env);
-      }
-
-      if (request.method === "GET" && path === "/admin/login") {
-        return await handleAdminLoginPage(request, env);
-      }
-
-      if (request.method === "POST" && path === "/admin/login") {
-        return await handleAdminPasswordLogin(request, env);
-      }
-
-      if (request.method === "GET" && path === "/admin/session/start") {
-        return await handleAdminSessionStartPage(request, env);
-      }
-
-      if (request.method === "GET" && path === "/admin/session/logout") {
-        return await handleAdminSessionLogout(request, env);
-      }
-
-      if (request.method === "POST" && path === "/admin/session/start") {
-        return await handleAdminSessionStart(request, env);
-      }
-
-      if (request.method === "GET" && path === "/admin/claims/latest") {
-        return json({ ok: false, error: "paid_claim_workflow_disabled" }, 410, env);
-      }
-
-      if (request.method === "POST" && path === "/admin/claims/create") {
-        return json({ ok: false, error: "paid_claim_workflow_disabled" }, 410, env);
-      }
-
-      if (request.method === "POST" && path === "/admin/claims/activate") {
-        return json({ ok: false, error: "paid_claim_workflow_disabled" }, 410, env);
-      }
-
-      if (request.method === "POST" && path === "/admin/claims/review") {
-        return json({ ok: false, error: "paid_claim_workflow_disabled" }, 410, env);
-      }
-
-      if (request.method === "POST" && path === "/admin/users/unthrottle") {
-        return await handleAdminUserUnthrottle(request, env);
-      }
-
-      if (request.method === "POST" && path === "/admin/users/throttle") {
-        return await handleAdminUserThrottle(request, env);
-      }
-
-      if (request.method === "POST" && path === "/admin/users/block") {
-        return await handleAdminUserBlock(request, env);
-      }
-
-      if (request.method === "POST" && path === "/admin/users/unblock") {
-        return await handleAdminUserUnblock(request, env);
-      }
-      if (request.method === "POST" && path === "/admin/users/hard-block") {
-        return await handleAdminUserHardBlock(request, env);
-      }
-      if (request.method === "POST" && path === "/admin/users/set-plan") {
-        return await handleAdminUserSetPlan(request, env);
-      }
-      if ((request.method === "GET" || request.method === "HEAD") && path.startsWith("/tiles/")) {
-        return await handleTileRequest(request, env, path, ctx);
-      }
-
-      if (request.method === "POST" && path === "/stripe/webhook") {
-        return await handleStripeWebhook(request, env);
-      }
-
-      return json(
-        {
-          ok: false,
-          error: "not_found",
-          path,
-        },
-        404,
-        env,
-      );
+      return await dispatchRequest(request, env, path, ctx);
     } catch (error) {
-      if (isAuthOrDevicePath(path)) {
-        try {
-          const db = requireDb(env);
-          await trackThresholdAlertDb(
-            db,
-            "auth_endpoint_error_spike",
-            parseRateLimitInteger(env.LOG_ALERT_AUTH_ERROR_THRESHOLD, DEFAULT_ALERT_AUTH_ERROR_THRESHOLD),
-            parseRateLimitInteger(env.LOG_ALERT_AUTH_ERROR_WINDOW_SECONDS, DEFAULT_ALERT_AUTH_ERROR_WINDOW_SECONDS),
-            {
-              route: path,
-              method: request.method,
-              error: String(error && error.message || "internal_error"),
-            },
-          );
-        } catch (alertError) {
-          // Alert tracking is best-effort and must never alter API error responses.
-          console.debug(
-            "worker.alert.tracking_failed",
-            JSON.stringify({
-              route: path,
-              method: request.method,
-              error: String(alertError && alertError.message || "alert_tracking_failed"),
-            }),
-          );
-        }
-      }
+      await trackAuthEndpointError(path, request.method, env, error);
       console.error(
         "worker.request.error",
         JSON.stringify({
