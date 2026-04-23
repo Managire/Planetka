@@ -6,12 +6,6 @@ from bpy.props import PointerProperty
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from . import updater as _planetka_updater
 
-try:
-    _planetka_updater.apply_pending_update_on_import()
-except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
-    # Updater bootstrap must never block addon import/registration.
-    pass
-
 from .animation_tools import (
     PLANETKA_OT_AnimationClearPrepared,
     PLANETKA_OT_AnimationMakeReady,
