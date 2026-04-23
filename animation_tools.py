@@ -12,8 +12,6 @@ from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from .extension_prefs import get_earth_object, get_prefs
 from .operator_utils import ErrorCode, fail, require_planetka_props, require_scene
 from .r2_source import (
-    begin_resolve_download_capture,
-    end_resolve_download_capture,
     get_remote_cache_folder,
     is_remote_source_configured,
     plan_resolve_downloads,
@@ -1996,139 +1994,6 @@ def _collect_pink_frames(scene, frame_start, frame_end):
     return pink_frames
 
 
-def _movie_extension(scene):
-    render = getattr(scene, "render", None) if scene else None
-    image_settings = getattr(render, "image_settings", None) if render else None
-    fmt = str(getattr(image_settings, "file_format", "") or "") if image_settings else ""
-    if fmt == "AVI_JPEG" or fmt == "AVI_RAW":
-        return ".avi"
-    if fmt != "FFMPEG":
-        return ""
-    ffmpeg = getattr(render, "ffmpeg", None) if render else None
-    container = str(getattr(ffmpeg, "format", "") or "") if ffmpeg else ""
-    return {
-        "MPEG4": ".mp4",
-        "QUICKTIME": ".mov",
-        "MATROSKA": ".mkv",
-        "WEBM": ".webm",
-        "OGG": ".ogv",
-    }.get(container, ".mp4")
-
-
-_MOVIE_EXTS = (
-    ".mp4",
-    ".m4v",
-    ".mov",
-    ".mkv",
-    ".webm",
-    ".avi",
-    ".ogv",
-    ".mpeg",
-    ".mpg",
-)
-
-
-def _list_dir_safe(path):
-    try:
-        return set(os.listdir(path)) if path and os.path.isdir(path) else set()
-    except OSError:
-        return set()
-
-
-def _pick_best_movie_path(directory, prefix_basename, candidates):
-    best_path = ""
-    best_score = (-1.0, -1)  # (mtime, size)
-    for name in candidates:
-        if not name.startswith(prefix_basename):
-            continue
-        full = os.path.join(directory, name)
-        if not os.path.isfile(full):
-            continue
-        ext = os.path.splitext(name)[1].lower()
-        if ext and ext not in _MOVIE_EXTS:
-            continue
-        try:
-            stat = os.stat(full)
-            score = (float(stat.st_mtime), int(stat.st_size))
-        except OSError:
-            continue
-        if score > best_score:
-            best_score = score
-            best_path = full
-    return best_path
-
-
-def _find_segment_movie_output(segment_base_abs, before_listing, expected_ext):
-    """
-    After rendering, locate the produced movie file for a segment.
-    Blender output naming can vary depending on file extension settings, so this
-    uses a prefix scan instead of assuming exact filename.
-    """
-    if not segment_base_abs:
-        return ""
-    directory = os.path.dirname(segment_base_abs) or ""
-    prefix = os.path.basename(segment_base_abs)
-    if not directory or not os.path.isdir(directory):
-        return ""
-
-    after = _list_dir_safe(directory)
-    new = after - (before_listing or set())
-    if expected_ext:
-        expected_name = f"{prefix}{expected_ext}"
-        if expected_name in after:
-            return os.path.join(directory, expected_name)
-
-    # Prefer newly created/changed files, then fallback to any matching prefix.
-    picked = _pick_best_movie_path(directory, prefix, new)
-    if picked:
-        return picked
-    return _pick_best_movie_path(directory, prefix, after)
-
-
-def _resolve_movie_output_base(scene):
-    """
-    Returns (base_path_without_ext, ext).
-    Keeps user intent: if render.filepath points to a directory, derive a sane filename.
-    """
-    render = getattr(scene, "render", None) if scene else None
-    raw = str(getattr(render, "filepath", "") or "") if render else ""
-    abs_path = bpy.path.abspath(raw) if raw else ""
-    ext = _movie_extension(scene)
-
-    if not abs_path:
-        return "", ext
-
-    # Blender allows render.filepath to be a directory (ending with /).
-    is_dir_hint = abs_path.endswith(os.sep) or (os.path.isdir(abs_path) and not os.path.splitext(abs_path)[1])
-    if is_dir_hint:
-        output_dir = abs_path.rstrip(os.sep)
-        blend_name = bpy.path.display_name_from_filepath(getattr(bpy.data, "filepath", "") or "")
-        base_name = blend_name or "Planetka_Animation"
-        return os.path.join(output_dir, base_name), ext
-
-    root, existing_ext = os.path.splitext(abs_path)
-    if existing_ext:
-        return root, existing_ext
-    return abs_path, ext
-
-
-def _copy_ffmpeg_settings(src_render, dst_render):
-    src = getattr(src_render, "ffmpeg", None) if src_render else None
-    dst = getattr(dst_render, "ffmpeg", None) if dst_render else None
-    if src is None or dst is None:
-        return
-    for prop in getattr(src.bl_rna, "properties", ()):
-        ident = getattr(prop, "identifier", "")
-        if not ident or ident in {"rna_type"}:
-            continue
-        try:
-            setattr(dst, ident, getattr(src, ident))
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            continue
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            continue
-
-
 def _render_output_display(scene):
     render = getattr(scene, "render", None) if scene else None
     if render is None:
@@ -2138,12 +2003,6 @@ def _render_output_display(scene):
         abs_path = bpy.path.abspath(raw) if raw else ""
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         abs_path = raw
-    image_settings = getattr(render, "image_settings", None)
-    fmt = str(getattr(image_settings, "file_format", "") or "") if image_settings else ""
-    if fmt in {"FFMPEG", "AVI_JPEG", "AVI_RAW"}:
-        base, ext = _resolve_movie_output_base(scene)
-        if base:
-            return f"{base}{ext}"
     return abs_path or raw or "—"
 
 
@@ -2235,130 +2094,6 @@ def _restore_earth_material_displacement_mode_state(material, state):
     cycles_mode = str(state.get("cycles", "") or "").strip()
     if cycles_mode:
         _set_enum_property_if_available(cycles_settings, "displacement_method", (cycles_mode,))
-
-
-def _concat_movie_segments_vse(scene, segment_movie_paths, final_movie_base, final_ext, frame_start, frame_end):
-    if not segment_movie_paths:
-        return False, "No segment movies to combine."
-    concat_scene = bpy.data.scenes.new("Planetka Concat Temp")
-    try:
-        concat_scene.sequence_editor_create()
-        concat_scene.render.use_sequencer = True
-        concat_scene.frame_start = int(frame_start)
-        concat_scene.frame_end = int(frame_end)
-        try:
-            concat_scene.render.resolution_x = int(scene.render.resolution_x)
-            concat_scene.render.resolution_y = int(scene.render.resolution_y)
-            concat_scene.render.resolution_percentage = int(scene.render.resolution_percentage)
-            concat_scene.render.fps = int(scene.render.fps)
-            concat_scene.render.fps_base = float(scene.render.fps_base)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
-
-        # Some Blender versions still require a valid camera even when using the VSE.
-        try:
-            if getattr(scene, "camera", None) is not None:
-                concat_scene.camera = scene.camera
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
-
-        # Copy output settings so the final movie matches the user's chosen container/codec.
-        src_render = getattr(scene, "render", None)
-        dst_render = getattr(concat_scene, "render", None)
-        if src_render and dst_render:
-            try:
-                dst_render.image_settings.file_format = src_render.image_settings.file_format
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
-            except (RuntimeError, TypeError, ValueError, AttributeError):
-                logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
-            _copy_ffmpeg_settings(src_render, dst_render)
-            try:
-                dst_render.filepath = str(final_movie_base)
-                if hasattr(dst_render, "use_file_extension"):
-                    dst_render.use_file_extension = True
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
-            except (RuntimeError, TypeError, ValueError, AttributeError):
-                logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
-
-        # Insert each segment at its real frame start.
-        seq_editor = concat_scene.sequence_editor
-        sequences = getattr(seq_editor, "sequences", None)
-        if sequences is None:
-            sequences = getattr(seq_editor, "strips", None)
-        if sequences is None:
-            return False, "Blender VSE API unavailable (no sequences/strips collection)."
-        for path in segment_movie_paths:
-            seg_name = os.path.basename(path)
-            # Parse "...__Frames_0001-0035.ext" if present; fallback: append sequentially.
-            insert_at = None
-            try:
-                base = os.path.splitext(seg_name)[0]
-                if "Frames_" in base and "-" in base:
-                    frag = base.split("Frames_", 1)[1]
-                    start_str = frag.split("-", 1)[0]
-                    insert_at = int(start_str)
-            except (TypeError, ValueError, IndexError):
-                insert_at = None
-            if insert_at is None:
-                insert_at = int(concat_scene.frame_start)
-            try:
-                sequences.new_movie(seg_name, path, channel=1, frame_start=insert_at)
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                return False, f"Failed to add segment movie strip: {seg_name}"
-            except (RuntimeError, TypeError, ValueError):
-                return False, f"Failed to add segment movie strip: {seg_name}"
-
-        # Render the sequencer-only scene to the final output movie.
-        override = None
-        try:
-            override = bpy.context.copy()
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            override = {}
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            override = {}
-        if override is None:
-            override = {}
-        override["scene"] = concat_scene
-        override["view_layer"] = concat_scene.view_layers[0] if concat_scene.view_layers else None
-        try:
-            wm = getattr(bpy.context, "window_manager", None)
-            window = wm.windows[0] if wm and getattr(wm, "windows", None) else None
-            if window:
-                override["window"] = window
-                override["screen"] = window.screen
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
-
-        with bpy.context.temp_override(**override):
-            result = bpy.ops.render.render(animation=True, use_viewport=False)
-        ok = "FINISHED" in result
-        final_path = f"{final_movie_base}{final_ext}"
-        if ok and final_path and os.path.isfile(final_path):
-            return True, ""
-        if ok:
-            # Blender may pick extension differently; locate by prefix.
-            directory = os.path.dirname(final_movie_base) or ""
-            prefix = os.path.basename(final_movie_base)
-            picked = _pick_best_movie_path(directory, prefix, _list_dir_safe(directory))
-            if picked:
-                return True, ""
-            return False, "Sequencer render finished but output movie was not created."
-        return False, "Sequencer render was cancelled."
-    finally:
-        try:
-            bpy.data.scenes.remove(concat_scene)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
-        except (RuntimeError, TypeError, ValueError):
-            logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
 
 
 def _ensure_saved_blend_before_animation_render(operator, prompt_if_unsaved=False):
@@ -2930,9 +2665,6 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
     _original_texture_quality_mode = "PREVIEW"
     _eevee_temp_displacement_state = None
     _segment_failures = None
-    _prefetch_attempted_segments = None
-    _prefetch_results = None
-    _prefetch_segment_window = 3
 
     def invoke(self, context, event):
         del event
@@ -2998,8 +2730,6 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         self._render_seen_active = False
         self._render_launch_time = 0.0
         self._render_launch_wall_time = 0.0
-        self._prefetch_attempted_segments = set()
-        self._prefetch_results = {}
 
     def _cancel_with_error(self, context, message):
         text = str(message or "Animation render failed.").strip() or "Animation render failed."
@@ -3057,151 +2787,13 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             return []
         return self._dedupe_texture_requests(_build_texture_requests_for_tiles(segment_tiles))
 
-    def _prefetch_segment_downloads(self, segment_index, force=False):
-        attempted = self._prefetch_attempted_segments
-        if not isinstance(attempted, set):
-            attempted = set()
-            self._prefetch_attempted_segments = attempted
-        results = self._prefetch_results
-        if not isinstance(results, dict):
-            results = {}
-            self._prefetch_results = results
-
-        if (not force) and int(segment_index) in results:
-            return dict(results.get(int(segment_index), {}) or {})
-
-        requests = self._segment_texture_requests(segment_index)
-        if not requests:
-            result = {
-                "done": True,
-                "ready": True,
-                "cancelled": False,
-                "missing_count": 0,
-                "resolved_count": 0,
-                "error_count": 0,
-                "fatal_error": "",
-            }
-            attempted.add(int(segment_index))
-            results[int(segment_index)] = dict(result)
-            return dict(result)
-
-        prefs = get_prefs()
-        base_path = str(getattr(prefs, "texture_base_path", "") or "")
-        if not is_remote_source_configured(base_path):
-            result = {
-                "done": True,
-                "ready": True,
-                "cancelled": False,
-                "missing_count": 0,
-                "resolved_count": 0,
-                "error_count": 0,
-                "fatal_error": "",
-            }
-            attempted.add(int(segment_index))
-            results[int(segment_index)] = dict(result)
-            return dict(result)
-
-        prefetch_result = {}
-        try:
-            begin_resolve_download_capture()
-            try:
-                plan_resolve_downloads(requests, allow_remote_probe=False)
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
-                logger.debug("Planetka animation: next-segment prefetch planning failed", exc_info=True)
-            prefetch_result = prefetch_resolve_downloads(requests, base_path=base_path)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka animation: next-segment prefetch failed", exc_info=True)
-            result = {
-                "done": True,
-                "ready": False,
-                "cancelled": False,
-                "missing_count": 0,
-                "resolved_count": 0,
-                "error_count": 1,
-                "fatal_error": "Planetka prefetch failed.",
-            }
-            attempted.add(int(segment_index))
-            results[int(segment_index)] = dict(result)
-            return dict(result)
-        except (RuntimeError, TypeError, ValueError):
-            logger.debug("Planetka animation: next-segment prefetch failed", exc_info=True)
-            result = {
-                "done": True,
-                "ready": False,
-                "cancelled": False,
-                "missing_count": 0,
-                "resolved_count": 0,
-                "error_count": 1,
-                "fatal_error": "Planetka prefetch failed.",
-            }
-            attempted.add(int(segment_index))
-            results[int(segment_index)] = dict(result)
-            return dict(result)
-        finally:
-            try:
-                end_resolve_download_capture()
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
-                logger.debug("Planetka animation: next-segment prefetch capture finalize failed", exc_info=True)
-
-        if not isinstance(prefetch_result, dict):
-            prefetch_result = {}
-        missing_count = int(prefetch_result.get("missing_count", 0) or 0)
-        resolved_count = int(prefetch_result.get("resolved_count", 0) or 0)
-        error_count = int(prefetch_result.get("error_count", 0) or 0)
-        cancelled = bool(prefetch_result.get("cancelled", False))
-        fatal_error = str(prefetch_result.get("fatal_error", "") or "").strip()
-        ready = (not cancelled) and (not fatal_error) and int(missing_count) <= 0
-        result = {
-            "done": True,
-            "ready": bool(ready),
-            "cancelled": bool(cancelled),
-            "missing_count": int(max(0, missing_count)),
-            "resolved_count": int(max(0, resolved_count)),
-            "error_count": int(max(0, error_count)),
-            "fatal_error": str(fatal_error),
-        }
-        attempted.add(int(segment_index))
-        results[int(segment_index)] = dict(result)
-        if str(fatal_error):
-            logger.warning(
-                "Planetka animation: next-segment prefetch reported fatal_error for segment %d: %s",
-                int(segment_index) + 1,
-                str(fatal_error),
-            )
-        elif (not ready):
-            logger.warning(
-                "Planetka animation: next-segment prefetch incomplete for segment %d (missing=%d, resolved=%d, errors=%d).",
-                int(segment_index) + 1,
-                int(max(0, missing_count)),
-                int(max(0, resolved_count)),
-                int(max(0, error_count)),
-            )
-        return dict(result)
-
     def _ensure_segment_download_ready(self, segment_index):
-        results = self._prefetch_results
-        if isinstance(results, dict):
-            existing = dict(results.get(int(segment_index), {}) or {})
-            if bool(existing.get("ready", False)):
-                return True, ""
-        status = self._prefetch_segment_downloads(segment_index, force=True)
-        if bool(status.get("ready", False)):
+        # Final animation render intentionally avoids prefetch complexity.
+        # Segment downloads are handled synchronously by resolve in segment order.
+        requests = self._segment_texture_requests(segment_index)
+        if requests:
             return True, ""
-        if bool(status.get("cancelled", False)):
-            return False, f"Segment {int(segment_index) + 1} download was cancelled."
-        fatal = str(status.get("fatal_error", "") or "").strip()
-        if fatal:
-            return False, f"Segment {int(segment_index) + 1} download failed: {fatal}"
-        missing = int(status.get("missing_count", 0) or 0)
-        errors = int(status.get("error_count", 0) or 0)
-        resolved = int(status.get("resolved_count", 0) or 0)
-        return (
-            False,
-            (
-                f"Segment {int(segment_index) + 1} download incomplete "
-                f"(missing={missing}, resolved={resolved}, errors={errors})."
-            ),
-        )
+        return False, f"Segment {int(segment_index) + 1} has no tile requests."
 
     def _cleanup_completed_segment_cache(self, segment_index):
         prefs = get_prefs()
@@ -3239,32 +2831,6 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
                 int(removed_files),
                 int(segment_index) + 1,
             )
-
-    def _prefetch_next_segment_if_needed(self):
-        segments = list(self._segments or ())
-        if not segments:
-            return
-        attempted = self._prefetch_attempted_segments
-        if not isinstance(attempted, set):
-            attempted = set()
-            self._prefetch_attempted_segments = attempted
-        results = self._prefetch_results
-        if not isinstance(results, dict):
-            results = {}
-            self._prefetch_results = results
-
-        current_index = int(self._segment_index)
-        prefetch_window = max(1, int(getattr(self, "_prefetch_segment_window", 1)))
-        for offset in range(1, prefetch_window + 1):
-            next_index = current_index + offset
-            if next_index >= len(segments):
-                continue
-            known_status = dict(results.get(int(next_index), {}) or {})
-            if bool(known_status.get("ready", False)):
-                continue
-            # Keep trying nearest segments first; retry only incomplete prefetches.
-            force_retry = bool(known_status) or bool(next_index in attempted)
-            self._prefetch_segment_downloads(next_index, force=force_retry)
 
     def _resolve_segment_frame(self, frame_value, tiles_override=None):
         scene = self._scene
@@ -3523,8 +3089,6 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             self._original_texture_quality_mode = str(original_texture_quality_mode)
             self._eevee_temp_displacement_state = eevee_temp_displacement_state
             self._segment_failures = []
-            self._prefetch_attempted_segments = set()
-            self._prefetch_results = {}
 
             wm = getattr(context, "window_manager", None)
             if wm is None:
@@ -3596,7 +3160,6 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             running = self._is_render_job_running()
             if running:
                 self._render_seen_active = True
-                self._prefetch_next_segment_if_needed()
                 return {'RUNNING_MODAL'}
             elapsed = float(time.monotonic() - float(self._render_launch_time))
             if (not self._render_seen_active) and elapsed < 0.75:
