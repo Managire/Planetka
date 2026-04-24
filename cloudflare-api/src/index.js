@@ -11,8 +11,6 @@ const PLAN_CODE_PLANETKA_STUDIO = PLAN_CODE_PLANETKA_PRO;
 const DEFAULT_BETA_FORCE_PRO_TIER = false;
 const DEFAULT_ALLOWANCE_COUNTING_RULE =
   "No data metering is enforced. Personal and Commercial tiers are unlimited.";
-const DEFAULT_DAILY_RESOLVE_LIMIT_FREE_BALANCED_FULL = 10;
-const DEFAULT_DAILY_RESOLVE_LIMIT_PERSONAL_FULL = 50;
 const TIER_QUOTA_LONDON_TIMEZONE = "Europe/London";
 const TIER_QUOTA_MIN_ADDON_VERSION = "0.7.0";
 const DEFAULT_TRIAL_INCLUDED_GB = 25;
@@ -77,6 +75,11 @@ const DEFAULT_DOWNLOAD_THROTTLE_PRO_DAILY_GB = 0;
 const DEFAULT_DOWNLOAD_THROTTLE_DURATION_MINUTES = 1440;
 const DEFAULT_DOWNLOAD_THROTTLED_REQUESTS_PER_MINUTE = 0;
 const DEFAULT_DOWNLOAD_THROTTLED_DELAY_MS = 30000;
+const DEFAULT_TILE_SESSION_THROTTLE_CHECK_TTL_SECONDS = 1800;
+const DEFAULT_TILE_SESSION_THROTTLE_CACHE_MAX_ENTRIES = 4096;
+const DEFAULT_TILE_SESSION_TOKEN_TTL_SECONDS = 3600;
+const DEFAULT_AUTH_CONTEXT_CACHE_TTL_SECONDS = 60;
+const DEFAULT_AUTH_CONTEXT_CACHE_MAX_ENTRIES = 4096;
 const DEFAULT_DOWNLOAD_ALERT_EMAIL_COOLDOWN_SECONDS = 300;
 const DEFAULT_MONTHLY_COST_ALERT_BASE_USD = 50;
 const DEFAULT_MONTHLY_COST_ALERT_STEP_USD = 10;
@@ -120,7 +123,6 @@ const API_KEY_REQUEST_TYPE_PAID_CLAIM = "paid_claim";
 const CLAIM_REVIEW_PENDING = "pending";
 const CLAIM_REVIEW_APPROVED = "approved";
 const CLAIM_REVIEW_REJECTED = "rejected";
-let manualCreditModeCache = "";
 let userConsentColumnsReady = false;
 let magicLinksTokenIndexReady = false;
 let stripeWebhookEventsTableReady = false;
@@ -130,9 +132,7 @@ let authRefreshEventsTableReady = false;
 let apiKeyTablesReady = false;
 let userProvisionalColumnsReady = false;
 let refreshSessionColumnsReady = false;
-let userBestQualityTileTablesReady = false;
 let adminHardBlocksTableReady = false;
-let userDailyResolveQuotaTableReady = false;
 let rateLimitsLastPruneAt = 0;
 let supportMissingManifestCache = {
   loadedAtMs: 0,
@@ -151,12 +151,14 @@ let londonQuotaResetCache = {
   monthKey: "",
   resetIso: "",
 };
+let authContextCache = new Map();
+let tileSessionThrottleGateCache = new Map();
 
 function corsHeaders(env) {
   return {
     "Access-Control-Allow-Origin": env.APP_ORIGIN || "*",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Planetka-Device-Id, X-Planetka-Addon-Version, X-Planetka-Resolve-Id, X-Planetka-Quality-Mode",
+    "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Planetka-Device-Id, X-Planetka-Addon-Version, X-Planetka-Resolve-Id, X-Planetka-Quality-Mode, X-Planetka-Tile-Token",
   };
 }
 
@@ -690,38 +692,6 @@ function londonNextMonthBoundaryIso(epochMs = Date.now()) {
   return resetIso;
 }
 
-function resolveDailyResolveLimits(env = {}) {
-  return {
-    freeBalancedFull: Math.max(
-      0,
-      parseRateLimitInteger(
-        (env.MONTHLY_RESOLVE_LIMIT_FREE_BALANCED_FULL || env.DAILY_RESOLVE_LIMIT_FREE_BALANCED_FULL),
-        DEFAULT_DAILY_RESOLVE_LIMIT_FREE_BALANCED_FULL,
-      ),
-    ),
-    personalFull: Math.max(
-      0,
-      parseRateLimitInteger(
-        (env.MONTHLY_RESOLVE_LIMIT_PERSONAL_FULL || env.DAILY_RESOLVE_LIMIT_PERSONAL_FULL),
-        DEFAULT_DAILY_RESOLVE_LIMIT_PERSONAL_FULL,
-      ),
-    ),
-  };
-}
-
-function resolveDailyResolveQuotaPolicy(planCode, qualityMode, env = {}) {
-  void planCode;
-  void qualityMode;
-  void env;
-  return null;
-}
-
-function resolveDailyResolveQuotaPolicyForPlan(planCode, env = {}) {
-  void planCode;
-  void env;
-  return null;
-}
-
 function normalizeQualityMode(value) {
   const safe = String(value || "").trim().toLowerCase();
   if (safe === "full") return "full";
@@ -978,6 +948,211 @@ async function dbTableExists(db, tableName) {
 
 function parseRateLimitInteger(value, fallback) {
   return Math.max(0, parseNonNegativeInteger(value, fallback));
+}
+
+function authContextCacheTtlMs(env = {}) {
+  const ttlSeconds = Math.min(
+    3600,
+    Math.max(
+      0,
+      parseRateLimitInteger(
+        env.AUTH_CONTEXT_CACHE_TTL_SECONDS,
+        DEFAULT_AUTH_CONTEXT_CACHE_TTL_SECONDS,
+      ),
+    ),
+  );
+  return ttlSeconds * 1000;
+}
+
+function authContextCacheMaxEntries(env = {}) {
+  return Math.min(
+    20000,
+    Math.max(
+      64,
+      parseRateLimitInteger(
+        env.AUTH_CONTEXT_CACHE_MAX_ENTRIES,
+        DEFAULT_AUTH_CONTEXT_CACHE_MAX_ENTRIES,
+      ),
+    ),
+  );
+}
+
+function authContextCacheGet(key, env = {}) {
+  const safeKey = String(key || "").trim();
+  if (!safeKey) {
+    return null;
+  }
+  const ttlMs = authContextCacheTtlMs(env);
+  if (ttlMs <= 0) {
+    return null;
+  }
+  const entry = authContextCache.get(safeKey);
+  if (!entry) {
+    return null;
+  }
+  if (!Number.isFinite(entry.expiresAtMs) || entry.expiresAtMs <= Date.now()) {
+    authContextCache.delete(safeKey);
+    return null;
+  }
+  const accessExp = Number(entry && entry.value && entry.value.access && entry.value.access.exp);
+  if (Number.isFinite(accessExp) && accessExp <= Math.floor(Date.now() / 1000)) {
+    authContextCache.delete(safeKey);
+    return null;
+  }
+  return entry.value;
+}
+
+function authContextCacheSet(key, value, env = {}) {
+  const safeKey = String(key || "").trim();
+  if (!safeKey) {
+    return;
+  }
+  const ttlMs = authContextCacheTtlMs(env);
+  if (ttlMs <= 0) {
+    return;
+  }
+  const maxEntries = authContextCacheMaxEntries(env);
+  if (authContextCache.size >= maxEntries) {
+    const nowMs = Date.now();
+    for (const [entryKey, entryValue] of authContextCache.entries()) {
+      if (!entryValue || !Number.isFinite(entryValue.expiresAtMs) || entryValue.expiresAtMs <= nowMs) {
+        authContextCache.delete(entryKey);
+      }
+    }
+  }
+  while (authContextCache.size >= maxEntries) {
+    const oldestKey = authContextCache.keys().next().value;
+    if (!oldestKey) {
+      break;
+    }
+    authContextCache.delete(oldestKey);
+  }
+  authContextCache.set(safeKey, {
+    expiresAtMs: Date.now() + ttlMs,
+    value,
+  });
+}
+
+function tileSessionThrottleCheckCacheTtlMs(env = {}) {
+  const ttlSeconds = Math.min(
+    3600,
+    Math.max(
+      60,
+      parseRateLimitInteger(
+        env.TILE_SESSION_THROTTLE_CHECK_TTL_SECONDS,
+        DEFAULT_TILE_SESSION_THROTTLE_CHECK_TTL_SECONDS,
+      ),
+    ),
+  );
+  return ttlSeconds * 1000;
+}
+
+function tileSessionThrottleCacheMaxEntries(env = {}) {
+  return Math.min(
+    20000,
+    Math.max(
+      64,
+      parseRateLimitInteger(
+        env.TILE_SESSION_THROTTLE_CACHE_MAX_ENTRIES,
+        DEFAULT_TILE_SESSION_THROTTLE_CACHE_MAX_ENTRIES,
+      ),
+    ),
+  );
+}
+
+function tileSessionThrottleGateCacheGet(key) {
+  const safeKey = String(key || "").trim();
+  if (!safeKey) {
+    return null;
+  }
+  const entry = tileSessionThrottleGateCache.get(safeKey);
+  if (!entry) {
+    return null;
+  }
+  if (!Number.isFinite(entry.expiresAtMs) || entry.expiresAtMs <= Date.now()) {
+    tileSessionThrottleGateCache.delete(safeKey);
+    return null;
+  }
+  return entry.value;
+}
+
+function tileSessionThrottleGateCacheSet(key, value, env = {}, ttlMsOverride = 0) {
+  const safeKey = String(key || "").trim();
+  if (!safeKey) {
+    return;
+  }
+  const baseTtlMs = tileSessionThrottleCheckCacheTtlMs(env);
+  let ttlMs = Number.isFinite(Number(ttlMsOverride)) && Number(ttlMsOverride) > 0
+    ? Number(ttlMsOverride)
+    : baseTtlMs;
+  ttlMs = Math.max(1000, Math.min(baseTtlMs, ttlMs));
+
+  const maxEntries = tileSessionThrottleCacheMaxEntries(env);
+  if (tileSessionThrottleGateCache.size >= maxEntries) {
+    const nowMs = Date.now();
+    for (const [entryKey, entryValue] of tileSessionThrottleGateCache.entries()) {
+      if (!entryValue || !Number.isFinite(entryValue.expiresAtMs) || entryValue.expiresAtMs <= nowMs) {
+        tileSessionThrottleGateCache.delete(entryKey);
+      }
+    }
+  }
+  while (tileSessionThrottleGateCache.size >= maxEntries) {
+    const oldestKey = tileSessionThrottleGateCache.keys().next().value;
+    if (!oldestKey) {
+      break;
+    }
+    tileSessionThrottleGateCache.delete(oldestKey);
+  }
+  tileSessionThrottleGateCache.set(safeKey, {
+    expiresAtMs: Date.now() + ttlMs,
+    value,
+  });
+}
+
+function resolveDownloadThrottleRetryAfterSeconds(gate) {
+  const direct = clampNonNegativeInt(gate && gate.retryAfterSeconds);
+  if (direct > 0) {
+    return direct;
+  }
+  const throttledUntilMs = Date.parse(String(gate && gate.throttledUntil || ""));
+  if (Number.isFinite(throttledUntilMs)) {
+    return Math.max(1, Math.ceil((throttledUntilMs - Date.now()) / 1000));
+  }
+  return 60;
+}
+
+async function enforceTileSessionThrottleGateCached(db, env, user, requestDeviceId = "", requestIp = "") {
+  const userId = String(user && user.id || "").trim();
+  if (!userId) {
+    return null;
+  }
+  const cacheKey = `tile_session_gate:${userId}`;
+  const cached = tileSessionThrottleGateCacheGet(cacheKey);
+  if (cached) {
+    return cached.throttleGate;
+  }
+  const throttleGate = await enforceDownloadThrottleGate(db, env, user, requestDeviceId, requestIp);
+  if (throttleGate && (throttleGate.blocked || throttleGate.isThrottled)) {
+    const retryAfterSeconds = resolveDownloadThrottleRetryAfterSeconds(throttleGate);
+    const ttlMs = Math.min(60000, Math.max(5000, retryAfterSeconds * 1000));
+    tileSessionThrottleGateCacheSet(
+      cacheKey,
+      {
+        throttleGate,
+      },
+      env,
+      ttlMs,
+    );
+    return throttleGate;
+  }
+  tileSessionThrottleGateCacheSet(
+    cacheKey,
+    {
+      throttleGate: null,
+    },
+    env,
+  );
+  return null;
 }
 
 async function trackThresholdAlertDb(db, eventName, threshold, windowSeconds, payload = {}) {
@@ -1504,293 +1679,22 @@ async function ensureUserDownloadCountersTable(db) {
   );
 }
 
-async function ensureUserBestQualityTileTables(db) {
-  if (userBestQualityTileTablesReady) {
-    return;
-  }
-  await dbRun(
-    db,
-    `
-      CREATE TABLE IF NOT EXISTS user_best_quality_tile_tracking (
-        user_id TEXT NOT NULL,
-        account_tier TEXT NOT NULL,
-        user_email TEXT NOT NULL,
-        lifetime_unique_tiles INTEGER NOT NULL DEFAULT 0,
-        year_key TEXT NOT NULL DEFAULT '',
-        year_unique_tiles INTEGER NOT NULL DEFAULT 0,
-        month_key TEXT NOT NULL DEFAULT '',
-        month_unique_tiles INTEGER NOT NULL DEFAULT 0,
-        week_key TEXT NOT NULL DEFAULT '',
-        week_unique_tiles INTEGER NOT NULL DEFAULT 0,
-        month_alerted_over_10 INTEGER NOT NULL DEFAULT 0,
-        month_throttled_over_25 INTEGER NOT NULL DEFAULT 0,
-        last_best_tile_token TEXT,
-        last_best_tile_at TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        PRIMARY KEY (user_id, account_tier)
-      )
-    `,
-  );
-  await dbRun(
-    db,
-    `
-      CREATE TABLE IF NOT EXISTS user_best_quality_tile_seen (
-        user_id TEXT NOT NULL,
-        account_tier TEXT NOT NULL,
-        period_type TEXT NOT NULL,
-        period_key TEXT NOT NULL,
-        tile_token TEXT NOT NULL,
-        first_seen_at TEXT NOT NULL,
-        PRIMARY KEY (user_id, account_tier, period_type, period_key, tile_token)
-      )
-    `,
-  );
-  await dbRun(
-    db,
-    `
-      CREATE INDEX IF NOT EXISTS idx_user_best_quality_tile_seen_period
-      ON user_best_quality_tile_seen(account_tier, period_type, period_key)
-    `,
-  );
-  await dbRun(
-    db,
-    `
-      CREATE INDEX IF NOT EXISTS idx_user_best_quality_tile_seen_user_period
-      ON user_best_quality_tile_seen(user_id, account_tier, period_type, period_key)
-    `,
-  );
-  userBestQualityTileTablesReady = true;
-}
-
-async function ensureUserDailyResolveQuotaTable(db) {
-  if (userDailyResolveQuotaTableReady) {
-    return;
-  }
-  await dbRun(
-    db,
-    `
-      CREATE TABLE IF NOT EXISTS user_daily_resolve_quota (
-        user_id TEXT NOT NULL,
-        period_key TEXT NOT NULL,
-        quota_scope TEXT NOT NULL,
-        resolve_id TEXT NOT NULL,
-        quality_mode TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        PRIMARY KEY (user_id, period_key, quota_scope, resolve_id)
-      )
-    `,
-  );
-  await dbRun(
-    db,
-    `
-      CREATE INDEX IF NOT EXISTS idx_user_daily_resolve_quota_user_period_scope
-      ON user_daily_resolve_quota(user_id, period_key, quota_scope)
-    `,
-  );
-  await dbRun(
-    db,
-    `
-      CREATE INDEX IF NOT EXISTS idx_user_daily_resolve_quota_period_created
-      ON user_daily_resolve_quota(period_key, created_at DESC)
-    `,
-  );
-  userDailyResolveQuotaTableReady = true;
-}
-
-async function countUserDailyResolveQuotaUsage(db, userId, periodKey, quotaScope) {
-  const row = await dbGet(
-    db,
-    `
-      SELECT COUNT(*) AS used
-      FROM user_daily_resolve_quota
-      WHERE user_id = ?
-        AND period_key = ?
-        AND quota_scope = ?
-    `,
-    [String(userId || "").trim(), String(periodKey || "").trim(), String(quotaScope || "").trim()],
-  );
-  return clampNonNegativeInt(row && row.used);
-}
-
 async function buildDailyResolveQuotaState(db, userId, planCode, env = {}, nowEpochMs = Date.now()) {
-  const policy = resolveDailyResolveQuotaPolicyForPlan(planCode, env);
-  const resetAt = londonNextMonthBoundaryIso(nowEpochMs);
-  if (!policy || !Number.isFinite(policy.limit) || policy.limit <= 0) {
-    return {
-      used: 0,
-      limit: null,
-      remaining: null,
-      resetAt,
-      period: "month_london",
-      unlimited: true,
-      rule: "No monthly resolve cap for this tier.",
-      scope: "",
-      label: "Unlimited",
-    };
-  }
-  const safeUserId = String(userId || "").trim();
-  const periodKey = londonMonthKey(nowEpochMs);
-  let used = 0;
-  if (safeUserId) {
-    await ensureUserDailyResolveQuotaTable(db);
-    used = await countUserDailyResolveQuotaUsage(db, safeUserId, periodKey, policy.scope);
-  }
-  const limit = Math.max(0, clampNonNegativeInt(policy.limit));
+  void db;
+  void userId;
+  void planCode;
+  void env;
   return {
-    used,
-    limit,
-    remaining: Math.max(0, limit - used),
-    resetAt,
-    period: String(policy.period || "month_london"),
-    unlimited: false,
-    rule: String(policy.rule || "").trim(),
-    scope: String(policy.scope || "").trim(),
-    label: String(policy.label || "").trim(),
+    used: 0,
+    limit: null,
+    remaining: null,
+    resetAt: londonNextMonthBoundaryIso(nowEpochMs),
+    period: "month_london",
+    unlimited: true,
+    rule: "No monthly resolve cap for this tier.",
+    scope: "",
+    label: "Unlimited",
   };
-}
-
-async function enforceDailyResolveQuota(db, userId, planCode, qualityMode, resolveId, env = {}) {
-  const policy = resolveDailyResolveQuotaPolicy(planCode, qualityMode, env);
-  if (!policy) {
-    return { ok: true, enforced: false, quota: await buildDailyResolveQuotaState(db, userId, planCode, env) };
-  }
-  const safeResolveId = String(resolveId || "").trim();
-  if (!safeResolveId) {
-    const quota = await buildDailyResolveQuotaState(db, userId, planCode, env);
-    return {
-      ok: false,
-      enforced: true,
-      code: "missing_resolve_id",
-      message: "Resolve ID is required for tier-limited quality requests.",
-      quota,
-    };
-  }
-  const safeUserId = String(userId || "").trim();
-  if (!safeUserId) {
-    return {
-      ok: false,
-      enforced: true,
-      code: "missing_user_id",
-      message: "Unable to validate monthly resolve quota for this account.",
-      quota: null,
-    };
-  }
-
-  const periodKey = londonMonthKey(Date.now());
-  const scope = String(policy.scope || "").trim();
-  const limit = Math.max(0, clampNonNegativeInt(policy.limit));
-  await ensureUserDailyResolveQuotaTable(db);
-  const existing = await dbGet(
-    db,
-    `
-      SELECT 1 AS seen
-      FROM user_daily_resolve_quota
-      WHERE user_id = ?
-        AND period_key = ?
-        AND quota_scope = ?
-        AND resolve_id = ?
-      LIMIT 1
-    `,
-    [safeUserId, periodKey, scope, safeResolveId],
-  );
-  if (!existing) {
-    const usedBefore = await countUserDailyResolveQuotaUsage(db, safeUserId, periodKey, scope);
-    if (usedBefore >= limit) {
-      const quota = await buildDailyResolveQuotaState(db, safeUserId, planCode, env);
-      return {
-        ok: false,
-        enforced: true,
-        code: "daily_resolve_quota_exceeded",
-        message: `${policy.label} resolve quota reached for this month.`,
-        quota,
-      };
-    }
-    await dbRun(
-      db,
-      `
-        INSERT OR IGNORE INTO user_daily_resolve_quota (
-          user_id,
-          period_key,
-          quota_scope,
-          resolve_id,
-          quality_mode,
-          created_at
-        ) VALUES (?, ?, ?, ?, ?, ?)
-      `,
-      [
-        safeUserId,
-        periodKey,
-        scope,
-        safeResolveId,
-        String(qualityMode || "").trim().toLowerCase(),
-        nowIso(),
-      ],
-    );
-  }
-  const usedAfter = await countUserDailyResolveQuotaUsage(db, safeUserId, periodKey, scope);
-  if (usedAfter > limit) {
-    await dbRun(
-      db,
-      `
-        DELETE FROM user_daily_resolve_quota
-        WHERE user_id = ?
-          AND period_key = ?
-          AND quota_scope = ?
-          AND resolve_id = ?
-      `,
-      [safeUserId, periodKey, scope, safeResolveId],
-    );
-    const quota = await buildDailyResolveQuotaState(db, safeUserId, planCode, env);
-    return {
-      ok: false,
-      enforced: true,
-      code: "daily_resolve_quota_exceeded",
-      message: `${policy.label} resolve quota reached for this month.`,
-      quota,
-    };
-  }
-  return {
-    ok: true,
-    enforced: true,
-    quota: await buildDailyResolveQuotaState(db, safeUserId, planCode, env),
-  };
-}
-
-async function findBestQualityTileTracking(db, userId, accountTier) {
-  const safeUserId = String(userId || "").trim();
-  const safeTier = String(accountTier || "").trim().toLowerCase();
-  if (!safeUserId || !safeTier) {
-    return null;
-  }
-  await ensureUserBestQualityTileTables(db);
-  return dbGet(
-    db,
-    `
-      SELECT
-        user_id,
-        account_tier,
-        user_email,
-        lifetime_unique_tiles,
-        year_key,
-        year_unique_tiles,
-        month_key,
-        month_unique_tiles,
-        week_key,
-        week_unique_tiles,
-        month_alerted_over_10,
-        month_throttled_over_25,
-        last_best_tile_token,
-        last_best_tile_at,
-        created_at,
-        updated_at
-      FROM user_best_quality_tile_tracking
-      WHERE user_id = ?
-        AND account_tier = ?
-      LIMIT 1
-    `,
-    [safeUserId, safeTier],
-  );
 }
 
 async function ensureMonthlyCostAlertStateTable(db) {
@@ -2499,31 +2403,84 @@ async function collectAnalyticsSnapshot(
   const activeWindow1wStartUnix = Math.max(0, nowUnix - (7 * 86400));
   const activeWindow1dStartUnix = Math.max(0, nowUnix - 86400);
   const activeWindow1hStartUnix = Math.max(0, nowUnix - 3600);
-  const activeWindows = await dbGet(
+  const activeUserRows = await dbAll(
     db,
     `
       SELECT
-        COUNT(DISTINCT CASE WHEN created_at_unix >= ? THEN user_id END) AS users_6m,
-        COUNT(DISTINCT CASE WHEN created_at_unix >= ? THEN user_id END) AS users_3m,
-        COUNT(DISTINCT CASE WHEN created_at_unix >= ? THEN user_id END) AS users_1m,
-        COUNT(DISTINCT CASE WHEN created_at_unix >= ? THEN user_id END) AS users_1w,
-        COUNT(DISTINCT CASE WHEN created_at_unix >= ? THEN user_id END) AS users_1d,
-        COUNT(DISTINCT CASE WHEN created_at_unix >= ? THEN user_id END) AS users_1h
-      FROM tile_request_events
-      WHERE created_at_unix >= ?
-      ${eventEmailFilter.condition ? `AND ${eventEmailFilter.condition}` : ""}
+        e.user_id,
+        MAX(e.created_at_unix) AS last_seen_unix,
+        COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), COALESCE(NULLIF(TRIM(LOWER(c.plan_code)), ''), ?)) AS plan_norm
+      FROM tile_request_events e
+      LEFT JOIN users u ON u.id = e.user_id
+      LEFT JOIN user_download_counters c ON c.user_id = e.user_id
+      WHERE
+        e.created_at_unix >= ?
+        AND e.user_id IS NOT NULL
+        AND e.user_id != ''
+        ${eventEmailFilterAliasE.condition ? `AND ${eventEmailFilterAliasE.condition}` : ""}
+      GROUP BY
+        e.user_id,
+        COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), COALESCE(NULLIF(TRIM(LOWER(c.plan_code)), ''), ?))
     `,
     [
+      PLAN_CODE_PLANETKA_FREE,
       activeWindow6mStartUnix,
-      activeWindow3mStartUnix,
-      activeWindow1mStartUnix,
-      activeWindow1wStartUnix,
-      activeWindow1dStartUnix,
-      activeWindow1hStartUnix,
-      activeWindow6mStartUnix,
-      ...eventEmailFilter.bindings,
+      ...eventEmailFilterAliasE.bindings,
+      PLAN_CODE_PLANETKA_FREE,
     ],
   );
+  const makeActiveSplit = () => ({
+    free: 0,
+    personal: 0,
+    commercial: 0,
+    total: 0,
+  });
+  const activeWindows = {
+    users_6m: makeActiveSplit(),
+    users_3m: makeActiveSplit(),
+    users_1m: makeActiveSplit(),
+    users_1w: makeActiveSplit(),
+    users_1d: makeActiveSplit(),
+    users_1h: makeActiveSplit(),
+  };
+  const activeThresholds = [
+    ["users_6m", activeWindow6mStartUnix],
+    ["users_3m", activeWindow3mStartUnix],
+    ["users_1m", activeWindow1mStartUnix],
+    ["users_1w", activeWindow1wStartUnix],
+    ["users_1d", activeWindow1dStartUnix],
+    ["users_1h", activeWindow1hStartUnix],
+  ];
+  const resolveAnalyticsTierCode = (planValue) => {
+    const normalized = normalizePlanCode(planValue);
+    if (normalized === PLAN_CODE_PLANETKA_PRO) return "commercial";
+    if (normalized === PLAN_CODE_PLANETKA) return "personal";
+    return "free";
+  };
+  for (const row of (Array.isArray(activeUserRows) ? activeUserRows : [])) {
+    const lastSeenUnix = clampNonNegativeInt(row && row.last_seen_unix);
+    if (lastSeenUnix <= 0) {
+      continue;
+    }
+    const tierCode = resolveAnalyticsTierCode(row && row.plan_norm);
+    for (const [windowKey, thresholdUnix] of activeThresholds) {
+      if (lastSeenUnix < thresholdUnix) {
+        continue;
+      }
+      const windowCounts = activeWindows[windowKey];
+      if (!windowCounts) {
+        continue;
+      }
+      windowCounts.total += 1;
+      if (tierCode === "commercial") {
+        windowCounts.commercial += 1;
+      } else if (tierCode === "personal") {
+        windowCounts.personal += 1;
+      } else {
+        windowCounts.free += 1;
+      }
+    }
+  }
   let activeUsers10m = [];
   try {
     activeUsers10m = await dbAll(
@@ -3027,12 +2984,50 @@ async function collectAnalyticsSnapshot(
     },
     active: {
       users_total: clampNonNegativeInt(topLineUsers && topLineUsers.total_users),
-      users_6m: clampNonNegativeInt(activeWindows && activeWindows.users_6m),
-      users_3m: clampNonNegativeInt(activeWindows && activeWindows.users_3m),
-      users_1m: clampNonNegativeInt(activeWindows && activeWindows.users_1m),
-      users_1w: clampNonNegativeInt(activeWindows && activeWindows.users_1w),
-      users_1d: clampNonNegativeInt(activeWindows && activeWindows.users_1d),
-      users_1h: clampNonNegativeInt(activeWindows && activeWindows.users_1h),
+      users_6m: clampNonNegativeInt(activeWindows && activeWindows.users_6m && activeWindows.users_6m.total),
+      users_3m: clampNonNegativeInt(activeWindows && activeWindows.users_3m && activeWindows.users_3m.total),
+      users_1m: clampNonNegativeInt(activeWindows && activeWindows.users_1m && activeWindows.users_1m.total),
+      users_1w: clampNonNegativeInt(activeWindows && activeWindows.users_1w && activeWindows.users_1w.total),
+      users_1d: clampNonNegativeInt(activeWindows && activeWindows.users_1d && activeWindows.users_1d.total),
+      users_1h: clampNonNegativeInt(activeWindows && activeWindows.users_1h && activeWindows.users_1h.total),
+      windows: {
+        "6m": {
+          free: clampNonNegativeInt(activeWindows && activeWindows.users_6m && activeWindows.users_6m.free),
+          personal: clampNonNegativeInt(activeWindows && activeWindows.users_6m && activeWindows.users_6m.personal),
+          commercial: clampNonNegativeInt(activeWindows && activeWindows.users_6m && activeWindows.users_6m.commercial),
+          total: clampNonNegativeInt(activeWindows && activeWindows.users_6m && activeWindows.users_6m.total),
+        },
+        "3m": {
+          free: clampNonNegativeInt(activeWindows && activeWindows.users_3m && activeWindows.users_3m.free),
+          personal: clampNonNegativeInt(activeWindows && activeWindows.users_3m && activeWindows.users_3m.personal),
+          commercial: clampNonNegativeInt(activeWindows && activeWindows.users_3m && activeWindows.users_3m.commercial),
+          total: clampNonNegativeInt(activeWindows && activeWindows.users_3m && activeWindows.users_3m.total),
+        },
+        "1m": {
+          free: clampNonNegativeInt(activeWindows && activeWindows.users_1m && activeWindows.users_1m.free),
+          personal: clampNonNegativeInt(activeWindows && activeWindows.users_1m && activeWindows.users_1m.personal),
+          commercial: clampNonNegativeInt(activeWindows && activeWindows.users_1m && activeWindows.users_1m.commercial),
+          total: clampNonNegativeInt(activeWindows && activeWindows.users_1m && activeWindows.users_1m.total),
+        },
+        "1w": {
+          free: clampNonNegativeInt(activeWindows && activeWindows.users_1w && activeWindows.users_1w.free),
+          personal: clampNonNegativeInt(activeWindows && activeWindows.users_1w && activeWindows.users_1w.personal),
+          commercial: clampNonNegativeInt(activeWindows && activeWindows.users_1w && activeWindows.users_1w.commercial),
+          total: clampNonNegativeInt(activeWindows && activeWindows.users_1w && activeWindows.users_1w.total),
+        },
+        "1d": {
+          free: clampNonNegativeInt(activeWindows && activeWindows.users_1d && activeWindows.users_1d.free),
+          personal: clampNonNegativeInt(activeWindows && activeWindows.users_1d && activeWindows.users_1d.personal),
+          commercial: clampNonNegativeInt(activeWindows && activeWindows.users_1d && activeWindows.users_1d.commercial),
+          total: clampNonNegativeInt(activeWindows && activeWindows.users_1d && activeWindows.users_1d.total),
+        },
+        "1h": {
+          free: clampNonNegativeInt(activeWindows && activeWindows.users_1h && activeWindows.users_1h.free),
+          personal: clampNonNegativeInt(activeWindows && activeWindows.users_1h && activeWindows.users_1h.personal),
+          commercial: clampNonNegativeInt(activeWindows && activeWindows.users_1h && activeWindows.users_1h.commercial),
+          total: clampNonNegativeInt(activeWindows && activeWindows.users_1h && activeWindows.users_1h.total),
+        },
+      },
       tile_events_10s: clampNonNegativeInt(activeNow && activeNow.active_download_rows),
     },
     active_users_10m: normalizedActiveUsers10m,
@@ -3852,15 +3847,6 @@ async function maybeProcessDownloadMonitoring(db, env, details = {}) {
       }
     }
   }
-}
-
-async function maybeProcessBestQualityTileMonitoring(db, env, details = {}) {
-  // Deprecated: best-quality tile monitoring is intentionally disabled for all tiers.
-  // Keep no-op signature to preserve call-site compatibility if reintroduced.
-  void db;
-  void env;
-  void details;
-  return;
 }
 
 async function enforceDownloadThrottleGate(db, env, user, requestDeviceId = "", requestIp = "") {
@@ -4864,65 +4850,6 @@ async function runMonthlyCostEstimateAlerts(db, env, nowTimestamp) {
   };
 }
 
-async function ensureAllowanceTables(db) {
-  await dbRun(
-    db,
-    `
-      CREATE TABLE IF NOT EXISTS usage_periods (
-        id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL,
-        plan_code TEXT NOT NULL,
-        period TEXT NOT NULL,
-        period_start TEXT NOT NULL,
-        period_end TEXT NOT NULL,
-        included_limit_bytes INTEGER NOT NULL DEFAULT 0,
-        included_consumed_bytes INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      )
-    `,
-  );
-  await dbRun(
-    db,
-    `CREATE INDEX IF NOT EXISTS idx_usage_periods_user_start ON usage_periods(user_id, period_start DESC)`,
-  );
-  await dbRun(
-    db,
-    `
-      CREATE TABLE IF NOT EXISTS usage_charges (
-        id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL,
-        period_id TEXT NOT NULL,
-        bytes_used INTEGER NOT NULL,
-        created_at TEXT NOT NULL
-      )
-    `,
-  );
-  await dbRun(
-    db,
-    `CREATE INDEX IF NOT EXISTS idx_usage_charges_user_time ON usage_charges(user_id, created_at DESC)`,
-  );
-  await dbRun(
-    db,
-    `
-      CREATE TABLE IF NOT EXISTS manual_allowance_credits (
-        id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL,
-        bytes_total INTEGER NOT NULL,
-        bytes_consumed INTEGER NOT NULL DEFAULT 0,
-        expires_at TEXT,
-        note TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      )
-    `,
-  );
-  await dbRun(
-    db,
-    `CREATE INDEX IF NOT EXISTS idx_manual_allowance_credits_user_expiry ON manual_allowance_credits(user_id, expires_at)`,
-  );
-}
-
 function buildPlanConfig(env) {
   const trialIncludedBytes = toBytesFromGb(parsePositiveNumber(env.TRIAL_INCLUDED_GB, DEFAULT_TRIAL_INCLUDED_GB));
   const lowWarningBytes = toBytesFromGb(parsePositiveNumber(env.ALLOWANCE_LOW_WARNING_GB, DEFAULT_LOW_WARNING_GB));
@@ -4985,142 +4912,6 @@ function planAccessSummary(planCode) {
     return "Personal includes Preview and Balanced texture quality.";
   }
   return "Free includes Preview texture quality only.";
-}
-
-function includedLimitForPlan(planCode, cfg, previousPeriod) {
-  if (planCode === PLAN_CODE_PLANETKA_PRO) {
-    const previousLimit = clampNonNegativeInt(previousPeriod && previousPeriod.included_limit_bytes);
-    const previousConsumed = clampNonNegativeInt(previousPeriod && previousPeriod.included_consumed_bytes);
-    const previousUnused = Math.max(0, previousLimit - previousConsumed);
-    return Math.min(cfg.proRolloverCapBytes, cfg.proIncludedBytes + previousUnused);
-  }
-  return cfg.freeIncludedBytes;
-}
-
-async function findLatestUsagePeriod(db, userId) {
-  return dbGet(
-    db,
-    `
-      SELECT
-        id,
-        user_id,
-        plan_code,
-        period,
-        period_start,
-        period_end,
-        included_limit_bytes,
-        included_consumed_bytes
-      FROM usage_periods
-      WHERE user_id = ?
-      ORDER BY period_start DESC
-      LIMIT 1
-    `,
-    [userId],
-  );
-}
-
-async function ensureCurrentUsagePeriod(db, userId, planCode, cfg) {
-  await ensureAllowanceTables(db);
-  const now = Date.now();
-  let latest = await findLatestUsagePeriod(db, userId);
-  if (latest && Date.parse(String(latest.period_end || "")) > now) {
-    return latest;
-  }
-
-  const periodStart = latest ? String(latest.period_end || nowIso()) : nowIso();
-  const periodEnd = addDaysFromIso(periodStart, cfg.periodDays);
-  const includedLimitBytes = includedLimitForPlan(planCode, cfg, latest);
-  const createdAt = nowIso();
-  const periodId = crypto.randomUUID();
-  await dbRun(
-    db,
-    `
-      INSERT INTO usage_periods (
-        id,
-        user_id,
-        plan_code,
-        period,
-        period_start,
-        period_end,
-        included_limit_bytes,
-        included_consumed_bytes,
-        created_at,
-        updated_at
-      ) VALUES (?, ?, ?, 'monthly', ?, ?, ?, 0, ?, ?)
-    `,
-    [periodId, userId, planCode, periodStart, periodEnd, includedLimitBytes, createdAt, createdAt],
-  );
-
-  latest = await findLatestUsagePeriod(db, userId);
-  return latest;
-}
-
-async function getManualCreditRemaining(db, userId, nowTimestamp) {
-  const mode = await detectManualCreditMode(db);
-  if (mode === "remaining") {
-    const row = await dbGet(
-      db,
-      `
-        SELECT COALESCE(SUM(CASE WHEN bytes_remaining > 0 THEN bytes_remaining ELSE 0 END), 0) AS remaining
-        FROM manual_allowance_credits
-        WHERE user_id = ?
-          AND (expires_at IS NULL OR expires_at = '' OR expires_at >= ?)
-      `,
-      [userId, nowTimestamp],
-    );
-    return clampNonNegativeInt(row && row.remaining);
-  }
-
-  const row = await dbGet(
-    db,
-    `
-      SELECT
-        COALESCE(
-          SUM(
-            CASE
-              WHEN bytes_total > bytes_consumed THEN bytes_total - bytes_consumed
-              ELSE 0
-            END
-          ),
-          0
-        ) AS remaining
-      FROM manual_allowance_credits
-      WHERE user_id = ?
-        AND (expires_at IS NULL OR expires_at = '' OR expires_at >= ?)
-    `,
-    [userId, nowTimestamp],
-  );
-  return clampNonNegativeInt(row && row.remaining);
-}
-
-async function detectManualCreditMode(db) {
-  if (manualCreditModeCache) {
-    return manualCreditModeCache;
-  }
-  const pragma = await db.prepare(`PRAGMA table_info(manual_allowance_credits)`).all();
-  const rows = Array.isArray(pragma && pragma.results) ? pragma.results : [];
-  const names = new Set(rows.map((row) => String(row && row.name || "").trim().toLowerCase()));
-  if (names.has("bytes_remaining")) {
-    manualCreditModeCache = "remaining";
-  } else {
-    manualCreditModeCache = "consumed";
-  }
-  return manualCreditModeCache;
-}
-
-async function getDownloadedPeriodBytes(db, userId, periodStart, periodEnd) {
-  const row = await dbGet(
-    db,
-    `
-      SELECT COALESCE(SUM(bytes_used), 0) AS downloaded
-      FROM usage_charges
-      WHERE user_id = ?
-        AND created_at >= ?
-        AND created_at < ?
-    `,
-    [userId, periodStart, periodEnd],
-  );
-  return clampNonNegativeInt(row && row.downloaded);
 }
 
 async function buildAllowanceState(db, user, subscription, env, options = {}) {
@@ -5224,172 +5015,6 @@ function serializeAccountState(state) {
     throttle_reason: String(state.throttleReason || "").trim(),
     is_throttled: Boolean(state.throttledUntil),
   };
-}
-
-async function consumeManualCredits(db, userId, bytesToConsume, nowTimestamp) {
-  let remainingToConsume = clampNonNegativeInt(bytesToConsume);
-  if (remainingToConsume <= 0) {
-    return 0;
-  }
-  const mode = await detectManualCreditMode(db);
-
-  const creditsSql = mode === "remaining"
-    ? `
-      SELECT id, bytes_total, bytes_remaining
-      FROM manual_allowance_credits
-      WHERE user_id = ?
-        AND (expires_at IS NULL OR expires_at = '' OR expires_at >= ?)
-        AND bytes_remaining > 0
-      ORDER BY
-        CASE WHEN expires_at IS NULL OR expires_at = '' THEN 1 ELSE 0 END ASC,
-        expires_at ASC,
-        created_at ASC
-    `
-    : `
-      SELECT id, bytes_total, bytes_consumed
-      FROM manual_allowance_credits
-      WHERE user_id = ?
-        AND (expires_at IS NULL OR expires_at = '' OR expires_at >= ?)
-        AND bytes_total > bytes_consumed
-      ORDER BY
-        CASE WHEN expires_at IS NULL OR expires_at = '' THEN 1 ELSE 0 END ASC,
-        expires_at ASC,
-        created_at ASC
-    `;
-  const credits = await db.prepare(creditsSql).bind(userId, nowTimestamp).all();
-  const rows = Array.isArray(credits && credits.results) ? credits.results : [];
-  let consumed = 0;
-  for (const credit of rows) {
-    if (remainingToConsume <= 0) {
-      break;
-    }
-    const available = mode === "remaining"
-      ? clampNonNegativeInt(credit.bytes_remaining)
-      : Math.max(0, clampNonNegativeInt(credit.bytes_total) - clampNonNegativeInt(credit.bytes_consumed));
-    if (available <= 0) {
-      continue;
-    }
-    const useNow = Math.min(available, remainingToConsume);
-    if (mode === "remaining") {
-      await dbRun(
-        db,
-        `
-          UPDATE manual_allowance_credits
-          SET
-            bytes_remaining = CASE WHEN bytes_remaining > ? THEN bytes_remaining - ? ELSE 0 END,
-            updated_at = ?
-          WHERE id = ?
-        `,
-        [useNow, useNow, nowTimestamp, credit.id],
-      );
-    } else {
-      await dbRun(
-        db,
-        `
-          UPDATE manual_allowance_credits
-          SET
-            bytes_consumed = bytes_consumed + ?,
-            updated_at = ?
-          WHERE id = ?
-        `,
-        [useNow, nowTimestamp, credit.id],
-      );
-    }
-    consumed += useNow;
-    remainingToConsume -= useNow;
-  }
-  return consumed;
-}
-
-async function grantManualAllowanceCredits(db, userId, bytesTotal, note = "", expiresAt = "") {
-  const safeUserId = String(userId || "").trim();
-  const safeBytes = clampNonNegativeInt(bytesTotal);
-  if (!safeUserId || safeBytes <= 0) {
-    return { grantedBytes: 0 };
-  }
-  const mode = await detectManualCreditMode(db);
-  const now = nowIso();
-  const safeNote = String(note || "").trim().slice(0, 512);
-  const safeExpiresAt = String(expiresAt || "").trim() || null;
-  if (mode === "remaining") {
-    await dbRun(
-      db,
-      `
-        INSERT INTO manual_allowance_credits (
-          id,
-          user_id,
-          bytes_total,
-          bytes_remaining,
-          expires_at,
-          note,
-          created_at,
-          updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `,
-      [crypto.randomUUID(), safeUserId, safeBytes, safeBytes, safeExpiresAt, safeNote || null, now, now],
-    );
-  } else {
-    await dbRun(
-      db,
-      `
-        INSERT INTO manual_allowance_credits (
-          id,
-          user_id,
-          bytes_total,
-          bytes_consumed,
-          expires_at,
-          note,
-          created_at,
-          updated_at
-        ) VALUES (?, ?, ?, 0, ?, ?, ?, ?)
-      `,
-      [crypto.randomUUID(), safeUserId, safeBytes, safeExpiresAt, safeNote || null, now, now],
-    );
-  }
-  return { grantedBytes: safeBytes };
-}
-
-async function consumeAllowanceBytes(db, user, subscription, env, bytesUsed) {
-  const safeBytesUsed = clampNonNegativeInt(bytesUsed);
-  if (safeBytesUsed <= 0) {
-    return buildAllowanceState(db, user, subscription, env);
-  }
-  const userId = String(user && user.id || "").trim();
-  if (!userId) {
-    throw new Error("user_not_found");
-  }
-  const allowanceBefore = await buildAllowanceState(db, user, subscription, env);
-  const totalRemaining = clampNonNegativeInt(allowanceBefore && allowanceBefore.dataAllowance && allowanceBefore.dataAllowance.total_remaining_bytes);
-  if (totalRemaining < safeBytesUsed) {
-    throw new Error("allowance_exhausted");
-  }
-
-  const includedRemaining = clampNonNegativeInt(allowanceBefore && allowanceBefore.includedRemainingBytesBase);
-  const consumeIncludedBytes = Math.min(includedRemaining, safeBytesUsed);
-  const consumeManualBytes = Math.max(0, safeBytesUsed - consumeIncludedBytes);
-  const now = nowIso();
-  if (consumeIncludedBytes > 0) {
-    await dbRun(
-      db,
-      `
-        INSERT INTO usage_charges (
-          id,
-          user_id,
-          period_id,
-          bytes_used,
-          created_at
-        ) VALUES (?, ?, ?, ?, ?)
-      `,
-      [crypto.randomUUID(), userId, "trial_lifetime", consumeIncludedBytes, now],
-    );
-  }
-  if (consumeManualBytes > 0) {
-    const consumedManual = await consumeManualCredits(db, userId, consumeManualBytes, now);
-    if (consumedManual < consumeManualBytes) {
-      throw new Error("allowance_exhausted");
-    }
-  }
-  return buildAllowanceState(db, user, subscription, env);
 }
 
 async function findUserByEmail(db, email) {
@@ -6942,12 +6567,17 @@ async function createAccessToken(env, user, subscription, extraClaims = {}) {
   const secret = requireSecret(env, "JWT_SIGNING_SECRET");
   const exp = Math.floor(Date.now() / 1000) + (60 * 60);
   const entitlement = resolveEntitlementState(user, env);
+  const effectivePlanCode = normalizeRequestedPlan(
+    resolvePolicyPlanCode(user, subscription, env),
+  ) || PLAN_CODE_PLANETKA_FREE;
   const hostedStreamingAccessStatus = String(entitlement.subscription_status || "inactive");
   const hostedStreamingAccessValidUntil = String(entitlement.hosted_streaming_access_expires_at || "").trim();
   const basePayload = {
     type: "access",
     sub: user.id,
     email: user.email,
+    plan_code: effectivePlanCode,
+    user_status: effectivePlanCode,
     subscription_status: hostedStreamingAccessStatus,
     hosted_streaming_access_status: hostedStreamingAccessStatus,
     hosted_streaming_access_valid_until: hostedStreamingAccessValidUntil || null,
@@ -6966,6 +6596,125 @@ async function createAccessToken(env, user, subscription, extraClaims = {}) {
     payload,
     secret,
   );
+}
+
+function resolveTileSessionTokenTtlSeconds(env = {}) {
+  return Math.min(
+    3600,
+    Math.max(
+      60,
+      parseRateLimitInteger(
+        env.TILE_SESSION_TOKEN_TTL_SECONDS,
+        DEFAULT_TILE_SESSION_TOKEN_TTL_SECONDS,
+      ),
+    ),
+  );
+}
+
+function normalizeResolveId(value) {
+  return String(value || "").trim().slice(0, 128);
+}
+
+async function issueTileSessionToken(env, auth, requestedQualityMode, requestedResolveId = "") {
+  const safeQualityMode = normalizeQualityMode(requestedQualityMode);
+  const safePlanCode = normalizeRequestedPlan(auth && auth.planCode);
+  if (!isQualityModeAllowedForPlan(safePlanCode, safeQualityMode)) {
+    return {
+      error: json(
+        {
+          ok: false,
+          error: "quality_mode_not_allowed_for_tier",
+          message: qualityModeNotAllowedMessage(safePlanCode, safeQualityMode),
+          requested_quality_mode: safeQualityMode,
+        },
+        403,
+        env,
+      ),
+    };
+  }
+  const safeResolveId = normalizeResolveId(requestedResolveId) || crypto.randomUUID();
+  const ttlSeconds = resolveTileSessionTokenTtlSeconds(env);
+  const exp = Math.floor(Date.now() / 1000) + ttlSeconds;
+  const payload = {
+    type: "tile_session",
+    sub: String(auth && auth.user && auth.user.id || "").trim(),
+    email: String(auth && auth.user && auth.user.email || "").trim(),
+    plan_code: safePlanCode,
+    quality_mode: safeQualityMode,
+    resolve_id: safeResolveId,
+    auth_method: String(auth && auth.authMethod || "").trim(),
+    device_id: String(auth && auth.deviceId || "").trim(),
+    exp,
+  };
+  const secret = requireSecret(env, "JWT_SIGNING_SECRET");
+  const tileToken = await signJwt(payload, secret);
+  return {
+    token: tileToken,
+    resolveId: safeResolveId,
+    qualityMode: safeQualityMode,
+    expiresInSeconds: ttlSeconds,
+    expiresAt: new Date(exp * 1000).toISOString(),
+    exp,
+  };
+}
+
+async function readTileSessionClaims(request, env) {
+  const rawToken = String(request.headers.get("X-Planetka-Tile-Token") || "").trim();
+  if (!rawToken) {
+    return { claims: null };
+  }
+  const cacheKey = `tile_session:${rawToken}`;
+  const cached = authContextCacheGet(cacheKey, env);
+  if (cached && cached.tileSessionClaims) {
+    return { claims: cached.tileSessionClaims };
+  }
+  let payload;
+  try {
+    const secret = requireSecret(env, "JWT_SIGNING_SECRET");
+    payload = await verifyJwt(rawToken, secret);
+  } catch (error) {
+    const code = String(error && error.message || "invalid_tile_token");
+    const normalized = code === "token_expired" ? "tile_session_token_expired" : "invalid_tile_session_token";
+    return {
+      error: json(
+        {
+          ok: false,
+          error: normalized,
+        },
+        401,
+        env,
+      ),
+    };
+  }
+
+  if (String(payload && payload.type || "").trim() !== "tile_session") {
+    return { error: json({ ok: false, error: "invalid_tile_session_token" }, 401, env) };
+  }
+  const userId = String(payload && payload.sub || "").trim();
+  if (!userId) {
+    return { error: json({ ok: false, error: "invalid_tile_session_token" }, 401, env) };
+  }
+  const planCode = normalizeRequestedPlan(payload && (payload.plan_code || payload.user_status) || "");
+  const qualityMode = normalizeQualityMode(payload && payload.quality_mode || "");
+  const resolveId = normalizeResolveId(payload && payload.resolve_id || "");
+  const claims = {
+    userId,
+    userEmail: String(payload && payload.email || "").trim(),
+    planCode,
+    qualityMode,
+    resolveId,
+    authMethod: String(payload && payload.auth_method || "").trim(),
+    deviceId: normalizeDeviceId(payload && payload.device_id || ""),
+  };
+  authContextCacheSet(
+    cacheKey,
+    {
+      access: { exp: Number(payload && payload.exp || 0) || 0 },
+      tileSessionClaims: claims,
+    },
+    env,
+  );
+  return { claims };
 }
 
 async function createRefreshSession(db, userId, expiresAtOverride = "", metadata = {}) {
@@ -7077,28 +6826,6 @@ async function claimStripeWebhookEvent(db, event) {
   );
   const inserted = Number(result && result.meta && result.meta.changes) > 0;
   return { inserted, eventId, eventType };
-}
-
-function parseStripeCreditMap(value) {
-  const map = new Map();
-  const source = String(value || "").trim();
-  if (!source) {
-    return map;
-  }
-  for (const token of source.split(",")) {
-    const pair = String(token || "").trim();
-    if (!pair) {
-      continue;
-    }
-    const [idRaw, amountRaw] = pair.split(":", 2);
-    const id = String(idRaw || "").trim();
-    const amount = Number(amountRaw);
-    if (!id || !Number.isFinite(amount) || amount <= 0) {
-      continue;
-    }
-    map.set(id, amount);
-  }
-  return map;
 }
 
 function parseStripePlanMap(value) {
@@ -7236,43 +6963,6 @@ function resolveStripePlanEntitlement(lineItems, env) {
   }
   return {
     planCode: normalizeRequestedPlan(resolvedPlan || ""),
-    matched,
-  };
-}
-
-function computeStripeCreditGrantBytes(lineItems, env) {
-  const byPrice = parseStripeCreditMap(env.STRIPE_CREDIT_PRICE_GB_MAP);
-  const byProduct = parseStripeCreditMap(env.STRIPE_CREDIT_PRODUCT_GB_MAP);
-  const defaultTopupGb = Math.max(0, Number(env.STRIPE_DEFAULT_TOPUP_GB || 0));
-  let totalGb = 0;
-  const matched = [];
-
-  for (const item of collectStripeLineItemsWithQuantity(lineItems)) {
-    let perItemGb = 0;
-    if (item.priceId && byPrice.has(item.priceId)) {
-      perItemGb = Number(byPrice.get(item.priceId) || 0);
-    } else if (item.productId && byProduct.has(item.productId)) {
-      perItemGb = Number(byProduct.get(item.productId) || 0);
-    } else if (defaultTopupGb > 0 && (item.priceId || item.productId)) {
-      perItemGb = defaultTopupGb;
-    }
-    if (!Number.isFinite(perItemGb) || perItemGb <= 0) {
-      continue;
-    }
-    const lineGb = perItemGb * Math.max(1, item.quantity);
-    totalGb += lineGb;
-    matched.push({
-      price_id: item.priceId,
-      product_id: item.productId,
-      quantity: item.quantity,
-      gb_per_item: perItemGb,
-      gb_total: lineGb,
-    });
-  }
-
-  return {
-    creditsGb: totalGb,
-    creditsBytes: toBytesFromGb(totalGb),
     matched,
   };
 }
@@ -7420,12 +7110,20 @@ async function createStripeRefundForCheckoutSession(env, session, details = {}) 
   };
 }
 
-async function readBearerUser(request, env) {
+function readBearerToken(request) {
   const header = String(request.headers.get("Authorization") || "");
   if (!header.startsWith("Bearer ")) {
-    return null;
+    return "";
   }
   const token = header.slice("Bearer ".length).trim();
+  if (!token) {
+    return "";
+  }
+  return token;
+}
+
+async function readBearerUser(request, env) {
+  const token = readBearerToken(request);
   if (!token) {
     return null;
   }
@@ -9498,26 +9196,115 @@ function buildTileResponseHeaders(env, fileName, sizeBytes, etag) {
   return headers;
 }
 
+async function handleTileSessionStart(request, env) {
+  const auth = await requireAuthenticatedUserContext(
+    request,
+    env,
+    { enforceApiKeyDevicePolicy: false, lightweightAccessClaims: true },
+  );
+  if (auth.error) {
+    return auth.error;
+  }
+  const db = requireDb(env);
+  const requestDeviceId = normalizeDeviceId(
+    auth.deviceId || request.headers.get("X-Planetka-Device-Id") || "",
+  );
+  const throttleGate = await enforceTileSessionThrottleGateCached(
+    db,
+    env,
+    auth.user,
+    requestDeviceId,
+    requestClientIp(request),
+  );
+  if (throttleGate && throttleGate.blocked) {
+    return rateLimitedResponse(
+      env,
+      String(throttleGate.code || "download_throttled"),
+      String(
+        throttleGate.message
+        || "High-volume data use detected. Download speed is temporarily throttled. Contact Planetka support if needed.",
+      ),
+      resolveDownloadThrottleRetryAfterSeconds(throttleGate),
+    );
+  }
+  const body = await parseJson(request);
+  const requestedQualityMode = String(
+    body && body.quality_mode ? body.quality_mode : request.headers.get("X-Planetka-Quality-Mode") || "",
+  ).trim();
+  const requestedResolveId = String(
+    body && body.resolve_id ? body.resolve_id : request.headers.get("X-Planetka-Resolve-Id") || "",
+  ).trim();
+  const issued = await issueTileSessionToken(
+    env,
+    auth,
+    requestedQualityMode,
+    requestedResolveId,
+  );
+  if (issued && issued.error) {
+    return issued.error;
+  }
+  return json(
+    {
+      ok: true,
+      resolve_id: issued.resolveId,
+      quality_mode: issued.qualityMode,
+      tile_token: issued.token,
+      expires_in_seconds: issued.expiresInSeconds,
+      expires_at: issued.expiresAt,
+      plan_code: normalizeRequestedPlan(auth && auth.planCode),
+    },
+    200,
+    env,
+  );
+}
+
 async function handleTileRequest(request, env, path, ctx) {
   if (!env.PLANETKA_DATA) {
     return json({ ok: false, error: "missing_r2_binding" }, 500, env);
   }
 
-  const auth = await requireAuthenticatedUserContext(
-    request,
-    env,
-    { enforceApiKeyDevicePolicy: true },
-  );
-  if (auth.error) {
-    return auth.error;
+  const db = requireDb(env);
+  let user = { id: "", email: "" };
+  let planCode = PLAN_CODE_PLANETKA_FREE;
+  let deviceId = "";
+  let tokenQualityMode = "";
+  let tokenResolveId = "";
+  const tileSessionAuth = await readTileSessionClaims(request, env);
+  if (tileSessionAuth && tileSessionAuth.error) {
+    return tileSessionAuth.error;
   }
-  const { db, user, planCode, deviceId } = auth;
+  if (tileSessionAuth && tileSessionAuth.claims) {
+    user = {
+      id: String(tileSessionAuth.claims.userId || "").trim(),
+      email: String(tileSessionAuth.claims.userEmail || "").trim(),
+    };
+    planCode = normalizeRequestedPlan(tileSessionAuth.claims.planCode);
+    deviceId = normalizeDeviceId(tileSessionAuth.claims.deviceId || request.headers.get("X-Planetka-Device-Id") || "");
+    tokenQualityMode = normalizeQualityMode(tileSessionAuth.claims.qualityMode || "");
+    tokenResolveId = normalizeResolveId(tileSessionAuth.claims.resolveId || "");
+  } else {
+    const auth = await requireAuthenticatedUserContext(
+      request,
+      env,
+      { enforceApiKeyDevicePolicy: false, lightweightAccessClaims: true },
+    );
+    if (auth.error) {
+      return auth.error;
+    }
+    user = auth.user;
+    planCode = normalizeRequestedPlan(auth.planCode);
+    deviceId = normalizeDeviceId(auth.deviceId || request.headers.get("X-Planetka-Device-Id") || "");
+  }
 
   const requestStartedAtMs = Date.now();
   const clientIp = requestClientIp(request);
   const cfCountry = requestCountry(request);
   const cfRay = String(request.headers.get("CF-Ray") || "").trim();
-  const resolveId = String(request.headers.get("X-Planetka-Resolve-Id") || "").trim().slice(0, 128);
+  const resolveIdHeader = normalizeResolveId(request.headers.get("X-Planetka-Resolve-Id") || "");
+  if (tokenResolveId && resolveIdHeader && tokenResolveId !== resolveIdHeader) {
+    return json({ ok: false, error: "tile_session_resolve_mismatch" }, 403, env);
+  }
+  const resolveId = tokenResolveId || resolveIdHeader;
   let eventStatusCode = 0;
   let eventBytesServed = 0;
   let eventCacheStatus = "";
@@ -9525,32 +9312,6 @@ async function handleTileRequest(request, env, path, ctx) {
   let eventFolder = "";
   let eventFileName = "";
   let eventTileKey = "";
-  const throttleGate = await enforceDownloadThrottleGate(db, env, user, deviceId, clientIp);
-  if (throttleGate && throttleGate.blocked) {
-    eventStatusCode = 429;
-    eventErrorCode = String(throttleGate.code || "download_throttled");
-    return rateLimitedResponse(
-      env,
-      "download_throttled",
-      "High-volume data use detected. Download speed is temporarily throttled. Contact Planetka support if needed.",
-      clampNonNegativeInt(throttleGate.retryAfterSeconds) || 1,
-    );
-  }
-  if (throttleGate && throttleGate.isThrottled) {
-    const throttledDelayMs = Math.min(
-      30000,
-      Math.max(
-        0,
-        parseRateLimitInteger(
-          env.DOWNLOAD_THROTTLED_DELAY_MS,
-          DEFAULT_DOWNLOAD_THROTTLED_DELAY_MS,
-        ),
-      ),
-    );
-    if (throttledDelayMs > 0) {
-      await sleepMs(throttledDelayMs);
-    }
-  }
 
   try {
     const parts = path.replace(/^\/tiles\//, "").split("/");
@@ -9579,19 +9340,23 @@ async function handleTileRequest(request, env, path, ctx) {
     let key = prefix ? `${prefix}/${folder}/${fileName}` : `${folder}/${fileName}`;
     eventTileKey = key;
     const qualityModeRaw = String(request.headers.get("X-Planetka-Quality-Mode") || "").trim().toLowerCase();
-    const effectiveQualityMode = normalizeQualityMode(qualityModeRaw);
+    const requestedQualityMode = normalizeQualityMode(qualityModeRaw);
+    if (tokenQualityMode && qualityModeRaw && requestedQualityMode !== tokenQualityMode) {
+      eventStatusCode = 403;
+      eventErrorCode = "tile_session_quality_mismatch";
+      return json({ ok: false, error: "tile_session_quality_mismatch" }, 403, env);
+    }
+    const effectiveQualityMode = tokenQualityMode || requestedQualityMode;
     if ((request.method === "GET" || request.method === "HEAD")
       && !isQualityModeAllowedForPlan(planCode, effectiveQualityMode)) {
       eventStatusCode = 403;
       eventErrorCode = "quality_mode_not_allowed_for_tier";
-      const accountState = await buildAllowanceState(db, user, null, env);
       return json(
         {
           ok: false,
           error: "quality_mode_not_allowed_for_tier",
           message: qualityModeNotAllowedMessage(planCode, effectiveQualityMode),
           requested_quality_mode: effectiveQualityMode,
-          ...serializeAccountState(accountState),
         },
         403,
         env,
@@ -9602,7 +9367,6 @@ async function handleTileRequest(request, env, path, ctx) {
       && !isQualityModeAllowedForPlan(planCode, tileRequiredQualityMode)) {
       eventStatusCode = 403;
       eventErrorCode = "tile_quality_not_allowed_for_tier";
-      const accountState = await buildAllowanceState(db, user, null, env);
       return json(
         {
           ok: false,
@@ -9611,7 +9375,6 @@ async function handleTileRequest(request, env, path, ctx) {
           requested_quality_mode: effectiveQualityMode,
           required_quality_mode: tileRequiredQualityMode,
           file_name: fileName,
-          ...serializeAccountState(accountState),
         },
         403,
         env,
@@ -9671,55 +9434,11 @@ async function handleTileRequest(request, env, path, ctx) {
       responseBody = cacheableResponse.body;
     }
 
-    // Beta mode: keep allowance measurement state, but do not charge downloads in either quality mode.
-    const chargeCredits = false;
-
-    const allowanceState = await buildAllowanceState(db, user, null, env, { includeTileQuota: false });
-    let updatedAllowance = allowanceState;
-    if (chargeCredits) {
-      if (allowanceState.dataAllowance.total_remaining_bytes < objectSize) {
-        eventStatusCode = 402;
-        eventErrorCode = "allowance_exhausted";
-        return json(
-          {
-            ok: false,
-            error: "allowance_exhausted",
-            message: "Full Quality credits are depleted. Switch to Preview or top up credits.",
-            ...serializeAccountState(allowanceState),
-          },
-          402,
-          env,
-        );
-      }
-
-      try {
-        updatedAllowance = await consumeAllowanceBytes(db, user, null, env, objectSize);
-      } catch (error) {
-        if (String(error && error.message || "") === "allowance_exhausted") {
-          eventStatusCode = 402;
-          eventErrorCode = "allowance_exhausted";
-          return json(
-            {
-              ok: false,
-              error: "allowance_exhausted",
-              message: "Full Quality credits are depleted. Switch to Preview or top up credits.",
-              ...serializeAccountState(await buildAllowanceState(db, user, null, env)),
-            },
-            402,
-            env,
-          );
-        }
-        throw error;
-      }
-    }
-
     const responseHeaders = new Headers({
       ...corsHeaders(env),
       "Content-Type": contentType,
       "Content-Length": String(objectSize),
       "Cache-Control": resolveTileCacheControl(env),
-      "X-Planetka-Remaining-Bytes": String(updatedAllowance.dataAllowance.total_remaining_bytes),
-      "X-Planetka-Warning-State": String(updatedAllowance.dataAllowance.warning_state || "ok"),
       "X-Planetka-Cache": cacheStatus,
       "X-Planetka-Quality-Mode": effectiveQualityMode,
     });
@@ -9838,14 +9557,32 @@ async function requireAuthenticatedUserContext(request, env, options = {}) {
   const allowCookieToken = parseBooleanFlag(options.allowCookieToken);
   const requireAdmin = parseBooleanFlag(options.requireAdmin);
   const enforceApiKeyDevicePolicy = options.enforceApiKeyDevicePolicy !== false;
+  const lightweightAccessClaims = parseBooleanFlag(options.lightweightAccessClaims);
+  const canUseLightweightAuthCache = (
+    lightweightAccessClaims
+    && !requireAdmin
+    && !allowCookieToken
+    && !enforceApiKeyDevicePolicy
+  );
+  const bearerToken = readBearerToken(request);
+  const authCacheKey = canUseLightweightAuthCache && bearerToken
+    ? `lightweight_auth:${bearerToken}`
+    : "";
 
   let access = null;
   let tokenSource = "";
   let bearerError = "";
+  const cachedAuth = authCacheKey ? authContextCacheGet(authCacheKey, env) : null;
+  if (cachedAuth) {
+    access = cachedAuth.access;
+    tokenSource = "bearer_cache";
+  }
   try {
-    access = await readBearerUser(request, env);
-    if (access) {
-      tokenSource = "bearer";
+    if (!access) {
+      access = await readBearerUser(request, env);
+      if (access) {
+        tokenSource = "bearer";
+      }
     }
   } catch (error) {
     bearerError = String(error && error.message || "invalid_access_token");
@@ -9874,6 +9611,46 @@ async function requireAuthenticatedUserContext(request, env, options = {}) {
     return { error: json({ ok: false, error: "missing_bearer_token" }, 401, env) };
   }
 
+  const authMethod = String(access.auth_method || "").trim().toLowerCase();
+  const apiKeyId = String(access.api_key_id || "").trim();
+  const deviceId = normalizeDeviceId(
+    access.device_id || request.headers.get("X-Planetka-Device-Id") || "",
+  );
+  const tokenPlanRaw = String(
+    access.plan_code || access.user_status || access.plan || access.planCode || access.userStatus || "",
+  ).trim();
+  const tokenPlanCode = tokenPlanRaw ? normalizeRequestedPlan(tokenPlanRaw) : "";
+  if (
+    lightweightAccessClaims
+    && !requireAdmin
+    && tokenPlanCode
+  ) {
+    if (authCacheKey && tokenSource !== "bearer_cache") {
+      authContextCacheSet(
+        authCacheKey,
+        {
+          access,
+        },
+        env,
+      );
+    }
+    return {
+      db,
+      user: {
+        id: String(access.sub || "").trim(),
+        email: String(access.email || "").trim(),
+        status: tokenPlanCode,
+      },
+      access,
+      planCode: tokenPlanCode,
+      authMethod,
+      apiKeyId,
+      deviceId,
+      devicePolicy: null,
+      tokenSource,
+    };
+  }
+
   let user = await findUserById(db, access.sub);
   if (!user) {
     return { error: json({ ok: false, error: "user_not_found" }, 404, env) };
@@ -9886,11 +9663,6 @@ async function requireAuthenticatedUserContext(request, env, options = {}) {
     return { error: json({ ok: false, error: "user_not_found" }, 404, env) };
   }
   const planCode = resolvePlanCode(user, null, env);
-  const authMethod = String(access.auth_method || "").trim().toLowerCase();
-  const apiKeyId = String(access.api_key_id || "").trim();
-  const deviceId = normalizeDeviceId(
-    access.device_id || request.headers.get("X-Planetka-Device-Id") || "",
-  );
   let devicePolicy = null;
   if (enforceApiKeyDevicePolicy && authMethod === "api_key" && apiKeyId) {
     const keyUsable = await isApiKeyUsableById(db, apiKeyId, String(user.id || ""));
@@ -11629,7 +11401,6 @@ async function applyPermanentLicenseEntitlement(db, env, details = {}) {
 
 async function handleStripeWebhook(request, env) {
   const db = requireDb(env);
-  await ensureAllowanceTables(db);
   await ensureStripeWebhookEventsTable(db);
   const rawBody = await request.text();
   const event = await verifyStripeWebhook(request, env, rawBody);
@@ -11783,57 +11554,21 @@ async function handleStripeWebhook(request, env) {
       env,
     );
   }
-  const grant = computeStripeCreditGrantBytes(lineItems, env);
-  if (grant.creditsBytes <= 0) {
-    console.log(
-      "stripe.webhook.ignored_no_credit_mapping",
-      JSON.stringify({
-        event_type: eventType,
-        email,
-        session_id: sessionId,
-      }),
-    );
-    return json(
-      {
-        ok: true,
-        ignored: true,
-        reason: "no_credit_mapping",
-        event_type: eventType,
-        email,
-      },
-      200,
-      env,
-    );
-  }
-
-  let user = await upsertUserByEmail(db, email, PLAN_CODE_PLANETKA_FREE, {}, env);
-  user = await enforceUserPlanPolicy(db, user, null, env);
-  if (!user || !user.id) {
-    return json({ ok: false, error: "user_upsert_failed" }, 500, env);
-  }
-  const note = `stripe_checkout:${eventId}:${sessionId}`;
-  await grantManualAllowanceCredits(db, String(user.id || ""), grant.creditsBytes, note, "");
-
   console.log(
-    "stripe.webhook.processed",
+    "stripe.webhook.ignored_no_plan_mapping",
     JSON.stringify({
       event_type: eventType,
       email,
       session_id: sessionId,
-      credits_gb: grant.creditsGb,
-      credits_bytes: grant.creditsBytes,
-      matched: grant.matched.slice(0, 50),
-      user_status: String(user.status || PLAN_CODE_PLANETKA),
     }),
   );
   return json(
     {
       ok: true,
-      processed: true,
+      ignored: true,
+      reason: "no_plan_mapping",
       event_type: eventType,
       email,
-      credits_granted_gb: grant.creditsGb,
-      credits_granted_bytes: grant.creditsBytes,
     },
     200,
     env,
@@ -12008,6 +11743,11 @@ async function dispatchExactRoute(request, env, path) {
     case "/me":
       if (request.method === "GET") {
         return await handleMe(request, env);
+      }
+      return null;
+    case "/tiles/session":
+      if (request.method === "POST") {
+        return await handleTileSessionStart(request, env);
       }
       return null;
     case "/device/start":
