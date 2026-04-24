@@ -1567,6 +1567,80 @@ def _restore_camera_state_after_rebuild(scene, snapshot):
     return True
 
 
+def _earth_graph_rebind(scene, earth_surface):
+    if scene is None or earth_surface is None:
+        return False
+    try:
+        ensure_planetka_root(scene)
+        ensure_earth_surface_parent(scene=scene, earth_surface=earth_surface)
+        return True
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed binding Earth surface to Planetka Root", exc_info=True)
+    except (RuntimeError, TypeError, ValueError):
+        logger.debug("Planetka: failed binding Earth surface to Planetka Root", exc_info=True)
+    return False
+
+
+def _earth_graph_create_bootstrap_surface(scene):
+    surface_collection = ensure_planetka_temp_collection()
+    new_obj = _create_placeholder_surface_object(scene)
+    if not new_obj:
+        raise RuntimeError("Failed to create bootstrap Earth surface mesh")
+    if surface_collection is not None:
+        for collection in list(new_obj.users_collection):
+            if collection is surface_collection:
+                continue
+            collection.objects.unlink(new_obj)
+        if new_obj.name not in surface_collection.objects:
+            surface_collection.objects.link(new_obj)
+    delete_temp_meshes(keep_obj=new_obj)
+    try:
+        new_obj.name = "Planetka Earth Surface"
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        pass
+    mark_earth_object(new_obj)
+    _earth_graph_rebind(scene=scene, earth_surface=new_obj)
+    return new_obj
+
+
+def _earth_graph_cleanup_for_rebuild(scene):
+    detached_cameras = 0
+    try:
+        detached_cameras = _detach_cameras_from_planetka_parents(scene)
+    except _REBUILD_EXCEPTIONS:
+        detached_cameras = 0
+        logger.debug("Planetka: failed detaching cameras during rebuild", exc_info=True)
+
+    try:
+        delete_temp_meshes(keep_obj=None)
+    except _REBUILD_EXCEPTIONS:
+        logger.debug("Planetka: failed clearing temporary meshes during rebuild", exc_info=True)
+
+    removed_objects = _remove_planetka_objects_preserving_cameras()
+    removed_collections = _unlink_and_remove_planetka_collections()
+    removed_data = _remove_unused_planetka_datablocks()
+    scene_keys_cleared = _clear_scene_planetka_runtime_idprops(scene)
+    try:
+        cleanup_counts = cleanup_planetka_unused_data()
+    except _REBUILD_EXCEPTIONS:
+        cleanup_counts = {}
+        logger.debug("Planetka: failed cleanup pass during rebuild", exc_info=True)
+
+    return {
+        "detached_cameras": int(detached_cameras),
+        "removed_objects": int(removed_objects),
+        "removed_collections": int(removed_collections),
+        "removed_data": dict(removed_data or {}),
+        "scene_keys_cleared": int(scene_keys_cleared),
+        "cleanup_counts": dict(cleanup_counts or {}),
+    }
+
+
+def _earth_graph_restore_after_rebuild(scene, props, earth_settings_snapshot, camera_snapshot):
+    _restore_earth_settings_after_rebuild(scene, props, earth_settings_snapshot)
+    _restore_camera_state_after_rebuild(scene, camera_snapshot)
+
+
 def _scene_allows_automatic_clipping(scene):
     if scene is None:
         return False
@@ -3805,26 +3879,13 @@ class PLANETKA_OT_RebuildEarth(bpy.types.Operator):
         temp_camera_obj = None
         temp_camera_data = None
 
-        try:
-            detached_cameras = _detach_cameras_from_planetka_parents(scene)
-        except _REBUILD_EXCEPTIONS:
-            detached_cameras = 0
-            logger.debug("Planetka: failed detaching cameras during rebuild", exc_info=True)
-
-        try:
-            delete_temp_meshes(keep_obj=None)
-        except _REBUILD_EXCEPTIONS:
-            logger.debug("Planetka: failed clearing temporary meshes during rebuild", exc_info=True)
-
-        removed_objects = _remove_planetka_objects_preserving_cameras()
-        removed_collections = _unlink_and_remove_planetka_collections()
-        removed_data = _remove_unused_planetka_datablocks()
-        scene_keys_cleared = _clear_scene_planetka_runtime_idprops(scene)
-        try:
-            cleanup_counts = cleanup_planetka_unused_data()
-        except _REBUILD_EXCEPTIONS:
-            cleanup_counts = {}
-            logger.debug("Planetka: failed cleanup pass during rebuild", exc_info=True)
+        cleanup_stats = _earth_graph_cleanup_for_rebuild(scene)
+        detached_cameras = int(cleanup_stats.get("detached_cameras", 0))
+        removed_objects = int(cleanup_stats.get("removed_objects", 0))
+        removed_collections = int(cleanup_stats.get("removed_collections", 0))
+        removed_data = dict(cleanup_stats.get("removed_data", {}) or {})
+        scene_keys_cleared = int(cleanup_stats.get("scene_keys_cleared", 0))
+        cleanup_counts = dict(cleanup_stats.get("cleanup_counts", {}) or {})
 
         if camera is not None and str(getattr(camera, "type", "")) == "CAMERA":
             for collection in tuple(getattr(camera, "users_collection", ()) or ()):
@@ -3871,8 +3932,7 @@ class PLANETKA_OT_RebuildEarth(bpy.types.Operator):
             except _REBUILD_EXCEPTIONS:
                 logger.debug("Planetka: failed removing temporary rebuild camera data", exc_info=True)
 
-        _restore_earth_settings_after_rebuild(scene, props, earth_settings_snapshot)
-        _restore_camera_state_after_rebuild(scene, camera_snapshot)
+        _earth_graph_restore_after_rebuild(scene, props, earth_settings_snapshot, camera_snapshot)
 
         if "FINISHED" not in rebuild_result:
             return _return_with_selection(fail(
@@ -3987,19 +4047,9 @@ class PLANETKA_OT_AddEarth(bpy.types.Operator):
             logger.debug("Planetka: failed setting default texture quality to Preview", exc_info=True)
         warm_base_sphere_mesh_cache()
 
-        surface_collection = ensure_planetka_temp_collection()
         new_obj = None
         try:
-            new_obj = _create_placeholder_surface_object(scene)
-            if not new_obj:
-                raise RuntimeError("Failed to create bootstrap Earth surface mesh")
-            if surface_collection is not None:
-                for collection in list(new_obj.users_collection):
-                    if collection is surface_collection:
-                        continue
-                    collection.objects.unlink(new_obj)
-                if new_obj.name not in surface_collection.objects:
-                    surface_collection.objects.link(new_obj)
+            new_obj = _earth_graph_create_bootstrap_surface(scene)
         except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
             if new_obj:
                 remove_object_and_unused_mesh(new_obj)
@@ -4011,20 +4061,6 @@ class PLANETKA_OT_AddEarth(bpy.types.Operator):
                 exc=exc,
                 log_message="Planetka add_earth bootstrap build failed",
             ))
-
-        delete_temp_meshes(keep_obj=new_obj)
-        try:
-            new_obj.name = "Planetka Earth Surface"
-        except (AttributeError, RuntimeError, TypeError, ValueError):
-            pass
-        mark_earth_object(new_obj)
-        try:
-            ensure_planetka_root(scene)
-            ensure_earth_surface_parent(scene=scene, earth_surface=new_obj)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed parenting bootstrap Earth surface to Planetka Root", exc_info=True)
-        except (RuntimeError, TypeError, ValueError):
-            logger.debug("Planetka: failed parenting bootstrap Earth surface to Planetka Root", exc_info=True)
 
         try:
             _apply_startup_setup_for_create_earth(scene, props)
@@ -4117,13 +4153,7 @@ class PLANETKA_OT_AddEarth(bpy.types.Operator):
         except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
             logger.debug("Planetka: failed enforcing post-resolve Create Earth texture quality mode", exc_info=True)
 
-        try:
-            ensure_planetka_root(scene)
-            ensure_earth_surface_parent(scene=scene, earth_surface=get_earth_object() or new_obj)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed parenting resolved Earth surface to Planetka Root", exc_info=True)
-        except (RuntimeError, TypeError, ValueError):
-            logger.debug("Planetka: failed parenting resolved Earth surface to Planetka Root", exc_info=True)
+        _earth_graph_rebind(scene=scene, earth_surface=get_earth_object() or new_obj)
 
         # Atmosphere and cloud runtime loading is intentionally disabled for now.
         # Keep implementation code in-place for future re-enable.
