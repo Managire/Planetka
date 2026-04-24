@@ -158,6 +158,10 @@ _AUTO_RESOLVE_DOWNLOAD_EPOCH = 0
 _AUTO_RESOLVE_DOWNLOAD_PUMP_INTERVAL_SEC = 0.2
 _AUTO_RESOLVE_DOWNLOAD_SCENE_WAIT_SEC = 1.5
 _AUTO_RESOLVE_DOWNLOAD_COMPLETED_MAX_AGE_SEC = 15.0
+_AUTO_RESOLVE_NONCRITICAL_TIMER_RUNNING = False
+_AUTO_RESOLVE_NONCRITICAL_INTERVAL_SEC = 0.25
+_AUTO_RESOLVE_NONCRITICAL_PENDING = {}
+_AUTO_RESOLVE_SIZE_ESTIMATE_LAST_SIGNATURE = {}
 _AUTO_RESOLVE_TICK_STATE_IDLE = "IDLE"
 _AUTO_RESOLVE_TICK_STATE_READY = "READY"
 _AUTO_RESOLVE_TICK_STATE_PLANNED = "PLANNED"
@@ -3770,6 +3774,95 @@ def _auto_resolve_update_size_estimation(scene, scope, active_view_signature, ta
         logger.debug("Planetka auto-resolve: failed updating resolve size estimates", exc_info=True)
 
 
+def _arm_auto_resolve_noncritical_timer():
+    global _AUTO_RESOLVE_NONCRITICAL_TIMER_RUNNING
+    try:
+        if bpy.app.timers.is_registered(_auto_resolve_noncritical_timer):
+            _AUTO_RESOLVE_NONCRITICAL_TIMER_RUNNING = True
+            return
+        bpy.app.timers.register(
+            _auto_resolve_noncritical_timer,
+            first_interval=max(0.05, float(_AUTO_RESOLVE_NONCRITICAL_INTERVAL_SEC)),
+            persistent=True,
+        )
+        _AUTO_RESOLVE_NONCRITICAL_TIMER_RUNNING = True
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed arming non-critical auto-resolve timer", exc_info=True)
+        _AUTO_RESOLVE_NONCRITICAL_TIMER_RUNNING = False
+    except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
+        logger.debug("Planetka: failed arming non-critical auto-resolve timer", exc_info=True)
+        _AUTO_RESOLVE_NONCRITICAL_TIMER_RUNNING = False
+
+
+def _auto_resolve_enqueue_size_estimation(scene, scope, active_view_signature, target_tiles, props):
+    if scene is None or props is None:
+        return
+    try:
+        scene_id = _scene_key(scene)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return
+    current_quality_mode = _normalize_texture_quality_mode(getattr(props, "texture_quality_mode", "PREVIEW"))
+    safe_scope = str(scope or "CAMERA")
+    safe_active_signature = active_view_signature if safe_scope == "ACTIVE_VIEW" else None
+    safe_tiles = tuple(target_tiles or ())
+    request_signature = (safe_scope, safe_active_signature, current_quality_mode, safe_tiles)
+    if _AUTO_RESOLVE_SIZE_ESTIMATE_LAST_SIGNATURE.get(scene_id) == request_signature:
+        return
+    _AUTO_RESOLVE_SIZE_ESTIMATE_LAST_SIGNATURE[scene_id] = request_signature
+    _AUTO_RESOLVE_NONCRITICAL_PENDING[scene_id] = {
+        "scope": safe_scope,
+        "active_view_signature": safe_active_signature,
+        "target_tiles": safe_tiles,
+    }
+    _arm_auto_resolve_noncritical_timer()
+
+
+def _auto_resolve_noncritical_timer():
+    global _AUTO_RESOLVE_NONCRITICAL_TIMER_RUNNING
+    try:
+        if not hasattr(bpy.types.Scene, "planetka"):
+            _AUTO_RESOLVE_NONCRITICAL_PENDING.clear()
+            _AUTO_RESOLVE_NONCRITICAL_TIMER_RUNNING = False
+            return None
+        if not _AUTO_RESOLVE_NONCRITICAL_PENDING:
+            _AUTO_RESOLVE_NONCRITICAL_TIMER_RUNNING = False
+            return None
+
+        scene = getattr(bpy.context, "scene", None)
+        scene_id = _scene_key(scene) if scene is not None else None
+        request = None
+        if scene_id is not None:
+            request = _AUTO_RESOLVE_NONCRITICAL_PENDING.pop(scene_id, None)
+
+        if request is None:
+            pending_scene_id, request = next(iter(_AUTO_RESOLVE_NONCRITICAL_PENDING.items()))
+            _AUTO_RESOLVE_NONCRITICAL_PENDING.pop(pending_scene_id, None)
+            scene = _scene_from_key(pending_scene_id)
+
+        if scene is not None and request:
+            props = getattr(scene, "planetka", None)
+            if props is not None:
+                _auto_resolve_update_size_estimation(
+                    scene,
+                    request.get("scope"),
+                    request.get("active_view_signature"),
+                    request.get("target_tiles"),
+                    props,
+                )
+
+        if _AUTO_RESOLVE_NONCRITICAL_PENDING:
+            return max(0.05, float(_AUTO_RESOLVE_NONCRITICAL_INTERVAL_SEC))
+        _AUTO_RESOLVE_NONCRITICAL_TIMER_RUNNING = False
+        return None
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka non-critical auto-resolve timer tick failed", exc_info=True)
+        _AUTO_RESOLVE_NONCRITICAL_TIMER_RUNNING = False
+    except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
+        logger.debug("Planetka non-critical auto-resolve timer tick failed unexpectedly", exc_info=True)
+        _AUTO_RESOLVE_NONCRITICAL_TIMER_RUNNING = False
+    return None
+
+
 def _auto_resolve_tick_transition(current_state, event):
     transitions = _AUTO_RESOLVE_TICK_TRANSITIONS.get(str(current_state or ""), {})
     next_state = transitions.get(str(event or ""), current_state)
@@ -3785,9 +3878,6 @@ def _auto_resolve_detect_change(scene, props):
         return {"event": "STOP", "retry_delay": None}
     if props is None or not bool(getattr(props, "auto_resolve", False)):
         return {"event": "STOP", "retry_delay": None}
-
-    # Keep scope transitions updated even without depsgraph updates.
-    _handle_view_scope_quality_transition(scene)
 
     scope_mode = _auto_resolve_scope_mode(scene)
     if scope_mode == "NONE":
@@ -3876,7 +3966,7 @@ def _auto_resolve_plan_job(scene, props, detect_ctx):
         logger.debug("Planetka auto-resolve: unexpected tile computation failure", exc_info=True)
         return {"event": "RETRY", "retry_delay": AUTO_RESOLVE_RETRY_DELAY_SEC}
 
-    _auto_resolve_update_size_estimation(scene, scope, active_view_signature, target_tiles, props)
+    _auto_resolve_enqueue_size_estimation(scene, scope, active_view_signature, target_tiles, props)
 
     if target_tiles == _last_resolved_tiles(scene) and not bool(detect_ctx.get("pending_output_change", False)):
         return {"event": "NO_CHANGE", "target_tiles": target_tiles, "retry_delay": None}
@@ -4036,12 +4126,19 @@ def ensure_auto_resolve_service_running():
 
 def stop_auto_resolve_service():
     global _AUTO_RESOLVE_TIMER_RUNNING
+    global _AUTO_RESOLVE_NONCRITICAL_TIMER_RUNNING
     try:
         if bpy.app.timers.is_registered(_auto_resolve_timer):
             bpy.app.timers.unregister(_auto_resolve_timer)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed stopping auto-resolve timer", exc_info=True)
+    try:
+        if bpy.app.timers.is_registered(_auto_resolve_noncritical_timer):
+            bpy.app.timers.unregister(_auto_resolve_noncritical_timer)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed stopping non-critical auto-resolve timer", exc_info=True)
     _AUTO_RESOLVE_TIMER_RUNNING = False
+    _AUTO_RESOLVE_NONCRITICAL_TIMER_RUNNING = False
     stop_auto_resolve_download_pipeline()
     _AUTO_RESOLVE_NEXT_DUE_TIME.clear()
     _AUTO_RESOLVE_LAST_CAMERA_SIGNATURE.clear()
@@ -4060,6 +4157,8 @@ def stop_auto_resolve_service():
     _FRAME_KEYED_RUNTIME_LAST_SIGNATURE.clear()
     _NAV_CAMERA_CONTROL_LAST_SIGNATURE.clear()
     _SUNLIGHT_OBJECT_NAME_CACHE.clear()
+    _AUTO_RESOLVE_NONCRITICAL_PENDING.clear()
+    _AUTO_RESOLVE_SIZE_ESTIMATE_LAST_SIGNATURE.clear()
 
 
 def recover_post_render_state(scene=None, cancelled=False):
