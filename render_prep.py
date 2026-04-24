@@ -14,6 +14,7 @@ import math
 import os
 import time
 import re
+from dataclasses import dataclass, field
 
 import bpy
 from bpy.props import BoolProperty, EnumProperty, StringProperty
@@ -68,6 +69,71 @@ LAST_MANUAL_RESOLVE_TOTAL_SECONDS_KEY = "planetka_last_manual_resolve_total_seco
 
 
 _TILE_ZD_PATTERN = re.compile(r"_z(\d+)_d(\d+)$")
+
+
+@dataclass
+class ResolveUiReport:
+    level: str
+    message: str
+
+
+@dataclass
+class ResolvePrepareContextResult:
+    response: object = None
+    scene: object = None
+    props: object = None
+    prefs: object = None
+    normalized: str = ""
+    manual_summary_requested: bool = False
+    force_empty_once: bool = False
+    earth_surface: object = None
+    target_surface_name: str = "Planetka Earth Surface"
+    tile_utils: object = None
+    phase_assets_ms: float = 0.0
+    ui_reports: list = field(default_factory=list)
+
+
+@dataclass
+class ResolveTileSelectionResult:
+    response: object = None
+    tiles: list = field(default_factory=list)
+    texture_quality_mode: str = "PREVIEW"
+    nav_latitude_deg: float = 0.0
+    nav_longitude_deg: float = 0.0
+    nav_altitude_km: float = 0.0
+    phase_tile_select_ms: float = 0.0
+    ui_reports: list = field(default_factory=list)
+
+
+@dataclass
+class ResolveStreamingResult:
+    response: object = None
+    resolved_paths: dict = field(default_factory=dict)
+    resolved_tiles_override: object = None
+    ocean_tiles_override: object = None
+    full_quality_cost_bytes: int = 0
+    download_capture: dict = field(default_factory=dict)
+    phase_stream_ms: float = 0.0
+    ui_reports: list = field(default_factory=list)
+
+
+@dataclass
+class ResolveBuildResult:
+    response: object = None
+    new_obj: object = None
+    shader_result: dict = field(default_factory=dict)
+    old_surface_viewport_hidden: bool = False
+    old_surface_render_hidden: bool = False
+    phase_mesh_ms: float = 0.0
+    phase_shader_ms: float = 0.0
+    target_surface_name: str = "Planetka Earth Surface"
+    ui_reports: list = field(default_factory=list)
+
+
+@dataclass
+class ResolveEarlyResult:
+    response: object = None
+    ui_reports: list = field(default_factory=list)
 
 
 def _normalize_texture_quality_mode(value):
@@ -561,65 +627,88 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             logger=logger,
         )
 
+    def _ui_report(self, level, message):
+        return ResolveUiReport(str(level or "INFO").upper(), str(message or ""))
+
+    def _flush_ui_reports(self, ui_reports):
+        for entry in list(ui_reports or ()):
+            if not isinstance(entry, ResolveUiReport):
+                continue
+            level = str(entry.level or "INFO").upper()
+            if level not in {"INFO", "WARNING", "ERROR"}:
+                level = "INFO"
+            text = str(entry.message or "").strip()
+            if not text:
+                continue
+            try:
+                self.report({level}, text)
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka: failed emitting resolve UI report", exc_info=True)
+
     def _phase_prepare_context(self, context):
         phase_start = time.perf_counter()
+        ui_reports = []
         scene = require_scene(self, context, logger=logger)
         if scene is None:
-            return {"response": {'CANCELLED'}}
+            return ResolvePrepareContextResult(response={'CANCELLED'})
         props = require_planetka_props(self, context, logger=logger)
         if props is None:
-            return {"response": {'CANCELLED'}}
+            return ResolvePrepareContextResult(response={'CANCELLED'})
         manual_summary_requested = (
             not bool(getattr(self, "silent", False))
             and not bool(getattr(self, "defer_download", False))
         )
 
         if bool(getattr(props, "lock_resolve_during_animation", True)) and _is_animation_playing():
-            self.report({'WARNING'}, "Resolve skipped during animation playback (disabled in Settings).")
-            return {"response": {'CANCELLED'}}
+            ui_reports.append(self._ui_report("WARNING", "Resolve skipped during animation playback (disabled in Settings)."))
+            return ResolvePrepareContextResult(response={'CANCELLED'}, ui_reports=ui_reports)
 
         prefs = get_prefs()
         if not prefs:
-            return {
-                "response": fail(
+            return ResolvePrepareContextResult(
+                response=fail(
                     self,
                     "Planetka preferences not available.",
                     code=ErrorCode.RESOLVE_PREFS_MISSING,
                     logger=logger,
-                )
-            }
+                ),
+                ui_reports=ui_reports,
+            )
 
         normalized = _normalize_texture_source_path(getattr(prefs, "texture_base_path", ""))
         normalized, issue = _validate_texture_source(normalized)
         if issue:
-            return {
-                "response": fail(
+            return ResolvePrepareContextResult(
+                response=fail(
                     self,
                     issue,
                     code=ErrorCode.RESOLVE_PATH_INVALID,
                     logger=logger,
-                )
-            }
+                ),
+                ui_reports=ui_reports,
+            )
         if is_remote_source_configured(normalized):
             if not is_authenticated(prefs):
-                return {
-                    "response": fail(
+                return ResolvePrepareContextResult(
+                    response=fail(
                         self,
                         "Connect Planetka API key before resolving remote Earth data.",
                         code=ErrorCode.RESOLVE_PRECHECK_FAILED,
                         logger=logger,
-                    )
-                }
+                    ),
+                    ui_reports=ui_reports,
+                )
             stream_ok, stream_issue = verify_remote_stream_health(force=False)
             if not stream_ok:
-                return {
-                    "response": fail(
+                return ResolvePrepareContextResult(
+                    response=fail(
                         self,
                         stream_issue or "Planetka remote tile stream check failed.",
                         code=ErrorCode.RESOLVE_PRECHECK_FAILED,
                         logger=logger,
-                    )
-                }
+                    ),
+                    ui_reports=ui_reports,
+                )
         prefs.texture_base_path = normalized
 
         try:
@@ -640,8 +729,8 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 candidate_names = ", ".join(sorted(obj.name for obj in candidates[:5]))
                 if len(candidates) > 5:
                     candidate_names = f"{candidate_names}, ..."
-                return {
-                    "response": fail(
+                return ResolvePrepareContextResult(
+                    response=fail(
                         self,
                         (
                             "Resolve requires one unambiguous Earth surface object. "
@@ -650,26 +739,29 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                         ),
                         code=ErrorCode.RESOLVE_PRECHECK_FAILED,
                         logger=logger,
-                    )
-                }
-            return {
-                "response": fail(
+                    ),
+                    ui_reports=ui_reports,
+                )
+            return ResolvePrepareContextResult(
+                response=fail(
                     self,
                     "Resolve requires an existing Planetka Earth surface. Run Create Earth first.",
                     code=ErrorCode.RESOLVE_PRECHECK_FAILED,
                     logger=logger,
-                )
-            }
+                ),
+                ui_reports=ui_reports,
+            )
         integrity_issue = _validate_resolve_scene_integrity(earth_surface)
         if integrity_issue:
-            return {
-                "response": fail(
+            return ResolvePrepareContextResult(
+                response=fail(
                     self,
                     integrity_issue,
                     code=ErrorCode.RESOLVE_PRECHECK_FAILED,
                     logger=logger,
-                )
-            }
+                ),
+                ui_reports=ui_reports,
+            )
         target_surface_name = str(getattr(earth_surface, "name", "") or "Planetka Earth Surface")
 
         # Apply requested Earth Radius on resolve as a safe fallback in case the UI
@@ -709,30 +801,33 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
 
         tile_utils = _get_tile_utils()
         if tile_utils is None:
-            return {
-                "response": fail(
+            return ResolvePrepareContextResult(
+                response=fail(
                     self,
                     "Resolve failed because tile utilities are unavailable.",
                     code=ErrorCode.RESOLVE_PRECHECK_FAILED,
                     logger=logger,
-                )
-            }
+                ),
+                ui_reports=ui_reports,
+            )
 
-        return {
-            "response": None,
-            "scene": scene,
-            "props": props,
-            "prefs": prefs,
-            "normalized": normalized,
-            "manual_summary_requested": bool(manual_summary_requested),
-            "force_empty_once": bool(force_empty_once),
-            "earth_surface": earth_surface,
-            "target_surface_name": target_surface_name,
-            "tile_utils": tile_utils,
-            "phase_assets_ms": (time.perf_counter() - phase_start) * 1000.0,
-        }
+        return ResolvePrepareContextResult(
+            response=None,
+            scene=scene,
+            props=props,
+            prefs=prefs,
+            normalized=normalized,
+            manual_summary_requested=bool(manual_summary_requested),
+            force_empty_once=bool(force_empty_once),
+            earth_surface=earth_surface,
+            target_surface_name=target_surface_name,
+            tile_utils=tile_utils,
+            phase_assets_ms=(time.perf_counter() - phase_start) * 1000.0,
+            ui_reports=ui_reports,
+        )
 
     def _phase_select_tiles(self, scene, props, tile_utils, force_empty_once):
+        ui_reports = []
         tiles_override = _parse_tiles_override(getattr(self, "tiles_override_json", ""))
         texture_quality_mode = "PREVIEW"
         try:
@@ -789,7 +884,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.exception("Planetka tile resolve failed; resolving to no visible tiles")
                 tiles = []
-                self.report({'WARNING'}, "Tile detection failed; resolving to no visible tiles.")
+                ui_reports.append(self._ui_report("WARNING", "Tile detection failed; resolving to no visible tiles."))
             except RuntimeError as exc:
                 try:
                     if LAST_REQUIRED_MPP_KEY in scene:
@@ -804,17 +899,18 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 )
                 logger.debug("Planetka tile resolve runtime failure: %s", exc, exc_info=True)
                 tiles = []
-                self.report({'WARNING'}, "No active camera/view found; resolving to no visible tiles.")
+                ui_reports.append(self._ui_report("WARNING", "No active camera/view found; resolving to no visible tiles."))
 
-        return {
-            "response": None,
-            "tiles": tiles,
-            "texture_quality_mode": texture_quality_mode,
-            "nav_latitude_deg": nav_latitude_deg,
-            "nav_longitude_deg": nav_longitude_deg,
-            "nav_altitude_km": nav_altitude_km,
-            "phase_tile_select_ms": (time.perf_counter() - phase_start) * 1000.0,
-        }
+        return ResolveTileSelectionResult(
+            response=None,
+            tiles=list(tiles or ()),
+            texture_quality_mode=texture_quality_mode,
+            nav_latitude_deg=nav_latitude_deg,
+            nav_longitude_deg=nav_longitude_deg,
+            nav_altitude_km=nav_altitude_km,
+            phase_tile_select_ms=(time.perf_counter() - phase_start) * 1000.0,
+            ui_reports=ui_reports,
+        )
 
     def _phase_handle_panorama_or_defer(
         self,
@@ -825,6 +921,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         texture_quality_mode,
         normalized,
     ):
+        ui_reports = []
         try:
             panorama_mode = bool(scene.get(LAST_PANORAMA_MODE_KEY, False))
             panorama_limit_exceeded = bool(scene.get(LAST_PANORAMA_LIMIT_EXCEEDED_KEY, False))
@@ -858,8 +955,8 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                     "Increase camera altitude or reduce required quality and resolve again.",
                 ),
             )
-            self.report({'WARNING'}, panorama_message)
-            return {'CANCELLED'}
+            ui_reports.append(self._ui_report("WARNING", panorama_message))
+            return ResolveEarlyResult(response={'CANCELLED'}, ui_reports=ui_reports)
 
         if bool(getattr(self, "defer_download", False)):
             full_tiles_override = tuple(tiles or ()) if texture_quality_mode == "FULL" else None
@@ -878,17 +975,20 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 manual_request=True,
             )
             if not queued:
-                return fail(
-                    self,
-                    "Planetka could not queue resolve download.",
-                    code=ErrorCode.RESOLVE_REFRESH_FAILED,
-                    logger=logger,
+                return ResolveEarlyResult(
+                    response=fail(
+                        self,
+                        "Planetka could not queue resolve download.",
+                        code=ErrorCode.RESOLVE_REFRESH_FAILED,
+                        logger=logger,
+                    ),
+                    ui_reports=ui_reports,
                 )
-            self.report({'INFO'}, "Planetka resolve queued. Downloading data in background.")
-            return {'FINISHED'}
+            ui_reports.append(self._ui_report("INFO", "Planetka resolve queued. Downloading data in background."))
+            return ResolveEarlyResult(response={'FINISHED'}, ui_reports=ui_reports)
 
         _ = props
-        return None
+        return ResolveEarlyResult(response=None, ui_reports=ui_reports)
 
     def _phase_prepare_streaming(
         self,
@@ -900,6 +1000,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         nav_longitude_deg,
         nav_altitude_km,
     ):
+        ui_reports = []
         resolved_paths = {}
         resolved_tiles_override = None
         ocean_tiles_override = None
@@ -942,14 +1043,15 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                     nav_altitude_km=nav_altitude_km,
                 )
             if bool(stream_payload.get("cancelled", False)):
-                return {
-                    "response": fail(
+                return ResolveStreamingResult(
+                    response=fail(
                         self,
                         "Planetka resolve download was cancelled.",
                         code=ErrorCode.RESOLVE_REFRESH_FAILED,
                         logger=logger,
-                    )
-                }
+                    ),
+                    ui_reports=ui_reports,
+                )
             resolved_paths = dict(stream_payload.get("resolved_paths", {}) or {})
             resolved_tiles_override = list(stream_payload.get("resolved_tiles", ()) or ())
             ocean_tiles_override = set(stream_payload.get("ocean_tiles", ()) or ())
@@ -978,25 +1080,27 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             # Full-quality cost estimation intentionally disabled.
             # Resolve should avoid extra planning work and start downloads immediately.
         except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
-            return {
-                "response": fail(
+            return ResolveStreamingResult(
+                response=fail(
                     self,
                     f"Planetka resolve download failed: {exc}",
                     code=ErrorCode.RESOLVE_REFRESH_FAILED,
                     logger=logger,
                     exc=exc,
                     log_message="Planetka resolve download failed",
-                )
-            }
+                ),
+                ui_reports=ui_reports,
+            )
         except (RuntimeError, TypeError, ValueError) as exc:
-            return {
-                "response": fail(
+            return ResolveStreamingResult(
+                response=fail(
                     self,
                     f"Planetka resolve download failed: {exc}",
                     code=ErrorCode.RESOLVE_REFRESH_FAILED,
                     logger=logger,
-                )
-            }
+                ),
+                ui_reports=ui_reports,
+            )
         if prefetch_fatal_error:
             coded_fatal_message = with_error_code(ErrorCode.RESOLVE_REFRESH_FAILED, prefetch_fatal_error)
             _store_last_resolve_error(
@@ -1004,23 +1108,25 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 coded_fatal_message,
                 "failed storing fatal resolve error on scene",
             )
-            return {
-                "response": fail(
+            return ResolveStreamingResult(
+                response=fail(
                     self,
                     prefetch_fatal_error,
                     code=ErrorCode.RESOLVE_REFRESH_FAILED,
                     logger=logger,
-                )
-            }
+                ),
+                ui_reports=ui_reports,
+            )
         if prefetch_cancelled:
-            return {
-                "response": fail(
+            return ResolveStreamingResult(
+                response=fail(
                     self,
                     "Planetka resolve download was cancelled.",
                     code=ErrorCode.RESOLVE_REFRESH_FAILED,
                     logger=logger,
-                )
-            }
+                ),
+                ui_reports=ui_reports,
+            )
         if int(prefetch_missing_count) > 0:
             missing_s2_count = 0
             if prefetch_missing_details:
@@ -1058,24 +1164,26 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                     coded_missing_message,
                     "failed storing missing-file resolve error on scene",
                 )
-                return {
-                    "response": fail(
+                return ResolveStreamingResult(
+                    response=fail(
                         self,
                         missing_message,
                         code=ErrorCode.RESOLVE_REFRESH_FAILED,
                         logger=logger,
-                    )
-                }
+                    ),
+                    ui_reports=ui_reports,
+                )
 
-        return {
-            "response": None,
-            "resolved_paths": resolved_paths,
-            "resolved_tiles_override": resolved_tiles_override,
-            "ocean_tiles_override": ocean_tiles_override,
-            "full_quality_cost_bytes": full_quality_cost_bytes,
-            "download_capture": download_capture,
-            "phase_stream_ms": (time.perf_counter() - phase_start) * 1000.0,
-        }
+        return ResolveStreamingResult(
+            response=None,
+            resolved_paths=dict(resolved_paths or {}),
+            resolved_tiles_override=resolved_tiles_override,
+            ocean_tiles_override=ocean_tiles_override,
+            full_quality_cost_bytes=int(full_quality_cost_bytes or 0),
+            download_capture=dict(download_capture or {}),
+            phase_stream_ms=(time.perf_counter() - phase_start) * 1000.0,
+            ui_reports=ui_reports,
+        )
 
     def _phase_build_surface(
         self,
@@ -1087,6 +1195,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         resolved_tiles_override,
         ocean_tiles_override,
     ):
+        ui_reports = []
         ensure_planetka_temp_collection()
         new_obj = None
         old_surface_viewport_hidden = bool(getattr(earth_surface, "hide_viewport", False))
@@ -1120,39 +1229,43 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             ) or {}
             phase_shader_ms = (time.perf_counter() - phase_start) * 1000.0
         except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
-            return {
-                "response": self._abort_resolve(
+            return ResolveBuildResult(
+                response=self._abort_resolve(
                     f"Planetka resolve failed: {exc}",
                     code=ErrorCode.RESOLVE_REFRESH_FAILED,
                     exc=exc,
                     log_message="Planetka resolve failed",
                     cleanup_obj=new_obj,
-                )
-            }
+                ),
+                ui_reports=ui_reports,
+            )
         except (RuntimeError, TypeError, ValueError, AttributeError, OSError) as exc:
-            return {
-                "response": self._abort_resolve(
+            return ResolveBuildResult(
+                response=self._abort_resolve(
                     f"Planetka resolve failed unexpectedly: {exc}",
                     code=ErrorCode.RESOLVE_REFRESH_FAILED,
                     exc=exc,
                     log_message="Planetka resolve failed unexpectedly",
                     cleanup_obj=new_obj,
-                )
-            }
+                ),
+                ui_reports=ui_reports,
+            )
 
-        return {
-            "response": None,
-            "new_obj": new_obj,
-            "shader_result": shader_result,
-            "old_surface_viewport_hidden": old_surface_viewport_hidden,
-            "old_surface_render_hidden": old_surface_render_hidden,
-            "phase_mesh_ms": phase_mesh_ms,
-            "phase_shader_ms": phase_shader_ms,
-            "target_surface_name": target_surface_name,
-        }
+        return ResolveBuildResult(
+            response=None,
+            new_obj=new_obj,
+            shader_result=dict(shader_result or {}),
+            old_surface_viewport_hidden=bool(old_surface_viewport_hidden),
+            old_surface_render_hidden=bool(old_surface_render_hidden),
+            phase_mesh_ms=float(phase_mesh_ms or 0.0),
+            phase_shader_ms=float(phase_shader_ms or 0.0),
+            target_surface_name=str(target_surface_name or "Planetka Earth Surface"),
+            ui_reports=ui_reports,
+        )
 
     def execute(self, context):
         resolve_start = time.perf_counter()
+        ui_reports = []
         phase_assets_ms = 0.0
         phase_tile_select_ms = 0.0
         phase_stream_ms = 0.0
@@ -1169,30 +1282,32 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         _restore_navigation_adaptive_state_safe("failed pre-resolve adaptive viewport restore")
 
         prepare_ctx = self._phase_prepare_context(context)
-        if prepare_ctx.get("response") is not None:
-            return prepare_ctx.get("response")
-        scene = prepare_ctx.get("scene")
-        props = prepare_ctx.get("props")
-        prefs = prepare_ctx.get("prefs")
-        normalized = str(prepare_ctx.get("normalized") or "")
-        manual_summary_requested = bool(prepare_ctx.get("manual_summary_requested", False))
-        force_empty_once = bool(prepare_ctx.get("force_empty_once", False))
-        earth_surface = prepare_ctx.get("earth_surface")
-        target_surface_name = str(prepare_ctx.get("target_surface_name") or "Planetka Earth Surface")
-        tile_utils = prepare_ctx.get("tile_utils")
-        phase_assets_ms = float(prepare_ctx.get("phase_assets_ms", 0.0) or 0.0)
+        self._flush_ui_reports(getattr(prepare_ctx, "ui_reports", ()))
+        if getattr(prepare_ctx, "response", None) is not None:
+            return prepare_ctx.response
+        scene = prepare_ctx.scene
+        props = prepare_ctx.props
+        prefs = prepare_ctx.prefs
+        normalized = str(prepare_ctx.normalized or "")
+        manual_summary_requested = bool(prepare_ctx.manual_summary_requested)
+        force_empty_once = bool(prepare_ctx.force_empty_once)
+        earth_surface = prepare_ctx.earth_surface
+        target_surface_name = str(prepare_ctx.target_surface_name or "Planetka Earth Surface")
+        tile_utils = prepare_ctx.tile_utils
+        phase_assets_ms = float(prepare_ctx.phase_assets_ms or 0.0)
 
         select_ctx = self._phase_select_tiles(scene, props, tile_utils, force_empty_once)
-        if select_ctx.get("response") is not None:
-            return select_ctx.get("response")
-        tiles = list(select_ctx.get("tiles", ()) or ())
-        texture_quality_mode = str(select_ctx.get("texture_quality_mode") or "PREVIEW")
-        nav_latitude_deg = float(select_ctx.get("nav_latitude_deg", 0.0) or 0.0)
-        nav_longitude_deg = float(select_ctx.get("nav_longitude_deg", 0.0) or 0.0)
-        nav_altitude_km = float(select_ctx.get("nav_altitude_km", 0.0) or 0.0)
-        phase_tile_select_ms = float(select_ctx.get("phase_tile_select_ms", 0.0) or 0.0)
+        self._flush_ui_reports(getattr(select_ctx, "ui_reports", ()))
+        if getattr(select_ctx, "response", None) is not None:
+            return select_ctx.response
+        tiles = list(select_ctx.tiles or ())
+        texture_quality_mode = str(select_ctx.texture_quality_mode or "PREVIEW")
+        nav_latitude_deg = float(select_ctx.nav_latitude_deg or 0.0)
+        nav_longitude_deg = float(select_ctx.nav_longitude_deg or 0.0)
+        nav_altitude_km = float(select_ctx.nav_altitude_km or 0.0)
+        phase_tile_select_ms = float(select_ctx.phase_tile_select_ms or 0.0)
 
-        early_response = self._phase_handle_panorama_or_defer(
+        early_result = self._phase_handle_panorama_or_defer(
             context,
             scene,
             props,
@@ -1200,8 +1315,9 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             texture_quality_mode,
             normalized,
         )
-        if early_response is not None:
-            return early_response
+        self._flush_ui_reports(getattr(early_result, "ui_reports", ()))
+        if getattr(early_result, "response", None) is not None:
+            return early_result.response
 
         stream_ctx = self._phase_prepare_streaming(
             scene,
@@ -1212,14 +1328,15 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             nav_longitude_deg,
             nav_altitude_km,
         )
-        if stream_ctx.get("response") is not None:
-            return stream_ctx.get("response")
-        resolved_paths = dict(stream_ctx.get("resolved_paths", {}) or {})
-        resolved_tiles_override = stream_ctx.get("resolved_tiles_override")
-        ocean_tiles_override = stream_ctx.get("ocean_tiles_override")
-        full_quality_cost_bytes = int(stream_ctx.get("full_quality_cost_bytes", 0) or 0)
-        download_capture = dict(stream_ctx.get("download_capture", {}) or {})
-        phase_stream_ms = float(stream_ctx.get("phase_stream_ms", 0.0) or 0.0)
+        self._flush_ui_reports(getattr(stream_ctx, "ui_reports", ()))
+        if getattr(stream_ctx, "response", None) is not None:
+            return stream_ctx.response
+        resolved_paths = dict(stream_ctx.resolved_paths or {})
+        resolved_tiles_override = stream_ctx.resolved_tiles_override
+        ocean_tiles_override = stream_ctx.ocean_tiles_override
+        full_quality_cost_bytes = int(stream_ctx.full_quality_cost_bytes or 0)
+        download_capture = dict(stream_ctx.download_capture or {})
+        phase_stream_ms = float(stream_ctx.phase_stream_ms or 0.0)
 
         build_ctx = self._phase_build_surface(
             scene,
@@ -1230,15 +1347,16 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             resolved_tiles_override,
             ocean_tiles_override,
         )
-        if build_ctx.get("response") is not None:
-            return build_ctx.get("response")
-        new_obj = build_ctx.get("new_obj")
-        shader_result = dict(build_ctx.get("shader_result", {}) or {})
-        old_surface_viewport_hidden = bool(build_ctx.get("old_surface_viewport_hidden", False))
-        old_surface_render_hidden = bool(build_ctx.get("old_surface_render_hidden", False))
-        phase_mesh_ms = float(build_ctx.get("phase_mesh_ms", 0.0) or 0.0)
-        phase_shader_ms = float(build_ctx.get("phase_shader_ms", 0.0) or 0.0)
-        target_surface_name = str(build_ctx.get("target_surface_name") or target_surface_name)
+        self._flush_ui_reports(getattr(build_ctx, "ui_reports", ()))
+        if getattr(build_ctx, "response", None) is not None:
+            return build_ctx.response
+        new_obj = build_ctx.new_obj
+        shader_result = dict(build_ctx.shader_result or {})
+        old_surface_viewport_hidden = bool(build_ctx.old_surface_viewport_hidden)
+        old_surface_render_hidden = bool(build_ctx.old_surface_render_hidden)
+        phase_mesh_ms = float(build_ctx.phase_mesh_ms or 0.0)
+        phase_shader_ms = float(build_ctx.phase_shader_ms or 0.0)
+        target_surface_name = str(build_ctx.target_surface_name or target_surface_name)
 
         phase_start = time.perf_counter()
         try:
@@ -1284,17 +1402,17 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 ensure_preview_object(new_obj)
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka: failed refreshing preview object", exc_info=True)
-                self.report({'WARNING'}, "Planetka preview object refresh failed.")
+                ui_reports.append(self._ui_report("WARNING", "Planetka preview object refresh failed."))
             except (RuntimeError, TypeError, ValueError):
                 logger.debug("Planetka: failed refreshing preview object", exc_info=True)
-                self.report({'WARNING'}, "Planetka preview object refresh failed.")
+                ui_reports.append(self._ui_report("WARNING", "Planetka preview object refresh failed."))
             phase_post_preview_ms = (time.perf_counter() - phase_start) * 1000.0
 
         phase_post_ms = phase_post_delete_ms + phase_post_mark_ms + phase_post_preview_ms
         missing_node_images = _count_missing_tile_loading_images(material_name="Planetka Earth Material")
 
         if not bool(getattr(self, "silent", False)) and not (force_empty_once and len(tiles) == 0):
-            self.report({'INFO'}, f"Planetka resolved ({len(tiles)} tiles)")
+            ui_reports.append(self._ui_report("INFO", f"Planetka resolved ({len(tiles)} tiles)"))
         resolve_total_ms = (time.perf_counter() - resolve_start) * 1000.0
         measured_sum_ms = (
             phase_assets_ms
@@ -1459,6 +1577,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             )
             _set_resolve_failure_notice(scene, integrity_message)
             user_message = "Resolve failed. Please click Rebuild Earth"
+            self._flush_ui_reports(ui_reports)
             return fail(
                 self,
                 user_message,
@@ -1482,6 +1601,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 logger.debug("Planetka: failed syncing account profile after resolve", exc_info=True)
             except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
                 logger.debug("Planetka: failed syncing account profile after resolve", exc_info=True)
+        self._flush_ui_reports(ui_reports)
         _restore_navigation_adaptive_state_safe("failed post-resolve adaptive viewport restore")
         return {'FINISHED'}
 
