@@ -105,6 +105,11 @@ def _feature_flag_enabled(name, default=False):
 
 
 _CLOUD_RUNTIME_ENABLED = _feature_flag_enabled("PLANETKA_ENABLE_CLOUD_RUNTIME", default=False)
+_PUBLIC_BUILD_PROFILE = _feature_flag_enabled("PLANETKA_PUBLIC_BUILD", default=True)
+_LEGACY_RUNTIME_ENABLED = _feature_flag_enabled(
+    "PLANETKA_ENABLE_LEGACY_RUNTIME",
+    default=(not _PUBLIC_BUILD_PROFILE),
+)
 
 if _CLOUD_RUNTIME_ENABLED:
     from .clouds_local import (
@@ -142,6 +147,35 @@ else:
     _CLOUD_CLASSES = ()
 
 
+if _LEGACY_RUNTIME_ENABLED:
+    _LEGACY_CLASSES = (
+        PLANETKA_OT_DownloadStatusPopup,
+        PLANETKA_OT_AnimationPreviewShot,
+        PLANETKA_OT_ValidateTextureSource,
+    )
+else:
+    _LEGACY_CLASSES = ()
+
+_PLANETKA_PROPERTIES_ANNOTATIONS_ORIGINAL = dict(getattr(PlanetkaProperties, "__annotations__", {}) or {})
+_LEGACY_PROPERTY_NAMES = (
+    "anim_render_texture_quality",
+    "anim_start_altitude_km",
+    "anim_flyby_degrees",
+    "anim_flyby_camera_heading_deg",
+)
+
+
+def _configure_planetka_properties_for_profile():
+    annotations = getattr(PlanetkaProperties, "__annotations__", None)
+    if not isinstance(annotations, dict):
+        return
+    annotations.clear()
+    annotations.update(_PLANETKA_PROPERTIES_ANNOTATIONS_ORIGINAL)
+    if not _LEGACY_RUNTIME_ENABLED:
+        for key in _LEGACY_PROPERTY_NAMES:
+            annotations.pop(str(key), None)
+
+
 classes = (
     PlanetkaExtensionPreferences,
     PlanetkaAnimationWaypoint,
@@ -154,7 +188,7 @@ classes = (
     PLANETKA_OT_AccountLogout,
     PLANETKA_OT_AccountContact,
     PLANETKA_OT_AccountUpgrade,
-    PLANETKA_OT_DownloadStatusPopup,
+    *_LEGACY_CLASSES,
     PLANETKA_OT_RemoveDefaultScene,
     PLANETKA_OT_AddEarth,
     PLANETKA_OT_RebuildEarth,
@@ -177,13 +211,11 @@ classes = (
     PLANETKA_OT_AnimationWaypointRemove,
     PLANETKA_OT_AnimationWaypointCaptureCurrent,
     PLANETKA_OT_AnimationWaypointApply,
-    PLANETKA_OT_AnimationPreviewShot,
     PLANETKA_OT_AnimationRenderHeadless,
     PLANETKA_OT_AnimationRenderInfo,
     PLANETKA_OT_AnimationMakeReady,
     PLANETKA_OT_AnimationClearPrepared,
     PLANETKA_OT_LoadTextures,
-    PLANETKA_OT_ValidateTextureSource,
     PLANETKA_OT_SceneHealthCheck,
     PLANETKA_OT_ReportBug,
     PLANETKA_OT_SaveStartupSetup,
@@ -339,6 +371,7 @@ def _tag_view3d_ui_redraw():
 
 
 def register():
+    _configure_planetka_properties_for_profile()
     register_cloud_object_properties()
     for cls in classes:
         _safe_unregister_class(cls)
