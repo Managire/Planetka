@@ -3,6 +3,7 @@ import json
 import math
 import os
 import time
+from dataclasses import dataclass
 
 import bpy
 from bpy.props import EnumProperty, IntProperty
@@ -50,6 +51,16 @@ ANIMATION_PREPARED_AUTO_RESOLVE_PREV_KEY = "planetka_anim_prepared_auto_resolve_
 ANIMATION_BASE_SURFACE_NAME_KEY = "planetka_anim_base_surface_name"
 ANIMATION_BASE_SURFACE_HIDE_RENDER_KEY = "planetka_anim_base_surface_hide_render"
 ANIMATION_BASE_SURFACE_HIDE_VIEWPORT_KEY = "planetka_anim_base_surface_hide_viewport"
+QUICK_PREVIEW_SCENE_STATE_KEYS = (
+    ANIMATION_STATS_SEGMENTS_KEY,
+    ANIMATION_STATS_TEXTURE_MB_KEY,
+    ANIMATION_STATS_START_KEY,
+    ANIMATION_STATS_END_KEY,
+    ANIMATION_PREPARED_AUTO_RESOLVE_PREV_KEY,
+    ANIMATION_BASE_SURFACE_NAME_KEY,
+    ANIMATION_BASE_SURFACE_HIDE_RENDER_KEY,
+    ANIMATION_BASE_SURFACE_HIDE_VIEWPORT_KEY,
+)
 QUICK_PREVIEW_MAX_SEGMENTS = 99
 TEXTURE_TYPES = ("S2", "EL", "WT", "PO")
 TEXTURE_EXTENSIONS = {
@@ -63,6 +74,15 @@ _COVERAGE_MAP = None
 _TILE_UTILS_MODULE = None
 _OPERATORS_MODULE = None
 _STREAMING_UTILS_MODULE = None
+
+
+@dataclass
+class AnimationSegmentPlan:
+    frame_start: int
+    frame_end: int
+    frame_step: int
+    texture_quality_mode: str
+    segments: list
 
 
 def _format_frame_timecode(scene, frame_value):
@@ -572,6 +592,70 @@ def _build_segments(scene, frame_start, frame_end, frame_step, texture_quality_m
     return segments
 
 
+def _plan_animation_segments(scene, frame_start, frame_end, frame_step=1, texture_quality_mode_override=None):
+    safe_start = int(frame_start)
+    safe_end = int(frame_end)
+    safe_step = max(1, int(frame_step))
+    try:
+        original_frame = int(getattr(scene, "frame_current", safe_start))
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        original_frame = int(safe_start)
+    try:
+        segments = _build_segments(
+            scene,
+            safe_start,
+            safe_end,
+            safe_step,
+            texture_quality_mode_override=texture_quality_mode_override,
+        )
+    finally:
+        try:
+            scene.frame_set(int(original_frame))
+            bpy.context.view_layer.update()
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
+            logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
+    return AnimationSegmentPlan(
+        frame_start=safe_start,
+        frame_end=safe_end,
+        frame_step=safe_step,
+        texture_quality_mode=str(texture_quality_mode_override or ""),
+        segments=list(segments or ()),
+    )
+
+
+def _quick_preview_is_prepared(scene):
+    if scene is None:
+        return False
+    try:
+        prepared_segments = int(scene.get(ANIMATION_STATS_SEGMENTS_KEY, 0) or 0)
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        prepared_segments = 0
+    if prepared_segments > 0:
+        return True
+    for obj in tuple(bpy.data.objects):
+        try:
+            if bool(obj.get(ANIMATION_SEGMENT_TAG_KEY, False)):
+                return True
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            continue
+    return False
+
+
+def _store_quick_preview_scene_state(scene, segments, texture_mb, frame_start, frame_end, auto_resolve_value):
+    if scene is None:
+        return
+    scene[ANIMATION_STATS_SEGMENTS_KEY] = int(max(0, int(segments)))
+    scene[ANIMATION_STATS_TEXTURE_MB_KEY] = float(max(0.0, float(texture_mb)))
+    scene[ANIMATION_STATS_START_KEY] = int(frame_start)
+    scene[ANIMATION_STATS_END_KEY] = int(frame_end)
+    try:
+        scene[ANIMATION_PREPARED_AUTO_RESOLVE_PREV_KEY] = bool(auto_resolve_value)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
+    except (RuntimeError, TypeError, ValueError):
+        logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
+
+
 def _segment_display_name(segment_start, segment_end):
     try:
         start = int(segment_start)
@@ -674,16 +758,7 @@ def clear_prepared_animation_assets(scene):
         except (RuntimeError, TypeError, ValueError):
             logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
 
-    for key in (
-        ANIMATION_STATS_SEGMENTS_KEY,
-        ANIMATION_STATS_TEXTURE_MB_KEY,
-        ANIMATION_STATS_START_KEY,
-        ANIMATION_STATS_END_KEY,
-        ANIMATION_PREPARED_AUTO_RESOLVE_PREV_KEY,
-        ANIMATION_BASE_SURFACE_NAME_KEY,
-        ANIMATION_BASE_SURFACE_HIDE_RENDER_KEY,
-        ANIMATION_BASE_SURFACE_HIDE_VIEWPORT_KEY,
-    ):
+    for key in QUICK_PREVIEW_SCENE_STATE_KEYS:
         try:
             if key in scene:
                 del scene[key]
@@ -2789,14 +2864,6 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             return []
         return self._dedupe_texture_requests(_build_texture_requests_for_tiles(segment_tiles))
 
-    def _ensure_segment_download_ready(self, segment_index):
-        # Final animation render intentionally avoids prefetch complexity.
-        # Segment downloads are handled synchronously by resolve in segment order.
-        requests = self._segment_texture_requests(segment_index)
-        if requests:
-            return True, ""
-        return False, f"Segment {int(segment_index) + 1} has no tile requests."
-
     def _cleanup_completed_segment_cache(self, segment_index):
         prefs = get_prefs()
         base_path = str(getattr(prefs, "texture_base_path", "") or "")
@@ -2947,11 +3014,7 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         props = require_planetka_props(self, context, logger=logger)
         if props is None:
             return {'CANCELLED'}
-        try:
-            prepared_segments = int(scene.get(ANIMATION_STATS_SEGMENTS_KEY, 0) or 0)
-        except (TypeError, ValueError, AttributeError):
-            prepared_segments = 0
-        if prepared_segments > 0:
+        if _quick_preview_is_prepared(scene):
             try:
                 clear_prepared_animation_assets(scene)
             except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
@@ -3047,21 +3110,14 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             logger.debug("Planetka animation: failed applying selected texture quality mode for animation render", exc_info=True)
 
         try:
-            try:
-                segments = _build_segments(
-                    scene,
-                    frame_start,
-                    frame_end,
-                    frame_step=1,
-                    texture_quality_mode_override=str(selected_texture_quality_mode),
-                )
-            finally:
-                try:
-                    scene.frame_set(original_frame)
-                    bpy.context.view_layer.update()
-                except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
-                    logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
-
+            segment_plan = _plan_animation_segments(
+                scene,
+                frame_start,
+                frame_end,
+                frame_step=1,
+                texture_quality_mode_override=str(selected_texture_quality_mode),
+            )
+            segments = list(segment_plan.segments or ())
             if not segments:
                 return self._cancel_with_error(
                     context,
@@ -3144,9 +3200,6 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             seg_start = int(segment.get("start", 1))
             seg_end = int(segment.get("end", seg_start))
             print(f"[Planetka] Segment {self._segment_index + 1}/{len(self._segments)}: resolve {seg_start:04d}-{seg_end:04d}")
-            ready, ready_message = self._ensure_segment_download_ready(self._segment_index)
-            if not ready:
-                return self._cancel_with_error(context, ready_message)
             ok, message = self._resolve_segment_frame(seg_start, tiles_override=segment.get("tiles", ()))
             if not ok:
                 return self._cancel_with_error(context, message)
@@ -3280,17 +3333,16 @@ class PLANETKA_OT_AnimationMakeReady(bpy.types.Operator):
                 )
 
             frame_step = 1
-            current_frame = int(scene.frame_current)
             try:
-                segments = _build_segments(
+                segment_plan = _plan_animation_segments(
                     scene,
                     start_frame,
                     end_frame,
                     frame_step,
                     texture_quality_mode_override="PREVIEW",
                 )
+                segments = list(segment_plan.segments or ())
             except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
-                scene.frame_set(current_frame)
                 return fail(
                     self,
                     f"Segment analysis failed: {exc}",
@@ -3299,12 +3351,6 @@ class PLANETKA_OT_AnimationMakeReady(bpy.types.Operator):
                     exc=exc,
                     log_message="Planetka animation segment analysis failed",
                 )
-            finally:
-                try:
-                    scene.frame_set(current_frame)
-                    bpy.context.view_layer.update()
-                except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                    logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
 
             if not segments:
                 return fail(
@@ -3368,16 +3414,14 @@ class PLANETKA_OT_AnimationMakeReady(bpy.types.Operator):
                     logger=logger,
                 )
 
-            scene[ANIMATION_STATS_SEGMENTS_KEY] = int(len(segments))
-            scene[ANIMATION_STATS_TEXTURE_MB_KEY] = float(texture_mb)
-            scene[ANIMATION_STATS_START_KEY] = int(start_frame)
-            scene[ANIMATION_STATS_END_KEY] = int(end_frame)
-            try:
-                scene[ANIMATION_PREPARED_AUTO_RESOLVE_PREV_KEY] = bool(getattr(props, "auto_resolve", True))
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
-            except (RuntimeError, TypeError, ValueError):
-                logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
+            _store_quick_preview_scene_state(
+                scene,
+                segments=len(segments),
+                texture_mb=float(texture_mb),
+                frame_start=int(start_frame),
+                frame_end=int(end_frame),
+                auto_resolve_value=bool(getattr(props, "auto_resolve", True)),
+            )
             try:
                 props.auto_resolve = False
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
