@@ -158,6 +158,44 @@ _AUTO_RESOLVE_DOWNLOAD_EPOCH = 0
 _AUTO_RESOLVE_DOWNLOAD_PUMP_INTERVAL_SEC = 0.2
 _AUTO_RESOLVE_DOWNLOAD_SCENE_WAIT_SEC = 1.5
 _AUTO_RESOLVE_DOWNLOAD_COMPLETED_MAX_AGE_SEC = 15.0
+_AUTO_RESOLVE_TICK_STATE_IDLE = "IDLE"
+_AUTO_RESOLVE_TICK_STATE_READY = "READY"
+_AUTO_RESOLVE_TICK_STATE_PLANNED = "PLANNED"
+_AUTO_RESOLVE_TICK_STATE_DISPATCHED = "DISPATCHED"
+_AUTO_RESOLVE_TICK_STATE_WAITING = "WAITING"
+_AUTO_RESOLVE_TICK_STATE_STOPPED = "STOPPED"
+_AUTO_RESOLVE_TICK_TRANSITIONS = {
+    _AUTO_RESOLVE_TICK_STATE_IDLE: {
+        "PLAN": _AUTO_RESOLVE_TICK_STATE_PLANNED,
+        "NO_CHANGE": _AUTO_RESOLVE_TICK_STATE_READY,
+        "RETRY": _AUTO_RESOLVE_TICK_STATE_WAITING,
+        "STOP": _AUTO_RESOLVE_TICK_STATE_STOPPED,
+    },
+    _AUTO_RESOLVE_TICK_STATE_READY: {
+        "PLAN": _AUTO_RESOLVE_TICK_STATE_PLANNED,
+        "NO_CHANGE": _AUTO_RESOLVE_TICK_STATE_READY,
+        "RETRY": _AUTO_RESOLVE_TICK_STATE_WAITING,
+        "STOP": _AUTO_RESOLVE_TICK_STATE_STOPPED,
+    },
+    _AUTO_RESOLVE_TICK_STATE_PLANNED: {
+        "DISPATCH": _AUTO_RESOLVE_TICK_STATE_DISPATCHED,
+        "NO_CHANGE": _AUTO_RESOLVE_TICK_STATE_READY,
+        "RETRY": _AUTO_RESOLVE_TICK_STATE_WAITING,
+        "STOP": _AUTO_RESOLVE_TICK_STATE_STOPPED,
+    },
+    _AUTO_RESOLVE_TICK_STATE_DISPATCHED: {
+        "PLAN": _AUTO_RESOLVE_TICK_STATE_PLANNED,
+        "NO_CHANGE": _AUTO_RESOLVE_TICK_STATE_READY,
+        "RETRY": _AUTO_RESOLVE_TICK_STATE_WAITING,
+        "STOP": _AUTO_RESOLVE_TICK_STATE_STOPPED,
+    },
+    _AUTO_RESOLVE_TICK_STATE_WAITING: {
+        "PLAN": _AUTO_RESOLVE_TICK_STATE_PLANNED,
+        "NO_CHANGE": _AUTO_RESOLVE_TICK_STATE_READY,
+        "RETRY": _AUTO_RESOLVE_TICK_STATE_WAITING,
+        "STOP": _AUTO_RESOLVE_TICK_STATE_STOPPED,
+    },
+}
 LAST_RESOLVE_TILE_COUNT_KEY = "planetka_last_manual_resolve_tile_count"
 LAST_RESOLVE_DOWNLOADED_MB_KEY = "planetka_last_manual_resolve_downloaded_mb"
 LAST_RESOLVE_DOWNLOADED_GB_KEY = "planetka_last_manual_resolve_downloaded_gb"
@@ -3732,47 +3770,44 @@ def _auto_resolve_update_size_estimation(scene, scope, active_view_signature, ta
         logger.debug("Planetka auto-resolve: failed updating resolve size estimates", exc_info=True)
 
 
-def _auto_resolve_tick_once():
-    global _AUTO_RESOLVE_IN_FLIGHT
+def _auto_resolve_tick_transition(current_state, event):
+    transitions = _AUTO_RESOLVE_TICK_TRANSITIONS.get(str(current_state or ""), {})
+    next_state = transitions.get(str(event or ""), current_state)
+    if next_state != current_state:
+        _resolve_trace(
+            f"tick transition {str(current_state or '')}->{str(next_state or '')} via {str(event or '')}"
+        )
+    return next_state
 
-    if _AUTO_RESOLVE_IN_FLIGHT:
-        return 0.1
 
-    scene = getattr(bpy.context, "scene", None)
+def _auto_resolve_detect_change(scene, props):
     if scene is None:
-        return None
+        return {"event": "STOP", "retry_delay": None}
+    if props is None or not bool(getattr(props, "auto_resolve", False)):
+        return {"event": "STOP", "retry_delay": None}
 
-    props = getattr(scene, "planetka", None)
-    if not props or not bool(getattr(props, "auto_resolve", False)):
-        return None
-
-    # Track viewport scope transitions on every timer tick, not only on depsgraph
-    # events. View switches (Active View <-> Camera) may not emit depsgraph updates.
+    # Keep scope transitions updated even without depsgraph updates.
     _handle_view_scope_quality_transition(scene)
 
     scope_mode = _auto_resolve_scope_mode(scene)
     if scope_mode == "NONE":
-        return None
+        return {"event": "STOP", "retry_delay": None}
 
-    min_interval_sec = AUTO_RESOLVE_MIN_INTERVAL_SEC_DEFAULT
-
-    if _is_animation_playing():
-        if bool(getattr(props, "lock_resolve_during_animation", True)):
-            return AUTO_RESOLVE_RETRY_DELAY_SEC
-
+    if _is_animation_playing() and bool(getattr(props, "lock_resolve_during_animation", True)):
+        return {"event": "RETRY", "retry_delay": AUTO_RESOLVE_RETRY_DELAY_SEC}
     if _is_render_job_active():
-        return AUTO_RESOLVE_RETRY_DELAY_SEC
-
+        return {"event": "RETRY", "retry_delay": AUTO_RESOLVE_RETRY_DELAY_SEC}
     if get_earth_object() is None:
-        return None
+        return {"event": "STOP", "retry_delay": None}
 
     scope, active_view_signature, resolve_signature = _auto_resolve_collect_scope_signatures(scene, scope_mode)
     if resolve_signature is None:
-        return AUTO_RESOLVE_RETRY_DELAY_SEC
+        return {"event": "RETRY", "retry_delay": AUTO_RESOLVE_RETRY_DELAY_SEC}
 
     scene_state = _read_scene_auto_resolve_state(scene)
     if scene_state is None:
-        return None
+        return {"event": "STOP", "retry_delay": None}
+
     now = time.monotonic()
     output_signature = _output_resolution_signature(scene)
     pending_output_change = _auto_resolve_sync_state_signatures(
@@ -3782,17 +3817,52 @@ def _auto_resolve_tick_once():
         now,
     )
 
+    min_interval_sec = AUTO_RESOLVE_MIN_INTERVAL_SEC_DEFAULT
     last_resolve = float(scene_state.last_resolve_time or 0.0)
     if now - last_resolve < min_interval_sec:
-        return max(0.05, min_interval_sec - (now - last_resolve))
+        return {
+            "event": "RETRY",
+            "retry_delay": max(0.05, min_interval_sec - (now - last_resolve)),
+            "scene_state": scene_state,
+        }
 
     if scene_state.last_processed_signature == resolve_signature and not pending_output_change:
-        return None
+        return {
+            "event": "NO_CHANGE",
+            "retry_delay": None,
+            "scene_state": scene_state,
+        }
+
+    return {
+        "event": "PLAN",
+        "retry_delay": None,
+        "scene_state": scene_state,
+        "scope": scope,
+        "active_view_signature": active_view_signature,
+        "resolve_signature": resolve_signature,
+        "output_signature": output_signature,
+        "pending_output_change": bool(pending_output_change),
+        "now": now,
+    }
+
+
+def _auto_resolve_plan_job(scene, props, detect_ctx):
+    if scene is None:
+        return {"event": "STOP", "retry_delay": None}
+    if not isinstance(detect_ctx, dict):
+        return {"event": "STOP", "retry_delay": None}
+    if str(detect_ctx.get("event", "")) != "PLAN":
+        return {
+            "event": str(detect_ctx.get("event", "STOP") or "STOP"),
+            "retry_delay": detect_ctx.get("retry_delay", None),
+        }
 
     tile_utils = _get_tile_utils()
     if tile_utils is None:
-        return None
+        return {"event": "STOP", "retry_delay": None}
 
+    scope = str(detect_ctx.get("scope", "CAMERA") or "CAMERA")
+    active_view_signature = detect_ctx.get("active_view_signature")
     try:
         target_tiles = _canonical_tiles(
             tile_utils.main(
@@ -3801,25 +3871,92 @@ def _auto_resolve_tick_once():
         )
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka auto-resolve: tile computation failed", exc_info=True)
-        return AUTO_RESOLVE_RETRY_DELAY_SEC
+        return {"event": "RETRY", "retry_delay": AUTO_RESOLVE_RETRY_DELAY_SEC}
     except (RuntimeError, TypeError, ValueError, AttributeError):
         logger.debug("Planetka auto-resolve: unexpected tile computation failure", exc_info=True)
-        return AUTO_RESOLVE_RETRY_DELAY_SEC
+        return {"event": "RETRY", "retry_delay": AUTO_RESOLVE_RETRY_DELAY_SEC}
 
     _auto_resolve_update_size_estimation(scene, scope, active_view_signature, target_tiles, props)
 
-    if target_tiles == _last_resolved_tiles(scene) and not pending_output_change:
-        scene_state.last_processed_signature = resolve_signature
-        scene_state.last_resolve_time = now
-        _write_scene_auto_resolve_state(scene_state)
-        return None
+    if target_tiles == _last_resolved_tiles(scene) and not bool(detect_ctx.get("pending_output_change", False)):
+        return {"event": "NO_CHANGE", "target_tiles": target_tiles, "retry_delay": None}
 
+    return {"event": "DISPATCH", "target_tiles": target_tiles, "retry_delay": None}
+
+
+def _auto_resolve_dispatch_job(scene, detect_ctx, plan_ctx):
+    if scene is None:
+        return {"event": "STOP", "retry_delay": None}
+    if not isinstance(detect_ctx, dict) or not isinstance(plan_ctx, dict):
+        return {"event": "STOP", "retry_delay": None}
+
+    scene_state = detect_ctx.get("scene_state")
+    if scene_state is None:
+        return {"event": "STOP", "retry_delay": None}
+
+    plan_event = str(plan_ctx.get("event", "STOP") or "STOP")
+    if plan_event == "NO_CHANGE":
+        scene_state.last_processed_signature = detect_ctx.get("resolve_signature")
+        scene_state.last_resolve_time = float(detect_ctx.get("now", time.monotonic()) or time.monotonic())
+        _write_scene_auto_resolve_state(scene_state)
+        return {"event": "NO_CHANGE", "retry_delay": None}
+
+    if plan_event != "DISPATCH":
+        return {"event": plan_event, "retry_delay": plan_ctx.get("retry_delay", None)}
+
+    target_tiles = tuple(plan_ctx.get("target_tiles", ()) or ())
     output_signature = _output_resolution_signature(scene)
-    queued = _schedule_auto_resolve_download(scene, target_tiles, resolve_signature, output_signature)
+    queued = _schedule_auto_resolve_download(
+        scene,
+        target_tiles,
+        detect_ctx.get("resolve_signature"),
+        output_signature,
+    )
     if not queued:
-        return AUTO_RESOLVE_RETRY_DELAY_SEC
+        return {"event": "RETRY", "retry_delay": AUTO_RESOLVE_RETRY_DELAY_SEC}
+
     scene_state.last_change_time = time.monotonic()
     _write_scene_auto_resolve_state(scene_state)
+    return {"event": "DISPATCH", "retry_delay": None}
+
+
+def _auto_resolve_tick_once():
+    global _AUTO_RESOLVE_IN_FLIGHT
+
+    if _AUTO_RESOLVE_IN_FLIGHT:
+        return 0.1
+
+    scene = getattr(bpy.context, "scene", None)
+    if scene is None:
+        return None
+    props = getattr(scene, "planetka", None)
+
+    tick_state = _AUTO_RESOLVE_TICK_STATE_IDLE
+    detect_ctx = _auto_resolve_detect_change(scene, props)
+    detect_event = str(detect_ctx.get("event", "STOP") or "STOP")
+    tick_state = _auto_resolve_tick_transition(tick_state, detect_event)
+    if detect_event == "STOP":
+        return None
+    if detect_event == "RETRY":
+        return float(detect_ctx.get("retry_delay", AUTO_RESOLVE_RETRY_DELAY_SEC) or AUTO_RESOLVE_RETRY_DELAY_SEC)
+    if detect_event == "NO_CHANGE":
+        return None
+
+    plan_ctx = _auto_resolve_plan_job(scene, props, detect_ctx)
+    plan_event = str(plan_ctx.get("event", "STOP") or "STOP")
+    tick_state = _auto_resolve_tick_transition(tick_state, plan_event)
+    if plan_event == "STOP":
+        return None
+    if plan_event == "RETRY":
+        return float(plan_ctx.get("retry_delay", AUTO_RESOLVE_RETRY_DELAY_SEC) or AUTO_RESOLVE_RETRY_DELAY_SEC)
+
+    dispatch_ctx = _auto_resolve_dispatch_job(scene, detect_ctx, plan_ctx)
+    dispatch_event = str(dispatch_ctx.get("event", "STOP") or "STOP")
+    tick_state = _auto_resolve_tick_transition(tick_state, dispatch_event)
+    if dispatch_event == "RETRY":
+        return float(dispatch_ctx.get("retry_delay", AUTO_RESOLVE_RETRY_DELAY_SEC) or AUTO_RESOLVE_RETRY_DELAY_SEC)
+    if tick_state == _AUTO_RESOLVE_TICK_STATE_STOPPED:
+        return None
     return None
 
 
