@@ -30,29 +30,56 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
   } = context || {};
 
   const safeTopLine = snapshotTopLine && typeof snapshotTopLine === "object" ? snapshotTopLine : {};
+  const safeActive = snapshotActive && typeof snapshotActive === "object" ? snapshotActive : {};
+  const safeActiveWindows = safeActive.windows && typeof safeActive.windows === "object" ? safeActive.windows : {};
   const topLineUsers = safeTopLine.users && typeof safeTopLine.users === "object" ? safeTopLine.users : {};
   const topLineResolves = safeTopLine.resolves && typeof safeTopLine.resolves === "object" ? safeTopLine.resolves : {};
   const topLineTileRequests = safeTopLine.tile_requests && typeof safeTopLine.tile_requests === "object" ? safeTopLine.tile_requests : {};
   const topLineGbServed = safeTopLine.gb_served && typeof safeTopLine.gb_served === "object" ? safeTopLine.gb_served : {};
 
-  const renderTierSplitLines = (values = {}, valueFormatter) => {
+  const toTierSplit = (values = {}, fallbackTotal = 0) => {
     const safeValues = values && typeof values === "object" ? values : {};
-    const freeValue = valueFormatter(safeValues.free || 0);
-    const personalValue = valueFormatter(safeValues.personal || 0);
-    const commercialValue = valueFormatter(safeValues.commercial || 0);
-    const totalValue = valueFormatter(safeValues.total || 0);
-    return `
-      <span class="split-line tier-free">Free: ${escapeHtml(String(freeValue))}</span>
-      <span class="split-line tier-personal">Personal: ${escapeHtml(String(personalValue))}</span>
-      <span class="split-line tier-pro">Commercial: ${escapeHtml(String(commercialValue))}</span>
-      <span class="split-line">Total: ${escapeHtml(String(totalValue))}</span>
-    `.trim();
+    const free = Number(safeValues.free || 0);
+    const personal = Number(safeValues.personal || 0);
+    const commercial = Number(safeValues.commercial || 0);
+    const fallback = Number(fallbackTotal || 0);
+    if (free === 0 && personal === 0 && commercial === 0 && fallback > 0) {
+      return { free: fallback, personal: 0, commercial: 0 };
+    }
+    return { free, personal, commercial };
   };
 
-  const topUsersSplitHtml = renderTierSplitLines(topLineUsers, (value) => fmtIntLocal(value));
-  const topResolvesSplitHtml = renderTierSplitLines(topLineResolves, (value) => fmtIntLocal(value));
-  const topTileRequestsSplitHtml = renderTierSplitLines(topLineTileRequests, (value) => fmtIntLocal(value));
-  const topGbServedSplitHtml = renderTierSplitLines(topLineGbServed, (value) => `${fmtGbLocal(value)} GB`);
+  const renderTierTriplet = (values = {}, valueFormatter, fallbackTotal = 0) => {
+    const split = toTierSplit(values, fallbackTotal);
+    return [
+      `<span class="tier-free">${escapeHtml(String(valueFormatter(split.free)))}</span>`,
+      `<span class="split-sep"> / </span>`,
+      `<span class="tier-personal">${escapeHtml(String(valueFormatter(split.personal)))}</span>`,
+      `<span class="split-sep"> / </span>`,
+      `<span class="tier-pro">${escapeHtml(String(valueFormatter(split.commercial)))}</span>`,
+    ].join("");
+  };
+
+  const renderActiveUsersCompact = (windows = {}, activeFallback = {}) => {
+    const rows = [
+      ["6 Months", "6m", activeFallback.users_6m],
+      ["3 Months", "3m", activeFallback.users_3m],
+      ["1 Month", "1m", activeFallback.users_1m],
+      ["1 Week", "1w", activeFallback.users_1w],
+      ["1 Day", "1d", activeFallback.users_1d],
+      ["1 Hour", "1h", activeFallback.users_1h],
+    ];
+    return rows.map(([label, key, fallbackTotal]) => {
+      const lineValues = windows && typeof windows === "object" ? windows[key] : {};
+      return `<span class="split-line"><span class="window-label">${escapeHtml(label)}:</span> ${renderTierTriplet(lineValues, (value) => fmtIntLocal(value), fallbackTotal)}</span>`;
+    }).join("");
+  };
+
+  const topUsersSplitHtml = renderTierTriplet(topLineUsers, (value) => fmtIntLocal(value), topLineUsers.total);
+  const topResolvesSplitHtml = renderTierTriplet(topLineResolves, (value) => fmtIntLocal(value), topLineResolves.total);
+  const topTileRequestsSplitHtml = renderTierTriplet(topLineTileRequests, (value) => fmtIntLocal(value), topLineTileRequests.total);
+  const topGbServedSplitHtml = renderTierTriplet(topLineGbServed, (value) => `${fmtGbLocal(value)} GB`, topLineGbServed.total);
+  const activeUsersSplitHtml = renderActiveUsersCompact(safeActiveWindows, safeActive);
 
   return `
 <!doctype html>
@@ -72,6 +99,8 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     .value { font-size: 22px; margin-top: 6px; font-weight: 600; }
     .value-split { margin-top: 6px; line-height: 1.45; font-size: 14px; font-weight: 600; }
     .split-line { display: block; }
+    .split-sep { color: #9ca3af; }
+    .window-label { color: #93c5fd; font-weight: 600; }
     .controls { display:flex; gap:10px; align-items:center; margin: 8px 0 16px; }
     .map-shell { position: relative; width: 100%; max-width: 980px; aspect-ratio: 2 / 1; margin-top: 8px; border: 1px solid #1f2937; border-radius: 8px; overflow: hidden; background: #0a1628; }
     .map-bg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
@@ -140,12 +169,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     <div class="card"><div class="label">Total Resolves</div><div id="topResolvesSplit" class="value-split">${topResolvesSplitHtml}</div></div>
     <div class="card"><div class="label">Tile Requests</div><div id="topRequestsSplit" class="value-split">${topTileRequestsSplitHtml}</div></div>
     <div class="card"><div class="label">GB Served</div><div id="topGbSplit" class="value-split">${topGbServedSplitHtml}</div></div>
-    <div class="card"><div class="label">Active users (6 months)</div><div id="active6m" class="value">${escapeHtml(fmtIntLocal(snapshotActive.users_6m))}</div></div>
-    <div class="card"><div class="label">Active users (3 months)</div><div id="active3m" class="value">${escapeHtml(fmtIntLocal(snapshotActive.users_3m))}</div></div>
-    <div class="card"><div class="label">Active users (1 month)</div><div id="active1m" class="value">${escapeHtml(fmtIntLocal(snapshotActive.users_1m))}</div></div>
-    <div class="card"><div class="label">Active users (1 week)</div><div id="active1w" class="value">${escapeHtml(fmtIntLocal(snapshotActive.users_1w))}</div></div>
-    <div class="card"><div class="label">Active users (1 day)</div><div id="active1d" class="value">${escapeHtml(fmtIntLocal(snapshotActive.users_1d))}</div></div>
-    <div class="card"><div class="label">Active users (1 hour)</div><div id="active1h" class="value">${escapeHtml(fmtIntLocal(snapshotActive.users_1h))}</div></div>
+    <div class="card"><div class="label">Active Users</div><div id="activeUsersSplit" class="value-split">${activeUsersSplitHtml}</div></div>
     <div class="card"><div class="label">Live tile events (10s)</div><div id="live10s" class="value">${escapeHtml(fmtIntLocal(snapshotActive.tile_events_10s))}</div></div>
     <div class="card"><div class="label">Tile requests (window)</div><div id="reqCount" class="value">${escapeHtml(fmtIntLocal(snapshotSummary.request_count))}</div></div>
     <div class="card"><div class="label">Bytes served (window)</div><div id="bytesServed" class="value">${escapeHtml(fmtGbLocal(snapshotSummary.bytes_served))} GB</div></div>
@@ -246,20 +270,53 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
       const numeric = Number(v);
       return Number.isFinite(numeric) ? numeric.toFixed(digits) : "0.00";
     };
-    const renderTierSplit = (id, values, asGb = false) => {
+    const normalizeTierSplit = (values = {}, fallbackTotal = 0) => {
+      const safeValues = values && typeof values === "object" ? values : {};
+      const free = Number(safeValues.free || 0);
+      const personal = Number(safeValues.personal || 0);
+      const commercial = Number(safeValues.commercial || 0);
+      const fallback = Number(fallbackTotal || 0);
+      if (free === 0 && personal === 0 && commercial === 0 && fallback > 0) {
+        return { free: fallback, personal: 0, commercial: 0 };
+      }
+      return { free, personal, commercial };
+    };
+    const renderTierTripletHtml = (values, valueFormatter, fallbackTotal = 0) => {
+      const split = normalizeTierSplit(values, fallbackTotal);
+      return [
+        '<span class="tier-free">' + valueFormatter(split.free) + "</span>",
+        '<span class="split-sep"> / </span>',
+        '<span class="tier-personal">' + valueFormatter(split.personal) + "</span>",
+        '<span class="split-sep"> / </span>',
+        '<span class="tier-pro">' + valueFormatter(split.commercial) + "</span>",
+      ].join("");
+    };
+    const renderTierSplit = (id, values, asGb = false, fallbackTotal = 0) => {
       const target = document.getElementById(id);
       if (!target) return;
-      const safeValues = values && typeof values === "object" ? values : {};
       const fmtValue = (value) => {
         if (asGb) return fmtGb(value) + " GB";
         return fmtInt(value);
       };
-      target.innerHTML = [
-        '<span class="split-line tier-free">Free: ' + fmtValue(safeValues.free || 0) + "</span>",
-        '<span class="split-line tier-personal">Personal: ' + fmtValue(safeValues.personal || 0) + "</span>",
-        '<span class="split-line tier-pro">Commercial: ' + fmtValue(safeValues.commercial || 0) + "</span>",
-        '<span class="split-line">Total: ' + fmtValue(safeValues.total || 0) + "</span>",
-      ].join("");
+      target.innerHTML = renderTierTripletHtml(values, fmtValue, fallbackTotal);
+    };
+    const renderActiveUsersSplit = (id, windows, fallbackActive = {}) => {
+      const target = document.getElementById(id);
+      if (!target) return;
+      const safeWindows = windows && typeof windows === "object" ? windows : {};
+      const rowMeta = [
+        { label: "6 Months", key: "6m", fallbackTotal: Number(fallbackActive && fallbackActive.users_6m || 0) },
+        { label: "3 Months", key: "3m", fallbackTotal: Number(fallbackActive && fallbackActive.users_3m || 0) },
+        { label: "1 Month", key: "1m", fallbackTotal: Number(fallbackActive && fallbackActive.users_1m || 0) },
+        { label: "1 Week", key: "1w", fallbackTotal: Number(fallbackActive && fallbackActive.users_1w || 0) },
+        { label: "1 Day", key: "1d", fallbackTotal: Number(fallbackActive && fallbackActive.users_1d || 0) },
+        { label: "1 Hour", key: "1h", fallbackTotal: Number(fallbackActive && fallbackActive.users_1h || 0) },
+      ];
+      target.innerHTML = rowMeta.map((row) => {
+        const values = safeWindows[row.key];
+        const triplet = renderTierTripletHtml(values, (value) => fmtInt(value), row.fallbackTotal);
+        return '<span class="split-line"><span class="window-label">' + row.label + ":</span> " + triplet + "</span>";
+      }).join("");
     };
     const decodeDataValue = (v) => {
       try {
@@ -689,16 +746,11 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         const s = data.summary || {};
         const a = data.active || {};
         const topLine = data.top_line || {};
-        renderTierSplit("topUsersSplit", topLine.users || {}, false);
-        renderTierSplit("topResolvesSplit", topLine.resolves || {}, false);
-        renderTierSplit("topRequestsSplit", topLine.tile_requests || {}, false);
-        renderTierSplit("topGbSplit", topLine.gb_served || {}, true);
-        setText("active6m", fmtInt(a.users_6m));
-        setText("active3m", fmtInt(a.users_3m));
-        setText("active1m", fmtInt(a.users_1m));
-        setText("active1w", fmtInt(a.users_1w));
-        setText("active1d", fmtInt(a.users_1d));
-        setText("active1h", fmtInt(a.users_1h));
+        renderTierSplit("topUsersSplit", topLine.users || {}, false, Number(topLine && topLine.users && topLine.users.total || 0));
+        renderTierSplit("topResolvesSplit", topLine.resolves || {}, false, Number(topLine && topLine.resolves && topLine.resolves.total || 0));
+        renderTierSplit("topRequestsSplit", topLine.tile_requests || {}, false, Number(topLine && topLine.tile_requests && topLine.tile_requests.total || 0));
+        renderTierSplit("topGbSplit", topLine.gb_served || {}, true, Number(topLine && topLine.gb_served && topLine.gb_served.total || 0));
+        renderActiveUsersSplit("activeUsersSplit", a.windows || {}, a);
         setText("live10s", fmtInt(a.tile_events_10s));
         setText("reqCount", fmtInt(s.request_count));
         setText("bytesServed", fmtBytes(s.bytes_served));

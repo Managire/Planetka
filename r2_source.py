@@ -118,6 +118,8 @@ _REQUEST_CONTEXT_CANCEL_EVENT = None
 _REQUEST_CONTEXT_NAV_LAT = ""
 _REQUEST_CONTEXT_NAV_LON = ""
 _REQUEST_CONTEXT_NAV_ALT_KM = ""
+_REQUEST_CONTEXT_TILE_TOKEN = ""
+_REQUEST_CONTEXT_TILE_TOKEN_EXPIRES_AT = 0.0
 _TILE_FILE_RE = re.compile(
     r"^(S2|EL|WT|PO)_x(\d{3})_y(\d{3})_z(\d{3})_d(\d{3})\.(exr|tif)$",
     re.IGNORECASE,
@@ -1080,6 +1082,8 @@ def set_resolve_request_context(
     global _REQUEST_CONTEXT_NAV_LAT
     global _REQUEST_CONTEXT_NAV_LON
     global _REQUEST_CONTEXT_NAV_ALT_KM
+    global _REQUEST_CONTEXT_TILE_TOKEN
+    global _REQUEST_CONTEXT_TILE_TOKEN_EXPIRES_AT
     with _REQUEST_CONTEXT_LOCK:
         _REQUEST_CONTEXT_RESOLVE_ID = str(resolve_id or "").strip()[:128]
         safe_mode = str(texture_quality_mode or "").strip().lower()
@@ -1105,10 +1109,103 @@ def set_resolve_request_context(
             _REQUEST_CONTEXT_NAV_ALT_KM = str(max(0.0, float(nav_altitude_km))).strip()
         except (TypeError, ValueError):
             _REQUEST_CONTEXT_NAV_ALT_KM = ""
+        _REQUEST_CONTEXT_TILE_TOKEN = ""
+        _REQUEST_CONTEXT_TILE_TOKEN_EXPIRES_AT = 0.0
 
 
 def clear_resolve_request_context():
     set_resolve_request_context("", "", cancel_event=None, nav_latitude_deg="", nav_longitude_deg="", nav_altitude_km="")
+
+
+def _invalidate_request_context_tile_token():
+    global _REQUEST_CONTEXT_TILE_TOKEN
+    global _REQUEST_CONTEXT_TILE_TOKEN_EXPIRES_AT
+    with _REQUEST_CONTEXT_LOCK:
+        _REQUEST_CONTEXT_TILE_TOKEN = ""
+        _REQUEST_CONTEXT_TILE_TOKEN_EXPIRES_AT = 0.0
+
+
+def _request_tile_session_token(resolve_id, quality_mode, allow_refresh=True):
+    cfg = _get_config()
+    if cfg is None:
+        return "", 0.0
+    safe_resolve_id = str(resolve_id or "").strip()[:128]
+    safe_quality_mode = str(quality_mode or "").strip().lower()
+    if safe_quality_mode not in {"preview", "balanced", "full"}:
+        return "", 0.0
+    if not safe_resolve_id:
+        return "", 0.0
+
+    url = cfg.endpoint.rstrip("/") + "/tiles/session"
+    payload = {
+        "resolve_id": safe_resolve_id,
+        "quality_mode": safe_quality_mode,
+    }
+    payload_bytes = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+
+    def _attempt(refresh_allowed):
+        headers = {
+            "User-Agent": "Planetka-Blender",
+            "Content-Type": "application/json; charset=utf-8",
+            **get_authorized_headers(allow_refresh=refresh_allowed),
+        }
+        request = urllib.request.Request(url, method="POST", headers=headers, data=payload_bytes)
+        with urllib.request.urlopen(request, timeout=_R2_TIMEOUT_SECONDS) as response:
+            raw = response.read() or b"{}"
+        try:
+            decoded = raw.decode("utf-8", errors="replace")
+        except (TypeError, ValueError, AttributeError):
+            decoded = "{}"
+        try:
+            data = json.loads(decoded)
+        except (TypeError, ValueError):
+            data = {}
+        token = str(data.get("tile_token", "") or "").strip()
+        if not token:
+            return "", 0.0
+        expires_in_seconds = 0
+        try:
+            expires_in_seconds = int(float(data.get("expires_in_seconds", 0) or 0))
+        except (TypeError, ValueError):
+            expires_in_seconds = 0
+        expires_in_seconds = max(30, min(3600, int(expires_in_seconds or 900)))
+        return token, float(time.time() + float(expires_in_seconds))
+
+    try:
+        return _attempt(bool(allow_refresh))
+    except AuthApiError:
+        return "", 0.0
+    except urllib.error.HTTPError as exc:
+        if int(getattr(exc, "code", 0)) == 401 and bool(allow_refresh):
+            try:
+                refresh_auth_session()
+                return _attempt(False)
+            except (AuthApiError, urllib.error.HTTPError, urllib.error.URLError, RuntimeError, TypeError, ValueError, AttributeError, OSError):
+                return "", 0.0
+        return "", 0.0
+    except (urllib.error.URLError, RuntimeError, TypeError, ValueError, AttributeError, OSError):
+        return "", 0.0
+
+
+def _get_request_context_tile_token(allow_refresh=True):
+    with _REQUEST_CONTEXT_LOCK:
+        current_token = str(_REQUEST_CONTEXT_TILE_TOKEN or "").strip()
+        current_expiry = float(_REQUEST_CONTEXT_TILE_TOKEN_EXPIRES_AT or 0.0)
+        resolve_id = str(_REQUEST_CONTEXT_RESOLVE_ID or "").strip()
+        quality_mode = str(_REQUEST_CONTEXT_TEXTURE_MODE or "").strip().lower()
+        now = float(time.time())
+        if current_token and current_expiry > (now + 5.0):
+            return current_token
+        if quality_mode not in {"preview", "balanced", "full"}:
+            return ""
+        token, expires_at = _request_tile_session_token(
+            resolve_id=resolve_id,
+            quality_mode=quality_mode,
+            allow_refresh=allow_refresh,
+        )
+        _REQUEST_CONTEXT_TILE_TOKEN = str(token or "").strip()
+        _REQUEST_CONTEXT_TILE_TOKEN_EXPIRES_AT = float(expires_at or 0.0)
+        return str(_REQUEST_CONTEXT_TILE_TOKEN or "").strip()
 
 
 @contextmanager
@@ -1170,6 +1267,10 @@ def _signed_headers(cfg, method, key, allow_refresh=True):
         headers["X-Planetka-Nav-Longitude"] = nav_lon
     if nav_alt:
         headers["X-Planetka-Nav-Altitude-Km"] = nav_alt
+    tile_token = _get_request_context_tile_token(allow_refresh=allow_refresh)
+    if tile_token:
+        headers["X-Planetka-Tile-Token"] = tile_token
+        headers.pop("Authorization", None)
     url = cfg.endpoint.rstrip("/") + "/tiles/" + urllib.parse.quote(key, safe="/-_.~")
     return url, headers
 
@@ -1298,6 +1399,11 @@ def _r2_request(method, key, destination_path=None):
                     else:
                         error_message = text
             if exc.code == 401 and not refreshed:
+                request_headers = headers if isinstance(headers, dict) else {}
+                if str(request_headers.get("X-Planetka-Tile-Token", "") or "").strip():
+                    _invalidate_request_context_tile_token()
+                    refreshed = True
+                    continue
                 try:
                     refresh_auth_session()
                     refreshed = True
