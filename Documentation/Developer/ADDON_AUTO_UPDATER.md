@@ -6,7 +6,7 @@ Last updated: `2026-04-01`
 
 Planetka now supports safe staged auto-updates:
 
-1. Addon checks Cloudflare manifest endpoint in background.
+1. Addon checks Cloud manifest endpoint in background.
 2. If newer version exists, addon package zip is downloaded to local updater cache.
 3. Update is staged and applied automatically on next Blender start.
 4. If apply fails, updater rolls files back from local backup.

@@ -1009,7 +1009,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Single-core resumable full rebuild for S2/EL/WT/PO higher-z/higher-d tiles "
-            "using direct-from-lowest-d policy with immediate Cloudflare upload."
+            "using direct-from-lowest-d policy with immediate Cloud upload."
         )
     )
     parser.add_argument("--assets-root", default="/Volumes/SSDA/Planetka Assets", help="Root with S2/EL/WT/PO folders")
@@ -1025,7 +1025,7 @@ def parse_args() -> argparse.Namespace:
         "--secrets-file",
         default=f"{Path.home()}/.planetka/secrets/Cloudflare_API_from_stash_2026-03-17.txt",
     )
-    parser.add_argument("--refresh-manifest", action="store_true", help="Re-fetch remote manifest from Cloudflare")
+    parser.add_argument("--refresh-manifest", action="store_true", help="Re-fetch remote manifest from Cloud")
     parser.add_argument("--prepare-only", action="store_true", help="Prepare manifest/tasks and exit")
     parser.add_argument("--prune-local-extras", action="store_true", help="Delete local files not present in remote manifest")
     parser.add_argument("--task-retries", type=int, default=2, help="Per-task generation/upload retries")

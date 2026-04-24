@@ -59,7 +59,7 @@ Current implementation reference:
 - Protected source tiles:
   - Never modify `z001_d001` for any dataset.
 - No-new-files rule:
-  - Task set is derived from existing remote manifest (Cloudflare object list).
+  - Task set is derived from existing remote manifest (Cloud object list).
   - Files not in manifest are treated as extras and can be pruned locally.
 - Upload behavior:
-  - Every rebuilt file is uploaded to Cloudflare immediately after local write.
+  - Every rebuilt file is uploaded to Cloud immediately after local write.

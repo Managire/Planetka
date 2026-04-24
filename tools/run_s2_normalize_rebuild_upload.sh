@@ -19,7 +19,7 @@ cd "${WORKDIR}"
 python3 tools/s2_clamp_rebuild.py --root "${ROOT_S2}" --workers 4
 echo "[2/3] Rebuild complete"
 
-echo "[3/3] Upload S2 to Cloudflare R2"
+echo "[3/3] Upload S2 to Cloud R2"
 ACCOUNT_ID="$(awk -F'=' '/R2_ACCOUNT_ID/{gsub(/ /,"",$2); print $2; exit}' "${SECRETS_FILE}")"
 if [[ -z "${ACCOUNT_ID}" ]]; then
   echo "Failed to read R2_ACCOUNT_ID from ${SECRETS_FILE}" >&2
@@ -37,4 +37,3 @@ aws s3 sync "${ROOT_S2}/" "s3://${BUCKET}/${PREFIX}/" \
 
 echo "[3/3] Upload complete"
 echo "All steps completed successfully."
-

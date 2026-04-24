@@ -1,6 +1,6 @@
-# Cloudflare API Environment Variables
+# Cloud API Environment Variables
 
-This document lists runtime environment variables used by `cloudflare-api/src/index.js` for auth/device protection and cleanup behavior.
+This document lists runtime environment variables used by the Worker runtime for auth/device protection and cleanup behavior.
 
 ## Rate Limiting
 

@@ -111,7 +111,7 @@ def _validate_texture_source(base_path):
     except RuntimeError as exc:
         return "", str(exc)
     if not has_s2:
-        return "", "Planetka Cloudflare source is reachable but required S2 sentinel tiles are missing."
+        return "", "Planetka Cloud source is reachable but required S2 sentinel tiles are missing."
 
     return normalized, ""
 
@@ -226,7 +226,10 @@ def _wrap_popup_text_lines(text, width=86):
 def _set_resolve_failure_notice(scene, message):
     if scene is None:
         return
-    safe_message = str(message or "").strip() or "Resolve failed. Please click Rebuild Earth."
+    safe_message = (
+        str(message or "").strip()
+        or "Resolve failed. Please click Rebuild Earth"
+    )
     try:
         scene[RESOLVE_FAILURE_FLAG_KEY] = True
         scene[RESOLVE_FAILURE_MESSAGE_KEY] = safe_message
@@ -1455,7 +1458,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 "failed storing integrity resolve error on scene",
             )
             _set_resolve_failure_notice(scene, integrity_message)
-            user_message = "Resolve failed. Please click Rebuild Earth in the New Earth panel."
+            user_message = "Resolve failed. Please click Rebuild Earth"
             return fail(
                 self,
                 user_message,

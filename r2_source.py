@@ -1,4 +1,4 @@
-"""Cloudflare/API tile streaming + cache + download telemetry helpers."""
+"""Cloud/API tile streaming + cache + download telemetry helpers."""
 
 import hashlib
 import hmac

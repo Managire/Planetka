@@ -12,7 +12,7 @@ The Worker checks these metrics and sends email to `SECURITY_ALERT_EMAIL` when t
 - `Tile error burst` (`status_code >= 500` or `internal_error`)
 - `Claim rejection burst` (repeated paid-claim rejections/fallbacks)
 
-Alert controls are defined in [CLOUDFLARE_API_ENV_VARS.md](/Users/tomasgriger/Library/Application%20Support/Blender/5.0/extensions/user_default/Planetka/Documentation/Developer/CLOUDFLARE_API_ENV_VARS.md).
+Alert controls are defined in [CLOUD_API_ENV_VARS.md](/Users/tomasgriger/Library/Application%20Support/Blender/5.0/extensions/user_default/Planetka/Documentation/Developer/CLOUD_API_ENV_VARS.md).
 
 ## Immediate Response
 

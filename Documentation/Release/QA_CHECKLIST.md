@@ -32,8 +32,8 @@
   - `python3 tools/worker_abuse_simulation.py --base-url https://api.planetka.io`
 - [ ] Addon auto-updater manifest endpoint responds:
   - `curl -sS https://api.planetka.io/addon/update-manifest | jq .`
-- [ ] Cloudflare API env vars reviewed against:
-  - `Documentation/Developer/CLOUDFLARE_API_ENV_VARS.md`
+- [ ] Cloud API env vars reviewed against:
+  - `Documentation/Developer/CLOUD_API_ENV_VARS.md`
 
 ## 4. Texture Source Validation
 

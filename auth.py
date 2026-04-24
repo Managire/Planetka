@@ -87,15 +87,6 @@ PENDING_AUTH_MESSAGE = "Waiting for browser sign-in..."
 _DEVICE_LOGIN_TIMER_REGISTERED = False
 _ADDON_VERSION_CACHE = None
 THROTTLE_STATUS_PREFIX = "Account throttled until "
-NEW_ZEALAND_HIGH_QUALITY_MAX_ALTITUDE_KM = 2000.0
-NEW_ZEALAND_MAIN_LON_MIN = 165.0
-NEW_ZEALAND_MAIN_LON_MAX = 180.0
-NEW_ZEALAND_MAIN_LAT_MIN = -49.5
-NEW_ZEALAND_MAIN_LAT_MAX = -32.0
-NEW_ZEALAND_DATELINE_LON_MIN = -180.0
-NEW_ZEALAND_DATELINE_LON_MAX = -170.0
-NEW_ZEALAND_DATELINE_LAT_MIN = -50.0
-NEW_ZEALAND_DATELINE_LAT_MAX = -32.0
 
 
 class AuthApiError(RuntimeError):
@@ -122,11 +113,11 @@ def describe_auth_error(error):
     if "account_blocked" in lowered or "account is blocked" in lowered:
         return "Planetka account is blocked. Contact info@planetka.io."
     if "1010" in lowered:
-        return "Planetka API access is blocked by API gateway. Disable Browser Integrity Check for api.planetka.io."
+        return "Planetka connection was blocked by a security check. Please try again later or contact support."
     if "device_session_invalid" in lowered or "device_session_expired" in lowered:
         return "The Planetka browser session expired. Start login again."
     if "network_error" in lowered:
-        return "Planetka could not reach the API. Check the internet connection and Worker deployment."
+        return "Planetka could not connect right now. Check your internet connection and try again."
     if "missing_stripe_payment_link_url" in lowered:
         return "Planetka checkout URL is not configured on the API."
     if "allowance" in lowered or "quota_exceeded" in lowered or "insufficient_data" in lowered:
@@ -714,84 +705,6 @@ def _normalize_texture_quality_token(value):
 
 def _is_high_quality_mode(value):
     return _normalize_texture_quality_token(value) in {"BALANCED", "FULL"}
-
-
-def _safe_float(value, fallback=0.0):
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return float(fallback)
-
-
-def _normalize_longitude_180(value):
-    lon = _safe_float(value, 0.0)
-    while lon > 180.0:
-        lon -= 360.0
-    while lon < -180.0:
-        lon += 360.0
-    return lon
-
-
-def _extract_nav_pose(source):
-    if source is None:
-        return 0.0, 0.0, 0.0
-    return (
-        _safe_float(getattr(source, "nav_latitude_deg", 0.0), 0.0),
-        _normalize_longitude_180(getattr(source, "nav_longitude_deg", 0.0)),
-        max(0.0, _safe_float(getattr(source, "nav_altitude_km", 0.0), 0.0)),
-    )
-
-
-def _is_pose_inside_box(lat, lon, lat_min, lat_max, lon_min, lon_max):
-    return (
-        float(lat_min) <= float(lat) <= float(lat_max)
-        and float(lon_min) <= float(lon) <= float(lon_max)
-    )
-
-
-def is_new_zealand_high_quality_exception(source=None, lat_deg=None, lon_deg=None, altitude_km=None):
-    if source is not None:
-        lat, lon, _alt = _extract_nav_pose(source)
-    else:
-        lat = _safe_float(lat_deg, 0.0)
-        lon = _normalize_longitude_180(lon_deg if lon_deg is not None else 0.0)
-        _alt = max(0.0, _safe_float(altitude_km, 0.0))
-
-    in_main_box = (
-        float(NEW_ZEALAND_MAIN_LAT_MIN) <= lat <= float(NEW_ZEALAND_MAIN_LAT_MAX)
-        and float(NEW_ZEALAND_MAIN_LON_MIN) <= lon <= float(NEW_ZEALAND_MAIN_LON_MAX)
-    )
-    if in_main_box:
-        return True
-
-    in_dateline_box = (
-        float(NEW_ZEALAND_DATELINE_LAT_MIN) <= lat <= float(NEW_ZEALAND_DATELINE_LAT_MAX)
-        and float(NEW_ZEALAND_DATELINE_LON_MIN) <= lon <= float(NEW_ZEALAND_DATELINE_LON_MAX)
-    )
-    return bool(in_dateline_box)
-
-
-def is_lite_high_quality_exception(source=None, lat_deg=None, lon_deg=None, altitude_km=None):
-    return bool(
-        is_new_zealand_high_quality_exception(
-            source=source,
-            lat_deg=lat_deg,
-            lon_deg=lon_deg,
-            altitude_km=altitude_km,
-        )
-    )
-
-
-def is_new_zealand_testing_area(source=None, lat_deg=None, lon_deg=None, altitude_km=None):
-    del altitude_km
-    return bool(
-        is_new_zealand_high_quality_exception(
-            source=source,
-            lat_deg=lat_deg,
-            lon_deg=lon_deg,
-            altitude_km=0.0,
-        )
-    )
 
 
 def allows_balanced_for_context(prefs=None, source=None):

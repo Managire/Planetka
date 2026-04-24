@@ -2126,7 +2126,7 @@ class PLANETKA_PT_LocalCloudsPanel(bpy.types.Panel):
         box = layout.box()
         box.label(text="Texture Picker", icon="IMAGE_DATA")
         if not items:
-            box.label(text="No Cloudflare local-cloud test textures available.", icon="ERROR")
+            box.label(text="No Cloud local-cloud test textures available.", icon="ERROR")
             cache_dir = _local_clouds_dir()
             if cache_dir:
                 box.label(text=cache_dir, icon="FILE_FOLDER")

@@ -26,7 +26,7 @@ Status: Stable
   - estimated `Cost of animation in Full Quality`
 - Account panel actions:
   - `Connect API Key`
-  - `Request Free Access`
+  - `Request API Key`
   - `Top Up Credits`
 
 ## Worker/API

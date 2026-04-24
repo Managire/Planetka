@@ -30,11 +30,9 @@ from .operators import (
     PLANETKA_OT_AccountLogout,
     PLANETKA_OT_AccountOpenLogin,
     PLANETKA_OT_AccountUpgrade,
-    PLANETKA_OT_ConfirmImportNewData,
     PLANETKA_OT_UpdateNow,
     PLANETKA_OT_DownloadStatusPopup,
     PLANETKA_OT_DeleteSavedLocation,
-    PLANETKA_OT_ImportNewData,
     PLANETKA_OT_LoadSavedLocation,
     PLANETKA_OT_NavigationApplyShot,
     PLANETKA_OT_ResetEarthTransform,
@@ -49,7 +47,6 @@ from .operators import (
     PLANETKA_OT_ResetStartupSetupFactory,
     PLANETKA_OT_SaveStartupSetup,
     PLANETKA_OT_SaveLocation,
-    PLANETKA_OT_SelectTextureSource,
     PLANETKA_OT_SunlightPreset,
     PLANETKA_OT_UseCurrentViewNavigation,
 )
@@ -87,7 +84,6 @@ from .ui import (
 from .validation import (
     PLANETKA_OT_ReportBug,
     PLANETKA_OT_SceneHealthCheck,
-    PLANETKA_OT_SceneHealthReport,
     PLANETKA_OT_ValidateTextureSource,
 )
 
@@ -186,13 +182,9 @@ classes = (
     PLANETKA_OT_AnimationRenderInfo,
     PLANETKA_OT_AnimationMakeReady,
     PLANETKA_OT_AnimationClearPrepared,
-    PLANETKA_OT_SelectTextureSource,
-    PLANETKA_OT_ImportNewData,
-    PLANETKA_OT_ConfirmImportNewData,
     PLANETKA_OT_LoadTextures,
     PLANETKA_OT_ValidateTextureSource,
     PLANETKA_OT_SceneHealthCheck,
-    PLANETKA_OT_SceneHealthReport,
     PLANETKA_OT_ReportBug,
     PLANETKA_OT_SaveStartupSetup,
     PLANETKA_OT_ResetStartupSetupFactory,

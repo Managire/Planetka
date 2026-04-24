@@ -8,6 +8,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     snapshotGeneratedAt,
     fmtIntLocal,
     fmtGbLocal,
+    snapshotTopLine,
     snapshotActive,
     snapshotSummary,
     snapshotLiveMap,
@@ -28,6 +29,31 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     billableCostTotal,
   } = context || {};
 
+  const safeTopLine = snapshotTopLine && typeof snapshotTopLine === "object" ? snapshotTopLine : {};
+  const topLineUsers = safeTopLine.users && typeof safeTopLine.users === "object" ? safeTopLine.users : {};
+  const topLineResolves = safeTopLine.resolves && typeof safeTopLine.resolves === "object" ? safeTopLine.resolves : {};
+  const topLineTileRequests = safeTopLine.tile_requests && typeof safeTopLine.tile_requests === "object" ? safeTopLine.tile_requests : {};
+  const topLineGbServed = safeTopLine.gb_served && typeof safeTopLine.gb_served === "object" ? safeTopLine.gb_served : {};
+
+  const renderTierSplitLines = (values = {}, valueFormatter) => {
+    const safeValues = values && typeof values === "object" ? values : {};
+    const freeValue = valueFormatter(safeValues.free || 0);
+    const personalValue = valueFormatter(safeValues.personal || 0);
+    const commercialValue = valueFormatter(safeValues.commercial || 0);
+    const totalValue = valueFormatter(safeValues.total || 0);
+    return `
+      <span class="split-line tier-free">Free: ${escapeHtml(String(freeValue))}</span>
+      <span class="split-line tier-personal">Personal: ${escapeHtml(String(personalValue))}</span>
+      <span class="split-line tier-pro">Commercial: ${escapeHtml(String(commercialValue))}</span>
+      <span class="split-line">Total: ${escapeHtml(String(totalValue))}</span>
+    `.trim();
+  };
+
+  const topUsersSplitHtml = renderTierSplitLines(topLineUsers, (value) => fmtIntLocal(value));
+  const topResolvesSplitHtml = renderTierSplitLines(topLineResolves, (value) => fmtIntLocal(value));
+  const topTileRequestsSplitHtml = renderTierSplitLines(topLineTileRequests, (value) => fmtIntLocal(value));
+  const topGbServedSplitHtml = renderTierSplitLines(topLineGbServed, (value) => `${fmtGbLocal(value)} GB`);
+
   return `
 <!doctype html>
 <html>
@@ -44,6 +70,8 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     .card { background: #111827; border: 1px solid #1f2937; border-radius: 10px; padding: 12px; }
     .label { color: #93c5fd; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
     .value { font-size: 22px; margin-top: 6px; font-weight: 600; }
+    .value-split { margin-top: 6px; line-height: 1.45; font-size: 14px; font-weight: 600; }
+    .split-line { display: block; }
     .controls { display:flex; gap:10px; align-items:center; margin: 8px 0 16px; }
     .map-shell { position: relative; width: 100%; max-width: 980px; aspect-ratio: 2 / 1; margin-top: 8px; border: 1px solid #1f2937; border-radius: 8px; overflow: hidden; background: #0a1628; }
     .map-bg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
@@ -61,7 +89,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     .error { color: #fca5a5; }
     .tier-free { color: #ffffff; font-weight: 600; }
     .tier-personal { color: #22c55e; font-weight: 600; }
-    .tier-pro { color: #ff9f80; font-weight: 600; }
+    .tier-pro { color: #ef4444; font-weight: 600; }
     .user-filter-active { outline: 1px solid #60a5fa; outline-offset: -1px; }
   </style>
 </head>
@@ -85,7 +113,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     <select id="planFilter">
       <option value="all" selected>All</option>
       <option value="lite">Personal</option>
-      <option value="pro">Pro</option>
+      <option value="pro">Commercial</option>
     </select>
     <label for="tileMapWindow">Live map:</label>
     <select id="tileMapWindow">
@@ -100,7 +128,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     <label for="userAdminEmail">Manage user:</label>
     <input id="userAdminEmail" type="email" placeholder="user@example.com" style="min-width: 280px; background:#111827; color:#e5e7eb; border:1px solid #374151; border-radius:8px; padding:7px 10px;" />
     <button id="setLiteBtn" class="action-btn">Set Personal</button>
-    <button id="setProBtn" class="action-btn">Set Pro</button>
+    <button id="setProBtn" class="action-btn">Set Commercial</button>
     <button id="throttleBtn" class="action-btn warn">Throttle 24h</button>
     <button id="unthrottleBtn" class="action-btn">Unthrottle</button>
     <button id="blockBtn" class="action-btn danger">Block</button>
@@ -108,9 +136,16 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
   </div>
 
   <div class="grid">
-    <div class="card"><div class="label">Active users (5m)</div><div id="active5" class="value">${escapeHtml(fmtIntLocal(snapshotActive.users_5m))}</div></div>
-    <div class="card"><div class="label">Active users (15m)</div><div id="active15" class="value">${escapeHtml(fmtIntLocal(snapshotActive.users_15m))}</div></div>
-    <div class="card"><div class="label">Active users (60m)</div><div id="active60" class="value">${escapeHtml(fmtIntLocal(snapshotActive.users_60m))}</div></div>
+    <div class="card"><div class="label">Total Users</div><div id="topUsersSplit" class="value-split">${topUsersSplitHtml}</div></div>
+    <div class="card"><div class="label">Total Resolves</div><div id="topResolvesSplit" class="value-split">${topResolvesSplitHtml}</div></div>
+    <div class="card"><div class="label">Tile Requests</div><div id="topRequestsSplit" class="value-split">${topTileRequestsSplitHtml}</div></div>
+    <div class="card"><div class="label">GB Served</div><div id="topGbSplit" class="value-split">${topGbServedSplitHtml}</div></div>
+    <div class="card"><div class="label">Active users (6 months)</div><div id="active6m" class="value">${escapeHtml(fmtIntLocal(snapshotActive.users_6m))}</div></div>
+    <div class="card"><div class="label">Active users (3 months)</div><div id="active3m" class="value">${escapeHtml(fmtIntLocal(snapshotActive.users_3m))}</div></div>
+    <div class="card"><div class="label">Active users (1 month)</div><div id="active1m" class="value">${escapeHtml(fmtIntLocal(snapshotActive.users_1m))}</div></div>
+    <div class="card"><div class="label">Active users (1 week)</div><div id="active1w" class="value">${escapeHtml(fmtIntLocal(snapshotActive.users_1w))}</div></div>
+    <div class="card"><div class="label">Active users (1 day)</div><div id="active1d" class="value">${escapeHtml(fmtIntLocal(snapshotActive.users_1d))}</div></div>
+    <div class="card"><div class="label">Active users (1 hour)</div><div id="active1h" class="value">${escapeHtml(fmtIntLocal(snapshotActive.users_1h))}</div></div>
     <div class="card"><div class="label">Live tile events (10s)</div><div id="live10s" class="value">${escapeHtml(fmtIntLocal(snapshotActive.tile_events_10s))}</div></div>
     <div class="card"><div class="label">Tile requests (window)</div><div id="reqCount" class="value">${escapeHtml(fmtIntLocal(snapshotSummary.request_count))}</div></div>
     <div class="card"><div class="label">Bytes served (window)</div><div id="bytesServed" class="value">${escapeHtml(fmtGbLocal(snapshotSummary.bytes_served))} GB</div></div>
@@ -155,7 +190,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     <table id="heavyTable"><thead><tr><th>Email</th><th>Plan</th><th>Resolves</th><th>Month GB</th><th>Month Requests</th><th>Last Seen</th></tr></thead><tbody>${serverHeavyRowsHtml}</tbody></table>
   </div>
   <div class="section">
-    <h3>Cloudflare Billable Usage (R2)</h3>
+    <h3>Cloud Billable Usage (R2)</h3>
     <div class="muted" id="billableMeta">${billableStatusText}</div>
     <table id="billableTable">
       <thead><tr><th>Metric</th><th>Usage</th><th>Billable</th><th>Estimated Cost (USD)</th></tr></thead>
@@ -211,6 +246,21 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
       const numeric = Number(v);
       return Number.isFinite(numeric) ? numeric.toFixed(digits) : "0.00";
     };
+    const renderTierSplit = (id, values, asGb = false) => {
+      const target = document.getElementById(id);
+      if (!target) return;
+      const safeValues = values && typeof values === "object" ? values : {};
+      const fmtValue = (value) => {
+        if (asGb) return fmtGb(value) + " GB";
+        return fmtInt(value);
+      };
+      target.innerHTML = [
+        '<span class="split-line tier-free">Free: ' + fmtValue(safeValues.free || 0) + "</span>",
+        '<span class="split-line tier-personal">Personal: ' + fmtValue(safeValues.personal || 0) + "</span>",
+        '<span class="split-line tier-pro">Commercial: ' + fmtValue(safeValues.commercial || 0) + "</span>",
+        '<span class="split-line">Total: ' + fmtValue(safeValues.total || 0) + "</span>",
+      ].join("");
+    };
     const decodeDataValue = (v) => {
       try {
         return decodeURIComponent(String(v || ""));
@@ -256,15 +306,15 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
       const metaText = available
         ? (data && data.estimated
           ? ("Estimated billable usage from telemetry. Source: "
-            + String(data.source || "telemetry_estimate")
+            + String(data.source || "telemetry_estimate").replace(/cloudflare/gi, "cloud")
             + ". Period: " + String(data.period_start || "-")
             + " -> " + String(data.period_end || "-"))
-          : ("Cloudflare GraphQL live data. Source: "
-            + String(data.source || "cloudflare_graphql")
+          : ("Cloud GraphQL live data. Source: "
+            + String(data.source || "cloudflare_graphql").replace(/cloudflare/gi, "cloud")
             + ". Bucket: " + (bucket || "all buckets")
             + ". Period: " + String(data.period_start || "-")
             + " -> " + String(data.period_end || "-")))
-        : ("Cloudflare billable usage unavailable. "
+        : ("Cloud billable usage unavailable. "
           + String(data.message || data.reason || "Not configured."));
       setText("billableMeta", metaText);
       if (!available) {
@@ -295,7 +345,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     }
     const TILE_COLOR_FREE = "#ffffff";
     const TILE_COLOR_PERSONAL = "#22c55e";
-    const TILE_COLOR_PRO = "#ff9f80";
+    const TILE_COLOR_PRO = "#ef4444";
     const TILE_MAP_BASEMAP_URL = "/admin/analytics/world-map.jpg";
     let tileMapBaseImage = null;
     let tileMapBaseImageState = "idle";
@@ -316,7 +366,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     }
     function planLabel(planCode) {
       const tier = normalizePlanCode(planCode);
-      if (tier === "pro") return "Pro";
+      if (tier === "pro") return "Commercial";
       if (tier === "personal") return "Personal";
       return "Free";
     }
@@ -575,7 +625,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         unblock: "Unblock this user account now?",
         "hard-block": "Hard block this user and block same-computer attempts?",
         "set-lite": "Downgrade this account to Personal?",
-        "set-pro": "Upgrade this account to Pro?",
+        "set-pro": "Upgrade this account to Commercial?",
       };
       if (!window.confirm(confirmation[safeAction] || "Confirm action?")) {
         return;
@@ -638,9 +688,17 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         }
         const s = data.summary || {};
         const a = data.active || {};
-        setText("active5", fmtInt(a.users_5m));
-        setText("active15", fmtInt(a.users_15m));
-        setText("active60", fmtInt(a.users_60m));
+        const topLine = data.top_line || {};
+        renderTierSplit("topUsersSplit", topLine.users || {}, false);
+        renderTierSplit("topResolvesSplit", topLine.resolves || {}, false);
+        renderTierSplit("topRequestsSplit", topLine.tile_requests || {}, false);
+        renderTierSplit("topGbSplit", topLine.gb_served || {}, true);
+        setText("active6m", fmtInt(a.users_6m));
+        setText("active3m", fmtInt(a.users_3m));
+        setText("active1m", fmtInt(a.users_1m));
+        setText("active1w", fmtInt(a.users_1w));
+        setText("active1d", fmtInt(a.users_1d));
+        setText("active1h", fmtInt(a.users_1h));
         setText("live10s", fmtInt(a.tile_events_10s));
         setText("reqCount", fmtInt(s.request_count));
         setText("bytesServed", fmtBytes(s.bytes_served));
@@ -658,14 +716,14 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         renderCloudflareBillableUsage(data.cloudflare_billable_usage || {});
         renderRows("activeUsersTable", data.active_users_10m, (row) => {
           const normalizedPlan = normalizePlanCode(row && row.user_status);
-          const tier = normalizedPlan === "pro" ? "Pro" : (normalizedPlan === "personal" ? "Personal" : "Free");
+          const tier = normalizedPlan === "pro" ? "Commercial" : (normalizedPlan === "personal" ? "Personal" : "Free");
           const tierCss = tierClass(normalizedPlan);
           return \`<td class="\${tierCss}">\${row.user_email || ""}</td><td class="\${tierCss}">\${tier}</td><td>\${fmtInt(row.request_count)}</td><td>\${fmtInt(row.resolve_count)}</td><td>\${fmtGb(row.bytes_served)}</td><td>\${row.last_seen_at || ""}</td>\`;
         });
         renderRows("heavyTable", data.heavy_users_30d || [], (row) => {
           const rawPlanCode = String(row.user_status || "planetka").trim().toLowerCase();
           const normalizedPlan = normalizePlanCode(rawPlanCode);
-          const planLabelText = normalizedPlan === "pro" ? "Pro" : (normalizedPlan === "personal" ? "Personal" : "Free");
+          const planLabelText = normalizedPlan === "pro" ? "Commercial" : (normalizedPlan === "personal" ? "Personal" : "Free");
           const tierCss = tierClass(normalizedPlan);
           const lastSeen = Number.isFinite(Number(row.last_event_unix))
             ? new Date(Number(row.last_event_unix) * 1000).toISOString()

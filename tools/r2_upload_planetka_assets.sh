@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Upload Planetka texture dataset to Cloudflare R2 (image files only).
+# Upload Planetka texture dataset to Cloud R2 (image files only).
 # Default mode is preflight. Use --run to execute sync.
 
 PROFILE="${PROFILE:-planetka-r2}"

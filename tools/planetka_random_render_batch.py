@@ -1,7 +1,7 @@
 """
 Planetka end-to-end random resolve/render batch.
 
-Runs 10 random navigation shots, resolves textures from Cloudflare, renders PNGs,
+Runs 10 random navigation shots, resolves textures from Cloud, renders PNGs,
 and records allowance-usage deltas per shot.
 
 Usage:

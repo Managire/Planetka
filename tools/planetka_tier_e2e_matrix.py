@@ -491,24 +491,20 @@ def main():
             _render_still(scene, milan_path)
             scenario_result["renders"].append(milan_path)
 
-            # NZ stills at 30 km
+            # Global sample stills at 30 km.
             for city in (AUCKLAND, CHRISTCHURCH, WELLINGTON):
-                props.texture_quality_mode = "PREVIEW" if tier != "pro" else "FULL"
+                props.texture_quality_mode = "FULL" if tier == "pro" else ("BALANCED" if tier == "lite" else "PREVIEW")
                 _set_navigation(props, state_module, city["lat"], city["lon"], 30.0, heading_deg=rng.uniform(-20, 20), tilt_deg=50.0, roll_deg=rng.uniform(-5, 5))
                 result = _resolve_now(state_module=state_module)
                 if "FINISHED" not in result:
-                    raise RuntimeError(f"{label} NZ resolve failed for {city['name']}: {result}")
+                    raise RuntimeError(f"{label} sample resolve failed for {city['name']}: {result}")
                 out_path = os.path.join(render_dir, f"{session_prefix}_{tier}_{city['name'].lower().replace(' ', '_')}_30km.png")
                 _render_still(scene, out_path)
                 scenario_result["renders"].append(out_path)
 
             # 30-frame Auckland zoom (2000km -> 30km)
-            # For free/pro use FULL in NZ. For personal keep PREVIEW unless FULL is allowed.
-            if tier == "pro" or tier == "free":
-                props.texture_quality_mode = "FULL"
-            else:
-                # Personal tier currently blocks FULL; keep best allowed mode.
-                props.texture_quality_mode = "BALANCED"
+            # Use the best allowed mode per tier.
+            props.texture_quality_mode = "FULL" if tier == "pro" else ("BALANCED" if tier == "lite" else "PREVIEW")
 
             anim_dir = os.path.join(render_dir, f"{session_prefix}_{tier}_auckland_zoom")
             frames = _render_zoom_sequence(

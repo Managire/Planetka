@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sync tile size index rows from Cloudflare R2 object metadata.
+"""Sync tile size index rows from Cloud R2 object metadata.
 
 Updates `tile_sizes.sqlite` using actual object sizes reported by R2.
 Supports compact schema: tile_sizes(folder, x, y, z, d, ext, size_bytes).
@@ -350,7 +350,7 @@ def sync_folder_sizes(args: argparse.Namespace) -> None:
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Sync tile size sqlite rows from Cloudflare R2 object metadata")
+    parser = argparse.ArgumentParser(description="Sync tile size sqlite rows from Cloud R2 object metadata")
     parser.add_argument("--db", required=True, help="Path to tile_sizes.sqlite")
     parser.add_argument("--folder", required=True, help="Tile folder to sync: S2, EL, WT, PO")
     parser.add_argument("--bucket", default="planetka-data", help="R2 bucket name")

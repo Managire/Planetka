@@ -1,4 +1,4 @@
-# Cloudflare Setup: Preview + Credits Model
+# Cloud Setup: Preview + Credits Model
 
 ## 1) Access Model
 
@@ -63,7 +63,7 @@ Recommended:
 ## 6) Validation Checklist
 
 - `/health` confirms DB/R2 bindings and production settings.
-- `node --check cloudflare-api/src/index.js` passes.
+- `node --check src/index.js` passes (in Worker project folder).
 - `tools/release_gate.py` passes.
 - Stripe webhook test event grants credits for mapped price/product IDs.
 - Preview mode tiles do not reduce `total_remaining_bytes`.

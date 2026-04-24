@@ -2392,7 +2392,9 @@ async function collectAnalyticsSnapshot(
   const authRefreshWindowStartUnix = Math.max(0, nowUnix - authRefreshWindowSeconds);
   const eventEmailFilter = buildAnalyticsExcludedEmailFilter("user_email", env);
   const eventEmailFilterAliasE = buildAnalyticsExcludedEmailFilter("e.user_email", env);
+  const userEmailFilter = buildAnalyticsExcludedEmailFilter("email", env);
   const rollupEmailFilter = buildAnalyticsExcludedEmailFilter("user_email", env);
+  const rollupEmailFilterAliasR = buildAnalyticsExcludedEmailFilter("r.user_email", env);
   const heavyEmailFilter = buildAnalyticsExcludedEmailFilter("c.user_email", env);
   const authRefreshEmailFilter = buildAnalyticsExcludedEmailFilter("user_email", env);
 
@@ -2413,35 +2415,114 @@ async function collectAnalyticsSnapshot(
     [windowStartUnix, ...eventEmailFilter.bindings],
   );
 
-  const active5m = await dbGet(
+  const topLineUsers = await dbGet(
     db,
     `
-      SELECT COUNT(DISTINCT user_id) AS active_users
-      FROM tile_request_events
-      WHERE created_at_unix >= ?
-      ${eventEmailFilter.condition ? `AND ${eventEmailFilter.condition}` : ""}
+      WITH users_normalized AS (
+        SELECT
+          CASE
+            WHEN LOWER(COALESCE(status, '')) IN ('pro', 'planetka_pro', 'planetka_studio', 'studio') THEN 'commercial'
+            WHEN LOWER(COALESCE(status, '')) IN ('lite', 'planetka', 'personal', 'basic', 'indie') THEN 'personal'
+            ELSE 'free'
+          END AS tier_code
+        FROM users
+        WHERE 1 = 1
+        ${userEmailFilter.condition ? `AND ${userEmailFilter.condition}` : ""}
+      )
+      SELECT
+        COALESCE(SUM(CASE WHEN tier_code = 'free' THEN 1 ELSE 0 END), 0) AS free_users,
+        COALESCE(SUM(CASE WHEN tier_code = 'personal' THEN 1 ELSE 0 END), 0) AS personal_users,
+        COALESCE(SUM(CASE WHEN tier_code = 'commercial' THEN 1 ELSE 0 END), 0) AS commercial_users,
+        COUNT(*) AS total_users
+      FROM users_normalized
     `,
-    [Math.max(0, nowUnix - 300), ...eventEmailFilter.bindings],
+    [...userEmailFilter.bindings],
   );
-  const active15m = await dbGet(
+
+  const topLineTraffic = await dbGet(
     db,
     `
-      SELECT COUNT(DISTINCT user_id) AS active_users
-      FROM tile_request_events
-      WHERE created_at_unix >= ?
-      ${eventEmailFilter.condition ? `AND ${eventEmailFilter.condition}` : ""}
+      WITH traffic AS (
+        SELECT
+          r.request_count,
+          r.bytes_served,
+          COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), COALESCE(NULLIF(TRIM(LOWER(c.plan_code)), ''), ?)) AS plan_norm
+        FROM tile_request_rollup_daily_account r
+        LEFT JOIN users u ON u.id = r.user_id
+        LEFT JOIN user_download_counters c ON c.user_id = r.user_id
+        WHERE 1 = 1
+        ${rollupEmailFilterAliasR.condition ? `AND ${rollupEmailFilterAliasR.condition}` : ""}
+      )
+      SELECT
+        COALESCE(SUM(CASE WHEN plan_norm IN ('free', 'planetka_free', 'trial') THEN request_count ELSE 0 END), 0) AS free_requests,
+        COALESCE(SUM(CASE WHEN plan_norm IN ('lite', 'planetka', 'personal', 'basic', 'indie') THEN request_count ELSE 0 END), 0) AS personal_requests,
+        COALESCE(SUM(CASE WHEN plan_norm IN ('pro', 'planetka_pro', 'planetka_studio', 'studio') THEN request_count ELSE 0 END), 0) AS commercial_requests,
+        COALESCE(SUM(request_count), 0) AS total_requests,
+        COALESCE(SUM(CASE WHEN plan_norm IN ('free', 'planetka_free', 'trial') THEN bytes_served ELSE 0 END), 0) AS free_bytes,
+        COALESCE(SUM(CASE WHEN plan_norm IN ('lite', 'planetka', 'personal', 'basic', 'indie') THEN bytes_served ELSE 0 END), 0) AS personal_bytes,
+        COALESCE(SUM(CASE WHEN plan_norm IN ('pro', 'planetka_pro', 'planetka_studio', 'studio') THEN bytes_served ELSE 0 END), 0) AS commercial_bytes,
+        COALESCE(SUM(bytes_served), 0) AS total_bytes
+      FROM traffic
     `,
-    [Math.max(0, nowUnix - 900), ...eventEmailFilter.bindings],
+    [PLAN_CODE_PLANETKA_FREE, ...rollupEmailFilterAliasR.bindings],
   );
-  const active60m = await dbGet(
+
+  const topLineResolves = await dbGet(
     db,
     `
-      SELECT COUNT(DISTINCT user_id) AS active_users
+      WITH tagged_resolves AS (
+        SELECT DISTINCT
+          e.user_id,
+          e.resolve_id,
+          COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), COALESCE(NULLIF(TRIM(LOWER(c.plan_code)), ''), ?)) AS plan_norm
+        FROM tile_request_events e
+        LEFT JOIN users u ON u.id = e.user_id
+        LEFT JOIN user_download_counters c ON c.user_id = e.user_id
+        WHERE
+          e.resolve_id IS NOT NULL
+          AND e.resolve_id != ''
+          ${eventEmailFilterAliasE.condition ? `AND ${eventEmailFilterAliasE.condition}` : ""}
+      )
+      SELECT
+        COALESCE(SUM(CASE WHEN plan_norm IN ('free', 'planetka_free', 'trial') THEN 1 ELSE 0 END), 0) AS free_resolves,
+        COALESCE(SUM(CASE WHEN plan_norm IN ('lite', 'planetka', 'personal', 'basic', 'indie') THEN 1 ELSE 0 END), 0) AS personal_resolves,
+        COALESCE(SUM(CASE WHEN plan_norm IN ('pro', 'planetka_pro', 'planetka_studio', 'studio') THEN 1 ELSE 0 END), 0) AS commercial_resolves,
+        COUNT(*) AS total_resolves
+      FROM tagged_resolves
+    `,
+    [PLAN_CODE_PLANETKA_FREE, ...eventEmailFilterAliasE.bindings],
+  );
+
+  const activeWindow6mStartUnix = Math.max(0, nowUnix - (180 * 86400));
+  const activeWindow3mStartUnix = Math.max(0, nowUnix - (90 * 86400));
+  const activeWindow1mStartUnix = Math.max(0, nowUnix - (30 * 86400));
+  const activeWindow1wStartUnix = Math.max(0, nowUnix - (7 * 86400));
+  const activeWindow1dStartUnix = Math.max(0, nowUnix - 86400);
+  const activeWindow1hStartUnix = Math.max(0, nowUnix - 3600);
+  const activeWindows = await dbGet(
+    db,
+    `
+      SELECT
+        COUNT(DISTINCT CASE WHEN created_at_unix >= ? THEN user_id END) AS users_6m,
+        COUNT(DISTINCT CASE WHEN created_at_unix >= ? THEN user_id END) AS users_3m,
+        COUNT(DISTINCT CASE WHEN created_at_unix >= ? THEN user_id END) AS users_1m,
+        COUNT(DISTINCT CASE WHEN created_at_unix >= ? THEN user_id END) AS users_1w,
+        COUNT(DISTINCT CASE WHEN created_at_unix >= ? THEN user_id END) AS users_1d,
+        COUNT(DISTINCT CASE WHEN created_at_unix >= ? THEN user_id END) AS users_1h
       FROM tile_request_events
       WHERE created_at_unix >= ?
       ${eventEmailFilter.condition ? `AND ${eventEmailFilter.condition}` : ""}
     `,
-    [Math.max(0, nowUnix - 3600), ...eventEmailFilter.bindings],
+    [
+      activeWindow6mStartUnix,
+      activeWindow3mStartUnix,
+      activeWindow1mStartUnix,
+      activeWindow1wStartUnix,
+      activeWindow1dStartUnix,
+      activeWindow1hStartUnix,
+      activeWindow6mStartUnix,
+      ...eventEmailFilter.bindings,
+    ],
   );
   let activeUsers10m = [];
   try {
@@ -2910,6 +2991,32 @@ async function collectAnalyticsSnapshot(
     generated_at: nowIso(),
     window_minutes: windowMinutes,
     window_start_unix: windowStartUnix,
+    top_line: {
+      users: {
+        free: clampNonNegativeInt(topLineUsers && topLineUsers.free_users),
+        personal: clampNonNegativeInt(topLineUsers && topLineUsers.personal_users),
+        commercial: clampNonNegativeInt(topLineUsers && topLineUsers.commercial_users),
+        total: clampNonNegativeInt(topLineUsers && topLineUsers.total_users),
+      },
+      resolves: {
+        free: clampNonNegativeInt(topLineResolves && topLineResolves.free_resolves),
+        personal: clampNonNegativeInt(topLineResolves && topLineResolves.personal_resolves),
+        commercial: clampNonNegativeInt(topLineResolves && topLineResolves.commercial_resolves),
+        total: clampNonNegativeInt(topLineResolves && topLineResolves.total_resolves),
+      },
+      tile_requests: {
+        free: clampNonNegativeInt(topLineTraffic && topLineTraffic.free_requests),
+        personal: clampNonNegativeInt(topLineTraffic && topLineTraffic.personal_requests),
+        commercial: clampNonNegativeInt(topLineTraffic && topLineTraffic.commercial_requests),
+        total: clampNonNegativeInt(topLineTraffic && topLineTraffic.total_requests),
+      },
+      gb_served: {
+        free: clampNonNegativeInt(topLineTraffic && topLineTraffic.free_bytes),
+        personal: clampNonNegativeInt(topLineTraffic && topLineTraffic.personal_bytes),
+        commercial: clampNonNegativeInt(topLineTraffic && topLineTraffic.commercial_bytes),
+        total: clampNonNegativeInt(topLineTraffic && topLineTraffic.total_bytes),
+      },
+    },
     summary: {
       request_count: clampNonNegativeInt(summary && summary.request_count),
       bytes_served: clampNonNegativeInt(summary && summary.bytes_served),
@@ -2919,9 +3026,13 @@ async function collectAnalyticsSnapshot(
       tagged_resolve_count: clampNonNegativeInt(summary && summary.tagged_resolve_count),
     },
     active: {
-      users_5m: clampNonNegativeInt(active5m && active5m.active_users),
-      users_15m: clampNonNegativeInt(active15m && active15m.active_users),
-      users_60m: clampNonNegativeInt(active60m && active60m.active_users),
+      users_total: clampNonNegativeInt(topLineUsers && topLineUsers.total_users),
+      users_6m: clampNonNegativeInt(activeWindows && activeWindows.users_6m),
+      users_3m: clampNonNegativeInt(activeWindows && activeWindows.users_3m),
+      users_1m: clampNonNegativeInt(activeWindows && activeWindows.users_1m),
+      users_1w: clampNonNegativeInt(activeWindows && activeWindows.users_1w),
+      users_1d: clampNonNegativeInt(activeWindows && activeWindows.users_1d),
+      users_1h: clampNonNegativeInt(activeWindows && activeWindows.users_1h),
       tile_events_10s: clampNonNegativeInt(activeNow && activeNow.active_download_rows),
     },
     active_users_10m: normalizedActiveUsers10m,
@@ -4689,7 +4800,7 @@ async function runMonthlyCostEstimateAlerts(db, env, nowTimestamp) {
   if (highestCrossedMark > lastNotifiedMark) {
     await sendOpsAlertEmail(
       env,
-      "Planetka estimated monthly Cloudflare cost crossed threshold",
+      "Planetka estimated monthly Cloud cost crossed threshold",
       [
         `month=${monthKey}`,
         `estimated_total_usd=${totalCostRounded.toFixed(2)}`,
@@ -6284,6 +6395,18 @@ function parseTileQualityFromFileName(fileName) {
   return { z, d, textureType: String(match[1] || "").toUpperCase() };
 }
 
+function minimumPlanQualityForTile(fileName) {
+  const parsed = parseTileQualityFromFileName(fileName);
+  if (!parsed || !Number.isFinite(Number(parsed.d))) {
+    return "preview";
+  }
+  const d = Math.max(1, Number(parsed.d));
+  // d001 => Full-only, d002/d003 => Balanced+, d004+ => Preview+
+  if (d <= 1) return "full";
+  if (d <= 3) return "balanced";
+  return "preview";
+}
+
 async function sendMagicLinkEmail(env, email, token, magicUrlOverride = "") {
   const apiKey = requireSecret(env, "EMAIL_API_KEY");
   const from = String(env.EMAIL_FROM || "info@planetka.io").trim();
@@ -7054,6 +7177,38 @@ function resolvePlanPriority(planCode) {
   return 0;
 }
 
+function evaluateStripePlanPurchaseGuard(existingPlanCode, requestedPlanCode) {
+  const existing = normalizeRequestedPlan(existingPlanCode);
+  const requested = normalizeRequestedPlan(requestedPlanCode);
+  const existingPriority = resolvePlanPriority(existing);
+  const requestedPriority = resolvePlanPriority(requested);
+  if (existingPriority <= 0 || requestedPriority <= 0) {
+    return {
+      blocked: false,
+      reason: "",
+      existingPlanCode: existing,
+      requestedPlanCode: requested,
+    };
+  }
+  if (existingPriority < requestedPriority) {
+    return {
+      blocked: false,
+      reason: "",
+      existingPlanCode: existing,
+      requestedPlanCode: requested,
+    };
+  }
+  const reason = existingPriority === requestedPriority
+    ? "already_has_licence"
+    : "higher_tier_already_active";
+  return {
+    blocked: true,
+    reason,
+    existingPlanCode: existing,
+    requestedPlanCode: requested,
+  };
+}
+
 function resolveStripePlanEntitlement(lineItems, env) {
   const byPrice = parseStripePlanMap(env.STRIPE_PLAN_PRICE_CODE_MAP);
   const byProduct = parseStripePlanMap(env.STRIPE_PLAN_PRODUCT_CODE_MAP);
@@ -7200,6 +7355,69 @@ async function fetchStripeCustomerEmail(env, customerId) {
   }
   const payload = await response.json();
   return normalizeEmail(payload && payload.email);
+}
+
+async function createStripeRefundForCheckoutSession(env, session, details = {}) {
+  const paymentIntentId = String(session && session.payment_intent || "").trim();
+  const chargeId = String(session && session.charge || "").trim();
+  if (!paymentIntentId && !chargeId) {
+    return {
+      attempted: false,
+      refunded: false,
+      reason: "missing_payment_reference",
+      refundId: "",
+      status: "skipped",
+      error: "",
+    };
+  }
+  const secretKey = requireSecret(env, "STRIPE_SECRET_KEY");
+  const body = new URLSearchParams();
+  if (paymentIntentId) {
+    body.set("payment_intent", paymentIntentId);
+  } else {
+    body.set("charge", chargeId);
+  }
+  body.set("reason", "requested_by_customer");
+  const reason = String(details.reason || "").trim();
+  const existingPlanCode = normalizeRequestedPlan(details.existingPlanCode || "");
+  const requestedPlanCode = normalizeRequestedPlan(details.requestedPlanCode || "");
+  if (reason) {
+    body.set("metadata[planetka_reason]", reason);
+  }
+  if (existingPlanCode) {
+    body.set("metadata[planetka_existing_plan]", existingPlanCode);
+  }
+  if (requestedPlanCode) {
+    body.set("metadata[planetka_requested_plan]", requestedPlanCode);
+  }
+  const response = await fetch("https://api.stripe.com/v1/refunds", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${secretKey}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: body.toString(),
+  });
+  if (!response.ok) {
+    const bodyText = await response.text();
+    return {
+      attempted: true,
+      refunded: false,
+      reason,
+      refundId: "",
+      status: "failed",
+      error: `stripe_refund_failed_${response.status}:${String(bodyText || "").slice(0, 500)}`,
+    };
+  }
+  const payload = await response.json();
+  return {
+    attempted: true,
+    refunded: Boolean(payload && payload.id),
+    reason,
+    refundId: String(payload && payload.id || "").trim(),
+    status: String(payload && payload.status || "").trim() || "unknown",
+    error: "",
+  };
 }
 
 async function readBearerUser(request, env) {
@@ -9379,6 +9597,26 @@ async function handleTileRequest(request, env, path, ctx) {
         env,
       );
     }
+    const tileRequiredQualityMode = minimumPlanQualityForTile(fileName);
+    if ((request.method === "GET" || request.method === "HEAD")
+      && !isQualityModeAllowedForPlan(planCode, tileRequiredQualityMode)) {
+      eventStatusCode = 403;
+      eventErrorCode = "tile_quality_not_allowed_for_tier";
+      const accountState = await buildAllowanceState(db, user, null, env);
+      return json(
+        {
+          ok: false,
+          error: "tile_quality_not_allowed_for_tier",
+          message: qualityModeNotAllowedMessage(planCode, tileRequiredQualityMode),
+          requested_quality_mode: effectiveQualityMode,
+          required_quality_mode: tileRequiredQualityMode,
+          file_name: fileName,
+          ...serializeAccountState(accountState),
+        },
+        403,
+        env,
+      );
+    }
 
     if (request.method === "HEAD") {
       const objectHead = await env.PLANETKA_DATA.head(key);
@@ -9815,6 +10053,7 @@ async function handleAdminAnalyticsPage(request, env) {
       }),
     );
   }
+  const snapshotTopLine = initialSnapshot && initialSnapshot.top_line ? initialSnapshot.top_line : {};
   const snapshotSummary = initialSnapshot && initialSnapshot.summary ? initialSnapshot.summary : {};
   const snapshotActive = initialSnapshot && initialSnapshot.active ? initialSnapshot.active : {};
   const snapshotLiveMap = initialSnapshot && initialSnapshot.live_tile_map ? initialSnapshot.live_tile_map : {};
@@ -9854,7 +10093,7 @@ async function handleAdminAnalyticsPage(request, env) {
   };
   const tierColorFromStatus = (statusValue) => {
     const tierCode = tierCodeFromStatus(statusValue);
-    if (tierCode === "pro") return "#ff9f80";
+    if (tierCode === "pro") return "#ef4444";
     if (tierCode === "personal") return "#22c55e";
     return "#ffffff";
   };
@@ -9876,7 +10115,9 @@ async function handleAdminAnalyticsPage(request, env) {
     return `<tr><td class="${tierClass}">${email}</td><td class="${tierClass}">${tier}</td><td>${fmtIntLocal(row && row.resolve_count)}</td><td>${fmtGbLocal(monthBytes)}</td><td>${fmtIntLocal(monthRequests)}</td><td>${escapeHtml(lastSeen)}</td></tr>`;
   }).join("");
   const billableAvailable = Boolean(snapshotBillable && snapshotBillable.available);
-  const billableSource = escapeHtml(String(snapshotBillable && snapshotBillable.source || "cloudflare_graphql"));
+  const billableSource = escapeHtml(
+    String(snapshotBillable && snapshotBillable.source || "cloudflare_graphql").replace(/cloudflare/gi, "cloud"),
+  );
   const billablePeriodStart = escapeHtml(String(snapshotBillable && snapshotBillable.period_start || ""));
   const billablePeriodEnd = escapeHtml(String(snapshotBillable && snapshotBillable.period_end || ""));
   const billableBucket = escapeHtml(String(snapshotBillable && snapshotBillable.bucket_filter || ""));
@@ -9894,8 +10135,8 @@ async function handleAdminAnalyticsPage(request, env) {
   const billableStatusText = billableAvailable
     ? (snapshotBillable && snapshotBillable.estimated
       ? `Estimated billable usage from telemetry. Source: ${billableSource}. Period: ${billablePeriodStart} -> ${billablePeriodEnd}`
-      : `Cloudflare GraphQL live data. Source: ${billableSource}. Bucket: ${billableBucket || "all buckets"}. Period: ${billablePeriodStart} -> ${billablePeriodEnd}`)
-    : `Cloudflare billable usage unavailable. ${escapeHtml(String(snapshotBillable && snapshotBillable.message || snapshotBillable && snapshotBillable.reason || "Not configured."))}`;
+      : `Cloud GraphQL live data. Source: ${billableSource}. Bucket: ${billableBucket || "all buckets"}. Period: ${billablePeriodStart} -> ${billablePeriodEnd}`)
+    : `Cloud billable usage unavailable. ${escapeHtml(String(snapshotBillable && snapshotBillable.message || snapshotBillable && snapshotBillable.reason || "Not configured."))}`;
   const parseLiveMapTile = (tileKey) => {
     const text = String(tileKey || "").trim();
     const match = /_x(\d{3})_y(\d{3})_z(\d{3})_d(\d{3})\.(?:exr|tif|tiff|png|jpe?g)$/i.exec(text);
@@ -9937,6 +10178,7 @@ async function handleAdminAnalyticsPage(request, env) {
     snapshotGeneratedAt,
     fmtIntLocal,
     fmtGbLocal,
+    snapshotTopLine,
     snapshotActive,
     snapshotSummary,
     snapshotLiveMap,
@@ -10084,7 +10326,7 @@ async function handleAdminAnalyticsUsersPage(request, env) {
     .action-wrap { white-space: nowrap; min-width: 330px; }
     .tier-free { color: #ffffff; font-weight: 600; }
     .tier-personal { color: #22c55e; font-weight: 600; }
-    .tier-pro { color: #ff9f80; font-weight: 600; }
+    .tier-pro { color: #ef4444; font-weight: 600; }
     .error { color: #fca5a5; }
   </style>
 </head>
@@ -11459,6 +11701,57 @@ async function handleStripeWebhook(request, env) {
   const lineItems = await fetchStripeCheckoutSessionLineItems(env, sessionId);
   const planEntitlement = resolveStripePlanEntitlement(lineItems, env);
   if (planEntitlement.planCode) {
+    let existingPlanCode = PLAN_CODE_PLANETKA_FREE;
+    const existingUser = await findUserByEmail(db, email);
+    if (existingUser && !isBlockedStatus(existingUser.status)) {
+      const enforcedUser = await enforceUserPlanPolicy(db, existingUser, null, env);
+      existingPlanCode = normalizeRequestedPlan(resolvePlanCode(enforcedUser, null, env));
+    }
+    const purchaseGuard = evaluateStripePlanPurchaseGuard(existingPlanCode, planEntitlement.planCode);
+    if (purchaseGuard.blocked) {
+      const refund = await createStripeRefundForCheckoutSession(
+        env,
+        session,
+        {
+          reason: purchaseGuard.reason,
+          existingPlanCode: purchaseGuard.existingPlanCode,
+          requestedPlanCode: purchaseGuard.requestedPlanCode,
+        },
+      );
+      console.log(
+        "stripe.webhook.ignored_existing_licence",
+        JSON.stringify({
+          event_type: eventType,
+          email,
+          session_id: sessionId,
+          reason: purchaseGuard.reason,
+          existing_plan: purchaseGuard.existingPlanCode,
+          requested_plan: purchaseGuard.requestedPlanCode,
+          refund_attempted: refund.attempted,
+          refund_status: refund.status,
+          refund_id: refund.refundId,
+          refund_error: refund.error || "",
+          matched: planEntitlement.matched.slice(0, 50),
+        }),
+      );
+      return json(
+        {
+          ok: true,
+          ignored: true,
+          reason: purchaseGuard.reason,
+          event_type: eventType,
+          email,
+          existing_plan_code: purchaseGuard.existingPlanCode,
+          requested_plan_code: purchaseGuard.requestedPlanCode,
+          message: `This email already has ${planDisplayName(purchaseGuard.existingPlanCode)}.`,
+          refund_attempted: refund.attempted,
+          refund_status: refund.status,
+          refund_id: refund.refundId,
+        },
+        200,
+        env,
+      );
+    }
     const applied = await applyPermanentLicenseEntitlement(
       db,
       env,

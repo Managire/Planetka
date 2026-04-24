@@ -196,15 +196,15 @@ class PlanetkaExtensionPreferences(AddonPreferences):
     texture_base_path: StringProperty(
         name="Texture Source",
         subtype='DIR_PATH',
-        description="Internal Planetka source marker (Cloudflare only)",
+        description="Internal Planetka source marker (Cloud only)",
         default=REMOTE_TEXTURE_BASE_DEFAULT,
     )
 
     texture_source_mode: EnumProperty(
         name="Texture Source",
-        description="Planetka resolves tile textures from Cloudflare",
+        description="Planetka resolves tile textures from Cloud",
         items=(
-            ("CLOUDFLARE", "Cloudflare", "Stream tiles from Planetka Cloudflare storage"),
+            ("CLOUDFLARE", "Cloud", "Stream tiles from Planetka Cloud storage"),
         ),
         default=TEXTURE_SOURCE_MODE_DEFAULT,
     )

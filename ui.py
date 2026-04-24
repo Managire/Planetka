@@ -286,7 +286,7 @@ def _resolve_failure_notice(scene=None):
         message = str(target_scene.get(RESOLVE_FAILURE_MESSAGE_KEY, "") or "").strip()
     except (TypeError, ValueError, RuntimeError, AttributeError):
         message = ""
-    return message or "Resolve failed. Please click Rebuild Earth."
+    return message or "Resolve failed. Please click Rebuild Earth"
 
 
 def _has_resolve_failure_notice(scene=None):
@@ -498,7 +498,7 @@ def _draw_new_earth(layout):
                 icon="CHECKMARK" if connected else "ERROR",
             )
             preflight_box.label(
-                text=f"Source: {'Cloudflare ready' if source_ready else 'Cloudflare not ready'}",
+                text=f"Source: {'Cloud ready' if source_ready else 'Cloud not ready'}",
                 icon="CHECKMARK" if source_ready else "ERROR",
             )
             preflight_box.label(
@@ -1263,11 +1263,6 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
                 text="Scene Health Check",
                 icon="CHECKMARK",
             )
-            diagnostics_box.operator(
-                "planetka.scene_health_report",
-                text="Scene Health Report",
-                icon="INFO",
-            )
 
             scene_objects_box = layout.box()
             scene_objects_box.enabled = workflow_enabled and (not prepared)
@@ -1668,14 +1663,8 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
         final_render_box = layout.box()
         final_render_box.label(text="Final Animation Render", icon="RENDER_ANIMATION")
-        quality_box = final_render_box.box()
-        quality_box.label(text="Texture Quality for Animation", icon="IMAGE_DATA")
-        quality_row = quality_box.row(align=True)
-        quality_row.use_property_split = False
-        quality_row.use_property_decorate = False
-        quality_row.prop_enum(props, "anim_render_texture_quality", "PREVIEW", text="Preview")
-        quality_row.prop_enum(props, "anim_render_texture_quality", "BALANCED", text="Balanced")
-        quality_row.prop_enum(props, "anim_render_texture_quality", "FULL", text="Full Quality")
+        quality_row = final_render_box.row()
+        quality_row.label(text="Texture Quality for Animation: Full Quality", icon="IMAGE_DATA")
         final_render_allowed = allows_animation_render_for_context(prefs=get_prefs(), source=props)
         quality_row.enabled = bool(final_render_allowed)
 

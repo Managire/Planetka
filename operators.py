@@ -615,7 +615,7 @@ def _validate_create_earth_texture_source(base_path):
     issues = list(details.get("issues", ()) or ())
     for level, _code, message in issues:
         if str(level).upper() == "ERROR":
-            return "", str(message or "Unsupported local texture source is invalid.")
+            return "", str(message or "Unsupported local data path is invalid.")
     return normalized, ""
 
 
@@ -3126,23 +3126,23 @@ def _get_saved_location_by_name(locations, name):
 class PLANETKA_OT_ImportNewData(bpy.types.Operator):
     bl_idname = "planetka.import_new_data"
     bl_label = "Import New Data"
-    bl_description = "Disabled: Planetka uses Cloudflare source only"
+    bl_description = "Disabled: Planetka uses Cloud source only"
 
     directory: StringProperty(subtype='DIR_PATH')
 
     def execute(self, context):
-        self.report({'ERROR'}, "Local texture import is disabled. Planetka uses Cloudflare source only.")
+        self.report({'ERROR'}, "Local texture import is disabled. Planetka uses Cloud source only.")
         return {'CANCELLED'}
 
     def invoke(self, context, event):
-        self.report({'ERROR'}, "Local texture import is disabled. Planetka uses Cloudflare source only.")
+        self.report({'ERROR'}, "Local texture import is disabled. Planetka uses Cloud source only.")
         return {'CANCELLED'}
 
 
 class PLANETKA_OT_ConfirmImportNewData(bpy.types.Operator):
     bl_idname = "planetka.confirm_import_new_data"
     bl_label = "Confirm Data Import"
-    bl_description = "Disabled: Planetka uses Cloudflare source only"
+    bl_description = "Disabled: Planetka uses Cloud source only"
 
     source_directory: StringProperty(subtype='DIR_PATH', options={'HIDDEN'})
     destination_directory: StringProperty(subtype='DIR_PATH', options={'HIDDEN'})
@@ -3169,7 +3169,7 @@ class PLANETKA_OT_ConfirmImportNewData(bpy.types.Operator):
         return plan, ""
 
     def invoke(self, context, event):
-        self.report({'ERROR'}, "Local texture import is disabled. Planetka uses Cloudflare source only.")
+        self.report({'ERROR'}, "Local texture import is disabled. Planetka uses Cloud source only.")
         return {'CANCELLED'}
 
     def draw(self, context):
@@ -3186,29 +3186,29 @@ class PLANETKA_OT_ConfirmImportNewData(bpy.types.Operator):
             col.label(text=f"Duplicate source tiles detected: {int(self.duplicate_count)} (newest file kept)")
 
     def execute(self, context):
-        self.report({'ERROR'}, "Local texture import is disabled. Planetka uses Cloudflare source only.")
+        self.report({'ERROR'}, "Local texture import is disabled. Planetka uses Cloud source only.")
         return {'CANCELLED'}
 
 
 class PLANETKA_OT_SelectTextureSource(bpy.types.Operator):
     bl_idname = "planetka.select_texture_source"
     bl_label = "Set Texture Source"
-    bl_description = "Disabled: Planetka uses Cloudflare source only"
+    bl_description = "Disabled: Planetka uses Cloud source only"
 
     directory: StringProperty(subtype='DIR_PATH')
 
     def execute(self, context):
-        self.report({'ERROR'}, "Local texture directories are disabled. Planetka uses Cloudflare source only.")
+        self.report({'ERROR'}, "Local texture directories are disabled. Planetka uses Cloud source only.")
         return {'CANCELLED'}
 
     def invoke(self, context, event):
-        self.report({'ERROR'}, "Local texture directories are disabled. Planetka uses Cloudflare source only.")
+        self.report({'ERROR'}, "Local texture directories are disabled. Planetka uses Cloud source only.")
         return {'CANCELLED'}
 
 
 class PLANETKA_OT_AccountLogin(bpy.types.Operator):
     bl_idname = "planetka.account_login"
-    bl_label = "Request Free Access"
+    bl_label = "Request API Key"
     bl_description = "Open Planetka API key request page (opens browser)"
 
     def execute(self, context):
@@ -3298,7 +3298,7 @@ class PLANETKA_OT_AccountOpenLogin(bpy.types.Operator):
 class PLANETKA_OT_CheckUpdates(bpy.types.Operator):
     bl_idname = "planetka.check_updates"
     bl_label = "Check for Updates"
-    bl_description = "Check Cloudflare for newer Planetka addon version"
+    bl_description = "Check Cloud for newer Planetka addon version"
 
     force: BoolProperty(default=True, options={'HIDDEN', 'SKIP_SAVE'})
 
@@ -3910,7 +3910,7 @@ class PLANETKA_OT_RebuildEarth(bpy.types.Operator):
 class PLANETKA_OT_AddEarth(bpy.types.Operator):
     bl_idname = "planetka.add_earth"
     bl_label = "Create Earth"
-    bl_description = "Create Planetka Earth assets and run an initial Resolve from the configured texture source"
+    bl_description = "Create Planetka Earth assets and run an initial Resolve"
 
     def execute(self, context):
         scene = require_scene(self, context, logger=logger)
@@ -3951,7 +3951,7 @@ class PLANETKA_OT_AddEarth(bpy.types.Operator):
         if path_issue:
             self.report(
                 {'ERROR'},
-                "Create Earth texture source is invalid.",
+                "Create Earth data configuration is invalid.",
             )
             self.report({'ERROR'}, path_issue)
             return _return_with_selection({'CANCELLED'})

@@ -869,7 +869,7 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         min=0.0,
         max=50000.0,
         precision=2,
-        description="Start altitude for altitude-based cinematic presets (Zoom In / Zoom Out)",
+        description="Legacy start altitude value kept for compatibility with older animation files",
         update=_update_anim_preview_keyframes,
     )
 
@@ -905,22 +905,22 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
     )
 
     anim_flyby_degrees: FloatProperty(
-        name="Flyby Degrees",
+        name="Arc Travel Degrees",
         default=1.0,
         min=0.1,
         max=120.0,
         precision=2,
-        description="Angular travel distance in degrees for the Flyby path",
+        description="Legacy angular travel distance value kept for compatibility with older animation files",
         update=_update_anim_preview_keyframes,
     )
 
     anim_flyby_camera_heading_deg: FloatProperty(
-        name="Camera Heading (°)",
+        name="Legacy Camera Heading (°)",
         default=0.0,
         soft_min=-180.0,
         soft_max=180.0,
         precision=2,
-        description="Camera yaw offset during Flyby. 0° = look forward along flight, 180° = look backward. Does not change flight direction.",
+        description="Legacy camera heading offset kept for compatibility with older animation files",
         update=_update_anim_preview_keyframes,
     )
 
@@ -1055,7 +1055,7 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
     anim_waypoints: CollectionProperty(
         name="Waypoints",
         type=PlanetkaAnimationWaypoint,
-        description="Waypoints used by the Waypoints cinematic preset",
+        description="Legacy waypoint data kept for compatibility with older animation files",
     )
 
     anim_waypoint_active_index: IntProperty(

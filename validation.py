@@ -773,6 +773,8 @@ def _camera_earth_diagnostics(scene, earth, camera, props):
         "distance_ratio": None,
         "facing_dot": None,
         "inside_earth": False,
+        "surface_margin_bu": None,
+        "surface_margin_km": None,
     }
     if scene is None or earth is None or camera is None:
         return result
@@ -798,10 +800,18 @@ def _camera_earth_diagnostics(scene, earth, camera, props):
 
     distance_bu = float((camera_pos - earth_center).length)
     ratio = float(distance_bu / radius_bu)
+    surface_margin_bu = float(distance_bu - radius_bu)
+    meters_per_bu = float(6371000.0 / max(radius_bu, 1e-9))
+    surface_margin_km = float((surface_margin_bu * meters_per_bu) / 1000.0)
+    inside_epsilon_bu = float(max(1e-9, radius_bu * 1e-6))
     result["distance_bu"] = distance_bu
     result["radius_bu"] = radius_bu
     result["distance_ratio"] = ratio
-    result["inside_earth"] = bool(distance_bu <= (radius_bu * 1.01))
+    result["surface_margin_bu"] = surface_margin_bu
+    result["surface_margin_km"] = surface_margin_km
+    # Exact geometry check:
+    # positive margin => camera is above surface, negative margin => inside Earth.
+    result["inside_earth"] = bool(surface_margin_bu < (-inside_epsilon_bu))
 
     try:
         forward = Vector((0.0, 0.0, -1.0))
@@ -903,7 +913,7 @@ def collect_scene_health_data(context):
     base_path = str(getattr(prefs, "texture_base_path", "") or "").strip() if prefs is not None else ""
     remote_ready = bool(is_remote_source_configured(base_path))
     if remote_ready:
-        payload["info"].append("Data source: Cloudflare.")
+        payload["info"].append("Data source: Cloud.")
         _append_scene_health_check(
             payload,
             "General",
@@ -911,7 +921,7 @@ def collect_scene_health_data(context):
             "SOURCE_REMOTE",
             "INFO",
             True,
-            "Cloudflare source is configured.",
+            "Cloud source is configured.",
         )
     else:
         if not base_path:
@@ -1425,18 +1435,27 @@ def collect_scene_health_data(context):
         distance_bu = cam_diag.get("distance_bu")
         radius_bu = cam_diag.get("radius_bu")
         facing_dot = cam_diag.get("facing_dot")
+        surface_margin_bu = cam_diag.get("surface_margin_bu")
+        surface_margin_km = cam_diag.get("surface_margin_km")
+        inside_earth = bool(cam_diag.get("inside_earth", False))
+        margin_detail_parts = []
+        if isinstance(surface_margin_bu, float):
+            margin_detail_parts.append(f"surface_margin={surface_margin_bu:.6f} BU")
+        if isinstance(surface_margin_km, float):
+            margin_detail_parts.append(f"~{surface_margin_km:.2f} km")
         _append_scene_health_check(
             payload,
             "Camera",
             "Earth Visibility",
             "CAMERA_INSIDE_EARTH",
             "ERROR",
-            not bool(cam_diag.get("inside_earth", False)),
+            not inside_earth,
             (
-                "Camera is outside Earth."
-                if not bool(cam_diag.get("inside_earth", False))
-                else "Camera is inside/too close to Earth geometry."
+                "Camera is outside Earth geometry."
+                if not inside_earth
+                else "Camera is inside Earth geometry."
             ),
+            detail=(", ".join(margin_detail_parts) if margin_detail_parts else ""),
         )
         if isinstance(ratio, float):
             ratio_ok = ratio < float(_HEALTH_CAMERA_DISTANCE_RATIO_WARN)
@@ -1598,47 +1617,93 @@ def collect_scene_health_data(context):
     return payload
 
 
+def _draw_scene_health_report_layout(layout, health, title_text="Scene Health Check"):
+    checks = list(health.get("checks", ()) or ())
+    errors = list(health.get("errors", ()) or ())
+    warnings = list(health.get("warnings", ()) or ())
+    info = list(health.get("info", ()) or ())
+
+    summary = layout.box()
+    summary.label(text=str(title_text or "Scene Health Check"), icon="CHECKMARK")
+    summary_row = summary.row()
+    summary_row.alert = bool(errors or warnings)
+    summary_row.label(text=f"Errors: {len(errors)} | Warnings: {len(warnings)} | Info: {len(info)}")
+
+    grouped = {}
+    for check in checks:
+        section = str(check.get("section", "General") or "General")
+        grouped.setdefault(section, []).append(check)
+
+    section_order = (
+        "General",
+        "Viewport",
+        "Camera",
+        "Material",
+        "Tile Loading",
+        "S2",
+        "EL",
+        "WT",
+        "PO",
+        "Animation",
+    )
+    rendered_sections = set()
+    for section_name in section_order:
+        entries = grouped.get(section_name, [])
+        if not entries:
+            continue
+        rendered_sections.add(section_name)
+        box = layout.box()
+        box.label(text=section_name)
+        for entry in entries:
+            ok = bool(entry.get("ok", False))
+            severity = str(entry.get("severity", "INFO") or "INFO").upper()
+            layer = str(entry.get("layer", "General") or "General")
+            check_id = str(entry.get("id", "") or "").strip()
+            message = str(entry.get("message", "") or "").strip()
+            detail = str(entry.get("detail", "") or "").strip()
+            if ok:
+                icon = "CHECKMARK"
+            elif severity == "ERROR":
+                icon = "ERROR"
+            elif severity == "WARNING":
+                icon = "QUESTION"
+            else:
+                icon = "INFO"
+            label = f"[{layer}] {message}" if layer else message
+            if check_id:
+                label = f"{check_id}: {label}"
+            emphasize = (not ok) and severity in {"WARNING", "ERROR", "CRITICAL", "IMPORTANT"}
+            label_row = box.row()
+            label_row.alert = bool(emphasize)
+            label_row.label(text=label, icon=icon)
+            if detail:
+                detail_row = box.row()
+                detail_row.scale_y = 0.85
+                detail_row.alert = bool(emphasize)
+                detail_row.label(text=f"  {detail}", icon="BLANK1")
+
+    remaining_sections = [name for name in grouped.keys() if name not in rendered_sections]
+    for section_name in remaining_sections:
+        entries = grouped.get(section_name, [])
+        if not entries:
+            continue
+        box = layout.box()
+        box.label(text=section_name)
+        for entry in entries:
+            ok = bool(entry.get("ok", False))
+            severity = str(entry.get("severity", "INFO") or "INFO").upper()
+            icon = "CHECKMARK" if ok else ("ERROR" if severity == "ERROR" else "QUESTION")
+            message = str(entry.get("message", "") or "").strip()
+            emphasize = (not ok) and severity in {"WARNING", "ERROR", "CRITICAL", "IMPORTANT"}
+            row = box.row()
+            row.alert = bool(emphasize)
+            row.label(text=message, icon=icon)
+
+
 class PLANETKA_OT_SceneHealthCheck(bpy.types.Operator):
     bl_idname = "planetka.scene_health_check"
     bl_label = "Scene Health Check"
     bl_description = "Check for missing Planetka assets, invalid paths, and stale animation state"
-
-    def execute(self, context):
-        health = collect_scene_health_data(context)
-        errors = list(health.get("errors", ()) or ())
-        warnings = list(health.get("warnings", ()) or ())
-        info = list(health.get("info", ()) or ())
-        summary = []
-        summary.append(
-            f"Errors: {len(errors)} | Warnings: {len(warnings)} | Info: {len(info)}"
-        )
-        for line in errors[:4]:
-            summary.append(f"ERROR: {line}")
-        if len(errors) > 4:
-            summary.append(f"... and {len(errors) - 4} more error(s)")
-        for line in warnings[:4]:
-            summary.append(f"WARNING: {line}")
-        if len(warnings) > 4:
-            summary.append(f"... and {len(warnings) - 4} more warning(s)")
-        for line in info[:3]:
-            summary.append(f"INFO: {line}")
-
-        if errors:
-            _show_popup_lines(context, "Scene Health Check", "ERROR", summary)
-            self.report({'ERROR'}, f"Scene Health Check found {len(errors)} error(s).")
-        elif warnings:
-            _show_popup_lines(context, "Scene Health Check", "QUESTION", summary)
-            self.report({'WARNING'}, f"Scene Health Check found {len(warnings)} warning(s).")
-        else:
-            _show_popup_lines(context, "Scene Health Check", "CHECKMARK", summary + ["No issues detected."])
-            self.report({'INFO'}, "Scene Health Check passed.")
-        return {'FINISHED'}
-
-
-class PLANETKA_OT_SceneHealthReport(bpy.types.Operator):
-    bl_idname = "planetka.scene_health_report"
-    bl_label = "Scene Health Report"
-    bl_description = "Show full Scene Health report with all checks and their status"
 
     _health = None
 
@@ -1646,7 +1711,7 @@ class PLANETKA_OT_SceneHealthReport(bpy.types.Operator):
         del event
         self._health = collect_scene_health_data(context)
         wm = getattr(context, "window_manager", None)
-        if wm is None:
+        if wm is None or bool(getattr(bpy.app, "background", False)):
             return self.execute(context)
         return wm.invoke_props_dialog(self, width=860)
 
@@ -1654,86 +1719,16 @@ class PLANETKA_OT_SceneHealthReport(bpy.types.Operator):
         del context
         layout = self.layout
         health = self._health if isinstance(self._health, dict) else {}
-        checks = list(health.get("checks", ()) or ())
-        errors = list(health.get("errors", ()) or ())
-        warnings = list(health.get("warnings", ()) or ())
-        info = list(health.get("info", ()) or ())
-
-        summary = layout.box()
-        summary.label(text="Scene Health Report", icon="CHECKMARK")
-        summary.label(text=f"Errors: {len(errors)} | Warnings: {len(warnings)} | Info: {len(info)}")
-
-        grouped = {}
-        for check in checks:
-            section = str(check.get("section", "General") or "General")
-            grouped.setdefault(section, []).append(check)
-
-        section_order = (
-            "General",
-            "Viewport",
-            "Camera",
-            "Material",
-            "Tile Loading",
-            "S2",
-            "EL",
-            "WT",
-            "PO",
-            "Animation",
-        )
-        rendered_sections = set()
-        for section_name in section_order:
-            entries = grouped.get(section_name, [])
-            if not entries:
-                continue
-            rendered_sections.add(section_name)
-            box = layout.box()
-            box.label(text=section_name)
-            for entry in entries:
-                ok = bool(entry.get("ok", False))
-                severity = str(entry.get("severity", "INFO") or "INFO").upper()
-                layer = str(entry.get("layer", "General") or "General")
-                check_id = str(entry.get("id", "") or "").strip()
-                message = str(entry.get("message", "") or "").strip()
-                detail = str(entry.get("detail", "") or "").strip()
-                if ok:
-                    icon = "CHECKMARK"
-                elif severity == "ERROR":
-                    icon = "ERROR"
-                elif severity == "WARNING":
-                    icon = "QUESTION"
-                else:
-                    icon = "INFO"
-                label = f"[{layer}] {message}" if layer else message
-                if check_id:
-                    label = f"{check_id}: {label}"
-                box.label(text=label, icon=icon)
-                if detail:
-                    detail_row = box.row()
-                    detail_row.scale_y = 0.85
-                    detail_row.label(text=f"  {detail}", icon="BLANK1")
-
-        remaining_sections = [name for name in grouped.keys() if name not in rendered_sections]
-        for section_name in remaining_sections:
-            entries = grouped.get(section_name, [])
-            if not entries:
-                continue
-            box = layout.box()
-            box.label(text=section_name)
-            for entry in entries:
-                ok = bool(entry.get("ok", False))
-                severity = str(entry.get("severity", "INFO") or "INFO").upper()
-                icon = "CHECKMARK" if ok else ("ERROR" if severity == "ERROR" else "QUESTION")
-                message = str(entry.get("message", "") or "").strip()
-                box.label(text=message, icon=icon)
+        _draw_scene_health_report_layout(layout, health, title_text="Scene Health Check")
 
     def execute(self, context):
-        health = collect_scene_health_data(context)
+        health = self._health if isinstance(self._health, dict) else collect_scene_health_data(context)
         errors = int(len(list(health.get("errors", ()) or ())))
         warnings = int(len(list(health.get("warnings", ()) or ())))
         if errors > 0:
-            self.report({'ERROR'}, f"Scene Health Report: {errors} error(s), {warnings} warning(s).")
+            self.report({'ERROR'}, f"Scene Health Check found {errors} error(s), {warnings} warning(s).")
         elif warnings > 0:
-            self.report({'WARNING'}, f"Scene Health Report: {warnings} warning(s).")
+            self.report({'WARNING'}, f"Scene Health Check found {warnings} warning(s).")
         else:
-            self.report({'INFO'}, "Scene Health Report: no issues detected.")
+            self.report({'INFO'}, "Scene Health Check passed.")
         return {'FINISHED'}

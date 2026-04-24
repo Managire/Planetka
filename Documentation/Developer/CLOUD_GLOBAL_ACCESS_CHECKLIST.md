@@ -1,4 +1,4 @@
-# Cloudflare Global Access Optimization Checklist
+# Cloud Global Access Optimization Checklist
 
 Last updated: 2026-03-27
 
@@ -14,7 +14,7 @@ These changes are already applied in the Worker source:
 - The same cache policy is now applied consistently to both:
   - edge-cached object responses
   - final user responses
-- New Worker env vars added in `cloudflare-api/wrangler.toml`:
+- New Worker env vars added in `wrangler.toml`:
   - `TILE_BROWSER_MAX_AGE_SECONDS = "86400"`
   - `TILE_EDGE_MAX_AGE_SECONDS = "604800"`
   - `TILE_CACHE_IMMUTABLE = "1"`
@@ -42,20 +42,20 @@ Tracked telemetry:
 ## Deploy these code changes
 
 From:
-`/Users/tomasgriger/Library/Application Support/Blender/5.0/extensions/user_default/Planetka/cloudflare-api`
+`/Users/tomasgriger/Library/Application Support/Blender/5.0/extensions/user_default/Planetka`
 
 1. Deploy Worker
    - `npx wrangler deploy`
 2. Verify cache header on a tile request
    - Confirm `Cache-Control` contains `max-age=86400, s-maxage=604800, immutable`.
 
-## Cloudflare dashboard settings you should enable (step-by-step)
+## Cloud dashboard settings you should enable (step-by-step)
 
 These are account/zone settings I cannot reliably enforce from this repo alone.
 
 ### 1) Tiered Cache (high impact)
 
-1. Open Cloudflare Dashboard -> `planetka.io`.
+1. Open Cloud Dashboard -> `planetka.io`.
 2. Go to `Caching` -> `Tiered Cache`.
 3. Enable `Tiered Cache`.
 4. If available, enable `Smart Tiered Cache`.
@@ -116,7 +116,7 @@ For better first-byte latency globally:
 
 ## Quick verification checklist
 
-- `api.planetka.io` responses include Cloudflare edge headers.
+- `api.planetka.io` responses include Cloud edge headers.
 - Authenticated tile request returns:
   - `200`
   - expected `Cache-Control`
@@ -128,5 +128,5 @@ For better first-byte latency globally:
 
 If needed:
 
-1. In `cloudflare-api`, run `npx wrangler deployments list --name planetkaworker01`.
+1. In the Worker project folder, run `npx wrangler deployments list --name planetkaworker01`.
 2. Roll back to prior stable deployment/version.

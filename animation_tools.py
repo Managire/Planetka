@@ -2651,7 +2651,7 @@ class PLANETKA_OT_AnimationClearPrepared(bpy.types.Operator):
 class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
     bl_idname = "planetka.animation_render_headless"
     bl_label = "Render Animation"
-    bl_description = "Render animation in UI, segment-by-segment, using texture quality selected in the Animation panel"
+    bl_description = "Render animation in UI, segment-by-segment, always using Full Quality textures"
 
     _timer = None
     _scene = None
@@ -2676,12 +2676,9 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         return self.execute(context)
 
     def _get_selected_texture_quality_mode(self, props):
-        selected = str(getattr(props, "anim_render_texture_quality", "") or "").strip().upper()
-        if selected not in {"PREVIEW", "BALANCED", "FULL"}:
-            selected = str(getattr(props, "texture_quality_mode", "FULL") or "FULL").strip().upper()
-        if selected not in {"PREVIEW", "BALANCED", "FULL"}:
-            selected = "FULL"
-        return selected
+        del props
+        # Final Animation Render is fixed to Full Quality by design.
+        return "FULL"
 
     def _remove_timer(self, context):
         wm = getattr(context, "window_manager", None)
@@ -2989,7 +2986,7 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         if (not base_path or not os.path.isdir(base_path)) and not is_remote_source_configured(base_path):
             return fail(
                 self,
-                "Planetka Cloudflare source is not available. Log in and retry.",
+                "Planetka Cloud source is not available. Log in and retry.",
                 code=ErrorCode.RESOLVE_PATH_INVALID,
                 logger=logger,
             )
@@ -3201,7 +3198,7 @@ class PLANETKA_OT_AnimationRenderInfo(bpy.types.Operator):
             return {'FINISHED'}
 
         lines = (
-            "Render Animation dynamically loads LODs (new tiles)",
+            "Render Animation dynamically loads tiles (LODs)",
             "during the rendering process.",
             "",
             "Blender built-in Render Animation renders what is already in the scene",
@@ -3254,13 +3251,11 @@ class PLANETKA_OT_AnimationMakeReady(bpy.types.Operator):
                     code=ErrorCode.RESOLVE_PREFS_MISSING,
                     logger=logger,
                 )
-            if not _require_full_animation_access(self, prefs):
-                return {'CANCELLED'}
             base_path = str(getattr(prefs, "texture_base_path", "") or "")
             if (not base_path or not os.path.isdir(base_path)) and not is_remote_source_configured(base_path):
                 return fail(
                     self,
-                    "Planetka Cloudflare source is not available. Log in and retry.",
+                    "Planetka Cloud source is not available. Log in and retry.",
                     code=ErrorCode.RESOLVE_PATH_INVALID,
                     logger=logger,
                 )

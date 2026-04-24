@@ -4,8 +4,8 @@
 Accounts are read from /tmp/planetka_test_accounts_keys.json and must contain:
 {
   "free@planetka.io": {"plan": "free", "api_key": "pka_..."},
-  "lite@planetka.io": {"plan": "lite", "api_key": "pka_..."},
-  "pro@planetka.io":  {"plan": "pro",  "api_key": "pka_..."}
+  "personal@planetka.io": {"plan": "lite", "api_key": "pka_..."},
+  "commercial@planetka.io":  {"plan": "pro",  "api_key": "pka_..."}
 }
 """
 
@@ -267,8 +267,8 @@ def main():
 
     accounts = [
         ("free@planetka.io", "free"),
-        ("lite@planetka.io", "lite"),
-        ("pro@planetka.io", "pro"),
+        ("personal@planetka.io", "lite"),
+        ("commercial@planetka.io", "pro"),
     ]
     for email, plan in accounts:
         if email not in key_data:
@@ -345,8 +345,9 @@ def main():
                         "passed": True,
                     })
 
-                # NZ tests in FULL quality for all tiers (as requested)
-                props.texture_quality_mode = "FULL"
+                # Global sample stills at 30 km using the best allowed mode per tier.
+                props.texture_quality_mode = "FULL" if plan == "pro" else ("BALANCED" if plan == "lite" else "PREVIEW")
+                sample_quality = str(props.texture_quality_mode).lower()
                 for city in (AUCKLAND, CHRISTCHURCH, WELLINGTON):
                     _set_navigation(
                         props,
@@ -360,8 +361,11 @@ def main():
                     )
                     result = _resolve_now(state_module=state_module)
                     if "FINISHED" not in result:
-                        raise RuntimeError(f"{plan} NZ resolve failed for {city['name']} ({engine}): {result}")
-                    out_path = os.path.join(render_dir, f"{session_prefix}_{engine.lower()}_{plan}_{city['name'].lower().replace(' ', '_')}_30km_full.png")
+                        raise RuntimeError(f"{plan} sample resolve failed for {city['name']} ({engine}): {result}")
+                    out_path = os.path.join(
+                        render_dir,
+                        f"{session_prefix}_{engine.lower()}_{plan}_{city['name'].lower().replace(' ', '_')}_30km_{sample_quality}.png",
+                    )
                     _render_still(scene, out_path)
                     entry["renders"].append(out_path)
                 entry["animation_frames"] = 0
