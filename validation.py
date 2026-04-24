@@ -7,6 +7,7 @@ import re
 import sys
 import base64
 import mimetypes
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import urllib.error
 import urllib.request
@@ -824,20 +825,45 @@ def _camera_earth_diagnostics(scene, earth, camera, props):
     return result
 
 
-def collect_scene_health_data(context):
+@dataclass
+class _SceneHealthContext:
+    context: object
+    scene: object
+    prefs: object
+    props: object
+    earth: object
+    root: object
+    material: object
+    sunlight: object
+    camera: object
+
+
+@dataclass
+class _SceneHealthMaterialState:
+    loading_node: object = None
+    surface_grading_node: object = None
+    output_node: object = None
+    layer_stats: dict = None
+
+
+def _build_scene_health_context(context):
     scene = getattr(context, "scene", None)
     prefs = get_prefs()
-    props = getattr(scene, "planetka", None) if scene is not None else None
-    payload = _new_scene_health_payload()
+    return _SceneHealthContext(
+        context=context,
+        scene=scene,
+        prefs=prefs,
+        props=getattr(scene, "planetka", None) if scene is not None else None,
+        earth=get_earth_object(),
+        root=bpy.data.objects.get(PLANETKA_ROOT_OBJECT_NAME),
+        material=bpy.data.materials.get(EARTH_MATERIAL_NAME),
+        sunlight=bpy.data.objects.get(SUNLIGHT_OBJECT_NAME),
+        camera=getattr(scene, "camera", None) if scene is not None else None,
+    )
 
-    earth = get_earth_object()
-    root = bpy.data.objects.get(PLANETKA_ROOT_OBJECT_NAME)
-    material = bpy.data.materials.get(EARTH_MATERIAL_NAME)
-    sunlight = bpy.data.objects.get(SUNLIGHT_OBJECT_NAME)
-    camera = getattr(scene, "camera", None) if scene is not None else None
 
-    # General object/material presence.
-    has_planetka = not (earth is None and root is None and material is None)
+def _check_scene_health_general(ctx, payload):
+    has_planetka = not (ctx.earth is None and ctx.root is None and ctx.material is None)
     if not has_planetka:
         payload["info"].append("Earth not created in this scene yet.")
         _append_scene_health_check(
@@ -849,7 +875,7 @@ def collect_scene_health_data(context):
             True,
             "Earth is not created in this scene yet.",
         )
-        return payload
+        return False
 
     _append_scene_health_check(
         payload,
@@ -857,8 +883,8 @@ def collect_scene_health_data(context):
         "Objects",
         "EARTH_OBJECT",
         "ERROR",
-        earth is not None,
-        "Planetka Earth surface object is present." if earth is not None else "Planetka Earth surface object is missing.",
+        ctx.earth is not None,
+        "Planetka Earth surface object is present." if ctx.earth is not None else "Planetka Earth surface object is missing.",
     )
     _append_scene_health_check(
         payload,
@@ -866,8 +892,8 @@ def collect_scene_health_data(context):
         "Objects",
         "ROOT_OBJECT",
         "ERROR",
-        root is not None,
-        "Planetka Root object is present." if root is not None else "Planetka Root object is missing.",
+        ctx.root is not None,
+        "Planetka Root object is present." if ctx.root is not None else "Planetka Root object is missing.",
     )
     _append_scene_health_check(
         payload,
@@ -875,8 +901,8 @@ def collect_scene_health_data(context):
         "Material",
         "EARTH_MATERIAL",
         "ERROR",
-        material is not None,
-        "Planetka Earth Material is present." if material is not None else "Planetka Earth Material is missing.",
+        ctx.material is not None,
+        "Planetka Earth Material is present." if ctx.material is not None else "Planetka Earth Material is missing.",
     )
     _append_scene_health_check(
         payload,
@@ -884,11 +910,11 @@ def collect_scene_health_data(context):
         "Sunlight",
         "SUNLIGHT_OBJECT",
         "WARNING",
-        sunlight is not None,
-        "Planetka Sunlight object is present." if sunlight is not None else "Planetka Sunlight object is missing.",
+        ctx.sunlight is not None,
+        "Planetka Sunlight object is present." if ctx.sunlight is not None else "Planetka Sunlight object is missing.",
     )
 
-    if camera is None or str(getattr(camera, "type", "")) != "CAMERA":
+    if ctx.camera is None or str(getattr(ctx.camera, "type", "")) != "CAMERA":
         _append_scene_health_check(
             payload,
             "Camera",
@@ -908,9 +934,11 @@ def collect_scene_health_data(context):
             True,
             "Active scene camera is available.",
         )
+    return True
 
-    # Data source and runtime image health.
-    base_path = str(getattr(prefs, "texture_base_path", "") or "").strip() if prefs is not None else ""
+
+def _check_scene_health_data_source(ctx, payload):
+    base_path = str(getattr(ctx.prefs, "texture_base_path", "") or "").strip() if ctx.prefs is not None else ""
     remote_ready = bool(is_remote_source_configured(base_path))
     if remote_ready:
         payload["info"].append("Data source: Cloud.")
@@ -976,8 +1004,9 @@ def collect_scene_health_data(context):
         ),
     )
 
-    # Viewport shading visibility checks.
-    shading_types = _iter_view3d_shading_types(context)
+
+def _check_scene_health_viewport_and_material(ctx, payload, state):
+    shading_types = _iter_view3d_shading_types(ctx.context)
     preview_visible = any(mode in {"MATERIAL", "RENDERED"} for mode in shading_types)
     _append_scene_health_check(
         payload,
@@ -994,18 +1023,17 @@ def collect_scene_health_data(context):
         detail=f"Detected modes: {', '.join(shading_types) if shading_types else 'none'}",
     )
 
-    # Earth object visibility.
-    if earth is not None:
+    if ctx.earth is not None:
         _append_scene_health_check(
             payload,
             "General",
             "Objects",
             "EARTH_HIDE_VIEWPORT",
             "WARNING",
-            not bool(getattr(earth, "hide_viewport", False)),
+            not bool(getattr(ctx.earth, "hide_viewport", False)),
             (
                 "Earth object is visible in viewport."
-                if not bool(getattr(earth, "hide_viewport", False))
+                if not bool(getattr(ctx.earth, "hide_viewport", False))
                 else "Earth object is hidden in viewport."
             ),
         )
@@ -1015,14 +1043,14 @@ def collect_scene_health_data(context):
             "Objects",
             "EARTH_HIDE_RENDER",
             "WARNING",
-            not bool(getattr(earth, "hide_render", False)),
+            not bool(getattr(ctx.earth, "hide_render", False)),
             (
                 "Earth object is enabled for render."
-                if not bool(getattr(earth, "hide_render", False))
+                if not bool(getattr(ctx.earth, "hide_render", False))
                 else "Earth object is hidden for render."
             ),
         )
-        earth_data = getattr(earth, "data", None)
+        earth_data = getattr(ctx.earth, "data", None)
         material_slots = getattr(earth_data, "materials", None) if earth_data is not None else None
         has_material_slot = bool(material_slots and len(material_slots) > 0 and material_slots[0] is not None)
         _append_scene_health_check(
@@ -1035,11 +1063,13 @@ def collect_scene_health_data(context):
             "Earth mesh has an assigned material slot." if has_material_slot else "Earth mesh material slot is missing.",
         )
 
-    # Material pipeline checks.
-    loading_node = _find_texture_loading_node(material)
-    surface_grading_node = _find_surface_grading_node(material)
-    node_tree = getattr(material, "node_tree", None) if material is not None else None
+    loading_node = _find_texture_loading_node(ctx.material)
+    surface_grading_node = _find_surface_grading_node(ctx.material)
+    node_tree = getattr(ctx.material, "node_tree", None) if ctx.material is not None else None
     output_node = _find_material_output_node(node_tree)
+    state.loading_node = loading_node
+    state.surface_grading_node = surface_grading_node
+    state.output_node = output_node
 
     _append_scene_health_check(
         payload,
@@ -1047,10 +1077,10 @@ def collect_scene_health_data(context):
         "General",
         "MATERIAL_NODES",
         "ERROR",
-        bool(material is not None and bool(getattr(material, "use_nodes", False)) and node_tree is not None),
+        bool(ctx.material is not None and bool(getattr(ctx.material, "use_nodes", False)) and node_tree is not None),
         (
             "Material node tree is available."
-            if material is not None and bool(getattr(material, "use_nodes", False)) and node_tree is not None
+            if ctx.material is not None and bool(getattr(ctx.material, "use_nodes", False)) and node_tree is not None
             else "Material nodes are disabled or missing."
         ),
     )
@@ -1097,10 +1127,11 @@ def collect_scene_health_data(context):
                 ),
             )
 
-    # Layer image assignment/fallback checks.
-    layer_stats = _tile_loading_layer_stats(loading_node)
+
+def _check_scene_health_tile_loading_layers(_ctx, payload, state):
+    state.layer_stats = _tile_loading_layer_stats(state.loading_node)
     for layer in ("S2", "EL", "WT", "PO"):
-        stats = layer_stats.get(layer, {})
+        stats = state.layer_stats.get(layer, {})
         node_count = int(stats.get("node_count", 0))
         image_count = int(stats.get("image_count", 0))
         missing_paths = int(stats.get("missing_path_count", 0))
@@ -1146,13 +1177,12 @@ def collect_scene_health_data(context):
                 if not fallback_only
                 else f"{layer} is currently using fallback-only textures."
             ),
-            detail=(
-                f"images={image_count}, fallback={fallback_count}, non_fallback={non_fallback_count}"
-            ),
+            detail=f"images={image_count}, fallback={fallback_count}, non_fallback={non_fallback_count}",
         )
 
-    # S2 visibility checks.
-    s2_linked = loading_node is not None and _socket_is_linked(loading_node, "S2", is_output=True)
+
+def _check_scene_health_layers_and_render(ctx, payload, state):
+    s2_linked = state.loading_node is not None and _socket_is_linked(state.loading_node, "S2", is_output=True)
     _append_scene_health_check(
         payload,
         "S2",
@@ -1162,7 +1192,7 @@ def collect_scene_health_data(context):
         s2_linked,
         "S2 output from Tile Loading is linked." if s2_linked else "S2 output from Tile Loading is not linked.",
     )
-    surface_brightness = _socket_float_value(surface_grading_node, "Surface Brightness")
+    surface_brightness = _socket_float_value(state.surface_grading_node, "Surface Brightness")
     _append_scene_health_check(
         payload,
         "S2",
@@ -1178,8 +1208,7 @@ def collect_scene_health_data(context):
         detail=(f"value={surface_brightness:.4f}" if isinstance(surface_brightness, float) else ""),
     )
 
-    # EL / displacement checks.
-    el_linked = loading_node is not None and _socket_is_linked(loading_node, "EL", is_output=True)
+    el_linked = state.loading_node is not None and _socket_is_linked(state.loading_node, "EL", is_output=True)
     _append_scene_health_check(
         payload,
         "EL",
@@ -1189,7 +1218,7 @@ def collect_scene_health_data(context):
         el_linked,
         "EL output from Tile Loading is linked." if el_linked else "EL output from Tile Loading is not linked.",
     )
-    displacement_linked = bool(output_node is not None and _socket_is_linked(output_node, "Displacement", is_output=False))
+    displacement_linked = bool(state.output_node is not None and _socket_is_linked(state.output_node, "Displacement", is_output=False))
     _append_scene_health_check(
         payload,
         "EL",
@@ -1197,23 +1226,19 @@ def collect_scene_health_data(context):
         "DISPLACEMENT_OUTPUT_LINKED",
         "WARNING",
         displacement_linked,
-        (
-            "Material Output Displacement is connected."
-            if displacement_linked
-            else "Material Output Displacement is not connected."
-        ),
+        "Material Output Displacement is connected." if displacement_linked else "Material Output Displacement is not connected.",
     )
 
     displacement_mode = ""
-    if material is not None:
-        cycles_settings = getattr(material, "cycles", None)
+    if ctx.material is not None:
+        cycles_settings = getattr(ctx.material, "cycles", None)
         try:
             displacement_mode = str(getattr(cycles_settings, "displacement_method", "") or "").upper().strip()
         except (TypeError, ValueError, AttributeError, RuntimeError):
             displacement_mode = ""
         if not displacement_mode:
             try:
-                displacement_mode = str(getattr(material, "displacement_method", "") or "").upper().strip()
+                displacement_mode = str(getattr(ctx.material, "displacement_method", "") or "").upper().strip()
             except (TypeError, ValueError, AttributeError, RuntimeError):
                 displacement_mode = ""
     _append_scene_health_check(
@@ -1232,15 +1257,13 @@ def collect_scene_health_data(context):
     )
 
     adaptive_modifier = None
-    if earth is not None:
-        modifiers = getattr(earth, "modifiers", None)
+    if ctx.earth is not None:
+        modifiers = getattr(ctx.earth, "modifiers", None)
         if modifiers is not None:
             for modifier in modifiers:
                 if str(getattr(modifier, "type", "")) != "SUBSURF":
                     continue
-                if bool(getattr(modifier, "use_adaptive_subdivision", False)) or (
-                    "Adaptive" in str(getattr(modifier, "name", ""))
-                ):
+                if bool(getattr(modifier, "use_adaptive_subdivision", False)) or ("Adaptive" in str(getattr(modifier, "name", ""))):
                     adaptive_modifier = modifier
                     break
     adaptive_enabled = bool(adaptive_modifier is not None and bool(getattr(adaptive_modifier, "use_adaptive_subdivision", False)))
@@ -1251,15 +1274,11 @@ def collect_scene_health_data(context):
         "ADAPTIVE_SUBDIVISION",
         "WARNING",
         adaptive_enabled,
-        (
-            "Adaptive Subdivision is enabled."
-            if adaptive_enabled
-            else "Adaptive Subdivision is not enabled on Earth mesh."
-        ),
+        "Adaptive Subdivision is enabled." if adaptive_enabled else "Adaptive Subdivision is not enabled on Earth mesh.",
     )
 
-    cycles_settings = getattr(scene, "cycles", None) if scene is not None else None
-    render_engine = str(getattr(getattr(scene, "render", None), "engine", "") or "").upper()
+    cycles_settings = getattr(ctx.scene, "cycles", None) if ctx.scene is not None else None
+    render_engine = str(getattr(getattr(ctx.scene, "render", None), "engine", "") or "").upper()
     feature_set = str(getattr(cycles_settings, "feature_set", "") or "").upper() if cycles_settings is not None else ""
     if render_engine == "CYCLES":
         _append_scene_health_check(
@@ -1332,8 +1351,7 @@ def collect_scene_health_data(context):
             f"Offscreen dicing scale: {offscreen_dicing_scale:.2f}.",
         )
 
-    # WT checks.
-    wt_linked = loading_node is not None and _socket_is_linked(loading_node, "WT", is_output=True)
+    wt_linked = state.loading_node is not None and _socket_is_linked(state.loading_node, "WT", is_output=True)
     _append_scene_health_check(
         payload,
         "WT",
@@ -1343,7 +1361,7 @@ def collect_scene_health_data(context):
         wt_linked,
         "WT output from Tile Loading is linked." if wt_linked else "WT output from Tile Loading is not linked.",
     )
-    roughness_value = _socket_float_value(surface_grading_node, "Roughness")
+    roughness_value = _socket_float_value(state.surface_grading_node, "Roughness")
     _append_scene_health_check(
         payload,
         "WT",
@@ -1359,8 +1377,7 @@ def collect_scene_health_data(context):
         detail=(f"value={roughness_value:.4f}" if isinstance(roughness_value, float) else ""),
     )
 
-    # PO checks.
-    po_linked = loading_node is not None and _socket_is_linked(loading_node, "SE", is_output=True)
+    po_linked = state.loading_node is not None and _socket_is_linked(state.loading_node, "SE", is_output=True)
     _append_scene_health_check(
         payload,
         "PO",
@@ -1370,7 +1387,7 @@ def collect_scene_health_data(context):
         po_linked,
         "PO/SE output from Tile Loading is linked." if po_linked else "PO/SE output from Tile Loading is not linked.",
     )
-    intensity_value = _socket_float_value(surface_grading_node, "Intensity")
+    intensity_value = _socket_float_value(state.surface_grading_node, "Intensity")
     _append_scene_health_check(
         payload,
         "PO",
@@ -1400,7 +1417,7 @@ def collect_scene_health_data(context):
         "NightDay group is present." if nightday_groups else "NightDay group is missing.",
     )
     sunlight_hook_ok = False
-    if nightday_groups and sunlight is not None:
+    if nightday_groups and ctx.sunlight is not None:
         for group in nightday_groups:
             nodes = getattr(group, "nodes", None)
             if nodes is None:
@@ -1411,7 +1428,7 @@ def collect_scene_health_data(context):
             ]
             if not texcoord_nodes:
                 continue
-            if any(getattr(node, "object", None) is sunlight for node in texcoord_nodes):
+            if any(getattr(node, "object", None) is ctx.sunlight for node in texcoord_nodes):
                 sunlight_hook_ok = True
                 break
     _append_scene_health_check(
@@ -1421,107 +1438,94 @@ def collect_scene_health_data(context):
         "SUNLIGHT_HOOK",
         "WARNING",
         sunlight_hook_ok,
-        (
-            "Sunlight object is hooked in NightDay group."
-            if sunlight_hook_ok
-            else "Sunlight object is not hooked in NightDay group."
-        ),
+        "Sunlight object is hooked in NightDay group." if sunlight_hook_ok else "Sunlight object is not hooked in NightDay group.",
     )
 
-    # Camera orientation/distance checks against Earth.
-    if camera is not None and earth is not None:
-        cam_diag = _camera_earth_diagnostics(scene, earth, camera, props)
-        ratio = cam_diag.get("distance_ratio")
-        distance_bu = cam_diag.get("distance_bu")
-        radius_bu = cam_diag.get("radius_bu")
-        facing_dot = cam_diag.get("facing_dot")
-        surface_margin_bu = cam_diag.get("surface_margin_bu")
-        surface_margin_km = cam_diag.get("surface_margin_km")
-        inside_earth = bool(cam_diag.get("inside_earth", False))
-        margin_detail_parts = []
-        if isinstance(surface_margin_bu, float):
-            margin_detail_parts.append(f"surface_margin={surface_margin_bu:.6f} BU")
-        if isinstance(surface_margin_km, float):
-            margin_detail_parts.append(f"~{surface_margin_km:.2f} km")
+
+def _check_scene_health_camera(ctx, payload):
+    if ctx.camera is None or ctx.earth is None:
+        return
+    cam_diag = _camera_earth_diagnostics(ctx.scene, ctx.earth, ctx.camera, ctx.props)
+    ratio = cam_diag.get("distance_ratio")
+    distance_bu = cam_diag.get("distance_bu")
+    radius_bu = cam_diag.get("radius_bu")
+    facing_dot = cam_diag.get("facing_dot")
+    surface_margin_bu = cam_diag.get("surface_margin_bu")
+    surface_margin_km = cam_diag.get("surface_margin_km")
+    inside_earth = bool(cam_diag.get("inside_earth", False))
+    margin_detail_parts = []
+    if isinstance(surface_margin_bu, float):
+        margin_detail_parts.append(f"surface_margin={surface_margin_bu:.6f} BU")
+    if isinstance(surface_margin_km, float):
+        margin_detail_parts.append(f"~{surface_margin_km:.2f} km")
+    _append_scene_health_check(
+        payload,
+        "Camera",
+        "Earth Visibility",
+        "CAMERA_INSIDE_EARTH",
+        "ERROR",
+        not inside_earth,
+        "Camera is outside Earth geometry." if not inside_earth else "Camera is inside Earth geometry.",
+        detail=(", ".join(margin_detail_parts) if margin_detail_parts else ""),
+    )
+    if isinstance(ratio, float):
+        ratio_ok = ratio < float(_HEALTH_CAMERA_DISTANCE_RATIO_WARN)
+        severity = "WARNING"
+        if ratio >= float(_HEALTH_CAMERA_DISTANCE_RATIO_ERROR):
+            severity = "ERROR"
+            ratio_ok = False
         _append_scene_health_check(
             payload,
             "Camera",
             "Earth Visibility",
-            "CAMERA_INSIDE_EARTH",
-            "ERROR",
-            not inside_earth,
-            (
-                "Camera is outside Earth geometry."
-                if not inside_earth
-                else "Camera is inside Earth geometry."
+            "CAMERA_DISTANCE",
+            severity,
+            ratio_ok,
+            "Camera distance is within a typical visible range." if ratio_ok else "Camera is very far from Earth; Earth may be effectively invisible.",
+            detail=(
+                f"distance={distance_bu:.3f} BU, radius={radius_bu:.3f} BU, ratio={ratio:.1f}"
+                if isinstance(distance_bu, float) and isinstance(radius_bu, float)
+                else ""
             ),
-            detail=(", ".join(margin_detail_parts) if margin_detail_parts else ""),
         )
-        if isinstance(ratio, float):
-            ratio_ok = ratio < float(_HEALTH_CAMERA_DISTANCE_RATIO_WARN)
-            severity = "WARNING"
-            if ratio >= float(_HEALTH_CAMERA_DISTANCE_RATIO_ERROR):
-                severity = "ERROR"
-                ratio_ok = False
-            _append_scene_health_check(
-                payload,
-                "Camera",
-                "Earth Visibility",
-                "CAMERA_DISTANCE",
-                severity,
-                ratio_ok,
-                (
-                    "Camera distance is within a typical visible range."
-                    if ratio_ok
-                    else "Camera is very far from Earth; Earth may be effectively invisible."
-                ),
-                detail=(
-                    f"distance={distance_bu:.3f} BU, radius={radius_bu:.3f} BU, ratio={ratio:.1f}"
-                    if isinstance(distance_bu, float) and isinstance(radius_bu, float)
-                    else ""
-                ),
-            )
-        if isinstance(facing_dot, float):
-            _append_scene_health_check(
-                payload,
-                "Camera",
-                "Earth Visibility",
-                "CAMERA_FACING",
-                "WARNING",
-                facing_dot >= float(_HEALTH_MIN_FACING_DOT_WARN),
-                (
-                    "Camera is facing Earth."
-                    if facing_dot >= float(_HEALTH_MIN_FACING_DOT_WARN)
-                    else "Camera is not facing Earth strongly; Earth may be out of view."
-                ),
-                detail=f"dot={facing_dot:.3f}",
-            )
-        cam_data = getattr(camera, "data", None)
-        if cam_data is not None and isinstance(distance_bu, float) and isinstance(radius_bu, float):
-            try:
-                clip_end = float(getattr(cam_data, "clip_end", 0.0))
-            except (TypeError, ValueError, AttributeError):
-                clip_end = 0.0
-            target_distance = max(0.0, float(distance_bu - radius_bu))
-            _append_scene_health_check(
-                payload,
-                "Camera",
-                "Earth Visibility",
-                "CAMERA_CLIP_END",
-                "WARNING",
-                clip_end <= 0.0 or clip_end >= target_distance,
-                (
-                    "Camera clip end can reach Earth."
-                    if clip_end <= 0.0 or clip_end >= target_distance
-                    else "Camera clip end may cut Earth from view."
-                ),
-                detail=f"clip_end={clip_end:.3f}, required>={target_distance:.3f}",
-            )
+    if isinstance(facing_dot, float):
+        _append_scene_health_check(
+            payload,
+            "Camera",
+            "Earth Visibility",
+            "CAMERA_FACING",
+            "WARNING",
+            facing_dot >= float(_HEALTH_MIN_FACING_DOT_WARN),
+            (
+                "Camera is facing Earth."
+                if facing_dot >= float(_HEALTH_MIN_FACING_DOT_WARN)
+                else "Camera is not facing Earth strongly; Earth may be out of view."
+            ),
+            detail=f"dot={facing_dot:.3f}",
+        )
+    cam_data = getattr(ctx.camera, "data", None)
+    if cam_data is not None and isinstance(distance_bu, float) and isinstance(radius_bu, float):
+        try:
+            clip_end = float(getattr(cam_data, "clip_end", 0.0))
+        except (TypeError, ValueError, AttributeError):
+            clip_end = 0.0
+        target_distance = max(0.0, float(distance_bu - radius_bu))
+        _append_scene_health_check(
+            payload,
+            "Camera",
+            "Earth Visibility",
+            "CAMERA_CLIP_END",
+            "WARNING",
+            clip_end <= 0.0 or clip_end >= target_distance,
+            "Camera clip end can reach Earth." if clip_end <= 0.0 or clip_end >= target_distance else "Camera clip end may cut Earth from view.",
+            detail=f"clip_end={clip_end:.3f}, required>={target_distance:.3f}",
+        )
 
-    # Animation state checks kept from previous behavior.
-    if props is not None:
-        frame_start = int(getattr(props, "anim_frame_start", 1) or 1)
-        frame_end = int(getattr(props, "anim_frame_end", 1) or 1)
+
+def _check_scene_health_animation(ctx, payload):
+    if ctx.props is not None:
+        frame_start = int(getattr(ctx.props, "anim_frame_start", 1) or 1)
+        frame_end = int(getattr(ctx.props, "anim_frame_end", 1) or 1)
         _append_scene_health_check(
             payload,
             "Animation",
@@ -1536,10 +1540,10 @@ def collect_scene_health_data(context):
             ),
         )
 
-        preset = str(getattr(props, "anim_camera_preset", "NONE") or "NONE").strip().upper()
+        preset = str(getattr(ctx.props, "anim_camera_preset", "NONE") or "NONE").strip().upper()
         if preset == "A_TO_B":
-            has_a = bool(getattr(props, "anim_ab_a_valid", False))
-            has_b = bool(getattr(props, "anim_ab_b_valid", False))
+            has_a = bool(getattr(ctx.props, "anim_ab_a_valid", False))
+            has_b = bool(getattr(ctx.props, "anim_ab_b_valid", False))
             _append_scene_health_check(
                 payload,
                 "Animation",
@@ -1555,7 +1559,7 @@ def collect_scene_health_data(context):
             )
 
         if preset not in {"", "NONE"}:
-            keyed = _camera_has_transform_keys(camera)
+            keyed = _camera_has_transform_keys(ctx.camera)
             _append_scene_health_check(
                 payload,
                 "Animation",
@@ -1571,9 +1575,9 @@ def collect_scene_health_data(context):
             )
 
     prepared_segments = 0
-    if scene is not None:
+    if ctx.scene is not None:
         try:
-            prepared_segments = int(scene.get(_ANIMATION_PREPARED_SEGMENTS_KEY, 0) or 0)
+            prepared_segments = int(ctx.scene.get(_ANIMATION_PREPARED_SEGMENTS_KEY, 0) or 0)
         except (TypeError, ValueError, AttributeError):
             prepared_segments = 0
     prepared_collection = bpy.data.collections.get(_ANIMATION_PREPARED_COLLECTION_NAME)
@@ -1614,6 +1618,29 @@ def collect_scene_health_data(context):
             "Prepared animation state is internally consistent.",
         )
 
+
+_SCENE_HEALTH_CHECK_REGISTRY = (
+    (_check_scene_health_data_source, False),
+    (_check_scene_health_viewport_and_material, True),
+    (_check_scene_health_tile_loading_layers, True),
+    (_check_scene_health_layers_and_render, True),
+    (_check_scene_health_camera, False),
+    (_check_scene_health_animation, False),
+)
+
+
+def collect_scene_health_data(context):
+    ctx = _build_scene_health_context(context)
+    payload = _new_scene_health_payload()
+    if not _check_scene_health_general(ctx, payload):
+        return payload
+
+    state = _SceneHealthMaterialState()
+    for checker, uses_state in _SCENE_HEALTH_CHECK_REGISTRY:
+        if uses_state:
+            checker(ctx, payload, state)
+        else:
+            checker(ctx, payload)
     return payload
 
 
