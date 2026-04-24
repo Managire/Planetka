@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 import bpy
 from bpy.props import BoolProperty, EnumProperty, StringProperty
 
-from .auth import allows_balanced_full_quality_for_context, is_authenticated, sync_account_profile
+from .auth import allows_balanced_full_quality_for_context, is_authenticated
 from .asset_builder import ensure_earth_surface_parent, sync_surface_elevation_scale_for_radius
 from .diagnostics import write_resolve_diagnostics, write_tile_view_diagnostics
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS, with_error_code
@@ -38,8 +38,11 @@ from .streaming_utils import (
 )
 from .state import (
     _force_restore_navigation_adaptive_state,
+    _clear_camera_inside_earth_warning,
     _estimate_download_bytes_for_visible_tiles,
     _is_animation_playing,
+    _resolve_scope_altitude_info,
+    _set_camera_inside_earth_warning,
     create_temp_mesh,
     cleanup_planetka_unused_data,
     delete_temp_meshes,
@@ -810,6 +813,13 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 ),
                 ui_reports=ui_reports,
             )
+
+        scope_mode = str(getattr(self, "scope_mode", "AUTO") or "AUTO")
+        altitude_info = _resolve_scope_altitude_info(scene, scope_mode=scope_mode)
+        if bool(altitude_info.get("inside_earth", False)):
+            _set_camera_inside_earth_warning(scene, altitude_info.get("altitude_km"))
+            return ResolvePrepareContextResult(response={'CANCELLED'}, ui_reports=ui_reports)
+        _clear_camera_inside_earth_warning(scene)
 
         return ResolvePrepareContextResult(
             response=None,
@@ -1593,14 +1603,8 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         except (RuntimeError, TypeError, ValueError):
             logger.debug("Planetka: failed clearing resolve error marker after successful resolve", exc_info=True)
         _clear_resolve_failure_notice(scene)
+        _clear_camera_inside_earth_warning(scene)
 
-        if is_remote_source_configured(normalized) and is_authenticated(prefs):
-            try:
-                sync_account_profile(prefs)
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                logger.debug("Planetka: failed syncing account profile after resolve", exc_info=True)
-            except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
-                logger.debug("Planetka: failed syncing account profile after resolve", exc_info=True)
         self._flush_ui_reports(ui_reports)
         _restore_navigation_adaptive_state_safe("failed post-resolve adaptive viewport restore")
         return {'FINISHED'}

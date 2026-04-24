@@ -156,6 +156,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
   <div class="controls">
     <label for="userAdminEmail">Manage user:</label>
     <input id="userAdminEmail" type="email" placeholder="user@example.com" style="min-width: 280px; background:#111827; color:#e5e7eb; border:1px solid #374151; border-radius:8px; padding:7px 10px;" />
+    <button id="setFreeBtn" class="action-btn">Set Free</button>
     <button id="setLiteBtn" class="action-btn">Set Personal</button>
     <button id="setProBtn" class="action-btn">Set Commercial</button>
     <button id="throttleBtn" class="action-btn warn">Throttle 24h</button>
@@ -239,6 +240,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     const tileMapWindowEl = document.getElementById("tileMapWindow");
     const refreshBtn = document.getElementById("refresh");
     const userAdminEmailEl = document.getElementById("userAdminEmail");
+    const setFreeBtn = document.getElementById("setFreeBtn");
     const setLiteBtn = document.getElementById("setLiteBtn");
     const setProBtn = document.getElementById("setProBtn");
     const throttleBtn = document.getElementById("throttleBtn");
@@ -666,6 +668,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         block: "/admin/users/block",
         unblock: "/admin/users/unblock",
         "hard-block": "/admin/users/hard-block",
+        "set-free": "/admin/users/set-plan",
         "set-lite": "/admin/users/set-plan",
         "set-pro": "/admin/users/set-plan",
       };
@@ -681,6 +684,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         block: "Block this user account now?",
         unblock: "Unblock this user account now?",
         "hard-block": "Hard block this user and block same-computer attempts?",
+        "set-free": "Set this account to Free?",
         "set-lite": "Downgrade this account to Personal?",
         "set-pro": "Upgrade this account to Commercial?",
       };
@@ -699,6 +703,9 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
       }
       if (safeAction === "set-lite") {
         payload.plan_code = "lite";
+      }
+      if (safeAction === "set-free") {
+        payload.plan_code = "free";
       }
       if (safeAction === "set-pro") {
         payload.plan_code = "pro";
@@ -821,6 +828,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
       }
       performUserAction(actionName, "", email, "");
     };
+    if (setFreeBtn) setFreeBtn.addEventListener("click", () => runManualUserAction("set-free"));
     if (setLiteBtn) setLiteBtn.addEventListener("click", () => runManualUserAction("set-lite"));
     if (setProBtn) setProBtn.addEventListener("click", () => runManualUserAction("set-pro"));
     if (throttleBtn) throttleBtn.addEventListener("click", () => runManualUserAction("throttle"));

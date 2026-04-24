@@ -33,6 +33,7 @@ from .state import (
     ACCOUNT_PANEL_DEFAULT_COLLAPSED_KEY,
     ADD_EARTH_BUTTON_SCALE_X,
     ADD_EARTH_BUTTON_SCALE_Y,
+    get_camera_inside_earth_warning,
     get_resolve_size_estimates,
     get_resolve_runtime_status,
     logger,
@@ -46,6 +47,7 @@ RESOLVE_FAILURE_FLAG_KEY = "planetka_resolve_integrity_failed"
 RESOLVE_FAILURE_MESSAGE_KEY = "planetka_resolve_integrity_message"
 EARTH_RADIUS_SAFE_MIN_BU = 0.2
 EARTH_RADIUS_SAFE_MAX_BU = 20.0
+LOW_ALTITUDE_WARNING_EPS_KM = 0.05
 
 
 def _float_close(value, target, tol=1e-4):
@@ -304,6 +306,89 @@ def _resolve_failure_message_for_ui(scene=None):
         return str(target_scene.get("planetka_last_resolve_error", "") or "").strip()
     except (TypeError, ValueError, RuntimeError, AttributeError):
         return ""
+
+
+def _inside_earth_warning_for_ui(scene=None):
+    return str(get_camera_inside_earth_warning(scene) or "").strip()
+
+
+def _max_proximity_altitude_km_for_ui(scene=None):
+    target_scene = scene if scene is not None else getattr(getattr(bpy, "context", None), "scene", None)
+    if target_scene is None:
+        return None
+    props = getattr(target_scene, "planetka", None)
+    if props is None:
+        return None
+
+    try:
+        diag = read_diagnostics(target_scene)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        diag = {}
+
+    lat_value = diag.get("view_latitude_deg", None)
+    lon_value = diag.get("view_longitude_deg", None)
+    try:
+        if lat_value is None:
+            lat_value = float(getattr(props, "nav_latitude_deg", 0.0))
+        else:
+            lat_value = float(lat_value)
+        if lon_value is None:
+            lon_value = float(getattr(props, "nav_longitude_deg", 0.0))
+        else:
+            lon_value = float(lon_value)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return None
+
+    try:
+        from .extension_prefs import get_earth_object
+        from .operators import _earth_radius_blender_units, _max_proximity_altitude_km
+    except (ImportError, ModuleNotFoundError):
+        logger.debug("Planetka: failed importing Max Proximity helpers for low-altitude warning", exc_info=True)
+        return None
+
+    earth_obj = get_earth_object()
+    if earth_obj is None:
+        return None
+
+    try:
+        earth_radius_bu = float(_earth_radius_blender_units(earth_obj))
+        threshold_km, _note = _max_proximity_altitude_km(
+            target_scene,
+            earth_obj,
+            earth_radius_bu,
+            float(lon_value),
+            float(lat_value),
+        )
+        if threshold_km is None:
+            return None
+        return max(0.0, float(threshold_km))
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed computing Max Proximity threshold for low-altitude warning", exc_info=True)
+        return None
+
+
+def _low_altitude_warning_for_ui(scene=None):
+    target_scene = scene if scene is not None else getattr(getattr(bpy, "context", None), "scene", None)
+    if target_scene is None:
+        return ""
+    try:
+        diag = read_diagnostics(target_scene)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return ""
+    try:
+        current_altitude_km = diag.get("view_altitude_km", None)
+        if current_altitude_km is None:
+            current_altitude_km = float(getattr(getattr(target_scene, "planetka", None), "nav_altitude_km", 0.0))
+        else:
+            current_altitude_km = float(current_altitude_km)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return ""
+    threshold_km = _max_proximity_altitude_km_for_ui(target_scene)
+    if threshold_km is None:
+        return ""
+    if float(current_altitude_km) + float(LOW_ALTITUDE_WARNING_EPS_KM) < float(threshold_km):
+        return "Low altitude"
+    return ""
 
 
 def _is_connected():
@@ -698,13 +783,21 @@ def _draw_live_telemetry(layout, scene):
 
         runtime, runtime_code, runtime_text = _resolve_runtime_display(scene)
         resolve_failure_message = _resolve_failure_message_for_ui(scene)
+        inside_earth_warning = _inside_earth_warning_for_ui(scene)
+        low_altitude_warning = _low_altitude_warning_for_ui(scene)
         status_row = quality_box.row(align=True)
-        status_row.alert = bool(resolve_failure_message)
+        status_row.alert = bool(resolve_failure_message or inside_earth_warning or low_altitude_warning)
         status_label_text = f"{runtime_text}{_status_activity_suffix(runtime.get('running', False))}"
         status_icon = _status_icon(runtime_code)
         last_resolve_text = _last_resolve_summary_text(scene, include_prefix=True)
         if resolve_failure_message:
             status_label_text = "Error detected"
+            status_icon = "ERROR"
+        elif inside_earth_warning:
+            status_label_text = "Below Earth's surface"
+            status_icon = "ERROR"
+        elif low_altitude_warning:
+            status_label_text = low_altitude_warning
             status_icon = "ERROR"
         elif runtime_code == "IDLE" and last_resolve_text:
             status_label_text = last_resolve_text

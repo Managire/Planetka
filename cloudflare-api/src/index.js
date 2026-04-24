@@ -10052,15 +10052,16 @@ async function handleAdminAnalyticsUsersPage(request, env) {
     const throttledActive = Number.isFinite(throttledUntilMs) && throttledUntilMs > Date.now();
     let actionButtons = "";
     if (status === "blocked") {
-      actionButtons = `<button class="action-btn warn" data-action="unblock" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}" data-plan-code="${encodeURIComponent(planCodeRaw)}">Unblock</button><button class="action-btn" data-action="set-lite" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Personal</button><button class="action-btn" data-action="set-pro" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Commercial</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
+      actionButtons = `<button class="action-btn warn" data-action="unblock" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}" data-plan-code="${encodeURIComponent(planCodeRaw)}">Unblock</button><button class="action-btn" data-action="set-free" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Free</button><button class="action-btn" data-action="set-lite" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Personal</button><button class="action-btn" data-action="set-pro" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Commercial</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
     } else {
+      const freeButton = `<button class="action-btn" data-action="set-free" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Free</button>`;
       const planButton = tierCodeFromStatus(status || planCode) === "pro"
         ? `<button class="action-btn" data-action="set-lite" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Personal</button>`
         : `<button class="action-btn" data-action="set-pro" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Commercial</button>`;
       const throttleButton = throttledActive
         ? `<button class="action-btn" data-action="unthrottle" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Unthrottle</button>`
         : `<button class="action-btn warn" data-action="throttle" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Throttle 24h</button>`;
-      actionButtons = `${planButton}${throttleButton}<button class="action-btn danger" data-action="block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Block</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
+      actionButtons = `${freeButton}${planButton}${throttleButton}<button class="action-btn danger" data-action="block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Block</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
     }
     return `<tr>
       <td class="${tierClass}">${userEmail}</td>
@@ -10162,6 +10163,7 @@ async function handleAdminAnalyticsUsersPage(request, env) {
         throttle: "/admin/users/throttle",
         block: "/admin/users/block",
         unblock: "/admin/users/unblock",
+        "set-free": "/admin/users/set-plan",
         "set-lite": "/admin/users/set-plan",
         "set-pro": "/admin/users/set-plan",
         "hard-block": "/admin/users/hard-block",
@@ -10171,6 +10173,7 @@ async function handleAdminAnalyticsUsersPage(request, env) {
         throttle: "Throttle this account now for 24 hours?",
         block: "Block this user account now?",
         unblock: "Unblock this user account now?",
+        "set-free": "Set this account to Free?",
         "set-lite": "Set this account to Personal?",
         "set-pro": "Set this account to Commercial?",
         "hard-block": "Hard block this user and block same-computer attempts?",
@@ -10184,6 +10187,7 @@ async function handleAdminAnalyticsUsersPage(request, env) {
       if (safeAction === "unblock") {
         payload.plan_code = (!safePlanCode || safePlanCode === "blocked") ? "lite" : safePlanCode;
       }
+      if (safeAction === "set-free") payload.plan_code = "free";
       if (safeAction === "set-lite") payload.plan_code = "lite";
       if (safeAction === "set-pro") payload.plan_code = "pro";
       statusEl.textContent = "Applying action...";

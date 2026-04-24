@@ -138,6 +138,7 @@ _AUTO_RESOLVE_IN_FLIGHT = False
 _RENDER_JOB_ACTIVE = False
 _RENDER_JOB_EPOCH = 0
 _RENDER_JOB_LAST_ENDED_EPOCH = 0
+CAMERA_INSIDE_EARTH_WARNING_KEY = "planetka_camera_inside_earth_warning"
 _RENDER_JOB_LAST_CANCELLED_EPOCH = 0
 _AUTO_RESOLVE_NEXT_DUE_TIME = {}
 _AUTO_RESOLVE_LAST_CAMERA_SIGNATURE = {}
@@ -1792,6 +1793,93 @@ def get_resolve_runtime_status(scene=None):
         return status
 
     return status
+
+
+def get_camera_inside_earth_warning(scene=None):
+    target_scene = scene if scene is not None else getattr(getattr(bpy, "context", None), "scene", None)
+    if target_scene is None:
+        return ""
+    try:
+        return str(target_scene.get(CAMERA_INSIDE_EARTH_WARNING_KEY, "") or "").strip()
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        return ""
+
+
+def _clear_camera_inside_earth_warning(scene):
+    if scene is None:
+        return
+    try:
+        if CAMERA_INSIDE_EARTH_WARNING_KEY in scene:
+            del scene[CAMERA_INSIDE_EARTH_WARNING_KEY]
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed clearing inside-Earth warning", exc_info=True)
+
+
+def _set_camera_inside_earth_warning(scene, altitude_km=None):
+    if scene is None:
+        return ""
+    _ = altitude_km
+    message = "Below Earth's surface"
+    try:
+        scene[CAMERA_INSIDE_EARTH_WARNING_KEY] = str(message)
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed storing inside-Earth warning", exc_info=True)
+    return message
+
+
+def _resolve_scope_altitude_info(scene, scope_mode="AUTO"):
+    result = {
+        "inside_earth": False,
+        "altitude_km": None,
+        "altitude_bu": None,
+        "scope_used": None,
+    }
+    if scene is None:
+        return result
+    earth = get_earth_object()
+    if earth is None:
+        return result
+
+    tile_utils = _get_tile_utils()
+    if tile_utils is None:
+        return result
+    get_camera_info = getattr(tile_utils, "get_camera_info", None)
+    get_radius = getattr(tile_utils, "get_earth_radius_blender_units", None)
+    if not callable(get_camera_info) or not callable(get_radius):
+        return result
+
+    try:
+        camera_info = get_camera_info(scene, scope_mode=str(scope_mode or "AUTO"))
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed reading resolve camera info for inside-Earth check", exc_info=True)
+        return result
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed reading resolve camera info for inside-Earth check", exc_info=True)
+        return result
+
+    if not isinstance(camera_info, dict):
+        return result
+
+    camera_position = camera_info.get("position")
+    if camera_position is None:
+        return result
+
+    try:
+        earth_center = earth.matrix_world.translation.copy()
+        radius_bu = float(get_radius(earth))
+        altitude_bu = float((camera_position - earth_center).length) - radius_bu
+        meters_per_bu = float(6371000.0 / max(radius_bu, 1e-9))
+        altitude_km = float((altitude_bu * meters_per_bu) / 1000.0)
+        inside_epsilon_bu = float(max(1e-9, radius_bu * 1e-6))
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError, ZeroDivisionError):
+        logger.debug("Planetka: failed computing resolve altitude for inside-Earth check", exc_info=True)
+        return result
+
+    result["scope_used"] = str(camera_info.get("scope_used", "CAMERA") or "CAMERA")
+    result["altitude_bu"] = altitude_bu
+    result["altitude_km"] = altitude_km
+    result["inside_earth"] = bool(altitude_bu < (-inside_epsilon_bu))
+    return result
 
 
 def _camera_control_sync_signature(scene):
@@ -3893,6 +3981,13 @@ def _auto_resolve_detect_change(scene, props):
     scope, active_view_signature, resolve_signature = _auto_resolve_collect_scope_signatures(scene, scope_mode)
     if resolve_signature is None:
         return {"event": "RETRY", "retry_delay": AUTO_RESOLVE_RETRY_DELAY_SEC}
+
+    altitude_info = _resolve_scope_altitude_info(scene, scope_mode=scope)
+    if bool(altitude_info.get("inside_earth", False)):
+        _set_camera_inside_earth_warning(scene, altitude_info.get("altitude_km"))
+        stop_auto_resolve_download_pipeline()
+        return {"event": "STOP", "retry_delay": None}
+    _clear_camera_inside_earth_warning(scene)
 
     scene_state = _read_scene_auto_resolve_state(scene)
     if scene_state is None:

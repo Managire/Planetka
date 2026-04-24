@@ -1188,6 +1188,10 @@ def _request_tile_session_token(resolve_id, quality_mode, allow_refresh=True):
 
 
 def _get_request_context_tile_token(allow_refresh=True):
+    global _REQUEST_CONTEXT_TILE_TOKEN
+    global _REQUEST_CONTEXT_TILE_TOKEN_EXPIRES_AT
+    global _REQUEST_CONTEXT_RESOLVE_ID
+    global _REQUEST_CONTEXT_TEXTURE_MODE
     with _REQUEST_CONTEXT_LOCK:
         current_token = str(_REQUEST_CONTEXT_TILE_TOKEN or "").strip()
         current_expiry = float(_REQUEST_CONTEXT_TILE_TOKEN_EXPIRES_AT or 0.0)
