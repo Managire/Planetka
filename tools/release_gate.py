@@ -61,6 +61,7 @@ def main() -> int:
     worker_path = root / "cloudflare-api" / "src" / "index.js"
     worker_tile_routes_path = root / "cloudflare-api" / "src" / "worker" / "tile_routes.js"
     worker_admin_analytics_path = root / "cloudflare-api" / "src" / "worker" / "admin_analytics_handlers.js"
+    worker_maintenance_path = root / "cloudflare-api" / "src" / "worker" / "maintenance_jobs.js"
     wrangler_path = root / "cloudflare-api" / "wrangler.toml"
     fallback_dir = root / "Resources" / "Fallback Images"
 
@@ -135,6 +136,7 @@ def main() -> int:
     worker_src = ""
     worker_tile_routes_src = ""
     worker_admin_analytics_src = ""
+    worker_maintenance_src = ""
     if not worker_path.exists():
         errors.append("Missing cloudflare-api/src/index.js")
     else:
@@ -143,6 +145,11 @@ def main() -> int:
         worker_tile_routes_src = read_text(worker_tile_routes_path)
     if worker_admin_analytics_path.exists():
         worker_admin_analytics_src = read_text(worker_admin_analytics_path)
+    if worker_maintenance_path.exists():
+        worker_maintenance_src = read_text(worker_maintenance_path)
+    combined_worker_src = "\n".join(
+        part for part in [worker_src, worker_tile_routes_src, worker_admin_analytics_src, worker_maintenance_src] if part
+    )
 
     # 6) Worker access model must match the 0.7.0 plan-based product
     if worker_src:
@@ -232,17 +239,17 @@ def main() -> int:
         )
 
     # 10) Telemetry retention cleanup must be present and wired to scheduled job
-    if worker_src:
+    if combined_worker_src:
         retention_markers = [
             "CLEANUP_TILE_EVENT_RETENTION_DAYS",
             "DELETE FROM tile_request_events",
             "DELETE FROM tile_request_rollup_hourly_account",
             "DELETE FROM tile_request_rollup_daily_account",
-            "summary = await cleanupAuthTables(",
+            "runScheduledMaintenanceJobs(",
             "async scheduled(",
         ]
         for marker in retention_markers:
-            if marker not in worker_src:
+            if marker not in combined_worker_src:
                 errors.append(f"Retention/cleanup guard missing in worker source: '{marker}'")
 
     print("Planetka Release Gate")
