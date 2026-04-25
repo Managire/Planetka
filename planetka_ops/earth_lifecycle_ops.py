@@ -131,6 +131,12 @@ def add_earth_execute(operator, context, deps):
     fail = deps["fail"]
     ErrorCode = deps["ErrorCode"]
     PLANETKA_RECOVERABLE_EXCEPTIONS = deps["PLANETKA_RECOVERABLE_EXCEPTIONS"]
+    PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS = tuple(PLANETKA_RECOVERABLE_EXCEPTIONS) + (
+        RuntimeError,
+        TypeError,
+        ValueError,
+        AttributeError,
+    )
     _snapshot_view_selection = deps["_snapshot_view_selection"]
     _restore_view_selection = deps["_restore_view_selection"]
     _is_planetka_create_camera = deps["_is_planetka_create_camera"]
@@ -249,7 +255,7 @@ def add_earth_execute(operator, context, deps):
 
     try:
         _apply_startup_setup_for_create_earth(scene, props)
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed applying startup setup profile", exc_info=True)
     planetka_camera = _ensure_planetka_create_camera(scene)
     if planetka_camera is None:
@@ -262,17 +268,17 @@ def add_earth_execute(operator, context, deps):
                 planetka_camera,
                 activate=bool(activate_planetka_camera),
             )
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka: failed positioning Planetka Camera on Create Earth", exc_info=True)
     try:
         props.texture_quality_mode = "PREVIEW"
         _sync_idprops_from_props(scene, ("texture_quality_mode",))
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed enforcing Create Earth default texture quality mode", exc_info=True)
     if bool(getattr(props, "auto_black_background_new_files", True)):
         try:
             _set_default_world_background_to_black(scene)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka: failed applying default world background override", exc_info=True)
     if bool(getattr(props, "auto_adjust_clipping_values", True)):
         try:
@@ -293,11 +299,11 @@ def add_earth_execute(operator, context, deps):
                     and preexisting_active_camera is None
                 ):
                     scene.camera = camera_before_clip
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka: failed applying create-earth clipping defaults", exc_info=True)
     try:
         scene["planetka_status_notice_clear_skip_count"] = 1
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
         pass
 
     resolve_result = bpy.ops.planetka.load_textures(
@@ -321,12 +327,12 @@ def add_earth_execute(operator, context, deps):
 
     try:
         _apply_startup_setup_for_create_earth(scene, props)
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: post-resolve startup setup re-apply failed", exc_info=True)
     try:
         props.texture_quality_mode = "PREVIEW"
         _sync_idprops_from_props(scene, ("texture_quality_mode",))
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed enforcing post-resolve Create Earth texture quality mode", exc_info=True)
 
     _earth_graph_rebind(scene=scene, earth_surface=get_earth_object() or new_obj)
@@ -334,7 +340,7 @@ def add_earth_execute(operator, context, deps):
     try:
         if _DEFAULT_SCENE_REMOVED_KEY in scene:
             del scene[_DEFAULT_SCENE_REMOVED_KEY]
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed clearing default-scene removal marker", exc_info=True)
 
     operator.report({'INFO'}, "Planetka Earth created successfully.")
