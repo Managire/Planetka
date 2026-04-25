@@ -16,16 +16,30 @@ class ViewTelemetryDeps:
     recoverable_exceptions: Any
     import_recoverable_exceptions: Any
     get_prefs: Any
+    write_realtime_view_diagnostics: Any
     camera_inside_earth_warning_key: str
     scene_key: Any
     suspend_adaptive_viewport_during_navigation: Any
     is_render_job_active: Any
     is_animation_playing: Any
     get_earth_object: Any
+    get_tile_utils: Any
+    get_streaming_utils: Any
+    get_coverage_map: Any
+    normalize_texture_quality_mode: Any
     request_auto_resolve: Any
     get_auto_resolve_in_flight: Any
     sunlight_object_name: str
     monotonic: Any
+    real_earth_radius_m: float
+    max_terrain_height_m: float
+    dataset_mpp_base_d1: float
+    live_safety_caution_ratio: float
+    live_fallback_mpp_m: float
+    live_z_levels: tuple[int, ...]
+    resolve_estimate_full_bytes_key: str
+    resolve_estimate_balanced_bytes_key: str
+    resolve_estimate_preview_bytes_key: str
 
 
 @dataclass(slots=True)

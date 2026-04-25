@@ -759,7 +759,7 @@ def _set_camera_inside_earth_warning(scene, altitude_km=None):
 
 
 def _resolve_scope_altitude_info(scene, scope_mode="AUTO"):
-    return _view_telemetry.resolve_scope_altitude_info(scene, globals(), scope_mode=scope_mode)
+    return _view_telemetry.resolve_scope_altitude_info(scene, _VIEW_TELEMETRY_CTX, scope_mode=scope_mode)
 
 
 def _camera_control_sync_signature(scene):
@@ -854,7 +854,7 @@ def _intersect_ray_sphere_nearest(origin, direction, radius):
 
 
 def _realtime_view_camera_info(scene):
-    return _view_telemetry.realtime_view_camera_info(scene, globals())
+    return _view_telemetry.realtime_view_camera_info(scene, _VIEW_TELEMETRY_CTX)
 
 
 def _active_camera_projection_info(scene):
@@ -870,19 +870,15 @@ def _tile_xy_for_lon_lat(lon_deg, lat_deg, z):
 
 
 def _best_available_mpp_for_lon_lat(lon_deg, lat_deg):
-    return _view_telemetry.best_available_mpp_for_lon_lat(lon_deg, lat_deg, globals())
+    return _view_telemetry.best_available_mpp_for_lon_lat(lon_deg, lat_deg, _VIEW_TELEMETRY_CTX)
 
 
 def _safety_for_required_vs_available(required_mpp, available_mpp):
-    return _view_telemetry.safety_for_required_vs_available(required_mpp, available_mpp, globals())
+    return _view_telemetry.safety_for_required_vs_available(required_mpp, available_mpp, _VIEW_TELEMETRY_CTX)
 
 
 def _update_realtime_telemetry(scene):
-    return _view_telemetry.update_realtime_telemetry(
-        scene,
-        globals(),
-        write_realtime_view_diagnostics=write_realtime_view_diagnostics,
-    )
+    return _view_telemetry.update_realtime_telemetry(scene, _VIEW_TELEMETRY_CTX)
 
 
 def _canonical_tiles(tiles):
@@ -890,14 +886,14 @@ def _canonical_tiles(tiles):
 
 
 def _clear_resolve_size_estimates(scene):
-    return _view_telemetry.clear_resolve_size_estimates(scene, globals())
+    return _view_telemetry.clear_resolve_size_estimates(scene, _VIEW_TELEMETRY_CTX)
 
 
 def _estimate_download_bytes_for_visible_tiles(tiles, base_path, texture_quality_mode="PREVIEW"):
     return _view_telemetry.estimate_download_bytes_for_visible_tiles(
         tiles,
         base_path,
-        globals(),
+        _VIEW_TELEMETRY_CTX,
         texture_quality_mode=texture_quality_mode,
     )
 
@@ -905,7 +901,7 @@ def _estimate_download_bytes_for_visible_tiles(tiles, base_path, texture_quality
 def update_resolve_size_estimates(scene, scope_mode="CAMERA", base_path="", full_tiles_override=None):
     return _view_telemetry.update_resolve_size_estimates(
         scene,
-        globals(),
+        _VIEW_TELEMETRY_CTX,
         scope_mode=scope_mode,
         base_path=base_path,
         full_tiles_override=full_tiles_override,
@@ -913,11 +909,11 @@ def update_resolve_size_estimates(scene, scope_mode="CAMERA", base_path="", full
 
 
 def get_resolve_size_estimates(scene=None):
-    return _view_telemetry.get_resolve_size_estimates(scene=scene, runtime=globals())
+    return _view_telemetry.get_resolve_size_estimates(scene=scene, runtime=_VIEW_TELEMETRY_CTX)
 
 
 def _last_resolved_tiles(scene):
-    return _view_telemetry.last_resolved_tiles(scene, globals())
+    return _view_telemetry.last_resolved_tiles(scene, _VIEW_TELEMETRY_CTX)
 
 
 def _mark_auto_resolve_dirty(*args, **kwargs):
@@ -1107,16 +1103,30 @@ def _build_view_telemetry_context():
         recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
         import_recoverable_exceptions=PLANETKA_IMPORT_RECOVERABLE_EXCEPTIONS,
         get_prefs=get_prefs,
+        write_realtime_view_diagnostics=write_realtime_view_diagnostics,
         camera_inside_earth_warning_key=CAMERA_INSIDE_EARTH_WARNING_KEY,
         scene_key=_scene_key,
         suspend_adaptive_viewport_during_navigation=_suspend_adaptive_viewport_during_navigation,
         is_render_job_active=_is_render_job_active,
         is_animation_playing=_is_animation_playing,
         get_earth_object=get_earth_object,
+        get_tile_utils=_get_tile_utils,
+        get_streaming_utils=_get_streaming_utils,
+        get_coverage_map=_get_coverage_map,
+        normalize_texture_quality_mode=_normalize_texture_quality_mode,
         request_auto_resolve=request_auto_resolve,
         get_auto_resolve_in_flight=lambda: bool(_AUTO_RESOLVE_SHARED_STATE.in_flight),
         sunlight_object_name=_SUNLIGHT_OBJECT_NAME,
         monotonic=time.monotonic,
+        real_earth_radius_m=_REAL_EARTH_RADIUS_M,
+        max_terrain_height_m=_MAX_TERRAIN_HEIGHT_M,
+        dataset_mpp_base_d1=_DATASET_MPP_BASE_D1,
+        live_safety_caution_ratio=_LIVE_SAFETY_CAUTION_RATIO,
+        live_fallback_mpp_m=_LIVE_FALLBACK_MPP_M,
+        live_z_levels=_LIVE_Z_LEVELS,
+        resolve_estimate_full_bytes_key=RESOLVE_ESTIMATE_FULL_BYTES_KEY,
+        resolve_estimate_balanced_bytes_key=RESOLVE_ESTIMATE_BALANCED_BYTES_KEY,
+        resolve_estimate_preview_bytes_key=RESOLVE_ESTIMATE_PREVIEW_BYTES_KEY,
     )
     state = ViewTelemetryState(
         viewport_opt_last_signature=_VIEWPORT_OPT_LAST_SIGNATURE,
