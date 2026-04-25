@@ -298,11 +298,12 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
     const statusCode = eventStatusCode > 0 ? eventStatusCode : 500;
     const errorCode = String(eventErrorCode || (statusCode >= 400 ? "internal_error" : ""));
     const monitoringEnabled = isTileHotPathMonitoringEnabled(env);
-    const telemetryWrite = recordTileRequestEvent(db, {
+    const tileEventPayload = {
       created_at: nowIso(),
       created_at_unix: Math.floor(Date.now() / 1000),
       user_id: String(user.id || ""),
       user_email: String(user.email || ""),
+      device_id: String(deviceId || ""),
       resolve_id: resolveId,
       method: String(request.method || "GET"),
       path,
@@ -317,7 +318,9 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
       cf_country: cfCountry,
       client_ip: clientIp,
       error_code: errorCode,
-    });
+      monitoring_enabled: monitoringEnabled,
+    };
+    const telemetryWrite = recordTileRequestEvent(db, tileEventPayload);
     const processSignals = async () => {
       await telemetryWrite;
       if (!monitoringEnabled) {
@@ -335,10 +338,26 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
         statusCode,
       });
     };
+    const enqueueTileEvent = async () => {
+      if (!env.TILE_EVENT_QUEUE || typeof env.TILE_EVENT_QUEUE.send !== "function") {
+        await processSignals();
+        return;
+      }
+      try {
+        await env.TILE_EVENT_QUEUE.send(tileEventPayload);
+      } catch (error) {
+        console.warn(
+          "worker.tile_event_queue.enqueue_failed",
+          JSON.stringify({
+            error: String(error && error.message || "tile_event_queue_enqueue_failed"),
+          }),
+        );
+      }
+    };
     if (ctx && typeof ctx.waitUntil === "function") {
-      ctx.waitUntil(processSignals());
+      ctx.waitUntil(enqueueTileEvent());
     } else {
-      await processSignals();
+      await enqueueTileEvent();
     }
   }
 }

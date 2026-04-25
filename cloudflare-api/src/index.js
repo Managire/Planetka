@@ -105,6 +105,9 @@ import {
   handleTileRequest as handleTileRequestRoute,
   handleTileSessionStart as handleTileSessionStartRoute,
 } from "./worker/tile_routes.js";
+import {
+  handleTileEventQueueBatch,
+} from "./worker/tile_event_queue.js";
 const encoder = new TextEncoder();
 const ADDON_ID = "planetka";
 const BYTES_PER_GB = 1024 * 1024 * 1024;
@@ -2831,6 +2834,15 @@ const TILE_ROUTE_DEPS = {
   resolveTileCacheControl,
 };
 
+const TILE_EVENT_QUEUE_DEPS = {
+  clampNonNegativeInt,
+  isTileHotPathMonitoringEnabled,
+  maybeSignalTileFarmingActivity,
+  nowIso,
+  recordTileRequestEvent,
+  requireDb,
+};
+
 const ADMIN_ROUTE_DEPS = {
   handleAdminAnalyticsData: (request, env) => handleAdminAnalyticsDataRoute(request, env, ADMIN_ANALYTICS_DEPS),
   handleAdminAnalyticsPage: (request, env) => handleAdminAnalyticsPageRoute(request, env, ADMIN_ANALYTICS_DEPS),
@@ -3052,5 +3064,12 @@ export default {
         );
       }
     })());
+  },
+  async queue(batch, env, ctx) {
+    void ctx;
+    if (String(batch && batch.queue || "") !== "planetka-tile-events") {
+      return;
+    }
+    await handleTileEventQueueBatch(batch, env, TILE_EVENT_QUEUE_DEPS);
   },
 };

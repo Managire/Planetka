@@ -32,3 +32,12 @@ database_id = "8dd80102-88df-4105-9884-8e231875bc6d"
 [[r2_buckets]]
 binding = "PLANETKA_DATA"
 bucket_name = "planetka-data"
+
+[[queues.producers]]
+binding = "TILE_EVENT_QUEUE"
+queue = "planetka-tile-events"
+
+[[queues.consumers]]
+queue = "planetka-tile-events"
+max_batch_size = 50
+max_batch_timeout = 5
