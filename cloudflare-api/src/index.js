@@ -14,6 +14,10 @@ import {
   parsePositiveNumber,
 } from "./worker/env.js";
 import {
+  dispatchAdminRoute,
+  isAdminRoutePath,
+} from "./worker/admin_routes.js";
+import {
   handleTileRequest as handleTileRequestRoute,
   handleTileSessionStart as handleTileSessionStartRoute,
 } from "./worker/tile_routes.js";
@@ -10954,7 +10958,29 @@ const TILE_ROUTE_DEPS = {
   resolveTileCacheControl,
 };
 
+const ADMIN_ROUTE_DEPS = {
+  handleAdminAnalyticsData,
+  handleAdminAnalyticsPage,
+  handleAdminAnalyticsTileMapImage,
+  handleAdminAnalyticsUsersPage,
+  handleAdminLoginPage,
+  handleAdminPasswordLogin,
+  handleAdminSessionLogout,
+  handleAdminSessionStart,
+  handleAdminSessionStartPage,
+  handleAdminUserBlock,
+  handleAdminUserHardBlock,
+  handleAdminUserSetPlan,
+  handleAdminUserThrottle,
+  handleAdminUserUnblock,
+  handleAdminUserUnthrottle,
+};
+
 async function dispatchExactRoute(request, env, path) {
+  const adminMatch = await dispatchAdminRoute(request, env, path, ADMIN_ROUTE_DEPS);
+  if (adminMatch) {
+    return adminMatch;
+  }
   switch (path) {
     case "/health":
       if (request.method === "GET") {
@@ -11056,77 +11082,6 @@ async function dispatchExactRoute(request, env, path) {
         return await handleSupportBugReport(request, env);
       }
       return null;
-    case "/admin/analytics":
-      if (request.method === "GET") {
-        return await handleAdminAnalyticsPage(request, env);
-      }
-      return null;
-    case "/admin/analytics/users":
-      if (request.method === "GET") {
-        return await handleAdminAnalyticsUsersPage(request, env);
-      }
-      return null;
-    case "/admin/analytics/data":
-      if (request.method === "GET") {
-        return await handleAdminAnalyticsData(request, env);
-      }
-      return null;
-    case "/admin/analytics/world-map.jpg":
-      if (request.method === "GET") {
-        return await handleAdminAnalyticsTileMapImage(request, env);
-      }
-      return null;
-    case "/admin/login":
-      if (request.method === "GET") {
-        return await handleAdminLoginPage(request, env);
-      }
-      if (request.method === "POST") {
-        return await handleAdminPasswordLogin(request, env);
-      }
-      return null;
-    case "/admin/session/start":
-      if (request.method === "GET") {
-        return await handleAdminSessionStartPage(request, env);
-      }
-      if (request.method === "POST") {
-        return await handleAdminSessionStart(request, env);
-      }
-      return null;
-    case "/admin/session/logout":
-      if (request.method === "GET") {
-        return await handleAdminSessionLogout(request, env);
-      }
-      return null;
-    case "/admin/users/unthrottle":
-      if (request.method === "POST") {
-        return await handleAdminUserUnthrottle(request, env);
-      }
-      return null;
-    case "/admin/users/throttle":
-      if (request.method === "POST") {
-        return await handleAdminUserThrottle(request, env);
-      }
-      return null;
-    case "/admin/users/block":
-      if (request.method === "POST") {
-        return await handleAdminUserBlock(request, env);
-      }
-      return null;
-    case "/admin/users/unblock":
-      if (request.method === "POST") {
-        return await handleAdminUserUnblock(request, env);
-      }
-      return null;
-    case "/admin/users/hard-block":
-      if (request.method === "POST") {
-        return await handleAdminUserHardBlock(request, env);
-      }
-      return null;
-    case "/admin/users/set-plan":
-      if (request.method === "POST") {
-        return await handleAdminUserSetPlan(request, env);
-      }
-      return null;
     case "/stripe/webhook":
       if (request.method === "POST") {
         return await handleStripeWebhook(request, env);
@@ -11211,7 +11166,7 @@ export default {
     const queryToken = String(url.searchParams.get("access_token") || url.searchParams.get("token") || "").trim();
 
     try {
-      if (path.startsWith("/admin/") && queryToken) {
+      if (isAdminRoutePath(path) && queryToken) {
         return json({ ok: false, error: "query_token_not_allowed" }, 400, env);
       }
       return await dispatchRequest(request, env, path, ctx);
