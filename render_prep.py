@@ -52,6 +52,7 @@ from .state import (
     queue_resolve_download,
     remove_object_and_unused_mesh,
     replace_tiles,
+    _store_resolve_summary,
     update_resolve_size_estimates,
 )
 
@@ -65,6 +66,8 @@ LAST_PANORAMA_REQUIRED_TILES_KEY = "planetka_last_panorama_required_tiles"
 LAST_PANORAMA_REQUIRED_Z_KEY = "planetka_last_panorama_required_z"
 RESOLVE_FAILURE_FLAG_KEY = "planetka_resolve_integrity_failed"
 RESOLVE_FAILURE_MESSAGE_KEY = "planetka_resolve_integrity_message"
+# Compatibility exports for UI/modules that read the last resolve summary keys
+# from this module.
 LAST_MANUAL_RESOLVE_TILE_COUNT_KEY = "planetka_last_manual_resolve_tile_count"
 LAST_MANUAL_RESOLVE_DOWNLOADED_MB_KEY = "planetka_last_manual_resolve_downloaded_mb"
 LAST_MANUAL_RESOLVE_DOWNLOADED_GB_KEY = "planetka_last_manual_resolve_downloaded_gb"
@@ -1417,18 +1420,13 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             )
         except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
             summary_total_bytes = int(max(0, int(downloaded_bytes)))
-        try:
-            scene[LAST_MANUAL_RESOLVE_TILE_COUNT_KEY] = int(max(0, int(len(tiles))))
-            scene[LAST_MANUAL_RESOLVE_DOWNLOADED_MB_KEY] = float(
-                max(0.0, float(summary_total_bytes) / float(1024.0 ** 2))
-            )
-            # Keep legacy key updated for backward compatibility with older UI builds.
-            scene[LAST_MANUAL_RESOLVE_DOWNLOADED_GB_KEY] = float(
-                max(0.0, float(summary_total_bytes) / float(1024.0 ** 3))
-            )
-            scene[LAST_MANUAL_RESOLVE_TOTAL_SECONDS_KEY] = float(max(0.0, float(resolve_total_ms) / 1000.0))
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka: failed storing manual resolve summary stats", exc_info=True)
+        _store_resolve_summary(
+            scene,
+            int(max(0, int(len(tiles)))),
+            int(max(0, int(summary_total_bytes))),
+            float(max(0.0, float(resolve_total_ms) / 1000.0)),
+            log_label="Planetka: failed storing manual resolve summary stats",
+        )
 
     def execute(self, context):
         resolve_start = time.perf_counter()

@@ -3126,7 +3126,14 @@ def _read_scene_last_resolve_error(scene):
         return ""
 
 
-def _write_last_resolve_summary(scene, tile_count, summary_total_bytes, total_seconds):
+def _store_resolve_summary(
+    scene,
+    tile_count,
+    summary_total_bytes,
+    total_seconds,
+    *,
+    log_label="Planetka: failed storing resolve summary",
+):
     if scene is None:
         return
     try:
@@ -3140,9 +3147,19 @@ def _write_last_resolve_summary(scene, tile_count, summary_total_bytes, total_se
         )
         scene[LAST_RESOLVE_TOTAL_SECONDS_KEY] = float(max(0.0, float(total_seconds)))
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed storing queued/auto resolve summary", exc_info=True)
+        logger.debug(str(log_label or "Planetka: failed storing resolve summary"), exc_info=True)
     except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed storing queued/auto resolve summary", exc_info=True)
+        logger.debug(str(log_label or "Planetka: failed storing resolve summary"), exc_info=True)
+
+
+def _write_last_resolve_summary(scene, tile_count, summary_total_bytes, total_seconds):
+    _store_resolve_summary(
+        scene,
+        tile_count,
+        summary_total_bytes,
+        total_seconds,
+        log_label="Planetka: failed storing queued/auto resolve summary",
+    )
 
 
 def _is_non_retryable_resolve_error(message):
