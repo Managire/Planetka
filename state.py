@@ -47,6 +47,16 @@ from .planetka_runtime import scene_sync as _scene_sync
 from .planetka_runtime import view_telemetry as _view_telemetry
 from .planetka_runtime import auto_resolve_pipeline as _auto_resolve_pipeline
 from .planetka_runtime import auto_resolve_state as _auto_resolve_state
+from .planetka_runtime.auto_resolve_context import (
+    AutoResolveDecisionContext,
+    AutoResolveDecisionDeps,
+    AutoResolveDownloadContext,
+    AutoResolveDownloadDeps,
+    AutoResolveNonCriticalContext,
+    AutoResolveNonCriticalDeps,
+    AutoResolveSettings,
+    AutoResolveSharedState,
+)
 from .planetka_runtime import handler_runtime as _handler_runtime
 
 
@@ -1170,3 +1180,132 @@ def _planetka_frame_change_post(scene, _depsgraph=None):
 def _planetka_load_post(_dummy):
     _handler_runtime.configure(globals())
     return _handler_runtime._planetka_load_post(_dummy)
+
+
+def _build_auto_resolve_contexts():
+    settings = AutoResolveSettings(
+        retry_delay_sec=AUTO_RESOLVE_RETRY_DELAY_SEC,
+        min_interval_sec_default=AUTO_RESOLVE_MIN_INTERVAL_SEC_DEFAULT,
+        idle_sec_default=AUTO_RESOLVE_IDLE_SEC_DEFAULT,
+        download_pump_interval_sec=_AUTO_RESOLVE_DOWNLOAD_PUMP_INTERVAL_SEC,
+        download_scene_wait_sec=_AUTO_RESOLVE_DOWNLOAD_SCENE_WAIT_SEC,
+        download_completed_max_age_sec=_AUTO_RESOLVE_DOWNLOAD_COMPLETED_MAX_AGE_SEC,
+        noncritical_interval_sec=_AUTO_RESOLVE_NONCRITICAL_INTERVAL_SEC,
+    )
+    shared_state = AutoResolveSharedState(
+        in_flight=_AUTO_RESOLVE_IN_FLIGHT,
+        timer_running=_AUTO_RESOLVE_TIMER_RUNNING,
+        download_timer_running=_AUTO_RESOLVE_DOWNLOAD_TIMER_RUNNING,
+        download_thread=_AUTO_RESOLVE_DOWNLOAD_THREAD,
+        download_active_job=_AUTO_RESOLVE_DOWNLOAD_ACTIVE_JOB,
+        download_pending_job=_AUTO_RESOLVE_DOWNLOAD_PENDING_JOB,
+        download_completed=_AUTO_RESOLVE_DOWNLOAD_COMPLETED,
+        download_request_counter=_AUTO_RESOLVE_DOWNLOAD_REQUEST_COUNTER,
+        download_epoch=_AUTO_RESOLVE_DOWNLOAD_EPOCH,
+        download_lock=_AUTO_RESOLVE_DOWNLOAD_LOCK,
+        next_due_time=_AUTO_RESOLVE_NEXT_DUE_TIME,
+        last_camera_signature=_AUTO_RESOLVE_LAST_CAMERA_SIGNATURE,
+        last_output_signature=_AUTO_RESOLVE_LAST_OUTPUT_SIGNATURE,
+        last_change_time=_AUTO_RESOLVE_LAST_CHANGE_TIME,
+        last_resolve_time=_AUTO_RESOLVE_LAST_RESOLVE_TIME,
+        last_processed_signature=_AUTO_RESOLVE_LAST_PROCESSED_SIGNATURE,
+        pending_output_change=_AUTO_RESOLVE_PENDING_OUTPUT_CHANGE,
+        trigger_last_signature=_AUTO_RESOLVE_TRIGGER_LAST_SIGNATURE,
+        noncritical_timer_running=_AUTO_RESOLVE_NONCRITICAL_TIMER_RUNNING,
+        noncritical_pending=_AUTO_RESOLVE_NONCRITICAL_PENDING,
+        size_estimate_last_signature=_AUTO_RESOLVE_SIZE_ESTIMATE_LAST_SIGNATURE,
+    )
+    download_deps = AutoResolveDownloadDeps(
+        bpy=bpy,
+        logger=logger,
+        recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
+        resolve_trace=_resolve_trace,
+        get_prefs=get_prefs,
+        clear_status_notices=_clear_status_notices,
+        scene_key=_scene_key,
+        scene_from_key=_scene_from_key,
+        read_scene_auto_resolve_state=_read_scene_auto_resolve_state,
+        write_scene_auto_resolve_state=_write_scene_auto_resolve_state,
+        build_auto_resolve_download_job=_build_auto_resolve_download_job,
+        is_auto_resolve_download_job=_is_auto_resolve_download_job,
+        job_field=_job_field,
+        job_set_field=_job_set_field,
+        normalize_texture_quality_mode=_normalize_texture_quality_mode,
+        enforce_texture_quality_mode_for_account=_enforce_texture_quality_mode_for_account,
+        camera_signature=_camera_signature,
+        output_resolution_signature=_output_resolution_signature,
+        canonical_tiles=_canonical_tiles,
+        is_render_job_active=_is_render_job_active,
+        is_animation_playing=_is_animation_playing,
+        mark_manual_queued_resolve_error=_mark_manual_queued_resolve_error,
+        read_scene_last_resolve_error=_read_scene_last_resolve_error,
+        last_resolved_tiles=_last_resolved_tiles,
+        request_auto_resolve=request_auto_resolve,
+    )
+    decision_deps = AutoResolveDecisionDeps(
+        bpy=bpy,
+        logger=logger,
+        recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
+        resolve_trace=_resolve_trace,
+        iter_scenes=_iter_scenes,
+        scene_key=_scene_key,
+        read_scene_auto_resolve_state=_read_scene_auto_resolve_state,
+        write_scene_auto_resolve_state=_write_scene_auto_resolve_state,
+        make_depsgraph_trigger_signature=_make_depsgraph_trigger_signature,
+        depsgraph_trigger_output_signature=_depsgraph_trigger_output_signature,
+        camera_signature=_camera_signature,
+        output_resolution_signature=_output_resolution_signature,
+        current_view_scope=_current_view_scope,
+        auto_resolve_scope_mode=_auto_resolve_scope_mode,
+        active_view_signature=_active_view_signature,
+        last_resolved_tiles=_last_resolved_tiles,
+        get_earth_object=get_earth_object,
+        is_render_job_active=_is_render_job_active,
+        is_navigation_user_edit_active=_is_navigation_user_edit_active,
+        schedule_auto_resolve_download=_schedule_auto_resolve_download,
+        arm_auto_resolve_timer=_arm_auto_resolve_timer,
+        enqueue_size_estimation=_auto_resolve_enqueue_size_estimation,
+        update_realtime_telemetry=_update_realtime_telemetry,
+        handle_viewport_motion_optimization=_handle_viewport_motion_optimization,
+        handle_timeline_motion_optimization=_handle_timeline_motion_optimization,
+        handle_sunlight_motion_optimization=_handle_sunlight_motion_optimization,
+        handle_view_scope_quality_transition=_handle_view_scope_quality_transition,
+        keyed_runtime_signature=_keyed_runtime_signature,
+        timeline_signature=_timeline_signature,
+        sunlight_signature=_sunlight_signature,
+    )
+    noncritical_deps = AutoResolveNonCriticalDeps(
+        bpy=bpy,
+        logger=logger,
+        recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
+        scene_key=_scene_key,
+        update_resolve_size_estimates=update_resolve_size_estimates,
+    )
+    return (
+        settings,
+        shared_state,
+        AutoResolveDownloadContext(
+            deps=download_deps,
+            state=shared_state,
+            settings=settings,
+        ),
+        AutoResolveDecisionContext(
+            deps=decision_deps,
+            state=shared_state,
+            settings=settings,
+        ),
+        AutoResolveNonCriticalContext(
+            deps=noncritical_deps,
+            state=shared_state,
+            settings=settings,
+        ),
+    )
+
+
+(
+    _AUTO_RESOLVE_SETTINGS,
+    _AUTO_RESOLVE_SHARED_STATE,
+    _AUTO_RESOLVE_DOWNLOAD_CTX,
+    _AUTO_RESOLVE_DECISION_CTX,
+    _AUTO_RESOLVE_NONCRITICAL_CTX,
+) = _build_auto_resolve_contexts()
