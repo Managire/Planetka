@@ -1,11 +1,33 @@
 export function createAuthSessionRouteHandlers(deps) {
   async function handleAuthRefresh(request, env) {
     const db = deps.requireDb(env);
+    await deps.ensureRateLimitsTable(db);
     const refreshEventBase = {
       client_ip: deps.requestClientIp(request),
       cf_country: deps.requestCountry(request),
       cf_ray: String(request.headers.get("CF-Ray") || "").trim(),
     };
+    const refreshIpRate = await deps.consumeRateLimitWindow(
+      db,
+      "auth_refresh_ip",
+      refreshEventBase.client_ip,
+      deps.parseRateLimitInteger(
+        env.RATE_LIMIT_AUTH_REFRESH_IP_LIMIT,
+        deps.DEFAULT_RATE_LIMIT_AUTH_REFRESH_IP_LIMIT,
+      ),
+      deps.parseRateLimitInteger(
+        env.RATE_LIMIT_AUTH_REFRESH_IP_WINDOW_SECONDS,
+        deps.DEFAULT_RATE_LIMIT_AUTH_REFRESH_IP_WINDOW_SECONDS,
+      ),
+    );
+    if (!refreshIpRate.allowed) {
+      return deps.rateLimitedResponse(
+        env,
+        "auth_refresh_ip_rate_limited",
+        "Too many refresh requests. Please try again shortly.",
+        refreshIpRate.retryAfterSeconds,
+      );
+    }
     const recordRefreshEvent = async ({
       outcome = "error",
       errorCode = "",

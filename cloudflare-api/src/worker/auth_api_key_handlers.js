@@ -282,10 +282,32 @@ export function createAuthApiKeyHandlers(deps) {
 
   async function handleApiKeyExchange(request, env) {
     const db = deps.requireDb(env);
+    await deps.ensureRateLimitsTable(db);
     const body = await deps.parseJson(request);
     const apiKey = String(body.api_key || "").trim();
     const deviceId = deps.normalizeDeviceId(body.device_id || "");
     const clientIp = deps.requestClientIp(request);
+    const exchangeIpRate = await deps.consumeRateLimitWindow(
+      db,
+      "api_key_exchange_ip",
+      clientIp,
+      deps.parseRateLimitInteger(
+        env.RATE_LIMIT_AUTH_EXCHANGE_IP_LIMIT,
+        deps.DEFAULT_RATE_LIMIT_AUTH_EXCHANGE_IP_LIMIT,
+      ),
+      deps.parseRateLimitInteger(
+        env.RATE_LIMIT_AUTH_EXCHANGE_IP_WINDOW_SECONDS,
+        deps.DEFAULT_RATE_LIMIT_AUTH_EXCHANGE_IP_WINDOW_SECONDS,
+      ),
+    );
+    if (!exchangeIpRate.allowed) {
+      return deps.rateLimitedResponse(
+        env,
+        "api_key_exchange_ip_rate_limited",
+        "Too many sign-in attempts. Please try again shortly.",
+        exchangeIpRate.retryAfterSeconds,
+      );
+    }
     if (!deps.isValidApiKey(apiKey)) {
       return deps.json({ ok: false, error: "invalid_api_key" }, 400, env);
     }

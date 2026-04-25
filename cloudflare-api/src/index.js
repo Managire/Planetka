@@ -133,6 +133,10 @@ const DEFAULT_RATE_LIMIT_AUTH_START_IP_LIMIT = 20;
 const DEFAULT_RATE_LIMIT_AUTH_START_IP_WINDOW_SECONDS = 60;
 const DEFAULT_RATE_LIMIT_AUTH_START_EMAIL_LIMIT = 6;
 const DEFAULT_RATE_LIMIT_AUTH_START_EMAIL_WINDOW_SECONDS = 900;
+const DEFAULT_RATE_LIMIT_AUTH_EXCHANGE_IP_LIMIT = 30;
+const DEFAULT_RATE_LIMIT_AUTH_EXCHANGE_IP_WINDOW_SECONDS = 60;
+const DEFAULT_RATE_LIMIT_AUTH_REFRESH_IP_LIMIT = 60;
+const DEFAULT_RATE_LIMIT_AUTH_REFRESH_IP_WINDOW_SECONDS = 60;
 const DEFAULT_RATE_LIMIT_ADMIN_LOGIN_IP_LIMIT = 20;
 const DEFAULT_RATE_LIMIT_ADMIN_LOGIN_IP_WINDOW_SECONDS = 300;
 const DEFAULT_REFRESH_SESSION_CLEANUP_RETENTION_DAYS = 30;
@@ -2611,6 +2615,8 @@ function getAuthCore() {
 const AUTH_API_KEY_DEPS = {
   DEFAULT_API_KEY_REQUEST_MIN_AGE_SECONDS,
   DEFAULT_LEGAL_VERSION,
+  DEFAULT_RATE_LIMIT_AUTH_EXCHANGE_IP_LIMIT,
+  DEFAULT_RATE_LIMIT_AUTH_EXCHANGE_IP_WINDOW_SECONDS,
   DEFAULT_RATE_LIMIT_AUTH_START_EMAIL_LIMIT,
   DEFAULT_RATE_LIMIT_AUTH_START_EMAIL_WINDOW_SECONDS,
   DEFAULT_RATE_LIMIT_AUTH_START_IP_LIMIT,
@@ -2671,6 +2677,8 @@ function getAuthApiKeyHandlers() {
 }
 
 const AUTH_SESSION_ROUTE_DEPS = {
+  DEFAULT_RATE_LIMIT_AUTH_REFRESH_IP_LIMIT,
+  DEFAULT_RATE_LIMIT_AUTH_REFRESH_IP_WINDOW_SECONDS,
   PLAN_CODE_PLANETKA,
   blockedAccountResponse,
   buildAccountState,
@@ -2681,6 +2689,7 @@ const AUTH_SESSION_ROUTE_DEPS = {
   dbRun,
   enforceUserPlanPolicy,
   ensureApiKeyTables,
+  ensureRateLimitsTable,
   ensureRefreshSessionColumns,
   isApiKeyUsableById,
   isBlockedStatus,
@@ -2690,6 +2699,8 @@ const AUTH_SESSION_ROUTE_DEPS = {
   normalizeEmail,
   nowIso,
   parseJson,
+  parseRateLimitInteger,
+  rateLimitedResponse,
   readBearerUser: (request, env) => readBearerUser(request, env, AUTH_SESSION_DEPS),
   requestClientIp,
   requestCountry,
@@ -2699,6 +2710,7 @@ const AUTH_SESSION_ROUTE_DEPS = {
   resolvePolicyPlanCode,
   serializeAccountState,
   sha256Hex,
+  consumeRateLimitWindow,
 };
 
 function getAuthSessionRouteHandlers() {
