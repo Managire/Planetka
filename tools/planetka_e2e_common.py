@@ -257,7 +257,8 @@ def purge_planetka_data():
                 pass
 
     for coll in list(bpy.data.collections):
-        if not str(getattr(coll, "name", "")).startswith("Planetka"):
+        coll_name = str(getattr(coll, "name", "") or "")
+        if not (coll_name.startswith("Planetka") or coll_name == "Collection Planetka"):
             continue
         for scene in bpy.data.scenes:
             try:
@@ -277,12 +278,41 @@ def purge_planetka_data():
             except TOOL_RECOVERABLE_EXCEPTIONS:
                 pass
 
+    for mesh in list(bpy.data.meshes):
+        if str(getattr(mesh, "name", "")).startswith("Planetka"):
+            try:
+                bpy.data.meshes.remove(mesh, do_unlink=True)
+            except TOOL_RECOVERABLE_EXCEPTIONS:
+                pass
+
     for node_group in list(bpy.data.node_groups):
         if str(getattr(node_group, "name", "")).startswith("Planetka"):
             try:
                 bpy.data.node_groups.remove(node_group)
             except TOOL_RECOVERABLE_EXCEPTIONS:
                 pass
+
+    for image in list(bpy.data.images):
+        try:
+            name = str(getattr(image, "name", "") or "")
+            filepath = str(getattr(image, "filepath_raw", "") or getattr(image, "filepath", "") or "").lower()
+        except TOOL_RECOVERABLE_EXCEPTIONS:
+            continue
+        looks_planetka = (
+            name.startswith(("Planetka", "S2_", "EL_", "WT_", "PO_"))
+            or "planetka" in name.lower()
+            or "/s2/" in filepath
+            or "/el/" in filepath
+            or "/wt/" in filepath
+            or "/po/" in filepath
+            or "fallback images" in filepath
+        )
+        if not looks_planetka:
+            continue
+        try:
+            bpy.data.images.remove(image, do_unlink=True)
+        except TOOL_RECOVERABLE_EXCEPTIONS:
+            pass
 
 
 def ensure_standard_world(scene, name="Planetka E2E World"):
@@ -411,12 +441,24 @@ def get_runtime_status(state_module, scene):
         return {}
 
 
+def read_scene_last_resolve_error(scene):
+    if scene is None:
+        return ""
+    try:
+        return str(scene.get("planetka_last_resolve_error", "") or "").strip()
+    except TOOL_RECOVERABLE_EXCEPTIONS:
+        return ""
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return ""
+
+
 def drain_queued_resolve(state_module, scene, timeout_sec=60.0, sleep_sec=0.05):
     runtime_fn = getattr(state_module, "get_resolve_runtime_status", None)
     pump_fn = getattr(state_module, "_auto_resolve_download_pump_timer", None)
     stop_fn = getattr(state_module, "stop_auto_resolve_download_pipeline", None)
     started = time.monotonic()
     last_status = {}
+    baseline_error = read_scene_last_resolve_error(scene)
     while True:
         if callable(pump_fn):
             try:
@@ -431,6 +473,14 @@ def drain_queued_resolve(state_module, scene, timeout_sec=60.0, sleep_sec=0.05):
         running = bool(last_status.get("running", False))
         pending_count = int(last_status.get("pending_count", 0) or 0)
         code = str(last_status.get("code", "") or "")
+        scene_error = read_scene_last_resolve_error(scene)
+        if scene_error and scene_error != baseline_error:
+            if callable(stop_fn):
+                try:
+                    stop_fn()
+                except TOOL_RECOVERABLE_EXCEPTIONS:
+                    pass
+            raise E2EError(f"Queued resolve failed: {scene_error}")
         if not running and pending_count <= 0 and code in {"", "IDLE", "MONITORING"}:
             return last_status
         if (time.monotonic() - started) > float(timeout_sec):

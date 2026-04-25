@@ -94,6 +94,12 @@ TAG = "[Planetka Overnight E2E]"
 DEFAULT_SEED = 20260425
 FINAL_RENDER_TIMEOUT_SEC = 1800.0
 SHORT_WAIT_SEC = 0.25
+BLENDER_BIN_CANDIDATES = (
+    os.environ.get("PLANETKA_RELEASE_GATE_BLENDER_BIN"),
+    os.environ.get("BLENDER_BIN"),
+    "/Applications/Blender5.0.app/Contents/MacOS/Blender",
+    "/Applications/Blender.app/Contents/MacOS/Blender",
+)
 
 
 def _wrap_tile_x(x):
@@ -405,10 +411,12 @@ class OvernightRunner:
         self.quick_preview_cases = self._select_cases(QUICK_PREVIEW_CASES, smoke_count=2)
         self.final_animation_cases = self._select_cases(FINAL_ANIMATION_CASES, smoke_count=1)
         self.pending_final_cases = [dict(case) for case in self.final_animation_cases]
+        self.final_phase_rebased = False
         self.active_final_case_deadline = 0.0
         self.active_final_case_started_at = 0.0
         self.active_final_case_seen_running = False
         self.active_final_case_last_frame_count = 0
+        self.active_final_case_runtime_quiesced = False
         self.phase_methods = [
             self._setup_environment,
             self._run_preflight,
@@ -501,6 +509,12 @@ class OvernightRunner:
         except Exception:
             pass
         self._call_operator("sunlight_preset", preset=str(sunlight_preset or "NOON"))
+        for _ in range(3):
+            try:
+                bpy.context.view_layer.update()
+            except Exception:
+                pass
+            time.sleep(0.05)
         return selected or str(query or "").strip()
 
     def _prepare_animation_case(self, case):
@@ -889,6 +903,7 @@ class OvernightRunner:
         }
 
     def _run_still_case(self, case):
+        self._restore_visual_phase_defaults()
         engine_info = self._configure_engine(case.get("engine", "EEVEE"))
         query = str(case.get("query", "") or "").strip()
         if query:
@@ -952,6 +967,7 @@ class OvernightRunner:
             raise E2EError(f"Visual validation failed for still case {case['id']}")
 
     def _run_quick_preview_case(self, case):
+        self._restore_visual_phase_defaults()
         engine_info = self._configure_engine(case.get("engine", "EEVEE"))
         selected = self._prepare_animation_case(case)
         self.props.anim_prepare_max_segments = 12
@@ -985,11 +1001,150 @@ class OvernightRunner:
         if analysis.get("has_mostly_black") or analysis.get("has_pink_corrupt"):
             raise E2EError(f"Visual validation failed for quick preview case {case['id']}")
 
+    def _quiesce_runtime_for_final_animation(self):
+        stop_service = getattr(self.state, "stop_auto_resolve_service", None)
+        if callable(stop_service):
+            stop_service()
+        stop_pipeline = getattr(self.state, "stop_auto_resolve_download_pipeline", None)
+        if callable(stop_pipeline):
+            stop_pipeline()
+        flush_navigation = getattr(self.state, "_navigation_shot_update_timer", None)
+        if callable(flush_navigation):
+            try:
+                flush_navigation()
+            except Exception:
+                pass
+        force_restore_navigation = getattr(self.state, "_force_restore_navigation_adaptive_state", None)
+        if callable(force_restore_navigation):
+            try:
+                force_restore_navigation()
+            except Exception:
+                pass
+        suspend_navigation_updates = getattr(self.state, "suspend_navigation_shot_updates", None)
+        if callable(suspend_navigation_updates):
+            suspend_navigation_updates()
+        suspend_camera_sync = getattr(self.state, "suspend_navigation_camera_control_sync", None)
+        if callable(suspend_camera_sync):
+            suspend_camera_sync()
+        self.active_final_case_runtime_quiesced = True
+        for _ in range(2):
+            try:
+                bpy.context.view_layer.update()
+            except Exception:
+                pass
+            time.sleep(0.05)
+
+    def _release_runtime_after_final_animation(self):
+        if not bool(self.active_final_case_runtime_quiesced):
+            return
+        resume_camera_sync = getattr(self.state, "resume_navigation_camera_control_sync", None)
+        if callable(resume_camera_sync):
+            try:
+                resume_camera_sync()
+            except Exception:
+                pass
+        resume_navigation_updates = getattr(self.state, "resume_navigation_shot_updates", None)
+        if callable(resume_navigation_updates):
+            try:
+                resume_navigation_updates()
+            except Exception:
+                pass
+        self.active_final_case_runtime_quiesced = False
+
+    def _resolve_blender_bin(self):
+        for candidate in BLENDER_BIN_CANDIDATES:
+            path = str(candidate or "").strip()
+            if path and os.path.isfile(path) and os.access(path, os.X_OK):
+                return path
+        raise E2EError("Blender binary not found for isolated final animation subprocess.")
+
+    def _write_subprocess_auth_payload(self):
+        access_token = str(self.auth.get_access_token(self.prefs, allow_refresh=True) or "").strip()
+        refresh_token = str(getattr(self.prefs, "auth_refresh_token", "") or "").strip()
+        if not access_token or not refresh_token:
+            raise E2EError("Current Planetka auth session is incomplete for final animation subprocess.")
+        payload = {
+            "email": str(self.auth.get_connected_email(self.prefs) or getattr(self.prefs, "auth_email", "") or "").strip(),
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "api_key_mask": str(getattr(self.prefs, "auth_api_key_mask", "") or "").strip(),
+            "plan_code": str(self.auth.get_plan_code(self.prefs) or getattr(self.prefs, "auth_plan_code", "") or "").strip(),
+            "plan_name": str(getattr(self.prefs, "auth_plan_name", "") or "").strip(),
+            "account_tier": str(self.auth.get_account_tier(self.prefs) or getattr(self.prefs, "auth_account_tier", "") or "").strip(),
+            "commercial_use_allowed": bool(self.auth.get_commercial_use_allowed(self.prefs)),
+            "contact_url": str(getattr(self.prefs, "auth_contact_url", "") or "").strip(),
+            "upgrade_url": str(getattr(self.prefs, "auth_upgrade_url", "") or "").strip(),
+        }
+        target = self.session_dir / "final_animation_auth_payload.json"
+        write_json(target, payload)
+        return target
+
+    def _run_final_animation_subprocess_case(self, case):
+        blender_bin = self._resolve_blender_bin()
+        auth_payload_path = self._write_subprocess_auth_payload()
+        case_id = str(case.get("id", "final_animation_case") or "final_animation_case")
+        output_dir = self.session_dir / case_id
+        output_dir.mkdir(parents=True, exist_ok=True)
+        report_path = self.session_dir / f"{case_id}_report.json"
+        env = dict(os.environ)
+        env["PLANETKA_AUTH_PAYLOAD"] = str(auth_payload_path)
+        device_id = str(getattr(self.prefs, "auth_device_id", "") or "").strip()
+        if device_id:
+            env["PLANETKA_AUTH_DEVICE_ID"] = device_id
+        env["PLANETKA_E2E_FINAL_CASE_JSON"] = json.dumps(case, separators=(",", ":"))
+        env["PLANETKA_E2E_FINAL_OUTPUT_DIR"] = str(output_dir)
+        env["PLANETKA_E2E_FINAL_REPORT_PATH"] = str(report_path)
+        env["PLANETKA_E2E_FINAL_TIMEOUT_SEC"] = str(int(FINAL_RENDER_TIMEOUT_SEC))
+        cmd = [
+            blender_bin,
+            "--factory-startup",
+            "--python",
+            str(Path(_TOOLS_DIR) / "planetka_e2e_final_animation_ui.py"),
+        ]
+        proc = subprocess.run(
+            cmd,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=float(FINAL_RENDER_TIMEOUT_SEC + 300.0),
+        )
+        if not report_path.is_file():
+            raise E2EError(
+                f"Final animation subprocess produced no report for {case_id} (returncode={proc.returncode}). "
+                f"stdout_tail={(proc.stdout or '')[-1000:]} stderr_tail={(proc.stderr or '')[-1000:]}"
+            )
+        with open(report_path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        entry = {
+            "id": case_id,
+            "preset": case.get("preset"),
+            "engine": payload.get("engine"),
+            "selected_place": payload.get("selected_place", ""),
+            "render": payload.get("render", {}),
+            "output_dir": str(output_dir),
+            "invoke_result": payload.get("invoke_result", []),
+            "subprocess_report": str(report_path),
+            "subprocess_returncode": int(proc.returncode),
+            "subprocess_stdout_tail": (proc.stdout or "")[-4000:],
+            "subprocess_stderr_tail": (proc.stderr or "")[-4000:],
+        }
+        self.report["final_animation_cases"].append(entry)
+        if proc.returncode != 0 or str(payload.get("status", "")) != "ok":
+            raise E2EError(
+                f"Final animation subprocess failed for {case_id}: "
+                f"status={payload.get('status')} returncode={proc.returncode} error={payload.get('error', '')}"
+            )
+        analysis = entry.get("render", {}) or {}
+        if analysis.get("has_mostly_black") or analysis.get("has_pink_corrupt"):
+            raise E2EError(f"Visual validation failed for final animation case {case_id}")
+
     def _start_final_animation_case(self, case):
+        self._restore_visual_phase_defaults()
         engine_info = self._configure_engine(case.get("engine", "EEVEE"))
         selected = self._prepare_animation_case(case)
         self.props.anim_render_preset = str(case.get("render_preset", "SPEED"))
         self.props.anim_render_persistent_data = bool(case.get("render_persistent_data", True))
+        self._quiesce_runtime_for_final_animation()
         output_dir = self.session_dir / case["id"]
         output_dir.mkdir(parents=True, exist_ok=True)
         configure_png_output(
@@ -999,8 +1154,13 @@ class OvernightRunner:
             resolution_y=540,
             resolution_percentage=100,
         )
-        result = bpy.ops.planetka.animation_render_headless('INVOKE_DEFAULT')
+        try:
+            result = bpy.ops.planetka.animation_render_headless('INVOKE_DEFAULT')
+        except Exception:
+            self._release_runtime_after_final_animation()
+            raise
         if "RUNNING_MODAL" not in result and "FINISHED" not in result:
+            self._release_runtime_after_final_animation()
             raise E2EError(f"Final Animation Render did not start for {case['id']}: {result}")
         self.active_final_case = {
             "case": case,
@@ -1036,6 +1196,7 @@ class OvernightRunner:
         if not self.active_final_case_seen_running and now < (self.active_final_case_started_at + 15.0):
             return 0.25
         if frame_count >= expected_frames > 0:
+            self._release_runtime_after_final_animation()
             analysis = analyze_png_directory(output_dir, max_samples=min(6, expected_frames))
             entry = {
                 "id": case_info["case"]["id"],
@@ -1052,6 +1213,7 @@ class OvernightRunner:
                 raise E2EError(f"Visual validation failed for final animation case {entry['id']}")
             return SHORT_WAIT_SEC
         if now > self.active_final_case_deadline:
+            self._release_runtime_after_final_animation()
             raise E2EError(
                 f"Final Animation Render timed out for {case_info['case']['id']} ({frame_count}/{expected_frames} frames)."
             )
@@ -1082,6 +1244,7 @@ class OvernightRunner:
         return SHORT_WAIT_SEC
 
     def _run_preflight(self):
+        purge_planetka_data()
         if hasattr(bpy.ops.planetka, "remove_default_scene") and bpy.ops.planetka.remove_default_scene.poll():
             self._call_operator("remove_default_scene")
         else:
@@ -1135,6 +1298,20 @@ class OvernightRunner:
         self.props.resolution_bias = 0.0
         return SHORT_WAIT_SEC
 
+    def _restore_visual_phase_defaults(self):
+        self.props.texture_quality_mode = "PREVIEW"
+        self.props.anim_camera_preset = "NONE"
+        self.props.anim_motion_curve = "EASE_IN_OUT"
+        self.props.anim_circle_direction = "CLOCKWISE"
+        self.props.anim_render_preset = "SPEED"
+        self.props.auto_resolve = True
+        self.props.show_earth_preview = False
+        self.props.debug_logging = False
+        self.props.earth_radius_bu = 2.0
+        self.props.resolution_bias = 0.0
+        self.props.sunlight_strength = 10.0
+        self.props.sunlight_seasonal_tilt_deg = 0.0
+
     def _run_functional_ops(self):
         # saved locations
         self._search_and_frame("Bratislava", country_hint="SK", nav={"nav_altitude_km": 120.0, "nav_azimuth_deg": 18.0, "nav_tilt_deg": 42.0, "nav_roll_deg": 0.0}, sunlight_preset="NOON")
@@ -1170,6 +1347,12 @@ class OvernightRunner:
                 self._call_operator("navigation_use_current_view")
         else:
             self.report["notes"].append("navigation_use_current_view skipped: no VIEW_3D context available.")
+        self._search_and_frame(
+            "Bratislava",
+            country_hint="SK",
+            nav={"nav_altitude_km": 120.0, "nav_azimuth_deg": 18.0, "nav_tilt_deg": 42.0, "nav_roll_deg": 0.0},
+            sunlight_preset="NOON",
+        )
 
         self._call_operator("auto_adjust_clipping")
         root = bpy.data.objects.get("Planetka Root")
@@ -1179,6 +1362,13 @@ class OvernightRunner:
         self._call_operator("reset_earth_transform")
         self._run_surface_grading_reset_flow()
         self._run_startup_profile_flow()
+        self._restore_visual_phase_defaults()
+        self._search_and_frame(
+            "Bratislava",
+            country_hint="SK",
+            nav={"nav_altitude_km": 120.0, "nav_azimuth_deg": 18.0, "nav_tilt_deg": 42.0, "nav_roll_deg": 0.0},
+            sunlight_preset="NOON",
+        )
 
         standalone_path = self.session_dir / "planetka_standalone_test.blend"
         self._call_operator("create_standalone_file", filepath=str(standalone_path))
@@ -1186,12 +1376,25 @@ class OvernightRunner:
 
         self._call_operator("rebuild_earth")
         drain_queued_resolve(self.state, self.scene, timeout_sec=120.0)
+        stop_service = getattr(self.state, "stop_auto_resolve_service", None)
+        if callable(stop_service):
+            stop_service()
+        stop_pipeline = getattr(self.state, "stop_auto_resolve_download_pipeline", None)
+        if callable(stop_pipeline):
+            stop_pipeline()
         purge_planetka_data()
         ensure_camera(self.scene, name="Planetka Overnight Camera")
         ensure_standard_world(self.scene)
         self._call_operator("set_background_black")
         self.prefs.texture_base_path = "planetka-remote"
+        self._restore_visual_phase_defaults()
         create_earth_and_wait(self.state, self.scene)
+        stop_service = getattr(self.state, "stop_auto_resolve_service", None)
+        if callable(stop_service):
+            stop_service()
+        stop_pipeline = getattr(self.state, "stop_auto_resolve_download_pipeline", None)
+        if callable(stop_pipeline):
+            stop_pipeline()
         self.report["notes"].append("Post-functional phase baseline reset completed.")
         return SHORT_WAIT_SEC
 
@@ -1219,16 +1422,10 @@ class OvernightRunner:
         return SHORT_WAIT_SEC
 
     def _run_final_animation_cases(self):
-        if self.active_final_case is not None:
-            self.phase_index -= 1
-            return self._poll_final_animation_case()
-        pending = list(self.pending_final_cases or [])
-        if not pending:
-            return SHORT_WAIT_SEC
-        case = dict(pending.pop(0))
-        self.pending_final_cases = pending
-        self.phase_index -= 1
-        return self._start_final_animation_case(case)
+        for case in list(self.final_animation_cases or ()):
+            self._run_final_animation_subprocess_case(dict(case))
+        self.report["notes"].append("Final animation cases ran in fresh Blender UI subprocesses.")
+        return SHORT_WAIT_SEC
 
     def _finalize_success(self):
         self.report["status"] = "ok"
@@ -1253,13 +1450,20 @@ class OvernightRunner:
 
     def tick(self):
         try:
-            if self.active_final_case is not None:
-                return self._poll_final_animation_case()
-            if self.phase_index >= len(self.phase_methods):
-                return None
-            method = self.phase_methods[self.phase_index]
-            self.phase_index += 1
-            return method()
+            while True:
+                if self.active_final_case is not None:
+                    return self._poll_final_animation_case()
+                if self.phase_index >= len(self.phase_methods):
+                    return None
+                method = self.phase_methods[self.phase_index]
+                self.phase_index += 1
+                delay = method()
+                if self.active_final_case is not None:
+                    return delay
+                if delay is None:
+                    return None
+                if method in {self._run_final_animation_cases, self._finalize_success}:
+                    return delay
         except Exception as exc:
             return self._fail(exc)
 
