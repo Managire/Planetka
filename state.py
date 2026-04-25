@@ -14,7 +14,7 @@ import json
 import os
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import bpy
 from bpy.app.handlers import persistent
@@ -249,6 +249,76 @@ class SceneAutoResolveState:
     last_processed_signature: object = None
     pending_output_change: bool = False
     trigger_last_signature: object = None
+
+
+@dataclass
+class AutoResolveDownloadJob:
+    epoch: int
+    request_id: int
+    scene_id: int
+    target_tiles: tuple = ()
+    camera_signature: object = None
+    output_signature: object = None
+    manual_request: bool = False
+    base_path: str = ""
+    texture_quality_mode: str = "PREVIEW"
+    nav_latitude_deg: float = 0.0
+    nav_longitude_deg: float = 0.0
+    nav_altitude_km: float = 0.0
+    cancel_event: object = field(default_factory=threading.Event)
+    created_at: float = field(default_factory=time.monotonic)
+    scene_missing_since: float = 0.0
+    scene_missing_attempts: int = 0
+
+
+def _is_auto_resolve_download_job(job):
+    return isinstance(job, (AutoResolveDownloadJob, dict))
+
+
+def _job_field(job, name, default=None):
+    if isinstance(job, AutoResolveDownloadJob):
+        return getattr(job, name, default)
+    if isinstance(job, dict):
+        return job.get(name, default)
+    return default
+
+
+def _job_set_field(job, name, value):
+    if isinstance(job, AutoResolveDownloadJob):
+        setattr(job, name, value)
+    elif isinstance(job, dict):
+        job[name] = value
+
+
+def _build_auto_resolve_download_job(
+    *,
+    epoch,
+    request_id,
+    scene_id,
+    target_tiles,
+    camera_signature,
+    output_signature,
+    manual_request,
+    base_path,
+    texture_quality_mode,
+    nav_latitude_deg,
+    nav_longitude_deg,
+    nav_altitude_km,
+):
+    return AutoResolveDownloadJob(
+        epoch=int(epoch),
+        request_id=int(request_id),
+        scene_id=int(scene_id),
+        target_tiles=tuple(target_tiles or ()),
+        camera_signature=camera_signature,
+        output_signature=output_signature,
+        manual_request=bool(manual_request),
+        base_path=str(base_path or ""),
+        texture_quality_mode=_normalize_texture_quality_mode(texture_quality_mode),
+        nav_latitude_deg=float(nav_latitude_deg or 0.0),
+        nav_longitude_deg=float(nav_longitude_deg or 0.0),
+        nav_altitude_km=float(nav_altitude_km or 0.0),
+    )
 
 
 def _get_r2_source():
@@ -1687,18 +1757,18 @@ def get_resolve_runtime_status(scene=None):
         scene = getattr(getattr(bpy, "context", None), "scene", None)
 
     with _AUTO_RESOLVE_DOWNLOAD_LOCK:
-        active_job = dict(_AUTO_RESOLVE_DOWNLOAD_ACTIVE_JOB) if isinstance(_AUTO_RESOLVE_DOWNLOAD_ACTIVE_JOB, dict) else None
-        pending_job = dict(_AUTO_RESOLVE_DOWNLOAD_PENDING_JOB) if isinstance(_AUTO_RESOLVE_DOWNLOAD_PENDING_JOB, dict) else None
+        active_job = _AUTO_RESOLVE_DOWNLOAD_ACTIVE_JOB if _is_auto_resolve_download_job(_AUTO_RESOLVE_DOWNLOAD_ACTIVE_JOB) else None
+        pending_job = _AUTO_RESOLVE_DOWNLOAD_PENDING_JOB if _is_auto_resolve_download_job(_AUTO_RESOLVE_DOWNLOAD_PENDING_JOB) else None
         completed_payload = dict(_AUTO_RESOLVE_DOWNLOAD_COMPLETED) if isinstance(_AUTO_RESOLVE_DOWNLOAD_COMPLETED, dict) else None
 
     thread_running = _AUTO_RESOLVE_DOWNLOAD_THREAD is not None
     in_flight = bool(_AUTO_RESOLVE_IN_FLIGHT)
     pending_count = int((1 if active_job else 0) + (1 if pending_job else 0))
     active_request_id = None
-    if isinstance(active_job, dict):
-        active_request_id = active_job.get("request_id")
-    elif isinstance(pending_job, dict):
-        active_request_id = pending_job.get("request_id")
+    if _is_auto_resolve_download_job(active_job):
+        active_request_id = _job_field(active_job, "request_id")
+    elif _is_auto_resolve_download_job(pending_job):
+        active_request_id = _job_field(pending_job, "request_id")
 
     status = {
         "code": "IDLE",
@@ -1717,7 +1787,7 @@ def get_resolve_runtime_status(scene=None):
         })
         return status
 
-    if thread_running and isinstance(active_job, dict):
+    if thread_running and _is_auto_resolve_download_job(active_job):
         preparing = False
         try:
             r2_source = _get_r2_source()
@@ -1965,9 +2035,9 @@ def _is_resolve_pipeline_busy():
     if _AUTO_RESOLVE_DOWNLOAD_THREAD is not None:
         return True
     with _AUTO_RESOLVE_DOWNLOAD_LOCK:
-        if isinstance(_AUTO_RESOLVE_DOWNLOAD_ACTIVE_JOB, dict):
+        if _is_auto_resolve_download_job(_AUTO_RESOLVE_DOWNLOAD_ACTIVE_JOB):
             return True
-        if isinstance(_AUTO_RESOLVE_DOWNLOAD_PENDING_JOB, dict):
+        if _is_auto_resolve_download_job(_AUTO_RESOLVE_DOWNLOAD_PENDING_JOB):
             return True
         if isinstance(_AUTO_RESOLVE_DOWNLOAD_COMPLETED, dict):
             return True
@@ -2845,14 +2915,14 @@ def _arm_auto_resolve_timer(force_immediate=False):
 
 
 def _auto_resolve_download_job_signature(job):
-    if not isinstance(job, dict):
+    if not _is_auto_resolve_download_job(job):
         return None
     return (
-        int(job.get("scene_id", 0) or 0),
-        tuple(job.get("target_tiles", ())),
-        job.get("camera_signature"),
-        job.get("output_signature"),
-        _normalize_texture_quality_mode(job.get("texture_quality_mode", "PREVIEW")),
+        int(_job_field(job, "scene_id", 0) or 0),
+        tuple(_job_field(job, "target_tiles", ()) or ()),
+        _job_field(job, "camera_signature"),
+        _job_field(job, "output_signature"),
+        _normalize_texture_quality_mode(_job_field(job, "texture_quality_mode", "PREVIEW")),
     )
 
 
@@ -2883,7 +2953,7 @@ def _arm_auto_resolve_download_timer():
 
 def _start_auto_resolve_download_thread(job):
     global _AUTO_RESOLVE_DOWNLOAD_THREAD
-    if not isinstance(job, dict):
+    if not _is_auto_resolve_download_job(job):
         return
     worker = threading.Thread(
         target=_auto_resolve_download_worker,
@@ -2952,32 +3022,30 @@ def _schedule_auto_resolve_download(
         epoch = int(_AUTO_RESOLVE_DOWNLOAD_EPOCH)
         _AUTO_RESOLVE_DOWNLOAD_REQUEST_COUNTER += 1
         request_id = int(_AUTO_RESOLVE_DOWNLOAD_REQUEST_COUNTER)
-        new_job = {
-            "epoch": epoch,
-            "request_id": request_id,
-            "scene_id": int(scene_id),
-            "target_tiles": target_tiles_tuple,
-            "camera_signature": camera_signature,
-            "output_signature": output_signature,
-            "manual_request": bool(manual_request),
-            "base_path": base_path,
-            "texture_quality_mode": texture_quality_mode,
-            "nav_latitude_deg": nav_latitude_deg,
-            "nav_longitude_deg": nav_longitude_deg,
-            "nav_altitude_km": nav_altitude_km,
-            "cancel_event": threading.Event(),
-            "created_at": time.monotonic(),
-        }
+        new_job = _build_auto_resolve_download_job(
+            epoch=epoch,
+            request_id=request_id,
+            scene_id=scene_id,
+            target_tiles=target_tiles_tuple,
+            camera_signature=camera_signature,
+            output_signature=output_signature,
+            manual_request=manual_request,
+            base_path=base_path,
+            texture_quality_mode=texture_quality_mode,
+            nav_latitude_deg=nav_latitude_deg,
+            nav_longitude_deg=nav_longitude_deg,
+            nav_altitude_km=nav_altitude_km,
+        )
 
         new_sig = _auto_resolve_download_job_signature(new_job)
         active_sig = _auto_resolve_download_job_signature(_AUTO_RESOLVE_DOWNLOAD_ACTIVE_JOB)
         pending_sig = _auto_resolve_download_job_signature(_AUTO_RESOLVE_DOWNLOAD_PENDING_JOB)
         if new_sig == active_sig or new_sig == pending_sig:
             if bool(manual_request):
-                if new_sig == active_sig and isinstance(_AUTO_RESOLVE_DOWNLOAD_ACTIVE_JOB, dict):
-                    _AUTO_RESOLVE_DOWNLOAD_ACTIVE_JOB["manual_request"] = True
-                if new_sig == pending_sig and isinstance(_AUTO_RESOLVE_DOWNLOAD_PENDING_JOB, dict):
-                    _AUTO_RESOLVE_DOWNLOAD_PENDING_JOB["manual_request"] = True
+                if new_sig == active_sig and _is_auto_resolve_download_job(_AUTO_RESOLVE_DOWNLOAD_ACTIVE_JOB):
+                    _job_set_field(_AUTO_RESOLVE_DOWNLOAD_ACTIVE_JOB, "manual_request", True)
+                if new_sig == pending_sig and _is_auto_resolve_download_job(_AUTO_RESOLVE_DOWNLOAD_PENDING_JOB):
+                    _job_set_field(_AUTO_RESOLVE_DOWNLOAD_PENDING_JOB, "manual_request", True)
             _resolve_trace(
                 f"queue dedupe request_id={request_id} manual={bool(manual_request)} signature={new_sig!r}"
             )
@@ -2990,8 +3058,8 @@ def _schedule_auto_resolve_download(
             _AUTO_RESOLVE_DOWNLOAD_PENDING_JOB = new_job
             # Cancel in-flight download immediately when a newer request arrives.
             # The latest request should start as soon as possible.
-            if isinstance(_AUTO_RESOLVE_DOWNLOAD_ACTIVE_JOB, dict):
-                active_cancel_event = _AUTO_RESOLVE_DOWNLOAD_ACTIVE_JOB.get("cancel_event")
+            if _is_auto_resolve_download_job(_AUTO_RESOLVE_DOWNLOAD_ACTIVE_JOB):
+                active_cancel_event = _job_field(_AUTO_RESOLVE_DOWNLOAD_ACTIVE_JOB, "cancel_event")
                 if active_cancel_event is not None:
                     try:
                         active_cancel_event.set()
@@ -3109,8 +3177,8 @@ def _mark_auto_resolve_terminal_failure(scene, scene_id, job, message):
 
     now = time.monotonic()
     latest_signature = None
-    if isinstance(job, dict):
-        latest_signature = job.get("camera_signature")
+    if _is_auto_resolve_download_job(job):
+        latest_signature = _job_field(job, "camera_signature")
     if latest_signature is None:
         latest_signature = _camera_signature(scene)
     scene_state = _read_scene_auto_resolve_state(scene_id)
@@ -3127,17 +3195,17 @@ def _mark_auto_resolve_terminal_failure(scene, scene_id, job, message):
 
 def _handle_auto_resolve_download_failure(job, error_message):
     try:
-        scene_id = int(job.get("scene_id", 0) or 0)
+        scene_id = int(_job_field(job, "scene_id", 0) or 0)
     except (TypeError, ValueError):
         return
     scene = _scene_from_key(scene_id)
     if scene is None:
         return
 
-    if bool(job.get("manual_request", False)):
+    if bool(_job_field(job, "manual_request", False)):
         _resolve_trace(
             "Download finished with error "
-            f"(manual={bool(job.get('manual_request', False))}, request_id={job.get('request_id')}, "
+            f"(manual={bool(_job_field(job, 'manual_request', False))}, request_id={_job_field(job, 'request_id')}, "
             f"error={str(error_message or '').strip() or 'unknown'})"
         )
         _mark_manual_queued_resolve_error(
@@ -3151,7 +3219,7 @@ def _handle_auto_resolve_download_failure(job, error_message):
     if _is_non_retryable_resolve_error(error_message):
         _resolve_trace(
             "Download finished with terminal error "
-            f"(request_id={job.get('request_id')}, error={str(error_message or '').strip() or 'unknown'})"
+            f"(request_id={_job_field(job, 'request_id')}, error={str(error_message or '').strip() or 'unknown'})"
         )
         _mark_auto_resolve_terminal_failure(
             scene,
@@ -3175,7 +3243,7 @@ def _handle_auto_resolve_download_failure(job, error_message):
 
 def _auto_resolve_completion_epoch_state(job):
     try:
-        job_epoch = int(job.get("epoch", -1))
+        job_epoch = int(_job_field(job, "epoch", -1))
     except (TypeError, ValueError):
         job_epoch = -1
     with _AUTO_RESOLVE_DOWNLOAD_LOCK:
@@ -3187,7 +3255,7 @@ def _auto_resolve_completion_epoch_state(job):
 def _auto_resolve_handle_cancel_or_failure(result, job, manual_request):
     if bool(result.get("cancelled", False)):
         _resolve_trace(
-            f"Download finished cancelled (request_id={job.get('request_id')}, manual={manual_request})"
+            f"Download finished cancelled (request_id={_job_field(job, 'request_id')}, manual={manual_request})"
         )
         return True
 
@@ -3201,10 +3269,10 @@ def _auto_resolve_handle_cancel_or_failure(result, job, manual_request):
 def _auto_resolve_log_pending_request_overlap(job, pending_job):
     # Never drop a completed download just because a newer request exists.
     # Finalize this resolve first; pending jobs will run immediately after.
-    if isinstance(pending_job, dict):
+    if _is_auto_resolve_download_job(pending_job):
         try:
-            pending_request_id = int(pending_job.get("request_id", 0) or 0)
-            job_request_id = int(job.get("request_id", 0) or 0)
+            pending_request_id = int(_job_field(pending_job, "request_id", 0) or 0)
+            job_request_id = int(_job_field(job, "request_id", 0) or 0)
             if pending_request_id > job_request_id:
                 logger.debug(
                     "Planetka: finalizing completed resolve %d while newer request %d is pending.",
@@ -3216,47 +3284,46 @@ def _auto_resolve_log_pending_request_overlap(job, pending_job):
 
 
 def _auto_resolve_prepare_apply_context(job, manual_request):
-    scene_id = int(job.get("scene_id", 0) or 0)
+    scene_id = int(_job_field(job, "scene_id", 0) or 0)
     scene = _scene_from_key(scene_id)
     if scene is None:
         # Grace period: Blender can briefly lose scene context around file/load/UI transitions.
         # If context does not return quickly, consume/drop this completion to avoid a stuck pump loop.
         now = time.monotonic()
         try:
-            missing_since = float(job.get("_scene_missing_since", 0.0) or 0.0)
+            missing_since = float(_job_field(job, "scene_missing_since", 0.0) or 0.0)
         except (TypeError, ValueError):
             missing_since = 0.0
         if missing_since <= 0.0:
             missing_since = now
         try:
-            attempts = int(job.get("_scene_missing_attempts", 0) or 0) + 1
+            attempts = int(_job_field(job, "scene_missing_attempts", 0) or 0) + 1
         except (TypeError, ValueError):
             attempts = 1
-        job["_scene_missing_since"] = float(missing_since)
-        job["_scene_missing_attempts"] = int(max(1, attempts))
+        _job_set_field(job, "scene_missing_since", float(missing_since))
+        _job_set_field(job, "scene_missing_attempts", int(max(1, attempts)))
         waited_sec = max(0.0, float(now) - float(missing_since))
         if waited_sec < float(_AUTO_RESOLVE_DOWNLOAD_SCENE_WAIT_SEC):
             _resolve_trace(
                 "Download finished but scene context unavailable yet "
-                f"(request_id={job.get('request_id')}, waited={waited_sec:.2f}s, attempts={attempts}); waiting"
+                f"(request_id={_job_field(job, 'request_id')}, waited={waited_sec:.2f}s, attempts={attempts}); waiting"
             )
             return False, None, None, None
         _resolve_trace(
             "Download completion dropped due stale missing scene context "
-            f"(request_id={job.get('request_id')}, waited={waited_sec:.2f}s, attempts={attempts})"
+            f"(request_id={_job_field(job, 'request_id')}, waited={waited_sec:.2f}s, attempts={attempts})"
         )
         logger.debug(
             "Planetka: dropping completed auto-resolve payload because scene context did not return "
             "(request_id=%s, waited=%.2fs, attempts=%d).",
-            str(job.get("request_id", "")),
+            str(_job_field(job, "request_id", "")),
             float(waited_sec),
             int(attempts),
         )
         return True, None, None, None
-    if isinstance(job, dict):
-        job.pop("_scene_missing_since", None)
-        job.pop("_scene_missing_attempts", None)
-    job_target_tiles = _canonical_tiles(job.get("target_tiles", ()))
+    _job_set_field(job, "scene_missing_since", 0.0)
+    _job_set_field(job, "scene_missing_attempts", 0)
+    job_target_tiles = _canonical_tiles(_job_field(job, "target_tiles", ()))
 
     if _is_render_job_active():
         if manual_request:
@@ -3275,7 +3342,7 @@ def _auto_resolve_prepare_apply_context(job, manual_request):
 
     if manual_request:
         current_output_signature = _output_resolution_signature(scene)
-        if current_output_signature != job.get("output_signature"):
+        if current_output_signature != _job_field(job, "output_signature"):
             logger.warning("Planetka queued resolve continuing despite output signature change.")
     return True, scene, scene_id, job_target_tiles
 
@@ -3285,7 +3352,7 @@ def _auto_resolve_apply_downloaded_tiles(scene, scene_id, job, manual_request, j
     _AUTO_RESOLVE_IN_FLIGHT = True
     try:
         _resolve_trace(
-            f"Shader update started (request_id={job.get('request_id')}, manual={manual_request}, tiles={len(job_target_tiles)})"
+            f"Shader update started (request_id={_job_field(job, 'request_id')}, manual={manual_request}, tiles={len(job_target_tiles)})"
         )
         op_kwargs = {
             "scope_mode": "CAMERA",
@@ -3294,7 +3361,7 @@ def _auto_resolve_apply_downloaded_tiles(scene, scene_id, job, manual_request, j
             "defer_download": False,
             "tiles_override_json": json.dumps(list(job_target_tiles)),
             "texture_quality_mode_override": _normalize_texture_quality_mode(
-                job.get("texture_quality_mode", "PREVIEW")
+                _job_field(job, "texture_quality_mode", "PREVIEW")
             ),
         }
         context_scene = getattr(bpy.context, "scene", None)
@@ -3305,7 +3372,7 @@ def _auto_resolve_apply_downloaded_tiles(scene, scene_id, job, manual_request, j
                 op_result = bpy.ops.planetka.load_textures(**op_kwargs)
         if "FINISHED" not in op_result:
             _resolve_trace(
-                f"Shader update failed (request_id={job.get('request_id')} op_result={str(op_result)})"
+                f"Shader update failed (request_id={_job_field(job, 'request_id')} op_result={str(op_result)})"
             )
             scene_error = _read_scene_last_resolve_error(scene)
             apply_error = scene_error or f"Apply operator returned {str(op_result)} for {len(job_target_tiles)} tile(s)."
@@ -3327,7 +3394,7 @@ def _auto_resolve_apply_downloaded_tiles(scene, scene_id, job, manual_request, j
             return False
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         _resolve_trace(
-            f"Shader update failed with recoverable exception (request_id={job.get('request_id')})"
+            f"Shader update failed with recoverable exception (request_id={_job_field(job, 'request_id')})"
         )
         logger.debug("Planetka auto-resolve apply failed", exc_info=True)
         scene_error = _read_scene_last_resolve_error(scene)
@@ -3342,7 +3409,7 @@ def _auto_resolve_apply_downloaded_tiles(scene, scene_id, job, manual_request, j
         return False
     except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
         _resolve_trace(
-            f"Shader update failed with unexpected exception (request_id={job.get('request_id')})"
+            f"Shader update failed with unexpected exception (request_id={_job_field(job, 'request_id')})"
         )
         logger.debug("Planetka auto-resolve apply failed unexpectedly", exc_info=True)
         scene_error = _read_scene_last_resolve_error(scene)
@@ -3367,11 +3434,11 @@ def _auto_resolve_summary_total_bytes(job_target_tiles, job, result):
             max(
                 0,
                 int(
-                    _estimate_download_bytes_for_visible_tiles(
-                        job_target_tiles,
-                        str(job.get("base_path", "") or ""),
+                        _estimate_download_bytes_for_visible_tiles(
+                            job_target_tiles,
+                        str(_job_field(job, "base_path", "") or ""),
                         texture_quality_mode=_normalize_texture_quality_mode(
-                            job.get("texture_quality_mode", "PREVIEW")
+                            _job_field(job, "texture_quality_mode", "PREVIEW")
                         ),
                     )
                     or 0
@@ -3394,14 +3461,14 @@ def _auto_resolve_summary_total_bytes(job_target_tiles, job, result):
 
 def _finalize_auto_resolve_apply(scene, scene_id, job, manual_request, job_target_tiles, resolved_at, summary_total_bytes):
     try:
-        created_at = float(job.get("created_at", resolved_at) or resolved_at)
+        created_at = float(_job_field(job, "created_at", resolved_at) or resolved_at)
     except (TypeError, ValueError):
         created_at = resolved_at
     total_seconds = max(0.0, float(resolved_at) - float(created_at))
     _write_last_resolve_summary(scene, len(job_target_tiles), summary_total_bytes, total_seconds)
 
     scene_id = _scene_key(scene)
-    latest_signature = _camera_signature(scene) or job.get("camera_signature")
+    latest_signature = _camera_signature(scene) or _job_field(job, "camera_signature")
     scene_state = _read_scene_auto_resolve_state(scene_id)
     if scene_state is not None:
         scene_state.last_resolve_time = resolved_at
@@ -3429,12 +3496,12 @@ def _finalize_auto_resolve_apply(scene, scene_id, job, manual_request, job_targe
         latest_camera_signature = _camera_signature(scene)
         latest_output_signature = _output_resolution_signature(scene)
         if (
-            latest_camera_signature != job.get("camera_signature")
-            or latest_output_signature != job.get("output_signature")
+            latest_camera_signature != _job_field(job, "camera_signature")
+            or latest_output_signature != _job_field(job, "output_signature")
         ):
             request_auto_resolve(scene, immediate=False, mark_dirty=True)
     _resolve_trace(
-        f"Shader update finished (request_id={job.get('request_id')}, tiles={len(job_target_tiles)})"
+        f"Shader update finished (request_id={_job_field(job, 'request_id')}, tiles={len(job_target_tiles)})"
     )
 
 
@@ -3442,9 +3509,9 @@ def _handle_auto_resolve_download_complete(result):
     if not isinstance(result, dict):
         return True
     job = result.get("job")
-    if not isinstance(job, dict):
+    if not _is_auto_resolve_download_job(job):
         return True
-    manual_request = bool(job.get("manual_request", False))
+    manual_request = bool(_job_field(job, "manual_request", False))
 
     epoch_matches, pending_job = _auto_resolve_completion_epoch_state(job)
     if not epoch_matches:
@@ -3494,8 +3561,8 @@ def _auto_resolve_download_worker(job):
     try:
         _resolve_trace(
             "Download started "
-            f"(request_id={job.get('request_id')}, manual={bool(job.get('manual_request', False))}, "
-            f"tiles={len(tuple(job.get('target_tiles', ())))})"
+            f"(request_id={_job_field(job, 'request_id')}, manual={bool(_job_field(job, 'manual_request', False))}, "
+            f"tiles={len(tuple(_job_field(job, 'target_tiles', ())))})"
         )
         module_name = f"{__package__}.streaming_utils" if __package__ else "streaming_utils"
         streaming_module = importlib.import_module(module_name)
@@ -3505,14 +3572,14 @@ def _auto_resolve_download_worker(job):
             raise RuntimeError("Planetka streaming pipeline is unavailable.")
 
         prepared_payload = prepare_fn(
-            tuple(job.get("target_tiles", ())),
-            str(job.get("base_path", "") or ""),
-            cancel_event=job.get("cancel_event"),
+            tuple(_job_field(job, "target_tiles", ())),
+            str(_job_field(job, "base_path", "") or ""),
+            cancel_event=_job_field(job, "cancel_event"),
             capture=True,
-            texture_quality_mode=_normalize_texture_quality_mode(job.get("texture_quality_mode", "PREVIEW")),
-            nav_latitude_deg=job.get("nav_latitude_deg", ""),
-            nav_longitude_deg=job.get("nav_longitude_deg", ""),
-            nav_altitude_km=job.get("nav_altitude_km", ""),
+            texture_quality_mode=_normalize_texture_quality_mode(_job_field(job, "texture_quality_mode", "PREVIEW")),
+            nav_latitude_deg=_job_field(job, "nav_latitude_deg", ""),
+            nav_longitude_deg=_job_field(job, "nav_longitude_deg", ""),
+            nav_altitude_km=_job_field(job, "nav_altitude_km", ""),
         )
         cancelled = (
             bool(prepared_payload.get("cancelled", False))
@@ -3521,10 +3588,10 @@ def _auto_resolve_download_worker(job):
         )
         if not cancelled and isinstance(prepared_payload, dict) and callable(stage_fn):
             stage_fn(
-                tuple(job.get("target_tiles", ())),
-                str(job.get("base_path", "") or ""),
+                tuple(_job_field(job, "target_tiles", ()) or ()),
+                str(_job_field(job, "base_path", "") or ""),
                 prepared_payload,
-                texture_quality_mode=_normalize_texture_quality_mode(job.get("texture_quality_mode", "PREVIEW")),
+                texture_quality_mode=_normalize_texture_quality_mode(_job_field(job, "texture_quality_mode", "PREVIEW")),
             )
         result["success"] = not cancelled
         result["cancelled"] = cancelled
@@ -3538,17 +3605,17 @@ def _auto_resolve_download_worker(job):
         total_bytes = int(capture.get("total_bytes", 0) or 0) if isinstance(capture, dict) else 0
         _resolve_trace(
             "Download finished "
-            f"(request_id={job.get('request_id')}, cancelled={cancelled}, downloaded={downloaded_bytes}, total={total_bytes})"
+            f"(request_id={_job_field(job, 'request_id')}, cancelled={cancelled}, downloaded={downloaded_bytes}, total={total_bytes})"
         )
     except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
         result["error"] = str(exc)
         _resolve_trace(
-            f"Download failed with recoverable exception (request_id={job.get('request_id')}, error={str(exc)})"
+            f"Download failed with recoverable exception (request_id={_job_field(job, 'request_id')}, error={str(exc)})"
         )
     except (RuntimeError, TypeError, ValueError, AttributeError, OSError) as exc:
         result["error"] = str(exc)
         _resolve_trace(
-            f"Download failed with unexpected exception (request_id={job.get('request_id')}, error={str(exc)})"
+            f"Download failed with unexpected exception (request_id={_job_field(job, 'request_id')}, error={str(exc)})"
         )
     finally:
         result["completed_at"] = float(time.monotonic())
@@ -3556,13 +3623,13 @@ def _auto_resolve_download_worker(job):
             if _AUTO_RESOLVE_DOWNLOAD_ACTIVE_JOB is job:
                 _AUTO_RESOLVE_DOWNLOAD_ACTIVE_JOB = None
             _AUTO_RESOLVE_DOWNLOAD_THREAD = None
-            job_epoch = int(job.get("epoch", -1))
+            job_epoch = int(_job_field(job, "epoch", -1))
             current_epoch = int(_AUTO_RESOLVE_DOWNLOAD_EPOCH)
             store_completed = (job_epoch == current_epoch)
             if store_completed:
                 _AUTO_RESOLVE_DOWNLOAD_COMPLETED = result
             _resolve_trace(
-                f"Worker finalize (request_id={job.get('request_id')}, job_epoch={job_epoch}, "
+                f"Worker finalize (request_id={_job_field(job, 'request_id')}, job_epoch={job_epoch}, "
                 f"current_epoch={current_epoch}, store_completed={store_completed})"
             )
 
@@ -3587,7 +3654,7 @@ def _auto_resolve_download_pump_timer():
 
         if isinstance(completed, dict):
             completed_job = completed.get("job") if isinstance(completed, dict) else None
-            completed_request_id = completed_job.get("request_id") if isinstance(completed_job, dict) else None
+            completed_request_id = _job_field(completed_job, "request_id")
             now = time.monotonic()
             try:
                 completed_at = float(completed.get("completed_at", 0.0) or 0.0)
@@ -3623,7 +3690,7 @@ def _auto_resolve_download_pump_timer():
 
         job_to_start = None
         with _AUTO_RESOLVE_DOWNLOAD_LOCK:
-            if _AUTO_RESOLVE_DOWNLOAD_ACTIVE_JOB is None and isinstance(_AUTO_RESOLVE_DOWNLOAD_PENDING_JOB, dict):
+            if _AUTO_RESOLVE_DOWNLOAD_ACTIVE_JOB is None and _is_auto_resolve_download_job(_AUTO_RESOLVE_DOWNLOAD_PENDING_JOB):
                 _AUTO_RESOLVE_DOWNLOAD_ACTIVE_JOB = _AUTO_RESOLVE_DOWNLOAD_PENDING_JOB
                 _AUTO_RESOLVE_DOWNLOAD_PENDING_JOB = None
                 job_to_start = _AUTO_RESOLVE_DOWNLOAD_ACTIVE_JOB
@@ -3632,7 +3699,7 @@ def _auto_resolve_download_pump_timer():
             has_pending = _AUTO_RESOLVE_DOWNLOAD_PENDING_JOB is not None
             has_completed = _AUTO_RESOLVE_DOWNLOAD_COMPLETED is not None
 
-        if isinstance(job_to_start, dict):
+        if _is_auto_resolve_download_job(job_to_start):
             _start_auto_resolve_download_thread(job_to_start)
             has_active = True
 
@@ -3671,8 +3738,8 @@ def stop_auto_resolve_download_pipeline():
         _resolve_trace(f"Pipeline stop called; epoch advanced to {_AUTO_RESOLVE_DOWNLOAD_EPOCH}")
 
         active_job = _AUTO_RESOLVE_DOWNLOAD_ACTIVE_JOB
-        if isinstance(active_job, dict):
-            cancel_event = active_job.get("cancel_event")
+        if _is_auto_resolve_download_job(active_job):
+            cancel_event = _job_field(active_job, "cancel_event")
             if cancel_event is not None:
                 try:
                     cancel_event.set()
