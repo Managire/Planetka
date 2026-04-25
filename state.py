@@ -1297,6 +1297,8 @@ def _build_auto_resolve_contexts():
     _AUTO_RESOLVE_NONCRITICAL_CTX,
 ) = _build_auto_resolve_contexts()
 
+# state.py remains the owner of the singleton auto-resolve contexts; the
+# pipeline module receives them explicitly instead of pulling facade globals.
 _auto_resolve_pipeline._AUTO_RESOLVE_DOWNLOAD_CTX = _AUTO_RESOLVE_DOWNLOAD_CTX
 _auto_resolve_pipeline._AUTO_RESOLVE_DECISION_CTX = _AUTO_RESOLVE_DECISION_CTX
 _auto_resolve_pipeline._AUTO_RESOLVE_NONCRITICAL_CTX = _AUTO_RESOLVE_NONCRITICAL_CTX

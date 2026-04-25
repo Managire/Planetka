@@ -1,8 +1,8 @@
 """Typed context objects for the auto-resolve runtime.
 
-These objects are introduced incrementally so the auto-resolve pipeline can
-move away from ``configure(globals())`` without changing the public
-``state.py`` facade all at once.
+``state.py`` owns the singleton instances and installs them into
+``auto_resolve_pipeline`` so the pipeline can stay import-stable while using
+explicit dependency and state objects instead of facade globals.
 """
 
 from dataclasses import dataclass, field
