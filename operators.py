@@ -1,13 +1,5 @@
 import bpy
-import importlib
-import math
-import os
-import re
-import shutil
-import subprocess
-import tempfile
-from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, StringProperty
-from mathutils import Matrix, Quaternion, Vector
+from bpy.props import BoolProperty, EnumProperty
 
 from .auth import (
     allows_balanced_full_quality_for_context,
@@ -118,23 +110,8 @@ from .state import (
 )
 from .updater import kickoff_background_update_check
 
-_IMPORT_TEXTURE_EXTENSIONS = {
-    "S2": ".exr",
-    "EL": ".exr",
-    "WT": ".exr",
-    "PO": ".tif",
-}
-_IMPORT_TILE_FILENAME_RE = re.compile(
-    r"^(S2|EL|WT|PO)_x(\d{3})_y(\d{3})_z(\d{3})_d(\d{3})\.(exr|tif)$",
-    re.IGNORECASE,
-)
 _RECOVERABLE_LOG_COUNTS = {}
 _DOWNLOAD_POPUP_WM_FLAG = "planetka_download_popup_running"
-
-
-def _persist_user_preferences():
-    # Planetka must not write Blender's global user preferences automatically.
-    return False
 
 
 def _log_recoverable_once(code, message):
@@ -151,140 +128,6 @@ def _require_authenticated_account(operator, prefs):
         operator.report({'ERROR'}, "Connect Planetka API key before using remote Earth data.")
         return False
     return True
-
-
-def _paths_equivalent(path_a, path_b):
-    if not path_a or not path_b:
-        return False
-    try:
-        return os.path.samefile(path_a, path_b)
-    except (OSError, TypeError, ValueError, AttributeError):
-        a = os.path.normcase(os.path.realpath(path_a))
-        b = os.path.normcase(os.path.realpath(path_b))
-        return a == b
-
-
-def _canonical_import_filename(texture_type, x_code, y_code, z_code, d_code):
-    texture_prefix = str(texture_type).upper()
-    ext = _IMPORT_TEXTURE_EXTENSIONS.get(texture_prefix)
-    if not ext:
-        return None
-    return (
-        f"{texture_prefix}_x{int(x_code):03d}_y{int(y_code):03d}_z{int(z_code):03d}_d{int(d_code):03d}{ext}"
-    )
-
-
-def _collect_import_sources(source_directory):
-    by_canonical_name = {}
-    duplicates_skipped = 0
-
-    for root, _dirs, files in os.walk(source_directory):
-        for filename in files:
-            match = _IMPORT_TILE_FILENAME_RE.match(filename or "")
-            if not match:
-                continue
-
-            texture_type = str(match.group(1)).upper()
-            extension = "." + str(match.group(6)).lower()
-            expected_ext = _IMPORT_TEXTURE_EXTENSIONS.get(texture_type)
-            if expected_ext != extension:
-                continue
-
-            canonical_name = _canonical_import_filename(
-                texture_type=texture_type,
-                x_code=match.group(2),
-                y_code=match.group(3),
-                z_code=match.group(4),
-                d_code=match.group(5),
-            )
-            if not canonical_name:
-                continue
-
-            source_path = os.path.join(root, filename)
-            existing = by_canonical_name.get(canonical_name)
-            if existing is None:
-                by_canonical_name[canonical_name] = source_path
-                continue
-
-            duplicates_skipped += 1
-            try:
-                existing_mtime = os.path.getmtime(existing)
-                current_mtime = os.path.getmtime(source_path)
-                if current_mtime > existing_mtime:
-                    by_canonical_name[canonical_name] = source_path
-            except (OSError, TypeError, ValueError):
-                continue
-
-    return by_canonical_name, duplicates_skipped
-
-
-def _build_texture_import_plan(source_directory, destination_directory):
-    sources, duplicates_skipped = _collect_import_sources(source_directory)
-
-    jobs = []
-    new_file_count = 0
-    update_file_count = 0
-    added_size_bytes = 0
-
-    for canonical_name in sorted(sources):
-        source_path = sources[canonical_name]
-        texture_type = canonical_name.split("_", 1)[0]
-        destination_path = os.path.join(destination_directory, texture_type, canonical_name)
-
-        if _paths_equivalent(source_path, destination_path):
-            continue
-
-        destination_exists = os.path.isfile(destination_path)
-        try:
-            file_size = int(os.path.getsize(source_path))
-        except (OSError, TypeError, ValueError):
-            file_size = 0
-
-        if destination_exists:
-            update_file_count += 1
-        else:
-            new_file_count += 1
-            added_size_bytes += max(0, file_size)
-
-        jobs.append({
-            "source_path": source_path,
-            "destination_path": destination_path,
-        })
-
-    return {
-        "jobs": jobs,
-        "new_file_count": new_file_count,
-        "update_file_count": update_file_count,
-        "added_size_bytes": max(0, int(added_size_bytes)),
-        "duplicates_skipped": int(max(0, duplicates_skipped)),
-    }
-
-
-def _bytes_to_mb(size_bytes):
-    return float(max(0, int(size_bytes))) / float(1024 ** 2)
-
-
-def _prompt_texture_source_selection():
-    if bool(getattr(bpy.app, "background", False)):
-        return False
-
-    try:
-        result = bpy.ops.planetka.select_texture_source('INVOKE_DEFAULT')
-        if "RUNNING_MODAL" in result:
-            return True
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        _log_recoverable_once("PKA-OPS-001", "Failed invoking texture-source selector operator")
-    except (RuntimeError, TypeError, ValueError):
-        _log_recoverable_once("PKA-OPS-002", "Failed invoking texture-source selector operator")
-
-    module_name = __package__ or __name__
-    try:
-        bpy.ops.preferences.addon_show(module=module_name)
-        return True
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        return False
-    except (RuntimeError, TypeError, ValueError):
-        return False
 
 
 def _persist_user_preferences():
