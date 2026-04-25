@@ -89,6 +89,9 @@ import {
   handleApiKeyPage as handleApiKeyPageRoute,
 } from "./worker/api_key_page_handlers.js";
 import {
+  createAuthCore,
+} from "./worker/auth_core.js";
+import {
   runScheduledMaintenanceJobs,
 } from "./worker/maintenance_jobs.js";
 import {
@@ -2538,467 +2541,92 @@ async function enforceSingleActiveFreeApiKey(db, userId, preferredApiKeyId = "")
   };
 }
 
+const AUTH_CORE_DEPS = {
+  PLAN_CODE_PLANETKA,
+  PLAN_CODE_PLANETKA_FREE,
+  DEFAULT_API_KEY_DEVICE_ACTIVE_WINDOW_SECONDS,
+  DEFAULT_TILE_SESSION_TOKEN_TTL_SECONDS,
+  addDaysIso,
+  authContextCacheGet,
+  authContextCacheSet,
+  computeApiKeyExpiryIso,
+  dbAll,
+  dbGet,
+  dbRun,
+  ensureApiKeyTables,
+  ensureRefreshSessionColumns,
+  enforceSingleActiveFreeApiKey,
+  isDeviceLimitExemptEmail,
+  isQualityModeAllowedForPlan,
+  json,
+  normalizeDeviceId,
+  normalizeQualityMode,
+  normalizeRequestedPlan,
+  nowIso,
+  parsePositiveNumber,
+  parseRateLimitInteger,
+  qualityModeNotAllowedMessage,
+  randomToken,
+  requestClientIp,
+  requestCountry,
+  requireSecret,
+  resolvePolicyPlanCode,
+  sha256Hex,
+  signJwt,
+  verifyJwt,
+};
+
+let authCore = null;
+
+function getAuthCore() {
+  if (!authCore) {
+    authCore = createAuthCore(AUTH_CORE_DEPS);
+  }
+  return authCore;
+}
+
 async function isApiKeyUsableById(db, apiKeyId, expectedUserId = "") {
-  await ensureApiKeyTables(db);
-  const safeApiKeyId = String(apiKeyId || "").trim();
-  if (!safeApiKeyId) {
-    return false;
-  }
-  const row = await dbGet(
-    db,
-    `
-      SELECT id, user_id, status, expires_at
-      FROM api_keys
-      WHERE id = ?
-      LIMIT 1
-    `,
-    [safeApiKeyId],
-  );
-  if (!row || !row.id) {
-    return false;
-  }
-  if (String(row.status || "").trim().toLowerCase() !== "active") {
-    return false;
-  }
-  const safeExpectedUserId = String(expectedUserId || "").trim();
-  if (safeExpectedUserId && String(row.user_id || "").trim() !== safeExpectedUserId) {
-    return false;
-  }
-  return true;
+  return getAuthCore().isApiKeyUsableById(db, apiKeyId, expectedUserId);
 }
 
 async function issueApiKeyForUser(db, env, user, planCode, options = {}) {
-  await ensureApiKeyTables(db);
-  const safePlan = normalizeRequestedPlan(planCode || user.status || PLAN_CODE_PLANETKA);
-  const token = `pka_${randomToken(36)}`;
-  const keyHash = await sha256Hex(token);
-  const keyPrefix = String(token.slice(0, 16));
-  const keyId = crypto.randomUUID();
-  const issuedAt = nowIso();
-  void options;
-  const expiresAt = String(options.expiresAt || computeApiKeyExpiryIso(safePlan, env) || "").trim();
-  await dbRun(
-    db,
-    `
-      INSERT INTO api_keys (
-        id,
-        user_id,
-        key_hash,
-        key_prefix,
-        status,
-        plan_code,
-        expires_at,
-        issued_at
-      ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?)
-    `,
-    [
-      keyId,
-      user.id,
-      keyHash,
-      keyPrefix,
-      safePlan,
-      expiresAt || null,
-      issuedAt,
-    ],
-  );
-  if (safePlan === PLAN_CODE_PLANETKA_FREE) {
-    await enforceSingleActiveFreeApiKey(
-      db,
-      String(user && user.id || "").trim(),
-      keyId,
-    );
-  }
-
-  return {
-    apiKey: token,
-    apiKeyId: keyId,
-    keyPrefix,
-    planCode: safePlan,
-    expiresAt,
-  };
+  return getAuthCore().issueApiKeyForUser(db, env, user, planCode, options);
 }
 
 async function findActiveApiKeyRecord(db, apiKeyValue) {
-  await ensureApiKeyTables(db);
-  const keyHash = await sha256Hex(apiKeyValue);
-  return dbGet(
-    db,
-    `
-      SELECT
-        ak.id AS api_key_id,
-        ak.user_id,
-        ak.status AS api_key_status,
-        ak.plan_code AS api_key_plan_code,
-        ak.expires_at AS api_key_expires_at,
-        ak.key_prefix,
-        u.id,
-        u.email,
-        u.status,
-        u.created_at,
-        u.last_login_at
-      FROM api_keys ak
-      JOIN users u ON u.id = ak.user_id
-      WHERE ak.key_hash = ?
-      LIMIT 1
-    `,
-    [keyHash],
-  );
-}
-
-function maxDevicesForPlan(planCode) {
-  void normalizeRequestedPlan(planCode);
-  return 1;
-}
-
-async function listActiveApiKeyDevicesForUser(db, userId, env) {
-  await ensureApiKeyTables(db);
-  const safeUserId = String(userId || "").trim();
-  if (!safeUserId) {
-    return new Set();
-  }
-  const nowUnix = Math.floor(Date.now() / 1000);
-  const activeWindowSeconds = Math.max(
-    60,
-    Math.floor(parsePositiveNumber(env.API_KEY_DEVICE_ACTIVE_WINDOW_SECONDS, DEFAULT_API_KEY_DEVICE_ACTIVE_WINDOW_SECONDS)),
-  );
-  const windowStart = Math.max(0, nowUnix - activeWindowSeconds);
-
-  await dbRun(
-    db,
-    `
-      DELETE FROM api_key_device_activity
-      WHERE last_seen_unix < ?
-    `,
-    [Math.max(0, nowUnix - (activeWindowSeconds * 4))],
-  );
-
-  const rows = await dbAll(
-    db,
-    `
-      SELECT DISTINCT device_id
-      FROM api_key_device_activity
-      WHERE user_id = ?
-        AND last_seen_unix >= ?
-    `,
-    [safeUserId, windowStart],
-  );
-  return new Set(
-    rows.map((row) => normalizeDeviceId(row && row.device_id)).filter((value) => Boolean(value)),
-  );
+  return getAuthCore().findActiveApiKeyRecord(db, apiKeyValue);
 }
 
 async function enforceApiKeyIssueDeviceLimit(db, userId, userEmail, planCode, deviceId, env) {
-  const safeUserId = String(userId || "").trim();
-  if (!safeUserId) {
-    return { activeDeviceCount: 0, maxDevices: maxDevicesForPlan(planCode), matchedDevice: false };
-  }
-  if (isDeviceLimitExemptEmail(userEmail, env)) {
-    return { activeDeviceCount: 0, maxDevices: Number.MAX_SAFE_INTEGER, matchedDevice: true, exempted: true };
-  }
-  const safeDeviceId = normalizeDeviceId(deviceId);
-  const activeDeviceIds = await listActiveApiKeyDevicesForUser(db, safeUserId, env);
-  const maxDevices = maxDevicesForPlan(planCode);
-  const matchedDevice = Boolean(safeDeviceId && activeDeviceIds.has(safeDeviceId));
-  if (activeDeviceIds.size >= maxDevices && !matchedDevice) {
-    throw new Error("device_limit_exceeded");
-  }
-  return {
-    activeDeviceCount: activeDeviceIds.size,
-    maxDevices,
-    matchedDevice,
-  };
-}
-
-async function touchApiKeyDeviceActivity(db, apiKeyId, userId, deviceId, request, env) {
-  await ensureApiKeyTables(db);
-  const safeUserId = String(userId || "").trim();
-  const safeDeviceId = normalizeDeviceId(deviceId);
-  if (!safeUserId || !safeDeviceId) {
-    throw new Error("missing_device_id");
-  }
-  const nowUnix = Math.floor(Date.now() / 1000);
-  const now = nowIso();
-  const ip = requestClientIp(request);
-  const country = requestCountry(request);
-  const existingRows = await dbAll(
-    db,
-    `
-      SELECT id
-      FROM api_key_device_activity
-      WHERE user_id = ? AND device_id = ?
-      ORDER BY last_seen_unix DESC
-    `,
-    [safeUserId, safeDeviceId],
-  );
-  const primaryExisting = Array.isArray(existingRows) && existingRows.length > 0 ? existingRows[0] : null;
-  if (primaryExisting && primaryExisting.id) {
-    await dbRun(
-      db,
-      `
-        UPDATE api_key_device_activity
-        SET
-          api_key_id = ?,
-          last_seen_at = ?,
-          last_seen_unix = ?,
-          last_ip = ?,
-          last_country = ?
-        WHERE id = ?
-      `,
-      [apiKeyId, now, nowUnix, ip, country, primaryExisting.id],
-    );
-    if (existingRows.length > 1) {
-      await dbRun(
-        db,
-        `
-          DELETE FROM api_key_device_activity
-          WHERE user_id = ?
-            AND device_id = ?
-            AND id != ?
-        `,
-        [safeUserId, safeDeviceId, primaryExisting.id],
-      );
-    }
-    return primaryExisting.id;
-  }
-  await dbRun(
-    db,
-    `
-      INSERT INTO api_key_device_activity (
-        id,
-        api_key_id,
-        user_id,
-        device_id,
-        first_seen_at,
-        last_seen_at,
-        last_seen_unix,
-        last_ip,
-        last_country
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `,
-    [crypto.randomUUID(), apiKeyId, safeUserId, safeDeviceId, now, now, nowUnix, ip, country],
-  );
-  return "";
+  return getAuthCore().enforceApiKeyIssueDeviceLimit(db, userId, userEmail, planCode, deviceId, env);
 }
 
 async function enforceApiKeyDeviceLimit(db, apiKeyId, userId, userEmail, planCode, deviceId, request, env) {
-  await ensureApiKeyTables(db);
-  const safeUserId = String(userId || "").trim();
-  if (!safeUserId) {
-    throw new Error("user_not_found");
-  }
-  const safeDeviceId = normalizeDeviceId(deviceId);
-  if (!safeDeviceId) {
-    throw new Error("missing_device_id");
-  }
-  const activeDeviceIds = await listActiveApiKeyDevicesForUser(db, safeUserId, env);
-  if (isDeviceLimitExemptEmail(userEmail, env)) {
-    await touchApiKeyDeviceActivity(db, apiKeyId, safeUserId, safeDeviceId, request, env);
-    return {
-      activeDeviceCount: activeDeviceIds.has(safeDeviceId) ? activeDeviceIds.size : (activeDeviceIds.size + 1),
-      maxDevices: Number.MAX_SAFE_INTEGER,
-      exempted: true,
-    };
-  }
-  const alreadyActive = activeDeviceIds.has(safeDeviceId);
-  const maxDevices = maxDevicesForPlan(planCode);
-  if (!alreadyActive && activeDeviceIds.size >= maxDevices) {
-    throw new Error("device_limit_exceeded");
-  }
-
-  await touchApiKeyDeviceActivity(db, apiKeyId, safeUserId, safeDeviceId, request, env);
-  return {
-    activeDeviceCount: activeDeviceIds.has(safeDeviceId) ? activeDeviceIds.size : (activeDeviceIds.size + 1),
-    maxDevices,
-  };
+  return getAuthCore().enforceApiKeyDeviceLimit(db, apiKeyId, userId, userEmail, planCode, deviceId, request, env);
 }
 
 async function createAccessToken(env, user, subscription, extraClaims = {}) {
-  void subscription;
-  const secret = requireSecret(env, "JWT_SIGNING_SECRET");
-  const exp = Math.floor(Date.now() / 1000) + (60 * 60);
-  const effectivePlanCode = normalizeRequestedPlan(
-    resolvePolicyPlanCode(user, subscription, env),
-  ) || PLAN_CODE_PLANETKA_FREE;
-  const basePayload = {
-    type: "access",
-    sub: user.id,
-    email: user.email,
-    plan_code: effectivePlanCode,
-    user_status: effectivePlanCode,
-    exp,
-  };
-  const payload = { ...basePayload };
-  if (extraClaims && typeof extraClaims === "object") {
-    for (const [key, value] of Object.entries(extraClaims)) {
-      if (value === undefined || value === null || key === "sub" || key === "email" || key === "exp") {
-        continue;
-      }
-      payload[key] = value;
-    }
-  }
-  return signJwt(
-    payload,
-    secret,
-  );
-}
-
-function resolveTileSessionTokenTtlSeconds(env = {}) {
-  return Math.min(
-    3600,
-    Math.max(
-      60,
-      parseRateLimitInteger(
-        env.TILE_SESSION_TOKEN_TTL_SECONDS,
-        DEFAULT_TILE_SESSION_TOKEN_TTL_SECONDS,
-      ),
-    ),
-  );
+  return getAuthCore().createAccessToken(env, user, subscription, extraClaims);
 }
 
 function normalizeResolveId(value) {
-  return String(value || "").trim().slice(0, 128);
+  return getAuthCore().normalizeResolveId(value);
 }
 
 async function issueTileSessionToken(env, auth, requestedQualityMode, requestedResolveId = "") {
-  const safeQualityMode = normalizeQualityMode(requestedQualityMode);
-  const safePlanCode = normalizeRequestedPlan(auth && auth.planCode);
-  if (!isQualityModeAllowedForPlan(safePlanCode, safeQualityMode)) {
-    return {
-      error: json(
-        {
-          ok: false,
-          error: "quality_mode_not_allowed_for_tier",
-          message: qualityModeNotAllowedMessage(safePlanCode, safeQualityMode),
-          requested_quality_mode: safeQualityMode,
-        },
-        403,
-        env,
-      ),
-    };
-  }
-  const safeResolveId = normalizeResolveId(requestedResolveId) || crypto.randomUUID();
-  const ttlSeconds = resolveTileSessionTokenTtlSeconds(env);
-  const exp = Math.floor(Date.now() / 1000) + ttlSeconds;
-  const payload = {
-    type: "tile_session",
-    sub: String(auth && auth.user && auth.user.id || "").trim(),
-    email: String(auth && auth.user && auth.user.email || "").trim(),
-    plan_code: safePlanCode,
-    quality_mode: safeQualityMode,
-    resolve_id: safeResolveId,
-    auth_method: String(auth && auth.authMethod || "").trim(),
-    device_id: String(auth && auth.deviceId || "").trim(),
-    exp,
-  };
-  const secret = requireSecret(env, "JWT_SIGNING_SECRET");
-  const tileToken = await signJwt(payload, secret);
-  return {
-    token: tileToken,
-    resolveId: safeResolveId,
-    qualityMode: safeQualityMode,
-    expiresInSeconds: ttlSeconds,
-    expiresAt: new Date(exp * 1000).toISOString(),
-    exp,
-  };
+  return getAuthCore().issueTileSessionToken(env, auth, requestedQualityMode, requestedResolveId);
 }
 
 async function readTileSessionClaims(request, env) {
-  const rawToken = String(request.headers.get("X-Planetka-Tile-Token") || "").trim();
-  if (!rawToken) {
-    return { claims: null };
-  }
-  const cacheKey = `tile_session:${rawToken}`;
-  const cached = authContextCacheGet(cacheKey, env);
-  if (cached && cached.tileSessionClaims) {
-    return { claims: cached.tileSessionClaims };
-  }
-  let payload;
-  try {
-    const secret = requireSecret(env, "JWT_SIGNING_SECRET");
-    payload = await verifyJwt(rawToken, secret);
-  } catch (error) {
-    const code = String(error && error.message || "invalid_tile_token");
-    const normalized = code === "token_expired" ? "tile_session_token_expired" : "invalid_tile_session_token";
-    return {
-      error: json(
-        {
-          ok: false,
-          error: normalized,
-        },
-        401,
-        env,
-      ),
-    };
-  }
-
-  if (String(payload && payload.type || "").trim() !== "tile_session") {
-    return { error: json({ ok: false, error: "invalid_tile_session_token" }, 401, env) };
-  }
-  const userId = String(payload && payload.sub || "").trim();
-  if (!userId) {
-    return { error: json({ ok: false, error: "invalid_tile_session_token" }, 401, env) };
-  }
-  const planCode = normalizeRequestedPlan(payload && (payload.plan_code || payload.user_status) || "");
-  const qualityMode = normalizeQualityMode(payload && payload.quality_mode || "");
-  const resolveId = normalizeResolveId(payload && payload.resolve_id || "");
-  const claims = {
-    userId,
-    userEmail: String(payload && payload.email || "").trim(),
-    planCode,
-    qualityMode,
-    resolveId,
-    authMethod: String(payload && payload.auth_method || "").trim(),
-    deviceId: normalizeDeviceId(payload && payload.device_id || ""),
-  };
-  authContextCacheSet(
-    cacheKey,
-    {
-      access: { exp: Number(payload && payload.exp || 0) || 0 },
-      tileSessionClaims: claims,
-    },
-    env,
-  );
-  return { claims };
+  return getAuthCore().readTileSessionClaims(request, env);
 }
 
 async function createRefreshSession(db, userId, expiresAtOverride = "", metadata = {}) {
-  await ensureRefreshSessionColumns(db);
-  const refreshToken = randomToken(48);
-  const refreshHash = await sha256Hex(refreshToken);
-  const refreshSessionId = crypto.randomUUID();
-  const createdAt = nowIso();
-  const expiresAt = String(expiresAtOverride || "").trim() || addDaysIso(30);
-  const authMethod = String(metadata.auth_method || metadata.authMethod || "").trim();
-  const apiKeyId = String(metadata.api_key_id || metadata.apiKeyId || "").trim();
-  const deviceId = normalizeDeviceId(metadata.device_id || metadata.deviceId || "");
-  await dbRun(
-    db,
-    `
-      INSERT INTO refresh_sessions (
-        id,
-        user_id,
-        refresh_token_hash,
-        expires_at,
-        created_at,
-        auth_method,
-        api_key_id,
-        device_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `,
-    [refreshSessionId, userId, refreshHash, expiresAt, createdAt, authMethod || null, apiKeyId || null, deviceId || null],
-  );
-  return refreshToken;
+  return getAuthCore().createRefreshSession(db, userId, expiresAtOverride, metadata);
 }
 
 function genericAuthStartResponse(env) {
-  return json(
-    {
-      ok: true,
-      message: "If the email is valid, a Planetka API key activation link has been sent.",
-    },
-    200,
-    env,
-  );
+  return getAuthCore().genericAuthStartResponse(env);
 }
 
 async function sendOpsAlertEmail(env, subject, lines = []) {
