@@ -1,4 +1,45 @@
+import bpy
 import math
+from bpy.props import EnumProperty
+
+from ..error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
+from ..extension_prefs import get_earth_object
+from ..operator_utils import ErrorCode, fail, require_planetka_props, require_scene
+from ..state import logger
+from .navigation_helpers import (
+    _anchor_frame_world,
+    _apply_navigation_shot,
+    _earth_radius_blender_units,
+    _ensure_close_clip_limits,
+    _ensure_ortho_full_globe_if_needed,
+    _full_globe_altitude_km,
+    _max_proximity_altitude_km,
+    _navigate_camera_internal,
+    _switch_viewport_to_camera_view,
+    _update_shot_anchor_object,
+)
+
+
+def _module_deps():
+    return {
+        "require_scene": require_scene,
+        "require_planetka_props": require_planetka_props,
+        "logger": logger,
+        "fail": fail,
+        "ErrorCode": ErrorCode,
+        "PLANETKA_RECOVERABLE_EXCEPTIONS": PLANETKA_RECOVERABLE_EXCEPTIONS,
+        "get_earth_object": get_earth_object,
+        "_earth_radius_blender_units": _earth_radius_blender_units,
+        "_full_globe_altitude_km": _full_globe_altitude_km,
+        "_ensure_ortho_full_globe_if_needed": _ensure_ortho_full_globe_if_needed,
+        "_max_proximity_altitude_km": _max_proximity_altitude_km,
+        "_navigate_camera_internal": _navigate_camera_internal,
+        "_anchor_frame_world": _anchor_frame_world,
+        "_update_shot_anchor_object": _update_shot_anchor_object,
+        "_ensure_close_clip_limits": _ensure_close_clip_limits,
+        "_switch_viewport_to_camera_view": _switch_viewport_to_camera_view,
+        "_apply_navigation_shot": _apply_navigation_shot,
+    }
 
 
 def navigation_apply_shot_execute(operator, context, deps):
@@ -494,3 +535,53 @@ def sunlight_preset_execute(operator, context, deps):
 
     operator.report({'INFO'}, f"Sunlight preset applied: {preset.replace('_', ' ').title()}.")
     return {'FINISHED'}
+
+
+class PLANETKA_OT_NavigationPreset(bpy.types.Operator):
+    bl_idname = "planetka.navigation_preset"
+    bl_label = "Set Navigation Preset"
+    bl_description = "Apply a Navigation altitude preset and update camera placement for the current location"
+
+    preset: EnumProperty(
+        name="Preset",
+        items=(
+            ("MAX_PROXIMITY", "Max Proximity", "Closest altitude near texture quality limit (Caution target)"),
+            ("ISS_ORBIT", "ISS Orbit", "Set altitude to 400 km"),
+            ("SENTINEL2", "ESA Sentinel-2", "Set altitude to 786 km (Sentinel-2 nominal orbit)"),
+            ("HIGH_ORBIT", "Full Globe", "Fit full Earth with room around edges"),
+        ),
+        default="ISS_ORBIT",
+    )
+
+    def execute(self, context):
+        return navigation_preset_execute(self, context, _module_deps())
+
+
+class PLANETKA_OT_SunlightPreset(bpy.types.Operator):
+    bl_idname = "planetka.sunlight_preset"
+    bl_label = "Sunlight Preset"
+    bl_description = (
+        "Set Planetka Sunlight using common lighting presets around the current location "
+        "(seasonal tilt is clamped to ±23.5°)"
+    )
+
+    preset: EnumProperty(
+        name="Preset",
+        items=(
+            ("DAWN", "Dawn", ""),
+            ("SUNRISE", "Sunrise", ""),
+            ("EARLY_MORNING", "Early Morning", ""),
+            ("SUNSET", "Sunset", ""),
+            ("MID_MORNING", "Mid-morning", ""),
+            ("MID_AFTERNOON", "Mid-afternoon", ""),
+            ("LATE_AFTERNOON", "Late Afternoon", ""),
+            ("NOON", "Noon", ""),
+            ("DUSK", "Dusk", ""),
+            ("NIGHT", "Night", ""),
+        ),
+        default="NOON",
+        options={'HIDDEN', 'SKIP_SAVE'},
+    )
+
+    def execute(self, context):
+        return sunlight_preset_execute(self, context, _module_deps())

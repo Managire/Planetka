@@ -72,6 +72,10 @@ from .planetka_ops.import_export_ops import (
 )
 from .planetka_ops import earth_lifecycle_ops as _earth_lifecycle_ops
 from .planetka_ops import navigation_ops as _navigation_ops
+from .planetka_ops.navigation_ops import (
+    PLANETKA_OT_NavigationPreset,
+    PLANETKA_OT_SunlightPreset,
+)
 from .planetka_ops.scene_setup_ops import (
     PLANETKA_OT_RemoveDefaultScene,
     PLANETKA_OT_SetBackgroundBlack,
@@ -799,53 +803,3 @@ class PLANETKA_OT_ResetSurfaceGradingSection(bpy.types.Operator):
 
         self.report({'INFO'}, f"Surface Grading '{section_key.title()}' reset ({reset_count}/{touched_count} values).")
         return {'FINISHED'}
-
-
-class PLANETKA_OT_NavigationPreset(bpy.types.Operator):
-    bl_idname = "planetka.navigation_preset"
-    bl_label = "Set Navigation Preset"
-    bl_description = "Apply a Navigation altitude preset and update camera placement for the current location"
-
-    preset: EnumProperty(
-        name="Preset",
-        items=(
-            ("MAX_PROXIMITY", "Max Proximity", "Closest altitude near texture quality limit (Caution target)"),
-            ("ISS_ORBIT", "ISS Orbit", "Set altitude to 400 km"),
-            ("SENTINEL2", "ESA Sentinel-2", "Set altitude to 786 km (Sentinel-2 nominal orbit)"),
-            ("HIGH_ORBIT", "Full Globe", "Fit full Earth with room around edges"),
-        ),
-        default="ISS_ORBIT",
-    )
-
-    def execute(self, context):
-        return _navigation_ops.navigation_preset_execute(self, context, globals())
-
-
-class PLANETKA_OT_SunlightPreset(bpy.types.Operator):
-    bl_idname = "planetka.sunlight_preset"
-    bl_label = "Sunlight Preset"
-    bl_description = (
-        "Set Planetka Sunlight using common lighting presets around the current location "
-        "(seasonal tilt is clamped to ±23.5°)"
-    )
-
-    preset: EnumProperty(
-        name="Preset",
-        items=(
-            ("DAWN", "Dawn", ""),
-            ("SUNRISE", "Sunrise", ""),
-            ("EARLY_MORNING", "Early Morning", ""),
-            ("SUNSET", "Sunset", ""),
-            ("MID_MORNING", "Mid-morning", ""),
-            ("MID_AFTERNOON", "Mid-afternoon", ""),
-            ("LATE_AFTERNOON", "Late Afternoon", ""),
-            ("NOON", "Noon", ""),
-            ("DUSK", "Dusk", ""),
-            ("NIGHT", "Night", ""),
-        ),
-        default="NOON",
-        options={'HIDDEN', 'SKIP_SAVE'},
-    )
-
-    def execute(self, context):
-        return _navigation_ops.sunlight_preset_execute(self, context, globals())
