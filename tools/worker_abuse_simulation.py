@@ -79,7 +79,7 @@ def _run_static_guard_checks(root: Path) -> tuple[int, int]:
         ("all plans enforce single-device runtime", "function maxDevicesForPlan(planCode)"),
         ("max device count hardcoded to 1", "return 1;"),
         ("issue-time device-limit enforcement exists", "await enforceApiKeyIssueDeviceLimit("),
-        ("public API key request forces free plan", "const requestedPlan = PLAN_CODE_PLANETKA;"),
+        ("public API key request forces free plan", "const requestedPlan = PLAN_CODE_PLANETKA_FREE;"),
         ("admin query-token rejection enabled", "query_token_not_allowed"),
     ]
 
@@ -144,20 +144,19 @@ def main() -> int:
     checks = 0
     failures = 0
 
-    # 1) Legacy auth path disabled in production mode
+    # 1) Health reachable + legacy auth path removed
     checks += 1
     health_status, health_payload, _ = _get_json(f"{base_url}/health")
-    magic_link_enabled = bool(health_status == 200 and health_payload.get("magic_link_auth_enabled"))
-    ok = health_status == 200 and not magic_link_enabled
-    _print_check(ok, "Legacy magic-link auth disabled in /health")
+    ok = health_status == 200 and bool(health_payload.get("ok"))
+    _print_check(ok, "/health reachable")
     if not ok:
         failures += 1
 
     checks += 1
     probe_email = f"abuse-probe-{int(time.time())}@example.com"
     status, payload, _ = _post_json(f"{base_url}/auth/start", {"email": probe_email})
-    ok = status == 404 and str(payload.get("error", "")).strip() == "magic_link_auth_disabled"
-    _print_check(ok, "Legacy /auth/start endpoint blocked")
+    ok = status == 404 and str(payload.get("error", "")).strip() == "not_found"
+    _print_check(ok, "Legacy /auth/start endpoint removed")
     if not ok:
         failures += 1
 

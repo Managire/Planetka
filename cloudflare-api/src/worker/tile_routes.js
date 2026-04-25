@@ -32,15 +32,9 @@ function buildTileResponseHeaders(resolveTileCacheControl, clampNonNegativeInt, 
 export async function handleTileSessionStart(request, env, deps) {
   const {
     requireAuthenticatedUserContext,
-    normalizeDeviceId,
-    enforceTileSessionThrottleGateCached,
-    requestClientIp,
-    rateLimitedResponse,
-    resolveDownloadThrottleRetryAfterSeconds,
     parseJson,
     issueTileSessionToken,
     normalizeRequestedPlan,
-    requireDb,
   } = deps;
 
   const auth = await requireAuthenticatedUserContext(
@@ -50,28 +44,6 @@ export async function handleTileSessionStart(request, env, deps) {
   );
   if (auth.error) {
     return auth.error;
-  }
-  const db = requireDb(env);
-  const requestDeviceId = normalizeDeviceId(
-    auth.deviceId || request.headers.get("X-Planetka-Device-Id") || "",
-  );
-  const throttleGate = await enforceTileSessionThrottleGateCached(
-    db,
-    env,
-    auth.user,
-    requestDeviceId,
-    requestClientIp(request),
-  );
-  if (throttleGate && throttleGate.blocked) {
-    return rateLimitedResponse(
-      env,
-      String(throttleGate.code || "download_throttled"),
-      String(
-        throttleGate.message
-        || "High-volume data use detected. Download speed is temporarily throttled. Contact Planetka support if needed.",
-      ),
-      resolveDownloadThrottleRetryAfterSeconds(throttleGate),
-    );
   }
   const body = await parseJson(request);
   const requestedQualityMode = String(
@@ -108,10 +80,8 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
   const {
     PLAN_CODE_PLANETKA_FREE,
     clampNonNegativeInt,
-    enforceTileSessionThrottleGateCached, // unused here intentionally not needed
     isQualityModeAllowedForPlan,
     isTileHotPathMonitoringEnabled,
-    maybeProcessDownloadMonitoring,
     maybeSignalTileFarmingActivity,
     minimumPlanQualityForTile,
     normalizeDeviceId,
@@ -128,7 +98,6 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
     resolveTileCacheControl,
     nowIso,
   } = deps;
-  void enforceTileSessionThrottleGateCached;
 
   if (!env.PLANETKA_DATA) {
     return json({ ok: false, error: "missing_r2_binding" }, 500, env);
@@ -354,36 +323,17 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
       if (!monitoringEnabled) {
         return;
       }
-      const downloadMonitoringPipeline = async () => {
-        if (!(statusCode === 200 && eventBytesServed > 0)) {
-          return;
-        }
-        const monitoringPayload = {
-          userId: String(user.id || ""),
-          userEmail: String(user.email || ""),
-          planCode,
-          bytesUsed: eventBytesServed,
-          createdAtUnix: Math.floor(Date.now() / 1000),
-          ip: clientIp,
-          deviceId: String(deviceId || ""),
-          country: cfCountry,
-        };
-        await maybeProcessDownloadMonitoring(db, env, monitoringPayload);
-      };
-      await Promise.all([
-        maybeSignalTileFarmingActivity(db, env, {
-          userId: String(user.id || ""),
-          userEmail: String(user.email || ""),
-          ip: clientIp,
-          deviceId: String(deviceId || ""),
-          resolveId,
-          tileKey: eventTileKey,
-          method: String(request.method || "GET"),
-          path,
-          statusCode,
-        }),
-        downloadMonitoringPipeline(),
-      ]);
+      await maybeSignalTileFarmingActivity(db, env, {
+        userId: String(user.id || ""),
+        userEmail: String(user.email || ""),
+        ip: clientIp,
+        deviceId: String(deviceId || ""),
+        resolveId,
+        tileKey: eventTileKey,
+        method: String(request.method || "GET"),
+        path,
+        statusCode,
+      });
     };
     if (ctx && typeof ctx.waitUntil === "function") {
       ctx.waitUntil(processSignals());

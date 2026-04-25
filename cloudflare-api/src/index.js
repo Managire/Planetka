@@ -23,7 +23,6 @@ import {
   isBlockedStatus,
   isDeviceLimitExemptEmail,
   isPaidRequestedPlan,
-  isPermanentProEmail,
   isQualityModeAllowedForPlan,
   normalizePlanCode,
   normalizeQualityMode,
@@ -33,11 +32,9 @@ import {
   planAccessSummary,
   planDisplayName,
   qualityModeNotAllowedMessage,
-  resolveEntitlementState,
   resolvePlanCode,
   resolvePlanPriority,
   resolvePolicyPlanCode,
-  subscriptionStatusForUser,
 } from "./worker/entitlements.js";
 import {
   dispatchAdminRoute,
@@ -67,9 +64,7 @@ import {
   handleAdminUserBlock as handleAdminUserBlockRoute,
   handleAdminUserHardBlock as handleAdminUserHardBlockRoute,
   handleAdminUserSetPlan as handleAdminUserSetPlanRoute,
-  handleAdminUserThrottle as handleAdminUserThrottleRoute,
   handleAdminUserUnblock as handleAdminUserUnblockRoute,
-  handleAdminUserUnthrottle as handleAdminUserUnthrottleRoute,
 } from "./worker/admin_user_handlers.js";
 import {
   handleStripeWebhook as handleStripeWebhookRoute,
@@ -81,7 +76,6 @@ import {
 const encoder = new TextEncoder();
 const ADDON_ID = "planetka";
 const BYTES_PER_GB = 1024 * 1024 * 1024;
-const DEFAULT_HOSTED_ACCESS_DURATION_DAYS = 365;
 const DEFAULT_UPGRADE_URL = "https://www.planetka.io/blender/pricing";
 const DEFAULT_CONTACT_URL = "https://www.planetka.io/contact-me";
 const DEFAULT_ADMIN_ANALYTICS_TILE_MAP_KEY = "planetka-assets/Admin/world_map_720x360.jpg";
@@ -97,17 +91,11 @@ const DEFAULT_RATE_LIMIT_AUTH_START_IP_LIMIT = 20;
 const DEFAULT_RATE_LIMIT_AUTH_START_IP_WINDOW_SECONDS = 60;
 const DEFAULT_RATE_LIMIT_AUTH_START_EMAIL_LIMIT = 6;
 const DEFAULT_RATE_LIMIT_AUTH_START_EMAIL_WINDOW_SECONDS = 900;
-const DEFAULT_RATE_LIMIT_DEVICE_POLL_IP_LIMIT = 300;
-const DEFAULT_RATE_LIMIT_DEVICE_POLL_IP_WINDOW_SECONDS = 60;
-const DEFAULT_RATE_LIMIT_DEVICE_POLL_CODE_LIMIT = 120;
-const DEFAULT_RATE_LIMIT_DEVICE_POLL_CODE_WINDOW_SECONDS = 60;
 const DEFAULT_RATE_LIMIT_ADMIN_LOGIN_IP_LIMIT = 20;
 const DEFAULT_RATE_LIMIT_ADMIN_LOGIN_IP_WINDOW_SECONDS = 300;
 const DEFAULT_REFRESH_SESSION_CLEANUP_RETENTION_DAYS = 30;
 const DEFAULT_ALERT_AUTH_429_THRESHOLD = 10;
 const DEFAULT_ALERT_AUTH_429_WINDOW_SECONDS = 60;
-const DEFAULT_ALERT_DEVICE_POLL_429_THRESHOLD = 30;
-const DEFAULT_ALERT_DEVICE_POLL_429_WINDOW_SECONDS = 60;
 const DEFAULT_ALERT_AUTH_ERROR_THRESHOLD = 5;
 const DEFAULT_ALERT_AUTH_ERROR_WINDOW_SECONDS = 300;
 const DEFAULT_ALERT_PROD_403_THRESHOLD = 25;
@@ -118,8 +106,6 @@ const DEFAULT_ALERT_PROD_TILE_MISS_THRESHOLD = 25;
 const DEFAULT_ALERT_PROD_TILE_MISS_WINDOW_SECONDS = 300;
 const DEFAULT_ALERT_PROD_TILE_ERROR_THRESHOLD = 10;
 const DEFAULT_ALERT_PROD_TILE_ERROR_WINDOW_SECONDS = 300;
-const DEFAULT_ALERT_PROD_CLAIM_REJECTION_THRESHOLD = 5;
-const DEFAULT_ALERT_PROD_CLAIM_REJECTION_WINDOW_SECONDS = 3600;
 const DEFAULT_ALERT_PROD_COOLDOWN_SECONDS = 300;
 const DEFAULT_TILE_FARM_ALERT_WINDOW_SECONDS = 300;
 const DEFAULT_TILE_FARM_ALERT_USER_REQUEST_THRESHOLD = 300;
@@ -128,18 +114,9 @@ const DEFAULT_TILE_FARM_ALERT_UNIQUE_TILE_THRESHOLD = 200;
 const DEFAULT_TILE_FARM_ALERT_UNTAGGED_MIN_REQUESTS = 120;
 const DEFAULT_TILE_FARM_ALERT_UNTAGGED_PERCENT = 90;
 const DEFAULT_TILE_FARM_ALERT_EMAIL_COOLDOWN_SECONDS = 300;
-const DEFAULT_DOWNLOAD_MARK_STEP_GB = 100;
-const DEFAULT_DOWNLOAD_THROTTLE_FREE_DAILY_GB = 0;
-const DEFAULT_DOWNLOAD_THROTTLE_PRO_DAILY_GB = 0;
-const DEFAULT_DOWNLOAD_THROTTLE_DURATION_MINUTES = 1440;
-const DEFAULT_DOWNLOAD_THROTTLED_REQUESTS_PER_MINUTE = 0;
-const DEFAULT_DOWNLOAD_THROTTLED_DELAY_MS = 30000;
-const DEFAULT_TILE_SESSION_THROTTLE_CHECK_TTL_SECONDS = 1800;
-const DEFAULT_TILE_SESSION_THROTTLE_CACHE_MAX_ENTRIES = 4096;
 const DEFAULT_TILE_SESSION_TOKEN_TTL_SECONDS = 3600;
 const DEFAULT_AUTH_CONTEXT_CACHE_TTL_SECONDS = 60;
 const DEFAULT_AUTH_CONTEXT_CACHE_MAX_ENTRIES = 4096;
-const DEFAULT_DOWNLOAD_ALERT_EMAIL_COOLDOWN_SECONDS = 300;
 const DEFAULT_MONTHLY_COST_ALERT_BASE_USD = 50;
 const DEFAULT_MONTHLY_COST_ALERT_STEP_USD = 10;
 const DEFAULT_R2_ESTIMATED_STORAGE_GB = 2600;
@@ -158,7 +135,6 @@ const DEFAULT_AUTH_REFRESH_HEALTH_WINDOW_SECONDS = 7 * 86400;
 const DEFAULT_ANALYTICS_EXCLUDED_EMAIL_PATTERNS = "stressfree%";
 const DEFAULT_ANALYTICS_ADMIN_EMAILS = "info@planetka.io,tom.griger@gmail.com";
 const DEFAULT_ADMIN_LOGIN_EMAIL = "tom.griger@gmail.com";
-const DEFAULT_PERMANENT_PRO_EMAILS = "";
 const DEFAULT_TILE_EVENT_RETENTION_DAYS = 30;
 const DEFAULT_AUTH_REFRESH_EVENT_RETENTION_DAYS = 30;
 const DEFAULT_TILE_ROLLUP_RETENTION_DAYS = 365;
@@ -166,29 +142,17 @@ const BUG_REPORT_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 const DEFAULT_TILE_BROWSER_MAX_AGE_SECONDS = 86400;
 const DEFAULT_TILE_EDGE_MAX_AGE_SECONDS = 604800;
 const MAX_TILE_MAX_AGE_SECONDS = 31536000;
-const DEFAULT_ENABLE_MAGIC_LINK_AUTH = false;
-const DEFAULT_PRO_GRACE_HOURS = 24;
-const DEFAULT_PENDING_CLAIM_COOLDOWN_DAYS = 7;
 const DEFAULT_API_KEY_DEVICE_ACTIVE_WINDOW_SECONDS = 900;
 const DEFAULT_API_KEY_REQUEST_MIN_AGE_SECONDS = 2;
-const DEFAULT_REJECTED_CLAIM_ALERT_THRESHOLD = 3;
-const DEFAULT_REJECTED_CLAIM_ALERT_WINDOW_SECONDS = 86400;
-const DEFAULT_PAID_CLAIM_RETENTION_DAYS = 180;
 const RATE_LIMIT_PRUNE_INTERVAL_SECONDS = 300;
 const RATE_LIMIT_ENTRY_TTL_SECONDS = 172800;
 const API_KEY_REQUEST_TYPE_FREE = "free";
-const API_KEY_REQUEST_TYPE_PAID_CLAIM = "paid_claim";
-const CLAIM_REVIEW_PENDING = "pending";
-const CLAIM_REVIEW_APPROVED = "approved";
-const CLAIM_REVIEW_REJECTED = "rejected";
 let userConsentColumnsReady = false;
-let magicLinksTokenIndexReady = false;
 let stripeWebhookEventsTableReady = false;
 let rateLimitsTableReady = false;
 let tileRequestEventsTableReady = false;
 let authRefreshEventsTableReady = false;
 let apiKeyTablesReady = false;
-let userProvisionalColumnsReady = false;
 let refreshSessionColumnsReady = false;
 let adminHardBlocksTableReady = false;
 let rateLimitsLastPruneAt = 0;
@@ -206,7 +170,6 @@ let cloudflareR2BillableUsageCache = {
   value: null,
 };
 let authContextCache = new Map();
-let tileSessionThrottleGateCache = new Map();
 
 const AUTH_SESSION_DEPS = {
   authContextCacheGet,
@@ -219,7 +182,6 @@ const AUTH_SESSION_DEPS = {
   isApiKeyUsableById,
   isBlockedStatus,
   isPrimaryAnalyticsAdmin,
-  isUnconfirmedProvisionalActive,
   json,
   normalizeDeviceId,
   normalizeRequestedPlan,
@@ -288,37 +250,25 @@ const ADMIN_SESSION_DEPS = {
 };
 
 const ADMIN_USER_DEPS = {
-  clampNonNegativeInt,
-  clearUserDownloadThrottle,
   dbGet,
   dbMetaChanges,
   dbRun,
-  DEFAULT_DOWNLOAD_THROTTLE_DURATION_MINUTES,
   ensureAdminHardBlocksTable,
   ensureApiKeyTables,
   ensureRefreshSessionColumns,
-  ensureUserDownloadCountersTable,
-  ensureUserProvisionalColumns,
   findUserByEmail,
   findUserById,
-  findUserDownloadCounter,
-  findUserDownloadCounterByEmail,
-  isPaidRequestedPlan,
   json,
   normalizeDeviceId,
   normalizeEmail,
   normalizeRequestedPlan,
   nowIso,
-  parseBooleanFlag,
   parseJson,
-  parseNonNegativeInteger,
   PLAN_CODE_PLANETKA,
   requireAnalyticsAdmin: (request, env) => requireAnalyticsAdmin(request, env, AUTH_SESSION_DEPS),
-  setUserDownloadThrottle,
 };
 
 const BILLING_DEPS = {
-  computeHostedStreamingAccessExpiryIso,
   dbRun,
   ensureStripeWebhookEventsTable,
   enforceUserPlanPolicy,
@@ -395,14 +345,6 @@ function isTileHotPathMonitoringEnabled(env = {}) {
   if (raw === undefined || raw === null || String(raw).trim() === "") {
     // Default off: keep tile request path focused on serving data.
     return false;
-  }
-  return parseBooleanFlag(raw);
-}
-
-function isMagicLinkAuthEnabled(env = {}) {
-  const raw = env.ENABLE_MAGIC_LINK_AUTH;
-  if (raw === undefined || raw === null || String(raw).trim() === "") {
-    return DEFAULT_ENABLE_MAGIC_LINK_AUTH;
   }
   return parseBooleanFlag(raw);
 }
@@ -507,10 +449,6 @@ function parseClaimCooldownDays(env) {
   );
 }
 
-function computePendingClaimCooldownIso(env) {
-  return addDaysIso(parseClaimCooldownDays(env));
-}
-
 function thresholdHit(count, threshold) {
   if (threshold <= 0) {
     return false;
@@ -518,51 +456,11 @@ function thresholdHit(count, threshold) {
   return count === threshold || (count > threshold && (count % threshold) === 0);
 }
 
-function normalizeClaimReviewStatus(value) {
-  const normalized = String(value || "").trim().toLowerCase();
-  if (normalized === CLAIM_REVIEW_APPROVED) {
-    return CLAIM_REVIEW_APPROVED;
-  }
-  if (normalized === CLAIM_REVIEW_REJECTED) {
-    return CLAIM_REVIEW_REJECTED;
-  }
-  return CLAIM_REVIEW_PENDING;
-}
-
-function isUnconfirmedProvisionalActive(user) {
-  const entitlement = resolveEntitlementState(user);
-  return entitlement.state === "provisional_paid";
-}
-
-function isUnconfirmedProvisionalExpired(user) {
-  const entitlement = resolveEntitlementState(user);
-  return entitlement.state === "expired_provisional";
-}
-
 function computeApiKeyExpiryIso(planCode, env) {
   void planCode;
   void env;
   // API keys are non-expiring for this release.
   return "";
-}
-
-function computeHostedStreamingAccessExpiryIso(env, startMs = Date.now()) {
-  const durationDays = Math.max(
-    1,
-    Math.floor(parsePositiveNumber(env.HOSTED_ACCESS_DURATION_DAYS, DEFAULT_HOSTED_ACCESS_DURATION_DAYS)),
-  );
-  const safeStartMs = Number.isFinite(Number(startMs))
-    ? Math.max(0, Math.floor(Number(startMs)))
-    : Date.now();
-  return new Date(safeStartMs + (durationDays * 24 * 60 * 60 * 1000)).toISOString();
-}
-
-function computeProvisionalExpiryIso(env) {
-  const graceHours = Math.max(
-    1,
-    Math.floor(parsePositiveNumber(env.PRO_LICENSE_GRACE_HOURS, DEFAULT_PRO_GRACE_HOURS)),
-  );
-  return new Date(Date.now() + (graceHours * 60 * 60 * 1000)).toISOString();
 }
 
 function maskApiKey(value) {
@@ -798,128 +696,6 @@ function authContextCacheSet(key, value, env = {}) {
   });
 }
 
-function tileSessionThrottleCheckCacheTtlMs(env = {}) {
-  const ttlSeconds = Math.min(
-    3600,
-    Math.max(
-      60,
-      parseRateLimitInteger(
-        env.TILE_SESSION_THROTTLE_CHECK_TTL_SECONDS,
-        DEFAULT_TILE_SESSION_THROTTLE_CHECK_TTL_SECONDS,
-      ),
-    ),
-  );
-  return ttlSeconds * 1000;
-}
-
-function tileSessionThrottleCacheMaxEntries(env = {}) {
-  return Math.min(
-    20000,
-    Math.max(
-      64,
-      parseRateLimitInteger(
-        env.TILE_SESSION_THROTTLE_CACHE_MAX_ENTRIES,
-        DEFAULT_TILE_SESSION_THROTTLE_CACHE_MAX_ENTRIES,
-      ),
-    ),
-  );
-}
-
-function tileSessionThrottleGateCacheGet(key) {
-  const safeKey = String(key || "").trim();
-  if (!safeKey) {
-    return null;
-  }
-  const entry = tileSessionThrottleGateCache.get(safeKey);
-  if (!entry) {
-    return null;
-  }
-  if (!Number.isFinite(entry.expiresAtMs) || entry.expiresAtMs <= Date.now()) {
-    tileSessionThrottleGateCache.delete(safeKey);
-    return null;
-  }
-  return entry.value;
-}
-
-function tileSessionThrottleGateCacheSet(key, value, env = {}, ttlMsOverride = 0) {
-  const safeKey = String(key || "").trim();
-  if (!safeKey) {
-    return;
-  }
-  const baseTtlMs = tileSessionThrottleCheckCacheTtlMs(env);
-  let ttlMs = Number.isFinite(Number(ttlMsOverride)) && Number(ttlMsOverride) > 0
-    ? Number(ttlMsOverride)
-    : baseTtlMs;
-  ttlMs = Math.max(1000, Math.min(baseTtlMs, ttlMs));
-
-  const maxEntries = tileSessionThrottleCacheMaxEntries(env);
-  if (tileSessionThrottleGateCache.size >= maxEntries) {
-    const nowMs = Date.now();
-    for (const [entryKey, entryValue] of tileSessionThrottleGateCache.entries()) {
-      if (!entryValue || !Number.isFinite(entryValue.expiresAtMs) || entryValue.expiresAtMs <= nowMs) {
-        tileSessionThrottleGateCache.delete(entryKey);
-      }
-    }
-  }
-  while (tileSessionThrottleGateCache.size >= maxEntries) {
-    const oldestKey = tileSessionThrottleGateCache.keys().next().value;
-    if (!oldestKey) {
-      break;
-    }
-    tileSessionThrottleGateCache.delete(oldestKey);
-  }
-  tileSessionThrottleGateCache.set(safeKey, {
-    expiresAtMs: Date.now() + ttlMs,
-    value,
-  });
-}
-
-function resolveDownloadThrottleRetryAfterSeconds(gate) {
-  const direct = clampNonNegativeInt(gate && gate.retryAfterSeconds);
-  if (direct > 0) {
-    return direct;
-  }
-  const throttledUntilMs = Date.parse(String(gate && gate.throttledUntil || ""));
-  if (Number.isFinite(throttledUntilMs)) {
-    return Math.max(1, Math.ceil((throttledUntilMs - Date.now()) / 1000));
-  }
-  return 60;
-}
-
-async function enforceTileSessionThrottleGateCached(db, env, user, requestDeviceId = "", requestIp = "") {
-  const userId = String(user && user.id || "").trim();
-  if (!userId) {
-    return null;
-  }
-  const cacheKey = `tile_session_gate:${userId}`;
-  const cached = tileSessionThrottleGateCacheGet(cacheKey);
-  if (cached) {
-    return cached.throttleGate;
-  }
-  const throttleGate = await enforceDownloadThrottleGate(db, env, user, requestDeviceId, requestIp);
-  if (throttleGate && (throttleGate.blocked || throttleGate.isThrottled)) {
-    const retryAfterSeconds = resolveDownloadThrottleRetryAfterSeconds(throttleGate);
-    const ttlMs = Math.min(60000, Math.max(5000, retryAfterSeconds * 1000));
-    tileSessionThrottleGateCacheSet(
-      cacheKey,
-      {
-        throttleGate,
-      },
-      env,
-      ttlMs,
-    );
-    return throttleGate;
-  }
-  tileSessionThrottleGateCacheSet(
-    cacheKey,
-    {
-      throttleGate: null,
-    },
-    env,
-  );
-  return null;
-}
-
 async function trackThresholdAlertDb(db, eventName, threshold, windowSeconds, payload = {}) {
   if (!db || !eventName || threshold <= 0 || windowSeconds <= 0) {
     return;
@@ -987,25 +763,21 @@ function parseAdminEmailSet(env) {
   return set;
 }
 
-function parseDownloadAlertWhitelistSet(env) {
-  const explicit = parseCsvEmailSet(env.DOWNLOAD_ALERT_WHITELIST_EMAILS, "");
+function parseAbuseAlertWhitelistSet(env) {
+  const explicit = parseCsvEmailSet(env.ABUSE_ALERT_WHITELIST_EMAILS, "");
   const adminSet = parseAdminEmailSet(env);
-  const permanentSet = parseCsvEmailSet(env.PERMANENT_PRO_EMAILS, DEFAULT_PERMANENT_PRO_EMAILS);
   for (const email of adminSet) {
-    explicit.add(email);
-  }
-  for (const email of permanentSet) {
     explicit.add(email);
   }
   return explicit;
 }
 
-function isDownloadAlertWhitelisted(email, env) {
+function isAbuseAlertWhitelisted(email, env) {
   const normalized = normalizeEmail(email);
   if (!normalized) {
     return false;
   }
-  const whitelist = parseDownloadAlertWhitelistSet(env);
+  const whitelist = parseAbuseAlertWhitelistSet(env);
   return whitelist.has(normalized);
 }
 
@@ -1401,49 +1173,6 @@ async function ensureTileRequestRollupTables(db) {
   );
 }
 
-async function ensureUserDownloadCountersTable(db) {
-  await dbRun(
-    db,
-    `
-      CREATE TABLE IF NOT EXISTS user_download_counters (
-        user_id TEXT PRIMARY KEY,
-        user_email TEXT NOT NULL,
-        plan_code TEXT NOT NULL DEFAULT 'planetka',
-        lifetime_bytes INTEGER NOT NULL DEFAULT 0,
-        hour_bucket_start_unix INTEGER NOT NULL DEFAULT 0,
-        hour_bytes INTEGER NOT NULL DEFAULT 0,
-        day_bucket_start_unix INTEGER NOT NULL DEFAULT 0,
-        day_bytes INTEGER NOT NULL DEFAULT 0,
-        week_bucket_start_unix INTEGER NOT NULL DEFAULT 0,
-        week_bytes INTEGER NOT NULL DEFAULT 0,
-        month_bucket_start TEXT NOT NULL DEFAULT '',
-        month_bytes INTEGER NOT NULL DEFAULT 0,
-        last_notified_lifetime_mark INTEGER NOT NULL DEFAULT 0,
-        last_notified_hour_mark INTEGER NOT NULL DEFAULT 0,
-        last_notified_day_mark INTEGER NOT NULL DEFAULT 0,
-        last_notified_week_mark INTEGER NOT NULL DEFAULT 0,
-        last_notified_month_mark INTEGER NOT NULL DEFAULT 0,
-        throttled_until TEXT,
-        throttle_reason TEXT,
-        last_request_at TEXT,
-        last_ip TEXT,
-        last_device_id TEXT,
-        last_country TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      )
-    `,
-  );
-  await dbRun(
-    db,
-    `CREATE INDEX IF NOT EXISTS idx_user_download_counters_plan ON user_download_counters(plan_code, lifetime_bytes DESC)`,
-  );
-  await dbRun(
-    db,
-    `CREATE INDEX IF NOT EXISTS idx_user_download_counters_updated ON user_download_counters(updated_at DESC)`,
-  );
-}
-
 async function ensureMonthlyCostAlertStateTable(db) {
   await dbRun(
     db,
@@ -1462,152 +1191,6 @@ async function ensureMonthlyCostAlertStateTable(db) {
     db,
     `CREATE INDEX IF NOT EXISTS idx_monthly_cost_alert_state_updated ON monthly_cost_alert_state(updated_at DESC)`,
   );
-}
-
-async function findUserDownloadCounter(db, userId) {
-  const safeUserId = String(userId || "").trim();
-  if (!safeUserId) {
-    return null;
-  }
-  await ensureUserDownloadCountersTable(db);
-  return dbGet(
-    db,
-    `
-      SELECT
-        user_id,
-        user_email,
-        plan_code,
-        lifetime_bytes,
-        hour_bucket_start_unix,
-        hour_bytes,
-        day_bucket_start_unix,
-        day_bytes,
-        week_bucket_start_unix,
-        week_bytes,
-        month_bucket_start,
-        month_bytes,
-        last_notified_lifetime_mark,
-        last_notified_hour_mark,
-        last_notified_day_mark,
-        last_notified_week_mark,
-        last_notified_month_mark,
-        throttled_until,
-        throttle_reason,
-        last_request_at,
-        last_ip,
-        last_device_id,
-        last_country,
-        created_at,
-        updated_at
-      FROM user_download_counters
-      WHERE user_id = ?
-      LIMIT 1
-    `,
-    [safeUserId],
-  );
-}
-
-async function findUserDownloadCounterByEmail(db, email) {
-  const safeEmail = normalizeEmail(email);
-  if (!safeEmail) {
-    return null;
-  }
-  await ensureUserDownloadCountersTable(db);
-  return dbGet(
-    db,
-    `
-      SELECT
-        user_id,
-        user_email,
-        plan_code,
-        lifetime_bytes,
-        hour_bucket_start_unix,
-        hour_bytes,
-        day_bucket_start_unix,
-        day_bytes,
-        week_bucket_start_unix,
-        week_bytes,
-        month_bucket_start,
-        month_bytes,
-        last_notified_lifetime_mark,
-        last_notified_hour_mark,
-        last_notified_day_mark,
-        last_notified_week_mark,
-        last_notified_month_mark,
-        throttled_until,
-        throttle_reason,
-        last_request_at,
-        last_ip,
-        last_device_id,
-        last_country,
-        created_at,
-        updated_at
-      FROM user_download_counters
-      WHERE user_email = ?
-      ORDER BY updated_at DESC
-      LIMIT 1
-    `,
-    [safeEmail],
-  );
-}
-
-async function clearUserDownloadThrottle(db, userId, options = {}) {
-  const safeUserId = String(userId || "").trim();
-  if (!safeUserId) {
-    return null;
-  }
-  const resetHour = options.resetHour !== false;
-  const now = nowIso();
-  const nowUnix = Math.floor(Date.now() / 1000);
-  const currentHourStart = startOfHourUnix(nowUnix);
-  await ensureUserDownloadCountersTable(db);
-  await dbRun(
-    db,
-    `
-      UPDATE user_download_counters
-      SET
-        throttled_until = NULL,
-        throttle_reason = 'manual_unthrottle',
-        hour_bucket_start_unix = CASE WHEN ? = 1 THEN ? ELSE hour_bucket_start_unix END,
-        hour_bytes = CASE WHEN ? = 1 THEN 0 ELSE hour_bytes END,
-        updated_at = ?
-      WHERE user_id = ?
-    `,
-    [resetHour ? 1 : 0, currentHourStart, resetHour ? 1 : 0, now, safeUserId],
-  );
-  return findUserDownloadCounter(db, safeUserId);
-}
-
-async function setUserDownloadThrottle(db, userId, options = {}) {
-  const safeUserId = String(userId || "").trim();
-  if (!safeUserId) {
-    return null;
-  }
-  const now = nowIso();
-  const durationMinutes = Math.max(
-    1,
-    parseNonNegativeInteger(options.durationMinutes, DEFAULT_DOWNLOAD_THROTTLE_DURATION_MINUTES),
-  );
-  const nowUnix = Math.floor(Date.now() / 1000);
-  const resetHour = options.resetHour === true;
-  const currentHourStart = startOfHourUnix(nowUnix);
-  const throttledUntil = new Date((nowUnix + (durationMinutes * 60)) * 1000).toISOString();
-  await ensureUserDownloadCountersTable(db);
-  await dbRun(
-    db,
-    `
-      UPDATE user_download_counters
-      SET
-        throttled_until = ?,
-        throttle_reason = 'manual_admin_throttle',
-        hour_bucket_start_unix = CASE WHEN ? = 1 THEN ? ELSE hour_bucket_start_unix END,
-        hour_bytes = CASE WHEN ? = 1 THEN 0 ELSE hour_bytes END,
-        updated_at = ?
-      WHERE user_id = ?
-    `,
-    [throttledUntil, resetHour ? 1 : 0, currentHourStart, resetHour ? 1 : 0, now, safeUserId],
-  );
-  return findUserDownloadCounter(db, safeUserId);
 }
 
 function startOfHourUnix(epochSeconds) {
@@ -1637,67 +1220,8 @@ function monthBucketKey(epochSeconds) {
   return `${year}-${month}`;
 }
 
-function yearBucketKey(epochSeconds) {
-  const safe = Math.max(0, parseNonNegativeInteger(epochSeconds, Math.floor(Date.now() / 1000)));
-  return String(new Date(safe * 1000).getUTCFullYear());
-}
-
 function weekBucketKey(epochSeconds) {
   return String(startOfWeekUnix(epochSeconds));
-}
-
-function monthEndIso(epochSeconds) {
-  const safe = Math.max(0, parseNonNegativeInteger(epochSeconds, Math.floor(Date.now() / 1000)));
-  const date = new Date(safe * 1000);
-  const year = date.getUTCFullYear();
-  const month = date.getUTCMonth();
-  const nextMonthStartMs = Date.UTC(year, month + 1, 1, 0, 0, 0, 0);
-  return new Date(nextMonthStartMs - 1000).toISOString();
-}
-
-function resolveDailyThrottleThresholdGbForPlan(planCode, env = {}) {
-  const safePlanCode = normalizeRequestedPlan(planCode || PLAN_CODE_PLANETKA);
-  if (safePlanCode === PLAN_CODE_PLANETKA) {
-    const trialConfigured = Number(env.DOWNLOAD_THROTTLE_FREE_DAILY_GB);
-    if (Number.isFinite(trialConfigured) && trialConfigured > 0) {
-      return trialConfigured;
-    }
-    return DEFAULT_DOWNLOAD_THROTTLE_FREE_DAILY_GB;
-  }
-  const activeConfigured = Number(env.DOWNLOAD_THROTTLE_PRO_DAILY_GB);
-  if (Number.isFinite(activeConfigured) && activeConfigured >= 0) {
-    return activeConfigured;
-  }
-  return DEFAULT_DOWNLOAD_THROTTLE_PRO_DAILY_GB;
-}
-
-function resolveDailyThrottleThresholdBytesForPlan(planCode, env = {}) {
-  const thresholdGb = resolveDailyThrottleThresholdGbForPlan(planCode, env);
-  if (!Number.isFinite(thresholdGb) || thresholdGb <= 0) {
-    return 0;
-  }
-  return Math.max(1, toBytesFromGb(thresholdGb));
-}
-
-async function getRolling24hBytesForUser(db, userId, nowUnix) {
-  await ensureTileRequestRollupTables(db);
-  const safeUserId = String(userId || "").trim();
-  if (!safeUserId) {
-    return 0;
-  }
-  const safeNowUnix = Math.max(0, parseNonNegativeInteger(nowUnix, Math.floor(Date.now() / 1000)));
-  const windowStartUnix = Math.max(0, safeNowUnix - (24 * 60 * 60));
-  const row = await dbGet(
-    db,
-    `
-      SELECT COALESCE(SUM(bytes_served), 0) AS bytes_served
-      FROM tile_request_rollup_hourly_account
-      WHERE user_id = ?
-        AND bucket_start_unix >= ?
-    `,
-    [safeUserId, windowStartUnix],
-  );
-  return clampNonNegativeInt(row && row.bytes_served);
 }
 
 async function recordTileRequestRollups(db, payload) {
@@ -1980,7 +1504,6 @@ async function collectAnalyticsSnapshot(
 ) {
   await ensureTileRequestEventsTable(db);
   await ensureTileRequestRollupTables(db);
-  await ensureUserDownloadCountersTable(db);
   await ensureAuthRefreshEventsTable(db);
   const nowUnix = Math.floor(Date.now() / 1000);
   const windowMinutes = sanitizeAnalyticsMinutes(minutes, DEFAULT_ANALYTICS_WINDOW_MINUTES);
@@ -2048,10 +1571,9 @@ async function collectAnalyticsSnapshot(
         SELECT
           r.request_count,
           r.bytes_served,
-          COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), COALESCE(NULLIF(TRIM(LOWER(c.plan_code)), ''), ?)) AS plan_norm
+          COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) AS plan_norm
         FROM tile_request_rollup_daily_account r
         LEFT JOIN users u ON u.id = r.user_id
-        LEFT JOIN user_download_counters c ON c.user_id = r.user_id
         WHERE 1 = 1
         ${rollupEmailFilterAliasR.condition ? `AND ${rollupEmailFilterAliasR.condition}` : ""}
       )
@@ -2076,10 +1598,9 @@ async function collectAnalyticsSnapshot(
         SELECT DISTINCT
           e.user_id,
           e.resolve_id,
-          COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), COALESCE(NULLIF(TRIM(LOWER(c.plan_code)), ''), ?)) AS plan_norm
+          COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) AS plan_norm
         FROM tile_request_events e
         LEFT JOIN users u ON u.id = e.user_id
-        LEFT JOIN user_download_counters c ON c.user_id = e.user_id
         WHERE
           e.resolve_id IS NOT NULL
           AND e.resolve_id != ''
@@ -2107,10 +1628,9 @@ async function collectAnalyticsSnapshot(
       SELECT
         e.user_id,
         MAX(e.created_at_unix) AS last_seen_unix,
-        COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), COALESCE(NULLIF(TRIM(LOWER(c.plan_code)), ''), ?)) AS plan_norm
+        COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) AS plan_norm
       FROM tile_request_events e
       LEFT JOIN users u ON u.id = e.user_id
-      LEFT JOIN user_download_counters c ON c.user_id = e.user_id
       WHERE
         e.created_at_unix >= ?
         AND e.user_id IS NOT NULL
@@ -2118,7 +1638,7 @@ async function collectAnalyticsSnapshot(
         ${eventEmailFilterAliasE.condition ? `AND ${eventEmailFilterAliasE.condition}` : ""}
       GROUP BY
         e.user_id,
-        COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), COALESCE(NULLIF(TRIM(LOWER(c.plan_code)), ''), ?))
+        COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?)
     `,
     [
       PLAN_CODE_PLANETKA_FREE,
@@ -2186,23 +1706,22 @@ async function collectAnalyticsSnapshot(
       `
         SELECT
           e.user_id,
-          COALESCE(NULLIF(TRIM(e.user_email), ''), COALESCE(NULLIF(TRIM(u.email), ''), COALESCE(NULLIF(TRIM(c.user_email), ''), ''))) AS user_email,
-          COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), COALESCE(NULLIF(TRIM(LOWER(c.plan_code)), ''), ?)) AS user_status,
+          COALESCE(NULLIF(TRIM(e.user_email), ''), COALESCE(NULLIF(TRIM(u.email), ''), '')) AS user_email,
+          COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) AS user_status,
           COUNT(*) AS request_count,
           COALESCE(COUNT(DISTINCT CASE WHEN e.resolve_id IS NOT NULL AND e.resolve_id != '' THEN e.resolve_id END), 0) AS resolve_count,
           COALESCE(SUM(e.bytes_served), 0) AS bytes_served,
           MAX(e.created_at) AS last_seen_at
         FROM tile_request_events e
         LEFT JOIN users u ON u.id = e.user_id
-        LEFT JOIN user_download_counters c ON c.user_id = e.user_id
         WHERE
           e.created_at_unix >= ?
           AND e.status_code < 400
           ${eventEmailFilterAliasE.condition ? `AND ${eventEmailFilterAliasE.condition}` : ""}
         GROUP BY
           e.user_id,
-          COALESCE(NULLIF(TRIM(e.user_email), ''), COALESCE(NULLIF(TRIM(u.email), ''), COALESCE(NULLIF(TRIM(c.user_email), ''), ''))),
-          COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), COALESCE(NULLIF(TRIM(LOWER(c.plan_code)), ''), ?))
+          COALESCE(NULLIF(TRIM(e.user_email), ''), COALESCE(NULLIF(TRIM(u.email), ''), '')),
+          COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?)
         ORDER BY MAX(e.created_at_unix) DESC, bytes_served DESC
       `,
       [
@@ -2457,36 +1976,67 @@ async function collectAnalyticsSnapshot(
     [rollupStart30d, ...rollupEmailFilter.bindings],
   );
 
-  const heavyFilter = buildHeavyUserFilterSql(safePlanFilter);
   const heavyWhereParts = [];
-  const heavyBindings = [];
-  if (heavyFilter.clause) {
-    heavyWhereParts.push(String(heavyFilter.clause).replace(/^WHERE\\s+/i, "").trim());
-    heavyBindings.push(...heavyFilter.bindings);
+  const heavyBindings = [
+    PLAN_CODE_PLANETKA_FREE,
+    monthStartUnix(nowUnix),
+    startOfWeekUnix(nowUnix),
+    startOfDayUnix(nowUnix),
+    monthStartUnix(nowUnix),
+    startOfHourUnix(nowUnix),
+  ];
+  if (safePlanFilter === "lite") {
+    heavyWhereParts.push(`agg.user_status = ?`);
+    heavyBindings.push(PLAN_CODE_PLANETKA);
+  } else if (safePlanFilter === "pro") {
+    heavyWhereParts.push(`agg.user_status IN (?, ?)`);
+    heavyBindings.push(PLAN_CODE_PLANETKA_PRO, PLAN_CODE_PLANETKA_STUDIO);
   }
   if (heavyEmailFilter.condition) {
-    heavyWhereParts.push(heavyEmailFilter.condition);
+    heavyWhereParts.push(String(heavyEmailFilter.condition).replace(/user_email/g, "agg.user_email"));
     heavyBindings.push(...heavyEmailFilter.bindings);
   }
   const heavyWhereSql = heavyWhereParts.length ? `WHERE ${heavyWhereParts.join(" AND ")}` : "";
   const heavyBaseSql = `
+      WITH user_rollups AS (
+        SELECT
+          r.user_id,
+          COALESCE(NULLIF(TRIM(u.email), ''), COALESCE(NULLIF(TRIM(r.user_email), ''), '')) AS user_email,
+          COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) AS user_status,
+          COALESCE(SUM(r.bytes_served), 0) AS lifetime_bytes,
+          COALESCE(SUM(CASE WHEN r.day_start_unix >= ? THEN r.bytes_served ELSE 0 END), 0) AS month_bytes,
+          COALESCE(SUM(CASE WHEN r.day_start_unix >= ? THEN r.bytes_served ELSE 0 END), 0) AS week_bytes,
+          COALESCE(SUM(CASE WHEN r.day_start_unix >= ? THEN r.bytes_served ELSE 0 END), 0) AS day_bytes,
+          COALESCE(SUM(CASE WHEN r.day_start_unix >= ? THEN r.request_count ELSE 0 END), 0) AS request_count_month,
+          COALESCE(MAX(r.last_event_unix), 0) AS last_event_unix
+        FROM tile_request_rollup_daily_account r
+        LEFT JOIN users u ON u.id = r.user_id
+        GROUP BY
+          r.user_id,
+          COALESCE(NULLIF(TRIM(u.email), ''), COALESCE(NULLIF(TRIM(r.user_email), ''), '')),
+          COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?)
+      ),
+      hour_rollups AS (
+        SELECT
+          user_id,
+          COALESCE(SUM(bytes_served), 0) AS hour_bytes
+        FROM tile_request_rollup_hourly_account
+        WHERE bucket_start_unix >= ?
+        GROUP BY user_id
+      )
       SELECT
-        c.user_id,
-        c.user_email,
-        c.plan_code,
-        COALESCE(u.status, c.plan_code) AS user_status,
-        c.lifetime_bytes,
-        c.month_bytes,
-        c.week_bytes,
-        c.day_bytes,
-        c.hour_bytes,
-        c.throttled_until,
-        c.last_request_at,
-        c.last_ip,
-        c.last_device_id,
-        c.last_country
-      FROM user_download_counters c
-      LEFT JOIN users u ON u.id = c.user_id
+        agg.user_id,
+        agg.user_email,
+        agg.user_status,
+        agg.lifetime_bytes,
+        agg.month_bytes,
+        agg.week_bytes,
+        agg.day_bytes,
+        COALESCE(hr.hour_bytes, 0) AS hour_bytes,
+        agg.request_count_month,
+        agg.last_event_unix
+      FROM user_rollups agg
+      LEFT JOIN hour_rollups hr ON hr.user_id = agg.user_id
       ${heavyWhereSql}
     `;
   const topHeavyLifetime = await dbAll(
@@ -2514,76 +2064,22 @@ async function collectAnalyticsSnapshot(
     `${heavyBaseSql} ORDER BY hour_bytes DESC LIMIT 50`,
     heavyBindings,
   );
-  // Keep main-page Heavy Users consistent with All Users page:
-  // both must use user_download_counters.month_bytes.
   let heavyUsers30d = (Array.isArray(topHeavyMonth) ? topHeavyMonth : [])
     .map((row) => {
-      const lastRequestAt = String(row && row.last_request_at || "").trim();
-      const parsedLastRequestUnix = Date.parse(lastRequestAt);
       return {
         user_id: String(row && row.user_id || "").trim(),
         user_email: normalizeEmail(row && row.user_email || ""),
-        user_status: String(row && (row.user_status || row.plan_code) || PLAN_CODE_PLANETKA).trim().toLowerCase() || PLAN_CODE_PLANETKA,
-        throttled_until: String(row && row.throttled_until || "").trim(),
+        user_status: String(row && row.user_status || PLAN_CODE_PLANETKA).trim().toLowerCase() || PLAN_CODE_PLANETKA,
         month_bytes: clampNonNegativeInt(row && row.month_bytes),
-        request_count_month: 0,
-        last_event_unix: Number.isFinite(parsedLastRequestUnix) ? Math.max(0, Math.floor(parsedLastRequestUnix / 1000)) : 0,
+        request_count_month: clampNonNegativeInt(row && row.request_count_month),
+        last_event_unix: clampNonNegativeInt(row && row.last_event_unix),
       };
     });
-  const heavyMonthUserIds = Array.from(new Set(heavyUsers30d.map((row) => row.user_id).filter(Boolean)));
-  if (heavyMonthUserIds.length > 0) {
-    try {
-      const placeholders = heavyMonthUserIds.map(() => "?").join(",");
-      const monthRequestRows = await dbAll(
-        db,
-        `
-          SELECT
-            user_id,
-            COALESCE(SUM(request_count), 0) AS request_count_month,
-            MAX(last_event_unix) AS last_event_unix
-          FROM tile_request_rollup_daily_account
-          WHERE
-            day_start_unix >= ?
-            AND user_id IN (${placeholders})
-          GROUP BY user_id
-        `,
-        [monthStartUnix(nowUnix), ...heavyMonthUserIds],
-      );
-      const monthRequestsByUserId = new Map();
-      for (const row of (Array.isArray(monthRequestRows) ? monthRequestRows : [])) {
-        const userId = String(row && row.user_id || "").trim();
-        if (!userId) continue;
-        monthRequestsByUserId.set(userId, {
-          request_count_month: clampNonNegativeInt(row && row.request_count_month),
-          last_event_unix: clampNonNegativeInt(row && row.last_event_unix),
-        });
-      }
-      heavyUsers30d = heavyUsers30d.map((row) => {
-        const monthMeta = monthRequestsByUserId.get(String(row.user_id || "").trim()) || null;
-        const requestCountMonth = clampNonNegativeInt(monthMeta && monthMeta.request_count_month);
-        const lastEventUnix = Math.max(
-          clampNonNegativeInt(row && row.last_event_unix),
-          clampNonNegativeInt(monthMeta && monthMeta.last_event_unix),
-        );
-        const monthBytes = clampNonNegativeInt(row && row.month_bytes);
-        return {
-          ...row,
-          request_count_month: requestCountMonth,
-          last_event_unix: lastEventUnix,
-          // Keep legacy keys for compatibility with current UI/client payload shape.
-          request_count_30d: requestCountMonth,
-          bytes_served_30d: monthBytes,
-        };
-      });
-    } catch (error) {
-      console.warn(
-        "planetka.analytics.heavy_users_month_requests_query_failed",
-        JSON.stringify({
-          error: String(error && error.message || "heavy_users_month_requests_query_failed"),
-        }),
-      );
-    }
-  }
+  heavyUsers30d = heavyUsers30d.map((row) => ({
+    ...row,
+    request_count_30d: clampNonNegativeInt(row && row.request_count_month),
+    bytes_served_30d: clampNonNegativeInt(row && row.month_bytes),
+  }));
   heavyUsers30d = heavyUsers30d
     .sort((a, b) => clampNonNegativeInt(b && b.month_bytes) - clampNonNegativeInt(a && a.month_bytes))
     .slice(0, 20);
@@ -2874,7 +2370,7 @@ async function maybeSignalTileFarmingActivity(db, env, details = {}) {
 
   const userId = String(details.userId || "").trim();
   const userEmail = normalizeEmail(details.userEmail || "");
-  if (userEmail && isDownloadAlertWhitelisted(userEmail, env)) {
+  if (userEmail && isAbuseAlertWhitelisted(userEmail, env)) {
     return;
   }
   const userKey = userId || userEmail || "unknown";
@@ -3120,11 +2616,11 @@ function parseAnalyticsUsersSortDirection(value) {
 
 async function listAnalyticsUsers(db, env, options = {}) {
   await ensureTileRequestEventsTable(db);
-  await ensureUserDownloadCountersTable(db);
   const sortBy = parseAnalyticsUsersSort(options.sort_by);
   const sortDir = parseAnalyticsUsersSortDirection(options.sort_dir);
   const query = String(options.query || "").trim().toLowerCase();
   const limit = Math.max(1, Math.min(5000, parseNonNegativeInteger(options.limit, 5000)));
+  const nowUnix = Math.floor(Date.now() / 1000);
   const orderSqlByKey = {
     resolves: "resolve_count",
     lifetime: "lifetime_bytes",
@@ -3137,7 +2633,15 @@ async function listAnalyticsUsers(db, env, options = {}) {
   const orderSql = orderSqlByKey[sortBy] || orderSqlByKey.month;
   const emailFilter = buildAnalyticsExcludedEmailFilter("u.email", env);
   const whereParts = [];
-  const bindings = [PLAN_CODE_PLANETKA, PLAN_CODE_PLANETKA];
+  const bindings = [
+    PLAN_CODE_PLANETKA_FREE,
+    monthStartUnix(nowUnix),
+    startOfWeekUnix(nowUnix),
+    startOfDayUnix(nowUnix),
+    startOfHourUnix(nowUnix),
+    PLAN_CODE_PLANETKA_FREE,
+    PLAN_CODE_PLANETKA_FREE,
+  ];
   if (emailFilter.condition) {
     whereParts.push(emailFilter.condition);
     bindings.push(...emailFilter.bindings);
@@ -3157,23 +2661,45 @@ async function listAnalyticsUsers(db, env, options = {}) {
         FROM tile_request_events
         WHERE resolve_id IS NOT NULL AND resolve_id != ''
         GROUP BY user_id
+      ),
+      daily_usage AS (
+        SELECT
+          r.user_id,
+          COALESCE(SUM(r.bytes_served), 0) AS lifetime_bytes,
+          COALESCE(SUM(CASE WHEN r.day_start_unix >= ? THEN r.bytes_served ELSE 0 END), 0) AS month_bytes,
+          COALESCE(SUM(CASE WHEN r.day_start_unix >= ? THEN r.bytes_served ELSE 0 END), 0) AS week_bytes,
+          COALESCE(SUM(CASE WHEN r.day_start_unix >= ? THEN r.bytes_served ELSE 0 END), 0) AS day_bytes,
+          COALESCE(MAX(r.last_event_unix), 0) AS last_seen_unix
+        FROM tile_request_rollup_daily_account r
+        GROUP BY r.user_id
+      ),
+      hourly_usage AS (
+        SELECT
+          r.user_id,
+          COALESCE(SUM(r.bytes_served), 0) AS hour_bytes
+        FROM tile_request_rollup_hourly_account r
+        WHERE r.bucket_start_unix >= ?
+        GROUP BY r.user_id
       )
       SELECT
         u.id AS user_id,
         u.email AS user_email,
         COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) AS user_status,
-        COALESCE(NULLIF(TRIM(LOWER(c.plan_code)), ''), COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?)) AS plan_code,
+        COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) AS plan_code,
         COALESCE(rc.resolve_count, 0) AS resolve_count,
-        COALESCE(c.lifetime_bytes, 0) AS lifetime_bytes,
-        COALESCE(c.month_bytes, 0) AS month_bytes,
-        COALESCE(c.week_bytes, 0) AS week_bytes,
-        COALESCE(c.day_bytes, 0) AS day_bytes,
-        COALESCE(c.hour_bytes, 0) AS hour_bytes,
-        COALESCE(NULLIF(TRIM(c.throttled_until), ''), '') AS throttled_until,
-        COALESCE(NULLIF(TRIM(c.last_request_at), ''), COALESCE(NULLIF(TRIM(u.last_login_at), ''), COALESCE(NULLIF(TRIM(u.created_at), ''), ''))) AS last_seen_at,
-        COALESCE(strftime('%s', COALESCE(NULLIF(TRIM(c.last_request_at), ''), COALESCE(NULLIF(TRIM(u.last_login_at), ''), COALESCE(NULLIF(TRIM(u.created_at), ''), '')))), 0) AS last_seen_unix
+        COALESCE(du.lifetime_bytes, 0) AS lifetime_bytes,
+        COALESCE(du.month_bytes, 0) AS month_bytes,
+        COALESCE(du.week_bytes, 0) AS week_bytes,
+        COALESCE(du.day_bytes, 0) AS day_bytes,
+        COALESCE(hu.hour_bytes, 0) AS hour_bytes,
+        COALESCE(
+          NULLIF(TRIM(datetime(du.last_seen_unix, 'unixepoch')), ''),
+          COALESCE(NULLIF(TRIM(u.last_login_at), ''), COALESCE(NULLIF(TRIM(u.created_at), ''), ''))
+        ) AS last_seen_at,
+        COALESCE(du.last_seen_unix, strftime('%s', COALESCE(NULLIF(TRIM(u.last_login_at), ''), COALESCE(NULLIF(TRIM(u.created_at), ''), ''))), 0) AS last_seen_unix
       FROM users u
-      LEFT JOIN user_download_counters c ON c.user_id = u.id
+      LEFT JOIN daily_usage du ON du.user_id = u.id
+      LEFT JOIN hourly_usage hu ON hu.user_id = u.id
       LEFT JOIN resolve_counts rc ON rc.user_id = u.id
       ${whereSql}
       ORDER BY ${orderSql} ${sortDir.toUpperCase()}, LOWER(COALESCE(u.email, '')) ASC
@@ -3181,433 +2707,6 @@ async function listAnalyticsUsers(db, env, options = {}) {
     `,
     bindings,
   );
-}
-
-async function sendUserThrottledEmail(env, email, details = {}) {
-  const normalizedEmail = normalizeEmail(email);
-  if (!normalizedEmail) {
-    return;
-  }
-  const apiKey = requireSecret(env, "EMAIL_API_KEY");
-  const from = String(env.EMAIL_FROM || "info@planetka.io").trim();
-  const contactUrl = normalizeContactUrl(env.PLANETKA_CONTACT_URL || DEFAULT_CONTACT_URL);
-  const recentWindowGb = Number(details.recentWindowGb || 0).toFixed(2);
-  const thresholdGb = Number(details.thresholdGb || 0).toFixed(2);
-  const windowLabel = String(details.windowLabel || "24h").trim() || "24h";
-  const throttledUntil = String(details.throttledUntil || "").trim() || "soon";
-  const response = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      from,
-      to: [normalizedEmail],
-      subject: "Planetka account temporarily throttled",
-      text: [
-        "Your Planetka account has been temporarily throttled due to unusually high data volume.",
-        "",
-        `Recent ${windowLabel} volume: ${recentWindowGb} GB`,
-        `Throttle threshold: ${thresholdGb} GB/${windowLabel}`,
-        `Throttle active until: ${throttledUntil}`,
-        "",
-        "If this is expected usage, contact us so we can review and assist:",
-        contactUrl,
-      ].join("\n"),
-      html: `
-        <div style="font-family: Arial, sans-serif; line-height: 1.5; color: #111827;">
-          <h2 style="margin-bottom: 12px;">Planetka account temporarily throttled</h2>
-          <p>Your Planetka account was temporarily throttled due to unusually high data volume.</p>
-          <ul>
-            <li><strong>Recent ${escapeHtml(windowLabel)} volume:</strong> ${escapeHtml(recentWindowGb)} GB</li>
-            <li><strong>Throttle threshold:</strong> ${escapeHtml(thresholdGb)} GB/${escapeHtml(windowLabel)}</li>
-            <li><strong>Throttle active until:</strong> ${escapeHtml(throttledUntil)}</li>
-          </ul>
-          <p>If this usage is expected, please contact us so we can review and assist:</p>
-          <p><a href="${escapeHtml(contactUrl)}">${escapeHtml(contactUrl)}</a></p>
-        </div>
-      `,
-    }),
-  });
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`resend_error_${response.status}_${body}`);
-  }
-}
-
-async function maybeProcessDownloadMonitoring(db, env, details = {}) {
-  if (!db) {
-    return;
-  }
-  const userId = String(details.userId || "").trim();
-  const userEmail = normalizeEmail(details.userEmail || "");
-  if (!userId || !userEmail) {
-    return;
-  }
-  const bytesUsed = clampNonNegativeInt(details.bytesUsed);
-  if (bytesUsed <= 0) {
-    return;
-  }
-
-  await ensureUserDownloadCountersTable(db);
-  await ensureRateLimitsTable(db);
-  const nowUnix = parseNonNegativeInteger(details.createdAtUnix, Math.floor(Date.now() / 1000));
-  const now = new Date(nowUnix * 1000).toISOString();
-  const safePlanCode = normalizeRequestedPlan(details.planCode || PLAN_CODE_PLANETKA);
-  const ip = String(details.ip || "").trim();
-  const deviceId = normalizeDeviceId(details.deviceId || "");
-  const country = String(details.country || "").trim().toUpperCase();
-  const whitelisted = isDownloadAlertWhitelisted(userEmail, env);
-
-  const hourBucket = startOfHourUnix(nowUnix);
-  const dayBucket = startOfDayUnix(nowUnix);
-  const weekBucket = startOfWeekUnix(nowUnix);
-  const monthBucket = monthBucketKey(nowUnix);
-  const existing = await findUserDownloadCounter(db, userId);
-
-  const lifetimeBytes = clampNonNegativeInt(existing && existing.lifetime_bytes) + bytesUsed;
-  const hourBytes = (
-    parseNonNegativeInteger(existing && existing.hour_bucket_start_unix, hourBucket) === hourBucket
-      ? clampNonNegativeInt(existing && existing.hour_bytes)
-      : 0
-  ) + bytesUsed;
-  const dayBytes = (
-    parseNonNegativeInteger(existing && existing.day_bucket_start_unix, dayBucket) === dayBucket
-      ? clampNonNegativeInt(existing && existing.day_bytes)
-      : 0
-  ) + bytesUsed;
-  const weekBytes = (
-    parseNonNegativeInteger(existing && existing.week_bucket_start_unix, weekBucket) === weekBucket
-      ? clampNonNegativeInt(existing && existing.week_bytes)
-      : 0
-  ) + bytesUsed;
-  const monthBytes = (
-    String(existing && existing.month_bucket_start || "") === monthBucket
-      ? clampNonNegativeInt(existing && existing.month_bytes)
-      : 0
-  ) + bytesUsed;
-
-  const rolling24hBytes = await getRolling24hBytesForUser(db, userId, nowUnix);
-  const thresholdBytes = resolveDailyThrottleThresholdBytesForPlan(safePlanCode, env);
-  const throttleDurationMinutes = Math.max(
-    5,
-    parseRateLimitInteger(env.DOWNLOAD_THROTTLE_DURATION_MINUTES, DEFAULT_DOWNLOAD_THROTTLE_DURATION_MINUTES),
-  );
-  const currentThrottleUntil = String(existing && existing.throttled_until || "").trim();
-  const currentThrottleUntilMs = Date.parse(currentThrottleUntil);
-  const throttleShouldActivate = !whitelisted && thresholdBytes > 0 && rolling24hBytes >= thresholdBytes;
-  const nextThrottleUntilMs = throttleShouldActivate
-    ? Math.max(
-      Number.isFinite(currentThrottleUntilMs) ? currentThrottleUntilMs : 0,
-      (nowUnix + (throttleDurationMinutes * 60)) * 1000,
-    )
-    : (Number.isFinite(currentThrottleUntilMs) ? currentThrottleUntilMs : 0);
-  const throttledUntil = nextThrottleUntilMs > (nowUnix * 1000)
-    ? new Date(nextThrottleUntilMs).toISOString()
-    : "";
-
-  await dbRun(
-    db,
-    `
-      INSERT INTO user_download_counters (
-        user_id,
-        user_email,
-        plan_code,
-        lifetime_bytes,
-        hour_bucket_start_unix,
-        hour_bytes,
-        day_bucket_start_unix,
-        day_bytes,
-        week_bucket_start_unix,
-        week_bytes,
-        month_bucket_start,
-        month_bytes,
-        last_notified_lifetime_mark,
-        last_notified_hour_mark,
-        last_notified_day_mark,
-        last_notified_week_mark,
-        last_notified_month_mark,
-        throttled_until,
-        throttle_reason,
-        last_request_at,
-        last_ip,
-        last_device_id,
-        last_country,
-        created_at,
-        updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(user_id) DO UPDATE SET
-        user_email = excluded.user_email,
-        plan_code = excluded.plan_code,
-        lifetime_bytes = excluded.lifetime_bytes,
-        hour_bucket_start_unix = excluded.hour_bucket_start_unix,
-        hour_bytes = excluded.hour_bytes,
-        day_bucket_start_unix = excluded.day_bucket_start_unix,
-        day_bytes = excluded.day_bytes,
-        week_bucket_start_unix = excluded.week_bucket_start_unix,
-        week_bytes = excluded.week_bytes,
-        month_bucket_start = excluded.month_bucket_start,
-        month_bytes = excluded.month_bytes,
-        throttled_until = excluded.throttled_until,
-        throttle_reason = excluded.throttle_reason,
-        last_request_at = excluded.last_request_at,
-        last_ip = excluded.last_ip,
-        last_device_id = excluded.last_device_id,
-        last_country = excluded.last_country,
-        updated_at = excluded.updated_at
-    `,
-    [
-      userId,
-      userEmail,
-      safePlanCode,
-      lifetimeBytes,
-      hourBucket,
-      hourBytes,
-      dayBucket,
-      dayBytes,
-      weekBucket,
-      weekBytes,
-      monthBucket,
-      monthBytes,
-      clampNonNegativeInt(existing && existing.last_notified_lifetime_mark),
-      clampNonNegativeInt(existing && existing.last_notified_hour_mark),
-      clampNonNegativeInt(existing && existing.last_notified_day_mark),
-      clampNonNegativeInt(existing && existing.last_notified_week_mark),
-      clampNonNegativeInt(existing && existing.last_notified_month_mark),
-      throttledUntil || null,
-      throttleShouldActivate ? "high_daily_download_24h" : String(existing && existing.throttle_reason || ""),
-      now,
-      ip || null,
-      deviceId || null,
-      country || null,
-      String(existing && existing.created_at || now),
-      now,
-    ],
-  );
-
-  const markStepBytes = Math.max(
-    1,
-    toBytesFromGb(parsePositiveNumber(env.DOWNLOAD_MARK_STEP_GB, DEFAULT_DOWNLOAD_MARK_STEP_GB)),
-  );
-  const marksNow = {
-    lifetime: Math.floor(lifetimeBytes / markStepBytes),
-    hour: Math.floor(hourBytes / markStepBytes),
-    day: Math.floor(dayBytes / markStepBytes),
-    week: Math.floor(weekBytes / markStepBytes),
-    month: Math.floor(monthBytes / markStepBytes),
-  };
-  const marksPrev = {
-    lifetime: clampNonNegativeInt(existing && existing.last_notified_lifetime_mark),
-    hour: clampNonNegativeInt(existing && existing.last_notified_hour_mark),
-    day: clampNonNegativeInt(existing && existing.last_notified_day_mark),
-    week: clampNonNegativeInt(existing && existing.last_notified_week_mark),
-    month: clampNonNegativeInt(existing && existing.last_notified_month_mark),
-  };
-  const crossed = {
-    lifetime: marksNow.lifetime > marksPrev.lifetime,
-    hour: marksNow.hour > marksPrev.hour,
-    day: marksNow.day > marksPrev.day,
-    week: marksNow.week > marksPrev.week,
-    month: marksNow.month > marksPrev.month,
-  };
-  const crossedAny = Object.values(crossed).some((value) => Boolean(value));
-
-  if (crossedAny && !whitelisted) {
-    const opsCooldownSeconds = Math.max(
-      30,
-      parseRateLimitInteger(
-        env.DOWNLOAD_ALERT_EMAIL_COOLDOWN_SECONDS,
-        DEFAULT_DOWNLOAD_ALERT_EMAIL_COOLDOWN_SECONDS,
-      ),
-    );
-    const markGate = await consumeRateLimitWindow(
-      db,
-      "download_mark_ops_mail",
-      userId,
-      1,
-      opsCooldownSeconds,
-    );
-    if (markGate.allowed) {
-      try {
-        await sendOpsAlertEmail(
-          env,
-          "Planetka high-volume download milestone reached",
-          [
-            "User crossed download milestone marks.",
-            `email=${userEmail}`,
-            `plan=${safePlanCode}`,
-            `lifetime_gb=${(lifetimeBytes / BYTES_PER_GB).toFixed(2)}`,
-            `month_gb=${(monthBytes / BYTES_PER_GB).toFixed(2)}`,
-            `week_gb=${(weekBytes / BYTES_PER_GB).toFixed(2)}`,
-            `day_gb=${(dayBytes / BYTES_PER_GB).toFixed(2)}`,
-            `hour_gb=${(hourBytes / BYTES_PER_GB).toFixed(2)}`,
-            `marks_crossed=${JSON.stringify(crossed)}`,
-            `ip=${ip}`,
-            `device_id=${deviceId}`,
-          ],
-        );
-        await dbRun(
-          db,
-          `
-            UPDATE user_download_counters
-            SET
-              last_notified_lifetime_mark = ?,
-              last_notified_hour_mark = ?,
-              last_notified_day_mark = ?,
-              last_notified_week_mark = ?,
-              last_notified_month_mark = ?,
-              updated_at = ?
-            WHERE user_id = ?
-          `,
-          [marksNow.lifetime, marksNow.hour, marksNow.day, marksNow.week, marksNow.month, nowIso(), userId],
-        );
-      } catch (error) {
-        console.warn(
-          "worker.download_milestone_alert_email_failed",
-          JSON.stringify({
-            user_id: userId,
-            email: userEmail,
-            error: String(error && error.message || "download_milestone_alert_email_failed"),
-          }),
-        );
-      }
-    }
-  }
-
-  if (throttleShouldActivate && !whitelisted) {
-    const opsCooldownSeconds = Math.max(
-      30,
-      parseRateLimitInteger(
-        env.DOWNLOAD_ALERT_EMAIL_COOLDOWN_SECONDS,
-        DEFAULT_DOWNLOAD_ALERT_EMAIL_COOLDOWN_SECONDS,
-      ),
-    );
-    const throttleOpsGate = await consumeRateLimitWindow(
-      db,
-      "download_throttle_ops_mail",
-      userId,
-      1,
-      opsCooldownSeconds,
-    );
-    if (throttleOpsGate.allowed) {
-      try {
-        await sendOpsAlertEmail(
-          env,
-          "Planetka user automatically throttled",
-          [
-            "User exceeded rolling 24-hour download threshold and was throttled.",
-            `email=${userEmail}`,
-            `plan=${safePlanCode}`,
-            `rolling_24h_gb=${(rolling24hBytes / BYTES_PER_GB).toFixed(2)}`,
-            `threshold_gb=${(thresholdBytes / BYTES_PER_GB).toFixed(2)}`,
-            `throttled_until=${throttledUntil}`,
-            `ip=${ip}`,
-            `device_id=${deviceId}`,
-          ],
-        );
-      } catch (error) {
-        console.warn(
-          "worker.download_throttle_ops_email_failed",
-          JSON.stringify({
-            user_id: userId,
-            email: userEmail,
-            error: String(error && error.message || "download_throttle_ops_email_failed"),
-          }),
-        );
-      }
-    }
-
-    const throttleUserGate = await consumeRateLimitWindow(
-      db,
-      "download_throttle_user_mail",
-      userId,
-      1,
-      opsCooldownSeconds,
-    );
-    if (throttleUserGate.allowed) {
-      try {
-        await sendUserThrottledEmail(env, userEmail, {
-          recentWindowGb: rolling24hBytes / BYTES_PER_GB,
-          thresholdGb: thresholdBytes / BYTES_PER_GB,
-          windowLabel: "24h",
-          throttledUntil,
-        });
-      } catch (error) {
-        console.warn(
-          "worker.download_throttle_user_email_failed",
-          JSON.stringify({
-            user_id: userId,
-            email: userEmail,
-            error: String(error && error.message || "download_throttle_user_email_failed"),
-          }),
-        );
-      }
-    }
-  }
-}
-
-async function enforceDownloadThrottleGate(db, env, user, requestDeviceId = "", requestIp = "") {
-  if (!db || !user || !user.id) {
-    return null;
-  }
-  const userEmail = normalizeEmail(user.email || "");
-  if (isDownloadAlertWhitelisted(userEmail, env)) {
-    return null;
-  }
-  const counter = await findUserDownloadCounter(db, String(user.id || "").trim());
-  if (!counter) {
-    return null;
-  }
-  const throttledUntil = String(counter.throttled_until || "").trim();
-  const throttledUntilMs = Date.parse(throttledUntil);
-  if (!Number.isFinite(throttledUntilMs) || throttledUntilMs <= Date.now()) {
-    return null;
-  }
-  const perMinuteLimit = parseRateLimitInteger(
-    env.DOWNLOAD_THROTTLED_REQUESTS_PER_MINUTE,
-    DEFAULT_DOWNLOAD_THROTTLED_REQUESTS_PER_MINUTE,
-  );
-  if (perMinuteLimit <= 0) {
-    return {
-      isThrottled: true,
-      blocked: false,
-      retryAfterSeconds: 0,
-      throttledUntil,
-      userEmail,
-      requestDeviceId: normalizeDeviceId(requestDeviceId),
-      requestIp: String(requestIp || "").trim(),
-    };
-  }
-  const rate = await consumeRateLimitWindow(
-    db,
-    "download_throttled_req_minute",
-    String(user.id || "").trim(),
-    perMinuteLimit,
-    60,
-  );
-  if (rate.allowed) {
-    return {
-      isThrottled: true,
-      blocked: false,
-      retryAfterSeconds: 0,
-      throttledUntil,
-      userEmail,
-      requestDeviceId: normalizeDeviceId(requestDeviceId),
-      requestIp: String(requestIp || "").trim(),
-    };
-  }
-  return {
-    isThrottled: true,
-    blocked: true,
-    code: "download_throttled",
-    retryAfterSeconds: clampNonNegativeInt(rate.retryAfterSeconds) || 1,
-    message: "High-volume data use detected. Download speed is temporarily throttled. Contact Planetka support if needed.",
-    throttledUntil,
-    userEmail,
-    requestDeviceId: normalizeDeviceId(requestDeviceId),
-    requestIp: String(requestIp || "").trim(),
-  };
 }
 
 async function cleanupAuthTables(db, env, nowTimestamp) {
@@ -3621,12 +2720,9 @@ async function cleanupAuthTables(db, env, nowTimestamp) {
         DEFAULT_REFRESH_SESSION_CLEANUP_RETENTION_DAYS,
       ),
     ),
-    magic_links_deleted: 0,
     refresh_sessions_deleted: 0,
-    device_sessions_deleted: 0,
     api_key_requests_deleted: 0,
     api_key_device_activity_deleted: 0,
-    provisional_claim_audit_deleted: 0,
     auth_refresh_event_retention_days: Math.max(
       7,
       parseNonNegativeInteger(
@@ -3652,28 +2748,12 @@ async function cleanupAuthTables(db, env, nowTimestamp) {
     nowTimestamp,
     -summary.refresh_session_retention_days,
   );
-  const paidClaimRetentionCutoff = addDaysFromIso(
-    nowTimestamp,
-    -Math.max(30, parseNonNegativeInteger(env.PAID_CLAIM_RETENTION_DAYS, DEFAULT_PAID_CLAIM_RETENTION_DAYS)),
-  );
   const tileEventsCutoffUnix = Math.max(0, nowUnix - (summary.tile_event_retention_days * 86400));
   const authRefreshEventsCutoffUnix = Math.max(
     0,
     nowUnix - (summary.auth_refresh_event_retention_days * 86400),
   );
   const tileRollupCutoffUnix = Math.max(0, nowUnix - (summary.tile_rollup_retention_days * 86400));
-
-  if (await dbTableExists(db, "magic_links")) {
-    const magicLinksResult = await dbRun(
-      db,
-      `
-        DELETE FROM magic_links
-        WHERE expires_at < ?
-      `,
-      [nowTimestamp],
-    );
-    summary.magic_links_deleted = dbMetaChanges(magicLinksResult);
-  }
 
   if (await dbTableExists(db, "refresh_sessions")) {
     const refreshSessionsResult = await dbRun(
@@ -3690,18 +2770,6 @@ async function cleanupAuthTables(db, env, nowTimestamp) {
     summary.refresh_sessions_deleted = dbMetaChanges(refreshSessionsResult);
   }
 
-  if (await dbTableExists(db, "device_sessions")) {
-    const deviceSessionsResult = await dbRun(
-      db,
-      `
-        DELETE FROM device_sessions
-        WHERE expires_at < ?
-      `,
-      [nowTimestamp],
-    );
-    summary.device_sessions_deleted = dbMetaChanges(deviceSessionsResult);
-  }
-
   if (await dbTableExists(db, "api_key_requests")) {
     await ensureApiKeyTables(db);
     const apiKeyRequestsResult = await dbRun(
@@ -3709,33 +2777,12 @@ async function cleanupAuthTables(db, env, nowTimestamp) {
       `
         DELETE FROM api_key_requests
         WHERE
-          (
-            (request_type IS NULL OR request_type = '' OR request_type = ?)
-            AND (
-              expires_at < ?
-              OR (used_at IS NOT NULL AND used_at != '' AND used_at < ?)
-            )
-          )
-          OR (
-            request_type = ?
-            AND used_at IS NULL
-            AND expires_at < ?
-          )
-          OR (
-            request_type = ?
-            AND review_status != ?
-            AND COALESCE(reviewed_at, created_at) < ?
-          )
+          expires_at < ?
+          OR (used_at IS NOT NULL AND used_at != '' AND used_at < ?)
       `,
       [
-        API_KEY_REQUEST_TYPE_FREE,
         nowTimestamp,
         refreshSessionCutoff,
-        API_KEY_REQUEST_TYPE_PAID_CLAIM,
-        nowTimestamp,
-        API_KEY_REQUEST_TYPE_PAID_CLAIM,
-        CLAIM_REVIEW_PENDING,
-        paidClaimRetentionCutoff,
       ],
     );
     summary.api_key_requests_deleted = dbMetaChanges(apiKeyRequestsResult);
@@ -3757,18 +2804,6 @@ async function cleanupAuthTables(db, env, nowTimestamp) {
       [cutoffUnix],
     );
     summary.api_key_device_activity_deleted = dbMetaChanges(deviceActivityResult);
-  }
-
-  if (await dbTableExists(db, "provisional_claim_audit")) {
-    const claimAuditResult = await dbRun(
-      db,
-      `
-        DELETE FROM provisional_claim_audit
-        WHERE created_at < ?
-      `,
-      [paidClaimRetentionCutoff],
-    );
-    summary.provisional_claim_audit_deleted = dbMetaChanges(claimAuditResult);
   }
 
   if (await dbTableExists(db, "auth_refresh_events")) {
@@ -3854,7 +2889,6 @@ async function runProductionAlertChecks(db, env, nowTimestamp) {
   };
 
   const hasTileEvents = await dbTableExists(db, "tile_request_events");
-  const hasClaimAudit = await dbTableExists(db, "provisional_claim_audit");
   const metricSpecs = [
     {
       key: "http_403_spike",
@@ -3908,26 +2942,6 @@ async function runProductionAlertChecks(db, env, nowTimestamp) {
           )
       `,
       countBindings: (windowStartUnix) => [windowStartUnix],
-    },
-    {
-      key: "claim_rejection_burst",
-      label: "Claim rejection burst",
-      threshold: parseRateLimitInteger(
-        env.PROD_ALERT_CLAIM_REJECTION_THRESHOLD,
-        DEFAULT_ALERT_PROD_CLAIM_REJECTION_THRESHOLD,
-      ),
-      windowSeconds: parseRateLimitInteger(
-        env.PROD_ALERT_CLAIM_REJECTION_WINDOW_SECONDS,
-        DEFAULT_ALERT_PROD_CLAIM_REJECTION_WINDOW_SECONDS,
-      ),
-      tableAvailable: hasClaimAudit,
-      countSql: `
-        SELECT COUNT(*) AS count
-        FROM provisional_claim_audit
-        WHERE created_at >= ?
-          AND event_type IN ('claim_rejected_signal', 'claim_review_rejected', 'claim_auto_fallback_to_free')
-      `,
-      countBindings: (windowStartUnix) => [new Date(windowStartUnix * 1000).toISOString()],
     },
   ];
 
@@ -4525,25 +3539,13 @@ async function runMonthlyCostEstimateAlerts(db, env, nowTimestamp) {
 }
 
 async function buildAccountState(db, user, subscription, env) {
+  void db;
   const planCode = resolvePlanCode(user, subscription, env);
-  const userId = String(user && user.id || "").trim();
-  const counter = userId ? await findUserDownloadCounter(db, userId) : null;
-  const throttledUntilRaw = String(counter && counter.throttled_until || "").trim();
-  const throttledUntilMs = Date.parse(throttledUntilRaw);
-  const throttledUntil = Number.isFinite(throttledUntilMs) && throttledUntilMs > Date.now()
-    ? throttledUntilRaw
-    : "";
-  const throttleReason = throttledUntil
-    ? String(counter && counter.throttle_reason || "").trim()
-    : "";
-
   return {
     planCode,
     commercialUseAllowed: commercialUseAllowed(planCode),
     upgradeUrl: String(env.UPGRADE_URL || DEFAULT_UPGRADE_URL).trim() || DEFAULT_UPGRADE_URL,
     contactUrl: normalizeContactUrl(env.PLANETKA_CONTACT_URL || DEFAULT_CONTACT_URL),
-    throttledUntil,
-    throttleReason,
   };
 }
 
@@ -4559,14 +3561,10 @@ function serializeAccountState(state) {
     commercial_use_allowed: Boolean(safeState.commercialUseAllowed),
     upgrade_url: safeState.upgradeUrl,
     contact_url: safeState.contactUrl,
-    throttled_until: String(safeState.throttledUntil || "").trim(),
-    throttle_reason: String(safeState.throttleReason || "").trim(),
-    is_throttled: Boolean(safeState.throttledUntil),
   };
 }
 
 async function findUserByEmail(db, email) {
-  await ensureUserProvisionalColumns(db);
   return dbGet(
     db,
     `
@@ -4574,10 +3572,6 @@ async function findUserByEmail(db, email) {
         u.id,
         u.email,
         u.status,
-        u.provisional_plan_code,
-        u.provisional_expires_at,
-        u.pro_confirmed_at,
-        u.pro_access_expires_at,
         u.created_at,
         u.last_login_at
       FROM users u
@@ -4589,7 +3583,6 @@ async function findUserByEmail(db, email) {
 }
 
 async function findUserById(db, userId) {
-  await ensureUserProvisionalColumns(db);
   return dbGet(
     db,
     `
@@ -4597,10 +3590,6 @@ async function findUserById(db, userId) {
         u.id,
         u.email,
         u.status,
-        u.provisional_plan_code,
-        u.provisional_expires_at,
-        u.pro_confirmed_at,
-        u.pro_access_expires_at,
         u.created_at,
         u.last_login_at
       FROM users u
@@ -4608,29 +3597,6 @@ async function findUserById(db, userId) {
       LIMIT 1
     `,
     [userId],
-  );
-}
-
-async function ensureDeviceSessionsTable(db) {
-  await dbRun(
-    db,
-    `
-      CREATE TABLE IF NOT EXISTS device_sessions (
-        id TEXT PRIMARY KEY,
-        device_code TEXT NOT NULL UNIQUE,
-        status TEXT NOT NULL DEFAULT 'pending',
-        email TEXT,
-        access_token TEXT,
-        refresh_token TEXT,
-        subscription_status TEXT,
-        renews_at TEXT,
-        trial_ends_at TEXT,
-        expires_at TEXT NOT NULL,
-        completed_at TEXT,
-        claimed_at TEXT,
-        created_at TEXT NOT NULL
-      )
-    `,
   );
 }
 
@@ -4651,17 +3617,6 @@ async function ensureNewsletterSubscribersTable(db) {
     db,
     `CREATE INDEX IF NOT EXISTS idx_newsletter_subscribers_last_opt_in ON newsletter_subscribers(last_opt_in_at DESC)`,
   );
-}
-
-async function ensureMagicLinksTokenIndex(db) {
-  if (magicLinksTokenIndexReady) {
-    return;
-  }
-  await dbRun(
-    db,
-    `CREATE UNIQUE INDEX IF NOT EXISTS idx_magic_links_token_hash ON magic_links(token_hash)`,
-  );
-  magicLinksTokenIndexReady = true;
 }
 
 async function ensureStripeWebhookEventsTable(db) {
@@ -4748,65 +3703,20 @@ async function ensureUserConsentColumns(db) {
   userConsentColumnsReady = true;
 }
 
-async function ensureUserProvisionalColumns(db) {
-  if (userProvisionalColumnsReady) {
-    return;
-  }
-  const pragma = await db.prepare(`PRAGMA table_info(users)`).all();
-  const rows = Array.isArray(pragma && pragma.results) ? pragma.results : [];
-  if (!rows.length) {
-    return;
-  }
-  const names = new Set(rows.map((row) => String(row && row.name || "").trim().toLowerCase()));
-  const statements = [];
-  if (!names.has("provisional_plan_code")) {
-    statements.push(`ALTER TABLE users ADD COLUMN provisional_plan_code TEXT`);
-  }
-  if (!names.has("provisional_expires_at")) {
-    statements.push(`ALTER TABLE users ADD COLUMN provisional_expires_at TEXT`);
-  }
-  if (!names.has("pro_confirmed_at")) {
-    statements.push(`ALTER TABLE users ADD COLUMN pro_confirmed_at TEXT`);
-  }
-  if (!names.has("pro_access_expires_at")) {
-    statements.push(`ALTER TABLE users ADD COLUMN pro_access_expires_at TEXT`);
-  }
-  for (const statement of statements) {
-    try {
-      await dbRun(db, statement);
-    } catch (error) {
-      const message = String(error && error.message || "");
-      if (!message.toLowerCase().includes("duplicate column")) {
-        throw error;
-      }
-    }
-  }
-  userProvisionalColumnsReady = true;
-}
-
 async function ensureApiKeyTables(db) {
   if (apiKeyTablesReady) {
     return;
   }
-  await ensureUserProvisionalColumns(db);
   await dbRun(
     db,
     `
       CREATE TABLE IF NOT EXISTS api_key_requests (
         id TEXT PRIMARY KEY,
         email TEXT NOT NULL,
-        requested_plan TEXT NOT NULL DEFAULT 'planetka',
-        request_type TEXT NOT NULL DEFAULT 'free',
-        claimed_plan_code TEXT,
-        order_id TEXT,
+        requested_plan TEXT NOT NULL DEFAULT 'free',
         token_hash TEXT NOT NULL UNIQUE,
         expires_at TEXT NOT NULL,
         used_at TEXT,
-        review_status TEXT NOT NULL DEFAULT 'pending',
-        reviewed_at TEXT,
-        reviewed_by TEXT,
-        review_note TEXT,
-        cooldown_until TEXT,
         accept_terms INTEGER NOT NULL DEFAULT 0,
         accept_privacy INTEGER NOT NULL DEFAULT 0,
         opt_in_news INTEGER NOT NULL DEFAULT 0,
@@ -4825,32 +3735,8 @@ async function ensureApiKeyTables(db) {
     apiKeyRequestRows.map((row) => String(row && row.name || "").trim().toLowerCase()),
   );
   const apiKeyRequestStatements = [];
-  if (!apiKeyRequestNames.has("request_type")) {
-    apiKeyRequestStatements.push(`ALTER TABLE api_key_requests ADD COLUMN request_type TEXT NOT NULL DEFAULT 'free'`);
-  }
-  if (!apiKeyRequestNames.has("claimed_plan_code")) {
-    apiKeyRequestStatements.push(`ALTER TABLE api_key_requests ADD COLUMN claimed_plan_code TEXT`);
-  }
-  if (!apiKeyRequestNames.has("order_id")) {
-    apiKeyRequestStatements.push(`ALTER TABLE api_key_requests ADD COLUMN order_id TEXT`);
-  }
   if (!apiKeyRequestNames.has("request_ip")) {
     apiKeyRequestStatements.push(`ALTER TABLE api_key_requests ADD COLUMN request_ip TEXT`);
-  }
-  if (!apiKeyRequestNames.has("review_status")) {
-    apiKeyRequestStatements.push(`ALTER TABLE api_key_requests ADD COLUMN review_status TEXT NOT NULL DEFAULT 'pending'`);
-  }
-  if (!apiKeyRequestNames.has("reviewed_at")) {
-    apiKeyRequestStatements.push(`ALTER TABLE api_key_requests ADD COLUMN reviewed_at TEXT`);
-  }
-  if (!apiKeyRequestNames.has("reviewed_by")) {
-    apiKeyRequestStatements.push(`ALTER TABLE api_key_requests ADD COLUMN reviewed_by TEXT`);
-  }
-  if (!apiKeyRequestNames.has("review_note")) {
-    apiKeyRequestStatements.push(`ALTER TABLE api_key_requests ADD COLUMN review_note TEXT`);
-  }
-  if (!apiKeyRequestNames.has("cooldown_until")) {
-    apiKeyRequestStatements.push(`ALTER TABLE api_key_requests ADD COLUMN cooldown_until TEXT`);
   }
   if (!apiKeyRequestNames.has("accept_terms")) {
     apiKeyRequestStatements.push(`ALTER TABLE api_key_requests ADD COLUMN accept_terms INTEGER NOT NULL DEFAULT 0`);
@@ -4887,7 +3773,6 @@ async function ensureApiKeyTables(db) {
         UPDATE api_key_requests
         SET created_at = COALESCE(
           NULLIF(created_at, ''),
-          NULLIF(reviewed_at, ''),
           NULLIF(used_at, ''),
           NULLIF(expires_at, ''),
           ?
@@ -4903,14 +3788,6 @@ async function ensureApiKeyTables(db) {
   );
   await dbRun(
     db,
-    `CREATE INDEX IF NOT EXISTS idx_api_key_requests_claim_state ON api_key_requests(email, request_type, review_status, created_at DESC)`,
-  );
-  await dbRun(
-    db,
-    `CREATE INDEX IF NOT EXISTS idx_api_key_requests_claim_cooldown ON api_key_requests(email, request_type, cooldown_until DESC)`,
-  );
-  await dbRun(
-    db,
     `
       CREATE TABLE IF NOT EXISTS api_keys (
         id TEXT PRIMARY KEY,
@@ -4920,9 +3797,6 @@ async function ensureApiKeyTables(db) {
         status TEXT NOT NULL DEFAULT 'active',
         plan_code TEXT NOT NULL DEFAULT 'planetka',
         expires_at TEXT,
-        provisional INTEGER NOT NULL DEFAULT 0,
-        provisional_expires_at TEXT,
-        confirmed_at TEXT,
         issued_at TEXT NOT NULL,
         last_used_at TEXT,
         revoked_at TEXT
@@ -4965,213 +3839,7 @@ async function ensureApiKeyTables(db) {
     db,
     `CREATE INDEX IF NOT EXISTS idx_api_key_device_activity_seen ON api_key_device_activity(last_seen_unix DESC)`,
   );
-  await dbRun(
-    db,
-    `
-      CREATE TABLE IF NOT EXISTS provisional_claim_audit (
-        id TEXT PRIMARY KEY,
-        created_at TEXT NOT NULL,
-        event_type TEXT NOT NULL,
-        email TEXT,
-        user_id TEXT,
-        claim_id TEXT,
-        order_id TEXT,
-        plan_code TEXT,
-        ip TEXT,
-        device_id TEXT,
-        details_json TEXT
-      )
-    `,
-  );
-  const claimAuditPragma = await db.prepare(`PRAGMA table_info(provisional_claim_audit)`).all();
-  const claimAuditRows = Array.isArray(claimAuditPragma && claimAuditPragma.results)
-    ? claimAuditPragma.results
-    : [];
-  const claimAuditNames = new Set(
-    claimAuditRows.map((row) => String(row && row.name || "").trim().toLowerCase()),
-  );
-  const claimAuditStatements = [];
-  if (!claimAuditNames.has("created_at")) {
-    claimAuditStatements.push(`ALTER TABLE provisional_claim_audit ADD COLUMN created_at TEXT`);
-  }
-  if (!claimAuditNames.has("event_type")) {
-    claimAuditStatements.push(`ALTER TABLE provisional_claim_audit ADD COLUMN event_type TEXT`);
-  }
-  if (!claimAuditNames.has("email")) {
-    claimAuditStatements.push(`ALTER TABLE provisional_claim_audit ADD COLUMN email TEXT`);
-  }
-  if (!claimAuditNames.has("user_id")) {
-    claimAuditStatements.push(`ALTER TABLE provisional_claim_audit ADD COLUMN user_id TEXT`);
-  }
-  if (!claimAuditNames.has("claim_id")) {
-    claimAuditStatements.push(`ALTER TABLE provisional_claim_audit ADD COLUMN claim_id TEXT`);
-  }
-  if (!claimAuditNames.has("order_id")) {
-    claimAuditStatements.push(`ALTER TABLE provisional_claim_audit ADD COLUMN order_id TEXT`);
-  }
-  if (!claimAuditNames.has("plan_code")) {
-    claimAuditStatements.push(`ALTER TABLE provisional_claim_audit ADD COLUMN plan_code TEXT`);
-  }
-  if (!claimAuditNames.has("ip")) {
-    claimAuditStatements.push(`ALTER TABLE provisional_claim_audit ADD COLUMN ip TEXT`);
-  }
-  if (!claimAuditNames.has("device_id")) {
-    claimAuditStatements.push(`ALTER TABLE provisional_claim_audit ADD COLUMN device_id TEXT`);
-  }
-  if (!claimAuditNames.has("details_json")) {
-    claimAuditStatements.push(`ALTER TABLE provisional_claim_audit ADD COLUMN details_json TEXT`);
-  }
-  for (const statement of claimAuditStatements) {
-    try {
-      await dbRun(db, statement);
-    } catch (error) {
-      const message = String(error && error.message || "");
-      if (!message.toLowerCase().includes("duplicate column")) {
-        throw error;
-      }
-    }
-  }
-  if (!claimAuditNames.has("created_at")) {
-    await dbRun(
-      db,
-      `
-        UPDATE provisional_claim_audit
-        SET created_at = COALESCE(NULLIF(created_at, ''), ?)
-        WHERE created_at IS NULL OR created_at = ''
-      `,
-      [nowIso()],
-    );
-  }
-  await dbRun(
-    db,
-    `CREATE INDEX IF NOT EXISTS idx_provisional_claim_audit_created ON provisional_claim_audit(created_at DESC)`,
-  );
-  await dbRun(
-    db,
-    `CREATE INDEX IF NOT EXISTS idx_provisional_claim_audit_email_created ON provisional_claim_audit(email, created_at DESC)`,
-  );
   apiKeyTablesReady = true;
-}
-
-async function appendProvisionalClaimAudit(db, eventType, payload = {}) {
-  if (!db || !eventType) {
-    return;
-  }
-  await ensureApiKeyTables(db);
-  const detailsJson = (() => {
-    try {
-      return JSON.stringify(payload && payload.details ? payload.details : {});
-    } catch (_error) {
-      return "{}";
-    }
-  })();
-  await dbRun(
-    db,
-    `
-      INSERT INTO provisional_claim_audit (
-        id,
-        created_at,
-        event_type,
-        email,
-        user_id,
-        claim_id,
-        order_id,
-        plan_code,
-        ip,
-        device_id,
-        details_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `,
-    [
-      crypto.randomUUID(),
-      nowIso(),
-      String(eventType || "").trim().slice(0, 96),
-      normalizeEmail(payload.email || "") || null,
-      String(payload.userId || "").trim() || null,
-      String(payload.claimId || "").trim() || null,
-      normalizeOrderId(payload.orderId || "") || null,
-      normalizeRequestedPlan(payload.planCode || PLAN_CODE_PLANETKA),
-      String(payload.ip || "").trim() || null,
-      normalizeDeviceId(payload.deviceId || "") || null,
-      detailsJson,
-    ],
-  );
-}
-
-async function findLatestPaidClaimByEmail(db, email) {
-  const normalizedEmail = normalizeEmail(email);
-  if (!normalizedEmail) {
-    return null;
-  }
-  return dbGet(
-    db,
-    `
-      SELECT
-        id,
-        email,
-        requested_plan,
-        claimed_plan_code,
-        request_type,
-        order_id,
-        review_status,
-        reviewed_at,
-        reviewed_by,
-        review_note,
-        cooldown_until,
-        used_at,
-        request_ip,
-        request_device_id,
-        created_at
-      FROM api_key_requests
-      WHERE email = ?
-        AND request_type = ?
-      ORDER BY created_at DESC
-      LIMIT 1
-    `,
-    [normalizedEmail, API_KEY_REQUEST_TYPE_PAID_CLAIM],
-  );
-}
-
-async function markPaidClaimReviewed(db, claimId, reviewStatus, options = {}) {
-  const normalizedClaimId = String(claimId || "").trim();
-  if (!normalizedClaimId) {
-    return;
-  }
-  const safeStatus = normalizeClaimReviewStatus(reviewStatus) || CLAIM_REVIEW_REJECTED;
-  const reviewedAt = String(options.reviewedAt || nowIso()).trim();
-  const reviewedBy = String(options.reviewedBy || "").trim();
-  const reviewNote = String(options.reviewNote || "").trim();
-  const cooldownUntil = String(options.cooldownUntil || "").trim();
-  const clearCooldown = parseBooleanFlag(options.clearCooldown);
-  await dbRun(
-    db,
-    `
-      UPDATE api_key_requests
-      SET
-        review_status = ?,
-        reviewed_at = ?,
-        reviewed_by = CASE WHEN ? != '' THEN ? ELSE reviewed_by END,
-        review_note = CASE WHEN ? != '' THEN ? ELSE review_note END,
-        cooldown_until = CASE
-          WHEN ? = 1 THEN NULL
-          WHEN ? != '' THEN ?
-          ELSE cooldown_until
-        END
-      WHERE id = ?
-    `,
-    [
-      safeStatus,
-      reviewedAt,
-      reviewedBy,
-      reviewedBy,
-      reviewNote,
-      reviewNote,
-      clearCooldown ? 1 : 0,
-      cooldownUntil,
-      cooldownUntil,
-      normalizedClaimId,
-    ],
-  );
 }
 
 async function ensureRefreshSessionColumns(db) {
@@ -5223,65 +3891,45 @@ async function ensureRefreshSessionColumns(db) {
 async function upsertUserByEmail(db, email, status = PLAN_CODE_PLANETKA_FREE, options = {}, env = {}) {
   const normalizedEmail = normalizeEmail(email);
   await ensureUserConsentColumns(db);
-  await ensureUserProvisionalColumns(db);
   const requestedStatus = normalizePlanCode(status) || PLAN_CODE_PLANETKA_FREE;
-  const provisionalPlanCode = normalizeRequestedPlan(options.provisionalPlanCode || "");
-  const provisionalExpiresAt = String(options.provisionalExpiresAt || "").trim();
-  const proConfirmedAt = String(options.proConfirmedAt || "").trim();
-  const proAccessExpiresAt = String(options.proAccessExpiresAt || "").trim();
-  const requestedPaidStatus = requestedStatus === PLAN_CODE_PLANETKA_PRO;
-  const hasServerEntitlementSignal = Boolean(
-    proConfirmedAt
-    || proAccessExpiresAt
-    || (isPaidRequestedPlan(provisionalPlanCode) && provisionalExpiresAt)
-    || isPermanentProEmail(normalizedEmail, env),
-  );
-  const forceProByBeta = isBetaUnrestrictedAccessEnabled(env);
-  const gatedRequestedStatus = (requestedPaidStatus && !hasServerEntitlementSignal)
-    ? PLAN_CODE_PLANETKA_FREE
-    : requestedStatus;
-  const forceProByEmail = isPermanentProEmail(normalizedEmail, env);
-  const finalRequestedStatus = forceProByBeta
-    ? PLAN_CODE_PLANETKA_PRO
-    : (forceProByEmail ? PLAN_CODE_PLANETKA_PRO : gatedRequestedStatus);
+  void env;
   let user = await findUserByEmail(db, normalizedEmail);
   if (user) {
     const currentStatus = String(user.status || "").trim().toLowerCase();
-    const nextStatus = String(finalRequestedStatus || "").trim().toLowerCase() || PLAN_CODE_PLANETKA_FREE;
-    const currentEntitlement = resolveEntitlementState(user, env);
-    // Keep currently entitled paid status when this helper is called with free status by non-entitlement flows.
-    const protectedStatus = (
-      Boolean(currentEntitlement && currentEntitlement.commercial_use_allowed)
-      && currentStatus === PLAN_CODE_PLANETKA_PRO
-      && (
-        nextStatus === PLAN_CODE_PLANETKA_FREE
-        || nextStatus === PLAN_CODE_PLANETKA
-      )
-    )
+    const nextStatus = String(requestedStatus || "").trim().toLowerCase() || PLAN_CODE_PLANETKA_FREE;
+    const protectedStatus = currentStatus === "blocked"
       ? currentStatus
-      : nextStatus;
+      : (
+        resolvePlanPriority(currentStatus) > resolvePlanPriority(nextStatus)
+          ? currentStatus
+          : nextStatus
+      );
+    const termsAcceptedAt = String(options.termsAcceptedAt || "").trim();
+    const privacyAcceptedAt = String(options.privacyAcceptedAt || "").trim();
+    const termsVersion = String(options.termsVersion || "").trim();
+    const privacyVersion = String(options.privacyVersion || "").trim();
     await dbRun(
       db,
       `
         UPDATE users
         SET
           status = ?,
-          provisional_plan_code = CASE WHEN ? != '' THEN ? ELSE provisional_plan_code END,
-          provisional_expires_at = CASE WHEN ? != '' THEN ? ELSE provisional_expires_at END,
-          pro_confirmed_at = CASE WHEN ? != '' THEN ? ELSE pro_confirmed_at END,
-          pro_access_expires_at = CASE WHEN ? != '' THEN ? ELSE pro_access_expires_at END
+          terms_accepted_at = CASE WHEN ? != '' THEN ? ELSE terms_accepted_at END,
+          privacy_accepted_at = CASE WHEN ? != '' THEN ? ELSE privacy_accepted_at END,
+          terms_version = CASE WHEN ? != '' THEN ? ELSE terms_version END,
+          privacy_version = CASE WHEN ? != '' THEN ? ELSE privacy_version END
         WHERE id = ?
       `,
       [
         protectedStatus,
-        provisionalPlanCode,
-        provisionalPlanCode,
-        provisionalExpiresAt,
-        provisionalExpiresAt,
-        proConfirmedAt,
-        proConfirmedAt,
-        proAccessExpiresAt,
-        proAccessExpiresAt,
+        termsAcceptedAt,
+        termsAcceptedAt,
+        privacyAcceptedAt,
+        privacyAcceptedAt,
+        termsVersion,
+        termsVersion,
+        privacyVersion,
+        privacyVersion,
         user.id,
       ],
     );
@@ -5309,26 +3957,18 @@ async function upsertUserByEmail(db, email, status = PLAN_CODE_PLANETKA_FREE, op
         terms_accepted_at,
         privacy_accepted_at,
         terms_version,
-        privacy_version,
-        provisional_plan_code,
-        provisional_expires_at,
-        pro_confirmed_at,
-        pro_access_expires_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        privacy_version
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `,
     [
       id,
       normalizedEmail,
-      finalRequestedStatus,
+      requestedStatus,
       createdAt,
       termsAcceptedAt,
       privacyAcceptedAt,
       termsVersion,
       privacyVersion,
-      provisionalPlanCode || null,
-      provisionalExpiresAt || null,
-      proConfirmedAt || null,
-      proAccessExpiresAt || null,
     ],
   );
   if (!parseBooleanFlag(options.suppressNewUserAlert)) {
@@ -5336,7 +3976,7 @@ async function upsertUserByEmail(db, email, status = PLAN_CODE_PLANETKA_FREE, op
       await sendNewUserLoginAlert(env, {
         email: normalizedEmail,
         source: String(options.signupSource || options.source || "unknown").trim() || "unknown",
-        planCode: finalRequestedStatus,
+        planCode: requestedStatus,
         createdAt,
       });
     } catch (error) {
@@ -5354,136 +3994,13 @@ async function upsertUserByEmail(db, email, status = PLAN_CODE_PLANETKA_FREE, op
   return user;
 }
 
-async function applyExpiredProvisionalFallback(db, user, env = {}) {
-  if (!user || !user.id || !isUnconfirmedProvisionalExpired(user)) {
-    return;
-  }
-  const now = nowIso();
-  const cooldownUntil = computePendingClaimCooldownIso(env);
-  const latestClaim = await findLatestPaidClaimByEmail(db, user.email);
-  if (latestClaim && String(latestClaim.review_status || "").trim().toLowerCase() === CLAIM_REVIEW_PENDING) {
-    await markPaidClaimReviewed(
-      db,
-      latestClaim.id,
-      CLAIM_REVIEW_REJECTED,
-      {
-        reviewedAt: now,
-        reviewedBy: "system_timeout",
-        reviewNote: "auto_fallback_to_free_after_provisional_expiry",
-        cooldownUntil,
-      },
-    );
-    await appendProvisionalClaimAudit(
-      db,
-      "claim_auto_fallback_to_free",
-      {
-        email: user.email,
-        userId: user.id,
-        claimId: String(latestClaim.id || "").trim(),
-        orderId: String(latestClaim.order_id || "").trim(),
-        planCode: latestClaim.claimed_plan_code || latestClaim.requested_plan || PLAN_CODE_PLANETKA,
-        ip: String(latestClaim.request_ip || "").trim(),
-        deviceId: String(latestClaim.request_device_id || "").trim(),
-        details: {
-          cooldown_until: cooldownUntil,
-        },
-      },
-    );
-    await signalRejectedClaimAttempt(
-      db,
-      env,
-      {
-        email: user.email,
-        ip: String(latestClaim.request_ip || "").trim(),
-        deviceId: String(latestClaim.request_device_id || "").trim(),
-        orderId: String(latestClaim.order_id || "").trim(),
-        requestedPlan: latestClaim.claimed_plan_code || latestClaim.requested_plan || PLAN_CODE_PLANETKA,
-        claimId: String(latestClaim.id || "").trim(),
-        reason: "claim_expired_no_manual_decision",
-      },
-    );
-    try {
-      await sendOpsAlertEmail(
-        env,
-        "Planetka provisional paid access auto-fallback",
-        [
-          "Provisional paid access expired without manual confirmation.",
-          `email=${normalizeEmail(user.email || "")}`,
-          `claim_id=${String(latestClaim.id || "").trim()}`,
-          `order_id=${normalizeOrderId(latestClaim.order_id || "")}`,
-          `requested_plan=${normalizeRequestedPlan(latestClaim.claimed_plan_code || latestClaim.requested_plan || PLAN_CODE_PLANETKA)}`,
-          `request_ip=${String(latestClaim.request_ip || "").trim()}`,
-          `request_device_id=${normalizeDeviceId(latestClaim.request_device_id || "")}`,
-          `cooldown_until=${cooldownUntil}`,
-        ],
-      );
-    } catch (error) {
-      console.warn(
-        "worker.claim_auto_fallback_alert_email_failed",
-        JSON.stringify({
-          email: normalizeEmail(user.email || ""),
-          error: String(error && error.message || "claim_auto_fallback_alert_email_failed"),
-        }),
-      );
-    }
-  }
-  await dbRun(
-    db,
-    `
-      UPDATE api_keys
-      SET
-        provisional = 0,
-        provisional_expires_at = NULL,
-        plan_code = ?,
-        confirmed_at = NULL
-      WHERE user_id = ?
-        AND status = 'active'
-        AND provisional = 1
-    `,
-    [PLAN_CODE_PLANETKA, user.id],
-  );
-}
-
 async function enforceUserPlanPolicy(db, user, subscription = null, env = {}) {
+  void subscription;
+  void env;
   if (!user || !user.id || isBlockedStatus(user.status)) {
     return user;
   }
-  if (isUnconfirmedProvisionalExpired(user)) {
-    await applyExpiredProvisionalFallback(db, user, env);
-    user = await findUserById(db, user.id);
-    if (!user) {
-      return null;
-    }
-  }
-  if (String(user.pro_confirmed_at || "").trim()) {
-    const latestClaim = await findLatestPaidClaimByEmail(db, user.email);
-    if (latestClaim && String(latestClaim.review_status || "").trim().toLowerCase() === CLAIM_REVIEW_PENDING) {
-      await markPaidClaimReviewed(
-        db,
-        latestClaim.id,
-        CLAIM_REVIEW_APPROVED,
-        {
-          reviewedBy: "system_confirmed",
-          reviewNote: "user_confirmed_paid_claim",
-          clearCooldown: true,
-        },
-      );
-      await appendProvisionalClaimAudit(
-        db,
-        "claim_marked_approved_after_confirmation",
-        {
-          email: user.email,
-          userId: user.id,
-          claimId: String(latestClaim.id || "").trim(),
-          orderId: String(latestClaim.order_id || "").trim(),
-          planCode: latestClaim.claimed_plan_code || latestClaim.requested_plan || PLAN_CODE_PLANETKA,
-          ip: String(latestClaim.request_ip || "").trim(),
-          deviceId: String(latestClaim.request_device_id || "").trim(),
-        },
-      );
-    }
-  }
-  const targetPlan = resolvePolicyPlanCode(user, subscription, env);
+  const targetPlan = normalizeRequestedPlan(user.status);
   if (
     targetPlan !== PLAN_CODE_PLANETKA_FREE
     && targetPlan !== PLAN_CODE_PLANETKA
@@ -5495,44 +4012,6 @@ async function enforceUserPlanPolicy(db, user, subscription = null, env = {}) {
   if (currentStatus === targetPlan) {
     return { ...user, status: targetPlan };
   }
-  if (
-    targetPlan === PLAN_CODE_PLANETKA_FREE
-    || targetPlan === PLAN_CODE_PLANETKA
-  ) {
-    await dbRun(
-      db,
-      `
-        UPDATE users
-        SET
-          status = ?,
-          provisional_plan_code = NULL,
-          provisional_expires_at = NULL
-        WHERE id = ?
-      `,
-      [targetPlan, user.id],
-    );
-    await dbRun(
-      db,
-      `
-        UPDATE api_keys
-        SET
-          plan_code = ?,
-          expires_at = NULL,
-          provisional = 0,
-          provisional_expires_at = NULL,
-          confirmed_at = NULL
-        WHERE user_id = ?
-          AND status = 'active'
-      `,
-      [targetPlan, user.id],
-    );
-    return {
-      ...user,
-      status: targetPlan,
-      provisional_plan_code: "",
-      provisional_expires_at: "",
-    };
-  }
   await dbRun(db, `UPDATE users SET status = ? WHERE id = ?`, [targetPlan, user.id]);
   await dbRun(
     db,
@@ -5540,14 +4019,11 @@ async function enforceUserPlanPolicy(db, user, subscription = null, env = {}) {
       UPDATE api_keys
       SET
         plan_code = ?,
-        expires_at = NULL,
-        provisional = 0,
-        provisional_expires_at = NULL,
-        confirmed_at = CASE WHEN ? != '' THEN ? ELSE confirmed_at END
+        expires_at = NULL
       WHERE user_id = ?
         AND status = 'active'
     `,
-    [targetPlan, String(user && user.pro_confirmed_at || "").trim(), String(user && user.pro_confirmed_at || "").trim(), user.id],
+    [targetPlan, user.id],
   );
   return { ...user, status: targetPlan };
 }
@@ -5578,51 +4054,6 @@ function minimumPlanQualityForTile(fileName) {
   if (d <= 1) return "full";
   if (d <= 3) return "balanced";
   return "preview";
-}
-
-async function sendMagicLinkEmail(env, email, token, magicUrlOverride = "") {
-  const apiKey = requireSecret(env, "EMAIL_API_KEY");
-  const from = String(env.EMAIL_FROM || "info@planetka.io").trim();
-  const loginUrl = String(env.LOGIN_URL || "https://www.planetka.io/login").trim();
-  const magicUrl = String(magicUrlOverride || `${loginUrl}?token=${encodeURIComponent(token)}`).trim();
-
-  const response = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      from,
-      to: [email],
-      subject: "Your Planetka login link",
-      text: [
-        "Use this secure Planetka login link:",
-        magicUrl,
-        "",
-        "This link expires in 15 minutes and can only be used once.",
-      ].join("\n"),
-      html: `
-        <div style="font-family: Arial, sans-serif; line-height: 1.5; color: #111827;">
-          <h2 style="margin-bottom: 16px;">Log in to Planetka</h2>
-          <p>Use the button below to log in to Planetka for Blender.</p>
-          <p style="margin: 24px 0;">
-            <a href="${magicUrl}" style="background:#111827;color:#ffffff;padding:12px 18px;text-decoration:none;border-radius:8px;display:inline-block;">
-              Log In to Planetka
-            </a>
-          </p>
-          <p>If the button does not work, open this link:</p>
-          <p><a href="${magicUrl}">${magicUrl}</a></p>
-          <p>This link expires in 15 minutes and can only be used once.</p>
-        </div>
-      `,
-    }),
-  });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`resend_error_${response.status}_${body}`);
-  }
 }
 
 async function sendApiKeyActivationEmail(env, email, token) {
@@ -5858,9 +4289,7 @@ async function issueApiKeyForUser(db, env, user, planCode, options = {}) {
   const keyPrefix = String(token.slice(0, 16));
   const keyId = crypto.randomUUID();
   const issuedAt = nowIso();
-  const provisional = parseBooleanFlag(options.provisional) ? 1 : 0;
-  const provisionalExpiresAt = String(options.provisionalExpiresAt || "").trim();
-  const confirmedAt = String(options.confirmedAt || "").trim();
+  void options;
   const expiresAt = String(options.expiresAt || computeApiKeyExpiryIso(safePlan, env) || "").trim();
   await dbRun(
     db,
@@ -5873,11 +4302,8 @@ async function issueApiKeyForUser(db, env, user, planCode, options = {}) {
         status,
         plan_code,
         expires_at,
-        provisional,
-        provisional_expires_at,
-        confirmed_at,
         issued_at
-      ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?)
     `,
     [
       keyId,
@@ -5886,13 +4312,10 @@ async function issueApiKeyForUser(db, env, user, planCode, options = {}) {
       keyPrefix,
       safePlan,
       expiresAt || null,
-      provisional,
-      provisionalExpiresAt || null,
-      confirmedAt || null,
       issuedAt,
     ],
   );
-  if (safePlan === PLAN_CODE_PLANETKA) {
+  if (safePlan === PLAN_CODE_PLANETKA_FREE) {
     await enforceSingleActiveFreeApiKey(
       db,
       String(user && user.id || "").trim(),
@@ -5921,17 +4344,12 @@ async function findActiveApiKeyRecord(db, apiKeyValue) {
         ak.status AS api_key_status,
         ak.plan_code AS api_key_plan_code,
         ak.expires_at AS api_key_expires_at,
-        ak.provisional AS api_key_provisional,
-        ak.provisional_expires_at AS api_key_provisional_expires_at,
-        ak.confirmed_at AS api_key_confirmed_at,
         ak.key_prefix,
         u.id,
         u.email,
         u.status,
-        u.provisional_plan_code,
-        u.provisional_expires_at,
-        u.pro_confirmed_at,
-        u.pro_access_expires_at
+        u.created_at,
+        u.last_login_at
       FROM api_keys ak
       JOIN users u ON u.id = ak.user_id
       WHERE ak.key_hash = ?
@@ -6092,7 +4510,6 @@ async function enforceApiKeyDeviceLimit(db, apiKeyId, userId, userEmail, planCod
     return {
       activeDeviceCount: activeDeviceIds.has(safeDeviceId) ? activeDeviceIds.size : (activeDeviceIds.size + 1),
       maxDevices: Number.MAX_SAFE_INTEGER,
-      provisionalRestricted: false,
       exempted: true,
     };
   }
@@ -6106,7 +4523,6 @@ async function enforceApiKeyDeviceLimit(db, apiKeyId, userId, userEmail, planCod
   return {
     activeDeviceCount: activeDeviceIds.has(safeDeviceId) ? activeDeviceIds.size : (activeDeviceIds.size + 1),
     maxDevices,
-    provisionalRestricted: false,
   };
 }
 
@@ -6114,19 +4530,15 @@ async function createAccessToken(env, user, subscription, extraClaims = {}) {
   void subscription;
   const secret = requireSecret(env, "JWT_SIGNING_SECRET");
   const exp = Math.floor(Date.now() / 1000) + (60 * 60);
-  const entitlement = resolveEntitlementState(user, env);
   const effectivePlanCode = normalizeRequestedPlan(
     resolvePolicyPlanCode(user, subscription, env),
   ) || PLAN_CODE_PLANETKA_FREE;
-  const hostedStreamingAccessStatus = String(entitlement.subscription_status || "inactive");
   const basePayload = {
     type: "access",
     sub: user.id,
     email: user.email,
     plan_code: effectivePlanCode,
     user_status: effectivePlanCode,
-    subscription_status: hostedStreamingAccessStatus,
-    hosted_streaming_access_status: hostedStreamingAccessStatus,
     exp,
   };
   const payload = { ...basePayload };
@@ -6296,20 +4708,11 @@ function genericAuthStartResponse(env) {
   return json(
     {
       ok: true,
-      message: "If the email is valid, a Planetka login link has been sent.",
+      message: "If the email is valid, a Planetka API key activation link has been sent.",
     },
     200,
     env,
   );
-}
-
-function buildMagicLinkUrl(env, token, deviceCode = "") {
-  const apiBaseUrl = String(env.API_BASE_URL || "https://api.planetka.io").trim().replace(/\/+$/, "");
-  const loginUrl = String(env.LOGIN_URL || "https://www.planetka.io/login").trim();
-  if (deviceCode) {
-    return `${apiBaseUrl}/device/login?device_code=${encodeURIComponent(deviceCode)}&token=${encodeURIComponent(token)}`;
-  }
-  return `${loginUrl}?token=${encodeURIComponent(token)}`;
 }
 
 function renderApiKeyRequestPage(env, message = "", requestedPlan = PLAN_CODE_PLANETKA_FREE) {
@@ -6533,127 +4936,6 @@ async function sendNewUserLoginAlert(env, details = {}) {
   );
 }
 
-async function sendProvisionalPlanAlert(env, details = {}) {
-  try {
-    await sendOpsAlertEmail(
-      env,
-      "Planetka provisional paid access request",
-      [
-        "A user requested provisional paid access.",
-        `email=${normalizeEmail(details.email || "")}`,
-        `requested_plan=${normalizeRequestedPlan(details.requestedPlan || PLAN_CODE_PLANETKA)}`,
-        `order_id=${normalizeOrderId(details.orderId || "")}`,
-        `request_ip=${String(details.ip || "").trim()}`,
-        `request_device_id=${normalizeDeviceId(details.deviceId || "")}`,
-        `claim_id=${String(details.claimId || "").trim()}`,
-        `provisional_expires_at=${String(details.provisionalExpiresAt || "").trim()}`,
-        "",
-        "If payment is confirmed, mark the user as confirmed in D1 before expiry.",
-      ],
-    );
-  } catch (error) {
-    console.warn(
-      "worker.provisional_alert_email_failed",
-      JSON.stringify({
-        email: normalizeEmail(details.email || ""),
-        error: String(error && error.message || "alert_email_failed"),
-      }),
-    );
-  }
-}
-
-async function signalRejectedClaimAttempt(db, env, details = {}) {
-  await ensureRateLimitsTable(db);
-  const normalizedEmail = normalizeEmail(details.email || "");
-  const ip = String(details.ip || "").trim();
-  const deviceId = normalizeDeviceId(details.deviceId || "");
-  const threshold = parseRateLimitInteger(
-    env.REJECTED_CLAIM_ALERT_THRESHOLD,
-    DEFAULT_REJECTED_CLAIM_ALERT_THRESHOLD,
-  );
-  const windowSeconds = parseRateLimitInteger(
-    env.REJECTED_CLAIM_ALERT_WINDOW_SECONDS,
-    DEFAULT_REJECTED_CLAIM_ALERT_WINDOW_SECONDS,
-  );
-  if (threshold <= 0 || windowSeconds <= 0) {
-    return;
-  }
-  const signals = [];
-  if (normalizedEmail) {
-    signals.push({ keyType: "email", keyValue: normalizedEmail });
-  }
-  if (ip) {
-    signals.push({ keyType: "ip", keyValue: ip });
-  }
-  if (deviceId) {
-    signals.push({ keyType: "device", keyValue: deviceId });
-  }
-  if (!signals.length) {
-    return;
-  }
-  const triggered = [];
-  for (const signal of signals) {
-    const rate = await consumeRateLimitWindow(
-      db,
-      `claim_reject_${signal.keyType}`,
-      signal.keyValue,
-      2147483647,
-      windowSeconds,
-    );
-    if (thresholdHit(clampNonNegativeInt(rate && rate.count), threshold)) {
-      triggered.push({
-        keyType: signal.keyType,
-        keyValue: signal.keyValue,
-        count: clampNonNegativeInt(rate && rate.count),
-      });
-    }
-  }
-  await appendProvisionalClaimAudit(
-    db,
-    "claim_rejected_signal",
-    {
-      email: normalizedEmail,
-      orderId: details.orderId || "",
-      planCode: details.requestedPlan || PLAN_CODE_PLANETKA,
-      ip,
-      deviceId,
-      details: {
-        reason: String(details.reason || "").trim(),
-        claim_id: String(details.claimId || "").trim(),
-        triggered,
-      },
-    },
-  );
-  if (!triggered.length) {
-    return;
-  }
-  try {
-    await sendOpsAlertEmail(
-      env,
-      "Planetka repeated rejected paid-claim activity",
-      [
-        "Repeated rejected paid-claim activity detected.",
-        `email=${normalizedEmail}`,
-        `ip=${ip}`,
-        `device_id=${deviceId}`,
-        `order_id=${normalizeOrderId(details.orderId || "")}`,
-        `requested_plan=${normalizeRequestedPlan(details.requestedPlan || PLAN_CODE_PLANETKA)}`,
-        `reason=${String(details.reason || "").trim()}`,
-        `claim_id=${String(details.claimId || "").trim()}`,
-        `triggered=${JSON.stringify(triggered)}`,
-      ],
-    );
-  } catch (error) {
-    console.warn(
-      "worker.rejected_claim_alert_email_failed",
-      JSON.stringify({
-        email: normalizedEmail,
-        error: String(error && error.message || "rejected_claim_alert_email_failed"),
-      }),
-    );
-  }
-}
-
 async function handleApiKeyRequest(request, env) {
   const db = requireDb(env);
   await ensureApiKeyTables(db);
@@ -6779,10 +5061,6 @@ async function handleApiKeyRequest(request, env) {
 
   const token = randomToken(36);
   const tokenHash = await sha256Hex(token);
-  const requestType = API_KEY_REQUEST_TYPE_FREE;
-  const reviewStatus = CLAIM_REVIEW_APPROVED;
-  const claimPlanCode = requestedPlan;
-  const claimId = crypto.randomUUID();
   await dbRun(
     db,
     `
@@ -6790,12 +5068,8 @@ async function handleApiKeyRequest(request, env) {
         id,
         email,
         requested_plan,
-        request_type,
-        claimed_plan_code,
-        order_id,
         token_hash,
         expires_at,
-        review_status,
         accept_terms,
         accept_privacy,
         opt_in_news,
@@ -6803,18 +5077,14 @@ async function handleApiKeyRequest(request, env) {
         request_ip,
         request_device_id,
         created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     [
-      claimId,
+      crypto.randomUUID(),
       email,
-      claimPlanCode,
-      requestType,
-      claimPlanCode,
-      null,
+      requestedPlan,
       tokenHash,
       addMinutesIso(30),
-      reviewStatus,
       acceptTerms ? 1 : 0,
       acceptPrivacy ? 1 : 0,
       optInNews ? 1 : 0,
@@ -6851,31 +5121,18 @@ async function activateApiKeyFromToken(db, env, rawToken) {
       WHERE token_hash = ?
         AND used_at IS NULL
         AND expires_at >= ?
-        AND (
-          request_type IS NULL
-          OR request_type = ''
-          OR request_type = ?
-          OR (request_type = ? AND review_status = ?)
-        )
       RETURNING
         id,
         email,
         requested_plan,
-        claimed_plan_code,
-        request_type,
-        order_id,
         request_ip,
         request_device_id,
-        review_status,
         opt_in_news
     `,
     [
       now,
       tokenHash,
       now,
-      API_KEY_REQUEST_TYPE_FREE,
-      API_KEY_REQUEST_TYPE_PAID_CLAIM,
-      CLAIM_REVIEW_APPROVED,
     ],
   );
   if (!requestRow) {
@@ -6994,14 +5251,10 @@ async function handleApiKeyExchange(request, env) {
     id: record.id,
     email: record.email,
     status: record.status || PLAN_CODE_PLANETKA,
-    provisional_plan_code: record.provisional_plan_code || "",
-    provisional_expires_at: record.provisional_expires_at || "",
-    pro_confirmed_at: record.pro_confirmed_at || "",
-    pro_access_expires_at: record.pro_access_expires_at || "",
   };
   user = await enforceUserPlanPolicy(db, user, null, env);
   const effectivePlanCode = resolvePlanCode(user, null, env);
-  if (effectivePlanCode === PLAN_CODE_PLANETKA) {
+  if (effectivePlanCode === PLAN_CODE_PLANETKA_FREE) {
     const freePolicy = await enforceSingleActiveFreeApiKey(
       db,
       String(user.id || ""),
@@ -7019,11 +5272,6 @@ async function handleApiKeyExchange(request, env) {
       );
     }
   }
-  const provisionalRestricted = (
-    clampNonNegativeInt(record.api_key_provisional) === 1
-    && !String(record.api_key_confirmed_at || "").trim()
-    && !String(record.pro_confirmed_at || "").trim()
-  );
   try {
     await enforceApiKeyDeviceLimit(
       db,
@@ -7044,9 +5292,7 @@ async function handleApiKeyExchange(request, env) {
       {
         ok: false,
         error: "device_limit_exceeded",
-        message: provisionalRestricted
-          ? "This Planetka account can be active on one computer at a time."
-          : "This Planetka account can be active on one computer at a time.",
+        message: "This Planetka account can be active on one computer at a time.",
       },
       429,
       env,
@@ -7087,344 +5333,7 @@ async function handleApiKeyExchange(request, env) {
       email: user.email,
       access_token: accessToken,
       refresh_token: refreshToken,
-      subscription_status: subscriptionStatusForUser(user, env),
-      hosted_streaming_access_status: subscriptionStatusForUser(user, env),
-      renews_at: "",
-      trial_ends_at: "",
       api_key_mask: maskApiKey(apiKey),
-      ...serializeAccountState(accountState),
-    },
-    200,
-    env,
-  );
-}
-
-async function handleAuthStart(request, env) {
-  if (!isMagicLinkAuthEnabled(env)) {
-    return json({ ok: false, error: "magic_link_auth_disabled" }, 404, env);
-  }
-  const db = requireDb(env);
-  await ensureUserConsentColumns(db);
-  await ensureMagicLinksTokenIndex(db);
-  await ensureRateLimitsTable(db);
-  const body = await parseJson(request);
-  const email = normalizeEmail(body.email);
-  const clientIp = requestClientIp(request);
-  const authStartIpWindowSeconds = parseRateLimitInteger(
-    env.RATE_LIMIT_AUTH_START_IP_WINDOW_SECONDS,
-    DEFAULT_RATE_LIMIT_AUTH_START_IP_WINDOW_SECONDS,
-  );
-  const authStartIpLimit = parseRateLimitInteger(
-    env.RATE_LIMIT_AUTH_START_IP_LIMIT,
-    DEFAULT_RATE_LIMIT_AUTH_START_IP_LIMIT,
-  );
-  const authStartIpRate = await consumeRateLimitWindow(
-    db,
-    "auth_start_ip",
-    clientIp,
-    authStartIpLimit,
-    authStartIpWindowSeconds,
-  );
-  if (!authStartIpRate.allowed) {
-    await trackThresholdAlertDb(
-      db,
-      "auth_429_spike",
-      parseRateLimitInteger(env.LOG_ALERT_AUTH_429_THRESHOLD, DEFAULT_ALERT_AUTH_429_THRESHOLD),
-      parseRateLimitInteger(env.LOG_ALERT_AUTH_429_WINDOW_SECONDS, DEFAULT_ALERT_AUTH_429_WINDOW_SECONDS),
-      { route: "/auth/start", scope: "ip", code: "auth_start_ip_rate_limited" },
-    );
-    return rateLimitedResponse(
-      env,
-      "auth_start_ip_rate_limited",
-      "Too many login requests. Please try again shortly.",
-      authStartIpRate.retryAfterSeconds,
-    );
-  }
-  const authStartEmailWindowSeconds = parseRateLimitInteger(
-    env.RATE_LIMIT_AUTH_START_EMAIL_WINDOW_SECONDS,
-    DEFAULT_RATE_LIMIT_AUTH_START_EMAIL_WINDOW_SECONDS,
-  );
-  const authStartEmailLimit = parseRateLimitInteger(
-    env.RATE_LIMIT_AUTH_START_EMAIL_LIMIT,
-    DEFAULT_RATE_LIMIT_AUTH_START_EMAIL_LIMIT,
-  );
-  const authStartEmailRate = await consumeRateLimitWindow(
-    db,
-    "auth_start_email",
-    email || "unknown",
-    authStartEmailLimit,
-    authStartEmailWindowSeconds,
-  );
-  if (!authStartEmailRate.allowed) {
-    await trackThresholdAlertDb(
-      db,
-      "auth_429_spike",
-      parseRateLimitInteger(env.LOG_ALERT_AUTH_429_THRESHOLD, DEFAULT_ALERT_AUTH_429_THRESHOLD),
-      parseRateLimitInteger(env.LOG_ALERT_AUTH_429_WINDOW_SECONDS, DEFAULT_ALERT_AUTH_429_WINDOW_SECONDS),
-      { route: "/auth/start", scope: "email", code: "auth_start_email_rate_limited" },
-    );
-    return rateLimitedResponse(
-      env,
-      "auth_start_email_rate_limited",
-      "Too many login requests for this email. Please try again later.",
-      authStartEmailRate.retryAfterSeconds,
-    );
-  }
-  const deviceCode = String(body.device_code || "").trim();
-  const acceptTerms = parseBooleanFlag(body.accept_terms);
-  const acceptPrivacy = parseBooleanFlag(body.accept_privacy);
-  const optInNews = parseBooleanFlag(body.opt_in_news);
-  const legalVersion = String(env.TERMS_VERSION || env.LEGAL_VERSION || DEFAULT_LEGAL_VERSION).trim() || DEFAULT_LEGAL_VERSION;
-  const privacyVersion = String(env.PRIVACY_VERSION || env.LEGAL_VERSION || DEFAULT_LEGAL_VERSION).trim() || DEFAULT_LEGAL_VERSION;
-  if (!email || !email.includes("@")) {
-    return json({ ok: false, error: "invalid_email" }, 400, env);
-  }
-
-  if (deviceCode) {
-    if (!isValidDeviceCode(deviceCode)) {
-      return json({ ok: false, error: "device_session_invalid" }, 400, env);
-    }
-    await ensureDeviceSessionsTable(db);
-    const deviceSession = await dbGet(
-      db,
-      `
-        SELECT id, expires_at, claimed_at
-        FROM device_sessions
-        WHERE device_code = ?
-        LIMIT 1
-      `,
-      [deviceCode],
-    );
-    if (!deviceSession || deviceSession.claimed_at || Date.parse(deviceSession.expires_at) < Date.now()) {
-      return json({ ok: false, error: "device_session_invalid" }, 400, env);
-    }
-  }
-
-  let user = await findUserByEmail(db, email);
-  if (!user) {
-    if (!acceptTerms || !acceptPrivacy) {
-      return json({ ok: false, error: "terms_consent_required" }, 400, env);
-    }
-    const acceptedAt = nowIso();
-    user = await upsertUserByEmail(db, email, PLAN_CODE_PLANETKA_FREE, {
-      termsAcceptedAt: acceptedAt,
-      privacyAcceptedAt: acceptedAt,
-      termsVersion: legalVersion,
-      privacyVersion,
-      signupSource: deviceCode ? "device_login" : "magic_link_auth_start",
-    }, env);
-  } else if (isBlockedStatus(user.status)) {
-    return genericAuthStartResponse(env);
-  } else if (acceptTerms && acceptPrivacy) {
-    const acceptedAt = nowIso();
-    await dbRun(
-      db,
-      `
-        UPDATE users
-        SET
-          terms_accepted_at = COALESCE(terms_accepted_at, ?),
-          privacy_accepted_at = COALESCE(privacy_accepted_at, ?),
-          terms_version = COALESCE(terms_version, ?),
-          privacy_version = COALESCE(privacy_version, ?)
-        WHERE id = ?
-      `,
-      [acceptedAt, acceptedAt, legalVersion, privacyVersion, user.id],
-    );
-  }
-  if (user && !isBlockedStatus(user.status)) {
-    user = await enforceUserPlanPolicy(db, user, null, env);
-  }
-
-  if (optInNews) {
-    const source = deviceCode ? "device_login_page" : "auth_start";
-    await recordNewsletterOptIn(db, email, source);
-  }
-
-  const token = randomToken(32);
-  const tokenHash = await sha256Hex(token);
-  const magicLinkId = crypto.randomUUID();
-  await dbRun(
-    db,
-    `
-      INSERT INTO magic_links (
-        id,
-        user_id,
-        token_hash,
-        expires_at,
-        created_at
-      ) VALUES (?, ?, ?, ?, ?)
-    `,
-    [magicLinkId, user.id, tokenHash, addMinutesIso(15), nowIso()],
-  );
-
-  await sendMagicLinkEmail(env, email, token, buildMagicLinkUrl(env, token, deviceCode));
-  return genericAuthStartResponse(env);
-}
-
-async function handleAuthVerify(request, env) {
-  if (!isMagicLinkAuthEnabled(env)) {
-    return json({ ok: false, error: "magic_link_auth_disabled" }, 404, env);
-  }
-  const db = requireDb(env);
-  await ensureUserProvisionalColumns(db);
-  await ensureMagicLinksTokenIndex(db);
-  const body = await parseJson(request);
-  const token = String(body.token || "").trim();
-  const deviceCode = String(body.device_code || "").trim();
-  if (!token) {
-    return json({ ok: false, error: "missing_token" }, 400, env);
-  }
-
-  const tokenHash = await sha256Hex(token);
-  const usedAt = nowIso();
-  const claimedMagicLink = await dbGet(
-    db,
-    `
-      UPDATE magic_links
-      SET used_at = ?
-      WHERE token_hash = ?
-        AND used_at IS NULL
-        AND expires_at >= ?
-        AND user_id IN (
-          SELECT id
-          FROM users
-          WHERE LOWER(COALESCE(status, '')) != 'blocked'
-        )
-      RETURNING id, user_id
-    `,
-    [usedAt, tokenHash, usedAt],
-  );
-
-  let magicLink = null;
-  if (!claimedMagicLink) {
-    magicLink = await dbGet(
-      db,
-      `
-      SELECT
-        ml.id,
-        ml.user_id,
-        ml.expires_at,
-        ml.used_at,
-        u.email,
-        u.status AS user_status
-      FROM magic_links ml
-      JOIN users u ON u.id = ml.user_id
-      WHERE ml.token_hash = ?
-      LIMIT 1
-    `,
-      [tokenHash],
-    );
-    if (!magicLink) {
-      return json({ ok: false, error: "invalid_token" }, 400, env);
-    }
-    if (isBlockedStatus(magicLink.user_status)) {
-      return blockedAccountResponse(env);
-    }
-    if (magicLink.used_at) {
-      return json({ ok: false, error: "token_already_used" }, 400, env);
-    }
-    if (Date.parse(magicLink.expires_at) < Date.now()) {
-      return json({ ok: false, error: "token_expired" }, 400, env);
-    }
-    return json({ ok: false, error: "invalid_token" }, 400, env);
-  }
-
-  const userRecord = await dbGet(
-    db,
-    `
-      SELECT
-        u.id,
-        u.email,
-        u.status AS user_status,
-        u.provisional_plan_code,
-        u.provisional_expires_at,
-        u.pro_confirmed_at,
-        u.pro_access_expires_at
-      FROM users u
-      WHERE u.id = ?
-      LIMIT 1
-    `,
-    [claimedMagicLink.user_id],
-  );
-  if (!userRecord) {
-    return json({ ok: false, error: "user_not_found" }, 404, env);
-  }
-  if (isBlockedStatus(userRecord.user_status)) {
-    return blockedAccountResponse(env);
-  }
-  await dbRun(
-    db,
-    `UPDATE users SET last_login_at = ? WHERE id = ?`,
-    [usedAt, userRecord.id],
-  );
-
-  let user = {
-    id: userRecord.id,
-    email: userRecord.email,
-    status: userRecord.user_status || PLAN_CODE_PLANETKA,
-    provisional_plan_code: userRecord.provisional_plan_code || "",
-    provisional_expires_at: userRecord.provisional_expires_at || "",
-    pro_confirmed_at: userRecord.pro_confirmed_at || "",
-    pro_access_expires_at: userRecord.pro_access_expires_at || "",
-  };
-  user = await enforceUserPlanPolicy(db, user, null, env);
-  const subscriptionStatus = subscriptionStatusForUser(user, env);
-  const accessToken = await createAccessToken(env, user, null);
-  const refreshToken = await createRefreshSession(db, userRecord.id);
-  const accountState = await buildAccountState(db, user, null, env);
-
-  if (deviceCode) {
-    await ensureDeviceSessionsTable(db);
-    const deviceSession = await dbGet(
-      db,
-      `
-        SELECT id, expires_at, claimed_at
-        FROM device_sessions
-        WHERE device_code = ?
-        LIMIT 1
-      `,
-      [deviceCode],
-    );
-    if (deviceSession && !deviceSession.claimed_at && Date.parse(deviceSession.expires_at) >= Date.now()) {
-      await dbRun(
-        db,
-        `
-          UPDATE device_sessions
-          SET
-            status = 'completed',
-            email = ?,
-            access_token = ?,
-            refresh_token = ?,
-            subscription_status = ?,
-            renews_at = ?,
-            trial_ends_at = ?,
-            completed_at = ?
-          WHERE id = ?
-        `,
-        [
-          user.email,
-          accessToken,
-          refreshToken,
-          subscriptionStatus,
-          null,
-          null,
-          usedAt,
-          deviceSession.id,
-        ],
-      );
-    }
-  }
-
-  return json(
-    {
-      ok: true,
-      access_token: accessToken,
-      refresh_token: refreshToken,
-      email: user.email,
-      subscription_status: subscriptionStatus,
-      hosted_streaming_access_status: subscriptionStatus,
-      renews_at: null,
-      trial_ends_at: null,
       ...serializeAccountState(accountState),
     },
     200,
@@ -7434,7 +5343,6 @@ async function handleAuthVerify(request, env) {
 
 async function handleAuthRefresh(request, env) {
   const db = requireDb(env);
-  await ensureUserProvisionalColumns(db);
   const refreshEventBase = {
     client_ip: requestClientIp(request),
     cf_country: requestCountry(request),
@@ -7493,11 +5401,7 @@ async function handleAuthRefresh(request, env) {
         rs.api_key_id,
         rs.device_id,
         u.email,
-        u.status,
-        u.provisional_plan_code,
-        u.provisional_expires_at,
-        u.pro_confirmed_at,
-        u.pro_access_expires_at
+        u.status
       FROM refresh_sessions rs
       JOIN users u ON u.id = rs.user_id
       WHERE rs.refresh_token_hash = ?
@@ -7539,13 +5443,8 @@ async function handleAuthRefresh(request, env) {
     id: session.user_id,
     email: session.email,
     status: session.status || PLAN_CODE_PLANETKA,
-    provisional_plan_code: session.provisional_plan_code || "",
-    provisional_expires_at: session.provisional_expires_at || "",
-    pro_confirmed_at: session.pro_confirmed_at || "",
-    pro_access_expires_at: session.pro_access_expires_at || "",
   };
   user = await enforceUserPlanPolicy(db, user, null, env);
-  const subscriptionStatus = subscriptionStatusForUser(user, env);
 
   await dbRun(
     db,
@@ -7588,10 +5487,6 @@ async function handleAuthRefresh(request, env) {
       access_token: accessToken,
       refresh_token: nextRefreshToken,
       email: user.email,
-      subscription_status: subscriptionStatus,
-      hosted_streaming_access_status: subscriptionStatus,
-      renews_at: null,
-      trial_ends_at: null,
       ...serializeAccountState(accountState),
     },
     200,
@@ -7701,517 +5596,17 @@ async function handleMe(request, env) {
   const { db, user } = auth;
   const effectiveUserStatus = resolvePolicyPlanCode(user, null, env);
   const accountState = await buildAccountState(db, user, null, env);
-  const subscriptionStatus = subscriptionStatusForUser(user, env);
 
   return json(
     {
       ok: true,
       email: user.email,
       user_status: effectiveUserStatus,
-      subscription_status: subscriptionStatus,
-      hosted_streaming_access_status: subscriptionStatus,
-      trial_ends_at: null,
-      renews_at: null,
       ...serializeAccountState(accountState),
     },
     200,
     env,
   );
-}
-
-async function handleDeviceStart(request, env) {
-  if (!isMagicLinkAuthEnabled(env)) {
-    return json({ ok: false, error: "magic_link_auth_disabled" }, 404, env);
-  }
-  const db = requireDb(env);
-  await ensureDeviceSessionsTable(db);
-  const deviceCode = randomToken(24);
-  const createdAt = nowIso();
-  const expiresAt = addMinutesIso(15);
-  const expiresAtTs = Math.floor(Date.parse(expiresAt) / 1000);
-  const verificationUrl = `${String(env.API_BASE_URL || "https://api.planetka.io").trim().replace(/\/+$/, "")}/device/login?device_code=${encodeURIComponent(deviceCode)}`;
-
-  await dbRun(
-    db,
-    `
-      INSERT INTO device_sessions (
-        id,
-        device_code,
-        status,
-        expires_at,
-        created_at
-      ) VALUES (?, ?, 'pending', ?, ?)
-    `,
-    [crypto.randomUUID(), deviceCode, expiresAt, createdAt],
-  );
-
-  return json(
-    {
-      ok: true,
-      status: "pending",
-      device_code: deviceCode,
-      verification_url: verificationUrl,
-      interval_seconds: 2,
-      expires_at: expiresAt,
-      expires_at_ts: expiresAtTs,
-    },
-    200,
-    env,
-  );
-}
-
-async function handleDevicePoll(request, env) {
-  if (!isMagicLinkAuthEnabled(env)) {
-    return json({ ok: false, error: "magic_link_auth_disabled" }, 404, env);
-  }
-  const db = requireDb(env);
-  await ensureDeviceSessionsTable(db);
-  await ensureRateLimitsTable(db);
-  const body = await parseJson(request);
-  const deviceCode = String(body.device_code || "").trim();
-  const clientIp = requestClientIp(request);
-  const devicePollIpWindowSeconds = parseRateLimitInteger(
-    env.RATE_LIMIT_DEVICE_POLL_IP_WINDOW_SECONDS,
-    DEFAULT_RATE_LIMIT_DEVICE_POLL_IP_WINDOW_SECONDS,
-  );
-  const devicePollIpLimit = parseRateLimitInteger(
-    env.RATE_LIMIT_DEVICE_POLL_IP_LIMIT,
-    DEFAULT_RATE_LIMIT_DEVICE_POLL_IP_LIMIT,
-  );
-  const devicePollIpRate = await consumeRateLimitWindow(
-    db,
-    "device_poll_ip",
-    clientIp,
-    devicePollIpLimit,
-    devicePollIpWindowSeconds,
-  );
-  if (!devicePollIpRate.allowed) {
-    await trackThresholdAlertDb(
-      db,
-      "device_poll_429_spike",
-      parseRateLimitInteger(env.LOG_ALERT_DEVICE_POLL_429_THRESHOLD, DEFAULT_ALERT_DEVICE_POLL_429_THRESHOLD),
-      parseRateLimitInteger(env.LOG_ALERT_DEVICE_POLL_429_WINDOW_SECONDS, DEFAULT_ALERT_DEVICE_POLL_429_WINDOW_SECONDS),
-      { route: "/device/poll", scope: "ip", code: "device_poll_ip_rate_limited" },
-    );
-    return rateLimitedResponse(
-      env,
-      "device_poll_ip_rate_limited",
-      "Too many polling requests. Please slow down and try again shortly.",
-      devicePollIpRate.retryAfterSeconds,
-    );
-  }
-  if (!deviceCode) {
-    return json({ ok: false, error: "missing_device_code" }, 400, env);
-  }
-  if (!isValidDeviceCode(deviceCode)) {
-    return json({ ok: false, error: "invalid_device_code" }, 400, env);
-  }
-
-  const session = await dbGet(
-    db,
-    `
-      SELECT
-        id,
-        status,
-        email,
-        access_token,
-        refresh_token,
-        subscription_status,
-        renews_at,
-        trial_ends_at,
-        expires_at,
-        claimed_at
-      FROM device_sessions
-      WHERE device_code = ?
-      LIMIT 1
-    `,
-    [deviceCode],
-  );
-
-  if (!session) {
-    return json({ ok: false, error: "device_session_not_found" }, 404, env);
-  }
-
-  const devicePollCodeWindowSeconds = parseRateLimitInteger(
-    env.RATE_LIMIT_DEVICE_POLL_CODE_WINDOW_SECONDS,
-    DEFAULT_RATE_LIMIT_DEVICE_POLL_CODE_WINDOW_SECONDS,
-  );
-  const devicePollCodeLimit = parseRateLimitInteger(
-    env.RATE_LIMIT_DEVICE_POLL_CODE_LIMIT,
-    DEFAULT_RATE_LIMIT_DEVICE_POLL_CODE_LIMIT,
-  );
-  const devicePollCodeRate = await consumeRateLimitWindow(
-    db,
-    "device_poll_code",
-    session.id,
-    devicePollCodeLimit,
-    devicePollCodeWindowSeconds,
-  );
-  if (!devicePollCodeRate.allowed) {
-    await trackThresholdAlertDb(
-      db,
-      "device_poll_429_spike",
-      parseRateLimitInteger(env.LOG_ALERT_DEVICE_POLL_429_THRESHOLD, DEFAULT_ALERT_DEVICE_POLL_429_THRESHOLD),
-      parseRateLimitInteger(env.LOG_ALERT_DEVICE_POLL_429_WINDOW_SECONDS, DEFAULT_ALERT_DEVICE_POLL_429_WINDOW_SECONDS),
-      { route: "/device/poll", scope: "device_session", code: "device_poll_code_rate_limited" },
-    );
-    return rateLimitedResponse(
-      env,
-      "device_poll_code_rate_limited",
-      "Too many polling requests for this device session. Please slow down and try again shortly.",
-      devicePollCodeRate.retryAfterSeconds,
-    );
-  }
-
-  if (session.claimed_at) {
-    return json({ ok: false, error: "device_session_claimed" }, 410, env);
-  }
-  if (Date.parse(session.expires_at) < Date.now()) {
-    return json({ ok: false, error: "device_session_expired" }, 408, env);
-  }
-  if (String(session.status || "") !== "completed") {
-    return json({ ok: true, status: "pending" }, 200, env);
-  }
-
-  await dbRun(
-    db,
-    `UPDATE device_sessions SET claimed_at = ? WHERE id = ?`,
-    [nowIso(), session.id],
-  );
-
-  let accountPayload = {};
-  try {
-    let user = await findUserByEmail(db, normalizeEmail(session.email));
-    if (user) {
-      user = await enforceUserPlanPolicy(db, user, null, env);
-      const accountState = await buildAccountState(db, user, null, env);
-      accountPayload = serializeAccountState(accountState);
-    }
-  } catch (error) {
-    console.warn(
-      "worker.device_poll.account_payload_failed",
-      JSON.stringify({
-        session_id: String(session.id || ""),
-        error: String(error && error.message || "account_payload_failed"),
-      }),
-    );
-    accountPayload = {};
-  }
-
-  return json(
-    {
-      ok: true,
-      status: "completed",
-      email: session.email,
-      access_token: session.access_token,
-      refresh_token: session.refresh_token,
-      subscription_status: session.subscription_status,
-      hosted_streaming_access_status: session.subscription_status,
-      renews_at: session.renews_at,
-      trial_ends_at: session.trial_ends_at,
-      ...accountPayload,
-    },
-    200,
-    env,
-  );
-}
-
-function renderDeviceLoginPage(env, deviceCode = "", verifyMode = false) {
-  const termsUrl = String(env.TERMS_URL || DEFAULT_TERMS_URL).trim() || DEFAULT_TERMS_URL;
-  const privacyUrl = String(env.PRIVACY_URL || DEFAULT_PRIVACY_URL).trim() || DEFAULT_PRIVACY_URL;
-  const contactUrl = normalizeContactUrl(env.CONTACT_URL || DEFAULT_CONTACT_URL);
-  const loginSectionStyle = verifyMode ? "display:none;" : "";
-  const verifySectionStyle = verifyMode ? "" : "display:none;";
-  const verifyEmailInitial = verifyMode ? "Verifying email address..." : "";
-  return `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Planetka Device Login</title>
-    <style>
-      :root { color-scheme: dark; }
-      body {
-        margin: 0;
-        min-height: 100vh;
-        display: grid;
-        place-items: center;
-        background:
-          radial-gradient(circle at top, rgba(62,102,178,0.28), transparent 36%),
-          linear-gradient(180deg, #07111f 0%, #0b1424 100%);
-        font-family: Inter, system-ui, sans-serif;
-        color: #e5edf7;
-      }
-      .card {
-        width: min(92vw, 520px);
-        padding: 28px;
-        border-radius: 18px;
-        background: rgba(8, 15, 29, 0.78);
-        border: 1px solid rgba(148, 163, 184, 0.2);
-        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
-      }
-      h1 { margin: 0 0 10px; font-size: 32px; }
-      p { margin: 0 0 18px; color: #cbd5e1; line-height: 1.5; }
-      label { display: block; margin-bottom: 10px; font-size: 14px; color: #cbd5e1; }
-      input {
-        width: 100%;
-        box-sizing: border-box;
-        padding: 14px 16px;
-        border-radius: 12px;
-        border: 1px solid rgba(148, 163, 184, 0.25);
-        background: #0f172a;
-        color: #fff;
-        font-size: 16px;
-        outline: none;
-      }
-      .consent {
-        margin-top: 14px;
-      }
-      .consent label {
-        display: flex;
-        gap: 10px;
-        align-items: flex-start;
-        margin: 0;
-        font-size: 13px;
-        line-height: 1.4;
-      }
-      .consent input[type="checkbox"] {
-        width: 16px;
-        height: 16px;
-        margin-top: 2px;
-        flex: 0 0 auto;
-      }
-      .consent a { color: #e5edf7; }
-      button {
-        margin-top: 14px;
-        width: 100%;
-        padding: 14px 16px;
-        border: 0;
-        border-radius: 12px;
-        background: #f8fafc;
-        color: #0f172a;
-        font-size: 16px;
-        font-weight: 700;
-        cursor: pointer;
-      }
-      .status {
-        display: none;
-        margin-top: 14px;
-        padding: 12px 14px;
-        border-radius: 10px;
-        font-size: 14px;
-        line-height: 1.5;
-      }
-      .verify-email {
-        margin: 0 0 10px;
-        color: #e2e8f0;
-      }
-      .contact-help {
-        margin-top: 16px;
-        font-size: 14px;
-        color: #cbd5e1;
-      }
-      .contact-help a {
-        color: #e5edf7;
-      }
-    </style>
-  </head>
-  <body>
-    <div class="card">
-      <div id="planetka-login-section" style="${loginSectionStyle}">
-        <h1>Log In to Planetka</h1>
-        <p>For free access, enter your email address and Blender will connect automatically after you confirm the login email.</p>
-        <label for="planetka-email">Email</label>
-        <input id="planetka-email" type="email" placeholder="you@example.com" />
-        <div class="consent">
-          <label for="planetka-consent">
-            <input id="planetka-consent" type="checkbox" />
-            <span>I agree to the <a href="${termsUrl}" target="_blank" rel="noopener noreferrer">Terms and Conditions</a> and <a href="${privacyUrl}" target="_blank" rel="noopener noreferrer">Privacy Policy</a>.</span>
-          </label>
-        </div>
-        <div class="consent">
-          <label for="planetka-news-optin">
-            <input id="planetka-news-optin" type="checkbox" />
-            <span>Opt in for quarterly Planetka updates by email. Email addresses are not shared with third parties.</span>
-          </label>
-        </div>
-        <button id="planetka-send-link">Send Login Link</button>
-        <div id="planetka-status" class="status"></div>
-      </div>
-      <div id="planetka-verify-section" style="${verifySectionStyle}">
-        <h1>Email Verified</h1>
-        <p id="planetka-verify-email" class="verify-email">${verifyEmailInitial}</p>
-        <div id="planetka-verify-status" class="status"></div>
-        <p class="contact-help">Problem connecting? <a href="${contactUrl}" target="_blank" rel="noopener noreferrer">Contact Me</a></p>
-      </div>
-    </div>
-    <script>
-      (() => {
-        const API = "${String(env.API_BASE_URL || "https://api.planetka.io").trim()}";
-        const DEVICE_CODE = ${JSON.stringify(deviceCode)};
-        const loginSection = document.getElementById("planetka-login-section");
-        const verifySection = document.getElementById("planetka-verify-section");
-        const email = document.getElementById("planetka-email");
-        const consent = document.getElementById("planetka-consent");
-        const newsOptIn = document.getElementById("planetka-news-optin");
-        const button = document.getElementById("planetka-send-link");
-        const status = document.getElementById("planetka-status");
-        const verifyEmail = document.getElementById("planetka-verify-email");
-        const verifyStatus = document.getElementById("planetka-verify-status");
-        let busy = false;
-
-        function showStatus(target, message, type = "info") {
-          if (!target) return;
-          target.textContent = message || "";
-          target.style.display = message ? "block" : "none";
-          if (type === "error") {
-            target.style.background = "rgba(127,29,29,.18)";
-            target.style.border = "1px solid rgba(248,113,113,.35)";
-            target.style.color = "#fecaca";
-            return;
-          }
-          if (type === "success") {
-            target.style.background = "rgba(20,83,45,.18)";
-            target.style.border = "1px solid rgba(74,222,128,.35)";
-            target.style.color = "#bbf7d0";
-            return;
-          }
-          target.style.background = "rgba(30,41,59,.35)";
-          target.style.border = "1px solid rgba(148,163,184,.25)";
-          target.style.color = "#e2e8f0";
-        }
-
-        function show(message, type = "info") {
-          showStatus(status, message, type);
-        }
-
-        function validEmail(value) {
-          return /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(String(value || "").trim());
-        }
-
-        async function post(path, body) {
-          const response = await fetch(API + path, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-          });
-          const data = await response.json().catch(() => ({}));
-          if (!response.ok) throw new Error(data.error || String(response.status));
-          return data;
-        }
-
-        async function sendLink() {
-          if (busy) return;
-          const value = String(email.value || "").trim().toLowerCase();
-          if (!validEmail(value)) {
-            show("Enter a valid email address.", "error");
-            return;
-          }
-          if (!consent.checked) {
-            show("Please accept Terms and Privacy to continue.", "error");
-            return;
-          }
-          busy = true;
-          button.disabled = true;
-          button.textContent = "Sending...";
-          show("");
-          try {
-            await post("/auth/start", {
-              email: value,
-              device_code: DEVICE_CODE,
-              accept_terms: true,
-              accept_privacy: true,
-              opt_in_news: Boolean(newsOptIn && newsOptIn.checked),
-            });
-            show("Check your inbox. We sent you a secure login link.", "success");
-          } catch (error) {
-            console.error("planetka auth/start failed", error);
-            if (String(error && error.message || "") === "terms_consent_required") {
-              show("Please accept Terms and Privacy to continue.", "error");
-              return;
-            }
-            show("Login request failed. Please try again.", "error");
-          } finally {
-            busy = false;
-            button.disabled = false;
-            button.textContent = "Send Login Link";
-          }
-        }
-
-        async function verifyToken() {
-          const token = new URLSearchParams(window.location.search).get("token");
-          if (!token) return;
-          loginSection.style.display = "none";
-          verifySection.style.display = "block";
-          verifyEmail.textContent = "Verifying email address...";
-          showStatus(verifyStatus, "Verifying login...", "info");
-          busy = true;
-          try {
-            const data = await post("/auth/verify", { token, device_code: DEVICE_CODE });
-            const verifiedEmail = String((data && data.email) || "").trim();
-            if (verifiedEmail) {
-              verifyEmail.textContent = "Email address " + verifiedEmail + " has been verified.";
-            } else {
-              verifyEmail.textContent = "Your email address has been verified.";
-            }
-            showStatus(verifyStatus, "Blender is now connected. You can return to Blender.", "success");
-          } catch (error) {
-            console.error("planetka auth/verify failed", error);
-            verifyEmail.textContent = "Verification failed.";
-            showStatus(verifyStatus, "This login link is invalid or expired. Please request a new one.", "error");
-          } finally {
-            busy = false;
-          }
-        }
-
-        button.addEventListener("click", (event) => {
-          event.preventDefault();
-          sendLink();
-        });
-
-        email.addEventListener("keydown", (event) => {
-          if (event.key === "Enter") {
-            event.preventDefault();
-            sendLink();
-          }
-        });
-
-        verifyToken();
-      })();
-    </script>
-  </body>
-</html>`;
-}
-
-async function handleDeviceLoginPage(request, env) {
-  if (!isMagicLinkAuthEnabled(env)) {
-    return json({ ok: false, error: "magic_link_auth_disabled" }, 404, env);
-  }
-  const db = requireDb(env);
-  await ensureDeviceSessionsTable(db);
-  const url = new URL(request.url);
-  const deviceCode = String(url.searchParams.get("device_code") || "").trim();
-  const token = String(url.searchParams.get("token") || "").trim();
-  const verifyMode = Boolean(token);
-  if (!deviceCode) {
-    return html(renderDeviceLoginPage(env, "", verifyMode), 200, env);
-  }
-
-  const session = await dbGet(
-    db,
-    `
-      SELECT id, expires_at, claimed_at
-      FROM device_sessions
-      WHERE device_code = ?
-      LIMIT 1
-    `,
-    [deviceCode],
-  );
-  if (!session || session.claimed_at || Date.parse(session.expires_at) < Date.now()) {
-    return html(renderDeviceLoginPage(env, "", verifyMode), 410, env);
-  }
-
-  return html(renderDeviceLoginPage(env, deviceCode, verifyMode), 200, env);
 }
 
 function resolveLegalDocumentConfig(path, env) {
@@ -8532,22 +5927,13 @@ async function handleAddonUpdateManifest(request, env) {
   });
 }
 
-function magicLinkAuthDisabledResponse(env) {
-  return json({ ok: false, error: "magic_link_auth_disabled" }, 404, env);
-}
-
 async function routeHealth(env) {
-  const magicLinkEnabled = isMagicLinkAuthEnabled(env);
   return json(
     {
       ok: true,
       service: "planetka-api",
       api_base_url: env.API_BASE_URL || "https://api.planetka.io",
       login_url: env.LOGIN_URL || "https://www.planetka.io/login",
-      device_login_url: magicLinkEnabled
-        ? `${env.API_BASE_URL || "https://api.planetka.io"}/device/login`
-        : "",
-      magic_link_auth_enabled: magicLinkEnabled,
       db_bound: Boolean(env.DB),
       r2_bound: Boolean(env.PLANETKA_DATA),
     },
@@ -8572,11 +5958,9 @@ function routeApiKeyPage(request, env) {
 const TILE_ROUTE_DEPS = {
   PLAN_CODE_PLANETKA_FREE,
   clampNonNegativeInt,
-  enforceTileSessionThrottleGateCached,
   isQualityModeAllowedForPlan,
   isTileHotPathMonitoringEnabled,
   issueTileSessionToken,
-  maybeProcessDownloadMonitoring,
   maybeSignalTileFarmingActivity,
   minimumPlanQualityForTile,
   normalizeDeviceId,
@@ -8591,9 +5975,8 @@ const TILE_ROUTE_DEPS = {
   recordTileRequestEvent,
   requestClientIp,
   requestCountry,
-  requireAuthenticatedUserContext,
+  requireAuthenticatedUserContext: (request, env, options) => requireAuthenticatedUserContext(request, env, options, AUTH_SESSION_DEPS),
   requireDb,
-  resolveDownloadThrottleRetryAfterSeconds,
   resolveTileCacheControl,
 };
 
@@ -8610,9 +5993,7 @@ const ADMIN_ROUTE_DEPS = {
   handleAdminUserBlock: (request, env) => handleAdminUserBlockRoute(request, env, ADMIN_USER_DEPS),
   handleAdminUserHardBlock: (request, env) => handleAdminUserHardBlockRoute(request, env, ADMIN_USER_DEPS),
   handleAdminUserSetPlan: (request, env) => handleAdminUserSetPlanRoute(request, env, ADMIN_USER_DEPS),
-  handleAdminUserThrottle: (request, env) => handleAdminUserThrottleRoute(request, env, ADMIN_USER_DEPS),
   handleAdminUserUnblock: (request, env) => handleAdminUserUnblockRoute(request, env, ADMIN_USER_DEPS),
-  handleAdminUserUnthrottle: (request, env) => handleAdminUserUnthrottleRoute(request, env, ADMIN_USER_DEPS),
 };
 
 async function dispatchExactRoute(request, env, path) {
@@ -8641,14 +6022,6 @@ async function dispatchExactRoute(request, env, path) {
         return await handleApiKeyActivatePage(request, env);
       }
       return null;
-    case "/auth/start":
-      if (request.method === "POST") {
-        if (!isMagicLinkAuthEnabled(env)) {
-          return magicLinkAuthDisabledResponse(env);
-        }
-        return await handleAuthStart(request, env);
-      }
-      return null;
     case "/auth/api-key/request":
       if (request.method === "POST") {
         return await handleApiKeyRequest(request, env);
@@ -8662,14 +6035,6 @@ async function dispatchExactRoute(request, env, path) {
     case "/auth/api-key/exchange":
       if (request.method === "POST") {
         return await handleApiKeyExchange(request, env);
-      }
-      return null;
-    case "/auth/verify":
-      if (request.method === "POST") {
-        if (!isMagicLinkAuthEnabled(env)) {
-          return magicLinkAuthDisabledResponse(env);
-        }
-        return await handleAuthVerify(request, env);
       }
       return null;
     case "/auth/refresh":
@@ -8690,30 +6055,6 @@ async function dispatchExactRoute(request, env, path) {
     case "/tiles/session":
       if (request.method === "POST") {
         return await handleTileSessionStartRoute(request, env, TILE_ROUTE_DEPS);
-      }
-      return null;
-    case "/device/start":
-      if (request.method === "POST") {
-        if (!isMagicLinkAuthEnabled(env)) {
-          return magicLinkAuthDisabledResponse(env);
-        }
-        return await handleDeviceStart(request, env);
-      }
-      return null;
-    case "/device/poll":
-      if (request.method === "POST") {
-        if (!isMagicLinkAuthEnabled(env)) {
-          return magicLinkAuthDisabledResponse(env);
-        }
-        return await handleDevicePoll(request, env);
-      }
-      return null;
-    case "/device/login":
-      if (request.method === "GET") {
-        if (!isMagicLinkAuthEnabled(env)) {
-          return magicLinkAuthDisabledResponse(env);
-        }
-        return await handleDeviceLoginPage(request, env);
       }
       return null;
     case "/support/bug-report":

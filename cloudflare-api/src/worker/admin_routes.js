@@ -13,8 +13,6 @@ export async function dispatchAdminRoute(request, env, path, deps) {
     handleAdminSessionStartPage,
     handleAdminSessionStart,
     handleAdminSessionLogout,
-    handleAdminUserUnthrottle,
-    handleAdminUserThrottle,
     handleAdminUserBlock,
     handleAdminUserUnblock,
     handleAdminUserHardBlock,
@@ -61,16 +59,6 @@ export async function dispatchAdminRoute(request, env, path, deps) {
     case "/admin/session/logout":
       if (request.method === "GET") {
         return await handleAdminSessionLogout(request, env);
-      }
-      return null;
-    case "/admin/users/unthrottle":
-      if (request.method === "POST") {
-        return await handleAdminUserUnthrottle(request, env);
-      }
-      return null;
-    case "/admin/users/throttle":
-      if (request.method === "POST") {
-        return await handleAdminUserThrottle(request, env);
       }
       return null;
     case "/admin/users/block":

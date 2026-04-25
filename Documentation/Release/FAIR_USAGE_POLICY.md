@@ -1,6 +1,6 @@
 # Planetka Fair Usage Policy
 
-Planetka provides unlimited access for normal creative use in Blender: exploring locations, scene setup, and rendering images/animations.
+Planetka provides unlimited access for normal creative use in Blender: exploring locations, scene setup, and rendering images or animations.
 
 ## Allowed Use
 
@@ -11,18 +11,18 @@ Planetka provides unlimited access for normal creative use in Blender: exploring
 ## Prohibited Use
 
 - Source-data farming or systematic tile scraping.
-- Bulk extraction intended to replicate/rebuild Planetka datasets.
+- Bulk extraction intended to replicate or rebuild Planetka datasets.
 - Automated API traffic designed to bypass normal addon workflows.
 - Any behavior that degrades service quality for other users.
 
 ## Enforcement
 
-Planetka monitors download behavior for security and service stability. If suspicious behavior is detected, Planetka may:
+Planetka monitors request patterns for security and service stability. If suspicious behavior is detected, Planetka may:
 
-- temporarily throttle account download speed,
-- request user verification/support contact,
+- temporarily restrict or block hosted-service access,
+- request user verification or support contact,
 - apply additional restrictions, including account blocking, when necessary.
 
 ## Monitoring Scope
 
-Monitoring is focused on operational and security metrics (download volume, request patterns, abuse indicators). It is used to protect platform availability and prevent dataset abuse.
+Monitoring is focused on operational and security metrics such as request patterns, abuse indicators, and platform health. It is used to protect platform availability and prevent dataset abuse.

@@ -170,7 +170,6 @@ export async function requireAuthenticatedUserContext(request, env, options = {}
     if (!keyUsable) {
       return { error: deps.json({ ok: false, error: "api_key_revoked", message: "API key is no longer active." }, 401, env) };
     }
-    const provisionalRestricted = deps.isUnconfirmedProvisionalActive(user);
     try {
       devicePolicy = await deps.enforceApiKeyDeviceLimit(
         db,
@@ -187,9 +186,7 @@ export async function requireAuthenticatedUserContext(request, env, options = {}
       const statusCode = code === "missing_device_id" ? 400 : 429;
       const message = code === "missing_device_id"
         ? "Missing device identifier for API key session."
-        : (provisionalRestricted
-          ? "This Planetka account can be active on one computer at a time."
-          : "This Planetka account can be active on one computer at a time.");
+        : "This Planetka account can be active on one computer at a time.";
       return { error: deps.json({ ok: false, error: code, message }, statusCode, env) };
     }
   }

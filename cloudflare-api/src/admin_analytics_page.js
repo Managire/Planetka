@@ -159,8 +159,6 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     <button id="setFreeBtn" class="action-btn">Set Free</button>
     <button id="setLiteBtn" class="action-btn">Set Personal</button>
     <button id="setProBtn" class="action-btn">Set Commercial</button>
-    <button id="throttleBtn" class="action-btn warn">Throttle 24h</button>
-    <button id="unthrottleBtn" class="action-btn">Unthrottle</button>
     <button id="blockBtn" class="action-btn danger">Block</button>
     <button id="unblockBtn" class="action-btn warn">Unblock</button>
   </div>
@@ -243,8 +241,6 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     const setFreeBtn = document.getElementById("setFreeBtn");
     const setLiteBtn = document.getElementById("setLiteBtn");
     const setProBtn = document.getElementById("setProBtn");
-    const throttleBtn = document.getElementById("throttleBtn");
-    const unthrottleBtn = document.getElementById("unthrottleBtn");
     const blockBtn = document.getElementById("blockBtn");
     const unblockBtn = document.getElementById("unblockBtn");
     const setText = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
@@ -663,8 +659,6 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         return;
       }
       const endpointByAction = {
-        unthrottle: "/admin/users/unthrottle",
-        throttle: "/admin/users/throttle",
         block: "/admin/users/block",
         unblock: "/admin/users/unblock",
         "hard-block": "/admin/users/hard-block",
@@ -679,8 +673,6 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         return;
       }
       const confirmation = {
-        unthrottle: "Unthrottle this account now?",
-        throttle: "Throttle this account now for 24 hours?",
         block: "Block this user account now?",
         unblock: "Unblock this user account now?",
         "hard-block": "Hard block this user and block same-computer attempts?",
@@ -694,9 +686,6 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
       const payload = { email: safeUserEmail };
       if (safeUserId) {
         payload.user_id = safeUserId;
-      }
-      if (safeAction === "throttle") {
-        payload.duration_minutes = 1440;
       }
       if (safeAction === "unblock") {
         payload.plan_code = (!safePlanCode || safePlanCode === "blocked") ? "lite" : safePlanCode;
@@ -831,8 +820,6 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     if (setFreeBtn) setFreeBtn.addEventListener("click", () => runManualUserAction("set-free"));
     if (setLiteBtn) setLiteBtn.addEventListener("click", () => runManualUserAction("set-lite"));
     if (setProBtn) setProBtn.addEventListener("click", () => runManualUserAction("set-pro"));
-    if (throttleBtn) throttleBtn.addEventListener("click", () => runManualUserAction("throttle"));
-    if (unthrottleBtn) unthrottleBtn.addEventListener("click", () => runManualUserAction("unthrottle"));
     if (blockBtn) blockBtn.addEventListener("click", () => runManualUserAction("block"));
     if (unblockBtn) unblockBtn.addEventListener("click", () => runManualUserAction("unblock"));
     if (windowEl) windowEl.addEventListener("change", loadAnalytics);

@@ -28,10 +28,6 @@ FALLBACK_AUTH_CONTACT_URL_KEY = "planetka_auth_contact_url"
 FALLBACK_AUTH_UPGRADE_URL_KEY = "planetka_auth_upgrade_url"
 FALLBACK_AUTH_LOGIN_STATE_KEY = "planetka_auth_login_state"
 FALLBACK_AUTH_STATUS_MESSAGE_KEY = "planetka_auth_status_message"
-FALLBACK_AUTH_DEVICE_CODE_KEY = "planetka_auth_device_code"
-FALLBACK_AUTH_DEVICE_VERIFICATION_URL_KEY = "planetka_auth_device_verification_url"
-FALLBACK_AUTH_DEVICE_EXPIRES_AT_KEY = "planetka_auth_device_expires_at"
-FALLBACK_AUTH_POLL_INTERVAL_SECONDS_KEY = "planetka_auth_poll_interval_seconds"
 FALLBACK_STARTUP_SETUP_PROFILE_JSON_KEY = "planetka_startup_setup_profile_json"
 FALLBACK_CREATE_EARTH_PREFLIGHT_SEEN_VERSION_KEY = "planetka_create_earth_preflight_seen_version"
 TEXTURE_SOURCE_MODE_DEFAULT = "CLOUDFLARE"
@@ -217,18 +213,6 @@ class PlanetkaExtensionPreferences(AddonPreferences):
     auth_upgrade_url: StringProperty(name="Auth Upgrade URL", default="", options={'HIDDEN'})
     auth_login_state: StringProperty(name="Auth Login State", default="logged_out", options={'HIDDEN'})
     auth_status_message: StringProperty(name="Auth Status Message", default="", options={'HIDDEN'})
-    auth_device_code: StringProperty(name="Auth Device Code", default="", options={'HIDDEN'})
-    auth_device_verification_url: StringProperty(
-        name="Auth Device Verification URL",
-        default="",
-        options={'HIDDEN'},
-    )
-    auth_device_expires_at: StringProperty(name="Auth Device Expires At", default="", options={'HIDDEN'})
-    auth_poll_interval_seconds: IntProperty(
-        name="Auth Poll Interval Seconds",
-        default=2,
-        options={'HIDDEN'},
-    )
     startup_setup_profile_json: StringProperty(
         name="Startup Setup Profile",
         default="",
@@ -416,22 +400,6 @@ def get_prefs():
         auth_status_message = property(
             lambda self: self._get_value(FALLBACK_AUTH_STATUS_MESSAGE_KEY, ""),
             lambda self, value: self._set_value(FALLBACK_AUTH_STATUS_MESSAGE_KEY, value),
-        )
-        auth_device_code = property(
-            lambda self: self._get_value(FALLBACK_AUTH_DEVICE_CODE_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_DEVICE_CODE_KEY, value),
-        )
-        auth_device_verification_url = property(
-            lambda self: self._get_value(FALLBACK_AUTH_DEVICE_VERIFICATION_URL_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_DEVICE_VERIFICATION_URL_KEY, value),
-        )
-        auth_device_expires_at = property(
-            lambda self: self._get_value(FALLBACK_AUTH_DEVICE_EXPIRES_AT_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_DEVICE_EXPIRES_AT_KEY, value),
-        )
-        auth_poll_interval_seconds = property(
-            lambda self: self._get_value(FALLBACK_AUTH_POLL_INTERVAL_SECONDS_KEY, "2"),
-            lambda self, value: self._set_value(FALLBACK_AUTH_POLL_INTERVAL_SECONDS_KEY, value or "2"),
         )
         startup_setup_profile_json = property(
             lambda self: self._get_value(FALLBACK_STARTUP_SETUP_PROFILE_JSON_KEY, ""),

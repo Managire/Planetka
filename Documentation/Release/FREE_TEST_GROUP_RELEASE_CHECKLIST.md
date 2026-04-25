@@ -41,10 +41,10 @@ Public update channel remains on `v0.5.3` until explicit publish.
 
 - [ ] `/auth/api-key/request` and `/auth/api-key/exchange` match the intended beta entitlement policy.
 - [ ] `/admin/analytics` rejects query token (`query_token_not_allowed`) and requires Bearer/cookie admin auth.
-- [ ] Legacy magic-link auth routes (`/auth/start`, `/device/*`) are disabled in production.
+- [ ] Legacy magic-link and device-login routes are removed from production.
 - [ ] Tile-session auth (`X-Planetka-Tile-Token`) is active and tile hot path remains lightweight.
-- [ ] Account throttling / abuse protections remain active for abnormal download behavior.
-- [ ] DB cleanup cron is active for `magic_links`, `refresh_sessions`, `device_sessions`, and tile telemetry retention tables.
+- [ ] Account blocking and abuse protections remain active for abnormal scraping behavior.
+- [ ] DB cleanup cron is active for `refresh_sessions`, `api_key_requests`, `api_key_device_activity`, `auth_refresh_events`, and tile telemetry retention tables.
 
 ## 6. Observability and Support
 

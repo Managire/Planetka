@@ -1,5 +1,4 @@
 import base64
-import datetime
 import json
 import logging
 import os
@@ -49,12 +48,7 @@ PLAN_CODE_PLANETKA_PRO = "planetka_pro"
 PLAN_NAME_FREE = "Planetka Free"
 PLAN_NAME_PERSONAL = "Planetka Personal"
 PLAN_NAME_PRO = "Planetka Commercial"
-PENDING_AUTH_MESSAGE = "Waiting for browser sign-in..."
-_DEVICE_LOGIN_TIMER_REGISTERED = False
 _ADDON_VERSION_CACHE = None
-THROTTLE_STATUS_PREFIX = "Account throttled until "
-
-
 class AuthApiError(RuntimeError):
     def __init__(self, status, error, payload=None):
         super().__init__(str(error or f"http_{status}"))
@@ -80,8 +74,6 @@ def describe_auth_error(error):
         return "Planetka account is blocked. Contact info@planetka.io."
     if "1010" in lowered:
         return "Planetka connection was blocked by a security check. Please try again later or contact support."
-    if "device_session_invalid" in lowered or "device_session_expired" in lowered:
-        return "The Planetka browser session expired. Start login again."
     if "network_error" in lowered:
         return "Planetka could not connect right now. Check your internet connection and try again."
     if "missing_stripe_payment_link_url" in lowered:
@@ -263,47 +255,6 @@ def _extract_commercial_use_allowed(payload, plan=None):
     return _derive_commercial_use_allowed(payload.get("plan_code") or payload.get("account_tier"))
 
 
-def _parse_iso_timestamp_seconds(value):
-    text = str(value or "").strip()
-    if not text:
-        return None
-    try:
-        parsed = datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except (TypeError, ValueError):
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
-    return float(parsed.timestamp())
-
-
-def _extract_throttled_until(payload):
-    if not isinstance(payload, dict):
-        return ""
-    for key in ("throttled_until", "download_throttled_until"):
-        value = str(payload.get(key, "") or "").strip()
-        if value:
-            return value
-    return ""
-
-
-def _build_throttle_status_message(payload):
-    throttled_until = _extract_throttled_until(payload)
-    if not throttled_until:
-        return ""
-    expiry_seconds = _parse_iso_timestamp_seconds(throttled_until)
-    if expiry_seconds is not None and expiry_seconds <= float(time.time()):
-        return ""
-    return (
-        f"{THROTTLE_STATUS_PREFIX}{throttled_until}. "
-        "High-volume data use detected. Download speed is temporarily reduced."
-    )
-
-
-def _is_throttle_status_message(message):
-    text = str(message or "").strip().lower()
-    return text.startswith(THROTTLE_STATUS_PREFIX.lower())
-
-
 def get_api_base_url():
     return DEFAULT_API_BASE_URL
 
@@ -339,13 +290,6 @@ def _save_user_prefs():
     return False
 
 
-def _clear_pending_login_fields(prefs):
-    prefs.auth_device_code = ""
-    prefs.auth_device_verification_url = ""
-    prefs.auth_device_expires_at = ""
-    prefs.auth_poll_interval_seconds = 2
-
-
 def clear_auth_session(prefs=None, state="logged_out", status_message=""):
     prefs = prefs or get_prefs()
     if prefs is None:
@@ -365,7 +309,6 @@ def clear_auth_session(prefs=None, state="logged_out", status_message=""):
     prefs.auth_upgrade_url = ""
     prefs.auth_login_state = str(state or "logged_out")
     prefs.auth_status_message = str(status_message or "")
-    _clear_pending_login_fields(prefs)
     _save_user_prefs()
     _tag_ui_redraw()
 
@@ -420,13 +363,6 @@ def get_connected_email(prefs=None):
     if prefs is None:
         return ""
     return str(getattr(prefs, "auth_email", "") or "").strip()
-
-
-def get_device_verification_url(prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        return ""
-    return str(getattr(prefs, "auth_device_verification_url", "") or "").strip()
 
 
 def get_api_key_request_url():
@@ -750,12 +686,7 @@ def _apply_auth_payload(prefs, payload, login_state="authenticated", status_mess
     )
     prefs.auth_upgrade_url = _first_non_empty(payload.get("upgrade_url"))
     prefs.auth_login_state = str(login_state or "authenticated")
-    throttle_status_message = _build_throttle_status_message(payload)
-    if throttle_status_message:
-        prefs.auth_status_message = throttle_status_message
-    else:
-        prefs.auth_status_message = str(status_message or "")
-    _clear_pending_login_fields(prefs)
+    prefs.auth_status_message = str(status_message or "")
     _save_user_prefs()
     _tag_ui_redraw()
 
@@ -788,11 +719,6 @@ def _apply_account_profile_fields(prefs, payload):
     upgrade_url = _first_non_empty(payload.get("upgrade_url"))
     if upgrade_url:
         prefs.auth_upgrade_url = upgrade_url
-    throttle_status_message = _build_throttle_status_message(payload)
-    if throttle_status_message:
-        prefs.auth_status_message = throttle_status_message
-    elif _is_throttle_status_message(getattr(prefs, "auth_status_message", "")):
-        prefs.auth_status_message = ""
 
 
 def sync_account_profile(prefs=None):
@@ -908,156 +834,3 @@ def logout_remote_session(prefs=None):
     except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
         logger.debug("Planetka: remote logout failed", exc_info=True)
         return False
-
-
-def _device_login_timer():
-    global _DEVICE_LOGIN_TIMER_REGISTERED
-    try:
-        prefs = get_prefs()
-        if prefs is None:
-            _DEVICE_LOGIN_TIMER_REGISTERED = False
-            return None
-
-        if get_login_state(prefs) != "pending":
-            _DEVICE_LOGIN_TIMER_REGISTERED = False
-            return None
-
-        device_code = str(getattr(prefs, "auth_device_code", "") or "").strip()
-        if not device_code:
-            prefs.auth_login_state = "logged_out"
-            prefs.auth_status_message = ""
-            _DEVICE_LOGIN_TIMER_REGISTERED = False
-            _tag_ui_redraw()
-            return None
-
-        expires_at = str(getattr(prefs, "auth_device_expires_at", "") or "").strip()
-        if expires_at:
-            try:
-                if time.time() >= float(expires_at):
-                    clear_auth_session(prefs, state="logged_out", status_message="Browser session timed out. Connect again.")
-                    _DEVICE_LOGIN_TIMER_REGISTERED = False
-                    return None
-            except (TypeError, ValueError):
-                pass
-
-        interval = max(1.0, float(getattr(prefs, "auth_poll_interval_seconds", 2) or 2))
-        try:
-            _status, payload = _json_request("POST", "/device/poll", {"device_code": device_code})
-        except AuthApiError as exc:
-            if exc.status in {404, 410, 408}:
-                clear_auth_session(prefs, state="logged_out", status_message="Browser session expired. Connect again.")
-                _DEVICE_LOGIN_TIMER_REGISTERED = False
-                return None
-            if exc.status == 429:
-                retry_after = 0.0
-                try:
-                    retry_after = float((exc.payload or {}).get("retry_after_seconds", 0) or 0)
-                except (TypeError, ValueError):
-                    retry_after = 0.0
-                interval = max(interval, max(1.0, retry_after))
-            prefs.auth_status_message = PENDING_AUTH_MESSAGE
-            _tag_ui_redraw()
-            return interval
-
-        status = str(payload.get("status", "") or "").strip().lower()
-        if status == "completed":
-            _apply_auth_payload(prefs, payload, login_state="authenticated")
-            _DEVICE_LOGIN_TIMER_REGISTERED = False
-            return None
-
-        prefs.auth_status_message = PENDING_AUTH_MESSAGE
-        _tag_ui_redraw()
-        return interval
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        # Keep polling alive on unexpected runtime errors instead of silently stalling login.
-        logger.debug("Planetka: auth device polling loop failed", exc_info=True)
-        _DEVICE_LOGIN_TIMER_REGISTERED = False
-        prefs = get_prefs()
-        if prefs is not None and get_login_state(prefs) == "pending":
-            prefs.auth_status_message = PENDING_AUTH_MESSAGE
-            _tag_ui_redraw()
-            return max(1.0, float(getattr(prefs, "auth_poll_interval_seconds", 2) or 2))
-        return None
-    except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
-        # Keep polling alive on unexpected runtime errors instead of silently stalling login.
-        logger.debug("Planetka: auth device polling loop failed", exc_info=True)
-        _DEVICE_LOGIN_TIMER_REGISTERED = False
-        prefs = get_prefs()
-        if prefs is not None and get_login_state(prefs) == "pending":
-            prefs.auth_status_message = PENDING_AUTH_MESSAGE
-            _tag_ui_redraw()
-            return max(1.0, float(getattr(prefs, "auth_poll_interval_seconds", 2) or 2))
-        return None
-
-
-def ensure_device_login_polling():
-    global _DEVICE_LOGIN_TIMER_REGISTERED
-    try:
-        import bpy
-    except (ImportError, ModuleNotFoundError):
-        return
-
-    try:
-        # Self-heal stale in-memory flag after timer interruptions/add-on reloads.
-        if _DEVICE_LOGIN_TIMER_REGISTERED and not bpy.app.timers.is_registered(_device_login_timer):
-            _DEVICE_LOGIN_TIMER_REGISTERED = False
-        if _DEVICE_LOGIN_TIMER_REGISTERED:
-            return
-        if not bpy.app.timers.is_registered(_device_login_timer):
-            bpy.app.timers.register(_device_login_timer, first_interval=1.0)
-        _DEVICE_LOGIN_TIMER_REGISTERED = True
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed registering auth device polling timer", exc_info=True)
-        _DEVICE_LOGIN_TIMER_REGISTERED = False
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed registering auth device polling timer", exc_info=True)
-        _DEVICE_LOGIN_TIMER_REGISTERED = False
-
-
-def cancel_pending_device_login(prefs=None, status_message=""):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        return
-    clear_auth_session(prefs, state="logged_out", status_message=status_message)
-
-
-def start_device_login(prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        raise AuthApiError(0, "prefs_unavailable")
-
-    existing_url = get_device_verification_url(prefs)
-    if get_login_state(prefs) == "pending" and existing_url:
-        existing_code = str(getattr(prefs, "auth_device_code", "") or "").strip()
-        existing_expires_at = str(getattr(prefs, "auth_device_expires_at", "") or "").strip()
-        session_is_fresh = bool(existing_code)
-        if session_is_fresh and existing_expires_at:
-            try:
-                session_is_fresh = float(existing_expires_at) > time.time()
-            except (TypeError, ValueError):
-                session_is_fresh = True
-        if session_is_fresh:
-            ensure_device_login_polling()
-            return {
-                "verification_url": existing_url,
-                "device_code": existing_code,
-                "expires_at": existing_expires_at,
-                "interval_seconds": int(getattr(prefs, "auth_poll_interval_seconds", 2) or 2),
-            }
-        clear_auth_session(prefs, state="logged_out", status_message="Previous browser session expired. Starting a new one.")
-
-    _status, payload = _json_request("POST", "/device/start", {})
-    clear_auth_session(prefs, state="pending", status_message=PENDING_AUTH_MESSAGE)
-    prefs.auth_login_state = "pending"
-    prefs.auth_status_message = PENDING_AUTH_MESSAGE
-    prefs.auth_device_code = str(payload.get("device_code", "") or "").strip()
-    prefs.auth_device_verification_url = str(payload.get("verification_url", "") or "").strip()
-    prefs.auth_device_expires_at = str(payload.get("expires_at_ts", "") or "").strip()
-    try:
-        prefs.auth_poll_interval_seconds = int(payload.get("interval_seconds", 2) or 2)
-    except (TypeError, ValueError):
-        prefs.auth_poll_interval_seconds = 2
-    _save_user_prefs()
-    _tag_ui_redraw()
-    ensure_device_login_polling()
-    return payload

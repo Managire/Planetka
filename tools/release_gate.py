@@ -174,24 +174,42 @@ def main() -> int:
                 "(expected checks for both /admin/analytics and /admin/analytics/data)."
             )
 
-    # 8) Legacy magic-link auth must be disabled by default in production
-    if worker_src and "const DEFAULT_ENABLE_MAGIC_LINK_AUTH = false;" not in worker_src:
-        errors.append(
-            "Legacy magic-link default is not explicitly disabled "
-            "(expected DEFAULT_ENABLE_MAGIC_LINK_AUTH = false)."
-        )
+    # 8) Legacy auth/metering/claim systems must be absent from the worker surface
+    if worker_src:
+        forbidden_worker_markers = [
+            ("legacy auth route", '"/auth/start"'),
+            ("legacy auth route", '"/auth/verify"'),
+            ("legacy device-login route", '"/device/start"'),
+            ("legacy device-login route", '"/device/poll"'),
+            ("legacy device-login route", '"/device/login"'),
+            ("download metering table", "user_download_counters"),
+            ("download throttle config", "DOWNLOAD_THROTTLE_"),
+            ("download throttle response", "download_throttled"),
+            ("legacy paid-claim workflow", "paid_claim_workflow_disabled"),
+            ("legacy provisional claim audit", "provisional_claim_audit"),
+            ("claim rejection alert", "PROD_ALERT_CLAIM_REJECTION"),
+        ]
+        for label, marker in forbidden_worker_markers:
+            if marker in worker_src:
+                errors.append(f"Worker still contains {label} marker: '{marker}'")
 
     if wrangler_path.exists() and tomllib is not None:
         try:
             wrangler = tomllib.loads(read_text(wrangler_path))
             vars_table = wrangler.get("vars", {}) if isinstance(wrangler, dict) else {}
-            if isinstance(vars_table, dict) and "ENABLE_MAGIC_LINK_AUTH" in vars_table:
-                enabled = parse_bool_like(vars_table.get("ENABLE_MAGIC_LINK_AUTH"))
-                if enabled is True:
-                    errors.append(
-                        "wrangler.toml enables legacy magic-link auth "
-                        "(ENABLE_MAGIC_LINK_AUTH=true)."
-                    )
+            forbidden_vars = [
+                "ENABLE_MAGIC_LINK_AUTH",
+                "DOWNLOAD_THROTTLE_FREE_DAILY_GB",
+                "DOWNLOAD_THROTTLE_PRO_DAILY_GB",
+                "DOWNLOAD_THROTTLE_DURATION_MINUTES",
+                "DOWNLOAD_THROTTLED_REQUESTS_PER_MINUTE",
+                "DOWNLOAD_THROTTLED_DELAY_MS",
+                "PERMANENT_PRO_EMAILS",
+            ]
+            if isinstance(vars_table, dict):
+                for var_name in forbidden_vars:
+                    if var_name in vars_table:
+                        errors.append(f"wrangler.toml still defines legacy var '{var_name}'")
         except TOOL_RECOVERABLE_EXCEPTIONS as exc:  # noqa: BLE001 - release gate hard-fail
             errors.append(f"wrangler.toml parse failed: {exc}")
 

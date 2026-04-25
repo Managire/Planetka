@@ -102,29 +102,6 @@ function parseStripePlanMap(value, deps) {
   return map;
 }
 
-function collectStripeLineItemEntitlements(lineItems) {
-  const priceIds = new Set();
-  const productIds = new Set();
-  for (const item of Array.isArray(lineItems) ? lineItems : []) {
-    const price = item && typeof item === "object" ? item.price : null;
-    if (!price || typeof price !== "object") {
-      continue;
-    }
-    const priceId = String(price.id || "").trim();
-    if (priceId) {
-      priceIds.add(priceId);
-    }
-    const productId = String(price.product || "").trim();
-    if (productId) {
-      productIds.add(productId);
-    }
-  }
-  return {
-    priceIds: Array.from(priceIds),
-    productIds: Array.from(productIds),
-  };
-}
-
 function collectStripeLineItemsWithQuantity(lineItems) {
   const rows = [];
   for (const item of Array.isArray(lineItems) ? lineItems : []) {
@@ -211,51 +188,6 @@ async function fetchStripeCheckoutSessionLineItems(env, sessionId, deps) {
   return lineItems;
 }
 
-async function fetchStripeSubscription(env, subscriptionId, deps) {
-  const safeSubscriptionId = String(subscriptionId || "").trim();
-  if (!safeSubscriptionId) {
-    return null;
-  }
-  const secretKey = deps.requireSecret(env, "STRIPE_SECRET_KEY");
-  const response = await fetch(
-    `https://api.stripe.com/v1/subscriptions/${encodeURIComponent(safeSubscriptionId)}`,
-    {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${secretKey}`,
-      },
-    },
-  );
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`stripe_subscription_fetch_failed_${response.status}_${body}`);
-  }
-  return response.json();
-}
-
-async function fetchStripeCustomerEmail(env, customerId, deps) {
-  const safeCustomerId = String(customerId || "").trim();
-  if (!safeCustomerId) {
-    return "";
-  }
-  const secretKey = deps.requireSecret(env, "STRIPE_SECRET_KEY");
-  const response = await fetch(
-    `https://api.stripe.com/v1/customers/${encodeURIComponent(safeCustomerId)}`,
-    {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${secretKey}`,
-      },
-    },
-  );
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`stripe_customer_fetch_failed_${response.status}_${body}`);
-  }
-  const payload = await response.json();
-  return deps.normalizeEmail(payload && payload.email);
-}
-
 async function createStripeRefundForCheckoutSession(env, session, details = {}, deps) {
   const paymentIntentId = String(session && session.payment_intent || "").trim();
   const chargeId = String(session && session.charge || "").trim();
@@ -319,56 +251,6 @@ async function createStripeRefundForCheckoutSession(env, session, details = {}, 
   };
 }
 
-async function applyHostedStreamingAccessEntitlement(db, env, details = {}, deps) {
-  const email = deps.normalizeEmail(details.email || "");
-  if (!email) {
-    throw new Error("missing_customer_email");
-  }
-  const now = deps.nowIso();
-  const existingUser = await deps.findUserByEmail(db, email);
-  const existingExpiryMs = Date.parse(String(existingUser && existingUser.pro_access_expires_at || "").trim());
-  const entitlementStartMs = Number.isFinite(existingExpiryMs) && existingExpiryMs > Date.now()
-    ? existingExpiryMs
-    : Date.now();
-  const requestedPlan = deps.normalizeRequestedPlan(details.planCode || deps.PLAN_CODE_PLANETKA_PRO);
-  void requestedPlan;
-  const planCode = deps.PLAN_CODE_PLANETKA_PRO;
-  const accessExpiresAt = deps.computeHostedStreamingAccessExpiryIso(env, entitlementStartMs);
-  let user = await deps.upsertUserByEmail(
-    db,
-    email,
-    planCode,
-    {
-      proConfirmedAt: now,
-      proAccessExpiresAt: accessExpiresAt,
-      provisionalPlanCode: "",
-      provisionalExpiresAt: "",
-    },
-    env,
-  );
-  user = await deps.enforceUserPlanPolicy(db, user, null, env);
-  await deps.dbRun(
-    db,
-    `
-      UPDATE api_keys
-      SET
-        plan_code = ?,
-        expires_at = NULL,
-        provisional = 0,
-        provisional_expires_at = NULL,
-        confirmed_at = ?
-      WHERE user_id = ?
-        AND status = 'active'
-    `,
-    [planCode, now, String(user && user.id || "").trim()],
-  );
-  return {
-    user,
-    planCode,
-    accessExpiresAt,
-  };
-}
-
 async function applyPermanentLicenseEntitlement(db, env, details = {}, deps) {
   const email = deps.normalizeEmail(details.email || "");
   if (!email) {
@@ -378,7 +260,6 @@ async function applyPermanentLicenseEntitlement(db, env, details = {}, deps) {
   if (!requestedPlan) {
     throw new Error("missing_plan_code");
   }
-  const now = deps.nowIso();
   const existingUser = await deps.findUserByEmail(db, email);
   const existingStatus = deps.normalizeUserStatus(existingUser && existingUser.status);
   const finalPlan = (
@@ -387,59 +268,23 @@ async function applyPermanentLicenseEntitlement(db, env, details = {}, deps) {
   )
     ? deps.PLAN_CODE_PLANETKA_PRO
     : requestedPlan;
-  const proConfirmedAt = finalPlan === deps.PLAN_CODE_PLANETKA_PRO ? now : "";
 
-  let user = await deps.upsertUserByEmail(
-    db,
-    email,
-    finalPlan,
-    {
-      proConfirmedAt,
-      proAccessExpiresAt: "",
-      provisionalPlanCode: "",
-      provisionalExpiresAt: "",
-    },
-    env,
-  );
+  let user = await deps.upsertUserByEmail(db, email, finalPlan, {}, env);
   user = await deps.enforceUserPlanPolicy(db, user, null, env);
   if (!user || !user.id) {
     throw new Error("user_upsert_failed");
   }
-
-  await deps.dbRun(
-    db,
-    `
-      UPDATE users
-      SET
-        pro_access_expires_at = NULL,
-        pro_confirmed_at = CASE WHEN ? != '' THEN ? ELSE pro_confirmed_at END
-      WHERE id = ?
-    `,
-    [proConfirmedAt, proConfirmedAt, String(user.id || "").trim()],
-  );
   await deps.dbRun(
     db,
     `
       UPDATE api_keys
       SET
         plan_code = ?,
-        expires_at = NULL,
-        provisional = 0,
-        provisional_expires_at = NULL,
-        confirmed_at = CASE WHEN ? != '' THEN ? ELSE confirmed_at END
+        expires_at = NULL
       WHERE user_id = ?
         AND status = 'active'
     `,
-    [finalPlan, proConfirmedAt, proConfirmedAt, String(user.id || "").trim()],
-  );
-  await deps.dbRun(
-    db,
-    `
-      UPDATE user_download_counters
-      SET plan_code = ?, updated_at = ?
-      WHERE user_id = ?
-    `,
-    [finalPlan, now, String(user.id || "").trim()],
+    [finalPlan, String(user.id || "").trim()],
   );
 
   return {
@@ -627,15 +472,11 @@ export async function handleStripeWebhook(request, env, deps) {
 }
 
 export const billingInternals = {
-  applyHostedStreamingAccessEntitlement,
   applyPermanentLicenseEntitlement,
   claimStripeWebhookEvent,
-  collectStripeLineItemEntitlements,
   collectStripeLineItemsWithQuantity,
   createStripeRefundForCheckoutSession,
   fetchStripeCheckoutSessionLineItems,
-  fetchStripeCustomerEmail,
-  fetchStripeSubscription,
   parseStripePlanMap,
   resolveStripePlanEntitlement,
   stripeSignatureHeaderParts,

@@ -318,9 +318,6 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
     const status = String(row && row.user_status || "").trim().toLowerCase();
     const tierClass = analyticsTierClassFromStatus(status || planCodeRaw, deps);
     const tierLabel = analyticsTierLabelFromStatus(status || planCodeRaw, deps);
-    const throttledUntilRaw = String(row && row.throttled_until || "").trim();
-    const throttledUntilMs = Date.parse(throttledUntilRaw);
-    const throttledActive = Number.isFinite(throttledUntilMs) && throttledUntilMs > Date.now();
     let actionButtons = "";
     if (status === "blocked") {
       actionButtons = `<button class="action-btn warn" data-action="unblock" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}" data-plan-code="${encodeURIComponent(planCodeRaw)}">Unblock</button><button class="action-btn" data-action="set-free" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Free</button><button class="action-btn" data-action="set-lite" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Personal</button><button class="action-btn" data-action="set-pro" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Commercial</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
@@ -329,10 +326,7 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
       const planButton = analyticsTierCodeFromStatus(status || planCodeRaw, deps) === "pro"
         ? `<button class="action-btn" data-action="set-lite" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Personal</button>`
         : `<button class="action-btn" data-action="set-pro" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Commercial</button>`;
-      const throttleButton = throttledActive
-        ? `<button class="action-btn" data-action="unthrottle" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Unthrottle</button>`
-        : `<button class="action-btn warn" data-action="throttle" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Throttle 24h</button>`;
-      actionButtons = `${freeButton}${planButton}${throttleButton}<button class="action-btn danger" data-action="block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Block</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
+      actionButtons = `${freeButton}${planButton}<button class="action-btn danger" data-action="block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Block</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
     }
     return `<tr>
       <td class="${tierClass}">${userEmail}</td>
@@ -430,8 +424,6 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
       const safeUserEmail = String(userEmail || "").trim();
       const safePlanCode = String(planCode || "").trim().toLowerCase();
       const endpointByAction = {
-        unthrottle: "/admin/users/unthrottle",
-        throttle: "/admin/users/throttle",
         block: "/admin/users/block",
         unblock: "/admin/users/unblock",
         "set-free": "/admin/users/set-plan",
@@ -440,8 +432,6 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
         "hard-block": "/admin/users/hard-block",
       };
       const confirmation = {
-        unthrottle: "Unthrottle this account now?",
-        throttle: "Throttle this account now for 24 hours?",
         block: "Block this user account now?",
         unblock: "Unblock this user account now?",
         "set-free": "Set this account to Free?",
@@ -454,7 +444,6 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
       if (!window.confirm(confirmation[safeAction] || "Confirm action?")) return;
       const payload = { email: safeUserEmail };
       if (safeUserId) payload.user_id = safeUserId;
-      if (safeAction === "throttle") payload.duration_minutes = 1440;
       if (safeAction === "unblock") {
         payload.plan_code = (!safePlanCode || safePlanCode === "blocked") ? "lite" : safePlanCode;
       }
