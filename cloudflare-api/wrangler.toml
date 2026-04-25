@@ -2,6 +2,17 @@ name = "planetkaworker01"
 main = "src/index.js"
 compatibility_date = "2026-03-15"
 
+[observability]
+enabled = true
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 0.01
+
+[observability.traces]
+enabled = true
+head_sampling_rate = 0.01
+
 [triggers]
 crons = ["0 * * * *"]
 
