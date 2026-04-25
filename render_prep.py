@@ -134,6 +134,15 @@ class ResolveBuildResult:
 
 
 @dataclass
+class ResolveFinalizeResult:
+    phase_post_ms: float = 0.0
+    phase_post_delete_ms: float = 0.0
+    phase_post_mark_ms: float = 0.0
+    phase_post_preview_ms: float = 0.0
+    missing_node_images: int = 0
+
+
+@dataclass
 class ResolveEarlyResult:
     response: object = None
     ui_reports: list = field(default_factory=list)
@@ -1273,6 +1282,116 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             ui_reports=ui_reports,
         )
 
+    def _phase_finalize_surface(
+        self,
+        scene,
+        props,
+        new_obj,
+        target_surface_name,
+        old_surface_viewport_hidden,
+        old_surface_render_hidden,
+        resolved_paths,
+        force_empty_once,
+        tiles,
+        ui_reports,
+    ):
+        phase_start = time.perf_counter()
+        try:
+            new_obj.name = str(target_surface_name or "Planetka Earth Surface")
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            logger.debug("Planetka: failed renaming resolved Earth surface object", exc_info=True)
+        try:
+            ensure_earth_surface_parent(scene=scene, earth_surface=new_obj)
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed parenting resolved Earth surface to Planetka Root", exc_info=True)
+        # Reveal the new surface first, then remove old surfaces to avoid blank-frame flashes.
+        _set_object_hidden_state(
+            new_obj,
+            viewport_hidden=old_surface_viewport_hidden,
+            render_hidden=old_surface_render_hidden,
+        )
+        phase_post_mark_ms = (time.perf_counter() - phase_start) * 1000.0
+
+        phase_start = time.perf_counter()
+        delete_temp_meshes(keep_obj=new_obj)
+        phase_post_delete_ms = (time.perf_counter() - phase_start) * 1000.0
+        # Final naming pass after old surfaces are deleted.
+        # This removes Blender suffixes such as ".001" that can appear when the
+        # first rename happens before temporary/old surfaces are removed.
+        try:
+            new_obj.name = "Planetka Earth Surface"
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            logger.debug("Planetka: failed final canonical rename for Earth surface object", exc_info=True)
+
+        try:
+            scene["planetka_last_resolved_tiles"] = list(tiles)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed caching resolved tiles", exc_info=True)
+
+        try:
+            retain_recent_resolve_cache(resolved_paths, keep_count=2)
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed pruning cache to current+previous resolve snapshots", exc_info=True)
+
+        phase_post_preview_ms = 0.0
+        if not force_empty_once and bool(getattr(props, "show_earth_preview", False)):
+            phase_start = time.perf_counter()
+            try:
+                ensure_preview_object(new_obj)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka: failed refreshing preview object", exc_info=True)
+                ui_reports.append(self._ui_report("WARNING", "Planetka preview object refresh failed."))
+            except (RuntimeError, TypeError, ValueError):
+                logger.debug("Planetka: failed refreshing preview object", exc_info=True)
+                ui_reports.append(self._ui_report("WARNING", "Planetka preview object refresh failed."))
+            phase_post_preview_ms = (time.perf_counter() - phase_start) * 1000.0
+
+        return ResolveFinalizeResult(
+            phase_post_ms=phase_post_delete_ms + phase_post_mark_ms + phase_post_preview_ms,
+            phase_post_delete_ms=phase_post_delete_ms,
+            phase_post_mark_ms=phase_post_mark_ms,
+            phase_post_preview_ms=phase_post_preview_ms,
+            missing_node_images=_count_missing_tile_loading_images(material_name="Planetka Earth Material"),
+        )
+
+    def _store_manual_resolve_summary(
+        self,
+        scene,
+        tiles,
+        normalized,
+        texture_quality_mode,
+        resolve_total_ms,
+        downloaded_bytes,
+    ):
+        try:
+            summary_total_bytes = int(
+                max(
+                    0,
+                    int(
+                        _estimate_download_bytes_for_visible_tiles(
+                            tiles,
+                            normalized,
+                            texture_quality_mode=texture_quality_mode,
+                        )
+                        or 0
+                    ),
+                )
+            )
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            summary_total_bytes = int(max(0, int(downloaded_bytes)))
+        try:
+            scene[LAST_MANUAL_RESOLVE_TILE_COUNT_KEY] = int(max(0, int(len(tiles))))
+            scene[LAST_MANUAL_RESOLVE_DOWNLOADED_MB_KEY] = float(
+                max(0.0, float(summary_total_bytes) / float(1024.0 ** 2))
+            )
+            # Keep legacy key updated for backward compatibility with older UI builds.
+            scene[LAST_MANUAL_RESOLVE_DOWNLOADED_GB_KEY] = float(
+                max(0.0, float(summary_total_bytes) / float(1024.0 ** 3))
+            )
+            scene[LAST_MANUAL_RESOLVE_TOTAL_SECONDS_KEY] = float(max(0.0, float(resolve_total_ms) / 1000.0))
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed storing manual resolve summary stats", exc_info=True)
+
     def execute(self, context):
         resolve_start = time.perf_counter()
         ui_reports = []
@@ -1368,58 +1487,23 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         phase_shader_ms = float(build_ctx.phase_shader_ms or 0.0)
         target_surface_name = str(build_ctx.target_surface_name or target_surface_name)
 
-        phase_start = time.perf_counter()
-        try:
-            new_obj.name = str(target_surface_name or "Planetka Earth Surface")
-        except (AttributeError, RuntimeError, TypeError, ValueError):
-            logger.debug("Planetka: failed renaming resolved Earth surface object", exc_info=True)
-        try:
-            ensure_earth_surface_parent(scene=scene, earth_surface=new_obj)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka: failed parenting resolved Earth surface to Planetka Root", exc_info=True)
-        # Reveal the new surface first, then remove old surfaces to avoid blank-frame flashes.
-        _set_object_hidden_state(
-            new_obj,
-            viewport_hidden=old_surface_viewport_hidden,
-            render_hidden=old_surface_render_hidden,
+        finalize_ctx = self._phase_finalize_surface(
+            scene=scene,
+            props=props,
+            new_obj=new_obj,
+            target_surface_name=target_surface_name,
+            old_surface_viewport_hidden=old_surface_viewport_hidden,
+            old_surface_render_hidden=old_surface_render_hidden,
+            resolved_paths=resolved_paths,
+            force_empty_once=force_empty_once,
+            tiles=tiles,
+            ui_reports=ui_reports,
         )
-        phase_post_mark_ms = (time.perf_counter() - phase_start) * 1000.0
-
-        phase_start = time.perf_counter()
-        delete_temp_meshes(keep_obj=new_obj)
-        phase_post_delete_ms = (time.perf_counter() - phase_start) * 1000.0
-        # Final naming pass after old surfaces are deleted.
-        # This removes Blender suffixes such as ".001" that can appear when the
-        # first rename happens before temporary/old surfaces are removed.
-        try:
-            new_obj.name = "Planetka Earth Surface"
-        except (AttributeError, RuntimeError, TypeError, ValueError):
-            logger.debug("Planetka: failed final canonical rename for Earth surface object", exc_info=True)
-
-        try:
-            scene["planetka_last_resolved_tiles"] = list(tiles)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed caching resolved tiles", exc_info=True)
-
-        try:
-            retain_recent_resolve_cache(resolved_paths, keep_count=2)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka: failed pruning cache to current+previous resolve snapshots", exc_info=True)
-
-        if not force_empty_once and bool(getattr(props, "show_earth_preview", False)):
-            phase_start = time.perf_counter()
-            try:
-                ensure_preview_object(new_obj)
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                logger.debug("Planetka: failed refreshing preview object", exc_info=True)
-                ui_reports.append(self._ui_report("WARNING", "Planetka preview object refresh failed."))
-            except (RuntimeError, TypeError, ValueError):
-                logger.debug("Planetka: failed refreshing preview object", exc_info=True)
-                ui_reports.append(self._ui_report("WARNING", "Planetka preview object refresh failed."))
-            phase_post_preview_ms = (time.perf_counter() - phase_start) * 1000.0
-
-        phase_post_ms = phase_post_delete_ms + phase_post_mark_ms + phase_post_preview_ms
-        missing_node_images = _count_missing_tile_loading_images(material_name="Planetka Earth Material")
+        phase_post_ms = float(finalize_ctx.phase_post_ms or 0.0)
+        phase_post_delete_ms = float(finalize_ctx.phase_post_delete_ms or 0.0)
+        phase_post_mark_ms = float(finalize_ctx.phase_post_mark_ms or 0.0)
+        phase_post_preview_ms = float(finalize_ctx.phase_post_preview_ms or 0.0)
+        missing_node_images = int(finalize_ctx.missing_node_images or 0)
 
         if not bool(getattr(self, "silent", False)) and not (force_empty_once and len(tiles) == 0):
             ui_reports.append(self._ui_report("INFO", f"Planetka resolved ({len(tiles)} tiles)"))
@@ -1513,34 +1597,14 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             },
         )
         if manual_summary_requested:
-            try:
-                summary_total_bytes = int(
-                    max(
-                        0,
-                        int(
-                            _estimate_download_bytes_for_visible_tiles(
-                                tiles,
-                                normalized,
-                                texture_quality_mode=texture_quality_mode,
-                            )
-                            or 0
-                        ),
-                    )
-                )
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-                summary_total_bytes = int(max(0, int(downloaded_bytes)))
-            try:
-                scene[LAST_MANUAL_RESOLVE_TILE_COUNT_KEY] = int(max(0, int(len(tiles))))
-                scene[LAST_MANUAL_RESOLVE_DOWNLOADED_MB_KEY] = float(
-                    max(0.0, float(summary_total_bytes) / float(1024.0 ** 2))
-                )
-                # Keep legacy key updated for backward compatibility with older UI builds.
-                scene[LAST_MANUAL_RESOLVE_DOWNLOADED_GB_KEY] = float(
-                    max(0.0, float(summary_total_bytes) / float(1024.0 ** 3))
-                )
-                scene[LAST_MANUAL_RESOLVE_TOTAL_SECONDS_KEY] = float(max(0.0, float(resolve_total_ms) / 1000.0))
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-                logger.debug("Planetka: failed storing manual resolve summary stats", exc_info=True)
+            self._store_manual_resolve_summary(
+                scene=scene,
+                tiles=tiles,
+                normalized=normalized,
+                texture_quality_mode=texture_quality_mode,
+                resolve_total_ms=resolve_total_ms,
+                downloaded_bytes=downloaded_bytes,
+            )
 
         if int(missing_node_images) > 0:
             logger.warning(
