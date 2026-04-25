@@ -940,52 +940,42 @@ def _arm_auto_resolve_timer(*args, **kwargs):
 
 
 def _auto_resolve_download_job_signature(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline._auto_resolve_download_job_signature(*args, **kwargs)
 
 
 def _arm_auto_resolve_download_timer(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline._arm_auto_resolve_download_timer(*args, **kwargs)
 
 
 def _start_auto_resolve_download_thread(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline._start_auto_resolve_download_thread(*args, **kwargs)
 
 
 def _show_download_status_popup(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline._show_download_status_popup(*args, **kwargs)
 
 
 def _schedule_auto_resolve_download(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline._schedule_auto_resolve_download(*args, **kwargs)
 
 
 def queue_resolve_download(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline.queue_resolve_download(*args, **kwargs)
 
 
 def _mark_manual_queued_resolve_error(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline._mark_manual_queued_resolve_error(*args, **kwargs)
 
 
 def _read_scene_last_resolve_error(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline._read_scene_last_resolve_error(*args, **kwargs)
 
 
 def _store_resolve_summary(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline._store_resolve_summary(*args, **kwargs)
 
 
 def _write_last_resolve_summary(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline._write_last_resolve_summary(*args, **kwargs)
 
 
@@ -995,67 +985,54 @@ def _is_non_retryable_resolve_error(*args, **kwargs):
 
 
 def _mark_auto_resolve_terminal_failure(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline._mark_auto_resolve_terminal_failure(*args, **kwargs)
 
 
 def _handle_auto_resolve_download_failure(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline._handle_auto_resolve_download_failure(*args, **kwargs)
 
 
 def _auto_resolve_completion_epoch_state(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline._auto_resolve_completion_epoch_state(*args, **kwargs)
 
 
 def _auto_resolve_handle_cancel_or_failure(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline._auto_resolve_handle_cancel_or_failure(*args, **kwargs)
 
 
 def _auto_resolve_log_pending_request_overlap(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline._auto_resolve_log_pending_request_overlap(*args, **kwargs)
 
 
 def _auto_resolve_prepare_apply_context(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline._auto_resolve_prepare_apply_context(*args, **kwargs)
 
 
 def _auto_resolve_apply_downloaded_tiles(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline._auto_resolve_apply_downloaded_tiles(*args, **kwargs)
 
 
 def _auto_resolve_summary_total_bytes(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline._auto_resolve_summary_total_bytes(*args, **kwargs)
 
 
 def _finalize_auto_resolve_apply(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline._finalize_auto_resolve_apply(*args, **kwargs)
 
 
 def _handle_auto_resolve_download_complete(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline._handle_auto_resolve_download_complete(*args, **kwargs)
 
 
 def _auto_resolve_download_worker(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline._auto_resolve_download_worker(*args, **kwargs)
 
 
 def _auto_resolve_download_pump_timer(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline._auto_resolve_download_pump_timer(*args, **kwargs)
 
 
 def stop_auto_resolve_download_pipeline(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline.stop_auto_resolve_download_pipeline(*args, **kwargs)
 
 
@@ -1241,6 +1218,14 @@ def _build_auto_resolve_contexts():
         read_scene_last_resolve_error=_read_scene_last_resolve_error,
         last_resolved_tiles=_last_resolved_tiles,
         request_auto_resolve=request_auto_resolve,
+        estimate_download_bytes_for_visible_tiles=_estimate_download_bytes_for_visible_tiles,
+        update_realtime_telemetry=_update_realtime_telemetry,
+        tag_view3d_redraw=_tag_view3d_redraw,
+        last_resolve_tile_count_key=LAST_RESOLVE_TILE_COUNT_KEY,
+        last_resolve_downloaded_mb_key=LAST_RESOLVE_DOWNLOADED_MB_KEY,
+        last_resolve_downloaded_gb_key=LAST_RESOLVE_DOWNLOADED_GB_KEY,
+        last_resolve_total_seconds_key=LAST_RESOLVE_TOTAL_SECONDS_KEY,
+        viewport_scope_last_resolve_time=_VIEWPORT_SCOPE_LAST_RESOLVE_TIME,
     )
     decision_deps = AutoResolveDecisionDeps(
         bpy=bpy,
@@ -1309,3 +1294,5 @@ def _build_auto_resolve_contexts():
     _AUTO_RESOLVE_DECISION_CTX,
     _AUTO_RESOLVE_NONCRITICAL_CTX,
 ) = _build_auto_resolve_contexts()
+
+_auto_resolve_pipeline._AUTO_RESOLVE_DOWNLOAD_CTX = _AUTO_RESOLVE_DOWNLOAD_CTX

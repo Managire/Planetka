@@ -76,6 +76,14 @@ class AutoResolveDownloadDeps:
     read_scene_last_resolve_error: Any
     last_resolved_tiles: Any
     request_auto_resolve: Any
+    estimate_download_bytes_for_visible_tiles: Any
+    update_realtime_telemetry: Any
+    tag_view3d_redraw: Any
+    last_resolve_tile_count_key: str
+    last_resolve_downloaded_mb_key: str
+    last_resolve_downloaded_gb_key: str
+    last_resolve_total_seconds_key: str
+    viewport_scope_last_resolve_time: Any
 
 
 @dataclass(slots=True)
