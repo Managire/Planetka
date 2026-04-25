@@ -78,6 +78,7 @@ import {
 import {
   handleAdminUserBlock as handleAdminUserBlockRoute,
   handleAdminUserHardBlock as handleAdminUserHardBlockRoute,
+  handleAdminQaAuthReset as handleAdminQaAuthResetRoute,
   handleAdminUserSetPlan as handleAdminUserSetPlanRoute,
   handleAdminUserUnblock as handleAdminUserUnblockRoute,
 } from "./worker/admin_user_handlers.js";
@@ -335,9 +336,11 @@ const ADMIN_USER_DEPS = {
   dbRun,
   ensureAdminHardBlocksTable,
   ensureApiKeyTables,
+  ensureRateLimitsTable,
   ensureRefreshSessionColumns,
   findUserByEmail,
   findUserById,
+  issueApiKeyForUser,
   json,
   normalizeDeviceId,
   normalizeEmail,
@@ -345,7 +348,11 @@ const ADMIN_USER_DEPS = {
   normalizeRequestedPlan,
   nowIso,
   parseJson,
+  parseCsvEmailSet,
+  requestClientIp,
   requireAnalyticsAdmin: (request, env) => requireAnalyticsAdmin(request, env, AUTH_SESSION_DEPS),
+  sha256Hex,
+  upsertUserByEmail,
 };
 
 const BILLING_DEPS = {
@@ -2880,6 +2887,7 @@ const ADMIN_ROUTE_DEPS = {
   handleAdminSessionStartPage: (request, env) => handleAdminSessionStartPageRoute(request, env, ADMIN_SESSION_DEPS),
   handleAdminUserBlock: (request, env) => handleAdminUserBlockRoute(request, env, ADMIN_USER_DEPS),
   handleAdminUserHardBlock: (request, env) => handleAdminUserHardBlockRoute(request, env, ADMIN_USER_DEPS),
+  handleAdminQaAuthReset: (request, env) => handleAdminQaAuthResetRoute(request, env, ADMIN_USER_DEPS),
   handleAdminUserSetPlan: (request, env) => handleAdminUserSetPlanRoute(request, env, ADMIN_USER_DEPS),
   handleAdminUserUnblock: (request, env) => handleAdminUserUnblockRoute(request, env, ADMIN_USER_DEPS),
 };

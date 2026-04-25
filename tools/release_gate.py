@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Planetka release-gate checks for docs, auth hardening, and release safety."""
+"""Planetka release-gate checks for docs, auth hardening, release safety, and runtime E2E smoke."""
 
 from __future__ import annotations
 
@@ -7,7 +7,10 @@ import re
 import sys
 from pathlib import Path
 import os
-import sys
+import json
+import shutil
+import subprocess
+import tempfile
 
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(_TOOLS_DIR)
@@ -25,6 +28,10 @@ except ModuleNotFoundError:  # pragma: no cover
 
 SEMVER_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 CHANGELOG_RELEASE_RE = re.compile(r"^##\s+\[(v?\d+\.\d+\.\d+)\]\s+-\s+(\d{4}-\d{2}-\d{2})\s*$")
+DEFAULT_BLENDER_CANDIDATES = (
+    "/Applications/Blender5.0.app/Contents/MacOS/Blender",
+    "/Applications/Blender.app/Contents/MacOS/Blender",
+)
 
 
 def read_text(path: Path) -> str:
@@ -59,8 +66,105 @@ def parse_bool_like(value: object) -> bool | None:
     return None
 
 
+def find_blender_bin() -> str:
+    candidates = []
+    for value in (
+        os.environ.get("PLANETKA_RELEASE_GATE_BLENDER_BIN"),
+        os.environ.get("BLENDER_BIN"),
+    ):
+        path = str(value or "").strip()
+        if path:
+            candidates.append(path)
+    candidates.extend(DEFAULT_BLENDER_CANDIDATES)
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
+    return ""
+
+
+def read_json_if_exists(path: Path) -> dict[str, object] | None:
+    try:
+        if not path.exists():
+            return None
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        return payload if isinstance(payload, dict) else None
+    except TOOL_RECOVERABLE_EXCEPTIONS:
+        return None
+
+
+def find_latest_short_report(render_root: Path) -> Path | None:
+    candidates = sorted(
+        render_root.glob("planetka_e2e_short_*/planetka_e2e_short_report.json"),
+        key=lambda item: item.stat().st_mtime if item.exists() else 0.0,
+        reverse=True,
+    )
+    return candidates[0] if candidates else None
+
+
+def run_blender_gate_check(
+    *,
+    blender_bin: str,
+    script_path: Path,
+    label: str,
+    background: bool,
+    timeout_sec: int,
+    env_updates: dict[str, str] | None = None,
+    report_path: Path | None = None,
+) -> tuple[bool, str, dict[str, object] | None]:
+    env = os.environ.copy()
+    if isinstance(env_updates, dict):
+        env.update(env_updates)
+
+    cmd = [blender_bin]
+    if background:
+        cmd.append("--background")
+    cmd.extend(["--python", str(script_path)])
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=int(timeout_sec),
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        summary = f"{label} timed out after {timeout_sec}s"
+        stdout = str(getattr(exc, "stdout", "") or "").strip()
+        stderr = str(getattr(exc, "stderr", "") or "").strip()
+        if stdout:
+            summary += f"\nstdout:\n{stdout[-2000:]}"
+        if stderr:
+            summary += f"\nstderr:\n{stderr[-2000:]}"
+        return False, summary, None
+    except TOOL_RECOVERABLE_EXCEPTIONS as exc:
+        return False, f"{label} failed to launch Blender: {exc}", None
+
+    payload = read_json_if_exists(report_path) if report_path else None
+    if result.returncode != 0:
+        summary = (
+            f"{label} failed with exit code {result.returncode}\n"
+            f"stdout:\n{(result.stdout or '').strip()[-4000:]}\n"
+            f"stderr:\n{(result.stderr or '').strip()[-4000:]}"
+        )
+        if report_path:
+            summary += f"\nreport: {report_path}"
+        return False, summary, payload
+
+    if isinstance(payload, dict):
+        if payload.get("ok") is False or str(payload.get("status", "") or "").lower() == "error":
+            return False, f"{label} reported failure in {report_path}", payload
+
+    return True, f"{label} passed.", payload
+
+
 def main() -> int:
     root = Path(__file__).resolve().parents[1]
+    static_only = parse_bool_like(os.environ.get("PLANETKA_RELEASE_GATE_STATIC_ONLY")) is True
+    if "--static-only" in sys.argv[1:]:
+        static_only = True
 
     manifest_path = root / "blender_manifest.toml"
     changelog_path = root / "CHANGELOG.md"
@@ -284,6 +388,10 @@ def main() -> int:
 
     print("Planetka Release Gate")
     print(f"- manifest version: {manifest_version or '<unavailable>'}")
+    if not static_only:
+        print("- runtime checks: enabled")
+    else:
+        print("- runtime checks: skipped (--static-only)")
     if warnings:
         for warning in warnings:
             print(f"[WARN] {warning}")
@@ -291,6 +399,83 @@ def main() -> int:
         for err in errors:
             print(f"[FAIL] {err}")
         print(f"Release gate failed: {len(errors)} issue(s)")
+        return 1
+
+    if static_only:
+        print("Release gate passed.")
+        return 0
+
+    blender_bin = find_blender_bin()
+    if not blender_bin:
+        print("[FAIL] Blender binary not found for runtime release-gate checks.")
+        print("Release gate failed: 1 issue(s)")
+        return 1
+
+    runtime_errors: list[str] = []
+    runtime_root = Path(tempfile.gettempdir()) / "planetka_release_gate"
+    runtime_root.mkdir(parents=True, exist_ok=True)
+
+    queued_report = Path(tempfile.gettempdir()) / "planetka_ui_queued_resolve_test_report.json"
+    try:
+        queued_report.unlink(missing_ok=True)
+    except TOOL_RECOVERABLE_EXCEPTIONS:
+        pass
+
+    ok, summary, payload = run_blender_gate_check(
+        blender_bin=blender_bin,
+        script_path=root / "tools" / "planetka_create_earth_ui_queued_resolve_test.py",
+        label="UI queued Create Earth test",
+        background=False,
+        timeout_sec=90,
+        report_path=queued_report,
+    )
+    print(f"- {summary}")
+    if isinstance(payload, dict) and queued_report.exists():
+        print(f"  report: {queued_report}")
+    if not ok:
+        runtime_errors.append(summary)
+
+    short_render_root = runtime_root / "short_e2e"
+    if short_render_root.exists():
+        try:
+            shutil.rmtree(short_render_root)
+        except TOOL_RECOVERABLE_EXCEPTIONS as exc:
+            runtime_errors.append(f"Could not reset short E2E artifact dir: {exc}")
+    short_render_root.mkdir(parents=True, exist_ok=True)
+
+    ok, summary, payload = run_blender_gate_check(
+        blender_bin=blender_bin,
+        script_path=root / "tools" / "planetka_e2e_short.py",
+        label="Short E2E render test",
+        background=True,
+        timeout_sec=240,
+        env_updates={"PLANETKA_RENDER_DIR": str(short_render_root)},
+    )
+    short_report = find_latest_short_report(short_render_root)
+    if isinstance(payload, dict) and short_report is not None:
+        pass
+    else:
+        payload = read_json_if_exists(short_report) if short_report else None
+    print(f"- {summary}")
+    if short_report is not None:
+        print(f"  report: {short_report}")
+    if isinstance(payload, dict):
+        renders = payload.get("renders", {})
+        if isinstance(renders, dict):
+            quick_preview = renders.get("quick_preview_eevee", {})
+            if isinstance(quick_preview, dict):
+                print(
+                    "  quick_preview_eevee:"
+                    f" pink={quick_preview.get('has_pink_corrupt')}"
+                    f" mostly_black={quick_preview.get('has_mostly_black')}"
+                )
+    if not ok:
+        runtime_errors.append(summary)
+
+    if runtime_errors:
+        for err in runtime_errors:
+            print(f"[FAIL] {err}")
+        print(f"Release gate failed: {len(runtime_errors)} runtime issue(s)")
         return 1
 
     print("Release gate passed.")

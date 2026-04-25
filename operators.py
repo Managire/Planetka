@@ -3338,7 +3338,7 @@ class PLANETKA_OT_ResetStartupSetupFactory(bpy.types.Operator):
             self.report({'WARNING'}, "Startup setup reset for this session only. Use Blender Save Preferences to persist it.")
 
         factory_profile = _build_factory_startup_setup_profile(scene, props)
-        _apply_startup_setup_profile(scene, props, factory_profile)
+        _apply_startup_setup_profile(scene, props, factory_profile, apply_navigation_shot=False)
         if _persist_user_preferences():
             self.report({'INFO'}, "Startup setup reset to factory defaults.")
         return {'FINISHED'}
