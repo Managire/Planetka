@@ -69,38 +69,62 @@ export async function storeAnalyticsUsersSnapshot(env, snapshot) {
 
 export async function buildAnalyticsSnapshotMatrix(db, env, deps) {
   const generatedAt = deps.nowIso();
+  let attempted = 0;
   let stored = 0;
+  let failed = 0;
+  const failures = [];
   for (const minutes of ANALYTICS_SNAPSHOT_WINDOWS) {
     for (const planFilter of ANALYTICS_SNAPSHOT_PLAN_FILTERS) {
       for (const tileMapMinutes of ANALYTICS_SNAPSHOT_TILE_MAP_WINDOWS) {
-        const snapshot = await deps.collectAnalyticsSnapshot(
-          db,
-          minutes,
-          planFilter,
-          tileMapMinutes,
-          env,
-        );
-        await storeAnalyticsSnapshot(
-          env,
-          minutes,
-          planFilter,
-          tileMapMinutes,
-          {
-            ...snapshot,
-            generated_at: String(snapshot && snapshot.generated_at || generatedAt),
-            snapshot_minutes: minutes,
-            snapshot_plan_filter: planFilter,
-            snapshot_tile_map_minutes: tileMapMinutes,
-            snapshot_source: "scheduled_snapshot",
-          },
-        );
-        stored += 1;
+        attempted += 1;
+        try {
+          const snapshot = await deps.collectAnalyticsSnapshot(
+            db,
+            minutes,
+            planFilter,
+            tileMapMinutes,
+            env,
+          );
+          await storeAnalyticsSnapshot(
+            env,
+            minutes,
+            planFilter,
+            tileMapMinutes,
+            {
+              ...snapshot,
+              generated_at: String(snapshot && snapshot.generated_at || generatedAt),
+              snapshot_minutes: minutes,
+              snapshot_plan_filter: planFilter,
+              snapshot_tile_map_minutes: tileMapMinutes,
+              snapshot_source: "scheduled_snapshot",
+            },
+          );
+          stored += 1;
+        } catch (error) {
+          failed += 1;
+          const failure = {
+            minutes,
+            plan_filter: planFilter,
+            tile_map_minutes: tileMapMinutes,
+            error: String(error && error.message || "analytics_snapshot_failed"),
+          };
+          if (failures.length < 10) {
+            failures.push(failure);
+          }
+          console.warn(
+            "planetka.analytics.snapshot_window_failed",
+            JSON.stringify(failure),
+          );
+        }
       }
     }
   }
   return {
     generated_at: generatedAt,
+    attempted_snapshots: attempted,
     stored_snapshots: stored,
+    failed_snapshots: failed,
+    failures,
   };
 }
 
