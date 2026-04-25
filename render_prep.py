@@ -916,6 +916,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             try:
                 computed_tiles = tile_utils.main(
                     scope_mode=str(getattr(self, "scope_mode", "AUTO") or "AUTO"),
+                    texture_quality_mode_override=texture_quality_mode,
                 )
                 tiles = [] if force_empty_once else computed_tiles
             except PLANETKA_RECOVERABLE_EXCEPTIONS:

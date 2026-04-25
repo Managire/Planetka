@@ -41,6 +41,15 @@ import sqlite3
 import sys
 import time
 import traceback
+import os
+import sys
+
+_TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.dirname(_TOOLS_DIR)
+for _path in (_TOOLS_DIR, _REPO_ROOT):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
+
 from tool_error_utils import TOOL_OPTIONAL_IMPORT_EXCEPTIONS, TOOL_RECOVERABLE_EXCEPTIONS
 
 import addon_utils
@@ -758,7 +767,7 @@ def main():
         prefs.texture_base_path = "planetka-remote"
         props = scene.planetka
         props.auto_resolve = False
-        props.texture_quality_mode = "HALF"
+        props.texture_quality_mode = "BALANCED"
         props.show_earth_preview = False
 
         scene.render.resolution_x = 1920
