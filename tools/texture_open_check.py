@@ -11,20 +11,21 @@ import sys
 import time
 from pathlib import Path
 from typing import Callable
+from tool_error_utils import TOOL_OPTIONAL_IMPORT_EXCEPTIONS, TOOL_RECOVERABLE_EXCEPTIONS
 
 try:
     import OpenImageIO as oiio
-except Exception:  # pragma: no cover - optional dependency
+except TOOL_OPTIONAL_IMPORT_EXCEPTIONS:  # pragma: no cover - optional dependency
     oiio = None
 
 try:
     import OpenEXR
-except Exception:  # pragma: no cover - optional dependency
+except TOOL_OPTIONAL_IMPORT_EXCEPTIONS:  # pragma: no cover - optional dependency
     OpenEXR = None
 
 try:
     from PIL import Image
-except Exception:  # pragma: no cover - optional dependency
+except TOOL_OPTIONAL_IMPORT_EXCEPTIONS:  # pragma: no cover - optional dependency
     Image = None
 
 
@@ -133,7 +134,7 @@ def can_open_oiio(path: Path) -> tuple[bool, str]:
     finally:
         try:
             inp.close()
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             pass
 
 
@@ -145,7 +146,7 @@ def can_open_openexr(path: Path) -> tuple[bool, str]:
         file_obj.header()
         file_obj.close()
         return True, ""
-    except Exception as exc:  # noqa: BLE001 - report all loader errors
+    except TOOL_RECOVERABLE_EXCEPTIONS as exc:  # noqa: BLE001 - report all loader errors
         return False, f"OpenEXR failed: {exc}"
 
 
@@ -156,7 +157,7 @@ def can_open_pillow(path: Path) -> tuple[bool, str]:
         with Image.open(path) as img:
             img.verify()
         return True, ""
-    except Exception as exc:  # noqa: BLE001 - report all loader errors
+    except TOOL_RECOVERABLE_EXCEPTIONS as exc:  # noqa: BLE001 - report all loader errors
         return False, f"Pillow failed: {exc}"
 
 

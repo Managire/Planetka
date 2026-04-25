@@ -26,6 +26,7 @@ import time
 import traceback
 import urllib.error
 import urllib.request
+from tool_error_utils import TOOL_OPTIONAL_IMPORT_EXCEPTIONS, TOOL_RECOVERABLE_EXCEPTIONS
 
 import addon_utils
 import bpy
@@ -84,7 +85,7 @@ def _enable_module() -> str:
             if hasattr(bpy.ops, "planetka") and hasattr(bpy.ops.planetka, "add_earth"):
                 _log(f"Enabled addon module: {mod}")
                 return mod
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             continue
 
     addon_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -96,7 +97,7 @@ def _enable_module() -> str:
     if hasattr(module, "register"):
         try:
             module.unregister()
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             pass
         module.register()
     if hasattr(bpy.ops, "planetka") and hasattr(bpy.ops.planetka, "add_earth"):
@@ -115,7 +116,7 @@ def _import_submodule(base_module_name: str, submodule_name: str):
     for mod in candidates:
         try:
             return importlib.import_module(mod)
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             continue
     raise RuntimeError(f"Could not import {submodule_name}; tried: {candidates}")
 
@@ -139,7 +140,7 @@ def _post_json(url: str, payload: dict, headers: dict[str, str] | None = None, t
         raw = exc.read().decode("utf-8", errors="replace")
         try:
             body = json.loads(raw) if raw.strip() else {}
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             body = {}
         return int(exc.code), body if isinstance(body, dict) else {}
 
@@ -164,42 +165,42 @@ def _purge_planetka_data():
         if str(obj.name).startswith("Planetka"):
             try:
                 bpy.data.objects.remove(obj, do_unlink=True)
-            except Exception:
+            except TOOL_RECOVERABLE_EXCEPTIONS:
                 pass
 
     for collection in list(bpy.data.collections):
         if str(collection.name).startswith("Planetka"):
             try:
                 bpy.data.collections.remove(collection)
-            except Exception:
+            except TOOL_RECOVERABLE_EXCEPTIONS:
                 pass
 
     for material in list(bpy.data.materials):
         if str(material.name).startswith("Planetka"):
             try:
                 bpy.data.materials.remove(material)
-            except Exception:
+            except TOOL_RECOVERABLE_EXCEPTIONS:
                 pass
 
     for mesh in list(bpy.data.meshes):
         if str(mesh.name).startswith("Planetka"):
             try:
                 bpy.data.meshes.remove(mesh)
-            except Exception:
+            except TOOL_RECOVERABLE_EXCEPTIONS:
                 pass
 
     for image in list(bpy.data.images):
         if str(image.name).startswith("Planetka"):
             try:
                 bpy.data.images.remove(image)
-            except Exception:
+            except TOOL_RECOVERABLE_EXCEPTIONS:
                 pass
 
     for node_group in list(bpy.data.node_groups):
         if str(node_group.name).startswith("Planetka"):
             try:
                 bpy.data.node_groups.remove(node_group)
-            except Exception:
+            except TOOL_RECOVERABLE_EXCEPTIONS:
                 pass
 
 
@@ -254,7 +255,7 @@ def _reset_queued_resolve_pipeline(state_module):
         stop_fn = getattr(state_module, "stop_auto_resolve_download_pipeline", None)
         if callable(stop_fn):
             stop_fn()
-    except Exception:
+    except TOOL_RECOVERABLE_EXCEPTIONS:
         pass
 
 
@@ -269,14 +270,14 @@ def _drain_resolve_pipeline(state_module, timeout_sec=30.0):
         try:
             if callable(busy_fn):
                 is_busy = bool(busy_fn())
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             is_busy = False
         if not is_busy:
             return
         try:
             if callable(pump_fn):
                 pump_fn()
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             pass
         time.sleep(0.05)
 
@@ -560,7 +561,7 @@ def main():
         _set_plan_for_email(auth_module, prefs, email, "pro")
         auth_module.sync_account_profile(prefs)
 
-    except Exception as exc:
+    except TOOL_RECOVERABLE_EXCEPTIONS as exc:
         report["ok"] = False
         report["errors"].append(str(exc))
         traceback.print_exc()

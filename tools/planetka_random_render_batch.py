@@ -26,6 +26,7 @@ import random
 import sys
 import time
 import traceback
+from tool_error_utils import TOOL_OPTIONAL_IMPORT_EXCEPTIONS, TOOL_RECOVERABLE_EXCEPTIONS
 
 import addon_utils
 import bpy
@@ -80,7 +81,7 @@ def _enable_module():
             if hasattr(bpy.ops, "planetka") and hasattr(bpy.ops.planetka, "add_earth"):
                 _log(f"Enabled addon module: {mod}")
                 return mod
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             continue
 
     addon_root = _addon_root()
@@ -93,13 +94,13 @@ def _enable_module():
         if hasattr(module, "register"):
             try:
                 module.unregister()
-            except Exception:
+            except TOOL_RECOVERABLE_EXCEPTIONS:
                 pass
             module.register()
         if hasattr(bpy.ops, "planetka") and hasattr(bpy.ops.planetka, "add_earth"):
             _log(f"Enabled addon module via local import: {package_name}")
             return package_name
-    except Exception:
+    except TOOL_RECOVERABLE_EXCEPTIONS:
         pass
     return None
 
@@ -116,7 +117,7 @@ def _import_submodule(base_module_name, submodule_name):
     for mod in candidates:
         try:
             return importlib.import_module(mod)
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             continue
     _fail(f"Could not import submodule '{submodule_name}'. Tried: {', '.join(candidates)}")
 
@@ -154,7 +155,7 @@ def _configure_cycles_gpu(scene):
                 try:
                     cprefs.compute_device_type = backend
                     cprefs.get_devices()
-                except Exception:
+                except TOOL_RECOVERABLE_EXCEPTIONS:
                     continue
                 devices = list(getattr(cprefs, "devices", []))
                 non_cpu = [d for d in devices if str(getattr(d, "type", "")).upper() != "CPU"]
@@ -162,18 +163,18 @@ def _configure_cycles_gpu(scene):
                     for device in devices:
                         try:
                             device.use = True
-                        except Exception:
+                        except TOOL_RECOVERABLE_EXCEPTIONS:
                             pass
                     backend_selected = backend
                     gpu_enabled = True
                     gpu_devices = [str(getattr(d, "name", "GPU")) for d in non_cpu]
                     break
-    except Exception:
+    except TOOL_RECOVERABLE_EXCEPTIONS:
         pass
 
     try:
         scene.cycles.device = "GPU" if gpu_enabled else "CPU"
-    except Exception:
+    except TOOL_RECOVERABLE_EXCEPTIONS:
         pass
 
     return {
@@ -212,19 +213,19 @@ def _set_navigation(props, state_module, lon, lat, alt, azimuth, tilt, roll):
 def _earth_radius_bu(earth_obj):
     try:
         stored = float(earth_obj.get("planetka_surface_local_radius", 0.0))
-    except Exception:
+    except TOOL_RECOVERABLE_EXCEPTIONS:
         stored = 0.0
     if stored > 1e-9:
         try:
             max_scale = max(abs(float(v)) for v in earth_obj.scale)
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             max_scale = 1.0
         return float(stored) * float(max_scale)
     try:
         values = [Vector(corner).length for corner in earth_obj.bound_box]
         if values:
             return max(values)
-    except Exception:
+    except TOOL_RECOVERABLE_EXCEPTIONS:
         pass
     return 1.0
 
@@ -288,7 +289,7 @@ def _remove_existing_planetka_objects():
         if obj.name.startswith("Planetka"):
             try:
                 bpy.data.objects.remove(obj, do_unlink=True)
-            except Exception:
+            except TOOL_RECOVERABLE_EXCEPTIONS:
                 pass
 
 
@@ -416,7 +417,7 @@ def main():
         _log(f"Report: {report_path}")
     except SystemExit:
         raise
-    except Exception as exc:
+    except TOOL_RECOVERABLE_EXCEPTIONS as exc:
         _log(f"Unhandled error: {exc}")
         traceback.print_exc()
         raise SystemExit(1)

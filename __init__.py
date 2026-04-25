@@ -5,7 +5,7 @@ from bpy.props import PointerProperty
 
 # Includes data from GeoNames (allCountries) licensed under CC BY 4.0.
 
-from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
+from .error_utils import PLANETKA_IMPORT_RECOVERABLE_EXCEPTIONS, PLANETKA_RECOVERABLE_EXCEPTIONS
 from . import updater as _planetka_updater
 
 from .animation_tools import (
@@ -399,7 +399,7 @@ def register():
     try:
         from .unsupported import apply_runtime_unsupported_overrides
         apply_runtime_unsupported_overrides()
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError, ImportError):
+    except PLANETKA_IMPORT_RECOVERABLE_EXCEPTIONS:
         pass
     try:
         bpy.app.timers.register(_tag_view3d_ui_redraw, first_interval=0.05)

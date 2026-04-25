@@ -9,6 +9,7 @@ import argparse
 import json
 import os
 import sys
+from tool_error_utils import TOOL_OPTIONAL_IMPORT_EXCEPTIONS, TOOL_RECOVERABLE_EXCEPTIONS
 
 import bpy
 import addon_utils
@@ -31,7 +32,7 @@ def _import_addon_submodule(submodule_name):
     for mod_name in candidates:
         try:
             return __import__(mod_name, fromlist=["dummy"])
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             continue
     return None
 
@@ -71,14 +72,14 @@ def _pink_case_set(path):
         return set()
     try:
         data = _load_json(path)
-    except Exception:
+    except TOOL_RECOVERABLE_EXCEPTIONS:
         return set()
     values = data.get("pink_cases", [])
     result = set()
     for item in values:
         try:
             result.add(int(item))
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             continue
     return result
 
@@ -90,7 +91,7 @@ def _ensure_earth():
             earth = extension_prefs.get_earth_object()
             if earth is not None:
                 return earth
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             pass
 
     earth = bpy.data.objects.get("Planetka Earth")
@@ -106,7 +107,7 @@ def _ensure_earth():
                     earth = extension_prefs.get_earth_object()
                     if earth is not None:
                         return earth
-                except Exception:
+                except TOOL_RECOVERABLE_EXCEPTIONS:
                     pass
             earth = bpy.data.objects.get("Planetka Earth")
             if earth is not None:
@@ -204,7 +205,7 @@ def _main():
             if preset:
                 try:
                     bpy.ops.planetka.sunlight_preset(preset=preset)
-                except Exception:
+                except TOOL_RECOVERABLE_EXCEPTIONS:
                     pass
 
         _key_nav_properties(props, idx)

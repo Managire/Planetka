@@ -11,9 +11,6 @@ __init__.py
 animation_tools.py
 asset_builder.py
 auth.py
-clouds_global.py
-clouds_local.py
-clouds_vdb.py
 coverage.py
 diagnostics.py
 embedded_material_library.py
@@ -34,7 +31,6 @@ state.py
 streaming_utils.py
 tile_utils.py
 ui.py
-unsupported.py
 updater.py
 validation.py
 
@@ -85,8 +81,5 @@ Resources/Preview Textures/EL_x000_y000_z360_d000.exr
 Resources/Preview Textures/PO_x000_y000_z360_d000.tif
 Resources/Preview Textures/S2_x000_y000_z360_d000.exr
 Resources/Preview Textures/WT_x000_y000_z360_d000.exr
-Resources/planetka_fake_atmosphere.blend
-Resources/planetka_global_cloud_layer_min.blend
 Resources/planetka_material_lib_45.blend
-Resources/planetka_volumetric_atmosphere.blend
 Resources/tile_sizes.sqlite

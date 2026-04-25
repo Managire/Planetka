@@ -14,6 +14,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
+from tool_error_utils import TOOL_OPTIONAL_IMPORT_EXCEPTIONS, TOOL_RECOVERABLE_EXCEPTIONS
 
 os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
 
@@ -195,7 +196,7 @@ class Pipeline:
     def close(self) -> None:
         try:
             self.conn.close()
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             pass
 
     def _run_aws(self, argv: list[str], retry: int = 0) -> subprocess.CompletedProcess:
@@ -211,7 +212,7 @@ class Pipeline:
         for attempt in range(retry + 1):
             try:
                 return subprocess.run(cmd, check=True, capture_output=True, text=True)
-            except Exception as exc:  # noqa: BLE001
+            except TOOL_RECOVERABLE_EXCEPTIONS as exc:  # noqa: BLE001
                 last_exc = exc
                 if attempt >= retry:
                     break
@@ -380,7 +381,7 @@ class Pipeline:
                     entry.unlink()
                     deleted += 1
                     self._event("prune_local_extra", dataset=ds, filename=entry.name)
-                except Exception as exc:  # noqa: BLE001
+                except TOOL_RECOVERABLE_EXCEPTIONS as exc:  # noqa: BLE001
                     self._log(f"[prune] failed removing {entry}: {exc}")
         self._log(f"[prune] deleted_local_extras={deleted}")
 
@@ -406,7 +407,7 @@ class Pipeline:
             try:
                 self._run_aws(args, retry=0)
                 return
-            except Exception as exc:  # noqa: BLE001
+            except TOOL_RECOVERABLE_EXCEPTIONS as exc:  # noqa: BLE001
                 last_exc = exc
                 if attempt >= self.args.upload_retries:
                     break
@@ -442,7 +443,7 @@ class Pipeline:
             if arr.shape[2] > 3:
                 arr = arr[:, :, :3]
             return arr.astype(np.float32, copy=False)
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             buf = oiio.ImageBuf(str(path))
             if buf.has_error():
                 raise RuntimeError(f"read failed {path}: {buf.geterror()}")
@@ -470,7 +471,7 @@ class Pipeline:
             if arr.ndim == 3:
                 arr = arr[:, :, 0]
             return arr.astype(np.float32, copy=False)
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             buf = oiio.ImageBuf(str(path))
             if buf.has_error():
                 raise RuntimeError(f"read failed {path}: {buf.geterror()}")
@@ -558,7 +559,7 @@ class Pipeline:
             try:
                 self._run_aws(args, retry=0)
                 return local.is_file()
-            except Exception:
+            except TOOL_RECOVERABLE_EXCEPTIONS:
                 if attempt >= self.args.download_retries:
                     break
                 _retry_sleep(attempt)
@@ -840,7 +841,7 @@ class Pipeline:
                     self._build_d(task, local_path)
                 self._upload_file(task.dataset, task.filename)
                 return True, ""
-            except Exception as exc:  # noqa: BLE001
+            except TOOL_RECOVERABLE_EXCEPTIONS as exc:  # noqa: BLE001
                 last_error = str(exc)
                 if attempt >= self.args.task_retries:
                     break

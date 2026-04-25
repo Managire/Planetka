@@ -27,6 +27,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from tool_error_utils import TOOL_OPTIONAL_IMPORT_EXCEPTIONS, TOOL_RECOVERABLE_EXCEPTIONS
 
 ALLOWED_FOLDERS = {"S2", "EL", "WT", "PO"}
 TILE_FILE_RE = re.compile(
@@ -334,7 +335,7 @@ def sync_folder_sizes(args: argparse.Namespace) -> None:
         conn.commit()
 
         final_count = _count_folder_rows(conn, folder)
-    except Exception:
+    except TOOL_RECOVERABLE_EXCEPTIONS:
         conn.rollback()
         raise
     finally:
@@ -375,7 +376,7 @@ def main(argv: list[str]) -> int:
         args = parse_args(argv)
         sync_folder_sizes(args)
         return 0
-    except Exception as exc:  # noqa: BLE001
+    except TOOL_RECOVERABLE_EXCEPTIONS as exc:  # noqa: BLE001
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 

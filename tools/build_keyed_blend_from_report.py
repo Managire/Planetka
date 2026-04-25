@@ -13,6 +13,7 @@ import os
 import random
 import sqlite3
 import sys
+from tool_error_utils import TOOL_OPTIONAL_IMPORT_EXCEPTIONS, TOOL_RECOVERABLE_EXCEPTIONS
 
 import addon_utils
 import bpy
@@ -30,7 +31,7 @@ def _enable_addon():
             addon_utils.enable(mod)
             if hasattr(bpy.ops, "planetka") and hasattr(bpy.ops.planetka, "add_earth"):
                 return mod
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             continue
     return ""
 
@@ -49,7 +50,7 @@ def _import_submodule(base_mod, sub):
     for mod in candidates:
         try:
             return importlib.import_module(mod)
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             continue
     raise RuntimeError(f"Could not import submodule '{sub}'")
 
@@ -79,12 +80,12 @@ def _lookup_place(geonames_module, label):
             country_hint = parts[-1].upper()
     try:
         candidates = geonames_module.search_places(name_part, max_results=50) or []
-    except Exception:
+    except TOOL_RECOVERABLE_EXCEPTIONS:
         candidates = []
     for item in candidates:
         try:
             candidate_label = str(item[0] or "").strip()
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             continue
         if not candidate_label:
             continue
@@ -97,7 +98,7 @@ def _lookup_place(geonames_module, label):
     for item in candidates:
         try:
             candidate_label = str(item[0] or "").strip()
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             continue
         if not candidate_label:
             continue
@@ -151,7 +152,7 @@ def _sample_place_records_from_geonames(geonames_module, count, seed):
             try:
                 lat = float(item[3])
                 lon = float(item[4])
-            except Exception:
+            except TOOL_RECOVERABLE_EXCEPTIONS:
                 continue
             display = f"{name}, {country}" if country else name
             if display in used:
@@ -213,7 +214,7 @@ def _keyframe_nav_props(props, frame):
     ):
         try:
             props.keyframe_insert(data_path=path, frame=int(frame))
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             pass
 
 
@@ -245,7 +246,7 @@ def main():
     if auth_device_id:
         try:
             prefs.auth_device_id = auth_device_id
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             pass
     if not bool(auth_module.is_authenticated(prefs)):
         api_key = str(os.environ.get("PLANETKA_AUTH_API_KEY") or "").strip()
@@ -264,7 +265,7 @@ def main():
         raise RuntimeError(f"Create Earth failed: {create_result}")
     try:
         bpy.ops.planetka.set_background_black()
-    except Exception:
+    except TOOL_RECOVERABLE_EXCEPTIONS:
         pass
 
     props = scene.planetka
@@ -272,7 +273,7 @@ def main():
     props.texture_quality_mode = "FULL"
     try:
         bpy.ops.planetka.sunlight_preset(preset="MID_MORNING")
-    except Exception:
+    except TOOL_RECOVERABLE_EXCEPTIONS:
         pass
 
     camera = getattr(scene, "camera", None)
@@ -318,7 +319,7 @@ def main():
 
         try:
             _apply_nav(props, state_module, lon, lat, alt, heading, tilt, roll, focal)
-        except Exception as exc:
+        except TOOL_RECOVERABLE_EXCEPTIONS as exc:
             failures.append({"case": case.get("case"), "label": label, "reason": f"apply_failed:{exc}"})
             continue
 
@@ -352,6 +353,6 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except Exception as exc:
+    except TOOL_RECOVERABLE_EXCEPTIONS as exc:
         print(f"[Planetka keyed blend] ERROR: {exc}", flush=True)
         raise

@@ -32,6 +32,7 @@ import sqlite3
 import sys
 import time
 import traceback
+from tool_error_utils import TOOL_OPTIONAL_IMPORT_EXCEPTIONS, TOOL_RECOVERABLE_EXCEPTIONS
 
 import addon_utils
 import bpy
@@ -120,7 +121,7 @@ def _enable_module():
             if hasattr(bpy.ops, "planetka") and hasattr(bpy.ops.planetka, "add_earth"):
                 _log(f"Enabled addon module: {mod}")
                 return mod
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             continue
 
     addon_root = _addon_root()
@@ -133,13 +134,13 @@ def _enable_module():
         if hasattr(module, "register"):
             try:
                 module.unregister()
-            except Exception:
+            except TOOL_RECOVERABLE_EXCEPTIONS:
                 pass
             module.register()
         if hasattr(bpy.ops, "planetka") and hasattr(bpy.ops.planetka, "add_earth"):
             _log(f"Enabled addon module via local import: {package_name}")
             return package_name
-    except Exception:
+    except TOOL_RECOVERABLE_EXCEPTIONS:
         pass
     return None
 
@@ -156,7 +157,7 @@ def _import_submodule(base_module_name, submodule_name):
     for mod in candidates:
         try:
             return importlib.import_module(mod)
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             continue
     _fail(f"Could not import submodule '{submodule_name}'. Tried: {', '.join(candidates)}")
 
@@ -183,7 +184,7 @@ def _remove_existing_planetka_objects():
         if str(obj.name).startswith("Planetka"):
             try:
                 bpy.data.objects.remove(obj, do_unlink=True)
-            except Exception:
+            except TOOL_RECOVERABLE_EXCEPTIONS:
                 pass
 
 
@@ -195,7 +196,7 @@ def _remove_non_planetka_lights(scene):
             continue
         try:
             bpy.data.objects.remove(obj, do_unlink=True)
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             pass
 
 
@@ -212,7 +213,7 @@ def _configure_cycles_gpu(scene):
                 try:
                     cprefs.compute_device_type = backend
                     cprefs.get_devices()
-                except Exception:
+                except TOOL_RECOVERABLE_EXCEPTIONS:
                     continue
                 devices = list(getattr(cprefs, "devices", []))
                 non_cpu = [d for d in devices if str(getattr(d, "type", "")).upper() != "CPU"]
@@ -220,17 +221,17 @@ def _configure_cycles_gpu(scene):
                     for device in devices:
                         try:
                             device.use = True
-                        except Exception:
+                        except TOOL_RECOVERABLE_EXCEPTIONS:
                             pass
                     backend_selected = backend
                     gpu_enabled = True
                     gpu_devices = [str(getattr(d, "name", "GPU")) for d in non_cpu]
                     break
-    except Exception:
+    except TOOL_RECOVERABLE_EXCEPTIONS:
         pass
     try:
         scene.cycles.device = "GPU" if gpu_enabled else "CPU"
-    except Exception:
+    except TOOL_RECOVERABLE_EXCEPTIONS:
         pass
     return {
         "gpu_enabled": bool(gpu_enabled),
@@ -248,15 +249,15 @@ def _configure_render_output(scene, noise_threshold=0.05):
     scene.render.film_transparent = False
     try:
         scene.cycles.use_adaptive_sampling = True
-    except Exception:
+    except TOOL_RECOVERABLE_EXCEPTIONS:
         pass
     try:
         scene.cycles.adaptive_threshold = float(noise_threshold)
-    except Exception:
+    except TOOL_RECOVERABLE_EXCEPTIONS:
         pass
     try:
         scene.cycles.noise_threshold = float(noise_threshold)
-    except Exception:
+    except TOOL_RECOVERABLE_EXCEPTIONS:
         pass
 
 
@@ -265,7 +266,7 @@ def _eevee_engine_id():
         try:
             bpy.context.scene.render.engine = candidate
             return candidate
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             continue
     return ""
 
@@ -278,7 +279,7 @@ def _render_case(scene, render_dir, render_prefix, case_index, render_mode="dual
     # Always switch back to Cycles for the next resolve loop.
     try:
         scene.render.engine = cycles_engine
-    except Exception:
+    except TOOL_RECOVERABLE_EXCEPTIONS:
         pass
     if mode == "cycles":
         targets = ((cycles_engine, "cycles"),)
@@ -291,7 +292,7 @@ def _render_case(scene, render_dir, render_prefix, case_index, render_mode="dual
             continue
         try:
             scene.render.engine = engine_id
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             continue
         render_path = os.path.join(str(render_dir), f"{render_prefix}_{int(case_index):04d}_{suffix}.png")
         scene.render.filepath = render_path
@@ -307,7 +308,7 @@ def _render_case(scene, render_dir, render_prefix, case_index, render_mode="dual
         )
     try:
         scene.render.engine = cycles_engine
-    except Exception:
+    except TOOL_RECOVERABLE_EXCEPTIONS:
         pass
     return rendered
 
@@ -425,7 +426,7 @@ def _wait_for_camera_update(scene, props, state_module, previous_signature, time
     while time.monotonic() < deadline:
         try:
             bpy.context.view_layer.update()
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             pass
         current = _camera_signature(camera)
         if previous_signature is None:
@@ -434,11 +435,11 @@ def _wait_for_camera_update(scene, props, state_module, previous_signature, time
             return current, True
         try:
             bpy.ops.planetka.navigation_apply_shot(silent=True)
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             pass
         try:
             state_module.update_navigation_shot(props, bpy.context)
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             pass
         time.sleep(0.05)
     return _camera_signature(camera), False
@@ -581,7 +582,7 @@ def _run_case(
         for _ in range(12):
             try:
                 bpy.context.view_layer.update()
-            except Exception:
+            except TOOL_RECOVERABLE_EXCEPTIONS:
                 pass
             selected_name = str(getattr(props, "nav_city_selected_name", "") or "").strip()
             if selected_name:
@@ -596,7 +597,7 @@ def _run_case(
                     state_module.update_navigation_shot(props, bpy.context)
                     selected_name = place_display
                     warnings.append("place_selected_via_direct_coords")
-                except Exception:
+                except TOOL_RECOVERABLE_EXCEPTIONS:
                     pass
         if not selected_name:
             return {
@@ -613,7 +614,7 @@ def _run_case(
             props.nav_latitude_deg = float(case_data.get("direct_lat", 0.0))
             state_module.update_navigation_shot(props, bpy.context)
             selected_name = str(case_data.get("label", "Direct Coordinates"))
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             return {
                 "case": case_index,
                 "ok": False,
@@ -817,15 +818,15 @@ def main():
         for row in results:
             try:
                 total_downloaded_mb += float(row.get("resolve_downloaded_mb") or 0.0)
-            except Exception:
+            except TOOL_RECOVERABLE_EXCEPTIONS:
                 pass
             try:
                 total_resolve_ms += float(row.get("resolve_wall_ms") or 0.0)
-            except Exception:
+            except TOOL_RECOVERABLE_EXCEPTIONS:
                 pass
             try:
                 total_tiles += int(row.get("resolve_tile_count") or 0)
-            except Exception:
+            except TOOL_RECOVERABLE_EXCEPTIONS:
                 pass
 
         report = {
@@ -860,7 +861,7 @@ def main():
         _log(f"Completed successfully. Report: {report_path}")
     except SystemExit:
         raise
-    except Exception as exc:
+    except TOOL_RECOVERABLE_EXCEPTIONS as exc:
         crash_report = {
             "tag": TAG,
             "error": str(exc),
@@ -874,14 +875,14 @@ def main():
             with open(report_path, "w", encoding="utf-8") as handle:
                 json.dump(crash_report, handle, indent=2)
             _log(f"Crash report written: {report_path}")
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             _log("Failed writing crash report.")
         raise
     finally:
         if connection is not None:
             try:
                 connection.close()
-            except Exception:
+            except TOOL_RECOVERABLE_EXCEPTIONS:
                 pass
 
 

@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+from tool_error_utils import TOOL_OPTIONAL_IMPORT_EXCEPTIONS, TOOL_RECOVERABLE_EXCEPTIONS
 
 import addon_utils
 import bpy
@@ -83,7 +84,7 @@ def _set_image_colorspace_safe(image, colorspace):
         prop = settings.bl_rna.properties.get("name")
         if prop and hasattr(prop, "enum_items"):
             available = {item.identifier for item in prop.enum_items}
-    except Exception:
+    except TOOL_RECOVERABLE_EXCEPTIONS:
         available = set()
 
     for candidate in candidates:
@@ -92,7 +93,7 @@ def _set_image_colorspace_safe(image, colorspace):
         try:
             settings.name = candidate
             return
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             continue
 
 

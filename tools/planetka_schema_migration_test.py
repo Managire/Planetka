@@ -12,6 +12,7 @@ import importlib
 import os
 import sys
 import traceback
+from tool_error_utils import TOOL_OPTIONAL_IMPORT_EXCEPTIONS, TOOL_RECOVERABLE_EXCEPTIONS
 
 import addon_utils
 import bpy
@@ -64,7 +65,7 @@ def _enable_module():
             if hasattr(bpy.types.Scene, "planetka"):
                 _log(f"Enabled addon module: {mod}")
                 return mod
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             continue
 
     addon_root = _addon_root()
@@ -77,13 +78,13 @@ def _enable_module():
         if hasattr(module, "register"):
             try:
                 module.unregister()
-            except Exception:
+            except TOOL_RECOVERABLE_EXCEPTIONS:
                 pass
             module.register()
         if hasattr(bpy.types.Scene, "planetka"):
             _log(f"Enabled addon module via local import: {package_name}")
             return package_name
-    except Exception:
+    except TOOL_RECOVERABLE_EXCEPTIONS:
         pass
     return None
 
@@ -100,7 +101,7 @@ def _import_submodule(base_module_name, submodule_name):
     for mod in candidates:
         try:
             return importlib.import_module(mod)
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             continue
     _fail(f"Could not import submodule '{submodule_name}'. Tried: {', '.join(candidates)}")
 
@@ -169,7 +170,7 @@ def main():
         _log("PASS: schema migration checks passed.")
     except SystemExit:
         raise
-    except Exception as exc:
+    except TOOL_RECOVERABLE_EXCEPTIONS as exc:
         _log(f"FAIL: unexpected exception: {exc}")
         traceback.print_exc()
         raise SystemExit(1)

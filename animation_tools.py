@@ -10,7 +10,7 @@ from bpy.props import EnumProperty, IntProperty
 from mathutils import Quaternion, Vector
 
 from .auth import get_account_tier
-from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
+from .error_utils import PLANETKA_IMPORT_RECOVERABLE_EXCEPTIONS, PLANETKA_RECOVERABLE_EXCEPTIONS
 from .extension_prefs import get_earth_object, get_prefs
 from .operator_utils import ErrorCode, fail, require_planetka_props, require_scene
 from .r2_source import (
@@ -1118,7 +1118,7 @@ def _camera_fcurve_collection(camera):
         if channelbag_fcurves is None:
             raise RuntimeError("Action channelbag does not expose fcurves.")
         return channelbag_fcurves
-    except (ImportError, PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError) as exc:
+    except PLANETKA_IMPORT_RECOVERABLE_EXCEPTIONS as exc:
         raise RuntimeError(f"Unable to access action channelbag fcurves: {exc}") from exc
 
 

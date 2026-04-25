@@ -13,6 +13,7 @@ from collections import defaultdict
 from multiprocessing import Pool
 from pathlib import Path
 from typing import Iterable
+from tool_error_utils import TOOL_OPTIONAL_IMPORT_EXCEPTIONS, TOOL_RECOVERABLE_EXCEPTIONS
 
 os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
 
@@ -23,7 +24,7 @@ import OpenImageIO as oiio
 
 try:
     cv2.setLogLevel(0)
-except Exception:
+except TOOL_RECOVERABLE_EXCEPTIONS:
     pass
 
 
@@ -83,7 +84,7 @@ def _read_image(path: str) -> np.ndarray:
             array = array[:, :, :3]
         # OpenEXR returns RGB; convert to BGR for the rest of the pipeline.
         image = array[:, :, [2, 1, 0]]
-    except Exception:
+    except TOOL_RECOVERABLE_EXCEPTIONS:
         image = None
 
     if image is None:
@@ -134,7 +135,7 @@ def _resolve_r2_endpoint() -> str | None:
                     if account_id:
                         _R2_ENDPOINT_URL = f"https://{account_id}.r2.cloudflarestorage.com"
                         return _R2_ENDPOINT_URL
-    except Exception:
+    except TOOL_RECOVERABLE_EXCEPTIONS:
         return None
     return None
 
@@ -282,7 +283,7 @@ def _build_z_base(task: tuple[int, int, int]) -> tuple[bool, str]:
             return True, ""
 
         return False, f"Unsupported z build level: {z}"
-    except Exception as exc:  # noqa: BLE001
+    except TOOL_RECOVERABLE_EXCEPTIONS as exc:  # noqa: BLE001
         return False, f"{_tile_name(x, y, z, _encode_d_for_name(z))}: {exc}"
 
 
@@ -302,7 +303,7 @@ def _rebuild_d_variant(task: tuple[int, int, int, int]) -> tuple[bool, str]:
         out = _resize(image, dst_w, dst_h)
         _write_s2_exr(dst, out)
         return True, ""
-    except Exception as exc:  # noqa: BLE001
+    except TOOL_RECOVERABLE_EXCEPTIONS as exc:  # noqa: BLE001
         return False, f"{_tile_name(x, y, z, d_code)}: {exc}"
 
 
@@ -311,14 +312,14 @@ def _clamp_z001(task: str) -> tuple[bool, str]:
     try:
         try:
             image = _read_image(path)
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             recovered = _recover_z001_from_cloudflare(path)
             if not recovered:
                 raise
             image = _read_image(path)
         _write_s2_exr(path, image)
         return True, ""
-    except Exception as exc:  # noqa: BLE001
+    except TOOL_RECOVERABLE_EXCEPTIONS as exc:  # noqa: BLE001
         return False, f"{path}: {exc}"
 
 
@@ -370,13 +371,13 @@ def _recover_z001_from_cloudflare(path: str) -> bool:
         os.replace(tmp_path, path)
         tmp_path = ""
         return True
-    except Exception:
+    except TOOL_RECOVERABLE_EXCEPTIONS:
         return False
     finally:
         if tmp_path and os.path.isfile(tmp_path):
             try:
                 os.remove(tmp_path)
-            except Exception:
+            except TOOL_RECOVERABLE_EXCEPTIONS:
                 pass
 
 

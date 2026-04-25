@@ -26,6 +26,7 @@ import sqlite3
 import sys
 import time
 import traceback
+from tool_error_utils import TOOL_OPTIONAL_IMPORT_EXCEPTIONS, TOOL_RECOVERABLE_EXCEPTIONS
 
 import addon_utils
 import bpy
@@ -79,13 +80,13 @@ def _enable_module():
             if hasattr(module, "register"):
                 try:
                     module.unregister()
-                except Exception:
+                except TOOL_RECOVERABLE_EXCEPTIONS:
                     pass
                 module.register()
             if hasattr(bpy.ops, "planetka") and hasattr(bpy.ops.planetka, "add_earth"):
                 _log(f"Enabled addon module via forced local import: {package_name}")
                 return package_name
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             pass
 
     candidates = _unique(
@@ -102,7 +103,7 @@ def _enable_module():
             if hasattr(bpy.ops, "planetka") and hasattr(bpy.ops.planetka, "add_earth"):
                 _log(f"Enabled addon module: {mod}")
                 return mod
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             continue
 
     if parent_dir and parent_dir not in sys.path:
@@ -112,13 +113,13 @@ def _enable_module():
         if hasattr(module, "register"):
             try:
                 module.unregister()
-            except Exception:
+            except TOOL_RECOVERABLE_EXCEPTIONS:
                 pass
             module.register()
         if hasattr(bpy.ops, "planetka") and hasattr(bpy.ops.planetka, "add_earth"):
             _log(f"Enabled addon module via local import: {package_name}")
             return package_name
-    except Exception:
+    except TOOL_RECOVERABLE_EXCEPTIONS:
         pass
     return None
 
@@ -135,7 +136,7 @@ def _import_submodule(base_module_name, submodule_name):
     for mod in candidates:
         try:
             return importlib.import_module(mod)
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             continue
     _fail(f"Could not import submodule '{submodule_name}'. Tried: {', '.join(candidates)}")
 
@@ -193,7 +194,7 @@ def _sample_random_places(connection, count, rng):
         try:
             lat = float(item[3])
             lon = float(item[4])
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             continue
         if not name:
             continue
@@ -240,7 +241,7 @@ def _wait_for_camera_update(scene, props, state_module, previous_signature, time
     while time.monotonic() < deadline:
         try:
             bpy.context.view_layer.update()
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             pass
         sig = _camera_signature(camera)
         if previous_signature is None or sig != previous_signature:
@@ -259,7 +260,7 @@ def _apply_place_selection(props, geonames_module, state_module, place_record):
     for _ in range(16):
         try:
             bpy.context.view_layer.update()
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             pass
         selected_name = str(getattr(props, "nav_city_selected_name", "") or "").strip()
         if selected_name:
@@ -268,7 +269,7 @@ def _apply_place_selection(props, geonames_module, state_module, place_record):
             try:
                 forced_lon = float((place_record or {}).get("longitude", 0.0))
                 forced_lat = float((place_record or {}).get("latitude", 0.0))
-            except Exception:
+            except TOOL_RECOVERABLE_EXCEPTIONS:
                 return "", 0.0, 0.0, "place_selection_failed"
             return selected_name, forced_lon, forced_lat, None
         time.sleep(0.05)
@@ -279,7 +280,7 @@ def _apply_place_selection(props, geonames_module, state_module, place_record):
         props.nav_longitude_deg = float((place_record or {}).get("longitude", 0.0))
         props.nav_latitude_deg = float((place_record or {}).get("latitude", 0.0))
         state_module.update_navigation_shot(props, bpy.context)
-    except Exception:
+    except TOOL_RECOVERABLE_EXCEPTIONS:
         return "", 0.0, 0.0, "place_fallback_nav_failed"
     fallback_name = selected_name or place_display
     return str(fallback_name), float(props.nav_longitude_deg), float(props.nav_latitude_deg), "fallback_direct_coords"
@@ -301,7 +302,7 @@ def _configure_render(scene, render_engine):
     if mode == "CYCLES":
         try:
             scene.render.engine = "CYCLES"
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             scene.render.engine = "CYCLES"
         if "CYCLES" not in str(scene.render.engine):
             _fail(f"Failed to switch to Cycles, current engine={scene.render.engine}")
@@ -310,7 +311,7 @@ def _configure_render(scene, render_engine):
             scene.cycles.preview_samples = 8
             scene.cycles.use_adaptive_sampling = True
             scene.cycles.use_denoising = False
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             pass
         return "CYCLES"
 
@@ -319,7 +320,7 @@ def _configure_render(scene, render_engine):
         enum_items = scene.render.bl_rna.properties["engine"].enum_items.keys()
         if target not in enum_items:
             target = "BLENDER_EEVEE"
-    except Exception:
+    except TOOL_RECOVERABLE_EXCEPTIONS:
         target = "BLENDER_EEVEE"
     scene.render.engine = target
     if "EEVEE" not in str(scene.render.engine):
@@ -332,7 +333,7 @@ def _set_reasonable_clipping(scene):
     earth = None
     try:
         earth = bpy.data.objects.get("Planetka Earth Surface")
-    except Exception:
+    except TOOL_RECOVERABLE_EXCEPTIONS:
         earth = None
     if camera is None or getattr(camera, "type", None) != "CAMERA":
         return
@@ -343,13 +344,13 @@ def _set_reasonable_clipping(scene):
         try:
             cam_data.clip_start = min(float(getattr(cam_data, "clip_start", 0.1)), 0.01)
             cam_data.clip_end = max(float(getattr(cam_data, "clip_end", 1000.0)), 100000.0)
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             pass
         return
 
     try:
         distance = float((camera.matrix_world.translation - earth.matrix_world.translation).length)
-    except Exception:
+    except TOOL_RECOVERABLE_EXCEPTIONS:
         distance = 1000.0
     clip_start = max(1e-6, distance / 1_000_000.0)
     clip_end = max(distance * 10.0, clip_start * 100.0)
@@ -359,7 +360,7 @@ def _set_reasonable_clipping(scene):
     try:
         cam_data.clip_start = clip_start
         cam_data.clip_end = clip_end
-    except Exception:
+    except TOOL_RECOVERABLE_EXCEPTIONS:
         pass
 
 
@@ -403,7 +404,7 @@ def main():
         if auth_device_id:
             try:
                 prefs.auth_device_id = auth_device_id
-            except Exception:
+            except TOOL_RECOVERABLE_EXCEPTIONS:
                 _log("WARN: failed to set explicit auth device id")
         if not bool(auth_module.is_authenticated(prefs)):
             if not auth_api_key:
@@ -422,17 +423,17 @@ def main():
             _fail(f"Create Earth failed: {create_result}")
         try:
             props.texture_quality_mode = "FULL"
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             _log("WARN: failed forcing Full Quality mode")
 
         try:
             bpy.ops.planetka.set_background_black()
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             pass
 
         try:
             props.earth_radius_bu = float(max(1e-6, earth_radius))
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             _fail(f"Failed setting Earth Radius to {earth_radius}")
 
         resolved_engine = _configure_render(scene, render_engine)
@@ -499,7 +500,7 @@ def main():
                 sun_result = bpy.ops.planetka.sunlight_preset(preset="MID_MORNING")
                 if "FINISHED" not in sun_result:
                     warnings.append("sunlight_preset_failed")
-            except Exception:
+            except TOOL_RECOVERABLE_EXCEPTIONS:
                 warnings.append("sunlight_preset_exception")
 
             _set_reasonable_clipping(scene)
@@ -614,14 +615,14 @@ def main():
 
     except SystemExit:
         raise
-    except Exception as exc:
+    except TOOL_RECOVERABLE_EXCEPTIONS as exc:
         failures.append({"fatal": str(exc), "traceback": traceback.format_exc()})
         _log(f"FATAL: {exc}")
     finally:
         if conn is not None:
             try:
                 conn.close()
-            except Exception:
+            except TOOL_RECOVERABLE_EXCEPTIONS:
                 pass
 
         elapsed_sec = round(time.time() - started_at, 3)

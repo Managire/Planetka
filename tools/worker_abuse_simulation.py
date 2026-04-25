@@ -12,6 +12,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from tool_error_utils import TOOL_OPTIONAL_IMPORT_EXCEPTIONS, TOOL_RECOVERABLE_EXCEPTIONS
 
 
 def _get_json(url: str, headers: dict[str, str] | None = None, timeout: float = 20.0) -> tuple[int, dict, dict]:
@@ -25,7 +26,7 @@ def _get_json(url: str, headers: dict[str, str] | None = None, timeout: float = 
         raw = exc.read().decode("utf-8", errors="replace")
         try:
             payload = json.loads(raw) if raw.strip() else {}
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             payload = {}
         return int(exc.code), payload if isinstance(payload, dict) else {}, dict(exc.headers.items() if exc.headers else {})
 
@@ -49,7 +50,7 @@ def _post_json(url: str, payload: dict, headers: dict[str, str] | None = None, t
         raw = exc.read().decode("utf-8", errors="replace")
         try:
             body = json.loads(raw) if raw.strip() else {}
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             body = {}
         return int(exc.code), body if isinstance(body, dict) else {}, dict(exc.headers.items() if exc.headers else {})
 

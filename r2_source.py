@@ -21,9 +21,14 @@ from collections import OrderedDict
 
 from .auth import AuthApiError, get_authorized_headers, get_api_base_url, refresh_auth_session, sync_account_profile
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
-from .unsupported import (
-    get_unsupported_texture_source_mode,
-)
+
+try:
+    from .unsupported import (
+        get_unsupported_texture_source_mode,
+    )
+except (ImportError, ModuleNotFoundError):
+    def get_unsupported_texture_source_mode() -> str:
+        return "CLOUD"
 
 logger = logging.getLogger(__name__)
 

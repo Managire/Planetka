@@ -9,6 +9,7 @@ import os
 import time
 import urllib.error
 import urllib.request
+from tool_error_utils import TOOL_OPTIONAL_IMPORT_EXCEPTIONS, TOOL_RECOVERABLE_EXCEPTIONS
 
 
 def _get_json(url: str, timeout: float = 20.0) -> tuple[int, dict, dict]:
@@ -22,7 +23,7 @@ def _get_json(url: str, timeout: float = 20.0) -> tuple[int, dict, dict]:
         body = exc.read().decode("utf-8", errors="replace")
         try:
             parsed = json.loads(body) if body.strip() else {}
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             parsed = {}
         return int(exc.code), parsed if isinstance(parsed, dict) else {}, dict(exc.headers.items() if exc.headers else {})
 
@@ -43,7 +44,7 @@ def _post_json(url: str, payload: dict, timeout: float = 20.0) -> tuple[int, dic
         body = exc.read().decode("utf-8", errors="replace")
         try:
             parsed = json.loads(body) if body.strip() else {}
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             parsed = {}
         return int(exc.code), parsed if isinstance(parsed, dict) else {}, dict(exc.headers.items() if exc.headers else {})
 

@@ -30,13 +30,35 @@ from .state import (
     update_sunlight_controls,
     update_sunlight_strength,
 )
-from .clouds_local import (
-    _local_cloud_texture_items,
-    update_enable_local_clouds,
-    update_view_cloud_subdivision,
-)
-from .clouds_global import update_enable_global_clouds
-from .clouds_vdb import update_enable_vdb_clouds
+try:
+    from .clouds_local import (
+        _local_cloud_texture_items,
+        update_enable_local_clouds,
+        update_view_cloud_subdivision,
+    )
+    from .clouds_global import update_enable_global_clouds
+    from .clouds_vdb import update_enable_vdb_clouds
+except (ImportError, ModuleNotFoundError):
+    def _local_cloud_texture_items(_self=None, _context=None):
+        return (
+            ("UNAVAILABLE", "Unavailable", "Cloud runtime is not included in this build"),
+        )
+
+
+    def update_enable_local_clouds(_self=None, _context=None):
+        return None
+
+
+    def update_view_cloud_subdivision(_self=None, _context=None):
+        return None
+
+
+    def update_enable_global_clouds(_self=None, _context=None):
+        return None
+
+
+    def update_enable_vdb_clouds(_self=None, _context=None):
+        return None
 
 NAV_DEFAULT_ALTITUDE_KM = 400.0
 NAV_DEFAULT_AZIMUTH_DEG = 0.0

@@ -20,7 +20,7 @@ import bpy
 from bpy.app.handlers import persistent
 from mathutils import Vector
 
-from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
+from .error_utils import PLANETKA_IMPORT_RECOVERABLE_EXCEPTIONS, PLANETKA_RECOVERABLE_EXCEPTIONS
 from .extension_prefs import get_earth_object, get_prefs
 from .diagnostics import write_realtime_view_diagnostics
 from .scene_schema import migrate_scene_schema
@@ -1060,7 +1060,7 @@ def purge_disabled_atmosphere_and_cloud_assets(scene=None):
                 text = str(value or "").strip()
                 if text:
                     collection_names.add(text)
-    except (ImportError, PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_IMPORT_RECOVERABLE_EXCEPTIONS:
         pass
 
     try:
@@ -1080,7 +1080,7 @@ def purge_disabled_atmosphere_and_cloud_assets(scene=None):
                 collection_names.add(text)
             else:
                 object_names.add(text)
-    except (ImportError, PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_IMPORT_RECOVERABLE_EXCEPTIONS:
         pass
 
     removed_objects = 0
@@ -2062,7 +2062,7 @@ def _enforce_texture_quality_mode_for_account(scene, requested_mode):
         from .auth import get_account_tier
         prefs = get_prefs()
         tier = str(get_account_tier(prefs) or "").strip().lower()
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError, ImportError):
+    except PLANETKA_IMPORT_RECOVERABLE_EXCEPTIONS:
         tier = ""
 
     if mode == "BALANCED":
@@ -4489,7 +4489,7 @@ def _planetka_load_post(_dummy):
 
         prefs = get_prefs()
         connected = bool(is_authenticated(prefs))
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError, ImportError):
+    except PLANETKA_IMPORT_RECOVERABLE_EXCEPTIONS:
         connected = False
 
     for scene in _iter_scenes():

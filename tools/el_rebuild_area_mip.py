@@ -9,6 +9,7 @@ from collections import defaultdict
 from multiprocessing import Pool
 from pathlib import Path
 from typing import Iterable
+from tool_error_utils import TOOL_OPTIONAL_IMPORT_EXCEPTIONS, TOOL_RECOVERABLE_EXCEPTIONS
 
 os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
 
@@ -19,7 +20,7 @@ import OpenImageIO as oiio
 
 try:
     cv2.setLogLevel(0)
-except Exception:
+except TOOL_RECOVERABLE_EXCEPTIONS:
     pass
 
 
@@ -57,7 +58,7 @@ def _buf_has_error(buf) -> bool:
     if callable(flag):
         try:
             return bool(flag())
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             return False
     return bool(flag)
 
@@ -86,7 +87,7 @@ def _read_image(path: str) -> np.ndarray:
             image = image[:, :, 0]
         if image.ndim != 2:
             raise RuntimeError(f"Unexpected EL shape for image {path}: {image.shape}")
-    except Exception:
+    except TOOL_RECOVERABLE_EXCEPTIONS:
         image = None
 
     if image is None:
@@ -202,10 +203,10 @@ def _build_z_base(task: tuple[int, int, int]) -> tuple[bool, str]:
             try:
                 _read_image(dst)
                 return True, ""
-            except Exception:
+            except TOOL_RECOVERABLE_EXCEPTIONS:
                 try:
                     os.unlink(dst)
-                except Exception:
+                except TOOL_RECOVERABLE_EXCEPTIONS:
                     pass
 
         if z in Z_2X2:
@@ -266,7 +267,7 @@ def _build_z_base(task: tuple[int, int, int]) -> tuple[bool, str]:
             return True, ""
 
         return False, f"Unsupported z build level: {z}"
-    except Exception as exc:  # noqa: BLE001
+    except TOOL_RECOVERABLE_EXCEPTIONS as exc:  # noqa: BLE001
         return False, f"{_tile_name(x, y, z, _encode_d_for_name(z))}: {exc}"
 
 
@@ -289,10 +290,10 @@ def _rebuild_d_variant(task: tuple[int, int, int, int]) -> tuple[bool, str]:
         try:
             _read_image(dst)
             return True, ""
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             try:
                 os.unlink(dst)
-            except Exception:
+            except TOOL_RECOVERABLE_EXCEPTIONS:
                 pass
 
     last_err = ""
@@ -309,7 +310,7 @@ def _rebuild_d_variant(task: tuple[int, int, int, int]) -> tuple[bool, str]:
             out = _resize(image, dst_w, dst_h)
             _write_exr(dst, out)
             return True, ""
-        except Exception as exc:  # noqa: BLE001
+        except TOOL_RECOVERABLE_EXCEPTIONS as exc:  # noqa: BLE001
             last_err = str(exc)
             if attempt >= int(MAX_TASK_RETRIES):
                 break
@@ -411,7 +412,7 @@ def _collect_manifest(
             if cutoff_mtime is not None:
                 try:
                     mtime = float(entry.stat(follow_symlinks=False).st_mtime)
-                except Exception:
+                except TOOL_RECOVERABLE_EXCEPTIONS:
                     mtime = 0.0
                 if mtime >= cutoff_mtime:
                     continue

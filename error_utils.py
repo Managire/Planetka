@@ -9,6 +9,8 @@ PLANETKA_RECOVERABLE_EXCEPTIONS = (
     ReferenceError,
 )
 
+PLANETKA_IMPORT_RECOVERABLE_EXCEPTIONS = (ImportError,) + PLANETKA_RECOVERABLE_EXCEPTIONS
+
 
 def with_error_code(code, message):
     if code:

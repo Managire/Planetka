@@ -6,6 +6,7 @@ from __future__ import annotations
 import re
 import sys
 from pathlib import Path
+from tool_error_utils import TOOL_OPTIONAL_IMPORT_EXCEPTIONS, TOOL_RECOVERABLE_EXCEPTIONS
 
 try:
     import tomllib  # Python 3.11+
@@ -67,7 +68,7 @@ def main() -> int:
     # 1) Manifest version semantic format
     try:
         manifest_version = parse_manifest_version(manifest_path)
-    except Exception as exc:  # noqa: BLE001 - release gate hard-fail
+    except TOOL_RECOVERABLE_EXCEPTIONS as exc:  # noqa: BLE001 - release gate hard-fail
         errors.append(f"Manifest read failed: {exc}")
         manifest_version = ""
 
@@ -172,7 +173,7 @@ def main() -> int:
                         "wrangler.toml enables legacy magic-link auth "
                         "(ENABLE_MAGIC_LINK_AUTH=true)."
                     )
-        except Exception as exc:  # noqa: BLE001 - release gate hard-fail
+        except TOOL_RECOVERABLE_EXCEPTIONS as exc:  # noqa: BLE001 - release gate hard-fail
             errors.append(f"wrangler.toml parse failed: {exc}")
 
     # 9) Required fallback assets must exist; deprecated red fallback must be absent

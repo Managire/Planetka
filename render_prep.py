@@ -22,7 +22,7 @@ from bpy.props import BoolProperty, EnumProperty, StringProperty
 from .auth import allows_balanced_full_quality_for_context, is_authenticated
 from .asset_builder import ensure_earth_surface_parent, sync_surface_elevation_scale_for_radius
 from .diagnostics import write_resolve_diagnostics, write_tile_view_diagnostics
-from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS, with_error_code
+from .error_utils import PLANETKA_IMPORT_RECOVERABLE_EXCEPTIONS, PLANETKA_RECOVERABLE_EXCEPTIONS, with_error_code
 from .extension_prefs import get_earth_object, get_earth_surface_candidates, get_prefs
 from .operator_utils import ErrorCode, fail, require_planetka_props, require_scene
 from .r2_source import (
@@ -813,7 +813,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 set_radius_fn = getattr(operators_module, "_set_planetka_earth_radius_bu", None)
                 if callable(set_radius_fn):
                     set_radius_fn(scene, desired_radius)
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+            except PLANETKA_IMPORT_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka: failed applying deferred Earth Radius during resolve", exc_info=True)
         try:
             earth_radius_bu = _earth_radius_blender_units(earth_surface)

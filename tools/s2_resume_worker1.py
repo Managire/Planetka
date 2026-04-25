@@ -5,6 +5,7 @@ import json
 import os
 import time
 from pathlib import Path
+from tool_error_utils import TOOL_OPTIONAL_IMPORT_EXCEPTIONS, TOOL_RECOVERABLE_EXCEPTIONS
 
 SCRIPT_PATH = Path(__file__).resolve()
 PROJECT_ROOT = SCRIPT_PATH.parent.parent
@@ -31,7 +32,7 @@ def load_state() -> dict | None:
         return None
     try:
         return json.loads(STATE_PATH.read_text(encoding='utf-8'))
-    except Exception:
+    except TOOL_RECOVERABLE_EXCEPTIONS:
         return None
 
 

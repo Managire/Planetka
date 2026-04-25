@@ -9,6 +9,7 @@ from collections import defaultdict
 from multiprocessing import Pool
 from pathlib import Path
 from typing import Iterable
+from tool_error_utils import TOOL_OPTIONAL_IMPORT_EXCEPTIONS, TOOL_RECOVERABLE_EXCEPTIONS
 
 os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
 
@@ -19,7 +20,7 @@ import OpenImageIO as oiio
 
 try:
     cv2.setLogLevel(0)
-except Exception:
+except TOOL_RECOVERABLE_EXCEPTIONS:
     pass
 
 
@@ -87,7 +88,7 @@ def _read_image(path: str) -> np.ndarray:
         if array.shape[2] > 3:
             array = array[:, :, :3]
         image = array[:, :, [2, 1, 0]]
-    except Exception:
+    except TOOL_RECOVERABLE_EXCEPTIONS:
         image = None
 
     if image is None:
@@ -273,7 +274,7 @@ def _fix_z001(task: tuple[str, str]) -> tuple[bool, str]:
         os.makedirs(os.path.dirname(dst_path), exist_ok=True)
         _write_wt_exr(dst_path, out)
         return True, ""
-    except Exception as exc:  # noqa: BLE001
+    except TOOL_RECOVERABLE_EXCEPTIONS as exc:  # noqa: BLE001
         return False, f"{src_path}: {exc}"
 
 
@@ -341,7 +342,7 @@ def _build_z_base(task: tuple[int, int, int]) -> tuple[bool, str]:
             return True, ""
 
         return False, f"Unsupported z build level: {z}"
-    except Exception as exc:  # noqa: BLE001
+    except TOOL_RECOVERABLE_EXCEPTIONS as exc:  # noqa: BLE001
         return False, f"{_tile_name(x, y, z, _encode_d_for_name(z))}: {exc}"
 
 
@@ -384,11 +385,11 @@ def _rebuild_d_variant(task: tuple[int, int, int, int]) -> tuple[bool, str]:
         try:
             _read_image(dst)
             return True, ""
-        except Exception:
+        except TOOL_RECOVERABLE_EXCEPTIONS:
             # Corrupted/partial file: force rebuild.
             try:
                 os.unlink(dst)
-            except Exception:
+            except TOOL_RECOVERABLE_EXCEPTIONS:
                 pass
 
     last_err = ""
@@ -405,7 +406,7 @@ def _rebuild_d_variant(task: tuple[int, int, int, int]) -> tuple[bool, str]:
             out = _resize(image, dst_w, dst_h, force_linear=True)
             _write_wt_exr(dst, out)
             return True, ""
-        except Exception as exc:  # noqa: BLE001
+        except TOOL_RECOVERABLE_EXCEPTIONS as exc:  # noqa: BLE001
             last_err = str(exc)
             if attempt >= int(MAX_TASK_RETRIES):
                 break
