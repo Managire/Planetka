@@ -62,6 +62,11 @@ from .planetka_runtime.view_telemetry_context import (
     ViewTelemetryDeps,
     ViewTelemetryState,
 )
+from .planetka_runtime.navigation_runtime_context import (
+    NavigationRuntimeContext,
+    NavigationRuntimeDeps,
+    NavigationRuntimeState,
+)
 from .planetka_runtime import handler_runtime as _handler_runtime
 
 
@@ -582,59 +587,42 @@ def is_navigation_or_camera_sync_suspended():
 
 def mark_navigation_camera_control_signature(scene=None):
     return _navigation_runtime.mark_navigation_camera_control_signature(
-        globals(),
+        _NAVIGATION_RUNTIME_CTX,
         scene,
-        bpy=bpy,
-        scene_key=_scene_key,
-        camera_control_sync_signature=_camera_control_sync_signature,
     )
 
 
 def _get_planetka_sunlight_object():
-    return _navigation_runtime.get_planetka_sunlight_object(globals(), bpy=bpy)
+    return _navigation_runtime.get_planetka_sunlight_object(_NAVIGATION_RUNTIME_CTX)
 
 
 def _apply_sunlight_from_props(scene):
     return _navigation_runtime.apply_sunlight_from_props(
-        globals(),
+        _NAVIGATION_RUNTIME_CTX,
         scene,
-        bpy=bpy,
-        recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
-        logger=logger,
     )
 
 
 def _apply_sunlight_strength_from_props(scene):
     return _navigation_runtime.apply_sunlight_strength_from_props(
-        globals(),
+        _NAVIGATION_RUNTIME_CTX,
         scene,
-        bpy=bpy,
-        recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
-        logger=logger,
     )
 
 
 def update_sunlight_controls(self, context):
     return _navigation_runtime.update_sunlight_controls(
-        globals(),
+        _NAVIGATION_RUNTIME_CTX,
         self,
         context,
-        sync_idprops_from_props=_sync_idprops_from_props,
-        suspend_adaptive_viewport_during_navigation=_suspend_adaptive_viewport_during_navigation,
-        request_auto_resolve=request_auto_resolve,
-        apply_sunlight_from_props=_apply_sunlight_from_props,
-        apply_sunlight_strength_from_props=_apply_sunlight_strength_from_props,
     )
 
 
 def update_sunlight_strength(self, context):
     return _navigation_runtime.update_sunlight_strength(
-        globals(),
+        _NAVIGATION_RUNTIME_CTX,
         self,
         context,
-        sync_idprops_from_props=_sync_idprops_from_props,
-        suspend_adaptive_viewport_during_navigation=_suspend_adaptive_viewport_during_navigation,
-        apply_sunlight_strength_from_props=_apply_sunlight_strength_from_props,
     )
 
 
@@ -1143,6 +1131,27 @@ def _build_view_telemetry_context():
     )
 
 
+def _build_navigation_runtime_context():
+    deps = NavigationRuntimeDeps(
+        bpy=bpy,
+        logger=logger,
+        recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
+        scene_key=_scene_key,
+        camera_control_sync_signature=_camera_control_sync_signature,
+        sunlight_object_name=_SUNLIGHT_OBJECT_NAME,
+        sync_idprops_from_props=_sync_idprops_from_props,
+        suspend_adaptive_viewport_during_navigation=_suspend_adaptive_viewport_during_navigation,
+        request_auto_resolve=request_auto_resolve,
+    )
+    state = NavigationRuntimeState(
+        nav_camera_control_last_signature=_NAV_CAMERA_CONTROL_LAST_SIGNATURE,
+    )
+    return NavigationRuntimeContext(
+        deps=deps,
+        state=state,
+    )
+
+
 def recover_post_render_state(scene=None, cancelled=False):
     _handler_runtime.configure(globals())
     return _handler_runtime.recover_post_render_state(scene=scene, cancelled=cancelled)
@@ -1339,10 +1348,12 @@ def _build_auto_resolve_contexts():
 
 
 _VIEW_TELEMETRY_CTX = _build_view_telemetry_context()
+_NAVIGATION_RUNTIME_CTX = _build_navigation_runtime_context()
 
 # state.py remains the owner of the singleton view-telemetry context; the
 # runtime module receives it explicitly instead of pulling facade globals.
 _view_telemetry._VIEW_TELEMETRY_CTX = _VIEW_TELEMETRY_CTX
+_navigation_runtime._NAVIGATION_RUNTIME_CTX = _NAVIGATION_RUNTIME_CTX
 
 
 (

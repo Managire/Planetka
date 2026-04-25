@@ -3,6 +3,25 @@ import time
 
 from mathutils import Vector
 
+_NAVIGATION_RUNTIME_CTX = None
+
+
+def _require_ctx():
+    ctx = _NAVIGATION_RUNTIME_CTX
+    if ctx is None:
+        raise RuntimeError("Planetka navigation runtime context is not configured.")
+    return ctx
+
+
+def _is_context(value):
+    return hasattr(value, "deps") and hasattr(value, "state")
+
+
+def _coerce_ctx(value=None):
+    if _is_context(value):
+        return value
+    return _require_ctx()
+
 
 def navigation_shot_update_timer(runtime, *, bpy, get_earth_object, apply_navigation_shot_now):
     runtime["_NAVIGATION_SHOT_UPDATE_PENDING"] = False
@@ -243,23 +262,36 @@ def is_navigation_or_camera_sync_suspended(runtime):
     )
 
 
-def mark_navigation_camera_control_signature(runtime, scene=None, *, bpy, scene_key, camera_control_sync_signature):
+def mark_navigation_camera_control_signature(runtime=None, scene=None, *, bpy=None, scene_key=None, camera_control_sync_signature=None):
+    ctx = _coerce_ctx(runtime)
+    deps = ctx.deps
+    state = ctx.state
+    bpy_module = bpy if bpy is not None else deps.bpy
+    scene_key_fn = scene_key if callable(scene_key) else deps.scene_key
+    signature_fn = (
+        camera_control_sync_signature
+        if callable(camera_control_sync_signature)
+        else deps.camera_control_sync_signature
+    )
     target_scene = scene
     if target_scene is None:
-        target_scene = getattr(getattr(bpy, "context", None), "scene", None)
+        target_scene = getattr(getattr(bpy_module, "context", None), "scene", None)
     if target_scene is None:
         return
-    current_scene_id = scene_key(target_scene)
-    signature = camera_control_sync_signature(target_scene)
-    last_map = runtime["_NAV_CAMERA_CONTROL_LAST_SIGNATURE"]
+    current_scene_id = scene_key_fn(target_scene)
+    signature = signature_fn(target_scene)
+    last_map = state.nav_camera_control_last_signature
     if signature is None:
         last_map.pop(current_scene_id, None)
         return
     last_map[current_scene_id] = signature
 
 
-def get_planetka_sunlight_object(runtime, *, bpy):
-    sunlight = bpy.data.objects.get(runtime["_SUNLIGHT_OBJECT_NAME"])
+def get_planetka_sunlight_object(runtime=None, *, bpy=None):
+    ctx = _coerce_ctx(runtime)
+    deps = ctx.deps
+    bpy_module = bpy if bpy is not None else deps.bpy
+    sunlight = bpy_module.data.objects.get(deps.sunlight_object_name)
     if sunlight is None:
         return None
     if str(getattr(sunlight, "type", "")) != "LIGHT":
@@ -270,13 +302,18 @@ def get_planetka_sunlight_object(runtime, *, bpy):
     return sunlight
 
 
-def apply_sunlight_from_props(runtime, scene, *, bpy, recoverable_exceptions, logger):
+def apply_sunlight_from_props(runtime=None, scene=None, *, bpy=None, recoverable_exceptions=None, logger=None):
+    ctx = _coerce_ctx(runtime)
+    deps = ctx.deps
+    bpy_module = bpy if bpy is not None else deps.bpy
+    recoverable = recoverable_exceptions if recoverable_exceptions is not None else deps.recoverable_exceptions
+    runtime_logger = logger if logger is not None else deps.logger
     if scene is None:
         return
     props = getattr(scene, "planetka", None)
     if props is None:
         return
-    sunlight = get_planetka_sunlight_object(runtime, bpy=bpy)
+    sunlight = get_planetka_sunlight_object(ctx, bpy=bpy_module)
     if sunlight is None:
         return
 
@@ -306,19 +343,24 @@ def apply_sunlight_from_props(runtime, scene, *, bpy, recoverable_exceptions, lo
         quat = direction.to_track_quat('Z', 'Y')
         sunlight.rotation_mode = 'XYZ'
         sunlight.rotation_euler = quat.to_euler('XYZ')
-    except recoverable_exceptions:
-        logger.debug("Planetka: failed applying sunlight transform", exc_info=True)
+    except recoverable:
+        runtime_logger.debug("Planetka: failed applying sunlight transform", exc_info=True)
     except (RuntimeError, TypeError, ValueError):
-        logger.debug("Planetka: failed applying sunlight transform", exc_info=True)
+        runtime_logger.debug("Planetka: failed applying sunlight transform", exc_info=True)
 
 
-def apply_sunlight_strength_from_props(runtime, scene, *, bpy, recoverable_exceptions, logger):
+def apply_sunlight_strength_from_props(runtime=None, scene=None, *, bpy=None, recoverable_exceptions=None, logger=None):
+    ctx = _coerce_ctx(runtime)
+    deps = ctx.deps
+    bpy_module = bpy if bpy is not None else deps.bpy
+    recoverable = recoverable_exceptions if recoverable_exceptions is not None else deps.recoverable_exceptions
+    runtime_logger = logger if logger is not None else deps.logger
     if scene is None:
         return
     props = getattr(scene, "planetka", None)
     if props is None:
         return
-    sunlight = get_planetka_sunlight_object(runtime, bpy=bpy)
+    sunlight = get_planetka_sunlight_object(ctx, bpy=bpy_module)
     if sunlight is None:
         return
 
@@ -333,10 +375,10 @@ def apply_sunlight_strength_from_props(runtime, scene, *, bpy, recoverable_excep
 
     try:
         light_data.energy = strength
-    except recoverable_exceptions:
-        logger.debug("Planetka: failed applying sunlight strength", exc_info=True)
+    except recoverable:
+        runtime_logger.debug("Planetka: failed applying sunlight strength", exc_info=True)
     except (RuntimeError, TypeError, ValueError):
-        logger.debug("Planetka: failed applying sunlight strength", exc_info=True)
+        runtime_logger.debug("Planetka: failed applying sunlight strength", exc_info=True)
 
 
 def update_sunlight_controls(
@@ -344,19 +386,29 @@ def update_sunlight_controls(
     self,
     context,
     *,
-    sync_idprops_from_props,
-    suspend_adaptive_viewport_during_navigation,
-    request_auto_resolve,
-    apply_sunlight_from_props,
-    apply_sunlight_strength_from_props,
+    sync_idprops_from_props=None,
+    suspend_adaptive_viewport_during_navigation=None,
+    request_auto_resolve=None,
+    apply_sunlight_from_props_fn=None,
+    apply_sunlight_strength_from_props_fn=None,
 ):
+    ctx = _coerce_ctx(runtime)
+    deps = ctx.deps
+    sync_idprops = sync_idprops_from_props or deps.sync_idprops_from_props
+    suspend_viewport = (
+        suspend_adaptive_viewport_during_navigation
+        or deps.suspend_adaptive_viewport_during_navigation
+    )
+    request_resolve = request_auto_resolve or deps.request_auto_resolve
+    apply_sunlight = apply_sunlight_from_props_fn or apply_sunlight_from_props
+    apply_strength = apply_sunlight_strength_from_props_fn or apply_sunlight_strength_from_props
     scene = getattr(context, "scene", None) if context else None
     if scene:
-        sync_idprops_from_props(scene, ("sunlight_longitude_deg", "sunlight_seasonal_tilt_deg"))
-        suspend_adaptive_viewport_during_navigation(scene)
-        request_auto_resolve(scene, immediate=False)
-    apply_sunlight_from_props(scene)
-    apply_sunlight_strength_from_props(scene)
+        sync_idprops(scene, ("sunlight_longitude_deg", "sunlight_seasonal_tilt_deg"))
+        suspend_viewport(scene)
+        request_resolve(scene, immediate=False)
+    apply_sunlight(ctx, scene)
+    apply_strength(ctx, scene)
 
 
 def update_sunlight_strength(
@@ -364,15 +416,23 @@ def update_sunlight_strength(
     self,
     context,
     *,
-    sync_idprops_from_props,
-    suspend_adaptive_viewport_during_navigation,
-    apply_sunlight_strength_from_props,
+    sync_idprops_from_props=None,
+    suspend_adaptive_viewport_during_navigation=None,
+    apply_sunlight_strength_from_props_fn=None,
 ):
+    ctx = _coerce_ctx(runtime)
+    deps = ctx.deps
+    sync_idprops = sync_idprops_from_props or deps.sync_idprops_from_props
+    suspend_viewport = (
+        suspend_adaptive_viewport_during_navigation
+        or deps.suspend_adaptive_viewport_during_navigation
+    )
+    apply_strength = apply_sunlight_strength_from_props_fn or apply_sunlight_strength_from_props
     scene = getattr(context, "scene", None) if context else None
     if scene:
-        sync_idprops_from_props(scene, ("sunlight_strength",))
-        suspend_adaptive_viewport_during_navigation(scene)
-    apply_sunlight_strength_from_props(scene)
+        sync_idprops(scene, ("sunlight_strength",))
+        suspend_viewport(scene)
+    apply_strength(ctx, scene)
 
 
 def update_navigation_shot(
