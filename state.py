@@ -505,6 +505,7 @@ def _apply_navigation_shot_now():
         bpy=bpy,
         recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
         logger=logger,
+        get_earth_object=get_earth_object,
     )
 
 

@@ -18,6 +18,7 @@ import time
 import traceback
 import os
 import sys
+from types import SimpleNamespace
 
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(_TOOLS_DIR)
@@ -269,6 +270,7 @@ def main():
         extension_prefs = _import_submodule(base_module_name, "extension_prefs")
         state = _import_submodule(base_module_name, "state")
         animation_tools = _import_submodule(base_module_name, "animation_tools")
+        navigation_runtime = _import_submodule(base_module_name, "planetka_runtime.navigation_runtime")
 
         _purge_existing_planetka_data()
 
@@ -407,6 +409,88 @@ def main():
         prefs.texture_base_path = s2_only_source
         result = bpy.ops.planetka.load_textures()
         _assert("FINISHED" in result, f"Resolve Earth failed for S2-only source: {result}")
+
+        _log("Scenario 7: silent navigation apply skips operator when Earth is missing")
+        scene.camera = _ensure_active_camera(scene)
+        operator_called = {"value": False}
+
+        def _unexpected_navigation_apply_shot(**_kwargs):
+            operator_called["value"] = True
+            return {"FINISHED"}
+
+        fake_bpy = SimpleNamespace(
+            context=SimpleNamespace(scene=scene),
+            ops=SimpleNamespace(
+                planetka=SimpleNamespace(
+                    navigation_apply_shot=_unexpected_navigation_apply_shot,
+                )
+            ),
+        )
+        runtime = {
+            "_NAVIGATION_SHOT_UPDATE_REENTRANT": False,
+            "_NAV_FORCE_CAMERA_ONCE_KEY": "planetka_nav_force_camera_once",
+            "_NAV_SYNC_ACTIVE_VIEW_ONCE_KEY": "planetka_nav_sync_active_view_once",
+        }
+        skipped = navigation_runtime.apply_navigation_shot_now(
+            runtime,
+            bpy=fake_bpy,
+            recoverable_exceptions=TOOL_RECOVERABLE_EXCEPTIONS,
+            logger=state.logger,
+            get_earth_object=lambda: None,
+        )
+        _assert(skipped is False, "Silent navigation apply should return False when Earth is missing.")
+        _assert(not operator_called["value"], "Silent navigation apply should not invoke the operator when Earth is missing.")
+
+        _log("Scenario 8: saved startup profile restores cleanly on Create Earth")
+        expected = {
+            "nav_altitude_km": 234.0,
+            "nav_azimuth_deg": 57.0,
+            "nav_tilt_deg": 39.0,
+            "sunlight_longitude_deg": 77.0,
+            "sunlight_strength": 17.0,
+            "sunlight_seasonal_tilt_deg": 12.0,
+            "earth_radius_bu": 3.5,
+            "texture_quality_mode": "BALANCED",
+            "auto_resolve": False,
+            "show_earth_preview": False,
+            "anim_camera_preset": "ZOOM",
+        }
+        props.nav_altitude_km = expected["nav_altitude_km"]
+        props.nav_azimuth_deg = expected["nav_azimuth_deg"]
+        props.nav_tilt_deg = expected["nav_tilt_deg"]
+        props.nav_roll_deg = 0.0
+        props.sunlight_longitude_deg = expected["sunlight_longitude_deg"]
+        props.sunlight_strength = expected["sunlight_strength"]
+        props.sunlight_seasonal_tilt_deg = expected["sunlight_seasonal_tilt_deg"]
+        props.earth_radius_bu = expected["earth_radius_bu"]
+        props.texture_quality_mode = expected["texture_quality_mode"]
+        props.auto_resolve = expected["auto_resolve"]
+        props.show_earth_preview = expected["show_earth_preview"]
+        props.anim_camera_preset = expected["anim_camera_preset"]
+        result = bpy.ops.planetka.save_startup_setup()
+        _assert("FINISHED" in result, f"Save Startup Setup failed with result: {result}")
+
+        _purge_existing_planetka_data()
+        _ensure_active_camera(scene)
+        props = getattr(scene, "planetka", None)
+        _assert(props is not None, "Planetka scene properties disappeared after purge.")
+        props.nav_altitude_km = 50.0
+        props.texture_quality_mode = "PREVIEW"
+        props.anim_camera_preset = "NONE"
+
+        result = bpy.ops.planetka.add_earth()
+        _assert("FINISHED" in result, f"Create Earth with saved startup setup failed with result: {result}")
+        _drain_queued_resolve(state, scene)
+        _assert_close(float(getattr(props, "nav_altitude_km", 0.0)), expected["nav_altitude_km"], 1e-4, "Restored startup altitude")
+        _assert_close(float(getattr(props, "nav_azimuth_deg", 0.0)), expected["nav_azimuth_deg"], 1e-4, "Restored startup azimuth")
+        _assert_close(float(getattr(props, "nav_tilt_deg", 0.0)), expected["nav_tilt_deg"], 1e-4, "Restored startup tilt")
+        _assert_close(float(getattr(props, "sunlight_longitude_deg", 0.0)), expected["sunlight_longitude_deg"], 1e-4, "Restored startup sunlight longitude")
+        _assert_close(float(getattr(props, "sunlight_strength", 0.0)), expected["sunlight_strength"], 1e-4, "Restored startup sunlight strength")
+        _assert_close(float(getattr(props, "earth_radius_bu", 0.0)), expected["earth_radius_bu"], 1e-4, "Restored startup Earth radius")
+        _assert(str(getattr(props, "texture_quality_mode", "")) == "PREVIEW", "Create Earth should still force Preview texture quality after startup restore.")
+        _assert(str(getattr(props, "anim_camera_preset", "")) == "NONE", "Create Earth should still force animation preset back to NONE.")
+        result = bpy.ops.planetka.reset_startup_setup_factory()
+        _assert("FINISHED" in result, f"Reset Startup Setup failed with result: {result}")
 
         _log("PASS: regression checks passed.")
     except SystemExit:

@@ -28,7 +28,7 @@ def navigation_shot_update_timer(runtime, *, bpy, get_earth_object, apply_naviga
     return None
 
 
-def apply_navigation_shot_now(runtime, *, bpy, recoverable_exceptions, logger):
+def apply_navigation_shot_now(runtime, *, bpy, recoverable_exceptions, logger, get_earth_object):
     if runtime.get("_NAVIGATION_SHOT_UPDATE_REENTRANT"):
         return False
     runtime["_NAVIGATION_SHOT_UPDATE_REENTRANT"] = True
@@ -37,6 +37,10 @@ def apply_navigation_shot_now(runtime, *, bpy, recoverable_exceptions, logger):
         sync_active_view_when_not_camera = False
         context = getattr(bpy, "context", None)
         scene = getattr(context, "scene", None) if context else None
+        camera = getattr(scene, "camera", None) if scene is not None else None
+        earth = get_earth_object() if callable(get_earth_object) else None
+        if scene is None or earth is None or camera is None or getattr(camera, "type", None) != 'CAMERA':
+            return False
         if scene is not None:
             try:
                 if runtime["_NAV_FORCE_CAMERA_ONCE_KEY"] in scene:
