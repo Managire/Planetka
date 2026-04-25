@@ -1,4 +1,18 @@
 import { buildAdminAnalyticsPageHtml } from "./admin_analytics_page.js";
+import {
+  corsHeaders,
+  html,
+  json,
+  jsonWithHeaders,
+  publicErrorCode,
+  publicErrorMessage,
+} from "./worker/responses.js";
+import {
+  isBetaUnrestrictedAccessEnabled,
+  parseBooleanFlag,
+  parseNonNegativeInteger,
+  parsePositiveNumber,
+} from "./worker/env.js";
 const encoder = new TextEncoder();
 const ADDON_ID = "planetka";
 const BYTES_PER_GB = 1024 * 1024 * 1024;
@@ -8,7 +22,6 @@ const PLAN_CODE_PLANETKA_PRO = "pro";
 // Legacy aliases kept for backward compatibility in persisted data/webhook payloads.
 const PLAN_CODE_PLANETKA_INDIE = PLAN_CODE_PLANETKA;
 const PLAN_CODE_PLANETKA_STUDIO = PLAN_CODE_PLANETKA_PRO;
-const DEFAULT_BETA_ACCESS_MODE = "restricted";
 const DEFAULT_HOSTED_ACCESS_DURATION_DAYS = 365;
 const DEFAULT_UPGRADE_URL = "https://www.planetka.io/blender/pricing";
 const DEFAULT_CONTACT_URL = "https://www.planetka.io/contact-me";
@@ -137,59 +150,6 @@ let cloudflareR2BillableUsageCache = {
 let authContextCache = new Map();
 let tileSessionThrottleGateCache = new Map();
 
-function corsHeaders(env) {
-  return {
-    "Access-Control-Allow-Origin": env.APP_ORIGIN || "*",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Planetka-Device-Id, X-Planetka-Addon-Version, X-Planetka-Resolve-Id, X-Planetka-Quality-Mode, X-Planetka-Tile-Token",
-  };
-}
-
-function json(data, status = 200, env = {}) {
-  return new Response(JSON.stringify(data, null, 2), {
-    status,
-    headers: {
-      "Content-Type": "application/json; charset=utf-8",
-      ...corsHeaders(env),
-    },
-  });
-}
-
-function html(markup, status = 200, env = {}) {
-  return new Response(markup, {
-    status,
-    headers: {
-      "Content-Type": "text/html; charset=utf-8",
-      "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-      Pragma: "no-cache",
-      ...corsHeaders(env),
-    },
-  });
-}
-
-function jsonWithHeaders(data, status = 200, env = {}, extraHeaders = {}) {
-  return new Response(JSON.stringify(data, null, 2), {
-    status,
-    headers: {
-      "Content-Type": "application/json; charset=utf-8",
-      ...corsHeaders(env),
-      ...extraHeaders,
-    },
-  });
-}
-
-function publicErrorCode(error, fallbackCode, allowedCodes = null) {
-  const code = String(error && error.message || fallbackCode).trim() || String(fallbackCode || "").trim() || "internal_error";
-  if (allowedCodes instanceof Set && allowedCodes.size > 0) {
-    return allowedCodes.has(code) ? code : String(fallbackCode || "internal_error");
-  }
-  return String(fallbackCode || "internal_error");
-}
-
-function publicErrorMessage(fallbackMessage) {
-  return String(fallbackMessage || "Request failed. Please try again.");
-}
-
 function nowIso() {
   return new Date().toISOString();
 }
@@ -301,48 +261,6 @@ function isDeviceLimitExemptEmail(email, env) {
   }
   const set = parseCsvEmailSet(env.DEVICE_LIMIT_EXEMPT_EMAILS, DEFAULT_DEVICE_LIMIT_EXEMPT_EMAILS);
   return set.has(normalizedEmail);
-}
-
-function isLegacyBetaForceProTierEnabled(env = {}) {
-  const raw = env.BETA_FORCE_PRO_TIER;
-  if (raw === undefined || raw === null || String(raw).trim() === "") {
-    return false;
-  }
-  return parseBooleanFlag(raw);
-}
-
-function normalizeBetaAccessMode(value) {
-  const normalized = String(value || "").trim().toLowerCase();
-  if (!normalized) {
-    return "";
-  }
-  if (normalized === "unrestricted") {
-    return "unrestricted";
-  }
-  if (
-    normalized === "restricted"
-    || normalized === "off"
-    || normalized === "disabled"
-    || normalized === "normal"
-  ) {
-    return "restricted";
-  }
-  return "";
-}
-
-function resolveBetaAccessMode(env = {}) {
-  const explicitMode = normalizeBetaAccessMode(env.BETA_ACCESS_MODE);
-  if (explicitMode) {
-    return explicitMode;
-  }
-  if (isLegacyBetaForceProTierEnabled(env)) {
-    return "unrestricted";
-  }
-  return DEFAULT_BETA_ACCESS_MODE;
-}
-
-function isBetaUnrestrictedAccessEnabled(env = {}) {
-  return resolveBetaAccessMode(env) === "unrestricted";
 }
 
 function resolveEntitlementState(user, env = {}) {
@@ -477,14 +395,6 @@ function resolvePolicyPlanCode(user, subscription, env = {}) {
   return PLAN_CODE_PLANETKA_FREE;
 }
 
-function parseBooleanFlag(value) {
-  if (typeof value === "boolean") {
-    return value;
-  }
-  const normalized = String(value || "").trim().toLowerCase();
-  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
-}
-
 function isTileHotPathMonitoringEnabled(env = {}) {
   const raw = env.ENABLE_TILE_HOT_PATH_MONITORING;
   if (raw === undefined || raw === null || String(raw).trim() === "") {
@@ -516,22 +426,6 @@ function blockedAccountResponse(env, message = "Planetka account is blocked. Con
     403,
     env,
   );
-}
-
-function parsePositiveNumber(value, fallback) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return fallback;
-  }
-  return parsed;
-}
-
-function parseNonNegativeInteger(value, fallback = 0) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) {
-    return fallback;
-  }
-  return Math.max(0, Math.floor(parsed));
 }
 
 function toBytesFromGb(gbValue) {
