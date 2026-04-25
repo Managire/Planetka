@@ -8,7 +8,7 @@ const PLAN_CODE_PLANETKA_PRO = "pro";
 // Legacy aliases kept for backward compatibility in persisted data/webhook payloads.
 const PLAN_CODE_PLANETKA_INDIE = PLAN_CODE_PLANETKA;
 const PLAN_CODE_PLANETKA_STUDIO = PLAN_CODE_PLANETKA_PRO;
-const DEFAULT_BETA_FORCE_PRO_TIER = false;
+const DEFAULT_BETA_ACCESS_MODE = "restricted";
 const DEFAULT_HOSTED_ACCESS_DURATION_DAYS = 365;
 const DEFAULT_UPGRADE_URL = "https://www.planetka.io/blender/pricing";
 const DEFAULT_CONTACT_URL = "https://www.planetka.io/contact-me";
@@ -303,12 +303,46 @@ function isDeviceLimitExemptEmail(email, env) {
   return set.has(normalizedEmail);
 }
 
-function isBetaForceProTierEnabled(env = {}) {
+function isLegacyBetaForceProTierEnabled(env = {}) {
   const raw = env.BETA_FORCE_PRO_TIER;
   if (raw === undefined || raw === null || String(raw).trim() === "") {
-    return DEFAULT_BETA_FORCE_PRO_TIER;
+    return false;
   }
   return parseBooleanFlag(raw);
+}
+
+function normalizeBetaAccessMode(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) {
+    return "";
+  }
+  if (normalized === "unrestricted") {
+    return "unrestricted";
+  }
+  if (
+    normalized === "restricted"
+    || normalized === "off"
+    || normalized === "disabled"
+    || normalized === "normal"
+  ) {
+    return "restricted";
+  }
+  return "";
+}
+
+function resolveBetaAccessMode(env = {}) {
+  const explicitMode = normalizeBetaAccessMode(env.BETA_ACCESS_MODE);
+  if (explicitMode) {
+    return explicitMode;
+  }
+  if (isLegacyBetaForceProTierEnabled(env)) {
+    return "unrestricted";
+  }
+  return DEFAULT_BETA_ACCESS_MODE;
+}
+
+function isBetaUnrestrictedAccessEnabled(env = {}) {
+  return resolveBetaAccessMode(env) === "unrestricted";
 }
 
 function resolveEntitlementState(user, env = {}) {
@@ -348,7 +382,7 @@ function resolveEntitlementState(user, env = {}) {
       source: "blocked",
     };
   }
-  if (isBetaForceProTierEnabled(env)) {
+  if (isBetaUnrestrictedAccessEnabled(env)) {
     return {
       ...defaultResult,
       state: "permanent_paid",
@@ -356,7 +390,7 @@ function resolveEntitlementState(user, env = {}) {
       commercial_use_allowed: true,
       subscription_status: "active",
       is_permanent_paid: true,
-      source: "beta_force_pro",
+      source: "beta_unrestricted",
       hosted_streaming_access_expires_at: "",
     };
   }

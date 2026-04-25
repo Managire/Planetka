@@ -28,9 +28,11 @@ Planetka is currently released as a **public beta**.
   this beta period.
 - Planetka currently offers three account tiers: **Free**, **Personal**, and
   **Commercial**.
-- For the current `v0.7.0` beta phase, newly issued beta access may be
-  provisioned as **Commercial** by default for testing, even though the
-  long-term product model still defines all three tiers separately.
+- For the current `v0.7.0` beta phase, Planetka may run beta access in an
+  **unrestricted** mode for testing. In that mode, hosted-service access
+  behaves as **Commercial** regardless of the stored account tier, even
+  though the long-term product model still defines all three tiers
+  separately.
 
 ## 3. Intended Use
 
@@ -62,9 +64,9 @@ For clarity:
 - Free and Personal do **not** include commercial use rights.
 - Commercial includes commercial use rights, subject to all other Terms in this
   document.
-- During the current beta phase, if Planetka provisions your beta account as
-  Commercial by default, that granted Commercial status governs your permitted
-  use until Planetka changes that beta-access policy.
+- During the current beta phase, if Planetka runs beta access in unrestricted
+  mode, that Commercial-equivalent beta access governs your permitted use
+  until Planetka changes that beta-access policy.
 
 You may keep and use your own rendered outputs, subject to attribution and
 source-data obligations described in Planetka licensing documentation.

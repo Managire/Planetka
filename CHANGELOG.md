@@ -28,7 +28,7 @@ All notable changes to Planetka are documented in this file.
 - Tile streaming hot path was simplified with cached lightweight auth claims and tile session tokens to reduce per-tile overhead.
 - Public build profile keeps clouds and legacy-only runtime surface disabled by default.
 - Release documentation now treats `v0.7.0` as the current private beta candidate while leaving the public update channel unchanged.
-- Beta-facing docs now state explicitly that newly issued `v0.7.0` beta accounts are currently provisioned as `Commercial` by default for testing.
+- Beta-facing docs now state explicitly that `v0.7.0` currently runs in `unrestricted` beta access mode, giving testers Commercial-equivalent hosted-service access during beta.
 - EEVEE is documented as supported for stills, quick previews, and segmented animation rendering in `v0.7.0`.
 
 ### Fixed

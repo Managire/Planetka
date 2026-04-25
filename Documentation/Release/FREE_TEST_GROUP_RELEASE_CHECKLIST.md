@@ -30,7 +30,7 @@ Public update channel remains on `v0.5.3` until explicit publish.
 ## 4. Public Beta Access Rules
 
 - [ ] Beta build is marked personal-use beta in Terms and user-facing docs.
-- [ ] Current beta policy is stated explicitly: newly issued `v0.7.0` beta accounts are currently provisioned as `Commercial` by default for testing.
+- [ ] Current beta policy is stated explicitly: `v0.7.0` beta runs in `unrestricted` access mode, so beta users receive Commercial-equivalent hosted-service access during testing regardless of stored account tier.
 - [ ] Account/tier messaging in UI matches the current backend beta policy.
 - [ ] Core workflows needed for tester validation are available under the current beta policy.
 - [ ] Future public tier rollout (Free / Personal / Commercial) is clearly described as a later enforcement step, not the current beta-onboarding behavior.
@@ -61,7 +61,7 @@ Public update channel remains on `v0.5.3` until explicit publish.
 ## 8. Tester Communication
 
 - [ ] Share a short known-issues list with testers.
-- [ ] Tell testers that newly issued `v0.7.0` beta access currently lands on `Commercial` by default, even though the long-term product model still defines Free / Personal / Commercial tiers.
+- [ ] Tell testers that `v0.7.0` beta currently runs in `unrestricted` access mode, even though the long-term product model still defines Free / Personal / Commercial tiers.
 - [ ] Provide clear expected behavior for Preview / Balanced / Full Quality access under the current beta policy.
 - [ ] Tell testers that `v0.7.0` is a private beta candidate and is not in the public update channel yet.
 - [ ] Provide support contact path and expected response time.

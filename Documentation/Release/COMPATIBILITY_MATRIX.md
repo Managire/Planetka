@@ -17,7 +17,7 @@ Last matrix update: `2026-04-25`
 
 | Extension Version | Blender Versions Verified | Release Gate | Rollback Test | Notes |
 | --- | --- | --- | --- | --- |
-| v0.7.0 | 5.0.0 current, 4.5.7/5.1.0 carry-forward baseline | Pass | Pending final soak completion | Package/docs aligned to `0.7.0`; release gate, smoke, and regression pass; long supervised 4K stress run is in progress. Newly issued beta accounts are currently provisioned as `Commercial` by default. This candidate is not uploaded to the public update channel yet. |
+| v0.7.0 | 5.0.0 current, 4.5.7/5.1.0 carry-forward baseline | Pass | Pending final soak completion | Package/docs aligned to `0.7.0`; release gate, smoke, and regression pass; long supervised 4K stress run is in progress. Beta access currently runs in `unrestricted` mode with Commercial-equivalent hosted-service access for testers. This candidate is not uploaded to the public update channel yet. |
 | v0.5.3 | 4.5.7, 5.0.0, 5.1.0 | Pass | Pass | Added cache write-path validation, safer earth-surface parent assignment during replacement, and scene-safe background/clipping automation notices. |
 | v0.5.1 | 4.5.7, 5.0.0, 5.1.0 | Pass | Pass | Added user-selectable/persistent cache folder and tightened cache limit defaults for public update channel. |
 | v0.5.0 | 4.5.7, 5.0.0, 5.1.0 | Pass | Pass | Version bump for current beta branch; compatibility baseline unchanged from v0.4.1. |
