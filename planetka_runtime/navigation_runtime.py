@@ -294,22 +294,23 @@ def resume_navigation_shot_updates(runtime=None):
     ctx.state.navigation_shot_suspend_count = max(0, int(ctx.state.navigation_shot_suspend_count) - 1)
 
 
-def suspend_navigation_camera_control_sync(runtime):
-    runtime["_NAV_CAMERA_CONTROL_SYNC_SUSPEND_COUNT"] = int(runtime.get("_NAV_CAMERA_CONTROL_SYNC_SUSPEND_COUNT", 0)) + 1
+def suspend_navigation_camera_control_sync(runtime=None):
+    ctx = _coerce_ctx(runtime)
+    ctx.state.nav_camera_control_sync_suspend_count = int(ctx.state.nav_camera_control_sync_suspend_count) + 1
 
 
-def resume_navigation_camera_control_sync(runtime):
-    runtime["_NAV_CAMERA_CONTROL_SYNC_SUSPEND_COUNT"] = max(0, int(runtime.get("_NAV_CAMERA_CONTROL_SYNC_SUSPEND_COUNT", 0)) - 1)
+def resume_navigation_camera_control_sync(runtime=None):
+    ctx = _coerce_ctx(runtime)
+    ctx.state.nav_camera_control_sync_suspend_count = max(0, int(ctx.state.nav_camera_control_sync_suspend_count) - 1)
 
 
 def is_navigation_or_camera_sync_suspended(runtime=None):
     ctx = _coerce_ctx(runtime)
-    deps = ctx.deps
     state = ctx.state
     return bool(
         int(state.navigation_shot_suspend_count) > 0
-        or deps.is_camera_control_syncing()
-        or int(deps.get_camera_control_sync_suspend_count()) > 0
+        or state.nav_camera_control_syncing
+        or int(state.nav_camera_control_sync_suspend_count) > 0
     )
 
 
@@ -559,7 +560,7 @@ def update_navigation_focal_length(
     recoverable = recoverable_exceptions if recoverable_exceptions is not None else deps.recoverable_exceptions
     if int(state.navigation_shot_suspend_count) > 0:
         return
-    if deps.is_idprop_syncing() or state.navigation_shot_update_reentrant or deps.is_camera_control_syncing():
+    if deps.is_idprop_syncing() or state.navigation_shot_update_reentrant or state.nav_camera_control_syncing:
         return
 
     scene = getattr(context, "scene", None) if context else None
@@ -590,6 +591,13 @@ def reset_navigation_shot_runtime_state(runtime=None):
     state.navigation_shot_update_pending = False
     state.navigation_shot_update_reentrant = False
     state.navigation_shot_suspend_count = 0
+
+
+def reset_navigation_camera_control_runtime_state(runtime=None):
+    ctx = _coerce_ctx(runtime)
+    state = ctx.state
+    state.nav_camera_control_syncing = False
+    state.nav_camera_control_sync_suspend_count = 0
 
 
 def apply_navigation_shot_now(runtime=None, **kwargs):
@@ -629,77 +637,82 @@ def sync_navigation_controls_from_scene_camera(
     runtime,
     scene,
     *,
-    get_earth_object,
-    scene_key,
-    get_operators_module,
-    suspend_navigation_shot_updates,
-    resume_navigation_shot_updates,
-    recoverable_exceptions,
-    logger,
+    get_earth_object=None,
+    scene_key=None,
+    get_operators_module=None,
+    suspend_navigation_shot_updates=None,
+    resume_navigation_shot_updates=None,
+    recoverable_exceptions=None,
+    logger=None,
 ):
-    ctx = _NAVIGATION_RUNTIME_CTX
-    shot_suspend_count = int(runtime.get("_NAVIGATION_SHOT_SUSPEND_COUNT", 0))
-    shot_update_reentrant = bool(runtime.get("_NAVIGATION_SHOT_UPDATE_REENTRANT"))
-    if ctx is not None:
-        shot_suspend_count = int(ctx.state.navigation_shot_suspend_count)
-        shot_update_reentrant = bool(ctx.state.navigation_shot_update_reentrant)
+    ctx = _coerce_ctx(runtime)
+    deps = ctx.deps
+    state = ctx.state
+    get_earth = get_earth_object if callable(get_earth_object) else deps.get_earth_object
+    scene_key_fn = scene_key if callable(scene_key) else deps.scene_key
+    get_ops_module = get_operators_module if callable(get_operators_module) else deps.get_operators_module
+    suspend_shot_updates = suspend_navigation_shot_updates or deps.suspend_navigation_shot_updates
+    resume_shot_updates = resume_navigation_shot_updates or deps.resume_navigation_shot_updates
+    recoverable = recoverable_exceptions if recoverable_exceptions is not None else deps.recoverable_exceptions
+    runtime_logger = logger if logger is not None else deps.logger
     if scene is None:
         return
-    if runtime.get("_IDPROP_SYNCING") or runtime.get("_NAV_CAMERA_CONTROL_SYNCING"):
+    if deps.is_idprop_syncing() or state.nav_camera_control_syncing:
         return
-    if shot_suspend_count > 0 or shot_update_reentrant:
+    if int(state.navigation_shot_suspend_count) > 0 or state.navigation_shot_update_reentrant:
         return
 
     props = getattr(scene, "planetka", None)
     if props is None:
         return
 
-    scene_id = scene_key(scene)
-    if get_earth_object() is None:
-        runtime["_NAV_CAMERA_CONTROL_LAST_SIGNATURE"].pop(scene_id, None)
+    scene_id = scene_key_fn(scene)
+    last_map = state.nav_camera_control_last_signature
+    if get_earth() is None:
+        last_map.pop(scene_id, None)
         return
 
     signature = camera_control_sync_signature(scene)
     if signature is None:
-        runtime["_NAV_CAMERA_CONTROL_LAST_SIGNATURE"].pop(scene_id, None)
+        last_map.pop(scene_id, None)
         return
-    if int(runtime.get("_NAV_CAMERA_CONTROL_SYNC_SUSPEND_COUNT", 0)) > 0:
-        runtime["_NAV_CAMERA_CONTROL_LAST_SIGNATURE"][scene_id] = signature
+    if int(state.nav_camera_control_sync_suspend_count) > 0:
+        last_map[scene_id] = signature
         return
-    if runtime["_NAV_CAMERA_CONTROL_LAST_SIGNATURE"].get(scene_id) == signature:
+    if last_map.get(scene_id) == signature:
         return
 
-    operators_module = get_operators_module()
+    operators_module = get_ops_module()
     if operators_module is None:
         return
     is_below_surface = getattr(operators_module, "_is_scene_camera_below_surface", None)
     if callable(is_below_surface):
         try:
             if bool(is_below_surface(scene)):
-                runtime["_NAV_CAMERA_CONTROL_LAST_SIGNATURE"][scene_id] = signature
+                last_map[scene_id] = signature
                 return
-        except recoverable_exceptions:
-            logger.debug("Planetka camera control surface-state check failed", exc_info=True)
+        except recoverable:
+            runtime_logger.debug("Planetka camera control surface-state check failed", exc_info=True)
         except (RuntimeError, TypeError, ValueError):
-            logger.debug("Planetka camera control surface-state check failed", exc_info=True)
+            runtime_logger.debug("Planetka camera control surface-state check failed", exc_info=True)
     populate = getattr(operators_module, "_populate_navigation_from_scene_camera", None)
     if not callable(populate):
         return
 
-    runtime["_NAV_CAMERA_CONTROL_SYNCING"] = True
-    suspend_navigation_shot_updates()
+    state.nav_camera_control_syncing = True
+    suspend_shot_updates()
     synced = False
     try:
         synced = bool(populate(scene, props))
-    except recoverable_exceptions:
-        logger.debug("Planetka camera control sync failed", exc_info=True)
+    except recoverable:
+        runtime_logger.debug("Planetka camera control sync failed", exc_info=True)
     except (RuntimeError, TypeError, ValueError):
-        logger.debug("Planetka camera control sync failed", exc_info=True)
+        runtime_logger.debug("Planetka camera control sync failed", exc_info=True)
     finally:
-        resume_navigation_shot_updates()
-        runtime["_NAV_CAMERA_CONTROL_SYNCING"] = False
+        resume_shot_updates()
+        state.nav_camera_control_syncing = False
 
     if synced:
-        runtime["_NAV_CAMERA_CONTROL_LAST_SIGNATURE"][scene_id] = signature
+        last_map[scene_id] = signature
     else:
-        runtime["_NAV_CAMERA_CONTROL_LAST_SIGNATURE"].pop(scene_id, None)
+        last_map.pop(scene_id, None)

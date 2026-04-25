@@ -558,11 +558,11 @@ def resume_navigation_shot_updates():
 
 
 def suspend_navigation_camera_control_sync():
-    return _navigation_runtime.suspend_navigation_camera_control_sync(globals())
+    return _navigation_runtime.suspend_navigation_camera_control_sync(_NAVIGATION_RUNTIME_CTX)
 
 
 def resume_navigation_camera_control_sync():
-    return _navigation_runtime.resume_navigation_camera_control_sync(globals())
+    return _navigation_runtime.resume_navigation_camera_control_sync(_NAVIGATION_RUNTIME_CTX)
 
 
 def is_navigation_or_camera_sync_suspended():
@@ -665,10 +665,14 @@ def _is_idprop_syncing():
 
 
 def _is_navigation_camera_control_syncing():
+    if _NAVIGATION_RUNTIME_CTX is not None:
+        return bool(_NAVIGATION_RUNTIME_CTX.state.nav_camera_control_syncing)
     return bool(_NAV_CAMERA_CONTROL_SYNCING)
 
 
 def _get_navigation_camera_control_sync_suspend_count():
+    if _NAVIGATION_RUNTIME_CTX is not None:
+        return int(_NAVIGATION_RUNTIME_CTX.state.nav_camera_control_sync_suspend_count)
     return int(_NAV_CAMERA_CONTROL_SYNC_SUSPEND_COUNT)
 
 
@@ -682,6 +686,12 @@ def _reset_navigation_shot_runtime_state():
     if _NAVIGATION_RUNTIME_CTX is None:
         return
     _navigation_runtime.reset_navigation_shot_runtime_state(_NAVIGATION_RUNTIME_CTX)
+
+
+def _reset_navigation_camera_control_runtime_state():
+    if _NAVIGATION_RUNTIME_CTX is None:
+        return
+    _navigation_runtime.reset_navigation_camera_control_runtime_state(_NAVIGATION_RUNTIME_CTX)
 
 
 def _scene_key(scene):
@@ -752,15 +762,8 @@ def _camera_control_sync_signature(scene):
 
 def _sync_navigation_controls_from_scene_camera(scene):
     return _navigation_runtime.sync_navigation_controls_from_scene_camera(
-        globals(),
+        _NAVIGATION_RUNTIME_CTX,
         scene,
-        get_earth_object=get_earth_object,
-        scene_key=_scene_key,
-        get_operators_module=_get_operators_module,
-        suspend_navigation_shot_updates=suspend_navigation_shot_updates,
-        resume_navigation_shot_updates=resume_navigation_shot_updates,
-        recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
-        logger=logger,
     )
 
 
@@ -1138,16 +1141,21 @@ def _build_navigation_runtime_context():
         is_idprop_syncing=_is_idprop_syncing,
         is_camera_control_syncing=_is_navigation_camera_control_syncing,
         get_camera_control_sync_suspend_count=_get_navigation_camera_control_sync_suspend_count,
+        get_operators_module=_get_operators_module,
         nav_force_camera_once_key=_NAV_FORCE_CAMERA_ONCE_KEY,
         nav_sync_active_view_once_key=_NAV_SYNC_ACTIVE_VIEW_ONCE_KEY,
         sunlight_object_name=_SUNLIGHT_OBJECT_NAME,
         sync_idprops_from_props=_sync_idprops_from_props,
         sync_navigation_idprops_from_props=_sync_navigation_idprops_from_props,
         suspend_adaptive_viewport_during_navigation=_suspend_adaptive_viewport_during_navigation,
+        suspend_navigation_shot_updates=suspend_navigation_shot_updates,
+        resume_navigation_shot_updates=resume_navigation_shot_updates,
         request_auto_resolve=request_auto_resolve,
     )
     state = NavigationRuntimeState(
         nav_camera_control_last_signature=_NAV_CAMERA_CONTROL_LAST_SIGNATURE,
+        nav_camera_control_syncing=_NAV_CAMERA_CONTROL_SYNCING,
+        nav_camera_control_sync_suspend_count=_NAV_CAMERA_CONTROL_SYNC_SUSPEND_COUNT,
         navigation_adaptive_suspended=_NAVIGATION_ADAPTIVE_SUSPENDED,
         navigation_adaptive_last_touch=_NAVIGATION_ADAPTIVE_LAST_TOUCH,
         navigation_adaptive_timer_running=_NAVIGATION_ADAPTIVE_TIMER_RUNNING,

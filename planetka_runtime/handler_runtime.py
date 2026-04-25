@@ -23,7 +23,6 @@ def recover_post_render_state(scene=None, cancelled=False):
     global _RENDER_JOB_ACTIVE
     global _RENDER_JOB_LAST_ENDED_EPOCH
     global _RENDER_JOB_LAST_CANCELLED_EPOCH
-    global _NAV_CAMERA_CONTROL_SYNC_SUSPEND_COUNT
 
     _AUTO_RESOLVE_IN_FLIGHT = False
     _RENDER_JOB_ACTIVE = False
@@ -33,7 +32,9 @@ def recover_post_render_state(scene=None, cancelled=False):
     reset_navigation_shot_runtime_state = globals().get("_reset_navigation_shot_runtime_state")
     if callable(reset_navigation_shot_runtime_state):
         reset_navigation_shot_runtime_state()
-    _NAV_CAMERA_CONTROL_SYNC_SUSPEND_COUNT = 0
+    reset_navigation_camera_control_runtime_state = globals().get("_reset_navigation_camera_control_runtime_state")
+    if callable(reset_navigation_camera_control_runtime_state):
+        reset_navigation_camera_control_runtime_state()
     _force_restore_navigation_adaptive_state()
 
     if scene is None:
