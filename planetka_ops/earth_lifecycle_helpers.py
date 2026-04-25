@@ -2,6 +2,7 @@ import math
 
 import bpy
 
+from ..auth import is_authenticated
 from ..asset_builder import PLANETKA_ROOT_OBJECT_NAME, ensure_earth_surface_parent, ensure_planetka_root
 from ..error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from ..extension_prefs import mark_earth_object
@@ -45,6 +46,13 @@ def _validate_create_earth_texture_source(base_path):
         if str(level).upper() == "ERROR":
             return "", str(message or "Unsupported local data path is invalid.")
     return normalized, ""
+
+
+def _require_authenticated_account(operator, prefs):
+    if not is_authenticated(prefs):
+        operator.report({'ERROR'}, "Connect Planetka API key before using remote Earth data.")
+        return False
+    return True
 
 
 def _pick_scene_camera(scene, context=None):
@@ -137,6 +145,42 @@ def _ensure_planetka_create_camera(scene):
             logger.debug("Planetka: failed parenting Planetka Camera to Planetka Root", exc_info=True)
 
     return camera_obj
+
+
+def _position_planetka_create_camera(scene, props, camera_obj, activate=False):
+    if scene is None or props is None or camera_obj is None:
+        return False
+    if str(getattr(camera_obj, "type", "")) != "CAMERA":
+        return False
+
+    from .navigation_helpers import _apply_navigation_shot
+
+    previous_camera = getattr(scene, "camera", None)
+    try:
+        scene.camera = camera_obj
+        _apply_navigation_shot(
+            bpy.context,
+            scene,
+            props,
+            switch_viewport_to_camera=False,
+            sync_active_view_when_not_camera=False,
+        )
+        camera_data = getattr(camera_obj, "data", None)
+        if camera_data is not None:
+            camera_data.lens = max(1.0, float(getattr(props, "nav_focal_length_mm", 50.0)))
+    finally:
+        if bool(activate):
+            try:
+                scene.camera = camera_obj
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka: failed activating Planetka Camera", exc_info=True)
+        else:
+            try:
+                scene.camera = previous_camera
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka: failed restoring previously active scene camera", exc_info=True)
+
+    return True
 
 
 def _ensure_close_clip_limits(scene, min_clip=0.001):

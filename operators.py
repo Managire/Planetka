@@ -49,6 +49,8 @@ from .planetka_ops.earth_lifecycle_helpers import (
     _ensure_planetka_create_camera,
     _is_planetka_create_camera,
     _pick_scene_camera,
+    _position_planetka_create_camera,
+    _require_authenticated_account,
     _restore_view_selection,
     _set_default_world_background_to_black,
     _snapshot_camera_state_for_rebuild,
@@ -123,52 +125,11 @@ def _log_recoverable_once(code, message):
     _RECOVERABLE_LOG_COUNTS[code] = count + 1
 
 
-def _require_authenticated_account(operator, prefs):
-    if not is_authenticated(prefs):
-        operator.report({'ERROR'}, "Connect Planetka API key before using remote Earth data.")
-        return False
-    return True
-
-
 def _persist_user_preferences():
     if bool(getattr(bpy.app, "background", False)):
         return False
     # Planetka must not write Blender's global user preferences automatically.
     return False
-
-
-def _position_planetka_create_camera(scene, props, camera_obj, activate=False):
-    if scene is None or props is None or camera_obj is None:
-        return False
-    if str(getattr(camera_obj, "type", "")) != "CAMERA":
-        return False
-
-    previous_camera = getattr(scene, "camera", None)
-    try:
-        scene.camera = camera_obj
-        _apply_navigation_shot(
-            bpy.context,
-            scene,
-            props,
-            switch_viewport_to_camera=False,
-            sync_active_view_when_not_camera=False,
-        )
-        camera_data = getattr(camera_obj, "data", None)
-        if camera_data is not None:
-            camera_data.lens = max(1.0, float(getattr(props, "nav_focal_length_mm", 50.0)))
-    finally:
-        if bool(activate):
-            try:
-                scene.camera = camera_obj
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-                logger.debug("Planetka: failed activating Planetka Camera", exc_info=True)
-        else:
-            try:
-                scene.camera = previous_camera
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-                logger.debug("Planetka: failed restoring previously active scene camera", exc_info=True)
-
-    return True
 
 
 from .planetka_ops.navigation_helpers import (
