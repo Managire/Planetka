@@ -352,6 +352,16 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
             error: String(error && error.message || "tile_event_queue_enqueue_failed"),
           }),
         );
+        try {
+          await processSignals();
+        } catch (fallbackError) {
+          console.warn(
+            "worker.tile_event_queue.fallback_failed",
+            JSON.stringify({
+              error: String(fallbackError && fallbackError.message || "tile_event_fallback_failed"),
+            }),
+          );
+        }
       }
     };
     if (ctx && typeof ctx.waitUntil === "function") {
