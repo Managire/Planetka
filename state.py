@@ -163,44 +163,6 @@ _AUTO_RESOLVE_NONCRITICAL_TIMER_RUNNING = False
 _AUTO_RESOLVE_NONCRITICAL_INTERVAL_SEC = 0.25
 _AUTO_RESOLVE_NONCRITICAL_PENDING = {}
 _AUTO_RESOLVE_SIZE_ESTIMATE_LAST_SIGNATURE = {}
-_AUTO_RESOLVE_TICK_STATE_IDLE = "IDLE"
-_AUTO_RESOLVE_TICK_STATE_READY = "READY"
-_AUTO_RESOLVE_TICK_STATE_PLANNED = "PLANNED"
-_AUTO_RESOLVE_TICK_STATE_DISPATCHED = "DISPATCHED"
-_AUTO_RESOLVE_TICK_STATE_WAITING = "WAITING"
-_AUTO_RESOLVE_TICK_STATE_STOPPED = "STOPPED"
-_AUTO_RESOLVE_TICK_TRANSITIONS = {
-    _AUTO_RESOLVE_TICK_STATE_IDLE: {
-        "PLAN": _AUTO_RESOLVE_TICK_STATE_PLANNED,
-        "NO_CHANGE": _AUTO_RESOLVE_TICK_STATE_READY,
-        "RETRY": _AUTO_RESOLVE_TICK_STATE_WAITING,
-        "STOP": _AUTO_RESOLVE_TICK_STATE_STOPPED,
-    },
-    _AUTO_RESOLVE_TICK_STATE_READY: {
-        "PLAN": _AUTO_RESOLVE_TICK_STATE_PLANNED,
-        "NO_CHANGE": _AUTO_RESOLVE_TICK_STATE_READY,
-        "RETRY": _AUTO_RESOLVE_TICK_STATE_WAITING,
-        "STOP": _AUTO_RESOLVE_TICK_STATE_STOPPED,
-    },
-    _AUTO_RESOLVE_TICK_STATE_PLANNED: {
-        "DISPATCH": _AUTO_RESOLVE_TICK_STATE_DISPATCHED,
-        "NO_CHANGE": _AUTO_RESOLVE_TICK_STATE_READY,
-        "RETRY": _AUTO_RESOLVE_TICK_STATE_WAITING,
-        "STOP": _AUTO_RESOLVE_TICK_STATE_STOPPED,
-    },
-    _AUTO_RESOLVE_TICK_STATE_DISPATCHED: {
-        "PLAN": _AUTO_RESOLVE_TICK_STATE_PLANNED,
-        "NO_CHANGE": _AUTO_RESOLVE_TICK_STATE_READY,
-        "RETRY": _AUTO_RESOLVE_TICK_STATE_WAITING,
-        "STOP": _AUTO_RESOLVE_TICK_STATE_STOPPED,
-    },
-    _AUTO_RESOLVE_TICK_STATE_WAITING: {
-        "PLAN": _AUTO_RESOLVE_TICK_STATE_PLANNED,
-        "NO_CHANGE": _AUTO_RESOLVE_TICK_STATE_READY,
-        "RETRY": _AUTO_RESOLVE_TICK_STATE_WAITING,
-        "STOP": _AUTO_RESOLVE_TICK_STATE_STOPPED,
-    },
-}
 LAST_RESOLVE_TILE_COUNT_KEY = "planetka_last_manual_resolve_tile_count"
 LAST_RESOLVE_DOWNLOADED_MB_KEY = "planetka_last_manual_resolve_downloaded_mb"
 LAST_RESOLVE_DOWNLOADED_GB_KEY = "planetka_last_manual_resolve_downloaded_gb"
@@ -3951,16 +3913,6 @@ def _auto_resolve_noncritical_timer():
     return None
 
 
-def _auto_resolve_tick_transition(current_state, event):
-    transitions = _AUTO_RESOLVE_TICK_TRANSITIONS.get(str(current_state or ""), {})
-    next_state = transitions.get(str(event or ""), current_state)
-    if next_state != current_state:
-        _resolve_trace(
-            f"tick transition {str(current_state or '')}->{str(next_state or '')} via {str(event or '')}"
-        )
-    return next_state
-
-
 def _auto_resolve_detect_change(scene, props):
     if scene is None:
         return {"event": "STOP", "retry_delay": None}
@@ -4116,10 +4068,8 @@ def _auto_resolve_tick_once():
         return None
     props = getattr(scene, "planetka", None)
 
-    tick_state = _AUTO_RESOLVE_TICK_STATE_IDLE
     detect_ctx = _auto_resolve_detect_change(scene, props)
     detect_event = str(detect_ctx.get("event", "STOP") or "STOP")
-    tick_state = _auto_resolve_tick_transition(tick_state, detect_event)
     if detect_event == "STOP":
         return None
     if detect_event == "RETRY":
@@ -4129,19 +4079,17 @@ def _auto_resolve_tick_once():
 
     plan_ctx = _auto_resolve_plan_job(scene, props, detect_ctx)
     plan_event = str(plan_ctx.get("event", "STOP") or "STOP")
-    tick_state = _auto_resolve_tick_transition(tick_state, plan_event)
     if plan_event == "STOP":
         return None
     if plan_event == "RETRY":
         return float(plan_ctx.get("retry_delay", AUTO_RESOLVE_RETRY_DELAY_SEC) or AUTO_RESOLVE_RETRY_DELAY_SEC)
+    if plan_event == "NO_CHANGE":
+        return None
 
     dispatch_ctx = _auto_resolve_dispatch_job(scene, detect_ctx, plan_ctx)
     dispatch_event = str(dispatch_ctx.get("event", "STOP") or "STOP")
-    tick_state = _auto_resolve_tick_transition(tick_state, dispatch_event)
     if dispatch_event == "RETRY":
         return float(dispatch_ctx.get("retry_delay", AUTO_RESOLVE_RETRY_DELAY_SEC) or AUTO_RESOLVE_RETRY_DELAY_SEC)
-    if tick_state == _AUTO_RESOLVE_TICK_STATE_STOPPED:
-        return None
     return None
 
 
