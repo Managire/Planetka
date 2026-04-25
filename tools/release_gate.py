@@ -59,6 +59,7 @@ def main() -> int:
     checklist_path = root / "Documentation" / "Release" / "QA_CHECKLIST.md"
     template_path = root / "Documentation" / "Release" / "RELEASE_NOTES_TEMPLATE.md"
     worker_path = root / "cloudflare-api" / "src" / "index.js"
+    worker_tile_routes_path = root / "cloudflare-api" / "src" / "worker" / "tile_routes.js"
     wrangler_path = root / "cloudflare-api" / "wrangler.toml"
     fallback_dir = root / "Resources" / "Fallback Images"
 
@@ -131,20 +132,31 @@ def main() -> int:
         )
 
     worker_src = ""
+    worker_tile_routes_src = ""
     if not worker_path.exists():
         errors.append("Missing cloudflare-api/src/index.js")
     else:
         worker_src = read_text(worker_path)
+    if worker_tile_routes_path.exists():
+        worker_tile_routes_src = read_text(worker_tile_routes_path)
 
     # 6) Worker access model must match the 0.7.0 plan-based product
     if worker_src:
         required_worker_markers = [
             ("public API key request forces Free plan", "const requestedPlan = PLAN_CODE_PLANETKA_FREE;"),
-            ("tile requests read quality mode header", "X-Planetka-Quality-Mode"),
         ]
         for label, marker in required_worker_markers:
             if marker not in worker_src:
                 errors.append(f"Worker safeguard missing: {label} ('{marker}')")
+    tile_quality_marker_present = (
+        "X-Planetka-Quality-Mode" in worker_src
+        or "X-Planetka-Quality-Mode" in worker_tile_routes_src
+    )
+    if not tile_quality_marker_present:
+        errors.append(
+            "Worker safeguard missing: tile requests read quality mode header "
+            "('X-Planetka-Quality-Mode')"
+        )
 
     # 7) Admin analytics must reject token query params
     if worker_src:
