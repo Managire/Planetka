@@ -2066,14 +2066,14 @@ def _enforce_texture_quality_mode_for_account(scene, requested_mode):
         tier = ""
 
     if mode == "BALANCED":
-        if tier in {"personal", "lite", "pro"}:
+        if tier in {"personal", "commercial"}:
             return "BALANCED"
         return "PREVIEW"
 
     # FULL mode
-    if tier == "pro":
+    if tier == "commercial":
         return "FULL"
-    if tier in {"personal", "lite"}:
+    if tier == "personal":
         return "BALANCED"
     return "PREVIEW"
 

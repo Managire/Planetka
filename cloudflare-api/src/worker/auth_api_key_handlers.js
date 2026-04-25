@@ -9,7 +9,7 @@ export function createAuthApiKeyHandlers(deps) {
     const acceptTerms = deps.parseBooleanFlag(body.accept_terms);
     const acceptPrivacy = deps.parseBooleanFlag(body.accept_privacy);
     const optInNews = deps.parseBooleanFlag(body.opt_in_news);
-    const requestedPlan = deps.PLAN_CODE_PLANETKA_FREE;
+    const requestedPlan = deps.PLAN_CODE_FREE;
     const honeypot = String(body.website || "").trim();
     const submittedAtMs = deps.parseNonNegativeInteger(body.submitted_at_ms, 0);
     const minFormAgeMs = Math.max(
@@ -91,13 +91,13 @@ export function createAuthApiKeyHandlers(deps) {
 
     let existingUser = await deps.findUserByEmail(db, email);
     if (existingUser && !deps.isBlockedStatus(existingUser.status)) {
-      existingUser = await deps.enforceUserPlanPolicy(db, existingUser, null, env);
+      existingUser = await deps.enforceUserPlanPolicy(db, existingUser, env);
       try {
         await deps.enforceApiKeyIssueDeviceLimit(
           db,
           String(existingUser.id || "").trim(),
           String(existingUser.email || "").trim(),
-          deps.resolvePlanCode(existingUser, null, env),
+          deps.resolvePlanCode(existingUser, env),
           requestDeviceId,
           env,
         );
@@ -226,12 +226,12 @@ export function createAuthApiKeyHandlers(deps) {
     let user = await deps.upsertUserByEmail(
       db,
       email,
-      deps.PLAN_CODE_PLANETKA_FREE,
+      deps.PLAN_CODE_FREE,
       {},
       env,
     );
-    user = await deps.enforceUserPlanPolicy(db, user, null, env);
-    const effectivePlanCode = deps.resolvePlanCode(user, null, env);
+    user = await deps.enforceUserPlanPolicy(db, user, env);
+    const effectivePlanCode = deps.resolvePlanCode(user, env);
 
     const issued = await deps.issueApiKeyForUser(
       db,
@@ -340,11 +340,11 @@ export function createAuthApiKeyHandlers(deps) {
     let user = {
       id: record.id,
       email: record.email,
-      status: record.status || deps.PLAN_CODE_PLANETKA,
+      status: record.status || deps.PLAN_CODE_FREE,
     };
-    user = await deps.enforceUserPlanPolicy(db, user, null, env);
-    const effectivePlanCode = deps.resolvePlanCode(user, null, env);
-    if (effectivePlanCode === deps.PLAN_CODE_PLANETKA_FREE) {
+    user = await deps.enforceUserPlanPolicy(db, user, env);
+    const effectivePlanCode = deps.resolvePlanCode(user, env);
+    if (effectivePlanCode === deps.PLAN_CODE_FREE) {
       const freePolicy = await deps.enforceSingleActiveFreeApiKey(
         db,
         String(user.id || ""),
@@ -397,7 +397,6 @@ export function createAuthApiKeyHandlers(deps) {
     const accessToken = await deps.createAccessToken(
       env,
       user,
-      null,
       {
         api_key_id: String(record.api_key_id || ""),
         device_id: deviceId,
@@ -414,7 +413,7 @@ export function createAuthApiKeyHandlers(deps) {
         device_id: deviceId,
       },
     );
-    const accountState = await deps.buildAccountState(db, user, null, env);
+    const accountState = await deps.buildAccountState(db, user, env);
 
     return deps.json(
       {

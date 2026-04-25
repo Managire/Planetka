@@ -4,8 +4,8 @@
 Accounts are read from /tmp/planetka_test_accounts_keys.json and must contain:
 {
   "free@planetka.io": {"plan": "free", "api_key": "pka_..."},
-  "personal@planetka.io": {"plan": "lite", "api_key": "pka_..."},
-  "commercial@planetka.io":  {"plan": "pro",  "api_key": "pka_..."}
+  "personal@planetka.io": {"plan": "personal", "api_key": "pka_..."},
+  "commercial@planetka.io":  {"plan": "commercial",  "api_key": "pka_..."}
 }
 """
 
@@ -268,8 +268,8 @@ def main():
 
     accounts = [
         ("free@planetka.io", "free"),
-        ("personal@planetka.io", "lite"),
-        ("commercial@planetka.io", "pro"),
+        ("personal@planetka.io", "personal"),
+        ("commercial@planetka.io", "commercial"),
     ]
     for email, plan in accounts:
         if email not in key_data:
@@ -327,27 +327,27 @@ def main():
                 props.auto_resolve = False
                 props.show_earth_preview = True
 
-                # Pro account global Full Quality checks.
-                if plan == "pro":
+                # Commercial account global Full Quality checks.
+                if plan == "commercial":
                     _set_navigation(props, state_module, MILAN["lat"], MILAN["lon"], 30.0, heading_deg=12.0, tilt_deg=55.0, roll_deg=2.0)
                     props.texture_quality_mode = "FULL"
                     full_result = _resolve_now(state_module=state_module)
                     entry["checks"].append({
-                        "name": "pro_milan_full_allowed",
+                        "name": "commercial_milan_full_allowed",
                         "passed": "FINISHED" in full_result,
                         "result": list(full_result),
                     })
-                    milan_full_path = os.path.join(render_dir, f"{session_prefix}_{engine.lower()}_pro_milan_full.png")
+                    milan_full_path = os.path.join(render_dir, f"{session_prefix}_{engine.lower()}_commercial_milan_full.png")
                     _render_still(scene, milan_full_path)
                     entry["renders"].append(milan_full_path)
                 else:
                     entry["checks"].append({
-                        "name": "non_pro_global_full_checks_skipped",
+                        "name": "non_commercial_global_full_checks_skipped",
                         "passed": True,
                     })
 
                 # Global sample stills at 30 km using the best allowed mode per tier.
-                props.texture_quality_mode = "FULL" if plan == "pro" else ("BALANCED" if plan == "lite" else "PREVIEW")
+                props.texture_quality_mode = "FULL" if plan == "commercial" else ("BALANCED" if plan == "personal" else "PREVIEW")
                 sample_quality = str(props.texture_quality_mode).lower()
                 for city in (AUCKLAND, CHRISTCHURCH, WELLINGTON):
                     _set_navigation(
@@ -371,8 +371,8 @@ def main():
                     entry["renders"].append(out_path)
                 entry["animation_frames"] = 0
 
-                # Pro-only 100 random place renders in FULL quality
-                if plan == "pro":
+                # Commercial-only 100 random place renders in FULL quality
+                if plan == "commercial":
                     sampled = rng.sample(CAPITAL_QUERIES, 100)
                     for idx, query in enumerate(sampled, start=1):
                         selected = _apply_place_search(props, geonames_module, query)
@@ -395,8 +395,8 @@ def main():
                         )
                         result = _resolve_now(state_module=state_module)
                         if "FINISHED" not in result:
-                            raise RuntimeError(f"Pro random resolve failed idx={idx} query={query} ({engine}): {result}")
-                        out_path = os.path.join(render_dir, f"{session_prefix}_{engine.lower()}_pro_random_full_{idx:03d}.png")
+                            raise RuntimeError(f"Commercial random resolve failed idx={idx} query={query} ({engine}): {result}")
+                        out_path = os.path.join(render_dir, f"{session_prefix}_{engine.lower()}_commercial_random_full_{idx:03d}.png")
                         _render_still(scene, out_path)
                         entry["renders"].append(out_path)
 

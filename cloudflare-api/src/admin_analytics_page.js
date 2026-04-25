@@ -56,7 +56,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
       `<span class="split-sep"> / </span>`,
       `<span class="tier-personal">${escapeHtml(String(valueFormatter(split.personal)))}</span>`,
       `<span class="split-sep"> / </span>`,
-      `<span class="tier-pro">${escapeHtml(String(valueFormatter(split.commercial)))}</span>`,
+      `<span class="tier-commercial">${escapeHtml(String(valueFormatter(split.commercial)))}</span>`,
     ].join("");
   };
 
@@ -118,7 +118,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     .error { color: #fca5a5; }
     .tier-free { color: #ffffff; font-weight: 600; }
     .tier-personal { color: #22c55e; font-weight: 600; }
-    .tier-pro { color: #ef4444; font-weight: 600; }
+    .tier-commercial { color: #ef4444; font-weight: 600; }
     .user-filter-active { outline: 1px solid #60a5fa; outline-offset: -1px; }
   </style>
 </head>
@@ -141,8 +141,8 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     <label for="planFilter">User type:</label>
     <select id="planFilter">
       <option value="all" selected>All</option>
-      <option value="lite">Personal</option>
-      <option value="pro">Commercial</option>
+      <option value="personal">Personal</option>
+      <option value="commercial">Commercial</option>
     </select>
     <label for="tileMapWindow">Live map:</label>
     <select id="tileMapWindow">
@@ -157,8 +157,8 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     <label for="userAdminEmail">Manage user:</label>
     <input id="userAdminEmail" type="email" placeholder="user@example.com" style="min-width: 280px; background:#111827; color:#e5e7eb; border:1px solid #374151; border-radius:8px; padding:7px 10px;" />
     <button id="setFreeBtn" class="action-btn">Set Free</button>
-    <button id="setLiteBtn" class="action-btn">Set Personal</button>
-    <button id="setProBtn" class="action-btn">Set Commercial</button>
+    <button id="setPersonalBtn" class="action-btn">Set Personal</button>
+    <button id="setCommercialBtn" class="action-btn">Set Commercial</button>
     <button id="blockBtn" class="action-btn danger">Block</button>
     <button id="unblockBtn" class="action-btn warn">Unblock</button>
   </div>
@@ -239,8 +239,8 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     const refreshBtn = document.getElementById("refresh");
     const userAdminEmailEl = document.getElementById("userAdminEmail");
     const setFreeBtn = document.getElementById("setFreeBtn");
-    const setLiteBtn = document.getElementById("setLiteBtn");
-    const setProBtn = document.getElementById("setProBtn");
+    const setPersonalBtn = document.getElementById("setPersonalBtn");
+    const setCommercialBtn = document.getElementById("setCommercialBtn");
     const blockBtn = document.getElementById("blockBtn");
     const unblockBtn = document.getElementById("unblockBtn");
     const setText = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
@@ -286,7 +286,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         '<span class="split-sep"> / </span>',
         '<span class="tier-personal">' + valueFormatter(split.personal) + "</span>",
         '<span class="split-sep"> / </span>',
-        '<span class="tier-pro">' + valueFormatter(split.commercial) + "</span>",
+        '<span class="tier-commercial">' + valueFormatter(split.commercial) + "</span>",
       ].join("");
     };
     const renderTierSplit = (id, values, asGb = false, fallbackTotal = 0) => {
@@ -326,7 +326,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     const encodeDataValue = (v) => encodeURIComponent(String(v || ""));
     const tierClass = (planCode) => {
       const tier = normalizePlanCode(planCode);
-      if (tier === "pro") return "tier-pro";
+      if (tier === "commercial") return "tier-commercial";
       if (tier === "personal") return "tier-personal";
       return "tier-free";
     };
@@ -354,7 +354,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         tbody.appendChild(tr);
       }
     }
-    function renderCloudflareBillableUsage(payload) {
+    function renderCloudBillableUsage(payload) {
       const data = payload && typeof payload === "object" ? payload : {};
       const available = Boolean(data.available);
       const bucket = String(data.bucket_filter || "").trim();
@@ -364,8 +364,8 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
             + String(data.source || "telemetry_estimate").replace(/cloudflare/gi, "cloud")
             + ". Period: " + String(data.period_start || "-")
             + " -> " + String(data.period_end || "-"))
-          : ("Cloud GraphQL live data. Source: "
-            + String(data.source || "cloudflare_graphql").replace(/cloudflare/gi, "cloud")
+          : ("Cloud live data. Source: "
+            + String(data.source || "cloud_live").replace(/cloudflare/gi, "cloud")
             + ". Bucket: " + (bucket || "all buckets")
             + ". Period: " + String(data.period_start || "-")
             + " -> " + String(data.period_end || "-")))
@@ -400,7 +400,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     }
     const TILE_COLOR_FREE = "#ffffff";
     const TILE_COLOR_PERSONAL = "#22c55e";
-    const TILE_COLOR_PRO = "#ef4444";
+    const TILE_COLOR_COMMERCIAL = "#ef4444";
     const TILE_MAP_BASEMAP_URL = "/admin/analytics/world-map.jpg";
     let tileMapBaseImage = null;
     let tileMapBaseImageState = "idle";
@@ -408,26 +408,26 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     let tileMapSelectedUserKey = "";
     function normalizePlanCode(planCode) {
       const normalized = String(planCode || "").trim().toLowerCase();
-      if (normalized === "planetka_pro" || normalized === "pro" || normalized === "planetka_studio" || normalized === "studio") {
-        return "pro";
+      if (normalized === "commercial") {
+        return "commercial";
       }
-      if (normalized === "planetka" || normalized === "personal" || normalized === "basic" || normalized === "lite" || normalized === "indie") {
+      if (normalized === "personal") {
         return "personal";
       }
-      if (normalized === "free" || normalized === "trial" || normalized === "planetka_free") {
+      if (normalized === "free") {
         return "free";
       }
-      return "personal";
+      return "free";
     }
     function planLabel(planCode) {
       const tier = normalizePlanCode(planCode);
-      if (tier === "pro") return "Commercial";
+      if (tier === "commercial") return "Commercial";
       if (tier === "personal") return "Personal";
       return "Free";
     }
     function planColor(planCode) {
       const tier = normalizePlanCode(planCode);
-      if (tier === "pro") return TILE_COLOR_PRO;
+      if (tier === "commercial") return TILE_COLOR_COMMERCIAL;
       if (tier === "personal") return TILE_COLOR_PERSONAL;
       return TILE_COLOR_FREE;
     }
@@ -574,7 +574,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         const userId = String(row && row.user_id || "").trim();
         const userEmail = String(row && row.user_email || "").trim();
         const userKey = String(item.userKey || userId || userEmail || "unknown");
-        const userStatus = String(row && row.user_status || "planetka").trim().toLowerCase();
+        const userStatus = String(row && row.user_status || "free").trim().toLowerCase();
         const userColor = planColor(userStatus);
         const alpha = tileAlphaByD(parsed);
         const x = parsed.x * scaleX;
@@ -663,8 +663,8 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         unblock: "/admin/users/unblock",
         "hard-block": "/admin/users/hard-block",
         "set-free": "/admin/users/set-plan",
-        "set-lite": "/admin/users/set-plan",
-        "set-pro": "/admin/users/set-plan",
+        "set-personal": "/admin/users/set-plan",
+        "set-commercial": "/admin/users/set-plan",
       };
       const endpoint = endpointByAction[safeAction];
       if (!endpoint) {
@@ -677,8 +677,8 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         unblock: "Unblock this user account now?",
         "hard-block": "Hard block this user and block same-computer attempts?",
         "set-free": "Set this account to Free?",
-        "set-lite": "Downgrade this account to Personal?",
-        "set-pro": "Upgrade this account to Commercial?",
+        "set-personal": "Downgrade this account to Personal?",
+        "set-commercial": "Upgrade this account to Commercial?",
       };
       if (!window.confirm(confirmation[safeAction] || "Confirm action?")) {
         return;
@@ -688,16 +688,16 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         payload.user_id = safeUserId;
       }
       if (safeAction === "unblock") {
-        payload.plan_code = (!safePlanCode || safePlanCode === "blocked") ? "lite" : safePlanCode;
+        payload.plan_code = (!safePlanCode || safePlanCode === "blocked") ? "personal" : safePlanCode;
       }
-      if (safeAction === "set-lite") {
-        payload.plan_code = "lite";
+      if (safeAction === "set-personal") {
+        payload.plan_code = "personal";
       }
       if (safeAction === "set-free") {
         payload.plan_code = "free";
       }
-      if (safeAction === "set-pro") {
-        payload.plan_code = "pro";
+      if (safeAction === "set-commercial") {
+        payload.plan_code = "commercial";
       }
       statusEl.textContent = "Applying action...";
       statusEl.className = "muted";
@@ -761,17 +761,17 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         setText("authRefreshTotal", fmtInt(refreshTotal));
         setText("authRefreshFailures", fmtInt(refreshFailures));
         setText("authRefreshFailureRate", refreshFailureRate.toFixed(2) + "%");
-        renderCloudflareBillableUsage(data.cloudflare_billable_usage || {});
+        renderCloudBillableUsage(data.cloudflare_billable_usage || {});
         renderRows("activeUsersTable", data.active_users_10m, (row) => {
           const normalizedPlan = normalizePlanCode(row && row.user_status);
-          const tier = normalizedPlan === "pro" ? "Commercial" : (normalizedPlan === "personal" ? "Personal" : "Free");
+          const tier = normalizedPlan === "commercial" ? "Commercial" : (normalizedPlan === "personal" ? "Personal" : "Free");
           const tierCss = tierClass(normalizedPlan);
           return \`<td class="\${tierCss}">\${row.user_email || ""}</td><td class="\${tierCss}">\${tier}</td><td>\${fmtInt(row.request_count)}</td><td>\${fmtInt(row.resolve_count)}</td><td>\${fmtGb(row.bytes_served)}</td><td>\${row.last_seen_at || ""}</td>\`;
         });
         renderRows("heavyTable", data.heavy_users_30d || [], (row) => {
-          const rawPlanCode = String(row.user_status || "planetka").trim().toLowerCase();
+          const rawPlanCode = String(row.user_status || "free").trim().toLowerCase();
           const normalizedPlan = normalizePlanCode(rawPlanCode);
-          const planLabelText = normalizedPlan === "pro" ? "Commercial" : (normalizedPlan === "personal" ? "Personal" : "Free");
+          const planLabelText = normalizedPlan === "commercial" ? "Commercial" : (normalizedPlan === "personal" ? "Personal" : "Free");
           const tierCss = tierClass(normalizedPlan);
           const lastSeen = Number.isFinite(Number(row.last_event_unix))
             ? new Date(Number(row.last_event_unix) * 1000).toISOString()
@@ -818,8 +818,8 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
       performUserAction(actionName, "", email, "");
     };
     if (setFreeBtn) setFreeBtn.addEventListener("click", () => runManualUserAction("set-free"));
-    if (setLiteBtn) setLiteBtn.addEventListener("click", () => runManualUserAction("set-lite"));
-    if (setProBtn) setProBtn.addEventListener("click", () => runManualUserAction("set-pro"));
+    if (setPersonalBtn) setPersonalBtn.addEventListener("click", () => runManualUserAction("set-personal"));
+    if (setCommercialBtn) setCommercialBtn.addEventListener("click", () => runManualUserAction("set-commercial"));
     if (blockBtn) blockBtn.addEventListener("click", () => runManualUserAction("block"));
     if (unblockBtn) unblockBtn.addEventListener("click", () => runManualUserAction("unblock"));
     if (windowEl) windowEl.addEventListener("change", loadAnalytics);

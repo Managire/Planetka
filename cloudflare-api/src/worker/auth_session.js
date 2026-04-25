@@ -159,11 +159,11 @@ export async function requireAuthenticatedUserContext(request, env, options = {}
   if (deps.isBlockedStatus(user.status)) {
     return { error: deps.blockedAccountResponse(env) };
   }
-  user = await deps.enforceUserPlanPolicy(db, user, null, env);
+  user = await deps.enforceUserPlanPolicy(db, user, env);
   if (!user) {
     return { error: deps.json({ ok: false, error: "user_not_found" }, 404, env) };
   }
-  const planCode = deps.resolvePlanCode(user, null, env);
+  const planCode = deps.resolvePlanCode(user, env);
   let devicePolicy = null;
   if (enforceApiKeyDevicePolicy && authMethod === "api_key" && apiKeyId) {
     const keyUsable = await deps.isApiKeyUsableById(db, apiKeyId, String(user.id || ""));

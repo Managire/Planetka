@@ -37,17 +37,13 @@ DEFAULT_API_KEY_REQUEST_URL = str(
 
 ACCOUNT_TIER_FREE = "free"
 ACCOUNT_TIER_PERSONAL = "personal"
-# Backward-compat alias for older local prefs/payloads.
-ACCOUNT_TIER_LITE = "lite"
-ACCOUNT_TIER_PRO = "pro"
+ACCOUNT_TIER_COMMERCIAL = "commercial"
 PLAN_CODE_FREE = "free"
-PLAN_CODE_LITE = "lite"
-PLAN_CODE_PRO = "pro"
-PLAN_CODE_PLANETKA = "planetka"
-PLAN_CODE_PLANETKA_PRO = "planetka_pro"
-PLAN_NAME_FREE = "Planetka Free"
-PLAN_NAME_PERSONAL = "Planetka Personal"
-PLAN_NAME_PRO = "Planetka Commercial"
+PLAN_CODE_PERSONAL = "personal"
+PLAN_CODE_COMMERCIAL = "commercial"
+PLAN_NAME_FREE = "Free"
+PLAN_NAME_PERSONAL = "Personal"
+PLAN_NAME_COMMERCIAL = "Commercial"
 _ADDON_VERSION_CACHE = None
 class AuthApiError(RuntimeError):
     def __init__(self, status, error, payload=None):
@@ -87,17 +83,15 @@ def describe_auth_error(error):
 
 def _normalize_account_tier(value):
     plan_code = _normalize_plan_code(value)
-    if plan_code == PLAN_CODE_PRO:
-        return ACCOUNT_TIER_PRO
-    if plan_code == PLAN_CODE_LITE:
+    if plan_code == PLAN_CODE_COMMERCIAL:
+        return ACCOUNT_TIER_COMMERCIAL
+    if plan_code == PLAN_CODE_PERSONAL:
         return ACCOUNT_TIER_PERSONAL
     if plan_code == PLAN_CODE_FREE:
         return ACCOUNT_TIER_FREE
     tier = str(value or "").strip().lower()
-    if tier in {ACCOUNT_TIER_FREE, ACCOUNT_TIER_PRO, ACCOUNT_TIER_PERSONAL, ACCOUNT_TIER_LITE}:
-        return ACCOUNT_TIER_PERSONAL if tier in {ACCOUNT_TIER_PERSONAL, ACCOUNT_TIER_LITE} else tier
-    if tier in {"indie", "studio"}:
-        return ACCOUNT_TIER_PERSONAL if tier == "indie" else ACCOUNT_TIER_PRO
+    if tier in {ACCOUNT_TIER_FREE, ACCOUNT_TIER_PERSONAL, ACCOUNT_TIER_COMMERCIAL}:
+        return tier
     return ""
 
 
@@ -105,35 +99,22 @@ def _normalize_plan_code(value):
     token = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
     if token in {"", "none", "null"}:
         return ""
-    if token in {PLAN_CODE_FREE, "trial"}:
+    if token == PLAN_CODE_FREE:
         return PLAN_CODE_FREE
-    if token in {"indie", "creator"}:
-        return PLAN_CODE_LITE
-    if token in {PLAN_CODE_LITE, PLAN_CODE_PLANETKA, "basic", "personal"}:
-        return PLAN_CODE_LITE
-    if token in {
-        PLAN_CODE_PRO,
-        PLAN_CODE_PLANETKA_PRO,
-        "pro",
-        "planetkapro",
-        "planetka_pro_monthly",
-        "commercial",
-        "planetka_commercial",
-        "planetka_commercial_monthly",
-    }:
-        return PLAN_CODE_PRO
-    if token in {"planetka_studio", "studio", "enterprise"}:
-        return PLAN_CODE_PRO
+    if token == PLAN_CODE_PERSONAL:
+        return PLAN_CODE_PERSONAL
+    if token == PLAN_CODE_COMMERCIAL:
+        return PLAN_CODE_COMMERCIAL
     return token
 
 
 def _plan_name_for_code(plan_code):
     safe = _normalize_plan_code(plan_code)
-    if safe == PLAN_CODE_PRO:
-        return PLAN_NAME_PRO
+    if safe == PLAN_CODE_COMMERCIAL:
+        return PLAN_NAME_COMMERCIAL
     if safe == PLAN_CODE_FREE:
         return PLAN_NAME_FREE
-    if safe == PLAN_CODE_LITE:
+    if safe == PLAN_CODE_PERSONAL:
         return PLAN_NAME_PERSONAL
     return ""
 
@@ -195,9 +176,7 @@ def _extract_plan(payload):
         _first_non_empty(
             plan_obj.get("code"),
             payload.get("plan_code"),
-            payload.get("account_plan"),
             payload.get("account_tier"),
-            payload.get("tier"),
         ),
     )
     if not code:
@@ -217,12 +196,12 @@ def _extract_plan(payload):
 
 def _derive_commercial_use_allowed(plan_code):
     safe = _normalize_plan_code(plan_code)
-    return bool(safe in {PLAN_CODE_PRO})
+    return bool(safe == PLAN_CODE_COMMERCIAL)
 
 
 def _extract_commercial_use_allowed(payload, plan=None):
     if not isinstance(payload, dict):
-        code = plan["code"] if isinstance(plan, dict) else PLAN_CODE_LITE
+        code = plan["code"] if isinstance(plan, dict) else PLAN_CODE_FREE
         return _derive_commercial_use_allowed(code)
 
     plan_obj = payload.get("plan")
@@ -388,32 +367,20 @@ def get_account_tier(prefs=None):
     return _normalize_account_tier(get_plan_code(prefs)) or ACCOUNT_TIER_FREE
 
 
-def is_pro_account(prefs=None):
-    return get_account_tier(prefs) == ACCOUNT_TIER_PRO
-
-
-def is_studio_account(prefs=None):
-    return False
+def is_commercial_account(prefs=None):
+    return get_account_tier(prefs) == ACCOUNT_TIER_COMMERCIAL
 
 
 def is_free_account(prefs=None):
     return get_account_tier(prefs) == ACCOUNT_TIER_FREE
 
 
-def is_lite_account(prefs=None):
-    return get_account_tier(prefs) in {ACCOUNT_TIER_PERSONAL, ACCOUNT_TIER_LITE}
-
-
 def is_personal_account(prefs=None):
     return get_account_tier(prefs) == ACCOUNT_TIER_PERSONAL
 
 
-def is_indie_account(prefs=None):
-    return False
-
-
 def allows_balanced_full_quality(prefs=None):
-    return is_lite_account(prefs) or is_pro_account(prefs)
+    return is_personal_account(prefs) or is_commercial_account(prefs)
 
 
 def _normalize_texture_quality_token(value):
@@ -432,17 +399,17 @@ def _is_high_quality_mode(value):
 def allows_balanced_for_context(prefs=None, source=None):
     del source
     tier = get_account_tier(prefs)
-    return tier in {ACCOUNT_TIER_PERSONAL, ACCOUNT_TIER_LITE, ACCOUNT_TIER_PRO}
+    return tier in {ACCOUNT_TIER_PERSONAL, ACCOUNT_TIER_COMMERCIAL}
 
 
 def allows_full_quality_for_context(prefs=None, source=None):
     del source
-    return get_account_tier(prefs) == ACCOUNT_TIER_PRO
+    return get_account_tier(prefs) == ACCOUNT_TIER_COMMERCIAL
 
 
 def allows_animation_render_for_context(prefs=None, source=None):
     del source
-    return get_account_tier(prefs) == ACCOUNT_TIER_PRO
+    return get_account_tier(prefs) == ACCOUNT_TIER_COMMERCIAL
 
 
 def requires_d090_cap_for_context(prefs=None, source=None):
@@ -457,9 +424,9 @@ def allows_balanced_full_quality_for_context(prefs=None, source=None, requested_
     if mode == "PREVIEW":
         return True
     if mode == "BALANCED":
-        return tier in {ACCOUNT_TIER_PERSONAL, ACCOUNT_TIER_LITE, ACCOUNT_TIER_PRO}
+        return tier in {ACCOUNT_TIER_PERSONAL, ACCOUNT_TIER_COMMERCIAL}
     if mode == "FULL":
-        return tier == ACCOUNT_TIER_PRO
+        return tier == ACCOUNT_TIER_COMMERCIAL
     return False
 
 

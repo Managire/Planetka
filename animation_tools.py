@@ -113,14 +113,14 @@ def _format_frame_timecode(scene, frame_value):
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{centiseconds:02d}"
 
 
-def _require_pro_animation_render_access(operator, prefs=None):
+def _require_commercial_animation_render_access(operator, prefs=None):
     del operator, prefs
     return True
 
 
 def _require_full_animation_access(operator, prefs=None):
     tier = str(get_account_tier(prefs) or "").strip().lower()
-    if tier == "pro":
+    if tier == "commercial":
         return True
     if operator is not None:
         operator.report({'ERROR'}, "Final Animation Rendering requires Commercial licence.")
@@ -2631,7 +2631,7 @@ class PLANETKA_OT_AnimationPreviewShot(bpy.types.Operator):
             return {'CANCELLED'}
 
         prefs = get_prefs()
-        if not _require_pro_animation_render_access(self, prefs):
+        if not _require_commercial_animation_render_access(self, prefs):
             return {'CANCELLED'}
         try:
             start_frame, end_frame = apply_cinematic_preview(scene, props)

@@ -30,7 +30,7 @@ export function createAuthCore(deps) {
 
   async function issueApiKeyForUser(db, env, user, planCode, options = {}) {
     await deps.ensureApiKeyTables(db);
-    const safePlan = deps.normalizeRequestedPlan(planCode || user.status || deps.PLAN_CODE_PLANETKA);
+    const safePlan = deps.normalizeRequestedPlan(planCode || user.status || deps.PLAN_CODE_FREE);
     const token = `pka_${deps.randomToken(36)}`;
     const keyHash = await deps.sha256Hex(token);
     const keyPrefix = String(token.slice(0, 16));
@@ -62,7 +62,7 @@ export function createAuthCore(deps) {
         issuedAt,
       ],
     );
-    if (safePlan === deps.PLAN_CODE_PLANETKA_FREE) {
+    if (safePlan === deps.PLAN_CODE_FREE) {
       await deps.enforceSingleActiveFreeApiKey(
         db,
         String(user && user.id || "").trim(),
@@ -278,13 +278,12 @@ export function createAuthCore(deps) {
     };
   }
 
-  async function createAccessToken(env, user, subscription, extraClaims = {}) {
-    void subscription;
+  async function createAccessToken(env, user, extraClaims = {}) {
     const secret = deps.requireSecret(env, "JWT_SIGNING_SECRET");
     const exp = Math.floor(Date.now() / 1000) + (60 * 60);
     const effectivePlanCode = deps.normalizeRequestedPlan(
-      deps.resolvePolicyPlanCode(user, subscription, env),
-    ) || deps.PLAN_CODE_PLANETKA_FREE;
+      deps.resolvePolicyPlanCode(user, env),
+    ) || deps.PLAN_CODE_FREE;
     const basePayload = {
       type: "access",
       sub: user.id,

@@ -169,8 +169,8 @@ def main() -> int:
             (
                 "public API key request forces Free plan",
                 [
-                    "const requestedPlan = PLAN_CODE_PLANETKA_FREE;",
-                    "const requestedPlan = deps.PLAN_CODE_PLANETKA_FREE;",
+                    "const requestedPlan = PLAN_CODE_FREE;",
+                    "const requestedPlan = deps.PLAN_CODE_FREE;",
                 ],
             ),
         ]
@@ -202,7 +202,7 @@ def main() -> int:
                 "(expected checks for both /admin/analytics and /admin/analytics/data)."
             )
 
-    # 8) Legacy auth/metering/claim systems must be absent from the worker surface
+    # 8) Legacy auth/throttle/claim systems must be absent from the worker surface
     if worker_src:
         forbidden_worker_markers = [
             ("legacy auth route", '"/auth/start"'),
@@ -210,7 +210,7 @@ def main() -> int:
             ("legacy device-login route", '"/device/start"'),
             ("legacy device-login route", '"/device/poll"'),
             ("legacy device-login route", '"/device/login"'),
-            ("download metering table", "user_download_counters"),
+            ("legacy download table", "user_download_counters"),
             ("download throttle config", "DOWNLOAD_THROTTLE_"),
             ("download throttle response", "download_throttled"),
             ("legacy paid-claim workflow", "paid_claim_workflow_disabled"),

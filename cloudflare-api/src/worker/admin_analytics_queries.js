@@ -191,20 +191,20 @@ function buildAnalyticsExcludedEmailFilter(emailColumnSql, env = {}, deps) {
 }
 
 function buildTileActivityPlanFilterSql(planFilter, deps) {
-  if (planFilter === "lite") {
+  if (planFilter === "personal") {
     return {
       clause: `
         AND COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) = ?
       `,
-      bindings: [deps.PLAN_CODE_PLANETKA, deps.PLAN_CODE_PLANETKA],
+      bindings: [deps.PLAN_CODE_PERSONAL, deps.PLAN_CODE_PERSONAL],
     };
   }
-  if (planFilter === "pro") {
+  if (planFilter === "commercial") {
     return {
       clause: `
-        AND COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) IN (?, ?)
+        AND COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) = ?
       `,
-      bindings: [deps.PLAN_CODE_PLANETKA, deps.PLAN_CODE_PLANETKA_PRO, deps.PLAN_CODE_PLANETKA_STUDIO],
+      bindings: [deps.PLAN_CODE_PERSONAL, deps.PLAN_CODE_COMMERCIAL],
     };
   }
   return { clause: "", bindings: [] };
@@ -212,23 +212,14 @@ function buildTileActivityPlanFilterSql(planFilter, deps) {
 
 export function parseHeavyUserPlanFilter(value, deps) {
   const normalized = String(value || "all").trim().toLowerCase();
-  if (
-    normalized === "trial"
-    || normalized === "free"
-    || normalized === "lite"
-    || normalized === deps.PLAN_CODE_PLANETKA
-  ) {
-    return "lite";
+  if (normalized === "free") {
+    return "free";
   }
-  if (
-    normalized === "active"
-    || normalized === "paid"
-    || normalized === "pro"
-    || normalized === deps.PLAN_CODE_PLANETKA_PRO
-    || normalized === deps.PLAN_CODE_PLANETKA_STUDIO
-    || normalized === "studio"
-  ) {
-    return "pro";
+  if (normalized === deps.PLAN_CODE_PERSONAL) {
+    return "personal";
+  }
+  if (normalized === deps.PLAN_CODE_COMMERCIAL) {
+    return "commercial";
   }
   return "all";
 }
@@ -318,9 +309,9 @@ async function fetchCloudflareR2BillableUsage(env, db = null, deps) {
     } catch (_error) {
       return {
         available: false,
-        source: "cloud_graphql",
+        source: "cloud_live",
         reason: "not_configured",
-        message: "Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_GRAPHQL_API_TOKEN to display billable usage.",
+        message: "Cloud billing credentials are not configured.",
       };
     }
   }
@@ -424,7 +415,7 @@ async function fetchCloudflareR2BillableUsage(env, db = null, deps) {
       } catch (_error) {
         return {
           available: false,
-          source: "cloud_graphql",
+          source: "cloud_live",
           reason: "query_failed",
           message: errorMessage,
         };
@@ -493,7 +484,7 @@ async function fetchCloudflareR2BillableUsage(env, db = null, deps) {
 
     const result = {
       available: true,
-      source: "cloud_graphql",
+      source: "cloud_live",
       period_start: startDate,
       period_end: endDate,
       bucket_filter: bucketName || "",
@@ -541,7 +532,7 @@ async function fetchCloudflareR2BillableUsage(env, db = null, deps) {
     } catch (__error) {
       return {
         available: false,
-        source: "cloud_graphql",
+        source: "cloud_live",
         reason: "request_failed",
         message: deps.publicErrorMessage("Usage data is temporarily unavailable."),
       };
@@ -601,8 +592,8 @@ export async function collectAnalyticsSnapshot(
       WITH users_normalized AS (
         SELECT
           CASE
-            WHEN LOWER(COALESCE(status, '')) IN ('pro', 'planetka_pro', 'planetka_studio', 'studio') THEN 'commercial'
-            WHEN LOWER(COALESCE(status, '')) IN ('lite', 'planetka', 'personal', 'basic', 'indie') THEN 'personal'
+            WHEN LOWER(COALESCE(status, '')) = 'commercial' THEN 'commercial'
+            WHEN LOWER(COALESCE(status, '')) = 'personal' THEN 'personal'
             ELSE 'free'
           END AS tier_code
         FROM users
@@ -633,17 +624,17 @@ export async function collectAnalyticsSnapshot(
         ${rollupEmailFilterAliasR.condition ? `AND ${rollupEmailFilterAliasR.condition}` : ""}
       )
       SELECT
-        COALESCE(SUM(CASE WHEN plan_norm IN ('free', 'planetka_free', 'trial') THEN request_count ELSE 0 END), 0) AS free_requests,
-        COALESCE(SUM(CASE WHEN plan_norm IN ('lite', 'planetka', 'personal', 'basic', 'indie') THEN request_count ELSE 0 END), 0) AS personal_requests,
-        COALESCE(SUM(CASE WHEN plan_norm IN ('pro', 'planetka_pro', 'planetka_studio', 'studio') THEN request_count ELSE 0 END), 0) AS commercial_requests,
+        COALESCE(SUM(CASE WHEN plan_norm = 'free' THEN request_count ELSE 0 END), 0) AS free_requests,
+        COALESCE(SUM(CASE WHEN plan_norm = 'personal' THEN request_count ELSE 0 END), 0) AS personal_requests,
+        COALESCE(SUM(CASE WHEN plan_norm = 'commercial' THEN request_count ELSE 0 END), 0) AS commercial_requests,
         COALESCE(SUM(request_count), 0) AS total_requests,
-        COALESCE(SUM(CASE WHEN plan_norm IN ('free', 'planetka_free', 'trial') THEN bytes_served ELSE 0 END), 0) AS free_bytes,
-        COALESCE(SUM(CASE WHEN plan_norm IN ('lite', 'planetka', 'personal', 'basic', 'indie') THEN bytes_served ELSE 0 END), 0) AS personal_bytes,
-        COALESCE(SUM(CASE WHEN plan_norm IN ('pro', 'planetka_pro', 'planetka_studio', 'studio') THEN bytes_served ELSE 0 END), 0) AS commercial_bytes,
+        COALESCE(SUM(CASE WHEN plan_norm = 'free' THEN bytes_served ELSE 0 END), 0) AS free_bytes,
+        COALESCE(SUM(CASE WHEN plan_norm = 'personal' THEN bytes_served ELSE 0 END), 0) AS personal_bytes,
+        COALESCE(SUM(CASE WHEN plan_norm = 'commercial' THEN bytes_served ELSE 0 END), 0) AS commercial_bytes,
         COALESCE(SUM(bytes_served), 0) AS total_bytes
       FROM traffic
     `,
-    [deps.PLAN_CODE_PLANETKA_FREE, ...rollupEmailFilterAliasR.bindings],
+    [deps.PLAN_CODE_FREE, ...rollupEmailFilterAliasR.bindings],
   );
 
   const topLineResolves = await deps.dbGet(
@@ -662,13 +653,13 @@ export async function collectAnalyticsSnapshot(
           ${eventEmailFilterAliasE.condition ? `AND ${eventEmailFilterAliasE.condition}` : ""}
       )
       SELECT
-        COALESCE(SUM(CASE WHEN plan_norm IN ('free', 'planetka_free', 'trial') THEN 1 ELSE 0 END), 0) AS free_resolves,
-        COALESCE(SUM(CASE WHEN plan_norm IN ('lite', 'planetka', 'personal', 'basic', 'indie') THEN 1 ELSE 0 END), 0) AS personal_resolves,
-        COALESCE(SUM(CASE WHEN plan_norm IN ('pro', 'planetka_pro', 'planetka_studio', 'studio') THEN 1 ELSE 0 END), 0) AS commercial_resolves,
+        COALESCE(SUM(CASE WHEN plan_norm = 'free' THEN 1 ELSE 0 END), 0) AS free_resolves,
+        COALESCE(SUM(CASE WHEN plan_norm = 'personal' THEN 1 ELSE 0 END), 0) AS personal_resolves,
+        COALESCE(SUM(CASE WHEN plan_norm = 'commercial' THEN 1 ELSE 0 END), 0) AS commercial_resolves,
         COUNT(*) AS total_resolves
       FROM tagged_resolves
     `,
-    [deps.PLAN_CODE_PLANETKA_FREE, ...eventEmailFilterAliasE.bindings],
+    [deps.PLAN_CODE_FREE, ...eventEmailFilterAliasE.bindings],
   );
 
   const activeWindow6mStartUnix = Math.max(0, nowUnix - (180 * 86400));
@@ -696,10 +687,10 @@ export async function collectAnalyticsSnapshot(
         COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?)
     `,
     [
-      deps.PLAN_CODE_PLANETKA_FREE,
+      deps.PLAN_CODE_FREE,
       activeWindow6mStartUnix,
       ...eventEmailFilterAliasE.bindings,
-      deps.PLAN_CODE_PLANETKA_FREE,
+      deps.PLAN_CODE_FREE,
     ],
   );
 
@@ -727,8 +718,8 @@ export async function collectAnalyticsSnapshot(
   ];
   const resolveAnalyticsTierCode = (planValue) => {
     const normalized = deps.normalizePlanCode(planValue);
-    if (normalized === deps.PLAN_CODE_PLANETKA_PRO) return "commercial";
-    if (normalized === deps.PLAN_CODE_PLANETKA) return "personal";
+    if (normalized === deps.PLAN_CODE_COMMERCIAL) return "commercial";
+    if (normalized === deps.PLAN_CODE_PERSONAL) return "personal";
     return "free";
   };
   for (const row of (Array.isArray(activeUserRows) ? activeUserRows : [])) {
@@ -782,10 +773,10 @@ export async function collectAnalyticsSnapshot(
         ORDER BY MAX(e.created_at_unix) DESC, bytes_served DESC
       `,
       [
-        deps.PLAN_CODE_PLANETKA,
+        deps.PLAN_CODE_PERSONAL,
         Math.max(0, nowUnix - 600),
         ...eventEmailFilterAliasE.bindings,
-        deps.PLAN_CODE_PLANETKA,
+        deps.PLAN_CODE_PERSONAL,
       ],
     );
   } catch (error) {
@@ -812,14 +803,14 @@ export async function collectAnalyticsSnapshot(
   const topUsers = await deps.dbAll(
     db,
     `
-      SELECT
-        e.user_id,
-        e.user_email,
-        COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) AS user_status,
-        COUNT(*) AS request_count,
-        COALESCE(COUNT(DISTINCT CASE WHEN e.resolve_id IS NOT NULL AND e.resolve_id != '' THEN e.resolve_id END), 0) AS resolve_count,
-        COALESCE(SUM(e.bytes_served), 0) AS bytes_served,
-        COALESCE(SUM(CASE WHEN e.status_code >= 400 THEN 1 ELSE 0 END), 0) AS error_count,
+        SELECT
+          e.user_id,
+          e.user_email,
+          COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) AS user_status,
+          COUNT(*) AS request_count,
+          COALESCE(COUNT(DISTINCT CASE WHEN e.resolve_id IS NOT NULL AND e.resolve_id != '' THEN e.resolve_id END), 0) AS resolve_count,
+          COALESCE(SUM(e.bytes_served), 0) AS bytes_served,
+          COALESCE(SUM(CASE WHEN e.status_code >= 400 THEN 1 ELSE 0 END), 0) AS error_count,
         MAX(e.created_at) AS last_seen_at
       FROM tile_request_events e
       LEFT JOIN users u ON u.id = e.user_id
@@ -829,7 +820,7 @@ export async function collectAnalyticsSnapshot(
       ORDER BY request_count DESC
       LIMIT 20
     `,
-    [deps.PLAN_CODE_PLANETKA, windowStartUnix, ...eventEmailFilterAliasE.bindings, deps.PLAN_CODE_PLANETKA],
+    [deps.PLAN_CODE_PERSONAL, windowStartUnix, ...eventEmailFilterAliasE.bindings, deps.PLAN_CODE_PERSONAL],
   );
 
   const topTiles = await deps.dbAll(
@@ -889,11 +880,11 @@ export async function collectAnalyticsSnapshot(
       LIMIT ${tileMapRowLimit}
     `,
     [
-      deps.PLAN_CODE_PLANETKA,
+      deps.PLAN_CODE_PERSONAL,
       tileMapStartUnix,
       ...eventEmailFilterAliasE.bindings,
       ...tileActivityFilter.bindings,
-      deps.PLAN_CODE_PLANETKA,
+      deps.PLAN_CODE_PERSONAL,
     ],
   );
 
@@ -913,7 +904,7 @@ export async function collectAnalyticsSnapshot(
     return {
       user_id: userId,
       user_email: userEmail,
-      user_status: String(row && row.user_status || deps.PLAN_CODE_PLANETKA).trim().toLowerCase() || deps.PLAN_CODE_PLANETKA,
+      user_status: String(row && row.user_status || deps.PLAN_CODE_FREE).trim().toLowerCase() || deps.PLAN_CODE_FREE,
       tile_key: tileKey,
       last_seen_unix: deps.clampNonNegativeInt(row && row.last_seen_unix),
       request_count: deps.clampNonNegativeInt(row && row.request_count),
@@ -1041,20 +1032,20 @@ export async function collectAnalyticsSnapshot(
 
   const heavyWhereParts = [];
   const heavyBindings = [
-    deps.PLAN_CODE_PLANETKA_FREE,
+    deps.PLAN_CODE_FREE,
     deps.monthStartUnix(nowUnix),
     deps.startOfWeekUnix(nowUnix),
     deps.startOfDayUnix(nowUnix),
     deps.monthStartUnix(nowUnix),
-    deps.PLAN_CODE_PLANETKA_FREE,
+    deps.PLAN_CODE_FREE,
     deps.startOfHourUnix(nowUnix),
   ];
-  if (safePlanFilter === "lite") {
+  if (safePlanFilter === "personal") {
     heavyWhereParts.push(`agg.user_status = ?`);
-    heavyBindings.push(deps.PLAN_CODE_PLANETKA);
-  } else if (safePlanFilter === "pro") {
-    heavyWhereParts.push(`agg.user_status IN (?, ?)`);
-    heavyBindings.push(deps.PLAN_CODE_PLANETKA_PRO, deps.PLAN_CODE_PLANETKA_STUDIO);
+    heavyBindings.push(deps.PLAN_CODE_PERSONAL);
+  } else if (safePlanFilter === "commercial") {
+    heavyWhereParts.push(`agg.user_status = ?`);
+    heavyBindings.push(deps.PLAN_CODE_COMMERCIAL);
   }
   if (heavyEmailFilter.condition) {
     heavyWhereParts.push(String(heavyEmailFilter.condition));
@@ -1112,7 +1103,7 @@ export async function collectAnalyticsSnapshot(
   let heavyUsers30d = (Array.isArray(topHeavyMonth) ? topHeavyMonth : []).map((row) => ({
     user_id: String(row && row.user_id || "").trim(),
     user_email: deps.normalizeEmail(row && row.user_email || ""),
-    user_status: String(row && row.user_status || deps.PLAN_CODE_PLANETKA).trim().toLowerCase() || deps.PLAN_CODE_PLANETKA,
+    user_status: String(row && row.user_status || deps.PLAN_CODE_FREE).trim().toLowerCase() || deps.PLAN_CODE_FREE,
     month_bytes: deps.clampNonNegativeInt(row && row.month_bytes),
     request_count_month: deps.clampNonNegativeInt(row && row.request_count_month),
     last_event_unix: deps.clampNonNegativeInt(row && row.last_event_unix),
@@ -1173,7 +1164,7 @@ export async function collectAnalyticsSnapshot(
   const normalizedActiveUsers10m = (Array.isArray(activeUsers10m) ? activeUsers10m : []).map((row) => ({
     user_id: String(row && row.user_id || "").trim(),
     user_email: deps.normalizeEmail(row && row.user_email || ""),
-    user_status: String(row && row.user_status || deps.PLAN_CODE_PLANETKA).trim().toLowerCase() || deps.PLAN_CODE_PLANETKA,
+    user_status: String(row && row.user_status || deps.PLAN_CODE_FREE).trim().toLowerCase() || deps.PLAN_CODE_FREE,
     request_count: deps.clampNonNegativeInt(row && row.request_count),
     resolve_count: deps.clampNonNegativeInt(row && row.resolve_count),
     bytes_served: deps.clampNonNegativeInt(row && row.bytes_served),
@@ -1341,12 +1332,12 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
   const emailFilter = buildAnalyticsExcludedEmailFilter("u.email", env, deps);
   const whereParts = [];
   const bindings = [
-    deps.PLAN_CODE_PLANETKA_FREE,
+    deps.PLAN_CODE_FREE,
     deps.monthStartUnix(nowUnix),
     deps.startOfWeekUnix(nowUnix),
     deps.startOfDayUnix(nowUnix),
     deps.startOfHourUnix(nowUnix),
-    deps.PLAN_CODE_PLANETKA_FREE,
+    deps.PLAN_CODE_FREE,
   ];
   if (emailFilter.condition) {
     whereParts.push(emailFilter.condition);

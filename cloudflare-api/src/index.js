@@ -13,16 +13,14 @@ import {
   parsePositiveNumber,
 } from "./worker/env.js";
 import {
-  PLAN_CODE_PLANETKA,
-  PLAN_CODE_PLANETKA_FREE,
-  PLAN_CODE_PLANETKA_PRO,
-  PLAN_CODE_PLANETKA_STUDIO,
+  PLAN_CODE_PERSONAL,
+  PLAN_CODE_FREE,
+  PLAN_CODE_COMMERCIAL,
   accountTierForPlanCode,
   commercialUseAllowed,
   evaluateStripePlanPurchaseGuard,
   isBlockedStatus,
   isDeviceLimitExemptEmail,
-  isPaidRequestedPlan,
   isQualityModeAllowedForPlan,
   normalizePlanCode,
   normalizeQualityMode,
@@ -201,6 +199,7 @@ let authRefreshEventsTableReady = false;
 let apiKeyTablesReady = false;
 let refreshSessionColumnsReady = false;
 let adminHardBlocksTableReady = false;
+let newsletterContactsTableReady = false;
 let rateLimitsLastPruneAt = 0;
 let authContextCache = new Map();
 
@@ -221,10 +220,9 @@ const ANALYTICS_QUERY_DEPS = {
   DEFAULT_R2_STORAGE_FREE_GB_MONTH,
   DEFAULT_R2_STORAGE_PRICE_PER_GB_MONTH_USD,
   MAX_ANALYTICS_WINDOW_MINUTES,
-  PLAN_CODE_PLANETKA,
-  PLAN_CODE_PLANETKA_FREE,
-  PLAN_CODE_PLANETKA_PRO,
-  PLAN_CODE_PLANETKA_STUDIO,
+  PLAN_CODE_PERSONAL,
+  PLAN_CODE_FREE,
+  PLAN_CODE_COMMERCIAL,
   clampNonNegativeInt,
   countRowsFromQuery,
   dbAll,
@@ -288,8 +286,8 @@ const ADMIN_ANALYTICS_DEPS = {
   parseAnalyticsUsersSortDirection: (value) => parseAnalyticsUsersSortDirectionQuery(value),
   parseHeavyUserPlanFilter: (value) => parseHeavyUserPlanFilterQuery(value, ANALYTICS_QUERY_DEPS),
   parseNonNegativeInteger,
-  PLAN_CODE_PLANETKA,
-  PLAN_CODE_PLANETKA_PRO,
+  PLAN_CODE_PERSONAL,
+  PLAN_CODE_COMMERCIAL,
   publicErrorMessage,
   requireAnalyticsAdmin: (request, env) => requireAnalyticsAdmin(request, env, AUTH_SESSION_DEPS),
   sanitizeAnalyticsMinutes: (value, fallback = DEFAULT_ANALYTICS_WINDOW_MINUTES) =>
@@ -317,7 +315,7 @@ const ADMIN_SESSION_DEPS = {
   nowIso,
   parseJson,
   parseRateLimitInteger,
-  PLAN_CODE_PLANETKA_PRO,
+  PLAN_CODE_COMMERCIAL,
   rateLimitedResponse,
   requestClientIp,
   requireAuthenticatedUserContext: (request, env, options) => requireAuthenticatedUserContext(request, env, options, AUTH_SESSION_DEPS),
@@ -343,10 +341,10 @@ const ADMIN_USER_DEPS = {
   json,
   normalizeDeviceId,
   normalizeEmail,
+  normalizePlanCode,
   normalizeRequestedPlan,
   nowIso,
   parseJson,
-  PLAN_CODE_PLANETKA,
   requireAnalyticsAdmin: (request, env) => requireAnalyticsAdmin(request, env, AUTH_SESSION_DEPS),
 };
 
@@ -360,14 +358,15 @@ const BILLING_DEPS = {
   isBlockedStatus,
   json,
   normalizeEmail,
+  normalizePlanCode,
   normalizeRequestedPlan,
   normalizeUserStatus,
   nowIso,
   parsePositiveNumber,
   planDisplayName,
-  PLAN_CODE_PLANETKA,
-  PLAN_CODE_PLANETKA_FREE,
-  PLAN_CODE_PLANETKA_PRO,
+  PLAN_CODE_PERSONAL,
+  PLAN_CODE_FREE,
+  PLAN_CODE_COMMERCIAL,
   requireDb,
   requireSecret,
   resolvePlanCode,
@@ -396,8 +395,8 @@ const PUBLIC_MISC_DEPS = {
 };
 
 const API_KEY_PAGE_DEPS = {
-  PLAN_CODE_PLANETKA,
-  PLAN_CODE_PLANETKA_FREE,
+  PLAN_CODE_PERSONAL,
+  PLAN_CODE_FREE,
   DEFAULT_CONTACT_URL,
   DEFAULT_PRIVACY_URL,
   DEFAULT_TERMS_URL,
@@ -1852,9 +1851,9 @@ function estimateR2MonthlyCostUsd(env, monthlyClassBOps) {
   };
 }
 
-async function buildAccountState(db, user, subscription, env) {
+async function buildAccountState(db, user, env) {
   void db;
-  const planCode = resolvePlanCode(user, subscription, env);
+  const planCode = resolvePlanCode(user, env);
   return {
     planCode,
     commercialUseAllowed: commercialUseAllowed(planCode),
@@ -1914,11 +1913,14 @@ async function findUserById(db, userId) {
   );
 }
 
-async function ensureNewsletterSubscribersTable(db) {
+async function ensureNewsletterContactsTable(db) {
+  if (newsletterContactsTableReady) {
+    return;
+  }
   await dbRun(
     db,
     `
-      CREATE TABLE IF NOT EXISTS newsletter_subscribers (
+      CREATE TABLE IF NOT EXISTS newsletter_contacts (
         id TEXT PRIMARY KEY,
         email TEXT NOT NULL UNIQUE,
         source TEXT NOT NULL DEFAULT 'unknown',
@@ -1929,8 +1931,9 @@ async function ensureNewsletterSubscribersTable(db) {
   );
   await dbRun(
     db,
-    `CREATE INDEX IF NOT EXISTS idx_newsletter_subscribers_last_opt_in ON newsletter_subscribers(last_opt_in_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_newsletter_contacts_last_opt_in ON newsletter_contacts(last_opt_in_at DESC)`,
   );
+  newsletterContactsTableReady = true;
 }
 
 async function ensureStripeWebhookEventsTable(db) {
@@ -1961,12 +1964,12 @@ async function recordNewsletterOptIn(db, email, source = "unknown") {
   if (!normalizedEmail || !normalizedEmail.includes("@")) {
     return;
   }
-  await ensureNewsletterSubscribersTable(db);
+  await ensureNewsletterContactsTable(db);
   const now = nowIso();
   await dbRun(
     db,
     `
-      INSERT INTO newsletter_subscribers (
+      INSERT INTO newsletter_contacts (
         id,
         email,
         source,
@@ -2109,7 +2112,7 @@ async function ensureApiKeyTables(db) {
         key_hash TEXT NOT NULL UNIQUE,
         key_prefix TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'active',
-        plan_code TEXT NOT NULL DEFAULT 'planetka',
+        plan_code TEXT NOT NULL DEFAULT 'free',
         expires_at TEXT,
         issued_at TEXT NOT NULL,
         last_used_at TEXT,
@@ -2202,15 +2205,15 @@ async function ensureRefreshSessionColumns(db) {
   refreshSessionColumnsReady = true;
 }
 
-async function upsertUserByEmail(db, email, status = PLAN_CODE_PLANETKA_FREE, options = {}, env = {}) {
+async function upsertUserByEmail(db, email, status = PLAN_CODE_FREE, options = {}, env = {}) {
   const normalizedEmail = normalizeEmail(email);
   await ensureUserConsentColumns(db);
-  const requestedStatus = normalizePlanCode(status) || PLAN_CODE_PLANETKA_FREE;
+  const requestedStatus = normalizePlanCode(status) || PLAN_CODE_FREE;
   void env;
   let user = await findUserByEmail(db, normalizedEmail);
   if (user) {
     const currentStatus = String(user.status || "").trim().toLowerCase();
-    const nextStatus = String(requestedStatus || "").trim().toLowerCase() || PLAN_CODE_PLANETKA_FREE;
+    const nextStatus = String(requestedStatus || "").trim().toLowerCase() || PLAN_CODE_FREE;
     const protectedStatus = currentStatus === "blocked"
       ? currentStatus
       : (
@@ -2308,17 +2311,16 @@ async function upsertUserByEmail(db, email, status = PLAN_CODE_PLANETKA_FREE, op
   return user;
 }
 
-async function enforceUserPlanPolicy(db, user, subscription = null, env = {}) {
-  void subscription;
+async function enforceUserPlanPolicy(db, user, env = {}) {
   void env;
   if (!user || !user.id || isBlockedStatus(user.status)) {
     return user;
   }
   const targetPlan = normalizeRequestedPlan(user.status);
   if (
-    targetPlan !== PLAN_CODE_PLANETKA_FREE
-    && targetPlan !== PLAN_CODE_PLANETKA
-    && targetPlan !== PLAN_CODE_PLANETKA_PRO
+    targetPlan !== PLAN_CODE_FREE
+    && targetPlan !== PLAN_CODE_PERSONAL
+    && targetPlan !== PLAN_CODE_COMMERCIAL
   ) {
     return user;
   }
@@ -2387,7 +2389,7 @@ async function sendApiKeyActivationEmail(env, email, token) {
       to: [email],
       subject: "Your Planetka API key activation link",
       text: [
-        "Planetka free access request received.",
+        "Planetka API key request received.",
         "",
         "Open this activation link to generate your key:",
         activationUrl,
@@ -2567,8 +2569,8 @@ async function enforceSingleActiveFreeApiKey(db, userId, preferredApiKeyId = "")
 }
 
 const AUTH_CORE_DEPS = {
-  PLAN_CODE_PLANETKA,
-  PLAN_CODE_PLANETKA_FREE,
+  PLAN_CODE_PERSONAL,
+  PLAN_CODE_FREE,
   DEFAULT_API_KEY_DEVICE_ACTIVE_WINDOW_SECONDS,
   DEFAULT_TILE_SESSION_TOKEN_TTL_SECONDS,
   addDaysIso,
@@ -2621,8 +2623,8 @@ const AUTH_API_KEY_DEPS = {
   DEFAULT_RATE_LIMIT_AUTH_START_EMAIL_WINDOW_SECONDS,
   DEFAULT_RATE_LIMIT_AUTH_START_IP_LIMIT,
   DEFAULT_RATE_LIMIT_AUTH_START_IP_WINDOW_SECONDS,
-  PLAN_CODE_PLANETKA,
-  PLAN_CODE_PLANETKA_FREE,
+  PLAN_CODE_PERSONAL,
+  PLAN_CODE_FREE,
   addDaysIso,
   addMinutesIso,
   blockedAccountResponse,
@@ -2679,7 +2681,7 @@ function getAuthApiKeyHandlers() {
 const AUTH_SESSION_ROUTE_DEPS = {
   DEFAULT_RATE_LIMIT_AUTH_REFRESH_IP_LIMIT,
   DEFAULT_RATE_LIMIT_AUTH_REFRESH_IP_WINDOW_SECONDS,
-  PLAN_CODE_PLANETKA,
+  PLAN_CODE_PERSONAL,
   blockedAccountResponse,
   buildAccountState,
   createAccessToken,
@@ -2740,8 +2742,8 @@ async function enforceApiKeyDeviceLimit(db, apiKeyId, userId, userEmail, planCod
   return getAuthCore().enforceApiKeyDeviceLimit(db, apiKeyId, userId, userEmail, planCode, deviceId, request, env);
 }
 
-async function createAccessToken(env, user, subscription, extraClaims = {}) {
-  return getAuthCore().createAccessToken(env, user, subscription, extraClaims);
+async function createAccessToken(env, user, extraClaims = {}) {
+  return getAuthCore().createAccessToken(env, user, extraClaims);
 }
 
 function normalizeResolveId(value) {
@@ -2790,7 +2792,7 @@ async function sendNewUserLoginAlert(env, details = {}) {
   }
   const source = String(details.source || "unknown").trim() || "unknown";
   const createdAt = String(details.createdAt || nowIso()).trim() || nowIso();
-  const planCode = normalizePlanCode(details.planCode || PLAN_CODE_PLANETKA) || PLAN_CODE_PLANETKA;
+  const planCode = normalizeRequestedPlan(details.planCode || PLAN_CODE_FREE) || PLAN_CODE_FREE;
   await sendOpsAlertEmail(
     env,
     "New Planetka user signup/login",
@@ -2833,7 +2835,7 @@ async function handleMe(request, env) {
 }
 
 const TILE_ROUTE_DEPS = {
-  PLAN_CODE_PLANETKA_FREE,
+  PLAN_CODE_FREE,
   clampNonNegativeInt,
   isQualityModeAllowedForPlan,
   isTileHotPathMonitoringEnabled,

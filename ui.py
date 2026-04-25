@@ -424,9 +424,9 @@ def _connected_account_tier():
 
 def _account_tier_label(tier):
     safe_tier = str(tier or "").strip().lower()
-    if safe_tier in {"personal", "lite"}:
+    if safe_tier == "personal":
         return "Personal"
-    if safe_tier == "pro":
+    if safe_tier == "commercial":
         return "Commercial"
     return "Free"
 
@@ -434,11 +434,11 @@ def _account_tier_label(tier):
 def _is_paid_connected_account():
     if not _is_connected():
         return False
-    return _connected_account_tier() in {"lite", "personal", "pro"}
+    return _connected_account_tier() in {"personal", "commercial"}
 
 
 def _full_texture_quality_allowed():
-    return _connected_account_tier() == "pro"
+    return _connected_account_tier() == "commercial"
 
 
 def _is_cloud_source_mode():
@@ -495,7 +495,7 @@ def _api_key_inline_status(prefs, connected, status_message):
     return "Connect failed", "ERROR", True
 
 
-def _draw_subscription(layout):
+def _draw_account_panel(layout):
     layout.use_property_split = False
     layout.use_property_decorate = False
 
@@ -541,7 +541,7 @@ def _draw_subscription(layout):
 
     action_row = layout.row()
     action_row.operator("planetka.account_logout", text="Log Out", icon="X")
-    if tier in {"free", "personal", "lite"}:
+    if tier in {"free", "personal"}:
         action_row.operator("planetka.account_upgrade", text="Upgrade Licence", icon="URL")
     layout.label(text=f"Addon version: {current_version or 'unknown'}", icon="BLENDER")
     if updater_ready and latest_version:
@@ -1214,9 +1214,9 @@ def _draw_atmosphere(layout, context):
                 continue
 
 
-class PLANETKA_PT_SubscriptionPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
+class PLANETKA_PT_AccountPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
     bl_label = "Account"
-    bl_idname = "PLANETKA_PT_subscription"
+    bl_idname = "PLANETKA_PT_account"
     bl_order = 9000
     bl_options = set()
 
@@ -1225,12 +1225,12 @@ class PLANETKA_PT_SubscriptionPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         return (not _is_update_available()) and (not _account_panel_should_default_collapsed(context))
 
     def draw(self, context):
-        _draw_subscription(self.layout)
+        _draw_account_panel(self.layout)
 
 
-class PLANETKA_PT_SubscriptionPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
+class PLANETKA_PT_AccountPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
     bl_label = "Account"
-    bl_idname = "PLANETKA_PT_subscription_collapsed"
+    bl_idname = "PLANETKA_PT_account_collapsed"
     bl_order = 9000
 
     @classmethod
@@ -1238,12 +1238,12 @@ class PLANETKA_PT_SubscriptionPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types
         return _account_panel_should_default_collapsed(context)
 
     def draw(self, context):
-        _draw_subscription(self.layout)
+        _draw_account_panel(self.layout)
 
 
-class PLANETKA_PT_SubscriptionPanelUpdate(_PLANETKA_PT_BaseSection, bpy.types.Panel):
+class PLANETKA_PT_AccountPanelUpdate(_PLANETKA_PT_BaseSection, bpy.types.Panel):
     bl_label = "Account"
-    bl_idname = "PLANETKA_PT_subscription_update"
+    bl_idname = "PLANETKA_PT_account_update"
     bl_order = 9000
     bl_options = set()
 
@@ -1252,7 +1252,7 @@ class PLANETKA_PT_SubscriptionPanelUpdate(_PLANETKA_PT_BaseSection, bpy.types.Pa
         return _is_update_available() and (not _account_panel_should_default_collapsed(context))
 
     def draw(self, context):
-        _draw_subscription(self.layout)
+        _draw_account_panel(self.layout)
 
 
 class PLANETKA_PT_NewEarthPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):

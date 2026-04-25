@@ -78,7 +78,7 @@ export async function handleTileSessionStart(request, env, deps) {
 
 export async function handleTileRequest(request, env, path, ctx, deps) {
   const {
-    PLAN_CODE_PLANETKA_FREE,
+    PLAN_CODE_FREE,
     clampNonNegativeInt,
     isQualityModeAllowedForPlan,
     isTileHotPathMonitoringEnabled,
@@ -105,7 +105,7 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
 
   const db = requireDb(env);
   let user = { id: "", email: "" };
-  let planCode = PLAN_CODE_PLANETKA_FREE;
+  let planCode = PLAN_CODE_FREE;
   let deviceId = "";
   let tokenQualityMode = "";
   let tokenResolveId = "";

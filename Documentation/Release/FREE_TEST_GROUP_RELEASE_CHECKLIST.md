@@ -33,7 +33,8 @@ Public update channel remains on `v0.5.3` until explicit publish.
 - [ ] Current beta policy is stated explicitly: `v0.7.0` beta runs in `unrestricted` access mode, so beta users receive Commercial-equivalent hosted-service access during testing regardless of stored account tier.
 - [ ] Account/tier messaging in UI matches the current backend beta policy.
 - [ ] Core workflows needed for tester validation are available under the current beta policy.
-- [ ] Future public tier rollout (Free / Personal / Commercial) is clearly described as a later enforcement step, not the current beta-onboarding behavior.
+- [ ] Stored account tiers are documented clearly as `Free` / `Personal` / `Commercial`, with the current beta `unrestricted` override described separately.
+- [ ] Docs state clearly that Personal and Commercial are one-time licences, with optional paid upgrades only for significant future feature releases.
 - [ ] No public auto-update upload is performed for `v0.7.0` before explicit publish approval.
 - [ ] Fair-usage and anti-abuse protections remain active in backend.
 
@@ -61,8 +62,9 @@ Public update channel remains on `v0.5.3` until explicit publish.
 ## 8. Tester Communication
 
 - [ ] Share a short known-issues list with testers.
-- [ ] Tell testers that `v0.7.0` beta currently runs in `unrestricted` access mode, even though the long-term product model still defines Free / Personal / Commercial tiers.
+- [ ] Tell testers that `v0.7.0` beta currently runs in `unrestricted` access mode on top of the stored `Free` / `Personal` / `Commercial` tiers.
 - [ ] Provide clear expected behavior for Preview / Balanced / Full Quality access under the current beta policy.
+- [ ] State clearly that built-in `Final Animation Rendering` is licensed for Commercial only outside the beta override.
 - [ ] Tell testers that `v0.7.0` is a private beta candidate and is not in the public update channel yet.
 - [ ] Provide support contact path and expected response time.
 

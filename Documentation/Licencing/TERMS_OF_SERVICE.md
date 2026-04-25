@@ -28,11 +28,9 @@ Planetka is currently released as a **public beta**.
   this beta period.
 - Planetka currently offers three account tiers: **Free**, **Personal**, and
   **Commercial**.
-- For the current `v0.7.0` beta phase, Planetka may run beta access in an
-  **unrestricted** mode for testing. In that mode, hosted-service access
-  behaves as **Commercial** regardless of the stored account tier, even
-  though the long-term product model still defines all three tiers
-  separately.
+- For the current `v0.7.0` beta phase, Planetka may run hosted-service access
+  in an **unrestricted** mode for testing. In that mode, hosted-service access
+  behaves as **Commercial** regardless of the stored account tier.
 
 ## 3. Intended Use
 
@@ -56,22 +54,41 @@ Subject to these Terms, Planetka-hosted service use is licensed per account
 tier as follows:
 
 - **Free**: personal, non-commercial Blender rendering workflows only.
-- **Personal**: personal, non-commercial Blender rendering workflows only.
-- **Commercial**: personal and commercial Blender rendering workflows.
+- **Personal**: personal, non-commercial Blender rendering workflows with
+  unlimited `Preview` and `Balanced` quality.
+- **Commercial**: personal and commercial Blender rendering workflows with
+  unlimited `Preview`, `Balanced`, and `Full Quality`.
 
 For clarity:
 
+- Free includes unlimited `Preview` quality only.
+- Personal includes unlimited `Preview` and `Balanced` quality only.
+- Commercial includes unlimited `Preview`, `Balanced`, and `Full Quality`.
+- Final Animation Rendering in Planetka's built-in animation rendering system
+  is licensed only for Commercial.
 - Free and Personal do **not** include commercial use rights.
 - Commercial includes commercial use rights, subject to all other Terms in this
   document.
 - During the current beta phase, if Planetka runs beta access in unrestricted
   mode, that Commercial-equivalent beta access governs your permitted use
   until Planetka changes that beta-access policy.
+- All hosted-service access is unlimited only within Planetka's Fair Usage
+  Policy and abuse-prevention safeguards.
+
+## 5. Purchases, Upgrades, and Service Term
+
+- Personal and Commercial are one-time licence purchases.
+- Future versions with significant new functionality may be offered as optional
+  paid upgrades, but those upgrades are not required to keep using the version
+  you already purchased while it remains supported.
+- For paid Personal and Commercial purchases, Planetka guarantees support for
+  the purchased version and Planetka-hosted cloud data availability for a
+  minimum of **5 years from the date of purchase**.
 
 You may keep and use your own rendered outputs, subject to attribution and
 source-data obligations described in Planetka licensing documentation.
 
-## 5. Prohibited Use
+## 6. Prohibited Use
 
 You must not:
 
@@ -109,7 +126,7 @@ than a Blender rendering tool is prohibited.
 Artificial intelligence / machine learning use may be permitted only if
 Planetka releases a separate custom license for that use in writing.
 
-## 6. Enforcement
+## 7. Enforcement
 
 Planetka may suspend or terminate access, block accounts, or limit requests if
 Planetka reasonably believes an account is being used in breach of these Terms
@@ -118,7 +135,7 @@ or in a way that threatens service stability, data integrity, or other users.
 Planetka may act automatically where needed for abuse prevention or service
 protection.
 
-## 7. Account Responsibility
+## 8. Account Responsibility
 
 You are responsible for activity under your account and for keeping access to
 your email account secure.
@@ -128,15 +145,17 @@ You must provide a valid email address that you control.
 You are responsible for selecting and using the correct account tier for your
 intended use (personal/non-commercial vs commercial).
 
-## 8. No Warranty; Service Availability
+## 9. No Warranty; Service Availability
 
 Planetka-hosted services are provided on an "as is" and "as available" basis.
 No warranty is given that the service will always be available, uninterrupted,
 error-free, or suitable for any specific purpose.
 
-Planetka gives no guarantee of uninterrupted future availability.
+Planetka gives no guarantee of uninterrupted future availability beyond the
+minimum support and cloud-data availability period stated above for paid
+Personal and Commercial purchases.
 
-## 9. Access Continuity
+## 10. Access Continuity
 
 Beta access is provided on an "as available" basis.
 
@@ -144,7 +163,7 @@ Planetka may change technical limits, anti-abuse safeguards, fair-usage
 protections, and beta access conditions over time to keep service available for
 all users.
 
-## 10. Telemetry and Internal Analytics
+## 11. Telemetry and Internal Analytics
 
 Planetka may collect usage, performance, and account metrics needed to operate,
 secure, monitor, and improve the service.
@@ -155,7 +174,7 @@ protect the service.
 
 See the Planetka Privacy Policy for more detail.
 
-## 11. Outputs and Source Data
+## 12. Outputs and Source Data
 
 As between you and Planetka, you retain rights in your own creative rendered
 outputs, except where third-party source-data terms impose attribution or other
@@ -172,7 +191,7 @@ Those attribution requirements are documented in:
 - Documentation/Licencing/Attribution for User Renders.txt
 - Documentation/Licencing/Compliance/*
 
-## 12. Public Sharing and Planetka Credit
+## 13. Public Sharing and Planetka Credit
 
 When sharing Planetka-based work publicly, crediting Planetka is strongly
 encouraged (for example: "Created with Planetka for Blender").
@@ -181,12 +200,12 @@ This Planetka credit is requested for visibility and sustainability and helps
 support keeping the service sustainable long-term. It is encouraged, but not a
 separate third-party source-data requirement.
 
-## 13. Changes
+## 14. Changes
 
 Planetka may update these Terms from time to time. Updated Terms apply to
 future use after publication.
 
-## 14. Contact
+## 15. Contact
 
 Questions about these Terms can be sent to:
 

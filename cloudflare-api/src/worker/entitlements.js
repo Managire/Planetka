@@ -1,10 +1,8 @@
 import { isBetaUnrestrictedAccessEnabled } from "./env.js";
 
-export const PLAN_CODE_PLANETKA_FREE = "free";
-export const PLAN_CODE_PLANETKA = "lite";
-export const PLAN_CODE_PLANETKA_PRO = "pro";
-export const PLAN_CODE_PLANETKA_INDIE = PLAN_CODE_PLANETKA;
-export const PLAN_CODE_PLANETKA_STUDIO = PLAN_CODE_PLANETKA_PRO;
+export const PLAN_CODE_FREE = "free";
+export const PLAN_CODE_PERSONAL = "personal";
+export const PLAN_CODE_COMMERCIAL = "commercial";
 
 const DEFAULT_DEVICE_LIMIT_EXEMPT_EMAILS = "tom.griger@gmail.com";
 
@@ -14,31 +12,14 @@ function normalizeEmail(value) {
 
 export function normalizeUserStatus(value) {
   const normalized = String(value || "").trim().toLowerCase();
-  if (
-    normalized === PLAN_CODE_PLANETKA_PRO
-    || normalized === "pro"
-    || normalized === "planetka_pro"
-    || normalized === "planetka_studio"
-    || normalized === "studio"
-    || normalized === "commercial"
-    || normalized === "planetka_commercial"
-  ) {
-    return PLAN_CODE_PLANETKA_PRO;
+  if (normalized === PLAN_CODE_COMMERCIAL) {
+    return PLAN_CODE_COMMERCIAL;
   }
-  if (normalized === PLAN_CODE_PLANETKA_INDIE || normalized === "indie") {
-    return PLAN_CODE_PLANETKA;
+  if (normalized === PLAN_CODE_PERSONAL) {
+    return PLAN_CODE_PERSONAL;
   }
-  if (
-    normalized === PLAN_CODE_PLANETKA
-    || normalized === "planetka"
-    || normalized === "personal"
-    || normalized === "basic"
-    || normalized === "lite"
-  ) {
-    return PLAN_CODE_PLANETKA;
-  }
-  if (normalized === PLAN_CODE_PLANETKA_FREE || normalized === "free" || normalized === "trial") {
-    return PLAN_CODE_PLANETKA_FREE;
+  if (normalized === PLAN_CODE_FREE) {
+    return PLAN_CODE_FREE;
   }
   return normalized;
 }
@@ -77,29 +58,27 @@ export function isBlockedStatus(statusValue) {
 
 export function normalizeRequestedPlan(value) {
   const normalized = normalizePlanCode(value);
-  if (normalized === PLAN_CODE_PLANETKA_PRO || normalized === PLAN_CODE_PLANETKA_STUDIO) {
-    return PLAN_CODE_PLANETKA_PRO;
+  if (normalized === PLAN_CODE_COMMERCIAL) {
+    return PLAN_CODE_COMMERCIAL;
   }
-  if (normalized === PLAN_CODE_PLANETKA || normalized === PLAN_CODE_PLANETKA_INDIE) {
-    return PLAN_CODE_PLANETKA;
+  if (normalized === PLAN_CODE_PERSONAL) {
+    return PLAN_CODE_PERSONAL;
   }
-  return PLAN_CODE_PLANETKA_FREE;
+  return PLAN_CODE_FREE;
 }
 
-export function resolvePolicyPlanCode(user, subscription, env = {}) {
-  void subscription;
+export function resolvePolicyPlanCode(user, env = {}) {
   if (user && isBlockedStatus(user.status)) {
     return "blocked";
   }
   if (isBetaUnrestrictedAccessEnabled(env)) {
-    return PLAN_CODE_PLANETKA_PRO;
+    return PLAN_CODE_COMMERCIAL;
   }
   return normalizeRequestedPlan(user && user.status);
 }
 
-export function resolvePlanCode(user, subscription, env = {}) {
-  void subscription;
-  const resolved = resolvePolicyPlanCode(user, null, env);
+export function resolvePlanCode(user, env = {}) {
+  const resolved = resolvePolicyPlanCode(user, env);
   if (resolved === "blocked") {
     return resolved;
   }
@@ -120,10 +99,10 @@ export function isQualityModeAllowedForPlan(planCode, qualityMode) {
     return true;
   }
   if (safeMode === "balanced") {
-    return safePlanCode === PLAN_CODE_PLANETKA || safePlanCode === PLAN_CODE_PLANETKA_PRO;
+    return safePlanCode === PLAN_CODE_PERSONAL || safePlanCode === PLAN_CODE_COMMERCIAL;
   }
   if (safeMode === "full") {
-    return safePlanCode === PLAN_CODE_PLANETKA_PRO;
+    return safePlanCode === PLAN_CODE_COMMERCIAL;
   }
   return false;
 }
@@ -131,54 +110,47 @@ export function isQualityModeAllowedForPlan(planCode, qualityMode) {
 export function qualityModeNotAllowedMessage(planCode, qualityMode) {
   const safePlanCode = normalizeRequestedPlan(planCode);
   const safeMode = normalizeQualityMode(qualityMode);
-  if (safePlanCode === PLAN_CODE_PLANETKA_FREE) {
-    return "Free tier supports Preview only. Upgrade Licence for Balanced or Full Quality.";
+  if (safePlanCode === PLAN_CODE_FREE) {
+    return "Free supports Preview only. Upgrade Licence for Balanced or Full Quality.";
   }
-  if (safePlanCode === PLAN_CODE_PLANETKA && safeMode === "full") {
-    return "Personal tier supports Preview and Balanced. Upgrade Licence for Full Quality.";
+  if (safePlanCode === PLAN_CODE_PERSONAL && safeMode === "full") {
+    return "Personal supports Preview and Balanced. Upgrade Licence for Full Quality.";
   }
   return "Selected texture quality is not available for this account tier.";
 }
 
-export function isPaidRequestedPlan(planCode) {
-  return normalizeRequestedPlan(planCode) === PLAN_CODE_PLANETKA_PRO;
-}
-
 export function commercialUseAllowed(planCode) {
-  return normalizeRequestedPlan(planCode) === PLAN_CODE_PLANETKA_PRO;
+  return normalizeRequestedPlan(planCode) === PLAN_CODE_COMMERCIAL;
 }
 
 export function accountTierForPlanCode(planCode) {
-  const normalized = normalizeRequestedPlan(planCode);
-  if (normalized === PLAN_CODE_PLANETKA_PRO) return "pro";
-  if (normalized === PLAN_CODE_PLANETKA) return "personal";
-  return "free";
+  return normalizeRequestedPlan(planCode);
 }
 
 export function planDisplayName(planCode) {
   const normalized = normalizeRequestedPlan(planCode);
-  if (normalized === PLAN_CODE_PLANETKA_PRO) return "Planetka Commercial";
-  if (normalized === PLAN_CODE_PLANETKA) return "Planetka Personal";
-  return "Planetka Free";
+  if (normalized === PLAN_CODE_COMMERCIAL) return "Commercial";
+  if (normalized === PLAN_CODE_PERSONAL) return "Personal";
+  return "Free";
 }
 
 export function planAccessSummary(planCode) {
   const normalized = normalizeRequestedPlan(planCode);
-  if (normalized === PLAN_CODE_PLANETKA_PRO) {
-    return "Commercial includes Preview, Balanced, Full Quality, and Final Animation Render.";
+  if (normalized === PLAN_CODE_COMMERCIAL) {
+    return "Commercial includes unlimited Preview, Balanced, Full Quality, and Final Animation Render.";
   }
-  if (normalized === PLAN_CODE_PLANETKA) {
-    return "Personal includes Preview and Balanced texture quality.";
+  if (normalized === PLAN_CODE_PERSONAL) {
+    return "Personal includes unlimited Preview and Balanced texture quality.";
   }
-  return "Free includes Preview texture quality only.";
+  return "Free includes unlimited Preview texture quality only.";
 }
 
 export function resolvePlanPriority(planCode) {
   const normalized = normalizeRequestedPlan(planCode);
-  if (normalized === PLAN_CODE_PLANETKA_PRO) {
+  if (normalized === PLAN_CODE_COMMERCIAL) {
     return 2;
   }
-  if (normalized === PLAN_CODE_PLANETKA) {
+  if (normalized === PLAN_CODE_PERSONAL) {
     return 1;
   }
   return 0;

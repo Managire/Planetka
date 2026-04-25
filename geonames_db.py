@@ -18,7 +18,7 @@ _RECENT_BY_DISPLAY_LOWER = {}
 _RECENT_LIMIT = 5000
 _INDEX_BATCH_SIZE = 20000
 _INDEX_SCHEMA_VERSION = "4"
-_FILTER_PROFILE = "planetka_lite_v1"
+_FILTER_PROFILE = "planetka_places_v1"
 _POPULATED_MIN_POPULATION = 15000
 _ADMIN_ALWAYS_CODES = {"PCLI", "ADM1"}
 _ADMIN_POP_FILTERED_CODES = {"ADM2"}
@@ -243,6 +243,82 @@ def _index_has_rows(db_path):
         return False
 
 
+def _places_table_has_expected_layout(cursor):
+    try:
+        cursor.execute("PRAGMA table_info(places)")
+        rows = cursor.fetchall()
+    except sqlite3.Error:
+        return False
+    expected = (
+        ("geonameid", "INTEGER"),
+        ("name", "TEXT"),
+        ("admin1_code", "TEXT"),
+        ("country_code", "TEXT"),
+        ("search_lower", "TEXT"),
+        ("latitude", "REAL"),
+        ("longitude", "REAL"),
+        ("population", "INTEGER"),
+    )
+    actual = tuple((str(row[1]), str(row[2]).upper()) for row in rows)
+    return actual == expected
+
+
+def _repair_prebuilt_index_metadata(db_path):
+    if not db_path or not os.path.isfile(db_path):
+        return False
+    connection = None
+    try:
+        connection = sqlite3.connect(db_path, timeout=1.0)
+        cursor = connection.cursor()
+        cursor.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='places' LIMIT 1"
+        )
+        if cursor.fetchone() is None:
+            connection.close()
+            return False
+        if not _places_table_has_expected_layout(cursor):
+            connection.close()
+            return False
+        cursor.execute("SELECT 1 FROM places LIMIT 1")
+        if cursor.fetchone() is None:
+            connection.close()
+            return False
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            ) WITHOUT ROWID
+            """
+        )
+        cursor.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
+            (_INDEX_SCHEMA_VERSION,),
+        )
+        cursor.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES('filter_profile', ?)",
+            (_FILTER_PROFILE,),
+        )
+        cursor.execute("SELECT value FROM meta WHERE key='source_signature' LIMIT 1")
+        signature_row = cursor.fetchone()
+        if not signature_row or not str(signature_row[0]).strip():
+            cursor.execute(
+                "INSERT OR REPLACE INTO meta(key, value) VALUES('source_signature', ?)",
+                (_source_signature(db_path),),
+            )
+        connection.commit()
+        connection.close()
+        connection = None
+        return _db_is_ready(db_path)
+    except (sqlite3.Error, OSError, TypeError, ValueError):
+        if connection is not None:
+            try:
+                connection.close()
+            except sqlite3.Error:
+                pass
+        return False
+
+
 def _db_is_ready(db_path, expected_signature=None):
     if not db_path or not os.path.isfile(db_path):
         return False
@@ -442,6 +518,13 @@ def _start_index_if_needed(source_path):
 
     if str(source_path).lower().endswith(".idx.sqlite3"):
         if _db_is_ready(source_path):
+            with _INDEX_LOCK:
+                _INDEX_STATE = "ready"
+                _INDEX_ERROR = ""
+                _INDEX_DB_PATH = source_path
+                _INDEX_SOURCE_PATH = source_path
+            return True
+        if _repair_prebuilt_index_metadata(source_path) and _db_is_ready(source_path):
             with _INDEX_LOCK:
                 _INDEX_STATE = "ready"
                 _INDEX_ERROR = ""

@@ -101,7 +101,7 @@ def _run_static_guard_checks(root: Path) -> tuple[int, int]:
         ),
         (
             "public API key request forces free plan",
-            ["const requestedPlan = deps.PLAN_CODE_PLANETKA_FREE;", "const requestedPlan = PLAN_CODE_PLANETKA_FREE;"],
+            ["const requestedPlan = deps.PLAN_CODE_FREE;", "const requestedPlan = PLAN_CODE_FREE;"],
         ),
         (
             "admin query-token rejection enabled",
@@ -194,7 +194,7 @@ def main() -> int:
     checks += 1
     tamper_payload = {
         "email": f"tamper-{int(time.time())}-{random.randint(1000, 9999)}@example.com",
-        "requested_plan": "planetka_pro",
+        "requested_plan": "commercial",
         "accept_terms": True,
         "accept_privacy": True,
         "opt_in_news": False,

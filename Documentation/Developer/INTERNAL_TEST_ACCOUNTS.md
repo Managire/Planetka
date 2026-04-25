@@ -50,8 +50,8 @@ Example derived JSON for tier E2E scripts:
 ```json
 {
   "free@planetka.io": {"plan": "free", "api_key": "pka_..."},
-  "personal@planetka.io": {"plan": "lite", "api_key": "pka_..."},
-  "commercial@planetka.io": {"plan": "pro", "api_key": "pka_..."}
+  "personal@planetka.io": {"plan": "personal", "api_key": "pka_..."},
+  "commercial@planetka.io": {"plan": "commercial", "api_key": "pka_..."}
 }
 ```
 

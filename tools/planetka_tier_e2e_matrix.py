@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Planetka tiered end-to-end matrix test (Free / Personal / Pro).
+"""Planetka tiered end-to-end matrix test (Free / Personal / Commercial).
 
 This script uses the currently authenticated local Planetka account, switches its
 plan server-side via admin endpoint, and runs renders for each tier.
@@ -394,8 +394,8 @@ def main():
 
         scenarios = [
             {"tier": "free", "label": "Free"},
-            {"tier": "lite", "label": "Personal"},
-            {"tier": "pro", "label": "Pro"},
+            {"tier": "personal", "label": "Personal"},
+            {"tier": "commercial", "label": "Commercial"},
         ]
 
         for scenario in scenarios:
@@ -408,12 +408,12 @@ def main():
             auth_module.sync_account_profile(prefs)
             effective_tier = str(auth_module.get_account_tier(prefs) or "").strip().lower()
             simulated_tier = False
-            if tier in {"free", "lite"} and effective_tier != tier:
-                # Current deployed backend can force selected accounts to Pro.
+            if tier in {"free", "personal"} and effective_tier != tier:
+                # Current deployed backend can force selected accounts to Commercial.
                 # Simulate lower-tier gating locally to execute Free/Personal flows end-to-end.
                 prefs.auth_account_tier = tier
                 prefs.auth_plan_code = tier
-                prefs.auth_plan_name = "Planetka Free" if tier == "free" else "Planetka Personal"
+                prefs.auth_plan_name = "Free" if tier == "free" else "Personal"
                 effective_tier = tier
                 simulated_tier = True
                 _log(f"Backend did not apply {tier} directly; using local {tier} simulation for this scenario.")
@@ -461,7 +461,7 @@ def main():
                     "min_d": min_d,
                     "tile_count": len(tiles),
                 })
-            elif tier == "lite":
+            elif tier == "personal":
                 balanced_result = _set_quality_and_resolve("BALANCED")
                 scenario_result["checks"].append({
                     "name": "personal_milan_balanced_allowed",
@@ -477,13 +477,13 @@ def main():
             else:
                 full_result = _set_quality_and_resolve("FULL")
                 scenario_result["checks"].append({
-                    "name": "pro_milan_full_allowed",
+                    "name": "commercial_milan_full_allowed",
                     "passed": "FINISHED" in full_result,
                     "result": list(full_result),
                 })
 
-            # Milan still render for Personal and Pro, and one for Free as reference
-            milan_quality = "FULL" if tier == "pro" else ("BALANCED" if tier == "lite" else "PREVIEW")
+            # Milan still render for Personal and Commercial, and one for Free as reference
+            milan_quality = "FULL" if tier == "commercial" else ("BALANCED" if tier == "personal" else "PREVIEW")
             props.texture_quality_mode = milan_quality
             resolve_result = _resolve_now(state_module=state_module)
             if "FINISHED" not in resolve_result:
@@ -494,7 +494,7 @@ def main():
 
             # Global sample stills at 30 km.
             for city in (AUCKLAND, CHRISTCHURCH, WELLINGTON):
-                props.texture_quality_mode = "FULL" if tier == "pro" else ("BALANCED" if tier == "lite" else "PREVIEW")
+                props.texture_quality_mode = "FULL" if tier == "commercial" else ("BALANCED" if tier == "personal" else "PREVIEW")
                 _set_navigation(props, state_module, city["lat"], city["lon"], 30.0, heading_deg=rng.uniform(-20, 20), tilt_deg=50.0, roll_deg=rng.uniform(-5, 5))
                 result = _resolve_now(state_module=state_module)
                 if "FINISHED" not in result:
@@ -505,7 +505,7 @@ def main():
 
             # 30-frame Auckland zoom (2000km -> 30km)
             # Use the best allowed mode per tier.
-            props.texture_quality_mode = "FULL" if tier == "pro" else ("BALANCED" if tier == "lite" else "PREVIEW")
+            props.texture_quality_mode = "FULL" if tier == "commercial" else ("BALANCED" if tier == "personal" else "PREVIEW")
 
             anim_dir = os.path.join(render_dir, f"{session_prefix}_{tier}_auckland_zoom")
             frames = _render_zoom_sequence(
@@ -522,8 +522,8 @@ def main():
             )
             scenario_result["animation_frames"] = len(frames)
 
-            # Pro-only 100 random place-search renders
-            if tier == "pro":
+            # Commercial-only 100 random place-search renders
+            if tier == "commercial":
                 sampled = rng.sample(CAPITAL_QUERIES, 100)
                 for idx, query in enumerate(sampled, start=1):
                     selected = _apply_place_search(props, geonames_module, query)
@@ -533,7 +533,7 @@ def main():
                     tilt = rng.uniform(45.0, 70.0)
                     heading = rng.uniform(-45.0, 45.0)
                     roll = rng.uniform(-15.0, 15.0)
-                    # Keep the random 100-image matrix fast/stable; Pro Full Quality is
+                    # Keep the random 100-image matrix fast/stable; Commercial Full Quality is
                     # explicitly verified in the dedicated Milan test above.
                     props.texture_quality_mode = "PREVIEW"
                     _set_navigation(
@@ -548,8 +548,8 @@ def main():
                     )
                     result = _resolve_now(state_module=state_module)
                     if "FINISHED" not in result:
-                        raise RuntimeError(f"Pro random resolve failed idx={idx} query={query}: {result}")
-                    out_path = os.path.join(render_dir, f"{session_prefix}_pro_random_{idx:03d}.png")
+                        raise RuntimeError(f"Commercial random resolve failed idx={idx} query={query}: {result}")
+                    out_path = os.path.join(render_dir, f"{session_prefix}_commercial_random_{idx:03d}.png")
                     _render_still(scene, out_path)
                     scenario_result["renders"].append(out_path)
 
@@ -557,8 +557,8 @@ def main():
             scenario_result["diagnostics_tail"] = diag_payload
             report["scenarios"].append(scenario_result)
 
-        # Restore to Pro for local dev convenience.
-        _set_plan_for_email(auth_module, prefs, email, "pro")
+        # Restore to Commercial for local dev convenience.
+        _set_plan_for_email(auth_module, prefs, email, "commercial")
         auth_module.sync_account_profile(prefs)
 
     except TOOL_RECOVERABLE_EXCEPTIONS as exc:

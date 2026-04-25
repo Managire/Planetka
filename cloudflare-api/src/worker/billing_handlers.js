@@ -256,21 +256,21 @@ async function applyPermanentLicenseEntitlement(db, env, details = {}, deps) {
   if (!email) {
     throw new Error("missing_customer_email");
   }
-  const requestedPlan = deps.normalizeRequestedPlan(details.planCode || deps.PLAN_CODE_PLANETKA);
-  if (!requestedPlan) {
+  const requestedPlan = deps.normalizePlanCode(details.planCode || "");
+  if (!requestedPlan || (requestedPlan !== deps.PLAN_CODE_PERSONAL && requestedPlan !== deps.PLAN_CODE_COMMERCIAL)) {
     throw new Error("missing_plan_code");
   }
   const existingUser = await deps.findUserByEmail(db, email);
   const existingStatus = deps.normalizeUserStatus(existingUser && existingUser.status);
   const finalPlan = (
-    requestedPlan === deps.PLAN_CODE_PLANETKA
-    && existingStatus === deps.PLAN_CODE_PLANETKA_PRO
+    requestedPlan === deps.PLAN_CODE_PERSONAL
+    && existingStatus === deps.PLAN_CODE_COMMERCIAL
   )
-    ? deps.PLAN_CODE_PLANETKA_PRO
+    ? deps.PLAN_CODE_COMMERCIAL
     : requestedPlan;
 
   let user = await deps.upsertUserByEmail(db, email, finalPlan, {}, env);
-  user = await deps.enforceUserPlanPolicy(db, user, null, env);
+  user = await deps.enforceUserPlanPolicy(db, user, env);
   if (!user || !user.id) {
     throw new Error("user_upsert_failed");
   }
@@ -366,11 +366,11 @@ export async function handleStripeWebhook(request, env, deps) {
   const lineItems = await fetchStripeCheckoutSessionLineItems(env, sessionId, deps);
   const planEntitlement = resolveStripePlanEntitlement(lineItems, env, deps);
   if (planEntitlement.planCode) {
-    let existingPlanCode = deps.PLAN_CODE_PLANETKA_FREE;
+    let existingPlanCode = deps.PLAN_CODE_FREE;
     const existingUser = await deps.findUserByEmail(db, email);
     if (existingUser && !deps.isBlockedStatus(existingUser.status)) {
-      const enforcedUser = await deps.enforceUserPlanPolicy(db, existingUser, null, env);
-      existingPlanCode = deps.normalizeRequestedPlan(deps.resolvePlanCode(enforcedUser, null, env));
+      const enforcedUser = await deps.enforceUserPlanPolicy(db, existingUser, env);
+      existingPlanCode = deps.normalizeRequestedPlan(deps.resolvePlanCode(enforcedUser, env));
     }
     const purchaseGuard = deps.evaluateStripePlanPurchaseGuard(existingPlanCode, planEntitlement.planCode);
     if (purchaseGuard.blocked) {

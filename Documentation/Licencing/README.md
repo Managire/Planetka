@@ -20,10 +20,17 @@ Service terms note:
 - Current `v0.7.0` beta note: beta access currently runs in
   `unrestricted` mode, so hosted-service access behaves as Commercial during
   testing regardless of stored account tier.
-- Commercial-use scope by tier:
-  - Free: personal / non-commercial use only
-  - Personal: personal / non-commercial use only
-  - Commercial: commercial use allowed
+- Current tier model:
+  - Free: unlimited `Preview` only, no commercial use
+  - Personal: unlimited `Preview` and `Balanced`, no commercial use
+  - Commercial: unlimited `Preview`, `Balanced`, and `Full Quality`,
+    commercial use allowed
+- Planetka built-in `Final Animation Rendering` is licensed for Commercial
+  only.
+- Personal and Commercial are one-time licences.
+- Significant future feature releases may be optional paid upgrades.
+- Paid Personal and Commercial purchases include a minimum 5-year guarantee for
+  support and Planetka-hosted cloud data availability from the purchase date.
 
 ## Detailed records
 

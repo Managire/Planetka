@@ -22,7 +22,7 @@ This gate runs:
 - tile requests stop reading `X-Planetka-Quality-Mode`
 - admin analytics query-token rejection is incomplete
 - legacy magic-link/device-login routes reappear
-- data-metering / download-throttle / claim-workflow markers reappear
+- legacy download-throttle / claim-workflow markers reappear
 - forbidden legacy vars reappear in `wrangler.toml`
 - required fallback assets are missing or deprecated `red_pixel_20.exr` returns
 - telemetry retention cleanup wiring is missing

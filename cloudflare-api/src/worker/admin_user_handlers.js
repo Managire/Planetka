@@ -97,7 +97,11 @@ export async function handleAdminUserUnblock(request, env, deps) {
 
   const targetUserId = String(target.user.id || "").trim();
   const targetEmail = deps.normalizeEmail(target.user.email || "");
-  const targetPlan = deps.normalizeRequestedPlan(body.plan_code || deps.PLAN_CODE_PLANETKA);
+  const targetPlanRaw = String(body && body.plan_code || "").trim();
+  const targetPlan = deps.normalizePlanCode(targetPlanRaw);
+  if (!targetPlan || !["free", "personal", "commercial"].includes(targetPlan)) {
+    return deps.json({ ok: false, error: "missing_plan_code" }, 400, env);
+  }
   const now = deps.nowIso();
   await deps.dbRun(db, `UPDATE users SET status = ? WHERE id = ?`, [targetPlan, targetUserId]);
   const apiKeysResult = await deps.dbRun(
@@ -271,7 +275,11 @@ export async function handleAdminUserSetPlan(request, env, deps) {
 
   const targetUserId = String(target.user.id || "").trim();
   const targetEmail = deps.normalizeEmail(target.user.email || "");
-  const targetPlan = deps.normalizeRequestedPlan(body.plan_code || deps.PLAN_CODE_PLANETKA);
+  const targetPlanRaw = String(body && body.plan_code || "").trim();
+  const targetPlan = deps.normalizePlanCode(targetPlanRaw);
+  if (!targetPlan || !["free", "personal", "commercial"].includes(targetPlan)) {
+    return deps.json({ ok: false, error: "missing_plan_code" }, 400, env);
+  }
   const now = deps.nowIso();
 
   await deps.dbRun(db, `UPDATE users SET status = ? WHERE id = ?`, [targetPlan, targetUserId]);

@@ -62,6 +62,9 @@ from .state import (
     stop_auto_resolve_service,
 )
 from .ui import (
+    PLANETKA_PT_AccountPanel,
+    PLANETKA_PT_AccountPanelCollapsed,
+    PLANETKA_PT_AccountPanelUpdate,
     PLANETKA_PT_LiveTelemetryPanel,
     PLANETKA_PT_LiveTelemetryPanelFailure,
     PLANETKA_PT_LiveTelemetryPanelCollapsed,
@@ -75,9 +78,6 @@ from .ui import (
     PLANETKA_PT_NewEarthPanel,
     PLANETKA_PT_NewEarthPanelCollapsed,
     PLANETKA_PT_NewEarthPanelFailure,
-    PLANETKA_PT_SubscriptionPanel,
-    PLANETKA_PT_SubscriptionPanelCollapsed,
-    PLANETKA_PT_SubscriptionPanelUpdate,
     PLANETKA_PT_SunlightPanel,
     PLANETKA_PT_SettingsPanel,
 )
@@ -220,9 +220,9 @@ classes = (
     PLANETKA_OT_ReportBug,
     PLANETKA_OT_SaveStartupSetup,
     PLANETKA_OT_ResetStartupSetupFactory,
-    PLANETKA_PT_SubscriptionPanel,
-    PLANETKA_PT_SubscriptionPanelCollapsed,
-    PLANETKA_PT_SubscriptionPanelUpdate,
+    PLANETKA_PT_AccountPanel,
+    PLANETKA_PT_AccountPanelCollapsed,
+    PLANETKA_PT_AccountPanelUpdate,
     PLANETKA_PT_NewEarthPanel,
     PLANETKA_PT_NewEarthPanelFailure,
     PLANETKA_PT_NewEarthPanelCollapsed,

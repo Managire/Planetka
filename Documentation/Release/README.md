@@ -17,7 +17,13 @@ Planetka is currently in **Public Beta**.
 
 - Beta distribution is for tester feedback and stability validation.
 - Current `v0.7.0` beta access mode is `unrestricted`, so beta users receive Commercial-equivalent hosted-service access during testing regardless of stored account tier.
-- The long-term product model still defines `Free`, `Personal`, and `Commercial` tiers, but that broader tier rollout is not the current beta-onboarding behavior.
+- Stored account tiers are `Free`, `Personal`, and `Commercial`.
+- Product contract for `v0.7.0`:
+  - Free: unlimited `Preview` only, no commercial use
+  - Personal: unlimited `Preview` and `Balanced`, no commercial use
+  - Commercial: unlimited `Preview`, `Balanced`, `Full Quality`, and built-in `Final Animation Rendering`, commercial use allowed
+- Personal and Commercial are one-time licences.
+- Significant future feature releases may be optional paid upgrades.
 - EEVEE and Cycles are both supported in the current beta candidate.
 - Terms for beta access are in `Documentation/Licencing/TERMS_OF_SERVICE.md`.
 

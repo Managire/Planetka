@@ -124,9 +124,9 @@ export function createAuthSessionRouteHandlers(deps) {
     let user = {
       id: session.user_id,
       email: session.email,
-      status: session.status || deps.PLAN_CODE_PLANETKA,
+      status: session.status || deps.PLAN_CODE_FREE,
     };
-    user = await deps.enforceUserPlanPolicy(db, user, null, env);
+    user = await deps.enforceUserPlanPolicy(db, user, env);
 
     await deps.dbRun(
       db,
@@ -136,7 +136,6 @@ export function createAuthSessionRouteHandlers(deps) {
     const accessToken = await deps.createAccessToken(
       env,
       user,
-      null,
       {
         auth_method: String(session.auth_method || "").trim(),
         api_key_id: String(session.api_key_id || "").trim(),
@@ -153,7 +152,7 @@ export function createAuthSessionRouteHandlers(deps) {
         device_id: String(session.device_id || "").trim(),
       },
     );
-    const accountState = await deps.buildAccountState(db, user, null, env);
+    const accountState = await deps.buildAccountState(db, user, env);
     await recordRefreshEvent({
       outcome: "success",
       errorCode: "",
@@ -275,8 +274,8 @@ export function createAuthSessionRouteHandlers(deps) {
       return auth.error;
     }
     const { db, user } = auth;
-    const effectiveUserStatus = deps.resolvePolicyPlanCode(user, null, env);
-    const accountState = await deps.buildAccountState(db, user, null, env);
+    const effectiveUserStatus = deps.resolvePolicyPlanCode(user, env);
+    const accountState = await deps.buildAccountState(db, user, env);
 
     return deps.json(
       {

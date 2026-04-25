@@ -1,5 +1,5 @@
 export const ANALYTICS_SNAPSHOT_WINDOWS = [15, 60, 360, 1440, 10080];
-export const ANALYTICS_SNAPSHOT_PLAN_FILTERS = ["all", "lite", "pro"];
+export const ANALYTICS_SNAPSHOT_PLAN_FILTERS = ["all", "free", "personal", "commercial"];
 export const ANALYTICS_SNAPSHOT_TILE_MAP_WINDOWS = [1, 3, 10];
 const SNAPSHOT_CACHE_CONTROL = "private, max-age=60";
 

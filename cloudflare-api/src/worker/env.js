@@ -24,14 +24,6 @@ export function parseNonNegativeInteger(value, fallback = 0) {
   return Math.max(0, Math.floor(parsed));
 }
 
-export function isLegacyBetaForceProTierEnabled(env = {}) {
-  const raw = env.BETA_FORCE_PRO_TIER;
-  if (raw === undefined || raw === null || String(raw).trim() === "") {
-    return false;
-  }
-  return parseBooleanFlag(raw);
-}
-
 export function normalizeBetaAccessMode(value) {
   const normalized = String(value || "").trim().toLowerCase();
   if (!normalized) {
@@ -55,9 +47,6 @@ export function resolveBetaAccessMode(env = {}) {
   const explicitMode = normalizeBetaAccessMode(env.BETA_ACCESS_MODE);
   if (explicitMode) {
     return explicitMode;
-  }
-  if (isLegacyBetaForceProTierEnabled(env)) {
-    return "unrestricted";
   }
   return DEFAULT_BETA_ACCESS_MODE;
 }

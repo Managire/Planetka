@@ -288,18 +288,17 @@ export async function handleAdminPasswordLogin(request, env, deps) {
   let user = await deps.upsertUserByEmail(
     db,
     adminEmail,
-    deps.PLAN_CODE_PLANETKA_PRO,
-    { proConfirmedAt: deps.nowIso() },
+    deps.PLAN_CODE_COMMERCIAL,
+    {},
     env,
   );
-  user = await deps.enforceUserPlanPolicy(db, user, null, env);
+  user = await deps.enforceUserPlanPolicy(db, user, env);
   if (!user || !deps.isAnalyticsAdmin(user, env)) {
     return deps.json({ ok: false, error: "admin_access_required" }, 403, env);
   }
   const accessToken = await deps.createAccessToken(
     env,
     user,
-    null,
     {
       auth_method: "admin_password",
       admin_login: 1,

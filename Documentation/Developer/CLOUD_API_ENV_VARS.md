@@ -6,7 +6,7 @@ The 0.7.0 model is simple:
 - auth is API-key based
 - access is tier-based (`Free` / `Personal` / `Commercial`)
 - beta can override effective access with `BETA_ACCESS_MODE=unrestricted`
-- there is no data metering, resolve metering, magic-link auth, device-login flow, or time-limited subscription state in the Worker
+- there is no magic-link auth, device-login flow, or time-limited recurring-plan state in the Worker
 
 ## Rate Limiting
 
@@ -110,8 +110,6 @@ Worker-side access control is tier-based only:
 - `free`: Preview
 - `personal`: Preview + Balanced
 - `commercial`: Preview + Balanced + Full + Final Animation Render
-
-There are no per-day, per-month, or per-request usage counters in the tile hot path.
 
 ## Monthly Cost Estimate Alerts
 
