@@ -275,7 +275,7 @@ def _schedule_auto_resolve_download(
             )
             should_arm_timer = True
 
-    if isinstance(job_to_start, dict):
+    if _is_auto_resolve_download_job(job_to_start):
         _start_auto_resolve_download_thread(job_to_start)
     if should_arm_timer:
         _arm_auto_resolve_download_timer()

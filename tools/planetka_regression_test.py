@@ -14,6 +14,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import traceback
 import os
 import sys
@@ -227,6 +228,38 @@ def _surface_collection_names(surface_obj):
     return sorted(col.name for col in surface_obj.users_collection)
 
 
+def _drain_queued_resolve(state_module, scene, timeout_sec=8.0):
+    runtime_status_fn = getattr(state_module, "get_resolve_runtime_status", None)
+    pump_fn = getattr(state_module, "_auto_resolve_download_pump_timer", None)
+    stop_fn = getattr(state_module, "stop_auto_resolve_download_pipeline", None)
+    start = time.monotonic()
+    last_status = {}
+    while True:
+        if callable(pump_fn):
+            try:
+                pump_fn()
+            except TOOL_RECOVERABLE_EXCEPTIONS:
+                _fail("Queued resolve pump raised an unexpected exception.")
+        if callable(runtime_status_fn):
+            try:
+                last_status = dict(runtime_status_fn(scene) or {})
+            except TOOL_RECOVERABLE_EXCEPTIONS:
+                last_status = {}
+        running = bool(last_status.get("running", False))
+        pending_count = int(last_status.get("pending_count", 0) or 0)
+        code = str(last_status.get("code", "") or "")
+        if not running and pending_count <= 0 and code in {"", "IDLE"}:
+            return
+        if time.monotonic() - start > float(timeout_sec):
+            if callable(stop_fn):
+                try:
+                    stop_fn()
+                except TOOL_RECOVERABLE_EXCEPTIONS:
+                    pass
+            _fail(f"Queued Create Earth resolve did not complete in time: {last_status}")
+        time.sleep(0.05)
+
+
 def main():
     temp_dirs = []
     try:
@@ -252,6 +285,12 @@ def main():
 
         result = bpy.ops.planetka.add_earth()
         _assert("FINISHED" in result, f"Create Earth failed with result: {result}")
+        _drain_queued_resolve(state, scene)
+        status_after_create = dict(state.get_resolve_runtime_status(scene) or {})
+        _assert(
+            str(status_after_create.get("code", "") or "IDLE") == "IDLE",
+            f"Queued Create Earth resolve did not return to IDLE: {status_after_create}",
+        )
 
         surface = bpy.data.objects.get(SURFACE_OBJECT_NAME)
         _assert(surface is not None, "Planetka Earth Surface missing after Create Earth.")
