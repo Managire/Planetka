@@ -57,6 +57,21 @@ import {
   handleAdminAnalyticsUsersPage as handleAdminAnalyticsUsersPageRoute,
 } from "./worker/admin_analytics_handlers.js";
 import {
+  handleAdminLoginPage as handleAdminLoginPageRoute,
+  handleAdminPasswordLogin as handleAdminPasswordLoginRoute,
+  handleAdminSessionLogout as handleAdminSessionLogoutRoute,
+  handleAdminSessionStart as handleAdminSessionStartRoute,
+  handleAdminSessionStartPage as handleAdminSessionStartPageRoute,
+} from "./worker/admin_session_handlers.js";
+import {
+  handleAdminUserBlock as handleAdminUserBlockRoute,
+  handleAdminUserHardBlock as handleAdminUserHardBlockRoute,
+  handleAdminUserSetPlan as handleAdminUserSetPlanRoute,
+  handleAdminUserThrottle as handleAdminUserThrottleRoute,
+  handleAdminUserUnblock as handleAdminUserUnblockRoute,
+  handleAdminUserUnthrottle as handleAdminUserUnthrottleRoute,
+} from "./worker/admin_user_handlers.js";
+import {
   handleTileRequest as handleTileRequestRoute,
   handleTileSessionStart as handleTileSessionStartRoute,
 } from "./worker/tile_routes.js";
@@ -236,6 +251,67 @@ const ADMIN_ANALYTICS_DEPS = {
   sanitizeAnalyticsMinutes,
   sanitizeLiveTileMapMinutes,
   BYTES_PER_GB,
+};
+
+const ADMIN_SESSION_DEPS = {
+  buildAdminSessionClearCookie,
+  buildAdminSessionCookie,
+  corsHeaders,
+  createAccessToken,
+  DEFAULT_ADMIN_LOGIN_EMAIL,
+  enforceUserPlanPolicy,
+  ensureRateLimitsTable,
+  escapeHtml,
+  html,
+  isAnalyticsAdmin,
+  json,
+  jsonWithHeaders,
+  normalizeEmail,
+  nowIso,
+  parseJson,
+  parseRateLimitInteger,
+  PLAN_CODE_PLANETKA_PRO,
+  rateLimitedResponse,
+  requestClientIp,
+  requireAuthenticatedUserContext: (request, env, options) => requireAuthenticatedUserContext(request, env, options, AUTH_SESSION_DEPS),
+  requireDb,
+  resolveAdminLoginEmailFromBody,
+  trackThresholdAlertDb,
+  upsertUserByEmail,
+  verifyAdminDashboardPassword,
+  consumeRateLimitWindow,
+  DEFAULT_RATE_LIMIT_ADMIN_LOGIN_IP_LIMIT,
+  DEFAULT_RATE_LIMIT_ADMIN_LOGIN_IP_WINDOW_SECONDS,
+};
+
+const ADMIN_USER_DEPS = {
+  clampNonNegativeInt,
+  clearUserDownloadThrottle,
+  dbGet,
+  dbMetaChanges,
+  dbRun,
+  DEFAULT_DOWNLOAD_THROTTLE_DURATION_MINUTES,
+  ensureAdminHardBlocksTable,
+  ensureApiKeyTables,
+  ensureRefreshSessionColumns,
+  ensureUserDownloadCountersTable,
+  ensureUserProvisionalColumns,
+  findUserByEmail,
+  findUserById,
+  findUserDownloadCounter,
+  findUserDownloadCounterByEmail,
+  isPaidRequestedPlan,
+  json,
+  normalizeDeviceId,
+  normalizeEmail,
+  normalizeRequestedPlan,
+  nowIso,
+  parseBooleanFlag,
+  parseJson,
+  parseNonNegativeInteger,
+  PLAN_CODE_PLANETKA,
+  requireAnalyticsAdmin: (request, env) => requireAnalyticsAdmin(request, env, AUTH_SESSION_DEPS),
+  setUserDownloadThrottle,
 };
 
 function nowIso() {
@@ -8477,855 +8553,6 @@ async function handleLegalDocumentRequest(request, env, path) {
   return new Response(object.body, { status: 200, headers });
 }
 
-function renderAdminSessionStartPage(env) {
-  return `<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Planetka Admin Session</title>
-    <style>
-      body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; margin: 0; min-height: 100vh; display: grid; place-items: center; background: #0b1020; color: #e5e7eb; }
-      .card { width: min(92vw, 640px); padding: 24px; border: 1px solid #1f2937; border-radius: 12px; background: #111827; }
-      h1 { margin: 0 0 8px; font-size: 22px; }
-      p { margin: 8px 0; color: #cbd5e1; }
-      .muted { color: #9ca3af; font-size: 13px; }
-      input { width: 100%; box-sizing: border-box; background: #0f172a; color: #e5e7eb; border: 1px solid #374151; border-radius: 8px; padding: 10px; margin-top: 10px; }
-      button { margin-top: 10px; background: #2563eb; color: #fff; border: none; border-radius: 8px; padding: 10px 14px; cursor: pointer; font-weight: 600; }
-      button[disabled] { opacity: 0.6; cursor: default; }
-      .status { margin-top: 12px; font-size: 14px; }
-      .ok { color: #86efac; }
-      .err { color: #fca5a5; }
-    </style>
-  </head>
-  <body>
-    <main class="card">
-      <h1>Start Admin Session</h1>
-      <p>Paste admin bearer token and click <strong>Open Analytics</strong>.</p>
-      <p class="muted">Tip: one-click link format:<br><code>/admin/session/start#access_token=YOUR_TOKEN</code></p>
-      <input id="token" type="password" autocomplete="off" placeholder="Paste bearer token" />
-      <button id="startBtn" type="button">Open Analytics</button>
-      <div id="status" class="status muted"></div>
-    </main>
-    <script>
-      (function () {
-        const tokenInput = document.getElementById("token");
-        const startBtn = document.getElementById("startBtn");
-        const statusEl = document.getElementById("status");
-
-        function showStatus(message, type) {
-          statusEl.textContent = message;
-          statusEl.className = "status " + (type || "muted");
-        }
-
-        function parseHashToken() {
-          const raw = String(window.location.hash || "").replace(/^#/, "");
-          if (!raw) return "";
-          const params = new URLSearchParams(raw);
-          return String(params.get("access_token") || params.get("token") || "").trim();
-        }
-
-        async function startSession() {
-          const token = String(tokenInput.value || "").trim();
-          if (!token) {
-            showStatus("Missing token.", "err");
-            return;
-          }
-          startBtn.disabled = true;
-          showStatus("Starting admin session...", "muted");
-          try {
-            const res = await fetch("/admin/session/start", {
-              method: "POST",
-              headers: { Authorization: "Bearer " + token },
-              credentials: "same-origin",
-            });
-            const payload = await res.json().catch(() => ({}));
-            if (!res.ok || !payload.ok) {
-              throw new Error(String((payload && payload.error) || ("HTTP " + res.status)));
-            }
-            showStatus("Session started. Redirecting...", "ok");
-            window.location.href = "/admin/analytics";
-          } catch (error) {
-            showStatus("Failed to start session: " + String(error && error.message || error), "err");
-            startBtn.disabled = false;
-          }
-        }
-
-        startBtn.addEventListener("click", function () {
-          startSession();
-        });
-        tokenInput.addEventListener("keydown", function (event) {
-          if (event.key === "Enter") {
-            event.preventDefault();
-            startSession();
-          }
-        });
-
-        const hashToken = parseHashToken();
-        if (hashToken) {
-          tokenInput.value = hashToken;
-          window.history.replaceState({}, document.title, "/admin/session/start");
-          startSession();
-        }
-      })();
-    </script>
-  </body>
-</html>`;
-}
-
-async function handleAdminSessionStartPage(request, env) {
-  return html(renderAdminSessionStartPage(env), 200, env);
-}
-
-async function handleAdminSessionStart(request, env) {
-  const authHeader = String(request.headers.get("Authorization") || "");
-  if (!authHeader.startsWith("Bearer ")) {
-    return json({ ok: false, error: "missing_bearer_token" }, 401, env);
-  }
-  const token = authHeader.slice("Bearer ".length).trim();
-  if (!token) {
-    return json({ ok: false, error: "missing_bearer_token" }, 401, env);
-  }
-  const auth = await requireAuthenticatedUserContext(
-    request,
-    env,
-    { requireAdmin: true, allowCookieToken: false, enforceApiKeyDevicePolicy: true },
-    AUTH_SESSION_DEPS,
-  );
-  if (auth.error) {
-    return auth.error;
-  }
-  return jsonWithHeaders(
-    {
-      ok: true,
-      redirect: "/admin/analytics",
-    },
-    200,
-    env,
-    {
-      "Set-Cookie": buildAdminSessionCookie(token),
-    },
-  );
-}
-
-async function handleAdminSessionLogout(request, env) {
-  void request;
-  return new Response(null, {
-    status: 302,
-    headers: {
-      Location: "/admin/login",
-      "Set-Cookie": buildAdminSessionClearCookie(),
-      ...corsHeaders(env),
-    },
-  });
-}
-
-function renderAdminPasswordLoginPage() {
-  const defaultEmail = escapeHtml(DEFAULT_ADMIN_LOGIN_EMAIL);
-  return `<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Planetka Admin Login</title>
-    <style>
-      body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; margin: 0; min-height: 100vh; display: grid; place-items: center; background: #0b1020; color: #e5e7eb; }
-      .card { width: min(92vw, 520px); padding: 24px; border: 1px solid #1f2937; border-radius: 12px; background: #111827; }
-      h1 { margin: 0 0 8px; font-size: 22px; }
-      p { margin: 8px 0; color: #cbd5e1; }
-      input { width: 100%; box-sizing: border-box; background: #0f172a; color: #e5e7eb; border: 1px solid #374151; border-radius: 8px; padding: 10px; margin-top: 10px; }
-      button { margin-top: 10px; background: #2563eb; color: #fff; border: none; border-radius: 8px; padding: 10px 14px; cursor: pointer; font-weight: 600; }
-      button[disabled] { opacity: 0.6; cursor: default; }
-      .status { margin-top: 12px; font-size: 14px; color: #9ca3af; }
-      .ok { color: #86efac; }
-      .err { color: #fca5a5; }
-      .muted { color: #9ca3af; font-size: 13px; }
-    </style>
-  </head>
-  <body>
-    <main class="card">
-      <h1>Admin Login</h1>
-      <p>Enter password to open Planetka analytics dashboard.</p>
-      <input id="adminEmail" type="email" autocomplete="username" value="${defaultEmail}" placeholder="Admin email" />
-      <input id="password" type="password" autocomplete="current-password" placeholder="Password" />
-      <button id="loginBtn" type="button">Open Analytics</button>
-      <div id="status" class="status"></div>
-      <p class="muted">Session stays active for about 1 hour on this browser.</p>
-    </main>
-    <script>
-      (function () {
-        const adminEmailInput = document.getElementById("adminEmail");
-        const passwordInput = document.getElementById("password");
-        const loginBtn = document.getElementById("loginBtn");
-        const statusEl = document.getElementById("status");
-        function showStatus(message, type) {
-          statusEl.textContent = message;
-          statusEl.className = "status " + (type || "");
-        }
-        async function login() {
-          const adminEmail = String((adminEmailInput && adminEmailInput.value) || "").trim();
-          const password = String(passwordInput.value || "");
-          if (!password) {
-            showStatus("Missing password.", "err");
-            return;
-          }
-          loginBtn.disabled = true;
-          showStatus("Signing in...");
-          try {
-            const res = await fetch("/admin/login", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              credentials: "same-origin",
-              body: JSON.stringify({ password, admin_email: adminEmail }),
-            });
-            const payload = await res.json().catch(() => ({}));
-            if (!res.ok || !payload.ok) {
-              throw new Error(String((payload && payload.error) || ("HTTP " + res.status)));
-            }
-            showStatus("Success. Redirecting...", "ok");
-            window.location.href = "/admin/analytics";
-          } catch (error) {
-            showStatus("Login failed: " + String(error && error.message || error), "err");
-            loginBtn.disabled = false;
-          }
-        }
-        loginBtn.addEventListener("click", function () { login(); });
-        passwordInput.addEventListener("keydown", function (event) {
-          if (event.key === "Enter") {
-            event.preventDefault();
-            login();
-          }
-        });
-      })();
-    </script>
-  </body>
-</html>`;
-}
-
-async function handleAdminLoginPage(request, env) {
-  void request;
-  return html(renderAdminPasswordLoginPage(), 200, env);
-}
-
-async function handleAdminPasswordLogin(request, env) {
-  const db = requireDb(env);
-  await ensureRateLimitsTable(db);
-  const clientIp = requestClientIp(request);
-  const rate = await consumeRateLimitWindow(
-    db,
-    "admin_login_ip",
-    clientIp,
-    parseRateLimitInteger(env.RATE_LIMIT_ADMIN_LOGIN_IP_LIMIT, DEFAULT_RATE_LIMIT_ADMIN_LOGIN_IP_LIMIT),
-    parseRateLimitInteger(
-      env.RATE_LIMIT_ADMIN_LOGIN_IP_WINDOW_SECONDS,
-      DEFAULT_RATE_LIMIT_ADMIN_LOGIN_IP_WINDOW_SECONDS,
-    ),
-  );
-  if (!rate.allowed) {
-    return rateLimitedResponse(
-      env,
-      "admin_login_rate_limited",
-      "Too many admin login attempts. Please try again later.",
-      rate.retryAfterSeconds,
-    );
-  }
-
-  const body = await parseJson(request);
-  const requestedAdminEmail = normalizeEmail(body.admin_email || "");
-  const password = String(body.password || "");
-  if (!password) {
-    return json({ ok: false, error: "missing_password" }, 400, env);
-  }
-  let valid = false;
-  try {
-    valid = await verifyAdminDashboardPassword(env, password);
-  } catch (error) {
-    console.error(
-      "planetka.admin.login.verify_failed",
-      JSON.stringify({
-        error: String(error && error.message || "admin_login_misconfigured"),
-      }),
-    );
-    return json({ ok: false, error: "admin_login_misconfigured" }, 500, env);
-  }
-  if (!valid) {
-    await trackThresholdAlertDb(
-      db,
-      "admin_login_invalid_spike",
-      5,
-      300,
-      { scope: "ip", ip: clientIp },
-    );
-    return json({ ok: false, error: "invalid_admin_password" }, 401, env);
-  }
-
-  const adminEmail = resolveAdminLoginEmailFromBody(env, requestedAdminEmail);
-  if (!adminEmail) {
-    return json({ ok: false, error: "admin_login_email_misconfigured" }, 500, env);
-  }
-
-  let user = await upsertUserByEmail(
-    db,
-    adminEmail,
-    PLAN_CODE_PLANETKA_PRO,
-    { proConfirmedAt: nowIso() },
-    env,
-  );
-  user = await enforceUserPlanPolicy(db, user, null, env);
-  if (!user || !isAnalyticsAdmin(user, env)) {
-    return json({ ok: false, error: "admin_access_required" }, 403, env);
-  }
-  const accessToken = await createAccessToken(
-    env,
-    user,
-    null,
-    {
-      auth_method: "admin_password",
-      admin_login: 1,
-    },
-  );
-  return jsonWithHeaders(
-    {
-      ok: true,
-      email: String(user.email || ""),
-      redirect: "/admin/analytics",
-    },
-    200,
-    env,
-    {
-      "Set-Cookie": buildAdminSessionCookie(accessToken),
-    },
-  );
-}
-
-async function resolveDownloadCounterTarget(db, userId, email) {
-  const requestedUserId = String(userId || "").trim();
-  const requestedEmail = normalizeEmail(email || "");
-  if (!requestedUserId && !requestedEmail) {
-    return null;
-  }
-  let counter = requestedUserId ? await findUserDownloadCounter(db, requestedUserId) : null;
-  if (!counter && requestedEmail) {
-    counter = await findUserDownloadCounterByEmail(db, requestedEmail);
-  }
-  return counter;
-}
-
-async function handleAdminUserUnthrottle(request, env) {
-  const auth = await requireAnalyticsAdmin(request, env, AUTH_SESSION_DEPS);
-  if (auth.error) {
-    return auth.error;
-  }
-  const { db } = auth;
-  await ensureUserDownloadCountersTable(db);
-  const body = await parseJson(request);
-  const hasResetHourFlag = Object.prototype.hasOwnProperty.call(body, "reset_hour");
-  const resetHour = hasResetHourFlag ? parseBooleanFlag(body.reset_hour) : true;
-  const counter = await resolveDownloadCounterTarget(db, body.user_id, body.email);
-  if (!counter) {
-    return json({ ok: false, error: "download_counter_not_found" }, 404, env);
-  }
-  const previousThrottledUntil = String(counter.throttled_until || "").trim();
-  const updated = await clearUserDownloadThrottle(db, String(counter.user_id || "").trim(), { resetHour });
-  if (!updated) {
-    return json({ ok: false, error: "download_counter_not_found" }, 404, env);
-  }
-  return json(
-    {
-      ok: true,
-      action: "unthrottle",
-      user_id: String(updated.user_id || ""),
-      user_email: String(updated.user_email || ""),
-      reset_hour: resetHour,
-      previous_throttled_until: previousThrottledUntil || null,
-      throttled_until: String(updated.throttled_until || "").trim() || null,
-      hour_bytes: clampNonNegativeInt(updated.hour_bytes),
-      hour_bucket_start_unix: clampNonNegativeInt(updated.hour_bucket_start_unix),
-      updated_at: String(updated.updated_at || nowIso()),
-    },
-    200,
-    env,
-  );
-}
-
-async function handleAdminUserThrottle(request, env) {
-  const auth = await requireAnalyticsAdmin(request, env, AUTH_SESSION_DEPS);
-  if (auth.error) {
-    return auth.error;
-  }
-  const { db } = auth;
-  await ensureUserDownloadCountersTable(db);
-  const body = await parseJson(request);
-  const hasResetHourFlag = Object.prototype.hasOwnProperty.call(body, "reset_hour");
-  const resetHour = hasResetHourFlag ? parseBooleanFlag(body.reset_hour) : false;
-  const durationMinutes = Math.max(
-    1,
-    parseNonNegativeInteger(body.duration_minutes, DEFAULT_DOWNLOAD_THROTTLE_DURATION_MINUTES),
-  );
-  const counter = await resolveDownloadCounterTarget(db, body.user_id, body.email);
-  if (!counter) {
-    return json({ ok: false, error: "download_counter_not_found" }, 404, env);
-  }
-  const updated = await setUserDownloadThrottle(
-    db,
-    String(counter.user_id || "").trim(),
-    { durationMinutes, resetHour },
-  );
-  if (!updated) {
-    return json({ ok: false, error: "download_counter_not_found" }, 404, env);
-  }
-  return json(
-    {
-      ok: true,
-      action: "throttle",
-      user_id: String(updated.user_id || ""),
-      user_email: String(updated.user_email || ""),
-      duration_minutes: durationMinutes,
-      reset_hour: resetHour,
-      throttled_until: String(updated.throttled_until || "").trim() || null,
-      hour_bytes: clampNonNegativeInt(updated.hour_bytes),
-      hour_bucket_start_unix: clampNonNegativeInt(updated.hour_bucket_start_unix),
-      updated_at: String(updated.updated_at || nowIso()),
-    },
-    200,
-    env,
-  );
-}
-
-async function handleAdminUserBlock(request, env) {
-  const auth = await requireAnalyticsAdmin(request, env, AUTH_SESSION_DEPS);
-  if (auth.error) {
-    return auth.error;
-  }
-  const { db, user: adminUser } = auth;
-  await ensureApiKeyTables(db);
-  await ensureRefreshSessionColumns(db);
-  await ensureUserProvisionalColumns(db);
-  await ensureUserDownloadCountersTable(db);
-  const body = await parseJson(request);
-  const requestedUserId = String(body.user_id || "").trim();
-  const requestedEmail = normalizeEmail(body.email || "");
-  if (!requestedUserId && !requestedEmail) {
-    return json({ ok: false, error: "missing_user_id_or_email" }, 400, env);
-  }
-  let targetUser = requestedUserId ? await findUserById(db, requestedUserId) : null;
-  if (!targetUser && requestedEmail) {
-    targetUser = await findUserByEmail(db, requestedEmail);
-  }
-  if (!targetUser) {
-    return json({ ok: false, error: "user_not_found" }, 404, env);
-  }
-  const targetUserId = String(targetUser.id || "").trim();
-  const targetEmail = normalizeEmail(targetUser.email || "");
-  const now = nowIso();
-  await dbRun(
-    db,
-    `
-      UPDATE users
-      SET
-        status = 'blocked',
-        provisional_plan_code = NULL,
-        provisional_expires_at = NULL,
-        pro_confirmed_at = NULL
-      WHERE id = ?
-    `,
-    [targetUserId],
-  );
-  const revokedKeysResult = await dbRun(
-    db,
-    `
-      UPDATE api_keys
-      SET
-        status = 'revoked',
-        revoked_at = ?
-      WHERE user_id = ?
-        AND status = 'active'
-    `,
-    [now, targetUserId],
-  );
-  const revokedSessionsResult = await dbRun(
-    db,
-    `
-      UPDATE refresh_sessions
-      SET revoked_at = ?
-      WHERE user_id = ?
-        AND (revoked_at IS NULL OR revoked_at = '')
-    `,
-    [now, targetUserId],
-  );
-  const updatedCounter = await clearUserDownloadThrottle(db, targetUserId, { resetHour: true });
-  try {
-    console.log(
-      "admin.user_blocked",
-      JSON.stringify({
-        user_id: targetUserId,
-        user_email: targetEmail,
-        admin_email: normalizeEmail(adminUser && adminUser.email || ""),
-      }),
-    );
-  } catch (_error) {
-    // no-op logging guard
-  }
-  return json(
-    {
-      ok: true,
-      action: "block_user",
-      user_id: targetUserId,
-      user_email: targetEmail,
-      status: "blocked",
-      revoked_api_keys: dbMetaChanges(revokedKeysResult),
-      revoked_sessions: dbMetaChanges(revokedSessionsResult),
-      throttled_until: String(updatedCounter && updatedCounter.throttled_until || "").trim() || null,
-      updated_at: String(updatedCounter && updatedCounter.updated_at || now),
-    },
-    200,
-    env,
-  );
-}
-
-async function handleAdminUserUnblock(request, env) {
-  const auth = await requireAnalyticsAdmin(request, env, AUTH_SESSION_DEPS);
-  if (auth.error) {
-    return auth.error;
-  }
-  const { db, user: adminUser } = auth;
-  await ensureApiKeyTables(db);
-  await ensureRefreshSessionColumns(db);
-  await ensureUserProvisionalColumns(db);
-  await ensureUserDownloadCountersTable(db);
-  await ensureAdminHardBlocksTable(db);
-  const body = await parseJson(request);
-  const requestedUserId = String(body.user_id || "").trim();
-  const requestedEmail = normalizeEmail(body.email || "");
-  if (!requestedUserId && !requestedEmail) {
-    return json({ ok: false, error: "missing_user_id_or_email" }, 400, env);
-  }
-  let targetUser = requestedUserId ? await findUserById(db, requestedUserId) : null;
-  if (!targetUser && requestedEmail) {
-    targetUser = await findUserByEmail(db, requestedEmail);
-  }
-  if (!targetUser) {
-    return json({ ok: false, error: "user_not_found" }, 404, env);
-  }
-  const targetUserId = String(targetUser.id || "").trim();
-  const targetEmail = normalizeEmail(targetUser.email || "");
-  const targetPlan = normalizeRequestedPlan(body.plan_code || PLAN_CODE_PLANETKA);
-  const now = nowIso();
-  const proConfirmedAt = isPaidRequestedPlan(targetPlan) ? now : null;
-  await dbRun(
-    db,
-    `
-      UPDATE users
-      SET
-        status = ?,
-        provisional_plan_code = NULL,
-        provisional_expires_at = NULL,
-        pro_confirmed_at = ?
-      WHERE id = ?
-    `,
-    [targetPlan, proConfirmedAt, targetUserId],
-  );
-  const apiKeysResult = await dbRun(
-    db,
-    `
-      UPDATE api_keys
-      SET
-        plan_code = ?,
-        provisional = 0,
-        provisional_expires_at = NULL,
-        confirmed_at = ?
-      WHERE user_id = ?
-        AND status = 'active'
-    `,
-    [targetPlan, proConfirmedAt, targetUserId],
-  );
-  await dbRun(
-    db,
-    `
-      UPDATE user_download_counters
-      SET plan_code = ?, updated_at = ?
-      WHERE user_id = ?
-    `,
-    [targetPlan, now, targetUserId],
-  );
-  const hardBlocksClearedResult = await dbRun(
-    db,
-    `
-      UPDATE admin_hard_blocks
-      SET
-        active = 0
-      WHERE
-        active = 1
-        AND (
-          source_user_id = ?
-          OR LOWER(COALESCE(source_user_email, '')) = ?
-          OR LOWER(COALESCE(blocked_email, '')) = ?
-        )
-    `,
-    [targetUserId, targetEmail, targetEmail],
-  );
-  const updatedCounter = await clearUserDownloadThrottle(db, targetUserId, { resetHour: true });
-  try {
-    console.log(
-      "admin.user_unblocked",
-      JSON.stringify({
-        user_id: targetUserId,
-        user_email: targetEmail,
-        plan_code: targetPlan,
-        admin_email: normalizeEmail(adminUser && adminUser.email || ""),
-      }),
-    );
-  } catch (_error) {
-    // no-op logging guard
-  }
-  return json(
-    {
-      ok: true,
-      action: "unblock_user",
-      user_id: targetUserId,
-      user_email: targetEmail,
-      status: targetPlan,
-      updated_active_api_keys: dbMetaChanges(apiKeysResult),
-      hard_blocks_cleared: dbMetaChanges(hardBlocksClearedResult),
-      throttled_until: String(updatedCounter && updatedCounter.throttled_until || "").trim() || null,
-      updated_at: String(updatedCounter && updatedCounter.updated_at || now),
-    },
-    200,
-    env,
-  );
-}
-
-async function handleAdminUserHardBlock(request, env) {
-  const auth = await requireAnalyticsAdmin(request, env, AUTH_SESSION_DEPS);
-  if (auth.error) {
-    return auth.error;
-  }
-  const { db, user: adminUser } = auth;
-  await ensureApiKeyTables(db);
-  await ensureRefreshSessionColumns(db);
-  await ensureUserProvisionalColumns(db);
-  await ensureUserDownloadCountersTable(db);
-  await ensureAdminHardBlocksTable(db);
-
-  const body = await parseJson(request);
-  const requestedUserId = String(body.user_id || "").trim();
-  const requestedEmail = normalizeEmail(body.email || "");
-  if (!requestedUserId && !requestedEmail) {
-    return json({ ok: false, error: "missing_user_id_or_email" }, 400, env);
-  }
-
-  let targetUser = requestedUserId ? await findUserById(db, requestedUserId) : null;
-  if (!targetUser && requestedEmail) {
-    targetUser = await findUserByEmail(db, requestedEmail);
-  }
-  if (!targetUser) {
-    return json({ ok: false, error: "user_not_found" }, 404, env);
-  }
-
-  const targetUserId = String(targetUser.id || "").trim();
-  const targetEmail = normalizeEmail(targetUser.email || "");
-  const now = nowIso();
-
-  // Block the account itself (same behavior as manual block).
-  await dbRun(
-    db,
-    `
-      UPDATE users
-      SET
-        status = 'blocked',
-        provisional_plan_code = NULL,
-        provisional_expires_at = NULL,
-        pro_confirmed_at = NULL
-      WHERE id = ?
-    `,
-    [targetUserId],
-  );
-  const revokedKeysResult = await dbRun(
-    db,
-    `
-      UPDATE api_keys
-      SET
-        status = 'revoked',
-        revoked_at = ?
-      WHERE user_id = ?
-        AND status = 'active'
-    `,
-    [now, targetUserId],
-  );
-  const revokedSessionsResult = await dbRun(
-    db,
-    `
-      UPDATE refresh_sessions
-      SET revoked_at = ?
-      WHERE user_id = ?
-        AND (revoked_at IS NULL OR revoked_at = '')
-    `,
-    [now, targetUserId],
-  );
-
-  const counter = await findUserDownloadCounter(db, targetUserId);
-  const fallbackRequest = await dbGet(
-    db,
-    `
-      SELECT request_device_id, request_ip
-      FROM api_key_requests
-      WHERE LOWER(email) = ?
-      ORDER BY created_at DESC
-      LIMIT 1
-    `,
-    [targetEmail],
-  );
-  const blockedDeviceId = normalizeDeviceId(
-    String(counter && counter.last_device_id || "") || String(fallbackRequest && fallbackRequest.request_device_id || ""),
-  );
-  const blockedIp = String(counter && counter.last_ip || "").trim() || String(fallbackRequest && fallbackRequest.request_ip || "").trim();
-  const reason = String(body.reason || "manual_admin_hard_block").trim().slice(0, 160) || "manual_admin_hard_block";
-  await dbRun(
-    db,
-    `
-      INSERT INTO admin_hard_blocks (
-        id,
-        blocked_email,
-        blocked_device_id,
-        blocked_ip,
-        source_user_id,
-        source_user_email,
-        reason,
-        created_by,
-        created_at,
-        active
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-    `,
-    [
-      crypto.randomUUID(),
-      targetEmail || null,
-      blockedDeviceId || null,
-      blockedIp || null,
-      targetUserId || null,
-      targetEmail || null,
-      reason,
-      normalizeEmail(adminUser && adminUser.email || "") || null,
-      now,
-    ],
-  );
-  const updatedCounter = await clearUserDownloadThrottle(db, targetUserId, { resetHour: true });
-  return json(
-    {
-      ok: true,
-      action: "hard_block_user",
-      user_id: targetUserId,
-      user_email: targetEmail,
-      status: "blocked",
-      blocked_device_id: blockedDeviceId || null,
-      blocked_ip: blockedIp || null,
-      revoked_api_keys: dbMetaChanges(revokedKeysResult),
-      revoked_sessions: dbMetaChanges(revokedSessionsResult),
-      throttled_until: String(updatedCounter && updatedCounter.throttled_until || "").trim() || null,
-      updated_at: String(updatedCounter && updatedCounter.updated_at || now),
-    },
-    200,
-    env,
-  );
-}
-
-async function handleAdminUserSetPlan(request, env) {
-  const auth = await requireAnalyticsAdmin(request, env, AUTH_SESSION_DEPS);
-  if (auth.error) {
-    return auth.error;
-  }
-  const { db, user: adminUser } = auth;
-  await ensureApiKeyTables(db);
-  await ensureRefreshSessionColumns(db);
-  await ensureUserProvisionalColumns(db);
-  await ensureUserDownloadCountersTable(db);
-
-  const body = await parseJson(request);
-  const requestedUserId = String(body.user_id || "").trim();
-  const requestedEmail = normalizeEmail(body.email || "");
-  if (!requestedUserId && !requestedEmail) {
-    return json({ ok: false, error: "missing_user_id_or_email" }, 400, env);
-  }
-
-  let targetUser = requestedUserId ? await findUserById(db, requestedUserId) : null;
-  if (!targetUser && requestedEmail) {
-    targetUser = await findUserByEmail(db, requestedEmail);
-  }
-  if (!targetUser) {
-    return json({ ok: false, error: "user_not_found" }, 404, env);
-  }
-
-  const targetUserId = String(targetUser.id || "").trim();
-  const targetEmail = normalizeEmail(targetUser.email || "");
-  const targetPlan = normalizeRequestedPlan(body.plan_code || PLAN_CODE_PLANETKA);
-  const now = nowIso();
-  const proConfirmedAt = isPaidRequestedPlan(targetPlan) ? now : null;
-
-  await dbRun(
-    db,
-    `
-      UPDATE users
-      SET
-        status = ?,
-        provisional_plan_code = NULL,
-        provisional_expires_at = NULL,
-        pro_confirmed_at = ?
-      WHERE id = ?
-    `,
-    [targetPlan, proConfirmedAt, targetUserId],
-  );
-  const apiKeysResult = await dbRun(
-    db,
-    `
-      UPDATE api_keys
-      SET
-        plan_code = ?,
-        provisional = 0,
-        provisional_expires_at = NULL,
-        confirmed_at = ?
-      WHERE user_id = ?
-        AND status = 'active'
-    `,
-    [targetPlan, proConfirmedAt, targetUserId],
-  );
-  await dbRun(
-    db,
-    `
-      UPDATE user_download_counters
-      SET plan_code = ?, updated_at = ?
-      WHERE user_id = ?
-    `,
-    [targetPlan, now, targetUserId],
-  );
-
-  try {
-    console.log(
-      "admin.user_set_plan",
-      JSON.stringify({
-        user_id: targetUserId,
-        user_email: targetEmail,
-        plan_code: targetPlan,
-        admin_email: normalizeEmail(adminUser && adminUser.email || ""),
-      }),
-    );
-  } catch (_error) {
-    // no-op logging guard
-  }
-
-  return json(
-    {
-      ok: true,
-      action: "set_plan",
-      user_id: targetUserId,
-      user_email: targetEmail,
-      plan_code: targetPlan,
-      updated_active_api_keys: dbMetaChanges(apiKeysResult),
-      updated_at: now,
-    },
-    200,
-    env,
-  );
-}
-
 function sanitizeAttachmentFileName(value, fallback = "planetka_bug_report.json") {
   const raw = String(value || "").trim();
   const safe = raw.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120);
@@ -9972,17 +9199,17 @@ const ADMIN_ROUTE_DEPS = {
   handleAdminAnalyticsPage: (request, env) => handleAdminAnalyticsPageRoute(request, env, ADMIN_ANALYTICS_DEPS),
   handleAdminAnalyticsTileMapImage: (request, env) => handleAdminAnalyticsTileMapImageRoute(request, env, ADMIN_ANALYTICS_DEPS),
   handleAdminAnalyticsUsersPage: (request, env) => handleAdminAnalyticsUsersPageRoute(request, env, ADMIN_ANALYTICS_DEPS),
-  handleAdminLoginPage,
-  handleAdminPasswordLogin,
-  handleAdminSessionLogout,
-  handleAdminSessionStart,
-  handleAdminSessionStartPage,
-  handleAdminUserBlock,
-  handleAdminUserHardBlock,
-  handleAdminUserSetPlan,
-  handleAdminUserThrottle,
-  handleAdminUserUnblock,
-  handleAdminUserUnthrottle,
+  handleAdminLoginPage: (request, env) => handleAdminLoginPageRoute(request, env, ADMIN_SESSION_DEPS),
+  handleAdminPasswordLogin: (request, env) => handleAdminPasswordLoginRoute(request, env, ADMIN_SESSION_DEPS),
+  handleAdminSessionLogout: (request, env) => handleAdminSessionLogoutRoute(request, env, ADMIN_SESSION_DEPS),
+  handleAdminSessionStart: (request, env) => handleAdminSessionStartRoute(request, env, ADMIN_SESSION_DEPS),
+  handleAdminSessionStartPage: (request, env) => handleAdminSessionStartPageRoute(request, env, ADMIN_SESSION_DEPS),
+  handleAdminUserBlock: (request, env) => handleAdminUserBlockRoute(request, env, ADMIN_USER_DEPS),
+  handleAdminUserHardBlock: (request, env) => handleAdminUserHardBlockRoute(request, env, ADMIN_USER_DEPS),
+  handleAdminUserSetPlan: (request, env) => handleAdminUserSetPlanRoute(request, env, ADMIN_USER_DEPS),
+  handleAdminUserThrottle: (request, env) => handleAdminUserThrottleRoute(request, env, ADMIN_USER_DEPS),
+  handleAdminUserUnblock: (request, env) => handleAdminUserUnblockRoute(request, env, ADMIN_USER_DEPS),
+  handleAdminUserUnthrottle: (request, env) => handleAdminUserUnthrottleRoute(request, env, ADMIN_USER_DEPS),
 };
 
 async function dispatchExactRoute(request, env, path) {
