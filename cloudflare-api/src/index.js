@@ -54,6 +54,15 @@ import {
   handleAdminAnalyticsUsersPage as handleAdminAnalyticsUsersPageRoute,
 } from "./worker/admin_analytics_handlers.js";
 import {
+  collectAnalyticsSnapshot as collectAnalyticsSnapshotQuery,
+  listAnalyticsUsers as listAnalyticsUsersQuery,
+  parseAnalyticsUsersSort as parseAnalyticsUsersSortQuery,
+  parseAnalyticsUsersSortDirection as parseAnalyticsUsersSortDirectionQuery,
+  parseHeavyUserPlanFilter as parseHeavyUserPlanFilterQuery,
+  sanitizeAnalyticsMinutes as sanitizeAnalyticsMinutesQuery,
+  sanitizeLiveTileMapMinutes as sanitizeLiveTileMapMinutesQuery,
+} from "./worker/admin_analytics_queries.js";
+import {
   handleAdminLoginPage as handleAdminLoginPageRoute,
   handleAdminPasswordLogin as handleAdminPasswordLoginRoute,
   handleAdminSessionLogout as handleAdminSessionLogoutRoute,
@@ -169,20 +178,49 @@ let apiKeyTablesReady = false;
 let refreshSessionColumnsReady = false;
 let adminHardBlocksTableReady = false;
 let rateLimitsLastPruneAt = 0;
-let supportMissingManifestCache = {
-  loadedAtMs: 0,
-  expiresAtMs: 0,
-  key: "",
-  version: "",
-  generatedAt: "",
-  byLayer: {},
-};
-let cloudflareR2BillableUsageCache = {
-  expiresAtMs: 0,
-  cacheKey: "",
-  value: null,
-};
 let authContextCache = new Map();
+
+const ANALYTICS_QUERY_DEPS = {
+  ALLOWED_LIVE_TILE_MAP_WINDOW_MINUTES,
+  BYTES_PER_GB,
+  DEFAULT_ADMIN_SUPPORT_MISSING_MANIFEST_KEY,
+  DEFAULT_ANALYTICS_EXCLUDED_EMAIL_PATTERNS,
+  DEFAULT_ANALYTICS_WINDOW_MINUTES,
+  DEFAULT_AUTH_REFRESH_HEALTH_WINDOW_SECONDS,
+  DEFAULT_CLOUDFLARE_BILLABLE_CACHE_TTL_SECONDS,
+  DEFAULT_LIVE_TILE_MAP_WINDOW_MINUTES,
+  DEFAULT_R2_CLASS_A_FREE_OPS_PER_MONTH,
+  DEFAULT_R2_CLASS_A_PRICE_PER_MILLION_USD,
+  DEFAULT_R2_CLASS_B_FREE_OPS_PER_MONTH,
+  DEFAULT_R2_CLASS_B_PRICE_PER_MILLION_USD,
+  DEFAULT_R2_ESTIMATED_STORAGE_GB,
+  DEFAULT_R2_STORAGE_FREE_GB_MONTH,
+  DEFAULT_R2_STORAGE_PRICE_PER_GB_MONTH_USD,
+  MAX_ANALYTICS_WINDOW_MINUTES,
+  PLAN_CODE_PLANETKA,
+  PLAN_CODE_PLANETKA_FREE,
+  PLAN_CODE_PLANETKA_PRO,
+  PLAN_CODE_PLANETKA_STUDIO,
+  clampNonNegativeInt,
+  countRowsFromQuery,
+  dbAll,
+  dbGet,
+  ensureAuthRefreshEventsTable,
+  ensureTileRequestEventsTable,
+  ensureTileRequestRollupTables,
+  estimateR2MonthlyCostUsd,
+  monthStartIso,
+  monthStartUnix,
+  normalizeEmail,
+  normalizePlanCode,
+  nowIso,
+  parseNonNegativeInteger,
+  parsePositiveNumber,
+  publicErrorMessage,
+  startOfDayUnix,
+  startOfHourUnix,
+  startOfWeekUnix,
+};
 
 const AUTH_SESSION_DEPS = {
   authContextCacheGet,
@@ -207,7 +245,8 @@ const AUTH_SESSION_DEPS = {
 
 const ADMIN_ANALYTICS_DEPS = {
   buildAdminSessionCookie,
-  collectAnalyticsSnapshot,
+  collectAnalyticsSnapshot: (db, minutes, planFilter, liveTileMapWindowMinutes, env) =>
+    collectAnalyticsSnapshotQuery(db, minutes, planFilter, liveTileMapWindowMinutes, env, ANALYTICS_QUERY_DEPS),
   corsHeaders,
   DEFAULT_ADMIN_ANALYTICS_TILE_MAP_KEY,
   DEFAULT_ANALYTICS_WINDOW_MINUTES,
@@ -215,19 +254,21 @@ const ADMIN_ANALYTICS_DEPS = {
   escapeHtml,
   html,
   json,
-  listAnalyticsUsers,
+  listAnalyticsUsers: (db, env, options = {}) => listAnalyticsUsersQuery(db, env, options, ANALYTICS_QUERY_DEPS),
   normalizePlanCode,
   nowIso,
-  parseAnalyticsUsersSort,
-  parseAnalyticsUsersSortDirection,
-  parseHeavyUserPlanFilter,
+  parseAnalyticsUsersSort: (value) => parseAnalyticsUsersSortQuery(value),
+  parseAnalyticsUsersSortDirection: (value) => parseAnalyticsUsersSortDirectionQuery(value),
+  parseHeavyUserPlanFilter: (value) => parseHeavyUserPlanFilterQuery(value, ANALYTICS_QUERY_DEPS),
   parseNonNegativeInteger,
   PLAN_CODE_PLANETKA,
   PLAN_CODE_PLANETKA_PRO,
   publicErrorMessage,
   requireAnalyticsAdmin: (request, env) => requireAnalyticsAdmin(request, env, AUTH_SESSION_DEPS),
-  sanitizeAnalyticsMinutes,
-  sanitizeLiveTileMapMinutes,
+  sanitizeAnalyticsMinutes: (value, fallback = DEFAULT_ANALYTICS_WINDOW_MINUTES) =>
+    sanitizeAnalyticsMinutesQuery(value, fallback, ANALYTICS_QUERY_DEPS),
+  sanitizeLiveTileMapMinutes: (value, fallback = DEFAULT_LIVE_TILE_MAP_WINDOW_MINUTES) =>
+    sanitizeLiveTileMapMinutesQuery(value, fallback, ANALYTICS_QUERY_DEPS),
   BYTES_PER_GB,
 };
 
@@ -845,6 +886,247 @@ function requestCountry(request) {
     return "UNKNOWN";
   }
   return country;
+}
+
+async function maybePruneRateLimits(db, nowSeconds) {
+  if ((nowSeconds - rateLimitsLastPruneAt) < RATE_LIMIT_PRUNE_INTERVAL_SECONDS) {
+    return;
+  }
+  rateLimitsLastPruneAt = nowSeconds;
+  try {
+    await dbRun(
+      db,
+      `DELETE FROM rate_limits WHERE updated_at < ?`,
+      [Math.max(0, nowSeconds - RATE_LIMIT_ENTRY_TTL_SECONDS)],
+    );
+  } catch (error) {
+    console.debug(
+      "worker.rate_limits.prune_failed",
+      JSON.stringify({
+        error: String(error && error.message || "rate_limit_prune_failed"),
+      }),
+    );
+  }
+}
+
+async function consumeRateLimitWindow(db, scope, rawKey, limit, windowSeconds) {
+  if (limit <= 0 || windowSeconds <= 0) {
+    return { allowed: true, count: 0, limit, retryAfterSeconds: 0 };
+  }
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  await maybePruneRateLimits(db, nowSeconds);
+  const bucketStart = nowSeconds - (nowSeconds % windowSeconds);
+  const normalizedRawKey = String(rawKey || "").trim() || "unknown";
+  const hashedKey = await sha256Hex(`${scope}:${normalizedRawKey}`);
+  const storageKey = `${scope}:${hashedKey}`;
+  const row = await dbGet(
+    db,
+    `
+      INSERT INTO rate_limits (
+        key,
+        window_start,
+        count,
+        updated_at
+      ) VALUES (?, ?, 1, ?)
+      ON CONFLICT(key) DO UPDATE SET
+        window_start = CASE
+          WHEN rate_limits.window_start = excluded.window_start THEN rate_limits.window_start
+          ELSE excluded.window_start
+        END,
+        count = CASE
+          WHEN rate_limits.window_start = excluded.window_start THEN rate_limits.count + 1
+          ELSE 1
+        END,
+        updated_at = excluded.updated_at
+      RETURNING count, window_start
+    `,
+    [storageKey, bucketStart, nowSeconds],
+  );
+  const count = clampNonNegativeInt(row && row.count);
+  const effectiveWindowStart = parseNonNegativeInteger(row && row.window_start, bucketStart);
+  const retryAfterSeconds = Math.max(1, (effectiveWindowStart + windowSeconds) - nowSeconds);
+  return {
+    allowed: count <= limit,
+    count,
+    limit,
+    retryAfterSeconds,
+  };
+}
+
+function rateLimitedResponse(env, code, message, retryAfterSeconds) {
+  const retryAfter = Math.max(1, clampNonNegativeInt(retryAfterSeconds));
+  return jsonWithHeaders(
+    {
+      ok: false,
+      error: code,
+      message,
+      retry_after_seconds: retryAfter,
+    },
+    429,
+    env,
+    { "Retry-After": String(retryAfter) },
+  );
+}
+
+async function maybeSignalTileFarmingActivity(db, env, details = {}) {
+  if (!db) {
+    return;
+  }
+  await ensureRateLimitsTable(db);
+  const statusCode = parseNonNegativeInteger(details.statusCode, 0);
+  if (statusCode <= 0) {
+    return;
+  }
+
+  const userId = String(details.userId || "").trim();
+  const userEmail = normalizeEmail(details.userEmail || "");
+  if (userEmail && isAbuseAlertWhitelisted(userEmail, env)) {
+    return;
+  }
+  const userKey = userId || userEmail || "unknown";
+  const ip = String(details.ip || "").trim() || "unknown";
+  const deviceId = normalizeDeviceId(details.deviceId || "");
+  const tileKey = String(details.tileKey || "").trim();
+  const resolveId = String(details.resolveId || "").trim();
+  const method = String(details.method || "GET").toUpperCase();
+  const path = String(details.path || "").trim();
+
+  const windowSeconds = Math.max(
+    30,
+    parseRateLimitInteger(env.TILE_FARM_ALERT_WINDOW_SECONDS, DEFAULT_TILE_FARM_ALERT_WINDOW_SECONDS),
+  );
+  const userRequestThreshold = Math.max(
+    0,
+    parseRateLimitInteger(env.TILE_FARM_ALERT_USER_REQUEST_THRESHOLD, DEFAULT_TILE_FARM_ALERT_USER_REQUEST_THRESHOLD),
+  );
+  const ipRequestThreshold = Math.max(
+    0,
+    parseRateLimitInteger(env.TILE_FARM_ALERT_IP_REQUEST_THRESHOLD, DEFAULT_TILE_FARM_ALERT_IP_REQUEST_THRESHOLD),
+  );
+  const uniqueTileThreshold = Math.max(
+    0,
+    parseRateLimitInteger(env.TILE_FARM_ALERT_UNIQUE_TILE_THRESHOLD, DEFAULT_TILE_FARM_ALERT_UNIQUE_TILE_THRESHOLD),
+  );
+  const untaggedMinRequests = Math.max(
+    0,
+    parseRateLimitInteger(env.TILE_FARM_ALERT_UNTAGGED_MIN_REQUESTS, DEFAULT_TILE_FARM_ALERT_UNTAGGED_MIN_REQUESTS),
+  );
+  const untaggedPercentThreshold = Math.min(
+    100,
+    Math.max(1, parseRateLimitInteger(env.TILE_FARM_ALERT_UNTAGGED_PERCENT, DEFAULT_TILE_FARM_ALERT_UNTAGGED_PERCENT)),
+  );
+  const emailCooldownSeconds = Math.max(
+    30,
+    parseRateLimitInteger(
+      env.TILE_FARM_ALERT_EMAIL_COOLDOWN_SECONDS,
+      DEFAULT_TILE_FARM_ALERT_EMAIL_COOLDOWN_SECONDS,
+    ),
+  );
+
+  const userRate = await consumeRateLimitWindow(db, "tile_farm_user_req", userKey, 2147483647, windowSeconds);
+  const userCount = clampNonNegativeInt(userRate && userRate.count);
+  const ipRate = await consumeRateLimitWindow(db, "tile_farm_ip_req", ip, 2147483647, windowSeconds);
+  const ipCount = clampNonNegativeInt(ipRate && ipRate.count);
+
+  let uniqueTileCount = 0;
+  if (tileKey) {
+    const tileSeen = await consumeRateLimitWindow(
+      db,
+      "tile_farm_user_tile_seen",
+      `${userKey}:${tileKey}`,
+      2147483647,
+      windowSeconds,
+    );
+    if (clampNonNegativeInt(tileSeen && tileSeen.count) === 1) {
+      const uniqueRate = await consumeRateLimitWindow(
+        db,
+        "tile_farm_user_unique",
+        userKey,
+        2147483647,
+        windowSeconds,
+      );
+      uniqueTileCount = clampNonNegativeInt(uniqueRate && uniqueRate.count);
+    }
+  }
+
+  let untaggedCount = 0;
+  if (!resolveId) {
+    const untaggedRate = await consumeRateLimitWindow(
+      db,
+      "tile_farm_user_untagged",
+      userKey,
+      2147483647,
+      windowSeconds,
+    );
+    untaggedCount = clampNonNegativeInt(untaggedRate && untaggedRate.count);
+  }
+
+  const reasons = [];
+  if (userRequestThreshold > 0 && thresholdHit(userCount, userRequestThreshold)) {
+    reasons.push(`user_request_rate:${userCount}/${userRequestThreshold}`);
+  }
+  if (ipRequestThreshold > 0 && thresholdHit(ipCount, ipRequestThreshold)) {
+    reasons.push(`ip_request_rate:${ipCount}/${ipRequestThreshold}`);
+  }
+  if (uniqueTileThreshold > 0 && uniqueTileCount > 0 && thresholdHit(uniqueTileCount, uniqueTileThreshold)) {
+    reasons.push(`unique_tiles:${uniqueTileCount}/${uniqueTileThreshold}`);
+  }
+  if (
+    untaggedCount > 0
+    && userCount >= untaggedMinRequests
+    && ((untaggedCount * 100) / Math.max(1, userCount)) >= untaggedPercentThreshold
+  ) {
+    reasons.push(`untagged_ratio:${untaggedCount}/${userCount}>=${untaggedPercentThreshold}%`);
+  }
+  if (!reasons.length) {
+    return;
+  }
+
+  const alertGate = await consumeRateLimitWindow(
+    db,
+    "tile_farm_alert_mail",
+    `${userKey}:${ip}`,
+    1,
+    emailCooldownSeconds,
+  );
+  if (!alertGate.allowed) {
+    return;
+  }
+
+  try {
+    await sendOpsAlertEmail(
+      env,
+      "Planetka suspected tile farming activity",
+      [
+        "Potential tile farming pattern detected (real-time).",
+        `reasons=${reasons.join(",")}`,
+        `user_id=${userId}`,
+        `email=${userEmail}`,
+        `ip=${ip}`,
+        `device_id=${deviceId}`,
+        `status_code=${statusCode}`,
+        `method=${method}`,
+        `path=${path}`,
+        `tile_key=${tileKey}`,
+        `resolve_id=${resolveId}`,
+        `window_seconds=${windowSeconds}`,
+        `user_count=${userCount}`,
+        `ip_count=${ipCount}`,
+        `unique_tile_count=${uniqueTileCount}`,
+        `untagged_count=${untaggedCount}`,
+      ],
+    );
+  } catch (error) {
+    console.warn(
+      "worker.tile_farm_alert_email_failed",
+      JSON.stringify({
+        user_id: userId,
+        email: userEmail,
+        ip,
+        error: String(error && error.message || "tile_farm_alert_email_failed"),
+      }),
+    );
+  }
 }
 
 function parseAdminEmailSet(env) {
@@ -1470,1341 +1752,6 @@ async function recordTileRequestEvent(db, payload) {
   }
 }
 
-function sanitizeAnalyticsMinutes(value, fallback = DEFAULT_ANALYTICS_WINDOW_MINUTES) {
-  const parsed = parseNonNegativeInteger(value, fallback);
-  if (parsed <= 0) {
-    return fallback;
-  }
-  return Math.min(MAX_ANALYTICS_WINDOW_MINUTES, parsed);
-}
-
-function sanitizeLiveTileMapMinutes(value, fallback = DEFAULT_LIVE_TILE_MAP_WINDOW_MINUTES) {
-  const parsed = parseNonNegativeInteger(value, fallback);
-  if (!ALLOWED_LIVE_TILE_MAP_WINDOW_MINUTES.has(parsed)) {
-    return fallback;
-  }
-  return parsed;
-}
-
-function _normalizeErrorCode(value) {
-  return String(value || "").trim().toLowerCase();
-}
-
-function _isTileNotFoundRow(row) {
-  const statusCode = parseNonNegativeInteger(row && row.status_code, 0);
-  if (statusCode !== 404) {
-    return false;
-  }
-  const errorCode = _normalizeErrorCode(row && row.error_code);
-  return !errorCode || errorCode === "tile_not_found";
-}
-
-async function loadSupportMissingManifest(env) {
-  const manifestKey = String(
-    env.ADMIN_SUPPORT_MISSING_MANIFEST_KEY || DEFAULT_ADMIN_SUPPORT_MISSING_MANIFEST_KEY,
-  ).trim();
-  const nowMs = Date.now();
-  if (
-    supportMissingManifestCache.key === manifestKey
-    && nowMs < supportMissingManifestCache.expiresAtMs
-    && supportMissingManifestCache.byLayer
-  ) {
-    return supportMissingManifestCache;
-  }
-  const bucket = env.PLANETKA_DATA;
-  if (!bucket || !manifestKey) {
-    supportMissingManifestCache = {
-      loadedAtMs: nowMs,
-      expiresAtMs: nowMs + (5 * 60 * 1000),
-      key: manifestKey,
-      version: "",
-      generatedAt: "",
-      byLayer: {},
-    };
-    return supportMissingManifestCache;
-  }
-  try {
-    const object = await bucket.get(manifestKey);
-    if (!object || !object.body) {
-      supportMissingManifestCache = {
-        loadedAtMs: nowMs,
-        expiresAtMs: nowMs + (5 * 60 * 1000),
-        key: manifestKey,
-        version: "",
-        generatedAt: "",
-        byLayer: {},
-      };
-      return supportMissingManifestCache;
-    }
-    const raw = await object.text();
-    const parsed = JSON.parse(String(raw || "{}"));
-    const expected = parsed && parsed.expected_missing && typeof parsed.expected_missing === "object"
-      ? parsed.expected_missing
-      : {};
-    const byLayer = {};
-    for (const layer of ["PO", "EL", "WT"]) {
-      const entries = Array.isArray(expected[layer]) ? expected[layer] : [];
-      byLayer[layer] = new Set(entries.map((item) => String(item || "").trim()).filter(Boolean));
-    }
-    supportMissingManifestCache = {
-      loadedAtMs: nowMs,
-      expiresAtMs: nowMs + (10 * 60 * 1000),
-      key: manifestKey,
-      version: String(parsed && parsed.version || ""),
-      generatedAt: String(parsed && parsed.generated_at || ""),
-      byLayer,
-    };
-    return supportMissingManifestCache;
-  } catch (_error) {
-    supportMissingManifestCache = {
-      loadedAtMs: nowMs,
-      expiresAtMs: nowMs + (5 * 60 * 1000),
-      key: manifestKey,
-      version: "",
-      generatedAt: "",
-      byLayer: {},
-    };
-    return supportMissingManifestCache;
-  }
-}
-
-function isExpectedSupportFallbackMiss(row, supportMissingManifest) {
-  if (!_isTileNotFoundRow(row)) {
-    return false;
-  }
-  const folder = String(row && row.folder || "").trim().toUpperCase();
-  if (!["PO", "EL", "WT"].includes(folder)) {
-    return false;
-  }
-  const fileName = String(row && row.file_name || "").trim();
-  if (!fileName) {
-    return true;
-  }
-  const byLayer = supportMissingManifest && supportMissingManifest.byLayer
-    ? supportMissingManifest.byLayer
-    : {};
-  const layerSet = byLayer[folder];
-  if (!(layerSet instanceof Set) || layerSet.size <= 0) {
-    // No manifest loaded: default to support-layer fallback behavior.
-    return true;
-  }
-  return layerSet.has(fileName);
-}
-
-async function collectAnalyticsSnapshot(
-  db,
-  minutes,
-  planFilter = "all",
-  liveTileMapWindowMinutes = DEFAULT_LIVE_TILE_MAP_WINDOW_MINUTES,
-  env = {},
-) {
-  await ensureTileRequestEventsTable(db);
-  await ensureTileRequestRollupTables(db);
-  await ensureAuthRefreshEventsTable(db);
-  const nowUnix = Math.floor(Date.now() / 1000);
-  const windowMinutes = sanitizeAnalyticsMinutes(minutes, DEFAULT_ANALYTICS_WINDOW_MINUTES);
-  const windowStartUnix = Math.max(0, nowUnix - (windowMinutes * 60));
-  const rollupStart30d = Math.max(0, nowUnix - (30 * 86400));
-  const safePlanFilter = parseHeavyUserPlanFilter(planFilter);
-  const authRefreshWindowSeconds = Math.max(
-    3600,
-    parseNonNegativeInteger(env.AUTH_REFRESH_HEALTH_WINDOW_SECONDS, DEFAULT_AUTH_REFRESH_HEALTH_WINDOW_SECONDS),
-  );
-  const authRefreshWindowStartUnix = Math.max(0, nowUnix - authRefreshWindowSeconds);
-  const eventEmailFilter = buildAnalyticsExcludedEmailFilter("user_email", env);
-  const eventEmailFilterAliasE = buildAnalyticsExcludedEmailFilter("e.user_email", env);
-  const userEmailFilter = buildAnalyticsExcludedEmailFilter("email", env);
-  const rollupEmailFilter = buildAnalyticsExcludedEmailFilter("user_email", env);
-  const rollupEmailFilterAliasR = buildAnalyticsExcludedEmailFilter("r.user_email", env);
-  const heavyEmailFilter = buildAnalyticsExcludedEmailFilter("c.user_email", env);
-  const authRefreshEmailFilter = buildAnalyticsExcludedEmailFilter("user_email", env);
-
-  const summary = await dbGet(
-    db,
-    `
-      SELECT
-        COUNT(*) AS request_count,
-        COALESCE(SUM(bytes_served), 0) AS bytes_served,
-        COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0) AS error_count,
-        COALESCE(SUM(CASE WHEN UPPER(COALESCE(cache_status, '')) = 'HIT' THEN 1 ELSE 0 END), 0) AS cache_hit_count,
-        COALESCE(SUM(CASE WHEN resolve_id IS NOT NULL AND resolve_id != '' THEN 1 ELSE 0 END), 0) AS tagged_request_count,
-        COALESCE(COUNT(DISTINCT CASE WHEN resolve_id IS NOT NULL AND resolve_id != '' THEN resolve_id END), 0) AS tagged_resolve_count
-      FROM tile_request_events
-      WHERE created_at_unix >= ?
-      ${eventEmailFilter.condition ? `AND ${eventEmailFilter.condition}` : ""}
-    `,
-    [windowStartUnix, ...eventEmailFilter.bindings],
-  );
-
-  const topLineUsers = await dbGet(
-    db,
-    `
-      WITH users_normalized AS (
-        SELECT
-          CASE
-            WHEN LOWER(COALESCE(status, '')) IN ('pro', 'planetka_pro', 'planetka_studio', 'studio') THEN 'commercial'
-            WHEN LOWER(COALESCE(status, '')) IN ('lite', 'planetka', 'personal', 'basic', 'indie') THEN 'personal'
-            ELSE 'free'
-          END AS tier_code
-        FROM users
-        WHERE 1 = 1
-        ${userEmailFilter.condition ? `AND ${userEmailFilter.condition}` : ""}
-      )
-      SELECT
-        COALESCE(SUM(CASE WHEN tier_code = 'free' THEN 1 ELSE 0 END), 0) AS free_users,
-        COALESCE(SUM(CASE WHEN tier_code = 'personal' THEN 1 ELSE 0 END), 0) AS personal_users,
-        COALESCE(SUM(CASE WHEN tier_code = 'commercial' THEN 1 ELSE 0 END), 0) AS commercial_users,
-        COUNT(*) AS total_users
-      FROM users_normalized
-    `,
-    [...userEmailFilter.bindings],
-  );
-
-  const topLineTraffic = await dbGet(
-    db,
-    `
-      WITH traffic AS (
-        SELECT
-          r.request_count,
-          r.bytes_served,
-          COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) AS plan_norm
-        FROM tile_request_rollup_daily_account r
-        LEFT JOIN users u ON u.id = r.user_id
-        WHERE 1 = 1
-        ${rollupEmailFilterAliasR.condition ? `AND ${rollupEmailFilterAliasR.condition}` : ""}
-      )
-      SELECT
-        COALESCE(SUM(CASE WHEN plan_norm IN ('free', 'planetka_free', 'trial') THEN request_count ELSE 0 END), 0) AS free_requests,
-        COALESCE(SUM(CASE WHEN plan_norm IN ('lite', 'planetka', 'personal', 'basic', 'indie') THEN request_count ELSE 0 END), 0) AS personal_requests,
-        COALESCE(SUM(CASE WHEN plan_norm IN ('pro', 'planetka_pro', 'planetka_studio', 'studio') THEN request_count ELSE 0 END), 0) AS commercial_requests,
-        COALESCE(SUM(request_count), 0) AS total_requests,
-        COALESCE(SUM(CASE WHEN plan_norm IN ('free', 'planetka_free', 'trial') THEN bytes_served ELSE 0 END), 0) AS free_bytes,
-        COALESCE(SUM(CASE WHEN plan_norm IN ('lite', 'planetka', 'personal', 'basic', 'indie') THEN bytes_served ELSE 0 END), 0) AS personal_bytes,
-        COALESCE(SUM(CASE WHEN plan_norm IN ('pro', 'planetka_pro', 'planetka_studio', 'studio') THEN bytes_served ELSE 0 END), 0) AS commercial_bytes,
-        COALESCE(SUM(bytes_served), 0) AS total_bytes
-      FROM traffic
-    `,
-    [PLAN_CODE_PLANETKA_FREE, ...rollupEmailFilterAliasR.bindings],
-  );
-
-  const topLineResolves = await dbGet(
-    db,
-    `
-      WITH tagged_resolves AS (
-        SELECT DISTINCT
-          e.user_id,
-          e.resolve_id,
-          COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) AS plan_norm
-        FROM tile_request_events e
-        LEFT JOIN users u ON u.id = e.user_id
-        WHERE
-          e.resolve_id IS NOT NULL
-          AND e.resolve_id != ''
-          ${eventEmailFilterAliasE.condition ? `AND ${eventEmailFilterAliasE.condition}` : ""}
-      )
-      SELECT
-        COALESCE(SUM(CASE WHEN plan_norm IN ('free', 'planetka_free', 'trial') THEN 1 ELSE 0 END), 0) AS free_resolves,
-        COALESCE(SUM(CASE WHEN plan_norm IN ('lite', 'planetka', 'personal', 'basic', 'indie') THEN 1 ELSE 0 END), 0) AS personal_resolves,
-        COALESCE(SUM(CASE WHEN plan_norm IN ('pro', 'planetka_pro', 'planetka_studio', 'studio') THEN 1 ELSE 0 END), 0) AS commercial_resolves,
-        COUNT(*) AS total_resolves
-      FROM tagged_resolves
-    `,
-    [PLAN_CODE_PLANETKA_FREE, ...eventEmailFilterAliasE.bindings],
-  );
-
-  const activeWindow6mStartUnix = Math.max(0, nowUnix - (180 * 86400));
-  const activeWindow3mStartUnix = Math.max(0, nowUnix - (90 * 86400));
-  const activeWindow1mStartUnix = Math.max(0, nowUnix - (30 * 86400));
-  const activeWindow1wStartUnix = Math.max(0, nowUnix - (7 * 86400));
-  const activeWindow1dStartUnix = Math.max(0, nowUnix - 86400);
-  const activeWindow1hStartUnix = Math.max(0, nowUnix - 3600);
-  const activeUserRows = await dbAll(
-    db,
-    `
-      SELECT
-        e.user_id,
-        MAX(e.created_at_unix) AS last_seen_unix,
-        COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) AS plan_norm
-      FROM tile_request_events e
-      LEFT JOIN users u ON u.id = e.user_id
-      WHERE
-        e.created_at_unix >= ?
-        AND e.user_id IS NOT NULL
-        AND e.user_id != ''
-        ${eventEmailFilterAliasE.condition ? `AND ${eventEmailFilterAliasE.condition}` : ""}
-      GROUP BY
-        e.user_id,
-        COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?)
-    `,
-    [
-      PLAN_CODE_PLANETKA_FREE,
-      activeWindow6mStartUnix,
-      ...eventEmailFilterAliasE.bindings,
-      PLAN_CODE_PLANETKA_FREE,
-    ],
-  );
-  const makeActiveSplit = () => ({
-    free: 0,
-    personal: 0,
-    commercial: 0,
-    total: 0,
-  });
-  const activeWindows = {
-    users_6m: makeActiveSplit(),
-    users_3m: makeActiveSplit(),
-    users_1m: makeActiveSplit(),
-    users_1w: makeActiveSplit(),
-    users_1d: makeActiveSplit(),
-    users_1h: makeActiveSplit(),
-  };
-  const activeThresholds = [
-    ["users_6m", activeWindow6mStartUnix],
-    ["users_3m", activeWindow3mStartUnix],
-    ["users_1m", activeWindow1mStartUnix],
-    ["users_1w", activeWindow1wStartUnix],
-    ["users_1d", activeWindow1dStartUnix],
-    ["users_1h", activeWindow1hStartUnix],
-  ];
-  const resolveAnalyticsTierCode = (planValue) => {
-    const normalized = normalizePlanCode(planValue);
-    if (normalized === PLAN_CODE_PLANETKA_PRO) return "commercial";
-    if (normalized === PLAN_CODE_PLANETKA) return "personal";
-    return "free";
-  };
-  for (const row of (Array.isArray(activeUserRows) ? activeUserRows : [])) {
-    const lastSeenUnix = clampNonNegativeInt(row && row.last_seen_unix);
-    if (lastSeenUnix <= 0) {
-      continue;
-    }
-    const tierCode = resolveAnalyticsTierCode(row && row.plan_norm);
-    for (const [windowKey, thresholdUnix] of activeThresholds) {
-      if (lastSeenUnix < thresholdUnix) {
-        continue;
-      }
-      const windowCounts = activeWindows[windowKey];
-      if (!windowCounts) {
-        continue;
-      }
-      windowCounts.total += 1;
-      if (tierCode === "commercial") {
-        windowCounts.commercial += 1;
-      } else if (tierCode === "personal") {
-        windowCounts.personal += 1;
-      } else {
-        windowCounts.free += 1;
-      }
-    }
-  }
-  let activeUsers10m = [];
-  try {
-    activeUsers10m = await dbAll(
-      db,
-      `
-        SELECT
-          e.user_id,
-          COALESCE(NULLIF(TRIM(e.user_email), ''), COALESCE(NULLIF(TRIM(u.email), ''), '')) AS user_email,
-          COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) AS user_status,
-          COUNT(*) AS request_count,
-          COALESCE(COUNT(DISTINCT CASE WHEN e.resolve_id IS NOT NULL AND e.resolve_id != '' THEN e.resolve_id END), 0) AS resolve_count,
-          COALESCE(SUM(e.bytes_served), 0) AS bytes_served,
-          MAX(e.created_at) AS last_seen_at
-        FROM tile_request_events e
-        LEFT JOIN users u ON u.id = e.user_id
-        WHERE
-          e.created_at_unix >= ?
-          AND e.status_code < 400
-          ${eventEmailFilterAliasE.condition ? `AND ${eventEmailFilterAliasE.condition}` : ""}
-        GROUP BY
-          e.user_id,
-          COALESCE(NULLIF(TRIM(e.user_email), ''), COALESCE(NULLIF(TRIM(u.email), ''), '')),
-          COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?)
-        ORDER BY MAX(e.created_at_unix) DESC, bytes_served DESC
-      `,
-      [
-        PLAN_CODE_PLANETKA,
-        Math.max(0, nowUnix - 600),
-        ...eventEmailFilterAliasE.bindings,
-        PLAN_CODE_PLANETKA,
-      ],
-    );
-  } catch (error) {
-    console.warn(
-      "planetka.analytics.active_users_10m_query_failed",
-      JSON.stringify({
-        error: String(error && error.message || "active_users_10m_query_failed"),
-      }),
-    );
-    activeUsers10m = [];
-  }
-  const activeNow = await dbGet(
-    db,
-    `
-      SELECT COUNT(*) AS active_download_rows
-      FROM tile_request_events
-      WHERE created_at_unix >= ?
-      ${eventEmailFilter.condition ? `AND ${eventEmailFilter.condition}` : ""}
-    `,
-    [Math.max(0, nowUnix - 10), ...eventEmailFilter.bindings],
-  );
-
-  const topUsers = await dbAll(
-    db,
-    `
-      SELECT
-        e.user_id,
-        e.user_email,
-        COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) AS user_status,
-        COUNT(*) AS request_count,
-        COALESCE(COUNT(DISTINCT CASE WHEN e.resolve_id IS NOT NULL AND e.resolve_id != '' THEN e.resolve_id END), 0) AS resolve_count,
-        COALESCE(SUM(e.bytes_served), 0) AS bytes_served,
-        COALESCE(SUM(CASE WHEN e.status_code >= 400 THEN 1 ELSE 0 END), 0) AS error_count,
-        MAX(e.created_at) AS last_seen_at
-      FROM tile_request_events e
-      LEFT JOIN users u ON u.id = e.user_id
-      WHERE e.created_at_unix >= ?
-      ${eventEmailFilterAliasE.condition ? `AND ${eventEmailFilterAliasE.condition}` : ""}
-      GROUP BY e.user_id, e.user_email, COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?)
-      ORDER BY request_count DESC
-      LIMIT 20
-    `,
-    [PLAN_CODE_PLANETKA, windowStartUnix, ...eventEmailFilterAliasE.bindings, PLAN_CODE_PLANETKA],
-  );
-
-  const topTiles = await dbAll(
-    db,
-    `
-      SELECT
-        tile_key,
-        COUNT(*) AS request_count,
-        COALESCE(SUM(bytes_served), 0) AS bytes_served
-      FROM tile_request_events
-      WHERE created_at_unix >= ? AND tile_key IS NOT NULL AND tile_key != ''
-      ${eventEmailFilter.condition ? `AND ${eventEmailFilter.condition}` : ""}
-      GROUP BY tile_key
-      ORDER BY request_count DESC
-      LIMIT 20
-    `,
-    [windowStartUnix, ...eventEmailFilter.bindings],
-  );
-
-  const tileMapWindowSeconds = Math.max(
-    60,
-    sanitizeLiveTileMapMinutes(liveTileMapWindowMinutes, DEFAULT_LIVE_TILE_MAP_WINDOW_MINUTES) * 60,
-  );
-  const tileMapStartUnix = Math.max(0, nowUnix - tileMapWindowSeconds);
-  const tileMapRowLimit = 2500;
-  const tileActivityFilter = buildTileActivityPlanFilterSql(safePlanFilter);
-  const tileMapRows = await dbAll(
-    db,
-    `
-      SELECT
-        e.user_id,
-        e.user_email,
-        e.tile_key,
-        MAX(e.created_at_unix) AS last_seen_unix,
-        COUNT(*) AS request_count,
-        COALESCE(SUM(e.bytes_served), 0) AS bytes_served,
-        COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) AS user_status
-      FROM tile_request_events e
-      LEFT JOIN users u ON u.id = e.user_id
-      WHERE
-        e.created_at_unix >= ?
-        AND e.status_code < 400
-        AND e.tile_key IS NOT NULL
-        AND e.tile_key != ''
-        ${eventEmailFilterAliasE.condition ? `AND ${eventEmailFilterAliasE.condition}` : ""}
-        ${tileActivityFilter.clause}
-      GROUP BY
-        e.user_id,
-        e.user_email,
-        e.tile_key,
-        COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?)
-      ORDER BY last_seen_unix DESC
-      LIMIT ${tileMapRowLimit}
-    `,
-    [
-      PLAN_CODE_PLANETKA,
-      tileMapStartUnix,
-      ...eventEmailFilterAliasE.bindings,
-      ...tileActivityFilter.bindings,
-      PLAN_CODE_PLANETKA,
-    ],
-  );
-  const activeTileUsersSet = new Set();
-  const activeTileKeysSet = new Set();
-  const normalizedTileMapRows = Array.isArray(tileMapRows) ? tileMapRows.map((row) => {
-    const userId = String(row && row.user_id || "").trim();
-    const userEmail = normalizeEmail(row && row.user_email || "");
-    const userKey = userId || userEmail;
-    if (userKey) {
-      activeTileUsersSet.add(userKey);
-    }
-    const tileKey = String(row && row.tile_key || "").trim();
-    if (tileKey) {
-      activeTileKeysSet.add(tileKey);
-    }
-    return {
-      user_id: userId,
-      user_email: userEmail,
-      user_status: String(row && row.user_status || PLAN_CODE_PLANETKA).trim().toLowerCase() || PLAN_CODE_PLANETKA,
-      tile_key: tileKey,
-      last_seen_unix: clampNonNegativeInt(row && row.last_seen_unix),
-      request_count: clampNonNegativeInt(row && row.request_count),
-      bytes_served: clampNonNegativeInt(row && row.bytes_served),
-    };
-  }) : [];
-
-  const supportMissingManifest = await loadSupportMissingManifest(env);
-  const recentFailuresRaw = await dbAll(
-    db,
-    `
-      SELECT
-        created_at,
-        user_email,
-        folder,
-        file_name,
-        tile_key,
-        status_code,
-        error_code,
-        cache_status,
-        duration_ms
-      FROM tile_request_events
-      WHERE status_code >= 400
-      ${eventEmailFilter.condition ? `AND ${eventEmailFilter.condition}` : ""}
-      ORDER BY created_at_unix DESC
-      LIMIT 50
-    `,
-    [...eventEmailFilter.bindings],
-  );
-  const recentFailures = [];
-  for (const row of (Array.isArray(recentFailuresRaw) ? recentFailuresRaw : [])) {
-    if (isExpectedSupportFallbackMiss(row, supportMissingManifest)) {
-      continue;
-    }
-    recentFailures.push(row);
-  }
-
-  const authRefreshSummary = await dbGet(
-    db,
-    `
-      SELECT
-        COUNT(*) AS total_count,
-        COALESCE(SUM(CASE WHEN outcome = 'success' THEN 1 ELSE 0 END), 0) AS success_count,
-        COALESCE(SUM(CASE WHEN outcome != 'success' THEN 1 ELSE 0 END), 0) AS failure_count,
-        COALESCE(COUNT(DISTINCT CASE WHEN outcome != 'success' AND user_id IS NOT NULL AND user_id != '' THEN user_id END), 0) AS failed_user_count
-      FROM auth_refresh_events
-      WHERE created_at_unix >= ?
-      ${authRefreshEmailFilter.condition ? `AND ${authRefreshEmailFilter.condition}` : ""}
-    `,
-    [authRefreshWindowStartUnix, ...authRefreshEmailFilter.bindings],
-  );
-  const authRefreshTopFailureUsers = await dbAll(
-    db,
-    `
-      SELECT
-        user_id,
-        user_email,
-        COUNT(*) AS failure_count,
-        MAX(created_at) AS last_failure_at
-      FROM auth_refresh_events
-      WHERE
-        created_at_unix >= ?
-        AND outcome != 'success'
-        ${authRefreshEmailFilter.condition ? `AND ${authRefreshEmailFilter.condition}` : ""}
-      GROUP BY user_id, user_email
-      ORDER BY failure_count DESC
-      LIMIT 20
-    `,
-    [authRefreshWindowStartUnix, ...authRefreshEmailFilter.bindings],
-  );
-  const authRefreshErrorBreakdown = await dbAll(
-    db,
-    `
-      SELECT
-        COALESCE(NULLIF(TRIM(error_code), ''), 'unknown_error') AS error_code,
-        COUNT(*) AS count
-      FROM auth_refresh_events
-      WHERE
-        created_at_unix >= ?
-        AND outcome != 'success'
-        ${authRefreshEmailFilter.condition ? `AND ${authRefreshEmailFilter.condition}` : ""}
-      GROUP BY COALESCE(NULLIF(TRIM(error_code), ''), 'unknown_error')
-      ORDER BY count DESC
-      LIMIT 20
-    `,
-    [authRefreshWindowStartUnix, ...authRefreshEmailFilter.bindings],
-  );
-
-  const rollup30d = await dbGet(
-    db,
-    `
-      SELECT
-        COALESCE(SUM(request_count), 0) AS request_count,
-        COALESCE(SUM(bytes_served), 0) AS bytes_served,
-        COALESCE(SUM(error_count), 0) AS error_count,
-        COALESCE(SUM(cache_hit_count), 0) AS cache_hit_count,
-        COALESCE(SUM(tagged_request_count), 0) AS tagged_request_count,
-        COUNT(DISTINCT user_id) AS active_users
-      FROM tile_request_rollup_daily_account
-      WHERE day_start_unix >= ?
-      ${rollupEmailFilter.condition ? `AND ${rollupEmailFilter.condition}` : ""}
-    `,
-    [rollupStart30d, ...rollupEmailFilter.bindings],
-  );
-
-  const topAccounts30d = await dbAll(
-    db,
-    `
-      SELECT
-        user_id,
-        user_email,
-        COALESCE(SUM(request_count), 0) AS request_count,
-        COALESCE(SUM(bytes_served), 0) AS bytes_served,
-        COALESCE(SUM(error_count), 0) AS error_count,
-        MAX(last_event_unix) AS last_event_unix
-      FROM tile_request_rollup_daily_account
-      WHERE day_start_unix >= ?
-      ${rollupEmailFilter.condition ? `AND ${rollupEmailFilter.condition}` : ""}
-      GROUP BY user_id, user_email
-      ORDER BY request_count DESC
-      LIMIT 20
-    `,
-    [rollupStart30d, ...rollupEmailFilter.bindings],
-  );
-
-  const heavyWhereParts = [];
-  const heavyBindings = [
-    PLAN_CODE_PLANETKA_FREE,
-    monthStartUnix(nowUnix),
-    startOfWeekUnix(nowUnix),
-    startOfDayUnix(nowUnix),
-    monthStartUnix(nowUnix),
-    startOfHourUnix(nowUnix),
-  ];
-  if (safePlanFilter === "lite") {
-    heavyWhereParts.push(`agg.user_status = ?`);
-    heavyBindings.push(PLAN_CODE_PLANETKA);
-  } else if (safePlanFilter === "pro") {
-    heavyWhereParts.push(`agg.user_status IN (?, ?)`);
-    heavyBindings.push(PLAN_CODE_PLANETKA_PRO, PLAN_CODE_PLANETKA_STUDIO);
-  }
-  if (heavyEmailFilter.condition) {
-    heavyWhereParts.push(String(heavyEmailFilter.condition).replace(/user_email/g, "agg.user_email"));
-    heavyBindings.push(...heavyEmailFilter.bindings);
-  }
-  const heavyWhereSql = heavyWhereParts.length ? `WHERE ${heavyWhereParts.join(" AND ")}` : "";
-  const heavyBaseSql = `
-      WITH user_rollups AS (
-        SELECT
-          r.user_id,
-          COALESCE(NULLIF(TRIM(u.email), ''), COALESCE(NULLIF(TRIM(r.user_email), ''), '')) AS user_email,
-          COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) AS user_status,
-          COALESCE(SUM(r.bytes_served), 0) AS lifetime_bytes,
-          COALESCE(SUM(CASE WHEN r.day_start_unix >= ? THEN r.bytes_served ELSE 0 END), 0) AS month_bytes,
-          COALESCE(SUM(CASE WHEN r.day_start_unix >= ? THEN r.bytes_served ELSE 0 END), 0) AS week_bytes,
-          COALESCE(SUM(CASE WHEN r.day_start_unix >= ? THEN r.bytes_served ELSE 0 END), 0) AS day_bytes,
-          COALESCE(SUM(CASE WHEN r.day_start_unix >= ? THEN r.request_count ELSE 0 END), 0) AS request_count_month,
-          COALESCE(MAX(r.last_event_unix), 0) AS last_event_unix
-        FROM tile_request_rollup_daily_account r
-        LEFT JOIN users u ON u.id = r.user_id
-        GROUP BY
-          r.user_id,
-          COALESCE(NULLIF(TRIM(u.email), ''), COALESCE(NULLIF(TRIM(r.user_email), ''), '')),
-          COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?)
-      ),
-      hour_rollups AS (
-        SELECT
-          user_id,
-          COALESCE(SUM(bytes_served), 0) AS hour_bytes
-        FROM tile_request_rollup_hourly_account
-        WHERE bucket_start_unix >= ?
-        GROUP BY user_id
-      )
-      SELECT
-        agg.user_id,
-        agg.user_email,
-        agg.user_status,
-        agg.lifetime_bytes,
-        agg.month_bytes,
-        agg.week_bytes,
-        agg.day_bytes,
-        COALESCE(hr.hour_bytes, 0) AS hour_bytes,
-        agg.request_count_month,
-        agg.last_event_unix
-      FROM user_rollups agg
-      LEFT JOIN hour_rollups hr ON hr.user_id = agg.user_id
-      ${heavyWhereSql}
-    `;
-  const topHeavyLifetime = await dbAll(
-    db,
-    `${heavyBaseSql} ORDER BY lifetime_bytes DESC LIMIT 50`,
-    heavyBindings,
-  );
-  const topHeavyMonth = await dbAll(
-    db,
-    `${heavyBaseSql} ORDER BY month_bytes DESC LIMIT 50`,
-    heavyBindings,
-  );
-  const topHeavyWeek = await dbAll(
-    db,
-    `${heavyBaseSql} ORDER BY week_bytes DESC LIMIT 50`,
-    heavyBindings,
-  );
-  const topHeavyDay = await dbAll(
-    db,
-    `${heavyBaseSql} ORDER BY day_bytes DESC LIMIT 50`,
-    heavyBindings,
-  );
-  const topHeavyHour = await dbAll(
-    db,
-    `${heavyBaseSql} ORDER BY hour_bytes DESC LIMIT 50`,
-    heavyBindings,
-  );
-  let heavyUsers30d = (Array.isArray(topHeavyMonth) ? topHeavyMonth : [])
-    .map((row) => {
-      return {
-        user_id: String(row && row.user_id || "").trim(),
-        user_email: normalizeEmail(row && row.user_email || ""),
-        user_status: String(row && row.user_status || PLAN_CODE_PLANETKA).trim().toLowerCase() || PLAN_CODE_PLANETKA,
-        month_bytes: clampNonNegativeInt(row && row.month_bytes),
-        request_count_month: clampNonNegativeInt(row && row.request_count_month),
-        last_event_unix: clampNonNegativeInt(row && row.last_event_unix),
-      };
-    });
-  heavyUsers30d = heavyUsers30d.map((row) => ({
-    ...row,
-    request_count_30d: clampNonNegativeInt(row && row.request_count_month),
-    bytes_served_30d: clampNonNegativeInt(row && row.month_bytes),
-  }));
-  heavyUsers30d = heavyUsers30d
-    .sort((a, b) => clampNonNegativeInt(b && b.month_bytes) - clampNonNegativeInt(a && a.month_bytes))
-    .slice(0, 20);
-  const heavyResolveCountByUserId = new Map();
-  const heavyUserIds = Array.from(
-    new Set(
-      [
-        ...(Array.isArray(topHeavyLifetime) ? topHeavyLifetime : []),
-        ...(Array.isArray(topHeavyMonth) ? topHeavyMonth : []),
-        ...(Array.isArray(topHeavyWeek) ? topHeavyWeek : []),
-        ...(Array.isArray(topHeavyDay) ? topHeavyDay : []),
-        ...(Array.isArray(topHeavyHour) ? topHeavyHour : []),
-        ...(Array.isArray(heavyUsers30d) ? heavyUsers30d : []),
-      ].map((row) => String(row && row.user_id || "").trim()).filter(Boolean),
-    ),
-  );
-  if (heavyUserIds.length > 0) {
-    const placeholders = heavyUserIds.map(() => "?").join(",");
-    const heavyResolveRows = await dbAll(
-      db,
-      `
-        SELECT
-          user_id,
-          COUNT(DISTINCT resolve_id) AS resolve_count
-        FROM tile_request_events
-        WHERE
-          user_id IN (${placeholders})
-          AND resolve_id IS NOT NULL
-          AND resolve_id != ''
-        GROUP BY user_id
-      `,
-      heavyUserIds,
-    );
-    for (const row of heavyResolveRows || []) {
-      const userId = String(row && row.user_id || "").trim();
-      if (!userId) continue;
-      heavyResolveCountByUserId.set(userId, clampNonNegativeInt(row && row.resolve_count));
-    }
-  }
-  const attachHeavyResolveCounts = (rows) =>
-    (Array.isArray(rows) ? rows : []).map((row) => {
-      const userId = String(row && row.user_id || "").trim();
-      return {
-        ...row,
-        resolve_count: clampNonNegativeInt(heavyResolveCountByUserId.get(userId) || 0),
-      };
-    });
-  const normalizedActiveUsers10m = (Array.isArray(activeUsers10m) ? activeUsers10m : []).map((row) => ({
-    user_id: String(row && row.user_id || "").trim(),
-    user_email: normalizeEmail(row && row.user_email || ""),
-    user_status: String(row && row.user_status || PLAN_CODE_PLANETKA).trim().toLowerCase() || PLAN_CODE_PLANETKA,
-    request_count: clampNonNegativeInt(row && row.request_count),
-    resolve_count: clampNonNegativeInt(row && row.resolve_count),
-    bytes_served: clampNonNegativeInt(row && row.bytes_served),
-    last_seen_at: String(row && row.last_seen_at || ""),
-  }));
-  const cloudflareBillableUsage = await fetchCloudflareR2BillableUsage(env, db);
-
-  return {
-    generated_at: nowIso(),
-    window_minutes: windowMinutes,
-    window_start_unix: windowStartUnix,
-    top_line: {
-      users: {
-        free: clampNonNegativeInt(topLineUsers && topLineUsers.free_users),
-        personal: clampNonNegativeInt(topLineUsers && topLineUsers.personal_users),
-        commercial: clampNonNegativeInt(topLineUsers && topLineUsers.commercial_users),
-        total: clampNonNegativeInt(topLineUsers && topLineUsers.total_users),
-      },
-      resolves: {
-        free: clampNonNegativeInt(topLineResolves && topLineResolves.free_resolves),
-        personal: clampNonNegativeInt(topLineResolves && topLineResolves.personal_resolves),
-        commercial: clampNonNegativeInt(topLineResolves && topLineResolves.commercial_resolves),
-        total: clampNonNegativeInt(topLineResolves && topLineResolves.total_resolves),
-      },
-      tile_requests: {
-        free: clampNonNegativeInt(topLineTraffic && topLineTraffic.free_requests),
-        personal: clampNonNegativeInt(topLineTraffic && topLineTraffic.personal_requests),
-        commercial: clampNonNegativeInt(topLineTraffic && topLineTraffic.commercial_requests),
-        total: clampNonNegativeInt(topLineTraffic && topLineTraffic.total_requests),
-      },
-      gb_served: {
-        free: clampNonNegativeInt(topLineTraffic && topLineTraffic.free_bytes),
-        personal: clampNonNegativeInt(topLineTraffic && topLineTraffic.personal_bytes),
-        commercial: clampNonNegativeInt(topLineTraffic && topLineTraffic.commercial_bytes),
-        total: clampNonNegativeInt(topLineTraffic && topLineTraffic.total_bytes),
-      },
-    },
-    summary: {
-      request_count: clampNonNegativeInt(summary && summary.request_count),
-      bytes_served: clampNonNegativeInt(summary && summary.bytes_served),
-      error_count: clampNonNegativeInt(summary && summary.error_count),
-      cache_hit_count: clampNonNegativeInt(summary && summary.cache_hit_count),
-      tagged_request_count: clampNonNegativeInt(summary && summary.tagged_request_count),
-      tagged_resolve_count: clampNonNegativeInt(summary && summary.tagged_resolve_count),
-    },
-    active: {
-      users_total: clampNonNegativeInt(topLineUsers && topLineUsers.total_users),
-      users_6m: clampNonNegativeInt(activeWindows && activeWindows.users_6m && activeWindows.users_6m.total),
-      users_3m: clampNonNegativeInt(activeWindows && activeWindows.users_3m && activeWindows.users_3m.total),
-      users_1m: clampNonNegativeInt(activeWindows && activeWindows.users_1m && activeWindows.users_1m.total),
-      users_1w: clampNonNegativeInt(activeWindows && activeWindows.users_1w && activeWindows.users_1w.total),
-      users_1d: clampNonNegativeInt(activeWindows && activeWindows.users_1d && activeWindows.users_1d.total),
-      users_1h: clampNonNegativeInt(activeWindows && activeWindows.users_1h && activeWindows.users_1h.total),
-      windows: {
-        "6m": {
-          free: clampNonNegativeInt(activeWindows && activeWindows.users_6m && activeWindows.users_6m.free),
-          personal: clampNonNegativeInt(activeWindows && activeWindows.users_6m && activeWindows.users_6m.personal),
-          commercial: clampNonNegativeInt(activeWindows && activeWindows.users_6m && activeWindows.users_6m.commercial),
-          total: clampNonNegativeInt(activeWindows && activeWindows.users_6m && activeWindows.users_6m.total),
-        },
-        "3m": {
-          free: clampNonNegativeInt(activeWindows && activeWindows.users_3m && activeWindows.users_3m.free),
-          personal: clampNonNegativeInt(activeWindows && activeWindows.users_3m && activeWindows.users_3m.personal),
-          commercial: clampNonNegativeInt(activeWindows && activeWindows.users_3m && activeWindows.users_3m.commercial),
-          total: clampNonNegativeInt(activeWindows && activeWindows.users_3m && activeWindows.users_3m.total),
-        },
-        "1m": {
-          free: clampNonNegativeInt(activeWindows && activeWindows.users_1m && activeWindows.users_1m.free),
-          personal: clampNonNegativeInt(activeWindows && activeWindows.users_1m && activeWindows.users_1m.personal),
-          commercial: clampNonNegativeInt(activeWindows && activeWindows.users_1m && activeWindows.users_1m.commercial),
-          total: clampNonNegativeInt(activeWindows && activeWindows.users_1m && activeWindows.users_1m.total),
-        },
-        "1w": {
-          free: clampNonNegativeInt(activeWindows && activeWindows.users_1w && activeWindows.users_1w.free),
-          personal: clampNonNegativeInt(activeWindows && activeWindows.users_1w && activeWindows.users_1w.personal),
-          commercial: clampNonNegativeInt(activeWindows && activeWindows.users_1w && activeWindows.users_1w.commercial),
-          total: clampNonNegativeInt(activeWindows && activeWindows.users_1w && activeWindows.users_1w.total),
-        },
-        "1d": {
-          free: clampNonNegativeInt(activeWindows && activeWindows.users_1d && activeWindows.users_1d.free),
-          personal: clampNonNegativeInt(activeWindows && activeWindows.users_1d && activeWindows.users_1d.personal),
-          commercial: clampNonNegativeInt(activeWindows && activeWindows.users_1d && activeWindows.users_1d.commercial),
-          total: clampNonNegativeInt(activeWindows && activeWindows.users_1d && activeWindows.users_1d.total),
-        },
-        "1h": {
-          free: clampNonNegativeInt(activeWindows && activeWindows.users_1h && activeWindows.users_1h.free),
-          personal: clampNonNegativeInt(activeWindows && activeWindows.users_1h && activeWindows.users_1h.personal),
-          commercial: clampNonNegativeInt(activeWindows && activeWindows.users_1h && activeWindows.users_1h.commercial),
-          total: clampNonNegativeInt(activeWindows && activeWindows.users_1h && activeWindows.users_1h.total),
-        },
-      },
-      tile_events_10s: clampNonNegativeInt(activeNow && activeNow.active_download_rows),
-    },
-    active_users_10m: normalizedActiveUsers10m,
-    top_users: Array.isArray(topUsers) ? topUsers : [],
-    top_tiles: Array.isArray(topTiles) ? topTiles : [],
-    recent_failures: Array.isArray(recentFailures) ? recentFailures : [],
-    auth_refresh_health: {
-      window_seconds: authRefreshWindowSeconds,
-      window_start_unix: authRefreshWindowStartUnix,
-      total_count: clampNonNegativeInt(authRefreshSummary && authRefreshSummary.total_count),
-      success_count: clampNonNegativeInt(authRefreshSummary && authRefreshSummary.success_count),
-      failure_count: clampNonNegativeInt(authRefreshSummary && authRefreshSummary.failure_count),
-      failed_user_count: clampNonNegativeInt(authRefreshSummary && authRefreshSummary.failed_user_count),
-      top_failure_users: Array.isArray(authRefreshTopFailureUsers) ? authRefreshTopFailureUsers : [],
-      error_breakdown: Array.isArray(authRefreshErrorBreakdown) ? authRefreshErrorBreakdown : [],
-    },
-    rollup_30d: {
-      window_days: 30,
-      request_count: clampNonNegativeInt(rollup30d && rollup30d.request_count),
-      bytes_served: clampNonNegativeInt(rollup30d && rollup30d.bytes_served),
-      error_count: clampNonNegativeInt(rollup30d && rollup30d.error_count),
-      cache_hit_count: clampNonNegativeInt(rollup30d && rollup30d.cache_hit_count),
-      tagged_request_count: clampNonNegativeInt(rollup30d && rollup30d.tagged_request_count),
-      active_users: clampNonNegativeInt(rollup30d && rollup30d.active_users),
-      top_accounts: Array.isArray(topAccounts30d)
-        ? topAccounts30d.map((row) => ({
-          ...row,
-          last_seen_at: Number.isFinite(Number(row && row.last_event_unix))
-            ? new Date(Number(row.last_event_unix) * 1000).toISOString()
-            : "",
-        }))
-        : [],
-    },
-    heavy_users: {
-      plan_filter: safePlanFilter,
-      top_lifetime: attachHeavyResolveCounts(topHeavyLifetime),
-      top_month: attachHeavyResolveCounts(topHeavyMonth),
-      top_week: attachHeavyResolveCounts(topHeavyWeek),
-      top_day: attachHeavyResolveCounts(topHeavyDay),
-      top_hour: attachHeavyResolveCounts(topHeavyHour),
-    },
-    heavy_users_30d: attachHeavyResolveCounts(heavyUsers30d),
-    cloudflare_billable_usage: cloudflareBillableUsage,
-    live_tile_map: {
-      generated_at: nowIso(),
-      window_seconds: tileMapWindowSeconds,
-      plan_filter: safePlanFilter,
-      users_active: activeTileUsersSet.size,
-      tiles_active: activeTileKeysSet.size,
-      row_limit: tileMapRowLimit,
-      rows: normalizedTileMapRows,
-    },
-  };
-}
-
-async function maybePruneRateLimits(db, nowSeconds) {
-  if ((nowSeconds - rateLimitsLastPruneAt) < RATE_LIMIT_PRUNE_INTERVAL_SECONDS) {
-    return;
-  }
-  rateLimitsLastPruneAt = nowSeconds;
-  try {
-    await dbRun(
-      db,
-      `DELETE FROM rate_limits WHERE updated_at < ?`,
-      [Math.max(0, nowSeconds - RATE_LIMIT_ENTRY_TTL_SECONDS)],
-    );
-  } catch (error) {
-    // Prune is best-effort and must never block request handling.
-    console.debug(
-      "worker.rate_limits.prune_failed",
-      JSON.stringify({
-        error: String(error && error.message || "rate_limit_prune_failed"),
-      }),
-    );
-  }
-}
-
-async function consumeRateLimitWindow(db, scope, rawKey, limit, windowSeconds) {
-  if (limit <= 0 || windowSeconds <= 0) {
-    return { allowed: true, count: 0, limit, retryAfterSeconds: 0 };
-  }
-  const nowSeconds = Math.floor(Date.now() / 1000);
-  await maybePruneRateLimits(db, nowSeconds);
-  const bucketStart = nowSeconds - (nowSeconds % windowSeconds);
-  const normalizedRawKey = String(rawKey || "").trim() || "unknown";
-  const hashedKey = await sha256Hex(`${scope}:${normalizedRawKey}`);
-  const storageKey = `${scope}:${hashedKey}`;
-  const row = await dbGet(
-    db,
-    `
-      INSERT INTO rate_limits (
-        key,
-        window_start,
-        count,
-        updated_at
-      ) VALUES (?, ?, 1, ?)
-      ON CONFLICT(key) DO UPDATE SET
-        window_start = CASE
-          WHEN rate_limits.window_start = excluded.window_start THEN rate_limits.window_start
-          ELSE excluded.window_start
-        END,
-        count = CASE
-          WHEN rate_limits.window_start = excluded.window_start THEN rate_limits.count + 1
-          ELSE 1
-        END,
-        updated_at = excluded.updated_at
-      RETURNING count, window_start
-    `,
-    [storageKey, bucketStart, nowSeconds],
-  );
-  const count = clampNonNegativeInt(row && row.count);
-  const effectiveWindowStart = parseNonNegativeInteger(row && row.window_start, bucketStart);
-  const retryAfterSeconds = Math.max(1, (effectiveWindowStart + windowSeconds) - nowSeconds);
-  return {
-    allowed: count <= limit,
-    count,
-    limit,
-    retryAfterSeconds,
-  };
-}
-
-function rateLimitedResponse(env, code, message, retryAfterSeconds) {
-  const retryAfter = Math.max(1, clampNonNegativeInt(retryAfterSeconds));
-  return jsonWithHeaders(
-    {
-      ok: false,
-      error: code,
-      message,
-      retry_after_seconds: retryAfter,
-    },
-    429,
-    env,
-    { "Retry-After": String(retryAfter) },
-  );
-}
-
-async function maybeSignalTileFarmingActivity(db, env, details = {}) {
-  if (!db) {
-    return;
-  }
-  await ensureRateLimitsTable(db);
-  const statusCode = parseNonNegativeInteger(details.statusCode, 0);
-  if (statusCode <= 0) {
-    return;
-  }
-
-  const userId = String(details.userId || "").trim();
-  const userEmail = normalizeEmail(details.userEmail || "");
-  if (userEmail && isAbuseAlertWhitelisted(userEmail, env)) {
-    return;
-  }
-  const userKey = userId || userEmail || "unknown";
-  const ip = String(details.ip || "").trim() || "unknown";
-  const deviceId = normalizeDeviceId(details.deviceId || "");
-  const tileKey = String(details.tileKey || "").trim();
-  const resolveId = String(details.resolveId || "").trim();
-  const method = String(details.method || "GET").toUpperCase();
-  const path = String(details.path || "").trim();
-
-  const windowSeconds = Math.max(
-    30,
-    parseRateLimitInteger(env.TILE_FARM_ALERT_WINDOW_SECONDS, DEFAULT_TILE_FARM_ALERT_WINDOW_SECONDS),
-  );
-  const userRequestThreshold = Math.max(
-    0,
-    parseRateLimitInteger(env.TILE_FARM_ALERT_USER_REQUEST_THRESHOLD, DEFAULT_TILE_FARM_ALERT_USER_REQUEST_THRESHOLD),
-  );
-  const ipRequestThreshold = Math.max(
-    0,
-    parseRateLimitInteger(env.TILE_FARM_ALERT_IP_REQUEST_THRESHOLD, DEFAULT_TILE_FARM_ALERT_IP_REQUEST_THRESHOLD),
-  );
-  const uniqueTileThreshold = Math.max(
-    0,
-    parseRateLimitInteger(env.TILE_FARM_ALERT_UNIQUE_TILE_THRESHOLD, DEFAULT_TILE_FARM_ALERT_UNIQUE_TILE_THRESHOLD),
-  );
-  const untaggedMinRequests = Math.max(
-    0,
-    parseRateLimitInteger(env.TILE_FARM_ALERT_UNTAGGED_MIN_REQUESTS, DEFAULT_TILE_FARM_ALERT_UNTAGGED_MIN_REQUESTS),
-  );
-  const untaggedPercentThreshold = Math.min(
-    100,
-    Math.max(1, parseRateLimitInteger(env.TILE_FARM_ALERT_UNTAGGED_PERCENT, DEFAULT_TILE_FARM_ALERT_UNTAGGED_PERCENT)),
-  );
-  const emailCooldownSeconds = Math.max(
-    30,
-    parseRateLimitInteger(
-      env.TILE_FARM_ALERT_EMAIL_COOLDOWN_SECONDS,
-      DEFAULT_TILE_FARM_ALERT_EMAIL_COOLDOWN_SECONDS,
-    ),
-  );
-
-  const userRate = await consumeRateLimitWindow(db, "tile_farm_user_req", userKey, 2147483647, windowSeconds);
-  const userCount = clampNonNegativeInt(userRate && userRate.count);
-  const ipRate = await consumeRateLimitWindow(db, "tile_farm_ip_req", ip, 2147483647, windowSeconds);
-  const ipCount = clampNonNegativeInt(ipRate && ipRate.count);
-
-  let uniqueTileCount = 0;
-  if (tileKey) {
-    const tileSeen = await consumeRateLimitWindow(
-      db,
-      "tile_farm_user_tile_seen",
-      `${userKey}:${tileKey}`,
-      2147483647,
-      windowSeconds,
-    );
-    if (clampNonNegativeInt(tileSeen && tileSeen.count) === 1) {
-      const uniqueRate = await consumeRateLimitWindow(
-        db,
-        "tile_farm_user_unique",
-        userKey,
-        2147483647,
-        windowSeconds,
-      );
-      uniqueTileCount = clampNonNegativeInt(uniqueRate && uniqueRate.count);
-    }
-  }
-
-  let untaggedCount = 0;
-  if (!resolveId) {
-    const untaggedRate = await consumeRateLimitWindow(
-      db,
-      "tile_farm_user_untagged",
-      userKey,
-      2147483647,
-      windowSeconds,
-    );
-    untaggedCount = clampNonNegativeInt(untaggedRate && untaggedRate.count);
-  }
-
-  const reasons = [];
-  if (userRequestThreshold > 0 && thresholdHit(userCount, userRequestThreshold)) {
-    reasons.push(`user_request_rate:${userCount}/${userRequestThreshold}`);
-  }
-  if (ipRequestThreshold > 0 && thresholdHit(ipCount, ipRequestThreshold)) {
-    reasons.push(`ip_request_rate:${ipCount}/${ipRequestThreshold}`);
-  }
-  if (uniqueTileThreshold > 0 && uniqueTileCount > 0 && thresholdHit(uniqueTileCount, uniqueTileThreshold)) {
-    reasons.push(`unique_tiles:${uniqueTileCount}/${uniqueTileThreshold}`);
-  }
-  if (
-    untaggedCount > 0
-    && userCount >= untaggedMinRequests
-    && ((untaggedCount * 100) / Math.max(1, userCount)) >= untaggedPercentThreshold
-  ) {
-    reasons.push(`untagged_ratio:${untaggedCount}/${userCount}>=${untaggedPercentThreshold}%`);
-  }
-  if (!reasons.length) {
-    return;
-  }
-
-  const alertGate = await consumeRateLimitWindow(
-    db,
-    "tile_farm_alert_mail",
-    `${userKey}:${ip}`,
-    1,
-    emailCooldownSeconds,
-  );
-  if (!alertGate.allowed) {
-    return;
-  }
-
-  try {
-    await sendOpsAlertEmail(
-      env,
-      "Planetka suspected tile farming activity",
-      [
-        "Potential tile farming pattern detected (real-time).",
-        `reasons=${reasons.join(",")}`,
-        `user_id=${userId}`,
-        `email=${userEmail}`,
-        `ip=${ip}`,
-        `device_id=${deviceId}`,
-        `status_code=${statusCode}`,
-        `method=${method}`,
-        `path=${path}`,
-        `tile_key=${tileKey}`,
-        `resolve_id=${resolveId}`,
-        `window_seconds=${windowSeconds}`,
-        `user_count=${userCount}`,
-        `ip_count=${ipCount}`,
-        `unique_tile_count=${uniqueTileCount}`,
-        `untagged_count=${untaggedCount}`,
-      ],
-    );
-  } catch (error) {
-    console.warn(
-      "worker.tile_farm_alert_email_failed",
-      JSON.stringify({
-        user_id: userId,
-        email: userEmail,
-        ip,
-        error: String(error && error.message || "tile_farm_alert_email_failed"),
-      }),
-    );
-  }
-}
-
-function parseHeavyUserPlanFilter(value) {
-  const normalized = String(value || "all").trim().toLowerCase();
-  if (
-    normalized === "trial"
-    || normalized === "free"
-    || normalized === "lite"
-    || normalized === PLAN_CODE_PLANETKA
-  ) {
-    return "lite";
-  }
-  if (
-    normalized === "active"
-    || normalized === "paid"
-    || normalized === "pro"
-    || normalized === PLAN_CODE_PLANETKA_PRO
-    || normalized === PLAN_CODE_PLANETKA_STUDIO
-    || normalized === "studio"
-  ) {
-    return "pro";
-  }
-  return "all";
-}
-
-function parseAnalyticsExcludedEmailPatterns(env = {}) {
-  const source = String(
-    env.ANALYTICS_EXCLUDED_EMAIL_PATTERNS || DEFAULT_ANALYTICS_EXCLUDED_EMAIL_PATTERNS,
-  ).trim();
-  if (!source) {
-    return [];
-  }
-  const unique = new Set();
-  for (const token of source.split(",")) {
-    const pattern = String(token || "").trim().toLowerCase();
-    if (!pattern) continue;
-    unique.add(pattern);
-  }
-  return Array.from(unique);
-}
-
-function buildAnalyticsExcludedEmailFilter(emailColumnSql, env = {}) {
-  const patterns = parseAnalyticsExcludedEmailPatterns(env);
-  if (!patterns.length) {
-    return { condition: "", bindings: [] };
-  }
-  const safeColumn = String(emailColumnSql || "").trim() || "user_email";
-  const condition = patterns
-    .map(() => `LOWER(COALESCE(${safeColumn}, '')) NOT LIKE ?`)
-    .join(" AND ");
-  return { condition, bindings: patterns };
-}
-
-function buildHeavyUserFilterSql(planFilter) {
-  if (planFilter === "lite") {
-    return { clause: "WHERE c.plan_code = ?", bindings: [PLAN_CODE_PLANETKA] };
-  }
-  if (planFilter === "pro") {
-    return {
-      clause: "WHERE c.plan_code IN (?, ?)",
-      bindings: [PLAN_CODE_PLANETKA_PRO, PLAN_CODE_PLANETKA_STUDIO],
-    };
-  }
-  return { clause: "", bindings: [] };
-}
-
-function buildTileActivityPlanFilterSql(planFilter) {
-  if (planFilter === "lite") {
-    return {
-      clause: `
-        AND COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) = ?
-      `,
-      bindings: [PLAN_CODE_PLANETKA, PLAN_CODE_PLANETKA],
-    };
-  }
-  if (planFilter === "pro") {
-    return {
-      clause: `
-        AND COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) IN (?, ?)
-      `,
-      bindings: [PLAN_CODE_PLANETKA, PLAN_CODE_PLANETKA_PRO, PLAN_CODE_PLANETKA_STUDIO],
-    };
-  }
-  return { clause: "", bindings: [] };
-}
-
-function parseAnalyticsUsersSort(value) {
-  const normalized = String(value || "").trim().toLowerCase();
-  const allowed = new Set(["resolves", "lifetime", "month", "week", "day", "hour", "last_seen"]);
-  return allowed.has(normalized) ? normalized : "month";
-}
-
-function parseAnalyticsUsersSortDirection(value) {
-  const normalized = String(value || "").trim().toLowerCase();
-  return normalized === "asc" ? "asc" : "desc";
-}
-
-async function listAnalyticsUsers(db, env, options = {}) {
-  await ensureTileRequestEventsTable(db);
-  const sortBy = parseAnalyticsUsersSort(options.sort_by);
-  const sortDir = parseAnalyticsUsersSortDirection(options.sort_dir);
-  const query = String(options.query || "").trim().toLowerCase();
-  const limit = Math.max(1, Math.min(5000, parseNonNegativeInteger(options.limit, 5000)));
-  const nowUnix = Math.floor(Date.now() / 1000);
-  const orderSqlByKey = {
-    resolves: "resolve_count",
-    lifetime: "lifetime_bytes",
-    month: "month_bytes",
-    week: "week_bytes",
-    day: "day_bytes",
-    hour: "hour_bytes",
-    last_seen: "last_seen_unix",
-  };
-  const orderSql = orderSqlByKey[sortBy] || orderSqlByKey.month;
-  const emailFilter = buildAnalyticsExcludedEmailFilter("u.email", env);
-  const whereParts = [];
-  const bindings = [
-    PLAN_CODE_PLANETKA_FREE,
-    monthStartUnix(nowUnix),
-    startOfWeekUnix(nowUnix),
-    startOfDayUnix(nowUnix),
-    startOfHourUnix(nowUnix),
-    PLAN_CODE_PLANETKA_FREE,
-    PLAN_CODE_PLANETKA_FREE,
-  ];
-  if (emailFilter.condition) {
-    whereParts.push(emailFilter.condition);
-    bindings.push(...emailFilter.bindings);
-  }
-  if (query) {
-    whereParts.push(`LOWER(COALESCE(u.email, '')) LIKE ?`);
-    bindings.push(`%${query}%`);
-  }
-  const whereSql = whereParts.length ? `WHERE ${whereParts.join(" AND ")}` : "";
-  return dbAll(
-    db,
-    `
-      WITH resolve_counts AS (
-        SELECT
-          user_id,
-          COUNT(DISTINCT resolve_id) AS resolve_count
-        FROM tile_request_events
-        WHERE resolve_id IS NOT NULL AND resolve_id != ''
-        GROUP BY user_id
-      ),
-      daily_usage AS (
-        SELECT
-          r.user_id,
-          COALESCE(SUM(r.bytes_served), 0) AS lifetime_bytes,
-          COALESCE(SUM(CASE WHEN r.day_start_unix >= ? THEN r.bytes_served ELSE 0 END), 0) AS month_bytes,
-          COALESCE(SUM(CASE WHEN r.day_start_unix >= ? THEN r.bytes_served ELSE 0 END), 0) AS week_bytes,
-          COALESCE(SUM(CASE WHEN r.day_start_unix >= ? THEN r.bytes_served ELSE 0 END), 0) AS day_bytes,
-          COALESCE(MAX(r.last_event_unix), 0) AS last_seen_unix
-        FROM tile_request_rollup_daily_account r
-        GROUP BY r.user_id
-      ),
-      hourly_usage AS (
-        SELECT
-          r.user_id,
-          COALESCE(SUM(r.bytes_served), 0) AS hour_bytes
-        FROM tile_request_rollup_hourly_account r
-        WHERE r.bucket_start_unix >= ?
-        GROUP BY r.user_id
-      )
-      SELECT
-        u.id AS user_id,
-        u.email AS user_email,
-        COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) AS user_status,
-        COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) AS plan_code,
-        COALESCE(rc.resolve_count, 0) AS resolve_count,
-        COALESCE(du.lifetime_bytes, 0) AS lifetime_bytes,
-        COALESCE(du.month_bytes, 0) AS month_bytes,
-        COALESCE(du.week_bytes, 0) AS week_bytes,
-        COALESCE(du.day_bytes, 0) AS day_bytes,
-        COALESCE(hu.hour_bytes, 0) AS hour_bytes,
-        COALESCE(
-          NULLIF(TRIM(datetime(du.last_seen_unix, 'unixepoch')), ''),
-          COALESCE(NULLIF(TRIM(u.last_login_at), ''), COALESCE(NULLIF(TRIM(u.created_at), ''), ''))
-        ) AS last_seen_at,
-        COALESCE(du.last_seen_unix, strftime('%s', COALESCE(NULLIF(TRIM(u.last_login_at), ''), COALESCE(NULLIF(TRIM(u.created_at), ''), ''))), 0) AS last_seen_unix
-      FROM users u
-      LEFT JOIN daily_usage du ON du.user_id = u.id
-      LEFT JOIN hourly_usage hu ON hu.user_id = u.id
-      LEFT JOIN resolve_counts rc ON rc.user_id = u.id
-      ${whereSql}
-      ORDER BY ${orderSql} ${sortDir.toUpperCase()}, LOWER(COALESCE(u.email, '')) ASC
-      LIMIT ${limit}
-    `,
-    bindings,
-  );
-}
-
 async function countRowsFromQuery(db, sql, bindings = []) {
   const row = await dbGet(db, sql, bindings);
   return clampNonNegativeInt(row && (row.count ?? row.total ?? 0));
@@ -2825,340 +1772,6 @@ function monthStartUnix(epochSeconds) {
 
 function monthStartIso(epochSeconds) {
   return new Date(monthStartUnix(epochSeconds) * 1000).toISOString();
-}
-
-const R2_CLASS_A_ACTION_TYPES = new Set([
-  "listbuckets",
-  "putbucket",
-  "listobjects",
-  "putobject",
-  "copyobject",
-  "completemultipartupload",
-  "createmultipartupload",
-  "lifecyclestoragetiertransition",
-  "listmultipartuploads",
-  "uploadpart",
-  "uploadpartcopy",
-  "listparts",
-  "putbucketencryption",
-  "putbucketcors",
-  "putbucketlifecycleconfiguration",
-]);
-
-const R2_CLASS_B_ACTION_TYPES = new Set([
-  "headbucket",
-  "headobject",
-  "getobject",
-  "usagesummary",
-  "getbucketencryption",
-  "getbucketlocation",
-  "getbucketcors",
-  "getbucketlifecycleconfiguration",
-]);
-
-async function buildFallbackBillableUsageFromTelemetry(env, db, reason = "fallback_estimate") {
-  const nowUnix = Math.floor(Date.now() / 1000);
-  const startDate = monthStartIso(nowUnix);
-  const endDate = new Date(nowUnix * 1000).toISOString();
-  let monthClassBOps = 0;
-  if (db) {
-    monthClassBOps = await countRowsFromQuery(
-      db,
-      `
-        SELECT COUNT(*) AS count
-        FROM tile_request_events
-        WHERE created_at_unix >= ?
-      `,
-      [monthStartUnix(nowUnix)],
-    );
-  }
-  const estimate = estimateR2MonthlyCostUsd(env, monthClassBOps);
-  return {
-    available: true,
-    estimated: true,
-    source: "telemetry_estimate",
-    reason,
-    period_start: startDate,
-    period_end: endDate,
-    bucket_filter: "",
-    generated_at: nowIso(),
-    storage: {
-      bytes: Math.max(0, Math.floor(Number(estimate.storage_gb_estimate || 0) * BYTES_PER_GB)),
-      gb: Number(Number(estimate.storage_gb_estimate || 0).toFixed(3)),
-      object_count: 0,
-      upload_count: 0,
-      sample_datetime: "",
-      free_gb: clampNonNegativeInt(estimate.storage_gb_free),
-      billable_gb_rounded: clampNonNegativeInt(estimate.storage_gb_billable_rounded),
-    },
-    class_a: {
-      operations: clampNonNegativeInt(estimate.class_a_ops_estimate),
-      free_operations: clampNonNegativeInt(estimate.class_a_ops_free),
-      billable_operations: clampNonNegativeInt(estimate.class_a_ops_billable),
-      billable_million_rounded: clampNonNegativeInt(estimate.class_a_million_billable_rounded),
-    },
-    class_b: {
-      operations: clampNonNegativeInt(estimate.class_b_ops_month),
-      free_operations: clampNonNegativeInt(estimate.class_b_ops_free),
-      billable_operations: clampNonNegativeInt(estimate.class_b_ops_billable),
-      billable_million_rounded: clampNonNegativeInt(estimate.class_b_million_billable_rounded),
-    },
-    unknown_operations: 0,
-    estimated_cost_usd: {
-      storage: Number(Number(estimate.storage_cost_usd || 0).toFixed(2)),
-      class_a: Number(Number(estimate.class_a_cost_usd || 0).toFixed(2)),
-      class_b: Number(Number(estimate.class_b_cost_usd || 0).toFixed(2)),
-      total: Number(Number(estimate.total_cost_usd || 0).toFixed(2)),
-    },
-  };
-}
-
-async function fetchCloudflareR2BillableUsage(env, db = null) {
-  const accountTag = String(
-    env.CLOUDFLARE_ACCOUNT_ID
-    || env.CF_ACCOUNT_ID
-    || "",
-  ).trim();
-  const apiToken = String(
-    env.CLOUDFLARE_GRAPHQL_API_TOKEN
-    || env.CLOUDFLARE_API_TOKEN
-    || "",
-  ).trim();
-  if (!accountTag || !apiToken) {
-    try {
-      return await buildFallbackBillableUsageFromTelemetry(env, db, "missing_graphql_credentials");
-    } catch (_error) {
-      return {
-        available: false,
-        source: "cloudflare_graphql",
-        reason: "not_configured",
-        message: "Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_GRAPHQL_API_TOKEN to display billable usage.",
-      };
-    }
-  }
-  const nowUnix = Math.floor(Date.now() / 1000);
-  const startDate = monthStartIso(nowUnix);
-  const endDate = new Date(nowUnix * 1000).toISOString();
-  const bucketName = String(
-    env.CLOUDFLARE_R2_BILLING_BUCKET
-    || env.R2_BILLING_BUCKET
-    || "",
-  ).trim();
-  const ttlSeconds = Math.max(
-    30,
-    parseNonNegativeInteger(
-      env.CLOUDFLARE_BILLABLE_CACHE_TTL_SECONDS,
-      DEFAULT_CLOUDFLARE_BILLABLE_CACHE_TTL_SECONDS,
-    ),
-  );
-  const cacheKey = [accountTag, bucketName || "*", startDate.slice(0, 7)].join("::");
-  const nowMs = Date.now();
-  if (
-    cloudflareR2BillableUsageCache.cacheKey === cacheKey
-    && cloudflareR2BillableUsageCache.value
-    && nowMs < cloudflareR2BillableUsageCache.expiresAtMs
-  ) {
-    return cloudflareR2BillableUsageCache.value;
-  }
-
-  const hasBucketFilter = Boolean(bucketName);
-  const query = `
-    query PlanetkaR2BillableUsage($accountTag: string!, $startDate: Time!, $endDate: Time!${hasBucketFilter ? ", $bucketName: string!" : ""}) {
-      viewer {
-        accounts(filter: { accountTag: $accountTag }) {
-          r2OperationsAdaptiveGroups(
-            limit: 10000
-            filter: {
-              datetime_geq: $startDate
-              datetime_leq: $endDate
-              ${hasBucketFilter ? "bucketName: $bucketName" : ""}
-            }
-          ) {
-            sum {
-              requests
-            }
-            dimensions {
-              actionType
-            }
-          }
-          r2StorageAdaptiveGroups(
-            limit: 1
-            filter: {
-              datetime_leq: $endDate
-              ${hasBucketFilter ? "bucketName: $bucketName" : ""}
-            }
-            orderBy: [datetime_DESC]
-          ) {
-            max {
-              objectCount
-              uploadCount
-              payloadSize
-              metadataSize
-            }
-            dimensions {
-              datetime
-              bucketName
-            }
-          }
-        }
-      }
-    }
-  `;
-  const variables = {
-    accountTag,
-    startDate,
-    endDate,
-    ...(hasBucketFilter ? { bucketName } : {}),
-  };
-
-  try {
-    const response = await fetch(
-      "https://api.cloudflare.com/client/v4/graphql",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ query, variables }),
-      },
-    );
-    const payload = await response.json();
-    const errors = Array.isArray(payload && payload.errors) ? payload.errors : [];
-    if (!response.ok || errors.length > 0) {
-      const errorMessage = errors.length > 0
-        ? String(errors[0] && errors[0].message || "graphql_error")
-        : String(payload && payload.errors || `http_${response.status}`);
-      try {
-        const fallback = await buildFallbackBillableUsageFromTelemetry(env, db, "graphql_query_failed");
-        fallback.message = publicErrorMessage("Usage data is temporarily unavailable.");
-        return fallback;
-      } catch (_error) {
-        return {
-          available: false,
-          source: "cloudflare_graphql",
-          reason: "query_failed",
-          message: errorMessage,
-        };
-      }
-    }
-
-    const accounts = (((payload || {}).data || {}).viewer || {}).accounts;
-    const account = Array.isArray(accounts) && accounts.length > 0 ? accounts[0] : null;
-    const opRows = Array.isArray(account && account.r2OperationsAdaptiveGroups)
-      ? account.r2OperationsAdaptiveGroups
-      : [];
-    const storageRows = Array.isArray(account && account.r2StorageAdaptiveGroups)
-      ? account.r2StorageAdaptiveGroups
-      : [];
-
-    let classAOps = 0;
-    let classBOps = 0;
-    let unknownOps = 0;
-    for (const row of opRows) {
-      const actionType = String(((row || {}).dimensions || {}).actionType || "").trim().toLowerCase();
-      const requests = clampNonNegativeInt(((row || {}).sum || {}).requests);
-      if (!actionType) {
-        unknownOps += requests;
-        continue;
-      }
-      if (R2_CLASS_A_ACTION_TYPES.has(actionType)) {
-        classAOps += requests;
-      } else if (R2_CLASS_B_ACTION_TYPES.has(actionType)) {
-        classBOps += requests;
-      } else {
-        unknownOps += requests;
-      }
-    }
-
-    const storageRow = storageRows.length > 0 ? storageRows[0] : null;
-    const storageMax = (storageRow && storageRow.max) || {};
-    const payloadBytes = clampNonNegativeInt(storageMax.payloadSize);
-    const metadataBytes = clampNonNegativeInt(storageMax.metadataSize);
-    const totalStorageBytes = payloadBytes + metadataBytes;
-    const storageGb = totalStorageBytes / BYTES_PER_GB;
-    const classAFreeOps = parseNonNegativeInteger(env.R2_CLASS_A_FREE_OPS_PER_MONTH, DEFAULT_R2_CLASS_A_FREE_OPS_PER_MONTH);
-    const classBFreeOps = parseNonNegativeInteger(env.R2_CLASS_B_FREE_OPS_PER_MONTH, DEFAULT_R2_CLASS_B_FREE_OPS_PER_MONTH);
-    const storageFreeGb = parseNonNegativeInteger(env.R2_STORAGE_FREE_GB_MONTH, DEFAULT_R2_STORAGE_FREE_GB_MONTH);
-    const classAPricePerMillion = parsePositiveNumber(
-      env.R2_CLASS_A_PRICE_PER_MILLION_USD,
-      DEFAULT_R2_CLASS_A_PRICE_PER_MILLION_USD,
-    );
-    const classBPricePerMillion = parsePositiveNumber(
-      env.R2_CLASS_B_PRICE_PER_MILLION_USD,
-      DEFAULT_R2_CLASS_B_PRICE_PER_MILLION_USD,
-    );
-    const storagePricePerGbMonth = parsePositiveNumber(
-      env.R2_STORAGE_PRICE_PER_GB_MONTH_USD,
-      DEFAULT_R2_STORAGE_PRICE_PER_GB_MONTH_USD,
-    );
-
-    const classABillableOps = Math.max(0, classAOps - classAFreeOps);
-    const classBBillableOps = Math.max(0, classBOps - classBFreeOps);
-    const classABillableMillionRounded = classABillableOps > 0 ? Math.ceil(classABillableOps / 1000000) : 0;
-    const classBBillableMillionRounded = classBBillableOps > 0 ? Math.ceil(classBBillableOps / 1000000) : 0;
-    const storageBillableGbRounded = Math.max(0, Math.ceil(storageGb - storageFreeGb));
-    const storageCostUsd = storageBillableGbRounded * storagePricePerGbMonth;
-    const classACostUsd = classABillableMillionRounded * classAPricePerMillion;
-    const classBCostUsd = classBBillableMillionRounded * classBPricePerMillion;
-    const totalEstimatedUsd = storageCostUsd + classACostUsd + classBCostUsd;
-
-    const result = {
-      available: true,
-      source: "cloudflare_graphql",
-      period_start: startDate,
-      period_end: endDate,
-      bucket_filter: bucketName || "",
-      generated_at: nowIso(),
-      storage: {
-        bytes: totalStorageBytes,
-        gb: Number(storageGb.toFixed(3)),
-        object_count: clampNonNegativeInt(storageMax.objectCount),
-        upload_count: clampNonNegativeInt(storageMax.uploadCount),
-        sample_datetime: String(((storageRow || {}).dimensions || {}).datetime || ""),
-        free_gb: storageFreeGb,
-        billable_gb_rounded: storageBillableGbRounded,
-      },
-      class_a: {
-        operations: classAOps,
-        free_operations: classAFreeOps,
-        billable_operations: classABillableOps,
-        billable_million_rounded: classABillableMillionRounded,
-      },
-      class_b: {
-        operations: classBOps,
-        free_operations: classBFreeOps,
-        billable_operations: classBBillableOps,
-        billable_million_rounded: classBBillableMillionRounded,
-      },
-      unknown_operations: unknownOps,
-      estimated_cost_usd: {
-        storage: Number(storageCostUsd.toFixed(2)),
-        class_a: Number(classACostUsd.toFixed(2)),
-        class_b: Number(classBCostUsd.toFixed(2)),
-        total: Number(totalEstimatedUsd.toFixed(2)),
-      },
-    };
-    cloudflareR2BillableUsageCache = {
-      cacheKey,
-      value: result,
-      expiresAtMs: nowMs + (ttlSeconds * 1000),
-    };
-    return result;
-  } catch (error) {
-    try {
-      const fallback = await buildFallbackBillableUsageFromTelemetry(env, db, "graphql_request_failed");
-      fallback.message = publicErrorMessage("Usage data is temporarily unavailable.");
-      return fallback;
-    } catch (_error) {
-      return {
-        available: false,
-        source: "cloudflare_graphql",
-        reason: "request_failed",
-        message: publicErrorMessage("Usage data is temporarily unavailable."),
-      };
-    }
-  }
 }
 
 function estimateR2MonthlyCostUsd(env, monthlyClassBOps) {
