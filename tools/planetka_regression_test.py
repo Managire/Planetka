@@ -426,17 +426,21 @@ def main():
                 )
             ),
         )
-        runtime = {
-            "_NAVIGATION_SHOT_UPDATE_REENTRANT": False,
-            "_NAV_FORCE_CAMERA_ONCE_KEY": "planetka_nav_force_camera_once",
-            "_NAV_SYNC_ACTIVE_VIEW_ONCE_KEY": "planetka_nav_sync_active_view_once",
-        }
+        runtime = SimpleNamespace(
+            deps=SimpleNamespace(
+                bpy=fake_bpy,
+                logger=state.logger,
+                recoverable_exceptions=TOOL_RECOVERABLE_EXCEPTIONS,
+                get_earth_object=lambda: None,
+                nav_force_camera_once_key="planetka_nav_force_camera_once",
+                nav_sync_active_view_once_key="planetka_nav_sync_active_view_once",
+            ),
+            state=SimpleNamespace(
+                navigation_shot_update_reentrant=False,
+            ),
+        )
         skipped = navigation_runtime.apply_navigation_shot_now(
             runtime,
-            bpy=fake_bpy,
-            recoverable_exceptions=TOOL_RECOVERABLE_EXCEPTIONS,
-            logger=state.logger,
-            get_earth_object=lambda: None,
         )
         _assert(skipped is False, "Silent navigation apply should return False when Earth is missing.")
         _assert(not operator_called["value"], "Silent navigation apply should not invoke the operator when Earth is missing.")

@@ -23,70 +23,85 @@ def _coerce_ctx(value=None):
     return _require_ctx()
 
 
-def navigation_shot_update_timer(runtime, *, bpy, get_earth_object, apply_navigation_shot_now):
-    runtime["_NAVIGATION_SHOT_UPDATE_PENDING"] = False
+def navigation_shot_update_timer(runtime=None, *, bpy=None, get_earth_object=None, apply_navigation_shot_now=None):
+    ctx = _coerce_ctx(runtime)
+    deps = ctx.deps
+    state = ctx.state
+    bpy_module = bpy if bpy is not None else deps.bpy
+    get_earth = get_earth_object if callable(get_earth_object) else deps.get_earth_object
+    apply_shot = apply_navigation_shot_now
+    if not callable(apply_shot):
+        apply_shot = lambda: apply_navigation_shot_now_fn(ctx)
+    state.navigation_shot_update_pending = False
 
-    if runtime.get("_IDPROP_SYNCING"):
+    if deps.is_idprop_syncing():
         return None
 
-    context = getattr(bpy, "context", None)
+    context = getattr(bpy_module, "context", None)
     scene = getattr(context, "scene", None) if context else None
     if scene is None:
         return None
     props = getattr(scene, "planetka", None)
     if props is None:
         return None
-    earth = get_earth_object()
+    earth = get_earth()
     if earth is None:
         return None
     camera = getattr(scene, "camera", None)
     if camera is None or getattr(camera, "type", None) != 'CAMERA':
         return None
 
-    apply_navigation_shot_now()
+    apply_shot()
     return None
 
 
-def apply_navigation_shot_now(runtime, *, bpy, recoverable_exceptions, logger, get_earth_object):
-    if runtime.get("_NAVIGATION_SHOT_UPDATE_REENTRANT"):
+def apply_navigation_shot_now_fn(runtime=None, *, bpy=None, recoverable_exceptions=None, logger=None, get_earth_object=None):
+    ctx = _coerce_ctx(runtime)
+    deps = ctx.deps
+    state = ctx.state
+    bpy_module = bpy if bpy is not None else deps.bpy
+    recoverable = recoverable_exceptions if recoverable_exceptions is not None else deps.recoverable_exceptions
+    runtime_logger = logger if logger is not None else deps.logger
+    get_earth = get_earth_object if callable(get_earth_object) else deps.get_earth_object
+    if state.navigation_shot_update_reentrant:
         return False
-    runtime["_NAVIGATION_SHOT_UPDATE_REENTRANT"] = True
+    state.navigation_shot_update_reentrant = True
     try:
         force_camera_view = True
         sync_active_view_when_not_camera = False
-        context = getattr(bpy, "context", None)
+        context = getattr(bpy_module, "context", None)
         scene = getattr(context, "scene", None) if context else None
         camera = getattr(scene, "camera", None) if scene is not None else None
-        earth = get_earth_object() if callable(get_earth_object) else None
+        earth = get_earth() if callable(get_earth) else None
         if scene is None or earth is None or camera is None or getattr(camera, "type", None) != 'CAMERA':
             return False
         if scene is not None:
             try:
-                if runtime["_NAV_FORCE_CAMERA_ONCE_KEY"] in scene:
-                    force_camera_view = bool(scene.get(runtime["_NAV_FORCE_CAMERA_ONCE_KEY"], True))
-                    del scene[runtime["_NAV_FORCE_CAMERA_ONCE_KEY"]]
-            except (recoverable_exceptions, RuntimeError, TypeError, ValueError, AttributeError):
-                logger.debug("Planetka: failed reading one-shot nav force-camera override", exc_info=True)
+                if deps.nav_force_camera_once_key in scene:
+                    force_camera_view = bool(scene.get(deps.nav_force_camera_once_key, True))
+                    del scene[deps.nav_force_camera_once_key]
+            except (recoverable, RuntimeError, TypeError, ValueError, AttributeError):
+                runtime_logger.debug("Planetka: failed reading one-shot nav force-camera override", exc_info=True)
             try:
-                if runtime["_NAV_SYNC_ACTIVE_VIEW_ONCE_KEY"] in scene:
-                    sync_active_view_when_not_camera = bool(scene.get(runtime["_NAV_SYNC_ACTIVE_VIEW_ONCE_KEY"], False))
-                    del scene[runtime["_NAV_SYNC_ACTIVE_VIEW_ONCE_KEY"]]
-            except (recoverable_exceptions, RuntimeError, TypeError, ValueError, AttributeError):
-                logger.debug("Planetka: failed reading one-shot nav sync-active-view override", exc_info=True)
-        result = bpy.ops.planetka.navigation_apply_shot(
+                if deps.nav_sync_active_view_once_key in scene:
+                    sync_active_view_when_not_camera = bool(scene.get(deps.nav_sync_active_view_once_key, False))
+                    del scene[deps.nav_sync_active_view_once_key]
+            except (recoverable, RuntimeError, TypeError, ValueError, AttributeError):
+                runtime_logger.debug("Planetka: failed reading one-shot nav sync-active-view override", exc_info=True)
+        result = bpy_module.ops.planetka.navigation_apply_shot(
             silent=True,
             force_camera_view=force_camera_view,
             sync_active_view_when_not_camera=sync_active_view_when_not_camera,
         )
         return "FINISHED" in result
-    except recoverable_exceptions:
-        logger.debug("Planetka: immediate navigation shot update failed", exc_info=True)
+    except recoverable:
+        runtime_logger.debug("Planetka: immediate navigation shot update failed", exc_info=True)
         return False
     except (RuntimeError, TypeError, ValueError):
-        logger.debug("Planetka: immediate navigation shot update failed", exc_info=True)
+        runtime_logger.debug("Planetka: immediate navigation shot update failed", exc_info=True)
         return False
     finally:
-        runtime["_NAVIGATION_SHOT_UPDATE_REENTRANT"] = False
+        state.navigation_shot_update_reentrant = False
 
 
 def request_next_navigation_apply_behavior(
@@ -95,21 +110,25 @@ def request_next_navigation_apply_behavior(
     *,
     force_camera_view=None,
     sync_active_view_when_not_camera=None,
-    recoverable_exceptions,
-    logger,
+    recoverable_exceptions=None,
+    logger=None,
 ):
+    ctx = _coerce_ctx(runtime)
+    deps = ctx.deps
+    recoverable = recoverable_exceptions if recoverable_exceptions is not None else deps.recoverable_exceptions
+    runtime_logger = logger if logger is not None else deps.logger
     if scene is None:
         return
     if force_camera_view is not None:
         try:
-            scene[runtime["_NAV_FORCE_CAMERA_ONCE_KEY"]] = bool(force_camera_view)
-        except (recoverable_exceptions, RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka: failed storing one-shot nav force-camera override", exc_info=True)
+            scene[deps.nav_force_camera_once_key] = bool(force_camera_view)
+        except (recoverable, RuntimeError, TypeError, ValueError, AttributeError):
+            runtime_logger.debug("Planetka: failed storing one-shot nav force-camera override", exc_info=True)
     if sync_active_view_when_not_camera is not None:
         try:
-            scene[runtime["_NAV_SYNC_ACTIVE_VIEW_ONCE_KEY"]] = bool(sync_active_view_when_not_camera)
-        except (recoverable_exceptions, RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka: failed storing one-shot nav sync-active-view override", exc_info=True)
+            scene[deps.nav_sync_active_view_once_key] = bool(sync_active_view_when_not_camera)
+        except (recoverable, RuntimeError, TypeError, ValueError, AttributeError):
+            runtime_logger.debug("Planetka: failed storing one-shot nav sync-active-view override", exc_info=True)
 
 
 def resolve_navigation_adaptive_modifier(*, get_earth_object):
@@ -265,12 +284,14 @@ def suspend_adaptive_viewport_during_navigation(
         state.navigation_adaptive_timer_running = False
 
 
-def suspend_navigation_shot_updates(runtime):
-    runtime["_NAVIGATION_SHOT_SUSPEND_COUNT"] = int(runtime.get("_NAVIGATION_SHOT_SUSPEND_COUNT", 0)) + 1
+def suspend_navigation_shot_updates(runtime=None):
+    ctx = _coerce_ctx(runtime)
+    ctx.state.navigation_shot_suspend_count = int(ctx.state.navigation_shot_suspend_count) + 1
 
 
-def resume_navigation_shot_updates(runtime):
-    runtime["_NAVIGATION_SHOT_SUSPEND_COUNT"] = max(0, int(runtime.get("_NAVIGATION_SHOT_SUSPEND_COUNT", 0)) - 1)
+def resume_navigation_shot_updates(runtime=None):
+    ctx = _coerce_ctx(runtime)
+    ctx.state.navigation_shot_suspend_count = max(0, int(ctx.state.navigation_shot_suspend_count) - 1)
 
 
 def suspend_navigation_camera_control_sync(runtime):
@@ -281,11 +302,14 @@ def resume_navigation_camera_control_sync(runtime):
     runtime["_NAV_CAMERA_CONTROL_SYNC_SUSPEND_COUNT"] = max(0, int(runtime.get("_NAV_CAMERA_CONTROL_SYNC_SUSPEND_COUNT", 0)) - 1)
 
 
-def is_navigation_or_camera_sync_suspended(runtime):
+def is_navigation_or_camera_sync_suspended(runtime=None):
+    ctx = _coerce_ctx(runtime)
+    deps = ctx.deps
+    state = ctx.state
     return bool(
-        int(runtime.get("_NAVIGATION_SHOT_SUSPEND_COUNT", 0)) > 0
-        or runtime.get("_NAV_CAMERA_CONTROL_SYNCING")
-        or int(runtime.get("_NAV_CAMERA_CONTROL_SYNC_SUSPEND_COUNT", 0)) > 0
+        int(state.navigation_shot_suspend_count) > 0
+        or deps.is_camera_control_syncing()
+        or int(deps.get_camera_control_sync_suspend_count()) > 0
     )
 
 
@@ -467,36 +491,48 @@ def update_navigation_shot(
     self,
     context,
     *,
-    sync_navigation_idprops_from_props,
-    suspend_adaptive_viewport_during_navigation,
-    request_auto_resolve,
-    apply_navigation_shot_now,
-    bpy,
-    recoverable_exceptions,
+    sync_navigation_idprops_from_props=None,
+    suspend_adaptive_viewport_during_navigation=None,
+    request_auto_resolve=None,
+    apply_navigation_shot_now=None,
+    bpy=None,
+    recoverable_exceptions=None,
 ):
-    if int(runtime.get("_NAVIGATION_SHOT_SUSPEND_COUNT", 0)) > 0:
+    ctx = _coerce_ctx(runtime)
+    deps = ctx.deps
+    state = ctx.state
+    sync_navigation_idprops = sync_navigation_idprops_from_props or deps.sync_navigation_idprops_from_props
+    suspend_viewport = (
+        suspend_adaptive_viewport_during_navigation
+        or deps.suspend_adaptive_viewport_during_navigation
+    )
+    request_resolve = request_auto_resolve or deps.request_auto_resolve
+    apply_shot = apply_navigation_shot_now or (lambda: apply_navigation_shot_now_fn(ctx))
+    bpy_module = bpy if bpy is not None else deps.bpy
+    recoverable = recoverable_exceptions if recoverable_exceptions is not None else deps.recoverable_exceptions
+    if int(state.navigation_shot_suspend_count) > 0:
         return
-    if runtime.get("_IDPROP_SYNCING") or runtime.get("_NAVIGATION_SHOT_UPDATE_REENTRANT"):
+    if deps.is_idprop_syncing() or state.navigation_shot_update_reentrant:
         return
 
     scene = getattr(context, "scene", None) if context else None
     if scene:
-        runtime["_NAVIGATION_USER_EDIT_LAST_TOUCH"] = time.monotonic()
-        sync_navigation_idprops_from_props(scene)
-        suspend_adaptive_viewport_during_navigation(scene)
-        request_auto_resolve(scene, immediate=False)
-    if apply_navigation_shot_now():
-        runtime["_NAVIGATION_SHOT_UPDATE_PENDING"] = False
+        state.navigation_user_edit_last_touch = time.monotonic()
+        sync_navigation_idprops(scene)
+        suspend_viewport(scene)
+        request_resolve(scene, immediate=False)
+    if apply_shot():
+        state.navigation_shot_update_pending = False
         return
-    if runtime.get("_NAVIGATION_SHOT_UPDATE_PENDING"):
+    if state.navigation_shot_update_pending:
         return
-    runtime["_NAVIGATION_SHOT_UPDATE_PENDING"] = True
+    state.navigation_shot_update_pending = True
     try:
-        bpy.app.timers.register(runtime["_navigation_shot_update_timer_wrapper"], first_interval=0.0)
-    except recoverable_exceptions:
-        runtime["_NAVIGATION_SHOT_UPDATE_PENDING"] = False
+        bpy_module.app.timers.register(lambda: navigation_shot_update_timer(ctx), first_interval=0.0)
+    except recoverable:
+        state.navigation_shot_update_pending = False
     except (RuntimeError, TypeError, ValueError):
-        runtime["_NAVIGATION_SHOT_UPDATE_PENDING"] = False
+        state.navigation_shot_update_pending = False
 
 
 def update_navigation_focal_length(
@@ -504,24 +540,35 @@ def update_navigation_focal_length(
     self,
     context,
     *,
-    sync_navigation_idprops_from_props,
-    suspend_adaptive_viewport_during_navigation,
-    request_auto_resolve,
-    logger,
-    recoverable_exceptions,
+    sync_navigation_idprops_from_props=None,
+    suspend_adaptive_viewport_during_navigation=None,
+    request_auto_resolve=None,
+    logger=None,
+    recoverable_exceptions=None,
 ):
-    if int(runtime.get("_NAVIGATION_SHOT_SUSPEND_COUNT", 0)) > 0:
+    ctx = _coerce_ctx(runtime)
+    deps = ctx.deps
+    state = ctx.state
+    sync_navigation_idprops = sync_navigation_idprops_from_props or deps.sync_navigation_idprops_from_props
+    suspend_viewport = (
+        suspend_adaptive_viewport_during_navigation
+        or deps.suspend_adaptive_viewport_during_navigation
+    )
+    request_resolve = request_auto_resolve or deps.request_auto_resolve
+    runtime_logger = logger if logger is not None else deps.logger
+    recoverable = recoverable_exceptions if recoverable_exceptions is not None else deps.recoverable_exceptions
+    if int(state.navigation_shot_suspend_count) > 0:
         return
-    if runtime.get("_IDPROP_SYNCING") or runtime.get("_NAVIGATION_SHOT_UPDATE_REENTRANT") or runtime.get("_NAV_CAMERA_CONTROL_SYNCING"):
+    if deps.is_idprop_syncing() or state.navigation_shot_update_reentrant or deps.is_camera_control_syncing():
         return
 
     scene = getattr(context, "scene", None) if context else None
     if scene is None:
         return
 
-    runtime["_NAVIGATION_USER_EDIT_LAST_TOUCH"] = time.monotonic()
-    sync_navigation_idprops_from_props(scene)
-    suspend_adaptive_viewport_during_navigation(scene)
+    state.navigation_user_edit_last_touch = time.monotonic()
+    sync_navigation_idprops(scene)
+    suspend_viewport(scene)
 
     camera = getattr(scene, "camera", None)
     camera_data = getattr(camera, "data", None) if camera is not None else None
@@ -529,12 +576,24 @@ def update_navigation_focal_length(
         try:
             lens_mm = max(1.0, float(getattr(self, "nav_focal_length_mm", 50.0)))
             camera_data.lens = lens_mm
-        except recoverable_exceptions:
-            logger.debug("Planetka: failed applying camera focal length", exc_info=True)
+        except recoverable:
+            runtime_logger.debug("Planetka: failed applying camera focal length", exc_info=True)
         except (RuntimeError, TypeError, ValueError):
-            logger.debug("Planetka: failed applying camera focal length", exc_info=True)
+            runtime_logger.debug("Planetka: failed applying camera focal length", exc_info=True)
 
-    request_auto_resolve(scene, immediate=False)
+    request_resolve(scene, immediate=False)
+
+
+def reset_navigation_shot_runtime_state(runtime=None):
+    ctx = _coerce_ctx(runtime)
+    state = ctx.state
+    state.navigation_shot_update_pending = False
+    state.navigation_shot_update_reentrant = False
+    state.navigation_shot_suspend_count = 0
+
+
+def apply_navigation_shot_now(runtime=None, **kwargs):
+    return apply_navigation_shot_now_fn(runtime, **kwargs)
 
 
 def camera_control_sync_signature(scene):
@@ -578,11 +637,17 @@ def sync_navigation_controls_from_scene_camera(
     recoverable_exceptions,
     logger,
 ):
+    ctx = _NAVIGATION_RUNTIME_CTX
+    shot_suspend_count = int(runtime.get("_NAVIGATION_SHOT_SUSPEND_COUNT", 0))
+    shot_update_reentrant = bool(runtime.get("_NAVIGATION_SHOT_UPDATE_REENTRANT"))
+    if ctx is not None:
+        shot_suspend_count = int(ctx.state.navigation_shot_suspend_count)
+        shot_update_reentrant = bool(ctx.state.navigation_shot_update_reentrant)
     if scene is None:
         return
     if runtime.get("_IDPROP_SYNCING") or runtime.get("_NAV_CAMERA_CONTROL_SYNCING"):
         return
-    if int(runtime.get("_NAVIGATION_SHOT_SUSPEND_COUNT", 0)) > 0 or runtime.get("_NAVIGATION_SHOT_UPDATE_REENTRANT"):
+    if shot_suspend_count > 0 or shot_update_reentrant:
         return
 
     props = getattr(scene, "planetka", None)

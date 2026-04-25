@@ -17,8 +17,14 @@ class NavigationRuntimeDeps:
     scene_key: Any
     camera_control_sync_signature: Any
     get_earth_object: Any
+    is_idprop_syncing: Any
+    is_camera_control_syncing: Any
+    get_camera_control_sync_suspend_count: Any
+    nav_force_camera_once_key: str
+    nav_sync_active_view_once_key: str
     sunlight_object_name: str
     sync_idprops_from_props: Any
+    sync_navigation_idprops_from_props: Any
     suspend_adaptive_viewport_during_navigation: Any
     request_auto_resolve: Any
 
@@ -30,6 +36,10 @@ class NavigationRuntimeState:
     navigation_adaptive_last_touch: float = 0.0
     navigation_adaptive_timer_running: bool = False
     navigation_adaptive_idle_sec: float = 0.5
+    navigation_shot_update_pending: bool = False
+    navigation_shot_update_reentrant: bool = False
+    navigation_shot_suspend_count: int = 0
+    navigation_user_edit_last_touch: float = 0.0
 
 
 @dataclass(slots=True)

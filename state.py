@@ -502,26 +502,19 @@ def update_debug_logging(self, context):
 
 def _navigation_shot_update_timer():
     return _navigation_runtime.navigation_shot_update_timer(
-        globals(),
-        bpy=bpy,
-        get_earth_object=get_earth_object,
-        apply_navigation_shot_now=_apply_navigation_shot_now,
+        _NAVIGATION_RUNTIME_CTX,
     )
 
 
 def _apply_navigation_shot_now():
     return _navigation_runtime.apply_navigation_shot_now(
-        globals(),
-        bpy=bpy,
-        recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
-        logger=logger,
-        get_earth_object=get_earth_object,
+        _NAVIGATION_RUNTIME_CTX,
     )
 
 
 def request_next_navigation_apply_behavior(scene, *, force_camera_view=None, sync_active_view_when_not_camera=None):
     return _navigation_runtime.request_next_navigation_apply_behavior(
-        globals(),
+        _NAVIGATION_RUNTIME_CTX,
         scene,
         force_camera_view=force_camera_view,
         sync_active_view_when_not_camera=sync_active_view_when_not_camera,
@@ -557,11 +550,11 @@ def _suspend_adaptive_viewport_during_navigation(scene):
 
 
 def suspend_navigation_shot_updates():
-    return _navigation_runtime.suspend_navigation_shot_updates(globals())
+    return _navigation_runtime.suspend_navigation_shot_updates(_NAVIGATION_RUNTIME_CTX)
 
 
 def resume_navigation_shot_updates():
-    return _navigation_runtime.resume_navigation_shot_updates(globals())
+    return _navigation_runtime.resume_navigation_shot_updates(_NAVIGATION_RUNTIME_CTX)
 
 
 def suspend_navigation_camera_control_sync():
@@ -573,7 +566,7 @@ def resume_navigation_camera_control_sync():
 
 
 def is_navigation_or_camera_sync_suspended():
-    return _navigation_runtime.is_navigation_or_camera_sync_suspended(globals())
+    return _navigation_runtime.is_navigation_or_camera_sync_suspended(_NAVIGATION_RUNTIME_CTX)
 
 
 def mark_navigation_camera_control_signature(scene=None):
@@ -618,30 +611,18 @@ def update_sunlight_strength(self, context):
 
 
 def update_navigation_shot(self, context):
-    globals()["_navigation_shot_update_timer_wrapper"] = _navigation_shot_update_timer
     return _navigation_runtime.update_navigation_shot(
-        globals(),
+        _NAVIGATION_RUNTIME_CTX,
         self,
         context,
-        sync_navigation_idprops_from_props=_sync_navigation_idprops_from_props,
-        suspend_adaptive_viewport_during_navigation=_suspend_adaptive_viewport_during_navigation,
-        request_auto_resolve=request_auto_resolve,
-        apply_navigation_shot_now=_apply_navigation_shot_now,
-        bpy=bpy,
-        recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
     )
 
 
 def update_navigation_focal_length(self, context):
     return _navigation_runtime.update_navigation_focal_length(
-        globals(),
+        _NAVIGATION_RUNTIME_CTX,
         self,
         context,
-        sync_navigation_idprops_from_props=_sync_navigation_idprops_from_props,
-        suspend_adaptive_viewport_during_navigation=_suspend_adaptive_viewport_during_navigation,
-        request_auto_resolve=request_auto_resolve,
-        logger=logger,
-        recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
     )
 
 
@@ -677,6 +658,30 @@ def _is_render_job_active():
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             continue
     return False
+
+
+def _is_idprop_syncing():
+    return bool(_IDPROP_SYNCING)
+
+
+def _is_navigation_camera_control_syncing():
+    return bool(_NAV_CAMERA_CONTROL_SYNCING)
+
+
+def _get_navigation_camera_control_sync_suspend_count():
+    return int(_NAV_CAMERA_CONTROL_SYNC_SUSPEND_COUNT)
+
+
+def _get_navigation_user_edit_last_touch():
+    if _NAVIGATION_RUNTIME_CTX is not None:
+        return float(_NAVIGATION_RUNTIME_CTX.state.navigation_user_edit_last_touch)
+    return float(_NAVIGATION_USER_EDIT_LAST_TOUCH)
+
+
+def _reset_navigation_shot_runtime_state():
+    if _NAVIGATION_RUNTIME_CTX is None:
+        return
+    _navigation_runtime.reset_navigation_shot_runtime_state(_NAVIGATION_RUNTIME_CTX)
 
 
 def _scene_key(scene):
@@ -1130,8 +1135,14 @@ def _build_navigation_runtime_context():
         scene_key=_scene_key,
         camera_control_sync_signature=_camera_control_sync_signature,
         get_earth_object=get_earth_object,
+        is_idprop_syncing=_is_idprop_syncing,
+        is_camera_control_syncing=_is_navigation_camera_control_syncing,
+        get_camera_control_sync_suspend_count=_get_navigation_camera_control_sync_suspend_count,
+        nav_force_camera_once_key=_NAV_FORCE_CAMERA_ONCE_KEY,
+        nav_sync_active_view_once_key=_NAV_SYNC_ACTIVE_VIEW_ONCE_KEY,
         sunlight_object_name=_SUNLIGHT_OBJECT_NAME,
         sync_idprops_from_props=_sync_idprops_from_props,
+        sync_navigation_idprops_from_props=_sync_navigation_idprops_from_props,
         suspend_adaptive_viewport_during_navigation=_suspend_adaptive_viewport_during_navigation,
         request_auto_resolve=request_auto_resolve,
     )
@@ -1141,6 +1152,10 @@ def _build_navigation_runtime_context():
         navigation_adaptive_last_touch=_NAVIGATION_ADAPTIVE_LAST_TOUCH,
         navigation_adaptive_timer_running=_NAVIGATION_ADAPTIVE_TIMER_RUNNING,
         navigation_adaptive_idle_sec=_NAVIGATION_ADAPTIVE_IDLE_SEC,
+        navigation_shot_update_pending=_NAVIGATION_SHOT_UPDATE_PENDING,
+        navigation_shot_update_reentrant=_NAVIGATION_SHOT_UPDATE_REENTRANT,
+        navigation_shot_suspend_count=_NAVIGATION_SHOT_SUSPEND_COUNT,
+        navigation_user_edit_last_touch=_NAVIGATION_USER_EDIT_LAST_TOUCH,
     )
     return NavigationRuntimeContext(
         deps=deps,
@@ -1265,7 +1280,7 @@ def _build_auto_resolve_contexts():
         logger=logger,
         recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
         resolve_trace=_resolve_trace,
-        get_navigation_user_edit_last_touch=lambda: _NAVIGATION_USER_EDIT_LAST_TOUCH,
+        get_navigation_user_edit_last_touch=_get_navigation_user_edit_last_touch,
         nav_camera_control_sync_grace_sec=_NAV_CAMERA_CONTROL_SYNC_GRACE_SEC,
         iter_scenes=_iter_scenes,
         scene_key=_scene_key,
