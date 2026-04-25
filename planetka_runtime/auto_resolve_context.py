@@ -147,6 +147,7 @@ class AutoResolveNonCriticalDeps:
     logger: Any
     recoverable_exceptions: Any
     scene_key: Any
+    scene_from_key: Any
     update_resolve_size_estimates: Any
 
 

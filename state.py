@@ -1052,22 +1052,18 @@ def _auto_resolve_sync_state_signatures(*args, **kwargs):
 
 
 def _auto_resolve_update_size_estimation(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline._auto_resolve_update_size_estimation(*args, **kwargs)
 
 
 def _arm_auto_resolve_noncritical_timer(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline._arm_auto_resolve_noncritical_timer(*args, **kwargs)
 
 
 def _auto_resolve_enqueue_size_estimation(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline._auto_resolve_enqueue_size_estimation(*args, **kwargs)
 
 
 def _auto_resolve_noncritical_timer(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline._auto_resolve_noncritical_timer(*args, **kwargs)
 
 
@@ -1268,6 +1264,7 @@ def _build_auto_resolve_contexts():
         logger=logger,
         recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
         scene_key=_scene_key,
+        scene_from_key=_scene_from_key,
         update_resolve_size_estimates=update_resolve_size_estimates,
     )
     return (
@@ -1301,3 +1298,4 @@ def _build_auto_resolve_contexts():
 
 _auto_resolve_pipeline._AUTO_RESOLVE_DOWNLOAD_CTX = _AUTO_RESOLVE_DOWNLOAD_CTX
 _auto_resolve_pipeline._AUTO_RESOLVE_DECISION_CTX = _AUTO_RESOLVE_DECISION_CTX
+_auto_resolve_pipeline._AUTO_RESOLVE_NONCRITICAL_CTX = _AUTO_RESOLVE_NONCRITICAL_CTX

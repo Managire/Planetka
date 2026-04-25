@@ -53,6 +53,7 @@ _MOVED_NAMES = {
 
 _AUTO_RESOLVE_DOWNLOAD_CTX = None
 _AUTO_RESOLVE_DECISION_CTX = None
+_AUTO_RESOLVE_NONCRITICAL_CTX = None
 
 
 def configure(runtime):
@@ -74,6 +75,13 @@ def _require_decision_ctx():
     ctx = _AUTO_RESOLVE_DECISION_CTX
     if ctx is None:
         raise RuntimeError("Planetka auto-resolve decision context is not configured.")
+    return ctx
+
+
+def _require_noncritical_ctx():
+    ctx = _AUTO_RESOLVE_NONCRITICAL_CTX
+    if ctx is None:
+        raise RuntimeError("Planetka auto-resolve noncritical context is not configured.")
     return ctx
 
 
@@ -1332,7 +1340,8 @@ def _auto_resolve_sync_state_signatures(scene_state, resolve_signature, output_s
     )
 
 
-def _auto_resolve_update_size_estimation(scene, scope, active_view_signature, target_tiles, props):
+def _ctx_auto_resolve_update_size_estimation(ctx, scene, scope, active_view_signature, target_tiles, props):
+    deps = ctx.deps
     estimation_scope = "ACTIVE_VIEW" if (scope == "ACTIVE_VIEW" and active_view_signature is not None) else "CAMERA"
     base_path_for_estimate = ""
     try:
@@ -1345,41 +1354,60 @@ def _auto_resolve_update_size_estimation(scene, scope, active_view_signature, ta
     current_quality_mode = _normalize_texture_quality_mode(getattr(props, "texture_quality_mode", "PREVIEW"))
     full_tiles_override = target_tiles if current_quality_mode == "FULL" else None
     try:
-        update_resolve_size_estimates(
+        deps.update_resolve_size_estimates(
             scene,
             scope_mode=estimation_scope,
             base_path=base_path_for_estimate,
             full_tiles_override=full_tiles_override,
         )
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka auto-resolve: failed updating resolve size estimates", exc_info=True)
+    except (deps.recoverable_exceptions, RuntimeError, TypeError, ValueError, AttributeError):
+        deps.logger.debug("Planetka auto-resolve: failed updating resolve size estimates", exc_info=True)
+
+
+def _auto_resolve_update_size_estimation(scene, scope, active_view_signature, target_tiles, props):
+    return _ctx_auto_resolve_update_size_estimation(
+        _require_noncritical_ctx(),
+        scene,
+        scope,
+        active_view_signature,
+        target_tiles,
+        props,
+    )
+
+
+def _ctx_arm_auto_resolve_noncritical_timer(ctx):
+    deps = ctx.deps
+    state = ctx.state
+    settings = ctx.settings
+    try:
+        if deps.bpy.app.timers.is_registered(_auto_resolve_noncritical_timer):
+            state.noncritical_timer_running = True
+            return
+        deps.bpy.app.timers.register(
+            _auto_resolve_noncritical_timer,
+            first_interval=max(0.05, float(settings.noncritical_interval_sec)),
+            persistent=True,
+        )
+        state.noncritical_timer_running = True
+    except deps.recoverable_exceptions:
+        deps.logger.debug("Planetka: failed arming non-critical auto-resolve timer", exc_info=True)
+        state.noncritical_timer_running = False
+    except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
+        deps.logger.debug("Planetka: failed arming non-critical auto-resolve timer", exc_info=True)
+        state.noncritical_timer_running = False
 
 
 def _arm_auto_resolve_noncritical_timer():
-    global _AUTO_RESOLVE_NONCRITICAL_TIMER_RUNNING
-    try:
-        if bpy.app.timers.is_registered(_auto_resolve_noncritical_timer):
-            _AUTO_RESOLVE_NONCRITICAL_TIMER_RUNNING = True
-            return
-        bpy.app.timers.register(
-            _auto_resolve_noncritical_timer,
-            first_interval=max(0.05, float(_AUTO_RESOLVE_NONCRITICAL_INTERVAL_SEC)),
-            persistent=True,
-        )
-        _AUTO_RESOLVE_NONCRITICAL_TIMER_RUNNING = True
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed arming non-critical auto-resolve timer", exc_info=True)
-        _AUTO_RESOLVE_NONCRITICAL_TIMER_RUNNING = False
-    except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
-        logger.debug("Planetka: failed arming non-critical auto-resolve timer", exc_info=True)
-        _AUTO_RESOLVE_NONCRITICAL_TIMER_RUNNING = False
+    return _ctx_arm_auto_resolve_noncritical_timer(_require_noncritical_ctx())
 
 
-def _auto_resolve_enqueue_size_estimation(scene, scope, active_view_signature, target_tiles, props):
+def _ctx_auto_resolve_enqueue_size_estimation(ctx, scene, scope, active_view_signature, target_tiles, props):
+    deps = ctx.deps
+    state = ctx.state
     if scene is None or props is None:
         return
     try:
-        scene_id = _scene_key(scene)
+        scene_id = deps.scene_key(scene)
     except (RuntimeError, TypeError, ValueError, AttributeError):
         return
     current_quality_mode = _normalize_texture_quality_mode(getattr(props, "texture_quality_mode", "PREVIEW"))
@@ -1387,43 +1415,57 @@ def _auto_resolve_enqueue_size_estimation(scene, scope, active_view_signature, t
     safe_active_signature = active_view_signature if safe_scope == "ACTIVE_VIEW" else None
     safe_tiles = tuple(target_tiles or ())
     request_signature = (safe_scope, safe_active_signature, current_quality_mode, safe_tiles)
-    if _AUTO_RESOLVE_SIZE_ESTIMATE_LAST_SIGNATURE.get(scene_id) == request_signature:
+    if state.size_estimate_last_signature.get(scene_id) == request_signature:
         return
-    _AUTO_RESOLVE_SIZE_ESTIMATE_LAST_SIGNATURE[scene_id] = request_signature
-    _AUTO_RESOLVE_NONCRITICAL_PENDING[scene_id] = {
+    state.size_estimate_last_signature[scene_id] = request_signature
+    state.noncritical_pending[scene_id] = {
         "scope": safe_scope,
         "active_view_signature": safe_active_signature,
         "target_tiles": safe_tiles,
     }
-    _arm_auto_resolve_noncritical_timer()
+    _ctx_arm_auto_resolve_noncritical_timer(ctx)
 
 
-def _auto_resolve_noncritical_timer():
-    global _AUTO_RESOLVE_NONCRITICAL_TIMER_RUNNING
+def _auto_resolve_enqueue_size_estimation(scene, scope, active_view_signature, target_tiles, props):
+    return _ctx_auto_resolve_enqueue_size_estimation(
+        _require_noncritical_ctx(),
+        scene,
+        scope,
+        active_view_signature,
+        target_tiles,
+        props,
+    )
+
+
+def _ctx_auto_resolve_noncritical_timer(ctx):
+    deps = ctx.deps
+    state = ctx.state
+    settings = ctx.settings
     try:
-        if not hasattr(bpy.types.Scene, "planetka"):
-            _AUTO_RESOLVE_NONCRITICAL_PENDING.clear()
-            _AUTO_RESOLVE_NONCRITICAL_TIMER_RUNNING = False
+        if not hasattr(deps.bpy.types.Scene, "planetka"):
+            state.noncritical_pending.clear()
+            state.noncritical_timer_running = False
             return None
-        if not _AUTO_RESOLVE_NONCRITICAL_PENDING:
-            _AUTO_RESOLVE_NONCRITICAL_TIMER_RUNNING = False
+        if not state.noncritical_pending:
+            state.noncritical_timer_running = False
             return None
 
-        scene = getattr(bpy.context, "scene", None)
-        scene_id = _scene_key(scene) if scene is not None else None
+        scene = getattr(deps.bpy.context, "scene", None)
+        scene_id = deps.scene_key(scene) if scene is not None else None
         request = None
         if scene_id is not None:
-            request = _AUTO_RESOLVE_NONCRITICAL_PENDING.pop(scene_id, None)
+            request = state.noncritical_pending.pop(scene_id, None)
 
         if request is None:
-            pending_scene_id, request = next(iter(_AUTO_RESOLVE_NONCRITICAL_PENDING.items()))
-            _AUTO_RESOLVE_NONCRITICAL_PENDING.pop(pending_scene_id, None)
-            scene = _scene_from_key(pending_scene_id)
+            pending_scene_id, request = next(iter(state.noncritical_pending.items()))
+            state.noncritical_pending.pop(pending_scene_id, None)
+            scene = deps.scene_from_key(pending_scene_id)
 
         if scene is not None and request:
             props = getattr(scene, "planetka", None)
             if props is not None:
-                _auto_resolve_update_size_estimation(
+                _ctx_auto_resolve_update_size_estimation(
+                    ctx,
                     scene,
                     request.get("scope"),
                     request.get("active_view_signature"),
@@ -1431,17 +1473,21 @@ def _auto_resolve_noncritical_timer():
                     props,
                 )
 
-        if _AUTO_RESOLVE_NONCRITICAL_PENDING:
-            return max(0.05, float(_AUTO_RESOLVE_NONCRITICAL_INTERVAL_SEC))
-        _AUTO_RESOLVE_NONCRITICAL_TIMER_RUNNING = False
+        if state.noncritical_pending:
+            return max(0.05, float(settings.noncritical_interval_sec))
+        state.noncritical_timer_running = False
         return None
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka non-critical auto-resolve timer tick failed", exc_info=True)
-        _AUTO_RESOLVE_NONCRITICAL_TIMER_RUNNING = False
+    except deps.recoverable_exceptions:
+        deps.logger.debug("Planetka non-critical auto-resolve timer tick failed", exc_info=True)
+        state.noncritical_timer_running = False
     except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
-        logger.debug("Planetka non-critical auto-resolve timer tick failed unexpectedly", exc_info=True)
-        _AUTO_RESOLVE_NONCRITICAL_TIMER_RUNNING = False
+        deps.logger.debug("Planetka non-critical auto-resolve timer tick failed unexpectedly", exc_info=True)
+        state.noncritical_timer_running = False
     return None
+
+
+def _auto_resolve_noncritical_timer():
+    return _ctx_auto_resolve_noncritical_timer(_require_noncritical_ctx())
 
 
 def _ctx_auto_resolve_detect_change(ctx, scene, props):
