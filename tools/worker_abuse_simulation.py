@@ -67,25 +67,55 @@ def _status_counts(values: list[int]) -> str:
 
 
 def _run_static_guard_checks(root: Path) -> tuple[int, int]:
-    worker = root / "cloudflare-api" / "src" / "index.js"
-    src = worker.read_text(encoding="utf-8")
+    src_dir = root / "cloudflare-api" / "src"
+    source_paths = [src_dir / "index.js", *sorted((src_dir / "worker").glob("*.js"))]
+    source_map = {
+        str(path.relative_to(root)): path.read_text(encoding="utf-8")
+        for path in source_paths
+        if path.is_file()
+    }
 
     failures = 0
     checks = 0
 
     required_markers = [
-        ("free multi-key guard function exists", "async function enforceSingleActiveFreeApiKey"),
-        ("free key issue path enforces single active key", "await enforceSingleActiveFreeApiKey("),
-        ("all plans enforce single-device runtime", "function maxDevicesForPlan(planCode)"),
-        ("max device count hardcoded to 1", "return 1;"),
-        ("issue-time device-limit enforcement exists", "await enforceApiKeyIssueDeviceLimit("),
-        ("public API key request forces free plan", "const requestedPlan = PLAN_CODE_PLANETKA_FREE;"),
-        ("admin query-token rejection enabled", "query_token_not_allowed"),
+        (
+            "free multi-key guard function exists",
+            ["async function enforceSingleActiveFreeApiKey"],
+        ),
+        (
+            "free key issue path enforces single active key",
+            ["await deps.enforceSingleActiveFreeApiKey(", "await enforceSingleActiveFreeApiKey("],
+        ),
+        (
+            "all plans enforce single-device runtime",
+            ["function maxDevicesForPlan(planCode)"],
+        ),
+        (
+            "max device count hardcoded to 1",
+            ["return 1;"],
+        ),
+        (
+            "issue-time device-limit enforcement exists",
+            ["await deps.enforceApiKeyIssueDeviceLimit(", "await enforceApiKeyIssueDeviceLimit("],
+        ),
+        (
+            "public API key request forces free plan",
+            ["const requestedPlan = deps.PLAN_CODE_PLANETKA_FREE;", "const requestedPlan = PLAN_CODE_PLANETKA_FREE;"],
+        ),
+        (
+            "admin query-token rejection enabled",
+            ["query_token_not_allowed"],
+        ),
     ]
 
-    for label, marker in required_markers:
+    for label, markers in required_markers:
         checks += 1
-        ok = marker in src
+        ok = any(
+            marker in src
+            for marker in markers
+            for src in source_map.values()
+        )
         _print_check(ok, f"Static guard: {label}")
         if not ok:
             failures += 1
