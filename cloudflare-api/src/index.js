@@ -56,10 +56,6 @@ const DEFAULT_TILE_FARM_ALERT_UNIQUE_TILE_THRESHOLD = 200;
 const DEFAULT_TILE_FARM_ALERT_UNTAGGED_MIN_REQUESTS = 120;
 const DEFAULT_TILE_FARM_ALERT_UNTAGGED_PERCENT = 90;
 const DEFAULT_TILE_FARM_ALERT_EMAIL_COOLDOWN_SECONDS = 300;
-const DEFAULT_BEST_QUALITY_TILE_POOL_PRO = 64800;
-const DEFAULT_BEST_QUALITY_TILE_POOL_LITE = 64800;
-const DEFAULT_BEST_QUALITY_MONTHLY_ALERT_RATIO = 0.1;
-const DEFAULT_BEST_QUALITY_MONTHLY_THROTTLE_RATIO = 0.25;
 const DEFAULT_DOWNLOAD_MARK_STEP_GB = 100;
 const DEFAULT_DOWNLOAD_THROTTLE_FREE_DAILY_GB = 0;
 const DEFAULT_DOWNLOAD_THROTTLE_PRO_DAILY_GB = 0;
@@ -1794,55 +1790,6 @@ function monthEndIso(epochSeconds) {
   const month = date.getUTCMonth();
   const nextMonthStartMs = Date.UTC(year, month + 1, 1, 0, 0, 0, 0);
   return new Date(nextMonthStartMs - 1000).toISOString();
-}
-
-function resolveBestQualityTierDLevel(accountTier) {
-  const tier = String(accountTier || "").trim().toLowerCase();
-  if (tier === "pro") return 1;
-  if (tier === "lite") return 4;
-  return 0;
-}
-
-function parseRatio01(value, fallback) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return fallback;
-  }
-  const normalized = parsed > 1 ? (parsed / 100) : parsed;
-  return Math.min(1, Math.max(0, normalized));
-}
-
-function resolveBestQualityMonthlyAlertRatio(env = {}) {
-  return parseRatio01(env.BEST_QUALITY_MONTHLY_ALERT_RATIO, DEFAULT_BEST_QUALITY_MONTHLY_ALERT_RATIO);
-}
-
-function resolveBestQualityMonthlyThrottleRatio(env = {}) {
-  return parseRatio01(env.BEST_QUALITY_MONTHLY_THROTTLE_RATIO, DEFAULT_BEST_QUALITY_MONTHLY_THROTTLE_RATIO);
-}
-
-function resolveBestQualityTilePoolSize(accountTier, env = {}) {
-  const tier = String(accountTier || "").trim().toLowerCase();
-  if (tier === "pro") {
-    return Math.max(
-      1,
-      parseNonNegativeInteger(env.BEST_QUALITY_TILE_POOL_PRO, DEFAULT_BEST_QUALITY_TILE_POOL_PRO),
-    );
-  }
-  if (tier === "lite") {
-    return Math.max(
-      1,
-      parseNonNegativeInteger(env.BEST_QUALITY_TILE_POOL_LITE, DEFAULT_BEST_QUALITY_TILE_POOL_LITE),
-    );
-  }
-  return 0;
-}
-
-function buildBestQualityTileToken(fileName) {
-  const tileInfo = parsePlanetkaTileFromFileName(fileName);
-  if (!tileInfo) {
-    return "";
-  }
-  return `x${String(tileInfo.x).padStart(3, "0")}_y${String(tileInfo.y).padStart(3, "0")}_z${String(tileInfo.z).padStart(3, "0")}`;
 }
 
 function resolveDailyThrottleThresholdGbForPlan(planCode, env = {}) {
@@ -7132,64 +7079,6 @@ async function sendOpsAlertEmail(env, subject, lines = []) {
       text: Array.isArray(lines) ? lines.join("\n") : String(lines || ""),
     }),
   });
-}
-
-async function sendLiteFullQualityAttemptAlert(db, env, details = {}) {
-  if (!db) {
-    return;
-  }
-  try {
-    await ensureRateLimitsTable(db);
-    const cooldownSeconds = Math.max(
-      1,
-      parseRateLimitInteger(
-        env.LITE_FULL_QUALITY_ALERT_COOLDOWN_SECONDS,
-        DEFAULT_ALERT_PROD_COOLDOWN_SECONDS,
-      ),
-    );
-    const cooldownKey = [
-      String(details.userId || "").trim(),
-      normalizeEmail(details.userEmail || ""),
-      String(details.deviceId || "").trim(),
-      String(details.tileKey || "").trim(),
-    ].join("|");
-    const slot = await consumeRateLimitWindow(
-      db,
-      "lite_full_quality_attempt_alert",
-      cooldownKey || "unknown",
-      1,
-      cooldownSeconds,
-    );
-    if (!slot.allowed) {
-      return;
-    }
-    await sendOpsAlertEmail(
-      env,
-      "Planetka suspected farming: Personal full-quality tile request blocked",
-      [
-        "Personal account attempted to access a full-quality tile (z=d).",
-        `user_id=${String(details.userId || "").trim()}`,
-        `email=${normalizeEmail(details.userEmail || "")}`,
-        `plan_code=${normalizeRequestedPlan(details.planCode || PLAN_CODE_PLANETKA)}`,
-        `ip=${String(details.ip || "").trim()}`,
-        `device_id=${String(details.deviceId || "").trim()}`,
-        `method=${String(details.method || "").trim()}`,
-        `path=${String(details.path || "").trim()}`,
-        `tile_key=${String(details.tileKey || "").trim()}`,
-        `resolve_id=${String(details.resolveId || "").trim()}`,
-        `quality_mode=${String(details.qualityMode || "").trim()}`,
-      ],
-    );
-  } catch (error) {
-    console.warn(
-      "worker.lite_full_quality_alert_failed",
-      JSON.stringify({
-        error: String(error && error.message || "lite_full_quality_alert_failed"),
-        user_id: String(details.userId || "").trim(),
-        user_email: normalizeEmail(details.userEmail || ""),
-      }),
-    );
-  }
 }
 
 async function sendNewUserLoginAlert(env, details = {}) {
