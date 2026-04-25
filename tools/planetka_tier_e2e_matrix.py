@@ -314,6 +314,14 @@ def _set_quality_and_resolve(mode: str):
     return bpy.ops.planetka.set_texture_quality_and_resolve(texture_quality_mode=str(mode).upper())
 
 
+def _attempt_set_quality_and_resolve(mode: str):
+    try:
+        result = _set_quality_and_resolve(mode)
+        return {"ok": True, "result": list(result), "error": ""}
+    except RuntimeError as exc:
+        return {"ok": False, "result": [], "error": str(exc)}
+
+
 def _parse_tile_d_values(tiles):
     values = []
     for tile in (tiles or []):
@@ -461,34 +469,36 @@ def main():
                 result = _resolve_now(state_module=state_module)
                 if "FINISHED" not in result:
                     raise RuntimeError(f"Free Milan resolve failed: {result}")
-                tiles = list(scene.get("planetka_last_resolved_tiles", []) or [])
-                d_values = _parse_tile_d_values(tiles)
-                min_d = min(d_values) if d_values else None
+                enforced_mode = str(
+                    getattr(state_module, "_enforce_texture_quality_mode_for_account")(scene, "FULL")
+                ).strip().upper()
                 scenario_result["checks"].append({
-                    "name": "free_milan_d090_cap",
-                    "passed": bool(min_d is not None and min_d >= 90),
-                    "min_d": min_d,
-                    "tile_count": len(tiles),
+                    "name": "free_full_request_downgrades_to_preview",
+                    "passed": enforced_mode == "PREVIEW",
+                    "enforced_mode": enforced_mode,
                 })
             elif tier == "personal":
-                balanced_result = _set_quality_and_resolve("BALANCED")
+                balanced_result = _attempt_set_quality_and_resolve("BALANCED")
                 scenario_result["checks"].append({
                     "name": "personal_milan_balanced_allowed",
-                    "passed": "FINISHED" in balanced_result,
-                    "result": list(balanced_result),
+                    "passed": bool(balanced_result["ok"] and "FINISHED" in balanced_result["result"]),
+                    "result": list(balanced_result["result"]),
+                    "error": balanced_result["error"],
                 })
-                full_result = _set_quality_and_resolve("FULL")
+                full_result = _attempt_set_quality_and_resolve("FULL")
                 scenario_result["checks"].append({
                     "name": "personal_full_blocked",
-                    "passed": "FINISHED" not in full_result,
-                    "result": list(full_result),
+                    "passed": bool((not full_result["ok"]) or ("FINISHED" not in full_result["result"])),
+                    "result": list(full_result["result"]),
+                    "error": full_result["error"],
                 })
             else:
-                full_result = _set_quality_and_resolve("FULL")
+                full_result = _attempt_set_quality_and_resolve("FULL")
                 scenario_result["checks"].append({
                     "name": "commercial_milan_full_allowed",
-                    "passed": "FINISHED" in full_result,
-                    "result": list(full_result),
+                    "passed": bool(full_result["ok"] and "FINISHED" in full_result["result"]),
+                    "result": list(full_result["result"]),
+                    "error": full_result["error"],
                 })
 
             # Milan still render for Personal and Commercial, and one for Free as reference

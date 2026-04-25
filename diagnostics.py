@@ -6,6 +6,7 @@ DIAG_KEY_LAST_TILE_COUNT = "planetka_diag_last_tile_count"
 DIAG_KEY_LAST_FALLBACK_COUNT = "planetka_diag_last_fallback_count"
 DIAG_KEY_RESOLVE_ASSETS_MS = "planetka_diag_resolve_assets_ms"
 DIAG_KEY_RESOLVE_TILE_SELECT_MS = "planetka_diag_resolve_tile_select_ms"
+DIAG_KEY_RESOLVE_STREAM_MS = "planetka_diag_resolve_stream_ms"
 DIAG_KEY_RESOLVE_MESH_MS = "planetka_diag_resolve_mesh_ms"
 DIAG_KEY_RESOLVE_SHADER_MS = "planetka_diag_resolve_shader_ms"
 DIAG_KEY_RESOLVE_POST_MS = "planetka_diag_resolve_post_ms"
@@ -119,6 +120,7 @@ def write_resolve_diagnostics(scene, tile_count, resolve_ms, fallback_count, bre
     breakdown = breakdown or {}
     _set_scene_value(scene, DIAG_KEY_RESOLVE_ASSETS_MS, float(max(0.0, breakdown.get("assets_ms", 0.0))))
     _set_scene_value(scene, DIAG_KEY_RESOLVE_TILE_SELECT_MS, float(max(0.0, breakdown.get("tile_select_ms", 0.0))))
+    _set_scene_value(scene, DIAG_KEY_RESOLVE_STREAM_MS, float(max(0.0, breakdown.get("stream_ms", 0.0))))
     _set_scene_value(scene, DIAG_KEY_RESOLVE_MESH_MS, float(max(0.0, breakdown.get("mesh_ms", 0.0))))
     _set_scene_value(scene, DIAG_KEY_RESOLVE_SHADER_MS, float(max(0.0, breakdown.get("shader_ms", 0.0))))
     _set_scene_value(scene, DIAG_KEY_RESOLVE_POST_MS, float(max(0.0, breakdown.get("post_ms", 0.0))))
@@ -142,6 +144,7 @@ def read_diagnostics(scene):
         "last_fallback_count": _get_scene_value(scene, DIAG_KEY_LAST_FALLBACK_COUNT),
         "resolve_assets_ms": _get_scene_value(scene, DIAG_KEY_RESOLVE_ASSETS_MS),
         "resolve_tile_select_ms": _get_scene_value(scene, DIAG_KEY_RESOLVE_TILE_SELECT_MS),
+        "resolve_stream_ms": _get_scene_value(scene, DIAG_KEY_RESOLVE_STREAM_MS),
         "resolve_mesh_ms": _get_scene_value(scene, DIAG_KEY_RESOLVE_MESH_MS),
         "resolve_shader_ms": _get_scene_value(scene, DIAG_KEY_RESOLVE_SHADER_MS),
         "resolve_post_ms": _get_scene_value(scene, DIAG_KEY_RESOLVE_POST_MS),
