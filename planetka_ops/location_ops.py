@@ -1,4 +1,10 @@
+import bpy
+
 from ..error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
+from ..extension_prefs import get_prefs, read_saved_locations, write_saved_locations
+from ..operator_utils import ErrorCode, fail, require_planetka_props, require_scene
+from ..state import resume_navigation_shot_updates, suspend_navigation_shot_updates, logger
+from .navigation_helpers import _apply_navigation_shot
 
 
 def _next_saved_location_name(locations):
@@ -232,3 +238,69 @@ def delete_saved_location_execute(
         operator.report({'WARNING'}, "Deletion saved for this session only. Save Preferences to persist globally.")
     operator.report({'INFO'}, f"Deleted location: {selected_name}")
     return {'FINISHED'}
+
+
+def _persist_user_preferences():
+    return False
+
+
+class PLANETKA_OT_SaveLocation(bpy.types.Operator):
+    bl_idname = "planetka.save_location"
+    bl_label = "Save Location"
+    bl_description = "Save the current Navigation longitude, latitude, and altitude as a reusable location"
+
+    def execute(self, context):
+        return save_location_execute(
+            self,
+            context,
+            logger=logger,
+            get_prefs=get_prefs,
+            require_planetka_props=require_planetka_props,
+            read_saved_locations=read_saved_locations,
+            write_saved_locations=write_saved_locations,
+            fail=fail,
+            error_code=ErrorCode,
+            persist_user_preferences=_persist_user_preferences,
+        )
+
+
+class PLANETKA_OT_LoadSavedLocation(bpy.types.Operator):
+    bl_idname = "planetka.load_saved_location"
+    bl_label = "Load Location"
+    bl_description = "Load the selected saved location into Navigation fields and move the camera"
+
+    def execute(self, context):
+        return load_saved_location_execute(
+            self,
+            context,
+            logger=logger,
+            get_prefs=get_prefs,
+            require_scene=require_scene,
+            require_planetka_props=require_planetka_props,
+            read_saved_locations=read_saved_locations,
+            suspend_navigation_shot_updates=suspend_navigation_shot_updates,
+            resume_navigation_shot_updates=resume_navigation_shot_updates,
+            apply_navigation_shot=_apply_navigation_shot,
+            fail=fail,
+            error_code=ErrorCode,
+        )
+
+
+class PLANETKA_OT_DeleteSavedLocation(bpy.types.Operator):
+    bl_idname = "planetka.delete_saved_location"
+    bl_label = "Delete Location"
+    bl_description = "Delete the selected saved location from Planetka preferences"
+
+    def execute(self, context):
+        return delete_saved_location_execute(
+            self,
+            context,
+            logger=logger,
+            get_prefs=get_prefs,
+            require_planetka_props=require_planetka_props,
+            read_saved_locations=read_saved_locations,
+            write_saved_locations=write_saved_locations,
+            fail=fail,
+            error_code=ErrorCode,
+            persist_user_preferences=_persist_user_preferences,
+        )

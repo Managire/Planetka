@@ -23,7 +23,11 @@ from .planetka_ops.account_ops import (
     PLANETKA_OT_CheckUpdates,
     PLANETKA_OT_UpdateNow,
 )
-from .planetka_ops import location_ops as _location_ops
+from .planetka_ops.location_ops import (
+    PLANETKA_OT_DeleteSavedLocation,
+    PLANETKA_OT_LoadSavedLocation,
+    PLANETKA_OT_SaveLocation,
+)
 from .planetka_ops.startup_profile_ops import (
     _SURFACE_GRADING_SECTION_SOCKET_NAMES,
     _apply_startup_setup_for_create_earth,
@@ -795,68 +799,6 @@ class PLANETKA_OT_ResetSurfaceGradingSection(bpy.types.Operator):
 
         self.report({'INFO'}, f"Surface Grading '{section_key.title()}' reset ({reset_count}/{touched_count} values).")
         return {'FINISHED'}
-
-
-class PLANETKA_OT_SaveLocation(bpy.types.Operator):
-    bl_idname = "planetka.save_location"
-    bl_label = "Save Location"
-    bl_description = "Save the current Navigation longitude, latitude, and altitude as a reusable location"
-
-    def execute(self, context):
-        return _location_ops.save_location_execute(
-            self,
-            context,
-            logger=logger,
-            get_prefs=get_prefs,
-            require_planetka_props=require_planetka_props,
-            read_saved_locations=read_saved_locations,
-            write_saved_locations=write_saved_locations,
-            fail=fail,
-            error_code=ErrorCode,
-            persist_user_preferences=_persist_user_preferences,
-        )
-
-
-class PLANETKA_OT_LoadSavedLocation(bpy.types.Operator):
-    bl_idname = "planetka.load_saved_location"
-    bl_label = "Load Location"
-    bl_description = "Load the selected saved location into Navigation fields and move the camera"
-
-    def execute(self, context):
-        return _location_ops.load_saved_location_execute(
-            self,
-            context,
-            logger=logger,
-            get_prefs=get_prefs,
-            require_scene=require_scene,
-            require_planetka_props=require_planetka_props,
-            read_saved_locations=read_saved_locations,
-            suspend_navigation_shot_updates=suspend_navigation_shot_updates,
-            resume_navigation_shot_updates=resume_navigation_shot_updates,
-            apply_navigation_shot=_apply_navigation_shot,
-            fail=fail,
-            error_code=ErrorCode,
-        )
-
-
-class PLANETKA_OT_DeleteSavedLocation(bpy.types.Operator):
-    bl_idname = "planetka.delete_saved_location"
-    bl_label = "Delete Location"
-    bl_description = "Delete the selected saved location from Planetka preferences"
-
-    def execute(self, context):
-        return _location_ops.delete_saved_location_execute(
-            self,
-            context,
-            logger=logger,
-            get_prefs=get_prefs,
-            require_planetka_props=require_planetka_props,
-            read_saved_locations=read_saved_locations,
-            write_saved_locations=write_saved_locations,
-            fail=fail,
-            error_code=ErrorCode,
-            persist_user_preferences=_persist_user_preferences,
-        )
 
 
 class PLANETKA_OT_NavigationPreset(bpy.types.Operator):
