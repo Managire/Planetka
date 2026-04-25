@@ -43,6 +43,7 @@ import {
 import {
   buildAdminSessionClearCookie,
   buildAdminSessionCookie,
+  readBearerUser,
   readBearerToken,
   requireAnalyticsAdmin,
   requireAuthenticatedUserContext,
@@ -94,6 +95,9 @@ import {
 import {
   createAuthApiKeyHandlers,
 } from "./worker/auth_api_key_handlers.js";
+import {
+  createAuthSessionRouteHandlers,
+} from "./worker/auth_session_route_handlers.js";
 import {
   runScheduledMaintenanceJobs,
 } from "./worker/maintenance_jobs.js";
@@ -2581,6 +2585,7 @@ const AUTH_CORE_DEPS = {
 
 let authCore = null;
 let authApiKeyHandlers = null;
+let authSessionRouteHandlers = null;
 
 function getAuthCore() {
   if (!authCore) {
@@ -2649,6 +2654,44 @@ function getAuthApiKeyHandlers() {
     authApiKeyHandlers = createAuthApiKeyHandlers(AUTH_API_KEY_DEPS);
   }
   return authApiKeyHandlers;
+}
+
+const AUTH_SESSION_ROUTE_DEPS = {
+  PLAN_CODE_PLANETKA,
+  blockedAccountResponse,
+  buildAccountState,
+  createAccessToken,
+  createRefreshSession,
+  dbGet,
+  dbMetaChanges,
+  dbRun,
+  enforceUserPlanPolicy,
+  ensureApiKeyTables,
+  ensureRefreshSessionColumns,
+  isApiKeyUsableById,
+  isBlockedStatus,
+  json,
+  logAuthRefreshEvent,
+  normalizeDeviceId,
+  normalizeEmail,
+  nowIso,
+  parseJson,
+  readBearerUser: (request, env) => readBearerUser(request, env, AUTH_SESSION_DEPS),
+  requestClientIp,
+  requestCountry,
+  requireAuthenticatedUserContext: (request, env, options) =>
+    requireAuthenticatedUserContext(request, env, options, AUTH_SESSION_DEPS),
+  requireDb,
+  resolvePolicyPlanCode,
+  serializeAccountState,
+  sha256Hex,
+};
+
+function getAuthSessionRouteHandlers() {
+  if (!authSessionRouteHandlers) {
+    authSessionRouteHandlers = createAuthSessionRouteHandlers(AUTH_SESSION_ROUTE_DEPS);
+  }
+  return authSessionRouteHandlers;
 }
 
 async function isApiKeyUsableById(db, apiKeyId, expectedUserId = "") {
@@ -2752,271 +2795,15 @@ async function handleApiKeyExchange(request, env) {
 }
 
 async function handleAuthRefresh(request, env) {
-  const db = requireDb(env);
-  const refreshEventBase = {
-    client_ip: requestClientIp(request),
-    cf_country: requestCountry(request),
-    cf_ray: String(request.headers.get("CF-Ray") || "").trim(),
-  };
-  const recordRefreshEvent = async ({
-    outcome = "error",
-    errorCode = "",
-    httpStatus = 0,
-    userId = "",
-    userEmail = "",
-    sessionRow = null,
-    details = null,
-  } = {}) => {
-    await logAuthRefreshEvent(db, {
-      ...refreshEventBase,
-      user_id: userId,
-      user_email: userEmail,
-      auth_method: sessionRow ? String(sessionRow.auth_method || "").trim() : "",
-      api_key_id: sessionRow ? String(sessionRow.api_key_id || "").trim() : "",
-      device_id: sessionRow ? String(sessionRow.device_id || "").trim() : "",
-      outcome,
-      error_code: errorCode,
-      http_status: httpStatus,
-      details,
-    });
-  };
-  const errorResponse = async (errorCode, httpStatus, sessionRow = null, details = null) => {
-    await recordRefreshEvent({
-      outcome: "error",
-      errorCode,
-      httpStatus,
-      userId: sessionRow ? String(sessionRow.user_id || "").trim() : "",
-      userEmail: sessionRow ? normalizeEmail(sessionRow.email || "") : "",
-      sessionRow,
-      details,
-    });
-    return json({ ok: false, error: errorCode }, httpStatus, env);
-  };
-  const body = await parseJson(request);
-  const refreshToken = String(body.refresh_token || "").trim();
-  if (!refreshToken) {
-    return errorResponse("missing_refresh_token", 400, null, { has_body: Boolean(body && Object.keys(body).length) });
-  }
-
-  const refreshHash = await sha256Hex(refreshToken);
-  const session = await dbGet(
-    db,
-    `
-      SELECT
-        rs.id,
-        rs.user_id,
-        rs.expires_at,
-        rs.revoked_at,
-        rs.auth_method,
-        rs.api_key_id,
-        rs.device_id,
-        u.email,
-        u.status
-      FROM refresh_sessions rs
-      JOIN users u ON u.id = rs.user_id
-      WHERE rs.refresh_token_hash = ?
-      LIMIT 1
-    `,
-    [refreshHash],
-  );
-  if (!session) {
-    return errorResponse("invalid_refresh_token", 400);
-  }
-  if (isBlockedStatus(session.status)) {
-    await recordRefreshEvent({
-      outcome: "error",
-      errorCode: "account_blocked",
-      httpStatus: 403,
-      userId: String(session.user_id || "").trim(),
-      userEmail: normalizeEmail(session.email || ""),
-      sessionRow: session,
-    });
-    return blockedAccountResponse(env);
-  }
-  if (session.revoked_at) {
-    return errorResponse("refresh_token_revoked", 400, session);
-  }
-  if (Date.parse(session.expires_at) < Date.now()) {
-    return errorResponse("refresh_token_expired", 400, session);
-  }
-  if (
-    String(session.auth_method || "").trim().toLowerCase() === "api_key"
-    && String(session.api_key_id || "").trim()
-  ) {
-    const keyUsable = await isApiKeyUsableById(db, session.api_key_id, session.user_id);
-    if (!keyUsable) {
-      return errorResponse("api_key_revoked", 401, session);
-    }
-  }
-
-  let user = {
-    id: session.user_id,
-    email: session.email,
-    status: session.status || PLAN_CODE_PLANETKA,
-  };
-  user = await enforceUserPlanPolicy(db, user, null, env);
-
-  await dbRun(
-    db,
-    `UPDATE refresh_sessions SET revoked_at = ? WHERE id = ?`,
-    [nowIso(), session.id],
-  );
-  const accessToken = await createAccessToken(
-    env,
-    user,
-    null,
-    {
-      auth_method: String(session.auth_method || "").trim(),
-      api_key_id: String(session.api_key_id || "").trim(),
-      device_id: String(session.device_id || "").trim(),
-    },
-  );
-  const nextRefreshToken = await createRefreshSession(
-    db,
-    session.user_id,
-    "",
-    {
-      auth_method: String(session.auth_method || "").trim(),
-      api_key_id: String(session.api_key_id || "").trim(),
-      device_id: String(session.device_id || "").trim(),
-    },
-  );
-  const accountState = await buildAccountState(db, user, null, env);
-  await recordRefreshEvent({
-    outcome: "success",
-    errorCode: "",
-    httpStatus: 200,
-    userId: String(user.id || "").trim(),
-    userEmail: normalizeEmail(user.email || ""),
-    sessionRow: session,
-  });
-
-  return json(
-    {
-      ok: true,
-      access_token: accessToken,
-      refresh_token: nextRefreshToken,
-      email: user.email,
-      ...serializeAccountState(accountState),
-    },
-    200,
-    env,
-  );
+  return getAuthSessionRouteHandlers().handleAuthRefresh(request, env);
 }
 
 async function handleAuthLogout(request, env) {
-  const db = requireDb(env);
-  await ensureRefreshSessionColumns(db);
-  await ensureApiKeyTables(db);
-  const body = await parseJson(request);
-
-  const refreshToken = String(body.refresh_token || "").trim();
-  let deviceId = normalizeDeviceId(
-    body.device_id || request.headers.get("X-Planetka-Device-Id") || "",
-  );
-  let userId = "";
-  let revokedSessions = 0;
-  let clearedDeviceActivity = 0;
-
-  if (refreshToken) {
-    const refreshHash = await sha256Hex(refreshToken);
-    const session = await dbGet(
-      db,
-      `
-        SELECT id, user_id, device_id
-        FROM refresh_sessions
-        WHERE refresh_token_hash = ?
-        LIMIT 1
-      `,
-      [refreshHash],
-    );
-    if (session) {
-      userId = String(session.user_id || "").trim();
-      if (!deviceId) {
-        deviceId = normalizeDeviceId(session.device_id || "");
-      }
-    }
-  }
-
-  if (!userId) {
-    try {
-      const access = await readBearerUser(request, env);
-      if (access && access.sub) {
-        userId = String(access.sub || "").trim();
-      }
-      if (!deviceId && access) {
-        deviceId = normalizeDeviceId(access.device_id || "");
-      }
-    } catch (_error) {
-      // Best-effort logout: silently allow local logout even when token is missing/expired.
-    }
-  }
-
-  if (userId) {
-    const revokedAt = nowIso();
-    let revokeSql = `
-      UPDATE refresh_sessions
-      SET revoked_at = ?
-      WHERE user_id = ?
-        AND (revoked_at IS NULL OR revoked_at = '')
-    `;
-    const revokeBindings = [revokedAt, userId];
-    if (deviceId) {
-      revokeSql += " AND device_id = ?";
-      revokeBindings.push(deviceId);
-    }
-    const revokeResult = await dbRun(db, revokeSql, revokeBindings);
-    revokedSessions = dbMetaChanges(revokeResult);
-  }
-
-  if (userId && deviceId) {
-    const clearResult = await dbRun(
-      db,
-      `
-        DELETE FROM api_key_device_activity
-        WHERE user_id = ?
-          AND device_id = ?
-      `,
-      [userId, deviceId],
-    );
-    clearedDeviceActivity = dbMetaChanges(clearResult);
-  }
-
-  return json(
-    {
-      ok: true,
-      revoked_sessions: revokedSessions,
-      cleared_device_activity: clearedDeviceActivity,
-    },
-    200,
-    env,
-  );
+  return getAuthSessionRouteHandlers().handleAuthLogout(request, env);
 }
 
 async function handleMe(request, env) {
-  const auth = await requireAuthenticatedUserContext(
-    request,
-    env,
-    { enforceApiKeyDevicePolicy: true },
-    AUTH_SESSION_DEPS,
-  );
-  if (auth.error) {
-    return auth.error;
-  }
-  const { db, user } = auth;
-  const effectiveUserStatus = resolvePolicyPlanCode(user, null, env);
-  const accountState = await buildAccountState(db, user, null, env);
-
-  return json(
-    {
-      ok: true,
-      email: user.email,
-      user_status: effectiveUserStatus,
-      ...serializeAccountState(accountState),
-    },
-    200,
-    env,
-  );
+  return getAuthSessionRouteHandlers().handleMe(request, env);
 }
 
 const TILE_ROUTE_DEPS = {
