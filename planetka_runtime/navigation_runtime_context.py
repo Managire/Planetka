@@ -16,6 +16,7 @@ class NavigationRuntimeDeps:
     recoverable_exceptions: Any
     scene_key: Any
     camera_control_sync_signature: Any
+    get_earth_object: Any
     sunlight_object_name: str
     sync_idprops_from_props: Any
     suspend_adaptive_viewport_during_navigation: Any
@@ -25,6 +26,10 @@ class NavigationRuntimeDeps:
 @dataclass(slots=True)
 class NavigationRuntimeState:
     nav_camera_control_last_signature: dict = field(default_factory=dict)
+    navigation_adaptive_suspended: Any = None
+    navigation_adaptive_last_touch: float = 0.0
+    navigation_adaptive_timer_running: bool = False
+    navigation_adaptive_idle_sec: float = 0.5
 
 
 @dataclass(slots=True)

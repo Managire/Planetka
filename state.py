@@ -536,32 +536,23 @@ def _resolve_navigation_adaptive_modifier():
 
 def _navigation_adaptive_restore_timer():
     return _navigation_runtime.navigation_adaptive_restore_timer(
-        globals(),
-        bpy=bpy,
-        recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
-        logger=logger,
+        _NAVIGATION_RUNTIME_CTX,
     )
 
 
 def _force_restore_navigation_adaptive_state():
     return _navigation_runtime.force_restore_navigation_adaptive_state(
-        globals(),
-        bpy=bpy,
-        recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
-        logger=logger,
+        _NAVIGATION_RUNTIME_CTX,
     )
 
 
 def _suspend_adaptive_viewport_during_navigation(scene):
     return _navigation_runtime.suspend_adaptive_viewport_during_navigation(
-        globals(),
+        _NAVIGATION_RUNTIME_CTX,
         scene,
-        bpy=bpy,
-        recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
-        logger=logger,
         resolve_navigation_adaptive_modifier=_resolve_navigation_adaptive_modifier,
-        force_restore_navigation_adaptive_state=_force_restore_navigation_adaptive_state,
-        navigation_adaptive_restore_timer=_navigation_adaptive_restore_timer,
+        force_restore_navigation_adaptive_state_fn=_force_restore_navigation_adaptive_state,
+        navigation_adaptive_restore_timer_fn=_navigation_adaptive_restore_timer,
     )
 
 
@@ -1138,6 +1129,7 @@ def _build_navigation_runtime_context():
         recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
         scene_key=_scene_key,
         camera_control_sync_signature=_camera_control_sync_signature,
+        get_earth_object=get_earth_object,
         sunlight_object_name=_SUNLIGHT_OBJECT_NAME,
         sync_idprops_from_props=_sync_idprops_from_props,
         suspend_adaptive_viewport_during_navigation=_suspend_adaptive_viewport_during_navigation,
@@ -1145,6 +1137,10 @@ def _build_navigation_runtime_context():
     )
     state = NavigationRuntimeState(
         nav_camera_control_last_signature=_NAV_CAMERA_CONTROL_LAST_SIGNATURE,
+        navigation_adaptive_suspended=_NAVIGATION_ADAPTIVE_SUSPENDED,
+        navigation_adaptive_last_touch=_NAVIGATION_ADAPTIVE_LAST_TOUCH,
+        navigation_adaptive_timer_running=_NAVIGATION_ADAPTIVE_TIMER_RUNNING,
+        navigation_adaptive_idle_sec=_NAVIGATION_ADAPTIVE_IDLE_SEC,
     )
     return NavigationRuntimeContext(
         deps=deps,
