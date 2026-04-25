@@ -395,41 +395,7 @@ def _clear_status_notices(scene):
 
 
 def _active_view_signature():
-    wm = getattr(bpy.context, "window_manager", None)
-    if not wm:
-        return None
-
-    for window in wm.windows:
-        screen = getattr(window, "screen", None)
-        if not screen:
-            continue
-        for area in screen.areas:
-            if area.type != 'VIEW_3D':
-                continue
-            space = getattr(area.spaces, "active", None)
-            if not space or space.type != 'VIEW_3D':
-                continue
-            rv3d = getattr(space, "region_3d", None)
-            if rv3d is None:
-                continue
-            region = next((r for r in area.regions if r.type == 'WINDOW'), None)
-            region_sig = (
-                int(getattr(region, "width", 0)) if region else 0,
-                int(getattr(region, "height", 0)) if region else 0,
-            )
-            matrix_signature = tuple(
-                round(float(value), 6)
-                for row in rv3d.view_matrix
-                for value in row
-            )
-            return (
-                str(getattr(rv3d, "view_perspective", "")),
-                bool(getattr(rv3d, "is_perspective", True)),
-                round(float(getattr(space, "lens", 50.0)), 6),
-                region_sig,
-                matrix_signature,
-            )
-    return None
+    return _view_telemetry.active_view_signature(globals())
 
 
 def _get_mesh_utils():
@@ -984,90 +950,19 @@ def get_resolve_runtime_status(scene=None):
 
 
 def get_camera_inside_earth_warning(scene=None):
-    target_scene = scene if scene is not None else getattr(getattr(bpy, "context", None), "scene", None)
-    if target_scene is None:
-        return ""
-    try:
-        return str(target_scene.get(CAMERA_INSIDE_EARTH_WARNING_KEY, "") or "").strip()
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-        return ""
+    return _view_telemetry.get_camera_inside_earth_warning(scene, globals())
 
 
 def _clear_camera_inside_earth_warning(scene):
-    if scene is None:
-        return
-    try:
-        if CAMERA_INSIDE_EARTH_WARNING_KEY in scene:
-            del scene[CAMERA_INSIDE_EARTH_WARNING_KEY]
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed clearing inside-Earth warning", exc_info=True)
+    return _view_telemetry.clear_camera_inside_earth_warning(scene, globals())
 
 
 def _set_camera_inside_earth_warning(scene, altitude_km=None):
-    if scene is None:
-        return ""
-    _ = altitude_km
-    message = "Below Earth's surface"
-    try:
-        scene[CAMERA_INSIDE_EARTH_WARNING_KEY] = str(message)
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed storing inside-Earth warning", exc_info=True)
-    return message
+    return _view_telemetry.set_camera_inside_earth_warning(scene, altitude_km=altitude_km, runtime=globals())
 
 
 def _resolve_scope_altitude_info(scene, scope_mode="AUTO"):
-    result = {
-        "inside_earth": False,
-        "altitude_km": None,
-        "altitude_bu": None,
-        "scope_used": None,
-    }
-    if scene is None:
-        return result
-    earth = get_earth_object()
-    if earth is None:
-        return result
-
-    tile_utils = _get_tile_utils()
-    if tile_utils is None:
-        return result
-    get_camera_info = getattr(tile_utils, "get_camera_info", None)
-    get_radius = getattr(tile_utils, "get_earth_radius_blender_units", None)
-    if not callable(get_camera_info) or not callable(get_radius):
-        return result
-
-    try:
-        camera_info = get_camera_info(scene, scope_mode=str(scope_mode or "AUTO"))
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed reading resolve camera info for inside-Earth check", exc_info=True)
-        return result
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed reading resolve camera info for inside-Earth check", exc_info=True)
-        return result
-
-    if not isinstance(camera_info, dict):
-        return result
-
-    camera_position = camera_info.get("position")
-    if camera_position is None:
-        return result
-
-    try:
-        earth_center = earth.matrix_world.translation.copy()
-        radius_bu = float(get_radius(earth))
-        altitude_bu = float((camera_position - earth_center).length) - radius_bu
-        meters_per_bu = float(6371000.0 / max(radius_bu, 1e-9))
-        altitude_km = float((altitude_bu * meters_per_bu) / 1000.0)
-        inside_epsilon_bu = float(max(1e-9, radius_bu * 1e-6))
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError, ZeroDivisionError):
-        logger.debug("Planetka: failed computing resolve altitude for inside-Earth check", exc_info=True)
-        return result
-
-    result["scope_used"] = str(camera_info.get("scope_used", "CAMERA") or "CAMERA")
-    result["altitude_bu"] = altitude_bu
-    result["altitude_km"] = altitude_km
-    result["inside_earth"] = bool(altitude_bu < (-inside_epsilon_bu))
-    return result
+    return _view_telemetry.resolve_scope_altitude_info(scene, globals(), scope_mode=scope_mode)
 
 
 def _camera_control_sync_signature(scene):
@@ -1089,22 +984,7 @@ def _sync_navigation_controls_from_scene_camera(scene):
 
 
 def _camera_signature(scene):
-    camera = getattr(scene, "camera", None)
-    if camera is None:
-        return None
-    camera_data = getattr(camera, "data", None)
-    if camera_data is None:
-        return None
-
-    matrix_signature = tuple(round(float(value), 6) for row in camera.matrix_world for value in row)
-
-    return (
-        str(getattr(camera, "name_full", camera.name)),
-        str(getattr(camera_data, "type", "")),
-        round(float(getattr(camera_data, "lens", 0.0)), 6),
-        round(float(getattr(camera_data, "ortho_scale", 0.0)), 6),
-        matrix_signature,
-    )
+    return _view_telemetry.camera_signature(scene)
 
 
 def _is_resolve_pipeline_busy():
@@ -1123,439 +1003,71 @@ def _is_resolve_pipeline_busy():
 
 
 def _normalize_texture_quality_mode(value):
-    token = str(value or "").strip().upper()
-    if token == "HALF":
-        return "BALANCED"
-    if token in {"FULL", "BALANCED", "PREVIEW"}:
-        return token
-    return "PREVIEW"
+    return _view_telemetry.normalize_texture_quality_mode(value)
 
 
 def _enforce_texture_quality_mode_for_account(scene, requested_mode):
-    del scene
-    mode = _normalize_texture_quality_mode(requested_mode)
-    if mode == "PREVIEW":
-        return mode
-    try:
-        from .auth import get_account_tier
-        prefs = get_prefs()
-        tier = str(get_account_tier(prefs) or "").strip().lower()
-    except PLANETKA_IMPORT_RECOVERABLE_EXCEPTIONS:
-        tier = ""
-
-    if mode == "BALANCED":
-        if tier in {"personal", "commercial"}:
-            return "BALANCED"
-        return "PREVIEW"
-
-    # FULL mode
-    if tier == "commercial":
-        return "FULL"
-    if tier == "personal":
-        return "BALANCED"
-    return "PREVIEW"
+    return _view_telemetry.enforce_texture_quality_mode_for_account(scene, requested_mode, globals())
 
 
 def _output_resolution_signature(scene):
-    render = getattr(scene, "render", None) if scene is not None else None
-    if render is None:
-        return None
-    props = getattr(scene, "planetka", None) if scene is not None else None
-    texture_quality_mode = "PREVIEW"
-    try:
-        texture_quality_mode = _enforce_texture_quality_mode_for_account(
-            scene,
-            getattr(props, "texture_quality_mode", "PREVIEW"),
-        )
-    except (TypeError, ValueError, RuntimeError):
-        texture_quality_mode = "PREVIEW"
-    try:
-        return (
-            int(getattr(render, "resolution_x", 1920)),
-            int(getattr(render, "resolution_y", 1080)),
-            int(getattr(render, "resolution_percentage", 100)),
-            texture_quality_mode,
-        )
-    except (TypeError, ValueError, RuntimeError):
-        return None
+    return _view_telemetry.output_resolution_signature(scene, globals())
 
 
 def _current_view_scope(scene):
-    active_sig = _active_view_signature()
-    if active_sig is not None and str(active_sig[0]) != "CAMERA":
-        return "ACTIVE_VIEW"
-    if getattr(scene, "camera", None) is not None:
-        return "CAMERA"
-    return "NONE"
+    return _view_telemetry.current_view_scope(scene, globals())
 
 
 def _auto_resolve_scope_mode(scene):
-    current_scope = _current_view_scope(scene)
-    if current_scope == "ACTIVE_VIEW":
-        return "ACTIVE_VIEW"
-    if getattr(scene, "camera", None) is not None:
-        return "CAMERA"
-    return "NONE"
+    return _view_telemetry.auto_resolve_scope_mode(scene, globals())
 
 
 def _handle_viewport_motion_optimization(scene, camera_signature):
-    if scene is None or camera_signature is None:
-        return
-    props = getattr(scene, "planetka", None)
-    if props is None:
-        return
-    if not bool(getattr(props, "viewport_opt_suspend_subdivision", True)):
-        return
-
-    scene_id = _scene_key(scene)
-    previous_signature = _VIEWPORT_OPT_LAST_SIGNATURE.get(scene_id)
-    if previous_signature == camera_signature:
-        return
-    _VIEWPORT_OPT_LAST_SIGNATURE[scene_id] = camera_signature
-    _suspend_adaptive_viewport_during_navigation(scene)
+    return _view_telemetry.handle_viewport_motion_optimization(scene, camera_signature, globals())
 
 
 def _timeline_signature(scene):
-    if scene is None:
-        return None
-    try:
-        frame = int(getattr(scene, "frame_current", 0))
-    except (TypeError, ValueError, RuntimeError):
-        frame = 0
-    try:
-        subframe = round(float(getattr(scene, "frame_subframe", 0.0)), 4)
-    except (TypeError, ValueError, RuntimeError):
-        subframe = 0.0
-    return (frame, subframe)
+    return _view_telemetry.timeline_signature(scene)
 
 
 def _keyed_runtime_signature(scene):
-    if scene is None:
-        return None
-    props = getattr(scene, "planetka", None)
-    if props is None:
-        return None
-
-    def _as_float(value, fallback=0.0):
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return float(fallback)
-
-    nav_lon = _as_float(getattr(props, "nav_longitude_deg", 0.0), 0.0)
-    nav_lat = _as_float(getattr(props, "nav_latitude_deg", 0.0), 0.0)
-    nav_alt = max(0.0, _as_float(getattr(props, "nav_altitude_km", 0.0), 0.0))
-    nav_heading = _as_float(getattr(props, "nav_azimuth_deg", 0.0), 0.0)
-    nav_tilt = _as_float(getattr(props, "nav_tilt_deg", 0.0), 0.0)
-    nav_roll = _as_float(getattr(props, "nav_roll_deg", 0.0), 0.0)
-    nav_focal = max(1.0, _as_float(getattr(props, "nav_focal_length_mm", 50.0), 50.0))
-    sun_lon = _as_float(getattr(props, "sunlight_longitude_deg", 0.0), 0.0)
-    sun_tilt = _as_float(getattr(props, "sunlight_seasonal_tilt_deg", 0.0), 0.0)
-    sun_strength = max(0.0, _as_float(getattr(props, "sunlight_strength", 10.0), 10.0))
-
-    return (
-        round(nav_lon, 6),
-        round(nav_lat, 6),
-        round(nav_alt, 6),
-        round(nav_heading, 6),
-        round(nav_tilt, 6),
-        round(nav_roll, 6),
-        round(nav_focal, 6),
-        round(sun_lon, 6),
-        round(sun_tilt, 6),
-        round(sun_strength, 6),
-    )
+    return _view_telemetry.keyed_runtime_signature(scene)
 
 
 def _iter_scene_animation_fcurves(scene):
-    if scene is None:
-        return
-    animation_data = getattr(scene, "animation_data", None)
-    if animation_data is None:
-        return
-    seen = set()
-
-    def _yield_action_fcurves(action):
-        fcurves = getattr(action, "fcurves", None) if action is not None else None
-        if not fcurves:
-            return
-        for fcurve in fcurves:
-            if fcurve is None:
-                continue
-            try:
-                token = int(fcurve.as_pointer())
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-                token = id(fcurve)
-            if token in seen:
-                continue
-            seen.add(token)
-            yield fcurve
-
-    action = getattr(animation_data, "action", None)
-    for fcurve in _yield_action_fcurves(action):
-        yield fcurve
-
-    nla_tracks = getattr(animation_data, "nla_tracks", None)
-    if not nla_tracks:
-        return
-    for track in nla_tracks:
-        strips = getattr(track, "strips", None)
-        if not strips:
-            continue
-        for strip in strips:
-            strip_action = getattr(strip, "action", None)
-            for fcurve in _yield_action_fcurves(strip_action):
-                yield fcurve
+    yield from _view_telemetry.iter_scene_animation_fcurves(scene, globals())
 
 
 def _scene_has_keyed_runtime_path(scene, accepted_paths):
-    allowed = {str(path or "").strip() for path in (accepted_paths or ()) if str(path or "").strip()}
-    if not allowed:
-        return False
-    for fcurve in _iter_scene_animation_fcurves(scene):
-        data_path = str(getattr(fcurve, "data_path", "") or "").strip()
-        if data_path in allowed:
-            return True
-    return False
+    return _view_telemetry.scene_has_keyed_runtime_path(scene, accepted_paths, globals())
 
 
 def _handle_timeline_motion_optimization(scene):
-    if scene is None:
-        return
-    if _is_render_job_active():
-        return
-    props = getattr(scene, "planetka", None)
-    if props is None:
-        return
-    if not bool(getattr(props, "viewport_opt_suspend_subdivision", True)):
-        return
-
-    scene_id = _scene_key(scene)
-    current_signature = _timeline_signature(scene)
-    previous_signature = _TIMELINE_LAST_SIGNATURE.get(scene_id)
-    _TIMELINE_LAST_SIGNATURE[scene_id] = current_signature
-
-    if _is_animation_playing():
-        _suspend_adaptive_viewport_during_navigation(scene)
-        return
-
-    if previous_signature is None:
-        return
-    if current_signature == previous_signature:
-        return
-    _suspend_adaptive_viewport_during_navigation(scene)
+    return _view_telemetry.handle_timeline_motion_optimization(scene, globals())
 
 
 def _sunlight_signature(scene):
-    scene_id = _scene_key(scene) if scene is not None else None
-
-    def _is_valid_sunlight_object(obj):
-        if obj is None or str(getattr(obj, "type", "")) != "LIGHT":
-            return False
-        light_data = getattr(obj, "data", None)
-        return str(getattr(light_data, "type", "")) == "SUN"
-
-    def _scene_object_by_name(name):
-        if scene is None or not name:
-            return None
-        scene_objects = getattr(scene, "objects", None)
-        if scene_objects is None:
-            return None
-        try:
-            return scene_objects.get(name)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            return None
-
-    sunlight = _scene_object_by_name(_SUNLIGHT_OBJECT_NAME)
-    if not _is_valid_sunlight_object(sunlight):
-        sunlight = None
-
-    if sunlight is None and scene_id is not None:
-        cached_name = str(_SUNLIGHT_OBJECT_NAME_CACHE.get(scene_id, "") or "")
-        cached_obj = _scene_object_by_name(cached_name)
-        if _is_valid_sunlight_object(cached_obj):
-            sunlight = cached_obj
-
-    if sunlight is None and scene is not None:
-        fallback = None
-        fallback_name = ""
-        for obj in getattr(scene, "objects", ()):
-            if not _is_valid_sunlight_object(obj):
-                continue
-            name = str(getattr(obj, "name", ""))
-            if name == _SUNLIGHT_OBJECT_NAME:
-                sunlight = obj
-                break
-            if name.startswith(_SUNLIGHT_OBJECT_NAME):
-                if fallback is None or name < fallback_name:
-                    fallback = obj
-                    fallback_name = name
-        if sunlight is None:
-            sunlight = fallback
-
-    if sunlight is None:
-        fallback_obj = bpy.data.objects.get(_SUNLIGHT_OBJECT_NAME)
-        if _is_valid_sunlight_object(fallback_obj):
-            sunlight = fallback_obj
-
-    if scene_id is not None:
-        if sunlight is not None:
-            _SUNLIGHT_OBJECT_NAME_CACHE[scene_id] = str(getattr(sunlight, "name", ""))
-        else:
-            _SUNLIGHT_OBJECT_NAME_CACHE.pop(scene_id, None)
-
-    if sunlight is None:
-        return None
-    matrix_signature = tuple(
-        round(float(value), 6)
-        for row in sunlight.matrix_world
-        for value in row
-    )
-    return (
-        str(getattr(sunlight, "name", _SUNLIGHT_OBJECT_NAME)),
-        matrix_signature,
-    )
+    return _view_telemetry.sunlight_signature(scene, globals())
 
 
 def _handle_sunlight_motion_optimization(scene):
-    if scene is None:
-        return
-    props = getattr(scene, "planetka", None)
-    if props is None:
-        return
-    if not bool(getattr(props, "viewport_opt_suspend_subdivision", True)):
-        return
-
-    scene_id = _scene_key(scene)
-    signature = _sunlight_signature(scene)
-    previous_signature = _SUNLIGHT_LAST_SIGNATURE.get(scene_id)
-    _SUNLIGHT_LAST_SIGNATURE[scene_id] = signature
-    if signature is None or previous_signature is None:
-        return
-    if signature == previous_signature:
-        return
-    _suspend_adaptive_viewport_during_navigation(scene)
+    return _view_telemetry.handle_sunlight_motion_optimization(scene, globals())
 
 
 def _handle_view_scope_quality_transition(scene):
-    if scene is None:
-        return
-    props = getattr(scene, "planetka", None)
-    if props is None:
-        return
-    if get_earth_object() is None:
-        return
-
-    scene_id = _scene_key(scene)
-    current_scope = _current_view_scope(scene)
-    previous_scope = _VIEWPORT_SCOPE_LAST.get(scene_id)
-    _VIEWPORT_SCOPE_LAST[scene_id] = current_scope
-    if previous_scope is None or previous_scope == current_scope:
-        return
-
-    if previous_scope != "ACTIVE_VIEW" or current_scope != "CAMERA":
-        return
-    if not bool(getattr(props, "auto_resolve", False)):
-        return
-    if _AUTO_RESOLVE_IN_FLIGHT:
-        return
-    if _is_render_job_active():
-        return
-    if _is_animation_playing() and bool(getattr(props, "lock_resolve_during_animation", True)):
-        return
-
-    now = time.monotonic()
-    last_transition_resolve = _VIEWPORT_SCOPE_LAST_RESOLVE_TIME.get(scene_id, 0.0)
-    if now - float(last_transition_resolve) < 0.2:
-        return
-
-    # Always re-resolve on Active View -> Camera transition so Camera view
-    # is guaranteed to refresh with camera-scope tiles/settings.
-    request_auto_resolve(scene, immediate=True, mark_dirty=True)
+    return _view_telemetry.handle_view_scope_quality_transition(scene, globals())
 
 
 def _earth_radius_blender_units(earth_obj):
-    if not earth_obj:
-        return 1.0
-    try:
-        stored_local_radius = float(earth_obj.get("planetka_surface_local_radius", 0.0))
-    except (AttributeError, RuntimeError, TypeError, ValueError):
-        stored_local_radius = 0.0
-    if stored_local_radius > 1e-9:
-        scale = earth_obj.matrix_world.to_scale()
-        max_scale = max(abs(scale.x), abs(scale.y), abs(scale.z), 1e-9)
-        return stored_local_radius * float(max_scale)
-    scale = earth_obj.matrix_world.to_scale()
-    return max(abs(scale.x), abs(scale.y), abs(scale.z), 1.0)
+    return _view_telemetry.earth_radius_blender_units(earth_obj)
 
 
 def _intersect_ray_sphere_nearest(origin, direction, radius):
-    a = float(direction.dot(direction))
-    if a <= 1e-12:
-        return None
-    b = 2.0 * float(origin.dot(direction))
-    c = float(origin.dot(origin)) - float(radius) * float(radius)
-    disc = b * b - 4.0 * a * c
-    if disc < 0.0:
-        return None
-    sqrt_disc = math.sqrt(disc)
-    inv = 0.5 / a
-    t0 = (-b - sqrt_disc) * inv
-    t1 = (-b + sqrt_disc) * inv
-    for t in (t0, t1):
-        if t > 1e-6:
-            return origin + direction * t
-    return None
+    return _view_telemetry.intersect_ray_sphere_nearest(origin, direction, radius)
 
 
 def _realtime_view_camera_info(scene):
-    context = bpy.context
-    area = getattr(context, "area", None)
-    space = getattr(context, "space_data", None)
-    rv3d = getattr(context, "region_data", None)
-
-    if (
-        area is not None
-        and area.type == 'VIEW_3D'
-        and space is not None
-        and space.type == 'VIEW_3D'
-        and rv3d is not None
-    ):
-        cam_matrix = rv3d.view_matrix.inverted()
-        return {
-            "position": cam_matrix.translation.copy(),
-            "forward": (-cam_matrix.col[2].xyz).normalized(),
-        }
-
-    wm = getattr(context, "window_manager", None)
-    if wm:
-        for window in wm.windows:
-            screen = getattr(window, "screen", None)
-            if not screen:
-                continue
-            for candidate_area in screen.areas:
-                if candidate_area.type != 'VIEW_3D':
-                    continue
-                candidate_space = getattr(candidate_area.spaces, "active", None)
-                if not candidate_space or candidate_space.type != 'VIEW_3D':
-                    continue
-                candidate_rv3d = getattr(candidate_space, "region_3d", None)
-                if candidate_rv3d is None:
-                    continue
-                cam_matrix = candidate_rv3d.view_matrix.inverted()
-                return {
-                    "position": cam_matrix.translation.copy(),
-                    "forward": (-cam_matrix.col[2].xyz).normalized(),
-                }
-
-    camera = getattr(scene, "camera", None) if scene else None
-    if camera is None:
-        return None
-    matrix = camera.matrix_world
-    return {
-        "position": matrix.translation.copy(),
-        "forward": (-matrix.col[2].xyz).normalized(),
-    }
+    return _view_telemetry.realtime_view_camera_info(scene, globals())
 
 
 def _active_camera_projection_info(scene):
