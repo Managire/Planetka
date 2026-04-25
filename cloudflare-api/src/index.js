@@ -92,6 +92,9 @@ import {
   createAuthCore,
 } from "./worker/auth_core.js";
 import {
+  createAuthApiKeyHandlers,
+} from "./worker/auth_api_key_handlers.js";
+import {
   runScheduledMaintenanceJobs,
 } from "./worker/maintenance_jobs.js";
 import {
@@ -2577,12 +2580,75 @@ const AUTH_CORE_DEPS = {
 };
 
 let authCore = null;
+let authApiKeyHandlers = null;
 
 function getAuthCore() {
   if (!authCore) {
     authCore = createAuthCore(AUTH_CORE_DEPS);
   }
   return authCore;
+}
+
+const AUTH_API_KEY_DEPS = {
+  DEFAULT_API_KEY_REQUEST_MIN_AGE_SECONDS,
+  DEFAULT_LEGAL_VERSION,
+  DEFAULT_RATE_LIMIT_AUTH_START_EMAIL_LIMIT,
+  DEFAULT_RATE_LIMIT_AUTH_START_EMAIL_WINDOW_SECONDS,
+  DEFAULT_RATE_LIMIT_AUTH_START_IP_LIMIT,
+  DEFAULT_RATE_LIMIT_AUTH_START_IP_WINDOW_SECONDS,
+  PLAN_CODE_PLANETKA,
+  PLAN_CODE_PLANETKA_FREE,
+  addDaysIso,
+  addMinutesIso,
+  blockedAccountResponse,
+  buildAccountState,
+  consumeRateLimitWindow,
+  createAccessToken,
+  createRefreshSession,
+  dbGet,
+  dbRun,
+  enforceApiKeyDeviceLimit,
+  enforceApiKeyIssueDeviceLimit,
+  enforceSingleActiveFreeApiKey,
+  enforceUserPlanPolicy,
+  ensureApiKeyTables,
+  ensureRateLimitsTable,
+  findActiveApiKeyRecord,
+  findActiveHardBlock,
+  findUserByEmail,
+  genericAuthStartResponse,
+  isBlockedStatus,
+  isValidApiKey,
+  issueApiKeyForUser,
+  json,
+  maskApiKey,
+  normalizeDeviceId,
+  normalizeEmail,
+  nowIso,
+  parseBooleanFlag,
+  parseJson,
+  parseNonNegativeInteger,
+  parsePositiveNumber,
+  parseRateLimitInteger,
+  publicErrorCode,
+  randomToken,
+  rateLimitedResponse,
+  recordNewsletterOptIn,
+  requestClientIp,
+  requireDb,
+  resolvePlanCode,
+  sendApiKeyActivationEmail,
+  sendApiKeyIssuedEmail,
+  serializeAccountState,
+  sha256Hex,
+  upsertUserByEmail,
+};
+
+function getAuthApiKeyHandlers() {
+  if (!authApiKeyHandlers) {
+    authApiKeyHandlers = createAuthApiKeyHandlers(AUTH_API_KEY_DEPS);
+  }
+  return authApiKeyHandlers;
 }
 
 async function isApiKeyUsableById(db, apiKeyId, expectedUserId = "") {
@@ -2670,393 +2736,19 @@ async function sendNewUserLoginAlert(env, details = {}) {
 }
 
 async function handleApiKeyRequest(request, env) {
-  const db = requireDb(env);
-  await ensureApiKeyTables(db);
-  await ensureRateLimitsTable(db);
-  const body = await parseJson(request);
-  const email = normalizeEmail(body.email);
-  const requestDeviceId = normalizeDeviceId(body.device_id || "");
-  const acceptTerms = parseBooleanFlag(body.accept_terms);
-  const acceptPrivacy = parseBooleanFlag(body.accept_privacy);
-  const optInNews = parseBooleanFlag(body.opt_in_news);
-  // Public API-key request flow always issues base access.
-  const requestedPlan = PLAN_CODE_PLANETKA_FREE;
-  const honeypot = String(body.website || "").trim();
-  const submittedAtMs = parseNonNegativeInteger(body.submitted_at_ms, 0);
-  const minFormAgeMs = Math.max(
-    0,
-    Math.floor(parsePositiveNumber(env.API_KEY_REQUEST_MIN_AGE_SECONDS, DEFAULT_API_KEY_REQUEST_MIN_AGE_SECONDS) * 1000),
-  );
-  if (honeypot) {
-    return genericAuthStartResponse(env);
-  }
-  if (submittedAtMs > 0 && submittedAtMs < minFormAgeMs) {
-    return genericAuthStartResponse(env);
-  }
-  if (!email || !email.includes("@")) {
-    return json({ ok: false, error: "invalid_email" }, 400, env);
-  }
-  if (!acceptTerms || !acceptPrivacy) {
-    return json({ ok: false, error: "terms_consent_required" }, 400, env);
-  }
-
-  const clientIp = requestClientIp(request);
-  const hardBlockedByRequest = await findActiveHardBlock(
-    db,
-    {
-      email,
-      device_id: requestDeviceId,
-      ip: clientIp,
-    },
-  );
-  if (hardBlockedByRequest) {
-    return blockedAccountResponse(env, "This Planetka account is blocked. Contact info@planetka.io.");
-  }
-  const authStartIpRate = await consumeRateLimitWindow(
-    db,
-    "api_key_request_ip",
-    clientIp,
-    parseRateLimitInteger(env.RATE_LIMIT_AUTH_START_IP_LIMIT, DEFAULT_RATE_LIMIT_AUTH_START_IP_LIMIT),
-    parseRateLimitInteger(env.RATE_LIMIT_AUTH_START_IP_WINDOW_SECONDS, DEFAULT_RATE_LIMIT_AUTH_START_IP_WINDOW_SECONDS),
-  );
-  if (!authStartIpRate.allowed) {
-    return rateLimitedResponse(
-      env,
-      "api_key_request_ip_rate_limited",
-      "Too many requests. Please try again shortly.",
-      authStartIpRate.retryAfterSeconds,
-    );
-  }
-  const authStartEmailRate = await consumeRateLimitWindow(
-    db,
-    "api_key_request_email",
-    email,
-    parseRateLimitInteger(env.RATE_LIMIT_AUTH_START_EMAIL_LIMIT, DEFAULT_RATE_LIMIT_AUTH_START_EMAIL_LIMIT),
-    parseRateLimitInteger(env.RATE_LIMIT_AUTH_START_EMAIL_WINDOW_SECONDS, DEFAULT_RATE_LIMIT_AUTH_START_EMAIL_WINDOW_SECONDS),
-  );
-  if (!authStartEmailRate.allowed) {
-    return rateLimitedResponse(
-      env,
-      "api_key_request_email_rate_limited",
-      "Too many requests for this email. Please try again later.",
-      authStartEmailRate.retryAfterSeconds,
-    );
-  }
-
-  let existingUser = await findUserByEmail(db, email);
-  if (existingUser && !isBlockedStatus(existingUser.status)) {
-    existingUser = await enforceUserPlanPolicy(db, existingUser, null, env);
-    try {
-      await enforceApiKeyIssueDeviceLimit(
-        db,
-        String(existingUser.id || "").trim(),
-        String(existingUser.email || "").trim(),
-        resolvePlanCode(existingUser, null, env),
-        requestDeviceId,
-        env,
-      );
-    } catch (error) {
-      const code = String(error && error.message || "device_limit_exceeded");
-      if (code === "device_limit_exceeded") {
-        return json(
-          {
-            ok: false,
-            error: "device_limit_exceeded",
-            message: "This Planetka account can be active on one computer at a time.",
-          },
-          429,
-          env,
-        );
-      }
-      throw error;
-    }
-  }
-
-  const legalVersion = String(env.TERMS_VERSION || env.LEGAL_VERSION || DEFAULT_LEGAL_VERSION).trim() || DEFAULT_LEGAL_VERSION;
-  const privacyVersion = String(env.PRIVACY_VERSION || env.LEGAL_VERSION || DEFAULT_LEGAL_VERSION).trim() || DEFAULT_LEGAL_VERSION;
-  const acceptedAt = nowIso();
-  await upsertUserByEmail(
-    db,
-    email,
-    requestedPlan,
-    {
-      termsAcceptedAt: acceptedAt,
-      privacyAcceptedAt: acceptedAt,
-      termsVersion: legalVersion,
-      privacyVersion,
-      signupSource: "api_key_request",
-    },
-    env,
-  );
-  if (optInNews) {
-    await recordNewsletterOptIn(db, email, "api_key_request");
-  }
-
-  const token = randomToken(36);
-  const tokenHash = await sha256Hex(token);
-  await dbRun(
-    db,
-    `
-      INSERT INTO api_key_requests (
-        id,
-        email,
-        requested_plan,
-        token_hash,
-        expires_at,
-        accept_terms,
-        accept_privacy,
-        opt_in_news,
-        submitted_at_ms,
-        request_ip,
-        request_device_id,
-        created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `,
-    [
-      crypto.randomUUID(),
-      email,
-      requestedPlan,
-      tokenHash,
-      addMinutesIso(30),
-      acceptTerms ? 1 : 0,
-      acceptPrivacy ? 1 : 0,
-      optInNews ? 1 : 0,
-      submittedAtMs,
-      clientIp,
-      requestDeviceId || null,
-      nowIso(),
-    ],
-  );
-  await sendApiKeyActivationEmail(env, email, token);
-  return json(
-    {
-      ok: true,
-      message: "If the email is valid, a Planetka API key activation link has been sent.",
-    },
-    200,
-    env,
-  );
+  return getAuthApiKeyHandlers().handleApiKeyRequest(request, env);
 }
 
 async function activateApiKeyFromToken(db, env, rawToken) {
-  await ensureApiKeyTables(db);
-  const token = String(rawToken || "").trim();
-  if (!token) {
-    throw new Error("missing_token");
-  }
-  const tokenHash = await sha256Hex(token);
-  const now = nowIso();
-  const requestRow = await dbGet(
-    db,
-    `
-      UPDATE api_key_requests
-      SET used_at = ?
-      WHERE token_hash = ?
-        AND used_at IS NULL
-        AND expires_at >= ?
-      RETURNING
-        id,
-        email,
-        requested_plan,
-        request_ip,
-        request_device_id,
-        opt_in_news
-    `,
-    [
-      now,
-      tokenHash,
-      now,
-    ],
-  );
-  if (!requestRow) {
-    throw new Error("invalid_or_expired_token");
-  }
-
-  const email = normalizeEmail(requestRow.email);
-  let user = await upsertUserByEmail(
-    db,
-    email,
-    PLAN_CODE_PLANETKA_FREE,
-    {},
-    env,
-  );
-  user = await enforceUserPlanPolicy(db, user, null, env);
-  const effectivePlanCode = resolvePlanCode(user, null, env);
-
-  const issued = await issueApiKeyForUser(
-    db,
-    env,
-    user,
-    effectivePlanCode,
-    {},
-  );
-
-  await sendApiKeyIssuedEmail(env, email, issued.apiKey, issued.planCode, issued.expiresAt);
-  return {
-    email,
-    apiKey: issued.apiKey,
-    planCode: issued.planCode,
-    expiresAt: issued.expiresAt,
-  };
+  return getAuthApiKeyHandlers().activateApiKeyFromToken(db, env, rawToken);
 }
 
 async function handleApiKeyActivate(request, env) {
-  const db = requireDb(env);
-  const body = await parseJson(request);
-  try {
-    const activated = await activateApiKeyFromToken(db, env, body.token);
-    return json(
-      {
-        ok: true,
-        email: activated.email,
-        api_key: activated.apiKey,
-        plan_code: activated.planCode,
-        expires_at: activated.expiresAt,
-      },
-      200,
-      env,
-    );
-  } catch (error) {
-    const publicCode = publicErrorCode(
-      error,
-      "activation_failed",
-      new Set(["missing_token", "invalid_or_expired_token"]),
-    );
-    return json(
-      { ok: false, error: publicCode },
-      publicCode === "activation_failed" ? 500 : 400,
-      env,
-    );
-  }
+  return getAuthApiKeyHandlers().handleApiKeyActivate(request, env);
 }
 
 async function handleApiKeyExchange(request, env) {
-  const db = requireDb(env);
-  const body = await parseJson(request);
-  const apiKey = String(body.api_key || "").trim();
-  const deviceId = normalizeDeviceId(body.device_id || "");
-  const clientIp = requestClientIp(request);
-  if (!isValidApiKey(apiKey)) {
-    return json({ ok: false, error: "invalid_api_key" }, 400, env);
-  }
-  if (!deviceId) {
-    return json({ ok: false, error: "missing_device_id" }, 400, env);
-  }
-
-  let record = await findActiveApiKeyRecord(db, apiKey);
-  if (!record) {
-    return json({ ok: false, error: "invalid_api_key" }, 401, env);
-  }
-  if (String(record.api_key_status || "").trim().toLowerCase() !== "active") {
-    return json({ ok: false, error: "api_key_revoked" }, 401, env);
-  }
-  if (isBlockedStatus(record.status)) {
-    return blockedAccountResponse(env);
-  }
-  const hardBlockedByExchange = await findActiveHardBlock(
-    db,
-    {
-      email: String(record && record.email || ""),
-      device_id: deviceId,
-      ip: clientIp,
-    },
-  );
-  if (hardBlockedByExchange) {
-    return blockedAccountResponse(env, "This Planetka account is blocked. Contact info@planetka.io.");
-  }
-
-  let user = {
-    id: record.id,
-    email: record.email,
-    status: record.status || PLAN_CODE_PLANETKA,
-  };
-  user = await enforceUserPlanPolicy(db, user, null, env);
-  const effectivePlanCode = resolvePlanCode(user, null, env);
-  if (effectivePlanCode === PLAN_CODE_PLANETKA_FREE) {
-    const freePolicy = await enforceSingleActiveFreeApiKey(
-      db,
-      String(user.id || ""),
-      String(record.api_key_id || ""),
-    );
-    if (!freePolicy.allowed) {
-      return json(
-        {
-          ok: false,
-          error: "api_key_revoked",
-          message: "This API key has been replaced. Request a new API key.",
-        },
-        401,
-        env,
-      );
-    }
-  }
-  try {
-    await enforceApiKeyDeviceLimit(
-      db,
-      String(record.api_key_id || ""),
-      String(user.id || ""),
-      String(user.email || ""),
-      effectivePlanCode,
-      deviceId,
-      request,
-      env,
-    );
-  } catch (error) {
-    const code = String(error && error.message || "device_limit_exceeded");
-    if (code === "missing_device_id") {
-      return json({ ok: false, error: "missing_device_id" }, 400, env);
-    }
-    return json(
-      {
-        ok: false,
-        error: "device_limit_exceeded",
-        message: "This Planetka account can be active on one computer at a time.",
-      },
-      429,
-      env,
-    );
-  }
-
-  const now = nowIso();
-  await dbRun(db, `UPDATE users SET last_login_at = ? WHERE id = ?`, [now, user.id]);
-  await dbRun(db, `UPDATE api_keys SET last_used_at = ? WHERE id = ?`, [now, record.api_key_id]);
-
-  const refreshExpiresAt = addDaysIso(7);
-
-  const accessToken = await createAccessToken(
-    env,
-    user,
-    null,
-    {
-      api_key_id: String(record.api_key_id || ""),
-      device_id: deviceId,
-      auth_method: "api_key",
-    },
-  );
-  const refreshToken = await createRefreshSession(
-    db,
-    user.id,
-    refreshExpiresAt,
-    {
-      auth_method: "api_key",
-      api_key_id: String(record.api_key_id || ""),
-      device_id: deviceId,
-    },
-  );
-  const accountState = await buildAccountState(db, user, null, env);
-
-  return json(
-    {
-      ok: true,
-      email: user.email,
-      access_token: accessToken,
-      refresh_token: refreshToken,
-      api_key_mask: maskApiKey(apiKey),
-      ...serializeAccountState(accountState),
-    },
-    200,
-    env,
-  );
+  return getAuthApiKeyHandlers().handleApiKeyExchange(request, env);
 }
 
 async function handleAuthRefresh(request, env) {

@@ -137,6 +137,8 @@ def main() -> int:
     worker_tile_routes_src = ""
     worker_admin_analytics_src = ""
     worker_maintenance_src = ""
+    worker_auth_api_key_src = ""
+    worker_auth_api_key_path = root / "cloudflare-api" / "src" / "worker" / "auth_api_key_handlers.js"
     if not worker_path.exists():
         errors.append("Missing cloudflare-api/src/index.js")
     else:
@@ -147,18 +149,37 @@ def main() -> int:
         worker_admin_analytics_src = read_text(worker_admin_analytics_path)
     if worker_maintenance_path.exists():
         worker_maintenance_src = read_text(worker_maintenance_path)
+    if worker_auth_api_key_path.exists():
+        worker_auth_api_key_src = read_text(worker_auth_api_key_path)
     combined_worker_src = "\n".join(
-        part for part in [worker_src, worker_tile_routes_src, worker_admin_analytics_src, worker_maintenance_src] if part
+        part
+        for part in [
+            worker_src,
+            worker_tile_routes_src,
+            worker_admin_analytics_src,
+            worker_maintenance_src,
+            worker_auth_api_key_src,
+        ]
+        if part
     )
 
     # 6) Worker access model must match the 0.7.0 plan-based product
-    if worker_src:
+    if combined_worker_src:
         required_worker_markers = [
-            ("public API key request forces Free plan", "const requestedPlan = PLAN_CODE_PLANETKA_FREE;"),
+            (
+                "public API key request forces Free plan",
+                [
+                    "const requestedPlan = PLAN_CODE_PLANETKA_FREE;",
+                    "const requestedPlan = deps.PLAN_CODE_PLANETKA_FREE;",
+                ],
+            ),
         ]
-        for label, marker in required_worker_markers:
-            if marker not in worker_src:
-                errors.append(f"Worker safeguard missing: {label} ('{marker}')")
+        for label, markers in required_worker_markers:
+            if not any(marker in combined_worker_src for marker in markers):
+                errors.append(
+                    "Worker safeguard missing: "
+                    f"{label} ({' or '.join(repr(marker) for marker in markers)})"
+                )
     tile_quality_marker_present = (
         "X-Planetka-Quality-Mode" in worker_src
         or "X-Planetka-Quality-Mode" in worker_tile_routes_src
