@@ -64,6 +64,13 @@ import {
   sanitizeLiveTileMapMinutes as sanitizeLiveTileMapMinutesQuery,
 } from "./worker/admin_analytics_queries.js";
 import {
+  buildAnalyticsSnapshotMatrix,
+  buildAnalyticsUsersSnapshot,
+  loadAnalyticsSnapshot,
+  loadAnalyticsUsersSnapshot,
+  storeAnalyticsSnapshot,
+} from "./worker/admin_analytics_snapshots.js";
+import {
   handleAdminLoginPage as handleAdminLoginPageRoute,
   handleAdminPasswordLogin as handleAdminPasswordLoginRoute,
   handleAdminSessionLogout as handleAdminSessionLogoutRoute,
@@ -258,6 +265,7 @@ const AUTH_SESSION_DEPS = {
 
 const ADMIN_ANALYTICS_DEPS = {
   buildAdminSessionCookie,
+  buildAnalyticsUsersSnapshot: (db, env) => buildAnalyticsUsersSnapshot(db, env, ADMIN_ANALYTICS_DEPS),
   collectAnalyticsSnapshot: (db, minutes, planFilter, liveTileMapWindowMinutes, env) =>
     collectAnalyticsSnapshotQuery(db, minutes, planFilter, liveTileMapWindowMinutes, env, ANALYTICS_QUERY_DEPS),
   corsHeaders,
@@ -268,6 +276,8 @@ const ADMIN_ANALYTICS_DEPS = {
   html,
   json,
   listAnalyticsUsers: (db, env, options = {}) => listAnalyticsUsersQuery(db, env, options, ANALYTICS_QUERY_DEPS),
+  loadAnalyticsSnapshot,
+  loadAnalyticsUsersSnapshot,
   normalizePlanCode,
   nowIso,
   parseAnalyticsUsersSort: (value) => parseAnalyticsUsersSortQuery(value),
@@ -282,6 +292,7 @@ const ADMIN_ANALYTICS_DEPS = {
     sanitizeAnalyticsMinutesQuery(value, fallback, ANALYTICS_QUERY_DEPS),
   sanitizeLiveTileMapMinutes: (value, fallback = DEFAULT_LIVE_TILE_MAP_WINDOW_MINUTES) =>
     sanitizeLiveTileMapMinutesQuery(value, fallback, ANALYTICS_QUERY_DEPS),
+  storeAnalyticsSnapshot,
   BYTES_PER_GB,
 };
 
@@ -3045,6 +3056,16 @@ export default {
           runStartedAt,
           MAINTENANCE_JOB_DEPS,
         );
+        const analyticsSnapshotSummary = await buildAnalyticsSnapshotMatrix(
+          db,
+          env,
+          ADMIN_ANALYTICS_DEPS,
+        );
+        const analyticsUsersSnapshot = await buildAnalyticsUsersSnapshot(
+          db,
+          env,
+          ADMIN_ANALYTICS_DEPS,
+        );
         console.log(
           "worker.db_cleanup.completed",
           JSON.stringify({
@@ -3052,6 +3073,8 @@ export default {
             ...maintenance.summary,
             production_alert_summary: maintenance.alertSummary,
             monthly_cost_summary: maintenance.monthlyCostSummary,
+            analytics_snapshot_summary: analyticsSnapshotSummary,
+            analytics_users_snapshot_rows: Number(analyticsUsersSnapshot && analyticsUsersSnapshot.total_rows || 0),
           }),
         );
       } catch (error) {

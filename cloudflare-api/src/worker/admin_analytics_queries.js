@@ -575,7 +575,7 @@ export async function collectAnalyticsSnapshot(
   const userEmailFilter = buildAnalyticsExcludedEmailFilter("email", env, deps);
   const rollupEmailFilter = buildAnalyticsExcludedEmailFilter("user_email", env, deps);
   const rollupEmailFilterAliasR = buildAnalyticsExcludedEmailFilter("r.user_email", env, deps);
-  const heavyEmailFilter = buildAnalyticsExcludedEmailFilter("c.user_email", env, deps);
+  const heavyEmailFilter = buildAnalyticsExcludedEmailFilter("agg.user_email", env, deps);
   const authRefreshEmailFilter = buildAnalyticsExcludedEmailFilter("user_email", env, deps);
 
   const summary = await deps.dbGet(
@@ -1046,6 +1046,7 @@ export async function collectAnalyticsSnapshot(
     deps.startOfWeekUnix(nowUnix),
     deps.startOfDayUnix(nowUnix),
     deps.monthStartUnix(nowUnix),
+    deps.PLAN_CODE_PLANETKA_FREE,
     deps.startOfHourUnix(nowUnix),
   ];
   if (safePlanFilter === "lite") {
@@ -1056,7 +1057,7 @@ export async function collectAnalyticsSnapshot(
     heavyBindings.push(deps.PLAN_CODE_PLANETKA_PRO, deps.PLAN_CODE_PLANETKA_STUDIO);
   }
   if (heavyEmailFilter.condition) {
-    heavyWhereParts.push(String(heavyEmailFilter.condition).replace(/user_email/g, "agg.user_email"));
+    heavyWhereParts.push(String(heavyEmailFilter.condition));
     heavyBindings.push(...heavyEmailFilter.bindings);
   }
   const heavyWhereSql = heavyWhereParts.length ? `WHERE ${heavyWhereParts.join(" AND ")}` : "";

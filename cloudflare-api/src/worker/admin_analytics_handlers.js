@@ -49,6 +49,39 @@ function parseLiveMapTile(tileKey) {
   return { x, y, z, d };
 }
 
+function filterAnalyticsUsersRows(rows, query) {
+  const safeRows = Array.isArray(rows) ? rows : [];
+  const needle = String(query || "").trim().toLowerCase();
+  if (!needle) {
+    return safeRows.slice();
+  }
+  return safeRows.filter((row) => String(row && row.user_email || "").trim().toLowerCase().includes(needle));
+}
+
+function analyticsUsersSortValue(row, sortBy) {
+  if (sortBy === "resolves") return Number(row && row.resolve_count || 0);
+  if (sortBy === "lifetime") return Number(row && row.lifetime_bytes || 0);
+  if (sortBy === "month") return Number(row && row.month_bytes || 0);
+  if (sortBy === "week") return Number(row && row.week_bytes || 0);
+  if (sortBy === "day") return Number(row && row.day_bytes || 0);
+  if (sortBy === "hour") return Number(row && row.hour_bytes || 0);
+  if (sortBy === "last_seen") return Date.parse(String(row && row.last_seen_at || "")) || 0;
+  return Number(row && row.month_bytes || 0);
+}
+
+function sortAnalyticsUsersRows(rows, sortBy, sortDir) {
+  const safeRows = Array.isArray(rows) ? rows.slice() : [];
+  const direction = String(sortDir || "desc").trim().toLowerCase() === "asc" ? 1 : -1;
+  safeRows.sort((left, right) => {
+    const primary = analyticsUsersSortValue(left, sortBy) - analyticsUsersSortValue(right, sortBy);
+    if (primary !== 0) {
+      return primary * direction;
+    }
+    return String(left && left.user_email || "").localeCompare(String(right && right.user_email || "")) * direction;
+  });
+  return safeRows;
+}
+
 export async function handleAdminAnalyticsData(request, env, deps) {
   const url = new URL(request.url);
   if (String(url.searchParams.get("access_token") || url.searchParams.get("token") || "").trim()) {
@@ -66,7 +99,18 @@ export async function handleAdminAnalyticsData(request, env, deps) {
   );
   const planFilter = deps.parseHeavyUserPlanFilter(url.searchParams.get("plan_filter"));
   try {
-    const snapshot = await deps.collectAnalyticsSnapshot(db, windowMinutes, planFilter, tileMapMinutes, env);
+    let snapshot = await deps.loadAnalyticsSnapshot(env, windowMinutes, planFilter, tileMapMinutes);
+    if (!snapshot) {
+      snapshot = await deps.collectAnalyticsSnapshot(db, windowMinutes, planFilter, tileMapMinutes, env);
+      snapshot = {
+        ...snapshot,
+        snapshot_minutes: windowMinutes,
+        snapshot_plan_filter: planFilter,
+        snapshot_tile_map_minutes: tileMapMinutes,
+        snapshot_source: "live_rebuild",
+      };
+      await deps.storeAnalyticsSnapshot(env, windowMinutes, planFilter, tileMapMinutes, snapshot);
+    }
     return deps.json(
       {
         ok: true,
@@ -135,13 +179,24 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
   const { user, tokenSource } = auth;
   let initialSnapshot = null;
   try {
-    initialSnapshot = await deps.collectAnalyticsSnapshot(
-      auth.db,
-      10080,
-      "all",
-      10,
-      env,
-    );
+    initialSnapshot = await deps.loadAnalyticsSnapshot(env, 10080, "all", 10);
+    if (!initialSnapshot) {
+      initialSnapshot = await deps.collectAnalyticsSnapshot(
+        auth.db,
+        10080,
+        "all",
+        10,
+        env,
+      );
+      initialSnapshot = {
+        ...initialSnapshot,
+        snapshot_minutes: 10080,
+        snapshot_plan_filter: "all",
+        snapshot_tile_map_minutes: 10,
+        snapshot_source: "live_rebuild",
+      };
+      await deps.storeAnalyticsSnapshot(env, 10080, "all", 10, initialSnapshot);
+    }
   } catch (error) {
     console.error(
       "planetka.admin.analytics.page_snapshot_failed",
@@ -293,12 +348,15 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
   const query = String(url.searchParams.get("q") || "").trim();
   const sortBy = deps.parseAnalyticsUsersSort(url.searchParams.get("sort"));
   const sortDir = deps.parseAnalyticsUsersSortDirection(url.searchParams.get("dir"));
-  const rows = await deps.listAnalyticsUsers(db, env, {
-    query,
-    sort_by: sortBy,
-    sort_dir: sortDir,
-    limit: 5000,
-  });
+  let usersSnapshot = await deps.loadAnalyticsUsersSnapshot(env);
+  if (!usersSnapshot) {
+    usersSnapshot = await deps.buildAnalyticsUsersSnapshot(db, env);
+  }
+  const rows = sortAnalyticsUsersRows(
+    filterAnalyticsUsersRows(usersSnapshot && usersSnapshot.rows, query),
+    sortBy,
+    sortDir,
+  );
   const fmtInt = (value) => fmtIntLocal(value, deps.parseNonNegativeInteger);
   const fmtGb = (value) => fmtGbLocal(value, deps.parseNonNegativeInteger, deps.BYTES_PER_GB);
   const buildSortHref = (key) => {
