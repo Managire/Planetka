@@ -109,22 +109,17 @@ Behavior:
 - Optional per-minute cap can be enabled by setting `DOWNLOAD_THROTTLED_REQUESTS_PER_MINUTE` above `0`.
 - Throttled users receive an email notification; ops receives a security alert.
 
-## Full Quality Credits (Stripe Top-ups)
+## Access Model
 
-- `TRIAL_INCLUDED_GB` (default: `25`)
-- `STRIPE_CREDIT_PRICE_GB_MAP` (e.g. `price_abc:10,price_def:100`)
-- `STRIPE_CREDIT_PRODUCT_GB_MAP` (optional fallback)
-- `STRIPE_DEFAULT_TOPUP_GB` (optional fallback)
-- `TOPUP_URL` / `PURCHASE_TOPUP_URL`
+0.7.0 uses plan-based access only.
 
-Behavior:
+Worker-side access control is plan-based only:
 
-- New accounts receive starter Full Quality credits from `TRIAL_INCLUDED_GB`.
-- Preview mode is free.
-- Full Quality consumes credits for newly downloaded bytes only.
-- Credits are granted automatically from Stripe `checkout.session.completed` webhook events.
-- Credits do not expire by default (unless an explicit expiry is set on a grant).
-- API-key request flow cannot self-elevate plan/access through client parameters.
+- `free`: Preview
+- `personal`: Preview + Balanced
+- `commercial`: Preview + Balanced + Full + Final Animation Render
+
+The tile hot path does not meter or decrement any per-request usage counters.
 
 ## Monthly Cost Estimate Alerts (Ops)
 

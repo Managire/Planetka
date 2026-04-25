@@ -1426,7 +1426,7 @@ def _r2_request(method, key, destination_path=None):
                     raise RuntimeError(
                         "Planetka account is temporarily throttled due to high data volume."
                     )
-                if any(token in combined for token in ("allowance", "quota", "insufficient", "exhausted", "topup", "top_up", "top-up")):
+                if any(token in combined for token in ("quality_mode_not_allowed", "not_allowed_for_tier", "access_denied")):
                     try:
                         sync_account_profile()
                     except (AuthApiError, RuntimeError, TypeError, ValueError, AttributeError, OSError):
@@ -1441,7 +1441,7 @@ def _r2_request(method, key, destination_path=None):
                 combined = f"{error_code} {error_message}".lower()
                 if "account_blocked" in combined or "account is blocked" in combined:
                     raise RuntimeError("Planetka account is blocked. Contact info@planetka.io.")
-                if any(token in combined for token in ("allowance", "quota", "insufficient", "exhausted", "topup", "top_up", "top-up")):
+                if any(token in combined for token in ("quality_mode_not_allowed", "not_allowed_for_tier", "access_denied")):
                     try:
                         sync_account_profile()
                     except (AuthApiError, RuntimeError, TypeError, ValueError, AttributeError, OSError):

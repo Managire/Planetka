@@ -9,15 +9,7 @@ const PLAN_CODE_PLANETKA_PRO = "pro";
 const PLAN_CODE_PLANETKA_INDIE = PLAN_CODE_PLANETKA;
 const PLAN_CODE_PLANETKA_STUDIO = PLAN_CODE_PLANETKA_PRO;
 const DEFAULT_BETA_FORCE_PRO_TIER = false;
-const DEFAULT_ALLOWANCE_COUNTING_RULE =
-  "No data metering is enforced. Personal and Commercial tiers are unlimited.";
-const TIER_QUOTA_LONDON_TIMEZONE = "Europe/London";
-const TIER_QUOTA_MIN_ADDON_VERSION = "0.7.0";
-const DEFAULT_TRIAL_INCLUDED_GB = 25;
 const DEFAULT_HOSTED_ACCESS_DURATION_DAYS = 365;
-const DEFAULT_LOW_WARNING_GB = 10;
-const DEFAULT_LOW_WARNING_RATIO = 0.1;
-const UNLIMITED_ALLOWANCE_BYTES = Number.MAX_SAFE_INTEGER;
 const DEFAULT_UPGRADE_URL = "https://www.planetka.io/blender/pricing";
 const DEFAULT_CONTACT_URL = "https://www.planetka.io/contact-me";
 const DEFAULT_ADMIN_ANALYTICS_TILE_MAP_KEY = "planetka-assets/Admin/world_map_720x360.jpg";
@@ -40,7 +32,6 @@ const DEFAULT_RATE_LIMIT_DEVICE_POLL_CODE_WINDOW_SECONDS = 60;
 const DEFAULT_RATE_LIMIT_ADMIN_LOGIN_IP_LIMIT = 20;
 const DEFAULT_RATE_LIMIT_ADMIN_LOGIN_IP_WINDOW_SECONDS = 300;
 const DEFAULT_REFRESH_SESSION_CLEANUP_RETENTION_DAYS = 30;
-const DEFAULT_DAILY_RESOLVE_QUOTA_RETENTION_DAYS = 45;
 const DEFAULT_ALERT_AUTH_429_THRESHOLD = 10;
 const DEFAULT_ALERT_AUTH_429_WINDOW_SECONDS = 60;
 const DEFAULT_ALERT_DEVICE_POLL_429_THRESHOLD = 30;
@@ -146,10 +137,6 @@ let cloudflareR2BillableUsageCache = {
   expiresAtMs: 0,
   cacheKey: "",
   value: null,
-};
-let londonQuotaResetCache = {
-  monthKey: "",
-  resetIso: "",
 };
 let authContextCache = new Map();
 let tileSessionThrottleGateCache = new Map();
@@ -597,99 +584,6 @@ function normalizeRequestedPlan(value) {
     return PLAN_CODE_PLANETKA_FREE;
   }
   return PLAN_CODE_PLANETKA_FREE;
-}
-
-function parseSemverTuple(value) {
-  const text = String(value || "").trim();
-  const match = text.match(/^(\d+)\.(\d+)\.(\d+)/);
-  if (!match) {
-    return null;
-  }
-  return [
-    parseNonNegativeInteger(match[1], 0),
-    parseNonNegativeInteger(match[2], 0),
-    parseNonNegativeInteger(match[3], 0),
-  ];
-}
-
-function compareSemverTuples(left, right) {
-  for (let index = 0; index < 3; index += 1) {
-    const leftValue = parseNonNegativeInteger(left && left[index], 0);
-    const rightValue = parseNonNegativeInteger(right && right[index], 0);
-    if (leftValue > rightValue) return 1;
-    if (leftValue < rightValue) return -1;
-  }
-  return 0;
-}
-
-function isAddonVersionAtLeast(value, minimumVersion) {
-  const versionTuple = parseSemverTuple(value);
-  const minimumTuple = parseSemverTuple(minimumVersion);
-  if (!versionTuple || !minimumTuple) {
-    return false;
-  }
-  return compareSemverTuples(versionTuple, minimumTuple) >= 0;
-}
-
-function isDailyResolveQuotaEnforcedForRequest(request, env = {}) {
-  const forceAllVersions = parseBooleanFlag(env.ENFORCE_DAILY_RESOLVE_QUOTA_ALL_VERSIONS || "0");
-  if (forceAllVersions) {
-    return true;
-  }
-  const rawVersion = String(request.headers.get("X-Planetka-Addon-Version") || "").trim();
-  if (!rawVersion) {
-    return false;
-  }
-  return isAddonVersionAtLeast(rawVersion, TIER_QUOTA_MIN_ADDON_VERSION);
-}
-
-const londonMonthFormatter = new Intl.DateTimeFormat("en-GB", {
-  timeZone: TIER_QUOTA_LONDON_TIMEZONE,
-  year: "numeric",
-  month: "2-digit",
-});
-
-function londonMonthKey(epochMs = Date.now()) {
-  const parts = londonMonthFormatter.formatToParts(new Date(epochMs));
-  let month = "";
-  let year = "";
-  for (const part of parts) {
-    if (part.type === "month") month = String(part.value || "").padStart(2, "0");
-    if (part.type === "year") year = String(part.value || "");
-  }
-  if (year && month) {
-    return `${year}-${month}`;
-  }
-  return String(new Date(epochMs).toISOString().slice(0, 7));
-}
-
-function londonNextMonthBoundaryIso(epochMs = Date.now()) {
-  const currentKey = londonMonthKey(epochMs);
-  if (londonQuotaResetCache.monthKey === currentKey && londonQuotaResetCache.resetIso) {
-    return londonQuotaResetCache.resetIso;
-  }
-  let probe = epochMs + (7 * 24 * 60 * 60 * 1000);
-  while (londonMonthKey(probe) === currentKey) {
-    probe += (7 * 24 * 60 * 60 * 1000);
-    if ((probe - epochMs) > (400 * 24 * 60 * 60 * 1000)) {
-      const fallback = addDaysIso(1);
-      londonQuotaResetCache = { monthKey: currentKey, resetIso: fallback };
-      return fallback;
-    }
-  }
-  let low = epochMs;
-  let high = probe;
-  for (let iteration = 0; iteration < 32; iteration += 1) {
-    const mid = Math.floor((low + high) / 2);
-    if (londonMonthKey(mid) === currentKey) {
-      low = mid + 1;
-    } else {
-      high = mid;
-    }
-  }
-  const resetIso = new Date(high).toISOString();
-  londonQuotaResetCache = { monthKey: currentKey, resetIso };
-  return resetIso;
 }
 
 function normalizeQualityMode(value) {
@@ -1677,24 +1571,6 @@ async function ensureUserDownloadCountersTable(db) {
     db,
     `CREATE INDEX IF NOT EXISTS idx_user_download_counters_updated ON user_download_counters(updated_at DESC)`,
   );
-}
-
-async function buildDailyResolveQuotaState(db, userId, planCode, env = {}, nowEpochMs = Date.now()) {
-  void db;
-  void userId;
-  void planCode;
-  void env;
-  return {
-    used: 0,
-    limit: null,
-    remaining: null,
-    resetAt: londonNextMonthBoundaryIso(nowEpochMs),
-    period: "month_london",
-    unlimited: true,
-    rule: "No monthly resolve cap for this tier.",
-    scope: "",
-    label: "Unlimited",
-  };
 }
 
 async function ensureMonthlyCostAlertStateTable(db) {
@@ -3944,17 +3820,9 @@ async function cleanupAuthTables(db, env, nowTimestamp) {
       60,
       parseNonNegativeInteger(env.CLEANUP_TILE_ROLLUP_RETENTION_DAYS, DEFAULT_TILE_ROLLUP_RETENTION_DAYS),
     ),
-    daily_resolve_quota_retention_days: Math.max(
-      7,
-      parseNonNegativeInteger(
-        env.CLEANUP_DAILY_RESOLVE_QUOTA_RETENTION_DAYS,
-        DEFAULT_DAILY_RESOLVE_QUOTA_RETENTION_DAYS,
-      ),
-    ),
     tile_request_events_deleted: 0,
     tile_rollup_hourly_deleted: 0,
     tile_rollup_daily_deleted: 0,
-    daily_resolve_quota_deleted: 0,
     monthly_cost_alert_state_deleted: 0,
     auth_refresh_events_deleted: 0,
   };
@@ -3972,10 +3840,6 @@ async function cleanupAuthTables(db, env, nowTimestamp) {
     nowUnix - (summary.auth_refresh_event_retention_days * 86400),
   );
   const tileRollupCutoffUnix = Math.max(0, nowUnix - (summary.tile_rollup_retention_days * 86400));
-  const dailyResolveQuotaCutoffIso = addDaysFromIso(
-    nowTimestamp,
-    -summary.daily_resolve_quota_retention_days,
-  );
 
   if (await dbTableExists(db, "magic_links")) {
     const magicLinksResult = await dbRun(
@@ -4131,18 +3995,6 @@ async function cleanupAuthTables(db, env, nowTimestamp) {
       [tileRollupCutoffUnix],
     );
     summary.tile_rollup_daily_deleted = dbMetaChanges(dailyRollupResult);
-  }
-
-  if (await dbTableExists(db, "user_daily_resolve_quota")) {
-    const dailyResolveQuotaResult = await dbRun(
-      db,
-      `
-        DELETE FROM user_daily_resolve_quota
-        WHERE created_at < ?
-      `,
-      [dailyResolveQuotaCutoffIso],
-    );
-    summary.daily_resolve_quota_deleted = dbMetaChanges(dailyResolveQuotaResult);
   }
 
   if (await dbTableExists(db, "monthly_cost_alert_state")) {
@@ -4850,27 +4702,6 @@ async function runMonthlyCostEstimateAlerts(db, env, nowTimestamp) {
   };
 }
 
-function buildPlanConfig(env) {
-  const trialIncludedBytes = toBytesFromGb(parsePositiveNumber(env.TRIAL_INCLUDED_GB, DEFAULT_TRIAL_INCLUDED_GB));
-  const lowWarningBytes = toBytesFromGb(parsePositiveNumber(env.ALLOWANCE_LOW_WARNING_GB, DEFAULT_LOW_WARNING_GB));
-  const lowWarningRatio = parsePositiveNumber(env.ALLOWANCE_LOW_WARNING_RATIO, DEFAULT_LOW_WARNING_RATIO);
-  const countingRule = String(env.ALLOWANCE_COUNTING_RULE || DEFAULT_ALLOWANCE_COUNTING_RULE).trim();
-  const upgradeUrl = String(env.UPGRADE_URL || DEFAULT_UPGRADE_URL).trim();
-  const topupUrl = String(env.TOPUP_URL || env.PURCHASE_TOPUP_URL || upgradeUrl).trim();
-  const manageSubscriptionUrl = String(env.MANAGE_SUBSCRIPTION_URL || "").trim();
-  const contactUrl = normalizeContactUrl(env.PLANETKA_CONTACT_URL || env.ALLOWANCE_SUPPORT_URL || DEFAULT_CONTACT_URL);
-  return {
-    trialIncludedBytes,
-    lowWarningBytes,
-    lowWarningRatio,
-    countingRule,
-    upgradeUrl,
-    topupUrl,
-    manageSubscriptionUrl,
-    contactUrl,
-  };
-}
-
 function resolvePlanCode(user, subscription, env = {}) {
   void subscription;
   const entitlement = resolveEntitlementState(user, env);
@@ -4914,8 +4745,7 @@ function planAccessSummary(planCode) {
   return "Free includes Preview texture quality only.";
 }
 
-async function buildAllowanceState(db, user, subscription, env, options = {}) {
-  const cfg = buildPlanConfig(env);
+async function buildAccountState(db, user, subscription, env) {
   const planCode = resolvePlanCode(user, subscription, env);
   const userId = String(user && user.id || "").trim();
   const counter = userId ? await findUserDownloadCounter(db, userId) : null;
@@ -4927,93 +4757,32 @@ async function buildAllowanceState(db, user, subscription, env, options = {}) {
   const throttleReason = throttledUntil
     ? String(counter && counter.throttle_reason || "").trim()
     : "";
-  const downloadedPeriodBytes = clampNonNegativeInt(counter && counter.lifetime_bytes);
-  const includedLimitBytes = UNLIMITED_ALLOWANCE_BYTES;
-  const includedRemainingBytes = UNLIMITED_ALLOWANCE_BYTES;
-  const manualRemainingBytes = 0;
-  const totalRemainingBytes = UNLIMITED_ALLOWANCE_BYTES;
-  const warningState = "ok";
-  const exhausted = false;
-  const period = "lifetime";
-  const periodEnd = "";
-  const countingRule = cfg.countingRule || DEFAULT_ALLOWANCE_COUNTING_RULE;
-  const includeTileQuota = !(options && options.includeTileQuota === false);
-  const tileQuota = includeTileQuota
-    ? await buildDailyResolveQuotaState(db, userId, planCode, env)
-    : {
-      used: 0,
-      limit: null,
-      remaining: null,
-      resetAt: "",
-      period: "month_london",
-      unlimited: true,
-      rule: "",
-      scope: "",
-      label: "",
-    };
 
   return {
     planCode,
     commercialUseAllowed: commercialUseAllowed(planCode),
-    upgradeUrl: cfg.upgradeUrl,
-    topupUrl: cfg.topupUrl || cfg.upgradeUrl,
-    manageSubscriptionUrl: cfg.manageSubscriptionUrl,
-    contactUrl: cfg.contactUrl,
-    dataAllowance: {
-      included_limit_bytes: includedLimitBytes,
-      included_remaining_bytes: includedRemainingBytes,
-      topup_remaining_bytes: manualRemainingBytes,
-      total_remaining_bytes: totalRemainingBytes,
-      downloaded_period_bytes: downloadedPeriodBytes,
-      period,
-      period_end: periodEnd,
-      warning_state: warningState,
-      exhausted,
-      counting_rule: countingRule,
-    },
+    upgradeUrl: String(env.UPGRADE_URL || DEFAULT_UPGRADE_URL).trim() || DEFAULT_UPGRADE_URL,
+    contactUrl: normalizeContactUrl(env.PLANETKA_CONTACT_URL || DEFAULT_CONTACT_URL),
     throttledUntil,
     throttleReason,
-    includedRemainingBytesBase: includedRemainingBytes,
-    periodId: "",
-    tileQuota,
   };
 }
 
 function serializeAccountState(state) {
-  const tier = accountTierForPlanCode(state.planCode);
-  const tileQuota = state && state.tileQuota ? state.tileQuota : null;
+  const safeState = state || {};
+  const tier = accountTierForPlanCode(safeState.planCode);
   return {
     plan: {
-      code: state.planCode,
+      code: safeState.planCode,
     },
-    plan_code: state.planCode,
+    plan_code: safeState.planCode,
     account_tier: tier,
-    commercial_use_allowed: Boolean(state.commercialUseAllowed),
-    upgrade_url: state.upgradeUrl,
-    topup_url: state.topupUrl || state.upgradeUrl,
-    manage_subscription_url: state.manageSubscriptionUrl,
-    manage_hosted_streaming_access_url: state.manageSubscriptionUrl,
-    contact_url: state.contactUrl,
-    billing_period_end: state.dataAllowance.period_end,
-    data_allowance: state.dataAllowance,
-    tile_quota: {
-      used: clampNonNegativeInt(tileQuota && tileQuota.used),
-      limit: (tileQuota && Number.isFinite(tileQuota.limit) && tileQuota.limit >= 0)
-        ? clampNonNegativeInt(tileQuota.limit)
-        : null,
-      remaining: (tileQuota && Number.isFinite(tileQuota.remaining) && tileQuota.remaining >= 0)
-        ? clampNonNegativeInt(tileQuota.remaining)
-        : null,
-      reset_at: String(tileQuota && tileQuota.resetAt || ""),
-      period: String(tileQuota && tileQuota.period || "month_london"),
-      unlimited: Boolean(tileQuota && tileQuota.unlimited),
-      rule: String(tileQuota && tileQuota.rule || ""),
-      scope: String(tileQuota && tileQuota.scope || ""),
-      label: String(tileQuota && tileQuota.label || ""),
-    },
-    throttled_until: String(state.throttledUntil || "").trim(),
-    throttle_reason: String(state.throttleReason || "").trim(),
-    is_throttled: Boolean(state.throttledUntil),
+    commercial_use_allowed: Boolean(safeState.commercialUseAllowed),
+    upgrade_url: safeState.upgradeUrl,
+    contact_url: safeState.contactUrl,
+    throttled_until: String(safeState.throttledUntil || "").trim(),
+    throttle_reason: String(safeState.throttleReason || "").trim(),
+    is_throttled: Boolean(safeState.throttledUntil),
   };
 }
 
@@ -6571,7 +6340,6 @@ async function createAccessToken(env, user, subscription, extraClaims = {}) {
     resolvePolicyPlanCode(user, subscription, env),
   ) || PLAN_CODE_PLANETKA_FREE;
   const hostedStreamingAccessStatus = String(entitlement.subscription_status || "inactive");
-  const hostedStreamingAccessValidUntil = String(entitlement.hosted_streaming_access_expires_at || "").trim();
   const basePayload = {
     type: "access",
     sub: user.id,
@@ -6580,7 +6348,6 @@ async function createAccessToken(env, user, subscription, extraClaims = {}) {
     user_status: effectivePlanCode,
     subscription_status: hostedStreamingAccessStatus,
     hosted_streaming_access_status: hostedStreamingAccessStatus,
-    hosted_streaming_access_valid_until: hostedStreamingAccessValidUntil || null,
     exp,
   };
   const payload = { ...basePayload };
@@ -7566,7 +7333,6 @@ async function handleApiKeyRequest(request, env) {
   const acceptPrivacy = parseBooleanFlag(body.accept_privacy);
   const optInNews = parseBooleanFlag(body.opt_in_news);
   // Public API-key request flow always issues base access.
-  // Full Quality credits are granted only through Stripe top-up webhook events.
   const requestedPlan = PLAN_CODE_PLANETKA_FREE;
   const honeypot = String(body.website || "").trim();
   const submittedAtMs = parseNonNegativeInteger(body.submitted_at_ms, 0);
@@ -7802,7 +7568,6 @@ async function activateApiKeyFromToken(db, env, rawToken) {
     effectivePlanCode,
     {},
   );
-  const accountState = await buildAllowanceState(db, user, null, env);
 
   await sendApiKeyIssuedEmail(env, email, issued.apiKey, issued.planCode, issued.expiresAt);
   return {
@@ -7810,11 +7575,6 @@ async function activateApiKeyFromToken(db, env, rawToken) {
     apiKey: issued.apiKey,
     planCode: issued.planCode,
     expiresAt: issued.expiresAt,
-    creditsRemainingBytes: clampNonNegativeInt(
-      accountState
-      && accountState.dataAllowance
-      && accountState.dataAllowance.total_remaining_bytes,
-    ),
   };
 }
 
@@ -7830,7 +7590,6 @@ async function handleApiKeyActivate(request, env) {
         api_key: activated.apiKey,
         plan_code: activated.planCode,
         expires_at: activated.expiresAt,
-        credits_remaining_bytes: activated.creditsRemainingBytes,
       },
       200,
       env,
@@ -7979,7 +7738,7 @@ async function handleApiKeyExchange(request, env) {
       device_id: deviceId,
     },
   );
-  const accountState = await buildAllowanceState(db, user, null, env);
+  const accountState = await buildAccountState(db, user, null, env);
 
   return json(
     {
@@ -7989,7 +7748,6 @@ async function handleApiKeyExchange(request, env) {
       refresh_token: refreshToken,
       subscription_status: subscriptionStatusForUser(user, env),
       hosted_streaming_access_status: subscriptionStatusForUser(user, env),
-      hosted_streaming_access_valid_until: accountState.dataAllowance.period_end || null,
       renews_at: "",
       trial_ends_at: "",
       api_key_mask: maskApiKey(apiKey),
@@ -8272,7 +8030,7 @@ async function handleAuthVerify(request, env) {
   const subscriptionStatus = subscriptionStatusForUser(user, env);
   const accessToken = await createAccessToken(env, user, null);
   const refreshToken = await createRefreshSession(db, userRecord.id);
-  const accountState = await buildAllowanceState(db, user, null, env);
+  const accountState = await buildAccountState(db, user, null, env);
 
   if (deviceCode) {
     await ensureDeviceSessionsTable(db);
@@ -8324,7 +8082,6 @@ async function handleAuthVerify(request, env) {
       email: user.email,
       subscription_status: subscriptionStatus,
       hosted_streaming_access_status: subscriptionStatus,
-      hosted_streaming_access_valid_until: accountState.dataAllowance.period_end || null,
       renews_at: null,
       trial_ends_at: null,
       ...serializeAccountState(accountState),
@@ -8474,7 +8231,7 @@ async function handleAuthRefresh(request, env) {
       device_id: String(session.device_id || "").trim(),
     },
   );
-  const accountState = await buildAllowanceState(db, user, null, env);
+  const accountState = await buildAccountState(db, user, null, env);
   await recordRefreshEvent({
     outcome: "success",
     errorCode: "",
@@ -8492,7 +8249,6 @@ async function handleAuthRefresh(request, env) {
       email: user.email,
       subscription_status: subscriptionStatus,
       hosted_streaming_access_status: subscriptionStatus,
-      hosted_streaming_access_valid_until: accountState.dataAllowance.period_end || null,
       renews_at: null,
       trial_ends_at: null,
       ...serializeAccountState(accountState),
@@ -8602,7 +8358,7 @@ async function handleMe(request, env) {
   }
   const { db, user } = auth;
   const effectiveUserStatus = resolvePolicyPlanCode(user, null, env);
-  const accountState = await buildAllowanceState(db, user, null, env);
+  const accountState = await buildAccountState(db, user, null, env);
   const subscriptionStatus = subscriptionStatusForUser(user, env);
 
   return json(
@@ -8612,7 +8368,6 @@ async function handleMe(request, env) {
       user_status: effectiveUserStatus,
       subscription_status: subscriptionStatus,
       hosted_streaming_access_status: subscriptionStatus,
-      hosted_streaming_access_valid_until: accountState.dataAllowance.period_end || null,
       trial_ends_at: null,
       renews_at: null,
       ...serializeAccountState(accountState),
@@ -8787,7 +8542,7 @@ async function handleDevicePoll(request, env) {
     let user = await findUserByEmail(db, normalizeEmail(session.email));
     if (user) {
       user = await enforceUserPlanPolicy(db, user, null, env);
-      const accountState = await buildAllowanceState(db, user, null, env);
+      const accountState = await buildAccountState(db, user, null, env);
       accountPayload = serializeAccountState(accountState);
     }
   } catch (error) {
@@ -8810,9 +8565,6 @@ async function handleDevicePoll(request, env) {
       refresh_token: session.refresh_token,
       subscription_status: session.subscription_status,
       hosted_streaming_access_status: session.subscription_status,
-      hosted_streaming_access_valid_until: accountPayload && accountPayload.data_allowance
-        ? String(accountPayload.data_allowance.period_end || "").trim() || null
-        : null,
       renews_at: session.renews_at,
       trial_ends_at: session.trial_ends_at,
       ...accountPayload,

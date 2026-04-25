@@ -2,7 +2,7 @@
 Planetka end-to-end random resolve/render batch.
 
 Runs 10 random navigation shots, resolves textures from Cloud, renders PNGs,
-and records allowance-usage deltas per shot.
+and records resolve/render diagnostics per shot.
 
 Usage:
   /Applications/Blender.app/Contents/MacOS/Blender --background \
@@ -279,16 +279,6 @@ def _set_camera_direct(scene, camera, earth_obj, lon_deg, lat_deg, altitude_km, 
     camera.matrix_world = Matrix.LocRotScale(cam_pos, rotation, scale)
 
 
-def _usage_bytes(auth_module, prefs):
-    value = auth_module.get_allowance_downloaded_period_bytes(prefs)
-    if value is None:
-        return 0
-    try:
-        return int(max(0, int(value)))
-    except Exception:
-        return 0
-
-
 def _bytes_to_mb(value):
     return float(value) / (1024.0 * 1024.0)
 
@@ -359,12 +349,7 @@ def main():
         _assert("FINISHED" in create_result, f"Create Earth failed: {create_result}")
         _assert(extension_prefs.get_earth_object() is not None, "Planetka Earth object is missing after Create Earth.")
 
-        auth_module.sync_account_profile(prefs)
-        baseline_downloaded = _usage_bytes(auth_module, prefs)
-        _log(f"Baseline downloaded_period_bytes after Create Earth: {baseline_downloaded}")
-
         results = []
-        total_delta_bytes = 0
 
         altitude_options_km = [5, 12, 20, 40, 80, 150, 300, 600, 1200, 2500]
         for index in range(1, random_count + 1):
@@ -380,9 +365,6 @@ def main():
             _set_navigation(props, state_module, lon, lat, alt, azimuth, tilt, roll)
             _set_camera_direct(scene, camera, earth_obj, lon, lat, alt, azimuth, tilt, roll)
 
-            auth_module.sync_account_profile(prefs)
-            before = _usage_bytes(auth_module, prefs)
-
             resolve_result = bpy.ops.planetka.load_textures(scope_mode="CAMERA", skip_render_compatibility=True)
             _assert("FINISHED" in resolve_result, f"Resolve failed at case {index}: {resolve_result}")
 
@@ -391,11 +373,6 @@ def main():
             render_start = time.perf_counter()
             bpy.ops.render.render(write_still=True)
             render_ms = (time.perf_counter() - render_start) * 1000.0
-
-            auth_module.sync_account_profile(prefs)
-            after = _usage_bytes(auth_module, prefs)
-            delta = max(0, int(after - before))
-            total_delta_bytes += delta
 
             diag = diagnostics.read_diagnostics(scene)
             case_payload = {
@@ -408,10 +385,6 @@ def main():
                 "roll_deg": round(roll, 3),
                 "render_path": render_path,
                 "render_ms": round(render_ms, 3),
-                "allowance_downloaded_before_bytes": before,
-                "allowance_downloaded_after_bytes": after,
-                "allowance_delta_bytes": delta,
-                "allowance_delta_mb": round(_bytes_to_mb(delta), 3),
                 "resolve_downloaded_mb_local": diag.get("resolve_downloaded_mb"),
                 "resolve_download_ms_local": diag.get("resolve_download_ms"),
                 "resolve_tile_count": diag.get("last_tile_count"),
@@ -423,12 +396,9 @@ def main():
             }
             results.append(case_payload)
             _log(
-                f"Case {index:02d}: delta={delta} bytes ({_bytes_to_mb(delta):.3f} MB), "
+                f"Case {index:02d}: download={float(case_payload.get('resolve_downloaded_mb_local') or 0.0):.3f} MB, "
                 f"tiles={case_payload.get('resolve_tile_count')}, render={render_path}"
             )
-
-        auth_module.sync_account_profile(prefs)
-        final_downloaded = _usage_bytes(auth_module, prefs)
 
         report = {
             "ok": True,
@@ -436,10 +406,6 @@ def main():
             "count": random_count,
             "render_dir": render_dir,
             "gpu_info": gpu_info,
-            "baseline_downloaded_period_bytes": baseline_downloaded,
-            "final_downloaded_period_bytes": final_downloaded,
-            "total_delta_bytes": total_delta_bytes,
-            "total_delta_mb": round(_bytes_to_mb(total_delta_bytes), 3),
             "elapsed_sec": round(time.time() - started_at, 3),
             "cases": results,
         }
@@ -447,7 +413,6 @@ def main():
             json.dump(report, handle, indent=2, ensure_ascii=True)
 
         _log(f"Batch completed: {random_count} renders")
-        _log(f"Total delta bytes: {total_delta_bytes} ({_bytes_to_mb(total_delta_bytes):.3f} MB)")
         _log(f"Report: {report_path}")
     except SystemExit:
         raise

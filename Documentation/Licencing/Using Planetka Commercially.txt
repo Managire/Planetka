@@ -5,15 +5,17 @@ Using Planetka Commercially
    - Free: personal / non-commercial use only
    - Personal: personal / non-commercial use only
    - Commercial: commercial use allowed
-2. If your work is commercial, use Commercial tier.
-3. If your work is personal/non-commercial, Free or Personal may be used.
-4. If you publish images or animations, include attribution in the accompanying
+2. Current `v0.7.0` beta note: newly issued beta accounts are currently
+   provisioned as Commercial by default for testing.
+3. If your work is commercial, use Commercial tier.
+4. If your work is personal/non-commercial, Free or Personal may be used.
+5. If you publish images or animations, include attribution in the accompanying
    text or credits.
-5. The easiest way to do that is to use:
+6. The easiest way to do that is to use:
    `Attribution for User Renders.txt`
-6. Service access, account use, and prohibited scraping / abusive use are
+7. Service access, account use, and prohibited scraping / abusive use are
    governed by `TERMS_OF_SERVICE.md`.
-7. AI / machine learning use is not included. That includes training, fine-tuning, evaluation,
+8. AI / machine learning use is not included. That includes training, fine-tuning, evaluation,
    benchmarking, and dataset preparation. Those uses require a separate custom
    license from Planetka.
 

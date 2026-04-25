@@ -24,26 +24,8 @@ FALLBACK_AUTH_ACCOUNT_TIER_KEY = "planetka_auth_account_tier"
 FALLBACK_AUTH_COMMERCIAL_USE_ALLOWED_KEY = "planetka_auth_commercial_use_allowed"
 FALLBACK_AUTH_PLAN_CODE_KEY = "planetka_auth_plan_code"
 FALLBACK_AUTH_PLAN_NAME_KEY = "planetka_auth_plan_name"
-FALLBACK_AUTH_BILLING_PERIOD_END_KEY = "planetka_auth_billing_period_end"
 FALLBACK_AUTH_CONTACT_URL_KEY = "planetka_auth_contact_url"
 FALLBACK_AUTH_UPGRADE_URL_KEY = "planetka_auth_upgrade_url"
-FALLBACK_AUTH_TOPUP_URL_KEY = "planetka_auth_topup_url"
-FALLBACK_AUTH_MANAGE_SUBSCRIPTION_URL_KEY = "planetka_auth_manage_subscription_url"
-FALLBACK_AUTH_TILE_QUOTA_USED_KEY = "planetka_auth_tile_quota_used"
-FALLBACK_AUTH_TILE_QUOTA_LIMIT_KEY = "planetka_auth_tile_quota_limit"
-FALLBACK_AUTH_TILE_QUOTA_RESET_AT_KEY = "planetka_auth_tile_quota_reset_at"
-FALLBACK_AUTH_TILE_QUOTA_PERIOD_KEY = "planetka_auth_tile_quota_period"
-FALLBACK_AUTH_TILE_QUOTA_RULE_KEY = "planetka_auth_tile_quota_rule"
-FALLBACK_AUTH_ALLOWANCE_INCLUDED_LIMIT_BYTES_KEY = "planetka_auth_allowance_included_limit_bytes"
-FALLBACK_AUTH_ALLOWANCE_INCLUDED_REMAINING_BYTES_KEY = "planetka_auth_allowance_included_remaining_bytes"
-FALLBACK_AUTH_ALLOWANCE_TOPUP_REMAINING_BYTES_KEY = "planetka_auth_allowance_topup_remaining_bytes"
-FALLBACK_AUTH_ALLOWANCE_TOTAL_REMAINING_BYTES_KEY = "planetka_auth_allowance_total_remaining_bytes"
-FALLBACK_AUTH_ALLOWANCE_PERIOD_END_KEY = "planetka_auth_allowance_period_end"
-FALLBACK_AUTH_ALLOWANCE_PERIOD_KEY = "planetka_auth_allowance_period"
-FALLBACK_AUTH_ALLOWANCE_COUNTING_RULE_KEY = "planetka_auth_allowance_counting_rule"
-FALLBACK_AUTH_ALLOWANCE_WARNING_STATE_KEY = "planetka_auth_allowance_warning_state"
-FALLBACK_AUTH_ALLOWANCE_EXHAUSTED_KEY = "planetka_auth_allowance_exhausted"
-FALLBACK_AUTH_ALLOWANCE_DOWNLOADED_PERIOD_BYTES_KEY = "planetka_auth_allowance_downloaded_period_bytes"
 FALLBACK_AUTH_LOGIN_STATE_KEY = "planetka_auth_login_state"
 FALLBACK_AUTH_STATUS_MESSAGE_KEY = "planetka_auth_status_message"
 FALLBACK_AUTH_DEVICE_CODE_KEY = "planetka_auth_device_code"
@@ -231,26 +213,8 @@ class PlanetkaExtensionPreferences(AddonPreferences):
     auth_commercial_use_allowed: StringProperty(name="Auth Commercial Use Allowed", default="", options={'HIDDEN'})
     auth_plan_code: StringProperty(name="Auth Plan Code", default="", options={'HIDDEN'})
     auth_plan_name: StringProperty(name="Auth Plan Name", default="", options={'HIDDEN'})
-    auth_billing_period_end: StringProperty(name="Auth Billing Period End", default="", options={'HIDDEN'})
     auth_contact_url: StringProperty(name="Auth Contact URL", default="", options={'HIDDEN'})
     auth_upgrade_url: StringProperty(name="Auth Upgrade URL", default="", options={'HIDDEN'})
-    auth_topup_url: StringProperty(name="Auth Top-Up URL", default="", options={'HIDDEN'})
-    auth_manage_subscription_url: StringProperty(name="Auth Manage Subscription URL", default="", options={'HIDDEN'})
-    auth_tile_quota_used: StringProperty(name="Auth Tile Quota Used", default="", options={'HIDDEN'})
-    auth_tile_quota_limit: StringProperty(name="Auth Tile Quota Limit", default="", options={'HIDDEN'})
-    auth_tile_quota_reset_at: StringProperty(name="Auth Tile Quota Reset At", default="", options={'HIDDEN'})
-    auth_tile_quota_period: StringProperty(name="Auth Tile Quota Period", default="", options={'HIDDEN'})
-    auth_tile_quota_rule: StringProperty(name="Auth Tile Quota Rule", default="", options={'HIDDEN'})
-    auth_allowance_included_limit_bytes: StringProperty(name="Auth Included Limit Bytes", default="", options={'HIDDEN'})
-    auth_allowance_included_remaining_bytes: StringProperty(name="Auth Included Remaining Bytes", default="", options={'HIDDEN'})
-    auth_allowance_topup_remaining_bytes: StringProperty(name="Auth Topup Remaining Bytes", default="", options={'HIDDEN'})
-    auth_allowance_total_remaining_bytes: StringProperty(name="Auth Total Remaining Bytes", default="", options={'HIDDEN'})
-    auth_allowance_period_end: StringProperty(name="Auth Allowance Period End", default="", options={'HIDDEN'})
-    auth_allowance_period: StringProperty(name="Auth Allowance Period", default="", options={'HIDDEN'})
-    auth_allowance_counting_rule: StringProperty(name="Auth Allowance Counting Rule", default="", options={'HIDDEN'})
-    auth_allowance_warning_state: StringProperty(name="Auth Allowance Warning State", default="", options={'HIDDEN'})
-    auth_allowance_exhausted: StringProperty(name="Auth Allowance Exhausted", default="", options={'HIDDEN'})
-    auth_allowance_downloaded_period_bytes: StringProperty(name="Auth Allowance Downloaded Period Bytes", default="", options={'HIDDEN'})
     auth_login_state: StringProperty(name="Auth Login State", default="logged_out", options={'HIDDEN'})
     auth_status_message: StringProperty(name="Auth Status Message", default="", options={'HIDDEN'})
     auth_device_code: StringProperty(name="Auth Device Code", default="", options={'HIDDEN'})
@@ -437,10 +401,6 @@ def get_prefs():
             lambda self: self._get_value(FALLBACK_AUTH_PLAN_NAME_KEY, ""),
             lambda self, value: self._set_value(FALLBACK_AUTH_PLAN_NAME_KEY, value),
         )
-        auth_billing_period_end = property(
-            lambda self: self._get_value(FALLBACK_AUTH_BILLING_PERIOD_END_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_BILLING_PERIOD_END_KEY, value),
-        )
         auth_contact_url = property(
             lambda self: self._get_value(FALLBACK_AUTH_CONTACT_URL_KEY, ""),
             lambda self, value: self._set_value(FALLBACK_AUTH_CONTACT_URL_KEY, value),
@@ -448,74 +408,6 @@ def get_prefs():
         auth_upgrade_url = property(
             lambda self: self._get_value(FALLBACK_AUTH_UPGRADE_URL_KEY, ""),
             lambda self, value: self._set_value(FALLBACK_AUTH_UPGRADE_URL_KEY, value),
-        )
-        auth_topup_url = property(
-            lambda self: self._get_value(FALLBACK_AUTH_TOPUP_URL_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_TOPUP_URL_KEY, value),
-        )
-        auth_manage_subscription_url = property(
-            lambda self: self._get_value(FALLBACK_AUTH_MANAGE_SUBSCRIPTION_URL_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_MANAGE_SUBSCRIPTION_URL_KEY, value),
-        )
-        auth_tile_quota_used = property(
-            lambda self: self._get_value(FALLBACK_AUTH_TILE_QUOTA_USED_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_TILE_QUOTA_USED_KEY, value),
-        )
-        auth_tile_quota_limit = property(
-            lambda self: self._get_value(FALLBACK_AUTH_TILE_QUOTA_LIMIT_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_TILE_QUOTA_LIMIT_KEY, value),
-        )
-        auth_tile_quota_reset_at = property(
-            lambda self: self._get_value(FALLBACK_AUTH_TILE_QUOTA_RESET_AT_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_TILE_QUOTA_RESET_AT_KEY, value),
-        )
-        auth_tile_quota_period = property(
-            lambda self: self._get_value(FALLBACK_AUTH_TILE_QUOTA_PERIOD_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_TILE_QUOTA_PERIOD_KEY, value),
-        )
-        auth_tile_quota_rule = property(
-            lambda self: self._get_value(FALLBACK_AUTH_TILE_QUOTA_RULE_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_TILE_QUOTA_RULE_KEY, value),
-        )
-        auth_allowance_included_limit_bytes = property(
-            lambda self: self._get_value(FALLBACK_AUTH_ALLOWANCE_INCLUDED_LIMIT_BYTES_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_ALLOWANCE_INCLUDED_LIMIT_BYTES_KEY, value),
-        )
-        auth_allowance_included_remaining_bytes = property(
-            lambda self: self._get_value(FALLBACK_AUTH_ALLOWANCE_INCLUDED_REMAINING_BYTES_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_ALLOWANCE_INCLUDED_REMAINING_BYTES_KEY, value),
-        )
-        auth_allowance_topup_remaining_bytes = property(
-            lambda self: self._get_value(FALLBACK_AUTH_ALLOWANCE_TOPUP_REMAINING_BYTES_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_ALLOWANCE_TOPUP_REMAINING_BYTES_KEY, value),
-        )
-        auth_allowance_total_remaining_bytes = property(
-            lambda self: self._get_value(FALLBACK_AUTH_ALLOWANCE_TOTAL_REMAINING_BYTES_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_ALLOWANCE_TOTAL_REMAINING_BYTES_KEY, value),
-        )
-        auth_allowance_period_end = property(
-            lambda self: self._get_value(FALLBACK_AUTH_ALLOWANCE_PERIOD_END_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_ALLOWANCE_PERIOD_END_KEY, value),
-        )
-        auth_allowance_period = property(
-            lambda self: self._get_value(FALLBACK_AUTH_ALLOWANCE_PERIOD_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_ALLOWANCE_PERIOD_KEY, value),
-        )
-        auth_allowance_counting_rule = property(
-            lambda self: self._get_value(FALLBACK_AUTH_ALLOWANCE_COUNTING_RULE_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_ALLOWANCE_COUNTING_RULE_KEY, value),
-        )
-        auth_allowance_warning_state = property(
-            lambda self: self._get_value(FALLBACK_AUTH_ALLOWANCE_WARNING_STATE_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_ALLOWANCE_WARNING_STATE_KEY, value),
-        )
-        auth_allowance_exhausted = property(
-            lambda self: self._get_value(FALLBACK_AUTH_ALLOWANCE_EXHAUSTED_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_ALLOWANCE_EXHAUSTED_KEY, value),
-        )
-        auth_allowance_downloaded_period_bytes = property(
-            lambda self: self._get_value(FALLBACK_AUTH_ALLOWANCE_DOWNLOADED_PERIOD_BYTES_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_ALLOWANCE_DOWNLOADED_PERIOD_BYTES_KEY, value),
         )
         auth_login_state = property(
             lambda self: self._get_value(FALLBACK_AUTH_LOGIN_STATE_KEY, "logged_out"),

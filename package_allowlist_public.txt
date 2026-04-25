@@ -1,0 +1,92 @@
+# Planetka 0.7.0 public addon package allowlist.
+# One repo-relative file path per line. Wildcards are intentionally not allowed.
+
+# Metadata
+blender_manifest.toml
+LICENSE
+CHANGELOG.md
+
+# Runtime modules
+__init__.py
+animation_tools.py
+asset_builder.py
+auth.py
+clouds_global.py
+clouds_local.py
+clouds_vdb.py
+coverage.py
+diagnostics.py
+embedded_material_library.py
+error_utils.py
+extension_prefs.py
+fallback_utils.py
+geonames_db.py
+mesh_utils.py
+operator_utils.py
+operators.py
+properties.py
+r2_source.py
+render_prep.py
+sanity_utils.py
+scene_schema.py
+shader_utils.py
+state.py
+streaming_utils.py
+tile_utils.py
+ui.py
+unsupported.py
+updater.py
+validation.py
+
+# Public docs
+Documentation/Licencing/Attribution for User Renders.txt
+Documentation/Licencing/Compliance/Copernicus Sentinel-2 Attribution.txt
+Documentation/Licencing/Compliance/DLR World Settlement Footprint 2015 Attribution (CC BY 4.0).txt
+Documentation/Licencing/Compliance/Detailed Source Records.txt
+Documentation/Licencing/Compliance/Earth Surface Data Sources.txt
+Documentation/Licencing/Compliance/GeoNames Attribution (CC BY 4.0).txt
+Documentation/Licencing/Compliance/JAXA AW3D30 Attribution and Terms.txt
+Documentation/Licencing/PRIVACY_POLICY.md
+Documentation/Licencing/PRIVACY_POLICY.pdf
+Documentation/Licencing/README.md
+Documentation/Licencing/TERMS_OF_SERVICE.md
+Documentation/Licencing/TERMS_OF_SERVICE.pdf
+Documentation/Licencing/Using Planetka Commercially.txt
+Documentation/Release/CHANGELOG_DISCIPLINE.md
+Documentation/Release/COMPATIBILITY_MATRIX.md
+Documentation/Release/FAIR_USAGE_POLICY.md
+Documentation/Release/FREE_TEST_GROUP_RELEASE_CHECKLIST.md
+Documentation/Release/PRODUCTION_ALERT_RUNBOOK.md
+Documentation/Release/QA_CHECKLIST.md
+Documentation/Release/README.md
+Documentation/Release/RELEASE_NOTES_TEMPLATE.md
+Documentation/Release/REQUIRED_STATUS_CHECKS.md
+Documentation/Release/ROLLBACK_SAFE_UPDATE_TESTING.md
+Documentation/Release/SYSTEM_REQUIREMENTS.md
+Documentation/Release/VERSIONING_POLICY.md
+
+# Bundled resources
+Resources/Bootstrap Cache/EL/EL_x000_y000_z180_d720.exr
+Resources/Bootstrap Cache/EL/EL_x180_y000_z180_d720.exr
+Resources/Bootstrap Cache/PO/PO_x000_y000_z180_d720.tif
+Resources/Bootstrap Cache/PO/PO_x180_y000_z180_d720.tif
+Resources/Bootstrap Cache/S2/S2_x000_y000_z180_d720.exr
+Resources/Bootstrap Cache/S2/S2_x180_y000_z180_d720.exr
+Resources/Bootstrap Cache/WT/WT_x000_y000_z180_d720.exr
+Resources/Bootstrap Cache/WT/WT_x180_y000_z180_d720.exr
+Resources/Fallback Images/black_pixel_20.exr
+Resources/Fallback Images/blue_pixel_20.exr
+Resources/Fallback Images/el_south_cap_pixel_20.exr
+Resources/Fallback Images/ocean_pixel_final_20.exr
+Resources/Fallback Images/white_pixel_20.exr
+Resources/GeoNames/allCountries.idx.sqlite3
+Resources/GeoNames/planetka_places_extra.json
+Resources/Preview Textures/EL_x000_y000_z360_d000.exr
+Resources/Preview Textures/PO_x000_y000_z360_d000.tif
+Resources/Preview Textures/S2_x000_y000_z360_d000.exr
+Resources/Preview Textures/WT_x000_y000_z360_d000.exr
+Resources/planetka_fake_atmosphere.blend
+Resources/planetka_global_cloud_layer_min.blend
+Resources/planetka_material_lib_45.blend
+Resources/planetka_volumetric_atmosphere.blend
+Resources/tile_sizes.sqlite

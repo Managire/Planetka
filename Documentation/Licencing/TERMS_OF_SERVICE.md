@@ -1,6 +1,6 @@
 # Planetka Terms of Service
 
-Last updated: 2026-04-23
+Last updated: 2026-04-25
 
 These Terms of Service govern access to the Planetka service layer, including
 Planetka account login, Planetka-hosted tile delivery, and related web/API
@@ -28,6 +28,9 @@ Planetka is currently released as a **public beta**.
   this beta period.
 - Planetka currently offers three account tiers: **Free**, **Personal**, and
   **Commercial**.
+- For the current `v0.7.0` beta phase, newly issued beta access may be
+  provisioned as **Commercial** by default for testing, even though the
+  long-term product model still defines all three tiers separately.
 
 ## 3. Intended Use
 
@@ -59,6 +62,9 @@ For clarity:
 - Free and Personal do **not** include commercial use rights.
 - Commercial includes commercial use rights, subject to all other Terms in this
   document.
+- During the current beta phase, if Planetka provisions your beta account as
+  Commercial by default, that granted Commercial status governs your permitted
+  use until Planetka changes that beta-access policy.
 
 You may keep and use your own rendered outputs, subject to attribution and
 source-data obligations described in Planetka licensing documentation.

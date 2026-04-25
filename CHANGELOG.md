@@ -4,29 +4,38 @@ All notable changes to Planetka are documented in this file.
 
 ## [Unreleased]
 
+- No unreleased changes recorded yet.
+
+## [v0.7.0] - 2026-04-25
+
 ### Added
-- Added `tools/planetka_regression_test.py` to validate collection behavior, size stability, and S2-only support fallback.
+- Added `Remove Default Cube Scene` for pristine default Blender scenes before `Create Earth`.
+- Added dedicated `Planetka Camera` creation so `Create Earth` no longer needs to repurpose the user's existing camera.
+- Added `Rebuild Earth` flow that preserves Earth settings and camera state while recreating Planetka-managed objects.
+- Added `Quick Preview` build for animations so users can prepare preview-only segment visibility directly in the scene.
+- Added `Scene Health Check` and detailed report output for common scene, shader, camera, and render-state failures.
+- Added inline `Below Earth's surface` and `Low altitude` warnings to stop invalid auto-resolve states without pushing users into rebuild flow.
+- Added `tools/planetka_regression_test.py` to validate collection behavior, size stability, camera sync, and S2-only support fallback.
 
 ### Changed
-- Removed hidden scene/view/render mutations from `Create Earth` and `Prepare Animation Render` flows:
-  - no default-scene object deletion on Create Earth
-  - no automatic viewport mode switches in Create Earth/animation confirm
-  - no automatic Persistent Data/dicing/display-mode/lock-interface overrides when confirming animation render
-- Navigation now uses explicit `Bring Camera to View` behavior: Planetka Camera is activated and aligned only when user clicks that action.
-- Earth Transform now exposes `Earth Radius` (mesh-radius control) instead of object scale controls.
-- Updated default Earth grading values:
-  - `Surface Saturation` default to `1.0`
-  - `Roughness` default to `0.4`
-- Default material displacement mode is now `Displacement` (instead of `Displacement and Bump`), and user displacement-mode edits are preserved across Resolve.
-- Preserved user Earth-surface material edits across Resolve by applying default normalization/migration only once per material.
-- Updated release QA docs to match the simplified Create/Resolve-only workflow.
-- Improved Earth surface shading with procedural forest and rock detail (bump, optional micro-displacement) driven by satellite color/slope masks.
-- Marked EEVEE as unsupported/unstable for Planetka rendering in release documentation and UI warnings; Cycles is now auto-selected on `Create Earth`.
-- Increased user-editable tile cache limit range to `1–100 GB`.
-- Exposed `Data Cache Limit (GB)` in the Settings panel so users can edit it directly in UI.
+- `Create Earth` no longer mutates the user's active camera or view unexpectedly.
+- `Create Earth` now builds Planetka-owned scene objects only and keeps non-Planetka objects untouched.
+- Navigation and animation presets now rebuild around the current Planetka location/camera state instead of relying on stale hidden references.
+- `Data Control` now reports live resolve size estimates, last resolve summary, and simplified status messaging in MB.
+- `Final Animation Render` now uses the segmented Planetka render path with full-quality tiles, while `Quick Preview` remains preview-only.
+- Account UI now shows current account type, inline API-key connection state, and upgrade action for non-Commercial tiers.
+- Resolve success path no longer refreshes account profile on every resolve; account sync is kept for real auth/throttle error paths only.
+- Tile streaming hot path was simplified with cached lightweight auth claims and tile session tokens to reduce per-tile overhead.
+- Public build profile keeps clouds and legacy-only runtime surface disabled by default.
+- Release documentation now treats `v0.7.0` as the current private beta candidate while leaving the public update channel unchanged.
+- Beta-facing docs now state explicitly that newly issued `v0.7.0` beta accounts are currently provisioned as `Commercial` by default for testing.
+- EEVEE is documented as supported for stills, quick previews, and segmented animation rendering in `v0.7.0`.
 
 ### Fixed
-- Removed outdated release-checklist references to preview parenting.
+- Fixed repeated hidden UI/view side effects in `Create Earth`, resolve, and animation confirmation flows.
+- Fixed render-engine warning flow so invalid inside-Earth navigation shows a simple warning instead of a false rebuild failure.
+- Fixed unresolved hidden resolve overhead caused by success-path account-profile sync after every resolve.
+- Fixed documentation drift between package version, compatibility notes, and beta checklist.
 
 ## [v0.5.3] - 2026-04-12
 

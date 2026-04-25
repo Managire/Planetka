@@ -39,8 +39,9 @@
 
 - [ ] Invalid source path is rejected with a clear error.
 - [ ] Valid source path resolves Earth surface.
-- [ ] Missing S2 tiles trigger fallback warnings, not crashes.
-- [ ] Missing EL/WT/PO tiles use fallback support textures, not crashes.
+- [ ] Ocean-only tiles may use bundled fallback textures by design; this is acceptable and must not be treated as a source-data defect.
+- [ ] Missing S2 tiles inside covered land regions trigger investigation-worthy fallback warnings, not crashes.
+- [ ] Missing EL/WT/PO tiles inside expected covered regions use fallback support textures without crashing, but are treated as source-data defects to investigate.
 
 ## 5. Driver-Free Integrity
 

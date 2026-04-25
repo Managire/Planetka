@@ -135,40 +135,15 @@ def main() -> int:
     else:
         worker_src = read_text(worker_path)
 
-    # 6) Credit model hardening must be present (Stripe top-up, no client self-elevation)
+    # 6) Worker access model must match the 0.7.0 plan-based product
     if worker_src:
-        credit_guard_any_markers = [
-            (
-                "public API key request forces base plan",
-                [
-                    "const requestedPlan = PLAN_CODE_PLANETKA;",
-                    "const claimPlanCode = PLAN_CODE_PLANETKA;",
-                ],
-            ),
-        ]
-        for label, markers in credit_guard_any_markers:
-            if not any(marker in worker_src for marker in markers):
-                errors.append(f"Credit-model safeguard missing: {label} (expected one of: {markers})")
-
-        required_credit_guard_markers = [
-            ("Stripe checkout webhook path enabled", "\"checkout.session.completed\""),
-            ("Stripe credit mapping helper present", "computeStripeCreditGrantBytes"),
-            ("manual credit grant helper present", "grantManualAllowanceCredits"),
+        required_worker_markers = [
+            ("public API key request forces Free plan", "const requestedPlan = PLAN_CODE_PLANETKA_FREE;"),
             ("tile requests read quality mode header", "X-Planetka-Quality-Mode"),
         ]
-        for label, marker in required_credit_guard_markers:
+        for label, marker in required_worker_markers:
             if marker not in worker_src:
-                errors.append(f"Credit-model safeguard missing: {label} ('{marker}')")
-
-        charge_markers = [
-            "const chargeCredits = qualityMode === \"full\";",
-            "const chargeCredits = false;",
-        ]
-        if not any(marker in worker_src for marker in charge_markers):
-            errors.append(
-                "Credit-model safeguard missing: charge mode marker "
-                f"(expected one of: {charge_markers})"
-            )
+                errors.append(f"Worker safeguard missing: {label} ('{marker}')")
 
     # 7) Admin analytics must reject token query params
     if worker_src:

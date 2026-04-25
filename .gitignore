@@ -4,7 +4,10 @@ __pycache__/
 dist/
 logs/
 .wrangler/
+.build/
 
 # SQLite runtime sidecar files
+*.sqlite-shm
+*.sqlite-wal
 *.sqlite3-shm
 *.sqlite3-wal

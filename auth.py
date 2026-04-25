@@ -25,20 +25,10 @@ DEFAULT_UPGRADE_URL = str(
     or os.getenv("PLANETKA_PRICING_URL")
     or "https://www.planetka.io/blender/pricing"
 ).strip()
-DEFAULT_MANAGE_SUBSCRIPTION_URL = str(
-    os.getenv("PLANETKA_MANAGE_SUBSCRIPTION_URL")
-    or os.getenv("PLANETKA_BILLING_URL")
-    or "https://www.planetka.io/account"
-).strip()
 DEFAULT_CONTACT_URL = str(
     os.getenv("PLANETKA_CONTACT_URL")
     or os.getenv("PLANETKA_SUPPORT_URL")
     or "mailto:info@planetka.io?subject=Planetka%20support%20request"
-).strip()
-DEFAULT_TOPUP_URL = str(
-    os.getenv("PLANETKA_TOPUP_URL")
-    or os.getenv("PLANETKA_DATA_TOPUP_URL")
-    or "https://www.planetka.io/blender/pricing"
 ).strip()
 DEFAULT_API_KEY_REQUEST_URL = str(
     os.getenv("PLANETKA_API_KEY_REQUEST_URL")
@@ -46,29 +36,6 @@ DEFAULT_API_KEY_REQUEST_URL = str(
 ).strip()
 
 
-def _env_int(name, default):
-    raw = str(os.getenv(name) or "").strip()
-    if not raw:
-        return int(default)
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
-        return int(default)
-
-
-def _env_float(name, default):
-    raw = str(os.getenv(name) or "").strip()
-    if not raw:
-        return float(default)
-    try:
-        return float(raw)
-    except (TypeError, ValueError):
-        return float(default)
-
-
-DEFAULT_LOW_DATA_WARNING_GB = max(1, _env_int("PLANETKA_LOW_DATA_WARNING_GB", 10))
-DEFAULT_LOW_DATA_WARNING_RATIO = min(max(_env_float("PLANETKA_LOW_DATA_WARNING_RATIO", 0.10), 0.01), 0.95)
-DEFAULT_LOW_DATA_WARNING_BYTES = int(DEFAULT_LOW_DATA_WARNING_GB * (1024 ** 3))
 ACCOUNT_TIER_FREE = "free"
 ACCOUNT_TIER_PERSONAL = "personal"
 # Backward-compat alias for older local prefs/payloads.
@@ -82,7 +49,6 @@ PLAN_CODE_PLANETKA_PRO = "planetka_pro"
 PLAN_NAME_FREE = "Planetka Free"
 PLAN_NAME_PERSONAL = "Planetka Personal"
 PLAN_NAME_PRO = "Planetka Commercial"
-DEFAULT_DATA_COUNTING_RULE = "Only newly downloaded data counts. Reused local cache does not consume allowance."
 PENDING_AUTH_MESSAGE = "Waiting for browser sign-in..."
 _DEVICE_LOGIN_TIMER_REGISTERED = False
 _ADDON_VERSION_CACHE = None
@@ -120,10 +86,8 @@ def describe_auth_error(error):
         return "Planetka could not connect right now. Check your internet connection and try again."
     if "missing_stripe_payment_link_url" in lowered:
         return "Planetka checkout URL is not configured on the API."
-    if "allowance" in lowered or "quota_exceeded" in lowered or "insufficient_data" in lowered:
-        return "Account data allowance has been reached."
-    if "daily_resolve_quota_exceeded" in lowered or "monthly_resolve_quota_exceeded" in lowered:
-        return "Monthly resolve quota reached for the selected texture quality."
+    if "quality_mode_not_allowed" in lowered or "not_allowed_for_tier" in lowered or "insufficient_data" in lowered:
+        return "Planetka account does not currently have access to this texture quality."
     if "missing_resolve_id" in lowered:
         return "Resolve metadata is missing. Retry Resolve and ensure Planetka is up to date."
     return f"Planetka login failed: {message.replace('_', ' ')}."
@@ -299,166 +263,6 @@ def _extract_commercial_use_allowed(payload, plan=None):
     return _derive_commercial_use_allowed(payload.get("plan_code") or payload.get("account_tier"))
 
 
-def _extract_tile_quota(payload):
-    if not isinstance(payload, dict):
-        return {
-            "used": "",
-            "limit": "",
-            "reset_at": "",
-            "period": "",
-        }
-
-    quota_obj = payload.get("tile_quota")
-    if not isinstance(quota_obj, dict):
-        quota_obj = {}
-
-    used_raw = quota_obj.get("used", payload.get("tile_quota_used", payload.get("monthly_tiles_used", payload.get("tiles_used", ""))))
-    limit_raw = quota_obj.get("limit", payload.get("tile_quota_limit", payload.get("monthly_tiles_limit", payload.get("free_tiles_limit", ""))))
-    reset_raw = quota_obj.get("reset_at", payload.get("tile_quota_reset_at", payload.get("monthly_tiles_reset_at", payload.get("reset_at", ""))))
-    period_raw = quota_obj.get("period", payload.get("tile_quota_period", payload.get("tiles_period", "month_london")))
-    unlimited_raw = quota_obj.get("unlimited", payload.get("tile_quota_unlimited", ""))
-    rule_raw = quota_obj.get(
-        "rule",
-        payload.get("tile_quota_rule", payload.get("counting_rule", DEFAULT_DATA_COUNTING_RULE)),
-    )
-
-    used_value = _parse_int_or_none(used_raw)
-    limit_value = _parse_int_or_none(limit_raw)
-    is_unlimited = bool(unlimited_raw is True or str(unlimited_raw or "").strip().lower() in {"1", "true", "yes", "unlimited"})
-
-    return {
-        "used": "" if used_value is None else str(max(0, int(used_value))),
-        "limit": "" if (is_unlimited or limit_value is None) else str(max(0, int(limit_value))),
-        "reset_at": str(reset_raw or "").strip(),
-        "period": str(period_raw or "month_london").strip().lower() or "month_london",
-        "rule": str(rule_raw or "").strip(),
-    }
-
-
-def _compute_allowance_warning_state(total_remaining_bytes, included_limit_bytes, exhausted_flag):
-    if exhausted_flag:
-        return "exhausted"
-    if isinstance(total_remaining_bytes, int) and total_remaining_bytes <= 0:
-        return "exhausted"
-    if not isinstance(total_remaining_bytes, int):
-        return "unknown"
-
-    low_threshold_bytes = int(DEFAULT_LOW_DATA_WARNING_BYTES)
-    if isinstance(included_limit_bytes, int) and included_limit_bytes > 0:
-        pct_threshold = int(float(included_limit_bytes) * float(DEFAULT_LOW_DATA_WARNING_RATIO))
-        low_threshold_bytes = max(low_threshold_bytes, pct_threshold)
-
-    if total_remaining_bytes <= max(1, low_threshold_bytes):
-        return "low"
-    return "ok"
-
-
-def _extract_data_allowance(payload):
-    if not isinstance(payload, dict):
-        return {
-            "included_limit_bytes": "",
-            "included_remaining_bytes": "",
-            "topup_remaining_bytes": "0",
-            "total_remaining_bytes": "",
-            "period_end": "",
-            "period": "month",
-            "counting_rule": DEFAULT_DATA_COUNTING_RULE,
-            "warning_state": "unknown",
-            "exhausted": "",
-            "downloaded_period_bytes": "",
-        }
-
-    allowance_obj = payload.get("data_allowance")
-    if not isinstance(allowance_obj, dict):
-        allowance_obj = payload.get("allowance")
-    if not isinstance(allowance_obj, dict):
-        allowance_obj = {}
-
-    included_limit_value = _parse_int_or_none(
-        allowance_obj.get(
-            "included_limit_bytes",
-            payload.get("included_limit_bytes", payload.get("monthly_included_bytes", "")),
-        )
-    )
-    included_remaining_value = _parse_int_or_none(
-        allowance_obj.get(
-            "included_remaining_bytes",
-            payload.get("included_remaining_bytes", payload.get("monthly_remaining_bytes", "")),
-        )
-    )
-    topup_remaining_value = _parse_int_or_none(
-        allowance_obj.get(
-            "topup_remaining_bytes",
-            payload.get("topup_remaining_bytes", payload.get("add_on_remaining_bytes", "")),
-        )
-    )
-    total_remaining_value = _parse_int_or_none(
-        allowance_obj.get(
-            "total_remaining_bytes",
-            payload.get("total_remaining_bytes", ""),
-        )
-    )
-    # Single-pool allowance model:
-    # show one remaining value in UI; extra/manual credits are folded into monthly remaining on backend.
-    if included_remaining_value is None and isinstance(total_remaining_value, int):
-        included_remaining_value = max(0, int(total_remaining_value))
-    if included_remaining_value is None and isinstance(topup_remaining_value, int):
-        included_remaining_value = max(0, int(topup_remaining_value))
-    if total_remaining_value is None and isinstance(included_remaining_value, int):
-        total_remaining_value = max(0, int(included_remaining_value))
-
-    exhausted_flag = _parse_bool(
-        allowance_obj.get("exhausted", payload.get("allowance_exhausted", "")),
-    )
-    warning_state_raw = str(
-        allowance_obj.get("warning_state", payload.get("allowance_warning_state", ""))
-    ).strip().lower()
-    warning_state = warning_state_raw or _compute_allowance_warning_state(
-        total_remaining_value,
-        included_limit_value,
-        exhausted_flag,
-    )
-    if warning_state not in {"ok", "low", "exhausted", "unknown"}:
-        warning_state = "unknown"
-
-    period_end = _first_non_empty(
-        allowance_obj.get("period_end"),
-        allowance_obj.get("period_ends_at"),
-        payload.get("allowance_period_end"),
-        payload.get("billing_period_end"),
-    )
-    period = _first_non_empty(
-        allowance_obj.get("period"),
-        payload.get("allowance_period"),
-        "month",
-    ).lower()
-    downloaded_period_value = _parse_int_or_none(
-        allowance_obj.get(
-            "downloaded_period_bytes",
-            payload.get("downloaded_period_bytes", payload.get("fresh_downloaded_period_bytes", "")),
-        )
-    )
-
-    counting_rule = _first_non_empty(
-        allowance_obj.get("counting_rule"),
-        payload.get("counting_rule"),
-        DEFAULT_DATA_COUNTING_RULE,
-    )
-
-    return {
-        "included_limit_bytes": "" if included_limit_value is None else str(max(0, int(included_limit_value))),
-        "included_remaining_bytes": "" if included_remaining_value is None else str(max(0, int(included_remaining_value))),
-        "topup_remaining_bytes": "0",
-        "total_remaining_bytes": "" if total_remaining_value is None else str(max(0, int(total_remaining_value))),
-        "period_end": str(period_end or "").strip(),
-        "period": str(period or "month"),
-        "counting_rule": str(counting_rule or DEFAULT_DATA_COUNTING_RULE).strip(),
-        "warning_state": str(warning_state or "unknown"),
-        "exhausted": "1" if (exhausted_flag or warning_state == "exhausted") else "0",
-        "downloaded_period_bytes": "" if downloaded_period_value is None else str(max(0, int(downloaded_period_value))),
-    }
-
-
 def _parse_iso_timestamp_seconds(value):
     text = str(value or "").strip()
     if not text:
@@ -557,26 +361,8 @@ def clear_auth_session(prefs=None, state="logged_out", status_message=""):
     prefs.auth_commercial_use_allowed = ""
     prefs.auth_plan_code = ""
     prefs.auth_plan_name = ""
-    prefs.auth_billing_period_end = ""
     prefs.auth_contact_url = ""
     prefs.auth_upgrade_url = ""
-    prefs.auth_topup_url = ""
-    prefs.auth_manage_subscription_url = ""
-    prefs.auth_tile_quota_used = ""
-    prefs.auth_tile_quota_limit = ""
-    prefs.auth_tile_quota_reset_at = ""
-    prefs.auth_tile_quota_period = ""
-    prefs.auth_tile_quota_rule = ""
-    prefs.auth_allowance_included_limit_bytes = ""
-    prefs.auth_allowance_included_remaining_bytes = ""
-    prefs.auth_allowance_topup_remaining_bytes = ""
-    prefs.auth_allowance_total_remaining_bytes = ""
-    prefs.auth_allowance_period_end = ""
-    prefs.auth_allowance_period = ""
-    prefs.auth_allowance_counting_rule = ""
-    prefs.auth_allowance_warning_state = ""
-    prefs.auth_allowance_exhausted = ""
-    prefs.auth_allowance_downloaded_period_bytes = ""
     prefs.auth_login_state = str(state or "logged_out")
     prefs.auth_status_message = str(status_message or "")
     _clear_pending_login_fields(prefs)
@@ -777,13 +563,6 @@ def get_commercial_use_allowed(prefs=None):
     return bool(_derive_commercial_use_allowed(get_plan_code(prefs)))
 
 
-def get_billing_period_end(prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        return ""
-    return str(getattr(prefs, "auth_billing_period_end", "") or "").strip()
-
-
 def get_upgrade_url(prefs=None):
     prefs = prefs or get_prefs()
     if prefs is None:
@@ -798,174 +577,6 @@ def get_contact_url(prefs=None):
         return DEFAULT_CONTACT_URL
     value = str(getattr(prefs, "auth_contact_url", "") or "").strip()
     return value or DEFAULT_CONTACT_URL
-
-
-def get_topup_url(prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        return DEFAULT_TOPUP_URL
-    value = str(getattr(prefs, "auth_topup_url", "") or "").strip()
-    return value or DEFAULT_TOPUP_URL
-
-
-def get_manage_subscription_url(prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        return DEFAULT_MANAGE_SUBSCRIPTION_URL
-    value = str(getattr(prefs, "auth_manage_subscription_url", "") or "").strip()
-    return value or DEFAULT_MANAGE_SUBSCRIPTION_URL
-
-
-def get_tile_quota_used(prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        return None
-    return _parse_int_or_none(getattr(prefs, "auth_tile_quota_used", ""))
-
-
-def get_tile_quota_limit(prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        return None
-    return _parse_int_or_none(getattr(prefs, "auth_tile_quota_limit", ""))
-
-
-def get_tile_quota_reset_at(prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        return ""
-    return str(getattr(prefs, "auth_tile_quota_reset_at", "") or "").strip()
-
-
-def get_tile_quota_period(prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        return "month_london"
-    value = str(getattr(prefs, "auth_tile_quota_period", "") or "").strip().lower()
-    return value or "month_london"
-
-
-def get_tile_quota_rule(prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        return ""
-    return str(getattr(prefs, "auth_tile_quota_rule", "") or "").strip()
-
-
-def get_tile_quota_remaining(prefs=None):
-    used = get_tile_quota_used(prefs)
-    limit = get_tile_quota_limit(prefs)
-    if not isinstance(limit, int):
-        return None
-    safe_used = max(0, int(used or 0))
-    return max(0, int(limit) - safe_used)
-
-
-def get_quality_mode_daily_quota_remaining(mode, prefs=None):
-    del mode, prefs
-    return None
-
-
-def get_quality_mode_monthly_quota_remaining(mode, prefs=None):
-    # Alias for clarity in newer UI/runtime paths.
-    return get_quality_mode_daily_quota_remaining(mode, prefs)
-
-
-def get_allowance_included_limit_bytes(prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        return None
-    return _parse_int_or_none(getattr(prefs, "auth_allowance_included_limit_bytes", ""))
-
-
-def get_allowance_included_remaining_bytes(prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        return None
-    return _parse_int_or_none(getattr(prefs, "auth_allowance_included_remaining_bytes", ""))
-
-
-def get_allowance_topup_remaining_bytes(prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        return None
-    return _parse_int_or_none(getattr(prefs, "auth_allowance_topup_remaining_bytes", ""))
-
-
-def get_allowance_total_remaining_bytes(prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        return None
-    included = get_allowance_included_remaining_bytes(prefs)
-    if isinstance(included, int):
-        return max(0, int(included))
-    parsed_total = _parse_int_or_none(getattr(prefs, "auth_allowance_total_remaining_bytes", ""))
-    if isinstance(parsed_total, int):
-        return max(0, int(parsed_total))
-    topup = get_allowance_topup_remaining_bytes(prefs)
-    if isinstance(topup, int):
-        return max(0, int(topup))
-    return None
-
-
-def get_allowance_period_end(prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        return ""
-    value = str(getattr(prefs, "auth_allowance_period_end", "") or "").strip()
-    if value:
-        return value
-    return str(getattr(prefs, "auth_billing_period_end", "") or "").strip()
-
-
-def get_allowance_period(prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        return "month"
-    value = str(getattr(prefs, "auth_allowance_period", "") or "").strip().lower()
-    return value or "month"
-
-
-def get_allowance_counting_rule(prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        return DEFAULT_DATA_COUNTING_RULE
-    value = str(getattr(prefs, "auth_allowance_counting_rule", "") or "").strip()
-    return value or DEFAULT_DATA_COUNTING_RULE
-
-
-def get_allowance_warning_state(prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        return "unknown"
-    value = str(getattr(prefs, "auth_allowance_warning_state", "") or "").strip().lower()
-    if value in {"ok", "low", "exhausted", "unknown"}:
-        return value
-    return _compute_allowance_warning_state(
-        get_allowance_total_remaining_bytes(prefs),
-        get_allowance_included_limit_bytes(prefs),
-        is_data_exhausted(prefs),
-    )
-
-
-def is_data_exhausted(prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        return False
-    explicit = str(getattr(prefs, "auth_allowance_exhausted", "") or "").strip().lower()
-    if explicit in {"1", "true", "yes"}:
-        return True
-    total = get_allowance_total_remaining_bytes(prefs)
-    return isinstance(total, int) and total <= 0
-
-
-def get_allowance_downloaded_period_bytes(prefs=None):
-    prefs = prefs or get_prefs()
-    if prefs is None:
-        return None
-    return _parse_int_or_none(getattr(prefs, "auth_allowance_downloaded_period_bytes", ""))
-
-
 def _mask_api_key(value):
     token = str(value or "").strip()
     if not token:
@@ -1120,27 +731,7 @@ def connect_with_prefs_api_key(prefs=None):
     return connect_with_api_key(entered, prefs=prefs)
 
 
-def _apply_data_allowance_fields(prefs, payload):
-    allowance = _extract_data_allowance(payload)
-    prefs.auth_allowance_included_limit_bytes = allowance["included_limit_bytes"]
-    prefs.auth_allowance_included_remaining_bytes = allowance["included_remaining_bytes"]
-    prefs.auth_allowance_topup_remaining_bytes = allowance["topup_remaining_bytes"]
-    prefs.auth_allowance_total_remaining_bytes = allowance["total_remaining_bytes"]
-    prefs.auth_allowance_period_end = allowance["period_end"]
-    prefs.auth_allowance_period = allowance["period"]
-    prefs.auth_allowance_counting_rule = allowance["counting_rule"]
-    prefs.auth_allowance_warning_state = allowance["warning_state"]
-    prefs.auth_allowance_exhausted = allowance["exhausted"]
-    prefs.auth_allowance_downloaded_period_bytes = allowance["downloaded_period_bytes"]
-
-
 def _apply_auth_payload(prefs, payload, login_state="authenticated", status_message=""):
-    allowance_obj = payload.get("data_allowance")
-    if not isinstance(allowance_obj, dict):
-        allowance_obj = payload.get("allowance")
-    if not isinstance(allowance_obj, dict):
-        allowance_obj = {}
-
     prefs.auth_email = str(payload.get("email", "") or "").strip()
     prefs.auth_access_token = str(payload.get("access_token", "") or "").strip()
     prefs.auth_refresh_token = str(payload.get("refresh_token", "") or "").strip()
@@ -1153,34 +744,11 @@ def _apply_auth_payload(prefs, payload, login_state="authenticated", status_mess
     prefs.auth_commercial_use_allowed = "1" if _extract_commercial_use_allowed(payload, plan=plan) else "0"
     account_tier = _extract_account_tier(payload) or _normalize_account_tier(plan["code"])
     prefs.auth_account_tier = account_tier or ACCOUNT_TIER_FREE
-    prefs.auth_billing_period_end = _first_non_empty(
-        payload.get("billing_period_end"),
-        allowance_obj.get("period_end"),
-        allowance_obj.get("period_ends_at"),
-    )
     prefs.auth_contact_url = _first_non_empty(
         payload.get("contact_url"),
         payload.get("support_url"),
-        allowance_obj.get("contact_url"),
-        allowance_obj.get("support_url"),
     )
-    prefs.auth_upgrade_url = _first_non_empty(payload.get("upgrade_url"), allowance_obj.get("upgrade_url"))
-    prefs.auth_topup_url = _first_non_empty(
-        payload.get("topup_url"),
-        payload.get("purchase_topup_url"),
-        allowance_obj.get("topup_url"),
-    )
-    prefs.auth_manage_subscription_url = _first_non_empty(
-        payload.get("manage_subscription_url"),
-        allowance_obj.get("manage_subscription_url"),
-    )
-    quota = _extract_tile_quota(payload)
-    prefs.auth_tile_quota_used = quota["used"]
-    prefs.auth_tile_quota_limit = quota["limit"]
-    prefs.auth_tile_quota_reset_at = quota["reset_at"]
-    prefs.auth_tile_quota_period = quota["period"]
-    prefs.auth_tile_quota_rule = quota["rule"]
-    _apply_data_allowance_fields(prefs, payload)
+    prefs.auth_upgrade_url = _first_non_empty(payload.get("upgrade_url"))
     prefs.auth_login_state = str(login_state or "authenticated")
     throttle_status_message = _build_throttle_status_message(payload)
     if throttle_status_message:
@@ -1195,12 +763,6 @@ def _apply_auth_payload(prefs, payload, login_state="authenticated", status_mess
 def _apply_account_profile_fields(prefs, payload):
     if not isinstance(payload, dict):
         return
-    allowance_obj = payload.get("data_allowance")
-    if not isinstance(allowance_obj, dict):
-        allowance_obj = payload.get("allowance")
-    if not isinstance(allowance_obj, dict):
-        allowance_obj = {}
-
     email = str(payload.get("email", "") or "").strip()
     if email:
         prefs.auth_email = email
@@ -1216,49 +778,16 @@ def _apply_account_profile_fields(prefs, payload):
     if account_tier:
         prefs.auth_account_tier = account_tier
 
-    billing_period_end = _first_non_empty(
-        payload.get("billing_period_end"),
-        allowance_obj.get("period_end"),
-        allowance_obj.get("period_ends_at"),
-    )
-    if billing_period_end:
-        prefs.auth_billing_period_end = billing_period_end
-
     contact_url = _first_non_empty(
         payload.get("contact_url"),
         payload.get("support_url"),
-        allowance_obj.get("contact_url"),
-        allowance_obj.get("support_url"),
     )
     if contact_url:
         prefs.auth_contact_url = contact_url
 
-    upgrade_url = _first_non_empty(payload.get("upgrade_url"), allowance_obj.get("upgrade_url"))
+    upgrade_url = _first_non_empty(payload.get("upgrade_url"))
     if upgrade_url:
         prefs.auth_upgrade_url = upgrade_url
-
-    topup_url = _first_non_empty(
-        payload.get("topup_url"),
-        payload.get("purchase_topup_url"),
-        allowance_obj.get("topup_url"),
-    )
-    if topup_url:
-        prefs.auth_topup_url = topup_url
-
-    manage_subscription_url = _first_non_empty(
-        payload.get("manage_subscription_url"),
-        allowance_obj.get("manage_subscription_url"),
-    )
-    if manage_subscription_url:
-        prefs.auth_manage_subscription_url = manage_subscription_url
-
-    quota = _extract_tile_quota(payload)
-    prefs.auth_tile_quota_used = quota["used"]
-    prefs.auth_tile_quota_limit = quota["limit"]
-    prefs.auth_tile_quota_reset_at = quota["reset_at"]
-    prefs.auth_tile_quota_period = quota["period"]
-    prefs.auth_tile_quota_rule = quota["rule"]
-    _apply_data_allowance_fields(prefs, payload)
     throttle_status_message = _build_throttle_status_message(payload)
     if throttle_status_message:
         prefs.auth_status_message = throttle_status_message

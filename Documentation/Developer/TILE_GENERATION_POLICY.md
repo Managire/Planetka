@@ -28,6 +28,32 @@ This is a hard rule for Planetka source tile generation.
 - Do **not** add contrast tweaks.
 - Do **not** add noise reduction.
 
+## Intentional Ocean Fallback Policy
+
+Ocean-only tiles are intentionally not generated or stored in the source dataset.
+
+Planetka uses constant-color fallback textures for those tiles on purpose:
+
+- `S2` ocean-only tiles use the bundled ocean fallback.
+- `WT` ocean-only tiles use the bundled blue fallback.
+- `EL` / `PO` ocean-only support paths use their bundled fallback textures where applicable.
+
+This is normal addon behavior, not a source-data defect. Creating full source tiles for ocean-only regions would not improve visible output and would only increase storage and transfer cost.
+
+## How Planetka Distinguishes Ocean-Only vs Real Missing Data
+
+Planetka does not treat every fallback assignment as a broken asset.
+
+- `coverage.py` contains the non-ocean S2 tile coverage map used to decide whether a tile is expected to exist as land data or is an ocean-only tile.
+- Bundled tile/asset indices are used together with coverage checks when resolving whether a requested tile is expected to exist in source data.
+- If a tile is outside the known non-ocean coverage, fallback use is expected and acceptable.
+- If a tile is inside known coverage but the required source asset is unavailable, that is a genuine missing-data case and should be treated as a defect.
+
+Operational rule:
+
+- Ocean-only fallback use in logs, diagnostics, or stress runs is acceptable.
+- Land-tile fallback use inside covered regions is not acceptable and should be investigated as missing source data, packaging drift, or cache/streaming failure.
+
 ## WT Fallback Policy (Generation)
 
 - Default WT fallback for missing source tiles: **blue**

@@ -3,7 +3,7 @@ Planetka large-tile resolve speed benchmark.
 
 - Picks the largest S2_*_z001_d001.exr tiles from local Planetka Assets.
 - Positions camera above a tile-corner target so resolve is pushed to fetch a multi-tile neighborhood.
-- Runs Resolve (no render), captures download metrics and allowance delta.
+- Runs Resolve (no render) and captures download metrics.
 - Compares with local network quality test output (run separately in shell).
 
 Usage:
@@ -242,16 +242,6 @@ def _corner_neighbor_tiles(x: int, y: int):
     )
 
 
-def _usage_bytes(auth_module, prefs):
-    value = auth_module.get_allowance_downloaded_period_bytes(prefs)
-    if value is None:
-        return 0
-    try:
-        return int(max(0, int(value)))
-    except Exception:
-        return 0
-
-
 def _pick_largest_tiles(assets_dir: str, count: int):
     s2_dir = os.path.join(assets_dir, "S2")
     if not os.path.isdir(s2_dir):
@@ -447,16 +437,10 @@ def main():
 
             _set_camera_direct(camera, earth_obj, target_lon, target_lat, altitude_km, azimuth_deg=45.0, tilt_deg=0.0)
 
-            auth_module.sync_account_profile(prefs)
-            before_bytes = _usage_bytes(auth_module, prefs)
-
             resolve_start = time.perf_counter()
             resolve_result = bpy.ops.planetka.load_textures(scope_mode="CAMERA", skip_render_compatibility=True)
             resolve_wall_ms = (time.perf_counter() - resolve_start) * 1000.0
             _assert("FINISHED" in resolve_result, f"Resolve failed for {tile['name']}: {resolve_result}")
-
-            auth_module.sync_account_profile(prefs)
-            after_bytes = _usage_bytes(auth_module, prefs)
 
             diag = diagnostics.read_diagnostics(scene)
             downloaded_mb_local = float(diag.get("resolve_downloaded_mb") or 0.0)
@@ -464,12 +448,6 @@ def main():
             speed_mb_s_local = 0.0
             if downloaded_ms_local > 0.0:
                 speed_mb_s_local = downloaded_mb_local / (downloaded_ms_local / 1000.0)
-
-            allowance_delta_bytes = max(0, int(after_bytes - before_bytes))
-            allowance_delta_mb = allowance_delta_bytes / (1024.0 * 1024.0)
-            speed_mb_s_allowance = 0.0
-            if downloaded_ms_local > 0.0:
-                speed_mb_s_allowance = allowance_delta_mb / (downloaded_ms_local / 1000.0)
 
             row = {
                 "case": i,
@@ -484,21 +462,17 @@ def main():
                 "resolve_downloaded_mb_local": round(downloaded_mb_local, 6),
                 "resolve_download_ms_local": round(downloaded_ms_local, 6),
                 "resolve_speed_mb_s_local": round(speed_mb_s_local, 6),
-                "allowance_delta_bytes": allowance_delta_bytes,
-                "allowance_delta_mb": round(allowance_delta_mb, 6),
-                "allowance_speed_mb_s_using_diag_time": round(speed_mb_s_allowance, 6),
                 "resolve_tile_count": diag.get("last_tile_count"),
                 "resolve_textures_mb": diag.get("resolve_textures_mb"),
             }
             results.append(row)
             _log(
                 f"Case {i:02d} {tile['name']}: local={row['resolve_speed_mb_s_local']:.2f} MB/s, "
-                f"allowance={row['allowance_speed_mb_s_using_diag_time']:.2f} MB/s, "
                 f"download(all tiles/types)={row['resolve_downloaded_mb_local']:.2f} MB, "
                 f"resolved_tiles={row['resolve_tile_count']}"
             )
 
-        valid_speeds = [r["allowance_speed_mb_s_using_diag_time"] for r in results if r["allowance_speed_mb_s_using_diag_time"] > 0]
+        valid_speeds = [r["resolve_speed_mb_s_local"] for r in results if r["resolve_speed_mb_s_local"] > 0]
         avg_speed = sum(valid_speeds) / float(len(valid_speeds)) if valid_speeds else 0.0
         total_downloaded_mb = sum(float(row.get("resolve_downloaded_mb_local", 0.0) or 0.0) for row in results)
 
@@ -509,7 +483,7 @@ def main():
             "altitude_km": altitude_km,
             "cache_root": cache_root,
             "elapsed_sec": round(time.time() - started, 3),
-            "avg_allowance_speed_mb_s": round(avg_speed, 6),
+            "avg_resolve_speed_mb_s": round(avg_speed, 6),
             "total_downloaded_mb_local": round(total_downloaded_mb, 6),
             "cases": results,
         }
@@ -518,7 +492,7 @@ def main():
             json.dump(report, fh, indent=2, ensure_ascii=True)
 
         _log(f"Report written: {report_path}")
-        _log(f"Average allowance-based speed: {avg_speed:.2f} MB/s")
+        _log(f"Average resolve speed: {avg_speed:.2f} MB/s")
         _log(f"Total downloaded (all tiles/types): {total_downloaded_mb:.2f} MB")
     except SystemExit:
         raise

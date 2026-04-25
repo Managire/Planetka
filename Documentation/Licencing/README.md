@@ -17,6 +17,8 @@ Service terms note:
 - Planetka account access and hosted tile delivery are governed separately by
   `TERMS_OF_SERVICE.md`.
 - Privacy and telemetry handling are described in `PRIVACY_POLICY.md`.
+- Current `v0.7.0` beta note: newly issued beta accounts are currently
+  provisioned as `Commercial` by default for testing.
 - Commercial-use scope by tier:
   - Free: personal / non-commercial use only
   - Personal: personal / non-commercial use only

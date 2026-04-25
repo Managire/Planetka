@@ -16,6 +16,9 @@ This folder contains release-process documents for public extension builds:
 Planetka is currently in **Public Beta**.
 
 - Beta distribution is for tester feedback and stability validation.
+- Newly issued `v0.7.0` beta access is currently provisioned as `Commercial` by default for testing.
+- The long-term product model still defines `Free`, `Personal`, and `Commercial` tiers, but that broader tier rollout is not the current beta-onboarding behavior.
+- EEVEE and Cycles are both supported in the current beta candidate.
 - Terms for beta access are in `Documentation/Licencing/TERMS_OF_SERVICE.md`.
 
 ## Required Release Gate
