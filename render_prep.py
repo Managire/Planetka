@@ -121,6 +121,21 @@ class ResolveStreamingResult:
 
 
 @dataclass
+class ResolveStreamingPayloadData:
+    resolved_paths: dict = field(default_factory=dict)
+    resolved_tiles_override: object = None
+    ocean_tiles_override: object = None
+    full_quality_cost_bytes: int = 0
+    download_capture: dict = field(default_factory=dict)
+    prefetch_missing_count: int = 0
+    prefetch_resolved_count: int = 0
+    prefetch_error_count: int = 0
+    prefetch_missing_details: list = field(default_factory=list)
+    prefetch_cancelled: bool = False
+    prefetch_fatal_error: str = ""
+
+
+@dataclass
 class ResolveBuildResult:
     response: object = None
     new_obj: object = None
@@ -1020,84 +1035,17 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         nav_altitude_km,
     ):
         ui_reports = []
-        resolved_paths = {}
-        resolved_tiles_override = None
-        ocean_tiles_override = None
-        full_quality_cost_bytes = 0
-        prefetch_missing_count = 0
-        prefetch_resolved_count = 0
-        prefetch_error_count = 0
-        prefetch_missing_details = []
-        prefetch_cancelled = False
-        prefetch_fatal_error = ""
-        download_capture = {
-            "downloaded_bytes": 0,
-            "download_ms": 0.0,
-        }
         phase_start = time.perf_counter()
         try:
-            stream_payload = consume_staged_prefetch_payload(
-                tiles,
-                normalized,
+            stream_payload = self._get_stream_payload(
+                tiles=tiles,
+                normalized=normalized,
                 texture_quality_mode=texture_quality_mode,
+                nav_latitude_deg=nav_latitude_deg,
+                nav_longitude_deg=nav_longitude_deg,
+                nav_altitude_km=nav_altitude_km,
             )
-            if not isinstance(stream_payload, dict):
-                stream_payload = prepare_resolve_streaming_for_visible_tiles(
-                    tiles,
-                    normalized,
-                    capture=True,
-                    texture_quality_mode=texture_quality_mode,
-                    nav_latitude_deg=nav_latitude_deg,
-                    nav_longitude_deg=nav_longitude_deg,
-                    nav_altitude_km=nav_altitude_km,
-                )
-            elif _normalize_texture_quality_mode(stream_payload.get("texture_quality_mode", "PREVIEW")) != texture_quality_mode:
-                stream_payload = prepare_resolve_streaming_for_visible_tiles(
-                    tiles,
-                    normalized,
-                    capture=True,
-                    texture_quality_mode=texture_quality_mode,
-                    nav_latitude_deg=nav_latitude_deg,
-                    nav_longitude_deg=nav_longitude_deg,
-                    nav_altitude_km=nav_altitude_km,
-                )
-            if bool(stream_payload.get("cancelled", False)):
-                return ResolveStreamingResult(
-                    response=fail(
-                        self,
-                        "Planetka resolve download was cancelled.",
-                        code=ErrorCode.RESOLVE_REFRESH_FAILED,
-                        logger=logger,
-                    ),
-                    ui_reports=ui_reports,
-                )
-            resolved_paths = dict(stream_payload.get("resolved_paths", {}) or {})
-            resolved_tiles_override = list(stream_payload.get("resolved_tiles", ()) or ())
-            ocean_tiles_override = set(stream_payload.get("ocean_tiles", ()) or ())
-            prefetch_payload = stream_payload.get("prefetch_result", {})
-            if isinstance(prefetch_payload, dict):
-                try:
-                    prefetch_missing_count = int(prefetch_payload.get("missing_count", 0) or 0)
-                except (TypeError, ValueError):
-                    prefetch_missing_count = 0
-                try:
-                    prefetch_resolved_count = int(prefetch_payload.get("resolved_count", 0) or 0)
-                except (TypeError, ValueError):
-                    prefetch_resolved_count = 0
-                try:
-                    prefetch_error_count = int(prefetch_payload.get("error_count", 0) or 0)
-                except (TypeError, ValueError):
-                    prefetch_error_count = 0
-                details_payload = prefetch_payload.get("missing_details", ())
-                if isinstance(details_payload, (list, tuple)):
-                    prefetch_missing_details = [dict(item) for item in details_payload if isinstance(item, dict)]
-                prefetch_cancelled = bool(prefetch_payload.get("cancelled", False))
-                prefetch_fatal_error = str(prefetch_payload.get("fatal_error", "") or "").strip()
-            capture_payload = stream_payload.get("download_capture", {})
-            if isinstance(capture_payload, dict):
-                download_capture = capture_payload
-            # Full-quality cost estimation intentionally disabled.
-            # Resolve should avoid extra planning work and start downloads immediately.
+            payload_data = self._parse_stream_payload(stream_payload)
         except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
             return ResolveStreamingResult(
                 response=fail(
@@ -1120,48 +1068,151 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 ),
                 ui_reports=ui_reports,
             )
-        if prefetch_fatal_error:
-            coded_fatal_message = with_error_code(ErrorCode.RESOLVE_REFRESH_FAILED, prefetch_fatal_error)
+
+        policy_response = self._enforce_streaming_result_policy(scene, payload_data)
+        if policy_response is not None:
+            return ResolveStreamingResult(response=policy_response, ui_reports=ui_reports)
+
+        return ResolveStreamingResult(
+            response=None,
+            resolved_paths=dict(payload_data.resolved_paths or {}),
+            resolved_tiles_override=payload_data.resolved_tiles_override,
+            ocean_tiles_override=payload_data.ocean_tiles_override,
+            full_quality_cost_bytes=int(payload_data.full_quality_cost_bytes or 0),
+            download_capture=dict(payload_data.download_capture or {}),
+            phase_stream_ms=(time.perf_counter() - phase_start) * 1000.0,
+            ui_reports=ui_reports,
+        )
+
+    def _get_stream_payload(
+        self,
+        *,
+        tiles,
+        normalized,
+        texture_quality_mode,
+        nav_latitude_deg,
+        nav_longitude_deg,
+        nav_altitude_km,
+    ):
+        stream_payload = consume_staged_prefetch_payload(
+            tiles,
+            normalized,
+            texture_quality_mode=texture_quality_mode,
+        )
+        if not isinstance(stream_payload, dict):
+            return prepare_resolve_streaming_for_visible_tiles(
+                tiles,
+                normalized,
+                texture_quality_mode=texture_quality_mode,
+                capture=True,
+                nav_latitude_deg=nav_latitude_deg,
+                nav_longitude_deg=nav_longitude_deg,
+                nav_altitude_km=nav_altitude_km,
+            )
+        if _normalize_texture_quality_mode(stream_payload.get("texture_quality_mode", "PREVIEW")) != texture_quality_mode:
+            return prepare_resolve_streaming_for_visible_tiles(
+                tiles,
+                normalized,
+                capture=True,
+                texture_quality_mode=texture_quality_mode,
+                nav_latitude_deg=nav_latitude_deg,
+                nav_longitude_deg=nav_longitude_deg,
+                nav_altitude_km=nav_altitude_km,
+            )
+        return stream_payload
+
+    def _parse_stream_payload(self, stream_payload):
+        resolved_paths = dict(stream_payload.get("resolved_paths", {}) or {})
+        resolved_tiles_override = list(stream_payload.get("resolved_tiles", ()) or ())
+        ocean_tiles_override = set(stream_payload.get("ocean_tiles", ()) or ())
+        download_capture = {
+            "downloaded_bytes": 0,
+            "download_ms": 0.0,
+        }
+        prefetch_missing_count = 0
+        prefetch_resolved_count = 0
+        prefetch_error_count = 0
+        prefetch_missing_details = []
+        prefetch_cancelled = bool(stream_payload.get("cancelled", False))
+        prefetch_fatal_error = ""
+
+        prefetch_payload = stream_payload.get("prefetch_result", {})
+        if isinstance(prefetch_payload, dict):
+            try:
+                prefetch_missing_count = int(prefetch_payload.get("missing_count", 0) or 0)
+            except (TypeError, ValueError):
+                prefetch_missing_count = 0
+            try:
+                prefetch_resolved_count = int(prefetch_payload.get("resolved_count", 0) or 0)
+            except (TypeError, ValueError):
+                prefetch_resolved_count = 0
+            try:
+                prefetch_error_count = int(prefetch_payload.get("error_count", 0) or 0)
+            except (TypeError, ValueError):
+                prefetch_error_count = 0
+            details_payload = prefetch_payload.get("missing_details", ())
+            if isinstance(details_payload, (list, tuple)):
+                prefetch_missing_details = [dict(item) for item in details_payload if isinstance(item, dict)]
+            prefetch_cancelled = bool(prefetch_payload.get("cancelled", False)) or prefetch_cancelled
+            prefetch_fatal_error = str(prefetch_payload.get("fatal_error", "") or "").strip()
+        capture_payload = stream_payload.get("download_capture", {})
+        if isinstance(capture_payload, dict):
+            download_capture = capture_payload
+
+        return ResolveStreamingPayloadData(
+            resolved_paths=resolved_paths,
+            resolved_tiles_override=resolved_tiles_override,
+            ocean_tiles_override=ocean_tiles_override,
+            full_quality_cost_bytes=0,
+            download_capture=dict(download_capture or {}),
+            prefetch_missing_count=int(prefetch_missing_count or 0),
+            prefetch_resolved_count=int(prefetch_resolved_count or 0),
+            prefetch_error_count=int(prefetch_error_count or 0),
+            prefetch_missing_details=list(prefetch_missing_details or ()),
+            prefetch_cancelled=bool(prefetch_cancelled),
+            prefetch_fatal_error=prefetch_fatal_error,
+        )
+
+    def _enforce_streaming_result_policy(self, scene, payload_data):
+        if bool(payload_data.prefetch_fatal_error):
+            coded_fatal_message = with_error_code(
+                ErrorCode.RESOLVE_REFRESH_FAILED,
+                payload_data.prefetch_fatal_error,
+            )
             _store_last_resolve_error(
                 scene,
                 coded_fatal_message,
                 "failed storing fatal resolve error on scene",
             )
-            return ResolveStreamingResult(
-                response=fail(
-                    self,
-                    prefetch_fatal_error,
-                    code=ErrorCode.RESOLVE_REFRESH_FAILED,
-                    logger=logger,
-                ),
-                ui_reports=ui_reports,
+            return fail(
+                self,
+                payload_data.prefetch_fatal_error,
+                code=ErrorCode.RESOLVE_REFRESH_FAILED,
+                logger=logger,
             )
-        if prefetch_cancelled:
-            return ResolveStreamingResult(
-                response=fail(
-                    self,
-                    "Planetka resolve download was cancelled.",
-                    code=ErrorCode.RESOLVE_REFRESH_FAILED,
-                    logger=logger,
-                ),
-                ui_reports=ui_reports,
+        if bool(payload_data.prefetch_cancelled):
+            return fail(
+                self,
+                "Planetka resolve download was cancelled.",
+                code=ErrorCode.RESOLVE_REFRESH_FAILED,
+                logger=logger,
             )
-        if int(prefetch_missing_count) > 0:
+        if int(payload_data.prefetch_missing_count) > 0:
             missing_s2_count = 0
-            if prefetch_missing_details:
-                for entry in prefetch_missing_details:
+            if payload_data.prefetch_missing_details:
+                for entry in payload_data.prefetch_missing_details:
                     folder_value = str(entry.get("folder", "") or "").strip().upper()
                     if folder_value == "S2":
                         missing_s2_count += 1
             logger.warning(
                 "Planetka: resolve prefetch missing files (missing=%d resolved=%d errors=%d, missing_s2=%d).",
-                int(prefetch_missing_count),
-                int(prefetch_resolved_count),
-                int(prefetch_error_count),
+                int(payload_data.prefetch_missing_count),
+                int(payload_data.prefetch_resolved_count),
+                int(payload_data.prefetch_error_count),
                 int(missing_s2_count),
             )
-            if prefetch_missing_details:
-                for entry in prefetch_missing_details:
+            if payload_data.prefetch_missing_details:
+                for entry in payload_data.prefetch_missing_details:
                     logger.warning(
                         "Planetka prefetch missing asset: key=%s tile=%s cache_exists=%s remote_exists=%s fetch_error=%s remote_error=%s",
                         str(entry.get("key", "") or ""),
@@ -1174,8 +1225,8 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             if int(missing_s2_count) > 0:
                 missing_message = (
                     "Planetka resolve download completed with missing required S2 files "
-                    f"({int(missing_s2_count)} S2 missing, {int(prefetch_missing_count)} total missing, "
-                    f"{int(prefetch_resolved_count)} resolved, {int(prefetch_error_count)} errors)."
+                    f"({int(missing_s2_count)} S2 missing, {int(payload_data.prefetch_missing_count)} total missing, "
+                    f"{int(payload_data.prefetch_resolved_count)} resolved, {int(payload_data.prefetch_error_count)} errors)."
                 )
                 coded_missing_message = with_error_code(ErrorCode.RESOLVE_REFRESH_FAILED, missing_message)
                 _store_last_resolve_error(
@@ -1183,26 +1234,13 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                     coded_missing_message,
                     "failed storing missing-file resolve error on scene",
                 )
-                return ResolveStreamingResult(
-                    response=fail(
-                        self,
-                        missing_message,
-                        code=ErrorCode.RESOLVE_REFRESH_FAILED,
-                        logger=logger,
-                    ),
-                    ui_reports=ui_reports,
+                return fail(
+                    self,
+                    missing_message,
+                    code=ErrorCode.RESOLVE_REFRESH_FAILED,
+                    logger=logger,
                 )
-
-        return ResolveStreamingResult(
-            response=None,
-            resolved_paths=dict(resolved_paths or {}),
-            resolved_tiles_override=resolved_tiles_override,
-            ocean_tiles_override=ocean_tiles_override,
-            full_quality_cost_bytes=int(full_quality_cost_bytes or 0),
-            download_capture=dict(download_capture or {}),
-            phase_stream_ms=(time.perf_counter() - phase_start) * 1000.0,
-            ui_reports=ui_reports,
-        )
+        return None
 
     def _phase_build_surface(
         self,
