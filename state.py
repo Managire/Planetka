@@ -34,6 +34,7 @@ from .planetka_runtime.mesh_lifecycle import (
     warm_base_sphere_mesh_cache,
 )
 from .planetka_runtime import cache_recovery as _cache_recovery
+from .planetka_runtime import scene_sync as _scene_sync
 from .scene_schema import migrate_scene_schema
 
 
@@ -372,26 +373,13 @@ def _resolve_trace(message):
 
 
 def _clear_status_notices(scene):
-    if scene is None:
-        return
-    try:
-        skip_count = int(scene.get(_STATUS_NOTICE_CLEAR_SKIP_KEY, 0) or 0)
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-        skip_count = 0
-    if skip_count > 0:
-        try:
-            scene[_STATUS_NOTICE_CLEAR_SKIP_KEY] = max(0, int(skip_count) - 1)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-            pass
-        return
-    for key in _STATUS_NOTICE_KEYS:
-        try:
-            if key in scene:
-                del scene[key]
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed clearing status notice key %s", key, exc_info=True)
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka: failed clearing status notice key %s", key, exc_info=True)
+    return _scene_sync.clear_status_notices(
+        scene,
+        status_notice_clear_skip_key=_STATUS_NOTICE_CLEAR_SKIP_KEY,
+        status_notice_keys=_STATUS_NOTICE_KEYS,
+        recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
+        logger=logger,
+    )
 
 
 def _active_view_signature():
@@ -500,33 +488,7 @@ def _get_coverage_map():
 
 
 def _iter_scenes():
-    return tuple(getattr(bpy.data, "scenes", ()))
-
-
-def _coerce_storage_value(value):
-    if isinstance(value, (list, tuple)):
-        return list(value)
-    return value
-
-
-def _iter_sync_idprop_pairs(prop_names=None):
-    if prop_names is None:
-        for prop_name, scene_key in _SYNC_IDPROP_MAP.items():
-            yield prop_name, scene_key
-        return
-
-    if isinstance(prop_names, str):
-        names = (prop_names,)
-    else:
-        names = tuple(prop_names or ())
-
-    for prop_name in names:
-        if not prop_name:
-            continue
-        scene_key = _SYNC_IDPROP_MAP.get(str(prop_name))
-        if scene_key is None:
-            continue
-        yield str(prop_name), scene_key
+    return _scene_sync.iter_scenes(bpy)
 
 
 def _sync_idprops_from_props(scene, prop_names=None):
@@ -538,13 +500,14 @@ def _sync_idprops_from_props(scene, prop_names=None):
         return
     _IDPROP_SYNCING = True
     try:
-        for prop_name, scene_key in _iter_sync_idprop_pairs(prop_names):
-            if not hasattr(props, prop_name):
-                continue
-            try:
-                scene[scene_key] = _coerce_storage_value(getattr(props, prop_name))
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                logger.debug("Planetka: failed syncing idprop %s", scene_key, exc_info=True)
+        _scene_sync.sync_idprops_from_props(
+            scene,
+            props,
+            sync_idprop_map=_SYNC_IDPROP_MAP,
+            recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
+            logger=logger,
+            prop_names=prop_names,
+        )
     finally:
         _IDPROP_SYNCING = False
 
@@ -558,13 +521,13 @@ def _sync_navigation_idprops_from_props(scene):
         return
     _IDPROP_SYNCING = True
     try:
-        for prop_name, scene_key in _NAVIGATION_SYNC_IDPROP_MAP:
-            if not hasattr(props, prop_name):
-                continue
-            try:
-                scene[scene_key] = _coerce_storage_value(getattr(props, prop_name))
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                logger.debug("Planetka: failed syncing navigation idprop %s", scene_key, exc_info=True)
+        _scene_sync.sync_navigation_idprops_from_props(
+            scene,
+            props,
+            navigation_sync_idprop_map=_NAVIGATION_SYNC_IDPROP_MAP,
+            recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
+            logger=logger,
+        )
     finally:
         _IDPROP_SYNCING = False
 
@@ -578,19 +541,13 @@ def _sync_props_from_idprops(scene):
         return
     _IDPROP_SYNCING = True
     try:
-        for prop_name, scene_key in _SYNC_IDPROP_MAP.items():
-            if scene_key not in scene or not hasattr(props, prop_name):
-                continue
-            value = scene.get(scene_key)
-            try:
-                current = getattr(props, prop_name)
-                if isinstance(current, (list, tuple)) and isinstance(value, (list, tuple)):
-                    setattr(props, prop_name, tuple(value))
-                else:
-                    setattr(props, prop_name, value)
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                logger.debug("Planetka: failed restoring prop %s", prop_name, exc_info=True)
-
+        _scene_sync.sync_props_from_idprops(
+            scene,
+            props,
+            sync_idprop_map=_SYNC_IDPROP_MAP,
+            recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
+            logger=logger,
+        )
     finally:
         _IDPROP_SYNCING = False
 
