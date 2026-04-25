@@ -45,6 +45,13 @@ import {
   isAdminRoutePath,
 } from "./worker/admin_routes.js";
 import {
+  buildAdminSessionClearCookie,
+  buildAdminSessionCookie,
+  readBearerToken,
+  requireAnalyticsAdmin,
+  requireAuthenticatedUserContext,
+} from "./worker/auth_session.js";
+import {
   handleTileRequest as handleTileRequestRoute,
   handleTileSessionStart as handleTileSessionStartRoute,
 } from "./worker/tile_routes.js";
@@ -177,6 +184,28 @@ let cloudflareR2BillableUsageCache = {
 };
 let authContextCache = new Map();
 let tileSessionThrottleGateCache = new Map();
+
+const AUTH_SESSION_DEPS = {
+  authContextCacheGet,
+  authContextCacheSet,
+  blockedAccountResponse,
+  enforceApiKeyDeviceLimit,
+  enforceUserPlanPolicy,
+  findUserById,
+  isAnalyticsAdmin,
+  isApiKeyUsableById,
+  isBlockedStatus,
+  isPrimaryAnalyticsAdmin,
+  isUnconfirmedProvisionalActive,
+  json,
+  normalizeDeviceId,
+  normalizeRequestedPlan,
+  parseBooleanFlag,
+  requireDb,
+  requireSecret,
+  resolvePlanCode,
+  verifyJwt,
+};
 
 function nowIso() {
   return new Date().toISOString();
@@ -6448,31 +6477,6 @@ async function createStripeRefundForCheckoutSession(env, session, details = {}) 
   };
 }
 
-function readBearerToken(request) {
-  const header = String(request.headers.get("Authorization") || "");
-  if (!header.startsWith("Bearer ")) {
-    return "";
-  }
-  const token = header.slice("Bearer ".length).trim();
-  if (!token) {
-    return "";
-  }
-  return token;
-}
-
-async function readBearerUser(request, env) {
-  const token = readBearerToken(request);
-  if (!token) {
-    return null;
-  }
-  const secret = requireSecret(env, "JWT_SIGNING_SECRET");
-  const payload = await verifyJwt(token, secret);
-  if (payload.type !== "access" || !payload.sub) {
-    throw new Error("invalid_access_token");
-  }
-  return payload;
-}
-
 function genericAuthStartResponse(env) {
   return json(
     {
@@ -7874,6 +7878,7 @@ async function handleMe(request, env) {
     request,
     env,
     { enforceApiKeyDevicePolicy: true },
+    AUTH_SESSION_DEPS,
   );
   if (auth.error) {
     return auth.error;
@@ -8441,213 +8446,12 @@ async function handleLegalDocumentRequest(request, env, path) {
   return new Response(object.body, { status: 200, headers });
 }
 
-function readCookieValue(request, cookieName) {
-  const safeName = String(cookieName || "").trim();
-  if (!safeName) {
-    return "";
-  }
-  const cookieHeader = String(request.headers.get("Cookie") || "");
-  if (!cookieHeader) {
-    return "";
-  }
-  const parts = cookieHeader.split(";");
-  for (const part of parts) {
-    const [nameRaw, ...rest] = String(part || "").split("=");
-    const name = String(nameRaw || "").trim();
-    if (name !== safeName) {
-      continue;
-    }
-    return decodeURIComponent(String(rest.join("=") || "").trim());
-  }
-  return "";
-}
-
-function buildAdminSessionCookie(token) {
-  const safe = encodeURIComponent(String(token || "").trim());
-  return `planetka_admin_token=${safe}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=3600`;
-}
-
-function buildAdminSessionClearCookie() {
-  return "planetka_admin_token=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0";
-}
-
-async function requireAuthenticatedUserContext(request, env, options = {}) {
-  const db = requireDb(env);
-  const allowCookieToken = parseBooleanFlag(options.allowCookieToken);
-  const requireAdmin = parseBooleanFlag(options.requireAdmin);
-  const enforceApiKeyDevicePolicy = options.enforceApiKeyDevicePolicy !== false;
-  const lightweightAccessClaims = parseBooleanFlag(options.lightweightAccessClaims);
-  const canUseLightweightAuthCache = (
-    lightweightAccessClaims
-    && !requireAdmin
-    && !allowCookieToken
-    && !enforceApiKeyDevicePolicy
-  );
-  const bearerToken = readBearerToken(request);
-  const authCacheKey = canUseLightweightAuthCache && bearerToken
-    ? `lightweight_auth:${bearerToken}`
-    : "";
-
-  let access = null;
-  let tokenSource = "";
-  let bearerError = "";
-  const cachedAuth = authCacheKey ? authContextCacheGet(authCacheKey, env) : null;
-  if (cachedAuth) {
-    access = cachedAuth.access;
-    tokenSource = "bearer_cache";
-  }
-  try {
-    if (!access) {
-      access = await readBearerUser(request, env);
-      if (access) {
-        tokenSource = "bearer";
-      }
-    }
-  } catch (error) {
-    bearerError = String(error && error.message || "invalid_access_token");
-  }
-  if (!access && allowCookieToken) {
-    const cookieToken = String(readCookieValue(request, "planetka_admin_token") || "").trim();
-    if (cookieToken) {
-      try {
-        const secret = requireSecret(env, "JWT_SIGNING_SECRET");
-        const payload = await verifyJwt(cookieToken, secret);
-        if (payload.type === "access" && payload.sub) {
-          access = payload;
-          tokenSource = "admin_cookie";
-        } else {
-          bearerError = "invalid_access_token";
-        }
-      } catch (error) {
-        bearerError = String(error && error.message || "invalid_access_token");
-      }
-    }
-  }
-  if (!access) {
-    if (bearerError) {
-      return { error: json({ ok: false, error: bearerError }, 401, env) };
-    }
-    return { error: json({ ok: false, error: "missing_bearer_token" }, 401, env) };
-  }
-
-  const authMethod = String(access.auth_method || "").trim().toLowerCase();
-  const apiKeyId = String(access.api_key_id || "").trim();
-  const deviceId = normalizeDeviceId(
-    access.device_id || request.headers.get("X-Planetka-Device-Id") || "",
-  );
-  const tokenPlanRaw = String(
-    access.plan_code || access.user_status || access.plan || access.planCode || access.userStatus || "",
-  ).trim();
-  const tokenPlanCode = tokenPlanRaw ? normalizeRequestedPlan(tokenPlanRaw) : "";
-  if (
-    lightweightAccessClaims
-    && !requireAdmin
-    && tokenPlanCode
-  ) {
-    if (authCacheKey && tokenSource !== "bearer_cache") {
-      authContextCacheSet(
-        authCacheKey,
-        {
-          access,
-        },
-        env,
-      );
-    }
-    return {
-      db,
-      user: {
-        id: String(access.sub || "").trim(),
-        email: String(access.email || "").trim(),
-        status: tokenPlanCode,
-      },
-      access,
-      planCode: tokenPlanCode,
-      authMethod,
-      apiKeyId,
-      deviceId,
-      devicePolicy: null,
-      tokenSource,
-    };
-  }
-
-  let user = await findUserById(db, access.sub);
-  if (!user) {
-    return { error: json({ ok: false, error: "user_not_found" }, 404, env) };
-  }
-  if (isBlockedStatus(user.status)) {
-    return { error: blockedAccountResponse(env) };
-  }
-  user = await enforceUserPlanPolicy(db, user, null, env);
-  if (!user) {
-    return { error: json({ ok: false, error: "user_not_found" }, 404, env) };
-  }
-  const planCode = resolvePlanCode(user, null, env);
-  let devicePolicy = null;
-  if (enforceApiKeyDevicePolicy && authMethod === "api_key" && apiKeyId) {
-    const keyUsable = await isApiKeyUsableById(db, apiKeyId, String(user.id || ""));
-    if (!keyUsable) {
-      return { error: json({ ok: false, error: "api_key_revoked", message: "API key is no longer active." }, 401, env) };
-    }
-    const provisionalRestricted = isUnconfirmedProvisionalActive(user);
-    try {
-      devicePolicy = await enforceApiKeyDeviceLimit(
-        db,
-        apiKeyId,
-        String(user.id || ""),
-        String(user.email || ""),
-        planCode,
-        deviceId,
-        request,
-        env,
-      );
-    } catch (error) {
-      const code = String(error && error.message || "device_limit_exceeded");
-      const statusCode = code === "missing_device_id" ? 400 : 429;
-      const message = code === "missing_device_id"
-        ? "Missing device identifier for API key session."
-        : (provisionalRestricted
-          ? "This Planetka account can be active on one computer at a time."
-          : "This Planetka account can be active on one computer at a time.");
-      return { error: json({ ok: false, error: code, message }, statusCode, env) };
-    }
-  }
-  if (requireAdmin && !isAnalyticsAdmin(user, env)) {
-    return { error: json({ ok: false, error: "admin_access_required" }, 403, env) };
-  }
-  return {
-    db,
-    user,
-    access,
-    planCode,
-    authMethod,
-    apiKeyId,
-    deviceId,
-    devicePolicy,
-    tokenSource,
-  };
-}
-
-async function requireAnalyticsAdmin(request, env) {
-  const auth = await requireAuthenticatedUserContext(
-    request,
-    env,
-    { requireAdmin: true, allowCookieToken: true, enforceApiKeyDevicePolicy: false },
-  );
-  if (auth && auth.error) {
-    return auth;
-  }
-  if (!isPrimaryAnalyticsAdmin(auth && auth.user, env)) {
-    return { error: json({ ok: false, error: "primary_admin_required" }, 403, env) };
-  }
-  return auth;
-}
-
 async function handleAdminAnalyticsData(request, env) {
   const url = new URL(request.url);
   if (String(url.searchParams.get("access_token") || url.searchParams.get("token") || "").trim()) {
     return json({ ok: false, error: "query_token_not_allowed" }, 400, env);
   }
-  const auth = await requireAnalyticsAdmin(request, env);
+  const auth = await requireAnalyticsAdmin(request, env, AUTH_SESSION_DEPS);
   if (auth.error) {
     return auth.error;
   }
@@ -8720,7 +8524,7 @@ async function handleAdminAnalyticsPage(request, env) {
   if (String(url.searchParams.get("access_token") || url.searchParams.get("token") || "").trim()) {
     return json({ ok: false, error: "query_token_not_allowed" }, 400, env);
   }
-  const auth = await requireAnalyticsAdmin(request, env);
+  const auth = await requireAnalyticsAdmin(request, env, AUTH_SESSION_DEPS);
   if (auth.error) {
     return auth.error;
   }
@@ -8913,7 +8717,7 @@ async function handleAdminAnalyticsUsersPage(request, env) {
   if (String(url.searchParams.get("access_token") || url.searchParams.get("token") || "").trim()) {
     return json({ ok: false, error: "query_token_not_allowed" }, 400, env);
   }
-  const auth = await requireAnalyticsAdmin(request, env);
+  const auth = await requireAnalyticsAdmin(request, env, AUTH_SESSION_DEPS);
   if (auth.error) {
     return auth.error;
   }
@@ -9259,6 +9063,7 @@ async function handleAdminSessionStart(request, env) {
     request,
     env,
     { requireAdmin: true, allowCookieToken: false, enforceApiKeyDevicePolicy: true },
+    AUTH_SESSION_DEPS,
   );
   if (auth.error) {
     return auth.error;
@@ -9480,7 +9285,7 @@ async function resolveDownloadCounterTarget(db, userId, email) {
 }
 
 async function handleAdminUserUnthrottle(request, env) {
-  const auth = await requireAnalyticsAdmin(request, env);
+  const auth = await requireAnalyticsAdmin(request, env, AUTH_SESSION_DEPS);
   if (auth.error) {
     return auth.error;
   }
@@ -9517,7 +9322,7 @@ async function handleAdminUserUnthrottle(request, env) {
 }
 
 async function handleAdminUserThrottle(request, env) {
-  const auth = await requireAnalyticsAdmin(request, env);
+  const auth = await requireAnalyticsAdmin(request, env, AUTH_SESSION_DEPS);
   if (auth.error) {
     return auth.error;
   }
@@ -9561,7 +9366,7 @@ async function handleAdminUserThrottle(request, env) {
 }
 
 async function handleAdminUserBlock(request, env) {
-  const auth = await requireAnalyticsAdmin(request, env);
+  const auth = await requireAnalyticsAdmin(request, env, AUTH_SESSION_DEPS);
   if (auth.error) {
     return auth.error;
   }
@@ -9652,7 +9457,7 @@ async function handleAdminUserBlock(request, env) {
 }
 
 async function handleAdminUserUnblock(request, env) {
-  const auth = await requireAnalyticsAdmin(request, env);
+  const auth = await requireAnalyticsAdmin(request, env, AUTH_SESSION_DEPS);
   if (auth.error) {
     return auth.error;
   }
@@ -9764,7 +9569,7 @@ async function handleAdminUserUnblock(request, env) {
 }
 
 async function handleAdminUserHardBlock(request, env) {
-  const auth = await requireAnalyticsAdmin(request, env);
+  const auth = await requireAnalyticsAdmin(request, env, AUTH_SESSION_DEPS);
   if (auth.error) {
     return auth.error;
   }
@@ -9897,7 +9702,7 @@ async function handleAdminUserHardBlock(request, env) {
 }
 
 async function handleAdminUserSetPlan(request, env) {
-  const auth = await requireAnalyticsAdmin(request, env);
+  const auth = await requireAnalyticsAdmin(request, env, AUTH_SESSION_DEPS);
   if (auth.error) {
     return auth.error;
   }
@@ -10047,6 +9852,7 @@ async function handleSupportBugReport(request, env) {
     request,
     env,
     { enforceApiKeyDevicePolicy: true },
+    AUTH_SESSION_DEPS,
   );
   if (auth.error) {
     return auth.error;
