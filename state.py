@@ -67,7 +67,13 @@ from .planetka_runtime.navigation_runtime_context import (
     NavigationRuntimeDeps,
     NavigationRuntimeState,
 )
+from .planetka_runtime.handler_runtime_context import (
+    HandlerRuntimeContext,
+    HandlerRuntimeDeps,
+    HandlerRuntimeState,
+)
 from .planetka_runtime import handler_runtime as _handler_runtime
+from .scene_schema import migrate_scene_schema
 
 
 logger = logging.getLogger(__name__)
@@ -638,11 +644,13 @@ def _is_animation_playing():
 
 
 def _is_render_job_active():
-    global _RENDER_JOB_ACTIVE
     # bpy.app.is_job_running("RENDER") has been observed to get stuck True on some systems after F12
     # renders, which would permanently disable auto-resolve. Track render state via handlers and
     # prefer that signal.
-    if _RENDER_JOB_ACTIVE:
+    if "_HANDLER_RUNTIME_CTX" in globals() and _HANDLER_RUNTIME_CTX is not None:
+        if bool(_HANDLER_RUNTIME_CTX.state.render_job_active):
+            return True
+    elif _RENDER_JOB_ACTIVE:
         return True
 
     app = getattr(bpy, "app", None)
@@ -658,6 +666,14 @@ def _is_render_job_active():
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             continue
     return False
+
+
+def _clear_auto_resolve_in_flight():
+    global _AUTO_RESOLVE_IN_FLIGHT
+    _AUTO_RESOLVE_IN_FLIGHT = False
+    shared_state = globals().get("_AUTO_RESOLVE_SHARED_STATE")
+    if shared_state is not None:
+        shared_state.in_flight = False
 
 
 def _is_idprop_syncing():
@@ -1171,47 +1187,100 @@ def _build_navigation_runtime_context():
     )
 
 
+def _build_handler_runtime_context():
+    deps = HandlerRuntimeDeps(
+        bpy=bpy,
+        logger=logger,
+        recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
+        import_recoverable_exceptions=PLANETKA_IMPORT_RECOVERABLE_EXCEPTIONS,
+        clear_auto_resolve_in_flight=_clear_auto_resolve_in_flight,
+        reset_navigation_shot_runtime_state=_reset_navigation_shot_runtime_state,
+        reset_navigation_camera_control_runtime_state=_reset_navigation_camera_control_runtime_state,
+        force_restore_navigation_adaptive_state=_force_restore_navigation_adaptive_state,
+        mark_auto_resolve_dirty=_mark_auto_resolve_dirty,
+        request_auto_resolve=request_auto_resolve,
+        self_heal_missing_cache_images_for_render=self_heal_missing_cache_images_for_render,
+        iter_scenes=_iter_scenes,
+        set_planetka_logging=set_planetka_logging,
+        migrate_scene_schema=migrate_scene_schema,
+        legacy_scene_idprops=_LEGACY_SCENE_IDPROPS,
+        sync_idprops_from_props=_sync_idprops_from_props,
+        is_navigation_user_edit_active=_is_navigation_user_edit_active,
+        scene_has_keyed_runtime_path=_scene_has_keyed_runtime_path,
+        keyed_runtime_all_prop_paths=_KEYED_RUNTIME_ALL_PROP_PATHS,
+        keyed_runtime_nav_prop_paths=_KEYED_RUNTIME_NAV_PROP_PATHS,
+        keyed_runtime_focal_prop_paths=_KEYED_RUNTIME_FOCAL_PROP_PATHS,
+        keyed_runtime_sun_prop_paths=_KEYED_RUNTIME_SUN_PROP_PATHS,
+        is_render_job_active=_is_render_job_active,
+        is_animation_playing=_is_animation_playing,
+        sync_navigation_controls_from_scene_camera=_sync_navigation_controls_from_scene_camera,
+        can_auto_resolve_run=_can_auto_resolve_run,
+        ensure_auto_resolve_service_running=ensure_auto_resolve_service_running,
+        update_realtime_telemetry=_update_realtime_telemetry,
+        is_resolve_pipeline_busy=_is_resolve_pipeline_busy,
+        make_depsgraph_trigger_signature=_make_depsgraph_trigger_signature,
+        handle_timeline_motion_optimization=_handle_timeline_motion_optimization,
+        handle_viewport_motion_optimization=_handle_viewport_motion_optimization,
+        camera_signature=_camera_signature,
+        handle_sunlight_motion_optimization=_handle_sunlight_motion_optimization,
+        mark_auto_resolve_from_depsgraph_trigger=_mark_auto_resolve_from_depsgraph_trigger,
+        keyed_runtime_signature=_keyed_runtime_signature,
+        scene_key=_scene_key,
+        recover_missing_cache_image_paths_to_fallback=_recover_missing_cache_image_paths_to_fallback,
+        schedule_load_recovery_resolve=_schedule_load_recovery_resolve,
+        import_module=importlib.import_module,
+        get_prefs=get_prefs,
+        auth_is_authenticated_attr="is_authenticated",
+        package_name=__package__ or "",
+        account_panel_default_collapsed_key=ACCOUNT_PANEL_DEFAULT_COLLAPSED_KEY,
+    )
+    state = HandlerRuntimeState(
+        render_job_active=_RENDER_JOB_ACTIVE,
+        render_job_epoch=_RENDER_JOB_EPOCH,
+        render_job_last_ended_epoch=_RENDER_JOB_LAST_ENDED_EPOCH,
+        render_job_last_cancelled_epoch=_RENDER_JOB_LAST_CANCELLED_EPOCH,
+        logging_syncing=_LOGGING_SYNCING,
+        frame_keyed_runtime_last_signature=_FRAME_KEYED_RUNTIME_LAST_SIGNATURE,
+    )
+    return HandlerRuntimeContext(
+        deps=deps,
+        state=state,
+    )
+
+
 def recover_post_render_state(scene=None, cancelled=False):
-    _handler_runtime.configure(globals())
-    return _handler_runtime.recover_post_render_state(scene=scene, cancelled=cancelled)
+    return _handler_runtime.recover_post_render_state(scene=scene, cancelled=cancelled, ctx=_HANDLER_RUNTIME_CTX)
 
 
 def mark_render_job_started():
-    _handler_runtime.configure(globals())
-    return _handler_runtime.mark_render_job_started()
+    return _handler_runtime.mark_render_job_started(_HANDLER_RUNTIME_CTX)
 
 
 def _sync_logging_from_scenes():
-    _handler_runtime.configure(globals())
-    return _handler_runtime._sync_logging_from_scenes()
+    return _handler_runtime.sync_logging_from_scenes(_HANDLER_RUNTIME_CTX)
 
 
 def migrate_scene(scene):
-    _handler_runtime.configure(globals())
-    return _handler_runtime.migrate_scene(scene)
+    return _handler_runtime.migrate_scene(scene, _HANDLER_RUNTIME_CTX)
 
 
 def _initialize_props_from_imported_planetka(scene):
-    _handler_runtime.configure(globals())
-    return _handler_runtime._initialize_props_from_imported_planetka(scene)
+    return _handler_runtime.initialize_props_from_imported_planetka(scene, _HANDLER_RUNTIME_CTX)
 
 
 @persistent
 def _planetka_depsgraph_update_post(_scene, _depsgraph):
-    _handler_runtime.configure(globals())
-    return _handler_runtime._planetka_depsgraph_update_post(_scene, _depsgraph)
+    return _handler_runtime.depsgraph_update_post(_scene, _depsgraph, _HANDLER_RUNTIME_CTX)
 
 
 @persistent
 def _planetka_frame_change_post(scene, _depsgraph=None):
-    _handler_runtime.configure(globals())
-    return _handler_runtime._planetka_frame_change_post(scene, _depsgraph=_depsgraph)
+    return _handler_runtime.frame_change_post(scene, _depsgraph=_depsgraph, ctx=_HANDLER_RUNTIME_CTX)
 
 
 @persistent
 def _planetka_load_post(_dummy):
-    _handler_runtime.configure(globals())
-    return _handler_runtime._planetka_load_post(_dummy)
+    return _handler_runtime.load_post(_dummy, _HANDLER_RUNTIME_CTX)
 
 
 def _build_auto_resolve_contexts():
@@ -1368,11 +1437,13 @@ def _build_auto_resolve_contexts():
 
 _VIEW_TELEMETRY_CTX = _build_view_telemetry_context()
 _NAVIGATION_RUNTIME_CTX = _build_navigation_runtime_context()
+_HANDLER_RUNTIME_CTX = _build_handler_runtime_context()
 
 # state.py remains the owner of the singleton view-telemetry context; the
 # runtime module receives it explicitly instead of pulling facade globals.
 _view_telemetry._VIEW_TELEMETRY_CTX = _VIEW_TELEMETRY_CTX
 _navigation_runtime._NAVIGATION_RUNTIME_CTX = _NAVIGATION_RUNTIME_CTX
+_handler_runtime._HANDLER_RUNTIME_CTX = _HANDLER_RUNTIME_CTX
 
 
 (
