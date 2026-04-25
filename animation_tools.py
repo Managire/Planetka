@@ -1127,7 +1127,7 @@ def _ensure_action_fcurve(fcurves, data_path, index):
         raise RuntimeError("Camera action has no writable fcurves collection.")
     try:
         fcurve = fcurves.find(data_path, index=index)
-    except Exception:
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         fcurve = None
     if fcurve is None:
         last_exc = None
@@ -1139,7 +1139,7 @@ def _ensure_action_fcurve(fcurves, data_path, index):
             try:
                 fcurve = fcurves.new(**kwargs)
                 break
-            except Exception as exc:
+            except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
                 last_exc = exc
                 fcurve = None
         if fcurve is None:
