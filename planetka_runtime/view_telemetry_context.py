@@ -17,6 +17,15 @@ class ViewTelemetryDeps:
     import_recoverable_exceptions: Any
     get_prefs: Any
     camera_inside_earth_warning_key: str
+    scene_key: Any
+    suspend_adaptive_viewport_during_navigation: Any
+    is_render_job_active: Any
+    is_animation_playing: Any
+    get_earth_object: Any
+    request_auto_resolve: Any
+    get_auto_resolve_in_flight: Any
+    sunlight_object_name: str
+    monotonic: Any
 
 
 @dataclass(slots=True)

@@ -457,6 +457,25 @@ def auto_resolve_scope_mode(scene, ctx=None):
 
 
 def handle_viewport_motion_optimization(scene, camera_signature, runtime):
+    if _is_context(runtime):
+        deps = runtime.deps
+        state = runtime.state
+        if scene is None or camera_signature is None:
+            return
+        props = getattr(scene, "planetka", None)
+        if props is None:
+            return
+        if not bool(getattr(props, "viewport_opt_suspend_subdivision", True)):
+            return
+
+        scene_id = deps.scene_key(scene)
+        previous_signature = state.viewport_opt_last_signature.get(scene_id)
+        if previous_signature == camera_signature:
+            return
+        state.viewport_opt_last_signature[scene_id] = camera_signature
+        deps.suspend_adaptive_viewport_during_navigation(scene)
+        return
+
     if scene is None or camera_signature is None:
         return
     props = getattr(scene, "planetka", None)
@@ -526,6 +545,11 @@ def keyed_runtime_signature(scene):
 
 
 def iter_scene_animation_fcurves(scene, runtime):
+    if _is_context(runtime):
+        recoverable_exceptions = runtime.deps.recoverable_exceptions
+    else:
+        recoverable_exceptions = runtime["PLANETKA_RECOVERABLE_EXCEPTIONS"]
+
     if scene is None:
         return
     animation_data = getattr(scene, "animation_data", None)
@@ -542,7 +566,7 @@ def iter_scene_animation_fcurves(scene, runtime):
                 continue
             try:
                 token = int(fcurve.as_pointer())
-            except (runtime["PLANETKA_RECOVERABLE_EXCEPTIONS"], RuntimeError, TypeError, ValueError, AttributeError):
+            except (recoverable_exceptions, RuntimeError, TypeError, ValueError, AttributeError):
                 token = id(fcurve)
             if token in seen:
                 continue
@@ -578,6 +602,35 @@ def scene_has_keyed_runtime_path(scene, accepted_paths, runtime):
 
 
 def handle_timeline_motion_optimization(scene, runtime):
+    if _is_context(runtime):
+        deps = runtime.deps
+        state = runtime.state
+        if scene is None:
+            return
+        if deps.is_render_job_active():
+            return
+        props = getattr(scene, "planetka", None)
+        if props is None:
+            return
+        if not bool(getattr(props, "viewport_opt_suspend_subdivision", True)):
+            return
+
+        scene_id = deps.scene_key(scene)
+        current_signature = timeline_signature(scene)
+        previous_signature = state.timeline_last_signature.get(scene_id)
+        state.timeline_last_signature[scene_id] = current_signature
+
+        if deps.is_animation_playing():
+            deps.suspend_adaptive_viewport_during_navigation(scene)
+            return
+
+        if previous_signature is None:
+            return
+        if current_signature == previous_signature:
+            return
+        deps.suspend_adaptive_viewport_during_navigation(scene)
+        return
+
     if scene is None:
         return
     if runtime["_is_render_job_active"]():
@@ -605,10 +658,20 @@ def handle_timeline_motion_optimization(scene, runtime):
 
 
 def sunlight_signature(scene, runtime):
-    bpy_module = runtime["bpy"]
-    scene_id = runtime["_scene_key"](scene) if scene is not None else None
-    sunlight_object_name = runtime["_SUNLIGHT_OBJECT_NAME"]
-    cache = runtime["_SUNLIGHT_OBJECT_NAME_CACHE"]
+    if _is_context(runtime):
+        deps = runtime.deps
+        state = runtime.state
+        bpy_module = deps.bpy
+        scene_id = deps.scene_key(scene) if scene is not None else None
+        sunlight_object_name = deps.sunlight_object_name
+        cache = state.sunlight_object_name_cache
+        recoverable_exceptions = deps.recoverable_exceptions
+    else:
+        bpy_module = runtime["bpy"]
+        scene_id = runtime["_scene_key"](scene) if scene is not None else None
+        sunlight_object_name = runtime["_SUNLIGHT_OBJECT_NAME"]
+        cache = runtime["_SUNLIGHT_OBJECT_NAME_CACHE"]
+        recoverable_exceptions = runtime["PLANETKA_RECOVERABLE_EXCEPTIONS"]
 
     def _is_valid_sunlight_object(obj):
         if obj is None or str(getattr(obj, "type", "")) != "LIGHT":
@@ -624,7 +687,7 @@ def sunlight_signature(scene, runtime):
             return None
         try:
             return scene_objects.get(name)
-        except runtime["PLANETKA_RECOVERABLE_EXCEPTIONS"]:
+        except recoverable_exceptions:
             return None
 
     sunlight = _scene_object_by_name(sunlight_object_name)
@@ -679,6 +742,28 @@ def sunlight_signature(scene, runtime):
 
 
 def handle_sunlight_motion_optimization(scene, runtime):
+    if _is_context(runtime):
+        deps = runtime.deps
+        state = runtime.state
+        if scene is None:
+            return
+        props = getattr(scene, "planetka", None)
+        if props is None:
+            return
+        if not bool(getattr(props, "viewport_opt_suspend_subdivision", True)):
+            return
+
+        scene_id = deps.scene_key(scene)
+        signature = sunlight_signature(scene, runtime)
+        previous_signature = state.sunlight_last_signature.get(scene_id)
+        state.sunlight_last_signature[scene_id] = signature
+        if signature is None or previous_signature is None:
+            return
+        if signature == previous_signature:
+            return
+        deps.suspend_adaptive_viewport_during_navigation(scene)
+        return
+
     if scene is None:
         return
     props = getattr(scene, "planetka", None)
@@ -699,6 +784,43 @@ def handle_sunlight_motion_optimization(scene, runtime):
 
 
 def handle_view_scope_quality_transition(scene, runtime):
+    if _is_context(runtime):
+        deps = runtime.deps
+        state = runtime.state
+        if scene is None:
+            return
+        props = getattr(scene, "planetka", None)
+        if props is None:
+            return
+        if deps.get_earth_object() is None:
+            return
+
+        scene_id = deps.scene_key(scene)
+        current_scope = current_view_scope(scene, runtime)
+        previous_scope = state.viewport_scope_last.get(scene_id)
+        state.viewport_scope_last[scene_id] = current_scope
+        if previous_scope is None or previous_scope == current_scope:
+            return
+
+        if previous_scope != "ACTIVE_VIEW" or current_scope != "CAMERA":
+            return
+        if not bool(getattr(props, "auto_resolve", False)):
+            return
+        if bool(deps.get_auto_resolve_in_flight()):
+            return
+        if deps.is_render_job_active():
+            return
+        if deps.is_animation_playing() and bool(getattr(props, "lock_resolve_during_animation", True)):
+            return
+
+        now = deps.monotonic()
+        last_transition_resolve = state.viewport_scope_last_resolve_time.get(scene_id, 0.0)
+        if now - float(last_transition_resolve) < 0.2:
+            return
+
+        deps.request_auto_resolve(scene, immediate=True, mark_dirty=True)
+        return
+
     if scene is None:
         return
     props = getattr(scene, "planetka", None)

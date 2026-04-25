@@ -810,7 +810,7 @@ def _auto_resolve_scope_mode(scene):
 
 
 def _handle_viewport_motion_optimization(scene, camera_signature):
-    return _view_telemetry.handle_viewport_motion_optimization(scene, camera_signature, globals())
+    return _view_telemetry.handle_viewport_motion_optimization(scene, camera_signature, _VIEW_TELEMETRY_CTX)
 
 
 def _timeline_signature(scene):
@@ -822,27 +822,27 @@ def _keyed_runtime_signature(scene):
 
 
 def _iter_scene_animation_fcurves(scene):
-    yield from _view_telemetry.iter_scene_animation_fcurves(scene, globals())
+    yield from _view_telemetry.iter_scene_animation_fcurves(scene, _VIEW_TELEMETRY_CTX)
 
 
 def _scene_has_keyed_runtime_path(scene, accepted_paths):
-    return _view_telemetry.scene_has_keyed_runtime_path(scene, accepted_paths, globals())
+    return _view_telemetry.scene_has_keyed_runtime_path(scene, accepted_paths, _VIEW_TELEMETRY_CTX)
 
 
 def _handle_timeline_motion_optimization(scene):
-    return _view_telemetry.handle_timeline_motion_optimization(scene, globals())
+    return _view_telemetry.handle_timeline_motion_optimization(scene, _VIEW_TELEMETRY_CTX)
 
 
 def _sunlight_signature(scene):
-    return _view_telemetry.sunlight_signature(scene, globals())
+    return _view_telemetry.sunlight_signature(scene, _VIEW_TELEMETRY_CTX)
 
 
 def _handle_sunlight_motion_optimization(scene):
-    return _view_telemetry.handle_sunlight_motion_optimization(scene, globals())
+    return _view_telemetry.handle_sunlight_motion_optimization(scene, _VIEW_TELEMETRY_CTX)
 
 
 def _handle_view_scope_quality_transition(scene):
-    return _view_telemetry.handle_view_scope_quality_transition(scene, globals())
+    return _view_telemetry.handle_view_scope_quality_transition(scene, _VIEW_TELEMETRY_CTX)
 
 
 def _earth_radius_blender_units(earth_obj):
@@ -1108,6 +1108,15 @@ def _build_view_telemetry_context():
         import_recoverable_exceptions=PLANETKA_IMPORT_RECOVERABLE_EXCEPTIONS,
         get_prefs=get_prefs,
         camera_inside_earth_warning_key=CAMERA_INSIDE_EARTH_WARNING_KEY,
+        scene_key=_scene_key,
+        suspend_adaptive_viewport_during_navigation=_suspend_adaptive_viewport_during_navigation,
+        is_render_job_active=_is_render_job_active,
+        is_animation_playing=_is_animation_playing,
+        get_earth_object=get_earth_object,
+        request_auto_resolve=request_auto_resolve,
+        get_auto_resolve_in_flight=lambda: bool(_AUTO_RESOLVE_SHARED_STATE.in_flight),
+        sunlight_object_name=_SUNLIGHT_OBJECT_NAME,
+        monotonic=time.monotonic,
     )
     state = ViewTelemetryState(
         viewport_opt_last_signature=_VIEWPORT_OPT_LAST_SIGNATURE,
