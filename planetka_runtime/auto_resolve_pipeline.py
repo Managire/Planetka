@@ -1,3 +1,8 @@
+import json
+import threading
+import time
+
+
 _MOVED_NAMES = {
     "_mark_auto_resolve_dirty",
     "_auto_resolve_idle_seconds",
@@ -47,6 +52,7 @@ _MOVED_NAMES = {
 }
 
 _AUTO_RESOLVE_DOWNLOAD_CTX = None
+_AUTO_RESOLVE_DECISION_CTX = None
 
 
 def configure(runtime):
@@ -64,10 +70,19 @@ def _require_download_ctx():
     return ctx
 
 
-def _mark_auto_resolve_dirty(scene, immediate=False, force_resolve=False):
+def _require_decision_ctx():
+    ctx = _AUTO_RESOLVE_DECISION_CTX
+    if ctx is None:
+        raise RuntimeError("Planetka auto-resolve decision context is not configured.")
+    return ctx
+
+
+def _ctx_mark_auto_resolve_dirty(ctx, scene, immediate=False, force_resolve=False):
+    deps = ctx.deps
+    settings = ctx.settings
     if not scene:
         return
-    scene_state = _read_scene_auto_resolve_state(scene)
+    scene_state = deps.read_scene_auto_resolve_state(scene)
     if scene_state is None:
         return
     now = time.monotonic()
@@ -75,51 +90,79 @@ def _mark_auto_resolve_dirty(scene, immediate=False, force_resolve=False):
     scene_state.last_output_signature = None
     scene_state.last_processed_signature = None
     scene_state.pending_output_change = bool(force_resolve)
-    scene_state.last_change_time = now - (AUTO_RESOLVE_IDLE_SEC_DEFAULT if immediate else 0.0)
-    _write_scene_auto_resolve_state(scene_state)
+    scene_state.last_change_time = now - (settings.idle_sec_default if immediate else 0.0)
+    deps.write_scene_auto_resolve_state(scene_state)
 
 
-def _auto_resolve_idle_seconds(scene):
+def _mark_auto_resolve_dirty(scene, immediate=False, force_resolve=False):
+    return _ctx_mark_auto_resolve_dirty(
+        _require_decision_ctx(),
+        scene,
+        immediate=immediate,
+        force_resolve=force_resolve,
+    )
+
+
+def _ctx_auto_resolve_idle_seconds(ctx, scene):
+    settings = ctx.settings
     props = getattr(scene, "planetka", None) if scene is not None else None
     try:
-        idle_sec = float(getattr(props, "auto_resolve_idle_sec", AUTO_RESOLVE_IDLE_SEC_DEFAULT))
+        idle_sec = float(getattr(props, "auto_resolve_idle_sec", settings.idle_sec_default))
     except (TypeError, ValueError):
-        idle_sec = AUTO_RESOLVE_IDLE_SEC_DEFAULT
+        idle_sec = settings.idle_sec_default
     return max(0.1, min(3.0, idle_sec))
 
 
-def _is_navigation_user_edit_active(scene):
+def _auto_resolve_idle_seconds(scene):
+    return _ctx_auto_resolve_idle_seconds(_require_decision_ctx(), scene)
+
+
+def _ctx_is_navigation_user_edit_active(ctx, scene):
+    deps = ctx.deps
     if scene is None:
         return False
     now = time.monotonic()
-    idle_window = _auto_resolve_idle_seconds(scene)
-    guard_window = max(float(idle_window), float(_NAV_CAMERA_CONTROL_SYNC_GRACE_SEC))
-    return (now - float(_NAVIGATION_USER_EDIT_LAST_TOUCH)) < guard_window
+    idle_window = _ctx_auto_resolve_idle_seconds(ctx, scene)
+    guard_window = max(float(idle_window), float(deps.nav_camera_control_sync_grace_sec))
+    return (now - float(deps.get_navigation_user_edit_last_touch())) < guard_window
+
+
+def _is_navigation_user_edit_active(scene):
+    return _ctx_is_navigation_user_edit_active(_require_decision_ctx(), scene)
+
+
+def _ctx_active_view_monitor_interval_seconds(ctx, scene):
+    return _ctx_auto_resolve_idle_seconds(ctx, scene)
 
 
 def _active_view_monitor_interval_seconds(scene):
-    return _auto_resolve_idle_seconds(scene)
+    return _ctx_active_view_monitor_interval_seconds(_require_decision_ctx(), scene)
 
 
-def _arm_auto_resolve_timer(force_immediate=False):
-    global _AUTO_RESOLVE_TIMER_RUNNING
+def _ctx_arm_auto_resolve_timer(ctx, force_immediate=False):
+    deps = ctx.deps
+    state = ctx.state
     try:
-        if force_immediate and bpy.app.timers.is_registered(_auto_resolve_timer):
-            bpy.app.timers.unregister(_auto_resolve_timer)
-            _AUTO_RESOLVE_TIMER_RUNNING = False
-        if not bpy.app.timers.is_registered(_auto_resolve_timer):
-            bpy.app.timers.register(
+        if force_immediate and deps.bpy.app.timers.is_registered(_auto_resolve_timer):
+            deps.bpy.app.timers.unregister(_auto_resolve_timer)
+            state.timer_running = False
+        if not deps.bpy.app.timers.is_registered(_auto_resolve_timer):
+            deps.bpy.app.timers.register(
                 _auto_resolve_timer,
                 first_interval=0.0 if force_immediate else 0.05,
                 persistent=True,
             )
-        _AUTO_RESOLVE_TIMER_RUNNING = True
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        _AUTO_RESOLVE_TIMER_RUNNING = False
-        logger.debug("Planetka: failed arming auto-resolve timer", exc_info=True)
+        state.timer_running = True
+    except deps.recoverable_exceptions:
+        state.timer_running = False
+        deps.logger.debug("Planetka: failed arming auto-resolve timer", exc_info=True)
     except (RuntimeError, TypeError, ValueError):
-        _AUTO_RESOLVE_TIMER_RUNNING = False
-        logger.debug("Planetka: failed arming auto-resolve timer", exc_info=True)
+        state.timer_running = False
+        deps.logger.debug("Planetka: failed arming auto-resolve timer", exc_info=True)
+
+
+def _arm_auto_resolve_timer(force_immediate=False):
+    return _ctx_arm_auto_resolve_timer(_require_decision_ctx(), force_immediate=force_immediate)
 
 
 def _ctx_auto_resolve_download_job_signature(ctx, job):
@@ -942,8 +985,7 @@ def _ctx_auto_resolve_download_worker(ctx, job):
             f"(request_id={deps.job_field(job, 'request_id')}, manual={bool(deps.job_field(job, 'manual_request', False))}, "
             f"tiles={len(tuple(deps.job_field(job, 'target_tiles', ())))})"
         )
-        module_name = f"{__package__}.streaming_utils" if __package__ else "streaming_utils"
-        streaming_module = importlib.import_module(module_name)
+        streaming_module = deps.get_streaming_utils()
         prepare_fn = getattr(streaming_module, "prepare_resolve_streaming_for_visible_tiles", None)
         stage_fn = getattr(streaming_module, "stage_prefetch_payload", None)
         if not callable(prepare_fn):
@@ -1147,39 +1189,50 @@ def stop_auto_resolve_download_pipeline():
     return _ctx_stop_auto_resolve_download_pipeline(_require_download_ctx())
 
 
-def request_auto_resolve(scene, immediate=False, mark_dirty=True):
-    global _AUTO_RESOLVE_TIMER_RUNNING
-    if not _can_auto_resolve_run(scene):
-        _AUTO_RESOLVE_NEXT_DUE_TIME.clear()
-        _AUTO_RESOLVE_TIMER_RUNNING = False
+def _ctx_request_auto_resolve(ctx, scene, immediate=False, mark_dirty=True):
+    deps = ctx.deps
+    state = ctx.state
+    if not _ctx_can_auto_resolve_run(ctx, scene):
+        state.next_due_time.clear()
+        state.timer_running = False
         try:
-            if bpy.app.timers.is_registered(_auto_resolve_timer):
-                bpy.app.timers.unregister(_auto_resolve_timer)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed stopping auto-resolve timer", exc_info=True)
+            if deps.bpy.app.timers.is_registered(_auto_resolve_timer):
+                deps.bpy.app.timers.unregister(_auto_resolve_timer)
+        except deps.recoverable_exceptions:
+            deps.logger.debug("Planetka: failed stopping auto-resolve timer", exc_info=True)
         except (RuntimeError, TypeError, ValueError):
-            logger.debug("Planetka: failed stopping auto-resolve timer", exc_info=True)
+            deps.logger.debug("Planetka: failed stopping auto-resolve timer", exc_info=True)
         return
     if scene is None:
         return
 
-    if _auto_resolve_scope_mode(scene) == "NONE":
+    if deps.auto_resolve_scope_mode(scene) == "NONE":
         return
 
     if mark_dirty:
-        _mark_auto_resolve_dirty(scene, immediate=bool(immediate))
+        _ctx_mark_auto_resolve_dirty(ctx, scene, immediate=bool(immediate))
 
-    scene_state = _read_scene_auto_resolve_state(scene)
+    scene_state = deps.read_scene_auto_resolve_state(scene)
     if scene_state is None:
         return
     now = time.monotonic()
-    delay_sec = 0.0 if immediate else _auto_resolve_idle_seconds(scene)
+    delay_sec = 0.0 if immediate else _ctx_auto_resolve_idle_seconds(ctx, scene)
     scene_state.next_due_time = now + delay_sec
-    _write_scene_auto_resolve_state(scene_state)
-    _arm_auto_resolve_timer(force_immediate=bool(immediate))
+    deps.write_scene_auto_resolve_state(scene_state)
+    _ctx_arm_auto_resolve_timer(ctx, force_immediate=bool(immediate))
 
 
-def _can_auto_resolve_run(scene):
+def request_auto_resolve(scene, immediate=False, mark_dirty=True):
+    return _ctx_request_auto_resolve(
+        _require_decision_ctx(),
+        scene,
+        immediate=immediate,
+        mark_dirty=mark_dirty,
+    )
+
+
+def _ctx_can_auto_resolve_run(ctx, scene):
+    deps = ctx.deps
     if scene is None:
         return False
     props = getattr(scene, "planetka", None)
@@ -1187,15 +1240,20 @@ def _can_auto_resolve_run(scene):
         return False
     if not bool(getattr(props, "auto_resolve", False)):
         return False
-    if get_earth_object() is None:
+    if deps.get_earth_object() is None:
         return False
     return True
 
 
-def update_auto_resolve(self, context):
+def _can_auto_resolve_run(scene):
+    return _ctx_can_auto_resolve_run(_require_decision_ctx(), scene)
+
+
+def _ctx_update_auto_resolve(ctx, self, context):
+    deps = ctx.deps
     scene = getattr(context, "scene", None) if context else None
     if scene:
-        _sync_idprops_from_props(
+        deps.sync_idprops_from_props(
             scene,
             (
                 "viewport_opt_suspend_subdivision",
@@ -1210,20 +1268,25 @@ def update_auto_resolve(self, context):
         )
         props = getattr(scene, "planetka", None)
         if props is not None and not bool(getattr(props, "viewport_opt_suspend_subdivision", True)):
-            _force_restore_navigation_adaptive_state()
-        _mark_auto_resolve_dirty(scene, immediate=True, force_resolve=True)
-    if _can_auto_resolve_run(scene):
-        request_auto_resolve(scene, immediate=True, mark_dirty=False)
+            deps.force_restore_navigation_adaptive_state()
+        _ctx_mark_auto_resolve_dirty(ctx, scene, immediate=True, force_resolve=True)
+    if _ctx_can_auto_resolve_run(ctx, scene):
+        _ctx_request_auto_resolve(ctx, scene, immediate=True, mark_dirty=False)
     else:
-        stop_auto_resolve_service()
+        _ctx_stop_auto_resolve_service(ctx)
 
 
-def _auto_resolve_collect_scope_signatures(scene, scope_mode):
+def update_auto_resolve(self, context):
+    return _ctx_update_auto_resolve(_require_decision_ctx(), self, context)
+
+
+def _ctx_auto_resolve_collect_scope_signatures(ctx, scene, scope_mode):
+    deps = ctx.deps
     scope = str(scope_mode or "NONE")
     active_view_signature = None
     if scope == "ACTIVE_VIEW":
-        active_view_signature = _active_view_signature()
-    camera_signature = _camera_signature(scene)
+        active_view_signature = deps.active_view_signature()
+    camera_signature = deps.camera_signature(scene)
     resolve_signature = (
         ("ACTIVE_VIEW", active_view_signature)
         if active_view_signature is not None
@@ -1232,7 +1295,12 @@ def _auto_resolve_collect_scope_signatures(scene, scope_mode):
     return scope, active_view_signature, resolve_signature
 
 
-def _auto_resolve_sync_state_signatures(scene_state, resolve_signature, output_signature, now_monotonic):
+def _auto_resolve_collect_scope_signatures(scene, scope_mode):
+    return _ctx_auto_resolve_collect_scope_signatures(_require_decision_ctx(), scene, scope_mode)
+
+
+def _ctx_auto_resolve_sync_state_signatures(ctx, scene_state, resolve_signature, output_signature, now_monotonic):
+    deps = ctx.deps
     state_dirty = False
     previous_output_signature = scene_state.last_output_signature
     if previous_output_signature != output_signature:
@@ -1250,8 +1318,18 @@ def _auto_resolve_sync_state_signatures(scene_state, resolve_signature, output_s
         state_dirty = True
 
     if state_dirty:
-        _write_scene_auto_resolve_state(scene_state)
+        deps.write_scene_auto_resolve_state(scene_state)
     return bool(scene_state.pending_output_change)
+
+
+def _auto_resolve_sync_state_signatures(scene_state, resolve_signature, output_signature, now_monotonic):
+    return _ctx_auto_resolve_sync_state_signatures(
+        _require_decision_ctx(),
+        scene_state,
+        resolve_signature,
+        output_signature,
+        now_monotonic,
+    )
 
 
 def _auto_resolve_update_size_estimation(scene, scope, active_view_signature, target_tiles, props):
@@ -1366,48 +1444,51 @@ def _auto_resolve_noncritical_timer():
     return None
 
 
-def _auto_resolve_detect_change(scene, props):
+def _ctx_auto_resolve_detect_change(ctx, scene, props):
+    deps = ctx.deps
+    settings = ctx.settings
     if scene is None:
         return {"event": "STOP", "retry_delay": None}
     if props is None or not bool(getattr(props, "auto_resolve", False)):
         return {"event": "STOP", "retry_delay": None}
 
-    scope_mode = _auto_resolve_scope_mode(scene)
+    scope_mode = deps.auto_resolve_scope_mode(scene)
     if scope_mode == "NONE":
         return {"event": "STOP", "retry_delay": None}
 
-    if _is_animation_playing() and bool(getattr(props, "lock_resolve_during_animation", True)):
-        return {"event": "RETRY", "retry_delay": AUTO_RESOLVE_RETRY_DELAY_SEC}
-    if _is_render_job_active():
-        return {"event": "RETRY", "retry_delay": AUTO_RESOLVE_RETRY_DELAY_SEC}
-    if get_earth_object() is None:
+    if deps.is_animation_playing() and bool(getattr(props, "lock_resolve_during_animation", True)):
+        return {"event": "RETRY", "retry_delay": settings.retry_delay_sec}
+    if deps.is_render_job_active():
+        return {"event": "RETRY", "retry_delay": settings.retry_delay_sec}
+    if deps.get_earth_object() is None:
         return {"event": "STOP", "retry_delay": None}
 
-    scope, active_view_signature, resolve_signature = _auto_resolve_collect_scope_signatures(scene, scope_mode)
+    scope, active_view_signature, resolve_signature = _ctx_auto_resolve_collect_scope_signatures(ctx, scene, scope_mode)
     if resolve_signature is None:
-        return {"event": "RETRY", "retry_delay": AUTO_RESOLVE_RETRY_DELAY_SEC}
+        return {"event": "RETRY", "retry_delay": settings.retry_delay_sec}
 
-    altitude_info = _resolve_scope_altitude_info(scene, scope_mode=scope)
+    altitude_info = deps.resolve_scope_altitude_info(scene, scope_mode=scope)
     if bool(altitude_info.get("inside_earth", False)):
-        _set_camera_inside_earth_warning(scene, altitude_info.get("altitude_km"))
-        stop_auto_resolve_download_pipeline()
+        deps.set_camera_inside_earth_warning(scene, altitude_info.get("altitude_km"))
+        deps.stop_auto_resolve_download_pipeline()
         return {"event": "STOP", "retry_delay": None}
-    _clear_camera_inside_earth_warning(scene)
+    deps.clear_camera_inside_earth_warning(scene)
 
-    scene_state = _read_scene_auto_resolve_state(scene)
+    scene_state = deps.read_scene_auto_resolve_state(scene)
     if scene_state is None:
         return {"event": "STOP", "retry_delay": None}
 
     now = time.monotonic()
-    output_signature = _output_resolution_signature(scene)
-    pending_output_change = _auto_resolve_sync_state_signatures(
+    output_signature = deps.output_resolution_signature(scene)
+    pending_output_change = _ctx_auto_resolve_sync_state_signatures(
+        ctx,
         scene_state,
         resolve_signature,
         output_signature,
         now,
     )
 
-    min_interval_sec = AUTO_RESOLVE_MIN_INTERVAL_SEC_DEFAULT
+    min_interval_sec = settings.min_interval_sec_default
     last_resolve = float(scene_state.last_resolve_time or 0.0)
     if now - last_resolve < min_interval_sec:
         return {
@@ -1436,7 +1517,13 @@ def _auto_resolve_detect_change(scene, props):
     }
 
 
-def _auto_resolve_plan_job(scene, props, detect_ctx):
+def _auto_resolve_detect_change(scene, props):
+    return _ctx_auto_resolve_detect_change(_require_decision_ctx(), scene, props)
+
+
+def _ctx_auto_resolve_plan_job(ctx, scene, props, detect_ctx):
+    deps = ctx.deps
+    settings = ctx.settings
     if scene is None:
         return {"event": "STOP", "retry_delay": None}
     if not isinstance(detect_ctx, dict):
@@ -1447,34 +1534,40 @@ def _auto_resolve_plan_job(scene, props, detect_ctx):
             "retry_delay": detect_ctx.get("retry_delay", None),
         }
 
-    tile_utils = _get_tile_utils()
+    tile_utils = deps.get_tile_utils()
     if tile_utils is None:
         return {"event": "STOP", "retry_delay": None}
 
     scope = str(detect_ctx.get("scope", "CAMERA") or "CAMERA")
     active_view_signature = detect_ctx.get("active_view_signature")
     try:
-        target_tiles = _canonical_tiles(
+        target_tiles = deps.canonical_tiles(
             tile_utils.main(
                 scope_mode="ACTIVE_VIEW" if (scope == "ACTIVE_VIEW" and active_view_signature is not None) else "CAMERA",
             )
         )
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka auto-resolve: tile computation failed", exc_info=True)
-        return {"event": "RETRY", "retry_delay": AUTO_RESOLVE_RETRY_DELAY_SEC}
+    except deps.recoverable_exceptions:
+        deps.logger.debug("Planetka auto-resolve: tile computation failed", exc_info=True)
+        return {"event": "RETRY", "retry_delay": settings.retry_delay_sec}
     except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka auto-resolve: unexpected tile computation failure", exc_info=True)
-        return {"event": "RETRY", "retry_delay": AUTO_RESOLVE_RETRY_DELAY_SEC}
+        deps.logger.debug("Planetka auto-resolve: unexpected tile computation failure", exc_info=True)
+        return {"event": "RETRY", "retry_delay": settings.retry_delay_sec}
 
-    _auto_resolve_enqueue_size_estimation(scene, scope, active_view_signature, target_tiles, props)
+    deps.enqueue_size_estimation(scene, scope, active_view_signature, target_tiles, props)
 
-    if target_tiles == _last_resolved_tiles(scene) and not bool(detect_ctx.get("pending_output_change", False)):
+    if target_tiles == deps.last_resolved_tiles(scene) and not bool(detect_ctx.get("pending_output_change", False)):
         return {"event": "NO_CHANGE", "target_tiles": target_tiles, "retry_delay": None}
 
     return {"event": "DISPATCH", "target_tiles": target_tiles, "retry_delay": None}
 
 
-def _auto_resolve_dispatch_job(scene, detect_ctx, plan_ctx):
+def _auto_resolve_plan_job(scene, props, detect_ctx):
+    return _ctx_auto_resolve_plan_job(_require_decision_ctx(), scene, props, detect_ctx)
+
+
+def _ctx_auto_resolve_dispatch_job(ctx, scene, detect_ctx, plan_ctx):
+    deps = ctx.deps
+    settings = ctx.settings
     if scene is None:
         return {"event": "STOP", "retry_delay": None}
     if not isinstance(detect_ctx, dict) or not isinstance(plan_ctx, dict):
@@ -1488,91 +1581,102 @@ def _auto_resolve_dispatch_job(scene, detect_ctx, plan_ctx):
     if plan_event == "NO_CHANGE":
         scene_state.last_processed_signature = detect_ctx.get("resolve_signature")
         scene_state.last_resolve_time = float(detect_ctx.get("now", time.monotonic()) or time.monotonic())
-        _write_scene_auto_resolve_state(scene_state)
+        deps.write_scene_auto_resolve_state(scene_state)
         return {"event": "NO_CHANGE", "retry_delay": None}
 
     if plan_event != "DISPATCH":
         return {"event": plan_event, "retry_delay": plan_ctx.get("retry_delay", None)}
 
     target_tiles = tuple(plan_ctx.get("target_tiles", ()) or ())
-    output_signature = _output_resolution_signature(scene)
-    queued = _schedule_auto_resolve_download(
+    output_signature = deps.output_resolution_signature(scene)
+    queued = deps.schedule_auto_resolve_download(
         scene,
         target_tiles,
         detect_ctx.get("resolve_signature"),
         output_signature,
     )
     if not queued:
-        return {"event": "RETRY", "retry_delay": AUTO_RESOLVE_RETRY_DELAY_SEC}
+        return {"event": "RETRY", "retry_delay": settings.retry_delay_sec}
 
     scene_state.last_change_time = time.monotonic()
-    _write_scene_auto_resolve_state(scene_state)
+    deps.write_scene_auto_resolve_state(scene_state)
     return {"event": "DISPATCH", "retry_delay": None}
 
 
-def _auto_resolve_tick_once():
-    global _AUTO_RESOLVE_IN_FLIGHT
+def _auto_resolve_dispatch_job(scene, detect_ctx, plan_ctx):
+    return _ctx_auto_resolve_dispatch_job(_require_decision_ctx(), scene, detect_ctx, plan_ctx)
 
-    if _AUTO_RESOLVE_IN_FLIGHT:
+
+def _ctx_auto_resolve_tick_once(ctx):
+    deps = ctx.deps
+    state = ctx.state
+    settings = ctx.settings
+
+    if state.in_flight:
         return 0.1
 
-    scene = getattr(bpy.context, "scene", None)
+    scene = getattr(deps.bpy.context, "scene", None)
     if scene is None:
         return None
     props = getattr(scene, "planetka", None)
 
-    detect_ctx = _auto_resolve_detect_change(scene, props)
+    detect_ctx = _ctx_auto_resolve_detect_change(ctx, scene, props)
     detect_event = str(detect_ctx.get("event", "STOP") or "STOP")
     if detect_event == "STOP":
         return None
     if detect_event == "RETRY":
-        return float(detect_ctx.get("retry_delay", AUTO_RESOLVE_RETRY_DELAY_SEC) or AUTO_RESOLVE_RETRY_DELAY_SEC)
+        return float(detect_ctx.get("retry_delay", settings.retry_delay_sec) or settings.retry_delay_sec)
     if detect_event == "NO_CHANGE":
         return None
 
-    plan_ctx = _auto_resolve_plan_job(scene, props, detect_ctx)
+    plan_ctx = _ctx_auto_resolve_plan_job(ctx, scene, props, detect_ctx)
     plan_event = str(plan_ctx.get("event", "STOP") or "STOP")
     if plan_event == "STOP":
         return None
     if plan_event == "RETRY":
-        return float(plan_ctx.get("retry_delay", AUTO_RESOLVE_RETRY_DELAY_SEC) or AUTO_RESOLVE_RETRY_DELAY_SEC)
+        return float(plan_ctx.get("retry_delay", settings.retry_delay_sec) or settings.retry_delay_sec)
     if plan_event == "NO_CHANGE":
         return None
 
-    dispatch_ctx = _auto_resolve_dispatch_job(scene, detect_ctx, plan_ctx)
+    dispatch_ctx = _ctx_auto_resolve_dispatch_job(ctx, scene, detect_ctx, plan_ctx)
     dispatch_event = str(dispatch_ctx.get("event", "STOP") or "STOP")
     if dispatch_event == "RETRY":
-        return float(dispatch_ctx.get("retry_delay", AUTO_RESOLVE_RETRY_DELAY_SEC) or AUTO_RESOLVE_RETRY_DELAY_SEC)
+        return float(dispatch_ctx.get("retry_delay", settings.retry_delay_sec) or settings.retry_delay_sec)
     return None
 
 
-def _auto_resolve_timer():
-    global _AUTO_RESOLVE_TIMER_RUNNING
+def _auto_resolve_tick_once():
+    return _ctx_auto_resolve_tick_once(_require_decision_ctx())
+
+
+def _ctx_auto_resolve_timer(ctx):
+    deps = ctx.deps
+    state = ctx.state
     try:
-        if not hasattr(bpy.types.Scene, "planetka"):
-            _AUTO_RESOLVE_TIMER_RUNNING = False
+        if not hasattr(deps.bpy.types.Scene, "planetka"):
+            state.timer_running = False
             return None
 
-        scene = getattr(bpy.context, "scene", None)
+        scene = getattr(deps.bpy.context, "scene", None)
         if scene is None:
-            _AUTO_RESOLVE_TIMER_RUNNING = False
+            state.timer_running = False
             return None
 
-        scene_state = _read_scene_auto_resolve_state(scene)
+        scene_state = deps.read_scene_auto_resolve_state(scene)
         if scene_state is None:
-            _AUTO_RESOLVE_TIMER_RUNNING = False
+            state.timer_running = False
             return None
-        monitor_interval = max(0.05, _active_view_monitor_interval_seconds(scene))
+        monitor_interval = max(0.05, _ctx_active_view_monitor_interval_seconds(ctx, scene))
         due_time = scene_state.next_due_time
         if due_time is None:
             scene_state.next_due_time = time.monotonic()
-            _write_scene_auto_resolve_state(scene_state)
+            deps.write_scene_auto_resolve_state(scene_state)
             due_time = scene_state.next_due_time
 
-        if not _can_auto_resolve_run(scene):
+        if not _ctx_can_auto_resolve_run(ctx, scene):
             scene_state.next_due_time = None
-            _write_scene_auto_resolve_state(scene_state)
-            _AUTO_RESOLVE_TIMER_RUNNING = False
+            deps.write_scene_auto_resolve_state(scene_state)
+            state.timer_running = False
             return None
 
         now = time.monotonic()
@@ -1580,78 +1684,91 @@ def _auto_resolve_timer():
         if remaining > 0.0:
             return max(0.05, min(remaining, 1.0))
 
-        _update_realtime_telemetry(scene)
-        camera_signature = _camera_signature(scene)
-        _handle_timeline_motion_optimization(scene)
-        _handle_viewport_motion_optimization(scene, camera_signature)
-        _handle_sunlight_motion_optimization(scene)
-        _handle_view_scope_quality_transition(scene)
-        retry_delay = _auto_resolve_tick_once()
+        deps.update_realtime_telemetry(scene)
+        camera_signature = deps.camera_signature(scene)
+        deps.handle_timeline_motion_optimization(scene)
+        deps.handle_viewport_motion_optimization(scene, camera_signature)
+        deps.handle_sunlight_motion_optimization(scene)
+        deps.handle_view_scope_quality_transition(scene)
+        retry_delay = _ctx_auto_resolve_tick_once(ctx)
         if retry_delay is not None:
             scene_state.next_due_time = time.monotonic() + max(0.05, float(retry_delay))
-            _write_scene_auto_resolve_state(scene_state)
+            deps.write_scene_auto_resolve_state(scene_state)
             return max(0.05, float(retry_delay))
 
         scene_state.next_due_time = time.monotonic() + monitor_interval
-        _write_scene_auto_resolve_state(scene_state)
+        deps.write_scene_auto_resolve_state(scene_state)
         return monitor_interval
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka auto-resolve timer tick failed", exc_info=True)
-        _AUTO_RESOLVE_TIMER_RUNNING = False
+    except deps.recoverable_exceptions:
+        deps.logger.debug("Planetka auto-resolve timer tick failed", exc_info=True)
+        state.timer_running = False
     except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
-        logger.debug("Planetka auto-resolve timer tick failed unexpectedly", exc_info=True)
-        _AUTO_RESOLVE_TIMER_RUNNING = False
+        deps.logger.debug("Planetka auto-resolve timer tick failed unexpectedly", exc_info=True)
+        state.timer_running = False
     return None
 
 
-def ensure_auto_resolve_service_running():
-    scene = getattr(getattr(bpy, "context", None), "scene", None)
-    if not _can_auto_resolve_run(scene):
-        stop_auto_resolve_service()
+def _auto_resolve_timer():
+    return _ctx_auto_resolve_timer(_require_decision_ctx())
+
+
+def _ctx_ensure_auto_resolve_service_running(ctx):
+    deps = ctx.deps
+    scene = getattr(getattr(deps.bpy, "context", None), "scene", None)
+    if not _ctx_can_auto_resolve_run(ctx, scene):
+        _ctx_stop_auto_resolve_service(ctx)
         return
     if scene is None:
         return
-    scene_state = _read_scene_auto_resolve_state(scene)
+    scene_state = deps.read_scene_auto_resolve_state(scene)
     if scene_state is None:
         return
     if scene_state.next_due_time is None:
-        scene_state.next_due_time = time.monotonic() + max(0.05, _active_view_monitor_interval_seconds(scene))
-        _write_scene_auto_resolve_state(scene_state)
-    _arm_auto_resolve_timer(force_immediate=False)
+        scene_state.next_due_time = time.monotonic() + max(0.05, _ctx_active_view_monitor_interval_seconds(ctx, scene))
+        deps.write_scene_auto_resolve_state(scene_state)
+    _ctx_arm_auto_resolve_timer(ctx, force_immediate=False)
+
+
+def ensure_auto_resolve_service_running():
+    return _ctx_ensure_auto_resolve_service_running(_require_decision_ctx())
+
+
+def _ctx_stop_auto_resolve_service(ctx):
+    deps = ctx.deps
+    state = ctx.state
+    try:
+        if deps.bpy.app.timers.is_registered(_auto_resolve_timer):
+            deps.bpy.app.timers.unregister(_auto_resolve_timer)
+    except deps.recoverable_exceptions:
+        deps.logger.debug("Planetka: failed stopping auto-resolve timer", exc_info=True)
+    try:
+        if deps.bpy.app.timers.is_registered(_auto_resolve_noncritical_timer):
+            deps.bpy.app.timers.unregister(_auto_resolve_noncritical_timer)
+    except deps.recoverable_exceptions:
+        deps.logger.debug("Planetka: failed stopping non-critical auto-resolve timer", exc_info=True)
+    state.timer_running = False
+    state.noncritical_timer_running = False
+    deps.stop_auto_resolve_download_pipeline()
+    state.next_due_time.clear()
+    state.last_camera_signature.clear()
+    state.last_output_signature.clear()
+    state.last_change_time.clear()
+    state.last_resolve_time.clear()
+    state.last_processed_signature.clear()
+    state.pending_output_change.clear()
+    state.trigger_last_signature.clear()
+    deps.viewport_opt_last_signature.clear()
+    deps.sunlight_last_signature.clear()
+    deps.viewport_scope_last.clear()
+    deps.viewport_scope_last_resolve_time.clear()
+    deps.last_realtime_telemetry.clear()
+    deps.timeline_last_signature.clear()
+    deps.frame_keyed_runtime_last_signature.clear()
+    deps.nav_camera_control_last_signature.clear()
+    deps.sunlight_object_name_cache.clear()
+    state.noncritical_pending.clear()
+    state.size_estimate_last_signature.clear()
 
 
 def stop_auto_resolve_service():
-    global _AUTO_RESOLVE_TIMER_RUNNING
-    global _AUTO_RESOLVE_NONCRITICAL_TIMER_RUNNING
-    try:
-        if bpy.app.timers.is_registered(_auto_resolve_timer):
-            bpy.app.timers.unregister(_auto_resolve_timer)
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed stopping auto-resolve timer", exc_info=True)
-    try:
-        if bpy.app.timers.is_registered(_auto_resolve_noncritical_timer):
-            bpy.app.timers.unregister(_auto_resolve_noncritical_timer)
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed stopping non-critical auto-resolve timer", exc_info=True)
-    _AUTO_RESOLVE_TIMER_RUNNING = False
-    _AUTO_RESOLVE_NONCRITICAL_TIMER_RUNNING = False
-    stop_auto_resolve_download_pipeline()
-    _AUTO_RESOLVE_NEXT_DUE_TIME.clear()
-    _AUTO_RESOLVE_LAST_CAMERA_SIGNATURE.clear()
-    _AUTO_RESOLVE_LAST_OUTPUT_SIGNATURE.clear()
-    _AUTO_RESOLVE_LAST_CHANGE_TIME.clear()
-    _AUTO_RESOLVE_LAST_RESOLVE_TIME.clear()
-    _AUTO_RESOLVE_LAST_PROCESSED_SIGNATURE.clear()
-    _AUTO_RESOLVE_PENDING_OUTPUT_CHANGE.clear()
-    _AUTO_RESOLVE_TRIGGER_LAST_SIGNATURE.clear()
-    _VIEWPORT_OPT_LAST_SIGNATURE.clear()
-    _SUNLIGHT_LAST_SIGNATURE.clear()
-    _VIEWPORT_SCOPE_LAST.clear()
-    _VIEWPORT_SCOPE_LAST_RESOLVE_TIME.clear()
-    _LAST_REALTIME_TELEMETRY.clear()
-    _TIMELINE_LAST_SIGNATURE.clear()
-    _FRAME_KEYED_RUNTIME_LAST_SIGNATURE.clear()
-    _NAV_CAMERA_CONTROL_LAST_SIGNATURE.clear()
-    _SUNLIGHT_OBJECT_NAME_CACHE.clear()
-    _AUTO_RESOLVE_NONCRITICAL_PENDING.clear()
-    _AUTO_RESOLVE_SIZE_ESTIMATE_LAST_SIGNATURE.clear()
+    return _ctx_stop_auto_resolve_service(_require_decision_ctx())

@@ -56,6 +56,7 @@ class AutoResolveDownloadDeps:
     recoverable_exceptions: Any
     resolve_trace: Any
     get_prefs: Any
+    get_streaming_utils: Any
     clear_status_notices: Any
     scene_key: Any
     scene_from_key: Any
@@ -92,6 +93,8 @@ class AutoResolveDecisionDeps:
     logger: Any
     recoverable_exceptions: Any
     resolve_trace: Any
+    get_navigation_user_edit_last_touch: Any
+    nav_camera_control_sync_grace_sec: float
     iter_scenes: Any
     scene_key: Any
     read_scene_auto_resolve_state: Any
@@ -102,11 +105,18 @@ class AutoResolveDecisionDeps:
     output_resolution_signature: Any
     current_view_scope: Any
     auto_resolve_scope_mode: Any
+    resolve_scope_altitude_info: Any
+    set_camera_inside_earth_warning: Any
+    clear_camera_inside_earth_warning: Any
     active_view_signature: Any
     last_resolved_tiles: Any
     get_earth_object: Any
+    get_tile_utils: Any
+    canonical_tiles: Any
     is_render_job_active: Any
+    is_animation_playing: Any
     is_navigation_user_edit_active: Any
+    stop_auto_resolve_download_pipeline: Any
     schedule_auto_resolve_download: Any
     arm_auto_resolve_timer: Any
     enqueue_size_estimation: Any
@@ -118,6 +128,17 @@ class AutoResolveDecisionDeps:
     keyed_runtime_signature: Any
     timeline_signature: Any
     sunlight_signature: Any
+    sync_idprops_from_props: Any
+    force_restore_navigation_adaptive_state: Any
+    viewport_opt_last_signature: Any
+    sunlight_last_signature: Any
+    viewport_scope_last: Any
+    viewport_scope_last_resolve_time: Any
+    last_realtime_telemetry: Any
+    timeline_last_signature: Any
+    frame_keyed_runtime_last_signature: Any
+    nav_camera_control_last_signature: Any
+    sunlight_object_name_cache: Any
 
 
 @dataclass(slots=True)

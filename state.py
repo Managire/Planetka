@@ -915,27 +915,22 @@ def _last_resolved_tiles(scene):
 
 
 def _mark_auto_resolve_dirty(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline._mark_auto_resolve_dirty(*args, **kwargs)
 
 
 def _auto_resolve_idle_seconds(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline._auto_resolve_idle_seconds(*args, **kwargs)
 
 
 def _is_navigation_user_edit_active(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline._is_navigation_user_edit_active(*args, **kwargs)
 
 
 def _active_view_monitor_interval_seconds(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline._active_view_monitor_interval_seconds(*args, **kwargs)
 
 
 def _arm_auto_resolve_timer(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline._arm_auto_resolve_timer(*args, **kwargs)
 
 
@@ -1037,27 +1032,22 @@ def stop_auto_resolve_download_pipeline(*args, **kwargs):
 
 
 def request_auto_resolve(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline.request_auto_resolve(*args, **kwargs)
 
 
 def _can_auto_resolve_run(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline._can_auto_resolve_run(*args, **kwargs)
 
 
 def update_auto_resolve(self, context):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline.update_auto_resolve(self, context)
 
 
 def _auto_resolve_collect_scope_signatures(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline._auto_resolve_collect_scope_signatures(*args, **kwargs)
 
 
 def _auto_resolve_sync_state_signatures(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline._auto_resolve_sync_state_signatures(*args, **kwargs)
 
 
@@ -1082,37 +1072,30 @@ def _auto_resolve_noncritical_timer(*args, **kwargs):
 
 
 def _auto_resolve_detect_change(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline._auto_resolve_detect_change(*args, **kwargs)
 
 
 def _auto_resolve_plan_job(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline._auto_resolve_plan_job(*args, **kwargs)
 
 
 def _auto_resolve_dispatch_job(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline._auto_resolve_dispatch_job(*args, **kwargs)
 
 
 def _auto_resolve_tick_once(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline._auto_resolve_tick_once(*args, **kwargs)
 
 
 def _auto_resolve_timer(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline._auto_resolve_timer(*args, **kwargs)
 
 
 def ensure_auto_resolve_service_running(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline.ensure_auto_resolve_service_running(*args, **kwargs)
 
 
 def stop_auto_resolve_service(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline.stop_auto_resolve_service(*args, **kwargs)
 
 
@@ -1198,6 +1181,7 @@ def _build_auto_resolve_contexts():
         recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
         resolve_trace=_resolve_trace,
         get_prefs=get_prefs,
+        get_streaming_utils=_get_streaming_utils,
         clear_status_notices=_clear_status_notices,
         scene_key=_scene_key,
         scene_from_key=_scene_from_key,
@@ -1232,6 +1216,8 @@ def _build_auto_resolve_contexts():
         logger=logger,
         recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
         resolve_trace=_resolve_trace,
+        get_navigation_user_edit_last_touch=lambda: _NAVIGATION_USER_EDIT_LAST_TOUCH,
+        nav_camera_control_sync_grace_sec=_NAV_CAMERA_CONTROL_SYNC_GRACE_SEC,
         iter_scenes=_iter_scenes,
         scene_key=_scene_key,
         read_scene_auto_resolve_state=_read_scene_auto_resolve_state,
@@ -1242,11 +1228,18 @@ def _build_auto_resolve_contexts():
         output_resolution_signature=_output_resolution_signature,
         current_view_scope=_current_view_scope,
         auto_resolve_scope_mode=_auto_resolve_scope_mode,
+        resolve_scope_altitude_info=_resolve_scope_altitude_info,
+        set_camera_inside_earth_warning=_set_camera_inside_earth_warning,
+        clear_camera_inside_earth_warning=_clear_camera_inside_earth_warning,
         active_view_signature=_active_view_signature,
         last_resolved_tiles=_last_resolved_tiles,
         get_earth_object=get_earth_object,
+        get_tile_utils=_get_tile_utils,
+        canonical_tiles=_canonical_tiles,
         is_render_job_active=_is_render_job_active,
+        is_animation_playing=_is_animation_playing,
         is_navigation_user_edit_active=_is_navigation_user_edit_active,
+        stop_auto_resolve_download_pipeline=stop_auto_resolve_download_pipeline,
         schedule_auto_resolve_download=_schedule_auto_resolve_download,
         arm_auto_resolve_timer=_arm_auto_resolve_timer,
         enqueue_size_estimation=_auto_resolve_enqueue_size_estimation,
@@ -1258,6 +1251,17 @@ def _build_auto_resolve_contexts():
         keyed_runtime_signature=_keyed_runtime_signature,
         timeline_signature=_timeline_signature,
         sunlight_signature=_sunlight_signature,
+        sync_idprops_from_props=_sync_idprops_from_props,
+        force_restore_navigation_adaptive_state=_force_restore_navigation_adaptive_state,
+        viewport_opt_last_signature=_VIEWPORT_OPT_LAST_SIGNATURE,
+        sunlight_last_signature=_SUNLIGHT_LAST_SIGNATURE,
+        viewport_scope_last=_VIEWPORT_SCOPE_LAST,
+        viewport_scope_last_resolve_time=_VIEWPORT_SCOPE_LAST_RESOLVE_TIME,
+        last_realtime_telemetry=_LAST_REALTIME_TELEMETRY,
+        timeline_last_signature=_TIMELINE_LAST_SIGNATURE,
+        frame_keyed_runtime_last_signature=_FRAME_KEYED_RUNTIME_LAST_SIGNATURE,
+        nav_camera_control_last_signature=_NAV_CAMERA_CONTROL_LAST_SIGNATURE,
+        sunlight_object_name_cache=_SUNLIGHT_OBJECT_NAME_CACHE,
     )
     noncritical_deps = AutoResolveNonCriticalDeps(
         bpy=bpy,
@@ -1296,3 +1300,4 @@ def _build_auto_resolve_contexts():
 ) = _build_auto_resolve_contexts()
 
 _auto_resolve_pipeline._AUTO_RESOLVE_DOWNLOAD_CTX = _AUTO_RESOLVE_DOWNLOAD_CTX
+_auto_resolve_pipeline._AUTO_RESOLVE_DECISION_CTX = _AUTO_RESOLVE_DECISION_CTX
