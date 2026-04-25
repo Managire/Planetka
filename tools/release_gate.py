@@ -60,6 +60,7 @@ def main() -> int:
     template_path = root / "Documentation" / "Release" / "RELEASE_NOTES_TEMPLATE.md"
     worker_path = root / "cloudflare-api" / "src" / "index.js"
     worker_tile_routes_path = root / "cloudflare-api" / "src" / "worker" / "tile_routes.js"
+    worker_admin_analytics_path = root / "cloudflare-api" / "src" / "worker" / "admin_analytics_handlers.js"
     wrangler_path = root / "cloudflare-api" / "wrangler.toml"
     fallback_dir = root / "Resources" / "Fallback Images"
 
@@ -133,12 +134,15 @@ def main() -> int:
 
     worker_src = ""
     worker_tile_routes_src = ""
+    worker_admin_analytics_src = ""
     if not worker_path.exists():
         errors.append("Missing cloudflare-api/src/index.js")
     else:
         worker_src = read_text(worker_path)
     if worker_tile_routes_path.exists():
         worker_tile_routes_src = read_text(worker_tile_routes_path)
+    if worker_admin_analytics_path.exists():
+        worker_admin_analytics_src = read_text(worker_admin_analytics_path)
 
     # 6) Worker access model must match the 0.7.0 plan-based product
     if worker_src:
@@ -160,7 +164,10 @@ def main() -> int:
 
     # 7) Admin analytics must reject token query params
     if worker_src:
-        query_token_reject_count = worker_src.count("query_token_not_allowed")
+        query_token_reject_count = (
+            worker_src.count("query_token_not_allowed")
+            + worker_admin_analytics_src.count("query_token_not_allowed")
+        )
         if query_token_reject_count < 2:
             errors.append(
                 "Admin analytics query-token rejection appears incomplete "

@@ -1,4 +1,3 @@
-import { buildAdminAnalyticsPageHtml } from "./admin_analytics_page.js";
 import {
   corsHeaders,
   html,
@@ -51,6 +50,12 @@ import {
   requireAnalyticsAdmin,
   requireAuthenticatedUserContext,
 } from "./worker/auth_session.js";
+import {
+  handleAdminAnalyticsData as handleAdminAnalyticsDataRoute,
+  handleAdminAnalyticsPage as handleAdminAnalyticsPageRoute,
+  handleAdminAnalyticsTileMapImage as handleAdminAnalyticsTileMapImageRoute,
+  handleAdminAnalyticsUsersPage as handleAdminAnalyticsUsersPageRoute,
+} from "./worker/admin_analytics_handlers.js";
 import {
   handleTileRequest as handleTileRequestRoute,
   handleTileSessionStart as handleTileSessionStartRoute,
@@ -205,6 +210,32 @@ const AUTH_SESSION_DEPS = {
   requireSecret,
   resolvePlanCode,
   verifyJwt,
+};
+
+const ADMIN_ANALYTICS_DEPS = {
+  buildAdminSessionCookie,
+  collectAnalyticsSnapshot,
+  corsHeaders,
+  DEFAULT_ADMIN_ANALYTICS_TILE_MAP_KEY,
+  DEFAULT_ANALYTICS_WINDOW_MINUTES,
+  DEFAULT_LIVE_TILE_MAP_WINDOW_MINUTES,
+  escapeHtml,
+  html,
+  json,
+  listAnalyticsUsers,
+  normalizePlanCode,
+  nowIso,
+  parseAnalyticsUsersSort,
+  parseAnalyticsUsersSortDirection,
+  parseHeavyUserPlanFilter,
+  parseNonNegativeInteger,
+  PLAN_CODE_PLANETKA,
+  PLAN_CODE_PLANETKA_PRO,
+  publicErrorMessage,
+  requireAnalyticsAdmin: (request, env) => requireAnalyticsAdmin(request, env, AUTH_SESSION_DEPS),
+  sanitizeAnalyticsMinutes,
+  sanitizeLiveTileMapMinutes,
+  BYTES_PER_GB,
 };
 
 function nowIso() {
@@ -8446,510 +8477,6 @@ async function handleLegalDocumentRequest(request, env, path) {
   return new Response(object.body, { status: 200, headers });
 }
 
-async function handleAdminAnalyticsData(request, env) {
-  const url = new URL(request.url);
-  if (String(url.searchParams.get("access_token") || url.searchParams.get("token") || "").trim()) {
-    return json({ ok: false, error: "query_token_not_allowed" }, 400, env);
-  }
-  const auth = await requireAnalyticsAdmin(request, env, AUTH_SESSION_DEPS);
-  if (auth.error) {
-    return auth.error;
-  }
-  const { db, user } = auth;
-  const windowMinutes = sanitizeAnalyticsMinutes(url.searchParams.get("minutes"), DEFAULT_ANALYTICS_WINDOW_MINUTES);
-  const tileMapMinutes = sanitizeLiveTileMapMinutes(
-    url.searchParams.get("tile_map_minutes"),
-    DEFAULT_LIVE_TILE_MAP_WINDOW_MINUTES,
-  );
-  const planFilter = parseHeavyUserPlanFilter(url.searchParams.get("plan_filter"));
-  try {
-    const snapshot = await collectAnalyticsSnapshot(db, windowMinutes, planFilter, tileMapMinutes, env);
-    return json(
-      {
-        ok: true,
-        admin_email: String(user.email || ""),
-        ...snapshot,
-      },
-      200,
-      env,
-    );
-  } catch (error) {
-    const message = String(error && error.message || "analytics_data_failed");
-    console.error(
-      "planetka.admin.analytics.data_failed",
-      JSON.stringify({
-        error: message,
-        user_id: String(user && user.id || ""),
-        user_email: String(user && user.email || ""),
-        plan_filter: planFilter,
-        window_minutes: windowMinutes,
-        tile_map_minutes: tileMapMinutes,
-      }),
-    );
-    return json(
-      {
-        ok: false,
-        error: "analytics_data_failed",
-        message: publicErrorMessage("Analytics data is temporarily unavailable."),
-      },
-      500,
-      env,
-    );
-  }
-}
-
-async function handleAdminAnalyticsTileMapImage(request, env) {
-  const key = String(env.ADMIN_ANALYTICS_TILE_MAP_KEY || DEFAULT_ADMIN_ANALYTICS_TILE_MAP_KEY).trim();
-  if (!key) {
-    return json({ ok: false, error: "tile_map_key_not_configured" }, 500, env);
-  }
-  const bucket = env.PLANETKA_DATA;
-  if (!bucket) {
-    return json({ ok: false, error: "r2_not_bound" }, 500, env);
-  }
-  const object = await bucket.get(key);
-  if (!object || !object.body) {
-    return json({ ok: false, error: "tile_map_image_not_found" }, 404, env);
-  }
-  const headers = {
-    ...corsHeaders(env),
-    "Content-Type": String(object.httpMetadata && object.httpMetadata.contentType || "image/jpeg"),
-    "Cache-Control": "public, max-age=3600",
-  };
-  return new Response(object.body, { status: 200, headers });
-}
-
-async function handleAdminAnalyticsPage(request, env) {
-  const url = new URL(request.url);
-  if (String(url.searchParams.get("access_token") || url.searchParams.get("token") || "").trim()) {
-    return json({ ok: false, error: "query_token_not_allowed" }, 400, env);
-  }
-  const auth = await requireAnalyticsAdmin(request, env, AUTH_SESSION_DEPS);
-  if (auth.error) {
-    return auth.error;
-  }
-  const { user, tokenSource } = auth;
-  let initialSnapshot = null;
-  try {
-    initialSnapshot = await collectAnalyticsSnapshot(
-      auth.db,
-      10080,
-      "all",
-      10,
-      env,
-    );
-  } catch (error) {
-    console.error(
-      "planetka.admin.analytics.page_snapshot_failed",
-      JSON.stringify({
-        error: String(error && error.message || "analytics_page_snapshot_failed"),
-        user_id: String(user && user.id || ""),
-        user_email: String(user && user.email || ""),
-      }),
-    );
-  }
-  const snapshotTopLine = initialSnapshot && initialSnapshot.top_line ? initialSnapshot.top_line : {};
-  const snapshotSummary = initialSnapshot && initialSnapshot.summary ? initialSnapshot.summary : {};
-  const snapshotActive = initialSnapshot && initialSnapshot.active ? initialSnapshot.active : {};
-  const snapshotLiveMap = initialSnapshot && initialSnapshot.live_tile_map ? initialSnapshot.live_tile_map : {};
-  const snapshotLiveRows = Array.isArray(snapshotLiveMap && snapshotLiveMap.rows) ? snapshotLiveMap.rows : [];
-  const snapshotActiveUsers10m = Array.isArray(initialSnapshot && initialSnapshot.active_users_10m)
-    ? initialSnapshot.active_users_10m
-    : [];
-  const snapshotHeavyUsers = Array.isArray(initialSnapshot && initialSnapshot.heavy_users_30d)
-    ? initialSnapshot.heavy_users_30d
-    : [];
-  const snapshotBillable = initialSnapshot && initialSnapshot.cloudflare_billable_usage
-    ? initialSnapshot.cloudflare_billable_usage
-    : {};
-  const fmtIntLocal = (value) => Number(parseNonNegativeInteger(value, 0)).toLocaleString();
-  const fmtGbLocal = (value) => (Number(parseNonNegativeInteger(value, 0)) / BYTES_PER_GB).toFixed(3);
-  const fmtFloatLocal = (value, digits = 2) => {
-    const numeric = Number(value);
-    return Number.isFinite(numeric) ? numeric.toFixed(digits) : "0.00";
-  };
-  const tierCodeFromStatus = (statusValue) => {
-    const normalized = normalizePlanCode(statusValue);
-    if (normalized === PLAN_CODE_PLANETKA_PRO) return "pro";
-    if (normalized === PLAN_CODE_PLANETKA) return "personal";
-    return "free";
-  };
-  const tierLabelFromStatus = (statusValue) => {
-    const tierCode = tierCodeFromStatus(statusValue);
-    if (tierCode === "pro") return "Commercial";
-    if (tierCode === "personal") return "Personal";
-    return "Free";
-  };
-  const tierClassFromStatus = (statusValue) => {
-    const tierCode = tierCodeFromStatus(statusValue);
-    if (tierCode === "pro") return "tier-pro";
-    if (tierCode === "personal") return "tier-personal";
-    return "tier-free";
-  };
-  const tierColorFromStatus = (statusValue) => {
-    const tierCode = tierCodeFromStatus(statusValue);
-    if (tierCode === "pro") return "#ef4444";
-    if (tierCode === "personal") return "#22c55e";
-    return "#ffffff";
-  };
-  const serverActiveUsersRowsHtml = snapshotActiveUsers10m.map((row) => {
-    const email = escapeHtml(String(row && row.user_email || ""));
-    const tier = tierLabelFromStatus(row && row.user_status);
-    const tierClass = tierClassFromStatus(row && row.user_status);
-    return `<tr><td class="${tierClass}">${email}</td><td class="${tierClass}">${tier}</td><td>${fmtIntLocal(row && row.request_count)}</td><td>${fmtIntLocal(row && row.resolve_count)}</td><td>${fmtGbLocal(row && row.bytes_served)}</td><td>${escapeHtml(String(row && row.last_seen_at || ""))}</td></tr>`;
-  }).join("");
-  const serverHeavyRowsHtml = snapshotHeavyUsers.slice(0, 20).map((row) => {
-    const email = escapeHtml(String(row && row.user_email || ""));
-    const tier = tierLabelFromStatus(row && row.user_status);
-    const tierClass = tierClassFromStatus(row && row.user_status);
-    const lastSeen = Number.isFinite(Number(row && row.last_event_unix))
-      ? new Date(Number(row.last_event_unix) * 1000).toISOString()
-      : "";
-    const monthBytes = (row && (row.month_bytes ?? row.bytes_served_30d));
-    const monthRequests = (row && (row.request_count_month ?? row.request_count_30d));
-    return `<tr><td class="${tierClass}">${email}</td><td class="${tierClass}">${tier}</td><td>${fmtIntLocal(row && row.resolve_count)}</td><td>${fmtGbLocal(monthBytes)}</td><td>${fmtIntLocal(monthRequests)}</td><td>${escapeHtml(lastSeen)}</td></tr>`;
-  }).join("");
-  const billableAvailable = Boolean(snapshotBillable && snapshotBillable.available);
-  const billableSource = escapeHtml(
-    String(snapshotBillable && snapshotBillable.source || "cloudflare_graphql").replace(/cloudflare/gi, "cloud"),
-  );
-  const billablePeriodStart = escapeHtml(String(snapshotBillable && snapshotBillable.period_start || ""));
-  const billablePeriodEnd = escapeHtml(String(snapshotBillable && snapshotBillable.period_end || ""));
-  const billableBucket = escapeHtml(String(snapshotBillable && snapshotBillable.bucket_filter || ""));
-  const billableStorageGb = billableAvailable ? fmtFloatLocal(snapshotBillable && snapshotBillable.storage && snapshotBillable.storage.gb, 3) : "-";
-  const billableStorageGbBillable = billableAvailable ? fmtFloatLocal(snapshotBillable && snapshotBillable.storage && snapshotBillable.storage.billable_gb_rounded, 0) : "-";
-  const billableClassAOps = billableAvailable ? fmtIntLocal(snapshotBillable && snapshotBillable.class_a && snapshotBillable.class_a.operations) : "-";
-  const billableClassAOpsBillable = billableAvailable ? fmtIntLocal(snapshotBillable && snapshotBillable.class_a && snapshotBillable.class_a.billable_operations) : "-";
-  const billableClassBOps = billableAvailable ? fmtIntLocal(snapshotBillable && snapshotBillable.class_b && snapshotBillable.class_b.operations) : "-";
-  const billableClassBOpsBillable = billableAvailable ? fmtIntLocal(snapshotBillable && snapshotBillable.class_b && snapshotBillable.class_b.billable_operations) : "-";
-  const billableUnknownOps = billableAvailable ? fmtIntLocal(snapshotBillable && snapshotBillable.unknown_operations) : "-";
-  const billableCostStorage = billableAvailable ? fmtFloatLocal(snapshotBillable && snapshotBillable.estimated_cost_usd && snapshotBillable.estimated_cost_usd.storage, 2) : "-";
-  const billableCostClassA = billableAvailable ? fmtFloatLocal(snapshotBillable && snapshotBillable.estimated_cost_usd && snapshotBillable.estimated_cost_usd.class_a, 2) : "-";
-  const billableCostClassB = billableAvailable ? fmtFloatLocal(snapshotBillable && snapshotBillable.estimated_cost_usd && snapshotBillable.estimated_cost_usd.class_b, 2) : "-";
-  const billableCostTotal = billableAvailable ? fmtFloatLocal(snapshotBillable && snapshotBillable.estimated_cost_usd && snapshotBillable.estimated_cost_usd.total, 2) : "-";
-  const billableStatusText = billableAvailable
-    ? (snapshotBillable && snapshotBillable.estimated
-      ? `Estimated billable usage from telemetry. Source: ${billableSource}. Period: ${billablePeriodStart} -> ${billablePeriodEnd}`
-      : `Cloud GraphQL live data. Source: ${billableSource}. Bucket: ${billableBucket || "all buckets"}. Period: ${billablePeriodStart} -> ${billablePeriodEnd}`)
-    : `Cloud billable usage unavailable. ${escapeHtml(String(snapshotBillable && snapshotBillable.message || snapshotBillable && snapshotBillable.reason || "Not configured."))}`;
-  const parseLiveMapTile = (tileKey) => {
-    const text = String(tileKey || "").trim();
-    const match = /_x(\d{3})_y(\d{3})_z(\d{3})_d(\d{3})\.(?:exr|tif|tiff|png|jpe?g)$/i.exec(text);
-    if (!match) return null;
-    const x = Number.parseInt(match[1], 10);
-    const y = Number.parseInt(match[2], 10);
-    const z = Number.parseInt(match[3], 10);
-    const d = Number.parseInt(match[4], 10);
-    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z) || !Number.isFinite(d)) return null;
-    if (x < 0 || x > 359 || y < 0 || y > 179 || z <= 0 || z > 360) return null;
-    return { x, y, z, d };
-  };
-  const serverMapRectsSvg = snapshotLiveRows
-    .map((row) => {
-      const parsed = parseLiveMapTile(row && row.tile_key);
-      if (!parsed) return "";
-      if (parsed.z === 90 || parsed.z === 180 || parsed.z === 360) return "";
-      const x = parsed.x * 2;
-      const y = (180 - (parsed.y + parsed.z)) * 2;
-      const w = parsed.z * 2;
-      const h = parsed.z * 2;
-      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(w) || !Number.isFinite(h)) return "";
-      if ((x + w) <= 0 || (y + h) <= 0 || x >= 720 || y >= 360) return "";
-      const color = tierColorFromStatus(row && row.user_status);
-      const rawD = Number(parsed.d || 1);
-      const alpha = Math.max(0.05, Math.min(1, 1 / Math.max(1, rawD)));
-      return `<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${w.toFixed(2)}" height="${h.toFixed(2)}" fill="${color}" fill-opacity="${alpha.toFixed(3)}" stroke="${color}" stroke-width="0.5" stroke-opacity="0.95"></rect>`;
-    })
-    .filter(Boolean)
-    .join("");
-  const snapshotGeneratedAt = escapeHtml(String(initialSnapshot && initialSnapshot.generated_at || nowIso()));
-  const buildStamp = nowIso();
-  const htmlContent = buildAdminAnalyticsPageHtml({
-    escapeHtml,
-    encodeURIComponent,
-    user,
-    tokenSource,
-    buildStamp,
-    snapshotGeneratedAt,
-    fmtIntLocal,
-    fmtGbLocal,
-    snapshotTopLine,
-    snapshotActive,
-    snapshotSummary,
-    snapshotLiveMap,
-    serverActiveUsersRowsHtml,
-    serverMapRectsSvg,
-    serverHeavyRowsHtml,
-    billableStatusText,
-    billableStorageGb,
-    billableStorageGbBillable,
-    billableCostStorage,
-    billableClassAOps,
-    billableClassAOpsBillable,
-    billableCostClassA,
-    billableClassBOps,
-    billableClassBOpsBillable,
-    billableCostClassB,
-    billableUnknownOps,
-    billableCostTotal,
-  });
-  if (tokenSource === "bearer") {
-    const authHeader = String(request.headers.get("Authorization") || "");
-    if (authHeader.startsWith("Bearer ")) {
-      const token = authHeader.slice("Bearer ".length).trim();
-      if (token) {
-        return new Response(htmlContent, {
-          status: 200,
-          headers: {
-            "Content-Type": "text/html; charset=utf-8",
-            ...corsHeaders(env),
-            "Set-Cookie": buildAdminSessionCookie(token),
-          },
-        });
-      }
-    }
-  }
-  return html(htmlContent, 200, env);
-}
-
-async function handleAdminAnalyticsUsersPage(request, env) {
-  const url = new URL(request.url);
-  if (String(url.searchParams.get("access_token") || url.searchParams.get("token") || "").trim()) {
-    return json({ ok: false, error: "query_token_not_allowed" }, 400, env);
-  }
-  const auth = await requireAnalyticsAdmin(request, env, AUTH_SESSION_DEPS);
-  if (auth.error) {
-    return auth.error;
-  }
-  const { db, user } = auth;
-  const query = String(url.searchParams.get("q") || "").trim();
-  const sortBy = parseAnalyticsUsersSort(url.searchParams.get("sort"));
-  const sortDir = parseAnalyticsUsersSortDirection(url.searchParams.get("dir"));
-  const rows = await listAnalyticsUsers(db, env, {
-    query,
-    sort_by: sortBy,
-    sort_dir: sortDir,
-    limit: 5000,
-  });
-  const fmtIntLocal = (value) => Number(parseNonNegativeInteger(value, 0)).toLocaleString();
-  const fmtGbLocal = (value) => (Number(parseNonNegativeInteger(value, 0)) / BYTES_PER_GB).toFixed(3);
-  const tierCodeFromStatus = (statusValue) => {
-    const normalized = normalizePlanCode(statusValue);
-    if (normalized === PLAN_CODE_PLANETKA_PRO) return "pro";
-    if (normalized === PLAN_CODE_PLANETKA) return "personal";
-    return "free";
-  };
-  const tierLabelFromStatus = (statusValue) => {
-    const tierCode = tierCodeFromStatus(statusValue);
-    if (tierCode === "pro") return "Commercial";
-    if (tierCode === "personal") return "Personal";
-    return "Free";
-  };
-  const tierClassFromStatus = (statusValue) => {
-    const tierCode = tierCodeFromStatus(statusValue);
-    if (tierCode === "pro") return "tier-pro";
-    if (tierCode === "personal") return "tier-personal";
-    return "tier-free";
-  };
-  const buildSortHref = (key) => {
-    const params = new URLSearchParams();
-    if (query) params.set("q", query);
-    params.set("sort", key);
-    const nextDir = (sortBy === key && sortDir === "desc") ? "asc" : "desc";
-    params.set("dir", nextDir);
-    return `/admin/analytics/users?${params.toString()}`;
-  };
-  const sortMarker = (key) => (sortBy === key ? (sortDir === "desc" ? " ▼" : " ▲") : "");
-  const rowsHtml = (Array.isArray(rows) ? rows : []).map((row) => {
-    const userIdRaw = String(row && row.user_id || "");
-    const userEmailRaw = String(row && row.user_email || "");
-    const planCodeRaw = String(row && row.plan_code || PLAN_CODE_PLANETKA);
-    const userId = escapeHtml(userIdRaw);
-    const userEmail = escapeHtml(userEmailRaw);
-    const planCode = escapeHtml(planCodeRaw);
-    const status = String(row && row.user_status || "").trim().toLowerCase();
-    const tierClass = tierClassFromStatus(status || planCode);
-    const tierLabel = tierLabelFromStatus(status || planCode);
-    const throttledUntilRaw = String(row && row.throttled_until || "").trim();
-    const throttledUntilMs = Date.parse(throttledUntilRaw);
-    const throttledActive = Number.isFinite(throttledUntilMs) && throttledUntilMs > Date.now();
-    let actionButtons = "";
-    if (status === "blocked") {
-      actionButtons = `<button class="action-btn warn" data-action="unblock" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}" data-plan-code="${encodeURIComponent(planCodeRaw)}">Unblock</button><button class="action-btn" data-action="set-free" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Free</button><button class="action-btn" data-action="set-lite" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Personal</button><button class="action-btn" data-action="set-pro" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Commercial</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
-    } else {
-      const freeButton = `<button class="action-btn" data-action="set-free" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Free</button>`;
-      const planButton = tierCodeFromStatus(status || planCode) === "pro"
-        ? `<button class="action-btn" data-action="set-lite" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Personal</button>`
-        : `<button class="action-btn" data-action="set-pro" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Commercial</button>`;
-      const throttleButton = throttledActive
-        ? `<button class="action-btn" data-action="unthrottle" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Unthrottle</button>`
-        : `<button class="action-btn warn" data-action="throttle" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Throttle 24h</button>`;
-      actionButtons = `${freeButton}${planButton}${throttleButton}<button class="action-btn danger" data-action="block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Block</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
-    }
-    return `<tr>
-      <td class="${tierClass}">${userEmail}</td>
-      <td class="${tierClass}">${escapeHtml(tierLabel)}</td>
-      <td>${fmtIntLocal(row && row.resolve_count)}</td>
-      <td>${fmtGbLocal(row && row.lifetime_bytes)}</td>
-      <td>${fmtGbLocal(row && row.month_bytes)}</td>
-      <td>${fmtGbLocal(row && row.week_bytes)}</td>
-      <td>${fmtGbLocal(row && row.day_bytes)}</td>
-      <td>${fmtGbLocal(row && row.hour_bytes)}</td>
-      <td>${escapeHtml(String(row && row.last_seen_at || ""))}</td>
-      <td class="action-wrap">${actionButtons}</td>
-    </tr>`;
-  }).join("");
-
-  const htmlContent = `<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Planetka Analytics - All users</title>
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; margin: 20px; background: #0b1020; color: #e5e7eb; }
-    h1 { margin: 0 0 8px; font-size: 24px; }
-    .muted { color: #9ca3af; font-size: 13px; }
-    .controls { display:flex; gap:10px; align-items:center; flex-wrap: wrap; margin: 8px 0 16px; }
-    input, button, select { background:#111827; color:#e5e7eb; border:1px solid #374151; border-radius:8px; padding:7px 10px; }
-    table { width:100%; border-collapse: collapse; margin: 8px 0 16px; font-size: 13px; }
-    th, td { border-bottom: 1px solid #1f2937; padding: 8px 6px; text-align:left; vertical-align: top; }
-    th { color:#93c5fd; font-weight:600; white-space: nowrap; }
-    th a { color:#93c5fd; text-decoration:none; }
-    .action-btn { font-size: 12px; padding: 4px 8px; margin-right: 6px; margin-bottom: 4px; cursor: pointer; }
-    .action-btn.warn { border-color: #9a3412; color: #fed7aa; }
-    .action-btn.danger { border-color: #991b1b; color: #fecaca; }
-    .action-wrap { white-space: nowrap; min-width: 330px; }
-    .tier-free { color: #ffffff; font-weight: 600; }
-    .tier-personal { color: #22c55e; font-weight: 600; }
-    .tier-pro { color: #ef4444; font-weight: 600; }
-    .error { color: #fca5a5; }
-  </style>
-</head>
-<body>
-  <h1>All users</h1>
-  <div class="muted">Signed in as ${escapeHtml(String(user.email || ""))}</div>
-  <div class="controls">
-    <a href="/admin/analytics" style="color:#93c5fd; text-decoration:none;">Back to analytics</a>
-    <a href="/admin/session/logout" style="color:#fca5a5; text-decoration:none;">Sign Out</a>
-  </div>
-  <form class="controls" method="GET" action="/admin/analytics/users">
-    <label for="q">Search user email:</label>
-    <input id="q" name="q" type="text" value="${escapeHtml(query)}" placeholder="user@example.com" />
-    <input type="hidden" name="sort" value="${escapeHtml(sortBy)}" />
-    <input type="hidden" name="dir" value="${escapeHtml(sortDir)}" />
-    <button type="submit">Search</button>
-    <span class="muted">${fmtIntLocal(Array.isArray(rows) ? rows.length : 0)} users shown</span>
-  </form>
-  <div id="status" class="muted">Ready</div>
-  <table>
-    <thead>
-      <tr>
-        <th>Email</th>
-        <th>Plan</th>
-        <th><a href="${buildSortHref("resolves")}">Resolves${sortMarker("resolves")}</a></th>
-        <th><a href="${buildSortHref("lifetime")}">Lifetime GB${sortMarker("lifetime")}</a></th>
-        <th><a href="${buildSortHref("month")}">Month GB${sortMarker("month")}</a></th>
-        <th><a href="${buildSortHref("week")}">Week GB${sortMarker("week")}</a></th>
-        <th><a href="${buildSortHref("day")}">Day GB${sortMarker("day")}</a></th>
-        <th><a href="${buildSortHref("hour")}">Hour GB${sortMarker("hour")}</a></th>
-        <th><a href="${buildSortHref("last_seen")}">Last Seen${sortMarker("last_seen")}</a></th>
-        <th>Actions</th>
-      </tr>
-    </thead>
-    <tbody>${rowsHtml}</tbody>
-  </table>
-  <script>
-    const statusEl = document.getElementById("status");
-
-    const decodeDataValue = (v) => {
-      try { return decodeURIComponent(String(v || "")); } catch (_e) { return String(v || ""); }
-    };
-    function renderRows(tableId, rows, rowBuilder) {
-      const tbody = document.querySelector("#" + tableId + " tbody");
-      if (!tbody) return;
-      tbody.innerHTML = "";
-      const rowsSafe = Array.isArray(rows) ? rows : [];
-      for (const row of rowsSafe) {
-        const tr = document.createElement("tr");
-        tr.innerHTML = String(rowBuilder(row) || "");
-        tbody.appendChild(tr);
-      }
-    }
-    async function performUserAction(action, userId, userEmail, planCode) {
-      const safeAction = String(action || "").trim();
-      const safeUserId = String(userId || "").trim();
-      const safeUserEmail = String(userEmail || "").trim();
-      const safePlanCode = String(planCode || "").trim().toLowerCase();
-      const endpointByAction = {
-        unthrottle: "/admin/users/unthrottle",
-        throttle: "/admin/users/throttle",
-        block: "/admin/users/block",
-        unblock: "/admin/users/unblock",
-        "set-free": "/admin/users/set-plan",
-        "set-lite": "/admin/users/set-plan",
-        "set-pro": "/admin/users/set-plan",
-        "hard-block": "/admin/users/hard-block",
-      };
-      const confirmation = {
-        unthrottle: "Unthrottle this account now?",
-        throttle: "Throttle this account now for 24 hours?",
-        block: "Block this user account now?",
-        unblock: "Unblock this user account now?",
-        "set-free": "Set this account to Free?",
-        "set-lite": "Set this account to Personal?",
-        "set-pro": "Set this account to Commercial?",
-        "hard-block": "Hard block this user and block same-computer attempts?",
-      };
-      const endpoint = endpointByAction[safeAction];
-      if (!endpoint) return;
-      if (!window.confirm(confirmation[safeAction] || "Confirm action?")) return;
-      const payload = { email: safeUserEmail };
-      if (safeUserId) payload.user_id = safeUserId;
-      if (safeAction === "throttle") payload.duration_minutes = 1440;
-      if (safeAction === "unblock") {
-        payload.plan_code = (!safePlanCode || safePlanCode === "blocked") ? "lite" : safePlanCode;
-      }
-      if (safeAction === "set-free") payload.plan_code = "free";
-      if (safeAction === "set-lite") payload.plan_code = "lite";
-      if (safeAction === "set-pro") payload.plan_code = "pro";
-      statusEl.textContent = "Applying action...";
-      statusEl.className = "muted";
-      try {
-        const res = await fetch(endpoint, {
-          method: "POST",
-          credentials: "same-origin",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        const data = await res.json();
-        if (!res.ok || !data.ok) {
-          throw new Error((data && (data.message || data.error)) || ("HTTP " + res.status));
-        }
-        statusEl.textContent = "Action applied: " + safeAction + " (" + safeUserEmail + ")";
-        statusEl.className = "muted";
-        window.location.reload();
-      } catch (error) {
-        statusEl.textContent = "Action failed: " + String(error && error.message || error);
-        statusEl.className = "error";
-      }
-    }
-    document.addEventListener("click", (event) => {
-      const button = event.target && event.target.closest ? event.target.closest("button.action-btn") : null;
-      if (!button) return;
-      const action = String(button.getAttribute("data-action") || "").trim();
-      if (!action) return;
-      const userId = decodeDataValue(button.getAttribute("data-user-id"));
-      const userEmail = decodeDataValue(button.getAttribute("data-user-email"));
-      const planCode = decodeDataValue(button.getAttribute("data-plan-code"));
-      performUserAction(action, userId, userEmail, planCode);
-    });
-  </script>
-</body>
-</html>`;
-  return html(htmlContent, 200, env);
-}
-
 function renderAdminSessionStartPage(env) {
   return `<!doctype html>
 <html>
@@ -10441,10 +9968,10 @@ const TILE_ROUTE_DEPS = {
 };
 
 const ADMIN_ROUTE_DEPS = {
-  handleAdminAnalyticsData,
-  handleAdminAnalyticsPage,
-  handleAdminAnalyticsTileMapImage,
-  handleAdminAnalyticsUsersPage,
+  handleAdminAnalyticsData: (request, env) => handleAdminAnalyticsDataRoute(request, env, ADMIN_ANALYTICS_DEPS),
+  handleAdminAnalyticsPage: (request, env) => handleAdminAnalyticsPageRoute(request, env, ADMIN_ANALYTICS_DEPS),
+  handleAdminAnalyticsTileMapImage: (request, env) => handleAdminAnalyticsTileMapImageRoute(request, env, ADMIN_ANALYTICS_DEPS),
+  handleAdminAnalyticsUsersPage: (request, env) => handleAdminAnalyticsUsersPageRoute(request, env, ADMIN_ANALYTICS_DEPS),
   handleAdminLoginPage,
   handleAdminPasswordLogin,
   handleAdminSessionLogout,
