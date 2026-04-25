@@ -1,8 +1,21 @@
 import math
 
+_VIEW_TELEMETRY_CTX = None
 
-def active_view_signature(runtime):
-    bpy_module = runtime["bpy"]
+def _require_ctx():
+    ctx = _VIEW_TELEMETRY_CTX
+    if ctx is None:
+        raise RuntimeError("Planetka view telemetry context is not configured.")
+    return ctx
+
+
+def _is_context(value):
+    return hasattr(value, "deps") and hasattr(value, "state")
+
+
+def _active_view_signature_from_bpy(bpy_module):
+    if bpy_module is None:
+        return None
     wm = getattr(bpy_module.context, "window_manager", None)
     if not wm:
         return None
@@ -40,6 +53,18 @@ def active_view_signature(runtime):
     return None
 
 
+def _ctx_active_view_signature(ctx):
+    return _active_view_signature_from_bpy(ctx.deps.bpy)
+
+
+def active_view_signature(ctx=None):
+    if _is_context(ctx):
+        return _ctx_active_view_signature(ctx)
+    if isinstance(ctx, dict):
+        return _active_view_signature_from_bpy(ctx.get("bpy"))
+    return _ctx_active_view_signature(_require_ctx())
+
+
 def active_camera_projection_info(scene):
     camera = getattr(scene, "camera", None) if scene else None
     if camera is None:
@@ -73,8 +98,8 @@ def active_camera_projection_info(scene):
     }
 
 
-def tag_view3d_redraw(runtime):
-    bpy_module = runtime["bpy"]
+def _ctx_tag_view3d_redraw(ctx):
+    bpy_module = ctx.deps.bpy
     wm = getattr(bpy_module.context, "window_manager", None)
     if not wm:
         return
@@ -87,45 +112,117 @@ def tag_view3d_redraw(runtime):
                 area.tag_redraw()
 
 
-def get_camera_inside_earth_warning(scene, runtime):
-    target_scene = scene if scene is not None else getattr(getattr(runtime["bpy"], "context", None), "scene", None)
+def tag_view3d_redraw(ctx=None):
+    if _is_context(ctx):
+        return _ctx_tag_view3d_redraw(ctx)
+    if isinstance(ctx, dict):
+        bpy_module = ctx.get("bpy")
+        if bpy_module is None:
+            return
+        wm = getattr(bpy_module.context, "window_manager", None)
+        if not wm:
+            return
+        for window in wm.windows:
+            screen = getattr(window, "screen", None)
+            if not screen:
+                continue
+            for area in screen.areas:
+                if area.type == 'VIEW_3D':
+                    area.tag_redraw()
+        return
+    return _ctx_tag_view3d_redraw(_require_ctx())
+
+
+def _ctx_get_camera_inside_earth_warning(ctx, scene):
+    deps = ctx.deps
+    target_scene = scene if scene is not None else getattr(getattr(deps.bpy, "context", None), "scene", None)
     if target_scene is None:
         return ""
     try:
-        return str(target_scene.get(runtime["CAMERA_INSIDE_EARTH_WARNING_KEY"], "") or "").strip()
-    except runtime["PLANETKA_RECOVERABLE_EXCEPTIONS"]:
+        return str(target_scene.get(deps.camera_inside_earth_warning_key, "") or "").strip()
+    except deps.recoverable_exceptions:
         return ""
     except (RuntimeError, TypeError, ValueError, AttributeError):
         return ""
 
 
-def clear_camera_inside_earth_warning(scene, runtime):
+def get_camera_inside_earth_warning(scene, ctx=None):
+    if _is_context(ctx):
+        return _ctx_get_camera_inside_earth_warning(ctx, scene)
+    if isinstance(ctx, dict):
+        target_scene = scene if scene is not None else getattr(getattr(ctx.get("bpy"), "context", None), "scene", None)
+        if target_scene is None:
+            return ""
+        try:
+            return str(target_scene.get(ctx["CAMERA_INSIDE_EARTH_WARNING_KEY"], "") or "").strip()
+        except ctx["PLANETKA_RECOVERABLE_EXCEPTIONS"]:
+            return ""
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            return ""
+    return _ctx_get_camera_inside_earth_warning(_require_ctx(), scene)
+
+
+def _ctx_clear_camera_inside_earth_warning(ctx, scene):
+    deps = ctx.deps
     if scene is None:
         return
     try:
-        if runtime["CAMERA_INSIDE_EARTH_WARNING_KEY"] in scene:
-            del scene[runtime["CAMERA_INSIDE_EARTH_WARNING_KEY"]]
-    except runtime["PLANETKA_RECOVERABLE_EXCEPTIONS"]:
-        runtime["logger"].debug("Planetka: failed clearing inside-Earth warning", exc_info=True)
+        if deps.camera_inside_earth_warning_key in scene:
+            del scene[deps.camera_inside_earth_warning_key]
+    except deps.recoverable_exceptions:
+        deps.logger.debug("Planetka: failed clearing inside-Earth warning", exc_info=True)
     except (RuntimeError, TypeError, ValueError, AttributeError):
-        runtime["logger"].debug("Planetka: failed clearing inside-Earth warning", exc_info=True)
+        deps.logger.debug("Planetka: failed clearing inside-Earth warning", exc_info=True)
 
 
-def set_camera_inside_earth_warning(scene, altitude_km=None, runtime=None):
+def clear_camera_inside_earth_warning(scene, ctx=None):
+    if _is_context(ctx):
+        return _ctx_clear_camera_inside_earth_warning(ctx, scene)
+    if isinstance(ctx, dict):
+        if scene is None:
+            return
+        try:
+            if ctx["CAMERA_INSIDE_EARTH_WARNING_KEY"] in scene:
+                del scene[ctx["CAMERA_INSIDE_EARTH_WARNING_KEY"]]
+        except ctx["PLANETKA_RECOVERABLE_EXCEPTIONS"]:
+            ctx["logger"].debug("Planetka: failed clearing inside-Earth warning", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            ctx["logger"].debug("Planetka: failed clearing inside-Earth warning", exc_info=True)
+        return
+    return _ctx_clear_camera_inside_earth_warning(_require_ctx(), scene)
+
+
+def _ctx_set_camera_inside_earth_warning(ctx, scene, altitude_km=None):
+    deps = ctx.deps
     if scene is None:
         return ""
     _ = altitude_km
     message = "Below Earth's surface"
-    if runtime is None:
-        scene["planetka_camera_inside_earth_warning"] = str(message)
-        return message
     try:
-        scene[runtime["CAMERA_INSIDE_EARTH_WARNING_KEY"]] = str(message)
-    except runtime["PLANETKA_RECOVERABLE_EXCEPTIONS"]:
-        runtime["logger"].debug("Planetka: failed storing inside-Earth warning", exc_info=True)
+        scene[deps.camera_inside_earth_warning_key] = str(message)
+    except deps.recoverable_exceptions:
+        deps.logger.debug("Planetka: failed storing inside-Earth warning", exc_info=True)
     except (RuntimeError, TypeError, ValueError, AttributeError):
-        runtime["logger"].debug("Planetka: failed storing inside-Earth warning", exc_info=True)
+        deps.logger.debug("Planetka: failed storing inside-Earth warning", exc_info=True)
     return message
+
+
+def set_camera_inside_earth_warning(scene, altitude_km=None, ctx=None):
+    if _is_context(ctx):
+        return _ctx_set_camera_inside_earth_warning(ctx, scene, altitude_km=altitude_km)
+    if isinstance(ctx, dict):
+        if scene is None:
+            return ""
+        _ = altitude_km
+        message = "Below Earth's surface"
+        try:
+            scene[ctx["CAMERA_INSIDE_EARTH_WARNING_KEY"]] = str(message)
+        except ctx["PLANETKA_RECOVERABLE_EXCEPTIONS"]:
+            ctx["logger"].debug("Planetka: failed storing inside-Earth warning", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            ctx["logger"].debug("Planetka: failed storing inside-Earth warning", exc_info=True)
+        return message
+    return _ctx_set_camera_inside_earth_warning(_require_ctx(), scene, altitude_km=altitude_km)
 
 
 def resolve_scope_altitude_info(scene, runtime, scope_mode="AUTO"):
@@ -210,16 +307,17 @@ def normalize_texture_quality_mode(value):
     return "PREVIEW"
 
 
-def enforce_texture_quality_mode_for_account(scene, requested_mode, runtime):
+def _ctx_enforce_texture_quality_mode_for_account(ctx, scene, requested_mode):
+    deps = ctx.deps
     del scene
     mode = normalize_texture_quality_mode(requested_mode)
     if mode == "PREVIEW":
         return mode
     try:
         from ..auth import get_account_tier
-        prefs = runtime["get_prefs"]()
+        prefs = deps.get_prefs()
         tier = str(get_account_tier(prefs) or "").strip().lower()
-    except runtime["PLANETKA_IMPORT_RECOVERABLE_EXCEPTIONS"]:
+    except deps.import_recoverable_exceptions:
         tier = ""
 
     if mode == "BALANCED":
@@ -234,7 +332,33 @@ def enforce_texture_quality_mode_for_account(scene, requested_mode, runtime):
     return "PREVIEW"
 
 
-def output_resolution_signature(scene, runtime):
+def enforce_texture_quality_mode_for_account(scene, requested_mode, ctx=None):
+    if _is_context(ctx):
+        return _ctx_enforce_texture_quality_mode_for_account(ctx, scene, requested_mode)
+    if isinstance(ctx, dict):
+        del scene
+        mode = normalize_texture_quality_mode(requested_mode)
+        if mode == "PREVIEW":
+            return mode
+        try:
+            from ..auth import get_account_tier
+            prefs = ctx["get_prefs"]()
+            tier = str(get_account_tier(prefs) or "").strip().lower()
+        except ctx["PLANETKA_IMPORT_RECOVERABLE_EXCEPTIONS"]:
+            tier = ""
+        if mode == "BALANCED":
+            if tier in {"personal", "commercial"}:
+                return "BALANCED"
+            return "PREVIEW"
+        if tier == "commercial":
+            return "FULL"
+        if tier == "personal":
+            return "BALANCED"
+        return "PREVIEW"
+    return _ctx_enforce_texture_quality_mode_for_account(_require_ctx(), scene, requested_mode)
+
+
+def _ctx_output_resolution_signature(ctx, scene):
     render = getattr(scene, "render", None) if scene is not None else None
     if render is None:
         return None
@@ -244,7 +368,7 @@ def output_resolution_signature(scene, runtime):
         texture_quality_mode = enforce_texture_quality_mode_for_account(
             scene,
             getattr(props, "texture_quality_mode", "PREVIEW"),
-            runtime,
+            ctx,
         )
     except (TypeError, ValueError, RuntimeError):
         texture_quality_mode = "PREVIEW"
@@ -259,8 +383,37 @@ def output_resolution_signature(scene, runtime):
         return None
 
 
-def current_view_scope(scene, runtime):
-    active_sig = active_view_signature(runtime)
+def output_resolution_signature(scene, ctx=None):
+    if _is_context(ctx):
+        return _ctx_output_resolution_signature(ctx, scene)
+    if isinstance(ctx, dict):
+        render = getattr(scene, "render", None) if scene is not None else None
+        if render is None:
+            return None
+        props = getattr(scene, "planetka", None) if scene is not None else None
+        texture_quality_mode = "PREVIEW"
+        try:
+            texture_quality_mode = enforce_texture_quality_mode_for_account(
+                scene,
+                getattr(props, "texture_quality_mode", "PREVIEW"),
+                ctx,
+            )
+        except (TypeError, ValueError, RuntimeError):
+            texture_quality_mode = "PREVIEW"
+        try:
+            return (
+                int(getattr(render, "resolution_x", 1920)),
+                int(getattr(render, "resolution_y", 1080)),
+                int(getattr(render, "resolution_percentage", 100)),
+                texture_quality_mode,
+            )
+        except (TypeError, ValueError, RuntimeError):
+            return None
+    return _ctx_output_resolution_signature(_require_ctx(), scene)
+
+
+def _ctx_current_view_scope(ctx, scene):
+    active_sig = _ctx_active_view_signature(ctx)
     if active_sig is not None and str(active_sig[0]) != "CAMERA":
         return "ACTIVE_VIEW"
     if getattr(scene, "camera", None) is not None:
@@ -268,13 +421,39 @@ def current_view_scope(scene, runtime):
     return "NONE"
 
 
-def auto_resolve_scope_mode(scene, runtime):
-    current_scope = current_view_scope(scene, runtime)
+def current_view_scope(scene, ctx=None):
+    if _is_context(ctx):
+        return _ctx_current_view_scope(ctx, scene)
+    if isinstance(ctx, dict):
+        active_sig = active_view_signature(ctx)
+        if active_sig is not None and str(active_sig[0]) != "CAMERA":
+            return "ACTIVE_VIEW"
+        if getattr(scene, "camera", None) is not None:
+            return "CAMERA"
+        return "NONE"
+    return _ctx_current_view_scope(_require_ctx(), scene)
+
+
+def _ctx_auto_resolve_scope_mode(ctx, scene):
+    current_scope = _ctx_current_view_scope(ctx, scene)
     if current_scope == "ACTIVE_VIEW":
         return "ACTIVE_VIEW"
     if getattr(scene, "camera", None) is not None:
         return "CAMERA"
     return "NONE"
+
+
+def auto_resolve_scope_mode(scene, ctx=None):
+    if _is_context(ctx):
+        return _ctx_auto_resolve_scope_mode(ctx, scene)
+    if isinstance(ctx, dict):
+        current_scope = current_view_scope(scene, ctx)
+        if current_scope == "ACTIVE_VIEW":
+            return "ACTIVE_VIEW"
+        if getattr(scene, "camera", None) is not None:
+            return "CAMERA"
+        return "NONE"
+    return _ctx_auto_resolve_scope_mode(_require_ctx(), scene)
 
 
 def handle_viewport_motion_optimization(scene, camera_signature, runtime):

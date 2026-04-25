@@ -57,6 +57,11 @@ from .planetka_runtime.auto_resolve_context import (
     AutoResolveSettings,
     AutoResolveSharedState,
 )
+from .planetka_runtime.view_telemetry_context import (
+    ViewTelemetryContext,
+    ViewTelemetryDeps,
+    ViewTelemetryState,
+)
 from .planetka_runtime import handler_runtime as _handler_runtime
 
 
@@ -343,7 +348,7 @@ def _clear_status_notices(scene):
 
 
 def _active_view_signature():
-    return _view_telemetry.active_view_signature(globals())
+    return _view_telemetry.active_view_signature(_VIEW_TELEMETRY_CTX)
 
 
 def _get_mesh_utils():
@@ -742,15 +747,15 @@ def get_resolve_runtime_status(scene=None):
 
 
 def get_camera_inside_earth_warning(scene=None):
-    return _view_telemetry.get_camera_inside_earth_warning(scene, globals())
+    return _view_telemetry.get_camera_inside_earth_warning(scene, _VIEW_TELEMETRY_CTX)
 
 
 def _clear_camera_inside_earth_warning(scene):
-    return _view_telemetry.clear_camera_inside_earth_warning(scene, globals())
+    return _view_telemetry.clear_camera_inside_earth_warning(scene, _VIEW_TELEMETRY_CTX)
 
 
 def _set_camera_inside_earth_warning(scene, altitude_km=None):
-    return _view_telemetry.set_camera_inside_earth_warning(scene, altitude_km=altitude_km, runtime=globals())
+    return _view_telemetry.set_camera_inside_earth_warning(scene, altitude_km=altitude_km, ctx=_VIEW_TELEMETRY_CTX)
 
 
 def _resolve_scope_altitude_info(scene, scope_mode="AUTO"):
@@ -789,19 +794,19 @@ def _normalize_texture_quality_mode(value):
 
 
 def _enforce_texture_quality_mode_for_account(scene, requested_mode):
-    return _view_telemetry.enforce_texture_quality_mode_for_account(scene, requested_mode, globals())
+    return _view_telemetry.enforce_texture_quality_mode_for_account(scene, requested_mode, _VIEW_TELEMETRY_CTX)
 
 
 def _output_resolution_signature(scene):
-    return _view_telemetry.output_resolution_signature(scene, globals())
+    return _view_telemetry.output_resolution_signature(scene, _VIEW_TELEMETRY_CTX)
 
 
 def _current_view_scope(scene):
-    return _view_telemetry.current_view_scope(scene, globals())
+    return _view_telemetry.current_view_scope(scene, _VIEW_TELEMETRY_CTX)
 
 
 def _auto_resolve_scope_mode(scene):
-    return _view_telemetry.auto_resolve_scope_mode(scene, globals())
+    return _view_telemetry.auto_resolve_scope_mode(scene, _VIEW_TELEMETRY_CTX)
 
 
 def _handle_viewport_motion_optimization(scene, camera_signature):
@@ -857,7 +862,7 @@ def _active_camera_projection_info(scene):
 
 
 def _tag_view3d_redraw():
-    return _view_telemetry.tag_view3d_redraw(globals())
+    return _view_telemetry.tag_view3d_redraw(_VIEW_TELEMETRY_CTX)
 
 
 def _tile_xy_for_lon_lat(lon_deg, lat_deg, z):
@@ -1095,6 +1100,30 @@ def stop_auto_resolve_service(*args, **kwargs):
     return _auto_resolve_pipeline.stop_auto_resolve_service(*args, **kwargs)
 
 
+def _build_view_telemetry_context():
+    deps = ViewTelemetryDeps(
+        bpy=bpy,
+        logger=logger,
+        recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
+        import_recoverable_exceptions=PLANETKA_IMPORT_RECOVERABLE_EXCEPTIONS,
+        get_prefs=get_prefs,
+        camera_inside_earth_warning_key=CAMERA_INSIDE_EARTH_WARNING_KEY,
+    )
+    state = ViewTelemetryState(
+        viewport_opt_last_signature=_VIEWPORT_OPT_LAST_SIGNATURE,
+        sunlight_last_signature=_SUNLIGHT_LAST_SIGNATURE,
+        sunlight_object_name_cache=_SUNLIGHT_OBJECT_NAME_CACHE,
+        viewport_scope_last=_VIEWPORT_SCOPE_LAST,
+        viewport_scope_last_resolve_time=_VIEWPORT_SCOPE_LAST_RESOLVE_TIME,
+        last_realtime_telemetry=_LAST_REALTIME_TELEMETRY,
+        timeline_last_signature=_TIMELINE_LAST_SIGNATURE,
+    )
+    return ViewTelemetryContext(
+        deps=deps,
+        state=state,
+    )
+
+
 def recover_post_render_state(scene=None, cancelled=False):
     _handler_runtime.configure(globals())
     return _handler_runtime.recover_post_render_state(scene=scene, cancelled=cancelled)
@@ -1288,6 +1317,13 @@ def _build_auto_resolve_contexts():
             settings=settings,
         ),
     )
+
+
+_VIEW_TELEMETRY_CTX = _build_view_telemetry_context()
+
+# state.py remains the owner of the singleton view-telemetry context; the
+# runtime module receives it explicitly instead of pulling facade globals.
+_view_telemetry._VIEW_TELEMETRY_CTX = _VIEW_TELEMETRY_CTX
 
 
 (
