@@ -3,33 +3,20 @@ import threading
 from dataclasses import dataclass, field
 
 
-_MOVED_NAMES = {
-    "SceneAutoResolveState",
-    "AutoResolveDownloadJob",
-    "_is_auto_resolve_download_job",
-    "_job_field",
-    "_job_set_field",
-    "_build_auto_resolve_download_job",
-    "_scene_key",
-    "_scene_from_key",
-    "_coerce_scene_id",
-    "_set_scene_auto_resolve_map_entry",
-    "_read_scene_auto_resolve_state",
-    "_write_scene_auto_resolve_state",
-    "_make_depsgraph_trigger_signature",
-    "_depsgraph_trigger_output_signature",
-    "_mark_auto_resolve_from_depsgraph_trigger",
-    "_is_resolve_pipeline_busy",
-    "get_resolve_runtime_status",
-}
+_AUTO_RESOLVE_STATE_CTX = None
 
 
-def configure(runtime):
-    module_globals = globals()
-    for key, value in runtime.items():
-        if key in _MOVED_NAMES:
-            continue
-        module_globals[key] = value
+def _require_ctx():
+    ctx = _AUTO_RESOLVE_STATE_CTX
+    if ctx is None:
+        raise RuntimeError("Planetka auto resolve state context is not configured.")
+    return ctx
+
+
+def _coerce_ctx(value=None):
+    if value is not None and hasattr(value, "deps") and hasattr(value, "state"):
+        return value
+    return _require_ctx()
 
 
 @dataclass
@@ -98,7 +85,9 @@ def _build_auto_resolve_download_job(
     nav_latitude_deg,
     nav_longitude_deg,
     nav_altitude_km,
+    ctx=None,
 ):
+    ctx = _coerce_ctx(ctx)
     return AutoResolveDownloadJob(
         epoch=int(epoch),
         request_id=int(request_id),
@@ -108,7 +97,7 @@ def _build_auto_resolve_download_job(
         output_signature=output_signature,
         manual_request=bool(manual_request),
         base_path=str(base_path or ""),
-        texture_quality_mode=_normalize_texture_quality_mode(texture_quality_mode),
+        texture_quality_mode=ctx.deps.normalize_texture_quality_mode(texture_quality_mode),
         nav_latitude_deg=float(nav_latitude_deg or 0.0),
         nav_longitude_deg=float(nav_longitude_deg or 0.0),
         nav_altitude_km=float(nav_altitude_km or 0.0),
@@ -119,12 +108,13 @@ def _scene_key(scene):
     return int(getattr(scene, "as_pointer", lambda: id(scene))())
 
 
-def _scene_from_key(scene_id):
+def _scene_from_key(scene_id, ctx=None):
+    ctx = _coerce_ctx(ctx)
     try:
         target_id = int(scene_id)
     except (TypeError, ValueError):
         return None
-    for scene in _iter_scenes():
+    for scene in ctx.deps.iter_scenes():
         try:
             if _scene_key(scene) == target_id:
                 return scene
@@ -151,53 +141,59 @@ def _set_scene_auto_resolve_map_entry(target_map, scene_id, value):
     target_map[scene_id] = value
 
 
-def _read_scene_auto_resolve_state(scene_or_id):
+def _read_scene_auto_resolve_state(scene_or_id, ctx=None):
+    ctx = _coerce_ctx(ctx)
     scene_id = _coerce_scene_id(scene_or_id)
     if scene_id is None:
         return None
+    state = ctx.state
     return SceneAutoResolveState(
         scene_id=scene_id,
-        next_due_time=_AUTO_RESOLVE_NEXT_DUE_TIME.get(scene_id),
-        last_camera_signature=_AUTO_RESOLVE_LAST_CAMERA_SIGNATURE.get(scene_id),
-        last_output_signature=_AUTO_RESOLVE_LAST_OUTPUT_SIGNATURE.get(scene_id),
-        last_change_time=_AUTO_RESOLVE_LAST_CHANGE_TIME.get(scene_id),
-        last_resolve_time=_AUTO_RESOLVE_LAST_RESOLVE_TIME.get(scene_id),
-        last_processed_signature=_AUTO_RESOLVE_LAST_PROCESSED_SIGNATURE.get(scene_id),
-        pending_output_change=bool(_AUTO_RESOLVE_PENDING_OUTPUT_CHANGE.get(scene_id, False)),
-        trigger_last_signature=_AUTO_RESOLVE_TRIGGER_LAST_SIGNATURE.get(scene_id),
+        next_due_time=state.next_due_time.get(scene_id),
+        last_camera_signature=state.last_camera_signature.get(scene_id),
+        last_output_signature=state.last_output_signature.get(scene_id),
+        last_change_time=state.last_change_time.get(scene_id),
+        last_resolve_time=state.last_resolve_time.get(scene_id),
+        last_processed_signature=state.last_processed_signature.get(scene_id),
+        pending_output_change=bool(state.pending_output_change.get(scene_id, False)),
+        trigger_last_signature=state.trigger_last_signature.get(scene_id),
     )
 
 
-def _write_scene_auto_resolve_state(state):
-    if not isinstance(state, SceneAutoResolveState):
+def _write_scene_auto_resolve_state(scene_state, ctx=None):
+    ctx = _coerce_ctx(ctx)
+    if not isinstance(scene_state, SceneAutoResolveState):
         return
-    scene_id = int(state.scene_id)
-    _set_scene_auto_resolve_map_entry(_AUTO_RESOLVE_NEXT_DUE_TIME, scene_id, state.next_due_time)
-    _set_scene_auto_resolve_map_entry(_AUTO_RESOLVE_LAST_CAMERA_SIGNATURE, scene_id, state.last_camera_signature)
-    _set_scene_auto_resolve_map_entry(_AUTO_RESOLVE_LAST_OUTPUT_SIGNATURE, scene_id, state.last_output_signature)
-    _set_scene_auto_resolve_map_entry(_AUTO_RESOLVE_LAST_CHANGE_TIME, scene_id, state.last_change_time)
-    _set_scene_auto_resolve_map_entry(_AUTO_RESOLVE_LAST_RESOLVE_TIME, scene_id, state.last_resolve_time)
+    scene_id = int(scene_state.scene_id)
+    state = ctx.state
+    _set_scene_auto_resolve_map_entry(state.next_due_time, scene_id, scene_state.next_due_time)
+    _set_scene_auto_resolve_map_entry(state.last_camera_signature, scene_id, scene_state.last_camera_signature)
+    _set_scene_auto_resolve_map_entry(state.last_output_signature, scene_id, scene_state.last_output_signature)
+    _set_scene_auto_resolve_map_entry(state.last_change_time, scene_id, scene_state.last_change_time)
+    _set_scene_auto_resolve_map_entry(state.last_resolve_time, scene_id, scene_state.last_resolve_time)
     _set_scene_auto_resolve_map_entry(
-        _AUTO_RESOLVE_LAST_PROCESSED_SIGNATURE,
-        scene_id,
         state.last_processed_signature,
+        scene_id,
+        scene_state.last_processed_signature,
     )
-    if bool(state.pending_output_change):
-        _AUTO_RESOLVE_PENDING_OUTPUT_CHANGE[scene_id] = True
+    if bool(scene_state.pending_output_change):
+        state.pending_output_change[scene_id] = True
     else:
-        _AUTO_RESOLVE_PENDING_OUTPUT_CHANGE.pop(scene_id, None)
-    _set_scene_auto_resolve_map_entry(_AUTO_RESOLVE_TRIGGER_LAST_SIGNATURE, scene_id, state.trigger_last_signature)
+        state.pending_output_change.pop(scene_id, None)
+    _set_scene_auto_resolve_map_entry(state.trigger_last_signature, scene_id, scene_state.trigger_last_signature)
 
 
-def _make_depsgraph_trigger_signature(scene):
-    resolve_signature = _camera_signature(scene)
-    if _auto_resolve_scope_mode(scene) == "ACTIVE_VIEW":
-        active_signature = _active_view_signature()
+def _make_depsgraph_trigger_signature(scene, ctx=None):
+    ctx = _coerce_ctx(ctx)
+    deps = ctx.deps
+    resolve_signature = deps.camera_signature(scene)
+    if deps.auto_resolve_scope_mode(scene) == "ACTIVE_VIEW":
+        active_signature = deps.active_view_signature()
         if active_signature is not None:
             resolve_signature = ("ACTIVE_VIEW", active_signature)
     if resolve_signature is None:
         return None
-    output_signature = _output_resolution_signature(scene)
+    output_signature = deps.output_resolution_signature(scene)
     return ("TRIGGER_V2", resolve_signature, output_signature)
 
 
@@ -211,17 +207,19 @@ def _depsgraph_trigger_output_signature(signature):
     return None
 
 
-def _mark_auto_resolve_from_depsgraph_trigger(scene, trigger_signature):
+def _mark_auto_resolve_from_depsgraph_trigger(scene, trigger_signature, ctx=None):
+    ctx = _coerce_ctx(ctx)
+    deps = ctx.deps
     if scene is None or trigger_signature is None:
         return False
-    scene_state = _read_scene_auto_resolve_state(scene)
+    scene_state = _read_scene_auto_resolve_state(scene, ctx)
     if scene_state is None:
         return False
 
     previous_trigger_signature = scene_state.trigger_last_signature
     if previous_trigger_signature is None:
         scene_state.trigger_last_signature = trigger_signature
-        _write_scene_auto_resolve_state(scene_state)
+        _write_scene_auto_resolve_state(scene_state, ctx)
         return False
     if previous_trigger_signature == trigger_signature:
         return False
@@ -237,37 +235,42 @@ def _mark_auto_resolve_from_depsgraph_trigger(scene, trigger_signature):
         immediate = True
 
     scene_state.trigger_last_signature = trigger_signature
-    _write_scene_auto_resolve_state(scene_state)
-    request_auto_resolve(scene, immediate=bool(immediate), mark_dirty=False)
+    _write_scene_auto_resolve_state(scene_state, ctx)
+    deps.request_auto_resolve(scene, immediate=bool(immediate), mark_dirty=False)
     return True
 
 
-def _is_resolve_pipeline_busy():
-    if _AUTO_RESOLVE_IN_FLIGHT:
+def _is_resolve_pipeline_busy(ctx=None):
+    ctx = _coerce_ctx(ctx)
+    state = ctx.state
+    if state.in_flight:
         return True
-    if _AUTO_RESOLVE_DOWNLOAD_THREAD is not None:
+    if state.download_thread is not None:
         return True
-    with _AUTO_RESOLVE_DOWNLOAD_LOCK:
-        if _is_auto_resolve_download_job(_AUTO_RESOLVE_DOWNLOAD_ACTIVE_JOB):
+    with state.download_lock:
+        if _is_auto_resolve_download_job(state.download_active_job):
             return True
-        if _is_auto_resolve_download_job(_AUTO_RESOLVE_DOWNLOAD_PENDING_JOB):
+        if _is_auto_resolve_download_job(state.download_pending_job):
             return True
-        if isinstance(_AUTO_RESOLVE_DOWNLOAD_COMPLETED, dict):
+        if isinstance(state.download_completed, dict):
             return True
     return False
 
 
-def get_resolve_runtime_status(scene=None):
+def get_resolve_runtime_status(scene=None, ctx=None):
+    ctx = _coerce_ctx(ctx)
+    deps = ctx.deps
+    state = ctx.state
     if scene is None:
-        scene = getattr(getattr(bpy, "context", None), "scene", None)
+        scene = getattr(getattr(deps.bpy, "context", None), "scene", None)
 
-    with _AUTO_RESOLVE_DOWNLOAD_LOCK:
-        active_job = _AUTO_RESOLVE_DOWNLOAD_ACTIVE_JOB if _is_auto_resolve_download_job(_AUTO_RESOLVE_DOWNLOAD_ACTIVE_JOB) else None
-        pending_job = _AUTO_RESOLVE_DOWNLOAD_PENDING_JOB if _is_auto_resolve_download_job(_AUTO_RESOLVE_DOWNLOAD_PENDING_JOB) else None
-        completed_payload = dict(_AUTO_RESOLVE_DOWNLOAD_COMPLETED) if isinstance(_AUTO_RESOLVE_DOWNLOAD_COMPLETED, dict) else None
+    with state.download_lock:
+        active_job = state.download_active_job if _is_auto_resolve_download_job(state.download_active_job) else None
+        pending_job = state.download_pending_job if _is_auto_resolve_download_job(state.download_pending_job) else None
+        completed_payload = dict(state.download_completed) if isinstance(state.download_completed, dict) else None
 
-    thread_running = _AUTO_RESOLVE_DOWNLOAD_THREAD is not None
-    in_flight = bool(_AUTO_RESOLVE_IN_FLIGHT)
+    thread_running = state.download_thread is not None
+    in_flight = bool(state.in_flight)
     pending_count = int((1 if active_job else 0) + (1 if pending_job else 0))
     active_request_id = None
     if _is_auto_resolve_download_job(active_job):
@@ -295,14 +298,14 @@ def get_resolve_runtime_status(scene=None):
     if thread_running and _is_auto_resolve_download_job(active_job):
         preparing = False
         try:
-            r2_source = _get_r2_source()
+            r2_source = deps.get_r2_source()
             get_progress = getattr(r2_source, "get_download_progress", None) if r2_source is not None else None
             if callable(get_progress):
                 progress = get_progress() or {}
                 active_requests = int(progress.get("active_requests", 0) or 0)
                 downloaded_bytes = int(progress.get("downloaded_bytes", 0) or 0)
                 preparing = bool(active_requests <= 0 and downloaded_bytes <= 0)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        except deps.recoverable_exceptions:
             preparing = False
         except (RuntimeError, TypeError, ValueError, AttributeError):
             preparing = False

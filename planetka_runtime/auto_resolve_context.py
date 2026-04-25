@@ -154,6 +154,20 @@ class AutoResolveNonCriticalDeps:
 
 
 @dataclass(slots=True)
+class AutoResolveStateDeps:
+    bpy: Any
+    recoverable_exceptions: Any
+    iter_scenes: Any
+    normalize_texture_quality_mode: Any
+    camera_signature: Any
+    auto_resolve_scope_mode: Any
+    active_view_signature: Any
+    output_resolution_signature: Any
+    request_auto_resolve: Any
+    get_r2_source: Any
+
+
+@dataclass(slots=True)
 class AutoResolveDownloadContext:
     deps: AutoResolveDownloadDeps
     state: AutoResolveSharedState
@@ -172,3 +186,9 @@ class AutoResolveNonCriticalContext:
     deps: AutoResolveNonCriticalDeps
     state: AutoResolveSharedState
     settings: AutoResolveSettings
+
+
+@dataclass(slots=True)
+class AutoResolveStateContext:
+    deps: AutoResolveStateDeps
+    state: AutoResolveSharedState

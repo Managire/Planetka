@@ -55,6 +55,8 @@ from .planetka_runtime.auto_resolve_context import (
     AutoResolveNonCriticalContext,
     AutoResolveNonCriticalDeps,
     AutoResolveSettings,
+    AutoResolveStateContext,
+    AutoResolveStateDeps,
     AutoResolveSharedState,
 )
 from .planetka_runtime.view_telemetry_context import (
@@ -298,8 +300,7 @@ def _job_set_field(job, name, value):
 
 
 def _build_auto_resolve_download_job(*args, **kwargs):
-    _auto_resolve_state.configure(globals())
-    return _auto_resolve_state._build_auto_resolve_download_job(*args, **kwargs)
+    return _auto_resolve_state._build_auto_resolve_download_job(*args, ctx=_AUTO_RESOLVE_STATE_CTX, **kwargs)
 
 
 def _get_r2_source():
@@ -715,8 +716,7 @@ def _scene_key(scene):
 
 
 def _scene_from_key(scene_id):
-    _auto_resolve_state.configure(globals())
-    return _auto_resolve_state._scene_from_key(scene_id)
+    return _auto_resolve_state._scene_from_key(scene_id, _AUTO_RESOLVE_STATE_CTX)
 
 
 def _coerce_scene_id(scene_or_id):
@@ -728,18 +728,15 @@ def _set_scene_auto_resolve_map_entry(target_map, scene_id, value):
 
 
 def _read_scene_auto_resolve_state(scene_or_id):
-    _auto_resolve_state.configure(globals())
-    return _auto_resolve_state._read_scene_auto_resolve_state(scene_or_id)
+    return _auto_resolve_state._read_scene_auto_resolve_state(scene_or_id, _AUTO_RESOLVE_STATE_CTX)
 
 
 def _write_scene_auto_resolve_state(state):
-    _auto_resolve_state.configure(globals())
-    return _auto_resolve_state._write_scene_auto_resolve_state(state)
+    return _auto_resolve_state._write_scene_auto_resolve_state(state, _AUTO_RESOLVE_STATE_CTX)
 
 
 def _make_depsgraph_trigger_signature(scene):
-    _auto_resolve_state.configure(globals())
-    return _auto_resolve_state._make_depsgraph_trigger_signature(scene)
+    return _auto_resolve_state._make_depsgraph_trigger_signature(scene, _AUTO_RESOLVE_STATE_CTX)
 
 
 def _depsgraph_trigger_output_signature(signature):
@@ -747,13 +744,11 @@ def _depsgraph_trigger_output_signature(signature):
 
 
 def _mark_auto_resolve_from_depsgraph_trigger(scene, trigger_signature):
-    _auto_resolve_state.configure(globals())
-    return _auto_resolve_state._mark_auto_resolve_from_depsgraph_trigger(scene, trigger_signature)
+    return _auto_resolve_state._mark_auto_resolve_from_depsgraph_trigger(scene, trigger_signature, _AUTO_RESOLVE_STATE_CTX)
 
 
 def get_resolve_runtime_status(scene=None):
-    _auto_resolve_state.configure(globals())
-    return _auto_resolve_state.get_resolve_runtime_status(scene=scene)
+    return _auto_resolve_state.get_resolve_runtime_status(scene=scene, ctx=_AUTO_RESOLVE_STATE_CTX)
 
 
 def get_camera_inside_earth_warning(scene=None):
@@ -788,8 +783,7 @@ def _camera_signature(scene):
 
 
 def _is_resolve_pipeline_busy():
-    _auto_resolve_state.configure(globals())
-    return _auto_resolve_state._is_resolve_pipeline_busy()
+    return _auto_resolve_state._is_resolve_pipeline_busy(_AUTO_RESOLVE_STATE_CTX)
 
 
 def _normalize_texture_quality_mode(value):
@@ -1414,6 +1408,18 @@ def _build_auto_resolve_contexts():
         scene_from_key=_scene_from_key,
         update_resolve_size_estimates=update_resolve_size_estimates,
     )
+    state_deps = AutoResolveStateDeps(
+        bpy=bpy,
+        recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
+        iter_scenes=_iter_scenes,
+        normalize_texture_quality_mode=_normalize_texture_quality_mode,
+        camera_signature=_camera_signature,
+        auto_resolve_scope_mode=_auto_resolve_scope_mode,
+        active_view_signature=_active_view_signature,
+        output_resolution_signature=_output_resolution_signature,
+        request_auto_resolve=request_auto_resolve,
+        get_r2_source=_get_r2_source,
+    )
     return (
         settings,
         shared_state,
@@ -1431,6 +1437,10 @@ def _build_auto_resolve_contexts():
             deps=noncritical_deps,
             state=shared_state,
             settings=settings,
+        ),
+        AutoResolveStateContext(
+            deps=state_deps,
+            state=shared_state,
         ),
     )
 
@@ -1452,6 +1462,7 @@ _handler_runtime._HANDLER_RUNTIME_CTX = _HANDLER_RUNTIME_CTX
     _AUTO_RESOLVE_DOWNLOAD_CTX,
     _AUTO_RESOLVE_DECISION_CTX,
     _AUTO_RESOLVE_NONCRITICAL_CTX,
+    _AUTO_RESOLVE_STATE_CTX,
 ) = _build_auto_resolve_contexts()
 
 # state.py remains the owner of the singleton auto-resolve contexts; the
@@ -1459,3 +1470,4 @@ _handler_runtime._HANDLER_RUNTIME_CTX = _HANDLER_RUNTIME_CTX
 _auto_resolve_pipeline._AUTO_RESOLVE_DOWNLOAD_CTX = _AUTO_RESOLVE_DOWNLOAD_CTX
 _auto_resolve_pipeline._AUTO_RESOLVE_DECISION_CTX = _AUTO_RESOLVE_DECISION_CTX
 _auto_resolve_pipeline._AUTO_RESOLVE_NONCRITICAL_CTX = _AUTO_RESOLVE_NONCRITICAL_CTX
+_auto_resolve_state._AUTO_RESOLVE_STATE_CTX = _AUTO_RESOLVE_STATE_CTX
