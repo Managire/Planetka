@@ -146,6 +146,8 @@ class AutoResolveNonCriticalDeps:
     bpy: Any
     logger: Any
     recoverable_exceptions: Any
+    get_prefs: Any
+    normalize_texture_quality_mode: Any
     scene_key: Any
     scene_from_key: Any
     update_resolve_size_estimates: Any

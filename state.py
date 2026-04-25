@@ -975,7 +975,6 @@ def _write_last_resolve_summary(*args, **kwargs):
 
 
 def _is_non_retryable_resolve_error(*args, **kwargs):
-    _auto_resolve_pipeline.configure(globals())
     return _auto_resolve_pipeline._is_non_retryable_resolve_error(*args, **kwargs)
 
 
@@ -1263,6 +1262,8 @@ def _build_auto_resolve_contexts():
         bpy=bpy,
         logger=logger,
         recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
+        get_prefs=get_prefs,
+        normalize_texture_quality_mode=_normalize_texture_quality_mode,
         scene_key=_scene_key,
         scene_from_key=_scene_from_key,
         update_resolve_size_estimates=update_resolve_size_estimates,

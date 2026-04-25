@@ -2,66 +2,9 @@ import json
 import threading
 import time
 
-
-_MOVED_NAMES = {
-    "_mark_auto_resolve_dirty",
-    "_auto_resolve_idle_seconds",
-    "_is_navigation_user_edit_active",
-    "_active_view_monitor_interval_seconds",
-    "_arm_auto_resolve_timer",
-    "_auto_resolve_download_job_signature",
-    "_arm_auto_resolve_download_timer",
-    "_start_auto_resolve_download_thread",
-    "_show_download_status_popup",
-    "_schedule_auto_resolve_download",
-    "queue_resolve_download",
-    "_mark_manual_queued_resolve_error",
-    "_read_scene_last_resolve_error",
-    "_store_resolve_summary",
-    "_write_last_resolve_summary",
-    "_is_non_retryable_resolve_error",
-    "_mark_auto_resolve_terminal_failure",
-    "_handle_auto_resolve_download_failure",
-    "_auto_resolve_completion_epoch_state",
-    "_auto_resolve_handle_cancel_or_failure",
-    "_auto_resolve_log_pending_request_overlap",
-    "_auto_resolve_prepare_apply_context",
-    "_auto_resolve_apply_downloaded_tiles",
-    "_auto_resolve_summary_total_bytes",
-    "_finalize_auto_resolve_apply",
-    "_handle_auto_resolve_download_complete",
-    "_auto_resolve_download_worker",
-    "_auto_resolve_download_pump_timer",
-    "stop_auto_resolve_download_pipeline",
-    "request_auto_resolve",
-    "_can_auto_resolve_run",
-    "update_auto_resolve",
-    "_auto_resolve_collect_scope_signatures",
-    "_auto_resolve_sync_state_signatures",
-    "_auto_resolve_update_size_estimation",
-    "_arm_auto_resolve_noncritical_timer",
-    "_auto_resolve_enqueue_size_estimation",
-    "_auto_resolve_noncritical_timer",
-    "_auto_resolve_detect_change",
-    "_auto_resolve_plan_job",
-    "_auto_resolve_dispatch_job",
-    "_auto_resolve_tick_once",
-    "_auto_resolve_timer",
-    "ensure_auto_resolve_service_running",
-    "stop_auto_resolve_service",
-}
-
 _AUTO_RESOLVE_DOWNLOAD_CTX = None
 _AUTO_RESOLVE_DECISION_CTX = None
 _AUTO_RESOLVE_NONCRITICAL_CTX = None
-
-
-def configure(runtime):
-    module_globals = globals()
-    for key, value in runtime.items():
-        if key in _MOVED_NAMES:
-            continue
-        module_globals[key] = value
 
 
 def _require_download_ctx():
@@ -1345,13 +1288,13 @@ def _ctx_auto_resolve_update_size_estimation(ctx, scene, scope, active_view_sign
     estimation_scope = "ACTIVE_VIEW" if (scope == "ACTIVE_VIEW" and active_view_signature is not None) else "CAMERA"
     base_path_for_estimate = ""
     try:
-        prefs = get_prefs()
+        prefs = deps.get_prefs()
         if prefs is not None:
             base_path_for_estimate = str(getattr(prefs, "texture_base_path", "") or "")
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except (deps.recoverable_exceptions, RuntimeError, TypeError, ValueError, AttributeError):
         base_path_for_estimate = ""
 
-    current_quality_mode = _normalize_texture_quality_mode(getattr(props, "texture_quality_mode", "PREVIEW"))
+    current_quality_mode = deps.normalize_texture_quality_mode(getattr(props, "texture_quality_mode", "PREVIEW"))
     full_tiles_override = target_tiles if current_quality_mode == "FULL" else None
     try:
         deps.update_resolve_size_estimates(
@@ -1410,7 +1353,7 @@ def _ctx_auto_resolve_enqueue_size_estimation(ctx, scene, scope, active_view_sig
         scene_id = deps.scene_key(scene)
     except (RuntimeError, TypeError, ValueError, AttributeError):
         return
-    current_quality_mode = _normalize_texture_quality_mode(getattr(props, "texture_quality_mode", "PREVIEW"))
+    current_quality_mode = deps.normalize_texture_quality_mode(getattr(props, "texture_quality_mode", "PREVIEW"))
     safe_scope = str(scope or "CAMERA")
     safe_active_signature = active_view_signature if safe_scope == "ACTIVE_VIEW" else None
     safe_tiles = tuple(target_tiles or ())
