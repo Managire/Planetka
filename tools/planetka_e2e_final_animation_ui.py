@@ -126,7 +126,16 @@ def _search_and_frame(props, state_module, geonames_module, query, country_hint=
 
 
 def _prepare_animation_case(props, state_module, geonames_module, case):
+    scene = bpy.context.scene
     frames = int(case.get("frames", 6))
+    try:
+        scene.use_preview_range = False
+        scene.frame_start = 1
+        scene.frame_end = max(1, int(frames))
+        scene.frame_set(1)
+        bpy.context.view_layer.update()
+    except Exception:
+        pass
     props.anim_frame_start = 1
     props.anim_frame_end = frames
     props.anim_motion_curve = str(case.get("motion_curve", "EASE_IN_OUT"))

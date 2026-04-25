@@ -519,6 +519,14 @@ class OvernightRunner:
 
     def _prepare_animation_case(self, case):
         frames = int(case.get("frames", 6))
+        try:
+            self.scene.use_preview_range = False
+            self.scene.frame_start = 1
+            self.scene.frame_end = max(1, int(frames))
+            self.scene.frame_set(1)
+            bpy.context.view_layer.update()
+        except Exception:
+            pass
         self.props.anim_frame_start = 1
         self.props.anim_frame_end = frames
         self.props.anim_motion_curve = str(case.get("motion_curve", "EASE_IN_OUT"))
