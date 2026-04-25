@@ -182,6 +182,18 @@ function jsonWithHeaders(data, status = 200, env = {}, extraHeaders = {}) {
   });
 }
 
+function publicErrorCode(error, fallbackCode, allowedCodes = null) {
+  const code = String(error && error.message || fallbackCode).trim() || String(fallbackCode || "").trim() || "internal_error";
+  if (allowedCodes instanceof Set && allowedCodes.size > 0) {
+    return allowedCodes.has(code) ? code : String(fallbackCode || "internal_error");
+  }
+  return String(fallbackCode || "internal_error");
+}
+
+function publicErrorMessage(fallbackMessage) {
+  return String(fallbackMessage || "Request failed. Please try again.");
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -4409,7 +4421,7 @@ async function fetchCloudflareR2BillableUsage(env, db = null) {
         : String(payload && payload.errors || `http_${response.status}`);
       try {
         const fallback = await buildFallbackBillableUsageFromTelemetry(env, db, "graphql_query_failed");
-        fallback.message = errorMessage;
+        fallback.message = publicErrorMessage("Usage data is temporarily unavailable.");
         return fallback;
       } catch (_error) {
         return {
@@ -4526,14 +4538,14 @@ async function fetchCloudflareR2BillableUsage(env, db = null) {
   } catch (error) {
     try {
       const fallback = await buildFallbackBillableUsageFromTelemetry(env, db, "graphql_request_failed");
-      fallback.message = String(error && error.message || "request_failed");
+      fallback.message = publicErrorMessage("Usage data is temporarily unavailable.");
       return fallback;
     } catch (_error) {
       return {
         available: false,
         source: "cloudflare_graphql",
         reason: "request_failed",
-        message: String(error && error.message || "request_failed"),
+        message: publicErrorMessage("Usage data is temporarily unavailable."),
       };
     }
   }
@@ -7595,7 +7607,16 @@ async function handleApiKeyActivate(request, env) {
       env,
     );
   } catch (error) {
-    return json({ ok: false, error: String(error && error.message || "activation_failed") }, 400, env);
+    const publicCode = publicErrorCode(
+      error,
+      "activation_failed",
+      new Set(["missing_token", "invalid_or_expired_token"]),
+    );
+    return json(
+      { ok: false, error: publicCode },
+      publicCode === "activation_failed" ? 500 : 400,
+      env,
+    );
   }
 }
 
@@ -9519,7 +9540,7 @@ async function handleAdminAnalyticsData(request, env) {
       {
         ok: false,
         error: "analytics_data_failed",
-        message,
+        message: publicErrorMessage("Analytics data is temporarily unavailable."),
       },
       500,
       env,
@@ -10241,7 +10262,13 @@ async function handleAdminPasswordLogin(request, env) {
   try {
     valid = await verifyAdminDashboardPassword(env, password);
   } catch (error) {
-    return json({ ok: false, error: String(error && error.message || "admin_login_misconfigured") }, 500, env);
+    console.error(
+      "planetka.admin.login.verify_failed",
+      JSON.stringify({
+        error: String(error && error.message || "admin_login_misconfigured"),
+      }),
+    );
+    return json({ ok: false, error: "admin_login_misconfigured" }, 500, env);
   }
   if (!valid) {
     await trackThresholdAlertDb(
@@ -11707,7 +11734,7 @@ export default {
       return json(
         {
           ok: false,
-          error: String(error.message || "internal_error"),
+          error: "internal_error",
         },
         500,
         env,
