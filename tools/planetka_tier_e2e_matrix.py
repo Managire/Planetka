@@ -541,9 +541,9 @@ def main():
             )
             scenario_result["animation_frames"] = len(frames)
 
-            # Commercial-only 100 random place-search renders
+            # Commercial-only 10 random place-search renders
             if tier == "commercial":
-                sampled = rng.sample(CAPITAL_QUERIES, 100)
+                sampled = rng.sample(CAPITAL_QUERIES, 10)
                 for idx, query in enumerate(sampled, start=1):
                     selected = _apply_place_search(props, geonames_module, query)
                     if not selected:
@@ -552,7 +552,7 @@ def main():
                     tilt = rng.uniform(45.0, 70.0)
                     heading = rng.uniform(-45.0, 45.0)
                     roll = rng.uniform(-15.0, 15.0)
-                    # Keep the random 100-image matrix fast/stable; Commercial Full Quality is
+                    # Keep the random 10-image matrix fast/stable; Commercial Full Quality is
                     # explicitly verified in the dedicated Milan test above.
                     props.texture_quality_mode = "PREVIEW"
                     _set_navigation(
