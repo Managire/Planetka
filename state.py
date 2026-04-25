@@ -34,6 +34,7 @@ from .planetka_runtime.mesh_lifecycle import (
     warm_base_sphere_mesh_cache,
 )
 from .planetka_runtime import cache_recovery as _cache_recovery
+from .planetka_runtime import navigation_runtime as _navigation_runtime
 from .planetka_runtime import scene_sync as _scene_sync
 from .scene_schema import migrate_scene_schema
 
@@ -833,406 +834,173 @@ def update_atmosphere_enabled(self, context):
 
 
 def _navigation_shot_update_timer():
-    global _NAVIGATION_SHOT_UPDATE_PENDING
-    _NAVIGATION_SHOT_UPDATE_PENDING = False
-
-    if _IDPROP_SYNCING:
-        return None
-
-    context = getattr(bpy, "context", None)
-    scene = getattr(context, "scene", None) if context else None
-    if scene is None:
-        return None
-    props = getattr(scene, "planetka", None)
-    if props is None:
-        return None
-    earth = get_earth_object()
-    if earth is None:
-        return None
-    camera = getattr(scene, "camera", None)
-    if camera is None or getattr(camera, "type", None) != 'CAMERA':
-        return None
-
-    _apply_navigation_shot_now()
-    return None
-
-
-def _apply_navigation_shot_now():
-    global _NAVIGATION_SHOT_UPDATE_REENTRANT
-
-    if _NAVIGATION_SHOT_UPDATE_REENTRANT:
-        return False
-    _NAVIGATION_SHOT_UPDATE_REENTRANT = True
-    try:
-        force_camera_view = True
-        sync_active_view_when_not_camera = False
-        context = getattr(bpy, "context", None)
-        scene = getattr(context, "scene", None) if context else None
-        if scene is not None:
-            try:
-                if _NAV_FORCE_CAMERA_ONCE_KEY in scene:
-                    force_camera_view = bool(scene.get(_NAV_FORCE_CAMERA_ONCE_KEY, True))
-                    del scene[_NAV_FORCE_CAMERA_ONCE_KEY]
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-                logger.debug("Planetka: failed reading one-shot nav force-camera override", exc_info=True)
-            try:
-                if _NAV_SYNC_ACTIVE_VIEW_ONCE_KEY in scene:
-                    sync_active_view_when_not_camera = bool(scene.get(_NAV_SYNC_ACTIVE_VIEW_ONCE_KEY, False))
-                    del scene[_NAV_SYNC_ACTIVE_VIEW_ONCE_KEY]
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-                logger.debug("Planetka: failed reading one-shot nav sync-active-view override", exc_info=True)
-        result = bpy.ops.planetka.navigation_apply_shot(
-            silent=True,
-            force_camera_view=force_camera_view,
-            sync_active_view_when_not_camera=sync_active_view_when_not_camera,
-        )
-        return "FINISHED" in result
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: immediate navigation shot update failed", exc_info=True)
-        return False
-    except (RuntimeError, TypeError, ValueError):
-        logger.debug("Planetka: immediate navigation shot update failed", exc_info=True)
-        return False
-    finally:
-        _NAVIGATION_SHOT_UPDATE_REENTRANT = False
-
-
-def request_next_navigation_apply_behavior(scene, *, force_camera_view=None, sync_active_view_when_not_camera=None):
-    if scene is None:
-        return
-    if force_camera_view is not None:
-        try:
-            scene[_NAV_FORCE_CAMERA_ONCE_KEY] = bool(force_camera_view)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka: failed storing one-shot nav force-camera override", exc_info=True)
-    if sync_active_view_when_not_camera is not None:
-        try:
-            scene[_NAV_SYNC_ACTIVE_VIEW_ONCE_KEY] = bool(sync_active_view_when_not_camera)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka: failed storing one-shot nav sync-active-view override", exc_info=True)
-
-
-def _resolve_navigation_adaptive_modifier():
-    earth = get_earth_object()
-    if earth is None:
-        return None, None
-    modifiers = getattr(earth, "modifiers", None)
-    if modifiers is None:
-        return None, None
-    subsurf = modifiers.get("Adaptive Subdivision")
-    if subsurf is not None and str(getattr(subsurf, "type", "")) == "SUBSURF":
-        return earth, subsurf
-    for modifier in modifiers:
-        if str(getattr(modifier, "type", "")) != "SUBSURF":
-            continue
-        if "Adaptive" in str(getattr(modifier, "name", "")):
-            return earth, modifier
-        if bool(getattr(modifier, "use_adaptive_subdivision", False)):
-            return earth, modifier
-    return None, None
-
-
-def _navigation_adaptive_restore_timer():
-    global _NAVIGATION_ADAPTIVE_TIMER_RUNNING
-    global _NAVIGATION_ADAPTIVE_SUSPENDED
-    if (time.monotonic() - float(_NAVIGATION_ADAPTIVE_LAST_TOUCH)) < float(_NAVIGATION_ADAPTIVE_IDLE_SEC):
-        return 0.05
-
-    suspended = _NAVIGATION_ADAPTIVE_SUSPENDED
-    _NAVIGATION_ADAPTIVE_SUSPENDED = None
-    _NAVIGATION_ADAPTIVE_TIMER_RUNNING = False
-    if not suspended:
-        return None
-
-    obj_name, modifier_name, was_viewport_enabled = suspended
-    try:
-        obj = bpy.data.objects.get(str(obj_name))
-        if obj is None:
-            return None
-        modifier = obj.modifiers.get(str(modifier_name))
-        if modifier is None or str(getattr(modifier, "type", "")) != "SUBSURF":
-            return None
-        modifier.show_viewport = bool(was_viewport_enabled)
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed restoring adaptive viewport state", exc_info=True)
-    except (RuntimeError, TypeError, ValueError):
-        logger.debug("Planetka: failed restoring adaptive viewport state", exc_info=True)
-    return None
-
-
-def _force_restore_navigation_adaptive_state():
-    global _NAVIGATION_ADAPTIVE_SUSPENDED
-    global _NAVIGATION_ADAPTIVE_TIMER_RUNNING
-
-    suspended = _NAVIGATION_ADAPTIVE_SUSPENDED
-    _NAVIGATION_ADAPTIVE_SUSPENDED = None
-    _NAVIGATION_ADAPTIVE_TIMER_RUNNING = False
-    if not suspended:
-        return
-
-    obj_name, modifier_name, was_viewport_enabled = suspended
-    try:
-        obj = bpy.data.objects.get(str(obj_name))
-        if obj is None:
-            return
-        modifier = obj.modifiers.get(str(modifier_name))
-        if modifier is None or str(getattr(modifier, "type", "")) != "SUBSURF":
-            return
-        modifier.show_viewport = bool(was_viewport_enabled)
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed forced restore of adaptive viewport state", exc_info=True)
-    except (RuntimeError, TypeError, ValueError):
-        logger.debug("Planetka: failed forced restore of adaptive viewport state", exc_info=True)
-
-
-def _suspend_adaptive_viewport_during_navigation(scene):
-    global _NAVIGATION_ADAPTIVE_TIMER_RUNNING
-    global _NAVIGATION_ADAPTIVE_SUSPENDED
-    global _NAVIGATION_ADAPTIVE_LAST_TOUCH
-    global _NAVIGATION_ADAPTIVE_IDLE_SEC
-
-    render = getattr(scene, "render", None) if scene else None
-    if str(getattr(render, "engine", "")) != "CYCLES":
-        _force_restore_navigation_adaptive_state()
-        return
-    props = getattr(scene, "planetka", None) if scene else None
-    if props is not None and not bool(getattr(props, "viewport_opt_suspend_subdivision", True)):
-        _force_restore_navigation_adaptive_state()
-        return
-    if props is not None:
-        try:
-            restore_delay = float(getattr(props, "viewport_opt_subdivision_restore_delay_sec", 0.5))
-        except (TypeError, ValueError):
-            restore_delay = 0.5
-        _NAVIGATION_ADAPTIVE_IDLE_SEC = max(0.1, min(2.0, restore_delay))
-
-    obj, modifier = _resolve_navigation_adaptive_modifier()
-    if obj is None or modifier is None:
-        return
-
-    if _NAVIGATION_ADAPTIVE_SUSPENDED is None:
-        _NAVIGATION_ADAPTIVE_SUSPENDED = (
-            str(getattr(obj, "name", "")),
-            str(getattr(modifier, "name", "")),
-            bool(getattr(modifier, "show_viewport", True)),
-        )
-
-    try:
-        if bool(getattr(modifier, "show_viewport", False)):
-            modifier.show_viewport = False
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed suspending adaptive viewport", exc_info=True)
-    except (RuntimeError, TypeError, ValueError):
-        logger.debug("Planetka: failed suspending adaptive viewport", exc_info=True)
-
-    _NAVIGATION_ADAPTIVE_LAST_TOUCH = time.monotonic()
-    if _NAVIGATION_ADAPTIVE_TIMER_RUNNING:
-        return
-    _NAVIGATION_ADAPTIVE_TIMER_RUNNING = True
-    try:
-        bpy.app.timers.register(_navigation_adaptive_restore_timer, first_interval=0.05)
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        _NAVIGATION_ADAPTIVE_TIMER_RUNNING = False
-    except (RuntimeError, TypeError, ValueError):
-        _NAVIGATION_ADAPTIVE_TIMER_RUNNING = False
-
-
-def suspend_navigation_shot_updates():
-    global _NAVIGATION_SHOT_SUSPEND_COUNT
-    _NAVIGATION_SHOT_SUSPEND_COUNT += 1
-
-
-def resume_navigation_shot_updates():
-    global _NAVIGATION_SHOT_SUSPEND_COUNT
-    _NAVIGATION_SHOT_SUSPEND_COUNT = max(0, int(_NAVIGATION_SHOT_SUSPEND_COUNT) - 1)
-
-
-def suspend_navigation_camera_control_sync():
-    global _NAV_CAMERA_CONTROL_SYNC_SUSPEND_COUNT
-    _NAV_CAMERA_CONTROL_SYNC_SUSPEND_COUNT += 1
-
-
-def resume_navigation_camera_control_sync():
-    global _NAV_CAMERA_CONTROL_SYNC_SUSPEND_COUNT
-    _NAV_CAMERA_CONTROL_SYNC_SUSPEND_COUNT = max(0, int(_NAV_CAMERA_CONTROL_SYNC_SUSPEND_COUNT) - 1)
-
-
-def is_navigation_or_camera_sync_suspended():
-    return bool(
-        _NAVIGATION_SHOT_SUSPEND_COUNT > 0
-        or _NAV_CAMERA_CONTROL_SYNCING
-        or int(_NAV_CAMERA_CONTROL_SYNC_SUSPEND_COUNT) > 0
+    return _navigation_runtime.navigation_shot_update_timer(
+        globals(),
+        bpy=bpy,
+        get_earth_object=get_earth_object,
+        apply_navigation_shot_now=_apply_navigation_shot_now,
     )
 
 
+def _apply_navigation_shot_now():
+    return _navigation_runtime.apply_navigation_shot_now(
+        globals(),
+        bpy=bpy,
+        recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
+        logger=logger,
+    )
+
+
+def request_next_navigation_apply_behavior(scene, *, force_camera_view=None, sync_active_view_when_not_camera=None):
+    return _navigation_runtime.request_next_navigation_apply_behavior(
+        globals(),
+        scene,
+        force_camera_view=force_camera_view,
+        sync_active_view_when_not_camera=sync_active_view_when_not_camera,
+        recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
+        logger=logger,
+    )
+
+
+def _resolve_navigation_adaptive_modifier():
+    return _navigation_runtime.resolve_navigation_adaptive_modifier(get_earth_object=get_earth_object)
+
+
+def _navigation_adaptive_restore_timer():
+    return _navigation_runtime.navigation_adaptive_restore_timer(
+        globals(),
+        bpy=bpy,
+        recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
+        logger=logger,
+    )
+
+
+def _force_restore_navigation_adaptive_state():
+    return _navigation_runtime.force_restore_navigation_adaptive_state(
+        globals(),
+        bpy=bpy,
+        recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
+        logger=logger,
+    )
+
+
+def _suspend_adaptive_viewport_during_navigation(scene):
+    return _navigation_runtime.suspend_adaptive_viewport_during_navigation(
+        globals(),
+        scene,
+        bpy=bpy,
+        recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
+        logger=logger,
+        resolve_navigation_adaptive_modifier=_resolve_navigation_adaptive_modifier,
+        force_restore_navigation_adaptive_state=_force_restore_navigation_adaptive_state,
+        navigation_adaptive_restore_timer=_navigation_adaptive_restore_timer,
+    )
+
+
+def suspend_navigation_shot_updates():
+    return _navigation_runtime.suspend_navigation_shot_updates(globals())
+
+
+def resume_navigation_shot_updates():
+    return _navigation_runtime.resume_navigation_shot_updates(globals())
+
+
+def suspend_navigation_camera_control_sync():
+    return _navigation_runtime.suspend_navigation_camera_control_sync(globals())
+
+
+def resume_navigation_camera_control_sync():
+    return _navigation_runtime.resume_navigation_camera_control_sync(globals())
+
+
+def is_navigation_or_camera_sync_suspended():
+    return _navigation_runtime.is_navigation_or_camera_sync_suspended(globals())
+
+
 def mark_navigation_camera_control_signature(scene=None):
-    target_scene = scene
-    if target_scene is None:
-        target_scene = getattr(getattr(bpy, "context", None), "scene", None)
-    if target_scene is None:
-        return
-    scene_id = _scene_key(target_scene)
-    signature = _camera_control_sync_signature(target_scene)
-    if signature is None:
-        _NAV_CAMERA_CONTROL_LAST_SIGNATURE.pop(scene_id, None)
-        return
-    _NAV_CAMERA_CONTROL_LAST_SIGNATURE[scene_id] = signature
+    return _navigation_runtime.mark_navigation_camera_control_signature(
+        globals(),
+        scene,
+        bpy=bpy,
+        scene_key=_scene_key,
+        camera_control_sync_signature=_camera_control_sync_signature,
+    )
 
 
 def _get_planetka_sunlight_object():
-    sunlight = bpy.data.objects.get(_SUNLIGHT_OBJECT_NAME)
-    if sunlight is None:
-        return None
-    if str(getattr(sunlight, "type", "")) != "LIGHT":
-        return None
-    light_data = getattr(sunlight, "data", None)
-    if light_data is None or str(getattr(light_data, "type", "")) != "SUN":
-        return None
-    return sunlight
+    return _navigation_runtime.get_planetka_sunlight_object(globals(), bpy=bpy)
 
 
 def _apply_sunlight_from_props(scene):
-    if scene is None:
-        return
-    props = getattr(scene, "planetka", None)
-    if props is None:
-        return
-    sunlight = _get_planetka_sunlight_object()
-    if sunlight is None:
-        return
-
-    try:
-        lon_deg = float(getattr(props, "sunlight_longitude_deg", 0.0))
-        lat_deg = float(getattr(props, "sunlight_seasonal_tilt_deg", 0.0))
-    except (TypeError, ValueError):
-        return
-
-    lon = math.radians(lon_deg)
-    lat = math.radians(lat_deg)
-    try:
-        direction = Vector(
-            (
-                math.cos(lat) * math.cos(lon),
-                math.cos(lat) * math.sin(lon),
-                math.sin(lat),
-            )
-        )
-        if direction.length < 1e-9:
-            return
-        direction.normalize()
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        return
-
-    try:
-        quat = direction.to_track_quat('Z', 'Y')
-        sunlight.rotation_mode = 'XYZ'
-        sunlight.rotation_euler = quat.to_euler('XYZ')
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed applying sunlight transform", exc_info=True)
-    except (RuntimeError, TypeError, ValueError):
-        logger.debug("Planetka: failed applying sunlight transform", exc_info=True)
+    return _navigation_runtime.apply_sunlight_from_props(
+        globals(),
+        scene,
+        bpy=bpy,
+        recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
+        logger=logger,
+    )
 
 
 def _apply_sunlight_strength_from_props(scene):
-    if scene is None:
-        return
-    props = getattr(scene, "planetka", None)
-    if props is None:
-        return
-    sunlight = _get_planetka_sunlight_object()
-    if sunlight is None:
-        return
-
-    light_data = getattr(sunlight, "data", None)
-    if light_data is None:
-        return
-
-    try:
-        strength = max(0.0, float(getattr(props, "sunlight_strength", 10.0)))
-    except (TypeError, ValueError):
-        return
-
-    try:
-        light_data.energy = strength
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed applying sunlight strength", exc_info=True)
-    except (RuntimeError, TypeError, ValueError):
-        logger.debug("Planetka: failed applying sunlight strength", exc_info=True)
+    return _navigation_runtime.apply_sunlight_strength_from_props(
+        globals(),
+        scene,
+        bpy=bpy,
+        recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
+        logger=logger,
+    )
 
 
 def update_sunlight_controls(self, context):
-    scene = getattr(context, "scene", None) if context else None
-    if scene:
-        _sync_idprops_from_props(scene, ("sunlight_longitude_deg", "sunlight_seasonal_tilt_deg"))
-        _suspend_adaptive_viewport_during_navigation(scene)
-        request_auto_resolve(scene, immediate=False)
-    _apply_sunlight_from_props(scene)
-    _apply_sunlight_strength_from_props(scene)
+    return _navigation_runtime.update_sunlight_controls(
+        globals(),
+        self,
+        context,
+        sync_idprops_from_props=_sync_idprops_from_props,
+        suspend_adaptive_viewport_during_navigation=_suspend_adaptive_viewport_during_navigation,
+        request_auto_resolve=request_auto_resolve,
+        apply_sunlight_from_props=_apply_sunlight_from_props,
+        apply_sunlight_strength_from_props=_apply_sunlight_strength_from_props,
+    )
 
 
 def update_sunlight_strength(self, context):
-    scene = getattr(context, "scene", None) if context else None
-    if scene:
-        _sync_idprops_from_props(scene, ("sunlight_strength",))
-        _suspend_adaptive_viewport_during_navigation(scene)
-    _apply_sunlight_strength_from_props(scene)
+    return _navigation_runtime.update_sunlight_strength(
+        globals(),
+        self,
+        context,
+        sync_idprops_from_props=_sync_idprops_from_props,
+        suspend_adaptive_viewport_during_navigation=_suspend_adaptive_viewport_during_navigation,
+        apply_sunlight_strength_from_props=_apply_sunlight_strength_from_props,
+    )
 
 
 def update_navigation_shot(self, context):
-    global _NAVIGATION_SHOT_UPDATE_PENDING
-    global _NAVIGATION_USER_EDIT_LAST_TOUCH
-    if _NAVIGATION_SHOT_SUSPEND_COUNT > 0:
-        return
-    if _IDPROP_SYNCING or _NAVIGATION_SHOT_UPDATE_REENTRANT:
-        return
-
-    scene = getattr(context, "scene", None) if context else None
-    if scene:
-        _NAVIGATION_USER_EDIT_LAST_TOUCH = time.monotonic()
-        _sync_navigation_idprops_from_props(scene)
-        _suspend_adaptive_viewport_during_navigation(scene)
-        request_auto_resolve(scene, immediate=False)
-    if _apply_navigation_shot_now():
-        _NAVIGATION_SHOT_UPDATE_PENDING = False
-        return
-    if _NAVIGATION_SHOT_UPDATE_PENDING:
-        return
-    _NAVIGATION_SHOT_UPDATE_PENDING = True
-    try:
-        bpy.app.timers.register(_navigation_shot_update_timer, first_interval=0.0)
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        _NAVIGATION_SHOT_UPDATE_PENDING = False
-    except (RuntimeError, TypeError, ValueError):
-        _NAVIGATION_SHOT_UPDATE_PENDING = False
+    globals()["_navigation_shot_update_timer_wrapper"] = _navigation_shot_update_timer
+    return _navigation_runtime.update_navigation_shot(
+        globals(),
+        self,
+        context,
+        sync_navigation_idprops_from_props=_sync_navigation_idprops_from_props,
+        suspend_adaptive_viewport_during_navigation=_suspend_adaptive_viewport_during_navigation,
+        request_auto_resolve=request_auto_resolve,
+        apply_navigation_shot_now=_apply_navigation_shot_now,
+        bpy=bpy,
+        recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
+    )
 
 
 def update_navigation_focal_length(self, context):
-    global _NAVIGATION_USER_EDIT_LAST_TOUCH
-    if _NAVIGATION_SHOT_SUSPEND_COUNT > 0:
-        return
-    if _IDPROP_SYNCING or _NAVIGATION_SHOT_UPDATE_REENTRANT or _NAV_CAMERA_CONTROL_SYNCING:
-        return
-
-    scene = getattr(context, "scene", None) if context else None
-    if scene is None:
-        return
-
-    _NAVIGATION_USER_EDIT_LAST_TOUCH = time.monotonic()
-    _sync_navigation_idprops_from_props(scene)
-    _suspend_adaptive_viewport_during_navigation(scene)
-
-    camera = getattr(scene, "camera", None)
-    camera_data = getattr(camera, "data", None) if camera is not None else None
-    if camera is not None and getattr(camera, "type", None) == 'CAMERA' and camera_data is not None:
-        try:
-            lens_mm = max(1.0, float(getattr(self, "nav_focal_length_mm", 50.0)))
-            camera_data.lens = lens_mm
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed applying camera focal length", exc_info=True)
-        except (RuntimeError, TypeError, ValueError):
-            logger.debug("Planetka: failed applying camera focal length", exc_info=True)
-
-    request_auto_resolve(scene, immediate=False)
+    return _navigation_runtime.update_navigation_focal_length(
+        globals(),
+        self,
+        context,
+        sync_navigation_idprops_from_props=_sync_navigation_idprops_from_props,
+        suspend_adaptive_viewport_during_navigation=_suspend_adaptive_viewport_during_navigation,
+        request_auto_resolve=request_auto_resolve,
+        logger=logger,
+        recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
+    )
 
 
 def _is_animation_playing():
@@ -1560,99 +1328,21 @@ def _resolve_scope_altitude_info(scene, scope_mode="AUTO"):
 
 
 def _camera_control_sync_signature(scene):
-    if scene is None:
-        return None
-
-    camera = getattr(scene, "camera", None)
-    if camera is None or getattr(camera, "type", None) != 'CAMERA':
-        return None
-    camera_data = getattr(camera, "data", None)
-    if camera_data is None:
-        return None
-
-    try:
-        camera_matrix_signature = tuple(
-            round(float(value), 6)
-            for row in camera.matrix_world
-            for value in row
-        )
-    except (TypeError, ValueError, RuntimeError):
-        return None
-
-    return (
-        str(getattr(camera, "name_full", camera.name)),
-        str(getattr(camera_data, "type", "")),
-        round(float(getattr(camera_data, "lens", 0.0)), 6),
-        round(float(getattr(camera_data, "ortho_scale", 0.0)), 6),
-        camera_matrix_signature,
-    )
+    return _navigation_runtime.camera_control_sync_signature(scene)
 
 
 def _sync_navigation_controls_from_scene_camera(scene):
-    global _NAV_CAMERA_CONTROL_SYNCING
-
-    if scene is None:
-        return
-    if _IDPROP_SYNCING or _NAV_CAMERA_CONTROL_SYNCING:
-        return
-    if _NAVIGATION_SHOT_SUSPEND_COUNT > 0 or _NAVIGATION_SHOT_UPDATE_REENTRANT:
-        return
-
-    props = getattr(scene, "planetka", None)
-    if props is None:
-        return
-
-    scene_id = _scene_key(scene)
-    if get_earth_object() is None:
-        _NAV_CAMERA_CONTROL_LAST_SIGNATURE.pop(scene_id, None)
-        return
-
-    signature = _camera_control_sync_signature(scene)
-    if signature is None:
-        _NAV_CAMERA_CONTROL_LAST_SIGNATURE.pop(scene_id, None)
-        return
-    if int(_NAV_CAMERA_CONTROL_SYNC_SUSPEND_COUNT) > 0:
-        # During scripted camera-keyframe edits (for example animation preset updates),
-        # keep navigation controls frozen and consume signature deltas.
-        _NAV_CAMERA_CONTROL_LAST_SIGNATURE[scene_id] = signature
-        return
-    if _NAV_CAMERA_CONTROL_LAST_SIGNATURE.get(scene_id) == signature:
-        return
-
-    operators_module = _get_operators_module()
-    if operators_module is None:
-        return
-    is_below_surface = getattr(operators_module, "_is_scene_camera_below_surface", None)
-    if callable(is_below_surface):
-        try:
-            if bool(is_below_surface(scene)):
-                _NAV_CAMERA_CONTROL_LAST_SIGNATURE[scene_id] = signature
-                return
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka camera control surface-state check failed", exc_info=True)
-        except (RuntimeError, TypeError, ValueError):
-            logger.debug("Planetka camera control surface-state check failed", exc_info=True)
-    populate = getattr(operators_module, "_populate_navigation_from_scene_camera", None)
-    if not callable(populate):
-        return
-
-    _NAV_CAMERA_CONTROL_SYNCING = True
-    suspend_navigation_shot_updates()
-    synced = False
-    try:
-        synced = bool(populate(scene, props))
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka camera control sync failed", exc_info=True)
-    except (RuntimeError, TypeError, ValueError):
-        logger.debug("Planetka camera control sync failed", exc_info=True)
-    finally:
-        resume_navigation_shot_updates()
-        _NAV_CAMERA_CONTROL_SYNCING = False
-
-    if synced:
-        _NAV_CAMERA_CONTROL_LAST_SIGNATURE[scene_id] = signature
-    else:
-        _NAV_CAMERA_CONTROL_LAST_SIGNATURE.pop(scene_id, None)
+    return _navigation_runtime.sync_navigation_controls_from_scene_camera(
+        globals(),
+        scene,
+        get_earth_object=get_earth_object,
+        scene_key=_scene_key,
+        get_operators_module=_get_operators_module,
+        suspend_navigation_shot_updates=suspend_navigation_shot_updates,
+        resume_navigation_shot_updates=resume_navigation_shot_updates,
+        recoverable_exceptions=PLANETKA_RECOVERABLE_EXCEPTIONS,
+        logger=logger,
+    )
 
 
 def _camera_signature(scene):
