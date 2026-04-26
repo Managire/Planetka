@@ -339,19 +339,61 @@ def mark_navigation_camera_control_signature(runtime=None, scene=None, *, bpy=No
     last_map[current_scene_id] = signature
 
 
-def get_planetka_sunlight_object(runtime=None, *, bpy=None):
+def get_planetka_sunlight_object(runtime=None, scene=None, *, bpy=None, recoverable_exceptions=None):
     ctx = _coerce_ctx(runtime)
     deps = ctx.deps
     bpy_module = bpy if bpy is not None else deps.bpy
+    recoverable = recoverable_exceptions if recoverable_exceptions is not None else deps.recoverable_exceptions
+
+    def _is_valid_sunlight_object(obj):
+        if obj is None or str(getattr(obj, "type", "")) != "LIGHT":
+            return False
+        light_data = getattr(obj, "data", None)
+        return bool(light_data is not None and str(getattr(light_data, "type", "")) == "SUN")
+
+    target_scene = scene
+    if target_scene is None:
+        target_scene = getattr(getattr(bpy_module, "context", None), "scene", None)
+
+    # STRICT RULE: only Planetka Sunlight is allowed to be modified.
+    # Never target arbitrary SUN lights.
+    if target_scene is not None:
+        scene_objects = getattr(target_scene, "objects", None)
+        if scene_objects is not None:
+            try:
+                exact = scene_objects.get(deps.sunlight_object_name)
+            except (recoverable, RuntimeError, TypeError, ValueError, AttributeError):
+                exact = None
+            if _is_valid_sunlight_object(exact):
+                return exact
+
+            # Backward-compatible Planetka-only fallback:
+            # allow explicitly tagged Planetka sunlight objects, and normalize
+            # their name back to the canonical Planetka Sunlight id.
+            tagged_fallback = None
+            for obj in tuple(scene_objects):
+                if not _is_valid_sunlight_object(obj):
+                    continue
+                try:
+                    role = str(obj.get("planetka_role", "") or "").strip().lower()
+                except (recoverable, RuntimeError, TypeError, ValueError, AttributeError):
+                    role = ""
+                if role == "sunlight":
+                    tagged_fallback = obj
+                    break
+            if tagged_fallback is not None:
+                try:
+                    if bpy_module.data.objects.get(deps.sunlight_object_name) is None:
+                        tagged_fallback.name = deps.sunlight_object_name
+                except (recoverable, RuntimeError, TypeError, ValueError, AttributeError):
+                    pass
+                return tagged_fallback
+
+    # Fallback to exact global object lookup.
     sunlight = bpy_module.data.objects.get(deps.sunlight_object_name)
-    if sunlight is None:
-        return None
-    if str(getattr(sunlight, "type", "")) != "LIGHT":
-        return None
-    light_data = getattr(sunlight, "data", None)
-    if light_data is None or str(getattr(light_data, "type", "")) != "SUN":
-        return None
-    return sunlight
+    if _is_valid_sunlight_object(sunlight):
+        return sunlight
+    return None
 
 
 def apply_sunlight_from_props(runtime=None, scene=None, *, bpy=None, recoverable_exceptions=None, logger=None):
@@ -365,7 +407,12 @@ def apply_sunlight_from_props(runtime=None, scene=None, *, bpy=None, recoverable
     props = getattr(scene, "planetka", None)
     if props is None:
         return
-    sunlight = get_planetka_sunlight_object(ctx, bpy=bpy_module)
+    sunlight = get_planetka_sunlight_object(
+        ctx,
+        scene=scene,
+        bpy=bpy_module,
+        recoverable_exceptions=recoverable,
+    )
     if sunlight is None:
         return
 
@@ -412,7 +459,12 @@ def apply_sunlight_strength_from_props(runtime=None, scene=None, *, bpy=None, re
     props = getattr(scene, "planetka", None)
     if props is None:
         return
-    sunlight = get_planetka_sunlight_object(ctx, bpy=bpy_module)
+    sunlight = get_planetka_sunlight_object(
+        ctx,
+        scene=scene,
+        bpy=bpy_module,
+        recoverable_exceptions=recoverable,
+    )
     if sunlight is None:
         return
 

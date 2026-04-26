@@ -2507,6 +2507,11 @@ def _ensure_planetka_sunlight(surface_collection):
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
 
+    try:
+        sunlight_obj["planetka_role"] = "sunlight"
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
     # Keep sunlight under Planetka Root so root transforms remain coherent.
     scene = getattr(bpy.context, "scene", None)
     if scene is None:
