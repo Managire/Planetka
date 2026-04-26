@@ -40,9 +40,7 @@ TILE_RE = re.compile(
 
 DATASETS = ("S2", "EL", "WT", "PO")
 Z_ORDER = (1, 2, 4, 8, 15, 16, 30, 32, 60, 90, 180, 360)
-EXCLUDED_FILES = {
-    ("EL", "EL_x093_y137_z001_d002.exr"),
-}
+EXCLUDED_FILES: set[tuple[str, str]] = set()
 
 # Higher-z base source map requested by user.
 Z_BASE_SOURCE = {
