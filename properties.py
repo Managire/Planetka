@@ -414,6 +414,11 @@ def _set_nav_city_search(self, value):
                 force_camera_view=True,
                 sync_active_view_when_not_camera=False,
             )
+        # Bulk updates are complete; release guards before single consolidated apply.
+        _ANIM_PREVIEW_UPDATE_GUARD = False
+        if nav_suspended:
+            resume_navigation_shot_updates()
+            nav_suspended = False
         update_navigation_shot(self, context_for_updates)
         _update_anim_preview_keyframes(self, context_for_updates)
     except (RuntimeError, TypeError, ValueError, AttributeError):
