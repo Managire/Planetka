@@ -170,6 +170,16 @@ def _status_icon(code):
     return "INFO"
 
 
+def _is_animation_render_running():
+    try:
+        is_job_running = getattr(getattr(bpy, "app", None), "is_job_running", None)
+        if callable(is_job_running):
+            return bool(is_job_running("RENDER"))
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return False
+    return False
+
+
 def _resolve_runtime_display(scene):
     progress = get_download_progress()
     active_download = is_download_active()
@@ -183,13 +193,7 @@ def _resolve_runtime_display(scene):
     if runtime_code == "MONITORING":
         runtime_code = "IDLE"
         runtime_text = "Idle"
-    animation_render_running = False
-    try:
-        is_job_running = getattr(getattr(bpy, "app", None), "is_job_running", None)
-        if callable(is_job_running):
-            animation_render_running = bool(is_job_running("RENDER"))
-    except (AttributeError, RuntimeError, TypeError, ValueError):
-        animation_render_running = False
+    animation_render_running = _is_animation_render_running()
     if active_download and runtime_code in {"IDLE", "MONITORING"}:
         runtime_code = "DOWNLOADING"
         runtime_text = "Animation Downloading" if animation_render_running else "Downloading"
@@ -865,6 +869,7 @@ def _draw_live_telemetry(layout, scene):
         low_altitude_warning = _low_altitude_warning_for_ui(scene)
         status_row = quality_box.row(align=True)
         status_row.alert = bool(resolve_failure_message or inside_earth_warning or low_altitude_warning)
+        animation_render_running = _is_animation_render_running()
         status_label_text = f"{runtime_text}{_status_activity_suffix(runtime.get('running', False))}"
         status_icon = _status_icon(runtime_code)
         last_resolve_text = _last_resolve_summary_text(scene, include_prefix=True)
@@ -877,6 +882,9 @@ def _draw_live_telemetry(layout, scene):
         elif low_altitude_warning:
             status_label_text = low_altitude_warning
             status_icon = "ERROR"
+        elif animation_render_running:
+            status_label_text = "Rendering Animation"
+            status_icon = "RENDER_ANIMATION"
         elif runtime_code == "IDLE" and last_resolve_text:
             status_label_text = last_resolve_text
         status_row.label(
