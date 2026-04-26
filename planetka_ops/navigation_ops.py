@@ -5,16 +5,18 @@ from bpy.props import EnumProperty
 from ..error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from ..extension_prefs import get_earth_object
 from ..operator_utils import ErrorCode, fail, require_planetka_props, require_scene
-from ..state import logger
+from ..state import logger, resume_navigation_shot_updates, suspend_navigation_shot_updates
 from .navigation_helpers import (
     _anchor_frame_world,
     _apply_navigation_shot,
+    _clear_full_globe_tilt_lock,
     _earth_radius_blender_units,
     _ensure_close_clip_limits,
     _ensure_ortho_full_globe_if_needed,
     _full_globe_altitude_km,
     _max_proximity_altitude_km,
     _navigate_camera_internal,
+    _set_full_globe_tilt_lock,
     _switch_viewport_to_camera_view,
     _update_shot_anchor_object,
 )
@@ -34,11 +36,15 @@ def _module_deps():
         "_ensure_ortho_full_globe_if_needed": _ensure_ortho_full_globe_if_needed,
         "_max_proximity_altitude_km": _max_proximity_altitude_km,
         "_navigate_camera_internal": _navigate_camera_internal,
+        "_set_full_globe_tilt_lock": _set_full_globe_tilt_lock,
+        "_clear_full_globe_tilt_lock": _clear_full_globe_tilt_lock,
         "_anchor_frame_world": _anchor_frame_world,
         "_update_shot_anchor_object": _update_shot_anchor_object,
         "_ensure_close_clip_limits": _ensure_close_clip_limits,
         "_switch_viewport_to_camera_view": _switch_viewport_to_camera_view,
         "_apply_navigation_shot": _apply_navigation_shot,
+        "suspend_navigation_shot_updates": suspend_navigation_shot_updates,
+        "resume_navigation_shot_updates": resume_navigation_shot_updates,
     }
 
 
@@ -326,6 +332,8 @@ def navigation_preset_execute(operator, context, deps):
     _full_globe_altitude_km = deps["_full_globe_altitude_km"]
     _ensure_ortho_full_globe_if_needed = deps["_ensure_ortho_full_globe_if_needed"]
     _max_proximity_altitude_km = deps["_max_proximity_altitude_km"]
+    _set_full_globe_tilt_lock = deps["_set_full_globe_tilt_lock"]
+    _clear_full_globe_tilt_lock = deps["_clear_full_globe_tilt_lock"]
     PLANETKA_RECOVERABLE_EXCEPTIONS = deps["PLANETKA_RECOVERABLE_EXCEPTIONS"]
     _navigate_camera_internal = deps["_navigate_camera_internal"]
     _anchor_frame_world = deps["_anchor_frame_world"]
@@ -333,6 +341,8 @@ def navigation_preset_execute(operator, context, deps):
     _ensure_close_clip_limits = deps["_ensure_close_clip_limits"]
     _switch_viewport_to_camera_view = deps["_switch_viewport_to_camera_view"]
     _apply_navigation_shot = deps["_apply_navigation_shot"]
+    suspend_navigation_shot_updates = deps["suspend_navigation_shot_updates"]
+    resume_navigation_shot_updates = deps["resume_navigation_shot_updates"]
 
     scene = require_scene(operator, context, logger=logger)
     if scene is None:
@@ -359,38 +369,55 @@ def navigation_preset_execute(operator, context, deps):
 
     earth_radius_bu = _earth_radius_blender_units(earth_obj)
     preset = str(getattr(operator, "preset", "ISS_ORBIT"))
-    if preset == "ISS_ORBIT":
-        props.nav_altitude_km = 400.0
-    elif preset == "SENTINEL2":
-        props.nav_altitude_km = 786.0
-    elif preset == "HIGH_ORBIT":
-        full_globe_km = _full_globe_altitude_km(scene, earth_radius_bu)
-        if full_globe_km is not None:
-            props.nav_altitude_km = max(0.0, float(full_globe_km))
-        ortho_adjusted = _ensure_ortho_full_globe_if_needed(scene, earth_radius_bu)
-        if ortho_adjusted:
-            operator.report({'INFO'}, "Orthographic scale expanded to fit full globe with margin.")
-    elif preset == "MAX_PROXIMITY":
-        lon_deg = float(getattr(props, "nav_longitude_deg", 0.0))
-        lat_deg = float(getattr(props, "nav_latitude_deg", 0.0))
-        max_km, note = _max_proximity_altitude_km(scene, earth_obj, earth_radius_bu, lon_deg, lat_deg)
-        if max_km is None:
+    nav_updates_suspended = False
+    try:
+        suspend_navigation_shot_updates()
+        nav_updates_suspended = True
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
+        nav_updates_suspended = False
+    try:
+        if preset == "ISS_ORBIT":
+            _clear_full_globe_tilt_lock(scene)
+            props.nav_altitude_km = 400.0
+        elif preset == "SENTINEL2":
+            _clear_full_globe_tilt_lock(scene)
+            props.nav_altitude_km = 786.0
+        elif preset == "HIGH_ORBIT":
+            _set_full_globe_tilt_lock(scene, float(getattr(props, "nav_tilt_deg", 0.0)))
+            full_globe_km = _full_globe_altitude_km(scene, earth_radius_bu)
+            if full_globe_km is not None:
+                props.nav_altitude_km = max(0.0, float(full_globe_km))
+            ortho_adjusted = _ensure_ortho_full_globe_if_needed(scene, earth_radius_bu)
+            if ortho_adjusted:
+                operator.report({'INFO'}, "Orthographic scale expanded to fit full globe with margin.")
+        elif preset == "MAX_PROXIMITY":
+            _clear_full_globe_tilt_lock(scene)
+            lon_deg = float(getattr(props, "nav_longitude_deg", 0.0))
+            lat_deg = float(getattr(props, "nav_latitude_deg", 0.0))
+            max_km, note = _max_proximity_altitude_km(scene, earth_obj, earth_radius_bu, lon_deg, lat_deg)
+            if max_km is None:
+                return fail(
+                    operator,
+                    "Unable to compute Max Proximity for current camera.",
+                    code=ErrorCode.NAV_PRECHECK_FAILED,
+                    logger=logger,
+                )
+            props.nav_altitude_km = max(0.0, float(max_km))
+            if note:
+                operator.report({'INFO'}, note)
+        else:
             return fail(
                 operator,
-                "Unable to compute Max Proximity for current camera.",
+                f"Unknown navigation preset: {preset}",
                 code=ErrorCode.NAV_PRECHECK_FAILED,
                 logger=logger,
             )
-        props.nav_altitude_km = max(0.0, float(max_km))
-        if note:
-            operator.report({'INFO'}, note)
-    else:
-        return fail(
-            operator,
-            f"Unknown navigation preset: {preset}",
-            code=ErrorCode.NAV_PRECHECK_FAILED,
-            logger=logger,
-        )
+    finally:
+        if nav_updates_suspended:
+            try:
+                resume_navigation_shot_updates()
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
+                pass
 
     try:
         if preset == "HIGH_ORBIT":

@@ -231,21 +231,22 @@ def _set_tex_image_node_interpolation(node, use_fallback):
         logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
 
 
-def _set_material_displacement_and_bump(material):
+def _set_material_displacement_and_bump(material, *, force=False):
     if material is None:
         return False
 
-    try:
-        if int(material.get(_MATERIAL_DISPLACEMENT_MODE_VERSION_KEY, 0)) >= int(_MATERIAL_DISPLACEMENT_MODE_VERSION):
-            return False
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
-        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+    if not bool(force):
+        try:
+            if int(material.get(_MATERIAL_DISPLACEMENT_MODE_VERSION_KEY, 0)) >= int(_MATERIAL_DISPLACEMENT_MODE_VERSION):
+                return False
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
 
     changed = False
 
     # Blender 5.x path.
     if hasattr(material, "displacement_method"):
-        preferred_material = ("DISPLACEMENT", "DISPLACEMENT_ONLY")
+        preferred_material = ("BOTH", "DISPLACEMENT_AND_BUMP", "DISPLACEMENT", "DISPLACEMENT_ONLY")
         available = set()
         try:
             prop_def = material.bl_rna.properties.get("displacement_method")
@@ -257,6 +258,12 @@ def _set_material_displacement_and_bump(material):
         for identifier in preferred_material:
             if available and identifier not in available:
                 continue
+            try:
+                current = str(getattr(material, "displacement_method", "") or "")
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+                current = ""
+            if current == identifier:
+                break
             try:
                 material.displacement_method = identifier
                 changed = True
@@ -273,7 +280,7 @@ def _set_material_displacement_and_bump(material):
             logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
         return changed
 
-    preferred_cycles = ("DISPLACEMENT", "DISPLACEMENT_ONLY")
+    preferred_cycles = ("BOTH", "DISPLACEMENT_AND_BUMP", "DISPLACEMENT", "DISPLACEMENT_ONLY")
     available = set()
     try:
         prop_def = cycles_settings.bl_rna.properties.get("displacement_method")
@@ -286,6 +293,12 @@ def _set_material_displacement_and_bump(material):
         if available and identifier not in available:
             continue
         try:
+            current = str(getattr(cycles_settings, "displacement_method", "") or "")
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+            current = ""
+        if current == identifier:
+            break
+        try:
             cycles_settings.displacement_method = identifier
             changed = True
             break
@@ -296,6 +309,42 @@ def _set_material_displacement_and_bump(material):
     except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
         logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
     return changed
+
+
+def enforce_earth_surface_displacement_and_bump(scene=None):
+    del scene  # Scope is strict by canonical Planetka Earth object identity.
+    try:
+        from .extension_prefs import get_earth_object
+    except (ImportError, ModuleNotFoundError):
+        return False
+
+    earth_obj = get_earth_object()
+    if earth_obj is None or str(getattr(earth_obj, "type", "")) != "MESH":
+        return False
+
+    target_materials = []
+    slots = getattr(earth_obj, "material_slots", None)
+    if slots:
+        for slot in slots:
+            material = getattr(slot, "material", None)
+            if material is None:
+                continue
+            target_materials.append(material)
+
+    if not target_materials:
+        fallback = bpy.data.materials.get(EARTH_MATERIAL_NAME)
+        if fallback is not None:
+            target_materials.append(fallback)
+
+    seen = set()
+    changed = False
+    for material in target_materials:
+        ptr = getattr(material, "as_pointer", lambda: 0)()
+        if ptr in seen:
+            continue
+        seen.add(ptr)
+        changed = bool(_set_material_displacement_and_bump(material, force=True)) or changed
+    return bool(changed)
 
 
 def _normalize_surface_elevation_defaults(material):
@@ -424,6 +473,20 @@ def sync_surface_elevation_scale_for_radius(earth_radius_bu):
         if scale_node is None or str(getattr(scale_node, "bl_idname", "")) != "ShaderNodeMath":
             continue
         try:
+            socket_path = scale_node.inputs[1].path_from_id("default_value")
+            animation_data = getattr(node_group, "animation_data", None)
+            fcurves = getattr(animation_data, "drivers", None) if animation_data is not None else None
+            if fcurves:
+                if any(
+                    str(getattr(fcurve, "data_path", "") or "") == str(socket_path)
+                    and int(getattr(fcurve, "array_index", 0) or 0) == 0
+                    for fcurve in tuple(fcurves)
+                ):
+                    # Driver-based radius compensation is active; avoid imperative writes.
+                    continue
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        try:
             current = float(scale_node.inputs[1].default_value)
         except (AttributeError, TypeError, ValueError, IndexError):
             current = None
@@ -436,6 +499,90 @@ def sync_surface_elevation_scale_for_radius(earth_radius_bu):
             logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
 
     return float(scale_value), bool(changed)
+
+
+def _ensure_surface_elevation_radius_driver(scene):
+    if scene is None:
+        scene = getattr(bpy.context, "scene", None)
+    if scene is None:
+        return False
+
+    target_group_names = {
+        str(SURFACE_GRADING_GROUP_NAME),
+        f"{SURFACE_GRADING_GROUP_NAME}.001",
+        f"{SURFACE_GRADING_GROUP_NAME}.002",
+    }
+    expression = f"{float(ELEVATION_SCALE_MULTIPLIER):.12g} * (earth_radius / 2.0)"
+    changed = False
+    for node_group in tuple(getattr(bpy.data, "node_groups", ())):
+        group_name = str(getattr(node_group, "name", "") or "")
+        if group_name not in target_group_names:
+            continue
+        nodes = getattr(node_group, "nodes", None)
+        if nodes is None:
+            continue
+        scale_node = nodes.get("Math.011")
+        if scale_node is None or str(getattr(scale_node, "bl_idname", "")) != "ShaderNodeMath":
+            continue
+        try:
+            socket = scale_node.inputs[1]
+            fcurve = socket.driver_add("default_value")
+            driver = getattr(fcurve, "driver", None)
+            if driver is None:
+                continue
+
+            if str(getattr(driver, "type", "") or "") != "SCRIPTED":
+                driver.type = "SCRIPTED"
+                changed = True
+            if str(getattr(driver, "expression", "") or "") != expression:
+                driver.expression = expression
+                changed = True
+
+            variables = list(getattr(driver, "variables", ()))
+            radius_var = None
+            for variable in variables:
+                if str(getattr(variable, "name", "") or "") == "earth_radius" and radius_var is None:
+                    radius_var = variable
+                    continue
+                driver.variables.remove(variable)
+                changed = True
+            if radius_var is None:
+                radius_var = driver.variables.new()
+                radius_var.name = "earth_radius"
+                changed = True
+            if str(getattr(radius_var, "type", "") or "") != "SINGLE_PROP":
+                radius_var.type = "SINGLE_PROP"
+                changed = True
+
+            targets = getattr(radius_var, "targets", ())
+            if not targets:
+                continue
+            target = targets[0]
+            if str(getattr(target, "id_type", "") or "") != "SCENE":
+                target.id_type = "SCENE"
+                changed = True
+            if getattr(target, "id", None) is not scene:
+                target.id = scene
+                changed = True
+            if str(getattr(target, "data_path", "") or "") != "planetka.earth_radius_bu":
+                target.data_path = "planetka.earth_radius_bu"
+                changed = True
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+    return bool(changed)
+
+
+def _scene_earth_radius_bu(scene):
+    if scene is None:
+        return 2.0
+    props = getattr(scene, "planetka", None)
+    if props is None:
+        return 2.0
+    try:
+        return max(1e-6, float(getattr(props, "earth_radius_bu", 2.0)))
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        return 2.0
 
 
 def _ensure_interface_float_socket(node_group, name, *, default, min_value=0.0, max_value=1.0, description=""):
@@ -2887,7 +3034,7 @@ def _load_embedded_material_library():
             _set_library_signature(node_group)
 
 
-def _ensure_embedded_material_library():
+def _ensure_embedded_material_library(scene=None):
     if not _is_embedded_material_library_ready():
         _load_embedded_material_library()
     # Hard reset image-node bindings on every Create Earth asset ensure so
@@ -2900,7 +3047,7 @@ def _ensure_embedded_material_library():
     if not earth_material:
         raise RuntimeError("Planetka: embedded shader materials are missing after load.")
     _normalize_surface_elevation_defaults(earth_material)
-    _set_material_displacement_and_bump(earth_material)
+    _set_material_displacement_and_bump(earth_material, force=True)
     preview_material = bpy.data.materials.get(PREVIEW_MATERIAL_NAME)
     if preview_material is None:
         preview_material = bpy.data.materials.get(LEGACY_PREVIEW_MATERIAL_NAME)
@@ -2909,7 +3056,12 @@ def _ensure_embedded_material_library():
     if preview_material is None:
         raise RuntimeError("Planetka: preview material is missing after loading reference shaders.")
     _normalize_surface_elevation_defaults(preview_material)
-    _set_material_displacement_and_bump(preview_material)
+    _set_material_displacement_and_bump(preview_material, force=True)
+    driver_changed = _ensure_surface_elevation_radius_driver(scene)
+    if driver_changed:
+        logger.debug("Planetka asset builder: bound elevation-radius driver for surface displacement scale.")
+    # Fallback in case driver binding is unavailable in current runtime context.
+    sync_surface_elevation_scale_for_radius(_scene_earth_radius_bu(scene))
     _hide_unconnected_group_input_sockets_everywhere()
     return preview_material, earth_material
 
@@ -2922,7 +3074,7 @@ def ensure_planetka_assets(scene=None):
 
     surface_collection = _ensure_collection(root, SURFACE_COLLECTION_NAME)
 
-    preview_material, earth_material = _ensure_embedded_material_library()
+    preview_material, earth_material = _ensure_embedded_material_library(scene)
     sunlight_object = _ensure_planetka_sunlight(surface_collection)
 
     return {

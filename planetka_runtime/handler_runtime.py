@@ -114,6 +114,27 @@ def initialize_props_from_imported_planetka(scene, ctx=None):
     deps.sync_idprops_from_props(scene)
 
 
+def _enforce_planetka_earth_surface_displacement_mode(scene, deps):
+    if scene is None:
+        return
+    try:
+        module_name = f"{deps.package_name}.asset_builder" if deps.package_name else "asset_builder"
+        asset_builder = deps.import_module(module_name)
+        enforce_fn = getattr(asset_builder, "enforce_earth_surface_displacement_and_bump", None)
+        if callable(enforce_fn):
+            enforce_fn(scene)
+    except deps.recoverable_exceptions:
+        deps.logger.debug(
+            "Planetka: failed enforcing Earth surface displacement mode in depsgraph runtime",
+            exc_info=True,
+        )
+    except (RuntimeError, TypeError, ValueError, AttributeError, ImportError):
+        deps.logger.debug(
+            "Planetka: failed enforcing Earth surface displacement mode in depsgraph runtime",
+            exc_info=True,
+        )
+
+
 def depsgraph_update_post(_scene, _depsgraph, ctx=None):
     ctx = _coerce_ctx(ctx)
     deps = ctx.deps
@@ -121,6 +142,8 @@ def depsgraph_update_post(_scene, _depsgraph, ctx=None):
     scene = getattr(getattr(deps.bpy, "context", None), "scene", None)
     if scene is None:
         return
+
+    _enforce_planetka_earth_surface_displacement_mode(scene, deps)
 
     if deps.is_navigation_user_edit_active(scene):
         return
