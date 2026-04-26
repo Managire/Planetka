@@ -274,7 +274,17 @@ async function applyPermanentLicenseEntitlement(db, env, details = {}, deps) {
   if (!user || !user.id) {
     throw new Error("user_upsert_failed");
   }
-  const appliedPlanCode = deps.normalizeRequestedPlan(user && user.status || finalPlan) || finalPlan;
+  const currentPlanCode = deps.normalizeRequestedPlan(user && user.status || "");
+  let appliedPlanCode = currentPlanCode;
+  if (currentPlanCode !== finalPlan) {
+    await deps.dbRun(
+      db,
+      `UPDATE users SET status = ? WHERE id = ?`,
+      [finalPlan, String(user.id || "").trim()],
+    );
+    appliedPlanCode = finalPlan;
+    user = { ...user, status: finalPlan };
+  }
   await deps.dbRun(
     db,
     `

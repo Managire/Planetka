@@ -1,4 +1,14 @@
 export function createAuthApiKeyHandlers(deps) {
+  const strictStoredTier = (value) => {
+    const normalized = typeof deps.normalizeTierCodeStrict === "function"
+      ? deps.normalizeTierCodeStrict(value)
+      : "";
+    if (!normalized) {
+      throw new Error("invalid_user_status");
+    }
+    return normalized;
+  };
+
   async function handleApiKeyRequest(request, env) {
     const db = deps.requireDb(env);
     await deps.ensureApiKeyTables(db);
@@ -97,7 +107,7 @@ export function createAuthApiKeyHandlers(deps) {
           db,
           String(existingUser.id || "").trim(),
           String(existingUser.email || "").trim(),
-          deps.normalizeRequestedPlan(existingUser && existingUser.status || deps.PLAN_CODE_FREE),
+          strictStoredTier(existingUser && existingUser.status),
           requestDeviceId,
           env,
         );
@@ -231,7 +241,7 @@ export function createAuthApiKeyHandlers(deps) {
       env,
     );
     user = await deps.enforceUserPlanPolicy(db, user, env);
-    const storedPlanCode = deps.normalizeRequestedPlan(user && user.status || deps.PLAN_CODE_FREE);
+    const storedPlanCode = strictStoredTier(user && user.status);
 
     const issued = await deps.issueApiKeyForUser(
       db,
@@ -340,10 +350,10 @@ export function createAuthApiKeyHandlers(deps) {
     let user = {
       id: record.id,
       email: record.email,
-      status: record.status || deps.PLAN_CODE_FREE,
+      status: strictStoredTier(record.status),
     };
     user = await deps.enforceUserPlanPolicy(db, user, env);
-    const storedPlanCode = deps.normalizeRequestedPlan(user && user.status || deps.PLAN_CODE_FREE);
+    const storedPlanCode = strictStoredTier(user && user.status);
     if (storedPlanCode === deps.PLAN_CODE_FREE) {
       const freePolicy = await deps.enforceSingleActiveFreeApiKey(
         db,

@@ -9,31 +9,39 @@ function fmtGbLocal(value, parseNonNegativeInteger, bytesPerGb) {
 }
 
 function analyticsTierCodeFromStatus(statusValue, deps) {
-  const normalized = deps.normalizePlanCode(statusValue);
+  const normalized = String(statusValue || "").trim().toLowerCase();
+  if (normalized === "blocked") return "blocked";
   if (normalized === deps.PLAN_CODE_COMMERCIAL) return "commercial";
   if (normalized === deps.PLAN_CODE_PERSONAL) return "personal";
-  return "free";
+  if (normalized === deps.PLAN_CODE_FREE) return "free";
+  return "invalid";
 }
 
 function analyticsTierLabelFromStatus(statusValue, deps) {
   const tierCode = analyticsTierCodeFromStatus(statusValue, deps);
+  if (tierCode === "blocked") return "Blocked";
   if (tierCode === "commercial") return "Commercial";
   if (tierCode === "personal") return "Personal";
-  return "Free";
+  if (tierCode === "free") return "Free";
+  return "Invalid";
 }
 
 function analyticsTierClassFromStatus(statusValue, deps) {
   const tierCode = analyticsTierCodeFromStatus(statusValue, deps);
+  if (tierCode === "blocked") return "tier-blocked";
   if (tierCode === "commercial") return "tier-commercial";
   if (tierCode === "personal") return "tier-personal";
-  return "tier-free";
+  if (tierCode === "free") return "tier-free";
+  return "tier-invalid";
 }
 
 function analyticsTierColorFromStatus(statusValue, deps) {
   const tierCode = analyticsTierCodeFromStatus(statusValue, deps);
+  if (tierCode === "blocked") return "#f97316";
   if (tierCode === "commercial") return "#ef4444";
   if (tierCode === "personal") return "#22c55e";
-  return "#ffffff";
+  if (tierCode === "free") return "#ffffff";
+  return "#f59e0b";
 }
 
 function qualityOverrideModeFromValue(value) {
@@ -388,7 +396,7 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
   const rowsHtml = (Array.isArray(rows) ? rows : []).map((row) => {
     const userIdRaw = String(row && row.user_id || "");
     const userEmailRaw = String(row && row.user_email || "");
-    const planCodeRaw = String(row && row.plan_code || deps.PLAN_CODE_FREE);
+    const planCodeRaw = String(row && row.plan_code || "");
     const userEmail = deps.escapeHtml(userEmailRaw);
     const status = String(row && row.user_status || "").trim().toLowerCase();
     const tierClass = analyticsTierClassFromStatus(status || planCodeRaw, deps);
@@ -399,7 +407,7 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
       : `<button class="action-btn" data-action="quality-unrestricted" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Unrestricted</button>`;
     let actionButtons = "";
     if (status === "blocked") {
-      actionButtons = `<button class="action-btn warn" data-action="unblock" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}" data-plan-code="${encodeURIComponent(planCodeRaw)}">Unblock</button><button class="action-btn" data-action="set-free" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Free</button><button class="action-btn" data-action="set-personal" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Personal</button><button class="action-btn" data-action="set-commercial" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Commercial</button>${qualityModeAction}<button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
+      actionButtons = `<button class="action-btn" data-action="set-free" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Free</button><button class="action-btn" data-action="set-personal" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Personal</button><button class="action-btn" data-action="set-commercial" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Commercial</button>${qualityModeAction}<button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
     } else {
       const freeButton = `<button class="action-btn" data-action="set-free" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Free</button>`;
       const planButton = analyticsTierCodeFromStatus(status || planCodeRaw, deps) === "commercial"
@@ -445,6 +453,8 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
     .tier-free { color: #ffffff; font-weight: 600; }
     .tier-personal { color: #22c55e; font-weight: 600; }
     .tier-commercial { color: #ef4444; font-weight: 600; }
+    .tier-blocked { color: #f97316; font-weight: 600; }
+    .tier-invalid { color: #f59e0b; font-weight: 600; }
     .error { color: #fca5a5; }
   </style>
 </head>
@@ -530,7 +540,12 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
       const payload = { email: safeUserEmail };
       if (safeUserId) payload.user_id = safeUserId;
       if (safeAction === "unblock") {
-        payload.plan_code = (!safePlanCode || safePlanCode === "blocked") ? "personal" : safePlanCode;
+        if (!["free", "personal", "commercial"].includes(safePlanCode)) {
+          statusEl.textContent = "Action failed: unblock requires explicit target tier.";
+          statusEl.className = "error";
+          return;
+        }
+        payload.plan_code = safePlanCode;
       }
       if (safeAction === "set-free") payload.plan_code = "free";
       if (safeAction === "set-personal") payload.plan_code = "personal";

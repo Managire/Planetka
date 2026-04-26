@@ -120,12 +120,14 @@ export async function requireAuthenticatedUserContext(request, env, options = {}
   const tokenPlanRaw = String(
     access.plan_code || access.user_status || access.plan || access.planCode || access.userStatus || "",
   ).trim();
-  const tokenPlanCode = tokenPlanRaw ? deps.normalizeRequestedPlan(tokenPlanRaw) : "";
+  const tokenPlanCode = tokenPlanRaw && typeof deps.normalizeTierCodeStrict === "function"
+    ? deps.normalizeTierCodeStrict(tokenPlanRaw)
+    : "";
   const tokenQualityAccessPlanRaw = String(
     access.quality_access_plan_code || access.qualityAccessPlanCode || tokenPlanRaw || "",
   ).trim();
-  const tokenQualityAccessPlanCode = tokenQualityAccessPlanRaw
-    ? deps.normalizeRequestedPlan(tokenQualityAccessPlanRaw)
+  const tokenQualityAccessPlanCode = tokenQualityAccessPlanRaw && typeof deps.normalizeTierCodeStrict === "function"
+    ? deps.normalizeTierCodeStrict(tokenQualityAccessPlanRaw)
     : tokenPlanCode;
   const tokenUnrestrictedQualityAccess = deps.parseBooleanFlag(
     access.unrestricted_quality_access ?? access.unrestrictedQualityAccess,

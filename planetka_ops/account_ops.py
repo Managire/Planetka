@@ -12,6 +12,7 @@ from ..auth import (
     get_api_key_request_url,
     get_upgrade_url,
     logout_remote_session,
+    sync_account_profile,
 )
 from ..error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from ..extension_prefs import get_prefs
@@ -98,6 +99,11 @@ class PLANETKA_OT_AccountOpenLogin(bpy.types.Operator):
                 logger=logger,
                 exc=exc,
             )
+        try:
+            # Refresh canonical stored tier/profile fields immediately after login.
+            sync_account_profile(prefs)
+        except (AuthApiError, PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: post-login account profile sync failed", exc_info=True)
         try:
             prefs.auth_status_message = ""
         except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):

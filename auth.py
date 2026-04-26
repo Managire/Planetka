@@ -44,6 +44,11 @@ PLAN_CODE_COMMERCIAL = "commercial"
 PLAN_NAME_FREE = "Free"
 PLAN_NAME_PERSONAL = "Personal"
 PLAN_NAME_COMMERCIAL = "Commercial"
+TIER_INTEGRITY_ERROR_CODE = "tier_integrity_violation"
+TIER_INTEGRITY_STATUS_MESSAGE = (
+    "Critical account tier integrity error detected. "
+    "Planetka is locked until resolved. Contact info@planetka.io."
+)
 _ADDON_VERSION_CACHE = None
 class AuthApiError(RuntimeError):
     def __init__(self, status, error, payload=None):
@@ -56,6 +61,11 @@ class AuthApiError(RuntimeError):
 def describe_auth_error(error):
     message = str(getattr(error, "error", error) or "login_failed")
     lowered = message.lower()
+    if TIER_INTEGRITY_ERROR_CODE in lowered:
+        return (
+            "Critical account tier integrity error detected. "
+            "Planetka was locked for safety. Reconnect and contact info@planetka.io if it persists."
+        )
     if "invalid_api_key" in lowered:
         return "Invalid Planetka API key."
     if "api_key_expired" in lowered:
@@ -170,14 +180,16 @@ def _extract_stored_account_tier(payload):
     return _normalize_account_tier(
         _first_non_empty(
             payload.get("stored_account_tier"),
+            payload.get("storedAccountTier"),
             payload.get("stored_plan_code"),
+            payload.get("storedPlanCode"),
         ),
     )
 
 
 def _extract_plan(payload):
     if not isinstance(payload, dict):
-        return {"code": PLAN_CODE_FREE, "name": PLAN_NAME_FREE}
+        return {"code": "", "name": ""}
 
     plan_obj = payload.get("plan")
     if not isinstance(plan_obj, dict):
@@ -190,37 +202,34 @@ def _extract_plan(payload):
             payload.get("account_tier"),
         ),
     )
-    if not code:
-        code = PLAN_CODE_FREE
-
     return {
-        "code": code,
-        "name": _plan_name_for_code(code) or PLAN_NAME_FREE,
+        "code": code or "",
+        "name": _plan_name_for_code(code) or "",
     }
 
 
 def _extract_stored_plan(payload):
     if not isinstance(payload, dict):
-        return {"code": PLAN_CODE_FREE, "name": PLAN_NAME_FREE}
+        return {"code": "", "name": ""}
 
     code = _normalize_plan_code(
         _first_non_empty(
             payload.get("stored_plan_code"),
+            payload.get("storedPlanCode"),
             payload.get("stored_account_tier"),
+            payload.get("storedAccountTier"),
         ),
     )
-    if not code:
-        code = _extract_plan(payload)["code"]
 
     return {
-        "code": code or PLAN_CODE_FREE,
-        "name": _plan_name_for_code(code) or PLAN_NAME_FREE,
+        "code": code or "",
+        "name": _plan_name_for_code(code) or "",
     }
 
 
 def _extract_quality_access_plan(payload):
     if not isinstance(payload, dict):
-        return PLAN_CODE_FREE
+        return ""
     code = _normalize_plan_code(
         _first_non_empty(
             payload.get("quality_access_plan_code"),
@@ -442,19 +451,133 @@ def get_api_key_mask(prefs=None):
     return str(getattr(prefs, "auth_api_key_mask", "") or "").strip()
 
 
+def _raise_tier_integrity_violation(prefs, reason, details=None):
+    payload = {"reason": str(reason or "tier_integrity_violation").strip() or "tier_integrity_violation"}
+    if isinstance(details, dict):
+        payload.update(details)
+    logger.error("Planetka: account tier integrity violation: %s", payload)
+    try:
+        _clear_auth_session_preserve_api_key(
+            prefs=prefs,
+            state="tier_integrity_error",
+            status_message=TIER_INTEGRITY_STATUS_MESSAGE,
+        )
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed preserving API key while handling tier integrity violation", exc_info=True)
+        clear_auth_session(
+            prefs=prefs,
+            state="tier_integrity_error",
+            status_message=TIER_INTEGRITY_STATUS_MESSAGE,
+        )
+    raise AuthApiError(500, TIER_INTEGRITY_ERROR_CODE, payload=payload)
+
+
+def _require_valid_authenticated_tier(prefs=None, context="runtime"):
+    prefs = prefs or get_prefs()
+    if prefs is None:
+        return ""
+    if not is_authenticated(prefs):
+        return ""
+
+    raw_stored_plan = str(getattr(prefs, "auth_stored_plan_code", "") or "").strip()
+    raw_stored_tier = str(getattr(prefs, "auth_stored_account_tier", "") or "").strip()
+    raw_plan_code = str(getattr(prefs, "auth_plan_code", "") or "").strip()
+    raw_account_tier = str(getattr(prefs, "auth_account_tier", "") or "").strip()
+
+    if not raw_stored_plan or not raw_stored_tier:
+        _raise_tier_integrity_violation(
+            prefs,
+            "missing_canonical_tier_fields",
+            {
+                "context": str(context or "runtime"),
+                "auth_stored_plan_code": raw_stored_plan,
+                "auth_stored_account_tier": raw_stored_tier,
+                "auth_plan_code": raw_plan_code,
+                "auth_account_tier": raw_account_tier,
+            },
+        )
+
+    norm_stored_plan = _normalize_plan_code(raw_stored_plan)
+    norm_stored_tier = _normalize_account_tier(raw_stored_tier)
+    norm_plan_code = _normalize_plan_code(raw_plan_code)
+    norm_account_tier = _normalize_account_tier(raw_account_tier)
+
+    if not norm_stored_plan:
+        _raise_tier_integrity_violation(
+            prefs,
+            "invalid_stored_plan_code",
+            {
+                "context": str(context or "runtime"),
+                "auth_stored_plan_code": raw_stored_plan,
+            },
+        )
+    if not norm_stored_tier:
+        _raise_tier_integrity_violation(
+            prefs,
+            "invalid_stored_account_tier",
+            {
+                "context": str(context or "runtime"),
+                "auth_stored_account_tier": raw_stored_tier,
+            },
+        )
+    if norm_stored_plan != norm_stored_tier:
+        _raise_tier_integrity_violation(
+            prefs,
+            "stored_tier_mismatch",
+            {
+                "context": str(context or "runtime"),
+                "auth_stored_plan_code": norm_stored_plan,
+                "auth_stored_account_tier": norm_stored_tier,
+            },
+        )
+    if raw_plan_code and not norm_plan_code:
+        _raise_tier_integrity_violation(
+            prefs,
+            "invalid_plan_code",
+            {
+                "context": str(context or "runtime"),
+                "auth_plan_code": raw_plan_code,
+            },
+        )
+    if raw_account_tier and not norm_account_tier:
+        _raise_tier_integrity_violation(
+            prefs,
+            "invalid_account_tier",
+            {
+                "context": str(context or "runtime"),
+                "auth_account_tier": raw_account_tier,
+            },
+        )
+    if norm_plan_code and norm_plan_code != norm_stored_plan:
+        _raise_tier_integrity_violation(
+            prefs,
+            "plan_code_mismatch",
+            {
+                "context": str(context or "runtime"),
+                "auth_plan_code": norm_plan_code,
+                "auth_stored_plan_code": norm_stored_plan,
+            },
+        )
+    if norm_account_tier and norm_account_tier != norm_stored_plan:
+        _raise_tier_integrity_violation(
+            prefs,
+            "account_tier_mismatch",
+            {
+                "context": str(context or "runtime"),
+                "auth_account_tier": norm_account_tier,
+                "auth_stored_plan_code": norm_stored_plan,
+            },
+        )
+    return norm_stored_plan
+
+
 def get_account_tier(prefs=None):
     prefs = prefs or get_prefs()
     if prefs is None:
         return ""
     if not is_authenticated(prefs):
         return ""
-    explicit_tier = _normalize_account_tier(getattr(prefs, "auth_stored_account_tier", ""))
-    if explicit_tier:
-        return explicit_tier
-    explicit_tier = _normalize_account_tier(getattr(prefs, "auth_account_tier", ""))
-    if explicit_tier:
-        return explicit_tier
-    return _normalize_account_tier(get_plan_code(prefs)) or ACCOUNT_TIER_FREE
+    return _require_valid_authenticated_tier(prefs, context="get_account_tier")
 
 
 def get_stored_account_tier(prefs=None):
@@ -530,13 +653,7 @@ def get_plan_code(prefs=None):
         return ""
     if not is_authenticated(prefs):
         return ""
-    value = _normalize_plan_code(getattr(prefs, "auth_stored_plan_code", ""))
-    if value:
-        return value
-    value = _normalize_plan_code(getattr(prefs, "auth_plan_code", ""))
-    if value:
-        return value
-    return _normalize_plan_code(getattr(prefs, "auth_stored_account_tier", "")) or _normalize_plan_code(getattr(prefs, "auth_account_tier", "")) or PLAN_CODE_FREE
+    return _require_valid_authenticated_tier(prefs, context="get_plan_code")
 
 
 def get_stored_plan_code(prefs=None):
@@ -552,7 +669,7 @@ def get_stored_plan_name(prefs=None):
     value = str(getattr(prefs, "auth_stored_plan_name", "") or "").strip()
     if value:
         return value
-    return _plan_name_for_code(get_stored_plan_code(prefs)) or get_plan_name(prefs)
+    return _plan_name_for_code(get_stored_plan_code(prefs)) or ""
 
 
 def get_plan_name(prefs=None):
@@ -564,10 +681,7 @@ def get_plan_name(prefs=None):
     value = str(getattr(prefs, "auth_stored_plan_name", "") or "").strip()
     if value:
         return value
-    value = str(getattr(prefs, "auth_plan_name", "") or "").strip()
-    if value:
-        return value
-    return _plan_name_for_code(get_plan_code(prefs)) or PLAN_NAME_FREE
+    return _plan_name_for_code(get_plan_code(prefs)) or ""
 
 
 def get_quality_access_plan_code(prefs=None):
@@ -576,10 +690,12 @@ def get_quality_access_plan_code(prefs=None):
         return ""
     if not is_authenticated(prefs):
         return ""
+    _require_valid_authenticated_tier(prefs, context="get_quality_access_plan_code")
     value = _normalize_plan_code(getattr(prefs, "auth_quality_access_plan_code", ""))
     if value:
         return value
-    if has_unrestricted_quality_access(prefs):
+    explicit_unrestricted = _parse_optional_bool(getattr(prefs, "auth_unrestricted_quality_access", ""))
+    if explicit_unrestricted is True:
         return PLAN_CODE_COMMERCIAL
     return get_plan_code(prefs)
 
@@ -787,17 +903,17 @@ def _apply_auth_payload(prefs, payload, login_state="authenticated", status_mess
     stored_plan = _extract_stored_plan(payload)
     prefs.auth_plan_code = plan["code"]
     prefs.auth_plan_name = plan["name"]
-    prefs.auth_stored_plan_code = stored_plan["code"]
-    prefs.auth_stored_plan_name = stored_plan["name"]
+    prefs.auth_stored_plan_code = stored_plan["code"] or ""
+    prefs.auth_stored_plan_name = stored_plan["name"] or ""
     prefs.auth_quality_access_plan_code = _extract_quality_access_plan(payload)
     prefs.auth_unrestricted_quality_access = "1" if _extract_unrestricted_quality_access(payload) else "0"
     prefs.auth_unrestricted_quality_override = _extract_unrestricted_quality_override(payload)
     prefs.auth_unrestricted_quality_global = "1" if _extract_unrestricted_quality_global(payload) else "0"
     prefs.auth_commercial_use_allowed = "1" if _extract_commercial_use_allowed(payload, plan=plan) else "0"
-    account_tier = _extract_account_tier(payload) or _normalize_account_tier(plan["code"])
-    prefs.auth_account_tier = account_tier or ACCOUNT_TIER_FREE
     stored_account_tier = _extract_stored_account_tier(payload) or _normalize_account_tier(stored_plan["code"])
-    prefs.auth_stored_account_tier = stored_account_tier or prefs.auth_account_tier
+    canonical_tier = stored_account_tier or ""
+    prefs.auth_stored_account_tier = canonical_tier
+    prefs.auth_account_tier = canonical_tier
     prefs.auth_contact_url = _first_non_empty(
         payload.get("contact_url"),
         payload.get("support_url"),
@@ -805,6 +921,7 @@ def _apply_auth_payload(prefs, payload, login_state="authenticated", status_mess
     prefs.auth_upgrade_url = _first_non_empty(payload.get("upgrade_url"))
     prefs.auth_login_state = str(login_state or "authenticated")
     prefs.auth_status_message = str(status_message or "")
+    _require_valid_authenticated_tier(prefs, context="auth_payload")
     _save_user_prefs()
     _tag_ui_redraw()
 
@@ -822,10 +939,8 @@ def _apply_account_profile_fields(prefs, payload):
         prefs.auth_plan_code = plan["code"]
     if plan["name"]:
         prefs.auth_plan_name = plan["name"]
-    if stored_plan["code"]:
-        prefs.auth_stored_plan_code = stored_plan["code"]
-    if stored_plan["name"]:
-        prefs.auth_stored_plan_name = stored_plan["name"]
+    prefs.auth_stored_plan_code = stored_plan["code"] or ""
+    prefs.auth_stored_plan_name = stored_plan["name"] or ""
     quality_access_plan = _extract_quality_access_plan(payload)
     prefs.auth_quality_access_plan_code = quality_access_plan or ""
     prefs.auth_unrestricted_quality_access = "1" if _extract_unrestricted_quality_access(payload) else "0"
@@ -834,12 +949,9 @@ def _apply_account_profile_fields(prefs, payload):
     prefs.auth_unrestricted_quality_global = "1" if _extract_unrestricted_quality_global(payload) else "0"
     prefs.auth_commercial_use_allowed = "1" if _extract_commercial_use_allowed(payload, plan=plan) else "0"
 
-    account_tier = _extract_account_tier(payload) or _normalize_account_tier(plan["code"])
-    if account_tier:
-        prefs.auth_account_tier = account_tier
     stored_account_tier = _extract_stored_account_tier(payload) or _normalize_account_tier(stored_plan["code"])
-    if stored_account_tier:
-        prefs.auth_stored_account_tier = stored_account_tier
+    prefs.auth_stored_account_tier = stored_account_tier or ""
+    prefs.auth_account_tier = stored_account_tier or ""
 
     contact_url = _first_non_empty(
         payload.get("contact_url"),
@@ -851,6 +963,7 @@ def _apply_account_profile_fields(prefs, payload):
     upgrade_url = _first_non_empty(payload.get("upgrade_url"))
     if upgrade_url:
         prefs.auth_upgrade_url = upgrade_url
+    _require_valid_authenticated_tier(prefs, context="account_profile")
 
 
 def sync_account_profile(prefs=None):
@@ -902,6 +1015,8 @@ def get_access_token(prefs=None, allow_refresh=True):
     prefs = prefs or get_prefs()
     if prefs is None:
         return ""
+    if is_authenticated(prefs):
+        _require_valid_authenticated_tier(prefs, context="get_access_token")
 
     access_token = str(getattr(prefs, "auth_access_token", "") or "").strip()
     if access_token and not _token_expires_soon(access_token):
@@ -919,6 +1034,7 @@ def get_access_token(prefs=None, allow_refresh=True):
 
 def get_authorized_headers(prefs=None, allow_refresh=True):
     prefs = prefs or get_prefs()
+    _require_valid_authenticated_tier(prefs, context="get_authorized_headers")
     token = get_access_token(prefs=prefs, allow_refresh=allow_refresh)
     if not token:
         raise AuthApiError(401, "account_not_connected")

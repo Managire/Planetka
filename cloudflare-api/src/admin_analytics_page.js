@@ -118,6 +118,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     .tier-free { color: #ffffff; font-weight: 600; }
     .tier-personal { color: #22c55e; font-weight: 600; }
     .tier-commercial { color: #ef4444; font-weight: 600; }
+    .tier-invalid { color: #f59e0b; font-weight: 600; }
     .user-filter-active { outline: 1px solid #60a5fa; outline-offset: -1px; }
   </style>
 </head>
@@ -339,7 +340,8 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
       const tier = normalizePlanCode(planCode);
       if (tier === "commercial") return "tier-commercial";
       if (tier === "personal") return "tier-personal";
-      return "tier-free";
+      if (tier === "free") return "tier-free";
+      return "tier-invalid";
     };
     function renderRows(tableId, rows, rowBuilder) {
       const tbody = document.querySelector("#" + tableId + " tbody");
@@ -428,18 +430,20 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
       if (normalized === "free") {
         return "free";
       }
-      return "free";
+      return "";
     }
     function planLabel(planCode) {
       const tier = normalizePlanCode(planCode);
       if (tier === "commercial") return "Commercial";
       if (tier === "personal") return "Personal";
-      return "Free";
+      if (tier === "free") return "Free";
+      return "Invalid";
     }
     function planColor(planCode) {
       const tier = normalizePlanCode(planCode);
       if (tier === "commercial") return TILE_COLOR_COMMERCIAL;
       if (tier === "personal") return TILE_COLOR_PERSONAL;
+      if (tier === "free") return TILE_COLOR_FREE;
       return TILE_COLOR_FREE;
     }
     function userKeyForRow(row) {
@@ -585,7 +589,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         const userId = String(row && row.user_id || "").trim();
         const userEmail = String(row && row.user_email || "").trim();
         const userKey = String(item.userKey || userId || userEmail || "unknown");
-        const userStatus = String(row && row.user_status || "free").trim().toLowerCase();
+        const userStatus = String(row && row.user_status || "").trim().toLowerCase();
         const userColor = planColor(userStatus);
         const alpha = tileAlphaByD(parsed);
         const x = parsed.x * scaleX;
@@ -650,7 +654,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         .slice(0, 50);
       renderRows("tileMapUsersTable", userRows, (row) => ({
         html: \`<td class="\${tierClass(row.plan)}">\${row.email || ""}</td>
-        <td class="\${tierClass(row.plan)}">\${row.plan || "Personal"}</td>
+        <td class="\${tierClass(row.plan)}">\${row.plan || "Invalid"}</td>
         <td><span style="display:inline-block;width:14px;height:14px;border-radius:3px;background:\${row.color};border:1px solid #111827;"></span> \${row.color || ""}</td>
         <td>\${fmtInt(row.tileCount)}</td>
         <td>\${fmtInt(row.requestCount)}</td>
@@ -703,7 +707,12 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         payload.user_id = safeUserId;
       }
       if (safeAction === "unblock") {
-        payload.plan_code = (!safePlanCode || safePlanCode === "blocked") ? "personal" : safePlanCode;
+        if (!["free", "personal", "commercial"].includes(safePlanCode)) {
+          statusEl.textContent = "Action failed: unblock requires explicit target tier.";
+          statusEl.className = "error";
+          return;
+        }
+        payload.plan_code = safePlanCode;
       }
       if (safeAction === "set-personal") {
         payload.plan_code = "personal";
@@ -820,14 +829,14 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         renderCloudBillableUsage(data.cloudflare_billable_usage || {});
         renderRows("activeUsersTable", data.active_users_10m, (row) => {
           const normalizedPlan = normalizePlanCode(row && row.user_status);
-          const tier = normalizedPlan === "commercial" ? "Commercial" : (normalizedPlan === "personal" ? "Personal" : "Free");
+          const tier = planLabel(normalizedPlan);
           const tierCss = tierClass(normalizedPlan);
           return \`<td class="\${tierCss}">\${row.user_email || ""}</td><td class="\${tierCss}">\${tier}</td><td>\${fmtInt(row.request_count)}</td><td>\${fmtInt(row.resolve_count)}</td><td>\${fmtGb(row.bytes_served)}</td><td>\${row.last_seen_at || ""}</td>\`;
         });
         renderRows("heavyTable", data.heavy_users_30d || [], (row) => {
-          const rawPlanCode = String(row.user_status || "free").trim().toLowerCase();
+          const rawPlanCode = String(row.user_status || "").trim().toLowerCase();
           const normalizedPlan = normalizePlanCode(rawPlanCode);
-          const planLabelText = normalizedPlan === "commercial" ? "Commercial" : (normalizedPlan === "personal" ? "Personal" : "Free");
+          const planLabelText = planLabel(normalizedPlan);
           const tierCss = tierClass(normalizedPlan);
           const lastSeen = Number.isFinite(Number(row.last_event_unix))
             ? new Date(Number(row.last_event_unix) * 1000).toISOString()

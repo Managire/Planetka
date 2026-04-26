@@ -58,6 +58,14 @@ export function sanitizeLiveTileMapMinutes(value, fallback, deps) {
   return parsed;
 }
 
+function normalizeTierCodeStrict(value, deps) {
+  const normalized = String(deps.normalizePlanCode(value) || "").trim().toLowerCase();
+  if (normalized === deps.PLAN_CODE_FREE) return deps.PLAN_CODE_FREE;
+  if (normalized === deps.PLAN_CODE_PERSONAL) return deps.PLAN_CODE_PERSONAL;
+  if (normalized === deps.PLAN_CODE_COMMERCIAL) return deps.PLAN_CODE_COMMERCIAL;
+  return "";
+}
+
 function _normalizeErrorCode(value) {
   return String(value || "").trim().toLowerCase();
 }
@@ -194,17 +202,17 @@ function buildTileActivityPlanFilterSql(planFilter, deps) {
   if (planFilter === "personal") {
     return {
       clause: `
-        AND COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) = ?
+        AND NULLIF(TRIM(LOWER(u.status)), '') = ?
       `,
-      bindings: [deps.PLAN_CODE_PERSONAL, deps.PLAN_CODE_PERSONAL],
+      bindings: [deps.PLAN_CODE_PERSONAL],
     };
   }
   if (planFilter === "commercial") {
     return {
       clause: `
-        AND COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) = ?
+        AND NULLIF(TRIM(LOWER(u.status)), '') = ?
       `,
-      bindings: [deps.PLAN_CODE_PERSONAL, deps.PLAN_CODE_COMMERCIAL],
+      bindings: [deps.PLAN_CODE_COMMERCIAL],
     };
   }
   return { clause: "", bindings: [] };
@@ -617,7 +625,7 @@ export async function collectAnalyticsSnapshot(
         SELECT
           r.request_count,
           r.bytes_served,
-          COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) AS plan_norm
+          NULLIF(TRIM(LOWER(u.status)), '') AS plan_norm
         FROM tile_request_rollup_daily_account r
         LEFT JOIN users u ON u.id = r.user_id
         WHERE 1 = 1
@@ -634,7 +642,7 @@ export async function collectAnalyticsSnapshot(
         COALESCE(SUM(bytes_served), 0) AS total_bytes
       FROM traffic
     `,
-    [deps.PLAN_CODE_FREE, ...rollupEmailFilterAliasR.bindings],
+    [...rollupEmailFilterAliasR.bindings],
   );
 
   const topLineResolves = await deps.dbGet(
@@ -644,7 +652,7 @@ export async function collectAnalyticsSnapshot(
         SELECT DISTINCT
           e.user_id,
           e.resolve_id,
-          COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) AS plan_norm
+          NULLIF(TRIM(LOWER(u.status)), '') AS plan_norm
         FROM tile_request_events e
         LEFT JOIN users u ON u.id = e.user_id
         WHERE
@@ -659,7 +667,7 @@ export async function collectAnalyticsSnapshot(
         COUNT(*) AS total_resolves
       FROM tagged_resolves
     `,
-    [deps.PLAN_CODE_FREE, ...eventEmailFilterAliasE.bindings],
+    [...eventEmailFilterAliasE.bindings],
   );
 
   const activeWindow6mStartUnix = Math.max(0, nowUnix - (180 * 86400));
@@ -674,7 +682,7 @@ export async function collectAnalyticsSnapshot(
       SELECT
         e.user_id,
         MAX(e.created_at_unix) AS last_seen_unix,
-        COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) AS plan_norm
+        NULLIF(TRIM(LOWER(u.status)), '') AS plan_norm
       FROM tile_request_events e
       LEFT JOIN users u ON u.id = e.user_id
       WHERE
@@ -684,13 +692,11 @@ export async function collectAnalyticsSnapshot(
         ${eventEmailFilterAliasE.condition ? `AND ${eventEmailFilterAliasE.condition}` : ""}
       GROUP BY
         e.user_id,
-        COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?)
+        NULLIF(TRIM(LOWER(u.status)), '')
     `,
     [
-      deps.PLAN_CODE_FREE,
       activeWindow6mStartUnix,
       ...eventEmailFilterAliasE.bindings,
-      deps.PLAN_CODE_FREE,
     ],
   );
 
@@ -717,10 +723,11 @@ export async function collectAnalyticsSnapshot(
     ["users_1h", activeWindow1hStartUnix],
   ];
   const resolveAnalyticsTierCode = (planValue) => {
-    const normalized = deps.normalizePlanCode(planValue);
+    const normalized = normalizeTierCodeStrict(planValue, deps);
     if (normalized === deps.PLAN_CODE_COMMERCIAL) return "commercial";
     if (normalized === deps.PLAN_CODE_PERSONAL) return "personal";
-    return "free";
+    if (normalized === deps.PLAN_CODE_FREE) return "free";
+    return "";
   };
   for (const row of (Array.isArray(activeUserRows) ? activeUserRows : [])) {
     const lastSeenUnix = deps.clampNonNegativeInt(row && row.last_seen_unix);
@@ -734,6 +741,9 @@ export async function collectAnalyticsSnapshot(
       }
       const windowCounts = activeWindows[windowKey];
       if (!windowCounts) {
+        continue;
+      }
+      if (!tierCode) {
         continue;
       }
       windowCounts.total += 1;
@@ -755,7 +765,7 @@ export async function collectAnalyticsSnapshot(
         SELECT
           e.user_id,
           COALESCE(NULLIF(TRIM(e.user_email), ''), COALESCE(NULLIF(TRIM(u.email), ''), '')) AS user_email,
-          COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) AS user_status,
+          NULLIF(TRIM(LOWER(u.status)), '') AS user_status,
           COUNT(*) AS request_count,
           COALESCE(COUNT(DISTINCT CASE WHEN e.resolve_id IS NOT NULL AND e.resolve_id != '' THEN e.resolve_id END), 0) AS resolve_count,
           COALESCE(SUM(e.bytes_served), 0) AS bytes_served,
@@ -769,14 +779,12 @@ export async function collectAnalyticsSnapshot(
         GROUP BY
           e.user_id,
           COALESCE(NULLIF(TRIM(e.user_email), ''), COALESCE(NULLIF(TRIM(u.email), ''), '')),
-          COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?)
+          NULLIF(TRIM(LOWER(u.status)), '')
         ORDER BY MAX(e.created_at_unix) DESC, bytes_served DESC
       `,
       [
-        deps.PLAN_CODE_PERSONAL,
         Math.max(0, nowUnix - 600),
         ...eventEmailFilterAliasE.bindings,
-        deps.PLAN_CODE_PERSONAL,
       ],
     );
   } catch (error) {
@@ -806,7 +814,7 @@ export async function collectAnalyticsSnapshot(
         SELECT
           e.user_id,
           e.user_email,
-          COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) AS user_status,
+          NULLIF(TRIM(LOWER(u.status)), '') AS user_status,
           COUNT(*) AS request_count,
           COALESCE(COUNT(DISTINCT CASE WHEN e.resolve_id IS NOT NULL AND e.resolve_id != '' THEN e.resolve_id END), 0) AS resolve_count,
           COALESCE(SUM(e.bytes_served), 0) AS bytes_served,
@@ -816,11 +824,11 @@ export async function collectAnalyticsSnapshot(
       LEFT JOIN users u ON u.id = e.user_id
       WHERE e.created_at_unix >= ?
       ${eventEmailFilterAliasE.condition ? `AND ${eventEmailFilterAliasE.condition}` : ""}
-      GROUP BY e.user_id, e.user_email, COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?)
+      GROUP BY e.user_id, e.user_email, NULLIF(TRIM(LOWER(u.status)), '')
       ORDER BY request_count DESC
       LIMIT 20
     `,
-    [deps.PLAN_CODE_PERSONAL, windowStartUnix, ...eventEmailFilterAliasE.bindings, deps.PLAN_CODE_PERSONAL],
+    [windowStartUnix, ...eventEmailFilterAliasE.bindings],
   );
 
   const topTiles = await deps.dbAll(
@@ -861,7 +869,7 @@ export async function collectAnalyticsSnapshot(
         MAX(e.created_at_unix) AS last_seen_unix,
         COUNT(*) AS request_count,
         COALESCE(SUM(e.bytes_served), 0) AS bytes_served,
-        COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) AS user_status
+        NULLIF(TRIM(LOWER(u.status)), '') AS user_status
       FROM tile_request_events e
       LEFT JOIN users u ON u.id = e.user_id
       WHERE
@@ -875,16 +883,14 @@ export async function collectAnalyticsSnapshot(
         e.user_id,
         e.user_email,
         e.tile_key,
-        COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?)
+        NULLIF(TRIM(LOWER(u.status)), '')
       ORDER BY last_seen_unix DESC
       LIMIT ${tileMapRowLimit}
     `,
     [
-      deps.PLAN_CODE_PERSONAL,
       tileMapStartUnix,
       ...eventEmailFilterAliasE.bindings,
       ...tileActivityFilter.bindings,
-      deps.PLAN_CODE_PERSONAL,
     ],
   );
 
@@ -904,7 +910,7 @@ export async function collectAnalyticsSnapshot(
     return {
       user_id: userId,
       user_email: userEmail,
-      user_status: String(row && row.user_status || deps.PLAN_CODE_FREE).trim().toLowerCase() || deps.PLAN_CODE_FREE,
+      user_status: normalizeTierCodeStrict(row && row.user_status, deps),
       tile_key: tileKey,
       last_seen_unix: deps.clampNonNegativeInt(row && row.last_seen_unix),
       request_count: deps.clampNonNegativeInt(row && row.request_count),
@@ -1032,12 +1038,10 @@ export async function collectAnalyticsSnapshot(
 
   const heavyWhereParts = [];
   const heavyBindings = [
-    deps.PLAN_CODE_FREE,
     deps.monthStartUnix(nowUnix),
     deps.startOfWeekUnix(nowUnix),
     deps.startOfDayUnix(nowUnix),
     deps.monthStartUnix(nowUnix),
-    deps.PLAN_CODE_FREE,
     deps.startOfHourUnix(nowUnix),
   ];
   if (safePlanFilter === "personal") {
@@ -1057,7 +1061,7 @@ export async function collectAnalyticsSnapshot(
         SELECT
           r.user_id,
           COALESCE(NULLIF(TRIM(u.email), ''), COALESCE(NULLIF(TRIM(r.user_email), ''), '')) AS user_email,
-          COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) AS user_status,
+          NULLIF(TRIM(LOWER(u.status)), '') AS user_status,
           COALESCE(SUM(r.bytes_served), 0) AS lifetime_bytes,
           COALESCE(SUM(CASE WHEN r.day_start_unix >= ? THEN r.bytes_served ELSE 0 END), 0) AS month_bytes,
           COALESCE(SUM(CASE WHEN r.day_start_unix >= ? THEN r.bytes_served ELSE 0 END), 0) AS week_bytes,
@@ -1069,7 +1073,7 @@ export async function collectAnalyticsSnapshot(
         GROUP BY
           r.user_id,
           COALESCE(NULLIF(TRIM(u.email), ''), COALESCE(NULLIF(TRIM(r.user_email), ''), '')),
-          COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?)
+          NULLIF(TRIM(LOWER(u.status)), '')
       ),
       hour_rollups AS (
         SELECT
@@ -1103,7 +1107,7 @@ export async function collectAnalyticsSnapshot(
   let heavyUsers30d = (Array.isArray(topHeavyMonth) ? topHeavyMonth : []).map((row) => ({
     user_id: String(row && row.user_id || "").trim(),
     user_email: deps.normalizeEmail(row && row.user_email || ""),
-    user_status: String(row && row.user_status || deps.PLAN_CODE_FREE).trim().toLowerCase() || deps.PLAN_CODE_FREE,
+    user_status: normalizeTierCodeStrict(row && row.user_status, deps),
     month_bytes: deps.clampNonNegativeInt(row && row.month_bytes),
     request_count_month: deps.clampNonNegativeInt(row && row.request_count_month),
     last_event_unix: deps.clampNonNegativeInt(row && row.last_event_unix),
@@ -1164,7 +1168,7 @@ export async function collectAnalyticsSnapshot(
   const normalizedActiveUsers10m = (Array.isArray(activeUsers10m) ? activeUsers10m : []).map((row) => ({
     user_id: String(row && row.user_id || "").trim(),
     user_email: deps.normalizeEmail(row && row.user_email || ""),
-    user_status: String(row && row.user_status || deps.PLAN_CODE_FREE).trim().toLowerCase() || deps.PLAN_CODE_FREE,
+    user_status: normalizeTierCodeStrict(row && row.user_status, deps),
     request_count: deps.clampNonNegativeInt(row && row.request_count),
     resolve_count: deps.clampNonNegativeInt(row && row.resolve_count),
     bytes_served: deps.clampNonNegativeInt(row && row.bytes_served),
@@ -1335,12 +1339,10 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
   const emailFilter = buildAnalyticsExcludedEmailFilter("u.email", env, deps);
   const whereParts = [];
   const bindings = [
-    deps.PLAN_CODE_FREE,
     deps.monthStartUnix(nowUnix),
     deps.startOfWeekUnix(nowUnix),
     deps.startOfDayUnix(nowUnix),
     deps.startOfHourUnix(nowUnix),
-    deps.PLAN_CODE_FREE,
   ];
   if (emailFilter.condition) {
     whereParts.push(emailFilter.condition);
@@ -1384,8 +1386,8 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
       SELECT
         u.id AS user_id,
         u.email AS user_email,
-        COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) AS user_status,
-        COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) AS plan_code,
+        NULLIF(TRIM(LOWER(u.status)), '') AS user_status,
+        NULLIF(TRIM(LOWER(u.status)), '') AS plan_code,
         u.unrestricted_quality_override AS unrestricted_quality_override,
         COALESCE(rc.resolve_count, 0) AS resolve_count,
         COALESCE(du.lifetime_bytes, 0) AS lifetime_bytes,

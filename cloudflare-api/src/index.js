@@ -16,7 +16,6 @@ import {
   PLAN_CODE_PERSONAL,
   PLAN_CODE_FREE,
   PLAN_CODE_COMMERCIAL,
-  accountTierForPlanCode,
   commercialUseAllowed,
   evaluateStripePlanPurchaseGuard,
   isBlockedStatus,
@@ -270,6 +269,7 @@ const AUTH_SESSION_DEPS = {
   isPrimaryAnalyticsAdmin,
   json,
   normalizeDeviceId,
+  normalizeTierCodeStrict,
   normalizeRequestedPlan,
   parseBooleanFlag,
   requireDb,
@@ -1880,11 +1880,14 @@ function estimateR2MonthlyCostUsd(env, monthlyClassBOps) {
 
 async function buildAccountState(db, user, env) {
   const qualityAccess = await resolveUserQualityAccessState(db, user, env);
-  const storedPlanCode = qualityAccess.storedPlanCode;
-  const storedAccountTier = accountTierForPlanCode(storedPlanCode);
+  const storedPlanCode = normalizeTierCodeStrict(qualityAccess.storedPlanCode);
+  if (!storedPlanCode) {
+    throw new Error("invalid_user_status");
+  }
+  const storedAccountTier = storedPlanCode;
   return {
     planCode: storedPlanCode,
-    storedPlanCode: storedPlanCode || PLAN_CODE_FREE,
+    storedPlanCode,
     accountTier: storedAccountTier,
     storedAccountTier,
     qualityAccessPlanCode: qualityAccess.qualityAccessPlanCode,
@@ -1898,18 +1901,20 @@ async function buildAccountState(db, user, env) {
 
 function serializeAccountState(state) {
   const safeState = state || {};
-  const tier = accountTierForPlanCode(safeState.planCode);
-  const storedPlanCode = normalizeRequestedPlan(safeState.storedPlanCode) || PLAN_CODE_FREE;
-  const storedTier = accountTierForPlanCode(storedPlanCode);
+  const planCode = normalizeTierCodeStrict(safeState.planCode);
+  const storedPlanCode = normalizeTierCodeStrict(safeState.storedPlanCode);
+  const storedTier = normalizeTierCodeStrict(safeState.storedAccountTier || storedPlanCode);
+  const tier = normalizeTierCodeStrict(safeState.accountTier || planCode || storedPlanCode);
+  const qualityAccessPlanCode = normalizeTierCodeStrict(safeState.qualityAccessPlanCode);
   return {
     plan: {
-      code: safeState.planCode,
+      code: planCode || "",
     },
-    plan_code: safeState.planCode,
-    account_tier: tier,
-    stored_plan_code: storedPlanCode,
-    stored_account_tier: storedTier,
-    quality_access_plan_code: normalizeRequestedPlan(safeState.qualityAccessPlanCode) || storedPlanCode,
+    plan_code: planCode || "",
+    account_tier: tier || "",
+    stored_plan_code: storedPlanCode || "",
+    stored_account_tier: storedTier || "",
+    quality_access_plan_code: qualityAccessPlanCode || "",
     unrestricted_quality_access: Boolean(safeState.unrestrictedQualityAccess),
     unrestricted_quality_override: String(safeState.unrestrictedQualityOverride || "normal"),
     commercial_use_allowed: Boolean(safeState.commercialUseAllowed),
@@ -2250,23 +2255,44 @@ async function ensureRefreshSessionColumns(db) {
   refreshSessionColumnsReady = true;
 }
 
+function normalizeTierCodeStrict(value) {
+  const normalized = normalizePlanCode(value);
+  if (
+    normalized === PLAN_CODE_FREE
+    || normalized === PLAN_CODE_PERSONAL
+    || normalized === PLAN_CODE_COMMERCIAL
+  ) {
+    return normalized;
+  }
+  return "";
+}
+
 async function upsertUserByEmail(db, email, status = PLAN_CODE_FREE, options = {}, env = {}) {
   const normalizedEmail = normalizeEmail(email);
   await ensureUserConsentColumns(db);
   await ensureUserQualityAccessColumns(db);
   const requestedStatus = resolveFixedInternalPlanForEmail(normalizedEmail, status);
+  if (!requestedStatus) {
+    throw new Error("invalid_plan_code");
+  }
   const grantBetaUnrestrictedToNewUser = isBetaUnrestrictedAccessEnabled(env);
   let user = await findUserByEmail(db, normalizedEmail);
   if (user) {
     const currentStatus = String(user.status || "").trim().toLowerCase();
-    const nextStatus = String(requestedStatus || "").trim().toLowerCase() || PLAN_CODE_FREE;
-    const protectedStatus = currentStatus === "blocked"
-      ? currentStatus
-      : (
-        resolvePlanPriority(currentStatus) > resolvePlanPriority(nextStatus)
-          ? currentStatus
-          : nextStatus
+    if (!isBlockedStatus(currentStatus) && !normalizeTierCodeStrict(currentStatus)) {
+      throw new Error("invalid_user_status");
+    }
+    const fixedPlan = fixedInternalPlanForEmail(normalizedEmail);
+    if (fixedPlan && currentStatus !== "blocked" && currentStatus && fixedPlan !== currentStatus) {
+      console.warn(
+        "worker.fixed_internal_plan_mismatch",
+        JSON.stringify({
+          email: normalizedEmail,
+          status: currentStatus,
+          expected: fixedPlan,
+        }),
       );
+    }
     const termsAcceptedAt = String(options.termsAcceptedAt || "").trim();
     const privacyAcceptedAt = String(options.privacyAcceptedAt || "").trim();
     const termsVersion = String(options.termsVersion || "").trim();
@@ -2276,7 +2302,6 @@ async function upsertUserByEmail(db, email, status = PLAN_CODE_FREE, options = {
       `
         UPDATE users
         SET
-          status = ?,
           terms_accepted_at = CASE WHEN ? != '' THEN ? ELSE terms_accepted_at END,
           privacy_accepted_at = CASE WHEN ? != '' THEN ? ELSE privacy_accepted_at END,
           terms_version = CASE WHEN ? != '' THEN ? ELSE terms_version END,
@@ -2284,7 +2309,6 @@ async function upsertUserByEmail(db, email, status = PLAN_CODE_FREE, options = {
         WHERE id = ?
       `,
       [
-        protectedStatus,
         termsAcceptedAt,
         termsAcceptedAt,
         privacyAcceptedAt,
@@ -2300,7 +2324,7 @@ async function upsertUserByEmail(db, email, status = PLAN_CODE_FREE, options = {
     if (refreshedUser) {
       return refreshedUser;
     }
-    return { ...user, status: protectedStatus };
+    return user;
   }
 
 	  const id = crypto.randomUUID();
@@ -2364,32 +2388,23 @@ async function enforceUserPlanPolicy(db, user, env = {}) {
   if (!user || !user.id || isBlockedStatus(user.status)) {
     return user;
   }
-  const targetPlan = resolveFixedInternalPlanForEmail(user.email, user.status);
-  if (
-    targetPlan !== PLAN_CODE_FREE
-    && targetPlan !== PLAN_CODE_PERSONAL
-    && targetPlan !== PLAN_CODE_COMMERCIAL
-  ) {
-    return user;
+  const currentStatus = normalizeTierCodeStrict(user.status);
+  if (!currentStatus) {
+    throw new Error("invalid_user_status");
   }
-  const currentStatus = normalizeUserStatus(user.status);
-  if (currentStatus === targetPlan) {
-    return { ...user, status: targetPlan };
+  const fixedPlan = fixedInternalPlanForEmail(user.email);
+  if (fixedPlan && fixedPlan !== currentStatus) {
+    console.warn(
+      "worker.fixed_internal_plan_mismatch",
+      JSON.stringify({
+        email: normalizeEmail(user.email || ""),
+        user_id: String(user.id || "").trim(),
+        status: currentStatus,
+        expected: fixedPlan,
+      }),
+    );
   }
-  await dbRun(db, `UPDATE users SET status = ? WHERE id = ?`, [targetPlan, user.id]);
-  await dbRun(
-    db,
-    `
-      UPDATE api_keys
-      SET
-        plan_code = ?,
-        expires_at = NULL
-      WHERE user_id = ?
-        AND status = 'active'
-    `,
-    [targetPlan, user.id],
-  );
-  return { ...user, status: targetPlan };
+  return { ...user, status: currentStatus };
 }
 
 function fixedInternalPlanForEmail(email) {
@@ -2402,7 +2417,7 @@ function resolveFixedInternalPlanForEmail(email, requestedPlan = PLAN_CODE_FREE)
   if (fixedPlan) {
     return fixedPlan;
   }
-  return normalizePlanCode(requestedPlan) || PLAN_CODE_FREE;
+  return normalizeTierCodeStrict(requestedPlan);
 }
 
 function normalizeUserQualityAccessOverride(value) {
@@ -2481,23 +2496,26 @@ async function resolveUserQualityAccessState(db, user, env = {}) {
       effectiveUser = hydratedUser;
     }
   }
-  const storedPlanCode = normalizeRequestedPlan(effectiveUser && effectiveUser.status) || PLAN_CODE_FREE;
+  const storedPlanCode = normalizeTierCodeStrict(effectiveUser && effectiveUser.status);
   if (!effectiveUser || !effectiveUser.id) {
     return {
-      storedPlanCode,
-      unrestrictedQualityAccess: storedPlanCode === PLAN_CODE_COMMERCIAL,
-      qualityAccessPlanCode: storedPlanCode || PLAN_CODE_FREE,
+      storedPlanCode: PLAN_CODE_FREE,
+      unrestrictedQualityAccess: false,
+      qualityAccessPlanCode: PLAN_CODE_FREE,
       overrideMode: "normal",
       globalEnabled: false,
     };
+  }
+  if (!storedPlanCode && !isBlockedStatus(effectiveUser && effectiveUser.status)) {
+    throw new Error("invalid_user_status");
   }
   await ensureUserQualityAccessColumns(db);
   const overrideValue = normalizeUserQualityAccessOverride(effectiveUser && effectiveUser.unrestricted_quality_override);
   const unrestrictedQualityAccess = Boolean(storedPlanCode === PLAN_CODE_COMMERCIAL || overrideValue === true);
   return {
-    storedPlanCode: storedPlanCode || PLAN_CODE_FREE,
+    storedPlanCode: storedPlanCode || "",
     unrestrictedQualityAccess,
-    qualityAccessPlanCode: unrestrictedQualityAccess ? PLAN_CODE_COMMERCIAL : (storedPlanCode || PLAN_CODE_FREE),
+    qualityAccessPlanCode: unrestrictedQualityAccess ? PLAN_CODE_COMMERCIAL : (storedPlanCode || ""),
     overrideMode: overrideValue === true ? "unrestricted" : "normal",
     globalEnabled: false,
   };
@@ -2810,6 +2828,7 @@ const AUTH_API_KEY_DEPS = {
   maskApiKey,
   normalizeDeviceId,
   normalizeEmail,
+  normalizeTierCodeStrict,
   normalizeRequestedPlan,
   nowIso,
   parseBooleanFlag,
@@ -2859,6 +2878,7 @@ const AUTH_SESSION_ROUTE_DEPS = {
   logAuthRefreshEvent,
   normalizeDeviceId,
   normalizeEmail,
+  normalizeTierCodeStrict,
   nowIso,
   parseJson,
   parseRateLimitInteger,

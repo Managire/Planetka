@@ -1,4 +1,14 @@
 export function createAuthSessionRouteHandlers(deps) {
+  const strictStoredTier = (value) => {
+    const normalized = typeof deps.normalizeTierCodeStrict === "function"
+      ? deps.normalizeTierCodeStrict(value)
+      : "";
+    if (!normalized) {
+      throw new Error("invalid_user_status");
+    }
+    return normalized;
+  };
+
   async function handleAuthRefresh(request, env) {
     const db = deps.requireDb(env);
     await deps.ensureRateLimitsTable(db);
@@ -121,10 +131,16 @@ export function createAuthSessionRouteHandlers(deps) {
       }
     }
 
+    let strictSessionStatus = "";
+    try {
+      strictSessionStatus = strictStoredTier(session.status);
+    } catch (_error) {
+      return errorResponse("invalid_user_status", 500, session);
+    }
     let user = {
       id: session.user_id,
       email: session.email,
-      status: session.status || deps.PLAN_CODE_FREE,
+      status: strictSessionStatus,
     };
     user = await deps.enforceUserPlanPolicy(db, user, env);
 

@@ -2,17 +2,19 @@
 
 import bpy
 import datetime
+import time
 
 from .asset_builder import PLANETKA_ROOT_OBJECT_NAME
 from .auth import (
+    AuthApiError,
     allows_animation_render_for_context,
     allows_balanced_full_quality_for_context,
     get_account_tier,
     get_connected_email,
-    get_stored_account_tier,
     get_status_message,
     has_unrestricted_quality_access,
     is_authenticated,
+    sync_account_profile,
 )
 from .extension_prefs import get_earth_object, get_prefs
 from .geonames_db import get_search_status_text
@@ -50,6 +52,8 @@ RESOLVE_FAILURE_MESSAGE_KEY = "planetka_resolve_integrity_message"
 EARTH_RADIUS_SAFE_MIN_BU = 0.2
 EARTH_RADIUS_SAFE_MAX_BU = 20.0
 LOW_ALTITUDE_WARNING_EPS_KM = 0.05
+ACCOUNT_PANEL_PROFILE_SYNC_INTERVAL_SEC = 120.0
+_ACCOUNT_PANEL_LAST_PROFILE_SYNC_AT = 0.0
 
 
 def _float_close(value, target, tol=1e-4):
@@ -396,7 +400,13 @@ def _low_altitude_warning_for_ui(scene=None):
 def _is_connected():
     from .extension_prefs import get_prefs
 
-    return is_authenticated(get_prefs())
+    prefs = get_prefs()
+    if not is_authenticated(prefs):
+        return False
+    try:
+        return bool(get_account_tier(prefs))
+    except AuthApiError:
+        return False
 
 
 def _is_update_available():
@@ -421,7 +431,10 @@ def _account_panel_should_default_collapsed(context=None):
 
 def _connected_account_tier():
     prefs = get_prefs()
-    return str(get_account_tier(prefs) or "").strip().lower()
+    try:
+        return str(get_account_tier(prefs) or "").strip().lower()
+    except AuthApiError:
+        return ""
 
 
 def _account_tier_label(tier):
@@ -430,14 +443,16 @@ def _account_tier_label(tier):
         return "Personal"
     if safe_tier == "commercial":
         return "Commercial"
-    return "Free"
+    if safe_tier == "free":
+        return "Free"
+    return "Invalid"
 
 
 def _account_tier_display_label(tier, unrestricted=False):
     base_label = _account_tier_label(tier)
     safe_tier = str(tier or "").strip().lower()
     if unrestricted and safe_tier in {"free", "personal"}:
-        return f"{base_label} (unrestricted)"
+        return f"{base_label} (Unrestricted)"
     return base_label
 
 
@@ -501,6 +516,8 @@ def _api_key_inline_status(prefs, connected, status_message):
     )
     if any(token in lowered for token in invalid_tokens):
         return "Key invalid", "ERROR", True
+    if "critical account tier integrity error" in lowered or "tier integrity" in lowered:
+        return "Critical tier integrity error", "ERROR", True
 
     return "Connect failed", "ERROR", True
 
@@ -511,10 +528,24 @@ def _draw_account_panel(layout):
 
     from .extension_prefs import get_prefs
 
+    global _ACCOUNT_PANEL_LAST_PROFILE_SYNC_AT
+
     prefs = get_prefs()
-    connected = is_authenticated(prefs)
+    connected = _is_connected()
+    now_ts = time.time()
+    if connected and (now_ts - float(_ACCOUNT_PANEL_LAST_PROFILE_SYNC_AT)) >= float(ACCOUNT_PANEL_PROFILE_SYNC_INTERVAL_SEC):
+        _ACCOUNT_PANEL_LAST_PROFILE_SYNC_AT = now_ts
+        try:
+            sync_account_profile(prefs)
+        except (AuthApiError, TypeError, ValueError, RuntimeError, AttributeError):
+            logger.debug("Planetka: account panel profile sync failed", exc_info=True)
+    connected = _is_connected()
     status_message = get_status_message(prefs)
-    updater = get_updater_public_status()
+    try:
+        updater = get_updater_public_status()
+    except (TypeError, ValueError, RuntimeError, AttributeError):
+        logger.debug("Planetka: failed reading updater status in account panel", exc_info=True)
+        updater = {}
     updater_ready = bool(updater.get("update_ready", False))
     latest_version = str(updater.get("latest_version") or "").strip()
     current_version = str(updater.get("current_version") or "").strip()
@@ -552,21 +583,40 @@ def _draw_account_panel(layout):
     connect_row.enabled = (not key_locked) and bool(key_text)
     connect_row.operator("planetka.account_open_login", text="Connect API Key", icon="CHECKMARK")
 
-    if connected:
-        email = get_connected_email(prefs)
-        account_tier = str(get_account_tier(prefs) or get_stored_account_tier(prefs) or "").strip().lower()
+    try:
+        email = str(get_connected_email(prefs) or "").strip()
+    except (TypeError, ValueError, RuntimeError, AttributeError):
+        email = str(getattr(prefs, "auth_email", "") or "").strip()
+    try:
+        account_tier = str(get_account_tier(prefs) or "").strip().lower()
+    except (AuthApiError, TypeError, ValueError, RuntimeError, AttributeError):
+        account_tier = ""
+    try:
         unrestricted_quality = bool(has_unrestricted_quality_access(prefs))
-        layout.label(text="Status: Connected to Planetka cloud", icon="CHECKMARK")
-        layout.label(text=f"Account: {email}", icon="USER")
-        layout.label(
-            text=f"Account Tier: {_account_tier_display_label(account_tier, unrestricted_quality)}",
-            icon="BOOKMARKS",
-        )
+    except (TypeError, ValueError, RuntimeError, AttributeError):
+        unrestricted_quality = False
+    status_icon = "CHECKMARK" if connected else "ERROR"
+    status_text = "Status: Connected to Planetka cloud" if connected else "Status: Not connected"
+    layout.label(text=status_text, icon=status_icon)
+    layout.label(text=f"Account: {email or '-'}", icon="USER")
+    if account_tier:
+        tier_text = _account_tier_display_label(account_tier, unrestricted_quality)
+        layout.label(text=f"Account Tier: {tier_text}", icon="BOOKMARKS")
+    elif connected:
+        tier_row = layout.row()
+        tier_row.alert = True
+        tier_row.label(text="Account Tier: Invalid or missing", icon="ERROR")
+    else:
+        layout.label(text="Account Tier: -", icon="BOOKMARKS")
 
-        action_row = layout.row()
-        action_row.operator("planetka.account_logout", text="Log Out", icon="X")
-        if account_tier in {"free", "personal"}:
-            action_row.operator("planetka.account_upgrade", text="Upgrade Licence", icon="URL")
+    action_row = layout.row(align=True)
+    logout_row = action_row.row(align=True)
+    logout_row.enabled = connected
+    logout_row.operator("planetka.account_logout", text="Log Out", icon="X")
+
+    upgrade_row = action_row.row(align=True)
+    upgrade_row.enabled = (not connected) or account_tier in {"free", "personal"}
+    upgrade_row.operator("planetka.account_upgrade", text="Upgrade Licence", icon="URL")
 
     version_row = layout.row()
     version_row.label(text=f"Addon version: {current_version or 'unknown'}", icon="BLENDER")
