@@ -891,6 +891,9 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         return;
       }
       const action = String(button.getAttribute("data-action") || "").trim();
+      if (!action) {
+        return;
+      }
       if (action === "map-filter-user") {
         const selected = decodeDataValue(button.getAttribute("data-user-key"));
         setTileMapUserFilter(selected);
