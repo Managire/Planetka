@@ -3276,7 +3276,7 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
 class PLANETKA_OT_AnimationRenderInfo(bpy.types.Operator):
     bl_idname = "planetka.animation_render_info"
     bl_label = "Planetka Animation Render Info"
-    bl_description = "Explain how Planetka animation render differs from Blender's built-in Render Animation"
+    bl_description = "Explain how Planetka Final Animation Render works"
 
     def execute(self, context):
         if bool(getattr(bpy.app, "background", False)):
@@ -3291,11 +3291,8 @@ class PLANETKA_OT_AnimationRenderInfo(bpy.types.Operator):
             "Render Animation dynamically loads tiles (LODs)",
             "during the rendering process.",
             "",
-            "Blender built-in Render Animation renders what is already in the scene",
-            "and does not perform Planetka dynamic tile streaming/loading.",
-            "",
-            "Rendering animation in Full Quality Textures setting is highly",
-            "recommended to ensure smooth seamless tiles transitions.",
+            "Planetka Animation Render always uses Full Quality textures",
+            "to ensure smooth seamless tile transitions.",
         )
 
         def _draw(_self, _popup_context):
