@@ -68,6 +68,10 @@ def _print_check(ok: bool, message: str) -> None:
     print(f"{'[PASS]' if ok else '[FAIL]'} {message}")
 
 
+def _print_skip(message: str) -> None:
+    print(f"[SKIP] {message}")
+
+
 def _status_counts(values: list[int]) -> str:
     counts: dict[int, int] = {}
     for val in values:
@@ -161,6 +165,11 @@ def main() -> int:
         default=int(os.getenv("PLANETKA_ABUSE_ANALYTICS_MINUTES") or "30"),
         help="Lookback window for telemetry evidence check (default: 30)",
     )
+    parser.add_argument(
+        "--allow-account-creation-checks",
+        action="store_true",
+        help="Explicitly allow public account-request abuse probes that may create requests or send emails",
+    )
     args = parser.parse_args()
 
     base_url = str(args.base_url or "").rstrip("/")
@@ -168,6 +177,10 @@ def main() -> int:
     bearer_token = str(args.bearer_token or "").strip()
     tile_requests = max(1, int(args.tile_requests))
     analytics_minutes = max(5, int(args.analytics_minutes))
+    allow_account_creation_checks = bool(
+        args.allow_account_creation_checks
+        or str(os.getenv("PLANETKA_ALLOW_ACCOUNT_CREATION_TESTS") or "").strip().lower() in {"1", "true", "yes", "on"}
+    )
 
     if not base_url.startswith("http"):
         print("[FAIL] Invalid --base-url")
@@ -201,19 +214,24 @@ def main() -> int:
 
     # 2) Plan tampering check (requested paid plan is ignored in public flow)
     checks += 1
-    tamper_payload = {
-        "email": f"tamper-{int(time.time())}-{random.randint(1000, 9999)}@example.com",
-        "requested_plan": "commercial",
-        "accept_terms": True,
-        "accept_privacy": True,
-        "opt_in_news": False,
-        "submitted_at_ms": int(time.time() * 1000),
-    }
-    status, payload, _ = _post_json(f"{base_url}/auth/api-key/request", tamper_payload)
-    ok = status == 200 and bool(payload.get("ok"))
-    _print_check(ok, "Plan tampering neutralized: public request path stays free")
-    if not ok:
-        failures += 1
+    if allow_account_creation_checks:
+        tamper_payload = {
+            "email": f"tamper-{int(time.time())}-{random.randint(1000, 9999)}@example.com",
+            "requested_plan": "commercial",
+            "accept_terms": True,
+            "accept_privacy": True,
+            "opt_in_news": False,
+            "submitted_at_ms": int(time.time() * 1000),
+        }
+        status, payload, _ = _post_json(f"{base_url}/auth/api-key/request", tamper_payload)
+        ok = status == 200 and bool(payload.get("ok"))
+        _print_check(ok, "Plan tampering neutralized: public request path stays free")
+        if not ok:
+            failures += 1
+    else:
+        _print_skip(
+            "Plan tampering public-request probe disabled by default to avoid creating users or sending emails"
+        )
 
     # 3) Token leakage path check
     checks += 1
