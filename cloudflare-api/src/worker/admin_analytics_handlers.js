@@ -121,7 +121,7 @@ export async function handleAdminAnalyticsData(request, env, deps) {
   const planFilter = deps.parseHeavyUserPlanFilter(url.searchParams.get("plan_filter"));
   try {
     let snapshot = await deps.loadAnalyticsSnapshot(env, windowMinutes, planFilter, tileMapMinutes);
-    if (!snapshot) {
+    if (!snapshot || deps.isAnalyticsSnapshotStale(snapshot)) {
       snapshot = await deps.collectAnalyticsSnapshot(db, windowMinutes, planFilter, tileMapMinutes, env);
       snapshot = {
         ...snapshot,
@@ -202,7 +202,7 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
   let initialSnapshot = null;
   try {
     initialSnapshot = await deps.loadAnalyticsSnapshot(env, 10080, "all", 10);
-    if (!initialSnapshot) {
+    if (!initialSnapshot || deps.isAnalyticsSnapshotStale(initialSnapshot)) {
       initialSnapshot = await deps.collectAnalyticsSnapshot(
         auth.db,
         10080,
@@ -372,7 +372,7 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
   const sortBy = deps.parseAnalyticsUsersSort(url.searchParams.get("sort"));
   const sortDir = deps.parseAnalyticsUsersSortDirection(url.searchParams.get("dir"));
   let usersSnapshot = await deps.loadAnalyticsUsersSnapshot(env);
-  if (!usersSnapshot) {
+  if (!usersSnapshot || deps.isAnalyticsSnapshotStale(usersSnapshot)) {
     usersSnapshot = await deps.buildAnalyticsUsersSnapshot(db, env);
   }
   const rows = sortAnalyticsUsersRows(

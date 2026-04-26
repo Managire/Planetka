@@ -123,6 +123,19 @@ function explicitBooleanFromBody(body, deps) {
   return { ok: false, value: false };
 }
 
+async function invalidateAdminAnalyticsSnapshots(env, deps) {
+  try {
+    await deps.invalidateAnalyticsSnapshots(env);
+  } catch (error) {
+    console.warn(
+      "planetka.admin.analytics_snapshot_invalidate_failed",
+      JSON.stringify({
+        error: String(error && error.message || "analytics_snapshot_invalidate_failed"),
+      }),
+    );
+  }
+}
+
 export async function handleAdminSetGlobalUnrestrictedQuality(request, env, deps) {
   const auth = await deps.requireAnalyticsAdmin(request, env);
   if (auth.error) {
@@ -146,6 +159,7 @@ export async function handleAdminSetGlobalUnrestrictedQuality(request, env, deps
   } catch (_error) {
     // no-op logging guard
   }
+  await invalidateAdminAnalyticsSnapshots(env, deps);
   return deps.json(
     {
       ok: true,
@@ -208,6 +222,7 @@ export async function handleAdminUserBlock(request, env, deps) {
   } catch (_error) {
     // no-op logging guard
   }
+  await invalidateAdminAnalyticsSnapshots(env, deps);
   return deps.json(
     {
       ok: true,
@@ -286,6 +301,7 @@ export async function handleAdminUserUnblock(request, env, deps) {
   } catch (_error) {
     // no-op logging guard
   }
+  await invalidateAdminAnalyticsSnapshots(env, deps);
   return deps.json(
     {
       ok: true,
@@ -386,6 +402,7 @@ export async function handleAdminUserHardBlock(request, env, deps) {
       now,
     ],
   );
+  await invalidateAdminAnalyticsSnapshots(env, deps);
   return deps.json(
     {
       ok: true,
@@ -450,6 +467,7 @@ export async function handleAdminUserSetPlan(request, env, deps) {
   } catch (_error) {
     // no-op logging guard
   }
+  await invalidateAdminAnalyticsSnapshots(env, deps);
 
   return deps.json(
     {
@@ -513,6 +531,7 @@ export async function handleAdminUserSetUnrestrictedQuality(request, env, deps) 
   } catch (_error) {
     // no-op logging guard
   }
+  await invalidateAdminAnalyticsSnapshots(env, deps);
 
   return deps.json(
     {
@@ -656,6 +675,7 @@ export async function handleAdminQaAuthReset(request, env, deps) {
   } catch (_error) {
     // no-op logging guard
   }
+  await invalidateAdminAnalyticsSnapshots(env, deps);
 
   return deps.json(
     {

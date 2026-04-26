@@ -2,6 +2,7 @@ export const ANALYTICS_SNAPSHOT_WINDOWS = [15, 60, 360, 1440, 10080];
 export const ANALYTICS_SNAPSHOT_PLAN_FILTERS = ["all", "free", "personal", "commercial"];
 export const ANALYTICS_SNAPSHOT_TILE_MAP_WINDOWS = [1, 3, 10];
 const SNAPSHOT_CACHE_CONTROL = "private, max-age=60";
+const DEFAULT_ANALYTICS_SNAPSHOT_MAX_AGE_SECONDS = 300;
 
 function r2KeyWithPrefix(env, suffix) {
   const prefix = String(env.R2_PREFIX || "").trim().replace(/^\/+|\/+$/g, "");
@@ -51,6 +52,36 @@ async function writeJsonSnapshot(env, key, payload) {
   );
 }
 
+async function deleteJsonSnapshot(env, key) {
+  const bucket = env.PLANETKA_DATA;
+  if (!bucket || !key) {
+    return;
+  }
+  await bucket.delete(key);
+}
+
+function parseSnapshotGeneratedAtUnix(snapshot) {
+  const generatedAt = String(snapshot && snapshot.generated_at || "").trim();
+  if (!generatedAt) {
+    return 0;
+  }
+  const parsed = Date.parse(generatedAt);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return 0;
+  }
+  return Math.floor(parsed / 1000);
+}
+
+export function isAnalyticsSnapshotStale(snapshot, maxAgeSeconds = DEFAULT_ANALYTICS_SNAPSHOT_MAX_AGE_SECONDS) {
+  const safeMaxAge = Math.max(1, Math.floor(Number(maxAgeSeconds) || DEFAULT_ANALYTICS_SNAPSHOT_MAX_AGE_SECONDS));
+  const generatedAtUnix = parseSnapshotGeneratedAtUnix(snapshot);
+  if (generatedAtUnix <= 0) {
+    return true;
+  }
+  const ageSeconds = Math.max(0, Math.floor(Date.now() / 1000) - generatedAtUnix);
+  return ageSeconds > safeMaxAge;
+}
+
 export async function loadAnalyticsSnapshot(env, minutes, planFilter, tileMapMinutes) {
   return readJsonSnapshot(env, analyticsSnapshotKey(env, minutes, planFilter, tileMapMinutes));
 }
@@ -65,6 +96,17 @@ export async function loadAnalyticsUsersSnapshot(env) {
 
 export async function storeAnalyticsUsersSnapshot(env, snapshot) {
   await writeJsonSnapshot(env, analyticsUsersSnapshotKey(env), snapshot);
+}
+
+export async function invalidateAnalyticsSnapshots(env) {
+  for (const minutes of ANALYTICS_SNAPSHOT_WINDOWS) {
+    for (const planFilter of ANALYTICS_SNAPSHOT_PLAN_FILTERS) {
+      for (const tileMapMinutes of ANALYTICS_SNAPSHOT_TILE_MAP_WINDOWS) {
+        await deleteJsonSnapshot(env, analyticsSnapshotKey(env, minutes, planFilter, tileMapMinutes));
+      }
+    }
+  }
+  await deleteJsonSnapshot(env, analyticsUsersSnapshotKey(env));
 }
 
 export async function buildAnalyticsSnapshotMatrix(db, env, deps) {
