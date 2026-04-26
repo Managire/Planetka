@@ -253,7 +253,11 @@ def suspend_adaptive_viewport_during_navigation(
             restore_delay = 0.5
         state.navigation_adaptive_idle_sec = max(0.1, min(2.0, restore_delay))
 
-    obj, modifier = resolve_modifier(get_earth_object=deps.get_earth_object)
+    try:
+        obj, modifier = resolve_modifier(get_earth_object=deps.get_earth_object)
+    except TypeError:
+        # Compatibility: state facade passes a zero-arg wrapper.
+        obj, modifier = resolve_modifier()
     if obj is None or modifier is None:
         return
 
@@ -499,17 +503,12 @@ def update_sunlight_controls(
     ctx = _coerce_ctx(runtime)
     deps = ctx.deps
     sync_idprops = sync_idprops_from_props or deps.sync_idprops_from_props
-    suspend_viewport = (
-        suspend_adaptive_viewport_during_navigation
-        or deps.suspend_adaptive_viewport_during_navigation
-    )
     request_resolve = request_auto_resolve or deps.request_auto_resolve
     apply_sunlight = apply_sunlight_from_props_fn or apply_sunlight_from_props
     apply_strength = apply_sunlight_strength_from_props_fn or apply_sunlight_strength_from_props
     scene = getattr(context, "scene", None) if context else None
     if scene:
         sync_idprops(scene, ("sunlight_longitude_deg", "sunlight_seasonal_tilt_deg"))
-        suspend_viewport(scene)
         request_resolve(scene, immediate=False)
     apply_sunlight(ctx, scene)
     apply_strength(ctx, scene)
@@ -527,15 +526,10 @@ def update_sunlight_strength(
     ctx = _coerce_ctx(runtime)
     deps = ctx.deps
     sync_idprops = sync_idprops_from_props or deps.sync_idprops_from_props
-    suspend_viewport = (
-        suspend_adaptive_viewport_during_navigation
-        or deps.suspend_adaptive_viewport_during_navigation
-    )
     apply_strength = apply_sunlight_strength_from_props_fn or apply_sunlight_strength_from_props
     scene = getattr(context, "scene", None) if context else None
     if scene:
         sync_idprops(scene, ("sunlight_strength",))
-        suspend_viewport(scene)
     apply_strength(ctx, scene)
 
 
