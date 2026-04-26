@@ -8,7 +8,12 @@ from ..error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from ..extension_prefs import get_earth_object, get_prefs
 from ..sanity_utils import _normalize_texture_source_path
 from ..r2_source import is_remote_source_configured, texture_file_exists
-from ..state import ensure_planetka_temp_collection, ensure_preview_object, logger
+from ..state import (
+    ensure_planetka_temp_collection,
+    ensure_preview_object,
+    logger,
+    mark_navigation_camera_control_signature,
+)
 from .earth_lifecycle_helpers import _ensure_close_clip_limits, _is_planetka_create_camera
 
 _RECOVERABLE_LOG_COUNTS = {}
@@ -36,6 +41,9 @@ NAV_LAST_APPLIED_KEYS = {
     "tilt": "planetka_nav_last_tilt_deg",
     "roll": "planetka_nav_last_roll_deg",
 }
+NAV_FULL_GLOBE_TILT_LOCK_ENABLED_KEY = "planetka_nav_full_globe_tilt_lock_enabled"
+NAV_FULL_GLOBE_TILT_LOCK_VALUE_KEY = "planetka_nav_full_globe_tilt_lock_value_deg"
+RADIUS_SYNC_NOTICE_KEY = "planetka_status_radius_sync_notice"
 NAV_CHANGE_EPS = 1e-6
 NAV_UI_DECIMALS = 2
 NAV_UI_ZERO_EPS = 0.005
@@ -85,6 +93,99 @@ def _store_last_navigation_values(scene, lon_deg, lat_deg, altitude_km, heading_
         _log_recoverable_once("PKA-OPS-003", "Failed storing last navigation values to scene idprops")
     except (TypeError, ValueError, AttributeError):
         _log_recoverable_once("PKA-OPS-004", "Failed storing last navigation values to scene idprops")
+
+
+def _set_full_globe_tilt_lock(scene, tilt_deg):
+    if scene is None:
+        return
+    try:
+        scene[NAV_FULL_GLOBE_TILT_LOCK_ENABLED_KEY] = True
+        scene[NAV_FULL_GLOBE_TILT_LOCK_VALUE_KEY] = float(tilt_deg)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        _log_recoverable_once("PKA-OPS-101", "Failed storing Full Globe tilt lock state")
+    except (TypeError, ValueError, AttributeError):
+        _log_recoverable_once("PKA-OPS-102", "Failed storing Full Globe tilt lock state")
+
+
+def _clear_full_globe_tilt_lock(scene):
+    if scene is None:
+        return
+    try:
+        if NAV_FULL_GLOBE_TILT_LOCK_ENABLED_KEY in scene:
+            del scene[NAV_FULL_GLOBE_TILT_LOCK_ENABLED_KEY]
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        _log_recoverable_once("PKA-OPS-103", "Failed clearing Full Globe tilt lock flag")
+    except (TypeError, ValueError, AttributeError):
+        _log_recoverable_once("PKA-OPS-104", "Failed clearing Full Globe tilt lock flag")
+    try:
+        if NAV_FULL_GLOBE_TILT_LOCK_VALUE_KEY in scene:
+            del scene[NAV_FULL_GLOBE_TILT_LOCK_VALUE_KEY]
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        _log_recoverable_once("PKA-OPS-105", "Failed clearing Full Globe tilt lock value")
+    except (TypeError, ValueError, AttributeError):
+        _log_recoverable_once("PKA-OPS-106", "Failed clearing Full Globe tilt lock value")
+
+
+def _read_full_globe_tilt_lock(scene):
+    if scene is None:
+        return False, None
+    try:
+        enabled = bool(scene.get(NAV_FULL_GLOBE_TILT_LOCK_ENABLED_KEY, False))
+    except (TypeError, ValueError, AttributeError):
+        enabled = False
+    if not enabled:
+        return False, None
+    try:
+        locked_tilt_deg = float(scene.get(NAV_FULL_GLOBE_TILT_LOCK_VALUE_KEY))
+    except (TypeError, ValueError, AttributeError):
+        locked_tilt_deg = None
+    return True, locked_tilt_deg
+
+
+def _set_radius_sync_notice(scene, message):
+    if scene is None:
+        return
+    text = str(message or "").strip()
+    if not text:
+        return
+    try:
+        scene[RADIUS_SYNC_NOTICE_KEY] = text
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        _log_recoverable_once("PKA-OPS-107", "Failed storing radius-sync status notice")
+    except (TypeError, ValueError, AttributeError):
+        _log_recoverable_once("PKA-OPS-108", "Failed storing radius-sync status notice")
+
+
+def _clear_radius_sync_notice(scene):
+    if scene is None:
+        return
+    try:
+        if RADIUS_SYNC_NOTICE_KEY in scene:
+            del scene[RADIUS_SYNC_NOTICE_KEY]
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        _log_recoverable_once("PKA-OPS-109", "Failed clearing radius-sync status notice")
+    except (TypeError, ValueError, AttributeError):
+        _log_recoverable_once("PKA-OPS-110", "Failed clearing radius-sync status notice")
+
+
+def _find_planetka_scene_camera(scene):
+    if scene is None:
+        return None
+    scene_camera = getattr(scene, "camera", None)
+    if (
+        scene_camera is not None
+        and str(getattr(scene_camera, "type", "")) == "CAMERA"
+        and _is_planetka_create_camera(scene_camera)
+    ):
+        return scene_camera
+    for obj in tuple(getattr(scene, "objects", ())):
+        if (
+            obj is not None
+            and str(getattr(obj, "type", "")) == "CAMERA"
+            and _is_planetka_create_camera(obj)
+        ):
+            return obj
+    return None
 
 
 def _quantize_navigation_ui_value(value, minimum=None):
@@ -245,52 +346,38 @@ def _set_planetka_earth_radius_bu(scene, target_radius_bu):
     except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
         scene_for_camera = None
     if scene_for_camera is not None:
-        previous_scene_camera = None
-        camera_swapped = False
+        _clear_radius_sync_notice(scene_for_camera)
         try:
             props = getattr(scene_for_camera, "planetka", None)
-            previous_scene_camera = getattr(scene_for_camera, "camera", None)
-            planetka_camera = None
-            if (
-                previous_scene_camera is not None
-                and str(getattr(previous_scene_camera, "type", "")) == "CAMERA"
-                and _is_planetka_create_camera(previous_scene_camera)
-            ):
-                planetka_camera = previous_scene_camera
-            if planetka_camera is None:
-                for obj in tuple(getattr(scene_for_camera, "objects", ())):
-                    if (
-                        obj is not None
-                        and str(getattr(obj, "type", "")) == "CAMERA"
-                        and _is_planetka_create_camera(obj)
-                    ):
-                        planetka_camera = obj
-                        break
+            planetka_camera = _find_planetka_scene_camera(scene_for_camera)
             if props is not None and planetka_camera is not None:
-                if getattr(scene_for_camera, "camera", None) is not planetka_camera:
-                    scene_for_camera.camera = planetka_camera
-                    camera_swapped = True
                 _apply_navigation_shot(
                     bpy.context,
                     scene_for_camera,
                     props,
                     switch_viewport_to_camera=False,
                     sync_active_view_when_not_camera=False,
+                    camera_override=planetka_camera,
+                )
+                mark_navigation_camera_control_signature(scene_for_camera)
+            elif props is not None and planetka_camera is None:
+                _set_radius_sync_notice(
+                    scene_for_camera,
+                    "Planetka Camera not found after Earth Radius change.",
                 )
         except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            _set_radius_sync_notice(
+                scene_for_camera,
+                "Earth Radius changed, but Planetka camera shot reapply failed.",
+            )
+            logger.warning(
+                "Planetka: failed reapplying Planetka camera shot after Earth radius change.",
+                exc_info=True,
+            )
             _log_recoverable_once(
                 "PKA-OPS-064",
                 "Failed reapplying Planetka camera shot after Earth radius change",
             )
-        finally:
-            if camera_swapped:
-                try:
-                    scene_for_camera.camera = previous_scene_camera
-                except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-                    _log_recoverable_once(
-                        "PKA-OPS-065",
-                        "Failed restoring active scene camera after Planetka camera radius sync",
-                    )
 
     return bool(changed)
 
@@ -767,8 +854,8 @@ def _ensure_ortho_full_globe_if_needed(scene, earth_radius_bu):
     return False
 
 
-def _navigate_camera_internal(scene, lon_deg, lat_deg, altitude_km, look_at_center=False):
-    camera = getattr(scene, "camera", None) if scene else None
+def _navigate_camera_internal(scene, lon_deg, lat_deg, altitude_km, look_at_center=False, camera_override=None):
+    camera = camera_override if camera_override is not None else (getattr(scene, "camera", None) if scene else None)
     if camera is None or getattr(camera, "type", None) != 'CAMERA':
         raise RuntimeError("Scene camera is missing. Set an active camera and retry.")
 
@@ -1082,8 +1169,9 @@ def _apply_navigation_shot(
     props,
     switch_viewport_to_camera=True,
     sync_active_view_when_not_camera=False,
+    camera_override=None,
 ):
-    camera = getattr(scene, "camera", None)
+    camera = camera_override if camera_override is not None else getattr(scene, "camera", None)
     if camera is None or getattr(camera, "type", None) != 'CAMERA':
         raise RuntimeError("Scene camera is missing. Set an active camera and retry.")
 
@@ -1097,6 +1185,45 @@ def _apply_navigation_shot(
     heading_deg = float(getattr(props, "nav_azimuth_deg", 0.0))
     tilt_deg = float(getattr(props, "nav_tilt_deg", 0.0))
     roll_deg = float(getattr(props, "nav_roll_deg", 0.0))
+
+    full_globe_tilt_lock_enabled, full_globe_tilt_lock_value = _read_full_globe_tilt_lock(scene)
+    if full_globe_tilt_lock_enabled:
+        # Full Globe must keep Earth centered and target stable until user explicitly
+        # changes Tilt. Ignore stored tilt value while lock is active.
+        if (
+            full_globe_tilt_lock_value is None
+            or abs(float(tilt_deg) - float(full_globe_tilt_lock_value)) <= NAV_CHANGE_EPS
+        ):
+            earth_obj, earth_radius_bu = _navigate_camera_internal(
+                scene,
+                lon_deg,
+                lat_deg,
+                altitude_km,
+                look_at_center=True,
+                camera_override=camera,
+            )
+            anchor_world, east_world, north_world, up_world, _radius = _anchor_frame_world(
+                earth_obj,
+                lon_deg,
+                lat_deg,
+            )
+            _update_shot_anchor_object(scene, anchor_world, east_world, north_world, up_world)
+            _ensure_close_clip_limits(scene, min_clip=0.001)
+            if bool(switch_viewport_to_camera):
+                _switch_viewport_to_camera_view(context, scene)
+            elif bool(sync_active_view_when_not_camera):
+                _sync_active_view_to_scene_camera(scene)
+            _store_last_navigation_values(
+                scene,
+                lon_deg=lon_deg,
+                lat_deg=lat_deg,
+                altitude_km=float(altitude_km),
+                heading_deg=heading_deg,
+                tilt_deg=tilt_deg,
+                roll_deg=roll_deg,
+            )
+            return earth_obj, earth_radius_bu
+        _clear_full_globe_tilt_lock(scene)
 
     anchor_world, east_world, north_world, up_world, earth_radius_bu = _anchor_frame_world(
         earth_obj, lon_deg, lat_deg

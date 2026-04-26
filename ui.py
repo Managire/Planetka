@@ -47,6 +47,7 @@ SHOW_INTERNAL_ANIMATION_UI = False
 BACKGROUND_AUTO_BLACK_NOTICE_KEY = "planetka_status_bg_auto_black_notice"
 CLIPPING_AUTO_NOTICE_KEY = "planetka_status_clip_auto_notice"
 CACHE_NOTICE_KEY = "planetka_status_cache_notice"
+RADIUS_SYNC_NOTICE_KEY = "planetka_status_radius_sync_notice"
 RESOLVE_FAILURE_FLAG_KEY = "planetka_resolve_integrity_failed"
 RESOLVE_FAILURE_MESSAGE_KEY = "planetka_resolve_integrity_message"
 EARTH_RADIUS_SAFE_MIN_BU = 0.2
@@ -781,6 +782,12 @@ def _draw_live_telemetry(layout, scene):
     cache_sticky_notice = str(getattr(scene, "get", lambda *_: "")(CACHE_NOTICE_KEY, "") or "").strip() if scene else ""
     if cache_sticky_notice:
         layout.label(text=cache_sticky_notice, icon="INFO")
+
+    radius_sync_notice = str(getattr(scene, "get", lambda *_: "")(RADIUS_SYNC_NOTICE_KEY, "") or "").strip() if scene else ""
+    if radius_sync_notice:
+        notice_row = layout.row(align=True)
+        notice_row.alert = True
+        notice_row.label(text=radius_sync_notice, icon="ERROR")
 
     if props is not None and is_authenticated(prefs):
         current_mode = str(getattr(props, "texture_quality_mode", "PREVIEW") or "PREVIEW").strip().upper()

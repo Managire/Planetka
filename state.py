@@ -257,6 +257,7 @@ _STATUS_NOTICE_KEYS = (
     "planetka_status_bg_auto_black_notice",
     "planetka_status_clip_auto_notice",
     "planetka_status_cache_notice",
+    "planetka_status_radius_sync_notice",
 )
 _STATUS_NOTICE_CLEAR_SKIP_KEY = "planetka_status_notice_clear_skip_count"
 ACCOUNT_PANEL_DEFAULT_COLLAPSED_KEY = "planetka_ui_account_default_collapsed"
