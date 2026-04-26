@@ -82,6 +82,15 @@ def find_blender_bin() -> str:
     return ""
 
 
+def explicit_auth_bootstrap_env() -> dict[str, str]:
+    values = {}
+    for key in ("PLANETKA_AUTH_PAYLOAD", "PLANETKA_API_KEY", "PLANETKA_API_KEY_PATH"):
+        raw = str(os.environ.get(key) or "").strip()
+        if raw:
+            values[key] = raw
+    return values
+
+
 def read_json_if_exists(path: Path) -> dict[str, object] | None:
     try:
         if not path.exists():
@@ -443,13 +452,33 @@ def main() -> int:
             runtime_errors.append(f"Could not reset short E2E artifact dir: {exc}")
     short_render_root.mkdir(parents=True, exist_ok=True)
 
+    explicit_auth_env = explicit_auth_bootstrap_env()
+    if not explicit_auth_env:
+        runtime_errors.append(
+            "Hermetic runtime auth bootstrap is required for release runs. "
+            "Set PLANETKA_AUTH_PAYLOAD or PLANETKA_API_KEY/PLANETKA_API_KEY_PATH."
+        )
+        print(
+            "- Hermetic runtime auth bootstrap missing."
+            " Set PLANETKA_AUTH_PAYLOAD or PLANETKA_API_KEY/PLANETKA_API_KEY_PATH."
+        )
+        if runtime_errors:
+            for err in runtime_errors:
+                print(f"[FAIL] {err}")
+            print(f"Release gate failed: {len(runtime_errors)} runtime issue(s)")
+            return 1
+
     ok, summary, payload = run_blender_gate_check(
         blender_bin=blender_bin,
         script_path=root / "tools" / "planetka_e2e_short.py",
         label="Short E2E render test",
         background=True,
         timeout_sec=240,
-        env_updates={"PLANETKA_RENDER_DIR": str(short_render_root)},
+        env_updates={
+            "PLANETKA_RENDER_DIR": str(short_render_root),
+            "PLANETKA_FORCE_AUTH_BOOTSTRAP": "1",
+            **explicit_auth_env,
+        },
     )
     short_report = find_latest_short_report(short_render_root)
     if isinstance(payload, dict) and short_report is not None:
@@ -460,6 +489,25 @@ def main() -> int:
     if short_report is not None:
         print(f"  report: {short_report}")
     if isinstance(payload, dict):
+        coverage = payload.get("coverage", {})
+        if isinstance(coverage, dict):
+            account = coverage.get("account", {})
+            if isinstance(account, dict):
+                auth_bootstrap = str(account.get("auth_bootstrap", "") or "").strip()
+                account_email = str(account.get("email", "") or "").strip()
+                account_tier = str(account.get("account_tier", "") or "").strip()
+                if auth_bootstrap:
+                    print(
+                        "  auth:"
+                        f" bootstrap={auth_bootstrap}"
+                        f"{f' email={account_email}' if account_email else ''}"
+                        f"{f' tier={account_tier}' if account_tier else ''}"
+                    )
+                if auth_bootstrap == "session":
+                    runtime_errors.append(
+                        "Short E2E used an already-authenticated local Blender profile despite "
+                        "the hermetic auth requirement."
+                    )
         renders = payload.get("renders", {})
         if isinstance(renders, dict):
             quick_preview = renders.get("quick_preview_eevee", {})

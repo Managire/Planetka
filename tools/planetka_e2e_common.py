@@ -189,11 +189,21 @@ def _load_api_key(raw_value="", path=""):
     raise E2EError("API key payload is invalid (missing api_key).")
 
 
+def _parse_bool_like(value):
+    token = str(value or "").strip().lower()
+    if token in {"1", "true", "yes", "on"}:
+        return True
+    if token in {"0", "false", "no", "off"}:
+        return False
+    return False
+
+
 def ensure_authenticated(auth_module, prefs, payload_path="", api_key="", api_key_path=""):
     if prefs is None:
         raise E2EError("Planetka preferences unavailable.")
 
     bootstrap = "session"
+    force_bootstrap = _parse_bool_like(os.environ.get("PLANETKA_FORCE_AUTH_BOOTSTRAP"))
     forced_device_id = str(
         os.environ.get("PLANETKA_AUTH_DEVICE_ID")
         or os.environ.get("PLANETKA_DEVICE_ID")
@@ -201,22 +211,33 @@ def ensure_authenticated(auth_module, prefs, payload_path="", api_key="", api_ke
     ).strip()
     if forced_device_id:
         prefs.auth_device_id = forced_device_id
-    if not auth_module.is_authenticated(prefs):
-        payload = _load_auth_payload(payload_path)
-        apply_fn = getattr(auth_module, "_apply_auth_payload", None)
+    payload = _load_auth_payload(payload_path)
+    apply_fn = getattr(auth_module, "_apply_auth_payload", None)
+    api_key_value = _load_api_key(api_key, api_key_path)
+    if force_bootstrap:
         if payload and callable(apply_fn):
             apply_fn(prefs, payload, login_state="authenticated")
             bootstrap = "auth_payload"
+        elif api_key_value:
+            auth_module.connect_with_api_key(api_key_value, prefs=prefs)
+            bootstrap = "api_key"
         else:
-            api_key_value = _load_api_key(api_key, api_key_path)
-            if api_key_value:
-                auth_module.connect_with_api_key(api_key_value, prefs=prefs)
-                bootstrap = "api_key"
-            else:
-                raise E2EError(
-                    "Planetka account is not authenticated. Connect the addon first, "
-                    "provide PLANETKA_AUTH_PAYLOAD, or provide PLANETKA_API_KEY/PLANETKA_API_KEY_PATH."
-                )
+            raise E2EError(
+                "Hermetic auth bootstrap required. Provide PLANETKA_AUTH_PAYLOAD "
+                "or PLANETKA_API_KEY/PLANETKA_API_KEY_PATH when PLANETKA_FORCE_AUTH_BOOTSTRAP=1."
+            )
+    elif not auth_module.is_authenticated(prefs):
+        if payload and callable(apply_fn):
+            apply_fn(prefs, payload, login_state="authenticated")
+            bootstrap = "auth_payload"
+        elif api_key_value:
+            auth_module.connect_with_api_key(api_key_value, prefs=prefs)
+            bootstrap = "api_key"
+        else:
+            raise E2EError(
+                "Planetka account is not authenticated. Connect the addon first, "
+                "provide PLANETKA_AUTH_PAYLOAD, or provide PLANETKA_API_KEY/PLANETKA_API_KEY_PATH."
+            )
 
     auth_module.sync_account_profile(prefs)
     return {
