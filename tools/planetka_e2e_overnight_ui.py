@@ -966,6 +966,12 @@ class OvernightRunner:
             ) or str(case.get("selected_label", "") or case["id"])
         self.props.earth_radius_bu = float(case.get("earth_radius_bu", 2.0))
         self.props.resolution_bias = float(case.get("resolution_bias", 0.0))
+        apply_result = self._call_operator("navigation_apply_shot")
+        if "FINISHED" not in apply_result:
+            raise E2EError(f"navigation_apply_shot failed after radius update for {case['id']}: {apply_result}")
+        clip_result = self._call_operator("auto_adjust_clipping")
+        if "FINISHED" not in clip_result and "CANCELLED" not in clip_result:
+            raise E2EError(f"auto_adjust_clipping failed after radius update for {case['id']}: {clip_result}")
         quality_mode = str(case.get("quality", "PREVIEW"))
         self.props.texture_quality_mode = quality_mode
         requested_tiles = list(case.get("tiles_override", ()) or ())

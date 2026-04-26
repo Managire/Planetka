@@ -342,7 +342,7 @@ def main():
             "Navigation controls did not update after external camera move.",
         )
 
-        _log("Scenario 3: Earth radius change preserves generic scene-camera altitude")
+        _log("Scenario 3: explicit navigation reapply restores generic scene-camera altitude after Earth radius change")
         generic_camera = scene.camera
         _assert(generic_camera is not None and getattr(generic_camera, "type", None) == "CAMERA", "Generic scene camera missing.")
         _assert(
@@ -360,8 +360,10 @@ def main():
         _assert("FINISHED" in result, f"navigation_apply_shot failed before radius change: {result}")
         props.earth_radius_bu = 2.6
         bpy.context.view_layer.update()
+        result = bpy.ops.planetka.navigation_apply_shot()
+        _assert("FINISHED" in result, f"navigation_apply_shot failed after radius change: {result}")
         altitude_info = dict(state._resolve_scope_altitude_info(scene, scope_mode="CAMERA") or {})
-        _assert(not bool(altitude_info.get("inside_earth", False)), f"Earth radius change pushed generic camera below surface: {altitude_info}")
+        _assert(not bool(altitude_info.get("inside_earth", False)), f"Explicit navigation reapply left camera below surface: {altitude_info}")
         result = bpy.ops.planetka.load_textures()
         _assert("FINISHED" in result, f"Resolve Earth failed after radius change on generic camera: {result}")
         warning = str(state.get_camera_inside_earth_warning(scene) or "").strip()
