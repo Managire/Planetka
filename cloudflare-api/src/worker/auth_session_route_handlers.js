@@ -133,10 +133,18 @@ export function createAuthSessionRouteHandlers(deps) {
       `UPDATE refresh_sessions SET revoked_at = ? WHERE id = ?`,
       [deps.nowIso(), session.id],
     );
+    const accountState = await deps.buildAccountState(db, user, env);
     const accessToken = await deps.createAccessToken(
       env,
       user,
       {
+        plan_code: String(accountState.planCode || ""),
+        user_status: String(accountState.planCode || ""),
+        account_tier: String(accountState.accountTier || accountState.storedAccountTier || ""),
+        stored_plan_code: String(accountState.storedPlanCode || ""),
+        stored_account_tier: String(accountState.storedAccountTier || ""),
+        quality_access_plan_code: String(accountState.qualityAccessPlanCode || ""),
+        unrestricted_quality_access: Boolean(accountState.unrestrictedQualityAccess),
         auth_method: String(session.auth_method || "").trim(),
         api_key_id: String(session.api_key_id || "").trim(),
         device_id: String(session.device_id || "").trim(),
@@ -152,7 +160,6 @@ export function createAuthSessionRouteHandlers(deps) {
         device_id: String(session.device_id || "").trim(),
       },
     );
-    const accountState = await deps.buildAccountState(db, user, env);
     await recordRefreshEvent({
       outcome: "success",
       errorCode: "",
@@ -274,14 +281,13 @@ export function createAuthSessionRouteHandlers(deps) {
       return auth.error;
     }
     const { db, user } = auth;
-    const effectiveUserStatus = deps.resolvePolicyPlanCode(user, env);
     const accountState = await deps.buildAccountState(db, user, env);
 
     return deps.json(
       {
         ok: true,
         email: user.email,
-        user_status: effectiveUserStatus,
+        user_status: String(accountState.planCode || ""),
         ...deps.serializeAccountState(accountState),
       },
       200,

@@ -164,6 +164,17 @@ def _extract_account_tier(payload):
     return _normalize_account_tier(payload.get("account_tier"))
 
 
+def _extract_stored_account_tier(payload):
+    if not isinstance(payload, dict):
+        return ""
+    return _normalize_account_tier(
+        _first_non_empty(
+            payload.get("stored_account_tier"),
+            payload.get("stored_plan_code"),
+        ),
+    )
+
+
 def _extract_plan(payload):
     if not isinstance(payload, dict):
         return {"code": PLAN_CODE_FREE, "name": PLAN_NAME_FREE}
@@ -192,6 +203,85 @@ def _extract_plan(payload):
         "code": code,
         "name": name or _plan_name_for_code(code) or PLAN_NAME_FREE,
     }
+
+
+def _extract_stored_plan(payload):
+    if not isinstance(payload, dict):
+        return {"code": PLAN_CODE_FREE, "name": PLAN_NAME_FREE}
+
+    code = _normalize_plan_code(
+        _first_non_empty(
+            payload.get("stored_plan_code"),
+            payload.get("stored_account_tier"),
+        ),
+    )
+    if not code:
+        code = _extract_plan(payload)["code"]
+
+    name = _first_non_empty(
+        payload.get("stored_plan_name"),
+        _plan_name_for_code(code),
+    )
+    return {
+        "code": code or PLAN_CODE_FREE,
+        "name": name or _plan_name_for_code(code) or PLAN_NAME_FREE,
+    }
+
+
+def _extract_quality_access_plan(payload):
+    if not isinstance(payload, dict):
+        return PLAN_CODE_FREE
+    code = _normalize_plan_code(
+        _first_non_empty(
+            payload.get("quality_access_plan_code"),
+            payload.get("qualityAccessPlanCode"),
+        ),
+    )
+    if code:
+        return code
+    if _extract_unrestricted_quality_access(payload):
+        return PLAN_CODE_COMMERCIAL
+    return _extract_plan(payload)["code"]
+
+
+def _extract_unrestricted_quality_access(payload):
+    if not isinstance(payload, dict):
+        return False
+    for candidate in (
+        payload.get("unrestricted_quality_access"),
+        payload.get("unrestrictedQualityAccess"),
+    ):
+        parsed = _parse_optional_bool(candidate)
+        if parsed is not None:
+            return bool(parsed)
+    return False
+
+
+def _extract_unrestricted_quality_override(payload):
+    if not isinstance(payload, dict):
+        return ""
+    token = str(
+        _first_non_empty(
+            payload.get("unrestricted_quality_override"),
+            payload.get("unrestrictedQualityOverride"),
+        ),
+    ).strip().lower()
+    if token in {"inherit", "on", "off"}:
+        return token
+    return ""
+
+
+def _extract_unrestricted_quality_global(payload):
+    if not isinstance(payload, dict):
+        return False
+    for candidate in (
+        payload.get("unrestricted_quality_global"),
+        payload.get("unrestrictedQualityGlobal"),
+    ):
+        parsed = _parse_optional_bool(candidate)
+        if parsed is not None:
+            return bool(parsed)
+    return False
 
 
 def _derive_commercial_use_allowed(plan_code):
@@ -281,9 +371,16 @@ def clear_auth_session(prefs=None, state="logged_out", status_message=""):
     prefs.auth_access_token = ""
     prefs.auth_refresh_token = ""
     prefs.auth_account_tier = ""
+    prefs.auth_stored_account_tier = ""
     prefs.auth_commercial_use_allowed = ""
     prefs.auth_plan_code = ""
     prefs.auth_plan_name = ""
+    prefs.auth_stored_plan_code = ""
+    prefs.auth_stored_plan_name = ""
+    prefs.auth_quality_access_plan_code = ""
+    prefs.auth_unrestricted_quality_access = ""
+    prefs.auth_unrestricted_quality_override = ""
+    prefs.auth_unrestricted_quality_global = ""
     prefs.auth_contact_url = ""
     prefs.auth_upgrade_url = ""
     prefs.auth_login_state = str(state or "logged_out")
@@ -361,10 +458,17 @@ def get_account_tier(prefs=None):
         return ""
     if not is_authenticated(prefs):
         return ""
+    explicit_tier = _normalize_account_tier(getattr(prefs, "auth_stored_account_tier", ""))
+    if explicit_tier:
+        return explicit_tier
     explicit_tier = _normalize_account_tier(getattr(prefs, "auth_account_tier", ""))
     if explicit_tier:
         return explicit_tier
     return _normalize_account_tier(get_plan_code(prefs)) or ACCOUNT_TIER_FREE
+
+
+def get_stored_account_tier(prefs=None):
+    return get_account_tier(prefs)
 
 
 def is_commercial_account(prefs=None):
@@ -380,7 +484,7 @@ def is_personal_account(prefs=None):
 
 
 def allows_balanced_full_quality(prefs=None):
-    return is_personal_account(prefs) or is_commercial_account(prefs)
+    return get_quality_access_plan_code(prefs) in {PLAN_CODE_PERSONAL, PLAN_CODE_COMMERCIAL}
 
 
 def _normalize_texture_quality_token(value):
@@ -398,18 +502,18 @@ def _is_high_quality_mode(value):
 
 def allows_balanced_for_context(prefs=None, source=None):
     del source
-    tier = get_account_tier(prefs)
-    return tier in {ACCOUNT_TIER_PERSONAL, ACCOUNT_TIER_COMMERCIAL}
+    plan_code = get_quality_access_plan_code(prefs)
+    return plan_code in {PLAN_CODE_PERSONAL, PLAN_CODE_COMMERCIAL}
 
 
 def allows_full_quality_for_context(prefs=None, source=None):
     del source
-    return get_account_tier(prefs) == ACCOUNT_TIER_COMMERCIAL
+    return get_quality_access_plan_code(prefs) == PLAN_CODE_COMMERCIAL
 
 
 def allows_animation_render_for_context(prefs=None, source=None):
     del source
-    return get_account_tier(prefs) == ACCOUNT_TIER_COMMERCIAL
+    return allows_full_quality_for_context(prefs)
 
 
 def requires_d090_cap_for_context(prefs=None, source=None):
@@ -420,13 +524,13 @@ def requires_d090_cap_for_context(prefs=None, source=None):
 def allows_balanced_full_quality_for_context(prefs=None, source=None, requested_mode="PREVIEW"):
     del source
     mode = _normalize_texture_quality_token(requested_mode)
-    tier = get_account_tier(prefs)
+    plan_code = get_quality_access_plan_code(prefs)
     if mode == "PREVIEW":
         return True
     if mode == "BALANCED":
-        return tier in {ACCOUNT_TIER_PERSONAL, ACCOUNT_TIER_COMMERCIAL}
+        return plan_code in {PLAN_CODE_PERSONAL, PLAN_CODE_COMMERCIAL}
     if mode == "FULL":
-        return tier == ACCOUNT_TIER_COMMERCIAL
+        return plan_code == PLAN_CODE_COMMERCIAL
     return False
 
 
@@ -436,10 +540,29 @@ def get_plan_code(prefs=None):
         return ""
     if not is_authenticated(prefs):
         return ""
+    value = _normalize_plan_code(getattr(prefs, "auth_stored_plan_code", ""))
+    if value:
+        return value
     value = _normalize_plan_code(getattr(prefs, "auth_plan_code", ""))
     if value:
         return value
-    return _normalize_plan_code(getattr(prefs, "auth_account_tier", "")) or PLAN_CODE_FREE
+    return _normalize_plan_code(getattr(prefs, "auth_stored_account_tier", "")) or _normalize_plan_code(getattr(prefs, "auth_account_tier", "")) or PLAN_CODE_FREE
+
+
+def get_stored_plan_code(prefs=None):
+    return get_plan_code(prefs)
+
+
+def get_stored_plan_name(prefs=None):
+    prefs = prefs or get_prefs()
+    if prefs is None:
+        return ""
+    if not is_authenticated(prefs):
+        return ""
+    value = str(getattr(prefs, "auth_stored_plan_name", "") or "").strip()
+    if value:
+        return value
+    return _plan_name_for_code(get_stored_plan_code(prefs)) or get_plan_name(prefs)
 
 
 def get_plan_name(prefs=None):
@@ -448,10 +571,39 @@ def get_plan_name(prefs=None):
         return ""
     if not is_authenticated(prefs):
         return ""
+    value = str(getattr(prefs, "auth_stored_plan_name", "") or "").strip()
+    if value:
+        return value
     value = str(getattr(prefs, "auth_plan_name", "") or "").strip()
     if value:
         return value
     return _plan_name_for_code(get_plan_code(prefs)) or PLAN_NAME_FREE
+
+
+def get_quality_access_plan_code(prefs=None):
+    prefs = prefs or get_prefs()
+    if prefs is None:
+        return ""
+    if not is_authenticated(prefs):
+        return ""
+    value = _normalize_plan_code(getattr(prefs, "auth_quality_access_plan_code", ""))
+    if value:
+        return value
+    if has_unrestricted_quality_access(prefs):
+        return PLAN_CODE_COMMERCIAL
+    return get_plan_code(prefs)
+
+
+def has_unrestricted_quality_access(prefs=None):
+    prefs = prefs or get_prefs()
+    if prefs is None:
+        return False
+    if not is_authenticated(prefs):
+        return False
+    explicit = _parse_optional_bool(getattr(prefs, "auth_unrestricted_quality_access", ""))
+    if explicit is not None:
+        return bool(explicit)
+    return get_quality_access_plan_code(prefs) == PLAN_CODE_COMMERCIAL and get_plan_code(prefs) != PLAN_CODE_COMMERCIAL
 
 
 def get_commercial_use_allowed(prefs=None):
@@ -642,11 +794,20 @@ def _apply_auth_payload(prefs, payload, login_state="authenticated", status_mess
     if api_key_mask:
         prefs.auth_api_key_mask = api_key_mask
     plan = _extract_plan(payload)
+    stored_plan = _extract_stored_plan(payload)
     prefs.auth_plan_code = plan["code"]
     prefs.auth_plan_name = plan["name"]
+    prefs.auth_stored_plan_code = stored_plan["code"]
+    prefs.auth_stored_plan_name = stored_plan["name"]
+    prefs.auth_quality_access_plan_code = _extract_quality_access_plan(payload)
+    prefs.auth_unrestricted_quality_access = "1" if _extract_unrestricted_quality_access(payload) else "0"
+    prefs.auth_unrestricted_quality_override = _extract_unrestricted_quality_override(payload)
+    prefs.auth_unrestricted_quality_global = "1" if _extract_unrestricted_quality_global(payload) else "0"
     prefs.auth_commercial_use_allowed = "1" if _extract_commercial_use_allowed(payload, plan=plan) else "0"
     account_tier = _extract_account_tier(payload) or _normalize_account_tier(plan["code"])
     prefs.auth_account_tier = account_tier or ACCOUNT_TIER_FREE
+    stored_account_tier = _extract_stored_account_tier(payload) or _normalize_account_tier(stored_plan["code"])
+    prefs.auth_stored_account_tier = stored_account_tier or prefs.auth_account_tier
     prefs.auth_contact_url = _first_non_empty(
         payload.get("contact_url"),
         payload.get("support_url"),
@@ -666,15 +827,29 @@ def _apply_account_profile_fields(prefs, payload):
         prefs.auth_email = email
 
     plan = _extract_plan(payload)
+    stored_plan = _extract_stored_plan(payload)
     if plan["code"]:
         prefs.auth_plan_code = plan["code"]
     if plan["name"]:
         prefs.auth_plan_name = plan["name"]
+    if stored_plan["code"]:
+        prefs.auth_stored_plan_code = stored_plan["code"]
+    if stored_plan["name"]:
+        prefs.auth_stored_plan_name = stored_plan["name"]
+    quality_access_plan = _extract_quality_access_plan(payload)
+    prefs.auth_quality_access_plan_code = quality_access_plan or ""
+    prefs.auth_unrestricted_quality_access = "1" if _extract_unrestricted_quality_access(payload) else "0"
+    override_mode = _extract_unrestricted_quality_override(payload)
+    prefs.auth_unrestricted_quality_override = override_mode
+    prefs.auth_unrestricted_quality_global = "1" if _extract_unrestricted_quality_global(payload) else "0"
     prefs.auth_commercial_use_allowed = "1" if _extract_commercial_use_allowed(payload, plan=plan) else "0"
 
     account_tier = _extract_account_tier(payload) or _normalize_account_tier(plan["code"])
     if account_tier:
         prefs.auth_account_tier = account_tier
+    stored_account_tier = _extract_stored_account_tier(payload) or _normalize_account_tier(stored_plan["code"])
+    if stored_account_tier:
+        prefs.auth_stored_account_tier = stored_account_tier
 
     contact_url = _first_non_empty(
         payload.get("contact_url"),

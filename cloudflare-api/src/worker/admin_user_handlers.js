@@ -102,6 +102,62 @@ async function clearQaAuthRateLimits(db, request, email, deps) {
   return cleared;
 }
 
+function normalizeAdminUnrestrictedQualityMode(value) {
+  const mode = String(value || "").trim().toLowerCase();
+  if (mode === "inherit" || mode === "on" || mode === "off") {
+    return mode;
+  }
+  return "";
+}
+
+function explicitBooleanFromBody(body, deps) {
+  if (!body || typeof body !== "object") {
+    return { ok: false, value: false };
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "enabled")) {
+    return { ok: true, value: deps.parseBooleanFlag(body.enabled) };
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "unrestricted_quality_enabled")) {
+    return { ok: true, value: deps.parseBooleanFlag(body.unrestricted_quality_enabled) };
+  }
+  return { ok: false, value: false };
+}
+
+export async function handleAdminSetGlobalUnrestrictedQuality(request, env, deps) {
+  const auth = await deps.requireAnalyticsAdmin(request, env);
+  if (auth.error) {
+    return auth.error;
+  }
+  const { db, user: adminUser } = auth;
+  const body = await deps.parseJson(request);
+  const enabledState = explicitBooleanFromBody(body, deps);
+  if (!enabledState.ok) {
+    return deps.json({ ok: false, error: "missing_enabled" }, 400, env);
+  }
+  const updated = await deps.setGlobalUnrestrictedQualityEnabled(db, enabledState.value);
+  try {
+    console.log(
+      "admin.global_unrestricted_quality_updated",
+      JSON.stringify({
+        enabled: Boolean(updated && updated.enabled),
+        admin_email: deps.normalizeEmail(adminUser && adminUser.email || ""),
+      }),
+    );
+  } catch (_error) {
+    // no-op logging guard
+  }
+  return deps.json(
+    {
+      ok: true,
+      action: "set_global_unrestricted_quality",
+      enabled: Boolean(updated && updated.enabled),
+      updated_at: String(updated && updated.updatedAt || deps.nowIso()),
+    },
+    200,
+    env,
+  );
+}
+
 export async function handleAdminUserBlock(request, env, deps) {
   const auth = await deps.requireAnalyticsAdmin(request, env);
   if (auth.error) {
@@ -186,7 +242,7 @@ export async function handleAdminUserUnblock(request, env, deps) {
   const targetUserId = String(target.user.id || "").trim();
   const targetEmail = deps.normalizeEmail(target.user.email || "");
   const targetPlanRaw = String(body && body.plan_code || "").trim();
-  const targetPlan = deps.normalizePlanCode(targetPlanRaw);
+  const targetPlan = deps.resolveFixedInternalPlanForEmail(targetEmail, targetPlanRaw);
   if (!targetPlan || !["free", "personal", "commercial"].includes(targetPlan)) {
     return deps.json({ ok: false, error: "missing_plan_code" }, 400, env);
   }
@@ -364,7 +420,7 @@ export async function handleAdminUserSetPlan(request, env, deps) {
   const targetUserId = String(target.user.id || "").trim();
   const targetEmail = deps.normalizeEmail(target.user.email || "");
   const targetPlanRaw = String(body && body.plan_code || "").trim();
-  const targetPlan = deps.normalizePlanCode(targetPlanRaw);
+  const targetPlan = deps.resolveFixedInternalPlanForEmail(targetEmail, targetPlanRaw);
   if (!targetPlan || !["free", "personal", "commercial"].includes(targetPlan)) {
     return deps.json({ ok: false, error: "missing_plan_code" }, 400, env);
   }
@@ -403,6 +459,72 @@ export async function handleAdminUserSetPlan(request, env, deps) {
       user_email: targetEmail,
       plan_code: targetPlan,
       updated_active_api_keys: deps.dbMetaChanges(apiKeysResult),
+      updated_at: now,
+    },
+    200,
+    env,
+  );
+}
+
+export async function handleAdminUserSetUnrestrictedQuality(request, env, deps) {
+  const auth = await deps.requireAnalyticsAdmin(request, env);
+  if (auth.error) {
+    return auth.error;
+  }
+  const { db, user: adminUser } = auth;
+  await deps.ensureUserQualityAccessColumns(db);
+  const body = await deps.parseJson(request);
+  const target = await resolveTargetUser(db, body, deps);
+  if (target.error) {
+    return deps.json({ ok: false, error: target.error }, target.error === "user_not_found" ? 404 : 400, env);
+  }
+
+  const overrideMode = normalizeAdminUnrestrictedQualityMode(
+    body && (body.mode || body.override_mode || body.unrestricted_quality_mode) || "",
+  );
+  if (!overrideMode) {
+    return deps.json({ ok: false, error: "missing_quality_mode" }, 400, env);
+  }
+
+  const targetUserId = String(target.user.id || "").trim();
+  const targetEmail = deps.normalizeEmail(target.user.email || "");
+  const overrideValue = overrideMode === "inherit" ? null : (overrideMode === "on" ? 1 : 0);
+  const now = deps.nowIso();
+
+  await deps.dbRun(
+    db,
+    `UPDATE users SET unrestricted_quality_override = ? WHERE id = ?`,
+    [overrideValue, targetUserId],
+  );
+  const refreshedUser = await deps.findUserById(db, targetUserId);
+  const qualityAccess = await deps.resolveUserQualityAccessState(db, refreshedUser || target.user, env);
+
+  try {
+    console.log(
+      "admin.user_set_unrestricted_quality",
+      JSON.stringify({
+        user_id: targetUserId,
+        user_email: targetEmail,
+        override_mode: overrideMode,
+        unrestricted_quality_access: Boolean(qualityAccess && qualityAccess.unrestrictedQualityAccess),
+        admin_email: deps.normalizeEmail(adminUser && adminUser.email || ""),
+      }),
+    );
+  } catch (_error) {
+    // no-op logging guard
+  }
+
+  return deps.json(
+    {
+      ok: true,
+      action: "set_unrestricted_quality",
+      user_id: targetUserId,
+      user_email: targetEmail,
+      override_mode: overrideMode,
+      stored_plan_code: String(qualityAccess && qualityAccess.storedPlanCode || ""),
+      quality_access_plan_code: String(qualityAccess && qualityAccess.qualityAccessPlanCode || ""),
+      unrestricted_quality_access: Boolean(qualityAccess && qualityAccess.unrestrictedQualityAccess),
+      unrestricted_quality_global: Boolean(qualityAccess && qualityAccess.globalEnabled),
       updated_at: now,
     },
     200,

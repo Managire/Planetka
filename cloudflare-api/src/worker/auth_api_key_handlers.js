@@ -97,7 +97,7 @@ export function createAuthApiKeyHandlers(deps) {
           db,
           String(existingUser.id || "").trim(),
           String(existingUser.email || "").trim(),
-          deps.resolvePlanCode(existingUser, env),
+          deps.normalizeRequestedPlan(existingUser && existingUser.status || deps.PLAN_CODE_FREE),
           requestDeviceId,
           env,
         );
@@ -231,13 +231,13 @@ export function createAuthApiKeyHandlers(deps) {
       env,
     );
     user = await deps.enforceUserPlanPolicy(db, user, env);
-    const effectivePlanCode = deps.resolvePlanCode(user, env);
+    const storedPlanCode = deps.normalizeRequestedPlan(user && user.status || deps.PLAN_CODE_FREE);
 
     const issued = await deps.issueApiKeyForUser(
       db,
       env,
       user,
-      effectivePlanCode,
+      storedPlanCode,
       {},
     );
 
@@ -343,8 +343,8 @@ export function createAuthApiKeyHandlers(deps) {
       status: record.status || deps.PLAN_CODE_FREE,
     };
     user = await deps.enforceUserPlanPolicy(db, user, env);
-    const effectivePlanCode = deps.resolvePlanCode(user, env);
-    if (effectivePlanCode === deps.PLAN_CODE_FREE) {
+    const storedPlanCode = deps.normalizeRequestedPlan(user && user.status || deps.PLAN_CODE_FREE);
+    if (storedPlanCode === deps.PLAN_CODE_FREE) {
       const freePolicy = await deps.enforceSingleActiveFreeApiKey(
         db,
         String(user.id || ""),
@@ -368,7 +368,7 @@ export function createAuthApiKeyHandlers(deps) {
         String(record.api_key_id || ""),
         String(user.id || ""),
         String(user.email || ""),
-        effectivePlanCode,
+        storedPlanCode,
         deviceId,
         request,
         env,
@@ -393,11 +393,19 @@ export function createAuthApiKeyHandlers(deps) {
     await deps.dbRun(db, `UPDATE users SET last_login_at = ? WHERE id = ?`, [now, user.id]);
     await deps.dbRun(db, `UPDATE api_keys SET last_used_at = ? WHERE id = ?`, [now, record.api_key_id]);
 
+    const accountState = await deps.buildAccountState(db, user, env);
     const refreshExpiresAt = deps.addDaysIso(7);
     const accessToken = await deps.createAccessToken(
       env,
       user,
       {
+        plan_code: String(accountState.planCode || ""),
+        user_status: String(accountState.planCode || ""),
+        account_tier: String(accountState.accountTier || accountState.storedAccountTier || ""),
+        stored_plan_code: String(accountState.storedPlanCode || ""),
+        stored_account_tier: String(accountState.storedAccountTier || ""),
+        quality_access_plan_code: String(accountState.qualityAccessPlanCode || ""),
+        unrestricted_quality_access: Boolean(accountState.unrestrictedQualityAccess),
         api_key_id: String(record.api_key_id || ""),
         device_id: deviceId,
         auth_method: "api_key",
@@ -413,8 +421,6 @@ export function createAuthApiKeyHandlers(deps) {
         device_id: deviceId,
       },
     );
-    const accountState = await deps.buildAccountState(db, user, env);
-
     return deps.json(
       {
         ok: true,

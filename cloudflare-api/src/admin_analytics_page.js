@@ -27,6 +27,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     billableCostClassB,
     billableUnknownOps,
     billableCostTotal,
+    globalUnrestrictedQualityEnabled,
   } = context || {};
 
   const safeTopLine = snapshotTopLine && typeof snapshotTopLine === "object" ? snapshotTopLine : {};
@@ -80,6 +81,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
   const topTileRequestsSplitHtml = renderTierTriplet(topLineTileRequests, (value) => fmtIntLocal(value), topLineTileRequests.total);
   const topGbServedSplitHtml = renderTierTriplet(topLineGbServed, (value) => `${fmtGbLocal(value)} GB`, topLineGbServed.total);
   const activeUsersSplitHtml = renderActiveUsersCompact(safeActiveWindows, safeActive);
+  const unrestrictedQualityStatusText = globalUnrestrictedQualityEnabled ? "Enabled" : "Disabled";
 
   return `
 <!doctype html>
@@ -159,8 +161,16 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     <button id="setFreeBtn" class="action-btn">Set Free</button>
     <button id="setPersonalBtn" class="action-btn">Set Personal</button>
     <button id="setCommercialBtn" class="action-btn">Set Commercial</button>
+    <button id="qualityInheritBtn" class="action-btn">Quality Inherit</button>
+    <button id="qualityOnBtn" class="action-btn">Quality On</button>
+    <button id="qualityOffBtn" class="action-btn">Quality Off</button>
     <button id="blockBtn" class="action-btn danger">Block</button>
     <button id="unblockBtn" class="action-btn warn">Unblock</button>
+  </div>
+  <div class="controls">
+    <span id="globalQualityState" class="muted">Unrestricted quality: ${escapeHtml(unrestrictedQualityStatusText)}</span>
+    <button id="globalQualityOnBtn" class="action-btn">Enable for all users</button>
+    <button id="globalQualityOffBtn" class="action-btn warn">Disable for all users</button>
   </div>
 
   <div class="grid">
@@ -241,8 +251,14 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     const setFreeBtn = document.getElementById("setFreeBtn");
     const setPersonalBtn = document.getElementById("setPersonalBtn");
     const setCommercialBtn = document.getElementById("setCommercialBtn");
+    const qualityInheritBtn = document.getElementById("qualityInheritBtn");
+    const qualityOnBtn = document.getElementById("qualityOnBtn");
+    const qualityOffBtn = document.getElementById("qualityOffBtn");
     const blockBtn = document.getElementById("blockBtn");
     const unblockBtn = document.getElementById("unblockBtn");
+    const globalQualityStateEl = document.getElementById("globalQualityState");
+    const globalQualityOnBtn = document.getElementById("globalQualityOnBtn");
+    const globalQualityOffBtn = document.getElementById("globalQualityOffBtn");
     const setText = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
     window.addEventListener("error", (event) => {
       const message = "Runtime error: " + String(event && event.message || "unknown_error");
@@ -665,6 +681,9 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         "set-free": "/admin/users/set-plan",
         "set-personal": "/admin/users/set-plan",
         "set-commercial": "/admin/users/set-plan",
+        "quality-inherit": "/admin/users/set-unrestricted-quality",
+        "quality-on": "/admin/users/set-unrestricted-quality",
+        "quality-off": "/admin/users/set-unrestricted-quality",
       };
       const endpoint = endpointByAction[safeAction];
       if (!endpoint) {
@@ -679,6 +698,9 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         "set-free": "Set this account to Free?",
         "set-personal": "Downgrade this account to Personal?",
         "set-commercial": "Upgrade this account to Commercial?",
+        "quality-inherit": "Return this account to the global unrestricted-quality setting?",
+        "quality-on": "Force unrestricted quality ON for this account?",
+        "quality-off": "Force unrestricted quality OFF for this account?",
       };
       if (!window.confirm(confirmation[safeAction] || "Confirm action?")) {
         return;
@@ -699,6 +721,15 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
       if (safeAction === "set-commercial") {
         payload.plan_code = "commercial";
       }
+      if (safeAction === "quality-inherit") {
+        payload.mode = "inherit";
+      }
+      if (safeAction === "quality-on") {
+        payload.mode = "on";
+      }
+      if (safeAction === "quality-off") {
+        payload.mode = "off";
+      }
       statusEl.textContent = "Applying action...";
       statusEl.className = "muted";
       try {
@@ -715,6 +746,37 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         statusEl.textContent = "Action applied: " + safeAction + " (" + safeUserEmail + ")";
         statusEl.className = "muted";
         await loadAnalytics();
+      } catch (error) {
+        statusEl.textContent = "Action failed: " + String(error && error.message || error);
+        statusEl.className = "error";
+      }
+    }
+    async function setGlobalUnrestrictedQuality(enabled) {
+      const safeEnabled = Boolean(enabled);
+      const confirmation = safeEnabled
+        ? "Enable unrestricted texture quality for all users?"
+        : "Disable unrestricted texture quality for all users?";
+      if (!window.confirm(confirmation)) {
+        return;
+      }
+      statusEl.textContent = "Applying global quality setting...";
+      statusEl.className = "muted";
+      try {
+        const res = await fetch("/admin/settings/unrestricted-quality", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled: safeEnabled }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          throw new Error((data && data.error) || ("HTTP " + res.status));
+        }
+        if (globalQualityStateEl) {
+          globalQualityStateEl.textContent = "Unrestricted quality: " + (data.enabled ? "Enabled" : "Disabled");
+        }
+        statusEl.textContent = "Global unrestricted quality updated.";
+        statusEl.className = "muted";
       } catch (error) {
         statusEl.textContent = "Action failed: " + String(error && error.message || error);
         statusEl.className = "error";
@@ -820,8 +882,13 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     if (setFreeBtn) setFreeBtn.addEventListener("click", () => runManualUserAction("set-free"));
     if (setPersonalBtn) setPersonalBtn.addEventListener("click", () => runManualUserAction("set-personal"));
     if (setCommercialBtn) setCommercialBtn.addEventListener("click", () => runManualUserAction("set-commercial"));
+    if (qualityInheritBtn) qualityInheritBtn.addEventListener("click", () => runManualUserAction("quality-inherit"));
+    if (qualityOnBtn) qualityOnBtn.addEventListener("click", () => runManualUserAction("quality-on"));
+    if (qualityOffBtn) qualityOffBtn.addEventListener("click", () => runManualUserAction("quality-off"));
     if (blockBtn) blockBtn.addEventListener("click", () => runManualUserAction("block"));
     if (unblockBtn) unblockBtn.addEventListener("click", () => runManualUserAction("unblock"));
+    if (globalQualityOnBtn) globalQualityOnBtn.addEventListener("click", () => setGlobalUnrestrictedQuality(true));
+    if (globalQualityOffBtn) globalQualityOffBtn.addEventListener("click", () => setGlobalUnrestrictedQuality(false));
     if (windowEl) windowEl.addEventListener("change", loadAnalytics);
     if (planFilterEl) planFilterEl.addEventListener("change", loadAnalytics);
     if (tileMapWindowEl) tileMapWindowEl.addEventListener("change", loadAnalytics);

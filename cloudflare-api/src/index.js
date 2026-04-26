@@ -77,9 +77,11 @@ import {
 } from "./worker/admin_session_handlers.js";
 import {
   handleAdminUserBlock as handleAdminUserBlockRoute,
+  handleAdminSetGlobalUnrestrictedQuality as handleAdminSetGlobalUnrestrictedQualityRoute,
   handleAdminUserHardBlock as handleAdminUserHardBlockRoute,
   handleAdminQaAuthReset as handleAdminQaAuthResetRoute,
   handleAdminUserSetPlan as handleAdminUserSetPlanRoute,
+  handleAdminUserSetUnrestrictedQuality as handleAdminUserSetUnrestrictedQualityRoute,
   handleAdminUserUnblock as handleAdminUserUnblockRoute,
 } from "./worker/admin_user_handlers.js";
 import {
@@ -199,6 +201,13 @@ let tileRequestEventsTableReady = false;
 let authRefreshEventsTableReady = false;
 let apiKeyTablesReady = false;
 let refreshSessionColumnsReady = false;
+let userQualityAccessColumnsReady = false;
+let adminFeatureFlagsTableReady = false;
+const FIXED_INTERNAL_TEST_PLAN_BY_EMAIL = Object.freeze({
+  "free@planetka.io": PLAN_CODE_FREE,
+  "personal@planetka.io": PLAN_CODE_PERSONAL,
+  "commercial@planetka.io": PLAN_CODE_COMMERCIAL,
+});
 let adminHardBlocksTableReady = false;
 let newsletterContactsTableReady = false;
 let rateLimitsLastPruneAt = 0;
@@ -228,6 +237,7 @@ const ANALYTICS_QUERY_DEPS = {
   countRowsFromQuery,
   dbAll,
   dbGet,
+  ensureUserQualityAccessColumns,
   ensureAuthRefreshEventsTable,
   ensureTileRequestEventsTable,
   ensureTileRequestRollupTables,
@@ -263,6 +273,7 @@ const AUTH_SESSION_DEPS = {
   requireDb,
   requireSecret,
   resolvePlanCode,
+  resolveUserQualityAccessState,
   verifyJwt,
 };
 
@@ -290,6 +301,7 @@ const ADMIN_ANALYTICS_DEPS = {
   PLAN_CODE_PERSONAL,
   PLAN_CODE_COMMERCIAL,
   publicErrorMessage,
+  readGlobalUnrestrictedQualityEnabled,
   requireAnalyticsAdmin: (request, env) => requireAnalyticsAdmin(request, env, AUTH_SESSION_DEPS),
   sanitizeAnalyticsMinutes: (value, fallback = DEFAULT_ANALYTICS_WINDOW_MINUTES) =>
     sanitizeAnalyticsMinutesQuery(value, fallback, ANALYTICS_QUERY_DEPS),
@@ -336,6 +348,7 @@ const ADMIN_USER_DEPS = {
   dbRun,
   ensureAdminHardBlocksTable,
   ensureApiKeyTables,
+  ensureUserQualityAccessColumns,
   ensureRateLimitsTable,
   ensureRefreshSessionColumns,
   findUserByEmail,
@@ -349,7 +362,11 @@ const ADMIN_USER_DEPS = {
   nowIso,
   parseJson,
   parseCsvEmailSet,
+  parseBooleanFlag,
   requestClientIp,
+  resolveUserQualityAccessState,
+  resolveFixedInternalPlanForEmail,
+  setGlobalUnrestrictedQualityEnabled,
   requireAnalyticsAdmin: (request, env) => requireAnalyticsAdmin(request, env, AUTH_SESSION_DEPS),
   sha256Hex,
   upsertUserByEmail,
@@ -1859,11 +1876,19 @@ function estimateR2MonthlyCostUsd(env, monthlyClassBOps) {
 }
 
 async function buildAccountState(db, user, env) {
-  void db;
-  const planCode = resolvePlanCode(user, env);
+  const qualityAccess = await resolveUserQualityAccessState(db, user, env);
+  const storedPlanCode = qualityAccess.storedPlanCode;
+  const storedAccountTier = accountTierForPlanCode(storedPlanCode);
   return {
-    planCode,
-    commercialUseAllowed: commercialUseAllowed(planCode),
+    planCode: storedPlanCode,
+    storedPlanCode: storedPlanCode || PLAN_CODE_FREE,
+    accountTier: storedAccountTier,
+    storedAccountTier,
+    qualityAccessPlanCode: qualityAccess.qualityAccessPlanCode,
+    unrestrictedQualityAccess: Boolean(qualityAccess.unrestrictedQualityAccess),
+    unrestrictedQualityOverride: String(qualityAccess.overrideMode || "inherit"),
+    globalUnrestrictedQualityEnabled: Boolean(qualityAccess.globalEnabled),
+    commercialUseAllowed: commercialUseAllowed(storedPlanCode),
     upgradeUrl: String(env.UPGRADE_URL || DEFAULT_UPGRADE_URL).trim() || DEFAULT_UPGRADE_URL,
     contactUrl: normalizeContactUrl(env.PLANETKA_CONTACT_URL || DEFAULT_CONTACT_URL),
   };
@@ -1872,12 +1897,20 @@ async function buildAccountState(db, user, env) {
 function serializeAccountState(state) {
   const safeState = state || {};
   const tier = accountTierForPlanCode(safeState.planCode);
+  const storedPlanCode = normalizeRequestedPlan(safeState.storedPlanCode) || PLAN_CODE_FREE;
+  const storedTier = accountTierForPlanCode(storedPlanCode);
   return {
     plan: {
       code: safeState.planCode,
     },
     plan_code: safeState.planCode,
     account_tier: tier,
+    stored_plan_code: storedPlanCode,
+    stored_account_tier: storedTier,
+    quality_access_plan_code: normalizeRequestedPlan(safeState.qualityAccessPlanCode) || storedPlanCode,
+    unrestricted_quality_access: Boolean(safeState.unrestrictedQualityAccess),
+    unrestricted_quality_override: String(safeState.unrestrictedQualityOverride || "inherit"),
+    unrestricted_quality_global: Boolean(safeState.globalUnrestrictedQualityEnabled),
     commercial_use_allowed: Boolean(safeState.commercialUseAllowed),
     upgrade_url: safeState.upgradeUrl,
     contact_url: safeState.contactUrl,
@@ -1885,6 +1918,7 @@ function serializeAccountState(state) {
 }
 
 async function findUserByEmail(db, email) {
+  await ensureUserQualityAccessColumns(db);
   return dbGet(
     db,
     `
@@ -1892,6 +1926,7 @@ async function findUserByEmail(db, email) {
         u.id,
         u.email,
         u.status,
+        u.unrestricted_quality_override,
         u.created_at,
         u.last_login_at
       FROM users u
@@ -1903,6 +1938,7 @@ async function findUserByEmail(db, email) {
 }
 
 async function findUserById(db, userId) {
+  await ensureUserQualityAccessColumns(db);
   return dbGet(
     db,
     `
@@ -1910,6 +1946,7 @@ async function findUserById(db, userId) {
         u.id,
         u.email,
         u.status,
+        u.unrestricted_quality_override,
         u.created_at,
         u.last_login_at
       FROM users u
@@ -2215,7 +2252,7 @@ async function ensureRefreshSessionColumns(db) {
 async function upsertUserByEmail(db, email, status = PLAN_CODE_FREE, options = {}, env = {}) {
   const normalizedEmail = normalizeEmail(email);
   await ensureUserConsentColumns(db);
-  const requestedStatus = normalizePlanCode(status) || PLAN_CODE_FREE;
+  const requestedStatus = resolveFixedInternalPlanForEmail(normalizedEmail, status);
   void env;
   let user = await findUserByEmail(db, normalizedEmail);
   if (user) {
@@ -2323,7 +2360,7 @@ async function enforceUserPlanPolicy(db, user, env = {}) {
   if (!user || !user.id || isBlockedStatus(user.status)) {
     return user;
   }
-  const targetPlan = normalizeRequestedPlan(user.status);
+  const targetPlan = resolveFixedInternalPlanForEmail(user.email, user.status);
   if (
     targetPlan !== PLAN_CODE_FREE
     && targetPlan !== PLAN_CODE_PERSONAL
@@ -2349,6 +2386,153 @@ async function enforceUserPlanPolicy(db, user, env = {}) {
     [targetPlan, user.id],
   );
   return { ...user, status: targetPlan };
+}
+
+function fixedInternalPlanForEmail(email) {
+  const normalizedEmail = normalizeEmail(email);
+  return FIXED_INTERNAL_TEST_PLAN_BY_EMAIL[normalizedEmail] || "";
+}
+
+function resolveFixedInternalPlanForEmail(email, requestedPlan = PLAN_CODE_FREE) {
+  const fixedPlan = fixedInternalPlanForEmail(email);
+  if (fixedPlan) {
+    return fixedPlan;
+  }
+  return normalizePlanCode(requestedPlan) || PLAN_CODE_FREE;
+}
+
+function normalizeUserQualityAccessOverride(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const text = String(value).trim().toLowerCase();
+  if (!text) {
+    return null;
+  }
+  if (text === "1" || text === "true" || text === "on" || text === "yes") {
+    return true;
+  }
+  if (text === "0" || text === "false" || text === "off" || text === "no") {
+    return false;
+  }
+  return null;
+}
+
+async function ensureUserQualityAccessColumns(db) {
+  if (userQualityAccessColumnsReady) {
+    return;
+  }
+  const pragma = await db.prepare(`PRAGMA table_info(users)`).all();
+  const rows = Array.isArray(pragma && pragma.results) ? pragma.results : [];
+  if (!rows.length) {
+    return;
+  }
+  const names = new Set(rows.map((row) => String(row && row.name || "").trim().toLowerCase()));
+  if (!names.has("unrestricted_quality_override")) {
+    try {
+      await dbRun(db, `ALTER TABLE users ADD COLUMN unrestricted_quality_override INTEGER`);
+    } catch (error) {
+      const message = String(error && error.message || "");
+      if (!message.toLowerCase().includes("duplicate column")) {
+        throw error;
+      }
+    }
+  }
+  userQualityAccessColumnsReady = true;
+}
+
+async function ensureAdminFeatureFlagsTable(db) {
+  if (adminFeatureFlagsTableReady) {
+    return;
+  }
+  await dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS admin_feature_flags (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `,
+  );
+  adminFeatureFlagsTableReady = true;
+}
+
+async function readGlobalUnrestrictedQualityEnabled(db, env = {}) {
+  await ensureAdminFeatureFlagsTable(db);
+  const row = await dbGet(
+    db,
+    `
+      SELECT value
+      FROM admin_feature_flags
+      WHERE key = 'unrestricted_quality_global'
+      LIMIT 1
+    `,
+  );
+  const parsed = normalizeUserQualityAccessOverride(row && row.value);
+  if (parsed !== null) {
+    return parsed;
+  }
+  return isBetaUnrestrictedAccessEnabled(env);
+}
+
+async function setGlobalUnrestrictedQualityEnabled(db, enabled) {
+  await ensureAdminFeatureFlagsTable(db);
+  const now = nowIso();
+  await dbRun(
+    db,
+    `
+      INSERT INTO admin_feature_flags (key, value, updated_at)
+      VALUES ('unrestricted_quality_global', ?, ?)
+      ON CONFLICT(key) DO UPDATE SET
+        value = excluded.value,
+        updated_at = excluded.updated_at
+    `,
+    [enabled ? "1" : "0", now],
+  );
+  return {
+    enabled: Boolean(enabled),
+    updatedAt: now,
+  };
+}
+
+async function resolveUserQualityAccessState(db, user, env = {}) {
+  let effectiveUser = user || null;
+  if (
+    effectiveUser
+    && effectiveUser.id
+    && effectiveUser.unrestricted_quality_override === undefined
+  ) {
+    const hydratedUser = await findUserById(db, effectiveUser.id);
+    if (hydratedUser) {
+      effectiveUser = hydratedUser;
+    }
+  }
+  const storedPlanCode = normalizeRequestedPlan(effectiveUser && effectiveUser.status) || PLAN_CODE_FREE;
+  if (!effectiveUser || !effectiveUser.id) {
+    return {
+      storedPlanCode,
+      unrestrictedQualityAccess: false,
+      qualityAccessPlanCode: storedPlanCode || PLAN_CODE_FREE,
+      overrideMode: "inherit",
+      globalEnabled: false,
+    };
+  }
+  await ensureUserQualityAccessColumns(db);
+  const globalEnabled = await readGlobalUnrestrictedQualityEnabled(db, env);
+  const overrideValue = normalizeUserQualityAccessOverride(effectiveUser && effectiveUser.unrestricted_quality_override);
+  const unrestrictedQualityAccess = (
+    overrideValue === null
+      ? globalEnabled
+      : Boolean(overrideValue)
+  );
+  return {
+    storedPlanCode: storedPlanCode || PLAN_CODE_FREE,
+    unrestrictedQualityAccess,
+    qualityAccessPlanCode: unrestrictedQualityAccess ? PLAN_CODE_COMMERCIAL : (storedPlanCode || PLAN_CODE_FREE),
+    overrideMode: overrideValue === null ? "inherit" : (overrideValue ? "on" : "off"),
+    globalEnabled,
+  };
 }
 
 function parseTileQualityFromFileName(fileName) {
@@ -2658,6 +2842,7 @@ const AUTH_API_KEY_DEPS = {
   maskApiKey,
   normalizeDeviceId,
   normalizeEmail,
+  normalizeRequestedPlan,
   nowIso,
   parseBooleanFlag,
   parseJson,
@@ -2885,10 +3070,12 @@ const ADMIN_ROUTE_DEPS = {
   handleAdminSessionLogout: (request, env) => handleAdminSessionLogoutRoute(request, env, ADMIN_SESSION_DEPS),
   handleAdminSessionStart: (request, env) => handleAdminSessionStartRoute(request, env, ADMIN_SESSION_DEPS),
   handleAdminSessionStartPage: (request, env) => handleAdminSessionStartPageRoute(request, env, ADMIN_SESSION_DEPS),
+  handleAdminSetGlobalUnrestrictedQuality: (request, env) => handleAdminSetGlobalUnrestrictedQualityRoute(request, env, ADMIN_USER_DEPS),
   handleAdminUserBlock: (request, env) => handleAdminUserBlockRoute(request, env, ADMIN_USER_DEPS),
   handleAdminUserHardBlock: (request, env) => handleAdminUserHardBlockRoute(request, env, ADMIN_USER_DEPS),
   handleAdminQaAuthReset: (request, env) => handleAdminQaAuthResetRoute(request, env, ADMIN_USER_DEPS),
   handleAdminUserSetPlan: (request, env) => handleAdminUserSetPlanRoute(request, env, ADMIN_USER_DEPS),
+  handleAdminUserSetUnrestrictedQuality: (request, env) => handleAdminUserSetUnrestrictedQualityRoute(request, env, ADMIN_USER_DEPS),
   handleAdminUserUnblock: (request, env) => handleAdminUserUnblockRoute(request, env, ADMIN_USER_DEPS),
 };
 

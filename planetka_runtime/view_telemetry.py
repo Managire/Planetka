@@ -262,20 +262,20 @@ def _ctx_enforce_texture_quality_mode_for_account(ctx, scene, requested_mode):
     if mode == "PREVIEW":
         return mode
     try:
-        from ..auth import get_account_tier
+        from ..auth import get_quality_access_plan_code
         prefs = deps.get_prefs()
-        tier = str(get_account_tier(prefs) or "").strip().lower()
+        quality_plan = str(get_quality_access_plan_code(prefs) or "").strip().lower()
     except deps.import_recoverable_exceptions:
-        tier = ""
+        quality_plan = ""
 
     if mode == "BALANCED":
-        if tier in {"personal", "commercial"}:
+        if quality_plan in {"personal", "commercial"}:
             return "BALANCED"
         return "PREVIEW"
 
-    if tier == "commercial":
+    if quality_plan == "commercial":
         return "FULL"
-    if tier == "personal":
+    if quality_plan == "personal":
         return "BALANCED"
     return "PREVIEW"
 

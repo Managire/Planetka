@@ -9,7 +9,7 @@ import bpy
 from bpy.props import EnumProperty, IntProperty
 from mathutils import Euler, Matrix, Quaternion, Vector
 
-from .auth import get_account_tier
+from .auth import allows_animation_render_for_context
 from .error_utils import PLANETKA_IMPORT_RECOVERABLE_EXCEPTIONS, PLANETKA_RECOVERABLE_EXCEPTIONS
 from .extension_prefs import get_earth_object, get_prefs
 from .operator_utils import ErrorCode, fail, require_planetka_props, require_scene
@@ -119,11 +119,10 @@ def _require_commercial_animation_render_access(operator, prefs=None):
 
 
 def _require_full_animation_access(operator, prefs=None):
-    tier = str(get_account_tier(prefs) or "").strip().lower()
-    if tier == "commercial":
+    if allows_animation_render_for_context(prefs):
         return True
     if operator is not None:
-        operator.report({'ERROR'}, "Final Animation Rendering requires Commercial licence.")
+        operator.report({'ERROR'}, "Final Animation Rendering requires Full Quality texture access.")
     return False
 
 

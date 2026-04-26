@@ -214,9 +214,9 @@ class PLANETKA_OT_SetBackgroundBlack(bpy.types.Operator):
 
 class PLANETKA_OT_RemoveDefaultScene(bpy.types.Operator):
     bl_idname = "planetka.remove_default_scene"
-    bl_label = "Remove Default Cube Scene"
+    bl_label = "Remove Default Scene"
     bl_description = (
-        "Remove default Collection/Cube/Camera/Light and default World shader "
+        "Remove Blender's default Collection/Cube/Camera/Light and default World shader "
         "when the scene is still pristine Blender startup state"
     )
 
@@ -237,7 +237,7 @@ class PLANETKA_OT_RemoveDefaultScene(bpy.types.Operator):
         if not _is_pristine_default_scene(scene):
             return fail(
                 self,
-                "Remove Default Cube Scene is available only for untouched Blender default startup scene.",
+                "Remove Default Scene is available only for untouched Blender default startup scene.",
                 code=ErrorCode.RESOLVE_PRECHECK_FAILED,
                 logger=logger,
             )

@@ -6,7 +6,6 @@ from .auth import (
     is_authenticated,
 )
 from .planetka_ops.account_ops import (
-    PLANETKA_OT_AccountCancelLogin,
     PLANETKA_OT_AccountContact,
     PLANETKA_OT_AccountLogin,
     PLANETKA_OT_AccountLogout,
@@ -394,7 +393,7 @@ class PLANETKA_OT_RebuildEarth(bpy.types.Operator):
 class PLANETKA_OT_AddEarth(bpy.types.Operator):
     bl_idname = "planetka.add_earth"
     bl_label = "Create Earth"
-    bl_description = "Create Planetka Earth assets and run an initial Resolve"
+    bl_description = "Create Planetka Earth assets"
 
     def execute(self, context):
         return _earth_lifecycle_ops.add_earth_execute(self, context, globals())
@@ -475,7 +474,7 @@ class PLANETKA_OT_ResetStartupSetupFactory(bpy.types.Operator):
 class PLANETKA_OT_NavigationApplyShot(bpy.types.Operator):
     bl_idname = "planetka.navigation_apply_shot"
     bl_label = "Apply Navigation Shot"
-    bl_description = "Apply current Navigation shot values to the Planetka camera rig"
+    bl_description = "Apply current Navigation shot values to the active scene camera"
     bl_options = {'INTERNAL'}
 
     silent: BoolProperty(

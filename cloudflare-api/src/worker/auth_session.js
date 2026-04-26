@@ -121,6 +121,15 @@ export async function requireAuthenticatedUserContext(request, env, options = {}
     access.plan_code || access.user_status || access.plan || access.planCode || access.userStatus || "",
   ).trim();
   const tokenPlanCode = tokenPlanRaw ? deps.normalizeRequestedPlan(tokenPlanRaw) : "";
+  const tokenQualityAccessPlanRaw = String(
+    access.quality_access_plan_code || access.qualityAccessPlanCode || tokenPlanRaw || "",
+  ).trim();
+  const tokenQualityAccessPlanCode = tokenQualityAccessPlanRaw
+    ? deps.normalizeRequestedPlan(tokenQualityAccessPlanRaw)
+    : tokenPlanCode;
+  const tokenUnrestrictedQualityAccess = deps.parseBooleanFlag(
+    access.unrestricted_quality_access ?? access.unrestrictedQualityAccess,
+  );
   if (
     lightweightAccessClaims
     && !requireAdmin
@@ -137,18 +146,20 @@ export async function requireAuthenticatedUserContext(request, env, options = {}
     }
     return {
       db,
-      user: {
-        id: String(access.sub || "").trim(),
-        email: String(access.email || "").trim(),
-        status: tokenPlanCode,
-      },
-      access,
-      planCode: tokenPlanCode,
-      authMethod,
-      apiKeyId,
-      deviceId,
-      devicePolicy: null,
-      tokenSource,
+        user: {
+          id: String(access.sub || "").trim(),
+          email: String(access.email || "").trim(),
+          status: tokenPlanCode,
+        },
+        access,
+        planCode: tokenPlanCode,
+        qualityAccessPlanCode: tokenQualityAccessPlanCode || tokenPlanCode,
+        unrestrictedQualityAccess: Boolean(tokenUnrestrictedQualityAccess),
+        authMethod,
+        apiKeyId,
+        deviceId,
+        devicePolicy: null,
+        tokenSource,
     };
   }
 
@@ -163,7 +174,9 @@ export async function requireAuthenticatedUserContext(request, env, options = {}
   if (!user) {
     return { error: deps.json({ ok: false, error: "user_not_found" }, 404, env) };
   }
-  const planCode = deps.resolvePlanCode(user, env);
+  const qualityAccess = await deps.resolveUserQualityAccessState(db, user, env);
+  const planCode = qualityAccess.storedPlanCode;
+  const qualityAccessPlanCode = qualityAccess.qualityAccessPlanCode;
   let devicePolicy = null;
   if (enforceApiKeyDevicePolicy && authMethod === "api_key" && apiKeyId) {
     const keyUsable = await deps.isApiKeyUsableById(db, apiKeyId, String(user.id || ""));
@@ -198,6 +211,8 @@ export async function requireAuthenticatedUserContext(request, env, options = {}
     user,
     access,
     planCode,
+    qualityAccessPlanCode,
+    unrestrictedQualityAccess: Boolean(qualityAccess.unrestrictedQualityAccess),
     authMethod,
     apiKeyId,
     deviceId,

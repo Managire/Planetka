@@ -23,7 +23,6 @@ from .animation_tools import (
 from .extension_prefs import PlanetkaExtensionPreferences
 from .operators import (
     PLANETKA_OT_AddEarth,
-    PLANETKA_OT_AccountCancelLogin,
     PLANETKA_OT_CheckUpdates,
     PLANETKA_OT_AccountContact,
     PLANETKA_OT_AccountLogin,
@@ -158,7 +157,6 @@ else:
 
 _PLANETKA_PROPERTIES_ANNOTATIONS_ORIGINAL = dict(getattr(PlanetkaProperties, "__annotations__", {}) or {})
 _LEGACY_PROPERTY_NAMES = (
-    "anim_render_texture_quality",
     "anim_start_altitude_km",
     "anim_flyby_degrees",
     "anim_flyby_camera_heading_deg",
@@ -184,7 +182,6 @@ classes = (
     PLANETKA_OT_CheckUpdates,
     PLANETKA_OT_UpdateNow,
     PLANETKA_OT_AccountOpenLogin,
-    PLANETKA_OT_AccountCancelLogin,
     PLANETKA_OT_AccountLogout,
     PLANETKA_OT_AccountContact,
     PLANETKA_OT_AccountUpgrade,

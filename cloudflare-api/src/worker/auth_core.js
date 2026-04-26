@@ -323,14 +323,17 @@ export function createAuthCore(deps) {
 
   async function issueTileSessionToken(env, auth, requestedQualityMode, requestedResolveId = "") {
     const safeQualityMode = deps.normalizeQualityMode(requestedQualityMode);
-    const safePlanCode = deps.normalizeRequestedPlan(auth && auth.planCode);
-    if (!deps.isQualityModeAllowedForPlan(safePlanCode, safeQualityMode)) {
+    const safeStoredPlanCode = deps.normalizeRequestedPlan(auth && auth.planCode);
+    const safeQualityAccessPlanCode = deps.normalizeRequestedPlan(
+      auth && (auth.qualityAccessPlanCode || auth.planCode),
+    );
+    if (!deps.isQualityModeAllowedForPlan(safeQualityAccessPlanCode, safeQualityMode)) {
       return {
         error: deps.json(
           {
             ok: false,
             error: "quality_mode_not_allowed_for_tier",
-            message: deps.qualityModeNotAllowedMessage(safePlanCode, safeQualityMode),
+            message: deps.qualityModeNotAllowedMessage(safeStoredPlanCode, safeQualityMode),
             requested_quality_mode: safeQualityMode,
           },
           403,
@@ -345,7 +348,9 @@ export function createAuthCore(deps) {
       type: "tile_session",
       sub: String(auth && auth.user && auth.user.id || "").trim(),
       email: String(auth && auth.user && auth.user.email || "").trim(),
-      plan_code: safePlanCode,
+      plan_code: safeQualityAccessPlanCode,
+      stored_plan_code: safeStoredPlanCode,
+      quality_access_plan_code: safeQualityAccessPlanCode,
       quality_mode: safeQualityMode,
       resolve_id: safeResolveId,
       auth_method: String(auth && auth.authMethod || "").trim(),
@@ -401,12 +406,20 @@ export function createAuthCore(deps) {
       return { error: deps.json({ ok: false, error: "invalid_tile_session_token" }, 401, env) };
     }
     const planCode = deps.normalizeRequestedPlan(payload && (payload.plan_code || payload.user_status) || "");
+    const storedPlanCode = deps.normalizeRequestedPlan(
+      payload && (payload.stored_plan_code || payload.storedPlanCode || planCode) || "",
+    );
+    const qualityAccessPlanCode = deps.normalizeRequestedPlan(
+      payload && (payload.quality_access_plan_code || payload.qualityAccessPlanCode || planCode) || "",
+    );
     const qualityMode = deps.normalizeQualityMode(payload && payload.quality_mode || "");
     const resolveId = normalizeResolveId(payload && payload.resolve_id || "");
     const claims = {
       userId,
       userEmail: String(payload && payload.email || "").trim(),
       planCode,
+      storedPlanCode: storedPlanCode || planCode,
+      qualityAccessPlanCode: qualityAccessPlanCode || planCode,
       qualityMode,
       resolveId,
       authMethod: String(payload && payload.auth_method || "").trim(),

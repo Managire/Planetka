@@ -1314,6 +1314,9 @@ export async function collectAnalyticsSnapshot(
 
 export async function listAnalyticsUsers(db, env, options = {}, deps) {
   await deps.ensureTileRequestEventsTable(db);
+  if (typeof deps.ensureUserQualityAccessColumns === "function") {
+    await deps.ensureUserQualityAccessColumns(db);
+  }
   const sortBy = parseAnalyticsUsersSort(options.sort_by);
   const sortDir = parseAnalyticsUsersSortDirection(options.sort_dir);
   const query = String(options.query || "").trim().toLowerCase();
@@ -1383,6 +1386,7 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
         u.email AS user_email,
         COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) AS user_status,
         COALESCE(NULLIF(TRIM(LOWER(u.status)), ''), ?) AS plan_code,
+        u.unrestricted_quality_override AS unrestricted_quality_override,
         COALESCE(rc.resolve_count, 0) AS resolve_count,
         COALESCE(du.lifetime_bytes, 0) AS lifetime_bytes,
         COALESCE(du.month_bytes, 0) AS month_bytes,

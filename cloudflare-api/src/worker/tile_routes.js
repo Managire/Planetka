@@ -40,7 +40,7 @@ export async function handleTileSessionStart(request, env, deps) {
   const auth = await requireAuthenticatedUserContext(
     request,
     env,
-    { enforceApiKeyDevicePolicy: false, lightweightAccessClaims: true },
+    { enforceApiKeyDevicePolicy: false, lightweightAccessClaims: false },
   );
   if (auth.error) {
     return auth.error;
@@ -106,6 +106,7 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
   const db = requireDb(env);
   let user = { id: "", email: "" };
   let planCode = PLAN_CODE_FREE;
+  let qualityAccessPlanCode = PLAN_CODE_FREE;
   let deviceId = "";
   let tokenQualityMode = "";
   let tokenResolveId = "";
@@ -118,7 +119,10 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
       id: String(tileSessionAuth.claims.userId || "").trim(),
       email: String(tileSessionAuth.claims.userEmail || "").trim(),
     };
-    planCode = normalizeRequestedPlan(tileSessionAuth.claims.planCode);
+    planCode = normalizeRequestedPlan(tileSessionAuth.claims.storedPlanCode || tileSessionAuth.claims.planCode);
+    qualityAccessPlanCode = normalizeRequestedPlan(
+      tileSessionAuth.claims.qualityAccessPlanCode || tileSessionAuth.claims.planCode,
+    );
     deviceId = normalizeDeviceId(tileSessionAuth.claims.deviceId || request.headers.get("X-Planetka-Device-Id") || "");
     tokenQualityMode = normalizeQualityMode(tileSessionAuth.claims.qualityMode || "");
     tokenResolveId = normalizeResolveId(tileSessionAuth.claims.resolveId || "");
@@ -126,13 +130,14 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
     const auth = await requireAuthenticatedUserContext(
       request,
       env,
-      { enforceApiKeyDevicePolicy: false, lightweightAccessClaims: true },
+      { enforceApiKeyDevicePolicy: false, lightweightAccessClaims: false },
     );
     if (auth.error) {
       return auth.error;
     }
     user = auth.user;
     planCode = normalizeRequestedPlan(auth.planCode);
+    qualityAccessPlanCode = normalizeRequestedPlan(auth.qualityAccessPlanCode || auth.planCode);
     deviceId = normalizeDeviceId(auth.deviceId || request.headers.get("X-Planetka-Device-Id") || "");
   }
 
@@ -188,7 +193,7 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
     }
     const effectiveQualityMode = tokenQualityMode || requestedQualityMode;
     if ((request.method === "GET" || request.method === "HEAD")
-      && !isQualityModeAllowedForPlan(planCode, effectiveQualityMode)) {
+      && !isQualityModeAllowedForPlan(qualityAccessPlanCode, effectiveQualityMode)) {
       eventStatusCode = 403;
       eventErrorCode = "quality_mode_not_allowed_for_tier";
       return json(
@@ -204,7 +209,7 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
     }
     const tileRequiredQualityMode = minimumPlanQualityForTile(fileName);
     if ((request.method === "GET" || request.method === "HEAD")
-      && !isQualityModeAllowedForPlan(planCode, tileRequiredQualityMode)) {
+      && !isQualityModeAllowedForPlan(qualityAccessPlanCode, tileRequiredQualityMode)) {
       eventStatusCode = 403;
       eventErrorCode = "tile_quality_not_allowed_for_tier";
       return json(

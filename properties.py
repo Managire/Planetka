@@ -874,17 +874,6 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         update=_update_anim_preview_keyframes,
     )
 
-    anim_render_texture_quality: EnumProperty(
-        name="Animation Texture Quality",
-        items=(
-            ("PREVIEW", "Preview", "Fast preview quality; visible tile LOD swapping"),
-            ("BALANCED", "Balanced", "Recommended when RAM/VRAM is limited"),
-            ("FULL", "Full Quality", "Highly recommended for final renders"),
-        ),
-        default="FULL",
-        description="Texture quality used by Render Animation",
-    )
-
     anim_start_altitude_km: FloatProperty(
         name="Start Altitude (km)",
         default=100.0,

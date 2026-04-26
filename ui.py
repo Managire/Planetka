@@ -9,7 +9,9 @@ from .auth import (
     allows_balanced_full_quality_for_context,
     get_account_tier,
     get_connected_email,
+    get_stored_account_tier,
     get_status_message,
+    has_unrestricted_quality_access,
     is_authenticated,
 )
 from .extension_prefs import get_earth_object, get_prefs
@@ -431,6 +433,14 @@ def _account_tier_label(tier):
     return "Free"
 
 
+def _account_tier_display_label(tier, unrestricted=False):
+    base_label = _account_tier_label(tier)
+    safe_tier = str(tier or "").strip().lower()
+    if unrestricted and safe_tier in {"free", "personal"}:
+        return f"{base_label} (unrestricted)"
+    return base_label
+
+
 def _is_paid_connected_account():
     if not _is_connected():
         return False
@@ -508,42 +518,60 @@ def _draw_account_panel(layout):
     updater_ready = bool(updater.get("update_ready", False))
     latest_version = str(updater.get("latest_version") or "").strip()
     current_version = str(updater.get("current_version") or "").strip()
+    key_text = str(getattr(prefs, "auth_api_key_input", "") or "").strip()
+    key_mask = str(getattr(prefs, "auth_api_key_mask", "") or "").strip()
+    stored_key = str(getattr(prefs, "auth_api_key", "") or "").strip()
+    key_locked = bool(connected)
     inline_status_text, inline_status_icon, inline_status_alert = _api_key_inline_status(
         prefs,
         connected,
         status_message,
     )
 
-    if not connected:
-        layout.label(text="Paste API key to connect Planetka", icon="INFO")
-        key_row = layout.row(align=True)
+    request_row = layout.row()
+    request_row.enabled = not key_locked
+    request_row.operator("planetka.account_login", text="Request API Key", icon="URL")
+
+    key_row = layout.row(align=True)
+    if key_locked:
+        key_row.enabled = False
+        if key_mask:
+            key_row.prop(prefs, "auth_api_key_mask", text="API Key")
+        else:
+            key_row.prop(prefs, "auth_api_key_input", text="API Key")
+    else:
+        key_row.enabled = True
         key_row.prop(prefs, "auth_api_key_input", text="API Key")
-        if inline_status_text:
-            key_status = key_row.row(align=True)
-            key_status.alert = bool(inline_status_alert)
-            key_status.label(text=inline_status_text, icon=inline_status_icon)
-        free_row = layout.row()
-        free_row.operator("planetka.account_login", text="Request API Key", icon="URL")
-        layout.label(text=f"Addon version: {current_version or 'unknown'}", icon="BLENDER")
-        if updater_ready and latest_version:
-            row = layout.row()
-            row.alert = True
-            row.label(text=f"Update available: {latest_version}", icon="ERROR")
-            row.operator("planetka.update_now", text="Update now", icon="IMPORT")
-        if status_message:
-            layout.label(text=status_message, icon="INFO")
-        return
+    if inline_status_text and not connected:
+        key_status = key_row.row(align=True)
+        key_status.alert = bool(inline_status_alert)
+        key_status.label(text=inline_status_text, icon=inline_status_icon)
 
-    email = get_connected_email(prefs)
-    tier = str(get_account_tier(prefs) or "").strip().lower()
-    layout.label(text=f"Account: {email}", icon="CHECKMARK")
-    layout.label(text=f"Account Type: {_account_tier_label(tier)}", icon="USER")
+    key_action_row = layout.row(align=True)
+    connect_row = key_action_row.row(align=True)
+    connect_row.enabled = (not key_locked) and bool(key_text)
+    connect_row.operator("planetka.account_open_login", text="Connect API Key", icon="CHECKMARK")
 
-    action_row = layout.row()
-    action_row.operator("planetka.account_logout", text="Log Out", icon="X")
-    if tier in {"free", "personal"}:
-        action_row.operator("planetka.account_upgrade", text="Upgrade Licence", icon="URL")
-    layout.label(text=f"Addon version: {current_version or 'unknown'}", icon="BLENDER")
+    if connected:
+        email = get_connected_email(prefs)
+        account_tier = str(get_account_tier(prefs) or get_stored_account_tier(prefs) or "").strip().lower()
+        unrestricted_quality = bool(has_unrestricted_quality_access(prefs))
+        layout.label(text="Status: Connected to Planetka cloud", icon="CHECKMARK")
+        layout.label(text=f"Account: {email}", icon="USER")
+        layout.label(
+            text=f"Account Tier: {_account_tier_display_label(account_tier, unrestricted_quality)}",
+            icon="BOOKMARKS",
+        )
+
+        action_row = layout.row()
+        action_row.operator("planetka.account_logout", text="Log Out", icon="X")
+        if account_tier in {"free", "personal"}:
+            action_row.operator("planetka.account_upgrade", text="Upgrade Licence", icon="URL")
+
+    version_row = layout.row()
+    version_row.label(text=f"Addon version: {current_version or 'unknown'}", icon="BLENDER")
+    updates_row = layout.row()
+    updates_row.operator("planetka.check_updates", text="Check for updates", icon="FILE_REFRESH")
     if updater_ready and latest_version:
         row = layout.row()
         row.alert = True
@@ -610,7 +638,7 @@ def _draw_new_earth(layout):
     row.scale_y = ADD_EARTH_BUTTON_SCALE_Y
     row.alert = False
     row.enabled = (not has_earth) and connected
-    row.operator("planetka.remove_default_scene", text="Remove Default Cube Scene", icon="TRASH")
+    row.operator("planetka.remove_default_scene", text="Remove Default Scene", icon="TRASH")
 
     row = layout.row()
     row.scale_x = ADD_EARTH_BUTTON_SCALE_X
@@ -831,11 +859,11 @@ def _draw_advanced_telemetry(layout, scene):
     download_thread_ms = diag.get("resolve_download_thread_ms")
     advanced_col.label(text=f"Tiles: {_fmt_int(diag.get('last_tile_count'))}")
     advanced_col.label(text=f"Spatial Resolution: {_fmt_m(diag.get('resolve_required_mpp_m'))}")
-    advanced_col.label(text=f"Tiles Size: {_fmt_mb(diag.get('resolve_textures_mb'))}")
-    advanced_col.label(text=f"Pre-calculation Time: {_fmt_ms(diag.get('last_resolve_ms'))}")
+    advanced_col.label(text=f"Texture Size: {_fmt_mb(diag.get('resolve_textures_mb'))}")
+    advanced_col.label(text=f"Resolve Prep Time: {_fmt_ms(diag.get('last_resolve_ms'))}")
     advanced_col.label(text=f"Download Time (Wall): {_fmt_ms(download_time_ms)}")
     if download_thread_ms is not None:
-        advanced_col.label(text=f"Download Time (Summed Requests): {_fmt_ms(download_thread_ms)}")
+        advanced_col.label(text=f"Download Time (All Requests): {_fmt_ms(download_thread_ms)}")
     advanced_col.label(text=f"Download Size: {_fmt_mb(download_size_mb)}")
     advanced_col.label(text=f"Effective Download Speed: {_fmt_mbps(download_size_mb, download_time_ms)}")
 
@@ -1757,7 +1785,7 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         final_render_box = layout.box()
         final_render_box.label(text="Final Animation Render", icon="RENDER_ANIMATION")
         quality_row = final_render_box.row()
-        quality_row.label(text="Texture Quality for Animation: Full Quality", icon="IMAGE_DATA")
+        quality_row.label(text="Always uses Full Quality textures", icon="IMAGE_DATA")
         final_render_allowed = allows_animation_render_for_context(prefs=get_prefs(), source=props)
         quality_row.enabled = bool(final_render_allowed)
 
@@ -1778,4 +1806,4 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             icon="QUESTION",
         )
         if not final_render_allowed:
-            final_render_box.label(text="Final Animation Rendering requires Commercial licence.", icon="INFO")
+            final_render_box.label(text="Final Animation Rendering requires Full Quality texture access.", icon="INFO")

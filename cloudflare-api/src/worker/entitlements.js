@@ -1,5 +1,3 @@
-import { isBetaUnrestrictedAccessEnabled } from "./env.js";
-
 export const PLAN_CODE_FREE = "free";
 export const PLAN_CODE_PERSONAL = "personal";
 export const PLAN_CODE_COMMERCIAL = "commercial";
@@ -68,11 +66,9 @@ export function normalizeRequestedPlan(value) {
 }
 
 export function resolvePolicyPlanCode(user, env = {}) {
+  void env;
   if (user && isBlockedStatus(user.status)) {
     return "blocked";
-  }
-  if (isBetaUnrestrictedAccessEnabled(env)) {
-    return PLAN_CODE_COMMERCIAL;
   }
   return normalizeRequestedPlan(user && user.status);
 }

@@ -145,26 +145,6 @@ class PLANETKA_OT_UpdateNow(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class PLANETKA_OT_AccountCancelLogin(bpy.types.Operator):
-    bl_idname = "planetka.account_cancel_login"
-    bl_label = "Clear API Key"
-    bl_description = "Clear the API key text field without logging out"
-
-    def execute(self, context):
-        prefs = get_prefs()
-        if not prefs:
-            return fail(
-                self,
-                "Planetka preferences not available.",
-                code=ErrorCode.RESOLVE_PREFS_MISSING,
-                logger=logger,
-            )
-
-        prefs.auth_api_key_input = ""
-        self.report({'INFO'}, "Planetka API key field cleared.")
-        return {'FINISHED'}
-
-
 class PLANETKA_OT_AccountLogout(bpy.types.Operator):
     bl_idname = "planetka.account_logout"
     bl_label = "Log Out"

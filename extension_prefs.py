@@ -1,7 +1,6 @@
 import bpy
 import json
 import logging
-import time
 from bpy.types import AddonPreferences
 from bpy.props import EnumProperty, IntProperty, StringProperty
 
@@ -21,9 +20,16 @@ FALLBACK_AUTH_DEVICE_ID_KEY = "planetka_auth_device_id"
 FALLBACK_AUTH_ACCESS_TOKEN_KEY = "planetka_auth_access_token"
 FALLBACK_AUTH_REFRESH_TOKEN_KEY = "planetka_auth_refresh_token"
 FALLBACK_AUTH_ACCOUNT_TIER_KEY = "planetka_auth_account_tier"
+FALLBACK_AUTH_STORED_ACCOUNT_TIER_KEY = "planetka_auth_stored_account_tier"
 FALLBACK_AUTH_COMMERCIAL_USE_ALLOWED_KEY = "planetka_auth_commercial_use_allowed"
 FALLBACK_AUTH_PLAN_CODE_KEY = "planetka_auth_plan_code"
 FALLBACK_AUTH_PLAN_NAME_KEY = "planetka_auth_plan_name"
+FALLBACK_AUTH_STORED_PLAN_CODE_KEY = "planetka_auth_stored_plan_code"
+FALLBACK_AUTH_STORED_PLAN_NAME_KEY = "planetka_auth_stored_plan_name"
+FALLBACK_AUTH_QUALITY_ACCESS_PLAN_CODE_KEY = "planetka_auth_quality_access_plan_code"
+FALLBACK_AUTH_UNRESTRICTED_QUALITY_ACCESS_KEY = "planetka_auth_unrestricted_quality_access"
+FALLBACK_AUTH_UNRESTRICTED_QUALITY_OVERRIDE_KEY = "planetka_auth_unrestricted_quality_override"
+FALLBACK_AUTH_UNRESTRICTED_QUALITY_GLOBAL_KEY = "planetka_auth_unrestricted_quality_global"
 FALLBACK_AUTH_CONTACT_URL_KEY = "planetka_auth_contact_url"
 FALLBACK_AUTH_UPGRADE_URL_KEY = "planetka_auth_upgrade_url"
 FALLBACK_AUTH_LOGIN_STATE_KEY = "planetka_auth_login_state"
@@ -34,136 +40,6 @@ TEXTURE_SOURCE_MODE_DEFAULT = "CLOUDFLARE"
 REMOTE_TEXTURE_BASE_DEFAULT = "remote"
 
 logger = logging.getLogger(__name__)
-
-_API_KEY_AUTO_CONNECT_TIMER_ACTIVE = False
-_API_KEY_AUTO_CONNECT_PENDING_TOKEN = ""
-_API_KEY_AUTO_CONNECT_PENDING_AT = 0.0
-_API_KEY_AUTO_CONNECT_LAST_ATTEMPT_TOKEN = ""
-_API_KEY_AUTO_CONNECT_DEBOUNCE_SECONDS = 0.45
-_API_KEY_AUTO_CONNECT_MIN_LENGTH = 20
-
-
-def _looks_like_api_key_candidate(token):
-    safe = str(token or "").strip()
-    if len(safe) < int(_API_KEY_AUTO_CONNECT_MIN_LENGTH):
-        return False
-    if any(ch.isspace() for ch in safe):
-        return False
-    return True
-
-
-def _run_api_key_auto_connect():
-    global _API_KEY_AUTO_CONNECT_TIMER_ACTIVE
-    global _API_KEY_AUTO_CONNECT_PENDING_TOKEN
-    global _API_KEY_AUTO_CONNECT_PENDING_AT
-    global _API_KEY_AUTO_CONNECT_LAST_ATTEMPT_TOKEN
-
-    try:
-        prefs = get_prefs()
-        if prefs is None:
-            _API_KEY_AUTO_CONNECT_TIMER_ACTIVE = False
-            return None
-
-        current_token = str(getattr(prefs, "auth_api_key_input", "") or "").strip()
-        pending_token = str(_API_KEY_AUTO_CONNECT_PENDING_TOKEN or "").strip()
-        if not pending_token:
-            _API_KEY_AUTO_CONNECT_TIMER_ACTIVE = False
-            return None
-
-        if current_token != pending_token:
-            if _looks_like_api_key_candidate(current_token):
-                _API_KEY_AUTO_CONNECT_PENDING_TOKEN = current_token
-                _API_KEY_AUTO_CONNECT_PENDING_AT = time.time()
-                return float(_API_KEY_AUTO_CONNECT_DEBOUNCE_SECONDS)
-            _API_KEY_AUTO_CONNECT_PENDING_TOKEN = ""
-            _API_KEY_AUTO_CONNECT_PENDING_AT = 0.0
-            _API_KEY_AUTO_CONNECT_TIMER_ACTIVE = False
-            return None
-
-        elapsed = float(time.time() - float(_API_KEY_AUTO_CONNECT_PENDING_AT or 0.0))
-        remaining = float(_API_KEY_AUTO_CONNECT_DEBOUNCE_SECONDS) - elapsed
-        if remaining > 0.0:
-            return max(0.05, remaining)
-
-        from .auth import connect_with_prefs_api_key, describe_auth_error, is_authenticated
-
-        if is_authenticated(prefs):
-            _API_KEY_AUTO_CONNECT_PENDING_TOKEN = ""
-            _API_KEY_AUTO_CONNECT_PENDING_AT = 0.0
-            _API_KEY_AUTO_CONNECT_TIMER_ACTIVE = False
-            return None
-
-        _API_KEY_AUTO_CONNECT_LAST_ATTEMPT_TOKEN = current_token
-        try:
-            connect_with_prefs_api_key(prefs)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
-            try:
-                prefs.auth_status_message = describe_auth_error(exc)
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                pass
-        except (RuntimeError, TypeError, ValueError, AttributeError, OSError) as exc:
-            logger.debug("Planetka: auto-connect with API key failed", exc_info=True)
-            try:
-                prefs.auth_status_message = describe_auth_error(exc)
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                pass
-
-        _API_KEY_AUTO_CONNECT_PENDING_TOKEN = ""
-        _API_KEY_AUTO_CONNECT_PENDING_AT = 0.0
-        _API_KEY_AUTO_CONNECT_TIMER_ACTIVE = False
-        return None
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        _API_KEY_AUTO_CONNECT_TIMER_ACTIVE = False
-        return None
-    except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
-        logger.debug("Planetka: API key auto-connect timer failed", exc_info=True)
-        _API_KEY_AUTO_CONNECT_TIMER_ACTIVE = False
-        return None
-
-
-def _on_auth_api_key_input_updated(_self, _context):
-    global _API_KEY_AUTO_CONNECT_TIMER_ACTIVE
-    global _API_KEY_AUTO_CONNECT_PENDING_TOKEN
-    global _API_KEY_AUTO_CONNECT_PENDING_AT
-    global _API_KEY_AUTO_CONNECT_LAST_ATTEMPT_TOKEN
-
-    try:
-        prefs = get_prefs()
-        if prefs is None:
-            return
-
-        from .auth import is_authenticated
-
-        if is_authenticated(prefs):
-            return
-
-        token = str(getattr(prefs, "auth_api_key_input", "") or "").strip()
-        if not _looks_like_api_key_candidate(token):
-            if not token:
-                _API_KEY_AUTO_CONNECT_LAST_ATTEMPT_TOKEN = ""
-            _API_KEY_AUTO_CONNECT_PENDING_TOKEN = ""
-            _API_KEY_AUTO_CONNECT_PENDING_AT = 0.0
-            return
-        if token == str(_API_KEY_AUTO_CONNECT_LAST_ATTEMPT_TOKEN or "").strip():
-            return
-
-        _API_KEY_AUTO_CONNECT_PENDING_TOKEN = token
-        _API_KEY_AUTO_CONNECT_PENDING_AT = time.time()
-        if not _API_KEY_AUTO_CONNECT_TIMER_ACTIVE:
-            _API_KEY_AUTO_CONNECT_TIMER_ACTIVE = True
-            try:
-                bpy.app.timers.register(_run_api_key_auto_connect, first_interval=float(_API_KEY_AUTO_CONNECT_DEBOUNCE_SECONDS))
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                _API_KEY_AUTO_CONNECT_TIMER_ACTIVE = False
-            except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
-                logger.debug("Planetka: failed registering API key auto-connect timer", exc_info=True)
-                _API_KEY_AUTO_CONNECT_TIMER_ACTIVE = False
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        return
-    except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
-        logger.debug("Planetka: API key input update hook failed", exc_info=True)
-        return
-
 
 class PlanetkaExtensionPreferences(AddonPreferences):
     __slots__ = ()
@@ -199,16 +75,22 @@ class PlanetkaExtensionPreferences(AddonPreferences):
         name="Auth API Key Input",
         default="",
         options={'HIDDEN'},
-        update=_on_auth_api_key_input_updated,
     )
     auth_api_key_mask: StringProperty(name="Auth API Key Mask", default="", options={'HIDDEN'})
     auth_device_id: StringProperty(name="Auth Device ID", default="", options={'HIDDEN'})
     auth_access_token: StringProperty(name="Auth Access Token", default="", options={'HIDDEN'})
     auth_refresh_token: StringProperty(name="Auth Refresh Token", default="", options={'HIDDEN'})
     auth_account_tier: StringProperty(name="Auth Account Tier", default="", options={'HIDDEN'})
+    auth_stored_account_tier: StringProperty(name="Auth Stored Account Tier", default="", options={'HIDDEN'})
     auth_commercial_use_allowed: StringProperty(name="Auth Commercial Use Allowed", default="", options={'HIDDEN'})
     auth_plan_code: StringProperty(name="Auth Plan Code", default="", options={'HIDDEN'})
     auth_plan_name: StringProperty(name="Auth Plan Name", default="", options={'HIDDEN'})
+    auth_stored_plan_code: StringProperty(name="Auth Stored Plan Code", default="", options={'HIDDEN'})
+    auth_stored_plan_name: StringProperty(name="Auth Stored Plan Name", default="", options={'HIDDEN'})
+    auth_quality_access_plan_code: StringProperty(name="Auth Quality Access Plan Code", default="", options={'HIDDEN'})
+    auth_unrestricted_quality_access: StringProperty(name="Auth Unrestricted Quality Access", default="", options={'HIDDEN'})
+    auth_unrestricted_quality_override: StringProperty(name="Auth Unrestricted Quality Override", default="", options={'HIDDEN'})
+    auth_unrestricted_quality_global: StringProperty(name="Auth Unrestricted Quality Global", default="", options={'HIDDEN'})
     auth_contact_url: StringProperty(name="Auth Contact URL", default="", options={'HIDDEN'})
     auth_upgrade_url: StringProperty(name="Auth Upgrade URL", default="", options={'HIDDEN'})
     auth_login_state: StringProperty(name="Auth Login State", default="logged_out", options={'HIDDEN'})
@@ -373,6 +255,10 @@ def get_prefs():
             lambda self: self._get_value(FALLBACK_AUTH_ACCOUNT_TIER_KEY, ""),
             lambda self, value: self._set_value(FALLBACK_AUTH_ACCOUNT_TIER_KEY, value),
         )
+        auth_stored_account_tier = property(
+            lambda self: self._get_value(FALLBACK_AUTH_STORED_ACCOUNT_TIER_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_STORED_ACCOUNT_TIER_KEY, value),
+        )
         auth_commercial_use_allowed = property(
             lambda self: self._get_value(FALLBACK_AUTH_COMMERCIAL_USE_ALLOWED_KEY, ""),
             lambda self, value: self._set_value(FALLBACK_AUTH_COMMERCIAL_USE_ALLOWED_KEY, value),
@@ -384,6 +270,30 @@ def get_prefs():
         auth_plan_name = property(
             lambda self: self._get_value(FALLBACK_AUTH_PLAN_NAME_KEY, ""),
             lambda self, value: self._set_value(FALLBACK_AUTH_PLAN_NAME_KEY, value),
+        )
+        auth_stored_plan_code = property(
+            lambda self: self._get_value(FALLBACK_AUTH_STORED_PLAN_CODE_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_STORED_PLAN_CODE_KEY, value),
+        )
+        auth_stored_plan_name = property(
+            lambda self: self._get_value(FALLBACK_AUTH_STORED_PLAN_NAME_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_STORED_PLAN_NAME_KEY, value),
+        )
+        auth_quality_access_plan_code = property(
+            lambda self: self._get_value(FALLBACK_AUTH_QUALITY_ACCESS_PLAN_CODE_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_QUALITY_ACCESS_PLAN_CODE_KEY, value),
+        )
+        auth_unrestricted_quality_access = property(
+            lambda self: self._get_value(FALLBACK_AUTH_UNRESTRICTED_QUALITY_ACCESS_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_UNRESTRICTED_QUALITY_ACCESS_KEY, value),
+        )
+        auth_unrestricted_quality_override = property(
+            lambda self: self._get_value(FALLBACK_AUTH_UNRESTRICTED_QUALITY_OVERRIDE_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_UNRESTRICTED_QUALITY_OVERRIDE_KEY, value),
+        )
+        auth_unrestricted_quality_global = property(
+            lambda self: self._get_value(FALLBACK_AUTH_UNRESTRICTED_QUALITY_GLOBAL_KEY, ""),
+            lambda self, value: self._set_value(FALLBACK_AUTH_UNRESTRICTED_QUALITY_GLOBAL_KEY, value),
         )
         auth_contact_url = property(
             lambda self: self._get_value(FALLBACK_AUTH_CONTACT_URL_KEY, ""),
