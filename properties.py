@@ -3,6 +3,7 @@ import importlib
 import logging
 import math
 import re
+from types import SimpleNamespace
 from bpy.props import (
     BoolProperty,
     CollectionProperty,
@@ -19,7 +20,9 @@ from .geonames_db import get_cached_place_by_display, get_place_by_display, sear
 from .state import (
     is_navigation_or_camera_sync_suspended,
     request_next_navigation_apply_behavior,
+    resume_navigation_camera_control_sync,
     resume_navigation_shot_updates,
+    suspend_navigation_camera_control_sync,
     suspend_navigation_shot_updates,
     update_atmosphere_enabled,
     update_auto_resolve,
@@ -381,11 +384,22 @@ def _set_nav_city_search(self, value):
         self["nav_city_selected_name"] = ""
         return
 
+    scene_for_updates = getattr(self, "id_data", None)
+    if scene_for_updates is None or not isinstance(scene_for_updates, bpy.types.Scene):
+        scene_for_updates = getattr(bpy.context, "scene", None)
+    if scene_for_updates is not None:
+        context_for_updates = SimpleNamespace(scene=scene_for_updates)
+    else:
+        context_for_updates = bpy.context
+
     nav_suspended = False
+    camera_sync_suspended = False
     try:
         _ANIM_PREVIEW_UPDATE_GUARD = True
         suspend_navigation_shot_updates()
         nav_suspended = True
+        suspend_navigation_camera_control_sync()
+        camera_sync_suspended = True
         self.nav_latitude_deg = float(place.get("latitude", 0.0))
         self.nav_longitude_deg = float(place.get("longitude", 0.0))
         self.nav_altitude_km = PLACE_SEARCH_DEFAULT_ALTITUDE_KM
@@ -394,23 +408,22 @@ def _set_nav_city_search(self, value):
         self.nav_roll_deg = NAV_DEFAULT_ROLL_DEG
         self["nav_city_selected_name"] = str(place.get("display_name", text))
         self["nav_city_search"] = str(place.get("display_name", text))
-    except (TypeError, ValueError, AttributeError):
+        if scene_for_updates is not None:
+            request_next_navigation_apply_behavior(
+                scene_for_updates,
+                force_camera_view=True,
+                sync_active_view_when_not_camera=False,
+            )
+        update_navigation_shot(self, context_for_updates)
+        _update_anim_preview_keyframes(self, context_for_updates)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
         return
     finally:
+        if camera_sync_suspended:
+            resume_navigation_camera_control_sync()
         if nav_suspended:
             resume_navigation_shot_updates()
         _ANIM_PREVIEW_UPDATE_GUARD = False
-
-    # Apply all navigation values in one pass to avoid repeated camera updates/resolves.
-    scene = getattr(self, "id_data", None)
-    if scene is not None:
-        request_next_navigation_apply_behavior(
-            scene,
-            force_camera_view=True,
-            sync_active_view_when_not_camera=False,
-        )
-    update_navigation_shot(self, bpy.context)
-    _update_anim_preview_keyframes(self, bpy.context)
 
     # Always avoid new locations appearing at night: switch to "Mid-morning" sun.
     sun = _sunlight_mid_morning_for_location(self.nav_longitude_deg, self.nav_latitude_deg)
@@ -420,7 +433,7 @@ def _set_nav_city_search(self, value):
         # Set both values first, then run a single sunlight update.
         self["sunlight_longitude_deg"] = float(sun[0])
         self["sunlight_seasonal_tilt_deg"] = float(sun[1])
-        update_sunlight_controls(self, bpy.context)
+        update_sunlight_controls(self, context_for_updates)
     except (TypeError, ValueError, AttributeError):
         return
 
