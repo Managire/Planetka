@@ -38,23 +38,19 @@ function analyticsTierColorFromStatus(statusValue, deps) {
 
 function qualityOverrideModeFromValue(value) {
   if (value === null || value === undefined || String(value).trim() === "") {
-    return "inherit";
+    return "normal";
   }
   const text = String(value).trim().toLowerCase();
-  if (text === "1" || text === "true" || text === "on") {
-    return "on";
+  if (text === "1" || text === "true" || text === "unrestricted") {
+    return "unrestricted";
   }
-  if (text === "0" || text === "false" || text === "off") {
-    return "off";
-  }
-  return "inherit";
+  return "normal";
 }
 
 function qualityOverrideLabel(mode) {
   const safeMode = String(mode || "").trim().toLowerCase();
-  if (safeMode === "on") return "On";
-  if (safeMode === "off") return "Off";
-  return "Inherit";
+  if (safeMode === "unrestricted") return "Unrestricted";
+  return "Normal";
 }
 
 function parseLiveMapTile(tileKey) {
@@ -198,7 +194,6 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
     return auth.error;
   }
   const { user, tokenSource } = auth;
-  const globalUnrestrictedQualityEnabled = await deps.readGlobalUnrestrictedQualityEnabled(auth.db, env);
   let initialSnapshot = null;
   try {
     initialSnapshot = await deps.loadAnalyticsSnapshot(env, 10080, "all", 10);
@@ -337,7 +332,6 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
     billableCostClassB,
     billableUnknownOps,
     billableCostTotal,
-    globalUnrestrictedQualityEnabled,
   });
   if (tokenSource === "bearer") {
     const authHeader = String(request.headers.get("Authorization") || "");
@@ -400,15 +394,18 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
     const tierClass = analyticsTierClassFromStatus(status || planCodeRaw, deps);
     const tierLabel = analyticsTierLabelFromStatus(status || planCodeRaw, deps);
     const qualityOverrideMode = qualityOverrideModeFromValue(row && row.unrestricted_quality_override);
+    const qualityModeAction = qualityOverrideMode === "unrestricted"
+      ? `<button class="action-btn" data-action="quality-normal" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Normal</button>`
+      : `<button class="action-btn" data-action="quality-unrestricted" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Unrestricted</button>`;
     let actionButtons = "";
     if (status === "blocked") {
-      actionButtons = `<button class="action-btn warn" data-action="unblock" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}" data-plan-code="${encodeURIComponent(planCodeRaw)}">Unblock</button><button class="action-btn" data-action="set-free" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Free</button><button class="action-btn" data-action="set-personal" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Personal</button><button class="action-btn" data-action="set-commercial" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Commercial</button><button class="action-btn" data-action="quality-inherit" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Quality Inherit</button><button class="action-btn" data-action="quality-on" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Quality On</button><button class="action-btn" data-action="quality-off" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Quality Off</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
+      actionButtons = `<button class="action-btn warn" data-action="unblock" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}" data-plan-code="${encodeURIComponent(planCodeRaw)}">Unblock</button><button class="action-btn" data-action="set-free" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Free</button><button class="action-btn" data-action="set-personal" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Personal</button><button class="action-btn" data-action="set-commercial" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Commercial</button>${qualityModeAction}<button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
     } else {
       const freeButton = `<button class="action-btn" data-action="set-free" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Free</button>`;
       const planButton = analyticsTierCodeFromStatus(status || planCodeRaw, deps) === "commercial"
         ? `<button class="action-btn" data-action="set-personal" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Personal</button>`
         : `<button class="action-btn" data-action="set-commercial" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Commercial</button>`;
-      actionButtons = `${freeButton}${planButton}<button class="action-btn" data-action="quality-inherit" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Quality Inherit</button><button class="action-btn" data-action="quality-on" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Quality On</button><button class="action-btn" data-action="quality-off" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Quality Off</button><button class="action-btn danger" data-action="block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Block</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
+      actionButtons = `${freeButton}${planButton}${qualityModeAction}<button class="action-btn danger" data-action="block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Block</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
     }
     return `<tr>
       <td class="${tierClass}">${userEmail}</td>
@@ -472,7 +469,7 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
       <tr>
         <th>Email</th>
         <th>Plan</th>
-        <th>Quality Override</th>
+        <th>Per-User Mode</th>
         <th><a href="${buildSortHref("resolves")}">Resolves${sortMarker("resolves")}</a></th>
         <th><a href="${buildSortHref("lifetime")}">Lifetime GB${sortMarker("lifetime")}</a></th>
         <th><a href="${buildSortHref("month")}">Month GB${sortMarker("month")}</a></th>
@@ -513,9 +510,8 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
         "set-free": "/admin/users/set-plan",
         "set-personal": "/admin/users/set-plan",
         "set-commercial": "/admin/users/set-plan",
-        "quality-inherit": "/admin/users/set-unrestricted-quality",
-        "quality-on": "/admin/users/set-unrestricted-quality",
-        "quality-off": "/admin/users/set-unrestricted-quality",
+        "quality-normal": "/admin/users/set-unrestricted-quality",
+        "quality-unrestricted": "/admin/users/set-unrestricted-quality",
         "hard-block": "/admin/users/hard-block",
       };
       const confirmation = {
@@ -524,9 +520,8 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
         "set-free": "Set this account to Free?",
         "set-personal": "Set this account to Personal?",
         "set-commercial": "Set this account to Commercial?",
-        "quality-inherit": "Return this account to the global unrestricted-quality setting?",
-        "quality-on": "Force unrestricted quality ON for this account?",
-        "quality-off": "Force unrestricted quality OFF for this account?",
+        "quality-normal": "Set this account to normal quality behavior?",
+        "quality-unrestricted": "Force unrestricted quality for this account?",
         "hard-block": "Hard block this user and block same-computer attempts?",
       };
       const endpoint = endpointByAction[safeAction];
@@ -540,9 +535,8 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
       if (safeAction === "set-free") payload.plan_code = "free";
       if (safeAction === "set-personal") payload.plan_code = "personal";
       if (safeAction === "set-commercial") payload.plan_code = "commercial";
-      if (safeAction === "quality-inherit") payload.mode = "inherit";
-      if (safeAction === "quality-on") payload.mode = "on";
-      if (safeAction === "quality-off") payload.mode = "off";
+      if (safeAction === "quality-normal") payload.mode = "normal";
+      if (safeAction === "quality-unrestricted") payload.mode = "unrestricted";
       statusEl.textContent = "Applying action...";
       statusEl.className = "muted";
       try {

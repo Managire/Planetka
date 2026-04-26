@@ -105,7 +105,7 @@ def _normalize_plan_code(value):
         return PLAN_CODE_PERSONAL
     if token == PLAN_CODE_COMMERCIAL:
         return PLAN_CODE_COMMERCIAL
-    return token
+    return ""
 
 
 def _plan_name_for_code(plan_code):
@@ -193,15 +193,9 @@ def _extract_plan(payload):
     if not code:
         code = PLAN_CODE_FREE
 
-    name = _first_non_empty(
-        plan_obj.get("name"),
-        payload.get("plan_name"),
-        _plan_name_for_code(code),
-    )
-
     return {
         "code": code,
-        "name": name or _plan_name_for_code(code) or PLAN_NAME_FREE,
+        "name": _plan_name_for_code(code) or PLAN_NAME_FREE,
     }
 
 
@@ -218,13 +212,9 @@ def _extract_stored_plan(payload):
     if not code:
         code = _extract_plan(payload)["code"]
 
-    name = _first_non_empty(
-        payload.get("stored_plan_name"),
-        _plan_name_for_code(code),
-    )
     return {
         "code": code or PLAN_CODE_FREE,
-        "name": name or _plan_name_for_code(code) or PLAN_NAME_FREE,
+        "name": _plan_name_for_code(code) or PLAN_NAME_FREE,
     }
 
 
@@ -266,7 +256,7 @@ def _extract_unrestricted_quality_override(payload):
             payload.get("unrestrictedQualityOverride"),
         ),
     ).strip().lower()
-    if token in {"inherit", "on", "off"}:
+    if token in {"normal", "unrestricted"}:
         return token
     return ""
 

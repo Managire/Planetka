@@ -304,7 +304,6 @@ const ADMIN_ANALYTICS_DEPS = {
   PLAN_CODE_PERSONAL,
   PLAN_CODE_COMMERCIAL,
   publicErrorMessage,
-  readGlobalUnrestrictedQualityEnabled,
   requireAnalyticsAdmin: (request, env) => requireAnalyticsAdmin(request, env, AUTH_SESSION_DEPS),
   sanitizeAnalyticsMinutes: (value, fallback = DEFAULT_ANALYTICS_WINDOW_MINUTES) =>
     sanitizeAnalyticsMinutesQuery(value, fallback, ANALYTICS_QUERY_DEPS),
@@ -1890,8 +1889,7 @@ async function buildAccountState(db, user, env) {
     storedAccountTier,
     qualityAccessPlanCode: qualityAccess.qualityAccessPlanCode,
     unrestrictedQualityAccess: Boolean(qualityAccess.unrestrictedQualityAccess),
-    unrestrictedQualityOverride: String(qualityAccess.overrideMode || "inherit"),
-    globalUnrestrictedQualityEnabled: Boolean(qualityAccess.globalEnabled),
+    unrestrictedQualityOverride: String(qualityAccess.overrideMode || "normal"),
     commercialUseAllowed: commercialUseAllowed(storedPlanCode),
     upgradeUrl: String(env.UPGRADE_URL || DEFAULT_UPGRADE_URL).trim() || DEFAULT_UPGRADE_URL,
     contactUrl: normalizeContactUrl(env.PLANETKA_CONTACT_URL || DEFAULT_CONTACT_URL),
@@ -1913,8 +1911,7 @@ function serializeAccountState(state) {
     stored_account_tier: storedTier,
     quality_access_plan_code: normalizeRequestedPlan(safeState.qualityAccessPlanCode) || storedPlanCode,
     unrestricted_quality_access: Boolean(safeState.unrestrictedQualityAccess),
-    unrestricted_quality_override: String(safeState.unrestrictedQualityOverride || "inherit"),
-    unrestricted_quality_global: Boolean(safeState.globalUnrestrictedQualityEnabled),
+    unrestricted_quality_override: String(safeState.unrestrictedQualityOverride || "normal"),
     commercial_use_allowed: Boolean(safeState.commercialUseAllowed),
     upgrade_url: safeState.upgradeUrl,
     contact_url: safeState.contactUrl,
@@ -2256,8 +2253,9 @@ async function ensureRefreshSessionColumns(db) {
 async function upsertUserByEmail(db, email, status = PLAN_CODE_FREE, options = {}, env = {}) {
   const normalizedEmail = normalizeEmail(email);
   await ensureUserConsentColumns(db);
+  await ensureUserQualityAccessColumns(db);
   const requestedStatus = resolveFixedInternalPlanForEmail(normalizedEmail, status);
-  void env;
+  const grantBetaUnrestrictedToNewUser = isBetaUnrestrictedAccessEnabled(env);
   let user = await findUserByEmail(db, normalizedEmail);
   if (user) {
     const currentStatus = String(user.status || "").trim().toLowerCase();
@@ -2318,17 +2316,19 @@ async function upsertUserByEmail(db, email, status = PLAN_CODE_FREE, options = {
         id,
         email,
         status,
+        unrestricted_quality_override,
         created_at,
         terms_accepted_at,
         privacy_accepted_at,
         terms_version,
         privacy_version
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     [
       id,
       normalizedEmail,
       requestedStatus,
+      grantBetaUnrestrictedToNewUser ? 1 : null,
       createdAt,
       termsAcceptedAt,
       privacyAcceptedAt,
@@ -2413,11 +2413,16 @@ function normalizeUserQualityAccessOverride(value) {
   if (!text) {
     return null;
   }
-  if (text === "1" || text === "true" || text === "on" || text === "yes") {
+  if (text === "1" || text === "true" || text === "yes" || text === "unrestricted") {
     return true;
   }
-  if (text === "0" || text === "false" || text === "off" || text === "no") {
-    return false;
+  if (
+    text === "0"
+    || text === "false"
+    || text === "no"
+    || text === "normal"
+  ) {
+    return null;
   }
   return null;
 }
@@ -2445,58 +2450,22 @@ async function ensureUserQualityAccessColumns(db) {
   userQualityAccessColumnsReady = true;
 }
 
-async function ensureAdminFeatureFlagsTable(db) {
-  if (adminFeatureFlagsTableReady) {
-    return;
-  }
-  await dbRun(
-    db,
-    `
-      CREATE TABLE IF NOT EXISTS admin_feature_flags (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      )
-    `,
-  );
-  adminFeatureFlagsTableReady = true;
-}
-
-async function readGlobalUnrestrictedQualityEnabled(db, env = {}) {
-  await ensureAdminFeatureFlagsTable(db);
-  const row = await dbGet(
-    db,
-    `
-      SELECT value
-      FROM admin_feature_flags
-      WHERE key = 'unrestricted_quality_global'
-      LIMIT 1
-    `,
-  );
-  const parsed = normalizeUserQualityAccessOverride(row && row.value);
-  if (parsed !== null) {
-    return parsed;
-  }
-  return isBetaUnrestrictedAccessEnabled(env);
-}
-
 async function setGlobalUnrestrictedQualityEnabled(db, enabled) {
-  await ensureAdminFeatureFlagsTable(db);
+  await ensureUserQualityAccessColumns(db);
   const now = nowIso();
-  await dbRun(
+  const overrideValue = enabled ? 1 : null;
+  const result = await dbRun(
     db,
     `
-      INSERT INTO admin_feature_flags (key, value, updated_at)
-      VALUES ('unrestricted_quality_global', ?, ?)
-      ON CONFLICT(key) DO UPDATE SET
-        value = excluded.value,
-        updated_at = excluded.updated_at
+      UPDATE users
+      SET unrestricted_quality_override = ?
     `,
-    [enabled ? "1" : "0", now],
+    [overrideValue],
   );
   return {
     enabled: Boolean(enabled),
     updatedAt: now,
+    affectedCount: dbMetaChanges(result),
   };
 }
 
@@ -2516,26 +2485,21 @@ async function resolveUserQualityAccessState(db, user, env = {}) {
   if (!effectiveUser || !effectiveUser.id) {
     return {
       storedPlanCode,
-      unrestrictedQualityAccess: false,
+      unrestrictedQualityAccess: storedPlanCode === PLAN_CODE_COMMERCIAL,
       qualityAccessPlanCode: storedPlanCode || PLAN_CODE_FREE,
-      overrideMode: "inherit",
+      overrideMode: "normal",
       globalEnabled: false,
     };
   }
   await ensureUserQualityAccessColumns(db);
-  const globalEnabled = await readGlobalUnrestrictedQualityEnabled(db, env);
   const overrideValue = normalizeUserQualityAccessOverride(effectiveUser && effectiveUser.unrestricted_quality_override);
-  const unrestrictedQualityAccess = (
-    overrideValue === null
-      ? globalEnabled
-      : Boolean(overrideValue)
-  );
+  const unrestrictedQualityAccess = Boolean(storedPlanCode === PLAN_CODE_COMMERCIAL || overrideValue === true);
   return {
     storedPlanCode: storedPlanCode || PLAN_CODE_FREE,
     unrestrictedQualityAccess,
     qualityAccessPlanCode: unrestrictedQualityAccess ? PLAN_CODE_COMMERCIAL : (storedPlanCode || PLAN_CODE_FREE),
-    overrideMode: overrideValue === null ? "inherit" : (overrideValue ? "on" : "off"),
-    globalEnabled,
+    overrideMode: overrideValue === true ? "unrestricted" : "normal",
+    globalEnabled: false,
   };
 }
 

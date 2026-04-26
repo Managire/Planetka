@@ -104,8 +104,11 @@ async function clearQaAuthRateLimits(db, request, email, deps) {
 
 function normalizeAdminUnrestrictedQualityMode(value) {
   const mode = String(value || "").trim().toLowerCase();
-  if (mode === "inherit" || mode === "on" || mode === "off") {
-    return mode;
+  if (mode === "unrestricted") {
+    return "unrestricted";
+  }
+  if (mode === "normal") {
+    return "normal";
   }
   return "";
 }
@@ -150,9 +153,10 @@ export async function handleAdminSetGlobalUnrestrictedQuality(request, env, deps
   const updated = await deps.setGlobalUnrestrictedQualityEnabled(db, enabledState.value);
   try {
     console.log(
-      "admin.global_unrestricted_quality_updated",
+      "admin.bulk_unrestricted_quality_applied",
       JSON.stringify({
         enabled: Boolean(updated && updated.enabled),
+        affected_count: Number(updated && updated.affectedCount || 0),
         admin_email: deps.normalizeEmail(adminUser && adminUser.email || ""),
       }),
     );
@@ -165,6 +169,7 @@ export async function handleAdminSetGlobalUnrestrictedQuality(request, env, deps
       ok: true,
       action: "set_global_unrestricted_quality",
       enabled: Boolean(updated && updated.enabled),
+      affected_count: Number(updated && updated.affectedCount || 0),
       updated_at: String(updated && updated.updatedAt || deps.nowIso()),
     },
     200,
@@ -506,7 +511,7 @@ export async function handleAdminUserSetUnrestrictedQuality(request, env, deps) 
 
   const targetUserId = String(target.user.id || "").trim();
   const targetEmail = deps.normalizeEmail(target.user.email || "");
-  const overrideValue = overrideMode === "inherit" ? null : (overrideMode === "on" ? 1 : 0);
+  const overrideValue = overrideMode === "unrestricted" ? 1 : null;
   const now = deps.nowIso();
 
   await deps.dbRun(
@@ -543,7 +548,6 @@ export async function handleAdminUserSetUnrestrictedQuality(request, env, deps) 
       stored_plan_code: String(qualityAccess && qualityAccess.storedPlanCode || ""),
       quality_access_plan_code: String(qualityAccess && qualityAccess.qualityAccessPlanCode || ""),
       unrestricted_quality_access: Boolean(qualityAccess && qualityAccess.unrestrictedQualityAccess),
-      unrestricted_quality_global: Boolean(qualityAccess && qualityAccess.globalEnabled),
       updated_at: now,
     },
     200,

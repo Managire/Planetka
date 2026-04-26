@@ -27,7 +27,6 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     billableCostClassB,
     billableUnknownOps,
     billableCostTotal,
-    globalUnrestrictedQualityEnabled,
   } = context || {};
 
   const safeTopLine = snapshotTopLine && typeof snapshotTopLine === "object" ? snapshotTopLine : {};
@@ -81,8 +80,6 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
   const topTileRequestsSplitHtml = renderTierTriplet(topLineTileRequests, (value) => fmtIntLocal(value), topLineTileRequests.total);
   const topGbServedSplitHtml = renderTierTriplet(topLineGbServed, (value) => `${fmtGbLocal(value)} GB`, topLineGbServed.total);
   const activeUsersSplitHtml = renderActiveUsersCompact(safeActiveWindows, safeActive);
-  const unrestrictedQualityStatusText = globalUnrestrictedQualityEnabled ? "Enabled" : "Disabled";
-
   return `
 <!doctype html>
 <html>
@@ -161,16 +158,15 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     <button id="setFreeBtn" class="action-btn">Set Free</button>
     <button id="setPersonalBtn" class="action-btn">Set Personal</button>
     <button id="setCommercialBtn" class="action-btn">Set Commercial</button>
-    <button id="qualityInheritBtn" class="action-btn">Quality Inherit</button>
-    <button id="qualityOnBtn" class="action-btn">Quality On</button>
-    <button id="qualityOffBtn" class="action-btn">Quality Off</button>
+    <button id="qualityNormalBtn" class="action-btn">Set Normal</button>
+    <button id="qualityUnrestrictedBtn" class="action-btn">Set Unrestricted</button>
     <button id="blockBtn" class="action-btn danger">Block</button>
     <button id="unblockBtn" class="action-btn warn">Unblock</button>
   </div>
   <div class="controls">
-    <span id="globalQualityState" class="muted">Unrestricted quality: ${escapeHtml(unrestrictedQualityStatusText)}</span>
-    <button id="globalQualityOnBtn" class="action-btn">Enable for all users</button>
-    <button id="globalQualityOffBtn" class="action-btn warn">Disable for all users</button>
+    <span id="globalQualityState" class="muted">Bulk apply per-user unrestricted mode to all users.</span>
+    <button id="globalQualityOnBtn" class="action-btn">Set Unrestricted for all users</button>
+    <button id="globalQualityOffBtn" class="action-btn warn">Set Normal for all users</button>
   </div>
 
   <div class="grid">
@@ -251,9 +247,8 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     const setFreeBtn = document.getElementById("setFreeBtn");
     const setPersonalBtn = document.getElementById("setPersonalBtn");
     const setCommercialBtn = document.getElementById("setCommercialBtn");
-    const qualityInheritBtn = document.getElementById("qualityInheritBtn");
-    const qualityOnBtn = document.getElementById("qualityOnBtn");
-    const qualityOffBtn = document.getElementById("qualityOffBtn");
+    const qualityNormalBtn = document.getElementById("qualityNormalBtn");
+    const qualityUnrestrictedBtn = document.getElementById("qualityUnrestrictedBtn");
     const blockBtn = document.getElementById("blockBtn");
     const unblockBtn = document.getElementById("unblockBtn");
     const globalQualityStateEl = document.getElementById("globalQualityState");
@@ -681,9 +676,8 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         "set-free": "/admin/users/set-plan",
         "set-personal": "/admin/users/set-plan",
         "set-commercial": "/admin/users/set-plan",
-        "quality-inherit": "/admin/users/set-unrestricted-quality",
-        "quality-on": "/admin/users/set-unrestricted-quality",
-        "quality-off": "/admin/users/set-unrestricted-quality",
+        "quality-normal": "/admin/users/set-unrestricted-quality",
+        "quality-unrestricted": "/admin/users/set-unrestricted-quality",
       };
       const endpoint = endpointByAction[safeAction];
       if (!endpoint) {
@@ -698,9 +692,8 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         "set-free": "Set this account to Free?",
         "set-personal": "Downgrade this account to Personal?",
         "set-commercial": "Upgrade this account to Commercial?",
-        "quality-inherit": "Return this account to the global unrestricted-quality setting?",
-        "quality-on": "Force unrestricted quality ON for this account?",
-        "quality-off": "Force unrestricted quality OFF for this account?",
+        "quality-normal": "Set this account to normal quality behavior?",
+        "quality-unrestricted": "Force unrestricted quality for this account?",
       };
       if (!window.confirm(confirmation[safeAction] || "Confirm action?")) {
         return;
@@ -721,14 +714,11 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
       if (safeAction === "set-commercial") {
         payload.plan_code = "commercial";
       }
-      if (safeAction === "quality-inherit") {
-        payload.mode = "inherit";
+      if (safeAction === "quality-normal") {
+        payload.mode = "normal";
       }
-      if (safeAction === "quality-on") {
-        payload.mode = "on";
-      }
-      if (safeAction === "quality-off") {
-        payload.mode = "off";
+      if (safeAction === "quality-unrestricted") {
+        payload.mode = "unrestricted";
       }
       statusEl.textContent = "Applying action...";
       statusEl.className = "muted";
@@ -754,12 +744,12 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     async function setGlobalUnrestrictedQuality(enabled) {
       const safeEnabled = Boolean(enabled);
       const confirmation = safeEnabled
-        ? "Enable unrestricted texture quality for all users?"
-        : "Disable unrestricted texture quality for all users?";
+        ? "Set unrestricted quality for all users? This writes the per-user mode on every account."
+        : "Set normal quality behavior for all users? This clears the per-user unrestricted mode on every account.";
       if (!window.confirm(confirmation)) {
         return;
       }
-      statusEl.textContent = "Applying global quality setting...";
+      statusEl.textContent = "Applying per-user quality mode to all users...";
       statusEl.className = "muted";
       try {
         const res = await fetch("/admin/settings/unrestricted-quality", {
@@ -773,9 +763,13 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
           throw new Error((data && data.error) || ("HTTP " + res.status));
         }
         if (globalQualityStateEl) {
-          globalQualityStateEl.textContent = "Unrestricted quality: " + (data.enabled ? "Enabled" : "Disabled");
+          globalQualityStateEl.textContent = data.enabled
+            ? "Per-user mode set to Unrestricted for all users."
+            : "Per-user mode set to Normal for all users.";
         }
-        statusEl.textContent = "Global unrestricted quality updated.";
+        statusEl.textContent = data.enabled
+          ? "Applied Unrestricted mode to all users."
+          : "Applied Normal mode to all users.";
         statusEl.className = "muted";
       } catch (error) {
         statusEl.textContent = "Action failed: " + String(error && error.message || error);
@@ -882,9 +876,8 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     if (setFreeBtn) setFreeBtn.addEventListener("click", () => runManualUserAction("set-free"));
     if (setPersonalBtn) setPersonalBtn.addEventListener("click", () => runManualUserAction("set-personal"));
     if (setCommercialBtn) setCommercialBtn.addEventListener("click", () => runManualUserAction("set-commercial"));
-    if (qualityInheritBtn) qualityInheritBtn.addEventListener("click", () => runManualUserAction("quality-inherit"));
-    if (qualityOnBtn) qualityOnBtn.addEventListener("click", () => runManualUserAction("quality-on"));
-    if (qualityOffBtn) qualityOffBtn.addEventListener("click", () => runManualUserAction("quality-off"));
+    if (qualityNormalBtn) qualityNormalBtn.addEventListener("click", () => runManualUserAction("quality-normal"));
+    if (qualityUnrestrictedBtn) qualityUnrestrictedBtn.addEventListener("click", () => runManualUserAction("quality-unrestricted"));
     if (blockBtn) blockBtn.addEventListener("click", () => runManualUserAction("block"));
     if (unblockBtn) unblockBtn.addEventListener("click", () => runManualUserAction("unblock"));
     if (globalQualityOnBtn) globalQualityOnBtn.addEventListener("click", () => setGlobalUnrestrictedQuality(true));
