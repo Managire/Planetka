@@ -342,7 +342,36 @@ def main():
             "Navigation controls did not update after external camera move.",
         )
 
-        _log("Scenario 3: resolve preserves old collection placement")
+        _log("Scenario 3: Earth radius change preserves generic scene-camera altitude")
+        generic_camera = scene.camera
+        _assert(generic_camera is not None and getattr(generic_camera, "type", None) == "CAMERA", "Generic scene camera missing.")
+        _assert(
+            "planetka" not in str(getattr(generic_camera, "name", "") or "").strip().lower()
+            or str(getattr(generic_camera, "name", "") or "").strip() == "Planetka Regression Camera",
+            "Regression scenario expects a normal scene camera.",
+        )
+        props.nav_latitude_deg = -33.9249
+        props.nav_longitude_deg = 18.4241
+        props.nav_altitude_km = 120.0
+        props.nav_azimuth_deg = 48.0
+        props.nav_tilt_deg = 40.0
+        props.nav_roll_deg = -4.0
+        result = bpy.ops.planetka.navigation_apply_shot()
+        _assert("FINISHED" in result, f"navigation_apply_shot failed before radius change: {result}")
+        props.earth_radius_bu = 2.6
+        bpy.context.view_layer.update()
+        altitude_info = dict(state._resolve_scope_altitude_info(scene, scope_mode="CAMERA") or {})
+        _assert(not bool(altitude_info.get("inside_earth", False)), f"Earth radius change pushed generic camera below surface: {altitude_info}")
+        result = bpy.ops.planetka.load_textures()
+        _assert("FINISHED" in result, f"Resolve Earth failed after radius change on generic camera: {result}")
+        warning = str(state.get_camera_inside_earth_warning(scene) or "").strip()
+        _assert(not warning, f"Inside-Earth warning should stay clear after radius change, got: {warning}")
+        props.earth_radius_bu = baseline_radius
+        bpy.context.view_layer.update()
+
+        _log("Scenario 4: resolve preserves old collection placement")
+        surface = bpy.data.objects.get(SURFACE_OBJECT_NAME)
+        _assert(surface is not None, "Planetka Earth Surface missing before collection-placement regression check.")
         custom_collection = bpy.data.collections.new("Regression Custom Surface")
         scene.collection.children.link(custom_collection)
         for col in list(surface.users_collection):
@@ -358,7 +387,7 @@ def main():
             "Resolve Earth did not preserve old mesh collection placement.",
         )
 
-        _log("Scenario 4: cinematic circle keeps stable altitude")
+        _log("Scenario 5: cinematic circle keeps stable altitude")
         props.anim_camera_preset = "ORBIT"
         props.anim_frame_start = 1
         props.anim_frame_end = 20
@@ -381,7 +410,7 @@ def main():
         drift = max(distances) - min(distances) if distances else 0.0
         _assert(drift < 1e-6, f"Camera altitude drift too high: {drift}")
 
-        _log("Scenario 5: repeated close-range rebuilds do not shrink surface")
+        _log("Scenario 6: repeated close-range rebuilds do not shrink surface")
         close_tiles = ["x000_y000_z030_d030", "x030_y000_z030_d030"]
         for _ in range(3):
             new_obj = state.create_temp_mesh(
@@ -402,7 +431,7 @@ def main():
         _assert_close(final_scale[1], baseline_scale[1], 0.01, "Scale Y after close-range rebuilds")
         _assert_close(final_scale[2], baseline_scale[2], 0.01, "Scale Z after close-range rebuilds")
 
-        _log("Scenario 6: S2-only source resolves using support fallbacks")
+        _log("Scenario 7: S2-only source resolves using support fallbacks")
         s2_only_source = tempfile.mkdtemp(prefix="planetka_regression_s2_only_")
         temp_dirs.append(s2_only_source)
         _make_texture_source_tree(s2_only_source, include_supporting=False)
@@ -410,7 +439,7 @@ def main():
         result = bpy.ops.planetka.load_textures()
         _assert("FINISHED" in result, f"Resolve Earth failed for S2-only source: {result}")
 
-        _log("Scenario 7: silent navigation apply skips operator when Earth is missing")
+        _log("Scenario 8: silent navigation apply skips operator when Earth is missing")
         scene.camera = _ensure_active_camera(scene)
         operator_called = {"value": False}
 
@@ -445,7 +474,7 @@ def main():
         _assert(skipped is False, "Silent navigation apply should return False when Earth is missing.")
         _assert(not operator_called["value"], "Silent navigation apply should not invoke the operator when Earth is missing.")
 
-        _log("Scenario 8: saved startup profile restores cleanly on Create Earth")
+        _log("Scenario 9: saved startup profile restores cleanly on Create Earth")
         expected = {
             "nav_altitude_km": 234.0,
             "nav_azimuth_deg": 57.0,

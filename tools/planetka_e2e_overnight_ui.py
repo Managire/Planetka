@@ -406,6 +406,7 @@ class OvernightRunner:
         self.prefs = None
         self.scene = None
         self.props = None
+        self.available_engines = set()
         self.active_final_case = None
         self.still_cases = self._select_cases(STILL_CASES, smoke_count=5)
         self.quick_preview_cases = self._select_cases(QUICK_PREVIEW_CASES, smoke_count=2)
@@ -484,6 +485,35 @@ class OvernightRunner:
         if str(engine_name).upper() == "CYCLES":
             return configure_cycles(self.scene)
         return {"engine": configure_eevee(self.scene)}
+
+    def _refresh_available_engines(self):
+        available = set()
+        try:
+            available = {
+                str(key).upper()
+                for key in self.scene.render.bl_rna.properties["engine"].enum_items.keys()
+            }
+        except Exception:
+            available = set()
+        self.available_engines = available
+        self.report["notes"].append(f"Available render engines: {sorted(self.available_engines)}")
+
+    def _engine_available(self, engine_name):
+        requested = str(engine_name or "EEVEE").strip().upper()
+        if requested == "CYCLES":
+            return "CYCLES" in self.available_engines
+        return bool({"BLENDER_EEVEE_NEXT", "BLENDER_EEVEE", "EEVEE"} & set(self.available_engines))
+
+    def _skip_engine_case(self, bucket, case, reason):
+        entry = {
+            "id": str(case.get("id", "") or ""),
+            "status": "skipped",
+            "engine": str(case.get("engine", "") or ""),
+            "reason": str(reason or ""),
+        }
+        self.report[str(bucket)].append(entry)
+        self.report["notes"].append(f"Skipped {entry['id']}: {entry['reason']}")
+        return entry
 
     def _search_and_frame(self, query, country_hint=None, nav=None, sunlight_preset="NOON"):
         ensure_camera(self.scene, name="Planetka Overnight Camera")
@@ -911,6 +941,13 @@ class OvernightRunner:
         }
 
     def _run_still_case(self, case):
+        if not self._engine_available(case.get("engine", "EEVEE")):
+            self._skip_engine_case(
+                "still_cases",
+                case,
+                f"Render engine unavailable in this Blender build: {case.get('engine', 'EEVEE')}",
+            )
+            return
         self._restore_visual_phase_defaults()
         engine_info = self._configure_engine(case.get("engine", "EEVEE"))
         query = str(case.get("query", "") or "").strip()
@@ -960,6 +997,7 @@ class OvernightRunner:
         }
         entry = {
             "id": case["id"],
+            "status": "ok",
             "selected_place": selected,
             "engine": engine_info,
             "quality": quality_mode,
@@ -975,6 +1013,13 @@ class OvernightRunner:
             raise E2EError(f"Visual validation failed for still case {case['id']}")
 
     def _run_quick_preview_case(self, case):
+        if not self._engine_available(case.get("engine", "EEVEE")):
+            self._skip_engine_case(
+                "quick_preview_cases",
+                case,
+                f"Render engine unavailable in this Blender build: {case.get('engine', 'EEVEE')}",
+            )
+            return
         self._restore_visual_phase_defaults()
         engine_info = self._configure_engine(case.get("engine", "EEVEE"))
         selected = self._prepare_animation_case(case)
@@ -999,6 +1044,7 @@ class OvernightRunner:
             raise E2EError(f"Quick Preview clear failed: {case['id']}")
         entry = {
             "id": case["id"],
+            "status": "ok",
             "selected_place": selected,
             "engine": engine_info,
             "preset": case.get("preset"),
@@ -1088,6 +1134,13 @@ class OvernightRunner:
         return target
 
     def _run_final_animation_subprocess_case(self, case):
+        if not self._engine_available(case.get("engine", "EEVEE")):
+            self._skip_engine_case(
+                "final_animation_cases",
+                case,
+                f"Render engine unavailable in this Blender build: {case.get('engine', 'EEVEE')}",
+            )
+            return
         blender_bin = self._resolve_blender_bin()
         auth_payload_path = self._write_subprocess_auth_payload()
         case_id = str(case.get("id", "final_animation_case") or "final_animation_case")
@@ -1125,6 +1178,7 @@ class OvernightRunner:
             payload = json.load(handle)
         entry = {
             "id": case_id,
+            "status": "ok",
             "preset": case.get("preset"),
             "engine": payload.get("engine"),
             "selected_place": payload.get("selected_place", ""),
@@ -1239,6 +1293,7 @@ class OvernightRunner:
         self.prefs = self.extension_prefs.get_prefs()
         self.scene = bpy.context.scene
         self.props = getattr(self.scene, "planetka", None)
+        self._refresh_available_engines()
         if self.props is None:
             raise E2EError("scene.planetka is unavailable.")
         self.report["account"] = ensure_authenticated(

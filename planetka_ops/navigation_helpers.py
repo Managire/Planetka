@@ -237,9 +237,10 @@ def _set_planetka_earth_radius_bu(scene, target_radius_bu):
     except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
         _log_recoverable_once("PKA-OPS-039", "Failed syncing preview radius after Earth radius change")
 
-    # Keep Planetka camera in the same relative navigation shot immediately
-    # after radius change (without requiring a manual UI nudge), regardless
-    # of which scene camera is currently active.
+    # Keep the current navigation shot stable after Earth radius changes.
+    # Prefer the active scene camera so generic user/test cameras stay above
+    # the surface too; fall back to a Planetka-managed camera only when the
+    # scene camera is missing or invalid.
     try:
         scene_for_camera = scene if isinstance(scene, bpy.types.Scene) else getattr(bpy.context, "scene", None)
     except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
@@ -250,25 +251,21 @@ def _set_planetka_earth_radius_bu(scene, target_radius_bu):
         try:
             props = getattr(scene_for_camera, "planetka", None)
             previous_scene_camera = getattr(scene_for_camera, "camera", None)
-            planetka_camera = None
-            if (
-                previous_scene_camera is not None
-                and str(getattr(previous_scene_camera, "type", "")) == "CAMERA"
-                and _is_planetka_create_camera(previous_scene_camera)
-            ):
-                planetka_camera = previous_scene_camera
-            if planetka_camera is None:
+            target_camera = None
+            if previous_scene_camera is not None and str(getattr(previous_scene_camera, "type", "")) == "CAMERA":
+                target_camera = previous_scene_camera
+            if target_camera is None:
                 for obj in tuple(getattr(scene_for_camera, "objects", ())):
                     if (
                         obj is not None
                         and str(getattr(obj, "type", "")) == "CAMERA"
                         and _is_planetka_create_camera(obj)
                     ):
-                        planetka_camera = obj
+                        target_camera = obj
                         break
-            if props is not None and planetka_camera is not None:
-                if getattr(scene_for_camera, "camera", None) is not planetka_camera:
-                    scene_for_camera.camera = planetka_camera
+            if props is not None and target_camera is not None:
+                if getattr(scene_for_camera, "camera", None) is not target_camera:
+                    scene_for_camera.camera = target_camera
                     camera_swapped = True
                 _apply_navigation_shot(
                     bpy.context,

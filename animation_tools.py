@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import bpy
 from bpy.props import EnumProperty, IntProperty
-from mathutils import Quaternion, Vector
+from mathutils import Euler, Matrix, Quaternion, Vector
 
 from .auth import get_account_tier
 from .error_utils import PLANETKA_IMPORT_RECOVERABLE_EXCEPTIONS, PLANETKA_RECOVERABLE_EXCEPTIONS
@@ -1489,6 +1489,36 @@ def _navigation_base_shot_from_props(props, fallback=None):
     }
 
 
+def _camera_base_shot_from_transform(scene, props, location, rotation_euler):
+    camera = getattr(scene, "camera", None) if scene is not None else None
+    if camera is None:
+        raise RuntimeError("Active camera is missing.")
+    try:
+        camera_matrix_before = camera.matrix_world.copy()
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        camera_matrix_before = None
+    try:
+        _loc, _rot, camera_scale = camera.matrix_world.decompose()
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        camera_scale = Vector((1.0, 1.0, 1.0))
+    try:
+        target_location = Vector(tuple(float(v) for v in tuple(location)))
+        target_rotation = Euler(tuple(float(v) for v in tuple(rotation_euler)), _rotation_order_for_camera(camera))
+        camera.matrix_world = Matrix.LocRotScale(target_location, target_rotation, camera_scale)
+        try:
+            bpy.context.view_layer.update()
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka animation: failed updating view layer while deriving saved camera shot", exc_info=True)
+        return _current_camera_base_shot(scene, props)
+    finally:
+        if camera_matrix_before is not None:
+            try:
+                camera.matrix_world = camera_matrix_before
+                bpy.context.view_layer.update()
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka animation: failed restoring camera after deriving saved shot", exc_info=True)
+
+
 def _frame_one_navigation_base_shot(scene, props):
     fallback = _navigation_base_shot_from_props(props, fallback=_current_camera_base_shot(scene, props))
     if scene is None:
@@ -1877,19 +1907,26 @@ def apply_cinematic_preview(scene, props):
         if preset == "A_TO_B":
             if not bool(getattr(props, "anim_ab_a_valid", False)) or not bool(getattr(props, "anim_ab_b_valid", False)):
                 raise RuntimeError("Save both View A and View B first.")
-            _set_camera_transform_keyframe(
+            start_shot = _camera_base_shot_from_transform(
                 scene,
-                start_frame,
+                props,
                 tuple(getattr(props, "anim_ab_a_location", (0.0, 0.0, 0.0))),
                 tuple(getattr(props, "anim_ab_a_rotation", (0.0, 0.0, 0.0))),
             )
-            _set_camera_transform_keyframe(
+            end_shot = _camera_base_shot_from_transform(
                 scene,
-                end_frame,
+                props,
                 tuple(getattr(props, "anim_ab_b_location", (0.0, 0.0, 0.0))),
                 tuple(getattr(props, "anim_ab_b_rotation", (0.0, 0.0, 0.0))),
             )
-            _apply_camera_motion_curve(scene, motion_curve)
+            _apply_sampled_navigation_preview(
+                scene,
+                start_shot,
+                end_shot,
+                int(start_frame),
+                int(end_frame),
+                motion_curve,
+            )
         elif preset == "WAYPOINTS":
             waypoint_shots = _build_waypoint_shots(props)
             if len(waypoint_shots) < 2:
