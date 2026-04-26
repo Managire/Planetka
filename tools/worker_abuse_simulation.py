@@ -6,14 +6,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import random
-import time
+import sys
 import urllib.error
-import urllib.parse
 import urllib.request
 from pathlib import Path
-import os
-import sys
 
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(_TOOLS_DIR)
@@ -21,7 +17,7 @@ for _path in (_TOOLS_DIR, _REPO_ROOT):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
-from tool_error_utils import TOOL_OPTIONAL_IMPORT_EXCEPTIONS, TOOL_RECOVERABLE_EXCEPTIONS
+from tool_error_utils import TOOL_RECOVERABLE_EXCEPTIONS
 
 
 def _get_json(url: str, headers: dict[str, str] | None = None, timeout: float = 20.0) -> tuple[int, dict, dict]:
@@ -90,7 +86,6 @@ def _run_static_guard_checks(root: Path) -> tuple[int, int]:
 
     failures = 0
     checks = 0
-
     required_markers = [
         (
             "free multi-key guard function exists",
@@ -124,11 +119,7 @@ def _run_static_guard_checks(root: Path) -> tuple[int, int]:
 
     for label, markers in required_markers:
         checks += 1
-        ok = any(
-            marker in src
-            for marker in markers
-            for src in source_map.values()
-        )
+        ok = any(marker in src for marker in markers for src in source_map.values())
         _print_check(ok, f"Static guard: {label}")
         if not ok:
             failures += 1
@@ -165,11 +156,6 @@ def main() -> int:
         default=int(os.getenv("PLANETKA_ABUSE_ANALYTICS_MINUTES") or "30"),
         help="Lookback window for telemetry evidence check (default: 30)",
     )
-    parser.add_argument(
-        "--allow-account-creation-checks",
-        action="store_true",
-        help="Explicitly allow public account-request abuse probes that may create requests or send emails",
-    )
     args = parser.parse_args()
 
     base_url = str(args.base_url or "").rstrip("/")
@@ -177,10 +163,6 @@ def main() -> int:
     bearer_token = str(args.bearer_token or "").strip()
     tile_requests = max(1, int(args.tile_requests))
     analytics_minutes = max(5, int(args.analytics_minutes))
-    allow_account_creation_checks = bool(
-        args.allow_account_creation_checks
-        or str(os.getenv("PLANETKA_ALLOW_ACCOUNT_CREATION_TESTS") or "").strip().lower() in {"1", "true", "yes", "on"}
-    )
 
     if not base_url.startswith("http"):
         print("[FAIL] Invalid --base-url")
@@ -196,7 +178,6 @@ def main() -> int:
     checks = 0
     failures = 0
 
-    # 1) Health reachable + legacy auth path removed
     checks += 1
     health_status, health_payload, _ = _get_json(f"{base_url}/health")
     ok = health_status == 200 and bool(health_payload.get("ok"))
@@ -205,35 +186,16 @@ def main() -> int:
         failures += 1
 
     checks += 1
-    probe_email = f"abuse-probe-{int(time.time())}@example.com"
-    status, payload, _ = _post_json(f"{base_url}/auth/start", {"email": probe_email})
+    status, payload, _ = _post_json(f"{base_url}/auth/start", {"email": "legacy-probe"})
     ok = status == 404 and str(payload.get("error", "")).strip() == "not_found"
     _print_check(ok, "Legacy /auth/start endpoint removed")
     if not ok:
         failures += 1
 
-    # 2) Plan tampering check (requested paid plan is ignored in public flow)
-    checks += 1
-    if allow_account_creation_checks:
-        tamper_payload = {
-            "email": f"tamper-{int(time.time())}-{random.randint(1000, 9999)}@example.com",
-            "requested_plan": "commercial",
-            "accept_terms": True,
-            "accept_privacy": True,
-            "opt_in_news": False,
-            "submitted_at_ms": int(time.time() * 1000),
-        }
-        status, payload, _ = _post_json(f"{base_url}/auth/api-key/request", tamper_payload)
-        ok = status == 200 and bool(payload.get("ok"))
-        _print_check(ok, "Plan tampering neutralized: public request path stays free")
-        if not ok:
-            failures += 1
-    else:
-        _print_skip(
-            "Plan tampering public-request probe disabled by default to avoid creating users or sending emails"
-        )
+    _print_skip(
+        "Public account-creation probes removed. This simulation uses provided internal accounts only unless explicitly changed."
+    )
 
-    # 3) Token leakage path check
     checks += 1
     leak_url = f"{base_url}/admin/analytics?access_token=fake"
     status, payload, _ = _get_json(leak_url)
@@ -250,7 +212,6 @@ def main() -> int:
     if not ok:
         failures += 1
 
-    # 4) High-volume tile abuse simulation (auth optional)
     tile_statuses: list[int] = []
     tile_headers = {"X-Planetka-Device-Id": "abuse-sim-device-01"}
     if bearer_token:
@@ -263,13 +224,11 @@ def main() -> int:
 
     checks += 1
     status_set = set(tile_statuses)
-    # Allowed outputs for abuse-style tile floods: blocked/auth/quality/not-found/success, but never 5xx.
     ok = all(code < 500 for code in status_set)
     _print_check(ok, f"High-volume tile requests returned no 5xx ({_status_counts(tile_statuses)})")
     if not ok:
         failures += 1
 
-    # Optional: confirm blocked high-volume behavior is visible in analytics logs.
     if bearer_token:
         checks += 1
         analytics_headers = {"Authorization": f"Bearer {bearer_token}"}
@@ -285,14 +244,10 @@ def main() -> int:
                 if int(row.get("status_code") or 0) in {401, 402, 403, 404, 429}:
                     observed = True
                     break
-            _print_check(
-                observed,
-                "Analytics evidence contains recent blocked/error tile events",
-            )
+            _print_check(observed, "Analytics evidence contains recent blocked/error tile events")
             if not observed:
                 failures += 1
 
-    # 5) Static guard checks for free multi-key/device enforcement logic
     static_checks, static_failures = _run_static_guard_checks(Path(__file__).resolve().parents[1])
     checks += static_checks
     failures += static_failures
