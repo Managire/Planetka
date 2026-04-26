@@ -302,6 +302,7 @@ const ADMIN_ANALYTICS_DEPS = {
   parseHeavyUserPlanFilter: (value) => parseHeavyUserPlanFilterQuery(value, ANALYTICS_QUERY_DEPS),
   parseNonNegativeInteger,
   PLAN_CODE_PERSONAL,
+  PLAN_CODE_FREE,
   PLAN_CODE_COMMERCIAL,
   publicErrorMessage,
   requireAnalyticsAdmin: (request, env) => requireAnalyticsAdmin(request, env, AUTH_SESSION_DEPS),
@@ -2543,6 +2544,17 @@ function minimumPlanQualityForTile(fileName) {
     return "preview";
   }
   const d = Math.max(1, Number(parsed.d));
+  const z = Math.max(1, Number(parsed.z));
+  const textureType = String(parsed.textureType || "").toUpperCase();
+
+  // Dataset alias:
+  // Blender balanced resolve may request EL z001 d002, but the actual stored file
+  // is EL z001 d001 (see streaming_utils.py replacement). Do not classify this
+  // compatibility alias as Full-only.
+  if (textureType === "EL" && z === 1 && d === 1) {
+    return "balanced";
+  }
+
   // d001 => Full-only, d002/d003 => Balanced+, d004+ => Preview+
   if (d <= 1) return "full";
   if (d <= 3) return "balanced";
