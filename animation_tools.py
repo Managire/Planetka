@@ -474,6 +474,8 @@ def _create_segment_material(segment_index, segment_start=None, segment_end=None
         segment_start=segment_start,
         segment_end=segment_end,
     )
+    # Quick Preview segment materials must stay bump-only for stable EEVEE/Cycles preview playback.
+    _set_material_displacement_bump_only(segment_material)
     return segment_material
 
 
@@ -861,6 +863,8 @@ def _prepare_segments(scene, segments, frame_start, frame_end, base_path="", tex
                 resolved_tiles_override=resolved_tiles_override,
                 ocean_tiles_override=ocean_tiles_override,
             )
+            # Keep Quick Preview segment shaders in bump-only mode regardless of active render engine.
+            _set_material_displacement_bump_only(segment_material)
             _set_constant_visibility_keyframes(
                 segment_obj,
                 segment_start=segment_start,
@@ -2180,7 +2184,7 @@ def _capture_earth_material_displacement_mode_state(material):
     return state
 
 
-def _set_earth_material_bump_only_for_eevee(material):
+def _set_material_displacement_bump_only(material):
     if material is None:
         return False
     changed_any = False
@@ -2197,6 +2201,80 @@ def _set_earth_material_bump_only_for_eevee(material):
         "displacement_method",
         ("BUMP", "BUMP_ONLY"),
     ) or changed_any
+    return changed_any
+
+
+def _set_earth_material_bump_only_for_eevee(material):
+    return _set_material_displacement_bump_only(material)
+
+
+def _earth_surface_materials():
+    materials = []
+    seen = set()
+
+    def _add_material(material):
+        if material is None:
+            return
+        try:
+            key = int(material.as_pointer())
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            key = id(material)
+        if key in seen:
+            return
+        seen.add(key)
+        materials.append(material)
+
+    earth_obj = get_earth_object()
+    if earth_obj is not None:
+        try:
+            _add_material(getattr(earth_obj, "active_material", None))
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            pass
+        try:
+            mesh_data = getattr(earth_obj, "data", None)
+            slots = getattr(mesh_data, "materials", None) if mesh_data is not None else None
+            if slots is not None:
+                for slot_material in slots:
+                    _add_material(slot_material)
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            pass
+
+    # Keep explicit-name fallback for old scenes where Earth object lookup can fail.
+    try:
+        _add_material(bpy.data.materials.get("Planetka Earth Material"))
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        pass
+    return materials
+
+
+def _capture_material_displacement_mode_states(materials):
+    states = []
+    for material in (materials or ()):
+        try:
+            state = _capture_earth_material_displacement_mode_state(material)
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            state = {}
+        if isinstance(state, dict) and state:
+            states.append({"material": material, "state": state})
+    return states
+
+
+def _restore_material_displacement_mode_states(states):
+    for entry in (states or ()):
+        if not isinstance(entry, dict):
+            continue
+        material = entry.get("material")
+        state = entry.get("state")
+        try:
+            _restore_earth_material_displacement_mode_state(material, state)
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka animation: failed restoring displacement mode state", exc_info=True)
+
+
+def _set_earth_surface_materials_bump_only():
+    changed_any = False
+    for material in _earth_surface_materials():
+        changed_any = _set_material_displacement_bump_only(material) or changed_any
     return changed_any
 
 
@@ -2823,10 +2901,9 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
                 logger.debug("Planetka animation: failed restoring frame range", exc_info=True)
 
-        if self._eevee_temp_displacement_state is not None:
+        if self._eevee_temp_displacement_state:
             try:
-                earth_material = bpy.data.materials.get("Planetka Earth Material")
-                _restore_earth_material_displacement_mode_state(earth_material, self._eevee_temp_displacement_state)
+                _restore_material_displacement_mode_states(self._eevee_temp_displacement_state)
             except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
                 logger.debug("Planetka animation: failed restoring Earth displacement mode after render", exc_info=True)
         self._eevee_temp_displacement_state = None
@@ -3165,9 +3242,9 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
                 render_engine = ""
             if render_engine in {"BLENDER_EEVEE", "BLENDER_EEVEE_NEXT"}:
-                earth_material = bpy.data.materials.get("Planetka Earth Material")
-                eevee_temp_displacement_state = _capture_earth_material_displacement_mode_state(earth_material)
-                _set_earth_material_bump_only_for_eevee(earth_material)
+                eevee_materials = _earth_surface_materials()
+                eevee_temp_displacement_state = _capture_material_displacement_mode_states(eevee_materials)
+                _set_earth_surface_materials_bump_only()
             self._scene = scene
             self._props = props
             self._segments = list(segments)
