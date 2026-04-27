@@ -38,8 +38,16 @@ def recover_post_render_state(scene=None, cancelled=False, ctx=None):
     if target_scene is None:
         target_scene = getattr(getattr(deps.bpy, "context", None), "scene", None)
     if target_scene is not None:
-        deps.mark_auto_resolve_dirty(target_scene, immediate=True)
-        deps.request_auto_resolve(target_scene, immediate=True, mark_dirty=False)
+        props = getattr(target_scene, "planetka", None)
+        try:
+            auto_resolve_enabled = bool(getattr(props, "auto_resolve", False)) if props is not None else False
+        except (deps.recoverable_exceptions, RuntimeError, TypeError, ValueError, AttributeError):
+            auto_resolve_enabled = False
+        if auto_resolve_enabled:
+            # Render completion can still be in a transient drawing/read-only state.
+            # Avoid immediate post-render resolve requests to reduce write-state races.
+            deps.mark_auto_resolve_dirty(target_scene, immediate=False)
+            deps.request_auto_resolve(target_scene, immediate=False, mark_dirty=False)
 
 
 def mark_render_job_started(ctx=None):

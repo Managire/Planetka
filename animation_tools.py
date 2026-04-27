@@ -30,6 +30,7 @@ from .state import (
     remove_object_and_unused_mesh,
     resume_navigation_camera_control_sync,
     resume_navigation_shot_updates,
+    stop_auto_resolve_download_pipeline,
     suspend_navigation_camera_control_sync,
     suspend_navigation_shot_updates,
     update_navigation_shot,
@@ -76,6 +77,8 @@ _COVERAGE_MAP = None
 _TILE_UTILS_MODULE = None
 _OPERATORS_MODULE = None
 _STREAMING_UTILS_MODULE = None
+ANIMATION_RESOLVE_FINALIZE_STUCK_TIMEOUT_SEC = 30.0
+ANIMATION_RESOLVE_FINALIZE_MAX_REFRESH_ATTEMPTS = 3
 
 
 @dataclass
@@ -849,6 +852,7 @@ def _prepare_segments(scene, segments, frame_start, frame_end, base_path="", tex
             segment_obj["planetka_segment_index"] = segment_index
             segment_obj["planetka_segment_start"] = segment_start
             segment_obj["planetka_segment_end"] = segment_end
+            _enforce_cycles_simple_subdivision_on_object(scene, segment_obj)
 
             segment_material = _create_segment_material(
                 segment_index,
@@ -2317,6 +2321,29 @@ def _restore_earth_material_displacement_mode_state(material, state):
         _set_enum_property_if_available(cycles_settings, "displacement_method", (cycles_mode,))
 
 
+def _enforce_cycles_simple_subdivision_on_object(scene, obj):
+    if scene is None or obj is None:
+        return False
+    render = getattr(scene, "render", None)
+    try:
+        engine = str(getattr(render, "engine", "") or "").strip().upper()
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        engine = ""
+    if engine != "CYCLES":
+        return False
+    if getattr(obj, "type", None) != 'MESH':
+        return False
+    modifiers = getattr(obj, "modifiers", None)
+    if modifiers is None:
+        return False
+    subsurf = modifiers.get("Adaptive Subdivision")
+    if subsurf is None or getattr(subsurf, "type", None) != 'SUBSURF':
+        return False
+    if not hasattr(subsurf, "subdivision_type"):
+        return False
+    return _set_enum_property_if_available(subsurf, "subdivision_type", ("SIMPLE",))
+
+
 def _ensure_saved_blend_before_animation_render(operator, prompt_if_unsaved=False):
     save_required_message = "Save the .blend file first, then run Animation Render again."
     blend_path = str(getattr(bpy.data, "filepath", "") or "").strip()
@@ -2657,6 +2684,8 @@ class PLANETKA_OT_AnimationPreviewShot(bpy.types.Operator):
             if "FINISHED" not in result:
                 last_message = f"Resolve returned {result} at frame {frame_int:04d}"
                 continue
+            earth = get_earth_object()
+            _enforce_cycles_simple_subdivision_on_object(scene, earth)
             missing_images = _count_missing_tile_loading_images(material_name="Planetka Earth Material")
             if int(missing_images) > 0:
                 last_message = (
@@ -2886,6 +2915,8 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
     _original_texture_quality_mode = "PREVIEW"
     _eevee_temp_displacement_state = None
     _segment_failures = None
+    _resolve_finalize_wait_started = 0.0
+    _resolve_finalize_refresh_attempts = 0
 
     def invoke(self, context, event):
         del event
@@ -2952,6 +2983,8 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         self._render_seen_active = False
         self._render_launch_time = 0.0
         self._render_launch_wall_time = 0.0
+        self._resolve_finalize_wait_started = 0.0
+        self._resolve_finalize_refresh_attempts = 0
 
     def _cancel_with_error(self, context, message):
         text = str(message or "Animation render failed.").strip() or "Animation render failed."
@@ -2977,6 +3010,63 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             return False
         return False
+
+    def _read_resolve_runtime_status(self, scene):
+        try:
+            return dict(get_resolve_runtime_status(scene=scene) or {})
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            return {}
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            return {}
+
+    def _refresh_stuck_finalize_queue(self, scene, waited_sec):
+        attempt = int(self._resolve_finalize_refresh_attempts) + 1
+        self._resolve_finalize_refresh_attempts = int(attempt)
+        self._resolve_finalize_wait_started = float(time.monotonic())
+        if attempt > int(ANIMATION_RESOLVE_FINALIZE_MAX_REFRESH_ATTEMPTS):
+            return False, (
+                "Resolve finalize remained stuck after automatic refresh attempts "
+                f"({int(ANIMATION_RESOLVE_FINALIZE_MAX_REFRESH_ATTEMPTS)})."
+            )
+        logger.warning(
+            "Planetka animation: resolve finalize watchdog refreshing stalled pipeline "
+            "(attempt=%d/%d, waited=%.2fs).",
+            int(attempt),
+            int(ANIMATION_RESOLVE_FINALIZE_MAX_REFRESH_ATTEMPTS),
+            float(max(0.0, float(waited_sec))),
+        )
+        self.report(
+            {'WARNING'},
+            (
+                "Resolve finalize stalled; attempting automatic refresh "
+                f"({int(attempt)}/{int(ANIMATION_RESOLVE_FINALIZE_MAX_REFRESH_ATTEMPTS)})."
+            ),
+        )
+        try:
+            stop_auto_resolve_download_pipeline()
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka animation: failed stopping stalled resolve pipeline", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka animation: failed stopping stalled resolve pipeline", exc_info=True)
+        return True, ""
+
+    def _wait_or_refresh_finalize_queue(self, scene):
+        status = self._read_resolve_runtime_status(scene)
+        code = str(status.get("code", "") or "").strip().upper()
+        if code != "FINALIZE_QUEUED":
+            self._resolve_finalize_wait_started = 0.0
+            self._resolve_finalize_refresh_attempts = 0
+            return True, ""
+
+        now = float(time.monotonic())
+        started = float(self._resolve_finalize_wait_started or 0.0)
+        if started <= 0.0:
+            self._resolve_finalize_wait_started = now
+            return False, ""
+        waited = max(0.0, now - started)
+        if waited < float(ANIMATION_RESOLVE_FINALIZE_STUCK_TIMEOUT_SEC):
+            return False, ""
+        return self._refresh_stuck_finalize_queue(scene, waited)
 
     def _dedupe_texture_requests(self, requests):
         deduped = []
@@ -3177,6 +3267,15 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka animation: failed reasserting EEVEE bump-only runtime flag", exc_info=True)
 
+    def _enforce_cycles_simple_subdivision_for_segment(self):
+        scene = self._scene
+        if scene is None:
+            return
+        if self._is_eevee_render_engine(scene):
+            return
+        earth = get_earth_object()
+        _enforce_cycles_simple_subdivision_on_object(scene, earth)
+
     def execute(self, context):
         scene = require_scene(self, context, logger=logger)
         if scene is None:
@@ -3238,6 +3337,26 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         if bool(runtime_status.get("running", False)):
             self.report({'INFO'}, "Waiting for queued Planetka resolve to finish before Animation Render starts.")
             idle, final_status = _wait_for_resolve_pipeline_idle(scene, timeout_sec=90.0, poll_sec=0.1)
+            if not idle:
+                try:
+                    final_code = str((final_status or {}).get("code", "") or "").strip().upper()
+                except (TypeError, ValueError, AttributeError):
+                    final_code = ""
+                if final_code == "FINALIZE_QUEUED":
+                    self.report(
+                        {'WARNING'},
+                        (
+                            "Queued resolve finalize appears stalled; "
+                            "attempting automatic refresh before starting Animation Render."
+                        ),
+                    )
+                    try:
+                        stop_auto_resolve_download_pipeline()
+                    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                        logger.debug("Planetka animation: failed refreshing stuck pre-render resolve queue", exc_info=True)
+                    except (RuntimeError, TypeError, ValueError, AttributeError):
+                        logger.debug("Planetka animation: failed refreshing stuck pre-render resolve queue", exc_info=True)
+                    idle, final_status = _wait_for_resolve_pipeline_idle(scene, timeout_sec=10.0, poll_sec=0.1)
             if not idle:
                 status_text = str((final_status or {}).get("text", "Resolve queued") or "Resolve queued")
                 return fail(
@@ -3337,6 +3456,8 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             self._original_texture_quality_mode = str(original_texture_quality_mode)
             self._eevee_temp_displacement_state = eevee_temp_displacement_state
             self._segment_failures = []
+            self._resolve_finalize_wait_started = 0.0
+            self._resolve_finalize_refresh_attempts = 0
 
             wm = getattr(context, "window_manager", None)
             if wm is None:
@@ -3385,6 +3506,11 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         if self._state == "RESOLVE":
             if self._segment_index >= len(self._segments or ()):
                 return self._finish_success(context)
+            resolve_ready, watchdog_message = self._wait_or_refresh_finalize_queue(scene)
+            if watchdog_message:
+                return self._cancel_with_error(context, watchdog_message)
+            if not resolve_ready:
+                return {'RUNNING_MODAL'}
             segment = dict((self._segments or [])[self._segment_index])
             self._active_segment = segment
             seg_start = int(segment.get("start", 1))
@@ -3393,7 +3519,10 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             ok, message = self._resolve_segment_frame(seg_start, tiles_override=segment.get("tiles", ()))
             if not ok:
                 return self._cancel_with_error(context, message)
+            self._resolve_finalize_wait_started = 0.0
+            self._resolve_finalize_refresh_attempts = 0
             self._enforce_eevee_bump_only_for_segment()
+            self._enforce_cycles_simple_subdivision_for_segment()
             ok, message = self._launch_segment_render(segment, invoke_ui=True)
             if not ok:
                 return self._cancel_with_error(context, message)
