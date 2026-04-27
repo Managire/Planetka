@@ -182,7 +182,7 @@ def _hide_unconnected_group_input_sockets(node_tree):
                 if not linked:
                     linked = bool(getattr(socket, "links", ()))
                 socket.hide = not linked
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
 
 
@@ -227,7 +227,7 @@ def _set_tex_image_node_interpolation(node, use_fallback):
         return
     try:
         node.interpolation = "Closest" if bool(use_fallback) else "Linear"
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
 
 
@@ -239,7 +239,7 @@ def _set_material_displacement_and_bump(material, *, force=False):
         try:
             if int(material.get(_MATERIAL_DISPLACEMENT_MODE_VERSION_KEY, 0)) >= int(_MATERIAL_DISPLACEMENT_MODE_VERSION):
                 return False
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
 
     changed = False
@@ -252,7 +252,7 @@ def _set_material_displacement_and_bump(material, *, force=False):
             prop_def = material.bl_rna.properties.get("displacement_method")
             if prop_def and hasattr(prop_def, "enum_items"):
                 available = {item.identifier for item in prop_def.enum_items}
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             available = set()
 
         for identifier in preferred_material:
@@ -260,7 +260,7 @@ def _set_material_displacement_and_bump(material, *, force=False):
                 continue
             try:
                 current = str(getattr(material, "displacement_method", "") or "")
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 current = ""
             if current == identifier:
                 break
@@ -268,7 +268,7 @@ def _set_material_displacement_and_bump(material, *, force=False):
                 material.displacement_method = identifier
                 changed = True
                 break
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 continue
 
     # Legacy path.
@@ -276,7 +276,7 @@ def _set_material_displacement_and_bump(material, *, force=False):
     if cycles_settings is None or not hasattr(cycles_settings, "displacement_method"):
         try:
             material[_MATERIAL_DISPLACEMENT_MODE_VERSION_KEY] = int(_MATERIAL_DISPLACEMENT_MODE_VERSION)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
         return changed
 
@@ -286,7 +286,7 @@ def _set_material_displacement_and_bump(material, *, force=False):
         prop_def = cycles_settings.bl_rna.properties.get("displacement_method")
         if prop_def and hasattr(prop_def, "enum_items"):
             available = {item.identifier for item in prop_def.enum_items}
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         available = set()
 
     for identifier in preferred_cycles:
@@ -294,7 +294,7 @@ def _set_material_displacement_and_bump(material, *, force=False):
             continue
         try:
             current = str(getattr(cycles_settings, "displacement_method", "") or "")
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             current = ""
         if current == identifier:
             break
@@ -302,11 +302,11 @@ def _set_material_displacement_and_bump(material, *, force=False):
             cycles_settings.displacement_method = identifier
             changed = True
             break
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             continue
     try:
         material[_MATERIAL_DISPLACEMENT_MODE_VERSION_KEY] = int(_MATERIAL_DISPLACEMENT_MODE_VERSION)
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
     return changed
 
@@ -353,7 +353,7 @@ def _normalize_surface_elevation_defaults(material):
     try:
         if int(material.get(_MATERIAL_DEFAULTS_VERSION_KEY, 0)) >= int(_MATERIAL_DEFAULTS_VERSION):
             return
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
     node_tree = getattr(material, "node_tree", None)
     if node_tree is None:
@@ -365,7 +365,7 @@ def _normalize_surface_elevation_defaults(material):
         if scale_node and getattr(scale_node, "bl_idname", "") == "ShaderNodeMath":
             try:
                 scale_node.inputs[1].default_value = float(ELEVATION_SCALE_MULTIPLIER)
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, TypeError, ValueError, IndexError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
 
     surface_nodes = [
@@ -394,7 +394,7 @@ def _normalize_surface_elevation_defaults(material):
             ):
                 try:
                     coeff_socket.default_value = float(DEFAULT_ELEVATION_COEFFICIENT)
-                except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, TypeError, ValueError):
+                except PLANETKA_RECOVERABLE_EXCEPTIONS:
                     pass
 
         roughness_socket = None
@@ -415,7 +415,7 @@ def _normalize_surface_elevation_defaults(material):
             ):
                 try:
                     roughness_socket.default_value = float(DEFAULT_WATER_ROUGHNESS)
-                except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, TypeError, ValueError):
+                except PLANETKA_RECOVERABLE_EXCEPTIONS:
                     pass
 
         surface_sat_socket = None
@@ -436,12 +436,12 @@ def _normalize_surface_elevation_defaults(material):
             ):
                 try:
                     surface_sat_socket.default_value = float(DEFAULT_SURFACE_SATURATION)
-                except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, TypeError, ValueError):
+                except PLANETKA_RECOVERABLE_EXCEPTIONS:
                     pass
 
     try:
         material[_MATERIAL_DEFAULTS_VERSION_KEY] = int(_MATERIAL_DEFAULTS_VERSION)
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
 
 
@@ -484,7 +484,7 @@ def sync_surface_elevation_scale_for_radius(earth_radius_bu):
                 ):
                     # Driver-based radius compensation is active; avoid imperative writes.
                     continue
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
         try:
             current = float(scale_node.inputs[1].default_value)
@@ -495,7 +495,7 @@ def sync_surface_elevation_scale_for_radius(earth_radius_bu):
         try:
             scale_node.inputs[1].default_value = float(scale_value)
             changed = True
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, TypeError, ValueError, IndexError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
 
     return float(scale_value), bool(changed)
@@ -567,7 +567,7 @@ def _ensure_surface_elevation_radius_driver(scene):
             if str(getattr(target, "data_path", "") or "") != "planetka.earth_radius_bu":
                 target.data_path = "planetka.earth_radius_bu"
                 changed = True
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
     return bool(changed)
 
@@ -580,7 +580,7 @@ def _scene_earth_radius_bu(scene):
         return 2.0
     try:
         return max(1e-6, float(getattr(props, "earth_radius_bu", 2.0)))
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
         return 2.0
 
@@ -619,12 +619,12 @@ def _ensure_interface_float_socket(node_group, name, *, default, min_value=0.0, 
         if hasattr(existing, attr):
             try:
                 setattr(existing, attr, float(value))
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
     if description and hasattr(existing, "description"):
         try:
             existing.description = str(description)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
 
     return existing
@@ -651,7 +651,7 @@ def _ensure_interface_socket(node_group, name, *, in_out, socket_type, descripti
         if description and hasattr(existing, "description"):
             try:
                 existing.description = str(description)
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, AttributeError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
         return existing
 
@@ -660,7 +660,7 @@ def _ensure_interface_socket(node_group, name, *, in_out, socket_type, descripti
         if description and hasattr(created, "description"):
             try:
                 created.description = str(description)
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, AttributeError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
         return created
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
@@ -695,7 +695,7 @@ def _safe_setattr(obj, name, value):
         return
     try:
         setattr(obj, name, value)
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
 
 
@@ -704,7 +704,7 @@ def _safe_set_node_location(node, x, y):
         return
     try:
         node.location = (float(x), float(y))
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
 
 
@@ -732,7 +732,7 @@ def _socket_by_name_or_index(sockets, name, fallback_index=None):
     try:
         if len(sockets) > int(fallback_index):
             return sockets[int(fallback_index)]
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         return None
     return None
 
@@ -845,7 +845,7 @@ def _ensure_surface_detail_nodes():
             green_mask.inputs[2].default_value = 0.15  # From Max
             green_mask.inputs[3].default_value = 0.0   # To Min
             green_mask.inputs[4].default_value = 1.0   # To Max
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, IndexError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
     _replace_input_link(links, green_mask.inputs[0] if green_mask else None, green_dom.outputs[0] if green_dom else None)
 
@@ -860,7 +860,7 @@ def _ensure_surface_detail_nodes():
             dark_mask.inputs[2].default_value = 0.50  # From Max
             dark_mask.inputs[3].default_value = 1.0   # To Min (invert)
             dark_mask.inputs[4].default_value = 0.0   # To Max
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, IndexError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
     _replace_input_link(links, dark_mask.inputs[0] if dark_mask else None, luma.outputs[0] if luma else None)
 
@@ -878,7 +878,7 @@ def _ensure_surface_detail_nodes():
             try:
                 inv.inputs[1].default_value = -1.0
                 inv.inputs[2].default_value = 1.0
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, IndexError, AttributeError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
         _replace_input_link(links, inv.inputs[0] if inv else None, high_alt)
         low_alt = inv.outputs[0] if inv else None
@@ -907,7 +907,7 @@ def _ensure_surface_detail_nodes():
     if slope is not None:
         try:
             slope.inputs[0].default_value = 1.0
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, IndexError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
     _replace_input_link(links, slope.inputs[1] if slope else None, dot.outputs.get("Value") if dot else None)
 
@@ -919,7 +919,7 @@ def _ensure_surface_detail_nodes():
             slope_mask.inputs[2].default_value = 0.25  # From Max
             slope_mask.inputs[3].default_value = 0.0   # To Min
             slope_mask.inputs[4].default_value = 1.0   # To Max
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, IndexError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
     _replace_input_link(links, slope_mask.inputs[0] if slope_mask else None, slope.outputs[0] if slope else None)
 
@@ -960,7 +960,7 @@ def _ensure_surface_detail_nodes():
     if forest_scale is not None:
         try:
             forest_scale.inputs[1].default_value = 800.0
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, IndexError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
     _replace_input_link(links, forest_scale.inputs[0] if forest_scale else None, detail_scale)
 
@@ -970,7 +970,7 @@ def _ensure_surface_detail_nodes():
             forest_noise.inputs["Detail"].default_value = 8.0
             forest_noise.inputs["Roughness"].default_value = 0.55
             forest_noise.inputs["Distortion"].default_value = 0.10
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, KeyError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
     _replace_input_link(links, forest_noise.inputs.get("Vector") if forest_noise else None, geo.outputs.get("Position") if geo else None)
     _replace_input_link(links, forest_noise.inputs.get("Scale") if forest_noise else None, forest_scale.outputs[0] if forest_scale else None)
@@ -983,7 +983,7 @@ def _ensure_surface_detail_nodes():
             forest_height.inputs[2].default_value = 0.65  # From Max
             forest_height.inputs[3].default_value = 0.0
             forest_height.inputs[4].default_value = 1.0
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, IndexError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
     _replace_input_link(links, forest_height.inputs[0] if forest_height else None, forest_noise.outputs.get("Fac") if forest_noise else None)
 
@@ -999,7 +999,7 @@ def _ensure_surface_detail_nodes():
     if rock_voronoi_scale is not None:
         try:
             rock_voronoi_scale.inputs[1].default_value = 140.0
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, IndexError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
     _replace_input_link(links, rock_voronoi_scale.inputs[0] if rock_voronoi_scale else None, detail_scale)
 
@@ -1017,7 +1017,7 @@ def _ensure_surface_detail_nodes():
             rock_cracks.inputs[2].default_value = 0.04  # From Max
             rock_cracks.inputs[3].default_value = 1.0   # To Min (invert)
             rock_cracks.inputs[4].default_value = 0.0   # To Max
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, IndexError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
     _replace_input_link(
         links,
@@ -1030,7 +1030,7 @@ def _ensure_surface_detail_nodes():
     if rock_noise_scale is not None:
         try:
             rock_noise_scale.inputs[1].default_value = 40.0
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, IndexError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
     _replace_input_link(links, rock_noise_scale.inputs[0] if rock_noise_scale else None, detail_scale)
 
@@ -1040,7 +1040,7 @@ def _ensure_surface_detail_nodes():
             rock_noise.inputs["Detail"].default_value = 12.0
             rock_noise.inputs["Roughness"].default_value = 0.60
             rock_noise.inputs["Distortion"].default_value = 0.15
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, KeyError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
     _replace_input_link(links, rock_noise.inputs.get("Vector") if rock_noise else None, geo.outputs.get("Position") if geo else None)
     _replace_input_link(links, rock_noise.inputs.get("Scale") if rock_noise else None, rock_noise_scale.outputs[0] if rock_noise_scale else None)
@@ -1050,7 +1050,7 @@ def _ensure_surface_detail_nodes():
     if crack_w is not None:
         try:
             crack_w.inputs[1].default_value = 0.75
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, IndexError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
     _replace_input_link(links, crack_w.inputs[0] if crack_w else None, rock_cracks.outputs.get("Result") if rock_cracks else None)
 
@@ -1059,7 +1059,7 @@ def _ensure_surface_detail_nodes():
     if noise_w is not None:
         try:
             noise_w.inputs[1].default_value = 0.25
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, IndexError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
     _replace_input_link(links, noise_w.inputs[0] if noise_w else None, rock_noise.outputs.get("Fac") if rock_noise else None)
 
@@ -1084,7 +1084,7 @@ def _ensure_surface_detail_nodes():
         if noise_center is not None:
             try:
                 noise_center.inputs[1].default_value = 0.5
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, IndexError, AttributeError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
         _replace_input_link(links, noise_center.inputs[0] if noise_center else None, rock_noise.outputs.get("Fac") if rock_noise else None)
 
@@ -1093,7 +1093,7 @@ def _ensure_surface_detail_nodes():
         if noise_center2 is not None:
             try:
                 noise_center2.inputs[1].default_value = 2.0
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, IndexError, AttributeError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
         _replace_input_link(links, noise_center2.inputs[0] if noise_center2 else None, noise_center.outputs[0] if noise_center else None)
 
@@ -1107,7 +1107,7 @@ def _ensure_surface_detail_nodes():
         if rock_color_amount2 is not None:
             try:
                 rock_color_amount2.inputs[1].default_value = 0.12
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, IndexError, AttributeError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
         _replace_input_link(links, rock_color_amount2.inputs[0] if rock_color_amount2 else None, rock_color_amount.outputs[0] if rock_color_amount else None)
 
@@ -1121,7 +1121,7 @@ def _ensure_surface_detail_nodes():
         if rock_color_scale is not None:
             try:
                 rock_color_scale.inputs[0].default_value = 1.0
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, IndexError, AttributeError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
         _replace_input_link(links, rock_color_scale.inputs[1] if rock_color_scale else None, rock_color_delta.outputs[0] if rock_color_delta else None)
 
@@ -1139,7 +1139,7 @@ def _ensure_surface_detail_nodes():
                 color_mul.inputs[0].default_value = 1.0
                 if hasattr(color_mul, "clamp_factor"):
                     color_mul.clamp_factor = True
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, IndexError, AttributeError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
         _replace_input_link(links, color_mul.inputs[6] if color_mul else None, base_color_source)
         _replace_input_link(links, color_mul.inputs[7] if color_mul else None, scale_rgb.outputs.get("Color") if scale_rgb else None)
@@ -1274,7 +1274,7 @@ def _ensure_interface_panel(interface, panel_name, *, parent=None, default_close
     if hasattr(panel, "default_closed"):
         try:
             panel.default_closed = bool(default_closed)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
     current_parent = getattr(panel, "parent", None)
     if current_parent is not parent:
@@ -1415,7 +1415,7 @@ def _set_group_node_input_default(node, socket_name, value):
         return
     try:
         socket.default_value = float(value)
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
 
 
@@ -1756,7 +1756,7 @@ def _wire_nightday_terminator_shift():
         try:
             shift_add.operation = "ADD"
             shift_add.use_clamp = True
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
 
         shift_scale = nodes.get("PKA Terminator Shift Scale")
@@ -1779,14 +1779,14 @@ def _wire_nightday_terminator_shift():
             shift_scale.operation = "DIVIDE"
             shift_scale.use_clamp = False
             shift_scale.inputs[1].default_value = 100.0
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
 
         try:
             shift_add.location = (float(color_ramp.location[0]) - 240.0, float(color_ramp.location[1]))
             shift_scale.location = (float(shift_add.location[0]) - 220.0, float(shift_add.location[1]) + 120.0)
             group_input.location = (float(shift_scale.location[0]) - 220.0, float(shift_scale.location[1]) + 40.0)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             pass
 
         # Remove legacy unused Map Range node if present.
@@ -1813,7 +1813,7 @@ def _wire_nightday_terminator_shift():
             elements = getattr(ramp, "elements", None) if ramp else None
             if elements and len(elements) >= 2:
                 elements[1].position = 0.017104
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
 
         try:
@@ -1854,7 +1854,7 @@ def _apply_surface_shader_updates():
     try:
         if int(surface_group.get(_SURFACE_SHADER_UPDATE_VERSION_KEY, 0)) >= int(_SURFACE_SHADER_UPDATE_VERSION):
             return
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
 
     _wire_nightday_terminator_shift()
@@ -1902,7 +1902,7 @@ def _set_image_colorspace_safe(image, colorspace):
         try:
             settings.name = candidate
             return
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             continue
 
 
@@ -2270,7 +2270,7 @@ def _resolve_fake_atmosphere_object(ensure_exists=False):
 
     try:
         fake_obj.name = FAKE_ATMOSPHERE_OBJECT_NAME
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
 
     try:
@@ -2303,7 +2303,7 @@ def _resolve_volumetric_atmosphere_object(ensure_exists=False):
             obj = _find_volumetric_atmosphere_object()
             if obj is not None:
                 break
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError) as exc:
+        except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
             errors.append(f"{blend_path}: {exc}")
             continue
 
@@ -2401,7 +2401,7 @@ def _ensure_fake_atmosphere_collection(scene):
                 legacy.name = FAKE_ATMOSPHERE_COLLECTION_NAME
                 target = legacy
                 break
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
                 target = legacy
                 break
@@ -2411,7 +2411,7 @@ def _ensure_fake_atmosphere_collection(scene):
         try:
             if target.name not in root.children:
                 root.children.link(target)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
     return target
 
@@ -2656,7 +2656,7 @@ def _ensure_planetka_sunlight(surface_collection):
 
     try:
         sunlight_obj["planetka_role"] = "sunlight"
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
 
     # Keep sunlight under Planetka Root so root transforms remain coherent.

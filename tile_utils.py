@@ -528,7 +528,7 @@ def _apply_temporal_z_hysteresis(scene, requested_z, distance_value):
 
     try:
         previous_z = int(scene.get(LAST_SELECTED_Z_LEVEL_KEY, 0) or 0)
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         previous_z = 0
 
     if previous_z <= 0 or previous_z == requested_z:
@@ -544,7 +544,7 @@ def _apply_temporal_z_hysteresis(scene, requested_z, distance_value):
             0.0,
             float(scene.get(LAST_Z_SWITCH_DISTANCE_KEY, current_distance) or current_distance),
         )
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         switch_distance = current_distance
 
     band = float(switch_distance) * float(TEMPORAL_HYSTERESIS_DISTANCE_RATIO)
@@ -1707,7 +1707,7 @@ def main(scope_mode="AUTO", edge_boost=False, texture_quality_mode_override=None
 
     try:
         previous_selected_z = int(scene.get(LAST_SELECTED_Z_LEVEL_KEY, 0) or 0)
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         previous_selected_z = 0
     try:
         scene[LAST_SELECTED_Z_LEVEL_KEY] = int(selected_z)
@@ -1718,7 +1718,7 @@ def main(scope_mode="AUTO", edge_boost=False, texture_quality_mode_override=None
         )
         if int(previous_selected_z) != int(selected_z):
             scene[LAST_Z_SWITCH_DISTANCE_KEY] = max(0.0, float(reference_distance))
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed storing temporal z hysteresis diagnostics", exc_info=True)
 
     required_mpp_selected = required_mpp_near

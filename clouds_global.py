@@ -159,7 +159,7 @@ def update_enable_global_clouds(self, context):
     if bool(getattr(self, "enable_global_clouds", True)):
         try:
             ensure_global_cloud_layer(scene=scene)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka clouds: failed ensuring global cloud layer", exc_info=True)
 
 

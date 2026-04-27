@@ -67,21 +67,21 @@ def _pick_scene_camera(scene, context=None):
     try:
         view_layer = getattr(context, "view_layer", None) if context is not None else None
         active_obj = getattr(view_layer.objects, "active", None) if view_layer is not None else None
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         active_obj = None
     if active_obj is not None and getattr(active_obj, "type", None) == 'CAMERA':
         try:
             if active_obj in tuple(getattr(scene, "objects", ())):
                 scene.camera = active_obj
                 return active_obj
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             pass
 
     for obj in tuple(getattr(scene, "objects", ())):
         if getattr(obj, "type", None) == 'CAMERA':
             try:
                 scene.camera = obj
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 pass
             return obj
 
@@ -98,7 +98,7 @@ def _is_planetka_create_camera(obj):
         pass
     try:
         return str(obj.get("planetka_role", "") or "").strip().lower() == "camera"
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         return False
 
 
@@ -127,12 +127,12 @@ def _ensure_planetka_create_camera(scene):
 
     try:
         camera_obj["planetka_role"] = "camera"
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed tagging Planetka Camera role", exc_info=True)
 
     try:
         root = ensure_planetka_root(scene)
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         root = None
     if root is not None:
         try:
@@ -141,7 +141,7 @@ def _ensure_planetka_create_camera(scene):
                 camera_obj.parent = root
                 camera_obj.matrix_parent_inverse = root.matrix_world.inverted()
                 camera_obj.matrix_world = world_matrix
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka: failed parenting Planetka Camera to Planetka Root", exc_info=True)
 
     return camera_obj
@@ -172,12 +172,12 @@ def _position_planetka_create_camera(scene, props, camera_obj, activate=False):
         if bool(activate):
             try:
                 scene.camera = camera_obj
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka: failed activating Planetka Camera", exc_info=True)
         else:
             try:
                 scene.camera = previous_camera
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka: failed restoring previously active scene camera", exc_info=True)
 
     return True
@@ -216,13 +216,13 @@ def _is_planetka_managed_object(obj):
         role_value = str(obj.get("planetka_role", "") or "").strip()
         if role_value:
             return True
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         pass
     try:
         for key in tuple(obj.keys()):
             if str(key).startswith("planetka_"):
                 return True
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         pass
     return False
 
@@ -747,7 +747,7 @@ def _create_placeholder_surface_object(scene):
         try:
             obj.data.materials.clear()
             obj.data.materials.append(planetka_surface)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka: failed assigning Earth material to bootstrap surface", exc_info=True)
     return obj
 
@@ -818,7 +818,7 @@ def _scene_allows_automatic_clipping(scene):
     allowed_default_names = {"Cube", "Camera", "Light"}
     try:
         scene_objects = tuple(getattr(scene, "objects", ()))
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         return False
     for obj in scene_objects:
         try:
@@ -874,7 +874,7 @@ def _apply_clipping_limits(scene, clip_start, clip_end, notice_text=None):
                 camera_data.clip_start = float(new_start)
                 camera_data.clip_end = float(new_end)
                 changed = True
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             pass
 
     wm = getattr(bpy.context, "window_manager", None)
@@ -896,13 +896,13 @@ def _apply_clipping_limits(scene, clip_start, clip_end, notice_text=None):
                             space.clip_start = float(new_start)
                             space.clip_end = float(new_end)
                             changed = True
-                    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                    except PLANETKA_RECOVERABLE_EXCEPTIONS:
                         continue
 
     if changed and notice_text:
         try:
             scene["planetka_status_clip_auto_notice"] = str(notice_text)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             pass
     return bool(changed)
 
@@ -937,7 +937,7 @@ def _apply_create_earth_clipping_defaults(scene):
     try:
         if scene is not None and "planetka_status_clip_auto_notice" in scene:
             del scene["planetka_status_clip_auto_notice"]
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         pass
     return bool(changed)
 
@@ -975,7 +975,7 @@ def _switch_solid_viewports_to_rendered(context):
                     if str(getattr(shading, "type", "")) != "RENDERED":
                         shading.type = 'RENDERED'
                         switched = True
-                except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+                except PLANETKA_RECOVERABLE_EXCEPTIONS:
                     continue
     return switched
 
@@ -1015,7 +1015,7 @@ def _set_default_world_background_to_black(scene):
         try:
             color_socket.default_value = (0.0, 0.0, 0.0, 1.0)
             changed = True
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             changed = False
         return changed
 
@@ -1032,7 +1032,7 @@ def _set_default_world_background_to_black(scene):
     try:
         world.color = (0.0, 0.0, 0.0)
         changed = True
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         changed = False
     return changed
 
@@ -1049,12 +1049,12 @@ def _snapshot_view_selection(context):
             for obj in tuple(getattr(context, "selected_objects", ()))
             if getattr(obj, "name", None)
         ]
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         selected_names = []
     try:
         active_obj = getattr(view_layer.objects, "active", None)
         active_name = str(getattr(active_obj, "name", "") or "")
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         active_name = ""
     return tuple(selected_names), active_name
 
@@ -1068,9 +1068,9 @@ def _restore_view_selection(context, scene, selected_names, active_name):
         for obj in tuple(getattr(context, "selected_objects", ())):
             try:
                 obj.select_set(False)
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 continue
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         pass
 
     selected_objs = []
@@ -1078,7 +1078,7 @@ def _restore_view_selection(context, scene, selected_names, active_name):
         obj = None
         try:
             obj = getattr(scene, "objects", None).get(name) if scene is not None and getattr(scene, "objects", None) is not None else None
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             obj = None
         if obj is None:
             obj = bpy.data.objects.get(name)
@@ -1087,14 +1087,14 @@ def _restore_view_selection(context, scene, selected_names, active_name):
         try:
             obj.select_set(True)
             selected_objs.append(obj)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             continue
 
     active_obj = None
     if active_name:
         try:
             active_obj = getattr(scene, "objects", None).get(active_name) if scene is not None and getattr(scene, "objects", None) is not None else None
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             active_obj = None
         if active_obj is None:
             active_obj = bpy.data.objects.get(active_name)
@@ -1103,5 +1103,5 @@ def _restore_view_selection(context, scene, selected_names, active_name):
 
     try:
         view_layer.objects.active = active_obj
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         pass

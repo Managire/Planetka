@@ -259,7 +259,7 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
 
         try:
             props.texture_quality_mode = target_mode
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka: failed setting texture quality mode via Data Control", exc_info=True)
             return fail(
                 self,
@@ -293,7 +293,7 @@ class PLANETKA_OT_DownloadStatusPopup(bpy.types.Operator):
         try:
             if _DOWNLOAD_POPUP_WM_FLAG in wm:
                 del wm[_DOWNLOAD_POPUP_WM_FLAG]
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             _log_recoverable_once("PKA-OPS-038", "Failed clearing download popup running flag")
 
     def _finish(self, context):
@@ -301,7 +301,7 @@ class PLANETKA_OT_DownloadStatusPopup(bpy.types.Operator):
         if wm is not None and self._timer is not None:
             try:
                 wm.event_timer_remove(self._timer)
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 _log_recoverable_once("PKA-OPS-039", "Failed removing download popup timer")
         self._timer = None
         self._clear_running_flag(context)
@@ -315,7 +315,7 @@ class PLANETKA_OT_DownloadStatusPopup(bpy.types.Operator):
             if bool(wm.get(_DOWNLOAD_POPUP_WM_FLAG, False)):
                 return {'CANCELLED'}
             wm[_DOWNLOAD_POPUP_WM_FLAG] = True
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             _log_recoverable_once("PKA-OPS-040", "Failed setting download popup running flag")
 
         if not is_download_active():
@@ -326,7 +326,7 @@ class PLANETKA_OT_DownloadStatusPopup(bpy.types.Operator):
             self._timer = wm.event_timer_add(0.2, window=getattr(context, "window", None))
             wm.modal_handler_add(self)
             return wm.invoke_popup(self, width=280)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             self._finish(context)
             return {'CANCELLED'}
 
@@ -344,7 +344,7 @@ class PLANETKA_OT_DownloadStatusPopup(bpy.types.Operator):
                 for area in tuple(getattr(screen, "areas", ())):
                     if str(getattr(area, "type", "")) in {"VIEW_3D", "PROPERTIES"}:
                         area.tag_redraw()
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             pass
         return {'RUNNING_MODAL'}
 
@@ -588,7 +588,7 @@ class PLANETKA_OT_ResetSurfaceGradingSection(bpy.types.Operator):
                     else:
                         socket.default_value = target_value
                     reset_count += 1
-                except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                except PLANETKA_RECOVERABLE_EXCEPTIONS:
                     logger.debug(
                         "Planetka: failed resetting surface grading socket '%s' in section '%s'",
                         socket_name_raw,

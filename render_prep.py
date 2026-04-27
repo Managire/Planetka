@@ -291,7 +291,7 @@ def _show_popup_lines(context, title, icon, lines):
 
     try:
         wm.popup_menu(_draw, title=str(title or "Planetka"), icon=str(icon or "INFO"))
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed showing popup warning", exc_info=True)
 
 
@@ -334,7 +334,7 @@ def _set_resolve_failure_notice(scene, message):
     try:
         scene[RESOLVE_FAILURE_FLAG_KEY] = True
         scene[RESOLVE_FAILURE_MESSAGE_KEY] = safe_message
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed storing resolve failure notice on scene", exc_info=True)
 
 
@@ -346,7 +346,7 @@ def _clear_resolve_failure_notice(scene):
             del scene[RESOLVE_FAILURE_FLAG_KEY]
         if RESOLVE_FAILURE_MESSAGE_KEY in scene:
             del scene[RESOLVE_FAILURE_MESSAGE_KEY]
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed clearing resolve failure notice on scene", exc_info=True)
 
 
@@ -462,12 +462,12 @@ def _set_object_hidden_state(obj, viewport_hidden=None, render_hidden=None):
     try:
         if viewport_hidden is not None and hasattr(obj, "hide_viewport"):
             obj.hide_viewport = bool(viewport_hidden)
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed setting object viewport hidden state", exc_info=True)
     try:
         if render_hidden is not None and hasattr(obj, "hide_render"):
             obj.hide_render = bool(render_hidden)
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed setting object render hidden state", exc_info=True)
 
 
@@ -542,14 +542,14 @@ def _validate_resolve_completion_integrity(scene, earth_surface, requested_tiles
     mesh_data = getattr(final_surface, "data", None)
     try:
         vertex_count = len(getattr(mesh_data, "vertices", ()) or ())
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         vertex_count = 0
     if int(vertex_count) <= 0:
         issues.append("Earth surface mesh has no vertices after resolve.")
 
     try:
         users_collection = tuple(getattr(final_surface, "users_collection", ()) or ())
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         users_collection = ()
     if not users_collection:
         issues.append("Earth surface object is not linked to any collection.")
@@ -580,7 +580,7 @@ def _validate_resolve_completion_integrity(scene, earth_surface, requested_tiles
             scene_root = getattr(scene, "collection", None)
             if scene_root is None:
                 issues.append("Scene root collection is unavailable after resolve.")
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             issues.append("Scene root collection is unavailable after resolve.")
     return issues
 
@@ -635,7 +635,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         if cleanup_obj is not None:
             try:
                 remove_object_and_unused_mesh(cleanup_obj)
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka: failed removing temporary Earth object during resolve abort", exc_info=True)
         _restore_navigation_adaptive_state_safe("failed restoring adaptive viewport after resolve abort")
         if exc is not None and log_message is not None:
@@ -677,7 +677,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 continue
             try:
                 self.report({level}, text)
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka: failed emitting resolve UI report", exc_info=True)
 
     def _phase_prepare_context(self, context):
@@ -803,14 +803,14 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         # setter was invoked in a context where direct mesh update could not run.
         try:
             desired_radius = float(getattr(props, "earth_radius_bu", 2.0))
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             desired_radius = 2.0
         if not math.isfinite(desired_radius):
             desired_radius = 2.0
         desired_radius = max(1e-6, float(desired_radius))
         try:
             current_radius = float(_earth_radius_blender_units(earth_surface))
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             current_radius = desired_radius
         if math.isfinite(current_radius) and abs(current_radius - desired_radius) > 1e-6:
             try:
@@ -885,7 +885,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 texture_quality_mode = _normalize_texture_quality_mode(
                     getattr(props, "texture_quality_mode", "PREVIEW")
                 )
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             texture_quality_mode = "PREVIEW"
         try:
             if not allows_balanced_full_quality_for_context(
@@ -904,19 +904,19 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                     texture_quality_mode = "BALANCED"
                 else:
                     texture_quality_mode = "PREVIEW"
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             texture_quality_mode = "PREVIEW"
         try:
             nav_latitude_deg = float(getattr(props, "nav_latitude_deg", 0.0))
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             nav_latitude_deg = 0.0
         try:
             nav_longitude_deg = float(getattr(props, "nav_longitude_deg", 0.0))
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             nav_longitude_deg = 0.0
         try:
             nav_altitude_km = max(0.0, float(getattr(props, "nav_altitude_km", 0.0)))
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             nav_altitude_km = 0.0
 
         phase_start = time.perf_counter()
@@ -975,7 +975,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             panorama_limit_exceeded = bool(scene.get(LAST_PANORAMA_LIMIT_EXCEEDED_KEY, False))
             panorama_required_tiles = int(scene.get(LAST_PANORAMA_REQUIRED_TILES_KEY, 0) or 0)
             panorama_required_z = int(scene.get(LAST_PANORAMA_REQUIRED_Z_KEY, 0) or 0)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             panorama_mode = False
             panorama_limit_exceeded = False
             panorama_required_tiles = 0
@@ -1024,7 +1024,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                     base_path=normalized,
                     full_tiles_override=full_tiles_override,
                 )
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka: failed updating resolve-size estimates before queued resolve", exc_info=True)
             queued = queue_resolve_download(
                 scene,
@@ -1291,7 +1291,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 raise RuntimeError("Failed to create new Earth surface mesh")
             try:
                 ensure_earth_surface_parent(scene=scene, earth_surface=new_obj)
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka: failed early-parenting staging Earth surface to Planetka Root", exc_info=True)
             # Keep the existing resolved surface visible while we build/rebind the new
             # surface in the background. Hiding both surfaces can cause visible white/black
@@ -1363,7 +1363,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             logger.debug("Planetka: failed renaming resolved Earth surface object", exc_info=True)
         try:
             ensure_earth_surface_parent(scene=scene, earth_surface=new_obj)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka: failed parenting resolved Earth surface to Planetka Root", exc_info=True)
         # Reveal the new surface first, then remove old surfaces to avoid blank-frame flashes.
         _set_object_hidden_state(
@@ -1391,7 +1391,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
 
         try:
             retain_recent_resolve_cache(resolved_paths, keep_count=2)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka: failed pruning cache to current+previous resolve snapshots", exc_info=True)
 
         phase_post_preview_ms = 0.0
@@ -1438,7 +1438,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                     ),
                 )
             )
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             summary_total_bytes = int(max(0, int(downloaded_bytes)))
         _store_resolve_summary(
             scene,

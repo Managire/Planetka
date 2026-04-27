@@ -37,7 +37,7 @@ def _clamp_cycles_viewport_dicing(scene, target=PLANETKA_VIEWPORT_DICING_TARGET)
         return False
     try:
         current = float(getattr(cycles, "preview_dicing_rate", float(target)))
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         return False
     if current <= float(target):
         return False

@@ -48,7 +48,7 @@ class PLANETKA_OT_AccountLogin(bpy.types.Operator):
         try:
             result = bpy.ops.wm.url_open(url=verification_url)
             opened = "FINISHED" in result
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             opened = False
 
         if not opened:
@@ -91,7 +91,7 @@ class PLANETKA_OT_AccountOpenLogin(bpy.types.Operator):
             try:
                 prefs.auth_status_message = str(status_text or "")
                 prefs.auth_login_state = "logged_out"
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka: failed storing API key auth error status", exc_info=True)
             return fail(
                 self,
@@ -106,14 +106,14 @@ class PLANETKA_OT_AccountOpenLogin(bpy.types.Operator):
             logger.debug("Planetka: post-login account profile sync failed", exc_info=True)
         try:
             prefs.auth_status_message = ""
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka: failed clearing API key auth status message", exc_info=True)
         scene = getattr(context, "scene", None) if context is not None else None
         if scene is not None:
             try:
                 if ACCOUNT_PANEL_DEFAULT_COLLAPSED_KEY in scene:
                     del scene[ACCOUNT_PANEL_DEFAULT_COLLAPSED_KEY]
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka: failed clearing account panel default-collapsed marker", exc_info=True)
         self.report({'INFO'}, "Planetka API key connected.")
         return {'FINISHED'}
@@ -165,11 +165,11 @@ class PLANETKA_OT_AccountLogout(bpy.types.Operator):
         download_active = False
         try:
             render_active = bool(_is_render_job_active())
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka: failed checking render activity before logout", exc_info=True)
         try:
             download_active = bool(is_download_active())
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka: failed checking download activity before logout", exc_info=True)
         return render_active, download_active
 
@@ -222,7 +222,7 @@ def _open_account_url(url):
     try:
         result = bpy.ops.wm.url_open(url=safe_url)
         opened = "FINISHED" in result
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         opened = False
 
     if not opened:

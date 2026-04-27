@@ -301,12 +301,12 @@ def _set_planetka_earth_radius_bu(scene, target_radius_bu):
                 mesh_data.transform(Matrix.Diagonal((bake_sx, bake_sy, bake_sz, 1.0)))
                 earth_obj.scale = (1.0, 1.0, 1.0)
                 changed = True
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 _log_recoverable_once("PKA-OPS-036", "Failed normalizing Earth object scale while applying radius")
 
         try:
             current_local_radius = max(float(v.co.length) for v in vertices)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             current_local_radius = 0.0
 
         if current_local_radius <= 1e-9:
@@ -317,17 +317,17 @@ def _set_planetka_earth_radius_bu(scene, target_radius_bu):
             try:
                 mesh_data.transform(Matrix.Scale(float(ratio), 4))
                 changed = True
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 _log_recoverable_once("PKA-OPS-037", "Failed scaling Earth mesh to requested radius")
 
         try:
             mesh_data.update()
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             pass
 
     try:
         earth_obj["planetka_surface_local_radius"] = float(target_radius)
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         _log_recoverable_once("PKA-OPS-038", "Failed storing Earth local radius metadata")
 
     try:
@@ -335,7 +335,7 @@ def _set_planetka_earth_radius_bu(scene, target_radius_bu):
         preview_exists = bpy.data.objects.get("Planetka Preview Object") is not None
         if preview_exists or bool(getattr(props, "show_earth_preview", False)):
             ensure_preview_object(earth_obj)
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         _log_recoverable_once("PKA-OPS-039", "Failed syncing preview radius after Earth radius change")
 
     # Keep Planetka camera in the same relative navigation shot immediately
@@ -343,7 +343,7 @@ def _set_planetka_earth_radius_bu(scene, target_radius_bu):
     # of which scene camera is currently active.
     try:
         scene_for_camera = scene if isinstance(scene, bpy.types.Scene) else getattr(bpy.context, "scene", None)
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         scene_for_camera = None
     if scene_for_camera is not None:
         _clear_radius_sync_notice(scene_for_camera)
@@ -365,7 +365,7 @@ def _set_planetka_earth_radius_bu(scene, target_radius_bu):
                     scene_for_camera,
                     "Planetka Camera not found after Earth Radius change.",
                 )
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             _set_radius_sync_notice(
                 scene_for_camera,
                 "Earth Radius changed, but Planetka camera shot reapply failed.",
@@ -542,7 +542,7 @@ def _switch_viewport_to_camera_view(context, scene):
                 scene.camera = camera
             rv3d.view_perspective = 'CAMERA'
             switched = True
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             _log_recoverable_once("PKA-OPS-016", "Failed switching active viewport to camera perspective")
 
     wm = getattr(context, "window_manager", None)
@@ -563,7 +563,7 @@ def _switch_viewport_to_camera_view(context, scene):
                         scene.camera = camera
                     candidate_rv3d.view_perspective = 'CAMERA'
                     switched = True
-                except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+                except PLANETKA_RECOVERABLE_EXCEPTIONS:
                     continue
     return switched
 
@@ -611,7 +611,7 @@ def _sync_active_view_to_scene_camera(scene):
         else:
             rv3d.view_perspective = "PERSP"
         return True
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         _log_recoverable_once("PKA-OPS-061", "Failed syncing active viewport to camera pose")
         return False
 

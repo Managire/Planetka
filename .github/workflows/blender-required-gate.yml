@@ -22,6 +22,11 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Lint recoverable exception tuples
+        shell: bash
+        run: |
+          python3 .github/scripts/check_recoverable_except_patterns.py
+
       - name: Run release gate
         shell: bash
         run: |

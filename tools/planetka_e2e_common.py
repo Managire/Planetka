@@ -102,6 +102,7 @@ def enable_module(required_planetka_attr="add_earth"):
     candidates = unique(
         [
             os.environ.get("PLANETKA_MODULE"),
+            "bl_ext.user_default.planetka",
             "bl_ext.user_default.Planetka",
             "Planetka",
             "planetka",
@@ -138,6 +139,7 @@ def import_submodule(base_module_name, submodule_name):
     candidates = unique(
         [
             f"{base_module_name}.{submodule_name}" if base_module_name else None,
+            f"bl_ext.user_default.planetka.{submodule_name}",
             f"bl_ext.user_default.Planetka.{submodule_name}",
             f"Planetka.{submodule_name}",
             f"planetka.{submodule_name}",

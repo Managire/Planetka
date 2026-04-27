@@ -619,6 +619,20 @@ def _auto_resolve_log_pending_request_overlap(job, pending_job):
     return _ctx_auto_resolve_log_pending_request_overlap(_require_download_ctx(), job, pending_job)
 
 
+def _ctx_blend_data_write_lock_reason(ctx):
+    deps = ctx.deps
+    bpy_context = getattr(deps.bpy, "context", None)
+    wm = getattr(bpy_context, "window_manager", None) if bpy_context is not None else None
+    try:
+        if wm is not None and bool(getattr(wm, "is_interface_locked", False)):
+            return "window_manager interface lock"
+    except deps.recoverable_exceptions:
+        return ""
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return ""
+    return ""
+
+
 def _ctx_auto_resolve_prepare_apply_context(ctx, job, manual_request):
     deps = ctx.deps
     settings = ctx.settings
@@ -661,6 +675,60 @@ def _ctx_auto_resolve_prepare_apply_context(ctx, job, manual_request):
         return True, None, None, None
     deps.job_set_field(job, "scene_missing_since", 0.0)
     deps.job_set_field(job, "scene_missing_attempts", 0)
+    lock_reason = _ctx_blend_data_write_lock_reason(ctx)
+    if lock_reason:
+        now = time.monotonic()
+        try:
+            lock_since = float(deps.job_field(job, "apply_lock_since", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            lock_since = 0.0
+        if lock_since <= 0.0:
+            lock_since = now
+        try:
+            lock_attempts = int(deps.job_field(job, "apply_lock_attempts", 0) or 0) + 1
+        except (TypeError, ValueError):
+            lock_attempts = 1
+        deps.job_set_field(job, "apply_lock_since", float(lock_since))
+        deps.job_set_field(job, "apply_lock_attempts", int(max(1, lock_attempts)))
+        waited_sec = max(0.0, float(now) - float(lock_since))
+        wait_budget_sec = min(
+            float(settings.download_completed_max_age_sec),
+            max(float(settings.download_scene_wait_sec), 6.0),
+        )
+        if waited_sec < wait_budget_sec:
+            deps.resolve_trace(
+                "Download finished but blend data is read-only; waiting "
+                f"(request_id={deps.job_field(job, 'request_id')}, waited={waited_sec:.2f}s, "
+                f"attempts={lock_attempts}, reason={lock_reason})"
+            )
+            return False, None, None, None
+        deps.resolve_trace(
+            "Download completion dropped due persistent read-only blend data state "
+            f"(request_id={deps.job_field(job, 'request_id')}, waited={waited_sec:.2f}s, "
+            f"attempts={lock_attempts}, reason={lock_reason})"
+        )
+        deps.logger.warning(
+            "Planetka: dropping completed auto-resolve payload after %.2fs waiting for write access "
+            "(request_id=%s, attempts=%d, reason=%s).",
+            float(waited_sec),
+            str(deps.job_field(job, "request_id", "")),
+            int(lock_attempts),
+            str(lock_reason),
+        )
+        if manual_request:
+            _ctx_mark_manual_queued_resolve_error(
+                ctx,
+                scene,
+                (
+                    "Apply deferred too long because Blender data stayed read-only "
+                    f"({lock_reason}); try Resolve again."
+                ),
+            )
+        else:
+            deps.request_auto_resolve(scene, immediate=False, mark_dirty=False)
+        return True, None, None, None
+    deps.job_set_field(job, "apply_lock_since", 0.0)
+    deps.job_set_field(job, "apply_lock_attempts", 0)
     job_target_tiles = deps.canonical_tiles(deps.job_field(job, "target_tiles", ()))
 
     if deps.is_render_job_active():
@@ -1087,7 +1155,12 @@ def _ctx_auto_resolve_download_pump_timer(ctx):
 
         job_to_start = None
         with state.download_lock:
-            if state.download_active_job is None and deps.is_auto_resolve_download_job(state.download_pending_job):
+            can_start_pending = state.download_completed is None
+            if (
+                can_start_pending
+                and state.download_active_job is None
+                and deps.is_auto_resolve_download_job(state.download_pending_job)
+            ):
                 state.download_active_job = state.download_pending_job
                 state.download_pending_job = None
                 job_to_start = state.download_active_job

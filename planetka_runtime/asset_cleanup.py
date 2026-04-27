@@ -37,7 +37,7 @@ def _remove_object_and_unused_data_any_type(obj):
     try:
         if data_block is None or int(getattr(data_block, "users", 0)) > 0:
             return True
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         return True
 
     try:
@@ -66,7 +66,7 @@ def _remove_collection_if_exists(collection_name):
             try:
                 if collection.name in tuple(getattr(parent, "children", ()).keys()):
                     parent.children.unlink(collection)
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 continue
         for scene in list(getattr(bpy.data, "scenes", ())):
             root = getattr(scene, "collection", None)
@@ -75,7 +75,7 @@ def _remove_collection_if_exists(collection_name):
             try:
                 if collection.name in tuple(getattr(root, "children", ()).keys()):
                     root.children.unlink(collection)
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 continue
         bpy.data.collections.remove(collection)
         return True
@@ -210,7 +210,7 @@ def purge_disabled_atmosphere_and_cloud_assets(scene=None):
             if int(getattr(material, "users", 0)) == 0:
                 bpy.data.materials.remove(material)
                 removed_materials += 1
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka cleanup: failed removing atmosphere/cloud material %s", name, exc_info=True)
 
     for group in list(getattr(bpy.data, "node_groups", ())):
@@ -221,7 +221,7 @@ def purge_disabled_atmosphere_and_cloud_assets(scene=None):
             if int(getattr(group, "users", 0)) == 0:
                 bpy.data.node_groups.remove(group)
                 removed_node_groups += 1
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka cleanup: failed removing atmosphere/cloud node group %s", name, exc_info=True)
 
     return {

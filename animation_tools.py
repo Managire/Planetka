@@ -601,7 +601,7 @@ def _plan_animation_segments(scene, frame_start, frame_end, frame_step=1, textur
     safe_step = max(1, int(frame_step))
     try:
         original_frame = int(getattr(scene, "frame_current", safe_start))
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         original_frame = int(safe_start)
     try:
         segments = _build_segments(
@@ -615,7 +615,7 @@ def _plan_animation_segments(scene, frame_start, frame_end, frame_step=1, textur
         try:
             scene.frame_set(int(original_frame))
             bpy.context.view_layer.update()
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
     return AnimationSegmentPlan(
         frame_start=safe_start,
@@ -631,7 +631,7 @@ def _quick_preview_is_prepared(scene):
         return False
     try:
         prepared_segments = int(scene.get(ANIMATION_STATS_SEGMENTS_KEY, 0) or 0)
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         prepared_segments = 0
     if prepared_segments > 0:
         return True
@@ -639,7 +639,7 @@ def _quick_preview_is_prepared(scene):
         try:
             if bool(obj.get(ANIMATION_SEGMENT_TAG_KEY, False)):
                 return True
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             continue
     return False
 
@@ -1084,7 +1084,7 @@ def _ensure_camera_action(camera):
         raise RuntimeError("Active camera is missing.")
     try:
         animation_data = camera.animation_data_create()
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError) as exc:
+    except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
         raise RuntimeError(f"Unable to create camera animation data: {exc}") from exc
     action = getattr(animation_data, "action", None)
     if action is None:
@@ -1092,7 +1092,7 @@ def _ensure_camera_action(camera):
         try:
             action = bpy.data.actions.new(name=action_name)
             animation_data.action = action
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError) as exc:
+        except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
             raise RuntimeError(f"Unable to create camera action: {exc}") from exc
     return action
 
@@ -1113,7 +1113,7 @@ def _camera_fcurve_collection(camera):
         try:
             slot = slots.new(camera.id_type, slot_name)
             animation_data.action_slot = slot
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError) as exc:
+        except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
             raise RuntimeError(f"Unable to create/assign action slot: {exc}") from exc
 
     try:
@@ -1164,18 +1164,18 @@ def _insert_or_update_fcurve_key(fcurve, frame, value):
     for keyframe in points:
         try:
             keyframe_frame = float(getattr(keyframe, "co", (0.0, 0.0))[0])
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             continue
         if abs(keyframe_frame - target_frame) <= 1e-6:
             try:
                 keyframe.co = (target_frame, target_value)
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError) as exc:
+            except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
                 raise RuntimeError(f"Unable to update keyframe at frame {target_frame}: {exc}") from exc
             return
 
     try:
         points.insert(frame=target_frame, value=target_value, options={'FAST'})
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         points.insert(frame=target_frame, value=target_value)
 
 
@@ -1192,19 +1192,19 @@ def _quaternion_to_camera_euler(camera, rotation_quaternion, compat_euler=None):
     if compat_euler is not None:
         try:
             compat = compat_euler.copy()
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             compat = None
     if compat is None:
         try:
             compat = getattr(camera, "rotation_euler", None)
             compat = compat.copy() if compat is not None else None
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             compat = None
     try:
         if compat is not None:
             return rotation_quaternion.to_euler(order, compat)
         return rotation_quaternion.to_euler(order)
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         return rotation_quaternion.to_euler("XYZ")
 
 
@@ -1240,13 +1240,13 @@ def _set_camera_linear_interpolation_in_range(scene, frame_start, frame_end):
         for keyframe_point in keyframe_points:
             try:
                 frame = float(getattr(keyframe_point, "co", (0.0, 0.0))[0])
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 continue
             if frame < lo or frame > hi:
                 continue
             try:
                 keyframe_point.interpolation = 'LINEAR'
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 continue
 
 
@@ -1388,19 +1388,19 @@ def _active_timeline_frame_range(scene):
         return 1, 250
     try:
         use_preview = bool(getattr(scene, "use_preview_range", False))
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         use_preview = False
     if use_preview:
         try:
             start = int(getattr(scene, "frame_preview_start", getattr(scene, "frame_start", 1)))
             end = int(getattr(scene, "frame_preview_end", getattr(scene, "frame_end", 250)))
             return start, end
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             pass
     try:
         start = int(getattr(scene, "frame_start", 1))
         end = int(getattr(scene, "frame_end", 250))
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         start, end = 1, 250
     return start, end
 
@@ -1500,11 +1500,11 @@ def _camera_base_shot_from_transform(scene, props, location, rotation_euler):
         raise RuntimeError("Active camera is missing.")
     try:
         camera_matrix_before = camera.matrix_world.copy()
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         camera_matrix_before = None
     try:
         _loc, _rot, camera_scale = camera.matrix_world.decompose()
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         camera_scale = Vector((1.0, 1.0, 1.0))
     try:
         target_location = Vector(tuple(float(v) for v in tuple(location)))
@@ -1512,7 +1512,7 @@ def _camera_base_shot_from_transform(scene, props, location, rotation_euler):
         camera.matrix_world = Matrix.LocRotScale(target_location, target_rotation, camera_scale)
         try:
             bpy.context.view_layer.update()
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka animation: failed updating view layer while deriving saved camera shot", exc_info=True)
         return _current_camera_base_shot(scene, props)
     finally:
@@ -1520,7 +1520,7 @@ def _camera_base_shot_from_transform(scene, props, location, rotation_euler):
             try:
                 camera.matrix_world = camera_matrix_before
                 bpy.context.view_layer.update()
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka animation: failed restoring camera after deriving saved shot", exc_info=True)
 
 
@@ -1534,16 +1534,16 @@ def _frame_one_navigation_base_shot(scene, props):
         scene.frame_set(1)
         try:
             bpy.context.view_layer.update()
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka animation: failed updating view layer during frame-1 base-shot sampling", exc_info=True)
         sampled = _navigation_base_shot_from_props(props, fallback=fallback)
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka animation: failed sampling frame-1 navigation base shot", exc_info=True)
     finally:
         try:
             scene.frame_set(int(frame_before))
             bpy.context.view_layer.update()
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka animation: failed restoring frame after frame-1 base-shot sampling", exc_info=True)
     return sampled
 
@@ -1877,7 +1877,7 @@ def apply_cinematic_preview(scene, props):
     camera_lens_before = None
     try:
         camera_matrix_before = camera.matrix_world.copy()
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         camera_matrix_before = None
     camera_data_before = getattr(camera, "data", None) if camera is not None else None
     if camera_data_before is not None:
@@ -1970,16 +1970,16 @@ def apply_cinematic_preview(scene, props):
                 camera_data = getattr(camera, "data", None)
                 if camera_data is not None and camera_lens_before is not None:
                     camera_data.lens = float(camera_lens_before)
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka animation: failed restoring live camera pose after preview keyframe update", exc_info=True)
         try:
             scene.frame_set(int(frame_before))
             bpy.context.view_layer.update()
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka animation: failed restoring frame after preview keyframe update", exc_info=True)
         try:
             mark_navigation_camera_control_signature(scene)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka animation: failed marking camera-control sync signature", exc_info=True)
         resume_navigation_camera_control_sync()
 
@@ -2148,7 +2148,7 @@ def _wait_for_resolve_pipeline_idle(scene, timeout_sec=45.0, poll_sec=0.1):
     while True:
         try:
             status = get_resolve_runtime_status(scene=scene) or {}
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             status = {}
         running = bool(status.get("running", False))
         if not running:
@@ -2158,7 +2158,7 @@ def _wait_for_resolve_pipeline_idle(scene, timeout_sec=45.0, poll_sec=0.1):
             return False, last_status
         try:
             bpy.context.view_layer.update()
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             pass
         time.sleep(float(max(0.02, poll_sec)))
 
@@ -2176,7 +2176,7 @@ def _set_enum_property_if_available(target, prop_name, preferred_values):
         prop_def = properties.get(prop_name) if properties is not None else None
         if prop_def and hasattr(prop_def, "enum_items"):
             available = {str(item.identifier) for item in prop_def.enum_items}
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         available = set()
     for identifier in candidates:
         if available and identifier not in available:
@@ -2184,7 +2184,7 @@ def _set_enum_property_if_available(target, prop_name, preferred_values):
         try:
             setattr(target, prop_name, identifier)
             return True
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             continue
     return False
 
@@ -2196,13 +2196,13 @@ def _capture_earth_material_displacement_mode_state(material):
     try:
         if hasattr(material, "displacement_method"):
             state["material"] = str(getattr(material, "displacement_method", "") or "")
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         pass
     cycles_settings = getattr(material, "cycles", None)
     try:
         if cycles_settings is not None and hasattr(cycles_settings, "displacement_method"):
             state["cycles"] = str(getattr(cycles_settings, "displacement_method", "") or "")
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         pass
     return state
 
@@ -2236,7 +2236,7 @@ def _earth_surface_materials():
             return
         try:
             key = int(material.as_pointer())
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             key = id(material)
         if key in seen:
             return
@@ -2247,7 +2247,7 @@ def _earth_surface_materials():
     if earth_obj is not None:
         try:
             _add_material(getattr(earth_obj, "active_material", None))
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             pass
         try:
             mesh_data = getattr(earth_obj, "data", None)
@@ -2255,13 +2255,13 @@ def _earth_surface_materials():
             if slots is not None:
                 for slot_material in slots:
                     _add_material(slot_material)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             pass
 
     # Keep explicit-name fallback for old scenes where Earth object lookup can fail.
     try:
         _add_material(bpy.data.materials.get("Planetka Earth Material"))
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         pass
     # Include material variants that can appear during resolve swaps.
     try:
@@ -2269,7 +2269,7 @@ def _earth_surface_materials():
             mat_name = str(getattr(material, "name", "") or "")
             if mat_name == "Planetka Earth Material" or mat_name.startswith("Planetka Earth Material."):
                 _add_material(material)
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         pass
     return materials
 
@@ -2279,7 +2279,7 @@ def _capture_material_displacement_mode_states(materials):
     for material in (materials or ()):
         try:
             state = _capture_earth_material_displacement_mode_state(material)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             state = {}
         if isinstance(state, dict) and state:
             states.append({"material": material, "state": state})
@@ -2294,7 +2294,7 @@ def _restore_material_displacement_mode_states(states):
         state = entry.get("state")
         try:
             _restore_earth_material_displacement_mode_state(material, state)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka animation: failed restoring displacement mode state", exc_info=True)
 
 
@@ -2913,11 +2913,11 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         if props is not None:
             try:
                 props.auto_resolve = bool(self._original_auto_resolve)
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka animation: failed restoring auto-resolve", exc_info=True)
             try:
                 props.texture_quality_mode = str(self._original_texture_quality_mode or "PREVIEW")
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka animation: failed restoring texture quality mode", exc_info=True)
 
         if scene is not None:
@@ -2925,18 +2925,18 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
                 scene.frame_start = int(self._original_frame_start)
                 scene.frame_end = int(self._original_frame_end)
                 scene.frame_set(int(self._original_frame))
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka animation: failed restoring frame range", exc_info=True)
             try:
                 if ANIMATION_EEVEE_FORCE_BUMP_RUNTIME_KEY in scene:
                     del scene[ANIMATION_EEVEE_FORCE_BUMP_RUNTIME_KEY]
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka animation: failed clearing EEVEE bump-only runtime flag", exc_info=True)
 
         if self._eevee_temp_displacement_state:
             try:
                 _restore_material_displacement_mode_states(self._eevee_temp_displacement_state)
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka animation: failed restoring Earth displacement mode after render", exc_info=True)
         self._eevee_temp_displacement_state = None
 
@@ -2974,7 +2974,7 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             is_job_running = getattr(getattr(bpy, "app", None), "is_job_running", None)
             if callable(is_job_running):
                 return bool(is_job_running("RENDER"))
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             return False
         return False
 
@@ -3037,7 +3037,7 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
                 try:
                     os.remove(cache_path)
                     removed_files += 1
-                except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, OSError):
+                except PLANETKA_RECOVERABLE_EXCEPTIONS:
                     logger.debug("Planetka animation: failed deleting completed-segment cache file", exc_info=True)
         if removed_files > 0:
             logger.debug(
@@ -3055,7 +3055,7 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         try:
             scene.frame_set(frame_int)
             bpy.context.view_layer.update()
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
         _apply_keyed_runtime_scene_state(scene, props)
         op_kwargs = {
@@ -3087,7 +3087,7 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             )
         try:
             cleanup_planetka_unused_data()
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
         return True, ""
 
@@ -3103,7 +3103,7 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             scene.frame_end = int(end)
             scene.frame_set(int(start))
             bpy.context.view_layer.update()
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
         try:
             # Mark launch wall-time immediately before invoking Blender render op.
@@ -3139,7 +3139,7 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         for frame in range(start, end + 1):
             try:
                 frame_path = bpy.path.abspath(scene.render.frame_path(frame=int(frame)))
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka animation: failed resolving segment frame output path", exc_info=True)
                 return False
             if not frame_path or not os.path.isfile(frame_path):
@@ -3159,7 +3159,7 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         render = getattr(scene, "render", None)
         try:
             engine = str(getattr(render, "engine", "") or "").strip().upper()
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             engine = ""
         return engine in {"BLENDER_EEVEE", "BLENDER_EEVEE_NEXT"}
 
@@ -3169,12 +3169,12 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             return
         try:
             _set_earth_surface_materials_bump_only()
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka animation: failed enforcing EEVEE bump-only mode after segment resolve", exc_info=True)
         if scene is not None:
             try:
                 scene[ANIMATION_EEVEE_FORCE_BUMP_RUNTIME_KEY] = True
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka animation: failed reasserting EEVEE bump-only runtime flag", exc_info=True)
 
     def execute(self, context):
@@ -3233,7 +3233,7 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
 
         try:
             runtime_status = get_resolve_runtime_status(scene=scene) or {}
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             runtime_status = {}
         if bool(runtime_status.get("running", False)):
             self.report({'INFO'}, "Waiting for queued Planetka resolve to finish before Animation Render starts.")
@@ -3288,11 +3288,11 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         segments = []
         try:
             props.auto_resolve = False
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka animation: failed disabling auto-resolve for animation render", exc_info=True)
         try:
             props.texture_quality_mode = str(selected_texture_quality_mode)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka animation: failed applying selected texture quality mode for animation render", exc_info=True)
 
         try:
@@ -3312,7 +3312,7 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
 
             try:
                 render_engine = str(getattr(render, "engine", "") or "").strip().upper()
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 render_engine = ""
             if render_engine in {"BLENDER_EEVEE", "BLENDER_EEVEE_NEXT"}:
                 eevee_materials = _earth_surface_materials()
@@ -3320,7 +3320,7 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
                 _set_earth_surface_materials_bump_only()
                 try:
                     scene[ANIMATION_EEVEE_FORCE_BUMP_RUNTIME_KEY] = True
-                except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                except PLANETKA_RECOVERABLE_EXCEPTIONS:
                     logger.debug("Planetka animation: failed setting EEVEE bump-only runtime flag", exc_info=True)
             self._scene = scene
             self._props = props
@@ -3462,7 +3462,7 @@ class PLANETKA_OT_AnimationRenderInfo(bpy.types.Operator):
 
         try:
             wm.popup_menu(_draw, title="Planetka Animation Render", icon='QUESTION')
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka animation: failed opening render info popup", exc_info=True)
         return {'FINISHED'}
 

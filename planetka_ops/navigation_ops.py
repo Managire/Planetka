@@ -373,7 +373,7 @@ def navigation_preset_execute(operator, context, deps):
     try:
         suspend_navigation_shot_updates()
         nav_updates_suspended = True
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         nav_updates_suspended = False
     try:
         if preset == "ISS_ORBIT":
@@ -416,7 +416,7 @@ def navigation_preset_execute(operator, context, deps):
         if nav_updates_suspended:
             try:
                 resume_navigation_shot_updates()
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 pass
 
     try:

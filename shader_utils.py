@@ -82,7 +82,7 @@ def _is_testing_texture_loading_group(group_tree):
         schema = int(group_tree.get(TESTING_LOADER_SCHEMA_VERSION_KEY, 0) or 0)
         if schema >= 1:
             return True
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         pass
     try:
         nodes = getattr(group_tree, "nodes", None)
@@ -92,7 +92,7 @@ def _is_testing_texture_loading_group(group_tree):
             return True
         if nodes.get("TileActive_001") is not None:
             return True
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         pass
     return False
 
@@ -103,7 +103,7 @@ def _is_animation_segment_group(group_tree):
     try:
         if bool(group_tree.get(ANIMATION_SEGMENT_GROUP_TAG_KEY, False)):
             return True
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         pass
     name = str(getattr(group_tree, "name", "") or "")
     return "_frames_" in name and "Planetka Textures Loading Group" in name
@@ -243,11 +243,11 @@ def _assign_image_to_node(img_node, image, img_type, use_fallback):
     img_node.image = image
     try:
         img_node.interpolation = "Closest" if use_fallback else "Linear"
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         _log_recoverable_once("PKA-SHADER-002", "Failed setting image node interpolation")
     try:
         img_node.extension = "EXTEND"
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         _log_recoverable_once("PKA-SHADER-003", "Failed setting image node extension")
 
     if image is None:
@@ -282,7 +282,7 @@ def _set_image_colorspace_safe(image, colorspace):
         try:
             settings.name = candidate
             return
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             continue
 
 
@@ -294,7 +294,7 @@ def _first_image_rgb(image, default_rgb):
         if pixels is None or len(pixels) < 3:
             return tuple(default_rgb)
         return (float(pixels[0]), float(pixels[1]), float(pixels[2]))
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         return tuple(default_rgb)
 
 
@@ -305,7 +305,7 @@ def _ensure_surface_grading_static_rgb_sources():
     try:
         if int(surface_group.get(SURFACE_GRADING_SAMPLER_OPT_KEY, 0) or 0) >= 1:
             return
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         pass
 
     extension_dir = os.path.dirname(os.path.abspath(__file__))
@@ -334,12 +334,12 @@ def _ensure_surface_grading_static_rgb_sources():
             color_output = node.outputs.get("Color")
             if color_output is not None:
                 to_sockets = [link.to_socket for link in color_output.links]
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             to_sockets = []
 
         try:
             surface_group.nodes.remove(node)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             _log_recoverable_once("PKA-SHADER-041", "Failed replacing surface grading texture sampler")
             continue
 
@@ -349,22 +349,22 @@ def _ensure_surface_grading_static_rgb_sources():
         rgb_node.outputs[0].default_value = (float(rgb[0]), float(rgb[1]), float(rgb[2]), 1.0)
         try:
             rgb_node.location = old_location
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             pass
         try:
             rgb_node.parent = old_parent
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             pass
 
         for to_socket in to_sockets:
             try:
                 surface_group.links.new(rgb_node.outputs[0], to_socket)
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 _log_recoverable_once("PKA-SHADER-042", "Failed reconnecting surface grading RGB constant")
 
     try:
         surface_group[SURFACE_GRADING_SAMPLER_OPT_KEY] = 1
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         pass
 
 
@@ -373,7 +373,7 @@ def _set_node_location_safe(node, x, y):
         return
     try:
         node.location = (float(x), float(y))
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         return
 
 
@@ -393,7 +393,7 @@ def _hide_unconnected_group_input_sockets(node_tree):
                 if not linked:
                     linked = bool(getattr(socket, "links", ()))
                 socket.hide = not linked
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 continue
 
 
@@ -860,7 +860,7 @@ def _layout_tile_group_readable(nodes, mapping_node, group_input, group_output, 
     try:
         base_x = float(mapping_node.location[0])
         base_y = float(mapping_node.location[1])
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, IndexError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         base_x = 0.0
         base_y = 0.0
 
@@ -972,7 +972,7 @@ def _stabilize_tile_group_mask_sources(tile_group, enable_z360=True):
         try:
             mapping_x = float(mapping_node.location[0])
             mapping_y = float(mapping_node.location[1])
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, IndexError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             mapping_x = 0.0
             mapping_y = 0.0
 
@@ -1432,7 +1432,7 @@ def _ensure_dynamic_texture_loading_slots(group_tree, slot_count, allow_shrink=T
         alpha_socket = alpha_sockets[idx - 1]
         try:
             tile_y = float(tile_node.location[1])
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, IndexError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             tile_y = 0.0
         for channel in TEXTURE_LOADING_CHANNELS_RGBA:
             color_socket = tile_node.outputs[channel]
@@ -1473,7 +1473,7 @@ def _ensure_dynamic_texture_loading_slots(group_tree, slot_count, allow_shrink=T
         el_weight.operation = "MULTIPLY"
         try:
             tile_y = float(tile_nodes[idx - 1].location[1])
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, IndexError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             tile_y = 0.0
         _set_node_location_safe(el_weight, chain_x_start - 360.0, tile_y - 220.0)
         links.new(el_socket, el_weight.inputs[0])
@@ -1568,7 +1568,7 @@ def _ensure_dynamic_texture_loading_slots_testing(group_tree, slot_count, allow_
 
     try:
         existing_schema = int(group_tree.get(TESTING_LOADER_SCHEMA_VERSION_KEY, 0) or 0)
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         existing_schema = 0
 
     def _collect_existing_tile_nodes():
@@ -1641,7 +1641,7 @@ def _ensure_dynamic_texture_loading_slots_testing(group_tree, slot_count, allow_
         _set_node_location_safe(active_node, -1260.0, tile_y + 260.0)
         try:
             active_node.outputs[0].default_value = 0.0
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError, IndexError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             pass
 
         alpha_effective = nodes.new("ShaderNodeMath")
@@ -1740,7 +1740,7 @@ def _ensure_dynamic_texture_loading_slots_testing(group_tree, slot_count, allow_
         el_weight.operation = "MULTIPLY"
         try:
             tile_y = float(tile_nodes[idx - 1].location[1])
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, IndexError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             tile_y = 0.0
         _set_node_location_safe(el_weight, chain_x_start - 360.0, tile_y - 220.0)
         links.new(el_socket, el_weight.inputs[0])
@@ -1828,7 +1828,7 @@ def _ensure_dynamic_texture_loading_slots_testing(group_tree, slot_count, allow_
 
     try:
         group_tree[TESTING_LOADER_SCHEMA_VERSION_KEY] = int(TESTING_LOADER_SCHEMA_VERSION)
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         _log_recoverable_once("PKA-SHADER-043", "Failed writing testing loader schema version")
 
     _hide_unconnected_group_input_sockets(group_tree)
@@ -1966,7 +1966,7 @@ def update_shader_nodes(
             return
         try:
             active_node.outputs[0].default_value = 1.0 if bool(enabled) else 0.0
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError, IndexError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             _log_recoverable_once("PKA-SHADER-044", "Failed setting testing slot active state")
 
     extension_dir = os.path.dirname(os.path.abspath(__file__))
@@ -2200,7 +2200,7 @@ def main(
                 int(incoming_count),
                 int(SHADER_TILE_BUDGET_EXPECTED),
             )
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, RuntimeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed validating incoming tile budget", exc_info=True)
     prefs = get_prefs()
     base_path = prefs.texture_base_path

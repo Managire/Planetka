@@ -78,7 +78,7 @@ def _is_pristine_default_scene(scene):
         return False
     try:
         scene_objects = tuple(getattr(scene, "objects", ()))
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         return False
     if len(scene_objects) != 3:
         return False
@@ -126,7 +126,7 @@ def _cleanup_pristine_default_scene(scene):
         try:
             bpy.data.objects.remove(obj, do_unlink=True)
             removed_any = True
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             _log_recoverable_once("PKA-OPS-027", f"Failed removing default object '{object_name}'")
 
     default_collection = bpy.data.collections.get("Collection")
@@ -139,7 +139,7 @@ def _cleanup_pristine_default_scene(scene):
                 and len(tuple(getattr(default_collection, "children", ()))) == 0
             ):
                 root_collection.children.unlink(default_collection)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             _log_recoverable_once("PKA-OPS-028", "Failed unlinking default collection from scene root")
         try:
             if (
@@ -147,7 +147,7 @@ def _cleanup_pristine_default_scene(scene):
                 and len(tuple(getattr(default_collection, "users_collection", ()))) == 0
             ):
                 bpy.data.collections.remove(default_collection)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             _log_recoverable_once("PKA-OPS-029", "Failed deleting empty default collection")
 
     world = getattr(scene, "world", None)
@@ -155,12 +155,12 @@ def _cleanup_pristine_default_scene(scene):
         try:
             scene.world = None
             removed_any = True
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             _log_recoverable_once("PKA-OPS-062", "Failed unlinking default World shader from scene")
         try:
             if int(getattr(world, "users", 0) or 0) == 0:
                 bpy.data.worlds.remove(world)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             _log_recoverable_once("PKA-OPS-063", "Failed removing default World datablock")
 
     return removed_any
@@ -253,7 +253,7 @@ class PLANETKA_OT_RemoveDefaultScene(bpy.types.Operator):
 
         try:
             scene[_DEFAULT_SCENE_REMOVED_KEY] = True
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka: failed tagging scene as default-cleaned", exc_info=True)
 
         self.report({'INFO'}, "Default startup scene removed.")

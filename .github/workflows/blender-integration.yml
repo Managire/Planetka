@@ -26,6 +26,11 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Lint recoverable exception tuples
+        shell: bash
+        run: |
+          python3 .github/scripts/check_recoverable_except_patterns.py
+
       - name: Run release gate
         shell: bash
         run: |
@@ -43,37 +48,63 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          "$(cat "${RUNNER_TEMP}/blender-bin.txt")" --background --python tools/planetka_smoke_test.py
+          "$(cat "${RUNNER_TEMP}/blender-bin.txt")" --background --debug-python --python tools/planetka_smoke_test.py
 
       - name: Run schema migration test (Linux/macOS)
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          "$(cat "${RUNNER_TEMP}/blender-bin.txt")" --background --python tools/planetka_schema_migration_test.py
+          "$(cat "${RUNNER_TEMP}/blender-bin.txt")" --background --debug-python --python tools/planetka_schema_migration_test.py
 
       - name: Run regression test (Linux/macOS)
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          "$(cat "${RUNNER_TEMP}/blender-bin.txt")" --background --python tools/planetka_regression_test.py
+          "$(cat "${RUNNER_TEMP}/blender-bin.txt")" --background --debug-python --python tools/planetka_regression_test.py
+
+      - name: Run core user-flow gate (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          "$(cat "${RUNNER_TEMP}/blender-bin.txt")" --background --debug-python --python tools/planetka_core_user_flow_gate.py
+
+      - name: Run render-open recovery regression (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          "$(cat "${RUNNER_TEMP}/blender-bin.txt")" --background --debug-python --python tools/planetka_render_open_recovery_regression_test.py
 
       - name: Run smoke test (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $blenderBin = (Get-Content "$env:RUNNER_TEMP\blender-bin.txt" -Raw).Trim()
-          & $blenderBin --background --python tools/planetka_smoke_test.py
+          & $blenderBin --background --debug-python --python tools/planetka_smoke_test.py
 
       - name: Run schema migration test (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $blenderBin = (Get-Content "$env:RUNNER_TEMP\blender-bin.txt" -Raw).Trim()
-          & $blenderBin --background --python tools/planetka_schema_migration_test.py
+          & $blenderBin --background --debug-python --python tools/planetka_schema_migration_test.py
 
       - name: Run regression test (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $blenderBin = (Get-Content "$env:RUNNER_TEMP\blender-bin.txt" -Raw).Trim()
-          & $blenderBin --background --python tools/planetka_regression_test.py
+          & $blenderBin --background --debug-python --python tools/planetka_regression_test.py
+
+      - name: Run core user-flow gate (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $blenderBin = (Get-Content "$env:RUNNER_TEMP\blender-bin.txt" -Raw).Trim()
+          & $blenderBin --background --debug-python --python tools/planetka_core_user_flow_gate.py
+
+      - name: Run render-open recovery regression (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $blenderBin = (Get-Content "$env:RUNNER_TEMP\blender-bin.txt" -Raw).Trim()
+          & $blenderBin --background --debug-python --python tools/planetka_render_open_recovery_regression_test.py

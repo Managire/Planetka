@@ -6,11 +6,17 @@ import sys
 from pathlib import Path
 
 
+FATAL_OUTPUT_PATTERNS = (
+    "Error in bpy.app.handlers",
+    "Traceback (most recent call last):",
+)
+
+
 def _run(blender_bin, repo_root, script_rel):
     script_path = Path(repo_root) / script_rel
     if not script_path.is_file():
         raise FileNotFoundError(f"Test script not found: {script_path}")
-    cmd = [str(blender_bin), "--background", "--python", str(script_rel)]
+    cmd = [str(blender_bin), "--background", "--debug-python", "--python", str(script_rel)]
     print(f"[run_blender_tests] Running: {' '.join(cmd)}")
     env = os.environ.copy()
     for key in (
@@ -23,8 +29,32 @@ def _run(blender_bin, repo_root, script_rel):
     ):
         env.pop(key, None)
 
-    result = subprocess.run(cmd, cwd=repo_root, env=env)
-    return result.returncode
+    result = subprocess.run(
+        cmd,
+        cwd=repo_root,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    output = str(result.stdout or "")
+    output_lower = output.lower()
+    has_fatal_output = any(pattern.lower() in output_lower for pattern in FATAL_OUTPUT_PATTERNS)
+
+    if result.returncode != 0 or has_fatal_output:
+        tail = output[-12000:]
+        print(f"[run_blender_tests] Output tail for {script_rel}:\n{tail}")
+    elif output.strip():
+        # Keep passing CI logs compact while still exposing recent context.
+        print(f"[run_blender_tests] Output tail for {script_rel}:\n{output[-1500:]}")
+
+    if has_fatal_output and result.returncode == 0:
+        print(
+            f"[run_blender_tests] FAIL: {script_rel} produced Blender handler traceback output",
+            file=sys.stderr,
+        )
+        return 1
+    return int(result.returncode)
 
 
 def main():
@@ -56,6 +86,8 @@ def main():
         "tools/planetka_smoke_test.py",
         "tools/planetka_schema_migration_test.py",
         "tools/planetka_regression_test.py",
+        "tools/planetka_core_user_flow_gate.py",
+        "tools/planetka_render_open_recovery_regression_test.py",
     ]
     for script in scripts:
         rc = _run(blender_bin, repo_root, script)
@@ -63,7 +95,10 @@ def main():
             print(f"[run_blender_tests] FAIL: {script} exited with {rc}", file=sys.stderr)
             return rc
 
-    print("[run_blender_tests] PASS: smoke, schema migration, and regression tests passed.")
+    print(
+        "[run_blender_tests] PASS: smoke, schema migration, regression, core user-flow, "
+        "and render-open recovery tests passed."
+    )
     return 0
 
 

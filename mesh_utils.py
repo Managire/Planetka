@@ -543,7 +543,7 @@ def _surface_local_radius(parent_surface):
         return 1.0
     try:
         stored = float(parent_surface.get("planetka_surface_local_radius", 0.0))
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         stored = 0.0
     if stored > 1e-9:
         return float(stored)
@@ -555,7 +555,7 @@ def _surface_local_radius(parent_surface):
             inferred = max(float(v.co.length) for v in vertices)
             if inferred > 1e-9:
                 return float(inferred)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka: failed inferring surface local radius for preview scale", exc_info=True)
     return 1.0
 
@@ -566,7 +566,7 @@ def _mesh_local_radius(mesh):
         return 0.0
     try:
         return max(float(v.co.length) for v in vertices)
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed inferring preview mesh local radius", exc_info=True)
     return 0.0
 
@@ -587,7 +587,7 @@ def _sync_preview_mesh_radius(preview_obj, target_radius):
     try:
         mesh.transform(Matrix.Scale(float(ratio), 4))
         mesh.update()
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed syncing preview mesh radius", exc_info=True)
 
 
@@ -636,7 +636,7 @@ def ensure_preview_object(parent_surface):
     preview.hide_viewport = False
     try:
         preview.display_type = 'TEXTURED'
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         _log_recoverable_once("PKA-MESH-009", "Failed setting preview object display type")
 
     return preview

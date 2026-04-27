@@ -196,7 +196,7 @@ def add_earth_execute(operator, context, deps):
         ))
     try:
         kickoff_background_update_check(force=True)
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: updater check kickoff failed", exc_info=True)
     normalized, path_issue = _validate_create_earth_texture_source(getattr(prefs, "texture_base_path", ""))
     if path_issue:
@@ -234,7 +234,7 @@ def add_earth_execute(operator, context, deps):
 
     try:
         props.texture_quality_mode = "PREVIEW"
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, AttributeError, RuntimeError, TypeError, ValueError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed setting default texture quality to Preview", exc_info=True)
     warm_base_sphere_mesh_cache()
 
@@ -385,7 +385,7 @@ def reset_earth_transform_execute(operator, context, deps):
     try:
         root.location = (0.0, 0.0, 0.0)
         root.rotation_euler = (0.0, 0.0, 0.0)
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         return fail(
             operator,
             "Failed to reset Planetka Root transform.",

@@ -362,7 +362,7 @@ def _tag_view3d_ui_redraw():
                 continue
             try:
                 area.tag_redraw()
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 continue
     return None
 
@@ -391,7 +391,7 @@ def register():
     _register_keymaps()
     try:
         _planetka_updater.kickoff_background_update_check(force=False)
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         pass
     try:
         from .unsupported import apply_runtime_unsupported_overrides
@@ -400,7 +400,7 @@ def register():
         pass
     try:
         bpy.app.timers.register(_tag_view3d_ui_redraw, first_interval=0.05)
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         pass
 
 

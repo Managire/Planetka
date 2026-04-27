@@ -75,6 +75,7 @@ def _enable_module():
     candidates = _unique(
         [
             os.environ.get("PLANETKA_MODULE"),
+            "bl_ext.user_default.planetka",
             "bl_ext.user_default.Planetka",
             "Planetka",
             "planetka",
@@ -83,6 +84,9 @@ def _enable_module():
     for mod in candidates:
         try:
             addon_utils.enable(mod)
+            loaded, _loaded_default = addon_utils.check(mod)
+            if not bool(loaded):
+                continue
             if hasattr(bpy.ops, "planetka") and hasattr(bpy.ops.planetka, "add_earth"):
                 _log(f"Enabled addon module: {mod}")
                 return mod
@@ -114,6 +118,7 @@ def _import_submodule(base_module_name, submodule_name):
     candidates = _unique(
         [
             f"{base_module_name}.{submodule_name}" if base_module_name else None,
+            f"bl_ext.user_default.planetka.{submodule_name}",
             f"bl_ext.user_default.Planetka.{submodule_name}",
             f"Planetka.{submodule_name}",
             f"planetka.{submodule_name}",

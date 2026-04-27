@@ -48,7 +48,7 @@ def _normalized_abs_fs_path(path_value):
         return ""
     try:
         absolute = bpy.path.abspath(raw)
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         absolute = raw
     if not absolute:
         return ""
@@ -78,7 +78,7 @@ def _planetka_cache_roots(get_r2_source):
         if callable(get_cache_folder):
             try:
                 root = _normalized_abs_fs_path(get_cache_folder(""))
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 root = ""
             if root:
                 roots.add(root)
@@ -105,7 +105,7 @@ def _is_missing_planetka_cache_image(image, get_r2_source):
         return False
     try:
         abs_path = bpy.path.abspath(raw_path)
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         return False
     if not abs_path:
         return False
@@ -157,20 +157,20 @@ def _rebind_image_to_file(image, file_path):
         return False
     try:
         image.source = "FILE"
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed switching image source to FILE during render self-heal", exc_info=True)
     try:
         image.filepath_raw = target
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed assigning filepath_raw during render self-heal", exc_info=True)
     try:
         image.filepath = target
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed assigning filepath during render self-heal", exc_info=True)
     try:
         image.reload()
         return True
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed reloading image during render self-heal", exc_info=True)
         return False
 
@@ -201,7 +201,7 @@ def _attempt_render_self_heal_for_image(image, base_path, request_cache, get_r2_
                     )
                     or ""
                 ).strip()
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError, OSError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka: resolve_texture_file failed during render self-heal", exc_info=True)
                 healed_path = ""
         if not healed_path and callable(resolve_remote_asset):
@@ -209,7 +209,7 @@ def _attempt_render_self_heal_for_image(image, base_path, request_cache, get_r2_
                 healed_path = str(
                     resolve_remote_asset(folder, f"{prefix}_{suffix}{ext}") or ""
                 ).strip()
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError, OSError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka: resolve_remote_asset failed during render self-heal", exc_info=True)
                 healed_path = ""
         request_cache[cache_key] = healed_path
@@ -266,20 +266,20 @@ def recover_missing_cache_image_paths_to_fallback(get_r2_source):
             continue
         try:
             image.source = "FILE"
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka: failed switching image source to FILE during load recovery", exc_info=True)
         try:
             image.filepath_raw = fallback_path
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka: failed assigning fallback filepath_raw during load recovery", exc_info=True)
         try:
             image.filepath = fallback_path
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka: failed assigning fallback filepath during load recovery", exc_info=True)
         try:
             image.reload()
             recovered_count += 1
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka: failed reloading fallback image during load recovery", exc_info=True)
     return int(missing_count), int(recovered_count)
 
@@ -297,8 +297,15 @@ def queue_manual_resolve_download_for_scene(scene, *, get_earth_object):
         if callable(is_job_running) and bool(is_job_running("RENDER")):
             logger.info("Planetka: skipping load-time queued recovery resolve during active render job.")
             return False
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed checking render job status for load-time recovery queue", exc_info=True)
+    try:
+        wm = getattr(getattr(bpy, "context", None), "window_manager", None)
+        if wm is not None and bool(getattr(wm, "is_interface_locked", False)):
+            logger.debug("Planetka: delaying load-time recovery queue while interface is locked.")
+            return False
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed checking interface lock state for load-time recovery queue", exc_info=True)
 
     wm = getattr(getattr(bpy, "context", None), "window_manager", None)
     windows = list(getattr(wm, "windows", ()) or ())
@@ -308,7 +315,7 @@ def queue_manual_resolve_download_for_scene(scene, *, get_earth_object):
     override = None
     try:
         override = bpy.context.copy()
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         override = {}
     if override is None:
         override = {}
@@ -334,7 +341,7 @@ def queue_manual_resolve_download_for_scene(scene, *, get_earth_object):
                     skip_render_compatibility=True,
                     defer_download=True,
                 )
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed queueing load-time recovery resolve", exc_info=True)
         return False
     return bool("FINISHED" in result or "RUNNING_MODAL" in result)
@@ -361,5 +368,5 @@ def schedule_load_recovery_resolve(scene, *, queue_manual_resolve_download_for_s
 
     try:
         bpy.app.timers.register(_attempt_recovery, first_interval=0.15, persistent=False)
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed scheduling load-time recovery resolve", exc_info=True)

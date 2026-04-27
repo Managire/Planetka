@@ -67,6 +67,7 @@ def _enable_module():
     candidates = _unique(
         [
             os.environ.get("PLANETKA_MODULE"),
+            "bl_ext.user_default.planetka",
             "bl_ext.user_default.Planetka",
             "Planetka",
             "planetka",
@@ -75,6 +76,9 @@ def _enable_module():
     for mod in candidates:
         try:
             addon_utils.enable(mod)
+            loaded, _loaded_default = addon_utils.check(mod)
+            if not bool(loaded):
+                continue
             if hasattr(bpy.ops, "planetka") and hasattr(bpy.ops.planetka, "add_earth"):
                 _log(f"Enabled addon module: {mod}")
                 return mod
@@ -106,6 +110,7 @@ def _import_submodule(base_module_name, submodule_name):
     candidates = _unique(
         [
             f"{base_module_name}.{submodule_name}" if base_module_name else None,
+            f"bl_ext.user_default.planetka.{submodule_name}",
             f"bl_ext.user_default.Planetka.{submodule_name}",
             f"Planetka.{submodule_name}",
             f"planetka.{submodule_name}",
@@ -117,33 +122,6 @@ def _import_submodule(base_module_name, submodule_name):
         except TOOL_RECOVERABLE_EXCEPTIONS:
             continue
     _fail(f"Could not import submodule '{submodule_name}'. Tried: {', '.join(candidates)}")
-
-
-def _driver_count(id_data):
-    anim = getattr(id_data, "animation_data", None)
-    drivers = getattr(anim, "drivers", None) if anim else None
-    return len(drivers) if drivers else 0
-
-
-def _planetka_driver_count():
-    total = 0
-    for obj in bpy.data.objects:
-        if not obj.name.startswith("Planetka"):
-            continue
-        total += _driver_count(obj)
-        data = getattr(obj, "data", None)
-        if data is not None:
-            total += _driver_count(data)
-
-    for material in bpy.data.materials:
-        if material.name.startswith("Planetka"):
-            total += _driver_count(material)
-
-    for node_group in bpy.data.node_groups:
-        if node_group.name.startswith("Planetka"):
-            total += _driver_count(node_group)
-
-    return total
 
 
 def _purge_existing_planetka_data():
@@ -326,9 +304,19 @@ def main():
             )
         _assert(adaptive_enabled, "Adaptive subdivision is not enabled on modifier or object.")
 
-        _log("3/4 Validate driver-free state and viewport subdivision")
-        _assert(_planetka_driver_count() == 0, "Planetka datablocks still contain drivers.")
+        _log("3/4 Validate viewport subdivision and sunlight wiring")
         _assert(bool(subsurf.show_viewport), "Adaptive subdivision viewport display must always stay enabled.")
+        sunlight = bpy.data.objects.get("Planetka Sunlight")
+        _assert(sunlight is not None, "Planetka Sunlight is missing after Create Earth.")
+        _assert(str(getattr(sunlight, "type", "")) == "LIGHT", "Planetka Sunlight object type must be LIGHT.")
+        light_data = getattr(sunlight, "data", None)
+        _assert(light_data is not None and str(getattr(light_data, "type", "")) == "SUN", "Planetka Sunlight data type must be SUN.")
+        props = getattr(scene, "planetka", None)
+        _assert(props is not None, "Planetka scene properties are unavailable for sunlight checks.")
+        props.sunlight_strength = 14.0
+        state.update_sunlight_strength(props, bpy.context)
+        energy = float(getattr(light_data, "energy", 0.0) or 0.0)
+        _assert(abs(energy - 14.0) <= 1e-4, f"Sunlight strength callback did not apply to light energy (got {energy}).")
 
         _log("PASS: simplified smoke checks passed.")
     except SystemExit:

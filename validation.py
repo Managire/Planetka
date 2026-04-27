@@ -253,7 +253,7 @@ def _show_popup_lines(context, title, icon, lines):
 
     try:
         wm.popup_menu(_draw, title=title, icon=icon)
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed opening popup '%s'", title, exc_info=True)
 
 
@@ -501,7 +501,7 @@ def _is_missing_file_image(image):
         return False
     try:
         absolute = os.path.abspath(bpy.path.abspath(raw_path))
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError, OSError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         return False
     if not absolute:
         return False
@@ -760,7 +760,7 @@ def _tile_loading_layer_stats(loading_node):
             if raw_path:
                 try:
                     abs_path = os.path.abspath(bpy.path.abspath(raw_path))
-                except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError, OSError):
+                except PLANETKA_RECOVERABLE_EXCEPTIONS:
                     abs_path = ""
                 if abs_path and not os.path.isfile(abs_path):
                     layer_stats["missing_path_count"] += 1
@@ -782,7 +782,7 @@ def _camera_earth_diagnostics(scene, earth, camera, props):
     try:
         earth_center = Vector(earth.matrix_world.translation)
         camera_pos = Vector(camera.matrix_world.translation)
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         return result
 
     radius_bu = None
@@ -820,7 +820,7 @@ def _camera_earth_diagnostics(scene, earth, camera, props):
         to_earth = earth_center - camera_pos
         if to_earth.length > 1e-9 and forward.length > 1e-9:
             result["facing_dot"] = float(forward.normalized().dot(to_earth.normalized()))
-    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
         result["facing_dot"] = None
     return result
 
@@ -965,7 +965,7 @@ def _check_scene_health_data_source(ctx, payload):
         else:
             try:
                 normalized_base_path = os.path.abspath(bpy.path.abspath(base_path))
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError, OSError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 normalized_base_path = ""
             is_valid_path = bool(normalized_base_path and os.path.isdir(normalized_base_path))
             _append_scene_health_check(

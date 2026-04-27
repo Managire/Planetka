@@ -190,7 +190,7 @@ def _refresh_remote_local_cloud_assets(force=False):
         if not path and force:
             try:
                 path = resolve_remote_asset(REMOTE_LOCAL_CLOUDS_FOLDER, file_name)
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError, OSError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka clouds: failed resolving local cloud texture asset", exc_info=True)
                 path = ""
         if path and os.path.isfile(path):
@@ -216,7 +216,7 @@ def _refresh_remote_vdb_cloud_assets(force=False):
         if not path and force:
             try:
                 path = resolve_remote_asset(REMOTE_VDB_CLOUDS_FOLDER, file_name)
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError, OSError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka clouds: failed resolving VDB cloud asset", exc_info=True)
                 path = ""
         if path and os.path.isfile(path):
@@ -1532,7 +1532,7 @@ def sync_cloud_system_scene(scene):
         if callable(ensure_global_fn):
             try:
                 ensure_global_fn(scene=scene)
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka clouds: failed ensuring global cloud layer during sync", exc_info=True)
     if props is not None:
         _apply_universal_cloud_preview_state(props, context=None)
@@ -1627,7 +1627,7 @@ class PLANETKA_OT_AddLocalCloud(bpy.types.Operator):
         if template_mat is None:
             try:
                 _append_from_reference(material_names=(LOCAL_CLOUD_MATERIAL_TEMPLATE_NAME,))
-            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError) as exc:
+            except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
                 self.report({'ERROR'}, f"Failed loading local cloud material template: {exc}")
                 return {'CANCELLED'}
             template_mat = bpy.data.materials.get(LOCAL_CLOUD_MATERIAL_TEMPLATE_NAME)
@@ -1861,7 +1861,7 @@ class PLANETKA_OT_AddVDBCloud(bpy.types.Operator):
 
         try:
             source_obj = _ensure_vdb_cloud_template(scene)
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError) as exc:
+        except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
             self.report({'ERROR'}, f"Failed preparing VDB cloud template: {exc}")
             return {'CANCELLED'}
 
