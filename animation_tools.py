@@ -3073,6 +3073,7 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         scene = self._scene
         if scene is None:
             return False, "Scene context became unavailable."
+        self._enforce_eevee_bump_only_for_segment()
         start = int(segment.get("start", 1))
         end = int(segment.get("end", start))
         try:
@@ -3129,6 +3130,30 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
                 if frame_mtime < (min_mtime_value - 0.2):
                     return False
         return True
+
+    def _is_eevee_render_engine(self, scene):
+        if scene is None:
+            return False
+        render = getattr(scene, "render", None)
+        try:
+            engine = str(getattr(render, "engine", "") or "").strip().upper()
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            engine = ""
+        return engine in {"BLENDER_EEVEE", "BLENDER_EEVEE_NEXT"}
+
+    def _enforce_eevee_bump_only_for_segment(self):
+        scene = self._scene
+        if not self._is_eevee_render_engine(scene):
+            return
+        try:
+            _set_earth_surface_materials_bump_only()
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka animation: failed enforcing EEVEE bump-only mode after segment resolve", exc_info=True)
+        if scene is not None:
+            try:
+                scene[ANIMATION_EEVEE_FORCE_BUMP_RUNTIME_KEY] = True
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka animation: failed reasserting EEVEE bump-only runtime flag", exc_info=True)
 
     def execute(self, context):
         scene = require_scene(self, context, logger=logger)
@@ -3330,6 +3355,7 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             ok, message = self._resolve_segment_frame(seg_start, tiles_override=segment.get("tiles", ()))
             if not ok:
                 return self._cancel_with_error(context, message)
+            self._enforce_eevee_bump_only_for_segment()
             ok, message = self._launch_segment_render(segment, invoke_ui=True)
             if not ok:
                 return self._cancel_with_error(context, message)
