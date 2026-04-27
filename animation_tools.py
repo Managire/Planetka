@@ -2205,10 +2205,6 @@ def _set_material_displacement_bump_only(material):
     return changed_any
 
 
-def _set_earth_material_bump_only_for_eevee(material):
-    return _set_material_displacement_bump_only(material)
-
-
 def _earth_surface_materials():
     materials = []
     seen = set()
@@ -3054,14 +3050,6 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             except (TypeError, ValueError):
                 logger.debug("Planetka animation: failed serializing segment tile override", exc_info=True)
         try:
-            render = getattr(scene, "render", None)
-            engine = str(getattr(render, "engine", "") or "").strip().upper() if render is not None else ""
-            if engine in {"BLENDER_EEVEE", "BLENDER_EEVEE_NEXT"}:
-                # Ensure segment rebuild starts from bump-only mode in EEVEE.
-                _set_earth_surface_materials_bump_only()
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka animation: failed enforcing EEVEE bump-only before segment resolve", exc_info=True)
-        try:
             result = bpy.ops.planetka.load_textures(**op_kwargs)
         except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
             return False, f"Resolve failed at frame {frame_int:04d}: {exc}"
@@ -3079,14 +3067,6 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             cleanup_planetka_unused_data()
         except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
             logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
-        try:
-            render = getattr(scene, "render", None)
-            engine = str(getattr(render, "engine", "") or "").strip().upper() if render is not None else ""
-            if engine in {"BLENDER_EEVEE", "BLENDER_EEVEE_NEXT"}:
-                # load_textures() can re-apply default displacement settings; force bump-only for EEVEE per segment.
-                _set_earth_surface_materials_bump_only()
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka animation: failed enforcing EEVEE bump-only after segment resolve", exc_info=True)
         return True, ""
 
     def _launch_segment_render(self, segment, invoke_ui=True):
@@ -3102,14 +3082,6 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             bpy.context.view_layer.update()
         except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
             logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
-        try:
-            render = getattr(scene, "render", None)
-            engine = str(getattr(render, "engine", "") or "").strip().upper() if render is not None else ""
-            if engine in {"BLENDER_EEVEE", "BLENDER_EEVEE_NEXT"}:
-                # Defensive pre-launch enforcement to keep EEVEE displacement in bump-only mode.
-                _set_earth_surface_materials_bump_only()
-        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka animation: failed enforcing EEVEE bump-only before segment render", exc_info=True)
         try:
             # Mark launch wall-time immediately before invoking Blender render op.
             # This avoids false "cancelled" detection on fast first frames.
