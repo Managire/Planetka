@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
-"""Fail CI when nested recoverable-exception except tuples are introduced."""
+"""Fail CI when recoverable-exception tuples are nested inside except tuples."""
 
 from __future__ import annotations
 
 import argparse
-import re
+import ast
 import subprocess
 import sys
 from pathlib import Path
 
 
-PATTERN = re.compile(
-    r"except\s*\(\s*PLANETKA_(?:IMPORT_)?RECOVERABLE_EXCEPTIONS\s*,",
-    re.MULTILINE,
-)
+RECOVERABLE_CONST_NAMES = {
+    "PLANETKA_RECOVERABLE_EXCEPTIONS",
+    "PLANETKA_IMPORT_RECOVERABLE_EXCEPTIONS",
+    "recoverable_exceptions",
+}
 
 
 def _tracked_python_files(repo_root: Path) -> list[Path]:
@@ -35,8 +36,37 @@ def _tracked_python_files(repo_root: Path) -> list[Path]:
     return files
 
 
-def _line_for_offset(text: str, offset: int) -> int:
-    return int(text.count("\n", 0, max(0, int(offset))) + 1)
+def _is_recoverable_symbol(node: ast.AST) -> bool:
+    if isinstance(node, ast.Name):
+        identifier = str(node.id or "")
+        return (
+            identifier in RECOVERABLE_CONST_NAMES
+            or identifier.endswith("RECOVERABLE_EXCEPTIONS")
+        )
+    if isinstance(node, ast.Attribute):
+        attr = str(node.attr or "")
+        return (
+            attr == "recoverable_exceptions"
+            or attr.endswith("RECOVERABLE_EXCEPTIONS")
+        )
+    return False
+
+
+def _find_offending_handlers(text: str) -> list[int]:
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return []
+    offending_lines: list[int] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ExceptHandler):
+            continue
+        exception_expr = node.type
+        if not isinstance(exception_expr, ast.Tuple):
+            continue
+        if any(_is_recoverable_symbol(element) for element in exception_expr.elts):
+            offending_lines.append(int(getattr(node, "lineno", 1)))
+    return offending_lines
 
 
 def main() -> int:
@@ -62,8 +92,7 @@ def main() -> int:
         except OSError as exc:
             print(f"[except-pattern-check] warning: could not read {file_path}: {exc}", file=sys.stderr)
             continue
-        for match in PATTERN.finditer(text):
-            line = _line_for_offset(text, match.start())
+        for line in _find_offending_handlers(text):
             rel = file_path.relative_to(repo_root)
             offenders.append(f"{rel}:{line}")
 
@@ -72,8 +101,8 @@ def main() -> int:
         for item in offenders:
             print(f"  - {item}")
         print(
-            "[except-pattern-check] Replace with `except PLANETKA_*_RECOVERABLE_EXCEPTIONS:` "
-            "or a flattened tuple expression."
+            "[except-pattern-check] Do not place recoverable exception tuples inside except tuple literals. "
+            "Use either a standalone recoverable except block or a flattened tuple expression via tuple concatenation."
         )
         return 1
 

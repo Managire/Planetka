@@ -102,7 +102,9 @@ class PLANETKA_OT_AccountOpenLogin(bpy.types.Operator):
         try:
             # Refresh canonical stored tier/profile fields immediately after login.
             sync_account_profile(prefs)
-        except (AuthApiError, PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        except (AuthApiError, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: post-login account profile sync failed", exc_info=True)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka: post-login account profile sync failed", exc_info=True)
         try:
             prefs.auth_status_message = ""

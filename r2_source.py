@@ -1524,7 +1524,7 @@ def _seed_cache_from_bootstrap(folder, file_name, destination_path):
         shutil.copyfile(source_path, temp_path)
         os.replace(temp_path, target_path)
         return _is_cache_file_usable(target_path)
-    except (OSError, RuntimeError, TypeError, ValueError, AttributeError, PLANETKA_RECOVERABLE_EXCEPTIONS):
+    except (OSError, RuntimeError, TypeError, ValueError, AttributeError) + PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed seeding cache from bundled startup tile", exc_info=True)
         return False
     finally:

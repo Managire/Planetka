@@ -483,7 +483,7 @@ def _build_index(source_path, db_path, source_signature):
             _INDEX_ERROR = ""
             _INDEX_DB_PATH = db_path
             _INDEX_SOURCE_PATH = source_path
-    except (sqlite3.Error, OSError, zipfile.BadZipFile, PLANETKA_RECOVERABLE_EXCEPTIONS) as exc:
+    except (sqlite3.Error, OSError, zipfile.BadZipFile) + PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
         if connection is not None:
             try:
                 connection.close()
@@ -1054,7 +1054,7 @@ def search_places(query_text, max_results=20):
                 (lower_bound, upper_bound, query, limit),
             )
         rows = cursor.fetchall()
-    except (sqlite3.Error, OSError, PLANETKA_RECOVERABLE_EXCEPTIONS):
+    except (sqlite3.Error, OSError) + PLANETKA_RECOVERABLE_EXCEPTIONS:
         _close_read_connection()
         return []
 
@@ -1185,7 +1185,7 @@ def get_place_by_display(display_name):
                 (lower_bound, upper_bound, name_hint),
             )
         rows = cursor.fetchall()
-    except (sqlite3.Error, OSError, PLANETKA_RECOVERABLE_EXCEPTIONS):
+    except (sqlite3.Error, OSError) + PLANETKA_RECOVERABLE_EXCEPTIONS:
         _close_read_connection()
         return None
 
