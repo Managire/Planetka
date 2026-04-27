@@ -2,7 +2,6 @@ name: Blender Required Gate
 
 on:
   pull_request:
-  push:
   workflow_dispatch:
 
 jobs:
