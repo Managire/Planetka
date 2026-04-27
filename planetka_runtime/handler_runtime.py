@@ -1,4 +1,5 @@
 _HANDLER_RUNTIME_CTX = None
+ANIMATION_EEVEE_FORCE_BUMP_RUNTIME_KEY = "planetka_anim_render_eevee_force_bump"
 
 
 def _require_ctx():
@@ -117,6 +118,30 @@ def initialize_props_from_imported_planetka(scene, ctx=None):
 def _enforce_planetka_earth_surface_displacement_mode(scene, deps):
     if scene is None:
         return
+    try:
+        force_eevee_bump = bool(scene.get(ANIMATION_EEVEE_FORCE_BUMP_RUNTIME_KEY, False))
+    except (deps.recoverable_exceptions, RuntimeError, TypeError, ValueError, AttributeError):
+        force_eevee_bump = False
+    if bool(force_eevee_bump):
+        try:
+            module_name = f"{deps.package_name}.animation_tools" if deps.package_name else "animation_tools"
+            animation_tools = deps.import_module(module_name)
+            enforce_bump_fn = getattr(animation_tools, "_set_earth_surface_materials_bump_only", None)
+            if callable(enforce_bump_fn):
+                enforce_bump_fn()
+            return
+        except deps.recoverable_exceptions:
+            deps.logger.debug(
+                "Planetka: failed enforcing EEVEE bump-only displacement mode in depsgraph runtime",
+                exc_info=True,
+            )
+            return
+        except (RuntimeError, TypeError, ValueError, AttributeError, ImportError):
+            deps.logger.debug(
+                "Planetka: failed enforcing EEVEE bump-only displacement mode in depsgraph runtime",
+                exc_info=True,
+            )
+            return
     try:
         module_name = f"{deps.package_name}.asset_builder" if deps.package_name else "asset_builder"
         asset_builder = deps.import_module(module_name)

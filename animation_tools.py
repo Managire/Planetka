@@ -62,6 +62,7 @@ QUICK_PREVIEW_SCENE_STATE_KEYS = (
     ANIMATION_BASE_SURFACE_HIDE_VIEWPORT_KEY,
 )
 QUICK_PREVIEW_MAX_SEGMENTS = 99
+ANIMATION_EEVEE_FORCE_BUMP_RUNTIME_KEY = "planetka_anim_render_eevee_force_bump"
 TEXTURE_TYPES = ("S2", "EL", "WT", "PO")
 TEXTURE_EXTENSIONS = {
     "S2": ".exr",
@@ -2908,6 +2909,11 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
                 scene.frame_set(int(self._original_frame))
             except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError):
                 logger.debug("Planetka animation: failed restoring frame range", exc_info=True)
+            try:
+                if ANIMATION_EEVEE_FORCE_BUMP_RUNTIME_KEY in scene:
+                    del scene[ANIMATION_EEVEE_FORCE_BUMP_RUNTIME_KEY]
+            except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka animation: failed clearing EEVEE bump-only runtime flag", exc_info=True)
 
         if self._eevee_temp_displacement_state:
             try:
@@ -3277,6 +3283,10 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
                 eevee_materials = _earth_surface_materials()
                 eevee_temp_displacement_state = _capture_material_displacement_mode_states(eevee_materials)
                 _set_earth_surface_materials_bump_only()
+                try:
+                    scene[ANIMATION_EEVEE_FORCE_BUMP_RUNTIME_KEY] = True
+                except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+                    logger.debug("Planetka animation: failed setting EEVEE bump-only runtime flag", exc_info=True)
             self._scene = scene
             self._props = props
             self._segments = list(segments)
