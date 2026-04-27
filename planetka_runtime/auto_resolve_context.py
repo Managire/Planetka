@@ -18,6 +18,9 @@ class AutoResolveSettings:
     download_pump_interval_sec: float
     download_scene_wait_sec: float
     download_completed_max_age_sec: float
+    apply_retry_max_attempts: int
+    apply_retry_backoff_base_sec: float
+    apply_retry_backoff_max_sec: float
     noncritical_interval_sec: float
 
 
