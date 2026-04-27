@@ -5,7 +5,7 @@ from bpy.props import EnumProperty
 from ..error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from ..extension_prefs import get_earth_object
 from ..operator_utils import ErrorCode, fail, require_planetka_props, require_scene
-from ..state import logger, resume_navigation_shot_updates, suspend_navigation_shot_updates
+from ..state import _is_render_job_active, logger, resume_navigation_shot_updates, suspend_navigation_shot_updates
 from .navigation_helpers import (
     _anchor_frame_world,
     _apply_navigation_shot,
@@ -45,7 +45,23 @@ def _module_deps():
         "_apply_navigation_shot": _apply_navigation_shot,
         "suspend_navigation_shot_updates": suspend_navigation_shot_updates,
         "resume_navigation_shot_updates": resume_navigation_shot_updates,
+        "_is_render_job_active": _is_render_job_active,
     }
+
+
+def _cancel_if_animation_render_active(operator, deps, action_label):
+    is_render_job_active = deps.get("_is_render_job_active")
+    try:
+        if callable(is_render_job_active) and bool(is_render_job_active()):
+            label = str(action_label or "This action").strip() or "This action"
+            operator.report(
+                {'WARNING'},
+                f"{label} is unavailable while Final Animation Render is running.",
+            )
+            return True
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        pass
+    return False
 
 
 def navigation_apply_shot_execute(operator, context, deps):
@@ -56,6 +72,9 @@ def navigation_apply_shot_execute(operator, context, deps):
     ErrorCode = deps["ErrorCode"]
     PLANETKA_RECOVERABLE_EXCEPTIONS = deps["PLANETKA_RECOVERABLE_EXCEPTIONS"]
     _apply_navigation_shot = deps["_apply_navigation_shot"]
+
+    if _cancel_if_animation_render_active(operator, deps, "Navigation apply"):
+        return {'CANCELLED'}
 
     scene = require_scene(operator, context, logger=logger)
     if scene is None:
@@ -107,6 +126,9 @@ def use_current_view_navigation_execute(operator, context, deps):
     _derive_navigation_shot_from_camera = deps["_derive_navigation_shot_from_camera"]
     _quantize_navigation_ui_payload = deps["_quantize_navigation_ui_payload"]
     _store_last_navigation_values = deps["_store_last_navigation_values"]
+
+    if _cancel_if_animation_render_active(operator, deps, "Bring Camera to View"):
+        return {'CANCELLED'}
 
     scene = require_scene(operator, context, logger=logger)
     if scene is None:
@@ -210,6 +232,9 @@ def auto_adjust_clipping_execute(operator, context, deps):
     logger = deps["logger"]
     get_earth_object = deps["get_earth_object"]
     _earth_radius_blender_units = deps["_earth_radius_blender_units"]
+
+    if _cancel_if_animation_render_active(operator, deps, "Clipping adjustment"):
+        return {'CANCELLED'}
 
     scene = require_scene(operator, context, logger=logger)
     if scene is None:
@@ -343,6 +368,9 @@ def navigation_preset_execute(operator, context, deps):
     _apply_navigation_shot = deps["_apply_navigation_shot"]
     suspend_navigation_shot_updates = deps["suspend_navigation_shot_updates"]
     resume_navigation_shot_updates = deps["resume_navigation_shot_updates"]
+
+    if _cancel_if_animation_render_active(operator, deps, "Navigation preset"):
+        return {'CANCELLED'}
 
     scene = require_scene(operator, context, logger=logger)
     if scene is None:
@@ -483,6 +511,9 @@ def sunlight_preset_execute(operator, context, deps):
     get_earth_object = deps["get_earth_object"]
     _anchor_frame_world = deps["_anchor_frame_world"]
     PLANETKA_RECOVERABLE_EXCEPTIONS = deps["PLANETKA_RECOVERABLE_EXCEPTIONS"]
+
+    if _cancel_if_animation_render_active(operator, deps, "Sunlight preset"):
+        return {'CANCELLED'}
 
     scene = require_scene(operator, context, logger=logger)
     if scene is None:

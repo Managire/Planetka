@@ -131,6 +131,20 @@ def _persist_user_preferences():
     return False
 
 
+def _cancel_if_animation_render_active(operator, action_label="This action"):
+    try:
+        if callable(_is_render_job_active) and bool(_is_render_job_active()):
+            label = str(action_label or "This action").strip() or "This action"
+            operator.report(
+                {'WARNING'},
+                f"{label} is unavailable while Final Animation Render is running.",
+            )
+            return True
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        pass
+    return False
+
+
 from .planetka_ops.navigation_helpers import (
     _anchor_distance_from_altitude_and_tilt,
     _anchor_frame_world,
@@ -214,6 +228,8 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
         return "Full Quality: full-resolution textures."
 
     def execute(self, context):
+        if _cancel_if_animation_render_active(self, "Texture quality change"):
+            return {'CANCELLED'}
         scene = require_scene(self, context, logger=logger)
         if scene is None:
             return {'CANCELLED'}
@@ -387,6 +403,8 @@ class PLANETKA_OT_RebuildEarth(bpy.types.Operator):
     )
 
     def execute(self, context):
+        if _cancel_if_animation_render_active(self, "Rebuild Earth"):
+            return {'CANCELLED'}
         return _earth_lifecycle_ops.rebuild_earth_execute(self, context, globals())
 
 
@@ -396,6 +414,8 @@ class PLANETKA_OT_AddEarth(bpy.types.Operator):
     bl_description = "Create Planetka Earth assets"
 
     def execute(self, context):
+        if _cancel_if_animation_render_active(self, "Create Earth"):
+            return {'CANCELLED'}
         return _earth_lifecycle_ops.add_earth_execute(self, context, globals())
 
 
@@ -408,6 +428,8 @@ class PLANETKA_OT_SaveStartupSetup(bpy.types.Operator):
     )
 
     def execute(self, context):
+        if _cancel_if_animation_render_active(self, "Save startup setup"):
+            return {'CANCELLED'}
         scene = require_scene(self, context, logger=logger)
         if scene is None:
             return {'CANCELLED'}
@@ -444,6 +466,8 @@ class PLANETKA_OT_ResetStartupSetupFactory(bpy.types.Operator):
     )
 
     def execute(self, context):
+        if _cancel_if_animation_render_active(self, "Reset startup setup"):
+            return {'CANCELLED'}
         scene = require_scene(self, context, logger=logger)
         if scene is None:
             return {'CANCELLED'}
@@ -494,6 +518,8 @@ class PLANETKA_OT_NavigationApplyShot(bpy.types.Operator):
     )
 
     def execute(self, context):
+        if _cancel_if_animation_render_active(self, "Navigation apply"):
+            return {'CANCELLED'}
         return _navigation_ops.navigation_apply_shot_execute(self, context, globals())
 
 
@@ -503,6 +529,8 @@ class PLANETKA_OT_UseCurrentViewNavigation(bpy.types.Operator):
     bl_description = "Move active camera to current viewport view and sync Navigation values"
 
     def execute(self, context):
+        if _cancel_if_animation_render_active(self, "Bring Camera to View"):
+            return {'CANCELLED'}
         return _navigation_ops.use_current_view_navigation_execute(self, context, globals())
 
 
@@ -514,6 +542,8 @@ class PLANETKA_OT_AutoAdjustClipping(bpy.types.Operator):
     )
 
     def execute(self, context):
+        if _cancel_if_animation_render_active(self, "Clipping adjustment"):
+            return {'CANCELLED'}
         return _navigation_ops.auto_adjust_clipping_execute(self, context, globals())
 
 
@@ -523,6 +553,8 @@ class PLANETKA_OT_ResetEarthTransform(bpy.types.Operator):
     bl_description = "Reset Planetka Root Location and Rotation to defaults (0, 0, 0)"
 
     def execute(self, context):
+        if _cancel_if_animation_render_active(self, "Reset transform"):
+            return {'CANCELLED'}
         return _earth_lifecycle_ops.reset_earth_transform_execute(self, context, globals())
 
 
@@ -544,6 +576,8 @@ class PLANETKA_OT_ResetSurfaceGradingSection(bpy.types.Operator):
     )
 
     def execute(self, context):
+        if _cancel_if_animation_render_active(self, "Surface grading reset"):
+            return {'CANCELLED'}
         _ = context
         nodes = tuple(_iter_surface_grading_nodes())
         if not nodes:
