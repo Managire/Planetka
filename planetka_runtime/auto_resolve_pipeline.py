@@ -323,6 +323,9 @@ def _ctx_queue_resolve_download(ctx, scene, target_tiles, manual_request=False):
     state = ctx.state
     if scene is None:
         return False
+    if bool(manual_request) and deps.is_render_job_active():
+        deps.logger.info("Planetka: ignoring deferred queued resolve request during active render job.")
+        return False
     camera_signature = deps.camera_signature(scene)
     if camera_signature is None:
         return False
@@ -662,7 +665,11 @@ def _ctx_auto_resolve_prepare_apply_context(ctx, job, manual_request):
 
     if deps.is_render_job_active():
         if manual_request:
-            _ctx_mark_manual_queued_resolve_error(ctx, scene, "Blocked by active render job.")
+            deps.logger.info(
+                "Planetka: skipping queued manual resolve apply during active render "
+                "(request_id=%s).",
+                str(deps.job_field(job, "request_id", "")),
+            )
         else:
             deps.request_auto_resolve(scene, immediate=False, mark_dirty=False)
         return True, None, None, None
@@ -729,13 +736,21 @@ def _ctx_auto_resolve_apply_downloaded_tiles(ctx, scene, scene_id, job, manual_r
                 else:
                     deps.request_auto_resolve(scene, immediate=False, mark_dirty=False)
             return False
-    except deps.recoverable_exceptions:
+    except deps.recoverable_exceptions as exc:
         deps.resolve_trace(
             f"Shader update failed with recoverable exception (request_id={deps.job_field(job, 'request_id')})"
         )
-        deps.logger.debug("Planetka auto-resolve apply failed", exc_info=True)
+        exc_text = f"{type(exc).__name__}: {exc}" if str(exc or "").strip() else str(type(exc).__name__)
+        deps.logger.exception(
+            "Planetka auto-resolve apply failed with recoverable exception "
+            "(request_id=%s, manual=%s, tiles=%d): %s",
+            str(deps.job_field(job, "request_id", "")),
+            bool(manual_request),
+            int(len(job_target_tiles)),
+            str(exc_text or "unknown"),
+        )
         scene_error = _ctx_read_scene_last_resolve_error(ctx, scene)
-        apply_error = scene_error or "Apply failed with recoverable exception."
+        apply_error = scene_error or f"Apply failed with recoverable exception: {str(exc_text or 'unknown')}."
         if manual_request:
             _ctx_mark_manual_queued_resolve_error(ctx, scene, apply_error)
         else:
@@ -744,13 +759,21 @@ def _ctx_auto_resolve_apply_downloaded_tiles(ctx, scene, scene_id, job, manual_r
             else:
                 deps.request_auto_resolve(scene, immediate=False, mark_dirty=False)
         return False
-    except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
+    except (RuntimeError, TypeError, ValueError, AttributeError, OSError) as exc:
         deps.resolve_trace(
             f"Shader update failed with unexpected exception (request_id={deps.job_field(job, 'request_id')})"
         )
-        deps.logger.debug("Planetka auto-resolve apply failed unexpectedly", exc_info=True)
+        exc_text = f"{type(exc).__name__}: {exc}" if str(exc or "").strip() else str(type(exc).__name__)
+        deps.logger.exception(
+            "Planetka auto-resolve apply failed unexpectedly "
+            "(request_id=%s, manual=%s, tiles=%d): %s",
+            str(deps.job_field(job, "request_id", "")),
+            bool(manual_request),
+            int(len(job_target_tiles)),
+            str(exc_text or "unknown"),
+        )
         scene_error = _ctx_read_scene_last_resolve_error(ctx, scene)
-        apply_error = scene_error or "Apply failed with unexpected exception."
+        apply_error = scene_error or f"Apply failed with unexpected exception: {str(exc_text or 'unknown')}."
         if manual_request:
             _ctx_mark_manual_queued_resolve_error(ctx, scene, apply_error)
         else:

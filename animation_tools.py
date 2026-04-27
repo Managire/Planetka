@@ -24,6 +24,7 @@ from .state import (
     _apply_sunlight_strength_from_props,
     create_temp_mesh,
     cleanup_planetka_unused_data,
+    get_resolve_runtime_status,
     logger,
     mark_navigation_camera_control_signature,
     remove_object_and_unused_mesh,
@@ -2141,6 +2142,27 @@ def _render_engine_display(scene):
     return engine or "—"
 
 
+def _wait_for_resolve_pipeline_idle(scene, timeout_sec=45.0, poll_sec=0.1):
+    started = time.monotonic()
+    last_status = {}
+    while True:
+        try:
+            status = get_resolve_runtime_status(scene=scene) or {}
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            status = {}
+        running = bool(status.get("running", False))
+        if not running:
+            return True, status
+        last_status = dict(status)
+        if (time.monotonic() - started) >= float(max(0.5, timeout_sec)):
+            return False, last_status
+        try:
+            bpy.context.view_layer.update()
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            pass
+        time.sleep(float(max(0.02, poll_sec)))
+
+
 def _set_enum_property_if_available(target, prop_name, preferred_values):
     if target is None or not hasattr(target, prop_name):
         return False
@@ -3208,6 +3230,22 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
                 code=ErrorCode.RENDER_FAILED,
                 logger=logger,
             )
+
+        try:
+            runtime_status = get_resolve_runtime_status(scene=scene) or {}
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            runtime_status = {}
+        if bool(runtime_status.get("running", False)):
+            self.report({'INFO'}, "Waiting for queued Planetka resolve to finish before Animation Render starts.")
+            idle, final_status = _wait_for_resolve_pipeline_idle(scene, timeout_sec=90.0, poll_sec=0.1)
+            if not idle:
+                status_text = str((final_status or {}).get("text", "Resolve queued") or "Resolve queued")
+                return fail(
+                    self,
+                    f"Cannot start Animation Render while queued resolve is active ({status_text}).",
+                    code=ErrorCode.RESOLVE_REFRESH_FAILED,
+                    logger=logger,
+                )
 
         try:
             start_frame, end_frame = apply_cinematic_preview(scene, props)

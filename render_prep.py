@@ -45,6 +45,7 @@ from .state import (
     _clear_camera_inside_earth_warning,
     _estimate_download_bytes_for_visible_tiles,
     _is_animation_playing,
+    _is_render_job_active,
     _resolve_scope_altitude_info,
     _set_camera_inside_earth_warning,
     create_temp_mesh,
@@ -1006,6 +1007,15 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             return ResolveEarlyResult(response={'CANCELLED'}, ui_reports=ui_reports)
 
         if bool(getattr(self, "defer_download", False)):
+            if _is_render_job_active():
+                logger.info("Planetka: ignored deferred resolve request during active render job.")
+                ui_reports.append(
+                    self._ui_report(
+                        "WARNING",
+                        "Planetka deferred resolve is disabled while rendering.",
+                    )
+                )
+                return ResolveEarlyResult(response={'CANCELLED'}, ui_reports=ui_reports)
             full_tiles_override = tuple(tiles or ()) if texture_quality_mode == "FULL" else None
             try:
                 update_resolve_size_estimates(

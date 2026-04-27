@@ -292,6 +292,13 @@ def queue_manual_resolve_download_for_scene(scene, *, get_earth_object):
         return False
     if get_earth_object() is None:
         return False
+    try:
+        is_job_running = getattr(getattr(bpy, "app", None), "is_job_running", None)
+        if callable(is_job_running) and bool(is_job_running("RENDER")):
+            logger.info("Planetka: skipping load-time queued recovery resolve during active render job.")
+            return False
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed checking render job status for load-time recovery queue", exc_info=True)
 
     wm = getattr(getattr(bpy, "context", None), "window_manager", None)
     windows = list(getattr(wm, "windows", ()) or ())
