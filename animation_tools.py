@@ -2244,6 +2244,14 @@ def _earth_surface_materials():
         _add_material(bpy.data.materials.get("Planetka Earth Material"))
     except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
         pass
+    # Include material variants that can appear during resolve swaps.
+    try:
+        for material in tuple(getattr(bpy.data, "materials", ()) or ()):
+            mat_name = str(getattr(material, "name", "") or "")
+            if mat_name == "Planetka Earth Material" or mat_name.startswith("Planetka Earth Material."):
+                _add_material(material)
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+        pass
     return materials
 
 
@@ -3039,6 +3047,14 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
                 op_kwargs["tiles_override_json"] = json.dumps(normalized_tiles, separators=(",", ":"))
             except (TypeError, ValueError):
                 logger.debug("Planetka animation: failed serializing segment tile override", exc_info=True)
+        try:
+            render = getattr(scene, "render", None)
+            engine = str(getattr(render, "engine", "") or "").strip().upper() if render is not None else ""
+            if engine in {"BLENDER_EEVEE", "BLENDER_EEVEE_NEXT"}:
+                # Ensure segment rebuild starts from bump-only mode in EEVEE.
+                _set_earth_surface_materials_bump_only()
+        except (PLANETKA_RECOVERABLE_EXCEPTIONS, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka animation: failed enforcing EEVEE bump-only before segment resolve", exc_info=True)
         try:
             result = bpy.ops.planetka.load_textures(**op_kwargs)
         except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
