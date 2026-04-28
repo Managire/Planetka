@@ -87,6 +87,7 @@ def main():
         "tools/planetka_schema_migration_test.py",
         "tools/planetka_regression_test.py",
         "tools/planetka_core_user_flow_gate.py",
+        "tools/planetka_final_animation_gate.py",
         "tools/planetka_render_open_recovery_regression_test.py",
     ]
     for script in scripts:
@@ -97,7 +98,7 @@ def main():
 
     print(
         "[run_blender_tests] PASS: smoke, schema migration, regression, core user-flow, "
-        "and render-open recovery tests passed."
+        "final-animation gate, and render-open recovery tests passed."
     )
     return 0
 
