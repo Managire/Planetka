@@ -40,16 +40,12 @@ def clear_status_notices(
         return
     try:
         skip_count = int(scene.get(status_notice_clear_skip_key, 0) or 0)
-    except recoverable_exceptions:
-        skip_count = 0
-    except (RuntimeError, TypeError, ValueError, AttributeError):
+    except (recoverable_exceptions, RuntimeError, TypeError, ValueError, AttributeError):
         skip_count = 0
     if skip_count > 0:
         try:
             scene[status_notice_clear_skip_key] = max(0, int(skip_count) - 1)
-        except recoverable_exceptions:
-            pass
-        except (RuntimeError, TypeError, ValueError, AttributeError):
+        except (recoverable_exceptions, RuntimeError, TypeError, ValueError, AttributeError):
             pass
         return
     for key in status_notice_keys:

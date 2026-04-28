@@ -218,28 +218,20 @@ def _ctx_schedule_auto_resolve_download(
             scene,
             getattr(props, "texture_quality_mode", "PREVIEW"),
         )
-    except deps.recoverable_exceptions:
-        texture_quality_mode = "PREVIEW"
-    except (RuntimeError, TypeError, ValueError, AttributeError):
+    except (deps.recoverable_exceptions, RuntimeError, TypeError, ValueError, AttributeError):
         texture_quality_mode = "PREVIEW"
     target_tiles_tuple = tuple(target_tiles or ())
     try:
         nav_latitude_deg = float(getattr(props, "nav_latitude_deg", 0.0)) if props is not None else 0.0
-    except deps.recoverable_exceptions:
-        nav_latitude_deg = 0.0
-    except (RuntimeError, TypeError, ValueError, AttributeError):
+    except (deps.recoverable_exceptions, RuntimeError, TypeError, ValueError, AttributeError):
         nav_latitude_deg = 0.0
     try:
         nav_longitude_deg = float(getattr(props, "nav_longitude_deg", 0.0)) if props is not None else 0.0
-    except deps.recoverable_exceptions:
-        nav_longitude_deg = 0.0
-    except (RuntimeError, TypeError, ValueError, AttributeError):
+    except (deps.recoverable_exceptions, RuntimeError, TypeError, ValueError, AttributeError):
         nav_longitude_deg = 0.0
     try:
         nav_altitude_km = max(0.0, float(getattr(props, "nav_altitude_km", 0.0))) if props is not None else 0.0
-    except deps.recoverable_exceptions:
-        nav_altitude_km = 0.0
-    except (RuntimeError, TypeError, ValueError, AttributeError):
+    except (deps.recoverable_exceptions, RuntimeError, TypeError, ValueError, AttributeError):
         nav_altitude_km = 0.0
 
     job_to_start = None
@@ -893,9 +885,7 @@ def _ctx_auto_resolve_summary_total_bytes(ctx, job_target_tiles, job, result):
                 ),
             )
         )
-    except deps.recoverable_exceptions:
-        summary_total_bytes = 0
-    except (RuntimeError, TypeError, ValueError, AttributeError):
+    except (deps.recoverable_exceptions, RuntimeError, TypeError, ValueError, AttributeError):
         summary_total_bytes = 0
     if summary_total_bytes <= 0:
         downloaded_bytes = 0
@@ -1397,9 +1387,7 @@ def _ctx_auto_resolve_update_size_estimation(ctx, scene, scope, active_view_sign
         prefs = deps.get_prefs()
         if prefs is not None:
             base_path_for_estimate = str(getattr(prefs, "texture_base_path", "") or "")
-    except deps.recoverable_exceptions:
-        base_path_for_estimate = ""
-    except (RuntimeError, TypeError, ValueError, AttributeError):
+    except (deps.recoverable_exceptions, RuntimeError, TypeError, ValueError, AttributeError):
         base_path_for_estimate = ""
 
     current_quality_mode = deps.normalize_texture_quality_mode(getattr(props, "texture_quality_mode", "PREVIEW"))
@@ -1411,9 +1399,7 @@ def _ctx_auto_resolve_update_size_estimation(ctx, scene, scope, active_view_sign
             base_path=base_path_for_estimate,
             full_tiles_override=full_tiles_override,
         )
-    except deps.recoverable_exceptions:
-        deps.logger.debug("Planetka auto-resolve: failed updating resolve size estimates", exc_info=True)
-    except (RuntimeError, TypeError, ValueError, AttributeError):
+    except (deps.recoverable_exceptions, RuntimeError, TypeError, ValueError, AttributeError):
         deps.logger.debug("Planetka auto-resolve: failed updating resolve size estimates", exc_info=True)
 
 
