@@ -480,101 +480,6 @@ def _is_non_retryable_resolve_error(message):
     )
 
 
-def _is_retryable_apply_error(message):
-    text = str(message or "").strip().lower()
-    if not text:
-        return False
-    return any(
-        token in text
-        for token in (
-            "cannot modify blend data in this state",
-            "drawing/rendering",
-            "readonly state",
-            "read-only state",
-            "writing to id classes in this context is not allowed",
-            "cannot run in readonly state",
-        )
-    )
-
-
-def _ctx_clear_apply_retry_state(ctx, job):
-    deps = ctx.deps
-    deps.job_set_field(job, "apply_retry_attempts", 0)
-    deps.job_set_field(job, "apply_retry_next_try", 0.0)
-    deps.job_set_field(job, "apply_retry_keep_completed", False)
-    deps.job_set_field(job, "apply_retry_last_error", "")
-
-
-def _ctx_schedule_apply_retry(ctx, job, apply_error):
-    deps = ctx.deps
-    settings = ctx.settings
-    now = time.monotonic()
-    try:
-        attempts = int(deps.job_field(job, "apply_retry_attempts", 0) or 0) + 1
-    except (TypeError, ValueError):
-        attempts = 1
-    max_attempts = max(1, int(getattr(settings, "apply_retry_max_attempts", 1) or 1))
-    if attempts > max_attempts:
-        deps.job_set_field(job, "apply_retry_attempts", max_attempts)
-        deps.job_set_field(job, "apply_retry_keep_completed", False)
-        return False, attempts, 0.0, max_attempts
-    base_delay = max(
-        float(getattr(settings, "download_pump_interval_sec", 0.2) or 0.2),
-        float(getattr(settings, "apply_retry_backoff_base_sec", 0.5) or 0.5),
-    )
-    max_delay = max(
-        base_delay,
-        float(getattr(settings, "apply_retry_backoff_max_sec", 2.0) or 2.0),
-    )
-    delay = min(max_delay, base_delay * float(2 ** max(0, attempts - 1)))
-    next_try = float(now) + float(delay)
-    deps.job_set_field(job, "apply_retry_attempts", int(attempts))
-    deps.job_set_field(job, "apply_retry_next_try", float(next_try))
-    deps.job_set_field(job, "apply_retry_keep_completed", True)
-    deps.job_set_field(job, "apply_retry_last_error", str(apply_error or ""))
-    deps.resolve_trace(
-        "Apply retry scheduled "
-        f"(request_id={deps.job_field(job, 'request_id')}, attempts={attempts}/{max_attempts}, delay={delay:.2f}s)"
-    )
-    return True, attempts, delay, max_attempts
-
-
-def _ctx_handle_apply_failure(ctx, scene, scene_id, job, manual_request, apply_error):
-    deps = ctx.deps
-    error_text = str(apply_error or "").strip() or "Apply failed."
-    if _is_retryable_apply_error(error_text):
-        scheduled, attempts, delay, max_attempts = _ctx_schedule_apply_retry(ctx, job, error_text)
-        if scheduled:
-            deps.logger.warning(
-                "Planetka auto-resolve apply deferred for retry (request_id=%s, attempt=%d/%d, delay=%.2fs): %s",
-                str(deps.job_field(job, "request_id", "")),
-                int(attempts),
-                int(max_attempts),
-                float(delay),
-                str(error_text),
-            )
-            return False
-        error_text = f"{error_text} Retry limit reached after {int(max_attempts)} attempts."
-        deps.logger.error(
-            "Planetka auto-resolve apply retry limit reached (request_id=%s): %s",
-            str(deps.job_field(job, "request_id", "")),
-            str(error_text),
-        )
-
-    _ctx_clear_apply_retry_state(ctx, job)
-    if manual_request:
-        _ctx_mark_manual_queued_resolve_error(ctx, scene, error_text)
-    else:
-        if _is_non_retryable_resolve_error(error_text):
-            _ctx_mark_auto_resolve_terminal_failure(ctx, scene, scene_id, job, error_text)
-        elif _is_retryable_apply_error(error_text):
-            # Retry budget exhausted for a transient Blender state failure.
-            _ctx_mark_auto_resolve_terminal_failure(ctx, scene, scene_id, job, error_text)
-        else:
-            deps.request_auto_resolve(scene, immediate=False, mark_dirty=False)
-    return False
-
-
 def _ctx_mark_auto_resolve_terminal_failure(ctx, scene, scene_id, job, message):
     deps = ctx.deps
     if scene is None:
@@ -775,24 +680,12 @@ def _ctx_auto_resolve_prepare_apply_context(ctx, job, manual_request):
             float(waited_sec),
             int(attempts),
         )
-        _ctx_clear_apply_retry_state(ctx, job)
         return True, None, None, None
     deps.job_set_field(job, "scene_missing_since", 0.0)
     deps.job_set_field(job, "scene_missing_attempts", 0)
-    now = time.monotonic()
-    try:
-        retry_next_try = float(deps.job_field(job, "apply_retry_next_try", 0.0) or 0.0)
-    except (TypeError, ValueError):
-        retry_next_try = 0.0
-    if retry_next_try > float(now):
-        wait_sec = max(0.0, float(retry_next_try) - float(now))
-        deps.resolve_trace(
-            "Apply retry deferred by backoff "
-            f"(request_id={deps.job_field(job, 'request_id')}, wait={wait_sec:.2f}s)"
-        )
-        return False, None, None, None
     lock_reason = _ctx_blend_data_write_lock_reason(ctx)
     if lock_reason:
+        now = time.monotonic()
         try:
             lock_since = float(deps.job_field(job, "apply_lock_since", 0.0) or 0.0)
         except (TypeError, ValueError):
@@ -841,7 +734,6 @@ def _ctx_auto_resolve_prepare_apply_context(ctx, job, manual_request):
             )
         else:
             deps.request_auto_resolve(scene, immediate=False, mark_dirty=False)
-        _ctx_clear_apply_retry_state(ctx, job)
         return True, None, None, None
     deps.job_set_field(job, "apply_lock_since", 0.0)
     deps.job_set_field(job, "apply_lock_attempts", 0)
@@ -856,7 +748,6 @@ def _ctx_auto_resolve_prepare_apply_context(ctx, job, manual_request):
             )
         else:
             deps.request_auto_resolve(scene, immediate=False, mark_dirty=False)
-        _ctx_clear_apply_retry_state(ctx, job)
         return True, None, None, None
 
     props = getattr(scene, "planetka", None)
@@ -865,7 +756,6 @@ def _ctx_auto_resolve_prepare_apply_context(ctx, job, manual_request):
             _ctx_mark_manual_queued_resolve_error(ctx, scene, "Blocked by animation playback lock.")
         else:
             deps.request_auto_resolve(scene, immediate=False, mark_dirty=False)
-        _ctx_clear_apply_retry_state(ctx, job)
         return True, None, None, None
 
     if manual_request:
@@ -914,14 +804,14 @@ def _ctx_auto_resolve_apply_downloaded_tiles(ctx, scene, scene_id, job, manual_r
                 str(op_result),
                 len(job_target_tiles),
             )
-            return _ctx_handle_apply_failure(
-                ctx,
-                scene,
-                scene_id,
-                job,
-                manual_request,
-                apply_error,
-            )
+            if manual_request:
+                _ctx_mark_manual_queued_resolve_error(ctx, scene, apply_error)
+            else:
+                if _is_non_retryable_resolve_error(apply_error):
+                    _ctx_mark_auto_resolve_terminal_failure(ctx, scene, scene_id, job, apply_error)
+                else:
+                    deps.request_auto_resolve(scene, immediate=False, mark_dirty=False)
+            return False
     except deps.recoverable_exceptions as exc:
         deps.resolve_trace(
             f"Shader update failed with recoverable exception (request_id={deps.job_field(job, 'request_id')})"
@@ -937,14 +827,14 @@ def _ctx_auto_resolve_apply_downloaded_tiles(ctx, scene, scene_id, job, manual_r
         )
         scene_error = _ctx_read_scene_last_resolve_error(ctx, scene)
         apply_error = scene_error or f"Apply failed with recoverable exception: {str(exc_text or 'unknown')}."
-        return _ctx_handle_apply_failure(
-            ctx,
-            scene,
-            scene_id,
-            job,
-            manual_request,
-            apply_error,
-        )
+        if manual_request:
+            _ctx_mark_manual_queued_resolve_error(ctx, scene, apply_error)
+        else:
+            if _is_non_retryable_resolve_error(apply_error):
+                _ctx_mark_auto_resolve_terminal_failure(ctx, scene, scene_id, job, apply_error)
+            else:
+                deps.request_auto_resolve(scene, immediate=False, mark_dirty=False)
+        return False
     except (RuntimeError, TypeError, ValueError, AttributeError, OSError) as exc:
         deps.resolve_trace(
             f"Shader update failed with unexpected exception (request_id={deps.job_field(job, 'request_id')})"
@@ -960,17 +850,16 @@ def _ctx_auto_resolve_apply_downloaded_tiles(ctx, scene, scene_id, job, manual_r
         )
         scene_error = _ctx_read_scene_last_resolve_error(ctx, scene)
         apply_error = scene_error or f"Apply failed with unexpected exception: {str(exc_text or 'unknown')}."
-        return _ctx_handle_apply_failure(
-            ctx,
-            scene,
-            scene_id,
-            job,
-            manual_request,
-            apply_error,
-        )
+        if manual_request:
+            _ctx_mark_manual_queued_resolve_error(ctx, scene, apply_error)
+        else:
+            if _is_non_retryable_resolve_error(apply_error):
+                _ctx_mark_auto_resolve_terminal_failure(ctx, scene, scene_id, job, apply_error)
+            else:
+                deps.request_auto_resolve(scene, immediate=False, mark_dirty=False)
+        return False
     finally:
         state.in_flight = False
-    _ctx_clear_apply_retry_state(ctx, job)
     return True
 
 
@@ -1026,7 +915,6 @@ def _auto_resolve_summary_total_bytes(job_target_tiles, job, result):
 
 def _ctx_finalize_auto_resolve_apply(ctx, scene, scene_id, job, manual_request, job_target_tiles, resolved_at, summary_total_bytes):
     deps = ctx.deps
-    _ctx_clear_apply_retry_state(ctx, job)
     try:
         created_at = float(deps.job_field(job, "created_at", resolved_at) or resolved_at)
     except (TypeError, ValueError):
@@ -1110,8 +998,6 @@ def _ctx_handle_auto_resolve_download_complete(ctx, result):
         return True
 
     if not _ctx_auto_resolve_apply_downloaded_tiles(ctx, scene, scene_id, job, manual_request, job_target_tiles):
-        if bool(deps.job_field(job, "apply_retry_keep_completed", False)):
-            return False
         return True
 
     resolved_at = time.monotonic()

@@ -50,10 +50,6 @@ class AutoResolveDownloadJob:
     created_at: float = field(default_factory=time.monotonic)
     scene_missing_since: float = 0.0
     scene_missing_attempts: int = 0
-    apply_retry_attempts: int = 0
-    apply_retry_next_try: float = 0.0
-    apply_retry_keep_completed: bool = False
-    apply_retry_last_error: str = ""
 
 
 def _is_auto_resolve_download_job(job):
