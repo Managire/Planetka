@@ -132,20 +132,6 @@ def _require_full_animation_access(operator, prefs=None):
     return False
 
 
-def _cancel_if_animation_render_active(operator, action_label):
-    try:
-        if callable(_is_render_job_active) and bool(_is_render_job_active()):
-            label = str(action_label or "This action").strip() or "This action"
-            operator.report(
-                {'WARNING'},
-                f"{label} is unavailable while Final Animation Render is running.",
-            )
-            return True
-    except (AttributeError, RuntimeError, TypeError, ValueError):
-        pass
-    return False
-
-
 def _canonical_tiles(tiles):
     if not isinstance(tiles, (list, tuple)):
         return tuple()
@@ -2421,8 +2407,6 @@ class PLANETKA_OT_AnimationSaveView(bpy.types.Operator):
     )
 
     def execute(self, context):
-        if _cancel_if_animation_render_active(self, "Save View"):
-            return {'CANCELLED'}
         scene = require_scene(self, context, logger=logger)
         if scene is None:
             return {'CANCELLED'}
@@ -2482,8 +2466,6 @@ class PLANETKA_OT_AnimationWaypointAdd(bpy.types.Operator):
     bl_description = "Add a new waypoint based on current Navigation/camera state"
 
     def execute(self, context):
-        if _cancel_if_animation_render_active(self, "Waypoint add"):
-            return {'CANCELLED'}
         scene = require_scene(self, context, logger=logger)
         if scene is None:
             return {'CANCELLED'}
@@ -2514,8 +2496,6 @@ class PLANETKA_OT_AnimationWaypointRemove(bpy.types.Operator):
     index: IntProperty(default=-1, options={'HIDDEN', 'SKIP_SAVE'})
 
     def execute(self, context):
-        if _cancel_if_animation_render_active(self, "Waypoint remove"):
-            return {'CANCELLED'}
         scene = require_scene(self, context, logger=logger)
         if scene is None:
             return {'CANCELLED'}
@@ -2546,8 +2526,6 @@ class PLANETKA_OT_AnimationWaypointCaptureCurrent(bpy.types.Operator):
     index: IntProperty(default=-1, options={'HIDDEN', 'SKIP_SAVE'})
 
     def execute(self, context):
-        if _cancel_if_animation_render_active(self, "Waypoint capture"):
-            return {'CANCELLED'}
         scene = require_scene(self, context, logger=logger)
         if scene is None:
             return {'CANCELLED'}
@@ -2587,8 +2565,6 @@ class PLANETKA_OT_AnimationWaypointApply(bpy.types.Operator):
     index: IntProperty(default=-1, options={'HIDDEN', 'SKIP_SAVE'})
 
     def execute(self, context):
-        if _cancel_if_animation_render_active(self, "Go To Waypoint"):
-            return {'CANCELLED'}
         scene = require_scene(self, context, logger=logger)
         if scene is None:
             return {'CANCELLED'}
@@ -2796,8 +2772,6 @@ class PLANETKA_OT_AnimationPreviewShot(bpy.types.Operator):
         return {'FINISHED'}
 
     def execute(self, context):
-        if _cancel_if_animation_render_active(self, "Quick Preview playback"):
-            return {'CANCELLED'}
         if _is_animation_playing():
             try:
                 bpy.ops.screen.animation_play()
@@ -2902,8 +2876,6 @@ class PLANETKA_OT_AnimationClearPrepared(bpy.types.Operator):
     bl_description = "Remove prepared segment assets and restore the normal Earth rendering workflow"
 
     def execute(self, context):
-        if _cancel_if_animation_render_active(self, "Clear Quick Preview"):
-            return {'CANCELLED'}
         scene = require_scene(self, context, logger=logger)
         if scene is None:
             return {'CANCELLED'}
@@ -3322,8 +3294,6 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         _enforce_cycles_simple_subdivision_on_object(scene, earth)
 
     def execute(self, context):
-        if _cancel_if_animation_render_active(self, "Render Animation"):
-            return {'CANCELLED'}
         scene = require_scene(self, context, logger=logger)
         if scene is None:
             return {'CANCELLED'}
@@ -3652,8 +3622,6 @@ class PLANETKA_OT_AnimationMakeReady(bpy.types.Operator):
     )
 
     def execute(self, context):
-        if _cancel_if_animation_render_active(self, "Build Quick Preview"):
-            return {'CANCELLED'}
         scene = require_scene(self, context, logger=logger)
         if scene is None:
             return {'CANCELLED'}

@@ -37,7 +37,6 @@ from .state import (
     ACCOUNT_PANEL_DEFAULT_COLLAPSED_KEY,
     ADD_EARTH_BUTTON_SCALE_X,
     ADD_EARTH_BUTTON_SCALE_Y,
-    _is_render_job_active,
     get_camera_inside_earth_warning,
     get_resolve_size_estimates,
     get_resolve_runtime_status,
@@ -174,15 +173,12 @@ def _status_icon(code):
 
 def _is_animation_render_running():
     try:
-        if callable(_is_render_job_active):
-            return bool(_is_render_job_active())
+        is_job_running = getattr(getattr(bpy, "app", None), "is_job_running", None)
+        if callable(is_job_running):
+            return bool(is_job_running("RENDER"))
     except (AttributeError, RuntimeError, TypeError, ValueError):
-        pass
+        return False
     return False
-
-
-def _planetka_controls_enabled(base_enabled=True):
-    return bool(base_enabled) and (not _is_animation_render_running())
 
 
 def _resolve_runtime_display(scene):
@@ -1322,10 +1318,7 @@ class PLANETKA_PT_AccountPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         return (not _is_update_available()) and (not _account_panel_should_default_collapsed(context))
 
     def draw(self, context):
-        _ = context
-        layout = self.layout
-        layout.enabled = _planetka_controls_enabled()
-        _draw_account_panel(layout)
+        _draw_account_panel(self.layout)
 
 
 class PLANETKA_PT_AccountPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
@@ -1338,10 +1331,7 @@ class PLANETKA_PT_AccountPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Pane
         return _account_panel_should_default_collapsed(context)
 
     def draw(self, context):
-        _ = context
-        layout = self.layout
-        layout.enabled = _planetka_controls_enabled()
-        _draw_account_panel(layout)
+        _draw_account_panel(self.layout)
 
 
 class PLANETKA_PT_AccountPanelUpdate(_PLANETKA_PT_BaseSection, bpy.types.Panel):
@@ -1355,10 +1345,7 @@ class PLANETKA_PT_AccountPanelUpdate(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         return _is_update_available() and (not _account_panel_should_default_collapsed(context))
 
     def draw(self, context):
-        _ = context
-        layout = self.layout
-        layout.enabled = _planetka_controls_enabled()
-        _draw_account_panel(layout)
+        _draw_account_panel(self.layout)
 
 
 class PLANETKA_PT_NewEarthPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
@@ -1373,7 +1360,7 @@ class PLANETKA_PT_NewEarthPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        layout.enabled = _planetka_controls_enabled(_is_connected())
+        layout.enabled = _is_connected()
         _draw_new_earth(layout)
 
 
@@ -1390,7 +1377,7 @@ class PLANETKA_PT_NewEarthPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Pan
 
     def draw(self, context):
         layout = self.layout
-        layout.enabled = _planetka_controls_enabled(_is_connected())
+        layout.enabled = _is_connected()
         _draw_new_earth(layout)
 
 
@@ -1407,7 +1394,7 @@ class PLANETKA_PT_NewEarthPanelFailure(_PLANETKA_PT_BaseSection, bpy.types.Panel
 
     def draw(self, context):
         layout = self.layout
-        layout.enabled = _planetka_controls_enabled(_is_connected())
+        layout.enabled = _is_connected()
         _draw_new_earth(layout)
 
 
@@ -1422,7 +1409,6 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        layout.enabled = _planetka_controls_enabled(True)
         layout.use_property_split = True
         layout.use_property_decorate = False
 
@@ -1502,7 +1488,7 @@ class PLANETKA_PT_LiveTelemetryPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         return _has_earth() and (not bool(_resolve_failure_message_for_ui(scene)))
 
     def draw(self, context):
-        self.layout.enabled = _planetka_controls_enabled(_is_earth_workflow_enabled())
+        self.layout.enabled = _is_earth_workflow_enabled()
         scene = getattr(context, "scene", None)
         _draw_live_telemetry(self.layout, scene)
 
@@ -1520,7 +1506,7 @@ class PLANETKA_PT_LiveTelemetryPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.type
 
     def draw(self, context):
         # Pre-Earth state: keep panel available but collapsed by default.
-        self.layout.enabled = _planetka_controls_enabled(_is_connected())
+        self.layout.enabled = _is_connected()
         scene = getattr(context, "scene", None)
         _draw_live_telemetry(self.layout, scene)
 
@@ -1537,7 +1523,7 @@ class PLANETKA_PT_LiveTelemetryPanelFailure(_PLANETKA_PT_BaseSection, bpy.types.
         return _has_earth() and bool(_resolve_failure_message_for_ui(scene))
 
     def draw(self, context):
-        self.layout.enabled = _planetka_controls_enabled(_is_earth_workflow_enabled())
+        self.layout.enabled = _is_earth_workflow_enabled()
         scene = getattr(context, "scene", None)
         _draw_live_telemetry(self.layout, scene)
 
@@ -1556,7 +1542,6 @@ class PLANETKA_PT_LinksPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
     def draw(self, context):
         _ = context
         layout = self.layout
-        layout.enabled = _planetka_controls_enabled(True)
         layout.use_property_split = True
         layout.use_property_decorate = False
 
@@ -1585,7 +1570,6 @@ class PLANETKA_PT_LinksPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel)
     def draw(self, context):
         _ = context
         layout = self.layout
-        layout.enabled = _planetka_controls_enabled(True)
         layout.use_property_split = True
         layout.use_property_decorate = False
 
@@ -1612,7 +1596,7 @@ class PLANETKA_PT_NavigationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        layout.enabled = _planetka_controls_enabled(_is_earth_workflow_enabled())
+        layout.enabled = _is_earth_workflow_enabled()
         _draw_navigation(layout, context)
 
 
@@ -1662,7 +1646,7 @@ class PLANETKA_PT_EarthSettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
     def draw(self, context):
         scene = getattr(context, "scene", None)
-        _draw_earth_settings(self.layout, scene, enabled=_planetka_controls_enabled(True))
+        _draw_earth_settings(self.layout, scene, enabled=True)
 
 
 class PLANETKA_PT_EarthSettingsPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
@@ -1676,7 +1660,7 @@ class PLANETKA_PT_EarthSettingsPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.type
 
     def draw(self, context):
         scene = getattr(context, "scene", None)
-        _draw_earth_settings(self.layout, scene, enabled=_planetka_controls_enabled(False))
+        _draw_earth_settings(self.layout, scene, enabled=False)
 
 
 class PLANETKA_PT_AtmospherePanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
@@ -1690,7 +1674,7 @@ class PLANETKA_PT_AtmospherePanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        layout.enabled = _planetka_controls_enabled(_is_earth_workflow_enabled())
+        layout.enabled = _is_earth_workflow_enabled()
         _draw_atmosphere(layout, context)
 
 
@@ -1721,7 +1705,7 @@ class PLANETKA_PT_SunlightPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        layout.enabled = _planetka_controls_enabled(_is_earth_workflow_enabled())
+        layout.enabled = _is_earth_workflow_enabled()
         layout.use_property_split = True
         layout.use_property_decorate = False
 
@@ -1781,7 +1765,7 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        layout.enabled = _planetka_controls_enabled(_is_earth_workflow_enabled())
+        layout.enabled = _is_earth_workflow_enabled()
         layout.use_property_split = True
         layout.use_property_decorate = False
 
