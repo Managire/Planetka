@@ -22,7 +22,6 @@ from .r2_source import (
 from .state import (
     _apply_sunlight_from_props,
     _apply_sunlight_strength_from_props,
-    _is_render_job_active,
     create_temp_mesh,
     cleanup_planetka_unused_data,
     get_resolve_runtime_status,
@@ -3005,18 +3004,6 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
 
     def _is_render_job_running(self):
         try:
-            if callable(_is_render_job_active) and bool(_is_render_job_active()):
-                return True
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            pass
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            pass
-        # Fallback to Blender's render job signal only before we have observed
-        # a render-active state. Some Blender builds can leave this flag stuck
-        # true after render completion.
-        if bool(self._render_seen_active):
-            return False
-        try:
             is_job_running = getattr(getattr(bpy, "app", None), "is_job_running", None)
             if callable(is_job_running):
                 return bool(is_job_running("RENDER"))
@@ -3066,14 +3053,10 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
     def _wait_or_refresh_finalize_queue(self, scene):
         status = self._read_resolve_runtime_status(scene)
         code = str(status.get("code", "") or "").strip().upper()
-        if not bool(status.get("running", False)):
-            self._resolve_finalize_wait_started = 0.0
-            self._resolve_finalize_refresh_attempts = 0
-            return True, ""
         if code != "FINALIZE_QUEUED":
             self._resolve_finalize_wait_started = 0.0
             self._resolve_finalize_refresh_attempts = 0
-            return False, ""
+            return True, ""
 
         now = float(time.monotonic())
         started = float(self._resolve_finalize_wait_started or 0.0)
