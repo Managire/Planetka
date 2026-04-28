@@ -37,6 +37,7 @@ from .state import (
     ACCOUNT_PANEL_DEFAULT_COLLAPSED_KEY,
     ADD_EARTH_BUTTON_SCALE_X,
     ADD_EARTH_BUTTON_SCALE_Y,
+    _is_render_job_active,
     get_camera_inside_earth_warning,
     get_resolve_size_estimates,
     get_resolve_runtime_status,
@@ -173,12 +174,90 @@ def _status_icon(code):
 
 def _is_animation_render_running():
     try:
-        is_job_running = getattr(getattr(bpy, "app", None), "is_job_running", None)
-        if callable(is_job_running):
-            return bool(is_job_running("RENDER"))
+        if callable(_is_render_job_active):
+            return bool(_is_render_job_active())
     except (AttributeError, RuntimeError, TypeError, ValueError):
-        return False
+        pass
     return False
+
+
+def _planetka_controls_enabled(base_enabled=True):
+    return bool(base_enabled) and (not _is_animation_render_running())
+
+
+def _action_has_keyframes(action):
+    if action is None:
+        return False
+    try:
+        fcurves = getattr(action, "fcurves", None)
+        if fcurves is not None:
+            for fcurve in fcurves:
+                if int(len(getattr(fcurve, "keyframe_points", ()) or ())) > 0:
+                    return True
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        pass
+    try:
+        layers = getattr(action, "layers", None)
+        if layers is not None:
+            for layer in layers:
+                for strip in getattr(layer, "strips", ()) or ():
+                    for channelbag in getattr(strip, "channelbags", ()) or ():
+                        for fcurve in getattr(channelbag, "fcurves", ()) or ():
+                            if int(len(getattr(fcurve, "keyframe_points", ()) or ())) > 0:
+                                return True
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        pass
+    return False
+
+
+def _animation_data_has_nla_tracks(animation_data):
+    if animation_data is None:
+        return False
+    tracks = getattr(animation_data, "nla_tracks", None)
+    if tracks is None:
+        return False
+    try:
+        if int(len(tracks)) > 0:
+            return True
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        pass
+    try:
+        for _track in tracks:
+            return True
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        pass
+    return False
+
+
+def _id_block_has_animation_bindings(id_block):
+    if id_block is None:
+        return False
+    try:
+        animation_data = getattr(id_block, "animation_data", None)
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        animation_data = None
+    if animation_data is None:
+        return False
+    try:
+        if _action_has_keyframes(getattr(animation_data, "action", None)):
+            return True
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        pass
+    return _animation_data_has_nla_tracks(animation_data)
+
+
+def _navigation_has_camera_keyframe_lock(scene):
+    if scene is None:
+        return False, False, False
+    try:
+        camera = getattr(scene, "camera", None)
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        camera = None
+    if camera is None or str(getattr(camera, "type", "")) != "CAMERA":
+        return False, False, False
+    object_locked = _id_block_has_animation_bindings(camera)
+    lens_locked = _id_block_has_animation_bindings(getattr(camera, "data", None))
+    return bool(object_locked or lens_locked), bool(object_locked), bool(lens_locked)
 
 
 def _resolve_runtime_display(scene):
@@ -933,22 +1012,36 @@ def _draw_advanced_telemetry(layout, scene):
     advanced_col.label(text=f"Effective Download Speed: {_fmt_mbps(download_size_mb, download_time_ms)}")
 
 
-def _draw_navigation(layout, context):
+def _draw_navigation(layout, context, controls_enabled=True):
     layout.use_property_split = True
     layout.use_property_decorate = False
 
     scene = getattr(context, "scene", None)
     props = getattr(scene, "planetka", None) if scene else None
     prepared = _is_animation_prepared(scene)
+    base_enabled = bool(controls_enabled)
     if not props:
         layout.label(text="Planetka settings unavailable.", icon="ERROR")
         return
 
+    keyframe_locked, _object_locked, _lens_locked = _navigation_has_camera_keyframe_lock(scene)
+    navigation_unlocked = bool(base_enabled) and (not prepared) and (not keyframe_locked)
+
     if prepared:
         _draw_animation_ready_message(layout)
+    if keyframe_locked:
+        lock_box = layout.box()
+        lock_box.label(text="Camera keyframes are active. Clear Camera Keyframes to unlock.", icon="LOCKED")
+        unlock_row = lock_box.row(align=True)
+        unlock_row.scale_y = 1.05
+        unlock_row.operator(
+            "planetka.animation_clear_camera_keyframes",
+            text="Clear Camera Keyframes",
+            icon="TRASH",
+        )
 
     location_box = layout.box()
-    location_box.enabled = not prepared
+    location_box.enabled = navigation_unlocked
     geonames_status = str(get_search_status_text() or "")
     if geonames_status:
         status_icon = "ERROR" if "not configured" in geonames_status else "INFO"
@@ -973,7 +1066,7 @@ def _draw_navigation(layout, context):
     lon_col.prop(props, "nav_longitude_deg", text="")
 
     shot_box = layout.box()
-    shot_box.enabled = not prepared
+    shot_box.enabled = navigation_unlocked
     shot_box.label(text="Camera Controls", icon="CAMERA_DATA")
     altitude_col = shot_box.column(align=True)
     altitude_col.use_property_split = False
@@ -1003,7 +1096,7 @@ def _draw_navigation(layout, context):
     shot_box.prop(props, "nav_focal_length_mm", text="Focal Length (mm)")
 
     preset_box = layout.box()
-    preset_box.enabled = not prepared
+    preset_box.enabled = navigation_unlocked
     preset_box.label(text="Altitude Presets", icon="ORIENTATION_GLOBAL")
     preset_row_top = preset_box.row(align=True)
     preset_row_top.operator(
@@ -1318,7 +1411,10 @@ class PLANETKA_PT_AccountPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         return (not _is_update_available()) and (not _account_panel_should_default_collapsed(context))
 
     def draw(self, context):
-        _draw_account_panel(self.layout)
+        _ = context
+        layout = self.layout
+        layout.enabled = _planetka_controls_enabled()
+        _draw_account_panel(layout)
 
 
 class PLANETKA_PT_AccountPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
@@ -1331,7 +1427,10 @@ class PLANETKA_PT_AccountPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Pane
         return _account_panel_should_default_collapsed(context)
 
     def draw(self, context):
-        _draw_account_panel(self.layout)
+        _ = context
+        layout = self.layout
+        layout.enabled = _planetka_controls_enabled()
+        _draw_account_panel(layout)
 
 
 class PLANETKA_PT_AccountPanelUpdate(_PLANETKA_PT_BaseSection, bpy.types.Panel):
@@ -1345,7 +1444,10 @@ class PLANETKA_PT_AccountPanelUpdate(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         return _is_update_available() and (not _account_panel_should_default_collapsed(context))
 
     def draw(self, context):
-        _draw_account_panel(self.layout)
+        _ = context
+        layout = self.layout
+        layout.enabled = _planetka_controls_enabled()
+        _draw_account_panel(layout)
 
 
 class PLANETKA_PT_NewEarthPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
@@ -1360,7 +1462,7 @@ class PLANETKA_PT_NewEarthPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        layout.enabled = _is_connected()
+        layout.enabled = _planetka_controls_enabled(_is_connected())
         _draw_new_earth(layout)
 
 
@@ -1377,7 +1479,7 @@ class PLANETKA_PT_NewEarthPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Pan
 
     def draw(self, context):
         layout = self.layout
-        layout.enabled = _is_connected()
+        layout.enabled = _planetka_controls_enabled(_is_connected())
         _draw_new_earth(layout)
 
 
@@ -1394,7 +1496,7 @@ class PLANETKA_PT_NewEarthPanelFailure(_PLANETKA_PT_BaseSection, bpy.types.Panel
 
     def draw(self, context):
         layout = self.layout
-        layout.enabled = _is_connected()
+        layout.enabled = _planetka_controls_enabled(_is_connected())
         _draw_new_earth(layout)
 
 
@@ -1409,6 +1511,7 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
+        layout.enabled = _planetka_controls_enabled(True)
         layout.use_property_split = True
         layout.use_property_decorate = False
 
@@ -1488,7 +1591,7 @@ class PLANETKA_PT_LiveTelemetryPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         return _has_earth() and (not bool(_resolve_failure_message_for_ui(scene)))
 
     def draw(self, context):
-        self.layout.enabled = _is_earth_workflow_enabled()
+        self.layout.enabled = _planetka_controls_enabled(_is_earth_workflow_enabled())
         scene = getattr(context, "scene", None)
         _draw_live_telemetry(self.layout, scene)
 
@@ -1506,7 +1609,7 @@ class PLANETKA_PT_LiveTelemetryPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.type
 
     def draw(self, context):
         # Pre-Earth state: keep panel available but collapsed by default.
-        self.layout.enabled = _is_connected()
+        self.layout.enabled = _planetka_controls_enabled(_is_connected())
         scene = getattr(context, "scene", None)
         _draw_live_telemetry(self.layout, scene)
 
@@ -1523,7 +1626,7 @@ class PLANETKA_PT_LiveTelemetryPanelFailure(_PLANETKA_PT_BaseSection, bpy.types.
         return _has_earth() and bool(_resolve_failure_message_for_ui(scene))
 
     def draw(self, context):
-        self.layout.enabled = _is_earth_workflow_enabled()
+        self.layout.enabled = _planetka_controls_enabled(_is_earth_workflow_enabled())
         scene = getattr(context, "scene", None)
         _draw_live_telemetry(self.layout, scene)
 
@@ -1542,6 +1645,7 @@ class PLANETKA_PT_LinksPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
     def draw(self, context):
         _ = context
         layout = self.layout
+        layout.enabled = _planetka_controls_enabled(True)
         layout.use_property_split = True
         layout.use_property_decorate = False
 
@@ -1570,6 +1674,7 @@ class PLANETKA_PT_LinksPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel)
     def draw(self, context):
         _ = context
         layout = self.layout
+        layout.enabled = _planetka_controls_enabled(True)
         layout.use_property_split = True
         layout.use_property_decorate = False
 
@@ -1596,8 +1701,9 @@ class PLANETKA_PT_NavigationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        layout.enabled = _is_earth_workflow_enabled()
-        _draw_navigation(layout, context)
+        controls_enabled = _planetka_controls_enabled(_is_earth_workflow_enabled())
+        layout.enabled = True
+        _draw_navigation(layout, context, controls_enabled=controls_enabled)
 
 
 class PLANETKA_PT_NavigationPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
@@ -1611,8 +1717,8 @@ class PLANETKA_PT_NavigationPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.P
 
     def draw(self, context):
         layout = self.layout
-        layout.enabled = False
-        _draw_navigation(layout, context)
+        layout.enabled = True
+        _draw_navigation(layout, context, controls_enabled=False)
 
 
 def _draw_earth_settings(layout, scene, enabled):
@@ -1646,7 +1752,7 @@ class PLANETKA_PT_EarthSettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
     def draw(self, context):
         scene = getattr(context, "scene", None)
-        _draw_earth_settings(self.layout, scene, enabled=True)
+        _draw_earth_settings(self.layout, scene, enabled=_planetka_controls_enabled(True))
 
 
 class PLANETKA_PT_EarthSettingsPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
@@ -1660,7 +1766,7 @@ class PLANETKA_PT_EarthSettingsPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.type
 
     def draw(self, context):
         scene = getattr(context, "scene", None)
-        _draw_earth_settings(self.layout, scene, enabled=False)
+        _draw_earth_settings(self.layout, scene, enabled=_planetka_controls_enabled(False))
 
 
 class PLANETKA_PT_AtmospherePanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
@@ -1674,7 +1780,7 @@ class PLANETKA_PT_AtmospherePanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        layout.enabled = _is_earth_workflow_enabled()
+        layout.enabled = _planetka_controls_enabled(_is_earth_workflow_enabled())
         _draw_atmosphere(layout, context)
 
 
@@ -1705,7 +1811,7 @@ class PLANETKA_PT_SunlightPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        layout.enabled = _is_earth_workflow_enabled()
+        layout.enabled = _planetka_controls_enabled(_is_earth_workflow_enabled())
         layout.use_property_split = True
         layout.use_property_decorate = False
 
@@ -1765,7 +1871,7 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        layout.enabled = _is_earth_workflow_enabled()
+        layout.enabled = _planetka_controls_enabled(_is_earth_workflow_enabled())
         layout.use_property_split = True
         layout.use_property_decorate = False
 
@@ -1822,6 +1928,27 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
                     meta_row_b = cinematic_box.row()
                     meta_row_b.scale_y = 0.82
                     meta_row_b.label(text=f"View B last captured: {meta_b}", icon="TIME")
+
+        if preset != "NONE":
+            frame_row = cinematic_box.row(align=True)
+            frame_row.prop(props, "anim_frame_start", text="Frames")
+            frame_row.prop(props, "anim_frame_end", text="End")
+
+            generate_row = cinematic_box.row(align=True)
+            generate_row.scale_y = 1.05
+            generate_row.operator(
+                "planetka.animation_generate_camera_keyframes",
+                text="Generate Camera Keyframes",
+                icon="KEY_HLT",
+            )
+
+        clear_keys_row = cinematic_box.row(align=True)
+        clear_keys_row.scale_y = 1.05
+        clear_keys_row.operator(
+            "planetka.animation_clear_camera_keyframes",
+            text="Clear Camera Keyframes",
+            icon="TRASH",
+        )
 
         prepared = _is_animation_prepared(scene)
         quick_preview_box = layout.box()

@@ -22,6 +22,7 @@ from .r2_source import (
 from .state import (
     _apply_sunlight_from_props,
     _apply_sunlight_strength_from_props,
+    _is_render_job_active,
     create_temp_mesh,
     cleanup_planetka_unused_data,
     get_resolve_runtime_status,
@@ -33,6 +34,7 @@ from .state import (
     stop_auto_resolve_download_pipeline,
     suspend_navigation_camera_control_sync,
     suspend_navigation_shot_updates,
+    set_final_animation_render_active,
     update_navigation_shot,
 )
 from . import shader_utils
@@ -128,6 +130,20 @@ def _require_full_animation_access(operator, prefs=None):
         return True
     if operator is not None:
         operator.report({'ERROR'}, "Final Animation Rendering requires Full Quality texture access.")
+    return False
+
+
+def _cancel_if_animation_render_active(operator, action_label):
+    try:
+        if callable(_is_render_job_active) and bool(_is_render_job_active()):
+            label = str(action_label or "This action").strip() or "This action"
+            operator.report(
+                {'WARNING'},
+                f"{label} is unavailable while Final Animation Render is running.",
+            )
+            return True
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        pass
     return False
 
 
@@ -1409,6 +1425,20 @@ def _active_timeline_frame_range(scene):
     return start, end
 
 
+def _cinematic_frame_range_from_props(scene, props):
+    timeline_start, timeline_end = _active_timeline_frame_range(scene)
+    if props is None:
+        return int(timeline_start), int(timeline_end)
+    try:
+        start = int(getattr(props, "anim_frame_start", timeline_start))
+        end = int(getattr(props, "anim_frame_end", timeline_end))
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        start, end = int(timeline_start), int(timeline_end)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        start, end = int(timeline_start), int(timeline_end)
+    return int(start), int(end)
+
+
 def _apply_camera_motion_curve(scene, motion_curve):
     camera = getattr(scene, "camera", None)
     anim = getattr(camera, "animation_data", None) if camera else None
@@ -1892,14 +1922,14 @@ def apply_cinematic_preview(scene, props):
 
     suspend_navigation_camera_control_sync()
     try:
-        start_frame, end_frame = _active_timeline_frame_range(scene)
+        start_frame, end_frame = _cinematic_frame_range_from_props(scene, props)
         if end_frame <= start_frame:
             raise RuntimeError("End frame must be greater than start frame.")
         motion_curve = str(getattr(props, "anim_motion_curve", "EASE_IN_OUT")).upper()
         preset = _normalize_cinematic_preset(getattr(props, "anim_camera_preset", "NONE"))
         if preset in {"", "NONE"}:
             # Support custom user camera rigs/animation with no Planetka preset selected.
-            # In this mode, keep user keyframes untouched and use timeline range as-is.
+            # In this mode, keep user keyframes untouched and use preset frame range as-is.
             return start_frame, end_frame
 
         # Always use current Navigation controls as the preset reference.
@@ -2391,6 +2421,122 @@ def _ensure_saved_blend_before_animation_render(operator, prompt_if_unsaved=Fals
     return True
 
 
+def _count_action_keyframes(action):
+    if action is None:
+        return 0
+    count = 0
+    fcurves = getattr(action, "fcurves", None)
+    if fcurves is not None:
+        for fcurve in fcurves:
+            try:
+                count += int(len(getattr(fcurve, "keyframe_points", ()) or ()))
+            except (TypeError, ValueError, AttributeError):
+                continue
+    layers = getattr(action, "layers", None)
+    if layers is not None:
+        for layer in layers:
+            for strip in getattr(layer, "strips", ()) or ():
+                for channelbag in getattr(strip, "channelbags", ()) or ():
+                    for fcurve in getattr(channelbag, "fcurves", ()) or ():
+                        try:
+                            count += int(len(getattr(fcurve, "keyframe_points", ()) or ()))
+                        except (TypeError, ValueError, AttributeError):
+                            continue
+    return int(max(0, count))
+
+
+def _unlink_animation_bindings(id_block):
+    if id_block is None:
+        return 0, 0, 0
+    animation_data = getattr(id_block, "animation_data", None)
+    if animation_data is None:
+        return 0, 0, 0
+
+    actions_unlinked = 0
+    keyframes_found = 0
+    tracks_removed = 0
+
+    action = getattr(animation_data, "action", None)
+    if action is not None:
+        keyframes_found = _count_action_keyframes(action)
+        try:
+            animation_data.action = None
+            actions_unlinked = 1
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka animation: failed unlinking action from datablock", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka animation: failed unlinking action from datablock", exc_info=True)
+
+    nla_tracks = getattr(animation_data, "nla_tracks", None)
+    if nla_tracks is not None:
+        for track in tuple(nla_tracks):
+            try:
+                nla_tracks.remove(track)
+                tracks_removed += 1
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka animation: failed removing NLA track while clearing camera animation", exc_info=True)
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka animation: failed removing NLA track while clearing camera animation", exc_info=True)
+
+    return int(actions_unlinked), int(keyframes_found), int(tracks_removed)
+
+
+class PLANETKA_OT_AnimationClearCameraKeyframes(bpy.types.Operator):
+    bl_idname = "planetka.animation_clear_camera_keyframes"
+    bl_label = "Clear Camera Keyframes"
+    bl_description = "Unlink camera animation (action and NLA) so Navigation controls can move camera freely"
+
+    def execute(self, context):
+        scene = require_scene(self, context, logger=logger)
+        if scene is None:
+            return {'CANCELLED'}
+        camera = getattr(scene, "camera", None)
+        if camera is None or getattr(camera, "type", None) != 'CAMERA':
+            return fail(
+                self,
+                "Set an active camera and retry.",
+                code=ErrorCode.NAV_PRECHECK_FAILED,
+                logger=logger,
+            )
+
+        actions_unlinked = 0
+        keyframes_found = 0
+        tracks_removed = 0
+
+        unlinked, found, removed = _unlink_animation_bindings(camera)
+        actions_unlinked += int(unlinked)
+        keyframes_found += int(found)
+        tracks_removed += int(removed)
+
+        camera_data = getattr(camera, "data", None)
+        unlinked, found, removed = _unlink_animation_bindings(camera_data)
+        actions_unlinked += int(unlinked)
+        keyframes_found += int(found)
+        tracks_removed += int(removed)
+
+        if actions_unlinked <= 0 and tracks_removed <= 0:
+            self.report({'INFO'}, "No camera animation bindings were found.")
+            return {'CANCELLED'}
+
+        try:
+            mark_navigation_camera_control_signature(scene)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka animation: failed updating camera-control signature after clearing keyframes", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka animation: failed updating camera-control signature after clearing keyframes", exc_info=True)
+
+        self.report(
+            {'INFO'},
+            (
+                "Camera animation cleared: "
+                f"{int(actions_unlinked)} action link(s), "
+                f"{int(tracks_removed)} NLA track(s), "
+                f"{int(keyframes_found)} keyframe(s) unlinked."
+            ),
+        )
+        return {'FINISHED'}
+
+
 class PLANETKA_OT_AnimationSaveView(bpy.types.Operator):
     bl_idname = "planetka.animation_save_view"
     bl_label = "Save Animation View"
@@ -2406,6 +2552,8 @@ class PLANETKA_OT_AnimationSaveView(bpy.types.Operator):
     )
 
     def execute(self, context):
+        if _cancel_if_animation_render_active(self, "Save View"):
+            return {'CANCELLED'}
         scene = require_scene(self, context, logger=logger)
         if scene is None:
             return {'CANCELLED'}
@@ -2440,22 +2588,65 @@ class PLANETKA_OT_AnimationSaveView(bpy.types.Operator):
             props.anim_ab_b_capture_frame = current_frame
             props.anim_ab_b_capture_timecode = current_timecode
 
+        self.report({'INFO'}, f"Saved camera view {slot}.")
         preset = str(getattr(props, "anim_camera_preset", "NONE") or "NONE").strip().upper()
         if preset == "A_TO_B":
             has_a = bool(getattr(props, "anim_ab_a_valid", False))
             has_b = bool(getattr(props, "anim_ab_b_valid", False))
-            if has_a and has_b:
-                try:
-                    apply_cinematic_preview(scene, props)
-                    self.report({'INFO'}, f"Saved camera view {slot}. A-to-B keyframes rebuilt.")
-                except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
-                    self.report({'WARNING'}, f"Saved camera view {slot}. A-to-B rebuild failed: {exc}")
-                except (RuntimeError, TypeError, ValueError) as exc:
-                    self.report({'WARNING'}, f"Saved camera view {slot}. A-to-B rebuild failed: {exc}")
+            if not (has_a and has_b):
+                self.report({'INFO'}, "Set the other view, then click Generate Camera Keyframes.")
             else:
-                self.report({'INFO'}, f"Saved camera view {slot}. Set the other view to build A-to-B keyframes.")
-        else:
-            self.report({'INFO'}, f"Saved camera view {slot}.")
+                self.report({'INFO'}, "Click Generate Camera Keyframes to rebuild A-to-B animation.")
+        return {'FINISHED'}
+
+
+class PLANETKA_OT_AnimationGenerateCameraKeyframes(bpy.types.Operator):
+    bl_idname = "planetka.animation_generate_camera_keyframes"
+    bl_label = "Generate Camera Keyframes"
+    bl_description = "Generate cinematic camera keyframes in timeline from current preset settings"
+
+    def execute(self, context):
+        if _cancel_if_animation_render_active(self, "Generate Camera Keyframes"):
+            return {'CANCELLED'}
+        scene = require_scene(self, context, logger=logger)
+        if scene is None:
+            return {'CANCELLED'}
+        props = require_planetka_props(self, context, logger=logger)
+        if props is None:
+            return {'CANCELLED'}
+
+        preset = _normalize_cinematic_preset(getattr(props, "anim_camera_preset", "NONE"))
+        if preset in {"", "NONE"}:
+            return fail(
+                self,
+                "Select a cinematic preset first.",
+                code=ErrorCode.NAV_PRECHECK_FAILED,
+                logger=logger,
+            )
+
+        try:
+            start_frame, end_frame = apply_cinematic_preview(scene, props)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
+            return fail(
+                self,
+                f"Failed to generate camera keyframes: {exc}",
+                code=ErrorCode.NAV_APPLY_FAILED,
+                logger=logger,
+                exc=exc,
+                log_message="Planetka animation keyframe generation failed",
+            )
+        except (RuntimeError, TypeError, ValueError) as exc:
+            return fail(
+                self,
+                f"Failed to generate camera keyframes: {exc}",
+                code=ErrorCode.NAV_APPLY_FAILED,
+                logger=logger,
+            )
+
+        self.report(
+            {'INFO'},
+            f"Camera keyframes generated for frames {int(start_frame)}-{int(end_frame)}.",
+        )
         return {'FINISHED'}
 
 
@@ -2465,6 +2656,8 @@ class PLANETKA_OT_AnimationWaypointAdd(bpy.types.Operator):
     bl_description = "Add a new waypoint based on current Navigation/camera state"
 
     def execute(self, context):
+        if _cancel_if_animation_render_active(self, "Waypoint add"):
+            return {'CANCELLED'}
         scene = require_scene(self, context, logger=logger)
         if scene is None:
             return {'CANCELLED'}
@@ -2495,6 +2688,8 @@ class PLANETKA_OT_AnimationWaypointRemove(bpy.types.Operator):
     index: IntProperty(default=-1, options={'HIDDEN', 'SKIP_SAVE'})
 
     def execute(self, context):
+        if _cancel_if_animation_render_active(self, "Waypoint remove"):
+            return {'CANCELLED'}
         scene = require_scene(self, context, logger=logger)
         if scene is None:
             return {'CANCELLED'}
@@ -2525,6 +2720,8 @@ class PLANETKA_OT_AnimationWaypointCaptureCurrent(bpy.types.Operator):
     index: IntProperty(default=-1, options={'HIDDEN', 'SKIP_SAVE'})
 
     def execute(self, context):
+        if _cancel_if_animation_render_active(self, "Waypoint capture"):
+            return {'CANCELLED'}
         scene = require_scene(self, context, logger=logger)
         if scene is None:
             return {'CANCELLED'}
@@ -2564,6 +2761,8 @@ class PLANETKA_OT_AnimationWaypointApply(bpy.types.Operator):
     index: IntProperty(default=-1, options={'HIDDEN', 'SKIP_SAVE'})
 
     def execute(self, context):
+        if _cancel_if_animation_render_active(self, "Go To Waypoint"):
+            return {'CANCELLED'}
         scene = require_scene(self, context, logger=logger)
         if scene is None:
             return {'CANCELLED'}
@@ -2771,6 +2970,8 @@ class PLANETKA_OT_AnimationPreviewShot(bpy.types.Operator):
         return {'FINISHED'}
 
     def execute(self, context):
+        if _cancel_if_animation_render_active(self, "Quick Preview playback"):
+            return {'CANCELLED'}
         if _is_animation_playing():
             try:
                 bpy.ops.screen.animation_play()
@@ -2803,22 +3004,12 @@ class PLANETKA_OT_AnimationPreviewShot(bpy.types.Operator):
         prefs = get_prefs()
         if not _require_commercial_animation_render_access(self, prefs):
             return {'CANCELLED'}
-        try:
-            start_frame, end_frame = apply_cinematic_preview(scene, props)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
+        start_frame, end_frame = _cinematic_frame_range_from_props(scene, props)
+        if int(end_frame) < int(start_frame):
             return fail(
                 self,
-                f"Preview animation failed: {exc}",
-                code=ErrorCode.NAV_APPLY_FAILED,
-                logger=logger,
-                exc=exc,
-                log_message="Planetka animation preview setup failed",
-            )
-        except (RuntimeError, TypeError, ValueError) as exc:
-            return fail(
-                self,
-                f"Preview animation failed: {exc}",
-                code=ErrorCode.NAV_APPLY_FAILED,
+                f"Invalid frame range: {int(start_frame)}-{int(end_frame)}.",
+                code=ErrorCode.NAV_PRECHECK_FAILED,
                 logger=logger,
             )
 
@@ -2875,6 +3066,8 @@ class PLANETKA_OT_AnimationClearPrepared(bpy.types.Operator):
     bl_description = "Remove prepared segment assets and restore the normal Earth rendering workflow"
 
     def execute(self, context):
+        if _cancel_if_animation_render_active(self, "Clear Quick Preview"):
+            return {'CANCELLED'}
         scene = require_scene(self, context, logger=logger)
         if scene is None:
             return {'CANCELLED'}
@@ -2939,6 +3132,13 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         self._timer = None
 
     def _restore_runtime_state(self):
+        try:
+            set_final_animation_render_active(False)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka animation: failed clearing final-render UI lock", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka animation: failed clearing final-render UI lock", exc_info=True)
+
         scene = self._scene
         props = self._props
         if props is not None:
@@ -3106,6 +3306,9 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             return
         segments = list(self._segments or ())
         if int(segment_index) < 0 or int(segment_index) >= len(segments):
+            return
+        # Keep final-segment textures on disk so the finished scene remains renderable/viewable.
+        if int(segment_index) >= (len(segments) - 1):
             return
         current_requests = self._segment_texture_requests(int(segment_index))
         next_requests = self._segment_texture_requests(int(segment_index) + 1)
@@ -3277,6 +3480,8 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         _enforce_cycles_simple_subdivision_on_object(scene, earth)
 
     def execute(self, context):
+        if _cancel_if_animation_render_active(self, "Render Animation"):
+            return {'CANCELLED'}
         scene = require_scene(self, context, logger=logger)
         if scene is None:
             return {'CANCELLED'}
@@ -3366,27 +3571,9 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
                     logger=logger,
                 )
 
-        try:
-            start_frame, end_frame = apply_cinematic_preview(scene, props)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
-            return fail(
-                self,
-                f"Failed to set cinematic keyframes: {exc}",
-                code=ErrorCode.NAV_APPLY_FAILED,
-                logger=logger,
-                exc=exc,
-                log_message="Planetka full animation preview setup failed",
-            )
-        except (RuntimeError, TypeError, ValueError) as exc:
-            return fail(
-                self,
-                f"Failed to set cinematic keyframes: {exc}",
-                code=ErrorCode.NAV_APPLY_FAILED,
-                logger=logger,
-            )
-
-        frame_start = int(start_frame)
-        frame_end = int(end_frame)
+        render_start, render_end = _active_timeline_frame_range(scene)
+        frame_start = int(render_start)
+        frame_end = int(render_end)
         if frame_end < frame_start:
             return fail(
                 self,
@@ -3458,6 +3645,12 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             self._segment_failures = []
             self._resolve_finalize_wait_started = 0.0
             self._resolve_finalize_refresh_attempts = 0
+            try:
+                set_final_animation_render_active(True)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka animation: failed setting final-render UI lock", exc_info=True)
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka animation: failed setting final-render UI lock", exc_info=True)
 
             wm = getattr(context, "window_manager", None)
             if wm is None:
@@ -3605,6 +3798,8 @@ class PLANETKA_OT_AnimationMakeReady(bpy.types.Operator):
     )
 
     def execute(self, context):
+        if _cancel_if_animation_render_active(self, "Build Quick Preview"):
+            return {'CANCELLED'}
         scene = require_scene(self, context, logger=logger)
         if scene is None:
             return {'CANCELLED'}
@@ -3630,22 +3825,12 @@ class PLANETKA_OT_AnimationMakeReady(bpy.types.Operator):
                     logger=logger,
                 )
 
-            try:
-                start_frame, end_frame = apply_cinematic_preview(scene, props)
-            except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
+            start_frame, end_frame = _cinematic_frame_range_from_props(scene, props)
+            if int(end_frame) < int(start_frame):
                 return fail(
                     self,
-                    f"Failed to set cinematic keyframes: {exc}",
-                    code=ErrorCode.NAV_APPLY_FAILED,
-                    logger=logger,
-                    exc=exc,
-                    log_message="Planetka animation make-ready preview failed",
-                )
-            except (RuntimeError, TypeError, ValueError) as exc:
-                return fail(
-                    self,
-                    f"Failed to set cinematic keyframes: {exc}",
-                    code=ErrorCode.NAV_APPLY_FAILED,
+                    f"Invalid frame range: {int(start_frame)}-{int(end_frame)}.",
+                    code=ErrorCode.RESOLVE_PRECHECK_FAILED,
                     logger=logger,
                 )
 

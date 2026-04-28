@@ -9,7 +9,9 @@ from .error_utils import PLANETKA_IMPORT_RECOVERABLE_EXCEPTIONS, PLANETKA_RECOVE
 from . import updater as _planetka_updater
 
 from .animation_tools import (
+    PLANETKA_OT_AnimationClearCameraKeyframes,
     PLANETKA_OT_AnimationClearPrepared,
+    PLANETKA_OT_AnimationGenerateCameraKeyframes,
     PLANETKA_OT_AnimationMakeReady,
     PLANETKA_OT_AnimationPreviewShot,
     PLANETKA_OT_AnimationRenderHeadless,
@@ -203,6 +205,8 @@ classes = (
     PLANETKA_OT_NavigationPreset,
     PLANETKA_OT_SunlightPreset,
     *_CLOUD_CLASSES,
+    PLANETKA_OT_AnimationClearCameraKeyframes,
+    PLANETKA_OT_AnimationGenerateCameraKeyframes,
     PLANETKA_OT_AnimationSaveView,
     PLANETKA_OT_AnimationWaypointAdd,
     PLANETKA_OT_AnimationWaypointRemove,
@@ -250,12 +254,33 @@ def _safe_register_class(cls):
         raise
 
 
+def _is_readonly_state_error(exc):
+    message = str(exc or "").strip().lower()
+    if not message:
+        return False
+    return any(
+        token in message
+        for token in (
+            "readonly state",
+            "read-only state",
+            "cannot run in readonly state",
+            "cannot set in readonly state",
+            "cannot modify blend data in this state",
+            "writing to id classes in this context is not allowed",
+        )
+    )
+
+
 def _safe_unregister_class(cls):
     try:
         bpy.utils.unregister_class(cls)
     except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
         message = str(exc)
-        if "missing bl_rna" in message or "not registered" in message:
+        if (
+            "missing bl_rna" in message
+            or "not registered" in message
+            or _is_readonly_state_error(exc)
+        ):
             return
         raise
 
@@ -405,17 +430,47 @@ def register():
 
 
 def unregister():
-    _unregister_keymaps()
-    _remove_load_post_handler()
-    _remove_depsgraph_post_handler()
-    _remove_frame_change_post_handler()
-    _remove_render_handlers()
-    stop_auto_resolve_service()
+    try:
+        _unregister_keymaps()
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        pass
+    try:
+        _remove_load_post_handler()
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        pass
+    try:
+        _remove_depsgraph_post_handler()
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        pass
+    try:
+        _remove_frame_change_post_handler()
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        pass
+    try:
+        _remove_render_handlers()
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        pass
+    try:
+        stop_auto_resolve_service()
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        pass
     if hasattr(bpy.types.Scene, "planetka"):
-        del bpy.types.Scene.planetka
+        try:
+            del bpy.types.Scene.planetka
+        except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
+            if not _is_readonly_state_error(exc):
+                raise
     for cls in reversed(classes):
-        _safe_unregister_class(cls)
-    unregister_cloud_object_properties()
+        try:
+            _safe_unregister_class(cls)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
+            if not _is_readonly_state_error(exc):
+                raise
+    try:
+        unregister_cloud_object_properties()
+    except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
+        if not _is_readonly_state_error(exc):
+            raise
 
 
 if __name__ == "__main__":

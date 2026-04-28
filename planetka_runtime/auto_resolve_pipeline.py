@@ -218,20 +218,28 @@ def _ctx_schedule_auto_resolve_download(
             scene,
             getattr(props, "texture_quality_mode", "PREVIEW"),
         )
-    except (deps.recoverable_exceptions, RuntimeError, TypeError, ValueError, AttributeError):
+    except deps.recoverable_exceptions:
+        texture_quality_mode = "PREVIEW"
+    except (RuntimeError, TypeError, ValueError, AttributeError):
         texture_quality_mode = "PREVIEW"
     target_tiles_tuple = tuple(target_tiles or ())
     try:
         nav_latitude_deg = float(getattr(props, "nav_latitude_deg", 0.0)) if props is not None else 0.0
-    except (deps.recoverable_exceptions, RuntimeError, TypeError, ValueError, AttributeError):
+    except deps.recoverable_exceptions:
+        nav_latitude_deg = 0.0
+    except (RuntimeError, TypeError, ValueError, AttributeError):
         nav_latitude_deg = 0.0
     try:
         nav_longitude_deg = float(getattr(props, "nav_longitude_deg", 0.0)) if props is not None else 0.0
-    except (deps.recoverable_exceptions, RuntimeError, TypeError, ValueError, AttributeError):
+    except deps.recoverable_exceptions:
+        nav_longitude_deg = 0.0
+    except (RuntimeError, TypeError, ValueError, AttributeError):
         nav_longitude_deg = 0.0
     try:
         nav_altitude_km = max(0.0, float(getattr(props, "nav_altitude_km", 0.0))) if props is not None else 0.0
-    except (deps.recoverable_exceptions, RuntimeError, TypeError, ValueError, AttributeError):
+    except deps.recoverable_exceptions:
+        nav_altitude_km = 0.0
+    except (RuntimeError, TypeError, ValueError, AttributeError):
         nav_altitude_km = 0.0
 
     job_to_start = None
@@ -470,6 +478,82 @@ def _is_non_retryable_resolve_error(message):
             "account blocked",
         )
     )
+
+
+def _is_blend_data_readonly_error(message):
+    text = str(message or "").strip().lower()
+    if not text:
+        return False
+    return any(
+        token in text
+        for token in (
+            "cannot modify blend data in this state",
+            "writing to id classes in this context is not allowed",
+            "readonly state",
+            "read-only state",
+            "drawing/rendering",
+        )
+    )
+
+
+def _ctx_handle_apply_readonly_failure(ctx, scene, job, manual_request, lock_reason):
+    deps = ctx.deps
+    settings = ctx.settings
+    reason = str(lock_reason or "blend data read-only").strip() or "blend data read-only"
+    now = time.monotonic()
+    try:
+        lock_since = float(deps.job_field(job, "apply_operator_lock_since", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        lock_since = 0.0
+    if lock_since <= 0.0:
+        lock_since = now
+    try:
+        lock_attempts = int(deps.job_field(job, "apply_operator_lock_attempts", 0) or 0) + 1
+    except (TypeError, ValueError):
+        lock_attempts = 1
+    deps.job_set_field(job, "apply_operator_lock_since", float(lock_since))
+    deps.job_set_field(job, "apply_operator_lock_attempts", int(max(1, lock_attempts)))
+    waited_sec = max(0.0, float(now) - float(lock_since))
+    wait_budget_sec = min(
+        float(settings.download_completed_max_age_sec),
+        max(float(settings.download_scene_wait_sec), 6.0),
+    )
+    if waited_sec < wait_budget_sec:
+        deps.resolve_trace(
+            "Apply deferred because Blender data is still read-only "
+            f"(request_id={deps.job_field(job, 'request_id')}, waited={waited_sec:.2f}s, "
+            f"attempts={lock_attempts}, reason={reason})"
+        )
+        # Keep completed payload queued; pump will retry the same apply later.
+        return None
+
+    deps.resolve_trace(
+        "Apply payload dropped after persistent read-only Blender state "
+        f"(request_id={deps.job_field(job, 'request_id')}, waited={waited_sec:.2f}s, "
+        f"attempts={lock_attempts}, reason={reason})"
+    )
+    deps.logger.warning(
+        "Planetka: dropping completed auto-resolve payload after %.2fs waiting for apply write access "
+        "(request_id=%s, attempts=%d, reason=%s).",
+        float(waited_sec),
+        str(deps.job_field(job, "request_id", "")),
+        int(lock_attempts),
+        str(reason),
+    )
+    deps.job_set_field(job, "apply_operator_lock_since", 0.0)
+    deps.job_set_field(job, "apply_operator_lock_attempts", 0)
+    if manual_request:
+        _ctx_mark_manual_queued_resolve_error(
+            ctx,
+            scene,
+            (
+                "Apply deferred too long because Blender data stayed read-only "
+                f"({reason}); try Resolve again."
+            ),
+        )
+    else:
+        deps.request_auto_resolve(scene, immediate=False, mark_dirty=False)
+    return False
 
 
 def _ctx_mark_auto_resolve_terminal_failure(ctx, scene, scene_id, job, message):
@@ -791,6 +875,14 @@ def _ctx_auto_resolve_apply_downloaded_tiles(ctx, scene, scene_id, job, manual_r
             )
             scene_error = _ctx_read_scene_last_resolve_error(ctx, scene)
             apply_error = scene_error or f"Apply operator returned {str(op_result)} for {len(job_target_tiles)} tile(s)."
+            if _is_blend_data_readonly_error(apply_error):
+                return _ctx_handle_apply_readonly_failure(
+                    ctx,
+                    scene,
+                    job,
+                    manual_request,
+                    apply_error,
+                )
             deps.logger.warning(
                 "Planetka queued resolve apply returned %s for %d tile(s).",
                 str(op_result),
@@ -809,6 +901,16 @@ def _ctx_auto_resolve_apply_downloaded_tiles(ctx, scene, scene_id, job, manual_r
             f"Shader update failed with recoverable exception (request_id={deps.job_field(job, 'request_id')})"
         )
         exc_text = f"{type(exc).__name__}: {exc}" if str(exc or "").strip() else str(type(exc).__name__)
+        scene_error = _ctx_read_scene_last_resolve_error(ctx, scene)
+        apply_error = scene_error or f"Apply failed with recoverable exception: {str(exc_text or 'unknown')}."
+        if _is_blend_data_readonly_error(apply_error) or _is_blend_data_readonly_error(exc_text):
+            return _ctx_handle_apply_readonly_failure(
+                ctx,
+                scene,
+                job,
+                manual_request,
+                apply_error,
+            )
         deps.logger.exception(
             "Planetka auto-resolve apply failed with recoverable exception "
             "(request_id=%s, manual=%s, tiles=%d): %s",
@@ -817,8 +919,6 @@ def _ctx_auto_resolve_apply_downloaded_tiles(ctx, scene, scene_id, job, manual_r
             int(len(job_target_tiles)),
             str(exc_text or "unknown"),
         )
-        scene_error = _ctx_read_scene_last_resolve_error(ctx, scene)
-        apply_error = scene_error or f"Apply failed with recoverable exception: {str(exc_text or 'unknown')}."
         if manual_request:
             _ctx_mark_manual_queued_resolve_error(ctx, scene, apply_error)
         else:
@@ -832,6 +932,16 @@ def _ctx_auto_resolve_apply_downloaded_tiles(ctx, scene, scene_id, job, manual_r
             f"Shader update failed with unexpected exception (request_id={deps.job_field(job, 'request_id')})"
         )
         exc_text = f"{type(exc).__name__}: {exc}" if str(exc or "").strip() else str(type(exc).__name__)
+        scene_error = _ctx_read_scene_last_resolve_error(ctx, scene)
+        apply_error = scene_error or f"Apply failed with unexpected exception: {str(exc_text or 'unknown')}."
+        if _is_blend_data_readonly_error(apply_error) or _is_blend_data_readonly_error(exc_text):
+            return _ctx_handle_apply_readonly_failure(
+                ctx,
+                scene,
+                job,
+                manual_request,
+                apply_error,
+            )
         deps.logger.exception(
             "Planetka auto-resolve apply failed unexpectedly "
             "(request_id=%s, manual=%s, tiles=%d): %s",
@@ -840,8 +950,6 @@ def _ctx_auto_resolve_apply_downloaded_tiles(ctx, scene, scene_id, job, manual_r
             int(len(job_target_tiles)),
             str(exc_text or "unknown"),
         )
-        scene_error = _ctx_read_scene_last_resolve_error(ctx, scene)
-        apply_error = scene_error or f"Apply failed with unexpected exception: {str(exc_text or 'unknown')}."
         if manual_request:
             _ctx_mark_manual_queued_resolve_error(ctx, scene, apply_error)
         else:
@@ -885,7 +993,9 @@ def _ctx_auto_resolve_summary_total_bytes(ctx, job_target_tiles, job, result):
                 ),
             )
         )
-    except (deps.recoverable_exceptions, RuntimeError, TypeError, ValueError, AttributeError):
+    except deps.recoverable_exceptions:
+        summary_total_bytes = 0
+    except (RuntimeError, TypeError, ValueError, AttributeError):
         summary_total_bytes = 0
     if summary_total_bytes <= 0:
         downloaded_bytes = 0
@@ -987,7 +1097,18 @@ def _ctx_handle_auto_resolve_download_complete(ctx, result):
     if scene is None:
         return True
 
-    if not _ctx_auto_resolve_apply_downloaded_tiles(ctx, scene, scene_id, job, manual_request, job_target_tiles):
+    apply_result = _ctx_auto_resolve_apply_downloaded_tiles(
+        ctx,
+        scene,
+        scene_id,
+        job,
+        manual_request,
+        job_target_tiles,
+    )
+    if apply_result is None:
+        # Keep completed payload queued; pump will retry apply after transient read-only states clear.
+        return False
+    if not apply_result:
         return True
 
     resolved_at = time.monotonic()
@@ -1100,6 +1221,22 @@ def _auto_resolve_download_worker(job):
     return _ctx_auto_resolve_download_worker(_require_download_ctx(), job)
 
 
+def _ctx_resume_or_stop_download_pump_after_error(ctx):
+    deps = ctx.deps
+    state = ctx.state
+    settings = ctx.settings
+    with state.download_lock:
+        has_active = state.download_active_job is not None
+        has_pending = state.download_pending_job is not None
+        has_completed = state.download_completed is not None
+    has_thread = state.download_thread is not None
+    if has_active or has_pending or has_completed or has_thread:
+        state.download_timer_running = True
+        return settings.download_pump_interval_sec
+    state.download_timer_running = False
+    return None
+
+
 def _ctx_auto_resolve_download_pump_timer(ctx):
     deps = ctx.deps
     state = ctx.state
@@ -1147,7 +1284,33 @@ def _ctx_auto_resolve_download_pump_timer(ctx):
                 deps.resolve_trace(
                     f"Pump received completed download (request_id={completed_request_id}, age={completed_age:.2f}s)"
                 )
-                consume_completed = bool(_ctx_handle_auto_resolve_download_complete(ctx, completed))
+                consume_completed = False
+                try:
+                    consume_completed = bool(_ctx_handle_auto_resolve_download_complete(ctx, completed))
+                except deps.recoverable_exceptions:
+                    _ctx_handle_auto_resolve_download_failure(
+                        ctx,
+                        completed_job,
+                        "Finalize crashed with recoverable exception.",
+                    )
+                    deps.logger.exception(
+                        "Planetka: auto-resolve finalize crashed for completed payload "
+                        "(request_id=%s). Dropping payload to keep pipeline alive.",
+                        str(completed_request_id),
+                    )
+                    consume_completed = True
+                except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
+                    _ctx_handle_auto_resolve_download_failure(
+                        ctx,
+                        completed_job,
+                        "Finalize crashed with unexpected exception.",
+                    )
+                    deps.logger.exception(
+                        "Planetka: auto-resolve finalize crashed unexpectedly for completed payload "
+                        "(request_id=%s). Dropping payload to keep pipeline alive.",
+                        str(completed_request_id),
+                    )
+                    consume_completed = True
                 if consume_completed:
                     with state.download_lock:
                         if state.download_completed is completed:
@@ -1187,10 +1350,16 @@ def _ctx_auto_resolve_download_pump_timer(ctx):
         return settings.download_pump_interval_sec
     except deps.recoverable_exceptions:
         deps.resolve_trace("Pump failed with recoverable exception")
-        deps.logger.debug("Planetka auto-resolve download timer failed", exc_info=True)
+        deps.logger.exception("Planetka auto-resolve download timer failed")
+        with state.download_lock:
+            state.download_completed = None
+        return _ctx_resume_or_stop_download_pump_after_error(ctx)
     except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
         deps.resolve_trace("Pump failed with unexpected exception")
-        deps.logger.debug("Planetka auto-resolve download timer failed unexpectedly", exc_info=True)
+        deps.logger.exception("Planetka auto-resolve download timer failed unexpectedly")
+        with state.download_lock:
+            state.download_completed = None
+        return _ctx_resume_or_stop_download_pump_after_error(ctx)
 
     state.download_timer_running = False
     return None
@@ -1387,7 +1556,9 @@ def _ctx_auto_resolve_update_size_estimation(ctx, scene, scope, active_view_sign
         prefs = deps.get_prefs()
         if prefs is not None:
             base_path_for_estimate = str(getattr(prefs, "texture_base_path", "") or "")
-    except (deps.recoverable_exceptions, RuntimeError, TypeError, ValueError, AttributeError):
+    except deps.recoverable_exceptions:
+        base_path_for_estimate = ""
+    except (RuntimeError, TypeError, ValueError, AttributeError):
         base_path_for_estimate = ""
 
     current_quality_mode = deps.normalize_texture_quality_mode(getattr(props, "texture_quality_mode", "PREVIEW"))
@@ -1399,7 +1570,9 @@ def _ctx_auto_resolve_update_size_estimation(ctx, scene, scope, active_view_sign
             base_path=base_path_for_estimate,
             full_tiles_override=full_tiles_override,
         )
-    except (deps.recoverable_exceptions, RuntimeError, TypeError, ValueError, AttributeError):
+    except deps.recoverable_exceptions:
+        deps.logger.debug("Planetka auto-resolve: failed updating resolve size estimates", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
         deps.logger.debug("Planetka auto-resolve: failed updating resolve size estimates", exc_info=True)
 
 
