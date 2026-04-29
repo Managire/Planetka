@@ -295,6 +295,36 @@ def _sort_tiles_for_apply(tiles):
     return sorted(set(tiles), key=_sort_key)
 
 
+def _tile_bounds(parsed_tile):
+    x, y, z, _d = parsed_tile
+    x0 = int(x)
+    y0 = int(y)
+    x1 = x0 + int(z)
+    y1 = y0 + int(z)
+    return x0, y0, x1, y1
+
+
+def _bounds_overlap(ax0, ay0, ax1, ay1, bx0, by0, bx1, by1):
+    return not (ax1 <= bx0 or bx1 <= ax0 or ay1 <= by0 or by1 <= ay0)
+
+
+def _tile_center_distance_from_camera(tile, cam_pos_local=None, earth_radius=None):
+    if cam_pos_local is None or earth_radius is None:
+        return 0.0
+    parsed = parse_tile(tile)
+    if not parsed:
+        return 0.0
+    x, y, z, _d = parsed
+    lon = ((float(x) + (float(z) * 0.5)) % 360.0) - 180.0
+    lat = max(0.0, min(179.999999, float(y) + (float(z) * 0.5)))
+    try:
+        cx, cy, cz = lonlat_to_cartesian(lon, lat, float(earth_radius))
+        tile_center = Vector((float(cx), float(cy), float(cz)))
+        return float((tile_center - cam_pos_local).length)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return 0.0
+
+
 def _select_parent_d_for_merge(parent_z, child_ds):
     parent_z = int(parent_z)
     child_ds = [int(d) for d in child_ds]
@@ -319,7 +349,7 @@ def _select_parent_d_for_merge(parent_z, child_ds):
     return None
 
 
-def _build_budget_merge_proposals(current_tiles):
+def _build_strict_budget_merge_proposals(current_tiles):
     parsed = {}
     for tile in current_tiles:
         info = parse_tile(tile)
@@ -351,18 +381,21 @@ def _build_budget_merge_proposals(current_tiles):
             continue
         proposals.append(
             {
+                "mode": "strict_parent_merge",
                 "parent_tile": parent_tile,
                 "parent_d": int(parent_d),
                 "parent_z": int(parent_z),
                 "children": child_tiles,
                 "child_ds": child_ds,
                 "reduction": int(reduction),
+                "area_growth": 0,
             }
         )
 
     proposals.sort(
         key=lambda p: (
             -int(p["reduction"]),
+            int(p.get("area_growth", 0)),
             int(p["parent_d"]),
             -int(p["parent_z"]),
             str(p["parent_tile"]),
@@ -371,23 +404,189 @@ def _build_budget_merge_proposals(current_tiles):
     return proposals
 
 
-def _enforce_shader_tile_budget(tiles, max_tiles=MAX_SHADER_TILE_BUDGET):
-    max_tiles = max(1, int(max_tiles))
-    current = set(_sort_tiles_for_apply(tiles))
+def _build_same_d_parent_cover_proposals(current_tiles):
+    parsed = {}
+    for tile in current_tiles:
+        info = parse_tile(tile)
+        if info:
+            parsed[tile] = info
+
+    ancestor_buckets = defaultdict(set)
+    for tile, (x, y, z, d) in parsed.items():
+        ancestor_z = int(z)
+        while is_mergeable(ancestor_z):
+            parent_z = int(ancestor_z) * 2
+            parent_x = (int(x) // parent_z) * parent_z
+            parent_y = (int(y) // parent_z) * parent_z
+            ancestor_buckets[(parent_x, parent_y, parent_z, int(d))].add(tile)
+            ancestor_z = int(parent_z)
+
+    proposals = []
+    for (parent_x, parent_y, parent_z, parent_d), child_set in ancestor_buckets.items():
+        child_tiles = sorted(child_set)
+        if len(child_tiles) < 2:
+            continue
+
+        allowed_parent_ds = {int(d) for d in D_LEVELS_BY_Z.get(int(parent_z), [int(parent_z)])}
+        if int(parent_d) not in allowed_parent_ds:
+            continue
+
+        parent_x0 = int(parent_x)
+        parent_y0 = int(parent_y)
+        parent_x1 = int(parent_x) + int(parent_z)
+        parent_y1 = int(parent_y) + int(parent_z)
+
+        child_area = 0
+        blocked = False
+        for child in child_tiles:
+            child_info = parsed.get(child)
+            if child_info is None:
+                blocked = True
+                break
+            cx0, cy0, cx1, cy1 = _tile_bounds(child_info)
+            if not (cx0 >= parent_x0 and cy0 >= parent_y0 and cx1 <= parent_x1 and cy1 <= parent_y1):
+                blocked = True
+                break
+            child_area += int(child_info[2]) * int(child_info[2])
+        if blocked:
+            continue
+
+        for other_tile, other_info in parsed.items():
+            if other_tile in child_set:
+                continue
+            ox0, oy0, ox1, oy1 = _tile_bounds(other_info)
+            if _bounds_overlap(parent_x0, parent_y0, parent_x1, parent_y1, ox0, oy0, ox1, oy1):
+                blocked = True
+                break
+        if blocked:
+            continue
+
+        reduction = len(child_tiles) - 1
+        if reduction <= 0:
+            continue
+
+        parent_tile = format_tile(int(parent_x), int(parent_y), int(parent_z), int(parent_d))
+        area_growth = max(0, int(parent_z) * int(parent_z) - int(child_area))
+        proposals.append(
+            {
+                "mode": "same_d_expand",
+                "parent_tile": parent_tile,
+                "parent_d": int(parent_d),
+                "parent_z": int(parent_z),
+                "children": child_tiles,
+                "child_ds": [int(parent_d) for _ in child_tiles],
+                "reduction": int(reduction),
+                "area_growth": int(area_growth),
+            }
+        )
+
+    proposals.sort(
+        key=lambda p: (
+            -int(p["reduction"]),
+            int(p.get("area_growth", 0)),
+            int(p["parent_d"]),
+            -int(p["parent_z"]),
+            str(p["parent_tile"]),
+        )
+    )
+    return proposals
+
+
+def _build_budget_merge_proposals(current_tiles):
+    strict = _build_strict_budget_merge_proposals(current_tiles)
+    same_d_expand = _build_same_d_parent_cover_proposals(current_tiles)
+    proposals = list(strict) + list(same_d_expand)
+    mode_order = {
+        "strict_parent_merge": 0,
+        "same_d_expand": 1,
+    }
+    proposals.sort(
+        key=lambda p: (
+            int(mode_order.get(str(p.get("mode", "")), 99)),
+            -int(p["reduction"]),
+            int(p.get("area_growth", 0)),
+            int(p["parent_d"]),
+            -int(p["parent_z"]),
+            str(p["parent_tile"]),
+        )
+    )
+    return proposals
+
+
+def _apply_destructive_budget_trim(current_tiles, max_tiles, cam_pos_local=None, earth_radius=None):
+    current = set(current_tiles)
+    removed = []
+    while len(current) > int(max_tiles):
+        scored = []
+        for tile in current:
+            parsed = parse_tile(tile)
+            if parsed:
+                _x, _y, z, d = parsed
+                ratio = float(d) / max(1.0, float(z))
+            else:
+                ratio = float("inf")
+            distance = _tile_center_distance_from_camera(
+                tile,
+                cam_pos_local=cam_pos_local,
+                earth_radius=earth_radius,
+            )
+            scored.append((float(ratio), float(distance), str(tile), tile))
+
+        if not scored:
+            break
+        scored.sort(key=lambda item: (-float(item[0]), -float(item[1]), str(item[2])))
+        ratio, distance, _tile_name, chosen_tile = scored[0]
+        current.discard(chosen_tile)
+        removed.append(
+            {
+                "mode": "destructive_drop",
+                "dropped": str(chosen_tile),
+                "ratio": float(ratio),
+                "distance": float(distance),
+                "reduction": 1,
+            }
+        )
+    return current, removed
+
+
+def _next_coarser_d_for_tile(tile):
+    parsed = parse_tile(tile)
+    if not parsed:
+        return None
+    _x, _y, z, d = parsed
+    allowed = sorted({int(v) for v in D_LEVELS_BY_Z.get(int(z), [int(z)])})
+    if not allowed:
+        return None
+    if int(d) not in allowed:
+        allowed.append(int(d))
+        allowed = sorted(set(allowed))
+    for candidate in allowed:
+        if int(candidate) > int(d):
+            return int(candidate)
+    return None
+
+
+def _replace_tile_d(tile, new_d):
+    parsed = parse_tile(tile)
+    if not parsed:
+        return str(tile)
+    x, y, z, _d = parsed
+    return format_tile(int(x), int(y), int(z), int(new_d))
+
+
+def _apply_budget_merges_only(current_tiles, max_tiles):
+    current = set(current_tiles or ())
     trace = []
 
-    if len(current) <= max_tiles:
-        return _sort_tiles_for_apply(current), trace, True
-
     for _ in range(128):
-        if len(current) <= max_tiles:
+        if len(current) <= int(max_tiles):
             break
         proposals = _build_budget_merge_proposals(current)
         if not proposals:
             break
         changed = False
         for proposal in proposals:
-            if len(current) <= max_tiles:
+            if len(current) <= int(max_tiles):
                 break
             children = proposal["children"]
             if any(child not in current for child in children):
@@ -397,16 +596,196 @@ def _enforce_shader_tile_budget(tiles, max_tiles=MAX_SHADER_TILE_BUDGET):
             current.add(proposal["parent_tile"])
             trace.append(
                 {
+                    "mode": str(proposal.get("mode", "strict_parent_merge")),
                     "children": list(children),
                     "parent": str(proposal["parent_tile"]),
                     "parent_d": int(proposal["parent_d"]),
                     "parent_z": int(proposal["parent_z"]),
                     "reduction": int(proposal["reduction"]),
+                    "area_growth": int(proposal.get("area_growth", 0)),
                 }
             )
             changed = True
         if not changed:
             break
+
+    return current, trace
+
+
+def _apply_quality_degrade_budget_adjustment(
+    current_tiles,
+    max_tiles,
+    cam_pos_local=None,
+    earth_radius=None,
+):
+    current = set(current_tiles or ())
+    trace = []
+    visited = {frozenset(current)}
+    max_steps = max(1, min(64, len(current) * 8))
+    steps = 0
+
+    while len(current) > int(max_tiles) and steps < max_steps:
+        steps += 1
+        candidates = []
+        for tile in list(current):
+            parsed = parse_tile(tile)
+            if not parsed:
+                continue
+            _x, _y, _z, old_d = parsed
+            next_d = _next_coarser_d_for_tile(tile)
+            if next_d is None:
+                continue
+            replacement_tile = _replace_tile_d(tile, next_d)
+            if str(replacement_tile) == str(tile):
+                continue
+
+            trial = set(current)
+            trial.discard(tile)
+            trial.add(replacement_tile)
+
+            merged, merge_trace = _apply_budget_merges_only(trial, max_tiles=max_tiles)
+            out_count = int(len(merged))
+            solved = out_count <= int(max_tiles)
+            distance = _tile_center_distance_from_camera(
+                tile,
+                cam_pos_local=cam_pos_local,
+                earth_radius=earth_radius,
+            )
+            candidates.append(
+                {
+                    "from_tile": str(tile),
+                    "to_tile": str(replacement_tile),
+                    "from_d": int(old_d),
+                    "to_d": int(next_d),
+                    "distance": float(distance),
+                    "out_count": int(out_count),
+                    "solved": bool(solved),
+                    "merged_state": set(merged),
+                    "merge_trace": list(merge_trace),
+                }
+            )
+
+        if not candidates:
+            break
+
+        # Preference:
+        # 1) any candidate that reaches budget
+        # 2) lowest resulting tile count
+        # 3) when equivalent, coarsen the tile farther from camera first
+        # 4) deterministic fallback by tile code
+        candidates.sort(
+            key=lambda c: (
+                0 if bool(c["solved"]) else 1,
+                int(c["out_count"]),
+                -float(c["distance"]),
+                str(c["from_tile"]),
+                str(c["to_tile"]),
+            )
+        )
+        best = candidates[0]
+        merged_state = set(best["merged_state"])
+        merged_key = frozenset(merged_state)
+        if merged_key in visited:
+            break
+        visited.add(merged_key)
+
+        reduction = int(len(current) - len(merged_state))
+        trace.append(
+            {
+                "mode": "quality_degrade",
+                "from_tile": str(best["from_tile"]),
+                "to_tile": str(best["to_tile"]),
+                "from_d": int(best["from_d"]),
+                "to_d": int(best["to_d"]),
+                "distance": float(best["distance"]),
+                "reduction": int(reduction),
+                "post_count": int(best["out_count"]),
+            }
+        )
+        trace.extend(list(best["merge_trace"]))
+        current = merged_state
+
+    return current, trace
+
+
+def _log_destructive_budget_trim(removed, before_trim_count, after_trim_count, max_tiles):
+    if not removed:
+        return
+    removed_count = int(len(removed))
+    budget_value = int(max_tiles)
+    input_count = int(before_trim_count)
+    output_count = int(after_trim_count)
+    logger.warning(
+        "Planetka: CRITICAL tile budget destructive trim removed=%d input=%d output=%d budget=%d",
+        removed_count,
+        input_count,
+        output_count,
+        budget_value,
+    )
+    for index, event in enumerate(removed, start=1):
+        dropped_tile = str(event.get("dropped", "") or "").strip()
+        ratio = float(event.get("ratio", 0.0) or 0.0)
+        distance = float(event.get("distance", 0.0) or 0.0)
+        logger.warning(
+            "Planetka: CRITICAL destructive drop #%d/%d tile=%s ratio=%.6f distance=%.3f",
+            int(index),
+            removed_count,
+            dropped_tile,
+            ratio,
+            distance,
+        )
+        # Mirror into stdout so this remains visible even if logger level filtering hides warnings.
+        print(
+            (
+                "Planetka: CRITICAL destructive tile drop "
+                f"{int(index)}/{removed_count} tile={dropped_tile} "
+                f"ratio={ratio:.6f} distance={distance:.3f}"
+            ),
+            flush=True,
+        )
+
+
+def _enforce_shader_tile_budget(
+    tiles,
+    max_tiles=MAX_SHADER_TILE_BUDGET,
+    cam_pos_local=None,
+    earth_radius=None,
+):
+    max_tiles = max(1, int(max_tiles))
+    current = set(_sort_tiles_for_apply(tiles))
+    trace = []
+
+    if len(current) <= max_tiles:
+        return _sort_tiles_for_apply(current), trace, True
+
+    current, merge_trace = _apply_budget_merges_only(current, max_tiles=max_tiles)
+    trace.extend(merge_trace)
+
+    if len(current) > max_tiles:
+        current, degrade_trace = _apply_quality_degrade_budget_adjustment(
+            current,
+            max_tiles=max_tiles,
+            cam_pos_local=cam_pos_local,
+            earth_radius=earth_radius,
+        )
+        trace.extend(degrade_trace)
+
+    if len(current) > max_tiles:
+        before_trim_count = len(current)
+        current, removed = _apply_destructive_budget_trim(
+            current,
+            max_tiles=max_tiles,
+            cam_pos_local=cam_pos_local,
+            earth_radius=earth_radius,
+        )
+        if removed:
+            trace.extend(removed)
+            _log_destructive_budget_trim(
+                removed,
+                before_trim_count=int(before_trim_count),
+                after_trim_count=len(current),
+                max_tiles=int(max_tiles),
+            )
 
     success = len(current) <= max_tiles
     return _sort_tiles_for_apply(current), trace, success
@@ -1764,6 +2143,8 @@ def main(scope_mode="AUTO", edge_boost=False, texture_quality_mode_override=None
     budgeted_tiles, budget_trace, budget_success = _enforce_shader_tile_budget(
         final_tiles,
         max_tiles=MAX_SHADER_TILE_BUDGET,
+        cam_pos_local=cam_pos_local,
+        earth_radius=earth_radius,
     )
     LAST_TILE_BUDGET_TRACE = list(budget_trace)
     if budget_trace:
