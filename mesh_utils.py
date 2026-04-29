@@ -841,14 +841,15 @@ def create_temp_mesh_for_all_tiles(tiles, name="Planetka Earth Surface", collect
         location = tuple(existing_surface.location)
         rotation = tuple(existing_surface.rotation_euler)
         scale = tuple(existing_surface.scale)
-        mesh_data = getattr(existing_surface, "data", None)
-        if mesh_data and hasattr(mesh_data, "vertices") and len(mesh_data.vertices) > 0:
-            try:
-                inferred_radius = max(v.co.length for v in mesh_data.vertices)
-                if inferred_radius > 1e-6:
-                    local_radius = float(inferred_radius)
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                logger.debug("Planetka: failed inferring local sphere radius from old mesh", exc_info=True)
+        # Keep the local radius stable across resolve rebuilds.
+        # Re-inferring from the currently visible subset of vertices can introduce
+        # tiny frame-to-frame radius drift when segment tile coverage changes.
+        try:
+            stable_radius = float(_surface_local_radius(existing_surface))
+            if stable_radius > 1e-6:
+                local_radius = float(stable_radius)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed reading stable local sphere radius from existing surface", exc_info=True)
 
     cached_resolved_mesh = _get_cached_resolved_mesh(tiles, local_radius)
     surface_col = ensure_surface_collection()

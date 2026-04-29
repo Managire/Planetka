@@ -22,10 +22,7 @@ from .diagnostics import read_diagnostics
 from .r2_source import get_download_progress, is_download_active, is_remote_source_configured
 from .updater import get_public_status as get_updater_public_status
 from .animation_tools import (
-    ANIMATION_STATS_END_KEY,
     ANIMATION_STATS_SEGMENTS_KEY,
-    ANIMATION_STATS_START_KEY,
-    ANIMATION_STATS_TEXTURE_MB_KEY,
 )
 from .render_prep import (
     LAST_MANUAL_RESOLVE_DOWNLOADED_MB_KEY,
@@ -39,6 +36,7 @@ from .state import (
     ADD_EARTH_BUTTON_SCALE_Y,
     _is_render_job_active,
     get_camera_inside_earth_warning,
+    is_final_animation_render_active,
     get_resolve_size_estimates,
     get_resolve_runtime_status,
     logger,
@@ -173,6 +171,11 @@ def _status_icon(code):
 
 
 def _is_animation_render_running():
+    try:
+        if callable(is_final_animation_render_active):
+            return bool(is_final_animation_render_active())
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        pass
     try:
         if callable(_is_render_job_active):
             return bool(_is_render_job_active())
@@ -1034,6 +1037,7 @@ def _draw_navigation(layout, context, controls_enabled=True):
         lock_box.label(text="Camera keyframes are active. Clear Camera Keyframes to unlock.", icon="LOCKED")
         unlock_row = lock_box.row(align=True)
         unlock_row.scale_y = 1.05
+        unlock_row.enabled = bool(base_enabled)
         unlock_row.operator(
             "planetka.animation_clear_camera_keyframes",
             text="Clear Camera Keyframes",
@@ -1871,7 +1875,6 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        layout.enabled = _planetka_controls_enabled(_is_earth_workflow_enabled())
         layout.use_property_split = True
         layout.use_property_decorate = False
 
@@ -1880,8 +1883,11 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         if props is None:
             layout.label(text="Planetka settings unavailable.", icon="ERROR")
             return
+        earth_workflow_enabled = _is_earth_workflow_enabled()
+        controls_enabled = _planetka_controls_enabled(earth_workflow_enabled)
 
         cinematic_box = layout.box()
+        cinematic_box.enabled = bool(controls_enabled)
         cinematic_box.label(text="Cinematic Camera", icon="CAMERA_DATA")
         cinematic_box.prop(props, "anim_camera_preset", text="Preset")
 
@@ -1944,6 +1950,7 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
         clear_keys_row = cinematic_box.row(align=True)
         clear_keys_row.scale_y = 1.05
+        clear_keys_row.enabled = bool(controls_enabled)
         clear_keys_row.operator(
             "planetka.animation_clear_camera_keyframes",
             text="Clear Camera Keyframes",
@@ -1952,6 +1959,7 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
         prepared = _is_animation_prepared(scene)
         quick_preview_box = layout.box()
+        quick_preview_box.enabled = bool(controls_enabled)
         quick_preview_box.label(text="Quick Preview", icon="SHADING_RENDERED")
 
         if _show_internal_animation_ui():
@@ -1967,7 +1975,7 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         )
         clear_row = quick_preview_box.row(align=True)
         clear_row.scale_y = 1.05
-        clear_row.enabled = bool(prepared)
+        clear_row.enabled = bool(controls_enabled) and bool(prepared)
         clear_row.operator(
             "planetka.animation_clear_prepared",
             text="Clear Quick Preview",
@@ -1975,16 +1983,17 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         )
 
         final_render_box = layout.box()
+        final_render_box.enabled = bool(controls_enabled)
         final_render_box.label(text="Final Animation Render", icon="RENDER_ANIMATION")
         quality_row = final_render_box.row()
         quality_row.label(text="Always uses Full Quality textures", icon="IMAGE_DATA")
         final_render_allowed = allows_animation_render_for_context(prefs=get_prefs(), source=props)
-        quality_row.enabled = bool(final_render_allowed)
+        quality_row.enabled = bool(final_render_allowed) and bool(earth_workflow_enabled)
 
         render_row = final_render_box.row(align=True)
         render_button_row = render_row.row(align=True)
         render_button_row.scale_y = 1.2
-        render_button_row.enabled = bool(final_render_allowed)
+        render_button_row.enabled = bool(final_render_allowed) and bool(earth_workflow_enabled)
         render_button_row.operator(
             "planetka.animation_render_headless",
             text="Render Animation",
@@ -1992,6 +2001,7 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         )
         render_info_row = render_row.row(align=True)
         render_info_row.scale_y = 1.2
+        render_info_row.enabled = bool(earth_workflow_enabled)
         render_info_row.operator(
             "planetka.animation_render_info",
             text="",

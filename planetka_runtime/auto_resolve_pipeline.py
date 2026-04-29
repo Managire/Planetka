@@ -332,8 +332,16 @@ def _ctx_queue_resolve_download(ctx, scene, target_tiles, manual_request=False):
     if scene is None:
         return False
     if bool(manual_request) and deps.is_render_job_active():
-        deps.logger.info("Planetka: ignoring deferred queued resolve request during active render job.")
-        return False
+        # Manual resolves should be blocked only while Blender is actually write-locked.
+        # A short post-render guard window is used for auto-resolve reliability, but should
+        # not reject explicit user resolve actions once write access is available again.
+        lock_reason = _ctx_blend_data_write_lock_reason(ctx)
+        if lock_reason:
+            deps.logger.info(
+                "Planetka: ignoring deferred queued resolve request during active render lock (%s).",
+                str(lock_reason),
+            )
+            return False
     camera_signature = deps.camera_signature(scene)
     if camera_signature is None:
         return False

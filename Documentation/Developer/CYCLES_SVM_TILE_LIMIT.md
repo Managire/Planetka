@@ -1,6 +1,6 @@
 # Cycles SVM Tile Limit (Planetka Earth Material)
 
-Last updated: `2026-04-07`
+Last updated: `2026-04-27`
 
 ## Summary
 
@@ -35,6 +35,17 @@ EEVEE displacement caveat (segment-boundary stability):
   - temporarily force Earth material displacement to `BUMP` during the render run
   - restore the user's original displacement mode at the end of the run
 - This avoids visible elevation jumps while preserving the user's material setting outside animation render execution.
+
+CRITICAL animation caveat (Cycles segment-boundary stability):
+
+- In Cycles segmented animation workflows, `Catmull-Clark` adaptive subdivision can cause tiny but visible surface/texture drift between time segments.
+- This was reproduced at segment boundaries where shared tiles/textures remain unchanged and only one additional tile is introduced.
+- Radius drift is not the cause for this specific issue when `planetka_surface_local_radius` is stable; the remaining drift is topology-sensitive subdivision behavior.
+- Root behavior: `Catmull-Clark` recomputes a smoothed limit surface when segment mesh topology changes, which can shift rendered output at boundaries.
+- CRITICAL mitigation for animation:
+  - Quick Preview segment meshes in Cycles must force `Adaptive Subdivision` `subdivision_type = SIMPLE`.
+  - Final Animation Render in Cycles must force `Adaptive Subdivision` `subdivision_type = SIMPLE` per segment resolve before rendering.
+- Outside segmented animation workflows, default Earth setup may still use `Catmull-Clark`.
 
 ## Root Cause (Observed)
 
@@ -85,6 +96,7 @@ For material/tile logic changes, re-run a Cairo-style reproduction and confirm:
 4. No coverage holes are introduced by merge replacements.
 5. EEVEE segment-boundary renders do not emit `sampler(...) out of bounds` and do not show placeholder-driven brightness shifts.
 6. EEVEE animation segment boundaries do not show displacement-driven tile popping/jitter (temporary BUMP safety mode active during render).
+7. CRITICAL (Cycles): segmented animation boundaries do not show tiny surface/texture drift; verify `Adaptive Subdivision` is forced to `SIMPLE` in Quick Preview and Final Animation Render paths.
 
 For wiring details, see:
 

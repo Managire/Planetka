@@ -541,6 +541,15 @@ function isTileHotPathMonitoringEnabled(env = {}) {
   return parseBooleanFlag(raw);
 }
 
+function isTileEventQueueProducerEnabled(env = {}) {
+  const raw = env.ENABLE_TILE_EVENT_QUEUE_PRODUCER;
+  if (raw === undefined || raw === null || String(raw).trim() === "") {
+    // Default off: direct D1 telemetry path remains active without Queue billable ops.
+    return false;
+  }
+  return parseBooleanFlag(raw);
+}
+
 function blockedAccountResponse(env, message = "Planetka account is blocked. Contact info@planetka.io.") {
   return json(
     {
@@ -3030,6 +3039,7 @@ const TILE_ROUTE_DEPS = {
   PLAN_CODE_FREE,
   clampNonNegativeInt,
   isQualityModeAllowedForPlan,
+  isTileEventQueueProducerEnabled,
   isTileHotPathMonitoringEnabled,
   issueTileSessionToken,
   maybeSignalTileFarmingActivity,

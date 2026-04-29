@@ -272,10 +272,9 @@ def _make_render_operator_proxy(animation_tools):
     cls = animation_tools.PLANETKA_OT_AnimationRenderHeadless
     op = type("FinalGateRenderProxy", (), {})()
     for name in (
+        "_is_render_job_running",
+        "_read_render_heartbeat",
         "_get_selected_texture_quality_mode",
-        "_read_resolve_runtime_status",
-        "_refresh_stuck_finalize_queue",
-        "_wait_or_refresh_finalize_queue",
         "_resolve_segment_frame",
         "_is_eevee_render_engine",
         "_enforce_eevee_bump_only_for_segment",
@@ -343,9 +342,6 @@ def _run_final_animation_case(scene, props, state_module, animation_tools, engin
     op._render_launch_time = 0.0
     op._render_launch_wall_time = 0.0
     op._segment_failures = []
-    op._segment_recovery_attempts = {}
-    op._resolve_finalize_wait_started = 0.0
-    op._resolve_finalize_refresh_attempts = 0
 
     for idx, segment in enumerate(segments):
         segment = dict(segment or {})
@@ -354,20 +350,13 @@ def _run_final_animation_case(scene, props, state_module, animation_tools, engin
         op._segment_index = int(idx)
         op._active_segment = segment
 
-        # Mirror modal pre-segment guard: don't start a new resolve while pipeline says FINALIZE_QUEUED.
-        wait_deadline = time.time() + 30.0
-        while True:
-            ready, message = op._wait_or_refresh_finalize_queue(scene)
-            _assert(not message, f"Finalize queue watchdog failed before segment {idx + 1}: {message}")
-            if ready:
-                break
-            if time.time() > wait_deadline:
-                _fail(f"Timed out waiting for finalize queue before segment {idx + 1}.")
-            try:
-                state_module._auto_resolve_download_pump_timer()
-            except TOOL_RECOVERABLE_EXCEPTIONS:
-                pass
-            time.sleep(0.05)
+        # Mirror simplified modal loop: force-terminate deferred/queued resolve before each segment resolve.
+        try:
+            state_module.stop_auto_resolve_download_pipeline()
+        except TOOL_RECOVERABLE_EXCEPTIONS:
+            pass
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            pass
 
         ok, message = op._resolve_segment_frame(seg_start, tiles_override=segment.get("tiles", ()))
         _assert(ok, f"Resolve failed for segment {idx + 1} ({seg_start:04d}-{seg_end:04d}): {message}")

@@ -229,8 +229,6 @@ def _update_anim_preset_defaults(self, context):
     finally:
         _ANIM_PREVIEW_UPDATE_GUARD = False
 
-    _update_anim_preview_keyframes(self, context)
-
 
 def _update_anim_preview_keyframes(self, context):
     global _ANIM_PREVIEW_UPDATE_GUARD
@@ -289,12 +287,10 @@ def _update_anim_preview_keyframes(self, context):
 
 def _update_navigation_shot_and_anim_preview(self, context):
     update_navigation_shot(self, context)
-    _update_anim_preview_keyframes(self, context)
 
 
 def _update_navigation_focal_and_anim_preview(self, context):
     update_navigation_focal_length(self, context)
-    _update_anim_preview_keyframes(self, context)
 
 
 def _update_anim_render_preset_defaults(self, _context):
@@ -420,7 +416,6 @@ def _set_nav_city_search(self, value):
             resume_navigation_shot_updates()
             nav_suspended = False
         update_navigation_shot(self, context_for_updates)
-        _update_anim_preview_keyframes(self, context_for_updates)
     except (RuntimeError, TypeError, ValueError, AttributeError):
         return
     finally:
@@ -858,7 +853,6 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         default=1,
         min=0,
         description="Start frame used for cinematic preview and animation render workflows",
-        update=_update_anim_preview_keyframes,
     )
 
     anim_frame_end: IntProperty(
@@ -866,7 +860,6 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         default=250,
         min=1,
         description="End frame used for cinematic preview and animation render workflows",
-        update=_update_anim_preview_keyframes,
     )
 
     anim_camera_strength: FloatProperty(
@@ -876,7 +869,6 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         max=5.0,
         precision=2,
         description="Global multiplier for cinematic movement intensity",
-        update=_update_anim_preview_keyframes,
     )
 
     anim_motion_curve: EnumProperty(
@@ -889,7 +881,6 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         ),
         default="EASE_IN_OUT",
         description="Interpolation style used for cinematic preview keyframes",
-        update=_update_anim_preview_keyframes,
     )
 
     anim_start_altitude_km: FloatProperty(
@@ -899,7 +890,6 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         max=50000.0,
         precision=2,
         description="Legacy start altitude value kept for compatibility with older animation files",
-        update=_update_anim_preview_keyframes,
     )
 
     anim_end_altitude_km: FloatProperty(
@@ -909,7 +899,6 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         max=50000.0,
         precision=2,
         description="End altitude for the Zoom cinematic preset",
-        update=_update_anim_preview_keyframes,
     )
 
     anim_orbit_degrees: FloatProperty(
@@ -919,7 +908,6 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         max=360.0,
         precision=2,
         description="Total heading rotation in degrees for Circle/Orbit-style movement",
-        update=_update_anim_preview_keyframes,
     )
 
     anim_circle_direction: EnumProperty(
@@ -930,7 +918,6 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         ),
         default="CLOCKWISE",
         description="Direction used by the Circle cinematic preset",
-        update=_update_anim_preview_keyframes,
     )
 
     anim_flyby_degrees: FloatProperty(
@@ -940,7 +927,6 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         max=120.0,
         precision=2,
         description="Legacy angular travel distance value kept for compatibility with older animation files",
-        update=_update_anim_preview_keyframes,
     )
 
     anim_flyby_camera_heading_deg: FloatProperty(
@@ -950,7 +936,6 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         soft_max=180.0,
         precision=2,
         description="Legacy camera heading offset kept for compatibility with older animation files",
-        update=_update_anim_preview_keyframes,
     )
 
     anim_zoom_rotate_degrees: FloatProperty(
@@ -960,7 +945,6 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         max=360.0,
         precision=2,
         description="Additional camera roll (twist) applied over Zoom movement",
-        update=_update_anim_preview_keyframes,
     )
 
     anim_prepare_max_segments: IntProperty(

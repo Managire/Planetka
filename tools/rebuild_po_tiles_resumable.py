@@ -39,7 +39,7 @@ Z_BASE_SOURCE = {
     4: 1,
     8: 1,
     15: 1,
-    16: 8,
+    16: 1,
     32: 8,
     30: 15,
     60: 15,
@@ -84,6 +84,19 @@ def _retry_sleep(attempt: int) -> None:
     time.sleep(min(5.0, 0.4 * (attempt + 1)))
 
 
+def _parse_int_set(csv_text: str) -> set[int]:
+    raw = str(csv_text or "").strip()
+    if not raw:
+        return set()
+    out: set[int] = set()
+    for part in raw.split(","):
+        tok = part.strip()
+        if not tok:
+            continue
+        out.add(int(tok))
+    return out
+
+
 @dataclass(frozen=True)
 class Task:
     dataset: str
@@ -109,6 +122,7 @@ class Pipeline:
         self.bucket = args.bucket
         self.prefix_root = args.prefix_root.strip("/").strip()
         self.secrets_file = Path(args.secrets_file).expanduser().resolve()
+        self.only_z: set[int] = _parse_int_set(getattr(args, "only_z", ""))
         self.endpoint_url = self._resolve_endpoint()
         self.dataset_ext: dict[str, str] = {}
         self.remote_key_by_name: dict[tuple[str, str], str] = {}
@@ -120,7 +134,8 @@ class Pipeline:
         self._init_db()
         self._log(
             f"pipeline init assets_root={self.assets_root} state_dir={self.state_dir} "
-            f"bucket={self.bucket} prefix_root={self.prefix_root} endpoint={self.endpoint_url}"
+            f"bucket={self.bucket} prefix_root={self.prefix_root} endpoint={self.endpoint_url} "
+            f"only_z={sorted(self.only_z) if self.only_z else 'all'}"
         )
 
     def _log(self, msg: str) -> None:
@@ -320,6 +335,8 @@ class Pipeline:
                 continue
             z = int(row["z"])
             d_eff = int(row["d_eff"])
+            if self.only_z and z not in self.only_z:
+                continue
             # Protected source: never touch z001_d001.
             if z == 1 and d_eff == 1:
                 continue
@@ -1029,6 +1046,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--progress-every", type=int, default=50)
     parser.add_argument("--workers-base", type=int, default=1, help="Worker count for higher-z base stage")
     parser.add_argument("--workers-d", type=int, default=8, help="Worker count for higher-d stage")
+    parser.add_argument(
+        "--only-z",
+        default="",
+        help="Optional comma-separated z-level filter (example: 16,30). Empty means all z levels.",
+    )
     return parser.parse_args()
 
 

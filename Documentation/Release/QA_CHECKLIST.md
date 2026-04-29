@@ -13,7 +13,8 @@
 - [ ] Resolved object is named `Planetka Earth Surface`.
 - [ ] `Create Earth` places surface only in `Planetka - Earth Surface Collection`.
 - [ ] `Resolve Earth` preserves the previous surface collection placement.
-- [ ] Adaptive subdivision modifier exists and uses Catmull-Clark (fallback to Simple only if Blender enum compatibility requires it).
+- [ ] Adaptive subdivision modifier exists and defaults to Catmull-Clark for normal (non-animation) Earth workflow.
+- [ ] CRITICAL (Animation): Cycles segmented animation paths (Quick Preview and Final Animation Render) force Adaptive Subdivision `subdivision_type = SIMPLE` to prevent tiny segment-boundary texture/surface drift.
 - [ ] Dynamic tile window enforcement active (`5..12` tiles at shader stage when dynamic tiles are present) with no missing visible coverage.
 
 ## 3. Automated Validation

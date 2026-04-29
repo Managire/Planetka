@@ -62,7 +62,11 @@ class HandlerRuntimeState:
     render_job_active: bool = False
     render_job_epoch: int = 0
     render_job_last_ended_epoch: int = 0
+    render_job_last_ended_at: float = 0.0
     render_job_last_cancelled_epoch: int = 0
+    render_job_last_progress_at: float = 0.0
+    render_job_last_frame_written_at: float = 0.0
+    render_job_last_frame_written: int = -1
     logging_syncing: bool = False
     frame_keyed_runtime_last_signature: dict = field(default_factory=dict)
 

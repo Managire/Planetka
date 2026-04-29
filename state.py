@@ -91,6 +91,7 @@ _NAV_SYNC_ACTIVE_VIEW_ONCE_KEY = "planetka_nav_sync_active_view_once"
 
 _IDPROP_SYNCING = False
 _LOGGING_SYNCING = False
+_FINAL_ANIMATION_RENDER_ACTIVE = False
 
 _SYNC_IDPROP_MAP = {
     "viewport_opt_suspend_subdivision": "planetka_viewport_opt_suspend_subdivision",
@@ -192,6 +193,11 @@ _RENDER_JOB_EPOCH = 0
 _RENDER_JOB_LAST_ENDED_EPOCH = 0
 CAMERA_INSIDE_EARTH_WARNING_KEY = "planetka_camera_inside_earth_warning"
 _RENDER_JOB_LAST_CANCELLED_EPOCH = 0
+_RENDER_JOB_LAST_ENDED_AT = 0.0
+_RENDER_JOB_POST_END_GUARD_SEC = 8.0
+_RENDER_JOB_LAST_PROGRESS_AT = 0.0
+_RENDER_JOB_LAST_FRAME_WRITTEN_AT = 0.0
+_RENDER_JOB_LAST_FRAME_WRITTEN = -1
 _AUTO_RESOLVE_NEXT_DUE_TIME = {}
 _AUTO_RESOLVE_LAST_CAMERA_SIGNATURE = {}
 _AUTO_RESOLVE_LAST_OUTPUT_SIGNATURE = {}
@@ -331,6 +337,7 @@ def _queue_manual_resolve_download_for_scene(scene):
     return _cache_recovery.queue_manual_resolve_download_for_scene(
         scene,
         get_earth_object=get_earth_object,
+        is_render_job_active=_is_render_job_active,
     )
 
 
@@ -645,14 +652,63 @@ def _is_animation_playing():
     return False
 
 
+def _is_render_handler_job_active():
+    # Reliable signal maintained by Planetka render handlers.
+    if "_HANDLER_RUNTIME_CTX" in globals() and _HANDLER_RUNTIME_CTX is not None:
+        try:
+            return bool(_HANDLER_RUNTIME_CTX.state.render_job_active)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            pass
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            pass
+    return bool(_RENDER_JOB_ACTIVE)
+
+
+def _get_render_job_heartbeat():
+    if "_HANDLER_RUNTIME_CTX" in globals() and _HANDLER_RUNTIME_CTX is not None:
+        try:
+            return dict(_handler_runtime.render_job_heartbeat(_HANDLER_RUNTIME_CTX) or {})
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            return {}
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            return {}
+    return {
+        "active": bool(_RENDER_JOB_ACTIVE),
+        "epoch": int(_RENDER_JOB_EPOCH),
+        "last_cancelled_epoch": int(_RENDER_JOB_LAST_CANCELLED_EPOCH),
+        "last_progress_at": float(_RENDER_JOB_LAST_PROGRESS_AT or 0.0),
+        "last_frame_written_at": float(_RENDER_JOB_LAST_FRAME_WRITTEN_AT or 0.0),
+        "last_frame_written": int(_RENDER_JOB_LAST_FRAME_WRITTEN),
+        "last_ended_at": float(_RENDER_JOB_LAST_ENDED_AT or 0.0),
+    }
+
+
+def _is_render_post_end_guard_active():
+    guard_window_sec = float(max(0.0, _RENDER_JOB_POST_END_GUARD_SEC))
+    if guard_window_sec <= 0.0:
+        return False
+    if "_HANDLER_RUNTIME_CTX" in globals() and _HANDLER_RUNTIME_CTX is not None:
+        try:
+            ended_at = float(getattr(_HANDLER_RUNTIME_CTX.state, "render_job_last_ended_at", 0.0) or 0.0)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            ended_at = 0.0
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            ended_at = 0.0
+    else:
+        ended_at = float(_RENDER_JOB_LAST_ENDED_AT or 0.0)
+    if ended_at <= 0.0:
+        return False
+    return (time.monotonic() - ended_at) < guard_window_sec
+
+
 def _is_render_job_active():
+    if bool(_FINAL_ANIMATION_RENDER_ACTIVE):
+        return True
+
     # bpy.app.is_job_running("RENDER") has been observed to get stuck True on some systems after F12
     # renders, which would permanently disable auto-resolve. Track render state via handlers and
     # prefer that signal.
-    if "_HANDLER_RUNTIME_CTX" in globals() and _HANDLER_RUNTIME_CTX is not None:
-        if bool(_HANDLER_RUNTIME_CTX.state.render_job_active):
-            return True
-    elif _RENDER_JOB_ACTIVE:
+    if _is_render_handler_job_active():
         return True
 
     app = getattr(bpy, "app", None)
@@ -668,6 +724,27 @@ def _is_render_job_active():
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             continue
     return False
+
+
+def _is_auto_resolve_render_guard_active():
+    if _is_render_job_active():
+        return True
+    return _is_render_post_end_guard_active()
+
+
+def set_final_animation_render_active(active=False):
+    global _FINAL_ANIMATION_RENDER_ACTIVE
+    _FINAL_ANIMATION_RENDER_ACTIVE = bool(active)
+    try:
+        _tag_view3d_redraw()
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed tagging View3D redraw for render UI lock", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed tagging View3D redraw for render UI lock", exc_info=True)
+
+
+def is_final_animation_render_active():
+    return bool(_FINAL_ANIMATION_RENDER_ACTIVE)
 
 
 def _clear_auto_resolve_in_flight():
@@ -1233,7 +1310,11 @@ def _build_handler_runtime_context():
         render_job_active=_RENDER_JOB_ACTIVE,
         render_job_epoch=_RENDER_JOB_EPOCH,
         render_job_last_ended_epoch=_RENDER_JOB_LAST_ENDED_EPOCH,
+        render_job_last_ended_at=_RENDER_JOB_LAST_ENDED_AT,
         render_job_last_cancelled_epoch=_RENDER_JOB_LAST_CANCELLED_EPOCH,
+        render_job_last_progress_at=_RENDER_JOB_LAST_PROGRESS_AT,
+        render_job_last_frame_written_at=_RENDER_JOB_LAST_FRAME_WRITTEN_AT,
+        render_job_last_frame_written=_RENDER_JOB_LAST_FRAME_WRITTEN,
         logging_syncing=_LOGGING_SYNCING,
         frame_keyed_runtime_last_signature=_FRAME_KEYED_RUNTIME_LAST_SIGNATURE,
     )
@@ -1249,6 +1330,14 @@ def recover_post_render_state(scene=None, cancelled=False):
 
 def mark_render_job_started():
     return _handler_runtime.mark_render_job_started(_HANDLER_RUNTIME_CTX)
+
+
+def mark_render_job_progress(scene=None, frame_written=False):
+    return _handler_runtime.mark_render_job_progress(
+        scene=scene,
+        frame_written=bool(frame_written),
+        ctx=_HANDLER_RUNTIME_CTX,
+    )
 
 
 def _sync_logging_from_scenes():
@@ -1332,7 +1421,7 @@ def _build_auto_resolve_contexts():
         camera_signature=_camera_signature,
         output_resolution_signature=_output_resolution_signature,
         canonical_tiles=_canonical_tiles,
-        is_render_job_active=_is_render_job_active,
+        is_render_job_active=_is_auto_resolve_render_guard_active,
         is_animation_playing=_is_animation_playing,
         mark_manual_queued_resolve_error=_mark_manual_queued_resolve_error,
         read_scene_last_resolve_error=_read_scene_last_resolve_error,
@@ -1372,7 +1461,7 @@ def _build_auto_resolve_contexts():
         get_earth_object=get_earth_object,
         get_tile_utils=_get_tile_utils,
         canonical_tiles=_canonical_tiles,
-        is_render_job_active=_is_render_job_active,
+        is_render_job_active=_is_auto_resolve_render_guard_active,
         is_animation_playing=_is_animation_playing,
         is_navigation_user_edit_active=_is_navigation_user_edit_active,
         stop_auto_resolve_download_pipeline=stop_auto_resolve_download_pipeline,
@@ -1420,6 +1509,7 @@ def _build_auto_resolve_contexts():
         output_resolution_signature=_output_resolution_signature,
         request_auto_resolve=request_auto_resolve,
         get_r2_source=_get_r2_source,
+        is_render_job_active=_is_auto_resolve_render_guard_active,
     )
     return (
         settings,

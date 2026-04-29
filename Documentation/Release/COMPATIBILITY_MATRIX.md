@@ -2,7 +2,7 @@
 
 Current extension release candidate: `v0.7.0`
 Public update channel remains on: `v0.5.3`
-Last matrix update: `2026-04-25`
+Last matrix update: `2026-04-27`
 
 | Blender Version | Status | Automated Tests | Notes |
 | --- | --- | --- | --- |
@@ -31,7 +31,7 @@ Last matrix update: `2026-04-25`
 | EEVEE (Rendered viewport / segmented animation render) | Supported | EEVEE is supported for Planetka stills, quick previews, and segmented animation rendering in this candidate. Continue manual QA for heavy scenes and long segmented renders. |
 | Cycles (GPU/CPU segmented render) | Supported | Cycles is supported for Planetka stills and segmented animation rendering in this candidate. |
 | Cycles/EEVEE dynamic tile window | Mitigated | Planetka enforces a pre-shader dynamic tile window of `0..12` tiles (real tiles only, no synthetic floor padding) to avoid EEVEE sampler overflow and Cycles SVM overflow in heavy views. See `Documentation/Developer/CYCLES_SVM_TILE_LIMIT.md`. |
-| Adaptive subdivision mode | Locked | Planetka Earth Surface uses `Catmull-Clark` adaptive subdivision (with `Simple` fallback only for enum compatibility). Keep dicing values in the recommended range for final Cycles renders. |
+| Adaptive subdivision mode | Workflow-dependent (critical animation rule) | Planetka Earth Surface defaults to `Catmull-Clark` in normal workflows. **CRITICAL:** in segmented animation on Cycles (Quick Preview and Final Animation Render), force `Adaptive Subdivision` to `SIMPLE` to prevent tiny segment-boundary texture/surface drift. |
 | Solid viewport | Verified | Resolve workflow validated. |
 | OpenGL/Cycles/EEVEE preview | Verified by user reports | Stable in reported scenarios. |
 

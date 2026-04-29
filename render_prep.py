@@ -30,6 +30,7 @@ from .error_utils import PLANETKA_IMPORT_RECOVERABLE_EXCEPTIONS, PLANETKA_RECOVE
 from .extension_prefs import get_earth_object, get_earth_surface_candidates, get_prefs
 from .operator_utils import ErrorCode, fail, require_planetka_props, require_scene
 from .r2_source import (
+    is_indexed_tile_asset,
     is_remote_source_configured,
     retain_recent_resolve_cache,
     texture_file_exists,
@@ -603,7 +604,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
 
     silent: BoolProperty(
         name="Silent",
-        default=False,
+        default=True,
         options={'HIDDEN', 'SKIP_SAVE'},
     )
 
@@ -1041,7 +1042,8 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                     ),
                     ui_reports=ui_reports,
                 )
-            ui_reports.append(self._ui_report("INFO", "Planetka resolve queued. Downloading data in background."))
+            if not bool(getattr(self, "silent", False)):
+                ui_reports.append(self._ui_report("INFO", "Planetka resolve queued. Downloading data in background."))
             return ResolveEarlyResult(response={'FINISHED'}, ui_reports=ui_reports)
 
         _ = props
@@ -1221,23 +1223,43 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 logger=logger,
             )
         if int(payload_data.prefetch_missing_count) > 0:
-            missing_s2_count = 0
+            required_missing_details = []
             if payload_data.prefetch_missing_details:
                 for entry in payload_data.prefetch_missing_details:
+                    if not isinstance(entry, dict):
+                        continue
                     folder_value = str(entry.get("folder", "") or "").strip().upper()
-                    if folder_value == "S2":
-                        missing_s2_count += 1
-            logger.warning(
-                "Planetka: resolve prefetch missing files (missing=%d resolved=%d errors=%d, missing_s2=%d).",
-                int(payload_data.prefetch_missing_count),
-                int(payload_data.prefetch_resolved_count),
-                int(payload_data.prefetch_error_count),
-                int(missing_s2_count),
-            )
-            if payload_data.prefetch_missing_details:
-                for entry in payload_data.prefetch_missing_details:
+                    prefix_value = str(entry.get("prefix", "") or "").strip()
+                    tile_value = str(entry.get("tile", "") or "").strip()
+                    ext_value = str(entry.get("ext", "") or "").strip().lower()
+                    if not folder_value or not prefix_value or not tile_value:
+                        continue
+                    if ext_value and not ext_value.startswith("."):
+                        ext_value = f".{ext_value}"
+                    if not ext_value:
+                        ext_value = ".exr"
+                    file_name = f"{prefix_value}_{tile_value}{ext_value}"
+                    if not is_indexed_tile_asset(folder_value, file_name):
+                        continue
+                    required_missing_details.append(entry)
+            required_missing_count = int(len(required_missing_details))
+            if required_missing_count > 0:
+                required_missing_s2_count = 0
+                for entry in required_missing_details:
+                    if str(entry.get("folder", "") or "").strip().upper() == "S2":
+                        required_missing_s2_count += 1
+                logger.warning(
+                    "Planetka: resolve prefetch missing required indexed files "
+                    "(required_missing=%d total_missing=%d resolved=%d errors=%d required_s2=%d).",
+                    int(required_missing_count),
+                    int(payload_data.prefetch_missing_count),
+                    int(payload_data.prefetch_resolved_count),
+                    int(payload_data.prefetch_error_count),
+                    int(required_missing_s2_count),
+                )
+                for entry in required_missing_details:
                     logger.warning(
-                        "Planetka prefetch missing asset: key=%s tile=%s cache_exists=%s remote_exists=%s fetch_error=%s remote_error=%s",
+                        "Planetka prefetch missing required asset: key=%s tile=%s cache_exists=%s remote_exists=%s fetch_error=%s remote_error=%s",
                         str(entry.get("key", "") or ""),
                         str(entry.get("tile", "") or ""),
                         bool(entry.get("cache_exists", False)),
@@ -1245,11 +1267,11 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                         str(entry.get("fetch_error", "") or ""),
                         str(entry.get("remote_error", "") or ""),
                     )
-            if int(missing_s2_count) > 0:
                 missing_message = (
-                    "Planetka resolve download completed with missing required S2 files "
-                    f"({int(missing_s2_count)} S2 missing, {int(payload_data.prefetch_missing_count)} total missing, "
-                    f"{int(payload_data.prefetch_resolved_count)} resolved, {int(payload_data.prefetch_error_count)} errors)."
+                    "Planetka resolve download completed with missing required indexed files "
+                    f"({int(required_missing_count)} required missing, {int(required_missing_s2_count)} required S2 missing, "
+                    f"{int(payload_data.prefetch_missing_count)} total missing, {int(payload_data.prefetch_resolved_count)} resolved, "
+                    f"{int(payload_data.prefetch_error_count)} errors)."
                 )
                 coded_missing_message = with_error_code(ErrorCode.RESOLVE_REFRESH_FAILED, missing_message)
                 _store_last_resolve_error(
@@ -1663,7 +1685,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             )
 
         if int(missing_node_images) > 0:
-            logger.warning(
+            logger.debug(
                 "Planetka: detected %d texture node(s) without image assignment after resolve.",
                 int(missing_node_images),
             )
@@ -1674,14 +1696,14 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             except (TypeError, ValueError):
                 shader_missing_texture_count = 0
         if int(shader_missing_texture_count) > 0:
-            logger.warning(
+            logger.debug(
                 "Planetka: detected %d missing tile texture assignment(s) after resolve.",
                 int(shader_missing_texture_count),
             )
         if int(shader_missing_texture_count) > 0:
             # Missing texture assignments here usually mean fallback textures were applied
             # (expected when EL/WT/PO assets are unavailable for a tile).
-            logger.warning(
+            logger.debug(
                 "Planetka: resolve used fallback textures (missing_texture_assignments=%d).",
                 int(shader_missing_texture_count),
             )

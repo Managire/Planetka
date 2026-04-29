@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 
 
 _AUTO_RESOLVE_STATE_CTX = None
+_ORPHAN_FINALIZE_QUEUE_GRACE_SEC = 5.0
 
 
 def _require_ctx():
@@ -315,6 +316,39 @@ def get_resolve_runtime_status(scene=None, ctx=None):
             "running": True,
         })
         return status
+
+    if isinstance(completed_payload, dict):
+        # Self-heal stale completed payloads that got orphaned (no active/pending/thread work
+        # and not currently rendering), otherwise UI can stay stuck on FINALIZE_QUEUED forever.
+        can_orphan = (
+            not bool(in_flight)
+            and not bool(thread_running)
+            and active_job is None
+            and pending_job is None
+        )
+        if can_orphan:
+            render_running = False
+            try:
+                is_render_job_active = getattr(deps, "is_render_job_active", None)
+                if callable(is_render_job_active):
+                    render_running = bool(is_render_job_active())
+            except deps.recoverable_exceptions:
+                render_running = False
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                render_running = False
+            if not render_running:
+                now = float(time.monotonic())
+                completed_at = 0.0
+                try:
+                    completed_at = float(completed_payload.get("completed_at", 0.0) or 0.0)
+                except (TypeError, ValueError, AttributeError):
+                    completed_at = 0.0
+                age = max(0.0, now - completed_at) if completed_at > 0.0 else float(_ORPHAN_FINALIZE_QUEUE_GRACE_SEC)
+                if age >= float(_ORPHAN_FINALIZE_QUEUE_GRACE_SEC):
+                    with state.download_lock:
+                        if isinstance(state.download_completed, dict):
+                            state.download_completed = None
+                    completed_payload = None
 
     if isinstance(completed_payload, dict):
         status.update({

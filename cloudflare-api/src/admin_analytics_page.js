@@ -185,6 +185,8 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     <div class="card"><div class="label" id="authRefreshAttemptsLabel">Refresh Attempts (7d)</div><div id="authRefreshTotal" class="value">-</div></div>
     <div class="card"><div class="label" id="authRefreshFailuresLabel">Refresh Failures (7d)</div><div id="authRefreshFailures" class="value">-</div></div>
     <div class="card"><div class="label">Refresh Failure Rate</div><div id="authRefreshFailureRate" class="value">-</div></div>
+    <div class="card"><div class="label">Critical Disconnects (7d)</div><div id="authRefreshCriticalFailures" class="value">-</div></div>
+    <div class="card"><div class="label">Critical Affected Users (7d)</div><div id="authRefreshCriticalUsers" class="value">-</div></div>
   </div>
 
   <div class="section">
@@ -210,6 +212,9 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     <h3 id="authRefreshHeading">Auth Refresh Health (7d)</h3>
     <table id="authRefreshUsersTable"><thead><tr><th>User</th><th>Failure Count</th><th>Last Failure</th></tr></thead><tbody></tbody></table>
     <table id="authRefreshErrorsTable"><thead><tr><th>Error</th><th>Count</th></tr></thead><tbody></tbody></table>
+    <h3 style="margin-top: 14px;">Critical Disconnects (7d)</h3>
+    <table id="authRefreshCriticalUsersTable"><thead><tr><th>User</th><th>Critical Count</th><th>Last Critical</th></tr></thead><tbody></tbody></table>
+    <table id="authRefreshCriticalErrorsTable"><thead><tr><th>Critical Error</th><th>Count</th></tr></thead><tbody></tbody></table>
   </div>
   <div class="section">
     <h3>Recent Failures</h3>
@@ -822,10 +827,14 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         const refreshHealth = data.auth_refresh_health || {};
         const refreshTotal = Number(refreshHealth.total_count || 0);
         const refreshFailures = Number(refreshHealth.failure_count || 0);
+        const refreshCriticalFailures = Number(refreshHealth.critical_failure_count || 0);
+        const refreshCriticalUsers = Number(refreshHealth.critical_failed_user_count || 0);
         const refreshFailureRate = refreshTotal > 0 ? (100 * refreshFailures / refreshTotal) : 0;
         setText("authRefreshTotal", fmtInt(refreshTotal));
         setText("authRefreshFailures", fmtInt(refreshFailures));
         setText("authRefreshFailureRate", refreshFailureRate.toFixed(2) + "%");
+        setText("authRefreshCriticalFailures", fmtInt(refreshCriticalFailures));
+        setText("authRefreshCriticalUsers", fmtInt(refreshCriticalUsers));
         renderCloudBillableUsage(data.cloudflare_billable_usage || {});
         renderRows("activeUsersTable", data.active_users_10m, (row) => {
           const normalizedPlan = normalizePlanCode(row && row.user_status);
@@ -849,6 +858,8 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         renderRows("tilesTable", data.top_tiles, (row) => \`<td>\${row.tile_key || ""}</td><td>\${fmtInt(row.request_count)}</td><td>\${fmtGb(row.bytes_served)}</td>\`);
         renderRows("authRefreshUsersTable", refreshHealth.top_failure_users || [], (row) => \`<td>\${row.user_email || row.user_id || ""}</td><td>\${fmtInt(row.failure_count)}</td><td>\${row.last_failure_at || ""}</td>\`);
         renderRows("authRefreshErrorsTable", refreshHealth.error_breakdown || [], (row) => \`<td>\${row.error_code || ""}</td><td>\${fmtInt(row.count)}</td>\`);
+        renderRows("authRefreshCriticalUsersTable", refreshHealth.top_critical_failure_users || [], (row) => \`<td>\${row.user_email || row.user_id || ""}</td><td>\${fmtInt(row.failure_count)}</td><td>\${row.last_failure_at || ""}</td>\`);
+        renderRows("authRefreshCriticalErrorsTable", refreshHealth.critical_error_breakdown || [], (row) => \`<td>\${row.error_code || ""}</td><td>\${fmtInt(row.count)}</td>\`);
         renderRows("failsTable", data.recent_failures, (row) => \`<td>\${row.created_at || ""}</td><td>\${row.user_email || ""}</td><td>\${row.status_code || ""}</td><td>\${row.error_code || ""}</td><td>\${row.tile_key || ""}</td><td>\${row.cache_status || ""}</td><td>\${row.duration_ms || ""}</td>\`);
         if (statusEl) {
           statusEl.textContent = "Updated " + new Date().toLocaleTimeString();

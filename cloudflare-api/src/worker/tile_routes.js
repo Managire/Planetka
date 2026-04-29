@@ -81,6 +81,7 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
     PLAN_CODE_FREE,
     clampNonNegativeInt,
     isQualityModeAllowedForPlan,
+    isTileEventQueueProducerEnabled,
     isTileHotPathMonitoringEnabled,
     maybeSignalTileFarmingActivity,
     minimumPlanQualityForTile,
@@ -344,7 +345,11 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
       });
     };
     const enqueueTileEvent = async () => {
-      if (!env.TILE_EVENT_QUEUE || typeof env.TILE_EVENT_QUEUE.send !== "function") {
+      if (
+        !isTileEventQueueProducerEnabled(env)
+        || !env.TILE_EVENT_QUEUE
+        || typeof env.TILE_EVENT_QUEUE.send !== "function"
+      ) {
         await processSignals();
         return;
       }

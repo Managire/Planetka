@@ -284,7 +284,7 @@ def recover_missing_cache_image_paths_to_fallback(get_r2_source):
     return int(missing_count), int(recovered_count)
 
 
-def queue_manual_resolve_download_for_scene(scene, *, get_earth_object):
+def queue_manual_resolve_download_for_scene(scene, *, get_earth_object, is_render_job_active=None):
     if scene is None:
         return False
     props = getattr(scene, "planetka", None)
@@ -293,12 +293,11 @@ def queue_manual_resolve_download_for_scene(scene, *, get_earth_object):
     if get_earth_object() is None:
         return False
     try:
-        is_job_running = getattr(getattr(bpy, "app", None), "is_job_running", None)
-        if callable(is_job_running) and bool(is_job_running("RENDER")):
-            logger.info("Planetka: skipping load-time queued recovery resolve during active render job.")
+        if callable(is_render_job_active) and bool(is_render_job_active()):
+            logger.info("Planetka: skipping load-time queued recovery resolve during active final animation render.")
             return False
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed checking render job status for load-time recovery queue", exc_info=True)
+        logger.debug("Planetka: failed checking final animation render state for load-time recovery queue", exc_info=True)
     try:
         wm = getattr(getattr(bpy, "context", None), "window_manager", None)
         if wm is not None and bool(getattr(wm, "is_interface_locked", False)):

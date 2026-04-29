@@ -615,6 +615,14 @@ def _lookup_indexed_texture_size(folder, file_name):
         return None
 
 
+def is_indexed_tile_asset(folder, file_name):
+    """Return True when the tile key exists in tile_sizes.sqlite."""
+    try:
+        return _lookup_indexed_texture_size(folder, file_name) is not None
+    except (sqlite3.Error, RuntimeError, TypeError, ValueError, OSError):
+        return False
+
+
 def _lookup_local_texture_size(folder, file_name):
     key = f"{folder}/{file_name}"
     with _LOCAL_SIZE_CACHE_LOCK:
@@ -1832,13 +1840,32 @@ def prefetch_resolve_downloads(requests, base_path=None, cancel_event=None):
         _resume_cache_prune()
 
     if missing_details:
-        logger.error(
-            "Planetka resolve prefetch diagnostics: missing=%d resolved=%d error=%d sample=%s",
-            int(missing_count),
-            int(resolved_count),
-            int(error_count),
-            json.dumps(missing_details, ensure_ascii=True),
-        )
+        reportable_missing_details = []
+        for entry in missing_details:
+            if not isinstance(entry, dict):
+                continue
+            folder_value = str(entry.get("folder", "") or "").strip().upper()
+            prefix_value = str(entry.get("prefix", "") or "").strip()
+            tile_value = str(entry.get("tile", "") or "").strip()
+            ext_value = str(entry.get("ext", "") or "").strip().lower()
+            if not folder_value or not prefix_value or not tile_value:
+                continue
+            if ext_value and not ext_value.startswith("."):
+                ext_value = f".{ext_value}"
+            if not ext_value:
+                ext_value = ".exr"
+            file_name = f"{prefix_value}_{tile_value}{ext_value}"
+            if not is_indexed_tile_asset(folder_value, file_name):
+                continue
+            reportable_missing_details.append(entry)
+        if reportable_missing_details:
+            logger.warning(
+                "Planetka resolve prefetch diagnostics: required_missing=%d resolved=%d error=%d sample=%s",
+                int(len(reportable_missing_details)),
+                int(resolved_count),
+                int(error_count),
+                json.dumps(reportable_missing_details, ensure_ascii=True),
+            )
 
     return {
         "resolved_count": int(resolved_count),

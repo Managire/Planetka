@@ -1,3 +1,6 @@
+import time
+
+
 _HANDLER_RUNTIME_CTX = None
 ANIMATION_EEVEE_FORCE_BUMP_RUNTIME_KEY = "planetka_anim_render_eevee_force_bump"
 
@@ -27,6 +30,9 @@ def recover_post_render_state(scene=None, cancelled=False, ctx=None):
     deps.clear_auto_resolve_in_flight()
     state.render_job_active = False
     state.render_job_last_ended_epoch = int(state.render_job_epoch)
+    ended_at = float(time.monotonic())
+    state.render_job_last_ended_at = ended_at
+    state.render_job_last_progress_at = ended_at
     if bool(cancelled):
         state.render_job_last_cancelled_epoch = int(state.render_job_epoch)
 
@@ -41,9 +47,11 @@ def recover_post_render_state(scene=None, cancelled=False, ctx=None):
         props = getattr(target_scene, "planetka", None)
         try:
             auto_resolve_enabled = bool(getattr(props, "auto_resolve", False)) if props is not None else False
-        except (deps.recoverable_exceptions, RuntimeError, TypeError, ValueError, AttributeError):
+        except deps.recoverable_exceptions:
             auto_resolve_enabled = False
-        if auto_resolve_enabled:
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            auto_resolve_enabled = False
+        if auto_resolve_enabled and not bool(cancelled):
             # Render completion can still be in a transient drawing/read-only state.
             # Avoid immediate post-render resolve requests to reduce write-state races.
             deps.mark_auto_resolve_dirty(target_scene, immediate=False)
@@ -60,15 +68,61 @@ def mark_render_job_started(ctx=None):
         # Treat the whole animation as one render job to avoid per-frame
         # self-heal churn and epoch flips during segment rendering.
         return int(state.render_job_epoch)
+    started_at = float(time.monotonic())
     try:
         deps.self_heal_missing_cache_images_for_render(
             getattr(getattr(deps.bpy, "context", None), "scene", None)
         )
-    except (deps.recoverable_exceptions, RuntimeError, TypeError, ValueError, AttributeError, OSError):
+    except deps.recoverable_exceptions:
+        deps.logger.debug("Planetka: render self-heal preflight failed", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
         deps.logger.debug("Planetka: render self-heal preflight failed", exc_info=True)
     state.render_job_epoch = int(state.render_job_epoch) + 1
     state.render_job_active = True
+    state.render_job_last_ended_at = 0.0
+    state.render_job_last_progress_at = started_at
+    state.render_job_last_frame_written_at = 0.0
+    state.render_job_last_frame_written = -1
     return int(state.render_job_epoch)
+
+
+def mark_render_job_progress(scene=None, frame_written=False, ctx=None):
+    ctx = _coerce_ctx(ctx)
+    deps = ctx.deps
+    state = ctx.state
+
+    now = float(time.monotonic())
+    state.render_job_last_progress_at = now
+    if not bool(frame_written):
+        return
+
+    state.render_job_last_frame_written_at = now
+    frame_value = -1
+    target_scene = scene
+    if target_scene is None:
+        target_scene = getattr(getattr(deps.bpy, "context", None), "scene", None)
+    if target_scene is not None:
+        try:
+            frame_value = int(getattr(target_scene, "frame_current", -1))
+        except deps.recoverable_exceptions:
+            frame_value = -1
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            frame_value = -1
+    state.render_job_last_frame_written = int(frame_value)
+
+
+def render_job_heartbeat(ctx=None):
+    ctx = _coerce_ctx(ctx)
+    state = ctx.state
+    return {
+        "active": bool(state.render_job_active),
+        "epoch": int(state.render_job_epoch),
+        "last_cancelled_epoch": int(state.render_job_last_cancelled_epoch),
+        "last_progress_at": float(state.render_job_last_progress_at or 0.0),
+        "last_frame_written_at": float(state.render_job_last_frame_written_at or 0.0),
+        "last_frame_written": int(state.render_job_last_frame_written),
+        "last_ended_at": float(state.render_job_last_ended_at or 0.0),
+    }
 
 
 def sync_logging_from_scenes(ctx=None):
@@ -117,7 +171,9 @@ def initialize_props_from_imported_planetka(scene, ctx=None):
         scene["planetka_enable_global_clouds"] = False
         scene["planetka_enable_local_clouds"] = False
         scene["planetka_enable_vdb_clouds"] = False
-    except (deps.recoverable_exceptions, RuntimeError, TypeError, ValueError, AttributeError):
+    except deps.recoverable_exceptions:
+        deps.logger.debug("Planetka: failed forcing atmosphere/cloud scene idprops off", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
         deps.logger.debug("Planetka: failed forcing atmosphere/cloud scene idprops off", exc_info=True)
 
     deps.sync_idprops_from_props(scene)
@@ -128,7 +184,9 @@ def _enforce_planetka_earth_surface_displacement_mode(scene, deps):
         return
     try:
         force_eevee_bump = bool(scene.get(ANIMATION_EEVEE_FORCE_BUMP_RUNTIME_KEY, False))
-    except (deps.recoverable_exceptions, RuntimeError, TypeError, ValueError, AttributeError):
+    except deps.recoverable_exceptions:
+        force_eevee_bump = False
+    except (RuntimeError, TypeError, ValueError, AttributeError):
         force_eevee_bump = False
     if bool(force_eevee_bump):
         try:
@@ -187,7 +245,9 @@ def depsgraph_update_post(_scene, _depsgraph, ctx=None):
     if props is not None:
         try:
             preset_token = str(getattr(props, "anim_camera_preset", "NONE") or "NONE").strip().upper()
-        except (deps.recoverable_exceptions, RuntimeError, TypeError, ValueError, AttributeError):
+        except deps.recoverable_exceptions:
+            preset_token = "NONE"
+        except (RuntimeError, TypeError, ValueError, AttributeError):
             preset_token = "NONE"
         if preset_token in {"PUSH_IN", "PULL_BACK"}:
             preset_token = "ZOOM"
@@ -291,6 +351,8 @@ def load_post(_dummy, ctx=None):
                 scene[deps.account_panel_default_collapsed_key] = True
             elif deps.account_panel_default_collapsed_key in scene:
                 del scene[deps.account_panel_default_collapsed_key]
-        except (deps.recoverable_exceptions, RuntimeError, TypeError, ValueError, AttributeError):
+        except deps.recoverable_exceptions:
+            deps.logger.debug("Planetka: failed syncing account panel default-collapsed state", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
             deps.logger.debug("Planetka: failed syncing account panel default-collapsed state", exc_info=True)
     deps.ensure_auto_resolve_service_running()

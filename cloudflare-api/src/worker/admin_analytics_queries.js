@@ -42,6 +42,28 @@ const R2_CLASS_B_ACTION_TYPES = new Set([
   "getbucketlifecycleconfiguration",
 ]);
 
+const AUTH_REFRESH_CRITICAL_ERROR_CODES = new Set([
+  "invalid_refresh_token",
+  "refresh_token_revoked",
+  "refresh_token_expired",
+  "api_key_revoked",
+  "account_blocked",
+  "invalid_user_status",
+  "account_not_connected",
+]);
+
+
+function authRefreshCriticalFailureSql(tableAlias = "") {
+  const alias = String(tableAlias || "").trim();
+  const columnPrefix = alias ? `${alias}.` : "";
+  const errorCodeExpr = `LOWER(COALESCE(NULLIF(TRIM(${columnPrefix}error_code), ''), 'unknown_error'))`;
+  const httpStatusExpr = `COALESCE(${columnPrefix}http_status, 0)`;
+  const codeList = Array.from(AUTH_REFRESH_CRITICAL_ERROR_CODES)
+    .map((code) => `'${String(code).replace(/'/g, "''")}'`)
+    .join(", ");
+  return `(${errorCodeExpr} IN (${codeList}) OR ${httpStatusExpr} IN (401, 403))`;
+}
+
 export function sanitizeAnalyticsMinutes(value, fallback, deps) {
   const parsed = deps.parseNonNegativeInteger(value, fallback);
   if (parsed <= 0) {
@@ -955,7 +977,9 @@ export async function collectAnalyticsSnapshot(
         COUNT(*) AS total_count,
         COALESCE(SUM(CASE WHEN outcome = 'success' THEN 1 ELSE 0 END), 0) AS success_count,
         COALESCE(SUM(CASE WHEN outcome != 'success' THEN 1 ELSE 0 END), 0) AS failure_count,
-        COALESCE(COUNT(DISTINCT CASE WHEN outcome != 'success' AND user_id IS NOT NULL AND user_id != '' THEN user_id END), 0) AS failed_user_count
+        COALESCE(COUNT(DISTINCT CASE WHEN outcome != 'success' AND user_id IS NOT NULL AND user_id != '' THEN user_id END), 0) AS failed_user_count,
+        COALESCE(SUM(CASE WHEN outcome != 'success' AND ${authRefreshCriticalFailureSql()} THEN 1 ELSE 0 END), 0) AS critical_failure_count,
+        COALESCE(COUNT(DISTINCT CASE WHEN outcome != 'success' AND ${authRefreshCriticalFailureSql()} AND user_id IS NOT NULL AND user_id != '' THEN user_id END), 0) AS critical_failed_user_count
       FROM auth_refresh_events
       WHERE created_at_unix >= ?
       ${authRefreshEmailFilter.condition ? `AND ${authRefreshEmailFilter.condition}` : ""}
@@ -991,6 +1015,44 @@ export async function collectAnalyticsSnapshot(
       WHERE
         created_at_unix >= ?
         AND outcome != 'success'
+        ${authRefreshEmailFilter.condition ? `AND ${authRefreshEmailFilter.condition}` : ""}
+      GROUP BY COALESCE(NULLIF(TRIM(error_code), ''), 'unknown_error')
+      ORDER BY count DESC
+      LIMIT 20
+    `,
+    [authRefreshWindowStartUnix, ...authRefreshEmailFilter.bindings],
+  );
+  const authRefreshTopCriticalFailureUsers = await deps.dbAll(
+    db,
+    `
+      SELECT
+        user_id,
+        user_email,
+        COUNT(*) AS failure_count,
+        MAX(created_at) AS last_failure_at
+      FROM auth_refresh_events
+      WHERE
+        created_at_unix >= ?
+        AND outcome != 'success'
+        AND ${authRefreshCriticalFailureSql()}
+        ${authRefreshEmailFilter.condition ? `AND ${authRefreshEmailFilter.condition}` : ""}
+      GROUP BY user_id, user_email
+      ORDER BY failure_count DESC
+      LIMIT 20
+    `,
+    [authRefreshWindowStartUnix, ...authRefreshEmailFilter.bindings],
+  );
+  const authRefreshCriticalErrorBreakdown = await deps.dbAll(
+    db,
+    `
+      SELECT
+        COALESCE(NULLIF(TRIM(error_code), ''), 'unknown_error') AS error_code,
+        COUNT(*) AS count
+      FROM auth_refresh_events
+      WHERE
+        created_at_unix >= ?
+        AND outcome != 'success'
+        AND ${authRefreshCriticalFailureSql()}
         ${authRefreshEmailFilter.condition ? `AND ${authRefreshEmailFilter.condition}` : ""}
       GROUP BY COALESCE(NULLIF(TRIM(error_code), ''), 'unknown_error')
       ORDER BY count DESC
@@ -1274,8 +1336,12 @@ export async function collectAnalyticsSnapshot(
       success_count: deps.clampNonNegativeInt(authRefreshSummary && authRefreshSummary.success_count),
       failure_count: deps.clampNonNegativeInt(authRefreshSummary && authRefreshSummary.failure_count),
       failed_user_count: deps.clampNonNegativeInt(authRefreshSummary && authRefreshSummary.failed_user_count),
+      critical_failure_count: deps.clampNonNegativeInt(authRefreshSummary && authRefreshSummary.critical_failure_count),
+      critical_failed_user_count: deps.clampNonNegativeInt(authRefreshSummary && authRefreshSummary.critical_failed_user_count),
       top_failure_users: Array.isArray(authRefreshTopFailureUsers) ? authRefreshTopFailureUsers : [],
       error_breakdown: Array.isArray(authRefreshErrorBreakdown) ? authRefreshErrorBreakdown : [],
+      top_critical_failure_users: Array.isArray(authRefreshTopCriticalFailureUsers) ? authRefreshTopCriticalFailureUsers : [],
+      critical_error_breakdown: Array.isArray(authRefreshCriticalErrorBreakdown) ? authRefreshCriticalErrorBreakdown : [],
     },
     rollup_30d: {
       window_days: 30,

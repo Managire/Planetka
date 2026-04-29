@@ -48,7 +48,7 @@ Z_BASE_SOURCE = {
     4: 1,
     8: 1,
     15: 1,
-    16: 8,
+    16: 1,
     32: 8,
     30: 15,
     60: 15,
@@ -93,6 +93,36 @@ def _retry_sleep(attempt: int) -> None:
     time.sleep(min(5.0, 0.4 * (attempt + 1)))
 
 
+def _parse_int_set(csv_text: str) -> set[int]:
+    raw = str(csv_text or "").strip()
+    if not raw:
+        return set()
+    out: set[int] = set()
+    for part in raw.split(","):
+        tok = part.strip()
+        if not tok:
+            continue
+        out.add(int(tok))
+    return out
+
+
+def _parse_dataset_set(csv_text: str) -> set[str]:
+    raw = str(csv_text or "").strip()
+    if not raw:
+        return set(DATASETS)
+    out: set[str] = set()
+    for part in raw.split(","):
+        tok = part.strip().upper()
+        if not tok:
+            continue
+        if tok not in DATASETS:
+            raise RuntimeError(f"unsupported dataset token: {tok}")
+        out.add(tok)
+    if not out:
+        return set(DATASETS)
+    return out
+
+
 @dataclass(frozen=True)
 class Task:
     dataset: str
@@ -118,6 +148,8 @@ class Pipeline:
         self.bucket = args.bucket
         self.prefix_root = args.prefix_root.strip("/").strip()
         self.secrets_file = Path(args.secrets_file).expanduser().resolve()
+        self.only_z: set[int] = _parse_int_set(getattr(args, "only_z", ""))
+        self.enabled_datasets: set[str] = _parse_dataset_set(getattr(args, "datasets", ""))
         self.endpoint_url = self._resolve_endpoint()
         self.dataset_ext: dict[str, str] = {}
         self.remote_key_by_name: dict[tuple[str, str], str] = {}
@@ -129,7 +161,9 @@ class Pipeline:
         self._init_db()
         self._log(
             f"pipeline init assets_root={self.assets_root} state_dir={self.state_dir} "
-            f"bucket={self.bucket} prefix_root={self.prefix_root} endpoint={self.endpoint_url}"
+            f"bucket={self.bucket} prefix_root={self.prefix_root} endpoint={self.endpoint_url} "
+            f"only_z={sorted(self.only_z) if self.only_z else 'all'} "
+            f"datasets={sorted(self.enabled_datasets)}"
         )
 
     def _log(self, msg: str) -> None:
@@ -276,6 +310,8 @@ class Pipeline:
         self.conn.commit()
 
         for ds in DATASETS:
+            if ds not in self.enabled_datasets:
+                continue
             rows = self._load_remote_manifest(ds)
             if not rows:
                 self._log(f"[manifest] warning: no remote rows for dataset={ds}")
@@ -297,6 +333,8 @@ class Pipeline:
         cur = self.conn.cursor()
         for row in cur.execute("SELECT dataset, filename, ext, remote_key FROM manifest"):
             ds = str(row["dataset"])
+            if ds not in self.enabled_datasets:
+                continue
             fn = str(row["filename"])
             if (ds, fn) in EXCLUDED_FILES:
                 continue
@@ -304,7 +342,7 @@ class Pipeline:
             self.remote_key_by_name[(ds, fn)] = str(row["remote_key"])
             if ds not in self.dataset_ext:
                 self.dataset_ext[ds] = ext
-        for ds in DATASETS:
+        for ds in self.enabled_datasets:
             if ds not in self.dataset_ext:
                 self.dataset_ext[ds] = "exr" if ds != "PO" else "tif"
 
@@ -324,11 +362,15 @@ class Pipeline:
         inserted = 0
         for row in rows:
             ds = str(row["dataset"])
+            if ds not in self.enabled_datasets:
+                continue
             fn = str(row["filename"])
             if (ds, fn) in EXCLUDED_FILES:
                 continue
             z = int(row["z"])
             d_eff = int(row["d_eff"])
+            if self.only_z and z not in self.only_z:
+                continue
             # Protected source: never touch z001_d001.
             if z == 1 and d_eff == 1:
                 continue
@@ -364,12 +406,14 @@ class Pipeline:
 
     def prune_local_extras(self) -> None:
         cur = self.conn.cursor()
-        expected_by_ds: dict[str, set[str]] = {ds: set() for ds in DATASETS}
+        expected_by_ds: dict[str, set[str]] = {ds: set() for ds in self.enabled_datasets}
         for row in cur.execute("SELECT dataset, filename FROM manifest"):
-            expected_by_ds[str(row["dataset"])].add(str(row["filename"]))
+            ds = str(row["dataset"])
+            if ds in self.enabled_datasets:
+                expected_by_ds[ds].add(str(row["filename"]))
 
         deleted = 0
-        for ds in DATASETS:
+        for ds in self.enabled_datasets:
             ds_dir = self.assets_root / ds
             if not ds_dir.is_dir():
                 continue
@@ -740,10 +784,11 @@ class Pipeline:
 
     def _task_iter(self) -> Iterable[Task]:
         cur = self.conn.cursor()
+        placeholders = ",".join(["?"] * len(self.enabled_datasets))
         q = """
         SELECT dataset, filename, x, y, z, d_eff, ext, kind
         FROM tasks
-        WHERE status IN ('pending','failed')
+        WHERE status IN ('pending','failed') AND dataset IN ({datasets})
         ORDER BY
           CASE z
             WHEN 1 THEN 1
@@ -762,8 +807,8 @@ class Pipeline:
           END ASC,
           CASE kind WHEN 'base' THEN 0 ELSE 1 END ASC,
           y ASC, x ASC, dataset ASC, d_eff ASC
-        """
-        for row in cur.execute(q):
+        """.replace("{datasets}", placeholders)
+        for row in cur.execute(q, tuple(sorted(self.enabled_datasets))):
             yield Task(
                 dataset=str(row["dataset"]),
                 filename=str(row["filename"]),
@@ -777,10 +822,11 @@ class Pipeline:
 
     def _tasks_for_kind(self, kind: str) -> list[Task]:
         cur = self.conn.cursor()
+        placeholders = ",".join(["?"] * len(self.enabled_datasets))
         q = """
         SELECT dataset, filename, x, y, z, d_eff, ext, kind
         FROM tasks
-        WHERE status IN ('pending','failed') AND kind=?
+        WHERE status IN ('pending','failed') AND kind=? AND dataset IN ({datasets})
         ORDER BY
           CASE z
             WHEN 1 THEN 1
@@ -798,9 +844,10 @@ class Pipeline:
             ELSE 99
           END ASC,
           y ASC, x ASC, dataset ASC, d_eff ASC
-        """
+        """.replace("{datasets}", placeholders)
         out: list[Task] = []
-        for row in cur.execute(q, (kind,)):
+        params = (kind, *tuple(sorted(self.enabled_datasets)))
+        for row in cur.execute(q, params):
             out.append(
                 Task(
                     dataset=str(row["dataset"]),
@@ -857,9 +904,26 @@ class Pipeline:
 
     def _count_status(self) -> tuple[int, int, int]:
         cur = self.conn.cursor()
-        done_now = int(cur.execute("SELECT COUNT(*) FROM tasks WHERE status='done'").fetchone()[0])
-        remaining = int(cur.execute("SELECT COUNT(*) FROM tasks WHERE status IN ('pending','failed')").fetchone()[0])
-        failed_now = int(cur.execute("SELECT COUNT(*) FROM tasks WHERE status='failed'").fetchone()[0])
+        placeholders = ",".join(["?"] * len(self.enabled_datasets))
+        ds = tuple(sorted(self.enabled_datasets))
+        done_now = int(
+            cur.execute(
+                f"SELECT COUNT(*) FROM tasks WHERE status='done' AND dataset IN ({placeholders})",
+                ds,
+            ).fetchone()[0]
+        )
+        remaining = int(
+            cur.execute(
+                f"SELECT COUNT(*) FROM tasks WHERE status IN ('pending','failed') AND dataset IN ({placeholders})",
+                ds,
+            ).fetchone()[0]
+        )
+        failed_now = int(
+            cur.execute(
+                f"SELECT COUNT(*) FROM tasks WHERE status='failed' AND dataset IN ({placeholders})",
+                ds,
+            ).fetchone()[0]
+        )
         return done_now, remaining, failed_now
 
     def _run_task_list(self, tasks: list[Task], workers: int, processed: int, started: float, total: int) -> tuple[int, int]:
@@ -973,9 +1037,16 @@ class Pipeline:
     def run(self) -> int:
         self._reload_manifest_cache()
         cur = self.conn.cursor()
-        total = int(cur.execute("SELECT COUNT(*) FROM tasks").fetchone()[0])
-        done = int(cur.execute("SELECT COUNT(*) FROM tasks WHERE status='done'").fetchone()[0])
-        pending = int(cur.execute("SELECT COUNT(*) FROM tasks WHERE status IN ('pending','failed')").fetchone()[0])
+        placeholders = ",".join(["?"] * len(self.enabled_datasets))
+        ds = tuple(sorted(self.enabled_datasets))
+        total = int(cur.execute(f"SELECT COUNT(*) FROM tasks WHERE dataset IN ({placeholders})", ds).fetchone()[0])
+        done = int(cur.execute(f"SELECT COUNT(*) FROM tasks WHERE status='done' AND dataset IN ({placeholders})", ds).fetchone()[0])
+        pending = int(
+            cur.execute(
+                f"SELECT COUNT(*) FROM tasks WHERE status IN ('pending','failed') AND dataset IN ({placeholders})",
+                ds,
+            ).fetchone()[0]
+        )
         self._log(
             f"[run] tasks total={total} done={done} pending={pending} "
             f"workers_base={self.args.workers_base} workers_d={self.args.workers_d}"
@@ -994,9 +1065,9 @@ class Pipeline:
         processed, failed_d = self._run_stage("d", int(self.args.workers_d), processed, started, total)
         failed += failed_d
 
-        done_final = int(cur.execute("SELECT COUNT(*) FROM tasks WHERE status='done'").fetchone()[0])
-        failed_final = int(cur.execute("SELECT COUNT(*) FROM tasks WHERE status='failed'").fetchone()[0])
-        remaining_final = int(cur.execute("SELECT COUNT(*) FROM tasks WHERE status='pending'").fetchone()[0])
+        done_final = int(cur.execute(f"SELECT COUNT(*) FROM tasks WHERE status='done' AND dataset IN ({placeholders})", ds).fetchone()[0])
+        failed_final = int(cur.execute(f"SELECT COUNT(*) FROM tasks WHERE status='failed' AND dataset IN ({placeholders})", ds).fetchone()[0])
+        remaining_final = int(cur.execute(f"SELECT COUNT(*) FROM tasks WHERE status='pending' AND dataset IN ({placeholders})", ds).fetchone()[0])
         elapsed = time.perf_counter() - started
         self._log(
             f"[run] finished done={done_final}/{total} failed={failed_final} "
@@ -1042,6 +1113,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--progress-every", type=int, default=50)
     parser.add_argument("--workers-base", type=int, default=1, help="Worker count for higher-z base stage")
     parser.add_argument("--workers-d", type=int, default=8, help="Worker count for higher-d stage")
+    parser.add_argument(
+        "--datasets",
+        default="S2,EL,WT,PO",
+        help="Comma-separated datasets to process (subset of S2,EL,WT,PO).",
+    )
+    parser.add_argument(
+        "--only-z",
+        default="",
+        help="Optional comma-separated z-level filter (example: 16,30). Empty means all z levels.",
+    )
     return parser.parse_args()
 
 

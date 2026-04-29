@@ -165,6 +165,7 @@ class AutoResolveStateDeps:
     output_resolution_signature: Any
     request_auto_resolve: Any
     get_r2_source: Any
+    is_render_job_active: Any
 
 
 @dataclass(slots=True)

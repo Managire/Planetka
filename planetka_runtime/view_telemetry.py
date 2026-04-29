@@ -217,7 +217,10 @@ def resolve_scope_altitude_info(scene, runtime=None, scope_mode="AUTO"):
         meters_per_bu = float(deps.real_earth_radius_m / max(radius_bu, 1e-9))
         altitude_km = float((altitude_bu * meters_per_bu) / 1000.0)
         inside_epsilon_bu = float(max(1e-9, radius_bu * 1e-6))
-    except (deps.recoverable_exceptions, RuntimeError, TypeError, ValueError, AttributeError, ZeroDivisionError):
+    except deps.recoverable_exceptions:
+        deps.logger.debug("Planetka: failed computing resolve altitude for inside-Earth check", exc_info=True)
+        return result
+    except (RuntimeError, TypeError, ValueError, AttributeError, ZeroDivisionError):
         deps.logger.debug("Planetka: failed computing resolve altitude for inside-Earth check", exc_info=True)
         return result
 
@@ -429,7 +432,9 @@ def iter_scene_animation_fcurves(scene, runtime=None):
                 continue
             try:
                 token = int(fcurve.as_pointer())
-            except (recoverable_exceptions, RuntimeError, TypeError, ValueError, AttributeError):
+            except recoverable_exceptions:
+                token = id(fcurve)
+            except (RuntimeError, TypeError, ValueError, AttributeError):
                 token = id(fcurve)
             if token in seen:
                 continue
