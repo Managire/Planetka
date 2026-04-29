@@ -71,6 +71,15 @@ VIEWPORT_RESOLUTION_Y = 1080.0
 LAST_TILE_BUDGET_TRACE = []
 LAST_TILE_BUDGET_INPUT = []
 LAST_TILE_BUDGET_OUTPUT = []
+ADAPTIVE_HORIZON_PRECISION_ENABLED = True
+ADAPTIVE_HORIZON_REFINE_MAX_Z = 2
+ADAPTIVE_HORIZON_NEAR_MISS_NDC_THRESHOLD = 0.012
+ADAPTIVE_HORIZON_FORCE_INCLUDE_NDC_THRESHOLD = 0.0045
+ADAPTIVE_HORIZON_NEAR_HEMISPHERE_NORM_THRESHOLD = 0.01
+ANIMATION_ADAPTIVE_HORIZON_SCENE_KEY = "planetka_anim_adaptive_horizon_precision"
+ANIMATION_HORIZON_HYSTERESIS_NDC_THRESHOLD = 0.008
+ANIMATION_HORIZON_HYSTERESIS_HEMISPHERE_NORM_THRESHOLD = 0.015
+ANIMATION_HORIZON_HYSTERESIS_MAX_RETAINED_TILES = 1
 
 
 def get_earth_radius_blender_units(earth_obj):
@@ -1029,6 +1038,41 @@ def _tile_sample_uv(z):
     return tuple(sorted(uv))
 
 
+def _tile_sample_uv_adaptive(z):
+    z = int(z)
+    if z <= 2:
+        grid = 21
+    elif z <= 4:
+        grid = 19
+    elif z <= 8:
+        grid = 17
+    else:
+        grid = 15
+
+    if grid <= 1:
+        return ((0.5, 0.5),)
+
+    uv = set()
+    step = 1.0 / float(grid - 1)
+    for i in range(grid):
+        u = i * step
+        for j in range(grid):
+            v = j * step
+            uv.add((u, v))
+
+    # Add edge-biased half-step samples to catch thin horizon/frustum slivers.
+    for i in range(grid - 1):
+        u = (i + 0.5) * step
+        uv.add((u, 0.0))
+        uv.add((u, 1.0))
+    for j in range(grid - 1):
+        v = (j + 0.5) * step
+        uv.add((0.0, v))
+        uv.add((1.0, v))
+
+    return tuple(sorted(uv))
+
+
 def _tile_sample_points(x, y, z, earth_radius, uv_samples):
     points = []
     zf = float(z)
@@ -1043,6 +1087,41 @@ def _tile_sample_points(x, y, z, earth_radius, uv_samples):
 
 def _point_on_visible_hemisphere(point, cam_pos_local, radius_sq):
     return point.dot(cam_pos_local) >= (radius_sq * HORIZON_DOT_MARGIN)
+
+
+def _point_view_state_and_overflow_ndc(
+    point,
+    cam_pos_local,
+    cam_forward_local,
+    cam_right_local,
+    cam_up_local,
+    camera_type,
+    tan_half_h,
+    tan_half_v,
+    ortho_half_w,
+    ortho_half_h,
+    frustum_margin,
+):
+    rel = point - cam_pos_local
+    depth = rel.dot(cam_forward_local)
+    if depth <= 0.0:
+        return False, None, None
+
+    x_val = rel.dot(cam_right_local)
+    y_val = rel.dot(cam_up_local)
+
+    if camera_type == "ORTHO":
+        max_x = max(1e-9, float(ortho_half_w) * float(frustum_margin))
+        max_y = max(1e-9, float(ortho_half_h) * float(frustum_margin))
+    else:
+        max_x = max(1e-9, float(depth) * float(tan_half_h) * float(frustum_margin))
+        max_y = max(1e-9, float(depth) * float(tan_half_v) * float(frustum_margin))
+
+    ndc_x = abs(float(x_val)) / max_x
+    ndc_y = abs(float(y_val)) / max_y
+    overflow_ndc = max(float(ndc_x) - 1.0, float(ndc_y) - 1.0)
+    inside = overflow_ndc <= 0.0
+    return bool(inside), float(overflow_ndc), float(rel.length)
 
 
 def _point_in_camera_view(
@@ -1075,6 +1154,132 @@ def _point_in_camera_view(
     max_x = depth * tan_half_h * frustum_margin
     max_y = depth * tan_half_v * frustum_margin
     return abs(x_val) <= max_x and abs(y_val) <= max_y
+
+
+def _evaluate_tile_visibility(
+    points,
+    *,
+    cam_pos_local,
+    cam_forward_local,
+    cam_right_local,
+    cam_up_local,
+    camera_type,
+    tan_half_h,
+    tan_half_v,
+    ortho_half_w,
+    ortho_half_h,
+    frustum_margin,
+    radius_sq,
+):
+    threshold = float(radius_sq) * float(HORIZON_DOT_MARGIN)
+    min_distance_visible = None
+    min_distance_depth = None
+    hemisphere_hits = 0
+    camera_hits = 0
+    both_hits = 0
+    min_abs_horizon_norm = None
+    min_positive_ndc_overflow = None
+    has_depth_samples = False
+    any_horizon_positive = False
+    any_horizon_negative = False
+
+    for point in points:
+        horizon_margin = float(point.dot(cam_pos_local)) - threshold
+        horizon_norm = float(horizon_margin) / max(float(radius_sq), 1e-9)
+        if horizon_norm >= 0.0:
+            any_horizon_positive = True
+            hemisphere_hits += 1
+        else:
+            any_horizon_negative = True
+        abs_horizon = abs(float(horizon_norm))
+        if min_abs_horizon_norm is None or abs_horizon < min_abs_horizon_norm:
+            min_abs_horizon_norm = abs_horizon
+
+        inside_view, overflow_ndc, rel_distance = _point_view_state_and_overflow_ndc(
+            point,
+            cam_pos_local,
+            cam_forward_local,
+            cam_right_local,
+            cam_up_local,
+            camera_type,
+            tan_half_h,
+            tan_half_v,
+            ortho_half_w,
+            ortho_half_h,
+            frustum_margin,
+        )
+        if overflow_ndc is None:
+            continue
+        has_depth_samples = True
+        positive_overflow = max(0.0, float(overflow_ndc))
+        if min_positive_ndc_overflow is None or positive_overflow < min_positive_ndc_overflow:
+            min_positive_ndc_overflow = positive_overflow
+        if min_distance_depth is None or rel_distance < min_distance_depth:
+            min_distance_depth = float(rel_distance)
+        if inside_view:
+            camera_hits += 1
+            if horizon_norm >= 0.0:
+                both_hits += 1
+                if min_distance_visible is None or rel_distance < min_distance_visible:
+                    min_distance_visible = float(rel_distance)
+
+    return {
+        "hemisphere_hits": int(hemisphere_hits),
+        "camera_hits": int(camera_hits),
+        "both_hits": int(both_hits),
+        "min_distance_visible": None if min_distance_visible is None else float(min_distance_visible),
+        "min_distance_depth": None if min_distance_depth is None else float(min_distance_depth),
+        "min_abs_horizon_norm": None if min_abs_horizon_norm is None else float(min_abs_horizon_norm),
+        "min_positive_ndc_overflow": None if min_positive_ndc_overflow is None else float(min_positive_ndc_overflow),
+        "has_depth_samples": bool(has_depth_samples),
+        "horizon_crossing": bool(any_horizon_positive and any_horizon_negative),
+    }
+
+
+def _adaptive_horizon_precision_active():
+    if not bool(ADAPTIVE_HORIZON_PRECISION_ENABLED):
+        return False
+    scene = getattr(bpy.context, "scene", None)
+    if scene is None:
+        return False
+    try:
+        return bool(scene.get(ANIMATION_ADAPTIVE_HORIZON_SCENE_KEY, False))
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        return False
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return False
+
+
+def _should_adaptive_refine_tile(stats, z):
+    if not _adaptive_horizon_precision_active():
+        return False
+    if int(z) > int(ADAPTIVE_HORIZON_REFINE_MAX_Z):
+        return False
+    if int(stats.get("both_hits", 0) or 0) > 0:
+        return False
+    if int(stats.get("hemisphere_hits", 0) or 0) <= 0:
+        return False
+    if not bool(stats.get("has_depth_samples", False)):
+        return False
+    overflow = stats.get("min_positive_ndc_overflow", None)
+    if overflow is None:
+        return False
+    return float(overflow) <= float(ADAPTIVE_HORIZON_NEAR_MISS_NDC_THRESHOLD)
+
+
+def _should_force_include_near_edge_tile(stats):
+    if int(stats.get("both_hits", 0) or 0) > 0:
+        return True
+    if int(stats.get("hemisphere_hits", 0) or 0) <= 0:
+        return False
+    overflow = stats.get("min_positive_ndc_overflow", None)
+    if overflow is None:
+        return False
+    near_horizon = bool(stats.get("horizon_crossing", False)) or (
+        stats.get("min_abs_horizon_norm", None) is not None
+        and float(stats.get("min_abs_horizon_norm", 1e9)) <= float(ADAPTIVE_HORIZON_NEAR_HEMISPHERE_NORM_THRESHOLD)
+    )
+    return bool(near_horizon) and float(overflow) <= float(ADAPTIVE_HORIZON_FORCE_INCLUDE_NDC_THRESHOLD)
 
 
 def _frustum_guard_ndc_points(sample_count):
@@ -1385,6 +1590,7 @@ def _collect_visible_tiles(
     frustum_margin=FRUSTUM_MARGIN,
     edge_boost=False,
 ):
+    adaptive_mode = _adaptive_horizon_precision_active()
     tan_half_h = math.tan(max(1e-9, float(h_fov)) * 0.5)
     tan_half_v = math.tan(max(1e-9, float(v_fov)) * 0.5)
     ortho_half_w, ortho_half_h = _orthographic_half_extents(ortho_scale, res_x, res_y)
@@ -1428,26 +1634,63 @@ def _collect_visible_tiles(
     for x, y in _candidate_tiles_for_level(z, guard_distances, edge_boost=edge_boost):
         min_distance = None
         points = _tile_sample_points(x, y, z, earth_radius, uv_samples)
-        for point in points:
-            if not _point_on_visible_hemisphere(point, cam_pos_local, radius_sq):
-                continue
-            if not _point_in_camera_view(
-                point,
-                cam_pos_local,
-                cam_forward_local,
-                cam_right_local,
-                cam_up_local,
-                camera_type,
-                tan_half_h,
-                tan_half_v,
-                ortho_half_w,
-                ortho_half_h,
-                frustum_margin,
-            ):
-                continue
-            distance = (point - cam_pos_local).length
-            if min_distance is None or distance < min_distance:
-                min_distance = distance
+        if not adaptive_mode:
+            for point in points:
+                if not _point_on_visible_hemisphere(point, cam_pos_local, radius_sq):
+                    continue
+                if not _point_in_camera_view(
+                    point,
+                    cam_pos_local,
+                    cam_forward_local,
+                    cam_right_local,
+                    cam_up_local,
+                    camera_type,
+                    tan_half_h,
+                    tan_half_v,
+                    ortho_half_w,
+                    ortho_half_h,
+                    frustum_margin,
+                ):
+                    continue
+                distance = (point - cam_pos_local).length
+                if min_distance is None or distance < min_distance:
+                    min_distance = distance
+        else:
+            stats = _evaluate_tile_visibility(
+                points,
+                cam_pos_local=cam_pos_local,
+                cam_forward_local=cam_forward_local,
+                cam_right_local=cam_right_local,
+                cam_up_local=cam_up_local,
+                camera_type=camera_type,
+                tan_half_h=tan_half_h,
+                tan_half_v=tan_half_v,
+                ortho_half_w=ortho_half_w,
+                ortho_half_h=ortho_half_h,
+                frustum_margin=frustum_margin,
+                radius_sq=radius_sq,
+            )
+            min_distance = stats.get("min_distance_visible", None)
+
+            if min_distance is None and _should_adaptive_refine_tile(stats, z):
+                adaptive_points = _tile_sample_points(x, y, z, earth_radius, _tile_sample_uv_adaptive(z))
+                adaptive_stats = _evaluate_tile_visibility(
+                    adaptive_points,
+                    cam_pos_local=cam_pos_local,
+                    cam_forward_local=cam_forward_local,
+                    cam_right_local=cam_right_local,
+                    cam_up_local=cam_up_local,
+                    camera_type=camera_type,
+                    tan_half_h=tan_half_h,
+                    tan_half_v=tan_half_v,
+                    ortho_half_w=ortho_half_w,
+                    ortho_half_h=ortho_half_h,
+                    frustum_margin=frustum_margin,
+                    radius_sq=radius_sq,
+                )
+                min_distance = adaptive_stats.get("min_distance_visible", None)
+                if min_distance is None and _should_force_include_near_edge_tile(adaptive_stats):
+                    min_distance = adaptive_stats.get("min_distance_depth", None)
 
         if min_distance is None:
             continue
@@ -1533,32 +1776,75 @@ def _tile_min_visible_distance(
     ortho_half_h,
     frustum_margin,
 ):
+    adaptive_mode = _adaptive_horizon_precision_active()
     radius_sq = float(earth_radius) * float(earth_radius)
-    uv_samples = _tile_sample_uv(z)
-    points = _tile_sample_points(x, y, z, earth_radius, uv_samples)
+    points = _tile_sample_points(x, y, z, earth_radius, _tile_sample_uv(z))
+    if not adaptive_mode:
+        min_distance = None
+        for point in points:
+            if not _point_on_visible_hemisphere(point, cam_pos_local, radius_sq):
+                continue
+            if not _point_in_camera_view(
+                point,
+                cam_pos_local,
+                cam_forward_local,
+                cam_right_local,
+                cam_up_local,
+                camera_type,
+                tan_half_h,
+                tan_half_v,
+                ortho_half_w,
+                ortho_half_h,
+                frustum_margin,
+            ):
+                continue
+            distance = (point - cam_pos_local).length
+            if min_distance is None or distance < min_distance:
+                min_distance = distance
+        return None if min_distance is None else float(min_distance)
 
-    min_distance = None
-    for point in points:
-        if not _point_on_visible_hemisphere(point, cam_pos_local, radius_sq):
-            continue
-        if not _point_in_camera_view(
-            point,
-            cam_pos_local,
-            cam_forward_local,
-            cam_right_local,
-            cam_up_local,
-            camera_type,
-            tan_half_h,
-            tan_half_v,
-            ortho_half_w,
-            ortho_half_h,
-            frustum_margin,
-        ):
-            continue
-        distance = (point - cam_pos_local).length
-        if min_distance is None or distance < min_distance:
-            min_distance = distance
-    return min_distance
+    stats = _evaluate_tile_visibility(
+        points,
+        cam_pos_local=cam_pos_local,
+        cam_forward_local=cam_forward_local,
+        cam_right_local=cam_right_local,
+        cam_up_local=cam_up_local,
+        camera_type=camera_type,
+        tan_half_h=tan_half_h,
+        tan_half_v=tan_half_v,
+        ortho_half_w=ortho_half_w,
+        ortho_half_h=ortho_half_h,
+        frustum_margin=frustum_margin,
+        radius_sq=radius_sq,
+    )
+    min_distance = stats.get("min_distance_visible", None)
+    if min_distance is not None:
+        return float(min_distance)
+
+    if _should_adaptive_refine_tile(stats, z):
+        adaptive_points = _tile_sample_points(x, y, z, earth_radius, _tile_sample_uv_adaptive(z))
+        adaptive_stats = _evaluate_tile_visibility(
+            adaptive_points,
+            cam_pos_local=cam_pos_local,
+            cam_forward_local=cam_forward_local,
+            cam_right_local=cam_right_local,
+            cam_up_local=cam_up_local,
+            camera_type=camera_type,
+            tan_half_h=tan_half_h,
+            tan_half_v=tan_half_v,
+            ortho_half_w=ortho_half_w,
+            ortho_half_h=ortho_half_h,
+            frustum_margin=frustum_margin,
+            radius_sq=radius_sq,
+        )
+        min_distance = adaptive_stats.get("min_distance_visible", None)
+        if min_distance is not None:
+            return float(min_distance)
+        if _should_force_include_near_edge_tile(adaptive_stats):
+            fallback_distance = adaptive_stats.get("min_distance_depth", None)
+            if fallback_distance is not None:
+                return float(fallback_distance)
+    return None
 
 
 def _one_pass_selective_refinement(
@@ -1887,6 +2173,198 @@ def get_camera_info(scene, scope_mode="AUTO"):
         "res_y": res_y,
         "scope_used": "CAMERA",
     }
+
+
+def _resolve_camera_local_context(scene, scope_mode="CAMERA"):
+    camera_info = get_camera_info(scene, scope_mode=scope_mode)
+    cam_pos_world = camera_info["position"]
+    cam_forward_world = camera_info["forward"]
+    cam_right_world = camera_info["right"]
+    cam_up_world = camera_info["up"]
+    earth = get_earth_object()
+    root = get_planet_root()
+    earth_radius = get_planet_radius(earth)
+    cam_pos_local, cam_forward_local, cam_right_local, cam_up_local = _transform_to_planet_space(
+        cam_pos_world,
+        cam_forward_world,
+        cam_right_world,
+        cam_up_world,
+        earth,
+        root,
+    )
+    return {
+        "camera_info": camera_info,
+        "earth": earth,
+        "root": root,
+        "earth_radius": float(earth_radius),
+        "cam_pos_local": cam_pos_local,
+        "cam_forward_local": cam_forward_local,
+        "cam_right_local": cam_right_local,
+        "cam_up_local": cam_up_local,
+    }
+
+
+def _tile_visibility_stats_with_optional_adaptive(
+    tile,
+    *,
+    cam_pos_local,
+    cam_forward_local,
+    cam_right_local,
+    cam_up_local,
+    camera_type,
+    h_fov,
+    v_fov,
+    res_x,
+    res_y,
+    ortho_scale,
+    frustum_margin,
+    earth_radius,
+):
+    parsed = parse_tile(tile)
+    if not parsed:
+        return None
+    x, y, z, _d = parsed
+    tan_half_h = math.tan(max(1e-9, float(h_fov)) * 0.5)
+    tan_half_v = math.tan(max(1e-9, float(v_fov)) * 0.5)
+    ortho_half_w, ortho_half_h = _orthographic_half_extents(ortho_scale, res_x, res_y)
+    radius_sq = float(earth_radius) * float(earth_radius)
+
+    points = _tile_sample_points(x, y, z, earth_radius, _tile_sample_uv(z))
+    stats = _evaluate_tile_visibility(
+        points,
+        cam_pos_local=cam_pos_local,
+        cam_forward_local=cam_forward_local,
+        cam_right_local=cam_right_local,
+        cam_up_local=cam_up_local,
+        camera_type=camera_type,
+        tan_half_h=tan_half_h,
+        tan_half_v=tan_half_v,
+        ortho_half_w=ortho_half_w,
+        ortho_half_h=ortho_half_h,
+        frustum_margin=frustum_margin,
+        radius_sq=radius_sq,
+    )
+
+    used_adaptive = False
+    if _should_adaptive_refine_tile(stats, z):
+        adaptive_points = _tile_sample_points(x, y, z, earth_radius, _tile_sample_uv_adaptive(z))
+        stats = _evaluate_tile_visibility(
+            adaptive_points,
+            cam_pos_local=cam_pos_local,
+            cam_forward_local=cam_forward_local,
+            cam_right_local=cam_right_local,
+            cam_up_local=cam_up_local,
+            camera_type=camera_type,
+            tan_half_h=tan_half_h,
+            tan_half_v=tan_half_v,
+            ortho_half_w=ortho_half_w,
+            ortho_half_h=ortho_half_h,
+            frustum_margin=frustum_margin,
+            radius_sq=radius_sq,
+        )
+        used_adaptive = True
+    stats["used_adaptive"] = bool(used_adaptive)
+    return stats
+
+
+def classify_horizon_edge_near_miss_tiles(tiles, scope_mode="CAMERA"):
+    scene = bpy.context.scene
+    if scene is None:
+        return []
+    context = _resolve_camera_local_context(scene, scope_mode=scope_mode)
+    camera_info = context["camera_info"]
+    cam_pos_local = context["cam_pos_local"]
+    cam_forward_local = context["cam_forward_local"]
+    cam_right_local = context["cam_right_local"]
+    cam_up_local = context["cam_up_local"]
+    earth_radius = float(context["earth_radius"])
+
+    camera_type = str(camera_info.get("camera_type", "PERSP"))
+    h_fov = float(camera_info.get("h_fov", math.radians(50.0)))
+    v_fov = float(camera_info.get("v_fov", math.radians(35.0)))
+    res_x = float(camera_info.get("res_x", VIEWPORT_RESOLUTION_X))
+    res_y = float(camera_info.get("res_y", VIEWPORT_RESOLUTION_Y))
+    ortho_scale = float(camera_info.get("ortho_scale", 1.0))
+    frustum_margin = FRUSTUM_MARGIN
+
+    scored_retained = []
+    for tile in list(tiles or ()):
+        tile_text = str(tile or "").strip()
+        if not tile_text or parse_tile(tile_text) is None:
+            continue
+        stats = _tile_visibility_stats_with_optional_adaptive(
+            tile_text,
+            cam_pos_local=cam_pos_local,
+            cam_forward_local=cam_forward_local,
+            cam_right_local=cam_right_local,
+            cam_up_local=cam_up_local,
+            camera_type=camera_type,
+            h_fov=h_fov,
+            v_fov=v_fov,
+            res_x=res_x,
+            res_y=res_y,
+            ortho_scale=ortho_scale,
+            frustum_margin=frustum_margin,
+            earth_radius=earth_radius,
+        )
+        if not stats:
+            continue
+        if int(stats.get("both_hits", 0) or 0) > 0:
+            continue
+        if int(stats.get("hemisphere_hits", 0) or 0) <= 0:
+            continue
+        if not bool(stats.get("has_depth_samples", False)):
+            continue
+        overflow = stats.get("min_positive_ndc_overflow", None)
+        if overflow is None:
+            continue
+        near_horizon = bool(stats.get("horizon_crossing", False)) or (
+            stats.get("min_abs_horizon_norm", None) is not None
+            and float(stats.get("min_abs_horizon_norm", 1e9))
+            <= float(ANIMATION_HORIZON_HYSTERESIS_HEMISPHERE_NORM_THRESHOLD)
+        )
+        if not near_horizon:
+            continue
+        overflow_value = float(overflow)
+        if overflow_value <= 0.0:
+            continue
+        if overflow_value > float(ANIMATION_HORIZON_HYSTERESIS_NDC_THRESHOLD):
+            continue
+        scored_retained.append(
+            (
+                overflow_value,
+                float(stats.get("min_abs_horizon_norm", 1e9) or 1e9),
+                tile_text,
+            )
+        )
+
+    if not scored_retained:
+        return []
+    scored_retained.sort(key=lambda item: (float(item[0]), float(item[1]), str(item[2])))
+    max_retain = max(0, int(ANIMATION_HORIZON_HYSTERESIS_MAX_RETAINED_TILES))
+    chosen = [item[2] for item in scored_retained[:max_retain]] if max_retain > 0 else []
+    return _sort_tiles_for_apply(chosen)
+
+
+def enforce_shader_tile_budget_for_tiles(tiles, max_tiles=MAX_SHADER_TILE_BUDGET, scope_mode="CAMERA"):
+    scene = bpy.context.scene
+    cam_pos_local = None
+    earth_radius = None
+    if scene is not None:
+        try:
+            context = _resolve_camera_local_context(scene, scope_mode=scope_mode)
+            cam_pos_local = context.get("cam_pos_local", None)
+            earth_radius = context.get("earth_radius", None)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed reading camera context for budget enforcement", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed reading camera context for budget enforcement", exc_info=True)
+    return _enforce_shader_tile_budget(
+        tiles,
+        max_tiles=max_tiles,
+        cam_pos_local=cam_pos_local,
+        earth_radius=earth_radius,
+    )
 
 
 def main(scope_mode="AUTO", edge_boost=False, texture_quality_mode_override=None):

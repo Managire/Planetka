@@ -95,6 +95,7 @@ ANIMATION_RENDER_LAUNCH_RETRY_MAX_ATTEMPTS = 2
 ANIMATION_POST_RECOVERY_RETRY_SEC = 0.25
 ANIMATION_POST_RECOVERY_MAX_ATTEMPTS = 120
 _ANIMATION_POST_RECOVERY_EPOCH = 0
+ANIMATION_HORIZON_SEGMENT_HYSTERESIS_ENABLED = True
 
 
 @dataclass
@@ -755,57 +756,218 @@ def _resolve_tiles_for_frame(scene, frame, texture_quality_mode_override=None):
         return []
 
 
-def _build_segments(scene, frame_start, frame_end, frame_step, texture_quality_mode_override=None):
+def _apply_horizon_segment_tile_retention(tile_utils, sampled_tiles, retained_tiles):
+    sampled_set = {str(tile) for tile in (sampled_tiles or ()) if _parse_tile(str(tile)) is not None}
+    retained_set = {str(tile) for tile in (retained_tiles or ()) if _parse_tile(str(tile)) is not None}
+    combined = list(sampled_set | retained_set)
+    if not combined:
+        return tuple()
+
+    max_budget = 12
+    try:
+        max_budget = int(getattr(tile_utils, "MAX_SHADER_TILE_BUDGET", 12) or 12) if tile_utils is not None else 12
+    except (TypeError, ValueError, AttributeError):
+        max_budget = 12
+    max_budget = max(1, int(max_budget))
+
+    if len(combined) <= max_budget or tile_utils is None:
+        return _canonical_tiles(combined)
+
+    budget_fn = getattr(tile_utils, "enforce_shader_tile_budget_for_tiles", None)
+    if not callable(budget_fn):
+        return _canonical_tiles(combined[:max_budget])
+
+    try:
+        budgeted_tiles, _trace, _success = budget_fn(combined, max_tiles=max_budget, scope_mode="CAMERA")
+        normalized = _canonical_tiles(list(budgeted_tiles or ()))
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka animation: horizon tile retention budget fallback failed", exc_info=True)
+        normalized = _canonical_tiles(combined[:max_budget])
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka animation: horizon tile retention budget fallback failed", exc_info=True)
+        normalized = _canonical_tiles(combined[:max_budget])
+
+    if not retained_set:
+        return normalized
+
+    missing_retained = [tile for tile in sorted(retained_set) if tile not in set(normalized)]
+    if missing_retained:
+        # If budget optimization cannot keep retained edge tiles without destabilizing
+        # the set, skip retention for this segment transition.
+        return _canonical_tiles(sampled_set)
+    return normalized
+
+
+def _classify_horizon_drops_for_next_segment(tile_utils, previous_tiles, next_raw_tiles):
+    if tile_utils is None:
+        return tuple()
+    previous_set = set(previous_tiles or ())
+    next_set = set(next_raw_tiles or ())
+    dropped = sorted(previous_set - next_set)
+    if not dropped:
+        return tuple()
+    try:
+        max_budget = int(getattr(tile_utils, "MAX_SHADER_TILE_BUDGET", 12) or 12)
+    except (TypeError, ValueError, AttributeError):
+        max_budget = 12
+    max_budget = max(1, int(max_budget))
+    # Avoid retention when next segment is already budget-full, because that tends to
+    # force compensating swaps and can fragment segment boundaries.
+    if len(next_set) >= max_budget:
+        return tuple()
+    # Keep retention highly targeted to avoid broad timeline-side effects.
+    if len(dropped) != 1:
+        return tuple()
+    classifier = getattr(tile_utils, "classify_horizon_edge_near_miss_tiles", None)
+    if not callable(classifier):
+        return tuple()
+    try:
+        retained = classifier(dropped, scope_mode="CAMERA")
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka animation: failed classifying horizon edge drops", exc_info=True)
+        return tuple()
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka animation: failed classifying horizon edge drops", exc_info=True)
+        return tuple()
+    return _canonical_tiles(retained)
+
+
+def _build_segments(
+    scene,
+    frame_start,
+    frame_end,
+    frame_step,
+    texture_quality_mode_override=None,
+    apply_segment_horizon_hysteresis=False,
+    enable_adaptive_horizon_precision=False,
+):
     frames = list(range(int(frame_start), int(frame_end) + 1, max(1, int(frame_step))))
     if not frames:
         return []
 
-    segments = []
-    current_start = int(frames[0])
-    current_tiles = _canonical_tiles(
-        _resolve_tiles_for_frame(
-            scene,
-            current_start,
-            texture_quality_mode_override=texture_quality_mode_override,
+    tile_utils = _get_tile_utils() if (bool(apply_segment_horizon_hysteresis) or bool(enable_adaptive_horizon_precision)) else None
+    adaptive_scene_key = None
+    adaptive_was_present = False
+    adaptive_previous_value = None
+    if bool(enable_adaptive_horizon_precision) and scene is not None and tile_utils is not None:
+        adaptive_scene_key = str(
+            getattr(
+                tile_utils,
+                "ANIMATION_ADAPTIVE_HORIZON_SCENE_KEY",
+                "planetka_anim_adaptive_horizon_precision",
+            )
         )
-    )
-    segment_index = 1
+        try:
+            adaptive_was_present = bool(adaptive_scene_key in scene)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            adaptive_was_present = False
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            adaptive_was_present = False
+        try:
+            adaptive_previous_value = scene.get(adaptive_scene_key, None)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            adaptive_previous_value = None
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            adaptive_previous_value = None
+        try:
+            scene[adaptive_scene_key] = True
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka animation: failed enabling adaptive horizon precision flag", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka animation: failed enabling adaptive horizon precision flag", exc_info=True)
 
-    for index in range(1, len(frames)):
-        frame = int(frames[index])
-        sampled_tiles = _canonical_tiles(
+    try:
+        segments = []
+        current_start = int(frames[0])
+        current_hold_tiles = tuple()
+        current_tiles = _canonical_tiles(
             _resolve_tiles_for_frame(
                 scene,
-                frame,
+                current_start,
                 texture_quality_mode_override=texture_quality_mode_override,
             )
         )
-        if sampled_tiles != current_tiles:
-            previous_frame = int(frames[index - 1])
-            segments.append(
-                {
-                    "index": int(segment_index),
-                    "start": int(current_start),
-                    "end": int(previous_frame),
-                    "tiles": list(current_tiles),
-                }
+        segment_index = 1
+
+        for index in range(1, len(frames)):
+            frame = int(frames[index])
+            sampled_raw_tiles = _canonical_tiles(
+                _resolve_tiles_for_frame(
+                    scene,
+                    frame,
+                    texture_quality_mode_override=texture_quality_mode_override,
+                )
             )
-            segment_index += 1
-            current_start = frame
-            current_tiles = sampled_tiles
+            if bool(apply_segment_horizon_hysteresis):
+                sampled_tiles = sampled_raw_tiles
+                if current_hold_tiles:
+                    sampled_tiles = _apply_horizon_segment_tile_retention(
+                        tile_utils,
+                        sampled_raw_tiles,
+                        current_hold_tiles,
+                    )
+            else:
+                sampled_tiles = sampled_raw_tiles
 
-    segments.append(
-        {
-            "index": int(segment_index),
-            "start": int(current_start),
-            "end": int(frames[-1]),
-            "tiles": list(current_tiles),
-        }
-    )
-    return segments
+            if sampled_tiles != current_tiles:
+                previous_frame = int(frames[index - 1])
+                segments.append(
+                    {
+                        "index": int(segment_index),
+                        "start": int(current_start),
+                        "end": int(previous_frame),
+                        "tiles": list(current_tiles),
+                    }
+                )
+                segment_index += 1
+                current_start = frame
+                if bool(apply_segment_horizon_hysteresis):
+                    current_hold_tiles = _classify_horizon_drops_for_next_segment(
+                        tile_utils,
+                        current_tiles,
+                        sampled_raw_tiles,
+                    )
+                    if current_hold_tiles:
+                        sampled_tiles = _apply_horizon_segment_tile_retention(
+                            tile_utils,
+                            sampled_raw_tiles,
+                            current_hold_tiles,
+                        )
+                else:
+                    current_hold_tiles = tuple()
+                current_tiles = _canonical_tiles(sampled_tiles)
+
+        segments.append(
+            {
+                "index": int(segment_index),
+                "start": int(current_start),
+                "end": int(frames[-1]),
+                "tiles": list(current_tiles),
+            }
+        )
+        return segments
+    finally:
+        if adaptive_scene_key and scene is not None:
+            try:
+                if adaptive_was_present:
+                    scene[adaptive_scene_key] = adaptive_previous_value
+                elif adaptive_scene_key in scene:
+                    del scene[adaptive_scene_key]
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka animation: failed restoring adaptive horizon precision flag", exc_info=True)
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka animation: failed restoring adaptive horizon precision flag", exc_info=True)
 
 
-def _plan_animation_segments(scene, frame_start, frame_end, frame_step=1, texture_quality_mode_override=None):
+def _plan_animation_segments(
+    scene,
+    frame_start,
+    frame_end,
+    frame_step=1,
+    texture_quality_mode_override=None,
+    apply_segment_horizon_hysteresis=False,
+    enable_adaptive_horizon_precision=False,
+):
     safe_start = int(frame_start)
     safe_end = int(frame_end)
     safe_step = max(1, int(frame_step))
@@ -820,6 +982,8 @@ def _plan_animation_segments(scene, frame_start, frame_end, frame_step=1, textur
             safe_end,
             safe_step,
             texture_quality_mode_override=texture_quality_mode_override,
+            apply_segment_horizon_hysteresis=bool(apply_segment_horizon_hysteresis),
+            enable_adaptive_horizon_precision=bool(enable_adaptive_horizon_precision),
         )
     finally:
         try:
@@ -3951,6 +4115,8 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
                 frame_end,
                 frame_step=1,
                 texture_quality_mode_override=str(selected_texture_quality_mode),
+                apply_segment_horizon_hysteresis=bool(ANIMATION_HORIZON_SEGMENT_HYSTERESIS_ENABLED),
+                enable_adaptive_horizon_precision=True,
             )
             segments = list(segment_plan.segments or ())
             if not segments:
@@ -4215,7 +4381,9 @@ class PLANETKA_OT_AnimationMakeReady(bpy.types.Operator):
                     logger=logger,
                 )
 
-            start_frame, end_frame = _cinematic_frame_range_from_props(scene, props)
+            # Quick Preview follows the active timeline range (or preview range if enabled),
+            # independent from cinematic preset frame fields.
+            start_frame, end_frame = _active_timeline_frame_range(scene)
             if int(end_frame) < int(start_frame):
                 return fail(
                     self,
