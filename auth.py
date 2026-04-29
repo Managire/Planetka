@@ -58,6 +58,74 @@ class AuthApiError(RuntimeError):
         self.payload = payload if isinstance(payload, dict) else {}
 
 
+_TERMINAL_AUTH_ERROR_CODES = {
+    "invalid_api_key",
+    "api_key_expired",
+    "api_key_revoked",
+    "missing_api_key",
+    "missing_refresh_token",
+    "invalid_refresh_token",
+    "refresh_token_revoked",
+    "refresh_token_expired",
+    "account_not_connected",
+    "account_blocked",
+    "invalid_user_status",
+}
+
+
+def _auth_error_code(error):
+    return str(getattr(error, "error", error) or "").strip().lower()
+
+
+def is_terminal_auth_error(error):
+    code = _auth_error_code(error)
+    try:
+        status = int(getattr(error, "status", 0) or 0)
+    except (TypeError, ValueError):
+        status = 0
+
+    if TIER_INTEGRITY_ERROR_CODE in code:
+        return True
+    if code in _TERMINAL_AUTH_ERROR_CODES:
+        return True
+    if code.startswith("http_"):
+        try:
+            http_code = int(code.split("_", 1)[1] or 0)
+        except (TypeError, ValueError, IndexError):
+            http_code = 0
+        if http_code in {401, 403}:
+            return True
+    if status in {401, 403} and code not in {"network_error", "invalid_json_response"}:
+        return True
+    return False
+
+
+def _critical_disconnect_status_message(primary_error=None, secondary_error=None):
+    if primary_error is not None:
+        message = describe_auth_error(primary_error)
+        if message:
+            return message
+    if secondary_error is not None:
+        message = describe_auth_error(secondary_error)
+        if message:
+            return message
+    return "Session expired. Connect again."
+
+
+def _report_critical_disconnect(prefs, source, primary_error=None, secondary_error=None):
+    logger.error(
+        "Planetka critical auth disconnect: source=%s primary_error=%s primary_status=%s "
+        "secondary_error=%s secondary_status=%s email=%s device_id=%s",
+        str(source or "").strip() or "unknown",
+        _auth_error_code(primary_error),
+        int(getattr(primary_error, "status", 0) or 0) if primary_error is not None else 0,
+        _auth_error_code(secondary_error),
+        int(getattr(secondary_error, "status", 0) or 0) if secondary_error is not None else 0,
+        str(getattr(prefs, "auth_email", "") or "").strip().lower(),
+        str(getattr(prefs, "auth_device_id", "") or "").strip(),
+    )
+
+
 def describe_auth_error(error):
     message = str(getattr(error, "error", error) or "login_failed")
     lowered = message.lower()
@@ -991,9 +1059,26 @@ def refresh_auth_session(prefs=None):
         try:
             _reauth_with_api_key(prefs)
             return str(getattr(prefs, "auth_access_token", "") or "").strip()
-        except AuthApiError:
-            _clear_auth_session_preserve_api_key(prefs, state="logged_out", status_message="")
-            raise AuthApiError(401, "missing_refresh_token")
+        except AuthApiError as reauth_error:
+            if is_terminal_auth_error(reauth_error):
+                _report_critical_disconnect(
+                    prefs,
+                    "refresh_auth_session_missing_refresh_token_reauth_failed",
+                    primary_error=reauth_error,
+                )
+                _clear_auth_session_preserve_api_key(
+                    prefs,
+                    state="logged_out",
+                    status_message=_critical_disconnect_status_message(reauth_error),
+                )
+            else:
+                logger.warning(
+                    "Planetka: transient auth reauth failure while refresh token missing; preserving local session "
+                    "(error=%s status=%s).",
+                    _auth_error_code(reauth_error),
+                    int(getattr(reauth_error, "status", 0) or 0),
+                )
+            raise reauth_error
 
     _status = None
     payload = None
@@ -1003,8 +1088,28 @@ def refresh_auth_session(prefs=None):
         try:
             _reauth_with_api_key(prefs)
             return str(getattr(prefs, "auth_access_token", "") or "").strip()
-        except AuthApiError:
-            _clear_auth_session_preserve_api_key(prefs, state="logged_out", status_message="Session expired. Connect again.")
+        except AuthApiError as reauth_error:
+            if is_terminal_auth_error(refresh_error) or is_terminal_auth_error(reauth_error):
+                _report_critical_disconnect(
+                    prefs,
+                    "refresh_auth_session_refresh_and_reauth_failed",
+                    primary_error=refresh_error,
+                    secondary_error=reauth_error,
+                )
+                _clear_auth_session_preserve_api_key(
+                    prefs,
+                    state="logged_out",
+                    status_message=_critical_disconnect_status_message(refresh_error, reauth_error),
+                )
+            else:
+                logger.warning(
+                    "Planetka: transient auth refresh failure; preserving local session "
+                    "(refresh_error=%s refresh_status=%s reauth_error=%s reauth_status=%s).",
+                    _auth_error_code(refresh_error),
+                    int(getattr(refresh_error, "status", 0) or 0),
+                    _auth_error_code(reauth_error),
+                    int(getattr(reauth_error, "status", 0) or 0),
+                )
             raise refresh_error
 
     _apply_auth_payload(prefs, payload, login_state="authenticated")
