@@ -9,7 +9,15 @@ import bpy
 from bpy.props import EnumProperty, IntProperty
 from mathutils import Euler, Matrix, Quaternion, Vector
 
-from .auth import allows_animation_render_for_context
+from .auth import (
+    AuthApiError,
+    allows_animation_render_for_context,
+    describe_auth_error,
+    get_authorized_headers,
+    get_login_state,
+    get_status_message,
+    is_authenticated,
+)
 from .error_utils import PLANETKA_IMPORT_RECOVERABLE_EXCEPTIONS, PLANETKA_RECOVERABLE_EXCEPTIONS
 from .extension_prefs import get_earth_object, get_prefs
 from .operator_utils import ErrorCode, fail, require_planetka_props, require_scene
@@ -17,11 +25,12 @@ from .r2_source import (
     get_remote_cache_folder,
     is_remote_source_configured,
     plan_resolve_downloads,
-    prefetch_resolve_downloads,
 )
 from .state import (
     _apply_sunlight_from_props,
     _apply_sunlight_strength_from_props,
+    _get_render_job_heartbeat,
+    _is_render_handler_job_active,
     _is_render_job_active,
     create_temp_mesh,
     cleanup_planetka_unused_data,
@@ -32,6 +41,7 @@ from .state import (
     resume_navigation_camera_control_sync,
     resume_navigation_shot_updates,
     stop_auto_resolve_download_pipeline,
+    stop_auto_resolve_service,
     suspend_navigation_camera_control_sync,
     suspend_navigation_shot_updates,
     set_final_animation_render_active,
@@ -79,8 +89,12 @@ _COVERAGE_MAP = None
 _TILE_UTILS_MODULE = None
 _OPERATORS_MODULE = None
 _STREAMING_UTILS_MODULE = None
-ANIMATION_RESOLVE_FINALIZE_STUCK_TIMEOUT_SEC = 30.0
-ANIMATION_RESOLVE_FINALIZE_MAX_REFRESH_ATTEMPTS = 3
+ANIMATION_RENDER_OUTPUT_SETTLE_TIMEOUT_SEC = 15.0
+ANIMATION_RENDER_LAUNCH_IDLE_WAIT_SEC = 8.0
+ANIMATION_RENDER_LAUNCH_RETRY_MAX_ATTEMPTS = 2
+ANIMATION_POST_RECOVERY_RETRY_SEC = 0.25
+ANIMATION_POST_RECOVERY_MAX_ATTEMPTS = 120
+_ANIMATION_POST_RECOVERY_EPOCH = 0
 
 
 @dataclass
@@ -133,6 +147,75 @@ def _require_full_animation_access(operator, prefs=None):
     return False
 
 
+def _ensure_remote_auth_ready_for_final_render(operator, prefs, base_path):
+    if not is_remote_source_configured(base_path):
+        return True
+
+    if not is_authenticated(prefs):
+        status_message = str(get_status_message(prefs) or "").strip()
+        login_state = str(get_login_state(prefs) or "").strip().lower()
+        message = "Planetka Cloud is not connected. Connect account and retry Animation Render."
+        if status_message:
+            message = f"{message} ({status_message})"
+        elif login_state and login_state != "authenticated":
+            message = f"{message} (state: {login_state})"
+        fail(
+            operator,
+            message,
+            code=ErrorCode.RESOLVE_REFRESH_FAILED,
+            logger=logger,
+        )
+        return False
+
+    try:
+        headers = get_authorized_headers(prefs=prefs, allow_refresh=True)
+    except AuthApiError as exc:
+        detail = str(describe_auth_error(exc) or "").strip()
+        message = "Planetka Cloud is not connected. Connect account and retry Animation Render."
+        if detail:
+            message = f"{message} {detail}"
+        fail(
+            operator,
+            message,
+            code=ErrorCode.RESOLVE_REFRESH_FAILED,
+            logger=logger,
+            exc=exc,
+            log_message="Planetka animation render auth preflight failed",
+        )
+        return False
+    except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
+        fail(
+            operator,
+            f"Planetka Cloud auth preflight failed: {exc}",
+            code=ErrorCode.RESOLVE_REFRESH_FAILED,
+            logger=logger,
+            exc=exc,
+            log_message="Planetka animation render auth preflight failed",
+        )
+        return False
+    except (RuntimeError, TypeError, ValueError, AttributeError, OSError) as exc:
+        fail(
+            operator,
+            f"Planetka Cloud auth preflight failed: {exc}",
+            code=ErrorCode.RESOLVE_REFRESH_FAILED,
+            logger=logger,
+            exc=exc,
+            log_message="Planetka animation render auth preflight failed",
+        )
+        return False
+
+    if not isinstance(headers, dict) or not headers:
+        fail(
+            operator,
+            "Planetka Cloud is not connected. Connect account and retry Animation Render.",
+            code=ErrorCode.RESOLVE_REFRESH_FAILED,
+            logger=logger,
+        )
+        return False
+
+    return True
+
+
 def _cancel_if_animation_render_active(operator, action_label):
     try:
         if callable(_is_render_job_active) and bool(_is_render_job_active()):
@@ -145,6 +228,114 @@ def _cancel_if_animation_render_active(operator, action_label):
     except (AttributeError, RuntimeError, TypeError, ValueError):
         pass
     return False
+
+
+def _is_interface_write_locked():
+    try:
+        wm = getattr(getattr(bpy, "context", None), "window_manager", None)
+        if wm is not None and bool(getattr(wm, "is_interface_locked", False)):
+            return True
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        return False
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return False
+    return False
+
+
+def _schedule_post_animation_recovery(scene_name, restore_auto_resolve=True):
+    global _ANIMATION_POST_RECOVERY_EPOCH
+    _ANIMATION_POST_RECOVERY_EPOCH = int(_ANIMATION_POST_RECOVERY_EPOCH) + 1
+    epoch = int(_ANIMATION_POST_RECOVERY_EPOCH)
+    target_scene_name = str(scene_name or "").strip()
+    desired_auto_resolve = bool(restore_auto_resolve)
+    if not target_scene_name:
+        return
+
+    attempts_remaining = {"count": int(max(1, ANIMATION_POST_RECOVERY_MAX_ATTEMPTS))}
+
+    def _attempt_recovery():
+        if int(epoch) != int(_ANIMATION_POST_RECOVERY_EPOCH):
+            return None
+        scene_ref = bpy.data.scenes.get(target_scene_name)
+        if scene_ref is None:
+            return None
+
+        attempts_remaining["count"] = int(attempts_remaining.get("count", 0)) - 1
+        attempts_left = int(attempts_remaining.get("count", 0))
+        has_attempts = attempts_left > 0
+
+        try:
+            if callable(_is_render_job_active) and bool(_is_render_job_active()):
+                return float(ANIMATION_POST_RECOVERY_RETRY_SEC) if has_attempts else None
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            pass
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            pass
+        if _is_interface_write_locked():
+            return float(ANIMATION_POST_RECOVERY_RETRY_SEC) if has_attempts else None
+
+        try:
+            stop_auto_resolve_service()
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka animation: failed stopping auto-resolve service during post-render recovery", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka animation: failed stopping auto-resolve service during post-render recovery", exc_info=True)
+        try:
+            stop_auto_resolve_download_pipeline()
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka animation: failed clearing queued resolve pipeline during post-render recovery", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka animation: failed clearing queued resolve pipeline during post-render recovery", exc_info=True)
+
+        props = getattr(scene_ref, "planetka", None)
+        if props is not None:
+            try:
+                current_auto_resolve = bool(getattr(props, "auto_resolve", False))
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                current_auto_resolve = None
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                current_auto_resolve = None
+            if current_auto_resolve is not None and current_auto_resolve != desired_auto_resolve:
+                try:
+                    props.auto_resolve = bool(desired_auto_resolve)
+                except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                    logger.debug("Planetka animation: failed restoring auto-resolve state after render", exc_info=True)
+                except (RuntimeError, TypeError, ValueError, AttributeError):
+                    logger.debug("Planetka animation: failed restoring auto-resolve state after render", exc_info=True)
+
+        if get_earth_object() is None:
+            return None
+
+        op_kwargs = {
+            "scope_mode": "CAMERA",
+            "silent": True,
+            "skip_render_compatibility": True,
+            "defer_download": False,
+        }
+        try:
+            context_scene = getattr(getattr(bpy, "context", None), "scene", None)
+            if context_scene is scene_ref or not hasattr(getattr(bpy, "context", None), "temp_override"):
+                result = bpy.ops.planetka.load_textures(**op_kwargs)
+            else:
+                with bpy.context.temp_override(scene=scene_ref, view_layer=scene_ref.view_layers[0]):
+                    result = bpy.ops.planetka.load_textures(**op_kwargs)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka animation: post-render recovery resolve failed", exc_info=True)
+            return float(ANIMATION_POST_RECOVERY_RETRY_SEC) if has_attempts else None
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka animation: post-render recovery resolve failed", exc_info=True)
+            return float(ANIMATION_POST_RECOVERY_RETRY_SEC) if has_attempts else None
+
+        if "FINISHED" in result:
+            return None
+        return float(ANIMATION_POST_RECOVERY_RETRY_SEC) if has_attempts else None
+
+    try:
+        bpy.app.timers.register(_attempt_recovery, first_interval=0.15, persistent=False)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka animation: failed scheduling post-render recovery", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka animation: failed scheduling post-render recovery", exc_info=True)
 
 
 def _canonical_tiles(tiles):
@@ -3099,17 +3290,18 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
     _active_segment = None
     _state = "IDLE"
     _render_seen_active = False
+    _render_window_seen_open = False
     _render_launch_time = 0.0
     _render_launch_wall_time = 0.0
     _original_frame = 1
     _original_frame_start = 1
     _original_frame_end = 1
     _original_auto_resolve = True
-    _original_texture_quality_mode = "PREVIEW"
     _eevee_temp_displacement_state = None
     _segment_failures = None
-    _resolve_finalize_wait_started = 0.0
-    _resolve_finalize_refresh_attempts = 0
+    _stop_requested = False
+    _stop_notice_sent = False
+    _segment_cancel_epoch_before_launch = -1
 
     def invoke(self, context, event):
         del event
@@ -3131,6 +3323,88 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
                 logger.debug("Planetka animation: failed removing render timer", exc_info=True)
         self._timer = None
 
+    def _report_user_stopped_render(self):
+        message = "Animation Render stopped by user."
+        logger.info("Planetka animation: %s", message)
+        print(f"Planetka: {message}")
+        self.report({'INFO'}, message)
+
+    def _request_render_stop(self):
+        try:
+            render_ops = getattr(bpy.ops, "render", None)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            render_ops = None
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            render_ops = None
+
+        if render_ops is None:
+            return
+
+        cancel_ops = (
+            getattr(render_ops, "cancel", None),
+            getattr(render_ops, "view_cancel", None),
+        )
+        for cancel_op in cancel_ops:
+            if not callable(cancel_op):
+                continue
+            try:
+                cancel_op()
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka animation: render cancel op raised recoverable exception", exc_info=True)
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka animation: render cancel op raised unexpected exception", exc_info=True)
+
+    def _read_render_heartbeat(self):
+        try:
+            if callable(_get_render_job_heartbeat):
+                heartbeat = dict(_get_render_job_heartbeat() or {})
+                return heartbeat
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            return {}
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            return {}
+        return {}
+
+    def _is_render_cancelled_since_segment_launch(self):
+        heartbeat = self._read_render_heartbeat()
+        try:
+            last_cancelled_epoch = int(heartbeat.get("last_cancelled_epoch", -1) or -1)
+        except (TypeError, ValueError, AttributeError):
+            last_cancelled_epoch = -1
+        try:
+            baseline_epoch = int(getattr(self, "_segment_cancel_epoch_before_launch", -1) or -1)
+        except (TypeError, ValueError, AttributeError):
+            baseline_epoch = -1
+        return bool(last_cancelled_epoch > baseline_epoch)
+
+    def _is_render_handler_running(self):
+        try:
+            if callable(_is_render_handler_job_active):
+                return bool(_is_render_handler_job_active())
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            return False
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            return False
+        return False
+
+    def _stop_render_before_cleanup(self):
+        if not self._is_render_job_running():
+            return
+        self._request_render_stop()
+        wait_started = float(time.monotonic())
+        while (float(time.monotonic()) - wait_started) < 2.0:
+            if not self._is_render_job_running():
+                break
+            try:
+                bpy.context.view_layer.update()
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                pass
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                pass
+            time.sleep(0.05)
+        if self._is_render_job_running():
+            logger.warning("Planetka animation: render job remained active during cleanup after cancel/error.")
+
     def _restore_runtime_state(self):
         try:
             set_final_animation_render_active(False)
@@ -3138,18 +3412,21 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             logger.debug("Planetka animation: failed clearing final-render UI lock", exc_info=True)
         except (RuntimeError, TypeError, ValueError, AttributeError):
             logger.debug("Planetka animation: failed clearing final-render UI lock", exc_info=True)
+        try:
+            stop_auto_resolve_download_pipeline()
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka animation: failed clearing queued resolve pipeline during restore", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka animation: failed clearing queued resolve pipeline during restore", exc_info=True)
 
         scene = self._scene
         props = self._props
+        desired_auto_resolve = bool(self._original_auto_resolve)
         if props is not None:
             try:
-                props.auto_resolve = bool(self._original_auto_resolve)
+                props.auto_resolve = False
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                logger.debug("Planetka animation: failed restoring auto-resolve", exc_info=True)
-            try:
-                props.texture_quality_mode = str(self._original_texture_quality_mode or "PREVIEW")
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                logger.debug("Planetka animation: failed restoring texture quality mode", exc_info=True)
+                logger.debug("Planetka animation: failed disabling auto-resolve during restore", exc_info=True)
 
         if scene is not None:
             try:
@@ -3170,8 +3447,15 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka animation: failed restoring Earth displacement mode after render", exc_info=True)
         self._eevee_temp_displacement_state = None
+        if scene is not None:
+            _schedule_post_animation_recovery(
+                str(getattr(scene, "name", "") or ""),
+                restore_auto_resolve=bool(desired_auto_resolve),
+            )
 
-    def _cleanup(self, context):
+    def _cleanup(self, context, stop_render=False):
+        if bool(stop_render):
+            self._stop_render_before_cleanup()
         self._remove_timer(context)
         self._restore_runtime_state()
         self._scene = None
@@ -3181,16 +3465,18 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         self._active_segment = None
         self._state = "IDLE"
         self._render_seen_active = False
+        self._render_window_seen_open = False
         self._render_launch_time = 0.0
         self._render_launch_wall_time = 0.0
-        self._resolve_finalize_wait_started = 0.0
-        self._resolve_finalize_refresh_attempts = 0
+        self._stop_requested = False
+        self._stop_notice_sent = False
+        self._segment_cancel_epoch_before_launch = -1
 
     def _cancel_with_error(self, context, message):
         text = str(message or "Animation render failed.").strip() or "Animation render failed."
         self.report({'ERROR'}, text)
         logger.error("Planetka animation render failed: %s", text)
-        self._cleanup(context)
+        self._cleanup(context, stop_render=True)
         return {'CANCELLED'}
 
     def _finish_success(self, context):
@@ -3203,70 +3489,57 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         return {'FINISHED'}
 
     def _is_render_job_running(self):
+        # Use handler state first, but keep Blender's RENDER flag as a live fallback.
+        # Some builds transiently flip handler state false between animation frames.
+        handler_active = None
+        try:
+            if callable(_is_render_handler_job_active):
+                handler_active = bool(_is_render_handler_job_active())
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            pass
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            pass
+        if handler_active is True:
+            return True
+
+        # Blender's app job flag can stick true on some systems, but we now guard that
+        # case via output-completion checks in modal state before segment completion.
         try:
             is_job_running = getattr(getattr(bpy, "app", None), "is_job_running", None)
             if callable(is_job_running):
-                return bool(is_job_running("RENDER"))
+                app_running = bool(is_job_running("RENDER"))
+                if app_running:
+                    return True
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            return False
+        except (RuntimeError, TypeError, ValueError, AttributeError):
             return False
         return False
 
-    def _read_resolve_runtime_status(self, scene):
+    def _has_render_result_window(self):
         try:
-            return dict(get_resolve_runtime_status(scene=scene) or {})
+            wm = getattr(getattr(bpy, "context", None), "window_manager", None)
+            if wm is None:
+                return False
+            for window in tuple(getattr(wm, "windows", ()) or ()):
+                screen = getattr(window, "screen", None)
+                if screen is None:
+                    continue
+                for area in tuple(getattr(screen, "areas", ()) or ()):
+                    if str(getattr(area, "type", "")) != "IMAGE_EDITOR":
+                        continue
+                    spaces = getattr(area, "spaces", None)
+                    space = getattr(spaces, "active", None) if spaces is not None else None
+                    image = getattr(space, "image", None) if space is not None else None
+                    if image is None:
+                        continue
+                    if str(getattr(image, "name", "") or "") == "Render Result":
+                        return True
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            return {}
+            return False
         except (RuntimeError, TypeError, ValueError, AttributeError):
-            return {}
-
-    def _refresh_stuck_finalize_queue(self, scene, waited_sec):
-        attempt = int(self._resolve_finalize_refresh_attempts) + 1
-        self._resolve_finalize_refresh_attempts = int(attempt)
-        self._resolve_finalize_wait_started = float(time.monotonic())
-        if attempt > int(ANIMATION_RESOLVE_FINALIZE_MAX_REFRESH_ATTEMPTS):
-            return False, (
-                "Resolve finalize remained stuck after automatic refresh attempts "
-                f"({int(ANIMATION_RESOLVE_FINALIZE_MAX_REFRESH_ATTEMPTS)})."
-            )
-        logger.warning(
-            "Planetka animation: resolve finalize watchdog refreshing stalled pipeline "
-            "(attempt=%d/%d, waited=%.2fs).",
-            int(attempt),
-            int(ANIMATION_RESOLVE_FINALIZE_MAX_REFRESH_ATTEMPTS),
-            float(max(0.0, float(waited_sec))),
-        )
-        self.report(
-            {'WARNING'},
-            (
-                "Resolve finalize stalled; attempting automatic refresh "
-                f"({int(attempt)}/{int(ANIMATION_RESOLVE_FINALIZE_MAX_REFRESH_ATTEMPTS)})."
-            ),
-        )
-        try:
-            stop_auto_resolve_download_pipeline()
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka animation: failed stopping stalled resolve pipeline", exc_info=True)
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka animation: failed stopping stalled resolve pipeline", exc_info=True)
-        return True, ""
-
-    def _wait_or_refresh_finalize_queue(self, scene):
-        status = self._read_resolve_runtime_status(scene)
-        code = str(status.get("code", "") or "").strip().upper()
-        if code != "FINALIZE_QUEUED":
-            self._resolve_finalize_wait_started = 0.0
-            self._resolve_finalize_refresh_attempts = 0
-            return True, ""
-
-        now = float(time.monotonic())
-        started = float(self._resolve_finalize_wait_started or 0.0)
-        if started <= 0.0:
-            self._resolve_finalize_wait_started = now
-            return False, ""
-        waited = max(0.0, now - started)
-        if waited < float(ANIMATION_RESOLVE_FINALIZE_STUCK_TIMEOUT_SEC):
-            return False, ""
-        return self._refresh_stuck_finalize_queue(scene, waited)
+            return False
+        return False
 
     def _dedupe_texture_requests(self, requests):
         deduped = []
@@ -3332,6 +3605,8 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
                     removed_files += 1
                 except PLANETKA_RECOVERABLE_EXCEPTIONS:
                     logger.debug("Planetka animation: failed deleting completed-segment cache file", exc_info=True)
+                except (OSError, RuntimeError, TypeError, ValueError):
+                    logger.debug("Planetka animation: failed deleting completed-segment cache file", exc_info=True)
         if removed_files > 0:
             logger.debug(
                 "Planetka animation: removed %d cache file(s) after segment %d.",
@@ -3354,6 +3629,7 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         op_kwargs = {
             "scope_mode": "CAMERA",
             "silent": True,
+            "defer_download": False,
         }
         selected_mode = self._get_selected_texture_quality_mode(props)
         if selected_mode in {"PREVIEW", "BALANCED", "FULL"}:
@@ -3389,8 +3665,22 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         if scene is None:
             return False, "Scene context became unavailable."
         self._enforce_eevee_bump_only_for_segment()
+        heartbeat = self._read_render_heartbeat()
+        try:
+            self._segment_cancel_epoch_before_launch = int(heartbeat.get("last_cancelled_epoch", -1) or -1)
+        except (TypeError, ValueError, AttributeError):
+            self._segment_cancel_epoch_before_launch = -1
         start = int(segment.get("start", 1))
         end = int(segment.get("end", start))
+        # Wait briefly for Blender to fully leave previous render state before launching next segment.
+        idle_wait_started = float(time.monotonic())
+        while self._is_render_job_running():
+            if (float(time.monotonic()) - idle_wait_started) >= float(max(0.5, ANIMATION_RENDER_LAUNCH_IDLE_WAIT_SEC)):
+                return False, (
+                    "Render launch blocked because previous render is still active "
+                    f"(frames {start:04d}-{end:04d})."
+                )
+            time.sleep(0.05)
         try:
             scene.frame_start = int(start)
             scene.frame_end = int(end)
@@ -3398,24 +3688,36 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             bpy.context.view_layer.update()
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
-        try:
-            # Mark launch wall-time immediately before invoking Blender render op.
-            # This avoids false "cancelled" detection on fast first frames.
-            self._render_launch_wall_time = time.time()
-            if bool(invoke_ui):
-                result = bpy.ops.render.render('INVOKE_DEFAULT', animation=True)
-            else:
-                try:
-                    result = bpy.ops.render.render('EXEC_DEFAULT', animation=True, use_viewport=False)
-                except TypeError:
-                    result = bpy.ops.render.render('EXEC_DEFAULT', animation=True)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
-            return False, f"Render launch failed for frames {start:04d}-{end:04d}: {exc}"
-        except (RuntimeError, TypeError, ValueError) as exc:
-            return False, f"Render launch failed for frames {start:04d}-{end:04d}: {exc}"
-        if "RUNNING_MODAL" in result or "FINISHED" in result:
-            return True, ""
-        return False, f"Render launch returned {result} for frames {start:04d}-{end:04d}."
+        last_result = None
+        attempts = int(max(1, ANIMATION_RENDER_LAUNCH_RETRY_MAX_ATTEMPTS))
+        for attempt in range(attempts):
+            try:
+                # Mark launch wall-time immediately before invoking Blender render op.
+                # This avoids false "cancelled" detection on fast first frames.
+                self._render_launch_wall_time = time.time()
+                if bool(invoke_ui):
+                    result = bpy.ops.render.render('INVOKE_DEFAULT', animation=True)
+                else:
+                    try:
+                        result = bpy.ops.render.render('EXEC_DEFAULT', animation=True, use_viewport=False)
+                    except TypeError:
+                        result = bpy.ops.render.render('EXEC_DEFAULT', animation=True)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
+                return False, f"Render launch failed for frames {start:04d}-{end:04d}: {exc}"
+            except (RuntimeError, TypeError, ValueError) as exc:
+                return False, f"Render launch failed for frames {start:04d}-{end:04d}: {exc}"
+            last_result = result
+            if "RUNNING_MODAL" in result or "FINISHED" in result:
+                return True, ""
+            if "CANCELLED" in result:
+                # Blender can transiently return CANCELLED while previous render teardown is settling.
+                if self._is_render_job_running():
+                    return True, ""
+                if attempt < (attempts - 1):
+                    time.sleep(0.2)
+                    continue
+            break
+        return False, f"Render launch returned {last_result} for frames {start:04d}-{end:04d}."
 
     def _segment_outputs_complete(self, segment, min_mtime=None):
         scene = self._scene
@@ -3445,6 +3747,37 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
                 if frame_mtime < (min_mtime_value - 0.2):
                     return False
         return True
+
+    def _segment_output_progress(self, segment, min_mtime=None):
+        scene = self._scene
+        if scene is None or _is_movie_output(scene):
+            return 0, 0
+        start = int(segment.get("start", 1))
+        end = int(segment.get("end", start))
+        min_mtime_value = None
+        if min_mtime is not None:
+            try:
+                min_mtime_value = float(min_mtime)
+            except (TypeError, ValueError):
+                min_mtime_value = None
+        produced = 0
+        total = int(max(0, end - start + 1))
+        for frame in range(start, end + 1):
+            try:
+                frame_path = bpy.path.abspath(scene.render.frame_path(frame=int(frame)))
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                continue
+            if not frame_path or not os.path.isfile(frame_path):
+                continue
+            if min_mtime_value is not None:
+                try:
+                    frame_mtime = float(os.path.getmtime(frame_path))
+                except (OSError, ValueError, TypeError):
+                    continue
+                if frame_mtime < (min_mtime_value - 0.2):
+                    continue
+            produced += 1
+        return int(produced), int(total)
 
     def _is_eevee_render_engine(self, scene):
         if scene is None:
@@ -3527,6 +3860,8 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
                 code=ErrorCode.RESOLVE_PATH_INVALID,
                 logger=logger,
             )
+        if not _ensure_remote_auth_ready_for_final_render(self, prefs, base_path):
+            return {'CANCELLED'}
         if _is_movie_output(scene):
             return fail(
                 self,
@@ -3571,6 +3906,19 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
                     logger=logger,
                 )
 
+        try:
+            stop_auto_resolve_service()
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka animation: failed stopping auto-resolve service for final render", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka animation: failed stopping auto-resolve service for final render", exc_info=True)
+        try:
+            stop_auto_resolve_download_pipeline()
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka animation: failed stopping auto-resolve download pipeline for final render", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka animation: failed stopping auto-resolve download pipeline for final render", exc_info=True)
+
         render_start, render_end = _active_timeline_frame_range(scene)
         frame_start = int(render_start)
         frame_end = int(render_end)
@@ -3584,7 +3932,6 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
 
         original_frame = int(getattr(scene, "frame_current", frame_start))
         original_auto_resolve = bool(getattr(props, "auto_resolve", True))
-        original_texture_quality_mode = str(getattr(props, "texture_quality_mode", "PREVIEW") or "PREVIEW").upper()
         selected_texture_quality_mode = self._get_selected_texture_quality_mode(props)
         render = getattr(scene, "render", None)
         eevee_temp_displacement_state = None
@@ -3596,10 +3943,6 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             props.auto_resolve = False
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka animation: failed disabling auto-resolve for animation render", exc_info=True)
-        try:
-            props.texture_quality_mode = str(selected_texture_quality_mode)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka animation: failed applying selected texture quality mode for animation render", exc_info=True)
 
         try:
             segment_plan = _plan_animation_segments(
@@ -3640,11 +3983,11 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             self._original_frame_start = int(original_frame_start)
             self._original_frame_end = int(original_frame_end)
             self._original_auto_resolve = bool(original_auto_resolve)
-            self._original_texture_quality_mode = str(original_texture_quality_mode)
             self._eevee_temp_displacement_state = eevee_temp_displacement_state
             self._segment_failures = []
-            self._resolve_finalize_wait_started = 0.0
-            self._resolve_finalize_refresh_attempts = 0
+            self._stop_requested = False
+            self._stop_notice_sent = False
+            self._render_window_seen_open = False
             try:
                 set_final_animation_render_active(True)
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
@@ -3685,12 +4028,19 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             )
 
     def modal(self, context, event):
-        if event.type in {'ESC', 'RIGHTMOUSE'}:
-            self.report({'INFO'}, "Render Animation cancelled.")
-            self._cleanup(context)
-            return {'CANCELLED'}
         if event.type != 'TIMER':
             return {'PASS_THROUGH'}
+
+        if bool(self._stop_requested):
+            if not bool(self._stop_notice_sent):
+                self.report({'INFO'}, "Stopping Final Animation Render...")
+                self._stop_notice_sent = True
+            self._request_render_stop()
+            if self._is_render_handler_running():
+                return {'RUNNING_MODAL'}
+            self._report_user_stopped_render()
+            self._cleanup(context, stop_render=False)
+            return {'CANCELLED'}
 
         scene = self._scene
         if scene is None:
@@ -3699,11 +4049,12 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         if self._state == "RESOLVE":
             if self._segment_index >= len(self._segments or ()):
                 return self._finish_success(context)
-            resolve_ready, watchdog_message = self._wait_or_refresh_finalize_queue(scene)
-            if watchdog_message:
-                return self._cancel_with_error(context, watchdog_message)
-            if not resolve_ready:
-                return {'RUNNING_MODAL'}
+            try:
+                stop_auto_resolve_download_pipeline()
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka animation: failed stopping queued resolve download before segment resolve", exc_info=True)
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka animation: failed stopping queued resolve download before segment resolve", exc_info=True)
             segment = dict((self._segments or [])[self._segment_index])
             self._active_segment = segment
             seg_start = int(segment.get("start", 1))
@@ -3712,8 +4063,6 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             ok, message = self._resolve_segment_frame(seg_start, tiles_override=segment.get("tiles", ()))
             if not ok:
                 return self._cancel_with_error(context, message)
-            self._resolve_finalize_wait_started = 0.0
-            self._resolve_finalize_refresh_attempts = 0
             self._enforce_eevee_bump_only_for_segment()
             self._enforce_cycles_simple_subdivision_for_segment()
             ok, message = self._launch_segment_render(segment, invoke_ui=True)
@@ -3721,29 +4070,70 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
                 return self._cancel_with_error(context, message)
             self._state = "RENDER"
             self._render_seen_active = False
+            self._render_window_seen_open = False
             self._render_launch_time = time.monotonic()
             return {'RUNNING_MODAL'}
 
         if self._state == "RENDER":
             running = self._is_render_job_running()
+            elapsed = float(time.monotonic() - float(self._render_launch_time))
+            render_window_open = self._has_render_result_window()
+            if bool(render_window_open):
+                self._render_window_seen_open = True
+            elif bool(self._render_window_seen_open):
+                if running:
+                    logger.info("Planetka animation: render window was closed by user; stopping animation render.")
+                    self._stop_requested = True
+                    return {'RUNNING_MODAL'}
+                self._report_user_stopped_render()
+                self._cleanup(context, stop_render=False)
+                return {'CANCELLED'}
             if running:
                 self._render_seen_active = True
                 return {'RUNNING_MODAL'}
-            elapsed = float(time.monotonic() - float(self._render_launch_time))
             if (not self._render_seen_active) and elapsed < 0.75:
                 return {'RUNNING_MODAL'}
-            active_segment = self._active_segment or {}
-            if not self._segment_outputs_complete(
+            active_segment = self._active_segment
+            if not isinstance(active_segment, dict):
+                return self._cancel_with_error(
+                    context,
+                    "Render segment state was lost before completion.",
+                )
+            outputs_complete = self._segment_outputs_complete(
                 active_segment,
                 min_mtime=self._render_launch_wall_time,
-            ):
-                # User closed/cancelled the render window before segment completed.
-                self._cleanup(context)
-                return {'CANCELLED'}
+            )
+            if not outputs_complete:
+                produced_count, expected_count = self._segment_output_progress(
+                    active_segment,
+                    min_mtime=self._render_launch_wall_time,
+                )
+                cancelled_by_user = (
+                    bool(self._stop_requested)
+                    or self._is_render_cancelled_since_segment_launch()
+                    or (
+                        bool(self._render_seen_active)
+                        and (int(expected_count) > int(produced_count))
+                        and (not bool(render_window_open))
+                    )
+                )
+                if cancelled_by_user:
+                    self._report_user_stopped_render()
+                    self._cleanup(context, stop_render=False)
+                    return {'CANCELLED'}
+                if elapsed < float(max(0.75, ANIMATION_RENDER_OUTPUT_SETTLE_TIMEOUT_SEC)):
+                    return {'RUNNING_MODAL'}
+                seg_start = int(active_segment.get("start", 1))
+                seg_end = int(active_segment.get("end", seg_start))
+                return self._cancel_with_error(
+                    context,
+                    f"Render segment ended before all output frames were written ({seg_start:04d}-{seg_end:04d}).",
+                )
             self._cleanup_completed_segment_cache(self._segment_index)
             self._segment_index += 1
             self._active_segment = None
             self._state = "RESOLVE"
+            self._render_seen_active = False
             return {'RUNNING_MODAL'}
 
         return {'RUNNING_MODAL'}

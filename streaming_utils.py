@@ -33,6 +33,15 @@ POLE_CAP_Z_LEVELS = frozenset({1, 2, 4, 8})
 _STAGED_PREFETCH_LOCK = threading.Lock()
 _STAGED_PREFETCH = {}
 _STAGED_PREFETCH_TTL_SECONDS = 60.0
+_AUTH_DISCONNECT_TOKENS = (
+    "account not connected",
+    "account_not_connected",
+    "login expired",
+    "session expired",
+    "log in again",
+    "missing_refresh_token",
+    "invalid_api_key",
+)
 
 
 def _normalize_tiles(visible_tiles):
@@ -42,6 +51,37 @@ def _normalize_tiles(visible_tiles):
 def _normalize_base_path(base_path):
     text = str(base_path or "").strip()
     return text.rstrip("/\\")
+
+
+def _contains_auth_disconnect_text(value):
+    text = str(value or "").strip().lower()
+    if not text:
+        return False
+    for token in _AUTH_DISCONNECT_TOKENS:
+        if token in text:
+            return True
+    return False
+
+
+def _prefetch_result_indicates_auth_disconnect(prefetch_result):
+    if not isinstance(prefetch_result, dict):
+        return False
+    if _contains_auth_disconnect_text(prefetch_result.get("fatal_error", "")):
+        return True
+    details = prefetch_result.get("missing_details", ())
+    if not isinstance(details, (tuple, list)):
+        return False
+    for entry in details:
+        if not isinstance(entry, dict):
+            continue
+        folder_value = str(entry.get("folder", "") or "").strip().upper()
+        if folder_value != "S2":
+            continue
+        if _contains_auth_disconnect_text(entry.get("fetch_error", "")):
+            return True
+        if _contains_auth_disconnect_text(entry.get("remote_error", "")):
+            return True
+    return False
 
 
 def _staged_prefetch_key(visible_tiles, base_path, texture_quality_mode="PREVIEW"):
@@ -343,10 +383,16 @@ def prefetch_resolve_plan(
         prefetch_result["resolved_count"] = int(prefetch_result.get("resolved_count", 0) or 0)
         prefetch_result["error_count"] = max(int(prefetch_result.get("error_count", 0) or 0), 0)
         if not str(prefetch_result.get("fatal_error", "") or "").strip():
-            prefetch_result["fatal_error"] = (
-                "Planetka resolve requires S2 tile assets. "
-                "One or more required S2 files are unavailable."
-            )
+            if _prefetch_result_indicates_auth_disconnect(prefetch_result):
+                prefetch_result["fatal_error"] = (
+                    "Planetka Cloud is not connected. "
+                    "Reconnect your account and retry Resolve."
+                )
+            else:
+                prefetch_result["fatal_error"] = (
+                    "Planetka resolve requires S2 tile assets. "
+                    "One or more required S2 files are unavailable."
+                )
     if prefetch_failed and not cancelled:
         prefetch_result["fatal_error"] = str(prefetch_result.get("fatal_error", "") or "").strip() or (
             str(prefetch_error_text or "").strip() or "Planetka resolve prefetch failed."
