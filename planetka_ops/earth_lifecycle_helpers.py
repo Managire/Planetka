@@ -26,6 +26,7 @@ _DEFAULT_SCENE_REMOVED_KEY = "planetka_default_scene_removed"
 _PLANETKA_CREATE_CAMERA_NAME = "Planetka Camera"
 _PLANETKA_RUNTIME_NAME_PREFIX = "Planetka"
 _PLANETKA_STANDALONE_NAME_PREFIX = "PlanetkaStandalone"
+_SURFACE_COLLECTION_NAME = "Planetka - Earth Surface Collection"
 _REBUILD_EXCEPTIONS = (
     PLANETKA_RECOVERABLE_EXCEPTIONS,
     RuntimeError,
@@ -102,9 +103,69 @@ def _is_planetka_create_camera(obj):
         return False
 
 
+def _ensure_planetka_camera_in_surface_collection(scene, camera_obj):
+    if scene is None or camera_obj is None:
+        return False
+    if str(getattr(camera_obj, "type", "")) != "CAMERA":
+        return False
+
+    scene_root_collection = getattr(scene, "collection", None)
+    if scene_root_collection is None:
+        return False
+
+    try:
+        surface_collection = bpy.data.collections.get(_SURFACE_COLLECTION_NAME)
+        if surface_collection is None:
+            surface_collection = bpy.data.collections.new(_SURFACE_COLLECTION_NAME)
+        if _SURFACE_COLLECTION_NAME not in scene_root_collection.children:
+            scene_root_collection.children.link(surface_collection)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed ensuring surface collection for Planetka Camera", exc_info=True)
+        return False
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed ensuring surface collection for Planetka Camera", exc_info=True)
+        return False
+
+    for collection in tuple(getattr(camera_obj, "users_collection", ()) or ()):
+        if collection == surface_collection:
+            continue
+        try:
+            collection.objects.unlink(camera_obj)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed unlinking Planetka Camera from non-surface collection", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed unlinking Planetka Camera from non-surface collection", exc_info=True)
+
+    try:
+        if camera_obj.name not in surface_collection.objects:
+            surface_collection.objects.link(camera_obj)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed linking Planetka Camera to surface collection", exc_info=True)
+        return False
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed linking Planetka Camera to surface collection", exc_info=True)
+        return False
+
+    return True
+
+
 def _ensure_planetka_create_camera(scene):
     if scene is None:
         return None
+
+    surface_collection = None
+    scene_root_collection = getattr(scene, "collection", None)
+    if scene_root_collection is not None:
+        try:
+            surface_collection = bpy.data.collections.get(_SURFACE_COLLECTION_NAME)
+            if surface_collection is None:
+                surface_collection = bpy.data.collections.new(_SURFACE_COLLECTION_NAME)
+            if _SURFACE_COLLECTION_NAME not in scene_root_collection.children:
+                scene_root_collection.children.link(surface_collection)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed ensuring surface collection for Planetka Camera", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed ensuring surface collection for Planetka Camera", exc_info=True)
 
     camera_obj = None
     named = bpy.data.objects.get(_PLANETKA_CREATE_CAMERA_NAME)
@@ -120,9 +181,12 @@ def _ensure_planetka_create_camera(scene):
     if camera_obj is None:
         camera_data = bpy.data.cameras.new(f"{_PLANETKA_CREATE_CAMERA_NAME} Data")
         camera_obj = bpy.data.objects.new(_PLANETKA_CREATE_CAMERA_NAME, camera_data)
-        scene.collection.objects.link(camera_obj)
+        if surface_collection is not None:
+            surface_collection.objects.link(camera_obj)
+        elif scene_root_collection is not None:
+            scene_root_collection.objects.link(camera_obj)
 
-    if camera_obj not in tuple(getattr(scene, "objects", ())):
+    if not _ensure_planetka_camera_in_surface_collection(scene, camera_obj) and camera_obj not in tuple(getattr(scene, "objects", ())):
         scene.collection.objects.link(camera_obj)
 
     try:
@@ -635,27 +699,31 @@ def _restore_camera_state_after_rebuild(scene, snapshot):
     if camera is None or str(getattr(camera, "type", "")) != "CAMERA":
         return False
 
-    linked = bool(tuple(getattr(camera, "users_collection", ()) or ()))
-    collection_names = tuple(str(name or "").strip() for name in snapshot.get("collection_names", ()) if str(name or "").strip())
-    for collection_name in collection_names:
-        collection = bpy.data.collections.get(collection_name)
-        if collection is None:
-            continue
-        try:
-            if str(getattr(camera, "name", "") or "") not in collection.objects:
-                collection.objects.link(camera)
-            linked = True
-        except _REBUILD_EXCEPTIONS:
-            logger.debug("Planetka: failed linking camera back into original collection", exc_info=True)
+    if _is_planetka_create_camera(camera):
+        if not _ensure_planetka_camera_in_surface_collection(scene, camera):
+            return False
+    else:
+        linked = bool(tuple(getattr(camera, "users_collection", ()) or ()))
+        collection_names = tuple(str(name or "").strip() for name in snapshot.get("collection_names", ()) if str(name or "").strip())
+        for collection_name in collection_names:
+            collection = bpy.data.collections.get(collection_name)
+            if collection is None:
+                continue
+            try:
+                if str(getattr(camera, "name", "") or "") not in collection.objects:
+                    collection.objects.link(camera)
+                linked = True
+            except _REBUILD_EXCEPTIONS:
+                logger.debug("Planetka: failed linking camera back into original collection", exc_info=True)
 
-    if not linked and scene is not None:
-        try:
-            scene.collection.objects.link(camera)
-            linked = True
-        except _REBUILD_EXCEPTIONS:
-            logger.debug("Planetka: failed linking camera back into scene root", exc_info=True)
-    if not linked:
-        return False
+        if not linked and scene is not None:
+            try:
+                scene.collection.objects.link(camera)
+                linked = True
+            except _REBUILD_EXCEPTIONS:
+                logger.debug("Planetka: failed linking camera back into scene root", exc_info=True)
+        if not linked:
+            return False
 
     try:
         if scene is not None and getattr(scene, "camera", None) is not camera:

@@ -512,18 +512,92 @@ def _camera_has_transform_keys(camera):
     if camera is None:
         return False
     animation_data = getattr(camera, "animation_data", None)
-    action = getattr(animation_data, "action", None) if animation_data is not None else None
-    if action is None:
+    if animation_data is None:
         return False
-    fcurves = getattr(action, "fcurves", None) or ()
-    for fcurve in fcurves:
+
+    transform_paths = {
+        "location",
+        "rotation_euler",
+        "rotation_quaternion",
+        "rotation_axis_angle",
+    }
+
+    def _fcurve_has_keys(fcurve):
         data_path = str(getattr(fcurve, "data_path", "") or "")
-        if data_path not in {"location", "rotation_euler"}:
-            continue
+        if data_path not in transform_paths:
+            return False
         points = getattr(fcurve, "keyframe_points", None)
-        if points and len(points) > 0:
-            return True
+        return bool(points and len(points) > 0)
+
+    def _action_has_transform_keys(action):
+        if action is None:
+            return False
+        for fcurve in _iter_action_fcurves_health(action):
+            if _fcurve_has_keys(fcurve):
+                return True
+        return False
+
+    action = getattr(animation_data, "action", None)
+    if _action_has_transform_keys(action):
+        return True
+
+    for track in tuple(getattr(animation_data, "nla_tracks", ()) or ()):
+        for strip in tuple(getattr(track, "strips", ()) or ()):
+            if _action_has_transform_keys(getattr(strip, "action", None)):
+                return True
     return False
+
+
+def _iter_action_fcurves_health(action):
+    if action is None:
+        return
+
+    seen = set()
+
+    def _token_for_fcurve(fcurve):
+        try:
+            return int(fcurve.as_pointer())
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            return id(fcurve)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            return id(fcurve)
+
+    legacy_fcurves = getattr(action, "fcurves", None) or ()
+    for fcurve in legacy_fcurves:
+        token = _token_for_fcurve(fcurve)
+        if token in seen:
+            continue
+        seen.add(token)
+        yield fcurve
+
+    layers = getattr(action, "layers", None)
+    slots = getattr(action, "slots", None)
+    if not layers or not slots:
+        return
+
+    for layer in layers:
+        strips = getattr(layer, "strips", None)
+        if not strips:
+            continue
+        for strip in strips:
+            channelbag_fn = getattr(strip, "channelbag", None)
+            if not callable(channelbag_fn):
+                continue
+            for slot in slots:
+                try:
+                    channelbag = channelbag_fn(slot)
+                except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                    continue
+                except (RuntimeError, TypeError, ValueError):
+                    continue
+                if channelbag is None:
+                    continue
+                for fcurve in tuple(getattr(channelbag, "fcurves", ()) or ()):
+                    token = _token_for_fcurve(fcurve)
+                    if token in seen:
+                        continue
+                    seen.add(token)
+                    yield fcurve
 
 
 def _new_scene_health_payload():
