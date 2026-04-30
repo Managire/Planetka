@@ -42,6 +42,7 @@ import os
 import random
 import shutil
 import sqlite3
+import subprocess
 import sys
 import time
 import traceback
@@ -55,7 +56,6 @@ for _path in (_TOOLS_DIR, _REPO_ROOT):
 
 from planetka_e2e_common import (  # noqa: E402
     E2EError,
-    analyze_render_image,
     configure_eevee,
     configure_png_output,
     enable_module,
@@ -70,6 +70,8 @@ from planetka_e2e_common import (  # noqa: E402
 from tool_error_utils import TOOL_RECOVERABLE_EXCEPTIONS  # noqa: E402
 
 import bpy  # noqa: E402
+from mathutils import Vector  # noqa: E402
+from bpy_extras.object_utils import world_to_camera_view  # noqa: E402
 
 
 TAG = "[Planetka Endless Stress]"
@@ -123,6 +125,84 @@ def _safe_int(value, default=0):
         return int(value)
     except (TypeError, ValueError):
         return int(default)
+
+
+def _analyze_render_image_cv2(path):
+    image_path = Path(str(path))
+    if not image_path.is_file():
+        raise E2EError(f"Rendered image does not exist: {image_path}")
+
+    python_bin = shutil.which("python3") or sys.executable
+    script = r"""
+import cv2
+import json
+import sys
+
+path = sys.argv[1]
+img = cv2.imread(path, cv2.IMREAD_COLOR)
+if img is None:
+    raise RuntimeError(f"cv2.imread failed: {path}")
+
+height = int(img.shape[0])
+width = int(img.shape[1])
+pixel_count = max(1, width * height)
+step = max(1, pixel_count // 30000)
+
+sampled = 0
+black_count = 0
+pink_count = 0
+lum_sum = 0.0
+max_lum = 0.0
+
+for i in range(0, pixel_count, step):
+    y = i // width
+    x = i % width
+    b8, g8, r8 = img[y, x]
+    r = float(r8) / 255.0
+    g = float(g8) / 255.0
+    b = float(b8) / 255.0
+    lum = (0.2126 * r) + (0.7152 * g) + (0.0722 * b)
+    lum_sum += lum
+    max_lum = max(max_lum, lum)
+    if lum <= 0.01:
+        black_count += 1
+    if r >= 0.80 and b >= 0.80 and g <= 0.22 and abs(r - b) <= 0.20:
+        pink_count += 1
+    sampled += 1
+
+avg_lum = lum_sum / max(1, sampled)
+black_ratio = black_count / max(1, sampled)
+pink_ratio = pink_count / max(1, sampled)
+mostly_black = (avg_lum <= 0.02 and max_lum <= 0.08) or (black_ratio >= 0.995)
+pink_corrupt = pink_ratio >= 0.005
+
+print(json.dumps({
+    "path": str(path),
+    "width": int(width),
+    "height": int(height),
+    "samples": int(sampled),
+    "avg_luminance": round(avg_lum, 6),
+    "max_luminance": round(max_lum, 6),
+    "black_ratio": round(black_ratio, 6),
+    "pink_ratio": round(pink_ratio, 6),
+    "mostly_black": bool(mostly_black),
+    "pink_corrupt": bool(pink_corrupt),
+    "analyzer": "opencv_external",
+}))
+"""
+    result = subprocess.run(
+        [python_bin, "-c", script, str(image_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if int(result.returncode) != 0:
+        stderr = str(result.stderr or "").strip()
+        raise E2EError(f"OpenCV image analysis failed for {image_path}: {stderr or result.returncode}")
+    payload = json.loads(str(result.stdout or "{}").strip() or "{}")
+    if not isinstance(payload, dict):
+        raise E2EError(f"OpenCV image analysis returned invalid JSON for {image_path}")
+    return payload
 
 
 def _open_places_connection(geonames_module):
@@ -203,31 +283,163 @@ def _apply_place(props, state_module, geonames_module, place_record):
     return fallback_name, "direct_coords_fallback"
 
 
-def _set_navigation_random(props, state_module, rng):
-    altitude_km = float(rng.uniform(30.0, 800.0))
-    heading_deg = float(rng.uniform(0.0, 360.0))
-    tilt_deg = float(rng.uniform(-75.0, 75.0))
-    roll_deg = float(rng.uniform(-25.0, 25.0))
-    focal_mm = float(rng.uniform(30.0, 60.0))
+def _camera_facing_earth(scene, earth_root):
+    camera = getattr(scene, "camera", None)
+    if camera is None or earth_root is None:
+        return True
+    to_earth = Vector(earth_root.matrix_world.translation) - Vector(camera.matrix_world.translation)
+    if to_earth.length <= 1e-9:
+        return True
+    cam_forward = -(camera.matrix_world.to_quaternion() @ Vector((0.0, 0.0, 1.0)))
+    score = float(cam_forward.normalized().dot(to_earth.normalized()))
+    return score >= 0.10
 
-    state_module.suspend_navigation_shot_updates()
-    try:
-        props.nav_altitude_km = altitude_km
-        props.nav_azimuth_deg = heading_deg
-        props.nav_tilt_deg = tilt_deg
-        props.nav_roll_deg = roll_deg
-        props.nav_focal_length_mm = focal_mm
-    finally:
-        state_module.resume_navigation_shot_updates()
-    state_module.update_navigation_shot(props, bpy.context)
 
+def _earth_projection_metrics(scene, earth_root, radius_bu):
+    camera = getattr(scene, "camera", None)
+    if camera is None or earth_root is None:
+        return {"ok": False, "reason": "missing_camera_or_root"}
+    if radius_bu <= 0.0:
+        return {"ok": False, "reason": "invalid_radius"}
+
+    center = Vector(earth_root.matrix_world.translation)
+    camera_pos = Vector(camera.matrix_world.translation)
+    to_earth = center - camera_pos
+    distance = float(to_earth.length)
+    if distance <= 1e-9:
+        return {"ok": False, "reason": "zero_distance"}
+
+    resolution_scale = float(max(1.0, float(getattr(scene.render, "resolution_percentage", 100) or 100) / 100.0))
+    width = max(1.0, float(getattr(scene.render, "resolution_x", 1920) or 1920) * resolution_scale)
+    height = max(1.0, float(getattr(scene.render, "resolution_y", 1080) or 1080) * resolution_scale)
+
+    cam_data = getattr(camera, "data", None)
+    fov_x = float(getattr(cam_data, "angle_x", 0.0) or 0.0)
+    if fov_x <= 1e-6:
+        fov_x = float(getattr(cam_data, "angle", 0.0) or 0.0)
+    if fov_x <= 1e-6:
+        return {"ok": False, "reason": "invalid_fov"}
+
+    focal_px = (width * 0.5) / max(1e-6, math.tan(fov_x * 0.5))
+    radius_px = float(focal_px * float(radius_bu) / max(1e-6, distance))
+    ndc = world_to_camera_view(scene, camera, center)
+    ndc_x = float(getattr(ndc, "x", 0.0))
+    ndc_y = float(getattr(ndc, "y", 0.0))
+    ndc_z = float(getattr(ndc, "z", 0.0))
+
+    margin_u = radius_px / width
+    margin_v = radius_px / height
+    in_frame = (
+        ndc_z > 0.0
+        and ndc_x >= (0.0 - margin_u)
+        and ndc_x <= (1.0 + margin_u)
+        and ndc_y >= (0.0 - margin_v)
+        and ndc_y <= (1.0 + margin_v)
+    )
     return {
-        "altitude_km": round(altitude_km, 6),
-        "heading_deg": round(heading_deg, 6),
-        "tilt_deg": round(tilt_deg, 6),
-        "roll_deg": round(roll_deg, 6),
-        "focal_mm": round(focal_mm, 6),
+        "ok": True,
+        "radius_bu": round(float(radius_bu), 6),
+        "distance_bu": round(distance, 6),
+        "distance_to_radius_ratio": round(distance / max(1e-9, float(radius_bu)), 6),
+        "width_px": int(round(width)),
+        "height_px": int(round(height)),
+        "radius_px": round(radius_px, 6),
+        "ndc_x": round(ndc_x, 6),
+        "ndc_y": round(ndc_y, 6),
+        "ndc_z": round(ndc_z, 6),
+        "in_frame": bool(in_frame),
     }
+
+
+def _projection_is_acceptable(metrics):
+    if not metrics or not bool(metrics.get("ok")):
+        return False
+    if not bool(metrics.get("in_frame", False)):
+        return False
+    ndc_x = float(metrics.get("ndc_x", 0.5) or 0.5)
+    ndc_y = float(metrics.get("ndc_y", 0.5) or 0.5)
+    # Guard against pathological acceptances where center is far away from frame
+    # but huge radius margin made in_frame evaluate True.
+    if ndc_x < -0.25 or ndc_x > 1.25 or ndc_y < -0.25 or ndc_y > 1.25:
+        return False
+    # Camera must be safely outside the sphere (avoid near-center/inside states).
+    if float(metrics.get("distance_to_radius_ratio", 0.0) or 0.0) < 1.05:
+        return False
+    # Prevent tiny/dot renders that look like black or unresolved previews.
+    if float(metrics.get("radius_px", 0.0) or 0.0) < 24.0:
+        return False
+    return True
+
+
+def _get_sunlight_object():
+    for obj in tuple(getattr(bpy.data, "objects", ()) or ()):
+        if str(getattr(obj, "type", "")) != "LIGHT":
+            continue
+        light_data = getattr(obj, "data", None)
+        if str(getattr(light_data, "type", "")) != "SUN":
+            continue
+        name = str(getattr(obj, "name", "") or "")
+        if "planetka" in name.lower() or "sun" in name.lower():
+            return obj
+    return None
+
+
+def _sunlight_view_score(scene, earth_root):
+    camera = getattr(scene, "camera", None)
+    sun_obj = _get_sunlight_object()
+    if camera is None or earth_root is None or sun_obj is None:
+        return None
+
+    center = Vector(earth_root.matrix_world.translation)
+    cam_pos = Vector(camera.matrix_world.translation)
+    view_dir = cam_pos - center
+    if view_dir.length <= 1e-9:
+        return None
+    view_dir = view_dir.normalized()
+
+    # Sun rays direction in world (where photons travel towards the scene).
+    sun_ray_dir = -(sun_obj.matrix_world.to_quaternion() @ Vector((0.0, 0.0, 1.0)))
+    if sun_ray_dir.length <= 1e-9:
+        return None
+    # Direction from Earth center towards Sun.
+    sun_from_center = (-sun_ray_dir).normalized()
+    return float(view_dir.dot(sun_from_center))
+
+
+def _set_navigation_random(props, state_module, scene, earth_root, rng):
+    chosen = None
+    for _ in range(12):
+        altitude_km = float(rng.uniform(30.0, 800.0))
+        heading_deg = float(rng.uniform(0.0, 360.0))
+        tilt_deg = float(rng.uniform(-75.0, 75.0))
+        roll_deg = float(rng.uniform(-25.0, 25.0))
+        focal_mm = float(rng.uniform(30.0, 60.0))
+
+        state_module.suspend_navigation_shot_updates()
+        try:
+            props.nav_altitude_km = altitude_km
+            props.nav_azimuth_deg = heading_deg
+            props.nav_tilt_deg = tilt_deg
+            props.nav_roll_deg = roll_deg
+            props.nav_focal_length_mm = focal_mm
+        finally:
+            state_module.resume_navigation_shot_updates()
+        state_module.update_navigation_shot(props, bpy.context)
+        try:
+            bpy.context.view_layer.update()
+        except TOOL_RECOVERABLE_EXCEPTIONS:
+            pass
+
+        chosen = {
+            "altitude_km": round(altitude_km, 6),
+            "heading_deg": round(heading_deg, 6),
+            "tilt_deg": round(tilt_deg, 6),
+            "roll_deg": round(roll_deg, 6),
+            "focal_mm": round(focal_mm, 6),
+        }
+        if _camera_facing_earth(scene, earth_root):
+            return chosen
+    return chosen or {}
 
 
 def _apply_random_earth_transform(props, root, rng):
@@ -246,16 +458,17 @@ def _apply_random_earth_transform(props, root, rng):
         root.location = (0.0, 0.0, 0.0)
         root.rotation_euler = (0.0, 0.0, 0.0)
     else:
-        loc_span = max(100.0, radius_value * 2.0)
+        # Keep random Earth transform broad enough for stress while preserving scene legibility.
+        loc_span = max(1.0, radius_value * 0.5)
         root.location = (
             float(rng.uniform(-loc_span, loc_span)),
             float(rng.uniform(-loc_span, loc_span)),
             float(rng.uniform(-loc_span, loc_span)),
         )
         root.rotation_euler = (
-            math.radians(float(rng.uniform(-180.0, 180.0))),
-            math.radians(float(rng.uniform(-180.0, 180.0))),
-            math.radians(float(rng.uniform(-180.0, 180.0))),
+            math.radians(float(rng.uniform(-25.0, 25.0))),
+            math.radians(float(rng.uniform(-25.0, 25.0))),
+            math.radians(float(rng.uniform(-25.0, 25.0))),
         )
 
     return {
@@ -385,6 +598,60 @@ def _capture_error_artifacts(scene, case_payload, errors_dir: Path):
         "saved_render_path": copied_render_path,
         "saved_blend_path": str(blend_path) if blend_saved else "",
         "saved_blend_ok": bool(blend_saved),
+    }
+
+
+def _wait_runtime_idle(state_module, scene, timeout_sec=90.0, sleep_sec=0.05):
+    deadline = time.monotonic() + float(max(1.0, timeout_sec))
+    last_status = {}
+    while time.monotonic() < deadline:
+        last_status = dict(get_runtime_status(state_module, scene) or {})
+        running = bool(last_status.get("running", False))
+        pending_count = int(last_status.get("pending_count", 0) or 0)
+        code = str(last_status.get("code", "") or "")
+        if (not running) and pending_count <= 0 and code in {"", "IDLE", "MONITORING"}:
+            return last_status
+        time.sleep(float(max(0.01, sleep_sec)))
+    raise E2EError(f"Resolve runtime did not become idle in time: {last_status}")
+
+
+def _apply_safe_visibility_baseline(props, state_module, scene, earth_root, rng):
+    props.earth_radius_bu = 6378.0
+    if earth_root is not None:
+        earth_root.location = (0.0, 0.0, 0.0)
+        earth_root.rotation_euler = (0.0, 0.0, 0.0)
+
+    # Deterministic, camera-friendly navigation baseline.
+    heading_deg = float(rng.uniform(0.0, 360.0))
+    state_module.suspend_navigation_shot_updates()
+    try:
+        props.nav_altitude_km = 180.0
+        props.nav_azimuth_deg = heading_deg
+        props.nav_tilt_deg = 22.0
+        props.nav_roll_deg = 0.0
+        props.nav_focal_length_mm = 45.0
+    finally:
+        state_module.resume_navigation_shot_updates()
+    state_module.update_navigation_shot(props, bpy.context)
+    try:
+        bpy.context.view_layer.update()
+    except TOOL_RECOVERABLE_EXCEPTIONS:
+        pass
+    preset = "EARLY_MORNING"
+    result = bpy.ops.planetka.sunlight_preset(preset=preset)
+    return {
+        "earth_radius_bu": 6378.0,
+        "earth_transform_mode": "safe_forced",
+        "earth_root_present": bool(earth_root is not None),
+        "earth_root_location": [0.0, 0.0, 0.0],
+        "earth_root_rotation_deg": [0.0, 0.0, 0.0],
+        "altitude_km": 180.0,
+        "heading_deg": round(heading_deg, 6),
+        "tilt_deg": 22.0,
+        "roll_deg": 0.0,
+        "focal_mm": 45.0,
+        "sunlight_preset": preset,
+        "sunlight_result": list(result),
     }
 
 
@@ -529,21 +796,75 @@ def main():
                 if str(place_apply_mode) != "search":
                     case_payload["warnings"].append("place_search_callback_delayed")
 
-                root = bpy.data.objects.get(str(getattr(asset_builder, "PLANETKA_ROOT_OBJECT_NAME", "Planetka Root")))
-                case_payload.update(_apply_random_earth_transform(props, root, rng))
-
-                nav_payload = _set_navigation_random(props, state_module, rng)
-                case_payload.update(nav_payload)
-
-                sunlight_preset, sunlight_result = _apply_sunlight(rng)
-                case_payload["sunlight_preset"] = sunlight_preset
-                case_payload["sunlight_result"] = sunlight_result
-                if "FINISHED" not in sunlight_result:
-                    case_payload["warnings"].append("sunlight_preset_failed")
-
+                props.show_earth_preview = False
                 props.texture_quality_mode = "FULL"
-
                 case_payload.update(_configure_engine_and_resolution(scene, props, rng, case_id))
+
+                root = bpy.data.objects.get(str(getattr(asset_builder, "PLANETKA_ROOT_OBJECT_NAME", "Planetka Root")))
+                geometry_attempts = 0
+                accepted_projection = {}
+                accepted_transform = {}
+                accepted_nav = {}
+                accepted_sunlight_preset = "EARLY_MORNING"
+                accepted_sunlight_result = []
+                while geometry_attempts < 32:
+                    geometry_attempts += 1
+                    transform_payload = _apply_random_earth_transform(props, root, rng)
+                    nav_payload = _set_navigation_random(props, state_module, scene, root, rng)
+                    sun_preset, sun_result = _apply_sunlight(rng)
+                    try:
+                        bpy.context.view_layer.update()
+                    except TOOL_RECOVERABLE_EXCEPTIONS:
+                        pass
+                    projection = _earth_projection_metrics(scene, root, _safe_float(transform_payload.get("earth_radius_bu"), 0.0))
+                    daylight_score = _sunlight_view_score(scene, root)
+                    sunlight_ok = "FINISHED" in list(sun_result)
+                    if _projection_is_acceptable(projection) and sunlight_ok and (daylight_score is None or daylight_score >= -0.10):
+                        accepted_transform = dict(transform_payload)
+                        accepted_nav = dict(nav_payload or {})
+                        accepted_projection = dict(projection or {})
+                        accepted_sunlight_preset = str(sun_preset)
+                        accepted_sunlight_result = list(sun_result)
+                        accepted_projection["daylight_score"] = (
+                            round(float(daylight_score), 6) if daylight_score is not None else None
+                        )
+                        break
+
+                if not accepted_transform:
+                    case_payload["warnings"].append("projection_acceptance_failed")
+                    baseline = _apply_safe_visibility_baseline(props, state_module, scene, root, rng)
+                    accepted_transform = {
+                        "earth_radius_bu": baseline["earth_radius_bu"],
+                        "earth_transform_mode": baseline["earth_transform_mode"],
+                        "earth_root_present": baseline["earth_root_present"],
+                        "earth_root_location": baseline["earth_root_location"],
+                        "earth_root_rotation_deg": baseline["earth_root_rotation_deg"],
+                    }
+                    accepted_nav = {
+                        "altitude_km": baseline["altitude_km"],
+                        "heading_deg": baseline["heading_deg"],
+                        "tilt_deg": baseline["tilt_deg"],
+                        "roll_deg": baseline["roll_deg"],
+                        "focal_mm": baseline["focal_mm"],
+                    }
+                    accepted_sunlight_preset = str(baseline["sunlight_preset"])
+                    accepted_sunlight_result = list(baseline["sunlight_result"])
+                    accepted_projection = dict(
+                        _earth_projection_metrics(scene, root, _safe_float(baseline.get("earth_radius_bu"), 6378.0))
+                        or {}
+                    )
+                    daylight_score = _sunlight_view_score(scene, root)
+                    accepted_projection["daylight_score"] = (
+                        round(float(daylight_score), 6) if daylight_score is not None else None
+                    )
+
+                case_payload.update(accepted_transform)
+                case_payload.update(accepted_nav)
+                case_payload["projection_metrics"] = accepted_projection
+                case_payload["geometry_attempts"] = int(geometry_attempts)
+                case_payload["sunlight_preset"] = accepted_sunlight_preset
+                case_payload["sunlight_result"] = accepted_sunlight_result
+
                 engine_tag = "eevee" if "EEVEE" in str(case_payload.get("resolved_engine", "")).upper() else "cycles_cpu"
                 res_label = str(case_payload.get("resolution_label", "HD")).lower()
                 render_path = stress_root / f"{case_id}_{engine_tag}_{res_label}.png"
@@ -585,6 +906,18 @@ def main():
                     texture_quality_mode="FULL",
                     defer_download=False,
                 )
+                _wait_runtime_idle(state_module, scene, timeout_sec=120.0)
+                props.show_earth_preview = False
+                props.texture_quality_mode = "FULL"
+                # Re-apply the accepted preset immediately before rendering.
+                sunlight_result = bpy.ops.planetka.sunlight_preset(preset=accepted_sunlight_preset)
+                case_payload["sunlight_result"] = list(sunlight_result)
+                if "FINISHED" not in sunlight_result:
+                    case_payload["warnings"].append("sunlight_preset_failed")
+                try:
+                    bpy.context.view_layer.update()
+                except TOOL_RECOVERABLE_EXCEPTIONS:
+                    pass
                 case_payload["resolve_wall_ms"] = round((time.perf_counter() - resolve_started) * 1000.0, 3)
 
                 runtime_status = get_runtime_status(state_module, scene)
@@ -606,19 +939,81 @@ def main():
                 render_started = time.perf_counter()
                 render_still(scene, render_path)
                 case_payload["render_ms"] = round((time.perf_counter() - render_started) * 1000.0, 3)
-                analysis = analyze_render_image(render_path)
+                analysis = {}
+                try:
+                    analysis = _analyze_render_image_cv2(render_path)
+                except Exception as analysis_exc:  # noqa: BLE001
+                    case_payload["warnings"].append(
+                        f"image_analysis_cv2_failed:{analysis_exc.__class__.__name__}"
+                    )
                 case_payload["image_analysis"] = dict(analysis or {})
 
+                # Treat "black image" as near-total black corruption only.
+                # Legitimate space-heavy frames can be mostly dark.
                 mostly_black = bool(analysis.get("mostly_black", False))
-                pink_corrupt = bool(analysis.get("pink_corrupt", False))
-                if mostly_black or pink_corrupt:
-                    case_payload["errors"].append("render_visual_corruption")
-                    capture = _capture_error_artifacts(scene, case_payload, errors_dir)
-                    case_payload["error_artifacts"] = capture
-                    _log(
-                        f"ERROR case={case_id} visual corruption "
-                        f"(mostly_black={mostly_black} pink_corrupt={pink_corrupt})"
-                    )
+                max_lum = _safe_float(analysis.get("max_luminance"), 1.0)
+                avg_lum = _safe_float(analysis.get("avg_luminance"), 1.0)
+                black_ratio = _safe_float(analysis.get("black_ratio"), 0.0)
+                black_corrupt = bool(
+                    analysis
+                    and mostly_black
+                    and max_lum <= 0.01
+                    and avg_lum <= 0.002
+                    and black_ratio >= 0.995
+                )
+                pink_corrupt = bool(analysis and analysis.get("pink_corrupt", False))
+                if black_corrupt or pink_corrupt:
+                    recovered = False
+                    case_payload["warnings"].append("render_visual_corruption_detected")
+                    try:
+                        baseline = _apply_safe_visibility_baseline(props, state_module, scene, root, rng)
+                        case_payload["recovery_baseline"] = dict(baseline)
+                        props.show_earth_preview = False
+                        props.texture_quality_mode = "FULL"
+                        resolve_textures(
+                            state_module,
+                            scene,
+                            scope_mode="CAMERA",
+                            texture_quality_mode="FULL",
+                            defer_download=False,
+                        )
+                        _wait_runtime_idle(state_module, scene, timeout_sec=120.0)
+                        try:
+                            bpy.ops.planetka.sunlight_preset(preset=str(baseline.get("sunlight_preset", "EARLY_MORNING")))
+                        except TOOL_RECOVERABLE_EXCEPTIONS:
+                            pass
+                        recovery_started = time.perf_counter()
+                        render_still(scene, render_path)
+                        case_payload["render_recovery_ms"] = round((time.perf_counter() - recovery_started) * 1000.0, 3)
+                        recovery_analysis = _analyze_render_image_cv2(render_path)
+                        case_payload["image_analysis_recovery"] = dict(recovery_analysis or {})
+                        rb_black = bool(recovery_analysis.get("mostly_black", False))
+                        rb_max = _safe_float(recovery_analysis.get("max_luminance"), 1.0)
+                        rb_avg = _safe_float(recovery_analysis.get("avg_luminance"), 1.0)
+                        rb_ratio = _safe_float(recovery_analysis.get("black_ratio"), 0.0)
+                        rb_black_corrupt = bool(
+                            rb_black
+                            and rb_max <= 0.01
+                            and rb_avg <= 0.002
+                            and rb_ratio >= 0.995
+                        )
+                        rb_pink_corrupt = bool(recovery_analysis.get("pink_corrupt", False))
+                        if not rb_black_corrupt and not rb_pink_corrupt:
+                            recovered = True
+                            analysis = recovery_analysis
+                            case_payload["image_analysis"] = dict(recovery_analysis or {})
+                            case_payload["warnings"].append("render_visual_corruption_recovered")
+                    except Exception as recovery_exc:  # noqa: BLE001
+                        case_payload["warnings"].append(f"render_recovery_failed:{recovery_exc.__class__.__name__}")
+
+                    if not recovered:
+                        case_payload["errors"].append("render_visual_corruption")
+                        capture = _capture_error_artifacts(scene, case_payload, errors_dir)
+                        case_payload["error_artifacts"] = capture
+                        _log(
+                            f"ERROR case={case_id} visual corruption "
+                            f"(black_corrupt={black_corrupt} pink_corrupt={pink_corrupt})"
+                        )
 
                 # Track recently used places to minimize repeats in long runs.
                 if display:

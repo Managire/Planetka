@@ -3458,7 +3458,6 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
     _active_segment = None
     _state = "IDLE"
     _render_seen_active = False
-    _render_window_seen_open = False
     _render_launch_time = 0.0
     _render_launch_wall_time = 0.0
     _original_frame = 1
@@ -3633,7 +3632,6 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
         self._active_segment = None
         self._state = "IDLE"
         self._render_seen_active = False
-        self._render_window_seen_open = False
         self._render_launch_time = 0.0
         self._render_launch_wall_time = 0.0
         self._stop_requested = False
@@ -3683,31 +3681,6 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
                 app_running = bool(is_job_running("RENDER"))
                 if app_running:
                     return True
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            return False
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            return False
-        return False
-
-    def _has_render_result_window(self):
-        try:
-            wm = getattr(getattr(bpy, "context", None), "window_manager", None)
-            if wm is None:
-                return False
-            for window in tuple(getattr(wm, "windows", ()) or ()):
-                screen = getattr(window, "screen", None)
-                if screen is None:
-                    continue
-                for area in tuple(getattr(screen, "areas", ()) or ()):
-                    if str(getattr(area, "type", "")) != "IMAGE_EDITOR":
-                        continue
-                    spaces = getattr(area, "spaces", None)
-                    space = getattr(spaces, "active", None) if spaces is not None else None
-                    image = getattr(space, "image", None) if space is not None else None
-                    if image is None:
-                        continue
-                    if str(getattr(image, "name", "") or "") == "Render Result":
-                        return True
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             return False
         except (RuntimeError, TypeError, ValueError, AttributeError):
@@ -4161,7 +4134,6 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             self._segment_failures = []
             self._stop_requested = False
             self._stop_notice_sent = False
-            self._render_window_seen_open = False
             try:
                 set_final_animation_render_active(True)
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
@@ -4244,29 +4216,21 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
                 return self._cancel_with_error(context, message)
             self._state = "RENDER"
             self._render_seen_active = False
-            self._render_window_seen_open = False
             self._render_launch_time = time.monotonic()
             return {'RUNNING_MODAL'}
 
         if self._state == "RENDER":
             running = self._is_render_job_running()
             elapsed = float(time.monotonic() - float(self._render_launch_time))
-            render_window_open = self._has_render_result_window()
-            if bool(render_window_open):
-                self._render_window_seen_open = True
-            elif bool(self._render_window_seen_open):
-                if running:
-                    logger.info("Planetka animation: render window was closed by user; stopping animation render.")
-                    self._stop_requested = True
-                    return {'RUNNING_MODAL'}
-                self._report_user_stopped_render()
-                self._cleanup(context, stop_render=False)
-                return {'CANCELLED'}
             if running:
                 self._render_seen_active = True
                 return {'RUNNING_MODAL'}
             if (not self._render_seen_active) and elapsed < 0.75:
                 return {'RUNNING_MODAL'}
+            if self._is_render_cancelled_since_segment_launch():
+                self._report_user_stopped_render()
+                self._cleanup(context, stop_render=False)
+                return {'CANCELLED'}
             active_segment = self._active_segment
             if not isinstance(active_segment, dict):
                 return self._cancel_with_error(
@@ -4285,11 +4249,6 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
                 cancelled_by_user = (
                     bool(self._stop_requested)
                     or self._is_render_cancelled_since_segment_launch()
-                    or (
-                        bool(self._render_seen_active)
-                        and (int(expected_count) > int(produced_count))
-                        and (not bool(render_window_open))
-                    )
                 )
                 if cancelled_by_user:
                     self._report_user_stopped_render()
@@ -4311,18 +4270,6 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             return {'RUNNING_MODAL'}
 
         return {'RUNNING_MODAL'}
-
-
-class PLANETKA_OT_AnimationRenderHeadless(PLANETKA_OT_AnimationRender):
-    bl_idname = "planetka.animation_render_headless"
-    bl_label = "Render Animation"
-    bl_description = "Deprecated compatibility alias for planetka.animation_render"
-
-    def invoke(self, context, event):
-        logger.debug(
-            "Planetka animation: deprecated operator id 'planetka.animation_render_headless' invoked; use 'planetka.animation_render'"
-        )
-        return super().invoke(context, event)
 
 
 class PLANETKA_OT_AnimationRenderInfo(bpy.types.Operator):
