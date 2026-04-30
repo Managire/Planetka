@@ -109,8 +109,6 @@ def navigation_apply_shot_execute(operator, context, deps):
             logger=logger,
         )
 
-    if not bool(getattr(operator, "silent", False)):
-        operator.report({'INFO'}, "Shot updated.")
     return {'FINISHED'}
 
 

@@ -523,10 +523,9 @@ def create_earth_and_wait(state_module, scene):
     return drain_queued_resolve(state_module, scene, timeout_sec=90.0)
 
 
-def resolve_textures(state_module, scene, *, scope_mode="CAMERA", texture_quality_mode=None, silent=True, defer_download=False, tiles_override_json=""):
+def resolve_textures(state_module, scene, *, scope_mode="CAMERA", texture_quality_mode=None, defer_download=False, tiles_override_json=""):
     kwargs = {
         "scope_mode": str(scope_mode or "CAMERA"),
-        "silent": bool(silent),
         "defer_download": bool(defer_download),
     }
     if texture_quality_mode:

@@ -287,7 +287,6 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
         result = bpy.ops.planetka.load_textures(
             skip_render_compatibility=True,
             defer_download=False,
-            silent=True,
         )
         if "FINISHED" not in result:
             return {'CANCELLED'}
@@ -505,11 +504,6 @@ class PLANETKA_OT_NavigationApplyShot(bpy.types.Operator):
     bl_description = "Apply current Navigation shot values to the active scene camera"
     bl_options = {'INTERNAL'}
 
-    silent: BoolProperty(
-        name="Silent",
-        default=False,
-        options={'HIDDEN', 'SKIP_SAVE'},
-    )
     force_camera_view: BoolProperty(
         name="Force Camera View",
         default=True,

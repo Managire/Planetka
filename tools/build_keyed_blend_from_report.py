@@ -191,7 +191,7 @@ def _apply_nav(props, state_module, lon, lat, alt, heading, tilt, roll, focal):
         props.nav_focal_length_mm = float(focal)
     finally:
         state_module.resume_navigation_shot_updates()
-    result = bpy.ops.planetka.navigation_apply_shot(silent=True)
+    result = bpy.ops.planetka.navigation_apply_shot()
     if "FINISHED" not in result:
         raise RuntimeError(f"navigation_apply_shot failed: {result}")
 

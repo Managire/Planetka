@@ -326,7 +326,7 @@ def main():
 
         # Earth radius change must keep scene operational (resolve + render valid).
         props.earth_radius_bu = 3.5
-        apply_radius = bpy.ops.planetka.navigation_apply_shot(silent=True)
+        apply_radius = bpy.ops.planetka.navigation_apply_shot()
         _assert(_operator_ok(apply_radius) or _operator_cancelled(apply_radius), f"navigation_apply_shot failed after radius change: {apply_radius}")
         resolve_textures(state, scene, texture_quality_mode="PREVIEW")
         report["renders"].append(_render_checkpoint(scene, output_dir, "after_radius_change"))

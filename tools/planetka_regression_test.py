@@ -446,7 +446,7 @@ def main():
         result = bpy.ops.planetka.load_textures()
         _assert("FINISHED" in result, f"Resolve Earth failed for S2-only source: {result}")
 
-        _log("Scenario 8: silent navigation apply skips operator when Earth is missing")
+        _log("Scenario 8: navigation apply skips operator when Earth is missing")
         scene.camera = _ensure_active_camera(scene)
         operator_called = {"value": False}
 

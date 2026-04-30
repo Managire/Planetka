@@ -498,7 +498,7 @@ def main():
                 props.nav_focal_length_mm = focal
             finally:
                 state_module.resume_navigation_shot_updates()
-            apply_result = bpy.ops.planetka.navigation_apply_shot(silent=True)
+            apply_result = bpy.ops.planetka.navigation_apply_shot()
             if "FINISHED" not in apply_result:
                 warnings.append(f"navigation_apply_failed_{apply_result}")
             camera_sig, cam_ok = _wait_for_camera_update(scene, props, state_module, camera_sig, timeout_sec=2.5)
@@ -554,7 +554,7 @@ def main():
                     props.nav_roll_deg = conservative_roll
                 finally:
                     state_module.resume_navigation_shot_updates()
-                retry_apply_result = bpy.ops.planetka.navigation_apply_shot(silent=True)
+                retry_apply_result = bpy.ops.planetka.navigation_apply_shot()
                 if "FINISHED" not in retry_apply_result:
                     warnings.append(f"retry_navigation_apply_failed_{retry_apply_result}")
                 _set_reasonable_clipping(scene)

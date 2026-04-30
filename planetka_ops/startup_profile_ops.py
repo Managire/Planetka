@@ -434,7 +434,6 @@ def _apply_startup_setup_profile(scene, props, profile, apply_navigation_shot=Tr
         ):
             try:
                 nav_result = bpy.ops.planetka.navigation_apply_shot(
-                    silent=True,
                     force_camera_view=False,
                 )
                 if 'FINISHED' not in set(nav_result):

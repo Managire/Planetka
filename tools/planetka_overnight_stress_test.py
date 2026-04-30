@@ -470,7 +470,7 @@ def _wait_for_camera_update(scene, props, state_module, previous_signature, time
             return current, True
         # Force-apply shot again if still unchanged.
         try:
-            bpy.ops.planetka.navigation_apply_shot(silent=True)
+            bpy.ops.planetka.navigation_apply_shot()
         except TOOL_RECOVERABLE_EXCEPTIONS:
             pass
         # Re-drive state update path too.

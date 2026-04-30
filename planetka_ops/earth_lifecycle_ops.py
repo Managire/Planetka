@@ -309,7 +309,6 @@ def add_earth_execute(operator, context, deps):
     resolve_result = bpy.ops.planetka.load_textures(
         skip_render_compatibility=True,
         defer_download=True,
-        silent=True,
     )
     final_surface = get_earth_object() or new_obj
     if final_surface and bool(getattr(props, "show_earth_preview", False)):

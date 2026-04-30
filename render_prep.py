@@ -602,12 +602,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         options={'HIDDEN', 'SKIP_SAVE'},
     )
 
-    silent: BoolProperty(
-        name="Silent",
-        default=True,
-        options={'HIDDEN', 'SKIP_SAVE'},
-    )
-
     skip_render_compatibility: BoolProperty(
         name="Skip Render Compatibility",
         default=False,
@@ -690,10 +684,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         props = require_planetka_props(self, context, logger=logger)
         if props is None:
             return ResolvePrepareContextResult(response={'CANCELLED'})
-        manual_summary_requested = (
-            not bool(getattr(self, "silent", False))
-            and not bool(getattr(self, "defer_download", False))
-        )
+        manual_summary_requested = not bool(getattr(self, "defer_download", False))
 
         if bool(getattr(props, "lock_resolve_during_animation", True)) and _is_animation_playing():
             ui_reports.append(self._ui_report("WARNING", "Resolve skipped during animation playback (disabled in Settings)."))
@@ -1042,8 +1033,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                     ),
                     ui_reports=ui_reports,
                 )
-            if not bool(getattr(self, "silent", False)):
-                ui_reports.append(self._ui_report("INFO", "Planetka resolve queued. Downloading data in background."))
+            ui_reports.append(self._ui_report("INFO", "Planetka resolve queued. Downloading data in background."))
             return ResolveEarlyResult(response={'FINISHED'}, ui_reports=ui_reports)
 
         _ = props
@@ -1583,7 +1573,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         phase_post_preview_ms = float(finalize_ctx.phase_post_preview_ms or 0.0)
         missing_node_images = int(finalize_ctx.missing_node_images or 0)
 
-        if not bool(getattr(self, "silent", False)) and not (force_empty_once and len(tiles) == 0):
+        if not (force_empty_once and len(tiles) == 0):
             ui_reports.append(self._ui_report("INFO", f"Planetka resolved ({len(tiles)} tiles)"))
         resolve_total_ms = (time.perf_counter() - resolve_start) * 1000.0
         measured_sum_ms = (

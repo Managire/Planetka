@@ -863,7 +863,6 @@ def _ctx_auto_resolve_apply_downloaded_tiles(ctx, scene, scene_id, job, manual_r
         )
         op_kwargs = {
             "scope_mode": "CAMERA",
-            "silent": True,
             "skip_render_compatibility": True,
             "defer_download": False,
             "tiles_override_json": json.dumps(list(job_target_tiles)),

@@ -329,14 +329,12 @@ def queue_manual_resolve_download_for_scene(scene, *, get_earth_object, is_rende
                 result = bpy.ops.planetka.load_textures(
                     'EXEC_DEFAULT',
                     scope_mode='CAMERA',
-                    silent=True,
                     skip_render_compatibility=True,
                     defer_download=True,
                 )
             except TypeError:
                 result = bpy.ops.planetka.load_textures(
                     scope_mode='CAMERA',
-                    silent=True,
                     skip_render_compatibility=True,
                     defer_download=True,
                 )

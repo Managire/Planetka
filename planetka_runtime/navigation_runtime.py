@@ -89,7 +89,6 @@ def apply_navigation_shot_now_fn(runtime=None, *, bpy=None, recoverable_exceptio
             except (recoverable, RuntimeError, TypeError, ValueError, AttributeError):
                 runtime_logger.debug("Planetka: failed reading one-shot nav sync-active-view override", exc_info=True)
         result = bpy_module.ops.planetka.navigation_apply_shot(
-            silent=True,
             force_camera_view=force_camera_view,
             sync_active_view_when_not_camera=sync_active_view_when_not_camera,
         )

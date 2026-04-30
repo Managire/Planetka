@@ -309,7 +309,6 @@ def _schedule_post_animation_recovery(scene_name, restore_auto_resolve=True):
 
         op_kwargs = {
             "scope_mode": "CAMERA",
-            "silent": True,
             "skip_render_compatibility": True,
             "defer_download": False,
         }
@@ -3228,7 +3227,7 @@ class PLANETKA_OT_AnimationPreviewShot(bpy.types.Operator):
                 logger.debug("Planetka animation preview: suppressed recoverable exception", exc_info=True)
             _apply_keyed_runtime_scene_state(scene, props)
             try:
-                result = bpy.ops.planetka.load_textures(scope_mode='CAMERA', silent=True)
+                result = bpy.ops.planetka.load_textures(scope_mode='CAMERA')
             except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
                 last_message = f"Resolve failed at frame {frame_int:04d}: {exc}"
                 continue
@@ -3792,7 +3791,6 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
         _apply_keyed_runtime_scene_state(scene, props)
         op_kwargs = {
             "scope_mode": "CAMERA",
-            "silent": True,
             "defer_download": False,
         }
         selected_mode = self._get_selected_texture_quality_mode(props)

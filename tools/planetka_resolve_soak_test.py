@@ -443,7 +443,7 @@ def _wait_for_camera_update(scene, props, state_module, previous_signature, time
         if current != previous_signature:
             return current, True
         try:
-            bpy.ops.planetka.navigation_apply_shot(silent=True)
+            bpy.ops.planetka.navigation_apply_shot()
         except TOOL_RECOVERABLE_EXCEPTIONS:
             pass
         try:
