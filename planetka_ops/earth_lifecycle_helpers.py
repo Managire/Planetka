@@ -6,6 +6,7 @@ from ..auth import is_authenticated
 from ..asset_builder import PLANETKA_ROOT_OBJECT_NAME, ensure_earth_surface_parent, ensure_planetka_root
 from ..error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from ..extension_prefs import mark_earth_object
+from ..operator_utils import ErrorCode, fail
 from ..r2_source import is_remote_source_configured
 from ..sanity_utils import _normalize_texture_source_path, validate_known_good_texture_source
 from ..state import (
@@ -51,7 +52,12 @@ def _validate_create_earth_texture_source(base_path):
 
 def _require_authenticated_account(operator, prefs):
     if not is_authenticated(prefs):
-        operator.report({'ERROR'}, "Connect Planetka API key before using remote Earth data.")
+        fail(
+            operator,
+            "Connect Planetka API key before using remote Earth data.",
+            code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+            logger=logger,
+        )
         return False
     return True
 

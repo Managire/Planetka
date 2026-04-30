@@ -200,12 +200,14 @@ def add_earth_execute(operator, context, deps):
         logger.debug("Planetka: updater check kickoff failed", exc_info=True)
     normalized, path_issue = _validate_create_earth_texture_source(getattr(prefs, "texture_base_path", ""))
     if path_issue:
-        operator.report(
-            {'ERROR'},
-            "Create Earth data configuration is invalid.",
+        return _return_with_selection(
+            fail(
+                operator,
+                f"Create Earth data configuration is invalid. {path_issue}",
+                code=ErrorCode.RESOLVE_PATH_INVALID,
+                logger=logger,
+            )
         )
-        operator.report({'ERROR'}, path_issue)
-        return _return_with_selection({'CANCELLED'})
     if is_remote_source_configured(normalized) and not _require_authenticated_account(operator, prefs):
         return _return_with_selection({'CANCELLED'})
     prefs.texture_base_path = normalized

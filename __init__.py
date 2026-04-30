@@ -1,4 +1,5 @@
 import os
+import logging
 
 import bpy
 from bpy.props import PointerProperty
@@ -14,6 +15,7 @@ from .animation_tools import (
     PLANETKA_OT_AnimationGenerateCameraKeyframes,
     PLANETKA_OT_AnimationMakeReady,
     PLANETKA_OT_AnimationPreviewShot,
+    PLANETKA_OT_AnimationRender,
     PLANETKA_OT_AnimationRenderHeadless,
     PLANETKA_OT_AnimationRenderInfo,
     PLANETKA_OT_AnimationSaveView,
@@ -97,6 +99,8 @@ bl_info = {
     "description": "Cinematic Earth visualisation system",
     "category": "3D View",
 }
+
+logger = logging.getLogger(__name__)
 
 
 def _feature_flag_enabled(name, default=False):
@@ -212,6 +216,7 @@ classes = (
     PLANETKA_OT_AnimationWaypointRemove,
     PLANETKA_OT_AnimationWaypointCaptureCurrent,
     PLANETKA_OT_AnimationWaypointApply,
+    PLANETKA_OT_AnimationRender,
     PLANETKA_OT_AnimationRenderHeadless,
     PLANETKA_OT_AnimationRenderInfo,
     PLANETKA_OT_AnimationMakeReady,
@@ -281,6 +286,11 @@ def _safe_unregister_class(cls):
             or "not registered" in message
             or _is_readonly_state_error(exc)
         ):
+            logger.debug(
+                "Planetka: ignored unregister_class issue for %s during lifecycle cleanup",
+                str(getattr(cls, "__name__", cls)),
+                exc_info=True,
+            )
             return
         raise
 
@@ -368,7 +378,7 @@ def _unregister_keymaps():
         try:
             keymap.keymap_items.remove(keymap_item)
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            pass
+            logger.debug("Planetka: failed removing addon keymap item during unregister", exc_info=True)
     _addon_keymaps.clear()
 
 
@@ -388,6 +398,7 @@ def _tag_view3d_ui_redraw():
             try:
                 area.tag_redraw()
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka: failed tagging VIEW_3D area for redraw during register", exc_info=True)
                 continue
     return None
 
@@ -417,43 +428,43 @@ def register():
     try:
         _planetka_updater.kickoff_background_update_check(force=False)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        pass
+        logger.debug("Planetka: failed starting background update check during register", exc_info=True)
     try:
         from .unsupported import apply_runtime_unsupported_overrides
         apply_runtime_unsupported_overrides()
     except PLANETKA_IMPORT_RECOVERABLE_EXCEPTIONS:
-        pass
+        logger.debug("Planetka: failed applying unsupported-runtime overrides during register", exc_info=True)
     try:
         bpy.app.timers.register(_tag_view3d_ui_redraw, first_interval=0.05)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        pass
+        logger.debug("Planetka: failed scheduling initial UI redraw timer during register", exc_info=True)
 
 
 def unregister():
     try:
         _unregister_keymaps()
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        pass
+        logger.debug("Planetka: failed unregistering keymaps during unregister", exc_info=True)
     try:
         _remove_load_post_handler()
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        pass
+        logger.debug("Planetka: failed removing load_post handler during unregister", exc_info=True)
     try:
         _remove_depsgraph_post_handler()
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        pass
+        logger.debug("Planetka: failed removing depsgraph_update_post handler during unregister", exc_info=True)
     try:
         _remove_frame_change_post_handler()
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        pass
+        logger.debug("Planetka: failed removing frame_change_post handler during unregister", exc_info=True)
     try:
         _remove_render_handlers()
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        pass
+        logger.debug("Planetka: failed removing render handlers during unregister", exc_info=True)
     try:
         stop_auto_resolve_service()
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        pass
+        logger.debug("Planetka: failed stopping auto-resolve service during unregister", exc_info=True)
     if hasattr(bpy.types.Scene, "planetka"):
         try:
             del bpy.types.Scene.planetka

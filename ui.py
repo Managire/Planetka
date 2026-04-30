@@ -1996,7 +1996,7 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         render_button_row.scale_y = 1.2
         render_button_row.enabled = bool(final_render_allowed) and bool(earth_workflow_enabled)
         render_button_row.operator(
-            "planetka.animation_render_headless",
+            "planetka.animation_render",
             text="Render Animation",
             icon="RENDER_ANIMATION",
         )

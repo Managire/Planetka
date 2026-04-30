@@ -269,7 +269,7 @@ def _configure_engine(scene, engine_id):
 
 
 def _make_render_operator_proxy(animation_tools):
-    cls = animation_tools.PLANETKA_OT_AnimationRenderHeadless
+    cls = animation_tools.PLANETKA_OT_AnimationRender
     op = type("FinalGateRenderProxy", (), {})()
     for name in (
         "_is_render_job_running",

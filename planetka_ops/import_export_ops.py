@@ -6,7 +6,7 @@ import bpy
 from bpy.props import FloatProperty, IntProperty, StringProperty
 
 from ..error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
-from ..operator_utils import fail
+from ..operator_utils import ErrorCode, fail
 from ..state import logger
 
 
@@ -18,12 +18,22 @@ class PLANETKA_OT_ImportNewData(bpy.types.Operator):
     directory: StringProperty(subtype='DIR_PATH')
 
     def execute(self, context):
-        self.report({'ERROR'}, "Local texture import is disabled. Planetka uses Cloud source only.")
-        return {'CANCELLED'}
+        del context
+        return fail(
+            self,
+            "Local texture import is disabled. Planetka uses Cloud source only.",
+            code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+            logger=logger,
+        )
 
     def invoke(self, context, event):
-        self.report({'ERROR'}, "Local texture import is disabled. Planetka uses Cloud source only.")
-        return {'CANCELLED'}
+        del context, event
+        return fail(
+            self,
+            "Local texture import is disabled. Planetka uses Cloud source only.",
+            code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+            logger=logger,
+        )
 
 
 class PLANETKA_OT_ConfirmImportNewData(bpy.types.Operator):
@@ -40,8 +50,13 @@ class PLANETKA_OT_ConfirmImportNewData(bpy.types.Operator):
     duplicate_count: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
 
     def invoke(self, context, event):
-        self.report({'ERROR'}, "Local texture import is disabled. Planetka uses Cloud source only.")
-        return {'CANCELLED'}
+        del context, event
+        return fail(
+            self,
+            "Local texture import is disabled. Planetka uses Cloud source only.",
+            code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+            logger=logger,
+        )
 
     def draw(self, context):
         layout = self.layout
@@ -57,8 +72,13 @@ class PLANETKA_OT_ConfirmImportNewData(bpy.types.Operator):
             col.label(text=f"Duplicate source tiles detected: {int(self.duplicate_count)} (newest file kept)")
 
     def execute(self, context):
-        self.report({'ERROR'}, "Local texture import is disabled. Planetka uses Cloud source only.")
-        return {'CANCELLED'}
+        del context
+        return fail(
+            self,
+            "Local texture import is disabled. Planetka uses Cloud source only.",
+            code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+            logger=logger,
+        )
 
 
 class PLANETKA_OT_SelectTextureSource(bpy.types.Operator):
@@ -69,12 +89,22 @@ class PLANETKA_OT_SelectTextureSource(bpy.types.Operator):
     directory: StringProperty(subtype='DIR_PATH')
 
     def execute(self, context):
-        self.report({'ERROR'}, "Local texture directories are disabled. Planetka uses Cloud source only.")
-        return {'CANCELLED'}
+        del context
+        return fail(
+            self,
+            "Local texture directories are disabled. Planetka uses Cloud source only.",
+            code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+            logger=logger,
+        )
 
     def invoke(self, context, event):
-        self.report({'ERROR'}, "Local texture directories are disabled. Planetka uses Cloud source only.")
-        return {'CANCELLED'}
+        del context, event
+        return fail(
+            self,
+            "Local texture directories are disabled. Planetka uses Cloud source only.",
+            code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+            logger=logger,
+        )
 
 
 class PLANETKA_OT_CreateStandaloneFile(bpy.types.Operator):

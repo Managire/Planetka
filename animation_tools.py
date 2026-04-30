@@ -144,7 +144,12 @@ def _require_full_animation_access(operator, prefs=None):
     if allows_animation_render_for_context(prefs):
         return True
     if operator is not None:
-        operator.report({'ERROR'}, "Final Animation Rendering requires Full Quality texture access.")
+        fail(
+            operator,
+            "Final Animation Rendering requires Full Quality texture access.",
+            code=ErrorCode.RENDER_FAILED,
+            logger=logger,
+        )
     return False
 
 
@@ -3440,8 +3445,8 @@ class PLANETKA_OT_AnimationClearPrepared(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
-    bl_idname = "planetka.animation_render_headless"
+class PLANETKA_OT_AnimationRender(bpy.types.Operator):
+    bl_idname = "planetka.animation_render"
     bl_label = "Render Animation"
     bl_description = "Render animation in UI, segment-by-segment, always using Full Quality textures"
 
@@ -3637,8 +3642,13 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
 
     def _cancel_with_error(self, context, message):
         text = str(message or "Animation render failed.").strip() or "Animation render failed."
-        self.report({'ERROR'}, text)
-        logger.error("Planetka animation render failed: %s", text)
+        fail(
+            self,
+            text,
+            code=ErrorCode.RENDER_FAILED,
+            logger=logger,
+            log_message=f"Planetka animation render failed: {text}",
+        )
         self._cleanup(context, stop_render=True)
         return {'CANCELLED'}
 
@@ -4301,6 +4311,18 @@ class PLANETKA_OT_AnimationRenderHeadless(bpy.types.Operator):
             return {'RUNNING_MODAL'}
 
         return {'RUNNING_MODAL'}
+
+
+class PLANETKA_OT_AnimationRenderHeadless(PLANETKA_OT_AnimationRender):
+    bl_idname = "planetka.animation_render_headless"
+    bl_label = "Render Animation"
+    bl_description = "Deprecated compatibility alias for planetka.animation_render"
+
+    def invoke(self, context, event):
+        logger.debug(
+            "Planetka animation: deprecated operator id 'planetka.animation_render_headless' invoked; use 'planetka.animation_render'"
+        )
+        return super().invoke(context, event)
 
 
 class PLANETKA_OT_AnimationRenderInfo(bpy.types.Operator):
