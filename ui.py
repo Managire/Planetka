@@ -892,15 +892,16 @@ def _draw_live_telemetry(layout, scene):
         header_row = quality_box.row(align=True)
         header_row.use_property_split = False
         header_row.use_property_decorate = False
-        header_row.label(text="Texture Quality", icon="TEXTURE")
+        header_row.label(text="Data Downloading", icon="TEXTURE")
         header_toggle = header_row.row(align=True)
         header_toggle.alignment = 'RIGHT'
         header_toggle.scale_x = 1.1
+        header_toggle.label(text="Pause")
         header_toggle.prop(
             props,
-            "auto_resolve",
+            "hold_resolve",
             text="",
-            icon="FILE_REFRESH",
+            icon="PAUSE",
             toggle=True,
         )
 
@@ -1655,7 +1656,7 @@ class PLANETKA_PT_LinksPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
         row = layout.row(align=True)
         row.operator("wm.url_open", text="Tutorials", icon="PLAY").url = "https://www.youtube.com/@tomasgriger-planetka/videos"
-        row.operator("planetka.report_bug", text="Report Bug", icon="INFO")
+        row.operator("planetka.report_bug", text="Send Feedback", icon="INFO")
 
         layout.operator(
             "wm.url_open",
@@ -1684,7 +1685,7 @@ class PLANETKA_PT_LinksPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel)
 
         row = layout.row(align=True)
         row.operator("wm.url_open", text="Tutorials", icon="PLAY").url = "https://www.youtube.com/@tomasgriger-planetka/videos"
-        row.operator("planetka.report_bug", text="Report Bug", icon="INFO")
+        row.operator("planetka.report_bug", text="Send Feedback", icon="INFO")
 
         layout.operator(
             "wm.url_open",

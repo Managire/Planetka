@@ -120,6 +120,7 @@ _REQUEST_CONTEXT_LOCK = threading.Lock()
 _REQUEST_CONTEXT_RESOLVE_ID = ""
 _REQUEST_CONTEXT_TEXTURE_MODE = ""
 _REQUEST_CONTEXT_CANCEL_EVENT = None
+_REQUEST_CONTEXT_FORCE_CANCEL = False
 _REQUEST_CONTEXT_NAV_LAT = ""
 _REQUEST_CONTEXT_NAV_LON = ""
 _REQUEST_CONTEXT_NAV_ALT_KM = ""
@@ -1130,6 +1131,18 @@ def clear_resolve_request_context():
     set_resolve_request_context("", "", cancel_event=None, nav_latitude_deg="", nav_longitude_deg="", nav_altitude_km="")
 
 
+def request_global_resolve_cancel():
+    global _REQUEST_CONTEXT_FORCE_CANCEL
+    with _REQUEST_CONTEXT_LOCK:
+        _REQUEST_CONTEXT_FORCE_CANCEL = True
+
+
+def clear_global_resolve_cancel():
+    global _REQUEST_CONTEXT_FORCE_CANCEL
+    with _REQUEST_CONTEXT_LOCK:
+        _REQUEST_CONTEXT_FORCE_CANCEL = False
+
+
 def _invalidate_request_context_tile_token():
     global _REQUEST_CONTEXT_TILE_TOKEN
     global _REQUEST_CONTEXT_TILE_TOKEN_EXPIRES_AT
@@ -1251,6 +1264,9 @@ def resolve_request_context(
 def _is_request_cancelled():
     with _REQUEST_CONTEXT_LOCK:
         event = _REQUEST_CONTEXT_CANCEL_EVENT
+        forced_cancel = bool(_REQUEST_CONTEXT_FORCE_CANCEL)
+    if forced_cancel:
+        return True
     if event is None:
         return False
     is_set = getattr(event, "is_set", None)
@@ -1669,7 +1685,7 @@ def prefetch_resolve_downloads(requests, base_path=None, cancel_event=None):
         return ("cancel" in text) and ("resolve" in text or "request" in text)
 
     for request in requests or ():
-        if cancel_event is not None and getattr(cancel_event, "is_set", None) and cancel_event.is_set():
+        if _is_request_cancelled() or (cancel_event is not None and getattr(cancel_event, "is_set", None) and cancel_event.is_set()):
             cancelled = True
             break
 
@@ -1742,7 +1758,7 @@ def prefetch_resolve_downloads(requests, base_path=None, cancel_event=None):
 
     def _fetch_one(task):
         task_folder, task_prefix, task_filename, task_exts = task
-        if cancel_event is not None and getattr(cancel_event, "is_set", None) and cancel_event.is_set():
+        if _is_request_cancelled() or (cancel_event is not None and getattr(cancel_event, "is_set", None) and cancel_event.is_set()):
             return {"state": "cancelled", "task": task}
         try:
             path = resolve_texture_file(
@@ -1797,7 +1813,7 @@ def prefetch_resolve_downloads(requests, base_path=None, cancel_event=None):
                 while pending:
                     done, pending = wait(pending, timeout=0.05, return_when=FIRST_COMPLETED)
                     _request_ui_redraw()
-                    if cancel_event is not None and getattr(cancel_event, "is_set", None) and cancel_event.is_set():
+                    if _is_request_cancelled() or (cancel_event is not None and getattr(cancel_event, "is_set", None) and cancel_event.is_set()):
                         cancelled = True
                         for pending_future in pending:
                             pending_future.cancel()

@@ -78,6 +78,70 @@ def update_texture_quality_mode(self, context):
     update_auto_resolve(self, context)
 
 
+def _request_resolve_kill_switch():
+    state_module_name = f"{__package__}.state" if __package__ else "state"
+    try:
+        state_module = importlib.import_module(state_module_name)
+        stop_fn = getattr(state_module, "stop_auto_resolve_service", None)
+        if callable(stop_fn):
+            stop_fn()
+    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed stopping auto-resolve service from Hold kill switch", exc_info=True)
+
+    r2_module_name = f"{__package__}.r2_source" if __package__ else "r2_source"
+    try:
+        r2_module = importlib.import_module(r2_module_name)
+        cancel_fn = getattr(r2_module, "request_global_resolve_cancel", None)
+        if callable(cancel_fn):
+            cancel_fn()
+    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed signaling global resolve cancel from Hold kill switch", exc_info=True)
+
+
+def _clear_resolve_kill_switch():
+    r2_module_name = f"{__package__}.r2_source" if __package__ else "r2_source"
+    try:
+        r2_module = importlib.import_module(r2_module_name)
+        clear_fn = getattr(r2_module, "clear_global_resolve_cancel", None)
+        if callable(clear_fn):
+            clear_fn()
+    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed clearing global resolve cancel state", exc_info=True)
+
+
+def _get_hold_resolve(self):
+    try:
+        return not bool(getattr(self, "auto_resolve", True))
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return False
+
+
+def _set_hold_resolve(self, value):
+    hold_enabled = bool(value)
+    if hold_enabled:
+        _request_resolve_kill_switch()
+    else:
+        _clear_resolve_kill_switch()
+
+    target_auto_resolve = not hold_enabled
+    try:
+        current_auto_resolve = bool(getattr(self, "auto_resolve", True))
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        current_auto_resolve = True
+    if current_auto_resolve == target_auto_resolve:
+        return
+
+    try:
+        # Route through the existing property so update callbacks and runtime sync stay intact.
+        self.auto_resolve = target_auto_resolve
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        try:
+            self["auto_resolve"] = bool(target_auto_resolve)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            return
+        update_auto_resolve(self, getattr(bpy, "context", None))
+
+
 def _show_earth_preview_description():
     base = "Show or hide the low-detail Earth preview helper mesh"
     module_name = f"{__package__}.mesh_utils" if __package__ else "mesh_utils"
@@ -648,6 +712,14 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         default=True,
         description="Automatically runs Resolve after camera movement when the visible tile set changes",
         update=update_auto_resolve,
+    )
+
+    hold_resolve: BoolProperty(
+        name="Pause",
+        description="Temporarily pause automatic resolve and download updates",
+        default=False,
+        get=_get_hold_resolve,
+        set=_set_hold_resolve,
     )
 
     auto_resolve_idle_sec: FloatProperty(

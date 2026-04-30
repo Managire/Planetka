@@ -173,6 +173,25 @@ def _open_bug_mail_draft(
     return True
 
 
+def _open_feedback_mail_draft(feedback_text):
+    subject = "Planetka Blender Feedback"
+    body = (
+        "Hi Planetka team,\n\n"
+        "Feedback:\n"
+        f"{str(feedback_text or '').strip()}\n"
+    )
+    mailto_url = (
+        "mailto:info@planetka.io"
+        f"?subject={quote(subject)}"
+        f"&body={quote(body)}"
+    )
+    try:
+        bpy.ops.wm.url_open(url=mailto_url)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        return False
+    return True
+
+
 def _send_bug_report_via_api(
     report_path,
     report_json_text,
@@ -259,32 +278,13 @@ def _show_popup_lines(context, title, icon, lines):
 
 class PLANETKA_OT_ReportBug(bpy.types.Operator):
     bl_idname = "planetka.report_bug"
-    bl_label = "Report Bug"
-    bl_description = "Describe the issue and send a compact debug report JSON to Planetka support"
+    bl_label = "Send Feedback"
+    bl_description = "Send feedback to Planetka support"
 
-    issue_what_happened: bpy.props.StringProperty(
-        name="What happened",
-        description="Describe what went wrong",
+    feedback_text: bpy.props.StringProperty(
+        name="Feedback",
+        description="Write your feedback",
         default="",
-        options={'TEXTEDIT_UPDATE'},
-    )
-    issue_steps_to_reproduce: bpy.props.StringProperty(
-        name="Steps to reproduce",
-        description="How we can reproduce this issue",
-        default="",
-        options={'TEXTEDIT_UPDATE'},
-    )
-    issue_expected_behavior: bpy.props.StringProperty(
-        name="Expected behavior",
-        description="What you expected to happen",
-        default="",
-        options={'TEXTEDIT_UPDATE'},
-    )
-    attachment_file: bpy.props.StringProperty(
-        name="Attachment",
-        description="Optional screenshot/image attachment (PNG/JPG/WEBP, max 10 MB)",
-        default="",
-        subtype='FILE_PATH',
         options={'TEXTEDIT_UPDATE'},
     )
 
@@ -293,117 +293,59 @@ class PLANETKA_OT_ReportBug(bpy.types.Operator):
         wm = getattr(context, "window_manager", None)
         if wm is None:
             return self.execute(context)
-        return wm.invoke_props_dialog(self, width=760)
+        return wm.invoke_props_dialog(self, width=640)
 
     def draw(self, context):
         del context
         layout = self.layout
         layout.use_property_split = False
         layout.use_property_decorate = False
-        layout.label(text="Describe the issue before sending.")
-
-        what_box = layout.box()
-        what_box.label(text="What happened")
-        what_row = what_box.row()
-        what_row.scale_y = 1.0
-        what_row.prop(self, "issue_what_happened", text="")
-
-        steps_box = layout.box()
-        steps_box.label(text="Steps to reproduce")
-        steps_row = steps_box.row()
-        steps_row.scale_y = 1.0
-        steps_row.prop(self, "issue_steps_to_reproduce", text="")
-
-        expected_box = layout.box()
-        expected_box.label(text="Expected behavior")
-        expected_row = expected_box.row()
-        expected_row.scale_y = 1.0
-        expected_row.prop(self, "issue_expected_behavior", text="")
-
-        attachment_box = layout.box()
-        attachment_box.label(text="Attachment (optional screenshot/image)")
-        attachment_row = attachment_box.row()
-        attachment_row.prop(self, "attachment_file", text="")
+        layout.label(text="Send quick feedback to Planetka team.")
+        feedback_box = layout.box()
+        feedback_row = feedback_box.row()
+        feedback_row.prop(self, "feedback_text", text="")
 
     def execute(self, context):
-        target_path = _default_bug_report_path()
-        try:
-            report = _build_minimal_report(context)
-            report_json_text = json.dumps(report, indent=2, sort_keys=False)
-            with open(target_path, "w", encoding="utf-8") as handle:
-                handle.write(report_json_text)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
+        feedback_text = str(getattr(self, "feedback_text", "") or "").strip()
+        if not feedback_text:
             return fail(
                 self,
-                f"Report Bug failed while exporting debug report: {exc}",
-                code=ErrorCode.IO_DEBUG_REPORT_FAILED,
-            )
-        except (OSError, TypeError, ValueError) as exc:
-            return fail(
-                self,
-                f"Report Bug failed while exporting debug report: {exc}",
+                "Please enter feedback before sending.",
                 code=ErrorCode.IO_DEBUG_REPORT_FAILED,
             )
 
-        report_path_abs = os.path.abspath(target_path)
-        issue_what = str(getattr(self, "issue_what_happened", "") or "").strip()
-        issue_steps = str(getattr(self, "issue_steps_to_reproduce", "") or "").strip()
-        issue_expected = str(getattr(self, "issue_expected_behavior", "") or "").strip()
-        attachment_payload, attachment_error = _encode_optional_bug_attachment(
-            str(getattr(self, "attachment_file", "") or "").strip()
-        )
-        if attachment_error:
-            attachment_error_messages = {
-                "attachment_not_found": "Attachment file was not found.",
-                "attachment_unreadable": "Attachment file could not be read.",
-                "attachment_empty": "Attachment file is empty.",
-                "attachment_too_large": "Attachment exceeds 10 MB limit.",
-                "attachment_unsupported_type": "Attachment must be PNG, JPG/JPEG, or WEBP.",
-            }
-            return fail(
-                self,
-                attachment_error_messages.get(attachment_error, "Invalid attachment."),
-                code=ErrorCode.IO_DEBUG_REPORT_FAILED,
-            )
         sent, send_error = _send_bug_report_via_api(
-            report_path_abs,
-            report_json_text,
-            issue_what_happened=issue_what,
-            issue_steps_to_reproduce=issue_steps,
-            issue_expected_behavior=issue_expected,
-            attachment_payload=attachment_payload,
+            report_path="",
+            report_json_text="{}",
+            issue_what_happened=feedback_text,
+            issue_steps_to_reproduce="",
+            issue_expected_behavior="",
+            attachment_payload=None,
         )
         if sent:
             _show_popup_lines(
                 context,
-                "Report Sent",
+                "Feedback Sent",
                 "CHECKMARK",
                 [
-                    "Planetka bug report was sent successfully.",
-                    "Thank you for reporting the issue.",
+                    "Feedback was sent successfully.",
+                    "Thank you.",
                 ],
             )
-            self.report({'INFO'}, "Bug report sent with attached JSON report.")
+            self.report({'INFO'}, "Feedback sent.")
             return {'FINISHED'}
 
-        fallback_opened = _open_bug_mail_draft(
-            report_path_abs,
-            report_json_text,
-            issue_what_happened=issue_what,
-            issue_steps_to_reproduce=issue_steps,
-            issue_expected_behavior=issue_expected,
-            attachment_path=(attachment_payload or {}).get("attachment_path", ""),
-        )
+        fallback_opened = _open_feedback_mail_draft(feedback_text)
         if fallback_opened:
             self.report(
                 {'WARNING'},
-                f"Bug report email draft opened (API send failed: {send_error or 'unknown_error'}).",
+                f"Feedback email draft opened (API send failed: {send_error or 'unknown_error'}).",
             )
             return {'FINISHED'}
 
         return fail(
             self,
-            f"Bug report send failed: {send_error or 'unknown_error'}",
+            f"Feedback send failed: {send_error or 'unknown_error'}",
             code=ErrorCode.IO_DEBUG_REPORT_FAILED,
         )
 
