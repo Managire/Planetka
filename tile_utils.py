@@ -80,6 +80,8 @@ ANIMATION_ADAPTIVE_HORIZON_SCENE_KEY = "planetka_anim_adaptive_horizon_precision
 ANIMATION_HORIZON_HYSTERESIS_NDC_THRESHOLD = 0.008
 ANIMATION_HORIZON_HYSTERESIS_HEMISPHERE_NORM_THRESHOLD = 0.015
 ANIMATION_HORIZON_HYSTERESIS_MAX_RETAINED_TILES = 1
+ANIMATION_HORIZON_BAND_NORM_THRESHOLD = 0.1
+ANIMATION_HORIZON_BAND_NDC_THRESHOLD = 0.03
 
 
 def get_earth_radius_blender_units(earth_obj):
@@ -1250,6 +1252,46 @@ def _adaptive_horizon_precision_active():
         return False
 
 
+def _cycles_render_engine_active():
+    scene = getattr(bpy.context, "scene", None)
+    if scene is None:
+        return False
+    render = getattr(scene, "render", None)
+    if render is None:
+        return False
+    try:
+        engine = str(getattr(render, "engine", "") or "").strip().upper()
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        return False
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return False
+    return engine == "CYCLES"
+
+
+def _is_horizon_band_candidate(stats):
+    if not isinstance(stats, dict):
+        return False
+    if int(stats.get("both_hits", 0) or 0) > 0:
+        return False
+    if int(stats.get("hemisphere_hits", 0) or 0) <= 0:
+        return False
+    if not bool(stats.get("has_depth_samples", False)):
+        return False
+    overflow = stats.get("min_positive_ndc_overflow", None)
+    if overflow is None:
+        return False
+    overflow = float(overflow)
+    if overflow <= 0.0:
+        return False
+    min_abs_horizon_norm = stats.get("min_abs_horizon_norm", None)
+    if min_abs_horizon_norm is None:
+        return False
+    return (
+        float(min_abs_horizon_norm) <= float(ANIMATION_HORIZON_BAND_NORM_THRESHOLD)
+        and overflow <= float(ANIMATION_HORIZON_BAND_NDC_THRESHOLD)
+    )
+
+
 def _should_adaptive_refine_tile(stats, z):
     if not _adaptive_horizon_precision_active():
         return False
@@ -1495,6 +1537,109 @@ def _candidate_tiles_for_level(z, guard_distances, edge_boost=False):
     return sorted(candidates)
 
 
+def _collect_horizon_band_tiles(
+    z,
+    earth_radius,
+    cam_pos_local,
+    cam_forward_local,
+    cam_right_local,
+    cam_up_local,
+    camera_type,
+    h_fov,
+    v_fov,
+    res_x,
+    res_y,
+    ortho_scale,
+    bias_factor,
+    frustum_margin=FRUSTUM_MARGIN,
+    guard_distances=None,
+):
+    tan_half_h = math.tan(max(1e-9, float(h_fov)) * 0.5)
+    tan_half_v = math.tan(max(1e-9, float(v_fov)) * 0.5)
+    ortho_half_w, ortho_half_h = _orthographic_half_extents(ortho_scale, res_x, res_y)
+    radius_sq = float(earth_radius) * float(earth_radius)
+    uv_samples = _tile_sample_uv(z)
+    if guard_distances is None:
+        guard_distances = _collect_guard_hit_distances(
+            z=z,
+            earth_radius=earth_radius,
+            cam_pos_local=cam_pos_local,
+            cam_forward_local=cam_forward_local,
+            cam_right_local=cam_right_local,
+            cam_up_local=cam_up_local,
+            camera_type=camera_type,
+            h_fov=h_fov,
+            v_fov=v_fov,
+            res_x=res_x,
+            res_y=res_y,
+            ortho_scale=ortho_scale,
+            frustum_margin=frustum_margin,
+            edge_boost=True,
+        )
+    if not guard_distances:
+        return set(), None
+
+    horizon_tiles = set()
+    nearest_distance = None
+    step = max(1, int(z))
+    # Keep a tight ring around frustum-edge hit tiles; this is independent from the
+    # regular candidate list and avoids full-globe scans.
+    if step <= 1:
+        expand = 2
+    elif step <= 2:
+        expand = 2
+    else:
+        expand = 1
+    horizon_candidates = set()
+    for x, y in guard_distances.keys():
+        for dx in range(-expand, expand + 1):
+            for dy in range(-expand, expand + 1):
+                nx = (int(x) + dx * step) % 360
+                ny = int(y) + dy * step
+                if 0 <= ny <= 179:
+                    horizon_candidates.add((nx, ny))
+
+    for x, y in sorted(horizon_candidates):
+        points = _tile_sample_points(x, y, z, earth_radius, uv_samples)
+        stats = _evaluate_tile_visibility(
+            points,
+            cam_pos_local=cam_pos_local,
+            cam_forward_local=cam_forward_local,
+            cam_right_local=cam_right_local,
+            cam_up_local=cam_up_local,
+            camera_type=camera_type,
+            tan_half_h=tan_half_h,
+            tan_half_v=tan_half_v,
+            ortho_half_w=ortho_half_w,
+            ortho_half_h=ortho_half_h,
+            frustum_margin=frustum_margin,
+            radius_sq=radius_sq,
+        )
+        if not _is_horizon_band_candidate(stats):
+            continue
+
+        min_distance = stats.get("min_distance_depth", None)
+        if min_distance is None:
+            continue
+
+        required_mpp = _required_mpp_from_distance(
+            distance=min_distance,
+            earth_radius=earth_radius,
+            camera_type=camera_type,
+            h_fov=h_fov,
+            v_fov=v_fov,
+            res_x=res_x,
+            res_y=res_y,
+            ortho_scale=ortho_scale,
+        )
+        d_value = compute_d_value(required_mpp, z, bias_factor=bias_factor)
+        horizon_tiles.add(format_tile(x, y, z, d_value))
+        if nearest_distance is None or min_distance < nearest_distance:
+            nearest_distance = min_distance
+
+    return horizon_tiles, nearest_distance
+
+
 def _orthographic_half_extents(ortho_scale, res_x, res_y):
     aspect = max(1e-9, float(res_x) / max(1.0, float(res_y)))
     if aspect >= 1.0:
@@ -1591,6 +1736,7 @@ def _collect_visible_tiles(
     edge_boost=False,
 ):
     adaptive_mode = _adaptive_horizon_precision_active()
+    horizon_band_mode = _cycles_render_engine_active()
     tan_half_h = math.tan(max(1e-9, float(h_fov)) * 0.5)
     tan_half_v = math.tan(max(1e-9, float(v_fov)) * 0.5)
     ortho_half_w, ortho_half_h = _orthographic_half_extents(ortho_scale, res_x, res_y)
@@ -1671,7 +1817,6 @@ def _collect_visible_tiles(
                 radius_sq=radius_sq,
             )
             min_distance = stats.get("min_distance_visible", None)
-
             if min_distance is None and _should_adaptive_refine_tile(stats, z):
                 adaptive_points = _tile_sample_points(x, y, z, earth_radius, _tile_sample_uv_adaptive(z))
                 adaptive_stats = _evaluate_tile_visibility(
@@ -1732,6 +1877,50 @@ def _collect_visible_tiles(
     if guard_nearest_distance is not None and (nearest_distance is None or guard_nearest_distance < nearest_distance):
         nearest_distance = guard_nearest_distance
 
+    if horizon_band_mode:
+        horizon_tiles, horizon_nearest_distance = _collect_horizon_band_tiles(
+            z=z,
+            earth_radius=earth_radius,
+            cam_pos_local=cam_pos_local,
+            cam_forward_local=cam_forward_local,
+            cam_right_local=cam_right_local,
+            cam_up_local=cam_up_local,
+            camera_type=camera_type,
+            h_fov=h_fov,
+            v_fov=v_fov,
+            res_x=res_x,
+            res_y=res_y,
+            ortho_scale=ortho_scale,
+            bias_factor=bias_factor,
+            frustum_margin=frustum_margin,
+            guard_distances=guard_distances,
+        )
+        base_tile_index = {}
+        for tile in final_tiles:
+            parsed = parse_tile(tile)
+            if not parsed:
+                continue
+            x, y, z_level, d_value = parsed
+            key = (int(x), int(y), int(z_level))
+            existing = base_tile_index.get(key)
+            if existing is None or int(d_value) > int(existing[3]):
+                base_tile_index[key] = (int(x), int(y), int(z_level), int(d_value), str(tile))
+
+        for tile in horizon_tiles:
+            parsed = parse_tile(tile)
+            if not parsed:
+                continue
+            x, y, z_level, _d_value = parsed
+            key = (int(x), int(y), int(z_level))
+            if key in base_tile_index:
+                # Keep original regular-visibility tile quality for already selected coverage.
+                continue
+            final_tiles.add(tile)
+        if horizon_nearest_distance is not None and (
+            nearest_distance is None or horizon_nearest_distance < nearest_distance
+        ):
+            nearest_distance = horizon_nearest_distance
+
     return final_tiles, nearest_distance
 
 
@@ -1778,7 +1967,8 @@ def _tile_min_visible_distance(
 ):
     adaptive_mode = _adaptive_horizon_precision_active()
     radius_sq = float(earth_radius) * float(earth_radius)
-    points = _tile_sample_points(x, y, z, earth_radius, _tile_sample_uv(z))
+    uv_samples = _tile_sample_uv(z)
+    points = _tile_sample_points(x, y, z, earth_radius, uv_samples)
     if not adaptive_mode:
         min_distance = None
         for point in points:
@@ -1801,30 +1991,11 @@ def _tile_min_visible_distance(
             distance = (point - cam_pos_local).length
             if min_distance is None or distance < min_distance:
                 min_distance = distance
-        return None if min_distance is None else float(min_distance)
-
-    stats = _evaluate_tile_visibility(
-        points,
-        cam_pos_local=cam_pos_local,
-        cam_forward_local=cam_forward_local,
-        cam_right_local=cam_right_local,
-        cam_up_local=cam_up_local,
-        camera_type=camera_type,
-        tan_half_h=tan_half_h,
-        tan_half_v=tan_half_v,
-        ortho_half_w=ortho_half_w,
-        ortho_half_h=ortho_half_h,
-        frustum_margin=frustum_margin,
-        radius_sq=radius_sq,
-    )
-    min_distance = stats.get("min_distance_visible", None)
-    if min_distance is not None:
-        return float(min_distance)
-
-    if _should_adaptive_refine_tile(stats, z):
-        adaptive_points = _tile_sample_points(x, y, z, earth_radius, _tile_sample_uv_adaptive(z))
-        adaptive_stats = _evaluate_tile_visibility(
-            adaptive_points,
+        if min_distance is not None:
+            return float(min_distance)
+    else:
+        stats = _evaluate_tile_visibility(
+            points,
             cam_pos_local=cam_pos_local,
             cam_forward_local=cam_forward_local,
             cam_right_local=cam_right_local,
@@ -1835,15 +2006,35 @@ def _tile_min_visible_distance(
             ortho_half_w=ortho_half_w,
             ortho_half_h=ortho_half_h,
             frustum_margin=frustum_margin,
-            radius_sq=radius_sq,
-        )
-        min_distance = adaptive_stats.get("min_distance_visible", None)
+                radius_sq=radius_sq,
+            )
+        min_distance = stats.get("min_distance_visible", None)
         if min_distance is not None:
             return float(min_distance)
-        if _should_force_include_near_edge_tile(adaptive_stats):
-            fallback_distance = adaptive_stats.get("min_distance_depth", None)
-            if fallback_distance is not None:
-                return float(fallback_distance)
+
+        if _should_adaptive_refine_tile(stats, z):
+            adaptive_points = _tile_sample_points(x, y, z, earth_radius, _tile_sample_uv_adaptive(z))
+            adaptive_stats = _evaluate_tile_visibility(
+                adaptive_points,
+                cam_pos_local=cam_pos_local,
+                cam_forward_local=cam_forward_local,
+                cam_right_local=cam_right_local,
+                cam_up_local=cam_up_local,
+                camera_type=camera_type,
+                tan_half_h=tan_half_h,
+                tan_half_v=tan_half_v,
+                ortho_half_w=ortho_half_w,
+                ortho_half_h=ortho_half_h,
+                frustum_margin=frustum_margin,
+                radius_sq=radius_sq,
+            )
+            min_distance = adaptive_stats.get("min_distance_visible", None)
+            if min_distance is not None:
+                return float(min_distance)
+            if _should_force_include_near_edge_tile(adaptive_stats):
+                fallback_distance = adaptive_stats.get("min_distance_depth", None)
+                if fallback_distance is not None:
+                    return float(fallback_distance)
     return None
 
 
