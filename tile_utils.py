@@ -80,8 +80,15 @@ ANIMATION_ADAPTIVE_HORIZON_SCENE_KEY = "planetka_anim_adaptive_horizon_precision
 ANIMATION_HORIZON_HYSTERESIS_NDC_THRESHOLD = 0.008
 ANIMATION_HORIZON_HYSTERESIS_HEMISPHERE_NORM_THRESHOLD = 0.015
 ANIMATION_HORIZON_HYSTERESIS_MAX_RETAINED_TILES = 1
-ANIMATION_HORIZON_BAND_NORM_THRESHOLD = 0.1
-ANIMATION_HORIZON_BAND_NDC_THRESHOLD = 0.03
+ANIMATION_HORIZON_BAND_FRONT_DEG = 0.5
+ANIMATION_HORIZON_BAND_STEP_DEG = 0.25
+ANIMATION_HORIZON_BAND_U_SAMPLES = 101
+ANIMATION_HORIZON_BAND_V_SCAN_MIN = -1.5
+ANIMATION_HORIZON_BAND_V_SCAN_MAX = 1.5
+ANIMATION_HORIZON_BAND_V_SCAN_STEPS = 180
+ANIMATION_HORIZON_BAND_BACK_DEG = math.degrees(
+    math.acos(REAL_EARTH_RADIUS_M / (REAL_EARTH_RADIUS_M + MAX_TERRAIN_HEIGHT_M))
+)
 
 
 def get_earth_radius_blender_units(earth_obj):
@@ -1268,30 +1275,6 @@ def _cycles_render_engine_active():
     return engine == "CYCLES"
 
 
-def _is_horizon_band_candidate(stats):
-    if not isinstance(stats, dict):
-        return False
-    if int(stats.get("both_hits", 0) or 0) > 0:
-        return False
-    if int(stats.get("hemisphere_hits", 0) or 0) <= 0:
-        return False
-    if not bool(stats.get("has_depth_samples", False)):
-        return False
-    overflow = stats.get("min_positive_ndc_overflow", None)
-    if overflow is None:
-        return False
-    overflow = float(overflow)
-    if overflow <= 0.0:
-        return False
-    min_abs_horizon_norm = stats.get("min_abs_horizon_norm", None)
-    if min_abs_horizon_norm is None:
-        return False
-    return (
-        float(min_abs_horizon_norm) <= float(ANIMATION_HORIZON_BAND_NORM_THRESHOLD)
-        and overflow <= float(ANIMATION_HORIZON_BAND_NDC_THRESHOLD)
-    )
-
-
 def _should_adaptive_refine_tile(stats, z):
     if not _adaptive_horizon_precision_active():
         return False
@@ -1379,6 +1362,166 @@ def _cartesian_to_lonlat(point):
     lon = math.degrees(math.atan2(y, x))
     lat = math.degrees(math.asin(z)) + 90.0
     return lon, max(0.0, min(179.999999, lat))
+
+
+def _ray_sphere_discriminant_for_ndc(
+    *,
+    cam_pos_local,
+    cam_forward_local,
+    cam_right_local,
+    cam_up_local,
+    camera_type,
+    tan_half_h,
+    tan_half_v,
+    ortho_half_w,
+    ortho_half_h,
+    frustum_margin,
+    u,
+    v,
+    earth_radius,
+):
+    if camera_type == "ORTHO":
+        ray_origin = (
+            cam_pos_local
+            + cam_right_local * (float(u) * float(ortho_half_w) * float(frustum_margin))
+            + cam_up_local * (float(v) * float(ortho_half_h) * float(frustum_margin))
+        )
+        ray_direction = cam_forward_local
+    else:
+        ray_origin = cam_pos_local
+        ray_direction = (
+            cam_forward_local
+            + cam_right_local * (float(u) * float(tan_half_h) * float(frustum_margin))
+            + cam_up_local * (float(v) * float(tan_half_v) * float(frustum_margin))
+        )
+        if ray_direction.length_squared <= 1e-12:
+            return None, None, None, None, None
+        ray_direction.normalize()
+
+    a = float(ray_direction.dot(ray_direction))
+    if a <= 1e-12:
+        return None, None, None, None, None
+    b = 2.0 * float(ray_origin.dot(ray_direction))
+    c = float(ray_origin.dot(ray_origin)) - float(earth_radius) * float(earth_radius)
+    discriminant = b * b - 4.0 * a * c
+    return float(discriminant), ray_origin, ray_direction, float(a), float(b)
+
+
+def _ray_hits_earth(discriminant, ray_origin, ray_direction, earth_radius):
+    if discriminant is None or ray_origin is None or ray_direction is None:
+        return False
+    if float(discriminant) < 0.0:
+        return False
+    hit = _intersect_ray_sphere_nearest(ray_origin, ray_direction, earth_radius)
+    return hit is not None
+
+
+def _find_horizon_v_root_for_u(
+    *,
+    cam_pos_local,
+    cam_forward_local,
+    cam_right_local,
+    cam_up_local,
+    camera_type,
+    tan_half_h,
+    tan_half_v,
+    ortho_half_w,
+    ortho_half_h,
+    frustum_margin,
+    earth_radius,
+    u,
+):
+    v_values = [
+        float(ANIMATION_HORIZON_BAND_V_SCAN_MIN)
+        + (float(ANIMATION_HORIZON_BAND_V_SCAN_MAX) - float(ANIMATION_HORIZON_BAND_V_SCAN_MIN))
+        * (float(i) / float(max(1, int(ANIMATION_HORIZON_BAND_V_SCAN_STEPS))))
+        for i in range(int(ANIMATION_HORIZON_BAND_V_SCAN_STEPS) + 1)
+    ]
+
+    samples = []
+    for v in v_values:
+        disc, ray_origin, ray_direction, _a, _b = _ray_sphere_discriminant_for_ndc(
+            cam_pos_local=cam_pos_local,
+            cam_forward_local=cam_forward_local,
+            cam_right_local=cam_right_local,
+            cam_up_local=cam_up_local,
+            camera_type=camera_type,
+            tan_half_h=tan_half_h,
+            tan_half_v=tan_half_v,
+            ortho_half_w=ortho_half_w,
+            ortho_half_h=ortho_half_h,
+            frustum_margin=frustum_margin,
+            u=u,
+            v=v,
+            earth_radius=earth_radius,
+        )
+        if disc is None:
+            continue
+        samples.append(
+            (
+                float(v),
+                float(disc),
+                bool(_ray_hits_earth(disc, ray_origin, ray_direction, earth_radius)),
+            )
+        )
+
+    if len(samples) < 2:
+        return None
+
+    transitions = []
+    for idx in range(len(samples) - 1):
+        v0, _d0, hit0 = samples[idx]
+        v1, _d1, hit1 = samples[idx + 1]
+        if bool(hit0) == bool(hit1):
+            continue
+        transitions.append((abs((float(v0) + float(v1)) * 0.5), idx))
+
+    if not transitions:
+        return None
+
+    transitions.sort(key=lambda item: float(item[0]))
+    _, idx = transitions[0]
+    v0, d0, _h0 = samples[idx]
+    v1, d1, _h1 = samples[idx + 1]
+
+    if float(d0) == 0.0:
+        return float(v0)
+    if float(d1) == 0.0:
+        return float(v1)
+
+    if float(d0) * float(d1) > 0.0:
+        return float(v0 if abs(float(d0)) <= abs(float(d1)) else v1)
+
+    lo = float(v0)
+    hi = float(v1)
+    dlo = float(d0)
+    for _ in range(52):
+        mid = 0.5 * (lo + hi)
+        dmid, _ro, _rd, _a, _b = _ray_sphere_discriminant_for_ndc(
+            cam_pos_local=cam_pos_local,
+            cam_forward_local=cam_forward_local,
+            cam_right_local=cam_right_local,
+            cam_up_local=cam_up_local,
+            camera_type=camera_type,
+            tan_half_h=tan_half_h,
+            tan_half_v=tan_half_v,
+            ortho_half_w=ortho_half_w,
+            ortho_half_h=ortho_half_h,
+            frustum_margin=frustum_margin,
+            u=u,
+            v=mid,
+            earth_radius=earth_radius,
+        )
+        if dmid is None:
+            break
+        if abs(float(dmid)) < 1e-12:
+            return float(mid)
+        if float(dlo) * float(dmid) <= 0.0:
+            hi = float(mid)
+        else:
+            lo = float(mid)
+            dlo = float(dmid)
+    return float(0.5 * (lo + hi))
 
 
 def _collect_guard_tiles_for_frustum(
@@ -1552,57 +1695,33 @@ def _collect_horizon_band_tiles(
     ortho_scale,
     bias_factor,
     frustum_margin=FRUSTUM_MARGIN,
-    guard_distances=None,
 ):
+    if str(camera_type or "").upper() == "ORTHO":
+        return set(), None
+
     tan_half_h = math.tan(max(1e-9, float(h_fov)) * 0.5)
     tan_half_v = math.tan(max(1e-9, float(v_fov)) * 0.5)
     ortho_half_w, ortho_half_h = _orthographic_half_extents(ortho_scale, res_x, res_y)
-    radius_sq = float(earth_radius) * float(earth_radius)
-    uv_samples = _tile_sample_uv(z)
-    if guard_distances is None:
-        guard_distances = _collect_guard_hit_distances(
-            z=z,
-            earth_radius=earth_radius,
-            cam_pos_local=cam_pos_local,
-            cam_forward_local=cam_forward_local,
-            cam_right_local=cam_right_local,
-            cam_up_local=cam_up_local,
-            camera_type=camera_type,
-            h_fov=h_fov,
-            v_fov=v_fov,
-            res_x=res_x,
-            res_y=res_y,
-            ortho_scale=ortho_scale,
-            frustum_margin=frustum_margin,
-            edge_boost=True,
-        )
-    if not guard_distances:
+    step = max(1, int(z))
+
+    cam_norm = cam_pos_local.normalized() if cam_pos_local.length > 1e-12 else None
+    if cam_norm is None:
         return set(), None
 
-    horizon_tiles = set()
+    horizon_tiles_by_key = {}
     nearest_distance = None
-    step = max(1, int(z))
-    # Keep a tight ring around frustum-edge hit tiles; this is independent from the
-    # regular candidate list and avoids full-globe scans.
-    if step <= 1:
-        expand = 2
-    elif step <= 2:
-        expand = 2
-    else:
-        expand = 1
-    horizon_candidates = set()
-    for x, y in guard_distances.keys():
-        for dx in range(-expand, expand + 1):
-            for dy in range(-expand, expand + 1):
-                nx = (int(x) + dx * step) % 360
-                ny = int(y) + dy * step
-                if 0 <= ny <= 179:
-                    horizon_candidates.add((nx, ny))
 
-    for x, y in sorted(horizon_candidates):
-        points = _tile_sample_points(x, y, z, earth_radius, uv_samples)
-        stats = _evaluate_tile_visibility(
-            points,
+    back_band = float(ANIMATION_HORIZON_BAND_BACK_DEG)
+    front_band = float(ANIMATION_HORIZON_BAND_FRONT_DEG)
+    delta_values = []
+    current = -front_band
+    while current <= (back_band + 1e-9):
+        delta_values.append(float(current))
+        current += float(ANIMATION_HORIZON_BAND_STEP_DEG)
+
+    for i in range(max(2, int(ANIMATION_HORIZON_BAND_U_SAMPLES))):
+        u = -1.0 + 2.0 * (float(i) / float(max(1, int(ANIMATION_HORIZON_BAND_U_SAMPLES) - 1)))
+        v_root = _find_horizon_v_root_for_u(
             cam_pos_local=cam_pos_local,
             cam_forward_local=cam_forward_local,
             cam_right_local=cam_right_local,
@@ -1613,30 +1732,97 @@ def _collect_horizon_band_tiles(
             ortho_half_w=ortho_half_w,
             ortho_half_h=ortho_half_h,
             frustum_margin=frustum_margin,
-            radius_sq=radius_sq,
-        )
-        if not _is_horizon_band_candidate(stats):
-            continue
-
-        min_distance = stats.get("min_distance_depth", None)
-        if min_distance is None:
-            continue
-
-        required_mpp = _required_mpp_from_distance(
-            distance=min_distance,
             earth_radius=earth_radius,
-            camera_type=camera_type,
-            h_fov=h_fov,
-            v_fov=v_fov,
-            res_x=res_x,
-            res_y=res_y,
-            ortho_scale=ortho_scale,
+            u=u,
         )
-        d_value = compute_d_value(required_mpp, z, bias_factor=bias_factor)
-        horizon_tiles.add(format_tile(x, y, z, d_value))
-        if nearest_distance is None or min_distance < nearest_distance:
-            nearest_distance = min_distance
+        if v_root is None:
+            continue
 
+        disc, ray_origin, ray_direction, a, b = _ray_sphere_discriminant_for_ndc(
+            cam_pos_local=cam_pos_local,
+            cam_forward_local=cam_forward_local,
+            cam_right_local=cam_right_local,
+            cam_up_local=cam_up_local,
+            camera_type=camera_type,
+            tan_half_h=tan_half_h,
+            tan_half_v=tan_half_v,
+            ortho_half_w=ortho_half_w,
+            ortho_half_h=ortho_half_h,
+            frustum_margin=frustum_margin,
+            u=u,
+            v=v_root,
+            earth_radius=earth_radius,
+        )
+        if disc is None or ray_origin is None or ray_direction is None or a is None or b is None:
+            continue
+
+        t_tangent = -float(b) / (2.0 * float(a))
+        if t_tangent <= 1e-8:
+            continue
+        tangent_point = ray_origin + ray_direction * float(t_tangent)
+        if tangent_point.length <= 1e-12:
+            continue
+        tangent_dir = tangent_point.normalized()
+
+        axis = cam_norm.cross(tangent_dir)
+        if axis.length <= 1e-12:
+            continue
+        axis.normalize()
+
+        cos_tangent = max(-1.0, min(1.0, float(cam_norm.dot(tangent_dir))))
+        psi_tangent = math.acos(cos_tangent)
+
+        for delta_deg in delta_values:
+            psi = psi_tangent + math.radians(float(delta_deg))
+            psi = max(0.0, min(math.pi, float(psi)))
+            rotated = mathutils.Matrix.Rotation(float(psi), 3, axis) @ cam_norm
+            if rotated.length <= 1e-12:
+                continue
+            rotated.normalize()
+            surface_point = rotated * float(earth_radius)
+
+            lonlat = _cartesian_to_lonlat(surface_point)
+            if lonlat is None:
+                continue
+            lon, lat = lonlat
+            tile_at_level = get_tile_from_coordinates(lon, lat, z, z)
+            parsed = parse_tile(tile_at_level) if tile_at_level else None
+            if not parsed:
+                continue
+            x, y, _z, _d = parsed
+
+            min_distance = float((surface_point - cam_pos_local).length)
+            required_mpp = _required_mpp_from_distance(
+                distance=min_distance,
+                earth_radius=earth_radius,
+                camera_type=camera_type,
+                h_fov=h_fov,
+                v_fov=v_fov,
+                res_x=res_x,
+                res_y=res_y,
+                ortho_scale=ortho_scale,
+            )
+            d_value = int(compute_d_value(required_mpp, z, bias_factor=bias_factor))
+            key = (int(x), int(y), int(step))
+            candidate = {
+                "tile": format_tile(int(x), int(y), int(step), int(d_value)),
+                "distance": float(min_distance),
+                "abs_delta": abs(float(delta_deg)),
+                "d_value": int(d_value),
+            }
+            existing = horizon_tiles_by_key.get(key)
+            if existing is None:
+                horizon_tiles_by_key[key] = candidate
+            else:
+                old_score = (float(existing["abs_delta"]), int(existing["d_value"]))
+                new_score = (float(candidate["abs_delta"]), int(candidate["d_value"]))
+                if new_score < old_score:
+                    horizon_tiles_by_key[key] = candidate
+
+            if nearest_distance is None or min_distance < nearest_distance:
+                nearest_distance = min_distance
+
+    horizon_tiles = {row["tile"] for row in horizon_tiles_by_key.values()}
     return horizon_tiles, nearest_distance
 
 
@@ -1893,7 +2079,6 @@ def _collect_visible_tiles(
             ortho_scale=ortho_scale,
             bias_factor=bias_factor,
             frustum_margin=frustum_margin,
-            guard_distances=guard_distances,
         )
         base_tile_index = {}
         for tile in final_tiles:
