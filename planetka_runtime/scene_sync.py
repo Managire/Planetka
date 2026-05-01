@@ -48,9 +48,17 @@ def clear_status_notices(
         try:
             scene[status_notice_clear_skip_key] = max(0, int(skip_count) - 1)
         except recoverable_exceptions:
-            pass
+            logger.debug(
+                "Planetka: failed decrementing status-notice clear skip counter key %s",
+                status_notice_clear_skip_key,
+                exc_info=True,
+            )
         except (RuntimeError, TypeError, ValueError, AttributeError):
-            pass
+            logger.debug(
+                "Planetka: failed decrementing status-notice clear skip counter key %s",
+                status_notice_clear_skip_key,
+                exc_info=True,
+            )
         return
     for key in status_notice_keys:
         try:

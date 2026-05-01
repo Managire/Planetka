@@ -31,7 +31,7 @@ EEVEE displacement caveat (segment-boundary stability):
 
 - In EEVEE animation workflows, keeping Earth material in true displacement mode can produce visible tile height popping/jitter at resolve segment boundaries.
 - The effect is most visible when neighboring tiles are added/removed by a new resolve and EL-driven displacement context shifts between segments.
-- Current mitigation in headless EEVEE animation render path:
+- Current mitigation in Final Animation Render (EEVEE) path:
   - temporarily force Earth material displacement to `BUMP` during the render run
   - restore the user's original displacement mode at the end of the run
 - This avoids visible elevation jumps while preserving the user's material setting outside animation render execution.

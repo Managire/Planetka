@@ -4,7 +4,7 @@
 Purpose:
 - directly validate Final Animation segment flow (plan -> resolve -> render)
 - run without network using bundled fallback textures
-- cover EEVEE and CYCLES when available in the current Blender build
+- require both EEVEE and CYCLES in the current Blender build
 """
 
 from __future__ import annotations
@@ -409,6 +409,7 @@ def main():
         engines = _available_render_engines(scene)
         eevee_engine = "BLENDER_EEVEE_NEXT" if "BLENDER_EEVEE_NEXT" in engines else "BLENDER_EEVEE"
         _assert(eevee_engine in engines, f"Eevee engine is not available in this Blender build: {sorted(engines)}")
+        _assert("CYCLES" in engines, f"Cycles engine is not available in this Blender build: {sorted(engines)}")
 
         _run_final_animation_case(
             scene,
@@ -419,17 +420,14 @@ def main():
             os.path.join(output_root, "eevee"),
         )
 
-        if "CYCLES" in engines:
-            _run_final_animation_case(
-                scene,
-                props,
-                state,
-                animation_tools,
-                "CYCLES",
-                os.path.join(output_root, "cycles"),
-            )
-        else:
-            _log("CYCLES not available in this Blender build; skipping Cycles Final Animation gate.")
+        _run_final_animation_case(
+            scene,
+            props,
+            state,
+            animation_tools,
+            "CYCLES",
+            os.path.join(output_root, "cycles"),
+        )
 
         _log("PASS: Final Animation gate passed.")
     except SystemExit:

@@ -28,7 +28,7 @@
 
 2. Timer + context coupling
 - Blender timer/context behavior is brittle and can regress quietly.
-- Recommendation: keep explicit stage markers in scene diagnostics (not only console) and add automated headless regression scripts.
+- Recommendation: keep explicit stage markers in scene diagnostics (not only console) and add automated UI-path regression scripts.
 
 3. Blender 6.0 API deprecations
 - Repeated `Material.use_nodes`/`World.use_nodes` deprecation warnings observed in Blender 5.1.

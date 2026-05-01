@@ -52,6 +52,17 @@ TAG = "[Planetka Core User Flow Gate]"
 REPORT_PATH = Path(tempfile.gettempdir()) / "planetka_core_user_flow_gate_report.json"
 FALLBACK_DIR = Path(_REPO_ROOT) / "Resources" / "Fallback Images"
 
+# Deterministic full-globe fixture tile set used by this hermetic gate.
+# These exact IDs are requested by the Full Globe camera in PREVIEW/BALANCED/FULL modes.
+_FIXTURE_TILE_IDS = (
+    "x000_y000_z180_d720",
+    "x180_y000_z180_d720",
+    "x000_y000_z180_d360",
+    "x180_y000_z180_d360",
+    "x000_y000_z180_d180",
+    "x180_y000_z180_d180",
+)
+
 
 def _log(message):
     print(f"{TAG} {message}", flush=True)
@@ -101,9 +112,30 @@ def _make_texture_source_tree(base_dir):
         _assert(source.is_file(), f"Missing fallback texture sample: {source}")
         folder = base / folder_name
         folder.mkdir(parents=True, exist_ok=True)
+        for tile_id in _FIXTURE_TILE_IDS:
+            shutil.copyfile(source, folder / f"{prefix}{tile_id}.exr")
+        # Keep one sentinel pair used by general texture-source health checks.
         shutil.copyfile(source, folder / f"{prefix}x000_y000_z360_d360.exr")
         shutil.copyfile(source, folder / f"{prefix}x180_y000_z180_d180.exr")
     (base / "PO").mkdir(parents=True, exist_ok=True)
+
+
+def _force_hermetic_local_texture_mode(r2_source_module):
+    """Force LOCAL texture-source mode for this process only.
+
+    Production uses cloud mode by default. This test gate is intentionally
+    hermetic and must stay offline, so we pin mode to LOCAL at runtime.
+    """
+    if r2_source_module is None:
+        return
+    try:
+        if hasattr(r2_source_module, "get_unsupported_texture_source_mode"):
+            r2_source_module.get_unsupported_texture_source_mode = lambda: "LOCAL"
+        reset_fn = getattr(r2_source_module, "reset_config_cache", None)
+        if callable(reset_fn):
+            reset_fn()
+    except Exception:
+        pass
 
 
 def _get_material_displacement_mode(material):
@@ -236,6 +268,8 @@ def main():
         geonames = import_submodule(base_module, "geonames_db")
         state = import_submodule(base_module, "state")
         auth = import_submodule(base_module, "auth")
+        r2_source = import_submodule(base_module, "r2_source")
+        _force_hermetic_local_texture_mode(r2_source)
 
         prefs = extension_prefs.get_prefs()
         _assert(prefs is not None, "Planetka preferences unavailable.")
@@ -244,6 +278,10 @@ def main():
         temp_dirs.append(source_root)
         _make_texture_source_tree(source_root)
         prefs.texture_base_path = source_root
+        _assert(
+            not bool(r2_source.is_remote_source_configured(prefs.texture_base_path)),
+            f"Hermetic gate expected local texture source, got: {prefs.texture_base_path}",
+        )
 
         output_dir = tempfile.mkdtemp(prefix="planetka_core_flow_renders_")
         temp_dirs.append(output_dir)
@@ -333,6 +371,8 @@ def main():
         record_step("earth_radius_change", earth_radius_bu=float(getattr(props, "earth_radius_bu", 0.0) or 0.0), apply_result=list(apply_radius))
 
         # Tier quality gating matrix (synthetic auth payload, hermetic).
+        full_globe_result = bpy.ops.planetka.navigation_preset(preset="HIGH_ORBIT")
+        _assert(_operator_ok(full_globe_result), f"HIGH_ORBIT preset failed before tier matrix: {full_globe_result}")
         matrix = (
             ("free", {"PREVIEW": True, "BALANCED": False, "FULL": False}),
             ("personal", {"PREVIEW": True, "BALANCED": True, "FULL": False}),
@@ -340,6 +380,11 @@ def main():
         )
         for tier_name, expectations in matrix:
             _apply_tier_payload(auth, prefs, tier_name)
+            prefs.texture_base_path = source_root
+            _assert(
+                not bool(r2_source.is_remote_source_configured(prefs.texture_base_path)),
+                f"Hermetic gate switched to remote texture source unexpectedly: {prefs.texture_base_path}",
+            )
             for mode in ("PREVIEW", "BALANCED", "FULL"):
                 entry = {
                     "tier": tier_name,

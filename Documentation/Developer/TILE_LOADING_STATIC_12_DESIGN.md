@@ -127,7 +127,7 @@ For any tile-loader edit, verify:
    - Keep `TileActive_### = 0`.
    - Confirm visible output remains unchanged (aside from normal EEVEE run-to-run noise).
 5. EEVEE segment-boundary animation test:
-   - Run segmented headless animation in EEVEE.
+   - Run segmented Final Animation Render in EEVEE (UI render path).
    - Confirm no displacement-driven tile height popping/jitter between segments.
    - Confirm Earth material displacement mode is restored after render.
 

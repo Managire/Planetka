@@ -232,7 +232,7 @@ def _cancel_if_animation_render_active(operator, action_label):
             )
             return True
     except (AttributeError, RuntimeError, TypeError, ValueError):
-        pass
+        logger.debug("Planetka animation: failed checking active render lock for action cancel guard", exc_info=True)
     return False
 
 
@@ -274,9 +274,9 @@ def _schedule_post_animation_recovery(scene_name, restore_auto_resolve=True):
             if callable(_is_render_job_active) and bool(_is_render_job_active()):
                 return float(ANIMATION_POST_RECOVERY_RETRY_SEC) if has_attempts else None
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            pass
+            logger.debug("Planetka animation: failed checking render active state during post-render recovery", exc_info=True)
         except (RuntimeError, TypeError, ValueError, AttributeError):
-            pass
+            logger.debug("Planetka animation: failed checking render active state during post-render recovery", exc_info=True)
         if _is_interface_write_locked():
             return float(ANIMATION_POST_RECOVERY_RETRY_SEC) if has_attempts else None
 
@@ -1775,7 +1775,7 @@ def _active_timeline_frame_range(scene):
             end = int(getattr(scene, "frame_preview_end", getattr(scene, "frame_end", 250)))
             return start, end
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            pass
+            logger.debug("Planetka animation: failed reading preview timeline range; falling back to scene range", exc_info=True)
     try:
         start = int(getattr(scene, "frame_start", 1))
         end = int(getattr(scene, "frame_end", 250))
@@ -2054,7 +2054,7 @@ def _apply_keyed_runtime_scene_state(scene, props):
             lens_mm = max(1.0, float(getattr(props, "nav_focal_length_mm", 50.0)))
             camera_data.lens = lens_mm
         except (TypeError, ValueError, AttributeError):
-            pass
+            logger.debug("Planetka animation: failed applying keyed focal length to camera runtime state", exc_info=True)
 
 
 def _build_shot_pair(scene, props, base_shot=None):
@@ -2552,7 +2552,7 @@ def _wait_for_resolve_pipeline_idle(scene, timeout_sec=45.0, poll_sec=0.1):
         try:
             bpy.context.view_layer.update()
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            pass
+            logger.debug("Planetka animation: view-layer update failed while waiting for resolve pipeline idle", exc_info=True)
         time.sleep(float(max(0.02, poll_sec)))
 
 
@@ -2590,13 +2590,13 @@ def _capture_earth_material_displacement_mode_state(material):
         if hasattr(material, "displacement_method"):
             state["material"] = str(getattr(material, "displacement_method", "") or "")
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        pass
+        logger.debug("Planetka animation: failed capturing material displacement method state", exc_info=True)
     cycles_settings = getattr(material, "cycles", None)
     try:
         if cycles_settings is not None and hasattr(cycles_settings, "displacement_method"):
             state["cycles"] = str(getattr(cycles_settings, "displacement_method", "") or "")
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        pass
+        logger.debug("Planetka animation: failed capturing cycles displacement method state", exc_info=True)
     return state
 
 
@@ -2641,7 +2641,7 @@ def _earth_surface_materials():
         try:
             _add_material(getattr(earth_obj, "active_material", None))
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            pass
+            logger.debug("Planetka animation: failed reading active Earth material while collecting materials", exc_info=True)
         try:
             mesh_data = getattr(earth_obj, "data", None)
             slots = getattr(mesh_data, "materials", None) if mesh_data is not None else None
@@ -2649,13 +2649,13 @@ def _earth_surface_materials():
                 for slot_material in slots:
                     _add_material(slot_material)
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            pass
+            logger.debug("Planetka animation: failed reading Earth material slots while collecting materials", exc_info=True)
 
     # Keep explicit-name fallback for old scenes where Earth object lookup can fail.
     try:
         _add_material(bpy.data.materials.get("Planetka Earth Material"))
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        pass
+        logger.debug("Planetka animation: failed reading named Earth material fallback", exc_info=True)
     # Include material variants that can appear during resolve swaps.
     try:
         for material in tuple(getattr(bpy.data, "materials", ()) or ()):
@@ -2663,7 +2663,7 @@ def _earth_surface_materials():
             if mat_name == "Planetka Earth Material" or mat_name.startswith("Planetka Earth Material."):
                 _add_material(material)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        pass
+        logger.debug("Planetka animation: failed scanning material variants while collecting Earth materials", exc_info=True)
     return materials
 
 
@@ -2741,9 +2741,9 @@ def _ensure_saved_blend_before_animation_render(operator, prompt_if_unsaved=Fals
             try:
                 bpy.ops.wm.save_mainfile('INVOKE_DEFAULT')
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                pass
+                logger.debug("Planetka animation: failed invoking Save As dialog before render", exc_info=True)
             except (RuntimeError, TypeError, ValueError):
-                pass
+                logger.debug("Planetka animation: failed invoking Save As dialog before render", exc_info=True)
             operator.report({'INFO'}, save_required_message)
             return False
         operator.report({'INFO'}, save_required_message)
@@ -3565,9 +3565,9 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             try:
                 bpy.context.view_layer.update()
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                pass
+                logger.debug("Planetka animation: view-layer update failed while waiting for render stop", exc_info=True)
             except (RuntimeError, TypeError, ValueError, AttributeError):
-                pass
+                logger.debug("Planetka animation: view-layer update failed while waiting for render stop", exc_info=True)
             time.sleep(0.05)
         if self._is_render_job_running():
             logger.warning("Planetka animation: render job remained active during cleanup after cancel/error.")
@@ -3667,9 +3667,9 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             if callable(_is_render_handler_job_active):
                 handler_active = bool(_is_render_handler_job_active())
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            pass
+            logger.debug("Planetka animation: handler render-state probe failed", exc_info=True)
         except (RuntimeError, TypeError, ValueError, AttributeError):
-            pass
+            logger.debug("Planetka animation: handler render-state probe failed", exc_info=True)
         if handler_active is True:
             return True
 

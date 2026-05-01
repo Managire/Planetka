@@ -284,10 +284,20 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
                 logger=logger,
             )
 
-        result = bpy.ops.planetka.load_textures(
-            skip_render_compatibility=True,
-            defer_download=False,
-        )
+        try:
+            result = bpy.ops.planetka.load_textures(
+                skip_render_compatibility=True,
+                defer_download=False,
+            )
+        except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
+            return fail(
+                self,
+                f"Texture resolve failed: {exc}",
+                code=ErrorCode.RESOLVE_REFRESH_FAILED,
+                logger=logger,
+                exc=exc,
+                log_message="Planetka texture quality change failed during resolve",
+            )
         if "FINISHED" not in result:
             return {'CANCELLED'}
         return {'FINISHED'}

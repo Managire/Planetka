@@ -658,9 +658,9 @@ def _is_render_handler_job_active():
         try:
             return bool(_HANDLER_RUNTIME_CTX.state.render_job_active)
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            pass
+            logger.debug("Planetka: failed reading handler render-job active state; using fallback flag", exc_info=True)
         except (RuntimeError, TypeError, ValueError, AttributeError):
-            pass
+            logger.debug("Planetka: failed reading handler render-job active state; using fallback flag", exc_info=True)
     return bool(_RENDER_JOB_ACTIVE)
 
 
