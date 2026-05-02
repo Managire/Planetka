@@ -20,6 +20,7 @@ from .extension_prefs import get_earth_object, get_prefs
 from .geonames_db import get_search_status_text
 from .diagnostics import read_diagnostics
 from .r2_source import get_download_progress, is_download_active, is_remote_source_configured
+from .planetka_ops.scene_setup_ops import is_scene_background_black
 from .updater import get_public_status as get_updater_public_status
 from .animation_tools import (
     ANIMATION_STATS_SEGMENTS_KEY,
@@ -43,7 +44,6 @@ from .state import (
 )
 
 SHOW_INTERNAL_ANIMATION_UI = False
-BACKGROUND_AUTO_BLACK_NOTICE_KEY = "planetka_status_bg_auto_black_notice"
 CLIPPING_AUTO_NOTICE_KEY = "planetka_status_clip_auto_notice"
 CACHE_NOTICE_KEY = "planetka_status_cache_notice"
 RADIUS_SYNC_NOTICE_KEY = "planetka_status_radius_sync_notice"
@@ -496,14 +496,6 @@ def _is_connected():
         return False
 
 
-def _is_update_available():
-    try:
-        status = get_updater_public_status()
-        return bool(status.get("update_ready", False)) and bool(str(status.get("latest_version") or "").strip())
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        return False
-
-
 def _account_panel_should_default_collapsed(context=None):
     if not _is_connected():
         return False
@@ -609,6 +601,27 @@ def _api_key_inline_status(prefs, connected, status_message):
     return "Connect failed", "ERROR", True
 
 
+def _draw_addon_update_controls(layout):
+    try:
+        updater = get_updater_public_status()
+    except (TypeError, ValueError, RuntimeError, AttributeError):
+        logger.debug("Planetka: failed reading updater status in settings panel", exc_info=True)
+        updater = {}
+    updater_ready = bool(updater.get("update_ready", False))
+    latest_version = str(updater.get("latest_version") or "").strip()
+    current_version = str(updater.get("current_version") or "").strip()
+
+    version_row = layout.row()
+    version_row.label(text=f"Addon version: {current_version or 'unknown'}", icon="BLENDER")
+    updates_row = layout.row()
+    updates_row.operator("planetka.check_updates", text="Check for updates", icon="FILE_REFRESH")
+    if updater_ready and latest_version:
+        row = layout.row()
+        row.alert = True
+        row.label(text=f"Update available: {latest_version}", icon="ERROR")
+        row.operator("planetka.update_now", text="Update now", icon="IMPORT")
+
+
 def _draw_account_panel(layout):
     layout.use_property_split = False
     layout.use_property_decorate = False
@@ -628,14 +641,6 @@ def _draw_account_panel(layout):
             logger.debug("Planetka: account panel profile sync failed", exc_info=True)
     connected = _is_connected()
     status_message = get_status_message(prefs)
-    try:
-        updater = get_updater_public_status()
-    except (TypeError, ValueError, RuntimeError, AttributeError):
-        logger.debug("Planetka: failed reading updater status in account panel", exc_info=True)
-        updater = {}
-    updater_ready = bool(updater.get("update_ready", False))
-    latest_version = str(updater.get("latest_version") or "").strip()
-    current_version = str(updater.get("current_version") or "").strip()
     key_text = str(getattr(prefs, "auth_api_key_input", "") or "").strip()
     key_mask = str(getattr(prefs, "auth_api_key_mask", "") or "").strip()
     stored_key = str(getattr(prefs, "auth_api_key", "") or "").strip()
@@ -705,16 +710,6 @@ def _draw_account_panel(layout):
     upgrade_row.enabled = (not connected) or account_tier in {"free", "personal"}
     upgrade_row.operator("planetka.account_upgrade", text="Upgrade Licence", icon="URL")
 
-    version_row = layout.row()
-    version_row.label(text=f"Addon version: {current_version or 'unknown'}", icon="BLENDER")
-    updates_row = layout.row()
-    updates_row.operator("planetka.check_updates", text="Check for updates", icon="FILE_REFRESH")
-    if updater_ready and latest_version:
-        row = layout.row()
-        row.alert = True
-        row.label(text=f"Update available: {latest_version}", icon="ERROR")
-        row.operator("planetka.update_now", text="Update now", icon="IMPORT")
-
     if status_message:
         layout.label(text=status_message, icon="INFO")
 
@@ -776,6 +771,13 @@ def _draw_new_earth(layout):
     row.alert = False
     row.enabled = (not has_earth) and connected
     row.operator("planetka.remove_default_scene", text="Remove Default Scene", icon="TRASH")
+
+    row = layout.row()
+    row.scale_x = ADD_EARTH_BUTTON_SCALE_X
+    row.scale_y = ADD_EARTH_BUTTON_SCALE_Y
+    row.alert = False
+    row.enabled = (not has_earth) and connected and (not is_scene_background_black(scene))
+    row.operator("planetka.set_background_black", text="Set Background to Black", icon="WORLD_DATA")
 
     row = layout.row()
     row.scale_x = ADD_EARTH_BUTTON_SCALE_X
@@ -845,17 +847,10 @@ def _draw_live_telemetry(layout, scene):
     # Keep informational auto-fix notices visible until the next resolve starts.
     if runtime_code in {"PREPARING", "DOWNLOADING", "FINALIZING", "FINALIZE_QUEUED", "QUEUED"}:
         try:
-            if scene is not None and BACKGROUND_AUTO_BLACK_NOTICE_KEY in scene:
-                del scene[BACKGROUND_AUTO_BLACK_NOTICE_KEY]
-        except (AttributeError, RuntimeError, TypeError, ValueError):
-            pass
-        try:
             if scene is not None and CLIPPING_AUTO_NOTICE_KEY in scene:
                 del scene[CLIPPING_AUTO_NOTICE_KEY]
         except (AttributeError, RuntimeError, TypeError, ValueError):
             pass
-
-    # Background auto-black notices are intentionally hidden from UI.
 
     clip_sticky_notice = str(getattr(scene, "get", lambda *_: "")(CLIPPING_AUTO_NOTICE_KEY, "") or "").strip() if scene else ""
     if clip_sticky_notice:
@@ -1413,7 +1408,7 @@ class PLANETKA_PT_AccountPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        return (not _is_update_available()) and (not _account_panel_should_default_collapsed(context))
+        return not _account_panel_should_default_collapsed(context)
 
     def draw(self, context):
         _ = context
@@ -1430,23 +1425,6 @@ class PLANETKA_PT_AccountPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Pane
     @classmethod
     def poll(cls, context):
         return _account_panel_should_default_collapsed(context)
-
-    def draw(self, context):
-        _ = context
-        layout = self.layout
-        layout.enabled = _planetka_controls_enabled()
-        _draw_account_panel(layout)
-
-
-class PLANETKA_PT_AccountPanelUpdate(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Account"
-    bl_idname = "PLANETKA_PT_account_update"
-    bl_order = 9000
-    bl_options = set()
-
-    @classmethod
-    def poll(cls, context):
-        return _is_update_available() and (not _account_panel_should_default_collapsed(context))
 
     def draw(self, context):
         _ = context
@@ -1506,7 +1484,7 @@ class PLANETKA_PT_NewEarthPanelFailure(_PLANETKA_PT_BaseSection, bpy.types.Panel
 
 
 class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Advanced Settings"
+    bl_label = "Planetka Settings"
     bl_idname = "PLANETKA_PT_settings"
     bl_order = 9007
 
@@ -1526,6 +1504,10 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         workflow_enabled = _is_earth_workflow_enabled()
 
         if props:
+            addon_box = layout.box()
+            addon_box.label(text="Add-on", icon="PREFERENCES")
+            _draw_addon_update_controls(addon_box)
+
             startup_box = layout.box()
             startup_box.label(text="Startup Setup", icon="TOOL_SETTINGS")
             save_row = startup_box.row()
@@ -1565,12 +1547,6 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
                 props,
                 "show_earth_preview",
                 text="Show Earth Preview",
-                toggle=True,
-            )
-            scene_objects_box.prop(
-                props,
-                "auto_black_background_new_files",
-                text="Auto-black background",
                 toggle=True,
             )
 

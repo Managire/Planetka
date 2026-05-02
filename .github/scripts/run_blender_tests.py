@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -10,13 +11,32 @@ FATAL_OUTPUT_PATTERNS = (
     "Error in bpy.app.handlers",
     "Traceback (most recent call last):",
 )
+UI_MODE_SCRIPTS = {
+    "tools/planetka_final_animation_gate.py",
+}
+SCRIPT_TIMEOUTS_SEC = {
+    "tools/planetka_final_animation_gate.py": 900,
+}
 
 
 def _run(blender_bin, repo_root, script_rel):
     script_path = Path(repo_root) / script_rel
     if not script_path.is_file():
         raise FileNotFoundError(f"Test script not found: {script_path}")
-    cmd = [str(blender_bin), "--background", "--debug-python", "--python", str(script_rel)]
+    ui_mode = str(script_rel) in UI_MODE_SCRIPTS
+    cmd = [str(blender_bin)]
+    if not ui_mode:
+        cmd.append("--background")
+    cmd.extend(["--debug-python", "--python", str(script_rel)])
+    if ui_mode and sys.platform.startswith("linux") and not os.environ.get("DISPLAY"):
+        xvfb_run = shutil.which("xvfb-run")
+        if not xvfb_run:
+            print(
+                f"[run_blender_tests] FAIL: {script_rel} requires UI mode; install xvfb-run or provide DISPLAY",
+                file=sys.stderr,
+            )
+            return 1
+        cmd = [xvfb_run, "-a", *cmd]
     print(f"[run_blender_tests] Running: {' '.join(cmd)}")
     env = os.environ.copy()
     for key in (
@@ -29,14 +49,25 @@ def _run(blender_bin, repo_root, script_rel):
     ):
         env.pop(key, None)
 
-    result = subprocess.run(
-        cmd,
-        cwd=repo_root,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=repo_root,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=SCRIPT_TIMEOUTS_SEC.get(str(script_rel)),
+        )
+    except subprocess.TimeoutExpired as exc:
+        output = str(getattr(exc, "stdout", "") or "")
+        tail = output[-12000:]
+        print(f"[run_blender_tests] Output tail for {script_rel}:\n{tail}")
+        print(
+            f"[run_blender_tests] FAIL: {script_rel} timed out",
+            file=sys.stderr,
+        )
+        return 1
     output = str(result.stdout or "")
     output_lower = output.lower()
     has_fatal_output = any(pattern.lower() in output_lower for pattern in FATAL_OUTPUT_PATTERNS)

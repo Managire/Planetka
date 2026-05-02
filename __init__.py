@@ -66,7 +66,6 @@ from .state import (
 from .ui import (
     PLANETKA_PT_AccountPanel,
     PLANETKA_PT_AccountPanelCollapsed,
-    PLANETKA_PT_AccountPanelUpdate,
     PLANETKA_PT_LiveTelemetryPanel,
     PLANETKA_PT_LiveTelemetryPanelFailure,
     PLANETKA_PT_LiveTelemetryPanelCollapsed,
@@ -226,7 +225,6 @@ classes = (
     PLANETKA_OT_ResetStartupSetupFactory,
     PLANETKA_PT_AccountPanel,
     PLANETKA_PT_AccountPanelCollapsed,
-    PLANETKA_PT_AccountPanelUpdate,
     PLANETKA_PT_NewEarthPanel,
     PLANETKA_PT_NewEarthPanelFailure,
     PLANETKA_PT_NewEarthPanelCollapsed,
@@ -320,16 +318,16 @@ def _remove_frame_change_post_handler():
             handlers.remove(handler)
 
 
-def _planetka_render_complete(_dummy):
-    recover_post_render_state(getattr(bpy.context, "scene", None), cancelled=False)
+def _planetka_render_complete(scene):
+    recover_post_render_state(scene, cancelled=False)
 
 
-def _planetka_render_cancel(_dummy):
-    recover_post_render_state(getattr(bpy.context, "scene", None), cancelled=True)
+def _planetka_render_cancel(scene):
+    recover_post_render_state(scene, cancelled=True)
 
 
-def _planetka_render_pre(_dummy):
-    mark_render_job_started()
+def _planetka_render_pre(scene):
+    mark_render_job_started(scene)
 
 
 def _remove_render_handlers():
@@ -469,17 +467,30 @@ def unregister():
         except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
             if not _is_readonly_state_error(exc):
                 raise
+            logger.debug(
+                "Planetka: ignored read-only state while deleting Scene.planetka during unregister",
+                exc_info=True,
+            )
     for cls in reversed(classes):
         try:
             _safe_unregister_class(cls)
         except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
             if not _is_readonly_state_error(exc):
                 raise
+            logger.debug(
+                "Planetka: ignored read-only state while unregistering %s during unregister",
+                str(getattr(cls, "__name__", cls)),
+                exc_info=True,
+            )
     try:
         unregister_cloud_object_properties()
     except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
         if not _is_readonly_state_error(exc):
             raise
+        logger.debug(
+            "Planetka: ignored read-only state while unregistering cloud object properties",
+            exc_info=True,
+        )
 
 
 if __name__ == "__main__":

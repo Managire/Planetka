@@ -40,6 +40,12 @@ jobs:
             --install-dir "${{ runner.temp }}/blender" \
             --output-file "${{ runner.temp }}/blender-bin.txt"
 
+      - name: Install UI test display server
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+
       - name: Run Blender test gate
         shell: bash
         run: |

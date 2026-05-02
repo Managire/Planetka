@@ -51,7 +51,6 @@ from .planetka_ops.earth_lifecycle_helpers import (
     _position_planetka_create_camera,
     _require_authenticated_account,
     _restore_view_selection,
-    _set_default_world_background_to_black,
     _snapshot_camera_state_for_rebuild,
     _snapshot_earth_settings_for_rebuild,
     _snapshot_view_selection,

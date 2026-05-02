@@ -738,12 +738,6 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         description="Automatically apply recommended Camera/Viewport clipping values during Create Earth",
     )
 
-    auto_black_background_new_files: BoolProperty(
-        name="Auto-black background",
-        default=True,
-        description="On Create Earth in a new file, change default gray World background to black space",
-    )
-
     nav_longitude_deg: FloatProperty(
         name="Longitude",
         default=0.0,

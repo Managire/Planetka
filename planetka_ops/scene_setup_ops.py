@@ -73,6 +73,115 @@ def _is_default_world_shader(scene):
     )
 
 
+def _find_world_background_node(world):
+    node_tree = getattr(world, "node_tree", None) if world is not None else None
+    nodes = getattr(node_tree, "nodes", None) if node_tree is not None else None
+    if nodes is None:
+        return None
+    background = nodes.get("Background")
+    if background is not None:
+        return background
+    for node in nodes:
+        if str(getattr(node, "bl_idname", "")) == "ShaderNodeBackground":
+            return node
+    return None
+
+
+def is_scene_background_black(scene):
+    world = getattr(scene, "world", None) if scene is not None else None
+    if world is None:
+        return False
+
+    node_tree = getattr(world, "node_tree", None)
+    if node_tree is not None:
+        background = _find_world_background_node(world)
+        if background is None or len(getattr(background, "inputs", ())) < 1:
+            return False
+        color_socket = background.inputs[0]
+        if bool(getattr(color_socket, "is_linked", False)):
+            return False
+        color = getattr(color_socket, "default_value", None)
+        if color is None or len(color) < 4:
+            return False
+        return bool(
+            _float_close(color[0], 0.0)
+            and _float_close(color[1], 0.0)
+            and _float_close(color[2], 0.0)
+            and _float_close(color[3], 1.0)
+        )
+
+    try:
+        color = getattr(world, "color", None)
+        return bool(
+            color is not None
+            and len(color) >= 3
+            and _float_close(color[0], 0.0)
+            and _float_close(color[1], 0.0)
+            and _float_close(color[2], 0.0)
+        )
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        return False
+
+
+def set_scene_background_black(scene):
+    if scene is None:
+        return False
+
+    world = getattr(scene, "world", None)
+    if world is None:
+        world = bpy.data.worlds.new("Planetka Black World")
+        scene.world = world
+
+    try:
+        world.use_nodes = True
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        try:
+            world.color = (0.0, 0.0, 0.0)
+            return True
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            return False
+
+    node_tree = getattr(world, "node_tree", None)
+    nodes = getattr(node_tree, "nodes", None) if node_tree is not None else None
+    links = getattr(node_tree, "links", None) if node_tree is not None else None
+    if node_tree is None or nodes is None or links is None:
+        return False
+
+    background = _find_world_background_node(world)
+    if background is None:
+        background = nodes.new(type="ShaderNodeBackground")
+        background.name = "Background"
+    output = nodes.get("World Output")
+    if output is None:
+        for node in nodes:
+            if str(getattr(node, "bl_idname", "")) == "ShaderNodeOutputWorld":
+                output = node
+                break
+    if output is None:
+        output = nodes.new(type="ShaderNodeOutputWorld")
+        output.name = "World Output"
+
+    color_socket = background.inputs[0] if len(background.inputs) > 0 else None
+    strength_socket = background.inputs[1] if len(background.inputs) > 1 else None
+    surface_socket = output.inputs.get("Surface") if getattr(output, "inputs", None) is not None else None
+    if color_socket is None or surface_socket is None:
+        return False
+
+    try:
+        for link in tuple(getattr(color_socket, "links", ())):
+            links.remove(link)
+        color_socket.default_value = (0.0, 0.0, 0.0, 1.0)
+        if strength_socket is not None and not bool(getattr(strength_socket, "is_linked", False)):
+            strength_socket.default_value = 1.0
+        for link in tuple(getattr(surface_socket, "links", ())):
+            links.remove(link)
+        links.new(background.outputs[0], surface_socket)
+        return True
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed setting scene background to black", exc_info=True)
+        return False
+
+
 def _is_pristine_default_scene(scene):
     if scene is None:
         return False
@@ -168,44 +277,20 @@ def _cleanup_pristine_default_scene(scene):
 
 class PLANETKA_OT_SetBackgroundBlack(bpy.types.Operator):
     bl_idname = "planetka.set_background_black"
-    bl_label = "Change Background to Black"
+    bl_label = "Set Background to Black"
     bl_description = "Set World background color to black"
+
+    @classmethod
+    def poll(cls, context):
+        scene = getattr(context, "scene", None)
+        return bool(scene is not None and not is_scene_background_black(scene))
 
     def execute(self, context):
         scene = require_scene(self, context, logger=logger)
         if scene is None:
             return {'CANCELLED'}
 
-        world = getattr(scene, "world", None)
-        if world is None:
-            self.report({'WARNING'}, "No World assigned to the scene.")
-            return {'CANCELLED'}
-
-        changed = False
-        node_tree = getattr(world, "node_tree", None)
-        nodes = getattr(node_tree, "nodes", None) if node_tree is not None else None
-        background = nodes.get("Background") if nodes is not None else None
-        if background is None and nodes is not None:
-            for node in nodes:
-                if str(getattr(node, "bl_idname", "")) == "ShaderNodeBackground":
-                    background = node
-                    break
-        if background is not None:
-            color_socket = background.inputs[0] if len(background.inputs) > 0 else None
-            if color_socket is not None and not bool(getattr(color_socket, "is_linked", False)):
-                try:
-                    color_socket.default_value = (0.0, 0.0, 0.0, 1.0)
-                    changed = True
-                except (AttributeError, RuntimeError, TypeError, ValueError):
-                    pass
-        elif node_tree is None:
-            try:
-                world.color = (0.0, 0.0, 0.0)
-                changed = True
-            except (AttributeError, RuntimeError, TypeError, ValueError):
-                pass
-
-        if not changed:
+        if not set_scene_background_black(scene):
             self.report({'WARNING'}, "World background color could not be changed automatically.")
             return {'CANCELLED'}
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Hermetic Final Animation gate (background-safe).
+"""Hermetic Final Animation gate (UI render path).
 
 Purpose:
-- directly validate Final Animation segment flow (plan -> resolve -> render)
+- validate the same Final Animation operator/render-window path users run
 - run without network using bundled fallback textures
 - require both EEVEE and CYCLES in the current Blender build
 """
@@ -32,6 +32,19 @@ import bpy
 
 TAG = "[Planetka Final Animation Gate]"
 SURFACE_OBJECT_NAME = "Planetka Earth Surface"
+POLL_INTERVAL_SEC = 0.5
+CASE_TIMEOUT_SEC = 240.0
+STATE = {
+    "started": False,
+    "scene": None,
+    "props": None,
+    "state_module": None,
+    "animation_tools": None,
+    "cases": [],
+    "case_index": -1,
+    "current": None,
+    "temp_dirs": [],
+}
 
 
 def _log(message):
@@ -67,8 +80,8 @@ def _enable_module():
     candidates = _unique(
         [
             os.environ.get("PLANETKA_MODULE"),
-            "bl_ext.user_default.planetka",
             "bl_ext.user_default.Planetka",
+            "bl_ext.user_default.planetka",
             "Planetka",
             "planetka",
         ]
@@ -91,8 +104,8 @@ def _import_submodule(base_module_name, submodule_name):
     candidates = _unique(
         [
             f"{base_module_name}.{submodule_name}" if base_module_name else None,
-            f"bl_ext.user_default.planetka.{submodule_name}",
             f"bl_ext.user_default.Planetka.{submodule_name}",
+            f"bl_ext.user_default.planetka.{submodule_name}",
             f"Planetka.{submodule_name}",
             f"planetka.{submodule_name}",
         ]
@@ -213,13 +226,32 @@ def _available_render_engines(scene):
     render = getattr(scene, "render", None)
     if render is None:
         return set()
+    current_engine = str(getattr(render, "engine", "") or "")
+    engines = set()
     try:
         prop = render.bl_rna.properties["engine"]
-        return {str(item.identifier) for item in prop.enum_items}
+        engines.update(str(item.identifier) for item in prop.enum_items)
     except TOOL_RECOVERABLE_EXCEPTIONS:
-        return set()
+        pass
     except (RuntimeError, TypeError, ValueError, AttributeError, KeyError):
-        return set()
+        pass
+    for candidate in ("BLENDER_EEVEE_NEXT", "BLENDER_EEVEE", "CYCLES"):
+        try:
+            render.engine = candidate
+            if str(getattr(render, "engine", "") or "") == candidate:
+                engines.add(candidate)
+        except TOOL_RECOVERABLE_EXCEPTIONS:
+            pass
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            pass
+    try:
+        if current_engine:
+            render.engine = current_engine
+    except TOOL_RECOVERABLE_EXCEPTIONS:
+        pass
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        pass
+    return set(engines)
 
 
 def _configure_engine(scene, engine_id):
@@ -268,27 +300,52 @@ def _configure_engine(scene, engine_id):
                 pass
 
 
-def _make_render_operator_proxy(animation_tools):
-    cls = animation_tools.PLANETKA_OT_AnimationRender
-    op = type("FinalGateRenderProxy", (), {})()
-    for name in (
-        "_is_render_job_running",
-        "_read_render_heartbeat",
-        "_get_selected_texture_quality_mode",
-        "_resolve_segment_frame",
-        "_is_eevee_render_engine",
-        "_enforce_eevee_bump_only_for_segment",
-        "_enforce_cycles_simple_subdivision_for_segment",
-        "_launch_segment_render",
-    ):
-        fn = getattr(cls, name, None)
-        if callable(fn):
-            setattr(op, name, fn.__get__(op, op.__class__))
-    setattr(op, "report", lambda *_args, **_kwargs: None)
-    return op
+def _timer_fail(message):
+    _log(f"FAIL: {message}")
+    if sys.exc_info()[0] is not None:
+        traceback.print_exc()
+    _cleanup_temp_dirs()
+    os._exit(1)
 
 
-def _run_final_animation_case(scene, props, state_module, animation_tools, engine_id, output_dir):
+def _cleanup_temp_dirs():
+    for path in list(STATE.get("temp_dirs", ()) or ()):
+        try:
+            shutil.rmtree(path, ignore_errors=True)
+        except TOOL_RECOVERABLE_EXCEPTIONS:
+            pass
+    STATE["temp_dirs"] = []
+
+
+def _render_job_running():
+    try:
+        is_job_running = getattr(getattr(bpy, "app", None), "is_job_running", None)
+        if callable(is_job_running):
+            return bool(is_job_running("RENDER"))
+    except TOOL_RECOVERABLE_EXCEPTIONS:
+        return False
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return False
+    return False
+
+
+def _final_animation_active(state_module):
+    fn = getattr(state_module, "is_final_animation_render_active", None)
+    if not callable(fn):
+        return False
+    try:
+        return bool(fn())
+    except TOOL_RECOVERABLE_EXCEPTIONS:
+        return False
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return False
+
+
+def _rendered_frames(output_dir):
+    return sorted(Path(output_dir).glob("*.png"))
+
+
+def _start_final_animation_case(scene, props, animation_tools, engine_id, output_dir):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     for old_file in output_dir.glob("*.png"):
@@ -321,61 +378,110 @@ def _run_final_animation_case(scene, props, state_module, animation_tools, engin
     scene.frame_set(int(frame_start))
     scene.render.filepath = str(output_dir / f"{str(engine_id).lower()}_")
 
-    planner = animation_tools._plan_animation_segments(
-        scene,
-        frame_start,
-        frame_end,
-        frame_step=1,
-        texture_quality_mode_override="FULL",
+    result = bpy.ops.planetka.animation_render('INVOKE_DEFAULT')
+    _assert(
+        "RUNNING_MODAL" in result or "FINISHED" in result,
+        f"Final Animation Render did not start for {engine_id}: {result}",
     )
-    segments = list(getattr(planner, "segments", ()) or ())
-    _assert(segments, f"No Final Animation segments were produced for engine {engine_id}.")
 
-    op = _make_render_operator_proxy(animation_tools)
-    op._scene = scene
-    op._props = props
-    op._segments = list(segments)
-    op._segment_index = 0
-    op._active_segment = None
-    op._state = "IDLE"
-    op._render_seen_active = False
-    op._render_launch_time = 0.0
-    op._render_launch_wall_time = 0.0
-    op._segment_failures = []
+    expected_frames = int(max(0, frame_end - frame_start + 1))
+    _log(f"{engine_id}: started UI Final Animation Render ({expected_frames} frame files expected)")
+    return {
+        "engine_id": str(engine_id),
+        "output_dir": output_dir,
+        "expected_frames": expected_frames,
+        "started_at": time.monotonic(),
+        "seen_active": False,
+        "invoke_result": list(result),
+    }
 
-    for idx, segment in enumerate(segments):
-        segment = dict(segment or {})
-        seg_start = int(segment.get("start", frame_start))
-        seg_end = int(segment.get("end", seg_start))
-        op._segment_index = int(idx)
-        op._active_segment = segment
 
-        # Mirror simplified modal loop: force-terminate deferred/queued resolve before each segment resolve.
+def _start_next_case():
+    try:
+        previous_index = int(STATE.get("case_index", -1))
+    except (TypeError, ValueError):
+        previous_index = -1
+    STATE["case_index"] = previous_index + 1
+    index = int(STATE["case_index"])
+    cases = list(STATE.get("cases", ()) or ())
+    if index >= len(cases):
+        _log("PASS: Final Animation UI gate passed.")
+        _cleanup_temp_dirs()
+        bpy.ops.wm.quit_blender()
+        return None
+
+    case = dict(cases[index] or {})
+    STATE["current"] = _start_final_animation_case(
+        STATE["scene"],
+        STATE["props"],
+        STATE["animation_tools"],
+        case["engine_id"],
+        case["output_dir"],
+    )
+    return float(POLL_INTERVAL_SEC)
+
+
+def _poll_current_case():
+    current = dict(STATE.get("current") or {})
+    if not current:
+        return _start_next_case()
+
+    state_module = STATE["state_module"]
+    output_dir = Path(current["output_dir"])
+    expected_frames = int(current.get("expected_frames", 0) or 0)
+    frame_count = len(_rendered_frames(output_dir))
+    active = _final_animation_active(state_module)
+    running = _render_job_running()
+    if active or running:
+        current["seen_active"] = True
+        STATE["current"] = current
+        return float(POLL_INTERVAL_SEC)
+
+    if frame_count >= expected_frames > 0:
+        _log(f"{current['engine_id']}: PASS ({frame_count} frame files)")
+        STATE["current"] = None
+        return _start_next_case()
+
+    started_at = float(current.get("started_at", time.monotonic()) or time.monotonic())
+    if (not bool(current.get("seen_active"))) and (time.monotonic() - started_at) < 10.0:
+        return float(POLL_INTERVAL_SEC)
+
+    if (time.monotonic() - started_at) > float(CASE_TIMEOUT_SEC):
+        _timer_fail(
+            f"{current['engine_id']}: Final Animation UI render timed out "
+            f"({frame_count}/{expected_frames} frame files)."
+        )
+    else:
+        _timer_fail(
+            f"{current['engine_id']}: Final Animation UI render stopped before expected output "
+            f"({frame_count}/{expected_frames} frame files)."
+        )
+    return None
+
+
+def _tick():
+    try:
+        if not bool(STATE.get("started", False)):
+            STATE["started"] = True
+            return float(POLL_INTERVAL_SEC)
+        return _poll_current_case()
+    except SystemExit as exc:
+        _cleanup_temp_dirs()
+        code = getattr(exc, "code", 1)
         try:
-            state_module.stop_auto_resolve_download_pipeline()
-        except TOOL_RECOVERABLE_EXCEPTIONS:
-            pass
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            pass
-
-        ok, message = op._resolve_segment_frame(seg_start, tiles_override=segment.get("tiles", ()))
-        _assert(ok, f"Resolve failed for segment {idx + 1} ({seg_start:04d}-{seg_end:04d}): {message}")
-        op._enforce_eevee_bump_only_for_segment()
-        op._enforce_cycles_simple_subdivision_for_segment()
-        ok, message = op._launch_segment_render(segment, invoke_ui=False)
-        _assert(ok, f"Render launch failed for segment {idx + 1} ({seg_start:04d}-{seg_end:04d}): {message}")
-
-        for frame in range(seg_start, seg_end + 1):
-            frame_path = str(bpy.path.abspath(scene.render.frame_path(frame=int(frame))) or "").strip()
-            _assert(frame_path and os.path.isfile(frame_path), f"Missing rendered frame {frame:04d} for {engine_id}.")
-
-    total_frames = int(frame_end - frame_start + 1)
-    rendered_frames = sorted(output_dir.glob("*.png"))
-    _assert(len(rendered_frames) >= total_frames, f"Expected >= {total_frames} frames for {engine_id}, got {len(rendered_frames)}.")
-    _log(f"{engine_id}: PASS ({len(segments)} segments, {len(rendered_frames)} frame files)")
+            code = int(code)
+        except (TypeError, ValueError):
+            code = 1
+        os._exit(code if code != 0 else 1)
+    except Exception as exc:
+        _timer_fail(f"unexpected exception: {exc}")
+    return None
 
 
 def main():
+    if bool(getattr(bpy.app, "background", False)):
+        _fail("Final Animation gate must run in Blender UI mode, not --background.")
+
     temp_dirs = []
     try:
         module_name = _enable_module()
@@ -411,25 +517,18 @@ def main():
         _assert(eevee_engine in engines, f"Eevee engine is not available in this Blender build: {sorted(engines)}")
         _assert("CYCLES" in engines, f"Cycles engine is not available in this Blender build: {sorted(engines)}")
 
-        _run_final_animation_case(
-            scene,
-            props,
-            state,
-            animation_tools,
-            eevee_engine,
-            os.path.join(output_root, "eevee"),
-        )
-
-        _run_final_animation_case(
-            scene,
-            props,
-            state,
-            animation_tools,
-            "CYCLES",
-            os.path.join(output_root, "cycles"),
-        )
-
-        _log("PASS: Final Animation gate passed.")
+        STATE["scene"] = scene
+        STATE["props"] = props
+        STATE["state_module"] = state
+        STATE["animation_tools"] = animation_tools
+        STATE["temp_dirs"] = list(temp_dirs)
+        STATE["cases"] = [
+            {"engine_id": eevee_engine, "output_dir": os.path.join(output_root, "eevee")},
+            {"engine_id": "CYCLES", "output_dir": os.path.join(output_root, "cycles")},
+        ]
+        bpy.app.timers.register(_tick, first_interval=0.1, persistent=False)
+        _log("Final Animation UI gate scheduled.")
+        temp_dirs = []
     except SystemExit:
         raise
     except TOOL_RECOVERABLE_EXCEPTIONS as exc:

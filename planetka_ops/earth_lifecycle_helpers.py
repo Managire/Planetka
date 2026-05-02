@@ -1054,63 +1054,6 @@ def _switch_solid_viewports_to_rendered(context):
     return switched
 
 
-def _set_default_world_background_to_black(scene):
-    world = getattr(scene, "world", None) if scene else None
-    if world is None:
-        return False
-
-    default_gray = 0.050876
-    changed = False
-
-    if getattr(world, "node_tree", None) is not None:
-        node_tree = getattr(world, "node_tree", None)
-        nodes = getattr(node_tree, "nodes", None) if node_tree else None
-        background = nodes.get("Background") if nodes else None
-        if background is None:
-            return False
-        color_socket = background.inputs[0] if len(background.inputs) > 0 else None
-        strength_socket = background.inputs[1] if len(background.inputs) > 1 else None
-        if color_socket is None or strength_socket is None:
-            return False
-
-        color = getattr(color_socket, "default_value", None)
-        if color is None or len(color) < 4:
-            return False
-        is_default = (
-            _float_close(color[0], default_gray)
-            and _float_close(color[1], default_gray)
-            and _float_close(color[2], default_gray)
-            and _float_close(color[3], 1.0)
-            and _float_close(getattr(strength_socket, "default_value", 1.0), 1.0)
-        )
-        if not is_default:
-            return False
-
-        try:
-            color_socket.default_value = (0.0, 0.0, 0.0, 1.0)
-            changed = True
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            changed = False
-        return changed
-
-    world_color = getattr(world, "color", None)
-    if world_color is None or len(world_color) < 3:
-        return False
-    is_default = (
-        _float_close(world_color[0], default_gray)
-        and _float_close(world_color[1], default_gray)
-        and _float_close(world_color[2], default_gray)
-    )
-    if not is_default:
-        return False
-    try:
-        world.color = (0.0, 0.0, 0.0)
-        changed = True
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        changed = False
-    return changed
-
-
 def _snapshot_view_selection(context):
     view_layer = getattr(context, "view_layer", None) if context is not None else None
     selected_names = []

@@ -67,8 +67,8 @@ def _enable_module():
     candidates = _unique(
         [
             os.environ.get("PLANETKA_MODULE"),
-            "bl_ext.user_default.planetka",
             "bl_ext.user_default.Planetka",
+            "bl_ext.user_default.planetka",
             "Planetka",
             "planetka",
         ]
@@ -110,8 +110,8 @@ def _import_submodule(base_module_name, submodule_name):
     candidates = _unique(
         [
             f"{base_module_name}.{submodule_name}" if base_module_name else None,
-            f"bl_ext.user_default.planetka.{submodule_name}",
             f"bl_ext.user_default.Planetka.{submodule_name}",
+            f"bl_ext.user_default.planetka.{submodule_name}",
             f"Planetka.{submodule_name}",
             f"planetka.{submodule_name}",
         ]

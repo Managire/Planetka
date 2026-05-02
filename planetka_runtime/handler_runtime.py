@@ -58,7 +58,10 @@ def recover_post_render_state(scene=None, cancelled=False, ctx=None):
             deps.request_auto_resolve(target_scene, immediate=False, mark_dirty=False)
 
 
-def mark_render_job_started(ctx=None):
+def mark_render_job_started(scene=None, ctx=None):
+    if ctx is None and _is_context(scene):
+        ctx = scene
+        scene = None
     ctx = _coerce_ctx(ctx)
     deps = ctx.deps
     state = ctx.state
@@ -69,10 +72,11 @@ def mark_render_job_started(ctx=None):
         # self-heal churn and epoch flips during segment rendering.
         return int(state.render_job_epoch)
     started_at = float(time.monotonic())
+    target_scene = scene
+    if target_scene is None:
+        target_scene = getattr(getattr(deps.bpy, "context", None), "scene", None)
     try:
-        deps.self_heal_missing_cache_images_for_render(
-            getattr(getattr(deps.bpy, "context", None), "scene", None)
-        )
+        deps.self_heal_missing_cache_images_for_render(target_scene)
     except deps.recoverable_exceptions:
         deps.logger.debug("Planetka: render self-heal preflight failed", exc_info=True)
     except (RuntimeError, TypeError, ValueError, AttributeError, OSError):

@@ -260,7 +260,6 @@ _SUNLIGHT_OBJECT_NAME = "Planetka Sunlight"
 _SURFACE_GRADING_GROUP_NAME = "Planetka Surface Grading Group"
 _RESOLVE_TRACE_ENABLED = False
 _STATUS_NOTICE_KEYS = (
-    "planetka_status_bg_auto_black_notice",
     "planetka_status_clip_auto_notice",
     "planetka_status_cache_notice",
     "planetka_status_radius_sync_notice",
@@ -1328,8 +1327,8 @@ def recover_post_render_state(scene=None, cancelled=False):
     return _handler_runtime.recover_post_render_state(scene=scene, cancelled=cancelled, ctx=_HANDLER_RUNTIME_CTX)
 
 
-def mark_render_job_started():
-    return _handler_runtime.mark_render_job_started(_HANDLER_RUNTIME_CTX)
+def mark_render_job_started(scene=None):
+    return _handler_runtime.mark_render_job_started(scene=scene, ctx=_HANDLER_RUNTIME_CTX)
 
 
 def mark_render_job_progress(scene=None, frame_written=False):

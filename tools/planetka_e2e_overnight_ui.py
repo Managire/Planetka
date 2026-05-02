@@ -150,7 +150,6 @@ BOOL_SWEEPS = {
     "show_earth_preview": [False, True],
     "auto_resolve": [False, True],
     "auto_adjust_clipping_values": [False, True],
-    "auto_black_background_new_files": [False, True],
     "lock_resolve_during_animation": [False, True],
     "debug_logging": [False, True],
     "anim_render_persistent_data": [False, True],

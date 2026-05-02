@@ -156,7 +156,6 @@ def add_earth_execute(operator, context, deps):
     _apply_startup_setup_for_create_earth = deps["_apply_startup_setup_for_create_earth"]
     _ensure_planetka_create_camera = deps["_ensure_planetka_create_camera"]
     _position_planetka_create_camera = deps["_position_planetka_create_camera"]
-    _set_default_world_background_to_black = deps["_set_default_world_background_to_black"]
     _apply_create_earth_clipping_defaults = deps["_apply_create_earth_clipping_defaults"]
     get_earth_object = deps["get_earth_object"]
     ensure_preview_object = deps["ensure_preview_object"]
@@ -277,11 +276,6 @@ def add_earth_execute(operator, context, deps):
         _sync_idprops_from_props(scene, ("texture_quality_mode",))
     except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed enforcing Create Earth default texture quality mode", exc_info=True)
-    if bool(getattr(props, "auto_black_background_new_files", True)):
-        try:
-            _set_default_world_background_to_black(scene)
-        except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed applying default world background override", exc_info=True)
     if bool(getattr(props, "auto_adjust_clipping_values", True)):
         try:
             camera_before_clip = getattr(scene, "camera", None)

@@ -166,6 +166,13 @@ def _write_text(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def _display_path(path: Path) -> str:
+    try:
+        return path.relative_to(ROOT).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
 def build_package(allowlist_path: Path, stage_root: Path, output_path: Path, keep_stage: bool) -> dict:
     manifest = _read_manifest()
     addon_id = str(manifest.get("id") or "planetka").strip() or "planetka"
@@ -204,8 +211,8 @@ def build_package(allowlist_path: Path, stage_root: Path, output_path: Path, kee
         f'  "addon_id": "{addon_id}",\n'
         f'  "version": "{version}",\n'
         f'  "allowlist": "{allowlist_path.relative_to(ROOT).as_posix()}",\n'
-        f'  "zip_path": "{output_path.relative_to(ROOT).as_posix()}",\n'
-        f'  "stage_path": "{stage_dir.relative_to(ROOT).as_posix()}",\n'
+        f'  "zip_path": "{_display_path(output_path)}",\n'
+        f'  "stage_path": "{_display_path(stage_dir)}",\n'
         f'  "file_count": {file_count},\n'
         f'  "total_uncompressed_bytes": {total_bytes},\n'
         f'  "sha256": "{sha256}"\n'

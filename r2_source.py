@@ -47,20 +47,6 @@ _R2_PROGRESS_FLUSH_BYTES = 4 * 1024 * 1024
 _R2_PROGRESS_FLUSH_INTERVAL_SECONDS = 0.25
 _R2_PREFETCH_MAX_WORKERS = 16
 _R2_PREFETCH_ABSOLUTE_MAX_WORKERS = 32
-_CACHE_PROTECTED_RELATIVE_PATHS = {
-    "S2/S2_x000_y000_z360_d000.exr",
-    "EL/EL_x000_y000_z360_d000.exr",
-    "WT/WT_x000_y000_z360_d000.exr",
-    "PO/PO_x000_y000_z360_d000.tif",
-    "S2/S2_x000_y000_z180_d720.exr",
-    "S2/S2_x180_y000_z180_d720.exr",
-    "EL/EL_x000_y000_z180_d720.exr",
-    "EL/EL_x180_y000_z180_d720.exr",
-    "WT/WT_x000_y000_z180_d720.exr",
-    "WT/WT_x180_y000_z180_d720.exr",
-    "PO/PO_x000_y000_z180_d720.tif",
-    "PO/PO_x180_y000_z180_d720.tif",
-}
 _BOOTSTRAP_CACHE_ROOT = os.path.join(os.path.dirname(__file__), "Resources", "Bootstrap Cache")
 
 
@@ -88,7 +74,6 @@ _HEAD_SIZE_CACHE_LOCK = threading.Lock()
 _METRICS_LOCK = threading.Lock()
 _CACHE_PRUNE_LOCK = threading.Lock()
 _CACHE_PRUNE_SUSPEND_LOCK = threading.Lock()
-_CACHE_RECENT_RESOLVES_LOCK = threading.Lock()
 _ACTIVE_DOWNLOADS = 0
 _ACTIVE_DOWNLOAD_BYTES = 0
 _ACTIVE_EXPECTED_BYTES = 0
@@ -114,8 +99,6 @@ _AUTH_LAST_BEARER = ""
 _AUTH_LAST_CHECKED_AT = 0.0
 _AUTH_CHECK_TTL_SECONDS = 15.0
 _CACHE_PRUNE_SUSPEND_COUNT = 0
-_CACHE_RECENT_RESOLVE_PATH_SETS = []
-_CACHE_RUNTIME_PROTECTED_RELATIVE_PATHS = set()
 _REQUEST_CONTEXT_LOCK = threading.Lock()
 _REQUEST_CONTEXT_RESOLVE_ID = ""
 _REQUEST_CONTEXT_TEXTURE_MODE = ""
@@ -243,8 +226,6 @@ def reset_config_cache():
     global _TILE_SIZE_DB_CONN
     global _TILE_SIZE_DB_PATH
     global _TILE_SIZE_DB_MODE
-    global _CACHE_RECENT_RESOLVE_PATH_SETS
-    global _CACHE_RUNTIME_PROTECTED_RELATIVE_PATHS
     with _CONFIG_LOCK:
         _CONFIG_CACHE = None
     with _HEAD_CACHE_LOCK:
@@ -264,9 +245,6 @@ def reset_config_cache():
             conn.close()
         except (sqlite3.Error, RuntimeError, TypeError, ValueError, OSError):
             logger.debug("Planetka: failed closing tile-size sqlite connection", exc_info=True)
-    with _CACHE_RECENT_RESOLVES_LOCK:
-        _CACHE_RECENT_RESOLVE_PATH_SETS = []
-        _CACHE_RUNTIME_PROTECTED_RELATIVE_PATHS = set()
     _LAST_CACHE_PRUNE_AT = 0.0
 
 
@@ -729,7 +707,7 @@ def plan_resolve_downloads(requests, allow_remote_probe=None):
             ext_text = str(ext or "")
             candidate_file_name = f"{prefix}_{filename}{ext_text}"
             cached_path = _cached_remote_path(folder, candidate_file_name)
-            if cached_path and _is_cache_file_usable(cached_path):
+            if cached_path and _is_remote_cache_file_usable(folder, candidate_file_name, cached_path):
                 selected_file_name = ""
                 break
             _remove_invalid_cache_file(cached_path)
@@ -892,12 +870,6 @@ def _prune_cache_root(cache_root, max_bytes, target_ratio):
                 continue
             size = int(max(0, stat.st_size))
             total_bytes += size
-            try:
-                rel_path = os.path.relpath(path, cache_root).replace("\\", "/")
-            except (OSError, RuntimeError, TypeError, ValueError, AttributeError):
-                rel_path = ""
-            if rel_path in _get_cache_protected_relative_paths():
-                continue
             entries.append((stat.st_mtime, path, size))
 
     if total_bytes <= max_bytes:
@@ -948,114 +920,16 @@ def _maybe_prune_cache(cfg, force=False):
         _CACHE_PRUNE_LOCK.release()
 
 
-def _get_cache_protected_relative_paths():
-    with _CACHE_RECENT_RESOLVES_LOCK:
-        runtime_paths = set(_CACHE_RUNTIME_PROTECTED_RELATIVE_PATHS)
-    return set(_CACHE_PROTECTED_RELATIVE_PATHS).union(runtime_paths)
-
-
-def _normalize_cache_relative_path(cache_root, file_path):
-    root = str(cache_root or "").strip()
-    path = str(file_path or "").strip()
-    if not root or not path:
-        return ""
-    try:
-        abs_root = os.path.abspath(root)
-        abs_path = os.path.abspath(path)
-    except (OSError, RuntimeError, TypeError, ValueError, AttributeError):
-        return ""
-    if not _is_cache_file_usable(abs_path):
-        return ""
-    try:
-        common = os.path.commonpath([abs_root, abs_path])
-    except (OSError, RuntimeError, TypeError, ValueError, AttributeError):
-        return ""
-    if common != abs_root:
-        return ""
-    try:
-        rel = os.path.relpath(abs_path, abs_root).replace("\\", "/")
-    except (OSError, RuntimeError, TypeError, ValueError, AttributeError):
-        return ""
-    return str(rel or "").strip()
-
-
-def _resolve_paths_to_cache_relpaths(cache_root, resolved_paths):
-    rel_paths = set()
-    values_iter = ()
-    if isinstance(resolved_paths, dict):
-        values_iter = resolved_paths.values()
-    elif isinstance(resolved_paths, (list, tuple, set)):
-        values_iter = resolved_paths
-    for path_value in values_iter:
-        rel = _normalize_cache_relative_path(cache_root, path_value)
-        if rel:
-            rel_paths.add(rel)
-    return rel_paths
-
-
-def _prune_cache_to_allowed_paths(cache_root, allowed_relative_paths):
-    root = str(cache_root or "").strip()
-    if not root:
-        return {"removed_files": 0}
-    allowed = set(str(item or "").strip() for item in (allowed_relative_paths or ()) if str(item or "").strip())
-    removed_files = 0
-    for dir_path, _, file_names in os.walk(root):
-        for file_name in file_names:
-            full_path = os.path.join(dir_path, file_name)
-            try:
-                rel_path = os.path.relpath(full_path, root).replace("\\", "/")
-            except (OSError, RuntimeError, TypeError, ValueError, AttributeError):
-                continue
-            rel_path = str(rel_path or "").strip()
-            if not rel_path:
-                continue
-            rel_parts = rel_path.split("/", 1)
-            if len(rel_parts) != 2:
-                continue
-            rel_folder, rel_file = rel_parts
-            rel_folder = str(rel_folder or "").strip().upper()
-            rel_file = str(rel_file or "").strip()
-            if rel_folder not in {"S2", "EL", "WT", "PO"}:
-                continue
-            if not _TILE_FILE_RE.match(rel_file):
-                continue
-            if rel_path in allowed:
-                continue
-            try:
-                os.remove(full_path)
-                removed_files += 1
-            except (OSError, RuntimeError, TypeError, ValueError, AttributeError):
-                continue
-    return {"removed_files": int(max(0, removed_files))}
-
-
 def retain_recent_resolve_cache(resolved_paths, keep_count=2):
+    del resolved_paths, keep_count
     cfg = _get_config()
     if cfg is None:
         return {"kept_snapshots": 0, "kept_files": 0, "removed_files": 0}
-    safe_keep_count = max(1, int(keep_count or 2))
-    current_set = _resolve_paths_to_cache_relpaths(cfg.cache_root, resolved_paths)
-    with _CACHE_RECENT_RESOLVES_LOCK:
-        global _CACHE_RECENT_RESOLVE_PATH_SETS
-        global _CACHE_RUNTIME_PROTECTED_RELATIVE_PATHS
-        existing = list(_CACHE_RECENT_RESOLVE_PATH_SETS or [])
-        snapshots = [set(current_set)] + [
-            set(item) for item in existing
-            if set(item) != set(current_set)
-        ]
-        snapshots = snapshots[:safe_keep_count]
-        _CACHE_RECENT_RESOLVE_PATH_SETS = snapshots
-        runtime_protected = set()
-        for snap in snapshots:
-            runtime_protected.update(snap)
-        _CACHE_RUNTIME_PROTECTED_RELATIVE_PATHS = runtime_protected
-        allowed = set(_CACHE_PROTECTED_RELATIVE_PATHS).union(runtime_protected)
-
-    removed = _prune_cache_to_allowed_paths(cfg.cache_root, allowed)
+    _maybe_prune_cache(cfg, force=False)
     return {
-        "kept_snapshots": int(len(_CACHE_RECENT_RESOLVE_PATH_SETS)),
-        "kept_files": int(len(allowed)),
-        "removed_files": int(max(0, int(removed.get("removed_files", 0) or 0))),
+        "kept_snapshots": 0,
+        "kept_files": 0,
+        "removed_files": 0,
     }
 
 
@@ -1300,6 +1174,13 @@ def _signed_headers(cfg, method, key, allow_refresh=True):
         headers["X-Planetka-Nav-Longitude"] = nav_lon
     if nav_alt:
         headers["X-Planetka-Nav-Altitude-Km"] = nav_alt
+    try:
+        key_folder, key_file_name = str(key or "").split("/", 1)
+        expected_size = _lookup_indexed_texture_size(key_folder, key_file_name)
+        if expected_size is not None and int(expected_size) > 0:
+            headers["X-Planetka-Expected-Size"] = str(int(expected_size))
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed adding expected tile size request header", exc_info=True)
     tile_token = _get_request_context_tile_token(allow_refresh=allow_refresh)
     if tile_token:
         headers["X-Planetka-Tile-Token"] = tile_token
@@ -1536,7 +1417,7 @@ def _seed_cache_from_bootstrap(folder, file_name, destination_path):
     target_path = str(destination_path or "").strip()
     if not source_path or not target_path:
         return False
-    if _is_cache_file_usable(target_path):
+    if _is_remote_cache_file_usable(folder, file_name, target_path):
         return True
 
     target_dir = os.path.dirname(target_path)
@@ -1547,7 +1428,7 @@ def _seed_cache_from_bootstrap(folder, file_name, destination_path):
         os.makedirs(target_dir, exist_ok=True)
         shutil.copyfile(source_path, temp_path)
         os.replace(temp_path, target_path)
-        return _is_cache_file_usable(target_path)
+        return _is_remote_cache_file_usable(folder, file_name, target_path)
     except (OSError, RuntimeError, TypeError, ValueError, AttributeError, PLANETKA_RECOVERABLE_EXCEPTIONS):
         logger.debug("Planetka: failed seeding cache from bundled startup tile", exc_info=True)
         return False
@@ -1580,6 +1461,33 @@ def _remove_invalid_cache_file(path):
         return
 
 
+def _is_remote_cache_file_usable(folder, file_name, path, *, remove_mismatch=True):
+    if not _is_cache_file_usable(path):
+        return False
+    expected_size = _lookup_indexed_texture_size(folder, file_name)
+    if expected_size is None:
+        return True
+    try:
+        actual_size = int(os.path.getsize(path))
+    except (OSError, RuntimeError, TypeError, ValueError, AttributeError):
+        return False
+    if int(actual_size) == int(expected_size):
+        return True
+    logger.info(
+        "Planetka: invalidating stale cached tile size mismatch: %s/%s cached=%d expected=%d",
+        str(folder or ""),
+        str(file_name or ""),
+        int(actual_size),
+        int(expected_size),
+    )
+    if remove_mismatch:
+        try:
+            os.remove(path)
+        except (OSError, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed removing stale cached tile after size mismatch", exc_info=True)
+    return False
+
+
 def get_remote_cache_folder(folder):
     cfg = _get_config()
     if cfg is None:
@@ -1601,14 +1509,14 @@ def resolve_remote_asset(folder, file_name):
         return ""
 
     cached_path = _cached_remote_path(safe_folder, safe_name)
-    if cached_path and _is_cache_file_usable(cached_path):
+    if cached_path and _is_remote_cache_file_usable(safe_folder, safe_name, cached_path):
         return cached_path
     _remove_invalid_cache_file(cached_path)
 
     key = _remote_key(safe_folder, safe_name)
     if key and cached_path:
         downloaded = _r2_request("GET", key, destination_path=cached_path)
-        if downloaded and _is_cache_file_usable(cached_path):
+        if downloaded and _is_remote_cache_file_usable(safe_folder, safe_name, cached_path):
             return cached_path
     return ""
 
@@ -1631,11 +1539,12 @@ def resolve_texture_file(base_path, folder, prefix, filename, extensions):
     for ext in exts:
         file_name = f"{prefix}_{filename}{ext}"
         cached_path = _cached_remote_path(folder, file_name)
-        if cached_path and _is_cache_file_usable(cached_path):
+        if cached_path and _is_remote_cache_file_usable(folder, file_name, cached_path):
             return cached_path
         _remove_invalid_cache_file(cached_path)
         if cached_path and _seed_cache_from_bootstrap(folder, file_name, cached_path):
-            return cached_path
+            if _is_remote_cache_file_usable(folder, file_name, cached_path):
+                return cached_path
 
     for ext in exts:
         file_name = f"{prefix}_{filename}{ext}"
@@ -1643,7 +1552,7 @@ def resolve_texture_file(base_path, folder, prefix, filename, extensions):
         key = _remote_key(folder, file_name)
         if key and cached_path:
             downloaded = _r2_request("GET", key, destination_path=cached_path)
-            if downloaded and _is_cache_file_usable(cached_path):
+            if downloaded and _is_remote_cache_file_usable(folder, file_name, cached_path):
                 return cached_path
 
     return ""
@@ -1720,7 +1629,7 @@ def prefetch_resolve_downloads(requests, base_path=None, cancel_event=None):
         file_name = f"{task_prefix}_{task_filename}{task_ext}"
         key = _remote_key(task_folder, file_name)
         cache_path = _cached_remote_path(task_folder, file_name)
-        cache_exists = bool(cache_path and _is_cache_file_usable(cache_path))
+        cache_exists = bool(cache_path and _is_remote_cache_file_usable(task_folder, file_name, cache_path))
         if cache_path and not cache_exists:
             _remove_invalid_cache_file(cache_path)
         remote_exists = None
@@ -1768,7 +1677,10 @@ def prefetch_resolve_downloads(requests, base_path=None, cancel_event=None):
                 filename=task_filename,
                 extensions=task_exts,
             )
-            if path and _is_cache_file_usable(path):
+            resolved_file_name = ""
+            if path:
+                resolved_file_name = os.path.basename(str(path or ""))
+            if path and _is_remote_cache_file_usable(task_folder, resolved_file_name, path):
                 return {"state": "resolved", "task": task}
             return {"state": "missing", "task": task}
         except RuntimeError as exc:
@@ -1910,7 +1822,7 @@ def texture_file_exists(base_path, folder, file_name):
         return False
 
     cached_path = _cached_remote_path(safe_folder, safe_name)
-    if cached_path and _is_cache_file_usable(cached_path):
+    if cached_path and _is_remote_cache_file_usable(safe_folder, safe_name, cached_path):
         return True
     _remove_invalid_cache_file(cached_path)
 

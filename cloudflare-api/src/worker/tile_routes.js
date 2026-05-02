@@ -151,6 +151,7 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
     return json({ ok: false, error: "tile_session_resolve_mismatch" }, 403, env);
   }
   const resolveId = tokenResolveId || resolveIdHeader;
+  const expectedSizeBytes = clampNonNegativeInt(request.headers.get("X-Planetka-Expected-Size") || "0");
   let eventStatusCode = 0;
   let eventBytesServed = 0;
   let eventCacheStatus = "";
@@ -248,7 +249,7 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
 
     const cache = caches.default;
     const cacheKeyRequest = buildTileEdgeCacheKey(request, key);
-    const cached = await cache.match(cacheKeyRequest);
+    let cached = await cache.match(cacheKeyRequest);
     let objectSize = 0;
     let contentType = guessContentType(fileName);
     let etag = "";
@@ -256,12 +257,29 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
     let cacheStatus = "MISS";
 
     if (cached) {
-      cacheStatus = "HIT";
-      objectSize = clampNonNegativeInt(cached.headers.get("Content-Length"));
-      contentType = String(cached.headers.get("Content-Type") || contentType);
-      etag = String(cached.headers.get("ETag") || "");
-      responseBody = cached.body;
-    } else {
+      const cachedSize = clampNonNegativeInt(cached.headers.get("Content-Length"));
+      if (expectedSizeBytes > 0 && cachedSize !== expectedSizeBytes) {
+        cacheStatus = "STALE_SIZE_MISMATCH";
+        if (ctx && typeof ctx.waitUntil === "function") {
+          ctx.waitUntil(cache.delete(cacheKeyRequest));
+        } else {
+          await cache.delete(cacheKeyRequest);
+        }
+        cached = null;
+      } else {
+        cacheStatus = "HIT";
+        objectSize = cachedSize;
+        contentType = String(cached.headers.get("Content-Type") || contentType);
+        etag = String(cached.headers.get("ETag") || "");
+        responseBody = cached.body;
+      }
+    }
+
+    if (!cached) {
+      const staleCacheStatus = cacheStatus;
+      if (staleCacheStatus !== "STALE_SIZE_MISMATCH") {
+        cacheStatus = "MISS";
+      }
       const object = await env.PLANETKA_DATA.get(key);
       if (!object) {
         eventStatusCode = 404;
