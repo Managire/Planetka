@@ -707,7 +707,7 @@ def plan_resolve_downloads(requests, allow_remote_probe=None):
             ext_text = str(ext or "")
             candidate_file_name = f"{prefix}_{filename}{ext_text}"
             cached_path = _cached_remote_path(folder, candidate_file_name)
-            if cached_path and _is_remote_cache_file_usable(folder, candidate_file_name, cached_path):
+            if cached_path and _is_cache_file_usable(cached_path):
                 selected_file_name = ""
                 break
             _remove_invalid_cache_file(cached_path)
@@ -1174,13 +1174,6 @@ def _signed_headers(cfg, method, key, allow_refresh=True):
         headers["X-Planetka-Nav-Longitude"] = nav_lon
     if nav_alt:
         headers["X-Planetka-Nav-Altitude-Km"] = nav_alt
-    try:
-        key_folder, key_file_name = str(key or "").split("/", 1)
-        expected_size = _lookup_indexed_texture_size(key_folder, key_file_name)
-        if expected_size is not None and int(expected_size) > 0:
-            headers["X-Planetka-Expected-Size"] = str(int(expected_size))
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed adding expected tile size request header", exc_info=True)
     tile_token = _get_request_context_tile_token(allow_refresh=allow_refresh)
     if tile_token:
         headers["X-Planetka-Tile-Token"] = tile_token
@@ -1417,7 +1410,7 @@ def _seed_cache_from_bootstrap(folder, file_name, destination_path):
     target_path = str(destination_path or "").strip()
     if not source_path or not target_path:
         return False
-    if _is_remote_cache_file_usable(folder, file_name, target_path):
+    if _is_cache_file_usable(target_path):
         return True
 
     target_dir = os.path.dirname(target_path)
@@ -1428,7 +1421,7 @@ def _seed_cache_from_bootstrap(folder, file_name, destination_path):
         os.makedirs(target_dir, exist_ok=True)
         shutil.copyfile(source_path, temp_path)
         os.replace(temp_path, target_path)
-        return _is_remote_cache_file_usable(folder, file_name, target_path)
+        return _is_cache_file_usable(target_path)
     except (OSError, RuntimeError, TypeError, ValueError, AttributeError, PLANETKA_RECOVERABLE_EXCEPTIONS):
         logger.debug("Planetka: failed seeding cache from bundled startup tile", exc_info=True)
         return False
@@ -1461,33 +1454,6 @@ def _remove_invalid_cache_file(path):
         return
 
 
-def _is_remote_cache_file_usable(folder, file_name, path, *, remove_mismatch=True):
-    if not _is_cache_file_usable(path):
-        return False
-    expected_size = _lookup_indexed_texture_size(folder, file_name)
-    if expected_size is None:
-        return True
-    try:
-        actual_size = int(os.path.getsize(path))
-    except (OSError, RuntimeError, TypeError, ValueError, AttributeError):
-        return False
-    if int(actual_size) == int(expected_size):
-        return True
-    logger.info(
-        "Planetka: invalidating stale cached tile size mismatch: %s/%s cached=%d expected=%d",
-        str(folder or ""),
-        str(file_name or ""),
-        int(actual_size),
-        int(expected_size),
-    )
-    if remove_mismatch:
-        try:
-            os.remove(path)
-        except (OSError, RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka: failed removing stale cached tile after size mismatch", exc_info=True)
-    return False
-
-
 def get_remote_cache_folder(folder):
     cfg = _get_config()
     if cfg is None:
@@ -1509,14 +1475,14 @@ def resolve_remote_asset(folder, file_name):
         return ""
 
     cached_path = _cached_remote_path(safe_folder, safe_name)
-    if cached_path and _is_remote_cache_file_usable(safe_folder, safe_name, cached_path):
+    if cached_path and _is_cache_file_usable(cached_path):
         return cached_path
     _remove_invalid_cache_file(cached_path)
 
     key = _remote_key(safe_folder, safe_name)
     if key and cached_path:
         downloaded = _r2_request("GET", key, destination_path=cached_path)
-        if downloaded and _is_remote_cache_file_usable(safe_folder, safe_name, cached_path):
+        if downloaded and _is_cache_file_usable(cached_path):
             return cached_path
     return ""
 
@@ -1539,11 +1505,11 @@ def resolve_texture_file(base_path, folder, prefix, filename, extensions):
     for ext in exts:
         file_name = f"{prefix}_{filename}{ext}"
         cached_path = _cached_remote_path(folder, file_name)
-        if cached_path and _is_remote_cache_file_usable(folder, file_name, cached_path):
+        if cached_path and _is_cache_file_usable(cached_path):
             return cached_path
         _remove_invalid_cache_file(cached_path)
         if cached_path and _seed_cache_from_bootstrap(folder, file_name, cached_path):
-            if _is_remote_cache_file_usable(folder, file_name, cached_path):
+            if _is_cache_file_usable(cached_path):
                 return cached_path
 
     for ext in exts:
@@ -1552,7 +1518,7 @@ def resolve_texture_file(base_path, folder, prefix, filename, extensions):
         key = _remote_key(folder, file_name)
         if key and cached_path:
             downloaded = _r2_request("GET", key, destination_path=cached_path)
-            if downloaded and _is_remote_cache_file_usable(folder, file_name, cached_path):
+            if downloaded and _is_cache_file_usable(cached_path):
                 return cached_path
 
     return ""
@@ -1629,7 +1595,7 @@ def prefetch_resolve_downloads(requests, base_path=None, cancel_event=None):
         file_name = f"{task_prefix}_{task_filename}{task_ext}"
         key = _remote_key(task_folder, file_name)
         cache_path = _cached_remote_path(task_folder, file_name)
-        cache_exists = bool(cache_path and _is_remote_cache_file_usable(task_folder, file_name, cache_path))
+        cache_exists = bool(cache_path and _is_cache_file_usable(cache_path))
         if cache_path and not cache_exists:
             _remove_invalid_cache_file(cache_path)
         remote_exists = None
@@ -1677,10 +1643,7 @@ def prefetch_resolve_downloads(requests, base_path=None, cancel_event=None):
                 filename=task_filename,
                 extensions=task_exts,
             )
-            resolved_file_name = ""
-            if path:
-                resolved_file_name = os.path.basename(str(path or ""))
-            if path and _is_remote_cache_file_usable(task_folder, resolved_file_name, path):
+            if path and _is_cache_file_usable(path):
                 return {"state": "resolved", "task": task}
             return {"state": "missing", "task": task}
         except RuntimeError as exc:
@@ -1822,7 +1785,7 @@ def texture_file_exists(base_path, folder, file_name):
         return False
 
     cached_path = _cached_remote_path(safe_folder, safe_name)
-    if cached_path and _is_remote_cache_file_usable(safe_folder, safe_name, cached_path):
+    if cached_path and _is_cache_file_usable(cached_path):
         return True
     _remove_invalid_cache_file(cached_path)
 
