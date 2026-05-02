@@ -61,6 +61,8 @@ ANIMATION_STATS_SEGMENTS_KEY = "planetka_anim_prepared_segments"
 ANIMATION_STATS_TEXTURE_MB_KEY = "planetka_anim_prepared_textures_mb"
 ANIMATION_STATS_START_KEY = "planetka_anim_prepared_start_frame"
 ANIMATION_STATS_END_KEY = "planetka_anim_prepared_end_frame"
+ANIMATION_RENDER_STATUS_TEXT_KEY = "planetka_anim_render_status_text"
+ANIMATION_RENDER_STATUS_ICON_KEY = "planetka_anim_render_status_icon"
 ANIMATION_PREPARED_AUTO_RESOLVE_PREV_KEY = "planetka_anim_prepared_auto_resolve_prev"
 ANIMATION_BASE_SURFACE_NAME_KEY = "planetka_anim_base_surface_name"
 ANIMATION_BASE_SURFACE_HIDE_RENDER_KEY = "planetka_anim_base_surface_hide_render"
@@ -94,6 +96,8 @@ ANIMATION_RENDER_USER_STOP_SETTLE_SEC = 1.0
 ANIMATION_RENDER_APP_JOB_FALLBACK_GRACE_SEC = 5.0
 ANIMATION_RENDER_LAUNCH_IDLE_WAIT_SEC = 8.0
 ANIMATION_RENDER_LAUNCH_RETRY_MAX_ATTEMPTS = 2
+ANIMATION_RENDER_LAUNCH_VERIFY_TIMEOUT_SEC = 6.0
+ANIMATION_RENDER_LAUNCH_VERIFY_MAX_ATTEMPTS = 2
 ANIMATION_POST_RECOVERY_RETRY_SEC = 0.25
 ANIMATION_POST_RECOVERY_MAX_ATTEMPTS = 120
 _ANIMATION_POST_RECOVERY_EPOCH = 0
@@ -3475,6 +3479,7 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
     _stop_requested = False
     _stop_notice_sent = False
     _segment_cancel_epoch_before_launch = -1
+    _segment_launch_attempts = 0
 
     def invoke(self, context, event):
         del event
@@ -3500,6 +3505,26 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
         message = "Animation Render stopped by user."
         logger.info("Planetka animation: %s", message)
         print(f"Planetka: {message}")
+
+    def _set_ui_status(self, text="", icon="RENDER_ANIMATION"):
+        scene = self._scene
+        if scene is None:
+            return
+        safe_text = str(text or "").strip()
+        safe_icon = str(icon or "RENDER_ANIMATION").strip() or "RENDER_ANIMATION"
+        try:
+            if safe_text:
+                scene[ANIMATION_RENDER_STATUS_TEXT_KEY] = safe_text
+                scene[ANIMATION_RENDER_STATUS_ICON_KEY] = safe_icon
+            else:
+                if ANIMATION_RENDER_STATUS_TEXT_KEY in scene:
+                    del scene[ANIMATION_RENDER_STATUS_TEXT_KEY]
+                if ANIMATION_RENDER_STATUS_ICON_KEY in scene:
+                    del scene[ANIMATION_RENDER_STATUS_ICON_KEY]
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka animation: failed updating render UI status", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka animation: failed updating render UI status", exc_info=True)
 
     def _count_render_result_windows(self):
         try:
@@ -3697,6 +3722,7 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
                 logger.debug("Planetka animation: failed disabling auto-resolve during restore", exc_info=True)
 
         if scene is not None:
+            self._set_ui_status("")
             try:
                 scene.frame_start = int(self._original_frame_start)
                 scene.frame_end = int(self._original_frame_end)
@@ -3742,6 +3768,7 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
         self._stop_requested = False
         self._stop_notice_sent = False
         self._segment_cancel_epoch_before_launch = -1
+        self._segment_launch_attempts = 0
 
     def _cancel_with_error(self, context, message):
         text = str(message or "Animation render failed.").strip() or "Animation render failed."
@@ -3924,6 +3951,7 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
         self._reset_render_result_window_tracking()
         start = int(segment.get("start", 1))
         end = int(segment.get("end", start))
+        self._segment_launch_attempts = int(getattr(self, "_segment_launch_attempts", 0) or 0) + 1
         # Wait briefly for Blender to fully leave previous render state before launching next segment.
         idle_wait_started = float(time.monotonic())
         while self._is_render_job_running(allow_app_fallback=False):
@@ -3958,7 +3986,7 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
                 return True, ""
             if "CANCELLED" in result:
                 # Blender can transiently return CANCELLED while previous render teardown is settling.
-                if self._is_render_job_running(allow_app_fallback=True):
+                if self._is_render_job_running(allow_app_fallback=False):
                     return True, ""
                 if attempt < (attempts - 1):
                     time.sleep(0.2)
@@ -3966,34 +3994,41 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             break
         return False, f"Render launch returned {last_result} for frames {start:04d}-{end:04d}."
 
-    def _segment_outputs_complete(self, segment, min_mtime=None):
+    def _segment_output_status(self, segment, min_mtime=None):
         scene = self._scene
         if scene is None or _is_movie_output(scene):
-            return False
+            return 0, 0
         start = int(segment.get("start", 1))
         end = int(segment.get("end", start))
+        total = int(max(0, (end - start) + 1))
         min_mtime_value = None
         if min_mtime is not None:
             try:
                 min_mtime_value = float(min_mtime)
             except (TypeError, ValueError):
                 min_mtime_value = None
+        complete = 0
         for frame in range(start, end + 1):
             try:
                 frame_path = bpy.path.abspath(scene.render.frame_path(frame=int(frame)))
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka animation: failed resolving segment frame output path", exc_info=True)
-                return False
+                return complete, total
             if not frame_path or not os.path.isfile(frame_path):
-                return False
+                continue
             if min_mtime_value is not None:
                 try:
                     frame_mtime = float(os.path.getmtime(frame_path))
                 except (OSError, ValueError, TypeError):
-                    return False
+                    continue
                 if frame_mtime < (min_mtime_value - 0.2):
-                    return False
-        return True
+                    continue
+            complete += 1
+        return int(complete), int(total)
+
+    def _segment_outputs_complete(self, segment, min_mtime=None):
+        complete, total = self._segment_output_status(segment, min_mtime=min_mtime)
+        return bool(total > 0 and complete >= total)
 
     def _is_eevee_render_engine(self, scene):
         if scene is None:
@@ -4278,8 +4313,11 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
                 logger.debug("Planetka animation: failed stopping queued resolve download before segment resolve", exc_info=True)
             segment = dict((self._segments or [])[self._segment_index])
             self._active_segment = segment
+            self._segment_launch_attempts = 0
             seg_start = int(segment.get("start", 1))
             seg_end = int(segment.get("end", seg_start))
+            segment_label = f"{self._segment_index + 1}/{len(self._segments)}"
+            self._set_ui_status(f"Resolving segment {seg_start:04d}-{seg_end:04d} ({segment_label})", icon="IMPORT")
             print(f"[Planetka] Segment {self._segment_index + 1}/{len(self._segments)}: resolve {seg_start:04d}-{seg_end:04d}")
             ok, message = self._resolve_segment_frame(seg_start, tiles_override=segment.get("tiles", ()))
             if not ok:
@@ -4289,6 +4327,7 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             ok, message = self._launch_segment_render(segment)
             if not ok:
                 return self._cancel_with_error(context, message)
+            self._set_ui_status(f"Rendering segment {seg_start:04d}-{seg_end:04d} ({segment_label})", icon="RENDER_ANIMATION")
             self._state = "RENDER"
             self._render_seen_active = False
             self._render_launch_time = time.monotonic()
@@ -4298,6 +4337,28 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             elapsed = float(time.monotonic() - float(self._render_launch_time))
             app_fallback_allowed = elapsed <= float(max(0.0, ANIMATION_RENDER_APP_JOB_FALLBACK_GRACE_SEC))
             running = self._is_render_job_running(allow_app_fallback=app_fallback_allowed)
+            active_segment = self._active_segment
+            if not isinstance(active_segment, dict):
+                return self._cancel_with_error(
+                    context,
+                    "Render segment state was lost before completion.",
+                )
+            output_count, output_total = self._segment_output_status(
+                active_segment,
+                min_mtime=self._render_launch_wall_time,
+            )
+            outputs_complete = bool(output_total > 0 and output_count >= output_total)
+            if outputs_complete:
+                self._cleanup_completed_segment_cache(self._segment_index)
+                self._segment_index += 1
+                self._active_segment = None
+                self._state = "RESOLVE"
+                self._render_seen_active = False
+                self._render_result_window_baseline_count = 0
+                self._render_result_window_peak_count = 0
+                self._render_result_window_seen = False
+                self._render_result_window_absent_since_time = 0.0
+                return {'RUNNING_MODAL'}
             if running:
                 self._render_seen_active = True
                 if (
@@ -4314,16 +4375,6 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
                 self._report_user_stopped_render()
                 self._cleanup(context, stop_render=False)
                 return {'CANCELLED'}
-            active_segment = self._active_segment
-            if not isinstance(active_segment, dict):
-                return self._cancel_with_error(
-                    context,
-                    "Render segment state was lost before completion.",
-                )
-            outputs_complete = self._segment_outputs_complete(
-                active_segment,
-                min_mtime=self._render_launch_wall_time,
-            )
             if not outputs_complete:
                 cancelled_by_user = (
                     bool(self._stop_requested)
@@ -4334,23 +4385,54 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
                     self._report_user_stopped_render()
                     self._cleanup(context, stop_render=False)
                     return {'CANCELLED'}
+                launch_attempts = int(getattr(self, "_segment_launch_attempts", 0) or 0)
+                max_verify_attempts = int(max(1, ANIMATION_RENDER_LAUNCH_VERIFY_MAX_ATTEMPTS))
+                if (
+                    int(output_count) <= 0
+                    and elapsed >= float(max(1.0, ANIMATION_RENDER_LAUNCH_VERIFY_TIMEOUT_SEC))
+                    and launch_attempts < max_verify_attempts
+                ):
+                    seg_start = int(active_segment.get("start", 1))
+                    seg_end = int(active_segment.get("end", seg_start))
+                    logger.warning(
+                        "Planetka animation: render launch produced no activity; retrying segment "
+                        "(frames=%04d-%04d attempt=%d/%d, render_seen=%s, render_window_seen=%s).",
+                        int(seg_start),
+                        int(seg_end),
+                        int(launch_attempts + 1),
+                        int(max_verify_attempts),
+                        bool(self._render_seen_active),
+                        bool(getattr(self, "_render_result_window_seen", False)),
+                    )
+                    ok, message = self._launch_segment_render(active_segment)
+                    if not ok:
+                        return self._cancel_with_error(context, message)
+                    seg_start = int(active_segment.get("start", 1))
+                    seg_end = int(active_segment.get("end", seg_start))
+                    segment_label = f"{self._segment_index + 1}/{len(self._segments)}"
+                    self._set_ui_status(
+                        f"Rendering segment {seg_start:04d}-{seg_end:04d} ({segment_label})",
+                        icon="RENDER_ANIMATION",
+                    )
+                    self._render_seen_active = False
+                    self._render_launch_time = time.monotonic()
+                    return {'RUNNING_MODAL'}
                 if elapsed < float(max(0.75, ANIMATION_RENDER_OUTPUT_SETTLE_TIMEOUT_SEC)):
                     return {'RUNNING_MODAL'}
                 seg_start = int(active_segment.get("start", 1))
                 seg_end = int(active_segment.get("end", seg_start))
+                if int(output_count) <= 0:
+                    return self._cancel_with_error(
+                        context,
+                        f"Render segment did not start writing output ({seg_start:04d}-{seg_end:04d}).",
+                    )
                 return self._cancel_with_error(
                     context,
-                    f"Render segment ended before all output frames were written ({seg_start:04d}-{seg_end:04d}).",
+                    (
+                        "Render segment stopped before all output frames were written "
+                        f"({seg_start:04d}-{seg_end:04d}, saved {int(output_count)}/{int(output_total)})."
+                    ),
                 )
-            self._cleanup_completed_segment_cache(self._segment_index)
-            self._segment_index += 1
-            self._active_segment = None
-            self._state = "RESOLVE"
-            self._render_seen_active = False
-            self._render_result_window_baseline_count = 0
-            self._render_result_window_peak_count = 0
-            self._render_result_window_seen = False
-            self._render_result_window_absent_since_time = 0.0
             return {'RUNNING_MODAL'}
 
         return {'RUNNING_MODAL'}

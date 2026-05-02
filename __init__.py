@@ -59,6 +59,7 @@ from .state import (
     _planetka_frame_change_post,
     _planetka_load_post,
     _sync_logging_from_scenes,
+    mark_render_job_progress,
     mark_render_job_started,
     recover_post_render_state,
     stop_auto_resolve_service,
@@ -330,21 +331,39 @@ def _planetka_render_pre(scene):
     mark_render_job_started(scene)
 
 
+def _planetka_render_post(scene, *args):
+    del args
+    mark_render_job_progress(scene, frame_written=False)
+
+
+def _planetka_render_write(scene, *args):
+    del args
+    mark_render_job_progress(scene, frame_written=True)
+
+
 def _remove_render_handlers():
-    for handler_list in (
+    handler_lists = [
         bpy.app.handlers.render_pre,
         bpy.app.handlers.render_post,
         bpy.app.handlers.render_complete,
         bpy.app.handlers.render_cancel,
-    ):
+    ]
+    render_write_handlers = getattr(bpy.app.handlers, "render_write", None)
+    if render_write_handlers is not None:
+        handler_lists.append(render_write_handlers)
+
+    for handler_list in handler_lists:
         for handler in list(handler_list):
             if handler is _planetka_render_pre or getattr(handler, "__name__", "") == "_planetka_render_pre":
                 handler_list.remove(handler)
                 continue
-            if handler is _planetka_render_complete or getattr(handler, "__name__", "") == "_planetka_render_complete":
+            if handler is _planetka_render_post or getattr(handler, "__name__", "") == "_planetka_render_post":
                 handler_list.remove(handler)
                 continue
-            if getattr(handler, "__name__", "") == "_planetka_render_post":
+            if handler is _planetka_render_write or getattr(handler, "__name__", "") == "_planetka_render_write":
+                handler_list.remove(handler)
+                continue
+            if handler is _planetka_render_complete or getattr(handler, "__name__", "") == "_planetka_render_complete":
                 handler_list.remove(handler)
                 continue
             if handler is _planetka_render_cancel or getattr(handler, "__name__", "") == "_planetka_render_cancel":
@@ -417,6 +436,10 @@ def register():
     bpy.app.handlers.frame_change_post.append(_planetka_frame_change_post)
     _remove_render_handlers()
     bpy.app.handlers.render_pre.append(_planetka_render_pre)
+    bpy.app.handlers.render_post.append(_planetka_render_post)
+    render_write_handlers = getattr(bpy.app.handlers, "render_write", None)
+    if render_write_handlers is not None:
+        render_write_handlers.append(_planetka_render_write)
     bpy.app.handlers.render_complete.append(_planetka_render_complete)
     bpy.app.handlers.render_cancel.append(_planetka_render_cancel)
     _unregister_keymaps()

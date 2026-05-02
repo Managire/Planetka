@@ -23,6 +23,8 @@ from .r2_source import get_download_progress, is_download_active, is_remote_sour
 from .planetka_ops.scene_setup_ops import is_scene_background_black
 from .updater import get_public_status as get_updater_public_status
 from .animation_tools import (
+    ANIMATION_RENDER_STATUS_ICON_KEY,
+    ANIMATION_RENDER_STATUS_TEXT_KEY,
     ANIMATION_STATS_SEGMENTS_KEY,
 )
 from .render_prep import (
@@ -182,6 +184,21 @@ def _is_animation_render_running():
     except (AttributeError, RuntimeError, TypeError, ValueError):
         pass
     return False
+
+
+def _animation_render_status_for_ui(scene):
+    text = ""
+    icon = "RENDER_ANIMATION"
+    if scene is not None:
+        try:
+            text = str(scene.get(ANIMATION_RENDER_STATUS_TEXT_KEY, "") or "").strip()
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            text = ""
+        try:
+            icon = str(scene.get(ANIMATION_RENDER_STATUS_ICON_KEY, icon) or icon).strip() or icon
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            icon = "RENDER_ANIMATION"
+    return (text or "Rendering Animation", icon or "RENDER_ANIMATION")
 
 
 def _planetka_controls_enabled(base_enabled=True):
@@ -968,8 +985,7 @@ def _draw_live_telemetry(layout, scene):
             status_label_text = low_altitude_warning
             status_icon = "ERROR"
         elif animation_render_running:
-            status_label_text = "Rendering Animation"
-            status_icon = "RENDER_ANIMATION"
+            status_label_text, status_icon = _animation_render_status_for_ui(scene)
         elif runtime_code == "IDLE" and last_resolve_text:
             status_label_text = last_resolve_text
         status_row.label(
@@ -1966,6 +1982,10 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         quality_row.label(text="Always uses Full Quality textures", icon="IMAGE_DATA")
         final_render_allowed = allows_animation_render_for_context(prefs=get_prefs(), source=props)
         quality_row.enabled = bool(final_render_allowed) and bool(earth_workflow_enabled)
+        if _is_animation_render_running():
+            render_status_text, render_status_icon = _animation_render_status_for_ui(scene)
+            status_row = final_render_box.row(align=True)
+            status_row.label(text=render_status_text, icon=render_status_icon)
 
         render_row = final_render_box.row(align=True)
         render_button_row = render_row.row(align=True)
