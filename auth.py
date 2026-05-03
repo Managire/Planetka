@@ -692,8 +692,16 @@ def allows_full_quality_for_context(prefs=None, source=None):
     return get_quality_access_plan_code(prefs) == PLAN_CODE_COMMERCIAL
 
 
-def allows_animation_render_for_context(prefs=None, source=None):
-    del source
+def allows_animation_render_for_context(prefs=None, source=None, requested_mode=None):
+    mode = requested_mode
+    if mode is None and source is not None:
+        try:
+            mode = getattr(source, "anim_render_texture_quality_mode", "FULL")
+        except (TypeError, ValueError, AttributeError):
+            mode = "FULL"
+    mode = _normalize_texture_quality_token(mode or "FULL")
+    if mode == "BALANCED":
+        return allows_balanced_for_context(prefs)
     return allows_full_quality_for_context(prefs)
 
 

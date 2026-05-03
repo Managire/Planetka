@@ -139,18 +139,30 @@ def _format_frame_timecode(scene, frame_value):
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{centiseconds:02d}"
 
 
+def _normalize_animation_render_texture_quality_mode(value):
+    mode = str(value or "FULL").strip().upper()
+    if mode == "BALANCED":
+        return "BALANCED"
+    return "FULL"
+
+
 def _require_commercial_animation_render_access(operator, prefs=None):
     del operator, prefs
     return True
 
 
-def _require_full_animation_access(operator, prefs=None):
-    if allows_animation_render_for_context(prefs):
+def _require_animation_texture_quality_access(operator, prefs=None, texture_quality_mode="FULL"):
+    mode = _normalize_animation_render_texture_quality_mode(texture_quality_mode)
+    if allows_animation_render_for_context(prefs, requested_mode=mode):
         return True
     if operator is not None:
+        if mode == "BALANCED":
+            message = "Final Animation Rendering with Balanced textures requires Personal or Commercial licence."
+        else:
+            message = "Final Animation Rendering with Full Quality textures requires Commercial licence."
         fail(
             operator,
-            "Final Animation Rendering requires Full Quality texture access.",
+            message,
             code=ErrorCode.RENDER_FAILED,
             logger=logger,
         )
@@ -3453,7 +3465,7 @@ class PLANETKA_OT_AnimationClearPrepared(bpy.types.Operator):
 class PLANETKA_OT_AnimationRender(bpy.types.Operator):
     bl_idname = "planetka.animation_render"
     bl_label = "Render Animation"
-    bl_description = "Render animation in UI, segment-by-segment, always using Full Quality textures"
+    bl_description = "Render animation in UI, segment-by-segment, using the selected Balanced or Full Quality textures"
 
     _timer = None
     _scene = None
@@ -3484,8 +3496,14 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
         return self.execute(context)
 
     def _get_selected_texture_quality_mode(self, props):
-        del props
-        # Final Animation Render is fixed to Full Quality by design.
+        try:
+            return _normalize_animation_render_texture_quality_mode(
+                getattr(props, "anim_render_texture_quality_mode", "FULL")
+            )
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka animation: failed reading final-render texture quality mode", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka animation: failed reading final-render texture quality mode", exc_info=True)
         return "FULL"
 
     def _remove_timer(self, context):
@@ -3926,7 +3944,7 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             "defer_download": False,
         }
         selected_mode = self._get_selected_texture_quality_mode(props)
-        if selected_mode in {"PREVIEW", "BALANCED", "FULL"}:
+        if selected_mode in {"BALANCED", "FULL"}:
             op_kwargs["texture_quality_mode_override"] = str(selected_mode)
         normalized_tiles = [str(tile or "").strip() for tile in (tiles_override or ()) if str(tile or "").strip()]
         if normalized_tiles:
@@ -4145,8 +4163,9 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
                 logger=logger,
             )
 
+        selected_texture_quality_mode = self._get_selected_texture_quality_mode(props)
         prefs = get_prefs()
-        if not _require_full_animation_access(self, prefs):
+        if not _require_animation_texture_quality_access(self, prefs, selected_texture_quality_mode):
             return {'CANCELLED'}
         base_path = str(getattr(prefs, "texture_base_path", "") or "") if prefs else ""
         if (not base_path or not os.path.isdir(base_path)) and not is_remote_source_configured(base_path):
@@ -4228,7 +4247,6 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
 
         original_frame = int(getattr(scene, "frame_current", frame_start))
         original_auto_resolve = bool(getattr(props, "auto_resolve", True))
-        selected_texture_quality_mode = self._get_selected_texture_quality_mode(props)
         render = getattr(scene, "render", None)
         eevee_temp_displacement_state = None
         original_frame_start = int(getattr(scene, "frame_start", frame_start))
@@ -4475,8 +4493,8 @@ class PLANETKA_OT_AnimationRenderInfo(bpy.types.Operator):
             "Render Animation dynamically loads tiles (LODs)",
             "during the rendering process.",
             "",
-            "Planetka Animation Render always uses Full Quality textures",
-            "to ensure smooth seamless tile transitions.",
+            "Texture Quality can be set to Balanced or Full Quality",
+            "before starting the final render.",
         )
 
         def _draw(_self, _popup_context):

@@ -1041,6 +1041,24 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         update=_update_anim_render_preset_defaults,
     )
 
+    anim_render_texture_quality_mode: EnumProperty(
+        name="Texture Quality",
+        items=(
+            (
+                "BALANCED",
+                "Balanced",
+                "Uses 1/2 texture size of Full Quality on each axis for lighter animation renders",
+            ),
+            (
+                "FULL",
+                "Full Quality",
+                "Uses full-resolution textures for maximum animation render detail",
+            ),
+        ),
+        default="FULL",
+        description="Texture quality used by Final Animation Render",
+    )
+
     anim_render_dicing_rate: FloatProperty(
         name="Dicing Rate Render",
         default=1.0,

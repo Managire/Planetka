@@ -1978,10 +1978,41 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         final_render_box = layout.box()
         final_render_box.enabled = bool(controls_enabled)
         final_render_box.label(text="Final Animation Render", icon="RENDER_ANIMATION")
-        quality_row = final_render_box.row()
-        quality_row.label(text="Always uses Full Quality textures", icon="IMAGE_DATA")
-        final_render_allowed = allows_animation_render_for_context(prefs=get_prefs(), source=props)
-        quality_row.enabled = bool(final_render_allowed) and bool(earth_workflow_enabled)
+        selected_final_quality = str(getattr(props, "anim_render_texture_quality_mode", "FULL") or "FULL").strip().upper()
+        if selected_final_quality != "BALANCED":
+            selected_final_quality = "FULL"
+        final_render_allowed = allows_animation_render_for_context(
+            prefs=get_prefs(),
+            source=props,
+            requested_mode=selected_final_quality,
+        )
+        balanced_allowed = allows_animation_render_for_context(
+            prefs=get_prefs(),
+            source=props,
+            requested_mode="BALANCED",
+        )
+        full_allowed = allows_animation_render_for_context(
+            prefs=get_prefs(),
+            source=props,
+            requested_mode="FULL",
+        )
+
+        quality_row = final_render_box.row(align=True)
+        quality_row.use_property_split = False
+        balanced_col = quality_row.column(align=True)
+        balanced_col.enabled = bool(earth_workflow_enabled) and bool(balanced_allowed)
+        balanced_col.operator(
+            "planetka.set_animation_render_texture_quality",
+            text="Balanced",
+            depress=(selected_final_quality == "BALANCED"),
+        ).texture_quality_mode = "BALANCED"
+        full_col = quality_row.column(align=True)
+        full_col.enabled = bool(earth_workflow_enabled) and bool(full_allowed)
+        full_col.operator(
+            "planetka.set_animation_render_texture_quality",
+            text="Full Quality",
+            depress=(selected_final_quality == "FULL"),
+        ).texture_quality_mode = "FULL"
         if _is_animation_render_running():
             render_status_text, render_status_icon = _animation_render_status_for_ui(scene)
             status_row = final_render_box.row(align=True)
@@ -2005,4 +2036,7 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             icon="QUESTION",
         )
         if not final_render_allowed:
-            final_render_box.label(text="Final Animation Rendering requires Full Quality texture access.", icon="INFO")
+            if selected_final_quality == "BALANCED":
+                final_render_box.label(text="Balanced animation rendering requires Personal or Commercial licence.", icon="INFO")
+            else:
+                final_render_box.label(text="Full Quality animation rendering requires Commercial licence.", icon="INFO")

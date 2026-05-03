@@ -6,7 +6,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import sqlite3
 import threading
 import tempfile
@@ -47,7 +46,6 @@ _R2_PROGRESS_FLUSH_BYTES = 4 * 1024 * 1024
 _R2_PROGRESS_FLUSH_INTERVAL_SECONDS = 0.25
 _R2_PREFETCH_MAX_WORKERS = 16
 _R2_PREFETCH_ABSOLUTE_MAX_WORKERS = 32
-_BOOTSTRAP_CACHE_ROOT = os.path.join(os.path.dirname(__file__), "Resources", "Bootstrap Cache")
 
 
 @dataclass(frozen=True)
@@ -1394,45 +1392,6 @@ def _cached_remote_path(folder, file_name):
     return os.path.join(cfg.cache_root, folder, file_name)
 
 
-def _bootstrap_seed_path(folder, file_name):
-    safe_folder = str(folder or "").strip().strip("/").replace("\\", "/")
-    safe_name = os.path.basename(str(file_name or "").strip())
-    if not safe_folder or not safe_name:
-        return ""
-    seed_path = os.path.join(_BOOTSTRAP_CACHE_ROOT, safe_folder, safe_name)
-    if _is_cache_file_usable(seed_path):
-        return seed_path
-    return ""
-
-
-def _seed_cache_from_bootstrap(folder, file_name, destination_path):
-    source_path = _bootstrap_seed_path(folder, file_name)
-    target_path = str(destination_path or "").strip()
-    if not source_path or not target_path:
-        return False
-    if _is_cache_file_usable(target_path):
-        return True
-
-    target_dir = os.path.dirname(target_path)
-    if not target_dir:
-        return False
-    temp_path = f"{target_path}.seed.{os.getpid()}.{threading.get_ident()}.{int(time.time() * 1_000_000)}"
-    try:
-        os.makedirs(target_dir, exist_ok=True)
-        shutil.copyfile(source_path, temp_path)
-        os.replace(temp_path, target_path)
-        return _is_cache_file_usable(target_path)
-    except (OSError, RuntimeError, TypeError, ValueError, AttributeError, PLANETKA_RECOVERABLE_EXCEPTIONS):
-        logger.debug("Planetka: failed seeding cache from bundled startup tile", exc_info=True)
-        return False
-    finally:
-        try:
-            if os.path.isfile(temp_path):
-                os.remove(temp_path)
-        except (OSError, RuntimeError, TypeError, ValueError, AttributeError):
-            pass
-
-
 def _is_cache_file_usable(path):
     safe_path = str(path or "").strip()
     if not safe_path:
@@ -1508,9 +1467,6 @@ def resolve_texture_file(base_path, folder, prefix, filename, extensions):
         if cached_path and _is_cache_file_usable(cached_path):
             return cached_path
         _remove_invalid_cache_file(cached_path)
-        if cached_path and _seed_cache_from_bootstrap(folder, file_name, cached_path):
-            if _is_cache_file_usable(cached_path):
-                return cached_path
 
     for ext in exts:
         file_name = f"{prefix}_{filename}{ext}"

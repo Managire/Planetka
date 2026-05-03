@@ -2,6 +2,7 @@ import bpy
 from bpy.props import BoolProperty, EnumProperty
 
 from .auth import (
+    allows_animation_render_for_context,
     allows_balanced_full_quality_for_context,
     is_authenticated,
 )
@@ -299,6 +300,77 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
             )
         if "FINISHED" not in result:
             return {'CANCELLED'}
+        return {'FINISHED'}
+
+
+class PLANETKA_OT_SetAnimationRenderTextureQuality(bpy.types.Operator):
+    bl_idname = "planetka.set_animation_render_texture_quality"
+    bl_label = "Set Animation Texture Quality"
+    bl_description = "Set texture quality for Final Animation Render"
+
+    texture_quality_mode: EnumProperty(
+        name="Texture Quality",
+        items=(
+            (
+                "BALANCED",
+                "Balanced",
+                "Uses 1/2 texture size of Full Quality on each axis for lighter animation renders",
+            ),
+            (
+                "FULL",
+                "Full Quality",
+                "Uses full-resolution textures for maximum animation render detail",
+            ),
+        ),
+        default="FULL",
+        options={'HIDDEN', 'SKIP_SAVE'},
+    )
+
+    @classmethod
+    def description(cls, _context, properties):
+        mode = str(getattr(properties, "texture_quality_mode", "FULL") or "FULL").strip().upper()
+        if mode == "BALANCED":
+            return "Balanced: 1/2 texture size on each axis for Final Animation Render."
+        return "Full Quality: full-resolution textures for Final Animation Render."
+
+    def execute(self, context):
+        if _cancel_if_animation_render_active(self, "Animation texture quality change"):
+            return {'CANCELLED'}
+        props = require_planetka_props(self, context, logger=logger)
+        if props is None:
+            return {'CANCELLED'}
+
+        target_mode = str(getattr(self, "texture_quality_mode", "FULL") or "FULL").strip().upper()
+        if target_mode != "BALANCED":
+            target_mode = "FULL"
+
+        prefs = get_prefs()
+        if not allows_animation_render_for_context(prefs=prefs, source=props, requested_mode=target_mode):
+            if target_mode == "BALANCED":
+                return fail(
+                    self,
+                    "Balanced animation rendering requires Personal or Commercial licence.",
+                    code=ErrorCode.RENDER_FAILED,
+                    logger=logger,
+                )
+            return fail(
+                self,
+                "Full Quality animation rendering requires Commercial licence.",
+                code=ErrorCode.RENDER_FAILED,
+                logger=logger,
+            )
+
+        try:
+            props.anim_render_texture_quality_mode = target_mode
+        except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
+            return fail(
+                self,
+                "Unable to set animation texture quality.",
+                code=ErrorCode.RENDER_FAILED,
+                logger=logger,
+                exc=exc,
+                log_message="Planetka animation texture quality change failed",
+            )
         return {'FINISHED'}
 
 
