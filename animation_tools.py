@@ -41,6 +41,7 @@ from .state import (
     remove_object_and_unused_mesh,
     resume_navigation_camera_control_sync,
     resume_navigation_shot_updates,
+    recover_post_render_state,
     stop_auto_resolve_download_pipeline,
     stop_auto_resolve_service,
     suspend_navigation_camera_control_sync,
@@ -3733,6 +3734,66 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
         if self._is_render_job_running(allow_app_fallback=True):
             logger.warning("Planetka animation: render job remained active during cleanup after cancel/error.")
 
+    def _finalize_success_render_state(self):
+        scene = self._scene
+        try:
+            recover_post_render_state(scene, cancelled=False)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka animation: failed forcing post-render recovery after success", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka animation: failed forcing post-render recovery after success", exc_info=True)
+
+        try:
+            is_job_running = getattr(getattr(bpy, "app", None), "is_job_running", None)
+            if not callable(is_job_running) or not bool(is_job_running("RENDER")):
+                return
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            return
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            return
+
+        wait_started = float(time.monotonic())
+        while (float(time.monotonic()) - wait_started) < 2.0:
+            try:
+                if not bool(is_job_running("RENDER")):
+                    return
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                return
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                return
+            try:
+                bpy.context.view_layer.update()
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka animation: view-layer update failed while draining successful render", exc_info=True)
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka animation: view-layer update failed while draining successful render", exc_info=True)
+            time.sleep(0.05)
+
+        try:
+            if bool(is_job_running("RENDER")):
+                logger.warning("Planetka animation: residual render job remained active after successful completion; requesting cleanup cancel.")
+                self._request_render_stop()
+                cancel_wait_started = float(time.monotonic())
+                while (float(time.monotonic()) - cancel_wait_started) < 2.0:
+                    try:
+                        if not bool(is_job_running("RENDER")):
+                            break
+                    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                        break
+                    except (RuntimeError, TypeError, ValueError, AttributeError):
+                        break
+                    time.sleep(0.05)
+                try:
+                    recover_post_render_state(scene, cancelled=False)
+                except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                    logger.debug("Planetka animation: failed restoring success state after residual render cleanup", exc_info=True)
+                except (RuntimeError, TypeError, ValueError, AttributeError):
+                    logger.debug("Planetka animation: failed restoring success state after residual render cleanup", exc_info=True)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka animation: failed clearing residual render job after success", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka animation: failed clearing residual render job after success", exc_info=True)
+
     def _restore_runtime_state(self):
         try:
             set_final_animation_render_active(False)
@@ -3819,6 +3880,7 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
     def _finish_success(self, context):
         failures = list(self._segment_failures or ())
         segment_count = len(self._segments or ())
+        self._finalize_success_render_state()
         self._cleanup(context)
         self.report({'INFO'}, f"Animation render complete ({segment_count} segments).")
         if failures:
