@@ -83,6 +83,7 @@ ANIMATION_HORIZON_HYSTERESIS_MAX_RETAINED_TILES = 1
 ANIMATION_HORIZON_BAND_FRONT_DEG = 0.5
 ANIMATION_HORIZON_BAND_STEP_DEG = 0.25
 ANIMATION_HORIZON_BAND_U_SAMPLES = 101
+ANIMATION_HORIZON_BAND_VIEW_NDC_MARGIN = 0.02
 ANIMATION_HORIZON_BAND_V_SCAN_MIN = -1.5
 ANIMATION_HORIZON_BAND_V_SCAN_MAX = 1.5
 ANIMATION_HORIZON_BAND_V_SCAN_STEPS = 180
@@ -1710,6 +1711,8 @@ def _collect_horizon_band_tiles(
 
     horizon_tiles_by_key = {}
     nearest_distance = None
+    view_ndc_margin = max(0.0, float(ANIMATION_HORIZON_BAND_VIEW_NDC_MARGIN))
+    horizon_frustum_margin = 1.0
 
     back_band = float(ANIMATION_HORIZON_BAND_BACK_DEG)
     front_band = float(ANIMATION_HORIZON_BAND_FRONT_DEG)
@@ -1731,11 +1734,13 @@ def _collect_horizon_band_tiles(
             tan_half_v=tan_half_v,
             ortho_half_w=ortho_half_w,
             ortho_half_h=ortho_half_h,
-            frustum_margin=frustum_margin,
+            frustum_margin=horizon_frustum_margin,
             earth_radius=earth_radius,
             u=u,
         )
         if v_root is None:
+            continue
+        if abs(float(v_root)) > (1.0 + view_ndc_margin):
             continue
 
         disc, ray_origin, ray_direction, a, b = _ray_sphere_discriminant_for_ndc(
@@ -1748,7 +1753,7 @@ def _collect_horizon_band_tiles(
             tan_half_v=tan_half_v,
             ortho_half_w=ortho_half_w,
             ortho_half_h=ortho_half_h,
-            frustum_margin=frustum_margin,
+            frustum_margin=horizon_frustum_margin,
             u=u,
             v=v_root,
             earth_radius=earth_radius,
@@ -1780,6 +1785,22 @@ def _collect_horizon_band_tiles(
                 continue
             rotated.normalize()
             surface_point = rotated * float(earth_radius)
+
+            _inside_view, overflow_ndc, _distance = _point_view_state_and_overflow_ndc(
+                surface_point,
+                cam_pos_local=cam_pos_local,
+                cam_forward_local=cam_forward_local,
+                cam_right_local=cam_right_local,
+                cam_up_local=cam_up_local,
+                camera_type=camera_type,
+                tan_half_h=tan_half_h,
+                tan_half_v=tan_half_v,
+                ortho_half_w=ortho_half_w,
+                ortho_half_h=ortho_half_h,
+                frustum_margin=1.0,
+            )
+            if overflow_ndc is None or float(overflow_ndc) > view_ndc_margin:
+                continue
 
             lonlat = _cartesian_to_lonlat(surface_point)
             if lonlat is None:
