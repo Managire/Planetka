@@ -17,6 +17,7 @@ export async function dispatchAdminRoute(request, env, path, deps) {
     handleAdminUserBlock,
     handleAdminUserUnblock,
     handleAdminUserHardBlock,
+    handleAdminGiftCredits,
     handleAdminUserSetPlan,
     handleAdminUserSetUnrestrictedQuality,
     handleAdminQaAuthReset,
@@ -92,6 +93,11 @@ export async function dispatchAdminRoute(request, env, path, deps) {
     case "/admin/users/set-unrestricted-quality":
       if (request.method === "POST") {
         return await handleAdminUserSetUnrestrictedQuality(request, env);
+      }
+      return null;
+    case "/admin/users/gift-credits":
+      if (request.method === "POST") {
+        return await handleAdminGiftCredits(request, env);
       }
       return null;
     case "/admin/qa/auth-reset":

@@ -2157,13 +2157,8 @@ class PLANETKA_PT_LocalCloudsPanel(bpy.types.Panel):
             return
 
         for idx, cloud_obj in enumerate(clouds, start=1):
-            panel_header, panel_body = layout.panel(
-                f"planetka_local_cloud_{cloud_obj.name}",
-                default_closed=False,
-            )
-            panel_header.label(text=_cloud_title(cloud_obj.name, idx, "Cloud No"), icon="MODIFIER")
-            if panel_body is None:
-                continue
+            panel_body = layout.box()
+            panel_body.label(text=_cloud_title(cloud_obj.name, idx, "Cloud No"), icon="MODIFIER")
 
             vis_row = panel_body.row()
             vis_row.use_property_split = False
@@ -2256,13 +2251,8 @@ class PLANETKA_PT_VDBCloudsPanel(bpy.types.Panel):
             return
 
         for idx, cloud_obj in enumerate(clouds, start=1):
-            panel_header, panel_body = layout.panel(
-                f"planetka_vdb_cloud_{cloud_obj.name}",
-                default_closed=False,
-            )
-            panel_header.label(text=_cloud_title(cloud_obj.name, idx, "VDB Cloud No"), icon="VOLUME_DATA")
-            if panel_body is None:
-                continue
+            panel_body = layout.box()
+            panel_body.label(text=_cloud_title(cloud_obj.name, idx, "VDB Cloud No"), icon="VOLUME_DATA")
 
             vis_row = panel_body.row()
             vis_row.use_property_split = False

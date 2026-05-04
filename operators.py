@@ -1,5 +1,5 @@
 import bpy
-from bpy.props import BoolProperty, EnumProperty
+from bpy.props import BoolProperty, EnumProperty, StringProperty
 
 from .auth import (
     allows_animation_render_for_context,
@@ -96,6 +96,106 @@ from .r2_source import (
     is_remote_source_configured,
     texture_file_exists,
 )
+
+
+class PLANETKA_OT_AccountListUnlockedTiles(bpy.types.Operator):
+    bl_idname = "planetka.account_list_unlocked_tiles"
+    bl_label = "List Unlocked Tiles"
+    bl_description = "Create a text list of tiles unlocked for this Planetka account"
+
+    def execute(self, context):
+        try:
+            from .credit_api import get_unlocked_tiles
+            tiles = get_unlocked_tiles(force=True)
+        except Exception as exc:
+            return fail(
+                self,
+                f"Unable to fetch unlocked tiles: {exc}",
+                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                logger=logger,
+                exc=exc,
+                log_message="Planetka unlocked tile list failed",
+            )
+        text_name = "Planetka Unlocked Tiles"
+        text = bpy.data.texts.get(text_name) or bpy.data.texts.new(text_name)
+        text.clear()
+        text.write(f"Planetka unlocked tiles: {len(tiles)}\n\n")
+        for entry in tiles:
+            if not isinstance(entry, dict):
+                continue
+            tile_key = str(entry.get("tile_key", "") or "")
+            quality = str(entry.get("quality_mode", "") or "")
+            credits = entry.get("credits_spent", 0)
+            unlocked_at = str(entry.get("unlocked_at", "") or "")
+            text.write(f"{tile_key}\t{quality}\t{credits} credits\t{unlocked_at}\n")
+        self.report({'INFO'}, f"Unlocked tile list created ({len(tiles)} tiles).")
+        return {'FINISHED'}
+
+
+class PLANETKA_OT_AccountDownloadUnlockedTiles(bpy.types.Operator):
+    bl_idname = "planetka.account_download_unlocked_tiles"
+    bl_label = "Download Unlocked Tiles"
+    bl_description = "Download all unlocked tiles to a local source folder"
+
+    period: EnumProperty(
+        name="Data Range",
+        description="Choose which unlocked tiles should be downloaded",
+        items=(
+            ("TODAY", "Today", "Download tiles unlocked today"),
+            ("THIS_WEEK", "This Week", "Download tiles unlocked this week"),
+            ("THIS_MONTH", "This Month", "Download tiles unlocked this month"),
+            ("ALL", "All Data", "Download every unlocked tile"),
+        ),
+        default="ALL",
+        options={'SKIP_SAVE'},
+    )
+
+    directory: StringProperty(
+        name="Directory",
+        subtype='DIR_PATH',
+        default="",
+        options={'SKIP_SAVE'},
+    )
+
+    def draw(self, _context):
+        layout = self.layout
+        layout.prop(self, "period", text="Download")
+
+    def invoke(self, context, _event):
+        if not str(getattr(self, "directory", "") or "").strip():
+            try:
+                prefs = get_prefs()
+                self.directory = str(getattr(prefs, "local_texture_source_path", "") or "")
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                self.directory = ""
+        wm = getattr(context, "window_manager", None)
+        if wm is None:
+            return self.execute(context)
+        wm.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def execute(self, _context):
+        try:
+            from .credit_api import download_unlocked_tiles_to_directory
+            result = download_unlocked_tiles_to_directory(self.directory, period=self.period)
+        except Exception as exc:
+            return fail(
+                self,
+                f"Unable to download unlocked tiles: {exc}",
+                code=ErrorCode.RESOLVE_REFRESH_FAILED,
+                logger=logger,
+                exc=exc,
+                log_message="Planetka unlocked tile download failed",
+            )
+        downloaded = int(result.get("downloaded_files", 0) or 0)
+        missing = int(result.get("missing_files", 0) or 0)
+        selected_tiles = int(result.get("selected_tiles", 0) or 0)
+        label = str(result.get("period_label", "") or "selected data")
+        self.report(
+            {'INFO'},
+            f"Downloaded {downloaded} unlocked tile files from {label} ({selected_tiles} tiles, {missing} missing).",
+        )
+        return {'FINISHED'}
 from .state import (
     ACCOUNT_PANEL_DEFAULT_COLLAPSED_KEY,
     _is_render_job_active,
@@ -255,20 +355,20 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
             if target_mode == "BALANCED":
                 return fail(
                     self,
-                    "Balanced quality requires Personal or Commercial licence.",
+                    "Balanced quality requires enough Planetka credits for selected tiles.",
                     code=ErrorCode.RESOLVE_PRECHECK_FAILED,
                     logger=logger,
                 )
             if target_mode == "FULL":
                 return fail(
                     self,
-                    "Full Quality requires Commercial licence.",
+                    "Full Quality requires enough Planetka credits for selected tiles.",
                     code=ErrorCode.RESOLVE_PRECHECK_FAILED,
                     logger=logger,
                 )
             return fail(
                 self,
-                "Selected texture quality is not available for this account tier.",
+                "Selected texture quality is not available.",
                 code=ErrorCode.RESOLVE_PRECHECK_FAILED,
                 logger=logger,
             )
@@ -349,13 +449,13 @@ class PLANETKA_OT_SetAnimationRenderTextureQuality(bpy.types.Operator):
             if target_mode == "BALANCED":
                 return fail(
                     self,
-                    "Balanced animation rendering requires Personal or Commercial licence.",
+                    "Balanced animation rendering requires enough Planetka credits for selected tiles.",
                     code=ErrorCode.RENDER_FAILED,
                     logger=logger,
                 )
             return fail(
                 self,
-                "Full Quality animation rendering requires Commercial licence.",
+                "Full Quality animation rendering requires enough Planetka credits for selected tiles.",
                 code=ErrorCode.RENDER_FAILED,
                 logger=logger,
             )
@@ -371,6 +471,15 @@ class PLANETKA_OT_SetAnimationRenderTextureQuality(bpy.types.Operator):
                 exc=exc,
                 log_message="Planetka animation texture quality change failed",
             )
+        try:
+            scene = getattr(context, "scene", None)
+            if scene is not None:
+                from .animation_tools import update_animation_credit_estimate
+                update_animation_credit_estimate(scene, props, texture_quality_mode=target_mode)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka animation: failed refreshing credit estimate after quality change", exc_info=True)
+        except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka animation: failed refreshing credit estimate after quality change", exc_info=True)
         return {'FINISHED'}
 
 

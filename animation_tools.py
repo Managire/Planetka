@@ -61,6 +61,7 @@ ANIMATION_SEGMENT_GROUP_TAG_KEY = "planetka_animation_segment_group"
 ANIMATION_SEGMENT_MATERIAL_TAG_KEY = "planetka_animation_segment_material"
 ANIMATION_STATS_SEGMENTS_KEY = "planetka_anim_prepared_segments"
 ANIMATION_STATS_TEXTURE_MB_KEY = "planetka_anim_prepared_textures_mb"
+ANIMATION_STATS_CREDITS_KEY = "planetka_anim_estimated_credits"
 ANIMATION_STATS_START_KEY = "planetka_anim_prepared_start_frame"
 ANIMATION_STATS_END_KEY = "planetka_anim_prepared_end_frame"
 ANIMATION_RENDER_STATUS_TEXT_KEY = "planetka_anim_render_status_text"
@@ -605,6 +606,69 @@ def _estimate_texture_bytes_for_segments(segments, base_path):
         total_bytes, _unknown = _estimate_remote_texture_bytes_for_requests(requests)
         return int(total_bytes)
     return int(_estimate_local_texture_bytes_for_requests(base_path, requests))
+
+
+def _estimate_credits_for_segments(segments, texture_quality_mode="FULL"):
+    mode = str(texture_quality_mode or "FULL").strip().upper()
+    if mode == "PREVIEW":
+        return 0.0, 0
+    tiles = []
+    seen = set()
+    for segment in segments or ():
+        for tile in segment.get("tiles", ()) if isinstance(segment, dict) else ():
+            tile_text = str(tile or "").strip()
+            if not tile_text or tile_text in seen:
+                continue
+            seen.add(tile_text)
+            tiles.append(tile_text)
+    if not tiles:
+        return 0.0, 0
+    try:
+        from .credit_api import unlocked_tile_keys
+        from .land_credits import pricing_records_for_tiles, summarize_pricing_records
+        records = pricing_records_for_tiles(
+            tiles,
+            quality_mode=mode,
+            owned_tile_keys=unlocked_tile_keys(force=False),
+            allow_estimate=True,
+        )
+        summary = summarize_pricing_records(records)
+        return float(summary.get("credits", 0.0) or 0.0), int(summary.get("paid_tile_count", 0) or 0)
+    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka animation: failed estimating animation land credits", exc_info=True)
+        return 0.0, 0
+
+
+def update_animation_credit_estimate(scene, props, texture_quality_mode=None):
+    """Recalculate the current Final Animation Render credit estimate."""
+    if scene is None:
+        return 0.0, 0
+    mode = str(texture_quality_mode or getattr(props, "anim_render_texture_quality_mode", "FULL") or "FULL").strip().upper()
+    if mode != "BALANCED":
+        mode = "FULL"
+    start_frame, end_frame = _cinematic_frame_range_from_props(scene, props)
+    segment_plan = _plan_animation_segments(
+        scene,
+        int(start_frame),
+        int(end_frame),
+        frame_step=1,
+        texture_quality_mode_override=mode,
+        apply_segment_horizon_hysteresis=bool(ANIMATION_HORIZON_SEGMENT_HYSTERESIS_ENABLED),
+        enable_adaptive_horizon_precision=True,
+    )
+    credits, paid_tile_count = _estimate_credits_for_segments(
+        list(segment_plan.segments or ()),
+        texture_quality_mode=mode,
+    )
+    scene[ANIMATION_STATS_CREDITS_KEY] = float(max(0.0, credits))
+    scene["planetka_anim_estimated_paid_tile_count"] = int(max(0, paid_tile_count))
+    logger.info(
+        "Planetka animation credit estimate: %.2f credits for %d new tile(s) (%s).",
+        float(credits),
+        int(paid_tile_count),
+        mode,
+    )
+    return float(credits), int(paid_tile_count)
 
 
 def _ensure_collection(scene, name):
@@ -3019,6 +3083,13 @@ class PLANETKA_OT_AnimationGenerateCameraKeyframes(bpy.types.Operator):
                 code=ErrorCode.NAV_APPLY_FAILED,
                 logger=logger,
             )
+
+        try:
+            update_animation_credit_estimate(scene, props)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka animation: failed calculating keyframe credit estimate", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka animation: failed calculating keyframe credit estimate", exc_info=True)
 
         self.report(
             {'INFO'},

@@ -4,7 +4,7 @@
 Purpose:
 - validate common user flow end-to-end with local fallback textures
 - assert real outcomes (camera/light/material state and render sanity), not only operator return flags
-- verify account-tier quality gating using synthetic auth payloads (no network)
+- verify land-credit branch quality access using synthetic auth payloads (no network)
 
 Run:
   /Applications/Blender.app/Contents/MacOS/Blender --background --debug-python \
@@ -370,12 +370,12 @@ def main():
         report["renders"].append(_render_checkpoint(scene, output_dir, "after_radius_change"))
         record_step("earth_radius_change", earth_radius_bu=float(getattr(props, "earth_radius_bu", 0.0) or 0.0), apply_result=list(apply_radius))
 
-        # Tier quality gating matrix (synthetic auth payload, hermetic).
+        # Land-credit branch quality matrix (synthetic auth payload, hermetic).
         full_globe_result = bpy.ops.planetka.navigation_preset(preset="HIGH_ORBIT")
         _assert(_operator_ok(full_globe_result), f"HIGH_ORBIT preset failed before tier matrix: {full_globe_result}")
         matrix = (
-            ("free", {"PREVIEW": True, "BALANCED": False, "FULL": False}),
-            ("personal", {"PREVIEW": True, "BALANCED": True, "FULL": False}),
+            ("free", {"PREVIEW": True, "BALANCED": True, "FULL": True}),
+            ("personal", {"PREVIEW": True, "BALANCED": True, "FULL": True}),
             ("commercial", {"PREVIEW": True, "BALANCED": True, "FULL": True}),
         )
         for tier_name, expectations in matrix:

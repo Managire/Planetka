@@ -161,6 +161,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     <button id="setCommercialBtn" class="action-btn">Set Commercial</button>
     <button id="qualityNormalBtn" class="action-btn">Set Normal</button>
     <button id="qualityUnrestrictedBtn" class="action-btn">Set Unrestricted</button>
+    <button id="giftCreditsBtn" class="action-btn">Gift Credits</button>
     <button id="blockBtn" class="action-btn danger">Block</button>
     <button id="unblockBtn" class="action-btn warn">Unblock</button>
   </div>
@@ -687,6 +688,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         "set-commercial": "/admin/users/set-plan",
         "quality-normal": "/admin/users/set-unrestricted-quality",
         "quality-unrestricted": "/admin/users/set-unrestricted-quality",
+        "gift-credits": "/admin/users/gift-credits",
       };
       const endpoint = endpointByAction[safeAction];
       if (!endpoint) {
@@ -703,6 +705,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         "set-commercial": "Upgrade this account to Commercial?",
         "quality-normal": "Set this account to normal quality behavior?",
         "quality-unrestricted": "Force unrestricted quality for this account?",
+        "gift-credits": "Gift credits to this account?",
       };
       if (!window.confirm(confirmation[safeAction] || "Confirm action?")) {
         return;
@@ -733,6 +736,14 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
       }
       if (safeAction === "quality-unrestricted") {
         payload.mode = "unrestricted";
+      }
+      if (safeAction === "gift-credits") {
+        const amount = window.prompt("Credits to gift:", "100");
+        if (amount === null) {
+          return;
+        }
+        payload.credits = Number(amount);
+        payload.reason = "admin_gift";
       }
       statusEl.textContent = "Applying action...";
       statusEl.className = "muted";
@@ -898,6 +909,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     if (setCommercialBtn) setCommercialBtn.addEventListener("click", () => runManualUserAction("set-commercial"));
     if (qualityNormalBtn) qualityNormalBtn.addEventListener("click", () => runManualUserAction("quality-normal"));
     if (qualityUnrestrictedBtn) qualityUnrestrictedBtn.addEventListener("click", () => runManualUserAction("quality-unrestricted"));
+    if (giftCreditsBtn) giftCreditsBtn.addEventListener("click", () => runManualUserAction("gift-credits"));
     if (blockBtn) blockBtn.addEventListener("click", () => runManualUserAction("block"));
     if (unblockBtn) unblockBtn.addEventListener("click", () => runManualUserAction("unblock"));
     if (globalQualityOnBtn) globalQualityOnBtn.addEventListener("click", () => setGlobalUnrestrictedQuality(true));

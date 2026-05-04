@@ -86,6 +86,12 @@ import {
   handleAdminUserUnblock as handleAdminUserUnblockRoute,
 } from "./worker/admin_user_handlers.js";
 import {
+  handleAdminGiftCredits as handleAdminGiftCreditsRoute,
+  handleCreditEstimate as handleCreditEstimateRoute,
+  handleCreditMe as handleCreditMeRoute,
+  handleCreditUnlocked as handleCreditUnlockedRoute,
+} from "./worker/credit_routes.js";
+import {
   handleStripeWebhook as handleStripeWebhookRoute,
 } from "./worker/billing_handlers.js";
 import {
@@ -211,6 +217,7 @@ const FIXED_INTERNAL_TEST_PLAN_BY_EMAIL = Object.freeze({
 });
 let adminHardBlocksTableReady = false;
 let newsletterContactsTableReady = false;
+let creditTablesReady = false;
 let rateLimitsLastPruneAt = 0;
 let authContextCache = new Map();
 
@@ -346,11 +353,13 @@ const ADMIN_SESSION_DEPS = {
 };
 
 const ADMIN_USER_DEPS = {
+  dbAll,
   dbGet,
   dbMetaChanges,
   dbRun,
   ensureAdminHardBlocksTable,
   ensureApiKeyTables,
+  ensureCreditTables,
   ensureUserQualityAccessColumns,
   ensureRateLimitsTable,
   ensureRefreshSessionColumns,
@@ -367,6 +376,7 @@ const ADMIN_USER_DEPS = {
   parseJson,
   parseCsvEmailSet,
   parseBooleanFlag,
+  randomToken,
   requestClientIp,
   resolveUserQualityAccessState,
   resolveFixedInternalPlanForEmail,
@@ -2219,6 +2229,146 @@ async function ensureApiKeyTables(db) {
   apiKeyTablesReady = true;
 }
 
+async function ensureCreditTables(db) {
+  if (creditTablesReady) {
+    return;
+  }
+  await dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS user_credit_accounts (
+        user_id TEXT PRIMARY KEY,
+        account_type TEXT NOT NULL DEFAULT 'unlimited',
+        balance_credits REAL NOT NULL DEFAULT 0,
+        total_granted_credits REAL NOT NULL DEFAULT 0,
+        total_spent_credits REAL NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `,
+  );
+  try {
+    await dbRun(db, `ALTER TABLE user_credit_accounts ADD COLUMN account_type TEXT NOT NULL DEFAULT 'unlimited'`);
+  } catch (error) {
+    const message = String(error && error.message || "").toLowerCase();
+    if (!message.includes("duplicate column")) {
+      throw error;
+    }
+  }
+  await dbRun(
+    db,
+    `
+      UPDATE user_credit_accounts
+      SET account_type = 'unlimited'
+      WHERE account_type IS NULL OR TRIM(account_type) = ''
+    `,
+  );
+  try {
+    await dbRun(
+      db,
+      `
+        INSERT OR IGNORE INTO user_credit_accounts (
+          user_id, account_type, balance_credits, total_granted_credits, total_spent_credits, created_at, updated_at
+        )
+        SELECT id, 'unlimited', 0, 0, 0, ?, ?
+        FROM users
+        WHERE id IS NOT NULL AND TRIM(id) != ''
+      `,
+      [nowIso(), nowIso()],
+    );
+  } catch (error) {
+    const message = String(error && error.message || "").toLowerCase();
+    if (!message.includes("no such table")) {
+      throw error;
+    }
+  }
+  await dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS user_tile_entitlements (
+        user_id TEXT NOT NULL,
+        tile_key TEXT NOT NULL,
+        quality_mode TEXT NOT NULL DEFAULT 'full',
+        credits_spent REAL NOT NULL DEFAULT 0,
+        land_km2 REAL NOT NULL DEFAULT 0,
+        billable_land_km2 REAL NOT NULL DEFAULT 0,
+        source TEXT NOT NULL DEFAULT 'client_pricing',
+        unlocked_at TEXT NOT NULL,
+        PRIMARY KEY (user_id, tile_key)
+      )
+    `,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_user_tile_entitlements_user_unlocked ON user_tile_entitlements(user_id, unlocked_at DESC)`,
+  );
+  await dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS credit_ledger (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        delta_credits REAL NOT NULL,
+        balance_after_credits REAL NOT NULL,
+        reason TEXT NOT NULL,
+        metadata_json TEXT,
+        created_at TEXT NOT NULL
+      )
+    `,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_credit_ledger_user_created ON credit_ledger(user_id, created_at DESC)`,
+  );
+  await dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS tile_land_stats (
+        tile_key TEXT PRIMARY KEY,
+        x INTEGER NOT NULL,
+        y INTEGER NOT NULL,
+        z INTEGER NOT NULL,
+        d INTEGER NOT NULL,
+        land_km2 REAL NOT NULL DEFAULT 0,
+        billable_land_km2 REAL NOT NULL DEFAULT 0,
+        base_credits REAL NOT NULL DEFAULT 0,
+        free_reason TEXT,
+        updated_at TEXT NOT NULL
+      )
+    `,
+  );
+  creditTablesReady = true;
+}
+
+async function ensureUnlimitedCreditAccountForUser(db, userId) {
+  const safeUserId = String(userId || "").trim();
+  if (!safeUserId) {
+    return;
+  }
+  await ensureCreditTables(db);
+  const now = nowIso();
+  await dbRun(
+    db,
+    `
+      INSERT OR IGNORE INTO user_credit_accounts (
+        user_id, account_type, balance_credits, total_granted_credits, total_spent_credits, created_at, updated_at
+      )
+      VALUES (?, 'unlimited', 0, 0, 0, ?, ?)
+    `,
+    [safeUserId, now, now],
+  );
+  await dbRun(
+    db,
+    `
+      UPDATE user_credit_accounts
+      SET account_type = 'unlimited', updated_at = ?
+      WHERE user_id = ?
+        AND (account_type IS NULL OR TRIM(account_type) = '')
+    `,
+    [now, safeUserId],
+  );
+}
+
 async function ensureRefreshSessionColumns(db) {
   if (refreshSessionColumnsReady) {
     return;
@@ -2330,6 +2480,7 @@ async function upsertUserByEmail(db, email, status = PLAN_CODE_FREE, options = {
         user.id,
       ],
     );
+    await ensureUnlimitedCreditAccountForUser(db, user.id);
     const refreshedUser = await findUserById(db, user.id);
     if (refreshedUser) {
       return refreshedUser;
@@ -2370,6 +2521,7 @@ async function upsertUserByEmail(db, email, status = PLAN_CODE_FREE, options = {
       privacyVersion,
     ],
   );
+  await ensureUnlimitedCreditAccountForUser(db, id);
   if (!parseBooleanFlag(options.suppressNewUserAlert)) {
     try {
       await sendNewUserLoginAlert(env, {
@@ -2951,8 +3103,8 @@ function normalizeResolveId(value) {
   return getAuthCore().normalizeResolveId(value);
 }
 
-async function issueTileSessionToken(env, auth, requestedQualityMode, requestedResolveId = "") {
-  return getAuthCore().issueTileSessionToken(env, auth, requestedQualityMode, requestedResolveId);
+async function issueTileSessionToken(env, auth, requestedQualityMode, requestedResolveId = "", options = {}) {
+  return getAuthCore().issueTileSessionToken(env, auth, requestedQualityMode, requestedResolveId, options);
 }
 
 async function readTileSessionClaims(request, env) {
@@ -3038,6 +3190,11 @@ async function handleMe(request, env) {
 const TILE_ROUTE_DEPS = {
   PLAN_CODE_FREE,
   clampNonNegativeInt,
+  dbAll,
+  dbGet,
+  dbMetaChanges,
+  dbRun,
+  ensureCreditTables,
   isQualityModeAllowedForPlan,
   isTileEventQueueProducerEnabled,
   isTileHotPathMonitoringEnabled,
@@ -3051,6 +3208,7 @@ const TILE_ROUTE_DEPS = {
   nowIso,
   parseJson,
   qualityModeNotAllowedMessage,
+  randomToken,
   rateLimitedResponse,
   readTileSessionClaims,
   recordTileRequestEvent,
@@ -3059,6 +3217,7 @@ const TILE_ROUTE_DEPS = {
   requireAuthenticatedUserContext: (request, env, options) => requireAuthenticatedUserContext(request, env, options, AUTH_SESSION_DEPS),
   requireDb,
   resolveTileCacheControl,
+  json,
 };
 
 const TILE_EVENT_QUEUE_DEPS = {
@@ -3084,6 +3243,7 @@ const ADMIN_ROUTE_DEPS = {
   handleAdminUserBlock: (request, env) => handleAdminUserBlockRoute(request, env, ADMIN_USER_DEPS),
   handleAdminUserHardBlock: (request, env) => handleAdminUserHardBlockRoute(request, env, ADMIN_USER_DEPS),
   handleAdminQaAuthReset: (request, env) => handleAdminQaAuthResetRoute(request, env, ADMIN_USER_DEPS),
+  handleAdminGiftCredits: (request, env) => handleAdminGiftCreditsRoute(request, env, ADMIN_USER_DEPS),
   handleAdminUserSetPlan: (request, env) => handleAdminUserSetPlanRoute(request, env, ADMIN_USER_DEPS),
   handleAdminUserSetUnrestrictedQuality: (request, env) => handleAdminUserSetUnrestrictedQualityRoute(request, env, ADMIN_USER_DEPS),
   handleAdminUserUnblock: (request, env) => handleAdminUserUnblockRoute(request, env, ADMIN_USER_DEPS),
@@ -3143,6 +3303,21 @@ async function dispatchExactRoute(request, env, path) {
     case "/me":
       if (request.method === "GET") {
         return await handleMe(request, env);
+      }
+      return null;
+    case "/credits/me":
+      if (request.method === "GET") {
+        return await handleCreditMeRoute(request, env, TILE_ROUTE_DEPS);
+      }
+      return null;
+    case "/credits/estimate":
+      if (request.method === "POST") {
+        return await handleCreditEstimateRoute(request, env, TILE_ROUTE_DEPS);
+      }
+      return null;
+    case "/credits/unlocked":
+      if (request.method === "GET") {
+        return await handleCreditUnlockedRoute(request, env, TILE_ROUTE_DEPS);
       }
       return null;
     case "/tiles/session":

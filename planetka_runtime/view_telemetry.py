@@ -259,28 +259,9 @@ def normalize_texture_quality_mode(value):
 
 
 def _ctx_enforce_texture_quality_mode_for_account(ctx, scene, requested_mode):
-    deps = ctx.deps
     del scene
-    mode = normalize_texture_quality_mode(requested_mode)
-    if mode == "PREVIEW":
-        return mode
-    try:
-        from ..auth import get_quality_access_plan_code
-        prefs = deps.get_prefs()
-        quality_plan = str(get_quality_access_plan_code(prefs) or "").strip().lower()
-    except deps.import_recoverable_exceptions:
-        quality_plan = ""
-
-    if mode == "BALANCED":
-        if quality_plan in {"personal", "commercial"}:
-            return "BALANCED"
-        return "PREVIEW"
-
-    if quality_plan == "commercial":
-        return "FULL"
-    if quality_plan == "personal":
-        return "BALANCED"
-    return "PREVIEW"
+    del ctx
+    return normalize_texture_quality_mode(requested_mode)
 
 
 def enforce_texture_quality_mode_for_account(scene, requested_mode, ctx=None):
@@ -898,6 +879,9 @@ def clear_resolve_size_estimates(scene, runtime=None):
         deps.resolve_estimate_full_bytes_key,
         deps.resolve_estimate_balanced_bytes_key,
         deps.resolve_estimate_preview_bytes_key,
+        deps.resolve_estimate_full_credits_key,
+        deps.resolve_estimate_balanced_credits_key,
+        deps.resolve_estimate_preview_credits_key,
     )
     if scene is None:
         return
@@ -966,6 +950,33 @@ def estimate_download_bytes_for_visible_tiles(tiles, base_path, runtime=None, te
         return int(max(0, int(estimate.get("planned_total_bytes", 0) or 0)))
     except (TypeError, ValueError):
         return 0
+
+
+def estimate_credits_for_visible_tiles(tiles, runtime=None, texture_quality_mode="PREVIEW"):
+    deps = _coerce_ctx(runtime).deps
+    logger = deps.logger
+    normalized_mode = deps.normalize_texture_quality_mode(texture_quality_mode)
+    safe_tiles = canonical_tiles(tiles)
+    if normalized_mode == "PREVIEW" or not safe_tiles:
+        return 0.0
+    try:
+        from ..credit_api import unlocked_tile_keys
+        from ..land_credits import pricing_records_for_tiles, summarize_pricing_records
+        owned = unlocked_tile_keys(force=False)
+        records = pricing_records_for_tiles(
+            safe_tiles,
+            quality_mode=normalized_mode,
+            owned_tile_keys=owned,
+            allow_estimate=True,
+        )
+        summary = summarize_pricing_records(records)
+        return float(max(0.0, float(summary.get("credits", 0.0) or 0.0)))
+    except deps.import_recoverable_exceptions:
+        logger.debug("Planetka: resolve-credit estimate failed", exc_info=True)
+        return 0.0
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: resolve-credit estimate failed", exc_info=True)
+        return 0.0
 
 
 def update_resolve_size_estimates(scene, runtime=None, scope_mode="CAMERA", base_path="", full_tiles_override=None):
@@ -1039,11 +1050,17 @@ def update_resolve_size_estimates(scene, runtime=None, scope_mode="CAMERA", base
         runtime,
         texture_quality_mode="PREVIEW",
     )
+    full_credits = estimate_credits_for_visible_tiles(full_tiles, runtime, texture_quality_mode="FULL")
+    balanced_credits = estimate_credits_for_visible_tiles(balanced_tiles, runtime, texture_quality_mode="BALANCED")
+    preview_credits = 0.0
 
     try:
         scene[resolve_estimate_full_bytes_key] = int(max(0, int(full_bytes)))
         scene[resolve_estimate_balanced_bytes_key] = int(max(0, int(balanced_bytes)))
         scene[resolve_estimate_preview_bytes_key] = int(max(0, int(preview_bytes)))
+        scene[deps.resolve_estimate_full_credits_key] = float(max(0.0, float(full_credits)))
+        scene[deps.resolve_estimate_balanced_credits_key] = float(max(0.0, float(balanced_credits)))
+        scene[deps.resolve_estimate_preview_credits_key] = float(max(0.0, float(preview_credits)))
     except recoverable_exceptions:
         logger.debug("Planetka: failed storing resolve-size estimates", exc_info=True)
         return False
@@ -1073,10 +1090,23 @@ def get_resolve_size_estimates(scene=None, runtime=None):
         except (RuntimeError, TypeError, ValueError, AttributeError):
             return None
 
+    def _read_float(key):
+        try:
+            if key not in target_scene:
+                return None
+            return float(max(0.0, float(target_scene.get(key, 0.0) or 0.0)))
+        except recoverable_exceptions:
+            return None
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            return None
+
     return {
         "FULL": _read_int(resolve_estimate_full_bytes_key),
         "BALANCED": _read_int(resolve_estimate_balanced_bytes_key),
         "PREVIEW": _read_int(resolve_estimate_preview_bytes_key),
+        "FULL_CREDITS": _read_float(deps.resolve_estimate_full_credits_key),
+        "BALANCED_CREDITS": _read_float(deps.resolve_estimate_balanced_credits_key),
+        "PREVIEW_CREDITS": _read_float(deps.resolve_estimate_preview_credits_key),
     }
 
 

@@ -6,10 +6,12 @@ import time
 import uuid
 
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
+from .land_credits import pricing_records_for_tiles
 from .r2_source import (
     begin_resolve_download_capture,
     end_resolve_download_capture,
     estimate_total_resolve_bytes,
+    find_local_source_asset,
     get_remote_cache_folder,
     is_remote_source_configured,
     plan_resolve_downloads,
@@ -255,7 +257,13 @@ def _build_prefetched_paths(index, base_path, allow_fallback=False):
     for tile, image_type, filename, exts in index:
         cached_path = ""
         cache_folder = str(get_remote_cache_folder(image_type) or "") if use_remote else ""
-        if use_remote and cache_folder:
+        if use_remote:
+            for ext in exts:
+                local_candidate = find_local_source_asset(image_type, f"{image_type}_{filename}{ext}")
+                if local_candidate:
+                    cached_path = local_candidate
+                    break
+        if use_remote and cache_folder and not cached_path:
             for ext in exts:
                 candidate = os.path.join(cache_folder, f"{image_type}_{filename}{ext}")
                 if os.path.isfile(candidate):
@@ -324,6 +332,19 @@ def prefetch_resolve_plan(
 
     normalized_quality_mode = _normalize_texture_quality_mode(texture_quality_mode)
     use_remote = bool(is_remote_source_configured(base_path))
+    ocean_lookup = set(ocean_tiles or ())
+    pricing_tiles = []
+    if normalized_quality_mode in {"BALANCED", "FULL"}:
+        credit_tiles = [
+            str(tile)
+            for tile in resolved_tiles
+            if str(tile) not in ocean_lookup
+        ]
+        pricing_tiles = pricing_records_for_tiles(
+            credit_tiles,
+            quality_mode=normalized_quality_mode,
+            allow_estimate=True,
+        )
 
     if capture and use_remote:
         begin_resolve_download_capture()
@@ -336,6 +357,7 @@ def prefetch_resolve_plan(
                 nav_latitude_deg=nav_latitude_deg,
                 nav_longitude_deg=nav_longitude_deg,
                 nav_altitude_km=nav_altitude_km,
+                pricing_tiles=pricing_tiles,
             ):
                 try:
                     # Fast resolve path: skip remote HEAD preflight size probes so first GET

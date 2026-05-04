@@ -153,7 +153,9 @@ def describe_auth_error(error):
     if "missing_stripe_payment_link_url" in lowered:
         return "Planetka checkout URL is not configured on the API."
     if "quality_mode_not_allowed" in lowered or "not_allowed_for_tier" in lowered or "insufficient_data" in lowered:
-        return "Planetka account does not currently have access to this texture quality."
+        return "This Resolve needs Planetka credits for Balanced or Full Quality tiles."
+    if "insufficient_credits" in lowered:
+        return "Not enough Planetka credits for this Resolve."
     if "missing_resolve_id" in lowered:
         return "Resolve metadata is missing. Retry Resolve and ensure Planetka is up to date."
     return f"Planetka login failed: {message.replace('_', ' ')}."
@@ -665,7 +667,8 @@ def is_personal_account(prefs=None):
 
 
 def allows_balanced_full_quality(prefs=None):
-    return get_quality_access_plan_code(prefs) in {PLAN_CODE_PERSONAL, PLAN_CODE_COMMERCIAL}
+    del prefs
+    return True
 
 
 def _normalize_texture_quality_token(value):
@@ -682,14 +685,13 @@ def _is_high_quality_mode(value):
 
 
 def allows_balanced_for_context(prefs=None, source=None):
-    del source
-    plan_code = get_quality_access_plan_code(prefs)
-    return plan_code in {PLAN_CODE_PERSONAL, PLAN_CODE_COMMERCIAL}
+    del prefs, source
+    return True
 
 
 def allows_full_quality_for_context(prefs=None, source=None):
-    del source
-    return get_quality_access_plan_code(prefs) == PLAN_CODE_COMMERCIAL
+    del prefs, source
+    return True
 
 
 def allows_animation_render_for_context(prefs=None, source=None, requested_mode=None):
@@ -711,16 +713,11 @@ def requires_d090_cap_for_context(prefs=None, source=None):
 
 
 def allows_balanced_full_quality_for_context(prefs=None, source=None, requested_mode="PREVIEW"):
-    del source
+    del prefs, source
     mode = _normalize_texture_quality_token(requested_mode)
-    plan_code = get_quality_access_plan_code(prefs)
     if mode == "PREVIEW":
         return True
-    if mode == "BALANCED":
-        return plan_code in {PLAN_CODE_PERSONAL, PLAN_CODE_COMMERCIAL}
-    if mode == "FULL":
-        return plan_code == PLAN_CODE_COMMERCIAL
-    return False
+    return mode in {"BALANCED", "FULL"}
 
 
 def get_plan_code(prefs=None):

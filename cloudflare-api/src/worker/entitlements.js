@@ -89,30 +89,18 @@ export function normalizeQualityMode(value) {
 }
 
 export function isQualityModeAllowedForPlan(planCode, qualityMode) {
-  const safePlanCode = normalizeRequestedPlan(planCode);
+  void planCode;
   const safeMode = normalizeQualityMode(qualityMode);
-  if (safeMode === "preview") {
-    return true;
-  }
-  if (safeMode === "balanced") {
-    return safePlanCode === PLAN_CODE_PERSONAL || safePlanCode === PLAN_CODE_COMMERCIAL;
-  }
-  if (safeMode === "full") {
-    return safePlanCode === PLAN_CODE_COMMERCIAL;
-  }
-  return false;
+  return safeMode === "preview" || safeMode === "balanced" || safeMode === "full";
 }
 
 export function qualityModeNotAllowedMessage(planCode, qualityMode) {
-  const safePlanCode = normalizeRequestedPlan(planCode);
+  void planCode;
   const safeMode = normalizeQualityMode(qualityMode);
-  if (safePlanCode === PLAN_CODE_FREE) {
-    return "Free supports Preview only. Upgrade Licence for Balanced or Full Quality.";
+  if (safeMode === "preview") {
+    return "Preview quality is free.";
   }
-  if (safePlanCode === PLAN_CODE_PERSONAL && safeMode === "full") {
-    return "Personal supports Preview and Balanced. Upgrade Licence for Full Quality.";
-  }
-  return "Selected texture quality is not available for this account tier.";
+  return "This quality level requires enough Planetka credits for the selected tiles.";
 }
 
 export function commercialUseAllowed(planCode) {
@@ -124,21 +112,13 @@ export function accountTierForPlanCode(planCode) {
 }
 
 export function planDisplayName(planCode) {
-  const normalized = normalizeRequestedPlan(planCode);
-  if (normalized === PLAN_CODE_COMMERCIAL) return "Commercial";
-  if (normalized === PLAN_CODE_PERSONAL) return "Personal";
+  void planCode;
   return "Free";
 }
 
 export function planAccessSummary(planCode) {
-  const normalized = normalizeRequestedPlan(planCode);
-  if (normalized === PLAN_CODE_COMMERCIAL) {
-    return "Commercial includes unlimited Preview, Balanced, Full Quality, and Final Animation Render.";
-  }
-  if (normalized === PLAN_CODE_PERSONAL) {
-    return "Personal includes unlimited Preview and Balanced texture quality.";
-  }
-  return "Free includes unlimited Preview texture quality only.";
+  void planCode;
+  return "Preview is free. Balanced and Full Quality use Planetka credits for newly unlocked land tiles.";
 }
 
 export function resolvePlanPriority(planCode) {

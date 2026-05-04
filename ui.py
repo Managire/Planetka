@@ -19,7 +19,7 @@ from .auth import (
 from .extension_prefs import get_earth_object, get_prefs
 from .geonames_db import get_search_status_text
 from .diagnostics import read_diagnostics
-from .r2_source import get_download_progress, is_download_active, is_remote_source_configured
+from .r2_source import get_download_progress, get_local_source_stale_notice, is_download_active, is_remote_source_configured
 from .planetka_ops.scene_setup_ops import is_scene_background_black
 from .updater import get_public_status as get_updater_public_status
 from .animation_tools import (
@@ -696,36 +696,63 @@ def _draw_account_panel(layout):
         email = str(get_connected_email(prefs) or "").strip()
     except (TypeError, ValueError, RuntimeError, AttributeError):
         email = str(getattr(prefs, "auth_email", "") or "").strip()
-    try:
-        account_tier = str(get_account_tier(prefs) or "").strip().lower()
-    except (AuthApiError, TypeError, ValueError, RuntimeError, AttributeError):
-        account_tier = ""
-    try:
-        unrestricted_quality = bool(has_unrestricted_quality_access(prefs))
-    except (TypeError, ValueError, RuntimeError, AttributeError):
-        unrestricted_quality = False
     status_icon = "CHECKMARK" if connected else "ERROR"
     status_text = "Status: Connected to Planetka cloud" if connected else "Status: Not connected"
     layout.label(text=status_text, icon=status_icon)
     layout.label(text=f"Account: {email or '-'}", icon="USER")
-    if account_tier:
-        tier_text = _account_tier_display_label(account_tier, unrestricted_quality)
-        layout.label(text=f"Account Tier: {tier_text}", icon="BOOKMARKS")
-    elif connected:
-        tier_row = layout.row()
-        tier_row.alert = True
-        tier_row.label(text="Account Tier: Invalid or missing", icon="ERROR")
-    else:
-        layout.label(text="Account Tier: -", icon="BOOKMARKS")
+
+    if connected:
+        credit_payload = {}
+        try:
+            from .credit_api import get_credit_account
+            credit_payload = get_credit_account(force=False)
+        except (AuthApiError, TypeError, ValueError, RuntimeError, AttributeError):
+            logger.debug("Planetka: failed reading credit account for UI", exc_info=True)
+            credit_payload = {}
+        credit_known = bool(credit_payload)
+        try:
+            balance = float(credit_payload.get("balance_credits", 0.0) or 0.0)
+        except (TypeError, ValueError, AttributeError):
+            balance = 0.0
+        try:
+            unlocked_count = int(credit_payload.get("unlocked_tile_count", 0) or 0)
+        except (TypeError, ValueError, AttributeError):
+            unlocked_count = 0
+        if bool(credit_payload.get("unlimited_credits", False)):
+            layout.label(text="Credits: Unlimited", icon="SOLO_ON")
+        elif not credit_known:
+            layout.label(text="Credits: —", icon="SOLO_ON")
+        else:
+            layout.label(text=f"Credits: {balance:.2f}", icon="SOLO_ON")
+        layout.label(text=f"Unlocked tiles: {unlocked_count}", icon="TEXTURE")
+        unlocked_row = layout.row(align=True)
+        unlocked_row.operator("planetka.account_list_unlocked_tiles", text="List Unlocked", icon="TEXT")
+        unlocked_row.operator("planetka.account_download_unlocked_tiles", text="Download Unlocked", icon="IMPORT")
+
+    local_row = layout.row()
+    local_row.prop(prefs, "local_texture_source_path", text="Local Source")
+    auto_row = layout.row()
+    auto_row.prop(prefs, "auto_download_unlocked_tiles", text="Download unlocked tiles automatically")
+    try:
+        auto_enabled = bool(getattr(prefs, "auto_download_unlocked_tiles", False))
+        local_path = str(getattr(prefs, "local_texture_source_path", "") or "").strip()
+    except (TypeError, ValueError, RuntimeError, AttributeError):
+        auto_enabled = False
+        local_path = ""
+    if auto_enabled and not local_path:
+        warning_row = layout.row(align=True)
+        warning_row.alert = True
+        warning_row.label(text="Select Local Source folder for automatic downloads.", icon="INFO")
+    local_notice = get_local_source_stale_notice()
+    if local_notice:
+        notice_row = layout.row(align=True)
+        notice_row.alert = True
+        notice_row.label(text=local_notice, icon="INFO")
 
     action_row = layout.row(align=True)
     logout_row = action_row.row(align=True)
     logout_row.enabled = connected
     logout_row.operator("planetka.account_logout", text="Log Out", icon="X")
-
-    upgrade_row = action_row.row(align=True)
-    upgrade_row.enabled = (not connected) or account_tier in {"free", "personal"}
-    upgrade_row.operator("planetka.account_upgrade", text="Upgrade Licence", icon="URL")
 
     if status_message:
         layout.label(text=status_message, icon="INFO")
@@ -887,9 +914,10 @@ def _draw_live_telemetry(layout, scene):
         current_mode = str(getattr(props, "texture_quality_mode", "PREVIEW") or "PREVIEW").strip().upper()
         estimates = get_resolve_size_estimates(scene)
 
-        def _estimate_label(mode):
+        def _estimate_mb_label(mode):
+            mode_key = str(mode or "").upper()
             try:
-                size_bytes = estimates.get(str(mode or "").upper())
+                size_bytes = estimates.get(mode_key)
             except (AttributeError, TypeError, ValueError):
                 size_bytes = None
             if size_bytes is None:
@@ -899,6 +927,20 @@ def _draw_live_telemetry(layout, scene):
             except (TypeError, ValueError, ZeroDivisionError):
                 return "— MB"
             return f"{max(0.0, size_mb):.0f} MB"
+
+        def _estimate_credit_label(mode):
+            mode_key = str(mode or "").upper()
+            if mode_key == "PREVIEW":
+                return "Free"
+            if bool(credit_unlimited):
+                return "Unlimited"
+            try:
+                credits = estimates.get(f"{mode_key}_CREDITS")
+                if credits is None:
+                    return "— credits"
+                return f"{max(0.0, float(credits)):.2f} credits"
+            except (AttributeError, TypeError, ValueError):
+                return "— credits"
 
         quality_box = layout.box()
         header_row = quality_box.row(align=True)
@@ -923,6 +965,30 @@ def _draw_live_telemetry(layout, scene):
         preview_allowed = allows_balanced_full_quality_for_context(prefs=prefs, source=props, requested_mode="PREVIEW")
         balanced_allowed = allows_balanced_full_quality_for_context(prefs=prefs, source=props, requested_mode="BALANCED")
         full_allowed = allows_balanced_full_quality_for_context(prefs=prefs, source=props, requested_mode="FULL")
+        credit_balance = 0.0
+        credit_known = False
+        try:
+            from .credit_api import get_credit_account
+            credit_account = get_credit_account(force=False)
+            credit_known = bool(credit_account)
+            credit_unlimited = bool(credit_account.get("unlimited_credits", False))
+            credit_balance = float(credit_account.get("balance_credits", 0.0) or 0.0)
+        except (AuthApiError, TypeError, ValueError, RuntimeError, AttributeError):
+            credit_known = False
+            credit_unlimited = False
+            credit_balance = 0.0
+        try:
+            balanced_credits = float(estimates.get("BALANCED_CREDITS", 0.0) or 0.0)
+        except (AttributeError, TypeError, ValueError):
+            balanced_credits = 0.0
+        try:
+            full_credits = float(estimates.get("FULL_CREDITS", 0.0) or 0.0)
+        except (AttributeError, TypeError, ValueError):
+            full_credits = 0.0
+        if credit_known and (not credit_unlimited) and balanced_credits > credit_balance:
+            balanced_allowed = False
+        if credit_known and (not credit_unlimited) and full_credits > credit_balance:
+            full_allowed = False
         effective_mode = str(current_mode or "PREVIEW").strip().upper()
         if effective_mode == "FULL" and not full_allowed:
             effective_mode = "BALANCED" if balanced_allowed else "PREVIEW"
@@ -939,7 +1005,11 @@ def _draw_live_telemetry(layout, scene):
         preview_size_row = preview_col.row(align=True)
         preview_size_row.alignment = 'CENTER'
         preview_size_row.enabled = (effective_mode == "PREVIEW")
-        preview_size_row.label(text=_estimate_label("PREVIEW"))
+        preview_size_row.label(text=_estimate_mb_label("PREVIEW"))
+        preview_credit_row = preview_col.row(align=True)
+        preview_credit_row.alignment = 'CENTER'
+        preview_credit_row.enabled = (effective_mode == "PREVIEW")
+        preview_credit_row.label(text=_estimate_credit_label("PREVIEW"))
 
         balanced_col = quality_row.column(align=True)
         balanced_col.enabled = bool(balanced_allowed)
@@ -951,7 +1021,11 @@ def _draw_live_telemetry(layout, scene):
         balanced_size_row = balanced_col.row(align=True)
         balanced_size_row.alignment = 'CENTER'
         balanced_size_row.enabled = (effective_mode == "BALANCED")
-        balanced_size_row.label(text=_estimate_label("BALANCED"))
+        balanced_size_row.label(text=_estimate_mb_label("BALANCED"))
+        balanced_credit_row = balanced_col.row(align=True)
+        balanced_credit_row.alignment = 'CENTER'
+        balanced_credit_row.enabled = (effective_mode == "BALANCED")
+        balanced_credit_row.label(text=_estimate_credit_label("BALANCED"))
 
         full_col = quality_row.column(align=True)
         full_col.enabled = bool(full_allowed)
@@ -963,7 +1037,15 @@ def _draw_live_telemetry(layout, scene):
         full_size_row = full_col.row(align=True)
         full_size_row.alignment = 'CENTER'
         full_size_row.enabled = (effective_mode == "FULL")
-        full_size_row.label(text=_estimate_label("FULL"))
+        full_size_row.label(text=_estimate_mb_label("FULL"))
+        full_credit_row = full_col.row(align=True)
+        full_credit_row.alignment = 'CENTER'
+        full_credit_row.enabled = (effective_mode == "FULL")
+        full_credit_row.label(text=_estimate_credit_label("FULL"))
+
+        if credit_known and (not credit_unlimited) and max(balanced_credits, full_credits) > credit_balance:
+            credit_notice = quality_box.row(align=True)
+            credit_notice.label(text=f"Credits available: {credit_balance:.2f}", icon="INFO")
 
         runtime, runtime_code, runtime_text = _resolve_runtime_display(scene)
         resolve_failure_message = _resolve_failure_message_for_ui(scene)
@@ -1723,17 +1805,13 @@ def _draw_earth_settings(layout, scene, enabled):
     layout.use_property_split = True
     layout.use_property_decorate = False
 
-    if hasattr(layout, "panel"):
-        header, body = layout.panel("planetka_earth_transform_section", default_closed=True)
-        header.label(text="Earth Transform", icon="EMPTY_AXIS")
-        if body is not None:
-            body.enabled = bool(enabled)
-            _draw_earth_transform(body, scene)
-    else:
-        transform_box = layout.box()
-        transform_box.label(text="Earth Transform", icon="EMPTY_AXIS")
-        transform_box.enabled = bool(enabled)
-        _draw_earth_transform(transform_box, scene)
+    # Blender 5.0 can crash inside uiLayout.panel() when this panel redraws
+    # immediately after Create Earth. Use a plain box here; stability matters
+    # more than a collapsible subsection.
+    transform_box = layout.box()
+    transform_box.label(text="Earth Transform", icon="EMPTY_AXIS")
+    transform_box.enabled = bool(enabled)
+    _draw_earth_transform(transform_box, scene)
 
     _draw_surface_grading(layout)
 
@@ -2013,6 +2091,32 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             text="Full Quality",
             depress=(selected_final_quality == "FULL"),
         ).texture_quality_mode = "FULL"
+        try:
+            anim_credits = float(scene.get("planetka_anim_estimated_credits", 0.0) or 0.0)
+            anim_paid_tiles = int(scene.get("planetka_anim_estimated_paid_tile_count", 0) or 0)
+        except (TypeError, ValueError, RuntimeError, AttributeError):
+            anim_credits = 0.0
+            anim_paid_tiles = 0
+        if anim_credits > 0.0 or anim_paid_tiles > 0:
+            final_render_box.label(
+                text=f"Estimated new tiles: {anim_paid_tiles} / {anim_credits:.2f} credits",
+                icon="SOLO_ON",
+            )
+        if anim_credits > 0.0:
+            anim_account_known = False
+            try:
+                from .credit_api import get_credit_account
+                anim_account = get_credit_account(force=False)
+                anim_account_known = bool(anim_account)
+                anim_unlimited = bool(anim_account.get("unlimited_credits", False))
+                anim_balance = float(anim_account.get("balance_credits", 0.0) or 0.0)
+            except (AuthApiError, TypeError, ValueError, RuntimeError, AttributeError):
+                anim_account_known = False
+                anim_unlimited = False
+                anim_balance = 0.0
+            if anim_account_known and (not anim_unlimited) and anim_credits > anim_balance:
+                final_render_allowed = False
+                final_render_box.label(text=f"Not enough credits ({anim_balance:.2f} available).", icon="INFO")
         if _is_animation_render_running():
             render_status_text, render_status_icon = _animation_render_status_for_ui(scene)
             status_row = final_render_box.row(align=True)
@@ -2036,7 +2140,4 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             icon="QUESTION",
         )
         if not final_render_allowed:
-            if selected_final_quality == "BALANCED":
-                final_render_box.label(text="Balanced animation rendering requires Personal or Commercial licence.", icon="INFO")
-            else:
-                final_render_box.label(text="Full Quality animation rendering requires Commercial licence.", icon="INFO")
+            final_render_box.label(text="Final Animation Render requires enough credits for selected tiles.", icon="INFO")

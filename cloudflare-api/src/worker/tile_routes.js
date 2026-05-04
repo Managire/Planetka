@@ -1,4 +1,10 @@
 import { corsHeaders, json } from "./responses.js";
+import {
+  isFreeCreditTileKey,
+  isTileUnlockedForUser,
+  tileKeyFromFileName,
+  unlockTilesForSession,
+} from "./credit_routes.js";
 
 function guessContentType(fileName) {
   const lower = String(fileName || "").toLowerCase();
@@ -35,6 +41,8 @@ export async function handleTileSessionStart(request, env, deps) {
     parseJson,
     issueTileSessionToken,
     normalizeRequestedPlan,
+    requireDb,
+    json: jsonResponse,
   } = deps;
 
   const auth = await requireAuthenticatedUserContext(
@@ -52,14 +60,47 @@ export async function handleTileSessionStart(request, env, deps) {
   const requestedResolveId = String(
     body && body.resolve_id ? body.resolve_id : request.headers.get("X-Planetka-Resolve-Id") || "",
   ).trim();
+  const creditProtocol = String(body && (body.credit_protocol || body.creditProtocol) || "").trim();
+  const pricingTiles = body && (body.pricing_tiles || body.tiles);
+  const creditEnforced = creditProtocol === "land_credits_v1" && Array.isArray(pricingTiles);
   const issued = await issueTileSessionToken(
     env,
     auth,
     requestedQualityMode,
     requestedResolveId,
+    {
+      creditProtocol,
+      creditEnforced,
+    },
   );
   if (issued && issued.error) {
     return issued.error;
+  }
+  const db = requireDb(env);
+  const unlockResult = creditEnforced
+    ? await unlockTilesForSession(
+      db,
+      auth.user && auth.user.id,
+      issued.qualityMode,
+      pricingTiles,
+      issued.resolveId,
+      deps,
+    )
+    : { credits: 0, paid_tile_count: 0, free_tile_count: 0, tile_count: 0, legacy_compat: true };
+  if (unlockResult && unlockResult.error === "insufficient_credits") {
+    return jsonResponse(
+      {
+        ok: false,
+        error: "insufficient_credits",
+        message: "Not enough Planetka credits for this Resolve.",
+        required_credits: Number(unlockResult.required_credits || 0),
+        balance_credits: Number(unlockResult.balance_credits || 0),
+        paid_tile_count: Number(unlockResult.paid_tile_count || 0),
+        tile_count: Number(unlockResult.tile_count || 0),
+      },
+      402,
+      env,
+    );
   }
   return json(
     {
@@ -70,6 +111,10 @@ export async function handleTileSessionStart(request, env, deps) {
       expires_in_seconds: issued.expiresInSeconds,
       expires_at: issued.expiresAt,
       plan_code: normalizeRequestedPlan(auth && auth.planCode),
+      credit_protocol: creditEnforced ? "land_credits_v1" : "legacy_compat",
+      credit_enforced: Boolean(creditEnforced),
+      credits_charged: Number(unlockResult && unlockResult.credits || 0),
+      paid_tile_count: Number(unlockResult && unlockResult.paid_tile_count || 0),
     },
     200,
     env,
@@ -111,6 +156,7 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
   let deviceId = "";
   let tokenQualityMode = "";
   let tokenResolveId = "";
+  let tokenCreditEnforced = false;
   const tileSessionAuth = await readTileSessionClaims(request, env);
   if (tileSessionAuth && tileSessionAuth.error) {
     return tileSessionAuth.error;
@@ -127,6 +173,7 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
     deviceId = normalizeDeviceId(tileSessionAuth.claims.deviceId || request.headers.get("X-Planetka-Device-Id") || "");
     tokenQualityMode = normalizeQualityMode(tileSessionAuth.claims.qualityMode || "");
     tokenResolveId = normalizeResolveId(tileSessionAuth.claims.resolveId || "");
+    tokenCreditEnforced = Boolean(tileSessionAuth.claims.creditEnforced);
   } else {
     const auth = await requireAuthenticatedUserContext(
       request,
@@ -169,6 +216,7 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
 
     const folder = decodeURIComponent(parts[0]);
     const fileName = decodeURIComponent(parts[1]);
+    const creditTileKey = tileKeyFromFileName(fileName);
     eventFolder = folder;
     eventFileName = fileName;
     if (
@@ -225,6 +273,30 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
         403,
         env,
       );
+    }
+    if (
+      (request.method === "GET" || request.method === "HEAD")
+      && tokenCreditEnforced
+      && effectiveQualityMode !== "preview"
+      && creditTileKey
+      && !isFreeCreditTileKey(creditTileKey)
+    ) {
+      const unlocked = await isTileUnlockedForUser(db, user && user.id, creditTileKey, deps);
+      if (!unlocked) {
+        eventStatusCode = 402;
+        eventErrorCode = "tile_not_unlocked";
+        return json(
+          {
+            ok: false,
+            error: "tile_not_unlocked",
+            message: "This tile has not been unlocked for this account.",
+            tile_key: creditTileKey,
+            requested_quality_mode: effectiveQualityMode,
+          },
+          402,
+          env,
+        );
+      }
     }
 
     if (request.method === "HEAD") {
