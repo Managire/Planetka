@@ -45,6 +45,7 @@ CACHE_NOTICE_KEY = "planetka_status_cache_notice"
 RADIUS_SYNC_NOTICE_KEY = "planetka_status_radius_sync_notice"
 RESOLVE_FAILURE_FLAG_KEY = "planetka_resolve_integrity_failed"
 RESOLVE_FAILURE_MESSAGE_KEY = "planetka_resolve_integrity_message"
+LAST_RESOLVE_TEXTURE_QUALITY_MODE_KEY = "planetka_last_resolve_texture_quality_mode"
 EARTH_RADIUS_SAFE_MIN_BU = 0.2
 EARTH_RADIUS_SAFE_MAX_BU = 20.0
 LOW_ALTITUDE_WARNING_EPS_KM = 0.05
@@ -176,6 +177,50 @@ def _status_icon(code):
     return "INFO"
 
 
+def _normalize_texture_quality_for_ui(value):
+    token = str(value or "").strip().upper()
+    if token in {"FULL", "BALANCED", "HALF"}:
+        return "FULL"
+    if token == "PREVIEW":
+        return "PREVIEW"
+    return ""
+
+
+def _last_visible_texture_quality_label(scene):
+    mode = ""
+    if scene is not None:
+        try:
+            mode = _normalize_texture_quality_for_ui(scene.get(LAST_RESOLVE_TEXTURE_QUALITY_MODE_KEY, ""))
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            mode = ""
+        if not mode:
+            try:
+                props = getattr(scene, "planetka", None)
+                mode = _normalize_texture_quality_for_ui(getattr(props, "texture_quality_mode", ""))
+            except (AttributeError, RuntimeError, TypeError, ValueError):
+                mode = ""
+    if mode == "FULL":
+        return "Full Quality"
+    return "Preview"
+
+
+def _last_resolve_download_bytes_for_ui(scene):
+    if scene is None:
+        return 0
+    for key in (
+        "planetka_last_manual_resolve_downloaded_mb",
+        "planetka_diag_resolve_downloaded_mb",
+        "planetka_diag_resolve_textures_mb",
+    ):
+        try:
+            value = float(scene.get(key, 0.0) or 0.0)
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            value = 0.0
+        if value > 0.0:
+            return int(max(0, round(value * float(1024 ** 2))))
+    return 0
+
+
 def _is_animation_render_running():
     try:
         if callable(is_final_animation_render_active):
@@ -287,10 +332,6 @@ def _navigation_has_camera_keyframe_lock(scene):
 def _resolve_runtime_display(scene):
     progress = get_download_progress()
     active_download = is_download_active()
-    downloaded_bytes = int(progress.get("downloaded_bytes", 0) or 0)
-    total_bytes = int(progress.get("total_bytes", 0) or 0)
-    downloaded_mb = float(downloaded_bytes) / (1024.0 * 1024.0)
-    total_mb = float(total_bytes) / (1024.0 * 1024.0)
     runtime = get_resolve_runtime_status(scene)
     runtime_code = str(runtime.get("code", "IDLE") or "IDLE").upper()
     runtime_text = str(runtime.get("text", "Idle") or "Idle")
@@ -305,10 +346,6 @@ def _resolve_runtime_display(scene):
         runtime_text = "Preparing Download"
     if runtime_code == "DOWNLOADING":
         runtime_text = "Animation Downloading" if animation_render_running else "Downloading"
-        if total_bytes > 0:
-            runtime_text = f"{runtime_text} ({downloaded_mb:.2f} / {total_mb:.2f} MB)"
-        else:
-            runtime_text = f"{runtime_text} ({downloaded_mb:.2f} MB)"
     return runtime, runtime_code, runtime_text
 
 
@@ -317,17 +354,10 @@ def _draw_resolve_download_indicator(layout, scene, runtime, runtime_code, runti
     inside_earth_warning = _inside_earth_warning_for_ui(scene)
     low_altitude_warning = _low_altitude_warning_for_ui(scene)
     animation_render_running = _is_animation_render_running()
-    should_draw = bool(
-        resolve_failure_message
-        or inside_earth_warning
-        or low_altitude_warning
-        or animation_render_running
-        or str(runtime_code or "").upper() not in {"", "IDLE", "MONITORING"}
-    )
-    if not should_draw:
-        return
 
-    status_label_text = f"{runtime_text}{_status_activity_suffix(runtime.get('running', False))}"
+    status_token = str(runtime_code or "").upper()
+    suffix = "" if status_token == "DOWNLOADING" else _status_activity_suffix(runtime.get('running', False))
+    status_label_text = f"{runtime_text}{suffix}"
     status_icon = _status_icon(runtime_code)
     alert = False
     if resolve_failure_message:
@@ -344,12 +374,15 @@ def _draw_resolve_download_indicator(layout, scene, runtime, runtime_code, runti
         alert = True
     elif animation_render_running:
         status_label_text, status_icon = _animation_render_status_for_ui(scene)
+    elif str(runtime_code or "").upper() in {"", "IDLE", "MONITORING"}:
+        status_label_text = f"Idle - Showing {_last_visible_texture_quality_label(scene)}"
 
     progress = get_download_progress()
     total_bytes = int(progress.get("total_bytes", 0) or 0)
     downloaded_bytes = int(progress.get("downloaded_bytes", 0) or 0)
-    active_requests = int(progress.get("active_requests", 0) or 0)
-    status_token = str(runtime_code or "").upper()
+    if total_bytes <= 0 and downloaded_bytes <= 0 and status_token in {"", "IDLE", "MONITORING"}:
+        total_bytes = _last_resolve_download_bytes_for_ui(scene)
+        downloaded_bytes = total_bytes
     factor = 0.0
     if total_bytes > 0:
         factor = max(0.0, min(1.0, float(downloaded_bytes) / float(total_bytes)))
@@ -368,6 +401,10 @@ def _draw_resolve_download_indicator(layout, scene, runtime, runtime_code, runti
         progress_text = "Download finished"
     elif resolve_failure_message:
         progress_text = "Resolve failed"
+    elif inside_earth_warning or low_altitude_warning:
+        progress_text = "Resolve paused"
+    elif status_token in {"", "IDLE", "MONITORING"}:
+        progress_text = f"{_fmt_bytes(downloaded_bytes)} / {_fmt_bytes(total_bytes)}"
     else:
         progress_text = "Waiting for data"
 
@@ -379,25 +416,6 @@ def _draw_resolve_download_indicator(layout, scene, runtime, runtime_code, runti
         type='BAR',
         text=progress_text,
     )
-    if active_requests > 0:
-        request_label = "request" if active_requests == 1 else "requests"
-        box.label(text=f"{active_requests} active download {request_label}", icon="IMPORT")
-    elif status_token in {"FINALIZING", "FINALIZE_QUEUED"}:
-        box.label(text="Download complete, applying textures", icon="MOD_REMESH")
-    elif status_token == "QUEUED":
-        box.label(text="Resolve queued", icon="SORTTIME")
-
-    if resolve_failure_message:
-        error_box = box.box()
-        error_box.alert = True
-        error_box.label(text=resolve_failure_message, icon="ERROR")
-        rebuild_row = error_box.row(align=True)
-        rebuild_row.alert = True
-        rebuild_row.operator("planetka.rebuild_earth", text="Rebuild Earth", icon="FILE_REFRESH")
-    elif inside_earth_warning:
-        box.label(text=inside_earth_warning, icon="ERROR")
-    elif low_altitude_warning:
-        box.label(text=low_altitude_warning, icon="ERROR")
 
 
 def _earth_radius_bu_for_ui(scene):

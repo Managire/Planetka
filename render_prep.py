@@ -70,6 +70,7 @@ LAST_PANORAMA_MODE_KEY = "planetka_last_panorama_mode"
 LAST_PANORAMA_LIMIT_EXCEEDED_KEY = "planetka_last_panorama_limit_exceeded"
 LAST_PANORAMA_REQUIRED_TILES_KEY = "planetka_last_panorama_required_tiles"
 LAST_PANORAMA_REQUIRED_Z_KEY = "planetka_last_panorama_required_z"
+LAST_RESOLVE_TEXTURE_QUALITY_MODE_KEY = "planetka_last_resolve_texture_quality_mode"
 RESOLVE_FAILURE_FLAG_KEY = "planetka_resolve_integrity_failed"
 RESOLVE_FAILURE_MESSAGE_KEY = "planetka_resolve_integrity_message"
 # Compatibility exports for UI/modules that read the last resolve summary keys
@@ -1726,6 +1727,12 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             logger.debug("Planetka: failed clearing resolve error marker after successful resolve", exc_info=True)
         _clear_resolve_failure_notice(scene)
         _clear_camera_inside_earth_warning(scene)
+        try:
+            scene[LAST_RESOLVE_TEXTURE_QUALITY_MODE_KEY] = _normalize_texture_quality_mode(texture_quality_mode)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed storing last resolved texture quality", exc_info=True)
+        except (RuntimeError, TypeError, ValueError):
+            logger.debug("Planetka: failed storing last resolved texture quality", exc_info=True)
 
         self._flush_ui_reports(ui_reports)
         _restore_navigation_adaptive_state_safe("failed post-resolve adaptive viewport restore")
