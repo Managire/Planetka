@@ -8,58 +8,7 @@ function fmtGbLocal(value, parseNonNegativeInteger, bytesPerGb) {
   return (Number(parseNonNegativeInteger(value, 0)) / bytesPerGb).toFixed(3);
 }
 
-function analyticsTierCodeFromStatus(statusValue, deps) {
-  const normalized = String(statusValue || "").trim().toLowerCase();
-  if (normalized === "blocked") return "blocked";
-  if (normalized === deps.PLAN_CODE_COMMERCIAL) return "commercial";
-  if (normalized === deps.PLAN_CODE_PERSONAL) return "personal";
-  if (normalized === deps.PLAN_CODE_FREE) return "free";
-  return "invalid";
-}
-
-function analyticsTierLabelFromStatus(statusValue, deps) {
-  const tierCode = analyticsTierCodeFromStatus(statusValue, deps);
-  if (tierCode === "blocked") return "Blocked";
-  if (tierCode === "commercial") return "Commercial";
-  if (tierCode === "personal") return "Personal";
-  if (tierCode === "free") return "Free";
-  return "Invalid";
-}
-
-function analyticsTierClassFromStatus(statusValue, deps) {
-  const tierCode = analyticsTierCodeFromStatus(statusValue, deps);
-  if (tierCode === "blocked") return "tier-blocked";
-  if (tierCode === "commercial") return "tier-commercial";
-  if (tierCode === "personal") return "tier-personal";
-  if (tierCode === "free") return "tier-free";
-  return "tier-invalid";
-}
-
-function analyticsTierColorFromStatus(statusValue, deps) {
-  const tierCode = analyticsTierCodeFromStatus(statusValue, deps);
-  if (tierCode === "blocked") return "#f97316";
-  if (tierCode === "commercial") return "#ef4444";
-  if (tierCode === "personal") return "#22c55e";
-  if (tierCode === "free") return "#ffffff";
-  return "#f59e0b";
-}
-
-function qualityOverrideModeFromValue(value) {
-  if (value === null || value === undefined || String(value).trim() === "") {
-    return "normal";
-  }
-  const text = String(value).trim().toLowerCase();
-  if (text === "1" || text === "true" || text === "unrestricted") {
-    return "unrestricted";
-  }
-  return "normal";
-}
-
-function qualityOverrideLabel(mode) {
-  const safeMode = String(mode || "").trim().toLowerCase();
-  if (safeMode === "unrestricted") return "Unrestricted";
-  return "Normal";
-}
+const ANALYTICS_TILE_COLOR = "#60a5fa";
 
 function parseLiveMapTile(tileKey) {
   const text = String(tileKey || "").trim();
@@ -87,12 +36,8 @@ function analyticsUsersSortValue(row, sortBy) {
   if (sortBy === "balance") return Number(row && row.balance_credits || 0);
   if (sortBy === "resolves") return Number(row && row.resolve_count || 0);
   if (sortBy === "lifetime") return Number(row && row.lifetime_bytes || 0);
-  if (sortBy === "month") return Number(row && row.month_bytes || 0);
-  if (sortBy === "week") return Number(row && row.week_bytes || 0);
-  if (sortBy === "day") return Number(row && row.day_bytes || 0);
-  if (sortBy === "hour") return Number(row && row.hour_bytes || 0);
   if (sortBy === "last_seen") return Date.parse(String(row && row.last_seen_at || "")) || 0;
-  return Number(row && row.month_bytes || 0);
+  return Number(row && row.lifetime_bytes || 0);
 }
 
 function sortAnalyticsUsersRows(rows, sortBy, sortDir) {
@@ -123,7 +68,7 @@ export async function handleAdminAnalyticsData(request, env, deps) {
     url.searchParams.get("tile_map_minutes"),
     deps.DEFAULT_LIVE_TILE_MAP_WINDOW_MINUTES,
   );
-  const planFilter = deps.parseHeavyUserPlanFilter(url.searchParams.get("plan_filter"));
+  const planFilter = "all";
   try {
     let snapshot = await deps.loadAnalyticsSnapshot(env, windowMinutes, planFilter, tileMapMinutes);
     if (!snapshot || deps.isAnalyticsSnapshotStale(snapshot)) {
@@ -154,7 +99,7 @@ export async function handleAdminAnalyticsData(request, env, deps) {
         error: message,
         user_id: String(user && user.id || ""),
         user_email: String(user && user.email || ""),
-        plan_filter: planFilter,
+        plan_filter: "all",
         window_minutes: windowMinutes,
         tile_map_minutes: tileMapMinutes,
       }),
@@ -255,20 +200,15 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
   };
   const serverActiveUsersRowsHtml = snapshotActiveUsers10m.map((row) => {
     const email = deps.escapeHtml(String(row && row.user_email || ""));
-    const tier = analyticsTierLabelFromStatus(row && row.user_status, deps);
-    const tierClass = analyticsTierClassFromStatus(row && row.user_status, deps);
-    return `<tr><td class="${tierClass}">${email}</td><td class="${tierClass}">${tier}</td><td>${fmtInt(row && row.request_count)}</td><td>${fmtInt(row && row.resolve_count)}</td><td>${fmtGb(row && row.bytes_served)}</td><td>${deps.escapeHtml(String(row && row.last_seen_at || ""))}</td></tr>`;
+    return `<tr><td>${email}</td><td>${fmtInt(row && row.request_count)}</td><td>${fmtInt(row && row.resolve_count)}</td><td>${fmtGb(row && row.bytes_served)}</td><td>${deps.escapeHtml(String(row && row.last_seen_at || ""))}</td></tr>`;
   }).join("");
   const serverHeavyRowsHtml = snapshotHeavyUsers.slice(0, 20).map((row) => {
     const email = deps.escapeHtml(String(row && row.user_email || ""));
-    const tier = analyticsTierLabelFromStatus(row && row.user_status, deps);
-    const tierClass = analyticsTierClassFromStatus(row && row.user_status, deps);
     const lastSeen = Number.isFinite(Number(row && row.last_event_unix))
       ? new Date(Number(row.last_event_unix) * 1000).toISOString()
       : "";
-    const monthBytes = (row && (row.month_bytes ?? row.bytes_served_30d));
-    const monthRequests = (row && (row.request_count_month ?? row.request_count_30d));
-    return `<tr><td class="${tierClass}">${email}</td><td class="${tierClass}">${tier}</td><td>${fmtInt(row && row.resolve_count)}</td><td>${fmtGb(monthBytes)}</td><td>${fmtInt(monthRequests)}</td><td>${deps.escapeHtml(lastSeen)}</td></tr>`;
+    const lifetimeBytes = row && (row.lifetime_bytes ?? row.bytes_served_lifetime ?? row.month_bytes ?? row.bytes_served_30d);
+    return `<tr><td>${email}</td><td>${fmtInt(row && row.resolve_count)}</td><td>${fmtGb(lifetimeBytes)}</td><td>${deps.escapeHtml(lastSeen)}</td></tr>`;
   }).join("");
   const billableAvailable = Boolean(snapshotBillable && snapshotBillable.available);
   const billableSource = deps.escapeHtml(
@@ -304,7 +244,7 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
       const h = parsed.z * 2;
       if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(w) || !Number.isFinite(h)) return "";
       if ((x + w) <= 0 || (y + h) <= 0 || x >= 720 || y >= 360) return "";
-      const color = analyticsTierColorFromStatus(row && row.user_status, deps);
+      const color = ANALYTICS_TILE_COLOR;
       const rawD = Number(parsed.d || 1);
       const alpha = Math.max(0.05, Math.min(1, 1 / Math.max(1, rawD)));
       return `<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${w.toFixed(2)}" height="${h.toFixed(2)}" fill="${color}" fill-opacity="${alpha.toFixed(3)}" stroke="${color}" stroke-width="0.5" stroke-opacity="0.95"></rect>`;
@@ -401,33 +341,20 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
   const rowsHtml = (Array.isArray(rows) ? rows : []).map((row) => {
     const userIdRaw = String(row && row.user_id || "");
     const userEmailRaw = String(row && row.user_email || "");
-    const planCodeRaw = String(row && row.plan_code || "");
     const userEmail = deps.escapeHtml(userEmailRaw);
     const status = String(row && row.user_status || "").trim().toLowerCase();
-    const tierClass = analyticsTierClassFromStatus(status || planCodeRaw, deps);
-    const tierLabel = analyticsTierLabelFromStatus(status || planCodeRaw, deps);
-    const qualityOverrideMode = qualityOverrideModeFromValue(row && row.unrestricted_quality_override);
-    const qualityModeAction = qualityOverrideMode === "unrestricted"
-      ? `<button class="action-btn" data-action="quality-normal" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Normal</button>`
-      : `<button class="action-btn" data-action="quality-unrestricted" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Unrestricted</button>`;
     let actionButtons = "";
     if (status === "blocked") {
-      actionButtons = `<button class="action-btn" data-action="gift-credits" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Top Up €</button><button class="action-btn warn" data-action="unblock" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Unblock</button>${qualityModeAction}<button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
+      actionButtons = `<button class="action-btn" data-action="gift-credits" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Top Up €</button><button class="action-btn warn" data-action="unblock" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Unblock</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
     } else {
-      actionButtons = `<button class="action-btn" data-action="gift-credits" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Top Up €</button>${qualityModeAction}<button class="action-btn danger" data-action="block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Block</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
+      actionButtons = `<button class="action-btn" data-action="gift-credits" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Top Up €</button><button class="action-btn danger" data-action="block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Block</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
     }
     return `<tr>
-      <td class="${tierClass}">${userEmail}</td>
-      <td class="${tierClass}">${deps.escapeHtml(tierLabel)}</td>
-      <td>${deps.escapeHtml(qualityOverrideLabel(qualityOverrideMode))}</td>
+      <td>${userEmail}</td>
       <td>${deps.escapeHtml(fmtEur(row && row.balance_credits))}</td>
       <td>${fmtInt(row && row.unlocked_tile_count)}</td>
       <td>${fmtInt(row && row.resolve_count)}</td>
       <td>${fmtGb(row && row.lifetime_bytes)}</td>
-      <td>${fmtGb(row && row.month_bytes)}</td>
-      <td>${fmtGb(row && row.week_bytes)}</td>
-      <td>${fmtGb(row && row.day_bytes)}</td>
-      <td>${fmtGb(row && row.hour_bytes)}</td>
       <td>${deps.escapeHtml(String(row && row.last_seen_at || ""))}</td>
       <td class="action-wrap">${actionButtons}</td>
     </tr>`;
@@ -453,11 +380,6 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
     .action-btn.warn { border-color: #9a3412; color: #fed7aa; }
     .action-btn.danger { border-color: #991b1b; color: #fecaca; }
     .action-wrap { white-space: normal; min-width: 380px; }
-    .tier-free { color: #ffffff; font-weight: 600; }
-    .tier-personal { color: #22c55e; font-weight: 600; }
-    .tier-commercial { color: #ef4444; font-weight: 600; }
-    .tier-blocked { color: #f97316; font-weight: 600; }
-    .tier-invalid { color: #f59e0b; font-weight: 600; }
     .error { color: #fca5a5; }
   </style>
 </head>
@@ -481,16 +403,10 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
     <thead>
       <tr>
         <th>Email</th>
-        <th>Plan</th>
-        <th>Per-User Mode</th>
         <th><a href="${buildSortHref("balance")}">Balance${sortMarker("balance")}</a></th>
         <th>Unlocked Tiles</th>
         <th><a href="${buildSortHref("resolves")}">Resolves${sortMarker("resolves")}</a></th>
         <th><a href="${buildSortHref("lifetime")}">Lifetime GB${sortMarker("lifetime")}</a></th>
-        <th><a href="${buildSortHref("month")}">Month GB${sortMarker("month")}</a></th>
-        <th><a href="${buildSortHref("week")}">Week GB${sortMarker("week")}</a></th>
-        <th><a href="${buildSortHref("day")}">Day GB${sortMarker("day")}</a></th>
-        <th><a href="${buildSortHref("hour")}">Hour GB${sortMarker("hour")}</a></th>
         <th><a href="${buildSortHref("last_seen")}">Last Seen${sortMarker("last_seen")}</a></th>
         <th>Actions</th>
       </tr>
@@ -522,16 +438,12 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
       const endpointByAction = {
         block: "/admin/users/block",
         unblock: "/admin/users/unblock",
-        "quality-normal": "/admin/users/set-unrestricted-quality",
-        "quality-unrestricted": "/admin/users/set-unrestricted-quality",
         "hard-block": "/admin/users/hard-block",
         "gift-credits": "/admin/users/gift-credits",
       };
       const confirmation = {
         block: "Block this user account now?",
         unblock: "Unblock this user account now?",
-        "quality-normal": "Set this account to normal quality behavior?",
-        "quality-unrestricted": "Force unrestricted quality for this account?",
         "hard-block": "Hard block this user and block same-computer attempts?",
         "gift-credits": "Top up this account's EUR balance?",
       };
@@ -540,11 +452,6 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
       if (!window.confirm(confirmation[safeAction] || "Confirm action?")) return;
       const payload = { email: safeUserEmail };
       if (safeUserId) payload.user_id = safeUserId;
-      if (safeAction === "unblock") {
-        payload.plan_code = "free";
-      }
-      if (safeAction === "quality-normal") payload.mode = "normal";
-      if (safeAction === "quality-unrestricted") payload.mode = "unrestricted";
       if (safeAction === "gift-credits") {
         const amount = window.prompt("EUR to add:", "100");
         if (amount === null) return;

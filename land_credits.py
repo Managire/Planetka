@@ -384,13 +384,15 @@ def pricing_records_for_tiles(
     out = []
     for family, d_value, record in sorted(pending, key=lambda item: (item[0], item[1])):
         gross = max(0.0, float(record.get("credits", 0.0) or 0.0))
+        record = dict(record)
+        record["gross_credits"] = round(float(gross), 6)
+        record["gross_price_eur"] = round(float(gross), 6)
         family_entitlements = owned_by_family.setdefault(family, [])
         covered_by_finer = any(int(owned_d) <= int(d_value) for owned_d, _value in family_entitlements)
         if gross <= 0.0:
             out.append(record)
             continue
         if covered_by_finer:
-            record = dict(record)
             record["credits"] = 0.0
             record["free_reason"] = str(record.get("free_reason") or "already_unlocked")
             out.append(record)
@@ -400,7 +402,6 @@ def pricing_records_for_tiles(
             default=0.0,
         )
         due = max(0.0, gross - coarser_value)
-        record = dict(record)
         record["credits"] = round(float(due), 6)
         if due <= 0.0:
             record["free_reason"] = str(record.get("free_reason") or "already_unlocked")

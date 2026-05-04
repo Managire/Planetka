@@ -1,5 +1,5 @@
 export const ANALYTICS_SNAPSHOT_WINDOWS = [15, 60, 360, 1440, 10080];
-export const ANALYTICS_SNAPSHOT_PLAN_FILTERS = ["all", "free", "personal", "commercial"];
+export const ANALYTICS_SNAPSHOT_PLAN_FILTERS = ["all"];
 export const ANALYTICS_SNAPSHOT_TILE_MAP_WINDOWS = [1, 3, 10];
 const SNAPSHOT_CACHE_CONTROL = "private, max-age=60";
 const DEFAULT_ANALYTICS_SNAPSHOT_MAX_AGE_SECONDS = 300;
@@ -173,7 +173,7 @@ export async function buildAnalyticsSnapshotMatrix(db, env, deps) {
 export async function buildAnalyticsUsersSnapshot(db, env, deps) {
   const rows = await deps.listAnalyticsUsers(db, env, {
     query: "",
-    sort_by: "month",
+    sort_by: "lifetime",
     sort_dir: "desc",
     limit: 5000,
   });

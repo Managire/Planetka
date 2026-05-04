@@ -9,10 +9,8 @@ from .auth import (
     AuthApiError,
     allows_animation_render_for_context,
     allows_balanced_full_quality_for_context,
-    get_account_tier,
     get_connected_email,
     get_status_message,
-    has_unrestricted_quality_access,
     is_authenticated,
     sync_account_profile,
 )
@@ -615,12 +613,7 @@ def _is_connected():
     from .extension_prefs import get_prefs
 
     prefs = get_prefs()
-    if not is_authenticated(prefs):
-        return False
-    try:
-        return bool(get_account_tier(prefs))
-    except AuthApiError:
-        return False
+    return bool(is_authenticated(prefs))
 
 
 def _account_panel_should_default_collapsed(context=None):
@@ -635,41 +628,12 @@ def _account_panel_should_default_collapsed(context=None):
         return False
 
 
-def _connected_account_tier():
-    prefs = get_prefs()
-    try:
-        return str(get_account_tier(prefs) or "").strip().lower()
-    except AuthApiError:
-        return ""
-
-
-def _account_tier_label(tier):
-    safe_tier = str(tier or "").strip().lower()
-    if safe_tier == "personal":
-        return "Personal"
-    if safe_tier == "commercial":
-        return "Commercial"
-    if safe_tier == "free":
-        return "Free"
-    return "Invalid"
-
-
-def _account_tier_display_label(tier, unrestricted=False):
-    base_label = _account_tier_label(tier)
-    safe_tier = str(tier or "").strip().lower()
-    if unrestricted and safe_tier in {"free", "personal"}:
-        return f"{base_label} (Unrestricted)"
-    return base_label
-
-
 def _is_paid_connected_account():
-    if not _is_connected():
-        return False
-    return _connected_account_tier() in {"personal", "commercial"}
+    return False
 
 
 def _full_texture_quality_allowed():
-    return _connected_account_tier() == "commercial"
+    return _is_connected()
 
 
 def _is_cloud_source_mode():

@@ -144,35 +144,13 @@ export async function handleAdminSetGlobalUnrestrictedQuality(request, env, deps
   if (auth.error) {
     return auth.error;
   }
-  const { db, user: adminUser } = auth;
-  const body = await deps.parseJson(request);
-  const enabledState = explicitBooleanFromBody(body, deps);
-  if (!enabledState.ok) {
-    return deps.json({ ok: false, error: "missing_enabled" }, 400, env);
-  }
-  const updated = await deps.setGlobalUnrestrictedQualityEnabled(db, enabledState.value);
-  try {
-    console.log(
-      "admin.bulk_unrestricted_quality_applied",
-      JSON.stringify({
-        enabled: Boolean(updated && updated.enabled),
-        affected_count: Number(updated && updated.affectedCount || 0),
-        admin_email: deps.normalizeEmail(adminUser && adminUser.email || ""),
-      }),
-    );
-  } catch (_error) {
-    // no-op logging guard
-  }
-  await invalidateAdminAnalyticsSnapshots(env, deps);
   return deps.json(
     {
-      ok: true,
-      action: "set_global_unrestricted_quality",
-      enabled: Boolean(updated && updated.enabled),
-      affected_count: Number(updated && updated.affectedCount || 0),
-      updated_at: String(updated && updated.updatedAt || deps.nowIso()),
+      ok: false,
+      error: "unrestricted_quality_mode_removed",
+      message: "Per-user unrestricted quality mode has been removed.",
     },
-    200,
+    410,
     env,
   );
 }
@@ -261,9 +239,9 @@ export async function handleAdminUserUnblock(request, env, deps) {
 
   const targetUserId = String(target.user.id || "").trim();
   const targetEmail = deps.normalizeEmail(target.user.email || "");
-  const targetPlan = "free";
+  const targetStatus = "free";
   const now = deps.nowIso();
-  await deps.dbRun(db, `UPDATE users SET status = ? WHERE id = ?`, [targetPlan, targetUserId]);
+  await deps.dbRun(db, `UPDATE users SET status = ? WHERE id = ?`, [targetStatus, targetUserId]);
   const apiKeysResult = await deps.dbRun(
     db,
     `
@@ -272,7 +250,7 @@ export async function handleAdminUserUnblock(request, env, deps) {
       WHERE user_id = ?
         AND status = 'active'
     `,
-    [targetPlan, targetUserId],
+    [targetStatus, targetUserId],
   );
   const hardBlocksClearedResult = await deps.dbRun(
     db,
@@ -295,7 +273,6 @@ export async function handleAdminUserUnblock(request, env, deps) {
       JSON.stringify({
         user_id: targetUserId,
         user_email: targetEmail,
-        plan_code: targetPlan,
         admin_email: deps.normalizeEmail(adminUser && adminUser.email || ""),
       }),
     );
@@ -309,7 +286,7 @@ export async function handleAdminUserUnblock(request, env, deps) {
       action: "unblock_user",
       user_id: targetUserId,
       user_email: targetEmail,
-      status: targetPlan,
+      status: targetStatus,
       updated_active_api_keys: deps.dbMetaChanges(apiKeysResult),
       hard_blocks_cleared: deps.dbMetaChanges(hardBlocksClearedResult),
       updated_at: now,
@@ -443,63 +420,13 @@ export async function handleAdminUserSetUnrestrictedQuality(request, env, deps) 
   if (auth.error) {
     return auth.error;
   }
-  const { db, user: adminUser } = auth;
-  await deps.ensureUserQualityAccessColumns(db);
-  const body = await deps.parseJson(request);
-  const target = await resolveTargetUser(db, body, deps);
-  if (target.error) {
-    return deps.json({ ok: false, error: target.error }, target.error === "user_not_found" ? 404 : 400, env);
-  }
-
-  const overrideMode = normalizeAdminUnrestrictedQualityMode(
-    body && (body.mode || body.override_mode || body.unrestricted_quality_mode) || "",
-  );
-  if (!overrideMode) {
-    return deps.json({ ok: false, error: "missing_quality_mode" }, 400, env);
-  }
-
-  const targetUserId = String(target.user.id || "").trim();
-  const targetEmail = deps.normalizeEmail(target.user.email || "");
-  const overrideValue = overrideMode === "unrestricted" ? 1 : null;
-  const now = deps.nowIso();
-
-  await deps.dbRun(
-    db,
-    `UPDATE users SET unrestricted_quality_override = ? WHERE id = ?`,
-    [overrideValue, targetUserId],
-  );
-  const refreshedUser = await deps.findUserById(db, targetUserId);
-  const qualityAccess = await deps.resolveUserQualityAccessState(db, refreshedUser || target.user, env);
-
-  try {
-    console.log(
-      "admin.user_set_unrestricted_quality",
-      JSON.stringify({
-        user_id: targetUserId,
-        user_email: targetEmail,
-        override_mode: overrideMode,
-        unrestricted_quality_access: Boolean(qualityAccess && qualityAccess.unrestrictedQualityAccess),
-        admin_email: deps.normalizeEmail(adminUser && adminUser.email || ""),
-      }),
-    );
-  } catch (_error) {
-    // no-op logging guard
-  }
-  await invalidateAdminAnalyticsSnapshots(env, deps);
-
   return deps.json(
     {
-      ok: true,
-      action: "set_unrestricted_quality",
-      user_id: targetUserId,
-      user_email: targetEmail,
-      override_mode: overrideMode,
-      stored_plan_code: String(qualityAccess && qualityAccess.storedPlanCode || ""),
-      quality_access_plan_code: String(qualityAccess && qualityAccess.qualityAccessPlanCode || ""),
-      unrestricted_quality_access: Boolean(qualityAccess && qualityAccess.unrestrictedQualityAccess),
-      updated_at: now,
+      ok: false,
+      error: "unrestricted_quality_mode_removed",
+      message: "Per-user unrestricted quality mode has been removed.",
     },
-    200,
+    410,
     env,
   );
 }

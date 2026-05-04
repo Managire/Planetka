@@ -498,6 +498,7 @@ def _run_unlocked_download_plan(plan: dict, cancel_event: threading.Event) -> No
                 texture_quality_mode="FULL",
                 resolve_id=f"download-unlocked-{uuid4().hex[:12]}",
                 pricing_tiles=[tile_key] if tile_key else (),
+                track_global_progress=False,
             )
             if cancel_event.is_set():
                 raise RuntimeError("cancelled")

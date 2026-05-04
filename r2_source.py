@@ -1313,7 +1313,14 @@ def _signed_headers(cfg, method, key, allow_refresh=True):
     return url, headers
 
 
-def _r2_request(method, key, destination_path=None, cancel_event=None, progress_callback=None):
+def _r2_request(
+    method,
+    key,
+    destination_path=None,
+    cancel_event=None,
+    progress_callback=None,
+    track_global_progress=True,
+):
     global _ACTIVE_DOWNLOADS
     global _ACTIVE_DOWNLOAD_BYTES
     global _ACTIVE_EXPECTED_BYTES
@@ -1353,7 +1360,8 @@ def _r2_request(method, key, destination_path=None, cancel_event=None, progress_
         if _cancelled():
             raise RuntimeError("Planetka resolve request cancelled.")
         refreshed = False
-        capture_download = bool(method == "GET" and destination_path is not None)
+        file_download = bool(method == "GET" and destination_path is not None)
+        capture_download = bool(file_download and track_global_progress)
         attempt_downloaded = 0
         attempt_expected = 0
         attempt_start = 0.0
@@ -1373,17 +1381,18 @@ def _r2_request(method, key, destination_path=None, cancel_event=None, progress_
             with urllib.request.urlopen(request, timeout=_R2_TIMEOUT_SECONDS) as response:
                 if method == "HEAD":
                     return True
-                if capture_download:
+                if file_download:
                     content_length_raw = response.headers.get("Content-Length", "")
                     try:
                         parsed_length = int(content_length_raw or 0)
                         attempt_expected = max(0, parsed_length)
                     except (TypeError, ValueError):
                         attempt_expected = 0
+                    _report_progress(0, attempt_expected)
+                if capture_download:
                     if attempt_expected > 0:
                         with _METRICS_LOCK:
                             _ACTIVE_EXPECTED_BYTES += attempt_expected
-                        _report_progress(0, attempt_expected)
                 if destination_path is not None:
                     os.makedirs(os.path.dirname(destination_path), exist_ok=True)
                     temp_path = f"{destination_path}.part.{os.getpid()}.{threading.get_ident()}.{int(time.time() * 1_000_000)}"
@@ -1396,11 +1405,12 @@ def _r2_request(method, key, destination_path=None, cancel_event=None, progress_
                                 if not chunk:
                                     break
                                 handle.write(chunk)
-                                if capture_download:
+                                if file_download:
                                     chunk_len = int(len(chunk))
                                     attempt_downloaded += chunk_len
-                                    pending_progress_bytes += chunk_len
                                     _report_progress(chunk_len, attempt_expected)
+                                if capture_download:
+                                    pending_progress_bytes += int(len(chunk))
                                     now = time.perf_counter()
                                     should_flush = (
                                         pending_progress_bytes >= _R2_PROGRESS_FLUSH_BYTES
@@ -1542,6 +1552,7 @@ def download_remote_asset_to_path(
     texture_quality_mode="FULL",
     resolve_id="",
     pricing_tiles=None,
+    track_global_progress=True,
 ):
     safe_folder = str(folder or "").strip().strip("/").replace("\\", "/")
     safe_name = os.path.basename(str(file_name or ""))
@@ -1563,6 +1574,7 @@ def download_remote_asset_to_path(
             destination_path=target,
             cancel_event=cancel_event,
             progress_callback=progress_callback,
+            track_global_progress=track_global_progress,
         )
 
 

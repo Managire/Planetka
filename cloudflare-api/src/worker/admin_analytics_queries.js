@@ -221,43 +221,21 @@ function buildAnalyticsExcludedEmailFilter(emailColumnSql, env = {}, deps) {
 }
 
 function buildTileActivityPlanFilterSql(planFilter, deps) {
-  if (planFilter === "personal") {
-    return {
-      clause: `
-        AND NULLIF(TRIM(LOWER(u.status)), '') = ?
-      `,
-      bindings: [deps.PLAN_CODE_PERSONAL],
-    };
-  }
-  if (planFilter === "commercial") {
-    return {
-      clause: `
-        AND NULLIF(TRIM(LOWER(u.status)), '') = ?
-      `,
-      bindings: [deps.PLAN_CODE_COMMERCIAL],
-    };
-  }
+  void planFilter;
+  void deps;
   return { clause: "", bindings: [] };
 }
 
 export function parseHeavyUserPlanFilter(value, deps) {
-  const normalized = String(value || "all").trim().toLowerCase();
-  if (normalized === "free") {
-    return "free";
-  }
-  if (normalized === deps.PLAN_CODE_PERSONAL) {
-    return "personal";
-  }
-  if (normalized === deps.PLAN_CODE_COMMERCIAL) {
-    return "commercial";
-  }
+  void value;
+  void deps;
   return "all";
 }
 
 export function parseAnalyticsUsersSort(value) {
   const normalized = String(value || "").trim().toLowerCase();
-  const allowed = new Set(["balance", "resolves", "lifetime", "month", "week", "day", "hour", "last_seen"]);
-  return allowed.has(normalized) ? normalized : "month";
+  const allowed = new Set(["balance", "resolves", "lifetime", "last_seen"]);
+  return allowed.has(normalized) ? normalized : "lifetime";
 }
 
 export function parseAnalyticsUsersSortDirection(value) {
@@ -1106,13 +1084,6 @@ export async function collectAnalyticsSnapshot(
     deps.monthStartUnix(nowUnix),
     deps.startOfHourUnix(nowUnix),
   ];
-  if (safePlanFilter === "personal") {
-    heavyWhereParts.push(`agg.user_status = ?`);
-    heavyBindings.push(deps.PLAN_CODE_PERSONAL);
-  } else if (safePlanFilter === "commercial") {
-    heavyWhereParts.push(`agg.user_status = ?`);
-    heavyBindings.push(deps.PLAN_CODE_COMMERCIAL);
-  }
   if (heavyEmailFilter.condition) {
     heavyWhereParts.push(String(heavyEmailFilter.condition));
     heavyBindings.push(...heavyEmailFilter.bindings);
@@ -1166,10 +1137,11 @@ export async function collectAnalyticsSnapshot(
   const topHeavyDay = await deps.dbAll(db, `${heavyBaseSql} ORDER BY day_bytes DESC LIMIT 50`, heavyBindings);
   const topHeavyHour = await deps.dbAll(db, `${heavyBaseSql} ORDER BY hour_bytes DESC LIMIT 50`, heavyBindings);
 
-  let heavyUsers30d = (Array.isArray(topHeavyMonth) ? topHeavyMonth : []).map((row) => ({
+  let heavyUsers30d = (Array.isArray(topHeavyLifetime) ? topHeavyLifetime : []).map((row) => ({
     user_id: String(row && row.user_id || "").trim(),
     user_email: deps.normalizeEmail(row && row.user_email || ""),
     user_status: normalizeTierCodeStrict(row && row.user_status, deps),
+    lifetime_bytes: deps.clampNonNegativeInt(row && row.lifetime_bytes),
     month_bytes: deps.clampNonNegativeInt(row && row.month_bytes),
     request_count_month: deps.clampNonNegativeInt(row && row.request_count_month),
     last_event_unix: deps.clampNonNegativeInt(row && row.last_event_unix),
@@ -1180,7 +1152,7 @@ export async function collectAnalyticsSnapshot(
     bytes_served_30d: deps.clampNonNegativeInt(row && row.month_bytes),
   }));
   heavyUsers30d = heavyUsers30d
-    .sort((a, b) => deps.clampNonNegativeInt(b && b.month_bytes) - deps.clampNonNegativeInt(a && a.month_bytes))
+    .sort((a, b) => deps.clampNonNegativeInt(b && b.lifetime_bytes) - deps.clampNonNegativeInt(a && a.lifetime_bytes))
     .slice(0, 20);
 
   const heavyResolveCountByUserId = new Map();
@@ -1387,33 +1359,20 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
   if (typeof deps.ensureCreditTables === "function") {
     await deps.ensureCreditTables(db);
   }
-  if (typeof deps.ensureUserQualityAccessColumns === "function") {
-    await deps.ensureUserQualityAccessColumns(db);
-  }
   const sortBy = parseAnalyticsUsersSort(options.sort_by);
   const sortDir = parseAnalyticsUsersSortDirection(options.sort_dir);
   const query = String(options.query || "").trim().toLowerCase();
   const limit = Math.max(1, Math.min(5000, deps.parseNonNegativeInteger(options.limit, 5000)));
-  const nowUnix = Math.floor(Date.now() / 1000);
   const orderSqlByKey = {
     balance: "balance_credits",
     resolves: "resolve_count",
     lifetime: "lifetime_bytes",
-    month: "month_bytes",
-    week: "week_bytes",
-    day: "day_bytes",
-    hour: "hour_bytes",
     last_seen: "last_seen_unix",
   };
-  const orderSql = orderSqlByKey[sortBy] || orderSqlByKey.month;
+  const orderSql = orderSqlByKey[sortBy] || orderSqlByKey.lifetime;
   const emailFilter = buildAnalyticsExcludedEmailFilter("u.email", env, deps);
   const whereParts = [];
-  const bindings = [
-    deps.monthStartUnix(nowUnix),
-    deps.startOfWeekUnix(nowUnix),
-    deps.startOfDayUnix(nowUnix),
-    deps.startOfHourUnix(nowUnix),
-  ];
+  const bindings = [];
   if (emailFilter.condition) {
     whereParts.push(emailFilter.condition);
     bindings.push(...emailFilter.bindings);
@@ -1438,19 +1397,8 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
         SELECT
           r.user_id,
           COALESCE(SUM(r.bytes_served), 0) AS lifetime_bytes,
-          COALESCE(SUM(CASE WHEN r.day_start_unix >= ? THEN r.bytes_served ELSE 0 END), 0) AS month_bytes,
-          COALESCE(SUM(CASE WHEN r.day_start_unix >= ? THEN r.bytes_served ELSE 0 END), 0) AS week_bytes,
-          COALESCE(SUM(CASE WHEN r.day_start_unix >= ? THEN r.bytes_served ELSE 0 END), 0) AS day_bytes,
           COALESCE(MAX(r.last_event_unix), 0) AS last_seen_unix
         FROM tile_request_rollup_daily_account r
-        GROUP BY r.user_id
-      ),
-      hourly_usage AS (
-        SELECT
-          r.user_id,
-          COALESCE(SUM(r.bytes_served), 0) AS hour_bytes
-        FROM tile_request_rollup_hourly_account r
-        WHERE r.bucket_start_unix >= ?
         GROUP BY r.user_id
       ),
       unlocked_tiles AS (
@@ -1464,18 +1412,12 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
         u.id AS user_id,
         u.email AS user_email,
         NULLIF(TRIM(LOWER(u.status)), '') AS user_status,
-        NULLIF(TRIM(LOWER(u.status)), '') AS plan_code,
-        u.unrestricted_quality_override AS unrestricted_quality_override,
         COALESCE(ca.balance_credits, 0) AS balance_credits,
         COALESCE(ca.total_granted_credits, 0) AS total_granted_credits,
         COALESCE(ca.total_spent_credits, 0) AS total_spent_credits,
         COALESCE(ut.unlocked_tile_count, 0) AS unlocked_tile_count,
         COALESCE(rc.resolve_count, 0) AS resolve_count,
         COALESCE(du.lifetime_bytes, 0) AS lifetime_bytes,
-        COALESCE(du.month_bytes, 0) AS month_bytes,
-        COALESCE(du.week_bytes, 0) AS week_bytes,
-        COALESCE(du.day_bytes, 0) AS day_bytes,
-        COALESCE(hu.hour_bytes, 0) AS hour_bytes,
         COALESCE(
           NULLIF(TRIM(datetime(du.last_seen_unix, 'unixepoch')), ''),
           COALESCE(NULLIF(TRIM(u.last_login_at), ''), COALESCE(NULLIF(TRIM(u.created_at), ''), ''))
@@ -1483,7 +1425,6 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
         COALESCE(du.last_seen_unix, strftime('%s', COALESCE(NULLIF(TRIM(u.last_login_at), ''), COALESCE(NULLIF(TRIM(u.created_at), ''), ''))), 0) AS last_seen_unix
       FROM users u
       LEFT JOIN daily_usage du ON du.user_id = u.id
-      LEFT JOIN hourly_usage hu ON hu.user_id = u.id
       LEFT JOIN resolve_counts rc ON rc.user_id = u.id
       LEFT JOIN user_credit_accounts ca ON ca.user_id = u.id
       LEFT JOIN unlocked_tiles ut ON ut.user_id = u.id

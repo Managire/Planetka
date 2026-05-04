@@ -532,7 +532,10 @@ class PLANETKA_OT_DataCostBreakdown(bpy.types.Operator):
         except (TypeError, ValueError):
             return "€0.00"
 
-    def _draw_rows(self, layout, title, rows, icon="TEXTURE", empty_text="None"):
+    def _struck_text(self, value):
+        return "".join(f"{char}\u0336" for char in str(value or ""))
+
+    def _draw_rows(self, layout, title, rows, icon="TEXTURE", empty_text="None", show_original_price=False):
         box = layout.box()
         box.label(text=title, icon=icon)
         entries = list(rows or ())
@@ -547,6 +550,20 @@ class PLANETKA_OT_DataCostBreakdown(bpy.types.Operator):
             tile_key = str(entry.get("tile_key", "") or "").strip()
             size_text = _format_bytes_for_ui(int(entry.get("bytes", 0) or 0))
             price_text = self._price_text(entry.get("credits", 0.0))
+            if show_original_price:
+                try:
+                    original_price = float(
+                        entry.get(
+                            "gross_price_eur",
+                            entry.get("gross_credits", entry.get("credits", 0.0)),
+                        ) or 0.0
+                    )
+                    charged_price = float(entry.get("credits", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    original_price = 0.0
+                    charged_price = 0.0
+                if original_price > charged_price + 1e-9:
+                    price_text = f"{price_text}  was {self._struck_text(self._price_text(original_price))}"
             reason = str(entry.get("free_reason", "") or "").strip()
             row = box.row(align=True)
             row.label(text=tile_key or "Unknown")
@@ -637,6 +654,7 @@ class PLANETKA_OT_DataCostBreakdown(bpy.types.Operator):
             breakdown.get("excluded_tiles", ()),
             icon="CHECKMARK",
             empty_text="No already-owned tiles in this Resolve.",
+            show_original_price=True,
         )
         self._draw_rows(
             layout,
