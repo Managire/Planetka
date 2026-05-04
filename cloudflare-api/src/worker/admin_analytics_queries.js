@@ -256,7 +256,7 @@ export function parseHeavyUserPlanFilter(value, deps) {
 
 export function parseAnalyticsUsersSort(value) {
   const normalized = String(value || "").trim().toLowerCase();
-  const allowed = new Set(["resolves", "lifetime", "month", "week", "day", "hour", "last_seen"]);
+  const allowed = new Set(["balance", "resolves", "lifetime", "month", "week", "day", "hour", "last_seen"]);
   return allowed.has(normalized) ? normalized : "month";
 }
 
@@ -1384,6 +1384,9 @@ export async function collectAnalyticsSnapshot(
 
 export async function listAnalyticsUsers(db, env, options = {}, deps) {
   await deps.ensureTileRequestEventsTable(db);
+  if (typeof deps.ensureCreditTables === "function") {
+    await deps.ensureCreditTables(db);
+  }
   if (typeof deps.ensureUserQualityAccessColumns === "function") {
     await deps.ensureUserQualityAccessColumns(db);
   }
@@ -1393,6 +1396,7 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
   const limit = Math.max(1, Math.min(5000, deps.parseNonNegativeInteger(options.limit, 5000)));
   const nowUnix = Math.floor(Date.now() / 1000);
   const orderSqlByKey = {
+    balance: "balance_credits",
     resolves: "resolve_count",
     lifetime: "lifetime_bytes",
     month: "month_bytes",
@@ -1448,6 +1452,13 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
         FROM tile_request_rollup_hourly_account r
         WHERE r.bucket_start_unix >= ?
         GROUP BY r.user_id
+      ),
+      unlocked_tiles AS (
+        SELECT
+          user_id,
+          COUNT(*) AS unlocked_tile_count
+        FROM user_tile_entitlements
+        GROUP BY user_id
       )
       SELECT
         u.id AS user_id,
@@ -1455,6 +1466,10 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
         NULLIF(TRIM(LOWER(u.status)), '') AS user_status,
         NULLIF(TRIM(LOWER(u.status)), '') AS plan_code,
         u.unrestricted_quality_override AS unrestricted_quality_override,
+        COALESCE(ca.balance_credits, 0) AS balance_credits,
+        COALESCE(ca.total_granted_credits, 0) AS total_granted_credits,
+        COALESCE(ca.total_spent_credits, 0) AS total_spent_credits,
+        COALESCE(ut.unlocked_tile_count, 0) AS unlocked_tile_count,
         COALESCE(rc.resolve_count, 0) AS resolve_count,
         COALESCE(du.lifetime_bytes, 0) AS lifetime_bytes,
         COALESCE(du.month_bytes, 0) AS month_bytes,
@@ -1470,6 +1485,8 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
       LEFT JOIN daily_usage du ON du.user_id = u.id
       LEFT JOIN hourly_usage hu ON hu.user_id = u.id
       LEFT JOIN resolve_counts rc ON rc.user_id = u.id
+      LEFT JOIN user_credit_accounts ca ON ca.user_id = u.id
+      LEFT JOIN unlocked_tiles ut ON ut.user_id = u.id
       ${whereSql}
       ORDER BY ${orderSql} ${sortDir.toUpperCase()}, LOWER(COALESCE(u.email, '')) ASC
       LIMIT ${limit}

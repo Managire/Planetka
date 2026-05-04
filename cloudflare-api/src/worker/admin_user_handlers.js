@@ -261,11 +261,7 @@ export async function handleAdminUserUnblock(request, env, deps) {
 
   const targetUserId = String(target.user.id || "").trim();
   const targetEmail = deps.normalizeEmail(target.user.email || "");
-  const targetPlanRaw = String(body && body.plan_code || "").trim();
-  const targetPlan = deps.resolveFixedInternalPlanForEmail(targetEmail, targetPlanRaw);
-  if (!targetPlan || !["free", "personal", "commercial"].includes(targetPlan)) {
-    return deps.json({ ok: false, error: "missing_plan_code" }, 400, env);
-  }
+  const targetPlan = "free";
   const now = deps.nowIso();
   await deps.dbRun(db, `UPDATE users SET status = ? WHERE id = ?`, [targetPlan, targetUserId]);
   const apiKeysResult = await deps.dbRun(
@@ -431,60 +427,13 @@ export async function handleAdminUserSetPlan(request, env, deps) {
   if (auth.error) {
     return auth.error;
   }
-  const { db, user: adminUser } = auth;
-  await deps.ensureApiKeyTables(db);
-  const body = await deps.parseJson(request);
-  const target = await resolveTargetUser(db, body, deps);
-  if (target.error) {
-    return deps.json({ ok: false, error: target.error }, target.error === "user_not_found" ? 404 : 400, env);
-  }
-
-  const targetUserId = String(target.user.id || "").trim();
-  const targetEmail = deps.normalizeEmail(target.user.email || "");
-  const targetPlanRaw = String(body && body.plan_code || "").trim();
-  const targetPlan = deps.resolveFixedInternalPlanForEmail(targetEmail, targetPlanRaw);
-  if (!targetPlan || !["free", "personal", "commercial"].includes(targetPlan)) {
-    return deps.json({ ok: false, error: "missing_plan_code" }, 400, env);
-  }
-  const now = deps.nowIso();
-
-  await deps.dbRun(db, `UPDATE users SET status = ? WHERE id = ?`, [targetPlan, targetUserId]);
-  const apiKeysResult = await deps.dbRun(
-    db,
-    `
-      UPDATE api_keys
-      SET plan_code = ?
-      WHERE user_id = ?
-        AND status = 'active'
-    `,
-    [targetPlan, targetUserId],
-  );
-  try {
-    console.log(
-      "admin.user_set_plan",
-      JSON.stringify({
-        user_id: targetUserId,
-        user_email: targetEmail,
-        plan_code: targetPlan,
-        admin_email: deps.normalizeEmail(adminUser && adminUser.email || ""),
-      }),
-    );
-  } catch (_error) {
-    // no-op logging guard
-  }
-  await invalidateAdminAnalyticsSnapshots(env, deps);
-
   return deps.json(
     {
-      ok: true,
-      action: "set_plan",
-      user_id: targetUserId,
-      user_email: targetEmail,
-      plan_code: targetPlan,
-      updated_active_api_keys: deps.dbMetaChanges(apiKeysResult),
-      updated_at: now,
+      ok: false,
+      error: "account_tiers_removed",
+      message: "Planetka account tiers are no longer editable. Top up EUR balance instead.",
     },
-    200,
+    410,
     env,
   );
 }

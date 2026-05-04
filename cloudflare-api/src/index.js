@@ -245,6 +245,7 @@ const ANALYTICS_QUERY_DEPS = {
   countRowsFromQuery,
   dbAll,
   dbGet,
+  ensureCreditTables,
   ensureUserQualityAccessColumns,
   ensureAuthRefreshEventsTable,
   ensureTileRequestEventsTable,

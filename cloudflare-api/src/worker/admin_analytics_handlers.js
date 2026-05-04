@@ -84,6 +84,7 @@ function filterAnalyticsUsersRows(rows, query) {
 }
 
 function analyticsUsersSortValue(row, sortBy) {
+  if (sortBy === "balance") return Number(row && row.balance_credits || 0);
   if (sortBy === "resolves") return Number(row && row.resolve_count || 0);
   if (sortBy === "lifetime") return Number(row && row.lifetime_bytes || 0);
   if (sortBy === "month") return Number(row && row.month_bytes || 0);
@@ -384,6 +385,10 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
   );
   const fmtInt = (value) => fmtIntLocal(value, deps.parseNonNegativeInteger);
   const fmtGb = (value) => fmtGbLocal(value, deps.parseNonNegativeInteger, deps.BYTES_PER_GB);
+  const fmtEur = (value) => {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? `${numeric.toFixed(2)} €` : "0.00 €";
+  };
   const buildSortHref = (key) => {
     const params = new URLSearchParams();
     if (query) params.set("q", query);
@@ -407,18 +412,16 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
       : `<button class="action-btn" data-action="quality-unrestricted" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Unrestricted</button>`;
     let actionButtons = "";
     if (status === "blocked") {
-      actionButtons = `<button class="action-btn" data-action="gift-credits" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Add €</button><button class="action-btn" data-action="set-free" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Free</button><button class="action-btn" data-action="set-personal" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Personal</button><button class="action-btn" data-action="set-commercial" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Commercial</button>${qualityModeAction}<button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
+      actionButtons = `<button class="action-btn" data-action="gift-credits" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Top Up €</button><button class="action-btn warn" data-action="unblock" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Unblock</button>${qualityModeAction}<button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
     } else {
-      const freeButton = `<button class="action-btn" data-action="set-free" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Free</button>`;
-      const planButton = analyticsTierCodeFromStatus(status || planCodeRaw, deps) === "commercial"
-        ? `<button class="action-btn" data-action="set-personal" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Personal</button>`
-        : `<button class="action-btn" data-action="set-commercial" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Commercial</button>`;
-      actionButtons = `<button class="action-btn" data-action="gift-credits" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Add €</button>${freeButton}${planButton}${qualityModeAction}<button class="action-btn danger" data-action="block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Block</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
+      actionButtons = `<button class="action-btn" data-action="gift-credits" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Top Up €</button>${qualityModeAction}<button class="action-btn danger" data-action="block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Block</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
     }
     return `<tr>
       <td class="${tierClass}">${userEmail}</td>
       <td class="${tierClass}">${deps.escapeHtml(tierLabel)}</td>
       <td>${deps.escapeHtml(qualityOverrideLabel(qualityOverrideMode))}</td>
+      <td>${deps.escapeHtml(fmtEur(row && row.balance_credits))}</td>
+      <td>${fmtInt(row && row.unlocked_tile_count)}</td>
       <td>${fmtInt(row && row.resolve_count)}</td>
       <td>${fmtGb(row && row.lifetime_bytes)}</td>
       <td>${fmtGb(row && row.month_bytes)}</td>
@@ -449,7 +452,7 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
     .action-btn { font-size: 12px; padding: 4px 8px; margin-right: 6px; margin-bottom: 4px; cursor: pointer; }
     .action-btn.warn { border-color: #9a3412; color: #fed7aa; }
     .action-btn.danger { border-color: #991b1b; color: #fecaca; }
-    .action-wrap { white-space: normal; min-width: 520px; }
+    .action-wrap { white-space: normal; min-width: 380px; }
     .tier-free { color: #ffffff; font-weight: 600; }
     .tier-personal { color: #22c55e; font-weight: 600; }
     .tier-commercial { color: #ef4444; font-weight: 600; }
@@ -480,6 +483,8 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
         <th>Email</th>
         <th>Plan</th>
         <th>Per-User Mode</th>
+        <th><a href="${buildSortHref("balance")}">Balance${sortMarker("balance")}</a></th>
+        <th>Unlocked Tiles</th>
         <th><a href="${buildSortHref("resolves")}">Resolves${sortMarker("resolves")}</a></th>
         <th><a href="${buildSortHref("lifetime")}">Lifetime GB${sortMarker("lifetime")}</a></th>
         <th><a href="${buildSortHref("month")}">Month GB${sortMarker("month")}</a></th>
@@ -513,13 +518,10 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
       const safeAction = String(action || "").trim();
       const safeUserId = String(userId || "").trim();
       const safeUserEmail = String(userEmail || "").trim();
-      const safePlanCode = String(planCode || "").trim().toLowerCase();
+      void planCode;
       const endpointByAction = {
         block: "/admin/users/block",
         unblock: "/admin/users/unblock",
-        "set-free": "/admin/users/set-plan",
-        "set-personal": "/admin/users/set-plan",
-        "set-commercial": "/admin/users/set-plan",
         "quality-normal": "/admin/users/set-unrestricted-quality",
         "quality-unrestricted": "/admin/users/set-unrestricted-quality",
         "hard-block": "/admin/users/hard-block",
@@ -528,13 +530,10 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
       const confirmation = {
         block: "Block this user account now?",
         unblock: "Unblock this user account now?",
-        "set-free": "Set this account to Free?",
-        "set-personal": "Set this account to Personal?",
-        "set-commercial": "Set this account to Commercial?",
         "quality-normal": "Set this account to normal quality behavior?",
         "quality-unrestricted": "Force unrestricted quality for this account?",
         "hard-block": "Hard block this user and block same-computer attempts?",
-        "gift-credits": "Add EUR balance to this account?",
+        "gift-credits": "Top up this account's EUR balance?",
       };
       const endpoint = endpointByAction[safeAction];
       if (!endpoint) return;
@@ -542,23 +541,15 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
       const payload = { email: safeUserEmail };
       if (safeUserId) payload.user_id = safeUserId;
       if (safeAction === "unblock") {
-        if (!["free", "personal", "commercial"].includes(safePlanCode)) {
-          statusEl.textContent = "Action failed: unblock requires explicit target tier.";
-          statusEl.className = "error";
-          return;
-        }
-        payload.plan_code = safePlanCode;
+        payload.plan_code = "free";
       }
-      if (safeAction === "set-free") payload.plan_code = "free";
-      if (safeAction === "set-personal") payload.plan_code = "personal";
-      if (safeAction === "set-commercial") payload.plan_code = "commercial";
       if (safeAction === "quality-normal") payload.mode = "normal";
       if (safeAction === "quality-unrestricted") payload.mode = "unrestricted";
       if (safeAction === "gift-credits") {
         const amount = window.prompt("EUR to add:", "100");
         if (amount === null) return;
         payload.credits = Number(amount);
-        payload.reason = "admin_gift";
+        payload.reason = "admin_top_up";
       }
       statusEl.textContent = "Applying action...";
       statusEl.className = "muted";

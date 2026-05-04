@@ -156,12 +156,9 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
   <div class="controls">
     <label for="userAdminEmail">Manage user:</label>
     <input id="userAdminEmail" type="email" placeholder="user@example.com" style="min-width: 280px; background:#111827; color:#e5e7eb; border:1px solid #374151; border-radius:8px; padding:7px 10px;" />
-    <button id="setFreeBtn" class="action-btn">Set Free</button>
-    <button id="setPersonalBtn" class="action-btn">Set Personal</button>
-    <button id="setCommercialBtn" class="action-btn">Set Commercial</button>
     <button id="qualityNormalBtn" class="action-btn">Set Normal</button>
     <button id="qualityUnrestrictedBtn" class="action-btn">Set Unrestricted</button>
-    <button id="giftCreditsBtn" class="action-btn">Add €</button>
+    <button id="giftCreditsBtn" class="action-btn">Top Up €</button>
     <button id="blockBtn" class="action-btn danger">Block</button>
     <button id="unblockBtn" class="action-btn warn">Unblock</button>
   </div>
@@ -251,9 +248,6 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     const tileMapWindowEl = document.getElementById("tileMapWindow");
     const refreshBtn = document.getElementById("refresh");
     const userAdminEmailEl = document.getElementById("userAdminEmail");
-    const setFreeBtn = document.getElementById("setFreeBtn");
-    const setPersonalBtn = document.getElementById("setPersonalBtn");
-    const setCommercialBtn = document.getElementById("setCommercialBtn");
     const qualityNormalBtn = document.getElementById("qualityNormalBtn");
     const qualityUnrestrictedBtn = document.getElementById("qualityUnrestrictedBtn");
     const blockBtn = document.getElementById("blockBtn");
@@ -673,7 +667,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
       const safeAction = String(action || "").trim();
       const safeUserId = String(userId || "").trim();
       const safeUserEmail = String(userEmail || "").trim();
-      const safePlanCode = String(planCode || "").trim().toLowerCase();
+      void planCode;
       if (!safeAction || (!safeUserId && !safeUserEmail)) {
         statusEl.textContent = "Action failed: missing user id/email.";
         statusEl.className = "error";
@@ -683,9 +677,6 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         block: "/admin/users/block",
         unblock: "/admin/users/unblock",
         "hard-block": "/admin/users/hard-block",
-        "set-free": "/admin/users/set-plan",
-        "set-personal": "/admin/users/set-plan",
-        "set-commercial": "/admin/users/set-plan",
         "quality-normal": "/admin/users/set-unrestricted-quality",
         "quality-unrestricted": "/admin/users/set-unrestricted-quality",
         "gift-credits": "/admin/users/gift-credits",
@@ -700,12 +691,9 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         block: "Block this user account now?",
         unblock: "Unblock this user account now?",
         "hard-block": "Hard block this user and block same-computer attempts?",
-        "set-free": "Set this account to Free?",
-        "set-personal": "Downgrade this account to Personal?",
-        "set-commercial": "Upgrade this account to Commercial?",
         "quality-normal": "Set this account to normal quality behavior?",
         "quality-unrestricted": "Force unrestricted quality for this account?",
-        "gift-credits": "Add EUR balance to this account?",
+        "gift-credits": "Top up this account's EUR balance?",
       };
       if (!window.confirm(confirmation[safeAction] || "Confirm action?")) {
         return;
@@ -715,21 +703,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         payload.user_id = safeUserId;
       }
       if (safeAction === "unblock") {
-        if (!["free", "personal", "commercial"].includes(safePlanCode)) {
-          statusEl.textContent = "Action failed: unblock requires explicit target tier.";
-          statusEl.className = "error";
-          return;
-        }
-        payload.plan_code = safePlanCode;
-      }
-      if (safeAction === "set-personal") {
-        payload.plan_code = "personal";
-      }
-      if (safeAction === "set-free") {
         payload.plan_code = "free";
-      }
-      if (safeAction === "set-commercial") {
-        payload.plan_code = "commercial";
       }
       if (safeAction === "quality-normal") {
         payload.mode = "normal";
@@ -743,7 +717,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
           return;
         }
         payload.credits = Number(amount);
-        payload.reason = "admin_gift";
+        payload.reason = "admin_top_up";
       }
       statusEl.textContent = "Applying action...";
       statusEl.className = "muted";
@@ -904,9 +878,6 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
       }
       performUserAction(actionName, "", email, "");
     };
-    if (setFreeBtn) setFreeBtn.addEventListener("click", () => runManualUserAction("set-free"));
-    if (setPersonalBtn) setPersonalBtn.addEventListener("click", () => runManualUserAction("set-personal"));
-    if (setCommercialBtn) setCommercialBtn.addEventListener("click", () => runManualUserAction("set-commercial"));
     if (qualityNormalBtn) qualityNormalBtn.addEventListener("click", () => runManualUserAction("quality-normal"));
     if (qualityUnrestrictedBtn) qualityUnrestrictedBtn.addEventListener("click", () => runManualUserAction("quality-unrestricted"));
     if (giftCreditsBtn) giftCreditsBtn.addEventListener("click", () => runManualUserAction("gift-credits"));

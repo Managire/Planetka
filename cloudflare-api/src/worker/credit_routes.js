@@ -656,7 +656,7 @@ export async function handleAdminGiftCredits(request, env, deps) {
   if (amount <= 0) {
     return deps.json({ ok: false, error: "missing_positive_credits" }, 400, env);
   }
-  const reason = String(body && body.reason || "admin_gift").trim().slice(0, 160) || "admin_gift";
+  const reason = String(body && body.reason || "admin_top_up").trim().slice(0, 160) || "admin_top_up";
   const userId = String(targetUser.id || "").trim();
   const now = deps.nowIso();
   await ensureCreditAccount(db, userId, deps);
@@ -695,14 +695,29 @@ export async function handleAdminGiftCredits(request, env, deps) {
       now,
     ],
   );
+  if (typeof deps.invalidateAnalyticsSnapshots === "function") {
+    try {
+      await deps.invalidateAnalyticsSnapshots(env);
+    } catch (error) {
+      console.warn(
+        "planetka.admin.credit_topup_snapshot_invalidate_failed",
+        JSON.stringify({
+          error: String(error && error.message || "analytics_snapshot_invalidate_failed"),
+          user_id: userId,
+        }),
+      );
+    }
+  }
   return deps.json(
     {
       ok: true,
-      action: "gift_credits",
+      action: "top_up_eur",
       user_id: userId,
       user_email: deps.normalizeEmail(targetUser.email || ""),
+      top_up_eur: amount,
       gifted_credits: amount,
       balance_credits: balanceAfter,
+      balance_eur: balanceAfter,
       updated_at: now,
     },
     200,
