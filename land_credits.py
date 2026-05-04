@@ -74,11 +74,13 @@ def detail_ratio(tile: TileCode | str | None) -> float:
 
 
 def detail_price_factor(tile: TileCode | str | None) -> float:
-    ratio = detail_ratio(tile)
-    if not math.isfinite(ratio) or ratio <= 0.0 or ratio >= FREE_DETAIL_RATIO:
-        return 0.0
     parsed = parse_tile_key(tile) if not isinstance(tile, TileCode) else tile
     if parsed is None:
+        return 0.0
+    if int(parsed.d) >= FREE_D_THRESHOLD:
+        return 0.0
+    ratio = detail_ratio(parsed)
+    if not math.isfinite(ratio) or ratio <= 0.0 or ratio >= FREE_DETAIL_RATIO:
         return 0.0
     mpp = delivered_mpp_for_d(parsed.d)
     return float((DATASET_BASE_MPP / max(DATASET_BASE_MPP, mpp)) ** 2)
@@ -163,6 +165,8 @@ def paid_band_area_km2(tile: TileCode) -> float:
 def free_reason_for_tile(tile: TileCode) -> str:
     if int(tile.d) <= 0:
         return "d000_global_free"
+    if int(tile.d) >= FREE_D_THRESHOLD:
+        return "coarse_detail_free"
     if detail_ratio(tile) >= FREE_DETAIL_RATIO:
         return "preview_detail_free"
     south, north = tile_lat_bounds(tile)

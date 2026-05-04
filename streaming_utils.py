@@ -12,6 +12,7 @@ from .r2_source import (
     estimate_total_resolve_bytes,
     find_local_source_asset,
     get_remote_cache_folder,
+    ensure_resolve_pricing_session,
     is_remote_source_configured,
     plan_resolve_downloads,
     prefetch_resolve_downloads,
@@ -351,6 +352,8 @@ def prefetch_resolve_plan(
                 pricing_tiles=credit_tile_keys,
             ):
                 try:
+                    if normalized_quality_mode == "FULL" and credit_tile_keys:
+                        ensure_resolve_pricing_session()
                     # Fast resolve path: skip remote HEAD preflight size probes so first GET
                     # requests start immediately.
                     plan_resolve_downloads(requests, allow_remote_probe=False)

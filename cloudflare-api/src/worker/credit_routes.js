@@ -69,6 +69,9 @@ function freeReasonForTile(parsed) {
   if (parsed.d <= 0) {
     return "d000_global_free";
   }
+  if (parsed.d >= FREE_D_THRESHOLD) {
+    return "coarse_detail_free";
+  }
   if (detailRatioForTile(parsed) >= FREE_DETAIL_RATIO) {
     return "preview_detail_free";
   }
@@ -464,52 +467,11 @@ export async function unlockTilesForSession(db, userId, qualityMode, tileKeys, r
   }
 
   const now = deps.nowIso();
-  if (requiredCredits > 0) {
-    const update = await deps.dbRun(
-      db,
-      `
-        UPDATE user_credit_accounts
-        SET
-          balance_credits = balance_credits - ?,
-          total_spent_credits = total_spent_credits + ?,
-          updated_at = ?
-        WHERE user_id = ?
-          AND balance_credits >= ?
-      `,
-      [requiredCredits, requiredCredits, now, safeUserId, requiredCredits],
-    );
-    if (deps.dbMetaChanges(update) <= 0) {
-      const fresh = await ensureCreditAccount(db, safeUserId, deps);
-      return {
-        error: "insufficient_credits",
-        required_credits: requiredCredits,
-        balance_credits: normalizeCreditAmount(fresh && fresh.balance_credits),
-        paid_tile_count: estimate.paid_tile_count,
-        tile_count: estimate.tile_count,
-      };
-    }
-    const balanceAfter = Math.round((balance - requiredCredits) * 1_000_000) / 1_000_000;
-    await deps.dbRun(
-      db,
-      `
-        INSERT INTO credit_ledger (
-          id, user_id, delta_credits, balance_after_credits, reason, metadata_json, created_at
-        )
-        VALUES (?, ?, ?, ?, 'tile_unlock', ?, ?)
-      `,
-      [
-        deps.randomToken(16),
-        safeUserId,
-        -requiredCredits,
-        balanceAfter,
-        JSON.stringify({ resolve_id: String(resolveId || ""), quality_mode: safeMode, tile_count: estimate.paid_tile_count }),
-        now,
-      ],
-    );
-  }
-
+  const insertedTiles = [];
+  let actualCredits = 0;
   for (const tile of estimate.new_tiles || []) {
-    await deps.dbRun(
+    const tileCredits = normalizeCreditAmount(tile.credits);
+    const insert = await deps.dbRun(
       db,
       `
         INSERT OR IGNORE INTO user_tile_entitlements (
@@ -521,16 +483,98 @@ export async function unlockTilesForSession(db, userId, qualityMode, tileKeys, r
         safeUserId,
         tile.tile_key,
         safeMode,
-        normalizeCreditAmount(tile.credits),
+        tileCredits,
         Math.max(0, Number.parseFloat(tile.land_km2 || 0) || 0),
         Math.max(0, Number.parseFloat(tile.billable_land_km2 || 0) || 0),
         String(tile.stats_source || "backend_d1").trim() || "backend_d1",
         now,
       ],
     );
+    if (deps.dbMetaChanges(insert) > 0) {
+      insertedTiles.push(tile);
+      actualCredits = normalizeCreditAmount(actualCredits + tileCredits);
+    }
   }
 
-  return estimate;
+  if (actualCredits > balance) {
+    for (const tile of insertedTiles) {
+      await deps.dbRun(
+        db,
+        `DELETE FROM user_tile_entitlements WHERE user_id = ? AND tile_key = ?`,
+        [safeUserId, tile.tile_key],
+      );
+    }
+    return {
+      error: "insufficient_credits",
+      required_credits: actualCredits,
+      balance_credits: balance,
+      paid_tile_count: insertedTiles.length,
+      tile_count: estimate.tile_count,
+    };
+  }
+
+  if (actualCredits > 0) {
+    const update = await deps.dbRun(
+      db,
+      `
+        UPDATE user_credit_accounts
+        SET
+          balance_credits = balance_credits - ?,
+          total_spent_credits = total_spent_credits + ?,
+          updated_at = ?
+        WHERE user_id = ?
+          AND balance_credits >= ?
+      `,
+      [actualCredits, actualCredits, now, safeUserId, actualCredits],
+    );
+    if (deps.dbMetaChanges(update) <= 0) {
+      for (const tile of insertedTiles) {
+        await deps.dbRun(
+          db,
+          `DELETE FROM user_tile_entitlements WHERE user_id = ? AND tile_key = ?`,
+          [safeUserId, tile.tile_key],
+        );
+      }
+      const fresh = await ensureCreditAccount(db, safeUserId, deps);
+      return {
+        error: "insufficient_credits",
+        required_credits: actualCredits,
+        balance_credits: normalizeCreditAmount(fresh && fresh.balance_credits),
+        paid_tile_count: insertedTiles.length,
+        tile_count: estimate.tile_count,
+      };
+    }
+    const balanceAfter = Math.round((balance - actualCredits) * 1_000_000) / 1_000_000;
+    await deps.dbRun(
+      db,
+      `
+        INSERT INTO credit_ledger (
+          id, user_id, delta_credits, balance_after_credits, reason, metadata_json, created_at
+        )
+        VALUES (?, ?, ?, ?, 'tile_unlock', ?, ?)
+      `,
+      [
+        deps.randomToken(16),
+        safeUserId,
+        -actualCredits,
+        balanceAfter,
+        JSON.stringify({ resolve_id: String(resolveId || ""), quality_mode: safeMode, tile_count: insertedTiles.length }),
+        now,
+      ],
+    );
+  }
+
+  const estimatedPaidCount = Math.max(0, Number.parseInt(estimate.paid_tile_count || 0, 10) || 0);
+  const estimatedFreeCount = Math.max(0, Number.parseInt(estimate.free_tile_count || 0, 10) || 0);
+  const skippedPaidCount = Math.max(0, estimatedPaidCount - insertedTiles.length);
+  return {
+    ...estimate,
+    credits: actualCredits,
+    price_eur: actualCredits,
+    paid_tile_count: insertedTiles.length,
+    free_tile_count: estimatedFreeCount + skippedPaidCount,
+    new_tiles: insertedTiles,
+  };
 }
 
 export async function handleCreditMe(request, env, deps) {

@@ -39,6 +39,7 @@ DEFAULT_S2_ROOT = Path("/Volumes/SSDA/Planetka Assets/S2")
 DEFAULT_OCEAN_FALLBACK = ROOT / "Resources" / "Fallback Images" / "ocean_pixel_final_20.exr"
 TILE_RE = re.compile(r"^S2_(x(\d{3})_y(\d{3})_z(\d{3})_d(\d{3}))\.exr$", re.IGNORECASE)
 EARTH_RADIUS_KM = 6371.0088
+FREE_D_THRESHOLD = 15
 FREE_DETAIL_RATIO = 4.0
 PAID_LAT_MIN_DEG = -60.0
 PAID_LAT_MAX_DEG = 75.0
@@ -170,6 +171,8 @@ def scan_s2_file(path: Path, x: int, y: int, z: int, d: int):
         detail_ratio = (float(d) / max(1.0, float(z))) if d > 0 else float("inf")
         if d <= 0:
             free_reason = "d000_global_free"
+        elif d >= FREE_D_THRESHOLD:
+            free_reason = "coarse_detail_free"
         elif detail_ratio >= FREE_DETAIL_RATIO:
             free_reason = "preview_detail_free"
         elif lat_north <= PAID_LAT_MIN_DEG:

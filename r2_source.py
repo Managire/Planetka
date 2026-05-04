@@ -101,6 +101,7 @@ _AUTH_LAST_CHECKED_AT = 0.0
 _AUTH_CHECK_TTL_SECONDS = 15.0
 _CACHE_PRUNE_SUSPEND_COUNT = 0
 _REQUEST_CONTEXT_LOCK = threading.Lock()
+_REQUEST_CONTEXT_TILE_TOKEN_FETCH_LOCK = threading.Lock()
 _REQUEST_CONTEXT_RESOLVE_ID = ""
 _REQUEST_CONTEXT_TEXTURE_MODE = ""
 _REQUEST_CONTEXT_CANCEL_EVENT = None
@@ -1183,11 +1184,31 @@ def _get_request_context_tile_token(allow_refresh=True):
     # Do not hold _REQUEST_CONTEXT_LOCK while requesting a tile session token:
     # _request_tile_session_token() also reads request context. Holding the lock
     # here deadlocks downloads before the first GET, leaving UI at 0.00 MB.
-    token, expires_at = _request_tile_session_token(
-        resolve_id=resolve_id,
-        quality_mode=quality_mode,
-        allow_refresh=allow_refresh,
-    )
+    #
+    # A separate fetch lock is still required: S2/EL/WT/PO downloads start in
+    # parallel, and without serialization each worker can create its own paid
+    # tile session before the first token is cached.
+    with _REQUEST_CONTEXT_TILE_TOKEN_FETCH_LOCK:
+        with _REQUEST_CONTEXT_LOCK:
+            current_token = str(_REQUEST_CONTEXT_TILE_TOKEN or "").strip()
+            current_expiry = float(_REQUEST_CONTEXT_TILE_TOKEN_EXPIRES_AT or 0.0)
+            current_resolve_id = str(_REQUEST_CONTEXT_RESOLVE_ID or "").strip()
+            current_quality_mode = str(_REQUEST_CONTEXT_TEXTURE_MODE or "").strip().lower()
+            now = float(time.time())
+            if current_quality_mode == "balanced":
+                current_quality_mode = "full"
+            if (
+                current_resolve_id == resolve_id
+                and current_quality_mode == quality_mode
+                and current_token
+                and current_expiry > (now + 5.0)
+            ):
+                return current_token
+        token, expires_at = _request_tile_session_token(
+            resolve_id=resolve_id,
+            quality_mode=quality_mode,
+            allow_refresh=allow_refresh,
+        )
     safe_token = str(token or "").strip()
     safe_expires_at = float(expires_at or 0.0)
     with _REQUEST_CONTEXT_LOCK:
@@ -1199,6 +1220,23 @@ def _get_request_context_tile_token(allow_refresh=True):
             _REQUEST_CONTEXT_TILE_TOKEN_EXPIRES_AT = safe_expires_at
             return str(_REQUEST_CONTEXT_TILE_TOKEN or "").strip()
     return safe_token
+
+
+def ensure_resolve_pricing_session(allow_refresh=True):
+    """Ensure the current Full Quality resolve has a backend unlock session.
+
+    Full Quality files may already be present in the local cache or Local Source.
+    Pricing must still be enforced per account before those files are used; the
+    download token is just the transport mechanism for the same unlock call.
+    """
+    with _REQUEST_CONTEXT_LOCK:
+        quality_mode = str(_REQUEST_CONTEXT_TEXTURE_MODE or "").strip().lower()
+        pricing_tiles = tuple(key for key in (_REQUEST_CONTEXT_PRICING_TILES or ()) if str(key or "").strip())
+    if quality_mode == "balanced":
+        quality_mode = "full"
+    if quality_mode != "full" or not pricing_tiles:
+        return ""
+    return _get_request_context_tile_token(allow_refresh=allow_refresh)
 
 
 @contextmanager
