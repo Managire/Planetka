@@ -1,6 +1,6 @@
 const TILE_KEY_RE = /x(\d{3})_y(\d{3})_z(\d{3})_d(\d{3})/i;
 const ASSET_RE = /^(?:S2|EL|WT|PO)_(x\d{3}_y\d{3}_z\d{3}_d\d{3})\.(?:exr|tif)$/i;
-const FREE_D_THRESHOLD = 15;
+const FREE_D_THRESHOLD = 60;
 const FREE_DETAIL_RATIO = 4.0;
 const ACCOUNT_TYPE_STANDARD = "standard";
 const DEFAULT_STARTING_CREDITS = 100.0;
