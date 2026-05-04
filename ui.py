@@ -872,9 +872,7 @@ def _draw_account_panel(layout):
                 error_row.label(text=str(unlocked_progress.get("error", "") or ""), icon="ERROR")
             if bool(unlocked_progress.get("active", False)):
                 progress_box.operator("planetka.account_cancel_unlocked_download", text="Cancel Download", icon="CANCEL")
-        unlocked_row = layout.row(align=True)
-        unlocked_row.operator("planetka.account_list_unlocked_tiles", text="List Unlocked", icon="TEXT")
-        unlocked_row.operator("planetka.account_download_unlocked_tiles", text="Download Unlocked", icon="IMPORT")
+        layout.operator("planetka.account_download_unlocked_tiles", text="Download Unlocked", icon="IMPORT")
 
     local_row = layout.row()
     local_row.prop(prefs, "local_texture_source_path", text="Local Source")
