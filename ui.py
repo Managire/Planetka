@@ -44,6 +44,7 @@ RADIUS_SYNC_NOTICE_KEY = "planetka_status_radius_sync_notice"
 RESOLVE_FAILURE_FLAG_KEY = "planetka_resolve_integrity_failed"
 RESOLVE_FAILURE_MESSAGE_KEY = "planetka_resolve_integrity_message"
 LAST_RESOLVE_TEXTURE_QUALITY_MODE_KEY = "planetka_last_resolve_texture_quality_mode"
+EARTH_TRANSFORM_SECTION_OPEN_KEY = "planetka_ui_earth_transform_open"
 EARTH_RADIUS_SAFE_MIN_BU = 0.2
 EARTH_RADIUS_SAFE_MAX_BU = 20.0
 LOW_ALTITUDE_WARNING_EPS_KM = 0.05
@@ -486,6 +487,56 @@ class _PLANETKA_PT_BaseSection:
     # Blender's tab/category ordering can be influenced by low panel bl_order values.
     bl_order = 9000
     bl_options = {'DEFAULT_CLOSED'}
+
+
+class PLANETKA_OT_ToggleUiSection(bpy.types.Operator):
+    bl_idname = "planetka.toggle_ui_section"
+    bl_label = "Toggle UI Section"
+    bl_description = "Expand or collapse a Planetka UI section"
+    bl_options = {'INTERNAL'}
+
+    section_key: bpy.props.StringProperty(default="")
+    default_open: bpy.props.BoolProperty(default=True)
+
+    def execute(self, context):
+        scene = getattr(context, "scene", None)
+        key = str(getattr(self, "section_key", "") or "").strip()
+        if scene is None or not key:
+            return {'CANCELLED'}
+        try:
+            current = bool(scene.get(key, bool(getattr(self, "default_open", True))))
+            scene[key] = not current
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            logger.debug("Planetka: failed toggling UI section %s", key, exc_info=True)
+            return {'CANCELLED'}
+        return {'FINISHED'}
+
+
+def _draw_collapsible_subsection(layout, scene, title, icon, section_key, default_open=True):
+    expanded = bool(default_open)
+    if scene is not None:
+        try:
+            expanded = bool(scene.get(section_key, bool(default_open)))
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            expanded = bool(default_open)
+
+    box = layout.box()
+    header = box.row(align=True)
+    header.use_property_split = False
+    header.use_property_decorate = False
+    toggle = header.operator(
+        "planetka.toggle_ui_section",
+        text=str(title or ""),
+        icon='DISCLOSURE_TRI_DOWN' if expanded else 'DISCLOSURE_TRI_RIGHT',
+        emboss=False,
+    )
+    toggle.section_key = str(section_key or "")
+    toggle.default_open = bool(default_open)
+    if icon:
+        icon_row = header.row(align=True)
+        icon_row.alignment = 'RIGHT'
+        icon_row.label(text="", icon=icon)
+    return box if expanded else None
 
 
 def _has_earth():
@@ -1827,13 +1878,17 @@ def _draw_earth_settings(layout, scene, enabled):
     layout.use_property_split = True
     layout.use_property_decorate = False
 
-    # Blender 5.0 can crash inside uiLayout.panel() when this panel redraws
-    # immediately after Create Earth. Use a plain box here; stability matters
-    # more than a collapsible subsection.
-    transform_box = layout.box()
-    transform_box.label(text="Earth Transform", icon="EMPTY_AXIS")
-    transform_box.enabled = bool(enabled)
-    _draw_earth_transform(transform_box, scene)
+    transform_box = _draw_collapsible_subsection(
+        layout,
+        scene,
+        "Earth Transform",
+        "EMPTY_AXIS",
+        EARTH_TRANSFORM_SECTION_OPEN_KEY,
+        default_open=True,
+    )
+    if transform_box is not None:
+        transform_box.enabled = bool(enabled)
+        _draw_earth_transform(transform_box, scene)
 
     _draw_surface_grading(layout)
 

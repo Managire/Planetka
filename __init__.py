@@ -69,6 +69,7 @@ from .state import (
     stop_auto_resolve_service,
 )
 from .ui import (
+    PLANETKA_OT_ToggleUiSection,
     PLANETKA_PT_AccountPanel,
     PLANETKA_PT_AccountPanelCollapsed,
     PLANETKA_PT_LiveTelemetryPanel,
@@ -232,6 +233,7 @@ classes = (
     PLANETKA_OT_ReportBug,
     PLANETKA_OT_SaveStartupSetup,
     PLANETKA_OT_ResetStartupSetupFactory,
+    PLANETKA_OT_ToggleUiSection,
     PLANETKA_PT_AccountPanel,
     PLANETKA_PT_AccountPanelCollapsed,
     PLANETKA_PT_NewEarthPanel,
