@@ -375,7 +375,7 @@ def _draw_resolve_download_indicator(layout, scene, runtime, runtime_code, runti
     elif animation_render_running:
         status_label_text, status_icon = _animation_render_status_for_ui(scene)
     elif str(runtime_code or "").upper() in {"", "IDLE", "MONITORING"}:
-        status_label_text = f"Idle - Showing {_last_visible_texture_quality_label(scene)}"
+        status_label_text = f"Complete - Showing {_last_visible_texture_quality_label(scene)}"
 
     progress = get_download_progress()
     total_bytes = int(progress.get("total_bytes", 0) or 0)

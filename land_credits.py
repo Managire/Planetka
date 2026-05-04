@@ -23,7 +23,6 @@ logger = logging.getLogger(__name__)
 EARTH_RADIUS_KM = 6371.0088
 DATASET_BASE_MPP = 10.0
 FREE_D_THRESHOLD = 60
-FREE_DETAIL_RATIO = 4.0
 PAID_LAT_MIN_DEG = -60.0
 PAID_LAT_MAX_DEG = 75.0
 EQUATOR_Z001_AREA_KM2 = (40075.016686 / 360.0) ** 2
@@ -80,7 +79,7 @@ def detail_price_factor(tile: TileCode | str | None) -> float:
     if int(parsed.d) >= FREE_D_THRESHOLD:
         return 0.0
     ratio = detail_ratio(parsed)
-    if not math.isfinite(ratio) or ratio <= 0.0 or ratio >= FREE_DETAIL_RATIO:
+    if not math.isfinite(ratio) or ratio <= 0.0:
         return 0.0
     mpp = delivered_mpp_for_d(parsed.d)
     return float((DATASET_BASE_MPP / max(DATASET_BASE_MPP, mpp)) ** 2)
@@ -162,13 +161,33 @@ def paid_band_area_km2(tile: TileCode) -> float:
     return spherical_area_km2(west, east, billable_south, billable_north)
 
 
+def _effective_billable_land_km2(tile: TileCode, stats: dict, free_reason: str = "") -> float:
+    if str(free_reason or "").strip():
+        return 0.0
+    try:
+        billable = float(stats.get("billable_land_km2", 0.0) or 0.0)
+    except (AttributeError, TypeError, ValueError):
+        billable = 0.0
+    if billable > 0.0:
+        return max(0.0, billable)
+    try:
+        land = float(stats.get("land_km2", 0.0) or 0.0)
+    except (AttributeError, TypeError, ValueError):
+        land = 0.0
+    if land <= 0.0:
+        return 0.0
+    total_area = tile_area_km2(tile)
+    paid_area = paid_band_area_km2(tile)
+    if total_area <= 0.0 or paid_area <= 0.0:
+        return 0.0
+    return max(0.0, land * min(1.0, paid_area / total_area))
+
+
 def free_reason_for_tile(tile: TileCode) -> str:
     if int(tile.d) <= 0:
         return "d000_global_free"
     if int(tile.d) >= FREE_D_THRESHOLD:
         return "coarse_detail_free"
-    if detail_ratio(tile) >= FREE_DETAIL_RATIO:
-        return "preview_detail_free"
     south, north = tile_lat_bounds(tile)
     if north <= PAID_LAT_MIN_DEG:
         return "south_polar_free"
@@ -312,10 +331,8 @@ def credits_for_tile(tile_key: str, quality_mode: str = "FULL", allow_estimate: 
     if mode == "PREVIEW":
         free_reason = free_reason or "preview_quality"
     mpp = delivered_mpp_for_d(tile.d)
-    base_credits = max(
-        0.0,
-        float(stats.get("base_credits", 0.0) or 0.0),
-    )
+    billable_land_km2 = _effective_billable_land_km2(tile, stats, free_reason=free_reason)
+    base_credits = max(0.0, billable_land_km2 / EQUATOR_Z001_AREA_KM2)
     price_factor = detail_price_factor(tile)
     credits = 0.0 if free_reason else (base_credits * price_factor)
     return {
@@ -323,7 +340,7 @@ def credits_for_tile(tile_key: str, quality_mode: str = "FULL", allow_estimate: 
         "quality_mode": mode.lower(),
         "credits": round(max(0.0, float(credits)), 6),
         "land_km2": round(max(0.0, float(stats.get("land_km2", 0.0) or 0.0)), 6),
-        "billable_land_km2": round(max(0.0, float(stats.get("billable_land_km2", 0.0) or 0.0)), 6),
+        "billable_land_km2": round(max(0.0, float(billable_land_km2)), 6),
         "delivered_mpp": round(float(mpp), 6),
         "detail_ratio": round(float(detail_ratio(tile)), 6),
         "price_factor": round(float(price_factor), 6),

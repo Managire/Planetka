@@ -40,7 +40,6 @@ DEFAULT_OCEAN_FALLBACK = ROOT / "Resources" / "Fallback Images" / "ocean_pixel_f
 TILE_RE = re.compile(r"^S2_(x(\d{3})_y(\d{3})_z(\d{3})_d(\d{3}))\.exr$", re.IGNORECASE)
 EARTH_RADIUS_KM = 6371.0088
 FREE_D_THRESHOLD = 60
-FREE_DETAIL_RATIO = 4.0
 PAID_LAT_MIN_DEG = -60.0
 PAID_LAT_MAX_DEG = 75.0
 EQUATOR_Z001_AREA_KM2 = (40075.016686 / 360.0) ** 2
@@ -173,8 +172,6 @@ def scan_s2_file(path: Path, x: int, y: int, z: int, d: int):
             free_reason = "d000_global_free"
         elif d >= FREE_D_THRESHOLD:
             free_reason = "coarse_detail_free"
-        elif detail_ratio >= FREE_DETAIL_RATIO:
-            free_reason = "preview_detail_free"
         elif lat_north <= PAID_LAT_MIN_DEG:
             free_reason = "south_polar_free"
         elif lat_south >= PAID_LAT_MAX_DEG:

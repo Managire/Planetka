@@ -1,10 +1,11 @@
 const TILE_KEY_RE = /x(\d{3})_y(\d{3})_z(\d{3})_d(\d{3})/i;
 const ASSET_RE = /^(?:S2|EL|WT|PO)_(x\d{3}_y\d{3}_z\d{3}_d\d{3})\.(?:exr|tif)$/i;
 const FREE_D_THRESHOLD = 60;
-const FREE_DETAIL_RATIO = 4.0;
 const ACCOUNT_TYPE_STANDARD = "standard";
 const DEFAULT_STARTING_CREDITS = 100.0;
 const DATASET_BASE_MPP = 10.0;
+const EARTH_RADIUS_KM = 6371.0088;
+const EQUATOR_Z001_AREA_KM2 = (40075.016686 / 360.0) ** 2;
 
 function normalizeTileKey(value) {
   const raw = String(value || "").trim();
@@ -62,6 +63,58 @@ function detailRatioForTile(parsed) {
   return d / z;
 }
 
+function sphericalAreaKm2(lonWest, lonEast, latSouth, latNorth) {
+  if (!(lonEast > lonWest) || !(latNorth > latSouth)) {
+    return 0;
+  }
+  const lonDelta = (Number(lonEast) - Number(lonWest)) * Math.PI / 180;
+  const southRad = Number(latSouth) * Math.PI / 180;
+  const northRad = Number(latNorth) * Math.PI / 180;
+  return Math.max(0, (EARTH_RADIUS_KM ** 2) * lonDelta * Math.abs(Math.sin(northRad) - Math.sin(southRad)));
+}
+
+function tileAreaKm2(parsed) {
+  if (!parsed) {
+    return 0;
+  }
+  const lonWest = Number(parsed.x) - 180;
+  const lonEast = Number(parsed.x + parsed.z) - 180;
+  const latSouth = Math.max(-90, Number(parsed.y) - 90);
+  const latNorth = Math.min(90, Number(parsed.y + parsed.z) - 90);
+  return sphericalAreaKm2(lonWest, lonEast, latSouth, latNorth);
+}
+
+function paidBandAreaKm2(parsed) {
+  if (!parsed) {
+    return 0;
+  }
+  const lonWest = Number(parsed.x) - 180;
+  const lonEast = Number(parsed.x + parsed.z) - 180;
+  const latSouth = Math.max(-90, Number(parsed.y) - 90);
+  const latNorth = Math.min(90, Number(parsed.y + parsed.z) - 90);
+  return sphericalAreaKm2(lonWest, lonEast, Math.max(latSouth, -60), Math.min(latNorth, 75));
+}
+
+function effectiveBillableLandKm2(parsed, stats, freeReason) {
+  if (String(freeReason || "").trim()) {
+    return 0;
+  }
+  const storedBillable = Math.max(0, Number.parseFloat(stats && stats.billable_land_km2 || 0) || 0);
+  if (storedBillable > 0) {
+    return storedBillable;
+  }
+  const land = Math.max(0, Number.parseFloat(stats && stats.land_km2 || 0) || 0);
+  if (land <= 0) {
+    return 0;
+  }
+  const totalArea = tileAreaKm2(parsed);
+  const paidArea = paidBandAreaKm2(parsed);
+  if (!(totalArea > 0) || !(paidArea > 0)) {
+    return 0;
+  }
+  return Math.max(0, land * Math.min(1, paidArea / totalArea));
+}
+
 function freeReasonForTile(parsed) {
   if (!parsed) {
     return "invalid_tile_key";
@@ -71,9 +124,6 @@ function freeReasonForTile(parsed) {
   }
   if (parsed.d >= FREE_D_THRESHOLD) {
     return "coarse_detail_free";
-  }
-  if (detailRatioForTile(parsed) >= FREE_DETAIL_RATIO) {
-    return "preview_detail_free";
   }
   const south = Number(parsed.y) - 90;
   const north = Number(parsed.y + parsed.z) - 90;
@@ -131,7 +181,8 @@ function creditsForTileStats(tile, stats, qualityMode) {
     ? "preview_quality"
     : derivedFreeReason;
   const mpp = deliveredMppForD(tile && tile.d);
-  const baseCredits = Math.max(0, Number.parseFloat(stats && stats.base_credits || 0) || 0);
+  const billableLandKm2 = effectiveBillableLandKm2(tile, stats, freeReason);
+  const baseCredits = Math.max(0, billableLandKm2 / EQUATOR_Z001_AREA_KM2);
   const qualityFactor = (DATASET_BASE_MPP / Math.max(DATASET_BASE_MPP, mpp)) ** 2;
   const credits = freeReason ? 0 : baseCredits * qualityFactor;
   const priceEur = normalizeCreditAmount(credits);
@@ -140,7 +191,7 @@ function creditsForTileStats(tile, stats, qualityMode) {
     credits: priceEur,
     price_eur: priceEur,
     land_km2: Math.max(0, Number.parseFloat(stats && stats.land_km2 || 0) || 0),
-    billable_land_km2: Math.max(0, Number.parseFloat(stats && stats.billable_land_km2 || 0) || 0),
+    billable_land_km2: billableLandKm2,
     delivered_mpp: normalizeCreditAmount(mpp),
     detail_ratio: normalizeCreditAmount(detailRatioForTile(tile)),
     price_factor: normalizeCreditAmount(qualityFactor),
