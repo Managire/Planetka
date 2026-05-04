@@ -813,6 +813,44 @@ def _write_scene_auto_resolve_state(state):
     return _auto_resolve_state._write_scene_auto_resolve_state(state, _AUTO_RESOLVE_STATE_CTX)
 
 
+def mark_auto_resolve_clean_after_resolve(scene):
+    if scene is None:
+        return
+    scene_state = _read_scene_auto_resolve_state(scene)
+    if scene_state is None:
+        return
+    now = time.monotonic()
+    try:
+        scene_id = _scene_key(scene)
+        active_view_signature = None
+        try:
+            if _auto_resolve_scope_mode(scene) == "ACTIVE_VIEW":
+                active_view_signature = _active_view_signature()
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            active_view_signature = None
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            active_view_signature = None
+        camera_signature = _camera_signature(scene)
+        signature = (
+            ("ACTIVE_VIEW", active_view_signature)
+            if active_view_signature is not None
+            else camera_signature
+        )
+        output_signature = _output_resolution_signature(scene)
+        scene_state.last_resolve_time = now
+        scene_state.last_change_time = now
+        scene_state.last_camera_signature = signature
+        scene_state.last_output_signature = output_signature
+        scene_state.last_processed_signature = signature
+        scene_state.pending_output_change = False
+        _write_scene_auto_resolve_state(scene_state)
+        _VIEWPORT_SCOPE_LAST_RESOLVE_TIME[scene_id] = now
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed marking auto-resolve state clean after resolve", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed marking auto-resolve state clean after resolve", exc_info=True)
+
+
 def _make_depsgraph_trigger_signature(scene):
     return _auto_resolve_state._make_depsgraph_trigger_signature(scene, _AUTO_RESOLVE_STATE_CTX)
 

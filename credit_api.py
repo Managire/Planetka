@@ -247,6 +247,34 @@ def estimate_credit_breakdown_for_tiles(tiles, quality_mode="FULL") -> dict:
     return estimate_credits_for_tiles(tiles, quality_mode=mode)
 
 
+def create_checkout_session(option: str, tiles=None, quality_mode="FULL") -> dict:
+    """Create a Stripe Checkout Session for scene data or a fixed balance top-up."""
+    safe_option = str(option or "scene").strip().lower()
+    if safe_option not in {"scene", "balance_10", "top_up_10", "topup_10"}:
+        safe_option = "scene"
+    tile_keys = []
+    if safe_option == "scene":
+        for entry in list(tiles or ()):
+            if isinstance(entry, dict):
+                key = str(entry.get("tile_key") or entry.get("tileKey") or entry.get("key") or "").strip()
+            else:
+                key = str(entry or "").strip()
+            if key and key not in tile_keys:
+                tile_keys.append(key)
+    payload = {
+        "option": "balance_10" if safe_option in {"balance_10", "top_up_10", "topup_10"} else "scene",
+        "quality_mode": str(quality_mode or "FULL").strip().lower(),
+        "tile_keys": tile_keys,
+    }
+    result = _request_json("POST", "/credits/checkout", body=payload, timeout=30)
+    if isinstance(result, dict) and result.get("ok", False):
+        return dict(result)
+    error = "checkout_create_failed"
+    if isinstance(result, dict):
+        error = str(result.get("error", "") or error)
+    raise CreditApiError(0, error, payload=result if isinstance(result, dict) else {})
+
+
 def _parse_unlocked_at(value):
     text = str(value or "").strip()
     if not text:

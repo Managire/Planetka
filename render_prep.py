@@ -55,6 +55,7 @@ from .state import (
     ensure_preview_object,
     ensure_planetka_temp_collection,
     logger,
+    mark_auto_resolve_clean_after_resolve,
     queue_resolve_download,
     remove_object_and_unused_mesh,
     replace_tiles,
@@ -1733,6 +1734,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             logger.debug("Planetka: failed storing last resolved texture quality", exc_info=True)
         except (RuntimeError, TypeError, ValueError):
             logger.debug("Planetka: failed storing last resolved texture quality", exc_info=True)
+        mark_auto_resolve_clean_after_resolve(scene)
 
         self._flush_ui_reports(ui_reports)
         _restore_navigation_adaptive_state_safe("failed post-resolve adaptive viewport restore")

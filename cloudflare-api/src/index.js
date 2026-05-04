@@ -87,6 +87,7 @@ import {
 } from "./worker/admin_user_handlers.js";
 import {
   handleAdminGiftCredits as handleAdminGiftCreditsRoute,
+  handleCreditCheckout as handleCreditCheckoutRoute,
   handleCreditEstimate as handleCreditEstimateRoute,
   handleCreditMe as handleCreditMeRoute,
   handleCreditUnlocked as handleCreditUnlockedRoute,
@@ -388,16 +389,23 @@ const ADMIN_USER_DEPS = {
 };
 
 const BILLING_DEPS = {
+  dbAll,
+  dbGet,
+  dbMetaChanges,
   dbRun,
+  ensureCreditTables,
   ensureStripeWebhookEventsTable,
   enforceUserPlanPolicy,
   evaluateStripePlanPurchaseGuard,
+  findUserById,
   findUserByEmail,
   hmacSha256Hex,
+  invalidateAnalyticsSnapshots,
   isBlockedStatus,
   json,
   normalizeEmail,
   normalizePlanCode,
+  normalizeQualityMode,
   normalizeRequestedPlan,
   normalizeUserStatus,
   nowIso,
@@ -406,6 +414,7 @@ const BILLING_DEPS = {
   PLAN_CODE_PERSONAL,
   PLAN_CODE_FREE,
   PLAN_CODE_COMMERCIAL,
+  randomToken,
   requireDb,
   requireSecret,
   resolvePlanCode,
@@ -3213,6 +3222,7 @@ const TILE_ROUTE_DEPS = {
   maybeSignalTileFarmingActivity,
   minimumPlanQualityForTile,
   normalizeDeviceId,
+  normalizeEmail,
   normalizeQualityMode,
   normalizeRequestedPlan,
   normalizeResolveId,
@@ -3227,6 +3237,7 @@ const TILE_ROUTE_DEPS = {
   requestCountry,
   requireAuthenticatedUserContext: (request, env, options) => requireAuthenticatedUserContext(request, env, options, AUTH_SESSION_DEPS),
   requireDb,
+  requireSecret,
   resolveTileCacheControl,
   json,
 };
@@ -3324,6 +3335,11 @@ async function dispatchExactRoute(request, env, path) {
     case "/credits/estimate":
       if (request.method === "POST") {
         return await handleCreditEstimateRoute(request, env, TILE_ROUTE_DEPS);
+      }
+      return null;
+    case "/credits/checkout":
+      if (request.method === "POST") {
+        return await handleCreditCheckoutRoute(request, env, TILE_ROUTE_DEPS);
       }
       return null;
     case "/credits/unlocked":

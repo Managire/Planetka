@@ -6,6 +6,8 @@ const DEFAULT_STARTING_CREDITS = 100.0;
 const DATASET_BASE_MPP = 10.0;
 const EARTH_RADIUS_KM = 6371.0088;
 const EQUATOR_Z001_AREA_KM2 = (40075.016686 / 360.0) ** 2;
+const CHECKOUT_BALANCE_TOP_UP_EUR = 10.0;
+const STRIPE_MIN_CHECKOUT_AMOUNT_CENTS = 50;
 
 function normalizeTileKey(value) {
   const raw = String(value || "").trim();
@@ -161,6 +163,34 @@ function normalizeCreditAmount(value) {
     return 0;
   }
   return Math.round(parsed * 1_000_000) / 1_000_000;
+}
+
+function centsForEur(value) {
+  const amount = normalizeCreditAmount(value);
+  if (amount <= 0) {
+    return 0;
+  }
+  return Math.max(0, Math.round(amount * 100));
+}
+
+function defaultCheckoutSuccessUrl(env) {
+  return String(
+    env.STRIPE_CHECKOUT_SUCCESS_URL
+    || env.PLANETKA_CHECKOUT_SUCCESS_URL
+    || "https://www.planetka.io/payment/success",
+  ).trim();
+}
+
+function defaultCheckoutCancelUrl(env) {
+  return String(
+    env.STRIPE_CHECKOUT_CANCEL_URL
+    || env.PLANETKA_CHECKOUT_CANCEL_URL
+    || "https://www.planetka.io/payment/cancelled",
+  ).trim();
+}
+
+function checkoutMetadataValue(value, maxLength = 480) {
+  return String(value || "").trim().slice(0, Math.max(1, Number(maxLength) || 480));
 }
 
 function deliveredMppForD(dValue) {
@@ -626,6 +656,302 @@ export async function unlockTilesForSession(db, userId, qualityMode, tileKeys, r
     free_tile_count: estimatedFreeCount + skippedPaidCount,
     new_tiles: insertedTiles,
   };
+}
+
+export async function addCreditBalance(db, userId, amountEur, reason, metadata, deps) {
+  const safeUserId = String(userId || "").trim();
+  const amount = normalizeCreditAmount(amountEur);
+  if (!safeUserId || amount <= 0) {
+    return { error: "missing_positive_amount", balance_credits: 0 };
+  }
+  const safeReason = String(reason || "balance_top_up").trim().slice(0, 160) || "balance_top_up";
+  const now = deps.nowIso();
+  await ensureCreditAccount(db, safeUserId, deps);
+  await deps.dbRun(
+    db,
+    `
+      UPDATE user_credit_accounts
+      SET
+        balance_credits = balance_credits + ?,
+        total_granted_credits = total_granted_credits + ?,
+        updated_at = ?
+      WHERE user_id = ?
+    `,
+    [amount, amount, now, safeUserId],
+  );
+  const account = await ensureCreditAccount(db, safeUserId, deps);
+  const balanceAfter = normalizeCreditAmount(account && account.balance_credits);
+  await deps.dbRun(
+    db,
+    `
+      INSERT INTO credit_ledger (
+        id, user_id, delta_credits, balance_after_credits, reason, metadata_json, created_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `,
+    [
+      deps.randomToken(16),
+      safeUserId,
+      amount,
+      balanceAfter,
+      safeReason,
+      JSON.stringify(metadata && typeof metadata === "object" ? metadata : {}),
+      now,
+    ],
+  );
+  return {
+    ok: true,
+    added_credits: amount,
+    added_eur: amount,
+    balance_credits: balanceAfter,
+    balance_eur: balanceAfter,
+  };
+}
+
+export async function grantPaidSceneTileEntitlements(db, userId, qualityMode, tileKeys, resolveId, amountPaidEur, deps) {
+  const safeMode = deps.normalizeQualityMode(qualityMode || "");
+  if (safeMode !== "full") {
+    return { error: "unsupported_quality_mode" };
+  }
+  const safeUserId = String(userId || "").trim();
+  const estimate = await estimateNewCredits(db, safeUserId, tileKeys, safeMode, deps);
+  if (estimate && estimate.error) {
+    return estimate;
+  }
+  await ensureCreditAccount(db, safeUserId, deps);
+  const now = deps.nowIso();
+  const insertedTiles = [];
+  let nominalCredits = 0;
+  for (const tile of estimate.new_tiles || []) {
+    const tileCredits = normalizeCreditAmount(tile.credits);
+    const insert = await deps.dbRun(
+      db,
+      `
+        INSERT OR IGNORE INTO user_tile_entitlements (
+          user_id, tile_key, quality_mode, credits_spent, land_km2, billable_land_km2, source, unlocked_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        safeUserId,
+        tile.tile_key,
+        safeMode,
+        tileCredits,
+        Math.max(0, Number.parseFloat(tile.land_km2 || 0) || 0),
+        Math.max(0, Number.parseFloat(tile.billable_land_km2 || 0) || 0),
+        "stripe_checkout",
+        now,
+      ],
+    );
+    if (deps.dbMetaChanges(insert) > 0) {
+      insertedTiles.push(tile);
+      nominalCredits = normalizeCreditAmount(nominalCredits + tileCredits);
+    }
+  }
+  await deps.dbRun(
+    db,
+    `
+      INSERT INTO credit_ledger (
+        id, user_id, delta_credits, balance_after_credits, reason, metadata_json, created_at
+      )
+      VALUES (?, ?, 0, (SELECT balance_credits FROM user_credit_accounts WHERE user_id = ?), 'stripe_scene_purchase', ?, ?)
+    `,
+    [
+      deps.randomToken(16),
+      safeUserId,
+      safeUserId,
+      JSON.stringify({
+        resolve_id: String(resolveId || ""),
+        quality_mode: safeMode,
+        tile_count: insertedTiles.length,
+        nominal_eur: nominalCredits,
+        paid_eur: normalizeCreditAmount(amountPaidEur),
+      }),
+      now,
+    ],
+  );
+  return {
+    ...estimate,
+    credits: 0,
+    price_eur: 0,
+    paid_eur: normalizeCreditAmount(amountPaidEur),
+    nominal_eur: nominalCredits,
+    paid_tile_count: insertedTiles.length,
+    new_tiles: insertedTiles,
+  };
+}
+
+async function createStripeCheckoutSession(env, params, deps) {
+  const secretKey = deps.requireSecret(env, "STRIPE_SECRET_KEY");
+  const metadata = params.metadata && typeof params.metadata === "object" ? params.metadata : {};
+  const body = new URLSearchParams();
+  body.set("mode", "payment");
+  body.set("success_url", defaultCheckoutSuccessUrl(env));
+  body.set("cancel_url", defaultCheckoutCancelUrl(env));
+  body.set("client_reference_id", checkoutMetadataValue(params.clientReferenceId || ""));
+  if (params.customerEmail) {
+    body.set("customer_email", checkoutMetadataValue(params.customerEmail || "", 320));
+  }
+  body.set("line_items[0][quantity]", "1");
+  body.set("line_items[0][price_data][currency]", "eur");
+  body.set("line_items[0][price_data][unit_amount]", String(Math.max(0, Math.floor(params.amountCents || 0))));
+  body.set("line_items[0][price_data][product_data][name]", checkoutMetadataValue(params.productName || "Planetka Data", 320));
+  for (const [key, value] of Object.entries(metadata)) {
+    const safeKey = String(key || "").trim().slice(0, 40);
+    if (!safeKey) {
+      continue;
+    }
+    const safeValue = checkoutMetadataValue(value, 480);
+    body.set(`metadata[${safeKey}]`, safeValue);
+    body.set(`payment_intent_data[metadata][${safeKey}]`, safeValue);
+  }
+  const response = await fetch("https://api.stripe.com/v1/checkout/sessions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${secretKey}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: body.toString(),
+  });
+  const responseText = await response.text();
+  let payload = {};
+  try {
+    payload = JSON.parse(responseText || "{}");
+  } catch (_error) {
+    payload = {};
+  }
+  if (!response.ok) {
+    return {
+      error: "stripe_checkout_create_failed",
+      status: response.status,
+      message: String(payload && payload.error && payload.error.message || responseText || "").slice(0, 500),
+    };
+  }
+  return {
+    ok: true,
+    session_id: String(payload && payload.id || ""),
+    checkout_url: String(payload && payload.url || ""),
+  };
+}
+
+export async function handleCreditCheckout(request, env, deps) {
+  const auth = await deps.requireAuthenticatedUserContext(request, env, { enforceApiKeyDevicePolicy: false });
+  if (auth.error) {
+    return auth.error;
+  }
+  const db = deps.requireDb(env);
+  await ensureCreditAccount(db, auth.user.id, deps);
+  const body = await deps.parseJson(request);
+  const option = String(body && (body.option || body.purchase_type || body.purchaseType) || "scene").trim().toLowerCase();
+  const email = deps.normalizeEmail(auth.user && auth.user.email || "");
+  const userId = String(auth.user && auth.user.id || "").trim();
+
+  if (option === "balance_10" || option === "top_up_10" || option === "topup_10") {
+    const amountEur = CHECKOUT_BALANCE_TOP_UP_EUR;
+    const session = await createStripeCheckoutSession(
+      env,
+      {
+        amountCents: centsForEur(amountEur),
+        customerEmail: email,
+        clientReferenceId: userId,
+        productName: "Planetka EUR Balance Top-Up",
+        metadata: {
+          planetka_purchase_type: "balance_top_up",
+          planetka_user_id: userId,
+          planetka_email: email,
+          planetka_top_up_eur: amountEur.toFixed(2),
+        },
+      },
+      deps,
+    );
+    if (session.error) {
+      return deps.json({ ok: false, ...session }, 502, env);
+    }
+    return deps.json({ ok: true, option: "balance_10", price_eur: amountEur, ...session }, 200, env);
+  }
+
+  const tileKeys = requestTileKeysFromBody(body);
+  const qualityMode = deps.normalizeQualityMode(body && body.quality_mode || body && body.qualityMode || "full");
+  if (qualityMode !== "full") {
+    return deps.json({ ok: false, error: "unsupported_checkout_quality" }, 400, env);
+  }
+  const estimate = await estimateNewCredits(db, userId, tileKeys, qualityMode, deps);
+  if (estimate && estimate.error === "credit_pricing_missing_tile_stats") {
+    return deps.json(
+      {
+        ok: false,
+        error: "credit_pricing_missing_tile_stats",
+        message: "Planetka EUR pricing metadata is missing for a requested tile.",
+        tile_key: String(estimate.missing_tile_key || ""),
+      },
+      503,
+      env,
+    );
+  }
+  const priceEur = normalizeCreditAmount(estimate && estimate.credits);
+  if (priceEur <= 0) {
+    return deps.json(
+      {
+        ok: true,
+        option: "scene",
+        no_payment_required: true,
+        price_eur: 0,
+        message: "This scene has no newly charged Full Quality tiles.",
+      },
+      200,
+      env,
+    );
+  }
+  const amountCents = centsForEur(priceEur);
+  if (amountCents < STRIPE_MIN_CHECKOUT_AMOUNT_CENTS) {
+    return deps.json(
+      {
+        ok: false,
+        error: "amount_below_stripe_minimum",
+        price_eur: priceEur,
+        minimum_eur: STRIPE_MIN_CHECKOUT_AMOUNT_CENTS / 100.0,
+        message: "This scene price is below Stripe's minimum checkout amount. Add €10 balance instead.",
+      },
+      400,
+      env,
+    );
+  }
+
+  const normalizedKeys = normalizeTileKeys(tileKeys);
+  const session = await createStripeCheckoutSession(
+    env,
+    {
+      amountCents,
+      customerEmail: email,
+      clientReferenceId: userId,
+      productName: "Planetka Full Quality Scene Data",
+      metadata: {
+        planetka_purchase_type: "scene_tiles",
+        planetka_user_id: userId,
+        planetka_email: email,
+        planetka_quality_mode: "full",
+        planetka_tile_keys_json: JSON.stringify(normalizedKeys),
+        planetka_price_eur: priceEur.toFixed(6),
+        planetka_paid_tile_count: String(Math.max(0, Number.parseInt(estimate && estimate.paid_tile_count || 0, 10) || 0)),
+      },
+    },
+    deps,
+  );
+  if (session.error) {
+    return deps.json({ ok: false, ...session }, 502, env);
+  }
+  return deps.json(
+    {
+      ok: true,
+      option: "scene",
+      price_eur: priceEur,
+      paid_tile_count: estimate.paid_tile_count,
+      tile_count: estimate.tile_count,
+      ...session,
+    },
+    200,
+    env,
+  );
 }
 
 export async function handleCreditMe(request, env, deps) {

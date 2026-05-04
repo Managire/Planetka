@@ -1,3 +1,8 @@
+import {
+  addCreditBalance,
+  grantPaidSceneTileEntitlements,
+} from "./credit_routes.js";
+
 function stripeSignatureHeaderParts(header) {
   const parts = String(header || "").split(",");
   const values = {};
@@ -13,6 +18,30 @@ function stripeSignatureHeaderParts(header) {
     }
   }
   return values;
+}
+
+function stripeMetadata(session) {
+  const metadata = session && session.metadata && typeof session.metadata === "object"
+    ? session.metadata
+    : {};
+  return metadata || {};
+}
+
+function parseStripeMetadataTileKeys(value) {
+  try {
+    const parsed = JSON.parse(String(value || "[]"));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_error) {
+    return [];
+  }
+}
+
+function eurFromStripeAmountCents(value) {
+  const cents = Number.parseInt(value, 10);
+  if (!Number.isFinite(cents) || cents <= 0) {
+    return 0;
+  }
+  return Math.round((cents / 100.0) * 1_000_000) / 1_000_000;
 }
 
 async function verifyStripeWebhook(request, env, rawBody, deps) {
@@ -368,6 +397,142 @@ export async function handleStripeWebhook(request, env, deps) {
         event_type: eventType,
         email,
         payment_status: paymentStatus,
+      },
+      200,
+      env,
+    );
+  }
+
+  const metadata = stripeMetadata(session);
+  const purchaseType = String(metadata.planetka_purchase_type || "").trim().toLowerCase();
+  if (purchaseType === "balance_top_up" || purchaseType === "scene_tiles") {
+    const metadataUserId = String(metadata.planetka_user_id || "").trim();
+    let targetUser = metadataUserId && typeof deps.findUserById === "function"
+      ? await deps.findUserById(db, metadataUserId)
+      : null;
+    if (!targetUser) {
+      targetUser = await deps.findUserByEmail(db, email);
+    }
+    if (!targetUser || !targetUser.id) {
+      console.error(
+        "stripe.webhook.credit_purchase_missing_user",
+        JSON.stringify({ event_type: eventType, email, session_id: sessionId, purchase_type: purchaseType }),
+      );
+      return deps.json({ ok: false, error: "credit_purchase_user_not_found" }, 404, env);
+    }
+    await deps.ensureCreditTables(db);
+    const userId = String(targetUser.id || "").trim();
+    const amountPaidEur = eurFromStripeAmountCents(session.amount_total);
+    if (purchaseType === "balance_top_up") {
+      const requestedTopUp = Number.parseFloat(metadata.planetka_top_up_eur || "");
+      const topUpEur = Number.isFinite(requestedTopUp) && requestedTopUp > 0
+        ? Math.round(requestedTopUp * 1_000_000) / 1_000_000
+        : amountPaidEur;
+      const topUp = await addCreditBalance(
+        db,
+        userId,
+        topUpEur,
+        "stripe_balance_top_up",
+        {
+          stripe_session_id: sessionId,
+          stripe_amount_paid_eur: amountPaidEur,
+          customer_email: email,
+        },
+        deps,
+      );
+      if (topUp.error) {
+        return deps.json({ ok: false, error: topUp.error }, 400, env);
+      }
+      if (typeof deps.invalidateAnalyticsSnapshots === "function") {
+        try {
+          await deps.invalidateAnalyticsSnapshots(env);
+        } catch (error) {
+          console.warn(
+            "stripe.webhook.balance_top_up_snapshot_invalidate_failed",
+            JSON.stringify({ error: String(error && error.message || "snapshot_invalidate_failed"), user_id: userId }),
+          );
+        }
+      }
+      console.log(
+        "stripe.webhook.balance_top_up_processed",
+        JSON.stringify({
+          event_type: eventType,
+          email,
+          session_id: sessionId,
+          user_id: userId,
+          top_up_eur: topUpEur,
+          balance_eur: topUp.balance_eur,
+        }),
+      );
+      return deps.json(
+        {
+          ok: true,
+          processed: true,
+          event_type: eventType,
+          email,
+          purchase_type: purchaseType,
+          balance_eur: topUp.balance_eur,
+        },
+        200,
+        env,
+      );
+    }
+
+    const tileKeys = parseStripeMetadataTileKeys(metadata.planetka_tile_keys_json);
+    const qualityMode = deps.normalizeQualityMode(metadata.planetka_quality_mode || "full");
+    const grant = await grantPaidSceneTileEntitlements(
+      db,
+      userId,
+      qualityMode,
+      tileKeys,
+      sessionId,
+      amountPaidEur,
+      deps,
+    );
+    if (grant && grant.error) {
+      console.error(
+        "stripe.webhook.scene_purchase_failed",
+        JSON.stringify({
+          event_type: eventType,
+          email,
+          session_id: sessionId,
+          user_id: userId,
+          error: grant.error,
+          missing_tile_key: grant.missing_tile_key || "",
+        }),
+      );
+      return deps.json({ ok: false, error: grant.error, tile_key: grant.missing_tile_key || "" }, 500, env);
+    }
+    if (typeof deps.invalidateAnalyticsSnapshots === "function") {
+      try {
+        await deps.invalidateAnalyticsSnapshots(env);
+      } catch (error) {
+        console.warn(
+          "stripe.webhook.scene_purchase_snapshot_invalidate_failed",
+          JSON.stringify({ error: String(error && error.message || "snapshot_invalidate_failed"), user_id: userId }),
+        );
+      }
+    }
+    console.log(
+      "stripe.webhook.scene_purchase_processed",
+      JSON.stringify({
+        event_type: eventType,
+        email,
+        session_id: sessionId,
+        user_id: userId,
+        amount_paid_eur: amountPaidEur,
+        tile_count: Array.isArray(tileKeys) ? tileKeys.length : 0,
+        unlocked_tile_count: grant && grant.paid_tile_count || 0,
+      }),
+    );
+    return deps.json(
+      {
+        ok: true,
+        processed: true,
+        event_type: eventType,
+        email,
+        purchase_type: purchaseType,
+        unlocked_tile_count: grant && grant.paid_tile_count || 0,
       },
       200,
       env,

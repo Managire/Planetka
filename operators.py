@@ -322,6 +322,7 @@ from .state import (
     logger,
     remove_object_and_unused_mesh,
     resume_navigation_shot_updates,
+    stop_auto_resolve_download_pipeline,
     suspend_navigation_shot_updates,
     update_resolve_size_estimates,
     warm_base_sphere_mesh_cache,
@@ -477,6 +478,8 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
             )
 
         try:
+            if target_mode == "FULL":
+                stop_auto_resolve_download_pipeline()
             result = bpy.ops.planetka.load_textures(
                 skip_render_compatibility=True,
                 defer_download=False,
@@ -509,6 +512,130 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
+    bl_idname = "planetka.open_credit_checkout"
+    bl_label = "Open Planetka Payment"
+    bl_description = "Open Stripe Checkout for Full Quality scene data or EUR balance"
+
+    checkout_option: EnumProperty(
+        name="Payment Option",
+        items=(
+            ("OPTIONS", "Payment Options", "Choose how to pay for Planetka Full Quality data"),
+            ("SCENE", "Buy This Scene", "Pay the exact current Full Quality scene price"),
+            ("BALANCE_10", "Add €10 Balance", "Add €10 to your Planetka balance"),
+        ),
+        default="OPTIONS",
+        options={'HIDDEN', 'SKIP_SAVE'},
+    )
+
+    texture_quality_mode: EnumProperty(
+        name="Texture Quality",
+        items=(("FULL", "Full Quality", "Full Quality paid land-detail data"),),
+        default="FULL",
+        options={'HIDDEN', 'SKIP_SAVE'},
+    )
+
+    def _open_url(self, url):
+        safe_url = str(url or "").strip()
+        if not safe_url:
+            return False
+        try:
+            result = bpy.ops.wm.url_open(url=safe_url)
+            if "FINISHED" in result:
+                return True
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed opening checkout URL through Blender", exc_info=True)
+        try:
+            import webbrowser
+            return bool(webbrowser.open(safe_url))
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed opening checkout URL in system browser", exc_info=True)
+        return False
+
+    def _current_scene_tile_keys(self, context):
+        try:
+            prefs = get_prefs()
+            base_path = str(getattr(prefs, "texture_base_path", "") or "") if prefs else ""
+            from .planetka_runtime.view_telemetry import build_resolve_cost_breakdown
+            breakdown = build_resolve_cost_breakdown(
+                scene=getattr(context, "scene", None),
+                scope_mode="CAMERA",
+                base_path=base_path,
+                texture_quality_mode="FULL",
+            )
+        except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
+            raise RuntimeError(f"Unable to calculate scene price: {exc}") from exc
+        except (ImportError, RuntimeError, TypeError, ValueError, AttributeError) as exc:
+            raise RuntimeError(f"Unable to calculate scene price: {exc}") from exc
+        keys = []
+        for entry in list((breakdown or {}).get("tiles", ()) or ()):
+            key = str(entry.get("tile_key", "") if isinstance(entry, dict) else entry or "").strip()
+            if key and key not in keys:
+                keys.append(key)
+        return keys
+
+    def invoke(self, context, event):
+        del event
+        option = str(getattr(self, "checkout_option", "OPTIONS") or "OPTIONS").strip().upper()
+        if option != "OPTIONS":
+            return self.execute(context)
+        wm = getattr(context, "window_manager", None)
+        if wm is None:
+            return {'CANCELLED'}
+        return wm.invoke_popup(self, width=360)
+
+    def draw(self, _context):
+        layout = self.layout
+        layout.label(text="Full Quality payment", icon="URL")
+        layout.operator(
+            "planetka.open_credit_checkout",
+            text="Buy This Scene",
+            icon="URL",
+        ).checkout_option = "SCENE"
+        layout.operator(
+            "planetka.open_credit_checkout",
+            text="Add €10 Balance",
+            icon="URL",
+        ).checkout_option = "BALANCE_10"
+
+    def execute(self, context):
+        if _cancel_if_animation_render_active(self, "Planetka payment"):
+            return {'CANCELLED'}
+        option = str(getattr(self, "checkout_option", "SCENE") or "SCENE").strip().upper()
+        if option == "OPTIONS":
+            return {'FINISHED'}
+        try:
+            from .credit_api import create_checkout_session
+            tile_keys = self._current_scene_tile_keys(context) if option == "SCENE" else []
+            checkout = create_checkout_session(
+                "balance_10" if option == "BALANCE_10" else "scene",
+                tiles=tile_keys,
+                quality_mode="FULL",
+            )
+        except Exception as exc:
+            return fail(
+                self,
+                f"Unable to open Planetka payment: {exc}",
+                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                logger=logger,
+                exc=exc,
+                log_message="Planetka checkout creation failed",
+            )
+        if bool(checkout.get("no_payment_required", False)):
+            self.report({'INFO'}, "No payment required for this Full Quality view.")
+            return {'FINISHED'}
+        checkout_url = str(checkout.get("checkout_url", "") or "").strip()
+        if not self._open_url(checkout_url):
+            return fail(
+                self,
+                "Could not open Planetka payment page.",
+                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                logger=logger,
+            )
+        self.report({'INFO'}, "Planetka payment page opened in browser.")
+        return {'FINISHED'}
+
+
 class PLANETKA_OT_DataCostBreakdown(bpy.types.Operator):
     bl_idname = "planetka.data_cost_breakdown"
     bl_label = "Resolve Cost Breakdown"
@@ -531,9 +658,6 @@ class PLANETKA_OT_DataCostBreakdown(bpy.types.Operator):
             return f"€{max(0.0, float(value or 0.0)):.2f}"
         except (TypeError, ValueError):
             return "€0.00"
-
-    def _struck_text(self, value):
-        return "".join(f"{char}\u0336" for char in str(value or ""))
 
     def _draw_rows(self, layout, title, rows, icon="TEXTURE", empty_text="None", show_original_price=False):
         box = layout.box()
@@ -563,7 +687,7 @@ class PLANETKA_OT_DataCostBreakdown(bpy.types.Operator):
                     original_price = 0.0
                     charged_price = 0.0
                 if original_price > charged_price + 1e-9:
-                    price_text = f"{price_text}  was {self._struck_text(self._price_text(original_price))}"
+                    price_text = f"{price_text}  originally {self._price_text(original_price)}"
             reason = str(entry.get("free_reason", "") or "").strip()
             row = box.row(align=True)
             row.label(text=tile_key or "Unknown")

@@ -843,10 +843,17 @@ def _draw_account_panel(layout):
             unlocked_count = int(credit_payload.get("unlocked_tile_count", 0) or 0)
         except (TypeError, ValueError, AttributeError):
             unlocked_count = 0
+        balance_row = layout.row(align=True)
         if not credit_known:
-            layout.label(text="Balance: —", icon="SOLO_ON")
+            balance_row.label(text="Balance: —", icon="USER")
         else:
-            layout.label(text=f"Balance: €{balance:.2f}", icon="SOLO_ON")
+            balance_row.label(text=f"Balance: €{balance:.2f}", icon="USER")
+            if balance <= 0.0:
+                balance_row.operator(
+                    "planetka.open_credit_checkout",
+                    text="Payment",
+                    icon="URL",
+                ).checkout_option = "OPTIONS"
         layout.label(text=f"Unlocked tiles: {unlocked_count}", icon="TEXTURE")
         try:
             from .credit_api import get_unlocked_download_progress
@@ -1121,6 +1128,7 @@ def _draw_live_telemetry(layout, scene):
             full_allowed = False
 
         full_box = quality_box.box()
+        full_box.label(text="Full Quality data is paid land-detail data.", icon="INFO")
         full_button_row = full_box.row(align=True)
         full_button_row.scale_y = 1.1
         full_button_row.enabled = bool(full_allowed)
@@ -1140,16 +1148,43 @@ def _draw_live_telemetry(layout, scene):
         ).texture_quality_mode = "FULL"
 
         if credit_known:
-            credit_notice = quality_box.row(align=True)
+            credit_notice = full_box.row(align=True)
             if full_credits > credit_balance:
-                credit_notice.label(text=f"Balance: {credit_balance:.2f} €", icon="INFO")
+                credit_notice.alert = True
+                credit_notice.label(text=f"Balance: €{credit_balance:.2f}", icon="USER")
             else:
-                credit_notice.label(text=f"Balance: {credit_balance:.2f} €", icon="SOLO_ON")
+                credit_notice.label(text=f"Balance: €{credit_balance:.2f}", icon="USER")
+            if credit_balance <= 0.0:
+                credit_notice.operator(
+                    "planetka.open_credit_checkout",
+                    text="Payment",
+                    icon="URL",
+                ).checkout_option = "OPTIONS"
         elif not full_allowed:
-            credit_notice = quality_box.row(align=True)
+            credit_notice = full_box.row(align=True)
             credit_notice.label(text="Balance unavailable", icon="INFO")
+        payment_box = full_box.box()
+        payment_box.label(text="Payment options:", icon="URL")
+        buy_row = payment_box.row(align=True)
+        scene_checkout_allowed = bool(full_price_known and full_credits >= 0.50)
+        buy_row.enabled = scene_checkout_allowed
+        buy_row.operator(
+            "planetka.open_credit_checkout",
+            text=f"Buy This Scene ({_estimate_eur_label('FULL')})",
+            icon="URL",
+        ).checkout_option = "SCENE"
+        top_up_row = payment_box.row(align=True)
+        top_up_row.operator(
+            "planetka.open_credit_checkout",
+            text="Add €10 Balance",
+            icon="URL",
+        ).checkout_option = "BALANCE_10"
+        if credit_known and full_credits > credit_balance:
+            payment_box.label(text="Pay this scene directly or add balance, then click Download Full Quality.", icon="INFO")
+        if full_price_known and 0.0 < full_credits < 0.50:
+            payment_box.label(text="Scene price is below Stripe minimum; add balance instead.", icon="INFO")
         if not full_size_known or not full_price_known:
-            estimate_notice = quality_box.row(align=True)
+            estimate_notice = full_box.row(align=True)
             estimate_notice.label(text="Full Quality price is being calculated.", icon="INFO")
 
         broader_box = quality_box.box()
