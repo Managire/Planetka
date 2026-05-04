@@ -445,6 +445,8 @@ def _run_unlocked_download_plan(plan: dict, cancel_event: threading.Event) -> No
     downloaded_bytes = 0
     total_bytes = int(max(0, int(plan.get("total_bytes", 0) or 0)))
     total_files = int(max(0, int(plan.get("total_files", 0) or 0)))
+    selected_tiles = int(max(0, int(plan.get("selected_tiles", 0) or 0)))
+    skipped_existing_files = int(max(0, int(plan.get("skipped_existing_files", 0) or 0)))
 
     def progress_callback(delta_bytes: int, _total_bytes: int) -> None:
         nonlocal downloaded_bytes
@@ -470,9 +472,9 @@ def _run_unlocked_download_plan(plan: dict, cancel_event: threading.Event) -> No
             downloaded_bytes=0,
             downloaded_files=0,
             total_files=total_files,
-            selected_tiles=int(plan.get("selected_tiles", 0) or 0),
+            selected_tiles=selected_tiles,
             missing_files=0,
-            skipped_existing_files=int(plan.get("skipped_existing_files", 0) or 0),
+            skipped_existing_files=skipped_existing_files,
             error="",
             started_at=time.monotonic(),
             finished_at=0.0,
@@ -516,10 +518,18 @@ def _run_unlocked_download_plan(plan: dict, cancel_event: threading.Event) -> No
                 downloaded_bytes=int(min(max(downloaded_bytes, 0), max(total_bytes, downloaded_bytes))),
             )
         clear_local_source_stale_notice()
+        if total_files <= 0 and skipped_existing_files > 0:
+            message = "Unlocked tile files already downloaded."
+        elif total_files <= 0 and selected_tiles <= 0:
+            message = "No unlocked tiles found for this range."
+        elif total_files <= 0:
+            message = "No downloadable files found for unlocked tiles."
+        else:
+            message = "Unlocked tile download complete."
         _set_unlocked_download_progress(
             active=False,
             status="FINISHED",
-            message="Unlocked tile download complete.",
+            message=message,
             downloaded_files=downloaded_files,
             missing_files=missing_files,
             downloaded_bytes=int(min(max(downloaded_bytes, 0), max(total_bytes, downloaded_bytes))),

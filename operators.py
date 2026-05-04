@@ -314,6 +314,7 @@ class PLANETKA_OT_AccountCancelUnlockedDownload(bpy.types.Operator):
 from .state import (
     ACCOUNT_PANEL_DEFAULT_COLLAPSED_KEY,
     _is_render_job_active,
+    _tag_view3d_redraw,
     _initialize_props_from_imported_planetka,
     _sync_idprops_from_props,
     ensure_preview_object,
@@ -322,6 +323,7 @@ from .state import (
     remove_object_and_unused_mesh,
     resume_navigation_shot_updates,
     suspend_navigation_shot_updates,
+    update_resolve_size_estimates,
     warm_base_sphere_mesh_cache,
 )
 from .updater import kickoff_background_update_check
@@ -491,6 +493,19 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
             )
         if "FINISHED" not in result:
             return {'CANCELLED'}
+        try:
+            from .credit_api import clear_credit_caches
+            clear_credit_caches()
+        except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed clearing credit caches after texture quality resolve", exc_info=True)
+        try:
+            base_path = _normalize_texture_source_path(str(getattr(prefs, "texture_base_path", "") or ""))
+            update_resolve_size_estimates(scene, scope_mode="CAMERA", base_path=base_path)
+            _tag_view3d_redraw()
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed refreshing Full Quality price estimate after resolve", exc_info=True)
+        except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed refreshing Full Quality price estimate after resolve", exc_info=True)
         return {'FINISHED'}
 
 

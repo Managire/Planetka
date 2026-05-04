@@ -312,6 +312,94 @@ def _resolve_runtime_display(scene):
     return runtime, runtime_code, runtime_text
 
 
+def _draw_resolve_download_indicator(layout, scene, runtime, runtime_code, runtime_text):
+    resolve_failure_message = _resolve_failure_message_for_ui(scene)
+    inside_earth_warning = _inside_earth_warning_for_ui(scene)
+    low_altitude_warning = _low_altitude_warning_for_ui(scene)
+    animation_render_running = _is_animation_render_running()
+    should_draw = bool(
+        resolve_failure_message
+        or inside_earth_warning
+        or low_altitude_warning
+        or animation_render_running
+        or str(runtime_code or "").upper() not in {"", "IDLE", "MONITORING"}
+    )
+    if not should_draw:
+        return
+
+    status_label_text = f"{runtime_text}{_status_activity_suffix(runtime.get('running', False))}"
+    status_icon = _status_icon(runtime_code)
+    alert = False
+    if resolve_failure_message:
+        status_label_text = "Error detected"
+        status_icon = "ERROR"
+        alert = True
+    elif inside_earth_warning:
+        status_label_text = "Below Earth's surface"
+        status_icon = "ERROR"
+        alert = True
+    elif low_altitude_warning:
+        status_label_text = low_altitude_warning
+        status_icon = "ERROR"
+        alert = True
+    elif animation_render_running:
+        status_label_text, status_icon = _animation_render_status_for_ui(scene)
+
+    progress = get_download_progress()
+    total_bytes = int(progress.get("total_bytes", 0) or 0)
+    downloaded_bytes = int(progress.get("downloaded_bytes", 0) or 0)
+    active_requests = int(progress.get("active_requests", 0) or 0)
+    status_token = str(runtime_code or "").upper()
+    factor = 0.0
+    if total_bytes > 0:
+        factor = max(0.0, min(1.0, float(downloaded_bytes) / float(total_bytes)))
+    elif status_token in {"FINALIZING", "FINALIZE_QUEUED"}:
+        factor = 1.0
+
+    if total_bytes > 0:
+        progress_text = f"{_fmt_bytes(downloaded_bytes)} / {_fmt_bytes(total_bytes)}"
+    elif downloaded_bytes > 0:
+        progress_text = f"{_fmt_bytes(downloaded_bytes)} downloaded"
+    elif status_token == "QUEUED":
+        progress_text = "Waiting to start"
+    elif status_token == "PREPARING":
+        progress_text = "Preparing download"
+    elif status_token in {"FINALIZING", "FINALIZE_QUEUED"}:
+        progress_text = "Download finished"
+    elif resolve_failure_message:
+        progress_text = "Resolve failed"
+    else:
+        progress_text = "Waiting for data"
+
+    box = layout.box()
+    box.alert = bool(alert)
+    box.label(text=status_label_text, icon=status_icon)
+    box.progress(
+        factor=factor,
+        type='BAR',
+        text=progress_text,
+    )
+    if active_requests > 0:
+        request_label = "request" if active_requests == 1 else "requests"
+        box.label(text=f"{active_requests} active download {request_label}", icon="IMPORT")
+    elif status_token in {"FINALIZING", "FINALIZE_QUEUED"}:
+        box.label(text="Download complete, applying textures", icon="MOD_REMESH")
+    elif status_token == "QUEUED":
+        box.label(text="Resolve queued", icon="SORTTIME")
+
+    if resolve_failure_message:
+        error_box = box.box()
+        error_box.alert = True
+        error_box.label(text=resolve_failure_message, icon="ERROR")
+        rebuild_row = error_box.row(align=True)
+        rebuild_row.alert = True
+        rebuild_row.operator("planetka.rebuild_earth", text="Rebuild Earth", icon="FILE_REFRESH")
+    elif inside_earth_warning:
+        box.label(text=inside_earth_warning, icon="ERROR")
+    elif low_altitude_warning:
+        box.label(text=low_altitude_warning, icon="ERROR")
+
+
 def _earth_radius_bu_for_ui(scene):
     earth = get_earth_object()
     if earth is None:
@@ -742,19 +830,42 @@ def _draw_account_panel(layout):
             progress_box.label(text=message, icon="IMPORT")
             total_bytes = int(unlocked_progress.get("total_bytes", 0) or 0)
             downloaded_bytes = int(unlocked_progress.get("downloaded_bytes", 0) or 0)
+            total_files = int(unlocked_progress.get("total_files", 0) or 0)
+            downloaded_files = int(unlocked_progress.get("downloaded_files", 0) or 0)
+            selected_tiles = int(unlocked_progress.get("selected_tiles", 0) or 0)
+            skipped_existing_files = int(unlocked_progress.get("skipped_existing_files", 0) or 0)
+            missing_files = int(unlocked_progress.get("missing_files", 0) or 0)
             factor = 0.0
             if total_bytes > 0:
                 factor = max(0.0, min(1.0, float(downloaded_bytes) / float(total_bytes)))
+            elif status == "FINISHED":
+                factor = 1.0
+            if total_bytes > 0:
+                progress_text = f"{_fmt_bytes(downloaded_bytes)} / {_fmt_bytes(total_bytes)}"
+            elif status == "FINISHED" and total_files <= 0 and skipped_existing_files > 0:
+                progress_text = "No download needed"
+            elif total_files > 0:
+                progress_text = "Size unavailable"
+            else:
+                progress_text = "No files to download"
             progress_box.progress(
                 factor=factor,
                 type='BAR',
-                text=f"{_fmt_bytes(downloaded_bytes)} / {_fmt_bytes(total_bytes)}",
+                text=progress_text,
             )
-            files_text = (
-                f"{int(unlocked_progress.get('downloaded_files', 0) or 0)} / "
-                f"{int(unlocked_progress.get('total_files', 0) or 0)} files"
-            )
+            if total_files > 0:
+                files_text = f"{downloaded_files} / {total_files} files"
+            elif skipped_existing_files > 0:
+                files_text = f"{skipped_existing_files} files already present"
+            else:
+                files_text = "No files to download"
             progress_box.label(text=files_text, icon="FILE")
+            if selected_tiles > 0:
+                progress_box.label(text=f"{selected_tiles} unlocked tiles selected", icon="TEXTURE")
+            if total_files > 0 and skipped_existing_files > 0:
+                progress_box.label(text=f"{skipped_existing_files} files already present", icon="CHECKMARK")
+            if missing_files > 0:
+                progress_box.label(text=f"{missing_files} files missing", icon="ERROR")
             if status == "ERROR" and str(unlocked_progress.get("error", "") or "").strip():
                 error_row = progress_box.row(align=True)
                 error_row.alert = True
@@ -947,6 +1058,8 @@ def _draw_live_telemetry(layout, scene):
             icon="PAUSE",
             toggle=True,
         )
+        runtime, runtime_code, runtime_text = _resolve_runtime_display(scene)
+        _draw_resolve_download_indicator(quality_box, scene, runtime, runtime_code, runtime_text)
 
         full_allowed = allows_balanced_full_quality_for_context(prefs=prefs, source=props, requested_mode="FULL")
         full_size_known = False
@@ -1011,39 +1124,6 @@ def _draw_live_telemetry(layout, scene):
         broader_box = quality_box.box()
         broader_box.label(text="Broader options:")
         broader_box.separator()
-
-        runtime, runtime_code, runtime_text = _resolve_runtime_display(scene)
-        resolve_failure_message = _resolve_failure_message_for_ui(scene)
-        inside_earth_warning = _inside_earth_warning_for_ui(scene)
-        low_altitude_warning = _low_altitude_warning_for_ui(scene)
-        status_row = quality_box.row(align=True)
-        status_row.alert = bool(resolve_failure_message or inside_earth_warning or low_altitude_warning)
-        animation_render_running = _is_animation_render_running()
-        status_label_text = f"{runtime_text}{_status_activity_suffix(runtime.get('running', False))}"
-        status_icon = _status_icon(runtime_code)
-        if resolve_failure_message:
-            status_label_text = "Error detected"
-            status_icon = "ERROR"
-        elif inside_earth_warning:
-            status_label_text = "Below Earth's surface"
-            status_icon = "ERROR"
-        elif low_altitude_warning:
-            status_label_text = low_altitude_warning
-            status_icon = "ERROR"
-        elif animation_render_running:
-            status_label_text, status_icon = _animation_render_status_for_ui(scene)
-        status_row.label(
-            text=status_label_text,
-            icon=status_icon,
-        )
-
-        if resolve_failure_message:
-            error_box = quality_box.box()
-            error_box.alert = True
-            error_box.label(text=resolve_failure_message, icon="ERROR")
-            rebuild_row = error_box.row(align=True)
-            rebuild_row.alert = True
-            rebuild_row.operator("planetka.rebuild_earth", text="Rebuild Earth", icon="FILE_REFRESH")
 
     throttle_message = str(get_status_message(prefs) or "").strip()
     if throttle_message and "throttl" in throttle_message.lower():
