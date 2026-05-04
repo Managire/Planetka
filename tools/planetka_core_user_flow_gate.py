@@ -4,7 +4,7 @@
 Purpose:
 - validate common user flow end-to-end with local fallback textures
 - assert real outcomes (camera/light/material state and render sanity), not only operator return flags
-- verify land-credit branch quality access using synthetic auth payloads (no network)
+- verify EUR-priced quality access using synthetic auth payloads (no network)
 
 Run:
   /Applications/Blender.app/Contents/MacOS/Blender --background --debug-python \
@@ -53,7 +53,7 @@ REPORT_PATH = Path(tempfile.gettempdir()) / "planetka_core_user_flow_gate_report
 FALLBACK_DIR = Path(_REPO_ROOT) / "Resources" / "Fallback Images"
 
 # Deterministic full-globe fixture tile set used by this hermetic gate.
-# These exact IDs are requested by the Full Globe camera in PREVIEW/BALANCED/FULL modes.
+# These exact IDs are requested by the Full Globe camera in PREVIEW/FULL modes.
 _FIXTURE_TILE_IDS = (
     "x000_y000_z180_d720",
     "x180_y000_z180_d720",
@@ -370,13 +370,13 @@ def main():
         report["renders"].append(_render_checkpoint(scene, output_dir, "after_radius_change"))
         record_step("earth_radius_change", earth_radius_bu=float(getattr(props, "earth_radius_bu", 0.0) or 0.0), apply_result=list(apply_radius))
 
-        # Land-credit branch quality matrix (synthetic auth payload, hermetic).
+        # EUR-priced quality matrix (synthetic auth payload, hermetic).
         full_globe_result = bpy.ops.planetka.navigation_preset(preset="HIGH_ORBIT")
         _assert(_operator_ok(full_globe_result), f"HIGH_ORBIT preset failed before tier matrix: {full_globe_result}")
         matrix = (
-            ("free", {"PREVIEW": True, "BALANCED": True, "FULL": True}),
-            ("personal", {"PREVIEW": True, "BALANCED": True, "FULL": True}),
-            ("commercial", {"PREVIEW": True, "BALANCED": True, "FULL": True}),
+            ("free", {"PREVIEW": True, "FULL": True}),
+            ("personal", {"PREVIEW": True, "FULL": True}),
+            ("commercial", {"PREVIEW": True, "FULL": True}),
         )
         for tier_name, expectations in matrix:
             _apply_tier_payload(auth, prefs, tier_name)
@@ -385,7 +385,7 @@ def main():
                 not bool(r2_source.is_remote_source_configured(prefs.texture_base_path)),
                 f"Hermetic gate switched to remote texture source unexpectedly: {prefs.texture_base_path}",
             )
-            for mode in ("PREVIEW", "BALANCED", "FULL"):
+            for mode in ("PREVIEW", "FULL"):
                 entry = {
                     "tier": tier_name,
                     "mode": mode,

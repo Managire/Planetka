@@ -11,3 +11,5 @@ logs/
 *.sqlite-wal
 *.sqlite3-shm
 *.sqlite3-wal
+Resources/tile_sizes.sqlite.land_stats_build
+Resources/tile_sizes.sqlite.land_stats_build-*

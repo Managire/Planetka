@@ -161,7 +161,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     <button id="setCommercialBtn" class="action-btn">Set Commercial</button>
     <button id="qualityNormalBtn" class="action-btn">Set Normal</button>
     <button id="qualityUnrestrictedBtn" class="action-btn">Set Unrestricted</button>
-    <button id="giftCreditsBtn" class="action-btn">Gift Credits</button>
+    <button id="giftCreditsBtn" class="action-btn">Add €</button>
     <button id="blockBtn" class="action-btn danger">Block</button>
     <button id="unblockBtn" class="action-btn warn">Unblock</button>
   </div>
@@ -705,7 +705,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         "set-commercial": "Upgrade this account to Commercial?",
         "quality-normal": "Set this account to normal quality behavior?",
         "quality-unrestricted": "Force unrestricted quality for this account?",
-        "gift-credits": "Gift credits to this account?",
+        "gift-credits": "Add EUR balance to this account?",
       };
       if (!window.confirm(confirmation[safeAction] || "Confirm action?")) {
         return;
@@ -738,7 +738,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         payload.mode = "unrestricted";
       }
       if (safeAction === "gift-credits") {
-        const amount = window.prompt("Credits to gift:", "100");
+        const amount = window.prompt("EUR to add:", "100");
         if (amount === null) {
           return;
         }

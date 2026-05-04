@@ -38,10 +38,8 @@ class ViewTelemetryDeps:
     live_fallback_mpp_m: float
     live_z_levels: tuple[int, ...]
     resolve_estimate_full_bytes_key: str
-    resolve_estimate_balanced_bytes_key: str
     resolve_estimate_preview_bytes_key: str
     resolve_estimate_full_credits_key: str
-    resolve_estimate_balanced_credits_key: str
     resolve_estimate_preview_credits_key: str
 
 

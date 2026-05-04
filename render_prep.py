@@ -174,9 +174,9 @@ class ResolveEarlyResult:
 
 def _normalize_texture_quality_mode(value):
     token = str(value or "").strip().upper()
-    if token == "HALF":
-        return "BALANCED"
-    if token in {"FULL", "BALANCED", "PREVIEW"}:
+    if token in {"HALF", "BALANCED"}:
+        return "FULL"
+    if token in {"FULL", "PREVIEW"}:
         return token
     return "PREVIEW"
 
@@ -874,9 +874,9 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             if override_mode:
                 texture_quality_mode = _normalize_texture_quality_mode(override_mode)
             else:
-                texture_quality_mode = _normalize_texture_quality_mode(
-                    getattr(props, "texture_quality_mode", "PREVIEW")
-                )
+                # Plain Resolve and auto-resolve are Preview-only. Full Quality
+                # must be explicitly requested through texture_quality_mode_override.
+                texture_quality_mode = "PREVIEW"
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             texture_quality_mode = "PREVIEW"
         try:
@@ -885,17 +885,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 source=props,
                 requested_mode=texture_quality_mode,
             ):
-                if (
-                    texture_quality_mode == "FULL"
-                    and allows_balanced_full_quality_for_context(
-                        prefs=get_prefs(),
-                        source=props,
-                        requested_mode="BALANCED",
-                    )
-                ):
-                    texture_quality_mode = "BALANCED"
-                else:
-                    texture_quality_mode = "PREVIEW"
+                texture_quality_mode = "PREVIEW"
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             texture_quality_mode = "PREVIEW"
         try:

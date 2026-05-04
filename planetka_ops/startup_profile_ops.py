@@ -193,7 +193,9 @@ def _property_default_value(owner, prop_name):
 
 def _normalize_startup_texture_quality_mode(value):
     token = str(value or "").strip().upper()
-    if token not in {"PREVIEW", "BALANCED", "FULL"}:
+    if token in {"BALANCED", "HALF"}:
+        return "FULL"
+    if token not in {"PREVIEW", "FULL"}:
         token = "PREVIEW"
     return token
 

@@ -100,7 +100,7 @@ export function qualityModeNotAllowedMessage(planCode, qualityMode) {
   if (safeMode === "preview") {
     return "Preview quality is free.";
   }
-  return "This quality level requires enough Planetka credits for the selected tiles.";
+  return "This quality level requires enough Planetka balance for the selected tiles.";
 }
 
 export function commercialUseAllowed(planCode) {
@@ -118,7 +118,7 @@ export function planDisplayName(planCode) {
 
 export function planAccessSummary(planCode) {
   void planCode;
-  return "Preview is free. Balanced and Full Quality use Planetka credits for newly unlocked land tiles.";
+  return "Preview is free. Full Quality uses Planetka balance for newly unlocked land tiles.";
 }
 
 export function resolvePlanPriority(planCode) {

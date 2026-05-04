@@ -1,7 +1,10 @@
 const TILE_KEY_RE = /x(\d{3})_y(\d{3})_z(\d{3})_d(\d{3})/i;
 const ASSET_RE = /^(?:S2|EL|WT|PO)_(x\d{3}_y\d{3}_z\d{3}_d\d{3})\.(?:exr|tif)$/i;
 const FREE_D_THRESHOLD = 15;
-const ACCOUNT_TYPE_UNLIMITED = "unlimited";
+const FREE_DETAIL_RATIO = 4.0;
+const ACCOUNT_TYPE_STANDARD = "standard";
+const DEFAULT_STARTING_CREDITS = 100.0;
+const DATASET_BASE_MPP = 10.0;
 
 function normalizeTileKey(value) {
   const raw = String(value || "").trim();
@@ -40,23 +43,48 @@ export function tileKeyFromFileName(fileName) {
   return normalizeTileKey(fileName);
 }
 
-export function isFreeCreditTileKey(tileKey) {
-  const parsed = parseTileKey(tileKey);
+function tileFamilyKey(parsed) {
   if (!parsed) {
-    return true;
+    return "";
   }
-  if (parsed.d >= FREE_D_THRESHOLD) {
-    return true;
+  return `x${String(parsed.x).padStart(3, "0")}_y${String(parsed.y).padStart(3, "0")}_z${String(parsed.z).padStart(3, "0")}`;
+}
+
+function detailRatioForTile(parsed) {
+  if (!parsed) {
+    return Number.POSITIVE_INFINITY;
+  }
+  const z = Math.max(1, Number.parseFloat(parsed.z || 0) || 1);
+  const d = Number.parseFloat(parsed.d || 0) || 0;
+  if (d <= 0) {
+    return Number.POSITIVE_INFINITY;
+  }
+  return d / z;
+}
+
+function freeReasonForTile(parsed) {
+  if (!parsed) {
+    return "invalid_tile_key";
+  }
+  if (parsed.d <= 0) {
+    return "d000_global_free";
+  }
+  if (detailRatioForTile(parsed) >= FREE_DETAIL_RATIO) {
+    return "preview_detail_free";
   }
   const south = Number(parsed.y) - 90;
   const north = Number(parsed.y + parsed.z) - 90;
   if (north <= -60) {
-    return true;
+    return "south_polar_free";
   }
   if (south >= 75) {
-    return true;
+    return "north_polar_free";
   }
-  return false;
+  return "";
+}
+
+export function isFreeCreditTileKey(tileKey) {
+  return Boolean(freeReasonForTile(parseTileKey(tileKey)));
 }
 
 export function defaultAssetsForTile(tileKey) {
@@ -82,47 +110,85 @@ function normalizeCreditAmount(value) {
   return Math.round(parsed * 1_000_000) / 1_000_000;
 }
 
+function deliveredMppForD(dValue) {
+  let d = Number.parseInt(dValue, 10);
+  if (!Number.isFinite(d)) {
+    d = FREE_D_THRESHOLD;
+  }
+  if (d <= 0) {
+    d = 1440;
+  }
+  return DATASET_BASE_MPP * Math.max(1, d);
+}
+
+function creditsForTileStats(tile, stats, qualityMode) {
+  const safeMode = String(qualityMode || "").trim().toLowerCase();
+  const derivedFreeReason = freeReasonForTile(tile);
+  const freeReason = safeMode === "preview"
+    ? "preview_quality"
+    : derivedFreeReason;
+  const mpp = deliveredMppForD(tile && tile.d);
+  const baseCredits = Math.max(0, Number.parseFloat(stats && stats.base_credits || 0) || 0);
+  const qualityFactor = (DATASET_BASE_MPP / Math.max(DATASET_BASE_MPP, mpp)) ** 2;
+  const credits = freeReason ? 0 : baseCredits * qualityFactor;
+  const priceEur = normalizeCreditAmount(credits);
+  return {
+    tile_key: tile.key,
+    credits: priceEur,
+    price_eur: priceEur,
+    land_km2: Math.max(0, Number.parseFloat(stats && stats.land_km2 || 0) || 0),
+    billable_land_km2: Math.max(0, Number.parseFloat(stats && stats.billable_land_km2 || 0) || 0),
+    delivered_mpp: normalizeCreditAmount(mpp),
+    detail_ratio: normalizeCreditAmount(detailRatioForTile(tile)),
+    price_factor: normalizeCreditAmount(qualityFactor),
+    free_reason: freeReason,
+    stats_source: "backend_d1",
+  };
+}
+
 function normalizeAccountType(value) {
   const token = String(value || "").trim().toLowerCase();
-  if (token === ACCOUNT_TYPE_UNLIMITED) {
-    return ACCOUNT_TYPE_UNLIMITED;
-  }
   if (token === "standard" || token === "credits" || token === "credit") {
-    return "standard";
+    return ACCOUNT_TYPE_STANDARD;
   }
-  return ACCOUNT_TYPE_UNLIMITED;
+  return ACCOUNT_TYPE_STANDARD;
 }
 
 function isUnlimitedCreditAccount(account) {
-  return normalizeAccountType(account && account.account_type) === ACCOUNT_TYPE_UNLIMITED;
+  void account;
+  return false;
 }
 
-function normalizePricingTiles(value) {
+function normalizeTileKeys(value) {
   const source = Array.isArray(value) ? value : [];
-  const byKey = new Map();
+  const keys = [];
+  const seen = new Set();
   for (const entry of source) {
-    if (!entry || typeof entry !== "object") {
-      continue;
-    }
-    const tileKey = normalizeTileKey(entry.tile_key || entry.tileKey || entry.key || "");
+    const tileKey = typeof entry === "object" && entry !== null
+      ? normalizeTileKey(entry.tile_key || entry.tileKey || entry.key || "")
+      : normalizeTileKey(entry);
     if (!tileKey) {
       continue;
     }
-    const credits = normalizeCreditAmount(entry.credits);
-    const previous = byKey.get(tileKey);
-    if (previous && previous.credits >= credits) {
+    if (seen.has(tileKey)) {
       continue;
     }
-    byKey.set(tileKey, {
-      tile_key: tileKey,
-      credits,
-      land_km2: Math.max(0, Number.parseFloat(entry.land_km2 || entry.landKm2 || 0) || 0),
-      billable_land_km2: Math.max(0, Number.parseFloat(entry.billable_land_km2 || entry.billableLandKm2 || 0) || 0),
-      free_reason: String(entry.free_reason || entry.freeReason || "").trim(),
-      stats_source: String(entry.stats_source || entry.statsSource || "").trim(),
-    });
+    seen.add(tileKey);
+    keys.push(tileKey);
   }
-  return Array.from(byKey.values());
+  return keys;
+}
+
+function requestTileKeysFromBody(body) {
+  return normalizeTileKeys(
+    body && (
+      body.tile_keys
+      || body.tileKeys
+      || body.tiles
+      || body.pricing_tiles
+      || body.pricingTiles
+    ),
+  );
 }
 
 async function ensureCreditAccount(db, userId, deps) {
@@ -138,113 +204,254 @@ async function ensureCreditAccount(db, userId, deps) {
       INSERT OR IGNORE INTO user_credit_accounts (
         user_id, account_type, balance_credits, total_granted_credits, total_spent_credits, created_at, updated_at
       )
-      VALUES (?, 'unlimited', 0, 0, 0, ?, ?)
+      VALUES (?, 'standard', ?, ?, 0, ?, ?)
     `,
-    [safeUserId, now, now],
+    [safeUserId, DEFAULT_STARTING_CREDITS, DEFAULT_STARTING_CREDITS, now, now],
+  );
+  await deps.dbRun(
+    db,
+    `
+      UPDATE user_credit_accounts
+      SET account_type = 'standard',
+          balance_credits = CASE
+            WHEN account_type = 'unlimited' THEN ?
+            ELSE balance_credits
+          END,
+          total_granted_credits = CASE
+            WHEN account_type = 'unlimited' THEN ?
+            ELSE total_granted_credits
+          END,
+          total_spent_credits = CASE
+            WHEN account_type = 'unlimited' THEN 0
+            ELSE total_spent_credits
+          END,
+          updated_at = ?
+      WHERE user_id = ?
+        AND account_type != 'standard'
+    `,
+    [DEFAULT_STARTING_CREDITS, DEFAULT_STARTING_CREDITS, now, safeUserId],
   );
   return await deps.dbGet(db, `SELECT * FROM user_credit_accounts WHERE user_id = ? LIMIT 1`, [safeUserId]);
 }
 
-export async function isTileUnlockedForUser(db, userId, tileKey, deps) {
+export async function isTileUnlockedForUser(db, userId, tileKey, deps, options = {}) {
   const key = normalizeTileKey(tileKey);
   if (!key || isFreeCreditTileKey(key)) {
+    return true;
+  }
+  const requested = parseTileKey(key);
+  let family = tileFamilyKey(requested);
+  let requestedD = Number(requested && requested.d);
+  if (
+    String(options && options.folder || "").trim().toUpperCase() === "EL"
+    && requested
+    && Number(requested.z) === 1
+    && Number(requested.d) === 1
+  ) {
+    // EL z001 d002 resolves to the stored d001 file. Authorize it against the
+    // user's z001 tile family instead of rejecting the alias as a separate tile.
+    family = `x${String(requested.x).padStart(3, "0")}_y${String(requested.y).padStart(3, "0")}_z001`;
+    requestedD = 2;
+  }
+  if (!requested || !family) {
     return true;
   }
   const account = await ensureCreditAccount(db, userId, deps);
   if (isUnlimitedCreditAccount(account)) {
     return true;
   }
-  const row = await deps.dbGet(
+  const rows = await deps.dbAll(
     db,
-    `SELECT 1 FROM user_tile_entitlements WHERE user_id = ? AND tile_key = ? LIMIT 1`,
-    [String(userId || "").trim(), key],
+    `
+      SELECT tile_key
+      FROM user_tile_entitlements
+      WHERE user_id = ?
+        AND tile_key LIKE ?
+    `,
+    [String(userId || "").trim(), `${family}_d%`],
   );
-  return Boolean(row);
+  return (rows || []).some((row) => {
+    const owned = parseTileKey(row && row.tile_key || "");
+    return Boolean(owned && tileFamilyKey(owned) === family && Number(owned.d) <= requestedD);
+  });
 }
 
-async function estimateNewCredits(db, userId, pricingTiles, deps) {
+async function backendPricingRecordsForTileKeys(db, tileKeys, qualityMode, deps) {
   await deps.ensureCreditTables(db);
-  const rows = pricingTiles.length
+  const keys = normalizeTileKeys(tileKeys);
+  if (!keys.length) {
+    return [];
+  }
+  const rows = await deps.dbAll(
+    db,
+    `
+      SELECT tile_key, land_km2, billable_land_km2, base_credits, free_reason
+      FROM tile_land_stats
+      WHERE tile_key IN (${keys.map(() => "?").join(",")})
+    `,
+    keys,
+  );
+  const byKey = new Map((rows || []).map((row) => [String(row && row.tile_key || "").trim(), row]));
+  const records = [];
+  for (const key of keys) {
+    const tile = parseTileKey(key);
+    if (!tile) {
+      continue;
+    }
+    const stats = byKey.get(key);
+    if (!stats && !isFreeCreditTileKey(key)) {
+      return {
+        error: "credit_pricing_missing_tile_stats",
+        missing_tile_key: key,
+      };
+    }
+    records.push(creditsForTileStats(
+      tile,
+      stats || { land_km2: 0, billable_land_km2: 0, base_credits: 0, free_reason: "globally_free" },
+      qualityMode,
+    ));
+  }
+  return records;
+}
+
+async function estimateNewCredits(db, userId, tileKeys, qualityMode, deps) {
+  await deps.ensureCreditTables(db);
+  const pricingRecords = await backendPricingRecordsForTileKeys(db, tileKeys, qualityMode, deps);
+  if (pricingRecords && pricingRecords.error) {
+    return pricingRecords;
+  }
+  const requested = [];
+  const families = new Set();
+  for (const record of pricingRecords) {
+    const parsed = parseTileKey(record && record.tile_key || "");
+    const family = tileFamilyKey(parsed);
+    if (!parsed || !family) {
+      continue;
+    }
+    requested.push({ record, parsed, family });
+    families.add(family);
+  }
+  const familyList = Array.from(families);
+  const rows = familyList.length
     ? await deps.dbAll(
       db,
       `
         SELECT tile_key
         FROM user_tile_entitlements
         WHERE user_id = ?
-          AND tile_key IN (${pricingTiles.map(() => "?").join(",")})
+          AND (${familyList.map(() => "tile_key LIKE ?").join(" OR ")})
       `,
-      [String(userId || "").trim(), ...pricingTiles.map((tile) => tile.tile_key)],
+      [String(userId || "").trim(), ...familyList.map((family) => `${family}_d%`)],
     )
     : [];
-  const owned = new Set((rows || []).map((row) => String(row && row.tile_key || "").trim()));
+  const ownedKeys = normalizeTileKeys((rows || []).map((row) => row && row.tile_key || ""));
+  const ownedPricing = ownedKeys.length ? await backendPricingRecordsForTileKeys(db, ownedKeys, "full", deps) : [];
+  const ownedByFamily = new Map();
+  if (Array.isArray(ownedPricing)) {
+    for (const ownedRecord of ownedPricing) {
+      const parsed = parseTileKey(ownedRecord && ownedRecord.tile_key || "");
+      const family = tileFamilyKey(parsed);
+      if (!parsed || !family) {
+        continue;
+      }
+      if (!ownedByFamily.has(family)) {
+        ownedByFamily.set(family, []);
+      }
+      ownedByFamily.get(family).push({
+        d: Number(parsed.d),
+        value: normalizeCreditAmount(ownedRecord && ownedRecord.credits),
+      });
+    }
+  }
   let credits = 0;
   let paidTileCount = 0;
   let freeTileCount = 0;
   const newTiles = [];
-  for (const tile of pricingTiles) {
+  const pricedTiles = [];
+  const excludedTiles = [];
+  for (const item of requested.sort((a, b) => {
+    if (a.family !== b.family) {
+      return a.family < b.family ? -1 : 1;
+    }
+    return Number(a.parsed.d) - Number(b.parsed.d);
+  })) {
+    const tile = item.record;
     const key = normalizeTileKey(tile.tile_key);
     const globallyFree = isFreeCreditTileKey(key);
-    const alreadyOwned = owned.has(key);
-    const tileCredits = (globallyFree || alreadyOwned) ? 0 : normalizeCreditAmount(tile.credits);
+    const grossCredits = normalizeCreditAmount(tile.credits);
+    const familyEntitlements = ownedByFamily.get(item.family) || [];
+    if (!ownedByFamily.has(item.family)) {
+      ownedByFamily.set(item.family, familyEntitlements);
+    }
+    const coveredByFiner = familyEntitlements.some((entry) => Number(entry.d) <= Number(item.parsed.d));
+    const coarserCredit = Math.max(
+      0,
+      ...familyEntitlements
+        .filter((entry) => Number(entry.d) > Number(item.parsed.d))
+        .map((entry) => normalizeCreditAmount(entry.value)),
+    );
+    const tileCredits = (globallyFree || coveredByFiner)
+      ? 0
+      : normalizeCreditAmount(Math.max(0, grossCredits - coarserCredit));
+    const breakdownTile = {
+      ...tile,
+      credits: tileCredits,
+      price_eur: tileCredits,
+      gross_credits: grossCredits,
+      gross_price_eur: grossCredits,
+      already_owned: Boolean(coveredByFiner),
+      globally_free: Boolean(globallyFree),
+    };
+    if (coarserCredit > 0) {
+      breakdownTile.upgrade_credit_applied = coarserCredit;
+    }
+    if (coveredByFiner) {
+      breakdownTile.free_reason = String(tile.free_reason || "already_unlocked");
+    }
     if (tileCredits > 0) {
       paidTileCount += 1;
       credits += tileCredits;
     } else {
       freeTileCount += 1;
     }
-    if (!globallyFree && !alreadyOwned) {
-      newTiles.push({ ...tile, credits: tileCredits });
+    pricedTiles.push(breakdownTile);
+    if (coveredByFiner) {
+      excludedTiles.push(breakdownTile);
+    }
+    if (!globallyFree && !coveredByFiner && tileCredits > 0) {
+      const newTile = { ...tile, credits: tileCredits };
+      if (coarserCredit > 0) {
+        newTile.upgrade_credit_applied = coarserCredit;
+      }
+      newTiles.push(newTile);
+      familyEntitlements.push({ d: Number(item.parsed.d), value: grossCredits });
     }
   }
+  const totalEur = Math.round(credits * 1_000_000) / 1_000_000;
   return {
-    credits: Math.round(credits * 1_000_000) / 1_000_000,
+    credits: totalEur,
+    price_eur: totalEur,
     paid_tile_count: paidTileCount,
     free_tile_count: freeTileCount,
-    tile_count: pricingTiles.length,
+    tile_count: pricingRecords.length,
     new_tiles: newTiles,
+    tiles: pricedTiles,
+    excluded_tiles: excludedTiles,
   };
 }
 
-export async function unlockTilesForSession(db, userId, qualityMode, pricingTiles, resolveId, deps) {
+export async function unlockTilesForSession(db, userId, qualityMode, tileKeys, resolveId, deps) {
   const safeMode = deps.normalizeQualityMode(qualityMode || "");
   if (safeMode === "preview") {
     return { credits: 0, paid_tile_count: 0, free_tile_count: 0, tile_count: 0 };
   }
   const safeUserId = String(userId || "").trim();
-  const normalizedTiles = normalizePricingTiles(pricingTiles);
-  const estimate = await estimateNewCredits(db, safeUserId, normalizedTiles, deps);
+  const estimate = await estimateNewCredits(db, safeUserId, tileKeys, safeMode, deps);
+  if (estimate && estimate.error === "credit_pricing_missing_tile_stats") {
+    return estimate;
+  }
   const requiredCredits = normalizeCreditAmount(estimate.credits);
   const account = await ensureCreditAccount(db, safeUserId, deps);
-  if (isUnlimitedCreditAccount(account)) {
-    const now = deps.nowIso();
-    for (const tile of estimate.new_tiles || []) {
-      await deps.dbRun(
-        db,
-        `
-          INSERT OR IGNORE INTO user_tile_entitlements (
-            user_id, tile_key, quality_mode, credits_spent, land_km2, billable_land_km2, source, unlocked_at
-          )
-          VALUES (?, ?, ?, 0, ?, ?, ?, ?)
-        `,
-        [
-          safeUserId,
-          tile.tile_key,
-          safeMode,
-          Math.max(0, Number.parseFloat(tile.land_km2 || 0) || 0),
-          Math.max(0, Number.parseFloat(tile.billable_land_km2 || 0) || 0),
-          "unlimited",
-          now,
-        ],
-      );
-    }
-    return {
-      ...estimate,
-      credits: 0,
-      paid_tile_count: 0,
-      free_tile_count: estimate.tile_count,
-      unlimited_credits: true,
-    };
-  }
   const balance = normalizeCreditAmount(account && account.balance_credits);
   if (requiredCredits > balance) {
     return {
@@ -317,7 +524,7 @@ export async function unlockTilesForSession(db, userId, qualityMode, pricingTile
         normalizeCreditAmount(tile.credits),
         Math.max(0, Number.parseFloat(tile.land_km2 || 0) || 0),
         Math.max(0, Number.parseFloat(tile.billable_land_km2 || 0) || 0),
-        String(tile.stats_source || "client_pricing").trim() || "client_pricing",
+        String(tile.stats_source || "backend_d1").trim() || "backend_d1",
         now,
       ],
     );
@@ -344,6 +551,7 @@ export async function handleCreditMe(request, env, deps) {
       account_type: normalizeAccountType(account && account.account_type),
       unlimited_credits: isUnlimitedCreditAccount(account),
       balance_credits: normalizeCreditAmount(account && account.balance_credits),
+      balance_eur: normalizeCreditAmount(account && account.balance_credits),
       unlocked_tile_count: Number(countRow && countRow.count || 0),
       user_id: String(auth.user.id || ""),
     },
@@ -360,20 +568,35 @@ export async function handleCreditEstimate(request, env, deps) {
   const db = deps.requireDb(env);
   await ensureCreditAccount(db, auth.user.id, deps);
   const body = await deps.parseJson(request);
-  const pricingTiles = normalizePricingTiles(body && (body.tiles || body.pricing_tiles));
-  const estimate = await estimateNewCredits(db, auth.user.id, pricingTiles, deps);
+  const tileKeys = requestTileKeysFromBody(body);
+  const qualityMode = deps.normalizeQualityMode(body && body.quality_mode || body && body.qualityMode || "full");
+  const estimate = await estimateNewCredits(db, auth.user.id, tileKeys, qualityMode, deps);
+  if (estimate && estimate.error === "credit_pricing_missing_tile_stats") {
+    return deps.json(
+      {
+        ok: false,
+        error: "credit_pricing_missing_tile_stats",
+        message: "Planetka EUR pricing metadata is missing for a requested tile.",
+        tile_key: String(estimate.missing_tile_key || ""),
+      },
+      503,
+      env,
+    );
+  }
   const account = await ensureCreditAccount(db, auth.user.id, deps);
   const unlimited = isUnlimitedCreditAccount(account);
   return deps.json(
     {
       ok: true,
       ...estimate,
-      credits: unlimited ? 0 : estimate.credits,
-      paid_tile_count: unlimited ? 0 : estimate.paid_tile_count,
-      free_tile_count: unlimited ? estimate.tile_count : estimate.free_tile_count,
+      credits: estimate.credits,
+      price_eur: normalizeCreditAmount(estimate.credits),
+      paid_tile_count: estimate.paid_tile_count,
+      free_tile_count: estimate.free_tile_count,
       account_type: normalizeAccountType(account && account.account_type),
       unlimited_credits: unlimited,
       balance_credits: normalizeCreditAmount(account && account.balance_credits),
+      balance_eur: normalizeCreditAmount(account && account.balance_credits),
     },
     200,
     env,

@@ -2,7 +2,6 @@ import bpy
 from bpy.props import BoolProperty, EnumProperty, StringProperty
 
 from .auth import (
-    allows_animation_render_for_context,
     allows_balanced_full_quality_for_context,
     is_authenticated,
 )
@@ -97,6 +96,52 @@ from .r2_source import (
     texture_file_exists,
 )
 
+_UNLOCKED_DOWNLOAD_REDRAW_TIMER_REGISTERED = False
+
+
+def _tag_view3d_for_unlocked_download():
+    try:
+        context = getattr(bpy, "context", None)
+        wm = getattr(context, "window_manager", None)
+        if wm is None:
+            return None
+        for window in wm.windows:
+            screen = getattr(window, "screen", None)
+            if screen is None:
+                continue
+            for area in screen.areas:
+                if getattr(area, "type", "") == "VIEW_3D":
+                    area.tag_redraw()
+        from .credit_api import is_unlocked_download_active
+        if is_unlocked_download_active():
+            return 0.5
+    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed redrawing unlocked-download UI", exc_info=True)
+    global _UNLOCKED_DOWNLOAD_REDRAW_TIMER_REGISTERED
+    _UNLOCKED_DOWNLOAD_REDRAW_TIMER_REGISTERED = False
+    return None
+
+
+def _ensure_unlocked_download_redraw_timer():
+    global _UNLOCKED_DOWNLOAD_REDRAW_TIMER_REGISTERED
+    if _UNLOCKED_DOWNLOAD_REDRAW_TIMER_REGISTERED:
+        return
+    try:
+        bpy.app.timers.register(_tag_view3d_for_unlocked_download, first_interval=0.2)
+        _UNLOCKED_DOWNLOAD_REDRAW_TIMER_REGISTERED = True
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed starting unlocked-download redraw timer", exc_info=True)
+
+
+def _format_bytes_for_ui(size_bytes):
+    try:
+        value = float(size_bytes or 0)
+    except (TypeError, ValueError):
+        value = 0.0
+    if value >= 1024.0 ** 3:
+        return f"{value / (1024.0 ** 3):.2f} GB"
+    return f"{value / (1024.0 ** 2):.2f} MB"
+
 
 class PLANETKA_OT_AccountListUnlockedTiles(bpy.types.Operator):
     bl_idname = "planetka.account_list_unlocked_tiles"
@@ -127,7 +172,7 @@ class PLANETKA_OT_AccountListUnlockedTiles(bpy.types.Operator):
             quality = str(entry.get("quality_mode", "") or "")
             credits = entry.get("credits_spent", 0)
             unlocked_at = str(entry.get("unlocked_at", "") or "")
-            text.write(f"{tile_key}\t{quality}\t{credits} credits\t{unlocked_at}\n")
+            text.write(f"{tile_key}\t{quality}\tEUR {credits}\t{unlocked_at}\n")
         self.report({'INFO'}, f"Unlocked tile list created ({len(tiles)} tiles).")
         return {'FINISHED'}
 
@@ -157,11 +202,39 @@ class PLANETKA_OT_AccountDownloadUnlockedTiles(bpy.types.Operator):
         options={'SKIP_SAVE'},
     )
 
+    confirmed: BoolProperty(default=False, options={'HIDDEN', 'SKIP_SAVE'})
+    plan_id: StringProperty(default="", options={'HIDDEN', 'SKIP_SAVE'})
+    confirm_total_bytes: StringProperty(default="0", options={'HIDDEN', 'SKIP_SAVE'})
+    confirm_total_files: StringProperty(default="0", options={'HIDDEN', 'SKIP_SAVE'})
+    confirm_selected_tiles: StringProperty(default="0", options={'HIDDEN', 'SKIP_SAVE'})
+    confirm_existing_files: StringProperty(default="0", options={'HIDDEN', 'SKIP_SAVE'})
+
     def draw(self, _context):
         layout = self.layout
-        layout.prop(self, "period", text="Download")
+        if not bool(getattr(self, "confirmed", False)):
+            layout.prop(self, "period", text="Download")
+            layout.prop(self, "directory", text="To")
+            layout.label(text="A confirmation with total size appears before download starts.", icon="INFO")
+            return
+        try:
+            total_bytes = int(str(getattr(self, "confirm_total_bytes", "0") or "0"))
+        except (TypeError, ValueError):
+            total_bytes = 0
+        layout.label(text=f"Download {_format_bytes_for_ui(total_bytes)}?", icon="IMPORT")
+        layout.label(text=f"Files: {getattr(self, 'confirm_total_files', '0')}")
+        layout.label(text=f"Unlocked tiles: {getattr(self, 'confirm_selected_tiles', '0')}")
+        existing = str(getattr(self, "confirm_existing_files", "0") or "0")
+        if existing != "0":
+            layout.label(text=f"Already present: {existing} files", icon="CHECKMARK")
+        layout.label(text=f"Data range: {self.period.replace('_', ' ').title()}")
+        layout.label(text=f"Folder: {self.directory}")
 
     def invoke(self, context, _event):
+        if bool(getattr(self, "confirmed", False)):
+            wm = getattr(context, "window_manager", None)
+            if wm is None:
+                return self.execute(context)
+            return wm.invoke_props_dialog(self, width=520)
         if not str(getattr(self, "directory", "") or "").strip():
             try:
                 prefs = get_prefs()
@@ -171,13 +244,32 @@ class PLANETKA_OT_AccountDownloadUnlockedTiles(bpy.types.Operator):
         wm = getattr(context, "window_manager", None)
         if wm is None:
             return self.execute(context)
-        wm.fileselect_add(self)
-        return {'RUNNING_MODAL'}
+        return wm.invoke_props_dialog(self, width=520)
 
-    def execute(self, _context):
+    def execute(self, context):
         try:
-            from .credit_api import download_unlocked_tiles_to_directory
-            result = download_unlocked_tiles_to_directory(self.directory, period=self.period)
+            from .credit_api import (
+                is_unlocked_download_active,
+                prepare_unlocked_download_plan,
+                start_unlocked_download_plan,
+            )
+            if is_unlocked_download_active():
+                self.report({'WARNING'}, "Unlocked tile download is already running.")
+                return {'CANCELLED'}
+            if not bool(getattr(self, "confirmed", False)):
+                plan = prepare_unlocked_download_plan(self.directory, period=self.period)
+                self.plan_id = str(plan.get("plan_id", "") or "")
+                self.confirm_total_bytes = str(int(plan.get("total_bytes", 0) or 0))
+                self.confirm_total_files = str(int(plan.get("total_files", 0) or 0))
+                self.confirm_selected_tiles = str(int(plan.get("selected_tiles", 0) or 0))
+                self.confirm_existing_files = str(int(plan.get("skipped_existing_files", 0) or 0))
+                self.confirmed = True
+                wm = getattr(context, "window_manager", None)
+                if wm is None:
+                    return {'CANCELLED'}
+                return wm.invoke_props_dialog(self, width=520)
+            progress = start_unlocked_download_plan(str(getattr(self, "plan_id", "") or ""))
+            _ensure_unlocked_download_redraw_timer()
         except Exception as exc:
             return fail(
                 self,
@@ -187,14 +279,37 @@ class PLANETKA_OT_AccountDownloadUnlockedTiles(bpy.types.Operator):
                 exc=exc,
                 log_message="Planetka unlocked tile download failed",
             )
-        downloaded = int(result.get("downloaded_files", 0) or 0)
-        missing = int(result.get("missing_files", 0) or 0)
-        selected_tiles = int(result.get("selected_tiles", 0) or 0)
-        label = str(result.get("period_label", "") or "selected data")
         self.report(
             {'INFO'},
-            f"Downloaded {downloaded} unlocked tile files from {label} ({selected_tiles} tiles, {missing} missing).",
+            (
+                "Unlocked tile download started "
+                f"({_format_bytes_for_ui(progress.get('total_bytes', 0))}, "
+                f"{int(progress.get('total_files', 0) or 0)} files)."
+            ),
         )
+        return {'FINISHED'}
+
+
+class PLANETKA_OT_AccountCancelUnlockedDownload(bpy.types.Operator):
+    bl_idname = "planetka.account_cancel_unlocked_download"
+    bl_label = "Cancel Download"
+    bl_description = "Cancel the active unlocked tile download"
+
+    def execute(self, _context):
+        try:
+            from .credit_api import cancel_unlocked_download
+            active = cancel_unlocked_download()
+        except Exception as exc:
+            return fail(
+                self,
+                f"Unable to cancel unlocked tile download: {exc}",
+                code=ErrorCode.RESOLVE_REFRESH_FAILED,
+                logger=logger,
+                exc=exc,
+                log_message="Planetka unlocked tile download cancel failed",
+            )
+        if active:
+            self.report({'INFO'}, "Cancelling unlocked tile download...")
         return {'FINISHED'}
 from .state import (
     ACCOUNT_PANEL_DEFAULT_COLLAPSED_KEY,
@@ -290,8 +405,8 @@ from .planetka_ops.navigation_helpers import (
 
 class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
     bl_idname = "planetka.set_texture_quality_and_resolve"
-    bl_label = "Set Texture Quality"
-    bl_description = "Set texture quality mode"
+    bl_label = "Download Texture Quality"
+    bl_description = "Run a one-shot texture download at the requested quality"
 
     texture_quality_mode: EnumProperty(
         name="Texture Quality",
@@ -302,14 +417,9 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
                 "Uses 1/4 texture size of Full Quality on each axis (effective 1/16 resolution)",
             ),
             (
-                "BALANCED",
-                "Balanced",
-                "Uses 1/2 texture size of Full Quality on each axis (effective 1/4 resolution)",
-            ),
-            (
                 "FULL",
                 "Full Quality",
-                "Highest quality texture data (baseline for Preview and Balanced scaling)",
+                "Highest quality texture data",
             ),
         ),
         default="PREVIEW",
@@ -322,10 +432,8 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
             getattr(properties, "texture_quality_mode", "PREVIEW")
         )
         if mode == "PREVIEW":
-            return "Preview: 1/4 texture size on each axis (1/16 of Full Quality resolution)."
-        if mode == "BALANCED":
-            return "Balanced: 1/2 texture size on each axis (1/4 of Full Quality resolution)."
-        return "Full Quality: full-resolution textures."
+            return "Resolve Preview textures once."
+        return "Download Full Quality textures for the current view once."
 
     def execute(self, context):
         if _cancel_if_animation_render_active(self, "Texture quality change"):
@@ -352,17 +460,10 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
             source=props,
             requested_mode=target_mode,
         ):
-            if target_mode == "BALANCED":
-                return fail(
-                    self,
-                    "Balanced quality requires enough Planetka credits for selected tiles.",
-                    code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-                    logger=logger,
-                )
             if target_mode == "FULL":
                 return fail(
                     self,
-                    "Full Quality requires enough Planetka credits for selected tiles.",
+                    "Full Quality requires enough Planetka balance for selected tiles.",
                     code=ErrorCode.RESOLVE_PRECHECK_FAILED,
                     logger=logger,
                 )
@@ -374,20 +475,10 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
             )
 
         try:
-            props.texture_quality_mode = target_mode
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed setting texture quality mode via Data Control", exc_info=True)
-            return fail(
-                self,
-                "Unable to set texture quality mode.",
-                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-                logger=logger,
-            )
-
-        try:
             result = bpy.ops.planetka.load_textures(
                 skip_render_compatibility=True,
                 defer_download=False,
+                texture_quality_mode_override=target_mode,
             )
         except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
             return fail(
@@ -403,83 +494,145 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class PLANETKA_OT_SetAnimationRenderTextureQuality(bpy.types.Operator):
-    bl_idname = "planetka.set_animation_render_texture_quality"
-    bl_label = "Set Animation Texture Quality"
-    bl_description = "Set texture quality for Final Animation Render"
+class PLANETKA_OT_DataCostBreakdown(bpy.types.Operator):
+    bl_idname = "planetka.data_cost_breakdown"
+    bl_label = "Resolve Cost Breakdown"
+    bl_description = "Show detailed data size and price breakdown for this Resolve"
 
     texture_quality_mode: EnumProperty(
         name="Texture Quality",
         items=(
-            (
-                "BALANCED",
-                "Balanced",
-                "Uses 1/2 texture size of Full Quality on each axis for lighter animation renders",
-            ),
-            (
-                "FULL",
-                "Full Quality",
-                "Uses full-resolution textures for maximum animation render detail",
-            ),
+            ("PREVIEW", "Preview", "Preview data is free"),
+            ("FULL", "Full Quality", "Full Quality paid land-detail data"),
         ),
         default="FULL",
         options={'HIDDEN', 'SKIP_SAVE'},
     )
 
-    @classmethod
-    def description(cls, _context, properties):
-        mode = str(getattr(properties, "texture_quality_mode", "FULL") or "FULL").strip().upper()
-        if mode == "BALANCED":
-            return "Balanced: 1/2 texture size on each axis for Final Animation Render."
-        return "Full Quality: full-resolution textures for Final Animation Render."
+    _breakdown = None
 
-    def execute(self, context):
-        if _cancel_if_animation_render_active(self, "Animation texture quality change"):
-            return {'CANCELLED'}
-        props = require_planetka_props(self, context, logger=logger)
-        if props is None:
-            return {'CANCELLED'}
-
-        target_mode = str(getattr(self, "texture_quality_mode", "FULL") or "FULL").strip().upper()
-        if target_mode != "BALANCED":
-            target_mode = "FULL"
-
-        prefs = get_prefs()
-        if not allows_animation_render_for_context(prefs=prefs, source=props, requested_mode=target_mode):
-            if target_mode == "BALANCED":
-                return fail(
-                    self,
-                    "Balanced animation rendering requires enough Planetka credits for selected tiles.",
-                    code=ErrorCode.RENDER_FAILED,
-                    logger=logger,
-                )
-            return fail(
-                self,
-                "Full Quality animation rendering requires enough Planetka credits for selected tiles.",
-                code=ErrorCode.RENDER_FAILED,
-                logger=logger,
-            )
-
+    def _price_text(self, value):
         try:
-            props.anim_render_texture_quality_mode = target_mode
+            return f"€{max(0.0, float(value or 0.0)):.2f}"
+        except (TypeError, ValueError):
+            return "€0.00"
+
+    def _draw_rows(self, layout, title, rows, icon="TEXTURE", empty_text="None"):
+        box = layout.box()
+        box.label(text=title, icon=icon)
+        entries = list(rows or ())
+        if not entries:
+            box.label(text=empty_text)
+            return
+        header = box.row(align=True)
+        header.label(text="Tile")
+        header.label(text="Size")
+        header.label(text="Price")
+        for entry in entries:
+            tile_key = str(entry.get("tile_key", "") or "").strip()
+            size_text = _format_bytes_for_ui(int(entry.get("bytes", 0) or 0))
+            price_text = self._price_text(entry.get("credits", 0.0))
+            reason = str(entry.get("free_reason", "") or "").strip()
+            row = box.row(align=True)
+            row.label(text=tile_key or "Unknown")
+            row.label(text=size_text)
+            row.label(text=price_text)
+            if reason and float(entry.get("credits", 0.0) or 0.0) <= 0.0:
+                reason_row = box.row(align=True)
+                reason_row.label(text=f"  reason: {reason.replace('_', ' ')}", icon="INFO")
+
+    def invoke(self, context, event):
+        del event
+        mode = str(getattr(self, "texture_quality_mode", "FULL") or "FULL").strip().upper()
+        if mode != "PREVIEW":
+            mode = "FULL"
+        try:
+            prefs = get_prefs()
+            base_path = str(getattr(prefs, "texture_base_path", "") or "") if prefs else ""
+            from .planetka_runtime.view_telemetry import build_resolve_cost_breakdown, get_resolve_size_estimates
+            breakdown = build_resolve_cost_breakdown(
+                scene=getattr(context, "scene", None),
+                scope_mode="CAMERA",
+                base_path=base_path,
+                texture_quality_mode=mode,
+            )
+            estimates = get_resolve_size_estimates(getattr(context, "scene", None))
+            if isinstance(breakdown, dict):
+                breakdown["panel_total_bytes"] = estimates.get(mode) if isinstance(estimates, dict) else None
+                breakdown["panel_total_credits"] = estimates.get(f"{mode}_CREDITS") if isinstance(estimates, dict) else None
         except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
             return fail(
                 self,
-                "Unable to set animation texture quality.",
-                code=ErrorCode.RENDER_FAILED,
+                f"Unable to build cost breakdown: {exc}",
+                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
                 logger=logger,
                 exc=exc,
-                log_message="Planetka animation texture quality change failed",
+                log_message="Planetka cost breakdown failed",
             )
-        try:
-            scene = getattr(context, "scene", None)
-            if scene is not None:
-                from .animation_tools import update_animation_credit_estimate
-                update_animation_credit_estimate(scene, props, texture_quality_mode=target_mode)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka animation: failed refreshing credit estimate after quality change", exc_info=True)
-        except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka animation: failed refreshing credit estimate after quality change", exc_info=True)
+        except (ImportError, RuntimeError, TypeError, ValueError, AttributeError) as exc:
+            return fail(
+                self,
+                f"Unable to build cost breakdown: {exc}",
+                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                logger=logger,
+                exc=exc,
+                log_message="Planetka cost breakdown failed",
+            )
+        self._breakdown = breakdown if isinstance(breakdown, dict) else {}
+        wm = getattr(context, "window_manager", None)
+        if wm is None:
+            return {'FINISHED'}
+        return wm.invoke_popup(self, width=760)
+
+    def draw(self, context):
+        del context
+        layout = self.layout
+        breakdown = self._breakdown if isinstance(self._breakdown, dict) else {}
+        mode = str(breakdown.get("quality_mode", getattr(self, "texture_quality_mode", "FULL")) or "FULL").strip().upper()
+        mode_label = "Preview" if mode == "PREVIEW" else "Full Quality"
+        total_bytes = breakdown.get("panel_total_bytes")
+        if total_bytes is None:
+            total_bytes = breakdown.get("total_bytes", 0)
+        total_credits = breakdown.get("panel_total_credits")
+        if total_credits is None:
+            total_credits = breakdown.get("total_credits", 0.0)
+
+        header = layout.box()
+        header.label(text=f"{mode_label} Resolve Breakdown", icon="INFO")
+        header.label(text=f"Total data size: {_format_bytes_for_ui(int(total_bytes or 0))}")
+        header.label(text=f"Total price: {'Free' if mode == 'PREVIEW' else self._price_text(total_credits)}")
+        header.label(
+            text=(
+                f"Tiles: {len(breakdown.get('tiles', ()) or ())} total, "
+                f"{len(breakdown.get('charged_tiles', ()) or ())} charged, "
+                f"{len(breakdown.get('excluded_tiles', ()) or ())} already owned"
+            )
+        )
+
+        self._draw_rows(
+            layout,
+            "Charged Tiles",
+            breakdown.get("charged_tiles", ()),
+            icon="SOLO_ON",
+            empty_text="No newly charged tiles.",
+        )
+        self._draw_rows(
+            layout,
+            "Excluded From Price: Already Owned",
+            breakdown.get("excluded_tiles", ()),
+            icon="CHECKMARK",
+            empty_text="No already-owned tiles in this Resolve.",
+        )
+        self._draw_rows(
+            layout,
+            "Free / Not Charged Tiles",
+            breakdown.get("free_tiles", ()),
+            icon="HIDE_OFF",
+            empty_text="No other free tiles.",
+        )
+
+    def execute(self, context):
+        del context
         return {'FINISHED'}
 
 

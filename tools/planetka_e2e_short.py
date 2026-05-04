@@ -17,7 +17,7 @@ What it covers:
 - Create Earth
 - Place Search
 - Navigation + Sunlight
-- Preview/Balanced/Full resolves
+- Preview/Full resolves
 - Quick Preview animation prep
 - short 4-frame EEVEE render to /Volumes/SSDA/Renders
 - JSON report with image-analysis checks
@@ -157,7 +157,7 @@ def main():
         }
 
         resolve_results = {}
-        for quality in ("PREVIEW", "BALANCED", "FULL"):
+        for quality in ("PREVIEW", "FULL"):
             op_result = bpy.ops.planetka.set_texture_quality_and_resolve(texture_quality_mode=quality)
             if "FINISHED" not in op_result:
                 raise E2EError(f"Texture quality resolve failed for {quality}: {op_result}")
@@ -167,7 +167,7 @@ def main():
                 "tile_count": int(getattr(scene, "get", lambda *_args, **_kwargs: 0)("planetka_last_manual_resolve_tile_count", 0) or 0),
             }
         payload["coverage"]["quality_resolves"] = resolve_results
-        log(TAG, "Preview/Balanced/Full resolve sweep completed.")
+        log(TAG, "Preview/Full resolve sweep completed.")
 
         props.anim_camera_preset = "ORBIT"
         props.anim_frame_start = 1

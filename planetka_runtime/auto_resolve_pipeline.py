@@ -212,16 +212,9 @@ def _ctx_schedule_auto_resolve_download(
     prefs = deps.get_prefs()
     props = getattr(scene, "planetka", None)
     base_path = str(getattr(prefs, "texture_base_path", "") or "") if prefs else ""
+    # Auto-resolve is always Preview. Full Quality is a deliberate one-shot
+    # download action from Data Control and must never be triggered by navigation.
     texture_quality_mode = "PREVIEW"
-    try:
-        texture_quality_mode = deps.enforce_texture_quality_mode_for_account(
-            scene,
-            getattr(props, "texture_quality_mode", "PREVIEW"),
-        )
-    except deps.recoverable_exceptions:
-        texture_quality_mode = "PREVIEW"
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        texture_quality_mode = "PREVIEW"
     target_tiles_tuple = tuple(target_tiles or ())
     try:
         nav_latitude_deg = float(getattr(props, "nav_latitude_deg", 0.0)) if props is not None else 0.0
@@ -1568,8 +1561,8 @@ def _ctx_auto_resolve_update_size_estimation(ctx, scene, scope, active_view_sign
     except (RuntimeError, TypeError, ValueError, AttributeError):
         base_path_for_estimate = ""
 
-    current_quality_mode = deps.normalize_texture_quality_mode(getattr(props, "texture_quality_mode", "PREVIEW"))
-    full_tiles_override = target_tiles if current_quality_mode == "FULL" else None
+    current_quality_mode = "PREVIEW"
+    full_tiles_override = None
     try:
         deps.update_resolve_size_estimates(
             scene,
@@ -1629,7 +1622,7 @@ def _ctx_auto_resolve_enqueue_size_estimation(ctx, scene, scope, active_view_sig
         scene_id = deps.scene_key(scene)
     except (RuntimeError, TypeError, ValueError, AttributeError):
         return
-    current_quality_mode = deps.normalize_texture_quality_mode(getattr(props, "texture_quality_mode", "PREVIEW"))
+    current_quality_mode = "PREVIEW"
     safe_scope = str(scope or "CAMERA")
     safe_active_signature = active_view_signature if safe_scope == "ACTIVE_VIEW" else None
     safe_tiles = tuple(target_tiles or ())

@@ -153,9 +153,9 @@ def describe_auth_error(error):
     if "missing_stripe_payment_link_url" in lowered:
         return "Planetka checkout URL is not configured on the API."
     if "quality_mode_not_allowed" in lowered or "not_allowed_for_tier" in lowered or "insufficient_data" in lowered:
-        return "This Resolve needs Planetka credits for Balanced or Full Quality tiles."
+        return "This Resolve needs Planetka balance for Full Quality tiles."
     if "insufficient_credits" in lowered:
-        return "Not enough Planetka credits for this Resolve."
+        return "Not enough Planetka balance for this Resolve."
     if "missing_resolve_id" in lowered:
         return "Resolve metadata is missing. Retry Resolve and ensure Planetka is up to date."
     return f"Planetka login failed: {message.replace('_', ' ')}."
@@ -673,15 +673,15 @@ def allows_balanced_full_quality(prefs=None):
 
 def _normalize_texture_quality_token(value):
     token = str(value or "").strip().upper()
-    if token == "HALF":
-        return "BALANCED"
-    if token in {"PREVIEW", "BALANCED", "FULL"}:
+    if token in {"HALF", "BALANCED"}:
+        return "FULL"
+    if token in {"PREVIEW", "FULL"}:
         return token
     return "PREVIEW"
 
 
 def _is_high_quality_mode(value):
-    return _normalize_texture_quality_token(value) in {"BALANCED", "FULL"}
+    return _normalize_texture_quality_token(value) == "FULL"
 
 
 def allows_balanced_for_context(prefs=None, source=None):
@@ -702,8 +702,6 @@ def allows_animation_render_for_context(prefs=None, source=None, requested_mode=
         except (TypeError, ValueError, AttributeError):
             mode = "FULL"
     mode = _normalize_texture_quality_token(mode or "FULL")
-    if mode == "BALANCED":
-        return allows_balanced_for_context(prefs)
     return allows_full_quality_for_context(prefs)
 
 
@@ -717,7 +715,7 @@ def allows_balanced_full_quality_for_context(prefs=None, source=None, requested_
     mode = _normalize_texture_quality_token(requested_mode)
     if mode == "PREVIEW":
         return True
-    return mode in {"BALANCED", "FULL"}
+    return mode == "FULL"
 
 
 def get_plan_code(prefs=None):

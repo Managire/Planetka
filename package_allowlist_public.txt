@@ -11,13 +11,18 @@ __init__.py
 animation_tools.py
 asset_builder.py
 auth.py
+clouds_global.py
+clouds_local.py
+clouds_vdb.py
 coverage.py
+credit_api.py
 diagnostics.py
 embedded_material_library.py
 error_utils.py
 extension_prefs.py
 fallback_utils.py
 geonames_db.py
+land_credits.py
 mesh_utils.py
 operator_utils.py
 operators.py
@@ -31,6 +36,7 @@ state.py
 streaming_utils.py
 tile_utils.py
 ui.py
+unsupported.py
 updater.py
 validation.py
 
@@ -88,14 +94,6 @@ Documentation/Release/SYSTEM_REQUIREMENTS.md
 Documentation/Release/VERSIONING_POLICY.md
 
 # Bundled resources
-Resources/Bootstrap Cache/EL/EL_x000_y000_z180_d720.exr
-Resources/Bootstrap Cache/EL/EL_x180_y000_z180_d720.exr
-Resources/Bootstrap Cache/PO/PO_x000_y000_z180_d720.tif
-Resources/Bootstrap Cache/PO/PO_x180_y000_z180_d720.tif
-Resources/Bootstrap Cache/S2/S2_x000_y000_z180_d720.exr
-Resources/Bootstrap Cache/S2/S2_x180_y000_z180_d720.exr
-Resources/Bootstrap Cache/WT/WT_x000_y000_z180_d720.exr
-Resources/Bootstrap Cache/WT/WT_x180_y000_z180_d720.exr
 Resources/Fallback Images/black_pixel_20.exr
 Resources/Fallback Images/blue_pixel_20.exr
 Resources/Fallback Images/el_south_cap_pixel_20.exr

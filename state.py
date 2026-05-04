@@ -226,10 +226,8 @@ LAST_RESOLVE_DOWNLOADED_MB_KEY = "planetka_last_manual_resolve_downloaded_mb"
 LAST_RESOLVE_DOWNLOADED_GB_KEY = "planetka_last_manual_resolve_downloaded_gb"
 LAST_RESOLVE_TOTAL_SECONDS_KEY = "planetka_last_manual_resolve_total_seconds"
 RESOLVE_ESTIMATE_FULL_BYTES_KEY = "planetka_resolve_estimate_full_bytes"
-RESOLVE_ESTIMATE_BALANCED_BYTES_KEY = "planetka_resolve_estimate_balanced_bytes"
 RESOLVE_ESTIMATE_PREVIEW_BYTES_KEY = "planetka_resolve_estimate_preview_bytes"
 RESOLVE_ESTIMATE_FULL_CREDITS_KEY = "planetka_resolve_estimate_full_credits"
-RESOLVE_ESTIMATE_BALANCED_CREDITS_KEY = "planetka_resolve_estimate_balanced_credits"
 RESOLVE_ESTIMATE_PREVIEW_CREDITS_KEY = "planetka_resolve_estimate_preview_credits"
 _VIEWPORT_OPT_LAST_SIGNATURE = {}
 _SUNLIGHT_LAST_SIGNATURE = {}
@@ -1202,10 +1200,8 @@ def _build_view_telemetry_context():
         live_fallback_mpp_m=_LIVE_FALLBACK_MPP_M,
         live_z_levels=_LIVE_Z_LEVELS,
         resolve_estimate_full_bytes_key=RESOLVE_ESTIMATE_FULL_BYTES_KEY,
-        resolve_estimate_balanced_bytes_key=RESOLVE_ESTIMATE_BALANCED_BYTES_KEY,
         resolve_estimate_preview_bytes_key=RESOLVE_ESTIMATE_PREVIEW_BYTES_KEY,
         resolve_estimate_full_credits_key=RESOLVE_ESTIMATE_FULL_CREDITS_KEY,
-        resolve_estimate_balanced_credits_key=RESOLVE_ESTIMATE_BALANCED_CREDITS_KEY,
         resolve_estimate_preview_credits_key=RESOLVE_ESTIMATE_PREVIEW_CREDITS_KEY,
     )
     state = ViewTelemetryState(

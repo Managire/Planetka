@@ -327,7 +327,8 @@ export function createAuthCore(deps) {
     const safeQualityAccessPlanCode = deps.normalizeRequestedPlan(
       auth && (auth.qualityAccessPlanCode || auth.planCode),
     );
-    if (!deps.isQualityModeAllowedForPlan(safeQualityAccessPlanCode, safeQualityMode)) {
+    const creditEnforced = Boolean(options && options.creditEnforced);
+    if (!creditEnforced && !deps.isQualityModeAllowedForPlan(safeQualityAccessPlanCode, safeQualityMode)) {
       return {
         error: deps.json(
           {
@@ -354,7 +355,7 @@ export function createAuthCore(deps) {
       quality_mode: safeQualityMode,
       resolve_id: safeResolveId,
       credit_protocol: String(options && options.creditProtocol || "").trim(),
-      credit_enforced: Boolean(options && options.creditEnforced),
+      credit_enforced: creditEnforced,
       auth_method: String(auth && auth.authMethod || "").trim(),
       device_id: String(auth && auth.deviceId || "").trim(),
       exp,

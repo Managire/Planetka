@@ -2229,6 +2229,8 @@ async function ensureApiKeyTables(db) {
   apiKeyTablesReady = true;
 }
 
+const DEFAULT_STARTING_EUR_BALANCE = 100.0;
+
 async function ensureCreditTables(db) {
   if (creditTablesReady) {
     return;
@@ -2238,7 +2240,7 @@ async function ensureCreditTables(db) {
     `
       CREATE TABLE IF NOT EXISTS user_credit_accounts (
         user_id TEXT PRIMARY KEY,
-        account_type TEXT NOT NULL DEFAULT 'unlimited',
+        account_type TEXT NOT NULL DEFAULT 'standard',
         balance_credits REAL NOT NULL DEFAULT 0,
         total_granted_credits REAL NOT NULL DEFAULT 0,
         total_spent_credits REAL NOT NULL DEFAULT 0,
@@ -2248,7 +2250,7 @@ async function ensureCreditTables(db) {
     `,
   );
   try {
-    await dbRun(db, `ALTER TABLE user_credit_accounts ADD COLUMN account_type TEXT NOT NULL DEFAULT 'unlimited'`);
+    await dbRun(db, `ALTER TABLE user_credit_accounts ADD COLUMN account_type TEXT NOT NULL DEFAULT 'standard'`);
   } catch (error) {
     const message = String(error && error.message || "").toLowerCase();
     if (!message.includes("duplicate column")) {
@@ -2259,7 +2261,7 @@ async function ensureCreditTables(db) {
     db,
     `
       UPDATE user_credit_accounts
-      SET account_type = 'unlimited'
+      SET account_type = 'standard'
       WHERE account_type IS NULL OR TRIM(account_type) = ''
     `,
   );
@@ -2270,11 +2272,11 @@ async function ensureCreditTables(db) {
         INSERT OR IGNORE INTO user_credit_accounts (
           user_id, account_type, balance_credits, total_granted_credits, total_spent_credits, created_at, updated_at
         )
-        SELECT id, 'unlimited', 0, 0, 0, ?, ?
+        SELECT id, 'standard', ?, ?, 0, ?, ?
         FROM users
         WHERE id IS NOT NULL AND TRIM(id) != ''
       `,
-      [nowIso(), nowIso()],
+      [DEFAULT_STARTING_EUR_BALANCE, DEFAULT_STARTING_EUR_BALANCE, nowIso(), nowIso()],
     );
   } catch (error) {
     const message = String(error && error.message || "").toLowerCase();
@@ -2340,7 +2342,7 @@ async function ensureCreditTables(db) {
   creditTablesReady = true;
 }
 
-async function ensureUnlimitedCreditAccountForUser(db, userId) {
+async function ensureStandardCreditAccountForUser(db, userId) {
   const safeUserId = String(userId || "").trim();
   if (!safeUserId) {
     return;
@@ -2353,19 +2355,27 @@ async function ensureUnlimitedCreditAccountForUser(db, userId) {
       INSERT OR IGNORE INTO user_credit_accounts (
         user_id, account_type, balance_credits, total_granted_credits, total_spent_credits, created_at, updated_at
       )
-      VALUES (?, 'unlimited', 0, 0, 0, ?, ?)
+      VALUES (?, 'standard', ?, ?, 0, ?, ?)
     `,
-    [safeUserId, now, now],
+    [safeUserId, DEFAULT_STARTING_EUR_BALANCE, DEFAULT_STARTING_EUR_BALANCE, now, now],
   );
   await dbRun(
     db,
     `
       UPDATE user_credit_accounts
-      SET account_type = 'unlimited', updated_at = ?
+      SET account_type = 'standard',
+          balance_credits = CASE WHEN LOWER(TRIM(account_type)) = 'unlimited' THEN ? ELSE balance_credits END,
+          total_granted_credits = CASE WHEN LOWER(TRIM(account_type)) = 'unlimited' THEN ? ELSE total_granted_credits END,
+          total_spent_credits = CASE WHEN LOWER(TRIM(account_type)) = 'unlimited' THEN 0 ELSE total_spent_credits END,
+          updated_at = ?
       WHERE user_id = ?
-        AND (account_type IS NULL OR TRIM(account_type) = '')
+        AND (
+          account_type IS NULL
+          OR TRIM(account_type) = ''
+          OR LOWER(TRIM(account_type)) = 'unlimited'
+        )
     `,
-    [now, safeUserId],
+    [DEFAULT_STARTING_EUR_BALANCE, DEFAULT_STARTING_EUR_BALANCE, now, safeUserId],
   );
 }
 
@@ -2480,7 +2490,7 @@ async function upsertUserByEmail(db, email, status = PLAN_CODE_FREE, options = {
         user.id,
       ],
     );
-    await ensureUnlimitedCreditAccountForUser(db, user.id);
+    await ensureStandardCreditAccountForUser(db, user.id);
     const refreshedUser = await findUserById(db, user.id);
     if (refreshedUser) {
       return refreshedUser;
@@ -2521,7 +2531,7 @@ async function upsertUserByEmail(db, email, status = PLAN_CODE_FREE, options = {
       privacyVersion,
     ],
   );
-  await ensureUnlimitedCreditAccountForUser(db, id);
+  await ensureStandardCreditAccountForUser(db, id);
   if (!parseBooleanFlag(options.suppressNewUserAlert)) {
     try {
       await sendNewUserLoginAlert(env, {
@@ -2709,14 +2719,14 @@ function minimumPlanQualityForTile(fileName) {
   const textureType = String(parsed.textureType || "").toUpperCase();
 
   // Dataset alias:
-  // Blender balanced resolve may request EL z001 d002, but the actual stored file
-  // is EL z001 d001 (see streaming_utils.py replacement). Do not classify this
+  // Some legacy clients may request EL z001 d002, but the actual stored file is
+  // EL z001 d001 (see streaming_utils.py replacement). Do not classify this
   // compatibility alias as Full-only.
   if (textureType === "EL" && z === 1 && d === 1) {
     return "balanced";
   }
 
-  // d001 => Full-only, d002/d003 => Balanced+, d004+ => Preview+
+  // d001 => Full-only, d002/d003 => legacy paid-quality compatibility, d004+ => Preview+
   if (d <= 1) return "full";
   if (d <= 3) return "balanced";
   return "preview";

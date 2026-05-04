@@ -752,6 +752,22 @@ def plan_resolve_downloads(requests, allow_remote_probe=None):
     }
 
 
+def texture_asset_size_bytes(folder, file_name, allow_remote_probe=False):
+    """Return the best known final asset size, regardless of cache/local source."""
+    safe_folder = str(folder or "").strip().strip("/").replace("\\", "/")
+    safe_name = os.path.basename(str(file_name or ""))
+    if not safe_folder or not safe_name:
+        return None
+    indexed_size = _lookup_local_texture_size(safe_folder, safe_name)
+    if indexed_size is not None:
+        return int(max(0, int(indexed_size)))
+    if allow_remote_probe:
+        remote_size = _lookup_remote_texture_size(safe_folder, safe_name)
+        if remote_size is not None:
+            return int(max(0, int(remote_size)))
+    return None
+
+
 def estimate_total_resolve_bytes(requests, allow_remote_probe=None):
     """Estimate total dataset bytes for resolve requests, ignoring cache hit state."""
     if allow_remote_probe is None:
@@ -786,13 +802,17 @@ def estimate_total_resolve_bytes(requests, allow_remote_probe=None):
         for ext in exts:
             ext_text = str(ext or "")
             candidate_file_name = f"{prefix}_{filename}{ext_text}"
-            if _find_user_local_source_file(folder, candidate_file_name):
-                selected_file_name = ""
-                selected_size = 0
+            local_source_path = _find_user_local_source_file(folder, candidate_file_name)
+            if local_source_path:
+                selected_file_name = candidate_file_name
+                try:
+                    selected_size = int(max(0, os.path.getsize(local_source_path)))
+                except (OSError, RuntimeError, TypeError, ValueError):
+                    selected_size = texture_asset_size_bytes(folder, candidate_file_name, allow_remote_probe=allow_remote_probe)
                 break
             if not selected_file_name:
                 selected_file_name = candidate_file_name
-            local_size = _lookup_local_texture_size(folder, candidate_file_name)
+            local_size = texture_asset_size_bytes(folder, candidate_file_name, allow_remote_probe=False)
             if local_size is not None:
                 selected_file_name = candidate_file_name
                 selected_size = int(max(0, int(local_size)))
@@ -986,12 +1006,10 @@ def set_resolve_request_context(
     with _REQUEST_CONTEXT_LOCK:
         _REQUEST_CONTEXT_RESOLVE_ID = str(resolve_id or "").strip()[:128]
         safe_mode = str(texture_quality_mode or "").strip().lower()
-        if safe_mode == "half":
-            safe_mode = "balanced"
+        if safe_mode in {"half", "balanced"}:
+            safe_mode = "full"
         elif safe_mode == "full":
             safe_mode = "full"
-        elif safe_mode == "balanced":
-            safe_mode = "balanced"
         elif safe_mode != "preview":
             safe_mode = ""
         _REQUEST_CONTEXT_TEXTURE_MODE = safe_mode
@@ -1012,9 +1030,10 @@ def set_resolve_request_context(
         _REQUEST_CONTEXT_TILE_TOKEN_EXPIRES_AT = 0.0
         if isinstance(pricing_tiles, (list, tuple)):
             _REQUEST_CONTEXT_PRICING_TILES = tuple(
-                dict(entry)
-                for entry in pricing_tiles
+                str(entry.get("tile_key") or entry.get("tileKey") or entry.get("key") or "").strip()
                 if isinstance(entry, dict)
+                else str(entry or "").strip()
+                for entry in pricing_tiles
             )
         else:
             _REQUEST_CONTEXT_PRICING_TILES = ()
@@ -1058,7 +1077,9 @@ def _request_tile_session_token(resolve_id, quality_mode, allow_refresh=True):
         return "", 0.0
     safe_resolve_id = str(resolve_id or "").strip()[:128]
     safe_quality_mode = str(quality_mode or "").strip().lower()
-    if safe_quality_mode not in {"preview", "balanced", "full"}:
+    if safe_quality_mode == "balanced":
+        safe_quality_mode = "full"
+    if safe_quality_mode not in {"preview", "full"}:
         return "", 0.0
     if not safe_resolve_id:
         return "", 0.0
@@ -1069,10 +1090,10 @@ def _request_tile_session_token(resolve_id, quality_mode, allow_refresh=True):
         "quality_mode": safe_quality_mode,
     }
     with _REQUEST_CONTEXT_LOCK:
-        pricing_tiles = tuple(_REQUEST_CONTEXT_PRICING_TILES or ())
-    if pricing_tiles:
+        tile_keys = tuple(key for key in (_REQUEST_CONTEXT_PRICING_TILES or ()) if str(key or "").strip())
+    if tile_keys:
         payload["credit_protocol"] = "land_credits_v1"
-        payload["pricing_tiles"] = list(pricing_tiles)
+        payload["tile_keys"] = list(tile_keys)
     payload_bytes = json.dumps(payload, ensure_ascii=True).encode("utf-8")
 
     def _attempt(refresh_allowed):
@@ -1092,6 +1113,16 @@ def _request_tile_session_token(resolve_id, quality_mode, allow_refresh=True):
             data = json.loads(decoded)
         except (TypeError, ValueError):
             data = {}
+        try:
+            credits_charged = float(data.get("credits_charged", 0.0) or 0.0)
+        except (TypeError, ValueError, AttributeError):
+            credits_charged = 0.0
+        if credits_charged > 0.0:
+            try:
+                from .credit_api import clear_credit_caches
+                clear_credit_caches()
+            except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka: failed clearing credit cache after tile unlock", exc_info=True)
         token = str(data.get("tile_token", "") or "").strip()
         if not token:
             return "", 0.0
@@ -1145,7 +1176,9 @@ def _get_request_context_tile_token(allow_refresh=True):
         now = float(time.time())
         if current_token and current_expiry > (now + 5.0):
             return current_token
-        if quality_mode not in {"preview", "balanced", "full"}:
+        if quality_mode == "balanced":
+            quality_mode = "full"
+        if quality_mode not in {"preview", "full"}:
             return ""
     # Do not hold _REQUEST_CONTEXT_LOCK while requesting a tile session token:
     # _request_tile_session_token() also reads request context. Holding the lock
@@ -1224,7 +1257,9 @@ def _signed_headers(cfg, method, key, allow_refresh=True):
         nav_alt = str(_REQUEST_CONTEXT_NAV_ALT_KM or "").strip()
     if resolve_id:
         headers["X-Planetka-Resolve-Id"] = resolve_id
-    if quality_mode in {"full", "balanced", "preview"}:
+    if quality_mode == "balanced":
+        quality_mode = "full"
+    if quality_mode in {"full", "preview"}:
         headers["X-Planetka-Quality-Mode"] = quality_mode
     if nav_lat:
         headers["X-Planetka-Nav-Latitude"] = nav_lat
@@ -1240,7 +1275,7 @@ def _signed_headers(cfg, method, key, allow_refresh=True):
     return url, headers
 
 
-def _r2_request(method, key, destination_path=None):
+def _r2_request(method, key, destination_path=None, cancel_event=None, progress_callback=None):
     global _ACTIVE_DOWNLOADS
     global _ACTIVE_DOWNLOAD_BYTES
     global _ACTIVE_EXPECTED_BYTES
@@ -1250,12 +1285,34 @@ def _r2_request(method, key, destination_path=None):
     cfg = _get_config()
     if cfg is None:
         return False
-    if _is_request_cancelled():
+
+    def _cancelled():
+        if _is_request_cancelled():
+            return True
+        if cancel_event is None:
+            return False
+        is_set = getattr(cancel_event, "is_set", None)
+        if not callable(is_set):
+            return False
+        try:
+            return bool(is_set())
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            return False
+
+    def _report_progress(delta_bytes=0, total_bytes=0):
+        if not callable(progress_callback):
+            return
+        try:
+            progress_callback(int(max(0, int(delta_bytes or 0))), int(max(0, int(total_bytes or 0))))
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: unlocked-download progress callback failed", exc_info=True)
+
+    if _cancelled():
         raise RuntimeError("Planetka resolve request cancelled.")
 
     last_error = None
     for _ in range(_R2_RETRIES + 1):
-        if _is_request_cancelled():
+        if _cancelled():
             raise RuntimeError("Planetka resolve request cancelled.")
         refreshed = False
         capture_download = bool(method == "GET" and destination_path is not None)
@@ -1288,13 +1345,14 @@ def _r2_request(method, key, destination_path=None):
                     if attempt_expected > 0:
                         with _METRICS_LOCK:
                             _ACTIVE_EXPECTED_BYTES += attempt_expected
+                        _report_progress(0, attempt_expected)
                 if destination_path is not None:
                     os.makedirs(os.path.dirname(destination_path), exist_ok=True)
                     temp_path = f"{destination_path}.part.{os.getpid()}.{threading.get_ident()}.{int(time.time() * 1_000_000)}"
                     try:
                         with open(temp_path, "wb") as handle:
                             while True:
-                                if _is_request_cancelled():
+                                if _cancelled():
                                     raise RuntimeError("Planetka resolve request cancelled.")
                                 chunk = response.read(_R2_READ_CHUNK_BYTES)
                                 if not chunk:
@@ -1304,6 +1362,7 @@ def _r2_request(method, key, destination_path=None):
                                     chunk_len = int(len(chunk))
                                     attempt_downloaded += chunk_len
                                     pending_progress_bytes += chunk_len
+                                    _report_progress(chunk_len, attempt_expected)
                                     now = time.perf_counter()
                                     should_flush = (
                                         pending_progress_bytes >= _R2_PROGRESS_FLUSH_BYTES
@@ -1315,7 +1374,7 @@ def _r2_request(method, key, destination_path=None):
                                         pending_progress_bytes = 0
                                         last_progress_flush_at = now
                                         _request_ui_redraw()
-                        if _is_request_cancelled():
+                        if _cancelled():
                             raise RuntimeError("Planetka resolve request cancelled.")
                         os.replace(temp_path, destination_path)
                     finally:
@@ -1434,6 +1493,39 @@ def _r2_request(method, key, destination_path=None):
 
 def _remote_key(folder, file_name):
     return f"{folder}/{file_name}"
+
+
+def download_remote_asset_to_path(
+    folder,
+    file_name,
+    destination_path,
+    cancel_event=None,
+    progress_callback=None,
+    texture_quality_mode="FULL",
+    resolve_id="",
+    pricing_tiles=None,
+):
+    safe_folder = str(folder or "").strip().strip("/").replace("\\", "/")
+    safe_name = os.path.basename(str(file_name or ""))
+    target = os.path.abspath(os.path.expanduser(str(destination_path or "")))
+    if not safe_folder or not safe_name or not target:
+        return False
+    safe_resolve_id = str(resolve_id or "").strip()[:128]
+    if not safe_resolve_id:
+        safe_resolve_id = f"download-unlocked-{int(time.time() * 1000)}"
+    with resolve_request_context(
+        safe_resolve_id,
+        texture_quality_mode=texture_quality_mode,
+        cancel_event=cancel_event,
+        pricing_tiles=pricing_tiles or (),
+    ):
+        return _r2_request(
+            "GET",
+            _remote_key(safe_folder, safe_name),
+            destination_path=target,
+            cancel_event=cancel_event,
+            progress_callback=progress_callback,
+        )
 
 
 def _local_candidate_paths(base_path, folder, file_name):
@@ -1594,7 +1686,7 @@ def _maybe_auto_copy_unlocked_asset(folder, file_name, source_path):
     if not _is_auto_download_unlocked_tiles_enabled():
         return
     mode = _current_request_texture_mode()
-    if mode not in {"balanced", "full"}:
+    if mode != "full":
         return
     _copy_to_local_source(folder, file_name, source_path)
 

@@ -6,7 +6,6 @@ import time
 import uuid
 
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
-from .land_credits import pricing_records_for_tiles
 from .r2_source import (
     begin_resolve_download_capture,
     end_resolve_download_capture,
@@ -161,10 +160,8 @@ def _build_resolve_download_requests(resolved_tiles, ocean_tiles=None):
 
 def _normalize_texture_quality_mode(value):
     token = str(value or "").strip().upper()
-    if token == "HALF":
-        return "BALANCED"
-    if token == "BALANCED":
-        return "BALANCED"
+    if token in {"HALF", "BALANCED"}:
+        return "FULL"
     if token == "FULL":
         return "FULL"
     if token == "PREVIEW":
@@ -176,7 +173,6 @@ def _apply_fixed_z180_quality_targets(visible_tiles, texture_quality_mode="PREVI
     mode = _normalize_texture_quality_mode(texture_quality_mode)
     target_by_mode = {
         "PREVIEW": 720,
-        "BALANCED": 360,
         "FULL": 180,
     }
     target_d = int(target_by_mode.get(mode, 720))
@@ -333,18 +329,13 @@ def prefetch_resolve_plan(
     normalized_quality_mode = _normalize_texture_quality_mode(texture_quality_mode)
     use_remote = bool(is_remote_source_configured(base_path))
     ocean_lookup = set(ocean_tiles or ())
-    pricing_tiles = []
-    if normalized_quality_mode in {"BALANCED", "FULL"}:
-        credit_tiles = [
+    credit_tile_keys = []
+    if normalized_quality_mode == "FULL":
+        credit_tile_keys = [
             str(tile)
             for tile in resolved_tiles
             if str(tile) not in ocean_lookup
         ]
-        pricing_tiles = pricing_records_for_tiles(
-            credit_tiles,
-            quality_mode=normalized_quality_mode,
-            allow_estimate=True,
-        )
 
     if capture and use_remote:
         begin_resolve_download_capture()
@@ -357,7 +348,7 @@ def prefetch_resolve_plan(
                 nav_latitude_deg=nav_latitude_deg,
                 nav_longitude_deg=nav_longitude_deg,
                 nav_altitude_km=nav_altitude_km,
-                pricing_tiles=pricing_tiles,
+                pricing_tiles=credit_tile_keys,
             ):
                 try:
                     # Fast resolve path: skip remote HEAD preflight size probes so first GET

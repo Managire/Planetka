@@ -407,13 +407,13 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
       : `<button class="action-btn" data-action="quality-unrestricted" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Unrestricted</button>`;
     let actionButtons = "";
     if (status === "blocked") {
-      actionButtons = `<button class="action-btn" data-action="gift-credits" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Gift Credits</button><button class="action-btn" data-action="set-free" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Free</button><button class="action-btn" data-action="set-personal" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Personal</button><button class="action-btn" data-action="set-commercial" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Commercial</button>${qualityModeAction}<button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
+      actionButtons = `<button class="action-btn" data-action="gift-credits" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Add €</button><button class="action-btn" data-action="set-free" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Free</button><button class="action-btn" data-action="set-personal" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Personal</button><button class="action-btn" data-action="set-commercial" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Commercial</button>${qualityModeAction}<button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
     } else {
       const freeButton = `<button class="action-btn" data-action="set-free" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Free</button>`;
       const planButton = analyticsTierCodeFromStatus(status || planCodeRaw, deps) === "commercial"
         ? `<button class="action-btn" data-action="set-personal" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Personal</button>`
         : `<button class="action-btn" data-action="set-commercial" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set Commercial</button>`;
-      actionButtons = `<button class="action-btn" data-action="gift-credits" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Gift Credits</button>${freeButton}${planButton}${qualityModeAction}<button class="action-btn danger" data-action="block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Block</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
+      actionButtons = `<button class="action-btn" data-action="gift-credits" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Add €</button>${freeButton}${planButton}${qualityModeAction}<button class="action-btn danger" data-action="block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Block</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
     }
     return `<tr>
       <td class="${tierClass}">${userEmail}</td>
@@ -534,7 +534,7 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
         "quality-normal": "Set this account to normal quality behavior?",
         "quality-unrestricted": "Force unrestricted quality for this account?",
         "hard-block": "Hard block this user and block same-computer attempts?",
-        "gift-credits": "Gift credits to this account?",
+        "gift-credits": "Add EUR balance to this account?",
       };
       const endpoint = endpointByAction[safeAction];
       if (!endpoint) return;
@@ -555,7 +555,7 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
       if (safeAction === "quality-normal") payload.mode = "normal";
       if (safeAction === "quality-unrestricted") payload.mode = "unrestricted";
       if (safeAction === "gift-credits") {
-        const amount = window.prompt("Credits to gift:", "100");
+        const amount = window.prompt("EUR to add:", "100");
         if (amount === null) return;
         payload.credits = Number(amount);
         payload.reason = "admin_gift";

@@ -142,9 +142,7 @@ def _format_frame_timecode(scene, frame_value):
 
 
 def _normalize_animation_render_texture_quality_mode(value):
-    mode = str(value or "FULL").strip().upper()
-    if mode == "BALANCED":
-        return "BALANCED"
+    del value
     return "FULL"
 
 
@@ -158,13 +156,9 @@ def _require_animation_texture_quality_access(operator, prefs=None, texture_qual
     if allows_animation_render_for_context(prefs, requested_mode=mode):
         return True
     if operator is not None:
-        if mode == "BALANCED":
-            message = "Final Animation Rendering with Balanced textures requires Personal or Commercial licence."
-        else:
-            message = "Final Animation Rendering with Full Quality textures requires Commercial licence."
         fail(
             operator,
-            message,
+            "Final Animation Rendering with Full Quality textures requires enough Planetka balance for selected tiles.",
             code=ErrorCode.RENDER_FAILED,
             logger=logger,
         )
@@ -624,28 +618,20 @@ def _estimate_credits_for_segments(segments, texture_quality_mode="FULL"):
     if not tiles:
         return 0.0, 0
     try:
-        from .credit_api import unlocked_tile_keys
-        from .land_credits import pricing_records_for_tiles, summarize_pricing_records
-        records = pricing_records_for_tiles(
-            tiles,
-            quality_mode=mode,
-            owned_tile_keys=unlocked_tile_keys(force=False),
-            allow_estimate=True,
-        )
-        summary = summarize_pricing_records(records)
+        from .credit_api import estimate_credits_for_tiles
+        summary = estimate_credits_for_tiles(tiles, quality_mode=mode)
         return float(summary.get("credits", 0.0) or 0.0), int(summary.get("paid_tile_count", 0) or 0)
     except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka animation: failed estimating animation land credits", exc_info=True)
+        logger.debug("Planetka animation: failed estimating animation price", exc_info=True)
         return 0.0, 0
 
 
 def update_animation_credit_estimate(scene, props, texture_quality_mode=None):
-    """Recalculate the current Final Animation Render credit estimate."""
+    """Recalculate the current Final Animation Render EUR estimate."""
     if scene is None:
         return 0.0, 0
-    mode = str(texture_quality_mode or getattr(props, "anim_render_texture_quality_mode", "FULL") or "FULL").strip().upper()
-    if mode != "BALANCED":
-        mode = "FULL"
+    del texture_quality_mode
+    mode = "FULL"
     start_frame, end_frame = _cinematic_frame_range_from_props(scene, props)
     segment_plan = _plan_animation_segments(
         scene,
@@ -663,7 +649,7 @@ def update_animation_credit_estimate(scene, props, texture_quality_mode=None):
     scene[ANIMATION_STATS_CREDITS_KEY] = float(max(0.0, credits))
     scene["planetka_anim_estimated_paid_tile_count"] = int(max(0, paid_tile_count))
     logger.info(
-        "Planetka animation credit estimate: %.2f credits for %d new tile(s) (%s).",
+        "Planetka animation price estimate: EUR %.2f for %d new tile(s) (%s).",
         float(credits),
         int(paid_tile_count),
         mode,
@@ -3087,9 +3073,9 @@ class PLANETKA_OT_AnimationGenerateCameraKeyframes(bpy.types.Operator):
         try:
             update_animation_credit_estimate(scene, props)
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka animation: failed calculating keyframe credit estimate", exc_info=True)
+            logger.debug("Planetka animation: failed calculating keyframe price estimate", exc_info=True)
         except (RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka animation: failed calculating keyframe credit estimate", exc_info=True)
+            logger.debug("Planetka animation: failed calculating keyframe price estimate", exc_info=True)
 
         self.report(
             {'INFO'},
@@ -3537,7 +3523,7 @@ class PLANETKA_OT_AnimationClearPrepared(bpy.types.Operator):
 class PLANETKA_OT_AnimationRender(bpy.types.Operator):
     bl_idname = "planetka.animation_render"
     bl_label = "Render Animation"
-    bl_description = "Render animation in UI, segment-by-segment, using the selected Balanced or Full Quality textures"
+    bl_description = "Render animation in UI, segment-by-segment, using Full Quality textures"
 
     _timer = None
     _scene = None
@@ -3568,14 +3554,7 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
         return self.execute(context)
 
     def _get_selected_texture_quality_mode(self, props):
-        try:
-            return _normalize_animation_render_texture_quality_mode(
-                getattr(props, "anim_render_texture_quality_mode", "FULL")
-            )
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka animation: failed reading final-render texture quality mode", exc_info=True)
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka animation: failed reading final-render texture quality mode", exc_info=True)
+        del props
         return "FULL"
 
     def _remove_timer(self, context):
@@ -4075,10 +4054,8 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
         op_kwargs = {
             "scope_mode": "CAMERA",
             "defer_download": False,
+            "texture_quality_mode_override": "FULL",
         }
-        selected_mode = self._get_selected_texture_quality_mode(props)
-        if selected_mode in {"BALANCED", "FULL"}:
-            op_kwargs["texture_quality_mode_override"] = str(selected_mode)
         normalized_tiles = [str(tile or "").strip() for tile in (tiles_override or ()) if str(tile or "").strip()]
         if normalized_tiles:
             try:
@@ -4626,8 +4603,7 @@ class PLANETKA_OT_AnimationRenderInfo(bpy.types.Operator):
             "Render Animation dynamically loads tiles (LODs)",
             "during the rendering process.",
             "",
-            "Texture Quality can be set to Balanced or Full Quality",
-            "before starting the final render.",
+            "Final Animation Render uses Full Quality textures.",
         )
 
         def _draw(_self, _popup_context):

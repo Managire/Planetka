@@ -30,6 +30,9 @@ DEFAULT_DIST_DIR = ROOT / "dist"
 FORBIDDEN_STAGE_NAMES = {
     ".ds_store",
 }
+FORBIDDEN_PACKAGE_PATHS = {
+    "Resources/tile_sizes.sqlite.land_stats_build",
+}
 FORBIDDEN_STAGE_SUFFIXES = {
     ".pyc",
     ".pyo",
@@ -38,6 +41,7 @@ FORBIDDEN_STAGE_SUFFIXES = {
     ".zip",
     ".wal",
     ".shm",
+    ".land_stats_build",
 }
 
 
@@ -73,6 +77,8 @@ def _load_allowlist(path: Path) -> list[Path]:
             normalized = rel.as_posix()
             if normalized.startswith("../") or normalized == "..":
                 raise RuntimeError(f"Allowlist entry escapes repo root: {line}")
+            if normalized in FORBIDDEN_PACKAGE_PATHS:
+                raise RuntimeError(f"Forbidden packaging input in allowlist: {line}")
             if normalized in seen:
                 continue
             seen.add(normalized)
@@ -127,6 +133,8 @@ def _validate_stage(payload_root: Path, expected_files: set[str]) -> None:
         raise RuntimeError(f"Stage contains unexpected files: {unexpected}")
 
     for rel in sorted(actual_files):
+        if rel in FORBIDDEN_PACKAGE_PATHS:
+            raise RuntimeError(f"Forbidden file staged: {rel}")
         leaf = Path(rel).name.lower()
         suffix = Path(rel).suffix.lower()
         if leaf in FORBIDDEN_STAGE_NAMES:

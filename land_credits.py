@@ -1,8 +1,9 @@
 """Land-credit pricing helpers for the experimental credit branch.
 
 The runtime only reads static metadata from ``Resources/tile_sizes.sqlite``.
-The heavy WT-image scan is implemented in ``tools/build_tile_land_stats.py`` so
-normal resolves do not decode large water-mask textures.
+The heavy S2 ocean-color scan is implemented in
+``tools/build_tile_land_stats.py`` so normal resolves do not decode large image
+textures or classify pixels on the fly.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ logger = logging.getLogger(__name__)
 EARTH_RADIUS_KM = 6371.0088
 DATASET_BASE_MPP = 10.0
 FREE_D_THRESHOLD = 15
+FREE_DETAIL_RATIO = 4.0
 PAID_LAT_MIN_DEG = -60.0
 PAID_LAT_MAX_DEG = 75.0
 EQUATOR_Z001_AREA_KM2 = (40075.016686 / 360.0) ** 2
@@ -50,11 +52,43 @@ class TileCode:
         return f"x{self.x:03d}_y{self.y:03d}_z{self.z:03d}_d{self.d:03d}"
 
 
+def tile_family_key(tile: TileCode | str | None) -> str:
+    parsed = parse_tile_key(tile) if not isinstance(tile, TileCode) else tile
+    if parsed is None:
+        return ""
+    return f"x{parsed.x:03d}_y{parsed.y:03d}_z{parsed.z:03d}"
+
+
+def detail_ratio(tile: TileCode | str | None) -> float:
+    parsed = parse_tile_key(tile) if not isinstance(tile, TileCode) else tile
+    if parsed is None:
+        return float("inf")
+    try:
+        z = max(1.0, float(parsed.z))
+        d = float(parsed.d)
+    except (TypeError, ValueError):
+        return float("inf")
+    if d <= 0:
+        return float("inf")
+    return float(d / z)
+
+
+def detail_price_factor(tile: TileCode | str | None) -> float:
+    ratio = detail_ratio(tile)
+    if not math.isfinite(ratio) or ratio <= 0.0 or ratio >= FREE_DETAIL_RATIO:
+        return 0.0
+    parsed = parse_tile_key(tile) if not isinstance(tile, TileCode) else tile
+    if parsed is None:
+        return 0.0
+    mpp = delivered_mpp_for_d(parsed.d)
+    return float((DATASET_BASE_MPP / max(DATASET_BASE_MPP, mpp)) ** 2)
+
+
 def normalize_quality_mode(value: str) -> str:
     token = str(value or "").strip().upper()
-    if token == "HALF":
-        return "BALANCED"
-    if token in {"FULL", "BALANCED", "PREVIEW"}:
+    if token in {"HALF", "BALANCED"}:
+        return "FULL"
+    if token in {"FULL", "PREVIEW"}:
         return token
     return "PREVIEW"
 
@@ -127,8 +161,10 @@ def paid_band_area_km2(tile: TileCode) -> float:
 
 
 def free_reason_for_tile(tile: TileCode) -> str:
-    if int(tile.d) >= FREE_D_THRESHOLD:
-        return "d015_or_coarser"
+    if int(tile.d) <= 0:
+        return "d000_global_free"
+    if detail_ratio(tile) >= FREE_DETAIL_RATIO:
+        return "preview_detail_free"
     south, north = tile_lat_bounds(tile)
     if north <= PAID_LAT_MIN_DEG:
         return "south_polar_free"
@@ -225,11 +261,11 @@ def lookup_tile_land_stats(tile_key: str) -> dict:
 
 
 def estimate_tile_land_stats(tile_key: str) -> dict:
-    """Fallback estimate when WT-derived metadata has not been generated yet.
+    """Fallback estimate when S2-derived land metadata is unavailable.
 
     This intentionally assumes all land inside the paid latitude band. It is a
     conservative testing fallback; production should populate tile_land_stats
-    from WT masks.
+    by excluding S2 pixels that match the ocean fallback color.
     """
     tile = parse_tile_key(tile_key)
     if tile is None:
@@ -268,13 +304,16 @@ def credits_for_tile(tile_key: str, quality_mode: str = "FULL", allow_estimate: 
     tile = parse_tile_key(key)
     if tile is None:
         return {}
-    free_reason = str(stats.get("free_reason", "") or "").strip()
+    free_reason = free_reason_for_tile(tile)
     if mode == "PREVIEW":
         free_reason = free_reason or "preview_quality"
     mpp = delivered_mpp_for_d(tile.d)
-    base_credits = max(0.0, float(stats.get("base_credits", 0.0) or 0.0))
-    quality_factor = (DATASET_BASE_MPP / max(DATASET_BASE_MPP, float(mpp))) ** 2
-    credits = 0.0 if free_reason else (base_credits * quality_factor)
+    base_credits = max(
+        0.0,
+        float(stats.get("base_credits", 0.0) or 0.0),
+    )
+    price_factor = detail_price_factor(tile)
+    credits = 0.0 if free_reason else (base_credits * price_factor)
     return {
         "tile_key": key,
         "quality_mode": mode.lower(),
@@ -282,6 +321,8 @@ def credits_for_tile(tile_key: str, quality_mode: str = "FULL", allow_estimate: 
         "land_km2": round(max(0.0, float(stats.get("land_km2", 0.0) or 0.0)), 6),
         "billable_land_km2": round(max(0.0, float(stats.get("billable_land_km2", 0.0) or 0.0)), 6),
         "delivered_mpp": round(float(mpp), 6),
+        "detail_ratio": round(float(detail_ratio(tile)), 6),
+        "price_factor": round(float(price_factor), 6),
         "free_reason": free_reason,
         "stats_source": str(stats.get("source", "") or ""),
     }
@@ -294,7 +335,17 @@ def pricing_records_for_tiles(
     allow_estimate: bool = True,
 ) -> list[dict]:
     owned = {normalize_tile_key(tile) for tile in (owned_tile_keys or ())}
-    out = []
+    owned_by_family: dict[str, list[tuple[int, float]]] = {}
+    for owned_key in owned:
+        owned_tile = parse_tile_key(owned_key)
+        if owned_tile is None:
+            continue
+        owned_record = credits_for_tile(owned_key, quality_mode="FULL", allow_estimate=allow_estimate)
+        owned_by_family.setdefault(tile_family_key(owned_tile), []).append(
+            (int(owned_tile.d), max(0.0, float(owned_record.get("credits", 0.0) or 0.0)))
+        )
+
+    pending = []
     seen = set()
     for tile in tiles or ():
         key = normalize_tile_key(tile)
@@ -304,10 +355,37 @@ def pricing_records_for_tiles(
         record = credits_for_tile(key, quality_mode=quality_mode, allow_estimate=allow_estimate)
         if not record:
             continue
-        if key in owned:
+        parsed = parse_tile_key(key)
+        if parsed is None:
+            continue
+        pending.append((tile_family_key(parsed), int(parsed.d), record))
+
+    out = []
+    for family, d_value, record in sorted(pending, key=lambda item: (item[0], item[1])):
+        gross = max(0.0, float(record.get("credits", 0.0) or 0.0))
+        family_entitlements = owned_by_family.setdefault(family, [])
+        covered_by_finer = any(int(owned_d) <= int(d_value) for owned_d, _value in family_entitlements)
+        if gross <= 0.0:
+            out.append(record)
+            continue
+        if covered_by_finer:
             record = dict(record)
             record["credits"] = 0.0
             record["free_reason"] = str(record.get("free_reason") or "already_unlocked")
+            out.append(record)
+            continue
+        coarser_value = max(
+            (float(value) for owned_d, value in family_entitlements if int(owned_d) > int(d_value)),
+            default=0.0,
+        )
+        due = max(0.0, gross - coarser_value)
+        record = dict(record)
+        record["credits"] = round(float(due), 6)
+        if due <= 0.0:
+            record["free_reason"] = str(record.get("free_reason") or "already_unlocked")
+        elif coarser_value > 0.0:
+            record["upgrade_credit_applied"] = round(float(coarser_value), 6)
+        family_entitlements.append((int(d_value), gross))
         out.append(record)
     return out
 
