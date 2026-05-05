@@ -545,7 +545,7 @@ export async function unlockTilesForSession(db, userId, qualityMode, tileKeys, r
   const requiredCredits = normalizeCreditAmount(estimate.credits);
   const account = await ensureCreditAccount(db, safeUserId, deps);
   const balance = normalizeSignedCreditAmount(account && account.balance_credits);
-  if (requiredCredits > 0 && requiredCredits > balance) {
+  if (requiredCredits > 0 && balance < 0) {
     return {
       error: "insufficient_credits",
       required_credits: requiredCredits,
@@ -585,7 +585,7 @@ export async function unlockTilesForSession(db, userId, qualityMode, tileKeys, r
     }
   }
 
-  if (actualCredits > balance) {
+  if (actualCredits > 0 && balance < 0) {
     for (const tile of insertedTiles) {
       await deps.dbRun(
         db,
@@ -612,9 +612,8 @@ export async function unlockTilesForSession(db, userId, qualityMode, tileKeys, r
           total_spent_credits = total_spent_credits + ?,
           updated_at = ?
         WHERE user_id = ?
-          AND balance_credits >= ?
       `,
-      [actualCredits, actualCredits, now, safeUserId, actualCredits],
+      [actualCredits, actualCredits, now, safeUserId],
     );
     if (deps.dbMetaChanges(update) <= 0) {
       for (const tile of insertedTiles) {

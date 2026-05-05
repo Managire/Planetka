@@ -34,6 +34,7 @@ from .state import (
     ACCOUNT_PANEL_DEFAULT_COLLAPSED_KEY,
     ADD_EARTH_BUTTON_SCALE_X,
     ADD_EARTH_BUTTON_SCALE_Y,
+    _auto_resolve_scope_mode,
     _is_render_job_active,
     get_camera_inside_earth_warning,
     is_final_animation_render_active,
@@ -239,6 +240,14 @@ def _is_animation_render_running():
     except (AttributeError, RuntimeError, TypeError, ValueError):
         pass
     return False
+
+
+def _is_active_view_resolve_scope(scene):
+    try:
+        scope = str(_auto_resolve_scope_mode(scene) or "CAMERA").strip().upper()
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        scope = "CAMERA"
+    return scope == "ACTIVE_VIEW"
 
 
 def _animation_render_status_for_ui(scene):
@@ -1143,6 +1152,7 @@ def _draw_live_telemetry(layout, scene):
         _draw_resolve_download_indicator(quality_box, scene, runtime, runtime_code, runtime_text)
 
         quick_preview_prepared = _is_animation_prepared(scene)
+        active_view_scope = _is_active_view_resolve_scope(scene)
         full_allowed = allows_balanced_full_quality_for_context(prefs=prefs, source=props, requested_mode="FULL")
         full_size_known = False
         full_price_known = False
@@ -1168,16 +1178,19 @@ def _draw_live_telemetry(layout, scene):
             full_credits = 0.0
         if not credit_known or not full_size_known or not full_price_known:
             full_allowed = False
-        if credit_known and full_credits > credit_balance:
+        full_has_new_cost = bool(full_price_known and full_credits > 0.000001)
+        if credit_known and credit_balance < 0.0 and full_has_new_cost:
             full_allowed = False
         if quick_preview_prepared:
+            full_allowed = False
+        if active_view_scope:
             full_allowed = False
 
         full_box = quality_box.box()
         full_button_row = full_box.row(align=True)
         full_button_row.scale_y = 1.1
         full_button_label = "Full Quality Textures"
-        if full_price_known:
+        if full_price_known and not active_view_scope:
             full_button_label = f"Full Quality Textures ({_estimate_eur_label('FULL')})"
         full_download = full_button_row.row(align=True)
         full_download.enabled = bool(full_allowed)
@@ -1187,32 +1200,38 @@ def _draw_live_telemetry(layout, scene):
             icon="IMPORT",
         ).texture_quality_mode = "FULL"
         full_details = full_button_row.row(align=True)
-        full_details.enabled = bool(full_price_known)
+        full_details.enabled = bool(full_price_known and not active_view_scope)
         full_details.operator(
             "planetka.data_cost_breakdown",
             text="",
             icon="INFO",
         ).texture_quality_mode = "FULL"
-        full_size_row = full_box.row(align=True)
-        full_size_row.label(text=f"Data Size: {_estimate_mb_label('FULL')}", icon="DISK_DRIVE")
+        if active_view_scope:
+            camera_view_row = full_box.row(align=True)
+            camera_view_row.label(text="Full Quality uses Camera View.", icon="CAMERA_DATA")
+            camera_view_row.operator(
+                "planetka.navigation_use_current_view",
+                text="Bring Camera",
+                icon="CAMERA_DATA",
+            )
+        else:
+            full_size_row = full_box.row(align=True)
+            full_size_row.label(text=f"Data Size: {_estimate_mb_label('FULL')}", icon="DISK_DRIVE")
 
         if credit_known:
             credit_notice = full_box.row(align=True)
-            if full_credits > credit_balance:
+            if credit_balance < 10.0:
                 credit_notice.alert = True
-                credit_notice.label(text=f"Balance: €{credit_balance:.2f}", icon="USER")
-            else:
-                credit_notice.label(text=f"Balance: €{credit_balance:.2f}", icon="USER")
-            if credit_balance <= 0.0 and not (full_price_known and full_credits > credit_balance):
-                credit_notice.operator(
-                    "planetka.open_credit_checkout",
-                    text="Payment",
-                    icon="URL",
-                ).checkout_option = "OPTIONS"
-        elif not full_allowed:
+            credit_notice.label(text=f"Balance: €{credit_balance:.2f}", icon="USER")
+            credit_notice.operator(
+                "planetka.open_credit_checkout",
+                text="Add Balance",
+                icon="URL",
+            ).checkout_option = "BALANCE_10"
+        elif not full_allowed and not active_view_scope:
             credit_notice = full_box.row(align=True)
             credit_notice.label(text="Balance unavailable", icon="INFO")
-        if credit_known and full_price_known and full_credits > credit_balance:
+        if (not active_view_scope) and credit_known and full_has_new_cost and credit_balance < 0.0:
             payment_row = full_box.row(align=True)
             if full_credits >= 0.50:
                 payment_row.operator(
@@ -1228,6 +1247,9 @@ def _draw_live_telemetry(layout, scene):
         if quick_preview_prepared:
             estimate_notice = full_box.row(align=True)
             estimate_notice.label(text="Clear Quick Preview before downloading Full Quality.", icon="INFO")
+        elif active_view_scope:
+            estimate_notice = full_box.row(align=True)
+            estimate_notice.label(text="Bring Camera to this view before using Full Quality.", icon="INFO")
         elif not full_size_known or not full_price_known:
             estimate_notice = full_box.row(align=True)
             estimate_notice.label(text="Full Quality price is being calculated.", icon="INFO")
@@ -2246,9 +2268,10 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             except (AuthApiError, TypeError, ValueError, RuntimeError, AttributeError):
                 anim_account_known = False
                 anim_balance = 0.0
-            if anim_account_known and anim_credits > anim_balance:
+            anim_has_new_cost = bool(anim_credits > 0.000001)
+            if anim_account_known and anim_has_new_cost and anim_balance < 0.0:
                 final_render_allowed = False
-                final_render_box.label(text=f"Not enough balance (€{anim_balance:.2f} available).", icon="INFO")
+                final_render_box.label(text=f"Add balance to continue (€{anim_balance:.2f} available).", icon="INFO")
         if _is_animation_render_running():
             runtime, runtime_code, runtime_text = _resolve_runtime_display(scene)
             _draw_resolve_download_indicator(final_render_box, scene, runtime, runtime_code, runtime_text)

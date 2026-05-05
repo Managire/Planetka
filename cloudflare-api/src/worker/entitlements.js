@@ -100,7 +100,7 @@ export function qualityModeNotAllowedMessage(planCode, qualityMode) {
   if (safeMode === "preview") {
     return "Preview quality is free.";
   }
-  return "This quality level requires enough Planetka balance for the selected tiles.";
+  return "This quality level requires non-negative Planetka balance.";
 }
 
 export function commercialUseAllowed(planCode) {

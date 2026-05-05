@@ -1,3 +1,5 @@
+import time
+
 import bpy
 from bpy.props import BoolProperty, EnumProperty, StringProperty
 
@@ -313,6 +315,7 @@ class PLANETKA_OT_AccountCancelUnlockedDownload(bpy.types.Operator):
         return {'FINISHED'}
 from .state import (
     ACCOUNT_PANEL_DEFAULT_COLLAPSED_KEY,
+    _auto_resolve_scope_mode,
     _is_render_job_active,
     _tag_view3d_redraw,
     _initialize_props_from_imported_planetka,
@@ -331,6 +334,20 @@ from .updater import kickoff_background_update_check
 
 _RECOVERABLE_LOG_COUNTS = {}
 _DOWNLOAD_POPUP_WM_FLAG = "planetka_download_popup_running"
+_POST_CHECKOUT_MONITOR = {}
+_POST_CHECKOUT_MONITOR_REGISTERED = False
+_POST_CHECKOUT_POLL_INTERVAL_SEC = 3.0
+_POST_CHECKOUT_TIMEOUT_SEC = 300.0
+
+
+def _is_active_view_resolve_scope(scene):
+    try:
+        scope = str(_auto_resolve_scope_mode(scene) or "CAMERA").strip().upper()
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        scope = "CAMERA"
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        scope = "CAMERA"
+    return scope == "ACTIVE_VIEW"
 
 
 def _log_recoverable_once(code, message):
@@ -340,6 +357,130 @@ def _log_recoverable_once(code, message):
     elif count == 3:
         logger.debug("[%s] %s (further occurrences suppressed)", code, message)
     _RECOVERABLE_LOG_COUNTS[code] = count + 1
+
+
+def _scene_full_quality_price_eur(scene):
+    if scene is None:
+        return None
+    try:
+        from .credit_api import clear_credit_caches
+        clear_credit_caches()
+    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed clearing credit caches during checkout refresh", exc_info=True)
+    try:
+        prefs = get_prefs()
+        base_path = _normalize_texture_source_path(str(getattr(prefs, "texture_base_path", "") or "")) if prefs else ""
+        from .planetka_runtime.view_telemetry import build_resolve_cost_breakdown
+        breakdown = build_resolve_cost_breakdown(
+            scene=scene,
+            scope_mode="CAMERA",
+            base_path=base_path,
+            texture_quality_mode="FULL",
+        )
+        update_resolve_size_estimates(scene, scope_mode="CAMERA", base_path=base_path)
+        _tag_view3d_redraw()
+        if not isinstance(breakdown, dict):
+            return None
+        return float(max(0.0, float(breakdown.get("total_credits", 0.0) or 0.0)))
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed refreshing checkout price state", exc_info=True)
+    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed refreshing checkout price state", exc_info=True)
+    return None
+
+
+def _run_camera_full_quality_resolve_after_checkout(scene):
+    if scene is None:
+        return False
+    try:
+        context_scene = getattr(getattr(bpy, "context", None), "scene", None)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        context_scene = None
+    if context_scene is not scene:
+        _tag_view3d_redraw()
+        return False
+    try:
+        stop_auto_resolve_download_pipeline()
+        result = bpy.ops.planetka.load_textures(
+            scope_mode="CAMERA",
+            skip_render_compatibility=True,
+            defer_download=False,
+            texture_quality_mode_override="FULL",
+        )
+        if "FINISHED" in result:
+            try:
+                from .credit_api import clear_credit_caches
+                clear_credit_caches()
+            except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka: failed clearing credit caches after checkout resolve", exc_info=True)
+            prefs = get_prefs()
+            base_path = _normalize_texture_source_path(str(getattr(prefs, "texture_base_path", "") or "")) if prefs else ""
+            update_resolve_size_estimates(scene, scope_mode="CAMERA", base_path=base_path)
+            _tag_view3d_redraw()
+            logger.info("Planetka: Full Quality resolve started after scene payment.")
+            return True
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed running Full Quality resolve after checkout", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed running Full Quality resolve after checkout", exc_info=True)
+    return False
+
+
+def _checkout_monitor_scene(scene_name):
+    safe_name = str(scene_name or "").strip()
+    if safe_name:
+        scene = bpy.data.scenes.get(safe_name)
+        if scene is not None:
+            return scene
+    try:
+        return getattr(getattr(bpy, "context", None), "scene", None)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return None
+
+
+def _post_checkout_monitor_timer():
+    global _POST_CHECKOUT_MONITOR
+    global _POST_CHECKOUT_MONITOR_REGISTERED
+    monitor = dict(_POST_CHECKOUT_MONITOR or {})
+    if not monitor:
+        _POST_CHECKOUT_MONITOR_REGISTERED = False
+        return None
+    try:
+        deadline = float(monitor.get("deadline", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        deadline = 0.0
+    if deadline > 0.0 and time.monotonic() > deadline:
+        logger.info("Planetka: scene payment monitor timed out before Full Quality licence appeared.")
+        _POST_CHECKOUT_MONITOR = {}
+        _POST_CHECKOUT_MONITOR_REGISTERED = False
+        return None
+
+    scene = _checkout_monitor_scene(monitor.get("scene_name", ""))
+    price_eur = _scene_full_quality_price_eur(scene)
+    if price_eur is not None and price_eur <= 0.000001:
+        _POST_CHECKOUT_MONITOR = {}
+        _POST_CHECKOUT_MONITOR_REGISTERED = False
+        _run_camera_full_quality_resolve_after_checkout(scene)
+        return None
+    return _POST_CHECKOUT_POLL_INTERVAL_SEC
+
+
+def _start_post_checkout_scene_monitor(scene):
+    global _POST_CHECKOUT_MONITOR
+    global _POST_CHECKOUT_MONITOR_REGISTERED
+    if scene is None:
+        return
+    _POST_CHECKOUT_MONITOR = {
+        "scene_name": str(getattr(scene, "name", "") or ""),
+        "deadline": float(time.monotonic() + _POST_CHECKOUT_TIMEOUT_SEC),
+    }
+    if _POST_CHECKOUT_MONITOR_REGISTERED:
+        return
+    try:
+        bpy.app.timers.register(_post_checkout_monitor_timer, first_interval=_POST_CHECKOUT_POLL_INTERVAL_SEC)
+        _POST_CHECKOUT_MONITOR_REGISTERED = True
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed starting scene payment monitor", exc_info=True)
 
 
 def _persist_user_preferences():
@@ -437,7 +578,7 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
         )
         if mode == "PREVIEW":
             return "Resolve Preview textures once."
-        return "Licence and download Full Quality textures for the current view once."
+        return "Licence and download Full Quality textures for Camera View once."
 
     def execute(self, context):
         if _cancel_if_animation_render_active(self, "Texture quality change"):
@@ -460,6 +601,13 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
 
         target_mode = _normalize_startup_texture_quality_mode(getattr(self, "texture_quality_mode", "PREVIEW"))
         if target_mode == "FULL":
+            if _is_active_view_resolve_scope(scene):
+                return fail(
+                    self,
+                    "Bring Camera to View before downloading Full Quality textures.",
+                    code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                    logger=logger,
+                )
             try:
                 from .animation_tools import _quick_preview_is_prepared
                 quick_preview_prepared = bool(_quick_preview_is_prepared(scene))
@@ -480,7 +628,7 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
             if target_mode == "FULL":
                 return fail(
                     self,
-                    "Full Quality requires enough Planetka balance for selected tiles.",
+                    "Full Quality requires non-negative Planetka balance.",
                     code=ErrorCode.RESOLVE_PRECHECK_FAILED,
                     logger=logger,
                 )
@@ -495,6 +643,7 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
             if target_mode == "FULL":
                 stop_auto_resolve_download_pipeline()
             result = bpy.ops.planetka.load_textures(
+                scope_mode="CAMERA",
                 skip_render_compatibility=True,
                 defer_download=False,
                 texture_quality_mode_override=target_mode,
@@ -636,6 +785,9 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
                 log_message="Planetka checkout creation failed",
             )
         if bool(checkout.get("no_payment_required", False)):
+            scene = getattr(context, "scene", None)
+            _scene_full_quality_price_eur(scene)
+            _run_camera_full_quality_resolve_after_checkout(scene)
             self.report({'INFO'}, "No payment required for this Full Quality view.")
             return {'FINISHED'}
         checkout_url = str(checkout.get("checkout_url", "") or "").strip()
@@ -646,6 +798,8 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
                 code=ErrorCode.RESOLVE_PRECHECK_FAILED,
                 logger=logger,
             )
+        if option == "SCENE":
+            _start_post_checkout_scene_monitor(getattr(context, "scene", None))
         self.report({'INFO'}, "Planetka payment page opened in browser.")
         return {'FINISHED'}
 
