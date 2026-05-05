@@ -1350,7 +1350,8 @@ def _ctx_auto_resolve_download_pump_timer(ctx):
         except (RuntimeError, TypeError, ValueError, AttributeError):
             scene = None
         if scene is not None:
-            deps.update_realtime_telemetry(scene)
+            if not (has_active or has_pending):
+                deps.update_realtime_telemetry(scene)
             deps.tag_view3d_redraw()
 
         if not has_active and not has_pending and not has_completed:

@@ -3675,7 +3675,10 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
     def draw(self, _context):
         layout = self.layout
         layout.label(text="Confirm Final Animation Render", icon="RENDER_ANIMATION")
-        layout.label(text=f"New Tiles to be Downloaded: {int(getattr(self, 'confirm_new_tile_count', 0) or 0)}", icon="TEXTURE")
+        layout.label(
+            text=f"New Tiles to be Licenced and Downloaded: {int(getattr(self, 'confirm_new_tile_count', 0) or 0)}",
+            icon="TEXTURE",
+        )
         layout.label(text=f"Price: {_animation_price_text(getattr(self, 'confirm_price_eur', 0.0))}", icon="SOLO_ON")
         layout.separator()
         layout.label(text="This will start the full animation render and spend balance for new Full Quality tiles.", icon="INFO")
@@ -5001,7 +5004,7 @@ class PLANETKA_OT_AnimationRenderCostBreakdown(bpy.types.Operator):
 
         header = layout.box()
         header.label(text="Final Animation Render Full Quality Breakdown", icon="INFO")
-        header.label(text=f"New Tiles to be Downloaded: {int(breakdown.get('new_tile_count', 0) or 0)}")
+        header.label(text=f"New Tiles to be Licenced and Downloaded: {int(breakdown.get('new_tile_count', 0) or 0)}")
         header.label(text=f"Price: {_animation_price_text(breakdown.get('price_eur', 0.0))}")
         if segments:
             header.label(
@@ -5028,7 +5031,7 @@ class PLANETKA_OT_AnimationRenderCostBreakdown(bpy.types.Operator):
             segment_box.label(
                 text=(
                     f"Segment {seg_index}: frames {seg_start:04d}-{seg_end:04d}  "
-                    f"New Tiles to be Downloaded: {int(segment.get('new_tile_count', 0) or 0)}  "
+                    f"New Tiles to be Licenced and Downloaded: {int(segment.get('new_tile_count', 0) or 0)}  "
                     f"Price: {_animation_price_text(segment.get('price_eur', 0.0))}"
                 ),
                 icon="RENDER_ANIMATION",

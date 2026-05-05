@@ -1168,9 +1168,9 @@ def _draw_live_telemetry(layout, scene):
         full_box = quality_box.box()
         full_button_row = full_box.row(align=True)
         full_button_row.scale_y = 1.1
-        full_button_label = "Download Full Quality"
+        full_button_label = "Full Quality Textures"
         if full_price_known:
-            full_button_label = f"Download Full Quality ({_estimate_eur_label('FULL')})"
+            full_button_label = f"Full Quality Textures ({_estimate_eur_label('FULL')})"
         full_download = full_button_row.row(align=True)
         full_download.enabled = bool(full_allowed)
         full_download.operator(
@@ -1956,7 +1956,7 @@ def _draw_earth_settings(layout, scene, enabled):
         "Earth Transform",
         "EMPTY_AXIS",
         EARTH_TRANSFORM_SECTION_OPEN_KEY,
-        default_open=True,
+        default_open=False,
     )
     if transform_box is not None:
         transform_box.enabled = bool(enabled)
@@ -2227,7 +2227,7 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         except (TypeError, ValueError, RuntimeError, AttributeError):
             anim_credits = 0.0
             anim_paid_tiles = 0
-        final_render_box.label(text=f"New Tiles to be Downloaded: {anim_paid_tiles}", icon="TEXTURE")
+        final_render_box.label(text=f"New Tiles to be Licenced and Downloaded: {anim_paid_tiles}", icon="TEXTURE")
         if anim_credits > 0.0:
             anim_account_known = False
             try:

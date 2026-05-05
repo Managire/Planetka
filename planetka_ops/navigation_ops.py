@@ -16,6 +16,8 @@ from .navigation_helpers import (
     _full_globe_altitude_km,
     _max_proximity_altitude_km,
     _navigate_camera_internal,
+    _read_full_globe_tilt_lock,
+    _restore_full_globe_locked_orientation,
     _set_full_globe_tilt_lock,
     _switch_viewport_to_camera_view,
     _update_shot_anchor_object,
@@ -36,6 +38,8 @@ def _module_deps():
         "_ensure_ortho_full_globe_if_needed": _ensure_ortho_full_globe_if_needed,
         "_max_proximity_altitude_km": _max_proximity_altitude_km,
         "_navigate_camera_internal": _navigate_camera_internal,
+        "_read_full_globe_tilt_lock": _read_full_globe_tilt_lock,
+        "_restore_full_globe_locked_orientation": _restore_full_globe_locked_orientation,
         "_set_full_globe_tilt_lock": _set_full_globe_tilt_lock,
         "_clear_full_globe_tilt_lock": _clear_full_globe_tilt_lock,
         "_anchor_frame_world": _anchor_frame_world,
@@ -357,6 +361,7 @@ def navigation_preset_execute(operator, context, deps):
     _max_proximity_altitude_km = deps["_max_proximity_altitude_km"]
     _set_full_globe_tilt_lock = deps["_set_full_globe_tilt_lock"]
     _clear_full_globe_tilt_lock = deps["_clear_full_globe_tilt_lock"]
+    _restore_full_globe_locked_orientation = deps["_restore_full_globe_locked_orientation"]
     PLANETKA_RECOVERABLE_EXCEPTIONS = deps["PLANETKA_RECOVERABLE_EXCEPTIONS"]
     _navigate_camera_internal = deps["_navigate_camera_internal"]
     _anchor_frame_world = deps["_anchor_frame_world"]
@@ -409,7 +414,12 @@ def navigation_preset_execute(operator, context, deps):
             _clear_full_globe_tilt_lock(scene)
             props.nav_altitude_km = 786.0
         elif preset == "HIGH_ORBIT":
-            _set_full_globe_tilt_lock(scene, float(getattr(props, "nav_tilt_deg", 0.0)))
+            _set_full_globe_tilt_lock(
+                scene,
+                float(getattr(props, "nav_tilt_deg", 0.0)),
+                heading_deg=float(getattr(props, "nav_azimuth_deg", 0.0)),
+                roll_deg=float(getattr(props, "nav_roll_deg", 0.0)),
+            )
             full_globe_km = _full_globe_altitude_km(scene, earth_radius_bu)
             if full_globe_km is not None:
                 props.nav_altitude_km = max(0.0, float(full_globe_km))
@@ -417,6 +427,7 @@ def navigation_preset_execute(operator, context, deps):
             if ortho_adjusted:
                 operator.report({'INFO'}, "Orthographic scale expanded to fit full globe with margin.")
         elif preset == "MAX_PROXIMITY":
+            _restore_full_globe_locked_orientation(scene, props)
             _clear_full_globe_tilt_lock(scene)
             lon_deg = float(getattr(props, "nav_longitude_deg", 0.0))
             lat_deg = float(getattr(props, "nav_latitude_deg", 0.0))

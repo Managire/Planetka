@@ -730,6 +730,17 @@ def sync_navigation_controls_from_scene_camera(
     operators_module = get_ops_module()
     if operators_module is None:
         return
+    read_full_globe_lock = getattr(operators_module, "_read_full_globe_tilt_lock", None)
+    if callable(read_full_globe_lock):
+        try:
+            locked, _locked_tilt = read_full_globe_lock(scene)
+            if bool(locked):
+                last_map[scene_id] = signature
+                return
+        except recoverable:
+            runtime_logger.debug("Planetka Full Globe navigation lock check failed", exc_info=True)
+        except (RuntimeError, TypeError, ValueError):
+            runtime_logger.debug("Planetka Full Globe navigation lock check failed", exc_info=True)
     is_below_surface = getattr(operators_module, "_is_scene_camera_below_surface", None)
     if callable(is_below_surface):
         try:

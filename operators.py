@@ -394,6 +394,7 @@ from .planetka_ops.navigation_helpers import (
     _quantize_navigation_ui_payload,
     _quantize_navigation_ui_value,
     _ray_sphere_hit_nearest,
+    _read_full_globe_tilt_lock,
     _read_last_navigation_values,
     _scene_camera_altitude_bu,
     _set_planetka_earth_radius_bu,
@@ -436,7 +437,7 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
         )
         if mode == "PREVIEW":
             return "Resolve Preview textures once."
-        return "Download Full Quality textures for the current view once."
+        return "Licence and download Full Quality textures for the current view once."
 
     def execute(self, context):
         if _cancel_if_animation_render_active(self, "Texture quality change"):

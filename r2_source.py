@@ -44,7 +44,8 @@ _STREAM_HEALTH_CACHE_TTL_SECONDS = 120.0
 _STREAM_HEALTH_SENTINEL = None
 _R2_READ_CHUNK_BYTES = 4 * 1024 * 1024
 _R2_PROGRESS_FLUSH_BYTES = 4 * 1024 * 1024
-_R2_PROGRESS_FLUSH_INTERVAL_SECONDS = 0.25
+_R2_PROGRESS_FLUSH_INTERVAL_SECONDS = 0.5
+_R2_UI_REDRAW_MIN_INTERVAL_SECONDS = 0.5
 _R2_PREFETCH_MAX_WORKERS = 16
 _R2_PREFETCH_ABSOLUTE_MAX_WORKERS = 32
 
@@ -852,7 +853,7 @@ def _request_ui_redraw(force=False):
 
     global _LAST_UI_REDRAW_AT
     now = time.perf_counter()
-    if not force and (now - _LAST_UI_REDRAW_AT) < 0.2:
+    if not force and (now - _LAST_UI_REDRAW_AT) < _R2_UI_REDRAW_MIN_INTERVAL_SECONDS:
         return
     _LAST_UI_REDRAW_AT = now
 
@@ -873,10 +874,6 @@ def _request_ui_redraw(force=False):
             for area in screen.areas:
                 if area.type == "VIEW_3D":
                     area.tag_redraw()
-        wm_ops = getattr(getattr(bpy, "ops", None), "wm", None)
-        redraw_timer = getattr(wm_ops, "redraw_timer", None)
-        if redraw_timer is not None:
-            redraw_timer(type="DRAW_WIN_SWAP", iterations=1)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed requesting UI redraw", exc_info=True)
         return

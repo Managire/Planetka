@@ -42,7 +42,9 @@ NAV_LAST_APPLIED_KEYS = {
     "roll": "planetka_nav_last_roll_deg",
 }
 NAV_FULL_GLOBE_TILT_LOCK_ENABLED_KEY = "planetka_nav_full_globe_tilt_lock_enabled"
+NAV_FULL_GLOBE_HEADING_LOCK_VALUE_KEY = "planetka_nav_full_globe_heading_lock_value_deg"
 NAV_FULL_GLOBE_TILT_LOCK_VALUE_KEY = "planetka_nav_full_globe_tilt_lock_value_deg"
+NAV_FULL_GLOBE_ROLL_LOCK_VALUE_KEY = "planetka_nav_full_globe_roll_lock_value_deg"
 RADIUS_SYNC_NOTICE_KEY = "planetka_status_radius_sync_notice"
 NAV_CHANGE_EPS = 1e-6
 NAV_UI_DECIMALS = 2
@@ -95,12 +97,16 @@ def _store_last_navigation_values(scene, lon_deg, lat_deg, altitude_km, heading_
         _log_recoverable_once("PKA-OPS-004", "Failed storing last navigation values to scene idprops")
 
 
-def _set_full_globe_tilt_lock(scene, tilt_deg):
+def _set_full_globe_tilt_lock(scene, tilt_deg, heading_deg=None, roll_deg=None):
     if scene is None:
         return
     try:
         scene[NAV_FULL_GLOBE_TILT_LOCK_ENABLED_KEY] = True
         scene[NAV_FULL_GLOBE_TILT_LOCK_VALUE_KEY] = float(tilt_deg)
+        if heading_deg is not None:
+            scene[NAV_FULL_GLOBE_HEADING_LOCK_VALUE_KEY] = float(heading_deg)
+        if roll_deg is not None:
+            scene[NAV_FULL_GLOBE_ROLL_LOCK_VALUE_KEY] = float(roll_deg)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         _log_recoverable_once("PKA-OPS-101", "Failed storing Full Globe tilt lock state")
     except (TypeError, ValueError, AttributeError):
@@ -124,6 +130,17 @@ def _clear_full_globe_tilt_lock(scene):
         _log_recoverable_once("PKA-OPS-105", "Failed clearing Full Globe tilt lock value")
     except (TypeError, ValueError, AttributeError):
         _log_recoverable_once("PKA-OPS-106", "Failed clearing Full Globe tilt lock value")
+    for key, code in (
+        (NAV_FULL_GLOBE_HEADING_LOCK_VALUE_KEY, "PKA-OPS-111"),
+        (NAV_FULL_GLOBE_ROLL_LOCK_VALUE_KEY, "PKA-OPS-112"),
+    ):
+        try:
+            if key in scene:
+                del scene[key]
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            _log_recoverable_once(code, "Failed clearing Full Globe orientation lock value")
+        except (TypeError, ValueError, AttributeError):
+            _log_recoverable_once(code, "Failed clearing Full Globe orientation lock value")
 
 
 def _read_full_globe_tilt_lock(scene):
@@ -140,6 +157,40 @@ def _read_full_globe_tilt_lock(scene):
     except (TypeError, ValueError, AttributeError):
         locked_tilt_deg = None
     return True, locked_tilt_deg
+
+
+def _restore_full_globe_locked_orientation(scene, props):
+    if scene is None or props is None:
+        return False
+    enabled, locked_tilt_deg = _read_full_globe_tilt_lock(scene)
+    if not enabled:
+        return False
+    restored = False
+    try:
+        if NAV_FULL_GLOBE_HEADING_LOCK_VALUE_KEY in scene:
+            props.nav_azimuth_deg = float(scene.get(NAV_FULL_GLOBE_HEADING_LOCK_VALUE_KEY))
+            restored = True
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        _log_recoverable_once("PKA-OPS-113", "Failed restoring Full Globe heading lock")
+    except (TypeError, ValueError, AttributeError):
+        _log_recoverable_once("PKA-OPS-114", "Failed restoring Full Globe heading lock")
+    try:
+        if locked_tilt_deg is not None:
+            props.nav_tilt_deg = float(locked_tilt_deg)
+            restored = True
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        _log_recoverable_once("PKA-OPS-115", "Failed restoring Full Globe tilt lock")
+    except (TypeError, ValueError, AttributeError):
+        _log_recoverable_once("PKA-OPS-116", "Failed restoring Full Globe tilt lock")
+    try:
+        if NAV_FULL_GLOBE_ROLL_LOCK_VALUE_KEY in scene:
+            props.nav_roll_deg = float(scene.get(NAV_FULL_GLOBE_ROLL_LOCK_VALUE_KEY))
+            restored = True
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        _log_recoverable_once("PKA-OPS-117", "Failed restoring Full Globe roll lock")
+    except (TypeError, ValueError, AttributeError):
+        _log_recoverable_once("PKA-OPS-118", "Failed restoring Full Globe roll lock")
+    return bool(restored)
 
 
 def _set_radius_sync_notice(scene, message):
@@ -890,6 +941,7 @@ def _navigate_camera_internal(scene, lon_deg, lat_deg, altitude_km, look_at_cent
 
     cam_rotation = look_direction.to_track_quat('-Z', 'Y')
     camera.matrix_world = Matrix.LocRotScale(camera_position, cam_rotation, cam_scale)
+    mark_navigation_camera_control_signature(scene)
     return earth_obj, earth_radius_bu
 
 
@@ -1303,6 +1355,7 @@ def _apply_navigation_shot(
         final_rotation = base_rotation
 
     camera.matrix_world = Matrix.LocRotScale(camera_position, final_rotation, camera_scale)
+    mark_navigation_camera_control_signature(scene)
     _ensure_close_clip_limits(scene, min_clip=0.001)
     if bool(switch_viewport_to_camera):
         _switch_viewport_to_camera_view(context, scene)
