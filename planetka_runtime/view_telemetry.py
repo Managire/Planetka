@@ -20,43 +20,91 @@ def _coerce_ctx(value=None):
     return _require_ctx()
 
 
+def _safe_bpy_context(bpy_module):
+    if bpy_module is None:
+        return None
+    try:
+        return getattr(bpy_module, "context", None)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return None
+
+
+def _safe_context_scene(bpy_module):
+    context = _safe_bpy_context(bpy_module)
+    if context is None:
+        return None
+    try:
+        return getattr(context, "scene", None)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return None
+
+
+def _safe_window_manager_from_bpy(bpy_module):
+    context = _safe_bpy_context(bpy_module)
+    if context is None:
+        return None
+    try:
+        return getattr(context, "window_manager", None)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return None
+
+
+def _safe_windows_from_manager(wm):
+    if wm is None:
+        return ()
+    try:
+        return tuple(getattr(wm, "windows", ()) or ())
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return ()
+
+
 def _active_view_signature_from_bpy(bpy_module):
     if bpy_module is None:
         return None
-    wm = getattr(bpy_module.context, "window_manager", None)
+    wm = _safe_window_manager_from_bpy(bpy_module)
     if not wm:
         return None
 
-    for window in wm.windows:
-        screen = getattr(window, "screen", None)
+    for window in _safe_windows_from_manager(wm):
+        try:
+            screen = getattr(window, "screen", None)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            continue
         if not screen:
             continue
-        for area in screen.areas:
-            if area.type != 'VIEW_3D':
+        try:
+            areas = tuple(getattr(screen, "areas", ()) or ())
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            continue
+        for area in areas:
+            try:
+                if area.type != 'VIEW_3D':
+                    continue
+                space = getattr(area.spaces, "active", None)
+                if not space or space.type != 'VIEW_3D':
+                    continue
+                rv3d = getattr(space, "region_3d", None)
+                if rv3d is None:
+                    continue
+                region = next((r for r in area.regions if r.type == 'WINDOW'), None)
+                region_sig = (
+                    int(getattr(region, "width", 0)) if region else 0,
+                    int(getattr(region, "height", 0)) if region else 0,
+                )
+                matrix_signature = tuple(
+                    round(float(value), 6)
+                    for row in rv3d.view_matrix
+                    for value in row
+                )
+                return (
+                    str(getattr(rv3d, "view_perspective", "")),
+                    bool(getattr(rv3d, "is_perspective", True)),
+                    round(float(getattr(space, "lens", 50.0)), 6),
+                    region_sig,
+                    matrix_signature,
+                )
+            except (RuntimeError, TypeError, ValueError, AttributeError):
                 continue
-            space = getattr(area.spaces, "active", None)
-            if not space or space.type != 'VIEW_3D':
-                continue
-            rv3d = getattr(space, "region_3d", None)
-            if rv3d is None:
-                continue
-            region = next((r for r in area.regions if r.type == 'WINDOW'), None)
-            region_sig = (
-                int(getattr(region, "width", 0)) if region else 0,
-                int(getattr(region, "height", 0)) if region else 0,
-            )
-            matrix_signature = tuple(
-                round(float(value), 6)
-                for row in rv3d.view_matrix
-                for value in row
-            )
-            return (
-                str(getattr(rv3d, "view_perspective", "")),
-                bool(getattr(rv3d, "is_perspective", True)),
-                round(float(getattr(space, "lens", 50.0)), 6),
-                region_sig,
-                matrix_signature,
-            )
     return None
 
 
@@ -103,16 +151,26 @@ def active_camera_projection_info(scene):
 
 def _ctx_tag_view3d_redraw(ctx):
     bpy_module = ctx.deps.bpy
-    wm = getattr(bpy_module.context, "window_manager", None)
+    wm = _safe_window_manager_from_bpy(bpy_module)
     if not wm:
         return
-    for window in wm.windows:
-        screen = getattr(window, "screen", None)
+    for window in _safe_windows_from_manager(wm):
+        try:
+            screen = getattr(window, "screen", None)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            continue
         if not screen:
             continue
-        for area in screen.areas:
-            if area.type == 'VIEW_3D':
-                area.tag_redraw()
+        try:
+            areas = tuple(getattr(screen, "areas", ()) or ())
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            continue
+        for area in areas:
+            try:
+                if area.type == 'VIEW_3D':
+                    area.tag_redraw()
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                continue
 
 
 def tag_view3d_redraw(ctx=None):
@@ -121,7 +179,7 @@ def tag_view3d_redraw(ctx=None):
 
 def _ctx_get_camera_inside_earth_warning(ctx, scene):
     deps = ctx.deps
-    target_scene = scene if scene is not None else getattr(getattr(deps.bpy, "context", None), "scene", None)
+    target_scene = scene if scene is not None else _safe_context_scene(deps.bpy)
     if target_scene is None:
         return ""
     try:
@@ -656,10 +714,15 @@ def intersect_ray_sphere_nearest(origin, direction, radius):
 
 def realtime_view_camera_info(scene, runtime=None):
     bpy_module = _coerce_ctx(runtime).deps.bpy
-    context = bpy_module.context
-    area = getattr(context, "area", None)
-    space = getattr(context, "space_data", None)
-    rv3d = getattr(context, "region_data", None)
+    context = _safe_bpy_context(bpy_module)
+    try:
+        area = getattr(context, "area", None) if context is not None else None
+        space = getattr(context, "space_data", None) if context is not None else None
+        rv3d = getattr(context, "region_data", None) if context is not None else None
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        area = None
+        space = None
+        rv3d = None
 
     if (
         area is not None
@@ -667,33 +730,43 @@ def realtime_view_camera_info(scene, runtime=None):
         and space is not None
         and space.type == 'VIEW_3D'
         and rv3d is not None
-    ):
+        ):
         cam_matrix = rv3d.view_matrix.inverted()
         return {
             "position": cam_matrix.translation.copy(),
             "forward": (-cam_matrix.col[2].xyz).normalized(),
         }
 
-    wm = getattr(context, "window_manager", None)
+    wm = _safe_window_manager_from_bpy(bpy_module)
     if wm:
-        for window in wm.windows:
-            screen = getattr(window, "screen", None)
+        for window in _safe_windows_from_manager(wm):
+            try:
+                screen = getattr(window, "screen", None)
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                continue
             if not screen:
                 continue
-            for candidate_area in screen.areas:
-                if candidate_area.type != 'VIEW_3D':
+            try:
+                areas = tuple(getattr(screen, "areas", ()) or ())
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                continue
+            for candidate_area in areas:
+                try:
+                    if candidate_area.type != 'VIEW_3D':
+                        continue
+                    candidate_space = getattr(candidate_area.spaces, "active", None)
+                    if not candidate_space or candidate_space.type != 'VIEW_3D':
+                        continue
+                    candidate_rv3d = getattr(candidate_space, "region_3d", None)
+                    if candidate_rv3d is None:
+                        continue
+                    cam_matrix = candidate_rv3d.view_matrix.inverted()
+                    return {
+                        "position": cam_matrix.translation.copy(),
+                        "forward": (-cam_matrix.col[2].xyz).normalized(),
+                    }
+                except (RuntimeError, TypeError, ValueError, AttributeError):
                     continue
-                candidate_space = getattr(candidate_area.spaces, "active", None)
-                if not candidate_space or candidate_space.type != 'VIEW_3D':
-                    continue
-                candidate_rv3d = getattr(candidate_space, "region_3d", None)
-                if candidate_rv3d is None:
-                    continue
-                cam_matrix = candidate_rv3d.view_matrix.inverted()
-                return {
-                    "position": cam_matrix.translation.copy(),
-                    "forward": (-cam_matrix.col[2].xyz).normalized(),
-                }
 
     camera = getattr(scene, "camera", None) if scene else None
     if camera is None:
@@ -980,7 +1053,7 @@ def build_resolve_cost_breakdown(scene=None, runtime=None, scope_mode="CAMERA", 
     streaming_utils = deps.get_streaming_utils()
     normalized_mode = deps.normalize_texture_quality_mode(texture_quality_mode)
     if scene is None:
-        scene = getattr(getattr(deps.bpy, "context", None), "scene", None)
+        scene = _safe_context_scene(deps.bpy)
     if scene is None or tile_utils is None or streaming_utils is None:
         return {
             "ok": False,
@@ -1111,6 +1184,12 @@ def build_resolve_cost_breakdown(scene=None, runtime=None, scope_mode="CAMERA", 
                 "mb": float(tile_bytes) / float(1024.0 ** 2),
                 "credits": float(price_record.get("credits", 0.0) or 0.0),
                 "gross_credits": float(price_record.get("gross_credits", price_record.get("credits", 0.0)) or 0.0),
+                "gross_price_eur": float(price_record.get("gross_price_eur", price_record.get("gross_credits", price_record.get("credits", 0.0))) or 0.0),
+                "land_km2": float(price_record.get("land_km2", 0.0) or 0.0),
+                "billable_land_km2": float(price_record.get("billable_land_km2", 0.0) or 0.0),
+                "delivered_mpp": float(price_record.get("delivered_mpp", 0.0) or 0.0),
+                "detail_ratio": float(price_record.get("detail_ratio", 0.0) or 0.0),
+                "price_factor": float(price_record.get("price_factor", 0.0) or 0.0),
                 "free_reason": str(price_record.get("free_reason", "") or "").strip(),
                 "already_owned": bool(price_record.get("already_owned", False)) or str(price_record.get("free_reason", "") or "").strip() == "already_unlocked",
                 "assets": assets,
@@ -1240,7 +1319,7 @@ def update_resolve_size_estimates(scene, runtime=None, scope_mode="CAMERA", base
 
 def get_resolve_size_estimates(scene=None, runtime=None):
     deps = _coerce_ctx(runtime).deps
-    target_scene = scene if scene is not None else getattr(getattr(deps.bpy, "context", None), "scene", None)
+    target_scene = scene if scene is not None else _safe_context_scene(deps.bpy)
     recoverable_exceptions = deps.recoverable_exceptions
     resolve_estimate_full_bytes_key = deps.resolve_estimate_full_bytes_key
     resolve_estimate_preview_bytes_key = deps.resolve_estimate_preview_bytes_key

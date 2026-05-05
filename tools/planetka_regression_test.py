@@ -493,7 +493,7 @@ def main():
             "sunlight_strength": 17.0,
             "sunlight_seasonal_tilt_deg": 12.0,
             "earth_radius_bu": 3.5,
-            "texture_quality_mode": "BALANCED",
+            "texture_quality_mode": "FULL",
             "auto_resolve": False,
             "show_earth_preview": False,
             "anim_camera_preset": "ZOOM",

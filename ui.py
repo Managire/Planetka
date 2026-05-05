@@ -21,8 +21,13 @@ from .r2_source import get_download_progress, get_local_source_stale_notice, is_
 from .planetka_ops.scene_setup_ops import is_scene_background_black
 from .updater import get_public_status as get_updater_public_status
 from .animation_tools import (
+    ANIMATION_SEGMENT_TAG_KEY,
     ANIMATION_RENDER_STATUS_ICON_KEY,
     ANIMATION_RENDER_STATUS_TEXT_KEY,
+    ANIMATION_STATS_CREDITS_KEY,
+    ANIMATION_STATS_LEGACY_CREDITS_KEY,
+    ANIMATION_STATS_LEGACY_NEW_TILE_COUNT_KEY,
+    ANIMATION_STATS_NEW_TILE_COUNT_KEY,
     ANIMATION_STATS_SEGMENTS_KEY,
 )
 from .state import (
@@ -186,6 +191,8 @@ def _normalize_texture_quality_for_ui(value):
 
 
 def _last_visible_texture_quality_label(scene):
+    if _is_animation_prepared(scene):
+        return "Preview"
     mode = ""
     if scene is not None:
         try:
@@ -379,11 +386,26 @@ def _draw_resolve_download_indicator(layout, scene, runtime, runtime_code, runti
     progress = get_download_progress()
     total_bytes = int(progress.get("total_bytes", 0) or 0)
     downloaded_bytes = int(progress.get("downloaded_bytes", 0) or 0)
-    if total_bytes <= 0 and downloaded_bytes <= 0 and status_token in {"", "IDLE", "MONITORING"}:
+    progress_download_active = bool(progress.get("download_active", False))
+    animation_status_upper = str(status_label_text or "").strip().upper()
+    animation_waiting_for_download = bool(
+        animation_render_running
+        and not progress_download_active
+        and total_bytes <= 0
+        and downloaded_bytes <= 0
+    )
+    if (
+        total_bytes <= 0
+        and downloaded_bytes <= 0
+        and status_token in {"", "IDLE", "MONITORING"}
+        and not animation_waiting_for_download
+    ):
         total_bytes = _last_resolve_download_bytes_for_ui(scene)
         downloaded_bytes = total_bytes
     factor = 0.0
-    if total_bytes > 0:
+    if animation_waiting_for_download and not ("LICENC" in animation_status_upper or "DOWNLOADING" in animation_status_upper):
+        factor = 1.0
+    elif total_bytes > 0:
         factor = max(0.0, min(1.0, float(downloaded_bytes) / float(total_bytes)))
     elif status_token in {"FINALIZING", "FINALIZE_QUEUED"}:
         factor = 1.0
@@ -392,6 +414,12 @@ def _draw_resolve_download_indicator(layout, scene, runtime, runtime_code, runti
         progress_text = f"{_fmt_bytes(downloaded_bytes)} / {_fmt_bytes(total_bytes)}"
     elif downloaded_bytes > 0:
         progress_text = f"{_fmt_bytes(downloaded_bytes)} downloaded"
+    elif animation_waiting_for_download and "LICENC" in animation_status_upper:
+        progress_text = "Confirming licence"
+    elif animation_waiting_for_download and "DOWNLOADING" in animation_status_upper:
+        progress_text = "Preparing download"
+    elif animation_waiting_for_download:
+        progress_text = "Data ready"
     elif status_token == "QUEUED":
         progress_text = "Waiting to start"
     elif status_token == "PREPARING":
@@ -704,8 +732,15 @@ def _is_animation_prepared(scene):
         return False
     try:
         return int(scene.get(ANIMATION_STATS_SEGMENTS_KEY, 0)) > 0
-    except (TypeError, ValueError):
-        return False
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        pass
+    try:
+        for obj in tuple(bpy.data.objects):
+            if bool(obj.get(ANIMATION_SEGMENT_TAG_KEY, False)):
+                return True
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        pass
+    return False
 
 
 def _draw_animation_ready_message(layout):
@@ -854,7 +889,7 @@ def _draw_account_panel(layout):
                     text="Payment",
                     icon="URL",
                 ).checkout_option = "OPTIONS"
-        layout.label(text=f"Unlocked tiles: {unlocked_count}", icon="TEXTURE")
+        layout.label(text=f"Licenced tiles: {unlocked_count}", icon="TEXTURE")
         try:
             from .credit_api import get_unlocked_download_progress
             unlocked_progress = get_unlocked_download_progress()
@@ -866,7 +901,7 @@ def _draw_account_panel(layout):
         ):
             progress_box = layout.box()
             status = str(unlocked_progress.get("status", "") or "").upper()
-            message = str(unlocked_progress.get("message", "") or "").strip() or "Unlocked tile download"
+            message = str(unlocked_progress.get("message", "") or "").strip() or "Licenced tile download"
             progress_box.label(text=message, icon="IMPORT")
             total_bytes = int(unlocked_progress.get("total_bytes", 0) or 0)
             downloaded_bytes = int(unlocked_progress.get("downloaded_bytes", 0) or 0)
@@ -901,7 +936,7 @@ def _draw_account_panel(layout):
                 files_text = "No files to download"
             progress_box.label(text=files_text, icon="FILE")
             if selected_tiles > 0:
-                progress_box.label(text=f"{selected_tiles} unlocked tiles selected", icon="TEXTURE")
+                progress_box.label(text=f"{selected_tiles} licenced tiles selected", icon="TEXTURE")
             if total_files > 0 and skipped_existing_files > 0:
                 progress_box.label(text=f"{skipped_existing_files} files already present", icon="CHECKMARK")
             if missing_files > 0:
@@ -912,12 +947,12 @@ def _draw_account_panel(layout):
                 error_row.label(text=str(unlocked_progress.get("error", "") or ""), icon="ERROR")
             if bool(unlocked_progress.get("active", False)):
                 progress_box.operator("planetka.account_cancel_unlocked_download", text="Cancel Download", icon="CANCEL")
-        layout.operator("planetka.account_download_unlocked_tiles", text="Download Unlocked", icon="IMPORT")
+        layout.operator("planetka.account_download_unlocked_tiles", text="Download Licenced", icon="IMPORT")
 
     local_row = layout.row()
     local_row.prop(prefs, "local_texture_source_path", text="Local Source")
     auto_row = layout.row()
-    auto_row.prop(prefs, "auto_download_unlocked_tiles", text="Download unlocked tiles automatically")
+    auto_row.prop(prefs, "auto_download_unlocked_tiles", text="Download licenced tiles automatically")
     try:
         auto_enabled = bool(getattr(prefs, "auto_download_unlocked_tiles", False))
         local_path = str(getattr(prefs, "local_texture_source_path", "") or "").strip()
@@ -1099,6 +1134,7 @@ def _draw_live_telemetry(layout, scene):
         runtime, runtime_code, runtime_text = _resolve_runtime_display(scene)
         _draw_resolve_download_indicator(quality_box, scene, runtime, runtime_code, runtime_text)
 
+        quick_preview_prepared = _is_animation_prepared(scene)
         full_allowed = allows_balanced_full_quality_for_context(prefs=prefs, source=props, requested_mode="FULL")
         full_size_known = False
         full_price_known = False
@@ -1126,26 +1162,31 @@ def _draw_live_telemetry(layout, scene):
             full_allowed = False
         if credit_known and full_credits > credit_balance:
             full_allowed = False
+        if quick_preview_prepared:
+            full_allowed = False
 
         full_box = quality_box.box()
-        full_box.label(text="Full Quality data is paid land-detail data.", icon="INFO")
         full_button_row = full_box.row(align=True)
         full_button_row.scale_y = 1.1
-        full_button_row.enabled = bool(full_allowed)
-        full_button_row.operator(
+        full_button_label = "Download Full Quality"
+        if full_price_known:
+            full_button_label = f"Download Full Quality ({_estimate_eur_label('FULL')})"
+        full_download = full_button_row.row(align=True)
+        full_download.enabled = bool(full_allowed)
+        full_download.operator(
             "planetka.set_texture_quality_and_resolve",
-            text="Download Full Quality",
+            text=full_button_label,
             icon="IMPORT",
+        ).texture_quality_mode = "FULL"
+        full_details = full_button_row.row(align=True)
+        full_details.enabled = bool(full_price_known)
+        full_details.operator(
+            "planetka.data_cost_breakdown",
+            text="",
+            icon="INFO",
         ).texture_quality_mode = "FULL"
         full_size_row = full_box.row(align=True)
         full_size_row.label(text=f"Data Size: {_estimate_mb_label('FULL')}", icon="DISK_DRIVE")
-        full_price_row = full_box.row(align=True)
-        full_price_row.label(text=f"Price: {_estimate_eur_label('FULL')}", icon="SOLO_ON")
-        full_price_row.operator(
-            "planetka.data_cost_breakdown",
-            text="Details",
-            icon="INFO",
-        ).texture_quality_mode = "FULL"
 
         if credit_known:
             credit_notice = full_box.row(align=True)
@@ -1154,7 +1195,7 @@ def _draw_live_telemetry(layout, scene):
                 credit_notice.label(text=f"Balance: €{credit_balance:.2f}", icon="USER")
             else:
                 credit_notice.label(text=f"Balance: €{credit_balance:.2f}", icon="USER")
-            if credit_balance <= 0.0:
+            if credit_balance <= 0.0 and not (full_price_known and full_credits > credit_balance):
                 credit_notice.operator(
                     "planetka.open_credit_checkout",
                     text="Payment",
@@ -1163,27 +1204,23 @@ def _draw_live_telemetry(layout, scene):
         elif not full_allowed:
             credit_notice = full_box.row(align=True)
             credit_notice.label(text="Balance unavailable", icon="INFO")
-        payment_box = full_box.box()
-        payment_box.label(text="Payment options:", icon="URL")
-        buy_row = payment_box.row(align=True)
-        scene_checkout_allowed = bool(full_price_known and full_credits >= 0.50)
-        buy_row.enabled = scene_checkout_allowed
-        buy_row.operator(
-            "planetka.open_credit_checkout",
-            text=f"Buy This Scene ({_estimate_eur_label('FULL')})",
-            icon="URL",
-        ).checkout_option = "SCENE"
-        top_up_row = payment_box.row(align=True)
-        top_up_row.operator(
-            "planetka.open_credit_checkout",
-            text="Add €10 Balance",
-            icon="URL",
-        ).checkout_option = "BALANCE_10"
-        if credit_known and full_credits > credit_balance:
-            payment_box.label(text="Pay this scene directly or add balance, then click Download Full Quality.", icon="INFO")
-        if full_price_known and 0.0 < full_credits < 0.50:
-            payment_box.label(text="Scene price is below Stripe minimum; add balance instead.", icon="INFO")
-        if not full_size_known or not full_price_known:
+        if credit_known and full_price_known and full_credits > credit_balance:
+            payment_row = full_box.row(align=True)
+            if full_credits >= 0.50:
+                payment_row.operator(
+                    "planetka.open_credit_checkout",
+                    text=f"Buy This Scene ({_estimate_eur_label('FULL')})",
+                    icon="URL",
+                ).checkout_option = "SCENE"
+            payment_row.operator(
+                "planetka.open_credit_checkout",
+                text="Add €10 Balance",
+                icon="URL",
+            ).checkout_option = "BALANCE_10"
+        if quick_preview_prepared:
+            estimate_notice = full_box.row(align=True)
+            estimate_notice.label(text="Clear Quick Preview before downloading Full Quality.", icon="INFO")
+        elif not full_size_known or not full_price_known:
             estimate_notice = full_box.row(align=True)
             estimate_notice.label(text="Full Quality price is being calculated.", icon="INFO")
 
@@ -2175,16 +2212,22 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             requested_mode=selected_final_quality,
         )
         try:
-            anim_credits = float(scene.get("planetka_anim_estimated_credits", 0.0) or 0.0)
-            anim_paid_tiles = int(scene.get("planetka_anim_estimated_paid_tile_count", 0) or 0)
+            anim_credits = float(
+                scene.get(
+                    ANIMATION_STATS_CREDITS_KEY,
+                    scene.get(ANIMATION_STATS_LEGACY_CREDITS_KEY, 0.0),
+                ) or 0.0
+            )
+            anim_paid_tiles = int(
+                scene.get(
+                    ANIMATION_STATS_NEW_TILE_COUNT_KEY,
+                    scene.get(ANIMATION_STATS_LEGACY_NEW_TILE_COUNT_KEY, 0),
+                ) or 0
+            )
         except (TypeError, ValueError, RuntimeError, AttributeError):
             anim_credits = 0.0
             anim_paid_tiles = 0
-        if anim_credits > 0.0 or anim_paid_tiles > 0:
-            final_render_box.label(
-                text=f"Estimated new tiles: {anim_paid_tiles} / €{anim_credits:.2f}",
-                icon="SOLO_ON",
-            )
+        final_render_box.label(text=f"New Tiles to be Downloaded: {anim_paid_tiles}", icon="TEXTURE")
         if anim_credits > 0.0:
             anim_account_known = False
             try:
@@ -2199,9 +2242,8 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
                 final_render_allowed = False
                 final_render_box.label(text=f"Not enough balance (€{anim_balance:.2f} available).", icon="INFO")
         if _is_animation_render_running():
-            render_status_text, render_status_icon = _animation_render_status_for_ui(scene)
-            status_row = final_render_box.row(align=True)
-            status_row.label(text=render_status_text, icon=render_status_icon)
+            runtime, runtime_code, runtime_text = _resolve_runtime_display(scene)
+            _draw_resolve_download_indicator(final_render_box, scene, runtime, runtime_code, runtime_text)
 
         render_row = final_render_box.row(align=True)
         render_button_row = render_row.row(align=True)
@@ -2209,16 +2251,16 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         render_button_row.enabled = bool(final_render_allowed) and bool(earth_workflow_enabled)
         render_button_row.operator(
             "planetka.animation_render",
-            text="Render Animation",
+            text=f"Render Animation (€{anim_credits:.2f})",
             icon="RENDER_ANIMATION",
         )
         render_info_row = render_row.row(align=True)
         render_info_row.scale_y = 1.2
         render_info_row.enabled = bool(earth_workflow_enabled)
         render_info_row.operator(
-            "planetka.animation_render_info",
+            "planetka.animation_render_cost_breakdown",
             text="",
-            icon="QUESTION",
+            icon="INFO",
         )
         if not final_render_allowed:
             final_render_box.label(text="Final Animation Render requires enough balance for selected tiles.", icon="INFO")

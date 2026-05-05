@@ -39,12 +39,12 @@ See:
 
 3) PO (Built-up proxy): DLR World Settlement Footprint 2015 (WSF2015 v2)
 ------------------------------------------------------------------------
-WSF2015 v2 is licensed under CC BY 4.0 (commercial use allowed with attribution,
-license link, and change notice).
+WSF2015 v2 is licenced under CC BY 4.0 (commercial use allowed with attribution,
+licence link, and change notice).
 
 Attribution Text (example):
 - Contains modified data from World Settlement Footprint 2015 (WSF2015 v2),
-  DLR (German Aerospace Center), licensed under CC BY 4.0.
+  DLR (German Aerospace Center), licenced under CC BY 4.0.
   DOI: 10.15489/6n5h1ezef920
 
 See:

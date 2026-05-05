@@ -378,7 +378,7 @@ def _start_final_animation_case(scene, props, animation_tools, engine_id, output
     scene.frame_set(int(frame_start))
     scene.render.filepath = str(output_dir / f"{str(engine_id).lower()}_")
 
-    result = bpy.ops.planetka.animation_render('INVOKE_DEFAULT')
+    result = bpy.ops.planetka.animation_render('INVOKE_DEFAULT', confirmed=True)
     _assert(
         "RUNNING_MODAL" in result or "FINISHED" in result,
         f"Final Animation Render did not start for {engine_id}: {result}",

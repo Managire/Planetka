@@ -863,12 +863,19 @@ def _ctx_auto_resolve_apply_downloaded_tiles(ctx, scene, scene_id, job, manual_r
                 deps.job_field(job, "texture_quality_mode", "PREVIEW")
             ),
         }
-        context_scene = getattr(deps.bpy.context, "scene", None)
-        if context_scene is scene or not hasattr(deps.bpy.context, "temp_override"):
-            op_result = deps.bpy.ops.planetka.load_textures(**op_kwargs)
-        else:
-            with deps.bpy.context.temp_override(scene=scene, view_layer=scene.view_layers[0]):
-                op_result = deps.bpy.ops.planetka.load_textures(**op_kwargs)
+        try:
+            context_scene = getattr(getattr(deps.bpy, "context", None), "scene", None)
+        except deps.recoverable_exceptions:
+            context_scene = None
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            context_scene = None
+        if context_scene is not scene:
+            deps.resolve_trace(
+                f"Shader update deferred: target scene is not the active context scene "
+                f"(request_id={deps.job_field(job, 'request_id')})"
+            )
+            return None
+        op_result = deps.bpy.ops.planetka.load_textures(**op_kwargs)
         if "FINISHED" not in op_result:
             deps.resolve_trace(
                 f"Shader update failed (request_id={deps.job_field(job, 'request_id')} op_result={str(op_result)})"
@@ -1336,7 +1343,12 @@ def _ctx_auto_resolve_download_pump_timer(ctx):
             _ctx_start_auto_resolve_download_thread(ctx, job_to_start)
             has_active = True
 
-        scene = getattr(deps.bpy.context, "scene", None)
+        try:
+            scene = getattr(getattr(deps.bpy, "context", None), "scene", None)
+        except deps.recoverable_exceptions:
+            scene = None
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            scene = None
         if scene is not None:
             deps.update_realtime_telemetry(scene)
             deps.tag_view3d_redraw()
@@ -1662,7 +1674,12 @@ def _ctx_auto_resolve_noncritical_timer(ctx):
             state.noncritical_timer_running = False
             return None
 
-        scene = getattr(deps.bpy.context, "scene", None)
+        try:
+            scene = getattr(getattr(deps.bpy, "context", None), "scene", None)
+        except deps.recoverable_exceptions:
+            scene = None
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            scene = None
         scene_id = deps.scene_key(scene) if scene is not None else None
         request = None
         if scene_id is not None:
@@ -1873,7 +1890,12 @@ def _ctx_auto_resolve_tick_once(ctx):
     if state.in_flight:
         return 0.1
 
-    scene = getattr(deps.bpy.context, "scene", None)
+    try:
+        scene = getattr(getattr(deps.bpy, "context", None), "scene", None)
+    except deps.recoverable_exceptions:
+        return None
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return None
     if scene is None:
         return None
     props = getattr(scene, "planetka", None)
@@ -1915,7 +1937,7 @@ def _ctx_auto_resolve_timer(ctx):
             state.timer_running = False
             return None
 
-        scene = getattr(deps.bpy.context, "scene", None)
+        scene = getattr(getattr(deps.bpy, "context", None), "scene", None)
         if scene is None:
             state.timer_running = False
             return None
@@ -1972,7 +1994,12 @@ def _auto_resolve_timer():
 
 def _ctx_ensure_auto_resolve_service_running(ctx):
     deps = ctx.deps
-    scene = getattr(getattr(deps.bpy, "context", None), "scene", None)
+    try:
+        scene = getattr(getattr(deps.bpy, "context", None), "scene", None)
+    except deps.recoverable_exceptions:
+        scene = None
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        scene = None
     if not _ctx_can_auto_resolve_run(ctx, scene):
         _ctx_stop_auto_resolve_service(ctx)
         return

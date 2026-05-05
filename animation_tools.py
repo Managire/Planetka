@@ -2,11 +2,12 @@ import importlib
 import json
 import math
 import os
+import threading
 import time
 from dataclasses import dataclass
 
 import bpy
-from bpy.props import EnumProperty, IntProperty
+from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty
 from mathutils import Euler, Matrix, Quaternion, Vector
 
 from .auth import (
@@ -23,9 +24,11 @@ from .error_utils import PLANETKA_IMPORT_RECOVERABLE_EXCEPTIONS, PLANETKA_RECOVE
 from .extension_prefs import get_earth_object, get_prefs
 from .operator_utils import ErrorCode, fail, require_planetka_props, require_scene
 from .r2_source import (
+    ensure_resolve_pricing_session,
     get_remote_cache_folder,
     is_remote_source_configured,
     plan_resolve_downloads,
+    resolve_request_context,
 )
 from .state import (
     _apply_sunlight_from_props,
@@ -61,7 +64,10 @@ ANIMATION_SEGMENT_GROUP_TAG_KEY = "planetka_animation_segment_group"
 ANIMATION_SEGMENT_MATERIAL_TAG_KEY = "planetka_animation_segment_material"
 ANIMATION_STATS_SEGMENTS_KEY = "planetka_anim_prepared_segments"
 ANIMATION_STATS_TEXTURE_MB_KEY = "planetka_anim_prepared_textures_mb"
-ANIMATION_STATS_CREDITS_KEY = "planetka_anim_estimated_credits"
+ANIMATION_STATS_CREDITS_KEY = "planetka_anim_full_quality_price_eur"
+ANIMATION_STATS_LEGACY_CREDITS_KEY = "planetka_anim_estimated_credits"
+ANIMATION_STATS_NEW_TILE_COUNT_KEY = "planetka_anim_full_quality_new_tile_count"
+ANIMATION_STATS_LEGACY_NEW_TILE_COUNT_KEY = "planetka_anim_estimated_paid_tile_count"
 ANIMATION_STATS_START_KEY = "planetka_anim_prepared_start_frame"
 ANIMATION_STATS_END_KEY = "planetka_anim_prepared_end_frame"
 ANIMATION_RENDER_STATUS_TEXT_KEY = "planetka_anim_render_status_text"
@@ -98,9 +104,6 @@ ANIMATION_RENDER_OUTPUT_SETTLE_TIMEOUT_SEC = 15.0
 ANIMATION_RENDER_USER_STOP_SETTLE_SEC = 1.0
 ANIMATION_RENDER_APP_JOB_FALLBACK_GRACE_SEC = 5.0
 ANIMATION_RENDER_LAUNCH_RETRY_MAX_ATTEMPTS = 2
-ANIMATION_POST_RECOVERY_RETRY_SEC = 0.25
-ANIMATION_POST_RECOVERY_MAX_ATTEMPTS = 120
-_ANIMATION_POST_RECOVERY_EPOCH = 0
 ANIMATION_HORIZON_SEGMENT_HYSTERESIS_ENABLED = True
 
 
@@ -249,111 +252,15 @@ def _cancel_if_animation_render_active(operator, action_label):
     return False
 
 
-def _is_interface_write_locked():
+def _update_active_view_layer():
     try:
-        wm = getattr(getattr(bpy, "context", None), "window_manager", None)
-        if wm is not None and bool(getattr(wm, "is_interface_locked", False)):
-            return True
+        view_layer = getattr(getattr(bpy, "context", None), "view_layer", None)
+        if view_layer is not None:
+            view_layer.update()
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        return False
+        logger.debug("Planetka animation: active view-layer update failed", exc_info=True)
     except (RuntimeError, TypeError, ValueError, AttributeError):
-        return False
-    return False
-
-
-def _schedule_post_animation_recovery(scene_name, restore_auto_resolve=True):
-    global _ANIMATION_POST_RECOVERY_EPOCH
-    _ANIMATION_POST_RECOVERY_EPOCH = int(_ANIMATION_POST_RECOVERY_EPOCH) + 1
-    epoch = int(_ANIMATION_POST_RECOVERY_EPOCH)
-    target_scene_name = str(scene_name or "").strip()
-    desired_auto_resolve = bool(restore_auto_resolve)
-    if not target_scene_name:
-        return
-
-    attempts_remaining = {"count": int(max(1, ANIMATION_POST_RECOVERY_MAX_ATTEMPTS))}
-
-    def _attempt_recovery():
-        if int(epoch) != int(_ANIMATION_POST_RECOVERY_EPOCH):
-            return None
-        scene_ref = bpy.data.scenes.get(target_scene_name)
-        if scene_ref is None:
-            return None
-
-        attempts_remaining["count"] = int(attempts_remaining.get("count", 0)) - 1
-        attempts_left = int(attempts_remaining.get("count", 0))
-        has_attempts = attempts_left > 0
-
-        try:
-            if callable(_is_render_job_active) and bool(_is_render_job_active()):
-                return float(ANIMATION_POST_RECOVERY_RETRY_SEC) if has_attempts else None
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka animation: failed checking render active state during post-render recovery", exc_info=True)
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka animation: failed checking render active state during post-render recovery", exc_info=True)
-        if _is_interface_write_locked():
-            return float(ANIMATION_POST_RECOVERY_RETRY_SEC) if has_attempts else None
-
-        try:
-            stop_auto_resolve_service()
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka animation: failed stopping auto-resolve service during post-render recovery", exc_info=True)
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka animation: failed stopping auto-resolve service during post-render recovery", exc_info=True)
-        try:
-            stop_auto_resolve_download_pipeline()
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka animation: failed clearing queued resolve pipeline during post-render recovery", exc_info=True)
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka animation: failed clearing queued resolve pipeline during post-render recovery", exc_info=True)
-
-        props = getattr(scene_ref, "planetka", None)
-        if props is not None:
-            try:
-                current_auto_resolve = bool(getattr(props, "auto_resolve", False))
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                current_auto_resolve = None
-            except (RuntimeError, TypeError, ValueError, AttributeError):
-                current_auto_resolve = None
-            if current_auto_resolve is not None and current_auto_resolve != desired_auto_resolve:
-                try:
-                    props.auto_resolve = bool(desired_auto_resolve)
-                except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                    logger.debug("Planetka animation: failed restoring auto-resolve state after render", exc_info=True)
-                except (RuntimeError, TypeError, ValueError, AttributeError):
-                    logger.debug("Planetka animation: failed restoring auto-resolve state after render", exc_info=True)
-
-        if get_earth_object() is None:
-            return None
-
-        op_kwargs = {
-            "scope_mode": "CAMERA",
-            "skip_render_compatibility": True,
-            "defer_download": False,
-        }
-        try:
-            context_scene = getattr(getattr(bpy, "context", None), "scene", None)
-            if context_scene is scene_ref or not hasattr(getattr(bpy, "context", None), "temp_override"):
-                result = bpy.ops.planetka.load_textures(**op_kwargs)
-            else:
-                with bpy.context.temp_override(scene=scene_ref, view_layer=scene_ref.view_layers[0]):
-                    result = bpy.ops.planetka.load_textures(**op_kwargs)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka animation: post-render recovery resolve failed", exc_info=True)
-            return float(ANIMATION_POST_RECOVERY_RETRY_SEC) if has_attempts else None
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka animation: post-render recovery resolve failed", exc_info=True)
-            return float(ANIMATION_POST_RECOVERY_RETRY_SEC) if has_attempts else None
-
-        if "FINISHED" in result:
-            return None
-        return float(ANIMATION_POST_RECOVERY_RETRY_SEC) if has_attempts else None
-
-    try:
-        bpy.app.timers.register(_attempt_recovery, first_interval=0.15, persistent=False)
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka animation: failed scheduling post-render recovery", exc_info=True)
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka animation: failed scheduling post-render recovery", exc_info=True)
+        logger.debug("Planetka animation: active view-layer update failed", exc_info=True)
 
 
 def _canonical_tiles(tiles):
@@ -626,14 +533,71 @@ def _estimate_credits_for_segments(segments, texture_quality_mode="FULL"):
         return 0.0, 0
 
 
-def update_animation_credit_estimate(scene, props, texture_quality_mode=None):
-    """Recalculate the current Final Animation Render EUR estimate."""
-    if scene is None:
-        return 0.0, 0
-    del texture_quality_mode
-    mode = "FULL"
+def _unique_tiles_for_segments(segments):
+    tiles = []
+    seen = set()
+    for segment in segments or ():
+        if not isinstance(segment, dict):
+            continue
+        for tile in segment.get("tiles", ()) or ():
+            tile_text = str(tile or "").strip()
+            if not tile_text or tile_text in seen:
+                continue
+            seen.add(tile_text)
+            tiles.append(tile_text)
+    return tiles
+
+
+def _animation_price_text(value):
+    try:
+        return f"€{max(0.0, float(value or 0.0)):.2f}"
+    except (TypeError, ValueError):
+        return "€0.00"
+
+
+def _animation_area_text(value):
+    try:
+        area = max(0.0, float(value or 0.0))
+    except (TypeError, ValueError):
+        area = 0.0
+    if area >= 1000.0:
+        return f"{area:,.0f} km2"
+    if area >= 10.0:
+        return f"{area:,.1f} km2"
+    return f"{area:,.2f} km2"
+
+
+def _animation_mpp_text(value):
+    try:
+        mpp = max(0.0, float(value or 0.0))
+    except (TypeError, ValueError):
+        mpp = 0.0
+    if mpp <= 0.0:
+        return "-"
+    if mpp >= 1000.0:
+        return f"{mpp / 1000.0:.1f} km/px"
+    return f"{mpp:.0f} m/px"
+
+
+def _animation_land_area_text(row):
+    if not isinstance(row, dict):
+        return _animation_area_text(0.0)
+    try:
+        land = max(0.0, float(row.get("land_km2", 0.0) or 0.0))
+    except (TypeError, ValueError):
+        land = 0.0
+    if land <= 0.0:
+        try:
+            land = max(0.0, float(row.get("billable_land_km2", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            land = 0.0
+    return _animation_area_text(land)
+
+
+def _final_animation_segment_plan(scene, props, texture_quality_mode="FULL"):
     start_frame, end_frame = _cinematic_frame_range_from_props(scene, props)
-    segment_plan = _plan_animation_segments(
+    mode = _normalize_animation_render_texture_quality_mode(texture_quality_mode)
+    return _plan_animation_segments(
         scene,
         int(start_frame),
         int(end_frame),
@@ -642,14 +606,108 @@ def update_animation_credit_estimate(scene, props, texture_quality_mode=None):
         apply_segment_horizon_hysteresis=bool(ANIMATION_HORIZON_SEGMENT_HYSTERESIS_ENABLED),
         enable_adaptive_horizon_precision=True,
     )
+
+
+def _build_animation_credit_breakdown(scene, props, texture_quality_mode="FULL"):
+    mode = _normalize_animation_render_texture_quality_mode(texture_quality_mode)
+    if mode == "PREVIEW":
+        return {
+            "quality_mode": mode,
+            "segments": [],
+            "price_eur": 0.0,
+            "new_tile_count": 0,
+            "tile_count": 0,
+        }
+
+    segment_plan = _final_animation_segment_plan(scene, props, texture_quality_mode=mode)
+    segments = list(segment_plan.segments or ())
+    unique_tiles = []
+    seen = set()
+    for segment in segments:
+        for tile in segment.get("tiles", ()) if isinstance(segment, dict) else ():
+            tile_key = str(tile or "").strip()
+            if not tile_key or tile_key in seen:
+                continue
+            seen.add(tile_key)
+            unique_tiles.append(tile_key)
+
+    summary = {}
+    if unique_tiles:
+        from .credit_api import estimate_credits_for_tiles
+        summary = estimate_credits_for_tiles(unique_tiles, quality_mode=mode)
+    records_by_key = {}
+    for record in list(summary.get("tiles", ()) if isinstance(summary, dict) else ()):
+        if not isinstance(record, dict):
+            continue
+        tile_key = str(record.get("tile_key", "") or "").strip()
+        if tile_key:
+            records_by_key[tile_key] = dict(record)
+
+    charged_seen = set()
+    segment_breakdowns = []
+    for segment in segments:
+        segment_rows = []
+        segment_price = 0.0
+        segment_new_tiles = 0
+        for tile in segment.get("tiles", ()) if isinstance(segment, dict) else ():
+            tile_key = str(tile or "").strip()
+            if not tile_key:
+                continue
+            row = dict(records_by_key.get(tile_key) or {"tile_key": tile_key, "credits": 0.0})
+            row["tile_key"] = tile_key
+            try:
+                row_price = max(0.0, float(row.get("credits", 0.0) or 0.0))
+            except (TypeError, ValueError):
+                row_price = 0.0
+            if row_price > 0.0:
+                if tile_key in charged_seen:
+                    row["credits"] = 0.0
+                    row["price_eur"] = 0.0
+                    row["free_reason"] = "already_listed_in_earlier_segment"
+                    row_price = 0.0
+                else:
+                    charged_seen.add(tile_key)
+                    segment_price += row_price
+                    segment_new_tiles += 1
+            segment_rows.append(row)
+        segment_breakdowns.append({
+            "index": int(segment.get("index", len(segment_breakdowns) + 1) if isinstance(segment, dict) else len(segment_breakdowns) + 1),
+            "start": int(segment.get("start", 0) if isinstance(segment, dict) else 0),
+            "end": int(segment.get("end", 0) if isinstance(segment, dict) else 0),
+            "price_eur": float(segment_price),
+            "new_tile_count": int(segment_new_tiles),
+            "tiles": segment_rows,
+        })
+
+    return {
+        "quality_mode": mode,
+        "frame_start": int(segment_plan.frame_start),
+        "frame_end": int(segment_plan.frame_end),
+        "frame_step": int(segment_plan.frame_step),
+        "segments": segment_breakdowns,
+        "price_eur": float(summary.get("price_eur", summary.get("credits", 0.0)) or 0.0) if isinstance(summary, dict) else 0.0,
+        "new_tile_count": int(summary.get("paid_tile_count", 0) or 0) if isinstance(summary, dict) else 0,
+        "tile_count": int(len(unique_tiles)),
+    }
+
+
+def update_animation_credit_estimate(scene, props, texture_quality_mode=None):
+    """Recalculate the current Final Animation Render EUR price."""
+    if scene is None:
+        return 0.0, 0
+    del texture_quality_mode
+    mode = "FULL"
+    segment_plan = _final_animation_segment_plan(scene, props, texture_quality_mode=mode)
     credits, paid_tile_count = _estimate_credits_for_segments(
         list(segment_plan.segments or ()),
         texture_quality_mode=mode,
     )
     scene[ANIMATION_STATS_CREDITS_KEY] = float(max(0.0, credits))
-    scene["planetka_anim_estimated_paid_tile_count"] = int(max(0, paid_tile_count))
+    scene[ANIMATION_STATS_NEW_TILE_COUNT_KEY] = int(max(0, paid_tile_count))
+    scene[ANIMATION_STATS_LEGACY_CREDITS_KEY] = float(max(0.0, credits))
+    scene[ANIMATION_STATS_LEGACY_NEW_TILE_COUNT_KEY] = int(max(0, paid_tile_count))
     logger.info(
-        "Planetka animation price estimate: EUR %.2f for %d new tile(s) (%s).",
+        "Planetka animation price calculation: EUR %.2f for %d new tile(s) (%s).",
         float(credits),
         int(paid_tile_count),
         mode,
@@ -810,7 +868,7 @@ def _resolve_tiles_for_frame(scene, frame, texture_quality_mode_override=None):
         raise RuntimeError("Tile utilities are unavailable.")
     scene.frame_set(int(frame))
     try:
-        bpy.context.view_layer.update()
+        _update_active_view_layer()
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
     try:
@@ -1060,7 +1118,7 @@ def _plan_animation_segments(
     finally:
         try:
             scene.frame_set(int(original_frame))
-            bpy.context.view_layer.update()
+            _update_active_view_layer()
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
     return AnimationSegmentPlan(
@@ -1972,7 +2030,7 @@ def _camera_base_shot_from_transform(scene, props, location, rotation_euler):
         target_rotation = Euler(tuple(float(v) for v in tuple(rotation_euler)), _rotation_order_for_camera(camera))
         camera.matrix_world = Matrix.LocRotScale(target_location, target_rotation, camera_scale)
         try:
-            bpy.context.view_layer.update()
+            _update_active_view_layer()
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka animation: failed updating view layer while deriving saved camera shot", exc_info=True)
         return _current_camera_base_shot(scene, props)
@@ -1980,7 +2038,7 @@ def _camera_base_shot_from_transform(scene, props, location, rotation_euler):
         if camera_matrix_before is not None:
             try:
                 camera.matrix_world = camera_matrix_before
-                bpy.context.view_layer.update()
+                _update_active_view_layer()
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka animation: failed restoring camera after deriving saved shot", exc_info=True)
 
@@ -1994,7 +2052,7 @@ def _frame_one_navigation_base_shot(scene, props):
     try:
         scene.frame_set(1)
         try:
-            bpy.context.view_layer.update()
+            _update_active_view_layer()
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka animation: failed updating view layer during frame-1 base-shot sampling", exc_info=True)
         sampled = _navigation_base_shot_from_props(props, fallback=fallback)
@@ -2003,7 +2061,7 @@ def _frame_one_navigation_base_shot(scene, props):
     finally:
         try:
             scene.frame_set(int(frame_before))
-            bpy.context.view_layer.update()
+            _update_active_view_layer()
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka animation: failed restoring frame after frame-1 base-shot sampling", exc_info=True)
     return sampled
@@ -2435,7 +2493,7 @@ def apply_cinematic_preview(scene, props):
                 logger.debug("Planetka animation: failed restoring live camera pose after preview keyframe update", exc_info=True)
         try:
             scene.frame_set(int(frame_before))
-            bpy.context.view_layer.update()
+            _update_active_view_layer()
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka animation: failed restoring frame after preview keyframe update", exc_info=True)
         try:
@@ -2446,13 +2504,29 @@ def apply_cinematic_preview(scene, props):
 
 
 def _is_animation_playing():
-    wm = getattr(bpy.context, "window_manager", None)
+    try:
+        wm = getattr(getattr(bpy, "context", None), "window_manager", None)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        return False
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return False
     if wm is None:
         return False
-    for window in getattr(wm, "windows", ()):
-        screen = getattr(window, "screen", None)
-        if screen and bool(getattr(screen, "is_animation_playing", False)):
-            return True
+    try:
+        windows = tuple(getattr(wm, "windows", ()) or ())
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        return False
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return False
+    for window in windows:
+        try:
+            screen = getattr(window, "screen", None)
+            if screen and bool(getattr(screen, "is_animation_playing", False)):
+                return True
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            continue
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            continue
     return False
 
 
@@ -2618,7 +2692,7 @@ def _wait_for_resolve_pipeline_idle(scene, timeout_sec=45.0, poll_sec=0.1):
         if (time.monotonic() - started) >= float(max(0.5, timeout_sec)):
             return False, last_status
         try:
-            bpy.context.view_layer.update()
+            _update_active_view_layer()
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka animation: view-layer update failed while waiting for resolve pipeline idle", exc_info=True)
         time.sleep(float(max(0.02, poll_sec)))
@@ -3073,9 +3147,9 @@ class PLANETKA_OT_AnimationGenerateCameraKeyframes(bpy.types.Operator):
         try:
             update_animation_credit_estimate(scene, props)
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka animation: failed calculating keyframe price estimate", exc_info=True)
+            logger.debug("Planetka animation: failed calculating keyframe price calculation", exc_info=True)
         except (RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka animation: failed calculating keyframe price estimate", exc_info=True)
+            logger.debug("Planetka animation: failed calculating keyframe price calculation", exc_info=True)
 
         self.report(
             {'INFO'},
@@ -3300,7 +3374,7 @@ class PLANETKA_OT_AnimationPreviewShot(bpy.types.Operator):
         for _attempt in range(1, attempts + 1):
             try:
                 scene.frame_set(frame_int)
-                bpy.context.view_layer.update()
+                _update_active_view_layer()
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka animation preview: suppressed recoverable exception", exc_info=True)
             except (RuntimeError, TypeError, ValueError):
@@ -3452,7 +3526,7 @@ class PLANETKA_OT_AnimationPreviewShot(bpy.types.Operator):
             scene.frame_preview_start = int(start_frame)
             scene.frame_preview_end = int(end_frame)
             scene.frame_set(int(start_frame))
-            bpy.context.view_layer.update()
+            _update_active_view_layer()
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka animation preview: failed setting playback range", exc_info=True)
         except (RuntimeError, TypeError, ValueError):
@@ -3525,6 +3599,10 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
     bl_label = "Render Animation"
     bl_description = "Render animation in UI, segment-by-segment, using Full Quality textures"
 
+    confirmed: BoolProperty(default=False, options={'HIDDEN', 'SKIP_SAVE'})
+    confirm_price_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
+    confirm_new_tile_count: IntProperty(default=0, options={'HIDDEN', 'SKIP_SAVE'})
+
     _timer = None
     _scene = None
     _props = None
@@ -3548,10 +3626,59 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
     _stop_requested = False
     _stop_notice_sent = False
     _segment_cancel_epoch_before_launch = -1
+    _preload_thread = None
+    _preload_cancel_event = None
+    _preload_result = None
+    _preload_started = False
+    _preload_completed = False
+    _animation_tiles = None
+    _animation_resolve_id = ""
+    _texture_quality_mode = "FULL"
+    _base_path = ""
+
+    def _read_cached_price_for_confirmation(self, context):
+        scene = getattr(context, "scene", None)
+        if scene is None:
+            return 0.0, 0
+        try:
+            price_eur = float(
+                scene.get(
+                    ANIMATION_STATS_CREDITS_KEY,
+                    scene.get(ANIMATION_STATS_LEGACY_CREDITS_KEY, 0.0),
+                ) or 0.0
+            )
+        except (TypeError, ValueError, RuntimeError, AttributeError):
+            price_eur = 0.0
+        try:
+            new_tile_count = int(
+                scene.get(
+                    ANIMATION_STATS_NEW_TILE_COUNT_KEY,
+                    scene.get(ANIMATION_STATS_LEGACY_NEW_TILE_COUNT_KEY, 0),
+                ) or 0
+            )
+        except (TypeError, ValueError, RuntimeError, AttributeError):
+            new_tile_count = 0
+        return max(0.0, float(price_eur)), max(0, int(new_tile_count))
 
     def invoke(self, context, event):
         del event
+        if not bool(getattr(self, "confirmed", False)) and not bool(getattr(bpy.app, "background", False)):
+            price_eur, new_tile_count = self._read_cached_price_for_confirmation(context)
+            self.confirm_price_eur = float(price_eur)
+            self.confirm_new_tile_count = int(new_tile_count)
+            self.confirmed = True
+            wm = getattr(context, "window_manager", None)
+            if wm is not None:
+                return wm.invoke_props_dialog(self, width=520)
         return self.execute(context)
+
+    def draw(self, _context):
+        layout = self.layout
+        layout.label(text="Confirm Final Animation Render", icon="RENDER_ANIMATION")
+        layout.label(text=f"New Tiles to be Downloaded: {int(getattr(self, 'confirm_new_tile_count', 0) or 0)}", icon="TEXTURE")
+        layout.label(text=f"Price: {_animation_price_text(getattr(self, 'confirm_price_eur', 0.0))}", icon="SOLO_ON")
+        layout.separator()
+        layout.label(text="This will start the full animation render and spend balance for new Full Quality tiles.", icon="INFO")
 
     def _get_selected_texture_quality_mode(self, props):
         del props
@@ -3592,6 +3719,134 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             logger.debug("Planetka animation: failed updating render UI status", exc_info=True)
         except (RuntimeError, TypeError, ValueError, AttributeError):
             logger.debug("Planetka animation: failed updating render UI status", exc_info=True)
+
+    def _set_animation_price_paid(self):
+        scene = self._scene
+        if scene is None:
+            return
+        try:
+            scene[ANIMATION_STATS_CREDITS_KEY] = 0.0
+            scene[ANIMATION_STATS_NEW_TILE_COUNT_KEY] = 0
+            scene[ANIMATION_STATS_LEGACY_CREDITS_KEY] = 0.0
+            scene[ANIMATION_STATS_LEGACY_NEW_TILE_COUNT_KEY] = 0
+            self.confirm_price_eur = 0.0
+            self.confirm_new_tile_count = 0
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka animation: failed clearing paid animation price", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka animation: failed clearing paid animation price", exc_info=True)
+
+    def _unlock_animation_tiles_before_download(self):
+        tiles = list(getattr(self, "_animation_tiles", ()) or ())
+        if not tiles:
+            self._set_animation_price_paid()
+            return True, ""
+        resolve_id = str(getattr(self, "_animation_resolve_id", "") or "").strip()
+        if not resolve_id:
+            resolve_id = f"anim-{int(time.time() * 1000)}"
+            self._animation_resolve_id = resolve_id
+        mode = str(getattr(self, "_texture_quality_mode", "FULL") or "FULL").strip().upper()
+        if mode != "FULL":
+            self._set_animation_price_paid()
+            return True, ""
+        base_path = str(getattr(self, "_base_path", "") or "")
+        if not is_remote_source_configured(base_path):
+            self._set_animation_price_paid()
+            return True, ""
+        self._set_ui_status("Confirming animation licence", icon="SOLO_ON")
+        try:
+            with resolve_request_context(
+                resolve_id=resolve_id,
+                texture_quality_mode="FULL",
+                pricing_tiles=tiles,
+            ):
+                token = ensure_resolve_pricing_session(allow_refresh=True)
+            if not str(token or "").strip():
+                return False, "Could not licence Full Quality animation tiles. Check connection and retry."
+        except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
+            return False, f"Could not licence Full Quality animation tiles: {exc}"
+        except (RuntimeError, TypeError, ValueError, AttributeError, OSError) as exc:
+            return False, f"Could not licence Full Quality animation tiles: {exc}"
+
+        try:
+            from .credit_api import clear_credit_caches
+            clear_credit_caches()
+        except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka animation: failed clearing credit caches after animation tile unlock", exc_info=True)
+        self._set_animation_price_paid()
+        return True, ""
+
+    def _start_animation_data_preload(self):
+        if bool(getattr(self, "_preload_started", False)):
+            return
+        tiles = list(getattr(self, "_animation_tiles", ()) or ())
+        self._preload_started = True
+        self._preload_result = None
+        if not tiles:
+            self._preload_result = {"ok": True, "message": "", "payload": {}}
+            return
+        cancel_event = threading.Event()
+        self._preload_cancel_event = cancel_event
+        base_path = str(getattr(self, "_base_path", "") or "")
+        texture_quality_mode = str(getattr(self, "_texture_quality_mode", "FULL") or "FULL").strip().upper()
+        resolve_id = str(getattr(self, "_animation_resolve_id", "") or "").strip()
+        if not resolve_id:
+            resolve_id = f"anim-{int(time.time() * 1000)}"
+            self._animation_resolve_id = resolve_id
+        self._set_ui_status("Downloading animation data", icon="IMPORT")
+
+        def _worker():
+            try:
+                streaming_utils = _get_streaming_utils_module()
+                prepare_fn = getattr(streaming_utils, "prepare_resolve_streaming_for_visible_tiles", None) if streaming_utils else None
+                if not callable(prepare_fn):
+                    self._preload_result = {"ok": False, "message": "Texture streaming module is unavailable."}
+                    return
+                payload = prepare_fn(
+                    tiles,
+                    base_path,
+                    cancel_event=cancel_event,
+                    capture=True,
+                    resolve_id=resolve_id,
+                    texture_quality_mode=texture_quality_mode,
+                    enforce_pricing_session=True,
+                )
+                if not isinstance(payload, dict):
+                    self._preload_result = {"ok": False, "message": "Animation data download failed."}
+                    return
+                if bool(payload.get("cancelled", False)):
+                    self._preload_result = {"ok": False, "cancelled": True, "message": "Animation data download was cancelled."}
+                    return
+                prefetch = payload.get("prefetch_result", {})
+                fatal_error = str(prefetch.get("fatal_error", "") or "").strip() if isinstance(prefetch, dict) else ""
+                if fatal_error:
+                    self._preload_result = {"ok": False, "message": fatal_error, "payload": payload}
+                    return
+                self._preload_result = {"ok": True, "message": "", "payload": payload}
+            except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
+                logger.debug("Planetka animation: upfront data download failed", exc_info=True)
+                self._preload_result = {"ok": False, "message": str(exc)}
+            except (RuntimeError, TypeError, ValueError, AttributeError, OSError) as exc:
+                logger.debug("Planetka animation: upfront data download failed", exc_info=True)
+                self._preload_result = {"ok": False, "message": str(exc)}
+
+        thread = threading.Thread(
+            target=_worker,
+            name="PlanetkaAnimationDataDownload",
+            daemon=True,
+        )
+        self._preload_thread = thread
+        thread.start()
+
+    def _animation_data_preload_finished(self):
+        thread = getattr(self, "_preload_thread", None)
+        if thread is not None:
+            try:
+                if thread.is_alive():
+                    return False
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                return False
+        return self._preload_result is not None
 
     def _count_render_result_windows(self):
         try:
@@ -3775,7 +4030,7 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             if not self._is_render_job_running(allow_app_fallback=True):
                 break
             try:
-                bpy.context.view_layer.update()
+                _update_active_view_layer()
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka animation: view-layer update failed while waiting for render stop", exc_info=True)
             except (RuntimeError, TypeError, ValueError, AttributeError):
@@ -3812,7 +4067,7 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             except (RuntimeError, TypeError, ValueError, AttributeError):
                 return
             try:
-                bpy.context.view_layer.update()
+                _update_active_view_layer()
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka animation: view-layer update failed while draining successful render", exc_info=True)
             except (RuntimeError, TypeError, ValueError, AttributeError):
@@ -3887,15 +4142,31 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka animation: failed restoring Earth displacement mode after render", exc_info=True)
         self._eevee_temp_displacement_state = None
-        if scene is not None:
-            _schedule_post_animation_recovery(
-                str(getattr(scene, "name", "") or ""),
-                restore_auto_resolve=bool(desired_auto_resolve),
-            )
+        if props is not None:
+            try:
+                # Do not fire the auto-resolve update callback immediately after
+                # final render. A fresh resolve at save/quit time can touch UI
+                # context while Blender is entering read-only shutdown state.
+                props["auto_resolve"] = bool(desired_auto_resolve)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka animation: failed restoring auto-resolve state after render", exc_info=True)
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                try:
+                    props.auto_resolve = bool(desired_auto_resolve)
+                except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                    logger.debug("Planetka animation: failed restoring auto-resolve state after render", exc_info=True)
+                except (RuntimeError, TypeError, ValueError, AttributeError):
+                    logger.debug("Planetka animation: failed restoring auto-resolve state after render", exc_info=True)
 
     def _cleanup(self, context, stop_render=False):
         if bool(stop_render):
             self._stop_render_before_cleanup()
+        cancel_event = getattr(self, "_preload_cancel_event", None)
+        if cancel_event is not None:
+            try:
+                cancel_event.set()
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                pass
         self._remove_timer(context)
         self._restore_runtime_state()
         self._scene = None
@@ -3914,6 +4185,15 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
         self._stop_requested = False
         self._stop_notice_sent = False
         self._segment_cancel_epoch_before_launch = -1
+        self._preload_thread = None
+        self._preload_cancel_event = None
+        self._preload_result = None
+        self._preload_started = False
+        self._preload_completed = False
+        self._animation_tiles = []
+        self._animation_resolve_id = ""
+        self._texture_quality_mode = "FULL"
+        self._base_path = ""
 
     def _cancel_with_error(self, context, message):
         text = str(message or "Animation render failed.").strip() or "Animation render failed."
@@ -3998,6 +4278,10 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
         return self._dedupe_texture_requests(_build_texture_requests_for_tiles(segment_tiles))
 
     def _cleanup_completed_segment_cache(self, segment_index):
+        if bool(getattr(self, "_preload_completed", False)):
+            # Animation data is paid/licenced before frame 1. Keep it in cache so
+            # cancelled or interrupted renders can resume without re-downloading.
+            return
         prefs = get_prefs()
         base_path = str(getattr(prefs, "texture_base_path", "") or "")
         if not is_remote_source_configured(base_path):
@@ -4047,7 +4331,7 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             return False, "Scene context became unavailable."
         try:
             scene.frame_set(frame_int)
-            bpy.context.view_layer.update()
+            _update_active_view_layer()
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
         _apply_keyed_runtime_scene_state(scene, props)
@@ -4055,6 +4339,7 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             "scope_mode": "CAMERA",
             "defer_download": False,
             "texture_quality_mode_override": "FULL",
+            "skip_pricing_session": True,
         }
         normalized_tiles = [str(tile or "").strip() for tile in (tiles_override or ()) if str(tile or "").strip()]
         if normalized_tiles:
@@ -4101,7 +4386,7 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             scene.frame_start = int(start)
             scene.frame_end = int(end)
             scene.frame_set(int(start))
-            bpy.context.view_layer.update()
+            _update_active_view_layer()
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
         last_result = None
@@ -4237,6 +4522,8 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
         _enforce_cycles_simple_subdivision_on_object(scene, earth)
 
     def execute(self, context):
+        if not bool(getattr(self, "confirmed", False)) and not bool(getattr(bpy.app, "background", False)):
+            return self.invoke(context, None)
         if _cancel_if_animation_render_active(self, "Render Animation"):
             return {'CANCELLED'}
         scene = require_scene(self, context, logger=logger)
@@ -4402,9 +4689,10 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             self._segments = list(segments)
             self._segment_index = 0
             self._active_segment = None
-            self._state = "RESOLVE"
+            self._state = "PURCHASE"
             self._render_seen_active = False
             self._render_launch_time = 0.0
+            self._render_launch_wall_time = 0.0
             self._render_result_window_baseline_count = 0
             self._render_result_window_peak_count = 0
             self._render_result_window_seen = False
@@ -4417,12 +4705,23 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             self._segment_failures = []
             self._stop_requested = False
             self._stop_notice_sent = False
+            self._segment_cancel_epoch_before_launch = -1
+            self._preload_thread = None
+            self._preload_cancel_event = None
+            self._preload_result = None
+            self._preload_started = False
+            self._preload_completed = False
+            self._animation_tiles = _unique_tiles_for_segments(segments)
+            self._animation_resolve_id = f"anim-{int(time.time() * 1000)}"
+            self._texture_quality_mode = str(selected_texture_quality_mode or "FULL").strip().upper() or "FULL"
+            self._base_path = str(base_path or "")
             try:
                 set_final_animation_render_active(True)
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka animation: failed setting final-render UI lock", exc_info=True)
             except (RuntimeError, TypeError, ValueError, AttributeError):
                 logger.debug("Planetka animation: failed setting final-render UI lock", exc_info=True)
+            self._set_ui_status("Confirming animation licence", icon="SOLO_ON")
 
             wm = getattr(context, "window_manager", None)
             if wm is None:
@@ -4474,6 +4773,35 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
         scene = self._scene
         if scene is None:
             return self._cancel_with_error(context, "Animation scene context was lost.")
+
+        if self._state == "PURCHASE":
+            ok, message = self._unlock_animation_tiles_before_download()
+            if not ok:
+                return self._cancel_with_error(context, message)
+            self._start_animation_data_preload()
+            self._state = "PREFETCH"
+            return {'RUNNING_MODAL'}
+
+        if self._state == "PREFETCH":
+            if not self._animation_data_preload_finished():
+                return {'RUNNING_MODAL'}
+            result = self._preload_result if isinstance(self._preload_result, dict) else {}
+            if not bool(result.get("ok", False)):
+                if bool(result.get("cancelled", False)):
+                    self._report_user_stopped_render()
+                    self._cleanup(context, stop_render=False)
+                    return {'CANCELLED'}
+                message = str(result.get("message", "") or "").strip() or "Animation data download failed."
+                return self._cancel_with_error(context, message)
+            self._preload_completed = True
+            try:
+                from .credit_api import clear_credit_caches
+                clear_credit_caches()
+            except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka animation: failed clearing credit caches after animation data download", exc_info=True)
+            self._set_ui_status("Starting animation render", icon="RENDER_ANIMATION")
+            self._state = "RESOLVE"
+            return {'RUNNING_MODAL'}
 
         if self._state == "RESOLVE":
             if self._segment_index >= len(self._segments or ()):
@@ -4585,43 +4913,151 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
         return {'RUNNING_MODAL'}
 
 
-class PLANETKA_OT_AnimationRenderInfo(bpy.types.Operator):
-    bl_idname = "planetka.animation_render_info"
-    bl_label = "Planetka Animation Render Info"
-    bl_description = "Explain how Planetka Final Animation Render works"
+class PLANETKA_OT_AnimationRenderCostBreakdown(bpy.types.Operator):
+    bl_idname = "planetka.animation_render_cost_breakdown"
+    bl_label = "Final Animation Render Cost Breakdown"
+    bl_description = "Show segment-by-segment Full Quality tile price breakdown for Final Animation Render"
+
+    _breakdown = None
+
+    def _price_for_row(self, row):
+        try:
+            price = max(0.0, float(row.get("credits", 0.0) or 0.0))
+        except (TypeError, ValueError, AttributeError):
+            price = 0.0
+        return _animation_price_text(price)
+
+    def _original_price_for_row(self, row):
+        try:
+            price = max(0.0, float(row.get("credits", 0.0) or 0.0))
+            original = max(
+                0.0,
+                float(row.get("gross_price_eur", row.get("gross_credits", price)) or 0.0),
+            )
+        except (TypeError, ValueError, AttributeError):
+            return 0.0
+        return original if original > price + 1e-9 else 0.0
+
+    def _zero_price_note_for_row(self, row):
+        if not isinstance(row, dict):
+            return ""
+        try:
+            price = max(0.0, float(row.get("credits", 0.0) or 0.0))
+        except (TypeError, ValueError, AttributeError):
+            price = 0.0
+        if price > 1e-9:
+            return ""
+        reason = str(row.get("free_reason", "") or "").strip()
+        if reason in {"already_unlocked", "already_owned"}:
+            return "No charge: already licenced before this render."
+        if reason == "already_listed_in_earlier_segment":
+            return "No charge: already counted in an earlier animation segment."
+        if reason:
+            return f"No charge: {reason.replace('_', ' ').replace('unlocked', 'licenced').replace('owned', 'licenced')}."
+        if self._original_price_for_row(row) > 0.0:
+            return "No charge: already licenced."
+        return ""
+
+    def invoke(self, context, event):
+        del event
+        scene = require_scene(self, context, logger=logger)
+        if scene is None:
+            return {'CANCELLED'}
+        props = require_planetka_props(self, context, logger=logger)
+        if props is None:
+            return {'CANCELLED'}
+        try:
+            self._breakdown = _build_animation_credit_breakdown(scene, props, texture_quality_mode="FULL")
+        except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
+            return fail(
+                self,
+                f"Unable to build animation price breakdown: {exc}",
+                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                logger=logger,
+                exc=exc,
+                log_message="Planetka animation price breakdown failed",
+            )
+        except (ImportError, RuntimeError, TypeError, ValueError, AttributeError) as exc:
+            return fail(
+                self,
+                f"Unable to build animation price breakdown: {exc}",
+                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                logger=logger,
+                exc=exc,
+                log_message="Planetka animation price breakdown failed",
+            )
+        wm = getattr(context, "window_manager", None)
+        if wm is None:
+            return {'FINISHED'}
+        return wm.invoke_popup(self, width=980)
 
     def execute(self, context):
-        if bool(getattr(bpy.app, "background", False)):
-            return {'FINISHED'}
+        return self.invoke(context, None)
 
-        wm = getattr(context, "window_manager", None)
-        windows = tuple(getattr(wm, "windows", ()) or ()) if wm is not None else ()
-        if wm is None or not windows:
-            return {'FINISHED'}
+    def draw(self, _context):
+        layout = self.layout
+        breakdown = self._breakdown if isinstance(self._breakdown, dict) else {}
+        segments = list(breakdown.get("segments", ()) or ())
 
-        lines = (
-            "Render Animation dynamically loads tiles (LODs)",
-            "during the rendering process.",
-            "",
-            "Final Animation Render uses Full Quality textures.",
+        header = layout.box()
+        header.label(text="Final Animation Render Full Quality Breakdown", icon="INFO")
+        header.label(text=f"New Tiles to be Downloaded: {int(breakdown.get('new_tile_count', 0) or 0)}")
+        header.label(text=f"Price: {_animation_price_text(breakdown.get('price_eur', 0.0))}")
+        if segments:
+            header.label(
+                text=(
+                    f"Frames: {int(breakdown.get('frame_start', 0) or 0):04d}-"
+                    f"{int(breakdown.get('frame_end', 0) or 0):04d}, "
+                    f"Segments: {len(segments)}, Unique tiles: {int(breakdown.get('tile_count', 0) or 0)}"
+                )
+            )
+        header.label(
+            text="Each licenced tile is charged once; later segments using the same licenced tile show €0.00.",
+            icon="INFO",
         )
 
-        def _draw(_self, _popup_context):
-            layout = getattr(_self, "layout", None)
-            if layout is None:
-                return
-            col = layout.column(align=True)
-            for line in lines:
-                if str(line).strip():
-                    col.label(text=str(line))
-                else:
-                    col.separator()
+        if not segments:
+            layout.label(text="No animation segments available.", icon="INFO")
+            return
 
-        try:
-            wm.popup_menu(_draw, title="Planetka Animation Render", icon='QUESTION')
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka animation: failed opening render info popup", exc_info=True)
-        return {'FINISHED'}
+        for segment in segments:
+            segment_box = layout.box()
+            seg_index = int(segment.get("index", 0) or 0)
+            seg_start = int(segment.get("start", 0) or 0)
+            seg_end = int(segment.get("end", seg_start) or seg_start)
+            segment_box.label(
+                text=(
+                    f"Segment {seg_index}: frames {seg_start:04d}-{seg_end:04d}  "
+                    f"New Tiles to be Downloaded: {int(segment.get('new_tile_count', 0) or 0)}  "
+                    f"Price: {_animation_price_text(segment.get('price_eur', 0.0))}"
+                ),
+                icon="RENDER_ANIMATION",
+            )
+            rows = list(segment.get("tiles", ()) or ())
+            if not rows:
+                segment_box.label(text="No tiles in this segment.", icon="INFO")
+                continue
+            table_header = segment_box.row(align=True)
+            table_header.label(text="Tile")
+            table_header.label(text="Land Area")
+            table_header.label(text="Texture Detail")
+            table_header.label(text="Price")
+            for row_data in rows:
+                if not isinstance(row_data, dict):
+                    continue
+                row = segment_box.row(align=True)
+                row.label(text=str(row_data.get("tile_key", "") or "Unknown"))
+                row.label(text=_animation_land_area_text(row_data))
+                row.label(text=_animation_mpp_text(row_data.get("delivered_mpp", 0.0)))
+                row.label(text=self._price_for_row(row_data))
+                zero_price_note = self._zero_price_note_for_row(row_data)
+                if zero_price_note:
+                    reason_row = segment_box.row(align=True)
+                    reason_row.label(text=f"  {zero_price_note}", icon="INFO")
+                original_price = self._original_price_for_row(row_data)
+                if original_price > 0.0:
+                    original_row = segment_box.row(align=True)
+                    original_row.label(text=f"  Original price: {_animation_price_text(original_price)}", icon="SOLO_ON")
 
 
 class PLANETKA_OT_AnimationMakeReady(bpy.types.Operator):

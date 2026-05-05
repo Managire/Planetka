@@ -1222,7 +1222,7 @@ class OvernightRunner:
             resolution_percentage=100,
         )
         try:
-            result = bpy.ops.planetka.animation_render('INVOKE_DEFAULT')
+            result = bpy.ops.planetka.animation_render('INVOKE_DEFAULT', confirmed=True)
         except Exception:
             self._release_runtime_after_final_animation()
             raise

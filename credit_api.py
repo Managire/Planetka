@@ -447,7 +447,7 @@ def cancel_unlocked_download() -> bool:
             except (RuntimeError, TypeError, ValueError, AttributeError):
                 pass
         if active:
-            _UNLOCKED_DOWNLOAD_PROGRESS["message"] = "Cancelling unlocked tile download..."
+            _UNLOCKED_DOWNLOAD_PROGRESS["message"] = "Cancelling licenced tile download..."
             _UNLOCKED_DOWNLOAD_PROGRESS["status"] = "CANCELLING"
         return active
 
@@ -483,7 +483,7 @@ def _run_unlocked_download_plan(plan: dict, cancel_event: threading.Event) -> No
         downloaded_bytes += int(max(0, int(delta_bytes or 0)))
         _set_unlocked_download_progress(
             downloaded_bytes=int(min(max(downloaded_bytes, 0), max(total_bytes, downloaded_bytes))),
-            message="Downloading unlocked tiles...",
+            message="Downloading licenced tiles...",
         )
 
     try:
@@ -492,7 +492,7 @@ def _run_unlocked_download_plan(plan: dict, cancel_event: threading.Event) -> No
         _set_unlocked_download_progress(
             active=True,
             status="RUNNING",
-            message="Downloading unlocked tiles...",
+            message="Downloading licenced tiles...",
             period=str(plan.get("period", "ALL") or "ALL"),
             period_label=str(plan.get("period_label", "") or "all data"),
             directory=str(plan.get("directory", "") or ""),
@@ -548,13 +548,13 @@ def _run_unlocked_download_plan(plan: dict, cancel_event: threading.Event) -> No
             )
         clear_local_source_stale_notice()
         if total_files <= 0 and skipped_existing_files > 0:
-            message = "Unlocked tile files already downloaded."
+            message = "Licenced tile files already downloaded."
         elif total_files <= 0 and selected_tiles <= 0:
-            message = "No unlocked tiles found for this range."
+            message = "No licenced tiles found for this range."
         elif total_files <= 0:
-            message = "No downloadable files found for unlocked tiles."
+            message = "No downloadable files found for licenced tiles."
         else:
-            message = "Unlocked tile download complete."
+            message = "Licenced tile download complete."
         _set_unlocked_download_progress(
             active=False,
             status="FINISHED",
@@ -569,7 +569,7 @@ def _run_unlocked_download_plan(plan: dict, cancel_event: threading.Event) -> No
             _set_unlocked_download_progress(
                 active=False,
                 status="CANCELLED",
-                message="Unlocked tile download cancelled.",
+                message="Licenced tile download cancelled.",
                 downloaded_files=downloaded_files,
                 missing_files=missing_files,
                 downloaded_bytes=int(min(max(downloaded_bytes, 0), max(total_bytes, downloaded_bytes))),
@@ -579,7 +579,7 @@ def _run_unlocked_download_plan(plan: dict, cancel_event: threading.Event) -> No
         _set_unlocked_download_progress(
             active=False,
             status="ERROR",
-            message="Unlocked tile download failed.",
+            message="Licenced tile download failed.",
             error=str(exc),
             downloaded_files=downloaded_files,
             missing_files=missing_files,
@@ -591,7 +591,7 @@ def _run_unlocked_download_plan(plan: dict, cancel_event: threading.Event) -> No
         _set_unlocked_download_progress(
             active=False,
             status="ERROR",
-            message="Unlocked tile download failed.",
+            message="Licenced tile download failed.",
             error=str(exc),
             downloaded_files=downloaded_files,
             missing_files=missing_files,
@@ -623,7 +623,7 @@ def start_unlocked_download_plan(plan_id: str) -> dict:
             {
                 "active": True,
                 "status": "STARTING",
-                "message": "Starting unlocked tile download...",
+                "message": "Starting licenced tile download...",
                 "period": str(plan.get("period", "ALL") or "ALL"),
                 "period_label": str(plan.get("period_label", "") or "all data"),
                 "directory": str(plan.get("directory", "") or ""),
@@ -644,7 +644,7 @@ def start_unlocked_download_plan(plan_id: str) -> dict:
 
 
 def download_unlocked_tiles_to_directory(directory: str, period: str = "ALL") -> dict:
-    """Download all unlocked assets to a user-selected local source directory."""
+    """Download all licenced assets to a user-selected local source directory."""
     target = os.path.abspath(os.path.expanduser(str(directory or "")))
     if not target:
         raise CreditApiError(400, "missing_directory")

@@ -343,11 +343,12 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
     const userEmailRaw = String(row && row.user_email || "");
     const userEmail = deps.escapeHtml(userEmailRaw);
     const status = String(row && row.user_status || "").trim().toLowerCase();
+    const creditButtons = `<button class="action-btn" data-action="gift-credits" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Top Up €</button><button class="action-btn warn" data-action="subtract-credits" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Take €</button>`;
     let actionButtons = "";
     if (status === "blocked") {
-      actionButtons = `<button class="action-btn" data-action="gift-credits" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Top Up €</button><button class="action-btn warn" data-action="unblock" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Unblock</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
+      actionButtons = `${creditButtons}<button class="action-btn warn" data-action="unblock" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Unblock</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
     } else {
-      actionButtons = `<button class="action-btn" data-action="gift-credits" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Top Up €</button><button class="action-btn danger" data-action="block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Block</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
+      actionButtons = `${creditButtons}<button class="action-btn danger" data-action="block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Block</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
     }
     return `<tr>
       <td>${userEmail}</td>
@@ -404,7 +405,7 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
       <tr>
         <th>Email</th>
         <th><a href="${buildSortHref("balance")}">Balance${sortMarker("balance")}</a></th>
-        <th>Unlocked Tiles</th>
+        <th>Licenced Tiles</th>
         <th><a href="${buildSortHref("resolves")}">Resolves${sortMarker("resolves")}</a></th>
         <th><a href="${buildSortHref("lifetime")}">Lifetime GB${sortMarker("lifetime")}</a></th>
         <th><a href="${buildSortHref("last_seen")}">Last Seen${sortMarker("last_seen")}</a></th>
@@ -440,23 +441,32 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
         unblock: "/admin/users/unblock",
         "hard-block": "/admin/users/hard-block",
         "gift-credits": "/admin/users/gift-credits",
+        "subtract-credits": "/admin/users/gift-credits",
       };
       const confirmation = {
         block: "Block this user account now?",
         unblock: "Unblock this user account now?",
         "hard-block": "Hard block this user and block same-computer attempts?",
         "gift-credits": "Top up this account's EUR balance?",
+        "subtract-credits": "Take EUR away from this account balance?",
       };
       const endpoint = endpointByAction[safeAction];
       if (!endpoint) return;
       if (!window.confirm(confirmation[safeAction] || "Confirm action?")) return;
       const payload = { email: safeUserEmail };
       if (safeUserId) payload.user_id = safeUserId;
-      if (safeAction === "gift-credits") {
-        const amount = window.prompt("EUR to add:", "100");
+      if (safeAction === "gift-credits" || safeAction === "subtract-credits") {
+        const amount = window.prompt(safeAction === "gift-credits" ? "EUR to add:" : "EUR to take away:", safeAction === "gift-credits" ? "100" : "10");
         if (amount === null) return;
-        payload.credits = Number(amount);
-        payload.reason = "admin_top_up";
+        const parsedAmount = Number(amount);
+        if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+          statusEl.textContent = "Action failed: enter a positive EUR amount.";
+          statusEl.className = "error";
+          return;
+        }
+        payload.delta_credits = safeAction === "gift-credits" ? parsedAmount : -parsedAmount;
+        payload.operation = safeAction === "gift-credits" ? "top_up" : "subtract";
+        payload.reason = safeAction === "gift-credits" ? "admin_top_up" : "admin_balance_subtract";
       }
       statusEl.textContent = "Applying action...";
       statusEl.className = "muted";

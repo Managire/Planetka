@@ -11,22 +11,22 @@ Source
 - Dataset page: https://geoservice.dlr.de/web/datasets/wsf_2015
 - DOI (as listed on the dataset page): 10.15489/6n5h1ezef920
 
-License
+Licence
 -------
-The dataset page states that WSF 2015 v2 is licensed under:
+The dataset page states that WSF 2015 v2 is licenced under:
 - Creative Commons Attribution 4.0 International (CC BY 4.0)
   https://creativecommons.org/licenses/by/4.0/
 
 What CC BY 4.0 requires for your use
 ------------------------------------
 - Give appropriate credit (DLR + dataset name).
-- Provide a link to the license.
+- Provide a link to the licence.
 - Indicate if changes were made (Planetka tiles are modified/optimized derivatives).
 
 Attribution Text (example)
 -------------------------
 - Contains modified data from World Settlement Footprint 2015 (WSF2015 v2),
-  DLR (German Aerospace Center), licensed under CC BY 4.0.
+  DLR (German Aerospace Center), licenced under CC BY 4.0.
   DOI: 10.15489/6n5h1ezef920
 
 Recommended citation (optional but encouraged by the dataset page)

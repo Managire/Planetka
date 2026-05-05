@@ -13,7 +13,7 @@ documents you usually need:
 - `PRIVACY_POLICY.md`
 
 Service terms note:
-- The add-on code is licensed under GPL-3.0-or-later.
+- The add-on code is licenced under GPL-3.0-or-later.
 - Planetka account access and hosted tile delivery are governed separately by
   `TERMS_OF_SERVICE.md`.
 - Privacy and telemetry handling are described in `PRIVACY_POLICY.md`.
@@ -25,7 +25,7 @@ Service terms note:
   - Personal: unlimited `Preview` and `Balanced`, no commercial use
   - Commercial: unlimited `Preview`, `Balanced`, and `Full Quality`,
     commercial use allowed
-- Planetka built-in `Final Animation Rendering` is licensed for Commercial
+- Planetka built-in `Final Animation Rendering` is licenced for Commercial
   only.
 - Personal and Commercial are one-time licences.
 - Significant future feature releases may be optional paid upgrades.
@@ -44,7 +44,7 @@ references, and provenance records for the bundled datasets:
 - `Compliance/DLR World Settlement Footprint 2015 Attribution (CC BY 4.0).txt`
 - `Compliance/Detailed Source Records.txt`
 
-## Software license
+## Software licence
 
 - Add-on code: `LICENSE` (GPL-3.0-or-later)
 - Planetka hosted service terms: `TERMS_OF_SERVICE.md`

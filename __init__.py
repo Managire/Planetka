@@ -4,7 +4,7 @@ import logging
 import bpy
 from bpy.props import PointerProperty
 
-# Includes data from GeoNames (allCountries) licensed under CC BY 4.0.
+# Includes data from GeoNames (allCountries) licenced under CC BY 4.0.
 
 from .error_utils import PLANETKA_IMPORT_RECOVERABLE_EXCEPTIONS, PLANETKA_RECOVERABLE_EXCEPTIONS
 from . import updater as _planetka_updater
@@ -16,7 +16,7 @@ from .animation_tools import (
     PLANETKA_OT_AnimationMakeReady,
     PLANETKA_OT_AnimationPreviewShot,
     PLANETKA_OT_AnimationRender,
-    PLANETKA_OT_AnimationRenderInfo,
+    PLANETKA_OT_AnimationRenderCostBreakdown,
     PLANETKA_OT_AnimationSaveView,
     PLANETKA_OT_AnimationWaypointAdd,
     PLANETKA_OT_AnimationWaypointApply,
@@ -227,7 +227,7 @@ classes = (
     PLANETKA_OT_AnimationWaypointCaptureCurrent,
     PLANETKA_OT_AnimationWaypointApply,
     PLANETKA_OT_AnimationRender,
-    PLANETKA_OT_AnimationRenderInfo,
+    PLANETKA_OT_AnimationRenderCostBreakdown,
     PLANETKA_OT_AnimationMakeReady,
     PLANETKA_OT_AnimationClearPrepared,
     PLANETKA_OT_LoadTextures,
@@ -383,7 +383,14 @@ def _remove_render_handlers():
 
 
 def _register_keymaps():
-    wm = getattr(bpy.context, "window_manager", None)
+    try:
+        wm = getattr(getattr(bpy, "context", None), "window_manager", None)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed accessing window manager while registering keymaps", exc_info=True)
+        return
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed accessing window manager while registering keymaps", exc_info=True)
+        return
     keyconfigs = getattr(wm, "keyconfigs", None) if wm else None
     addon_keyconfig = getattr(keyconfigs, "addon", None) if keyconfigs else None
     if addon_keyconfig is None:

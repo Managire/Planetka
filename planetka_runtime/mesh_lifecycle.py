@@ -89,7 +89,14 @@ def delete_temp_meshes(keep_obj=None):
 
 
 def ensure_planetka_temp_collection():
-    scene = getattr(bpy.context, "scene", None)
+    try:
+        scene = getattr(getattr(bpy, "context", None), "scene", None)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed accessing context scene for temp collection", exc_info=True)
+        return None
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed accessing context scene for temp collection", exc_info=True)
+        return None
     if scene is None:
         return None
     root = scene.collection

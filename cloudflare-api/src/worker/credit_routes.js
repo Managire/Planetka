@@ -165,6 +165,14 @@ function normalizeCreditAmount(value) {
   return Math.round(parsed * 1_000_000) / 1_000_000;
 }
 
+function normalizeSignedCreditAmount(value) {
+  const parsed = Number.parseFloat(value);
+  if (!Number.isFinite(parsed)) {
+    return 0;
+  }
+  return Math.round(parsed * 1_000_000) / 1_000_000;
+}
+
 function centsForEur(value) {
   const amount = normalizeCreditAmount(value);
   if (amount <= 0) {
@@ -536,8 +544,8 @@ export async function unlockTilesForSession(db, userId, qualityMode, tileKeys, r
   }
   const requiredCredits = normalizeCreditAmount(estimate.credits);
   const account = await ensureCreditAccount(db, safeUserId, deps);
-  const balance = normalizeCreditAmount(account && account.balance_credits);
-  if (requiredCredits > balance) {
+  const balance = normalizeSignedCreditAmount(account && account.balance_credits);
+  if (requiredCredits > 0 && requiredCredits > balance) {
     return {
       error: "insufficient_credits",
       required_credits: requiredCredits,
@@ -620,7 +628,7 @@ export async function unlockTilesForSession(db, userId, qualityMode, tileKeys, r
       return {
         error: "insufficient_credits",
         required_credits: actualCredits,
-        balance_credits: normalizeCreditAmount(fresh && fresh.balance_credits),
+        balance_credits: normalizeSignedCreditAmount(fresh && fresh.balance_credits),
         paid_tile_count: insertedTiles.length,
         tile_count: estimate.tile_count,
       };
@@ -680,7 +688,7 @@ export async function addCreditBalance(db, userId, amountEur, reason, metadata, 
     [amount, amount, now, safeUserId],
   );
   const account = await ensureCreditAccount(db, safeUserId, deps);
-  const balanceAfter = normalizeCreditAmount(account && account.balance_credits);
+  const balanceAfter = normalizeSignedCreditAmount(account && account.balance_credits);
   await deps.dbRun(
     db,
     `
@@ -971,8 +979,8 @@ export async function handleCreditMe(request, env, deps) {
       ok: true,
       account_type: normalizeAccountType(account && account.account_type),
       unlimited_credits: isUnlimitedCreditAccount(account),
-      balance_credits: normalizeCreditAmount(account && account.balance_credits),
-      balance_eur: normalizeCreditAmount(account && account.balance_credits),
+      balance_credits: normalizeSignedCreditAmount(account && account.balance_credits),
+      balance_eur: normalizeSignedCreditAmount(account && account.balance_credits),
       unlocked_tile_count: Number(countRow && countRow.count || 0),
       user_id: String(auth.user.id || ""),
     },
@@ -1016,8 +1024,8 @@ export async function handleCreditEstimate(request, env, deps) {
       free_tile_count: estimate.free_tile_count,
       account_type: normalizeAccountType(account && account.account_type),
       unlimited_credits: unlimited,
-      balance_credits: normalizeCreditAmount(account && account.balance_credits),
-      balance_eur: normalizeCreditAmount(account && account.balance_credits),
+      balance_credits: normalizeSignedCreditAmount(account && account.balance_credits),
+      balance_eur: normalizeSignedCreditAmount(account && account.balance_credits),
     },
     200,
     env,
@@ -1073,11 +1081,20 @@ export async function handleAdminGiftCredits(request, env, deps) {
   if (!targetUser) {
     return deps.json({ ok: false, error: "user_not_found" }, 404, env);
   }
-  const amount = normalizeCreditAmount(body && (body.credits || body.amount || body.delta_credits));
-  if (amount <= 0) {
-    return deps.json({ ok: false, error: "missing_positive_credits" }, 400, env);
+  const rawDelta = body && (
+    body.delta_credits ?? body.delta_eur ?? body.credits ?? body.amount
+  );
+  let delta = normalizeSignedCreditAmount(rawDelta);
+  const operation = String(body && (body.operation || body.action) || "").trim().toLowerCase();
+  if (delta > 0 && ["subtract", "take", "remove", "deduct", "withdraw"].includes(operation)) {
+    delta = -delta;
   }
-  const reason = String(body && body.reason || "admin_top_up").trim().slice(0, 160) || "admin_top_up";
+  if (delta === 0) {
+    return deps.json({ ok: false, error: "missing_nonzero_credits" }, 400, env);
+  }
+  const grantedDelta = delta > 0 ? delta : 0;
+  const defaultReason = delta < 0 ? "admin_balance_subtract" : "admin_top_up";
+  const reason = String(body && body.reason || defaultReason).trim().slice(0, 160) || defaultReason;
   const userId = String(targetUser.id || "").trim();
   const now = deps.nowIso();
   await ensureCreditAccount(db, userId, deps);
@@ -1091,10 +1108,10 @@ export async function handleAdminGiftCredits(request, env, deps) {
         updated_at = ?
       WHERE user_id = ?
     `,
-    [amount, amount, now, userId],
+    [delta, grantedDelta, now, userId],
   );
   const account = await ensureCreditAccount(db, userId, deps);
-  const balanceAfter = normalizeCreditAmount(account && account.balance_credits);
+  const balanceAfter = normalizeSignedCreditAmount(account && account.balance_credits);
   await deps.dbRun(
     db,
     `
@@ -1106,12 +1123,13 @@ export async function handleAdminGiftCredits(request, env, deps) {
     [
       deps.randomToken(16),
       userId,
-      amount,
+      delta,
       balanceAfter,
       reason,
       JSON.stringify({
         admin_user_id: String(adminUser && adminUser.id || ""),
         admin_email: deps.normalizeEmail(adminUser && adminUser.email || ""),
+        operation: delta < 0 ? "subtract" : "top_up",
       }),
       now,
     ],
@@ -1121,7 +1139,7 @@ export async function handleAdminGiftCredits(request, env, deps) {
       await deps.invalidateAnalyticsSnapshots(env);
     } catch (error) {
       console.warn(
-        "planetka.admin.credit_topup_snapshot_invalidate_failed",
+        "planetka.admin.credit_adjustment_snapshot_invalidate_failed",
         JSON.stringify({
           error: String(error && error.message || "analytics_snapshot_invalidate_failed"),
           user_id: userId,
@@ -1132,11 +1150,14 @@ export async function handleAdminGiftCredits(request, env, deps) {
   return deps.json(
     {
       ok: true,
-      action: "top_up_eur",
+      action: delta < 0 ? "subtract_eur" : "top_up_eur",
       user_id: userId,
       user_email: deps.normalizeEmail(targetUser.email || ""),
-      top_up_eur: amount,
-      gifted_credits: amount,
+      delta_credits: delta,
+      delta_eur: delta,
+      top_up_eur: delta > 0 ? delta : 0,
+      subtracted_eur: delta < 0 ? Math.abs(delta) : 0,
+      gifted_credits: delta > 0 ? delta : 0,
       balance_credits: balanceAfter,
       balance_eur: balanceAfter,
       updated_at: now,

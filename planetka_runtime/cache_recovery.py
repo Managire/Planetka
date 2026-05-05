@@ -306,39 +306,41 @@ def queue_manual_resolve_download_for_scene(scene, *, get_earth_object, is_rende
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed checking interface lock state for load-time recovery queue", exc_info=True)
 
-    wm = getattr(getattr(bpy, "context", None), "window_manager", None)
-    windows = list(getattr(wm, "windows", ()) or ())
+    try:
+        bpy_context = getattr(bpy, "context", None)
+        wm = getattr(bpy_context, "window_manager", None) if bpy_context is not None else None
+        windows = list(getattr(wm, "windows", ()) or ())
+        context_scene = getattr(bpy_context, "scene", None) if bpy_context is not None else None
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed reading context for load-time recovery queue", exc_info=True)
+        return False
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed reading context for load-time recovery queue", exc_info=True)
+        return False
     if not windows:
         return False
-    window = windows[0]
-    override = None
-    try:
-        override = bpy.context.copy()
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        override = {}
-    if override is None:
-        override = {}
-    override["window"] = window
-    override["screen"] = getattr(window, "screen", None)
-    override["scene"] = scene
-    override["view_layer"] = scene.view_layers[0] if getattr(scene, "view_layers", None) else None
+    if context_scene is not scene:
+        logger.debug("Planetka: delaying load-time recovery queue until target scene is active.")
+        return False
 
     try:
-        with bpy.context.temp_override(**override):
-            try:
-                result = bpy.ops.planetka.load_textures(
-                    'EXEC_DEFAULT',
-                    scope_mode='CAMERA',
-                    skip_render_compatibility=True,
-                    defer_download=True,
-                )
-            except TypeError:
-                result = bpy.ops.planetka.load_textures(
-                    scope_mode='CAMERA',
-                    skip_render_compatibility=True,
-                    defer_download=True,
-                )
+        try:
+            result = bpy.ops.planetka.load_textures(
+                'EXEC_DEFAULT',
+                scope_mode='CAMERA',
+                skip_render_compatibility=True,
+                defer_download=True,
+            )
+        except TypeError:
+            result = bpy.ops.planetka.load_textures(
+                scope_mode='CAMERA',
+                skip_render_compatibility=True,
+                defer_download=True,
+            )
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed queueing load-time recovery resolve", exc_info=True)
+        return False
+    except (RuntimeError, TypeError, ValueError, AttributeError):
         logger.debug("Planetka: failed queueing load-time recovery resolve", exc_info=True)
         return False
     return bool("FINISHED" in result or "RUNNING_MODAL" in result)

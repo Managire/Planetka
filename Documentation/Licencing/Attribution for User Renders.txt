@@ -9,7 +9,7 @@ Those dataset terms require attribution/credit when making derivatives public:
   distributing the data, and a different notice for modified data.
 - JAXA Research Data Terms: require crediting JAXA and the research name when
   distributing derivatives or making them public.
-- WSF2015 v2 (DLR): CC BY 4.0 requires appropriate credit, link to license, and
+- WSF2015 v2 (DLR): CC BY 4.0 requires appropriate credit, link to licence, and
   indication of changes when this dataset is visible in the published work
   (for Planetka, this is the Night Lights contribution).
 
@@ -22,7 +22,7 @@ Earth surface imagery/masks include modified data from:
 
 Include the following additional line if Night Lights are visible:
 - World Settlement Footprint 2015 (WSF2015 v2), DLR (German Aerospace Center),
-  licensed under CC BY 4.0; modified by Planetka.
+  licenced under CC BY 4.0; modified by Planetka.
 
 Attribution Text (expanded)
 --------------------------

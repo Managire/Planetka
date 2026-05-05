@@ -237,7 +237,7 @@ def _tick():
                 resolution_y=540,
                 resolution_percentage=100,
             )
-            result = bpy.ops.planetka.animation_render('INVOKE_DEFAULT')
+            result = bpy.ops.planetka.animation_render('INVOKE_DEFAULT', confirmed=True)
             if "RUNNING_MODAL" not in result and "FINISHED" not in result:
                 raise E2EError(f"Final Animation Render did not start: {result}")
 

@@ -314,7 +314,7 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
           {
             ok: false,
             error: "tile_not_unlocked",
-            message: "This tile has not been unlocked for this account.",
+            message: "This tile has not been licenced for this account.",
             tile_key: creditTileKey,
             requested_quality_mode: effectiveQualityMode,
           },

@@ -64,7 +64,7 @@ Public update channel remains on `v0.5.3` until explicit publish.
 - [ ] Share a short known-issues list with testers.
 - [ ] Tell testers that `v0.7.0` beta currently runs in `unrestricted` access mode on top of the stored `Free` / `Personal` / `Commercial` tiers.
 - [ ] Provide clear expected behavior for Preview / Balanced / Full Quality access under the current beta policy.
-- [ ] State clearly that built-in `Final Animation Rendering` is licensed for Commercial only outside the beta override.
+- [ ] State clearly that built-in `Final Animation Rendering` is licenced for Commercial only outside the beta override.
 - [ ] Tell testers that `v0.7.0` is a private beta candidate and is not in the public update channel yet.
 - [ ] Provide support contact path and expected response time.
 

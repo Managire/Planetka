@@ -118,7 +118,7 @@ export function planDisplayName(planCode) {
 
 export function planAccessSummary(planCode) {
   void planCode;
-  return "Preview is free. Full Quality uses Planetka balance for newly unlocked land tiles.";
+  return "Preview is free. Full Quality uses Planetka balance for newly licenced land tiles.";
 }
 
 export function resolvePlanPriority(planCode) {

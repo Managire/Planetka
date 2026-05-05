@@ -4,7 +4,7 @@
 Purpose:
 - validate common user flow end-to-end with local fallback textures
 - assert real outcomes (camera/light/material state and render sanity), not only operator return flags
-- verify EUR-priced quality access using synthetic auth payloads (no network)
+- verify Preview/Full Quality user flow using a synthetic auth payload (no network)
 
 Run:
   /Applications/Blender.app/Contents/MacOS/Blender --background --debug-python \
@@ -157,27 +157,6 @@ def _get_material_displacement_mode(material):
     return ""
 
 
-def _apply_tier_payload(auth_module, prefs, tier):
-    tier_token = str(tier or "").strip().lower()
-    _assert(tier_token in {"free", "personal", "commercial"}, f"Invalid tier token: {tier}")
-    payload = {
-        "email": f"{tier_token}@planetka.test",
-        "access_token": f"test-access-{tier_token}",
-        "refresh_token": f"test-refresh-{tier_token}",
-        "plan_code": tier_token,
-        "account_tier": tier_token,
-        "stored_plan_code": tier_token,
-        "stored_account_tier": tier_token,
-        "quality_access_plan_code": tier_token,
-        "commercial_use_allowed": bool(tier_token == "commercial"),
-        "unrestricted_quality_access": False,
-    }
-    auth_module.clear_auth_session(prefs=prefs, state="logged_out", status_message="")
-    auth_module._apply_auth_payload(prefs, payload, login_state="authenticated", status_message="")
-    resolved_tier = str(auth_module.get_account_tier(prefs) or "").strip().lower()
-    _assert(resolved_tier == tier_token, f"Tier payload apply mismatch: expected={tier_token} got={resolved_tier}")
-
-
 def _operator_ok(result):
     try:
         return "FINISHED" in result
@@ -252,7 +231,7 @@ def main():
         "status": "running",
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started)),
         "steps": [],
-        "tier_matrix": [],
+        "quality_matrix": [],
         "renders": [],
     }
 
@@ -370,33 +349,27 @@ def main():
         report["renders"].append(_render_checkpoint(scene, output_dir, "after_radius_change"))
         record_step("earth_radius_change", earth_radius_bu=float(getattr(props, "earth_radius_bu", 0.0) or 0.0), apply_result=list(apply_radius))
 
-        # EUR-priced quality matrix (synthetic auth payload, hermetic).
+        # EUR-priced quality flow (synthetic auth payload, hermetic local source).
         full_globe_result = bpy.ops.planetka.navigation_preset(preset="HIGH_ORBIT")
-        _assert(_operator_ok(full_globe_result), f"HIGH_ORBIT preset failed before tier matrix: {full_globe_result}")
-        matrix = (
-            ("free", {"PREVIEW": True, "FULL": True}),
-            ("personal", {"PREVIEW": True, "FULL": True}),
-            ("commercial", {"PREVIEW": True, "FULL": True}),
+        _assert(_operator_ok(full_globe_result), f"HIGH_ORBIT preset failed before quality flow: {full_globe_result}")
+        auth.clear_auth_session(prefs=prefs, state="logged_out", status_message="")
+        prefs.texture_base_path = source_root
+        _assert(
+            not bool(r2_source.is_remote_source_configured(prefs.texture_base_path)),
+            f"Hermetic gate switched to remote texture source unexpectedly: {prefs.texture_base_path}",
         )
-        for tier_name, expectations in matrix:
-            _apply_tier_payload(auth, prefs, tier_name)
-            prefs.texture_base_path = source_root
-            _assert(
-                not bool(r2_source.is_remote_source_configured(prefs.texture_base_path)),
-                f"Hermetic gate switched to remote texture source unexpectedly: {prefs.texture_base_path}",
-            )
-            for mode in ("PREVIEW", "FULL"):
-                entry = {
-                    "tier": tier_name,
-                    "mode": mode,
-                    "expected_ok": bool(expectations[mode]),
-                }
-                _set_quality_and_expect(mode, bool(expectations[mode]), entry)
-                report["tier_matrix"].append(entry)
+        for mode in ("PREVIEW", "FULL"):
+            entry = {
+                "account": "standard",
+                "mode": mode,
+                "expected_ok": True,
+            }
+            _set_quality_and_expect(mode, True, entry)
+            report["quality_matrix"].append(entry)
 
-        # Final sanity render at commercial/full.
-        report["renders"].append(_render_checkpoint(scene, output_dir, "commercial_full_sanity"))
-        record_step("tier_quality_matrix")
+        # Final sanity render at standard/full.
+        report["renders"].append(_render_checkpoint(scene, output_dir, "standard_full_sanity"))
+        record_step("quality_matrix")
 
         report["status"] = "ok"
         report["elapsed_sec"] = round(time.time() - started, 3)

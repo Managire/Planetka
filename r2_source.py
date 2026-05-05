@@ -1693,10 +1693,10 @@ def _check_local_source_freshness(folder, file_name, path):
     remote_etag = str(remote.get("etag", "") or "").strip()
     if remote_etag and remote_etag != local_etag:
         _LOCAL_SOURCE_STALE_NOTICE = (
-            f"Local Source has older unlocked data for {key}. Use Download Unlocked to refresh it."
+            f"Local Source has older licenced data for {key}. Use Download Licenced to refresh it."
         )
         logger.warning(
-            "Planetka local source asset is older than Cloudflare copy; re-download unlocked tiles: %s",
+            "Planetka local source asset is older than Cloudflare copy; re-download licenced tiles: %s",
             key,
         )
 

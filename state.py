@@ -642,13 +642,29 @@ def update_navigation_focal_length(self, context):
 
 
 def _is_animation_playing():
-    wm = getattr(bpy.context, "window_manager", None)
+    try:
+        wm = getattr(getattr(bpy, "context", None), "window_manager", None)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        return False
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return False
     if not wm:
         return False
-    for window in wm.windows:
-        screen = getattr(window, "screen", None)
-        if screen and bool(getattr(screen, "is_animation_playing", False)):
-            return True
+    try:
+        windows = tuple(getattr(wm, "windows", ()) or ())
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        return False
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return False
+    for window in windows:
+        try:
+            screen = getattr(window, "screen", None)
+            if screen and bool(getattr(screen, "is_animation_playing", False)):
+                return True
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            continue
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            continue
     return False
 
 

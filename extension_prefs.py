@@ -68,13 +68,13 @@ class PlanetkaExtensionPreferences(AddonPreferences):
     local_texture_source_path: StringProperty(
         name="Local Source",
         subtype='DIR_PATH',
-        description="Optional local folder searched before Planetka Cloud for previously unlocked tiles",
+        description="Optional local folder searched before Planetka Cloud for previously licenced tiles",
         default="",
     )
 
     auto_download_unlocked_tiles: BoolProperty(
-        name="Download unlocked tiles automatically",
-        description="Automatically keep a local copy of newly used unlocked Balanced/Full Quality tiles in Local Source",
+        name="Download licenced tiles automatically",
+        description="Automatically keep a local copy of newly used licenced Full Quality tiles in Local Source",
         default=False,
     )
 

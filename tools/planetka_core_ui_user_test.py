@@ -487,7 +487,7 @@ class Runner:
             resolution_y=ANIM_RES_Y,
             resolution_percentage=100,
         )
-        result = bpy.ops.planetka.animation_render('INVOKE_DEFAULT')
+        result = bpy.ops.planetka.animation_render('INVOKE_DEFAULT', confirmed=True)
         if "RUNNING_MODAL" not in result and "FINISHED" not in result:
             raise E2EError(f"Final Animation Render did not start for {label}: {result}")
         self.waiting_final = {

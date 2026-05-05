@@ -145,8 +145,8 @@ def _format_bytes_for_ui(size_bytes):
 
 class PLANETKA_OT_AccountListUnlockedTiles(bpy.types.Operator):
     bl_idname = "planetka.account_list_unlocked_tiles"
-    bl_label = "List Unlocked Tiles"
-    bl_description = "Create a text list of tiles unlocked for this Planetka account"
+    bl_label = "List Licenced Tiles"
+    bl_description = "Create a text list of tiles licenced for this Planetka account"
 
     def execute(self, context):
         try:
@@ -155,16 +155,16 @@ class PLANETKA_OT_AccountListUnlockedTiles(bpy.types.Operator):
         except Exception as exc:
             return fail(
                 self,
-                f"Unable to fetch unlocked tiles: {exc}",
+                f"Unable to fetch licenced tiles: {exc}",
                 code=ErrorCode.RESOLVE_PRECHECK_FAILED,
                 logger=logger,
                 exc=exc,
-                log_message="Planetka unlocked tile list failed",
+                log_message="Planetka licenced tile list failed",
             )
-        text_name = "Planetka Unlocked Tiles"
+        text_name = "Planetka Licenced Tiles"
         text = bpy.data.texts.get(text_name) or bpy.data.texts.new(text_name)
         text.clear()
-        text.write(f"Planetka unlocked tiles: {len(tiles)}\n\n")
+        text.write(f"Planetka licenced tiles: {len(tiles)}\n\n")
         for entry in tiles:
             if not isinstance(entry, dict):
                 continue
@@ -173,23 +173,23 @@ class PLANETKA_OT_AccountListUnlockedTiles(bpy.types.Operator):
             credits = entry.get("credits_spent", 0)
             unlocked_at = str(entry.get("unlocked_at", "") or "")
             text.write(f"{tile_key}\t{quality}\tEUR {credits}\t{unlocked_at}\n")
-        self.report({'INFO'}, f"Unlocked tile list created ({len(tiles)} tiles).")
+        self.report({'INFO'}, f"Licenced tile list created ({len(tiles)} tiles).")
         return {'FINISHED'}
 
 
 class PLANETKA_OT_AccountDownloadUnlockedTiles(bpy.types.Operator):
     bl_idname = "planetka.account_download_unlocked_tiles"
-    bl_label = "Download Unlocked Tiles"
-    bl_description = "Download all unlocked tiles to a local source folder"
+    bl_label = "Download Licenced Tiles"
+    bl_description = "Download all licenced tiles to a local source folder"
 
     period: EnumProperty(
         name="Data Range",
-        description="Choose which unlocked tiles should be downloaded",
+        description="Choose which licenced tiles should be downloaded",
         items=(
-            ("TODAY", "Today", "Download tiles unlocked today"),
-            ("THIS_WEEK", "This Week", "Download tiles unlocked this week"),
-            ("THIS_MONTH", "This Month", "Download tiles unlocked this month"),
-            ("ALL", "All Data", "Download every unlocked tile"),
+            ("TODAY", "Today", "Download tiles licenced today"),
+            ("THIS_WEEK", "This Week", "Download tiles licenced this week"),
+            ("THIS_MONTH", "This Month", "Download tiles licenced this month"),
+            ("ALL", "All Data", "Download every licenced tile"),
         ),
         default="ALL",
         options={'SKIP_SAVE'},
@@ -222,7 +222,7 @@ class PLANETKA_OT_AccountDownloadUnlockedTiles(bpy.types.Operator):
             total_bytes = 0
         layout.label(text=f"Download {_format_bytes_for_ui(total_bytes)}?", icon="IMPORT")
         layout.label(text=f"Files: {getattr(self, 'confirm_total_files', '0')}")
-        layout.label(text=f"Unlocked tiles: {getattr(self, 'confirm_selected_tiles', '0')}")
+        layout.label(text=f"Licenced tiles: {getattr(self, 'confirm_selected_tiles', '0')}")
         existing = str(getattr(self, "confirm_existing_files", "0") or "0")
         if existing != "0":
             layout.label(text=f"Already present: {existing} files", icon="CHECKMARK")
@@ -254,7 +254,7 @@ class PLANETKA_OT_AccountDownloadUnlockedTiles(bpy.types.Operator):
                 start_unlocked_download_plan,
             )
             if is_unlocked_download_active():
-                self.report({'WARNING'}, "Unlocked tile download is already running.")
+                self.report({'WARNING'}, "Licenced tile download is already running.")
                 return {'CANCELLED'}
             if not bool(getattr(self, "confirmed", False)):
                 plan = prepare_unlocked_download_plan(self.directory, period=self.period)
@@ -273,16 +273,16 @@ class PLANETKA_OT_AccountDownloadUnlockedTiles(bpy.types.Operator):
         except Exception as exc:
             return fail(
                 self,
-                f"Unable to download unlocked tiles: {exc}",
+                f"Unable to download licenced tiles: {exc}",
                 code=ErrorCode.RESOLVE_REFRESH_FAILED,
                 logger=logger,
                 exc=exc,
-                log_message="Planetka unlocked tile download failed",
+                log_message="Planetka licenced tile download failed",
             )
         self.report(
             {'INFO'},
             (
-                "Unlocked tile download started "
+                "Licenced tile download started "
                 f"({_format_bytes_for_ui(progress.get('total_bytes', 0))}, "
                 f"{int(progress.get('total_files', 0) or 0)} files)."
             ),
@@ -293,7 +293,7 @@ class PLANETKA_OT_AccountDownloadUnlockedTiles(bpy.types.Operator):
 class PLANETKA_OT_AccountCancelUnlockedDownload(bpy.types.Operator):
     bl_idname = "planetka.account_cancel_unlocked_download"
     bl_label = "Cancel Download"
-    bl_description = "Cancel the active unlocked tile download"
+    bl_description = "Cancel the active licenced tile download"
 
     def execute(self, _context):
         try:
@@ -302,14 +302,14 @@ class PLANETKA_OT_AccountCancelUnlockedDownload(bpy.types.Operator):
         except Exception as exc:
             return fail(
                 self,
-                f"Unable to cancel unlocked tile download: {exc}",
+                f"Unable to cancel licenced tile download: {exc}",
                 code=ErrorCode.RESOLVE_REFRESH_FAILED,
                 logger=logger,
                 exc=exc,
-                log_message="Planetka unlocked tile download cancel failed",
+                log_message="Planetka licenced tile download cancel failed",
             )
         if active:
-            self.report({'INFO'}, "Cancelling unlocked tile download...")
+            self.report({'INFO'}, "Cancelling licenced tile download...")
         return {'FINISHED'}
 from .state import (
     ACCOUNT_PANEL_DEFAULT_COLLAPSED_KEY,
@@ -458,6 +458,19 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
             )
 
         target_mode = _normalize_startup_texture_quality_mode(getattr(self, "texture_quality_mode", "PREVIEW"))
+        if target_mode == "FULL":
+            try:
+                from .animation_tools import _quick_preview_is_prepared
+                quick_preview_prepared = bool(_quick_preview_is_prepared(scene))
+            except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+                quick_preview_prepared = False
+            if quick_preview_prepared:
+                return fail(
+                    self,
+                    "Clear Quick Preview before downloading Full Quality textures.",
+                    code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                    logger=logger,
+                )
         if not allows_balanced_full_quality_for_context(
             prefs=prefs,
             source=props,
@@ -659,6 +672,50 @@ class PLANETKA_OT_DataCostBreakdown(bpy.types.Operator):
         except (TypeError, ValueError):
             return "€0.00"
 
+    def _area_text(self, value):
+        try:
+            area = max(0.0, float(value or 0.0))
+        except (TypeError, ValueError):
+            area = 0.0
+        if area >= 1000.0:
+            return f"{area:,.0f} km2"
+        if area >= 10.0:
+            return f"{area:,.1f} km2"
+        return f"{area:,.2f} km2"
+
+    def _mpp_text(self, value):
+        try:
+            mpp = max(0.0, float(value or 0.0))
+        except (TypeError, ValueError):
+            mpp = 0.0
+        if mpp <= 0:
+            return "-"
+        if mpp >= 1000.0:
+            return f"{mpp / 1000.0:.1f} km/px"
+        return f"{mpp:.0f} m/px"
+
+    def _land_area_text(self, entry):
+        if not isinstance(entry, dict):
+            return self._area_text(0.0)
+        try:
+            land = max(0.0, float(entry.get("land_km2", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            land = 0.0
+        if land <= 0.0:
+            try:
+                land = max(0.0, float(entry.get("billable_land_km2", 0.0) or 0.0))
+            except (TypeError, ValueError):
+                land = 0.0
+        return self._area_text(land)
+
+    def _free_reason_text(self, reason):
+        value = str(reason or "").strip()
+        if value in {"already_unlocked", "already_owned"}:
+            return "already licenced"
+        if value == "already_listed_in_earlier_segment":
+            return "already counted in an earlier animation segment"
+        return value.replace("_", " ")
+
     def _draw_rows(self, layout, title, rows, icon="TEXTURE", empty_text="None", show_original_price=False):
         box = layout.box()
         box.label(text=title, icon=icon)
@@ -668,12 +725,18 @@ class PLANETKA_OT_DataCostBreakdown(bpy.types.Operator):
             return
         header = box.row(align=True)
         header.label(text="Tile")
-        header.label(text="Size")
+        header.label(text="Data")
+        header.label(text="Land Area")
+        header.label(text="Texture Detail")
         header.label(text="Price")
         for entry in entries:
             tile_key = str(entry.get("tile_key", "") or "").strip()
             size_text = _format_bytes_for_ui(int(entry.get("bytes", 0) or 0))
+            land_text = self._land_area_text(entry)
+            detail_text = self._mpp_text(entry.get("delivered_mpp", 0.0))
             price_text = self._price_text(entry.get("credits", 0.0))
+            original_price = 0.0
+            charged_price = 0.0
             if show_original_price:
                 try:
                     original_price = float(
@@ -686,16 +749,34 @@ class PLANETKA_OT_DataCostBreakdown(bpy.types.Operator):
                 except (TypeError, ValueError):
                     original_price = 0.0
                     charged_price = 0.0
-                if original_price > charged_price + 1e-9:
-                    price_text = f"{price_text}  originally {self._price_text(original_price)}"
             reason = str(entry.get("free_reason", "") or "").strip()
             row = box.row(align=True)
             row.label(text=tile_key or "Unknown")
             row.label(text=size_text)
+            row.label(text=land_text)
+            row.label(text=detail_text)
             row.label(text=price_text)
-            if reason and float(entry.get("credits", 0.0) or 0.0) <= 0.0:
+            upgrade_credit = 0.0
+            try:
+                upgrade_credit = max(0.0, float(entry.get("upgrade_credit_applied", 0.0) or 0.0))
+            except (TypeError, ValueError):
+                upgrade_credit = 0.0
+            if upgrade_credit > 0.0:
+                upgrade_row = box.row(align=True)
+                upgrade_row.label(
+                    text=f"  upgrade credit from previously licenced lower detail: {self._price_text(upgrade_credit)}",
+                    icon="INFO",
+                )
+            if show_original_price and original_price > charged_price + 1e-9:
+                original_row = box.row(align=True)
+                original_row.label(text=f"  No charge: already licenced. Original price: {self._price_text(original_price)}", icon="INFO")
+            if (
+                reason
+                and reason not in {"already_unlocked", "already_owned", "already_listed_in_earlier_segment"}
+                and float(entry.get("credits", 0.0) or 0.0) <= 0.0
+            ):
                 reason_row = box.row(align=True)
-                reason_row.label(text=f"  reason: {reason.replace('_', ' ')}", icon="INFO")
+                reason_row.label(text=f"  Reason: {self._free_reason_text(reason)}", icon="INFO")
 
     def invoke(self, context, event):
         del event
@@ -757,11 +838,16 @@ class PLANETKA_OT_DataCostBreakdown(bpy.types.Operator):
         header.label(text=f"{mode_label} Resolve Breakdown", icon="INFO")
         header.label(text=f"Total data size: {_format_bytes_for_ui(int(total_bytes or 0))}")
         header.label(text=f"Total price: {'Free' if mode == 'PREVIEW' else self._price_text(total_credits)}")
+        if mode != "PREVIEW":
+            header.label(
+                text="Price is based on land area and texture detail; ocean-only, coarse, and already-licenced tiles are not charged.",
+                icon="INFO",
+            )
         header.label(
             text=(
                 f"Tiles: {len(breakdown.get('tiles', ()) or ())} total, "
                 f"{len(breakdown.get('charged_tiles', ()) or ())} charged, "
-                f"{len(breakdown.get('excluded_tiles', ()) or ())} already owned"
+                f"{len(breakdown.get('excluded_tiles', ()) or ())} already licenced"
             )
         )
 
@@ -774,10 +860,10 @@ class PLANETKA_OT_DataCostBreakdown(bpy.types.Operator):
         )
         self._draw_rows(
             layout,
-            "Excluded From Price: Already Owned",
+            "Excluded From Price: Already Licenced",
             breakdown.get("excluded_tiles", ()),
             icon="CHECKMARK",
-            empty_text="No already-owned tiles in this Resolve.",
+            empty_text="No already-licenced tiles in this Resolve.",
             show_original_price=True,
         )
         self._draw_rows(

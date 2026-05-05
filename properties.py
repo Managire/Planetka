@@ -74,6 +74,24 @@ logger = logging.getLogger(__name__)
 _ANIM_PREVIEW_UPDATE_GUARD = False
 _PREVIEW_TILE_ZD_RE = re.compile(r"_z(\d+)_d(\d+)\.", re.IGNORECASE)
 
+
+def _safe_bpy_context():
+    try:
+        return getattr(bpy, "context", None)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return None
+
+
+def _safe_context_scene():
+    context = _safe_bpy_context()
+    if context is None:
+        return None
+    try:
+        return getattr(context, "scene", None)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return None
+
+
 def update_texture_quality_mode(self, context):
     update_auto_resolve(self, context)
 
@@ -216,7 +234,7 @@ def _set_earth_radius_bu(self, value):
         if callable(set_radius_fn):
             scene = getattr(self, "id_data", None)
             if scene is None or not isinstance(scene, bpy.types.Scene):
-                scene = getattr(bpy.context, "scene", None)
+                scene = _safe_context_scene()
             set_radius_fn(scene, float(target))
             apply_clip_fn = getattr(operators, "_apply_radius_based_clipping", None)
             if callable(apply_clip_fn):
@@ -446,11 +464,11 @@ def _set_nav_city_search(self, value):
 
     scene_for_updates = getattr(self, "id_data", None)
     if scene_for_updates is None or not isinstance(scene_for_updates, bpy.types.Scene):
-        scene_for_updates = getattr(bpy.context, "scene", None)
+        scene_for_updates = _safe_context_scene()
     if scene_for_updates is not None:
         context_for_updates = SimpleNamespace(scene=scene_for_updates)
     else:
-        context_for_updates = bpy.context
+        context_for_updates = _safe_bpy_context()
 
     nav_suspended = False
     camera_sync_suspended = False

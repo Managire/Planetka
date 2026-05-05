@@ -22,6 +22,15 @@ def _coerce_ctx(value=None):
     return _require_ctx()
 
 
+def _safe_context_scene(deps):
+    try:
+        return getattr(getattr(deps.bpy, "context", None), "scene", None)
+    except deps.recoverable_exceptions:
+        return None
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return None
+
+
 def recover_post_render_state(scene=None, cancelled=False, ctx=None):
     ctx = _coerce_ctx(ctx)
     deps = ctx.deps
@@ -42,7 +51,7 @@ def recover_post_render_state(scene=None, cancelled=False, ctx=None):
 
     target_scene = scene
     if target_scene is None:
-        target_scene = getattr(getattr(deps.bpy, "context", None), "scene", None)
+        target_scene = _safe_context_scene(deps)
     if target_scene is not None:
         props = getattr(target_scene, "planetka", None)
         try:
@@ -74,7 +83,7 @@ def mark_render_job_started(scene=None, ctx=None):
     started_at = float(time.monotonic())
     target_scene = scene
     if target_scene is None:
-        target_scene = getattr(getattr(deps.bpy, "context", None), "scene", None)
+        target_scene = _safe_context_scene(deps)
     try:
         deps.self_heal_missing_cache_images_for_render(target_scene)
     except deps.recoverable_exceptions:
@@ -104,7 +113,7 @@ def mark_render_job_progress(scene=None, frame_written=False, ctx=None):
     frame_value = -1
     target_scene = scene
     if target_scene is None:
-        target_scene = getattr(getattr(deps.bpy, "context", None), "scene", None)
+        target_scene = _safe_context_scene(deps)
     if target_scene is not None:
         try:
             frame_value = int(getattr(target_scene, "frame_current", -1))
@@ -234,7 +243,9 @@ def depsgraph_update_post(_scene, _depsgraph, ctx=None):
     ctx = _coerce_ctx(ctx)
     deps = ctx.deps
 
-    scene = getattr(getattr(deps.bpy, "context", None), "scene", None)
+    scene = _scene
+    if scene is None:
+        scene = _safe_context_scene(deps)
     if scene is None:
         return
 
@@ -288,7 +299,7 @@ def frame_change_post(scene, _depsgraph=None, ctx=None):
     state = ctx.state
     target_scene = scene
     if target_scene is None:
-        target_scene = getattr(getattr(deps.bpy, "context", None), "scene", None)
+        target_scene = _safe_context_scene(deps)
     if target_scene is None:
         return
 
@@ -326,7 +337,7 @@ def load_post(_dummy, ctx=None):
             int(missing_cache_images),
             int(recovered_cache_images),
         )
-        scene = getattr(getattr(deps.bpy, "context", None), "scene", None)
+        scene = _safe_context_scene(deps)
         if scene is None:
             scene = next(iter(deps.iter_scenes()), None)
         if scene is not None:

@@ -616,6 +616,12 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         options={'HIDDEN', 'SKIP_SAVE'},
     )
 
+    skip_pricing_session: BoolProperty(
+        name="Skip Pricing Session",
+        default=False,
+        options={'HIDDEN', 'SKIP_SAVE'},
+    )
+
     tiles_override_json: StringProperty(
         name="Tiles Override",
         default="",
@@ -1051,6 +1057,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 nav_latitude_deg=nav_latitude_deg,
                 nav_longitude_deg=nav_longitude_deg,
                 nav_altitude_km=nav_altitude_km,
+                enforce_pricing_session=not bool(getattr(self, "skip_pricing_session", False)),
             )
             payload_data = self._parse_stream_payload(stream_payload)
         except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
@@ -1100,7 +1107,9 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         nav_latitude_deg,
         nav_longitude_deg,
         nav_altitude_km,
+        enforce_pricing_session=True,
     ):
+        use_pricing_session = bool(enforce_pricing_session)
         stream_payload = consume_staged_prefetch_payload(
             tiles,
             normalized,
@@ -1115,6 +1124,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 nav_latitude_deg=nav_latitude_deg,
                 nav_longitude_deg=nav_longitude_deg,
                 nav_altitude_km=nav_altitude_km,
+                enforce_pricing_session=use_pricing_session,
             )
         if _normalize_texture_quality_mode(stream_payload.get("texture_quality_mode", "PREVIEW")) != texture_quality_mode:
             return prepare_resolve_streaming_for_visible_tiles(
@@ -1125,6 +1135,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 nav_latitude_deg=nav_latitude_deg,
                 nav_longitude_deg=nav_longitude_deg,
                 nav_altitude_km=nav_altitude_km,
+                enforce_pricing_session=use_pricing_session,
             )
         return stream_payload
 
