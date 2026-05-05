@@ -388,6 +388,14 @@ def _draw_resolve_download_indicator(layout, scene, runtime, runtime_code, runti
     downloaded_bytes = int(progress.get("downloaded_bytes", 0) or 0)
     progress_download_active = bool(progress.get("download_active", False))
     animation_status_upper = str(status_label_text or "").strip().upper()
+    animation_download_phase = bool(
+        animation_render_running
+        and ("DOWNLOADING" in animation_status_upper or "LICENC" in animation_status_upper)
+    )
+    if animation_render_running and not animation_download_phase:
+        total_bytes = 0
+        downloaded_bytes = 0
+        progress_download_active = False
     animation_waiting_for_download = bool(
         animation_render_running
         and not progress_download_active

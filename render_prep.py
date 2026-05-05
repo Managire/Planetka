@@ -622,6 +622,12 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         options={'HIDDEN', 'SKIP_SAVE'},
     )
 
+    capture_download_progress: BoolProperty(
+        name="Capture Download Progress",
+        default=True,
+        options={'HIDDEN', 'SKIP_SAVE'},
+    )
+
     tiles_override_json: StringProperty(
         name="Tiles Override",
         default="",
@@ -1046,6 +1052,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         nav_latitude_deg,
         nav_longitude_deg,
         nav_altitude_km,
+        capture_download_progress=True,
     ):
         ui_reports = []
         phase_start = time.perf_counter()
@@ -1058,6 +1065,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 nav_longitude_deg=nav_longitude_deg,
                 nav_altitude_km=nav_altitude_km,
                 enforce_pricing_session=not bool(getattr(self, "skip_pricing_session", False)),
+                capture_download_progress=bool(capture_download_progress),
             )
             payload_data = self._parse_stream_payload(stream_payload)
         except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
@@ -1108,6 +1116,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         nav_longitude_deg,
         nav_altitude_km,
         enforce_pricing_session=True,
+        capture_download_progress=True,
     ):
         use_pricing_session = bool(enforce_pricing_session)
         stream_payload = consume_staged_prefetch_payload(
@@ -1120,7 +1129,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 tiles,
                 normalized,
                 texture_quality_mode=texture_quality_mode,
-                capture=True,
+                capture=bool(capture_download_progress),
                 nav_latitude_deg=nav_latitude_deg,
                 nav_longitude_deg=nav_longitude_deg,
                 nav_altitude_km=nav_altitude_km,
@@ -1130,7 +1139,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             return prepare_resolve_streaming_for_visible_tiles(
                 tiles,
                 normalized,
-                capture=True,
+                capture=bool(capture_download_progress),
                 texture_quality_mode=texture_quality_mode,
                 nav_latitude_deg=nav_latitude_deg,
                 nav_longitude_deg=nav_longitude_deg,
@@ -1527,6 +1536,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             nav_latitude_deg,
             nav_longitude_deg,
             nav_altitude_km,
+            capture_download_progress=bool(getattr(self, "capture_download_progress", True)),
         )
         self._flush_ui_reports(getattr(stream_ctx, "ui_reports", ()))
         if getattr(stream_ctx, "response", None) is not None:

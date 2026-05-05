@@ -4343,6 +4343,7 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             "defer_download": False,
             "texture_quality_mode_override": "FULL",
             "skip_pricing_session": True,
+            "capture_download_progress": False,
         }
         normalized_tiles = [str(tile or "").strip() for tile in (tiles_override or ()) if str(tile or "").strip()]
         if normalized_tiles:
@@ -4820,7 +4821,7 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             seg_start = int(segment.get("start", 1))
             seg_end = int(segment.get("end", seg_start))
             segment_label = f"{self._segment_index + 1}/{len(self._segments)}"
-            self._set_ui_status(f"Resolving segment {seg_start:04d}-{seg_end:04d} ({segment_label})", icon="IMPORT")
+            self._set_ui_status(f"Resolving segment {seg_start:04d}-{seg_end:04d} ({segment_label})", icon="TEXTURE")
             print(f"[Planetka] Segment {self._segment_index + 1}/{len(self._segments)}: resolve {seg_start:04d}-{seg_end:04d}")
             ok, message = self._resolve_segment_frame(seg_start, tiles_override=segment.get("tiles", ()))
             if not ok:
