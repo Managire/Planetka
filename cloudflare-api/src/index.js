@@ -92,6 +92,7 @@ import {
   handleCreditCheckout as handleCreditCheckoutRoute,
   handleCreditEstimate as handleCreditEstimateRoute,
   handleCreditMe as handleCreditMeRoute,
+  handleCreditRegionOffers as handleCreditRegionOffersRoute,
   handleCreditUnlocked as handleCreditUnlockedRoute,
 } from "./worker/credit_routes.js";
 import {
@@ -3881,6 +3882,11 @@ async function dispatchExactRoute(request, env, path) {
     case "/credits/checkout":
       if (request.method === "POST") {
         return await handleCreditCheckoutRoute(request, env, TILE_ROUTE_DEPS);
+      }
+      return null;
+    case "/credits/region-offers":
+      if (request.method === "POST") {
+        return await handleCreditRegionOffersRoute(request, env, TILE_ROUTE_DEPS);
       }
       return null;
     case "/credits/unlocked":

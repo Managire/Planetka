@@ -702,9 +702,16 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
             ("OPTIONS", "Payment Options", "Choose how to pay for Planetka data"),
             ("STANDARD_UNLOCK", "Unlock Standard Quality", "Unlock Standard Quality forever for this account"),
             ("SCENE", "Buy This Scene", "Pay the exact current Full Quality scene price"),
+            ("REGION_PACK", "Buy Region Pack", "Buy a broader Full Quality region pack"),
             ("BALANCE_10", "Add €10 Balance", "Add €10 to your Planetka balance"),
         ),
         default="OPTIONS",
+        options={'HIDDEN', 'SKIP_SAVE'},
+    )
+
+    region_pack_id: StringProperty(
+        name="Region Pack",
+        default="",
         options={'HIDDEN', 'SKIP_SAVE'},
     )
 
@@ -798,6 +805,9 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
             if option == "STANDARD_UNLOCK":
                 checkout_option = "standard_unlock"
                 quality_mode = "BALANCED"
+            elif option == "REGION_PACK":
+                checkout_option = "region_pack"
+                quality_mode = "FULL"
             else:
                 checkout_option = "balance_10" if option == "BALANCE_10" else "scene"
                 quality_mode = "FULL"
@@ -805,6 +815,7 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
                 checkout_option,
                 tiles=tile_keys,
                 quality_mode=quality_mode,
+                region_pack_id=str(getattr(self, "region_pack_id", "") or ""),
             )
         except Exception as exc:
             return fail(
@@ -827,7 +838,7 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
             scene = getattr(context, "scene", None)
             _scene_full_quality_price_eur(scene)
             _run_camera_full_quality_resolve_after_checkout(scene)
-            self.report({'INFO'}, "No payment required for this Full Quality view.")
+            self.report({'INFO'}, "No payment required for this Full Quality purchase.")
             return {'FINISHED'}
         checkout_url = str(checkout.get("checkout_url", "") or "").strip()
         if not self._open_url(checkout_url):
@@ -837,7 +848,7 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
                 code=ErrorCode.RESOLVE_PRECHECK_FAILED,
                 logger=logger,
             )
-        if option == "SCENE":
+        if option in {"SCENE", "REGION_PACK"}:
             _start_post_checkout_scene_monitor(getattr(context, "scene", None))
         self.report({'INFO'}, "Planetka payment page opened in browser.")
         return {'FINISHED'}

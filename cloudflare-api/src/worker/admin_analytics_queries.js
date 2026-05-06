@@ -721,7 +721,7 @@ export async function collectAnalyticsSnapshot(
           END AS metadata_json
         FROM credit_ledger cl
         LEFT JOIN users u ON u.id = cl.user_id
-        WHERE LOWER(COALESCE(cl.reason, '')) IN ('stripe_balance_top_up', 'stripe_scene_purchase', 'stripe_standard_quality_unlock')
+        WHERE LOWER(COALESCE(cl.reason, '')) IN ('stripe_balance_top_up', 'stripe_scene_purchase', 'stripe_standard_quality_unlock', 'stripe_region_pack_purchase')
         ${revenueEmailFilterAliasU.condition ? `AND ${revenueEmailFilterAliasU.condition}` : ""}
       ),
       paid_amounts AS (
@@ -739,6 +739,11 @@ export async function collectAnalyticsSnapshot(
             )
             WHEN reason_norm = 'stripe_standard_quality_unlock' THEN COALESCE(
               CAST(json_extract(metadata_json, '$.paid_eur') AS REAL),
+              0
+            )
+            WHEN reason_norm = 'stripe_region_pack_purchase' THEN COALESCE(
+              CAST(json_extract(metadata_json, '$.paid_eur') AS REAL),
+              CAST(json_extract(metadata_json, '$.nominal_eur') AS REAL),
               0
             )
             ELSE 0
@@ -1580,11 +1585,16 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
                 CAST(json_extract(CASE WHEN json_valid(COALESCE(cl.metadata_json, '')) THEN cl.metadata_json ELSE NULL END, '$.paid_eur') AS REAL),
                 0
               )
+              WHEN LOWER(COALESCE(cl.reason, '')) = 'stripe_region_pack_purchase' THEN COALESCE(
+                CAST(json_extract(CASE WHEN json_valid(COALESCE(cl.metadata_json, '')) THEN cl.metadata_json ELSE NULL END, '$.paid_eur') AS REAL),
+                CAST(json_extract(CASE WHEN json_valid(COALESCE(cl.metadata_json, '')) THEN cl.metadata_json ELSE NULL END, '$.nominal_eur') AS REAL),
+                0
+              )
               ELSE 0
             END
           ) * 100.0) / 100.0, 0) AS paid_eur_lifetime
         FROM credit_ledger cl
-        WHERE LOWER(COALESCE(cl.reason, '')) IN ('stripe_balance_top_up', 'stripe_scene_purchase', 'stripe_standard_quality_unlock')
+        WHERE LOWER(COALESCE(cl.reason, '')) IN ('stripe_balance_top_up', 'stripe_scene_purchase', 'stripe_standard_quality_unlock', 'stripe_region_pack_purchase')
         GROUP BY cl.user_id
       ),
       unlocked_tiles AS (

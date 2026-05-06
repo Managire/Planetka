@@ -131,6 +131,13 @@ def _fmt_bytes(value):
     return f"{size / (1024.0 ** 2):.2f} MB"
 
 
+def _fmt_eur(value):
+    try:
+        return f"€{max(0.0, float(value or 0.0)):.2f}"
+    except (TypeError, ValueError):
+        return "€0.00"
+
+
 def _fmt_mbps(downloaded_mb, download_ms):
     if downloaded_mb is None or download_ms is None:
         return "—"
@@ -254,6 +261,28 @@ def _is_active_view_resolve_scope(scene):
     except (RuntimeError, TypeError, ValueError, AttributeError):
         scope = "CAMERA"
     return scope == "ACTIVE_VIEW"
+
+
+def _region_offer_location_for_ui(scene):
+    if scene is None:
+        return None
+    props = getattr(scene, "planetka", None)
+    try:
+        diag = read_diagnostics(scene)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        diag = {}
+    lat_value = diag.get("view_latitude_deg", None) if isinstance(diag, dict) else None
+    lon_value = diag.get("view_longitude_deg", None) if isinstance(diag, dict) else None
+    try:
+        if lat_value is None and props is not None:
+            lat_value = getattr(props, "nav_latitude_deg", 0.0)
+        if lon_value is None and props is not None:
+            lon_value = getattr(props, "nav_longitude_deg", 0.0)
+        lat = max(-90.0, min(90.0, float(lat_value or 0.0)))
+        lon = max(-180.0, min(180.0, float(lon_value or 0.0)))
+        return lat, lon
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return None
 
 
 def _animation_render_status_for_ui(scene):
@@ -891,6 +920,78 @@ def _draw_licenced_download_controls(layout, prefs):
         notice_row.label(text=local_notice, icon="INFO")
 
 
+def _draw_broader_region_offers(layout, scene, active_view_scope=False):
+    if active_view_scope:
+        layout.label(text="Broader packs use Camera View.", icon="CAMERA_DATA")
+        return
+    location = _region_offer_location_for_ui(scene)
+    if location is None:
+        layout.label(text="Broader packs are unavailable for this view.", icon="INFO")
+        return
+    try:
+        from .credit_api import get_region_pack_offers
+        offers = get_region_pack_offers(location[0], location[1])
+    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed drawing broader region offers", exc_info=True)
+        offers = []
+    offers = [offer for offer in offers if isinstance(offer, dict) and bool(offer.get("ok", True))]
+    if not offers:
+        layout.label(text="No broader packs available for this view yet.", icon="INFO")
+        return
+    layout.label(text="Broader Full Quality packs:", icon="WORLD_DATA")
+    for offer in offers[:4]:
+        name = str(offer.get("name", "") or offer.get("region_pack_name", "") or "Region Pack").strip()
+        region_id = str(offer.get("id", "") or offer.get("region_pack_id", "") or "").strip()
+        if not name or not region_id:
+            continue
+        try:
+            discount = max(0, int(offer.get("discount_percent", 0) or 0))
+        except (TypeError, ValueError):
+            discount = 0
+        try:
+            price = max(0.0, float(offer.get("price_eur", offer.get("credits", 0.0)) or 0.0))
+        except (TypeError, ValueError):
+            price = 0.0
+        try:
+            gross = max(0.0, float(offer.get("gross_eur", offer.get("gross_price_eur", 0.0)) or 0.0))
+        except (TypeError, ValueError):
+            gross = 0.0
+        try:
+            new_tiles = max(0, int(offer.get("new_tile_count", offer.get("paid_tile_count", 0)) or 0))
+        except (TypeError, ValueError):
+            new_tiles = 0
+        try:
+            total_tiles = max(0, int(offer.get("tile_count", 0) or 0))
+        except (TypeError, ValueError):
+            total_tiles = 0
+        offer_box = layout.box()
+        title_row = offer_box.row(align=True)
+        title_row.label(text=name, icon="WORLD")
+        if discount > 0:
+            title_row.label(text=f"{discount}% off")
+        detail_text = f"{new_tiles} new tiles"
+        if total_tiles > 0:
+            detail_text = f"{new_tiles} new / {total_tiles} total tiles"
+        if gross > price and price > 0:
+            detail_text = f"{detail_text} · normal {_fmt_eur(gross)}"
+        elif price <= 0 and new_tiles <= 0:
+            detail_text = f"{detail_text} · already licenced"
+        elif price <= 0:
+            detail_text = f"{detail_text} · no charge"
+        fully_licenced = bool(price <= 0 and new_tiles <= 0)
+        offer_box.label(text=detail_text, icon="CHECKMARK" if price <= 0 else "INFO")
+        action_row = offer_box.row(align=True)
+        if fully_licenced:
+            action_row.enabled = False
+        action = action_row.operator(
+            "planetka.open_credit_checkout",
+            text=("Already Licenced" if fully_licenced else ("Unlock Free Pack" if price <= 0 else f"Buy Pack {_fmt_eur(price)}")),
+            icon=("CHECKMARK" if price <= 0 else "URL"),
+        )
+        action.checkout_option = "REGION_PACK"
+        action.region_pack_id = region_id
+
+
 def _draw_account_panel(layout):
     layout.use_property_split = False
     layout.use_property_decorate = False
@@ -1335,7 +1436,7 @@ def _draw_live_telemetry(layout, scene):
             default_open=False,
         )
         if more_box is not None:
-            more_box.label(text="Broader options:")
+            _draw_broader_region_offers(more_box, scene, active_view_scope=active_view_scope)
             more_box.separator()
             _draw_licenced_download_controls(more_box, prefs)
 

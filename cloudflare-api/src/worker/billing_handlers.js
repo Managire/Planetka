@@ -1,6 +1,7 @@
 import {
   addCreditBalance,
   grantPaidSceneTileEntitlements,
+  grantRegionPackEntitlements,
   grantStandardQualityUnlock,
 } from "./credit_routes.js";
 
@@ -414,7 +415,12 @@ export async function handleStripeWebhook(request, env, deps) {
 
   const metadata = stripeMetadata(session);
   const purchaseType = String(metadata.planetka_purchase_type || "").trim().toLowerCase();
-  if (purchaseType === "balance_top_up" || purchaseType === "scene_tiles" || purchaseType === "standard_quality_unlock") {
+  if (
+    purchaseType === "balance_top_up"
+    || purchaseType === "scene_tiles"
+    || purchaseType === "standard_quality_unlock"
+    || purchaseType === "region_pack"
+  ) {
     const metadataUserId = String(metadata.planetka_user_id || "").trim();
     let targetUser = metadataUserId && typeof deps.findUserById === "function"
       ? await deps.findUserById(db, metadataUserId)
@@ -527,6 +533,67 @@ export async function handleStripeWebhook(request, env, deps) {
           email,
           purchase_type: purchaseType,
           standard_quality_unlocked: Boolean(unlock && unlock.standard_quality_unlocked),
+        },
+        200,
+        env,
+      );
+    }
+
+    if (purchaseType === "region_pack") {
+      const regionPackId = String(metadata.planetka_region_id || "").trim();
+      const grant = await grantRegionPackEntitlements(
+        db,
+        userId,
+        regionPackId,
+        sessionId,
+        amountPaidEur,
+        deps,
+      );
+      if (grant && grant.error) {
+        console.error(
+          "stripe.webhook.region_pack_purchase_failed",
+          JSON.stringify({
+            event_type: eventType,
+            email,
+            session_id: sessionId,
+            user_id: userId,
+            region_pack_id: regionPackId,
+            error: grant.error,
+          }),
+        );
+        return deps.json({ ok: false, error: grant.error }, 500, env);
+      }
+      if (typeof deps.invalidateAnalyticsSnapshots === "function") {
+        try {
+          await deps.invalidateAnalyticsSnapshots(env);
+        } catch (error) {
+          console.warn(
+            "stripe.webhook.region_pack_snapshot_invalidate_failed",
+            JSON.stringify({ error: String(error && error.message || "snapshot_invalidate_failed"), user_id: userId }),
+          );
+        }
+      }
+      console.log(
+        "stripe.webhook.region_pack_purchase_processed",
+        JSON.stringify({
+          event_type: eventType,
+          email,
+          session_id: sessionId,
+          user_id: userId,
+          amount_paid_eur: amountPaidEur,
+          region_pack_id: regionPackId,
+          unlocked_tile_count: grant && grant.paid_tile_count || 0,
+        }),
+      );
+      return deps.json(
+        {
+          ok: true,
+          processed: true,
+          event_type: eventType,
+          email,
+          purchase_type: purchaseType,
+          region_pack_id: regionPackId,
+          unlocked_tile_count: grant && grant.paid_tile_count || 0,
         },
         200,
         env,

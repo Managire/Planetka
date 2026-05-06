@@ -1,3 +1,5 @@
+import { GENERATED_REGION_PACK_TILE_KEYS } from "./region_packs.generated.js";
+
 const TILE_KEY_RE = /x(\d{3})_y(\d{3})_z(\d{3})_d(\d{3})/i;
 const ASSET_RE = /^(?:S2|EL|WT|PO)_(x\d{3}_y\d{3}_z\d{3}_d\d{3})\.(?:exr|tif)$/i;
 const FREE_D_THRESHOLD = 60;
@@ -10,6 +12,106 @@ const STANDARD_QUALITY_UNLOCK_EUR = 50.0;
 const STRIPE_MIN_CHECKOUT_AMOUNT_CENTS = 50;
 const MONEY_SCALE = 100;
 const METRIC_SCALE = 1_000_000;
+const REGION_PACK_CATALOG_VERSION = "europe_bbox_v1";
+const REGION_PACK_TILE_CHUNK_SIZE = 450;
+const REGION_PACK_PAID_Z_LEVELS = [1, 2, 4, 8, 15, 30];
+
+const EUROPE_REGION_PRODUCTS = [
+  { id: "europe", name: "Europe", type: "continent", discount_percent: 50, bbox: [-25.0, 34.0, 45.0, 72.0] },
+  {
+    id: "western_europe",
+    name: "Western Europe",
+    type: "macro_region",
+    discount_percent: 30,
+    bbox: [-11.0, 41.0, 16.0, 56.0],
+    countries: ["austria", "belgium", "france", "germany", "ireland", "netherlands", "switzerland", "united_kingdom"],
+  },
+  {
+    id: "southern_europe",
+    name: "Southern Europe",
+    type: "macro_region",
+    discount_percent: 30,
+    bbox: [-10.0, 35.0, 30.0, 47.5],
+    countries: ["albania", "bosnia_herzegovina", "croatia", "greece", "italy", "kosovo", "montenegro", "north_macedonia", "portugal", "serbia", "slovenia", "spain"],
+  },
+  {
+    id: "northern_europe",
+    name: "Northern Europe",
+    type: "macro_region",
+    discount_percent: 30,
+    bbox: [-25.0, 54.0, 32.0, 72.0],
+    countries: ["denmark", "estonia", "finland", "iceland", "ireland", "latvia", "lithuania", "norway", "sweden", "united_kingdom"],
+  },
+  {
+    id: "eastern_europe",
+    name: "Eastern Europe",
+    type: "macro_region",
+    discount_percent: 30,
+    bbox: [14.0, 44.0, 41.0, 57.0],
+    countries: ["belarus", "bulgaria", "czechia", "hungary", "moldova", "poland", "romania", "slovakia", "ukraine"],
+  },
+  {
+    id: "balkans",
+    name: "Balkans",
+    type: "macro_region",
+    discount_percent: 30,
+    bbox: [13.0, 39.0, 30.0, 47.0],
+    countries: ["albania", "bosnia_herzegovina", "bulgaria", "croatia", "greece", "kosovo", "montenegro", "north_macedonia", "romania", "serbia", "slovenia"],
+  },
+  {
+    id: "scandinavia",
+    name: "Scandinavia",
+    type: "macro_region",
+    discount_percent: 30,
+    bbox: [4.0, 55.0, 32.0, 72.0],
+    countries: ["denmark", "finland", "iceland", "norway", "sweden"],
+  },
+  {
+    id: "mediterranean_europe",
+    name: "Mediterranean Europe",
+    type: "macro_region",
+    discount_percent: 30,
+    bbox: [-10.0, 35.0, 30.0, 46.5],
+    countries: ["albania", "bosnia_herzegovina", "croatia", "france", "greece", "italy", "montenegro", "portugal", "slovenia", "spain"],
+  },
+  { id: "albania", name: "Albania", type: "country", discount_percent: 20, bbox: [19.2, 39.6, 21.1, 42.7] },
+  { id: "austria", name: "Austria", type: "country", discount_percent: 20, bbox: [9.5, 46.3, 17.2, 49.1] },
+  { id: "belarus", name: "Belarus", type: "country", discount_percent: 20, bbox: [23.1, 51.2, 32.8, 56.2] },
+  { id: "belgium", name: "Belgium", type: "country", discount_percent: 20, bbox: [2.5, 49.5, 6.4, 51.6] },
+  { id: "bosnia_herzegovina", name: "Bosnia and Herzegovina", type: "country", discount_percent: 20, bbox: [15.7, 42.5, 19.7, 45.3] },
+  { id: "bulgaria", name: "Bulgaria", type: "country", discount_percent: 20, bbox: [22.3, 41.2, 28.7, 44.3] },
+  { id: "croatia", name: "Croatia", type: "country", discount_percent: 20, bbox: [13.5, 42.3, 19.5, 46.6] },
+  { id: "czechia", name: "Czechia", type: "country", discount_percent: 20, bbox: [12.1, 48.5, 18.9, 51.1] },
+  { id: "denmark", name: "Denmark", type: "country", discount_percent: 20, bbox: [8.0, 54.5, 15.3, 57.8] },
+  { id: "estonia", name: "Estonia", type: "country", discount_percent: 20, bbox: [21.8, 57.5, 28.3, 59.7] },
+  { id: "finland", name: "Finland", type: "country", discount_percent: 20, bbox: [20.5, 59.8, 31.6, 70.1] },
+  { id: "france", name: "France", type: "country", discount_percent: 20, bbox: [-5.2, 41.3, 9.7, 51.2] },
+  { id: "germany", name: "Germany", type: "country", discount_percent: 20, bbox: [5.8, 47.2, 15.1, 55.1] },
+  { id: "greece", name: "Greece", type: "country", discount_percent: 20, bbox: [19.3, 34.8, 29.7, 41.8] },
+  { id: "hungary", name: "Hungary", type: "country", discount_percent: 20, bbox: [16.1, 45.7, 22.9, 48.6] },
+  { id: "iceland", name: "Iceland", type: "country", discount_percent: 20, bbox: [-24.6, 63.1, -13.5, 66.6] },
+  { id: "ireland", name: "Ireland", type: "country", discount_percent: 20, bbox: [-10.7, 51.3, -5.4, 55.4] },
+  { id: "italy", name: "Italy", type: "country", discount_percent: 20, bbox: [6.6, 36.6, 18.6, 47.2] },
+  { id: "kosovo", name: "Kosovo", type: "country", discount_percent: 20, bbox: [20.0, 41.8, 21.9, 43.3] },
+  { id: "latvia", name: "Latvia", type: "country", discount_percent: 20, bbox: [20.9, 55.6, 28.3, 58.1] },
+  { id: "lithuania", name: "Lithuania", type: "country", discount_percent: 20, bbox: [20.9, 53.9, 26.9, 56.5] },
+  { id: "moldova", name: "Moldova", type: "country", discount_percent: 20, bbox: [26.6, 45.4, 30.2, 48.5] },
+  { id: "montenegro", name: "Montenegro", type: "country", discount_percent: 20, bbox: [18.4, 41.8, 20.4, 43.6] },
+  { id: "netherlands", name: "Netherlands", type: "country", discount_percent: 20, bbox: [3.2, 50.7, 7.3, 53.7] },
+  { id: "north_macedonia", name: "North Macedonia", type: "country", discount_percent: 20, bbox: [20.4, 40.8, 23.1, 42.4] },
+  { id: "norway", name: "Norway", type: "country", discount_percent: 20, bbox: [4.5, 57.8, 31.2, 71.2] },
+  { id: "poland", name: "Poland", type: "country", discount_percent: 20, bbox: [14.1, 49.0, 24.2, 54.9] },
+  { id: "portugal", name: "Portugal", type: "country", discount_percent: 20, bbox: [-9.6, 36.8, -6.1, 42.2] },
+  { id: "romania", name: "Romania", type: "country", discount_percent: 20, bbox: [20.2, 43.6, 29.8, 48.4] },
+  { id: "serbia", name: "Serbia", type: "country", discount_percent: 20, bbox: [18.8, 42.2, 23.1, 46.2] },
+  { id: "slovakia", name: "Slovakia", type: "country", discount_percent: 20, bbox: [16.8, 47.7, 22.6, 49.7] },
+  { id: "slovenia", name: "Slovenia", type: "country", discount_percent: 20, bbox: [13.3, 45.4, 16.7, 46.9] },
+  { id: "spain", name: "Spain", type: "country", discount_percent: 20, bbox: [-9.4, 35.8, 4.4, 43.8] },
+  { id: "sweden", name: "Sweden", type: "country", discount_percent: 20, bbox: [10.9, 55.2, 24.2, 69.1] },
+  { id: "switzerland", name: "Switzerland", type: "country", discount_percent: 20, bbox: [5.9, 45.8, 10.6, 47.9] },
+  { id: "ukraine", name: "Ukraine", type: "country", discount_percent: 20, bbox: [22.1, 44.2, 40.2, 52.4] },
+  { id: "united_kingdom", name: "United Kingdom", type: "country", discount_percent: 20, bbox: [-8.7, 49.8, 2.0, 60.9] },
+];
 
 function normalizeTileKey(value) {
   const raw = String(value || "").trim();
@@ -170,6 +272,277 @@ function defaultCheckoutCancelUrl(env) {
     || env.PLANETKA_CHECKOUT_CANCEL_URL
     || "https://www.planetka.io/payment/cancelled",
   ).trim();
+}
+
+function clampNumber(value, minValue, maxValue) {
+  const parsed = Number.parseFloat(value);
+  if (!Number.isFinite(parsed)) {
+    return minValue;
+  }
+  return Math.min(maxValue, Math.max(minValue, parsed));
+}
+
+function regionProductById(regionId) {
+  const safeId = String(regionId || "").trim().toLowerCase();
+  if (!safeId) {
+    return null;
+  }
+  return EUROPE_REGION_PRODUCTS.find((product) => String(product.id || "").toLowerCase() === safeId) || null;
+}
+
+function regionProductPublicPayload(product) {
+  if (!product) {
+    return {};
+  }
+  return {
+    id: String(product.id || ""),
+    name: String(product.name || ""),
+    type: String(product.type || ""),
+    discount_percent: Math.max(0, Number.parseInt(product.discount_percent || 0, 10) || 0),
+    catalog_version: REGION_PACK_CATALOG_VERSION,
+  };
+}
+
+function bboxArea(product) {
+  const bbox = product && product.bbox || [];
+  if (!Array.isArray(bbox) || bbox.length < 4) {
+    return Number.POSITIVE_INFINITY;
+  }
+  const width = Math.max(0, Number(bbox[2]) - Number(bbox[0]));
+  const height = Math.max(0, Number(bbox[3]) - Number(bbox[1]));
+  return width * height;
+}
+
+function pointInRegionProduct(product, latitudeDeg, longitudeDeg) {
+  const bbox = product && product.bbox || [];
+  if (!Array.isArray(bbox) || bbox.length < 4) {
+    return false;
+  }
+  const lon = clampNumber(longitudeDeg, -180.0, 180.0);
+  const lat = clampNumber(latitudeDeg, -90.0, 90.0);
+  return lon >= Number(bbox[0]) && lon <= Number(bbox[2]) && lat >= Number(bbox[1]) && lat <= Number(bbox[3]);
+}
+
+function suggestedRegionProductsForPoint(latitudeDeg, longitudeDeg) {
+  const matches = EUROPE_REGION_PRODUCTS.filter((product) => pointInRegionProduct(product, latitudeDeg, longitudeDeg));
+  const selected = [];
+  const seen = new Set();
+  const addProduct = (product) => {
+    const id = String(product && product.id || "");
+    if (!id || seen.has(id)) {
+      return;
+    }
+    seen.add(id);
+    selected.push(product);
+  };
+  const countryMatches = matches
+    .filter((product) => String(product.type || "") === "country")
+    .sort((a, b) => bboxArea(a) - bboxArea(b));
+  const country = countryMatches.length ? countryMatches[0] : null;
+  if (countryMatches.length) {
+    addProduct(country);
+  }
+  const macroSource = country
+    ? EUROPE_REGION_PRODUCTS.filter((product) => (
+      String(product.type || "") === "macro_region"
+      && Array.isArray(product.countries)
+      && product.countries.includes(String(country.id || ""))
+    ))
+    : matches.filter((product) => String(product.type || "") === "macro_region");
+  const macroMatches = macroSource.sort((a, b) => bboxArea(a) - bboxArea(b));
+  for (const product of macroMatches.slice(0, 2)) {
+    addProduct(product);
+  }
+  const continent = matches.find((product) => String(product.type || "") === "continent");
+  if (continent) {
+    addProduct(continent);
+  }
+  return selected.slice(0, 4);
+}
+
+function paidDLevelsForRegionZ(zValue) {
+  const z = Math.max(1, Number.parseInt(zValue, 10) || 1);
+  // A finer entitlement grants access to all coarser d-levels in the same tile
+  // family, so region packs only need the finest paid d-level per z footprint.
+  return z > 0 && z < FREE_D_THRESHOLD ? [z] : [];
+}
+
+function regionTileKey(x, y, z, d) {
+  return `x${String(x).padStart(3, "0")}_y${String(y).padStart(3, "0")}_z${String(z).padStart(3, "0")}_d${String(d).padStart(3, "0")}`;
+}
+
+function regionProductTileKeys(product) {
+  const generatedKeys = GENERATED_REGION_PACK_TILE_KEYS[String(product && product.id || "")];
+  if (Array.isArray(generatedKeys) && generatedKeys.length) {
+    return normalizeTileKeys(generatedKeys);
+  }
+  const bbox = product && product.bbox || [];
+  if (!Array.isArray(bbox) || bbox.length < 4) {
+    return [];
+  }
+  const minLon = clampNumber(Math.min(Number(bbox[0]), Number(bbox[2])), -180.0, 180.0);
+  const maxLon = clampNumber(Math.max(Number(bbox[0]), Number(bbox[2])), -180.0, 180.0);
+  const minLat = clampNumber(Math.min(Number(bbox[1]), Number(bbox[3])), -90.0, 90.0);
+  const maxLat = clampNumber(Math.max(Number(bbox[1]), Number(bbox[3])), -90.0, 90.0);
+  const minX = Math.max(0, Math.min(359, Math.floor(minLon + 180.0)));
+  const maxX = Math.max(0, Math.min(359, Math.ceil(maxLon + 180.0) - 1));
+  const minY = Math.max(0, Math.min(179, Math.floor(minLat + 90.0)));
+  const maxY = Math.max(0, Math.min(179, Math.ceil(maxLat + 90.0) - 1));
+  if (maxX < minX || maxY < minY) {
+    return [];
+  }
+  const keys = [];
+  const seen = new Set();
+  for (const z of REGION_PACK_PAID_Z_LEVELS) {
+    const startX = Math.floor(minX / z) * z;
+    const endX = Math.floor(maxX / z) * z;
+    const startY = Math.floor(minY / z) * z;
+    const endY = Math.floor(maxY / z) * z;
+    const dLevels = paidDLevelsForRegionZ(z);
+    for (let x = startX; x <= endX; x += z) {
+      for (let y = startY; y <= endY; y += z) {
+        if (x < 0 || x > 359 || y < 0 || y > 179) {
+          continue;
+        }
+        for (const d of dLevels) {
+          const key = regionTileKey(x, y, z, d);
+          if (seen.has(key)) {
+            continue;
+          }
+          seen.add(key);
+          keys.push(key);
+        }
+      }
+    }
+  }
+  return keys;
+}
+
+function tileFamilyFromKey(tileKey) {
+  return tileFamilyKey(parseTileKey(tileKey));
+}
+
+function chunkTileKeysByFamily(tileKeys, maxChunkSize = REGION_PACK_TILE_CHUNK_SIZE) {
+  const keys = normalizeTileKeys(tileKeys).sort((a, b) => {
+    const familyA = tileFamilyFromKey(a);
+    const familyB = tileFamilyFromKey(b);
+    if (familyA !== familyB) {
+      return familyA < familyB ? -1 : 1;
+    }
+    const tileA = parseTileKey(a);
+    const tileB = parseTileKey(b);
+    return Number(tileA && tileA.d || 0) - Number(tileB && tileB.d || 0);
+  });
+  const chunks = [];
+  let chunk = [];
+  let currentFamily = "";
+  for (const key of keys) {
+    const family = tileFamilyFromKey(key);
+    if (chunk.length >= maxChunkSize && family !== currentFamily) {
+      chunks.push(chunk);
+      chunk = [];
+    }
+    chunk.push(key);
+    currentFamily = family;
+  }
+  if (chunk.length) {
+    chunks.push(chunk);
+  }
+  return chunks;
+}
+
+function combineIntegrityWarnings(warnings) {
+  const byCode = new Map();
+  for (const warning of warnings || []) {
+    if (!warning || typeof warning !== "object") {
+      continue;
+    }
+    const code = String(warning.code || "").trim() || "warning";
+    if (!byCode.has(code)) {
+      byCode.set(code, { ...warning, tile_keys: [] });
+    }
+    const target = byCode.get(code);
+    const keys = Array.isArray(warning.tile_keys) ? warning.tile_keys : [];
+    target.tile_keys = Array.from(new Set([...(target.tile_keys || []), ...keys]));
+  }
+  return Array.from(byCode.values());
+}
+
+async function estimateNewCreditsChunked(db, userId, tileKeys, qualityMode, deps, options = {}) {
+  const chunks = chunkTileKeysByFamily(tileKeys);
+  const includeRows = Boolean(options && options.includeRows);
+  const aggregate = {
+    credits: 0,
+    price_eur: 0,
+    paid_tile_count: 0,
+    free_tile_count: 0,
+    tile_count: 0,
+    new_tiles: [],
+    tiles: [],
+    excluded_tiles: [],
+    integrity_warnings: [],
+    metadata_missing_tile_keys: [],
+  };
+  for (const chunk of chunks) {
+    const estimate = await estimateNewCredits(db, userId, chunk, qualityMode, deps);
+    if (estimate && estimate.error) {
+      return estimate;
+    }
+    aggregate.credits = normalizeCreditAmount(aggregate.credits + normalizeCreditAmount(estimate && estimate.credits));
+    aggregate.price_eur = aggregate.credits;
+    aggregate.paid_tile_count += Math.max(0, Number.parseInt(estimate && estimate.paid_tile_count || 0, 10) || 0);
+    aggregate.free_tile_count += Math.max(0, Number.parseInt(estimate && estimate.free_tile_count || 0, 10) || 0);
+    aggregate.tile_count += Math.max(0, Number.parseInt(estimate && estimate.tile_count || 0, 10) || 0);
+    aggregate.new_tiles.push(...(Array.isArray(estimate && estimate.new_tiles) ? estimate.new_tiles : []));
+    aggregate.excluded_tiles.push(...(Array.isArray(estimate && estimate.excluded_tiles) ? estimate.excluded_tiles : []));
+    aggregate.integrity_warnings.push(...(Array.isArray(estimate && estimate.integrity_warnings) ? estimate.integrity_warnings : []));
+    aggregate.metadata_missing_tile_keys.push(...(Array.isArray(estimate && estimate.metadata_missing_tile_keys) ? estimate.metadata_missing_tile_keys : []));
+    if (includeRows) {
+      aggregate.tiles.push(...(Array.isArray(estimate && estimate.tiles) ? estimate.tiles : []));
+    }
+  }
+  aggregate.integrity_warnings = combineIntegrityWarnings(aggregate.integrity_warnings);
+  aggregate.metadata_missing_tile_keys = Array.from(new Set(aggregate.metadata_missing_tile_keys));
+  return aggregate;
+}
+
+async function estimateRegionPack(db, userId, product, deps, options = {}) {
+  if (!product) {
+    return { error: "unknown_region_pack" };
+  }
+  const tileKeys = regionProductTileKeys(product);
+  const gross = await estimateNewCreditsChunked(db, userId, tileKeys, "full", deps, {
+    includeRows: Boolean(options && options.includeRows),
+  });
+  if (gross && gross.error) {
+    return gross;
+  }
+  const grossEur = normalizeCreditAmount(gross && gross.credits);
+  const discountPercent = Math.max(0, Math.min(95, Number.parseInt(product.discount_percent || 0, 10) || 0));
+  const discountEur = normalizeCreditAmount(grossEur * (discountPercent / 100.0));
+  const priceEur = normalizeCreditAmount(Math.max(0, grossEur - discountEur));
+  return {
+    ok: true,
+    region_pack: regionProductPublicPayload(product),
+    region_pack_id: String(product.id || ""),
+    region_pack_name: String(product.name || ""),
+    catalog_version: REGION_PACK_CATALOG_VERSION,
+    discount_percent: discountPercent,
+    gross_eur: grossEur,
+    gross_price_eur: grossEur,
+    discount_eur: discountEur,
+    credits: priceEur,
+    price_eur: priceEur,
+    paid_tile_count: Math.max(0, Number.parseInt(gross && gross.paid_tile_count || 0, 10) || 0),
+    free_tile_count: Math.max(0, Number.parseInt(gross && gross.free_tile_count || 0, 10) || 0),
+    tile_count: Math.max(0, Number.parseInt(gross && gross.tile_count || 0, 10) || 0),
+    new_tile_count: Array.isArray(gross && gross.new_tiles) ? gross.new_tiles.length : 0,
+    new_tiles: Array.isArray(gross && gross.new_tiles) ? gross.new_tiles : [],
+    excluded_tiles: Array.isArray(gross && gross.excluded_tiles) ? gross.excluded_tiles : [],
+    integrity_warnings: Array.isArray(gross && gross.integrity_warnings) ? gross.integrity_warnings : [],
+    metadata_missing_tile_keys: Array.isArray(gross && gross.metadata_missing_tile_keys) ? gross.metadata_missing_tile_keys : [],
+    tiles: Array.isArray(gross && gross.tiles) ? gross.tiles : [],
+  };
 }
 
 function checkoutMetadataValue(value, maxLength = 480) {
@@ -882,6 +1255,115 @@ export async function grantPaidSceneTileEntitlements(db, userId, qualityMode, ti
   };
 }
 
+export async function grantRegionPackEntitlements(db, userId, regionPackId, stripeSessionId, amountPaidEur, deps) {
+  const safeUserId = String(userId || "").trim();
+  const safeStripeSessionId = String(stripeSessionId || "").trim();
+  const product = regionProductById(regionPackId);
+  if (!safeUserId) {
+    return { error: "missing_user_id" };
+  }
+  if (!product) {
+    return { error: "unknown_region_pack" };
+  }
+  if (safeStripeSessionId) {
+    const existingLedger = await deps.dbGet(
+      db,
+      `
+        SELECT COUNT(*) AS count
+        FROM credit_ledger
+        WHERE user_id = ?
+          AND LOWER(COALESCE(reason, '')) = 'stripe_region_pack_purchase'
+          AND json_valid(COALESCE(metadata_json, ''))
+          AND COALESCE(json_extract(metadata_json, '$.stripe_session_id'), '') = ?
+      `,
+      [safeUserId, safeStripeSessionId],
+    );
+    if (Number(existingLedger && existingLedger.count || 0) > 0) {
+      return {
+        ok: true,
+        duplicate_session: true,
+        region_pack: regionProductPublicPayload(product),
+        paid_eur: 0,
+        paid_tile_count: 0,
+      };
+    }
+  }
+  await ensureCreditAccount(db, safeUserId, deps);
+  const estimate = await estimateRegionPack(db, safeUserId, product, deps, { includeRows: false });
+  if (estimate && estimate.error) {
+    return estimate;
+  }
+  const now = deps.nowIso();
+  const insertedTiles = [];
+  let nominalCredits = 0;
+  for (const tile of estimate.new_tiles || []) {
+    const tileKey = normalizeTileKey(tile && tile.tile_key || "");
+    if (!tileKey || isFreeCreditTileKey(tileKey)) {
+      continue;
+    }
+    const nominalTileCredits = normalizeCreditAmount(tile && (tile.gross_credits ?? tile.credits));
+    const insert = await deps.dbRun(
+      db,
+      `
+        INSERT OR IGNORE INTO user_tile_entitlements (
+          user_id, tile_key, quality_mode, credits_spent, land_km2, billable_land_km2, source, unlocked_at
+        )
+        VALUES (?, ?, 'full', ?, ?, ?, 'stripe_region_pack', ?)
+      `,
+      [
+        safeUserId,
+        tileKey,
+        nominalTileCredits,
+        Math.max(0, Number.parseFloat(tile && tile.land_km2 || 0) || 0),
+        Math.max(0, Number.parseFloat(tile && tile.billable_land_km2 || 0) || 0),
+        now,
+      ],
+    );
+    if (deps.dbMetaChanges(insert) > 0) {
+      insertedTiles.push(tile);
+      nominalCredits = normalizeCreditAmount(nominalCredits + nominalTileCredits);
+    }
+  }
+  const paidEur = normalizeCreditAmount(amountPaidEur);
+  await deps.dbRun(
+    db,
+    `
+      INSERT INTO credit_ledger (
+        id, user_id, delta_credits, balance_after_credits, reason, metadata_json, created_at
+      )
+      VALUES (?, ?, 0, (SELECT balance_credits FROM user_credit_accounts WHERE user_id = ?), 'stripe_region_pack_purchase', ?, ?)
+    `,
+    [
+      deps.randomToken(16),
+      safeUserId,
+      safeUserId,
+      JSON.stringify({
+        stripe_session_id: safeStripeSessionId,
+        region_pack_id: String(product.id || ""),
+        region_pack_name: String(product.name || ""),
+        region_pack_type: String(product.type || ""),
+        catalog_version: REGION_PACK_CATALOG_VERSION,
+        discount_percent: Math.max(0, Number.parseInt(product.discount_percent || 0, 10) || 0),
+        quality_mode: "full",
+        tile_count: insertedTiles.length,
+        nominal_eur: nominalCredits,
+        gross_eur: normalizeCreditAmount(estimate && estimate.gross_eur),
+        paid_eur: paidEur,
+      }),
+      now,
+    ],
+  );
+  return {
+    ...estimate,
+    credits: 0,
+    price_eur: 0,
+    paid_eur: paidEur,
+    nominal_eur: nominalCredits,
+    paid_tile_count: insertedTiles.filter((tile) => normalizeCreditAmount(tile && (tile.gross_credits ?? tile.credits)) > 0).length,
+    new_tiles: insertedTiles,
+  };
+}
+
 export async function grantStandardQualityUnlock(db, userId, stripeSessionId, amountPaidEur, deps) {
   await deps.ensureCreditTables(db);
   const safeUserId = String(userId || "").trim();
@@ -1097,6 +1579,113 @@ export async function handleCreditCheckout(request, env, deps) {
     return deps.json({ ok: true, option: "standard_unlock", price_eur: amountEur, ...session }, 200, env);
   }
 
+  if (option === "region_pack" || option === "broader_pack") {
+    const product = regionProductById(body && (
+      body.region_pack_id
+      || body.regionPackId
+      || body.region_id
+      || body.regionId
+      || body.pack_id
+      || body.packId
+    ));
+    if (!product) {
+      return deps.json({ ok: false, error: "unknown_region_pack" }, 404, env);
+    }
+    const estimate = await estimateRegionPack(db, userId, product, deps, { includeRows: false });
+    if (estimate && estimate.error) {
+      return deps.json({ ok: false, ...estimate }, 400, env);
+    }
+    const priceEur = normalizeCreditAmount(estimate && estimate.price_eur);
+    if (priceEur <= 0) {
+      const grant = await grantRegionPackEntitlements(
+        db,
+        userId,
+        String(product.id || ""),
+        `region_pack_no_payment_${deps.randomToken(8)}`,
+        0,
+        deps,
+      );
+      if (grant && grant.error) {
+        return deps.json({ ok: false, ...grant }, 400, env);
+      }
+      return deps.json(
+        {
+          ok: true,
+          option: "region_pack",
+          region_pack: regionProductPublicPayload(product),
+          no_payment_required: true,
+          price_eur: 0,
+          gross_eur: normalizeCreditAmount(estimate && estimate.gross_eur),
+          discount_eur: normalizeCreditAmount(estimate && estimate.discount_eur),
+          paid_tile_count: grant && grant.paid_tile_count || 0,
+          new_tile_count: grant && grant.new_tiles && grant.new_tiles.length || estimate.new_tile_count || 0,
+          tile_count: grant && grant.tile_count || estimate.tile_count,
+          message: "This region pack has no newly charged Full Quality tiles.",
+        },
+        200,
+        env,
+      );
+    }
+    const amountCents = centsForEur(priceEur);
+    if (amountCents < STRIPE_MIN_CHECKOUT_AMOUNT_CENTS) {
+      return deps.json(
+        {
+          ok: false,
+          error: "amount_below_stripe_minimum",
+          option: "region_pack",
+          region_pack: regionProductPublicPayload(product),
+          price_eur: priceEur,
+          minimum_eur: STRIPE_MIN_CHECKOUT_AMOUNT_CENTS / 100.0,
+          message: "This region pack price is below Stripe's minimum checkout amount.",
+        },
+        400,
+        env,
+      );
+    }
+    const session = await createStripeCheckoutSession(
+      env,
+      {
+        amountCents,
+        customerEmail: email,
+        clientReferenceId: userId,
+        productName: `Planetka Full Quality ${String(product.name || "Region")} Pack`,
+        metadata: {
+          planetka_purchase_type: "region_pack",
+          planetka_user_id: userId,
+          planetka_email: email,
+          planetka_quality_mode: "full",
+          planetka_region_id: String(product.id || ""),
+          planetka_region_name: String(product.name || ""),
+          planetka_region_type: String(product.type || ""),
+          planetka_catalog_version: REGION_PACK_CATALOG_VERSION,
+          planetka_price_eur: priceEur.toFixed(2),
+          planetka_gross_eur: normalizeCreditAmount(estimate && estimate.gross_eur).toFixed(2),
+          planetka_discount_percent: String(Math.max(0, Number.parseInt(product.discount_percent || 0, 10) || 0)),
+        },
+      },
+      deps,
+    );
+    if (session.error) {
+      return deps.json({ ok: false, ...session }, 502, env);
+    }
+    return deps.json(
+      {
+        ok: true,
+        option: "region_pack",
+        region_pack: regionProductPublicPayload(product),
+        price_eur: priceEur,
+        gross_eur: normalizeCreditAmount(estimate && estimate.gross_eur),
+        discount_eur: normalizeCreditAmount(estimate && estimate.discount_eur),
+        paid_tile_count: estimate.paid_tile_count,
+        new_tile_count: estimate.new_tile_count,
+        tile_count: estimate.tile_count,
+        ...session,
+      },
+      200,
+      env,
+    );
+  }
+
   const tileKeys = requestTileKeysFromBody(body);
   const qualityMode = deps.normalizeQualityMode(body && body.quality_mode || body && body.qualityMode || "full");
   if (qualityMode !== "full") {
@@ -1270,6 +1859,59 @@ export async function handleCreditEstimate(request, env, deps) {
       standard_quality_unlocked: isStandardQualityUnlocked(account),
       standard_quality_unlocked_at: String(account && account.standard_quality_unlocked_at || ""),
       standard_quality_price_eur: standardQualityUnlockPriceEur(env),
+    },
+    200,
+    env,
+  );
+}
+
+export async function handleCreditRegionOffers(request, env, deps) {
+  const auth = await deps.requireAuthenticatedUserContext(request, env, { enforceApiKeyDevicePolicy: false });
+  if (auth.error) {
+    return auth.error;
+  }
+  const db = deps.requireDb(env);
+  await ensureCreditAccount(db, auth.user.id, deps);
+  const body = await deps.parseJson(request);
+  const latitude = clampNumber(body && (body.latitude_deg ?? body.latitude ?? body.lat), -90.0, 90.0);
+  const longitude = clampNumber(body && (body.longitude_deg ?? body.longitude ?? body.lon), -180.0, 180.0);
+  const products = suggestedRegionProductsForPoint(latitude, longitude);
+  const offers = [];
+  for (const product of products) {
+    const estimate = await estimateRegionPack(db, auth.user.id, product, deps, { includeRows: false });
+    if (estimate && estimate.error) {
+      offers.push({
+        ok: false,
+        ...regionProductPublicPayload(product),
+        error: String(estimate.error || "region_pack_estimate_failed"),
+      });
+      continue;
+    }
+    offers.push({
+      ok: true,
+      ...regionProductPublicPayload(product),
+      gross_eur: normalizeCreditAmount(estimate && estimate.gross_eur),
+      gross_price_eur: normalizeCreditAmount(estimate && estimate.gross_price_eur),
+      discount_eur: normalizeCreditAmount(estimate && estimate.discount_eur),
+      credits: normalizeCreditAmount(estimate && estimate.credits),
+      price_eur: normalizeCreditAmount(estimate && estimate.price_eur),
+      paid_tile_count: Math.max(0, Number.parseInt(estimate && estimate.paid_tile_count || 0, 10) || 0),
+      free_tile_count: Math.max(0, Number.parseInt(estimate && estimate.free_tile_count || 0, 10) || 0),
+      tile_count: Math.max(0, Number.parseInt(estimate && estimate.tile_count || 0, 10) || 0),
+      new_tile_count: Math.max(0, Number.parseInt(estimate && estimate.new_tile_count || 0, 10) || 0),
+      already_licenced_tile_count: Math.max(0, Number.parseInt(estimate && estimate.excluded_tiles && estimate.excluded_tiles.length || 0, 10) || 0),
+      metadata_missing_tile_keys: Array.isArray(estimate && estimate.metadata_missing_tile_keys)
+        ? estimate.metadata_missing_tile_keys.slice(0, 100)
+        : [],
+    });
+  }
+  return deps.json(
+    {
+      ok: true,
+      catalog_version: REGION_PACK_CATALOG_VERSION,
+      latitude_deg: latitude,
+      longitude_deg: longitude,
+      offers,
     },
     200,
     env,

@@ -22,8 +22,10 @@ logger = logging.getLogger(__name__)
 
 _ACCOUNT_CACHE = {"timestamp": 0.0, "payload": {}}
 _UNLOCKED_CACHE = {"timestamp": 0.0, "payload": []}
+_REGION_OFFERS_CACHE = {"timestamp": 0.0, "key": "", "payload": []}
 _ACCOUNT_CACHE_TTL_SECONDS = 5.0
 _UNLOCKED_CACHE_TTL_SECONDS = 10.0
+_REGION_OFFERS_CACHE_TTL_SECONDS = 30.0
 _UNLOCKED_DOWNLOAD_LOCK = threading.Lock()
 _UNLOCKED_DOWNLOAD_CANCEL = None
 _UNLOCKED_DOWNLOAD_THREAD = None
@@ -56,6 +58,8 @@ _PRICE_FIELDS = {
     "upgrade_credit_applied",
     "paid_eur",
     "nominal_eur",
+    "gross_eur",
+    "discount_eur",
     "minimum_eur",
     "added_eur",
     "added_credits",
@@ -246,6 +250,9 @@ def clear_credit_caches():
     _ACCOUNT_CACHE["payload"] = {}
     _UNLOCKED_CACHE["timestamp"] = 0.0
     _UNLOCKED_CACHE["payload"] = []
+    _REGION_OFFERS_CACHE["timestamp"] = 0.0
+    _REGION_OFFERS_CACHE["key"] = ""
+    _REGION_OFFERS_CACHE["payload"] = []
 
 
 def get_credit_account(force=False) -> dict:
@@ -426,10 +433,55 @@ def estimate_credit_breakdown_for_tiles(tiles, quality_mode="FULL") -> dict:
     return estimate_credits_for_tiles(tiles, quality_mode=mode)
 
 
-def create_checkout_session(option: str, tiles=None, quality_mode="FULL") -> dict:
+def get_region_pack_offers(latitude_deg, longitude_deg, force=False) -> list[dict]:
+    try:
+        lat = max(-90.0, min(90.0, float(latitude_deg or 0.0)))
+        lon = max(-180.0, min(180.0, float(longitude_deg or 0.0)))
+    except (TypeError, ValueError):
+        return []
+    key = f"{round(lat, 3):.3f}:{round(lon, 3):.3f}"
+    now = time.monotonic()
+    cached = _REGION_OFFERS_CACHE.get("payload")
+    if (
+        not force
+        and _REGION_OFFERS_CACHE.get("key") == key
+        and isinstance(cached, list)
+        and (now - float(_REGION_OFFERS_CACHE.get("timestamp", 0.0) or 0.0)) < _REGION_OFFERS_CACHE_TTL_SECONDS
+    ):
+        return [dict(item) for item in cached if isinstance(item, dict)]
+    try:
+        payload = _request_json(
+            "POST",
+            "/credits/region-offers",
+            body={"latitude_deg": lat, "longitude_deg": lon},
+            timeout=45,
+        )
+    except (AuthApiError, CreditApiError, RuntimeError, TypeError, ValueError, OSError):
+        logger.debug("Planetka: failed fetching region pack offers", exc_info=True)
+        return []
+    offers = payload.get("offers", []) if isinstance(payload, dict) else []
+    if not isinstance(offers, list):
+        offers = []
+    offers = [_round_price_fields(entry) for entry in offers if isinstance(entry, dict)]
+    _REGION_OFFERS_CACHE["timestamp"] = now
+    _REGION_OFFERS_CACHE["key"] = key
+    _REGION_OFFERS_CACHE["payload"] = [dict(item) for item in offers]
+    return [dict(item) for item in offers]
+
+
+def create_checkout_session(option: str, tiles=None, quality_mode="FULL", region_pack_id: str = "") -> dict:
     """Create a Stripe Checkout Session for scene data or a fixed balance top-up."""
     safe_option = str(option or "scene").strip().lower()
-    if safe_option not in {"scene", "balance_10", "top_up_10", "topup_10", "standard_unlock", "balanced_unlock"}:
+    if safe_option not in {
+        "scene",
+        "balance_10",
+        "top_up_10",
+        "topup_10",
+        "standard_unlock",
+        "balanced_unlock",
+        "region_pack",
+        "broader_pack",
+    }:
         safe_option = "scene"
     tile_keys = []
     if safe_option == "scene":
@@ -444,11 +496,17 @@ def create_checkout_session(option: str, tiles=None, quality_mode="FULL") -> dic
         "option": (
             "balance_10"
             if safe_option in {"balance_10", "top_up_10", "topup_10"}
-            else ("standard_unlock" if safe_option in {"standard_unlock", "balanced_unlock"} else "scene")
+            else (
+                "standard_unlock"
+                if safe_option in {"standard_unlock", "balanced_unlock"}
+                else ("region_pack" if safe_option in {"region_pack", "broader_pack"} else "scene")
+            )
         ),
         "quality_mode": str(quality_mode or "FULL").strip().lower(),
         "tile_keys": tile_keys,
     }
+    if safe_option in {"region_pack", "broader_pack"}:
+        payload["region_pack_id"] = str(region_pack_id or "").strip()
     result = _request_json("POST", "/credits/checkout", body=payload, timeout=30)
     if isinstance(result, dict) and result.get("ok", False):
         normalized = _round_price_fields(result)
