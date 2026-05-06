@@ -1263,19 +1263,6 @@ def _draw_live_telemetry(layout, scene):
         elif not full_allowed and not active_view_scope:
             credit_notice = full_box.row(align=True)
             credit_notice.label(text="Balance unavailable", icon="INFO")
-        if (not active_view_scope) and credit_known and full_has_new_cost and credit_balance <= 0.0:
-            payment_row = full_box.row(align=True)
-            if full_credits >= 0.50:
-                payment_row.operator(
-                    "planetka.open_credit_checkout",
-                    text=f"Buy This Scene ({_estimate_eur_label('FULL')})",
-                    icon="URL",
-                ).checkout_option = "SCENE"
-            payment_row.operator(
-                "planetka.open_credit_checkout",
-                text="Add €10 Balance",
-                icon="URL",
-            ).checkout_option = "BALANCE_10"
         if quick_preview_prepared:
             estimate_notice = full_box.row(align=True)
             estimate_notice.label(text="Clear Quick Preview before downloading Full Quality.", icon="INFO")
