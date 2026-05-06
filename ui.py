@@ -53,6 +53,7 @@ RESOLVE_FAILURE_MESSAGE_KEY = "planetka_resolve_integrity_message"
 LAST_RESOLVE_TEXTURE_QUALITY_MODE_KEY = "planetka_last_resolve_texture_quality_mode"
 EARTH_TRANSFORM_SECTION_OPEN_KEY = "planetka_ui_earth_transform_open"
 DATA_CONTROL_MORE_OPTIONS_SECTION_OPEN_KEY = "planetka_ui_data_more_options_open"
+STANDARD_RESOLUTION_INFO_URL = "https://www.planetka.io/blender/standard-resolution-info"
 EARTH_RADIUS_SAFE_MIN_BU = 0.2
 EARTH_RADIUS_SAFE_MAX_BU = 20.0
 LOW_ALTITUDE_WARNING_EPS_KM = 0.05
@@ -1365,11 +1366,17 @@ def _draw_live_telemetry(layout, scene):
         if standard_unlocked:
             standard_col.label(text="Unlocked", icon="CHECKMARK")
         else:
-            standard_col.operator(
+            unlock_row = standard_col.row(align=True)
+            unlock_row.operator(
                 "planetka.open_credit_checkout",
                 text=f"Unlock €{max(0.0, standard_price):.0f}",
                 icon="URL",
             ).checkout_option = "STANDARD_UNLOCK"
+            unlock_row.operator(
+                "wm.url_open",
+                text="",
+                icon="INFO",
+            ).url = STANDARD_RESOLUTION_INFO_URL
 
         quick_preview_prepared = _is_animation_prepared(scene)
         active_view_scope = _is_active_view_resolve_scope(scene)
