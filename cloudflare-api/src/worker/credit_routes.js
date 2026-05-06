@@ -18,11 +18,11 @@ const STANDARD_QUALITY_UNLOCK_EUR = 50.0;
 const STRIPE_MIN_CHECKOUT_AMOUNT_CENTS = 50;
 const MONEY_SCALE = 100;
 const METRIC_SCALE = 1_000_000;
-const REGION_PACK_CATALOG_VERSION = GENERATED_REGION_PACK_CATALOG_VERSION || "europe_gadm_v2";
+const REGION_PACK_CATALOG_VERSION = GENERATED_REGION_PACK_CATALOG_VERSION || "gadm_regions_v3";
 const SQL_VARIABLE_SAFE_CHUNK_SIZE = 75;
 const REGION_PACK_TILE_CHUNK_SIZE = SQL_VARIABLE_SAFE_CHUNK_SIZE;
 const REGION_PACK_PAID_Z_LEVELS = [1, 2, 4, 8, 15, 30];
-const EUROPE_REGION_PRODUCTS = Array.isArray(GENERATED_REGION_PACK_PRODUCTS) ? GENERATED_REGION_PACK_PRODUCTS : [];
+const REGION_PRODUCTS = Array.isArray(GENERATED_REGION_PACK_PRODUCTS) ? GENERATED_REGION_PACK_PRODUCTS : [];
 
 function normalizeTileKey(value) {
   const raw = String(value || "").trim();
@@ -198,7 +198,7 @@ function regionProductById(regionId) {
   if (!safeId) {
     return null;
   }
-  return EUROPE_REGION_PRODUCTS.find((product) => String(product.id || "").toLowerCase() === safeId) || null;
+  return REGION_PRODUCTS.find((product) => String(product.id || "").toLowerCase() === safeId) || null;
 }
 
 function fixedSizeChunks(values, chunkSize = SQL_VARIABLE_SAFE_CHUNK_SIZE) {
@@ -264,6 +264,49 @@ function bboxArea(product) {
   return width * height;
 }
 
+function pointInPolygonRing(lon, lat, ring) {
+  if (!Array.isArray(ring) || ring.length < 4) {
+    return false;
+  }
+  let inside = false;
+  for (let index = 0, previous = ring.length - 1; index < ring.length; previous = index++) {
+    const currentPoint = Array.isArray(ring[index]) ? ring[index] : [];
+    const previousPoint = Array.isArray(ring[previous]) ? ring[previous] : [];
+    const xi = Number(currentPoint[0]);
+    const yi = Number(currentPoint[1]);
+    const xj = Number(previousPoint[0]);
+    const yj = Number(previousPoint[1]);
+    if (![xi, yi, xj, yj].every(Number.isFinite)) {
+      continue;
+    }
+    const intersects = ((yi > lat) !== (yj > lat))
+      && (lon < ((xj - xi) * (lat - yi)) / ((yj - yi) || Number.EPSILON) + xi);
+    if (intersects) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+function pointInGeneratedRegionOutlines(product, latitudeDeg, longitudeDeg) {
+  const detail = GENERATED_REGION_PACK_DETAILS[String(product && product.id || "")] || {};
+  const outlines = Array.isArray(detail.outlines) ? detail.outlines : [];
+  if (!outlines.length) {
+    return null;
+  }
+  const lon = clampNumber(longitudeDeg, -180.0, 180.0);
+  const lat = clampNumber(latitudeDeg, -90.0, 90.0);
+  for (const outline of outlines) {
+    const polygons = Array.isArray(outline && outline.polygons) ? outline.polygons : [];
+    for (const ring of polygons) {
+      if (pointInPolygonRing(lon, lat, ring)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 function pointInRegionProduct(product, latitudeDeg, longitudeDeg) {
   const bbox = product && product.bbox || [];
   if (!Array.isArray(bbox) || bbox.length < 4) {
@@ -271,11 +314,16 @@ function pointInRegionProduct(product, latitudeDeg, longitudeDeg) {
   }
   const lon = clampNumber(longitudeDeg, -180.0, 180.0);
   const lat = clampNumber(latitudeDeg, -90.0, 90.0);
-  return lon >= Number(bbox[0]) && lon <= Number(bbox[2]) && lat >= Number(bbox[1]) && lat <= Number(bbox[3]);
+  const inBBox = lon >= Number(bbox[0]) && lon <= Number(bbox[2]) && lat >= Number(bbox[1]) && lat <= Number(bbox[3]);
+  if (!inBBox) {
+    return false;
+  }
+  const inOutlines = pointInGeneratedRegionOutlines(product, lat, lon);
+  return inOutlines === null ? true : inOutlines;
 }
 
 function suggestedRegionProductsForPoint(latitudeDeg, longitudeDeg) {
-  const matches = EUROPE_REGION_PRODUCTS.filter((product) => pointInRegionProduct(product, latitudeDeg, longitudeDeg));
+  const matches = REGION_PRODUCTS.filter((product) => pointInRegionProduct(product, latitudeDeg, longitudeDeg));
   const selected = [];
   const seen = new Set();
   const addProduct = (product) => {
@@ -294,7 +342,7 @@ function suggestedRegionProductsForPoint(latitudeDeg, longitudeDeg) {
     addProduct(country);
   }
   const macroSource = country
-    ? EUROPE_REGION_PRODUCTS.filter((product) => (
+    ? REGION_PRODUCTS.filter((product) => (
       String(product.type || "") === "macro_region"
       && Array.isArray(product.countries)
       && product.countries.includes(String(country.id || ""))

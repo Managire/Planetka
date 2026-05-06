@@ -23,20 +23,21 @@ from shapely.prepared import prep
 
 
 DEFAULT_GPKG = Path("/Volumes/SSDA/Planetka Assets Extra/BO/gadm_410-levels.gpkg")
-DEFAULT_JSON = Path("Resources/Region Packs/europe_region_packs_gadm.json")
+DEFAULT_JSON = Path("Resources/Region Packs/region_packs_gadm.json")
 DEFAULT_JS = Path("cloudflare-api/src/worker/region_packs.generated.js")
-DEFAULT_PNG = Path("Resources/Region Packs/europe_region_packs_gadm.png")
-CATALOG_VERSION = "europe_gadm_v2"
+DEFAULT_PNG = Path("Resources/Region Packs/region_packs_gadm.png")
+CATALOG_VERSION = "gadm_regions_v3"
 PAID_Z_LEVELS = (1, 2, 4, 8, 15, 30)
 FREE_D_THRESHOLD = 60
-EUROPE_CLIP_BBOX = (-25.0, 34.0, 45.0, 72.0)
 MERGE_DIFFERENCE_RATIO = 0.50
 SMALL_COUNTRY_AUTO_MERGE_TILE_LIMIT = 30
 
-# Small sovereign states are intentionally excluded from first-pack products;
-# they are usually covered by neighbouring tile licences or can be licensed
-# through the normal scene purchase path.
-EXCLUDED_MICROSTATES = {
+EUROPE_CLIP_BBOX = (-25.0, 34.0, 45.0, 72.0)
+SOUTH_AMERICA_CLIP_BBOX = (-92.5, -60.0, -30.0, 15.0)
+CARIBBEAN_CLIP_BBOX = (-90.0, 5.0, -55.0, 30.0)
+FULL_CATALOG_PREVIEW_BBOX = (-95.0, -60.0, 45.0, 72.0)
+
+EXCLUDED_EUROPE_MICROSTATES = {
     "AND": "Andorra",
     "LIE": "Liechtenstein",
     "MCO": "Monaco",
@@ -44,55 +45,73 @@ EXCLUDED_MICROSTATES = {
     "VAT": "Vatican City",
 }
 
-# Russia and Turkey need a separate Europe/Asia boundary decision. Including
-# whole ADM_0 geometries would make the Europe pack include large non-European
-# areas, so they are excluded until that boundary is explicitly defined.
-EXCLUDED_TRANSCONTINENTAL = {
+EXCLUDED_EUROPE_TRANSCONTINENTAL = {
     "RUS": "Russia",
     "TUR": "Turkey",
 }
 
 EUROPE_COUNTRY_CODES = (
-    "ALB",
-    "AUT",
-    "BEL",
-    "BIH",
-    "BGR",
-    "BLR",
-    "CHE",
-    "CYP",
-    "CZE",
-    "DEU",
-    "DNK",
-    "ESP",
-    "EST",
-    "FIN",
-    "FRA",
-    "GBR",
-    "GRC",
-    "HRV",
-    "HUN",
-    "IRL",
-    "ISL",
-    "ITA",
-    "LTU",
-    "LUX",
-    "LVA",
-    "MDA",
-    "MKD",
-    "MLT",
-    "MNE",
-    "NLD",
-    "NOR",
-    "POL",
-    "PRT",
-    "ROU",
-    "SRB",
-    "SVK",
-    "SVN",
-    "SWE",
-    "UKR",
-    "XKO",
+    "ALB", "AUT", "BEL", "BIH", "BGR", "BLR", "CHE", "CYP", "CZE", "DEU",
+    "DNK", "ESP", "EST", "FIN", "FRA", "GBR", "GRC", "HRV", "HUN", "IRL",
+    "ISL", "ITA", "LTU", "LUX", "LVA", "MDA", "MKD", "MLT", "MNE", "NLD",
+    "NOR", "POL", "PRT", "ROU", "SRB", "SVK", "SVN", "SWE", "UKR", "XKO",
+)
+
+SOUTH_AMERICA_COUNTRY_CODES = (
+    "ARG", "BOL", "BRA", "CHL", "COL", "ECU", "FLK", "GUF", "GUY", "PRY",
+    "PER", "SUR", "URY", "VEN",
+)
+
+CARIBBEAN_LARGE_ISLAND_CODES = (
+    "BHS", "CUB", "DOM", "HTI", "JAM", "TTO",
+)
+
+CARIBBEAN_SMALL_ISLAND_CODES = (
+    "ABW", "AIA", "ATG", "BES", "BRB", "CUW", "CYM", "DMA", "GLP", "GRD",
+    "KNA", "LCA", "MSR", "MTQ", "SXM", "TCA", "VCT", "VGB", "VIR",
+)
+
+LOCAL_PRODUCT_SPECS = (
+    *(
+        {
+            "adm0_codes": (code,),
+            "clip_bbox": EUROPE_CLIP_BBOX,
+            "merge_scope": "europe",
+            "auto_merge": True,
+            "discount_percent": 20,
+        }
+        for code in EUROPE_COUNTRY_CODES
+    ),
+    *(
+        {
+            "adm0_codes": (code,),
+            "clip_bbox": SOUTH_AMERICA_CLIP_BBOX,
+            "merge_scope": "south_america",
+            "auto_merge": False,
+            "discount_percent": 20,
+        }
+        for code in SOUTH_AMERICA_COUNTRY_CODES
+    ),
+    *(
+        {
+            "adm0_codes": (code,),
+            "clip_bbox": CARIBBEAN_CLIP_BBOX,
+            "merge_scope": "caribbean",
+            "auto_merge": False,
+            "discount_percent": 20,
+        }
+        for code in CARIBBEAN_LARGE_ISLAND_CODES
+    ),
+    {
+        "id": "caribbean_islands",
+        "name": "Caribbean Islands",
+        "adm0_codes": CARIBBEAN_SMALL_ISLAND_CODES,
+        "clip_bbox": CARIBBEAN_CLIP_BBOX,
+        "merge_scope": "caribbean",
+        "auto_merge": False,
+        "discount_percent": 20,
+        "source_note": "GADM 4.10 ADM_0 polygon intersection; grouped small Caribbean island nations and territories",
+    },
 )
 
 MACRO_PACKS = (
@@ -102,29 +121,15 @@ MACRO_PACKS = (
         "type": "macro_region",
         "discount_percent": 30,
         "adm0_codes": ("AUT", "BEL", "CHE", "DEU", "FRA", "GBR", "IRL", "LUX", "NLD"),
+        "clip_bbox": EUROPE_CLIP_BBOX,
     },
     {
         "id": "southern_europe",
         "name": "Southern Europe",
         "type": "macro_region",
         "discount_percent": 30,
-        "adm0_codes": (
-            "ALB",
-            "BIH",
-            "BGR",
-            "CYP",
-            "GRC",
-            "HRV",
-            "ITA",
-            "MKD",
-            "MLT",
-            "MNE",
-            "PRT",
-            "SRB",
-            "SVN",
-            "ESP",
-            "XKO",
-        ),
+        "adm0_codes": ("ALB", "BIH", "BGR", "CYP", "GRC", "HRV", "ITA", "MKD", "MLT", "MNE", "PRT", "SRB", "SVN", "ESP", "XKO"),
+        "clip_bbox": EUROPE_CLIP_BBOX,
     },
     {
         "id": "northern_europe",
@@ -132,6 +137,7 @@ MACRO_PACKS = (
         "type": "macro_region",
         "discount_percent": 30,
         "adm0_codes": ("DNK", "EST", "FIN", "GBR", "IRL", "ISL", "LTU", "LVA", "NOR", "SWE"),
+        "clip_bbox": EUROPE_CLIP_BBOX,
     },
     {
         "id": "eastern_europe",
@@ -139,6 +145,7 @@ MACRO_PACKS = (
         "type": "macro_region",
         "discount_percent": 30,
         "adm0_codes": ("BLR", "BGR", "CZE", "HUN", "MDA", "POL", "ROU", "SVK", "UKR"),
+        "clip_bbox": EUROPE_CLIP_BBOX,
     },
     {
         "id": "balkans",
@@ -146,6 +153,7 @@ MACRO_PACKS = (
         "type": "macro_region",
         "discount_percent": 30,
         "adm0_codes": ("ALB", "BIH", "BGR", "GRC", "HRV", "MKD", "MNE", "ROU", "SRB", "SVN", "XKO"),
+        "clip_bbox": EUROPE_CLIP_BBOX,
     },
     {
         "id": "scandinavia",
@@ -153,6 +161,7 @@ MACRO_PACKS = (
         "type": "macro_region",
         "discount_percent": 30,
         "adm0_codes": ("DNK", "FIN", "ISL", "NOR", "SWE"),
+        "clip_bbox": EUROPE_CLIP_BBOX,
     },
     {
         "id": "mediterranean_europe",
@@ -160,6 +169,7 @@ MACRO_PACKS = (
         "type": "macro_region",
         "discount_percent": 30,
         "adm0_codes": ("ALB", "BIH", "CYP", "ESP", "FRA", "GRC", "HRV", "ITA", "MLT", "MNE", "PRT", "SVN"),
+        "clip_bbox": EUROPE_CLIP_BBOX,
     },
     {
         "id": "central_europe",
@@ -167,6 +177,7 @@ MACRO_PACKS = (
         "type": "macro_region",
         "discount_percent": 30,
         "adm0_codes": ("AUT", "CHE", "CZE", "DEU", "HUN", "POL", "SVK", "SVN"),
+        "clip_bbox": EUROPE_CLIP_BBOX,
     },
     {
         "id": "baltics",
@@ -174,6 +185,7 @@ MACRO_PACKS = (
         "type": "macro_region",
         "discount_percent": 30,
         "adm0_codes": ("EST", "LTU", "LVA"),
+        "clip_bbox": EUROPE_CLIP_BBOX,
     },
     {
         "id": "europe",
@@ -181,6 +193,55 @@ MACRO_PACKS = (
         "type": "continent",
         "discount_percent": 50,
         "adm0_codes": EUROPE_COUNTRY_CODES,
+        "clip_bbox": EUROPE_CLIP_BBOX,
+    },
+    {
+        "id": "andean_south_america",
+        "name": "Andean South America",
+        "type": "macro_region",
+        "discount_percent": 30,
+        "adm0_codes": ("BOL", "CHL", "COL", "ECU", "PER", "VEN"),
+        "clip_bbox": SOUTH_AMERICA_CLIP_BBOX,
+    },
+    {
+        "id": "southern_cone",
+        "name": "Southern Cone",
+        "type": "macro_region",
+        "discount_percent": 30,
+        "adm0_codes": ("ARG", "CHL", "FLK", "PRY", "URY"),
+        "clip_bbox": SOUTH_AMERICA_CLIP_BBOX,
+    },
+    {
+        "id": "guianas",
+        "name": "Guianas",
+        "type": "macro_region",
+        "discount_percent": 30,
+        "adm0_codes": ("GUF", "GUY", "SUR"),
+        "clip_bbox": SOUTH_AMERICA_CLIP_BBOX,
+    },
+    {
+        "id": "amazon_basin",
+        "name": "Amazon Basin",
+        "type": "macro_region",
+        "discount_percent": 30,
+        "adm0_codes": ("BOL", "BRA", "COL", "ECU", "GUF", "GUY", "PER", "SUR", "VEN"),
+        "clip_bbox": SOUTH_AMERICA_CLIP_BBOX,
+    },
+    {
+        "id": "south_america",
+        "name": "South America",
+        "type": "continent",
+        "discount_percent": 50,
+        "adm0_codes": SOUTH_AMERICA_COUNTRY_CODES,
+        "clip_bbox": SOUTH_AMERICA_CLIP_BBOX,
+    },
+    {
+        "id": "caribbean",
+        "name": "Caribbean",
+        "type": "macro_region",
+        "discount_percent": 30,
+        "adm0_codes": CARIBBEAN_LARGE_ISLAND_CODES + CARIBBEAN_SMALL_ISLAND_CODES,
+        "clip_bbox": CARIBBEAN_CLIP_BBOX,
     },
 )
 
@@ -211,8 +272,6 @@ def tile_key(x_value: int, y_value: int, z_value: int, d_value: int) -> str:
 
 
 def paid_d_levels_for_z(z_value: int) -> tuple[int, ...]:
-    # A finer d-level licence covers all coarser d-levels in the same tile
-    # family, so only the finest paid d-level is needed for pack ownership.
     return (z_value,) if 0 < z_value < FREE_D_THRESHOLD else ()
 
 
@@ -276,7 +335,7 @@ def read_adm0(gpkg_path: Path):
     return countries
 
 
-def selected_for_codes(countries, codes: tuple[str, ...] | list[str], clip_bbox=EUROPE_CLIP_BBOX):
+def selected_for_codes(countries, codes: tuple[str, ...] | list[str], clip_bbox=None):
     safe_codes = tuple(str(code).strip().upper() for code in codes if str(code).strip())
     if not safe_codes:
         raise ValueError("No ADM_0 country codes supplied")
@@ -332,7 +391,7 @@ def _iter_polygon_geometries(geometry):
             yield from _iter_polygon_geometries(part)
 
 
-def country_outlines_for_web(selected, simplify_tolerance: float = 0.035, min_polygon_area: float = 0.002) -> list[dict]:
+def country_outlines_for_web(selected, simplify_tolerance: float = 0.01, min_polygon_area: float = 0.001) -> list[dict]:
     outlines = []
     for row in selected.sort_values("COUNTRY").itertuples(index=False):
         geometry = getattr(row, "geometry", None)
@@ -351,13 +410,7 @@ def country_outlines_for_web(selected, simplify_tolerance: float = 0.035, min_po
                 polygons.append(coords)
         if not polygons:
             continue
-        outlines.append(
-            {
-                "id": str(getattr(row, "GID_0", "") or ""),
-                "name": str(getattr(row, "COUNTRY", "") or ""),
-                "polygons": polygons,
-            }
-        )
+        outlines.append({"id": str(getattr(row, "GID_0", "") or ""), "name": str(getattr(row, "COUNTRY", "") or ""), "polygons": polygons})
     return outlines
 
 
@@ -369,6 +422,9 @@ def payload_from_selected(
     discount_percent: int,
     selected,
     adm0_codes: tuple[str, ...] | list[str],
+    clip_bbox=None,
+    merge_scope: str = "",
+    auto_merge: bool = False,
     member_product_ids: list[str] | None = None,
     source_note: str = "GADM 4.10 ADM_0 polygon intersection",
     tile_keys_override: list[str] | None = None,
@@ -384,6 +440,9 @@ def payload_from_selected(
         "catalog_version": CATALOG_VERSION,
         "source": source_note,
         "adm0_codes": sorted(set(str(code).upper() for code in adm0_codes)),
+        "clip_bbox": list(clip_bbox or []),
+        "merge_scope": str(merge_scope or ""),
+        "auto_merge": bool(auto_merge),
         "countries": country_records(selected),
         "country_product_ids": list(member_product_ids or []),
         "tile_count": len(tile_keys),
@@ -395,27 +454,45 @@ def payload_from_selected(
     }
 
 
-def build_country_payloads(countries) -> list[dict]:
+def product_name_from_selected(selected, fallback: str) -> str:
+    records = country_records(selected)
+    if len(records) == 1:
+        return records[0]["COUNTRY"]
+    return fallback
+
+
+def build_local_payloads(countries) -> list[dict]:
     payloads = []
-    for index, code in enumerate(EUROPE_COUNTRY_CODES, start=1):
-        print(f"Building country {index}/{len(EUROPE_COUNTRY_CODES)}: {code}", file=sys.stderr, flush=True)
-        selected = selected_for_codes(countries, [code])
-        records = country_records(selected)
-        name = records[0]["COUNTRY"] if records else code
+    specs = list(LOCAL_PRODUCT_SPECS)
+    for index, spec in enumerate(specs, start=1):
+        codes = tuple(spec["adm0_codes"])
+        label = str(spec.get("name") or ",".join(codes))
+        print(f"Building local product {index}/{len(specs)}: {label}", file=sys.stderr, flush=True)
+        selected = selected_for_codes(countries, codes, spec.get("clip_bbox"))
+        name = str(spec.get("name") or "").strip() or product_name_from_selected(selected, codes[0])
+        product_id = str(spec.get("id") or "").strip() or slugify(name)
         payloads.append(
             payload_from_selected(
-                product_id=slugify(name),
+                product_id=product_id,
                 name=name,
                 product_type="country",
-                discount_percent=20,
+                discount_percent=int(spec.get("discount_percent", 20)),
                 selected=selected,
-                adm0_codes=[code],
+                adm0_codes=codes,
+                clip_bbox=spec.get("clip_bbox"),
+                merge_scope=str(spec.get("merge_scope") or ""),
+                auto_merge=bool(spec.get("auto_merge", False)),
+                source_note=str(spec.get("source_note") or "GADM 4.10 ADM_0 polygon intersection"),
             )
         )
     return payloads
 
 
 def merge_reason(a: dict, b: dict) -> str:
+    if not (a.get("auto_merge") and b.get("auto_merge")):
+        return ""
+    if str(a.get("merge_scope") or "") != str(b.get("merge_scope") or ""):
+        return ""
     tiles_a = set(a.get("tile_keys") or [])
     tiles_b = set(b.get("tile_keys") or [])
     if not tiles_a or not tiles_b:
@@ -467,42 +544,39 @@ def merged_product_identity(codes: list[str], names: list[str]) -> tuple[str, st
     return slugify("_".join(names)), list_name(names)
 
 
-def merge_country_payloads(country_payloads: list[dict], countries) -> tuple[list[dict], list[dict], dict[str, str]]:
+def merge_local_payloads(local_payloads: list[dict], countries) -> tuple[list[dict], list[dict], dict[str, str], dict[str, dict]]:
     edges = []
     pair_report = []
-    for left in range(len(country_payloads)):
-        for right in range(left + 1, len(country_payloads)):
-            reason = merge_reason(country_payloads[left], country_payloads[right])
+    for left in range(len(local_payloads)):
+        for right in range(left + 1, len(local_payloads)):
+            reason = merge_reason(local_payloads[left], local_payloads[right])
             if not reason:
                 continue
             edges.append((left, right))
-            pair_report.append(
-                {
-                    "left": country_payloads[left]["id"],
-                    "right": country_payloads[right]["id"],
-                    "reason": reason,
-                    "left_tile_count": country_payloads[left]["tile_count"],
-                    "right_tile_count": country_payloads[right]["tile_count"],
-                }
-            )
-    components = connected_components(len(country_payloads), edges)
+            pair_report.append({
+                "left": local_payloads[left]["id"],
+                "right": local_payloads[right]["id"],
+                "reason": reason,
+                "left_tile_count": local_payloads[left]["tile_count"],
+                "right_tile_count": local_payloads[right]["tile_count"],
+            })
+    components = connected_components(len(local_payloads), edges)
     merged = []
     code_to_product_id = {}
+    code_to_payload = {}
     for component in components:
-        component_payloads = [country_payloads[index] for index in sorted(component, key=lambda idx: country_payloads[idx]["name"])]
+        component_payloads = [local_payloads[index] for index in sorted(component, key=lambda idx: local_payloads[idx]["name"])]
         codes = sorted({code for payload in component_payloads for code in payload.get("adm0_codes", [])})
         names = sorted({record["COUNTRY"] for payload in component_payloads for record in payload.get("countries", [])})
+        clip_bbox = component_payloads[0].get("clip_bbox") or None
+        merge_scope = str(component_payloads[0].get("merge_scope") or "")
         if len(component_payloads) == 1:
             payload = dict(component_payloads[0])
             payload["country_product_ids"] = [payload["id"]]
         else:
-            selected = selected_for_codes(countries, codes)
+            selected = selected_for_codes(countries, codes, clip_bbox)
             product_id, name = merged_product_identity(codes, names)
-            merged_tile_keys = sorted({
-                key
-                for source in component_payloads
-                for key in source.get("tile_keys", [])
-            })
+            merged_tile_keys = sorted({key for source in component_payloads for key in source.get("tile_keys", [])})
             payload = payload_from_selected(
                 product_id=product_id,
                 name=name,
@@ -510,23 +584,20 @@ def merge_country_payloads(country_payloads: list[dict], countries) -> tuple[lis
                 discount_percent=20,
                 selected=selected,
                 adm0_codes=codes,
+                clip_bbox=clip_bbox,
+                merge_scope=merge_scope,
+                auto_merge=False,
                 member_product_ids=[payload["id"] for payload in component_payloads],
                 source_note="GADM 4.10 ADM_0 polygon intersection; merged by paid tile-set overlap",
                 tile_keys_override=merged_tile_keys,
             )
-            payload["merged_from"] = [
-                {
-                    "id": source["id"],
-                    "name": source["name"],
-                    "tile_count": source["tile_count"],
-                }
-                for source in component_payloads
-            ]
+            payload["merged_from"] = [{"id": source["id"], "name": source["name"], "tile_count": source["tile_count"]} for source in component_payloads]
         for code in codes:
             code_to_product_id[code] = payload["id"]
+            code_to_payload[code] = payload
         merged.append(payload)
     merged.sort(key=lambda payload: (payload["name"], payload["id"]))
-    return merged, pair_report, code_to_product_id
+    return merged, pair_report, code_to_product_id, code_to_payload
 
 
 def product_ids_for_codes(codes: tuple[str, ...] | list[str], code_to_product_id: dict[str, str]) -> list[str]:
@@ -541,16 +612,16 @@ def product_ids_for_codes(codes: tuple[str, ...] | list[str], code_to_product_id
     return ids
 
 
-def build_macro_payloads(countries, code_to_product_id: dict[str, str], country_payloads_by_code: dict[str, dict]) -> list[dict]:
+def tile_keys_for_codes(codes: tuple[str, ...] | list[str], code_to_payload: dict[str, dict]) -> list[str]:
+    return sorted({key for code in codes for key in (code_to_payload.get(str(code).upper(), {}).get("tile_keys") or [])})
+
+
+def build_macro_payloads(countries, code_to_product_id: dict[str, str], code_to_payload: dict[str, dict]) -> list[dict]:
     payloads = []
     for index, pack in enumerate(MACRO_PACKS, start=1):
         print(f"Building macro {index}/{len(MACRO_PACKS)}: {pack['id']}", file=sys.stderr, flush=True)
-        selected = selected_for_codes(countries, pack["adm0_codes"])
-        tile_keys = sorted({
-            key
-            for code in pack["adm0_codes"]
-            for key in (country_payloads_by_code.get(str(code).upper(), {}).get("tile_keys") or [])
-        })
+        selected = selected_for_codes(countries, pack["adm0_codes"], pack.get("clip_bbox"))
+        tile_keys = tile_keys_for_codes(pack["adm0_codes"], code_to_payload)
         payloads.append(
             payload_from_selected(
                 product_id=pack["id"],
@@ -559,6 +630,7 @@ def build_macro_payloads(countries, code_to_product_id: dict[str, str], country_
                 discount_percent=pack["discount_percent"],
                 selected=selected,
                 adm0_codes=pack["adm0_codes"],
+                clip_bbox=pack.get("clip_bbox"),
                 member_product_ids=product_ids_for_codes(pack["adm0_codes"], code_to_product_id),
                 tile_keys_override=tile_keys,
             )
@@ -568,31 +640,22 @@ def build_macro_payloads(countries, code_to_product_id: dict[str, str], country_
 
 def build_catalog(gpkg_path: Path) -> dict:
     countries = read_adm0(gpkg_path)
-    raw_countries = build_country_payloads(countries)
-    country_payloads_by_code = {
-        (payload.get("adm0_codes") or [""])[0]: payload
-        for payload in raw_countries
-        if payload.get("adm0_codes")
-    }
-    country_products, merge_report, code_to_product_id = merge_country_payloads(raw_countries, countries)
-    macro_products = build_macro_payloads(countries, code_to_product_id, country_payloads_by_code)
-    products = country_products + [payload for payload in macro_products if payload["id"] != "europe"]
-    europe = next((payload for payload in macro_products if payload["id"] == "europe"), None)
-    if europe:
-        products.append(europe)
+    raw_local = build_local_payloads(countries)
+    local_products, merge_report, code_to_product_id, code_to_payload = merge_local_payloads(raw_local, countries)
+    macro_products = build_macro_payloads(countries, code_to_product_id, code_to_payload)
+    products = local_products + macro_products
     products.sort(key=lambda payload: (0 if payload["type"] == "country" else 1 if payload["type"] == "macro_region" else 2, payload["name"]))
     return {
         "catalog_version": CATALOG_VERSION,
-        "source": "GADM 4.10 ADM_0 polygon intersection clipped to Europe working extent",
-        "europe_clip_bbox": list(EUROPE_CLIP_BBOX),
+        "source": "GADM 4.10 ADM_0 polygon intersection clipped per product region",
         "paid_z_levels": list(PAID_Z_LEVELS),
         "free_d_threshold": FREE_D_THRESHOLD,
         "merge_difference_ratio": MERGE_DIFFERENCE_RATIO,
         "small_country_auto_merge_tile_limit": SMALL_COUNTRY_AUTO_MERGE_TILE_LIMIT,
-        "excluded_microstates": EXCLUDED_MICROSTATES,
-        "excluded_transcontinental": EXCLUDED_TRANSCONTINENTAL,
-        "raw_country_count": len(raw_countries),
-        "country_product_count": len(country_products),
+        "excluded_europe_microstates": EXCLUDED_EUROPE_MICROSTATES,
+        "excluded_europe_transcontinental": EXCLUDED_EUROPE_TRANSCONTINENTAL,
+        "raw_local_product_count": len(raw_local),
+        "local_product_count": len(local_products),
         "product_count": len(products),
         "merge_report": merge_report,
         "products": products,
@@ -649,7 +712,7 @@ def write_js(path: Path, catalog: dict):
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def write_png(path: Path, catalog: dict, product_id: str = "europe"):
+def write_png(path: Path, catalog: dict, product_id: str = "south_america"):
     import matplotlib.pyplot as plt
     from matplotlib.patches import Rectangle
 
@@ -658,7 +721,7 @@ def write_png(path: Path, catalog: dict, product_id: str = "europe"):
         return
     gpkg_path = Path(catalog.get("gpkg_path") or DEFAULT_GPKG)
     countries = read_adm0(gpkg_path)
-    selected = selected_for_codes(countries, product.get("adm0_codes") or [])
+    selected = selected_for_codes(countries, product.get("adm0_codes") or [], product.get("clip_bbox") or None)
     tile_keys = product.get("tile_keys") or []
     path.parent.mkdir(parents=True, exist_ok=True)
     fig, ax = plt.subplots(figsize=(13, 8), dpi=160)
@@ -668,15 +731,7 @@ def write_png(path: Path, catalog: dict, product_id: str = "europe"):
     for key in z001:
         x_value = int(key[1:4])
         y_value = int(key[6:9])
-        rect = Rectangle(
-            (x_value - 180.0, y_value - 90.0),
-            1.0,
-            1.0,
-            fill=False,
-            edgecolor="#ff3b30",
-            linewidth=0.35,
-            alpha=0.75,
-        )
+        rect = Rectangle((x_value - 180.0, y_value - 90.0), 1.0, 1.0, fill=False, edgecolor="#ff3b30", linewidth=0.35, alpha=0.75)
         ax.add_patch(rect)
     minx, miny, maxx, maxy = selected.total_bounds
     pad_x = max(1.0, (maxx - minx) * 0.08)
@@ -699,29 +754,12 @@ def summarize_catalog(catalog: dict) -> dict:
     return {
         "catalog_version": catalog.get("catalog_version"),
         "product_count": len(products),
-        "country_product_count": sum(1 for entry in products if entry.get("type") == "country"),
+        "local_product_count": sum(1 for entry in products if entry.get("type") == "country"),
         "macro_region_count": sum(1 for entry in products if entry.get("type") == "macro_region"),
         "continent_count": sum(1 for entry in products if entry.get("type") == "continent"),
         "merged_product_count": len(merged),
-        "merged_products": [
-            {
-                "id": entry.get("id"),
-                "name": entry.get("name"),
-                "countries": [source.get("name") for source in entry.get("merged_from") or []],
-                "tile_count": entry.get("tile_count"),
-            }
-            for entry in merged
-        ],
-        "products": [
-            {
-                "id": entry.get("id"),
-                "name": entry.get("name"),
-                "type": entry.get("type"),
-                "tile_count": entry.get("tile_count"),
-                "counts_by_z": entry.get("counts_by_z"),
-            }
-            for entry in products
-        ],
+        "merged_products": [{"id": entry.get("id"), "name": entry.get("name"), "countries": [source.get("name") for source in entry.get("merged_from") or []], "tile_count": entry.get("tile_count")} for entry in merged],
+        "products": [{"id": entry.get("id"), "name": entry.get("name"), "type": entry.get("type"), "tile_count": entry.get("tile_count"), "counts_by_z": entry.get("counts_by_z")} for entry in products],
     }
 
 
@@ -731,6 +769,7 @@ def main() -> int:
     parser.add_argument("--json-output", type=Path, default=DEFAULT_JSON)
     parser.add_argument("--js-output", type=Path, default=DEFAULT_JS)
     parser.add_argument("--png-output", type=Path, default=DEFAULT_PNG)
+    parser.add_argument("--png-product", default="south_america")
     parser.add_argument("--skip-png", action="store_true")
     args = parser.parse_args()
 
@@ -739,15 +778,9 @@ def main() -> int:
     write_json(args.json_output, catalog)
     write_js(args.js_output, catalog)
     if not args.skip_png:
-        write_png(args.png_output, catalog, "europe")
+        write_png(args.png_output, catalog, args.png_product)
     summary = summarize_catalog(catalog)
-    summary.update(
-        {
-            "json_output": str(args.json_output),
-            "js_output": str(args.js_output),
-            "png_output": "" if args.skip_png else str(args.png_output),
-        }
-    )
+    summary.update({"json_output": str(args.json_output), "js_output": str(args.js_output), "png_output": "" if args.skip_png else str(args.png_output)})
     print(json.dumps(summary, indent=2, ensure_ascii=True))
     return 0
 
