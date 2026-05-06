@@ -276,6 +276,18 @@ def get_credit_account(force=False) -> dict:
     return dict(payload or {})
 
 
+def has_standard_quality_access_cached() -> bool:
+    account = _ACCOUNT_CACHE.get("payload")
+    if not isinstance(account, dict) or not account:
+        return False
+    return bool(
+        account.get("standard_quality_unlocked", False)
+        or account.get("balanced_quality_unlocked", False)
+        or str(account.get("standard_quality_unlocked_at", "") or "").strip()
+        or str(account.get("balanced_quality_unlocked_at", "") or "").strip()
+    )
+
+
 def has_standard_quality_access(force=False) -> bool:
     account = get_credit_account(force=bool(force))
     if not isinstance(account, dict):

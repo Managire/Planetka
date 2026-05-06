@@ -888,8 +888,9 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             if override_mode:
                 texture_quality_mode = _normalize_texture_quality_mode(override_mode)
             else:
-                # Plain Resolve and auto-resolve are Preview-only. Full Quality
-                # must be explicitly requested through texture_quality_mode_override.
+                # Plain Resolve without an explicit mode defaults to Preview.
+                # Auto-resolve passes the selected live mode through this override.
+                # Full Quality must still be explicitly requested.
                 texture_quality_mode = "PREVIEW"
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             texture_quality_mode = "PREVIEW"

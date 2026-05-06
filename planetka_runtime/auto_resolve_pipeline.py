@@ -191,6 +191,32 @@ def _show_download_status_popup():
     return
 
 
+def _ctx_auto_resolve_texture_quality_mode(ctx, scene, props=None):
+    deps = ctx.deps
+    if props is None and scene is not None:
+        props = getattr(scene, "planetka", None)
+    try:
+        requested = deps.normalize_texture_quality_mode(getattr(props, "texture_quality_mode", "PREVIEW"))
+    except deps.recoverable_exceptions:
+        requested = "PREVIEW"
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        requested = "PREVIEW"
+
+    # Automated resolving supports the selectable live modes only. Full Quality
+    # remains a deliberate paid/manual Camera View operation.
+    if requested != "BALANCED":
+        return "PREVIEW"
+
+    try:
+        enforced = deps.enforce_texture_quality_mode_for_account(scene, requested)
+        enforced = deps.normalize_texture_quality_mode(enforced)
+    except deps.recoverable_exceptions:
+        enforced = "PREVIEW"
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        enforced = "PREVIEW"
+    return "BALANCED" if enforced == "BALANCED" else "PREVIEW"
+
+
 def _ctx_schedule_auto_resolve_download(
     ctx,
     scene,
@@ -212,9 +238,7 @@ def _ctx_schedule_auto_resolve_download(
     prefs = deps.get_prefs()
     props = getattr(scene, "planetka", None)
     base_path = str(getattr(prefs, "texture_base_path", "") or "") if prefs else ""
-    # Auto-resolve is always Preview. Full Quality is a deliberate one-shot
-    # download action from Data Control and must never be triggered by navigation.
-    texture_quality_mode = "PREVIEW"
+    texture_quality_mode = _ctx_auto_resolve_texture_quality_mode(ctx, scene, props)
     target_tiles_tuple = tuple(target_tiles or ())
     try:
         nav_latitude_deg = float(getattr(props, "nav_latitude_deg", 0.0)) if props is not None else 0.0
@@ -1574,7 +1598,7 @@ def _ctx_auto_resolve_update_size_estimation(ctx, scene, scope, active_view_sign
     except (RuntimeError, TypeError, ValueError, AttributeError):
         base_path_for_estimate = ""
 
-    current_quality_mode = "PREVIEW"
+    current_quality_mode = _ctx_auto_resolve_texture_quality_mode(ctx, scene, props)
     full_tiles_override = None
     try:
         deps.update_resolve_size_estimates(
@@ -1635,7 +1659,7 @@ def _ctx_auto_resolve_enqueue_size_estimation(ctx, scene, scope, active_view_sig
         scene_id = deps.scene_key(scene)
     except (RuntimeError, TypeError, ValueError, AttributeError):
         return
-    current_quality_mode = "PREVIEW"
+    current_quality_mode = _ctx_auto_resolve_texture_quality_mode(ctx, scene, props)
     safe_scope = str(scope or "CAMERA")
     safe_active_signature = active_view_signature if safe_scope == "ACTIVE_VIEW" else None
     safe_tiles = tuple(target_tiles or ())

@@ -13,7 +13,8 @@ const STRIPE_MIN_CHECKOUT_AMOUNT_CENTS = 50;
 const MONEY_SCALE = 100;
 const METRIC_SCALE = 1_000_000;
 const REGION_PACK_CATALOG_VERSION = "europe_bbox_v1";
-const REGION_PACK_TILE_CHUNK_SIZE = 450;
+const SQL_VARIABLE_SAFE_CHUNK_SIZE = 75;
+const REGION_PACK_TILE_CHUNK_SIZE = SQL_VARIABLE_SAFE_CHUNK_SIZE;
 const REGION_PACK_PAID_Z_LEVELS = [1, 2, 4, 8, 15, 30];
 
 const EUROPE_REGION_PRODUCTS = [
@@ -288,6 +289,16 @@ function regionProductById(regionId) {
     return null;
   }
   return EUROPE_REGION_PRODUCTS.find((product) => String(product.id || "").toLowerCase() === safeId) || null;
+}
+
+function fixedSizeChunks(values, chunkSize = SQL_VARIABLE_SAFE_CHUNK_SIZE) {
+  const source = Array.isArray(values) ? values : [];
+  const safeSize = Math.max(1, Number.parseInt(chunkSize, 10) || SQL_VARIABLE_SAFE_CHUNK_SIZE);
+  const chunks = [];
+  for (let index = 0; index < source.length; index += safeSize) {
+    chunks.push(source.slice(index, index + safeSize));
+  }
+  return chunks;
 }
 
 function regionProductPublicPayload(product) {
@@ -748,15 +759,18 @@ async function backendPricingRecordsForTileKeys(db, tileKeys, qualityMode, deps)
   if (!keys.length) {
     return [];
   }
-  const rows = await deps.dbAll(
-    db,
-    `
-      SELECT tile_key, land_km2, billable_land_km2, free_reason
-      FROM tile_land_stats
-      WHERE tile_key IN (${keys.map(() => "?").join(",")})
-    `,
-    keys,
-  );
+  const rows = [];
+  for (const chunk of fixedSizeChunks(keys)) {
+    rows.push(...await deps.dbAll(
+      db,
+      `
+        SELECT tile_key, land_km2, billable_land_km2, free_reason
+        FROM tile_land_stats
+        WHERE tile_key IN (${chunk.map(() => "?").join(",")})
+      `,
+      chunk,
+    ));
+  }
   const byKey = new Map((rows || []).map((row) => [String(row && row.tile_key || "").trim(), row]));
   const records = [];
   for (const key of keys) {
@@ -887,18 +901,21 @@ async function estimateNewCredits(db, userId, tileKeys, qualityMode, deps) {
     families.add(family);
   }
   const familyList = Array.from(families);
-  const rows = familyList.length
-    ? await deps.dbAll(
+  const rows = [];
+  if (familyList.length) {
+    for (const familyChunk of fixedSizeChunks(familyList)) {
+      rows.push(...await deps.dbAll(
       db,
       `
         SELECT tile_key
         FROM user_tile_entitlements
         WHERE user_id = ?
-          AND (${familyList.map(() => "tile_key LIKE ?").join(" OR ")})
+          AND (${familyChunk.map(() => "tile_key LIKE ?").join(" OR ")})
       `,
-      [String(userId || "").trim(), ...familyList.map((family) => `${family}_d%`)],
-    )
-    : [];
+      [String(userId || "").trim(), ...familyChunk.map((family) => `${family}_d%`)],
+      ));
+    }
+  }
   const ownedKeys = normalizeTileKeys((rows || []).map((row) => row && row.tile_key || ""));
   const ownedPricing = ownedKeys.length ? await backendPricingRecordsForTileKeys(db, ownedKeys, "full", deps) : [];
   const ownedByFamily = new Map();

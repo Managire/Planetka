@@ -271,13 +271,19 @@ def _region_offer_location_for_ui(scene):
         diag = read_diagnostics(scene)
     except (RuntimeError, TypeError, ValueError, AttributeError):
         diag = {}
-    lat_value = diag.get("view_latitude_deg", None) if isinstance(diag, dict) else None
-    lon_value = diag.get("view_longitude_deg", None) if isinstance(diag, dict) else None
+    lat_value = None
+    lon_value = None
     try:
-        if lat_value is None and props is not None:
+        # Broader packs should follow the user-selected/search target. Realtime
+        # camera-hit diagnostics can be stale or can point away from the target
+        # when the camera is tilted, so use them only as a fallback.
+        if props is not None:
             lat_value = getattr(props, "nav_latitude_deg", 0.0)
-        if lon_value is None and props is not None:
             lon_value = getattr(props, "nav_longitude_deg", 0.0)
+        if lat_value is None and isinstance(diag, dict):
+            lat_value = diag.get("view_latitude_deg", None)
+        if lon_value is None and isinstance(diag, dict):
+            lon_value = diag.get("view_longitude_deg", None)
         lat = max(-90.0, min(90.0, float(lat_value or 0.0)))
         lon = max(-180.0, min(180.0, float(lon_value or 0.0)))
         return lat, lon
@@ -1306,6 +1312,12 @@ def _draw_live_telemetry(layout, scene):
         except (AttributeError, TypeError, ValueError):
             standard_price = 50.0
 
+        selected_auto_quality = _normalize_texture_quality_for_ui(getattr(props, "texture_quality_mode", "PREVIEW"))
+        if selected_auto_quality == "BALANCED" and not standard_unlocked:
+            selected_auto_quality = "PREVIEW"
+        if selected_auto_quality not in {"PREVIEW", "BALANCED"}:
+            selected_auto_quality = "PREVIEW"
+
         standard_box = quality_box.box()
         quality_buttons = standard_box.row(align=True)
         preview_col = quality_buttons.column(align=True)
@@ -1313,6 +1325,7 @@ def _draw_live_telemetry(layout, scene):
             "planetka.set_texture_quality_and_resolve",
             text="Preview",
             icon="HIDE_OFF",
+            depress=(selected_auto_quality == "PREVIEW"),
         ).texture_quality_mode = "PREVIEW"
         preview_col.label(text=_estimate_mb_label("PREVIEW"), icon="DISK_DRIVE")
 
@@ -1323,6 +1336,7 @@ def _draw_live_telemetry(layout, scene):
             "planetka.set_texture_quality_and_resolve",
             text="Standard",
             icon="SHADING_TEXTURE",
+            depress=(selected_auto_quality == "BALANCED"),
         ).texture_quality_mode = "BALANCED"
         standard_col.label(text=_estimate_mb_label("BALANCED"), icon="DISK_DRIVE")
         if standard_unlocked:

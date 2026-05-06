@@ -330,9 +330,16 @@ def normalize_texture_quality_mode(value):
 
 
 def _ctx_enforce_texture_quality_mode_for_account(ctx, scene, requested_mode):
-    del scene
     del ctx
-    return normalize_texture_quality_mode(requested_mode)
+    mode = normalize_texture_quality_mode(requested_mode)
+    if mode == "BALANCED":
+        try:
+            from ..credit_api import has_standard_quality_access_cached
+            if not has_standard_quality_access_cached():
+                return "PREVIEW"
+        except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+            return "PREVIEW"
+    return mode
 
 
 def enforce_texture_quality_mode_for_account(scene, requested_mode, ctx=None):

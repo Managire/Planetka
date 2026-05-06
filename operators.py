@@ -518,8 +518,8 @@ from .planetka_ops.navigation_helpers import (
 
 class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
     bl_idname = "planetka.set_texture_quality_and_resolve"
-    bl_label = "Download Texture Quality"
-    bl_description = "Run a one-shot texture download at the requested quality"
+    bl_label = "Texture Quality"
+    bl_description = "Select Preview or Standard for automated resolving, or run a manual Full Quality download"
 
     texture_quality_mode: EnumProperty(
         name="Texture Quality",
@@ -550,9 +550,9 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
             getattr(properties, "texture_quality_mode", "PREVIEW")
         )
         if mode == "PREVIEW":
-            return "Resolve Preview textures once."
+            return "Use Preview textures for automated resolving."
         if mode == "BALANCED":
-            return "Resolve Standard Quality textures once."
+            return "Use Standard Quality textures for automated resolving."
         return "Licence and download Full Quality textures for Camera View once."
 
     def execute(self, context):
@@ -620,6 +620,36 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
                 code=ErrorCode.RESOLVE_PRECHECK_FAILED,
                 logger=logger,
             )
+
+        if target_mode in {"PREVIEW", "BALANCED"}:
+            try:
+                previous_mode = _normalize_startup_texture_quality_mode(
+                    getattr(props, "texture_quality_mode", "PREVIEW")
+                )
+                if previous_mode != target_mode:
+                    props.texture_quality_mode = target_mode
+                else:
+                    from .planetka_runtime.auto_resolve_pipeline import update_auto_resolve
+                    update_auto_resolve(props, context)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
+                return fail(
+                    self,
+                    f"Texture quality selection failed: {exc}",
+                    code=ErrorCode.RESOLVE_REFRESH_FAILED,
+                    logger=logger,
+                    exc=exc,
+                    log_message="Planetka texture quality selection failed",
+                )
+            try:
+                base_path = _normalize_texture_source_path(str(getattr(prefs, "texture_base_path", "") or ""))
+                update_resolve_size_estimates(scene, scope_mode="AUTO", base_path=base_path)
+                _tag_view3d_redraw()
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka: failed refreshing selected texture quality estimates", exc_info=True)
+            except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka: failed refreshing selected texture quality estimates", exc_info=True)
+            return {'FINISHED'}
+
         if target_mode == "FULL":
             try:
                 from .credit_api import get_credit_account
