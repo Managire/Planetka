@@ -2300,7 +2300,7 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
                 anim_account_known = False
                 anim_balance = 0.0
             anim_has_new_cost = bool(anim_credits > 0.000001)
-            if anim_account_known and anim_has_new_cost and anim_balance < 0.0:
+            if anim_account_known and anim_has_new_cost and anim_balance <= 0.0:
                 final_render_allowed = False
                 final_render_box.label(text=f"Add balance to continue (€{anim_balance:.2f} available).", icon="INFO")
         if _is_animation_render_running():

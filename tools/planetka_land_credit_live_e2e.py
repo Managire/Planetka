@@ -33,7 +33,7 @@ ANIMATION_SECOND_TILE = "x339_y143_z001_d002"
 FULL_TILE = "x075_y149_z001_d001"
 UPGRADE_FINE_TILE = "x074_y149_z001_d001"
 UPGRADE_COARSE_TILE = "x074_y149_z001_d002"
-UPGRADE_FREE_TILE = "x074_y149_z001_d004"
+UPGRADE_FREE_TILE = "x225_y105_z015_d060"
 INSUFFICIENT_TILE = "x121_y051_z001_d001"
 FREE_TILE = "x000_y000_z360_d000"
 PREVIEW_TILE = FREE_TILE
@@ -329,6 +329,7 @@ def run(api_base_url: str, key_json: Path, wrangler_cwd: Path) -> dict:
     # 2. Same-family entitlement model:
     # A finer tile unlocks coarser d-levels. A coarser tile does not unlock a
     # finer tile, but its previous price is credited against the upgrade.
+    # Detail level d060 and above is free.
     coarse_estimate = estimate(api_base_url, headers, "full", [UPGRADE_COARSE_TILE])
     coarse_cost = float(coarse_estimate.get("credits", 0) or 0)
     fine_estimate_before = estimate(api_base_url, headers, "full", [UPGRADE_FINE_TILE])
@@ -336,7 +337,7 @@ def run(api_base_url: str, key_json: Path, wrangler_cwd: Path) -> dict:
     preview_detail_estimate = estimate(api_base_url, headers, "full", [UPGRADE_FREE_TILE])
     assert_true(coarse_cost > 0, f"Coarser upgrade tile should have a positive cost: {coarse_estimate}")
     assert_true(fine_gross_cost > coarse_cost, f"Fine tile should cost more than coarse tile: {fine_estimate_before}")
-    assert_close(preview_detail_estimate.get("credits", 0), 0, "d/z >= 4 tile should be free")
+    assert_close(preview_detail_estimate.get("credits", 0), 0, "d >= 60 tile should be free")
     coarse_session = session(api_base_url, headers, "full", [UPGRADE_COARSE_TILE])
     assert_close(coarse_session.get("credits_charged", 0), coarse_cost, "Coarse session charge mismatch")
     balance_after_coarse = balance_after_preview - coarse_cost
@@ -411,7 +412,23 @@ def run(api_base_url: str, key_json: Path, wrangler_cwd: Path) -> dict:
     report["cases"].append({"name": "insufficient_clean_block", "ok": True, "required": insufficient_cost})
     log("PASS insufficient balance cleanly blocked before tile download.")
 
-    # 5. Final Animation Render pricing/unlocking model:
+    # 5. Positive balance may go negative once, then further paid unlocks are blocked.
+    reset_test_account(wrangler_cwd, "standard", 0.01)
+    auth_payload = exchange_api_key(api_base_url, key_payload)
+    headers = auth_headers(auth_payload, key_payload)
+    small_balance_estimate = estimate(api_base_url, headers, "full", [FULL_TILE])
+    small_balance_cost = float(small_balance_estimate.get("credits", 0) or 0)
+    assert_true(small_balance_cost > 0.01, f"Small-balance test tile should cost more than EUR 0.01: {small_balance_estimate}")
+    small_balance_session = session(api_base_url, headers, "full", [FULL_TILE])
+    assert_close(small_balance_session.get("credits_charged", 0), small_balance_cost, "Small positive balance charge mismatch")
+    assert_balance(api_base_url, headers, 0.01 - small_balance_cost, "small positive balance allowed to go negative")
+    blocked_after_negative = session(api_base_url, headers, "full", [INSUFFICIENT_TILE], expected_status=402)
+    assert_true(blocked_after_negative.get("error") == "insufficient_credits", f"Negative balance did not block next paid tile: {blocked_after_negative}")
+    assert_true(not any(t.get("tile_key") == INSUFFICIENT_TILE for t in unlocked_tiles(api_base_url, headers)), "Blocked-after-negative tile was unlocked")
+    report["cases"].append({"name": "positive_balance_can_go_negative_once", "ok": True, "credits": small_balance_cost})
+    log("PASS small positive balance can go negative once, then blocks further paid unlocks.")
+
+    # 6. Final Animation Render pricing/unlocking model:
     # The render preflight estimates all segment tiles before render; each segment
     # session then unlocks only newly encountered tiles. This mirrors the current
     # Final Animation sequence without needing to render image frames in this
