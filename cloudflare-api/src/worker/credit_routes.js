@@ -1,4 +1,8 @@
-import { GENERATED_REGION_PACK_TILE_KEYS } from "./region_packs.generated.js";
+import { html } from "./responses.js";
+import {
+  GENERATED_REGION_PACK_DETAILS,
+  GENERATED_REGION_PACK_TILE_KEYS,
+} from "./region_packs.generated.js";
 
 const TILE_KEY_RE = /x(\d{3})_y(\d{3})_z(\d{3})_d(\d{3})/i;
 const ASSET_RE = /^(?:S2|EL|WT|PO)_(x\d{3}_y\d{3}_z\d{3}_d\d{3})\.(?:exr|tif)$/i;
@@ -33,7 +37,7 @@ const EUROPE_REGION_PRODUCTS = [
     type: "macro_region",
     discount_percent: 30,
     bbox: [-10.0, 35.0, 30.0, 47.5],
-    countries: ["albania", "bosnia_herzegovina", "croatia", "greece", "italy", "kosovo", "montenegro", "north_macedonia", "portugal", "serbia", "slovenia", "spain"],
+    countries: ["albania", "bosnia_herzegovina", "bulgaria", "croatia", "greece", "italy", "kosovo", "montenegro", "north_macedonia", "portugal", "serbia", "slovenia", "spain"],
   },
   {
     id: "northern_europe",
@@ -311,7 +315,37 @@ function regionProductPublicPayload(product) {
     type: String(product.type || ""),
     discount_percent: Math.max(0, Number.parseInt(product.discount_percent || 0, 10) || 0),
     catalog_version: REGION_PACK_CATALOG_VERSION,
+    included_countries: regionProductIncludedCountries(product),
   };
+}
+
+function countryNameByRegionId(regionId) {
+  const product = regionProductById(regionId);
+  return product && String(product.type || "") === "country" ? String(product.name || "").trim() : "";
+}
+
+function regionProductIncludedCountries(product) {
+  if (!product) {
+    return [];
+  }
+  const id = String(product.id || "").trim();
+  const generated = GENERATED_REGION_PACK_DETAILS[id];
+  if (generated && Array.isArray(generated.countries)) {
+    return generated.countries
+      .map((entry) => String(entry && (entry.COUNTRY || entry.name) || "").trim())
+      .filter(Boolean);
+  }
+  if (String(product.type || "") === "country") {
+    const name = String(product.name || "").trim();
+    return name ? [name] : [];
+  }
+  if (!Array.isArray(product.countries)) {
+    return [];
+  }
+  return product.countries
+    .map((countryId) => countryNameByRegionId(countryId))
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b));
 }
 
 function bboxArea(product) {
@@ -554,6 +588,439 @@ async function estimateRegionPack(db, userId, product, deps, options = {}) {
     metadata_missing_tile_keys: Array.isArray(gross && gross.metadata_missing_tile_keys) ? gross.metadata_missing_tile_keys : [],
     tiles: Array.isArray(gross && gross.tiles) ? gross.tiles : [],
   };
+}
+
+function purchaseMetadataJson(metadata) {
+  try {
+    return JSON.stringify(metadata && typeof metadata === "object" ? metadata : {});
+  } catch (error) {
+    return JSON.stringify({ metadata_error: String(error && error.message || "metadata_json_failed") });
+  }
+}
+
+function compactPurchaseTile(row, status = "new") {
+  const key = normalizeTileKey(row && row.tile_key || "");
+  if (!key) {
+    return null;
+  }
+  return {
+    tile_key: key,
+    tile_status: String(status || "new").trim() || "new",
+    price_eur: normalizeCreditAmount(row && (row.credits ?? row.price_eur)),
+    gross_price_eur: normalizeCreditAmount(row && (row.gross_credits ?? row.gross_price_eur ?? row.credits ?? row.price_eur)),
+    land_km2: normalizeMetricAmount(row && row.land_km2),
+    billable_land_km2: normalizeMetricAmount(row && row.billable_land_km2),
+  };
+}
+
+async function recordPurchaseHistory(db, details, deps) {
+  await deps.ensureCreditTables(db);
+  const safeUserId = String(details && details.user_id || details && details.userId || "").trim();
+  const purchaseType = String(details && details.purchase_type || details && details.purchaseType || "").trim().toLowerCase();
+  if (!safeUserId || !purchaseType) {
+    return { error: "missing_purchase_history_identity" };
+  }
+  const stripeSessionId = String(details && details.stripe_session_id || details && details.stripeSessionId || "").trim();
+  if (stripeSessionId) {
+    const existing = await deps.dbGet(
+      db,
+      `SELECT id FROM purchase_history WHERE stripe_session_id = ? LIMIT 1`,
+      [stripeSessionId],
+    );
+    if (existing && existing.id) {
+      return { ok: true, duplicate: true, purchase_id: String(existing.id || "") };
+    }
+  }
+  const purchaseId = String(details && details.id || "").trim() || deps.randomToken(16);
+  const createdAt = String(details && details.created_at || "").trim() || deps.nowIso();
+  const tileRows = Array.isArray(details && details.tiles) ? details.tiles : [];
+  const normalizedTiles = tileRows
+    .map((tile) => compactPurchaseTile(tile, tile && (tile.tile_status || tile.status) || "new"))
+    .filter(Boolean);
+  await deps.dbRun(
+    db,
+    `
+      INSERT INTO purchase_history (
+        id,
+        user_id,
+        user_email,
+        purchase_type,
+        stripe_session_id,
+        stripe_payment_intent_id,
+        currency,
+        amount_paid_eur,
+        nominal_eur,
+        gross_eur,
+        discount_eur,
+        discount_percent,
+        quality_mode,
+        region_pack_id,
+        region_pack_name,
+        region_pack_type,
+        catalog_version,
+        tile_count_total,
+        tile_count_new,
+        tile_count_already_licenced,
+        metadata_json,
+        created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'eur', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    [
+      purchaseId,
+      safeUserId,
+      String(details && details.user_email || details && details.userEmail || "").trim().toLowerCase(),
+      purchaseType,
+      stripeSessionId || null,
+      String(details && details.stripe_payment_intent_id || details && details.stripePaymentIntentId || "").trim() || null,
+      normalizeCreditAmount(details && details.amount_paid_eur),
+      normalizeCreditAmount(details && details.nominal_eur),
+      normalizeCreditAmount(details && details.gross_eur),
+      normalizeCreditAmount(details && details.discount_eur),
+      Math.max(0, Number.parseInt(details && details.discount_percent || 0, 10) || 0),
+      String(details && details.quality_mode || details && details.qualityMode || "").trim().toLowerCase(),
+      String(details && details.region_pack_id || details && details.regionPackId || "").trim(),
+      String(details && details.region_pack_name || details && details.regionPackName || "").trim(),
+      String(details && details.region_pack_type || details && details.regionPackType || "").trim(),
+      String(details && details.catalog_version || details && details.catalogVersion || "").trim(),
+      Math.max(0, Number.parseInt(details && details.tile_count_total || 0, 10) || 0),
+      Math.max(0, Number.parseInt(details && details.tile_count_new || normalizedTiles.length, 10) || 0),
+      Math.max(0, Number.parseInt(details && details.tile_count_already_licenced || 0, 10) || 0),
+      purchaseMetadataJson(details && details.metadata),
+      createdAt,
+    ],
+  );
+  for (const tile of normalizedTiles) {
+    await deps.dbRun(
+      db,
+      `
+        INSERT OR IGNORE INTO purchase_history_tiles (
+          purchase_id,
+          tile_key,
+          tile_status,
+          price_eur,
+          gross_price_eur,
+          land_km2,
+          billable_land_km2,
+          quality_mode,
+          created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        purchaseId,
+        tile.tile_key,
+        tile.tile_status,
+        normalizeCreditAmount(tile.price_eur),
+        normalizeCreditAmount(tile.gross_price_eur),
+        normalizeMetricAmount(tile.land_km2),
+        normalizeMetricAmount(tile.billable_land_km2),
+        String(details && details.quality_mode || details && details.qualityMode || "full").trim().toLowerCase() || "full",
+        createdAt,
+      ],
+    );
+  }
+  return { ok: true, purchase_id: purchaseId, tile_count: normalizedTiles.length };
+}
+
+async function recordPurchaseHistoryBestEffort(db, details, deps) {
+  try {
+    return await recordPurchaseHistory(db, details, deps);
+  } catch (error) {
+    const errorMessage = error && error.stack ? String(error.stack) : String(error || "unknown_error");
+    console.error("planetka.purchase_history_record_failed", JSON.stringify({
+      purchase_type: String(details && details.purchase_type || details && details.purchaseType || ""),
+      user_id: String(details && details.user_id || details && details.userId || ""),
+      stripe_session_id: String(details && details.stripe_session_id || details && details.stripeSessionId || ""),
+      error: errorMessage.slice(0, 1200),
+    }));
+    return { ok: false, error: "purchase_history_record_failed" };
+  }
+}
+
+function escapeHtmlText(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function jsonForInlineScript(value) {
+  return JSON.stringify(value || {})
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/&/g, "\\u0026")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
+}
+
+function parseRegionMapTile(row) {
+  const parsed = parseTileKey(row && row.tile_key || "");
+  if (!parsed) {
+    return null;
+  }
+  return parsed;
+}
+
+function allocatedRegionPackTileRows(estimate) {
+  const rows = Array.isArray(estimate && estimate.tiles) ? estimate.tiles : [];
+  const paid = [];
+  let normalCentsTotal = 0;
+  for (const row of rows) {
+    const normalCents = centsForEur(row && (row.credits ?? row.price_eur));
+    if (normalCents <= 0 || Boolean(row && row.already_owned) || Boolean(row && row.globally_free)) {
+      continue;
+    }
+    normalCentsTotal += normalCents;
+    paid.push({ row, normalCents });
+  }
+  const targetCents = centsForEur(estimate && estimate.price_eur);
+  const allocations = new Map();
+  if (normalCentsTotal > 0 && targetCents > 0 && paid.length) {
+    let allocated = 0;
+    const sortable = paid.map((entry, index) => {
+      const raw = (entry.normalCents * targetCents) / normalCentsTotal;
+      const floor = Math.floor(raw);
+      allocated += floor;
+      return {
+        index,
+        row: entry.row,
+        cents: floor,
+        remainder: raw - floor,
+      };
+    });
+    sortable.sort((a, b) => {
+      if (b.remainder !== a.remainder) {
+        return b.remainder - a.remainder;
+      }
+      return a.index - b.index;
+    });
+    let remaining = Math.max(0, targetCents - allocated);
+    for (const entry of sortable) {
+      if (remaining <= 0) {
+        break;
+      }
+      entry.cents += 1;
+      remaining -= 1;
+    }
+    for (const entry of sortable) {
+      allocations.set(normalizeTileKey(entry.row && entry.row.tile_key || ""), entry.cents);
+    }
+  }
+
+  return rows.map((row) => {
+    const parsed = parseRegionMapTile(row);
+    const key = normalizeTileKey(row && row.tile_key || "");
+    const allocatedCents = Math.max(0, Number(allocations.get(key) || 0) || 0);
+    const normalCents = centsForEur(row && (row.credits ?? row.price_eur));
+    const grossCents = centsForEur(row && (row.gross_credits ?? row.gross_price_eur ?? row.credits ?? row.price_eur));
+    let status = "free";
+    if (Boolean(row && row.already_owned)) {
+      status = "licenced";
+    } else if (allocatedCents > 0) {
+      status = "new";
+    }
+    return {
+      tile_key: key,
+      x: parsed ? parsed.x : null,
+      y: parsed ? parsed.y : null,
+      z: parsed ? parsed.z : null,
+      d: parsed ? parsed.d : null,
+      lon_min: parsed ? parsed.x - 180 : null,
+      lon_max: parsed ? parsed.x - 180 + parsed.z : null,
+      lat_min: parsed ? parsed.y - 90 : null,
+      lat_max: parsed ? parsed.y - 90 + parsed.z : null,
+      status,
+      price_eur: normalizeCreditAmount(allocatedCents / 100.0),
+      normal_price_eur: normalizeCreditAmount(normalCents / 100.0),
+      original_price_eur: normalizeCreditAmount(grossCents / 100.0),
+      land_km2: normalizeMetricAmount(row && row.land_km2),
+      billable_land_km2: normalizeMetricAmount(row && row.billable_land_km2),
+      free_reason: String(row && row.free_reason || "").trim(),
+      already_licenced: Boolean(row && row.already_owned),
+      globally_free: Boolean(row && row.globally_free),
+    };
+  }).filter((row) => row.tile_key && Number.isFinite(row.x) && Number.isFinite(row.y) && Number.isFinite(row.z));
+}
+
+function regionMapBounds(product, detail, tileRows) {
+  const bounds = detail && Array.isArray(detail.bounds) ? detail.bounds : null;
+  if (bounds && bounds.length >= 4) {
+    return {
+      min_lon: Number(bounds[0]),
+      min_lat: Number(bounds[1]),
+      max_lon: Number(bounds[2]),
+      max_lat: Number(bounds[3]),
+    };
+  }
+  const bbox = product && Array.isArray(product.bbox) ? product.bbox : null;
+  if (bbox && bbox.length >= 4) {
+    return {
+      min_lon: Number(bbox[0]),
+      min_lat: Number(bbox[1]),
+      max_lon: Number(bbox[2]),
+      max_lat: Number(bbox[3]),
+    };
+  }
+  const rows = Array.isArray(tileRows) ? tileRows : [];
+  if (!rows.length) {
+    return { min_lon: -10, min_lat: 35, max_lon: 30, max_lat: 47.5 };
+  }
+  return rows.reduce((acc, row) => ({
+    min_lon: Math.min(acc.min_lon, Number(row.lon_min)),
+    min_lat: Math.min(acc.min_lat, Number(row.lat_min)),
+    max_lon: Math.max(acc.max_lon, Number(row.lon_max)),
+    max_lat: Math.max(acc.max_lat, Number(row.lat_max)),
+  }), {
+    min_lon: 180,
+    min_lat: 90,
+    max_lon: -180,
+    max_lat: -90,
+  });
+}
+
+function buildRegionPackMapData(product, estimate) {
+  const id = String(product && product.id || "");
+  const detail = GENERATED_REGION_PACK_DETAILS[id] || {};
+  const tileRows = allocatedRegionPackTileRows(estimate);
+  const countries = regionProductIncludedCountries(product);
+  const levels = Array.from(new Set(tileRows.map((row) => row.z).filter((z) => Number.isFinite(z))))
+    .sort((a, b) => a - b);
+  return {
+    ok: true,
+    catalog_version: REGION_PACK_CATALOG_VERSION,
+    generated_detail_available: Boolean(detail && Object.keys(detail).length),
+    region_pack: regionProductPublicPayload(product),
+    included_countries: countries,
+    outlines: Array.isArray(detail.outlines) ? detail.outlines : [],
+    bounds: regionMapBounds(product, detail, tileRows),
+    levels,
+    summary: {
+      new_tiles: Math.max(0, Number.parseInt(estimate && estimate.new_tile_count || 0, 10) || 0),
+      total_tiles: Math.max(0, Number.parseInt(estimate && estimate.tile_count || 0, 10) || 0),
+      already_licenced_tiles: Math.max(0, Array.isArray(estimate && estimate.excluded_tiles) ? estimate.excluded_tiles.length : 0),
+      full_price_eur: normalizeCreditAmount(estimate && estimate.gross_eur),
+      discount_percent: Math.max(0, Number.parseInt(estimate && estimate.discount_percent || 0, 10) || 0),
+      discount_eur: normalizeCreditAmount(estimate && estimate.discount_eur),
+      price_eur: normalizeCreditAmount(estimate && estimate.price_eur),
+      tile_price_sum_eur: normalizeCreditAmount(tileRows.reduce((total, row) => total + normalizeCreditAmount(row.price_eur), 0)),
+    },
+    tiles: tileRows,
+  };
+}
+
+async function ensureRegionPackDetailTokenTable(db, deps) {
+  await deps.ensureCreditTables(db);
+  await deps.dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS region_pack_detail_tokens (
+        token TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        region_pack_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+      )
+    `,
+  );
+  await deps.dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_region_pack_detail_tokens_expires ON region_pack_detail_tokens(expires_at)`,
+  );
+}
+
+function regionPackDetailTokenTtlMinutes(env = {}) {
+  const configured = Number.parseFloat(env.REGION_PACK_DETAIL_TOKEN_TTL_MINUTES || "");
+  if (Number.isFinite(configured) && configured > 0) {
+    return Math.min(24 * 60, Math.max(5, configured));
+  }
+  return 60;
+}
+
+function addMinutesIsoFromDeps(deps, minutes) {
+  const base = Date.parse(String(deps.nowIso && deps.nowIso() || ""));
+  const nowMs = Number.isFinite(base) ? base : Date.now();
+  return new Date(nowMs + (Math.max(1, Number(minutes) || 1) * 60 * 1000)).toISOString();
+}
+
+function regionPackMapHtml(data) {
+  const pack = data && data.region_pack || {};
+  const name = String(pack.name || "Region Pack").trim() || "Region Pack";
+  const countries = Array.isArray(data && data.included_countries) ? data.included_countries : [];
+  const summary = data && data.summary || {};
+  const payload = jsonForInlineScript(data);
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Planetka ${escapeHtmlText(name)} Pack Detail</title>
+<style>
+:root{color-scheme:dark;--bg:#111;--panel:#1b1b1b;--line:#3c3c3c;--text:#eee;--muted:#aaa;--new:#e45745;--licenced:#e2bc49;--free:#69707a;--country:#2a3748;--country-line:#98b4d8}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+main{max-width:1180px;margin:0 auto;padding:24px}h1{margin:0 0 8px;font-size:28px;font-weight:650}.muted{color:var(--muted)}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:18px 0}.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px}.card b{display:block;font-size:22px;margin-top:4px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;margin-top:14px}.toolbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+select{background:#262626;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:7px 10px}svg{width:100%;height:auto;background:#0d1118;border:1px solid var(--line);border-radius:10px}
+.legend{display:flex;gap:16px;flex-wrap:wrap;margin:10px 0 0}.swatch{display:inline-block;width:14px;height:14px;border-radius:3px;margin-right:6px;vertical-align:-2px}.new{background:var(--new)}.licenced{background:var(--licenced)}.free{background:var(--free)}
+.countries{columns:2;column-gap:26px}.countries div{break-inside:avoid;margin:2px 0}.small{font-size:13px}
+</style>
+</head>
+<body>
+<main>
+<h1>${escapeHtmlText(name)} Full Quality Pack</h1>
+<p class="muted">This is the same backend estimate used by Blender. Tile prices shown on hover are user-specific: already licenced tiles are €0.00.</p>
+<section class="cards">
+<div class="card"><span>New Tiles</span><b>${Number(summary.new_tiles || 0)}</b></div>
+<div class="card"><span>Total Tiles</span><b>${Number(summary.total_tiles || 0)}</b></div>
+<div class="card"><span>Full Price</span><b>€${Number(summary.full_price_eur || 0).toFixed(2)}</b></div>
+<div class="card"><span>Volume Discount</span><b>${Number(summary.discount_percent || 0)}%</b></div>
+<div class="card"><span>Your Price</span><b>€${Number(summary.price_eur || 0).toFixed(2)}</b></div>
+</section>
+<section class="panel">
+<div class="toolbar">
+<label>Detail level <select id="levelSelect"></select></label>
+<span id="levelSummary" class="muted"></span>
+</div>
+<svg id="map" role="img" aria-label="${escapeHtmlText(name)} tile map"></svg>
+<div class="legend">
+<span><i class="swatch new"></i>New in this pack</span>
+<span><i class="swatch licenced"></i>Already licenced</span>
+<span><i class="swatch free"></i>Free / not charged</span>
+</div>
+</section>
+<section class="panel">
+<h2>Included Countries</h2>
+<div class="countries">${countries.map((country) => `<div>${escapeHtmlText(country)}</div>`).join("")}</div>
+</section>
+<section class="panel small muted">
+<p>Price check: the sum of visible charged tile prices for all detail levels is €${Number(summary.tile_price_sum_eur || 0).toFixed(2)} and the pack price is €${Number(summary.price_eur || 0).toFixed(2)}.</p>
+</section>
+</main>
+<script>const DATA=${payload};
+const NS="http://www.w3.org/2000/svg";
+const fmt=(v)=>"€"+Number(v||0).toFixed(2);
+const bounds=DATA.bounds||{min_lon:-10,min_lat:35,max_lon:30,max_lat:48};
+const pad=20, innerW=1000, aspect=Math.max(0.28,Math.min(0.9,(bounds.max_lat-bounds.min_lat)/Math.max(1e-6,bounds.max_lon-bounds.min_lon)));
+const W=innerW, H=Math.round(innerW*aspect)+pad*2;
+function xy(lon,lat){return [pad+((lon-bounds.min_lon)/(bounds.max_lon-bounds.min_lon||1))*(W-pad*2),pad+((bounds.max_lat-lat)/(bounds.max_lat-bounds.min_lat||1))*(H-pad*2)]}
+function el(name,attrs){const node=document.createElementNS(NS,name);for(const[k,v]of Object.entries(attrs||{})){node.setAttribute(k,String(v))}return node}
+function pathFor(poly){return poly.map((pt,i)=>{const p=xy(pt[0],pt[1]);return (i?"L":"M")+p[0].toFixed(2)+" "+p[1].toFixed(2)}).join(" ")+" Z"}
+function render(level){const svg=document.getElementById("map");svg.replaceChildren();svg.setAttribute("viewBox","0 0 "+W+" "+H);
+  svg.appendChild(el("rect",{x:0,y:0,width:W,height:H,fill:"#0d1118"}));
+  for(const outline of DATA.outlines||[]){for(const poly of outline.polygons||[]){const p=el("path",{d:pathFor(poly),fill:"var(--country)",stroke:"var(--country-line)","stroke-width":"0.7",opacity:"0.72"});const t=el("title",{});t.textContent=outline.name; p.appendChild(t); svg.appendChild(p);}}
+  const rows=(DATA.tiles||[]).filter(t=>Number(t.z)===Number(level)); let newCount=0, licencedCount=0, freeCount=0, price=0;
+  for(const tile of rows){const a=xy(tile.lon_min,tile.lat_max), b=xy(tile.lon_max,tile.lat_min); const cls=tile.status==="new"?"var(--new)":(tile.status==="licenced"?"var(--licenced)":"var(--free)");
+    if(tile.status==="new"){newCount++; price+=Number(tile.price_eur||0)} else if(tile.status==="licenced"){licencedCount++} else {freeCount++}
+    const r=el("rect",{x:a[0],y:a[1],width:Math.max(1,b[0]-a[0]),height:Math.max(1,b[1]-a[1]),fill:cls,stroke:"#fff","stroke-width":"0.45",opacity:tile.status==="new"?"0.58":"0.43"});
+    const title=el("title",{}); title.textContent=tile.tile_key+"\\nStatus: "+tile.status+"\\nPack price: "+fmt(tile.price_eur)+"\\nNormal price: "+fmt(tile.normal_price_eur)+"\\nLand: "+Number(tile.billable_land_km2||0).toFixed(2)+" km²"; r.appendChild(title); svg.appendChild(r);}
+  document.getElementById("levelSummary").textContent=rows.length+" tiles at z"+String(level).padStart(3,"0")+" · new "+newCount+" · already licenced "+licencedCount+" · free "+freeCount+" · visible-level price "+fmt(price);
+}
+const levels=(DATA.levels&&DATA.levels.length?DATA.levels:[1]); const select=document.getElementById("levelSelect");
+for(const z of levels){const o=document.createElement("option");o.value=String(z);o.textContent="z"+String(z).padStart(3,"0");select.appendChild(o)}
+select.addEventListener("change",()=>render(Number(select.value))); render(Number(select.value||levels[0]));
+</script>
+</body>
+</html>`;
 }
 
 function checkoutMetadataValue(value, maxLength = 480) {
@@ -1189,6 +1656,31 @@ export async function addCreditBalance(db, userId, amountEur, reason, metadata, 
       now,
     ],
   );
+  const stripeSessionId = String(metadata && metadata.stripe_session_id || "").trim();
+  if (safeReason === "stripe_balance_top_up" && stripeSessionId) {
+    await recordPurchaseHistoryBestEffort(
+      db,
+      {
+        user_id: safeUserId,
+        user_email: String(metadata && metadata.customer_email || "").trim().toLowerCase(),
+        purchase_type: "balance_top_up",
+        stripe_session_id: stripeSessionId,
+        stripe_payment_intent_id: String(metadata && metadata.stripe_payment_intent_id || "").trim(),
+        amount_paid_eur: normalizeCreditAmount(metadata && (metadata.stripe_amount_paid_eur ?? amount)),
+        nominal_eur: amount,
+        gross_eur: amount,
+        tile_count_total: 0,
+        tile_count_new: 0,
+        metadata: {
+          stripe_amount_paid_eur: normalizeCreditAmount(metadata && metadata.stripe_amount_paid_eur),
+          stripe_payment_intent_id: String(metadata && metadata.stripe_payment_intent_id || "").trim(),
+          top_up_eur: amount,
+        },
+        created_at: now,
+      },
+      deps,
+    );
+  }
   return {
     ok: true,
     added_credits: amount,
@@ -1198,7 +1690,7 @@ export async function addCreditBalance(db, userId, amountEur, reason, metadata, 
   };
 }
 
-export async function grantPaidSceneTileEntitlements(db, userId, qualityMode, tileKeys, resolveId, amountPaidEur, deps) {
+export async function grantPaidSceneTileEntitlements(db, userId, qualityMode, tileKeys, resolveId, amountPaidEur, deps, userEmail = "", stripePaymentIntentId = "") {
   const safeMode = deps.normalizeQualityMode(qualityMode || "");
   if (safeMode !== "full") {
     return { error: "unsupported_quality_mode" };
@@ -1239,6 +1731,14 @@ export async function grantPaidSceneTileEntitlements(db, userId, qualityMode, ti
     }
   }
   const insertedPaidCount = insertedTiles.filter((tile) => normalizeCreditAmount(tile && tile.credits) > 0).length;
+  const purchasedTileRows = insertedTiles.map((tile) => ({
+    ...tile,
+    tile_status: "new",
+  }));
+  const purchasedTileKeys = purchasedTileRows.map((tile) => normalizeTileKey(tile && tile.tile_key || "")).filter(Boolean);
+  const alreadyLicencedCount = Array.isArray(estimate && estimate.excluded_tiles)
+    ? estimate.excluded_tiles.length
+    : 0;
   await deps.dbRun(
     db,
     `
@@ -1252,14 +1752,44 @@ export async function grantPaidSceneTileEntitlements(db, userId, qualityMode, ti
       safeUserId,
       safeUserId,
       JSON.stringify({
+        stripe_session_id: String(resolveId || ""),
+        stripe_payment_intent_id: String(stripePaymentIntentId || "").trim(),
         resolve_id: String(resolveId || ""),
         quality_mode: safeMode,
         tile_count: insertedTiles.length,
+        tile_count_total: Math.max(0, Number.parseInt(estimate && estimate.tile_count || 0, 10) || 0),
+        tile_count_new: insertedTiles.length,
+        tile_count_already_licenced: alreadyLicencedCount,
         nominal_eur: nominalCredits,
         paid_eur: normalizeCreditAmount(amountPaidEur),
+        purchased_tile_keys: purchasedTileKeys,
+        purchased_tiles: purchasedTileRows.map((tile) => compactPurchaseTile(tile, "new")).filter(Boolean),
       }),
       now,
     ],
+  );
+  await recordPurchaseHistoryBestEffort(
+    db,
+    {
+      user_id: safeUserId,
+      user_email: String(userEmail || "").trim().toLowerCase(),
+      purchase_type: "scene_tiles",
+      stripe_session_id: String(resolveId || "").trim(),
+      stripe_payment_intent_id: String(stripePaymentIntentId || "").trim(),
+      amount_paid_eur: normalizeCreditAmount(amountPaidEur),
+      nominal_eur: nominalCredits,
+      gross_eur: nominalCredits,
+      quality_mode: safeMode,
+      tile_count_total: Math.max(0, Number.parseInt(estimate && estimate.tile_count || 0, 10) || 0),
+      tile_count_new: insertedTiles.length,
+      tile_count_already_licenced: alreadyLicencedCount,
+      tiles: purchasedTileRows,
+      metadata: {
+        purchased_tile_keys: purchasedTileKeys,
+      },
+      created_at: now,
+    },
+    deps,
   );
   return {
     ...estimate,
@@ -1272,7 +1802,7 @@ export async function grantPaidSceneTileEntitlements(db, userId, qualityMode, ti
   };
 }
 
-export async function grantRegionPackEntitlements(db, userId, regionPackId, stripeSessionId, amountPaidEur, deps) {
+export async function grantRegionPackEntitlements(db, userId, regionPackId, stripeSessionId, amountPaidEur, deps, userEmail = "", stripePaymentIntentId = "") {
   const safeUserId = String(userId || "").trim();
   const safeStripeSessionId = String(stripeSessionId || "").trim();
   const product = regionProductById(regionPackId);
@@ -1342,6 +1872,12 @@ export async function grantRegionPackEntitlements(db, userId, regionPackId, stri
     }
   }
   const paidEur = normalizeCreditAmount(amountPaidEur);
+  const estimateTotalTiles = Math.max(0, Number.parseInt(estimate && estimate.tile_count || 0, 10) || 0);
+  const estimateNewTiles = Math.max(0, Number.parseInt(estimate && estimate.new_tile_count || 0, 10) || 0);
+  const alreadyLicencedTiles = Math.max(0, Array.isArray(estimate && estimate.excluded_tiles) ? estimate.excluded_tiles.length : 0);
+  const grossEur = normalizeCreditAmount(estimate && estimate.gross_eur);
+  const discountEur = normalizeCreditAmount(estimate && estimate.discount_eur);
+  const discountPercent = Math.max(0, Number.parseInt(product.discount_percent || 0, 10) || 0);
   await deps.dbRun(
     db,
     `
@@ -1356,19 +1892,52 @@ export async function grantRegionPackEntitlements(db, userId, regionPackId, stri
       safeUserId,
       JSON.stringify({
         stripe_session_id: safeStripeSessionId,
+        stripe_payment_intent_id: String(stripePaymentIntentId || "").trim(),
         region_pack_id: String(product.id || ""),
         region_pack_name: String(product.name || ""),
         region_pack_type: String(product.type || ""),
         catalog_version: REGION_PACK_CATALOG_VERSION,
-        discount_percent: Math.max(0, Number.parseInt(product.discount_percent || 0, 10) || 0),
+        discount_percent: discountPercent,
+        discount_eur: discountEur,
         quality_mode: "full",
         tile_count: insertedTiles.length,
+        tile_count_total: estimateTotalTiles,
+        tile_count_new: estimateNewTiles,
+        tile_count_already_licenced: alreadyLicencedTiles,
         nominal_eur: nominalCredits,
-        gross_eur: normalizeCreditAmount(estimate && estimate.gross_eur),
+        gross_eur: grossEur,
         paid_eur: paidEur,
       }),
       now,
     ],
+  );
+  await recordPurchaseHistoryBestEffort(
+    db,
+    {
+      user_id: safeUserId,
+      user_email: String(userEmail || "").trim().toLowerCase(),
+      purchase_type: "region_pack",
+      stripe_session_id: safeStripeSessionId,
+      stripe_payment_intent_id: String(stripePaymentIntentId || "").trim(),
+      amount_paid_eur: paidEur,
+      nominal_eur: nominalCredits,
+      gross_eur: grossEur,
+      discount_eur: discountEur,
+      discount_percent: discountPercent,
+      quality_mode: "full",
+      region_pack_id: String(product.id || ""),
+      region_pack_name: String(product.name || ""),
+      region_pack_type: String(product.type || ""),
+      catalog_version: REGION_PACK_CATALOG_VERSION,
+      tile_count_total: estimateTotalTiles,
+      tile_count_new: estimateNewTiles,
+      tile_count_already_licenced: alreadyLicencedTiles,
+      metadata: {
+        inserted_tile_count: insertedTiles.length,
+      },
+      created_at: now,
+    },
+    deps,
   );
   return {
     ...estimate,
@@ -1381,7 +1950,7 @@ export async function grantRegionPackEntitlements(db, userId, regionPackId, stri
   };
 }
 
-export async function grantStandardQualityUnlock(db, userId, stripeSessionId, amountPaidEur, deps) {
+export async function grantStandardQualityUnlock(db, userId, stripeSessionId, amountPaidEur, deps, userEmail = "", stripePaymentIntentId = "") {
   await deps.ensureCreditTables(db);
   const safeUserId = String(userId || "").trim();
   if (!safeUserId) {
@@ -1451,11 +2020,33 @@ export async function grantStandardQualityUnlock(db, userId, stripeSessionId, am
       safeUserId,
       JSON.stringify({
         stripe_session_id: safeStripeSessionId,
+        stripe_payment_intent_id: String(stripePaymentIntentId || "").trim(),
         paid_eur: normalizeCreditAmount(amountPaidEur),
         already_unlocked: alreadyUnlocked,
       }),
       now,
     ],
+  );
+  await recordPurchaseHistoryBestEffort(
+    db,
+    {
+      user_id: safeUserId,
+      user_email: String(userEmail || "").trim().toLowerCase(),
+      purchase_type: "standard_quality_unlock",
+      stripe_session_id: safeStripeSessionId,
+      stripe_payment_intent_id: String(stripePaymentIntentId || "").trim(),
+      amount_paid_eur: normalizeCreditAmount(amountPaidEur),
+      nominal_eur: normalizeCreditAmount(amountPaidEur),
+      gross_eur: normalizeCreditAmount(amountPaidEur),
+      quality_mode: "balanced",
+      tile_count_total: 0,
+      tile_count_new: 0,
+      metadata: {
+        already_unlocked: alreadyUnlocked,
+      },
+      created_at: now,
+    },
+    deps,
   );
   const refreshed = await ensureCreditAccount(db, safeUserId, deps);
   return {
@@ -1929,6 +2520,242 @@ export async function handleCreditRegionOffers(request, env, deps) {
       latitude_deg: latitude,
       longitude_deg: longitude,
       offers,
+    },
+    200,
+    env,
+  );
+}
+
+export async function handleCreditRegionPackDetailLink(request, env, deps) {
+  const auth = await deps.requireAuthenticatedUserContext(request, env, { enforceApiKeyDevicePolicy: false });
+  if (auth.error) {
+    return auth.error;
+  }
+  const db = deps.requireDb(env);
+  await ensureCreditAccount(db, auth.user.id, deps);
+  await ensureRegionPackDetailTokenTable(db, deps);
+  const body = await deps.parseJson(request);
+  const product = regionProductById(body && (
+    body.region_pack_id
+    || body.regionPackId
+    || body.region_id
+    || body.regionId
+    || body.pack_id
+    || body.packId
+  ));
+  if (!product) {
+    return deps.json({ ok: false, error: "unknown_region_pack" }, 404, env);
+  }
+  const now = deps.nowIso();
+  await deps.dbRun(db, `DELETE FROM region_pack_detail_tokens WHERE expires_at <= ?`, [now]);
+  const token = deps.randomToken(32);
+  const expiresAt = addMinutesIsoFromDeps(deps, regionPackDetailTokenTtlMinutes(env));
+  await deps.dbRun(
+    db,
+    `
+      INSERT INTO region_pack_detail_tokens (
+        token, user_id, region_pack_id, created_at, expires_at
+      ) VALUES (?, ?, ?, ?, ?)
+    `,
+    [token, String(auth.user.id || "").trim(), String(product.id || ""), now, expiresAt],
+  );
+  const url = new URL(request.url);
+  url.pathname = "/credits/region-pack-map";
+  url.search = "";
+  url.searchParams.set("token", token);
+  return deps.json(
+    {
+      ok: true,
+      region_pack: regionProductPublicPayload(product),
+      detail_url: url.toString(),
+      expires_at: expiresAt,
+    },
+    200,
+    env,
+  );
+}
+
+export async function handleCreditRegionPackMap(request, env, deps) {
+  const url = new URL(request.url);
+  const token = String(url.searchParams.get("token") || "").trim();
+  if (!token) {
+    return html(
+      "<!doctype html><title>Planetka Region Pack</title><h1>Missing region-pack detail token.</h1>",
+      400,
+      env,
+    );
+  }
+  const db = deps.requireDb(env);
+  await ensureRegionPackDetailTokenTable(db, deps);
+  const now = deps.nowIso();
+  const row = await deps.dbGet(
+    db,
+    `
+      SELECT token, user_id, region_pack_id, expires_at
+      FROM region_pack_detail_tokens
+      WHERE token = ?
+      LIMIT 1
+    `,
+    [token],
+  );
+  if (!row || String(row.expires_at || "") <= now) {
+    return html(
+      "<!doctype html><title>Planetka Region Pack</title><h1>This region-pack detail link expired.</h1><p>Please open it again from Blender.</p>",
+      410,
+      env,
+    );
+  }
+  const product = regionProductById(row.region_pack_id);
+  if (!product) {
+    return html(
+      "<!doctype html><title>Planetka Region Pack</title><h1>Unknown region pack.</h1>",
+      404,
+      env,
+    );
+  }
+  await ensureCreditAccount(db, row.user_id, deps);
+  const estimate = await estimateRegionPack(db, row.user_id, product, deps, { includeRows: true });
+  if (estimate && estimate.error) {
+    return html(
+      `<!doctype html><title>Planetka Region Pack</title><h1>Region pack estimate failed.</h1><p>${escapeHtmlText(estimate.error)}</p>`,
+      500,
+      env,
+    );
+  }
+  const data = buildRegionPackMapData(product, estimate);
+  return html(regionPackMapHtml(data), 200, env);
+}
+
+async function loadPurchaseHistoryForUser(db, userId, deps, options = {}) {
+  await deps.ensureCreditTables(db);
+  const safeUserId = String(userId || "").trim();
+  const limit = Math.max(1, Math.min(500, Number.parseInt(options && options.limit || 100, 10) || 100));
+  const purchases = await deps.dbAll(
+    db,
+    `
+      SELECT
+        id,
+        user_id,
+        user_email,
+        purchase_type,
+        stripe_session_id,
+        stripe_payment_intent_id,
+        currency,
+        amount_paid_eur,
+        nominal_eur,
+        gross_eur,
+        discount_eur,
+        discount_percent,
+        quality_mode,
+        region_pack_id,
+        region_pack_name,
+        region_pack_type,
+        catalog_version,
+        tile_count_total,
+        tile_count_new,
+        tile_count_already_licenced,
+        metadata_json,
+        created_at
+      FROM purchase_history
+      WHERE user_id = ?
+      ORDER BY created_at DESC
+      LIMIT ?
+    `,
+    [safeUserId, limit],
+  );
+  const purchaseIds = (purchases || []).map((row) => String(row && row.id || "").trim()).filter(Boolean);
+  const tilesByPurchase = new Map();
+  if (purchaseIds.length) {
+    for (const chunk of fixedSizeChunks(purchaseIds, SQL_VARIABLE_SAFE_CHUNK_SIZE)) {
+      const tileRows = await deps.dbAll(
+        db,
+        `
+          SELECT
+            purchase_id,
+            tile_key,
+            tile_status,
+            price_eur,
+            gross_price_eur,
+            land_km2,
+            billable_land_km2,
+            quality_mode,
+            created_at
+          FROM purchase_history_tiles
+          WHERE purchase_id IN (${chunk.map(() => "?").join(",")})
+          ORDER BY tile_key ASC
+        `,
+        chunk,
+      );
+      for (const tile of tileRows || []) {
+        const purchaseId = String(tile && tile.purchase_id || "").trim();
+        if (!tilesByPurchase.has(purchaseId)) {
+          tilesByPurchase.set(purchaseId, []);
+        }
+        tilesByPurchase.get(purchaseId).push({
+          tile_key: normalizeTileKey(tile && tile.tile_key || ""),
+          tile_status: String(tile && tile.tile_status || "new"),
+          price_eur: normalizeCreditAmount(tile && tile.price_eur),
+          gross_price_eur: normalizeCreditAmount(tile && tile.gross_price_eur),
+          land_km2: normalizeMetricAmount(tile && tile.land_km2),
+          billable_land_km2: normalizeMetricAmount(tile && tile.billable_land_km2),
+          quality_mode: String(tile && tile.quality_mode || "full"),
+          created_at: String(tile && tile.created_at || ""),
+        });
+      }
+    }
+  }
+  return (purchases || []).map((row) => {
+    const id = String(row && row.id || "");
+    let metadata = {};
+    try {
+      metadata = JSON.parse(String(row && row.metadata_json || "{}"));
+    } catch (error) {
+      metadata = {};
+    }
+    return {
+      id,
+      user_id: String(row && row.user_id || ""),
+      user_email: String(row && row.user_email || ""),
+      purchase_type: String(row && row.purchase_type || ""),
+      stripe_session_id: String(row && row.stripe_session_id || ""),
+      stripe_payment_intent_id: String(row && row.stripe_payment_intent_id || ""),
+      currency: String(row && row.currency || "eur"),
+      amount_paid_eur: normalizeCreditAmount(row && row.amount_paid_eur),
+      nominal_eur: normalizeCreditAmount(row && row.nominal_eur),
+      gross_eur: normalizeCreditAmount(row && row.gross_eur),
+      discount_eur: normalizeCreditAmount(row && row.discount_eur),
+      discount_percent: Math.max(0, Number.parseInt(row && row.discount_percent || 0, 10) || 0),
+      quality_mode: String(row && row.quality_mode || ""),
+      region_pack_id: String(row && row.region_pack_id || ""),
+      region_pack_name: String(row && row.region_pack_name || ""),
+      region_pack_type: String(row && row.region_pack_type || ""),
+      catalog_version: String(row && row.catalog_version || ""),
+      tile_count_total: Math.max(0, Number.parseInt(row && row.tile_count_total || 0, 10) || 0),
+      tile_count_new: Math.max(0, Number.parseInt(row && row.tile_count_new || 0, 10) || 0),
+      tile_count_already_licenced: Math.max(0, Number.parseInt(row && row.tile_count_already_licenced || 0, 10) || 0),
+      created_at: String(row && row.created_at || ""),
+      metadata,
+      tiles: tilesByPurchase.get(id) || [],
+    };
+  });
+}
+
+export async function handleCreditPurchaseHistory(request, env, deps) {
+  const auth = await deps.requireAuthenticatedUserContext(request, env, { enforceApiKeyDevicePolicy: false });
+  if (auth.error) {
+    return auth.error;
+  }
+  const db = deps.requireDb(env);
+  await ensureCreditAccount(db, auth.user.id, deps);
+  const url = new URL(request.url);
+  const limit = Math.max(1, Math.min(200, Number.parseInt(url.searchParams.get("limit") || "100", 10) || 100));
+  const purchases = await loadPurchaseHistoryForUser(db, auth.user.id, deps, { limit });
+  return deps.json(
+    {
+      ok: true,
+      user_id: String(auth.user.id || ""),
+      user_email: String(auth.user.email || ""),
+      purchases,
     },
     200,
     env,

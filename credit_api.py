@@ -531,6 +531,25 @@ def create_checkout_session(option: str, tiles=None, quality_mode="FULL", region
     raise CreditApiError(0, error, payload=result if isinstance(result, dict) else {})
 
 
+def create_region_pack_detail_link(region_pack_id: str) -> dict:
+    """Create a short-lived user-specific browser map link for a region pack."""
+    safe_id = str(region_pack_id or "").strip()
+    if not safe_id:
+        raise CreditApiError(0, "missing_region_pack_id", payload={})
+    result = _request_json(
+        "POST",
+        "/credits/region-pack-detail-link",
+        body={"region_pack_id": safe_id},
+        timeout=30,
+    )
+    if isinstance(result, dict) and result.get("ok", False):
+        return dict(result)
+    error = "region_pack_detail_link_failed"
+    if isinstance(result, dict):
+        error = str(result.get("error", "") or error)
+    raise CreditApiError(0, error, payload=result if isinstance(result, dict) else {})
+
+
 def _parse_unlocked_at(value):
     text = str(value or "").strip()
     if not text:

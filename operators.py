@@ -1,7 +1,8 @@
+import textwrap
 import time
 
 import bpy
-from bpy.props import BoolProperty, EnumProperty, StringProperty
+from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, StringProperty
 
 from .auth import (
     allows_balanced_full_quality_for_context,
@@ -881,6 +882,136 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
         if option in {"SCENE", "REGION_PACK"}:
             _start_post_checkout_scene_monitor(getattr(context, "scene", None))
         self.report({'INFO'}, "Planetka payment page opened in browser.")
+        return {'FINISHED'}
+
+
+def _open_external_url(url):
+    safe_url = str(url or "").strip()
+    if not safe_url:
+        return False
+    try:
+        result = bpy.ops.wm.url_open(url=safe_url)
+        if "FINISHED" in result:
+            return True
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed opening URL through Blender", exc_info=True)
+    try:
+        import webbrowser
+        return bool(webbrowser.open(safe_url))
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed opening URL in system browser", exc_info=True)
+    return False
+
+
+class PLANETKA_OT_OpenRegionPackMap(bpy.types.Operator):
+    bl_idname = "planetka.open_region_pack_map"
+    bl_label = "Open Region Pack Map"
+    bl_description = "Open the detailed user-specific region-pack map in a browser"
+
+    region_pack_id: StringProperty(
+        name="Region Pack",
+        default="",
+        options={'HIDDEN', 'SKIP_SAVE'},
+    )
+
+    def execute(self, _context):
+        region_id = str(getattr(self, "region_pack_id", "") or "").strip()
+        if not region_id:
+            return fail(
+                self,
+                "No region pack selected.",
+                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                logger=logger,
+            )
+        try:
+            from .credit_api import create_region_pack_detail_link
+            link = create_region_pack_detail_link(region_id)
+        except Exception as exc:
+            return fail(
+                self,
+                f"Unable to open region pack map: {exc}",
+                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                logger=logger,
+                exc=exc,
+                log_message="Planetka region pack detail link creation failed",
+            )
+        url = str(link.get("detail_url", "") or "").strip()
+        if not _open_external_url(url):
+            return fail(
+                self,
+                "Could not open Planetka region pack map.",
+                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                logger=logger,
+            )
+        self.report({'INFO'}, "Planetka region pack map opened in browser.")
+        return {'FINISHED'}
+
+
+class PLANETKA_OT_RegionPackInfo(bpy.types.Operator):
+    bl_idname = "planetka.region_pack_info"
+    bl_label = "Region Pack Details"
+    bl_description = "Show what is included in this broader Full Quality region pack"
+
+    region_pack_id: StringProperty(default="", options={'HIDDEN', 'SKIP_SAVE'})
+    region_pack_name: StringProperty(default="Region Pack", options={'HIDDEN', 'SKIP_SAVE'})
+    included_countries: StringProperty(default="", options={'HIDDEN', 'SKIP_SAVE'})
+    new_tile_count: IntProperty(default=0, options={'HIDDEN', 'SKIP_SAVE'})
+    total_tile_count: IntProperty(default=0, options={'HIDDEN', 'SKIP_SAVE'})
+    already_licenced_tile_count: IntProperty(default=0, options={'HIDDEN', 'SKIP_SAVE'})
+    full_price_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
+    discount_percent: IntProperty(default=0, options={'HIDDEN', 'SKIP_SAVE'})
+    discount_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
+    price_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
+
+    def invoke(self, context, event):
+        del event
+        wm = getattr(context, "window_manager", None)
+        if wm is None:
+            return {'CANCELLED'}
+        return wm.invoke_popup(self, width=440)
+
+    def _wrapped_label(self, layout, text, icon='NONE', width=58):
+        safe_text = str(text or "").strip()
+        if not safe_text:
+            return
+        lines = textwrap.wrap(safe_text, width=max(20, int(width or 58))) or [safe_text]
+        for index, line in enumerate(lines):
+            layout.label(text=line, icon=icon if index == 0 else 'BLANK1')
+
+    def draw(self, _context):
+        layout = self.layout
+        name = str(getattr(self, "region_pack_name", "") or "Region Pack").strip()
+        countries = [part.strip() for part in str(getattr(self, "included_countries", "") or "").split("|") if part.strip()]
+        layout.label(text=name, icon="WORLD")
+        summary = layout.box()
+        summary.label(text=f"New Tiles: {int(getattr(self, 'new_tile_count', 0) or 0)}", icon="TEXTURE")
+        summary.label(text=f"Total Tiles: {int(getattr(self, 'total_tile_count', 0) or 0)}", icon="GRID")
+        licenced = int(getattr(self, "already_licenced_tile_count", 0) or 0)
+        if licenced > 0:
+            summary.label(text=f"Already Licenced: {licenced}", icon="CHECKMARK")
+        summary.label(text=f"Full Price: €{float(getattr(self, 'full_price_eur', 0.0) or 0.0):.2f}", icon="SOLO_ON")
+        discount = int(getattr(self, "discount_percent", 0) or 0)
+        if discount > 0:
+            summary.label(
+                text=(
+                    f"Volume Discount: {discount}% "
+                    f"(€{float(getattr(self, 'discount_eur', 0.0) or 0.0):.2f})"
+                ),
+                icon="SORTSIZE",
+            )
+        summary.label(text=f"Price: €{float(getattr(self, 'price_eur', 0.0) or 0.0):.2f}", icon="USER")
+        country_box = layout.box()
+        country_box.label(text="Included Countries", icon="WORLD_DATA")
+        country_text = ", ".join(countries) if countries else "Country list is not available for this pack yet."
+        self._wrapped_label(country_box, country_text)
+        actions = layout.row(align=True)
+        map_op = actions.operator("planetka.open_region_pack_map", text="Detailed Map", icon="URL")
+        map_op.region_pack_id = str(getattr(self, "region_pack_id", "") or "")
+        checkout = actions.operator("planetka.open_credit_checkout", text="Buy Pack", icon="URL")
+        checkout.checkout_option = "REGION_PACK"
+        checkout.region_pack_id = str(getattr(self, "region_pack_id", "") or "")
+
+    def execute(self, _context):
         return {'FINISHED'}
 
 

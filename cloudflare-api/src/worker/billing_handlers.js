@@ -438,6 +438,7 @@ export async function handleStripeWebhook(request, env, deps) {
     await deps.ensureCreditTables(db);
     const userId = String(targetUser.id || "").trim();
     const amountPaidEur = eurFromStripeAmountCents(session.amount_total);
+    const stripePaymentIntentId = String(session.payment_intent || session.payment_intent_id || "").trim();
     if (purchaseType === "balance_top_up") {
       const requestedTopUp = Number.parseFloat(metadata.planetka_top_up_eur || "");
       const topUpEur = Number.isFinite(requestedTopUp) && requestedTopUp > 0
@@ -450,6 +451,7 @@ export async function handleStripeWebhook(request, env, deps) {
         "stripe_balance_top_up",
         {
           stripe_session_id: sessionId,
+          stripe_payment_intent_id: stripePaymentIntentId,
           stripe_amount_paid_eur: amountPaidEur,
           customer_email: email,
         },
@@ -500,6 +502,8 @@ export async function handleStripeWebhook(request, env, deps) {
         sessionId,
         amountPaidEur,
         deps,
+        email,
+        stripePaymentIntentId,
       );
       if (unlock && unlock.error) {
         return deps.json({ ok: false, error: unlock.error }, 400, env);
@@ -548,6 +552,8 @@ export async function handleStripeWebhook(request, env, deps) {
         sessionId,
         amountPaidEur,
         deps,
+        email,
+        stripePaymentIntentId,
       );
       if (grant && grant.error) {
         console.error(
@@ -610,6 +616,8 @@ export async function handleStripeWebhook(request, env, deps) {
       sessionId,
       amountPaidEur,
       deps,
+      email,
+      stripePaymentIntentId,
     );
     if (grant && grant.error) {
       console.error(

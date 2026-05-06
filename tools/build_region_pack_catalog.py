@@ -148,7 +148,62 @@ def write_js(path: Path, pack_payloads: list[dict]):
             lines.append(f"    {json.dumps(key)},")
         lines.append("  ],")
     lines.append("};")
+    detail_payload = {}
+    for payload in pack_payloads:
+        detail_payload[payload["id"]] = {
+            "bounds": payload.get("bounds", []),
+            "countries": payload.get("countries", []),
+            "outlines": payload.get("outlines", []),
+        }
+    lines.append("")
+    lines.append(f"export const GENERATED_REGION_PACK_DETAILS = {json.dumps(detail_payload, ensure_ascii=True, separators=(',', ':'))};")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _iter_polygon_geometries(geometry):
+    from shapely.geometry import GeometryCollection, MultiPolygon, Polygon
+
+    if geometry is None or geometry.is_empty:
+        return
+    if isinstance(geometry, Polygon):
+        yield geometry
+        return
+    if isinstance(geometry, MultiPolygon):
+        for part in geometry.geoms:
+            yield from _iter_polygon_geometries(part)
+        return
+    if isinstance(geometry, GeometryCollection):
+        for part in geometry.geoms:
+            yield from _iter_polygon_geometries(part)
+
+
+def country_outlines_for_web(selected, simplify_tolerance: float = 0.035, min_polygon_area: float = 0.002) -> list[dict]:
+    outlines = []
+    for row in selected.sort_values("COUNTRY").itertuples(index=False):
+        geometry = getattr(row, "geometry", None)
+        if geometry is None or geometry.is_empty:
+            continue
+        simplified = geometry.simplify(float(simplify_tolerance), preserve_topology=True)
+        polygons = []
+        for polygon in _iter_polygon_geometries(simplified):
+            if polygon.area < float(min_polygon_area):
+                continue
+            coords = [
+                [round(float(x_value), 4), round(float(y_value), 4)]
+                for x_value, y_value in polygon.exterior.coords
+            ]
+            if len(coords) >= 4:
+                polygons.append(coords)
+        if not polygons:
+            continue
+        outlines.append(
+            {
+                "id": str(getattr(row, "GID_0", "") or ""),
+                "name": str(getattr(row, "COUNTRY", "") or ""),
+                "polygons": polygons,
+            }
+        )
+    return outlines
 
 
 def write_png(path: Path, selected, tile_keys: list[str]):
@@ -210,6 +265,7 @@ def build_pack(pack_id: str, gpkg_path: Path) -> dict:
         "tile_count": len(tile_keys),
         "counts_by_z": dict(sorted(counts_by_z.items())),
         "bounds": [float(value) for value in selected.total_bounds],
+        "outlines": country_outlines_for_web(selected),
         "tile_keys": tile_keys,
     }, selected
 

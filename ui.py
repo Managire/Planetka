@@ -974,18 +974,38 @@ def _draw_broader_region_offers(layout, scene, active_view_scope=False):
         title_row = offer_box.row(align=True)
         title_row.label(text=name, icon="WORLD")
         if discount > 0:
-            title_row.label(text=f"{discount}% off")
-        detail_text = f"{new_tiles} new tiles"
+            title_row.label(text=f"{discount}% volume discount")
+        info = title_row.operator("planetka.region_pack_info", text="", icon="INFO")
+        info.region_pack_id = region_id
+        info.region_pack_name = name
+        countries = offer.get("included_countries", ())
+        if isinstance(countries, (list, tuple)):
+            info.included_countries = "|".join(str(country).strip() for country in countries if str(country).strip())
+        else:
+            info.included_countries = str(countries or "")
+        info.new_tile_count = int(new_tiles)
+        info.total_tile_count = int(total_tiles)
+        try:
+            info.already_licenced_tile_count = max(0, int(offer.get("already_licenced_tile_count", 0) or 0))
+        except (TypeError, ValueError):
+            info.already_licenced_tile_count = 0
+        info.full_price_eur = float(gross)
+        info.discount_percent = int(discount)
+        try:
+            info.discount_eur = max(0.0, float(offer.get("discount_eur", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            info.discount_eur = 0.0
+        info.price_eur = float(price)
+        offer_box.label(text=f"New Tiles: {new_tiles}", icon="TEXTURE")
         if total_tiles > 0:
-            detail_text = f"{new_tiles} new / {total_tiles} total tiles"
-        if gross > price and price > 0:
-            detail_text = f"{detail_text} · normal {_fmt_eur(gross)}"
-        elif price <= 0 and new_tiles <= 0:
-            detail_text = f"{detail_text} · already licenced"
+            offer_box.label(text=f"Total Tiles: {total_tiles}", icon="GRID")
+        if gross > 0:
+            offer_box.label(text=f"Full Price: {_fmt_eur(gross)}", icon="SOLO_ON")
+        if price <= 0 and new_tiles <= 0:
+            offer_box.label(text="Already Licenced", icon="CHECKMARK")
         elif price <= 0:
-            detail_text = f"{detail_text} · no charge"
+            offer_box.label(text="No charge for new tiles", icon="CHECKMARK")
         fully_licenced = bool(price <= 0 and new_tiles <= 0)
-        offer_box.label(text=detail_text, icon="CHECKMARK" if price <= 0 else "INFO")
         action_row = offer_box.row(align=True)
         if fully_licenced:
             action_row.enabled = False

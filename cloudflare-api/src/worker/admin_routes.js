@@ -5,6 +5,7 @@ export function isAdminRoutePath(path) {
 export async function dispatchAdminRoute(request, env, path, deps) {
   const {
     handleAdminAnalyticsPage,
+    handleAdminAnalyticsUserPage,
     handleAdminAnalyticsUsersPage,
     handleAdminAnalyticsData,
     handleAdminAnalyticsTileMapImage,
@@ -34,6 +35,11 @@ export async function dispatchAdminRoute(request, env, path, deps) {
     case "/admin/analytics/users":
       if (request.method === "GET") {
         return await handleAdminAnalyticsUsersPage(request, env);
+      }
+      return null;
+    case "/admin/analytics/user":
+      if (request.method === "GET") {
+        return await handleAdminAnalyticsUserPage(request, env);
       }
       return null;
     case "/admin/analytics/data":

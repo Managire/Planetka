@@ -43,6 +43,19 @@ function analyticsUsersSortValue(row, sortBy) {
   return Number(row && row.total_spent_credits || 0);
 }
 
+function fmtEurLocal(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? `${numeric.toFixed(2)} €` : "0.00 €";
+}
+
+function parseMetadataJson(value) {
+  try {
+    return JSON.parse(String(value || "{}"));
+  } catch (_error) {
+    return {};
+  }
+}
+
 function sortAnalyticsUsersRows(rows, sortBy, sortDir) {
   const safeRows = Array.isArray(rows) ? rows.slice() : [];
   const direction = String(sortDir || "desc").trim().toLowerCase() === "asc" ? 1 : -1;
@@ -304,6 +317,169 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
   return deps.html(htmlContent, 200, env);
 }
 
+export async function handleAdminAnalyticsUserPage(request, env, deps) {
+  const url = new URL(request.url);
+  if (String(url.searchParams.get("access_token") || url.searchParams.get("token") || "").trim()) {
+    return deps.json({ ok: false, error: "query_token_not_allowed" }, 400, env);
+  }
+  const auth = await deps.requireAnalyticsAdmin(request, env);
+  if (auth.error) {
+    return auth.error;
+  }
+  const { db, user: adminUser } = auth;
+  await deps.ensureCreditTables(db);
+  const requestedUserId = String(url.searchParams.get("user_id") || "").trim();
+  const requestedEmail = String(url.searchParams.get("email") || "").trim().toLowerCase();
+  const targetUser = requestedUserId
+    ? await deps.findUserById(db, requestedUserId)
+    : (requestedEmail ? await deps.findUserByEmail(db, requestedEmail) : null);
+  if (!targetUser || !targetUser.id) {
+    return deps.html(
+      `<!doctype html><title>Planetka User History</title><body style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;background:#0b1020;color:#e5e7eb;margin:20px"><h1>User not found</h1><p><a style="color:#93c5fd" href="/admin/analytics/users">Back to users</a></p></body>`,
+      404,
+      env,
+    );
+  }
+  const targetUserId = String(targetUser.id || "").trim();
+  const targetEmail = String(targetUser.email || "").trim().toLowerCase();
+  const account = await deps.dbGet(
+    db,
+    `SELECT * FROM user_credit_accounts WHERE user_id = ? LIMIT 1`,
+    [targetUserId],
+  );
+  const purchases = await deps.dbAll(
+    db,
+    `
+      SELECT *
+      FROM purchase_history
+      WHERE user_id = ?
+      ORDER BY created_at DESC
+      LIMIT 250
+    `,
+    [targetUserId],
+  );
+  const purchaseIds = (purchases || []).map((row) => String(row && row.id || "").trim()).filter(Boolean);
+  const tileRows = purchaseIds.length
+    ? await deps.dbAll(
+      db,
+      `
+        SELECT *
+        FROM purchase_history_tiles
+        WHERE purchase_id IN (${purchaseIds.map(() => "?").join(",")})
+        ORDER BY purchase_id ASC, tile_key ASC
+      `,
+      purchaseIds,
+    )
+    : [];
+  const tilesByPurchase = new Map();
+  for (const tile of tileRows || []) {
+    const purchaseId = String(tile && tile.purchase_id || "").trim();
+    if (!tilesByPurchase.has(purchaseId)) {
+      tilesByPurchase.set(purchaseId, []);
+    }
+    tilesByPurchase.get(purchaseId).push(tile);
+  }
+  const licencedSummary = await deps.dbGet(
+    db,
+    `
+      SELECT
+        COUNT(*) AS tile_count,
+        COALESCE(ROUND(SUM(credits_spent) * 100.0) / 100.0, 0) AS nominal_eur
+      FROM user_tile_entitlements
+      WHERE user_id = ?
+    `,
+    [targetUserId],
+  );
+  const paidSummary = await deps.dbGet(
+    db,
+    `
+      SELECT COALESCE(ROUND(SUM(amount_paid_eur) * 100.0) / 100.0, 0) AS paid_eur
+      FROM purchase_history
+      WHERE user_id = ?
+    `,
+    [targetUserId],
+  );
+  const purchaseRowsHtml = (purchases || []).map((row) => {
+    const purchaseId = String(row && row.id || "");
+    const metadata = parseMetadataJson(row && row.metadata_json);
+    const tiles = tilesByPurchase.get(purchaseId) || [];
+    const packName = String(row && row.region_pack_name || row && row.region_pack_id || "");
+    const purchaseType = String(row && row.purchase_type || "");
+    const typeLabel = purchaseType === "region_pack"
+      ? `Region Pack${packName ? `: ${deps.escapeHtml(packName)}` : ""}`
+      : (purchaseType === "scene_tiles"
+        ? "Scene Full Quality"
+        : (purchaseType === "standard_quality_unlock" ? "Standard Quality Unlock" : "Balance Top-Up"));
+    const tileDetails = tiles.length
+      ? `<details><summary>${tiles.length} purchased tile(s)</summary><table class="inner"><thead><tr><th>Tile</th><th>Status</th><th>Price</th><th>Gross</th><th>Land km²</th></tr></thead><tbody>${tiles.map((tile) => `<tr><td>${deps.escapeHtml(String(tile && tile.tile_key || ""))}</td><td>${deps.escapeHtml(String(tile && tile.tile_status || ""))}</td><td>${deps.escapeHtml(fmtEurLocal(tile && tile.price_eur))}</td><td>${deps.escapeHtml(fmtEurLocal(tile && tile.gross_price_eur))}</td><td>${Number(tile && tile.billable_land_km2 || 0).toFixed(2)}</td></tr>`).join("")}</tbody></table></details>`
+      : "";
+    const metadataLine = purchaseType === "region_pack"
+      ? `Catalog: ${deps.escapeHtml(String(row && row.catalog_version || ""))} · Discount: ${Number(row && row.discount_percent || 0)}% (${deps.escapeHtml(fmtEurLocal(row && row.discount_eur))})`
+      : (metadata && metadata.purchased_tile_keys
+        ? `Tile keys: ${deps.escapeHtml((metadata.purchased_tile_keys || []).join(", "))}`
+        : "");
+    return `<tr>
+      <td>${deps.escapeHtml(String(row && row.created_at || ""))}</td>
+      <td>${typeLabel}</td>
+      <td>${deps.escapeHtml(fmtEurLocal(row && row.amount_paid_eur))}</td>
+      <td>${deps.escapeHtml(fmtEurLocal(row && row.gross_eur))}</td>
+      <td>${Number(row && row.tile_count_new || 0).toLocaleString()} new / ${Number(row && row.tile_count_total || 0).toLocaleString()} total</td>
+      <td>${deps.escapeHtml(String(row && row.stripe_session_id || ""))}</td>
+      <td>${metadataLine}${tileDetails}</td>
+    </tr>`;
+  }).join("");
+  const htmlContent = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Planetka Analytics - User Purchase History</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; margin: 20px; background: #0b1020; color: #e5e7eb; }
+    h1 { margin: 0 0 8px; font-size: 24px; }
+    .muted { color: #9ca3af; font-size: 13px; }
+    .cards { display:grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap:10px; margin:16px 0; }
+    .card { background:#111827; border:1px solid #1f2937; border-radius:10px; padding:12px; }
+    .card b { display:block; font-size:20px; margin-top:4px; }
+    a { color:#93c5fd; text-decoration:none; }
+    table { width:100%; border-collapse: collapse; margin: 14px 0 16px; font-size: 13px; }
+    th, td { border-bottom: 1px solid #1f2937; padding: 8px 6px; text-align:left; vertical-align: top; }
+    th { color:#93c5fd; font-weight:600; white-space: nowrap; }
+    .inner { margin: 8px 0 0; font-size:12px; }
+    summary { cursor:pointer; color:#bfdbfe; margin-top:6px; }
+    code { color:#fef3c7; }
+  </style>
+</head>
+<body>
+  <h1>${deps.escapeHtml(targetEmail || targetUserId)}</h1>
+  <div class="muted">Signed in as ${deps.escapeHtml(String(adminUser.email || ""))}</div>
+  <p><a href="/admin/analytics/users">Back to users</a> · <a href="/admin/analytics">Back to analytics</a></p>
+  <section class="cards">
+    <div class="card"><span>Balance</span><b>${deps.escapeHtml(fmtEurLocal(account && account.balance_credits))}</b></div>
+    <div class="card"><span>Paid EUR</span><b>${deps.escapeHtml(fmtEurLocal(paidSummary && paidSummary.paid_eur))}</b></div>
+    <div class="card"><span>Licenced Tiles</span><b>${Number(licencedSummary && licencedSummary.tile_count || 0).toLocaleString()}</b></div>
+    <div class="card"><span>Nominal Tile Value</span><b>${deps.escapeHtml(fmtEurLocal(licencedSummary && licencedSummary.nominal_eur))}</b></div>
+  </section>
+  <h2>Purchase History</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Time</th>
+        <th>Transaction</th>
+        <th>Paid</th>
+        <th>Full Price</th>
+        <th>Tiles</th>
+        <th>Stripe Session</th>
+        <th>Details</th>
+      </tr>
+    </thead>
+    <tbody>${purchaseRowsHtml || `<tr><td colspan="7" class="muted">No purchase history recorded yet.</td></tr>`}</tbody>
+  </table>
+</body>
+</html>`;
+  return deps.html(htmlContent, 200, env);
+}
+
 export async function handleAdminAnalyticsUsersPage(request, env, deps) {
   const url = new URL(request.url);
   if (String(url.searchParams.get("access_token") || url.searchParams.get("token") || "").trim()) {
@@ -345,6 +521,9 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
     const userIdRaw = String(row && row.user_id || "");
     const userEmailRaw = String(row && row.user_email || "");
     const userEmail = deps.escapeHtml(userEmailRaw);
+    const userHref = userIdRaw
+      ? `/admin/analytics/user?user_id=${encodeURIComponent(userIdRaw)}`
+      : `/admin/analytics/user?email=${encodeURIComponent(userEmailRaw)}`;
     const status = String(row && row.user_status || "").trim().toLowerCase();
     const previewHeld = Boolean(String(row && row.preview_fair_usage_hold_at || "").trim());
     const standardUnlocked = Boolean(Number(row && row.standard_quality_unlocked || 0));
@@ -359,7 +538,7 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
       actionButtons = `${creditButtons}${previewHoldButton}<button class="action-btn danger" data-action="block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Block</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
     }
     return `<tr${previewHeld ? ` class="preview-held"` : ""}>
-      <td>${userEmail}</td>
+      <td><a href="${deps.escapeHtml(userHref)}">${userEmail}</a></td>
       <td>${deps.escapeHtml(fmtEur(row && row.balance_credits))}</td>
       <td>${deps.escapeHtml(fmtEur(row && (row.paid_eur_lifetime ?? row.total_spent_credits)))}</td>
       <td>${standardUnlocked ? "Unlocked" : "—"}</td>

@@ -49,6 +49,7 @@ import {
   handleAdminAnalyticsData as handleAdminAnalyticsDataRoute,
   handleAdminAnalyticsPage as handleAdminAnalyticsPageRoute,
   handleAdminAnalyticsTileMapImage as handleAdminAnalyticsTileMapImageRoute,
+  handleAdminAnalyticsUserPage as handleAdminAnalyticsUserPageRoute,
   handleAdminAnalyticsUsersPage as handleAdminAnalyticsUsersPageRoute,
 } from "./worker/admin_analytics_handlers.js";
 import {
@@ -92,6 +93,9 @@ import {
   handleCreditCheckout as handleCreditCheckoutRoute,
   handleCreditEstimate as handleCreditEstimateRoute,
   handleCreditMe as handleCreditMeRoute,
+  handleCreditPurchaseHistory as handleCreditPurchaseHistoryRoute,
+  handleCreditRegionPackDetailLink as handleCreditRegionPackDetailLinkRoute,
+  handleCreditRegionPackMap as handleCreditRegionPackMapRoute,
   handleCreditRegionOffers as handleCreditRegionOffersRoute,
   handleCreditUnlocked as handleCreditUnlockedRoute,
 } from "./worker/credit_routes.js";
@@ -309,6 +313,8 @@ const ADMIN_ANALYTICS_DEPS = {
   DEFAULT_ANALYTICS_WINDOW_MINUTES,
   DEFAULT_LIVE_TILE_MAP_WINDOW_MINUTES,
   escapeHtml,
+  findUserByEmail,
+  findUserById,
   html,
   isAnalyticsSnapshotStale,
   json,
@@ -331,6 +337,9 @@ const ADMIN_ANALYTICS_DEPS = {
   sanitizeLiveTileMapMinutes: (value, fallback = DEFAULT_LIVE_TILE_MAP_WINDOW_MINUTES) =>
     sanitizeLiveTileMapMinutesQuery(value, fallback, ANALYTICS_QUERY_DEPS),
   storeAnalyticsSnapshot,
+  dbAll,
+  dbGet,
+  ensureCreditTables,
   BYTES_PER_GB,
 };
 
@@ -2816,6 +2825,80 @@ async function ensureCreditTables(db) {
   await dbRun(
     db,
     `
+      CREATE TABLE IF NOT EXISTS purchase_history (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        user_email TEXT,
+        purchase_type TEXT NOT NULL,
+        stripe_session_id TEXT,
+        stripe_payment_intent_id TEXT,
+        currency TEXT NOT NULL DEFAULT 'eur',
+        amount_paid_eur REAL NOT NULL DEFAULT 0,
+        nominal_eur REAL NOT NULL DEFAULT 0,
+        gross_eur REAL NOT NULL DEFAULT 0,
+        discount_eur REAL NOT NULL DEFAULT 0,
+        discount_percent INTEGER NOT NULL DEFAULT 0,
+        quality_mode TEXT,
+        region_pack_id TEXT,
+        region_pack_name TEXT,
+        region_pack_type TEXT,
+        catalog_version TEXT,
+        tile_count_total INTEGER NOT NULL DEFAULT 0,
+        tile_count_new INTEGER NOT NULL DEFAULT 0,
+        tile_count_already_licenced INTEGER NOT NULL DEFAULT 0,
+        metadata_json TEXT,
+        created_at TEXT NOT NULL
+      )
+    `,
+  );
+  await dbRun(
+    db,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_purchase_history_stripe_session ON purchase_history(stripe_session_id) WHERE stripe_session_id IS NOT NULL AND stripe_session_id != ''`,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_purchase_history_user_created ON purchase_history(user_id, created_at DESC)`,
+  );
+  await dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS purchase_history_tiles (
+        purchase_id TEXT NOT NULL,
+        tile_key TEXT NOT NULL,
+        tile_status TEXT NOT NULL DEFAULT 'new',
+        price_eur REAL NOT NULL DEFAULT 0,
+        gross_price_eur REAL NOT NULL DEFAULT 0,
+        land_km2 REAL NOT NULL DEFAULT 0,
+        billable_land_km2 REAL NOT NULL DEFAULT 0,
+        quality_mode TEXT NOT NULL DEFAULT 'full',
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (purchase_id, tile_key)
+      )
+    `,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_purchase_history_tiles_tile ON purchase_history_tiles(tile_key)`,
+  );
+  await dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS region_pack_detail_tokens (
+        token TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        region_pack_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+      )
+    `,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_region_pack_detail_tokens_expires ON region_pack_detail_tokens(expires_at)`,
+  );
+  await dbRun(
+    db,
+    `
       CREATE TABLE IF NOT EXISTS tile_land_stats (
         tile_key TEXT PRIMARY KEY,
         x INTEGER NOT NULL,
@@ -3795,6 +3878,7 @@ const ADMIN_ROUTE_DEPS = {
   handleAdminAnalyticsData: (request, env) => handleAdminAnalyticsDataRoute(request, env, ADMIN_ANALYTICS_DEPS),
   handleAdminAnalyticsPage: (request, env) => handleAdminAnalyticsPageRoute(request, env, ADMIN_ANALYTICS_DEPS),
   handleAdminAnalyticsTileMapImage: (request, env) => handleAdminAnalyticsTileMapImageRoute(request, env, ADMIN_ANALYTICS_DEPS),
+  handleAdminAnalyticsUserPage: (request, env) => handleAdminAnalyticsUserPageRoute(request, env, ADMIN_ANALYTICS_DEPS),
   handleAdminAnalyticsUsersPage: (request, env) => handleAdminAnalyticsUsersPageRoute(request, env, ADMIN_ANALYTICS_DEPS),
   handleAdminLoginPage: (request, env) => handleAdminLoginPageRoute(request, env, ADMIN_SESSION_DEPS),
   handleAdminPasswordLogin: (request, env) => handleAdminPasswordLoginRoute(request, env, ADMIN_SESSION_DEPS),
@@ -3887,6 +3971,21 @@ async function dispatchExactRoute(request, env, path) {
     case "/credits/region-offers":
       if (request.method === "POST") {
         return await handleCreditRegionOffersRoute(request, env, TILE_ROUTE_DEPS);
+      }
+      return null;
+    case "/credits/region-pack-detail-link":
+      if (request.method === "POST") {
+        return await handleCreditRegionPackDetailLinkRoute(request, env, TILE_ROUTE_DEPS);
+      }
+      return null;
+    case "/credits/region-pack-map":
+      if (request.method === "GET" || request.method === "HEAD") {
+        return await handleCreditRegionPackMapRoute(request, env, TILE_ROUTE_DEPS);
+      }
+      return null;
+    case "/credits/purchase-history":
+      if (request.method === "GET") {
+        return await handleCreditPurchaseHistoryRoute(request, env, TILE_ROUTE_DEPS);
       }
       return null;
     case "/credits/unlocked":
