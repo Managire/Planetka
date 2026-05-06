@@ -16,6 +16,8 @@ export async function dispatchAdminRoute(request, env, path, deps) {
     handleAdminSetGlobalUnrestrictedQuality,
     handleAdminUserBlock,
     handleAdminUserUnblock,
+    handleAdminUserSetPreviewHold,
+    handleAdminUserReleasePreviewHold,
     handleAdminUserHardBlock,
     handleAdminGiftCredits,
     handleAdminUserSetPlan,
@@ -78,6 +80,16 @@ export async function dispatchAdminRoute(request, env, path, deps) {
     case "/admin/users/unblock":
       if (request.method === "POST") {
         return await handleAdminUserUnblock(request, env);
+      }
+      return null;
+    case "/admin/users/release-preview-hold":
+      if (request.method === "POST") {
+        return await handleAdminUserReleasePreviewHold(request, env);
+      }
+      return null;
+    case "/admin/users/set-preview-hold":
+      if (request.method === "POST") {
+        return await handleAdminUserSetPreviewHold(request, env);
       }
       return null;
     case "/admin/users/hard-block":

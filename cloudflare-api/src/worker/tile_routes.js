@@ -40,7 +40,10 @@ export async function handleTileSessionStart(request, env, deps) {
     requireAuthenticatedUserContext,
     parseJson,
     issueTileSessionToken,
+    getPreviewFairUsageHoldForUser,
     normalizeRequestedPlan,
+    normalizeQualityMode,
+    previewFairUsageBlockedResponse,
     requireDb,
     json: jsonResponse,
   } = deps;
@@ -53,10 +56,18 @@ export async function handleTileSessionStart(request, env, deps) {
   if (auth.error) {
     return auth.error;
   }
+  const db = requireDb(env);
   const body = await parseJson(request);
   const requestedQualityMode = String(
     body && body.quality_mode ? body.quality_mode : request.headers.get("X-Planetka-Quality-Mode") || "",
   ).trim();
+  const normalizedRequestedQualityMode = normalizeQualityMode(requestedQualityMode);
+  if (normalizedRequestedQualityMode === "preview") {
+    const hold = await getPreviewFairUsageHoldForUser(db, auth.user && auth.user.id);
+    if (hold && hold.held) {
+      return previewFairUsageBlockedResponse(env, hold.message);
+    }
+  }
   const requestedResolveId = String(
     body && body.resolve_id ? body.resolve_id : request.headers.get("X-Planetka-Resolve-Id") || "",
   ).trim();
@@ -82,7 +93,6 @@ export async function handleTileSessionStart(request, env, deps) {
   if (issued && issued.error) {
     return issued.error;
   }
-  const db = requireDb(env);
   const unlockResult = creditEnforced
     ? await unlockTilesForSession(
       db,
@@ -153,8 +163,11 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
     normalizeQualityMode,
     normalizeRequestedPlan,
     normalizeResolveId,
+    getPreviewFairUsageHoldForUser,
+    previewFairUsageBlockedResponse,
     qualityModeNotAllowedMessage,
     readTileSessionClaims,
+    recordPreviewUsageAndMaybeAlert,
     recordTileRequestEvent,
     requestClientIp,
     requestCountry,
@@ -224,6 +237,7 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
   let eventFolder = "";
   let eventFileName = "";
   let eventTileKey = "";
+  let eventQualityMode = "";
   let legacyCreditUnlockResult = null;
 
   try {
@@ -261,6 +275,15 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
       return json({ ok: false, error: "tile_session_quality_mismatch" }, 403, env);
     }
     const effectiveQualityMode = tokenQualityMode || requestedQualityMode;
+    eventQualityMode = effectiveQualityMode;
+    if ((request.method === "GET" || request.method === "HEAD") && effectiveQualityMode === "preview") {
+      const hold = await getPreviewFairUsageHoldForUser(db, user && user.id);
+      if (hold && hold.held) {
+        eventStatusCode = 403;
+        eventErrorCode = "preview_fair_usage_hold";
+        return previewFairUsageBlockedResponse(env, hold.message);
+      }
+    }
     const tileRequiredQualityMode = minimumPlanQualityForTile(fileName);
     const creditBillingQualityMode = normalizeQualityMode(
       effectiveQualityMode !== "preview" ? effectiveQualityMode : tileRequiredQualityMode,
@@ -456,6 +479,18 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
     eventStatusCode = 200;
     eventBytesServed = objectSize;
     eventCacheStatus = cacheStatus;
+    if (effectiveQualityMode === "preview" && request.method === "GET") {
+      await recordPreviewUsageAndMaybeAlert(db, env, {
+        created_at_unix: Math.floor(Date.now() / 1000),
+        user_id: String(user.id || ""),
+        user_email: String(user.email || ""),
+        method: "GET",
+        quality_mode: effectiveQualityMode,
+        status_code: 200,
+        bytes_served: objectSize,
+        tile_key: creditTileKey || eventTileKey,
+      });
+    }
     return new Response(responseBody, {
       status: 200,
       headers: responseHeaders,
@@ -477,6 +512,7 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
       folder: eventFolder,
       file_name: eventFileName,
       tile_key: eventTileKey,
+      quality_mode: eventQualityMode,
       status_code: statusCode,
       bytes_served: eventBytesServed,
       cache_status: eventCacheStatus,

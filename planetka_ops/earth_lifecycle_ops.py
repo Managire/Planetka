@@ -1,6 +1,70 @@
 import bpy
 
 
+def _snapshot_camera_view_areas(context):
+    snapshots = []
+    seen_region_data = set()
+
+    def _capture_screen(screen):
+        if screen is None:
+            return
+        for area in tuple(getattr(screen, "areas", ()) or ()):
+            if str(getattr(area, "type", "") or "") != "VIEW_3D":
+                continue
+            space = getattr(getattr(area, "spaces", None), "active", None)
+            if space is None or str(getattr(space, "type", "") or "") != "VIEW_3D":
+                continue
+            rv3d = getattr(space, "region_3d", None)
+            if rv3d is None:
+                continue
+            rv3d_id = id(rv3d)
+            if rv3d_id in seen_region_data:
+                continue
+            seen_region_data.add(rv3d_id)
+            snapshots.append({
+                "area": area,
+                "rv3d": rv3d,
+                "was_camera": str(getattr(rv3d, "view_perspective", "") or "") == "CAMERA",
+            })
+
+    window_manager = getattr(context, "window_manager", None)
+    if window_manager is not None:
+        for window in tuple(getattr(window_manager, "windows", ()) or ()):
+            _capture_screen(getattr(window, "screen", None))
+
+    _capture_screen(getattr(context, "screen", None))
+    return tuple(snapshots)
+
+
+def _restore_camera_view_areas(context, scene, snapshots, logger, recoverable_exceptions):
+    del context
+    if scene is None or not snapshots:
+        return False
+    camera = getattr(scene, "camera", None)
+    if camera is None:
+        return False
+
+    restored = False
+    for snapshot in snapshots:
+        if not bool(snapshot.get("was_camera", False)):
+            continue
+        rv3d = snapshot.get("rv3d", None)
+        if rv3d is None:
+            continue
+        try:
+            if getattr(scene, "camera", None) is not camera:
+                scene.camera = camera
+            if str(getattr(rv3d, "view_perspective", "") or "") != "CAMERA":
+                rv3d.view_perspective = "CAMERA"
+                restored = True
+            area = snapshot.get("area", None)
+            if area is not None:
+                area.tag_redraw()
+        except recoverable_exceptions:
+            logger.debug("Planetka: failed restoring camera viewport state after rebuild", exc_info=True)
+    return restored
+
+
 def rebuild_earth_execute(operator, context, deps):
     require_scene = deps["require_scene"]
     require_planetka_props = deps["require_planetka_props"]
@@ -25,16 +89,16 @@ def rebuild_earth_execute(operator, context, deps):
         return {'CANCELLED'}
 
     selected_names_before, active_name_before = _snapshot_view_selection(context)
+    camera_view_snapshot = _snapshot_camera_view_areas(context)
 
     def _return_with_selection(result):
         _restore_view_selection(context, scene, selected_names_before, active_name_before)
+        _restore_camera_view_areas(context, scene, camera_view_snapshot, logger, _REBUILD_EXCEPTIONS)
         return result
 
     camera = _pick_scene_camera(scene, context=context)
     camera_snapshot = _snapshot_camera_state_for_rebuild(scene, camera)
     earth_settings_snapshot = _snapshot_earth_settings_for_rebuild(scene, props)
-    temp_camera_obj = None
-    temp_camera_data = None
 
     cleanup_stats = _earth_graph_cleanup_for_rebuild(scene)
     detached_cameras = int(cleanup_stats.get("detached_cameras", 0))
@@ -45,24 +109,10 @@ def rebuild_earth_execute(operator, context, deps):
     cleanup_counts = dict(cleanup_stats.get("cleanup_counts", {}) or {})
 
     if camera is not None and str(getattr(camera, "type", "")) == "CAMERA":
-        for collection in tuple(getattr(camera, "users_collection", ()) or ()):
-            try:
-                collection.objects.unlink(camera)
-            except _REBUILD_EXCEPTIONS:
-                logger.debug("Planetka: failed unlinking preserved camera during rebuild isolation", exc_info=True)
-
-    try:
-        temp_camera_data = bpy.data.cameras.new("Planetka Rebuild Temp Camera Data")
-        temp_camera_obj = bpy.data.objects.new("Planetka Rebuild Temp Camera", temp_camera_data)
-        scene.collection.objects.link(temp_camera_obj)
-        matrix_world = camera_snapshot.get("matrix_world", None)
-        if matrix_world is not None:
-            temp_camera_obj.matrix_world = matrix_world
-        scene.camera = temp_camera_obj
-    except _REBUILD_EXCEPTIONS:
-        logger.debug("Planetka: failed creating temporary rebuild camera", exc_info=True)
-        temp_camera_obj = None
-        temp_camera_data = None
+        try:
+            scene.camera = camera
+        except _REBUILD_EXCEPTIONS:
+            logger.debug("Planetka: failed preserving active camera before rebuild", exc_info=True)
 
     try:
         scene[_SKIP_CAMERA_CHANGES_ON_CREATE_EARTH_KEY] = True
@@ -77,19 +127,8 @@ def rebuild_earth_execute(operator, context, deps):
         except _REBUILD_EXCEPTIONS:
             logger.debug("Planetka: failed clearing create-earth camera-skip flag after rebuild", exc_info=True)
 
-    if temp_camera_obj is not None:
-        try:
-            bpy.data.objects.remove(temp_camera_obj, do_unlink=True)
-        except _REBUILD_EXCEPTIONS:
-            logger.debug("Planetka: failed removing temporary rebuild camera object", exc_info=True)
-    if temp_camera_data is not None:
-        try:
-            if int(getattr(temp_camera_data, "users", 0) or 0) == 0:
-                bpy.data.cameras.remove(temp_camera_data)
-        except _REBUILD_EXCEPTIONS:
-            logger.debug("Planetka: failed removing temporary rebuild camera data", exc_info=True)
-
     _earth_graph_restore_after_rebuild(scene, props, earth_settings_snapshot, camera_snapshot)
+    _restore_camera_view_areas(context, scene, camera_view_snapshot, logger, _REBUILD_EXCEPTIONS)
 
     if "FINISHED" not in rebuild_result:
         return _return_with_selection(fail(

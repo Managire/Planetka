@@ -1356,9 +1356,14 @@ export async function collectAnalyticsSnapshot(
 
 export async function listAnalyticsUsers(db, env, options = {}, deps) {
   await deps.ensureTileRequestEventsTable(db);
+  await deps.ensureTileRequestRollupTables(db);
+  await deps.ensureUserQualityAccessColumns(db);
   if (typeof deps.ensureCreditTables === "function") {
     await deps.ensureCreditTables(db);
   }
+  const nowUnix = Math.floor(Date.now() / 1000);
+  const currentHourUnix = deps.startOfHourUnix(nowUnix);
+  const currentDayUnix = deps.startOfDayUnix(nowUnix);
   const sortBy = parseAnalyticsUsersSort(options.sort_by);
   const sortDir = parseAnalyticsUsersSortDirection(options.sort_dir);
   const query = String(options.query || "").trim().toLowerCase();
@@ -1401,6 +1406,54 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
         FROM tile_request_rollup_daily_account r
         GROUP BY r.user_id
       ),
+      preview_hour AS (
+        SELECT
+          user_id,
+          COALESCE(SUM(bytes_served), 0) AS preview_hour_bytes,
+          COALESCE(SUM(request_count), 0) AS preview_hour_requests,
+          COALESCE(MAX(d004_unique_count), 0) AS preview_d004_unique_hour
+        FROM preview_usage_hourly_account
+        WHERE bucket_start_unix = ?
+        GROUP BY user_id
+      ),
+      preview_day AS (
+        SELECT
+          user_id,
+          COALESCE(SUM(bytes_served), 0) AS preview_day_bytes,
+          COALESCE(SUM(request_count), 0) AS preview_day_requests
+        FROM tile_request_rollup_daily_account_quality
+        WHERE quality_mode = 'preview'
+          AND day_start_unix = ?
+        GROUP BY user_id
+      ),
+      preview_lifetime AS (
+        SELECT
+          user_id,
+          COALESCE(SUM(bytes_served), 0) AS preview_lifetime_bytes,
+          COALESCE(SUM(request_count), 0) AS preview_lifetime_requests
+        FROM tile_request_rollup_daily_account_quality
+        WHERE quality_mode = 'preview'
+        GROUP BY user_id
+      ),
+      full_lifetime AS (
+        SELECT
+          user_id,
+          COALESCE(SUM(bytes_served), 0) AS full_lifetime_bytes,
+          COALESCE(SUM(request_count), 0) AS full_lifetime_requests
+        FROM tile_request_rollup_daily_account_quality
+        WHERE quality_mode = 'full'
+        GROUP BY user_id
+      ),
+      paid_full_resolves AS (
+        SELECT
+          user_id,
+          COUNT(*) AS paid_full_resolve_count
+        FROM credit_ledger
+        WHERE LOWER(COALESCE(reason, '')) IN ('tile_unlock', 'stripe_scene_purchase')
+          AND LOWER(COALESCE(json_extract(metadata_json, '$.quality_mode'), '')) = 'full'
+          AND COALESCE(CAST(json_extract(metadata_json, '$.tile_count') AS INTEGER), 0) > 0
+        GROUP BY user_id
+      ),
       unlocked_tiles AS (
         SELECT
           user_id,
@@ -1412,12 +1465,24 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
         u.id AS user_id,
         u.email AS user_email,
         NULLIF(TRIM(LOWER(u.status)), '') AS user_status,
+        COALESCE(NULLIF(TRIM(u.preview_fair_usage_hold_at), ''), '') AS preview_fair_usage_hold_at,
+        COALESCE(NULLIF(TRIM(u.preview_fair_usage_hold_reason), ''), '') AS preview_fair_usage_hold_reason,
         COALESCE(ca.balance_credits, 0) AS balance_credits,
         COALESCE(ca.total_granted_credits, 0) AS total_granted_credits,
         COALESCE(ca.total_spent_credits, 0) AS total_spent_credits,
         COALESCE(ut.unlocked_tile_count, 0) AS unlocked_tile_count,
         COALESCE(rc.resolve_count, 0) AS resolve_count,
         COALESCE(du.lifetime_bytes, 0) AS lifetime_bytes,
+        COALESCE(ph.preview_hour_bytes, 0) AS preview_hour_bytes,
+        COALESCE(ph.preview_hour_requests, 0) AS preview_hour_requests,
+        COALESCE(ph.preview_d004_unique_hour, 0) AS preview_d004_unique_hour,
+        COALESCE(pd.preview_day_bytes, 0) AS preview_day_bytes,
+        COALESCE(pd.preview_day_requests, 0) AS preview_day_requests,
+        COALESCE(pl.preview_lifetime_bytes, 0) AS preview_lifetime_bytes,
+        COALESCE(pl.preview_lifetime_requests, 0) AS preview_lifetime_requests,
+        COALESCE(fl.full_lifetime_bytes, 0) AS full_lifetime_bytes,
+        COALESCE(fl.full_lifetime_requests, 0) AS full_lifetime_requests,
+        COALESCE(pfr.paid_full_resolve_count, 0) AS paid_full_resolve_count,
         COALESCE(
           NULLIF(TRIM(datetime(du.last_seen_unix, 'unixepoch')), ''),
           COALESCE(NULLIF(TRIM(u.last_login_at), ''), COALESCE(NULLIF(TRIM(u.created_at), ''), ''))
@@ -1426,12 +1491,17 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
       FROM users u
       LEFT JOIN daily_usage du ON du.user_id = u.id
       LEFT JOIN resolve_counts rc ON rc.user_id = u.id
+      LEFT JOIN preview_hour ph ON ph.user_id = u.id
+      LEFT JOIN preview_day pd ON pd.user_id = u.id
+      LEFT JOIN preview_lifetime pl ON pl.user_id = u.id
+      LEFT JOIN full_lifetime fl ON fl.user_id = u.id
+      LEFT JOIN paid_full_resolves pfr ON pfr.user_id = u.id
       LEFT JOIN user_credit_accounts ca ON ca.user_id = u.id
       LEFT JOIN unlocked_tiles ut ON ut.user_id = u.id
       ${whereSql}
       ORDER BY ${orderSql} ${sortDir.toUpperCase()}, LOWER(COALESCE(u.email, '')) ASC
       LIMIT ${limit}
     `,
-    bindings,
+    [currentHourUnix, currentDayUnix, ...bindings],
   );
 }

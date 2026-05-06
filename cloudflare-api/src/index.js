@@ -80,6 +80,8 @@ import {
   handleAdminUserBlock as handleAdminUserBlockRoute,
   handleAdminSetGlobalUnrestrictedQuality as handleAdminSetGlobalUnrestrictedQualityRoute,
   handleAdminUserHardBlock as handleAdminUserHardBlockRoute,
+  handleAdminUserReleasePreviewHold as handleAdminUserReleasePreviewHoldRoute,
+  handleAdminUserSetPreviewHold as handleAdminUserSetPreviewHoldRoute,
   handleAdminQaAuthReset as handleAdminQaAuthResetRoute,
   handleAdminUserSetPlan as handleAdminUserSetPlanRoute,
   handleAdminUserSetUnrestrictedQuality as handleAdminUserSetUnrestrictedQualityRoute,
@@ -169,6 +171,12 @@ const DEFAULT_TILE_FARM_ALERT_UNIQUE_TILE_THRESHOLD = 200;
 const DEFAULT_TILE_FARM_ALERT_UNTAGGED_MIN_REQUESTS = 120;
 const DEFAULT_TILE_FARM_ALERT_UNTAGGED_PERCENT = 90;
 const DEFAULT_TILE_FARM_ALERT_EMAIL_COOLDOWN_SECONDS = 300;
+const DEFAULT_PREVIEW_FAIR_USAGE_ALERT_GB = 15;
+const DEFAULT_PREVIEW_FAIR_USAGE_STRICT_FACTOR = 0.5;
+const DEFAULT_PREVIEW_FAIR_USAGE_NEW_USER_DAYS = 7;
+const DEFAULT_PREVIEW_D004_UNIQUE_ALERT_THRESHOLD = 100;
+const DEFAULT_PREVIEW_D004_UNIQUE_ALERT_WINDOW_SECONDS = 300;
+const DEFAULT_PREVIEW_FAIR_USAGE_ALERT_EMAIL_COOLDOWN_SECONDS = 3600;
 const DEFAULT_TILE_SESSION_TOKEN_TTL_SECONDS = 3600;
 const DEFAULT_AUTH_CONTEXT_CACHE_TTL_SECONDS = 60;
 const DEFAULT_AUTH_CONTEXT_CACHE_MAX_ENTRIES = 4096;
@@ -584,6 +592,18 @@ function blockedAccountResponse(env, message = "Planetka account is blocked. Con
 
 function toBytesFromGb(gbValue) {
   return Math.max(0, Math.floor(parsePositiveNumber(gbValue, 0) * BYTES_PER_GB));
+}
+
+function previewFairUsageBlockedResponse(env, message = "Preview streaming is temporarily paused for this account while usage is reviewed.") {
+  return json(
+    {
+      ok: false,
+      error: "preview_fair_usage_hold",
+      message,
+    },
+    403,
+    env,
+  );
 }
 
 function clampNonNegativeInt(value) {
@@ -1438,6 +1458,7 @@ async function ensureTileRequestEventsTable(db) {
         folder TEXT,
         file_name TEXT,
         tile_key TEXT,
+        quality_mode TEXT,
         status_code INTEGER NOT NULL,
         bytes_served INTEGER NOT NULL DEFAULT 0,
         cache_status TEXT,
@@ -1449,6 +1470,19 @@ async function ensureTileRequestEventsTable(db) {
       )
     `,
   );
+  const eventPragma = await db.prepare(`PRAGMA table_info(tile_request_events)`).all();
+  const eventRows = Array.isArray(eventPragma && eventPragma.results) ? eventPragma.results : [];
+  const eventColumnNames = new Set(eventRows.map((row) => String(row && row.name || "").trim().toLowerCase()));
+  if (!eventColumnNames.has("quality_mode")) {
+    try {
+      await dbRun(db, `ALTER TABLE tile_request_events ADD COLUMN quality_mode TEXT`);
+    } catch (error) {
+      const message = String(error && error.message || "").toLowerCase();
+      if (!message.includes("duplicate column")) {
+        throw error;
+      }
+    }
+  }
   await dbRun(
     db,
     `CREATE INDEX IF NOT EXISTS idx_tile_request_events_created_unix ON tile_request_events(created_at_unix DESC)`,
@@ -1468,6 +1502,10 @@ async function ensureTileRequestEventsTable(db) {
   await dbRun(
     db,
     `CREATE INDEX IF NOT EXISTS idx_tile_request_events_created_at ON tile_request_events(created_at DESC)`,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_tile_request_events_user_quality_created ON tile_request_events(user_id, quality_mode, created_at_unix DESC)`,
   );
   await ensureTileRequestRollupTables(db);
   tileRequestEventsTableReady = true;
@@ -1633,6 +1671,73 @@ async function ensureTileRequestRollupTables(db) {
     db,
     `CREATE INDEX IF NOT EXISTS idx_tile_rollup_daily_account_user ON tile_request_rollup_daily_account(user_id, day_start_unix DESC)`,
   );
+  await dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS tile_request_rollup_hourly_account_quality (
+        bucket_start_unix INTEGER NOT NULL,
+        bucket_start TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        user_email TEXT NOT NULL,
+        quality_mode TEXT NOT NULL,
+        request_count INTEGER NOT NULL DEFAULT 0,
+        bytes_served INTEGER NOT NULL DEFAULT 0,
+        error_count INTEGER NOT NULL DEFAULT 0,
+        cache_hit_count INTEGER NOT NULL DEFAULT 0,
+        tagged_request_count INTEGER NOT NULL DEFAULT 0,
+        last_event_unix INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (bucket_start_unix, user_id, quality_mode)
+      )
+    `,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_tile_rollup_hourly_quality_user ON tile_request_rollup_hourly_account_quality(user_id, quality_mode, bucket_start_unix DESC)`,
+  );
+  await dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS tile_request_rollup_daily_account_quality (
+        day_start_unix INTEGER NOT NULL,
+        day_start TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        user_email TEXT NOT NULL,
+        quality_mode TEXT NOT NULL,
+        request_count INTEGER NOT NULL DEFAULT 0,
+        bytes_served INTEGER NOT NULL DEFAULT 0,
+        error_count INTEGER NOT NULL DEFAULT 0,
+        cache_hit_count INTEGER NOT NULL DEFAULT 0,
+        tagged_request_count INTEGER NOT NULL DEFAULT 0,
+        last_event_unix INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (day_start_unix, user_id, quality_mode)
+      )
+    `,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_tile_rollup_daily_quality_user ON tile_request_rollup_daily_account_quality(user_id, quality_mode, day_start_unix DESC)`,
+  );
+  await dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS preview_usage_hourly_account (
+        bucket_start_unix INTEGER NOT NULL,
+        bucket_start TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        user_email TEXT NOT NULL,
+        request_count INTEGER NOT NULL DEFAULT 0,
+        bytes_served INTEGER NOT NULL DEFAULT 0,
+        d004_unique_count INTEGER NOT NULL DEFAULT 0,
+        alert_sent_at TEXT,
+        last_event_unix INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (bucket_start_unix, user_id)
+      )
+    `,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_preview_usage_hourly_user ON preview_usage_hourly_account(user_id, bucket_start_unix DESC)`,
+  );
 }
 
 async function ensureMonthlyCostAlertStateTable(db) {
@@ -1701,6 +1806,7 @@ async function recordTileRequestRollups(db, payload) {
   const taggedRequest = String(payload.resolve_id || "").trim() ? 1 : 0;
   const errorCount = statusCode >= 400 ? 1 : 0;
   const cacheHitCount = cacheStatus === "HIT" ? 1 : 0;
+  const qualityMode = normalizeQualityMode(payload.quality_mode || payload.qualityMode || "");
 
   await dbRun(
     db,
@@ -1763,6 +1869,70 @@ async function recordTileRequestRollups(db, payload) {
     `,
     [bucketDay, bucketDayIso, userId, userEmail, bytesServed, errorCount, cacheHitCount, taggedRequest, createdAtUnix],
   );
+
+  await dbRun(
+    db,
+    `
+      INSERT INTO tile_request_rollup_hourly_account_quality (
+        bucket_start_unix,
+        bucket_start,
+        user_id,
+        user_email,
+        quality_mode,
+        request_count,
+        bytes_served,
+        error_count,
+        cache_hit_count,
+        tagged_request_count,
+        last_event_unix
+      ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+      ON CONFLICT(bucket_start_unix, user_id, quality_mode) DO UPDATE SET
+        user_email = excluded.user_email,
+        request_count = tile_request_rollup_hourly_account_quality.request_count + 1,
+        bytes_served = tile_request_rollup_hourly_account_quality.bytes_served + excluded.bytes_served,
+        error_count = tile_request_rollup_hourly_account_quality.error_count + excluded.error_count,
+        cache_hit_count = tile_request_rollup_hourly_account_quality.cache_hit_count + excluded.cache_hit_count,
+        tagged_request_count = tile_request_rollup_hourly_account_quality.tagged_request_count + excluded.tagged_request_count,
+        last_event_unix = CASE
+          WHEN excluded.last_event_unix > tile_request_rollup_hourly_account_quality.last_event_unix
+            THEN excluded.last_event_unix
+          ELSE tile_request_rollup_hourly_account_quality.last_event_unix
+        END
+    `,
+    [bucketHour, bucketHourIso, userId, userEmail, qualityMode, bytesServed, errorCount, cacheHitCount, taggedRequest, createdAtUnix],
+  );
+
+  await dbRun(
+    db,
+    `
+      INSERT INTO tile_request_rollup_daily_account_quality (
+        day_start_unix,
+        day_start,
+        user_id,
+        user_email,
+        quality_mode,
+        request_count,
+        bytes_served,
+        error_count,
+        cache_hit_count,
+        tagged_request_count,
+        last_event_unix
+      ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+      ON CONFLICT(day_start_unix, user_id, quality_mode) DO UPDATE SET
+        user_email = excluded.user_email,
+        request_count = tile_request_rollup_daily_account_quality.request_count + 1,
+        bytes_served = tile_request_rollup_daily_account_quality.bytes_served + excluded.bytes_served,
+        error_count = tile_request_rollup_daily_account_quality.error_count + excluded.error_count,
+        cache_hit_count = tile_request_rollup_daily_account_quality.cache_hit_count + excluded.cache_hit_count,
+        tagged_request_count = tile_request_rollup_daily_account_quality.tagged_request_count + excluded.tagged_request_count,
+        last_event_unix = CASE
+          WHEN excluded.last_event_unix > tile_request_rollup_daily_account_quality.last_event_unix
+            THEN excluded.last_event_unix
+          ELSE tile_request_rollup_daily_account_quality.last_event_unix
+        END
+    `,
+    [bucketDay, bucketDayIso, userId, userEmail, qualityMode, bytesServed, errorCount, cacheHitCount, taggedRequest, createdAtUnix],
+  );
 }
 
 async function recordTileRequestEvent(db, payload) {
@@ -1785,6 +1955,7 @@ async function recordTileRequestEvent(db, payload) {
           folder,
           file_name,
           tile_key,
+          quality_mode,
           status_code,
           bytes_served,
           cache_status,
@@ -1793,7 +1964,7 @@ async function recordTileRequestEvent(db, payload) {
           cf_country,
           client_ip,
           error_code
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
         crypto.randomUUID(),
@@ -1807,6 +1978,7 @@ async function recordTileRequestEvent(db, payload) {
         String(payload.folder || ""),
         String(payload.file_name || ""),
         String(payload.tile_key || ""),
+        normalizeQualityMode(payload.quality_mode || payload.qualityMode || ""),
         parseNonNegativeInteger(payload.status_code, 0),
         clampNonNegativeInt(payload.bytes_served),
         String(payload.cache_status || ""),
@@ -1822,6 +1994,7 @@ async function recordTileRequestEvent(db, payload) {
       user_id: String(payload.user_id || ""),
       user_email: normalizeEmail(payload.user_email || ""),
       resolve_id: String(payload.resolve_id || ""),
+      quality_mode: normalizeQualityMode(payload.quality_mode || payload.qualityMode || ""),
       status_code: parseNonNegativeInteger(payload.status_code, 0),
       bytes_served: clampNonNegativeInt(payload.bytes_served),
       cache_status: String(payload.cache_status || ""),
@@ -1834,6 +2007,274 @@ async function recordTileRequestEvent(db, payload) {
       }),
     );
   }
+}
+
+function previewFairUsageUserMessage() {
+  return "Preview streaming is temporarily paused for this account while usage is reviewed. Full Quality licenced data and account access remain available.";
+}
+
+function previewFairUsageIsHeld(user) {
+  return Boolean(String(user && user.preview_fair_usage_hold_at || "").trim());
+}
+
+async function getPreviewFairUsageHoldForUser(db, userId) {
+  const safeUserId = String(userId || "").trim();
+  if (!safeUserId) {
+    return {
+      held: false,
+      hold_at: "",
+      reason: "",
+      message: previewFairUsageUserMessage(),
+    };
+  }
+  const user = await findUserById(db, safeUserId);
+  const holdAt = String(user && user.preview_fair_usage_hold_at || "").trim();
+  return {
+    held: Boolean(holdAt),
+    hold_at: holdAt,
+    reason: String(user && user.preview_fair_usage_hold_reason || "").trim(),
+    details_json: String(user && user.preview_fair_usage_hold_details_json || "").trim(),
+    message: previewFairUsageUserMessage(),
+  };
+}
+
+function previewStrictFactor(env = {}) {
+  const factor = parsePositiveNumber(
+    env.PREVIEW_FAIR_USAGE_STRICT_FACTOR,
+    DEFAULT_PREVIEW_FAIR_USAGE_STRICT_FACTOR,
+  );
+  return Math.min(1, Math.max(0.05, factor));
+}
+
+function parseDFromTileKey(value) {
+  const match = /_d(\d{3})/i.exec(String(value || ""));
+  if (!match) {
+    return 0;
+  }
+  return parseNonNegativeInteger(match[1], 0);
+}
+
+function userAgeDays(user) {
+  const createdAt = Date.parse(String(user && user.created_at || ""));
+  if (!Number.isFinite(createdAt) || createdAt <= 0) {
+    return Number.POSITIVE_INFINITY;
+  }
+  return Math.max(0, (Date.now() - createdAt) / 86400000);
+}
+
+async function userHasStripePaidActivity(db, userId) {
+  const safeUserId = String(userId || "").trim();
+  if (!safeUserId) {
+    return false;
+  }
+  await ensureCreditTables(db);
+  const row = await dbGet(
+    db,
+    `
+      SELECT COUNT(*) AS count
+      FROM credit_ledger
+      WHERE user_id = ?
+        AND LOWER(COALESCE(reason, '')) IN ('stripe_balance_top_up', 'stripe_scene_purchase')
+    `,
+    [safeUserId],
+  );
+  return clampNonNegativeInt(row && row.count) > 0;
+}
+
+async function previewFairUsageThresholdsForUser(db, env, userId) {
+  const safeUserId = String(userId || "").trim();
+  const baseGb = parsePositiveNumber(
+    env.PREVIEW_FAIR_USAGE_ALERT_GB || env.PREVIEW_FAIR_USAGE_HOLD_GB,
+    DEFAULT_PREVIEW_FAIR_USAGE_ALERT_GB,
+  );
+  const baseD004 = parseRateLimitInteger(
+    env.PREVIEW_D004_UNIQUE_ALERT_THRESHOLD || env.PREVIEW_D004_UNIQUE_HOLD_THRESHOLD,
+    DEFAULT_PREVIEW_D004_UNIQUE_ALERT_THRESHOLD,
+  );
+  const newUserDays = parsePositiveNumber(
+    env.PREVIEW_FAIR_USAGE_NEW_USER_DAYS,
+    DEFAULT_PREVIEW_FAIR_USAGE_NEW_USER_DAYS,
+  );
+  const user = safeUserId ? await findUserById(db, safeUserId) : null;
+  const hasPaid = await userHasStripePaidActivity(db, safeUserId);
+  const isNew = user ? userAgeDays(user) < newUserDays : true;
+  const strict = Boolean(!hasPaid || isNew);
+  const factor = strict ? previewStrictFactor(env) : 1;
+  return {
+    strict,
+    has_paid: Boolean(hasPaid),
+    is_new: Boolean(isNew),
+    hourly_bytes: toBytesFromGb(baseGb * factor),
+    hourly_gb: baseGb * factor,
+    d004_unique_threshold: Math.max(1, Math.floor(baseD004 * factor)),
+    d004_window_seconds: Math.max(
+      60,
+      parseRateLimitInteger(
+        env.PREVIEW_D004_UNIQUE_ALERT_WINDOW_SECONDS || env.PREVIEW_D004_UNIQUE_HOLD_WINDOW_SECONDS,
+        DEFAULT_PREVIEW_D004_UNIQUE_ALERT_WINDOW_SECONDS,
+      ),
+    ),
+  };
+}
+
+async function sendPreviewFairUsageThresholdAlert(db, env, details = {}) {
+  const userId = String(details.user_id || details.userId || "").trim();
+  const userEmail = normalizeEmail(details.user_email || details.userEmail || "");
+  const reason = String(details.reason || "preview_fair_usage_threshold").trim().slice(0, 160) || "preview_fair_usage_threshold";
+  const cooldownSeconds = Math.max(
+    60,
+    parseRateLimitInteger(
+      env.PREVIEW_FAIR_USAGE_ALERT_EMAIL_COOLDOWN_SECONDS,
+      DEFAULT_PREVIEW_FAIR_USAGE_ALERT_EMAIL_COOLDOWN_SECONDS,
+    ),
+  );
+  await ensureRateLimitsTable(db);
+  const alertGate = await consumeRateLimitWindow(
+    db,
+    "preview_fair_usage_alert_mail",
+    `${userId || userEmail || "unknown"}:${reason}`,
+    1,
+    cooldownSeconds,
+  );
+  if (!alertGate.allowed) {
+    return { alerted: false, cooldown: true };
+  }
+  try {
+    await sendOpsAlertEmail(
+      env,
+      "Planetka Preview fair usage threshold reached",
+      [
+        "Preview usage crossed a monitoring threshold. User access was not changed.",
+        `reason=${reason}`,
+        `user_id=${userId}`,
+        `email=${userEmail}`,
+        `bytes_this_hour=${clampNonNegativeInt(details.bytes_this_hour)}`,
+        `hourly_threshold_bytes=${clampNonNegativeInt(details.hourly_threshold_bytes)}`,
+        `hourly_threshold_gb=${Number(details.hourly_threshold_gb || 0)}`,
+        `d004_unique_count=${clampNonNegativeInt(details.d004_unique_count)}`,
+        `d004_unique_threshold=${clampNonNegativeInt(details.d004_unique_threshold)}`,
+        `d004_window_seconds=${clampNonNegativeInt(details.d004_window_seconds)}`,
+        `strict_threshold=${Boolean(details.strict_threshold)}`,
+        `has_paid=${Boolean(details.has_paid)}`,
+        `is_new=${Boolean(details.is_new)}`,
+      ],
+    );
+    return { alerted: true, cooldown: false };
+  } catch (error) {
+    console.warn(
+      "worker.preview_fair_usage_alert_email_failed",
+      JSON.stringify({
+        user_id: userId,
+        email: userEmail,
+        reason,
+        error: String(error && error.message || "preview_fair_usage_alert_email_failed"),
+      }),
+    );
+    return { alerted: false, error: String(error && error.message || "preview_fair_usage_alert_email_failed") };
+  }
+}
+
+async function recordPreviewUsageAndMaybeAlert(db, env, payload = {}) {
+  const qualityMode = normalizeQualityMode(payload.quality_mode || payload.qualityMode || "");
+  const method = String(payload.method || "GET").trim().toUpperCase();
+  const statusCode = parseNonNegativeInteger(payload.status_code, 0);
+  const userId = String(payload.user_id || "").trim();
+  const userEmail = normalizeEmail(payload.user_email || "");
+  const bytesServed = clampNonNegativeInt(payload.bytes_served);
+  if (qualityMode !== "preview" || method !== "GET" || statusCode !== 200 || !userId || bytesServed <= 0) {
+    return { alerted: false };
+  }
+
+  await ensureTileRequestRollupTables(db);
+  await ensureUserQualityAccessColumns(db);
+  const createdAtUnix = parseNonNegativeInteger(payload.created_at_unix, Math.floor(Date.now() / 1000));
+  const bucketHour = startOfHourUnix(createdAtUnix);
+  const bucketHourIso = new Date(bucketHour * 1000).toISOString();
+  const tileKey = String(payload.tile_key || "").trim();
+  const dValue = parseDFromTileKey(tileKey);
+  let d004UniqueCount = 0;
+  const thresholds = await previewFairUsageThresholdsForUser(db, env, userId);
+  if (dValue === 4) {
+    const seen = await consumeRateLimitWindow(
+      db,
+      "preview_d004_tile_seen",
+      `${userId}:${tileKey}`,
+      2147483647,
+      thresholds.d004_window_seconds,
+    );
+    if (clampNonNegativeInt(seen && seen.count) === 1) {
+      const unique = await consumeRateLimitWindow(
+        db,
+        "preview_d004_unique",
+        userId,
+        2147483647,
+        thresholds.d004_window_seconds,
+      );
+      d004UniqueCount = clampNonNegativeInt(unique && unique.count);
+    }
+  }
+
+  const usageRow = await dbGet(
+    db,
+    `
+      INSERT INTO preview_usage_hourly_account (
+        bucket_start_unix,
+        bucket_start,
+        user_id,
+        user_email,
+        request_count,
+        bytes_served,
+        d004_unique_count,
+        last_event_unix
+      ) VALUES (?, ?, ?, ?, 1, ?, ?, ?)
+      ON CONFLICT(bucket_start_unix, user_id) DO UPDATE SET
+        user_email = excluded.user_email,
+        request_count = preview_usage_hourly_account.request_count + 1,
+        bytes_served = preview_usage_hourly_account.bytes_served + excluded.bytes_served,
+        d004_unique_count = CASE
+          WHEN excluded.d004_unique_count > preview_usage_hourly_account.d004_unique_count
+            THEN excluded.d004_unique_count
+          ELSE preview_usage_hourly_account.d004_unique_count
+        END,
+        last_event_unix = CASE
+          WHEN excluded.last_event_unix > preview_usage_hourly_account.last_event_unix
+            THEN excluded.last_event_unix
+          ELSE preview_usage_hourly_account.last_event_unix
+        END
+      RETURNING bytes_served, d004_unique_count
+    `,
+    [bucketHour, bucketHourIso, userId, userEmail, bytesServed, d004UniqueCount, createdAtUnix],
+  );
+  const hourBytes = clampNonNegativeInt(usageRow && usageRow.bytes_served);
+  const hourD004Unique = Math.max(d004UniqueCount, clampNonNegativeInt(usageRow && usageRow.d004_unique_count));
+
+  if (hourBytes > thresholds.hourly_bytes) {
+    return await sendPreviewFairUsageThresholdAlert(db, env, {
+      reason: "preview_hourly_bytes_limit",
+      user_id: userId,
+      user_email: userEmail,
+      bytes_this_hour: hourBytes,
+      hourly_threshold_bytes: thresholds.hourly_bytes,
+      hourly_threshold_gb: thresholds.hourly_gb,
+      strict_threshold: thresholds.strict,
+      has_paid: thresholds.has_paid,
+      is_new: thresholds.is_new,
+    });
+  }
+  if (hourD004Unique > thresholds.d004_unique_threshold) {
+    return await sendPreviewFairUsageThresholdAlert(db, env, {
+      reason: "preview_d004_unique_tile_limit",
+      user_id: userId,
+      user_email: userEmail,
+      d004_unique_count: hourD004Unique,
+      d004_unique_threshold: thresholds.d004_unique_threshold,
+      d004_window_seconds: thresholds.d004_window_seconds,
+      strict_threshold: thresholds.strict,
+      has_paid: thresholds.has_paid,
+      is_new: thresholds.is_new,
+    });
+  }
+  return { alerted: false };
 }
 
 async function countRowsFromQuery(db, sql, bindings = []) {
@@ -1910,6 +2351,7 @@ function estimateR2MonthlyCostUsd(env, monthlyClassBOps) {
 
 async function buildAccountState(db, user, env) {
   const qualityAccess = await resolveUserQualityAccessState(db, user, env);
+  const previewFairUsageHold = await getPreviewFairUsageHoldForUser(db, user && user.id);
   const storedPlanCode = normalizeTierCodeStrict(qualityAccess.storedPlanCode);
   if (!storedPlanCode) {
     throw new Error("invalid_user_status");
@@ -1926,6 +2368,7 @@ async function buildAccountState(db, user, env) {
     commercialUseAllowed: commercialUseAllowed(storedPlanCode),
     upgradeUrl: String(env.UPGRADE_URL || DEFAULT_UPGRADE_URL).trim() || DEFAULT_UPGRADE_URL,
     contactUrl: normalizeContactUrl(env.PLANETKA_CONTACT_URL || DEFAULT_CONTACT_URL),
+    previewFairUsageHold,
   };
 }
 
@@ -1950,6 +2393,8 @@ function serializeAccountState(state) {
     commercial_use_allowed: Boolean(safeState.commercialUseAllowed),
     upgrade_url: safeState.upgradeUrl,
     contact_url: safeState.contactUrl,
+    preview_fair_usage_hold: safeState.previewFairUsageHold || { held: false },
+    previewFairUsageHold: safeState.previewFairUsageHold || { held: false },
   };
 }
 
@@ -1963,6 +2408,9 @@ async function findUserByEmail(db, email) {
         u.email,
         u.status,
         u.unrestricted_quality_override,
+        u.preview_fair_usage_hold_at,
+        u.preview_fair_usage_hold_reason,
+        u.preview_fair_usage_hold_details_json,
         u.created_at,
         u.last_login_at
       FROM users u
@@ -1983,6 +2431,9 @@ async function findUserById(db, userId) {
         u.email,
         u.status,
         u.unrestricted_quality_override,
+        u.preview_fair_usage_hold_at,
+        u.preview_fair_usage_hold_reason,
+        u.preview_fair_usage_hold_details_json,
         u.created_at,
         u.last_login_at
       FROM users u
@@ -2644,6 +3095,36 @@ async function ensureUserQualityAccessColumns(db) {
       }
     }
   }
+  if (!names.has("preview_fair_usage_hold_at")) {
+    try {
+      await dbRun(db, `ALTER TABLE users ADD COLUMN preview_fair_usage_hold_at TEXT`);
+    } catch (error) {
+      const message = String(error && error.message || "");
+      if (!message.toLowerCase().includes("duplicate column")) {
+        throw error;
+      }
+    }
+  }
+  if (!names.has("preview_fair_usage_hold_reason")) {
+    try {
+      await dbRun(db, `ALTER TABLE users ADD COLUMN preview_fair_usage_hold_reason TEXT`);
+    } catch (error) {
+      const message = String(error && error.message || "");
+      if (!message.toLowerCase().includes("duplicate column")) {
+        throw error;
+      }
+    }
+  }
+  if (!names.has("preview_fair_usage_hold_details_json")) {
+    try {
+      await dbRun(db, `ALTER TABLE users ADD COLUMN preview_fair_usage_hold_details_json TEXT`);
+    } catch (error) {
+      const message = String(error && error.message || "");
+      if (!message.toLowerCase().includes("duplicate column")) {
+        throw error;
+      }
+    }
+  }
   userQualityAccessColumnsReady = true;
 }
 
@@ -3233,12 +3714,15 @@ const TILE_ROUTE_DEPS = {
   rateLimitedResponse,
   readTileSessionClaims,
   recordTileRequestEvent,
+  recordPreviewUsageAndMaybeAlert,
   requestClientIp,
   requestCountry,
   requireAuthenticatedUserContext: (request, env, options) => requireAuthenticatedUserContext(request, env, options, AUTH_SESSION_DEPS),
   requireDb,
   requireSecret,
   resolveTileCacheControl,
+  getPreviewFairUsageHoldForUser,
+  previewFairUsageBlockedResponse,
   json,
 };
 
@@ -3264,6 +3748,8 @@ const ADMIN_ROUTE_DEPS = {
   handleAdminSetGlobalUnrestrictedQuality: (request, env) => handleAdminSetGlobalUnrestrictedQualityRoute(request, env, ADMIN_USER_DEPS),
   handleAdminUserBlock: (request, env) => handleAdminUserBlockRoute(request, env, ADMIN_USER_DEPS),
   handleAdminUserHardBlock: (request, env) => handleAdminUserHardBlockRoute(request, env, ADMIN_USER_DEPS),
+  handleAdminUserReleasePreviewHold: (request, env) => handleAdminUserReleasePreviewHoldRoute(request, env, ADMIN_USER_DEPS),
+  handleAdminUserSetPreviewHold: (request, env) => handleAdminUserSetPreviewHoldRoute(request, env, ADMIN_USER_DEPS),
   handleAdminQaAuthReset: (request, env) => handleAdminQaAuthResetRoute(request, env, ADMIN_USER_DEPS),
   handleAdminGiftCredits: (request, env) => handleAdminGiftCreditsRoute(request, env, ADMIN_USER_DEPS),
   handleAdminUserSetPlan: (request, env) => handleAdminUserSetPlanRoute(request, env, ADMIN_USER_DEPS),

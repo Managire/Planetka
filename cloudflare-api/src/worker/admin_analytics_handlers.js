@@ -343,19 +343,33 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
     const userEmailRaw = String(row && row.user_email || "");
     const userEmail = deps.escapeHtml(userEmailRaw);
     const status = String(row && row.user_status || "").trim().toLowerCase();
+    const previewHeld = Boolean(String(row && row.preview_fair_usage_hold_at || "").trim());
+    const previewHoldReason = deps.escapeHtml(String(row && row.preview_fair_usage_hold_reason || ""));
+    const previewHoldText = previewHeld
+      ? `Held${previewHoldReason ? `<div class="muted">${previewHoldReason}</div>` : ""}`
+      : "OK";
     const creditButtons = `<button class="action-btn" data-action="gift-credits" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Top Up €</button><button class="action-btn warn" data-action="subtract-credits" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Take €</button>`;
+    const previewHoldButton = previewHeld
+      ? `<button class="action-btn warn" data-action="release-preview-hold" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Release Preview Hold</button>`
+      : `<button class="action-btn warn" data-action="set-preview-hold" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Pause Preview</button>`;
     let actionButtons = "";
     if (status === "blocked") {
-      actionButtons = `${creditButtons}<button class="action-btn warn" data-action="unblock" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Unblock</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
+      actionButtons = `${creditButtons}${previewHoldButton}<button class="action-btn warn" data-action="unblock" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Unblock</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
     } else {
-      actionButtons = `${creditButtons}<button class="action-btn danger" data-action="block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Block</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
+      actionButtons = `${creditButtons}${previewHoldButton}<button class="action-btn danger" data-action="block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Block</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
     }
-    return `<tr>
+    return `<tr${previewHeld ? ` class="preview-held"` : ""}>
       <td>${userEmail}</td>
       <td>${deps.escapeHtml(fmtEur(row && row.balance_credits))}</td>
       <td>${fmtInt(row && row.unlocked_tile_count)}</td>
       <td>${fmtInt(row && row.resolve_count)}</td>
       <td>${fmtGb(row && row.lifetime_bytes)}</td>
+      <td>${fmtGb(row && row.preview_hour_bytes)}</td>
+      <td>${fmtGb(row && row.preview_day_bytes)}</td>
+      <td>${fmtGb(row && row.preview_lifetime_bytes)}</td>
+      <td>${fmtGb(row && row.full_lifetime_bytes)}</td>
+      <td>${fmtInt(row && row.paid_full_resolve_count)}</td>
+      <td>${previewHoldText}</td>
       <td>${deps.escapeHtml(String(row && row.last_seen_at || ""))}</td>
       <td class="action-wrap">${actionButtons}</td>
     </tr>`;
@@ -381,6 +395,7 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
     .action-btn.warn { border-color: #9a3412; color: #fed7aa; }
     .action-btn.danger { border-color: #991b1b; color: #fecaca; }
     .action-wrap { white-space: normal; min-width: 380px; }
+    .preview-held td { background: rgba(154, 52, 18, 0.12); }
     .error { color: #fca5a5; }
   </style>
 </head>
@@ -408,6 +423,12 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
         <th>Licenced Tiles</th>
         <th><a href="${buildSortHref("resolves")}">Resolves${sortMarker("resolves")}</a></th>
         <th><a href="${buildSortHref("lifetime")}">Lifetime GB${sortMarker("lifetime")}</a></th>
+        <th>Preview GB 1h</th>
+        <th>Preview GB Today</th>
+        <th>Preview GB Lifetime</th>
+        <th>Full GB Lifetime</th>
+        <th>Paid Full Resolves</th>
+        <th>Preview Hold</th>
         <th><a href="${buildSortHref("last_seen")}">Last Seen${sortMarker("last_seen")}</a></th>
         <th>Actions</th>
       </tr>
@@ -442,6 +463,8 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
         "hard-block": "/admin/users/hard-block",
         "gift-credits": "/admin/users/gift-credits",
         "subtract-credits": "/admin/users/gift-credits",
+        "set-preview-hold": "/admin/users/set-preview-hold",
+        "release-preview-hold": "/admin/users/release-preview-hold",
       };
       const confirmation = {
         block: "Block this user account now?",
@@ -449,6 +472,8 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
         "hard-block": "Hard block this user and block same-computer attempts?",
         "gift-credits": "Top up this account's EUR balance?",
         "subtract-credits": "Take EUR away from this account balance?",
+        "set-preview-hold": "Pause Preview streaming for this user? Full Quality remains available.",
+        "release-preview-hold": "Release this user's Preview fair-usage hold?",
       };
       const endpoint = endpointByAction[safeAction];
       if (!endpoint) return;

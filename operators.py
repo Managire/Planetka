@@ -638,6 +638,29 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
                 code=ErrorCode.RESOLVE_PRECHECK_FAILED,
                 logger=logger,
             )
+        if target_mode == "FULL":
+            try:
+                from .credit_api import get_credit_account
+                from .planetka_runtime.view_telemetry import build_resolve_cost_breakdown
+                account = get_credit_account(force=False)
+                balance = float(account.get("balance_credits", 0.0) or 0.0) if account else 0.0
+                base_path = _normalize_texture_source_path(str(getattr(prefs, "texture_base_path", "") or ""))
+                breakdown = build_resolve_cost_breakdown(
+                    scene=scene,
+                    scope_mode="CAMERA",
+                    base_path=base_path,
+                    texture_quality_mode="FULL",
+                )
+                scene_price = float(
+                    (breakdown or {}).get("total_credits", (breakdown or {}).get("credits", 0.0)) or 0.0
+                )
+            except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka: failed checking balance before Full Quality resolve", exc_info=True)
+                balance = 0.0
+                scene_price = 0.0
+            if scene_price > 0.000001 and balance <= 0.0:
+                checkout_result = bpy.ops.planetka.open_credit_checkout(checkout_option="SCENE")
+                return {'FINISHED'} if "FINISHED" in checkout_result else {'CANCELLED'}
 
         try:
             if target_mode == "FULL":

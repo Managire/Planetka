@@ -24,6 +24,7 @@ export async function handleTileEventQueueBatch(batch, env, deps) {
         folder: String(payload.folder || ""),
         file_name: String(payload.file_name || ""),
         tile_key: String(payload.tile_key || ""),
+        quality_mode: String(payload.quality_mode || payload.qualityMode || ""),
         status_code: deps.clampNonNegativeInt(payload.status_code),
         bytes_served: deps.clampNonNegativeInt(payload.bytes_served),
         cache_status: String(payload.cache_status || ""),

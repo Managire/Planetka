@@ -973,6 +973,9 @@ export async function handleCreditMe(request, env, deps) {
     `SELECT COUNT(*) AS count FROM user_tile_entitlements WHERE user_id = ?`,
     [String(auth.user.id || "").trim()],
   );
+  const previewHold = typeof deps.getPreviewFairUsageHoldForUser === "function"
+    ? await deps.getPreviewFairUsageHoldForUser(db, auth.user && auth.user.id)
+    : { held: false };
   return deps.json(
     {
       ok: true,
@@ -982,6 +985,9 @@ export async function handleCreditMe(request, env, deps) {
       balance_eur: normalizeSignedCreditAmount(account && account.balance_credits),
       unlocked_tile_count: Number(countRow && countRow.count || 0),
       user_id: String(auth.user.id || ""),
+      preview_fair_usage_hold: previewHold,
+      previewFairUsageHold: previewHold,
+      preview_fair_usage_held: Boolean(previewHold && previewHold.held),
     },
     200,
     env,
