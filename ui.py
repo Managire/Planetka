@@ -1133,6 +1133,9 @@ def _draw_account_panel(layout):
             text=f"Standard Quality: {'Unlocked' if standard_unlocked else 'Not unlocked'}",
             icon="CHECKMARK" if standard_unlocked else "LOCKED",
         )
+        licenced_data_box = layout.box()
+        licenced_data_box.label(text="Licenced Data", icon="IMPORT")
+        _draw_licenced_download_controls(licenced_data_box, prefs)
         if preview_hold_active:
             hold_box = layout.box()
             hold_row = hold_box.row(align=True)
@@ -1471,8 +1474,6 @@ def _draw_live_telemetry(layout, scene):
         )
         if more_box is not None:
             _draw_broader_region_offers(more_box, scene, active_view_scope=active_view_scope)
-            more_box.separator()
-            _draw_licenced_download_controls(more_box, prefs)
 
     throttle_message = str(get_status_message(prefs) or "").strip()
     if throttle_message and "throttl" in throttle_message.lower():
