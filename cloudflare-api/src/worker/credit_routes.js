@@ -2,6 +2,7 @@ import { html } from "./responses.js";
 import {
   GENERATED_REGION_PACK_CATALOG_VERSION,
   GENERATED_REGION_PACK_DETAILS,
+  GENERATED_REGION_PACK_OUTLINES,
   GENERATED_REGION_PACK_PRODUCTS,
   GENERATED_REGION_PACK_TILE_KEYS,
 } from "./region_packs.generated.js";
@@ -18,7 +19,7 @@ const STANDARD_QUALITY_UNLOCK_EUR = 50.0;
 const STRIPE_MIN_CHECKOUT_AMOUNT_CENTS = 50;
 const MONEY_SCALE = 100;
 const METRIC_SCALE = 1_000_000;
-const REGION_PACK_CATALOG_VERSION = GENERATED_REGION_PACK_CATALOG_VERSION || "gadm_regions_v4";
+const REGION_PACK_CATALOG_VERSION = GENERATED_REGION_PACK_CATALOG_VERSION || "gadm_regions_v5";
 const SQL_VARIABLE_SAFE_CHUNK_SIZE = 75;
 const REGION_PACK_TILE_CHUNK_SIZE = SQL_VARIABLE_SAFE_CHUNK_SIZE;
 const REGION_PACK_PAID_Z_LEVELS = [1, 2, 4, 8, 15, 30];
@@ -264,6 +265,14 @@ function bboxArea(product) {
   return width * height;
 }
 
+function productSpecificityScore(product) {
+  const tileCount = Number.parseInt(product && product.tile_count || 0, 10) || 0;
+  if (tileCount > 0) {
+    return tileCount;
+  }
+  return bboxArea(product);
+}
+
 function pointInPolygonRing(lon, lat, ring) {
   if (!Array.isArray(ring) || ring.length < 4) {
     return false;
@@ -288,9 +297,24 @@ function pointInPolygonRing(lon, lat, ring) {
   return inside;
 }
 
-function pointInGeneratedRegionOutlines(product, latitudeDeg, longitudeDeg) {
+function regionProductOutlines(product) {
   const detail = GENERATED_REGION_PACK_DETAILS[String(product && product.id || "")] || {};
-  const outlines = Array.isArray(detail.outlines) ? detail.outlines : [];
+  if (Array.isArray(detail.outlines) && detail.outlines.length) {
+    return detail.outlines;
+  }
+  const refs = Array.isArray(detail.outline_refs) ? detail.outline_refs : [];
+  const outlines = [];
+  for (const ref of refs) {
+    const outline = GENERATED_REGION_PACK_OUTLINES[String(ref || "")];
+    if (outline) {
+      outlines.push(outline);
+    }
+  }
+  return outlines;
+}
+
+function pointInGeneratedRegionOutlines(product, latitudeDeg, longitudeDeg) {
+  const outlines = regionProductOutlines(product);
   if (!outlines.length) {
     return null;
   }
@@ -348,7 +372,10 @@ function suggestedRegionProductsForPoint(latitudeDeg, longitudeDeg) {
       && product.countries.includes(String(country.id || ""))
     ))
     : matches.filter((product) => String(product.type || "") === "macro_region");
-  const macroMatches = macroSource.sort((a, b) => bboxArea(a) - bboxArea(b));
+  const macroMatches = macroSource.sort((a, b) => (
+    productSpecificityScore(a) - productSpecificityScore(b)
+    || bboxArea(a) - bboxArea(b)
+  ));
   for (const product of macroMatches.slice(0, 2)) {
     addProduct(product);
   }
@@ -845,7 +872,7 @@ function buildRegionPackMapData(product, estimate) {
     generated_detail_available: Boolean(detail && Object.keys(detail).length),
     region_pack: regionProductPublicPayload(product),
     included_countries: countries,
-    outlines: Array.isArray(detail.outlines) ? detail.outlines : [],
+    outlines: regionProductOutlines(product),
     bounds: regionMapBounds(product, detail, tileRows),
     levels,
     summary: {

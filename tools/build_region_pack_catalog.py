@@ -17,6 +17,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import geopandas as gpd
+import pandas as pd
 from shapely.geometry import box
 from shapely.ops import unary_union
 from shapely.prepared import prep
@@ -26,7 +27,7 @@ DEFAULT_GPKG = Path("/Volumes/SSDA/Planetka Assets Extra/BO/gadm_410-levels.gpkg
 DEFAULT_JSON = Path("Resources/Region Packs/region_packs_gadm.json")
 DEFAULT_JS = Path("cloudflare-api/src/worker/region_packs.generated.js")
 DEFAULT_PNG = Path("Resources/Region Packs/region_packs_gadm.png")
-CATALOG_VERSION = "gadm_regions_v4"
+CATALOG_VERSION = "gadm_regions_v5"
 PAID_Z_LEVELS = (1, 2, 4, 8, 15, 30)
 FREE_D_THRESHOLD = 60
 MERGE_DIFFERENCE_RATIO = 0.50
@@ -95,6 +96,69 @@ AUSTRALIA_ALL_REGION_CODES = (
     *AUSTRALIA_MAINLAND_REGION_CODES,
     *AUSTRALIA_ACT_AND_JERVIS_CODES,
     *AUSTRALIA_EXTERNAL_ISLAND_CODES,
+)
+
+USA_STATE_CODES = (
+    "USA.1_1", "USA.2_1", "USA.3_1", "USA.4_1", "USA.5_1", "USA.6_1",
+    "USA.7_1", "USA.8_1", "USA.9_1", "USA.10_1", "USA.11_1", "USA.12_1",
+    "USA.13_1", "USA.14_1", "USA.15_1", "USA.16_1", "USA.17_1", "USA.18_1",
+    "USA.19_1", "USA.20_1", "USA.21_1", "USA.22_1", "USA.23_1", "USA.24_1",
+    "USA.25_1", "USA.26_1", "USA.27_1", "USA.28_1", "USA.29_1", "USA.30_1",
+    "USA.31_1", "USA.32_1", "USA.33_1", "USA.34_1", "USA.35_1", "USA.36_1",
+    "USA.37_1", "USA.38_1", "USA.39_1", "USA.40_1", "USA.41_1", "USA.42_1",
+    "USA.43_1", "USA.44_1", "USA.45_1", "USA.46_1", "USA.47_1", "USA.48_1",
+    "USA.49_1", "USA.50_1", "USA.51_1",
+)
+
+USA_NORTHEAST_CODES = (
+    "USA.7_1", "USA.20_1", "USA.22_1", "USA.30_1", "USA.31_1", "USA.33_1",
+    "USA.39_1", "USA.40_1", "USA.46_1",
+)
+
+USA_MIDWEST_CODES = (
+    "USA.14_1", "USA.15_1", "USA.16_1", "USA.17_1", "USA.23_1", "USA.24_1",
+    "USA.26_1", "USA.28_1", "USA.35_1", "USA.36_1", "USA.42_1", "USA.50_1",
+)
+
+USA_SOUTH_CODES = (
+    "USA.1_1", "USA.4_1", "USA.8_1", "USA.9_1", "USA.10_1", "USA.11_1",
+    "USA.18_1", "USA.19_1", "USA.21_1", "USA.25_1", "USA.34_1", "USA.37_1",
+    "USA.41_1", "USA.43_1", "USA.44_1", "USA.47_1", "USA.49_1",
+)
+
+USA_WEST_CODES = (
+    "USA.2_1", "USA.3_1", "USA.5_1", "USA.6_1", "USA.12_1", "USA.13_1",
+    "USA.27_1", "USA.29_1", "USA.32_1", "USA.38_1", "USA.45_1", "USA.48_1",
+    "USA.51_1",
+)
+
+CANADA_REGION_SPECS = (
+    ("CAN.1_1", "alberta", "Alberta"),
+    ("CAN.2_1", "british_columbia", "British Columbia"),
+    ("CAN.3_1", "manitoba", "Manitoba"),
+    ("CAN.4_1", "new_brunswick", "New Brunswick"),
+    ("CAN.5_1", "newfoundland_and_labrador", "Newfoundland and Labrador"),
+    ("CAN.6_1", "northwest_territories", "Northwest Territories"),
+    ("CAN.7_1", "nova_scotia", "Nova Scotia"),
+    ("CAN.8_1", "nunavut", "Nunavut"),
+    ("CAN.9_1", "ontario", "Ontario"),
+    ("CAN.10_1", "prince_edward_island", "Prince Edward Island"),
+    ("CAN.11_1", "quebec", "Québec"),
+    ("CAN.12_1", "saskatchewan", "Saskatchewan"),
+    ("CAN.13_1", "yukon", "Yukon"),
+)
+
+CANADA_REGION_CODES = tuple(code for code, _product_id, _name in CANADA_REGION_SPECS)
+CANADA_WEST_CODES = ("CAN.1_1", "CAN.2_1", "CAN.3_1", "CAN.12_1")
+CANADA_EAST_CODES = ("CAN.4_1", "CAN.5_1", "CAN.7_1", "CAN.9_1", "CAN.10_1", "CAN.11_1")
+CANADA_NORTH_CODES = ("CAN.6_1", "CAN.8_1", "CAN.13_1")
+
+NORTH_ATLANTIC_ISLAND_CODES = ("BMU", "SPM")
+NORTH_AMERICA_COUNTRY_CODES = ("GRL", "MEX", *NORTH_ATLANTIC_ISLAND_CODES)
+NORTH_AMERICA_ALL_MEMBERS = (
+    *USA_STATE_CODES,
+    *CANADA_REGION_CODES,
+    *NORTH_AMERICA_COUNTRY_CODES,
 )
 
 LOCAL_PRODUCT_SPECS = (
@@ -167,6 +231,51 @@ LOCAL_PRODUCT_SPECS = (
         "auto_merge": False,
         "discount_percent": 20,
         "source_note": "GADM 4.10 ADM_1 polygon intersection; grouped small Australian external island territories",
+    },
+    *(
+        {
+            "adm1_codes": (code,),
+            "merge_scope": "north_america",
+            "auto_merge": False,
+            "discount_percent": 20,
+        }
+        for code in USA_STATE_CODES
+    ),
+    *(
+        {
+            "id": product_id,
+            "name": name,
+            "adm1_codes": (code,),
+            "merge_scope": "north_america",
+            "auto_merge": False,
+            "discount_percent": 20,
+        }
+        for code, product_id, name in CANADA_REGION_SPECS
+    ),
+    {
+        "id": "greenland",
+        "name": "Greenland",
+        "adm0_codes": ("GRL",),
+        "merge_scope": "north_america",
+        "auto_merge": False,
+        "discount_percent": 20,
+    },
+    {
+        "id": "mexico",
+        "name": "Mexico",
+        "adm0_codes": ("MEX",),
+        "merge_scope": "north_america",
+        "auto_merge": False,
+        "discount_percent": 20,
+    },
+    {
+        "id": "north_atlantic_islands",
+        "name": "North Atlantic Islands",
+        "adm0_codes": NORTH_ATLANTIC_ISLAND_CODES,
+        "merge_scope": "north_america",
+        "auto_merge": False,
+        "discount_percent": 20,
+        "source_note": "GADM 4.10 ADM_0 polygon intersection; grouped small North Atlantic island territories",
     },
 )
 
@@ -334,6 +443,77 @@ MACRO_PACKS = (
         "adm1_codes": AUSTRALIA_ALL_REGION_CODES,
         "clip_bbox": AUSTRALIA_CLIP_BBOX,
     },
+    {
+        "id": "western_united_states",
+        "name": "Western United States",
+        "type": "macro_region",
+        "discount_percent": 30,
+        "adm1_codes": USA_WEST_CODES,
+    },
+    {
+        "id": "southern_united_states",
+        "name": "Southern United States",
+        "type": "macro_region",
+        "discount_percent": 30,
+        "adm1_codes": USA_SOUTH_CODES,
+    },
+    {
+        "id": "midwestern_united_states",
+        "name": "Midwestern United States",
+        "type": "macro_region",
+        "discount_percent": 30,
+        "adm1_codes": USA_MIDWEST_CODES,
+    },
+    {
+        "id": "northeastern_united_states",
+        "name": "Northeastern United States",
+        "type": "macro_region",
+        "discount_percent": 30,
+        "adm1_codes": USA_NORTHEAST_CODES,
+    },
+    {
+        "id": "united_states",
+        "name": "United States",
+        "type": "macro_region",
+        "discount_percent": 30,
+        "adm1_codes": USA_STATE_CODES,
+    },
+    {
+        "id": "western_canada",
+        "name": "Western Canada",
+        "type": "macro_region",
+        "discount_percent": 30,
+        "adm1_codes": CANADA_WEST_CODES,
+    },
+    {
+        "id": "eastern_canada",
+        "name": "Eastern Canada",
+        "type": "macro_region",
+        "discount_percent": 30,
+        "adm1_codes": CANADA_EAST_CODES,
+    },
+    {
+        "id": "northern_canada",
+        "name": "Northern Canada",
+        "type": "macro_region",
+        "discount_percent": 30,
+        "adm1_codes": CANADA_NORTH_CODES,
+    },
+    {
+        "id": "canada",
+        "name": "Canada",
+        "type": "macro_region",
+        "discount_percent": 30,
+        "adm1_codes": CANADA_REGION_CODES,
+    },
+    {
+        "id": "north_america",
+        "name": "North America",
+        "type": "continent",
+        "discount_percent": 50,
+        "adm0_codes": NORTH_AMERICA_COUNTRY_CODES,
+        "adm1_codes": (*USA_STATE_CODES, *CANADA_REGION_CODES),
+    },
 )
 
 SPECIAL_GROUP_NAMES = {
@@ -356,6 +536,15 @@ def list_name(values: list[str]) -> str:
     if len(names) == 2:
         return f"{names[0]} & {names[1]}"
     return f"{', '.join(names[:-1])} & {names[-1]}"
+
+
+def clean_text(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and math.isnan(value):
+        return ""
+    text = str(value).strip()
+    return "" if text.lower() == "nan" else text
 
 
 def tile_key(x_value: int, y_value: int, z_value: int, d_value: int) -> str:
@@ -388,41 +577,65 @@ def tile_polygon(x_value: int, y_value: int, z_value: int):
     )
 
 
+def _iter_polygon_geometries(geometry):
+    from shapely.geometry import GeometryCollection, MultiPolygon, Polygon
+
+    if geometry is None or geometry.is_empty:
+        return
+    if isinstance(geometry, Polygon):
+        yield geometry
+        return
+    if isinstance(geometry, MultiPolygon):
+        for part in geometry.geoms:
+            yield from _iter_polygon_geometries(part)
+        return
+    if isinstance(geometry, GeometryCollection):
+        for part in geometry.geoms:
+            yield from _iter_polygon_geometries(part)
+
+
 def region_tiles_for_geometry(geometry, min_intersection_area: float = 1e-10) -> list[str]:
     if geometry is None or geometry.is_empty:
         return []
     keys = []
     seen = set()
-    prepared_bounds = geometry.bounds
-    prepared_geometry = prep(geometry)
+    polygon_parts = list(_iter_polygon_geometries(geometry))
+    if not polygon_parts:
+        return []
     for z_value in PAID_Z_LEVELS:
         d_levels = paid_d_levels_for_z(z_value)
         if not d_levels:
             continue
-        start_x, end_x, start_y, end_y = candidate_ranges(prepared_bounds, z_value)
-        for x_value in range(start_x, end_x + 1, z_value):
-            if x_value < 0 or x_value > 359:
+        for polygon_part in polygon_parts:
+            if polygon_part is None or polygon_part.is_empty:
                 continue
-            for y_value in range(start_y, end_y + 1, z_value):
-                if y_value < 0 or y_value > 179:
+            prepared_geometry = prep(polygon_part)
+            start_x, end_x, start_y, end_y = candidate_ranges(polygon_part.bounds, z_value)
+            for x_value in range(start_x, end_x + 1, z_value):
+                if x_value < 0 or x_value > 359:
                     continue
-                poly = tile_polygon(x_value, y_value, z_value)
-                if not prepared_geometry.intersects(poly):
-                    continue
-                if geometry.intersection(poly).area <= min_intersection_area:
-                    continue
-                for d_value in d_levels:
-                    key = tile_key(x_value, y_value, z_value, d_value)
-                    if key in seen:
+                for y_value in range(start_y, end_y + 1, z_value):
+                    if y_value < 0 or y_value > 179:
                         continue
-                    seen.add(key)
-                    keys.append(key)
+                    poly = tile_polygon(x_value, y_value, z_value)
+                    if not prepared_geometry.intersects(poly):
+                        continue
+                    if polygon_part.intersection(poly).area <= min_intersection_area:
+                        continue
+                    for d_value in d_levels:
+                        key = tile_key(x_value, y_value, z_value, d_value)
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        keys.append(key)
     return sorted(keys)
 
 
 def read_adm0(gpkg_path: Path):
     countries = gpd.read_file(gpkg_path, layer="ADM_0", columns=["GID_0", "COUNTRY", "geometry"])
     countries["GID_0"] = countries["GID_0"].astype(str).str.upper()
+    countries["GID_1"] = ""
+    countries["NAME_1"] = ""
     return countries
 
 
@@ -468,15 +681,23 @@ def selected_for_adm1_codes(regions, codes: tuple[str, ...] | list[str], clip_bb
 
 
 def selected_for_spec(layers: dict[str, object], spec: dict):
+    parts = []
+    if spec.get("adm0_codes"):
+        parts.append(selected_for_codes(layers["adm0"], spec["adm0_codes"], spec.get("clip_bbox")))
     if spec.get("adm1_codes"):
-        return selected_for_adm1_codes(layers["adm1"], spec["adm1_codes"], spec.get("clip_bbox"))
-    return selected_for_codes(layers["adm0"], spec["adm0_codes"], spec.get("clip_bbox"))
+        parts.append(selected_for_adm1_codes(layers["adm1"], spec["adm1_codes"], spec.get("clip_bbox")))
+    if not parts:
+        raise ValueError("No ADM_0 or ADM_1 codes supplied")
+    if len(parts) == 1:
+        return parts[0]
+    combined = pd.concat(parts, ignore_index=True, sort=False)
+    return gpd.GeoDataFrame(combined, geometry="geometry", crs=getattr(parts[0], "crs", None))
 
 
 def spec_membership_codes(spec: dict) -> tuple[str, ...]:
-    if spec.get("adm1_codes"):
-        return tuple(str(code).strip().upper() for code in spec.get("adm1_codes") or [] if str(code).strip())
-    return tuple(str(code).strip().upper() for code in spec.get("adm0_codes") or [] if str(code).strip())
+    adm0_codes = tuple(str(code).strip().upper() for code in spec.get("adm0_codes") or [] if str(code).strip())
+    adm1_codes = tuple(str(code).strip().upper() for code in spec.get("adm1_codes") or [] if str(code).strip())
+    return adm0_codes + adm1_codes
 
 
 def payload_membership_codes(payload: dict) -> list[str]:
@@ -504,41 +725,30 @@ def country_records(selected) -> list[dict]:
     if "GID_1" in selected.columns and "NAME_1" in selected.columns:
         columns = ["GID_0", "COUNTRY", "GID_1", "NAME_1"]
         for row in selected[columns].drop_duplicates().sort_values(["COUNTRY", "NAME_1"]).itertuples(index=False):
-            region_name = str(row.NAME_1)
-            country_name = str(row.COUNTRY)
-            records.append({
-                "GID_0": str(row.GID_0),
-                "COUNTRY": country_name,
-                "GID_1": str(row.GID_1),
-                "NAME_1": region_name,
-                "name": region_name,
-                "country": country_name,
-            })
+            region_name = clean_text(row.NAME_1)
+            country_name = clean_text(row.COUNTRY)
+            gid0 = clean_text(row.GID_0)
+            gid1 = clean_text(row.GID_1)
+            if region_name:
+                records.append({
+                    "GID_0": gid0,
+                    "COUNTRY": country_name,
+                    "GID_1": gid1,
+                    "NAME_1": region_name,
+                    "name": region_name,
+                    "country": country_name,
+                })
+            elif country_name:
+                records.append({"GID_0": gid0, "COUNTRY": country_name, "name": country_name})
         return records
     for row in selected[["GID_0", "COUNTRY"]].drop_duplicates().sort_values("COUNTRY").itertuples(index=False):
-        country_name = str(row.COUNTRY)
-        records.append({"GID_0": str(row.GID_0), "COUNTRY": country_name, "name": country_name})
+        country_name = clean_text(row.COUNTRY)
+        if country_name:
+            records.append({"GID_0": clean_text(row.GID_0), "COUNTRY": country_name, "name": country_name})
     return records
 
 
-def _iter_polygon_geometries(geometry):
-    from shapely.geometry import GeometryCollection, MultiPolygon, Polygon
-
-    if geometry is None or geometry.is_empty:
-        return
-    if isinstance(geometry, Polygon):
-        yield geometry
-        return
-    if isinstance(geometry, MultiPolygon):
-        for part in geometry.geoms:
-            yield from _iter_polygon_geometries(part)
-        return
-    if isinstance(geometry, GeometryCollection):
-        for part in geometry.geoms:
-            yield from _iter_polygon_geometries(part)
-
-
-def country_outlines_for_web(selected, simplify_tolerance: float = 0.01, min_polygon_area: float = 0.001) -> list[dict]:
+def country_outlines_for_web(selected, simplify_tolerance: float = 0.005, min_polygon_area: float = 0.001) -> list[dict]:
     outlines = []
     sort_columns = ["COUNTRY"]
     if "NAME_1" in selected.columns:
@@ -560,8 +770,8 @@ def country_outlines_for_web(selected, simplify_tolerance: float = 0.01, min_pol
                 polygons.append(coords)
         if not polygons:
             continue
-        outline_id = str(getattr(row, "GID_1", "") or getattr(row, "GID_0", "") or "")
-        outline_name = str(getattr(row, "NAME_1", "") or getattr(row, "COUNTRY", "") or "")
+        outline_id = clean_text(getattr(row, "GID_1", "")) or clean_text(getattr(row, "GID_0", ""))
+        outline_name = clean_text(getattr(row, "NAME_1", "")) or clean_text(getattr(row, "COUNTRY", ""))
         outlines.append({"id": outline_id, "name": outline_name, "polygons": polygons})
     return outlines
 
@@ -791,15 +1001,11 @@ def tile_keys_for_codes(codes: tuple[str, ...] | list[str], code_to_payload: dic
 
 
 def spec_codes_for_macro(pack: dict) -> tuple[str, ...]:
-    if pack.get("adm1_codes"):
-        return tuple(str(code).strip().upper() for code in pack.get("adm1_codes") or [] if str(code).strip())
-    return tuple(str(code).strip().upper() for code in pack.get("adm0_codes") or [] if str(code).strip())
+    return spec_membership_codes(pack)
 
 
 def selected_for_macro(layers: dict[str, object], pack: dict):
-    if pack.get("adm1_codes"):
-        return selected_for_adm1_codes(layers["adm1"], pack["adm1_codes"], pack.get("clip_bbox"))
-    return selected_for_codes(layers["adm0"], pack["adm0_codes"], pack.get("clip_bbox"))
+    return selected_for_spec(layers, pack)
 
 
 def build_macro_payloads(layers: dict[str, object], code_to_product_id: dict[str, str], code_to_payload: dict[str, dict]) -> list[dict]:
@@ -859,6 +1065,7 @@ def public_product_payload(payload: dict) -> dict:
         "name": payload["name"],
         "type": payload["type"],
         "discount_percent": payload["discount_percent"],
+        "tile_count": int(payload.get("tile_count") or 0),
         "bbox": payload.get("bbox") or payload.get("bounds") or [],
     }
     if payload.get("country_product_ids"):
@@ -872,12 +1079,43 @@ def public_product_payload(payload: dict) -> dict:
 
 def write_json(path: Path, payload: dict):
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+    path.write_text(json.dumps(normalized_outline_catalog(payload), indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+
+
+def normalized_outline_catalog(catalog: dict) -> dict:
+    payload = dict(catalog)
+    outlines = {}
+    products = []
+    for product in catalog.get("products") or []:
+        product_payload = dict(product)
+        refs = []
+        for outline in product_payload.pop("outlines", []) or []:
+            outline_id = str(outline.get("id") or "").strip()
+            if not outline_id:
+                continue
+            outlines.setdefault(outline_id, outline)
+            refs.append(outline_id)
+        product_payload["outline_refs"] = refs
+        products.append(product_payload)
+    payload["products"] = products
+    payload["outlines"] = outlines
+    return payload
 
 
 def write_js(path: Path, catalog: dict):
     path.parent.mkdir(parents=True, exist_ok=True)
     pack_payloads = catalog.get("products") or []
+    outline_payload = {}
+    outline_refs_by_product = {}
+    for payload in pack_payloads:
+        refs = []
+        for outline in payload.get("outlines", []) or []:
+            outline_id = str(outline.get("id") or "").strip()
+            if not outline_id:
+                continue
+            outline_payload.setdefault(outline_id, outline)
+            refs.append(outline_id)
+        outline_refs_by_product[payload["id"]] = refs
     lines = [
         "// Generated by tools/build_region_pack_catalog.py. Do not edit by hand.",
         f"export const GENERATED_REGION_PACK_CATALOG_VERSION = {json.dumps(catalog.get('catalog_version') or CATALOG_VERSION)};",
@@ -895,7 +1133,7 @@ def write_js(path: Path, catalog: dict):
         detail_payload[payload["id"]] = {
             "bounds": payload.get("bounds", []),
             "countries": payload.get("countries", []),
-            "outlines": payload.get("outlines", []),
+            "outline_refs": outline_refs_by_product.get(payload["id"], []),
             "adm0_codes": payload.get("adm0_codes", []),
             "adm1_codes": payload.get("adm1_codes", []),
             "merged_from": payload.get("merged_from", []),
@@ -903,6 +1141,8 @@ def write_js(path: Path, catalog: dict):
         }
     lines.append("")
     lines.append(f"export const GENERATED_REGION_PACK_DETAILS = {json.dumps(detail_payload, ensure_ascii=True, separators=(',', ':'))};")
+    lines.append("")
+    lines.append(f"export const GENERATED_REGION_PACK_OUTLINES = {json.dumps(outline_payload, ensure_ascii=True, separators=(',', ':'))};")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
