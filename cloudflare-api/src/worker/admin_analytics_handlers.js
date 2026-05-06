@@ -34,10 +34,12 @@ function filterAnalyticsUsersRows(rows, query) {
 
 function analyticsUsersSortValue(row, sortBy) {
   if (sortBy === "balance") return Number(row && row.balance_credits || 0);
-  if (sortBy === "resolves") return Number(row && row.resolve_count || 0);
-  if (sortBy === "lifetime") return Number(row && row.lifetime_bytes || 0);
+  if (sortBy === "paid_eur") return Number(row && row.total_spent_credits || 0);
+  if (sortBy === "paid_resolves") return Number(row && row.paid_full_resolve_count || 0);
+  if (sortBy === "paid_tiles") return Number(row && row.unlocked_tile_count || 0);
+  if (sortBy === "preview_lifetime") return Number(row && row.preview_lifetime_bytes || 0);
   if (sortBy === "last_seen") return Date.parse(String(row && row.last_seen_at || "")) || 0;
-  return Number(row && row.lifetime_bytes || 0);
+  return Number(row && row.total_spent_credits || 0);
 }
 
 function sortAnalyticsUsersRows(rows, sortBy, sortDir) {
@@ -344,10 +346,6 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
     const userEmail = deps.escapeHtml(userEmailRaw);
     const status = String(row && row.user_status || "").trim().toLowerCase();
     const previewHeld = Boolean(String(row && row.preview_fair_usage_hold_at || "").trim());
-    const previewHoldReason = deps.escapeHtml(String(row && row.preview_fair_usage_hold_reason || ""));
-    const previewHoldText = previewHeld
-      ? `Held${previewHoldReason ? `<div class="muted">${previewHoldReason}</div>` : ""}`
-      : "OK";
     const creditButtons = `<button class="action-btn" data-action="gift-credits" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Top Up €</button><button class="action-btn warn" data-action="subtract-credits" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Take €</button>`;
     const previewHoldButton = previewHeld
       ? `<button class="action-btn warn" data-action="release-preview-hold" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Release Preview Hold</button>`
@@ -361,15 +359,10 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
     return `<tr${previewHeld ? ` class="preview-held"` : ""}>
       <td>${userEmail}</td>
       <td>${deps.escapeHtml(fmtEur(row && row.balance_credits))}</td>
-      <td>${fmtInt(row && row.unlocked_tile_count)}</td>
-      <td>${fmtInt(row && row.resolve_count)}</td>
-      <td>${fmtGb(row && row.lifetime_bytes)}</td>
-      <td>${fmtGb(row && row.preview_hour_bytes)}</td>
-      <td>${fmtGb(row && row.preview_day_bytes)}</td>
-      <td>${fmtGb(row && row.preview_lifetime_bytes)}</td>
-      <td>${fmtGb(row && row.full_lifetime_bytes)}</td>
+      <td>${deps.escapeHtml(fmtEur(row && row.total_spent_credits))}</td>
       <td>${fmtInt(row && row.paid_full_resolve_count)}</td>
-      <td>${previewHoldText}</td>
+      <td>${fmtInt(row && row.unlocked_tile_count)}</td>
+      <td>${fmtGb(row && row.preview_lifetime_bytes)}</td>
       <td>${deps.escapeHtml(String(row && row.last_seen_at || ""))}</td>
       <td class="action-wrap">${actionButtons}</td>
     </tr>`;
@@ -420,15 +413,10 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
       <tr>
         <th>Email</th>
         <th><a href="${buildSortHref("balance")}">Balance${sortMarker("balance")}</a></th>
-        <th>Licenced Tiles</th>
-        <th><a href="${buildSortHref("resolves")}">Resolves${sortMarker("resolves")}</a></th>
-        <th><a href="${buildSortHref("lifetime")}">Lifetime GB${sortMarker("lifetime")}</a></th>
-        <th>Preview GB 1h</th>
-        <th>Preview GB Today</th>
-        <th>Preview GB Lifetime</th>
-        <th>Full GB Lifetime</th>
-        <th>Paid Full Resolves</th>
-        <th>Preview Hold</th>
+        <th><a href="${buildSortHref("paid_eur")}">Paid EUR${sortMarker("paid_eur")}</a></th>
+        <th><a href="${buildSortHref("paid_resolves")}">Paid Resolves${sortMarker("paid_resolves")}</a></th>
+        <th><a href="${buildSortHref("paid_tiles")}">Paid Tiles${sortMarker("paid_tiles")}</a></th>
+        <th><a href="${buildSortHref("preview_lifetime")}">Preview GB Lifetime${sortMarker("preview_lifetime")}</a></th>
         <th><a href="${buildSortHref("last_seen")}">Last Seen${sortMarker("last_seen")}</a></th>
         <th>Actions</th>
       </tr>

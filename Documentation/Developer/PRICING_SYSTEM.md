@@ -1,0 +1,795 @@
+# Planetka Internal Pricing System Reference
+
+This document describes the current EUR land-detail pricing system from a technical point of view. It is an internal implementation reference, not public legal text.
+
+Last updated: 2026-05-06
+
+## 1. Design Goals
+
+The pricing system sells licenced access to Full Quality land-detail texture tiles while keeping Preview data free.
+
+Core goals:
+
+- Preview quality is free and unlimited from the user-experience point of view, subject to fair-usage monitoring.
+- Full Quality is paid/licenced per tile, but users are charged only once for the same tile detail entitlement.
+- Price is based on land area and delivered texture detail, not on raw file size or number of downloads.
+- Once a tile is licenced, the user can download it again without paying again.
+- Pricing must be backend-authoritative. The Blender client may display estimates, but must not be trusted to decide the final charge.
+- Missing or inconsistent backend pricing metadata must never overcharge users. Such cases are charged at EUR 0.00 and logged as pricing integrity events.
+- Animation render should pre-licence and pre-download all required Full Quality data before frame rendering starts.
+
+## 2. User-Facing Terminology
+
+User-facing UI should use these terms:
+
+- `EUR` / `€`: The displayed balance and price currency.
+- `Licenced`: A tile the user has paid for or otherwise received rights to use.
+- `Full Quality Textures`: The primary paid action for the current Camera View.
+- `Preview`: Free low-detail data used for normal browsing and Quick Preview animation.
+
+Implementation still uses older internal field names such as `credits`, `balance_credits`, and `credit_ledger`. These now represent EUR values and should be treated as legacy internal naming.
+
+## 3. Authoritative Components
+
+### Backend Worker
+
+Primary files:
+
+- `cloudflare-api/src/worker/credit_routes.js`
+- `cloudflare-api/src/worker/tile_routes.js`
+- `cloudflare-api/src/worker/billing_handlers.js`
+- `cloudflare-api/src/index.js`
+
+The Cloudflare Worker is the authority for:
+
+- Account balance.
+- Tile licence/entitlement state.
+- Full Quality price calculation.
+- Stripe Checkout session creation.
+- Stripe webhook processing.
+- Blocking unauthorised Full Quality tile requests.
+- Preview fair-usage telemetry and alerts.
+
+### Blender Client
+
+Primary files:
+
+- `credit_api.py`
+- `planetka_runtime/view_telemetry.py`
+- `operators.py`
+- `ui.py`
+- `animation_tools.py`
+- `r2_source.py`
+- `streaming_utils.py`
+
+The Blender client is responsible for:
+
+- Computing the current visible tile set for the Camera View.
+- Asking the backend for authoritative EUR estimates.
+- Displaying prices, balances, data sizes, and breakdowns.
+- Starting Stripe Checkout when needed.
+- Starting paid Full Quality resolves only after backend licence/session confirmation.
+- Downloading licenced assets from Cloudflare R2 or from Local Source.
+
+The client must not calculate final charge locally.
+
+## 4. Data Model
+
+The backend D1 database contains the authoritative account, licence, pricing, and ledger tables.
+
+### `user_credit_accounts`
+
+Created in `ensureCreditTables()` in `cloudflare-api/src/index.js`.
+
+Important columns:
+
+- `user_id`: Primary key.
+- `account_type`: Currently always `standard`.
+- `balance_credits`: EUR balance, rounded to cents.
+- `total_granted_credits`: Total EUR added to the account.
+- `total_spent_credits`: Total EUR deducted by tile unlocks.
+- `created_at`, `updated_at`.
+
+Current account model:
+
+- There is only one account type: `standard`.
+- New accounts get `DEFAULT_STARTING_CREDITS = 100.0` / `DEFAULT_STARTING_EUR_BALANCE`.
+- Old `unlimited` account state is coerced back to `standard` with the default starting balance.
+
+### `user_tile_entitlements`
+
+Stores licenced tiles.
+
+Important columns:
+
+- `user_id`.
+- `tile_key`: Example `x075_y149_z001_d001`.
+- `quality_mode`: Currently `full` for paid/licenced data.
+- `credits_spent`: EUR charged for this entitlement row.
+- `land_km2`, `billable_land_km2`: Backend metadata snapshot at unlock time.
+- `source`: `backend_d1`, `stripe_checkout`, etc.
+- `unlocked_at`.
+
+Primary key:
+
+- `(user_id, tile_key)`.
+
+Important rule:
+
+- Entitlement is evaluated by tile family `x/y/z` and `d` level. A finer licence covers coarser variants in the same family.
+
+### `credit_ledger`
+
+Financial audit trail.
+
+Important columns:
+
+- `delta_credits`: Positive for top-up/admin grant, negative for balance deduction, zero for direct scene purchase that does not touch balance.
+- `balance_after_credits`: Balance after the operation.
+- `reason`: Examples `tile_unlock`, `stripe_scene_purchase`, `stripe_balance_top_up`, `admin_top_up`, `admin_balance_subtract`.
+- `metadata_json`: Resolve ID, quality mode, tile count, Stripe session ID, etc.
+
+### `tile_land_stats`
+
+Authoritative pricing metadata in backend D1.
+
+Important columns:
+
+- `tile_key`.
+- `x`, `y`, `z`, `d`.
+- `land_km2`.
+- `billable_land_km2`.
+- `free_reason`.
+- `updated_at`.
+
+This table is the backend source for pricing. The local `Resources/tile_sizes.sqlite` may contain land metadata for tooling/reference, but Blender runtime pricing must not rely on local SQLite because backend prices/rules may change.
+
+### `pricing_integrity_events`
+
+Records backend pricing metadata problems.
+
+Current critical case:
+
+- `pricing_metadata_missing`: A requested, non-free S2 tile key has no matching backend pricing metadata.
+
+In that case, the affected tile is charged EUR 0.00 and the event is recorded for investigation.
+
+### Stripe Webhook Events
+
+`stripe_webhook_events` stores processed Stripe event IDs so webhooks are idempotent.
+
+## 5. Tile Key and Asset Model
+
+Canonical tile key format:
+
+```text
+xNNN_yNNN_zNNN_dNNN
+```
+
+Example:
+
+```text
+x075_y149_z001_d001
+```
+
+Asset files for one tile normally include:
+
+```text
+S2/S2_x075_y149_z001_d001.exr
+EL/EL_x075_y149_z001_d001.exr
+WT/WT_x075_y149_z001_d001.exr
+PO/PO_x075_y149_z001_d001.tif
+```
+
+`defaultAssetsForTile()` in `credit_routes.js` defines the default asset list.
+
+Special EL alias:
+
+- For `z001_d002`, EL uses the `d001` file internally.
+- `isTileUnlockedForUser()` handles this so EL aliasing does not create a separate entitlement problem.
+
+Pricing is always associated with the S2 tile key, not with individual EL/WT/PO support files.
+
+## 6. Land Metadata Generation
+
+Tool:
+
+```text
+tools/build_tile_land_stats.py
+```
+
+Input source:
+
+```text
+/Volumes/SSDA/Planetka Assets/S2
+```
+
+Ocean reference:
+
+```text
+Resources/Fallback Images/ocean_pixel_final_20.exr
+```
+
+Rules:
+
+- Every S2 pixel is counted as land unless it matches the S2 ocean fallback RGB value within tolerance `1e-5`.
+- Land includes normal land, rivers, lakes, snow/ice, and any non-ocean S2 pixel.
+- Ocean-only pixels do not contribute to `land_km2` or `billable_land_km2`.
+- Latitude/free-detail rules are independent from pixel classification.
+
+Area calculation:
+
+- The tool calculates spherical row areas from tile bounds using Earth radius `6371.0088 km`.
+- It accumulates land area per scanline using the fraction of non-ocean pixels in that row.
+- `billable_land_km2` is land area inside the paid latitude band unless the whole tile is globally free.
+
+Free metadata reasons generated by the tool:
+
+- `d000_global_free`
+- `coarse_detail_free`
+- `south_polar_free`
+- `north_polar_free`
+
+The local build table contains more metadata fields (`land_fraction`, `paid_lat_fraction`, `source`), but the Worker currently needs only `tile_key`, coordinates, land areas, `free_reason`, and `updated_at`.
+
+## 7. Free Tile Rules
+
+Implemented in `freeReasonForTile()` in `credit_routes.js` and mirrored in `tools/build_tile_land_stats.py`.
+
+A tile is free when any of the following is true:
+
+- Invalid tile key: `invalid_tile_key`.
+- `d <= 0`: `d000_global_free`.
+- `d >= 60`: `coarse_detail_free`.
+- Tile north edge is at or below `60°S`: `south_polar_free`.
+- Tile south edge is at or above `75°N`: `north_polar_free`.
+- Quality mode is Preview: `preview_quality`.
+- Tile is already covered by an existing licence: `already_unlocked` / user-facing `already licenced`.
+- Tile is ocean fallback / ocean-only and therefore has `billable_land_km2 = 0`.
+
+Important current rule:
+
+- `z015_d030` is not free just because `z=015`. Only `d >= 060` is coarse-detail free.
+
+## 8. Price Formula
+
+Implemented in `creditsForTileStats()` in `cloudflare-api/src/worker/credit_routes.js`.
+
+Constants:
+
+```js
+DATASET_BASE_MPP = 10.0
+EQUATOR_Z001_AREA_KM2 = (40075.016686 / 360.0) ** 2
+```
+
+Delivered metres per pixel:
+
+```text
+delivered_mpp = 10m * d
+```
+
+For `d <= 0`, the internal fallback delivered MPP is `1440`, but `d000` is free anyway.
+
+Base price before detail factor:
+
+```text
+base_eur = billable_land_km2 / EQUATOR_Z001_AREA_KM2
+```
+
+Detail factor:
+
+```text
+quality_factor = (10 / max(10, delivered_mpp)) ^ 2
+```
+
+Final gross price:
+
+```text
+gross_price_eur = round_to_cents(base_eur * quality_factor)
+```
+
+Examples by d-level for the same land area:
+
+- `d001`: full 10 m/px price.
+- `d002`: one quarter of `d001` price.
+- `d004`: one sixteenth of `d001` price.
+- `d060+`: free by rule, not just cheaper.
+
+All backend money output is rounded to cents using `MONEY_SCALE = 100`. The client also rounds all received price fields to two decimals before display and summation, so the UI total matches the visible row prices.
+
+## 9. Licence Cascade and Upgrade Logic
+
+Implemented in `estimateNewCredits()` and `isTileUnlockedForUser()`.
+
+Terminology:
+
+- Smaller `d` means finer texture detail.
+- Larger `d` means coarser texture detail.
+
+Family key:
+
+```text
+xNNN_yNNN_zNNN
+```
+
+A licence for a finer tile covers coarser variants in the same family:
+
+- Licenced `x075_y149_z001_d001` covers `d002`, `d004`, ..., `d060`.
+- Licenced `x075_y149_z001_d002` does not cover `d001`.
+
+Upgrade pricing:
+
+- If the user previously licenced a coarser tile and later needs a finer tile in the same family, the backend charges only the difference.
+- The existing coarser gross price is reported as `upgrade_credit_applied`.
+
+Example:
+
+```text
+Previously licenced: z001_d002 gross price €0.13
+New requested:       z001_d001 gross price €0.50
+Charge now:          €0.37
+```
+
+The estimate response includes both:
+
+- `credits` / `price_eur`: charge now.
+- `gross_credits` / `gross_price_eur`: original tile price before entitlement/upgrade deductions.
+
+## 10. Resolve Price Estimation Flow
+
+### Client-side visible tile planning
+
+File:
+
+```text
+planetka_runtime/view_telemetry.py
+```
+
+Functions:
+
+- `build_resolve_cost_breakdown()`
+- `estimate_credits_for_visible_tiles()`
+- `_pricing_tiles_for_visible_tiles()`
+
+Flow:
+
+1. Tile selection computes visible tiles for the current Camera View using `tile_utils.main()`.
+2. Streaming planning resolves the actual downloadable tile set via `streaming_utils.build_resolve_download_requests_for_visible_tiles()`.
+3. Ocean fallback tiles are excluded from pricing with `ocean_tiles` from the download plan.
+4. The resulting pricing tile list is sent to the backend `/credits/estimate` endpoint.
+5. The UI receives authoritative price rows and combines them with asset sizes for the breakdown popup.
+
+Important UI rule:
+
+- Full Quality is locked to Camera View.
+- Active View shows a `Bring Camera` action instead of allowing Full Quality purchase directly.
+- Quick Preview prepared state disables Full Quality until Quick Preview is cleared.
+
+### Backend estimate endpoint
+
+Endpoint:
+
+```text
+POST /credits/estimate
+```
+
+Handler:
+
+```text
+handleCreditEstimate() in credit_routes.js
+```
+
+Request fields:
+
+```json
+{
+  "quality_mode": "full",
+  "tile_keys": ["x075_y149_z001_d001"]
+}
+```
+
+Response includes:
+
+- `credits` / `price_eur`: total charge now.
+- `paid_tile_count`.
+- `free_tile_count`.
+- `tile_count`.
+- `tiles`: all priced rows.
+- `new_tiles`: rows that would create new licences.
+- `excluded_tiles`: already licenced rows.
+- `integrity_warnings`.
+- `metadata_missing_tile_keys`.
+- `balance_credits` / `balance_eur`.
+
+## 11. Full Quality Resolve Purchase/Unlock Flow
+
+Primary files:
+
+- `operators.py`
+- `streaming_utils.py`
+- `r2_source.py`
+- `cloudflare-api/src/worker/tile_routes.js`
+- `cloudflare-api/src/worker/credit_routes.js`
+
+Normal balance path:
+
+1. User clicks `Full Quality Textures`.
+2. `PLANETKA_OT_SetTextureQualityAndResolve` checks Camera View, Quick Preview state, account, and authoritative price.
+3. If price is positive and balance is `<= 0`, it opens Stripe scene checkout instead of attempting a resolve.
+4. If balance is positive or price is zero, it starts `bpy.ops.planetka.load_textures(... texture_quality_mode_override="FULL")`.
+5. Streaming creates a resolve request context containing:
+   - `resolve_id`
+   - `texture_quality_mode = full`
+   - `pricing_tiles`
+6. `ensure_resolve_pricing_session()` posts to `/tiles/session` with:
+
+```json
+{
+  "resolve_id": "...",
+  "quality_mode": "full",
+  "credit_protocol": "land_credits_v1",
+  "tile_keys": ["..."]
+}
+```
+
+7. Backend calls `unlockTilesForSession()` before issuing the tile token.
+8. If charge is allowed, backend writes `user_tile_entitlements`, deducts balance, writes `credit_ledger`, and returns a short-lived tile token.
+9. Subsequent R2 tile GETs include `X-Planetka-Tile-Token` and are allowed only if the tile is free or licenced.
+
+Balance rule:
+
+- If account balance is positive, one paid resolve can make it negative.
+- If account balance is zero or negative at session start, a paid resolve is blocked with `402 insufficient_credits`.
+- Preview and already-free/already-licenced Full Quality resolves do not require positive balance.
+
+The Worker checks balance twice:
+
+- Before inserting entitlements.
+- After insertion, before balance deduction, rolling back new entitlements if needed.
+
+## 12. Stripe Checkout Flow
+
+Primary files:
+
+- `operators.py`
+- `credit_api.py`
+- `cloudflare-api/src/worker/credit_routes.js`
+- `cloudflare-api/src/worker/billing_handlers.js`
+
+Checkout endpoint:
+
+```text
+POST /credits/checkout
+```
+
+Supported options:
+
+- `scene`: Pay exact current Full Quality scene price.
+- `balance_10`: Add EUR 10 balance.
+
+### Scene Purchase
+
+Request:
+
+```json
+{
+  "option": "scene",
+  "quality_mode": "full",
+  "tile_keys": ["x075_y149_z001_d001"]
+}
+```
+
+Backend behavior:
+
+1. Recalculates the scene price authoritatively in D1.
+2. If price is `0`, it unlocks any free/no-charge tiles immediately and returns `no_payment_required: true`.
+3. If price is below Stripe minimum (`€0.50`), it returns `amount_below_stripe_minimum` and the user should add balance instead.
+4. Otherwise, creates a Stripe Checkout Session with product name `Planetka Full Quality Scene Data`.
+5. Metadata includes:
+   - `planetka_purchase_type = scene_tiles`
+   - `planetka_user_id`
+   - `planetka_email`
+   - `planetka_quality_mode = full`
+   - `planetka_tile_keys_json`
+   - `planetka_price_eur`
+   - `planetka_paid_tile_count`
+
+Webhook behavior:
+
+1. `/stripe/webhook` verifies Stripe signature.
+2. `checkout.session.completed` is idempotently claimed in `stripe_webhook_events`.
+3. For `scene_tiles`, it calls `grantPaidSceneTileEntitlements()`.
+4. Entitlements are inserted with source `stripe_checkout`.
+5. A ledger row is added with reason `stripe_scene_purchase`, `delta_credits = 0`, and metadata containing nominal/paid EUR.
+6. Account balance is not changed by direct scene purchase.
+
+After returning to Blender:
+
+- The client monitors the scene price.
+- Once backend estimate returns `€0.00`, it automatically starts the Full Quality resolve for the Camera View.
+
+### EUR 10 Balance Top-Up
+
+Request:
+
+```json
+{
+  "option": "balance_10"
+}
+```
+
+Backend behavior:
+
+- Creates a Stripe Checkout Session with product name `Planetka EUR Balance Top-Up`.
+- Metadata includes `planetka_purchase_type = balance_top_up` and `planetka_top_up_eur = 10.00`.
+
+Webhook behavior:
+
+- Calls `addCreditBalance()` with reason `stripe_balance_top_up`.
+- Balance and `total_granted_credits` increase by EUR 10.
+- A ledger row is created.
+
+## 13. Animation Render Pricing Flow
+
+Primary file:
+
+```text
+animation_tools.py
+```
+
+Important functions:
+
+- `_plan_animation_segments()`
+- `_unique_tiles_for_segments()`
+- `update_animation_credit_estimate()`
+- `_build_animation_credit_breakdown()`
+- `_unlock_animation_tiles_before_download()`
+- `_start_animation_data_preload()`
+
+User-facing workflow:
+
+1. Camera keyframes/animation segment plan are generated.
+2. Planetka calculates all Full Quality tiles needed by all time segments.
+3. It asks the backend for an authoritative price for the unique tile set.
+4. UI displays:
+   - New Tiles to be Licenced and Downloaded.
+   - Price.
+   - Details popup with per-segment tile rows.
+5. User clicks `Render Animation (€X.XX)` and confirms.
+6. Before frame rendering starts:
+   - Backend licences all unique Full Quality animation tiles via `/tiles/session` and `land_credits_v1`.
+   - UI price is set to `€0.00` because all tiles are now licenced.
+   - All required texture files are downloaded up front into cache.
+7. Segment resolves during the render should use already licenced/downloaded data. Online access remains only as a fallback.
+8. If the user cancels or Blender crashes, the licenced tiles remain licenced and can be reused later without extra charge.
+
+Animation breakdown rule:
+
+- Each tile is charged once across the full animation.
+- Later segments using the same tile show `€0.00` with reason `already counted in an earlier animation segment`.
+- Tiles licenced before the render show `€0.00` with reason `already licenced before this render`.
+
+## 14. Downloading Licenced Tiles and Local Source
+
+Primary file:
+
+```text
+credit_api.py
+```
+
+Features:
+
+- `GET /credits/unlocked` returns licenced tile rows and default asset lists.
+- User can download licenced tiles to a chosen Local Source folder.
+- Download ranges currently include Today, This Week, This Month, and All Data.
+- Download progress is tracked separately from Resolve download progress.
+- Downloaded assets are not meant to create additional charges because they are tied to already licenced tile keys.
+
+Local Source behavior:
+
+- Local Source is searched before cloud download.
+- Local files are used directly when valid.
+- If cloud data is newer or local metadata is stale, the user should be notified to re-download, without being charged again.
+
+## 15. Preview Fair-Usage Separation
+
+Preview quality is free, but backend telemetry tracks it separately from Full Quality.
+
+Primary tables:
+
+- `tile_request_rollup_hourly_account_quality`
+- `tile_request_rollup_daily_account_quality`
+- `preview_usage_hourly_account`
+
+Rules:
+
+- Preview usage monitoring counts only successful `GET` requests with effective quality mode `preview`.
+- Full Quality/licenced traffic is not part of Preview fair-usage limits.
+- Current strict fair-usage thresholds are alert-only unless explicitly changed to enforce holds.
+- Preview fair-usage hold state is separate from hard account block.
+
+Tile route behavior:
+
+- Preview fair-usage hold blocks Preview tile-session creation.
+- Preview fair-usage hold also blocks Preview tile GETs even if an old tile session token exists.
+- Full Quality licenced data remains available while Preview is on hold.
+
+## 16. Pricing Integrity and Failure Rules
+
+### Backend unavailable on client
+
+If `/credits/estimate` fails or returns an incomplete response, `credit_api.py` returns a non-authoritative zero-price payload:
+
+```text
+authoritative = False
+pricing_source = backend_unavailable | backend_rejected | backend_incomplete
+credits = 0.0
+```
+
+The Full Quality UI must not treat this as a valid free purchase. For paid modes, UI and animation code require `authoritative = True`.
+
+### Missing backend pricing metadata
+
+If a requested non-free tile is missing from `tile_land_stats`:
+
+- Backend prices it as `€0.00`.
+- `free_reason = pricing_metadata_missing`.
+- `pricing_integrity_events` row is written.
+- Worker logs `planetka_pricing_metadata_missing`.
+
+This prevents overcharging while making the data problem visible.
+
+Expected state for production:
+
+- `pricing_integrity_events` should normally stay at zero.
+- R2 S2 tile keys and D1 `tile_land_stats` rows should match exactly.
+
+### Ocean fallback tiles
+
+The client excludes tiles listed as `ocean_tiles` by the streaming plan from the pricing tile list. Ocean fallback assets should not contribute to price.
+
+### S2 required, support files fallback
+
+S2 is the paid/detail base. Missing EL/WT/PO support files can fall back when the tile is not expected in the database; they should not create pricing failures. Missing required S2 data is a separate resolve/data availability problem.
+
+## 17. Analytics and Admin Controls
+
+Relevant backend/admin behavior:
+
+- Analytics user list includes balance, total granted/spent, unlocked tile count, paid Full Quality resolve count, Preview usage, and Full Quality usage.
+- Admin can add or subtract EUR from a user balance through the credit adjustment route.
+- Account plans and unrestricted modes are deprecated/removed from the pricing model.
+
+Admin balance changes write `credit_ledger` rows:
+
+- Positive: `admin_top_up`.
+- Negative: `admin_balance_subtract`.
+
+## 18. Validation and Test Coverage
+
+Primary live pricing E2E test:
+
+```text
+tools/planetka_land_credit_live_e2e.py
+```
+
+Covered cases:
+
+- Preview resolve is free and does not create entitlement.
+- Same-family entitlement cascade and upgrade difference.
+- `d >= 060` tiles are free.
+- Full Quality new tile charges once.
+- Repeat Full Quality resolve is free.
+- Zero balance blocks paid unlock before tile download.
+- Small positive balance may go negative once.
+- Negative balance blocks the next paid unlock.
+- Animation estimate matches segment unlocking.
+- Test account is restored to standard EUR 100 state at the end.
+
+Recommended checks before release or after pricing changes:
+
+```bash
+python3 tools/planetka_land_credit_live_e2e.py --report /tmp/planetka_land_credit_live_e2e.json
+python3 -m compileall -q .
+node --check cloudflare-api/src/worker/credit_routes.js
+node --check cloudflare-api/src/worker/billing_handlers.js
+node --check cloudflare-api/src/index.js
+git diff --check
+```
+
+Recommended D1 integrity checks:
+
+```sql
+SELECT COUNT(*) AS pricing_integrity_events FROM pricing_integrity_events;
+SELECT COUNT(*) AS tile_land_stats_rows FROM tile_land_stats;
+SELECT free_reason, COUNT(*) FROM tile_land_stats GROUP BY free_reason ORDER BY free_reason;
+```
+
+R2/D1 metadata alignment should be checked after any dataset update:
+
+- Every S2 object in R2 should have a `tile_land_stats` row.
+- Every `tile_land_stats` row should correspond to an S2 object in R2.
+
+## 19. Operational Rules for Future Changes
+
+Do not violate these invariants:
+
+- Do not reintroduce local client pricing as authoritative.
+- Do not charge for missing pricing metadata.
+- Do not charge Preview quality.
+- Do not charge `d >= 060` tiles.
+- Do not allow Full Quality tile GETs for unlicenced non-free tiles under the `land_credits_v1` protocol.
+- Do not allow a paid Full Quality resolve to start from zero or negative balance unless it goes through Stripe scene checkout.
+- Do not silently change price formula constants without regenerating/revalidating backend pricing behavior and updating this document.
+- Do not count Full Quality/licenced traffic into Preview fair-usage enforcement.
+- Do not use Stripe Checkout metadata as the pricing authority; webhook processing must re-evaluate/grant using backend logic.
+
+## 20. File/Function Map
+
+Backend pricing:
+
+- `cloudflare-api/src/worker/credit_routes.js`
+- `creditsForTileStats()`
+- `estimateNewCredits()`
+- `unlockTilesForSession()`
+- `grantPaidSceneTileEntitlements()`
+- `handleCreditEstimate()`
+- `handleCreditCheckout()`
+- `handleCreditUnlocked()`
+- `handleAdminGiftCredits()`
+
+Tile access enforcement:
+
+- `cloudflare-api/src/worker/tile_routes.js`
+- `handleTileSessionStart()`
+- `handleTileRequest()`
+- `isTileUnlockedForUser()`
+
+Stripe:
+
+- `cloudflare-api/src/worker/billing_handlers.js`
+- `handleStripeWebhook()`
+- `claimStripeWebhookEvent()`
+- `addCreditBalance()`
+- `grantPaidSceneTileEntitlements()`
+
+Blender client API:
+
+- `credit_api.py`
+- `estimate_credits_for_tiles()`
+- `estimate_credit_breakdown_for_tiles()`
+- `create_checkout_session()`
+- `get_credit_account()`
+- `get_unlocked_tiles()`
+
+Resolve UI and action flow:
+
+- `operators.py`
+- `PLANETKA_OT_SetTextureQualityAndResolve`
+- `PLANETKA_OT_OpenCreditCheckout`
+- `PLANETKA_OT_DataCostBreakdown`
+- `ui.py`
+
+Camera View cost breakdown:
+
+- `planetka_runtime/view_telemetry.py`
+- `build_resolve_cost_breakdown()`
+- `estimate_credits_for_visible_tiles()`
+- `update_resolve_size_estimates()`
+
+Animation pricing:
+
+- `animation_tools.py`
+- `update_animation_credit_estimate()`
+- `_build_animation_credit_breakdown()`
+- `_unlock_animation_tiles_before_download()`
+- `_start_animation_data_preload()`
+- `PLANETKA_OT_AnimationRenderCostBreakdown`
+
+Metadata build:
+
+- `tools/build_tile_land_stats.py`
+
+Live E2E verification:
+
+- `tools/planetka_land_credit_live_e2e.py`

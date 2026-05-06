@@ -208,8 +208,40 @@ function parseAnalyticsExcludedEmailPatterns(env = {}, deps) {
   return Array.from(unique);
 }
 
+function parseAnalyticsRevenueExcludedEmailPatterns(env = {}, deps) {
+  const baseSource = String(
+    env.ANALYTICS_EXCLUDED_EMAIL_PATTERNS || deps.DEFAULT_ANALYTICS_EXCLUDED_EMAIL_PATTERNS || "",
+  ).trim();
+  const revenueSource = String(
+    env.ANALYTICS_REVENUE_EXCLUDED_EMAIL_PATTERNS
+      || deps.DEFAULT_ANALYTICS_REVENUE_EXCLUDED_EMAIL_PATTERNS
+      || "tom.griger@gmail.com,info@planetka.io,free@planetka.io,personal@planetka.io,commercial@planetka.io,credits@planetka.io",
+  ).trim();
+  const unique = new Set();
+  for (const source of [baseSource, revenueSource]) {
+    for (const token of String(source || "").split(",")) {
+      const pattern = String(token || "").trim().toLowerCase();
+      if (!pattern) continue;
+      unique.add(pattern);
+    }
+  }
+  return Array.from(unique);
+}
+
 function buildAnalyticsExcludedEmailFilter(emailColumnSql, env = {}, deps) {
   const patterns = parseAnalyticsExcludedEmailPatterns(env, deps);
+  if (!patterns.length) {
+    return { condition: "", bindings: [] };
+  }
+  const safeColumn = String(emailColumnSql || "").trim() || "user_email";
+  const condition = patterns
+    .map(() => `LOWER(COALESCE(${safeColumn}, '')) NOT LIKE ?`)
+    .join(" AND ");
+  return { condition, bindings: patterns };
+}
+
+function buildAnalyticsRevenueExcludedEmailFilter(emailColumnSql, env = {}, deps) {
+  const patterns = parseAnalyticsRevenueExcludedEmailPatterns(env, deps);
   if (!patterns.length) {
     return { condition: "", bindings: [] };
   }
@@ -234,8 +266,10 @@ export function parseHeavyUserPlanFilter(value, deps) {
 
 export function parseAnalyticsUsersSort(value) {
   const normalized = String(value || "").trim().toLowerCase();
-  const allowed = new Set(["balance", "resolves", "lifetime", "last_seen"]);
-  return allowed.has(normalized) ? normalized : "lifetime";
+  if (normalized === "resolves") return "paid_resolves";
+  if (normalized === "lifetime") return "preview_lifetime";
+  const allowed = new Set(["balance", "paid_eur", "paid_resolves", "paid_tiles", "preview_lifetime", "last_seen"]);
+  return allowed.has(normalized) ? normalized : "paid_eur";
 }
 
 export function parseAnalyticsUsersSortDirection(value) {
@@ -559,6 +593,9 @@ export async function collectAnalyticsSnapshot(
   await deps.ensureTileRequestEventsTable(db);
   await deps.ensureTileRequestRollupTables(db);
   await deps.ensureAuthRefreshEventsTable(db);
+  if (typeof deps.ensureCreditTables === "function") {
+    await deps.ensureCreditTables(db);
+  }
   const nowUnix = Math.floor(Date.now() / 1000);
   const windowMinutes = sanitizeAnalyticsMinutes(minutes, deps.DEFAULT_ANALYTICS_WINDOW_MINUTES, deps);
   const windowStartUnix = Math.max(0, nowUnix - (windowMinutes * 60));
@@ -576,6 +613,7 @@ export async function collectAnalyticsSnapshot(
   const rollupEmailFilterAliasR = buildAnalyticsExcludedEmailFilter("r.user_email", env, deps);
   const heavyEmailFilter = buildAnalyticsExcludedEmailFilter("agg.user_email", env, deps);
   const authRefreshEmailFilter = buildAnalyticsExcludedEmailFilter("user_email", env, deps);
+  const revenueEmailFilterAliasU = buildAnalyticsRevenueExcludedEmailFilter("u.email", env, deps);
 
   const summary = await deps.dbGet(
     db,
@@ -668,6 +706,61 @@ export async function collectAnalyticsSnapshot(
       FROM tagged_resolves
     `,
     [...eventEmailFilterAliasE.bindings],
+  );
+
+  const topLineRevenue = await deps.dbGet(
+    db,
+    `
+      WITH paid_ledger AS (
+        SELECT
+          LOWER(COALESCE(cl.reason, '')) AS reason_norm,
+          COALESCE(cl.delta_credits, 0) AS delta_credits,
+          CASE
+            WHEN json_valid(COALESCE(cl.metadata_json, '')) THEN cl.metadata_json
+            ELSE NULL
+          END AS metadata_json
+        FROM credit_ledger cl
+        LEFT JOIN users u ON u.id = cl.user_id
+        WHERE LOWER(COALESCE(cl.reason, '')) IN ('stripe_balance_top_up', 'stripe_scene_purchase')
+        ${revenueEmailFilterAliasU.condition ? `AND ${revenueEmailFilterAliasU.condition}` : ""}
+      ),
+      paid_amounts AS (
+        SELECT
+          CASE
+            WHEN reason_norm = 'stripe_balance_top_up' THEN COALESCE(
+              CAST(json_extract(metadata_json, '$.stripe_amount_paid_eur') AS REAL),
+              ABS(delta_credits),
+              0
+            )
+            WHEN reason_norm = 'stripe_scene_purchase' THEN COALESCE(
+              CAST(json_extract(metadata_json, '$.paid_eur') AS REAL),
+              CAST(json_extract(metadata_json, '$.nominal_eur') AS REAL),
+              0
+            )
+            ELSE 0
+          END AS amount_eur
+        FROM paid_ledger
+      )
+      SELECT
+        COALESCE(ROUND(SUM(CASE WHEN amount_eur > 0 THEN amount_eur ELSE 0 END) * 100.0) / 100.0, 0) AS total_earned_eur
+      FROM paid_amounts
+    `,
+    [...revenueEmailFilterAliasU.bindings],
+  );
+
+  const topLinePaidResolves = await deps.dbGet(
+    db,
+    `
+      SELECT COUNT(*) AS total_paid_resolves
+      FROM credit_ledger cl
+      LEFT JOIN users u ON u.id = cl.user_id
+      WHERE LOWER(COALESCE(cl.reason, '')) IN ('tile_unlock', 'stripe_scene_purchase')
+        AND json_valid(COALESCE(cl.metadata_json, ''))
+        AND LOWER(COALESCE(json_extract(cl.metadata_json, '$.quality_mode'), '')) = 'full'
+        AND COALESCE(CAST(json_extract(cl.metadata_json, '$.tile_count') AS INTEGER), 0) > 0
+        ${revenueEmailFilterAliasU.condition ? `AND ${revenueEmailFilterAliasU.condition}` : ""}
+    `,
+    [...revenueEmailFilterAliasU.bindings],
   );
 
   const activeWindow6mStartUnix = Math.max(0, nowUnix - (180 * 86400));
@@ -1210,6 +1303,7 @@ export async function collectAnalyticsSnapshot(
   }));
 
   const cloudBillableUsage = await fetchCloudflareR2BillableUsage(env, db, deps);
+  const totalEarnedEur = Number(topLineRevenue && topLineRevenue.total_earned_eur);
 
   return {
     generated_at: deps.nowIso(),
@@ -1239,6 +1333,12 @@ export async function collectAnalyticsSnapshot(
         personal: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.personal_bytes),
         commercial: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.commercial_bytes),
         total: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.total_bytes),
+      },
+      earned_eur: {
+        total: Number.isFinite(totalEarnedEur) ? Number(totalEarnedEur.toFixed(2)) : 0,
+      },
+      paid_resolves: {
+        total: deps.clampNonNegativeInt(topLinePaidResolves && topLinePaidResolves.total_paid_resolves),
       },
     },
     summary: {
@@ -1370,11 +1470,13 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
   const limit = Math.max(1, Math.min(5000, deps.parseNonNegativeInteger(options.limit, 5000)));
   const orderSqlByKey = {
     balance: "balance_credits",
-    resolves: "resolve_count",
-    lifetime: "lifetime_bytes",
+    paid_eur: "total_spent_credits",
+    paid_resolves: "paid_full_resolve_count",
+    paid_tiles: "unlocked_tile_count",
+    preview_lifetime: "preview_lifetime_bytes",
     last_seen: "last_seen_unix",
   };
-  const orderSql = orderSqlByKey[sortBy] || orderSqlByKey.lifetime;
+  const orderSql = orderSqlByKey[sortBy] || orderSqlByKey.paid_eur;
   const emailFilter = buildAnalyticsExcludedEmailFilter("u.email", env, deps);
   const whereParts = [];
   const bindings = [];

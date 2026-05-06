@@ -35,17 +35,25 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
   const topLineResolves = safeTopLine.resolves && typeof safeTopLine.resolves === "object" ? safeTopLine.resolves : {};
   const topLineTileRequests = safeTopLine.tile_requests && typeof safeTopLine.tile_requests === "object" ? safeTopLine.tile_requests : {};
   const topLineGbServed = safeTopLine.gb_served && typeof safeTopLine.gb_served === "object" ? safeTopLine.gb_served : {};
+  const topLineEarnedEur = safeTopLine.earned_eur && typeof safeTopLine.earned_eur === "object" ? safeTopLine.earned_eur : {};
+  const topLinePaidResolves = safeTopLine.paid_resolves && typeof safeTopLine.paid_resolves === "object" ? safeTopLine.paid_resolves : {};
 
   const renderTotalValue = (values = {}, valueFormatter, fallbackTotal = 0) => {
     const safeValues = values && typeof values === "object" ? values : {};
     const total = Number(safeValues.total || fallbackTotal || 0);
     return escapeHtml(String(valueFormatter(total)));
   };
+  const fmtEurLocal = (value) => {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? `${numeric.toFixed(2)} €` : "0.00 €";
+  };
 
   const topUsersSplitHtml = renderTotalValue(topLineUsers, (value) => fmtIntLocal(value), topLineUsers.total);
   const topResolvesSplitHtml = renderTotalValue(topLineResolves, (value) => fmtIntLocal(value), topLineResolves.total);
   const topTileRequestsSplitHtml = renderTotalValue(topLineTileRequests, (value) => fmtIntLocal(value), topLineTileRequests.total);
   const topGbServedSplitHtml = renderTotalValue(topLineGbServed, (value) => `${fmtGbLocal(value)} GB`, topLineGbServed.total);
+  const topEarnedEurHtml = renderTotalValue(topLineEarnedEur, (value) => fmtEurLocal(value), topLineEarnedEur.total);
+  const topPaidResolvesHtml = renderTotalValue(topLinePaidResolves, (value) => fmtIntLocal(value), topLinePaidResolves.total);
   return `
 <!doctype html>
 <html>
@@ -106,6 +114,8 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     <span id="status" class="muted">Snapshot updated: ${snapshotGeneratedAt} UTC</span>
   </div>
   <div class="grid">
+    <div class="card"><div class="label">Total Earned</div><div id="topEarnedEur" class="value">${topEarnedEurHtml}</div></div>
+    <div class="card"><div class="label">Total Paid Resolves</div><div id="topPaidResolves" class="value">${topPaidResolvesHtml}</div></div>
     <div class="card"><div class="label">Total Users</div><div id="topUsersSplit" class="value">${topUsersSplitHtml}</div></div>
     <div class="card"><div class="label">Total Resolves</div><div id="topResolvesSplit" class="value">${topResolvesSplitHtml}</div></div>
     <div class="card"><div class="label">Tile Requests</div><div id="topRequestsSplit" class="value">${topTileRequestsSplitHtml}</div></div>
@@ -203,6 +213,10 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
       return n.toFixed(i === 0 ? 0 : 2) + " " + units[i];
     };
     const fmtGb = (v) => (Number(v || 0) / (1024 * 1024 * 1024)).toFixed(3);
+    const fmtEur = (v) => {
+      const numeric = Number(v);
+      return Number.isFinite(numeric) ? numeric.toFixed(2) + " €" : "0.00 €";
+    };
     const fmtFixed = (v, digits = 2) => {
       const numeric = Number(v);
       return Number.isFinite(numeric) ? numeric.toFixed(digits) : "0.00";
@@ -534,6 +548,8 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         const s = data.summary || {};
         const a = data.active || {};
         const topLine = data.top_line || {};
+        setText("topEarnedEur", fmtEur(topLine && topLine.earned_eur && topLine.earned_eur.total));
+        renderTotalMetric("topPaidResolves", topLine.paid_resolves || {}, false, Number(topLine && topLine.paid_resolves && topLine.paid_resolves.total || 0));
         renderTotalMetric("topUsersSplit", topLine.users || {}, false, Number(topLine && topLine.users && topLine.users.total || 0));
         renderTotalMetric("topResolvesSplit", topLine.resolves || {}, false, Number(topLine && topLine.resolves && topLine.resolves.total || 0));
         renderTotalMetric("topRequestsSplit", topLine.tile_requests || {}, false, Number(topLine && topLine.tile_requests && topLine.tile_requests.total || 0));

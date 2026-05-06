@@ -173,7 +173,7 @@ export async function buildAnalyticsSnapshotMatrix(db, env, deps) {
 export async function buildAnalyticsUsersSnapshot(db, env, deps) {
   const rows = await deps.listAnalyticsUsers(db, env, {
     query: "",
-    sort_by: "lifetime",
+    sort_by: "paid_eur",
     sort_dir: "desc",
     limit: 5000,
   });
