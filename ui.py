@@ -1012,11 +1012,33 @@ def _draw_broader_region_offers(layout, scene, active_view_scope=False):
             action_row.enabled = False
         action = action_row.operator(
             "planetka.open_credit_checkout",
-            text=("Already Licenced" if fully_licenced else ("Unlock Free Pack" if price <= 0 else f"Buy Pack {_fmt_eur(price)}")),
+            text=(
+                "Already Licenced"
+                if fully_licenced
+                else (f"Licence {name} (Free)" if price <= 0 else f"Licence {name} ({_fmt_eur(price)})")
+            ),
             icon=("CHECKMARK" if price <= 0 else "URL"),
         )
         action.checkout_option = "REGION_PACK"
         action.region_pack_id = region_id
+        action.region_pack_name = name
+        if isinstance(countries, (list, tuple)):
+            action.included_countries = "|".join(str(country).strip() for country in countries if str(country).strip())
+        else:
+            action.included_countries = str(countries or "")
+        action.confirm_new_tile_count = int(new_tiles)
+        action.confirm_total_tile_count = int(total_tiles)
+        try:
+            action.confirm_already_licenced_tile_count = max(0, int(offer.get("already_licenced_tile_count", 0) or 0))
+        except (TypeError, ValueError):
+            action.confirm_already_licenced_tile_count = 0
+        action.confirm_full_price_eur = float(gross)
+        action.confirm_discount_percent = int(discount)
+        try:
+            action.confirm_discount_eur = max(0.0, float(offer.get("discount_eur", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            action.confirm_discount_eur = 0.0
+        action.confirm_price_eur = float(price)
 
 
 def _draw_account_panel(layout):

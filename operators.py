@@ -146,6 +146,57 @@ def _format_bytes_for_ui(size_bytes):
     return f"{value / (1024.0 ** 2):.2f} MB"
 
 
+def _format_eur_for_ui(value):
+    try:
+        return f"€{max(0.0, float(value or 0.0)):.2f}"
+    except (TypeError, ValueError):
+        return "€0.00"
+
+
+def _wrapped_label(layout, text, icon='NONE', width=58):
+    safe_text = str(text or "").strip()
+    if not safe_text:
+        return
+    lines = textwrap.wrap(safe_text, width=max(20, int(width or 58))) or [safe_text]
+    for index, line in enumerate(lines):
+        layout.label(text=line, icon=icon if index == 0 else 'BLANK1')
+
+
+def _scene_full_quality_purchase_summary(context):
+    scene = getattr(context, "scene", None)
+    prefs = get_prefs()
+    base_path = _normalize_texture_source_path(str(getattr(prefs, "texture_base_path", "") or "")) if prefs else ""
+    from .planetka_runtime.view_telemetry import build_resolve_cost_breakdown, get_resolve_size_estimates
+    breakdown = build_resolve_cost_breakdown(
+        scene=scene,
+        scope_mode="CAMERA",
+        base_path=base_path,
+        texture_quality_mode="FULL",
+    )
+    if not isinstance(breakdown, dict) or not bool(breakdown.get("ok", True)):
+        raise RuntimeError("Full Quality pricing is not available.")
+    try:
+        update_resolve_size_estimates(scene, scope_mode="CAMERA", base_path=base_path)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed refreshing Full Quality estimates for confirmation", exc_info=True)
+    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed refreshing Full Quality estimates for confirmation", exc_info=True)
+    estimates = get_resolve_size_estimates(scene)
+    total_bytes = breakdown.get("total_bytes", 0)
+    if isinstance(estimates, dict) and estimates.get("FULL") is not None:
+        total_bytes = estimates.get("FULL")
+    charged_tiles = list(breakdown.get("charged_tiles", ()) or ())
+    excluded_tiles = list(breakdown.get("excluded_tiles", ()) or ())
+    free_tiles = list(breakdown.get("free_tiles", ()) or ())
+    return {
+        "price_eur": float(max(0.0, float(breakdown.get("total_credits", 0.0) or 0.0))),
+        "total_bytes": int(max(0, int(total_bytes or 0))),
+        "new_tile_count": len(charged_tiles),
+        "already_licenced_tile_count": len(excluded_tiles),
+        "free_tile_count": len(free_tiles),
+    }
+
+
 class PLANETKA_OT_AccountDownloadUnlockedTiles(bpy.types.Operator):
     bl_idname = "planetka.account_download_unlocked_tiles"
     bl_label = "Download Licenced Tiles"
@@ -544,6 +595,12 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
         default="PREVIEW",
         options={'HIDDEN', 'SKIP_SAVE'},
     )
+    confirm_purchase: BoolProperty(default=False, options={'HIDDEN', 'SKIP_SAVE'})
+    confirm_new_tile_count: IntProperty(default=0, options={'HIDDEN', 'SKIP_SAVE'})
+    confirm_already_licenced_tile_count: IntProperty(default=0, options={'HIDDEN', 'SKIP_SAVE'})
+    confirm_free_tile_count: IntProperty(default=0, options={'HIDDEN', 'SKIP_SAVE'})
+    confirm_total_bytes: StringProperty(default="0", options={'HIDDEN', 'SKIP_SAVE'})
+    confirm_price_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
 
     @classmethod
     def description(cls, _context, properties):
@@ -555,6 +612,67 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
         if mode == "BALANCED":
             return "Use Standard Quality textures for automated resolving."
         return "Licence and download Full Quality textures for Camera View once."
+
+    def invoke(self, context, event):
+        del event
+        target_mode = _normalize_startup_texture_quality_mode(getattr(self, "texture_quality_mode", "PREVIEW"))
+        if target_mode != "FULL" or bool(getattr(self, "confirm_purchase", False)):
+            return self.execute(context)
+        try:
+            summary = _scene_full_quality_purchase_summary(context)
+        except (ImportError, RuntimeError, TypeError, ValueError, AttributeError) as exc:
+            return fail(
+                self,
+                f"Unable to confirm Full Quality purchase: {exc}",
+                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                logger=logger,
+                exc=exc,
+                log_message="Planetka Full Quality purchase confirmation failed",
+            )
+        price = float(summary.get("price_eur", 0.0) or 0.0)
+        if price <= 0.000001:
+            return self.execute(context)
+        self.confirm_purchase = True
+        self.confirm_new_tile_count = int(summary.get("new_tile_count", 0) or 0)
+        self.confirm_already_licenced_tile_count = int(summary.get("already_licenced_tile_count", 0) or 0)
+        self.confirm_free_tile_count = int(summary.get("free_tile_count", 0) or 0)
+        self.confirm_total_bytes = str(int(summary.get("total_bytes", 0) or 0))
+        self.confirm_price_eur = price
+        wm = getattr(context, "window_manager", None)
+        if wm is None:
+            return self.execute(context)
+        return wm.invoke_props_dialog(self, width=430)
+
+    def draw(self, _context):
+        layout = self.layout
+        layout.label(text="Full Quality Texture Licence", icon="TEXTURE")
+        _wrapped_label(
+            layout,
+            "You are licensing Full Quality texture data for this scene.",
+            icon="INFO",
+            width=54,
+        )
+        box = layout.box()
+        box.label(text=f"New tiles: {int(getattr(self, 'confirm_new_tile_count', 0) or 0)}", icon="TEXTURE")
+        box.label(
+            text=f"Already licenced: {int(getattr(self, 'confirm_already_licenced_tile_count', 0) or 0)}",
+            icon="CHECKMARK",
+        )
+        free_count = int(getattr(self, "confirm_free_tile_count", 0) or 0)
+        if free_count > 0:
+            box.label(text=f"Free / not charged: {free_count}", icon="HIDE_OFF")
+        try:
+            total_bytes = int(str(getattr(self, "confirm_total_bytes", "0") or "0"))
+        except (TypeError, ValueError):
+            total_bytes = 0
+        box.label(text=f"Data size: {_format_bytes_for_ui(total_bytes)}", icon="DISK_DRIVE")
+        box.label(text=f"Price: {_format_eur_for_ui(getattr(self, 'confirm_price_eur', 0.0))}", icon="USER")
+        _wrapped_label(
+            layout,
+            "These textures remain licenced to your account and can be downloaded again later.",
+            icon="CHECKMARK",
+            width=54,
+        )
 
     def execute(self, context):
         if _cancel_if_animation_render_active(self, "Texture quality change"):
@@ -745,6 +863,17 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
         default="",
         options={'HIDDEN', 'SKIP_SAVE'},
     )
+    region_pack_name: StringProperty(default="Region Pack", options={'HIDDEN', 'SKIP_SAVE'})
+    included_countries: StringProperty(default="", options={'HIDDEN', 'SKIP_SAVE'})
+    confirm_purchase: BoolProperty(default=False, options={'HIDDEN', 'SKIP_SAVE'})
+    confirm_new_tile_count: IntProperty(default=0, options={'HIDDEN', 'SKIP_SAVE'})
+    confirm_total_tile_count: IntProperty(default=0, options={'HIDDEN', 'SKIP_SAVE'})
+    confirm_already_licenced_tile_count: IntProperty(default=0, options={'HIDDEN', 'SKIP_SAVE'})
+    confirm_total_bytes: StringProperty(default="0", options={'HIDDEN', 'SKIP_SAVE'})
+    confirm_full_price_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
+    confirm_discount_percent: IntProperty(default=0, options={'HIDDEN', 'SKIP_SAVE'})
+    confirm_discount_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
+    confirm_price_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
 
     texture_quality_mode: EnumProperty(
         name="Texture Quality",
@@ -798,6 +927,40 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
     def invoke(self, context, event):
         del event
         option = str(getattr(self, "checkout_option", "OPTIONS") or "OPTIONS").strip().upper()
+        if option == "SCENE" and not bool(getattr(self, "confirm_purchase", False)):
+            try:
+                summary = _scene_full_quality_purchase_summary(context)
+            except (ImportError, RuntimeError, TypeError, ValueError, AttributeError) as exc:
+                return fail(
+                    self,
+                    f"Unable to confirm Full Quality purchase: {exc}",
+                    code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                    logger=logger,
+                    exc=exc,
+                    log_message="Planetka scene checkout confirmation failed",
+                )
+            price = float(summary.get("price_eur", 0.0) or 0.0)
+            if price > 0.000001:
+                self.confirm_purchase = True
+                self.confirm_new_tile_count = int(summary.get("new_tile_count", 0) or 0)
+                self.confirm_already_licenced_tile_count = int(summary.get("already_licenced_tile_count", 0) or 0)
+                self.confirm_total_tile_count = (
+                    int(summary.get("new_tile_count", 0) or 0)
+                    + int(summary.get("already_licenced_tile_count", 0) or 0)
+                    + int(summary.get("free_tile_count", 0) or 0)
+                )
+                self.confirm_total_bytes = str(int(summary.get("total_bytes", 0) or 0))
+                self.confirm_price_eur = price
+                wm = getattr(context, "window_manager", None)
+                if wm is None:
+                    return self.execute(context)
+                return wm.invoke_props_dialog(self, width=430)
+        if option == "REGION_PACK" and not bool(getattr(self, "confirm_purchase", False)):
+            self.confirm_purchase = True
+            wm = getattr(context, "window_manager", None)
+            if wm is None:
+                return self.execute(context)
+            return wm.invoke_props_dialog(self, width=460)
         if option != "OPTIONS":
             return self.execute(context)
         wm = getattr(context, "window_manager", None)
@@ -807,6 +970,73 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
 
     def draw(self, _context):
         layout = self.layout
+        option = str(getattr(self, "checkout_option", "OPTIONS") or "OPTIONS").strip().upper()
+        if option == "SCENE" and bool(getattr(self, "confirm_purchase", False)):
+            layout.label(text="Full Quality Texture Licence", icon="TEXTURE")
+            _wrapped_label(
+                layout,
+                "You are licensing Full Quality texture data for this scene.",
+                icon="INFO",
+                width=54,
+            )
+            box = layout.box()
+            box.label(text=f"New tiles: {int(getattr(self, 'confirm_new_tile_count', 0) or 0)}", icon="TEXTURE")
+            box.label(
+                text=f"Already licenced: {int(getattr(self, 'confirm_already_licenced_tile_count', 0) or 0)}",
+                icon="CHECKMARK",
+            )
+            try:
+                total_bytes = int(str(getattr(self, "confirm_total_bytes", "0") or "0"))
+            except (TypeError, ValueError):
+                total_bytes = 0
+            box.label(text=f"Data size: {_format_bytes_for_ui(total_bytes)}", icon="DISK_DRIVE")
+            box.label(text=f"Price: {_format_eur_for_ui(getattr(self, 'confirm_price_eur', 0.0))}", icon="USER")
+            _wrapped_label(
+                layout,
+                "These textures remain licenced to your account and can be downloaded again later.",
+                icon="CHECKMARK",
+                width=54,
+            )
+            return
+        if option == "REGION_PACK" and bool(getattr(self, "confirm_purchase", False)):
+            name = str(getattr(self, "region_pack_name", "") or "Region Pack").strip()
+            layout.label(text=f"Licence {name}", icon="WORLD")
+            countries = [
+                part.strip()
+                for part in str(getattr(self, "included_countries", "") or "").split("|")
+                if part.strip()
+            ]
+            summary = layout.box()
+            summary.label(text=f"New Tiles: {int(getattr(self, 'confirm_new_tile_count', 0) or 0)}", icon="TEXTURE")
+            total_tiles = int(getattr(self, "confirm_total_tile_count", 0) or 0)
+            if total_tiles > 0:
+                summary.label(text=f"Total Tiles: {total_tiles}", icon="GRID")
+            already = int(getattr(self, "confirm_already_licenced_tile_count", 0) or 0)
+            if already > 0:
+                summary.label(text=f"Already Licenced: {already}", icon="CHECKMARK")
+            summary.label(text=f"Full Price: {_format_eur_for_ui(getattr(self, 'confirm_full_price_eur', 0.0))}", icon="SOLO_ON")
+            discount = int(getattr(self, "confirm_discount_percent", 0) or 0)
+            if discount > 0:
+                summary.label(
+                    text=(
+                        f"Volume Discount: {discount}% "
+                        f"({_format_eur_for_ui(getattr(self, 'confirm_discount_eur', 0.0))})"
+                    ),
+                    icon="SORTSIZE",
+                )
+            summary.label(text=f"Price: {_format_eur_for_ui(getattr(self, 'confirm_price_eur', 0.0))}", icon="USER")
+            if countries:
+                _wrapped_label(layout, f"Included countries: {', '.join(countries)}", icon="WORLD_DATA", width=58)
+            _wrapped_label(
+                layout,
+                "Pack price is calculated from new Full Quality tiles only; already licenced tiles are excluded before the volume discount is applied.",
+                icon="INFO",
+                width=58,
+            )
+            actions = layout.row(align=True)
+            map_op = actions.operator("planetka.open_region_pack_map", text="View Map", icon="URL")
+            map_op.region_pack_id = str(getattr(self, "region_pack_id", "") or "")
+            return
         layout.label(text="Planetka payment", icon="URL")
         layout.operator(
             "planetka.open_credit_checkout",
@@ -1004,12 +1234,30 @@ class PLANETKA_OT_RegionPackInfo(bpy.types.Operator):
         country_box.label(text="Included Countries", icon="WORLD_DATA")
         country_text = ", ".join(countries) if countries else "Country list is not available for this pack yet."
         self._wrapped_label(country_box, country_text)
+        self._wrapped_label(
+            layout,
+            "Price uses only new Full Quality tiles; already licenced tiles are excluded before the volume discount is applied.",
+            icon="INFO",
+        )
         actions = layout.row(align=True)
         map_op = actions.operator("planetka.open_region_pack_map", text="Detailed Map", icon="URL")
         map_op.region_pack_id = str(getattr(self, "region_pack_id", "") or "")
-        checkout = actions.operator("planetka.open_credit_checkout", text="Buy Pack", icon="URL")
+        checkout = actions.operator(
+            "planetka.open_credit_checkout",
+            text=f"Licence {name} ({_format_eur_for_ui(getattr(self, 'price_eur', 0.0))})",
+            icon="URL",
+        )
         checkout.checkout_option = "REGION_PACK"
         checkout.region_pack_id = str(getattr(self, "region_pack_id", "") or "")
+        checkout.region_pack_name = name
+        checkout.included_countries = str(getattr(self, "included_countries", "") or "")
+        checkout.confirm_new_tile_count = int(getattr(self, "new_tile_count", 0) or 0)
+        checkout.confirm_total_tile_count = int(getattr(self, "total_tile_count", 0) or 0)
+        checkout.confirm_already_licenced_tile_count = int(getattr(self, "already_licenced_tile_count", 0) or 0)
+        checkout.confirm_full_price_eur = float(getattr(self, "full_price_eur", 0.0) or 0.0)
+        checkout.confirm_discount_percent = int(getattr(self, "discount_percent", 0) or 0)
+        checkout.confirm_discount_eur = float(getattr(self, "discount_eur", 0.0) or 0.0)
+        checkout.confirm_price_eur = float(getattr(self, "price_eur", 0.0) or 0.0)
 
     def execute(self, _context):
         return {'FINISHED'}

@@ -1,6 +1,8 @@
 import { html } from "./responses.js";
 import {
+  GENERATED_REGION_PACK_CATALOG_VERSION,
   GENERATED_REGION_PACK_DETAILS,
+  GENERATED_REGION_PACK_PRODUCTS,
   GENERATED_REGION_PACK_TILE_KEYS,
 } from "./region_packs.generated.js";
 
@@ -16,107 +18,11 @@ const STANDARD_QUALITY_UNLOCK_EUR = 50.0;
 const STRIPE_MIN_CHECKOUT_AMOUNT_CENTS = 50;
 const MONEY_SCALE = 100;
 const METRIC_SCALE = 1_000_000;
-const REGION_PACK_CATALOG_VERSION = "europe_bbox_v1";
+const REGION_PACK_CATALOG_VERSION = GENERATED_REGION_PACK_CATALOG_VERSION || "europe_gadm_v2";
 const SQL_VARIABLE_SAFE_CHUNK_SIZE = 75;
 const REGION_PACK_TILE_CHUNK_SIZE = SQL_VARIABLE_SAFE_CHUNK_SIZE;
 const REGION_PACK_PAID_Z_LEVELS = [1, 2, 4, 8, 15, 30];
-
-const EUROPE_REGION_PRODUCTS = [
-  { id: "europe", name: "Europe", type: "continent", discount_percent: 50, bbox: [-25.0, 34.0, 45.0, 72.0] },
-  {
-    id: "western_europe",
-    name: "Western Europe",
-    type: "macro_region",
-    discount_percent: 30,
-    bbox: [-11.0, 41.0, 16.0, 56.0],
-    countries: ["austria", "belgium", "france", "germany", "ireland", "netherlands", "switzerland", "united_kingdom"],
-  },
-  {
-    id: "southern_europe",
-    name: "Southern Europe",
-    type: "macro_region",
-    discount_percent: 30,
-    bbox: [-10.0, 35.0, 30.0, 47.5],
-    countries: ["albania", "bosnia_herzegovina", "bulgaria", "croatia", "greece", "italy", "kosovo", "montenegro", "north_macedonia", "portugal", "serbia", "slovenia", "spain"],
-  },
-  {
-    id: "northern_europe",
-    name: "Northern Europe",
-    type: "macro_region",
-    discount_percent: 30,
-    bbox: [-25.0, 54.0, 32.0, 72.0],
-    countries: ["denmark", "estonia", "finland", "iceland", "ireland", "latvia", "lithuania", "norway", "sweden", "united_kingdom"],
-  },
-  {
-    id: "eastern_europe",
-    name: "Eastern Europe",
-    type: "macro_region",
-    discount_percent: 30,
-    bbox: [14.0, 44.0, 41.0, 57.0],
-    countries: ["belarus", "bulgaria", "czechia", "hungary", "moldova", "poland", "romania", "slovakia", "ukraine"],
-  },
-  {
-    id: "balkans",
-    name: "Balkans",
-    type: "macro_region",
-    discount_percent: 30,
-    bbox: [13.0, 39.0, 30.0, 47.0],
-    countries: ["albania", "bosnia_herzegovina", "bulgaria", "croatia", "greece", "kosovo", "montenegro", "north_macedonia", "romania", "serbia", "slovenia"],
-  },
-  {
-    id: "scandinavia",
-    name: "Scandinavia",
-    type: "macro_region",
-    discount_percent: 30,
-    bbox: [4.0, 55.0, 32.0, 72.0],
-    countries: ["denmark", "finland", "iceland", "norway", "sweden"],
-  },
-  {
-    id: "mediterranean_europe",
-    name: "Mediterranean Europe",
-    type: "macro_region",
-    discount_percent: 30,
-    bbox: [-10.0, 35.0, 30.0, 46.5],
-    countries: ["albania", "bosnia_herzegovina", "croatia", "france", "greece", "italy", "montenegro", "portugal", "slovenia", "spain"],
-  },
-  { id: "albania", name: "Albania", type: "country", discount_percent: 20, bbox: [19.2, 39.6, 21.1, 42.7] },
-  { id: "austria", name: "Austria", type: "country", discount_percent: 20, bbox: [9.5, 46.3, 17.2, 49.1] },
-  { id: "belarus", name: "Belarus", type: "country", discount_percent: 20, bbox: [23.1, 51.2, 32.8, 56.2] },
-  { id: "belgium", name: "Belgium", type: "country", discount_percent: 20, bbox: [2.5, 49.5, 6.4, 51.6] },
-  { id: "bosnia_herzegovina", name: "Bosnia and Herzegovina", type: "country", discount_percent: 20, bbox: [15.7, 42.5, 19.7, 45.3] },
-  { id: "bulgaria", name: "Bulgaria", type: "country", discount_percent: 20, bbox: [22.3, 41.2, 28.7, 44.3] },
-  { id: "croatia", name: "Croatia", type: "country", discount_percent: 20, bbox: [13.5, 42.3, 19.5, 46.6] },
-  { id: "czechia", name: "Czechia", type: "country", discount_percent: 20, bbox: [12.1, 48.5, 18.9, 51.1] },
-  { id: "denmark", name: "Denmark", type: "country", discount_percent: 20, bbox: [8.0, 54.5, 15.3, 57.8] },
-  { id: "estonia", name: "Estonia", type: "country", discount_percent: 20, bbox: [21.8, 57.5, 28.3, 59.7] },
-  { id: "finland", name: "Finland", type: "country", discount_percent: 20, bbox: [20.5, 59.8, 31.6, 70.1] },
-  { id: "france", name: "France", type: "country", discount_percent: 20, bbox: [-5.2, 41.3, 9.7, 51.2] },
-  { id: "germany", name: "Germany", type: "country", discount_percent: 20, bbox: [5.8, 47.2, 15.1, 55.1] },
-  { id: "greece", name: "Greece", type: "country", discount_percent: 20, bbox: [19.3, 34.8, 29.7, 41.8] },
-  { id: "hungary", name: "Hungary", type: "country", discount_percent: 20, bbox: [16.1, 45.7, 22.9, 48.6] },
-  { id: "iceland", name: "Iceland", type: "country", discount_percent: 20, bbox: [-24.6, 63.1, -13.5, 66.6] },
-  { id: "ireland", name: "Ireland", type: "country", discount_percent: 20, bbox: [-10.7, 51.3, -5.4, 55.4] },
-  { id: "italy", name: "Italy", type: "country", discount_percent: 20, bbox: [6.6, 36.6, 18.6, 47.2] },
-  { id: "kosovo", name: "Kosovo", type: "country", discount_percent: 20, bbox: [20.0, 41.8, 21.9, 43.3] },
-  { id: "latvia", name: "Latvia", type: "country", discount_percent: 20, bbox: [20.9, 55.6, 28.3, 58.1] },
-  { id: "lithuania", name: "Lithuania", type: "country", discount_percent: 20, bbox: [20.9, 53.9, 26.9, 56.5] },
-  { id: "moldova", name: "Moldova", type: "country", discount_percent: 20, bbox: [26.6, 45.4, 30.2, 48.5] },
-  { id: "montenegro", name: "Montenegro", type: "country", discount_percent: 20, bbox: [18.4, 41.8, 20.4, 43.6] },
-  { id: "netherlands", name: "Netherlands", type: "country", discount_percent: 20, bbox: [3.2, 50.7, 7.3, 53.7] },
-  { id: "north_macedonia", name: "North Macedonia", type: "country", discount_percent: 20, bbox: [20.4, 40.8, 23.1, 42.4] },
-  { id: "norway", name: "Norway", type: "country", discount_percent: 20, bbox: [4.5, 57.8, 31.2, 71.2] },
-  { id: "poland", name: "Poland", type: "country", discount_percent: 20, bbox: [14.1, 49.0, 24.2, 54.9] },
-  { id: "portugal", name: "Portugal", type: "country", discount_percent: 20, bbox: [-9.6, 36.8, -6.1, 42.2] },
-  { id: "romania", name: "Romania", type: "country", discount_percent: 20, bbox: [20.2, 43.6, 29.8, 48.4] },
-  { id: "serbia", name: "Serbia", type: "country", discount_percent: 20, bbox: [18.8, 42.2, 23.1, 46.2] },
-  { id: "slovakia", name: "Slovakia", type: "country", discount_percent: 20, bbox: [16.8, 47.7, 22.6, 49.7] },
-  { id: "slovenia", name: "Slovenia", type: "country", discount_percent: 20, bbox: [13.3, 45.4, 16.7, 46.9] },
-  { id: "spain", name: "Spain", type: "country", discount_percent: 20, bbox: [-9.4, 35.8, 4.4, 43.8] },
-  { id: "sweden", name: "Sweden", type: "country", discount_percent: 20, bbox: [10.9, 55.2, 24.2, 69.1] },
-  { id: "switzerland", name: "Switzerland", type: "country", discount_percent: 20, bbox: [5.9, 45.8, 10.6, 47.9] },
-  { id: "ukraine", name: "Ukraine", type: "country", discount_percent: 20, bbox: [22.1, 44.2, 40.2, 52.4] },
-  { id: "united_kingdom", name: "United Kingdom", type: "country", discount_percent: 20, bbox: [-8.7, 49.8, 2.0, 60.9] },
-];
+const EUROPE_REGION_PRODUCTS = Array.isArray(GENERATED_REGION_PACK_PRODUCTS) ? GENERATED_REGION_PACK_PRODUCTS : [];
 
 function normalizeTileKey(value) {
   const raw = String(value || "").trim();
