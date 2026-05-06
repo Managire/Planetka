@@ -1026,7 +1026,7 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
                 )
             summary.label(text=f"Price: {_format_eur_for_ui(getattr(self, 'confirm_price_eur', 0.0))}", icon="USER")
             if countries:
-                _wrapped_label(layout, f"Included countries: {', '.join(countries)}", icon="WORLD_DATA", width=58)
+                _wrapped_label(layout, f"Included areas: {', '.join(countries)}", icon="WORLD_DATA", width=58)
             _wrapped_label(
                 layout,
                 "Pack price is calculated from new Full Quality tiles only; already licenced tiles are excluded before the volume discount is applied.",
@@ -1231,7 +1231,7 @@ class PLANETKA_OT_RegionPackInfo(bpy.types.Operator):
             )
         summary.label(text=f"Price: €{float(getattr(self, 'price_eur', 0.0) or 0.0):.2f}", icon="USER")
         country_box = layout.box()
-        country_box.label(text="Included Countries", icon="WORLD_DATA")
+        country_box.label(text="Included Areas", icon="WORLD_DATA")
         country_text = ", ".join(countries) if countries else "Country list is not available for this pack yet."
         self._wrapped_label(country_box, country_text)
         self._wrapped_label(

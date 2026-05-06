@@ -18,7 +18,7 @@ const STANDARD_QUALITY_UNLOCK_EUR = 50.0;
 const STRIPE_MIN_CHECKOUT_AMOUNT_CENTS = 50;
 const MONEY_SCALE = 100;
 const METRIC_SCALE = 1_000_000;
-const REGION_PACK_CATALOG_VERSION = GENERATED_REGION_PACK_CATALOG_VERSION || "gadm_regions_v3";
+const REGION_PACK_CATALOG_VERSION = GENERATED_REGION_PACK_CATALOG_VERSION || "gadm_regions_v4";
 const SQL_VARIABLE_SAFE_CHUNK_SIZE = 75;
 const REGION_PACK_TILE_CHUNK_SIZE = SQL_VARIABLE_SAFE_CHUNK_SIZE;
 const REGION_PACK_PAID_Z_LEVELS = [1, 2, 4, 8, 15, 30];
@@ -238,7 +238,7 @@ function regionProductIncludedCountries(product) {
   const generated = GENERATED_REGION_PACK_DETAILS[id];
   if (generated && Array.isArray(generated.countries)) {
     return generated.countries
-      .map((entry) => String(entry && (entry.COUNTRY || entry.name) || "").trim())
+      .map((entry) => String(entry && (entry.NAME_1 || entry.name || entry.COUNTRY) || "").trim())
       .filter(Boolean);
   }
   if (String(product.type || "") === "country") {
@@ -943,7 +943,7 @@ select{background:#262626;color:var(--text);border:1px solid var(--line);border-
 </div>
 </section>
 <section class="panel">
-<h2>Included Countries</h2>
+<h2>Included Areas</h2>
 <div class="countries">${countries.map((country) => `<div>${escapeHtmlText(country)}</div>`).join("")}</div>
 </section>
 <section class="panel small muted">

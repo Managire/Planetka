@@ -26,7 +26,7 @@ DEFAULT_GPKG = Path("/Volumes/SSDA/Planetka Assets Extra/BO/gadm_410-levels.gpkg
 DEFAULT_JSON = Path("Resources/Region Packs/region_packs_gadm.json")
 DEFAULT_JS = Path("cloudflare-api/src/worker/region_packs.generated.js")
 DEFAULT_PNG = Path("Resources/Region Packs/region_packs_gadm.png")
-CATALOG_VERSION = "gadm_regions_v3"
+CATALOG_VERSION = "gadm_regions_v4"
 PAID_Z_LEVELS = (1, 2, 4, 8, 15, 30)
 FREE_D_THRESHOLD = 60
 MERGE_DIFFERENCE_RATIO = 0.50
@@ -35,7 +35,7 @@ SMALL_COUNTRY_AUTO_MERGE_TILE_LIMIT = 30
 EUROPE_CLIP_BBOX = (-25.0, 34.0, 45.0, 72.0)
 SOUTH_AMERICA_CLIP_BBOX = (-92.5, -60.0, -30.0, 15.0)
 CARIBBEAN_CLIP_BBOX = (-90.0, 5.0, -55.0, 30.0)
-FULL_CATALOG_PREVIEW_BBOX = (-95.0, -60.0, 45.0, 72.0)
+AUSTRALIA_CLIP_BBOX = (110.0, -45.0, 155.0, -9.0)
 
 EXCLUDED_EUROPE_MICROSTATES = {
     "AND": "Andorra",
@@ -69,6 +69,32 @@ CARIBBEAN_LARGE_ISLAND_CODES = (
 CARIBBEAN_SMALL_ISLAND_CODES = (
     "ABW", "AIA", "ATG", "BES", "BRB", "CUW", "CYM", "DMA", "GLP", "GRD",
     "KNA", "LCA", "MSR", "MTQ", "SXM", "TCA", "VCT", "VGB", "VIR",
+)
+
+AUSTRALIA_MAINLAND_REGION_CODES = (
+    "AUS.5_1",   # New South Wales
+    "AUS.6_1",   # Northern Territory
+    "AUS.7_1",   # Queensland
+    "AUS.8_1",   # South Australia
+    "AUS.9_1",   # Tasmania
+    "AUS.10_1",  # Victoria
+    "AUS.11_1",  # Western Australia
+)
+
+AUSTRALIA_ACT_AND_JERVIS_CODES = (
+    "AUS.2_1",  # Australian Capital Territory
+    "AUS.4_1",  # Jervis Bay Territory
+)
+
+AUSTRALIA_EXTERNAL_ISLAND_CODES = (
+    "AUS.1_1",  # Ashmore and Cartier Islands
+    "AUS.3_1",  # Coral Sea Islands Territory
+)
+
+AUSTRALIA_ALL_REGION_CODES = (
+    *AUSTRALIA_MAINLAND_REGION_CODES,
+    *AUSTRALIA_ACT_AND_JERVIS_CODES,
+    *AUSTRALIA_EXTERNAL_ISLAND_CODES,
 )
 
 LOCAL_PRODUCT_SPECS = (
@@ -111,6 +137,36 @@ LOCAL_PRODUCT_SPECS = (
         "auto_merge": False,
         "discount_percent": 20,
         "source_note": "GADM 4.10 ADM_0 polygon intersection; grouped small Caribbean island nations and territories",
+    },
+    *(
+        {
+            "adm1_codes": (code,),
+            "clip_bbox": AUSTRALIA_CLIP_BBOX,
+            "merge_scope": "australia",
+            "auto_merge": False,
+            "discount_percent": 20,
+        }
+        for code in AUSTRALIA_MAINLAND_REGION_CODES
+    ),
+    {
+        "id": "australian_capital_territory_and_jervis_bay",
+        "name": "Australian Capital Territory & Jervis Bay",
+        "adm1_codes": AUSTRALIA_ACT_AND_JERVIS_CODES,
+        "clip_bbox": AUSTRALIA_CLIP_BBOX,
+        "merge_scope": "australia",
+        "auto_merge": False,
+        "discount_percent": 20,
+        "source_note": "GADM 4.10 ADM_1 polygon intersection; grouped ACT and Jervis Bay Territory",
+    },
+    {
+        "id": "australian_external_islands",
+        "name": "Australian External Islands",
+        "adm1_codes": AUSTRALIA_EXTERNAL_ISLAND_CODES,
+        "clip_bbox": AUSTRALIA_CLIP_BBOX,
+        "merge_scope": "australia",
+        "auto_merge": False,
+        "discount_percent": 20,
+        "source_note": "GADM 4.10 ADM_1 polygon intersection; grouped small Australian external island territories",
     },
 )
 
@@ -243,6 +299,41 @@ MACRO_PACKS = (
         "adm0_codes": CARIBBEAN_LARGE_ISLAND_CODES + CARIBBEAN_SMALL_ISLAND_CODES,
         "clip_bbox": CARIBBEAN_CLIP_BBOX,
     },
+    {
+        "id": "eastern_australia",
+        "name": "Eastern Australia",
+        "type": "macro_region",
+        "discount_percent": 30,
+        "adm1_codes": (
+            *AUSTRALIA_ACT_AND_JERVIS_CODES,
+            "AUS.5_1",   # New South Wales
+            "AUS.7_1",   # Queensland
+            "AUS.9_1",   # Tasmania
+            "AUS.10_1",  # Victoria
+        ),
+        "clip_bbox": AUSTRALIA_CLIP_BBOX,
+    },
+    {
+        "id": "western_and_central_australia",
+        "name": "Western & Central Australia",
+        "type": "macro_region",
+        "discount_percent": 30,
+        "adm1_codes": (
+            "AUS.6_1",   # Northern Territory
+            "AUS.8_1",   # South Australia
+            "AUS.11_1",  # Western Australia
+            *AUSTRALIA_EXTERNAL_ISLAND_CODES,
+        ),
+        "clip_bbox": AUSTRALIA_CLIP_BBOX,
+    },
+    {
+        "id": "australia",
+        "name": "Australia",
+        "type": "continent",
+        "discount_percent": 50,
+        "adm1_codes": AUSTRALIA_ALL_REGION_CODES,
+        "clip_bbox": AUSTRALIA_CLIP_BBOX,
+    },
 )
 
 SPECIAL_GROUP_NAMES = {
@@ -335,6 +426,13 @@ def read_adm0(gpkg_path: Path):
     return countries
 
 
+def read_adm1(gpkg_path: Path):
+    regions = gpd.read_file(gpkg_path, layer="ADM_1", columns=["GID_0", "COUNTRY", "GID_1", "NAME_1", "geometry"])
+    regions["GID_0"] = regions["GID_0"].astype(str).str.upper()
+    regions["GID_1"] = regions["GID_1"].astype(str).str.upper()
+    return regions
+
+
 def selected_for_codes(countries, codes: tuple[str, ...] | list[str], clip_bbox=None):
     safe_codes = tuple(str(code).strip().upper() for code in codes if str(code).strip())
     if not safe_codes:
@@ -350,6 +448,40 @@ def selected_for_codes(countries, codes: tuple[str, ...] | list[str], clip_bbox=
     if selected.empty:
         raise ValueError(f"ADM_0 code(s) clipped to empty geometry: {', '.join(safe_codes)}")
     return selected.sort_values("COUNTRY").reset_index(drop=True)
+
+
+def selected_for_adm1_codes(regions, codes: tuple[str, ...] | list[str], clip_bbox=None):
+    safe_codes = tuple(str(code).strip().upper() for code in codes if str(code).strip())
+    if not safe_codes:
+        raise ValueError("No ADM_1 region codes supplied")
+    selected = regions[regions["GID_1"].isin(safe_codes)].copy()
+    missing = sorted(set(safe_codes) - set(selected["GID_1"].astype(str)))
+    if missing:
+        raise ValueError(f"Missing ADM_1 code(s): {', '.join(missing)}")
+    if clip_bbox:
+        clip = box(*clip_bbox)
+        selected["geometry"] = selected.geometry.intersection(clip)
+        selected = selected[~selected.geometry.is_empty].copy()
+    if selected.empty:
+        raise ValueError(f"ADM_1 code(s) clipped to empty geometry: {', '.join(safe_codes)}")
+    return selected.sort_values(["COUNTRY", "NAME_1"]).reset_index(drop=True)
+
+
+def selected_for_spec(layers: dict[str, object], spec: dict):
+    if spec.get("adm1_codes"):
+        return selected_for_adm1_codes(layers["adm1"], spec["adm1_codes"], spec.get("clip_bbox"))
+    return selected_for_codes(layers["adm0"], spec["adm0_codes"], spec.get("clip_bbox"))
+
+
+def spec_membership_codes(spec: dict) -> tuple[str, ...]:
+    if spec.get("adm1_codes"):
+        return tuple(str(code).strip().upper() for code in spec.get("adm1_codes") or [] if str(code).strip())
+    return tuple(str(code).strip().upper() for code in spec.get("adm0_codes") or [] if str(code).strip())
+
+
+def payload_membership_codes(payload: dict) -> list[str]:
+    codes = payload.get("membership_codes") or payload.get("adm1_codes") or payload.get("adm0_codes") or []
+    return [str(code).strip().upper() for code in codes if str(code).strip()]
 
 
 def union_geometry(selected):
@@ -369,8 +501,23 @@ def counts_by_z(tile_keys: list[str]) -> dict[str, int]:
 
 def country_records(selected) -> list[dict]:
     records = []
+    if "GID_1" in selected.columns and "NAME_1" in selected.columns:
+        columns = ["GID_0", "COUNTRY", "GID_1", "NAME_1"]
+        for row in selected[columns].drop_duplicates().sort_values(["COUNTRY", "NAME_1"]).itertuples(index=False):
+            region_name = str(row.NAME_1)
+            country_name = str(row.COUNTRY)
+            records.append({
+                "GID_0": str(row.GID_0),
+                "COUNTRY": country_name,
+                "GID_1": str(row.GID_1),
+                "NAME_1": region_name,
+                "name": region_name,
+                "country": country_name,
+            })
+        return records
     for row in selected[["GID_0", "COUNTRY"]].drop_duplicates().sort_values("COUNTRY").itertuples(index=False):
-        records.append({"GID_0": str(row.GID_0), "COUNTRY": str(row.COUNTRY)})
+        country_name = str(row.COUNTRY)
+        records.append({"GID_0": str(row.GID_0), "COUNTRY": country_name, "name": country_name})
     return records
 
 
@@ -393,7 +540,10 @@ def _iter_polygon_geometries(geometry):
 
 def country_outlines_for_web(selected, simplify_tolerance: float = 0.01, min_polygon_area: float = 0.001) -> list[dict]:
     outlines = []
-    for row in selected.sort_values("COUNTRY").itertuples(index=False):
+    sort_columns = ["COUNTRY"]
+    if "NAME_1" in selected.columns:
+        sort_columns.append("NAME_1")
+    for row in selected.sort_values(sort_columns).itertuples(index=False):
         geometry = getattr(row, "geometry", None)
         if geometry is None or geometry.is_empty:
             continue
@@ -410,7 +560,9 @@ def country_outlines_for_web(selected, simplify_tolerance: float = 0.01, min_pol
                 polygons.append(coords)
         if not polygons:
             continue
-        outlines.append({"id": str(getattr(row, "GID_0", "") or ""), "name": str(getattr(row, "COUNTRY", "") or ""), "polygons": polygons})
+        outline_id = str(getattr(row, "GID_1", "") or getattr(row, "GID_0", "") or "")
+        outline_name = str(getattr(row, "NAME_1", "") or getattr(row, "COUNTRY", "") or "")
+        outlines.append({"id": outline_id, "name": outline_name, "polygons": polygons})
     return outlines
 
 
@@ -421,7 +573,8 @@ def payload_from_selected(
     product_type: str,
     discount_percent: int,
     selected,
-    adm0_codes: tuple[str, ...] | list[str],
+    adm0_codes: tuple[str, ...] | list[str] = (),
+    adm1_codes: tuple[str, ...] | list[str] = (),
     clip_bbox=None,
     merge_scope: str = "",
     auto_merge: bool = False,
@@ -432,6 +585,11 @@ def payload_from_selected(
     geometry = union_geometry(selected)
     tile_keys = sorted(set(tile_keys_override)) if tile_keys_override is not None else region_tiles_for_geometry(geometry)
     bounds = [float(value) for value in selected.total_bounds]
+    safe_adm0_codes = sorted(set(str(code).upper() for code in adm0_codes if str(code).strip()))
+    if not safe_adm0_codes and "GID_0" in selected.columns:
+        safe_adm0_codes = sorted(set(str(value).upper() for value in selected["GID_0"].astype(str)))
+    safe_adm1_codes = sorted(set(str(code).upper() for code in adm1_codes if str(code).strip()))
+    membership_codes = safe_adm1_codes or safe_adm0_codes
     return {
         "id": product_id,
         "name": name,
@@ -439,7 +597,9 @@ def payload_from_selected(
         "discount_percent": int(discount_percent),
         "catalog_version": CATALOG_VERSION,
         "source": source_note,
-        "adm0_codes": sorted(set(str(code).upper() for code in adm0_codes)),
+        "adm0_codes": safe_adm0_codes,
+        "adm1_codes": safe_adm1_codes,
+        "membership_codes": membership_codes,
         "clip_bbox": list(clip_bbox or []),
         "merge_scope": str(merge_scope or ""),
         "auto_merge": bool(auto_merge),
@@ -457,18 +617,20 @@ def payload_from_selected(
 def product_name_from_selected(selected, fallback: str) -> str:
     records = country_records(selected)
     if len(records) == 1:
-        return records[0]["COUNTRY"]
+        return records[0].get("NAME_1") or records[0].get("COUNTRY") or fallback
     return fallback
 
 
-def build_local_payloads(countries) -> list[dict]:
+def build_local_payloads(layers: dict[str, object]) -> list[dict]:
     payloads = []
     specs = list(LOCAL_PRODUCT_SPECS)
     for index, spec in enumerate(specs, start=1):
-        codes = tuple(spec["adm0_codes"])
+        adm0_codes = tuple(spec.get("adm0_codes") or ())
+        adm1_codes = tuple(spec.get("adm1_codes") or ())
+        codes = spec_membership_codes(spec)
         label = str(spec.get("name") or ",".join(codes))
         print(f"Building local product {index}/{len(specs)}: {label}", file=sys.stderr, flush=True)
-        selected = selected_for_codes(countries, codes, spec.get("clip_bbox"))
+        selected = selected_for_spec(layers, spec)
         name = str(spec.get("name") or "").strip() or product_name_from_selected(selected, codes[0])
         product_id = str(spec.get("id") or "").strip() or slugify(name)
         payloads.append(
@@ -478,7 +640,8 @@ def build_local_payloads(countries) -> list[dict]:
                 product_type="country",
                 discount_percent=int(spec.get("discount_percent", 20)),
                 selected=selected,
-                adm0_codes=codes,
+                adm0_codes=adm0_codes,
+                adm1_codes=adm1_codes,
                 clip_bbox=spec.get("clip_bbox"),
                 merge_scope=str(spec.get("merge_scope") or ""),
                 auto_merge=bool(spec.get("auto_merge", False)),
@@ -544,7 +707,7 @@ def merged_product_identity(codes: list[str], names: list[str]) -> tuple[str, st
     return slugify("_".join(names)), list_name(names)
 
 
-def merge_local_payloads(local_payloads: list[dict], countries) -> tuple[list[dict], list[dict], dict[str, str], dict[str, dict]]:
+def merge_local_payloads(local_payloads: list[dict], layers: dict[str, object]) -> tuple[list[dict], list[dict], dict[str, str], dict[str, dict]]:
     edges = []
     pair_report = []
     for left in range(len(local_payloads)):
@@ -566,15 +729,25 @@ def merge_local_payloads(local_payloads: list[dict], countries) -> tuple[list[di
     code_to_payload = {}
     for component in components:
         component_payloads = [local_payloads[index] for index in sorted(component, key=lambda idx: local_payloads[idx]["name"])]
-        codes = sorted({code for payload in component_payloads for code in payload.get("adm0_codes", [])})
-        names = sorted({record["COUNTRY"] for payload in component_payloads for record in payload.get("countries", [])})
+        codes = sorted({code for payload in component_payloads for code in payload_membership_codes(payload)})
+        adm0_codes = sorted({code for payload in component_payloads for code in payload.get("adm0_codes", [])})
+        adm1_codes = sorted({code for payload in component_payloads for code in payload.get("adm1_codes", [])})
+        names = sorted({
+            record.get("NAME_1") or record.get("COUNTRY")
+            for payload in component_payloads
+            for record in payload.get("countries", [])
+            if record.get("NAME_1") or record.get("COUNTRY")
+        })
         clip_bbox = component_payloads[0].get("clip_bbox") or None
         merge_scope = str(component_payloads[0].get("merge_scope") or "")
         if len(component_payloads) == 1:
             payload = dict(component_payloads[0])
             payload["country_product_ids"] = [payload["id"]]
         else:
-            selected = selected_for_codes(countries, codes, clip_bbox)
+            if adm1_codes:
+                selected = selected_for_adm1_codes(layers["adm1"], adm1_codes, clip_bbox)
+            else:
+                selected = selected_for_codes(layers["adm0"], adm0_codes, clip_bbox)
             product_id, name = merged_product_identity(codes, names)
             merged_tile_keys = sorted({key for source in component_payloads for key in source.get("tile_keys", [])})
             payload = payload_from_selected(
@@ -583,7 +756,8 @@ def merge_local_payloads(local_payloads: list[dict], countries) -> tuple[list[di
                 product_type="country",
                 discount_percent=20,
                 selected=selected,
-                adm0_codes=codes,
+                adm0_codes=adm0_codes,
+                adm1_codes=adm1_codes,
                 clip_bbox=clip_bbox,
                 merge_scope=merge_scope,
                 auto_merge=False,
@@ -616,12 +790,25 @@ def tile_keys_for_codes(codes: tuple[str, ...] | list[str], code_to_payload: dic
     return sorted({key for code in codes for key in (code_to_payload.get(str(code).upper(), {}).get("tile_keys") or [])})
 
 
-def build_macro_payloads(countries, code_to_product_id: dict[str, str], code_to_payload: dict[str, dict]) -> list[dict]:
+def spec_codes_for_macro(pack: dict) -> tuple[str, ...]:
+    if pack.get("adm1_codes"):
+        return tuple(str(code).strip().upper() for code in pack.get("adm1_codes") or [] if str(code).strip())
+    return tuple(str(code).strip().upper() for code in pack.get("adm0_codes") or [] if str(code).strip())
+
+
+def selected_for_macro(layers: dict[str, object], pack: dict):
+    if pack.get("adm1_codes"):
+        return selected_for_adm1_codes(layers["adm1"], pack["adm1_codes"], pack.get("clip_bbox"))
+    return selected_for_codes(layers["adm0"], pack["adm0_codes"], pack.get("clip_bbox"))
+
+
+def build_macro_payloads(layers: dict[str, object], code_to_product_id: dict[str, str], code_to_payload: dict[str, dict]) -> list[dict]:
     payloads = []
     for index, pack in enumerate(MACRO_PACKS, start=1):
         print(f"Building macro {index}/{len(MACRO_PACKS)}: {pack['id']}", file=sys.stderr, flush=True)
-        selected = selected_for_codes(countries, pack["adm0_codes"], pack.get("clip_bbox"))
-        tile_keys = tile_keys_for_codes(pack["adm0_codes"], code_to_payload)
+        codes = spec_codes_for_macro(pack)
+        selected = selected_for_macro(layers, pack)
+        tile_keys = tile_keys_for_codes(codes, code_to_payload)
         payloads.append(
             payload_from_selected(
                 product_id=pack["id"],
@@ -629,9 +816,10 @@ def build_macro_payloads(countries, code_to_product_id: dict[str, str], code_to_
                 product_type=pack["type"],
                 discount_percent=pack["discount_percent"],
                 selected=selected,
-                adm0_codes=pack["adm0_codes"],
+                adm0_codes=tuple(pack.get("adm0_codes") or ()),
+                adm1_codes=tuple(pack.get("adm1_codes") or ()),
                 clip_bbox=pack.get("clip_bbox"),
-                member_product_ids=product_ids_for_codes(pack["adm0_codes"], code_to_product_id),
+                member_product_ids=product_ids_for_codes(codes, code_to_product_id),
                 tile_keys_override=tile_keys,
             )
         )
@@ -639,10 +827,13 @@ def build_macro_payloads(countries, code_to_product_id: dict[str, str], code_to_
 
 
 def build_catalog(gpkg_path: Path) -> dict:
-    countries = read_adm0(gpkg_path)
-    raw_local = build_local_payloads(countries)
-    local_products, merge_report, code_to_product_id, code_to_payload = merge_local_payloads(raw_local, countries)
-    macro_products = build_macro_payloads(countries, code_to_product_id, code_to_payload)
+    layers = {
+        "adm0": read_adm0(gpkg_path),
+        "adm1": read_adm1(gpkg_path),
+    }
+    raw_local = build_local_payloads(layers)
+    local_products, merge_report, code_to_product_id, code_to_payload = merge_local_payloads(raw_local, layers)
+    macro_products = build_macro_payloads(layers, code_to_product_id, code_to_payload)
     products = local_products + macro_products
     products.sort(key=lambda payload: (0 if payload["type"] == "country" else 1 if payload["type"] == "macro_region" else 2, payload["name"]))
     return {
@@ -674,6 +865,8 @@ def public_product_payload(payload: dict) -> dict:
         result["countries"] = payload["country_product_ids"]
     if payload.get("adm0_codes"):
         result["adm0_codes"] = payload["adm0_codes"]
+    if payload.get("adm1_codes"):
+        result["adm1_codes"] = payload["adm1_codes"]
     return result
 
 
@@ -704,6 +897,7 @@ def write_js(path: Path, catalog: dict):
             "countries": payload.get("countries", []),
             "outlines": payload.get("outlines", []),
             "adm0_codes": payload.get("adm0_codes", []),
+            "adm1_codes": payload.get("adm1_codes", []),
             "merged_from": payload.get("merged_from", []),
             "counts_by_z": payload.get("counts_by_z", {}),
         }
@@ -720,8 +914,10 @@ def write_png(path: Path, catalog: dict, product_id: str = "south_america"):
     if not product:
         return
     gpkg_path = Path(catalog.get("gpkg_path") or DEFAULT_GPKG)
-    countries = read_adm0(gpkg_path)
-    selected = selected_for_codes(countries, product.get("adm0_codes") or [], product.get("clip_bbox") or None)
+    if product.get("adm1_codes"):
+        selected = selected_for_adm1_codes(read_adm1(gpkg_path), product.get("adm1_codes") or [], product.get("clip_bbox") or None)
+    else:
+        selected = selected_for_codes(read_adm0(gpkg_path), product.get("adm0_codes") or [], product.get("clip_bbox") or None)
     tile_keys = product.get("tile_keys") or []
     path.parent.mkdir(parents=True, exist_ok=True)
     fig, ax = plt.subplots(figsize=(13, 8), dpi=160)
@@ -769,7 +965,7 @@ def main() -> int:
     parser.add_argument("--json-output", type=Path, default=DEFAULT_JSON)
     parser.add_argument("--js-output", type=Path, default=DEFAULT_JS)
     parser.add_argument("--png-output", type=Path, default=DEFAULT_PNG)
-    parser.add_argument("--png-product", default="south_america")
+    parser.add_argument("--png-product", default="australia")
     parser.add_argument("--skip-png", action="store_true")
     args = parser.parse_args()
 
