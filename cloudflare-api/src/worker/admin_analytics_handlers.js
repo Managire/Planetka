@@ -34,7 +34,8 @@ function filterAnalyticsUsersRows(rows, query) {
 
 function analyticsUsersSortValue(row, sortBy) {
   if (sortBy === "balance") return Number(row && row.balance_credits || 0);
-  if (sortBy === "paid_eur") return Number(row && row.total_spent_credits || 0);
+  if (sortBy === "paid_eur") return Number(row && row.paid_eur_lifetime || row && row.total_spent_credits || 0);
+  if (sortBy === "standard") return Number(row && row.standard_quality_unlocked || 0);
   if (sortBy === "paid_resolves") return Number(row && row.paid_full_resolve_count || 0);
   if (sortBy === "paid_tiles") return Number(row && row.unlocked_tile_count || 0);
   if (sortBy === "preview_lifetime") return Number(row && row.preview_lifetime_bytes || 0);
@@ -346,6 +347,7 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
     const userEmail = deps.escapeHtml(userEmailRaw);
     const status = String(row && row.user_status || "").trim().toLowerCase();
     const previewHeld = Boolean(String(row && row.preview_fair_usage_hold_at || "").trim());
+    const standardUnlocked = Boolean(Number(row && row.standard_quality_unlocked || 0));
     const creditButtons = `<button class="action-btn" data-action="gift-credits" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Top Up €</button><button class="action-btn warn" data-action="subtract-credits" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Take €</button>`;
     const previewHoldButton = previewHeld
       ? `<button class="action-btn warn" data-action="release-preview-hold" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Release Preview Hold</button>`
@@ -359,7 +361,8 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
     return `<tr${previewHeld ? ` class="preview-held"` : ""}>
       <td>${userEmail}</td>
       <td>${deps.escapeHtml(fmtEur(row && row.balance_credits))}</td>
-      <td>${deps.escapeHtml(fmtEur(row && row.total_spent_credits))}</td>
+      <td>${deps.escapeHtml(fmtEur(row && (row.paid_eur_lifetime ?? row.total_spent_credits)))}</td>
+      <td>${standardUnlocked ? "Unlocked" : "—"}</td>
       <td>${fmtInt(row && row.paid_full_resolve_count)}</td>
       <td>${fmtInt(row && row.unlocked_tile_count)}</td>
       <td>${fmtGb(row && row.preview_lifetime_bytes)}</td>
@@ -414,6 +417,7 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
         <th>Email</th>
         <th><a href="${buildSortHref("balance")}">Balance${sortMarker("balance")}</a></th>
         <th><a href="${buildSortHref("paid_eur")}">Paid EUR${sortMarker("paid_eur")}</a></th>
+        <th><a href="${buildSortHref("standard")}">Standard${sortMarker("standard")}</a></th>
         <th><a href="${buildSortHref("paid_resolves")}">Paid Resolves${sortMarker("paid_resolves")}</a></th>
         <th><a href="${buildSortHref("paid_tiles")}">Paid Tiles${sortMarker("paid_tiles")}</a></th>
         <th><a href="${buildSortHref("preview_lifetime")}">Preview GB Lifetime${sortMarker("preview_lifetime")}</a></th>

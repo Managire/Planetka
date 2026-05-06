@@ -145,40 +145,6 @@ def _format_bytes_for_ui(size_bytes):
     return f"{value / (1024.0 ** 2):.2f} MB"
 
 
-class PLANETKA_OT_AccountListUnlockedTiles(bpy.types.Operator):
-    bl_idname = "planetka.account_list_unlocked_tiles"
-    bl_label = "List Licenced Tiles"
-    bl_description = "Create a text list of tiles licenced for this Planetka account"
-
-    def execute(self, context):
-        try:
-            from .credit_api import get_unlocked_tiles
-            tiles = get_unlocked_tiles(force=True)
-        except Exception as exc:
-            return fail(
-                self,
-                f"Unable to fetch licenced tiles: {exc}",
-                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-                logger=logger,
-                exc=exc,
-                log_message="Planetka licenced tile list failed",
-            )
-        text_name = "Planetka Licenced Tiles"
-        text = bpy.data.texts.get(text_name) or bpy.data.texts.new(text_name)
-        text.clear()
-        text.write(f"Planetka licenced tiles: {len(tiles)}\n\n")
-        for entry in tiles:
-            if not isinstance(entry, dict):
-                continue
-            tile_key = str(entry.get("tile_key", "") or "")
-            quality = str(entry.get("quality_mode", "") or "")
-            credits = entry.get("credits_spent", 0)
-            unlocked_at = str(entry.get("unlocked_at", "") or "")
-            text.write(f"{tile_key}\t{quality}\tEUR {credits}\t{unlocked_at}\n")
-        self.report({'INFO'}, f"Licenced tile list created ({len(tiles)} tiles).")
-        return {'FINISHED'}
-
-
 class PLANETKA_OT_AccountDownloadUnlockedTiles(bpy.types.Operator):
     bl_idname = "planetka.account_download_unlocked_tiles"
     bl_label = "Download Licenced Tiles"
@@ -564,6 +530,11 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
                 "Uses 1/4 texture size of Full Quality on each axis (effective 1/16 resolution)",
             ),
             (
+                "BALANCED",
+                "Standard",
+                "One-time unlocked Standard Quality using half the edge size of Full Quality textures",
+            ),
+            (
                 "FULL",
                 "Full Quality",
                 "Highest quality texture data",
@@ -580,6 +551,8 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
         )
         if mode == "PREVIEW":
             return "Resolve Preview textures once."
+        if mode == "BALANCED":
+            return "Resolve Standard Quality textures once."
         return "Licence and download Full Quality textures for Camera View once."
 
     def execute(self, context):
@@ -627,6 +600,13 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
             source=props,
             requested_mode=target_mode,
         ):
+            if target_mode == "BALANCED":
+                return fail(
+                    self,
+                    "Standard Quality is not unlocked for this Planetka account.",
+                    code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                    logger=logger,
+                )
             if target_mode == "FULL":
                 return fail(
                     self,
@@ -672,10 +652,10 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
                 return {'FINISHED'} if "FINISHED" in checkout_result else {'CANCELLED'}
 
         try:
-            if target_mode == "FULL":
+            if target_mode in {"BALANCED", "FULL"}:
                 stop_auto_resolve_download_pipeline()
             result = bpy.ops.planetka.load_textures(
-                scope_mode="CAMERA",
+                scope_mode="CAMERA" if target_mode == "FULL" else "AUTO",
                 skip_render_compatibility=True,
                 defer_download=False,
                 texture_quality_mode_override=target_mode,
@@ -698,7 +678,11 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
             logger.debug("Planetka: failed clearing credit caches after texture quality resolve", exc_info=True)
         try:
             base_path = _normalize_texture_source_path(str(getattr(prefs, "texture_base_path", "") or ""))
-            update_resolve_size_estimates(scene, scope_mode="CAMERA", base_path=base_path)
+            update_resolve_size_estimates(
+                scene,
+                scope_mode="CAMERA" if target_mode == "FULL" else "AUTO",
+                base_path=base_path,
+            )
             _tag_view3d_redraw()
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka: failed refreshing Full Quality price estimate after resolve", exc_info=True)
@@ -710,12 +694,13 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
 class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
     bl_idname = "planetka.open_credit_checkout"
     bl_label = "Open Planetka Payment"
-    bl_description = "Open Stripe Checkout for Full Quality scene data or EUR balance"
+    bl_description = "Open Stripe Checkout for Standard Quality, Full Quality scene data, or EUR balance"
 
     checkout_option: EnumProperty(
         name="Payment Option",
         items=(
-            ("OPTIONS", "Payment Options", "Choose how to pay for Planetka Full Quality data"),
+            ("OPTIONS", "Payment Options", "Choose how to pay for Planetka data"),
+            ("STANDARD_UNLOCK", "Unlock Standard Quality", "Unlock Standard Quality forever for this account"),
             ("SCENE", "Buy This Scene", "Pay the exact current Full Quality scene price"),
             ("BALANCE_10", "Add €10 Balance", "Add €10 to your Planetka balance"),
         ),
@@ -725,7 +710,10 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
 
     texture_quality_mode: EnumProperty(
         name="Texture Quality",
-        items=(("FULL", "Full Quality", "Full Quality paid land-detail data"),),
+        items=(
+            ("BALANCED", "Standard", "Standard Quality one-time unlock"),
+            ("FULL", "Full Quality", "Full Quality paid land-detail data"),
+        ),
         default="FULL",
         options={'HIDDEN', 'SKIP_SAVE'},
     )
@@ -781,7 +769,12 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
 
     def draw(self, _context):
         layout = self.layout
-        layout.label(text="Full Quality payment", icon="URL")
+        layout.label(text="Planetka payment", icon="URL")
+        layout.operator(
+            "planetka.open_credit_checkout",
+            text="Unlock Standard Quality (€50)",
+            icon="URL",
+        ).checkout_option = "STANDARD_UNLOCK"
         layout.operator(
             "planetka.open_credit_checkout",
             text="Buy This Scene",
@@ -802,10 +795,16 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
         try:
             from .credit_api import create_checkout_session
             tile_keys = self._current_scene_tile_keys(context) if option == "SCENE" else []
+            if option == "STANDARD_UNLOCK":
+                checkout_option = "standard_unlock"
+                quality_mode = "BALANCED"
+            else:
+                checkout_option = "balance_10" if option == "BALANCE_10" else "scene"
+                quality_mode = "FULL"
             checkout = create_checkout_session(
-                "balance_10" if option == "BALANCE_10" else "scene",
+                checkout_option,
                 tiles=tile_keys,
-                quality_mode="FULL",
+                quality_mode=quality_mode,
             )
         except Exception as exc:
             return fail(
@@ -817,6 +816,14 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
                 log_message="Planetka checkout creation failed",
             )
         if bool(checkout.get("no_payment_required", False)):
+            if option == "STANDARD_UNLOCK":
+                try:
+                    from .credit_api import clear_credit_caches
+                    clear_credit_caches()
+                except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+                    logger.debug("Planetka: failed clearing credit cache after Standard unlock check", exc_info=True)
+                self.report({'INFO'}, "Standard Quality is already unlocked.")
+                return {'FINISHED'}
             scene = getattr(context, "scene", None)
             _scene_full_quality_price_eur(scene)
             _run_camera_full_quality_resolve_after_checkout(scene)
@@ -845,6 +852,7 @@ class PLANETKA_OT_DataCostBreakdown(bpy.types.Operator):
         name="Texture Quality",
         items=(
             ("PREVIEW", "Preview", "Preview data is free"),
+            ("BALANCED", "Standard", "Standard Quality data"),
             ("FULL", "Full Quality", "Full Quality paid land-detail data"),
         ),
         default="FULL",
@@ -1018,7 +1026,12 @@ class PLANETKA_OT_DataCostBreakdown(bpy.types.Operator):
         layout = self.layout
         breakdown = self._breakdown if isinstance(self._breakdown, dict) else {}
         mode = str(breakdown.get("quality_mode", getattr(self, "texture_quality_mode", "FULL")) or "FULL").strip().upper()
-        mode_label = "Preview" if mode == "PREVIEW" else "Full Quality"
+        if mode == "PREVIEW":
+            mode_label = "Preview"
+        elif mode == "BALANCED":
+            mode_label = "Standard"
+        else:
+            mode_label = "Full Quality"
         total_bytes = breakdown.get("panel_total_bytes")
         if total_bytes is None:
             total_bytes = breakdown.get("total_bytes", 0)

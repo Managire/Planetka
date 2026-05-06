@@ -1,6 +1,7 @@
 import {
   addCreditBalance,
   grantPaidSceneTileEntitlements,
+  grantStandardQualityUnlock,
 } from "./credit_routes.js";
 
 function stripeSignatureHeaderParts(header) {
@@ -413,7 +414,7 @@ export async function handleStripeWebhook(request, env, deps) {
 
   const metadata = stripeMetadata(session);
   const purchaseType = String(metadata.planetka_purchase_type || "").trim().toLowerCase();
-  if (purchaseType === "balance_top_up" || purchaseType === "scene_tiles") {
+  if (purchaseType === "balance_top_up" || purchaseType === "scene_tiles" || purchaseType === "standard_quality_unlock") {
     const metadataUserId = String(metadata.planetka_user_id || "").trim();
     let targetUser = metadataUserId && typeof deps.findUserById === "function"
       ? await deps.findUserById(db, metadataUserId)
@@ -480,6 +481,52 @@ export async function handleStripeWebhook(request, env, deps) {
           email,
           purchase_type: purchaseType,
           balance_eur: topUp.balance_eur,
+        },
+        200,
+        env,
+      );
+    }
+
+    if (purchaseType === "standard_quality_unlock") {
+      const unlock = await grantStandardQualityUnlock(
+        db,
+        userId,
+        sessionId,
+        amountPaidEur,
+        deps,
+      );
+      if (unlock && unlock.error) {
+        return deps.json({ ok: false, error: unlock.error }, 400, env);
+      }
+      if (typeof deps.invalidateAnalyticsSnapshots === "function") {
+        try {
+          await deps.invalidateAnalyticsSnapshots(env);
+        } catch (error) {
+          console.warn(
+            "stripe.webhook.standard_quality_snapshot_invalidate_failed",
+            JSON.stringify({ error: String(error && error.message || "snapshot_invalidate_failed"), user_id: userId }),
+          );
+        }
+      }
+      console.log(
+        "stripe.webhook.standard_quality_unlock_processed",
+        JSON.stringify({
+          event_type: eventType,
+          email,
+          session_id: sessionId,
+          user_id: userId,
+          amount_paid_eur: amountPaidEur,
+          already_unlocked: Boolean(unlock && unlock.already_unlocked),
+        }),
+      );
+      return deps.json(
+        {
+          ok: true,
+          processed: true,
+          event_type: eventType,
+          email,
+          purchase_type: purchaseType,
+          standard_quality_unlocked: Boolean(unlock && unlock.standard_quality_unlocked),
         },
         200,
         env,

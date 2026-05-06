@@ -1086,6 +1086,7 @@ def _check_scene_health_viewport_and_material(ctx, payload, state):
     state.loading_node = loading_node
     state.surface_grading_node = surface_grading_node
     state.output_node = output_node
+    material_nodes_available = bool(ctx.material is not None and node_tree is not None)
 
     _append_scene_health_check(
         payload,
@@ -1093,11 +1094,11 @@ def _check_scene_health_viewport_and_material(ctx, payload, state):
         "General",
         "MATERIAL_NODES",
         "ERROR",
-        bool(ctx.material is not None and bool(getattr(ctx.material, "use_nodes", False)) and node_tree is not None),
+        material_nodes_available,
         (
             "Material node tree is available."
-            if ctx.material is not None and bool(getattr(ctx.material, "use_nodes", False)) and node_tree is not None
-            else "Material nodes are disabled or missing."
+            if material_nodes_available
+            else "Material node tree is unavailable."
         ),
     )
     _append_scene_health_check(

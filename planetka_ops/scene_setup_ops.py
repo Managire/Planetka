@@ -132,20 +132,15 @@ def set_scene_background_black(scene):
         world = bpy.data.worlds.new("Planetka Black World")
         scene.world = world
 
-    try:
-        world.use_nodes = True
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+    node_tree = getattr(world, "node_tree", None)
+    nodes = getattr(node_tree, "nodes", None) if node_tree is not None else None
+    links = getattr(node_tree, "links", None) if node_tree is not None else None
+    if node_tree is None or nodes is None or links is None:
         try:
             world.color = (0.0, 0.0, 0.0)
             return True
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             return False
-
-    node_tree = getattr(world, "node_tree", None)
-    nodes = getattr(node_tree, "nodes", None) if node_tree is not None else None
-    links = getattr(node_tree, "links", None) if node_tree is not None else None
-    if node_tree is None or nodes is None or links is None:
-        return False
 
     background = _find_world_background_node(world)
     if background is None:

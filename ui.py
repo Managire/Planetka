@@ -52,6 +52,7 @@ RESOLVE_FAILURE_FLAG_KEY = "planetka_resolve_integrity_failed"
 RESOLVE_FAILURE_MESSAGE_KEY = "planetka_resolve_integrity_message"
 LAST_RESOLVE_TEXTURE_QUALITY_MODE_KEY = "planetka_last_resolve_texture_quality_mode"
 EARTH_TRANSFORM_SECTION_OPEN_KEY = "planetka_ui_earth_transform_open"
+DATA_CONTROL_MORE_OPTIONS_SECTION_OPEN_KEY = "planetka_ui_data_more_options_open"
 EARTH_RADIUS_SAFE_MIN_BU = 0.2
 EARTH_RADIUS_SAFE_MAX_BU = 20.0
 LOW_ALTITUDE_WARNING_EPS_KM = 0.05
@@ -185,8 +186,10 @@ def _status_icon(code):
 
 def _normalize_texture_quality_for_ui(value):
     token = str(value or "").strip().upper()
-    if token in {"FULL", "BALANCED", "HALF"}:
+    if token == "FULL":
         return "FULL"
+    if token in {"BALANCED", "HALF"}:
+        return "BALANCED"
     if token == "PREVIEW":
         return "PREVIEW"
     return ""
@@ -209,6 +212,8 @@ def _last_visible_texture_quality_label(scene):
                 mode = ""
     if mode == "FULL":
         return "Full Quality"
+    if mode == "BALANCED":
+        return "Standard"
     return "Preview"
 
 
@@ -817,6 +822,75 @@ def _draw_addon_update_controls(layout):
         row.operator("planetka.update_now", text="Update now", icon="IMPORT")
 
 
+def _draw_licenced_download_controls(layout, prefs):
+    try:
+        from .credit_api import get_unlocked_download_progress
+        unlocked_progress = get_unlocked_download_progress()
+    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+        unlocked_progress = {}
+    if unlocked_progress and (
+        bool(unlocked_progress.get("active", False))
+        or str(unlocked_progress.get("status", "") or "").upper() in {"FINISHED", "CANCELLED", "ERROR"}
+    ):
+        progress_box = layout.box()
+        status = str(unlocked_progress.get("status", "") or "").upper()
+        message = str(unlocked_progress.get("message", "") or "").strip() or "Licenced tile download"
+        progress_box.label(text=message, icon="IMPORT")
+        total_bytes = int(unlocked_progress.get("total_bytes", 0) or 0)
+        downloaded_bytes = int(unlocked_progress.get("downloaded_bytes", 0) or 0)
+        total_files = int(unlocked_progress.get("total_files", 0) or 0)
+        downloaded_files = int(unlocked_progress.get("downloaded_files", 0) or 0)
+        selected_tiles = int(unlocked_progress.get("selected_tiles", 0) or 0)
+        skipped_existing_files = int(unlocked_progress.get("skipped_existing_files", 0) or 0)
+        missing_files = int(unlocked_progress.get("missing_files", 0) or 0)
+        factor = 0.0
+        if total_bytes > 0:
+            factor = max(0.0, min(1.0, float(downloaded_bytes) / float(total_bytes)))
+        elif status == "FINISHED":
+            factor = 1.0
+        if total_bytes > 0:
+            progress_text = f"{_fmt_bytes(downloaded_bytes)} / {_fmt_bytes(total_bytes)}"
+        elif status == "FINISHED" and total_files <= 0 and skipped_existing_files > 0:
+            progress_text = "No download needed"
+        elif total_files > 0:
+            progress_text = "Size unavailable"
+        else:
+            progress_text = "No files to download"
+        progress_box.progress(
+            factor=factor,
+            type='BAR',
+            text=progress_text,
+        )
+        if total_files > 0:
+            files_text = f"{downloaded_files} / {total_files} files"
+        elif skipped_existing_files > 0:
+            files_text = f"{skipped_existing_files} files already present"
+        else:
+            files_text = "No files to download"
+        progress_box.label(text=files_text, icon="FILE")
+        if selected_tiles > 0:
+            progress_box.label(text=f"{selected_tiles} licenced tiles selected", icon="TEXTURE")
+        if total_files > 0 and skipped_existing_files > 0:
+            progress_box.label(text=f"{skipped_existing_files} files already present", icon="CHECKMARK")
+        if missing_files > 0:
+            progress_box.label(text=f"{missing_files} files missing", icon="ERROR")
+        if status == "ERROR" and str(unlocked_progress.get("error", "") or "").strip():
+            error_row = progress_box.row(align=True)
+            error_row.alert = True
+            error_row.label(text=str(unlocked_progress.get("error", "") or ""), icon="ERROR")
+        if bool(unlocked_progress.get("active", False)):
+            progress_box.operator("planetka.account_cancel_unlocked_download", text="Cancel Download", icon="CANCEL")
+
+    layout.operator("planetka.account_download_unlocked_tiles", text="Download Licenced", icon="IMPORT")
+    local_row = layout.row()
+    local_row.prop(prefs, "local_texture_source_path", text="Local Source")
+    local_notice = get_local_source_stale_notice()
+    if local_notice:
+        notice_row = layout.row(align=True)
+        notice_row.alert = True
+        notice_row.label(text=local_notice, icon="INFO")
+
+
 def _draw_account_panel(layout):
     layout.use_property_split = False
     layout.use_property_decorate = False
@@ -921,90 +995,23 @@ def _draw_account_panel(layout):
                     icon="URL",
                 ).checkout_option = "OPTIONS"
         layout.label(text=f"Licenced tiles: {unlocked_count}", icon="TEXTURE")
+        standard_unlocked = bool(
+            isinstance(credit_payload, dict)
+            and (
+                credit_payload.get("standard_quality_unlocked", False)
+                or str(credit_payload.get("standard_quality_unlocked_at", "") or "").strip()
+            )
+        )
+        layout.label(
+            text=f"Standard Quality: {'Unlocked' if standard_unlocked else 'Not unlocked'}",
+            icon="CHECKMARK" if standard_unlocked else "LOCKED",
+        )
         if preview_hold_active:
             hold_box = layout.box()
             hold_row = hold_box.row(align=True)
             hold_row.alert = True
             hold_row.label(text="Preview streaming is paused for review.", icon="INFO")
             hold_box.label(text="Full Quality licenced data remains available.", icon="CHECKMARK")
-        try:
-            from .credit_api import get_unlocked_download_progress
-            unlocked_progress = get_unlocked_download_progress()
-        except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-            unlocked_progress = {}
-        if unlocked_progress and (
-            bool(unlocked_progress.get("active", False))
-            or str(unlocked_progress.get("status", "") or "").upper() in {"FINISHED", "CANCELLED", "ERROR"}
-        ):
-            progress_box = layout.box()
-            status = str(unlocked_progress.get("status", "") or "").upper()
-            message = str(unlocked_progress.get("message", "") or "").strip() or "Licenced tile download"
-            progress_box.label(text=message, icon="IMPORT")
-            total_bytes = int(unlocked_progress.get("total_bytes", 0) or 0)
-            downloaded_bytes = int(unlocked_progress.get("downloaded_bytes", 0) or 0)
-            total_files = int(unlocked_progress.get("total_files", 0) or 0)
-            downloaded_files = int(unlocked_progress.get("downloaded_files", 0) or 0)
-            selected_tiles = int(unlocked_progress.get("selected_tiles", 0) or 0)
-            skipped_existing_files = int(unlocked_progress.get("skipped_existing_files", 0) or 0)
-            missing_files = int(unlocked_progress.get("missing_files", 0) or 0)
-            factor = 0.0
-            if total_bytes > 0:
-                factor = max(0.0, min(1.0, float(downloaded_bytes) / float(total_bytes)))
-            elif status == "FINISHED":
-                factor = 1.0
-            if total_bytes > 0:
-                progress_text = f"{_fmt_bytes(downloaded_bytes)} / {_fmt_bytes(total_bytes)}"
-            elif status == "FINISHED" and total_files <= 0 and skipped_existing_files > 0:
-                progress_text = "No download needed"
-            elif total_files > 0:
-                progress_text = "Size unavailable"
-            else:
-                progress_text = "No files to download"
-            progress_box.progress(
-                factor=factor,
-                type='BAR',
-                text=progress_text,
-            )
-            if total_files > 0:
-                files_text = f"{downloaded_files} / {total_files} files"
-            elif skipped_existing_files > 0:
-                files_text = f"{skipped_existing_files} files already present"
-            else:
-                files_text = "No files to download"
-            progress_box.label(text=files_text, icon="FILE")
-            if selected_tiles > 0:
-                progress_box.label(text=f"{selected_tiles} licenced tiles selected", icon="TEXTURE")
-            if total_files > 0 and skipped_existing_files > 0:
-                progress_box.label(text=f"{skipped_existing_files} files already present", icon="CHECKMARK")
-            if missing_files > 0:
-                progress_box.label(text=f"{missing_files} files missing", icon="ERROR")
-            if status == "ERROR" and str(unlocked_progress.get("error", "") or "").strip():
-                error_row = progress_box.row(align=True)
-                error_row.alert = True
-                error_row.label(text=str(unlocked_progress.get("error", "") or ""), icon="ERROR")
-            if bool(unlocked_progress.get("active", False)):
-                progress_box.operator("planetka.account_cancel_unlocked_download", text="Cancel Download", icon="CANCEL")
-        layout.operator("planetka.account_download_unlocked_tiles", text="Download Licenced", icon="IMPORT")
-
-    local_row = layout.row()
-    local_row.prop(prefs, "local_texture_source_path", text="Local Source")
-    auto_row = layout.row()
-    auto_row.prop(prefs, "auto_download_unlocked_tiles", text="Download licenced tiles automatically")
-    try:
-        auto_enabled = bool(getattr(prefs, "auto_download_unlocked_tiles", False))
-        local_path = str(getattr(prefs, "local_texture_source_path", "") or "").strip()
-    except (TypeError, ValueError, RuntimeError, AttributeError):
-        auto_enabled = False
-        local_path = ""
-    if auto_enabled and not local_path:
-        warning_row = layout.row(align=True)
-        warning_row.alert = True
-        warning_row.label(text="Select Local Source folder for automatic downloads.", icon="INFO")
-    local_notice = get_local_source_stale_notice()
-    if local_notice:
-        notice_row = layout.row(align=True)
-        notice_row.alert = True
-        notice_row.label(text=local_notice, icon="INFO")
 
     action_row = layout.row(align=True)
     logout_row = action_row.row(align=True)
@@ -1171,6 +1178,61 @@ def _draw_live_telemetry(layout, scene):
         runtime, runtime_code, runtime_text = _resolve_runtime_display(scene)
         _draw_resolve_download_indicator(quality_box, scene, runtime, runtime_code, runtime_text)
 
+        try:
+            from .credit_api import get_credit_account
+            credit_account = get_credit_account(force=False)
+        except (AuthApiError, TypeError, ValueError, RuntimeError, AttributeError):
+            credit_account = {}
+        credit_known = bool(credit_account)
+        try:
+            credit_balance = float(credit_account.get("balance_credits", 0.0) or 0.0)
+        except (AttributeError, TypeError, ValueError):
+            credit_balance = 0.0
+        standard_unlocked = bool(
+            isinstance(credit_account, dict)
+            and (
+                credit_account.get("standard_quality_unlocked", False)
+                or credit_account.get("balanced_quality_unlocked", False)
+                or str(credit_account.get("standard_quality_unlocked_at", "") or "").strip()
+                or str(credit_account.get("balanced_quality_unlocked_at", "") or "").strip()
+            )
+        )
+        try:
+            standard_price = float(
+                credit_account.get("standard_quality_price_eur", credit_account.get("balanced_quality_price_eur", 50.0))
+                or 50.0
+            )
+        except (AttributeError, TypeError, ValueError):
+            standard_price = 50.0
+
+        standard_box = quality_box.box()
+        quality_buttons = standard_box.row(align=True)
+        preview_col = quality_buttons.column(align=True)
+        preview_col.operator(
+            "planetka.set_texture_quality_and_resolve",
+            text="Preview",
+            icon="HIDE_OFF",
+        ).texture_quality_mode = "PREVIEW"
+        preview_col.label(text=_estimate_mb_label("PREVIEW"), icon="DISK_DRIVE")
+
+        standard_col = quality_buttons.column(align=True)
+        standard_button = standard_col.row(align=True)
+        standard_button.enabled = bool(standard_unlocked)
+        standard_button.operator(
+            "planetka.set_texture_quality_and_resolve",
+            text="Standard",
+            icon="SHADING_TEXTURE",
+        ).texture_quality_mode = "BALANCED"
+        standard_col.label(text=_estimate_mb_label("BALANCED"), icon="DISK_DRIVE")
+        if standard_unlocked:
+            standard_col.label(text="Unlocked", icon="CHECKMARK")
+        else:
+            standard_col.operator(
+                "planetka.open_credit_checkout",
+                text=f"Unlock €{max(0.0, standard_price):.0f}",
+                icon="URL",
+            ).checkout_option = "STANDARD_UNLOCK"
+
         quick_preview_prepared = _is_animation_prepared(scene)
         active_view_scope = _is_active_view_resolve_scope(scene)
         full_allowed = allows_balanced_full_quality_for_context(prefs=prefs, source=props, requested_mode="FULL")
@@ -1182,16 +1244,6 @@ def _draw_live_telemetry(layout, scene):
         except (AttributeError, TypeError, ValueError):
             full_size_known = False
             full_price_known = False
-        credit_balance = 0.0
-        credit_known = False
-        try:
-            from .credit_api import get_credit_account
-            credit_account = get_credit_account(force=False)
-            credit_known = bool(credit_account)
-            credit_balance = float(credit_account.get("balance_credits", 0.0) or 0.0)
-        except (AuthApiError, TypeError, ValueError, RuntimeError, AttributeError):
-            credit_known = False
-            credit_balance = 0.0
         try:
             full_credits = float(estimates.get("FULL_CREDITS", 0.0) or 0.0)
         except (AttributeError, TypeError, ValueError):
@@ -1274,9 +1326,18 @@ def _draw_live_telemetry(layout, scene):
             estimate_notice = full_box.row(align=True)
             estimate_notice.label(text="Full Quality price is being calculated.", icon="INFO")
 
-        broader_box = quality_box.box()
-        broader_box.label(text="Broader options:")
-        broader_box.separator()
+        more_box = _draw_collapsible_subsection(
+            quality_box,
+            scene,
+            "More Options",
+            "PREFERENCES",
+            DATA_CONTROL_MORE_OPTIONS_SECTION_OPEN_KEY,
+            default_open=False,
+        )
+        if more_box is not None:
+            more_box.label(text="Broader options:")
+            more_box.separator()
+            _draw_licenced_download_controls(more_box, prefs)
 
     throttle_message = str(get_status_message(prefs) or "").strip()
     if throttle_message and "throttl" in throttle_message.lower():

@@ -1,6 +1,7 @@
 import { corsHeaders, json } from "./responses.js";
 import {
   isFreeCreditTileKey,
+  isStandardQualityUnlockedForUser,
   isTileUnlockedForUser,
   tileKeyFromFileName,
   unlockTilesForSession,
@@ -67,6 +68,21 @@ export async function handleTileSessionStart(request, env, deps) {
     if (hold && hold.held) {
       return previewFairUsageBlockedResponse(env, hold.message);
     }
+  }
+  const standardQualityUnlocked = normalizedRequestedQualityMode === "balanced"
+    ? await isStandardQualityUnlockedForUser(db, auth.user && auth.user.id, deps)
+    : true;
+  if (normalizedRequestedQualityMode === "balanced" && !standardQualityUnlocked) {
+    return jsonResponse(
+      {
+        ok: false,
+        error: "standard_quality_not_unlocked",
+        message: "Standard Quality is not unlocked for this account.",
+        requested_quality_mode: normalizedRequestedQualityMode,
+      },
+      403,
+      env,
+    );
   }
   const requestedResolveId = String(
     body && body.resolve_id ? body.resolve_id : request.headers.get("X-Planetka-Resolve-Id") || "",
@@ -285,12 +301,34 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
       }
     }
     const tileRequiredQualityMode = minimumPlanQualityForTile(fileName);
+    if (
+      (request.method === "GET" || request.method === "HEAD")
+      && effectiveQualityMode === "balanced"
+      && tileRequiredQualityMode === "full"
+    ) {
+      eventStatusCode = 403;
+      eventErrorCode = "standard_quality_cannot_access_full_tile";
+      return json(
+        {
+          ok: false,
+          error: "standard_quality_cannot_access_full_tile",
+          message: "Standard Quality cannot download Full Quality-only tile data.",
+          requested_quality_mode: effectiveQualityMode,
+          required_quality_mode: tileRequiredQualityMode,
+          file_name: fileName,
+        },
+        403,
+        env,
+      );
+    }
     const creditBillingQualityMode = normalizeQualityMode(
-      effectiveQualityMode !== "preview" ? effectiveQualityMode : tileRequiredQualityMode,
+      effectiveQualityMode === "balanced"
+        ? "preview"
+        : (effectiveQualityMode !== "preview" ? effectiveQualityMode : tileRequiredQualityMode),
     );
     if ((request.method === "GET" || request.method === "HEAD")
-      && !tokenCreditEnforced
-      && !isQualityModeAllowedForPlan(qualityAccessPlanCode, effectiveQualityMode)) {
+    && !tokenCreditEnforced
+    && !isQualityModeAllowedForPlan(qualityAccessPlanCode, effectiveQualityMode)) {
       eventStatusCode = 403;
       eventErrorCode = "quality_mode_not_allowed_for_tier";
       return json(
@@ -298,6 +336,27 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
           ok: false,
           error: "quality_mode_not_allowed_for_tier",
           message: qualityModeNotAllowedMessage(planCode, effectiveQualityMode),
+          requested_quality_mode: effectiveQualityMode,
+        },
+        403,
+        env,
+      );
+    }
+    const standardTileRequestUnlocked = effectiveQualityMode === "balanced"
+      ? await isStandardQualityUnlockedForUser(db, user && user.id, deps)
+      : true;
+    if (
+      (request.method === "GET" || request.method === "HEAD")
+      && effectiveQualityMode === "balanced"
+      && !standardTileRequestUnlocked
+    ) {
+      eventStatusCode = 403;
+      eventErrorCode = "standard_quality_not_unlocked";
+      return json(
+        {
+          ok: false,
+          error: "standard_quality_not_unlocked",
+          message: "Standard Quality is not unlocked for this account.",
           requested_quality_mode: effectiveQualityMode,
         },
         403,

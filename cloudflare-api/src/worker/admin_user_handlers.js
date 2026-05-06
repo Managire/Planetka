@@ -102,30 +102,6 @@ async function clearQaAuthRateLimits(db, request, email, deps) {
   return cleared;
 }
 
-function normalizeAdminUnrestrictedQualityMode(value) {
-  const mode = String(value || "").trim().toLowerCase();
-  if (mode === "unrestricted") {
-    return "unrestricted";
-  }
-  if (mode === "normal") {
-    return "normal";
-  }
-  return "";
-}
-
-function explicitBooleanFromBody(body, deps) {
-  if (!body || typeof body !== "object") {
-    return { ok: false, value: false };
-  }
-  if (Object.prototype.hasOwnProperty.call(body, "enabled")) {
-    return { ok: true, value: deps.parseBooleanFlag(body.enabled) };
-  }
-  if (Object.prototype.hasOwnProperty.call(body, "unrestricted_quality_enabled")) {
-    return { ok: true, value: deps.parseBooleanFlag(body.unrestricted_quality_enabled) };
-  }
-  return { ok: false, value: false };
-}
-
 async function invalidateAdminAnalyticsSnapshots(env, deps) {
   try {
     await deps.invalidateAnalyticsSnapshots(env);

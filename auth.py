@@ -576,8 +576,8 @@ def allows_balanced_full_quality(prefs=None):
 def _normalize_texture_quality_token(value):
     token = str(value or "").strip().upper()
     if token in {"HALF", "BALANCED"}:
-        return "FULL"
-    if token in {"PREVIEW", "FULL"}:
+        return "BALANCED"
+    if token in {"PREVIEW", "BALANCED", "FULL"}:
         return token
     return "PREVIEW"
 
@@ -588,7 +588,11 @@ def _is_high_quality_mode(value):
 
 def allows_balanced_for_context(prefs=None, source=None):
     del prefs, source
-    return True
+    try:
+        from .credit_api import has_standard_quality_access
+        return bool(has_standard_quality_access(force=False))
+    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+        return False
 
 
 def allows_full_quality_for_context(prefs=None, source=None):
@@ -617,6 +621,8 @@ def allows_balanced_full_quality_for_context(prefs=None, source=None, requested_
     mode = _normalize_texture_quality_token(requested_mode)
     if mode == "PREVIEW":
         return True
+    if mode == "BALANCED":
+        return allows_balanced_for_context()
     return mode == "FULL"
 
 

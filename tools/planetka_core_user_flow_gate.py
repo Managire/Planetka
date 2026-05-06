@@ -181,6 +181,7 @@ def _set_quality_and_expect(mode, expected_ok, report_entry):
             raise
         denied_markers = (
             "PKA-RES-003",
+            "Standard Quality is not unlocked",
             "requires Personal or Commercial",
             "requires Commercial",
             "not available for this account tier",
@@ -247,6 +248,7 @@ def main():
         geonames = import_submodule(base_module, "geonames_db")
         state = import_submodule(base_module, "state")
         auth = import_submodule(base_module, "auth")
+        credit_api = import_submodule(base_module, "credit_api")
         r2_source = import_submodule(base_module, "r2_source")
         _force_hermetic_local_texture_mode(r2_source)
 
@@ -349,7 +351,9 @@ def main():
         report["renders"].append(_render_checkpoint(scene, output_dir, "after_radius_change"))
         record_step("earth_radius_change", earth_radius_bu=float(getattr(props, "earth_radius_bu", 0.0) or 0.0), apply_result=list(apply_radius))
 
-        # EUR-priced quality flow (synthetic auth payload, hermetic local source).
+        # EUR-priced quality flow guardrails. This gate is hermetic/offline, so
+        # Preview must work and Full Quality must refuse to run without
+        # backend-authoritative pricing.
         full_globe_result = bpy.ops.planetka.navigation_preset(preset="HIGH_ORBIT")
         _assert(_operator_ok(full_globe_result), f"HIGH_ORBIT preset failed before quality flow: {full_globe_result}")
         auth.clear_auth_session(prefs=prefs, state="logged_out", status_message="")
@@ -358,17 +362,31 @@ def main():
             not bool(r2_source.is_remote_source_configured(prefs.texture_base_path)),
             f"Hermetic gate switched to remote texture source unexpectedly: {prefs.texture_base_path}",
         )
-        for mode in ("PREVIEW", "FULL"):
+        for mode, expected_ok in (("PREVIEW", True), ("BALANCED", False), ("FULL", False)):
             entry = {
                 "account": "standard",
                 "mode": mode,
-                "expected_ok": True,
+                "expected_ok": bool(expected_ok),
             }
-            _set_quality_and_expect(mode, True, entry)
+            _set_quality_and_expect(mode, expected_ok, entry)
             report["quality_matrix"].append(entry)
 
-        # Final sanity render at standard/full.
-        report["renders"].append(_render_checkpoint(scene, output_dir, "standard_full_sanity"))
+        original_standard_access = getattr(credit_api, "has_standard_quality_access", None)
+        credit_api.has_standard_quality_access = lambda force=False: True
+        try:
+            entry = {
+                "account": "standard_quality_unlocked",
+                "mode": "BALANCED",
+                "expected_ok": True,
+            }
+            _set_quality_and_expect("BALANCED", True, entry)
+            report["quality_matrix"].append(entry)
+        finally:
+            if original_standard_access is not None:
+                credit_api.has_standard_quality_access = original_standard_access
+
+        # Final sanity render after a rejected Full Quality attempt.
+        report["renders"].append(_render_checkpoint(scene, output_dir, "preview_after_full_rejection"))
         record_step("quality_matrix")
 
         report["status"] = "ok"

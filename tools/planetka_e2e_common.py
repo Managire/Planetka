@@ -343,10 +343,13 @@ def ensure_standard_world(scene, name="Planetka E2E World"):
     if world is None:
         world = bpy.data.worlds.new(name=name)
         scene.world = world
-    if not bool(getattr(world, "use_nodes", False)):
-        world.use_nodes = True
-    nodes = getattr(getattr(world, "node_tree", None), "nodes", None)
+    node_tree = getattr(world, "node_tree", None)
+    nodes = getattr(node_tree, "nodes", None) if node_tree is not None else None
     if nodes is None:
+        try:
+            world.color = (0.0, 0.0, 0.0)
+        except TOOL_RECOVERABLE_EXCEPTIONS:
+            pass
         return world
     background = nodes.get("Background")
     output = nodes.get("World Output")
@@ -356,7 +359,7 @@ def ensure_standard_world(scene, name="Planetka E2E World"):
     if output is None:
         output = nodes.new("ShaderNodeOutputWorld")
         output.location = (200.0, 0.0)
-    links = getattr(world.node_tree, "links", None)
+    links = getattr(node_tree, "links", None)
     if links is not None and not any(link.to_node == output for link in links):
         try:
             links.new(background.outputs[0], output.inputs[0])

@@ -323,8 +323,8 @@ def camera_signature(scene):
 def normalize_texture_quality_mode(value):
     token = str(value or "").strip().upper()
     if token in {"HALF", "BALANCED"}:
-        return "FULL"
-    if token in {"FULL", "PREVIEW"}:
+        return "BALANCED"
+    if token in {"FULL", "BALANCED", "PREVIEW"}:
         return token
     return "PREVIEW"
 
@@ -1350,9 +1350,10 @@ def update_resolve_size_estimates(scene, runtime=None, scope_mode="CAMERA", base
             return None
 
     full_tiles = _compute_mode_tiles("FULL", override_tiles=full_tiles_override)
+    balanced_tiles = _compute_mode_tiles("BALANCED")
     preview_tiles = _compute_mode_tiles("PREVIEW")
 
-    if full_tiles is None or preview_tiles is None:
+    if full_tiles is None or balanced_tiles is None or preview_tiles is None:
         clear_resolve_size_estimates(scene, runtime)
         return False
 
@@ -1368,24 +1369,26 @@ def update_resolve_size_estimates(scene, runtime=None, scope_mode="CAMERA", base
         runtime,
         texture_quality_mode="PREVIEW",
     )
+    balanced_bytes = estimate_download_bytes_for_visible_tiles(
+        balanced_tiles,
+        base_path,
+        runtime,
+        texture_quality_mode="BALANCED",
+    )
     full_credits = estimate_credits_for_visible_tiles(full_tiles, runtime, texture_quality_mode="FULL", base_path=base_path)
     preview_credits = 0.0
 
     try:
         scene[resolve_estimate_full_bytes_key] = int(max(0, int(full_bytes)))
         scene[resolve_estimate_preview_bytes_key] = int(max(0, int(preview_bytes)))
+        scene["planetka_resolve_estimate_balanced_bytes"] = int(max(0, int(balanced_bytes)))
         if full_credits is None:
             if deps.resolve_estimate_full_credits_key in scene:
                 del scene[deps.resolve_estimate_full_credits_key]
         else:
             scene[deps.resolve_estimate_full_credits_key] = float(max(0.0, float(full_credits)))
         scene[deps.resolve_estimate_preview_credits_key] = float(max(0.0, float(preview_credits)))
-        for key in (
-            "planetka_resolve_estimate_balanced_bytes",
-            "planetka_resolve_estimate_balanced_credits",
-        ):
-            if key in scene:
-                del scene[key]
+        scene["planetka_resolve_estimate_balanced_credits"] = 0.0
     except recoverable_exceptions:
         logger.debug("Planetka: failed storing resolve-size estimates", exc_info=True)
         return False
@@ -1402,7 +1405,7 @@ def get_resolve_size_estimates(scene=None, runtime=None):
     resolve_estimate_full_bytes_key = deps.resolve_estimate_full_bytes_key
     resolve_estimate_preview_bytes_key = deps.resolve_estimate_preview_bytes_key
     if target_scene is None:
-        return {"FULL": None, "PREVIEW": None}
+        return {"FULL": None, "BALANCED": None, "PREVIEW": None}
 
     def _read_int(key):
         try:
@@ -1426,8 +1429,10 @@ def get_resolve_size_estimates(scene=None, runtime=None):
 
     return {
         "FULL": _read_int(resolve_estimate_full_bytes_key),
+        "BALANCED": _read_int("planetka_resolve_estimate_balanced_bytes"),
         "PREVIEW": _read_int(resolve_estimate_preview_bytes_key),
         "FULL_CREDITS": _read_float(deps.resolve_estimate_full_credits_key),
+        "BALANCED_CREDITS": _read_float("planetka_resolve_estimate_balanced_credits"),
         "PREVIEW_CREDITS": _read_float(deps.resolve_estimate_preview_credits_key),
     }
 

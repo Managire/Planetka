@@ -18,6 +18,9 @@ TARGETS = (
     "clouds_global.py",
     "clouds_local.py",
     "ui.py",
+    "validation.py",
+    "planetka_ops/scene_setup_ops.py",
+    "tools/planetka_e2e_common.py",
 )
 DEPRECATED_PATTERN = re.compile(r"\buse_nodes\b")
 

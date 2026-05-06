@@ -6,6 +6,7 @@ const DEFAULT_STARTING_CREDITS = 100.0;
 const DATASET_BASE_MPP = 10.0;
 const EQUATOR_Z001_AREA_KM2 = (40075.016686 / 360.0) ** 2;
 const CHECKOUT_BALANCE_TOP_UP_EUR = 10.0;
+const STANDARD_QUALITY_UNLOCK_EUR = 50.0;
 const STRIPE_MIN_CHECKOUT_AMOUNT_CENTS = 50;
 const MONEY_SCALE = 100;
 const METRIC_SCALE = 1_000_000;
@@ -147,6 +148,14 @@ function centsForEur(value) {
   return Math.max(0, Math.round(amount * 100));
 }
 
+function standardQualityUnlockPriceEur(env = {}) {
+  const configured = Number.parseFloat(env.STANDARD_QUALITY_UNLOCK_EUR || env.BALANCED_QUALITY_UNLOCK_EUR || "");
+  if (Number.isFinite(configured) && configured > 0) {
+    return normalizeCreditAmount(configured);
+  }
+  return STANDARD_QUALITY_UNLOCK_EUR;
+}
+
 function defaultCheckoutSuccessUrl(env) {
   return String(
     env.STRIPE_CHECKOUT_SUCCESS_URL
@@ -216,6 +225,19 @@ function normalizeAccountType(value) {
 function isUnlimitedCreditAccount(account) {
   void account;
   return false;
+}
+
+export function isStandardQualityUnlocked(account) {
+  return Boolean(String(account && (
+    account.standard_quality_unlocked_at
+    || account.balanced_quality_unlocked_at
+    || ""
+  ) || "").trim());
+}
+
+export async function isStandardQualityUnlockedForUser(db, userId, deps) {
+  const account = await ensureCreditAccount(db, userId, deps);
+  return isStandardQualityUnlocked(account);
 }
 
 function normalizeTileKeys(value) {
@@ -452,6 +474,27 @@ async function recordPricingIntegrityWarnings(db, userId, qualityMode, records, 
 
 async function estimateNewCredits(db, userId, tileKeys, qualityMode, deps) {
   await deps.ensureCreditTables(db);
+  const safeMode = deps.normalizeQualityMode(qualityMode || "");
+  if (safeMode === "preview" || safeMode === "balanced") {
+    const keys = normalizeTileKeys(tileKeys);
+    return {
+      credits: 0,
+      price_eur: 0,
+      paid_tile_count: 0,
+      free_tile_count: keys.length,
+      tile_count: keys.length,
+      new_tiles: [],
+      tiles: keys.map((tileKey) => ({
+        tile_key: tileKey,
+        credits: 0,
+        price_eur: 0,
+        free_reason: safeMode === "balanced" ? "standard_quality_unlock" : "preview_quality",
+      })),
+      excluded_tiles: [],
+      integrity_warnings: [],
+      metadata_missing_tile_keys: [],
+    };
+  }
   const pricingRecords = await backendPricingRecordsForTileKeys(db, tileKeys, qualityMode, deps);
   if (pricingRecords && pricingRecords.error) {
     return pricingRecords;
@@ -583,7 +626,7 @@ async function estimateNewCredits(db, userId, tileKeys, qualityMode, deps) {
 
 export async function unlockTilesForSession(db, userId, qualityMode, tileKeys, resolveId, deps) {
   const safeMode = deps.normalizeQualityMode(qualityMode || "");
-  if (safeMode === "preview") {
+  if (safeMode === "preview" || safeMode === "balanced") {
     return { credits: 0, paid_tile_count: 0, free_tile_count: 0, tile_count: 0 };
   }
   const safeUserId = String(userId || "").trim();
@@ -839,6 +882,92 @@ export async function grantPaidSceneTileEntitlements(db, userId, qualityMode, ti
   };
 }
 
+export async function grantStandardQualityUnlock(db, userId, stripeSessionId, amountPaidEur, deps) {
+  await deps.ensureCreditTables(db);
+  const safeUserId = String(userId || "").trim();
+  if (!safeUserId) {
+    return { error: "missing_user_id" };
+  }
+  const safeStripeSessionId = String(stripeSessionId || "").trim();
+  if (safeStripeSessionId) {
+    const existingLedger = await deps.dbGet(
+      db,
+      `
+        SELECT COUNT(*) AS count
+        FROM credit_ledger
+        WHERE user_id = ?
+          AND LOWER(COALESCE(reason, '')) = 'stripe_standard_quality_unlock'
+          AND json_valid(COALESCE(metadata_json, ''))
+          AND COALESCE(json_extract(metadata_json, '$.stripe_session_id'), '') = ?
+      `,
+      [safeUserId, safeStripeSessionId],
+    );
+    if (Number(existingLedger && existingLedger.count || 0) > 0) {
+      const account = await ensureCreditAccount(db, safeUserId, deps);
+      return {
+        ok: true,
+        already_unlocked: true,
+        duplicate_session: true,
+        standard_quality_unlocked: isStandardQualityUnlocked(account),
+        standard_quality_unlocked_at: String(account && account.standard_quality_unlocked_at || ""),
+        paid_eur: 0,
+      };
+    }
+  }
+  const account = await ensureCreditAccount(db, safeUserId, deps);
+  const alreadyUnlocked = isStandardQualityUnlocked(account);
+  const now = deps.nowIso();
+  if (!alreadyUnlocked) {
+    await deps.dbRun(
+      db,
+      `
+        UPDATE user_credit_accounts
+        SET
+          standard_quality_unlocked_at = ?,
+          standard_quality_checkout_session_id = ?,
+          standard_quality_paid_eur = ?,
+          updated_at = ?
+        WHERE user_id = ?
+      `,
+      [
+        now,
+        safeStripeSessionId,
+        normalizeCreditAmount(amountPaidEur),
+        now,
+        safeUserId,
+      ],
+    );
+  }
+  await deps.dbRun(
+    db,
+    `
+      INSERT INTO credit_ledger (
+        id, user_id, delta_credits, balance_after_credits, reason, metadata_json, created_at
+      )
+      VALUES (?, ?, 0, (SELECT balance_credits FROM user_credit_accounts WHERE user_id = ?), 'stripe_standard_quality_unlock', ?, ?)
+    `,
+    [
+      deps.randomToken(16),
+      safeUserId,
+      safeUserId,
+      JSON.stringify({
+        stripe_session_id: safeStripeSessionId,
+        paid_eur: normalizeCreditAmount(amountPaidEur),
+        already_unlocked: alreadyUnlocked,
+      }),
+      now,
+    ],
+  );
+  const refreshed = await ensureCreditAccount(db, safeUserId, deps);
+  return {
+    ok: true,
+    already_unlocked: alreadyUnlocked,
+    standard_quality_unlocked: isStandardQualityUnlocked(refreshed),
+    standard_quality_unlocked_at: String(refreshed && refreshed.standard_quality_unlocked_at || ""),
+    paid_eur: normalizeCreditAmount(amountPaidEur),
+  };
+}
+
 async function createStripeCheckoutSession(env, params, deps) {
   const secretKey = deps.requireSecret(env, "STRIPE_SECRET_KEY");
   const metadata = params.metadata && typeof params.metadata === "object" ? params.metadata : {};
@@ -926,6 +1055,46 @@ export async function handleCreditCheckout(request, env, deps) {
       return deps.json({ ok: false, ...session }, 502, env);
     }
     return deps.json({ ok: true, option: "balance_10", price_eur: amountEur, ...session }, 200, env);
+  }
+
+  if (option === "standard_unlock" || option === "balanced_unlock") {
+    const account = await ensureCreditAccount(db, userId, deps);
+    if (isStandardQualityUnlocked(account)) {
+      return deps.json(
+        {
+          ok: true,
+          option: "standard_unlock",
+          no_payment_required: true,
+          standard_quality_unlocked: true,
+          price_eur: 0,
+          message: "Standard Quality is already unlocked for this account.",
+        },
+        200,
+        env,
+      );
+    }
+    const amountEur = standardQualityUnlockPriceEur(env);
+    const session = await createStripeCheckoutSession(
+      env,
+      {
+        amountCents: centsForEur(amountEur),
+        customerEmail: email,
+        clientReferenceId: userId,
+        productName: "Planetka Standard Quality Unlock",
+        metadata: {
+          planetka_purchase_type: "standard_quality_unlock",
+          planetka_user_id: userId,
+          planetka_email: email,
+          planetka_quality_mode: "balanced",
+          planetka_standard_quality_price_eur: amountEur.toFixed(2),
+        },
+      },
+      deps,
+    );
+    if (session.error) {
+      return deps.json({ ok: false, ...session }, 502, env);
+    }
+    return deps.json({ ok: true, option: "standard_unlock", price_eur: amountEur, ...session }, 200, env);
   }
 
   const tileKeys = requestTileKeysFromBody(body);
@@ -1048,6 +1217,9 @@ export async function handleCreditMe(request, env, deps) {
       balance_credits: normalizeSignedCreditAmount(account && account.balance_credits),
       balance_eur: normalizeSignedCreditAmount(account && account.balance_credits),
       unlocked_tile_count: Number(countRow && countRow.count || 0),
+      standard_quality_unlocked: isStandardQualityUnlocked(account),
+      standard_quality_unlocked_at: String(account && account.standard_quality_unlocked_at || ""),
+      standard_quality_price_eur: standardQualityUnlockPriceEur(env),
       user_id: String(auth.user.id || ""),
       preview_fair_usage_hold: previewHold,
       previewFairUsageHold: previewHold,
@@ -1095,6 +1267,9 @@ export async function handleCreditEstimate(request, env, deps) {
       unlimited_credits: unlimited,
       balance_credits: normalizeSignedCreditAmount(account && account.balance_credits),
       balance_eur: normalizeSignedCreditAmount(account && account.balance_credits),
+      standard_quality_unlocked: isStandardQualityUnlocked(account),
+      standard_quality_unlocked_at: String(account && account.standard_quality_unlocked_at || ""),
+      standard_quality_price_eur: standardQualityUnlockPriceEur(env),
     },
     200,
     env,

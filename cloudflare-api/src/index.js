@@ -2076,7 +2076,7 @@ async function userHasStripePaidActivity(db, userId) {
       SELECT COUNT(*) AS count
       FROM credit_ledger
       WHERE user_id = ?
-        AND LOWER(COALESCE(reason, '')) IN ('stripe_balance_top_up', 'stripe_scene_purchase')
+        AND LOWER(COALESCE(reason, '')) IN ('stripe_balance_top_up', 'stripe_scene_purchase', 'stripe_standard_quality_unlock')
     `,
     [safeUserId],
   );
@@ -2707,6 +2707,9 @@ async function ensureCreditTables(db) {
         balance_credits REAL NOT NULL DEFAULT 0,
         total_granted_credits REAL NOT NULL DEFAULT 0,
         total_spent_credits REAL NOT NULL DEFAULT 0,
+        standard_quality_unlocked_at TEXT,
+        standard_quality_checkout_session_id TEXT,
+        standard_quality_paid_eur REAL NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       )
@@ -2718,6 +2721,20 @@ async function ensureCreditTables(db) {
     const message = String(error && error.message || "").toLowerCase();
     if (!message.includes("duplicate column")) {
       throw error;
+    }
+  }
+  for (const statement of [
+    `ALTER TABLE user_credit_accounts ADD COLUMN standard_quality_unlocked_at TEXT`,
+    `ALTER TABLE user_credit_accounts ADD COLUMN standard_quality_checkout_session_id TEXT`,
+    `ALTER TABLE user_credit_accounts ADD COLUMN standard_quality_paid_eur REAL NOT NULL DEFAULT 0`,
+  ]) {
+    try {
+      await dbRun(db, statement);
+    } catch (error) {
+      const message = String(error && error.message || "").toLowerCase();
+      if (!message.includes("duplicate column")) {
+        throw error;
+      }
     }
   }
   await dbRun(

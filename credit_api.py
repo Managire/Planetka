@@ -269,6 +269,18 @@ def get_credit_account(force=False) -> dict:
     return dict(payload or {})
 
 
+def has_standard_quality_access(force=False) -> bool:
+    account = get_credit_account(force=bool(force))
+    if not isinstance(account, dict):
+        return False
+    return bool(
+        account.get("standard_quality_unlocked", False)
+        or account.get("balanced_quality_unlocked", False)
+        or str(account.get("standard_quality_unlocked_at", "") or "").strip()
+        or str(account.get("balanced_quality_unlocked_at", "") or "").strip()
+    )
+
+
 def get_unlocked_tiles(force=False) -> list[dict]:
     now = time.monotonic()
     payload = _UNLOCKED_CACHE.get("payload")
@@ -338,14 +350,27 @@ def estimate_credits_for_tiles(tiles, quality_mode="FULL") -> dict:
         return _zero_backend_unavailable_payload(tile_keys, reason="backend_rejected")
     _log_pricing_integrity_warnings(payload)
     if "balance_credits" in payload:
-        _ACCOUNT_CACHE["timestamp"] = time.monotonic()
-        _ACCOUNT_CACHE["payload"] = {
-            **dict(_ACCOUNT_CACHE.get("payload") or {}),
+        cached_account = dict(_ACCOUNT_CACHE.get("payload") or {})
+        account_update = {
             "ok": True,
             "account_type": str(payload.get("account_type", "standard") or "standard"),
             "unlimited_credits": bool(payload.get("unlimited_credits", False)),
             "balance_credits": _signed_money_round(payload.get("balance_credits", 0.0)),
+            "balance_eur": _signed_money_round(payload.get("balance_eur", payload.get("balance_credits", 0.0))),
         }
+        for key in (
+            "unlocked_tile_count",
+            "standard_quality_unlocked",
+            "standard_quality_unlocked_at",
+            "standard_quality_price_eur",
+            "balanced_quality_unlocked",
+            "balanced_quality_unlocked_at",
+            "balanced_quality_price_eur",
+        ):
+            if key in payload:
+                account_update[key] = payload.get(key)
+        _ACCOUNT_CACHE["timestamp"] = time.monotonic()
+        _ACCOUNT_CACHE["payload"] = _normalize_account_payload({**cached_account, **account_update})
     payload_tiles = [_round_price_fields(entry) for entry in list(payload.get("tiles", ()) or ())]
     returned_keys = {
         str(entry.get("tile_key", "") or "").strip()
@@ -376,8 +401,9 @@ def estimate_credits_for_tiles(tiles, quality_mode="FULL") -> dict:
 
 def estimate_credit_breakdown_for_tiles(tiles, quality_mode="FULL") -> dict:
     mode = str(quality_mode or "FULL").strip().upper()
-    if mode == "PREVIEW":
+    if mode in {"PREVIEW", "BALANCED", "HALF"}:
         normalized_tiles = _normalize_tile_keys(tiles)
+        free_reason = "standard_quality_unlock" if mode in {"BALANCED", "HALF"} else "preview_quality"
         return {
             "credits": 0.0,
             "paid_tile_count": 0,
@@ -388,7 +414,7 @@ def estimate_credit_breakdown_for_tiles(tiles, quality_mode="FULL") -> dict:
                     "tile_key": tile,
                     "credits": 0.0,
                     "gross_credits": 0.0,
-                    "free_reason": "preview_quality",
+                    "free_reason": free_reason,
                     "already_owned": False,
                 }
                 for tile in normalized_tiles
@@ -403,7 +429,7 @@ def estimate_credit_breakdown_for_tiles(tiles, quality_mode="FULL") -> dict:
 def create_checkout_session(option: str, tiles=None, quality_mode="FULL") -> dict:
     """Create a Stripe Checkout Session for scene data or a fixed balance top-up."""
     safe_option = str(option or "scene").strip().lower()
-    if safe_option not in {"scene", "balance_10", "top_up_10", "topup_10"}:
+    if safe_option not in {"scene", "balance_10", "top_up_10", "topup_10", "standard_unlock", "balanced_unlock"}:
         safe_option = "scene"
     tile_keys = []
     if safe_option == "scene":
@@ -415,7 +441,11 @@ def create_checkout_session(option: str, tiles=None, quality_mode="FULL") -> dic
             if key and key not in tile_keys:
                 tile_keys.append(key)
     payload = {
-        "option": "balance_10" if safe_option in {"balance_10", "top_up_10", "topup_10"} else "scene",
+        "option": (
+            "balance_10"
+            if safe_option in {"balance_10", "top_up_10", "topup_10"}
+            else ("standard_unlock" if safe_option in {"standard_unlock", "balanced_unlock"} else "scene")
+        ),
         "quality_mode": str(quality_mode or "FULL").strip().lower(),
         "tile_keys": tile_keys,
     }
