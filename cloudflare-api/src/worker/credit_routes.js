@@ -4,10 +4,11 @@ const FREE_D_THRESHOLD = 60;
 const ACCOUNT_TYPE_STANDARD = "standard";
 const DEFAULT_STARTING_CREDITS = 100.0;
 const DATASET_BASE_MPP = 10.0;
-const EARTH_RADIUS_KM = 6371.0088;
 const EQUATOR_Z001_AREA_KM2 = (40075.016686 / 360.0) ** 2;
 const CHECKOUT_BALANCE_TOP_UP_EUR = 10.0;
 const STRIPE_MIN_CHECKOUT_AMOUNT_CENTS = 50;
+const MONEY_SCALE = 100;
+const METRIC_SCALE = 1_000_000;
 
 function normalizeTileKey(value) {
   const raw = String(value || "").trim();
@@ -65,56 +66,12 @@ function detailRatioForTile(parsed) {
   return d / z;
 }
 
-function sphericalAreaKm2(lonWest, lonEast, latSouth, latNorth) {
-  if (!(lonEast > lonWest) || !(latNorth > latSouth)) {
-    return 0;
-  }
-  const lonDelta = (Number(lonEast) - Number(lonWest)) * Math.PI / 180;
-  const southRad = Number(latSouth) * Math.PI / 180;
-  const northRad = Number(latNorth) * Math.PI / 180;
-  return Math.max(0, (EARTH_RADIUS_KM ** 2) * lonDelta * Math.abs(Math.sin(northRad) - Math.sin(southRad)));
-}
-
-function tileAreaKm2(parsed) {
-  if (!parsed) {
-    return 0;
-  }
-  const lonWest = Number(parsed.x) - 180;
-  const lonEast = Number(parsed.x + parsed.z) - 180;
-  const latSouth = Math.max(-90, Number(parsed.y) - 90);
-  const latNorth = Math.min(90, Number(parsed.y + parsed.z) - 90);
-  return sphericalAreaKm2(lonWest, lonEast, latSouth, latNorth);
-}
-
-function paidBandAreaKm2(parsed) {
-  if (!parsed) {
-    return 0;
-  }
-  const lonWest = Number(parsed.x) - 180;
-  const lonEast = Number(parsed.x + parsed.z) - 180;
-  const latSouth = Math.max(-90, Number(parsed.y) - 90);
-  const latNorth = Math.min(90, Number(parsed.y + parsed.z) - 90);
-  return sphericalAreaKm2(lonWest, lonEast, Math.max(latSouth, -60), Math.min(latNorth, 75));
-}
-
 function effectiveBillableLandKm2(parsed, stats, freeReason) {
   if (String(freeReason || "").trim()) {
     return 0;
   }
   const storedBillable = Math.max(0, Number.parseFloat(stats && stats.billable_land_km2 || 0) || 0);
-  if (storedBillable > 0) {
-    return storedBillable;
-  }
-  const land = Math.max(0, Number.parseFloat(stats && stats.land_km2 || 0) || 0);
-  if (land <= 0) {
-    return 0;
-  }
-  const totalArea = tileAreaKm2(parsed);
-  const paidArea = paidBandAreaKm2(parsed);
-  if (!(totalArea > 0) || !(paidArea > 0)) {
-    return 0;
-  }
-  return Math.max(0, land * Math.min(1, paidArea / totalArea));
+  return storedBillable;
 }
 
 function freeReasonForTile(parsed) {
@@ -162,7 +119,7 @@ function normalizeCreditAmount(value) {
   if (!Number.isFinite(parsed) || parsed <= 0) {
     return 0;
   }
-  return Math.round(parsed * 1_000_000) / 1_000_000;
+  return Math.round((parsed + Number.EPSILON) * MONEY_SCALE) / MONEY_SCALE;
 }
 
 function normalizeSignedCreditAmount(value) {
@@ -170,7 +127,16 @@ function normalizeSignedCreditAmount(value) {
   if (!Number.isFinite(parsed)) {
     return 0;
   }
-  return Math.round(parsed * 1_000_000) / 1_000_000;
+  const sign = parsed < 0 ? -1 : 1;
+  return sign * Math.round((Math.abs(parsed) + Number.EPSILON) * MONEY_SCALE) / MONEY_SCALE;
+}
+
+function normalizeMetricAmount(value) {
+  const parsed = Number.parseFloat(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return 0;
+  }
+  return Math.round(parsed * METRIC_SCALE) / METRIC_SCALE;
 }
 
 function centsForEur(value) {
@@ -215,9 +181,10 @@ function deliveredMppForD(dValue) {
 function creditsForTileStats(tile, stats, qualityMode) {
   const safeMode = String(qualityMode || "").trim().toLowerCase();
   const derivedFreeReason = freeReasonForTile(tile);
+  const statsFreeReason = String(stats && stats.free_reason || "").trim();
   const freeReason = safeMode === "preview"
     ? "preview_quality"
-    : derivedFreeReason;
+    : (derivedFreeReason || statsFreeReason);
   const mpp = deliveredMppForD(tile && tile.d);
   const billableLandKm2 = effectiveBillableLandKm2(tile, stats, freeReason);
   const baseCredits = Math.max(0, billableLandKm2 / EQUATOR_Z001_AREA_KM2);
@@ -228,13 +195,13 @@ function creditsForTileStats(tile, stats, qualityMode) {
     tile_key: tile.key,
     credits: priceEur,
     price_eur: priceEur,
-    land_km2: Math.max(0, Number.parseFloat(stats && stats.land_km2 || 0) || 0),
-    billable_land_km2: billableLandKm2,
-    delivered_mpp: normalizeCreditAmount(mpp),
-    detail_ratio: normalizeCreditAmount(detailRatioForTile(tile)),
-    price_factor: normalizeCreditAmount(qualityFactor),
+    land_km2: normalizeMetricAmount(stats && stats.land_km2),
+    billable_land_km2: normalizeMetricAmount(billableLandKm2),
+    delivered_mpp: normalizeMetricAmount(mpp),
+    detail_ratio: normalizeMetricAmount(detailRatioForTile(tile)),
+    price_factor: normalizeMetricAmount(qualityFactor),
     free_reason: freeReason,
-    stats_source: "backend_d1",
+    stats_source: String(stats && stats.source || "backend_d1").trim() || "backend_d1",
   };
 }
 
@@ -323,6 +290,18 @@ async function ensureCreditAccount(db, userId, deps) {
     `,
     [DEFAULT_STARTING_CREDITS, DEFAULT_STARTING_CREDITS, now, safeUserId],
   );
+  await deps.dbRun(
+    db,
+    `
+      UPDATE user_credit_accounts
+      SET
+        balance_credits = ROUND(balance_credits * 100.0) / 100.0,
+        total_granted_credits = ROUND(total_granted_credits * 100.0) / 100.0,
+        total_spent_credits = ROUND(total_spent_credits * 100.0) / 100.0
+      WHERE user_id = ?
+    `,
+    [safeUserId],
+  );
   return await deps.dbGet(db, `SELECT * FROM user_credit_accounts WHERE user_id = ? LIMIT 1`, [safeUserId]);
 }
 
@@ -377,7 +356,7 @@ async function backendPricingRecordsForTileKeys(db, tileKeys, qualityMode, deps)
   const rows = await deps.dbAll(
     db,
     `
-      SELECT tile_key, land_km2, billable_land_km2, base_credits, free_reason
+      SELECT tile_key, land_km2, billable_land_km2, free_reason
       FROM tile_land_stats
       WHERE tile_key IN (${keys.map(() => "?").join(",")})
     `,
@@ -391,19 +370,84 @@ async function backendPricingRecordsForTileKeys(db, tileKeys, qualityMode, deps)
       continue;
     }
     const stats = byKey.get(key);
-    if (!stats && !isFreeCreditTileKey(key)) {
-      return {
-        error: "credit_pricing_missing_tile_stats",
-        missing_tile_key: key,
-      };
-    }
+    const fallbackStats = isFreeCreditTileKey(key)
+      ? { land_km2: 0, billable_land_km2: 0, free_reason: "globally_free", source: "global_free_fallback" }
+      : { land_km2: 0, billable_land_km2: 0, free_reason: "pricing_metadata_missing", source: "missing_pricing_metadata" };
     records.push(creditsForTileStats(
       tile,
-      stats || { land_km2: 0, billable_land_km2: 0, base_credits: 0, free_reason: "globally_free" },
+      stats || fallbackStats,
       qualityMode,
     ));
   }
   return records;
+}
+
+function pricingMetadataMissingTileKeys(records) {
+  const keys = [];
+  for (const record of records || []) {
+    if (String(record && record.free_reason || "").trim() !== "pricing_metadata_missing") {
+      continue;
+    }
+    const key = normalizeTileKey(record && record.tile_key || "");
+    if (key) {
+      keys.push(key);
+    }
+  }
+  return Array.from(new Set(keys));
+}
+
+function pricingIntegrityWarnings(records) {
+  const missingKeys = pricingMetadataMissingTileKeys(records);
+  if (!missingKeys.length) {
+    return [];
+  }
+  return [
+    {
+      code: "pricing_metadata_missing",
+      severity: "error",
+      tile_keys: missingKeys,
+      message: "Backend pricing metadata is missing for actual requested S2 tile keys; affected tiles are not charged.",
+    },
+  ];
+}
+
+async function recordPricingIntegrityWarnings(db, userId, qualityMode, records, deps) {
+  const missingKeys = pricingMetadataMissingTileKeys(records);
+  if (!missingKeys.length) {
+    return;
+  }
+  console.warn(JSON.stringify({
+    event: "planetka_pricing_metadata_missing",
+    user_id: String(userId || ""),
+    quality_mode: String(qualityMode || ""),
+    missing_tile_count: missingKeys.length,
+    missing_tile_keys: missingKeys.slice(0, 100),
+  }));
+  try {
+    await deps.dbRun(
+      db,
+      `
+        INSERT INTO pricing_integrity_events (
+          id, user_id, quality_mode, issue_code, missing_tile_count, tile_keys_json, created_at
+        )
+        VALUES (?, ?, ?, 'pricing_metadata_missing', ?, ?, ?)
+      `,
+      [
+        deps.randomToken(16),
+        String(userId || "").trim(),
+        String(qualityMode || "").trim().toLowerCase(),
+        missingKeys.length,
+        JSON.stringify(missingKeys.slice(0, 500)),
+        deps.nowIso(),
+      ],
+    );
+  } catch (error) {
+    console.warn(JSON.stringify({
+      event: "planetka_pricing_integrity_event_record_failed",
+      user_id: String(userId || ""),
+      error: String(error && error.message || "pricing_integrity_event_record_failed"),
+    }));
+  }
 }
 
 async function estimateNewCredits(db, userId, tileKeys, qualityMode, deps) {
@@ -412,6 +456,9 @@ async function estimateNewCredits(db, userId, tileKeys, qualityMode, deps) {
   if (pricingRecords && pricingRecords.error) {
     return pricingRecords;
   }
+  await recordPricingIntegrityWarnings(db, userId, qualityMode, pricingRecords, deps);
+  const integrityWarnings = pricingIntegrityWarnings(pricingRecords);
+  const metadataMissingTileKeys = pricingMetadataMissingTileKeys(pricingRecords);
   const requested = [];
   const families = new Set();
   for (const record of pricingRecords) {
@@ -502,7 +549,7 @@ async function estimateNewCredits(db, userId, tileKeys, qualityMode, deps) {
     }
     if (tileCredits > 0) {
       paidTileCount += 1;
-      credits += tileCredits;
+      credits = normalizeCreditAmount(credits + tileCredits);
     } else {
       freeTileCount += 1;
     }
@@ -510,7 +557,7 @@ async function estimateNewCredits(db, userId, tileKeys, qualityMode, deps) {
     if (coveredByFiner) {
       excludedTiles.push(breakdownTile);
     }
-    if (!globallyFree && !coveredByFiner && tileCredits > 0) {
+    if (!globallyFree && !coveredByFiner) {
       const newTile = { ...tile, credits: tileCredits };
       if (coarserCredit > 0) {
         newTile.upgrade_credit_applied = coarserCredit;
@@ -519,7 +566,7 @@ async function estimateNewCredits(db, userId, tileKeys, qualityMode, deps) {
       familyEntitlements.push({ d: Number(item.parsed.d), value: grossCredits });
     }
   }
-  const totalEur = Math.round(credits * 1_000_000) / 1_000_000;
+  const totalEur = normalizeCreditAmount(credits);
   return {
     credits: totalEur,
     price_eur: totalEur,
@@ -529,6 +576,8 @@ async function estimateNewCredits(db, userId, tileKeys, qualityMode, deps) {
     new_tiles: newTiles,
     tiles: pricedTiles,
     excluded_tiles: excludedTiles,
+    integrity_warnings: integrityWarnings,
+    metadata_missing_tile_keys: metadataMissingTileKeys,
   };
 }
 
@@ -597,7 +646,7 @@ export async function unlockTilesForSession(db, userId, qualityMode, tileKeys, r
       error: "insufficient_credits",
       required_credits: actualCredits,
       balance_credits: balance,
-      paid_tile_count: insertedTiles.length,
+      paid_tile_count: insertedTiles.filter((tile) => normalizeCreditAmount(tile && tile.credits) > 0).length,
       tile_count: estimate.tile_count,
     };
   }
@@ -608,8 +657,8 @@ export async function unlockTilesForSession(db, userId, qualityMode, tileKeys, r
       `
         UPDATE user_credit_accounts
         SET
-          balance_credits = balance_credits - ?,
-          total_spent_credits = total_spent_credits + ?,
+          balance_credits = ROUND((balance_credits - ?) * 100.0) / 100.0,
+          total_spent_credits = ROUND((total_spent_credits + ?) * 100.0) / 100.0,
           updated_at = ?
         WHERE user_id = ?
       `,
@@ -628,11 +677,11 @@ export async function unlockTilesForSession(db, userId, qualityMode, tileKeys, r
         error: "insufficient_credits",
         required_credits: actualCredits,
         balance_credits: normalizeSignedCreditAmount(fresh && fresh.balance_credits),
-        paid_tile_count: insertedTiles.length,
+        paid_tile_count: insertedTiles.filter((tile) => normalizeCreditAmount(tile && tile.credits) > 0).length,
         tile_count: estimate.tile_count,
       };
     }
-    const balanceAfter = Math.round((balance - actualCredits) * 1_000_000) / 1_000_000;
+    const balanceAfter = normalizeSignedCreditAmount(balance - actualCredits);
     await deps.dbRun(
       db,
       `
@@ -654,12 +703,13 @@ export async function unlockTilesForSession(db, userId, qualityMode, tileKeys, r
 
   const estimatedPaidCount = Math.max(0, Number.parseInt(estimate.paid_tile_count || 0, 10) || 0);
   const estimatedFreeCount = Math.max(0, Number.parseInt(estimate.free_tile_count || 0, 10) || 0);
-  const skippedPaidCount = Math.max(0, estimatedPaidCount - insertedTiles.length);
+  const insertedPaidCount = insertedTiles.filter((tile) => normalizeCreditAmount(tile && tile.credits) > 0).length;
+  const skippedPaidCount = Math.max(0, estimatedPaidCount - insertedPaidCount);
   return {
     ...estimate,
-    credits: actualCredits,
-    price_eur: actualCredits,
-    paid_tile_count: insertedTiles.length,
+    credits: normalizeCreditAmount(actualCredits),
+    price_eur: normalizeCreditAmount(actualCredits),
+    paid_tile_count: insertedPaidCount,
     free_tile_count: estimatedFreeCount + skippedPaidCount,
     new_tiles: insertedTiles,
   };
@@ -679,8 +729,8 @@ export async function addCreditBalance(db, userId, amountEur, reason, metadata, 
     `
       UPDATE user_credit_accounts
       SET
-        balance_credits = balance_credits + ?,
-        total_granted_credits = total_granted_credits + ?,
+        balance_credits = ROUND((balance_credits + ?) * 100.0) / 100.0,
+        total_granted_credits = ROUND((total_granted_credits + ?) * 100.0) / 100.0,
         updated_at = ?
       WHERE user_id = ?
     `,
@@ -755,6 +805,7 @@ export async function grantPaidSceneTileEntitlements(db, userId, qualityMode, ti
       nominalCredits = normalizeCreditAmount(nominalCredits + tileCredits);
     }
   }
+  const insertedPaidCount = insertedTiles.filter((tile) => normalizeCreditAmount(tile && tile.credits) > 0).length;
   await deps.dbRun(
     db,
     `
@@ -783,7 +834,7 @@ export async function grantPaidSceneTileEntitlements(db, userId, qualityMode, ti
     price_eur: 0,
     paid_eur: normalizeCreditAmount(amountPaidEur),
     nominal_eur: nominalCredits,
-    paid_tile_count: insertedTiles.length,
+    paid_tile_count: insertedPaidCount,
     new_tiles: insertedTiles,
   };
 }
@@ -897,12 +948,25 @@ export async function handleCreditCheckout(request, env, deps) {
   }
   const priceEur = normalizeCreditAmount(estimate && estimate.credits);
   if (priceEur <= 0) {
+    const unlockResult = await unlockTilesForSession(
+      db,
+      userId,
+      qualityMode,
+      tileKeys,
+      `checkout_no_payment_${deps.randomToken(8)}`,
+      deps,
+    );
+    if (unlockResult && unlockResult.error) {
+      return deps.json({ ok: false, ...unlockResult }, 400, env);
+    }
     return deps.json(
       {
         ok: true,
         option: "scene",
         no_payment_required: true,
         price_eur: 0,
+        paid_tile_count: unlockResult && unlockResult.paid_tile_count || 0,
+        tile_count: unlockResult && unlockResult.tile_count || estimate.tile_count,
         message: "This scene has no newly charged Full Quality tiles.",
       },
       200,
@@ -938,7 +1002,7 @@ export async function handleCreditCheckout(request, env, deps) {
         planetka_email: email,
         planetka_quality_mode: "full",
         planetka_tile_keys_json: JSON.stringify(normalizedKeys),
-        planetka_price_eur: priceEur.toFixed(6),
+        planetka_price_eur: priceEur.toFixed(2),
         planetka_paid_tile_count: String(Math.max(0, Number.parseInt(estimate && estimate.paid_tile_count || 0, 10) || 0)),
       },
     },
@@ -1108,8 +1172,8 @@ export async function handleAdminGiftCredits(request, env, deps) {
     `
       UPDATE user_credit_accounts
       SET
-        balance_credits = balance_credits + ?,
-        total_granted_credits = total_granted_credits + ?,
+        balance_credits = ROUND((balance_credits + ?) * 100.0) / 100.0,
+        total_granted_credits = ROUND((total_granted_credits + ?) * 100.0) / 100.0,
         updated_at = ?
       WHERE user_id = ?
     `,

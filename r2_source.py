@@ -1115,7 +1115,8 @@ def _request_tile_session_token(resolve_id, quality_mode, allow_refresh=True):
             credits_charged = float(data.get("credits_charged", 0.0) or 0.0)
         except (TypeError, ValueError, AttributeError):
             credits_charged = 0.0
-        if credits_charged > 0.0:
+        credit_protocol = str(data.get("credit_protocol", "") or "").strip()
+        if credits_charged > 0.0 or credit_protocol == "land_credits_v1":
             try:
                 from .credit_api import clear_credit_caches
                 clear_credit_caches()

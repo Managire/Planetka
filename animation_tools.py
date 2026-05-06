@@ -5,6 +5,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 import bpy
 from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty
@@ -65,6 +66,7 @@ ANIMATION_SEGMENT_MATERIAL_TAG_KEY = "planetka_animation_segment_material"
 ANIMATION_STATS_SEGMENTS_KEY = "planetka_anim_prepared_segments"
 ANIMATION_STATS_TEXTURE_MB_KEY = "planetka_anim_prepared_textures_mb"
 ANIMATION_STATS_CREDITS_KEY = "planetka_anim_full_quality_price_eur"
+ANIMATION_STATS_PRICE_KNOWN_KEY = "planetka_anim_full_quality_price_authoritative"
 ANIMATION_STATS_LEGACY_CREDITS_KEY = "planetka_anim_estimated_credits"
 ANIMATION_STATS_NEW_TILE_COUNT_KEY = "planetka_anim_full_quality_new_tile_count"
 ANIMATION_STATS_LEGACY_NEW_TILE_COUNT_KEY = "planetka_anim_estimated_paid_tile_count"
@@ -87,6 +89,7 @@ QUICK_PREVIEW_SCENE_STATE_KEYS = (
     ANIMATION_BASE_SURFACE_HIDE_VIEWPORT_KEY,
 )
 QUICK_PREVIEW_MAX_SEGMENTS = 99
+_ANIMATION_CENT = Decimal("0.01")
 ANIMATION_EEVEE_FORCE_BUMP_RUNTIME_KEY = "planetka_anim_render_eevee_force_bump"
 TEXTURE_TYPES = ("S2", "EL", "WT", "PO")
 TEXTURE_EXTENSIONS = {
@@ -527,10 +530,12 @@ def _estimate_credits_for_segments(segments, texture_quality_mode="FULL"):
     try:
         from .credit_api import estimate_credits_for_tiles
         summary = estimate_credits_for_tiles(tiles, quality_mode=mode)
-        return float(summary.get("credits", 0.0) or 0.0), int(summary.get("paid_tile_count", 0) or 0)
+        if mode != "PREVIEW" and not bool(summary.get("authoritative", False)):
+            return None, 0
+        return _animation_money_round(summary.get("credits", 0.0)), int(summary.get("paid_tile_count", 0) or 0)
     except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
         logger.debug("Planetka animation: failed estimating animation price", exc_info=True)
-        return 0.0, 0
+        return (0.0, 0) if mode == "PREVIEW" else (None, 0)
 
 
 def _unique_tiles_for_segments(segments):
@@ -553,6 +558,16 @@ def _animation_price_text(value):
         return f"€{max(0.0, float(value or 0.0)):.2f}"
     except (TypeError, ValueError):
         return "€0.00"
+
+
+def _animation_money_round(value):
+    try:
+        amount = Decimal(str(value or "0"))
+    except (InvalidOperation, TypeError, ValueError):
+        return 0.0
+    if amount <= 0:
+        return 0.0
+    return float(amount.quantize(_ANIMATION_CENT, rounding=ROUND_HALF_UP))
 
 
 def _animation_area_text(value):
@@ -635,6 +650,8 @@ def _build_animation_credit_breakdown(scene, props, texture_quality_mode="FULL")
     if unique_tiles:
         from .credit_api import estimate_credits_for_tiles
         summary = estimate_credits_for_tiles(unique_tiles, quality_mode=mode)
+        if not bool(summary.get("authoritative", False)):
+            raise RuntimeError("Animation pricing is unavailable because backend pricing could not be confirmed.")
     records_by_key = {}
     for record in list(summary.get("tiles", ()) if isinstance(summary, dict) else ()):
         if not isinstance(record, dict):
@@ -667,17 +684,18 @@ def _build_animation_credit_breakdown(scene, props, texture_quality_mode="FULL")
                     row_price = 0.0
                 else:
                     charged_seen.add(tile_key)
-                    segment_price += row_price
+                    segment_price = _animation_money_round(segment_price + row_price)
                     segment_new_tiles += 1
             segment_rows.append(row)
         segment_breakdowns.append({
             "index": int(segment.get("index", len(segment_breakdowns) + 1) if isinstance(segment, dict) else len(segment_breakdowns) + 1),
             "start": int(segment.get("start", 0) if isinstance(segment, dict) else 0),
             "end": int(segment.get("end", 0) if isinstance(segment, dict) else 0),
-            "price_eur": float(segment_price),
+            "price_eur": float(_animation_money_round(segment_price)),
             "new_tile_count": int(segment_new_tiles),
             "tiles": segment_rows,
         })
+    total_price_eur = _animation_money_round(sum(float(segment.get("price_eur", 0.0) or 0.0) for segment in segment_breakdowns))
 
     return {
         "quality_mode": mode,
@@ -685,8 +703,8 @@ def _build_animation_credit_breakdown(scene, props, texture_quality_mode="FULL")
         "frame_end": int(segment_plan.frame_end),
         "frame_step": int(segment_plan.frame_step),
         "segments": segment_breakdowns,
-        "price_eur": float(summary.get("price_eur", summary.get("credits", 0.0)) or 0.0) if isinstance(summary, dict) else 0.0,
-        "new_tile_count": int(summary.get("paid_tile_count", 0) or 0) if isinstance(summary, dict) else 0,
+        "price_eur": float(total_price_eur),
+        "new_tile_count": int(sum(int(segment.get("new_tile_count", 0) or 0) for segment in segment_breakdowns)),
         "tile_count": int(len(unique_tiles)),
     }
 
@@ -702,7 +720,26 @@ def update_animation_credit_estimate(scene, props, texture_quality_mode=None):
         list(segment_plan.segments or ()),
         texture_quality_mode=mode,
     )
+    if credits is None:
+        for key in (
+            ANIMATION_STATS_CREDITS_KEY,
+            ANIMATION_STATS_NEW_TILE_COUNT_KEY,
+            ANIMATION_STATS_LEGACY_CREDITS_KEY,
+            ANIMATION_STATS_LEGACY_NEW_TILE_COUNT_KEY,
+        ):
+            try:
+                if key in scene:
+                    del scene[key]
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka animation: failed clearing unavailable price key", exc_info=True)
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka animation: failed clearing unavailable price key", exc_info=True)
+        scene[ANIMATION_STATS_PRICE_KNOWN_KEY] = False
+        logger.info("Planetka animation price calculation unavailable; backend pricing is required.")
+        return 0.0, 0
+    credits = _animation_money_round(credits)
     scene[ANIMATION_STATS_CREDITS_KEY] = float(max(0.0, credits))
+    scene[ANIMATION_STATS_PRICE_KNOWN_KEY] = True
     scene[ANIMATION_STATS_NEW_TILE_COUNT_KEY] = int(max(0, paid_tile_count))
     scene[ANIMATION_STATS_LEGACY_CREDITS_KEY] = float(max(0.0, credits))
     scene[ANIMATION_STATS_LEGACY_NEW_TILE_COUNT_KEY] = int(max(0, paid_tile_count))
@@ -3639,7 +3676,18 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
     def _read_cached_price_for_confirmation(self, context):
         scene = getattr(context, "scene", None)
         if scene is None:
-            return 0.0, 0
+            return None, 0
+        try:
+            price_known = bool(
+                scene.get(
+                    ANIMATION_STATS_PRICE_KNOWN_KEY,
+                    ANIMATION_STATS_CREDITS_KEY in scene or ANIMATION_STATS_LEGACY_CREDITS_KEY in scene,
+                )
+            )
+        except (TypeError, ValueError, RuntimeError, AttributeError):
+            price_known = False
+        if not price_known:
+            return None, 0
         try:
             price_eur = float(
                 scene.get(
@@ -3664,6 +3712,13 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
         del event
         if not bool(getattr(self, "confirmed", False)) and not bool(getattr(bpy.app, "background", False)):
             price_eur, new_tile_count = self._read_cached_price_for_confirmation(context)
+            if price_eur is None:
+                return fail(
+                    self,
+                    "Animation price is not available. Generate keyframes or refresh pricing before rendering.",
+                    code=ErrorCode.ANIMATION_RENDER_FAILED,
+                    logger=logger,
+                )
             self.confirm_price_eur = float(price_eur)
             self.confirm_new_tile_count = int(new_tile_count)
             self.confirmed = True
@@ -3729,6 +3784,7 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             return
         try:
             scene[ANIMATION_STATS_CREDITS_KEY] = 0.0
+            scene[ANIMATION_STATS_PRICE_KNOWN_KEY] = True
             scene[ANIMATION_STATS_NEW_TILE_COUNT_KEY] = 0
             scene[ANIMATION_STATS_LEGACY_CREDITS_KEY] = 0.0
             scene[ANIMATION_STATS_LEGACY_NEW_TILE_COUNT_KEY] = 0

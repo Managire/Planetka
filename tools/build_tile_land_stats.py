@@ -113,7 +113,6 @@ def create_schema(conn: sqlite3.Connection) -> None:
             d INTEGER NOT NULL,
             land_km2 REAL NOT NULL DEFAULT 0,
             billable_land_km2 REAL NOT NULL DEFAULT 0,
-            base_credits REAL NOT NULL DEFAULT 0,
             land_fraction REAL NOT NULL DEFAULT 0,
             paid_lat_fraction REAL NOT NULL DEFAULT 0,
             free_reason TEXT,
@@ -207,11 +206,9 @@ def scan_s2_file(path: Path, x: int, y: int, z: int, d: int):
             land_area += row_area * fraction
             billable_area += paid_row_area * fraction
 
-        base_credits = max(0.0, billable_area / EQUATOR_Z001_AREA_KM2)
         return {
             "land_km2": land_area,
             "billable_land_km2": billable_area,
-            "base_credits": base_credits,
             "land_fraction": (land_area / tile_area) if tile_area > 0 else 0.0,
             "paid_lat_fraction": (paid_area / tile_area) if tile_area > 0 else 0.0,
             "free_reason": free_reason,
@@ -248,10 +245,10 @@ def write_tile_stats(conn: sqlite3.Connection, tile_key: str, x: int, y: int, z:
         """
         INSERT OR REPLACE INTO tile_land_stats (
             tile_key, x, y, z, d,
-            land_km2, billable_land_km2, base_credits,
+            land_km2, billable_land_km2,
             land_fraction, paid_lat_fraction, free_reason, source, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'S2', ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'S2', ?)
         """,
         (
             tile_key,
@@ -261,7 +258,6 @@ def write_tile_stats(conn: sqlite3.Connection, tile_key: str, x: int, y: int, z:
             d,
             float(stats["land_km2"]),
             float(stats["billable_land_km2"]),
-            float(stats["base_credits"]),
             float(stats["land_fraction"]),
             float(stats["paid_lat_fraction"]),
             str(stats["free_reason"] or ""),
@@ -279,7 +275,6 @@ def install_stats_to_live_db(work_db_path: Path, live_db_path: Path) -> int:
         "d",
         "land_km2",
         "billable_land_km2",
-        "base_credits",
         "land_fraction",
         "paid_lat_fraction",
         "free_reason",

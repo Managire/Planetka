@@ -2748,6 +2748,16 @@ async function ensureCreditTables(db) {
   await dbRun(
     db,
     `
+      UPDATE user_credit_accounts
+      SET
+        balance_credits = ROUND(balance_credits * 100.0) / 100.0,
+        total_granted_credits = ROUND(total_granted_credits * 100.0) / 100.0,
+        total_spent_credits = ROUND(total_spent_credits * 100.0) / 100.0
+    `,
+  );
+  await dbRun(
+    db,
+    `
       CREATE TABLE IF NOT EXISTS user_tile_entitlements (
         user_id TEXT NOT NULL,
         tile_key TEXT NOT NULL,
@@ -2794,11 +2804,28 @@ async function ensureCreditTables(db) {
         d INTEGER NOT NULL,
         land_km2 REAL NOT NULL DEFAULT 0,
         billable_land_km2 REAL NOT NULL DEFAULT 0,
-        base_credits REAL NOT NULL DEFAULT 0,
         free_reason TEXT,
         updated_at TEXT NOT NULL
       )
     `,
+  );
+  await dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS pricing_integrity_events (
+        id TEXT PRIMARY KEY,
+        user_id TEXT,
+        quality_mode TEXT,
+        issue_code TEXT NOT NULL,
+        missing_tile_count INTEGER NOT NULL DEFAULT 0,
+        tile_keys_json TEXT,
+        created_at TEXT NOT NULL
+      )
+    `,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_pricing_integrity_events_created ON pricing_integrity_events(created_at DESC)`,
   );
   creditTablesReady = true;
 }
@@ -2825,9 +2852,18 @@ async function ensureStandardCreditAccountForUser(db, userId) {
     `
       UPDATE user_credit_accounts
       SET account_type = 'standard',
-          balance_credits = CASE WHEN LOWER(TRIM(account_type)) = 'unlimited' THEN ? ELSE balance_credits END,
-          total_granted_credits = CASE WHEN LOWER(TRIM(account_type)) = 'unlimited' THEN ? ELSE total_granted_credits END,
-          total_spent_credits = CASE WHEN LOWER(TRIM(account_type)) = 'unlimited' THEN 0 ELSE total_spent_credits END,
+          balance_credits = CASE
+            WHEN LOWER(TRIM(account_type)) = 'unlimited' THEN ?
+            ELSE ROUND(balance_credits * 100.0) / 100.0
+          END,
+          total_granted_credits = CASE
+            WHEN LOWER(TRIM(account_type)) = 'unlimited' THEN ?
+            ELSE ROUND(total_granted_credits * 100.0) / 100.0
+          END,
+          total_spent_credits = CASE
+            WHEN LOWER(TRIM(account_type)) = 'unlimited' THEN 0
+            ELSE ROUND(total_spent_credits * 100.0) / 100.0
+          END,
           updated_at = ?
       WHERE user_id = ?
         AND (

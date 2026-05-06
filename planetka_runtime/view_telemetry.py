@@ -1,7 +1,19 @@
 import math
 import os
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 _VIEW_TELEMETRY_CTX = None
+_CENT = Decimal("0.01")
+
+
+def _money_round(value):
+    try:
+        amount = Decimal(str(value or "0"))
+    except (InvalidOperation, TypeError, ValueError):
+        return 0.0
+    if amount <= 0:
+        return 0.0
+    return float(amount.quantize(_CENT, rounding=ROUND_HALF_UP))
 
 def _require_ctx():
     ctx = _VIEW_TELEMETRY_CTX
@@ -1026,23 +1038,60 @@ def estimate_download_bytes_for_visible_tiles(tiles, base_path, runtime=None, te
         return 0
 
 
-def estimate_credits_for_visible_tiles(tiles, runtime=None, texture_quality_mode="PREVIEW"):
+def _pricing_tiles_for_visible_tiles(tiles, runtime=None, texture_quality_mode="PREVIEW", base_path=""):
     deps = _coerce_ctx(runtime).deps
     logger = deps.logger
     normalized_mode = deps.normalize_texture_quality_mode(texture_quality_mode)
+    streaming_utils = deps.get_streaming_utils()
     safe_tiles = canonical_tiles(tiles)
+    if normalized_mode == "PREVIEW" or not safe_tiles:
+        return tuple()
+    if streaming_utils is None:
+        return tuple(safe_tiles)
+    try:
+        plan_payload = streaming_utils.build_resolve_download_requests_for_visible_tiles(
+            safe_tiles,
+            str(base_path or ""),
+            texture_quality_mode=normalized_mode,
+        )
+    except deps.recoverable_exceptions:
+        logger.debug("Planetka: failed building pricing tile plan for resolve-credit estimate", exc_info=True)
+        return tuple(safe_tiles)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed building pricing tile plan for resolve-credit estimate", exc_info=True)
+        return tuple(safe_tiles)
+    resolved_tiles = canonical_tiles(plan_payload.get("resolved_tiles", ()) if isinstance(plan_payload, dict) else ())
+    ocean_lookup = set(plan_payload.get("ocean_tiles", ()) if isinstance(plan_payload, dict) else ())
+    pricing_tiles = tuple(tile for tile in resolved_tiles if str(tile) not in ocean_lookup)
+    if resolved_tiles:
+        return pricing_tiles
+    return tuple(safe_tiles)
+
+
+def estimate_credits_for_visible_tiles(tiles, runtime=None, texture_quality_mode="PREVIEW", base_path=""):
+    deps = _coerce_ctx(runtime).deps
+    logger = deps.logger
+    normalized_mode = deps.normalize_texture_quality_mode(texture_quality_mode)
+    safe_tiles = _pricing_tiles_for_visible_tiles(
+        tiles,
+        runtime,
+        texture_quality_mode=normalized_mode,
+        base_path=base_path,
+    )
     if normalized_mode == "PREVIEW" or not safe_tiles:
         return 0.0
     try:
         from ..credit_api import estimate_credits_for_tiles
         summary = estimate_credits_for_tiles(safe_tiles, quality_mode=normalized_mode)
+        if normalized_mode != "PREVIEW" and not bool(summary.get("authoritative", False)):
+            return None
         return float(max(0.0, float(summary.get("credits", 0.0) or 0.0)))
     except deps.import_recoverable_exceptions:
         logger.debug("Planetka: resolve-credit estimate failed", exc_info=True)
-        return 0.0
+        return 0.0 if normalized_mode == "PREVIEW" else None
     except (RuntimeError, TypeError, ValueError, AttributeError):
         logger.debug("Planetka: resolve-credit estimate failed", exc_info=True)
-        return 0.0
+        return 0.0 if normalized_mode == "PREVIEW" else None
 
 
 def build_resolve_cost_breakdown(scene=None, runtime=None, scope_mode="CAMERA", base_path="", texture_quality_mode="FULL"):
@@ -1099,7 +1148,7 @@ def build_resolve_cost_breakdown(scene=None, runtime=None, scope_mode="CAMERA", 
     resolved_tiles = canonical_tiles(plan_payload.get("resolved_tiles", ()) if isinstance(plan_payload, dict) else ())
     ocean_lookup = set(plan_payload.get("ocean_tiles", ()) if isinstance(plan_payload, dict) else ())
     pricing_tiles = [tile for tile in resolved_tiles if str(tile) not in ocean_lookup]
-    if not pricing_tiles:
+    if not pricing_tiles and not resolved_tiles:
         pricing_tiles = list(visible_tiles)
 
     try:
@@ -1111,6 +1160,27 @@ def build_resolve_cost_breakdown(scene=None, runtime=None, scope_mode="CAMERA", 
     except (RuntimeError, TypeError, ValueError, AttributeError):
         logger.debug("Planetka: failed computing credit breakdown", exc_info=True)
         credit_summary = {}
+
+    pricing_authoritative = bool(
+        normalized_mode == "PREVIEW"
+        or (isinstance(credit_summary, dict) and credit_summary.get("authoritative", False))
+    )
+    if normalized_mode != "PREVIEW" and not pricing_authoritative:
+        return {
+            "ok": False,
+            "error": "pricing_unavailable",
+            "quality_mode": normalized_mode,
+            "pricing_authoritative": False,
+            "tiles": [],
+            "charged_tiles": [],
+            "excluded_tiles": [],
+            "free_tiles": [],
+            "total_bytes": 0,
+            "tile_bytes_sum": 0,
+            "total_credits": 0.0,
+            "paid_tile_count": 0,
+            "free_tile_count": 0,
+        }
 
     price_by_tile = {}
     for record in credit_summary.get("tiles", ()) if isinstance(credit_summary, dict) else ():
@@ -1215,19 +1285,23 @@ def build_resolve_cost_breakdown(scene=None, runtime=None, scope_mode="CAMERA", 
         row for row in tile_rows
         if row.get("already_owned") or str(row.get("tile_key", "") or "") in excluded_keys
     ]
+    charged_tiles = [row for row in tile_rows if float(row.get("credits", 0.0) or 0.0) > 0.0]
+    free_tiles = [row for row in tile_rows if float(row.get("credits", 0.0) or 0.0) <= 0.0 and row not in excluded_tiles]
+    total_credits = _money_round(sum(float(row.get("credits", 0.0) or 0.0) for row in tile_rows))
 
     return {
         "ok": True,
         "quality_mode": normalized_mode,
         "tiles": tile_rows,
-        "charged_tiles": [row for row in tile_rows if float(row.get("credits", 0.0) or 0.0) > 0.0],
+        "charged_tiles": charged_tiles,
         "excluded_tiles": excluded_tiles,
-        "free_tiles": [row for row in tile_rows if float(row.get("credits", 0.0) or 0.0) <= 0.0 and row not in excluded_tiles],
+        "free_tiles": free_tiles,
         "total_bytes": int(max(0, total_bytes)),
         "tile_bytes_sum": int(max(0, sum(int(row.get("bytes", 0) or 0) for row in tile_rows))),
-        "total_credits": float(credit_summary.get("credits", 0.0) or 0.0) if isinstance(credit_summary, dict) else 0.0,
-        "paid_tile_count": int(credit_summary.get("paid_tile_count", 0) or 0) if isinstance(credit_summary, dict) else 0,
-        "free_tile_count": int(credit_summary.get("free_tile_count", 0) or 0) if isinstance(credit_summary, dict) else 0,
+        "total_credits": float(total_credits),
+        "paid_tile_count": int(len(charged_tiles)),
+        "free_tile_count": int(len(free_tiles)),
+        "pricing_authoritative": bool(pricing_authoritative),
     }
 
 
@@ -1294,13 +1368,17 @@ def update_resolve_size_estimates(scene, runtime=None, scope_mode="CAMERA", base
         runtime,
         texture_quality_mode="PREVIEW",
     )
-    full_credits = estimate_credits_for_visible_tiles(full_tiles, runtime, texture_quality_mode="FULL")
+    full_credits = estimate_credits_for_visible_tiles(full_tiles, runtime, texture_quality_mode="FULL", base_path=base_path)
     preview_credits = 0.0
 
     try:
         scene[resolve_estimate_full_bytes_key] = int(max(0, int(full_bytes)))
         scene[resolve_estimate_preview_bytes_key] = int(max(0, int(preview_bytes)))
-        scene[deps.resolve_estimate_full_credits_key] = float(max(0.0, float(full_credits)))
+        if full_credits is None:
+            if deps.resolve_estimate_full_credits_key in scene:
+                del scene[deps.resolve_estimate_full_credits_key]
+        else:
+            scene[deps.resolve_estimate_full_credits_key] = float(max(0.0, float(full_credits)))
         scene[deps.resolve_estimate_preview_credits_key] = float(max(0.0, float(preview_credits)))
         for key in (
             "planetka_resolve_estimate_balanced_bytes",

@@ -28,6 +28,7 @@ from .animation_tools import (
     ANIMATION_STATS_LEGACY_CREDITS_KEY,
     ANIMATION_STATS_LEGACY_NEW_TILE_COUNT_KEY,
     ANIMATION_STATS_NEW_TILE_COUNT_KEY,
+    ANIMATION_STATS_PRICE_KNOWN_KEY,
     ANIMATION_STATS_SEGMENTS_KEY,
 )
 from .state import (
@@ -2261,6 +2262,12 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             requested_mode=selected_final_quality,
         )
         try:
+            anim_price_known = bool(
+                scene.get(
+                    ANIMATION_STATS_PRICE_KNOWN_KEY,
+                    ANIMATION_STATS_CREDITS_KEY in scene or ANIMATION_STATS_LEGACY_CREDITS_KEY in scene,
+                )
+            )
             anim_credits = float(
                 scene.get(
                     ANIMATION_STATS_CREDITS_KEY,
@@ -2274,9 +2281,14 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
                 ) or 0
             )
         except (TypeError, ValueError, RuntimeError, AttributeError):
+            anim_price_known = False
             anim_credits = 0.0
             anim_paid_tiles = 0
+        if not anim_price_known:
+            final_render_allowed = False
         final_render_box.label(text=f"New Tiles to be Licenced and Downloaded: {anim_paid_tiles}", icon="TEXTURE")
+        if not anim_price_known:
+            final_render_box.label(text="Animation price is not available yet. Generate keyframes or refresh pricing.", icon="INFO")
         if anim_credits > 0.0:
             anim_account_known = False
             try:

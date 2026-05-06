@@ -41,7 +41,15 @@ function eurFromStripeAmountCents(value) {
   if (!Number.isFinite(cents) || cents <= 0) {
     return 0;
   }
-  return Math.round((cents / 100.0) * 1_000_000) / 1_000_000;
+  return Math.round((cents / 100.0) * 100.0) / 100.0;
+}
+
+function normalizeEur(value) {
+  const parsed = Number.parseFloat(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return 0;
+  }
+  return Math.round((parsed + Number.EPSILON) * 100.0) / 100.0;
 }
 
 async function verifyStripeWebhook(request, env, rawBody, deps) {
@@ -426,7 +434,7 @@ export async function handleStripeWebhook(request, env, deps) {
     if (purchaseType === "balance_top_up") {
       const requestedTopUp = Number.parseFloat(metadata.planetka_top_up_eur || "");
       const topUpEur = Number.isFinite(requestedTopUp) && requestedTopUp > 0
-        ? Math.round(requestedTopUp * 1_000_000) / 1_000_000
+        ? normalizeEur(requestedTopUp)
         : amountPaidEur;
       const topUp = await addCreditBalance(
         db,

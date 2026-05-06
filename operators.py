@@ -381,6 +381,8 @@ def _scene_full_quality_price_eur(scene):
         _tag_view3d_redraw()
         if not isinstance(breakdown, dict):
             return None
+        if not bool(breakdown.get("ok", True)):
+            return None
         return float(max(0.0, float(breakdown.get("total_credits", 0.0) or 0.0)))
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed refreshing checkout price state", exc_info=True)
@@ -651,6 +653,13 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
                     base_path=base_path,
                     texture_quality_mode="FULL",
                 )
+                if not isinstance(breakdown, dict) or not bool(breakdown.get("ok", True)):
+                    return fail(
+                        self,
+                        "Full Quality pricing is not available. Reconnect Planetka Cloud and retry.",
+                        code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                        logger=logger,
+                    )
                 scene_price = float(
                     (breakdown or {}).get("total_credits", (breakdown or {}).get("credits", 0.0)) or 0.0
                 )
@@ -971,10 +980,15 @@ class PLANETKA_OT_DataCostBreakdown(bpy.types.Operator):
                 base_path=base_path,
                 texture_quality_mode=mode,
             )
+            try:
+                update_resolve_size_estimates(getattr(context, "scene", None), scope_mode="CAMERA", base_path=base_path)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka: failed refreshing resolve estimates before cost breakdown", exc_info=True)
+            except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka: failed refreshing resolve estimates before cost breakdown", exc_info=True)
             estimates = get_resolve_size_estimates(getattr(context, "scene", None))
             if isinstance(breakdown, dict):
                 breakdown["panel_total_bytes"] = estimates.get(mode) if isinstance(estimates, dict) else None
-                breakdown["panel_total_credits"] = estimates.get(f"{mode}_CREDITS") if isinstance(estimates, dict) else None
         except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
             return fail(
                 self,
@@ -1008,12 +1022,15 @@ class PLANETKA_OT_DataCostBreakdown(bpy.types.Operator):
         total_bytes = breakdown.get("panel_total_bytes")
         if total_bytes is None:
             total_bytes = breakdown.get("total_bytes", 0)
-        total_credits = breakdown.get("panel_total_credits")
-        if total_credits is None:
-            total_credits = breakdown.get("total_credits", 0.0)
+        total_credits = breakdown.get("total_credits", 0.0)
 
         header = layout.box()
         header.label(text=f"{mode_label} Resolve Breakdown", icon="INFO")
+        if not bool(breakdown.get("ok", True)):
+            error = str(breakdown.get("error", "pricing_unavailable") or "pricing_unavailable").replace("_", " ")
+            header.label(text=f"Pricing unavailable: {error}.", icon="ERROR")
+            header.label(text="Reconnect Planetka Cloud and refresh Resolve to get the exact price.")
+            return
         header.label(text=f"Total data size: {_format_bytes_for_ui(int(total_bytes or 0))}")
         header.label(text=f"Total price: {'Free' if mode == 'PREVIEW' else self._price_text(total_credits)}")
         if mode != "PREVIEW":

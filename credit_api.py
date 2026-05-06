@@ -5,16 +5,17 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from uuid import uuid4
 
 from .auth import AuthApiError, get_api_base_url, get_authorized_headers, refresh_auth_session
-from .land_credits import pricing_records_for_tiles, summarize_pricing_records
 
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,23 @@ _UNLOCKED_DOWNLOAD_PROGRESS = {
     "finished_at": 0.0,
 }
 
+_PRICE_FIELDS = {
+    "credits",
+    "credits_spent",
+    "price_eur",
+    "gross_credits",
+    "gross_price_eur",
+    "upgrade_credit_applied",
+    "paid_eur",
+    "nominal_eur",
+    "minimum_eur",
+    "added_eur",
+    "added_credits",
+}
+_CENT = Decimal("0.01")
+_TILE_RE = re.compile(r"x(\d{3})_y(\d{3})_z(\d{3})_d(\d{3})", re.IGNORECASE)
+_ASSET_RE = re.compile(r"^(?:S2|EL|WT|PO)_(x\d{3}_y\d{3}_z\d{3}_d\d{3})\.(?:exr|tif)$", re.IGNORECASE)
+
 
 class CreditApiError(RuntimeError):
     def __init__(self, status=0, error="", payload=None):
@@ -57,6 +75,105 @@ class CreditApiError(RuntimeError):
 
 def _api_url(path: str) -> str:
     return f"{get_api_base_url().rstrip('/')}/{str(path or '').lstrip('/')}"
+
+
+def _money_round(value) -> float:
+    try:
+        amount = Decimal(str(value or "0"))
+    except (InvalidOperation, TypeError, ValueError):
+        return 0.0
+    if amount <= 0:
+        return 0.0
+    return float(amount.quantize(_CENT, rounding=ROUND_HALF_UP))
+
+
+def _normalize_tile_key(value) -> str:
+    if isinstance(value, dict):
+        raw = str(value.get("tile_key") or value.get("tileKey") or value.get("key") or "").strip()
+    else:
+        raw = str(value or "").strip()
+    asset_match = _ASSET_RE.match(os.path.basename(raw))
+    source = asset_match.group(1) if asset_match else raw
+    match = _TILE_RE.search(source)
+    if not match:
+        return ""
+    x, y, z, d = (int(part) for part in match.groups())
+    return f"x{x:03d}_y{y:03d}_z{z:03d}_d{d:03d}"
+
+
+def _normalize_tile_keys(tiles) -> list[str]:
+    keys = []
+    seen = set()
+    for entry in tiles or ():
+        key = _normalize_tile_key(entry)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        keys.append(key)
+    return keys
+
+
+def _summarize_pricing_rows(rows) -> dict:
+    total = 0.0
+    paid = 0
+    free = 0
+    for row in rows or ():
+        if not isinstance(row, dict):
+            continue
+        credits = _money_round(row.get("credits", row.get("price_eur", 0.0)))
+        total = _money_round(total + credits)
+        if credits > 0:
+            paid += 1
+        else:
+            free += 1
+    return {
+        "credits": _money_round(total),
+        "paid_tile_count": int(paid),
+        "free_tile_count": int(free),
+        "tile_count": int(paid + free),
+    }
+
+
+def _zero_backend_unavailable_payload(tile_keys, reason="backend_unavailable") -> dict:
+    safe_keys = _normalize_tile_keys(tile_keys)
+    return {
+        "credits": 0.0,
+        "paid_tile_count": 0,
+        "free_tile_count": 0,
+        "tile_count": int(len(safe_keys)),
+        "tiles": [{"tile_key": key} for key in safe_keys],
+        "excluded_tiles": [],
+        "authoritative": False,
+        "pricing_source": reason,
+    }
+
+
+def _log_pricing_integrity_warnings(payload):
+    if not isinstance(payload, dict):
+        return
+    warnings = payload.get("integrity_warnings") or payload.get("integrityWarnings") or ()
+    if not isinstance(warnings, (list, tuple)):
+        warnings = ()
+    missing = []
+    for warning in warnings:
+        if not isinstance(warning, dict):
+            continue
+        code = str(warning.get("code", "") or "").strip()
+        if code != "pricing_metadata_missing":
+            continue
+        keys = warning.get("tile_keys") or warning.get("tileKeys") or ()
+        if isinstance(keys, (list, tuple)):
+            missing.extend(str(key or "").strip() for key in keys if str(key or "").strip())
+    direct = payload.get("metadata_missing_tile_keys") or payload.get("metadataMissingTileKeys") or ()
+    if isinstance(direct, (list, tuple)):
+        missing.extend(str(key or "").strip() for key in direct if str(key or "").strip())
+    missing = sorted(set(missing))
+    if missing:
+        logger.error(
+            "Planetka pricing integrity warning: backend missing pricing metadata for %d actual Resolve tile(s): %s",
+            len(missing),
+            ", ".join(missing[:20]),
+        )
 
 
 def _request_json(method: str, path: str, body=None, allow_refresh=True, timeout=30):
@@ -94,6 +211,36 @@ def _request_json(method: str, path: str, body=None, allow_refresh=True, timeout
         raise CreditApiError(0, "invalid_json_response") from exc
 
 
+def _round_price_fields(entry):
+    if not isinstance(entry, dict):
+        return entry
+    out = dict(entry)
+    for field in _PRICE_FIELDS:
+        if field in out:
+            out[field] = _money_round(out.get(field, 0.0))
+    return out
+
+
+def _signed_money_round(value):
+    try:
+        amount = float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    if amount < 0:
+        return -_money_round(abs(amount))
+    return _money_round(amount)
+
+
+def _normalize_account_payload(payload):
+    if not isinstance(payload, dict):
+        return {}
+    out = dict(payload)
+    for field in ("balance_credits", "balance_eur", "total_granted_credits", "total_spent_credits"):
+        if field in out:
+            out[field] = _signed_money_round(out.get(field, 0.0))
+    return out
+
+
 def clear_credit_caches():
     _ACCOUNT_CACHE["timestamp"] = 0.0
     _ACCOUNT_CACHE["payload"] = {}
@@ -116,6 +263,7 @@ def get_credit_account(force=False) -> dict:
     except (AuthApiError, CreditApiError, RuntimeError, TypeError, ValueError, OSError):
         logger.debug("Planetka: failed fetching credit account", exc_info=True)
         return {}
+    payload = _normalize_account_payload(payload)
     _ACCOUNT_CACHE["timestamp"] = now
     _ACCOUNT_CACHE["payload"] = dict(payload or {})
     return dict(payload or {})
@@ -138,6 +286,7 @@ def get_unlocked_tiles(force=False) -> list[dict]:
     tiles = payload.get("tiles", []) if isinstance(payload, dict) else []
     if not isinstance(tiles, list):
         tiles = []
+    tiles = [_round_price_fields(entry) for entry in tiles]
     _UNLOCKED_CACHE["timestamp"] = now
     _UNLOCKED_CACHE["payload"] = list(tiles)
     return list(tiles)
@@ -155,35 +304,23 @@ def unlocked_tile_keys(force=False) -> set[str]:
 
 
 def build_pricing_payload_for_tiles(tiles, quality_mode="FULL") -> list[dict]:
-    return pricing_records_for_tiles(
-        tiles,
-        quality_mode=quality_mode,
-        owned_tile_keys=unlocked_tile_keys(force=False),
-        allow_estimate=True,
-    )
+    mode = str(quality_mode or "FULL").strip().lower()
+    return [{"tile_key": key, "quality_mode": mode} for key in _normalize_tile_keys(tiles)]
 
 
 def estimate_credits_for_tiles(tiles, quality_mode="FULL") -> dict:
-    pricing_tiles = build_pricing_payload_for_tiles(tiles, quality_mode=quality_mode)
-    fallback_summary = summarize_pricing_records(pricing_tiles)
-    fallback_payload = {
-        **dict(fallback_summary),
-        "tiles": list(pricing_tiles or ()),
-        "excluded_tiles": [
-            dict(entry)
-            for entry in pricing_tiles
-            if isinstance(entry, dict)
-            and float(entry.get("credits", 0.0) or 0.0) <= 0.0
-            and str(entry.get("free_reason", "") or "").strip() == "already_unlocked"
-        ],
-    }
-    tile_keys = [
-        str(entry.get("tile_key", "") or "").strip()
-        for entry in pricing_tiles
-        if isinstance(entry, dict) and str(entry.get("tile_key", "") or "").strip()
-    ]
+    tile_keys = _normalize_tile_keys(tiles)
     if not tile_keys:
-        return dict(fallback_payload)
+        return {
+            "credits": 0.0,
+            "paid_tile_count": 0,
+            "free_tile_count": 0,
+            "tile_count": 0,
+            "tiles": [],
+            "excluded_tiles": [],
+            "authoritative": True,
+            "pricing_source": "backend",
+        }
     try:
         payload = _request_json(
             "POST",
@@ -195,10 +332,11 @@ def estimate_credits_for_tiles(tiles, quality_mode="FULL") -> dict:
             timeout=20,
         )
     except (AuthApiError, CreditApiError, RuntimeError, TypeError, ValueError, OSError):
-        logger.debug("Planetka: backend credit estimate unavailable; using local estimate", exc_info=True)
-        return dict(fallback_payload)
+        logger.debug("Planetka: backend credit estimate unavailable; no local pricing fallback is allowed", exc_info=True)
+        return _zero_backend_unavailable_payload(tile_keys, reason="backend_unavailable")
     if not isinstance(payload, dict) or not payload.get("ok", False):
-        return dict(fallback_payload)
+        return _zero_backend_unavailable_payload(tile_keys, reason="backend_rejected")
+    _log_pricing_integrity_warnings(payload)
     if "balance_credits" in payload:
         _ACCOUNT_CACHE["timestamp"] = time.monotonic()
         _ACCOUNT_CACHE["payload"] = {
@@ -206,27 +344,40 @@ def estimate_credits_for_tiles(tiles, quality_mode="FULL") -> dict:
             "ok": True,
             "account_type": str(payload.get("account_type", "standard") or "standard"),
             "unlimited_credits": bool(payload.get("unlimited_credits", False)),
-            "balance_credits": float(payload.get("balance_credits", 0.0) or 0.0),
+            "balance_credits": _signed_money_round(payload.get("balance_credits", 0.0)),
         }
+    payload_tiles = [_round_price_fields(entry) for entry in list(payload.get("tiles", ()) or ())]
+    returned_keys = {
+        str(entry.get("tile_key", "") or "").strip()
+        for entry in payload_tiles
+        if isinstance(entry, dict) and str(entry.get("tile_key", "") or "").strip()
+    }
+    missing_response_keys = [key for key in tile_keys if key not in returned_keys]
+    if missing_response_keys:
+        logger.error(
+            "Planetka pricing integrity warning: backend response omitted %d requested tile price row(s): %s",
+            len(missing_response_keys),
+            ", ".join(missing_response_keys[:20]),
+        )
+        return _zero_backend_unavailable_payload(tile_keys, reason="backend_incomplete")
+    payload_summary = _summarize_pricing_rows(payload_tiles)
     return {
-        "credits": float(payload.get("price_eur", payload.get("credits", fallback_summary.get("credits", 0.0))) or 0.0),
-        "paid_tile_count": int(payload.get("paid_tile_count", fallback_summary.get("paid_tile_count", 0)) or 0),
-        "free_tile_count": int(payload.get("free_tile_count", fallback_summary.get("free_tile_count", 0)) or 0),
-        "tile_count": int(payload.get("tile_count", fallback_summary.get("tile_count", 0)) or 0),
-        "balance_credits": float(payload.get("balance_eur", payload.get("balance_credits", 0.0)) or 0.0),
-        "tiles": list(payload.get("tiles", pricing_tiles) or ()),
-        "excluded_tiles": list(payload.get("excluded_tiles", ()) or ()),
+        "credits": _money_round(payload_summary.get("credits", 0.0)),
+        "paid_tile_count": int(payload_summary.get("paid_tile_count", 0) or 0),
+        "free_tile_count": int(payload_summary.get("free_tile_count", 0) or 0),
+        "tile_count": int(payload_summary.get("tile_count", len(payload_tiles)) or 0),
+        "balance_credits": _signed_money_round(payload.get("balance_eur", payload.get("balance_credits", 0.0))),
+        "tiles": payload_tiles,
+        "excluded_tiles": [_round_price_fields(entry) for entry in list(payload.get("excluded_tiles", ()) or ())],
+        "authoritative": True,
+        "pricing_source": "backend",
     }
 
 
 def estimate_credit_breakdown_for_tiles(tiles, quality_mode="FULL") -> dict:
     mode = str(quality_mode or "FULL").strip().upper()
     if mode == "PREVIEW":
-        normalized_tiles = [
-            str(entry.get("tile_key", "") or "").strip()
-            for entry in pricing_records_for_tiles(tiles, quality_mode="PREVIEW", owned_tile_keys=(), allow_estimate=True)
-            if isinstance(entry, dict) and str(entry.get("tile_key", "") or "").strip()
-        ]
+        normalized_tiles = _normalize_tile_keys(tiles)
         return {
             "credits": 0.0,
             "paid_tile_count": 0,
@@ -243,6 +394,8 @@ def estimate_credit_breakdown_for_tiles(tiles, quality_mode="FULL") -> dict:
                 for tile in normalized_tiles
             ],
             "excluded_tiles": [],
+            "authoritative": True,
+            "pricing_source": "preview_free",
         }
     return estimate_credits_for_tiles(tiles, quality_mode=mode)
 
@@ -268,7 +421,10 @@ def create_checkout_session(option: str, tiles=None, quality_mode="FULL") -> dic
     }
     result = _request_json("POST", "/credits/checkout", body=payload, timeout=30)
     if isinstance(result, dict) and result.get("ok", False):
-        return dict(result)
+        normalized = _round_price_fields(result)
+        if "balance_credits" in normalized or "balance_eur" in normalized:
+            normalized = _normalize_account_payload(normalized)
+        return dict(normalized)
     error = "checkout_create_failed"
     if isinstance(result, dict):
         error = str(result.get("error", "") or error)

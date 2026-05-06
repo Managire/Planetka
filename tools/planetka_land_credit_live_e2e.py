@@ -195,7 +195,7 @@ def tile_stat_rows(cwd: Path, tile_keys: list[str]) -> dict:
     key_list = ", ".join(sql_literal(key) for key in tile_keys)
     rows = wrangler_d1(
         f"""
-        SELECT tile_key, base_credits, free_reason
+        SELECT tile_key, billable_land_km2, free_reason
         FROM tile_land_stats
         WHERE tile_key IN ({key_list});
         """,

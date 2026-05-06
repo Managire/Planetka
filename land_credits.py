@@ -1,6 +1,8 @@
-"""Land-credit pricing helpers for the experimental credit branch.
+"""Land-coverage helpers for the experimental credit branch.
 
 The runtime only reads static metadata from ``Resources/tile_sizes.sqlite``.
+The local database intentionally does not store EUR prices; paid pricing is
+computed by the backend from the same land-coverage metadata.
 The heavy S2 ocean-color scan is implemented in
 ``tools/build_tile_land_stats.py`` so normal resolves do not decode large image
 textures or classify pixels on the fly.
@@ -15,6 +17,7 @@ import re
 import sqlite3
 import threading
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Iterable
 
 
@@ -37,6 +40,7 @@ _DB_LOCK = threading.Lock()
 _DB_CONN = None
 _DB_PATH = ""
 _LAND_STATS_READY = None
+_CENT = Decimal("0.01")
 
 
 @dataclass(frozen=True)
@@ -125,6 +129,16 @@ def delivered_mpp_for_d(d_value: int) -> float:
     return float(DATASET_BASE_MPP * max(1, d))
 
 
+def money_round(value) -> float:
+    try:
+        amount = Decimal(str(value or "0"))
+    except (InvalidOperation, TypeError, ValueError):
+        return 0.0
+    if amount <= 0:
+        return 0.0
+    return float(amount.quantize(_CENT, rounding=ROUND_HALF_UP))
+
+
 def tile_lat_bounds(tile: TileCode) -> tuple[float, float]:
     south = float(tile.y) - 90.0
     north = float(tile.y + tile.z) - 90.0
@@ -168,19 +182,7 @@ def _effective_billable_land_km2(tile: TileCode, stats: dict, free_reason: str =
         billable = float(stats.get("billable_land_km2", 0.0) or 0.0)
     except (AttributeError, TypeError, ValueError):
         billable = 0.0
-    if billable > 0.0:
-        return max(0.0, billable)
-    try:
-        land = float(stats.get("land_km2", 0.0) or 0.0)
-    except (AttributeError, TypeError, ValueError):
-        land = 0.0
-    if land <= 0.0:
-        return 0.0
-    total_area = tile_area_km2(tile)
-    paid_area = paid_band_area_km2(tile)
-    if total_area <= 0.0 or paid_area <= 0.0:
-        return 0.0
-    return max(0.0, land * min(1.0, paid_area / total_area))
+    return max(0.0, billable)
 
 
 def free_reason_for_tile(tile: TileCode) -> str:
@@ -213,7 +215,8 @@ def land_stats_db_path() -> str:
 def _connect_stats_db(path: str):
     uri = f"file:{os.path.abspath(path)}?mode=ro"
     # Credit estimates must never make Blender feel stuck. If the stats DB is
-    # temporarily busy, fall back to geometric estimates instead of waiting.
+    # temporarily busy, missing metadata is priced as EUR 0.00 instead of
+    # guessed.
     conn = sqlite3.connect(uri, uri=True, check_same_thread=False, timeout=0.05)
     conn.execute("SELECT 1 FROM tile_land_stats LIMIT 1")
     return conn
@@ -258,7 +261,7 @@ def lookup_tile_land_stats(tile_key: str) -> dict:
         with _DB_LOCK:
             row = conn.execute(
                 """
-                SELECT land_km2, billable_land_km2, base_credits, free_reason
+                SELECT land_km2, billable_land_km2, free_reason
                 FROM tile_land_stats
                 WHERE tile_key = ?
                 LIMIT 1
@@ -275,8 +278,7 @@ def lookup_tile_land_stats(tile_key: str) -> dict:
             "tile_key": tile.key,
             "land_km2": max(0.0, float(row[0] or 0.0)),
             "billable_land_km2": max(0.0, float(row[1] or 0.0)),
-            "base_credits": max(0.0, float(row[2] or 0.0)),
-            "free_reason": str(row[3] or "").strip(),
+            "free_reason": str(row[2] or "").strip(),
             "source": "sqlite",
         }
     except (TypeError, ValueError):
@@ -284,26 +286,23 @@ def lookup_tile_land_stats(tile_key: str) -> dict:
 
 
 def estimate_tile_land_stats(tile_key: str) -> dict:
-    """Fallback estimate when S2-derived land metadata is unavailable.
+    """Safe fallback when S2-derived land metadata is unavailable.
 
-    This intentionally assumes all land inside the paid latitude band. It is a
-    conservative testing fallback; production should populate tile_land_stats
-    by excluding S2 pixels that match the ocean fallback color.
+    Missing land metadata must never invent billable land. Paid EUR pricing is
+    backend-only; this local helper only returns coverage fields.
     """
     tile = parse_tile_key(tile_key)
     if tile is None:
         return {}
     reason = free_reason_for_tile(tile)
-    total_area = tile_area_km2(tile)
-    billable_area = 0.0 if reason else paid_band_area_km2(tile)
-    base_credits = billable_area / EQUATOR_Z001_AREA_KM2
+    if not reason:
+        reason = "pricing_metadata_missing"
     return {
         "tile_key": tile.key,
-        "land_km2": total_area,
-        "billable_land_km2": billable_area,
-        "base_credits": max(0.0, float(base_credits)),
+        "land_km2": 0.0,
+        "billable_land_km2": 0.0,
         "free_reason": reason,
-        "source": "geometric_estimate",
+        "source": "missing_pricing_metadata",
     }
 
 
@@ -317,6 +316,11 @@ def get_tile_land_stats(tile_key: str, allow_estimate: bool = True) -> dict:
 
 
 def credits_for_tile(tile_key: str, quality_mode: str = "FULL", allow_estimate: bool = True) -> dict:
+    """Return local coverage metadata with zero EUR price.
+
+    Paid pricing is deliberately not computed from the bundled SQLite database.
+    The backend is the only authority for EUR totals.
+    """
     mode = normalize_quality_mode(quality_mode)
     key = normalize_tile_key(tile_key)
     if not key:
@@ -327,18 +331,19 @@ def credits_for_tile(tile_key: str, quality_mode: str = "FULL", allow_estimate: 
     tile = parse_tile_key(key)
     if tile is None:
         return {}
-    free_reason = free_reason_for_tile(tile)
+    natural_free_reason = free_reason_for_tile(tile) or str(stats.get("free_reason", "") or "").strip()
+    free_reason = natural_free_reason
     if mode == "PREVIEW":
         free_reason = free_reason or "preview_quality"
     mpp = delivered_mpp_for_d(tile.d)
-    billable_land_km2 = _effective_billable_land_km2(tile, stats, free_reason=free_reason)
-    base_credits = max(0.0, billable_land_km2 / EQUATOR_Z001_AREA_KM2)
+    billable_land_km2 = _effective_billable_land_km2(tile, stats, free_reason=natural_free_reason)
+    if mode != "PREVIEW" and not free_reason:
+        free_reason = "backend_pricing_required"
     price_factor = detail_price_factor(tile)
-    credits = 0.0 if free_reason else (base_credits * price_factor)
     return {
         "tile_key": key,
         "quality_mode": mode.lower(),
-        "credits": round(max(0.0, float(credits)), 6),
+        "credits": 0.0,
         "land_km2": round(max(0.0, float(stats.get("land_km2", 0.0) or 0.0)), 6),
         "billable_land_km2": round(max(0.0, float(billable_land_km2)), 6),
         "delivered_mpp": round(float(mpp), 6),
@@ -346,6 +351,34 @@ def credits_for_tile(tile_key: str, quality_mode: str = "FULL", allow_estimate: 
         "price_factor": round(float(price_factor), 6),
         "free_reason": free_reason,
         "stats_source": str(stats.get("source", "") or ""),
+    }
+
+
+def _missing_pricing_metadata_record(tile_key: str, quality_mode: str = "FULL") -> dict:
+    mode = normalize_quality_mode(quality_mode)
+    key = normalize_tile_key(tile_key)
+    if not key:
+        return {}
+    tile = parse_tile_key(key)
+    if tile is None:
+        return {}
+    free_reason = free_reason_for_tile(tile)
+    if mode == "PREVIEW":
+        free_reason = free_reason or "preview_quality"
+    if not free_reason:
+        free_reason = "pricing_metadata_missing"
+    mpp = delivered_mpp_for_d(tile.d)
+    return {
+        "tile_key": key,
+        "quality_mode": mode.lower(),
+        "credits": 0.0,
+        "land_km2": 0.0,
+        "billable_land_km2": 0.0,
+        "delivered_mpp": round(float(mpp), 6),
+        "detail_ratio": round(float(detail_ratio(tile)), 6),
+        "price_factor": 0.0,
+        "free_reason": free_reason,
+        "stats_source": "missing",
     }
 
 
@@ -375,6 +408,8 @@ def pricing_records_for_tiles(
         seen.add(key)
         record = credits_for_tile(key, quality_mode=quality_mode, allow_estimate=allow_estimate)
         if not record:
+            record = _missing_pricing_metadata_record(key, quality_mode=quality_mode)
+        if not record:
             continue
         parsed = parse_tile_key(key)
         if parsed is None:
@@ -383,10 +418,10 @@ def pricing_records_for_tiles(
 
     out = []
     for family, d_value, record in sorted(pending, key=lambda item: (item[0], item[1])):
-        gross = max(0.0, float(record.get("credits", 0.0) or 0.0))
+        gross = money_round(record.get("credits", 0.0))
         record = dict(record)
-        record["gross_credits"] = round(float(gross), 6)
-        record["gross_price_eur"] = round(float(gross), 6)
+        record["gross_credits"] = money_round(gross)
+        record["gross_price_eur"] = money_round(gross)
         family_entitlements = owned_by_family.setdefault(family, [])
         covered_by_finer = any(int(owned_d) <= int(d_value) for owned_d, _value in family_entitlements)
         if gross <= 0.0:
@@ -401,12 +436,12 @@ def pricing_records_for_tiles(
             (float(value) for owned_d, value in family_entitlements if int(owned_d) > int(d_value)),
             default=0.0,
         )
-        due = max(0.0, gross - coarser_value)
-        record["credits"] = round(float(due), 6)
+        due = money_round(max(0.0, gross - coarser_value))
+        record["credits"] = money_round(due)
         if due <= 0.0:
             record["free_reason"] = str(record.get("free_reason") or "already_unlocked")
         elif coarser_value > 0.0:
-            record["upgrade_credit_applied"] = round(float(coarser_value), 6)
+            record["upgrade_credit_applied"] = money_round(coarser_value)
         family_entitlements.append((int(d_value), gross))
         out.append(record)
     return out
@@ -421,13 +456,13 @@ def summarize_pricing_records(records: Iterable[dict]) -> dict:
             credits = max(0.0, float(record.get("credits", 0.0) or 0.0))
         except (TypeError, ValueError, AttributeError):
             credits = 0.0
-        total += credits
+        total = money_round(total + credits)
         if credits > 0:
             paid += 1
         else:
             free += 1
     return {
-        "credits": round(max(0.0, float(total)), 6),
+        "credits": money_round(total),
         "paid_tile_count": int(paid),
         "free_tile_count": int(free),
         "tile_count": int(paid + free),
