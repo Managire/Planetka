@@ -283,6 +283,63 @@ function generatedTileGrossEur(tileKey) {
   return normalizeCreditAmount(generatedTileGrossCents(tileKey) / 100.0);
 }
 
+function regionProductDirectTileSet(productId, cache = {}) {
+  const safeId = String(productId || "").trim();
+  if (!safeId) {
+    return new Set();
+  }
+  if (!cache.directTileSets) {
+    cache.directTileSets = new Map();
+  }
+  if (cache.directTileSets.has(safeId)) {
+    return cache.directTileSets.get(safeId);
+  }
+  const set = new Set(normalizeTileKeys(GENERATED_REGION_PACK_TILE_KEYS[safeId] || []));
+  cache.directTileSets.set(safeId, set);
+  return set;
+}
+
+function regionProductContainsGeneratedTileKey(product, tileKey, cache = {}, seenProductIds = new Set()) {
+  const key = normalizeTileKey(tileKey);
+  const productId = String(product && product.id || "").trim();
+  if (!productId || !key) {
+    return false;
+  }
+  if (String(productId).toLowerCase() === "world") {
+    return Boolean(parseTileKey(key));
+  }
+  const memoKey = `${productId}|${key}`;
+  if (!cache.membership) {
+    cache.membership = new Map();
+  } else if (cache.membership.has(memoKey)) {
+    return cache.membership.get(memoKey);
+  }
+  if (seenProductIds.has(productId)) {
+    return false;
+  }
+  seenProductIds.add(productId);
+
+  const directSet = regionProductDirectTileSet(productId, cache);
+  if (directSet.has(key)) {
+    cache.membership.set(memoKey, true);
+    return true;
+  }
+
+  const refs = Array.isArray(GENERATED_REGION_PACK_TILE_REFS[productId])
+    ? GENERATED_REGION_PACK_TILE_REFS[productId]
+    : [];
+  for (const ref of refs) {
+    const refProduct = regionProductById(ref);
+    if (regionProductContainsGeneratedTileKey(refProduct, key, cache, new Set(seenProductIds))) {
+      cache.membership.set(memoKey, true);
+      return true;
+    }
+  }
+
+  cache.membership.set(memoKey, false);
+  return false;
+}
+
 function ownedByFamilyFromTileRows(rows) {
   const ownedByFamily = new Map();
   for (const row of rows || []) {
@@ -761,7 +818,7 @@ async function estimateNewCreditsChunked(db, userId, tileKeys, qualityMode, deps
   return aggregate;
 }
 
-function estimateRegionPackSummaryWithOwned(product, account, ownedByFamily) {
+function estimateRegionPackSummaryWithOwned(product, account, ownedByFamily, options = {}) {
   const summary = regionProductPricingSummary(product);
   if (!summary) {
     return { error: "missing_region_pack_summary" };
@@ -796,46 +853,52 @@ function estimateRegionPackSummaryWithOwned(product, account, ownedByFamily) {
       tiles: [],
     };
   }
-  const tileKeys = regionProductTileKeys(product);
-  const coveredKeys = [];
+  const membershipCache = options && options.membershipCache || {};
   const upgradeOwnedKeys = [];
   let alreadyLicencedCount = 0;
-  let newLicensableCount = 0;
-  for (const key of tileKeys) {
-    const parsed = parseTileKey(key);
-    const family = tileFamilyKey(parsed);
-    if (!parsed || !family || isFreeCreditTileKey(key)) {
+  let coveredCents = 0;
+  let coveredPaidTileCount = 0;
+  for (const entries of ownedByFamily.values()) {
+    if (!Array.isArray(entries) || !entries.length) {
       continue;
     }
-    const entries = ownedByFamily.get(family) || [];
-    const coveredByFiner = entries.some((entry) => Number(entry.d) <= Number(parsed.d));
+    const owned = parseTileKey(entries[0] && entries[0].key || "");
+    if (!owned || isFreeCreditTileKey(owned.key)) {
+      continue;
+    }
+    const paidDLevels = paidDLevelsForRegionZ(owned.z);
+    if (!paidDLevels.length) {
+      continue;
+    }
+    const packD = paidDLevels[0];
+    const packKey = regionTileKey(owned.x, owned.y, owned.z, packD);
+    if (!packKey || isFreeCreditTileKey(packKey)) {
+      continue;
+    }
+    if (!regionProductContainsGeneratedTileKey(product, packKey, membershipCache)) {
+      continue;
+    }
+
+    const coveredByFiner = entries.some((entry) => Number(entry.d) <= Number(packD));
     if (coveredByFiner) {
       alreadyLicencedCount += 1;
-      coveredKeys.push(key);
+      const cents = generatedTileGrossCents(packKey);
+      coveredCents += cents;
+      if (cents > 0) {
+        coveredPaidTileCount += 1;
+      }
       continue;
     }
-    newLicensableCount += 1;
-    const coarserEntries = entries.filter((entry) => Number(entry.d) > Number(parsed.d));
+    const coarserEntries = entries.filter((entry) => Number(entry.d) > Number(packD));
     for (const entry of coarserEntries) {
       upgradeOwnedKeys.push(entry.key);
     }
   }
 
-  let coveredGrossEur = 0;
-  let coveredPaidTileCount = 0;
-  if (coveredKeys.length && coveredKeys.length >= summary.licensable_tile_count) {
+  let coveredGrossEur = normalizeCreditAmount(coveredCents / 100.0);
+  if (coveredPaidTileCount > 0 && coveredPaidTileCount >= summary.paid_tile_count) {
     coveredGrossEur = summary.gross_eur;
     coveredPaidTileCount = summary.paid_tile_count;
-  } else if (coveredKeys.length) {
-    let coveredCents = 0;
-    for (const key of coveredKeys) {
-      const cents = generatedTileGrossCents(key);
-      coveredCents += cents;
-      if (cents > 0) {
-        coveredPaidTileCount += 1;
-      }
-    }
-    coveredGrossEur = normalizeCreditAmount(coveredCents / 100.0);
   }
 
   let upgradeCreditEur = 0;
@@ -853,6 +916,7 @@ function estimateRegionPackSummaryWithOwned(product, account, ownedByFamily) {
   const alreadyLicencedAmounts = discountedRegionPackAmount(coveredGrossEur, discountPercent);
   const paidTileCount = Math.max(0, summary.paid_tile_count - coveredPaidTileCount);
   const freeTileCount = Math.max(0, summary.tile_count - paidTileCount);
+  const newLicensableCount = paidTileCount;
   return {
     ok: true,
     summary_estimate: true,
@@ -1434,9 +1498,10 @@ async function buildRegionPackCatalogData(db, userId, token, deps) {
   const account = await ensureCreditAccount(db, userId, deps);
   const ownedRows = await ownedTileRowsForUser(db, userId, deps);
   const ownedByFamily = ownedByFamilyFromTileRows(ownedRows);
+  const membershipCache = { directTileSets: new Map(), membership: new Map() };
   const rows = REGION_PRODUCTS
     .map((product) => {
-      const estimate = estimateRegionPackSummaryWithOwned(product, account, ownedByFamily);
+      const estimate = estimateRegionPackSummaryWithOwned(product, account, ownedByFamily, { membershipCache });
       if (!estimate || estimate.error) {
         return null;
       }
