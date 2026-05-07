@@ -239,7 +239,7 @@ def _normalize_account_payload(payload):
     if not isinstance(payload, dict):
         return {}
     out = dict(payload)
-    for field in ("balance_credits", "balance_eur", "total_granted_credits", "total_spent_credits"):
+    for field in ("balance_credits", "balance_eur", "total_granted_credits", "total_spent_credits", "world_full_quality_paid_eur"):
         if field in out:
             out[field] = _signed_money_round(out.get(field, 0.0))
     return out
@@ -385,6 +385,11 @@ def estimate_credits_for_tiles(tiles, quality_mode="FULL") -> dict:
             "balanced_quality_unlocked",
             "balanced_quality_unlocked_at",
             "balanced_quality_price_eur",
+            "world_full_quality_unlocked",
+            "world_full_quality_unlocked_at",
+            "world_full_quality_paid_eur",
+            "world_full_quality_tile_count",
+            "world_full_quality_licensable_tile_count",
         ):
             if key in payload:
                 account_update[key] = payload.get(key)

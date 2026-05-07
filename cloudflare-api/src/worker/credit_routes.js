@@ -255,6 +255,15 @@ function regionProductPricingSummary(product) {
   };
 }
 
+function worldRegionProductSummary() {
+  return regionProductPricingSummary(regionProductById("world")) || {
+    tile_count: 0,
+    licensable_tile_count: 0,
+    paid_tile_count: 0,
+    gross_eur: 0,
+  };
+}
+
 function discountedRegionPackAmount(grossEur, discountPercent) {
   const gross = normalizeCreditAmount(grossEur);
   const discount = normalizeCreditAmount(gross * (Math.max(0, Math.min(95, Number.parseInt(discountPercent || 0, 10) || 0)) / 100.0));
@@ -615,6 +624,33 @@ async function estimateRegionPackSummary(db, userId, product, deps) {
   const summary = regionProductPricingSummary(product);
   if (!summary) {
     return { error: "missing_region_pack_summary" };
+  }
+  const account = await ensureCreditAccount(db, userId, deps);
+  if (isWorldFullQualityUnlocked(account)) {
+    return {
+      ok: true,
+      summary_estimate: true,
+      world_full_quality_unlocked: true,
+      region_pack: regionProductPublicPayload(product),
+      region_pack_id: String(product.id || ""),
+      region_pack_name: String(product.name || ""),
+      catalog_version: REGION_PACK_CATALOG_VERSION,
+      discount_percent: Math.max(0, Math.min(95, Number.parseInt(product && product.discount_percent || 0, 10) || 0)),
+      gross_eur: 0,
+      gross_price_eur: 0,
+      discount_eur: 0,
+      credits: 0,
+      price_eur: 0,
+      paid_tile_count: 0,
+      free_tile_count: summary.tile_count,
+      tile_count: summary.tile_count,
+      new_tile_count: 0,
+      new_tiles: [],
+      excluded_tiles: new Array(summary.licensable_tile_count).fill(null),
+      integrity_warnings: [],
+      metadata_missing_tile_keys: [],
+      tiles: [],
+    };
   }
   const tileKeys = regionProductTileKeys(product);
   const discountPercent = Math.max(0, Math.min(95, Number.parseInt(product && product.discount_percent || 0, 10) || 0));
@@ -1266,6 +1302,13 @@ export async function isStandardQualityUnlockedForUser(db, userId, deps) {
   return isStandardQualityUnlocked(account);
 }
 
+export function isWorldFullQualityUnlocked(account) {
+  return Boolean(String(account && (
+    account.world_full_quality_unlocked_at
+    || ""
+  ) || "").trim());
+}
+
 function normalizeTileKeys(value) {
   const source = Array.isArray(value) ? value : [];
   const keys = [];
@@ -1376,7 +1419,7 @@ export async function isTileUnlockedForUser(db, userId, tileKey, deps, options =
     return true;
   }
   const account = await ensureCreditAccount(db, userId, deps);
-  if (isUnlimitedCreditAccount(account)) {
+  if (isUnlimitedCreditAccount(account) || isWorldFullQualityUnlocked(account)) {
     return true;
   }
   const rows = await deps.dbAll(
@@ -1524,6 +1567,8 @@ async function estimateNewCredits(db, userId, tileKeys, qualityMode, deps) {
       metadata_missing_tile_keys: [],
     };
   }
+  const account = await ensureCreditAccount(db, userId, deps);
+  const worldFullQualityUnlocked = isWorldFullQualityUnlocked(account);
   const pricingRecords = await backendPricingRecordsForTileKeys(db, tileKeys, qualityMode, deps);
   if (pricingRecords && pricingRecords.error) {
     return pricingRecords;
@@ -1541,6 +1586,30 @@ async function estimateNewCredits(db, userId, tileKeys, qualityMode, deps) {
     }
     requested.push({ record, parsed, family });
     families.add(family);
+  }
+  if (worldFullQualityUnlocked) {
+    const pricedTiles = pricingRecords.map((tile) => ({
+      ...tile,
+      credits: 0,
+      price_eur: 0,
+      gross_credits: normalizeCreditAmount(tile && tile.credits),
+      gross_price_eur: normalizeCreditAmount(tile && tile.credits),
+      already_owned: true,
+      globally_free: Boolean(isFreeCreditTileKey(tile && tile.tile_key || "")),
+      free_reason: "world_full_quality_licence",
+    }));
+    return {
+      credits: 0,
+      price_eur: 0,
+      paid_tile_count: 0,
+      free_tile_count: pricingRecords.length,
+      tile_count: pricingRecords.length,
+      new_tiles: [],
+      tiles: pricedTiles,
+      excluded_tiles: pricedTiles,
+      integrity_warnings: integrityWarnings,
+      metadata_missing_tile_keys: metadataMissingTileKeys,
+    };
   }
   const familyList = Array.from(families);
   const rows = [];
@@ -2108,7 +2177,113 @@ export async function grantRegionPackEntitlements(db, userId, regionPackId, stri
   if (estimate && estimate.error) {
     return estimate;
   }
+  const paidEur = normalizeCreditAmount(amountPaidEur);
+  const estimateTotalTiles = Math.max(0, Number.parseInt(estimate && estimate.tile_count || 0, 10) || 0);
+  const estimateNewTiles = Math.max(0, Number.parseInt(estimate && estimate.new_tile_count || 0, 10) || 0);
+  const alreadyLicencedTiles = Math.max(0, Array.isArray(estimate && estimate.excluded_tiles) ? estimate.excluded_tiles.length : 0);
+  const grossEur = normalizeCreditAmount(estimate && estimate.gross_eur);
+  const discountEur = normalizeCreditAmount(estimate && estimate.discount_eur);
+  const discountPercent = Math.max(0, Number.parseInt(product.discount_percent || 0, 10) || 0);
+  if (paidEur <= 0 && estimateNewTiles <= 0) {
+    return {
+      ...estimate,
+      credits: 0,
+      price_eur: 0,
+      paid_eur: 0,
+      nominal_eur: 0,
+      paid_tile_count: 0,
+      new_tiles: [],
+    };
+  }
   const now = deps.nowIso();
+  const isWorldPack = String(product.id || "").trim().toLowerCase() === "world";
+  if (isWorldPack) {
+    await deps.dbRun(
+      db,
+      `
+        UPDATE user_credit_accounts
+        SET
+          world_full_quality_unlocked_at = COALESCE(NULLIF(TRIM(world_full_quality_unlocked_at), ''), ?),
+          world_full_quality_checkout_session_id = ?,
+          world_full_quality_paid_eur = ROUND((COALESCE(world_full_quality_paid_eur, 0) + ?) * 100.0) / 100.0,
+          updated_at = ?
+        WHERE user_id = ?
+      `,
+      [now, safeStripeSessionId || null, paidEur, now, safeUserId],
+    );
+    await deps.dbRun(
+      db,
+      `
+        INSERT INTO credit_ledger (
+          id, user_id, delta_credits, balance_after_credits, reason, metadata_json, created_at
+        )
+        VALUES (?, ?, 0, (SELECT balance_credits FROM user_credit_accounts WHERE user_id = ?), 'stripe_region_pack_purchase', ?, ?)
+      `,
+      [
+        deps.randomToken(16),
+        safeUserId,
+        safeUserId,
+        JSON.stringify({
+          stripe_session_id: safeStripeSessionId,
+          stripe_payment_intent_id: String(stripePaymentIntentId || "").trim(),
+          region_pack_id: "world",
+          region_pack_name: String(product.name || "World"),
+          region_pack_type: String(product.type || "world"),
+          catalog_version: REGION_PACK_CATALOG_VERSION,
+          discount_percent: discountPercent,
+          discount_eur: discountEur,
+          quality_mode: "full",
+          tile_count: estimateNewTiles,
+          tile_count_total: estimateTotalTiles,
+          tile_count_new: estimateNewTiles,
+          tile_count_already_licenced: alreadyLicencedTiles,
+          nominal_eur: grossEur,
+          gross_eur: grossEur,
+          paid_eur: paidEur,
+          world_full_quality_unlocked: true,
+        }),
+        now,
+      ],
+    );
+    await recordPurchaseHistoryBestEffort(
+      db,
+      {
+        user_id: safeUserId,
+        user_email: String(userEmail || "").trim().toLowerCase(),
+        purchase_type: "region_pack",
+        stripe_session_id: safeStripeSessionId,
+        stripe_payment_intent_id: String(stripePaymentIntentId || "").trim(),
+        amount_paid_eur: paidEur,
+        nominal_eur: grossEur,
+        gross_eur: grossEur,
+        discount_eur: discountEur,
+        discount_percent: discountPercent,
+        quality_mode: "full",
+        region_pack_id: "world",
+        region_pack_name: String(product.name || "World"),
+        region_pack_type: String(product.type || "world"),
+        catalog_version: REGION_PACK_CATALOG_VERSION,
+        tile_count_total: estimateTotalTiles,
+        tile_count_new: estimateNewTiles,
+        tile_count_already_licenced: alreadyLicencedTiles,
+        metadata: {
+          world_full_quality_unlocked: true,
+        },
+        created_at: now,
+      },
+      deps,
+    );
+    return {
+      ...estimate,
+      credits: 0,
+      price_eur: 0,
+      paid_eur: paidEur,
+      nominal_eur: grossEur,
+      paid_tile_count: Math.max(0, Number.parseInt(estimate && estimate.paid_tile_count || 0, 10) || 0),
+      new_tiles: [],
+      world_full_quality_unlocked: true,
+    };
+  }
   const insertedTiles = [];
   let nominalCredits = 0;
   const grantTiles = useDetailedGrant
@@ -2153,13 +2328,6 @@ export async function grantRegionPackEntitlements(db, userId, regionPackId, stri
       nominalCredits = normalizeCreditAmount(nominalCredits + nominalTileCredits);
     }
   }
-  const paidEur = normalizeCreditAmount(amountPaidEur);
-  const estimateTotalTiles = Math.max(0, Number.parseInt(estimate && estimate.tile_count || 0, 10) || 0);
-  const estimateNewTiles = Math.max(0, Number.parseInt(estimate && estimate.new_tile_count || 0, 10) || 0);
-  const alreadyLicencedTiles = Math.max(0, Array.isArray(estimate && estimate.excluded_tiles) ? estimate.excluded_tiles.length : 0);
-  const grossEur = normalizeCreditAmount(estimate && estimate.gross_eur);
-  const discountEur = normalizeCreditAmount(estimate && estimate.discount_eur);
-  const discountPercent = Math.max(0, Number.parseInt(product.discount_percent || 0, 10) || 0);
   await deps.dbRun(
     db,
     `
@@ -2682,6 +2850,8 @@ export async function handleCreditMe(request, env, deps) {
   }
   const db = deps.requireDb(env);
   const account = await ensureCreditAccount(db, auth.user.id, deps);
+  const worldUnlocked = isWorldFullQualityUnlocked(account);
+  const worldSummary = worldRegionProductSummary();
   const countRow = await deps.dbGet(
     db,
     `SELECT COUNT(*) AS count FROM user_tile_entitlements WHERE user_id = ?`,
@@ -2697,10 +2867,17 @@ export async function handleCreditMe(request, env, deps) {
       unlimited_credits: isUnlimitedCreditAccount(account),
       balance_credits: normalizeSignedCreditAmount(account && account.balance_credits),
       balance_eur: normalizeSignedCreditAmount(account && account.balance_credits),
-      unlocked_tile_count: Number(countRow && countRow.count || 0),
+      unlocked_tile_count: worldUnlocked
+        ? Math.max(Number(countRow && countRow.count || 0), Number(worldSummary.licensable_tile_count || 0))
+        : Number(countRow && countRow.count || 0),
       standard_quality_unlocked: isStandardQualityUnlocked(account),
       standard_quality_unlocked_at: String(account && account.standard_quality_unlocked_at || ""),
       standard_quality_price_eur: standardQualityUnlockPriceEur(env),
+      world_full_quality_unlocked: worldUnlocked,
+      world_full_quality_unlocked_at: String(account && account.world_full_quality_unlocked_at || ""),
+      world_full_quality_paid_eur: normalizeCreditAmount(account && account.world_full_quality_paid_eur),
+      world_full_quality_tile_count: Number(worldSummary.tile_count || 0),
+      world_full_quality_licensable_tile_count: Number(worldSummary.licensable_tile_count || 0),
       user_id: String(auth.user.id || ""),
       preview_fair_usage_hold: previewHold,
       previewFairUsageHold: previewHold,
@@ -2736,6 +2913,8 @@ export async function handleCreditEstimate(request, env, deps) {
   }
   const account = await ensureCreditAccount(db, auth.user.id, deps);
   const unlimited = isUnlimitedCreditAccount(account);
+  const worldUnlocked = isWorldFullQualityUnlocked(account);
+  const worldSummary = worldRegionProductSummary();
   return deps.json(
     {
       ok: true,
@@ -2751,6 +2930,11 @@ export async function handleCreditEstimate(request, env, deps) {
       standard_quality_unlocked: isStandardQualityUnlocked(account),
       standard_quality_unlocked_at: String(account && account.standard_quality_unlocked_at || ""),
       standard_quality_price_eur: standardQualityUnlockPriceEur(env),
+      world_full_quality_unlocked: worldUnlocked,
+      world_full_quality_unlocked_at: String(account && account.world_full_quality_unlocked_at || ""),
+      world_full_quality_paid_eur: normalizeCreditAmount(account && account.world_full_quality_paid_eur),
+      world_full_quality_tile_count: Number(worldSummary.tile_count || 0),
+      world_full_quality_licensable_tile_count: Number(worldSummary.licensable_tile_count || 0),
     },
     200,
     env,
@@ -3152,6 +3336,9 @@ export async function handleCreditUnlocked(request, env, deps) {
   }
   const db = deps.requireDb(env);
   await deps.ensureCreditTables(db);
+  const account = await ensureCreditAccount(db, auth.user.id, deps);
+  const worldUnlocked = isWorldFullQualityUnlocked(account);
+  const worldSummary = worldRegionProductSummary();
   const rows = await deps.dbAll(
     db,
     `
@@ -3172,7 +3359,17 @@ export async function handleCreditUnlocked(request, env, deps) {
     unlocked_at: String(row && row.unlocked_at || ""),
     assets: defaultAssetsForTile(row && row.tile_key || ""),
   }));
-  return deps.json({ ok: true, tiles, unlocked_tile_count: tiles.length }, 200, env);
+  return deps.json({
+    ok: true,
+    tiles,
+    unlocked_tile_count: worldUnlocked
+      ? Math.max(tiles.length, Number(worldSummary.licensable_tile_count || 0))
+      : tiles.length,
+    world_full_quality_unlocked: worldUnlocked,
+    world_full_quality_unlocked_at: String(account && account.world_full_quality_unlocked_at || ""),
+    world_full_quality_tile_count: Number(worldSummary.tile_count || 0),
+    world_full_quality_licensable_tile_count: Number(worldSummary.licensable_tile_count || 0),
+  }, 200, env);
 }
 
 export async function handleAdminGiftCredits(request, env, deps) {

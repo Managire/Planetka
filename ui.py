@@ -1152,10 +1152,19 @@ def _draw_account_panel(layout):
                 or str(credit_payload.get("standard_quality_unlocked_at", "") or "").strip()
             )
         )
+        world_full_quality_unlocked = bool(
+            isinstance(credit_payload, dict)
+            and (
+                credit_payload.get("world_full_quality_unlocked", False)
+                or str(credit_payload.get("world_full_quality_unlocked_at", "") or "").strip()
+            )
+        )
         layout.label(
             text=f"Standard Quality: {'Unlocked' if standard_unlocked else 'Not unlocked'}",
             icon="CHECKMARK" if standard_unlocked else "LOCKED",
         )
+        if world_full_quality_unlocked:
+            layout.label(text="World Full Quality: Licenced", icon="WORLD")
         licenced_data_box = layout.box()
         licenced_data_box.label(text="Licenced Data", icon="IMPORT")
         _draw_licenced_download_controls(licenced_data_box, prefs)
@@ -1350,6 +1359,13 @@ def _draw_live_telemetry(layout, scene):
                 or str(credit_account.get("balanced_quality_unlocked_at", "") or "").strip()
             )
         )
+        world_full_quality_unlocked = bool(
+            isinstance(credit_account, dict)
+            and (
+                credit_account.get("world_full_quality_unlocked", False)
+                or str(credit_account.get("world_full_quality_unlocked_at", "") or "").strip()
+            )
+        )
         try:
             standard_price = float(
                 credit_account.get("standard_quality_price_eur", credit_account.get("balanced_quality_price_eur", 50.0))
@@ -1489,6 +1505,9 @@ def _draw_live_telemetry(layout, scene):
         elif active_view_scope:
             estimate_notice = full_box.row(align=True)
             estimate_notice.label(text="Bring Camera to this view before using Full Quality.", icon="INFO")
+        elif world_full_quality_unlocked:
+            estimate_notice = full_box.row(align=True)
+            estimate_notice.label(text="World Full Quality is licenced for this account.", icon="CHECKMARK")
         elif not full_size_known or not full_price_known:
             estimate_notice = full_box.row(align=True)
             estimate_notice.label(text="Full Quality price is being calculated.", icon="INFO")
@@ -1502,7 +1521,10 @@ def _draw_live_telemetry(layout, scene):
             default_open=False,
         )
         if more_box is not None:
-            _draw_broader_region_offers(more_box, scene, active_view_scope=active_view_scope)
+            if world_full_quality_unlocked:
+                more_box.label(text="All broader Full Quality packs are already licenced.", icon="CHECKMARK")
+            else:
+                _draw_broader_region_offers(more_box, scene, active_view_scope=active_view_scope)
 
     throttle_message = str(get_status_message(prefs) or "").strip()
     if throttle_message and "throttl" in throttle_message.lower():
