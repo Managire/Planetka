@@ -2963,6 +2963,11 @@ export async function handleCreditRegionOffers(request, env, deps) {
       });
       continue;
     }
+    const priceEur = normalizeCreditAmount(estimate && estimate.price_eur);
+    const newTileCount = Math.max(0, Number.parseInt(estimate && estimate.new_tile_count || 0, 10) || 0);
+    if (priceEur <= 0 && newTileCount <= 0) {
+      continue;
+    }
     offers.push({
       ok: true,
       ...regionProductPublicPayload(product),
@@ -2970,11 +2975,11 @@ export async function handleCreditRegionOffers(request, env, deps) {
       gross_price_eur: normalizeCreditAmount(estimate && estimate.gross_price_eur),
       discount_eur: normalizeCreditAmount(estimate && estimate.discount_eur),
       credits: normalizeCreditAmount(estimate && estimate.credits),
-      price_eur: normalizeCreditAmount(estimate && estimate.price_eur),
+      price_eur: priceEur,
       paid_tile_count: Math.max(0, Number.parseInt(estimate && estimate.paid_tile_count || 0, 10) || 0),
       free_tile_count: Math.max(0, Number.parseInt(estimate && estimate.free_tile_count || 0, 10) || 0),
       tile_count: Math.max(0, Number.parseInt(estimate && estimate.tile_count || 0, 10) || 0),
-      new_tile_count: Math.max(0, Number.parseInt(estimate && estimate.new_tile_count || 0, 10) || 0),
+      new_tile_count: newTileCount,
       already_licenced_tile_count: Math.max(0, Number.parseInt(estimate && estimate.excluded_tiles && estimate.excluded_tiles.length || 0, 10) || 0),
       metadata_missing_tile_keys: Array.isArray(estimate && estimate.metadata_missing_tile_keys)
         ? estimate.metadata_missing_tile_keys.slice(0, 100)
