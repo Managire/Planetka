@@ -402,7 +402,12 @@ def _run_camera_full_quality_resolve_after_checkout(scene):
                 logger.debug("Planetka: failed clearing credit caches after checkout resolve", exc_info=True)
             prefs = get_prefs()
             base_path = _normalize_texture_source_path(str(getattr(prefs, "texture_base_path", "") or "")) if prefs else ""
-            update_resolve_size_estimates(scene, scope_mode="CAMERA", base_path=base_path)
+            update_resolve_size_estimates(
+                scene,
+                scope_mode="CAMERA",
+                base_path=base_path,
+                force_full_price_refresh=True,
+            )
             _tag_view3d_redraw()
             logger.info("Planetka: Full Quality resolve started after scene payment.")
             return True
@@ -973,6 +978,7 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
                 scope_mode="CAMERA" if target_mode == "FULL" else "AUTO",
                 base_path=base_path,
                 async_full_price=(target_mode != "FULL"),
+                force_full_price_refresh=(target_mode == "FULL"),
             )
             _tag_view3d_redraw()
         except PLANETKA_RECOVERABLE_EXCEPTIONS:

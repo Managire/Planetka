@@ -1034,6 +1034,7 @@ def update_resolve_size_estimates(
     full_tiles_override=None,
     include_full_price=True,
     async_full_price=False,
+    force_full_price_refresh=False,
 ):
     return _view_telemetry.update_resolve_size_estimates(
         scene,
@@ -1043,6 +1044,7 @@ def update_resolve_size_estimates(
         full_tiles_override=full_tiles_override,
         include_full_price=include_full_price,
         async_full_price=async_full_price,
+        force_full_price_refresh=force_full_price_refresh,
     )
 
 

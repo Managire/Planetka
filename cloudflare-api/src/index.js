@@ -100,9 +100,11 @@ import {
   handleCreditSceneDetailLink as handleCreditSceneDetailLinkRoute,
   handleCreditSceneMap as handleCreditSceneMapRoute,
   handleCreditRegionPackDetailLink as handleCreditRegionPackDetailLinkRoute,
+  handleCreditRegionPackCatalogAsset as handleCreditRegionPackCatalogAssetRoute,
   handleCreditRegionPackCatalog as handleCreditRegionPackCatalogRoute,
   handleCreditRegionPackCheckoutFromToken as handleCreditRegionPackCheckoutFromTokenRoute,
   handleCreditRegionPackMap as handleCreditRegionPackMapRoute,
+  handleCreditRegionPackMapAsset as handleCreditRegionPackMapAssetRoute,
   handleCreditRegionOffers as handleCreditRegionOffersRoute,
   handleCreditUnlocked as handleCreditUnlockedRoute,
 } from "./worker/credit_routes.js";
@@ -4057,9 +4059,19 @@ async function dispatchExactRoute(request, env, path) {
         return await handleCreditRegionPackMapRoute(request, env, TILE_ROUTE_DEPS);
       }
       return null;
+    case "/credits/region-pack-map-asset":
+      if (request.method === "GET" || request.method === "HEAD") {
+        return await handleCreditRegionPackMapAssetRoute(request, env, TILE_ROUTE_DEPS);
+      }
+      return null;
     case "/credits/region-pack-catalog":
       if (request.method === "GET" || request.method === "HEAD") {
         return await handleCreditRegionPackCatalogRoute(request, env, TILE_ROUTE_DEPS);
+      }
+      return null;
+    case "/credits/region-pack-catalog-asset":
+      if (request.method === "GET" || request.method === "HEAD") {
+        return await handleCreditRegionPackCatalogAssetRoute(request, env, TILE_ROUTE_DEPS);
       }
       return null;
     case "/credits/region-pack-checkout":

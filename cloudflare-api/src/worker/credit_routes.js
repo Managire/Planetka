@@ -1,4 +1,4 @@
-import { html } from "./responses.js";
+import { corsHeaders, html } from "./responses.js";
 import {
   GENERATED_REGION_PACK_CATALOG_VERSION,
   GENERATED_REGION_PACK_DETAILS,
@@ -25,6 +25,7 @@ const REGION_PACK_CATALOG_VERSION = GENERATED_REGION_PACK_CATALOG_VERSION || "ga
 const SQL_VARIABLE_SAFE_CHUNK_SIZE = 75;
 const REGION_PACK_TILE_CHUNK_SIZE = SQL_VARIABLE_SAFE_CHUNK_SIZE;
 const REGION_PACK_PAID_Z_LEVELS = [1, 2, 4, 8, 15, 30];
+const REGION_PACK_MAP_MAX_OUTLINE_POINTS = 20_000;
 const REGION_PRODUCTS = Array.isArray(GENERATED_REGION_PACK_PRODUCTS) ? GENERATED_REGION_PACK_PRODUCTS : [];
 
 function normalizeTileKey(value) {
@@ -454,6 +455,103 @@ function regionProductOutlines(product) {
     }
   }
   return outlines;
+}
+
+function outlinePointCount(outlines) {
+  let count = 0;
+  for (const outline of outlines || []) {
+    const polygons = Array.isArray(outline && outline.polygons) ? outline.polygons : [];
+    for (const ring of polygons) {
+      count += Array.isArray(ring) ? ring.length : 0;
+    }
+  }
+  return count;
+}
+
+function simplifyRingForMap(ring, stride) {
+  const source = Array.isArray(ring) ? ring : [];
+  if (source.length <= 4 || stride <= 1) {
+    return source;
+  }
+  const simplified = [];
+  for (let index = 0; index < source.length; index += stride) {
+    simplified.push(source[index]);
+  }
+  const last = source[source.length - 1];
+  if (last && simplified[simplified.length - 1] !== last) {
+    simplified.push(last);
+  }
+  if (simplified.length >= 3) {
+    return simplified;
+  }
+  return source.slice(0, Math.min(source.length, 4));
+}
+
+function regionProductOutlinesForMap(product, maxPoints = REGION_PACK_MAP_MAX_OUTLINE_POINTS) {
+  const outlines = regionProductOutlines(product);
+  const totalPoints = outlinePointCount(outlines);
+  const safeMax = Math.max(500, Number.parseInt(maxPoints, 10) || REGION_PACK_MAP_MAX_OUTLINE_POINTS);
+  if (totalPoints <= safeMax) {
+    return outlines;
+  }
+  const stride = Math.max(1, Math.ceil(totalPoints / safeMax));
+  return outlines.map((outline) => ({
+    id: String(outline && outline.id || ""),
+    name: String(outline && outline.name || ""),
+    polygons: (Array.isArray(outline && outline.polygons) ? outline.polygons : [])
+      .map((ring) => simplifyRingForMap(ring, stride))
+    .filter((ring) => Array.isArray(ring) && ring.length >= 3),
+  })).filter((outline) => Array.isArray(outline.polygons) && outline.polygons.length);
+}
+
+function cleanR2Prefix(env = {}) {
+  return String(env.R2_PREFIX || "").trim().replace(/^\/+|\/+$/g, "");
+}
+
+function regionPackMapAssetKey(env, regionPackId) {
+  const prefix = cleanR2Prefix(env);
+  const id = String(regionPackId || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "");
+  const relative = `region_pack_maps/${REGION_PACK_CATALOG_VERSION}/${id}.json`;
+  return prefix ? `${prefix}/${relative}` : relative;
+}
+
+function regionPackCatalogAssetKey(env) {
+  const prefix = cleanR2Prefix(env);
+  const relative = `region_pack_maps/${REGION_PACK_CATALOG_VERSION}/catalog.json`;
+  return prefix ? `${prefix}/${relative}` : relative;
+}
+
+function ownedTilePayloadRows(ownedRows) {
+  return (Array.isArray(ownedRows) ? ownedRows : [])
+    .map((row) => {
+      const parsed = parseTileKey(row && row.tile_key || "");
+      if (!parsed) {
+        return null;
+      }
+      return {
+        tile_key: parsed.key,
+        z: parsed.z,
+        d: parsed.d,
+        gross_cents: generatedTileGrossCents(parsed.key),
+      };
+    })
+    .filter(Boolean);
+}
+
+function regionPackStaticMapPayload(product, token, account, ownedRows, options = {}) {
+  return {
+    ok: true,
+    static_asset_mode: true,
+    catalog_version: REGION_PACK_CATALOG_VERSION,
+    token: String(token || ""),
+    catalog_mode: Boolean(options && options.catalogMode),
+    asset_id: String(product && product.id || ""),
+    region_pack: regionProductPublicPayload(product),
+    owned_tiles: ownedTilePayloadRows(ownedRows),
+    world_full_quality_unlocked: isWorldFullQualityUnlocked(account),
+    success: options && options.success ? options.success : null,
+    summary_override: options && options.summaryOverride ? options.summaryOverride : null,
+  };
 }
 
 function pointInGeneratedRegionOutlines(product, latitudeDeg, longitudeDeg) {
@@ -1008,6 +1106,160 @@ async function estimateRegionPack(db, userId, product, deps, options = {}) {
   };
 }
 
+function billableLandKm2FromGeneratedGrossCents(tileKey, grossCents) {
+  const cents = Math.max(0, Number.parseInt(grossCents || 0, 10) || 0);
+  if (cents <= 0) {
+    return 0;
+  }
+  const parsed = parseTileKey(tileKey);
+  if (!parsed) {
+    return 0;
+  }
+  const mpp = deliveredMppForD(parsed.d);
+  const qualityFactor = (DATASET_BASE_MPP / Math.max(DATASET_BASE_MPP, mpp)) ** 2;
+  if (!Number.isFinite(qualityFactor) || qualityFactor <= 0) {
+    return 0;
+  }
+  return normalizeMetricAmount((cents / 100.0) * EQUATOR_Z001_AREA_KM2 / qualityFactor);
+}
+
+async function estimateRegionPackForMap(db, userId, product, deps) {
+  if (!product) {
+    return { error: "unknown_region_pack" };
+  }
+  await deps.ensureCreditTables(db);
+  const account = await ensureCreditAccount(db, userId, deps);
+  if (String(product && product.id || "").trim().toLowerCase() === "world") {
+    return estimateRegionPack(db, userId, product, deps, { includeRows: false });
+  }
+
+  const ownedRows = await ownedTileRowsForUser(db, userId, deps);
+  const ownedByFamily = new Map();
+  for (const row of ownedRows || []) {
+    const owned = parseTileKey(row && row.tile_key || "");
+    const family = tileFamilyKey(owned);
+    if (!owned || !family) {
+      continue;
+    }
+    if (!ownedByFamily.has(family)) {
+      ownedByFamily.set(family, []);
+    }
+    ownedByFamily.get(family).push({
+      key: owned.key,
+      d: Number(owned.d),
+      value: generatedTileGrossEur(owned.key),
+    });
+  }
+
+  const worldFullQualityUnlocked = isWorldFullQualityUnlocked(account);
+  const tileKeys = regionProductTileKeys(product).sort((a, b) => {
+    const parsedA = parseTileKey(a);
+    const parsedB = parseTileKey(b);
+    const familyA = tileFamilyKey(parsedA);
+    const familyB = tileFamilyKey(parsedB);
+    if (familyA !== familyB) {
+      return familyA < familyB ? -1 : 1;
+    }
+    return Number(parsedA && parsedA.d || 0) - Number(parsedB && parsedB.d || 0);
+  });
+
+  let credits = 0;
+  let paidTileCount = 0;
+  let freeTileCount = 0;
+  let alreadyLicencedGross = 0;
+  const tiles = [];
+  const newTiles = [];
+  const excludedTiles = [];
+
+  for (const tileKey of tileKeys) {
+    const parsed = parseTileKey(tileKey);
+    const family = tileFamilyKey(parsed);
+    if (!parsed || !family) {
+      continue;
+    }
+    const grossCents = generatedTileGrossCents(tileKey);
+    const grossCredits = normalizeCreditAmount(grossCents / 100.0);
+    const globallyFree = Boolean(isFreeCreditTileKey(tileKey) || grossCents <= 0);
+    const familyEntitlements = ownedByFamily.get(family) || [];
+    if (!ownedByFamily.has(family)) {
+      ownedByFamily.set(family, familyEntitlements);
+    }
+    const coveredByFiner = Boolean(worldFullQualityUnlocked)
+      || familyEntitlements.some((entry) => Number(entry.d) <= Number(parsed.d));
+    const coarserCredit = Math.max(
+      0,
+      ...familyEntitlements
+        .filter((entry) => Number(entry.d) > Number(parsed.d))
+        .map((entry) => normalizeCreditAmount(entry.value)),
+    );
+    const tileCredits = (globallyFree || coveredByFiner)
+      ? 0
+      : normalizeCreditAmount(Math.max(0, grossCredits - coarserCredit));
+    const landKm2 = billableLandKm2FromGeneratedGrossCents(tileKey, grossCents);
+    const row = {
+      tile_key: tileKey,
+      credits: tileCredits,
+      price_eur: tileCredits,
+      gross_credits: grossCredits,
+      gross_price_eur: grossCredits,
+      land_km2: landKm2,
+      billable_land_km2: landKm2,
+      already_owned: Boolean(coveredByFiner),
+      globally_free: Boolean(globallyFree),
+      free_reason: globallyFree
+        ? (freeReasonForTile(parsed) || "no_billable_land")
+        : (coveredByFiner ? "already_unlocked" : ""),
+    };
+    if (coarserCredit > 0) {
+      row.upgrade_credit_applied = coarserCredit;
+    }
+    tiles.push(row);
+    if (coveredByFiner) {
+      excludedTiles.push(row);
+      alreadyLicencedGross = normalizeCreditAmount(alreadyLicencedGross + grossCredits);
+    }
+    if (tileCredits > 0) {
+      paidTileCount += 1;
+      credits = normalizeCreditAmount(credits + tileCredits);
+    } else {
+      freeTileCount += 1;
+    }
+    if (!globallyFree && !coveredByFiner) {
+      newTiles.push(row);
+      familyEntitlements.push({ key: tileKey, d: Number(parsed.d), value: grossCredits });
+    }
+  }
+
+  const discountPercent = Math.max(0, Math.min(95, Number.parseInt(product.discount_percent || 0, 10) || 0));
+  const amounts = discountedRegionPackAmount(credits, discountPercent);
+  const alreadyLicencedAmounts = discountedRegionPackAmount(alreadyLicencedGross, discountPercent);
+  return {
+    ok: true,
+    map_estimate: true,
+    region_pack: regionProductPublicPayload(product),
+    region_pack_id: String(product.id || ""),
+    region_pack_name: String(product.name || ""),
+    catalog_version: REGION_PACK_CATALOG_VERSION,
+    discount_percent: discountPercent,
+    gross_eur: amounts.gross,
+    gross_price_eur: amounts.gross,
+    discount_eur: amounts.discount,
+    already_licenced_gross_eur: alreadyLicencedAmounts.gross,
+    already_licenced_saving_eur: alreadyLicencedAmounts.price,
+    credits: amounts.price,
+    price_eur: amounts.price,
+    paid_tile_count: paidTileCount,
+    free_tile_count: freeTileCount,
+    tile_count: tiles.length,
+    new_tile_count: newTiles.length,
+    new_tiles: newTiles,
+    excluded_tiles: excludedTiles,
+    integrity_warnings: [],
+    metadata_missing_tile_keys: [],
+    tiles,
+  };
+}
+
 function purchaseMetadataJson(metadata) {
   try {
     return JSON.stringify(metadata && typeof metadata === "object" ? metadata : {});
@@ -1337,7 +1589,7 @@ function buildRegionPackMapData(product, estimate, options = {}) {
     generated_detail_available: Boolean(detail && Object.keys(detail).length),
     region_pack: regionProductPublicPayload(product),
     included_countries: countries,
-    outlines: regionProductOutlines(product),
+    outlines: regionProductOutlinesForMap(product),
     bounds: regionMapBounds(product, detail, tileRows),
     levels,
     summary: {
@@ -1430,7 +1682,7 @@ function buildSceneFullQualityMapData(estimate, options = {}) {
       included_countries: contextCountries,
     },
     included_countries: contextCountries,
-    outlines: contextProduct ? regionProductOutlines(contextProduct) : [],
+    outlines: contextProduct ? regionProductOutlinesForMap(contextProduct) : [],
     bounds: contextBounds,
     tile_bounds: tileBounds,
     levels,
@@ -1648,7 +1900,7 @@ main{max-width:1180px;margin:0 auto;padding:24px}h1{margin:0 0 8px;font-size:28p
 select{background:#262626;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:7px 10px}svg{width:100%;height:auto;background:#0d1118;border:1px solid var(--line);border-radius:10px}
 .legend{display:flex;gap:16px;flex-wrap:wrap;margin:10px 0 0}.swatch{display:inline-block;width:14px;height:14px;border-radius:3px;margin-right:6px;vertical-align:-2px}.new{background:var(--new)}.licenced{background:var(--licenced)}.free{background:var(--free)}
 .countries{columns:2;column-gap:26px}.countries div{break-inside:avoid;margin:2px 0}.small{font-size:13px}
-.upsells{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}.upsell{background:#151515;border:1px solid var(--line);border-radius:12px;padding:12px}.upsell h3{margin:0 0 8px;font-size:18px}.upsell p{margin:6px 0}.upsell svg{min-height:150px}.button{display:inline-flex;align-items:center;justify-content:center;margin-top:10px;padding:9px 12px;border-radius:8px;background:#d9a441;color:#111;text-decoration:none;font-weight:700}.button.secondary{margin-left:8px;background:#2a2a2a;color:var(--text);border:1px solid var(--line)}
+.upsells{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}.upsell{background:#151515;border:1px solid var(--line);border-radius:12px;padding:12px}.upsell h3{margin:0 0 8px;font-size:18px}.upsell p{margin:6px 0}.upsell svg{aspect-ratio:1/1;min-height:0}.button{display:inline-flex;align-items:center;justify-content:center;margin-top:10px;padding:9px 12px;border-radius:8px;background:#d9a441;color:#111;text-decoration:none;font-weight:700}.button.secondary{margin-left:8px;background:#2a2a2a;color:var(--text);border:1px solid var(--line)}
 </style>
 </head>
 <body>
@@ -1712,10 +1964,105 @@ function render(level){const svg=document.getElementById("map");svg.replaceChild
 const levels=(DATA.levels&&DATA.levels.length?DATA.levels:[1]); const select=document.getElementById("levelSelect");
 for(const z of levels){const o=document.createElement("option");o.value=String(z);o.textContent="z"+String(z).padStart(3,"0");select.appendChild(o)}
 select.addEventListener("change",()=>render(Number(select.value))); render(Number(select.value||levels[0]));
-function miniXY(bounds,w,h,lon,lat){const p=12;return [p+((lon-bounds.min_lon)/(bounds.max_lon-bounds.min_lon||1))*(w-p*2),p+((bounds.max_lat-lat)/(bounds.max_lat-bounds.min_lat||1))*(h-p*2)]}
-function renderMiniMap(svg,card){const b=card.bounds||{min_lon:-10,min_lat:35,max_lon:30,max_lat:48};const w=360;const h=Math.max(150,Math.min(230,Math.round(360*Math.max(0.25,Math.min(0.75,(b.max_lat-b.min_lat)/Math.max(1e-6,b.max_lon-b.min_lon))))));svg.setAttribute("viewBox","0 0 "+w+" "+h);svg.replaceChildren();svg.appendChild(el("rect",{x:0,y:0,width:w,height:h,fill:"#0d1118"}));for(const tile of card.tiles||[]){const a=miniXY(b,w,h,tile.lon_min,tile.lat_max),c=miniXY(b,w,h,tile.lon_max,tile.lat_min);const cls=tile.status==="new"?"var(--new)":(tile.status==="licenced"?"var(--licenced)":"var(--free)");const r=el("rect",{x:a[0],y:a[1],width:Math.max(1,c[0]-a[0]),height:Math.max(1,c[1]-a[1]),fill:cls,stroke:"#fff","stroke-width":"0.5",opacity:tile.status==="new"?"0.58":"0.43"});svg.appendChild(r)}}
+function miniFrame(bounds,w,h){const p=12,lonSpan=Math.max(1e-6,bounds.max_lon-bounds.min_lon),latSpan=Math.max(1e-6,bounds.max_lat-bounds.min_lat),scale=Math.min((w-p*2)/lonSpan,(h-p*2)/latSpan),usedW=lonSpan*scale,usedH=latSpan*scale;return{bounds,scale,ox:(w-usedW)/2,oy:(h-usedH)/2}}
+function miniXY(frame,lon,lat){return [frame.ox+(lon-frame.bounds.min_lon)*frame.scale,frame.oy+(frame.bounds.max_lat-lat)*frame.scale]}
+function renderMiniMap(svg,card){const b=card.bounds||{min_lon:-10,min_lat:35,max_lon:30,max_lat:48};const w=360,h=360,frame=miniFrame(b,w,h);svg.setAttribute("viewBox","0 0 "+w+" "+h);svg.setAttribute("preserveAspectRatio","xMidYMid meet");svg.replaceChildren();svg.appendChild(el("rect",{x:0,y:0,width:w,height:h,fill:"#0d1118"}));for(const tile of card.tiles||[]){const a=miniXY(frame,tile.lon_min,tile.lat_max),c=miniXY(frame,tile.lon_max,tile.lat_min);const cls=tile.status==="new"?"var(--new)":(tile.status==="licenced"?"var(--licenced)":"var(--free)");const r=el("rect",{x:a[0],y:a[1],width:Math.max(1,c[0]-a[0]),height:Math.max(1,c[1]-a[1]),fill:cls,stroke:"#fff","stroke-width":"0.5",opacity:tile.status==="new"?"0.58":"0.43"});svg.appendChild(r)}}
 function renderUpsells(){const grid=document.getElementById("upsellGrid");if(!grid)return;const token=encodeURIComponent(DATA.token||"");const catalog=DATA.catalog_mode?"&catalog=1":"";for(const card of DATA.upsells||[]){const pack=card.region_pack||{},s=card.summary||{};const id=encodeURIComponent(pack.id||"");const div=document.createElement("div");div.className="upsell";const title=document.createElement("h3");title.textContent=pack.name||"Region Pack";div.appendChild(title);const map=document.createElementNS(NS,"svg");div.appendChild(map);renderMiniMap(map,card);const meta=document.createElement("p");meta.className="muted small";meta.textContent=Number(s.new_tiles||0)+" new tiles · "+Number(s.discount_percent||0)+"% volume discount · "+fmt(s.price_eur);div.appendChild(meta);const checkout=document.createElement("a");checkout.className="button";checkout.href="/credits/region-pack-checkout?token="+token+"&region_pack_id="+id+catalog;checkout.textContent="Buy "+(pack.name||"Pack")+" ("+fmt(s.price_eur)+")";div.appendChild(checkout);const detail=document.createElement("a");detail.className="button secondary";detail.href="/credits/region-pack-map?token="+token+"&region_pack_id="+id+catalog;detail.textContent="View map";div.appendChild(detail);grid.appendChild(div)}}
 renderUpsells();
+</script>
+</body>
+</html>`;
+}
+
+function regionPackStaticMapHtml(data) {
+  const pack = data && data.region_pack || {};
+  const name = String(pack.name || "Region Pack").trim() || "Region Pack";
+  const success = data && data.success && typeof data.success === "object" ? data.success : null;
+  const payload = jsonForInlineScript(data);
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Planetka ${escapeHtmlText(name)} Pack Detail</title>
+<style>
+:root{color-scheme:dark;--bg:#111;--panel:#1b1b1b;--line:#3c3c3c;--text:#eee;--muted:#aaa;--new:#e45745;--licenced:#e2bc49;--free:#69707a;--country:#2a3748;--country-line:#98b4d8;--accent:#d9a441}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+main{max-width:1180px;margin:0 auto;padding:24px}h1{margin:0 0 8px;font-size:28px;font-weight:650}.muted{color:var(--muted)}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:18px 0}.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px}.card b{display:block;font-size:22px;margin-top:4px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;margin-top:14px}.toolbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+select{background:#262626;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:7px 10px}svg{width:100%;height:auto;background:#0d1118;border:1px solid var(--line);border-radius:10px}
+.legend{display:flex;gap:16px;flex-wrap:wrap;margin:10px 0 0}.swatch{display:inline-block;width:14px;height:14px;border-radius:3px;margin-right:6px;vertical-align:-2px}.new{background:var(--new)}.licenced{background:var(--licenced)}.free{background:var(--free)}
+.countries{columns:2;column-gap:26px}.countries div{break-inside:avoid;margin:2px 0}.small{font-size:13px}.error{color:#ffb4a9}
+.upsells{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}.upsell{background:#151515;border:1px solid var(--line);border-radius:12px;padding:12px}.upsell h3{margin:0 0 8px;font-size:18px}.upsell p{margin:6px 0}.upsell svg{aspect-ratio:1/1;min-height:0}
+.button{display:inline-flex;align-items:center;justify-content:center;margin-top:10px;padding:9px 12px;border-radius:8px;background:var(--accent);color:#111;text-decoration:none;font-weight:700}.button.secondary{margin-left:8px;background:#2a2a2a;color:var(--text);border:1px solid var(--line)}
+</style>
+</head>
+<body>
+<main>
+<h1 id="pageTitle">${escapeHtmlText(name)} Full Quality Pack</h1>
+${success ? `<section class="panel"><h2>${escapeHtmlText(success.title || "Payment successful")}</h2><p>${escapeHtmlText(success.message || "Your Planetka purchase has been processed.")}</p></section>` : ""}
+<p class="muted">Tile prices shown on hover are user-specific: already licenced tiles are €0.00.</p>
+<section id="cards" class="cards"></section>
+<section class="panel">
+<div class="toolbar">
+<label>Detail level <select id="levelSelect"></select></label>
+<span id="levelSummary" class="muted"></span>
+</div>
+<p class="muted small">Included detail levels are part of the Full Quality pack and are required for reliable Planetka rendering across different camera distances.</p>
+<svg id="map" role="img" aria-label="${escapeHtmlText(name)} tile map"></svg>
+<div class="legend">
+<span><i class="swatch new"></i>New in this pack</span>
+<span><i class="swatch licenced"></i>Already licenced</span>
+<span><i class="swatch free"></i>Free / not charged</span>
+</div>
+<p id="mapStatus" class="muted small">Loading map...</p>
+</section>
+<section id="countriesPanel" class="panel" style="display:none">
+<h2>Included Countries / Areas</h2>
+<div id="countries" class="countries"></div>
+</section>
+<section id="upsellsPanel" class="panel" style="display:none">
+<h2>Larger Full Quality options</h2>
+<div id="upsellGrid" class="upsells"></div>
+</section>
+<section class="panel">
+<a class="button secondary" href="/credits/region-pack-catalog?token=${escapeHtmlText(encodeURIComponent(String(data && data.token || "")))}">View all Full Quality data packs</a>
+</section>
+</main>
+<script>const DATA=${payload};
+const NS="http://www.w3.org/2000/svg";
+const fmtCents=(v)=>"€"+(Math.max(0,Number(v||0)||0)/100).toFixed(2);
+const int=(v)=>Math.max(0,Math.round(Number(v||0)||0));
+const assetCache=new Map();
+function esc(value){return String(value||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}
+function parseTileKey(key){const m=/x(\\d{3})_y(\\d{3})_z(\\d{3})_d(\\d{3})/i.exec(String(key||""));return m?{key:m[0],x:Number(m[1]),y:Number(m[2]),z:Number(m[3]),d:Number(m[4])}:null}
+function family(parsed){return parsed?"x"+String(parsed.x).padStart(3,"0")+"_y"+String(parsed.y).padStart(3,"0")+"_z"+String(parsed.z).padStart(3,"0"):""}
+function tileSort(a,b){const pa=parseTileKey(a.tile_key),pb=parseTileKey(b.tile_key),fa=family(pa),fb=family(pb);return fa===fb?(Number(pa&&pa.d||0)-Number(pb&&pb.d||0)):fa<fb?-1:1}
+function buildOwnedByFamily(){const map=new Map();for(const row of DATA.owned_tiles||[]){const p=parseTileKey(row.tile_key);const f=family(p);if(!p||!f)continue;if(!map.has(f))map.set(f,[]);map.get(f).push({d:p.d,gross_cents:int(row.gross_cents)})}return map}
+async function loadAsset(id){const safe=String(id||"").trim();if(assetCache.has(safe))return assetCache.get(safe);const res=await fetch("/credits/region-pack-map-asset?region_pack_id="+encodeURIComponent(safe),{cache:"force-cache"});if(!res.ok)throw new Error("map_asset_"+res.status);const asset=await res.json();assetCache.set(safe,asset);return asset}
+function computeAsset(asset){const owned=buildOwnedByFamily();const world=!!DATA.world_full_quality_unlocked;const discountPct=Math.max(0,Math.min(95,Number(asset&&asset.region_pack&&asset.region_pack.discount_percent||0)||0));const rows=(asset.tiles||[]).slice().sort(tileSort);const paid=[];let grossCents=0,alreadyGrossCents=0,alreadyCount=0,freeCount=0;
+  for(const tile of rows){const p=parseTileKey(tile.tile_key);const f=family(p);const full=int(tile.full_price_cents||tile.gross_cents);const globallyFree=!!tile.globally_free||full<=0;if(!owned.has(f))owned.set(f,[]);const entries=owned.get(f);const covered=world||entries.some((entry)=>Number(entry.d)<=Number(p&&p.d||0));let coarser=0;for(const entry of entries){if(Number(entry.d)>Number(p&&p.d||0))coarser=Math.max(coarser,int(entry.gross_cents))}
+    const charge=globallyFree||covered?0:Math.max(0,full-coarser);let status="free";if(covered&&!globallyFree){status="licenced";alreadyCount+=1;alreadyGrossCents+=full}else if(charge>0){status="new";grossCents+=charge;paid.push({tile,cents:charge})}else{freeCount+=1}
+    if(charge>0&&entries){entries.push({d:Number(p&&p.d||0),gross_cents:full})}
+    tile.x=p?p.x:null;tile.y=p?p.y:null;tile.z=p?p.z:null;tile.d=p?p.d:null;tile.lon_min=p?p.x-180:null;tile.lon_max=p?p.x-180+p.z:null;tile.lat_min=p?p.y-90:null;tile.lat_max=p?p.y-90+p.z:null;tile.status=status;tile.charge_cents=charge;tile.price_cents=0;tile.full_price_cents=full;tile.full_price_eur=full/100;tile.price_eur=0;
+  }
+  const discountCents=Math.round(grossCents*discountPct/100);const targetCents=Math.max(0,grossCents-discountCents);let allocated=0;const alloc=paid.map((entry,index)=>{const raw=grossCents>0?(entry.cents*targetCents/grossCents):0;const floor=Math.floor(raw);allocated+=floor;return{entry,index,cents:floor,remainder:raw-floor}}).sort((a,b)=>b.remainder!==a.remainder?b.remainder-a.remainder:a.index-b.index);let rem=Math.max(0,targetCents-allocated);for(const item of alloc){if(rem<=0)break;item.cents+=1;rem-=1}for(const item of alloc){item.entry.tile.price_cents=item.cents;item.entry.tile.price_eur=item.cents/100;if(item.cents<=0)item.entry.tile.status="free"}
+  const alreadySavingGross=alreadyGrossCents;const alreadySavingDiscount=Math.round(alreadySavingGross*discountPct/100);const summaryOverride=DATA.summary_override||{};const displayFull=summaryOverride.full_price_cents!=null?int(summaryOverride.full_price_cents):grossCents;const displayDiscount=summaryOverride.discount_cents!=null?int(summaryOverride.discount_cents):discountCents;const displayPrice=summaryOverride.price_cents!=null?int(summaryOverride.price_cents):targetCents;
+  const levels=Array.from(new Set(rows.map((row)=>Number(row.z)).filter(Number.isFinite))).sort((a,b)=>a-b);return{asset,rows,levels,summary:{new_tiles:paid.filter((entry)=>entry.entry.tile.price_cents>0).length,total_tiles:rows.length,already_licenced_tiles:alreadyCount,free_tiles:freeCount,full_price_cents:displayFull,discount_percent:discountPct,discount_cents:displayDiscount,price_cents:displayPrice,already_licenced_saving_cents:Math.max(0,alreadySavingGross-alreadySavingDiscount)}}}
+function renderCards(vm){const s=vm.summary;const cards=[["New Tiles",s.new_tiles],["Total Tiles",s.total_tiles],["Full Price",fmtCents(s.full_price_cents)]];if(s.discount_percent>0)cards.push(["Volume Discount",s.discount_percent+"% (-"+fmtCents(s.discount_cents)+")"]);else cards.push(["Already Licenced Saving",fmtCents(s.already_licenced_saving_cents)]);cards.push(["Your Price",fmtCents(s.price_cents)]);document.getElementById("cards").innerHTML=cards.map((c)=>"<div class=\\"card\\"><span>"+esc(c[0])+"</span><b>"+esc(c[1])+"</b></div>").join("")}
+let currentBounds={min_lon:-10,min_lat:35,max_lon:30,max_lat:48},pad=20,W=1000,H=520;
+function setBounds(bounds){currentBounds=bounds||currentBounds;const aspect=Math.max(0.28,Math.min(0.9,(currentBounds.max_lat-currentBounds.min_lat)/Math.max(1e-6,currentBounds.max_lon-currentBounds.min_lon)));H=Math.round(W*aspect)+pad*2}
+function xy(lon,lat){return [pad+((lon-currentBounds.min_lon)/(currentBounds.max_lon-currentBounds.min_lon||1))*(W-pad*2),pad+((currentBounds.max_lat-lat)/(currentBounds.max_lat-currentBounds.min_lat||1))*(H-pad*2)]}
+function el(name,attrs){const node=document.createElementNS(NS,name);for(const k in attrs||{})node.setAttribute(k,String(attrs[k]));return node}
+function pathFor(poly){return(poly||[]).map((pt,i)=>{const p=xy(pt[0],pt[1]);return(i?"L":"M")+p[0].toFixed(2)+" "+p[1].toFixed(2)}).join(" ")+" Z"}
+function renderMap(vm,level){const svg=document.getElementById("map");svg.replaceChildren();svg.setAttribute("viewBox","0 0 "+W+" "+H);svg.appendChild(el("rect",{x:0,y:0,width:W,height:H,fill:"#0d1118"}));for(const outline of vm.asset.outlines||[]){for(const poly of outline.polygons||[]){const p=el("path",{d:pathFor(poly),fill:"var(--country)",stroke:"var(--country-line)","stroke-width":"0.7",opacity:"0.72"});const t=el("title",{});t.textContent=outline.name;p.appendChild(t);svg.appendChild(p)}}const rows=vm.rows.filter((row)=>Number(row.z)===Number(level));let newCount=0,licencedCount=0,freeCount=0,price=0;for(const tile of rows){const a=xy(tile.lon_min,tile.lat_max),b=xy(tile.lon_max,tile.lat_min);const cls=tile.status==="new"?"var(--new)":(tile.status==="licenced"?"var(--licenced)":"var(--free)");if(tile.status==="new"){newCount++;price+=int(tile.price_cents)}else if(tile.status==="licenced"){licencedCount++}else{freeCount++}const r=el("rect",{x:a[0],y:a[1],width:Math.max(1,b[0]-a[0]),height:Math.max(1,b[1]-a[1]),fill:cls,stroke:"#fff","stroke-width":"0.45",opacity:tile.status==="new"?"0.58":"0.43"});const title=el("title",{});title.textContent=tile.tile_key+"\\nLand: "+Number(tile.billable_land_km2||0).toFixed(2)+" km²\\nStatus: "+tile.status+"\\nFull price: "+fmtCents(tile.full_price_cents)+"\\nYour price: "+fmtCents(tile.price_cents);r.appendChild(title);svg.appendChild(r)}document.getElementById("levelSummary").textContent=rows.length+" tiles at z"+String(level).padStart(3,"0")+" · new "+newCount+" · already licenced "+licencedCount+" · free "+freeCount+" · visible-level price "+fmtCents(price)}
+function miniFrame(bounds,w,h){const p=12,lonSpan=Math.max(1e-6,bounds.max_lon-bounds.min_lon),latSpan=Math.max(1e-6,bounds.max_lat-bounds.min_lat),scale=Math.min((w-p*2)/lonSpan,(h-p*2)/latSpan),usedW=lonSpan*scale,usedH=latSpan*scale;return{bounds,scale,ox:(w-usedW)/2,oy:(h-usedH)/2}}
+function miniXY(frame,lon,lat){return[frame.ox+(lon-frame.bounds.min_lon)*frame.scale,frame.oy+(frame.bounds.max_lat-lat)*frame.scale]}
+function renderMiniMap(svg,vm){const b=vm.asset.bounds||{min_lon:-10,min_lat:35,max_lon:30,max_lat:48};const w=360,h=360,frame=miniFrame(b,w,h);svg.setAttribute("viewBox","0 0 "+w+" "+h);svg.setAttribute("preserveAspectRatio","xMidYMid meet");svg.replaceChildren();svg.appendChild(el("rect",{x:0,y:0,width:w,height:h,fill:"#0d1118"}));const first=vm.levels.length?vm.levels[0]:null;for(const tile of vm.rows.filter((row)=>Number(row.z)===Number(first))){const a=miniXY(frame,tile.lon_min,tile.lat_max),c=miniXY(frame,tile.lon_max,tile.lat_min);const cls=tile.status==="new"?"var(--new)":(tile.status==="licenced"?"var(--licenced)":"var(--free)");svg.appendChild(el("rect",{x:a[0],y:a[1],width:Math.max(1,c[0]-a[0]),height:Math.max(1,c[1]-a[1]),fill:cls,stroke:"#fff","stroke-width":"0.5",opacity:tile.status==="new"?"0.58":"0.43"}))}}
+async function renderUpsells(asset){const ids=Array.isArray(asset.upsell_ids)?asset.upsell_ids:[];const grid=document.getElementById("upsellGrid");if(!grid||!ids.length)return;const token=encodeURIComponent(DATA.token||"");const catalog=DATA.catalog_mode?"&catalog=1":"";for(const idRaw of ids){try{const upAsset=await loadAsset(idRaw);const vm=computeAsset(upAsset);if(vm.summary.price_cents<=0&&vm.summary.new_tiles<=0)continue;const id=encodeURIComponent(upAsset.region_pack.id||idRaw);const div=document.createElement("div");div.className="upsell";const title=document.createElement("h3");title.textContent=upAsset.region_pack.name||"Region Pack";div.appendChild(title);const map=document.createElementNS(NS,"svg");div.appendChild(map);renderMiniMap(map,vm);const meta=document.createElement("p");meta.className="muted small";meta.textContent=Number(vm.summary.new_tiles||0)+" new tiles · "+Number(vm.summary.discount_percent||0)+"% volume discount · "+fmtCents(vm.summary.price_cents);div.appendChild(meta);const checkout=document.createElement("a");checkout.className="button";checkout.href="/credits/region-pack-checkout?token="+token+"&region_pack_id="+id+catalog;checkout.textContent="Buy "+(upAsset.region_pack.name||"Pack")+" ("+fmtCents(vm.summary.price_cents)+")";div.appendChild(checkout);const detail=document.createElement("a");detail.className="button secondary";detail.href="/credits/region-pack-map?token="+token+"&region_pack_id="+id+catalog;detail.textContent="View map";div.appendChild(detail);grid.appendChild(div);document.getElementById("upsellsPanel").style.display=""}catch(error){console.warn("Planetka upsell map failed",idRaw,error)}}}
+async function init(){try{const asset=await loadAsset(DATA.asset_id);document.getElementById("pageTitle").textContent=(asset.region_pack.name||"Region Pack")+" Full Quality Pack";const vm=computeAsset(asset);renderCards(vm);setBounds(asset.bounds);const countries=Array.isArray(asset.included_countries)?asset.included_countries:[];if(countries.length){document.getElementById("countries").innerHTML=countries.map((c)=>"<div>"+esc(c)+"</div>").join("");document.getElementById("countriesPanel").style.display=""}const select=document.getElementById("levelSelect");select.replaceChildren();const levels=vm.levels.length?vm.levels:[1];for(const z of levels){const o=document.createElement("option");o.value=String(z);o.textContent="z"+String(z).padStart(3,"0");select.appendChild(o)}select.addEventListener("change",()=>renderMap(vm,Number(select.value)));renderMap(vm,Number(select.value||levels[0]));document.getElementById("mapStatus").textContent="Map loaded.";renderUpsells(asset)}catch(error){document.getElementById("mapStatus").className="error small";document.getElementById("mapStatus").textContent="Map failed to load. Please reopen this page from Blender."}}
+init();
 </script>
 </body>
 </html>`;
@@ -1767,6 +2114,67 @@ function rowHtml(row){const id=encodeURIComponent(row.id||"");const licenced=Num
 +"</tr>"}
 function escapeCell(value){return String(value||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}
 function render(){const filter=String(document.getElementById("filter").value||"").trim().toLowerCase();let shown=0;const html=(DATA.groups||[]).map(group=>{const rows=(group.rows||[]).filter(row=>!filter||String(row.name||"").toLowerCase().includes(filter));if(!rows.length)return "";shown+=rows.length;return "<h2>"+escapeCell(group.label)+"</h2><table><thead><tr><th>Data Pack</th><th>New Tiles</th><th>Total Tiles</th><th>Full Price</th><th>Already Licenced</th><th>Volume Discount</th><th>Your Price</th><th>Actions</th></tr></thead><tbody>"+rows.map(rowHtml).join("")+"</tbody></table>"}).join("");document.getElementById("catalog").innerHTML=html||"<div class=\\"empty\\">No data packs match this search.</div>";document.getElementById("count").textContent=shown+" data packs";}document.getElementById("filter").addEventListener("input",render);render();
+</script>
+</body>
+</html>`;
+}
+
+function regionPackStaticCatalogHtml(data) {
+  const payload = jsonForInlineScript(data);
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Planetka Full Quality Data Packs</title>
+<style>
+:root{color-scheme:dark;--bg:#111;--panel:#1b1b1b;--line:#3c3c3c;--text:#eee;--muted:#aaa;--accent:#d9a441}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+main{max-width:1180px;margin:0 auto;padding:24px}h1{margin:0 0 8px;font-size:28px;font-weight:650}h2{margin:22px 0 10px}.muted{color:var(--muted)}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;margin-top:14px}.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:12px 0}
+input{min-width:260px;flex:1;background:#262626;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:9px 11px}
+table{width:100%;border-collapse:collapse;background:#151515;border:1px solid var(--line);border-radius:10px;overflow:hidden}th,td{padding:8px 10px;border-bottom:1px solid #2d2d2d;text-align:right;white-space:nowrap}th:first-child,td:first-child{text-align:left;white-space:normal}tr:last-child td{border-bottom:0}th{color:#ddd;background:#202020;font-weight:650}.small{font-size:13px}.saving{color:#9dd18d}.price{font-weight:700;color:#f4d28d}.error{color:#ffb4a9}
+.button{display:inline-flex;align-items:center;justify-content:center;padding:7px 10px;border-radius:8px;background:var(--accent);color:#111;text-decoration:none;font-weight:700}.button.secondary{background:#2a2a2a;color:var(--text);border:1px solid var(--line)}
+.empty{padding:12px;color:var(--muted)}
+</style>
+</head>
+<body>
+<main>
+<h1>All Full Quality Data Packs</h1>
+<p class="muted">Prices are calculated for this account. Already licenced tiles are deducted automatically.</p>
+<section class="panel">
+<div class="toolbar">
+<input id="filter" type="search" placeholder="Search countries, regions, states, provinces...">
+<span id="count" class="muted small">Loading data packs...</span>
+</div>
+<div id="catalog"></div>
+</section>
+</main>
+<script>const DATA=${payload};
+const fmtCents=(v)=>"€"+(Math.max(0,Number(v||0)||0)/100).toFixed(2);
+const int=(v)=>Math.max(0,Math.round(Number(v||0)||0));
+const token=encodeURIComponent(DATA.token||"");
+function esc(value){return String(value||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}
+function parseTileKey(key){const m=/x(\\d{3})_y(\\d{3})_z(\\d{3})_d(\\d{3})/i.exec(String(key||""));return m?{key:m[0],x:Number(m[1]),y:Number(m[2]),z:Number(m[3]),d:Number(m[4])}:null}
+function family(parsed){return parsed?"x"+String(parsed.x).padStart(3,"0")+"_y"+String(parsed.y).padStart(3,"0")+"_z"+String(parsed.z).padStart(3,"0"):""}
+function tileSort(a,b){const pa=parseTileKey(a[0]),pb=parseTileKey(b[0]),fa=family(pa),fb=family(pb);return fa===fb?(Number(pa&&pa.d||0)-Number(pb&&pb.d||0)):fa<fb?-1:1}
+function buildOwnedByFamily(){const map=new Map();for(const row of DATA.owned_tiles||[]){const p=parseTileKey(row.tile_key);const f=family(p);if(!p||!f)continue;if(!map.has(f))map.set(f,[]);map.get(f).push({d:p.d,gross_cents:int(row.gross_cents)})}return map}
+function computeProduct(row){const discountPct=Math.max(0,Math.min(95,Number(row.discount_percent||0)||0));if(row.world){const full=int(row.full_price_cents);const discount=Math.round(full*discountPct/100);const price=DATA.world_full_quality_unlocked?0:Math.max(0,full-discount);return{...row,new_tiles:DATA.world_full_quality_unlocked?0:Number(row.total_tiles||0),already_licenced_tiles:DATA.world_full_quality_unlocked?Number(row.total_tiles||0):0,full_price_cents:full,chargeable_full_price_cents:full,discount_cents:DATA.world_full_quality_unlocked?0:discount,price_cents:price,already_licenced_saving_cents:0}}
+  const owned=buildOwnedByFamily();const world=!!DATA.world_full_quality_unlocked;const tiles=(row.tiles||[]).slice().sort(tileSort);let gross=0,alreadyGross=0,alreadyCount=0,freeCount=0,newCount=0;for(const tile of tiles){const p=parseTileKey(tile[0]);const f=family(p);const full=int(tile[1]);const globallyFree=!!tile[2]||full<=0;if(!owned.has(f))owned.set(f,[]);const entries=owned.get(f);const covered=world||entries.some((entry)=>Number(entry.d)<=Number(p&&p.d||0));let coarser=0;for(const entry of entries){if(Number(entry.d)>Number(p&&p.d||0))coarser=Math.max(coarser,int(entry.gross_cents))}const charge=globallyFree||covered?0:Math.max(0,full-coarser);if(covered&&!globallyFree){alreadyCount++;alreadyGross+=full}else if(charge>0){newCount++;gross+=charge;entries.push({d:Number(p&&p.d||0),gross_cents:full})}else{freeCount++}}const discount=Math.round(gross*discountPct/100);const price=Math.max(0,gross-discount);const alreadyDiscount=Math.round(alreadyGross*discountPct/100);return{...row,new_tiles:newCount,already_licenced_tiles:alreadyCount,free_tiles:freeCount,chargeable_full_price_cents:gross,discount_cents:discount,price_cents:price,already_licenced_saving_cents:Math.max(0,alreadyGross-alreadyDiscount)}}
+function rowHtml(row){const id=encodeURIComponent(row.id||"");const licenced=Number(row.already_licenced_tiles||0);const saving=int(row.already_licenced_saving_cents);const mapLink=String(row.id||"").toLowerCase()==="world"?"":" <a class=\\"button secondary\\" href=\\"/credits/region-pack-map?token="+token+"&region_pack_id="+id+"&catalog=1\\">Map</a>";return "<tr>"
++"<td><b>"+esc(row.name||"Data Pack")+"</b><div class=\\"muted small\\">"+esc(row.group_label||"")+"</div></td>"
++"<td>"+Number(row.new_tiles||0)+"</td>"
++"<td>"+Number(row.total_tiles||0)+"</td>"
++"<td>"+fmtCents(row.full_price_cents)+"</td>"
++"<td>"+(licenced?licenced+" tiles <span class=\\"saving\\">(-"+fmtCents(saving)+")</span>":"-")+"</td>"
++"<td>"+Number(row.discount_percent||0)+"% <span class=\\"saving\\">(-"+fmtCents(row.discount_cents)+")</span></td>"
++"<td class=\\"price\\">"+fmtCents(row.price_cents)+"</td>"
++"<td><a class=\\"button\\" href=\\"/credits/region-pack-checkout?token="+token+"&region_pack_id="+id+"&catalog=1\\">Buy</a>"+mapLink+"</td>"
++"</tr>"}
+let ROWS=[];
+function render(){const filter=String(document.getElementById("filter").value||"").trim().toLowerCase();let shown=0;const groupOrder=["world","continents","regions","countries","states_provinces","other"];const chunks=[];for(const key of groupOrder){const rows=ROWS.filter((row)=>String(row.group_key||"")===key&&(!filter||String(row.name||"").toLowerCase().includes(filter)));if(!rows.length)continue;shown+=rows.length;chunks.push("<h2>"+esc(rows[0].group_label||key)+"</h2><table><thead><tr><th>Data Pack</th><th>New Tiles</th><th>Total Tiles</th><th>Full Price</th><th>Already Licenced</th><th>Volume Discount</th><th>Your Price</th><th>Actions</th></tr></thead><tbody>"+rows.map(rowHtml).join("")+"</tbody></table>")}document.getElementById("catalog").innerHTML=chunks.join("")||"<div class=\\"empty\\">No data packs match this search.</div>";document.getElementById("count").textContent=shown+" data packs"}
+async function init(){try{const res=await fetch("/credits/region-pack-catalog-asset",{cache:"force-cache"});if(!res.ok)throw new Error("catalog_asset_"+res.status);const data=await res.json();ROWS=(data.products||[]).map(computeProduct).sort((a,b)=>String(a.group_label||"").localeCompare(String(b.group_label||""))||String(a.name||"").localeCompare(String(b.name||"")));document.getElementById("filter").addEventListener("input",render);render()}catch(error){document.getElementById("count").className="error small";document.getElementById("count").textContent="Data-pack catalog failed to load."}}
+init();
 </script>
 </body>
 </html>`;
@@ -3912,7 +4320,7 @@ export async function handleCreditRegionPackMap(request, env, deps) {
   }
   const userId = String(tokenResult.row && tokenResult.row.user_id || "").trim();
   const product = productResult.product;
-  await ensureCreditAccount(db, userId, deps);
+  const account = await ensureCreditAccount(db, userId, deps);
   if (String(product && product.id || "").trim().toLowerCase() === "world") {
     const estimate = await estimateRegionPack(db, userId, product, deps, { includeRows: false });
     if (estimate && estimate.error) {
@@ -3931,28 +4339,53 @@ export async function handleCreditRegionPackMap(request, env, deps) {
       env,
     );
   }
-  const estimate = await estimateRegionPack(db, userId, product, deps, { includeRows: true });
-  if (estimate && estimate.error) {
-    return html(
-      `<!doctype html><title>Planetka Region Pack</title><h1>Region pack estimate failed.</h1><p>${escapeHtmlText(estimate.error)}</p>`,
-      500,
-      env,
-    );
+  const ownedRows = await ownedTileRowsForUser(db, userId, deps);
+  const data = regionPackStaticMapPayload(product, token, account, ownedRows, { catalogMode: allowCatalogProduct });
+  return html(regionPackStaticMapHtml(data), 200, env);
+}
+
+export async function handleCreditRegionPackMapAsset(request, env, deps) {
+  const url = new URL(request.url);
+  const regionPackId = String(url.searchParams.get("region_pack_id") || url.searchParams.get("id") || "").trim();
+  const product = regionProductById(regionPackId);
+  if (!product || String(product.id || "").trim().toLowerCase() === "world") {
+    return deps.json({ ok: false, error: "region_pack_map_asset_not_available" }, 404, env);
   }
-  const upsells = [];
-  for (const relatedProduct of relatedHigherRegionProducts(product, 3)) {
-    const relatedEstimate = await estimateRegionPack(db, userId, relatedProduct, deps, { includeRows: true });
-    if (relatedEstimate && !relatedEstimate.error) {
-      const relatedPrice = normalizeCreditAmount(relatedEstimate && relatedEstimate.price_eur);
-      const relatedNewTiles = Math.max(0, Number.parseInt(relatedEstimate && relatedEstimate.new_tile_count || 0, 10) || 0);
-      if (relatedPrice <= 0 && relatedNewTiles <= 0) {
-        continue;
-      }
-      upsells.push(buildRegionPackUpsellCardData(relatedProduct, relatedEstimate));
-    }
+  const bucket = env && env.PLANETKA_DATA;
+  if (!bucket || typeof bucket.get !== "function") {
+    return deps.json({ ok: false, error: "r2_binding_unavailable" }, 500, env);
   }
-  const data = buildRegionPackMapData(product, estimate, { token, upsells, catalogMode: allowCatalogProduct });
-  return html(regionPackMapHtml(data), 200, env);
+  const object = await bucket.get(regionPackMapAssetKey(env, product.id));
+  if (!object || !object.body) {
+    return deps.json({ ok: false, error: "region_pack_map_asset_missing" }, 404, env);
+  }
+  return new Response(object.body, {
+    status: 200,
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "public, max-age=86400",
+      ...corsHeaders(env),
+    },
+  });
+}
+
+export async function handleCreditRegionPackCatalogAsset(request, env, deps) {
+  const bucket = env && env.PLANETKA_DATA;
+  if (!bucket || typeof bucket.get !== "function") {
+    return deps.json({ ok: false, error: "r2_binding_unavailable" }, 500, env);
+  }
+  const object = await bucket.get(regionPackCatalogAssetKey(env));
+  if (!object || !object.body) {
+    return deps.json({ ok: false, error: "region_pack_catalog_asset_missing" }, 404, env);
+  }
+  return new Response(object.body, {
+    status: 200,
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "public, max-age=86400",
+      ...corsHeaders(env),
+    },
+  });
 }
 
 export async function handleCreditRegionPackCatalog(request, env, deps) {
@@ -3975,8 +4408,18 @@ export async function handleCreditRegionPackCatalog(request, env, deps) {
     );
   }
   const userId = String(tokenResult.row && tokenResult.row.user_id || "").trim();
-  const data = await buildRegionPackCatalogData(db, userId, token, deps);
-  return html(regionPackCatalogHtml(data), 200, env);
+  const account = await ensureCreditAccount(db, userId, deps);
+  const ownedRows = await ownedTileRowsForUser(db, userId, deps);
+  return html(
+    regionPackStaticCatalogHtml({
+      ok: true,
+      token,
+      owned_tiles: ownedTilePayloadRows(ownedRows),
+      world_full_quality_unlocked: isWorldFullQualityUnlocked(account),
+    }),
+    200,
+    env,
+  );
 }
 
 export async function handleCreditSceneMap(request, env, deps) {
@@ -4017,7 +4460,7 @@ export async function handleCreditSceneMap(request, env, deps) {
   const contextProduct = contextProducts.length ? contextProducts[0] : null;
   const upsells = [];
   for (const product of contextProducts.slice(0, 4)) {
-    const relatedEstimate = await estimateRegionPack(db, userId, product, deps, { includeRows: true });
+    const relatedEstimate = await estimateRegionPackForMap(db, userId, product, deps);
     if (relatedEstimate && !relatedEstimate.error) {
       const relatedPrice = normalizeCreditAmount(relatedEstimate && relatedEstimate.price_eur);
       const relatedNewTiles = Math.max(0, Number.parseInt(relatedEstimate && relatedEstimate.new_tile_count || 0, 10) || 0);
@@ -4200,7 +4643,7 @@ export async function handleCreditPaymentSuccess(request, env, deps) {
       const contextProduct = contextProducts.length ? contextProducts[0] : null;
       const upsells = [];
       for (const product of contextProducts.slice(0, 4)) {
-        const relatedEstimate = await estimateRegionPack(db, userId, product, deps, { includeRows: true });
+        const relatedEstimate = await estimateRegionPackForMap(db, userId, product, deps);
         if (relatedEstimate && !relatedEstimate.error) {
           const relatedPrice = normalizeCreditAmount(relatedEstimate && relatedEstimate.price_eur);
           const relatedNewTiles = Math.max(0, Number.parseInt(relatedEstimate && relatedEstimate.new_tile_count || 0, 10) || 0);
@@ -4239,43 +4682,28 @@ export async function handleCreditPaymentSuccess(request, env, deps) {
           env,
         );
       }
-      const estimate = await estimateRegionPack(db, userId, product, deps, { includeRows: true });
-      if (estimate && !estimate.error) {
-        const upsells = [];
-        for (const relatedProduct of relatedHigherRegionProducts(product, 3)) {
-          const relatedEstimate = await estimateRegionPack(db, userId, relatedProduct, deps, { includeRows: true });
-          if (relatedEstimate && !relatedEstimate.error) {
-            const relatedPrice = normalizeCreditAmount(relatedEstimate && relatedEstimate.price_eur);
-            const relatedNewTiles = Math.max(0, Number.parseInt(relatedEstimate && relatedEstimate.new_tile_count || 0, 10) || 0);
-            if (relatedPrice <= 0 && relatedNewTiles <= 0) {
-              continue;
-            }
-            upsells.push(buildRegionPackUpsellCardData(relatedProduct, relatedEstimate));
-          }
-        }
-        const data = buildRegionPackMapData(product, estimate, {
-          token: tokenResult.token,
-          upsells,
-          catalogMode: true,
-          success,
-        });
-        data.summary.price_eur = amountPaidEur;
-        data.summary.full_price_eur = normalizeCreditAmount(
-          purchase && purchase.gross_eur
-            || metadata.planetka_gross_eur
-            || data.summary.full_price_eur,
-        );
-        data.summary.discount_eur = normalizeCreditAmount(
-          purchase && purchase.discount_eur
-            || (data.summary.full_price_eur - amountPaidEur)
-            || data.summary.discount_eur,
-        );
-        data.summary.discount_percent = Math.max(
-          0,
-          Number.parseInt(purchase && purchase.discount_percent || metadata.planetka_discount_percent || data.summary.discount_percent || 0, 10) || 0,
-        );
-        return html(regionPackMapHtml(data), 200, env);
-      }
+      const account = await ensureCreditAccount(db, userId, deps);
+      const ownedRows = await ownedTileRowsForUser(db, userId, deps);
+      const fullPrice = normalizeCreditAmount(
+        purchase && purchase.gross_eur
+          || metadata.planetka_gross_eur
+          || regionProductPricingSummary(product) && regionProductPricingSummary(product).gross_eur,
+      );
+      const discountEur = normalizeCreditAmount(
+        purchase && purchase.discount_eur
+          || (fullPrice - amountPaidEur)
+          || 0,
+      );
+      const data = regionPackStaticMapPayload(product, tokenResult.token, account, ownedRows, {
+        catalogMode: true,
+        success,
+        summaryOverride: {
+          full_price_cents: centsForEur(fullPrice),
+          discount_cents: centsForEur(discountEur),
+          price_cents: centsForEur(amountPaidEur),
+        },
+      });
+      return html(regionPackStaticMapHtml(data), 200, env);
     }
   }
 

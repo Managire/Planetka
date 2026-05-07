@@ -1525,6 +1525,7 @@ def update_resolve_size_estimates(
     full_tiles_override=None,
     include_full_price=True,
     async_full_price=False,
+    force_full_price_refresh=False,
 ):
     deps = _coerce_ctx(runtime).deps
     logger = deps.logger
@@ -1613,7 +1614,7 @@ def update_resolve_size_estimates(
         existing_signature = ""
     if not full_pricing_tiles:
         full_credits = 0.0
-    elif existing_signature == full_price_signature:
+    elif existing_signature == full_price_signature and not bool(force_full_price_refresh):
         try:
             if deps.resolve_estimate_full_credits_key in scene:
                 full_credits = float(max(0.0, float(scene.get(deps.resolve_estimate_full_credits_key, 0.0) or 0.0)))
