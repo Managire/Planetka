@@ -2,7 +2,7 @@ import math
 
 import bpy
 
-from ..auth import is_authenticated
+from ..auth import get_cloud_connection_status, is_authenticated
 from ..asset_builder import PLANETKA_ROOT_OBJECT_NAME, ensure_earth_surface_parent, ensure_planetka_root
 from ..error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from ..extension_prefs import mark_earth_object
@@ -55,6 +55,16 @@ def _require_authenticated_account(operator, prefs):
         fail(
             operator,
             "Connect Planetka API key before using remote Earth data.",
+            code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+            logger=logger,
+        )
+        return False
+    status = get_cloud_connection_status(prefs=prefs, force=True, timeout=4.0)
+    if not bool(status.get("online", False)):
+        message = str(status.get("message", "") or "").strip()
+        fail(
+            operator,
+            message or "Planetka Cloud is not reachable. Check your internet connection.",
             code=ErrorCode.RESOLVE_PRECHECK_FAILED,
             logger=logger,
         )

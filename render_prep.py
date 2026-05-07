@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 import bpy
 from bpy.props import BoolProperty, EnumProperty, StringProperty
 
-from .auth import allows_balanced_full_quality_for_context, is_authenticated
+from .auth import allows_balanced_full_quality_for_context, get_cloud_connection_status, is_authenticated
 from .asset_builder import (
     _ensure_surface_elevation_radius_driver,
     ensure_earth_surface_parent,
@@ -734,6 +734,18 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                     response=fail(
                         self,
                         "Connect Planetka API key before resolving remote Earth data.",
+                        code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                        logger=logger,
+                    ),
+                    ui_reports=ui_reports,
+                )
+            cloud_status = get_cloud_connection_status(prefs=prefs, force=False, timeout=3.0)
+            if not bool(cloud_status.get("online", False)):
+                return ResolvePrepareContextResult(
+                    response=fail(
+                        self,
+                        str(cloud_status.get("message", "") or "").strip()
+                        or "Planetka Cloud is not reachable. Check your internet connection.",
                         code=ErrorCode.RESOLVE_PRECHECK_FAILED,
                         logger=logger,
                     ),

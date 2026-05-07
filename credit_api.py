@@ -15,7 +15,14 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from uuid import uuid4
 
-from .auth import AuthApiError, get_api_base_url, get_authorized_headers, refresh_auth_session
+from .auth import (
+    AuthApiError,
+    get_api_base_url,
+    get_authorized_headers,
+    mark_planetka_cloud_offline,
+    mark_planetka_cloud_online,
+    refresh_auth_session,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -193,9 +200,11 @@ def _request_json(method: str, path: str, body=None, allow_refresh=True, timeout
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             raw = response.read() or b"{}"
+        mark_planetka_cloud_online()
         text = raw.decode("utf-8", errors="replace")
         return json.loads(text or "{}")
     except urllib.error.HTTPError as exc:
+        mark_planetka_cloud_online()
         raw = exc.read() or b"{}"
         text = raw.decode("utf-8", errors="replace")
         try:
@@ -210,8 +219,10 @@ def _request_json(method: str, path: str, body=None, allow_refresh=True, timeout
                 raise CreditApiError(exc.code, data.get("error") or "auth_failed", payload=data) from refresh_error
         raise CreditApiError(exc.code, data.get("error") or f"http_{exc.code}", payload=data) from exc
     except urllib.error.URLError as exc:
+        mark_planetka_cloud_offline(str(getattr(exc, "reason", exc) or exc))
         raise CreditApiError(0, f"network_error_{exc.reason}") from exc
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        mark_planetka_cloud_online()
         raise CreditApiError(0, "invalid_json_response") from exc
 
 

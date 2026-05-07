@@ -50,6 +50,16 @@ TIER_INTEGRITY_STATUS_MESSAGE = (
     "Planetka is locked until resolved. Contact info@planetka.io."
 )
 _ADDON_VERSION_CACHE = None
+_CLOUD_CONNECTION_CACHE = {
+    "checked": False,
+    "timestamp": 0.0,
+    "online": True,
+    "message": "",
+}
+_CLOUD_CONNECTION_TTL_SECONDS = 5.0
+_CLOUD_CONNECTION_OFFLINE_MESSAGE = "Planetka Cloud is not reachable. Check your internet connection."
+
+
 class AuthApiError(RuntimeError):
     def __init__(self, status, error, payload=None):
         super().__init__(str(error or f"http_{status}"))
@@ -149,7 +159,7 @@ def describe_auth_error(error):
     if "1010" in lowered:
         return "Planetka connection was blocked by a security check. Please try again later or contact support."
     if "network_error" in lowered:
-        return "Planetka could not connect right now. Check your internet connection and try again."
+        return _CLOUD_CONNECTION_OFFLINE_MESSAGE
     if "missing_stripe_payment_link_url" in lowered:
         return "Planetka checkout URL is not configured on the API."
     if "quality_mode_not_allowed" in lowered or "not_allowed_for_tier" in lowered or "insufficient_data" in lowered:
@@ -395,6 +405,123 @@ def _extract_commercial_use_allowed(payload, plan=None):
 
 def get_api_base_url():
     return DEFAULT_API_BASE_URL
+
+
+def _is_cloud_offline_status_message(message):
+    lowered = str(message or "").strip().lower()
+    return bool(
+        lowered.startswith(_CLOUD_CONNECTION_OFFLINE_MESSAGE.lower())
+        or "check your internet connection" in lowered
+        or "could not connect right now" in lowered
+    )
+
+
+def _set_auth_status_message(prefs, message):
+    if prefs is None:
+        return
+    try:
+        prefs.auth_status_message = str(message or "")
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed storing auth connection status", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed storing auth connection status", exc_info=True)
+
+
+def mark_planetka_cloud_online(prefs=None):
+    _CLOUD_CONNECTION_CACHE["checked"] = True
+    _CLOUD_CONNECTION_CACHE["timestamp"] = time.monotonic()
+    _CLOUD_CONNECTION_CACHE["online"] = True
+    _CLOUD_CONNECTION_CACHE["message"] = ""
+    prefs = prefs or get_prefs()
+    if prefs is not None and _is_cloud_offline_status_message(get_status_message(prefs)):
+        _set_auth_status_message(prefs, "")
+    _tag_ui_redraw()
+
+
+def mark_planetka_cloud_offline(reason="", prefs=None):
+    reason_text = str(reason or "").strip()
+    message = _CLOUD_CONNECTION_OFFLINE_MESSAGE
+    if reason_text:
+        logger.debug("Planetka Cloud reachability check failed: %s", reason_text)
+    _CLOUD_CONNECTION_CACHE["checked"] = True
+    _CLOUD_CONNECTION_CACHE["timestamp"] = time.monotonic()
+    _CLOUD_CONNECTION_CACHE["online"] = False
+    _CLOUD_CONNECTION_CACHE["message"] = message
+    prefs = prefs or get_prefs()
+    if prefs is not None and is_authenticated(prefs):
+        _set_auth_status_message(prefs, message)
+    _tag_ui_redraw()
+
+
+def get_cloud_connection_status(prefs=None, force=False, timeout=2.0):
+    prefs = prefs or get_prefs()
+    now = time.monotonic()
+    if (
+        not bool(force)
+        and bool(_CLOUD_CONNECTION_CACHE.get("checked", False))
+        and (now - float(_CLOUD_CONNECTION_CACHE.get("timestamp", 0.0) or 0.0)) < _CLOUD_CONNECTION_TTL_SECONDS
+    ):
+        return {
+            "online": bool(_CLOUD_CONNECTION_CACHE.get("online", False)),
+            "message": str(_CLOUD_CONNECTION_CACHE.get("message", "") or ""),
+            "checked": True,
+        }
+
+    url = f"{get_api_base_url().rstrip('/')}/health"
+    request = urllib.request.Request(url, method="GET", headers={"User-Agent": "Planetka-Blender"})
+    try:
+        with urllib.request.urlopen(request, timeout=max(0.5, float(timeout or 2.0))) as response:
+            status = int(getattr(response, "status", 200) or 200)
+            # Read a tiny response body so connection failures surface while
+            # keeping the check cheap for UI redraws.
+            response.read(256)
+        if 200 <= status < 500:
+            mark_planetka_cloud_online(prefs)
+            return {"online": True, "message": "", "checked": True}
+        message = f"Planetka Cloud is unavailable right now (HTTP {status})."
+        _CLOUD_CONNECTION_CACHE["checked"] = True
+        _CLOUD_CONNECTION_CACHE["timestamp"] = time.monotonic()
+        _CLOUD_CONNECTION_CACHE["online"] = False
+        _CLOUD_CONNECTION_CACHE["message"] = message
+        if prefs is not None and is_authenticated(prefs):
+            _set_auth_status_message(prefs, message)
+        _tag_ui_redraw()
+        return {"online": False, "message": message, "checked": True}
+    except urllib.error.HTTPError as exc:
+        status = int(getattr(exc, "code", 0) or 0)
+        if 200 <= status < 500:
+            mark_planetka_cloud_online(prefs)
+            return {"online": True, "message": "", "checked": True}
+        message = f"Planetka Cloud is unavailable right now (HTTP {status})."
+        _CLOUD_CONNECTION_CACHE["checked"] = True
+        _CLOUD_CONNECTION_CACHE["timestamp"] = time.monotonic()
+        _CLOUD_CONNECTION_CACHE["online"] = False
+        _CLOUD_CONNECTION_CACHE["message"] = message
+        if prefs is not None and is_authenticated(prefs):
+            _set_auth_status_message(prefs, message)
+        _tag_ui_redraw()
+        return {"online": False, "message": message, "checked": True}
+    except urllib.error.URLError as exc:
+        mark_planetka_cloud_offline(str(getattr(exc, "reason", exc) or exc), prefs=prefs)
+    except (TimeoutError, OSError, RuntimeError, TypeError, ValueError) as exc:
+        mark_planetka_cloud_offline(str(exc), prefs=prefs)
+    return {
+        "online": False,
+        "message": str(_CLOUD_CONNECTION_CACHE.get("message", "") or _CLOUD_CONNECTION_OFFLINE_MESSAGE),
+        "checked": True,
+    }
+
+
+def get_cached_cloud_connection_status():
+    return {
+        "online": bool(_CLOUD_CONNECTION_CACHE.get("online", False)),
+        "message": str(_CLOUD_CONNECTION_CACHE.get("message", "") or ""),
+        "checked": bool(_CLOUD_CONNECTION_CACHE.get("checked", False)),
+    }
+
+
+def is_planetka_cloud_online(prefs=None, force=False, timeout=2.0):
+    return bool(get_cloud_connection_status(prefs=prefs, force=force, timeout=timeout).get("online", False))
 
 
 def _tag_ui_redraw():
@@ -747,8 +874,10 @@ def _json_request(method, path, body=None, headers=None, timeout=30):
             raw = response.read()
             text = raw.decode("utf-8", errors="replace") if raw else "{}"
             data = json.loads(text or "{}")
+            mark_planetka_cloud_online()
             return int(getattr(response, "status", 200) or 200), data
     except urllib.error.HTTPError as exc:
+        mark_planetka_cloud_online()
         raw = exc.read()
         text = raw.decode("utf-8", errors="replace") if raw else "{}"
         try:
@@ -757,8 +886,10 @@ def _json_request(method, path, body=None, headers=None, timeout=30):
             data = {"error": text or f"http_{exc.code}"}
         raise AuthApiError(exc.code, data.get("error") or f"http_{exc.code}", payload=data) from exc
     except urllib.error.URLError as exc:
+        mark_planetka_cloud_offline(str(getattr(exc, "reason", exc) or exc))
         raise AuthApiError(0, f"network_error_{exc.reason}") from exc
     except ValueError as exc:
+        mark_planetka_cloud_online()
         raise AuthApiError(0, "invalid_json_response") from exc
 
 

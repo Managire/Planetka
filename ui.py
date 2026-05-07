@@ -9,6 +9,8 @@ from .auth import (
     AuthApiError,
     allows_animation_render_for_context,
     allows_balanced_full_quality_for_context,
+    get_cached_cloud_connection_status,
+    get_cloud_connection_status,
     get_connected_email,
     get_status_message,
     is_authenticated,
@@ -751,11 +753,22 @@ def _is_connected():
     from .extension_prefs import get_prefs
 
     prefs = get_prefs()
-    return bool(is_authenticated(prefs))
+    if not is_authenticated(prefs):
+        return False
+    try:
+        status = get_cloud_connection_status(prefs=prefs, force=False, timeout=1.5)
+    except (AuthApiError, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed checking Planetka Cloud connectivity", exc_info=True)
+        return False
+    return bool(status.get("online", False))
 
 
 def _account_panel_should_default_collapsed(context=None):
-    if not _is_connected():
+    prefs = get_prefs()
+    if not is_authenticated(prefs):
+        return False
+    cloud_status = get_cached_cloud_connection_status()
+    if not bool(cloud_status.get("checked", False)) or not bool(cloud_status.get("online", False)):
         return False
     target_scene = getattr(context, "scene", None) if context is not None else getattr(getattr(bpy, "context", None), "scene", None)
     if target_scene is None:
@@ -1030,7 +1043,13 @@ def _draw_account_panel(layout):
     global _ACCOUNT_PANEL_LAST_PROFILE_SYNC_AT
 
     prefs = get_prefs()
-    connected = _is_connected()
+    authenticated = bool(is_authenticated(prefs))
+    cloud_status = (
+        get_cloud_connection_status(prefs=prefs, force=False, timeout=1.5)
+        if authenticated
+        else {"online": False, "message": "", "checked": False}
+    )
+    connected = bool(authenticated and cloud_status.get("online", False))
     now_ts = time.time()
     if connected and (now_ts - float(_ACCOUNT_PANEL_LAST_PROFILE_SYNC_AT)) >= float(ACCOUNT_PANEL_PROFILE_SYNC_INTERVAL_SEC):
         _ACCOUNT_PANEL_LAST_PROFILE_SYNC_AT = now_ts
@@ -1038,12 +1057,18 @@ def _draw_account_panel(layout):
             sync_account_profile(prefs)
         except (AuthApiError, TypeError, ValueError, RuntimeError, AttributeError):
             logger.debug("Planetka: account panel profile sync failed", exc_info=True)
-    connected = _is_connected()
+    authenticated = bool(is_authenticated(prefs))
+    cloud_status = (
+        get_cloud_connection_status(prefs=prefs, force=False, timeout=1.5)
+        if authenticated
+        else {"online": False, "message": "", "checked": False}
+    )
+    connected = bool(authenticated and cloud_status.get("online", False))
     status_message = get_status_message(prefs)
     key_text = str(getattr(prefs, "auth_api_key_input", "") or "").strip()
     key_mask = str(getattr(prefs, "auth_api_key_mask", "") or "").strip()
     stored_key = str(getattr(prefs, "auth_api_key", "") or "").strip()
-    key_locked = bool(connected)
+    key_locked = bool(authenticated)
     inline_status_text, inline_status_icon, inline_status_alert = _api_key_inline_status(
         prefs,
         connected,
@@ -1079,9 +1104,23 @@ def _draw_account_panel(layout):
     except (TypeError, ValueError, RuntimeError, AttributeError):
         email = str(getattr(prefs, "auth_email", "") or "").strip()
     status_icon = "CHECKMARK" if connected else "ERROR"
-    status_text = "Status: Connected to Planetka cloud" if connected else "Status: Not connected"
-    layout.label(text=status_text, icon=status_icon)
+    if connected:
+        status_text = "Status: Connected to Planetka Cloud"
+    elif authenticated:
+        status_text = "Status: Not connected to Planetka Cloud"
+    else:
+        status_text = "Status: Not connected"
+    status_row = layout.row(align=True)
+    status_row.alert = not bool(connected)
+    status_row.label(text=status_text, icon=status_icon)
     layout.label(text=f"Account: {email or '-'}", icon="USER")
+
+    cloud_message = str(cloud_status.get("message", "") or "").strip()
+    if authenticated and not connected:
+        warning_box = layout.box()
+        warning_box.alert = True
+        warning_box.label(text="Planetka Cloud connection required.", icon="ERROR")
+        warning_box.label(text=cloud_message or "Check your internet connection and try again.")
 
     if connected:
         credit_payload = {}
@@ -1157,7 +1196,7 @@ def _draw_account_panel(layout):
 
     action_row = layout.row(align=True)
     logout_row = action_row.row(align=True)
-    logout_row.enabled = connected
+    logout_row.enabled = authenticated
     logout_row.operator("planetka.account_logout", text="Log Out", icon="X")
 
     if status_message:
