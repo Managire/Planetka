@@ -5,6 +5,7 @@ import {
   GENERATED_REGION_PACK_OUTLINES,
   GENERATED_REGION_PACK_PRODUCTS,
   GENERATED_REGION_PACK_TILE_KEYS,
+  GENERATED_REGION_PACK_TILE_GROSS_CENTS,
   GENERATED_REGION_PACK_TILE_REFS,
 } from "./region_packs.generated.js";
 
@@ -259,6 +260,18 @@ function discountedRegionPackAmount(grossEur, discountPercent) {
   const discount = normalizeCreditAmount(gross * (Math.max(0, Math.min(95, Number.parseInt(discountPercent || 0, 10) || 0)) / 100.0));
   const price = normalizeCreditAmount(Math.max(0, gross - discount));
   return { gross, discount, price };
+}
+
+function generatedTileGrossCents(tileKey) {
+  const key = normalizeTileKey(tileKey);
+  if (!key) {
+    return 0;
+  }
+  return Math.max(0, Number.parseInt(GENERATED_REGION_PACK_TILE_GROSS_CENTS && GENERATED_REGION_PACK_TILE_GROSS_CENTS[key] || 0, 10) || 0);
+}
+
+function generatedTileGrossEur(tileKey) {
+  return normalizeCreditAmount(generatedTileGrossCents(tileKey) / 100.0);
 }
 
 function countryNameByRegionId(regionId) {
@@ -652,26 +665,29 @@ async function estimateRegionPackSummary(db, userId, product, deps) {
 
   let coveredGrossEur = 0;
   let coveredPaidTileCount = 0;
-  if (coveredKeys.length && coveredKeys.length < summary.licensable_tile_count) {
-    const coveredPricing = await backendPricingRecordsForTileKeys(db, coveredKeys, "full", deps);
-    coveredGrossEur = normalizeCreditAmount((coveredPricing || []).reduce(
-      (total, row) => total + normalizeCreditAmount(row && row.credits),
-      0,
-    ));
-    coveredPaidTileCount = (coveredPricing || []).filter((row) => normalizeCreditAmount(row && row.credits) > 0).length;
-  } else if (coveredKeys.length && coveredKeys.length >= summary.licensable_tile_count) {
+  if (coveredKeys.length && coveredKeys.length >= summary.licensable_tile_count) {
     coveredGrossEur = summary.gross_eur;
     coveredPaidTileCount = summary.paid_tile_count;
+  } else if (coveredKeys.length) {
+    let coveredCents = 0;
+    for (const key of coveredKeys) {
+      const cents = generatedTileGrossCents(key);
+      coveredCents += cents;
+      if (cents > 0) {
+        coveredPaidTileCount += 1;
+      }
+    }
+    coveredGrossEur = normalizeCreditAmount(coveredCents / 100.0);
   }
 
   let upgradeCreditEur = 0;
   const uniqueUpgradeKeys = normalizeTileKeys(upgradeOwnedKeys);
   if (uniqueUpgradeKeys.length) {
-    const upgradePricing = await backendPricingRecordsForTileKeys(db, uniqueUpgradeKeys, "full", deps);
-    upgradeCreditEur = normalizeCreditAmount((upgradePricing || []).reduce(
-      (total, row) => total + normalizeCreditAmount(row && row.credits),
-      0,
-    ));
+    let upgradeCents = 0;
+    for (const key of uniqueUpgradeKeys) {
+      upgradeCents += generatedTileGrossCents(key);
+    }
+    upgradeCreditEur = normalizeCreditAmount(upgradeCents / 100.0);
   }
 
   const grossEur = normalizeCreditAmount(Math.max(0, summary.gross_eur - coveredGrossEur - upgradeCreditEur));
@@ -1997,12 +2013,13 @@ async function regionPackEntitlementRowsForGrant(db, userId, product, deps) {
     if (ownedDLevels.some((ownedD) => Number(ownedD) <= Number(parsed.d))) {
       continue;
     }
+    const gross = generatedTileGrossEur(tileKey);
     rows.push({
       tile_key: tileKey,
-      credits: 0,
-      gross_credits: 0,
-      price_eur: 0,
-      gross_price_eur: 0,
+      credits: gross,
+      gross_credits: gross,
+      price_eur: gross,
+      gross_price_eur: gross,
       land_km2: 0,
       billable_land_km2: 0,
       source: "stripe_region_pack_summary",

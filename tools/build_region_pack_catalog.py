@@ -1693,6 +1693,11 @@ def build_catalog(gpkg_path: Path, tile_db_path: Path = DEFAULT_TILE_DB) -> dict
         "local_product_count": len(local_products),
         "product_count": len(products),
         "merge_report": merge_report,
+        "tile_gross_cents": {
+            key: int(record.get("gross_cents") or 0)
+            for key, record in tile_pricing.items()
+            if int(record.get("gross_cents") or 0) > 0
+        },
         "products": products,
     }
 
@@ -1727,6 +1732,7 @@ def write_json(path: Path, payload: dict):
 
 def normalized_outline_catalog(catalog: dict) -> dict:
     payload = dict(catalog)
+    payload.pop("tile_gross_cents", None)
     outlines = {}
     products = []
     for product in catalog.get("products") or []:
@@ -1784,6 +1790,8 @@ def write_js(path: Path, catalog: dict):
     lines.append("};")
     lines.append("")
     lines.append(f"export const GENERATED_REGION_PACK_TILE_REFS = {json.dumps(tile_refs_by_product, ensure_ascii=True, separators=(',', ':'))};")
+    lines.append("")
+    lines.append(f"export const GENERATED_REGION_PACK_TILE_GROSS_CENTS = {json.dumps(catalog.get('tile_gross_cents') or {}, ensure_ascii=True, separators=(',', ':'))};")
     detail_payload = {}
     for payload in pack_payloads:
         detail_payload[payload["id"]] = {

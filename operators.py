@@ -1096,6 +1096,15 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
                     logger.debug("Planetka: failed clearing credit cache after Standard unlock check", exc_info=True)
                 self.report({'INFO'}, "Standard Quality is already unlocked.")
                 return {'FINISHED'}
+            if option == "REGION_PACK":
+                try:
+                    from .credit_api import clear_credit_caches
+                    clear_credit_caches()
+                except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+                    logger.debug("Planetka: failed clearing credit cache after region pack no-payment check", exc_info=True)
+                pack_name = str(getattr(self, "region_pack_name", "") or "Region Pack").strip()
+                self.report({'INFO'}, f"{pack_name} is already licenced or has no newly charged tiles.")
+                return {'FINISHED'}
             scene = getattr(context, "scene", None)
             _scene_full_quality_price_eur(scene)
             _run_camera_full_quality_resolve_after_checkout(scene)
