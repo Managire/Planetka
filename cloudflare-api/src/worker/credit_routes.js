@@ -625,8 +625,10 @@ async function estimateRegionPackSummary(db, userId, product, deps) {
   if (!summary) {
     return { error: "missing_region_pack_summary" };
   }
+  const discountPercent = Math.max(0, Math.min(95, Number.parseInt(product && product.discount_percent || 0, 10) || 0));
   const account = await ensureCreditAccount(db, userId, deps);
   if (isWorldFullQualityUnlocked(account)) {
+    const alreadyLicencedAmounts = discountedRegionPackAmount(summary.gross_eur, discountPercent);
     return {
       ok: true,
       summary_estimate: true,
@@ -635,10 +637,12 @@ async function estimateRegionPackSummary(db, userId, product, deps) {
       region_pack_id: String(product.id || ""),
       region_pack_name: String(product.name || ""),
       catalog_version: REGION_PACK_CATALOG_VERSION,
-      discount_percent: Math.max(0, Math.min(95, Number.parseInt(product && product.discount_percent || 0, 10) || 0)),
+      discount_percent: discountPercent,
       gross_eur: 0,
       gross_price_eur: 0,
       discount_eur: 0,
+      already_licenced_gross_eur: alreadyLicencedAmounts.gross,
+      already_licenced_saving_eur: alreadyLicencedAmounts.price,
       credits: 0,
       price_eur: 0,
       paid_tile_count: 0,
@@ -653,7 +657,6 @@ async function estimateRegionPackSummary(db, userId, product, deps) {
     };
   }
   const tileKeys = regionProductTileKeys(product);
-  const discountPercent = Math.max(0, Math.min(95, Number.parseInt(product && product.discount_percent || 0, 10) || 0));
   const ownedRows = await deps.dbAll(
     db,
     `
@@ -728,6 +731,7 @@ async function estimateRegionPackSummary(db, userId, product, deps) {
 
   const grossEur = normalizeCreditAmount(Math.max(0, summary.gross_eur - coveredGrossEur - upgradeCreditEur));
   const amounts = discountedRegionPackAmount(grossEur, discountPercent);
+  const alreadyLicencedAmounts = discountedRegionPackAmount(coveredGrossEur, discountPercent);
   const paidTileCount = Math.max(0, summary.paid_tile_count - coveredPaidTileCount);
   const freeTileCount = Math.max(0, summary.tile_count - paidTileCount);
   return {
@@ -741,6 +745,8 @@ async function estimateRegionPackSummary(db, userId, product, deps) {
     gross_eur: amounts.gross,
     gross_price_eur: amounts.gross,
     discount_eur: amounts.discount,
+    already_licenced_gross_eur: alreadyLicencedAmounts.gross,
+    already_licenced_saving_eur: alreadyLicencedAmounts.price,
     credits: amounts.price,
     price_eur: amounts.price,
     paid_tile_count: paidTileCount,
@@ -777,6 +783,11 @@ async function estimateRegionPack(db, userId, product, deps, options = {}) {
   const amounts = discountedRegionPackAmount(grossEur, discountPercent);
   const discountEur = amounts.discount;
   const priceEur = amounts.price;
+  const alreadyLicencedGrossEur = normalizeCreditAmount((Array.isArray(gross && gross.excluded_tiles) ? gross.excluded_tiles : []).reduce(
+    (total, row) => total + normalizeCreditAmount(row && (row.gross_price_eur ?? row.gross_credits ?? row.price_eur ?? row.credits)),
+    0,
+  ));
+  const alreadyLicencedAmounts = discountedRegionPackAmount(alreadyLicencedGrossEur, discountPercent);
   return {
     ok: true,
     region_pack: regionProductPublicPayload(product),
@@ -787,6 +798,8 @@ async function estimateRegionPack(db, userId, product, deps, options = {}) {
     gross_eur: grossEur,
     gross_price_eur: grossEur,
     discount_eur: discountEur,
+    already_licenced_gross_eur: alreadyLicencedAmounts.gross,
+    already_licenced_saving_eur: alreadyLicencedAmounts.price,
     credits: priceEur,
     price_eur: priceEur,
     paid_tile_count: Math.max(0, Number.parseInt(gross && gross.paid_tile_count || 0, 10) || 0),
@@ -1022,7 +1035,6 @@ function allocatedRegionPackTileRows(estimate) {
     const parsed = parseRegionMapTile(row);
     const key = normalizeTileKey(row && row.tile_key || "");
     const allocatedCents = Math.max(0, Number(allocations.get(key) || 0) || 0);
-    const normalCents = centsForEur(row && (row.credits ?? row.price_eur));
     const grossCents = centsForEur(row && (row.gross_credits ?? row.gross_price_eur ?? row.credits ?? row.price_eur));
     let status = "free";
     if (Boolean(row && row.already_owned)) {
@@ -1042,7 +1054,8 @@ function allocatedRegionPackTileRows(estimate) {
       lat_max: parsed ? parsed.y - 90 + parsed.z : null,
       status,
       price_eur: normalizeCreditAmount(allocatedCents / 100.0),
-      normal_price_eur: normalizeCreditAmount(normalCents / 100.0),
+      full_price_eur: normalizeCreditAmount(grossCents / 100.0),
+      normal_price_eur: normalizeCreditAmount(grossCents / 100.0),
       original_price_eur: normalizeCreditAmount(grossCents / 100.0),
       land_km2: normalizeMetricAmount(row && row.land_km2),
       billable_land_km2: normalizeMetricAmount(row && row.billable_land_km2),
@@ -1109,6 +1122,7 @@ function buildRegionPackMapData(product, estimate) {
       new_tiles: Math.max(0, Number.parseInt(estimate && estimate.new_tile_count || 0, 10) || 0),
       total_tiles: Math.max(0, Number.parseInt(estimate && estimate.tile_count || 0, 10) || 0),
       already_licenced_tiles: Math.max(0, Array.isArray(estimate && estimate.excluded_tiles) ? estimate.excluded_tiles.length : 0),
+      already_licenced_saving_eur: normalizeCreditAmount(estimate && estimate.already_licenced_saving_eur),
       full_price_eur: normalizeCreditAmount(estimate && estimate.gross_eur),
       discount_percent: Math.max(0, Number.parseInt(estimate && estimate.discount_percent || 0, 10) || 0),
       discount_eur: normalizeCreditAmount(estimate && estimate.discount_eur),
@@ -1179,12 +1193,12 @@ select{background:#262626;color:var(--text);border:1px solid var(--line);border-
 <body>
 <main>
 <h1>${escapeHtmlText(name)} Full Quality Pack</h1>
-<p class="muted">This is the same backend estimate used by Blender. Tile prices shown on hover are user-specific: already licenced tiles are €0.00.</p>
+<p class="muted">Tile prices shown on hover are user-specific: already licenced tiles are €0.00.</p>
 <section class="cards">
 <div class="card"><span>New Tiles</span><b>${Number(summary.new_tiles || 0)}</b></div>
 <div class="card"><span>Total Tiles</span><b>${Number(summary.total_tiles || 0)}</b></div>
 <div class="card"><span>Full Price</span><b>€${Number(summary.full_price_eur || 0).toFixed(2)}</b></div>
-<div class="card"><span>Volume Discount</span><b>${Number(summary.discount_percent || 0)}%</b></div>
+<div class="card"><span>Volume Discount</span><b>${Number(summary.discount_percent || 0)}% (-€${Number(summary.discount_eur || 0).toFixed(2)})</b></div>
 <div class="card"><span>Your Price</span><b>€${Number(summary.price_eur || 0).toFixed(2)}</b></div>
 </section>
 <section class="panel">
@@ -1200,11 +1214,8 @@ select{background:#262626;color:var(--text);border:1px solid var(--line);border-
 </div>
 </section>
 <section class="panel">
-<h2>Included Areas</h2>
+<h2>Included Countries / Areas</h2>
 <div class="countries">${countries.map((country) => `<div>${escapeHtmlText(country)}</div>`).join("")}</div>
-</section>
-<section class="panel small muted">
-<p>Price check: the sum of visible charged tile prices for all detail levels is €${Number(summary.tile_price_sum_eur || 0).toFixed(2)} and the pack price is €${Number(summary.price_eur || 0).toFixed(2)}.</p>
 </section>
 </main>
 <script>const DATA=${payload};
@@ -1223,7 +1234,7 @@ function render(level){const svg=document.getElementById("map");svg.replaceChild
   for(const tile of rows){const a=xy(tile.lon_min,tile.lat_max), b=xy(tile.lon_max,tile.lat_min); const cls=tile.status==="new"?"var(--new)":(tile.status==="licenced"?"var(--licenced)":"var(--free)");
     if(tile.status==="new"){newCount++; price+=Number(tile.price_eur||0)} else if(tile.status==="licenced"){licencedCount++} else {freeCount++}
     const r=el("rect",{x:a[0],y:a[1],width:Math.max(1,b[0]-a[0]),height:Math.max(1,b[1]-a[1]),fill:cls,stroke:"#fff","stroke-width":"0.45",opacity:tile.status==="new"?"0.58":"0.43"});
-    const title=el("title",{}); title.textContent=tile.tile_key+"\\nStatus: "+tile.status+"\\nPack price: "+fmt(tile.price_eur)+"\\nNormal price: "+fmt(tile.normal_price_eur)+"\\nLand: "+Number(tile.billable_land_km2||0).toFixed(2)+" km²"; r.appendChild(title); svg.appendChild(r);}
+    const title=el("title",{}); title.textContent=tile.tile_key+"\\nLand: "+Number(tile.billable_land_km2||0).toFixed(2)+" km²"+"\\nStatus: "+tile.status+"\\nFull price: "+fmt(tile.full_price_eur)+"\\nYour price: "+fmt(tile.price_eur); r.appendChild(title); svg.appendChild(r);}
   document.getElementById("levelSummary").textContent=rows.length+" tiles at z"+String(level).padStart(3,"0")+" · new "+newCount+" · already licenced "+licencedCount+" · free "+freeCount+" · visible-level price "+fmt(price);
 }
 const levels=(DATA.levels&&DATA.levels.length?DATA.levels:[1]); const select=document.getElementById("levelSelect");
@@ -2974,6 +2985,8 @@ export async function handleCreditRegionOffers(request, env, deps) {
       gross_eur: normalizeCreditAmount(estimate && estimate.gross_eur),
       gross_price_eur: normalizeCreditAmount(estimate && estimate.gross_price_eur),
       discount_eur: normalizeCreditAmount(estimate && estimate.discount_eur),
+      already_licenced_gross_eur: normalizeCreditAmount(estimate && estimate.already_licenced_gross_eur),
+      already_licenced_saving_eur: normalizeCreditAmount(estimate && estimate.already_licenced_saving_eur),
       credits: normalizeCreditAmount(estimate && estimate.credits),
       price_eur: priceEur,
       paid_tile_count: Math.max(0, Number.parseInt(estimate && estimate.paid_tile_count || 0, 10) || 0),
@@ -3328,6 +3341,108 @@ export async function handleCreditPurchaseHistory(request, env, deps) {
       user_id: String(auth.user.id || ""),
       user_email: String(auth.user.email || ""),
       purchases,
+    },
+    200,
+    env,
+  );
+}
+
+export async function handleCreditLicencedDownloadReport(request, env, deps) {
+  const auth = await deps.requireAuthenticatedUserContext(request, env, { enforceApiKeyDevicePolicy: false });
+  if (auth.error) {
+    return auth.error;
+  }
+  const db = deps.requireDb(env);
+  await deps.ensureCreditTables(db);
+  await ensureCreditAccount(db, auth.user.id, deps);
+  const body = await deps.parseJson(request);
+  const maxBytes = 20 * 1024 * 1024 * 1024 * 1024;
+  const downloadedBytes = Math.min(
+    maxBytes,
+    deps.clampNonNegativeInt(body && (body.downloaded_bytes ?? body.downloadedBytes ?? body.bytes)),
+  );
+  const downloadedTiles = Math.min(
+    10000000,
+    deps.clampNonNegativeInt(body && (body.downloaded_tile_count ?? body.downloadedTileCount ?? body.tiles)),
+  );
+  const downloadedFiles = Math.min(
+    10000000,
+    deps.clampNonNegativeInt(body && (body.downloaded_file_count ?? body.downloadedFileCount ?? body.files)),
+  );
+  const skippedExistingFiles = Math.min(
+    10000000,
+    deps.clampNonNegativeInt(body && (body.skipped_existing_files ?? body.skippedExistingFiles)),
+  );
+  const missingFiles = Math.min(
+    10000000,
+    deps.clampNonNegativeInt(body && (body.missing_files ?? body.missingFiles)),
+  );
+  const period = String(body && body.period || "ALL").trim().toUpperCase().slice(0, 32) || "ALL";
+  const status = String(body && body.status || "FINISHED").trim().toUpperCase().slice(0, 32) || "FINISHED";
+  const source = String(body && body.source || "blender_download_licenced").trim().slice(0, 80) || "blender_download_licenced";
+  if (downloadedBytes <= 0 && downloadedTiles <= 0 && downloadedFiles <= 0) {
+    return deps.json({ ok: true, recorded: false }, 200, env);
+  }
+  const userId = String(auth.user.id || "").trim();
+  const now = deps.nowIso();
+  await deps.dbRun(
+    db,
+    `
+      INSERT INTO user_licenced_download_events (
+        id, user_id, downloaded_bytes, downloaded_tiles, downloaded_files,
+        skipped_existing_files, missing_files, period, status, source, created_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    [
+      deps.randomToken(16),
+      userId,
+      downloadedBytes,
+      downloadedTiles,
+      downloadedFiles,
+      skippedExistingFiles,
+      missingFiles,
+      period,
+      status,
+      source,
+      now,
+    ],
+  );
+  await deps.dbRun(
+    db,
+    `
+      INSERT INTO user_licenced_download_stats (
+        user_id, total_downloaded_bytes, total_downloaded_tiles, total_downloaded_files, last_downloaded_at
+      )
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(user_id) DO UPDATE SET
+        total_downloaded_bytes = user_licenced_download_stats.total_downloaded_bytes + excluded.total_downloaded_bytes,
+        total_downloaded_tiles = user_licenced_download_stats.total_downloaded_tiles + excluded.total_downloaded_tiles,
+        total_downloaded_files = user_licenced_download_stats.total_downloaded_files + excluded.total_downloaded_files,
+        last_downloaded_at = excluded.last_downloaded_at
+    `,
+    [userId, downloadedBytes, downloadedTiles, downloadedFiles, now],
+  );
+  if (typeof deps.invalidateAnalyticsSnapshots === "function") {
+    try {
+      await deps.invalidateAnalyticsSnapshots(env);
+    } catch (error) {
+      console.warn(
+        "planetka.licenced_download.analytics_snapshot_invalidate_failed",
+        JSON.stringify({
+          error: String(error && error.message || "analytics_snapshot_invalidate_failed"),
+          user_id: userId,
+        }),
+      );
+    }
+  }
+  return deps.json(
+    {
+      ok: true,
+      recorded: true,
+      downloaded_bytes: downloadedBytes,
+      downloaded_tile_count: downloadedTiles,
+      downloaded_file_count: downloadedFiles,
     },
     200,
     env,

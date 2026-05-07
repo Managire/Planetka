@@ -52,7 +52,6 @@ RESOLVE_FAILURE_FLAG_KEY = "planetka_resolve_integrity_failed"
 RESOLVE_FAILURE_MESSAGE_KEY = "planetka_resolve_integrity_message"
 LAST_RESOLVE_TEXTURE_QUALITY_MODE_KEY = "planetka_last_resolve_texture_quality_mode"
 EARTH_TRANSFORM_SECTION_OPEN_KEY = "planetka_ui_earth_transform_open"
-DATA_CONTROL_MORE_OPTIONS_SECTION_OPEN_KEY = "planetka_ui_data_more_options_open"
 STANDARD_RESOLUTION_INFO_URL = "https://www.planetka.io/blender/standard-resolution-info"
 EARTH_RADIUS_SAFE_MIN_BU = 0.2
 EARTH_RADIUS_SAFE_MAX_BU = 20.0
@@ -945,7 +944,6 @@ def _draw_broader_region_offers(layout, scene, active_view_scope=False):
     if not offers:
         layout.label(text="No broader packs available for this view yet.", icon="INFO")
         return
-    layout.label(text="Broader Full Quality packs:", icon="WORLD_DATA")
     for offer in offers[:4]:
         name = str(offer.get("name", "") or offer.get("region_pack_name", "") or "Region Pack").strip()
         region_id = str(offer.get("id", "") or offer.get("region_pack_id", "") or "").strip()
@@ -971,46 +969,29 @@ def _draw_broader_region_offers(layout, scene, active_view_scope=False):
             total_tiles = max(0, int(offer.get("tile_count", 0) or 0))
         except (TypeError, ValueError):
             total_tiles = 0
-        offer_box = layout.box()
-        title_row = offer_box.row(align=True)
-        title_row.label(text=name, icon="WORLD")
-        if discount > 0:
-            title_row.label(text=f"{discount}% volume discount")
-        info = title_row.operator("planetka.region_pack_info", text="", icon="INFO")
-        info.region_pack_id = region_id
-        info.region_pack_name = name
+        try:
+            already_licenced_count = max(0, int(offer.get("already_licenced_tile_count", 0) or 0))
+        except (TypeError, ValueError):
+            already_licenced_count = 0
+        try:
+            already_licenced_saving = max(0.0, float(offer.get("already_licenced_saving_eur", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            already_licenced_saving = 0.0
+        try:
+            discount_eur = max(0.0, float(offer.get("discount_eur", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            discount_eur = 0.0
         countries = offer.get("included_countries", ())
-        if isinstance(countries, (list, tuple)):
-            info.included_countries = "|".join(str(country).strip() for country in countries if str(country).strip())
-        else:
-            info.included_countries = str(countries or "")
-        info.new_tile_count = int(new_tiles)
-        info.total_tile_count = int(total_tiles)
-        try:
-            info.already_licenced_tile_count = max(0, int(offer.get("already_licenced_tile_count", 0) or 0))
-        except (TypeError, ValueError):
-            info.already_licenced_tile_count = 0
-        info.full_price_eur = float(gross)
-        info.discount_percent = int(discount)
-        try:
-            info.discount_eur = max(0.0, float(offer.get("discount_eur", 0.0) or 0.0))
-        except (TypeError, ValueError):
-            info.discount_eur = 0.0
-        info.price_eur = float(price)
-        offer_box.label(text=f"New Tiles: {new_tiles}", icon="TEXTURE")
-        if total_tiles > 0:
-            offer_box.label(text=f"Total Tiles: {total_tiles}", icon="GRID")
-        if gross > 0:
-            offer_box.label(text=f"Full Price: {_fmt_eur(gross)}", icon="SOLO_ON")
-        if price <= 0 and new_tiles <= 0:
-            offer_box.label(text="Already Licenced", icon="CHECKMARK")
-        elif price <= 0:
-            offer_box.label(text="No charge for new tiles", icon="CHECKMARK")
+        included_countries = (
+            "|".join(str(country).strip() for country in countries if str(country).strip())
+            if isinstance(countries, (list, tuple))
+            else str(countries or "")
+        )
         fully_licenced = bool(price <= 0 and new_tiles <= 0)
-        action_row = offer_box.row(align=True)
-        if fully_licenced:
-            action_row.enabled = False
-        action = action_row.operator(
+        action_row = layout.row(align=True)
+        action_button = action_row.row(align=True)
+        action_button.enabled = not fully_licenced
+        action = action_button.operator(
             "planetka.open_credit_checkout",
             text=(
                 "Already Licenced"
@@ -1022,23 +1003,19 @@ def _draw_broader_region_offers(layout, scene, active_view_scope=False):
         action.checkout_option = "REGION_PACK"
         action.region_pack_id = region_id
         action.region_pack_name = name
-        if isinstance(countries, (list, tuple)):
-            action.included_countries = "|".join(str(country).strip() for country in countries if str(country).strip())
-        else:
-            action.included_countries = str(countries or "")
-        action.confirm_new_tile_count = int(new_tiles)
-        action.confirm_total_tile_count = int(total_tiles)
-        try:
-            action.confirm_already_licenced_tile_count = max(0, int(offer.get("already_licenced_tile_count", 0) or 0))
-        except (TypeError, ValueError):
-            action.confirm_already_licenced_tile_count = 0
-        action.confirm_full_price_eur = float(gross)
-        action.confirm_discount_percent = int(discount)
-        try:
-            action.confirm_discount_eur = max(0.0, float(offer.get("discount_eur", 0.0) or 0.0))
-        except (TypeError, ValueError):
-            action.confirm_discount_eur = 0.0
-        action.confirm_price_eur = float(price)
+        action.included_countries = included_countries
+        info = action_row.operator("planetka.region_pack_info", text="", icon="INFO")
+        info.region_pack_id = region_id
+        info.region_pack_name = name
+        info.included_countries = included_countries
+        info.new_tile_count = int(new_tiles)
+        info.total_tile_count = int(total_tiles)
+        info.already_licenced_tile_count = int(already_licenced_count)
+        info.already_licenced_saving_eur = float(already_licenced_saving)
+        info.full_price_eur = float(gross)
+        info.discount_percent = int(discount)
+        info.discount_eur = float(discount_eur)
+        info.price_eur = float(price)
 
 
 def _draw_account_panel(layout):
@@ -1366,14 +1343,6 @@ def _draw_live_telemetry(layout, scene):
                 or str(credit_account.get("world_full_quality_unlocked_at", "") or "").strip()
             )
         )
-        try:
-            standard_price = float(
-                credit_account.get("standard_quality_price_eur", credit_account.get("balanced_quality_price_eur", 50.0))
-                or 50.0
-            )
-        except (AttributeError, TypeError, ValueError):
-            standard_price = 50.0
-
         selected_auto_quality = _normalize_texture_quality_for_ui(getattr(props, "texture_quality_mode", "PREVIEW"))
         if selected_auto_quality == "BALANCED" and not standard_unlocked:
             selected_auto_quality = "PREVIEW"
@@ -1401,19 +1370,12 @@ def _draw_live_telemetry(layout, scene):
             depress=(selected_auto_quality == "BALANCED"),
         ).texture_quality_mode = "BALANCED"
         standard_col.label(text=_estimate_mb_label("BALANCED"), icon="DISK_DRIVE")
-        if standard_unlocked:
-            standard_col.label(text="Unlocked", icon="CHECKMARK")
-        else:
-            unlock_row = standard_col.row(align=True)
-            unlock_row.operator(
-                "planetka.open_credit_checkout",
-                text=f"Unlock €{max(0.0, standard_price):.0f}",
-                icon="URL",
-            ).checkout_option = "STANDARD_UNLOCK"
+        if not standard_unlocked:
+            unlock_row = standard_box.row(align=True)
             unlock_row.operator(
                 "wm.url_open",
-                text="",
-                icon="INFO",
+                text="Unlock standard quality permanently",
+                icon="URL",
             ).url = STANDARD_RESOLUTION_INFO_URL
 
         quick_preview_prepared = _is_animation_prepared(scene)
@@ -1481,15 +1443,22 @@ def _draw_live_telemetry(layout, scene):
                 icon="CAMERA_DATA",
             )
         else:
-            full_size_row = full_box.row(align=True)
-            full_size_row.label(text=f"Data Size: {_estimate_mb_label('FULL')}", icon="DISK_DRIVE")
+            full_meta_row = full_box.row(align=True)
+            full_meta_row.label(text=_estimate_mb_label("FULL"), icon="DISK_DRIVE")
+            if credit_known:
+                balance_meta = full_meta_row.row(align=True)
+                balance_meta.alignment = 'RIGHT'
+                if credit_balance < 0.0:
+                    balance_meta.alert = True
+                balance_meta.label(text=f"Balance: €{credit_balance:.2f}", icon="USER")
 
         if credit_known:
-            credit_notice = full_box.row(align=True)
-            if credit_balance < 0.0:
-                credit_notice.alert = True
-            credit_notice.label(text=f"Balance: €{credit_balance:.2f}", icon="USER")
-            add_balance_row = credit_notice.row(align=True)
+            if active_view_scope:
+                credit_notice = full_box.row(align=True)
+                if credit_balance < 0.0:
+                    credit_notice.alert = True
+                credit_notice.label(text=f"Balance: €{credit_balance:.2f}", icon="USER")
+            add_balance_row = full_box.row(align=True)
             add_balance_row.alert = bool(credit_balance < 0.0)
             add_balance_row.operator(
                 "planetka.open_credit_checkout",
@@ -1512,19 +1481,12 @@ def _draw_live_telemetry(layout, scene):
             estimate_notice = full_box.row(align=True)
             estimate_notice.label(text="Full Quality price is being calculated.", icon="INFO")
 
-        more_box = _draw_collapsible_subsection(
-            quality_box,
-            scene,
-            "More Options",
-            "PREFERENCES",
-            DATA_CONTROL_MORE_OPTIONS_SECTION_OPEN_KEY,
-            default_open=False,
-        )
-        if more_box is not None:
-            if world_full_quality_unlocked:
-                more_box.label(text="All broader Full Quality packs are already licenced.", icon="CHECKMARK")
-            else:
-                _draw_broader_region_offers(more_box, scene, active_view_scope=active_view_scope)
+        data_packs_box = quality_box.box()
+        data_packs_box.label(text="Full Quality Data Packs", icon="WORLD_DATA")
+        if world_full_quality_unlocked:
+            data_packs_box.label(text="All broader Full Quality packs are already licenced.", icon="CHECKMARK")
+        else:
+            _draw_broader_region_offers(data_packs_box, scene, active_view_scope=active_view_scope)
 
     throttle_message = str(get_status_message(prefs) or "").strip()
     if throttle_message and "throttl" in throttle_message.lower():

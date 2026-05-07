@@ -268,7 +268,7 @@ export function parseAnalyticsUsersSort(value) {
   const normalized = String(value || "").trim().toLowerCase();
   if (normalized === "resolves") return "paid_resolves";
   if (normalized === "lifetime") return "preview_lifetime";
-  const allowed = new Set(["balance", "paid_eur", "standard", "paid_resolves", "paid_tiles", "preview_lifetime", "last_seen"]);
+  const allowed = new Set(["balance", "paid_eur", "standard", "paid_resolves", "paid_tiles", "data_downloaded", "preview_lifetime", "last_seen"]);
   return allowed.has(normalized) ? normalized : "paid_eur";
 }
 
@@ -1483,6 +1483,7 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
     standard: "standard_quality_unlocked",
     paid_resolves: "paid_full_resolve_count",
     paid_tiles: "unlocked_tile_count",
+    data_downloaded: "licenced_downloaded_bytes",
     preview_lifetime: "preview_lifetime_bytes",
     last_seen: "last_seen_unix",
   };
@@ -1603,6 +1604,14 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
           COUNT(*) AS unlocked_tile_count
         FROM user_tile_entitlements
         GROUP BY user_id
+      ),
+      licenced_downloads AS (
+        SELECT
+          user_id,
+          COALESCE(total_downloaded_bytes, 0) AS licenced_downloaded_bytes,
+          COALESCE(total_downloaded_tiles, 0) AS licenced_downloaded_tiles,
+          COALESCE(total_downloaded_files, 0) AS licenced_downloaded_files
+        FROM user_licenced_download_stats
       )
       SELECT
         u.id AS user_id,
@@ -1631,6 +1640,9 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
         COALESCE(pl.preview_lifetime_requests, 0) AS preview_lifetime_requests,
         COALESCE(fl.full_lifetime_bytes, 0) AS full_lifetime_bytes,
         COALESCE(fl.full_lifetime_requests, 0) AS full_lifetime_requests,
+        COALESCE(ld.licenced_downloaded_bytes, 0) AS licenced_downloaded_bytes,
+        COALESCE(ld.licenced_downloaded_tiles, 0) AS licenced_downloaded_tiles,
+        COALESCE(ld.licenced_downloaded_files, 0) AS licenced_downloaded_files,
         COALESCE(pfr.paid_full_resolve_count, 0) AS paid_full_resolve_count,
         COALESCE(
           NULLIF(TRIM(datetime(du.last_seen_unix, 'unixepoch')), ''),
@@ -1648,6 +1660,7 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
       LEFT JOIN paid_eur_lifetime pe ON pe.user_id = u.id
       LEFT JOIN user_credit_accounts ca ON ca.user_id = u.id
       LEFT JOIN unlocked_tiles ut ON ut.user_id = u.id
+      LEFT JOIN licenced_downloads ld ON ld.user_id = u.id
       ${whereSql}
       ORDER BY ${orderSql} ${sortDir.toUpperCase()}, LOWER(COALESCE(u.email, '')) ASC
       LIMIT ${limit}

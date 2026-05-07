@@ -96,6 +96,7 @@ import {
   handleCreditPaymentCancelled as handleCreditPaymentCancelledRoute,
   handleCreditPaymentSuccess as handleCreditPaymentSuccessRoute,
   handleCreditPurchaseHistory as handleCreditPurchaseHistoryRoute,
+  handleCreditLicencedDownloadReport as handleCreditLicencedDownloadReportRoute,
   handleCreditRegionPackDetailLink as handleCreditRegionPackDetailLinkRoute,
   handleCreditRegionPackMap as handleCreditRegionPackMapRoute,
   handleCreditRegionOffers as handleCreditRegionOffersRoute,
@@ -2891,6 +2892,40 @@ async function ensureCreditTables(db) {
   await dbRun(
     db,
     `
+      CREATE TABLE IF NOT EXISTS user_licenced_download_stats (
+        user_id TEXT PRIMARY KEY,
+        total_downloaded_bytes INTEGER NOT NULL DEFAULT 0,
+        total_downloaded_tiles INTEGER NOT NULL DEFAULT 0,
+        total_downloaded_files INTEGER NOT NULL DEFAULT 0,
+        last_downloaded_at TEXT
+      )
+    `,
+  );
+  await dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS user_licenced_download_events (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        downloaded_bytes INTEGER NOT NULL DEFAULT 0,
+        downloaded_tiles INTEGER NOT NULL DEFAULT 0,
+        downloaded_files INTEGER NOT NULL DEFAULT 0,
+        skipped_existing_files INTEGER NOT NULL DEFAULT 0,
+        missing_files INTEGER NOT NULL DEFAULT 0,
+        period TEXT,
+        status TEXT,
+        source TEXT,
+        created_at TEXT NOT NULL
+      )
+    `,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_user_licenced_download_events_user_created ON user_licenced_download_events(user_id, created_at DESC)`,
+  );
+  await dbRun(
+    db,
+    `
       CREATE TABLE IF NOT EXISTS region_pack_detail_tokens (
         token TEXT PRIMARY KEY,
         user_id TEXT NOT NULL,
@@ -3862,6 +3897,7 @@ const TILE_ROUTE_DEPS = {
   readTileSessionClaims,
   recordTileRequestEvent,
   recordPreviewUsageAndMaybeAlert,
+  invalidateAnalyticsSnapshots,
   requestClientIp,
   requestCountry,
   requireAuthenticatedUserContext: (request, env, options) => requireAuthenticatedUserContext(request, env, options, AUTH_SESSION_DEPS),
@@ -4004,6 +4040,11 @@ async function dispatchExactRoute(request, env, path) {
     case "/credits/purchase-history":
       if (request.method === "GET") {
         return await handleCreditPurchaseHistoryRoute(request, env, TILE_ROUTE_DEPS);
+      }
+      return null;
+    case "/credits/licenced-download-report":
+      if (request.method === "POST") {
+        return await handleCreditLicencedDownloadReportRoute(request, env, TILE_ROUTE_DEPS);
       }
       return null;
     case "/credits/unlocked":

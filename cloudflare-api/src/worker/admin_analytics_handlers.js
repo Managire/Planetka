@@ -8,6 +8,10 @@ function fmtGbLocal(value, parseNonNegativeInteger, bytesPerGb) {
   return (Number(parseNonNegativeInteger(value, 0)) / bytesPerGb).toFixed(3);
 }
 
+function fmtMbLocal(value, parseNonNegativeInteger) {
+  return (Number(parseNonNegativeInteger(value, 0)) / (1024 * 1024)).toFixed(2);
+}
+
 const ANALYTICS_TILE_COLOR = "#60a5fa";
 
 function parseLiveMapTile(tileKey) {
@@ -38,6 +42,7 @@ function analyticsUsersSortValue(row, sortBy) {
   if (sortBy === "standard") return Number(row && row.standard_quality_unlocked || 0);
   if (sortBy === "paid_resolves") return Number(row && row.paid_full_resolve_count || 0);
   if (sortBy === "paid_tiles") return Number(row && row.unlocked_tile_count || 0);
+  if (sortBy === "data_downloaded") return Number(row && row.licenced_downloaded_bytes || 0);
   if (sortBy === "preview_lifetime") return Number(row && row.preview_lifetime_bytes || 0);
   if (sortBy === "last_seen") return Date.parse(String(row && row.last_seen_at || "")) || 0;
   return Number(row && row.total_spent_credits || 0);
@@ -504,6 +509,7 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
   );
   const fmtInt = (value) => fmtIntLocal(value, deps.parseNonNegativeInteger);
   const fmtGb = (value) => fmtGbLocal(value, deps.parseNonNegativeInteger, deps.BYTES_PER_GB);
+  const fmtMb = (value) => fmtMbLocal(value, deps.parseNonNegativeInteger);
   const fmtEur = (value) => {
     const numeric = Number(value);
     return Number.isFinite(numeric) ? `${numeric.toFixed(2)} €` : "0.00 €";
@@ -544,6 +550,7 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
       <td>${standardUnlocked ? "Unlocked" : "—"}</td>
       <td>${fmtInt(row && row.paid_full_resolve_count)}</td>
       <td>${fmtInt(row && row.unlocked_tile_count)}</td>
+      <td>${fmtMb(row && row.licenced_downloaded_bytes)} MB<br><span class="muted">${fmtInt(row && row.licenced_downloaded_tiles)} tiles</span></td>
       <td>${fmtGb(row && row.preview_lifetime_bytes)}</td>
       <td>${deps.escapeHtml(String(row && row.last_seen_at || ""))}</td>
       <td class="action-wrap">${actionButtons}</td>
@@ -599,6 +606,7 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
         <th><a href="${buildSortHref("standard")}">Standard${sortMarker("standard")}</a></th>
         <th><a href="${buildSortHref("paid_resolves")}">Paid Resolves${sortMarker("paid_resolves")}</a></th>
         <th><a href="${buildSortHref("paid_tiles")}">Paid Tiles${sortMarker("paid_tiles")}</a></th>
+        <th><a href="${buildSortHref("data_downloaded")}">Data Downloaded${sortMarker("data_downloaded")}</a></th>
         <th><a href="${buildSortHref("preview_lifetime")}">Preview GB Lifetime${sortMarker("preview_lifetime")}</a></th>
         <th><a href="${buildSortHref("last_seen")}">Last Seen${sortMarker("last_seen")}</a></th>
         <th>Actions</th>

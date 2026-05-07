@@ -555,6 +555,48 @@ def create_region_pack_detail_link(region_pack_id: str) -> dict:
     raise CreditApiError(0, error, payload=result if isinstance(result, dict) else {})
 
 
+def report_licenced_download_usage(
+    *,
+    downloaded_bytes: int,
+    downloaded_tile_count: int,
+    downloaded_file_count: int,
+    skipped_existing_files: int = 0,
+    missing_files: int = 0,
+    period: str = "ALL",
+    status: str = "FINISHED",
+    source: str = "blender_download_licenced",
+) -> dict:
+    """Best-effort top-line reporting for manual licenced-data downloads."""
+    try:
+        safe_bytes = max(0, int(downloaded_bytes or 0))
+        safe_tiles = max(0, int(downloaded_tile_count or 0))
+        safe_files = max(0, int(downloaded_file_count or 0))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "invalid_download_report"}
+    if safe_bytes <= 0 and safe_tiles <= 0 and safe_files <= 0:
+        return {"ok": True, "recorded": False}
+    try:
+        payload = _request_json(
+            "POST",
+            "/credits/licenced-download-report",
+            body={
+                "downloaded_bytes": safe_bytes,
+                "downloaded_tile_count": safe_tiles,
+                "downloaded_file_count": safe_files,
+                "skipped_existing_files": max(0, int(skipped_existing_files or 0)),
+                "missing_files": max(0, int(missing_files or 0)),
+                "period": str(period or "ALL").strip().upper() or "ALL",
+                "status": str(status or "FINISHED").strip().upper() or "FINISHED",
+                "source": str(source or "blender_download_licenced").strip() or "blender_download_licenced",
+            },
+            timeout=15,
+        )
+    except (AuthApiError, CreditApiError, RuntimeError, TypeError, ValueError, OSError):
+        logger.debug("Planetka: failed reporting licenced download usage", exc_info=True)
+        return {"ok": False, "error": "report_failed"}
+    return dict(payload or {}) if isinstance(payload, dict) else {"ok": False, "error": "invalid_report_response"}
+
+
 def _parse_unlocked_at(value):
     text = str(value or "").strip()
     if not text:
@@ -751,10 +793,23 @@ def _run_unlocked_download_plan(plan: dict, cancel_event: threading.Event) -> No
     downloaded_files = 0
     missing_files = 0
     downloaded_bytes = 0
+    downloaded_file_bytes = 0
+    downloaded_tile_keys = set()
     total_bytes = int(max(0, int(plan.get("total_bytes", 0) or 0)))
     total_files = int(max(0, int(plan.get("total_files", 0) or 0)))
     selected_tiles = int(max(0, int(plan.get("selected_tiles", 0) or 0)))
     skipped_existing_files = int(max(0, int(plan.get("skipped_existing_files", 0) or 0)))
+
+    def report_usage(status: str) -> None:
+        report_licenced_download_usage(
+            downloaded_bytes=int(max(0, downloaded_file_bytes)),
+            downloaded_tile_count=int(len(downloaded_tile_keys)),
+            downloaded_file_count=int(max(0, downloaded_files)),
+            skipped_existing_files=skipped_existing_files,
+            missing_files=missing_files,
+            period=str(plan.get("period", "ALL") or "ALL"),
+            status=str(status or "FINISHED"),
+        )
 
     def progress_callback(delta_bytes: int, _total_bytes: int) -> None:
         nonlocal downloaded_bytes
@@ -816,6 +871,12 @@ def _run_unlocked_download_plan(plan: dict, cancel_event: threading.Event) -> No
                 continue
             _write_asset_metadata_sidecar(target_path, folder, file_name)
             downloaded_files += 1
+            if tile_key:
+                downloaded_tile_keys.add(tile_key)
+            try:
+                downloaded_file_bytes += int(max(0, os.path.getsize(target_path)))
+            except (OSError, RuntimeError, TypeError, ValueError):
+                downloaded_file_bytes += int(max(0, int(asset.get("size_bytes", 0) or 0)))
             expected_size = int(max(0, int(asset.get("size_bytes", 0) or 0)))
             if expected_size > 0 and downloaded_bytes < sum(
                 int(max(0, int(item.get("size_bytes", 0) or 0)))
@@ -844,6 +905,7 @@ def _run_unlocked_download_plan(plan: dict, cancel_event: threading.Event) -> No
             downloaded_bytes=int(min(max(downloaded_bytes, 0), max(total_bytes, downloaded_bytes))),
             finished_at=time.monotonic(),
         )
+        report_usage("FINISHED")
     except RuntimeError as exc:
         if str(exc).strip().lower() == "cancelled" or cancel_event.is_set():
             _set_unlocked_download_progress(
@@ -855,6 +917,7 @@ def _run_unlocked_download_plan(plan: dict, cancel_event: threading.Event) -> No
                 downloaded_bytes=int(min(max(downloaded_bytes, 0), max(total_bytes, downloaded_bytes))),
                 finished_at=time.monotonic(),
             )
+            report_usage("CANCELLED")
             return
         _set_unlocked_download_progress(
             active=False,
@@ -866,6 +929,7 @@ def _run_unlocked_download_plan(plan: dict, cancel_event: threading.Event) -> No
             downloaded_bytes=int(min(max(downloaded_bytes, 0), max(total_bytes, downloaded_bytes))),
             finished_at=time.monotonic(),
         )
+        report_usage("ERROR")
         logger.debug("Planetka: unlocked tile download failed", exc_info=True)
     except Exception as exc:
         _set_unlocked_download_progress(
@@ -878,6 +942,7 @@ def _run_unlocked_download_plan(plan: dict, cancel_event: threading.Event) -> No
             downloaded_bytes=int(min(max(downloaded_bytes, 0), max(total_bytes, downloaded_bytes))),
             finished_at=time.monotonic(),
         )
+        report_usage("ERROR")
         logger.debug("Planetka: unlocked tile download failed", exc_info=True)
 
 
