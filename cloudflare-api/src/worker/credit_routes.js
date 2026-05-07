@@ -283,6 +283,35 @@ function generatedTileGrossEur(tileKey) {
   return normalizeCreditAmount(generatedTileGrossCents(tileKey) / 100.0);
 }
 
+function ownedByFamilyFromTileRows(rows) {
+  const ownedByFamily = new Map();
+  for (const row of rows || []) {
+    const owned = parseTileKey(row && row.tile_key || "");
+    const family = tileFamilyKey(owned);
+    if (!owned || !family) {
+      continue;
+    }
+    if (!ownedByFamily.has(family)) {
+      ownedByFamily.set(family, []);
+    }
+    ownedByFamily.get(family).push({ key: owned.key, d: Number(owned.d) });
+  }
+  return ownedByFamily;
+}
+
+async function ownedTileRowsForUser(db, userId, deps) {
+  await deps.ensureCreditTables(db);
+  return await deps.dbAll(
+    db,
+    `
+      SELECT tile_key
+      FROM user_tile_entitlements
+      WHERE user_id = ?
+    `,
+    [String(userId || "").trim()],
+  );
+}
+
 function countryNameByRegionId(regionId) {
   const product = regionProductById(regionId);
   return product && String(product.type || "") === "country" ? String(product.name || "").trim() : "";
@@ -732,14 +761,12 @@ async function estimateNewCreditsChunked(db, userId, tileKeys, qualityMode, deps
   return aggregate;
 }
 
-async function estimateRegionPackSummary(db, userId, product, deps) {
-  await deps.ensureCreditTables(db);
+function estimateRegionPackSummaryWithOwned(product, account, ownedByFamily) {
   const summary = regionProductPricingSummary(product);
   if (!summary) {
     return { error: "missing_region_pack_summary" };
   }
   const discountPercent = Math.max(0, Math.min(95, Number.parseInt(product && product.discount_percent || 0, 10) || 0));
-  const account = await ensureCreditAccount(db, userId, deps);
   if (isWorldFullQualityUnlocked(account)) {
     const alreadyLicencedAmounts = discountedRegionPackAmount(summary.gross_eur, discountPercent);
     return {
@@ -770,27 +797,6 @@ async function estimateRegionPackSummary(db, userId, product, deps) {
     };
   }
   const tileKeys = regionProductTileKeys(product);
-  const ownedRows = await deps.dbAll(
-    db,
-    `
-      SELECT tile_key
-      FROM user_tile_entitlements
-      WHERE user_id = ?
-    `,
-    [String(userId || "").trim()],
-  );
-  const ownedByFamily = new Map();
-  for (const row of ownedRows || []) {
-    const owned = parseTileKey(row && row.tile_key || "");
-    const family = tileFamilyKey(owned);
-    if (!owned || !family) {
-      continue;
-    }
-    if (!ownedByFamily.has(family)) {
-      ownedByFamily.set(family, []);
-    }
-    ownedByFamily.get(family).push({ key: owned.key, d: Number(owned.d) });
-  }
   const coveredKeys = [];
   const upgradeOwnedKeys = [];
   let alreadyLicencedCount = 0;
@@ -872,6 +878,17 @@ async function estimateRegionPackSummary(db, userId, product, deps) {
     metadata_missing_tile_keys: [],
     tiles: [],
   };
+}
+
+async function estimateRegionPackSummary(db, userId, product, deps) {
+  await deps.ensureCreditTables(db);
+  const account = await ensureCreditAccount(db, userId, deps);
+  const ownedRows = await ownedTileRowsForUser(db, userId, deps);
+  return estimateRegionPackSummaryWithOwned(
+    product,
+    account,
+    ownedByFamilyFromTileRows(ownedRows),
+  );
 }
 
 async function estimateRegionPack(db, userId, product, deps, options = {}) {
@@ -1252,6 +1269,7 @@ function buildRegionPackMapData(product, estimate, options = {}) {
     ok: true,
     catalog_version: REGION_PACK_CATALOG_VERSION,
     token: String(options && options.token || ""),
+    catalog_mode: Boolean(options && options.catalogMode),
     generated_detail_available: Boolean(detail && Object.keys(detail).length),
     region_pack: regionProductPublicPayload(product),
     included_countries: countries,
@@ -1271,6 +1289,183 @@ function buildRegionPackMapData(product, estimate, options = {}) {
     },
     tiles: tileRows,
     upsells: Array.isArray(options && options.upsells) ? options.upsells : [],
+    success: options && options.success ? options.success : null,
+  };
+}
+
+function expandedMapBounds(bounds, paddingFraction = 0.08) {
+  const minLon = Number(bounds && bounds.min_lon);
+  const minLat = Number(bounds && bounds.min_lat);
+  const maxLon = Number(bounds && bounds.max_lon);
+  const maxLat = Number(bounds && bounds.max_lat);
+  if (![minLon, minLat, maxLon, maxLat].every(Number.isFinite)) {
+    return { min_lon: -10, min_lat: 35, max_lon: 30, max_lat: 47.5 };
+  }
+  const width = Math.max(0.5, maxLon - minLon);
+  const height = Math.max(0.5, maxLat - minLat);
+  const padLon = width * Math.max(0, Number(paddingFraction) || 0);
+  const padLat = height * Math.max(0, Number(paddingFraction) || 0);
+  return {
+    min_lon: clampNumber(minLon - padLon, -180, 180),
+    min_lat: clampNumber(minLat - padLat, -90, 90),
+    max_lon: clampNumber(maxLon + padLon, -180, 180),
+    max_lat: clampNumber(maxLat + padLat, -90, 90),
+  };
+}
+
+function tileRowsCenter(tileRows) {
+  const rows = Array.isArray(tileRows) ? tileRows : [];
+  if (!rows.length) {
+    return null;
+  }
+  const bounds = regionMapBounds(null, null, rows);
+  return {
+    latitude_deg: (Number(bounds.min_lat) + Number(bounds.max_lat)) / 2.0,
+    longitude_deg: (Number(bounds.min_lon) + Number(bounds.max_lon)) / 2.0,
+    bounds,
+  };
+}
+
+function contextRegionProductForTileRows(tileRows) {
+  const center = tileRowsCenter(tileRows);
+  if (!center) {
+    return null;
+  }
+  const products = suggestedRegionProductsForPoint(center.latitude_deg, center.longitude_deg);
+  return products.length ? products[0] : null;
+}
+
+function buildSceneFullQualityMapData(estimate, options = {}) {
+  const tileRows = allocatedRegionPackTileRows(estimate);
+  const contextProduct = options && options.contextProduct ? options.contextProduct : contextRegionProductForTileRows(tileRows);
+  const contextDetail = GENERATED_REGION_PACK_DETAILS[String(contextProduct && contextProduct.id || "")] || {};
+  const contextCountries = contextProduct ? regionProductIncludedCountries(contextProduct) : [];
+  const levels = Array.from(new Set(tileRows.map((row) => row.z).filter((z) => Number.isFinite(z))))
+    .sort((a, b) => a - b);
+  const tileBounds = regionMapBounds(null, null, tileRows);
+  const contextBounds = contextProduct
+    ? regionMapBounds(contextProduct, contextDetail, tileRows)
+    : expandedMapBounds(tileBounds, 0.18);
+  const fullPrice = normalizeCreditAmount(tileRows.reduce((total, row) => total + normalizeCreditAmount(row.full_price_eur), 0));
+  const alreadyLicencedSaving = normalizeCreditAmount(tileRows
+    .filter((row) => String(row.status || "") === "licenced")
+    .reduce((total, row) => total + normalizeCreditAmount(row.full_price_eur), 0));
+  return {
+    ok: true,
+    scene_detail: true,
+    catalog_version: REGION_PACK_CATALOG_VERSION,
+    token: String(options && options.token || ""),
+    catalog_mode: true,
+    generated_detail_available: Boolean(contextProduct && Object.keys(contextDetail).length),
+    region_pack: {
+      id: "scene",
+      name: "This Scene",
+      type: "scene",
+      discount_percent: 0,
+      catalog_version: REGION_PACK_CATALOG_VERSION,
+      included_countries: contextCountries,
+    },
+    included_countries: contextCountries,
+    outlines: contextProduct ? regionProductOutlines(contextProduct) : [],
+    bounds: contextBounds,
+    tile_bounds: tileBounds,
+    levels,
+    summary: {
+      new_tiles: Math.max(0, Number.parseInt(estimate && estimate.new_tile_count || 0, 10) || 0),
+      total_tiles: Math.max(0, Number.parseInt(estimate && estimate.tile_count || 0, 10) || 0),
+      already_licenced_tiles: Math.max(0, Array.isArray(estimate && estimate.excluded_tiles) ? estimate.excluded_tiles.length : 0),
+      already_licenced_saving_eur: alreadyLicencedSaving,
+      full_price_eur: fullPrice,
+      discount_percent: 0,
+      discount_eur: 0,
+      price_eur: normalizeCreditAmount(estimate && estimate.price_eur),
+      tile_price_sum_eur: normalizeCreditAmount(tileRows.reduce((total, row) => total + normalizeCreditAmount(row.price_eur), 0)),
+    },
+    tiles: tileRows,
+    upsells: Array.isArray(options && options.upsells) ? options.upsells : [],
+    success: options && options.success ? options.success : null,
+  };
+}
+
+function regionProductCatalogGroup(product) {
+  const type = String(product && product.type || "").trim().toLowerCase();
+  if (type === "world") {
+    return { key: "world", label: "World" };
+  }
+  if (type === "continent") {
+    return { key: "continents", label: "Continents" };
+  }
+  if (type === "macro_region") {
+    return { key: "regions", label: "Regions" };
+  }
+  const adm1Codes = Array.isArray(product && product.adm1_codes) ? product.adm1_codes : [];
+  if (adm1Codes.length) {
+    return { key: "states_provinces", label: "States / Provinces" };
+  }
+  if (type === "country" || type === "admin_region") {
+    return { key: "countries", label: "Countries" };
+  }
+  return { key: "other", label: "Other Data Packs" };
+}
+
+function regionPackCatalogRow(product, estimate) {
+  const productSummary = regionProductPricingSummary(product) || {};
+  const group = regionProductCatalogGroup(product);
+  return {
+    id: String(product && product.id || ""),
+    name: String(product && product.name || ""),
+    type: String(product && product.type || ""),
+    group_key: group.key,
+    group_label: group.label,
+    total_tiles: Math.max(0, Number.parseInt(productSummary.tile_count || estimate && estimate.tile_count || 0, 10) || 0),
+    new_tiles: Math.max(0, Number.parseInt(estimate && estimate.new_tile_count || 0, 10) || 0),
+    already_licenced_tiles: Math.max(0, Array.isArray(estimate && estimate.excluded_tiles) ? estimate.excluded_tiles.length : 0),
+    full_price_eur: normalizeCreditAmount(productSummary.gross_eur),
+    chargeable_full_price_eur: normalizeCreditAmount(estimate && estimate.gross_eur),
+    already_licenced_saving_eur: normalizeCreditAmount(estimate && estimate.already_licenced_saving_eur),
+    discount_percent: Math.max(0, Number.parseInt(estimate && estimate.discount_percent || product && product.discount_percent || 0, 10) || 0),
+    discount_eur: normalizeCreditAmount(estimate && estimate.discount_eur),
+    price_eur: normalizeCreditAmount(estimate && estimate.price_eur),
+  };
+}
+
+async function buildRegionPackCatalogData(db, userId, token, deps) {
+  await deps.ensureCreditTables(db);
+  const account = await ensureCreditAccount(db, userId, deps);
+  const ownedRows = await ownedTileRowsForUser(db, userId, deps);
+  const ownedByFamily = ownedByFamilyFromTileRows(ownedRows);
+  const rows = REGION_PRODUCTS
+    .map((product) => {
+      const estimate = estimateRegionPackSummaryWithOwned(product, account, ownedByFamily);
+      if (!estimate || estimate.error) {
+        return null;
+      }
+      return regionPackCatalogRow(product, estimate);
+    })
+    .filter(Boolean)
+    .sort((a, b) => (
+      String(a.group_label || "").localeCompare(String(b.group_label || ""))
+      || String(a.name || "").localeCompare(String(b.name || ""))
+    ));
+  const groupOrder = ["world", "continents", "regions", "countries", "states_provinces", "other"];
+  const groups = [];
+  for (const key of groupOrder) {
+    const groupRows = rows.filter((row) => String(row.group_key || "") === key);
+    if (!groupRows.length) {
+      continue;
+    }
+    groups.push({
+      key,
+      label: String(groupRows[0].group_label || key),
+      rows: groupRows,
+    });
+  }
+  return {
+    ok: true,
+    catalog_version: REGION_PACK_CATALOG_VERSION,
+    token: String(token || ""),
+    total_packs: rows.length,
+    groups,
   };
 }
 
@@ -1294,6 +1489,26 @@ async function ensureRegionPackDetailTokenTable(db, deps) {
   );
 }
 
+async function ensureSceneFullQualityDetailTokenTable(db, deps) {
+  await deps.ensureCreditTables(db);
+  await deps.dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS scene_full_quality_detail_tokens (
+        token TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        tile_keys_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+      )
+    `,
+  );
+  await deps.dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_scene_full_quality_detail_tokens_expires ON scene_full_quality_detail_tokens(expires_at)`,
+  );
+}
+
 function regionPackDetailTokenTtlMinutes(env = {}) {
   const configured = Number.parseFloat(env.REGION_PACK_DETAIL_TOKEN_TTL_MINUTES || "");
   if (Number.isFinite(configured) && configured > 0) {
@@ -1308,11 +1523,50 @@ function addMinutesIsoFromDeps(deps, minutes) {
   return new Date(nowMs + (Math.max(1, Number(minutes) || 1) * 60 * 1000)).toISOString();
 }
 
+async function createRegionPackDetailTokenForUser(db, userId, regionPackId, env, deps) {
+  await ensureRegionPackDetailTokenTable(db, deps);
+  const now = deps.nowIso();
+  await deps.dbRun(db, `DELETE FROM region_pack_detail_tokens WHERE expires_at <= ?`, [now]);
+  const token = deps.randomToken(32);
+  const expiresAt = addMinutesIsoFromDeps(deps, regionPackDetailTokenTtlMinutes(env));
+  await deps.dbRun(
+    db,
+    `
+      INSERT INTO region_pack_detail_tokens (
+        token, user_id, region_pack_id, created_at, expires_at
+      ) VALUES (?, ?, ?, ?, ?)
+    `,
+    [token, String(userId || "").trim(), String(regionPackId || "").trim(), now, expiresAt],
+  );
+  return { token, expires_at: expiresAt };
+}
+
+async function createSceneFullQualityDetailTokenForUser(db, userId, tileKeys, env, deps) {
+  await ensureSceneFullQualityDetailTokenTable(db, deps);
+  const keys = normalizeTileKeys(tileKeys);
+  const now = deps.nowIso();
+  await deps.dbRun(db, `DELETE FROM scene_full_quality_detail_tokens WHERE expires_at <= ?`, [now]);
+  const token = deps.randomToken(32);
+  const expiresAt = addMinutesIsoFromDeps(deps, regionPackDetailTokenTtlMinutes(env));
+  await deps.dbRun(
+    db,
+    `
+      INSERT INTO scene_full_quality_detail_tokens (
+        token, user_id, tile_keys_json, created_at, expires_at
+      ) VALUES (?, ?, ?, ?, ?)
+    `,
+    [token, String(userId || "").trim(), JSON.stringify(keys), now, expiresAt],
+  );
+  return { token, expires_at: expiresAt };
+}
+
 function regionPackMapHtml(data) {
   const pack = data && data.region_pack || {};
   const name = String(pack.name || "Region Pack").trim() || "Region Pack";
+  const isSceneDetail = Boolean(data && data.scene_detail);
   const countries = Array.isArray(data && data.included_countries) ? data.included_countries : [];
   const summary = data && data.summary || {};
+  const success = data && data.success && typeof data.success === "object" ? data.success : null;
   const payload = jsonForInlineScript(data);
   return `<!doctype html>
 <html lang="en">
@@ -1334,13 +1588,16 @@ select{background:#262626;color:var(--text);border:1px solid var(--line);border-
 </head>
 <body>
 <main>
-<h1>${escapeHtmlText(name)} Full Quality Pack</h1>
+<h1>${isSceneDetail ? "Full Quality Textures for This Scene" : `${escapeHtmlText(name)} Full Quality Pack`}</h1>
+${success ? `<section class="panel"><h2>${escapeHtmlText(success.title || "Payment successful")}</h2><p>${escapeHtmlText(success.message || "Your Planetka purchase has been processed.")}</p></section>` : ""}
 <p class="muted">Tile prices shown on hover are user-specific: already licenced tiles are €0.00.</p>
 <section class="cards">
 <div class="card"><span>New Tiles</span><b>${Number(summary.new_tiles || 0)}</b></div>
 <div class="card"><span>Total Tiles</span><b>${Number(summary.total_tiles || 0)}</b></div>
 <div class="card"><span>Full Price</span><b>€${Number(summary.full_price_eur || 0).toFixed(2)}</b></div>
-<div class="card"><span>Volume Discount</span><b>${Number(summary.discount_percent || 0)}% (-€${Number(summary.discount_eur || 0).toFixed(2)})</b></div>
+${Number(summary.discount_percent || 0) > 0
+    ? `<div class="card"><span>Volume Discount</span><b>${Number(summary.discount_percent || 0)}% (-€${Number(summary.discount_eur || 0).toFixed(2)})</b></div>`
+    : `<div class="card"><span>Already Licenced Saving</span><b>€${Number(summary.already_licenced_saving_eur || 0).toFixed(2)}</b></div>`}
 <div class="card"><span>Your Price</span><b>€${Number(summary.price_eur || 0).toFixed(2)}</b></div>
 </section>
 <section class="panel">
@@ -1356,14 +1613,17 @@ select{background:#262626;color:var(--text);border:1px solid var(--line);border-
 <span><i class="swatch free"></i>Free / not charged</span>
 </div>
 </section>
-<section class="panel">
-<h2>Included Countries / Areas</h2>
+${countries.length ? `<section class="panel">
+<h2>${isSceneDetail ? "Map Context" : "Included Countries / Areas"}</h2>
 <div class="countries">${countries.map((country) => `<div>${escapeHtmlText(country)}</div>`).join("")}</div>
-</section>
+</section>` : ""}
 ${Array.isArray(data && data.upsells) && data.upsells.length ? `<section class="panel">
 <h2>Larger Full Quality options</h2>
 <div id="upsellGrid" class="upsells"></div>
 </section>` : ""}
+<section class="panel">
+<a class="button secondary" href="/credits/region-pack-catalog?token=${escapeHtmlText(encodeURIComponent(String(data && data.token || "")))}">View all Full Quality data packs</a>
+</section>
 </main>
 <script>const DATA=${payload};
 const NS="http://www.w3.org/2000/svg";
@@ -1389,8 +1649,59 @@ for(const z of levels){const o=document.createElement("option");o.value=String(z
 select.addEventListener("change",()=>render(Number(select.value))); render(Number(select.value||levels[0]));
 function miniXY(bounds,w,h,lon,lat){const p=12;return [p+((lon-bounds.min_lon)/(bounds.max_lon-bounds.min_lon||1))*(w-p*2),p+((bounds.max_lat-lat)/(bounds.max_lat-bounds.min_lat||1))*(h-p*2)]}
 function renderMiniMap(svg,card){const b=card.bounds||{min_lon:-10,min_lat:35,max_lon:30,max_lat:48};const w=360;const h=Math.max(150,Math.min(230,Math.round(360*Math.max(0.25,Math.min(0.75,(b.max_lat-b.min_lat)/Math.max(1e-6,b.max_lon-b.min_lon))))));svg.setAttribute("viewBox","0 0 "+w+" "+h);svg.replaceChildren();svg.appendChild(el("rect",{x:0,y:0,width:w,height:h,fill:"#0d1118"}));for(const tile of card.tiles||[]){const a=miniXY(b,w,h,tile.lon_min,tile.lat_max),c=miniXY(b,w,h,tile.lon_max,tile.lat_min);const cls=tile.status==="new"?"var(--new)":(tile.status==="licenced"?"var(--licenced)":"var(--free)");const r=el("rect",{x:a[0],y:a[1],width:Math.max(1,c[0]-a[0]),height:Math.max(1,c[1]-a[1]),fill:cls,stroke:"#fff","stroke-width":"0.5",opacity:tile.status==="new"?"0.58":"0.43"});svg.appendChild(r)}}
-function renderUpsells(){const grid=document.getElementById("upsellGrid");if(!grid)return;const token=encodeURIComponent(DATA.token||"");for(const card of DATA.upsells||[]){const pack=card.region_pack||{},s=card.summary||{};const id=encodeURIComponent(pack.id||"");const div=document.createElement("div");div.className="upsell";const title=document.createElement("h3");title.textContent=pack.name||"Region Pack";div.appendChild(title);const map=document.createElementNS(NS,"svg");div.appendChild(map);renderMiniMap(map,card);const meta=document.createElement("p");meta.className="muted small";meta.textContent=Number(s.new_tiles||0)+" new tiles · "+Number(s.discount_percent||0)+"% volume discount · "+fmt(s.price_eur);div.appendChild(meta);const checkout=document.createElement("a");checkout.className="button";checkout.href="/credits/region-pack-checkout?token="+token+"&region_pack_id="+id;checkout.textContent="Buy "+(pack.name||"Pack")+" ("+fmt(s.price_eur)+")";div.appendChild(checkout);const detail=document.createElement("a");detail.className="button secondary";detail.href="/credits/region-pack-map?token="+token+"&region_pack_id="+id;detail.textContent="View map";div.appendChild(detail);grid.appendChild(div)}}
+function renderUpsells(){const grid=document.getElementById("upsellGrid");if(!grid)return;const token=encodeURIComponent(DATA.token||"");const catalog=DATA.catalog_mode?"&catalog=1":"";for(const card of DATA.upsells||[]){const pack=card.region_pack||{},s=card.summary||{};const id=encodeURIComponent(pack.id||"");const div=document.createElement("div");div.className="upsell";const title=document.createElement("h3");title.textContent=pack.name||"Region Pack";div.appendChild(title);const map=document.createElementNS(NS,"svg");div.appendChild(map);renderMiniMap(map,card);const meta=document.createElement("p");meta.className="muted small";meta.textContent=Number(s.new_tiles||0)+" new tiles · "+Number(s.discount_percent||0)+"% volume discount · "+fmt(s.price_eur);div.appendChild(meta);const checkout=document.createElement("a");checkout.className="button";checkout.href="/credits/region-pack-checkout?token="+token+"&region_pack_id="+id+catalog;checkout.textContent="Buy "+(pack.name||"Pack")+" ("+fmt(s.price_eur)+")";div.appendChild(checkout);const detail=document.createElement("a");detail.className="button secondary";detail.href="/credits/region-pack-map?token="+token+"&region_pack_id="+id+catalog;detail.textContent="View map";div.appendChild(detail);grid.appendChild(div)}}
 renderUpsells();
+</script>
+</body>
+</html>`;
+}
+
+function regionPackCatalogHtml(data) {
+  const payload = jsonForInlineScript(data);
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Planetka Full Quality Data Packs</title>
+<style>
+:root{color-scheme:dark;--bg:#111;--panel:#1b1b1b;--line:#3c3c3c;--text:#eee;--muted:#aaa;--accent:#d9a441}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+main{max-width:1180px;margin:0 auto;padding:24px}h1{margin:0 0 8px;font-size:28px;font-weight:650}h2{margin:22px 0 10px}.muted{color:var(--muted)}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;margin-top:14px}.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:12px 0}
+input{min-width:260px;flex:1;background:#262626;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:9px 11px}
+table{width:100%;border-collapse:collapse;background:#151515;border:1px solid var(--line);border-radius:10px;overflow:hidden}th,td{padding:8px 10px;border-bottom:1px solid #2d2d2d;text-align:right;white-space:nowrap}th:first-child,td:first-child{text-align:left;white-space:normal}tr:last-child td{border-bottom:0}th{color:#ddd;background:#202020;font-weight:650}.small{font-size:13px}.saving{color:#9dd18d}.price{font-weight:700;color:#f4d28d}
+.button{display:inline-flex;align-items:center;justify-content:center;padding:7px 10px;border-radius:8px;background:var(--accent);color:#111;text-decoration:none;font-weight:700}.button.secondary{background:#2a2a2a;color:var(--text);border:1px solid var(--line)}
+.empty{padding:12px;color:var(--muted)}
+</style>
+</head>
+<body>
+<main>
+<h1>All Full Quality Data Packs</h1>
+<p class="muted">Prices are calculated for this account. Already licenced tiles are deducted automatically.</p>
+<section class="panel">
+<div class="toolbar">
+<input id="filter" type="search" placeholder="Search countries, regions, states, provinces...">
+<span id="count" class="muted small"></span>
+</div>
+<div id="catalog"></div>
+</section>
+</main>
+<script>const DATA=${payload};
+const fmt=(v)=>"€"+Number(v||0).toFixed(2);
+const token=encodeURIComponent(DATA.token||"");
+function rowHtml(row){const id=encodeURIComponent(row.id||"");const licenced=Number(row.already_licenced_tiles||0);const saving=Number(row.already_licenced_saving_eur||0);const mapLink=String(row.id||"").toLowerCase()==="world"?"":" <a class=\\"button secondary\\" href=\\"/credits/region-pack-map?token="+token+"&region_pack_id="+id+"&catalog=1\\">Map</a>";return "<tr>"
++"<td><b>"+escapeCell(row.name||"Data Pack")+"</b><div class=\\"muted small\\">"+escapeCell(row.group_label||"")+"</div></td>"
++"<td>"+Number(row.new_tiles||0)+"</td>"
++"<td>"+Number(row.total_tiles||0)+"</td>"
++"<td>"+fmt(row.full_price_eur)+"</td>"
++"<td>"+(licenced?licenced+" tiles <span class=\\"saving\\">(-"+fmt(saving)+")</span>":"-")+"</td>"
++"<td>"+Number(row.discount_percent||0)+"% <span class=\\"saving\\">(-"+fmt(row.discount_eur)+")</span></td>"
++"<td class=\\"price\\">"+fmt(row.price_eur)+"</td>"
++"<td><a class=\\"button\\" href=\\"/credits/region-pack-checkout?token="+token+"&region_pack_id="+id+"&catalog=1\\">Buy</a>"+mapLink+"</td>"
++"</tr>"}
+function escapeCell(value){return String(value||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}
+function render(){const filter=String(document.getElementById("filter").value||"").trim().toLowerCase();let shown=0;const html=(DATA.groups||[]).map(group=>{const rows=(group.rows||[]).filter(row=>!filter||String(row.name||"").toLowerCase().includes(filter));if(!rows.length)return "";shown+=rows.length;return "<h2>"+escapeCell(group.label)+"</h2><table><thead><tr><th>Data Pack</th><th>New Tiles</th><th>Total Tiles</th><th>Full Price</th><th>Already Licenced</th><th>Volume Discount</th><th>Your Price</th><th>Actions</th></tr></thead><tbody>"+rows.map(rowHtml).join("")+"</tbody></table>"}).join("");document.getElementById("catalog").innerHTML=html||"<div class=\\"empty\\">No data packs match this search.</div>";document.getElementById("count").textContent=shown+" data packs";}document.getElementById("filter").addEventListener("input",render);render();
 </script>
 </body>
 </html>`;
@@ -2725,6 +3036,56 @@ async function createStripeCheckoutSession(env, params, deps) {
   };
 }
 
+async function fetchStripeCheckoutSession(env, sessionId, deps) {
+  const safeSessionId = String(sessionId || "").trim();
+  if (!safeSessionId) {
+    return { error: "missing_session_id" };
+  }
+  const secretKey = deps.requireSecret(env, "STRIPE_SECRET_KEY");
+  const response = await fetch(`https://api.stripe.com/v1/checkout/sessions/${encodeURIComponent(safeSessionId)}`, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${secretKey}`,
+    },
+  });
+  const responseText = await response.text();
+  let payload = {};
+  try {
+    payload = JSON.parse(responseText || "{}");
+  } catch (_error) {
+    payload = {};
+  }
+  if (!response.ok) {
+    return {
+      error: "stripe_session_fetch_failed",
+      status: response.status,
+      message: String(payload && (payload.error && payload.error.message || payload.message) || responseText || "stripe_session_fetch_failed"),
+    };
+  }
+  return { ok: true, session: payload };
+}
+
+function stripeSessionMetadata(session) {
+  return session && session.metadata && typeof session.metadata === "object" ? session.metadata : {};
+}
+
+function parseStripeMetadataTileKeys(value) {
+  try {
+    const parsed = JSON.parse(String(value || "[]"));
+    return normalizeTileKeys(Array.isArray(parsed) ? parsed : []);
+  } catch (_error) {
+    return [];
+  }
+}
+
+function eurFromStripeAmountCents(value) {
+  const cents = Number.parseInt(value, 10);
+  if (!Number.isFinite(cents) || cents <= 0) {
+    return 0;
+  }
+  return normalizeCreditAmount(cents / 100.0);
+}
+
 export async function handleCreditCheckout(request, env, deps) {
   const auth = await deps.requireAuthenticatedUserContext(request, env, { enforceApiKeyDevicePolicy: false });
   if (auth.error) {
@@ -3183,29 +3544,64 @@ export async function handleCreditRegionPackDetailLink(request, env, deps) {
   if (!product) {
     return deps.json({ ok: false, error: "unknown_region_pack" }, 404, env);
   }
-  const now = deps.nowIso();
-  await deps.dbRun(db, `DELETE FROM region_pack_detail_tokens WHERE expires_at <= ?`, [now]);
-  const token = deps.randomToken(32);
-  const expiresAt = addMinutesIsoFromDeps(deps, regionPackDetailTokenTtlMinutes(env));
-  await deps.dbRun(
+  const tokenResult = await createRegionPackDetailTokenForUser(
     db,
-    `
-      INSERT INTO region_pack_detail_tokens (
-        token, user_id, region_pack_id, created_at, expires_at
-      ) VALUES (?, ?, ?, ?, ?)
-    `,
-    [token, String(auth.user.id || "").trim(), String(product.id || ""), now, expiresAt],
+    auth.user.id,
+    String(product.id || ""),
+    env,
+    deps,
   );
   const url = new URL(request.url);
   url.pathname = "/credits/region-pack-map";
   url.search = "";
-  url.searchParams.set("token", token);
+  url.searchParams.set("token", tokenResult.token);
   return deps.json(
     {
       ok: true,
       region_pack: regionProductPublicPayload(product),
       detail_url: url.toString(),
-      expires_at: expiresAt,
+      expires_at: tokenResult.expires_at,
+    },
+    200,
+    env,
+  );
+}
+
+export async function handleCreditSceneDetailLink(request, env, deps) {
+  const auth = await deps.requireAuthenticatedUserContext(request, env, { enforceApiKeyDevicePolicy: false });
+  if (auth.error) {
+    return auth.error;
+  }
+  const db = deps.requireDb(env);
+  await ensureCreditAccount(db, auth.user.id, deps);
+  await ensureSceneFullQualityDetailTokenTable(db, deps);
+  const body = await deps.parseJson(request);
+  const tileKeys = normalizeTileKeys(
+    body && (
+      body.tile_keys
+      || body.tileKeys
+      || body.tiles
+      || body.pricing_tiles
+      || body.pricingTiles
+    ),
+  );
+  if (!tileKeys.length) {
+    return deps.json({ ok: false, error: "missing_scene_tile_keys" }, 400, env);
+  }
+  if (tileKeys.length > 500) {
+    return deps.json({ ok: false, error: "too_many_scene_tile_keys", tile_count: tileKeys.length }, 400, env);
+  }
+  const tokenResult = await createSceneFullQualityDetailTokenForUser(db, auth.user.id, tileKeys, env, deps);
+  const url = new URL(request.url);
+  url.pathname = "/credits/scene-map";
+  url.search = "";
+  url.searchParams.set("token", tokenResult.token);
+  return deps.json(
+    {
+      ok: true,
+      tile_count: tileKeys.length,
+      detail_url: url.toString(),
+      expires_at: tokenResult.expires_at,
     },
     200,
     env,
@@ -3235,14 +3631,61 @@ async function getValidRegionPackDetailToken(db, token, deps) {
   return { ok: true, row };
 }
 
-function resolveRegionPackFromDetailTokenRow(row, requestedRegionId = "") {
+async function getValidSceneFullQualityDetailToken(db, token, deps) {
+  const safeToken = String(token || "").trim();
+  if (!safeToken) {
+    return { error: "missing_token", status: 400 };
+  }
+  await ensureSceneFullQualityDetailTokenTable(db, deps);
+  const now = deps.nowIso();
+  const row = await deps.dbGet(
+    db,
+    `
+      SELECT token, user_id, tile_keys_json, expires_at
+      FROM scene_full_quality_detail_tokens
+      WHERE token = ?
+      LIMIT 1
+    `,
+    [safeToken],
+  );
+  if (!row || String(row.expires_at || "") <= now) {
+    return { error: "expired_token", status: 410 };
+  }
+  let tileKeys = [];
+  try {
+    tileKeys = normalizeTileKeys(JSON.parse(String(row.tile_keys_json || "[]")));
+  } catch (error) {
+    tileKeys = [];
+  }
+  if (!tileKeys.length) {
+    return { error: "scene_detail_has_no_tiles", status: 410 };
+  }
+  return { ok: true, row: { ...row, tile_keys: tileKeys } };
+}
+
+async function getValidAnyDetailToken(db, token, deps) {
+  const region = await getValidRegionPackDetailToken(db, token, deps);
+  if (region && region.ok) {
+    return { ...region, token_type: "region_pack" };
+  }
+  const scene = await getValidSceneFullQualityDetailToken(db, token, deps);
+  if (scene && scene.ok) {
+    return { ...scene, token_type: "scene" };
+  }
+  return region && region.error ? region : scene;
+}
+
+function resolveRegionPackFromDetailTokenRow(row, requestedRegionId = "", options = {}) {
   const baseProduct = regionProductById(row && row.region_pack_id);
   if (!baseProduct) {
     return { error: "unknown_region_pack", status: 404 };
   }
   const requestedId = String(requestedRegionId || "").trim();
   const product = requestedId ? regionProductById(requestedId) : baseProduct;
-  if (!product || !isSameOrRelatedHigherRegionProduct(baseProduct, product)) {
+  if (!product) {
+    return { error: "region_pack_not_available_for_this_detail_link", status: 403 };
+  }
+  if (!Boolean(options && options.allowAnyProduct) && !isSameOrRelatedHigherRegionProduct(baseProduct, product)) {
     return { error: "region_pack_not_available_for_this_detail_link", status: 403 };
   }
   return { ok: true, baseProduct, product };
@@ -3252,8 +3695,11 @@ export async function handleCreditRegionPackCheckoutFromToken(request, env, deps
   const url = new URL(request.url);
   const token = String(url.searchParams.get("token") || "").trim();
   const requestedRegionId = String(url.searchParams.get("region_pack_id") || "").trim();
+  const allowCatalogProduct = String(url.searchParams.get("catalog") || "") === "1";
   const db = deps.requireDb(env);
-  const tokenResult = await getValidRegionPackDetailToken(db, token, deps);
+  const tokenResult = allowCatalogProduct
+    ? await getValidAnyDetailToken(db, token, deps)
+    : await getValidRegionPackDetailToken(db, token, deps);
   if (tokenResult.error) {
     return html(
       "<!doctype html><title>Planetka Region Pack</title><h1>This region-pack payment link expired.</h1><p>Please open it again from Blender.</p>",
@@ -3261,7 +3707,12 @@ export async function handleCreditRegionPackCheckoutFromToken(request, env, deps
       env,
     );
   }
-  const productResult = resolveRegionPackFromDetailTokenRow(tokenResult.row, requestedRegionId);
+  const productResult = allowCatalogProduct
+    ? (() => {
+      const product = regionProductById(requestedRegionId || tokenResult.row && tokenResult.row.region_pack_id);
+      return product ? { ok: true, product } : { error: "region_pack_not_available_for_this_detail_link", status: 403 };
+    })()
+    : resolveRegionPackFromDetailTokenRow(tokenResult.row, requestedRegionId);
   if (productResult.error) {
     return html(
       `<!doctype html><title>Planetka Region Pack</title><h1>Region pack unavailable.</h1><p>${escapeHtmlText(productResult.error)}</p>`,
@@ -3343,7 +3794,7 @@ export async function handleCreditRegionPackCheckoutFromToken(request, env, deps
         planetka_price_eur: priceEur.toFixed(2),
         planetka_gross_eur: normalizeCreditAmount(estimate && estimate.gross_eur).toFixed(2),
         planetka_discount_percent: String(Math.max(0, Number.parseInt(product.discount_percent || 0, 10) || 0)),
-        planetka_checkout_source: "region_pack_map_upsell",
+        planetka_checkout_source: allowCatalogProduct ? "region_pack_catalog" : "region_pack_map_upsell",
       },
     },
     deps,
@@ -3361,6 +3812,7 @@ export async function handleCreditRegionPackCheckoutFromToken(request, env, deps
 export async function handleCreditRegionPackMap(request, env, deps) {
   const url = new URL(request.url);
   const token = String(url.searchParams.get("token") || "").trim();
+  const allowCatalogProduct = String(url.searchParams.get("catalog") || "") === "1";
   if (!token) {
     return html(
       "<!doctype html><title>Planetka Region Pack</title><h1>Missing region-pack detail token.</h1>",
@@ -3369,7 +3821,9 @@ export async function handleCreditRegionPackMap(request, env, deps) {
     );
   }
   const db = deps.requireDb(env);
-  const tokenResult = await getValidRegionPackDetailToken(db, token, deps);
+  const tokenResult = allowCatalogProduct
+    ? await getValidAnyDetailToken(db, token, deps)
+    : await getValidRegionPackDetailToken(db, token, deps);
   if (tokenResult.error) {
     return html(
       "<!doctype html><title>Planetka Region Pack</title><h1>This region-pack detail link expired.</h1><p>Please open it again from Blender.</p>",
@@ -3378,7 +3832,12 @@ export async function handleCreditRegionPackMap(request, env, deps) {
     );
   }
   const requestedRegionId = String(url.searchParams.get("region_pack_id") || "").trim();
-  const productResult = resolveRegionPackFromDetailTokenRow(tokenResult.row, requestedRegionId);
+  const productResult = allowCatalogProduct
+    ? (() => {
+      const product = regionProductById(requestedRegionId || tokenResult.row && tokenResult.row.region_pack_id);
+      return product ? { ok: true, product } : { error: "region_pack_not_available_for_this_detail_link", status: 403 };
+    })()
+    : resolveRegionPackFromDetailTokenRow(tokenResult.row, requestedRegionId);
   if (productResult.error) {
     return html(
       `<!doctype html><title>Planetka Region Pack</title><h1>Region pack unavailable.</h1><p>${escapeHtmlText(productResult.error)}</p>`,
@@ -3389,6 +3848,24 @@ export async function handleCreditRegionPackMap(request, env, deps) {
   const userId = String(tokenResult.row && tokenResult.row.user_id || "").trim();
   const product = productResult.product;
   await ensureCreditAccount(db, userId, deps);
+  if (String(product && product.id || "").trim().toLowerCase() === "world") {
+    const estimate = await estimateRegionPack(db, userId, product, deps, { includeRows: false });
+    if (estimate && estimate.error) {
+      return html(
+        `<!doctype html><title>Planetka Region Pack</title><h1>Region pack estimate failed.</h1><p>${escapeHtmlText(estimate.error)}</p>`,
+        500,
+        env,
+      );
+    }
+    const safeToken = escapeHtmlText(encodeURIComponent(token));
+    const price = normalizeCreditAmount(estimate && estimate.price_eur).toFixed(2);
+    const fullPrice = normalizeCreditAmount(regionProductPricingSummary(product) && regionProductPricingSummary(product).gross_eur).toFixed(2);
+    return html(
+      `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Planetka World Pack</title><style>:root{color-scheme:dark}body{margin:0;background:#111;color:#eee;font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:820px;margin:0 auto;padding:24px}.panel{background:#1b1b1b;border:1px solid #3c3c3c;border-radius:12px;padding:14px}.button{display:inline-flex;align-items:center;justify-content:center;margin:8px 8px 0 0;padding:9px 12px;border-radius:8px;background:#d9a441;color:#111;text-decoration:none;font-weight:700}.secondary{background:#2a2a2a;color:#eee;border:1px solid #3c3c3c}.muted{color:#aaa}</style></head><body><main><h1>World Full Quality Pack</h1><section class="panel"><p>The World pack includes the complete Full Quality texture dataset. A full interactive tile map is intentionally not generated because it would be too large for a useful browser view.</p><p class="muted">Full price: €${fullPrice}<br>Your price: €${price}</p><a class="button" href="/credits/region-pack-checkout?token=${safeToken}&region_pack_id=world&catalog=1">Buy World (€${price})</a><a class="button secondary" href="/credits/region-pack-catalog?token=${safeToken}">Back to all data packs</a></section></main></body></html>`,
+      200,
+      env,
+    );
+  }
   const estimate = await estimateRegionPack(db, userId, product, deps, { includeRows: true });
   if (estimate && estimate.error) {
     return html(
@@ -3409,7 +3886,83 @@ export async function handleCreditRegionPackMap(request, env, deps) {
       upsells.push(buildRegionPackUpsellCardData(relatedProduct, relatedEstimate));
     }
   }
-  const data = buildRegionPackMapData(product, estimate, { token, upsells });
+  const data = buildRegionPackMapData(product, estimate, { token, upsells, catalogMode: allowCatalogProduct });
+  return html(regionPackMapHtml(data), 200, env);
+}
+
+export async function handleCreditRegionPackCatalog(request, env, deps) {
+  const url = new URL(request.url);
+  const token = String(url.searchParams.get("token") || "").trim();
+  if (!token) {
+    return html(
+      "<!doctype html><title>Planetka Data Packs</title><h1>Missing region-pack detail token.</h1>",
+      400,
+      env,
+    );
+  }
+  const db = deps.requireDb(env);
+  const tokenResult = await getValidAnyDetailToken(db, token, deps);
+  if (tokenResult.error) {
+    return html(
+      "<!doctype html><title>Planetka Data Packs</title><h1>This data-pack link expired.</h1><p>Please open it again from Blender.</p>",
+      tokenResult.status || 410,
+      env,
+    );
+  }
+  const userId = String(tokenResult.row && tokenResult.row.user_id || "").trim();
+  const data = await buildRegionPackCatalogData(db, userId, token, deps);
+  return html(regionPackCatalogHtml(data), 200, env);
+}
+
+export async function handleCreditSceneMap(request, env, deps) {
+  const url = new URL(request.url);
+  const token = String(url.searchParams.get("token") || "").trim();
+  if (!token) {
+    return html(
+      "<!doctype html><title>Planetka Scene Textures</title><h1>Missing scene detail token.</h1>",
+      400,
+      env,
+    );
+  }
+  const db = deps.requireDb(env);
+  const tokenResult = await getValidSceneFullQualityDetailToken(db, token, deps);
+  if (tokenResult.error) {
+    return html(
+      "<!doctype html><title>Planetka Scene Textures</title><h1>This scene detail link expired.</h1><p>Please open it again from Blender.</p>",
+      tokenResult.status || 410,
+      env,
+    );
+  }
+  const userId = String(tokenResult.row && tokenResult.row.user_id || "").trim();
+  await ensureCreditAccount(db, userId, deps);
+  const tileKeys = normalizeTileKeys(tokenResult.row && tokenResult.row.tile_keys);
+  const estimate = await estimateNewCredits(db, userId, tileKeys, "full", deps);
+  if (estimate && estimate.error) {
+    return html(
+      `<!doctype html><title>Planetka Scene Textures</title><h1>Scene estimate failed.</h1><p>${escapeHtmlText(estimate.error)}</p>`,
+      500,
+      env,
+    );
+  }
+  const preliminaryRows = allocatedRegionPackTileRows(estimate);
+  const center = tileRowsCenter(preliminaryRows);
+  const contextProducts = center
+    ? suggestedRegionProductsForPoint(center.latitude_deg, center.longitude_deg)
+    : [];
+  const contextProduct = contextProducts.length ? contextProducts[0] : null;
+  const upsells = [];
+  for (const product of contextProducts.slice(0, 4)) {
+    const relatedEstimate = await estimateRegionPack(db, userId, product, deps, { includeRows: true });
+    if (relatedEstimate && !relatedEstimate.error) {
+      const relatedPrice = normalizeCreditAmount(relatedEstimate && relatedEstimate.price_eur);
+      const relatedNewTiles = Math.max(0, Number.parseInt(relatedEstimate && relatedEstimate.new_tile_count || 0, 10) || 0);
+      if (relatedPrice <= 0 && relatedNewTiles <= 0) {
+        continue;
+      }
+      upsells.push(buildRegionPackUpsellCardData(product, relatedEstimate));
+    }
+  }
+  const data = buildSceneFullQualityMapData(estimate, { token, contextProduct, upsells });
   return html(regionPackMapHtml(data), 200, env);
 }
 
@@ -3485,11 +4038,215 @@ function checkoutReturnHtml({ title, heading, message, icon, tone }) {
 }
 
 export async function handleCreditPaymentSuccess(request, env, deps) {
+  const url = new URL(request.url);
+  const sessionId = String(url.searchParams.get("session_id") || "").trim();
+  if (!sessionId) {
+    return html(
+      checkoutReturnHtml({
+        title: "Planetka Payment Complete",
+        heading: "Payment complete",
+        message: "Your Planetka licence is being applied to your account. Return to Blender; the panel will refresh automatically after Stripe confirms the payment.",
+        icon: "OK",
+        tone: "success",
+      }),
+      200,
+      env,
+    );
+  }
+
+  const db = deps.requireDb(env);
+  await deps.ensureCreditTables(db);
+  const purchase = await loadPurchaseHistoryByStripeSession(db, sessionId, deps);
+  let session = null;
+  let metadata = {};
+  if (!purchase) {
+    const sessionResult = await fetchStripeCheckoutSession(env, sessionId, deps);
+    if (sessionResult && sessionResult.ok) {
+      session = sessionResult.session;
+      metadata = stripeSessionMetadata(session);
+    }
+  }
+  const purchaseType = String(
+    purchase && purchase.purchase_type
+      || metadata.planetka_purchase_type
+      || "",
+  ).trim().toLowerCase();
+  const userId = String(
+    purchase && purchase.user_id
+      || metadata.planetka_user_id
+      || session && session.client_reference_id
+      || "",
+  ).trim();
+  const amountPaidEur = normalizeCreditAmount(
+    purchase && purchase.amount_paid_eur
+      || metadata.planetka_price_eur
+      || eurFromStripeAmountCents(session && session.amount_total),
+  );
+  const applied = Boolean(purchase && purchase.id);
+  const success = {
+    title: "Payment successful",
+    message: applied
+      ? `Your Planetka licence has been applied. Here are the details of your purchase${amountPaidEur > 0 ? ` (€${amountPaidEur.toFixed(2)})` : ""}.`
+      : "Your payment was successful. Stripe is applying the licence now; Blender will refresh automatically. Here are the purchase details.",
+  };
+
+  if (!userId || !purchaseType) {
+    return html(
+      checkoutReturnHtml({
+        title: "Planetka Payment Complete",
+        heading: "Payment successful",
+        message: "Your Planetka payment was completed. Return to Blender; the panel will refresh automatically.",
+        icon: "OK",
+        tone: "success",
+      }),
+      200,
+      env,
+    );
+  }
+
+  if (purchaseType === "scene_tiles") {
+    const historyTiles = purchase && purchase.id ? await loadPurchaseHistoryTiles(db, purchase.id, deps) : [];
+    const tileKeys = historyTiles.length
+      ? normalizeTileKeys(historyTiles.map((row) => row && row.tile_key || ""))
+      : parseStripeMetadataTileKeys(metadata.planetka_tile_keys_json);
+    if (!tileKeys.length) {
+      return html(
+        checkoutReturnHtml({
+          title: "Planetka Payment Complete",
+          heading: "Payment successful",
+          message: "Your Full Quality scene texture purchase was completed. Return to Blender; the panel will refresh automatically.",
+          icon: "OK",
+          tone: "success",
+        }),
+        200,
+        env,
+      );
+    }
+    const tokenResult = await createSceneFullQualityDetailTokenForUser(db, userId, tileKeys, env, deps);
+    const estimate = historyTiles.length
+      ? sceneEstimateFromPurchaseTiles(purchase, historyTiles)
+      : await estimateNewCredits(db, userId, tileKeys, "full", deps);
+    if (estimate && !estimate.error) {
+      const preliminaryRows = allocatedRegionPackTileRows(estimate);
+      const center = tileRowsCenter(preliminaryRows);
+      const contextProducts = center
+        ? suggestedRegionProductsForPoint(center.latitude_deg, center.longitude_deg)
+        : [];
+      const contextProduct = contextProducts.length ? contextProducts[0] : null;
+      const upsells = [];
+      for (const product of contextProducts.slice(0, 4)) {
+        const relatedEstimate = await estimateRegionPack(db, userId, product, deps, { includeRows: true });
+        if (relatedEstimate && !relatedEstimate.error) {
+          const relatedPrice = normalizeCreditAmount(relatedEstimate && relatedEstimate.price_eur);
+          const relatedNewTiles = Math.max(0, Number.parseInt(relatedEstimate && relatedEstimate.new_tile_count || 0, 10) || 0);
+          if (relatedPrice <= 0 && relatedNewTiles <= 0) {
+            continue;
+          }
+          upsells.push(buildRegionPackUpsellCardData(product, relatedEstimate));
+        }
+      }
+      const data = buildSceneFullQualityMapData(estimate, {
+        token: tokenResult.token,
+        contextProduct,
+        upsells,
+        success,
+      });
+      return html(regionPackMapHtml(data), 200, env);
+    }
+  }
+
+  if (purchaseType === "region_pack") {
+    const regionPackId = String(purchase && purchase.region_pack_id || metadata.planetka_region_id || "").trim();
+    const product = regionProductById(regionPackId);
+    if (product) {
+      const tokenResult = await createRegionPackDetailTokenForUser(db, userId, String(product.id || ""), env, deps);
+      if (String(product.id || "").trim().toLowerCase() === "world") {
+        const fullPrice = normalizeCreditAmount(
+          purchase && purchase.gross_eur
+            || metadata.planetka_gross_eur
+            || regionProductPricingSummary(product) && regionProductPricingSummary(product).gross_eur,
+        );
+        const price = amountPaidEur;
+        const safeToken = escapeHtmlText(encodeURIComponent(tokenResult.token));
+        return html(
+          `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Planetka World Pack</title><style>:root{color-scheme:dark}body{margin:0;background:#111;color:#eee;font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:820px;margin:0 auto;padding:24px}.panel{background:#1b1b1b;border:1px solid #3c3c3c;border-radius:12px;padding:14px;margin-top:14px}.button{display:inline-flex;align-items:center;justify-content:center;margin:8px 8px 0 0;padding:9px 12px;border-radius:8px;background:#d9a441;color:#111;text-decoration:none;font-weight:700}.secondary{background:#2a2a2a;color:#eee;border:1px solid #3c3c3c}.muted{color:#aaa}</style></head><body><main><h1>World Full Quality Pack</h1><section class="panel"><h2>Payment successful</h2><p>${escapeHtmlText(success.message)}</p></section><section class="panel"><p>The World pack includes the complete Full Quality texture dataset. A full interactive tile map is intentionally not generated because it would be too large for a useful browser view.</p><p class="muted">Full price: €${fullPrice.toFixed(2)}<br>Your price: €${price.toFixed(2)}</p><a class="button secondary" href="/credits/region-pack-catalog?token=${safeToken}">View all data packs</a></section></main></body></html>`,
+          200,
+          env,
+        );
+      }
+      const estimate = await estimateRegionPack(db, userId, product, deps, { includeRows: true });
+      if (estimate && !estimate.error) {
+        const upsells = [];
+        for (const relatedProduct of relatedHigherRegionProducts(product, 3)) {
+          const relatedEstimate = await estimateRegionPack(db, userId, relatedProduct, deps, { includeRows: true });
+          if (relatedEstimate && !relatedEstimate.error) {
+            const relatedPrice = normalizeCreditAmount(relatedEstimate && relatedEstimate.price_eur);
+            const relatedNewTiles = Math.max(0, Number.parseInt(relatedEstimate && relatedEstimate.new_tile_count || 0, 10) || 0);
+            if (relatedPrice <= 0 && relatedNewTiles <= 0) {
+              continue;
+            }
+            upsells.push(buildRegionPackUpsellCardData(relatedProduct, relatedEstimate));
+          }
+        }
+        const data = buildRegionPackMapData(product, estimate, {
+          token: tokenResult.token,
+          upsells,
+          catalogMode: true,
+          success,
+        });
+        data.summary.price_eur = amountPaidEur;
+        data.summary.full_price_eur = normalizeCreditAmount(
+          purchase && purchase.gross_eur
+            || metadata.planetka_gross_eur
+            || data.summary.full_price_eur,
+        );
+        data.summary.discount_eur = normalizeCreditAmount(
+          purchase && purchase.discount_eur
+            || (data.summary.full_price_eur - amountPaidEur)
+            || data.summary.discount_eur,
+        );
+        data.summary.discount_percent = Math.max(
+          0,
+          Number.parseInt(purchase && purchase.discount_percent || metadata.planetka_discount_percent || data.summary.discount_percent || 0, 10) || 0,
+        );
+        return html(regionPackMapHtml(data), 200, env);
+      }
+    }
+  }
+
+  if (purchaseType === "standard_quality_unlock") {
+    return html(
+      checkoutReturnHtml({
+        title: "Planetka Standard Quality",
+        heading: "Standard Quality unlocked",
+        message: `Payment successful${amountPaidEur > 0 ? ` (€${amountPaidEur.toFixed(2)})` : ""}. Standard Quality textures are now unlocked for this account.`,
+        icon: "OK",
+        tone: "success",
+      }),
+      200,
+      env,
+    );
+  }
+
+  if (purchaseType === "balance_top_up") {
+    return html(
+      checkoutReturnHtml({
+        title: "Planetka Balance Added",
+        heading: "Balance added",
+        message: `Payment successful${amountPaidEur > 0 ? ` (€${amountPaidEur.toFixed(2)})` : ""}. Your Planetka balance will refresh automatically in Blender.`,
+        icon: "OK",
+        tone: "success",
+      }),
+      200,
+      env,
+    );
+  }
+
   return html(
     checkoutReturnHtml({
       title: "Planetka Payment Complete",
-      heading: "Payment complete",
-      message: "Your Planetka licence is being applied to your account. Return to Blender; the panel will refresh automatically after Stripe confirms the payment.",
+      heading: "Payment successful",
+      message: "Your Planetka payment was completed. Return to Blender; the panel will refresh automatically.",
       icon: "OK",
       tone: "success",
     }),
@@ -3510,6 +4267,113 @@ export async function handleCreditPaymentCancelled(request, env, deps) {
     200,
     env,
   );
+}
+
+async function loadPurchaseHistoryByStripeSession(db, stripeSessionId, deps) {
+  await deps.ensureCreditTables(db);
+  const safeSessionId = String(stripeSessionId || "").trim();
+  if (!safeSessionId) {
+    return null;
+  }
+  return await deps.dbGet(
+    db,
+    `
+      SELECT
+        id,
+        user_id,
+        user_email,
+        purchase_type,
+        stripe_session_id,
+        stripe_payment_intent_id,
+        currency,
+        amount_paid_eur,
+        nominal_eur,
+        gross_eur,
+        discount_eur,
+        discount_percent,
+        quality_mode,
+        region_pack_id,
+        region_pack_name,
+        region_pack_type,
+        catalog_version,
+        tile_count_total,
+        tile_count_new,
+        tile_count_already_licenced,
+        metadata_json,
+        created_at
+      FROM purchase_history
+      WHERE stripe_session_id = ?
+      LIMIT 1
+    `,
+    [safeSessionId],
+  );
+}
+
+async function loadPurchaseHistoryTiles(db, purchaseId, deps) {
+  await deps.ensureCreditTables(db);
+  const safePurchaseId = String(purchaseId || "").trim();
+  if (!safePurchaseId) {
+    return [];
+  }
+  return await deps.dbAll(
+    db,
+    `
+      SELECT
+        tile_key,
+        tile_status,
+        price_eur,
+        gross_price_eur,
+        land_km2,
+        billable_land_km2,
+        quality_mode,
+        created_at
+      FROM purchase_history_tiles
+      WHERE purchase_id = ?
+      ORDER BY tile_key ASC
+    `,
+    [safePurchaseId],
+  );
+}
+
+function sceneEstimateFromPurchaseTiles(purchase, rows) {
+  const tiles = [];
+  let total = 0;
+  for (const row of rows || []) {
+    const key = normalizeTileKey(row && row.tile_key || "");
+    if (!key) {
+      continue;
+    }
+    const price = normalizeCreditAmount(row && row.price_eur);
+    const gross = normalizeCreditAmount(row && (row.gross_price_eur ?? row.price_eur));
+    total = normalizeCreditAmount(total + price);
+    tiles.push({
+      tile_key: key,
+      credits: price,
+      price_eur: price,
+      gross_credits: gross,
+      gross_price_eur: gross,
+      land_km2: normalizeMetricAmount(row && row.land_km2),
+      billable_land_km2: normalizeMetricAmount(row && row.billable_land_km2),
+      already_owned: false,
+      globally_free: false,
+      free_reason: "",
+    });
+  }
+  const amountPaid = normalizeCreditAmount(purchase && purchase.amount_paid_eur);
+  return {
+    ok: true,
+    credits: amountPaid > 0 ? amountPaid : total,
+    price_eur: amountPaid > 0 ? amountPaid : total,
+    paid_tile_count: tiles.length,
+    free_tile_count: 0,
+    tile_count: Math.max(tiles.length, Number.parseInt(purchase && purchase.tile_count_total || 0, 10) || 0),
+    new_tile_count: tiles.length,
+    new_tiles: tiles,
+    tiles,
+    excluded_tiles: [],
+    integrity_warnings: [],
+    metadata_missing_tile_keys: [],
+  };
 }
 
 async function loadPurchaseHistoryForUser(db, userId, deps, options = {}) {

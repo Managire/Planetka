@@ -560,6 +560,35 @@ def create_region_pack_detail_link(region_pack_id: str) -> dict:
     raise CreditApiError(0, error, payload=result if isinstance(result, dict) else {})
 
 
+def create_scene_detail_link(tiles, quality_mode="FULL") -> dict:
+    """Create a short-lived user-specific browser map link for current scene tiles."""
+    tile_keys = []
+    for entry in list(tiles or ()):
+        if isinstance(entry, dict):
+            key = str(entry.get("tile_key") or entry.get("tileKey") or entry.get("key") or "").strip()
+        else:
+            key = str(entry or "").strip()
+        if key and key not in tile_keys:
+            tile_keys.append(key)
+    if not tile_keys:
+        raise CreditApiError(0, "missing_scene_tile_keys", payload={})
+    result = _request_json(
+        "POST",
+        "/credits/scene-detail-link",
+        body={
+            "tile_keys": tile_keys,
+            "quality_mode": str(quality_mode or "FULL").strip().lower(),
+        },
+        timeout=30,
+    )
+    if isinstance(result, dict) and result.get("ok", False):
+        return dict(result)
+    error = "scene_detail_link_failed"
+    if isinstance(result, dict):
+        error = str(result.get("error", "") or error)
+    raise CreditApiError(0, error, payload=result if isinstance(result, dict) else {})
+
+
 def report_licenced_download_usage(
     *,
     downloaded_bytes: int,

@@ -97,7 +97,10 @@ import {
   handleCreditPaymentSuccess as handleCreditPaymentSuccessRoute,
   handleCreditPurchaseHistory as handleCreditPurchaseHistoryRoute,
   handleCreditLicencedDownloadReport as handleCreditLicencedDownloadReportRoute,
+  handleCreditSceneDetailLink as handleCreditSceneDetailLinkRoute,
+  handleCreditSceneMap as handleCreditSceneMapRoute,
   handleCreditRegionPackDetailLink as handleCreditRegionPackDetailLinkRoute,
+  handleCreditRegionPackCatalog as handleCreditRegionPackCatalogRoute,
   handleCreditRegionPackCheckoutFromToken as handleCreditRegionPackCheckoutFromTokenRoute,
   handleCreditRegionPackMap as handleCreditRegionPackMapRoute,
   handleCreditRegionOffers as handleCreditRegionOffersRoute,
@@ -2943,6 +2946,22 @@ async function ensureCreditTables(db) {
   await dbRun(
     db,
     `
+      CREATE TABLE IF NOT EXISTS scene_full_quality_detail_tokens (
+        token TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        tile_keys_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+      )
+    `,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_scene_full_quality_detail_tokens_expires ON scene_full_quality_detail_tokens(expires_at)`,
+  );
+  await dbRun(
+    db,
+    `
       CREATE TABLE IF NOT EXISTS tile_land_stats (
         tile_key TEXT PRIMARY KEY,
         x INTEGER NOT NULL,
@@ -4023,9 +4042,24 @@ async function dispatchExactRoute(request, env, path) {
         return await handleCreditRegionPackDetailLinkRoute(request, env, TILE_ROUTE_DEPS);
       }
       return null;
+    case "/credits/scene-detail-link":
+      if (request.method === "POST") {
+        return await handleCreditSceneDetailLinkRoute(request, env, TILE_ROUTE_DEPS);
+      }
+      return null;
+    case "/credits/scene-map":
+      if (request.method === "GET" || request.method === "HEAD") {
+        return await handleCreditSceneMapRoute(request, env, TILE_ROUTE_DEPS);
+      }
+      return null;
     case "/credits/region-pack-map":
       if (request.method === "GET" || request.method === "HEAD") {
         return await handleCreditRegionPackMapRoute(request, env, TILE_ROUTE_DEPS);
+      }
+      return null;
+    case "/credits/region-pack-catalog":
+      if (request.method === "GET" || request.method === "HEAD") {
+        return await handleCreditRegionPackCatalogRoute(request, env, TILE_ROUTE_DEPS);
       }
       return null;
     case "/credits/region-pack-checkout":
