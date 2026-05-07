@@ -16,6 +16,7 @@ import sqlite3
 import sys
 import unicodedata
 from collections import defaultdict
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
 import geopandas as gpd
@@ -35,6 +36,10 @@ PAID_Z_LEVELS = (1, 2, 4, 8, 15, 30)
 FREE_D_THRESHOLD = 60
 MERGE_DIFFERENCE_RATIO = 0.50
 SMALL_COUNTRY_AUTO_MERGE_TILE_LIMIT = 30
+DATASET_BASE_MPP = Decimal("10.0")
+EQUATOR_Z001_AREA_KM2 = (Decimal("40075.016686") / Decimal("360.0")) ** 2
+MONEY_CENTS = Decimal("100")
+TILE_KEY_RE = re.compile(r"x(\d{3})_y(\d{3})_z(\d{3})_d(\d{3})", re.IGNORECASE)
 
 EUROPE_CLIP_BBOX = (-25.0, 34.0, 45.0, 72.0)
 SOUTH_AMERICA_CLIP_BBOX = (-92.5, -60.0, -30.0, 15.0)
@@ -891,6 +896,57 @@ def tile_key(x_value: int, y_value: int, z_value: int, d_value: int) -> str:
     return f"x{x_value:03d}_y{y_value:03d}_z{z_value:03d}_d{d_value:03d}"
 
 
+def parse_tile_key(value: str) -> tuple[int, int, int, int] | None:
+    match = TILE_KEY_RE.search(str(value or ""))
+    if not match:
+        return None
+    return tuple(int(match.group(index)) for index in range(1, 5))
+
+
+def free_reason_for_tile_key(value: str) -> str:
+    parsed = parse_tile_key(value)
+    if not parsed:
+        return "invalid_tile_key"
+    _x_value, y_value, z_value, d_value = parsed
+    if d_value <= 0:
+        return "d000_global_free"
+    if d_value >= FREE_D_THRESHOLD:
+        return "coarse_detail_free"
+    south = y_value - 90
+    north = y_value + z_value - 90
+    if north <= -60:
+        return "south_polar_free"
+    if south >= 75:
+        return "north_polar_free"
+    return ""
+
+
+def delivered_mpp_for_d(d_value: int) -> Decimal:
+    if d_value <= 0:
+        return Decimal("1440")
+    return DATASET_BASE_MPP * Decimal(max(1, int(d_value)))
+
+
+def credit_cents_for_land(tile_key_value: str, billable_land_km2: float, free_reason: str = "") -> int:
+    if free_reason_for_tile_key(tile_key_value) or str(free_reason or "").strip():
+        return 0
+    parsed = parse_tile_key(tile_key_value)
+    if not parsed:
+        return 0
+    _x_value, _y_value, _z_value, d_value = parsed
+    billable = Decimal(str(max(0.0, float(billable_land_km2 or 0.0))))
+    if billable <= 0:
+        return 0
+    mpp = delivered_mpp_for_d(d_value)
+    quality_factor = (DATASET_BASE_MPP / max(DATASET_BASE_MPP, mpp)) ** 2
+    eur = (billable / EQUATOR_Z001_AREA_KM2) * quality_factor
+    return int((eur * MONEY_CENTS).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def eur_from_cents(cents: int) -> float:
+    return float((Decimal(max(0, int(cents))) / MONEY_CENTS).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
 def paid_d_levels_for_z(z_value: int) -> tuple[int, ...]:
     return (z_value,) if 0 < z_value < FREE_D_THRESHOLD else ()
 
@@ -1074,6 +1130,44 @@ def counts_by_z(tile_keys: list[str]) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 
+def filtered_tile_keys(tile_keys: list[str], valid_tile_keys: set[str] | None = None) -> list[str]:
+    keys = sorted(set(str(key).strip() for key in tile_keys if str(key).strip()))
+    if valid_tile_keys is None:
+        return keys
+    return [key for key in keys if key in valid_tile_keys]
+
+
+def pricing_summary_for_tile_keys(tile_keys: list[str], tile_pricing: dict[str, dict]) -> dict:
+    gross_cents = 0
+    paid_tile_count = 0
+    free_tile_count = 0
+    licensable_tile_count = 0
+    missing_tile_keys = []
+    for key in filtered_tile_keys(tile_keys):
+        if not free_reason_for_tile_key(key):
+            licensable_tile_count += 1
+        record = tile_pricing.get(key)
+        if record is None:
+            missing_tile_keys.append(key)
+            free_tile_count += 1
+            continue
+        cents = max(0, int(record.get("gross_cents") or 0))
+        gross_cents += cents
+        if cents > 0:
+            paid_tile_count += 1
+        else:
+            free_tile_count += 1
+    return {
+        "gross_cents": gross_cents,
+        "gross_eur": eur_from_cents(gross_cents),
+        "paid_tile_count": paid_tile_count,
+        "free_tile_count": free_tile_count,
+        "licensable_tile_count": licensable_tile_count,
+        "metadata_missing_tile_count": len(missing_tile_keys),
+        "metadata_missing_tile_keys": missing_tile_keys[:100],
+    }
+
+
 def country_records(selected) -> list[dict]:
     records = []
     if "GID_1" in selected.columns and "NAME_1" in selected.columns:
@@ -1151,9 +1245,11 @@ def payload_from_selected(
     source_note: str = "GADM 4.10 ADM_0 polygon intersection",
     tile_keys_override: list[str] | None = None,
     membership_codes_override: tuple[str, ...] | list[str] | None = None,
+    valid_tile_keys: set[str] | None = None,
 ) -> dict:
     geometry = union_geometry(selected)
-    tile_keys = sorted(set(tile_keys_override)) if tile_keys_override is not None else region_tiles_for_geometry(geometry)
+    source_tile_keys = sorted(set(tile_keys_override)) if tile_keys_override is not None else region_tiles_for_geometry(geometry)
+    tile_keys = filtered_tile_keys(source_tile_keys, valid_tile_keys)
     bounds = [float(value) for value in selected.total_bounds]
     safe_adm0_codes = sorted(set(str(code).upper() for code in adm0_codes if str(code).strip()))
     if not safe_adm0_codes and "GID_0" in selected.columns:
@@ -1210,7 +1306,7 @@ def product_name_from_selected(selected, fallback: str) -> str:
     return fallback
 
 
-def build_local_payloads(layers: dict[str, object]) -> list[dict]:
+def build_local_payloads(layers: dict[str, object], valid_tile_keys: set[str] | None = None) -> list[dict]:
     payloads = []
     specs = list(LOCAL_PRODUCT_SPECS)
     for index, spec in enumerate(specs, start=1):
@@ -1236,6 +1332,7 @@ def build_local_payloads(layers: dict[str, object]) -> list[dict]:
                 auto_merge=bool(spec.get("auto_merge", False)),
                 source_note=str(spec.get("source_note") or "GADM 4.10 ADM_0 polygon intersection"),
                 membership_codes_override=tuple(spec.get("membership_codes") or ()),
+                valid_tile_keys=valid_tile_keys,
             )
         )
     return payloads
@@ -1430,11 +1527,57 @@ def validate_unique_product_ids(products: list[dict]):
         raise ValueError(f"Duplicate region pack product id(s): {formatted}")
 
 
+def load_valid_region_tile_keys(tile_db_path: Path) -> set[str]:
+    if not tile_db_path.exists():
+        raise FileNotFoundError(f"Region pack build requires tile DB: {tile_db_path}")
+    conn = sqlite3.connect(str(tile_db_path))
+    try:
+        tables = {
+            str(row[0])
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        }
+        if "tile_land_stats" in tables:
+            rows = conn.execute(
+                """
+                  SELECT tile_key
+                  FROM tile_land_stats
+                  WHERE tile_key IS NOT NULL
+                  ORDER BY tile_key
+                """
+            ).fetchall()
+            return {str(row[0]).strip() for row in rows if str(row[0]).strip()}
+        rows = conn.execute(
+            """
+              SELECT DISTINCT x, y, z, d
+              FROM tile_sizes
+              WHERE folder = 'S2'
+              ORDER BY z, d, x, y
+            """
+        ).fetchall()
+        return {tile_key(int(x), int(y), int(z), int(d)) for x, y, z, d in rows}
+    finally:
+        conn.close()
+
+
 def world_tile_keys_from_db(tile_db_path: Path) -> list[str]:
     if not tile_db_path.exists():
         raise FileNotFoundError(f"World region pack requires tile size DB: {tile_db_path}")
     conn = sqlite3.connect(str(tile_db_path))
     try:
+        tables = {
+            str(row[0])
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        }
+        if "tile_land_stats" in tables:
+            rows = conn.execute(
+                """
+                  SELECT tile_key
+                  FROM tile_land_stats
+                  WHERE tile_key IS NOT NULL
+                  ORDER BY z, d, x, y
+                """
+            ).fetchall()
+            return [str(row[0]).strip() for row in rows if str(row[0]).strip()]
         rows = conn.execute(
             """
               SELECT DISTINCT x, y, z, d
@@ -1448,6 +1591,55 @@ def world_tile_keys_from_db(tile_db_path: Path) -> list[str]:
     return [tile_key(int(x), int(y), int(z), int(d)) for x, y, z, d in rows]
 
 
+def load_tile_pricing(tile_db_path: Path) -> dict[str, dict]:
+    if not tile_db_path.exists():
+        raise FileNotFoundError(f"Region pack pricing requires tile DB: {tile_db_path}")
+    conn = sqlite3.connect(str(tile_db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        tables = {
+            str(row[0])
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        }
+        if "tile_land_stats" not in tables:
+            raise RuntimeError("Region pack pricing requires tile_land_stats in Resources/tile_sizes.sqlite")
+        rows = conn.execute(
+            """
+              SELECT tile_key, billable_land_km2, free_reason
+              FROM tile_land_stats
+              WHERE tile_key IS NOT NULL
+              ORDER BY tile_key
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+    pricing = {}
+    for row in rows:
+        key = str(row["tile_key"] or "").strip()
+        if not key:
+            continue
+        free_reason = str(row["free_reason"] or "").strip()
+        pricing[key] = {
+            "gross_cents": credit_cents_for_land(key, row["billable_land_km2"], free_reason),
+            "free_reason": free_reason or free_reason_for_tile_key(key),
+        }
+    return pricing
+
+
+def apply_pricing_summaries(products: list[dict], tile_pricing: dict[str, dict]) -> None:
+    for product in products:
+        summary = pricing_summary_for_tile_keys(product.get("tile_keys") or [], tile_pricing)
+        product["pricing_summary"] = summary
+        product["gross_cents"] = int(summary["gross_cents"])
+        product["gross_eur"] = float(summary["gross_eur"])
+        product["paid_tile_count"] = int(summary["paid_tile_count"])
+        product["free_tile_count"] = int(summary["free_tile_count"])
+        product["licensable_tile_count"] = int(summary["licensable_tile_count"])
+        if summary["metadata_missing_tile_count"]:
+            product["metadata_missing_tile_count"] = int(summary["metadata_missing_tile_count"])
+            product["metadata_missing_tile_keys"] = list(summary["metadata_missing_tile_keys"])
+
+
 def world_product_payload(tile_db_path: Path) -> dict:
     tile_keys = world_tile_keys_from_db(tile_db_path)
     return {
@@ -1456,7 +1648,7 @@ def world_product_payload(tile_db_path: Path) -> dict:
         "type": "world",
         "discount_percent": 50,
         "catalog_version": CATALOG_VERSION,
-        "source": "S2 tile inventory from Resources/tile_sizes.sqlite; includes free, polar, ocean, and coarse tiles",
+        "source": "S2 tile pricing inventory from Resources/tile_sizes.sqlite; includes free, polar, ocean, and coarse tiles",
         "adm0_codes": [],
         "adm1_codes": [],
         "membership_codes": [],
@@ -1475,14 +1667,17 @@ def world_product_payload(tile_db_path: Path) -> dict:
 
 
 def build_catalog(gpkg_path: Path, tile_db_path: Path = DEFAULT_TILE_DB) -> dict:
+    valid_tile_keys = load_valid_region_tile_keys(tile_db_path)
+    tile_pricing = load_tile_pricing(tile_db_path)
     layers = {
         "adm0": read_adm0(gpkg_path),
         "adm1": read_adm1(gpkg_path),
     }
-    raw_local = build_local_payloads(layers)
+    raw_local = build_local_payloads(layers, valid_tile_keys)
     local_products, merge_report, code_to_product_id, code_to_payload = merge_local_payloads(raw_local, layers)
     macro_products = build_macro_payloads(layers, code_to_product_id, code_to_payload)
     products = local_products + macro_products + [world_product_payload(tile_db_path)]
+    apply_pricing_summaries(products, tile_pricing)
     validate_unique_product_ids(products)
     products.sort(key=lambda payload: (0 if payload["type"] == "country" else 1 if payload["type"] == "macro_region" else 2, payload["name"]))
     return {
@@ -1510,6 +1705,11 @@ def public_product_payload(payload: dict) -> dict:
         "discount_percent": payload["discount_percent"],
         "tile_count": int(payload.get("tile_count") or 0),
         "bbox": payload.get("bbox") or payload.get("bounds") or [],
+        "gross_eur": float(payload.get("gross_eur") or 0.0),
+        "gross_cents": int(payload.get("gross_cents") or 0),
+        "paid_tile_count": int(payload.get("paid_tile_count") or 0),
+        "free_tile_count": int(payload.get("free_tile_count") or 0),
+        "licensable_tile_count": int(payload.get("licensable_tile_count") or 0),
     }
     if payload.get("country_product_ids"):
         result["countries"] = payload["country_product_ids"]
@@ -1594,6 +1794,7 @@ def write_js(path: Path, catalog: dict):
             "adm1_codes": payload.get("adm1_codes", []),
             "merged_from": payload.get("merged_from", []),
             "counts_by_z": payload.get("counts_by_z", {}),
+            "pricing_summary": payload.get("pricing_summary", {}),
         }
     lines.append("")
     lines.append(f"export const GENERATED_REGION_PACK_DETAILS = {json.dumps(detail_payload, ensure_ascii=True, separators=(',', ':'))};")

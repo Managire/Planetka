@@ -175,7 +175,7 @@ function defaultCheckoutSuccessUrl(env) {
   return String(
     env.STRIPE_CHECKOUT_SUCCESS_URL
     || env.PLANETKA_CHECKOUT_SUCCESS_URL
-    || "https://www.planetka.io/payment/success",
+    || "https://api.planetka.io/credits/payment-success",
   ).trim();
 }
 
@@ -183,8 +183,17 @@ function defaultCheckoutCancelUrl(env) {
   return String(
     env.STRIPE_CHECKOUT_CANCEL_URL
     || env.PLANETKA_CHECKOUT_CANCEL_URL
-    || "https://www.planetka.io/payment/cancelled",
+    || "https://api.planetka.io/credits/payment-cancelled",
   ).trim();
+}
+
+function checkoutReturnUrl(baseUrl, sessionPlaceholder = "") {
+  const safeBaseUrl = String(baseUrl || "").trim();
+  if (!safeBaseUrl || !sessionPlaceholder) {
+    return safeBaseUrl;
+  }
+  const separator = safeBaseUrl.includes("?") ? "&" : "?";
+  return `${safeBaseUrl}${separator}session_id=${sessionPlaceholder}`;
 }
 
 function clampNumber(value, minValue, maxValue) {
@@ -225,6 +234,31 @@ function regionProductPublicPayload(product) {
     catalog_version: REGION_PACK_CATALOG_VERSION,
     included_countries: regionProductIncludedCountries(product),
   };
+}
+
+function regionProductPricingSummary(product) {
+  if (!product || typeof product !== "object") {
+    return null;
+  }
+  const grossCents = Math.max(0, Number.parseInt(product.gross_cents || 0, 10) || 0);
+  const grossEur = grossCents > 0
+    ? normalizeCreditAmount(grossCents / 100.0)
+    : normalizeCreditAmount(product.gross_eur || 0);
+  return {
+    gross_cents: grossCents || centsForEur(grossEur),
+    gross_eur: grossEur,
+    paid_tile_count: Math.max(0, Number.parseInt(product.paid_tile_count || 0, 10) || 0),
+    free_tile_count: Math.max(0, Number.parseInt(product.free_tile_count || 0, 10) || 0),
+    licensable_tile_count: Math.max(0, Number.parseInt(product.licensable_tile_count || 0, 10) || 0),
+    tile_count: Math.max(0, Number.parseInt(product.tile_count || 0, 10) || 0),
+  };
+}
+
+function discountedRegionPackAmount(grossEur, discountPercent) {
+  const gross = normalizeCreditAmount(grossEur);
+  const discount = normalizeCreditAmount(gross * (Math.max(0, Math.min(95, Number.parseInt(discountPercent || 0, 10) || 0)) / 100.0));
+  const price = normalizeCreditAmount(Math.max(0, gross - discount));
+  return { gross, discount, price };
 }
 
 function countryNameByRegionId(regionId) {
@@ -563,9 +597,121 @@ async function estimateNewCreditsChunked(db, userId, tileKeys, qualityMode, deps
   return aggregate;
 }
 
+async function estimateRegionPackSummary(db, userId, product, deps) {
+  await deps.ensureCreditTables(db);
+  const summary = regionProductPricingSummary(product);
+  if (!summary) {
+    return { error: "missing_region_pack_summary" };
+  }
+  const tileKeys = regionProductTileKeys(product);
+  const discountPercent = Math.max(0, Math.min(95, Number.parseInt(product && product.discount_percent || 0, 10) || 0));
+  const ownedRows = await deps.dbAll(
+    db,
+    `
+      SELECT tile_key
+      FROM user_tile_entitlements
+      WHERE user_id = ?
+    `,
+    [String(userId || "").trim()],
+  );
+  const ownedByFamily = new Map();
+  for (const row of ownedRows || []) {
+    const owned = parseTileKey(row && row.tile_key || "");
+    const family = tileFamilyKey(owned);
+    if (!owned || !family) {
+      continue;
+    }
+    if (!ownedByFamily.has(family)) {
+      ownedByFamily.set(family, []);
+    }
+    ownedByFamily.get(family).push({ key: owned.key, d: Number(owned.d) });
+  }
+  const coveredKeys = [];
+  const upgradeOwnedKeys = [];
+  let alreadyLicencedCount = 0;
+  let newLicensableCount = 0;
+  for (const key of tileKeys) {
+    const parsed = parseTileKey(key);
+    const family = tileFamilyKey(parsed);
+    if (!parsed || !family || isFreeCreditTileKey(key)) {
+      continue;
+    }
+    const entries = ownedByFamily.get(family) || [];
+    const coveredByFiner = entries.some((entry) => Number(entry.d) <= Number(parsed.d));
+    if (coveredByFiner) {
+      alreadyLicencedCount += 1;
+      coveredKeys.push(key);
+      continue;
+    }
+    newLicensableCount += 1;
+    const coarserEntries = entries.filter((entry) => Number(entry.d) > Number(parsed.d));
+    for (const entry of coarserEntries) {
+      upgradeOwnedKeys.push(entry.key);
+    }
+  }
+
+  let coveredGrossEur = 0;
+  let coveredPaidTileCount = 0;
+  if (coveredKeys.length && coveredKeys.length < summary.licensable_tile_count) {
+    const coveredPricing = await backendPricingRecordsForTileKeys(db, coveredKeys, "full", deps);
+    coveredGrossEur = normalizeCreditAmount((coveredPricing || []).reduce(
+      (total, row) => total + normalizeCreditAmount(row && row.credits),
+      0,
+    ));
+    coveredPaidTileCount = (coveredPricing || []).filter((row) => normalizeCreditAmount(row && row.credits) > 0).length;
+  } else if (coveredKeys.length && coveredKeys.length >= summary.licensable_tile_count) {
+    coveredGrossEur = summary.gross_eur;
+    coveredPaidTileCount = summary.paid_tile_count;
+  }
+
+  let upgradeCreditEur = 0;
+  const uniqueUpgradeKeys = normalizeTileKeys(upgradeOwnedKeys);
+  if (uniqueUpgradeKeys.length) {
+    const upgradePricing = await backendPricingRecordsForTileKeys(db, uniqueUpgradeKeys, "full", deps);
+    upgradeCreditEur = normalizeCreditAmount((upgradePricing || []).reduce(
+      (total, row) => total + normalizeCreditAmount(row && row.credits),
+      0,
+    ));
+  }
+
+  const grossEur = normalizeCreditAmount(Math.max(0, summary.gross_eur - coveredGrossEur - upgradeCreditEur));
+  const amounts = discountedRegionPackAmount(grossEur, discountPercent);
+  const paidTileCount = Math.max(0, summary.paid_tile_count - coveredPaidTileCount);
+  const freeTileCount = Math.max(0, summary.tile_count - paidTileCount);
+  return {
+    ok: true,
+    summary_estimate: true,
+    region_pack: regionProductPublicPayload(product),
+    region_pack_id: String(product.id || ""),
+    region_pack_name: String(product.name || ""),
+    catalog_version: REGION_PACK_CATALOG_VERSION,
+    discount_percent: discountPercent,
+    gross_eur: amounts.gross,
+    gross_price_eur: amounts.gross,
+    discount_eur: amounts.discount,
+    credits: amounts.price,
+    price_eur: amounts.price,
+    paid_tile_count: paidTileCount,
+    free_tile_count: freeTileCount,
+    tile_count: summary.tile_count,
+    new_tile_count: newLicensableCount,
+    new_tiles: [],
+    excluded_tiles: new Array(alreadyLicencedCount).fill(null),
+    integrity_warnings: [],
+    metadata_missing_tile_keys: [],
+    tiles: [],
+  };
+}
+
 async function estimateRegionPack(db, userId, product, deps, options = {}) {
   if (!product) {
     return { error: "unknown_region_pack" };
+  }
+  if (!Boolean(options && options.includeRows) && !Boolean(options && options.forceDetailed)) {
+    const summaryEstimate = await estimateRegionPackSummary(db, userId, product, deps);
+    if (summaryEstimate && !summaryEstimate.error) {
+      return summaryEstimate;
+    }
   }
   const tileKeys = regionProductTileKeys(product);
   const gross = await estimateNewCreditsChunked(db, userId, tileKeys, "full", deps, {
@@ -576,8 +722,9 @@ async function estimateRegionPack(db, userId, product, deps, options = {}) {
   }
   const grossEur = normalizeCreditAmount(gross && gross.credits);
   const discountPercent = Math.max(0, Math.min(95, Number.parseInt(product.discount_percent || 0, 10) || 0));
-  const discountEur = normalizeCreditAmount(grossEur * (discountPercent / 100.0));
-  const priceEur = normalizeCreditAmount(Math.max(0, grossEur - discountEur));
+  const amounts = discountedRegionPackAmount(grossEur, discountPercent);
+  const discountEur = amounts.discount;
+  const priceEur = amounts.price;
   return {
     ok: true,
     region_pack: regionProductPublicPayload(product),
@@ -1814,6 +1961,97 @@ export async function grantPaidSceneTileEntitlements(db, userId, qualityMode, ti
   };
 }
 
+async function regionPackEntitlementRowsForGrant(db, userId, product, deps) {
+  await deps.ensureCreditTables(db);
+  const tileKeys = regionProductTileKeys(product);
+  const existingRows = await deps.dbAll(
+    db,
+    `
+      SELECT tile_key
+      FROM user_tile_entitlements
+      WHERE user_id = ?
+    `,
+    [String(userId || "").trim()],
+  );
+  const ownedByFamily = new Map();
+  for (const row of existingRows || []) {
+    const owned = parseTileKey(row && row.tile_key || "");
+    const family = tileFamilyKey(owned);
+    if (!owned || !family) {
+      continue;
+    }
+    if (!ownedByFamily.has(family)) {
+      ownedByFamily.set(family, []);
+    }
+    ownedByFamily.get(family).push(Number(owned.d));
+  }
+  const rows = [];
+  for (const key of tileKeys) {
+    const tileKey = normalizeTileKey(key);
+    const parsed = parseTileKey(tileKey);
+    const family = tileFamilyKey(parsed);
+    if (!tileKey || !parsed || !family || isFreeCreditTileKey(tileKey)) {
+      continue;
+    }
+    const ownedDLevels = ownedByFamily.get(family) || [];
+    if (ownedDLevels.some((ownedD) => Number(ownedD) <= Number(parsed.d))) {
+      continue;
+    }
+    rows.push({
+      tile_key: tileKey,
+      credits: 0,
+      gross_credits: 0,
+      price_eur: 0,
+      gross_price_eur: 0,
+      land_km2: 0,
+      billable_land_km2: 0,
+      source: "stripe_region_pack_summary",
+    });
+    ownedDLevels.push(Number(parsed.d));
+    ownedByFamily.set(family, ownedDLevels);
+  }
+  return rows;
+}
+
+async function insertRegionPackEntitlementRows(db, userId, rows, source, now, deps) {
+  const safeUserId = String(userId || "").trim();
+  const sourceName = String(source || "stripe_region_pack").trim() || "stripe_region_pack";
+  const inserted = [];
+  // D1 rejects large multi-value INSERT statements well below SQLite's usual
+  // variable limit in Workers. Ten rows keeps this path under 70 bound values.
+  const chunks = fixedSizeChunks(rows || [], 10);
+  for (const chunk of chunks) {
+    const valuesSql = chunk.map(() => "(?, ?, 'full', ?, ?, ?, ?, ?)").join(",");
+    const bindings = [];
+    for (const row of chunk) {
+      bindings.push(
+        safeUserId,
+        normalizeTileKey(row && row.tile_key || ""),
+        normalizeCreditAmount(row && (row.gross_credits ?? row.credits)),
+        Math.max(0, Number.parseFloat(row && row.land_km2 || 0) || 0),
+        Math.max(0, Number.parseFloat(row && row.billable_land_km2 || 0) || 0),
+        sourceName,
+        now,
+      );
+    }
+    if (!bindings.length) {
+      continue;
+    }
+    await deps.dbRun(
+      db,
+      `
+        INSERT OR IGNORE INTO user_tile_entitlements (
+          user_id, tile_key, quality_mode, credits_spent, land_km2, billable_land_km2, source, unlocked_at
+        )
+        VALUES ${valuesSql}
+      `,
+      bindings,
+    );
+    inserted.push(...chunk);
+  }
+  return inserted;
+}
+
 export async function grantRegionPackEntitlements(db, userId, regionPackId, stripeSessionId, amountPaidEur, deps, userEmail = "", stripePaymentIntentId = "") {
   const safeUserId = String(userId || "").trim();
   const safeStripeSessionId = String(stripeSessionId || "").trim();
@@ -1848,14 +2086,29 @@ export async function grantRegionPackEntitlements(db, userId, regionPackId, stri
     }
   }
   await ensureCreditAccount(db, safeUserId, deps);
-  const estimate = await estimateRegionPack(db, safeUserId, product, deps, { includeRows: false });
+  const useDetailedGrant = Math.max(0, Number.parseInt(product && product.tile_count || 0, 10) || 0) <= 1000;
+  const estimate = await estimateRegionPack(db, safeUserId, product, deps, { includeRows: false, forceDetailed: useDetailedGrant });
   if (estimate && estimate.error) {
     return estimate;
   }
   const now = deps.nowIso();
   const insertedTiles = [];
   let nominalCredits = 0;
-  for (const tile of estimate.new_tiles || []) {
+  const grantTiles = useDetailedGrant
+    ? (estimate.new_tiles || [])
+    : await regionPackEntitlementRowsForGrant(db, safeUserId, product, deps);
+  if (!useDetailedGrant) {
+    insertedTiles.push(...await insertRegionPackEntitlementRows(
+      db,
+      safeUserId,
+      grantTiles,
+      "stripe_region_pack_summary",
+      now,
+      deps,
+    ));
+    nominalCredits = normalizeCreditAmount(estimate && estimate.gross_eur);
+  }
+  for (const tile of (useDetailedGrant ? grantTiles : [])) {
     const tileKey = normalizeTileKey(tile && tile.tile_key || "");
     if (!tileKey || isFreeCreditTileKey(tileKey)) {
       continue;
@@ -1957,8 +2210,10 @@ export async function grantRegionPackEntitlements(db, userId, regionPackId, stri
     price_eur: 0,
     paid_eur: paidEur,
     nominal_eur: nominalCredits,
-    paid_tile_count: insertedTiles.filter((tile) => normalizeCreditAmount(tile && (tile.gross_credits ?? tile.credits)) > 0).length,
-    new_tiles: insertedTiles,
+    paid_tile_count: useDetailedGrant
+      ? insertedTiles.filter((tile) => normalizeCreditAmount(tile && (tile.gross_credits ?? tile.credits)) > 0).length
+      : Math.max(0, Number.parseInt(estimate && estimate.paid_tile_count || 0, 10) || 0),
+    new_tiles: insertedTiles.slice(0, 500),
   };
 }
 
@@ -2075,7 +2330,7 @@ async function createStripeCheckoutSession(env, params, deps) {
   const metadata = params.metadata && typeof params.metadata === "object" ? params.metadata : {};
   const body = new URLSearchParams();
   body.set("mode", "payment");
-  body.set("success_url", defaultCheckoutSuccessUrl(env));
+  body.set("success_url", checkoutReturnUrl(defaultCheckoutSuccessUrl(env), "{CHECKOUT_SESSION_ID}"));
   body.set("cancel_url", defaultCheckoutCancelUrl(env));
   body.set("client_reference_id", checkoutMetadataValue(params.clientReferenceId || ""));
   if (params.customerEmail) {
@@ -2636,6 +2891,105 @@ export async function handleCreditRegionPackMap(request, env, deps) {
   }
   const data = buildRegionPackMapData(product, estimate);
   return html(regionPackMapHtml(data), 200, env);
+}
+
+function checkoutReturnHtml({ title, heading, message, icon, tone }) {
+  const safeTitle = escapeHtmlText(title || "Planetka Payment");
+  const safeHeading = escapeHtmlText(heading || "Payment processed");
+  const safeMessage = escapeHtmlText(message || "You can return to Blender.");
+  const safeIcon = escapeHtmlText(icon || "OK");
+  const safeTone = String(tone || "success").trim() === "cancel" ? "cancel" : "success";
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${safeTitle}</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #101214;
+      color: #f4f0e8;
+    }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background:
+        radial-gradient(circle at 20% 20%, rgba(93, 160, 255, 0.22), transparent 32rem),
+        radial-gradient(circle at 85% 75%, rgba(64, 180, 126, 0.18), transparent 28rem),
+        #101214;
+    }
+    main {
+      width: min(38rem, calc(100vw - 2rem));
+      padding: 2.4rem;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 1.25rem;
+      background: rgba(18, 20, 22, 0.82);
+      box-shadow: 0 2rem 6rem rgba(0, 0, 0, 0.36);
+    }
+    .mark {
+      width: 3.25rem;
+      height: 3.25rem;
+      display: inline-grid;
+      place-items: center;
+      border-radius: 999px;
+      margin-bottom: 1.2rem;
+      font-size: 1.7rem;
+      background: ${safeTone === "cancel" ? "rgba(255, 181, 71, 0.18)" : "rgba(74, 222, 128, 0.18)"};
+      color: ${safeTone === "cancel" ? "#ffd08a" : "#91f7b5"};
+    }
+    h1 {
+      margin: 0 0 0.75rem;
+      font-size: clamp(1.8rem, 5vw, 2.6rem);
+      letter-spacing: -0.04em;
+    }
+    p {
+      margin: 0;
+      color: rgba(244, 240, 232, 0.78);
+      line-height: 1.55;
+      font-size: 1.05rem;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="mark">${safeIcon}</div>
+    <h1>${safeHeading}</h1>
+    <p>${safeMessage}</p>
+  </main>
+</body>
+</html>`;
+}
+
+export async function handleCreditPaymentSuccess(request, env, deps) {
+  return html(
+    checkoutReturnHtml({
+      title: "Planetka Payment Complete",
+      heading: "Payment complete",
+      message: "Your Planetka licence is being applied to your account. Return to Blender; the panel will refresh automatically after Stripe confirms the payment.",
+      icon: "OK",
+      tone: "success",
+    }),
+    200,
+    env,
+  );
+}
+
+export async function handleCreditPaymentCancelled(request, env, deps) {
+  return html(
+    checkoutReturnHtml({
+      title: "Planetka Payment Cancelled",
+      heading: "Payment cancelled",
+      message: "No Planetka payment was completed. You can return to Blender and continue with Preview or start the purchase again.",
+      icon: "!",
+      tone: "cancel",
+    }),
+    200,
+    env,
+  );
 }
 
 async function loadPurchaseHistoryForUser(db, userId, deps, options = {}) {

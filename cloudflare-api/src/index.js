@@ -93,6 +93,8 @@ import {
   handleCreditCheckout as handleCreditCheckoutRoute,
   handleCreditEstimate as handleCreditEstimateRoute,
   handleCreditMe as handleCreditMeRoute,
+  handleCreditPaymentCancelled as handleCreditPaymentCancelledRoute,
+  handleCreditPaymentSuccess as handleCreditPaymentSuccessRoute,
   handleCreditPurchaseHistory as handleCreditPurchaseHistoryRoute,
   handleCreditRegionPackDetailLink as handleCreditRegionPackDetailLinkRoute,
   handleCreditRegionPackMap as handleCreditRegionPackMapRoute,
@@ -3981,6 +3983,16 @@ async function dispatchExactRoute(request, env, path) {
     case "/credits/region-pack-map":
       if (request.method === "GET" || request.method === "HEAD") {
         return await handleCreditRegionPackMapRoute(request, env, TILE_ROUTE_DEPS);
+      }
+      return null;
+    case "/credits/payment-success":
+      if (request.method === "GET" || request.method === "HEAD") {
+        return await handleCreditPaymentSuccessRoute(request, env, TILE_ROUTE_DEPS);
+      }
+      return null;
+    case "/credits/payment-cancelled":
+      if (request.method === "GET" || request.method === "HEAD") {
+        return await handleCreditPaymentCancelledRoute(request, env, TILE_ROUTE_DEPS);
       }
       return null;
     case "/credits/purchase-history":
