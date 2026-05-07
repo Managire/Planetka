@@ -12,6 +12,7 @@ import argparse
 import json
 import math
 import re
+import sqlite3
 import sys
 import unicodedata
 from collections import defaultdict
@@ -28,7 +29,8 @@ DEFAULT_GPKG = Path("/Volumes/SSDA/Planetka Assets Extra/BO/gadm_410-levels.gpkg
 DEFAULT_JSON = Path("Resources/Region Packs/region_packs_gadm.json")
 DEFAULT_JS = Path("cloudflare-api/src/worker/region_packs.generated.js")
 DEFAULT_PNG = Path("Resources/Region Packs/region_packs_gadm.png")
-CATALOG_VERSION = "gadm_regions_v7"
+DEFAULT_TILE_DB = Path("Resources/tile_sizes.sqlite")
+CATALOG_VERSION = "gadm_regions_v8"
 PAID_Z_LEVELS = (1, 2, 4, 8, 15, 30)
 FREE_D_THRESHOLD = 60
 MERGE_DIFFERENCE_RATIO = 0.50
@@ -1428,7 +1430,51 @@ def validate_unique_product_ids(products: list[dict]):
         raise ValueError(f"Duplicate region pack product id(s): {formatted}")
 
 
-def build_catalog(gpkg_path: Path) -> dict:
+def world_tile_keys_from_db(tile_db_path: Path) -> list[str]:
+    if not tile_db_path.exists():
+        raise FileNotFoundError(f"World region pack requires tile size DB: {tile_db_path}")
+    conn = sqlite3.connect(str(tile_db_path))
+    try:
+        rows = conn.execute(
+            """
+              SELECT DISTINCT x, y, z, d
+              FROM tile_sizes
+              WHERE folder = 'S2'
+              ORDER BY z, d, x, y
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+    return [tile_key(int(x), int(y), int(z), int(d)) for x, y, z, d in rows]
+
+
+def world_product_payload(tile_db_path: Path) -> dict:
+    tile_keys = world_tile_keys_from_db(tile_db_path)
+    return {
+        "id": "world",
+        "name": "World",
+        "type": "world",
+        "discount_percent": 50,
+        "catalog_version": CATALOG_VERSION,
+        "source": "S2 tile inventory from Resources/tile_sizes.sqlite; includes free, polar, ocean, and coarse tiles",
+        "adm0_codes": [],
+        "adm1_codes": [],
+        "membership_codes": [],
+        "clip_bbox": [],
+        "merge_scope": "world",
+        "auto_merge": False,
+        "countries": [],
+        "country_product_ids": [],
+        "tile_count": len(tile_keys),
+        "counts_by_z": counts_by_z(tile_keys),
+        "bounds": [-180.0, -90.0, 180.0, 90.0],
+        "bbox": [-180.0, -90.0, 180.0, 90.0],
+        "outlines": [],
+        "tile_keys": tile_keys,
+    }
+
+
+def build_catalog(gpkg_path: Path, tile_db_path: Path = DEFAULT_TILE_DB) -> dict:
     layers = {
         "adm0": read_adm0(gpkg_path),
         "adm1": read_adm1(gpkg_path),
@@ -1436,7 +1482,7 @@ def build_catalog(gpkg_path: Path) -> dict:
     raw_local = build_local_payloads(layers)
     local_products, merge_report, code_to_product_id, code_to_payload = merge_local_payloads(raw_local, layers)
     macro_products = build_macro_payloads(layers, code_to_product_id, code_to_payload)
-    products = local_products + macro_products
+    products = local_products + macro_products + [world_product_payload(tile_db_path)]
     validate_unique_product_ids(products)
     products.sort(key=lambda payload: (0 if payload["type"] == "country" else 1 if payload["type"] == "macro_region" else 2, payload["name"]))
     return {
@@ -1603,6 +1649,7 @@ def summarize_catalog(catalog: dict) -> dict:
         "local_product_count": sum(1 for entry in products if entry.get("type") == "country"),
         "macro_region_count": sum(1 for entry in products if entry.get("type") == "macro_region"),
         "continent_count": sum(1 for entry in products if entry.get("type") == "continent"),
+        "world_product_count": sum(1 for entry in products if entry.get("type") == "world"),
         "merged_product_count": len(merged),
         "merged_products": [{"id": entry.get("id"), "name": entry.get("name"), "countries": [source.get("name") for source in entry.get("merged_from") or []], "tile_count": entry.get("tile_count")} for entry in merged],
         "products": [{"id": entry.get("id"), "name": entry.get("name"), "type": entry.get("type"), "tile_count": entry.get("tile_count"), "counts_by_z": entry.get("counts_by_z")} for entry in products],
@@ -1616,10 +1663,11 @@ def main() -> int:
     parser.add_argument("--js-output", type=Path, default=DEFAULT_JS)
     parser.add_argument("--png-output", type=Path, default=DEFAULT_PNG)
     parser.add_argument("--png-product", default="australia")
+    parser.add_argument("--tile-db", type=Path, default=DEFAULT_TILE_DB)
     parser.add_argument("--skip-png", action="store_true")
     args = parser.parse_args()
 
-    catalog = build_catalog(args.gpkg)
+    catalog = build_catalog(args.gpkg, args.tile_db)
     catalog["gpkg_path"] = str(args.gpkg)
     write_json(args.json_output, catalog)
     write_js(args.js_output, catalog)
