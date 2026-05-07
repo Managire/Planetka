@@ -13,6 +13,7 @@ import json
 import math
 import re
 import sys
+import unicodedata
 from collections import defaultdict
 from pathlib import Path
 
@@ -27,7 +28,7 @@ DEFAULT_GPKG = Path("/Volumes/SSDA/Planetka Assets Extra/BO/gadm_410-levels.gpkg
 DEFAULT_JSON = Path("Resources/Region Packs/region_packs_gadm.json")
 DEFAULT_JS = Path("cloudflare-api/src/worker/region_packs.generated.js")
 DEFAULT_PNG = Path("Resources/Region Packs/region_packs_gadm.png")
-CATALOG_VERSION = "gadm_regions_v5"
+CATALOG_VERSION = "gadm_regions_v6"
 PAID_Z_LEVELS = (1, 2, 4, 8, 15, 30)
 FREE_D_THRESHOLD = 60
 MERGE_DIFFERENCE_RATIO = 0.50
@@ -37,6 +38,7 @@ EUROPE_CLIP_BBOX = (-25.0, 34.0, 45.0, 72.0)
 SOUTH_AMERICA_CLIP_BBOX = (-92.5, -60.0, -30.0, 15.0)
 CARIBBEAN_CLIP_BBOX = (-90.0, 5.0, -55.0, 30.0)
 AUSTRALIA_CLIP_BBOX = (110.0, -45.0, 155.0, -9.0)
+AFRICA_CLIP_BBOX = (-26.0, -41.0, 64.0, 38.0)
 
 EXCLUDED_EUROPE_MICROSTATES = {
     "AND": "Andorra",
@@ -161,6 +163,30 @@ NORTH_AMERICA_ALL_MEMBERS = (
     *NORTH_AMERICA_COUNTRY_CODES,
 )
 
+AFRICA_COUNTRY_CODES = (
+    "AGO", "BEN", "BFA", "BDI", "BWA", "CAF", "CIV", "CMR", "COD", "COG",
+    "COM", "CPV", "DJI", "DZA", "EGY", "ERI", "ESH", "ETH", "GAB", "GHA",
+    "GIN", "GMB", "GNB", "GNQ", "KEN", "LBR", "LBY", "LSO", "MAR", "MDG",
+    "MLI", "MOZ", "MRT", "MUS", "MWI", "MYT", "NAM", "NER", "NGA", "REU",
+    "RWA", "SDN", "SEN", "SHN", "SLE", "SOM", "SSD", "STP", "SWZ", "SYC",
+    "TCD", "TGO", "TUN", "TZA", "UGA", "ZAF", "ZMB", "ZWE",
+)
+
+AFRICA_PRODUCT_OVERRIDES = {
+    "SHN": {"id": "saint_helena_ascension_and_tristan_da_cunha", "name": "Saint Helena, Ascension and Tristan da Cunha"},
+    "SWZ": {"id": "eswatini", "name": "Eswatini"},
+}
+
+NORTH_AFRICA_CODES = ("DZA", "EGY", "ESH", "LBY", "MAR", "MRT", "SDN", "TUN")
+WEST_AFRICA_CODES = ("BEN", "BFA", "CIV", "CPV", "GHA", "GIN", "GMB", "GNB", "LBR", "MLI", "MRT", "NER", "NGA", "SEN", "SLE", "TGO")
+CENTRAL_AFRICA_CODES = ("AGO", "CAF", "CMR", "COD", "COG", "GAB", "GNQ", "STP", "TCD")
+EAST_AFRICA_CODES = ("BDI", "COM", "DJI", "ERI", "ETH", "KEN", "MDG", "MOZ", "MUS", "MWI", "MYT", "REU", "RWA", "SOM", "SSD", "SYC", "TZA", "UGA", "ZMB")
+SOUTHERN_AFRICA_CODES = ("AGO", "BWA", "LSO", "MOZ", "MWI", "NAM", "SWZ", "ZAF", "ZMB", "ZWE")
+HORN_OF_AFRICA_CODES = ("DJI", "ERI", "ETH", "SOM")
+SAHEL_CODES = ("BFA", "TCD", "MLI", "MRT", "NER", "SDN", "SEN", "SSD")
+GREAT_LAKES_AFRICA_CODES = ("BDI", "COD", "KEN", "MWI", "RWA", "TZA", "UGA", "ZMB")
+INDIAN_OCEAN_AFRICA_CODES = ("COM", "MDG", "MUS", "MYT", "REU", "SYC")
+
 LOCAL_PRODUCT_SPECS = (
     *(
         {
@@ -277,6 +303,18 @@ LOCAL_PRODUCT_SPECS = (
         "discount_percent": 20,
         "source_note": "GADM 4.10 ADM_0 polygon intersection; grouped small North Atlantic island territories",
     },
+    *(
+        {
+            "id": (AFRICA_PRODUCT_OVERRIDES.get(code) or {}).get("id"),
+            "name": (AFRICA_PRODUCT_OVERRIDES.get(code) or {}).get("name"),
+            "adm0_codes": (code,),
+            "clip_bbox": AFRICA_CLIP_BBOX,
+            "merge_scope": "africa",
+            "auto_merge": False,
+            "discount_percent": 20,
+        }
+        for code in AFRICA_COUNTRY_CODES
+    ),
 )
 
 MACRO_PACKS = (
@@ -514,6 +552,86 @@ MACRO_PACKS = (
         "adm0_codes": NORTH_AMERICA_COUNTRY_CODES,
         "adm1_codes": (*USA_STATE_CODES, *CANADA_REGION_CODES),
     },
+    {
+        "id": "north_africa",
+        "name": "North Africa",
+        "type": "macro_region",
+        "discount_percent": 30,
+        "adm0_codes": NORTH_AFRICA_CODES,
+        "clip_bbox": AFRICA_CLIP_BBOX,
+    },
+    {
+        "id": "west_africa",
+        "name": "West Africa",
+        "type": "macro_region",
+        "discount_percent": 30,
+        "adm0_codes": WEST_AFRICA_CODES,
+        "clip_bbox": AFRICA_CLIP_BBOX,
+    },
+    {
+        "id": "central_africa",
+        "name": "Central Africa",
+        "type": "macro_region",
+        "discount_percent": 30,
+        "adm0_codes": CENTRAL_AFRICA_CODES,
+        "clip_bbox": AFRICA_CLIP_BBOX,
+    },
+    {
+        "id": "east_africa",
+        "name": "East Africa",
+        "type": "macro_region",
+        "discount_percent": 30,
+        "adm0_codes": EAST_AFRICA_CODES,
+        "clip_bbox": AFRICA_CLIP_BBOX,
+    },
+    {
+        "id": "southern_africa",
+        "name": "Southern Africa",
+        "type": "macro_region",
+        "discount_percent": 30,
+        "adm0_codes": SOUTHERN_AFRICA_CODES,
+        "clip_bbox": AFRICA_CLIP_BBOX,
+    },
+    {
+        "id": "horn_of_africa",
+        "name": "Horn of Africa",
+        "type": "macro_region",
+        "discount_percent": 30,
+        "adm0_codes": HORN_OF_AFRICA_CODES,
+        "clip_bbox": AFRICA_CLIP_BBOX,
+    },
+    {
+        "id": "sahel",
+        "name": "Sahel",
+        "type": "macro_region",
+        "discount_percent": 30,
+        "adm0_codes": SAHEL_CODES,
+        "clip_bbox": AFRICA_CLIP_BBOX,
+    },
+    {
+        "id": "african_great_lakes",
+        "name": "African Great Lakes",
+        "type": "macro_region",
+        "discount_percent": 30,
+        "adm0_codes": GREAT_LAKES_AFRICA_CODES,
+        "clip_bbox": AFRICA_CLIP_BBOX,
+    },
+    {
+        "id": "indian_ocean_africa",
+        "name": "Indian Ocean Africa",
+        "type": "macro_region",
+        "discount_percent": 30,
+        "adm0_codes": INDIAN_OCEAN_AFRICA_CODES,
+        "clip_bbox": AFRICA_CLIP_BBOX,
+    },
+    {
+        "id": "africa",
+        "name": "Africa",
+        "type": "continent",
+        "discount_percent": 50,
+        "adm0_codes": AFRICA_COUNTRY_CODES,
+        "clip_bbox": AFRICA_CLIP_BBOX,
+    },
 )
 
 SPECIAL_GROUP_NAMES = {
@@ -523,6 +641,7 @@ SPECIAL_GROUP_NAMES = {
 
 
 def slugify(value: str) -> str:
+    value = unicodedata.normalize("NFKD", str(value)).encode("ascii", "ignore").decode("ascii")
     slug = re.sub(r"[^a-z0-9]+", "_", str(value).strip().lower())
     return re.sub(r"_+", "_", slug).strip("_") or "region_pack"
 
