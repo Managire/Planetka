@@ -990,7 +990,9 @@ def _draw_broader_region_offers(layout, scene, active_view_scope=False):
         )
         fully_licenced = bool(price <= 0 and new_tiles <= 0)
         action_row = layout.row(align=True)
+        action_row.alignment = 'EXPAND'
         action_button = action_row.row(align=True)
+        action_button.alignment = 'LEFT'
         action_button.enabled = not fully_licenced
         action = action_button.operator(
             "planetka.open_credit_checkout",

@@ -513,7 +513,9 @@ def _draw_region_pack_upsell_options(layout, context, *, current_region_pack_id=
         price = max(0.0, _region_offer_number(offer, "price_eur", _region_offer_number(offer, "credits", 0.0)))
         new_tiles = max(0, _region_offer_int(offer, "new_tile_count", _region_offer_int(offer, "paid_tile_count", 0)))
         row = box.row(align=True)
+        row.alignment = 'EXPAND'
         button = row.row(align=True)
+        button.alignment = 'LEFT'
         button.enabled = not bool(price <= 0.0 and new_tiles <= 0)
         checkout = button.operator(
             "planetka.open_credit_checkout",
@@ -1227,7 +1229,7 @@ class PLANETKA_OT_OpenRegionPackMap(bpy.types.Operator):
 class PLANETKA_OT_RegionPackInfo(bpy.types.Operator):
     bl_idname = "planetka.region_pack_info"
     bl_label = "Region Pack Details"
-    bl_description = "Open the detailed user-specific region-pack map in a browser"
+    bl_description = "Show what is included in this broader Full Quality region pack"
 
     region_pack_id: StringProperty(default="", options={'HIDDEN', 'SKIP_SAVE'})
     region_pack_name: StringProperty(default="Region Pack", options={'HIDDEN', 'SKIP_SAVE'})
@@ -1242,8 +1244,11 @@ class PLANETKA_OT_RegionPackInfo(bpy.types.Operator):
     price_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
 
     def invoke(self, context, event):
-        del context, event
-        return self.execute(None)
+        del event
+        wm = getattr(context, "window_manager", None)
+        if wm is None:
+            return {'CANCELLED'}
+        return wm.invoke_popup(self, width=440)
 
     def _wrapped_label(self, layout, text, icon='NONE', width=58):
         safe_text = str(text or "").strip()
@@ -1308,42 +1313,13 @@ class PLANETKA_OT_RegionPackInfo(bpy.types.Operator):
         )
 
     def execute(self, _context):
-        region_id = str(getattr(self, "region_pack_id", "") or "").strip()
-        if not region_id:
-            return fail(
-                self,
-                "No region pack selected.",
-                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-                logger=logger,
-            )
-        try:
-            from .credit_api import create_region_pack_detail_link
-            link = create_region_pack_detail_link(region_id)
-        except Exception as exc:
-            return fail(
-                self,
-                f"Unable to open region pack map: {exc}",
-                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-                logger=logger,
-                exc=exc,
-                log_message="Planetka region pack detail link creation failed",
-            )
-        url = str(link.get("detail_url", "") or "").strip()
-        if not _open_external_url(url):
-            return fail(
-                self,
-                "Could not open Planetka region pack map.",
-                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-                logger=logger,
-            )
-        self.report({'INFO'}, "Planetka region pack map opened in browser.")
         return {'FINISHED'}
 
 
 class PLANETKA_OT_DataCostBreakdown(bpy.types.Operator):
     bl_idname = "planetka.data_cost_breakdown"
-    bl_label = "Open Full Quality Texture Map"
-    bl_description = "Open the detailed user-specific Full Quality scene map in a browser"
+    bl_label = "Resolve Cost Breakdown"
+    bl_description = "Show detailed data size and price breakdown for this Resolve"
 
     texture_quality_mode: EnumProperty(
         name="Texture Quality",
@@ -1475,45 +1451,6 @@ class PLANETKA_OT_DataCostBreakdown(bpy.types.Operator):
         mode = str(getattr(self, "texture_quality_mode", "FULL") or "FULL").strip().upper()
         if mode != "PREVIEW":
             mode = "FULL"
-        if mode == "FULL":
-            try:
-                prefs = get_prefs()
-                base_path = str(getattr(prefs, "texture_base_path", "") or "") if prefs else ""
-                from .planetka_runtime.view_telemetry import build_resolve_cost_breakdown
-                breakdown = build_resolve_cost_breakdown(
-                    scene=getattr(context, "scene", None),
-                    scope_mode="CAMERA",
-                    base_path=base_path,
-                    texture_quality_mode="FULL",
-                )
-                if not isinstance(breakdown, dict) or not bool(breakdown.get("ok", True)):
-                    raise RuntimeError(str((breakdown or {}).get("error", "pricing_unavailable") or "pricing_unavailable"))
-                tile_keys = []
-                for entry in list((breakdown or {}).get("tiles", ()) or ()):
-                    key = str(entry.get("tile_key", "") if isinstance(entry, dict) else entry or "").strip()
-                    if key and key not in tile_keys:
-                        tile_keys.append(key)
-                from .credit_api import create_scene_detail_link
-                link = create_scene_detail_link(tile_keys, quality_mode="FULL")
-            except Exception as exc:
-                return fail(
-                    self,
-                    f"Unable to open Full Quality texture map: {exc}",
-                    code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-                    logger=logger,
-                    exc=exc,
-                    log_message="Planetka scene detail link creation failed",
-                )
-            url = str(link.get("detail_url", "") or "").strip()
-            if not _open_external_url(url):
-                return fail(
-                    self,
-                    "Could not open Planetka Full Quality texture map.",
-                    code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-                    logger=logger,
-                )
-            self.report({'INFO'}, "Planetka Full Quality texture map opened in browser.")
-            return {'FINISHED'}
         try:
             prefs = get_prefs()
             base_path = str(getattr(prefs, "texture_base_path", "") or "") if prefs else ""
