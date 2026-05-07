@@ -5,6 +5,7 @@ import {
   GENERATED_REGION_PACK_OUTLINES,
   GENERATED_REGION_PACK_PRODUCTS,
   GENERATED_REGION_PACK_TILE_KEYS,
+  GENERATED_REGION_PACK_TILE_REFS,
 } from "./region_packs.generated.js";
 
 const TILE_KEY_RE = /x(\d{3})_y(\d{3})_z(\d{3})_d(\d{3})/i;
@@ -19,7 +20,7 @@ const STANDARD_QUALITY_UNLOCK_EUR = 50.0;
 const STRIPE_MIN_CHECKOUT_AMOUNT_CENTS = 50;
 const MONEY_SCALE = 100;
 const METRIC_SCALE = 1_000_000;
-const REGION_PACK_CATALOG_VERSION = GENERATED_REGION_PACK_CATALOG_VERSION || "gadm_regions_v6";
+const REGION_PACK_CATALOG_VERSION = GENERATED_REGION_PACK_CATALOG_VERSION || "gadm_regions_v7";
 const SQL_VARIABLE_SAFE_CHUNK_SIZE = 75;
 const REGION_PACK_TILE_CHUNK_SIZE = SQL_VARIABLE_SAFE_CHUNK_SIZE;
 const REGION_PACK_PAID_Z_LEVELS = [1, 2, 4, 8, 15, 30];
@@ -397,8 +398,38 @@ function regionTileKey(x, y, z, d) {
   return `x${String(x).padStart(3, "0")}_y${String(y).padStart(3, "0")}_z${String(z).padStart(3, "0")}_d${String(d).padStart(3, "0")}`;
 }
 
-function regionProductTileKeys(product) {
-  const generatedKeys = GENERATED_REGION_PACK_TILE_KEYS[String(product && product.id || "")];
+function regionProductTileKeys(product, seenProductIds = new Set()) {
+  const productId = String(product && product.id || "").trim();
+  if (productId) {
+    if (seenProductIds.has(productId)) {
+      return [];
+    }
+    seenProductIds.add(productId);
+  }
+  const generatedKeys = GENERATED_REGION_PACK_TILE_KEYS[productId];
+  const generatedRefs = GENERATED_REGION_PACK_TILE_REFS[productId];
+  if (Array.isArray(generatedRefs) && generatedRefs.length) {
+    const keys = [];
+    const seenKeys = new Set();
+    for (const ref of generatedRefs) {
+      const refProduct = regionProductById(ref);
+      for (const key of regionProductTileKeys(refProduct, seenProductIds)) {
+        if (seenKeys.has(key)) {
+          continue;
+        }
+        seenKeys.add(key);
+        keys.push(key);
+      }
+    }
+    for (const key of normalizeTileKeys(generatedKeys || [])) {
+      if (seenKeys.has(key)) {
+        continue;
+      }
+      seenKeys.add(key);
+      keys.push(key);
+    }
+    return keys;
+  }
   if (Array.isArray(generatedKeys) && generatedKeys.length) {
     return normalizeTileKeys(generatedKeys);
   }

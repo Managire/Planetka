@@ -28,7 +28,7 @@ DEFAULT_GPKG = Path("/Volumes/SSDA/Planetka Assets Extra/BO/gadm_410-levels.gpkg
 DEFAULT_JSON = Path("Resources/Region Packs/region_packs_gadm.json")
 DEFAULT_JS = Path("cloudflare-api/src/worker/region_packs.generated.js")
 DEFAULT_PNG = Path("Resources/Region Packs/region_packs_gadm.png")
-CATALOG_VERSION = "gadm_regions_v6"
+CATALOG_VERSION = "gadm_regions_v7"
 PAID_Z_LEVELS = (1, 2, 4, 8, 15, 30)
 FREE_D_THRESHOLD = 60
 MERGE_DIFFERENCE_RATIO = 0.50
@@ -39,6 +39,7 @@ SOUTH_AMERICA_CLIP_BBOX = (-92.5, -60.0, -30.0, 15.0)
 CARIBBEAN_CLIP_BBOX = (-90.0, 5.0, -55.0, 30.0)
 AUSTRALIA_CLIP_BBOX = (110.0, -45.0, 155.0, -9.0)
 AFRICA_CLIP_BBOX = (-26.0, -41.0, 64.0, 38.0)
+ASIA_CLIP_BBOX = (24.0, -13.0, 180.0, 82.0)
 
 EXCLUDED_EUROPE_MICROSTATES = {
     "AND": "Andorra",
@@ -187,10 +188,77 @@ SAHEL_CODES = ("BFA", "TCD", "MLI", "MRT", "NER", "SDN", "SEN", "SSD")
 GREAT_LAKES_AFRICA_CODES = ("BDI", "COD", "KEN", "MWI", "RWA", "TZA", "UGA", "ZMB")
 INDIAN_OCEAN_AFRICA_CODES = ("COM", "MDG", "MUS", "MYT", "REU", "SYC")
 
+CHINA_REGION_CODES = (
+    "CHN.1_1", "CHN.2_1", "CHN.3_1", "CHN.4_1", "CHN.5_1", "CHN.6_1",
+    "CHN.7_1", "CHN.8_1", "CHN.9_1", "CHN.10_1", "CHN.11_1", "CHN.12_1",
+    "CHN.HKG", "CHN.13_1", "CHN.14_1", "CHN.15_1", "CHN.16_1",
+    "CHN.17_1", "CHN.18_1", "CHN.MAC", "CHN.19_1", "CHN.20_1",
+    "CHN.21_1", "CHN.22_1", "CHN.23_1", "CHN.24_1", "CHN.25_1",
+    "CHN.26_1", "CHN.27_1", "CHN.28_1", "CHN.29_1", "CHN.30_1",
+    "CHN.31_1",
+)
+
+HIMALAYAN_DISPUTED_CODES = ("Z01", "Z02", "Z03", "Z04", "Z05", "Z06", "Z07", "Z08", "Z09")
+PARACEL_ISLAND_CODES = ("XPI",)
+SPRATLY_ISLAND_CODES = ("XSP",)
+SOUTH_CHINA_SEA_DISPUTED_CODES = (*PARACEL_ISLAND_CODES, *SPRATLY_ISLAND_CODES)
+
+LOCAL_ADM0_EXPANSIONS = {
+    "BRN": SPRATLY_ISLAND_CODES,
+    "CYP": ("ZNC", "XAD"),
+    "GBR": ("XAD",),
+    "IND": HIMALAYAN_DISPUTED_CODES,
+    "MYS": SPRATLY_ISLAND_CODES,
+    "PAK": HIMALAYAN_DISPUTED_CODES,
+    "PHL": SPRATLY_ISLAND_CODES,
+    "TUR": ("ZNC",),
+    "TWN": SOUTH_CHINA_SEA_DISPUTED_CODES,
+    "VNM": SOUTH_CHINA_SEA_DISPUTED_CODES,
+}
+
+ASIA_COUNTRY_CODES = (
+    "AFG", "ARM", "AZE", "BGD", "BHR", "BRN", "BTN", "CCK", "CXR", "GEO",
+    "IDN", "IND", "IOT", "IRN", "IRQ", "ISR", "JPN", "JOR", "KAZ", "KGZ",
+    "KHM", "KOR", "KWT", "LAO", "LBN", "LKA", "MDV", "MMR", "MNG", "MYS",
+    "NPL", "OMN", "PAK", "PHL", "PRK", "PSE", "QAT", "RUS", "SAU", "SGP",
+    "SYR", "THA", "TJK", "TKM", "TLS", "TUR", "TWN", "ARE", "UZB", "VNM",
+    "YEM",
+)
+
+ASIA_PRODUCT_OVERRIDES = {
+    "ARE": {"id": "united_arab_emirates", "name": "United Arab Emirates"},
+    "CCK": {"id": "cocos_islands", "name": "Cocos Islands"},
+    "CXR": {"id": "christmas_island", "name": "Christmas Island"},
+    "GEO": {"id": "georgia_country", "name": "Georgia"},
+    "IOT": {"id": "british_indian_ocean_territory", "name": "British Indian Ocean Territory"},
+    "RUS": {"id": "russia", "name": "Russia", "clip_bbox": None, "subtract_adm0_codes": ("UKR",)},
+}
+
+WEST_ASIA_CODES = ("ARM", "AZE", "BHR", "CYP", "GEO", "IRN", "IRQ", "ISR", "JOR", "KWT", "LBN", "OMN", "PSE", "QAT", "SAU", "SYR", "TUR", "ARE", "YEM")
+GULF_STATES_CODES = ("BHR", "KWT", "OMN", "QAT", "SAU", "ARE")
+LEVANT_CODES = ("CYP", "ISR", "JOR", "LBN", "PSE", "SYR", "TUR")
+CAUCASUS_CODES = ("ARM", "AZE", "GEO")
+CENTRAL_ASIA_CODES = ("KAZ", "KGZ", "TJK", "TKM", "UZB")
+SOUTH_ASIA_CODES = ("AFG", "BGD", "BTN", "IND", "MDV", "NPL", "PAK", "LKA", *HIMALAYAN_DISPUTED_CODES)
+SOUTHEAST_ASIA_CODES = ("BRN", "KHM", "IDN", "LAO", "MYS", "MMR", "PHL", "SGP", "THA", "TLS", "VNM", *SOUTH_CHINA_SEA_DISPUTED_CODES)
+EAST_ASIA_COUNTRY_CODES = ("JPN", "KOR", "MNG", "PRK", "TWN", *SOUTH_CHINA_SEA_DISPUTED_CODES)
+NORTH_ASIA_CODES = ("RUS", "MNG")
+ASIA_ALL_ADM0_CODES = (
+    *ASIA_COUNTRY_CODES,
+    *HIMALAYAN_DISPUTED_CODES,
+    *SOUTH_CHINA_SEA_DISPUTED_CODES,
+)
+
+
+def expanded_adm0_codes(code: str) -> tuple[str, ...]:
+    safe_code = str(code).strip().upper()
+    return (safe_code, *LOCAL_ADM0_EXPANSIONS.get(safe_code, ()))
+
 LOCAL_PRODUCT_SPECS = (
     *(
         {
-            "adm0_codes": (code,),
+            "adm0_codes": expanded_adm0_codes(code),
+            "membership_codes": (code,),
             "clip_bbox": EUROPE_CLIP_BBOX,
             "merge_scope": "europe",
             "auto_merge": True,
@@ -201,6 +269,7 @@ LOCAL_PRODUCT_SPECS = (
     *(
         {
             "adm0_codes": (code,),
+            "membership_codes": (code,),
             "clip_bbox": SOUTH_AMERICA_CLIP_BBOX,
             "merge_scope": "south_america",
             "auto_merge": False,
@@ -211,6 +280,7 @@ LOCAL_PRODUCT_SPECS = (
     *(
         {
             "adm0_codes": (code,),
+            "membership_codes": (code,),
             "clip_bbox": CARIBBEAN_CLIP_BBOX,
             "merge_scope": "caribbean",
             "auto_merge": False,
@@ -308,12 +378,70 @@ LOCAL_PRODUCT_SPECS = (
             "id": (AFRICA_PRODUCT_OVERRIDES.get(code) or {}).get("id"),
             "name": (AFRICA_PRODUCT_OVERRIDES.get(code) or {}).get("name"),
             "adm0_codes": (code,),
+            "membership_codes": (code,),
             "clip_bbox": AFRICA_CLIP_BBOX,
             "merge_scope": "africa",
             "auto_merge": False,
             "discount_percent": 20,
         }
         for code in AFRICA_COUNTRY_CODES
+    ),
+    {
+        "id": "himalayan_disputed_territories",
+        "name": "Himalayan Disputed Territories",
+        "adm0_codes": HIMALAYAN_DISPUTED_CODES,
+        "membership_codes": HIMALAYAN_DISPUTED_CODES,
+        "clip_bbox": ASIA_CLIP_BBOX,
+        "merge_scope": "asia",
+        "auto_merge": False,
+        "discount_percent": 20,
+        "source_note": "GADM 4.10 ADM_0 polygon intersection; grouped disputed Himalayan source polygons",
+    },
+    {
+        "id": "paracel_islands",
+        "name": "Paracel Islands",
+        "adm0_codes": PARACEL_ISLAND_CODES,
+        "membership_codes": PARACEL_ISLAND_CODES,
+        "clip_bbox": ASIA_CLIP_BBOX,
+        "merge_scope": "asia",
+        "auto_merge": False,
+        "discount_percent": 20,
+        "source_note": "GADM 4.10 ADM_0 polygon intersection; disputed South China Sea island group",
+    },
+    {
+        "id": "spratly_islands",
+        "name": "Spratly Islands",
+        "adm0_codes": SPRATLY_ISLAND_CODES,
+        "membership_codes": SPRATLY_ISLAND_CODES,
+        "clip_bbox": ASIA_CLIP_BBOX,
+        "merge_scope": "asia",
+        "auto_merge": False,
+        "discount_percent": 20,
+        "source_note": "GADM 4.10 ADM_0 polygon intersection; disputed South China Sea island group",
+    },
+    *(
+        {
+            "adm1_codes": (code,),
+            "clip_bbox": ASIA_CLIP_BBOX,
+            "merge_scope": "asia",
+            "auto_merge": False,
+            "discount_percent": 20,
+        }
+        for code in CHINA_REGION_CODES
+    ),
+    *(
+        {
+            "id": (ASIA_PRODUCT_OVERRIDES.get(code) or {}).get("id"),
+            "name": (ASIA_PRODUCT_OVERRIDES.get(code) or {}).get("name"),
+            "adm0_codes": expanded_adm0_codes(code),
+            "membership_codes": (code,),
+            "clip_bbox": (ASIA_PRODUCT_OVERRIDES.get(code) or {}).get("clip_bbox", ASIA_CLIP_BBOX),
+            "merge_scope": "asia",
+            "auto_merge": False,
+            "discount_percent": 20,
+            "subtract_adm0_codes": tuple((ASIA_PRODUCT_OVERRIDES.get(code) or {}).get("subtract_adm0_codes") or ()),
+        }
+        for code in ASIA_COUNTRY_CODES
     ),
 )
 
@@ -632,6 +760,97 @@ MACRO_PACKS = (
         "adm0_codes": AFRICA_COUNTRY_CODES,
         "clip_bbox": AFRICA_CLIP_BBOX,
     },
+    {
+        "id": "china",
+        "name": "China",
+        "type": "macro_region",
+        "discount_percent": 30,
+        "adm0_codes": (*HIMALAYAN_DISPUTED_CODES, *SOUTH_CHINA_SEA_DISPUTED_CODES),
+        "adm1_codes": CHINA_REGION_CODES,
+        "clip_bbox": ASIA_CLIP_BBOX,
+    },
+    {
+        "id": "west_asia",
+        "name": "West Asia",
+        "type": "macro_region",
+        "discount_percent": 30,
+        "adm0_codes": WEST_ASIA_CODES,
+        "clip_bbox": ASIA_CLIP_BBOX,
+    },
+    {
+        "id": "gulf_states",
+        "name": "Gulf States",
+        "type": "macro_region",
+        "discount_percent": 30,
+        "adm0_codes": GULF_STATES_CODES,
+        "clip_bbox": ASIA_CLIP_BBOX,
+    },
+    {
+        "id": "levant",
+        "name": "Levant",
+        "type": "macro_region",
+        "discount_percent": 30,
+        "adm0_codes": LEVANT_CODES,
+        "clip_bbox": ASIA_CLIP_BBOX,
+    },
+    {
+        "id": "caucasus",
+        "name": "Caucasus",
+        "type": "macro_region",
+        "discount_percent": 30,
+        "adm0_codes": CAUCASUS_CODES,
+        "clip_bbox": ASIA_CLIP_BBOX,
+    },
+    {
+        "id": "central_asia",
+        "name": "Central Asia",
+        "type": "macro_region",
+        "discount_percent": 30,
+        "adm0_codes": CENTRAL_ASIA_CODES,
+        "clip_bbox": ASIA_CLIP_BBOX,
+    },
+    {
+        "id": "south_asia",
+        "name": "South Asia",
+        "type": "macro_region",
+        "discount_percent": 30,
+        "adm0_codes": SOUTH_ASIA_CODES,
+        "clip_bbox": ASIA_CLIP_BBOX,
+    },
+    {
+        "id": "southeast_asia",
+        "name": "Southeast Asia",
+        "type": "macro_region",
+        "discount_percent": 30,
+        "adm0_codes": SOUTHEAST_ASIA_CODES,
+        "clip_bbox": ASIA_CLIP_BBOX,
+    },
+    {
+        "id": "east_asia",
+        "name": "East Asia",
+        "type": "macro_region",
+        "discount_percent": 30,
+        "adm0_codes": EAST_ASIA_COUNTRY_CODES,
+        "adm1_codes": CHINA_REGION_CODES,
+        "clip_bbox": ASIA_CLIP_BBOX,
+    },
+    {
+        "id": "north_asia",
+        "name": "North Asia",
+        "type": "macro_region",
+        "discount_percent": 30,
+        "adm0_codes": NORTH_ASIA_CODES,
+        "clip_bbox": ASIA_CLIP_BBOX,
+    },
+    {
+        "id": "asia",
+        "name": "Asia",
+        "type": "continent",
+        "discount_percent": 50,
+        "adm0_codes": ASIA_ALL_ADM0_CODES,
+        "adm1_codes": CHINA_REGION_CODES,
+        "clip_bbox": ASIA_CLIP_BBOX,
+    },
 )
 
 SPECIAL_GROUP_NAMES = {
@@ -808,12 +1027,26 @@ def selected_for_spec(layers: dict[str, object], spec: dict):
     if not parts:
         raise ValueError("No ADM_0 or ADM_1 codes supplied")
     if len(parts) == 1:
-        return parts[0]
-    combined = pd.concat(parts, ignore_index=True, sort=False)
-    return gpd.GeoDataFrame(combined, geometry="geometry", crs=getattr(parts[0], "crs", None))
+        selected = parts[0]
+    else:
+        combined = pd.concat(parts, ignore_index=True, sort=False)
+        selected = gpd.GeoDataFrame(combined, geometry="geometry", crs=getattr(parts[0], "crs", None))
+    subtract_codes = tuple(str(code).strip().upper() for code in spec.get("subtract_adm0_codes") or [] if str(code).strip())
+    if subtract_codes:
+        subtract = selected_for_codes(layers["adm0"], subtract_codes)
+        subtract_geometry = union_geometry(subtract)
+        selected = selected.copy()
+        selected["geometry"] = selected.geometry.difference(subtract_geometry)
+        selected = selected[~selected.geometry.is_empty].copy()
+        if selected.empty:
+            raise ValueError(f"ADM selection emptied by subtract_adm0_codes: {', '.join(subtract_codes)}")
+    return selected
 
 
 def spec_membership_codes(spec: dict) -> tuple[str, ...]:
+    explicit_codes = tuple(str(code).strip().upper() for code in spec.get("membership_codes") or [] if str(code).strip())
+    if explicit_codes:
+        return explicit_codes
     adm0_codes = tuple(str(code).strip().upper() for code in spec.get("adm0_codes") or [] if str(code).strip())
     adm1_codes = tuple(str(code).strip().upper() for code in spec.get("adm1_codes") or [] if str(code).strip())
     return adm0_codes + adm1_codes
@@ -867,7 +1100,12 @@ def country_records(selected) -> list[dict]:
     return records
 
 
-def country_outlines_for_web(selected, simplify_tolerance: float = 0.005, min_polygon_area: float = 0.001) -> list[dict]:
+def country_outlines_for_web(
+    selected,
+    simplify_tolerance: float = 0.005,
+    min_polygon_area: float = 0.001,
+    coord_decimals: int = 2,
+) -> list[dict]:
     outlines = []
     sort_columns = ["COUNTRY"]
     if "NAME_1" in selected.columns:
@@ -882,7 +1120,7 @@ def country_outlines_for_web(selected, simplify_tolerance: float = 0.005, min_po
             if polygon.area < float(min_polygon_area):
                 continue
             coords = [
-                [round(float(x_value), 4), round(float(y_value), 4)]
+                [round(float(x_value), coord_decimals), round(float(y_value), coord_decimals)]
                 for x_value, y_value in polygon.exterior.coords
             ]
             if len(coords) >= 4:
@@ -910,6 +1148,7 @@ def payload_from_selected(
     member_product_ids: list[str] | None = None,
     source_note: str = "GADM 4.10 ADM_0 polygon intersection",
     tile_keys_override: list[str] | None = None,
+    membership_codes_override: tuple[str, ...] | list[str] | None = None,
 ) -> dict:
     geometry = union_geometry(selected)
     tile_keys = sorted(set(tile_keys_override)) if tile_keys_override is not None else region_tiles_for_geometry(geometry)
@@ -918,7 +1157,12 @@ def payload_from_selected(
     if not safe_adm0_codes and "GID_0" in selected.columns:
         safe_adm0_codes = sorted(set(str(value).upper() for value in selected["GID_0"].astype(str)))
     safe_adm1_codes = sorted(set(str(code).upper() for code in adm1_codes if str(code).strip()))
-    membership_codes = safe_adm1_codes or safe_adm0_codes
+    explicit_membership_codes = sorted(set(
+        str(code).strip().upper()
+        for code in (membership_codes_override or [])
+        if str(code).strip()
+    ))
+    membership_codes = explicit_membership_codes or safe_adm1_codes or safe_adm0_codes
     return {
         "id": product_id,
         "name": name,
@@ -944,6 +1188,20 @@ def payload_from_selected(
 
 
 def product_name_from_selected(selected, fallback: str) -> str:
+    safe_fallback = str(fallback or "").strip().upper()
+    if safe_fallback:
+        if "GID_1" in selected.columns and "NAME_1" in selected.columns:
+            rows = selected[selected["GID_1"].astype(str).str.upper() == safe_fallback]
+            if not rows.empty:
+                name = clean_text(rows.iloc[0].get("NAME_1"))
+                if name:
+                    return name
+        if "GID_0" in selected.columns and "COUNTRY" in selected.columns:
+            rows = selected[selected["GID_0"].astype(str).str.upper() == safe_fallback]
+            if not rows.empty:
+                name = clean_text(rows.iloc[0].get("COUNTRY"))
+                if name:
+                    return name
     records = country_records(selected)
     if len(records) == 1:
         return records[0].get("NAME_1") or records[0].get("COUNTRY") or fallback
@@ -975,6 +1233,7 @@ def build_local_payloads(layers: dict[str, object]) -> list[dict]:
                 merge_scope=str(spec.get("merge_scope") or ""),
                 auto_merge=bool(spec.get("auto_merge", False)),
                 source_note=str(spec.get("source_note") or "GADM 4.10 ADM_0 polygon intersection"),
+                membership_codes_override=tuple(spec.get("membership_codes") or ()),
             )
         )
     return payloads
@@ -1151,6 +1410,24 @@ def build_macro_payloads(layers: dict[str, object], code_to_product_id: dict[str
     return payloads
 
 
+def validate_unique_product_ids(products: list[dict]):
+    seen: dict[str, str] = {}
+    duplicates: list[tuple[str, str, str]] = []
+    for payload in products:
+        product_id = str(payload.get("id") or "").strip()
+        name = str(payload.get("name") or "").strip()
+        if not product_id:
+            raise ValueError(f"Region pack product has empty id: {name or '<unnamed>'}")
+        previous_name = seen.get(product_id)
+        if previous_name is not None:
+            duplicates.append((product_id, previous_name, name))
+            continue
+        seen[product_id] = name
+    if duplicates:
+        formatted = "; ".join(f"{product_id}: {left!r} and {right!r}" for product_id, left, right in duplicates)
+        raise ValueError(f"Duplicate region pack product id(s): {formatted}")
+
+
 def build_catalog(gpkg_path: Path) -> dict:
     layers = {
         "adm0": read_adm0(gpkg_path),
@@ -1160,6 +1437,7 @@ def build_catalog(gpkg_path: Path) -> dict:
     local_products, merge_report, code_to_product_id, code_to_payload = merge_local_payloads(raw_local, layers)
     macro_products = build_macro_payloads(layers, code_to_product_id, code_to_payload)
     products = local_products + macro_products
+    validate_unique_product_ids(products)
     products.sort(key=lambda payload: (0 if payload["type"] == "country" else 1 if payload["type"] == "macro_region" else 2, payload["name"]))
     return {
         "catalog_version": CATALOG_VERSION,
@@ -1226,6 +1504,8 @@ def write_js(path: Path, catalog: dict):
     pack_payloads = catalog.get("products") or []
     outline_payload = {}
     outline_refs_by_product = {}
+    tile_refs_by_product = {}
+    tile_keys_by_product = {}
     for payload in pack_payloads:
         refs = []
         for outline in payload.get("outlines", []) or []:
@@ -1235,18 +1515,29 @@ def write_js(path: Path, catalog: dict):
             outline_payload.setdefault(outline_id, outline)
             refs.append(outline_id)
         outline_refs_by_product[payload["id"]] = refs
+        member_refs = [
+            str(ref).strip()
+            for ref in (payload.get("country_product_ids") or [])
+            if str(ref).strip()
+        ]
+        if str(payload.get("type") or "") != "country" and member_refs:
+            tile_refs_by_product[payload["id"]] = member_refs
+        else:
+            tile_keys_by_product[payload["id"]] = list(payload.get("tile_keys") or [])
     lines = [
         "// Generated by tools/build_region_pack_catalog.py. Do not edit by hand.",
         f"export const GENERATED_REGION_PACK_CATALOG_VERSION = {json.dumps(catalog.get('catalog_version') or CATALOG_VERSION)};",
         f"export const GENERATED_REGION_PACK_PRODUCTS = {json.dumps([public_product_payload(payload) for payload in pack_payloads], ensure_ascii=True, separators=(',', ':'))};",
         "export const GENERATED_REGION_PACK_TILE_KEYS = {",
     ]
-    for payload in pack_payloads:
-        lines.append(f"  {json.dumps(payload['id'])}: [")
-        for key in payload["tile_keys"]:
+    for product_id, tile_keys in tile_keys_by_product.items():
+        lines.append(f"  {json.dumps(product_id)}: [")
+        for key in tile_keys:
             lines.append(f"    {json.dumps(key)},")
         lines.append("  ],")
     lines.append("};")
+    lines.append("")
+    lines.append(f"export const GENERATED_REGION_PACK_TILE_REFS = {json.dumps(tile_refs_by_product, ensure_ascii=True, separators=(',', ':'))};")
     detail_payload = {}
     for payload in pack_payloads:
         detail_payload[payload["id"]] = {
