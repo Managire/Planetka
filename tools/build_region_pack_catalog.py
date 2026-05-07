@@ -193,7 +193,6 @@ SOUTHERN_AFRICA_CODES = ("AGO", "BWA", "LSO", "MOZ", "MWI", "NAM", "SWZ", "ZAF",
 HORN_OF_AFRICA_CODES = ("DJI", "ERI", "ETH", "SOM")
 SAHEL_CODES = ("BFA", "TCD", "MLI", "MRT", "NER", "SDN", "SEN", "SSD")
 GREAT_LAKES_AFRICA_CODES = ("BDI", "COD", "KEN", "MWI", "RWA", "TZA", "UGA", "ZMB")
-INDIAN_OCEAN_AFRICA_CODES = ("COM", "MDG", "MUS", "MYT", "REU", "SYC")
 
 CHINA_REGION_CODES = (
     "CHN.1_1", "CHN.2_1", "CHN.3_1", "CHN.4_1", "CHN.5_1", "CHN.6_1",
@@ -249,7 +248,6 @@ CENTRAL_ASIA_CODES = ("KAZ", "KGZ", "TJK", "TKM", "UZB")
 SOUTH_ASIA_CODES = ("AFG", "BGD", "BTN", "IND", "MDV", "NPL", "PAK", "LKA", *HIMALAYAN_DISPUTED_CODES)
 SOUTHEAST_ASIA_CODES = ("BRN", "KHM", "IDN", "LAO", "MYS", "MMR", "PHL", "SGP", "THA", "TLS", "VNM", *SOUTH_CHINA_SEA_DISPUTED_CODES)
 EAST_ASIA_COUNTRY_CODES = ("JPN", "KOR", "MNG", "PRK", "TWN", *SOUTH_CHINA_SEA_DISPUTED_CODES)
-NORTH_ASIA_CODES = ("RUS", "MNG")
 ASIA_ALL_ADM0_CODES = (
     *ASIA_COUNTRY_CODES,
     *HIMALAYAN_DISPUTED_CODES,
@@ -558,14 +556,6 @@ MACRO_PACKS = (
         "clip_bbox": SOUTH_AMERICA_CLIP_BBOX,
     },
     {
-        "id": "amazon_basin",
-        "name": "Amazon Basin",
-        "type": "macro_region",
-        "discount_percent": 30,
-        "adm0_codes": ("BOL", "BRA", "COL", "ECU", "GUF", "GUY", "PER", "SUR", "VEN"),
-        "clip_bbox": SOUTH_AMERICA_CLIP_BBOX,
-    },
-    {
         "id": "south_america",
         "name": "South America",
         "type": "continent",
@@ -752,14 +742,6 @@ MACRO_PACKS = (
         "clip_bbox": AFRICA_CLIP_BBOX,
     },
     {
-        "id": "indian_ocean_africa",
-        "name": "Indian Ocean Africa",
-        "type": "macro_region",
-        "discount_percent": 30,
-        "adm0_codes": INDIAN_OCEAN_AFRICA_CODES,
-        "clip_bbox": AFRICA_CLIP_BBOX,
-    },
-    {
         "id": "africa",
         "name": "Africa",
         "type": "continent",
@@ -839,14 +821,6 @@ MACRO_PACKS = (
         "discount_percent": 30,
         "adm0_codes": EAST_ASIA_COUNTRY_CODES,
         "adm1_codes": CHINA_REGION_CODES,
-        "clip_bbox": ASIA_CLIP_BBOX,
-    },
-    {
-        "id": "north_asia",
-        "name": "North Asia",
-        "type": "macro_region",
-        "discount_percent": 30,
-        "adm0_codes": NORTH_ASIA_CODES,
         "clip_bbox": ASIA_CLIP_BBOX,
     },
     {
