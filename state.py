@@ -1027,13 +1027,22 @@ def _estimate_download_bytes_for_visible_tiles(tiles, base_path, texture_quality
     )
 
 
-def update_resolve_size_estimates(scene, scope_mode="CAMERA", base_path="", full_tiles_override=None):
+def update_resolve_size_estimates(
+    scene,
+    scope_mode="CAMERA",
+    base_path="",
+    full_tiles_override=None,
+    include_full_price=True,
+    async_full_price=False,
+):
     return _view_telemetry.update_resolve_size_estimates(
         scene,
         _VIEW_TELEMETRY_CTX,
         scope_mode=scope_mode,
         base_path=base_path,
         full_tiles_override=full_tiles_override,
+        include_full_price=include_full_price,
+        async_full_price=async_full_price,
     )
 
 

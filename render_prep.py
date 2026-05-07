@@ -1020,6 +1020,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                     scope_mode=str(getattr(self, "scope_mode", "AUTO") or "AUTO"),
                     base_path=normalized,
                     full_tiles_override=full_tiles_override,
+                    async_full_price=True,
                 )
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka: failed updating resolve-size estimates before queued resolve", exc_info=True)

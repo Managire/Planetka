@@ -853,6 +853,11 @@ def _apply_auth_payload(prefs, payload, login_state="authenticated", status_mess
     prefs.auth_login_state = str(login_state or "authenticated")
     prefs.auth_status_message = str(status_message or "")
     _require_valid_authenticated_tier(prefs, context="auth_payload")
+    try:
+        from .credit_api import clear_credit_caches
+        clear_credit_caches()
+    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed clearing credit caches after auth payload update", exc_info=True)
     _save_user_prefs()
     _tag_ui_redraw()
 

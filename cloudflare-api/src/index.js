@@ -98,6 +98,7 @@ import {
   handleCreditPurchaseHistory as handleCreditPurchaseHistoryRoute,
   handleCreditLicencedDownloadReport as handleCreditLicencedDownloadReportRoute,
   handleCreditRegionPackDetailLink as handleCreditRegionPackDetailLinkRoute,
+  handleCreditRegionPackCheckoutFromToken as handleCreditRegionPackCheckoutFromTokenRoute,
   handleCreditRegionPackMap as handleCreditRegionPackMapRoute,
   handleCreditRegionOffers as handleCreditRegionOffersRoute,
   handleCreditUnlocked as handleCreditUnlockedRoute,
@@ -4025,6 +4026,11 @@ async function dispatchExactRoute(request, env, path) {
     case "/credits/region-pack-map":
       if (request.method === "GET" || request.method === "HEAD") {
         return await handleCreditRegionPackMapRoute(request, env, TILE_ROUTE_DEPS);
+      }
+      return null;
+    case "/credits/region-pack-checkout":
+      if (request.method === "GET" || request.method === "HEAD") {
+        return await handleCreditRegionPackCheckoutFromTokenRoute(request, env, TILE_ROUTE_DEPS);
       }
       return null;
     case "/credits/payment-success":

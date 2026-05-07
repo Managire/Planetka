@@ -1,9 +1,27 @@
 import math
 import os
+import threading
+import time
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 _VIEW_TELEMETRY_CTX = None
 _CENT = Decimal("0.01")
+_FULL_PRICE_SIGNATURE_KEY = "planetka_resolve_estimate_full_price_signature"
+_FULL_PRICE_PENDING_KEY = "planetka_resolve_estimate_full_price_pending"
+_FULL_PRICE_CACHE_TTL_SECONDS = 300.0
+_FULL_PRICE_CACHE = {}
+_FULL_PRICE_IN_FLIGHT = set()
+_FULL_PRICE_RESULTS = []
+_FULL_PRICE_LOCK = threading.Lock()
+_FULL_PRICE_APPLY_TIMER_RUNNING = False
+_FULL_PRICE_GENERATION = 0
+
+
+def clear_full_price_estimate_cache():
+    global _FULL_PRICE_GENERATION
+    with _FULL_PRICE_LOCK:
+        _FULL_PRICE_CACHE.clear()
+        _FULL_PRICE_GENERATION += 1
 
 
 def _money_round(value):
@@ -1075,6 +1093,193 @@ def _pricing_tiles_for_visible_tiles(tiles, runtime=None, texture_quality_mode="
     return tuple(safe_tiles)
 
 
+def _full_price_signature(pricing_tiles, texture_quality_mode="FULL"):
+    mode = str(texture_quality_mode or "FULL").strip().upper()
+    return "|".join((mode, *canonical_tiles(pricing_tiles)))
+
+
+def _find_scene_by_key(deps, scene_id):
+    try:
+        target_id = int(scene_id)
+    except (TypeError, ValueError):
+        return None
+    try:
+        scenes = tuple(getattr(getattr(deps.bpy, "data", None), "scenes", ()) or ())
+    except deps.recoverable_exceptions:
+        return None
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return None
+    for scene in scenes:
+        try:
+            if int(deps.scene_key(scene)) == target_id:
+                return scene
+        except deps.recoverable_exceptions:
+            continue
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            continue
+    return None
+
+
+def _set_full_price_pending(scene, deps, signature, pending=True):
+    if scene is None:
+        return
+    try:
+        scene[_FULL_PRICE_SIGNATURE_KEY] = str(signature or "")
+        scene[_FULL_PRICE_PENDING_KEY] = bool(pending)
+        if bool(pending) and deps.resolve_estimate_full_credits_key in scene:
+            del scene[deps.resolve_estimate_full_credits_key]
+    except deps.recoverable_exceptions:
+        deps.logger.debug("Planetka: failed storing Full Quality price pending state", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        deps.logger.debug("Planetka: failed storing Full Quality price pending state", exc_info=True)
+
+
+def _store_full_price_estimate(scene, deps, signature, credits):
+    if scene is None:
+        return
+    try:
+        scene[_FULL_PRICE_SIGNATURE_KEY] = str(signature or "")
+        scene[_FULL_PRICE_PENDING_KEY] = False
+        if credits is None:
+            if deps.resolve_estimate_full_credits_key in scene:
+                del scene[deps.resolve_estimate_full_credits_key]
+        else:
+            scene[deps.resolve_estimate_full_credits_key] = float(max(0.0, float(credits)))
+    except deps.recoverable_exceptions:
+        deps.logger.debug("Planetka: failed storing Full Quality price estimate", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        deps.logger.debug("Planetka: failed storing Full Quality price estimate", exc_info=True)
+
+
+def _estimate_full_credits_for_pricing_tiles(pricing_tiles):
+    safe_tiles = canonical_tiles(pricing_tiles)
+    if not safe_tiles:
+        return 0.0
+    from ..credit_api import estimate_credits_for_tiles
+    summary = estimate_credits_for_tiles(safe_tiles, quality_mode="FULL")
+    if not isinstance(summary, dict) or not bool(summary.get("authoritative", False)):
+        return None
+    return _money_round(max(0.0, float(summary.get("credits", 0.0) or 0.0)))
+
+
+def _apply_async_full_price_results_timer():
+    global _FULL_PRICE_APPLY_TIMER_RUNNING
+    try:
+        ctx = _require_ctx()
+        deps = ctx.deps
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        with _FULL_PRICE_LOCK:
+            _FULL_PRICE_APPLY_TIMER_RUNNING = False
+        return None
+
+    with _FULL_PRICE_LOCK:
+        results = list(_FULL_PRICE_RESULTS)
+        _FULL_PRICE_RESULTS.clear()
+        for result in results:
+            _FULL_PRICE_IN_FLIGHT.discard(str(result.get("signature", "") or ""))
+        if not results:
+            if _FULL_PRICE_IN_FLIGHT:
+                return 0.1
+            _FULL_PRICE_APPLY_TIMER_RUNNING = False
+            return None
+        current_generation = int(_FULL_PRICE_GENERATION)
+
+    for result in results:
+        try:
+            result_generation = int(result.get("generation", -1))
+        except (TypeError, ValueError):
+            result_generation = -1
+        if result_generation != current_generation:
+            continue
+        signature = str(result.get("signature", "") or "")
+        scene = _find_scene_by_key(deps, result.get("scene_id"))
+        if scene is None:
+            continue
+        try:
+            if str(scene.get(_FULL_PRICE_SIGNATURE_KEY, "") or "") != signature:
+                continue
+        except deps.recoverable_exceptions:
+            continue
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            continue
+        _store_full_price_estimate(scene, deps, signature, result.get("credits"))
+        try:
+            tag_view3d_redraw(ctx)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            pass
+
+    with _FULL_PRICE_LOCK:
+        if _FULL_PRICE_RESULTS:
+            return 0.1
+        _FULL_PRICE_APPLY_TIMER_RUNNING = False
+    return None
+
+
+def _schedule_async_full_price_estimate(scene, runtime, pricing_tiles, signature):
+    global _FULL_PRICE_APPLY_TIMER_RUNNING
+    ctx = _coerce_ctx(runtime)
+    deps = ctx.deps
+    safe_tiles = canonical_tiles(pricing_tiles)
+    safe_signature = str(signature or _full_price_signature(safe_tiles, "FULL"))
+    now = time.monotonic()
+
+    with _FULL_PRICE_LOCK:
+        cached = _FULL_PRICE_CACHE.get(safe_signature)
+        if isinstance(cached, dict) and (now - float(cached.get("time", 0.0) or 0.0)) <= _FULL_PRICE_CACHE_TTL_SECONDS:
+            _store_full_price_estimate(scene, deps, safe_signature, cached.get("credits"))
+            return
+        if safe_signature in _FULL_PRICE_IN_FLIGHT:
+            _set_full_price_pending(scene, deps, safe_signature, pending=True)
+            return
+        _FULL_PRICE_IN_FLIGHT.add(safe_signature)
+        generation = int(_FULL_PRICE_GENERATION)
+        _set_full_price_pending(scene, deps, safe_signature, pending=True)
+        try:
+            if not _FULL_PRICE_APPLY_TIMER_RUNNING:
+                deps.bpy.app.timers.register(_apply_async_full_price_results_timer, first_interval=0.1)
+                _FULL_PRICE_APPLY_TIMER_RUNNING = True
+        except deps.recoverable_exceptions:
+            deps.logger.debug("Planetka: failed registering async Full Quality price timer", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            deps.logger.debug("Planetka: failed registering async Full Quality price timer", exc_info=True)
+
+    try:
+        scene_id = deps.scene_key(scene)
+    except deps.recoverable_exceptions:
+        scene_id = 0
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        scene_id = 0
+
+    def _worker():
+        credits = None
+        try:
+            credits = _estimate_full_credits_for_pricing_tiles(safe_tiles)
+        except deps.import_recoverable_exceptions:
+            deps.logger.debug("Planetka: async Full Quality price estimate failed", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            deps.logger.debug("Planetka: async Full Quality price estimate failed", exc_info=True)
+        with _FULL_PRICE_LOCK:
+            _FULL_PRICE_CACHE[safe_signature] = {
+                "time": time.monotonic(),
+                "credits": credits,
+            }
+            _FULL_PRICE_RESULTS.append(
+                {
+                    "scene_id": scene_id,
+                    "signature": safe_signature,
+                    "credits": credits,
+                    "generation": generation,
+                }
+            )
+
+    thread = threading.Thread(
+        target=_worker,
+        name="PlanetkaFullPriceEstimate",
+        daemon=True,
+    )
+    thread.start()
+
+
 def estimate_credits_for_visible_tiles(tiles, runtime=None, texture_quality_mode="PREVIEW", base_path=""):
     deps = _coerce_ctx(runtime).deps
     logger = deps.logger
@@ -1312,7 +1517,15 @@ def build_resolve_cost_breakdown(scene=None, runtime=None, scope_mode="CAMERA", 
     }
 
 
-def update_resolve_size_estimates(scene, runtime=None, scope_mode="CAMERA", base_path="", full_tiles_override=None):
+def update_resolve_size_estimates(
+    scene,
+    runtime=None,
+    scope_mode="CAMERA",
+    base_path="",
+    full_tiles_override=None,
+    include_full_price=True,
+    async_full_price=False,
+):
     deps = _coerce_ctx(runtime).deps
     logger = deps.logger
     recoverable_exceptions = deps.recoverable_exceptions
@@ -1382,17 +1595,60 @@ def update_resolve_size_estimates(scene, runtime=None, scope_mode="CAMERA", base
         runtime,
         texture_quality_mode="BALANCED",
     )
-    full_credits = estimate_credits_for_visible_tiles(full_tiles, runtime, texture_quality_mode="FULL", base_path=base_path)
+    full_pricing_tiles = _pricing_tiles_for_visible_tiles(
+        full_tiles,
+        runtime,
+        texture_quality_mode="FULL",
+        base_path=base_path,
+    )
+    full_price_signature = _full_price_signature(full_pricing_tiles, "FULL")
+    full_credits = None
+    full_price_pending = False
+    existing_signature = ""
+    try:
+        existing_signature = str(scene.get(_FULL_PRICE_SIGNATURE_KEY, "") or "")
+    except recoverable_exceptions:
+        existing_signature = ""
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        existing_signature = ""
+    if not full_pricing_tiles:
+        full_credits = 0.0
+    elif existing_signature == full_price_signature:
+        try:
+            if deps.resolve_estimate_full_credits_key in scene:
+                full_credits = float(max(0.0, float(scene.get(deps.resolve_estimate_full_credits_key, 0.0) or 0.0)))
+        except recoverable_exceptions:
+            full_credits = None
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            full_credits = None
+    if full_credits is None and bool(include_full_price):
+        if bool(async_full_price):
+            _schedule_async_full_price_estimate(scene, runtime, full_pricing_tiles, full_price_signature)
+            full_price_pending = True
+        else:
+            try:
+                full_credits = _estimate_full_credits_for_pricing_tiles(full_pricing_tiles)
+            except deps.import_recoverable_exceptions:
+                logger.debug("Planetka: resolve-credit estimate failed", exc_info=True)
+                full_credits = None
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka: resolve-credit estimate failed", exc_info=True)
+                full_credits = None
     preview_credits = 0.0
 
     try:
         scene[resolve_estimate_full_bytes_key] = int(max(0, int(full_bytes)))
         scene[resolve_estimate_preview_bytes_key] = int(max(0, int(preview_bytes)))
         scene["planetka_resolve_estimate_balanced_bytes"] = int(max(0, int(balanced_bytes)))
-        if full_credits is None:
+        scene[_FULL_PRICE_SIGNATURE_KEY] = str(full_price_signature or "")
+        if full_price_pending:
+            scene[_FULL_PRICE_PENDING_KEY] = True
+        elif full_credits is None:
+            scene[_FULL_PRICE_PENDING_KEY] = False
             if deps.resolve_estimate_full_credits_key in scene:
                 del scene[deps.resolve_estimate_full_credits_key]
         else:
+            scene[_FULL_PRICE_PENDING_KEY] = False
             scene[deps.resolve_estimate_full_credits_key] = float(max(0.0, float(full_credits)))
         scene[deps.resolve_estimate_preview_credits_key] = float(max(0.0, float(preview_credits)))
         scene["planetka_resolve_estimate_balanced_credits"] = 0.0
@@ -1434,11 +1690,22 @@ def get_resolve_size_estimates(scene=None, runtime=None):
         except (RuntimeError, TypeError, ValueError, AttributeError):
             return None
 
+    def _read_bool(key):
+        try:
+            if key not in target_scene:
+                return False
+            return bool(target_scene.get(key, False))
+        except recoverable_exceptions:
+            return False
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            return False
+
     return {
         "FULL": _read_int(resolve_estimate_full_bytes_key),
         "BALANCED": _read_int("planetka_resolve_estimate_balanced_bytes"),
         "PREVIEW": _read_int(resolve_estimate_preview_bytes_key),
         "FULL_CREDITS": _read_float(deps.resolve_estimate_full_credits_key),
+        "FULL_CREDITS_PENDING": _read_bool(_FULL_PRICE_PENDING_KEY),
         "BALANCED_CREDITS": _read_float("planetka_resolve_estimate_balanced_credits"),
         "PREVIEW_CREDITS": _read_float(deps.resolve_estimate_preview_credits_key),
     }

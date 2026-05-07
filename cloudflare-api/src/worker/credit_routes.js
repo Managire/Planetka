@@ -443,6 +443,119 @@ function suggestedRegionProductsForPoint(latitudeDeg, longitudeDeg) {
   return selected.slice(0, 4);
 }
 
+function regionProductRank(product) {
+  const type = String(product && product.type || "").trim().toLowerCase();
+  if (type === "country" || type === "admin_region") {
+    return 1;
+  }
+  if (type === "macro_region") {
+    return 2;
+  }
+  if (type === "continent") {
+    return 3;
+  }
+  if (type === "world") {
+    return 4;
+  }
+  return 0;
+}
+
+function regionProductCountryIdSet(product, seenProductIds = new Set()) {
+  const id = String(product && product.id || "").trim();
+  if (!id || seenProductIds.has(id)) {
+    return new Set();
+  }
+  seenProductIds.add(id);
+  const type = String(product && product.type || "").trim().toLowerCase();
+  if (type === "country" || type === "admin_region") {
+    return new Set([id]);
+  }
+  const result = new Set();
+  const countryIds = Array.isArray(product && product.countries) ? product.countries : [];
+  for (const countryId of countryIds) {
+    const child = regionProductById(countryId);
+    if (child) {
+      for (const nestedId of regionProductCountryIdSet(child, seenProductIds)) {
+        result.add(nestedId);
+      }
+    } else {
+      const safeId = String(countryId || "").trim();
+      if (safeId) {
+        result.add(safeId);
+      }
+    }
+  }
+  if (!result.size && type === "world") {
+    for (const candidate of REGION_PRODUCTS) {
+      if (String(candidate && candidate.type || "").trim().toLowerCase() === "country") {
+        const candidateId = String(candidate && candidate.id || "").trim();
+        if (candidateId) {
+          result.add(candidateId);
+        }
+      }
+    }
+  }
+  return result;
+}
+
+function regionProductsShareCountry(productA, productB) {
+  const a = regionProductCountryIdSet(productA);
+  const b = regionProductCountryIdSet(productB);
+  if (!a.size || !b.size) {
+    return false;
+  }
+  for (const id of a) {
+    if (b.has(id)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function relatedHigherRegionProducts(product, limit = 3) {
+  const currentRank = regionProductRank(product);
+  const currentId = String(product && product.id || "").trim();
+  if (!currentId || currentRank <= 0) {
+    return [];
+  }
+  return REGION_PRODUCTS
+    .filter((candidate) => {
+      const candidateId = String(candidate && candidate.id || "").trim();
+      if (!candidateId || candidateId === currentId) {
+        return false;
+      }
+      const candidateRank = regionProductRank(candidate);
+      if (candidateRank <= currentRank) {
+        return false;
+      }
+      // World is deliberately not shown as a contextual upsell yet.
+      if (candidateRank >= 4) {
+        return false;
+      }
+      return regionProductsShareCountry(product, candidate);
+    })
+    .sort((a, b) => (
+      regionProductRank(a) - regionProductRank(b)
+      || productSpecificityScore(a) - productSpecificityScore(b)
+      || bboxArea(a) - bboxArea(b)
+      || String(a.name || "").localeCompare(String(b.name || ""))
+    ))
+    .slice(0, Math.max(0, Number.parseInt(limit, 10) || 3));
+}
+
+function isSameOrRelatedHigherRegionProduct(baseProduct, requestedProduct) {
+  const baseId = String(baseProduct && baseProduct.id || "").trim();
+  const requestedId = String(requestedProduct && requestedProduct.id || "").trim();
+  if (!baseId || !requestedId) {
+    return false;
+  }
+  if (baseId === requestedId) {
+    return true;
+  }
+  return relatedHigherRegionProducts(baseProduct, 12)
+    .some((product) => String(product && product.id || "").trim() === requestedId);
+}
+
 function paidDLevelsForRegionZ(zValue) {
   const z = Math.max(1, Number.parseInt(zValue, 10) || 1);
   // A finer entitlement grants access to all coarser d-levels in the same tile
@@ -1102,7 +1215,33 @@ function regionMapBounds(product, detail, tileRows) {
   });
 }
 
-function buildRegionPackMapData(product, estimate) {
+function buildRegionPackUpsellCardData(product, estimate) {
+  const tileRows = allocatedRegionPackTileRows(estimate);
+  const levels = Array.from(new Set(tileRows.map((row) => row.z).filter((z) => Number.isFinite(z))))
+    .sort((a, b) => a - b);
+  const displayLevel = levels.length ? levels[0] : null;
+  const displayTiles = displayLevel === null
+    ? []
+    : tileRows.filter((row) => Number(row.z) === Number(displayLevel));
+  const detail = GENERATED_REGION_PACK_DETAILS[String(product && product.id || "")] || {};
+  return {
+    region_pack: regionProductPublicPayload(product),
+    bounds: regionMapBounds(product, detail, displayTiles.length ? displayTiles : tileRows),
+    display_level: displayLevel,
+    tiles: displayTiles,
+    summary: {
+      new_tiles: Math.max(0, Number.parseInt(estimate && estimate.new_tile_count || 0, 10) || 0),
+      total_tiles: Math.max(0, Number.parseInt(estimate && estimate.tile_count || 0, 10) || 0),
+      already_licenced_tiles: Math.max(0, Array.isArray(estimate && estimate.excluded_tiles) ? estimate.excluded_tiles.length : 0),
+      full_price_eur: normalizeCreditAmount(estimate && estimate.gross_eur),
+      discount_percent: Math.max(0, Number.parseInt(estimate && estimate.discount_percent || 0, 10) || 0),
+      discount_eur: normalizeCreditAmount(estimate && estimate.discount_eur),
+      price_eur: normalizeCreditAmount(estimate && estimate.price_eur),
+    },
+  };
+}
+
+function buildRegionPackMapData(product, estimate, options = {}) {
   const id = String(product && product.id || "");
   const detail = GENERATED_REGION_PACK_DETAILS[id] || {};
   const tileRows = allocatedRegionPackTileRows(estimate);
@@ -1112,6 +1251,7 @@ function buildRegionPackMapData(product, estimate) {
   return {
     ok: true,
     catalog_version: REGION_PACK_CATALOG_VERSION,
+    token: String(options && options.token || ""),
     generated_detail_available: Boolean(detail && Object.keys(detail).length),
     region_pack: regionProductPublicPayload(product),
     included_countries: countries,
@@ -1130,6 +1270,7 @@ function buildRegionPackMapData(product, estimate) {
       tile_price_sum_eur: normalizeCreditAmount(tileRows.reduce((total, row) => total + normalizeCreditAmount(row.price_eur), 0)),
     },
     tiles: tileRows,
+    upsells: Array.isArray(options && options.upsells) ? options.upsells : [],
   };
 }
 
@@ -1188,6 +1329,7 @@ main{max-width:1180px;margin:0 auto;padding:24px}h1{margin:0 0 8px;font-size:28p
 select{background:#262626;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:7px 10px}svg{width:100%;height:auto;background:#0d1118;border:1px solid var(--line);border-radius:10px}
 .legend{display:flex;gap:16px;flex-wrap:wrap;margin:10px 0 0}.swatch{display:inline-block;width:14px;height:14px;border-radius:3px;margin-right:6px;vertical-align:-2px}.new{background:var(--new)}.licenced{background:var(--licenced)}.free{background:var(--free)}
 .countries{columns:2;column-gap:26px}.countries div{break-inside:avoid;margin:2px 0}.small{font-size:13px}
+.upsells{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}.upsell{background:#151515;border:1px solid var(--line);border-radius:12px;padding:12px}.upsell h3{margin:0 0 8px;font-size:18px}.upsell p{margin:6px 0}.upsell svg{min-height:150px}.button{display:inline-flex;align-items:center;justify-content:center;margin-top:10px;padding:9px 12px;border-radius:8px;background:#d9a441;color:#111;text-decoration:none;font-weight:700}.button.secondary{margin-left:8px;background:#2a2a2a;color:var(--text);border:1px solid var(--line)}
 </style>
 </head>
 <body>
@@ -1206,6 +1348,7 @@ select{background:#262626;color:var(--text);border:1px solid var(--line);border-
 <label>Detail level <select id="levelSelect"></select></label>
 <span id="levelSummary" class="muted"></span>
 </div>
+<p class="muted small">Included detail levels are part of the Full Quality pack and are required for reliable Planetka rendering across different camera distances.</p>
 <svg id="map" role="img" aria-label="${escapeHtmlText(name)} tile map"></svg>
 <div class="legend">
 <span><i class="swatch new"></i>New in this pack</span>
@@ -1217,6 +1360,10 @@ select{background:#262626;color:var(--text);border:1px solid var(--line);border-
 <h2>Included Countries / Areas</h2>
 <div class="countries">${countries.map((country) => `<div>${escapeHtmlText(country)}</div>`).join("")}</div>
 </section>
+${Array.isArray(data && data.upsells) && data.upsells.length ? `<section class="panel">
+<h2>Larger Full Quality options</h2>
+<div id="upsellGrid" class="upsells"></div>
+</section>` : ""}
 </main>
 <script>const DATA=${payload};
 const NS="http://www.w3.org/2000/svg";
@@ -1240,6 +1387,10 @@ function render(level){const svg=document.getElementById("map");svg.replaceChild
 const levels=(DATA.levels&&DATA.levels.length?DATA.levels:[1]); const select=document.getElementById("levelSelect");
 for(const z of levels){const o=document.createElement("option");o.value=String(z);o.textContent="z"+String(z).padStart(3,"0");select.appendChild(o)}
 select.addEventListener("change",()=>render(Number(select.value))); render(Number(select.value||levels[0]));
+function miniXY(bounds,w,h,lon,lat){const p=12;return [p+((lon-bounds.min_lon)/(bounds.max_lon-bounds.min_lon||1))*(w-p*2),p+((bounds.max_lat-lat)/(bounds.max_lat-bounds.min_lat||1))*(h-p*2)]}
+function renderMiniMap(svg,card){const b=card.bounds||{min_lon:-10,min_lat:35,max_lon:30,max_lat:48};const w=360;const h=Math.max(150,Math.min(230,Math.round(360*Math.max(0.25,Math.min(0.75,(b.max_lat-b.min_lat)/Math.max(1e-6,b.max_lon-b.min_lon))))));svg.setAttribute("viewBox","0 0 "+w+" "+h);svg.replaceChildren();svg.appendChild(el("rect",{x:0,y:0,width:w,height:h,fill:"#0d1118"}));for(const tile of card.tiles||[]){const a=miniXY(b,w,h,tile.lon_min,tile.lat_max),c=miniXY(b,w,h,tile.lon_max,tile.lat_min);const cls=tile.status==="new"?"var(--new)":(tile.status==="licenced"?"var(--licenced)":"var(--free)");const r=el("rect",{x:a[0],y:a[1],width:Math.max(1,c[0]-a[0]),height:Math.max(1,c[1]-a[1]),fill:cls,stroke:"#fff","stroke-width":"0.5",opacity:tile.status==="new"?"0.58":"0.43"});svg.appendChild(r)}}
+function renderUpsells(){const grid=document.getElementById("upsellGrid");if(!grid)return;const token=encodeURIComponent(DATA.token||"");for(const card of DATA.upsells||[]){const pack=card.region_pack||{},s=card.summary||{};const id=encodeURIComponent(pack.id||"");const div=document.createElement("div");div.className="upsell";const title=document.createElement("h3");title.textContent=pack.name||"Region Pack";div.appendChild(title);const map=document.createElementNS(NS,"svg");div.appendChild(map);renderMiniMap(map,card);const meta=document.createElement("p");meta.className="muted small";meta.textContent=Number(s.new_tiles||0)+" new tiles · "+Number(s.discount_percent||0)+"% volume discount · "+fmt(s.price_eur);div.appendChild(meta);const checkout=document.createElement("a");checkout.className="button";checkout.href="/credits/region-pack-checkout?token="+token+"&region_pack_id="+id;checkout.textContent="Buy "+(pack.name||"Pack")+" ("+fmt(s.price_eur)+")";div.appendChild(checkout);const detail=document.createElement("a");detail.className="button secondary";detail.href="/credits/region-pack-map?token="+token+"&region_pack_id="+id;detail.textContent="View map";div.appendChild(detail);grid.appendChild(div)}}
+renderUpsells();
 </script>
 </body>
 </html>`;
@@ -3061,6 +3212,152 @@ export async function handleCreditRegionPackDetailLink(request, env, deps) {
   );
 }
 
+async function getValidRegionPackDetailToken(db, token, deps) {
+  const safeToken = String(token || "").trim();
+  if (!safeToken) {
+    return { error: "missing_token", status: 400 };
+  }
+  await ensureRegionPackDetailTokenTable(db, deps);
+  const now = deps.nowIso();
+  const row = await deps.dbGet(
+    db,
+    `
+      SELECT token, user_id, region_pack_id, expires_at
+      FROM region_pack_detail_tokens
+      WHERE token = ?
+      LIMIT 1
+    `,
+    [safeToken],
+  );
+  if (!row || String(row.expires_at || "") <= now) {
+    return { error: "expired_token", status: 410 };
+  }
+  return { ok: true, row };
+}
+
+function resolveRegionPackFromDetailTokenRow(row, requestedRegionId = "") {
+  const baseProduct = regionProductById(row && row.region_pack_id);
+  if (!baseProduct) {
+    return { error: "unknown_region_pack", status: 404 };
+  }
+  const requestedId = String(requestedRegionId || "").trim();
+  const product = requestedId ? regionProductById(requestedId) : baseProduct;
+  if (!product || !isSameOrRelatedHigherRegionProduct(baseProduct, product)) {
+    return { error: "region_pack_not_available_for_this_detail_link", status: 403 };
+  }
+  return { ok: true, baseProduct, product };
+}
+
+export async function handleCreditRegionPackCheckoutFromToken(request, env, deps) {
+  const url = new URL(request.url);
+  const token = String(url.searchParams.get("token") || "").trim();
+  const requestedRegionId = String(url.searchParams.get("region_pack_id") || "").trim();
+  const db = deps.requireDb(env);
+  const tokenResult = await getValidRegionPackDetailToken(db, token, deps);
+  if (tokenResult.error) {
+    return html(
+      "<!doctype html><title>Planetka Region Pack</title><h1>This region-pack payment link expired.</h1><p>Please open it again from Blender.</p>",
+      tokenResult.status || 400,
+      env,
+    );
+  }
+  const productResult = resolveRegionPackFromDetailTokenRow(tokenResult.row, requestedRegionId);
+  if (productResult.error) {
+    return html(
+      `<!doctype html><title>Planetka Region Pack</title><h1>Region pack unavailable.</h1><p>${escapeHtmlText(productResult.error)}</p>`,
+      productResult.status || 400,
+      env,
+    );
+  }
+  const userId = String(tokenResult.row && tokenResult.row.user_id || "").trim();
+  const user = await deps.dbGet(
+    db,
+    `SELECT id, email FROM users WHERE id = ? LIMIT 1`,
+    [userId],
+  );
+  const email = deps.normalizeEmail(user && user.email || "");
+  await ensureCreditAccount(db, userId, deps);
+  const product = productResult.product;
+  const estimate = await estimateRegionPack(db, userId, product, deps, { includeRows: false });
+  if (estimate && estimate.error) {
+    return html(
+      `<!doctype html><title>Planetka Region Pack</title><h1>Region pack estimate failed.</h1><p>${escapeHtmlText(estimate.error)}</p>`,
+      500,
+      env,
+    );
+  }
+  const priceEur = normalizeCreditAmount(estimate && estimate.price_eur);
+  if (priceEur <= 0) {
+    const grant = await grantRegionPackEntitlements(
+      db,
+      userId,
+      String(product.id || ""),
+      `region_pack_no_payment_${deps.randomToken(8)}`,
+      0,
+      deps,
+      email,
+    );
+    if (grant && grant.error) {
+      return html(
+        `<!doctype html><title>Planetka Region Pack</title><h1>Region pack licence failed.</h1><p>${escapeHtmlText(grant.error)}</p>`,
+        500,
+        env,
+      );
+    }
+    return html(
+      checkoutReturnHtml({
+        title: "Planetka Region Pack",
+        heading: `${String(product.name || "Region Pack")} is already licenced`,
+        message: "This pack has no newly charged Full Quality tiles. You can return to Blender.",
+        icon: "OK",
+        tone: "success",
+      }),
+      200,
+      env,
+    );
+  }
+  const amountCents = centsForEur(priceEur);
+  if (amountCents < STRIPE_MIN_CHECKOUT_AMOUNT_CENTS) {
+    return html(
+      `<!doctype html><title>Planetka Region Pack</title><h1>Amount below Stripe minimum.</h1><p>This pack price is €${priceEur.toFixed(2)}.</p>`,
+      400,
+      env,
+    );
+  }
+  const session = await createStripeCheckoutSession(
+    env,
+    {
+      amountCents,
+      customerEmail: email,
+      clientReferenceId: userId,
+      productName: `Planetka Full Quality ${String(product.name || "Region")} Pack`,
+      metadata: {
+        planetka_purchase_type: "region_pack",
+        planetka_user_id: userId,
+        planetka_email: email,
+        planetka_quality_mode: "full",
+        planetka_region_id: String(product.id || ""),
+        planetka_region_name: String(product.name || ""),
+        planetka_region_type: String(product.type || ""),
+        planetka_catalog_version: REGION_PACK_CATALOG_VERSION,
+        planetka_price_eur: priceEur.toFixed(2),
+        planetka_gross_eur: normalizeCreditAmount(estimate && estimate.gross_eur).toFixed(2),
+        planetka_discount_percent: String(Math.max(0, Number.parseInt(product.discount_percent || 0, 10) || 0)),
+        planetka_checkout_source: "region_pack_map_upsell",
+      },
+    },
+    deps,
+  );
+  if (session.error || !session.checkout_url) {
+    return html(
+      `<!doctype html><title>Planetka Region Pack</title><h1>Stripe checkout failed.</h1><p>${escapeHtmlText(session.message || session.error || "checkout_failed")}</p>`,
+      502,
+      env,
+    );
+  }
+  return Response.redirect(session.checkout_url, 303);
+}
+
 export async function handleCreditRegionPackMap(request, env, deps) {
   const url = new URL(request.url);
   const token = String(url.searchParams.get("token") || "").trim();
@@ -3072,35 +3369,27 @@ export async function handleCreditRegionPackMap(request, env, deps) {
     );
   }
   const db = deps.requireDb(env);
-  await ensureRegionPackDetailTokenTable(db, deps);
-  const now = deps.nowIso();
-  const row = await deps.dbGet(
-    db,
-    `
-      SELECT token, user_id, region_pack_id, expires_at
-      FROM region_pack_detail_tokens
-      WHERE token = ?
-      LIMIT 1
-    `,
-    [token],
-  );
-  if (!row || String(row.expires_at || "") <= now) {
+  const tokenResult = await getValidRegionPackDetailToken(db, token, deps);
+  if (tokenResult.error) {
     return html(
       "<!doctype html><title>Planetka Region Pack</title><h1>This region-pack detail link expired.</h1><p>Please open it again from Blender.</p>",
-      410,
+      tokenResult.status || 410,
       env,
     );
   }
-  const product = regionProductById(row.region_pack_id);
-  if (!product) {
+  const requestedRegionId = String(url.searchParams.get("region_pack_id") || "").trim();
+  const productResult = resolveRegionPackFromDetailTokenRow(tokenResult.row, requestedRegionId);
+  if (productResult.error) {
     return html(
-      "<!doctype html><title>Planetka Region Pack</title><h1>Unknown region pack.</h1>",
-      404,
+      `<!doctype html><title>Planetka Region Pack</title><h1>Region pack unavailable.</h1><p>${escapeHtmlText(productResult.error)}</p>`,
+      productResult.status || 404,
       env,
     );
   }
-  await ensureCreditAccount(db, row.user_id, deps);
-  const estimate = await estimateRegionPack(db, row.user_id, product, deps, { includeRows: true });
+  const userId = String(tokenResult.row && tokenResult.row.user_id || "").trim();
+  const product = productResult.product;
+  await ensureCreditAccount(db, userId, deps);
+  const estimate = await estimateRegionPack(db, userId, product, deps, { includeRows: true });
   if (estimate && estimate.error) {
     return html(
       `<!doctype html><title>Planetka Region Pack</title><h1>Region pack estimate failed.</h1><p>${escapeHtmlText(estimate.error)}</p>`,
@@ -3108,7 +3397,19 @@ export async function handleCreditRegionPackMap(request, env, deps) {
       env,
     );
   }
-  const data = buildRegionPackMapData(product, estimate);
+  const upsells = [];
+  for (const relatedProduct of relatedHigherRegionProducts(product, 3)) {
+    const relatedEstimate = await estimateRegionPack(db, userId, relatedProduct, deps, { includeRows: true });
+    if (relatedEstimate && !relatedEstimate.error) {
+      const relatedPrice = normalizeCreditAmount(relatedEstimate && relatedEstimate.price_eur);
+      const relatedNewTiles = Math.max(0, Number.parseInt(relatedEstimate && relatedEstimate.new_tile_count || 0, 10) || 0);
+      if (relatedPrice <= 0 && relatedNewTiles <= 0) {
+        continue;
+      }
+      upsells.push(buildRegionPackUpsellCardData(relatedProduct, relatedEstimate));
+    }
+  }
+  const data = buildRegionPackMapData(product, estimate, { token, upsells });
   return html(regionPackMapHtml(data), 200, env);
 }
 

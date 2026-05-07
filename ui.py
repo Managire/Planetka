@@ -52,6 +52,7 @@ RESOLVE_FAILURE_FLAG_KEY = "planetka_resolve_integrity_failed"
 RESOLVE_FAILURE_MESSAGE_KEY = "planetka_resolve_integrity_message"
 LAST_RESOLVE_TEXTURE_QUALITY_MODE_KEY = "planetka_last_resolve_texture_quality_mode"
 EARTH_TRANSFORM_SECTION_OPEN_KEY = "planetka_ui_earth_transform_open"
+DATA_CONTROL_MORE_OPTIONS_SECTION_OPEN_KEY = "planetka_ui_data_more_options_open"
 STANDARD_RESOLUTION_INFO_URL = "https://www.planetka.io/blender/standard-resolution-info"
 EARTH_RADIUS_SAFE_MIN_BU = 0.2
 EARTH_RADIUS_SAFE_MAX_BU = 20.0
@@ -996,7 +997,7 @@ def _draw_broader_region_offers(layout, scene, active_view_scope=False):
             text=(
                 "Already Licenced"
                 if fully_licenced
-                else (f"Licence {name} (Free)" if price <= 0 else f"Licence {name} ({_fmt_eur(price)})")
+                else (f"{name} (Free)" if price <= 0 else f"{name} ({_fmt_eur(price)})")
             ),
             icon=("CHECKMARK" if price <= 0 else "URL"),
         )
@@ -1113,14 +1114,14 @@ def _draw_account_panel(layout):
             balance_row.label(text="Balance: —", icon="USER")
         else:
             balance_row.label(text=f"Balance: €{balance:.2f}", icon="USER")
-            if balance <= 0.0:
-                payment_row = balance_row.row(align=True)
-                payment_row.alert = bool(balance < 0.0)
-                payment_row.operator(
-                    "planetka.open_credit_checkout",
-                    text="Payment",
-                    icon="URL",
-                ).checkout_option = "OPTIONS"
+            add_balance_row = layout.row(align=True)
+            if balance < 0.0:
+                add_balance_row.alert = True
+            add_balance_row.operator(
+                "planetka.open_credit_checkout",
+                text="Add Balance",
+                icon="URL",
+            ).checkout_option = "BALANCE_10"
         layout.label(text=f"Licenced tiles: {unlocked_count}", icon="TEXTURE")
         standard_unlocked = bool(
             isinstance(credit_payload, dict)
@@ -1458,13 +1459,14 @@ def _draw_live_telemetry(layout, scene):
                 if credit_balance < 0.0:
                     credit_notice.alert = True
                 credit_notice.label(text=f"Balance: €{credit_balance:.2f}", icon="USER")
-            add_balance_row = full_box.row(align=True)
-            add_balance_row.alert = bool(credit_balance < 0.0)
-            add_balance_row.operator(
-                "planetka.open_credit_checkout",
-                text="Add Balance",
-                icon="URL",
-            ).checkout_option = "BALANCE_10"
+            if credit_balance < 0.0:
+                add_balance_row = full_box.row(align=True)
+                add_balance_row.alert = True
+                add_balance_row.operator(
+                    "planetka.open_credit_checkout",
+                    text="Add Balance",
+                    icon="URL",
+                ).checkout_option = "BALANCE_10"
         elif not full_allowed and not active_view_scope:
             credit_notice = full_box.row(align=True)
             credit_notice.label(text="Balance unavailable", icon="INFO")
@@ -1481,12 +1483,19 @@ def _draw_live_telemetry(layout, scene):
             estimate_notice = full_box.row(align=True)
             estimate_notice.label(text="Full Quality price is being calculated.", icon="INFO")
 
-        data_packs_box = quality_box.box()
-        data_packs_box.label(text="Full Quality Data Packs", icon="WORLD_DATA")
-        if world_full_quality_unlocked:
-            data_packs_box.label(text="All broader Full Quality packs are already licenced.", icon="CHECKMARK")
-        else:
-            _draw_broader_region_offers(data_packs_box, scene, active_view_scope=active_view_scope)
+        data_packs_box = _draw_collapsible_subsection(
+            quality_box,
+            scene,
+            "Full Quality Data Packs",
+            "WORLD_DATA",
+            DATA_CONTROL_MORE_OPTIONS_SECTION_OPEN_KEY,
+            default_open=False,
+        )
+        if data_packs_box is not None:
+            if world_full_quality_unlocked:
+                data_packs_box.label(text="All broader Full Quality packs are already licenced.", icon="CHECKMARK")
+            else:
+                _draw_broader_region_offers(data_packs_box, scene, active_view_scope=active_view_scope)
 
     throttle_message = str(get_status_message(prefs) or "").strip()
     if throttle_message and "throttl" in throttle_message.lower():

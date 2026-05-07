@@ -1598,14 +1598,16 @@ def _ctx_auto_resolve_update_size_estimation(ctx, scene, scope, active_view_sign
     except (RuntimeError, TypeError, ValueError, AttributeError):
         base_path_for_estimate = ""
 
-    current_quality_mode = _ctx_auto_resolve_texture_quality_mode(ctx, scene, props)
     full_tiles_override = None
+    include_full_price = estimation_scope == "CAMERA"
     try:
         deps.update_resolve_size_estimates(
             scene,
             scope_mode=estimation_scope,
             base_path=base_path_for_estimate,
             full_tiles_override=full_tiles_override,
+            include_full_price=include_full_price,
+            async_full_price=include_full_price,
         )
     except deps.recoverable_exceptions:
         deps.logger.debug("Planetka auto-resolve: failed updating resolve size estimates", exc_info=True)
