@@ -950,7 +950,15 @@ def _draw_broader_region_offers(layout, scene, active_view_scope=False):
         return
     try:
         from .credit_api import get_region_pack_offers
-        offers = get_region_pack_offers(location[0], location[1])
+        from .planetka_runtime.view_telemetry import current_full_quality_pricing_tiles_for_region_offers
+        prefs = get_prefs()
+        base_path = str(getattr(prefs, "texture_base_path", "") or "").strip()
+        offer_tile_keys = current_full_quality_pricing_tiles_for_region_offers(
+            scene=scene,
+            scope_mode="CAMERA",
+            base_path=base_path,
+        )
+        offers = get_region_pack_offers(location[0], location[1], tile_keys=offer_tile_keys)
     except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
         logger.debug("Planetka: failed drawing broader region offers", exc_info=True)
         offers = []
@@ -958,7 +966,7 @@ def _draw_broader_region_offers(layout, scene, active_view_scope=False):
     if not offers:
         layout.label(text="No broader packs available for this view yet.", icon="INFO")
         return
-    for offer in offers[:4]:
+    for offer in offers[:8]:
         name = str(offer.get("name", "") or offer.get("region_pack_name", "") or "Region Pack").strip()
         region_id = str(offer.get("id", "") or offer.get("region_pack_id", "") or "").strip()
         if not name or not region_id:

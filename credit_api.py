@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import os
 import re
@@ -466,13 +467,23 @@ def estimate_credit_breakdown_for_tiles(tiles, quality_mode="FULL") -> dict:
     return estimate_credits_for_tiles(tiles, quality_mode=mode)
 
 
-def get_region_pack_offers(latitude_deg, longitude_deg, force=False) -> list[dict]:
+def get_region_pack_offers(latitude_deg, longitude_deg, tile_keys=None, force=False) -> list[dict]:
+    if isinstance(tile_keys, bool) and not force:
+        force = bool(tile_keys)
+        tile_keys = None
     try:
         lat = max(-90.0, min(90.0, float(latitude_deg or 0.0)))
         lon = max(-180.0, min(180.0, float(longitude_deg or 0.0)))
     except (TypeError, ValueError):
         return []
-    key = f"{round(lat, 3):.3f}:{round(lon, 3):.3f}"
+    normalized_tile_keys = _normalize_tile_keys(tile_keys)
+    tile_signature = ""
+    if normalized_tile_keys:
+        try:
+            tile_signature = hashlib.sha1("|".join(normalized_tile_keys[:256]).encode("utf-8")).hexdigest()[:16]
+        except (TypeError, ValueError):
+            tile_signature = ""
+    key = f"{round(lat, 3):.3f}:{round(lon, 3):.3f}:{tile_signature}"
     now = time.monotonic()
     cached = _REGION_OFFERS_CACHE.get("payload")
     if (
@@ -483,10 +494,13 @@ def get_region_pack_offers(latitude_deg, longitude_deg, force=False) -> list[dic
     ):
         return [dict(item) for item in cached if isinstance(item, dict)]
     try:
+        body = {"latitude_deg": lat, "longitude_deg": lon}
+        if normalized_tile_keys:
+            body["tile_keys"] = normalized_tile_keys[:256]
         payload = _request_json(
             "POST",
             "/credits/region-offers",
-            body={"latitude_deg": lat, "longitude_deg": lon},
+            body=body,
             timeout=45,
         )
     except (AuthApiError, CreditApiError, RuntimeError, TypeError, ValueError, OSError):

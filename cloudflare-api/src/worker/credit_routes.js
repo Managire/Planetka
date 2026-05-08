@@ -665,6 +665,193 @@ function suggestedRegionProductsForPoint(latitudeDeg, longitudeDeg) {
   return selected.slice(0, 4);
 }
 
+function regionOfferTileLookupKey(parsed) {
+  if (!parsed) {
+    return "";
+  }
+  const paidDLevels = paidDLevelsForRegionZ(parsed.z);
+  const paidD = paidDLevels.length ? paidDLevels[0] : parsed.d;
+  return regionTileKey(parsed.x, parsed.y, parsed.z, paidD);
+}
+
+function parsedTileBbox(parsed) {
+  if (!parsed) {
+    return null;
+  }
+  const z = Math.max(1, Number.parseInt(parsed.z || 0, 10) || 1);
+  return [
+    clampNumber(Number(parsed.x) - 180.0, -180.0, 180.0),
+    clampNumber(Number(parsed.y) - 90.0, -90.0, 90.0),
+    clampNumber(Number(parsed.x) + z - 180.0, -180.0, 180.0),
+    clampNumber(Number(parsed.y) + z - 90.0, -90.0, 90.0),
+  ];
+}
+
+function bboxIntersects(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length < 4 || b.length < 4) {
+    return false;
+  }
+  return Number(a[0]) <= Number(b[2])
+    && Number(a[2]) >= Number(b[0])
+    && Number(a[1]) <= Number(b[3])
+    && Number(a[3]) >= Number(b[1]);
+}
+
+function regionProductIntersectsAnyTileBbox(product, parsedTiles) {
+  const productBbox = product && product.bbox || [];
+  if (!Array.isArray(productBbox) || productBbox.length < 4) {
+    return true;
+  }
+  for (const parsed of parsedTiles) {
+    if (bboxIntersects(productBbox, parsedTileBbox(parsed))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function finestPaidTilesForRegionOffers(tileKeys) {
+  const parsedTiles = normalizeTileKeys(tileKeys)
+    .map((key) => parseTileKey(key))
+    .filter((parsed) => parsed && parsed.z > 0 && parsed.d > 0 && parsed.d < FREE_D_THRESHOLD);
+  if (!parsedTiles.length) {
+    return [];
+  }
+  const minZ = parsedTiles.reduce((best, parsed) => Math.min(best, parsed.z), Number.POSITIVE_INFINITY);
+  const zLimit = minZ <= 4 ? Math.max(minZ, minZ * 2) : minZ;
+  const seen = new Set();
+  const result = [];
+  for (const parsed of parsedTiles) {
+    if (parsed.z > zLimit) {
+      continue;
+    }
+    const lookupKey = regionOfferTileLookupKey(parsed);
+    if (!lookupKey || seen.has(lookupKey)) {
+      continue;
+    }
+    seen.add(lookupKey);
+    result.push({
+      ...parsed,
+      key: lookupKey,
+      source_key: parsed.key,
+    });
+  }
+  return result;
+}
+
+function regionCountryProductsForTileKeys(tileKeys, limit = 8) {
+  const parsedTiles = finestPaidTilesForRegionOffers(tileKeys);
+  if (!parsedTiles.length) {
+    return [];
+  }
+  const lookupKeys = Array.from(new Set(parsedTiles.map((parsed) => parsed.key).filter(Boolean)));
+  const cache = {};
+  const matches = [];
+  for (const product of REGION_PRODUCTS) {
+    const type = String(product && product.type || "").trim().toLowerCase();
+    if (type !== "country" && type !== "admin_region") {
+      continue;
+    }
+    if (!regionProductIntersectsAnyTileBbox(product, parsedTiles)) {
+      continue;
+    }
+    let overlap = 0;
+    for (const key of lookupKeys) {
+      if (regionProductContainsGeneratedTileKey(product, key, cache)) {
+        overlap += 1;
+      }
+    }
+    if (overlap > 0) {
+      matches.push({ product, overlap });
+    }
+  }
+  return matches
+    .sort((a, b) => (
+      Number(b.overlap || 0) - Number(a.overlap || 0)
+      || bboxArea(a.product) - bboxArea(b.product)
+      || String(a.product && a.product.name || "").localeCompare(String(b.product && b.product.name || ""))
+    ))
+    .slice(0, Math.max(1, Number.parseInt(limit, 10) || 8))
+    .map((entry) => entry.product);
+}
+
+function regionProductsContainingAnyCountry(countryIds, type, limit = 3) {
+  const ids = countryIds instanceof Set ? countryIds : new Set(countryIds || []);
+  if (!ids.size) {
+    return [];
+  }
+  const safeType = String(type || "").trim().toLowerCase();
+  const matches = [];
+  for (const product of REGION_PRODUCTS) {
+    if (String(product && product.type || "").trim().toLowerCase() !== safeType) {
+      continue;
+    }
+    const productCountryIds = regionProductCountryIdSet(product);
+    for (const id of ids) {
+      if (productCountryIds.has(id)) {
+        matches.push(product);
+        break;
+      }
+    }
+  }
+  return matches
+    .sort((a, b) => (
+      productSpecificityScore(a) - productSpecificityScore(b)
+      || bboxArea(a) - bboxArea(b)
+      || String(a.name || "").localeCompare(String(b.name || ""))
+    ))
+    .slice(0, Math.max(1, Number.parseInt(limit, 10) || 3));
+}
+
+function suggestedRegionProductsForContext(latitudeDeg, longitudeDeg, tileKeys = []) {
+  const pointProducts = suggestedRegionProductsForPoint(latitudeDeg, longitudeDeg);
+  const tileCountryProducts = regionCountryProductsForTileKeys(tileKeys, 6);
+  const selected = [];
+  const seen = new Set();
+  const addProduct = (product) => {
+    const id = String(product && product.id || "").trim();
+    if (!id || seen.has(id)) {
+      return;
+    }
+    seen.add(id);
+    selected.push(product);
+  };
+  const isCountryProduct = (product) => {
+    const type = String(product && product.type || "").trim().toLowerCase();
+    return type === "country" || type === "admin_region";
+  };
+
+  for (const product of pointProducts.filter(isCountryProduct)) {
+    addProduct(product);
+  }
+  for (const product of tileCountryProducts) {
+    addProduct(product);
+  }
+
+  const countryIds = new Set();
+  for (const product of selected.filter(isCountryProduct)) {
+    for (const countryId of regionProductCountryIdSet(product)) {
+      countryIds.add(countryId);
+    }
+  }
+
+  if (!countryIds.size) {
+    for (const product of pointProducts) {
+      addProduct(product);
+    }
+    return selected.slice(0, 8);
+  }
+
+  for (const product of regionProductsContainingAnyCountry(countryIds, "macro_region", 3)) {
+    addProduct(product);
+  }
+  for (const product of regionProductsContainingAnyCountry(countryIds, "continent", 1)) {
+    addProduct(product);
+  }
+
+  return selected.slice(0, 8);
+}
+
 function regionProductRank(product) {
   const type = String(product && product.type || "").trim().toLowerCase();
   if (type === "country" || type === "admin_region") {
@@ -4183,7 +4370,8 @@ export async function handleCreditRegionOffers(request, env, deps) {
   const body = await deps.parseJson(request);
   const latitude = clampNumber(body && (body.latitude_deg ?? body.latitude ?? body.lat), -90.0, 90.0);
   const longitude = clampNumber(body && (body.longitude_deg ?? body.longitude ?? body.lon), -180.0, 180.0);
-  const products = suggestedRegionProductsForPoint(latitude, longitude);
+  const tileKeys = requestTileKeysFromBody(body).slice(0, 256);
+  const products = suggestedRegionProductsForContext(latitude, longitude, tileKeys);
   const offers = [];
   for (const product of products) {
     const estimate = await estimateRegionPack(db, auth.user.id, product, deps, { includeRows: false });

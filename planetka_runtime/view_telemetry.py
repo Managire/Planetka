@@ -8,6 +8,7 @@ _VIEW_TELEMETRY_CTX = None
 _CENT = Decimal("0.01")
 _FULL_PRICE_SIGNATURE_KEY = "planetka_resolve_estimate_full_price_signature"
 _FULL_PRICE_PENDING_KEY = "planetka_resolve_estimate_full_price_pending"
+_REGION_OFFER_PRICING_TILES_KEY = "planetka_resolve_estimate_region_offer_tiles"
 _FULL_PRICE_CACHE_TTL_SECONDS = 300.0
 _FULL_PRICE_CACHE = {}
 _FULL_PRICE_IN_FLIGHT = set()
@@ -993,6 +994,7 @@ def clear_resolve_size_estimates(scene, runtime=None):
         deps.resolve_estimate_preview_credits_key,
         "planetka_resolve_estimate_balanced_bytes",
         "planetka_resolve_estimate_balanced_credits",
+        _REGION_OFFER_PRICING_TILES_KEY,
     )
     if scene is None:
         return
@@ -1091,6 +1093,49 @@ def _pricing_tiles_for_visible_tiles(tiles, runtime=None, texture_quality_mode="
     if resolved_tiles:
         return pricing_tiles
     return tuple(safe_tiles)
+
+
+def current_full_quality_pricing_tiles_for_region_offers(scene=None, runtime=None, scope_mode="CAMERA", base_path=""):
+    deps = _coerce_ctx(runtime).deps
+    logger = deps.logger
+    recoverable_exceptions = deps.recoverable_exceptions
+    target_scene = scene if scene is not None else _safe_context_scene(deps.bpy)
+    if target_scene is not None:
+        try:
+            raw = str(target_scene.get(_REGION_OFFER_PRICING_TILES_KEY, "") or "")
+            stored_tiles = canonical_tiles(raw.split("|") if raw else ())
+            if stored_tiles:
+                return stored_tiles
+        except recoverable_exceptions:
+            logger.debug("Planetka: failed reading cached region-offer tiles", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed reading cached region-offer tiles", exc_info=True)
+
+    tile_utils = deps.get_tile_utils()
+    if tile_utils is None:
+        return tuple()
+    scope_token = str(scope_mode or "CAMERA").strip().upper()
+    if scope_token not in {"CAMERA", "ACTIVE_VIEW", "AUTO"}:
+        scope_token = "CAMERA"
+    try:
+        visible_tiles = canonical_tiles(
+            tile_utils.main(
+                scope_mode=scope_token,
+                texture_quality_mode_override="FULL",
+            )
+        )
+    except recoverable_exceptions:
+        logger.debug("Planetka: failed computing region-offer tiles", exc_info=True)
+        return tuple()
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed computing region-offer tiles", exc_info=True)
+        return tuple()
+    return _pricing_tiles_for_visible_tiles(
+        visible_tiles,
+        runtime,
+        texture_quality_mode="FULL",
+        base_path=base_path,
+    )
 
 
 def _full_price_signature(pricing_tiles, texture_quality_mode="FULL"):
@@ -1641,6 +1686,7 @@ def update_resolve_size_estimates(
         scene[resolve_estimate_full_bytes_key] = int(max(0, int(full_bytes)))
         scene[resolve_estimate_preview_bytes_key] = int(max(0, int(preview_bytes)))
         scene["planetka_resolve_estimate_balanced_bytes"] = int(max(0, int(balanced_bytes)))
+        scene[_REGION_OFFER_PRICING_TILES_KEY] = "|".join(str(tile) for tile in full_pricing_tiles[:256])
         scene[_FULL_PRICE_SIGNATURE_KEY] = str(full_price_signature or "")
         if full_price_pending:
             scene[_FULL_PRICE_PENDING_KEY] = True
