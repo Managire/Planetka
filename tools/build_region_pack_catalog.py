@@ -36,6 +36,20 @@ PAID_Z_LEVELS = (1, 2, 4, 8, 15, 30)
 FREE_D_THRESHOLD = 60
 MERGE_DIFFERENCE_RATIO = 0.50
 SMALL_COUNTRY_AUTO_MERGE_TILE_LIMIT = 30
+WORLD_VOLUME_DISCOUNT_PERCENT = 50
+DEFAULT_VOLUME_DISCOUNT_PERCENT = 20
+VOLUME_DISCOUNT_SHARE_BUCKETS = (
+    # Discount depends on the product's z001 billable land share of World.
+    # The widening buckets keep small products at 20% while still giving
+    # materially larger packs a clearer volume discount.
+    (0.75, 50),
+    (0.25, 45),
+    (0.125, 40),
+    (0.10, 35),
+    (0.07, 30),
+    (0.05, 25),
+    (0.0, 20),
+)
 DATASET_BASE_MPP = Decimal("10.0")
 EQUATOR_Z001_AREA_KM2 = (Decimal("40075.016686") / Decimal("360.0")) ** 2
 MONEY_CENTS = Decimal("100")
@@ -1572,7 +1586,7 @@ def load_tile_pricing(tile_db_path: Path) -> dict[str, dict]:
             raise RuntimeError("Region pack pricing requires tile_land_stats in Resources/tile_sizes.sqlite")
         rows = conn.execute(
             """
-              SELECT tile_key, billable_land_km2, free_reason
+              SELECT tile_key, z, d, billable_land_km2, free_reason
               FROM tile_land_stats
               WHERE tile_key IS NOT NULL
               ORDER BY tile_key
@@ -1587,10 +1601,57 @@ def load_tile_pricing(tile_db_path: Path) -> dict[str, dict]:
             continue
         free_reason = str(row["free_reason"] or "").strip()
         pricing[key] = {
+            "z": int(row["z"] or 0),
+            "d": int(row["d"] or 0),
+            "billable_land_km2": float(row["billable_land_km2"] or 0.0),
             "gross_cents": credit_cents_for_land(key, row["billable_land_km2"], free_reason),
             "free_reason": free_reason or free_reason_for_tile_key(key),
         }
     return pricing
+
+
+def d001_billable_land_km2(tile_keys: list[str] | tuple[str, ...], tile_pricing: dict[str, dict]) -> float:
+    total = 0.0
+    seen = set()
+    for key in tile_keys or []:
+        safe_key = str(key or "").strip()
+        if not safe_key or safe_key in seen:
+            continue
+        seen.add(safe_key)
+        record = tile_pricing.get(safe_key)
+        if not record or int(record.get("d") or 0) != 1:
+            continue
+        total += max(0.0, float(record.get("billable_land_km2") or 0.0))
+    return total
+
+
+def volume_discount_percent_for_share(land_share: float) -> int:
+    share = max(0.0, min(1.0, float(land_share or 0.0)))
+    for threshold, discount in VOLUME_DISCOUNT_SHARE_BUCKETS:
+        if share >= threshold:
+            return int(discount)
+    return DEFAULT_VOLUME_DISCOUNT_PERCENT
+
+
+def apply_dynamic_volume_discounts(products: list[dict], tile_pricing: dict[str, dict]) -> None:
+    world = next((product for product in products if str(product.get("id") or "").lower() == "world"), None)
+    world_land_km2 = d001_billable_land_km2(world.get("tile_keys") or [], tile_pricing) if world else 0.0
+    if world_land_km2 <= 0:
+        raise RuntimeError("Cannot calculate dynamic region-pack discounts without positive World z001 billable land area")
+    for product in products:
+        product_land_km2 = d001_billable_land_km2(product.get("tile_keys") or [], tile_pricing)
+        land_share = max(0.0, product_land_km2 / world_land_km2)
+        if str(product.get("id") or "").lower() == "world":
+            discount = WORLD_VOLUME_DISCOUNT_PERCENT
+        else:
+            discount = volume_discount_percent_for_share(land_share)
+        product["discount_percent"] = int(discount)
+        product["volume_discount_basis"] = {
+            "method": "d001_billable_land_share_bucket",
+            "product_d001_billable_land_km2": round(product_land_km2, 6),
+            "world_d001_billable_land_km2": round(world_land_km2, 6),
+            "world_land_share": round(land_share, 8),
+        }
 
 
 def apply_pricing_summaries(products: list[dict], tile_pricing: dict[str, dict]) -> None:
@@ -1613,7 +1674,7 @@ def world_product_payload(tile_db_path: Path) -> dict:
         "id": "world",
         "name": "World",
         "type": "world",
-        "discount_percent": 50,
+        "discount_percent": WORLD_VOLUME_DISCOUNT_PERCENT,
         "catalog_version": CATALOG_VERSION,
         "source": "S2 tile pricing inventory from Resources/tile_sizes.sqlite; polar/Greenland land masks use WT ocean plus S2 white exclusion; d000 and d060+ tiles are free",
         "adm0_codes": [],
@@ -1645,6 +1706,7 @@ def build_catalog(gpkg_path: Path, tile_db_path: Path = DEFAULT_TILE_DB) -> dict
     macro_products = build_macro_payloads(layers, code_to_product_id, code_to_payload)
     products = local_products + macro_products + [world_product_payload(tile_db_path)]
     apply_pricing_summaries(products, tile_pricing)
+    apply_dynamic_volume_discounts(products, tile_pricing)
     validate_unique_product_ids(products)
     products.sort(key=lambda payload: (0 if payload["type"] == "country" else 1 if payload["type"] == "macro_region" else 2, payload["name"]))
     return {
@@ -1683,6 +1745,8 @@ def public_product_payload(payload: dict) -> dict:
         "free_tile_count": int(payload.get("free_tile_count") or 0),
         "licensable_tile_count": int(payload.get("licensable_tile_count") or 0),
     }
+    if payload.get("volume_discount_basis"):
+        result["volume_discount_basis"] = payload["volume_discount_basis"]
     if payload.get("country_product_ids"):
         result["countries"] = payload["country_product_ids"]
     if payload.get("adm0_codes"):
@@ -1718,7 +1782,7 @@ def normalized_outline_catalog(catalog: dict) -> dict:
     return payload
 
 
-def write_js(path: Path, catalog: dict):
+def write_js(path: Path, catalog: dict, include_details: bool = False):
     path.parent.mkdir(parents=True, exist_ok=True)
     pack_payloads = catalog.get("products") or []
     outline_payload = {}
@@ -1760,21 +1824,22 @@ def write_js(path: Path, catalog: dict):
     lines.append("")
     lines.append(f"export const GENERATED_REGION_PACK_TILE_GROSS_CENTS = {json.dumps(catalog.get('tile_gross_cents') or {}, ensure_ascii=True, separators=(',', ':'))};")
     detail_payload = {}
-    for payload in pack_payloads:
-        detail_payload[payload["id"]] = {
-            "bounds": payload.get("bounds", []),
-            "countries": payload.get("countries", []),
-            "outline_refs": outline_refs_by_product.get(payload["id"], []),
-            "adm0_codes": payload.get("adm0_codes", []),
-            "adm1_codes": payload.get("adm1_codes", []),
-            "merged_from": payload.get("merged_from", []),
-            "counts_by_z": payload.get("counts_by_z", {}),
-            "pricing_summary": payload.get("pricing_summary", {}),
-        }
+    if include_details:
+        for payload in pack_payloads:
+            detail_payload[payload["id"]] = {
+                "bounds": payload.get("bounds", []),
+                "countries": payload.get("countries", []),
+                "outline_refs": outline_refs_by_product.get(payload["id"], []),
+                "adm0_codes": payload.get("adm0_codes", []),
+                "adm1_codes": payload.get("adm1_codes", []),
+                "merged_from": payload.get("merged_from", []),
+                "counts_by_z": payload.get("counts_by_z", {}),
+                "pricing_summary": payload.get("pricing_summary", {}),
+            }
     lines.append("")
     lines.append(f"export const GENERATED_REGION_PACK_DETAILS = {json.dumps(detail_payload, ensure_ascii=True, separators=(',', ':'))};")
     lines.append("")
-    lines.append(f"export const GENERATED_REGION_PACK_OUTLINES = {json.dumps(outline_payload, ensure_ascii=True, separators=(',', ':'))};")
+    lines.append(f"export const GENERATED_REGION_PACK_OUTLINES = {json.dumps(outline_payload if include_details else {}, ensure_ascii=True, separators=(',', ':'))};")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -1841,12 +1906,17 @@ def main() -> int:
     parser.add_argument("--png-product", default="australia")
     parser.add_argument("--tile-db", type=Path, default=DEFAULT_TILE_DB)
     parser.add_argument("--skip-png", action="store_true")
+    parser.add_argument(
+        "--full-js-details",
+        action="store_true",
+        help="Include bulky outline/detail payloads in the generated JS. Use only as an intermediate source for map-asset generation, not for Worker deployment.",
+    )
     args = parser.parse_args()
 
     catalog = build_catalog(args.gpkg, args.tile_db)
     catalog["gpkg_path"] = str(args.gpkg)
     write_json(args.json_output, catalog)
-    write_js(args.js_output, catalog)
+    write_js(args.js_output, catalog, include_details=bool(args.full_js_details))
     if not args.skip_png:
         write_png(args.png_output, catalog, args.png_product)
     summary = summarize_catalog(catalog)

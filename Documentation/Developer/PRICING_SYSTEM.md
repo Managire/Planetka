@@ -150,7 +150,7 @@ Internal analysis table in `Resources/tile_sizes.sqlite`.
 
 This table stores experimental GeoNames/population-derived commercial value tiers and multipliers. It is kept for future pricing analysis only.
 
-Active public pricing must ignore `tile_commercial_value`. The live formula uses only backend `tile_land_stats.billable_land_km2`, tile `d` detail, free-tile rules, licence coverage, and any product-level volume discount.
+Active public pricing must ignore `tile_commercial_value`. The live formula uses only backend `tile_land_stats.billable_land_km2`, tile `d` detail, free-tile rules, licence coverage, and the region-pack volume discount.
 
 ### `pricing_integrity_events`
 
@@ -316,7 +316,29 @@ Examples by d-level for the same land area:
 
 All backend money output is rounded to cents using `MONEY_SCALE = 100`. The client also rounds all received price fields to two decimals before display and summation, so the UI total matches the visible row prices.
 
-## 9. Licence Cascade and Upgrade Logic
+## 9. Region-Pack Volume Discounts
+
+Implemented in `tools/build_region_pack_catalog.py` and exported as static region-pack metadata.
+
+Region-pack discounts are size-based, not category-based. The builder calculates each product's `d001` billable land area and compares it with the `World` product's `d001` billable land area. `d001` is used so the same ground is not double-counted through lower-detail tile levels.
+
+The active discount buckets are:
+
+| Product share of World `d001` billable land | Volume discount |
+|---:|---:|
+| `< 5%` | `20%` |
+| `5% - < 7%` | `25%` |
+| `7% - < 10%` | `30%` |
+| `10% - < 12.5%` | `35%` |
+| `12.5% - < 25%` | `40%` |
+| `25% - < 75%` | `45%` |
+| `>= 75%` | `50%` |
+
+The World pack is fixed at `50%`.
+
+This creates a non-linear volume curve: small countries remain at the baseline discount, medium/large countries move higher, continent-scale products get materially larger volume discounts, and World remains the maximum-value purchase.
+
+## 10. Licence Cascade and Upgrade Logic
 
 Implemented in `estimateNewCredits()` and `isTileUnlockedForUser()`.
 
@@ -354,7 +376,7 @@ The estimate response includes both:
 - `credits` / `price_eur`: charge now.
 - `gross_credits` / `gross_price_eur`: original tile price before entitlement/upgrade deductions.
 
-## 10. Resolve Price Estimation Flow
+## 11. Resolve Price Estimation Flow
 
 ### Client-side visible tile planning
 
@@ -420,7 +442,7 @@ Response includes:
 - `metadata_missing_tile_keys`.
 - `balance_credits` / `balance_eur`.
 
-## 11. Full Quality Resolve Purchase/Unlock Flow
+## 12. Full Quality Resolve Purchase/Unlock Flow
 
 Primary files:
 
@@ -466,7 +488,7 @@ The Worker checks balance twice:
 - Before inserting entitlements.
 - After insertion, before balance deduction, rolling back new entitlements if needed.
 
-## 12. Stripe Checkout Flow
+## 13. Stripe Checkout Flow
 
 Primary files:
 
@@ -548,7 +570,7 @@ Webhook behavior:
 - Balance and `total_granted_credits` increase by EUR 10.
 - A ledger row is created.
 
-## 13. Animation Render Pricing Flow
+## 14. Animation Render Pricing Flow
 
 Primary file:
 
@@ -588,7 +610,7 @@ Animation breakdown rule:
 - Later segments using the same tile show `€0.00` with reason `already counted in an earlier animation segment`.
 - Tiles licenced before the render show `€0.00` with reason `already licenced before this render`.
 
-## 14. Downloading Licenced Tiles and Local Source
+## 15. Downloading Licenced Tiles and Local Source
 
 Primary file:
 
@@ -610,7 +632,7 @@ Local Source behavior:
 - Local files are used directly when valid.
 - If cloud data is newer or local metadata is stale, the user should be notified to re-download, without being charged again.
 
-## 15. Preview Fair-Usage Separation
+## 16. Preview Fair-Usage Separation
 
 Preview quality is free, but backend telemetry tracks it separately from Full Quality.
 
@@ -633,7 +655,7 @@ Tile route behavior:
 - Preview fair-usage hold also blocks Preview tile GETs even if an old tile session token exists.
 - Full Quality licenced data remains available while Preview is on hold.
 
-## 16. Pricing Integrity and Failure Rules
+## 17. Pricing Integrity and Failure Rules
 
 ### Backend unavailable on client
 
@@ -671,7 +693,7 @@ The client excludes tiles listed as `ocean_tiles` by the streaming plan from the
 
 S2 is the paid/detail base. Missing EL/WT/PO support files can fall back when the tile is not expected in the database; they should not create pricing failures. Missing required S2 data is a separate resolve/data availability problem.
 
-## 17. Analytics and Admin Controls
+## 18. Analytics and Admin Controls
 
 Relevant backend/admin behavior:
 
@@ -684,7 +706,7 @@ Admin balance changes write `credit_ledger` rows:
 - Positive: `admin_top_up`.
 - Negative: `admin_balance_subtract`.
 
-## 18. Validation and Test Coverage
+## 19. Validation and Test Coverage
 
 Primary live pricing E2E test:
 
@@ -729,7 +751,7 @@ R2/D1 metadata alignment should be checked after any dataset update:
 - Every S2 object in R2 should have a `tile_land_stats` row.
 - Every `tile_land_stats` row should correspond to an S2 object in R2.
 
-## 19. Operational Rules for Future Changes
+## 20. Operational Rules for Future Changes
 
 Do not violate these invariants:
 
@@ -743,7 +765,7 @@ Do not violate these invariants:
 - Do not count Full Quality/licenced traffic into Preview fair-usage enforcement.
 - Do not use Stripe Checkout metadata as the pricing authority; webhook processing must re-evaluate/grant using backend logic.
 
-## 20. File/Function Map
+## 21. File/Function Map
 
 Backend pricing:
 
