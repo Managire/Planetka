@@ -1676,7 +1676,7 @@ def world_product_payload(tile_db_path: Path) -> dict:
         "type": "world",
         "discount_percent": WORLD_VOLUME_DISCOUNT_PERCENT,
         "catalog_version": CATALOG_VERSION,
-        "source": "S2 tile pricing inventory from Resources/tile_sizes.sqlite; polar/Greenland land masks use WT ocean plus S2 white exclusion; d000 and d060+ tiles are free",
+        "source": "S2 tile pricing inventory from Resources/tile_sizes.sqlite; Antarctica/Greenland land masks use WT ocean plus S2 white exclusion; d000 and d060+ tiles are free",
         "adm0_codes": [],
         "adm1_codes": [],
         "membership_codes": [],

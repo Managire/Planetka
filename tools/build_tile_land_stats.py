@@ -4,7 +4,7 @@
 Default convention:
 - every S2 pixel is counted as land unless it matches the S2 ocean-fill color
 
-Polar/Greenland convention:
+Antarctica/Greenland convention:
 - WT blue pixels are ocean and removed from land area
 - S2 white pixels are ice/snow and removed from land area
 - if a required WT tile is missing, S2 ocean + S2 white is used as a visible fallback
@@ -47,8 +47,7 @@ DEFAULT_OCEAN_FALLBACK = ROOT / "Resources" / "Fallback Images" / "ocean_pixel_f
 TILE_RE = re.compile(r"^S2_(x(\d{3})_y(\d{3})_z(\d{3})_d(\d{3}))\.exr$", re.IGNORECASE)
 EARTH_RADIUS_KM = 6371.0088
 FREE_D_THRESHOLD = 60
-POLAR_SOUTH_MAX_DEG = -60.0
-POLAR_NORTH_MIN_DEG = 75.0
+ANTARCTICA_NORTH_MAX_DEG = -60.0
 EQUATOR_Z001_AREA_KM2 = (40075.016686 / 360.0) ** 2
 S2_OCEAN_TOLERANCE = np.float32(1e-5)
 WT_OCEAN_RGB = np.array((0.0, 0.0, 1.0), dtype=np.float32)
@@ -137,9 +136,9 @@ def tile_lat_bounds(y: int, z: int) -> tuple[float, float]:
     return max(-90.0, float(y) - 90.0), min(90.0, float(y + z) - 90.0)
 
 
-def is_polar_tile(y: int, z: int) -> bool:
+def is_antarctica_tile(y: int, z: int) -> bool:
     lat_south, lat_north = tile_lat_bounds(y, z)
-    return bool(lat_north <= POLAR_SOUTH_MAX_DEG or lat_south >= POLAR_NORTH_MIN_DEG)
+    return bool(lat_north <= ANTARCTICA_NORTH_MAX_DEG)
 
 
 def wt_path_for_tile(wt_root: Path, tile_key: str) -> Path:
@@ -197,7 +196,7 @@ def count_s2_land_pixels(scanline, width: int, channels: int) -> int:
     return int(np.count_nonzero(~ocean))
 
 
-def count_polar_greenland_land_pixels(s2_scanline, wt_scanline, width: int, s2_channels: int, wt_channels: int | None) -> int:
+def count_antarctica_greenland_land_pixels(s2_scanline, wt_scanline, width: int, s2_channels: int, wt_channels: int | None) -> int:
     s2_rgb = scanline_rgb(s2_scanline, width, s2_channels)
     s2_white = np.all(s2_rgb >= S2_WHITE_THRESHOLD, axis=1)
     if wt_scanline is not None and wt_channels is not None:
@@ -261,7 +260,7 @@ def scan_s2_file(path: Path, x: int, y: int, z: int, d: int, *, special_mask: bo
                 wt_scanline = wt_inp.read_scanline(row, 0, oiio.FLOAT)
                 if wt_scanline is None:
                     raise RuntimeError(f"Unable to read scanline {row} from {wt_path}")
-            land_pixels = count_polar_greenland_land_pixels(scanline, wt_scanline, width, channels, wt_channels) if special_mask else count_s2_land_pixels(scanline, width, channels)
+            land_pixels = count_antarctica_greenland_land_pixels(scanline, wt_scanline, width, channels, wt_channels) if special_mask else count_s2_land_pixels(scanline, width, channels)
             fraction = float(land_pixels) / float(width)
             land_area += row_area * fraction
         billable_area = 0.0 if free_reason else land_area
@@ -305,7 +304,7 @@ def iter_source_files(root: Path, wt_root: Path, greenland_tile_keys: set[str], 
                 continue
             tile_key = match.group(1)
             x, y, z, d = (int(match.group(index)) for index in range(2, 6))
-            special_mask = bool(tile_key in greenland_tile_keys or is_polar_tile(y, z))
+            special_mask = bool(tile_key in greenland_tile_keys or is_antarctica_tile(y, z))
             wt_path = wt_path_for_tile(wt_root, tile_key) if special_mask else Path("")
             yield str(entry.path), tile_key, x, y, z, d, special_mask, str(wt_path)
             count += 1
