@@ -1825,6 +1825,9 @@ function regionMapBounds(product, detail, tileRows) {
 
 function buildRegionPackUpsellCardData(product, estimate) {
   const tileRows = allocatedRegionPackTileRows(estimate);
+  const productSummary = regionProductPricingSummary(product) || {};
+  const fullPriceEur = normalizeCreditAmount(productSummary.gross_eur);
+  const chargeableFullPriceEur = normalizeCreditAmount(estimate && estimate.gross_eur);
   const levels = Array.from(new Set(tileRows.map((row) => row.z).filter((z) => Number.isFinite(z))))
     .sort((a, b) => a - b);
   const displayLevel = levels.length ? levels[0] : null;
@@ -1841,7 +1844,8 @@ function buildRegionPackUpsellCardData(product, estimate) {
       new_tiles: Math.max(0, Number.parseInt(estimate && estimate.new_tile_count || 0, 10) || 0),
       total_tiles: Math.max(0, Number.parseInt(estimate && estimate.tile_count || 0, 10) || 0),
       already_licenced_tiles: Math.max(0, Array.isArray(estimate && estimate.excluded_tiles) ? estimate.excluded_tiles.length : 0),
-      full_price_eur: normalizeCreditAmount(estimate && estimate.gross_eur),
+      full_price_eur: fullPriceEur,
+      already_licenced_deduction_eur: normalizeCreditAmount(Math.max(0, fullPriceEur - chargeableFullPriceEur)),
       discount_percent: Math.max(0, Number.parseInt(estimate && estimate.discount_percent || 0, 10) || 0),
       discount_eur: normalizeCreditAmount(estimate && estimate.discount_eur),
       price_eur: normalizeCreditAmount(estimate && estimate.price_eur),
@@ -1852,6 +1856,9 @@ function buildRegionPackUpsellCardData(product, estimate) {
 function buildRegionPackMapData(product, estimate, options = {}) {
   const id = String(product && product.id || "");
   const detail = GENERATED_REGION_PACK_DETAILS[id] || {};
+  const productSummary = regionProductPricingSummary(product) || {};
+  const fullPriceEur = normalizeCreditAmount(productSummary.gross_eur);
+  const chargeableFullPriceEur = normalizeCreditAmount(estimate && estimate.gross_eur);
   const tileRows = allocatedRegionPackTileRows(estimate);
   const countries = regionProductIncludedCountries(product);
   const levels = Array.from(new Set(tileRows.map((row) => row.z).filter((z) => Number.isFinite(z))))
@@ -1871,8 +1878,9 @@ function buildRegionPackMapData(product, estimate, options = {}) {
       new_tiles: Math.max(0, Number.parseInt(estimate && estimate.new_tile_count || 0, 10) || 0),
       total_tiles: Math.max(0, Number.parseInt(estimate && estimate.tile_count || 0, 10) || 0),
       already_licenced_tiles: Math.max(0, Array.isArray(estimate && estimate.excluded_tiles) ? estimate.excluded_tiles.length : 0),
-      already_licenced_saving_eur: normalizeCreditAmount(estimate && estimate.already_licenced_saving_eur),
-      full_price_eur: normalizeCreditAmount(estimate && estimate.gross_eur),
+      already_licenced_saving_eur: normalizeCreditAmount(Math.max(0, fullPriceEur - chargeableFullPriceEur)),
+      already_licenced_deduction_eur: normalizeCreditAmount(Math.max(0, fullPriceEur - chargeableFullPriceEur)),
+      full_price_eur: fullPriceEur,
       discount_percent: Math.max(0, Number.parseInt(estimate && estimate.discount_percent || 0, 10) || 0),
       discount_eur: normalizeCreditAmount(estimate && estimate.discount_eur),
       price_eur: normalizeCreditAmount(estimate && estimate.price_eur),
@@ -1966,6 +1974,7 @@ function buildSceneFullQualityMapData(estimate, options = {}) {
       total_tiles: Math.max(0, Number.parseInt(estimate && estimate.tile_count || 0, 10) || 0),
       already_licenced_tiles: Math.max(0, Array.isArray(estimate && estimate.excluded_tiles) ? estimate.excluded_tiles.length : 0),
       already_licenced_saving_eur: alreadyLicencedSaving,
+      already_licenced_deduction_eur: alreadyLicencedSaving,
       full_price_eur: fullPrice,
       discount_percent: 0,
       discount_eur: 0,
@@ -2224,16 +2233,14 @@ select{background:#262626;color:var(--text);border:1px solid var(--line);border-
 <body>
 <main>
 <h1>${isSceneDetail ? "Full Quality Textures for This Scene" : `${escapeHtmlText(name)} Full Quality Pack`}</h1>
-${success ? `<section class="panel"><h2>${escapeHtmlText(success.title || "Payment successful")}</h2><p>${escapeHtmlText(success.message || "Your Planetka purchase has been processed.")}</p></section>` : ""}
-<section class="cards">
-<div class="card"><span>New Tiles</span><b>${Number(summary.new_tiles || 0)}</b></div>
-<div class="card"><span>Total Tiles</span><b>${Number(summary.total_tiles || 0)}</b></div>
-<div class="card"><span>Full Price</span><b>€${Number(summary.full_price_eur || 0).toFixed(2)}</b></div>
-${Number(summary.discount_percent || 0) > 0
-    ? `<div class="card"><span>Volume Discount</span><b>${Number(summary.discount_percent || 0)}% (-€${Number(summary.discount_eur || 0).toFixed(2)})</b></div>`
-    : `<div class="card"><span>Already Licenced Saving</span><b>€${Number(summary.already_licenced_saving_eur || 0).toFixed(2)}</b></div>`}
-<div class="card final-price"><span>Final Price</span><b>€${Number(summary.price_eur || 0).toFixed(2)}</b>${primaryBuyHref && Number(summary.price_eur || 0) > 0 ? `<a class="button buy-now" href="${primaryBuyHref}">Buy Now</a>` : ""}</div>
-</section>
+	${success ? `<section class="panel"><h2>${escapeHtmlText(success.title || "Payment successful")}</h2><p>${escapeHtmlText(success.message || "Your Planetka purchase has been processed.")}</p></section>` : ""}
+	<section class="cards">
+	<div class="card"><span>New / Total Tiles</span><b>${Number(summary.new_tiles || 0)} / ${Number(summary.total_tiles || 0)}</b></div>
+	<div class="card"><span>Full Price</span><b>€${Number(summary.full_price_eur || 0).toFixed(2)}</b></div>
+	<div class="card"><span>Already Licenced</span><b>-€${Number(summary.already_licenced_deduction_eur ?? summary.already_licenced_saving_eur ?? 0).toFixed(2)}</b></div>
+	<div class="card"><span>Volume Discount</span><b>${Number(summary.discount_percent || 0)}% (-€${Number(summary.discount_eur || 0).toFixed(2)})</b></div>
+	<div class="card final-price"><span>Final Price</span><b>€${Number(summary.price_eur || 0).toFixed(2)}</b>${primaryBuyHref && Number(summary.price_eur || 0) > 0 ? `<a class="button buy-now" href="${primaryBuyHref}">Buy Now</a>` : ""}</div>
+	</section>
 <section class="panel">
 <div class="toolbar">
 <label>Detail level <select id="levelSelect"></select></label>
@@ -2368,19 +2375,20 @@ function uniqueCountryNames(values){const seen=new Set(),out=[];for(const entry 
 function parseTileKey(key){const m=/x(\\d{3})_y(\\d{3})_z(\\d{3})_d(\\d{3})/i.exec(String(key||""));return m?{key:m[0],x:Number(m[1]),y:Number(m[2]),z:Number(m[3]),d:Number(m[4])}:null}
 function family(parsed){return parsed?"x"+String(parsed.x).padStart(3,"0")+"_y"+String(parsed.y).padStart(3,"0")+"_z"+String(parsed.z).padStart(3,"0"):""}
 function tileSort(a,b){const pa=parseTileKey(a.tile_key),pb=parseTileKey(b.tile_key),fa=family(pa),fb=family(pb);return fa===fb?(Number(pa&&pa.d||0)-Number(pb&&pb.d||0)):fa<fb?-1:1}
-function buildOwnedByFamily(){const map=new Map();for(const row of DATA.owned_tiles||[]){const p=parseTileKey(row.tile_key);const f=family(p);if(!p||!f)continue;if(!map.has(f))map.set(f,[]);map.get(f).push({d:p.d,gross_cents:int(row.gross_cents)})}return map}
-async function loadAsset(id){const safe=String(id||"").trim();if(assetCache.has(safe))return assetCache.get(safe);const res=await fetch("/credits/region-pack-map-asset?region_pack_id="+encodeURIComponent(safe)+"&v="+assetVersion,{cache:"reload"});if(!res.ok)throw new Error("map_asset_"+res.status);const asset=await res.json();assetCache.set(safe,asset);return asset}
-function computeAsset(asset){const owned=buildOwnedByFamily();const world=!!DATA.world_full_quality_unlocked;const discountPct=Math.max(0,Math.min(95,Number(asset&&asset.region_pack&&asset.region_pack.discount_percent||0)||0));const rows=(asset.tiles||[]).slice().sort(tileSort);const paid=[];let grossCents=0,alreadyGrossCents=0,alreadyCount=0,freeCount=0;
-  for(const tile of rows){const p=parseTileKey(tile.tile_key);const f=family(p);const full=int(tile.full_price_cents||tile.gross_cents);const globallyFree=!!tile.globally_free||full<=0;if(!owned.has(f))owned.set(f,[]);const entries=owned.get(f);const covered=world||entries.some((entry)=>Number(entry.d)<=Number(p&&p.d||0));let coarser=0;for(const entry of entries){if(Number(entry.d)>Number(p&&p.d||0))coarser=Math.max(coarser,int(entry.gross_cents))}
-    const charge=globallyFree||covered?0:Math.max(0,full-coarser);let status="free";if(covered&&!globallyFree){status="licenced";alreadyCount+=1;alreadyGrossCents+=full}else if(charge>0){status="new";grossCents+=charge;paid.push({tile,cents:charge})}else{freeCount+=1}
-    if(charge>0&&entries){entries.push({d:Number(p&&p.d||0),gross_cents:full})}
-    tile.x=p?p.x:null;tile.y=p?p.y:null;tile.z=p?p.z:null;tile.d=p?p.d:null;tile.lon_min=p?p.x-180:null;tile.lon_max=p?p.x-180+p.z:null;tile.lat_min=p?p.y-90:null;tile.lat_max=p?p.y-90+p.z:null;tile.status=status;tile.charge_cents=charge;tile.price_cents=0;tile.full_price_cents=full;tile.full_price_eur=full/100;tile.price_eur=0;
-  }
-  const discountCents=Math.round(grossCents*discountPct/100);const targetCents=Math.max(0,grossCents-discountCents);let allocated=0;const alloc=paid.map((entry,index)=>{const raw=grossCents>0?(entry.cents*targetCents/grossCents):0;const floor=Math.floor(raw);allocated+=floor;return{entry,index,cents:floor,remainder:raw-floor}}).sort((a,b)=>b.remainder!==a.remainder?b.remainder-a.remainder:a.index-b.index);let rem=Math.max(0,targetCents-allocated);for(const item of alloc){if(rem<=0)break;item.cents+=1;rem-=1}for(const item of alloc){item.entry.tile.price_cents=item.cents;item.entry.tile.price_eur=item.cents/100;if(item.cents<=0)item.entry.tile.status="free"}
-  const alreadySavingGross=alreadyGrossCents;const alreadySavingDiscount=Math.round(alreadySavingGross*discountPct/100);const displayFull=grossCents;const displayDiscount=discountCents;const displayPrice=targetCents;
-  const levels=Array.from(new Set(rows.map((row)=>Number(row.z)).filter(Number.isFinite))).sort((a,b)=>a-b);return{asset,rows,levels,summary:{new_tiles:paid.filter((entry)=>entry.tile.price_cents>0).length,total_tiles:rows.length,already_licenced_tiles:alreadyCount,free_tiles:freeCount,full_price_cents:displayFull,discount_percent:discountPct,discount_cents:displayDiscount,price_cents:displayPrice,already_licenced_saving_cents:Math.max(0,alreadySavingGross-alreadySavingDiscount)}}}
-function currentBuyHref(){return currentPackId?"/credits/region-pack-checkout?token="+currentToken+"&region_pack_id="+currentPackId+currentCatalog:""}
-function renderCards(vm){const s=vm.summary;const cards=[["New Tiles",s.new_tiles],["Total Tiles",s.total_tiles],["Full Price",fmtCents(s.full_price_cents)]];if(s.discount_percent>0)cards.push(["Volume Discount",s.discount_percent+"% (-"+fmtCents(s.discount_cents)+")"]);else cards.push(["Already Licenced Saving",fmtCents(s.already_licenced_saving_cents)]);const buy=currentBuyHref()&&int(s.price_cents)>0?"<a class=\\"button buy-now\\" href=\\""+currentBuyHref()+"\\">Buy Now</a>":"";cards.push(["Final Price",fmtCents(s.price_cents),buy]);document.getElementById("cards").innerHTML=cards.map((c)=>"<div class=\\"card "+(c[0]==="Final Price"?"final-price":"")+"\\"><span>"+esc(c[0])+"</span><b>"+esc(c[1])+"</b>"+(c[2]||"")+"</div>").join("")}
+	function buildOwnedByFamily(){const map=new Map();for(const row of DATA.owned_tiles||[]){const p=parseTileKey(row.tile_key);const f=family(p);if(!p||!f)continue;if(!map.has(f))map.set(f,[]);map.get(f).push({d:p.d,gross_cents:int(row.gross_cents)})}return map}
+	async function loadAsset(id){const safe=String(id||"").trim();if(assetCache.has(safe))return assetCache.get(safe);const res=await fetch("/credits/region-pack-map-asset?region_pack_id="+encodeURIComponent(safe)+"&v="+assetVersion,{cache:"reload"});if(!res.ok)throw new Error("map_asset_"+res.status);const asset=await res.json();assetCache.set(safe,asset);return asset}
+	function rawPackGrossCents(rows){const owned=new Map();let total=0;for(const tile of rows){const p=parseTileKey(tile.tile_key);const f=family(p);const full=int(tile.full_price_cents||tile.gross_cents);const globallyFree=!!tile.globally_free||full<=0;if(!p||!f||globallyFree)continue;if(!owned.has(f))owned.set(f,[]);const entries=owned.get(f);const covered=entries.some((entry)=>Number(entry.d)<=Number(p.d));let coarser=0;for(const entry of entries){if(Number(entry.d)>Number(p.d))coarser=Math.max(coarser,int(entry.gross_cents))}const charge=covered?0:Math.max(0,full-coarser);if(charge>0){total+=charge;entries.push({d:Number(p.d),gross_cents:full})}}return total}
+	function computeAsset(asset){const owned=buildOwnedByFamily();const world=!!DATA.world_full_quality_unlocked;const discountPct=Math.max(0,Math.min(95,Number(asset&&asset.region_pack&&asset.region_pack.discount_percent||0)||0));const rows=(asset.tiles||[]).slice().sort(tileSort);const rawFullCents=rawPackGrossCents(rows);const paid=[];let grossCents=0,alreadyCount=0,freeCount=0;
+	  for(const tile of rows){const p=parseTileKey(tile.tile_key);const f=family(p);const full=int(tile.full_price_cents||tile.gross_cents);const globallyFree=!!tile.globally_free||full<=0;if(!owned.has(f))owned.set(f,[]);const entries=owned.get(f);const covered=world||entries.some((entry)=>Number(entry.d)<=Number(p&&p.d||0));let coarser=0;for(const entry of entries){if(Number(entry.d)>Number(p&&p.d||0))coarser=Math.max(coarser,int(entry.gross_cents))}
+	    const charge=globallyFree||covered?0:Math.max(0,full-coarser);let status="free";if(covered&&!globallyFree){status="licenced";alreadyCount+=1}else if(charge>0){status="new";grossCents+=charge;paid.push({tile,cents:charge})}else{freeCount+=1}
+	    if(charge>0&&entries){entries.push({d:Number(p&&p.d||0),gross_cents:full})}
+	    tile.x=p?p.x:null;tile.y=p?p.y:null;tile.z=p?p.z:null;tile.d=p?p.d:null;tile.lon_min=p?p.x-180:null;tile.lon_max=p?p.x-180+p.z:null;tile.lat_min=p?p.y-90:null;tile.lat_max=p?p.y-90+p.z:null;tile.status=status;tile.charge_cents=charge;tile.price_cents=0;tile.full_price_cents=full;tile.full_price_eur=full/100;tile.price_eur=0;
+	  }
+	  const discountCents=Math.round(grossCents*discountPct/100);const targetCents=Math.max(0,grossCents-discountCents);let allocated=0;const alloc=paid.map((entry,index)=>{const raw=grossCents>0?(entry.cents*targetCents/grossCents):0;const floor=Math.floor(raw);allocated+=floor;return{entry,index,cents:floor,remainder:raw-floor}}).sort((a,b)=>b.remainder!==a.remainder?b.remainder-a.remainder:a.index-b.index);let rem=Math.max(0,targetCents-allocated);for(const item of alloc){if(rem<=0)break;item.cents+=1;rem-=1}for(const item of alloc){item.entry.tile.price_cents=item.cents;item.entry.tile.price_eur=item.cents/100;if(item.cents<=0)item.entry.tile.status="free"}
+	  const alreadyDeductionCents=Math.max(0,rawFullCents-grossCents);
+	  const levels=Array.from(new Set(rows.map((row)=>Number(row.z)).filter(Number.isFinite))).sort((a,b)=>a-b);return{asset,rows,levels,summary:{new_tiles:paid.filter((entry)=>entry.tile.price_cents>0).length,total_tiles:rows.length,already_licenced_tiles:alreadyCount,free_tiles:freeCount,full_price_cents:rawFullCents,discount_percent:discountPct,discount_cents:discountCents,price_cents:targetCents,already_licenced_deduction_cents:alreadyDeductionCents,already_licenced_saving_cents:alreadyDeductionCents}}}
+	function currentBuyHref(){return currentPackId?"/credits/region-pack-checkout?token="+currentToken+"&region_pack_id="+currentPackId+currentCatalog:""}
+	function renderCards(vm){const s=vm.summary;const cards=[["New / Total Tiles",Number(s.new_tiles||0)+" / "+Number(s.total_tiles||0)],["Full Price",fmtCents(s.full_price_cents)],["Already Licenced","-"+fmtCents(s.already_licenced_deduction_cents)],["Volume Discount",Number(s.discount_percent||0)+"% (-"+fmtCents(s.discount_cents)+")"]];const buy=currentBuyHref()&&int(s.price_cents)>0?"<a class=\\"button buy-now\\" href=\\""+currentBuyHref()+"\\">Buy Now</a>":"";cards.push(["Final Price",fmtCents(s.price_cents),buy]);document.getElementById("cards").innerHTML=cards.map((c)=>"<div class=\\"card "+(c[0]==="Final Price"?"final-price":"")+"\\"><span>"+esc(c[0])+"</span><b>"+esc(c[1])+"</b>"+(c[2]||"")+"</div>").join("")}
 let currentBounds={min_lon:-10,min_lat:35,max_lon:30,max_lat:48},pad=20,W=1000,H=520;
 function setBounds(bounds){currentBounds=bounds||currentBounds;const aspect=Math.max(0.28,Math.min(0.9,(currentBounds.max_lat-currentBounds.min_lat)/Math.max(1e-6,currentBounds.max_lon-currentBounds.min_lon)));H=Math.round(W*aspect)+pad*2}
 function xy(lon,lat){return [pad+((lon-currentBounds.min_lon)/(currentBounds.max_lon-currentBounds.min_lon||1))*(W-pad*2),pad+((currentBounds.max_lat-lat)/(currentBounds.max_lat-currentBounds.min_lat||1))*(H-pad*2)]}
@@ -2490,9 +2498,9 @@ function parseTileKey(key){const m=/x(\\d{3})_y(\\d{3})_z(\\d{3})_d(\\d{3})/i.ex
 function family(parsed){return parsed?"x"+String(parsed.x).padStart(3,"0")+"_y"+String(parsed.y).padStart(3,"0")+"_z"+String(parsed.z).padStart(3,"0"):""}
 function tileSort(a,b){const pa=parseTileKey(a[0]),pb=parseTileKey(b[0]),fa=family(pa),fb=family(pb);return fa===fb?(Number(pa&&pa.d||0)-Number(pb&&pb.d||0)):fa<fb?-1:1}
 function buildOwnedByFamily(){const map=new Map();for(const row of DATA.owned_tiles||[]){const p=parseTileKey(row.tile_key);const f=family(p);if(!p||!f)continue;if(!map.has(f))map.set(f,[]);map.get(f).push({d:p.d,gross_cents:int(row.gross_cents)})}return map}
-function computeProduct(row){const discountPct=Math.max(0,Math.min(95,Number(row.discount_percent||0)||0));if(row.world){const full=int(row.full_price_cents);const discount=Math.round(full*discountPct/100);const price=DATA.world_full_quality_unlocked?0:Math.max(0,full-discount);return{...row,new_tiles:DATA.world_full_quality_unlocked?0:Number(row.total_tiles||0),already_licenced_tiles:DATA.world_full_quality_unlocked?Number(row.total_tiles||0):0,full_price_cents:full,chargeable_full_price_cents:full,discount_cents:DATA.world_full_quality_unlocked?0:discount,price_cents:price,already_licenced_saving_cents:0}}
-  const owned=buildOwnedByFamily();const world=!!DATA.world_full_quality_unlocked;const tiles=(row.tiles||[]).slice().sort(tileSort);let gross=0,alreadyGross=0,alreadyCount=0,freeCount=0,newCount=0;for(const tile of tiles){const p=parseTileKey(tile[0]);const f=family(p);const full=int(tile[1]);const globallyFree=!!tile[2]||full<=0;if(!owned.has(f))owned.set(f,[]);const entries=owned.get(f);const covered=world||entries.some((entry)=>Number(entry.d)<=Number(p&&p.d||0));let coarser=0;for(const entry of entries){if(Number(entry.d)>Number(p&&p.d||0))coarser=Math.max(coarser,int(entry.gross_cents))}const charge=globallyFree||covered?0:Math.max(0,full-coarser);if(covered&&!globallyFree){alreadyCount++;alreadyGross+=full}else if(charge>0){newCount++;gross+=charge;entries.push({d:Number(p&&p.d||0),gross_cents:full})}else{freeCount++}}const discount=Math.round(gross*discountPct/100);const price=Math.max(0,gross-discount);const alreadyDiscount=Math.round(alreadyGross*discountPct/100);return{...row,new_tiles:newCount,already_licenced_tiles:alreadyCount,free_tiles:freeCount,chargeable_full_price_cents:gross,discount_cents:discount,price_cents:price,already_licenced_saving_cents:Math.max(0,alreadyGross-alreadyDiscount)}}
-function rowHtml(row){const id=encodeURIComponent(row.id||"");const licenced=Number(row.already_licenced_tiles||0);const saving=int(row.already_licenced_saving_cents);const mapLink=String(row.id||"").toLowerCase()==="world"?"":" <a class=\\"button secondary\\" href=\\"/credits/region-pack-map?token="+token+"&region_pack_id="+id+"&catalog=1\\">Map</a>";return "<tr>"
+	function computeProduct(row){const discountPct=Math.max(0,Math.min(95,Number(row.discount_percent||0)||0));if(row.world){const full=int(row.full_price_cents);const discount=Math.round(full*discountPct/100);const price=DATA.world_full_quality_unlocked?0:Math.max(0,full-discount);const already=DATA.world_full_quality_unlocked?full:0;return{...row,new_tiles:DATA.world_full_quality_unlocked?0:Number(row.total_tiles||0),already_licenced_tiles:DATA.world_full_quality_unlocked?Number(row.total_tiles||0):0,full_price_cents:full,chargeable_full_price_cents:DATA.world_full_quality_unlocked?0:full,discount_cents:DATA.world_full_quality_unlocked?0:discount,price_cents:price,already_licenced_deduction_cents:already,already_licenced_saving_cents:already}}
+	  const owned=buildOwnedByFamily();const world=!!DATA.world_full_quality_unlocked;const tiles=(row.tiles||[]).slice().sort(tileSort);let gross=0,alreadyCount=0,freeCount=0,newCount=0;for(const tile of tiles){const p=parseTileKey(tile[0]);const f=family(p);const full=int(tile[1]);const globallyFree=!!tile[2]||full<=0;if(!owned.has(f))owned.set(f,[]);const entries=owned.get(f);const covered=world||entries.some((entry)=>Number(entry.d)<=Number(p&&p.d||0));let coarser=0;for(const entry of entries){if(Number(entry.d)>Number(p&&p.d||0))coarser=Math.max(coarser,int(entry.gross_cents))}const charge=globallyFree||covered?0:Math.max(0,full-coarser);if(covered&&!globallyFree){alreadyCount++}else if(charge>0){newCount++;gross+=charge;entries.push({d:Number(p&&p.d||0),gross_cents:full})}else{freeCount++}}const full=int(row.full_price_cents);const discount=Math.round(gross*discountPct/100);const price=Math.max(0,gross-discount);const already=Math.max(0,full-gross);return{...row,new_tiles:newCount,already_licenced_tiles:alreadyCount,free_tiles:freeCount,chargeable_full_price_cents:gross,discount_cents:discount,price_cents:price,already_licenced_deduction_cents:already,already_licenced_saving_cents:already}}
+	function rowHtml(row){const id=encodeURIComponent(row.id||"");const licenced=Number(row.already_licenced_tiles||0);const saving=int(row.already_licenced_saving_cents);const mapLink=String(row.id||"").toLowerCase()==="world"?"":" <a class=\\"button secondary\\" href=\\"/credits/region-pack-map?token="+token+"&region_pack_id="+id+"&catalog=1\\">Map</a>";return "<tr>"
 +"<td><b>"+esc(row.name||"Data Pack")+"</b><div class=\\"muted small\\">"+esc(row.group_label||"")+"</div></td>"
 +"<td>"+Number(row.new_tiles||0)+"</td>"
 +"<td>"+Number(row.total_tiles||0)+"</td>"
@@ -4717,7 +4725,9 @@ function regionPackPaymentChoiceHtml(data) {
   const balanceTopUpHref = balanceTopUpToken ? `/credits/balance?token=${escapeHtmlText(encodeURIComponent(balanceTopUpToken))}` : "";
   const mapHref = `/credits/region-pack-map?token=${escapeHtmlText(encodeURIComponent(String(data && data.token || "")))}&region_pack_id=${escapeHtmlText(encodeURIComponent(String(product && product.id || "")))}${catalogParam}`;
   const priceEur = normalizeCreditAmount(estimate && estimate.price_eur);
-  const grossEur = normalizeCreditAmount(estimate && estimate.gross_eur);
+  const fullPriceEur = normalizeCreditAmount(regionProductPricingSummary(product) && regionProductPricingSummary(product).gross_eur);
+  const chargeableFullPriceEur = normalizeCreditAmount(estimate && estimate.gross_eur);
+  const alreadyLicencedDeductionEur = normalizeCreditAmount(Math.max(0, fullPriceEur - chargeableFullPriceEur));
   const discountEur = normalizeCreditAmount(estimate && estimate.discount_eur);
   const discountPercent = Math.max(0, Number.parseInt(product && product.discount_percent || 0, 10) || 0);
   const balanceEur = normalizeSignedCreditAmount(account && account.balance_credits);
@@ -4746,15 +4756,16 @@ main{max-width:760px;margin:0 auto;padding:24px}h1{margin:0 0 10px;font-size:28p
 <main>
 <h1>${escapeHtmlText(name)} Full Quality Pack</h1>
 <section class="panel">
-<p>Choose how you want to licence this Full Quality data pack.</p>
-<div class="summary">
-<div class="card"><span>Final Price</span><b>€${priceEur.toFixed(2)}</b></div>
-<div class="card"><span>Your Balance</span><b>€${balanceEur.toFixed(2)}</b></div>
-<div class="card"><span>New Tiles</span><b>${Math.max(0, Number.parseInt(estimate && estimate.new_tile_count || 0, 10) || 0)}</b></div>
-<div class="card"><span>Volume Discount</span><b>${discountPercent}% (-€${discountEur.toFixed(2)})</b></div>
-</div>
-<p class="muted">Full price before volume discount and already-licenced tiles: €${grossEur.toFixed(2)}</p>
-${insufficientBalance ? `<p class="notice">Your balance is lower than this pack price. Use the payment gateway or add balance first.</p>` : ""}
+	<p>Choose how you want to licence this Full Quality data pack.</p>
+	<div class="summary">
+	<div class="card"><span>New / Total Tiles</span><b>${Math.max(0, Number.parseInt(estimate && estimate.new_tile_count || 0, 10) || 0)} / ${Math.max(0, Number.parseInt(estimate && estimate.tile_count || 0, 10) || 0)}</b></div>
+	<div class="card"><span>Full Price</span><b>€${fullPriceEur.toFixed(2)}</b></div>
+	<div class="card"><span>Already Licenced</span><b>-€${alreadyLicencedDeductionEur.toFixed(2)}</b></div>
+	<div class="card"><span>Volume Discount</span><b>${discountPercent}% (-€${discountEur.toFixed(2)})</b></div>
+	<div class="card"><span>Final Price</span><b>€${priceEur.toFixed(2)}</b></div>
+	<div class="card"><span>Your Balance</span><b>€${balanceEur.toFixed(2)}</b></div>
+	</div>
+	${insufficientBalance ? `<p class="notice">Your balance is lower than this pack price. Use the payment gateway or add balance first.</p>` : ""}
 <div class="actions">
 ${stripeButton}
 ${balanceButton}
