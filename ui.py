@@ -1416,7 +1416,7 @@ def _draw_live_telemetry(layout, scene):
             unlock_row = standard_box.row(align=True)
             unlock_row.operator(
                 "wm.url_open",
-                text="Unlock standard quality permanently",
+                text="Unlock Standard Quality",
                 icon="URL",
             ).url = STANDARD_RESOLUTION_INFO_URL
 

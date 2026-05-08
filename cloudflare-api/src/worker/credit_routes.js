@@ -1959,6 +1959,12 @@ function regionPackMapHtml(data) {
   const countries = Array.isArray(data && data.included_countries) ? data.included_countries : [];
   const summary = data && data.summary || {};
   const success = data && data.success && typeof data.success === "object" ? data.success : null;
+  const tokenParam = escapeHtmlText(encodeURIComponent(String(data && data.token || "")));
+  const packIdParam = escapeHtmlText(encodeURIComponent(String(pack && pack.id || "")));
+  const catalogParam = data && data.catalog_mode ? "&catalog=1" : "";
+  const primaryBuyHref = !isSceneDetail && packIdParam
+    ? `/credits/region-pack-checkout?token=${tokenParam}&region_pack_id=${packIdParam}${catalogParam}`
+    : "";
   const payload = jsonForInlineScript(data);
   return `<!doctype html>
 <html lang="en">
@@ -1970,7 +1976,7 @@ function regionPackMapHtml(data) {
 :root{color-scheme:dark;--bg:#111;--panel:#1b1b1b;--line:#3c3c3c;--text:#eee;--muted:#aaa;--new:#e45745;--licenced:#e2bc49;--free:#69707a;--country:#2a3748;--country-line:#98b4d8}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 main{max-width:1180px;margin:0 auto;padding:24px}h1{margin:0 0 8px;font-size:28px;font-weight:650}.muted{color:var(--muted)}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:18px 0}.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px}.card b{display:block;font-size:22px;margin-top:4px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:18px 0}.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px}.card b{display:block;font-size:22px;margin-top:4px}.card.final-price{border-color:#8f732f;box-shadow:0 0 0 1px rgba(217,164,65,.16) inset}.card.final-price b{font-size:26px}.buy-now{width:100%;font-size:16px}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;margin-top:14px}.toolbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
 select{background:#262626;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:7px 10px}svg{width:100%;height:auto;background:#0d1118;border:1px solid var(--line);border-radius:10px}
 .legend{display:flex;gap:16px;flex-wrap:wrap;margin:10px 0 0}.swatch{display:inline-block;width:14px;height:14px;border-radius:3px;margin-right:6px;vertical-align:-2px}.new{background:var(--new)}.licenced{background:var(--licenced)}.free{background:var(--free)}
@@ -1989,7 +1995,7 @@ ${success ? `<section class="panel"><h2>${escapeHtmlText(success.title || "Payme
 ${Number(summary.discount_percent || 0) > 0
     ? `<div class="card"><span>Volume Discount</span><b>${Number(summary.discount_percent || 0)}% (-€${Number(summary.discount_eur || 0).toFixed(2)})</b></div>`
     : `<div class="card"><span>Already Licenced Saving</span><b>€${Number(summary.already_licenced_saving_eur || 0).toFixed(2)}</b></div>`}
-<div class="card"><span>Final Price</span><b>€${Number(summary.price_eur || 0).toFixed(2)}</b></div>
+<div class="card final-price"><span>Final Price</span><b>€${Number(summary.price_eur || 0).toFixed(2)}</b>${primaryBuyHref && Number(summary.price_eur || 0) > 0 ? `<a class="button buy-now" href="${primaryBuyHref}">Buy Now</a>` : ""}</div>
 </section>
 <section class="panel">
 <div class="toolbar">
@@ -2014,7 +2020,7 @@ ${Array.isArray(data && data.upsells) && data.upsells.length ? `<section class="
 <div id="upsellGrid" class="upsells"></div>
 </section>` : ""}
 <section class="panel">
-<a class="button secondary" href="/credits/region-pack-catalog?token=${escapeHtmlText(encodeURIComponent(String(data && data.token || "")))}">View all Full Quality data packs</a>
+<a class="button secondary" href="/credits/region-pack-catalog?token=${tokenParam}">View all Full Quality data packs</a>
 </section>
 </main>
 <script>const DATA=${payload};
@@ -2064,7 +2070,7 @@ function regionPackStaticMapHtml(data) {
 :root{color-scheme:dark;--bg:#111;--panel:#1b1b1b;--line:#3c3c3c;--text:#eee;--muted:#aaa;--new:#e45745;--licenced:#e2bc49;--free:#69707a;--country:#2a3748;--country-line:#98b4d8;--accent:#d9a441}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 main{max-width:1180px;margin:0 auto;padding:24px}h1{margin:0 0 8px;font-size:28px;font-weight:650}.muted{color:var(--muted)}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:18px 0}.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px}.card b{display:block;font-size:22px;margin-top:4px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:18px 0}.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px}.card b{display:block;font-size:22px;margin-top:4px}.card.final-price{border-color:#8f732f;box-shadow:0 0 0 1px rgba(217,164,65,.16) inset}.card.final-price b{font-size:26px}.buy-now{width:100%;font-size:16px}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;margin-top:14px}.toolbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
 select{background:#262626;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:7px 10px}svg{width:100%;height:auto;background:#0d1118;border:1px solid var(--line);border-radius:10px}
 .legend{display:flex;gap:16px;flex-wrap:wrap;margin:10px 0 0}.swatch{display:inline-block;width:14px;height:14px;border-radius:3px;margin-right:6px;vertical-align:-2px}.new{background:var(--new)}.licenced{background:var(--licenced)}.free{background:var(--free)}
@@ -2110,6 +2116,9 @@ const NS="http://www.w3.org/2000/svg";
 const fmtCents=(v)=>"€"+(Math.max(0,Number(v||0)||0)/100).toFixed(2);
 const int=(v)=>Math.max(0,Math.round(Number(v||0)||0));
 const assetCache=new Map();
+const currentToken=encodeURIComponent(DATA.token||"");
+const currentPackId=encodeURIComponent(DATA.asset_id||DATA.region_pack&&DATA.region_pack.id||"");
+const currentCatalog=DATA.catalog_mode?"&catalog=1":"";
 function esc(value){return String(value||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}
 function countryName(value){return typeof value==="object"&&value?String(value.name||value.COUNTRY||value.NAME_1||value.GID_0||""):String(value||"")}
 function parseTileKey(key){const m=/x(\\d{3})_y(\\d{3})_z(\\d{3})_d(\\d{3})/i.exec(String(key||""));return m?{key:m[0],x:Number(m[1]),y:Number(m[2]),z:Number(m[3]),d:Number(m[4])}:null}
@@ -2126,7 +2135,8 @@ function computeAsset(asset){const owned=buildOwnedByFamily();const world=!!DATA
   const discountCents=Math.round(grossCents*discountPct/100);const targetCents=Math.max(0,grossCents-discountCents);let allocated=0;const alloc=paid.map((entry,index)=>{const raw=grossCents>0?(entry.cents*targetCents/grossCents):0;const floor=Math.floor(raw);allocated+=floor;return{entry,index,cents:floor,remainder:raw-floor}}).sort((a,b)=>b.remainder!==a.remainder?b.remainder-a.remainder:a.index-b.index);let rem=Math.max(0,targetCents-allocated);for(const item of alloc){if(rem<=0)break;item.cents+=1;rem-=1}for(const item of alloc){item.entry.tile.price_cents=item.cents;item.entry.tile.price_eur=item.cents/100;if(item.cents<=0)item.entry.tile.status="free"}
   const alreadySavingGross=alreadyGrossCents;const alreadySavingDiscount=Math.round(alreadySavingGross*discountPct/100);const summaryOverride=DATA.summary_override||{};const displayFull=summaryOverride.full_price_cents!=null?int(summaryOverride.full_price_cents):grossCents;const displayDiscount=summaryOverride.discount_cents!=null?int(summaryOverride.discount_cents):discountCents;const displayPrice=summaryOverride.price_cents!=null?int(summaryOverride.price_cents):targetCents;
   const levels=Array.from(new Set(rows.map((row)=>Number(row.z)).filter(Number.isFinite))).sort((a,b)=>a-b);return{asset,rows,levels,summary:{new_tiles:paid.filter((entry)=>entry.tile.price_cents>0).length,total_tiles:rows.length,already_licenced_tiles:alreadyCount,free_tiles:freeCount,full_price_cents:displayFull,discount_percent:discountPct,discount_cents:displayDiscount,price_cents:displayPrice,already_licenced_saving_cents:Math.max(0,alreadySavingGross-alreadySavingDiscount)}}}
-function renderCards(vm){const s=vm.summary;const cards=[["New Tiles",s.new_tiles],["Total Tiles",s.total_tiles],["Full Price",fmtCents(s.full_price_cents)]];if(s.discount_percent>0)cards.push(["Volume Discount",s.discount_percent+"% (-"+fmtCents(s.discount_cents)+")"]);else cards.push(["Already Licenced Saving",fmtCents(s.already_licenced_saving_cents)]);cards.push(["Final Price",fmtCents(s.price_cents)]);document.getElementById("cards").innerHTML=cards.map((c)=>"<div class=\\"card\\"><span>"+esc(c[0])+"</span><b>"+esc(c[1])+"</b></div>").join("")}
+function currentBuyHref(){return currentPackId?"/credits/region-pack-checkout?token="+currentToken+"&region_pack_id="+currentPackId+currentCatalog:""}
+function renderCards(vm){const s=vm.summary;const cards=[["New Tiles",s.new_tiles],["Total Tiles",s.total_tiles],["Full Price",fmtCents(s.full_price_cents)]];if(s.discount_percent>0)cards.push(["Volume Discount",s.discount_percent+"% (-"+fmtCents(s.discount_cents)+")"]);else cards.push(["Already Licenced Saving",fmtCents(s.already_licenced_saving_cents)]);const buy=currentBuyHref()&&int(s.price_cents)>0?"<a class=\\"button buy-now\\" href=\\""+currentBuyHref()+"\\">Buy Now</a>":"";cards.push(["Final Price",fmtCents(s.price_cents),buy]);document.getElementById("cards").innerHTML=cards.map((c)=>"<div class=\\"card "+(c[0]==="Final Price"?"final-price":"")+"\\"><span>"+esc(c[0])+"</span><b>"+esc(c[1])+"</b>"+(c[2]||"")+"</div>").join("")}
 let currentBounds={min_lon:-10,min_lat:35,max_lon:30,max_lat:48},pad=20,W=1000,H=520;
 function setBounds(bounds){currentBounds=bounds||currentBounds;const aspect=Math.max(0.28,Math.min(0.9,(currentBounds.max_lat-currentBounds.min_lat)/Math.max(1e-6,currentBounds.max_lon-currentBounds.min_lon)));H=Math.round(W*aspect)+pad*2}
 function xy(lon,lat){return [pad+((lon-currentBounds.min_lon)/(currentBounds.max_lon-currentBounds.min_lon||1))*(W-pad*2),pad+((currentBounds.max_lat-lat)/(currentBounds.max_lat-currentBounds.min_lat||1))*(H-pad*2)]}
