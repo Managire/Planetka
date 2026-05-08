@@ -496,7 +496,43 @@ def _validate_resolve_integrity(render_prep_module):
     active_groups = _active_loading_tile_nodes("Planetka Earth Material")
     if not active_groups:
         errors.append("no_active_tile_groups")
+    material = bpy.data.materials.get("Planetka Earth Material")
+    group_nodes = None
+    testing_mode = False
+    if material is not None and getattr(material, "node_tree", None) is not None:
+        nodes = getattr(material.node_tree, "nodes", None)
+        loading_group_node = nodes.get("Planetka Textures Loading") if nodes else None
+        loading_group = getattr(loading_group_node, "node_tree", None) if loading_group_node else None
+        group_nodes = getattr(loading_group, "nodes", None) if loading_group else None
+        group_name = str(getattr(loading_group, "name", "") or "").strip() if loading_group else ""
+        testing_mode = group_name in {
+            "Planetka Textures Loading Group",
+            "Planetka Textures Loading Group - Testing",
+        }
     for group_node in active_groups:
+        if testing_mode and group_nodes is not None:
+            suffix = str(getattr(group_node, "name", "") or "").split("_", 1)[1] if "_" in str(getattr(group_node, "name", "") or "") else ""
+            if not suffix.isdigit():
+                errors.append(f"invalid_testing_tile_node_name:{group_node.name}")
+                continue
+            index = int(suffix)
+            for image_type in ("S2", "EL", "WT", "PO"):
+                image_node = group_nodes.get(f"TileImg_{index:03d}_{image_type}")
+                if image_node is None:
+                    errors.append(f"missing_image_node:{group_node.name}:{image_type}")
+                    continue
+                image = getattr(image_node, "image", None)
+                if image is None:
+                    errors.append(f"missing_image_ref:{group_node.name}:{image_type}")
+                    continue
+                image_path = str(getattr(image, "filepath_raw", "") or getattr(image, "filepath", "")).strip()
+                if not image_path:
+                    errors.append(f"missing_image_path:{group_node.name}:{image_type}")
+                    continue
+                abs_path = bpy.path.abspath(image_path)
+                if not abs_path or not os.path.isfile(abs_path):
+                    errors.append(f"missing_image_file:{group_node.name}:{image_type}:{abs_path}")
+            continue
         group_tree = getattr(group_node, "node_tree", None)
         group_nodes = getattr(group_tree, "nodes", None) if group_tree else None
         if group_nodes is None:
@@ -695,6 +731,17 @@ def _run_case(
         "resolve_tile_count": diag.get("last_tile_count"),
         "resolve_downloaded_mb": diag.get("resolve_downloaded_mb"),
         "resolve_download_ms": diag.get("resolve_download_ms"),
+        "resolve_assets_ms": diag.get("resolve_assets_ms"),
+        "resolve_tile_select_ms": diag.get("resolve_tile_select_ms"),
+        "resolve_stream_ms": diag.get("resolve_stream_ms"),
+        "resolve_mesh_ms": diag.get("resolve_mesh_ms"),
+        "resolve_shader_ms": diag.get("resolve_shader_ms"),
+        "resolve_post_ms": diag.get("resolve_post_ms"),
+        "resolve_post_delete_ms": diag.get("resolve_post_delete_ms"),
+        "resolve_post_mark_ms": diag.get("resolve_post_mark_ms"),
+        "resolve_post_preview_ms": diag.get("resolve_post_preview_ms"),
+        "resolve_unaccounted_ms": diag.get("resolve_unaccounted_ms"),
+        "resolve_download_thread_ms": diag.get("resolve_download_thread_ms"),
         "resolve_stage": diag.get("resolve_stage"),
         "resolve_error": diag.get("resolve_error"),
         "integrity_errors": integrity_errors,

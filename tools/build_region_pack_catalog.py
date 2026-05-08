@@ -59,6 +59,7 @@ EUROPE_CLIP_BBOX = (-25.0, 34.0, 45.0, 72.0)
 SOUTH_AMERICA_CLIP_BBOX = (-92.5, -60.0, -30.0, 15.0)
 CARIBBEAN_CLIP_BBOX = (-90.0, 5.0, -55.0, 30.0)
 AUSTRALIA_CLIP_BBOX = (110.0, -45.0, 155.0, -9.0)
+NEW_ZEALAND_CLIP_BBOX = (165.0, -53.0, 180.0, -29.0)
 AFRICA_CLIP_BBOX = (-26.0, -41.0, 64.0, 38.0)
 ASIA_CLIP_BBOX = (24.0, -13.0, 180.0, 82.0)
 USA_REMOTE_PACIFIC_BBOX = (130.0, -90.0, 180.0, 90.0)
@@ -370,6 +371,16 @@ LOCAL_PRODUCT_SPECS = (
         "discount_percent": 20,
         "publish_product": False,
         "source_note": "GADM 4.10 ADM_1 polygon intersection; grouped small Australian external island territories",
+    },
+    {
+        "id": "new_zealand",
+        "name": "New Zealand",
+        "adm0_codes": ("NZL",),
+        "clip_bbox": NEW_ZEALAND_CLIP_BBOX,
+        "merge_scope": "australia",
+        "auto_merge": False,
+        "discount_percent": 20,
+        "source_note": "GADM 4.10 ADM_0 polygon intersection; clipped to the main New Zealand longitudes to avoid antimeridian map wrapping",
     },
     *(
         {

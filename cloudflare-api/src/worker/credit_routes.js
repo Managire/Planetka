@@ -3296,8 +3296,46 @@ export async function addCreditBalance(db, userId, amountEur, reason, metadata, 
     return { error: "missing_positive_amount", balance_credits: 0 };
   }
   const safeReason = String(reason || "balance_top_up").trim().slice(0, 160) || "balance_top_up";
+  const stripeSessionId = String(metadata && metadata.stripe_session_id || "").trim();
   const now = deps.nowIso();
   await ensureCreditAccount(db, safeUserId, deps);
+  if (safeReason === "stripe_balance_top_up" && stripeSessionId) {
+    const existingPurchase = await loadPurchaseHistoryByStripeSession(db, stripeSessionId, deps);
+    if (existingPurchase && existingPurchase.id) {
+      const existingAccount = await ensureCreditAccount(db, safeUserId, deps);
+      return {
+        ok: true,
+        duplicate_session: true,
+        added_credits: 0,
+        added_eur: 0,
+        balance_credits: normalizeSignedCreditAmount(existingAccount && existingAccount.balance_credits),
+        balance_eur: normalizeSignedCreditAmount(existingAccount && existingAccount.balance_credits),
+      };
+    }
+    const existingLedger = await deps.dbGet(
+      db,
+      `
+        SELECT COUNT(*) AS count
+        FROM credit_ledger
+        WHERE user_id = ?
+          AND LOWER(COALESCE(reason, '')) = 'stripe_balance_top_up'
+          AND json_valid(COALESCE(metadata_json, ''))
+          AND COALESCE(json_extract(metadata_json, '$.stripe_session_id'), '') = ?
+      `,
+      [safeUserId, stripeSessionId],
+    );
+    if (Number(existingLedger && existingLedger.count || 0) > 0) {
+      const existingAccount = await ensureCreditAccount(db, safeUserId, deps);
+      return {
+        ok: true,
+        duplicate_session: true,
+        added_credits: 0,
+        added_eur: 0,
+        balance_credits: normalizeSignedCreditAmount(existingAccount && existingAccount.balance_credits),
+        balance_eur: normalizeSignedCreditAmount(existingAccount && existingAccount.balance_credits),
+      };
+    }
+  }
   await deps.dbRun(
     db,
     `
@@ -3330,7 +3368,6 @@ export async function addCreditBalance(db, userId, amountEur, reason, metadata, 
       now,
     ],
   );
-  const stripeSessionId = String(metadata && metadata.stripe_session_id || "").trim();
   if (safeReason === "stripe_balance_top_up" && stripeSessionId) {
     await recordPurchaseHistoryBestEffort(
       db,
@@ -5427,7 +5464,7 @@ export async function handleCreditPaymentSuccess(request, env, deps) {
 
   const db = deps.requireDb(env);
   await deps.ensureCreditTables(db);
-  const purchase = await loadPurchaseHistoryByStripeSession(db, sessionId, deps);
+  let purchase = await loadPurchaseHistoryByStripeSession(db, sessionId, deps);
   let session = null;
   let metadata = {};
   if (!purchase) {
@@ -5435,6 +5472,15 @@ export async function handleCreditPaymentSuccess(request, env, deps) {
     if (sessionResult && sessionResult.ok) {
       session = sessionResult.session;
       metadata = stripeSessionMetadata(session);
+      const applyResult = await applyStripeCreditPurchaseFromSession(db, session, deps, env);
+      if (applyResult && applyResult.ok) {
+        purchase = applyResult.purchase || await loadPurchaseHistoryByStripeSession(db, sessionId, deps);
+      } else if (applyResult && applyResult.error) {
+        console.warn(
+          "stripe.payment_success_apply_deferred",
+          JSON.stringify({ session_id: sessionId, error: String(applyResult.error || "apply_failed") }),
+        );
+      }
     }
   }
   const purchaseType = String(
@@ -5730,6 +5776,126 @@ function sceneEstimateFromPurchaseTiles(purchase, rows) {
     excluded_tiles: [],
     integrity_warnings: [],
     metadata_missing_tile_keys: [],
+  };
+}
+
+async function applyStripeCreditPurchaseFromSession(db, session, deps, env) {
+  const sessionId = String(session && session.id || "").trim();
+  if (!sessionId) {
+    return { error: "missing_session_id" };
+  }
+  const existingPurchase = await loadPurchaseHistoryByStripeSession(db, sessionId, deps);
+  if (existingPurchase && existingPurchase.id) {
+    return { ok: true, applied: false, duplicate_session: true, purchase: existingPurchase };
+  }
+  const paymentStatus = String(session && session.payment_status || "").trim().toLowerCase();
+  if (paymentStatus !== "paid" && paymentStatus !== "no_payment_required") {
+    return { error: "stripe_session_not_paid", payment_status: paymentStatus };
+  }
+  const metadata = stripeSessionMetadata(session);
+  const purchaseType = String(metadata.planetka_purchase_type || "").trim().toLowerCase();
+  const userId = String(metadata.planetka_user_id || session && session.client_reference_id || "").trim();
+  if (!purchaseType || !userId) {
+    return { error: "missing_credit_purchase_metadata" };
+  }
+  const email = String(
+    metadata.planetka_email
+      || session && session.customer_details && session.customer_details.email
+      || session && session.customer_email
+      || "",
+  ).trim().toLowerCase();
+  const amountPaidEur = eurFromStripeAmountCents(session && session.amount_total);
+  const stripePaymentIntentId = String(session && (session.payment_intent || session.payment_intent_id) || "").trim();
+  let result = null;
+  if (purchaseType === "balance_top_up") {
+    const requestedTopUp = Number.parseFloat(metadata.planetka_top_up_eur || "");
+    const topUpEur = Number.isFinite(requestedTopUp) && requestedTopUp > 0
+      ? normalizeCreditAmount(requestedTopUp)
+      : amountPaidEur;
+    const requestedPayment = Number.parseFloat(metadata.planetka_top_up_payment_eur || "");
+    const topUpPaymentEur = Number.isFinite(requestedPayment) && requestedPayment > 0
+      ? normalizeCreditAmount(requestedPayment)
+      : amountPaidEur;
+    const requestedBonus = Number.parseFloat(metadata.planetka_top_up_bonus_eur || "");
+    const topUpBonusEur = Number.isFinite(requestedBonus) && requestedBonus > 0
+      ? normalizeCreditAmount(requestedBonus)
+      : normalizeCreditAmount(Math.max(0, topUpEur - topUpPaymentEur));
+    const requestedBonusPercent = Number.parseFloat(metadata.planetka_top_up_bonus_percent || "");
+    const topUpBonusPercent = Number.isFinite(requestedBonusPercent) && requestedBonusPercent > 0
+      ? Math.round(requestedBonusPercent * 1000) / 1000
+      : 0;
+    result = await addCreditBalance(
+      db,
+      userId,
+      topUpEur,
+      "stripe_balance_top_up",
+      {
+        stripe_session_id: sessionId,
+        stripe_payment_intent_id: stripePaymentIntentId,
+        stripe_amount_paid_eur: amountPaidEur,
+        top_up_payment_eur: topUpPaymentEur,
+        top_up_bonus_eur: topUpBonusEur,
+        top_up_bonus_percent: topUpBonusPercent,
+        top_up_balance_eur: topUpEur,
+        customer_email: email,
+      },
+      deps,
+    );
+  } else if (purchaseType === "standard_quality_unlock") {
+    result = await grantStandardQualityUnlock(
+      db,
+      userId,
+      sessionId,
+      amountPaidEur,
+      deps,
+      email,
+      stripePaymentIntentId,
+    );
+  } else if (purchaseType === "region_pack") {
+    result = await grantRegionPackEntitlements(
+      db,
+      userId,
+      String(metadata.planetka_region_id || "").trim(),
+      sessionId,
+      amountPaidEur,
+      deps,
+      email,
+      stripePaymentIntentId,
+    );
+  } else if (purchaseType === "scene_tiles") {
+    result = await grantPaidSceneTileEntitlements(
+      db,
+      userId,
+      deps.normalizeQualityMode(metadata.planetka_quality_mode || "full"),
+      parseStripeMetadataTileKeys(metadata.planetka_tile_keys_json),
+      sessionId,
+      amountPaidEur,
+      deps,
+      email,
+      stripePaymentIntentId,
+    );
+  } else {
+    return { error: "unsupported_credit_purchase_type", purchase_type: purchaseType };
+  }
+  if (result && result.error) {
+    return result;
+  }
+  if (typeof deps.invalidateAnalyticsSnapshots === "function") {
+    try {
+      await deps.invalidateAnalyticsSnapshots(env);
+    } catch (error) {
+      console.warn(
+        "stripe.success_page_snapshot_invalidate_failed",
+        JSON.stringify({ error: String(error && error.message || "snapshot_invalidate_failed"), user_id: userId }),
+      );
+    }
+  }
+  return {
+    ok: true,
+    applied: true,
+    purchase_type: purchaseType,
+    result,
+    purchase: await loadPurchaseHistoryByStripeSession(db, sessionId, deps),
   };
 }
 
