@@ -333,6 +333,30 @@ function productPublicPayload(product, version, includedCountries) {
   };
 }
 
+function includedCountryDisplayName(value, helpers) {
+  if (value && typeof value === "object") {
+    return String(value.name || value.COUNTRY || value.NAME_1 || value.GID_0 || "").trim();
+  }
+  const id = String(value || "").trim();
+  const product = helpers && typeof helpers.product === "function" ? helpers.product(id) : null;
+  return String(product && product.name || id).trim();
+}
+
+function uniqueIncludedCountries(values, helpers) {
+  const seen = new Set();
+  const result = [];
+  for (const entry of Array.isArray(values) ? values : []) {
+    const label = includedCountryDisplayName(entry, helpers);
+    const key = label.toLowerCase();
+    if (!label || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(label);
+  }
+  return result;
+}
+
 function catalogGroupForProduct(product) {
   const type = String(product && product.type || "").trim().toLowerCase();
   if (type === "world") {
@@ -356,9 +380,9 @@ function catalogGroupForProduct(product) {
 function assetForProduct(product, helpers, generated) {
   const id = String(product && product.id || "");
   const sourceDetail = helpers.detail(id);
-  const includedCountries = Array.isArray(sourceDetail.countries)
+  const includedCountries = uniqueIncludedCountries(Array.isArray(sourceDetail.countries)
     ? sourceDetail.countries
-    : (Array.isArray(product && product.countries) ? product.countries : []);
+    : (Array.isArray(product && product.countries) ? product.countries : []), helpers);
   const rows = helpers.tileKeys(product)
     .map((tileKey) => {
       const parsed = parseTileKey(tileKey);

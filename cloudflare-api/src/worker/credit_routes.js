@@ -413,6 +413,23 @@ function countryNameByRegionId(regionId) {
   return product && String(product.type || "") === "country" ? String(product.name || "").trim() : "";
 }
 
+const INCLUDED_AREA_NEUTRALITY_NOTICE = "Included area labels are provided only to describe possible texture coverage for this data pack. They do not define borders, sovereignty, or political status. Planetka does not draw or decide national borders; this pack simply unlocks texture tiles that may be relevant to the selected area.";
+
+function uniqueDisplayStrings(values) {
+  const seen = new Set();
+  const result = [];
+  for (const value of Array.isArray(values) ? values : []) {
+    const label = String(value || "").trim();
+    const key = label.toLowerCase();
+    if (!label || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(label);
+  }
+  return result;
+}
+
 function regionProductIncludedCountries(product) {
   if (!product) {
     return [];
@@ -420,9 +437,9 @@ function regionProductIncludedCountries(product) {
   const id = String(product.id || "").trim();
   const generated = GENERATED_REGION_PACK_DETAILS[id];
   if (generated && Array.isArray(generated.countries)) {
-    return generated.countries
+    return uniqueDisplayStrings(generated.countries
       .map((entry) => String(entry && (entry.NAME_1 || entry.name || entry.COUNTRY) || "").trim())
-      .filter(Boolean);
+      .filter(Boolean));
   }
   if (String(product.type || "") === "country") {
     const name = String(product.name || "").trim();
@@ -431,10 +448,10 @@ function regionProductIncludedCountries(product) {
   if (!Array.isArray(product.countries)) {
     return [];
   }
-  return product.countries
+  return uniqueDisplayStrings(product.countries
     .map((countryId) => countryNameByRegionId(countryId))
     .filter(Boolean)
-    .sort((a, b) => a.localeCompare(b));
+    .sort((a, b) => a.localeCompare(b)));
 }
 
 function bboxArea(product) {
@@ -2199,7 +2216,8 @@ ${Number(summary.discount_percent || 0) > 0
 </div>
 </section>
 ${countries.length ? `<section class="panel">
-<h2>${isSceneDetail ? "Map Context" : "Included Countries / Areas"}</h2>
+<h2>${isSceneDetail ? "Map Context" : "Included Area Labels"}</h2>
+<p class="muted small">${escapeHtmlText(INCLUDED_AREA_NEUTRALITY_NOTICE)}</p>
 <div class="countries">${countries.map((country) => `<div>${escapeHtmlText(country)}</div>`).join("")}</div>
 </section>` : ""}
 ${Array.isArray(data && data.upsells) && data.upsells.length ? `<section class="panel">
@@ -2287,7 +2305,8 @@ ${success ? `<section class="panel"><h2>${escapeHtmlText(success.title || "Payme
 <p id="mapStatus" class="muted small">Loading map...</p>
 </section>
 <section id="countriesPanel" class="panel" style="display:none">
-<h2>Included Countries / Areas</h2>
+<h2>Included Area Labels</h2>
+<p class="muted small">${escapeHtmlText(INCLUDED_AREA_NEUTRALITY_NOTICE)}</p>
 <div id="countries" class="countries"></div>
 </section>
 <section id="upsellsPanel" class="panel" style="display:none">
@@ -2309,6 +2328,7 @@ const currentPackId=encodeURIComponent(DATA.asset_id||DATA.region_pack&&DATA.reg
 const currentCatalog=DATA.catalog_mode?"&catalog=1":"";
 function esc(value){return String(value||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}
 function countryName(value){return typeof value==="object"&&value?String(value.name||value.COUNTRY||value.NAME_1||value.GID_0||""):String(value||"")}
+function uniqueCountryNames(values){const seen=new Set(),out=[];for(const entry of Array.isArray(values)?values:[]){const label=countryName(entry).trim();const key=label.toLowerCase();if(!label||seen.has(key))continue;seen.add(key);out.push(label)}return out}
 function parseTileKey(key){const m=/x(\\d{3})_y(\\d{3})_z(\\d{3})_d(\\d{3})/i.exec(String(key||""));return m?{key:m[0],x:Number(m[1]),y:Number(m[2]),z:Number(m[3]),d:Number(m[4])}:null}
 function family(parsed){return parsed?"x"+String(parsed.x).padStart(3,"0")+"_y"+String(parsed.y).padStart(3,"0")+"_z"+String(parsed.z).padStart(3,"0"):""}
 function tileSort(a,b){const pa=parseTileKey(a.tile_key),pb=parseTileKey(b.tile_key),fa=family(pa),fb=family(pb);return fa===fb?(Number(pa&&pa.d||0)-Number(pb&&pb.d||0)):fa<fb?-1:1}
@@ -2335,7 +2355,7 @@ function miniFrame(bounds,w,h){const p=12,lonSpan=Math.max(1e-6,bounds.max_lon-b
 function miniXY(frame,lon,lat){return[frame.ox+(lon-frame.bounds.min_lon)*frame.scale,frame.oy+(frame.bounds.max_lat-lat)*frame.scale]}
 function renderMiniMap(svg,vm){const b=vm.asset.bounds||{min_lon:-10,min_lat:35,max_lon:30,max_lat:48};const w=360,h=360,frame=miniFrame(b,w,h);svg.setAttribute("viewBox","0 0 "+w+" "+h);svg.setAttribute("preserveAspectRatio","xMidYMid meet");svg.replaceChildren();svg.appendChild(el("rect",{x:0,y:0,width:w,height:h,fill:"#0d1118"}));const first=vm.levels.length?vm.levels[0]:null;for(const tile of vm.rows.filter((row)=>Number(row.z)===Number(first))){const a=miniXY(frame,tile.lon_min,tile.lat_max),c=miniXY(frame,tile.lon_max,tile.lat_min);const cls=tile.status==="new"?"var(--new)":(tile.status==="licenced"?"var(--licenced)":"var(--free)");svg.appendChild(el("rect",{x:a[0],y:a[1],width:Math.max(1,c[0]-a[0]),height:Math.max(1,c[1]-a[1]),fill:cls,stroke:"#fff","stroke-width":"0.5",opacity:tile.status==="new"?"0.58":"0.43"}))}}
 async function renderUpsells(asset){const ids=Array.isArray(asset.upsell_ids)?asset.upsell_ids:[];const grid=document.getElementById("upsellGrid");if(!grid||!ids.length)return;const token=encodeURIComponent(DATA.token||"");const catalog=DATA.catalog_mode?"&catalog=1":"";for(const idRaw of ids){try{const upAsset=await loadAsset(idRaw);const vm=computeAsset(upAsset);if(vm.summary.price_cents<=0&&vm.summary.new_tiles<=0)continue;const id=encodeURIComponent(upAsset.region_pack.id||idRaw);const div=document.createElement("div");div.className="upsell";const title=document.createElement("h3");title.textContent=upAsset.region_pack.name||"Region Pack";div.appendChild(title);const map=document.createElementNS(NS,"svg");div.appendChild(map);renderMiniMap(map,vm);const meta=document.createElement("p");meta.className="muted small";meta.textContent=Number(vm.summary.new_tiles||0)+" new tiles · "+Number(vm.summary.discount_percent||0)+"% volume discount · "+fmtCents(vm.summary.price_cents);div.appendChild(meta);const checkout=document.createElement("a");checkout.className="button";checkout.href="/credits/region-pack-checkout?token="+token+"&region_pack_id="+id+catalog;checkout.textContent="Buy "+(upAsset.region_pack.name||"Pack")+" ("+fmtCents(vm.summary.price_cents)+")";div.appendChild(checkout);const detail=document.createElement("a");detail.className="button secondary";detail.href="/credits/region-pack-map?token="+token+"&region_pack_id="+id+catalog;detail.textContent="View map";div.appendChild(detail);grid.appendChild(div);document.getElementById("upsellsPanel").style.display=""}catch(error){console.warn("Planetka upsell map failed",idRaw,error)}}}
-async function init(){try{const asset=await loadAsset(DATA.asset_id);document.getElementById("pageTitle").textContent=(asset.region_pack.name||"Region Pack")+" Full Quality Pack";const vm=computeAsset(asset);renderCards(vm);setBounds(asset.bounds);const countries=Array.isArray(asset.included_countries)?asset.included_countries:[];if(countries.length){document.getElementById("countries").innerHTML=countries.map((c)=>"<div>"+esc(countryName(c))+"</div>").join("");document.getElementById("countriesPanel").style.display=""}const select=document.getElementById("levelSelect");select.replaceChildren();const levels=vm.levels.length?vm.levels:[1];for(const z of levels){const o=document.createElement("option");o.value=String(z);o.textContent="z"+String(z).padStart(3,"0");select.appendChild(o)}select.addEventListener("change",()=>renderMap(vm,Number(select.value)));renderMap(vm,Number(select.value||levels[0]));document.getElementById("mapStatus").textContent="Map loaded.";renderUpsells(asset)}catch(error){console.warn("Planetka region-pack map failed",error);document.getElementById("mapStatus").className="error small";document.getElementById("mapStatus").textContent="Map failed to load. Please reopen this page from Blender."}}
+async function init(){try{const asset=await loadAsset(DATA.asset_id);document.getElementById("pageTitle").textContent=(asset.region_pack.name||"Region Pack")+" Full Quality Pack";const vm=computeAsset(asset);renderCards(vm);setBounds(asset.bounds);const countries=uniqueCountryNames(asset.included_countries);if(countries.length){document.getElementById("countries").innerHTML=countries.map((c)=>"<div>"+esc(c)+"</div>").join("");document.getElementById("countriesPanel").style.display=""}const select=document.getElementById("levelSelect");select.replaceChildren();const levels=vm.levels.length?vm.levels:[1];for(const z of levels){const o=document.createElement("option");o.value=String(z);o.textContent="z"+String(z).padStart(3,"0");select.appendChild(o)}select.addEventListener("change",()=>renderMap(vm,Number(select.value)));renderMap(vm,Number(select.value||levels[0]));document.getElementById("mapStatus").textContent="Map loaded.";renderUpsells(asset)}catch(error){console.warn("Planetka region-pack map failed",error);document.getElementById("mapStatus").className="error small";document.getElementById("mapStatus").textContent="Map failed to load. Please reopen this page from Blender."}}
 init();
 </script>
 </body>

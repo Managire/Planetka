@@ -460,8 +460,24 @@ def _region_offer_int(offer, key, fallback=0):
 def _region_offer_countries_text(offer):
     countries = (offer or {}).get("included_countries", ())
     if isinstance(countries, (list, tuple)):
-        return "|".join(str(country).strip() for country in countries if str(country).strip())
+        seen = set()
+        labels = []
+        for country in countries:
+            label = str(country).strip()
+            key = label.lower()
+            if not label or key in seen:
+                continue
+            seen.add(key)
+            labels.append(label)
+        return "|".join(labels)
     return str(countries or "")
+
+
+INCLUDED_AREA_NEUTRALITY_NOTICE = (
+    "Included area labels describe possible texture coverage only. They do not define borders, "
+    "sovereignty, or political status. Planetka does not draw or decide national borders; "
+    "the pack simply unlocks texture tiles that may be relevant to the selected area."
+)
 
 
 def _populate_region_pack_info_operator(operator, offer):
@@ -1289,8 +1305,9 @@ class PLANETKA_OT_RegionPackInfo(bpy.types.Operator):
             )
         summary.label(text=f"Price: €{float(getattr(self, 'price_eur', 0.0) or 0.0):.2f}", icon="USER")
         country_box = layout.box()
-        country_box.label(text="Included Countries / Areas", icon="WORLD_DATA")
-        country_text = f"Countries: {', '.join(countries)}" if countries else "Country / area list is not available for this pack yet."
+        country_box.label(text="Included Area Labels", icon="WORLD_DATA")
+        self._wrapped_label(country_box, INCLUDED_AREA_NEUTRALITY_NOTICE, icon="INFO")
+        country_text = f"Area labels: {', '.join(countries)}" if countries else "Area label list is not available for this pack yet."
         self._wrapped_label(country_box, country_text)
         self._wrapped_label(
             layout,

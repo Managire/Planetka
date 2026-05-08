@@ -222,6 +222,14 @@ HIMALAYAN_DISPUTED_CODES = ("Z01", "Z02", "Z03", "Z04", "Z05", "Z06", "Z07", "Z0
 PARACEL_ISLAND_CODES = ("XPI",)
 SPRATLY_ISLAND_CODES = ("XSP",)
 SOUTH_CHINA_SEA_DISPUTED_CODES = (*PARACEL_ISLAND_CODES, *SPRATLY_ISLAND_CODES)
+RUSSIA_EXCLUDED_UKRAINE_ADM1_CODES = (
+    "UKR.4_1",   # Crimea
+    "UKR.6_1",   # Donetsk
+    "UKR.9_1",   # Kherson
+    "UKR.15_1",  # Luhansk
+    "UKR.20_1",  # Sevastopol
+    "UKR.26_1",  # Zaporizhia
+)
 
 LOCAL_ADM0_EXPANSIONS = {
     "BRN": SPRATLY_ISLAND_CODES,
@@ -250,7 +258,13 @@ ASIA_PRODUCT_OVERRIDES = {
     "CXR": {"id": "christmas_island", "name": "Christmas Island"},
     "GEO": {"id": "georgia_country", "name": "Georgia"},
     "IOT": {"id": "british_indian_ocean_territory", "name": "British Indian Ocean Territory"},
-    "RUS": {"id": "russia", "name": "Russia", "clip_bbox": None, "subtract_adm0_codes": ("UKR",)},
+    "RUS": {
+        "id": "russia",
+        "name": "Russia",
+        "clip_bbox": None,
+        "subtract_adm0_codes": ("UKR",),
+        "subtract_adm1_codes": RUSSIA_EXCLUDED_UKRAINE_ADM1_CODES,
+    },
 }
 
 WEST_ASIA_CODES = ("ARM", "AZE", "BHR", "CYP", "GEO", "IRN", "IRQ", "ISR", "JOR", "KWT", "LBN", "OMN", "PSE", "QAT", "SAU", "SYR", "TUR", "ARE", "YEM")
@@ -1079,6 +1093,15 @@ def selected_for_spec(layers: dict[str, object], spec: dict):
         selected = selected[~selected.geometry.is_empty].copy()
         if selected.empty:
             raise ValueError(f"ADM selection emptied by subtract_adm0_codes: {', '.join(subtract_codes)}")
+    subtract_adm1_codes = tuple(str(code).strip().upper() for code in spec.get("subtract_adm1_codes") or [] if str(code).strip())
+    if subtract_adm1_codes:
+        subtract = selected_for_adm1_codes(layers["adm1"], subtract_adm1_codes)
+        subtract_geometry = union_geometry(subtract)
+        selected = selected.copy()
+        selected["geometry"] = selected.geometry.difference(subtract_geometry)
+        selected = selected[~selected.geometry.is_empty].copy()
+        if selected.empty:
+            raise ValueError(f"ADM selection emptied by subtract_adm1_codes: {', '.join(subtract_adm1_codes)}")
     return selected
 
 

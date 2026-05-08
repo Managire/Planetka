@@ -1005,7 +1005,7 @@ def _draw_broader_region_offers(layout, scene, active_view_scope=False):
             discount_eur = 0.0
         countries = offer.get("included_countries", ())
         included_countries = (
-            "|".join(str(country).strip() for country in countries if str(country).strip())
+            "|".join(dict.fromkeys(str(country).strip() for country in countries if str(country).strip()))
             if isinstance(countries, (list, tuple))
             else str(countries or "")
         )
