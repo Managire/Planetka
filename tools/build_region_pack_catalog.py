@@ -880,17 +880,11 @@ def free_reason_for_tile_key(value: str) -> str:
     parsed = parse_tile_key(value)
     if not parsed:
         return "invalid_tile_key"
-    _x_value, y_value, z_value, d_value = parsed
+    _x_value, _y_value, _z_value, d_value = parsed
     if d_value <= 0:
         return "d000_global_free"
     if d_value >= FREE_D_THRESHOLD:
         return "coarse_detail_free"
-    south = y_value - 90
-    north = y_value + z_value - 90
-    if north <= -60:
-        return "south_polar_free"
-    if south >= 75:
-        return "north_polar_free"
     return ""
 
 
@@ -1621,7 +1615,7 @@ def world_product_payload(tile_db_path: Path) -> dict:
         "type": "world",
         "discount_percent": 50,
         "catalog_version": CATALOG_VERSION,
-        "source": "S2 tile pricing inventory from Resources/tile_sizes.sqlite; includes free, polar, ocean, and coarse tiles",
+        "source": "S2 tile pricing inventory from Resources/tile_sizes.sqlite; polar/Greenland land masks use WT ocean plus S2 white exclusion; d000 and d060+ tiles are free",
         "adm0_codes": [],
         "adm1_codes": [],
         "membership_codes": [],

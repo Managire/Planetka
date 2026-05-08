@@ -26,8 +26,6 @@ logger = logging.getLogger(__name__)
 EARTH_RADIUS_KM = 6371.0088
 DATASET_BASE_MPP = 10.0
 FREE_D_THRESHOLD = 60
-PAID_LAT_MIN_DEG = -60.0
-PAID_LAT_MAX_DEG = 75.0
 EQUATOR_Z001_AREA_KM2 = (40075.016686 / 360.0) ** 2
 
 TILE_RE = re.compile(r"x(\d{3})_y(\d{3})_z(\d{3})_d(\d{3})", re.IGNORECASE)
@@ -167,14 +165,6 @@ def tile_area_km2(tile: TileCode) -> float:
     return spherical_area_km2(west, east, south, north)
 
 
-def paid_band_area_km2(tile: TileCode) -> float:
-    west, east = tile_lon_bounds(tile)
-    south, north = tile_lat_bounds(tile)
-    billable_south = max(float(south), PAID_LAT_MIN_DEG)
-    billable_north = min(float(north), PAID_LAT_MAX_DEG)
-    return spherical_area_km2(west, east, billable_south, billable_north)
-
-
 def _effective_billable_land_km2(tile: TileCode, stats: dict, free_reason: str = "") -> float:
     if str(free_reason or "").strip():
         return 0.0
@@ -190,11 +180,6 @@ def free_reason_for_tile(tile: TileCode) -> str:
         return "d000_global_free"
     if int(tile.d) >= FREE_D_THRESHOLD:
         return "coarse_detail_free"
-    south, north = tile_lat_bounds(tile)
-    if north <= PAID_LAT_MIN_DEG:
-        return "south_polar_free"
-    if south >= PAID_LAT_MAX_DEG:
-        return "north_polar_free"
     return ""
 
 

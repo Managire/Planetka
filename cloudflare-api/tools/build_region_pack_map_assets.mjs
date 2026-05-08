@@ -86,14 +86,6 @@ function freeReasonForTile(parsed) {
   if (parsed.d >= FREE_D_THRESHOLD) {
     return "coarse_detail_free";
   }
-  const south = Number(parsed.y) - 90;
-  const north = Number(parsed.y + parsed.z) - 90;
-  if (north <= -60) {
-    return "south_polar_free";
-  }
-  if (south >= 75) {
-    return "north_polar_free";
-  }
   return "";
 }
 

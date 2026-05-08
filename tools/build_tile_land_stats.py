@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""Populate tile_land_stats in Resources/tile_sizes.sqlite from S2 textures.
+"""Populate tile_land_stats in Resources/tile_sizes.sqlite from texture masks.
 
-S2 convention:
-- every pixel is counted as billable surface unless it matches the S2 ocean-fill color
-- billing/free latitude criteria remain independent from pixel classification
+Default convention:
+- every S2 pixel is counted as land unless it matches the S2 ocean-fill color
+
+Polar/Greenland convention:
+- WT blue pixels are ocean and removed from land area
+- S2 white pixels are ice/snow and removed from land area
+- if a required WT tile is missing, S2 ocean + S2 white is used as a visible fallback
 
 The script is incremental. Existing rows are skipped unless --force is used.
 Large EXR files are streamed scanline-by-scanline through OpenImageIO.
@@ -14,6 +18,7 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 import datetime as _dt
+import json
 import math
 import os
 import re
@@ -36,14 +41,19 @@ except Exception as exc:  # pragma: no cover - depends on local Python install
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB = ROOT / "Resources" / "tile_sizes.sqlite"
 DEFAULT_S2_ROOT = Path("/Volumes/SSDA/Planetka Assets/S2")
+DEFAULT_WT_ROOT = Path("/Volumes/SSDA/Planetka Assets/WT")
+DEFAULT_REGION_PACK_JSON = ROOT / "Resources" / "Region Packs" / "region_packs_gadm.json"
 DEFAULT_OCEAN_FALLBACK = ROOT / "Resources" / "Fallback Images" / "ocean_pixel_final_20.exr"
 TILE_RE = re.compile(r"^S2_(x(\d{3})_y(\d{3})_z(\d{3})_d(\d{3}))\.exr$", re.IGNORECASE)
 EARTH_RADIUS_KM = 6371.0088
 FREE_D_THRESHOLD = 60
-PAID_LAT_MIN_DEG = -60.0
-PAID_LAT_MAX_DEG = 75.0
+POLAR_SOUTH_MAX_DEG = -60.0
+POLAR_NORTH_MIN_DEG = 75.0
 EQUATOR_Z001_AREA_KM2 = (40075.016686 / 360.0) ** 2
 S2_OCEAN_TOLERANCE = np.float32(1e-5)
+WT_OCEAN_RGB = np.array((0.0, 0.0, 1.0), dtype=np.float32)
+WT_OCEAN_TOLERANCE = np.float32(1e-5)
+S2_WHITE_THRESHOLD = np.float32(1.0)
 
 
 def read_ocean_rgb_from_fallback(path: Path = DEFAULT_OCEAN_FALLBACK) -> np.ndarray:
@@ -93,6 +103,27 @@ def count_source_files(root: Path) -> int:
     return count
 
 
+def load_greenland_tile_keys(region_pack_json: Path) -> set[str]:
+    try:
+        payload = json.loads(Path(region_pack_json).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return set()
+    products = payload.get("products") if isinstance(payload, dict) else []
+    if not isinstance(products, list):
+        return set()
+    for product in products:
+        if not isinstance(product, dict):
+            continue
+        if str(product.get("id") or "").strip().lower() != "greenland":
+            continue
+        return {
+            str(key or "").strip()
+            for key in (product.get("tile_keys") or ())
+            if str(key or "").strip()
+        }
+    return set()
+
+
 def spherical_area_km2(lon_west, lon_east, lat_south, lat_north) -> float:
     if lon_east <= lon_west or lat_north <= lat_south:
         return 0.0
@@ -100,6 +131,19 @@ def spherical_area_km2(lon_west, lon_east, lat_south, lat_north) -> float:
     south_rad = math.radians(float(lat_south))
     north_rad = math.radians(float(lat_north))
     return max(0.0, (EARTH_RADIUS_KM ** 2) * lon_delta * abs(math.sin(north_rad) - math.sin(south_rad)))
+
+
+def tile_lat_bounds(y: int, z: int) -> tuple[float, float]:
+    return max(-90.0, float(y) - 90.0), min(90.0, float(y + z) - 90.0)
+
+
+def is_polar_tile(y: int, z: int) -> bool:
+    lat_south, lat_north = tile_lat_bounds(y, z)
+    return bool(lat_north <= POLAR_SOUTH_MAX_DEG or lat_south >= POLAR_NORTH_MIN_DEG)
+
+
+def wt_path_for_tile(wt_root: Path, tile_key: str) -> Path:
+    return Path(wt_root) / f"WT_{tile_key}.exr"
 
 
 def create_schema(conn: sqlite3.Connection) -> None:
@@ -136,7 +180,7 @@ def classify_land_rgb(rgb) -> bool:
     return not bool(np.all(np.abs(values - S2_OCEAN_RGB) <= S2_OCEAN_TOLERANCE))
 
 
-def count_land_pixels(scanline, width: int, channels: int) -> int:
+def scanline_rgb(scanline, width: int, channels: int) -> np.ndarray:
     arr = np.asarray(scanline, dtype=np.float32)
     if arr.ndim == 1:
         arr = arr.reshape(int(width), int(channels))
@@ -144,15 +188,33 @@ def count_land_pixels(scanline, width: int, channels: int) -> int:
         arr = arr.reshape(int(width), int(channels))
     else:
         arr = arr.reshape(-1, int(channels))
-    rgb = arr[:, :3]
+    return arr[:, :3]
+
+
+def count_s2_land_pixels(scanline, width: int, channels: int) -> int:
+    rgb = scanline_rgb(scanline, width, channels)
     ocean = np.all(np.abs(rgb - S2_OCEAN_RGB) <= S2_OCEAN_TOLERANCE, axis=1)
     return int(np.count_nonzero(~ocean))
 
 
-def scan_s2_file(path: Path, x: int, y: int, z: int, d: int):
+def count_polar_greenland_land_pixels(s2_scanline, wt_scanline, width: int, s2_channels: int, wt_channels: int | None) -> int:
+    s2_rgb = scanline_rgb(s2_scanline, width, s2_channels)
+    s2_white = np.all(s2_rgb >= S2_WHITE_THRESHOLD, axis=1)
+    if wt_scanline is not None and wt_channels is not None:
+        wt_rgb = scanline_rgb(wt_scanline, width, wt_channels)
+        wt_ocean = np.all(np.abs(wt_rgb - WT_OCEAN_RGB) <= WT_OCEAN_TOLERANCE, axis=1)
+        return int(np.count_nonzero(~wt_ocean & ~s2_white))
+    s2_ocean = np.all(np.abs(s2_rgb - S2_OCEAN_RGB) <= S2_OCEAN_TOLERANCE, axis=1)
+    return int(np.count_nonzero(~s2_ocean & ~s2_white))
+
+
+def scan_s2_file(path: Path, x: int, y: int, z: int, d: int, *, special_mask: bool = False, wt_path: Path | None = None):
     inp = oiio.ImageInput.open(str(path))
     if inp is None:
         raise RuntimeError(f"Unable to open {path}")
+    wt_inp = None
+    wt_channels = None
+    source = "S2"
     try:
         spec = inp.spec()
         width = int(spec.width)
@@ -160,70 +222,79 @@ def scan_s2_file(path: Path, x: int, y: int, z: int, d: int):
         channels = int(spec.nchannels)
         if width <= 0 or height <= 0 or channels < 3:
             raise RuntimeError(f"Unsupported S2 image shape for {path}: {width}x{height}x{channels}")
+        if special_mask:
+            source = "S2_WHITE_FALLBACK"
+            if wt_path is not None and Path(wt_path).is_file():
+                wt_inp = oiio.ImageInput.open(str(wt_path))
+                if wt_inp is not None:
+                    wt_spec = wt_inp.spec()
+                    if int(wt_spec.width) == width and int(wt_spec.height) == height and int(wt_spec.nchannels) >= 3:
+                        wt_channels = int(wt_spec.nchannels)
+                        source = "WT_S2_WHITE"
+                    else:
+                        wt_inp.close()
+                        wt_inp = None
 
         lon_west = float(x) - 180.0
         lon_east = float(x + z) - 180.0
-        lat_south = max(-90.0, float(y) - 90.0)
-        lat_north = min(90.0, float(y + z) - 90.0)
+        lat_south, lat_north = tile_lat_bounds(y, z)
         tile_area = spherical_area_km2(lon_west, lon_east, lat_south, lat_north)
-        detail_ratio = (float(d) / max(1.0, float(z))) if d > 0 else float("inf")
         if d <= 0:
             free_reason = "d000_global_free"
         elif d >= FREE_D_THRESHOLD:
             free_reason = "coarse_detail_free"
-        elif lat_north <= PAID_LAT_MIN_DEG:
-            free_reason = "south_polar_free"
-        elif lat_south >= PAID_LAT_MAX_DEG:
-            free_reason = "north_polar_free"
         else:
             free_reason = ""
 
         land_area = 0.0
-        billable_area = 0.0
-        paid_area = spherical_area_km2(
-            lon_west,
-            lon_east,
-            max(lat_south, PAID_LAT_MIN_DEG),
-            min(lat_north, PAID_LAT_MAX_DEG),
-        )
         for row in range(height):
             # OIIO image origin is top-left for normal image files. This maps
             # row 0 to northern latitude.
             row_north = lat_north - (float(row) / float(height)) * (lat_north - lat_south)
             row_south = lat_north - (float(row + 1) / float(height)) * (lat_north - lat_south)
             row_area = spherical_area_km2(lon_west, lon_east, row_south, row_north)
-            paid_row_area = 0.0 if free_reason else spherical_area_km2(
-                lon_west,
-                lon_east,
-                max(row_south, PAID_LAT_MIN_DEG),
-                min(row_north, PAID_LAT_MAX_DEG),
-            )
             scanline = inp.read_scanline(row, 0, oiio.FLOAT)
             if scanline is None:
                 raise RuntimeError(f"Unable to read scanline {row} from {path}")
-            land_pixels = count_land_pixels(scanline, width, channels)
+            wt_scanline = None
+            if wt_inp is not None:
+                wt_scanline = wt_inp.read_scanline(row, 0, oiio.FLOAT)
+                if wt_scanline is None:
+                    raise RuntimeError(f"Unable to read scanline {row} from {wt_path}")
+            land_pixels = count_polar_greenland_land_pixels(scanline, wt_scanline, width, channels, wt_channels) if special_mask else count_s2_land_pixels(scanline, width, channels)
             fraction = float(land_pixels) / float(width)
             land_area += row_area * fraction
-            billable_area += paid_row_area * fraction
+        billable_area = 0.0 if free_reason else land_area
 
         return {
             "land_km2": land_area,
             "billable_land_km2": billable_area,
             "land_fraction": (land_area / tile_area) if tile_area > 0 else 0.0,
-            "paid_lat_fraction": (paid_area / tile_area) if tile_area > 0 else 0.0,
+            "paid_lat_fraction": (0.0 if free_reason else 1.0),
             "free_reason": free_reason,
+            "source": source,
         }
     finally:
+        if wt_inp is not None:
+            wt_inp.close()
         inp.close()
 
 
 def process_source_entry(entry):
-    path_text, tile_key, x, y, z, d = entry
-    stats = scan_s2_file(Path(path_text), int(x), int(y), int(z), int(d))
+    path_text, tile_key, x, y, z, d, special_mask, wt_path_text = entry
+    stats = scan_s2_file(
+        Path(path_text),
+        int(x),
+        int(y),
+        int(z),
+        int(d),
+        special_mask=bool(special_mask),
+        wt_path=(Path(wt_path_text) if str(wt_path_text or "").strip() else None),
+    )
     return path_text, tile_key, int(x), int(y), int(z), int(d), stats
 
 
-def iter_source_files(root: Path, limit: int = 0):
+def iter_source_files(root: Path, wt_root: Path, greenland_tile_keys: set[str], limit: int = 0):
     count = 0
     with os.scandir(root) as entries:
         for entry in entries:
@@ -234,7 +305,9 @@ def iter_source_files(root: Path, limit: int = 0):
                 continue
             tile_key = match.group(1)
             x, y, z, d = (int(match.group(index)) for index in range(2, 6))
-            yield str(entry.path), tile_key, x, y, z, d
+            special_mask = bool(tile_key in greenland_tile_keys or is_polar_tile(y, z))
+            wt_path = wt_path_for_tile(wt_root, tile_key) if special_mask else Path("")
+            yield str(entry.path), tile_key, x, y, z, d, special_mask, str(wt_path)
             count += 1
             if limit and count >= limit:
                 return
@@ -248,7 +321,7 @@ def write_tile_stats(conn: sqlite3.Connection, tile_key: str, x: int, y: int, z:
             land_km2, billable_land_km2,
             land_fraction, paid_lat_fraction, free_reason, source, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'S2', ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             tile_key,
@@ -261,6 +334,7 @@ def write_tile_stats(conn: sqlite3.Connection, tile_key: str, x: int, y: int, z:
             float(stats["land_fraction"]),
             float(stats["paid_lat_fraction"]),
             str(stats["free_reason"] or ""),
+            str(stats.get("source") or "S2"),
             now_iso(),
         ),
     )
@@ -318,6 +392,8 @@ def main(argv=None) -> int:
         help="Staging DB used while scanning. Defaults to <db>.land_stats_build so Blender never reads partial stats.",
     )
     parser.add_argument("--s2-root", default=str(DEFAULT_S2_ROOT))
+    parser.add_argument("--wt-root", default=str(DEFAULT_WT_ROOT))
+    parser.add_argument("--region-pack-json", default=str(DEFAULT_REGION_PACK_JSON))
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--force", action="store_true")
     parser.add_argument(
@@ -331,18 +407,31 @@ def main(argv=None) -> int:
         help="Install even when --limit is used. Useful only for controlled tests.",
     )
     parser.add_argument("--only", default="", help="Comma-separated tile keys without S2_ prefix")
+    parser.add_argument("--only-file", default="", help="File containing one tile key per line without S2_ prefix")
     parser.add_argument("--workers", type=int, default=1, help="Number of S2 reader processes")
     args = parser.parse_args(argv)
 
     db_path = Path(args.db).expanduser()
     work_db_path = Path(args.work_db).expanduser() if str(args.work_db or "").strip() else db_path.with_name(f"{db_path.name}.land_stats_build")
     s2_root = Path(args.s2_root).expanduser()
+    wt_root = Path(args.wt_root).expanduser()
+    region_pack_json = Path(args.region_pack_json).expanduser()
     if not s2_root.is_dir():
         raise SystemExit(f"S2 root does not exist: {s2_root}")
+    if not wt_root.is_dir():
+        raise SystemExit(f"WT root does not exist: {wt_root}")
     if work_db_path.resolve() == db_path.resolve():
         raise SystemExit("Refusing to build land stats directly into the live DB. Use a separate --work-db.")
 
     only = {token.strip() for token in str(args.only or "").split(",") if token.strip()}
+    only_file = Path(str(args.only_file or "")).expanduser() if str(args.only_file or "").strip() else None
+    if only_file is not None:
+        only.update(
+            token.strip()
+            for token in only_file.read_text(encoding="utf-8").splitlines()
+            if token.strip() and not token.lstrip().startswith("#")
+        )
+    greenland_tile_keys = load_greenland_tile_keys(region_pack_json)
     conn = sqlite3.connect(str(work_db_path))
     create_schema(conn)
     processed = 0
@@ -352,21 +441,30 @@ def main(argv=None) -> int:
     pending_limit = max(1, workers * 4)
     commit_every = 100
     total_files = count_source_files(s2_root)
+    target_files = len(only) if only else total_files
     install_at_end = not bool(args.no_install) and (not bool(args.limit) or bool(args.install_partial))
     started_at = time.perf_counter()
     print(
-        "tile_land_stats starting: total_files={total_files} workers={workers} "
-        "s2_root={s2_root} work_db={work_db} live_db={live_db} install_at_end={install} "
-        "ocean_rgb=({r:.8f},{g:.8f},{b:.8f})".format(
+        "tile_land_stats starting: total_files={total_files} target_files={target_files} workers={workers} "
+        "s2_root={s2_root} wt_root={wt_root} work_db={work_db} live_db={live_db} "
+        "install_at_end={install} greenland_keys={greenland_keys} only={only_count} "
+        "ocean_rgb=({r:.8f},{g:.8f},{b:.8f}) wt_ocean_rgb=({wr:.1f},{wg:.1f},{wb:.1f})".format(
             total_files=total_files,
+            target_files=target_files,
             workers=workers,
             s2_root=s2_root,
+            wt_root=wt_root,
             work_db=work_db_path,
             live_db=db_path,
             install=bool(install_at_end),
+            greenland_keys=len(greenland_tile_keys),
+            only_count=len(only),
             r=float(S2_OCEAN_RGB[0]),
             g=float(S2_OCEAN_RGB[1]),
             b=float(S2_OCEAN_RGB[2]),
+            wr=float(WT_OCEAN_RGB[0]),
+            wg=float(WT_OCEAN_RGB[1]),
+            wb=float(WT_OCEAN_RGB[2]),
         ),
         flush=True,
     )
@@ -375,18 +473,18 @@ def main(argv=None) -> int:
         if args.force:
             return False
         row = conn.execute(
-            "SELECT 1 FROM tile_land_stats WHERE tile_key = ? AND source = 'S2' LIMIT 1",
+            "SELECT 1 FROM tile_land_stats WHERE tile_key = ? LIMIT 1",
             (tile_key,),
         ).fetchone()
         return bool(row)
 
     try:
-        source_iter = iter(iter_source_files(s2_root, limit=max(0, int(args.limit or 0))))
+        source_iter = iter(iter_source_files(s2_root, wt_root, greenland_tile_keys, limit=max(0, int(args.limit or 0))))
 
         def next_work_item():
             nonlocal skipped
             for entry in source_iter:
-                _path, tile_key, _x, _y, _z, _d = entry
+                _path, tile_key, _x, _y, _z, _d, _special_mask, _wt_path = entry
                 if only and tile_key not in only:
                     continue
                 if should_skip(tile_key):
@@ -401,18 +499,19 @@ def main(argv=None) -> int:
                 elapsed = max(0.001, time.perf_counter() - started_at)
                 handled = int(processed + skipped + failed)
                 rate = (float(handled) / elapsed) * 60.0
-                remaining = max(0, int(total_files) - handled)
+                total_for_eta = max(1, int(target_files or total_files))
+                remaining = max(0, total_for_eta - handled)
                 eta_seconds = (float(remaining) / (rate / 60.0)) if rate > 0.0 else 0.0
-                percent = (float(handled) / float(total_files) * 100.0) if total_files > 0 else 0.0
+                percent = (float(handled) / float(total_for_eta) * 100.0)
                 print(
                     "processed={processed} skipped={skipped} failed={failed} "
-                    "handled={handled}/{total_files} ({percent:.2f}%) "
+                    "handled={handled}/{target_files} ({percent:.2f}%) "
                     "rate={rate:.1f}/min eta={eta}".format(
                         processed=processed,
                         skipped=skipped,
                         failed=failed,
                         handled=handled,
-                        total_files=total_files,
+                        target_files=total_for_eta,
                         percent=percent,
                         rate=rate,
                         eta=format_duration(eta_seconds),
