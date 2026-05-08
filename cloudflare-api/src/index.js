@@ -107,6 +107,7 @@ import {
   handleCreditRegionPackCheckoutFromToken as handleCreditRegionPackCheckoutFromTokenRoute,
   handleCreditRegionPackMap as handleCreditRegionPackMapRoute,
   handleCreditRegionPackMapAsset as handleCreditRegionPackMapAssetRoute,
+  handleCreditRegionPackMapBackground as handleCreditRegionPackMapBackgroundRoute,
   handleCreditRegionOffers as handleCreditRegionOffersRoute,
   handleCreditUnlocked as handleCreditUnlockedRoute,
 } from "./worker/credit_routes.js";
@@ -4064,6 +4065,11 @@ async function dispatchExactRoute(request, env, path) {
     case "/credits/region-pack-map-asset":
       if (request.method === "GET" || request.method === "HEAD") {
         return await handleCreditRegionPackMapAssetRoute(request, env, TILE_ROUTE_DEPS);
+      }
+      return null;
+    case "/credits/region-pack-map-background.jpg":
+      if (request.method === "GET" || request.method === "HEAD") {
+        return await handleCreditRegionPackMapBackgroundRoute(request, env, TILE_ROUTE_DEPS);
       }
       return null;
     case "/credits/region-pack-catalog":

@@ -61,6 +61,7 @@ CARIBBEAN_CLIP_BBOX = (-90.0, 5.0, -55.0, 30.0)
 AUSTRALIA_CLIP_BBOX = (110.0, -45.0, 155.0, -9.0)
 AFRICA_CLIP_BBOX = (-26.0, -41.0, 64.0, 38.0)
 ASIA_CLIP_BBOX = (24.0, -13.0, 180.0, 82.0)
+USA_REMOTE_PACIFIC_BBOX = (130.0, -90.0, 180.0, 90.0)
 
 EXCLUDED_EUROPE_MICROSTATES = {
     "AND": "Andorra",
@@ -219,6 +220,7 @@ CHINA_REGION_CODES = (
 )
 
 HIMALAYAN_DISPUTED_CODES = ("Z01", "Z02", "Z03", "Z04", "Z05", "Z06", "Z07", "Z08", "Z09")
+PAKISTAN_HIMALAYAN_DISPUTED_CODES = ("Z01", "Z02", "Z03", "Z06")
 PARACEL_ISLAND_CODES = ("XPI",)
 SPRATLY_ISLAND_CODES = ("XSP",)
 SOUTH_CHINA_SEA_DISPUTED_CODES = (*PARACEL_ISLAND_CODES, *SPRATLY_ISLAND_CODES)
@@ -243,7 +245,7 @@ LOCAL_ADM0_EXPANSIONS = {
     "CYP": ("ZNC", "XAD"),
     "IND": HIMALAYAN_DISPUTED_CODES,
     "MYS": SPRATLY_ISLAND_CODES,
-    "PAK": HIMALAYAN_DISPUTED_CODES,
+    "PAK": PAKISTAN_HIMALAYAN_DISPUTED_CODES,
     "PHL": SPRATLY_ISLAND_CODES,
     "TUR": ("ZNC",),
     "TWN": SOUTH_CHINA_SEA_DISPUTED_CODES,
@@ -355,6 +357,7 @@ LOCAL_PRODUCT_SPECS = (
         "merge_scope": "australia",
         "auto_merge": False,
         "discount_percent": 20,
+        "publish_product": False,
         "source_note": "GADM 4.10 ADM_1 polygon intersection; grouped ACT and Jervis Bay Territory",
     },
     {
@@ -365,11 +368,13 @@ LOCAL_PRODUCT_SPECS = (
         "merge_scope": "australia",
         "auto_merge": False,
         "discount_percent": 20,
+        "publish_product": False,
         "source_note": "GADM 4.10 ADM_1 polygon intersection; grouped small Australian external island territories",
     },
     *(
         {
             "adm1_codes": (code,),
+            "subtract_bboxes": (USA_REMOTE_PACIFIC_BBOX,),
             "merge_scope": "north_america",
             "auto_merge": False,
             "discount_percent": 20,
@@ -410,6 +415,7 @@ LOCAL_PRODUCT_SPECS = (
         "merge_scope": "north_america",
         "auto_merge": False,
         "discount_percent": 20,
+        "publish_product": False,
         "source_note": "GADM 4.10 ADM_0 polygon intersection; grouped small North Atlantic island territories",
     },
     *(
@@ -434,6 +440,7 @@ LOCAL_PRODUCT_SPECS = (
         "merge_scope": "asia",
         "auto_merge": False,
         "discount_percent": 20,
+        "publish_product": False,
         "source_note": "GADM 4.10 ADM_0 polygon intersection; grouped disputed Himalayan source polygons",
     },
     {
@@ -640,6 +647,7 @@ MACRO_PACKS = (
         "discount_percent": 50,
         "adm1_codes": AUSTRALIA_ALL_REGION_CODES,
         "clip_bbox": AUSTRALIA_CLIP_BBOX,
+        "outline_mode": "union",
     },
     {
         "id": "western_united_states",
@@ -647,6 +655,7 @@ MACRO_PACKS = (
         "type": "macro_region",
         "discount_percent": 30,
         "adm1_codes": USA_WEST_CODES,
+        "subtract_bboxes": (USA_REMOTE_PACIFIC_BBOX,),
     },
     {
         "id": "southern_united_states",
@@ -675,6 +684,7 @@ MACRO_PACKS = (
         "type": "macro_region",
         "discount_percent": 30,
         "adm1_codes": USA_STATE_CODES,
+        "subtract_bboxes": (USA_REMOTE_PACIFIC_BBOX,),
     },
     {
         "id": "western_canada",
@@ -711,6 +721,7 @@ MACRO_PACKS = (
         "discount_percent": 50,
         "adm0_codes": NORTH_AMERICA_COUNTRY_CODES,
         "adm1_codes": (*USA_STATE_CODES, *CANADA_REGION_CODES),
+        "subtract_bboxes": (USA_REMOTE_PACIFIC_BBOX,),
     },
     {
         "id": "north_africa",
@@ -1110,6 +1121,16 @@ def selected_for_spec(layers: dict[str, object], spec: dict):
         selected = selected[~selected.geometry.is_empty].copy()
         if selected.empty:
             raise ValueError(f"ADM selection emptied by subtract_adm1_codes: {', '.join(subtract_adm1_codes)}")
+    subtract_bboxes = tuple(spec.get("subtract_bboxes") or ())
+    if subtract_bboxes:
+        selected = selected.copy()
+        for bbox in subtract_bboxes:
+            if not bbox:
+                continue
+            selected["geometry"] = selected.geometry.difference(box(*bbox))
+            selected = selected[~selected.geometry.is_empty].copy()
+            if selected.empty:
+                raise ValueError(f"ADM selection emptied by subtract_bboxes: {bbox}")
     return selected
 
 
@@ -1249,6 +1270,33 @@ def country_outlines_for_web(
     return outlines
 
 
+def union_outline_for_web(
+    selected,
+    outline_id: str,
+    outline_name: str,
+    simplify_tolerance: float = 0.005,
+    min_polygon_area: float = 0.001,
+    coord_decimals: int = 2,
+) -> list[dict]:
+    geometry = union_geometry(selected)
+    if geometry is None or geometry.is_empty:
+        return []
+    simplified = geometry.simplify(float(simplify_tolerance), preserve_topology=True)
+    polygons = []
+    for polygon in _iter_polygon_geometries(simplified):
+        if polygon.area < float(min_polygon_area):
+            continue
+        coords = [
+            [round(float(x_value), coord_decimals), round(float(y_value), coord_decimals)]
+            for x_value, y_value in polygon.exterior.coords
+        ]
+        if len(coords) >= 4:
+            polygons.append(coords)
+    if not polygons:
+        return []
+    return [{"id": clean_text(outline_id), "name": clean_text(outline_name), "polygons": polygons}]
+
+
 def payload_from_selected(
     *,
     product_id: str,
@@ -1266,6 +1314,7 @@ def payload_from_selected(
     tile_keys_override: list[str] | None = None,
     membership_codes_override: tuple[str, ...] | list[str] | None = None,
     valid_tile_keys: set[str] | None = None,
+    outline_mode: str = "source",
 ) -> dict:
     geometry = union_geometry(selected)
     source_tile_keys = sorted(set(tile_keys_override)) if tile_keys_override is not None else region_tiles_for_geometry(geometry)
@@ -1281,6 +1330,11 @@ def payload_from_selected(
         if str(code).strip()
     ))
     membership_codes = explicit_membership_codes or safe_adm1_codes or safe_adm0_codes
+    outlines = (
+        union_outline_for_web(selected, product_id, name)
+        if str(outline_mode or "").strip().lower() == "union"
+        else country_outlines_for_web(selected)
+    )
     return {
         "id": product_id,
         "name": name,
@@ -1300,7 +1354,7 @@ def payload_from_selected(
         "counts_by_z": counts_by_z(tile_keys),
         "bounds": bounds,
         "bbox": bounds,
-        "outlines": country_outlines_for_web(selected),
+        "outlines": outlines,
         "tile_keys": tile_keys,
     }
 
@@ -1338,23 +1392,24 @@ def build_local_payloads(layers: dict[str, object], valid_tile_keys: set[str] | 
         selected = selected_for_spec(layers, spec)
         name = str(spec.get("name") or "").strip() or product_name_from_selected(selected, codes[0])
         product_id = str(spec.get("id") or "").strip() or slugify(name)
-        payloads.append(
-            payload_from_selected(
-                product_id=product_id,
-                name=name,
-                product_type="country",
-                discount_percent=int(spec.get("discount_percent", 20)),
-                selected=selected,
-                adm0_codes=adm0_codes,
-                adm1_codes=adm1_codes,
-                clip_bbox=spec.get("clip_bbox"),
-                merge_scope=str(spec.get("merge_scope") or ""),
-                auto_merge=bool(spec.get("auto_merge", False)),
-                source_note=str(spec.get("source_note") or "GADM 4.10 ADM_0 polygon intersection"),
-                membership_codes_override=tuple(spec.get("membership_codes") or ()),
-                valid_tile_keys=valid_tile_keys,
-            )
+        payload = payload_from_selected(
+            product_id=product_id,
+            name=name,
+            product_type="country",
+            discount_percent=int(spec.get("discount_percent", 20)),
+            selected=selected,
+            adm0_codes=adm0_codes,
+            adm1_codes=adm1_codes,
+            clip_bbox=spec.get("clip_bbox"),
+            merge_scope=str(spec.get("merge_scope") or ""),
+            auto_merge=bool(spec.get("auto_merge", False)),
+            source_note=str(spec.get("source_note") or "GADM 4.10 ADM_0 polygon intersection"),
+            membership_codes_override=tuple(spec.get("membership_codes") or ()),
+            valid_tile_keys=valid_tile_keys,
+            outline_mode=str(spec.get("outline_mode") or "source"),
         )
+        payload["hidden"] = not bool(spec.get("publish_product", True))
+        payloads.append(payload)
     return payloads
 
 
@@ -1436,6 +1491,7 @@ def merge_local_payloads(local_payloads: list[dict], layers: dict[str, object]) 
     code_to_payload = {}
     for component in components:
         component_payloads = [local_payloads[index] for index in sorted(component, key=lambda idx: local_payloads[idx]["name"])]
+        publish_product = any(not source.get("hidden") for source in component_payloads)
         codes = sorted({code for payload in component_payloads for code in payload_membership_codes(payload)})
         adm0_codes = sorted({code for payload in component_payloads for code in payload.get("adm0_codes", [])})
         adm1_codes = sorted({code for payload in component_payloads for code in payload.get("adm1_codes", [])})
@@ -1473,10 +1529,12 @@ def merge_local_payloads(local_payloads: list[dict], layers: dict[str, object]) 
                 tile_keys_override=merged_tile_keys,
             )
             payload["merged_from"] = [{"id": source["id"], "name": source["name"], "tile_count": source["tile_count"]} for source in component_payloads]
+            payload["hidden"] = not publish_product
         for code in codes:
             code_to_product_id[code] = payload["id"]
             code_to_payload[code] = payload
-        merged.append(payload)
+        if publish_product:
+            merged.append(payload)
     merged.sort(key=lambda payload: (payload["name"], payload["id"]))
     return merged, pair_report, code_to_product_id, code_to_payload
 
@@ -1524,6 +1582,7 @@ def build_macro_payloads(layers: dict[str, object], code_to_product_id: dict[str
                 clip_bbox=pack.get("clip_bbox"),
                 member_product_ids=product_ids_for_codes(codes, code_to_product_id),
                 tile_keys_override=tile_keys,
+                outline_mode=str(pack.get("outline_mode") or "source"),
             )
         )
     return payloads
@@ -1788,6 +1847,8 @@ def public_product_payload(payload: dict) -> dict:
         result["volume_discount_basis"] = payload["volume_discount_basis"]
     if payload.get("country_product_ids"):
         result["countries"] = payload["country_product_ids"]
+    if payload.get("hidden"):
+        result["hidden"] = True
     if payload.get("adm0_codes"):
         result["adm0_codes"] = payload["adm0_codes"]
     if payload.get("adm1_codes"):
@@ -1844,8 +1905,7 @@ def write_js(path: Path, catalog: dict, include_details: bool = False):
         ]
         if str(payload.get("type") or "") != "country" and member_refs:
             tile_refs_by_product[payload["id"]] = member_refs
-        else:
-            tile_keys_by_product[payload["id"]] = list(payload.get("tile_keys") or [])
+        tile_keys_by_product[payload["id"]] = list(payload.get("tile_keys") or [])
     lines = [
         "// Generated by tools/build_region_pack_catalog.py. Do not edit by hand.",
         f"export const GENERATED_REGION_PACK_CATALOG_VERSION = {json.dumps(catalog.get('catalog_version') or CATALOG_VERSION)};",

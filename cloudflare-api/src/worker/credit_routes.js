@@ -594,6 +594,16 @@ function regionPackCatalogAssetKey(env) {
   return prefix ? `${prefix}/${relative}` : relative;
 }
 
+function regionPackMapBackgroundKey(env) {
+  const prefix = cleanR2Prefix(env);
+  const relative = `region_pack_maps/${REGION_PACK_CATALOG_VERSION}/world_s2_background.jpg`;
+  return prefix ? `${prefix}/${relative}` : relative;
+}
+
+function isHiddenRegionProduct(product) {
+  return Boolean(product && product.hidden);
+}
+
 function ownedTilePayloadRows(ownedRows) {
   return (Array.isArray(ownedRows) ? ownedRows : [])
     .map((row) => {
@@ -661,7 +671,7 @@ function pointInRegionProduct(product, latitudeDeg, longitudeDeg) {
 }
 
 function suggestedRegionProductsForPoint(latitudeDeg, longitudeDeg) {
-  const matches = REGION_PRODUCTS.filter((product) => pointInRegionProduct(product, latitudeDeg, longitudeDeg));
+  const matches = REGION_PRODUCTS.filter((product) => !isHiddenRegionProduct(product) && pointInRegionProduct(product, latitudeDeg, longitudeDeg));
   const selected = [];
   const seen = new Set();
   const addProduct = (product) => {
@@ -783,6 +793,9 @@ function regionCountryProductsForTileKeys(tileKeys, limit = 8) {
   const cache = {};
   const matches = [];
   for (const product of REGION_PRODUCTS) {
+    if (isHiddenRegionProduct(product)) {
+      continue;
+    }
     const type = String(product && product.type || "").trim().toLowerCase();
     if (type !== "country" && type !== "admin_region") {
       continue;
@@ -818,6 +831,9 @@ function regionProductsContainingAnyCountry(countryIds, type, limit = 3) {
   const safeType = String(type || "").trim().toLowerCase();
   const matches = [];
   for (const product of REGION_PRODUCTS) {
+    if (isHiddenRegionProduct(product)) {
+      continue;
+    }
     if (String(product && product.type || "").trim().toLowerCase() !== safeType) {
       continue;
     }
@@ -2249,14 +2265,16 @@ ${Array.isArray(data && data.upsells) && data.upsells.length ? `<section class="
 <script>const DATA=${payload};
 const NS="http://www.w3.org/2000/svg";
 const fmt=(v)=>"€"+Number(v||0).toFixed(2);
+const MAP_BG="/credits/region-pack-map-background.jpg?v="+encodeURIComponent(String(DATA.catalog_version||DATA.token||Date.now()));
 const bounds=DATA.bounds||{min_lon:-10,min_lat:35,max_lon:30,max_lat:48};
 const pad=20, innerW=1000, aspect=Math.max(0.28,Math.min(0.9,(bounds.max_lat-bounds.min_lat)/Math.max(1e-6,bounds.max_lon-bounds.min_lon)));
 const W=innerW, H=Math.round(innerW*aspect)+pad*2;
 function xy(lon,lat){return [pad+((lon-bounds.min_lon)/(bounds.max_lon-bounds.min_lon||1))*(W-pad*2),pad+((bounds.max_lat-lat)/(bounds.max_lat-bounds.min_lat||1))*(H-pad*2)]}
 function el(name,attrs){const node=document.createElementNS(NS,name);for(const[k,v]of Object.entries(attrs||{})){node.setAttribute(k,String(v))}return node}
+function addMapBackground(svg,project,width,height){svg.appendChild(el("rect",{x:0,y:0,width,height,fill:"#0d1118"}));const tl=project(-180,90),br=project(180,-90);svg.appendChild(el("image",{href:MAP_BG,x:tl[0],y:tl[1],width:br[0]-tl[0],height:br[1]-tl[1],preserveAspectRatio:"none",opacity:"0.22"}));svg.appendChild(el("rect",{x:0,y:0,width,height,fill:"#05070a",opacity:"0.48"}))}
 function pathFor(poly){return poly.map((pt,i)=>{const p=xy(pt[0],pt[1]);return (i?"L":"M")+p[0].toFixed(2)+" "+p[1].toFixed(2)}).join(" ")+" Z"}
 function render(level){const svg=document.getElementById("map");svg.replaceChildren();svg.setAttribute("viewBox","0 0 "+W+" "+H);
-  svg.appendChild(el("rect",{x:0,y:0,width:W,height:H,fill:"#0d1118"}));
+  addMapBackground(svg,xy,W,H);
   for(const outline of DATA.outlines||[]){for(const poly of outline.polygons||[]){const p=el("path",{d:pathFor(poly),fill:"var(--country)",stroke:"var(--country-line)","stroke-width":"0.7",opacity:"0.72"});const t=el("title",{});t.textContent=outline.name; p.appendChild(t); svg.appendChild(p);}}
   const rows=(DATA.tiles||[]).filter(t=>Number(t.z)===Number(level)); let newCount=0, licencedCount=0, freeCount=0, price=0;
   for(const tile of rows){const a=xy(tile.lon_min,tile.lat_max), b=xy(tile.lon_max,tile.lat_min); const cls=tile.status==="new"?"var(--new)":(tile.status==="licenced"?"var(--licenced)":"var(--free)");
@@ -2270,7 +2288,7 @@ for(const z of levels){const o=document.createElement("option");o.value=String(z
 select.addEventListener("change",()=>render(Number(select.value))); render(Number(select.value||levels[0]));
 function miniFrame(bounds,w,h){const p=12,lonSpan=Math.max(1e-6,bounds.max_lon-bounds.min_lon),latSpan=Math.max(1e-6,bounds.max_lat-bounds.min_lat),scale=Math.min((w-p*2)/lonSpan,(h-p*2)/latSpan),usedW=lonSpan*scale,usedH=latSpan*scale;return{bounds,scale,ox:(w-usedW)/2,oy:(h-usedH)/2}}
 function miniXY(frame,lon,lat){return [frame.ox+(lon-frame.bounds.min_lon)*frame.scale,frame.oy+(frame.bounds.max_lat-lat)*frame.scale]}
-function renderMiniMap(svg,card){const b=card.bounds||{min_lon:-10,min_lat:35,max_lon:30,max_lat:48};const w=360,h=360,frame=miniFrame(b,w,h);svg.setAttribute("viewBox","0 0 "+w+" "+h);svg.setAttribute("preserveAspectRatio","xMidYMid meet");svg.replaceChildren();svg.appendChild(el("rect",{x:0,y:0,width:w,height:h,fill:"#0d1118"}));for(const tile of card.tiles||[]){const a=miniXY(frame,tile.lon_min,tile.lat_max),c=miniXY(frame,tile.lon_max,tile.lat_min);const cls=tile.status==="new"?"var(--new)":(tile.status==="licenced"?"var(--licenced)":"var(--free)");const r=el("rect",{x:a[0],y:a[1],width:Math.max(1,c[0]-a[0]),height:Math.max(1,c[1]-a[1]),fill:cls,stroke:"#fff","stroke-width":"0.5",opacity:tile.status==="new"?"0.58":"0.43"});svg.appendChild(r)}}
+function renderMiniMap(svg,card){const b=card.bounds||{min_lon:-10,min_lat:35,max_lon:30,max_lat:48};const w=360,h=360,frame=miniFrame(b,w,h);svg.setAttribute("viewBox","0 0 "+w+" "+h);svg.setAttribute("preserveAspectRatio","xMidYMid meet");svg.replaceChildren();addMapBackground(svg,(lon,lat)=>miniXY(frame,lon,lat),w,h);for(const tile of card.tiles||[]){const a=miniXY(frame,tile.lon_min,tile.lat_max),c=miniXY(frame,tile.lon_max,tile.lat_min);const cls=tile.status==="new"?"var(--new)":(tile.status==="licenced"?"var(--licenced)":"var(--free)");const r=el("rect",{x:a[0],y:a[1],width:Math.max(1,c[0]-a[0]),height:Math.max(1,c[1]-a[1]),fill:cls,stroke:"#fff","stroke-width":"0.5",opacity:tile.status==="new"?"0.58":"0.43"});svg.appendChild(r)}}
 function renderUpsells(){const grid=document.getElementById("upsellGrid");if(!grid)return;const token=encodeURIComponent(DATA.token||"");const catalog=DATA.catalog_mode?"&catalog=1":"";for(const card of DATA.upsells||[]){const pack=card.region_pack||{},s=card.summary||{};const id=encodeURIComponent(pack.id||"");const div=document.createElement("div");div.className="upsell";const title=document.createElement("h3");title.textContent=pack.name||"Region Pack";div.appendChild(title);const map=document.createElementNS(NS,"svg");div.appendChild(map);renderMiniMap(map,card);const meta=document.createElement("p");meta.className="muted small";meta.textContent=Number(s.new_tiles||0)+" new tiles · "+Number(s.discount_percent||0)+"% volume discount · "+fmt(s.price_eur);div.appendChild(meta);const checkout=document.createElement("a");checkout.className="button";checkout.href="/credits/region-pack-checkout?token="+token+"&region_pack_id="+id+catalog;checkout.textContent="Buy "+(pack.name||"Pack")+" ("+fmt(s.price_eur)+")";div.appendChild(checkout);const detail=document.createElement("a");detail.className="button secondary";detail.href="/credits/region-pack-map?token="+token+"&region_pack_id="+id+catalog;detail.textContent="View map";div.appendChild(detail);grid.appendChild(div)}}
 renderUpsells();
 </script>
@@ -2341,6 +2359,7 @@ const fmtCents=(v)=>"€"+(Math.max(0,Number(v||0)||0)/100).toFixed(2);
 const int=(v)=>Math.max(0,Math.round(Number(v||0)||0));
 const assetCache=new Map();
 const assetVersion=encodeURIComponent(String(DATA.catalog_version||DATA.token||Date.now()));
+const MAP_BG="/credits/region-pack-map-background.jpg?v="+assetVersion;
 const currentToken=encodeURIComponent(DATA.token||"");
 const currentPackId=encodeURIComponent(DATA.asset_id||DATA.region_pack&&DATA.region_pack.id||"");
 const currentCatalog=DATA.catalog_mode?"&catalog=1":"";
@@ -2367,11 +2386,12 @@ let currentBounds={min_lon:-10,min_lat:35,max_lon:30,max_lat:48},pad=20,W=1000,H
 function setBounds(bounds){currentBounds=bounds||currentBounds;const aspect=Math.max(0.28,Math.min(0.9,(currentBounds.max_lat-currentBounds.min_lat)/Math.max(1e-6,currentBounds.max_lon-currentBounds.min_lon)));H=Math.round(W*aspect)+pad*2}
 function xy(lon,lat){return [pad+((lon-currentBounds.min_lon)/(currentBounds.max_lon-currentBounds.min_lon||1))*(W-pad*2),pad+((currentBounds.max_lat-lat)/(currentBounds.max_lat-currentBounds.min_lat||1))*(H-pad*2)]}
 function el(name,attrs){const node=document.createElementNS(NS,name);for(const k in attrs||{})node.setAttribute(k,String(attrs[k]));return node}
+function addMapBackground(svg,project,width,height){svg.appendChild(el("rect",{x:0,y:0,width,height,fill:"#0d1118"}));const tl=project(-180,90),br=project(180,-90);svg.appendChild(el("image",{href:MAP_BG,x:tl[0],y:tl[1],width:br[0]-tl[0],height:br[1]-tl[1],preserveAspectRatio:"none",opacity:"0.22"}));svg.appendChild(el("rect",{x:0,y:0,width,height,fill:"#05070a",opacity:"0.48"}))}
 function pathFor(poly){return(poly||[]).map((pt,i)=>{const p=xy(pt[0],pt[1]);return(i?"L":"M")+p[0].toFixed(2)+" "+p[1].toFixed(2)}).join(" ")+" Z"}
-function renderMap(vm,level){const svg=document.getElementById("map");svg.replaceChildren();svg.setAttribute("viewBox","0 0 "+W+" "+H);svg.appendChild(el("rect",{x:0,y:0,width:W,height:H,fill:"#0d1118"}));for(const outline of vm.asset.outlines||[]){for(const poly of outline.polygons||[]){const p=el("path",{d:pathFor(poly),fill:"var(--country)",stroke:"var(--country-line)","stroke-width":"0.7",opacity:"0.72"});const t=el("title",{});t.textContent=outline.name;p.appendChild(t);svg.appendChild(p)}}const rows=vm.rows.filter((row)=>Number(row.z)===Number(level));let newCount=0,licencedCount=0,freeCount=0,price=0;for(const tile of rows){const a=xy(tile.lon_min,tile.lat_max),b=xy(tile.lon_max,tile.lat_min);const cls=tile.status==="new"?"var(--new)":(tile.status==="licenced"?"var(--licenced)":"var(--free)");if(tile.status==="new"){newCount++;price+=int(tile.price_cents)}else if(tile.status==="licenced"){licencedCount++}else{freeCount++}const r=el("rect",{x:a[0],y:a[1],width:Math.max(1,b[0]-a[0]),height:Math.max(1,b[1]-a[1]),fill:cls,stroke:"#fff","stroke-width":"0.45",opacity:tile.status==="new"?"0.58":"0.43"});const title=el("title",{});title.textContent=tile.tile_key+"\\nLand: "+Number(tile.billable_land_km2||0).toFixed(2)+" km²\\nStatus: "+tile.status+"\\nFull price: "+fmtCents(tile.full_price_cents)+"\\nFinal price: "+fmtCents(tile.price_cents);r.appendChild(title);svg.appendChild(r)}document.getElementById("levelSummary").textContent=rows.length+" tiles at z"+String(level).padStart(3,"0")+" · new "+newCount+" · already licenced "+licencedCount+" · free "+freeCount+" · visible-level price "+fmtCents(price)}
+function renderMap(vm,level){const svg=document.getElementById("map");svg.replaceChildren();svg.setAttribute("viewBox","0 0 "+W+" "+H);addMapBackground(svg,xy,W,H);for(const outline of vm.asset.outlines||[]){for(const poly of outline.polygons||[]){const p=el("path",{d:pathFor(poly),fill:"var(--country)",stroke:"var(--country-line)","stroke-width":"0.7",opacity:"0.72"});const t=el("title",{});t.textContent=outline.name;p.appendChild(t);svg.appendChild(p)}}const rows=vm.rows.filter((row)=>Number(row.z)===Number(level));let newCount=0,licencedCount=0,freeCount=0,price=0;for(const tile of rows){const a=xy(tile.lon_min,tile.lat_max),b=xy(tile.lon_max,tile.lat_min);const cls=tile.status==="new"?"var(--new)":(tile.status==="licenced"?"var(--licenced)":"var(--free)");if(tile.status==="new"){newCount++;price+=int(tile.price_cents)}else if(tile.status==="licenced"){licencedCount++}else{freeCount++}const r=el("rect",{x:a[0],y:a[1],width:Math.max(1,b[0]-a[0]),height:Math.max(1,b[1]-a[1]),fill:cls,stroke:"#fff","stroke-width":"0.45",opacity:tile.status==="new"?"0.58":"0.43"});const title=el("title",{});title.textContent=tile.tile_key+"\\nLand: "+Number(tile.billable_land_km2||0).toFixed(2)+" km²\\nStatus: "+tile.status+"\\nFull price: "+fmtCents(tile.full_price_cents)+"\\nFinal price: "+fmtCents(tile.price_cents);r.appendChild(title);svg.appendChild(r)}document.getElementById("levelSummary").textContent=rows.length+" tiles at z"+String(level).padStart(3,"0")+" · new "+newCount+" · already licenced "+licencedCount+" · free "+freeCount+" · visible-level price "+fmtCents(price)}
 function miniFrame(bounds,w,h){const p=12,lonSpan=Math.max(1e-6,bounds.max_lon-bounds.min_lon),latSpan=Math.max(1e-6,bounds.max_lat-bounds.min_lat),scale=Math.min((w-p*2)/lonSpan,(h-p*2)/latSpan),usedW=lonSpan*scale,usedH=latSpan*scale;return{bounds,scale,ox:(w-usedW)/2,oy:(h-usedH)/2}}
 function miniXY(frame,lon,lat){return[frame.ox+(lon-frame.bounds.min_lon)*frame.scale,frame.oy+(frame.bounds.max_lat-lat)*frame.scale]}
-function renderMiniMap(svg,vm){const b=vm.asset.bounds||{min_lon:-10,min_lat:35,max_lon:30,max_lat:48};const w=360,h=360,frame=miniFrame(b,w,h);svg.setAttribute("viewBox","0 0 "+w+" "+h);svg.setAttribute("preserveAspectRatio","xMidYMid meet");svg.replaceChildren();svg.appendChild(el("rect",{x:0,y:0,width:w,height:h,fill:"#0d1118"}));const first=vm.levels.length?vm.levels[0]:null;for(const tile of vm.rows.filter((row)=>Number(row.z)===Number(first))){const a=miniXY(frame,tile.lon_min,tile.lat_max),c=miniXY(frame,tile.lon_max,tile.lat_min);const cls=tile.status==="new"?"var(--new)":(tile.status==="licenced"?"var(--licenced)":"var(--free)");svg.appendChild(el("rect",{x:a[0],y:a[1],width:Math.max(1,c[0]-a[0]),height:Math.max(1,c[1]-a[1]),fill:cls,stroke:"#fff","stroke-width":"0.5",opacity:tile.status==="new"?"0.58":"0.43"}))}}
+function renderMiniMap(svg,vm){const b=vm.asset.bounds||{min_lon:-10,min_lat:35,max_lon:30,max_lat:48};const w=360,h=360,frame=miniFrame(b,w,h);svg.setAttribute("viewBox","0 0 "+w+" "+h);svg.setAttribute("preserveAspectRatio","xMidYMid meet");svg.replaceChildren();addMapBackground(svg,(lon,lat)=>miniXY(frame,lon,lat),w,h);const first=vm.levels.length?vm.levels[0]:null;for(const tile of vm.rows.filter((row)=>Number(row.z)===Number(first))){const a=miniXY(frame,tile.lon_min,tile.lat_max),c=miniXY(frame,tile.lon_max,tile.lat_min);const cls=tile.status==="new"?"var(--new)":(tile.status==="licenced"?"var(--licenced)":"var(--free)");svg.appendChild(el("rect",{x:a[0],y:a[1],width:Math.max(1,c[0]-a[0]),height:Math.max(1,c[1]-a[1]),fill:cls,stroke:"#fff","stroke-width":"0.5",opacity:tile.status==="new"?"0.58":"0.43"}))}}
 async function renderUpsells(asset){const ids=Array.isArray(asset.upsell_ids)?asset.upsell_ids:[];const grid=document.getElementById("upsellGrid");if(!grid||!ids.length)return;const token=encodeURIComponent(DATA.token||"");const catalog=DATA.catalog_mode?"&catalog=1":"";for(const idRaw of ids){try{const upAsset=await loadAsset(idRaw);const vm=computeAsset(upAsset);if(vm.summary.price_cents<=0&&vm.summary.new_tiles<=0)continue;const id=encodeURIComponent(upAsset.region_pack.id||idRaw);const div=document.createElement("div");div.className="upsell";const title=document.createElement("h3");title.textContent=upAsset.region_pack.name||"Region Pack";div.appendChild(title);const map=document.createElementNS(NS,"svg");div.appendChild(map);renderMiniMap(map,vm);const meta=document.createElement("p");meta.className="muted small";meta.textContent=Number(vm.summary.new_tiles||0)+" new tiles · "+Number(vm.summary.discount_percent||0)+"% volume discount · "+fmtCents(vm.summary.price_cents);div.appendChild(meta);const checkout=document.createElement("a");checkout.className="button";checkout.href="/credits/region-pack-checkout?token="+token+"&region_pack_id="+id+catalog;checkout.textContent="Buy "+(upAsset.region_pack.name||"Pack")+" ("+fmtCents(vm.summary.price_cents)+")";div.appendChild(checkout);const detail=document.createElement("a");detail.className="button secondary";detail.href="/credits/region-pack-map?token="+token+"&region_pack_id="+id+catalog;detail.textContent="View map";div.appendChild(detail);grid.appendChild(div);document.getElementById("upsellsPanel").style.display=""}catch(error){console.warn("Planetka upsell map failed",idRaw,error)}}}
 async function init(){try{const asset=await loadAsset(DATA.asset_id);document.getElementById("pageTitle").textContent=(asset.region_pack.name||"Region Pack")+" Full Quality Pack";const vm=computeAsset(asset);renderCards(vm);setBounds(asset.bounds);const countries=uniqueCountryNames(asset.included_countries);if(countries.length){document.getElementById("countries").innerHTML=countries.map((c)=>"<div>"+esc(c)+"</div>").join("");document.getElementById("countriesPanel").style.display=""}const select=document.getElementById("levelSelect");select.replaceChildren();const levels=vm.levels.length?vm.levels:[1];for(const z of levels){const o=document.createElement("option");o.value=String(z);o.textContent="z"+String(z).padStart(3,"0");select.appendChild(o)}select.addEventListener("change",()=>renderMap(vm,Number(select.value)));renderMap(vm,Number(select.value||levels[0]));document.getElementById("mapStatus").textContent="Map loaded.";renderUpsells(asset)}catch(error){console.warn("Planetka region-pack map failed",error);document.getElementById("mapStatus").className="error small";document.getElementById("mapStatus").textContent="Map failed to load. Please reopen this page from Blender."}}
 init();
@@ -2519,13 +2539,16 @@ svg{width:100%;aspect-ratio:1/1;height:auto;background:#0d1118;border:1px solid 
 <script>const DATA=${payload};
 const NS="http://www.w3.org/2000/svg";
 const fmt=(v)=>"€"+Number(v||0).toFixed(2);
+const assetVersion=encodeURIComponent(String(DATA.catalog_version||DATA.token||Date.now()));
+const MAP_BG="/credits/region-pack-map-background.jpg?v="+assetVersion;
 function esc(value){return String(value||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}
 function parseTileKey(key){const m=/x(\\d{3})_y(\\d{3})_z(\\d{3})_d(\\d{3})/i.exec(String(key||""));return m?{x:Number(m[1]),y:Number(m[2]),z:Number(m[3]),d:Number(m[4])}:null}
 function frame(bounds,w,h){const p=12,lonSpan=Math.max(1e-6,bounds.max_lon-bounds.min_lon),latSpan=Math.max(1e-6,bounds.max_lat-bounds.min_lat),scale=Math.min((w-p*2)/lonSpan,(h-p*2)/latSpan),usedW=lonSpan*scale,usedH=latSpan*scale;return{bounds,scale,ox:(w-usedW)/2,oy:(h-usedH)/2}}
 function xy(f,lon,lat){return[f.ox+(lon-f.bounds.min_lon)*f.scale,f.oy+(f.bounds.max_lat-lat)*f.scale]}
 function el(name,attrs){const node=document.createElementNS(NS,name);for(const k in attrs||{})node.setAttribute(k,String(attrs[k]));return node}
+function addMapBackground(svg,project,width,height){svg.appendChild(el("rect",{x:0,y:0,width,height,fill:"#0d1118"}));const tl=project(-180,90),br=project(180,-90);svg.appendChild(el("image",{href:MAP_BG,x:tl[0],y:tl[1],width:br[0]-tl[0],height:br[1]-tl[1],preserveAspectRatio:"none",opacity:"0.22"}));svg.appendChild(el("rect",{x:0,y:0,width,height,fill:"#05070a",opacity:"0.48"}))}
 function pathFor(f,poly){return(poly||[]).map((pt,i)=>{const p=xy(f,pt[0],pt[1]);return(i?"L":"M")+p[0].toFixed(2)+" "+p[1].toFixed(2)}).join(" ")+" Z"}
-async function renderMiniMap(svg,id){try{const res=await fetch("/credits/region-pack-map-asset?region_pack_id="+encodeURIComponent(id)+"&v="+assetVersion,{cache:"reload"});if(!res.ok)throw new Error("asset_"+res.status);const asset=await res.json();const b=asset.bounds||{min_lon:-10,min_lat:35,max_lon:30,max_lat:48};const w=360,h=360,f=frame(b,w,h);svg.setAttribute("viewBox","0 0 "+w+" "+h);svg.setAttribute("preserveAspectRatio","xMidYMid meet");svg.replaceChildren();svg.appendChild(el("rect",{x:0,y:0,width:w,height:h,fill:"#0d1118"}));for(const outline of asset.outlines||[]){for(const poly of outline.polygons||[]){svg.appendChild(el("path",{d:pathFor(f,poly),fill:"var(--country)",stroke:"var(--country-line)","stroke-width":"0.7",opacity:"0.7"}))}}const parsed=(asset.tiles||[]).map(t=>({tile:t,parsed:parseTileKey(t.tile_key)})).filter(v=>v.parsed);const levels=[...new Set(parsed.map(v=>v.parsed.z))].sort((a,b)=>a-b);const level=levels.length?levels[0]:1;for(const entry of parsed.filter(v=>v.parsed.z===level)){const p=entry.parsed;const a=xy(f,p.x-180,p.y-90+p.z),c=xy(f,p.x-180+p.z,p.y-90);svg.appendChild(el("rect",{x:a[0],y:a[1],width:Math.max(1,c[0]-a[0]),height:Math.max(1,c[1]-a[1]),fill:"var(--tile)",stroke:"#fff","stroke-width":"0.5",opacity:"0.58"}))}}catch(error){svg.replaceChildren();svg.setAttribute("viewBox","0 0 360 360");svg.appendChild(el("rect",{x:0,y:0,width:360,height:360,fill:"#0d1118"}));const t=el("text",{x:180,y:180,"text-anchor":"middle",fill:"#ffb4a9"});t.textContent="Map unavailable";svg.appendChild(t);}}
+async function renderMiniMap(svg,id){try{const res=await fetch("/credits/region-pack-map-asset?region_pack_id="+encodeURIComponent(id)+"&v="+assetVersion,{cache:"reload"});if(!res.ok)throw new Error("asset_"+res.status);const asset=await res.json();const b=asset.bounds||{min_lon:-10,min_lat:35,max_lon:30,max_lat:48};const w=360,h=360,f=frame(b,w,h);svg.setAttribute("viewBox","0 0 "+w+" "+h);svg.setAttribute("preserveAspectRatio","xMidYMid meet");svg.replaceChildren();addMapBackground(svg,(lon,lat)=>xy(f,lon,lat),w,h);for(const outline of asset.outlines||[]){for(const poly of outline.polygons||[]){svg.appendChild(el("path",{d:pathFor(f,poly),fill:"var(--country)",stroke:"var(--country-line)","stroke-width":"0.7",opacity:"0.7"}))}}const parsed=(asset.tiles||[]).map(t=>({tile:t,parsed:parseTileKey(t.tile_key)})).filter(v=>v.parsed);const levels=[...new Set(parsed.map(v=>v.parsed.z))].sort((a,b)=>a-b);const level=levels.length?levels[0]:1;for(const entry of parsed.filter(v=>v.parsed.z===level)){const p=entry.parsed;const a=xy(f,p.x-180,p.y-90+p.z),c=xy(f,p.x-180+p.z,p.y-90);svg.appendChild(el("rect",{x:a[0],y:a[1],width:Math.max(1,c[0]-a[0]),height:Math.max(1,c[1]-a[1]),fill:"var(--tile)",stroke:"#fff","stroke-width":"0.5",opacity:"0.58"}))}}catch(error){svg.replaceChildren();svg.setAttribute("viewBox","0 0 360 360");svg.appendChild(el("rect",{x:0,y:0,width:360,height:360,fill:"#0d1118"}));const t=el("text",{x:180,y:180,"text-anchor":"middle",fill:"#ffb4a9"});t.textContent="Map unavailable";svg.appendChild(t);}}
 function render(){const root=document.getElementById("options");root.innerHTML=(DATA.options||[]).map((option)=>{const href="/credits/balance-checkout?token="+encodeURIComponent(DATA.token||"")+"&amount_eur="+encodeURIComponent(option.amount_eur);return "<article class=\\"card\\"><div class=\\"top\\"><div><div class=\\"pay\\">Pay "+fmt(option.amount_eur)+"</div><div class=\\"balance\\">Adds "+fmt(option.balance_eur)+" balance</div></div><div class=\\"bonus\\">+"+Number(option.bonus_percent||0)+"%<br><span class=\\"small\\">"+fmt(option.bonus_eur)+" bonus</span></div></div><svg data-pack=\\""+esc(option.guide_region_pack_id||"")+"\\" aria-label=\\""+esc(option.guide_label||"guide map")+"\\"></svg><div class=\\"guide\\">Roughly comparable to "+esc(option.guide_label||"a regional pack")+" ("+fmt(option.guide_price_eur)+")</div><a class=\\"button\\" href=\\""+href+"\\">Add "+fmt(option.amount_eur)+"</a></article>"}).join("");for(const svg of root.querySelectorAll("svg[data-pack]")){renderMiniMap(svg,svg.getAttribute("data-pack")||"")}}
 render();
 </script>
@@ -4482,7 +4505,7 @@ export async function handleCreditRegionPackDetailLink(request, env, deps) {
     || body.pack_id
     || body.packId
   ));
-  if (!product) {
+  if (!product || isHiddenRegionProduct(product)) {
     return deps.json({ ok: false, error: "unknown_region_pack" }, 404, env);
   }
   const tokenResult = await createRegionPackDetailTokenForUser(
@@ -4646,7 +4669,7 @@ function resolveRegionPackFromDetailTokenRow(row, requestedRegionId = "", option
   }
   const requestedId = String(requestedRegionId || "").trim();
   const product = requestedId ? regionProductById(requestedId) : baseProduct;
-  if (!product) {
+  if (!product || isHiddenRegionProduct(product)) {
     return { error: "region_pack_not_available_for_this_detail_link", status: 403 };
   }
   if (!Boolean(options && options.allowAnyProduct) && !isSameOrRelatedHigherRegionProduct(baseProduct, product)) {
@@ -4877,9 +4900,13 @@ export async function handleCreditRegionPackCheckoutFromToken(request, env, deps
   const productResult = allowCatalogProduct
     ? (() => {
       const product = regionProductById(requestedRegionId || tokenResult.row && tokenResult.row.region_pack_id);
-      return product ? { ok: true, product } : { error: "region_pack_not_available_for_this_detail_link", status: 403 };
+      return product && !isHiddenRegionProduct(product) ? { ok: true, product } : { error: "region_pack_not_available_for_this_detail_link", status: 403 };
     })()
     : resolveRegionPackFromDetailTokenRow(tokenResult.row, requestedRegionId);
+  if (!productResult.error && isHiddenRegionProduct(productResult.product)) {
+    productResult.error = "region_pack_not_available_for_this_detail_link";
+    productResult.status = 404;
+  }
   if (productResult.error) {
     return html(
       `<!doctype html><title>Planetka Region Pack</title><h1>Region pack unavailable.</h1><p>${escapeHtmlText(productResult.error)}</p>`,
@@ -5120,7 +5147,7 @@ export async function handleCreditRegionPackMapAsset(request, env, deps) {
   const url = new URL(request.url);
   const regionPackId = String(url.searchParams.get("region_pack_id") || url.searchParams.get("id") || "").trim();
   const product = regionProductById(regionPackId);
-  if (!product || String(product.id || "").trim().toLowerCase() === "world") {
+  if (!product || isHiddenRegionProduct(product) || String(product.id || "").trim().toLowerCase() === "world") {
     return deps.json({ ok: false, error: "region_pack_map_asset_not_available" }, 404, env);
   }
   const bucket = env && env.PLANETKA_DATA;
@@ -5136,6 +5163,26 @@ export async function handleCreditRegionPackMapAsset(request, env, deps) {
     headers: {
       "Content-Type": "application/json; charset=utf-8",
       "Cache-Control": "public, max-age=300",
+      ...corsHeaders(env),
+    },
+  });
+}
+
+export async function handleCreditRegionPackMapBackground(request, env, deps) {
+  void request;
+  const bucket = env && env.PLANETKA_DATA;
+  if (!bucket || typeof bucket.get !== "function") {
+    return deps.json({ ok: false, error: "r2_binding_unavailable" }, 500, env);
+  }
+  const object = await bucket.get(regionPackMapBackgroundKey(env));
+  if (!object || !object.body) {
+    return deps.json({ ok: false, error: "region_pack_map_background_missing" }, 404, env);
+  }
+  return new Response(object.body, {
+    status: 200,
+    headers: {
+      "Content-Type": "image/jpeg",
+      "Cache-Control": "public, max-age=86400",
       ...corsHeaders(env),
     },
   });
