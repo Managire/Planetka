@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..", "..");
 const generatedSource = path.join(repoRoot, "cloudflare-api", "src", "worker", "region_packs.generated.js");
+const catalogSource = path.join(repoRoot, "Resources", "Region Packs", "region_packs_gadm.json");
 const defaultOut = path.join(os.tmpdir(), "planetka_region_pack_map_assets");
 
 const TILE_KEY_RE = /x(\d{3})_y(\d{3})_z(\d{3})_d(\d{3})/i;
@@ -14,7 +15,9 @@ const FREE_D_THRESHOLD = 60;
 const DATASET_BASE_MPP = 10.0;
 const EQUATOR_Z001_AREA_KM2 = (40075.016686 / 360.0) ** 2;
 const METRIC_SCALE = 1_000_000;
-const REGION_PACK_MAP_MAX_OUTLINE_POINTS = 20_000;
+// The R2 map assets are allowed to be larger than Worker inline payloads.  A low
+// cap here corrupts borders by drawing shortcut chords across complex polygons.
+const REGION_PACK_MAP_MAX_OUTLINE_POINTS = 250_000;
 const DISPLAY_AREA_LABEL_BY_ADM0_CODE = new Map([
   ["Z01", "Himalayan Disputed Territories"],
   ["Z02", "Himalayan Disputed Territories"],
@@ -194,13 +197,47 @@ async function loadGenerated() {
   }
 }
 
-function buildHelpers(generated) {
+async function loadCatalog() {
+  const source = path.resolve(argValue("--catalog-json", catalogSource));
+  try {
+    return JSON.parse(await fs.readFile(source, "utf8"));
+  } catch (error) {
+    if (error && error.code === "ENOENT") {
+      return {};
+    }
+    throw error;
+  }
+}
+
+function buildHelpers(generated, catalog = {}) {
   const products = Array.isArray(generated.GENERATED_REGION_PACK_PRODUCTS)
     ? generated.GENERATED_REGION_PACK_PRODUCTS
     : [];
   const productById = new Map(products.map((product) => [String(product && product.id || ""), product]));
+  const catalogProductById = new Map((Array.isArray(catalog && catalog.products) ? catalog.products : [])
+    .map((product) => [String(product && product.id || ""), product]));
+  const catalogOutlines = catalog && typeof catalog.outlines === "object" && catalog.outlines
+    ? catalog.outlines
+    : {};
   const product = (id) => productById.get(String(id || "").trim()) || null;
-  const detail = (id) => generated.GENERATED_REGION_PACK_DETAILS[String(id || "").trim()] || {};
+  const detail = (id) => {
+    const safeId = String(id || "").trim();
+    const generatedDetail = generated.GENERATED_REGION_PACK_DETAILS[safeId] || {};
+    const catalogProduct = catalogProductById.get(safeId) || {};
+    return {
+      ...catalogProduct,
+      ...generatedDetail,
+      countries: Array.isArray(generatedDetail.countries)
+        ? generatedDetail.countries
+        : (Array.isArray(catalogProduct.countries) ? catalogProduct.countries : []),
+      outline_refs: Array.isArray(generatedDetail.outline_refs)
+        ? generatedDetail.outline_refs
+        : (Array.isArray(catalogProduct.outline_refs) ? catalogProduct.outline_refs : []),
+      bounds: Array.isArray(generatedDetail.bounds)
+        ? generatedDetail.bounds
+        : (Array.isArray(catalogProduct.bounds) ? catalogProduct.bounds : catalogProduct.bbox),
+    };
+  };
   const tileKeys = (sourceProduct, seen = new Set()) => {
     const productId = String(sourceProduct && sourceProduct.id || "").trim();
     if (!productId || seen.has(productId)) {
@@ -236,7 +273,8 @@ function buildHelpers(generated) {
     const refs = Array.isArray(sourceDetail.outline_refs) ? sourceDetail.outline_refs : [];
     const result = [];
     for (const ref of refs) {
-      const outline = generated.GENERATED_REGION_PACK_OUTLINES[String(ref || "")];
+      const safeRef = String(ref || "");
+      const outline = generated.GENERATED_REGION_PACK_OUTLINES[safeRef] || catalogOutlines[safeRef];
       if (outline) {
         result.push(outline);
       }
@@ -452,7 +490,8 @@ function assetForProduct(product, helpers, generated) {
 async function main() {
   const outDir = path.resolve(argValue("--out", defaultOut));
   const generated = await loadGenerated();
-  const helpers = buildHelpers(generated);
+  const catalog = await loadCatalog();
+  const helpers = buildHelpers(generated, catalog);
   await fs.rm(outDir, { recursive: true, force: true });
   await fs.mkdir(outDir, { recursive: true });
   let count = 0;

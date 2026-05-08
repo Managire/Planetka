@@ -29,10 +29,11 @@ const STRIPE_MIN_CHECKOUT_AMOUNT_CENTS = 50;
 const MONEY_SCALE = 100;
 const METRIC_SCALE = 1_000_000;
 const REGION_PACK_CATALOG_VERSION = GENERATED_REGION_PACK_CATALOG_VERSION || "gadm_regions_v8";
+const REGION_PACK_MAP_ASSET_REVISION = `${REGION_PACK_CATALOG_VERSION}:outline-v2`;
 const SQL_VARIABLE_SAFE_CHUNK_SIZE = 75;
 const REGION_PACK_TILE_CHUNK_SIZE = SQL_VARIABLE_SAFE_CHUNK_SIZE;
 const REGION_PACK_PAID_Z_LEVELS = [1, 2, 4, 8, 15, 30];
-const REGION_PACK_MAP_MAX_OUTLINE_POINTS = 20_000;
+const REGION_PACK_MAP_MAX_OUTLINE_POINTS = 250_000;
 const REGION_PRODUCTS = Array.isArray(GENERATED_REGION_PACK_PRODUCTS) ? GENERATED_REGION_PACK_PRODUCTS : [];
 
 function normalizeTileKey(value) {
@@ -626,6 +627,7 @@ function regionPackStaticMapPayload(product, token, account, ownedRows, options 
     ok: true,
     static_asset_mode: true,
     catalog_version: REGION_PACK_CATALOG_VERSION,
+    map_asset_revision: REGION_PACK_MAP_ASSET_REVISION,
     token: String(token || ""),
     catalog_mode: Boolean(options && options.catalogMode),
     asset_id: String(product && product.id || ""),
@@ -1866,6 +1868,7 @@ function buildRegionPackMapData(product, estimate, options = {}) {
   return {
     ok: true,
     catalog_version: REGION_PACK_CATALOG_VERSION,
+    map_asset_revision: REGION_PACK_MAP_ASSET_REVISION,
     token: String(options && options.token || ""),
     catalog_mode: Boolean(options && options.catalogMode),
     generated_detail_available: Boolean(detail && Object.keys(detail).length),
@@ -1953,6 +1956,7 @@ function buildSceneFullQualityMapData(estimate, options = {}) {
     ok: true,
     scene_detail: true,
     catalog_version: REGION_PACK_CATALOG_VERSION,
+    map_asset_revision: REGION_PACK_MAP_ASSET_REVISION,
     token: String(options && options.token || ""),
     catalog_mode: true,
     generated_detail_available: Boolean(contextProduct && Object.keys(contextDetail).length),
@@ -2364,7 +2368,7 @@ const NS="http://www.w3.org/2000/svg";
 const fmtCents=(v)=>"€"+(Math.max(0,Number(v||0)||0)/100).toFixed(2);
 const int=(v)=>Math.max(0,Math.round(Number(v||0)||0));
 const assetCache=new Map();
-const assetVersion=encodeURIComponent(String(DATA.catalog_version||DATA.token||Date.now()));
+const assetVersion=encodeURIComponent(String(DATA.map_asset_revision||DATA.catalog_version||DATA.token||Date.now()));
 const MAP_BG="/credits/region-pack-map-background.jpg?v="+assetVersion;
 const currentToken=encodeURIComponent(DATA.token||"");
 const currentPackId=encodeURIComponent(DATA.asset_id||DATA.region_pack&&DATA.region_pack.id||"");
@@ -2546,7 +2550,7 @@ svg{width:100%;aspect-ratio:1/1;height:auto;background:#0d1118;border:1px solid 
 <script>const DATA=${payload};
 const NS="http://www.w3.org/2000/svg";
 const fmt=(v)=>"€"+Number(v||0).toFixed(2);
-const assetVersion=encodeURIComponent(String(DATA.catalog_version||DATA.token||Date.now()));
+const assetVersion=encodeURIComponent(String(DATA.map_asset_revision||DATA.catalog_version||DATA.token||Date.now()));
 const MAP_BG="/credits/region-pack-map-background.jpg?v="+assetVersion;
 function esc(value){return String(value||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}
 function parseTileKey(key){const m=/x(\\d{3})_y(\\d{3})_z(\\d{3})_d(\\d{3})/i.exec(String(key||""));return m?{x:Number(m[1]),y:Number(m[2]),z:Number(m[3]),d:Number(m[4])}:null}
@@ -2578,6 +2582,8 @@ export async function handleCreditBalanceTopUpPage(request, env, deps) {
   return html(
     balanceTopUpPageHtml({
       ok: true,
+      catalog_version: REGION_PACK_CATALOG_VERSION,
+      map_asset_revision: REGION_PACK_MAP_ASSET_REVISION,
       token,
       options: balanceTopUpOptions(),
     }),
@@ -5237,6 +5243,8 @@ export async function handleCreditRegionPackCatalog(request, env, deps) {
   return html(
     regionPackStaticCatalogHtml({
       ok: true,
+      catalog_version: REGION_PACK_CATALOG_VERSION,
+      map_asset_revision: REGION_PACK_MAP_ASSET_REVISION,
       token,
       owned_tiles: ownedTilePayloadRows(ownedRows),
       world_full_quality_unlocked: isWorldFullQualityUnlocked(account),
