@@ -2,13 +2,17 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { execFile } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..", "..");
 const generatedSource = path.join(repoRoot, "cloudflare-api", "src", "worker", "region_packs.generated.js");
 const catalogSource = path.join(repoRoot, "Resources", "Region Packs", "region_packs_gadm.json");
+const dissolveOutlinesScript = path.join(__dirname, "dissolve_region_pack_map_outlines.py");
 const defaultOut = path.join(os.tmpdir(), "planetka_region_pack_map_assets");
+const execFileAsync = promisify(execFile);
 
 const TILE_KEY_RE = /x(\d{3})_y(\d{3})_z(\d{3})_d(\d{3})/i;
 const FREE_D_THRESHOLD = 60;
@@ -206,6 +210,25 @@ async function loadCatalog() {
       return {};
     }
     throw error;
+  }
+}
+
+async function dissolveGeneratedOutlines(outDir) {
+  if (process.argv.includes("--skip-dissolve-outlines")) {
+    return { skipped: true };
+  }
+  const { stdout, stderr } = await execFileAsync(
+    "python3",
+    [dissolveOutlinesScript, "--assets-dir", outDir],
+    { maxBuffer: 10 * 1024 * 1024 },
+  );
+  if (stderr && stderr.trim()) {
+    console.error(stderr.trim());
+  }
+  try {
+    return JSON.parse(stdout);
+  } catch {
+    return { raw_stdout: stdout.trim() };
   }
 }
 
@@ -548,7 +571,8 @@ async function main() {
   });
   await fs.writeFile(path.join(outDir, "catalog.json"), catalogBody);
   totalBytes += Buffer.byteLength(catalogBody);
-  console.log(JSON.stringify({ ok: true, outDir, count, totalBytes }, null, 2));
+  const dissolveResult = await dissolveGeneratedOutlines(outDir);
+  console.log(JSON.stringify({ ok: true, outDir, count, totalBytes, dissolveResult }, null, 2));
 }
 
 main().catch((error) => {
