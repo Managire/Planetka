@@ -633,7 +633,6 @@ function regionPackStaticMapPayload(product, token, account, ownedRows, options 
     owned_tiles: ownedTilePayloadRows(ownedRows),
     world_full_quality_unlocked: isWorldFullQualityUnlocked(account),
     success: options && options.success ? options.success : null,
-    summary_override: options && options.summaryOverride ? options.summaryOverride : null,
   };
 }
 
@@ -2378,7 +2377,7 @@ function computeAsset(asset){const owned=buildOwnedByFamily();const world=!!DATA
     tile.x=p?p.x:null;tile.y=p?p.y:null;tile.z=p?p.z:null;tile.d=p?p.d:null;tile.lon_min=p?p.x-180:null;tile.lon_max=p?p.x-180+p.z:null;tile.lat_min=p?p.y-90:null;tile.lat_max=p?p.y-90+p.z:null;tile.status=status;tile.charge_cents=charge;tile.price_cents=0;tile.full_price_cents=full;tile.full_price_eur=full/100;tile.price_eur=0;
   }
   const discountCents=Math.round(grossCents*discountPct/100);const targetCents=Math.max(0,grossCents-discountCents);let allocated=0;const alloc=paid.map((entry,index)=>{const raw=grossCents>0?(entry.cents*targetCents/grossCents):0;const floor=Math.floor(raw);allocated+=floor;return{entry,index,cents:floor,remainder:raw-floor}}).sort((a,b)=>b.remainder!==a.remainder?b.remainder-a.remainder:a.index-b.index);let rem=Math.max(0,targetCents-allocated);for(const item of alloc){if(rem<=0)break;item.cents+=1;rem-=1}for(const item of alloc){item.entry.tile.price_cents=item.cents;item.entry.tile.price_eur=item.cents/100;if(item.cents<=0)item.entry.tile.status="free"}
-  const alreadySavingGross=alreadyGrossCents;const alreadySavingDiscount=Math.round(alreadySavingGross*discountPct/100);const summaryOverride=DATA.summary_override||{};const displayFull=summaryOverride.full_price_cents!=null?int(summaryOverride.full_price_cents):grossCents;const displayDiscount=summaryOverride.discount_cents!=null?int(summaryOverride.discount_cents):discountCents;const displayPrice=summaryOverride.price_cents!=null?int(summaryOverride.price_cents):targetCents;
+  const alreadySavingGross=alreadyGrossCents;const alreadySavingDiscount=Math.round(alreadySavingGross*discountPct/100);const displayFull=grossCents;const displayDiscount=discountCents;const displayPrice=targetCents;
   const levels=Array.from(new Set(rows.map((row)=>Number(row.z)).filter(Number.isFinite))).sort((a,b)=>a-b);return{asset,rows,levels,summary:{new_tiles:paid.filter((entry)=>entry.tile.price_cents>0).length,total_tiles:rows.length,already_licenced_tiles:alreadyCount,free_tiles:freeCount,full_price_cents:displayFull,discount_percent:discountPct,discount_cents:displayDiscount,price_cents:displayPrice,already_licenced_saving_cents:Math.max(0,alreadySavingGross-alreadySavingDiscount)}}}
 function currentBuyHref(){return currentPackId?"/credits/region-pack-checkout?token="+currentToken+"&region_pack_id="+currentPackId+currentCatalog:""}
 function renderCards(vm){const s=vm.summary;const cards=[["New Tiles",s.new_tiles],["Total Tiles",s.total_tiles],["Full Price",fmtCents(s.full_price_cents)]];if(s.discount_percent>0)cards.push(["Volume Discount",s.discount_percent+"% (-"+fmtCents(s.discount_cents)+")"]);else cards.push(["Already Licenced Saving",fmtCents(s.already_licenced_saving_cents)]);const buy=currentBuyHref()&&int(s.price_cents)>0?"<a class=\\"button buy-now\\" href=\\""+currentBuyHref()+"\\">Buy Now</a>":"";cards.push(["Final Price",fmtCents(s.price_cents),buy]);document.getElementById("cards").innerHTML=cards.map((c)=>"<div class=\\"card "+(c[0]==="Final Price"?"final-price":"")+"\\"><span>"+esc(c[0])+"</span><b>"+esc(c[1])+"</b>"+(c[2]||"")+"</div>").join("")}
@@ -5009,11 +5008,6 @@ export async function handleCreditRegionPackCheckoutFromToken(request, env, deps
     const data = regionPackStaticMapPayload(product, token, refreshedAccount, ownedRows, {
       catalogMode: allowCatalogProduct,
       success,
-      summaryOverride: {
-        full_price_cents: centsForEur(normalizeCreditAmount(estimate && estimate.gross_eur)),
-        discount_cents: centsForEur(normalizeCreditAmount(estimate && estimate.discount_eur)),
-        price_cents: centsForEur(priceEur),
-      },
     });
     return html(regionPackStaticMapHtml(data), 200, env);
   }
@@ -5503,24 +5497,9 @@ export async function handleCreditPaymentSuccess(request, env, deps) {
       }
       const account = await ensureCreditAccount(db, userId, deps);
       const ownedRows = await ownedTileRowsForUser(db, userId, deps);
-      const fullPrice = normalizeCreditAmount(
-        purchase && purchase.gross_eur
-          || metadata.planetka_gross_eur
-          || regionProductPricingSummary(product) && regionProductPricingSummary(product).gross_eur,
-      );
-      const discountEur = normalizeCreditAmount(
-        purchase && purchase.discount_eur
-          || (fullPrice - amountPaidEur)
-          || 0,
-      );
       const data = regionPackStaticMapPayload(product, tokenResult.token, account, ownedRows, {
         catalogMode: true,
         success,
-        summaryOverride: {
-          full_price_cents: centsForEur(fullPrice),
-          discount_cents: centsForEur(discountEur),
-          price_cents: centsForEur(amountPaidEur),
-        },
       });
       return html(regionPackStaticMapHtml(data), 200, env);
     }
