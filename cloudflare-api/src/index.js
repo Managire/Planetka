@@ -4077,7 +4077,7 @@ async function dispatchExactRoute(request, env, path) {
       }
       return null;
     case "/credits/region-pack-checkout":
-      if (request.method === "GET" || request.method === "HEAD") {
+      if (request.method === "GET" || request.method === "HEAD" || request.method === "POST") {
         return await handleCreditRegionPackCheckoutFromTokenRoute(request, env, TILE_ROUTE_DEPS);
       }
       return null;

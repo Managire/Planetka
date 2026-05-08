@@ -3467,9 +3467,31 @@ async function insertRegionPackEntitlementRows(db, userId, rows, source, now, de
   return inserted;
 }
 
-export async function grantRegionPackEntitlements(db, userId, regionPackId, stripeSessionId, amountPaidEur, deps, userEmail = "", stripePaymentIntentId = "") {
+export async function grantRegionPackEntitlements(db, userId, regionPackId, stripeSessionId, amountPaidEur, deps, userEmail = "", stripePaymentIntentId = "", options = {}) {
   const safeUserId = String(userId || "").trim();
   const safeStripeSessionId = String(stripeSessionId || "").trim();
+  const safeOptions = options && typeof options === "object" ? options : {};
+  const paymentSourceRaw = String(
+    safeOptions.payment_source
+      || safeOptions.paymentSource
+      || (safeStripeSessionId.startsWith("region_pack_no_payment_") ? "none" : "stripe")
+      || "",
+  ).trim().toLowerCase();
+  const paymentSource = paymentSourceRaw === "balance" || paymentSourceRaw === "none" ? paymentSourceRaw : "stripe";
+  const ledgerReason = paymentSource === "balance"
+    ? "balance_region_pack_purchase"
+    : paymentSource === "none"
+    ? "region_pack_no_payment"
+    : "stripe_region_pack_purchase";
+  const entitlementSource = paymentSource === "balance"
+    ? "balance_region_pack"
+    : paymentSource === "none"
+    ? "region_pack_no_payment"
+    : "stripe_region_pack";
+  const paymentReferenceId = String(safeOptions.payment_reference_id || safeOptions.paymentReferenceId || "").trim();
+  const purchaseHistoryId = String(safeOptions.purchase_history_id || safeOptions.purchaseHistoryId || "").trim();
+  const shouldWriteLedger = !Boolean(safeOptions.skip_credit_ledger || safeOptions.skipCreditLedger);
+  const purchaseStripeSessionId = paymentSource === "stripe" ? safeStripeSessionId : "";
   const product = regionProductById(regionPackId);
   if (!safeUserId) {
     return { error: "missing_user_id" };
@@ -3477,7 +3499,7 @@ export async function grantRegionPackEntitlements(db, userId, regionPackId, stri
   if (!product) {
     return { error: "unknown_region_pack" };
   }
-  if (safeStripeSessionId) {
+  if (paymentSource === "stripe" && safeStripeSessionId) {
     const existingLedger = await deps.dbGet(
       db,
       `
@@ -3538,50 +3560,56 @@ export async function grantRegionPackEntitlements(db, userId, regionPackId, stri
           updated_at = ?
         WHERE user_id = ?
       `,
-      [now, safeStripeSessionId || null, paidEur, now, safeUserId],
+      [now, purchaseStripeSessionId || null, paidEur, now, safeUserId],
     );
-    await deps.dbRun(
-      db,
-      `
-        INSERT INTO credit_ledger (
-          id, user_id, delta_credits, balance_after_credits, reason, metadata_json, created_at
-        )
-        VALUES (?, ?, 0, (SELECT balance_credits FROM user_credit_accounts WHERE user_id = ?), 'stripe_region_pack_purchase', ?, ?)
-      `,
-      [
-        deps.randomToken(16),
-        safeUserId,
-        safeUserId,
-        JSON.stringify({
-          stripe_session_id: safeStripeSessionId,
-          stripe_payment_intent_id: String(stripePaymentIntentId || "").trim(),
-          region_pack_id: "world",
-          region_pack_name: String(product.name || "World"),
-          region_pack_type: String(product.type || "world"),
-          catalog_version: REGION_PACK_CATALOG_VERSION,
-          discount_percent: discountPercent,
-          discount_eur: discountEur,
-          quality_mode: "full",
-          tile_count: estimateNewTiles,
-          tile_count_total: estimateTotalTiles,
-          tile_count_new: estimateNewTiles,
-          tile_count_already_licenced: alreadyLicencedTiles,
-          nominal_eur: grossEur,
-          gross_eur: grossEur,
-          paid_eur: paidEur,
-          world_full_quality_unlocked: true,
-        }),
-        now,
-      ],
-    );
+    if (shouldWriteLedger) {
+      await deps.dbRun(
+        db,
+        `
+          INSERT INTO credit_ledger (
+            id, user_id, delta_credits, balance_after_credits, reason, metadata_json, created_at
+          )
+          VALUES (?, ?, 0, (SELECT balance_credits FROM user_credit_accounts WHERE user_id = ?), ?, ?, ?)
+        `,
+        [
+          deps.randomToken(16),
+          safeUserId,
+          safeUserId,
+          ledgerReason,
+          JSON.stringify({
+            stripe_session_id: purchaseStripeSessionId,
+            stripe_payment_intent_id: paymentSource === "stripe" ? String(stripePaymentIntentId || "").trim() : "",
+            payment_source: paymentSource,
+            payment_reference_id: paymentReferenceId,
+            region_pack_id: "world",
+            region_pack_name: String(product.name || "World"),
+            region_pack_type: String(product.type || "world"),
+            catalog_version: REGION_PACK_CATALOG_VERSION,
+            discount_percent: discountPercent,
+            discount_eur: discountEur,
+            quality_mode: "full",
+            tile_count: estimateNewTiles,
+            tile_count_total: estimateTotalTiles,
+            tile_count_new: estimateNewTiles,
+            tile_count_already_licenced: alreadyLicencedTiles,
+            nominal_eur: grossEur,
+            gross_eur: grossEur,
+            paid_eur: paidEur,
+            world_full_quality_unlocked: true,
+          }),
+          now,
+        ],
+      );
+    }
     await recordPurchaseHistoryBestEffort(
       db,
       {
+        id: purchaseHistoryId || undefined,
         user_id: safeUserId,
         user_email: String(userEmail || "").trim().toLowerCase(),
         purchase_type: "region_pack",
-        stripe_session_id: safeStripeSessionId,
-        stripe_payment_intent_id: String(stripePaymentIntentId || "").trim(),
+        stripe_session_id: purchaseStripeSessionId,
+        stripe_payment_intent_id: paymentSource === "stripe" ? String(stripePaymentIntentId || "").trim() : "",
         amount_paid_eur: paidEur,
         nominal_eur: grossEur,
         gross_eur: grossEur,
@@ -3596,6 +3624,8 @@ export async function grantRegionPackEntitlements(db, userId, regionPackId, stri
         tile_count_new: estimateNewTiles,
         tile_count_already_licenced: alreadyLicencedTiles,
         metadata: {
+          payment_source: paymentSource,
+          payment_reference_id: paymentReferenceId,
           world_full_quality_unlocked: true,
         },
         created_at: now,
@@ -3623,7 +3653,7 @@ export async function grantRegionPackEntitlements(db, userId, regionPackId, stri
       db,
       safeUserId,
       grantTiles,
-      "stripe_region_pack_summary",
+      `${entitlementSource}_summary`,
       now,
       deps,
     ));
@@ -3641,7 +3671,7 @@ export async function grantRegionPackEntitlements(db, userId, regionPackId, stri
         INSERT OR IGNORE INTO user_tile_entitlements (
           user_id, tile_key, quality_mode, credits_spent, land_km2, billable_land_km2, source, unlocked_at
         )
-        VALUES (?, ?, 'full', ?, ?, ?, 'stripe_region_pack', ?)
+        VALUES (?, ?, 'full', ?, ?, ?, ?, ?)
       `,
       [
         safeUserId,
@@ -3649,6 +3679,7 @@ export async function grantRegionPackEntitlements(db, userId, regionPackId, stri
         nominalTileCredits,
         Math.max(0, Number.parseFloat(tile && tile.land_km2 || 0) || 0),
         Math.max(0, Number.parseFloat(tile && tile.billable_land_km2 || 0) || 0),
+        entitlementSource,
         now,
       ],
     );
@@ -3657,47 +3688,53 @@ export async function grantRegionPackEntitlements(db, userId, regionPackId, stri
       nominalCredits = normalizeCreditAmount(nominalCredits + nominalTileCredits);
     }
   }
-  await deps.dbRun(
-    db,
-    `
-      INSERT INTO credit_ledger (
-        id, user_id, delta_credits, balance_after_credits, reason, metadata_json, created_at
-      )
-      VALUES (?, ?, 0, (SELECT balance_credits FROM user_credit_accounts WHERE user_id = ?), 'stripe_region_pack_purchase', ?, ?)
-    `,
-    [
-      deps.randomToken(16),
-      safeUserId,
-      safeUserId,
-      JSON.stringify({
-        stripe_session_id: safeStripeSessionId,
-        stripe_payment_intent_id: String(stripePaymentIntentId || "").trim(),
-        region_pack_id: String(product.id || ""),
-        region_pack_name: String(product.name || ""),
-        region_pack_type: String(product.type || ""),
-        catalog_version: REGION_PACK_CATALOG_VERSION,
-        discount_percent: discountPercent,
-        discount_eur: discountEur,
-        quality_mode: "full",
-        tile_count: insertedTiles.length,
-        tile_count_total: estimateTotalTiles,
-        tile_count_new: estimateNewTiles,
-        tile_count_already_licenced: alreadyLicencedTiles,
-        nominal_eur: nominalCredits,
-        gross_eur: grossEur,
-        paid_eur: paidEur,
-      }),
-      now,
-    ],
-  );
+  if (shouldWriteLedger) {
+    await deps.dbRun(
+      db,
+      `
+        INSERT INTO credit_ledger (
+          id, user_id, delta_credits, balance_after_credits, reason, metadata_json, created_at
+        )
+        VALUES (?, ?, 0, (SELECT balance_credits FROM user_credit_accounts WHERE user_id = ?), ?, ?, ?)
+      `,
+      [
+        deps.randomToken(16),
+        safeUserId,
+        safeUserId,
+        ledgerReason,
+        JSON.stringify({
+          stripe_session_id: purchaseStripeSessionId,
+          stripe_payment_intent_id: paymentSource === "stripe" ? String(stripePaymentIntentId || "").trim() : "",
+          payment_source: paymentSource,
+          payment_reference_id: paymentReferenceId,
+          region_pack_id: String(product.id || ""),
+          region_pack_name: String(product.name || ""),
+          region_pack_type: String(product.type || ""),
+          catalog_version: REGION_PACK_CATALOG_VERSION,
+          discount_percent: discountPercent,
+          discount_eur: discountEur,
+          quality_mode: "full",
+          tile_count: insertedTiles.length,
+          tile_count_total: estimateTotalTiles,
+          tile_count_new: estimateNewTiles,
+          tile_count_already_licenced: alreadyLicencedTiles,
+          nominal_eur: nominalCredits,
+          gross_eur: grossEur,
+          paid_eur: paidEur,
+        }),
+        now,
+      ],
+    );
+  }
   await recordPurchaseHistoryBestEffort(
     db,
     {
+      id: purchaseHistoryId || undefined,
       user_id: safeUserId,
       user_email: String(userEmail || "").trim().toLowerCase(),
       purchase_type: "region_pack",
-      stripe_session_id: safeStripeSessionId,
-      stripe_payment_intent_id: String(stripePaymentIntentId || "").trim(),
+      stripe_session_id: purchaseStripeSessionId,
+      stripe_payment_intent_id: paymentSource === "stripe" ? String(stripePaymentIntentId || "").trim() : "",
       amount_paid_eur: paidEur,
       nominal_eur: nominalCredits,
       gross_eur: grossEur,
@@ -3712,6 +3749,8 @@ export async function grantRegionPackEntitlements(db, userId, regionPackId, stri
       tile_count_new: estimateNewTiles,
       tile_count_already_licenced: alreadyLicencedTiles,
       metadata: {
+        payment_source: paymentSource,
+        payment_reference_id: paymentReferenceId,
         inserted_tile_count: insertedTiles.length,
       },
       created_at: now,
@@ -4106,52 +4145,17 @@ export async function handleCreditCheckout(request, env, deps) {
         env,
       );
     }
-    const amountCents = centsForEur(priceEur);
-    if (amountCents < STRIPE_MIN_CHECKOUT_AMOUNT_CENTS) {
-      return deps.json(
-        {
-          ok: false,
-          error: "amount_below_stripe_minimum",
-          option: "region_pack",
-          region_pack: regionProductPublicPayload(product),
-          price_eur: priceEur,
-          minimum_eur: STRIPE_MIN_CHECKOUT_AMOUNT_CENTS / 100.0,
-          message: "This region pack price is below Stripe's minimum checkout amount.",
-        },
-        400,
-        env,
-      );
-    }
-    const session = await createStripeCheckoutSession(
-      env,
-      {
-        amountCents,
-        customerEmail: email,
-        clientReferenceId: userId,
-        productName: `Planetka Full Quality ${String(product.name || "Region")} Pack`,
-        metadata: {
-          planetka_purchase_type: "region_pack",
-          planetka_user_id: userId,
-          planetka_email: email,
-          planetka_quality_mode: "full",
-          planetka_region_id: String(product.id || ""),
-          planetka_region_name: String(product.name || ""),
-          planetka_region_type: String(product.type || ""),
-          planetka_catalog_version: REGION_PACK_CATALOG_VERSION,
-          planetka_price_eur: priceEur.toFixed(2),
-          planetka_gross_eur: normalizeCreditAmount(estimate && estimate.gross_eur).toFixed(2),
-          planetka_discount_percent: String(Math.max(0, Number.parseInt(product.discount_percent || 0, 10) || 0)),
-        },
-      },
-      deps,
-    );
-    if (session.error) {
-      return deps.json({ ok: false, ...session }, 502, env);
-    }
+    const tokenResult = await createRegionPackDetailTokenForUser(db, userId, String(product.id || ""), env, deps);
+    const url = new URL(request.url);
+    url.pathname = "/credits/region-pack-checkout";
+    url.search = "";
+    url.searchParams.set("token", tokenResult.token);
+    url.searchParams.set("region_pack_id", String(product.id || ""));
     return deps.json(
       {
         ok: true,
         option: "region_pack",
+        payment_choice_required: true,
         region_pack: regionProductPublicPayload(product),
         price_eur: priceEur,
         gross_eur: normalizeCreditAmount(estimate && estimate.gross_eur),
@@ -4159,7 +4163,8 @@ export async function handleCreditCheckout(request, env, deps) {
         paid_tile_count: estimate.paid_tile_count,
         new_tile_count: estimate.new_tile_count,
         tile_count: estimate.tile_count,
-        ...session,
+        checkout_url: url.toString(),
+        expires_at: tokenResult.expires_at,
       },
       200,
       env,
@@ -4612,11 +4617,214 @@ function resolveRegionPackFromDetailTokenRow(row, requestedRegionId = "", option
   return { ok: true, baseProduct, product };
 }
 
-export async function handleCreditRegionPackCheckoutFromToken(request, env, deps) {
+async function regionPackCheckoutParams(request) {
   const url = new URL(request.url);
-  const token = String(url.searchParams.get("token") || "").trim();
-  const requestedRegionId = String(url.searchParams.get("region_pack_id") || "").trim();
-  const allowCatalogProduct = String(url.searchParams.get("catalog") || "") === "1";
+  const params = new Map();
+  for (const key of ["token", "region_pack_id", "catalog", "method"]) {
+    params.set(key, String(url.searchParams.get(key) || "").trim());
+  }
+  if (String(request.method || "GET").trim().toUpperCase() === "POST") {
+    try {
+      const form = await request.formData();
+      for (const key of ["token", "region_pack_id", "catalog", "method"]) {
+        const value = form.get(key);
+        if (value !== null && value !== undefined) {
+          params.set(key, String(value || "").trim());
+        }
+      }
+    } catch (_error) {
+      // Keep URL parameters as a fallback for malformed form posts.
+    }
+  }
+  return {
+    token: params.get("token") || "",
+    requestedRegionId: params.get("region_pack_id") || "",
+    allowCatalogProduct: params.get("catalog") === "1",
+    method: String(params.get("method") || "").trim().toLowerCase(),
+  };
+}
+
+function regionPackPaymentChoiceHtml(data) {
+  const product = data && data.product || {};
+  const estimate = data && data.estimate || {};
+  const account = data && data.account || {};
+  const name = String(product && product.name || "Region Pack").trim() || "Region Pack";
+  const token = escapeHtmlText(String(data && data.token || ""));
+  const regionPackId = escapeHtmlText(String(product && product.id || ""));
+  const catalogInput = data && data.catalog_mode ? `<input type="hidden" name="catalog" value="1">` : "";
+  const catalogParam = data && data.catalog_mode ? "&catalog=1" : "";
+  const balanceTopUpToken = String(data && data.balance_top_up_token || "").trim();
+  const balanceTopUpHref = balanceTopUpToken ? `/credits/balance?token=${escapeHtmlText(encodeURIComponent(balanceTopUpToken))}` : "";
+  const mapHref = `/credits/region-pack-map?token=${escapeHtmlText(encodeURIComponent(String(data && data.token || "")))}&region_pack_id=${escapeHtmlText(encodeURIComponent(String(product && product.id || "")))}${catalogParam}`;
+  const priceEur = normalizeCreditAmount(estimate && estimate.price_eur);
+  const grossEur = normalizeCreditAmount(estimate && estimate.gross_eur);
+  const discountEur = normalizeCreditAmount(estimate && estimate.discount_eur);
+  const discountPercent = Math.max(0, Number.parseInt(product && product.discount_percent || 0, 10) || 0);
+  const balanceEur = normalizeSignedCreditAmount(account && account.balance_credits);
+  const canUseBalance = priceEur > 0 && balanceEur >= priceEur;
+  const stripeAvailable = centsForEur(priceEur) >= STRIPE_MIN_CHECKOUT_AMOUNT_CENTS;
+  const insufficientBalance = priceEur > 0 && !canUseBalance;
+  const stripeButton = stripeAvailable
+    ? `<form method="post" action="/credits/region-pack-checkout"><input type="hidden" name="token" value="${token}"><input type="hidden" name="region_pack_id" value="${regionPackId}">${catalogInput}<input type="hidden" name="method" value="stripe"><button class="button" type="submit">Pay through payment gateway (€${priceEur.toFixed(2)})</button></form>`
+    : `<button class="button disabled" type="button" disabled>Payment gateway unavailable below €${(STRIPE_MIN_CHECKOUT_AMOUNT_CENTS / 100).toFixed(2)}</button>`;
+  const balanceButton = canUseBalance
+    ? `<form method="post" action="/credits/region-pack-checkout"><input type="hidden" name="token" value="${token}"><input type="hidden" name="region_pack_id" value="${regionPackId}">${catalogInput}<input type="hidden" name="method" value="balance"><button class="button secondary" type="submit">Use Planetka balance (€${priceEur.toFixed(2)})</button></form>`
+    : `<button class="button disabled" type="button" disabled>Use Planetka balance (€${balanceEur.toFixed(2)} available)</button>`;
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Planetka ${escapeHtmlText(name)} Payment Options</title>
+<style>
+:root{color-scheme:dark;--bg:#111;--panel:#1b1b1b;--line:#3c3c3c;--text:#eee;--muted:#aaa;--accent:#d9a441}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+main{max-width:760px;margin:0 auto;padding:24px}h1{margin:0 0 10px;font-size:28px;font-weight:650}.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;margin-top:14px}.muted{color:var(--muted)}.summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-top:12px}.card{background:#151515;border:1px solid var(--line);border-radius:10px;padding:12px}.card b{display:block;font-size:21px;margin-top:3px}.actions{display:grid;gap:10px;margin-top:14px}.button{width:100%;display:inline-flex;align-items:center;justify-content:center;padding:11px 13px;border:0;border-radius:9px;background:var(--accent);color:#111;text-decoration:none;font-weight:750;font:inherit;cursor:pointer}.button.secondary{background:#2a2a2a;color:var(--text);border:1px solid var(--line)}.button.disabled{background:#333;color:#888;border:1px solid var(--line);cursor:not-allowed}.notice{color:#f2c36b}.links{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px}.links a{color:#f4d28d;text-decoration:none}
+</style>
+</head>
+<body>
+<main>
+<h1>${escapeHtmlText(name)} Full Quality Pack</h1>
+<section class="panel">
+<p>Choose how you want to licence this Full Quality data pack.</p>
+<div class="summary">
+<div class="card"><span>Final Price</span><b>€${priceEur.toFixed(2)}</b></div>
+<div class="card"><span>Your Balance</span><b>€${balanceEur.toFixed(2)}</b></div>
+<div class="card"><span>New Tiles</span><b>${Math.max(0, Number.parseInt(estimate && estimate.new_tile_count || 0, 10) || 0)}</b></div>
+<div class="card"><span>Volume Discount</span><b>${discountPercent}% (-€${discountEur.toFixed(2)})</b></div>
+</div>
+<p class="muted">Full price before volume discount and already-licenced tiles: €${grossEur.toFixed(2)}</p>
+${insufficientBalance ? `<p class="notice">Your balance is lower than this pack price. Use the payment gateway or add balance first.</p>` : ""}
+<div class="actions">
+${stripeButton}
+${balanceButton}
+</div>
+<div class="links">
+${balanceTopUpHref ? `<a href="${balanceTopUpHref}">Add balance</a>` : ""}
+<a href="${mapHref}">View detailed map</a>
+</div>
+</section>
+</main>
+</body>
+</html>`;
+}
+
+async function grantRegionPackFromBalance(db, userId, email, product, priceEur, estimate, deps) {
+  const safeUserId = String(userId || "").trim();
+  const amount = normalizeCreditAmount(priceEur);
+  if (!safeUserId || amount <= 0) {
+    return { error: "missing_positive_region_pack_amount" };
+  }
+  const account = await ensureCreditAccount(db, safeUserId, deps);
+  const balanceBefore = normalizeSignedCreditAmount(account && account.balance_credits);
+  if (balanceBefore < amount) {
+    return {
+      error: "insufficient_balance",
+      balance_credits: balanceBefore,
+      required_credits: amount,
+    };
+  }
+  const now = deps.nowIso();
+  const balancePurchaseId = `balance_region_pack_${deps.randomToken(16)}`;
+  const update = await deps.dbRun(
+    db,
+    `
+      UPDATE user_credit_accounts
+      SET
+        balance_credits = ROUND((balance_credits - ?) * 100.0) / 100.0,
+        total_spent_credits = ROUND((total_spent_credits + ?) * 100.0) / 100.0,
+        updated_at = ?
+      WHERE user_id = ?
+        AND balance_credits >= ?
+    `,
+    [amount, amount, now, safeUserId, amount],
+  );
+  if (deps.dbMetaChanges(update) <= 0) {
+    const fresh = await ensureCreditAccount(db, safeUserId, deps);
+    return {
+      error: "insufficient_balance",
+      balance_credits: normalizeSignedCreditAmount(fresh && fresh.balance_credits),
+      required_credits: amount,
+    };
+  }
+  const afterAccount = await ensureCreditAccount(db, safeUserId, deps);
+  const balanceAfter = normalizeSignedCreditAmount(afterAccount && afterAccount.balance_credits);
+  await deps.dbRun(
+    db,
+    `
+      INSERT INTO credit_ledger (
+        id, user_id, delta_credits, balance_after_credits, reason, metadata_json, created_at
+      )
+      VALUES (?, ?, ?, ?, 'balance_region_pack_purchase', ?, ?)
+    `,
+    [
+      deps.randomToken(16),
+      safeUserId,
+      -amount,
+      balanceAfter,
+      JSON.stringify({
+        payment_source: "balance",
+        payment_reference_id: balancePurchaseId,
+        region_pack_id: String(product && product.id || ""),
+        region_pack_name: String(product && product.name || ""),
+        region_pack_type: String(product && product.type || ""),
+        catalog_version: REGION_PACK_CATALOG_VERSION,
+        discount_percent: Math.max(0, Number.parseInt(product && product.discount_percent || 0, 10) || 0),
+        discount_eur: normalizeCreditAmount(estimate && estimate.discount_eur),
+        quality_mode: "full",
+        tile_count: Math.max(0, Number.parseInt(estimate && estimate.new_tile_count || 0, 10) || 0),
+        tile_count_total: Math.max(0, Number.parseInt(estimate && estimate.tile_count || 0, 10) || 0),
+        tile_count_new: Math.max(0, Number.parseInt(estimate && estimate.new_tile_count || 0, 10) || 0),
+        tile_count_already_licenced: Math.max(0, Array.isArray(estimate && estimate.excluded_tiles) ? estimate.excluded_tiles.length : 0),
+        gross_eur: normalizeCreditAmount(estimate && estimate.gross_eur),
+        paid_eur: amount,
+      }),
+      now,
+    ],
+  );
+  const grant = await grantRegionPackEntitlements(
+    db,
+    safeUserId,
+    String(product && product.id || ""),
+    "",
+    amount,
+    deps,
+    email,
+    "",
+    {
+      payment_source: "balance",
+      payment_reference_id: balancePurchaseId,
+      purchase_history_id: balancePurchaseId,
+      skip_credit_ledger: true,
+    },
+  );
+  if (grant && grant.error) {
+    await addCreditBalance(
+      db,
+      safeUserId,
+      amount,
+      "balance_region_pack_refund",
+      {
+        payment_source: "balance",
+        payment_reference_id: balancePurchaseId,
+        region_pack_id: String(product && product.id || ""),
+        refund_reason: String(grant.error || "region_pack_grant_failed"),
+      },
+      deps,
+    );
+    return grant;
+  }
+  return {
+    ok: true,
+    balance_before_credits: balanceBefore,
+    balance_after_credits: balanceAfter,
+    payment_reference_id: balancePurchaseId,
+    grant,
+  };
+}
+
+export async function handleCreditRegionPackCheckoutFromToken(request, env, deps) {
+  const { token, requestedRegionId, allowCatalogProduct, method } = await regionPackCheckoutParams(request);
   const db = deps.requireDb(env);
   const tokenResult = allowCatalogProduct
     ? await getValidAnyDetailToken(db, token, deps)
@@ -4689,9 +4897,87 @@ export async function handleCreditRegionPackCheckoutFromToken(request, env, deps
     );
   }
   const amountCents = centsForEur(priceEur);
+  const account = await ensureCreditAccount(db, userId, deps);
+  const balanceToken = await createBalanceTopUpTokenForUser(db, userId, env, deps);
+
+  if (method === "balance") {
+    const balanceGrant = await grantRegionPackFromBalance(db, userId, email, product, priceEur, estimate, deps);
+    if (balanceGrant && balanceGrant.error) {
+      return html(
+        regionPackPaymentChoiceHtml({
+          token,
+          product,
+          estimate,
+          account: await ensureCreditAccount(db, userId, deps),
+          catalog_mode: allowCatalogProduct,
+          balance_top_up_token: balanceToken && balanceToken.token,
+        }),
+        balanceGrant.error === "insufficient_balance" ? 402 : 500,
+        env,
+      );
+    }
+    if (typeof deps.invalidateAnalyticsSnapshots === "function") {
+      try {
+        await deps.invalidateAnalyticsSnapshots(env);
+      } catch (error) {
+        console.warn(
+          "region_pack.balance_purchase_snapshot_invalidate_failed",
+          JSON.stringify({ user_id: userId, region_pack_id: String(product.id || ""), error: String(error && error.message || "snapshot_invalidate_failed") }),
+        );
+      }
+    }
+    const success = {
+      title: "Licence applied",
+      message: `€${priceEur.toFixed(2)} was deducted from your Planetka balance. ${String(product.name || "This pack")} is now licenced to your account.`,
+    };
+    if (String(product.id || "").trim().toLowerCase() === "world") {
+      const safeToken = escapeHtmlText(encodeURIComponent(token));
+      const fullPrice = normalizeCreditAmount(regionProductPricingSummary(product) && regionProductPricingSummary(product).gross_eur).toFixed(2);
+      return html(
+        `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Planetka World Pack</title><style>:root{color-scheme:dark}body{margin:0;background:#111;color:#eee;font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:820px;margin:0 auto;padding:24px}.panel{background:#1b1b1b;border:1px solid #3c3c3c;border-radius:12px;padding:14px;margin-top:14px}.button{display:inline-flex;align-items:center;justify-content:center;margin:8px 8px 0 0;padding:9px 12px;border-radius:8px;background:#d9a441;color:#111;text-decoration:none;font-weight:700}.secondary{background:#2a2a2a;color:#eee;border:1px solid #3c3c3c}.muted{color:#aaa}</style></head><body><main><h1>World Full Quality Pack</h1><section class="panel"><h2>${escapeHtmlText(success.title)}</h2><p>${escapeHtmlText(success.message)}</p></section><section class="panel"><p>The World pack includes the complete Full Quality texture dataset. A full interactive tile map is intentionally not generated because it would be too large for a useful browser view.</p><p class="muted">Full price: €${fullPrice}<br>Final price: €${priceEur.toFixed(2)}</p><a class="button secondary" href="/credits/region-pack-catalog?token=${safeToken}">View all data packs</a></section></main></body></html>`,
+        200,
+        env,
+      );
+    }
+    const ownedRows = await ownedTileRowsForUser(db, userId, deps);
+    const refreshedAccount = await ensureCreditAccount(db, userId, deps);
+    const data = regionPackStaticMapPayload(product, token, refreshedAccount, ownedRows, {
+      catalogMode: allowCatalogProduct,
+      success,
+      summaryOverride: {
+        full_price_cents: centsForEur(normalizeCreditAmount(estimate && estimate.gross_eur)),
+        discount_cents: centsForEur(normalizeCreditAmount(estimate && estimate.discount_eur)),
+        price_cents: centsForEur(priceEur),
+      },
+    });
+    return html(regionPackStaticMapHtml(data), 200, env);
+  }
+
+  if (method !== "stripe") {
+    return html(
+      regionPackPaymentChoiceHtml({
+        token,
+        product,
+        estimate,
+        account,
+        catalog_mode: allowCatalogProduct,
+        balance_top_up_token: balanceToken && balanceToken.token,
+      }),
+      200,
+      env,
+    );
+  }
+
   if (amountCents < STRIPE_MIN_CHECKOUT_AMOUNT_CENTS) {
     return html(
-      `<!doctype html><title>Planetka Region Pack</title><h1>Amount below Stripe minimum.</h1><p>This pack price is €${priceEur.toFixed(2)}.</p>`,
+      regionPackPaymentChoiceHtml({
+        token,
+        product,
+        estimate,
+        account,
+        catalog_mode: allowCatalogProduct,
+        balance_top_up_token: balanceToken && balanceToken.token,
+      }),
       400,
       env,
     );
