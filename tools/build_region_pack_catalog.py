@@ -222,6 +222,13 @@ HIMALAYAN_DISPUTED_CODES = ("Z01", "Z02", "Z03", "Z04", "Z05", "Z06", "Z07", "Z0
 PARACEL_ISLAND_CODES = ("XPI",)
 SPRATLY_ISLAND_CODES = ("XSP",)
 SOUTH_CHINA_SEA_DISPUTED_CODES = (*PARACEL_ISLAND_CODES, *SPRATLY_ISLAND_CODES)
+DISPLAY_AREA_LABEL_BY_ADM0_CODE = {
+    **{code: "Himalayan Disputed Territories" for code in HIMALAYAN_DISPUTED_CODES},
+    "XPI": "Paracel Islands",
+    "XSP": "Spratly Islands",
+    "ZNC": "Northern Cyprus",
+    "XAD": "Akrotiri and Dhekelia",
+}
 RUSSIA_EXCLUDED_UKRAINE_ADM1_CODES = (
     "UKR.4_1",   # Crimea
     "UKR.6_1",   # Donetsk
@@ -472,6 +479,7 @@ LOCAL_PRODUCT_SPECS = (
             "auto_merge": False,
             "discount_percent": 20,
             "subtract_adm0_codes": tuple((ASIA_PRODUCT_OVERRIDES.get(code) or {}).get("subtract_adm0_codes") or ()),
+            "subtract_adm1_codes": tuple((ASIA_PRODUCT_OVERRIDES.get(code) or {}).get("subtract_adm1_codes") or ()),
         }
         for code in ASIA_COUNTRY_CODES
     ),
@@ -1181,22 +1189,25 @@ def country_records(selected) -> list[dict]:
             country_name = clean_text(row.COUNTRY)
             gid0 = clean_text(row.GID_0)
             gid1 = clean_text(row.GID_1)
+            area_label = DISPLAY_AREA_LABEL_BY_ADM0_CODE.get(gid0.upper(), "")
             if region_name:
                 records.append({
                     "GID_0": gid0,
                     "COUNTRY": country_name,
                     "GID_1": gid1,
                     "NAME_1": region_name,
-                    "name": region_name,
+                    "name": area_label or region_name,
                     "country": country_name,
                 })
-            elif country_name:
-                records.append({"GID_0": gid0, "COUNTRY": country_name, "name": country_name})
+            elif area_label or country_name:
+                records.append({"GID_0": gid0, "COUNTRY": country_name, "name": area_label or country_name})
         return records
     for row in selected[["GID_0", "COUNTRY"]].drop_duplicates().sort_values("COUNTRY").itertuples(index=False):
         country_name = clean_text(row.COUNTRY)
-        if country_name:
-            records.append({"GID_0": clean_text(row.GID_0), "COUNTRY": country_name, "name": country_name})
+        gid0 = clean_text(row.GID_0)
+        area_label = DISPLAY_AREA_LABEL_BY_ADM0_CODE.get(gid0.upper(), "")
+        if area_label or country_name:
+            records.append({"GID_0": gid0, "COUNTRY": country_name, "name": area_label or country_name})
     return records
 
 
@@ -1228,7 +1239,12 @@ def country_outlines_for_web(
         if not polygons:
             continue
         outline_id = clean_text(getattr(row, "GID_1", "")) or clean_text(getattr(row, "GID_0", ""))
-        outline_name = clean_text(getattr(row, "NAME_1", "")) or clean_text(getattr(row, "COUNTRY", ""))
+        gid0 = clean_text(getattr(row, "GID_0", ""))
+        outline_name = (
+            DISPLAY_AREA_LABEL_BY_ADM0_CODE.get(gid0.upper(), "")
+            or clean_text(getattr(row, "NAME_1", ""))
+            or clean_text(getattr(row, "COUNTRY", ""))
+        )
         outlines.append({"id": outline_id, "name": outline_name, "polygons": polygons})
     return outlines
 

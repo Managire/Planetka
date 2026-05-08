@@ -414,6 +414,21 @@ function countryNameByRegionId(regionId) {
 }
 
 const INCLUDED_AREA_NEUTRALITY_NOTICE = "Included area labels are provided only to describe possible texture coverage for this data pack. They do not define borders, sovereignty, or political status. Planetka does not draw or decide national borders; this pack simply unlocks texture tiles that may be relevant to the selected area.";
+const DISPLAY_AREA_LABEL_BY_ADM0_CODE = new Map([
+  ["Z01", "Himalayan Disputed Territories"],
+  ["Z02", "Himalayan Disputed Territories"],
+  ["Z03", "Himalayan Disputed Territories"],
+  ["Z04", "Himalayan Disputed Territories"],
+  ["Z05", "Himalayan Disputed Territories"],
+  ["Z06", "Himalayan Disputed Territories"],
+  ["Z07", "Himalayan Disputed Territories"],
+  ["Z08", "Himalayan Disputed Territories"],
+  ["Z09", "Himalayan Disputed Territories"],
+  ["XPI", "Paracel Islands"],
+  ["XSP", "Spratly Islands"],
+  ["ZNC", "Northern Cyprus"],
+  ["XAD", "Akrotiri and Dhekelia"],
+]);
 
 function uniqueDisplayStrings(values) {
   const seen = new Set();
@@ -438,7 +453,10 @@ function regionProductIncludedCountries(product) {
   const generated = GENERATED_REGION_PACK_DETAILS[id];
   if (generated && Array.isArray(generated.countries)) {
     return uniqueDisplayStrings(generated.countries
-      .map((entry) => String(entry && (entry.NAME_1 || entry.name || entry.COUNTRY) || "").trim())
+      .map((entry) => {
+        const code = String(entry && entry.GID_0 || "").trim().toUpperCase();
+        return String(DISPLAY_AREA_LABEL_BY_ADM0_CODE.get(code) || entry && (entry.NAME_1 || entry.name || entry.COUNTRY) || "").trim();
+      })
       .filter(Boolean));
   }
   if (String(product.type || "") === "country") {

@@ -15,6 +15,21 @@ const DATASET_BASE_MPP = 10.0;
 const EQUATOR_Z001_AREA_KM2 = (40075.016686 / 360.0) ** 2;
 const METRIC_SCALE = 1_000_000;
 const REGION_PACK_MAP_MAX_OUTLINE_POINTS = 20_000;
+const DISPLAY_AREA_LABEL_BY_ADM0_CODE = new Map([
+  ["Z01", "Himalayan Disputed Territories"],
+  ["Z02", "Himalayan Disputed Territories"],
+  ["Z03", "Himalayan Disputed Territories"],
+  ["Z04", "Himalayan Disputed Territories"],
+  ["Z05", "Himalayan Disputed Territories"],
+  ["Z06", "Himalayan Disputed Territories"],
+  ["Z07", "Himalayan Disputed Territories"],
+  ["Z08", "Himalayan Disputed Territories"],
+  ["Z09", "Himalayan Disputed Territories"],
+  ["XPI", "Paracel Islands"],
+  ["XSP", "Spratly Islands"],
+  ["ZNC", "Northern Cyprus"],
+  ["XAD", "Akrotiri and Dhekelia"],
+]);
 
 function argValue(name, fallback = "") {
   const index = process.argv.indexOf(name);
@@ -335,11 +350,17 @@ function productPublicPayload(product, version, includedCountries) {
 
 function includedCountryDisplayName(value, helpers) {
   if (value && typeof value === "object") {
-    return String(value.name || value.COUNTRY || value.NAME_1 || value.GID_0 || "").trim();
+    const code = String(value.GID_0 || "").trim().toUpperCase();
+    return String(DISPLAY_AREA_LABEL_BY_ADM0_CODE.get(code) || value.name || value.COUNTRY || value.NAME_1 || value.GID_0 || "").trim();
   }
   const id = String(value || "").trim();
   const product = helpers && typeof helpers.product === "function" ? helpers.product(id) : null;
   return String(product && product.name || id).trim();
+}
+
+function outlineDisplayName(outline) {
+  const code = String(outline && outline.id || "").trim().toUpperCase();
+  return String(DISPLAY_AREA_LABEL_BY_ADM0_CODE.get(code) || outline && outline.name || "").trim();
 }
 
 function uniqueIncludedCountries(values, helpers) {
@@ -417,7 +438,10 @@ function assetForProduct(product, helpers, generated) {
     catalog_version: generated.GENERATED_REGION_PACK_CATALOG_VERSION || "unknown",
     region_pack: productPublicPayload(product, generated.GENERATED_REGION_PACK_CATALOG_VERSION || "unknown", includedCountries),
     included_countries: includedCountries,
-    outlines: helpers.outlines(product),
+    outlines: helpers.outlines(product).map((outline) => ({
+      ...outline,
+      name: outlineDisplayName(outline),
+    })),
     bounds: boundsForProduct(product, sourceDetail, rows),
     levels,
     tiles: rows,
