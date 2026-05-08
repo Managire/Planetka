@@ -444,6 +444,18 @@ export async function handleStripeWebhook(request, env, deps) {
       const topUpEur = Number.isFinite(requestedTopUp) && requestedTopUp > 0
         ? normalizeEur(requestedTopUp)
         : amountPaidEur;
+      const requestedPayment = Number.parseFloat(metadata.planetka_top_up_payment_eur || "");
+      const topUpPaymentEur = Number.isFinite(requestedPayment) && requestedPayment > 0
+        ? normalizeEur(requestedPayment)
+        : amountPaidEur;
+      const requestedBonus = Number.parseFloat(metadata.planetka_top_up_bonus_eur || "");
+      const topUpBonusEur = Number.isFinite(requestedBonus) && requestedBonus > 0
+        ? normalizeEur(requestedBonus)
+        : normalizeEur(Math.max(0, topUpEur - topUpPaymentEur));
+      const requestedBonusPercent = Number.parseFloat(metadata.planetka_top_up_bonus_percent || "");
+      const topUpBonusPercent = Number.isFinite(requestedBonusPercent) && requestedBonusPercent > 0
+        ? Math.round(requestedBonusPercent * 1000) / 1000
+        : 0;
       const topUp = await addCreditBalance(
         db,
         userId,
@@ -453,6 +465,10 @@ export async function handleStripeWebhook(request, env, deps) {
           stripe_session_id: sessionId,
           stripe_payment_intent_id: stripePaymentIntentId,
           stripe_amount_paid_eur: amountPaidEur,
+          top_up_payment_eur: topUpPaymentEur,
+          top_up_bonus_eur: topUpBonusEur,
+          top_up_bonus_percent: topUpBonusPercent,
+          top_up_balance_eur: topUpEur,
           customer_email: email,
         },
         deps,

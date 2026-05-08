@@ -1002,6 +1002,7 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
             ("STANDARD_UNLOCK", "Unlock Standard Quality", "Unlock Standard Quality forever for this account"),
             ("SCENE", "Buy This Scene", "Pay the exact current Full Quality scene price"),
             ("REGION_PACK", "Buy Region Pack", "Buy a broader Full Quality region pack"),
+            ("BALANCE_OPTIONS", "Add Balance", "Choose a Planetka balance top-up amount"),
             ("BALANCE_10", "Add €10 Balance", "Add €10 to your Planetka balance"),
         ),
         default="OPTIONS",
@@ -1090,9 +1091,9 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
         ).checkout_option = "SCENE"
         layout.operator(
             "planetka.open_credit_checkout",
-            text="Add €10 Balance",
+            text="Add Balance",
             icon="URL",
-        ).checkout_option = "BALANCE_10"
+        ).checkout_option = "BALANCE_OPTIONS"
 
     def execute(self, context):
         if _cancel_if_animation_render_active(self, "Planetka payment"):
@@ -1108,6 +1109,9 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
                 quality_mode = "BALANCED"
             elif option == "REGION_PACK":
                 checkout_option = "region_pack"
+                quality_mode = "FULL"
+            elif option in {"BALANCE_OPTIONS", "BALANCE"}:
+                checkout_option = "balance_options"
                 quality_mode = "FULL"
             else:
                 checkout_option = "balance_10" if option == "BALANCE_10" else "scene"

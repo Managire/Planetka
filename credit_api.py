@@ -503,18 +503,28 @@ def get_region_pack_offers(latitude_deg, longitude_deg, force=False) -> list[dic
 
 
 def create_checkout_session(option: str, tiles=None, quality_mode="FULL", region_pack_id: str = "") -> dict:
-    """Create a Stripe Checkout Session for scene data or a fixed balance top-up."""
+    """Create a Stripe Checkout Session or payment-selection page for Planetka purchases."""
     safe_option = str(option or "scene").strip().lower()
+    balance_direct_match = re.fullmatch(r"(?:balance|top[_-]?up|topup)[_-]?(10|25|50|100|250|500)", safe_option)
     if safe_option not in {
         "scene",
+        "balance",
+        "balance_options",
+        "add_balance",
+        "top_up_options",
         "balance_10",
+        "balance_25",
+        "balance_50",
+        "balance_100",
+        "balance_250",
+        "balance_500",
         "top_up_10",
         "topup_10",
         "standard_unlock",
         "balanced_unlock",
         "region_pack",
         "broader_pack",
-    }:
+    } and not balance_direct_match:
         safe_option = "scene"
     tile_keys = []
     if safe_option == "scene":
@@ -527,8 +537,12 @@ def create_checkout_session(option: str, tiles=None, quality_mode="FULL", region
                 tile_keys.append(key)
     payload = {
         "option": (
-            "balance_10"
+            "balance_options"
+            if safe_option in {"balance", "balance_options", "add_balance", "top_up_options"}
+            else "balance_10"
             if safe_option in {"balance_10", "top_up_10", "topup_10"}
+            else safe_option
+            if balance_direct_match or safe_option in {"balance_25", "balance_50", "balance_100", "balance_250", "balance_500"}
             else (
                 "standard_unlock"
                 if safe_option in {"standard_unlock", "balanced_unlock"}

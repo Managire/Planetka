@@ -1162,7 +1162,7 @@ def _draw_account_panel(layout):
                 "planetka.open_credit_checkout",
                 text="Add Balance",
                 icon="URL",
-            ).checkout_option = "BALANCE_10"
+            ).checkout_option = "BALANCE_OPTIONS"
         layout.label(text=f"Licenced tiles: {unlocked_count}", icon="TEXTURE")
         standard_unlocked = bool(
             isinstance(credit_payload, dict)
@@ -1507,7 +1507,7 @@ def _draw_live_telemetry(layout, scene):
                     "planetka.open_credit_checkout",
                     text="Add Balance",
                     icon="URL",
-                ).checkout_option = "BALANCE_10"
+                ).checkout_option = "BALANCE_OPTIONS"
         elif not full_allowed and not active_view_scope:
             credit_notice = full_box.row(align=True)
             credit_notice.label(text="Balance unavailable", icon="INFO")

@@ -506,7 +506,8 @@ POST /credits/checkout
 Supported options:
 
 - `scene`: Pay exact current Full Quality scene price.
-- `balance_10`: Add EUR 10 balance.
+- `balance_options`: Open the Planetka balance top-up selector.
+- Direct balance shortcuts: `balance_10`, `balance_25`, `balance_50`, `balance_100`, `balance_250`, `balance_500`.
 
 ### Scene Purchase
 
@@ -549,26 +550,45 @@ After returning to Blender:
 - The client monitors the scene price.
 - Once backend estimate returns `€0.00`, it automatically starts the Full Quality resolve for the Camera View.
 
-### EUR 10 Balance Top-Up
+### EUR Balance Top-Up Options
 
 Request:
 
 ```json
 {
-  "option": "balance_10"
+  "option": "balance_options"
 }
 ```
 
 Backend behavior:
 
-- Creates a Stripe Checkout Session with product name `Planetka EUR Balance Top-Up`.
-- Metadata includes `planetka_purchase_type = balance_top_up` and `planetka_top_up_eur = 10.00`.
+- Creates a short-lived `/credits/balance` selector link.
+- The selector presents the allowed top-up options and then creates a Stripe Checkout Session for the selected amount.
+- Direct shortcuts still work for internal/backward compatibility.
+
+| Paid | Bonus | Balance added |
+|---:|---:|---:|
+| EUR 10 | 10% | EUR 11.00 |
+| EUR 25 | 12.5% | EUR 28.13 |
+| EUR 50 | 15% | EUR 57.50 |
+| EUR 100 | 20% | EUR 120.00 |
+| EUR 250 | 22.5% | EUR 306.25 |
+| EUR 500 | 25% | EUR 625.00 |
+
+Checkout metadata includes:
+
+- `planetka_purchase_type = balance_top_up`
+- `planetka_top_up_payment_eur`: amount paid through Stripe.
+- `planetka_top_up_eur`: amount credited to Planetka balance, including bonus.
+- `planetka_top_up_bonus_eur`: bonus amount.
+- `planetka_top_up_bonus_percent`: bonus percentage.
 
 Webhook behavior:
 
 - Calls `addCreditBalance()` with reason `stripe_balance_top_up`.
-- Balance and `total_granted_credits` increase by EUR 10.
+- Balance and `total_granted_credits` increase by the credited amount including bonus.
 - A ledger row is created.
+- Purchase history records both the paid EUR and credited EUR so revenue and user balance remain separate.
 
 ## 14. Animation Render Pricing Flow
 

@@ -90,6 +90,8 @@ import {
 } from "./worker/admin_user_handlers.js";
 import {
   handleAdminGiftCredits as handleAdminGiftCreditsRoute,
+  handleCreditBalanceTopUpCheckoutFromToken as handleCreditBalanceTopUpCheckoutFromTokenRoute,
+  handleCreditBalanceTopUpPage as handleCreditBalanceTopUpPageRoute,
   handleCreditCheckout as handleCreditCheckoutRoute,
   handleCreditEstimate as handleCreditEstimateRoute,
   handleCreditMe as handleCreditMeRoute,
@@ -4077,6 +4079,16 @@ async function dispatchExactRoute(request, env, path) {
     case "/credits/region-pack-checkout":
       if (request.method === "GET" || request.method === "HEAD") {
         return await handleCreditRegionPackCheckoutFromTokenRoute(request, env, TILE_ROUTE_DEPS);
+      }
+      return null;
+    case "/credits/balance":
+      if (request.method === "GET" || request.method === "HEAD") {
+        return await handleCreditBalanceTopUpPageRoute(request, env, TILE_ROUTE_DEPS);
+      }
+      return null;
+    case "/credits/balance-checkout":
+      if (request.method === "GET" || request.method === "HEAD") {
+        return await handleCreditBalanceTopUpCheckoutFromTokenRoute(request, env, TILE_ROUTE_DEPS);
       }
       return null;
     case "/credits/payment-success":

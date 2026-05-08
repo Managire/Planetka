@@ -16,7 +16,14 @@ const ACCOUNT_TYPE_STANDARD = "standard";
 const DEFAULT_STARTING_CREDITS = 100.0;
 const DATASET_BASE_MPP = 10.0;
 const EQUATOR_Z001_AREA_KM2 = (40075.016686 / 360.0) ** 2;
-const CHECKOUT_BALANCE_TOP_UP_EUR = 10.0;
+const BALANCE_TOP_UP_OPTIONS = [
+  { amount_eur: 10, bonus_percent: 10, guide_region_pack_id: "denmark", guide_label: "Denmark" },
+  { amount_eur: 25, bonus_percent: 12.5, guide_region_pack_id: "united_kingdom", guide_label: "United Kingdom" },
+  { amount_eur: 50, bonus_percent: 15, guide_region_pack_id: "germany", guide_label: "Germany" },
+  { amount_eur: 100, bonus_percent: 20, guide_region_pack_id: "central_europe", guide_label: "Central Europe" },
+  { amount_eur: 250, bonus_percent: 22.5, guide_region_pack_id: "argentina", guide_label: "Argentina" },
+  { amount_eur: 500, bonus_percent: 25, guide_region_pack_id: "east_africa", guide_label: "East Africa" },
+];
 const STANDARD_QUALITY_UNLOCK_EUR = 50.0;
 const STRIPE_MIN_CHECKOUT_AMOUNT_CENTS = 50;
 const MONEY_SCALE = 100;
@@ -163,6 +170,45 @@ function standardQualityUnlockPriceEur(env = {}) {
     return normalizeCreditAmount(configured);
   }
   return STANDARD_QUALITY_UNLOCK_EUR;
+}
+
+function balanceTopUpOptions() {
+  return BALANCE_TOP_UP_OPTIONS.map((option) => {
+    const amount = normalizeCreditAmount(option.amount_eur);
+    const bonusPercent = Math.max(0, Number.parseFloat(option.bonus_percent || 0) || 0);
+    const bonus = normalizeCreditAmount(amount * bonusPercent / 100.0);
+    const guideProduct = regionProductById(option.guide_region_pack_id);
+    const guideSummary = guideProduct ? regionProductPricingSummary(guideProduct) : null;
+    const guideAmount = guideProduct && guideSummary
+      ? discountedRegionPackAmount(guideSummary.gross_eur, guideProduct.discount_percent)
+      : null;
+    return {
+      amount_eur: amount,
+      bonus_percent: bonusPercent,
+      bonus_eur: bonus,
+      balance_eur: normalizeCreditAmount(amount + bonus),
+      guide_region_pack_id: String(option.guide_region_pack_id || "").trim(),
+      guide_label: String(option.guide_label || guideProduct && guideProduct.name || "").trim(),
+      guide_price_eur: guideAmount ? guideAmount.price : 0,
+    };
+  });
+}
+
+function balanceTopUpOptionForAmount(value) {
+  const amount = normalizeCreditAmount(value);
+  if (amount <= 0) {
+    return null;
+  }
+  return balanceTopUpOptions().find((option) => Math.abs(option.amount_eur - amount) < 0.001) || null;
+}
+
+function balanceTopUpOptionFromCheckoutOption(option) {
+  const safe = String(option || "").trim().toLowerCase();
+  const match = /(?:balance|top[_-]?up|topup)[_-]?(\d+(?:\.\d+)?)/.exec(safe);
+  if (!match) {
+    return null;
+  }
+  return balanceTopUpOptionForAmount(match[1]);
 }
 
 function defaultCheckoutSuccessUrl(env) {
@@ -1818,6 +1864,25 @@ async function ensureSceneFullQualityDetailTokenTable(db, deps) {
   );
 }
 
+async function ensureBalanceTopUpTokenTable(db, deps) {
+  await deps.ensureCreditTables(db);
+  await deps.dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS balance_top_up_tokens (
+        token TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+      )
+    `,
+  );
+  await deps.dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_balance_top_up_tokens_expires ON balance_top_up_tokens(expires_at)`,
+  );
+}
+
 function regionPackDetailTokenTtlMinutes(env = {}) {
   const configured = Number.parseFloat(env.REGION_PACK_DETAIL_TOKEN_TTL_MINUTES || "");
   if (Number.isFinite(configured) && configured > 0) {
@@ -1846,6 +1911,24 @@ async function createRegionPackDetailTokenForUser(db, userId, regionPackId, env,
       ) VALUES (?, ?, ?, ?, ?)
     `,
     [token, String(userId || "").trim(), String(regionPackId || "").trim(), now, expiresAt],
+  );
+  return { token, expires_at: expiresAt };
+}
+
+async function createBalanceTopUpTokenForUser(db, userId, env, deps) {
+  await ensureBalanceTopUpTokenTable(db, deps);
+  const now = deps.nowIso();
+  await deps.dbRun(db, `DELETE FROM balance_top_up_tokens WHERE expires_at <= ?`, [now]);
+  const token = deps.randomToken(32);
+  const expiresAt = addMinutesIsoFromDeps(deps, regionPackDetailTokenTtlMinutes(env));
+  await deps.dbRun(
+    db,
+    `
+      INSERT INTO balance_top_up_tokens (
+        token, user_id, created_at, expires_at
+      ) VALUES (?, ?, ?, ?)
+    `,
+    [token, String(userId || "").trim(), now, expiresAt],
   );
   return { token, expires_at: expiresAt };
 }
@@ -2171,6 +2254,111 @@ init();
 </script>
 </body>
 </html>`;
+}
+
+function balanceTopUpPageHtml(data) {
+  const payload = jsonForInlineScript(data);
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Planetka Add Balance</title>
+<style>
+:root{color-scheme:dark;--bg:#111;--panel:#1b1b1b;--line:#3c3c3c;--text:#eee;--muted:#aaa;--accent:#d9a441;--tile:#e45745;--country:#2a3748;--country-line:#98b4d8}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+main{max-width:1120px;margin:0 auto;padding:24px}h1{margin:0 0 8px;font-size:30px;font-weight:700}p{margin:8px 0}.muted{color:var(--muted)}.small{font-size:13px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;margin-top:18px}.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px;display:flex;flex-direction:column;gap:10px}
+.top{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.pay{font-size:26px;font-weight:750}.bonus{color:#bdeaa7;font-weight:700}.balance{font-size:18px;font-weight:700}.guide{color:var(--muted)}
+svg{width:100%;aspect-ratio:1/1;height:auto;background:#0d1118;border:1px solid var(--line);border-radius:10px}.button{display:inline-flex;align-items:center;justify-content:center;padding:10px 12px;border-radius:9px;background:var(--accent);color:#111;text-decoration:none;font-weight:750}
+</style>
+</head>
+<body>
+<main>
+<h1>Add Planetka Balance</h1>
+<p class="muted">Choose how much balance to add. Bonus balance is added automatically after Stripe confirms the payment.</p>
+<section id="options" class="grid"></section>
+<p class="muted small">Visual guides are approximate examples based on current Full Quality pack prices. Actual scene prices depend on the visible tiles and any data already licenced to your account.</p>
+</main>
+<script>const DATA=${payload};
+const NS="http://www.w3.org/2000/svg";
+const fmt=(v)=>"€"+Number(v||0).toFixed(2);
+function esc(value){return String(value||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}
+function parseTileKey(key){const m=/x(\\d{3})_y(\\d{3})_z(\\d{3})_d(\\d{3})/i.exec(String(key||""));return m?{x:Number(m[1]),y:Number(m[2]),z:Number(m[3]),d:Number(m[4])}:null}
+function frame(bounds,w,h){const p=12,lonSpan=Math.max(1e-6,bounds.max_lon-bounds.min_lon),latSpan=Math.max(1e-6,bounds.max_lat-bounds.min_lat),scale=Math.min((w-p*2)/lonSpan,(h-p*2)/latSpan),usedW=lonSpan*scale,usedH=latSpan*scale;return{bounds,scale,ox:(w-usedW)/2,oy:(h-usedH)/2}}
+function xy(f,lon,lat){return[f.ox+(lon-f.bounds.min_lon)*f.scale,f.oy+(f.bounds.max_lat-lat)*f.scale]}
+function el(name,attrs){const node=document.createElementNS(NS,name);for(const k in attrs||{})node.setAttribute(k,String(attrs[k]));return node}
+function pathFor(f,poly){return(poly||[]).map((pt,i)=>{const p=xy(f,pt[0],pt[1]);return(i?"L":"M")+p[0].toFixed(2)+" "+p[1].toFixed(2)}).join(" ")+" Z"}
+async function renderMiniMap(svg,id){try{const res=await fetch("/credits/region-pack-map-asset?region_pack_id="+encodeURIComponent(id),{cache:"force-cache"});if(!res.ok)throw new Error("asset_"+res.status);const asset=await res.json();const b=asset.bounds||{min_lon:-10,min_lat:35,max_lon:30,max_lat:48};const w=360,h=360,f=frame(b,w,h);svg.setAttribute("viewBox","0 0 "+w+" "+h);svg.setAttribute("preserveAspectRatio","xMidYMid meet");svg.replaceChildren();svg.appendChild(el("rect",{x:0,y:0,width:w,height:h,fill:"#0d1118"}));for(const outline of asset.outlines||[]){for(const poly of outline.polygons||[]){svg.appendChild(el("path",{d:pathFor(f,poly),fill:"var(--country)",stroke:"var(--country-line)","stroke-width":"0.7",opacity:"0.7"}))}}const parsed=(asset.tiles||[]).map(t=>({tile:t,parsed:parseTileKey(t.tile_key)})).filter(v=>v.parsed);const levels=[...new Set(parsed.map(v=>v.parsed.z))].sort((a,b)=>a-b);const level=levels.length?levels[0]:1;for(const entry of parsed.filter(v=>v.parsed.z===level)){const p=entry.parsed;const a=xy(f,p.x-180,p.y-90+p.z),c=xy(f,p.x-180+p.z,p.y-90);svg.appendChild(el("rect",{x:a[0],y:a[1],width:Math.max(1,c[0]-a[0]),height:Math.max(1,c[1]-a[1]),fill:"var(--tile)",stroke:"#fff","stroke-width":"0.5",opacity:"0.58"}))}}catch(error){svg.replaceChildren();svg.setAttribute("viewBox","0 0 360 360");svg.appendChild(el("rect",{x:0,y:0,width:360,height:360,fill:"#0d1118"}));const t=el("text",{x:180,y:180,"text-anchor":"middle",fill:"#ffb4a9"});t.textContent="Map unavailable";svg.appendChild(t);}}
+function render(){const root=document.getElementById("options");root.innerHTML=(DATA.options||[]).map((option)=>{const href="/credits/balance-checkout?token="+encodeURIComponent(DATA.token||"")+"&amount_eur="+encodeURIComponent(option.amount_eur);return "<article class=\\"card\\"><div class=\\"top\\"><div><div class=\\"pay\\">Pay "+fmt(option.amount_eur)+"</div><div class=\\"balance\\">Adds "+fmt(option.balance_eur)+" balance</div></div><div class=\\"bonus\\">+"+Number(option.bonus_percent||0)+"%<br><span class=\\"small\\">"+fmt(option.bonus_eur)+" bonus</span></div></div><svg data-pack=\\""+esc(option.guide_region_pack_id||"")+"\\" aria-label=\\""+esc(option.guide_label||"guide map")+"\\"></svg><div class=\\"guide\\">Roughly comparable to "+esc(option.guide_label||"a regional pack")+" ("+fmt(option.guide_price_eur)+")</div><a class=\\"button\\" href=\\""+href+"\\">Add "+fmt(option.amount_eur)+"</a></article>"}).join("");for(const svg of root.querySelectorAll("svg[data-pack]")){renderMiniMap(svg,svg.getAttribute("data-pack")||"")}}
+render();
+</script>
+</body>
+</html>`;
+}
+
+export async function handleCreditBalanceTopUpPage(request, env, deps) {
+  const url = new URL(request.url);
+  const token = String(url.searchParams.get("token") || "").trim();
+  const db = deps.requireDb(env);
+  const tokenResult = await getValidBalanceTopUpToken(db, token, deps);
+  if (tokenResult.error) {
+    return html(
+      "<!doctype html><title>Planetka Add Balance</title><h1>This balance top-up link expired.</h1><p>Please open Add Balance again from Blender.</p>",
+      tokenResult.status || 410,
+      env,
+    );
+  }
+  return html(
+    balanceTopUpPageHtml({
+      ok: true,
+      token,
+      options: balanceTopUpOptions(),
+    }),
+    200,
+    env,
+  );
+}
+
+export async function handleCreditBalanceTopUpCheckoutFromToken(request, env, deps) {
+  const url = new URL(request.url);
+  const token = String(url.searchParams.get("token") || "").trim();
+  const topUpOption = balanceTopUpOptionForAmount(url.searchParams.get("amount_eur") || url.searchParams.get("amount") || "");
+  if (!topUpOption) {
+    return html(
+      "<!doctype html><title>Planetka Add Balance</title><h1>Unknown balance top-up amount.</h1><p>Please choose one of the listed Planetka balance options.</p>",
+      400,
+      env,
+    );
+  }
+  const db = deps.requireDb(env);
+  const tokenResult = await getValidBalanceTopUpToken(db, token, deps);
+  if (tokenResult.error) {
+    return html(
+      "<!doctype html><title>Planetka Add Balance</title><h1>This balance top-up link expired.</h1><p>Please open Add Balance again from Blender.</p>",
+      tokenResult.status || 410,
+      env,
+    );
+  }
+  const userId = String(tokenResult.row && tokenResult.row.user_id || "").trim();
+  const user = await deps.dbGet(db, `SELECT id, email FROM users WHERE id = ? LIMIT 1`, [userId]);
+  const email = deps.normalizeEmail(user && user.email || "");
+  if (!userId || !email) {
+    return html(
+      "<!doctype html><title>Planetka Add Balance</title><h1>Account not found.</h1><p>Please return to Blender and sign in again.</p>",
+      404,
+      env,
+    );
+  }
+  const session = await createBalanceTopUpStripeSession(env, topUpOption, email, userId, deps);
+  if (session.error || !session.checkout_url) {
+    return html(
+      `<!doctype html><title>Planetka Add Balance</title><h1>Could not open payment.</h1><p>${escapeHtmlText(session.message || session.error || "Stripe Checkout could not be created.")}</p>`,
+      502,
+      env,
+    );
+  }
+  return Response.redirect(session.checkout_url, 303);
 }
 
 function checkoutMetadataValue(value, maxLength = 480) {
@@ -2857,7 +3045,11 @@ export async function addCreditBalance(db, userId, amountEur, reason, metadata, 
         metadata: {
           stripe_amount_paid_eur: normalizeCreditAmount(metadata && metadata.stripe_amount_paid_eur),
           stripe_payment_intent_id: String(metadata && metadata.stripe_payment_intent_id || "").trim(),
+          top_up_payment_eur: normalizeCreditAmount(metadata && (metadata.top_up_payment_eur ?? metadata.stripe_amount_paid_eur)),
+          top_up_bonus_eur: normalizeCreditAmount(metadata && metadata.top_up_bonus_eur),
+          top_up_bonus_percent: Math.max(0, Number.parseFloat(metadata && metadata.top_up_bonus_percent || 0) || 0),
           top_up_eur: amount,
+          balance_added_eur: amount,
         },
         created_at: now,
       },
@@ -3531,6 +3723,32 @@ async function fetchStripeCheckoutSession(env, sessionId, deps) {
   return { ok: true, session: payload };
 }
 
+async function createBalanceTopUpStripeSession(env, topUpOption, email, userId, deps) {
+  const amountEur = normalizeCreditAmount(topUpOption && topUpOption.amount_eur);
+  const balanceEur = normalizeCreditAmount(topUpOption && topUpOption.balance_eur);
+  const bonusEur = normalizeCreditAmount(topUpOption && topUpOption.bonus_eur);
+  const bonusPercent = Math.max(0, Number.parseFloat(topUpOption && topUpOption.bonus_percent || 0) || 0);
+  return await createStripeCheckoutSession(
+    env,
+    {
+      amountCents: centsForEur(amountEur),
+      customerEmail: email,
+      clientReferenceId: userId,
+      productName: `Planetka €${amountEur.toFixed(2)} Balance Top-Up (+${bonusPercent}% Bonus)`,
+      metadata: {
+        planetka_purchase_type: "balance_top_up",
+        planetka_user_id: userId,
+        planetka_email: email,
+        planetka_top_up_payment_eur: amountEur.toFixed(2),
+        planetka_top_up_eur: balanceEur.toFixed(2),
+        planetka_top_up_bonus_eur: bonusEur.toFixed(2),
+        planetka_top_up_bonus_percent: String(bonusPercent),
+      },
+    },
+    deps,
+  );
+}
+
 function stripeSessionMetadata(session) {
   return session && session.metadata && typeof session.metadata === "object" ? session.metadata : {};
 }
@@ -3564,28 +3782,43 @@ export async function handleCreditCheckout(request, env, deps) {
   const email = deps.normalizeEmail(auth.user && auth.user.email || "");
   const userId = String(auth.user && auth.user.id || "").trim();
 
-  if (option === "balance_10" || option === "top_up_10" || option === "topup_10") {
-    const amountEur = CHECKOUT_BALANCE_TOP_UP_EUR;
-    const session = await createStripeCheckoutSession(
-      env,
+  if (option === "balance_options" || option === "balance" || option === "add_balance" || option === "top_up_options") {
+    const tokenResult = await createBalanceTopUpTokenForUser(db, userId, env, deps);
+    const url = new URL(request.url);
+    url.pathname = "/credits/balance";
+    url.search = "";
+    url.searchParams.set("token", tokenResult.token);
+    return deps.json(
       {
-        amountCents: centsForEur(amountEur),
-        customerEmail: email,
-        clientReferenceId: userId,
-        productName: "Planetka EUR Balance Top-Up",
-        metadata: {
-          planetka_purchase_type: "balance_top_up",
-          planetka_user_id: userId,
-          planetka_email: email,
-          planetka_top_up_eur: amountEur.toFixed(2),
-        },
+        ok: true,
+        option: "balance_options",
+        checkout_url: url.toString(),
+        top_up_options: balanceTopUpOptions(),
+        expires_at: tokenResult.expires_at,
       },
-      deps,
+      200,
+      env,
     );
+  }
+
+  const topUpOption = balanceTopUpOptionFromCheckoutOption(option);
+  if (topUpOption) {
+    const amountEur = topUpOption.amount_eur;
+    const balanceEur = topUpOption.balance_eur;
+    const bonusEur = topUpOption.bonus_eur;
+    const session = await createBalanceTopUpStripeSession(env, topUpOption, email, userId, deps);
     if (session.error) {
       return deps.json({ ok: false, ...session }, 502, env);
     }
-    return deps.json({ ok: true, option: "balance_10", price_eur: amountEur, ...session }, 200, env);
+    return deps.json({
+      ok: true,
+      option: `balance_${String(amountEur).replace(".", "_")}`,
+      price_eur: amountEur,
+      balance_eur: balanceEur,
+      bonus_eur: bonusEur,
+      bonus_percent: topUpOption.bonus_percent,
+      ...session,
+    }, 200, env);
   }
 
   if (option === "standard_unlock" || option === "balanced_unlock") {
@@ -3788,7 +4021,7 @@ export async function handleCreditCheckout(request, env, deps) {
         error: "amount_below_stripe_minimum",
         price_eur: priceEur,
         minimum_eur: STRIPE_MIN_CHECKOUT_AMOUNT_CENTS / 100.0,
-        message: "This scene price is below Stripe's minimum checkout amount. Add €10 balance instead.",
+        message: "This scene price is below Stripe's minimum checkout amount. Add Planetka balance instead.",
       },
       400,
       env,
@@ -4127,6 +4360,29 @@ async function getValidSceneFullQualityDetailToken(db, token, deps) {
     return { error: "scene_detail_has_no_tiles", status: 410 };
   }
   return { ok: true, row: { ...row, tile_keys: tileKeys } };
+}
+
+async function getValidBalanceTopUpToken(db, token, deps) {
+  const safeToken = String(token || "").trim();
+  if (!safeToken) {
+    return { error: "missing_token", status: 400 };
+  }
+  await ensureBalanceTopUpTokenTable(db, deps);
+  const now = deps.nowIso();
+  const row = await deps.dbGet(
+    db,
+    `
+      SELECT token, user_id, expires_at
+      FROM balance_top_up_tokens
+      WHERE token = ?
+      LIMIT 1
+    `,
+    [safeToken],
+  );
+  if (!row || String(row.expires_at || "") <= now) {
+    return { error: "expired_token", status: 410 };
+  }
+  return { ok: true, row };
 }
 
 async function getValidAnyDetailToken(db, token, deps) {
@@ -4715,11 +4971,27 @@ export async function handleCreditPaymentSuccess(request, env, deps) {
   }
 
   if (purchaseType === "balance_top_up") {
+    let creditedEur = normalizeCreditAmount(
+      purchase && purchase.nominal_eur
+        || metadata.planetka_top_up_eur
+        || amountPaidEur,
+    );
+    let bonusEur = normalizeCreditAmount(metadata.planetka_top_up_bonus_eur || 0);
+    if (purchase && purchase.metadata_json) {
+      try {
+        const purchaseMetadata = JSON.parse(String(purchase.metadata_json || "{}"));
+        creditedEur = normalizeCreditAmount(purchaseMetadata.balance_added_eur || purchaseMetadata.top_up_eur || creditedEur);
+        bonusEur = normalizeCreditAmount(purchaseMetadata.top_up_bonus_eur || bonusEur);
+      } catch (_error) {
+        // The success page is best-effort; webhook state remains authoritative.
+      }
+    }
+    const bonusText = bonusEur > 0 ? ` including €${bonusEur.toFixed(2)} bonus` : "";
     return html(
       checkoutReturnHtml({
         title: "Planetka Balance Added",
         heading: "Balance added",
-        message: `Payment successful${amountPaidEur > 0 ? ` (€${amountPaidEur.toFixed(2)})` : ""}. Your Planetka balance will refresh automatically in Blender.`,
+        message: `Payment successful${amountPaidEur > 0 ? ` (€${amountPaidEur.toFixed(2)})` : ""}. €${creditedEur.toFixed(2)} was added to your Planetka balance${bonusText}. Blender will refresh automatically.`,
         icon: "OK",
         tone: "success",
       }),
