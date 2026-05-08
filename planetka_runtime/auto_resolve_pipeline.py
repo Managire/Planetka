@@ -1071,6 +1071,11 @@ def _ctx_finalize_auto_resolve_apply(ctx, scene, scene_id, job, manual_request, 
         deps.logger.debug("Planetka: failed clearing queued resolve error marker", exc_info=True)
     except (RuntimeError, TypeError, ValueError):
         deps.logger.debug("Planetka: failed clearing queued resolve error marker", exc_info=True)
+    latest_camera_signature = deps.camera_signature(scene)
+    latest_output_signature = deps.output_resolution_signature(scene)
+    job_camera_signature = deps.job_field(job, "camera_signature")
+    job_output_signature = deps.job_field(job, "output_signature")
+
     if manual_request:
         deps.logger.warning(
             "Planetka queued resolve applied successfully (%d tile(s)).",
@@ -1079,13 +1084,25 @@ def _ctx_finalize_auto_resolve_apply(ctx, scene, scene_id, job, manual_request, 
     else:
         # Auto-resolve should always finalize once download completes.
         # If the camera/output changed while downloading, queue another pass after this apply.
-        latest_camera_signature = deps.camera_signature(scene)
-        latest_output_signature = deps.output_resolution_signature(scene)
         if (
-            latest_camera_signature != deps.job_field(job, "camera_signature")
-            or latest_output_signature != deps.job_field(job, "output_signature")
+            latest_camera_signature != job_camera_signature
+            or latest_output_signature != job_output_signature
         ):
             deps.request_auto_resolve(scene, immediate=False, mark_dirty=True)
+    if latest_camera_signature == job_camera_signature and latest_output_signature == job_output_signature:
+        try:
+            from .view_telemetry import schedule_region_pack_offer_refresh
+            schedule_region_pack_offer_refresh(
+                scene,
+                ctx,
+                latitude_deg=deps.job_field(job, "nav_latitude_deg", None),
+                longitude_deg=deps.job_field(job, "nav_longitude_deg", None),
+                camera_signature_value=latest_camera_signature,
+            )
+        except deps.recoverable_exceptions:
+            deps.logger.debug("Planetka: failed scheduling Full Quality Data Packs refresh", exc_info=True)
+        except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+            deps.logger.debug("Planetka: failed scheduling Full Quality Data Packs refresh", exc_info=True)
     deps.resolve_trace(
         f"Shader update finished (request_id={deps.job_field(job, 'request_id')}, tiles={len(job_target_tiles)})"
     )

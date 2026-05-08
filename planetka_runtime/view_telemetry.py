@@ -1,3 +1,5 @@
+import hashlib
+import json
 import math
 import os
 import threading
@@ -9,13 +11,29 @@ _CENT = Decimal("0.01")
 _FULL_PRICE_SIGNATURE_KEY = "planetka_resolve_estimate_full_price_signature"
 _FULL_PRICE_PENDING_KEY = "planetka_resolve_estimate_full_price_pending"
 _REGION_OFFER_PRICING_TILES_KEY = "planetka_resolve_estimate_region_offer_tiles"
+_REGION_OFFERS_JSON_KEY = "planetka_region_pack_offers_json"
+_REGION_OFFERS_STATUS_KEY = "planetka_region_pack_offers_status"
+_REGION_OFFERS_SIGNATURE_KEY = "planetka_region_pack_offers_signature"
+_REGION_OFFERS_PENDING_SIGNATURE_KEY = "planetka_region_pack_offers_pending_signature"
+_REGION_OFFERS_CAMERA_SIGNATURE_KEY = "planetka_region_pack_offers_camera_signature"
+_REGION_OFFERS_MESSAGE_KEY = "planetka_region_pack_offers_message"
+_REGION_OFFERS_UPDATED_AT_KEY = "planetka_region_pack_offers_updated_at"
+_REGION_OFFERS_LATITUDE_KEY = "planetka_region_pack_offers_latitude"
+_REGION_OFFERS_LONGITUDE_KEY = "planetka_region_pack_offers_longitude"
 _FULL_PRICE_CACHE_TTL_SECONDS = 300.0
+_REGION_OFFERS_REFRESH_DELAY_SECONDS = 0.75
+_REGION_OFFERS_STALE_DISTANCE_DEG = 4.0
 _FULL_PRICE_CACHE = {}
 _FULL_PRICE_IN_FLIGHT = set()
 _FULL_PRICE_RESULTS = []
 _FULL_PRICE_LOCK = threading.Lock()
 _FULL_PRICE_APPLY_TIMER_RUNNING = False
 _FULL_PRICE_GENERATION = 0
+_REGION_OFFERS_IN_FLIGHT = set()
+_REGION_OFFERS_RESULTS = []
+_REGION_OFFERS_LOCK = threading.Lock()
+_REGION_OFFERS_APPLY_TIMER_RUNNING = False
+_REGION_OFFERS_GENERATION = 0
 
 
 def clear_full_price_estimate_cache():
@@ -23,6 +41,14 @@ def clear_full_price_estimate_cache():
     with _FULL_PRICE_LOCK:
         _FULL_PRICE_CACHE.clear()
         _FULL_PRICE_GENERATION += 1
+
+
+def clear_region_pack_offer_cache():
+    global _REGION_OFFERS_GENERATION
+    with _REGION_OFFERS_LOCK:
+        _REGION_OFFERS_IN_FLIGHT.clear()
+        _REGION_OFFERS_RESULTS.clear()
+        _REGION_OFFERS_GENERATION += 1
 
 
 def _money_round(value):
@@ -1136,6 +1162,342 @@ def current_full_quality_pricing_tiles_for_region_offers(scene=None, runtime=Non
         texture_quality_mode="FULL",
         base_path=base_path,
     )
+
+
+def _region_offer_location_for_scene(scene):
+    if scene is None:
+        return None
+    props = getattr(scene, "planetka", None)
+    if props is None:
+        return None
+    try:
+        lat = max(-90.0, min(90.0, float(getattr(props, "nav_latitude_deg", 0.0) or 0.0)))
+        lon = max(-180.0, min(180.0, float(getattr(props, "nav_longitude_deg", 0.0) or 0.0)))
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return None
+    return lat, lon
+
+
+def _camera_signature_text(camera_sig):
+    try:
+        return json.dumps(camera_sig, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        return repr(camera_sig)
+
+
+def _longitude_distance_degrees(a, b):
+    try:
+        diff = abs(float(a) - float(b))
+    except (TypeError, ValueError):
+        return 180.0
+    return min(diff, 360.0 - diff)
+
+
+def _location_distance_degrees(a, b):
+    if not a or not b:
+        return 0.0
+    try:
+        lat_delta = abs(float(a[0]) - float(b[0]))
+        lon_delta = _longitude_distance_degrees(float(a[1]), float(b[1]))
+        return math.sqrt(lat_delta * lat_delta + lon_delta * lon_delta)
+    except (TypeError, ValueError, IndexError):
+        return 0.0
+
+
+def _region_offer_signature(latitude_deg, longitude_deg, pricing_tiles, camera_signature_value):
+    safe_tiles = canonical_tiles(pricing_tiles)
+    tile_hash = hashlib.sha1("|".join(safe_tiles[:256]).encode("utf-8")).hexdigest()[:16] if safe_tiles else "none"
+    camera_hash = hashlib.sha1(_camera_signature_text(camera_signature_value).encode("utf-8")).hexdigest()[:16]
+    return f"{round(float(latitude_deg), 4):.4f}:{round(float(longitude_deg), 4):.4f}:{tile_hash}:{camera_hash}"
+
+
+def _scene_region_offer_pricing_tiles(scene, deps):
+    if scene is None:
+        return tuple()
+    try:
+        raw = str(scene.get(_REGION_OFFER_PRICING_TILES_KEY, "") or "")
+    except deps.recoverable_exceptions:
+        deps.logger.debug("Planetka: failed reading region-pack offer pricing tiles", exc_info=True)
+        return tuple()
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        deps.logger.debug("Planetka: failed reading region-pack offer pricing tiles", exc_info=True)
+        return tuple()
+    return canonical_tiles(raw.split("|") if raw else ())
+
+
+def get_cached_region_pack_offers(scene=None, runtime=None):
+    ctx = _coerce_ctx(runtime)
+    deps = ctx.deps
+    target_scene = scene if scene is not None else _safe_context_scene(deps.bpy)
+    payload = {
+        "offers": [],
+        "status": "EMPTY",
+        "message": "",
+        "updated_at": 0.0,
+    }
+    if target_scene is None:
+        return payload
+    try:
+        payload["status"] = str(target_scene.get(_REGION_OFFERS_STATUS_KEY, "EMPTY") or "EMPTY")
+        payload["message"] = str(target_scene.get(_REGION_OFFERS_MESSAGE_KEY, "") or "")
+        payload["updated_at"] = float(target_scene.get(_REGION_OFFERS_UPDATED_AT_KEY, 0.0) or 0.0)
+        stored_lat = float(target_scene.get(_REGION_OFFERS_LATITUDE_KEY, 9999.0) or 9999.0)
+        stored_lon = float(target_scene.get(_REGION_OFFERS_LONGITUDE_KEY, 9999.0) or 9999.0)
+        raw = str(target_scene.get(_REGION_OFFERS_JSON_KEY, "") or "")
+    except deps.recoverable_exceptions:
+        deps.logger.debug("Planetka: failed reading cached Full Quality Data Packs", exc_info=True)
+        return payload
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        deps.logger.debug("Planetka: failed reading cached Full Quality Data Packs", exc_info=True)
+        return payload
+    if not raw:
+        return payload
+    current_location = _region_offer_location_for_scene(target_scene)
+    if (
+        current_location is not None
+        and abs(stored_lat) <= 90.0
+        and abs(stored_lon) <= 180.0
+        and _location_distance_degrees(current_location, (stored_lat, stored_lon)) > _REGION_OFFERS_STALE_DISTANCE_DEG
+    ):
+        payload["status"] = "STALE"
+        payload["message"] = "Full Quality Data Packs update after Camera View Resolve."
+        return payload
+    try:
+        offers = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        offers = []
+    if isinstance(offers, list):
+        payload["offers"] = [dict(offer) for offer in offers if isinstance(offer, dict)]
+    return payload
+
+
+def _set_region_offer_pending(scene, deps, signature, camera_signature_value, latitude_deg=None, longitude_deg=None):
+    if scene is None:
+        return
+    try:
+        scene[_REGION_OFFERS_PENDING_SIGNATURE_KEY] = str(signature or "")
+        scene[_REGION_OFFERS_CAMERA_SIGNATURE_KEY] = _camera_signature_text(camera_signature_value)
+        # Keep the previous completed payload visible while a low-priority refresh runs.
+        scene[_REGION_OFFERS_STATUS_KEY] = "LOADING"
+        scene[_REGION_OFFERS_MESSAGE_KEY] = "Updating Full Quality Data Packs after Camera View Resolve."
+    except deps.recoverable_exceptions:
+        deps.logger.debug("Planetka: failed storing region-pack offer pending state", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        deps.logger.debug("Planetka: failed storing region-pack offer pending state", exc_info=True)
+
+
+def _store_region_pack_offers(scene, deps, signature, offers, latitude_deg=None, longitude_deg=None):
+    if scene is None:
+        return
+    safe_offers = [dict(offer) for offer in offers if isinstance(offer, dict)]
+    try:
+        scene[_REGION_OFFERS_JSON_KEY] = json.dumps(safe_offers, separators=(",", ":"), sort_keys=True)
+        scene[_REGION_OFFERS_SIGNATURE_KEY] = str(signature or "")
+        scene[_REGION_OFFERS_PENDING_SIGNATURE_KEY] = ""
+        scene[_REGION_OFFERS_STATUS_KEY] = "READY"
+        scene[_REGION_OFFERS_MESSAGE_KEY] = ""
+        scene[_REGION_OFFERS_UPDATED_AT_KEY] = float(time.time())
+        if latitude_deg is not None and longitude_deg is not None:
+            scene[_REGION_OFFERS_LATITUDE_KEY] = float(latitude_deg)
+            scene[_REGION_OFFERS_LONGITUDE_KEY] = float(longitude_deg)
+    except deps.recoverable_exceptions:
+        deps.logger.debug("Planetka: failed storing cached Full Quality Data Packs", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        deps.logger.debug("Planetka: failed storing cached Full Quality Data Packs", exc_info=True)
+
+
+def _discard_stale_region_pack_offer_result(scene, deps, signature):
+    if scene is None:
+        return
+    try:
+        if str(scene.get(_REGION_OFFERS_PENDING_SIGNATURE_KEY, "") or "") == str(signature or ""):
+            scene[_REGION_OFFERS_PENDING_SIGNATURE_KEY] = ""
+            scene[_REGION_OFFERS_STATUS_KEY] = "STALE"
+            scene[_REGION_OFFERS_MESSAGE_KEY] = "Full Quality Data Packs update after Camera View Resolve."
+    except deps.recoverable_exceptions:
+        deps.logger.debug("Planetka: failed discarding stale Full Quality Data Packs", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        deps.logger.debug("Planetka: failed discarding stale Full Quality Data Packs", exc_info=True)
+
+
+def _apply_region_pack_offer_results_timer():
+    global _REGION_OFFERS_APPLY_TIMER_RUNNING
+    try:
+        ctx = _require_ctx()
+        deps = ctx.deps
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        with _REGION_OFFERS_LOCK:
+            _REGION_OFFERS_APPLY_TIMER_RUNNING = False
+        return None
+
+    with _REGION_OFFERS_LOCK:
+        results = list(_REGION_OFFERS_RESULTS)
+        _REGION_OFFERS_RESULTS.clear()
+        for result in results:
+            _REGION_OFFERS_IN_FLIGHT.discard(str(result.get("signature", "") or ""))
+        if not results:
+            if _REGION_OFFERS_IN_FLIGHT:
+                return 0.1
+            _REGION_OFFERS_APPLY_TIMER_RUNNING = False
+            return None
+        current_generation = int(_REGION_OFFERS_GENERATION)
+
+    redraw = False
+    for result in results:
+        try:
+            result_generation = int(result.get("generation", -1))
+        except (TypeError, ValueError):
+            result_generation = -1
+        if result_generation != current_generation:
+            continue
+        signature = str(result.get("signature", "") or "")
+        scene = _find_scene_by_key(deps, result.get("scene_id"))
+        if scene is None:
+            continue
+        try:
+            pending_signature = str(scene.get(_REGION_OFFERS_PENDING_SIGNATURE_KEY, "") or "")
+        except deps.recoverable_exceptions:
+            continue
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            continue
+        if pending_signature != signature:
+            continue
+        current_camera_signature = _camera_signature_text(camera_signature(scene))
+        result_camera_signature = str(result.get("camera_signature_text", "") or "")
+        if current_camera_signature != result_camera_signature:
+            _discard_stale_region_pack_offer_result(scene, deps, signature)
+            redraw = True
+            continue
+        if not bool(result.get("ok", False)):
+            _discard_stale_region_pack_offer_result(scene, deps, signature)
+            redraw = True
+            continue
+        _store_region_pack_offers(
+            scene,
+            deps,
+            signature,
+            result.get("offers", ()),
+            latitude_deg=result.get("latitude_deg"),
+            longitude_deg=result.get("longitude_deg"),
+        )
+        redraw = True
+
+    if redraw:
+        try:
+            tag_view3d_redraw(ctx)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            pass
+
+    with _REGION_OFFERS_LOCK:
+        if _REGION_OFFERS_RESULTS:
+            return 0.1
+        _REGION_OFFERS_APPLY_TIMER_RUNNING = False
+    return None
+
+
+def schedule_region_pack_offer_refresh(
+    scene,
+    runtime=None,
+    latitude_deg=None,
+    longitude_deg=None,
+    pricing_tiles=None,
+    camera_signature_value=None,
+    delay_seconds=_REGION_OFFERS_REFRESH_DELAY_SECONDS,
+    force=False,
+):
+    global _REGION_OFFERS_APPLY_TIMER_RUNNING
+    ctx = _coerce_ctx(runtime)
+    deps = ctx.deps
+    if scene is None:
+        return False
+    if camera_signature_value is None:
+        camera_signature_value = camera_signature(scene)
+    if camera_signature_value is None:
+        return False
+
+    if latitude_deg is None or longitude_deg is None:
+        location = _region_offer_location_for_scene(scene)
+        if location is None:
+            return False
+        latitude_deg, longitude_deg = location
+    try:
+        lat = max(-90.0, min(90.0, float(latitude_deg or 0.0)))
+        lon = max(-180.0, min(180.0, float(longitude_deg or 0.0)))
+    except (TypeError, ValueError):
+        return False
+
+    safe_tiles = canonical_tiles(pricing_tiles if pricing_tiles is not None else _scene_region_offer_pricing_tiles(scene, deps))
+    signature = _region_offer_signature(lat, lon, safe_tiles, camera_signature_value)
+    try:
+        existing_signature = str(scene.get(_REGION_OFFERS_SIGNATURE_KEY, "") or "")
+    except deps.recoverable_exceptions:
+        existing_signature = ""
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        existing_signature = ""
+    if existing_signature == signature and not bool(force):
+        return False
+
+    with _REGION_OFFERS_LOCK:
+        if signature in _REGION_OFFERS_IN_FLIGHT:
+            _set_region_offer_pending(scene, deps, signature, camera_signature_value, lat, lon)
+            return True
+        _REGION_OFFERS_IN_FLIGHT.add(signature)
+        generation = int(_REGION_OFFERS_GENERATION)
+        _set_region_offer_pending(scene, deps, signature, camera_signature_value, lat, lon)
+        try:
+            if not _REGION_OFFERS_APPLY_TIMER_RUNNING:
+                deps.bpy.app.timers.register(_apply_region_pack_offer_results_timer, first_interval=0.1)
+                _REGION_OFFERS_APPLY_TIMER_RUNNING = True
+        except deps.recoverable_exceptions:
+            deps.logger.debug("Planetka: failed registering Full Quality Data Packs timer", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            deps.logger.debug("Planetka: failed registering Full Quality Data Packs timer", exc_info=True)
+
+    try:
+        scene_id = deps.scene_key(scene)
+    except deps.recoverable_exceptions:
+        scene_id = 0
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        scene_id = 0
+    camera_signature_text = _camera_signature_text(camera_signature_value)
+
+    def _worker():
+        offers = []
+        ok = False
+        try:
+            delay = max(0.0, float(delay_seconds or 0.0))
+        except (TypeError, ValueError):
+            delay = _REGION_OFFERS_REFRESH_DELAY_SECONDS
+        if delay > 0.0:
+            time.sleep(delay)
+        try:
+            from ..credit_api import get_region_pack_offers
+            offers = get_region_pack_offers(lat, lon, tile_keys=safe_tiles, force=force)
+            ok = True
+        except deps.import_recoverable_exceptions:
+            deps.logger.debug("Planetka: Full Quality Data Packs refresh failed", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            deps.logger.debug("Planetka: Full Quality Data Packs refresh failed", exc_info=True)
+        with _REGION_OFFERS_LOCK:
+            _REGION_OFFERS_RESULTS.append(
+                {
+                    "scene_id": scene_id,
+                    "signature": signature,
+                    "camera_signature_text": camera_signature_text,
+                    "latitude_deg": lat,
+                    "longitude_deg": lon,
+                    "offers": offers,
+                    "ok": ok,
+                    "generation": generation,
+                }
+            )
+
+    threading.Thread(
+        target=_worker,
+        name="PlanetkaRegionPackOffers",
+        daemon=True,
+    ).start()
+    return True
 
 
 def _full_price_signature(pricing_tiles, texture_quality_mode="FULL"):

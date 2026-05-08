@@ -376,6 +376,21 @@ def _scene_full_quality_price_eur(scene):
     return None
 
 
+def _schedule_region_pack_offers_after_camera_resolve(scene):
+    if scene is None:
+        return
+    try:
+        from .planetka_runtime.view_telemetry import camera_signature, schedule_region_pack_offer_refresh
+        schedule_region_pack_offer_refresh(
+            scene,
+            camera_signature_value=camera_signature(scene),
+        )
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed scheduling Full Quality Data Packs refresh", exc_info=True)
+    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed scheduling Full Quality Data Packs refresh", exc_info=True)
+
+
 def _run_camera_full_quality_resolve_after_checkout(scene):
     if scene is None:
         return False
@@ -408,6 +423,7 @@ def _run_camera_full_quality_resolve_after_checkout(scene):
                 base_path=base_path,
                 force_full_price_refresh=True,
             )
+            _schedule_region_pack_offers_after_camera_resolve(scene)
             _tag_view3d_redraw()
             logger.info("Planetka: Full Quality resolve started after scene payment.")
             return True
@@ -496,7 +512,7 @@ def _populate_region_pack_info_operator(operator, offer):
     operator.price_eur = max(0.0, _region_offer_number(offer, "price_eur", _region_offer_number(offer, "credits", 0.0)))
 
 
-def _draw_region_pack_upsell_options(layout, context, *, current_region_pack_id="", title="Broader Full Quality options"):
+def _draw_region_pack_upsell_options(layout, context, *, current_region_pack_id="", title="Full Quality Data Pack options"):
     location = _region_offer_location_for_context(context)
     if location is None:
         return
@@ -504,7 +520,7 @@ def _draw_region_pack_upsell_options(layout, context, *, current_region_pack_id=
         from .credit_api import get_region_pack_offers
         offers = get_region_pack_offers(location[0], location[1])
     except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed fetching broader region pack options for popup", exc_info=True)
+        logger.debug("Planetka: failed fetching Full Quality Data Pack options for popup", exc_info=True)
         return
     offers = [offer for offer in offers if isinstance(offer, dict) and bool(offer.get("ok", True))]
     current_id = str(current_region_pack_id or "").strip()
@@ -830,7 +846,7 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
         _draw_region_pack_upsell_options(
             layout,
             context,
-            title="Broader Full Quality options",
+            title="Full Quality Data Pack options",
         )
 
     def execute(self, context):
@@ -998,6 +1014,8 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
                 async_full_price=(target_mode != "FULL"),
                 force_full_price_refresh=(target_mode == "FULL"),
             )
+            if target_mode == "FULL":
+                _schedule_region_pack_offers_after_camera_resolve(scene)
             _tag_view3d_redraw()
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka: failed refreshing Full Quality price estimate after resolve", exc_info=True)
@@ -1017,7 +1035,7 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
             ("OPTIONS", "Payment Options", "Choose how to pay for Planetka data"),
             ("STANDARD_UNLOCK", "Unlock Standard Quality", "Unlock Standard Quality forever for this account"),
             ("SCENE", "Buy This Scene", "Pay the exact current Full Quality scene price"),
-            ("REGION_PACK", "Buy Region Pack", "Buy a broader Full Quality region pack"),
+            ("REGION_PACK", "Buy Region Pack", "Buy a Full Quality Data Pack"),
             ("BALANCE_OPTIONS", "Add Balance", "Choose a Planetka balance top-up amount"),
             ("BALANCE_10", "Add €10 Balance", "Add €10 to your Planetka balance"),
         ),
@@ -1249,7 +1267,7 @@ class PLANETKA_OT_OpenRegionPackMap(bpy.types.Operator):
 class PLANETKA_OT_RegionPackInfo(bpy.types.Operator):
     bl_idname = "planetka.region_pack_info"
     bl_label = "Region Pack Details"
-    bl_description = "Show what is included in this broader Full Quality region pack"
+    bl_description = "Show what is included in this Full Quality Data Pack"
 
     region_pack_id: StringProperty(default="", options={'HIDDEN', 'SKIP_SAVE'})
     region_pack_name: StringProperty(default="Region Pack", options={'HIDDEN', 'SKIP_SAVE'})
@@ -1583,7 +1601,7 @@ class PLANETKA_OT_DataCostBreakdown(bpy.types.Operator):
             _draw_region_pack_upsell_options(
                 layout,
                 context,
-                title="Broader Full Quality options",
+                title="Full Quality Data Pack options",
             )
 
     def execute(self, context):

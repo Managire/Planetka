@@ -266,10 +266,11 @@ def clear_credit_caches():
     _REGION_OFFERS_CACHE["key"] = ""
     _REGION_OFFERS_CACHE["payload"] = []
     try:
-        from .planetka_runtime.view_telemetry import clear_full_price_estimate_cache
+        from .planetka_runtime.view_telemetry import clear_full_price_estimate_cache, clear_region_pack_offer_cache
         clear_full_price_estimate_cache()
+        clear_region_pack_offer_cache()
     except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed clearing Full Quality price estimate cache", exc_info=True)
+        logger.debug("Planetka: failed clearing Full Quality estimate cache", exc_info=True)
 
 
 def get_credit_account(force=False) -> dict:

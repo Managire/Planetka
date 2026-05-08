@@ -277,9 +277,9 @@ def _region_offer_location_for_ui(scene):
     lat_value = None
     lon_value = None
     try:
-        # Broader packs should follow the user-selected/search target. Realtime
-        # camera-hit diagnostics can be stale or can point away from the target
-        # when the camera is tilted, so use them only as a fallback.
+        # Full Quality Data Packs follow the user-selected/search target.
+        # Realtime camera-hit diagnostics can be stale or can point away from
+        # the target when the camera is tilted, so use them only as a fallback.
         if props is not None:
             lat_value = getattr(props, "nav_latitude_deg", 0.0)
             lon_value = getattr(props, "nav_longitude_deg", 0.0)
@@ -942,29 +942,24 @@ def _draw_licenced_download_controls(layout, prefs):
 
 def _draw_broader_region_offers(layout, scene, active_view_scope=False):
     if active_view_scope:
-        layout.label(text="Broader packs use Camera View.", icon="CAMERA_DATA")
-        return
-    location = _region_offer_location_for_ui(scene)
-    if location is None:
-        layout.label(text="Broader packs are unavailable for this view.", icon="INFO")
-        return
+        layout.label(text="Full Quality Data Packs use Camera View.", icon="CAMERA_DATA")
+        # Keep the last Camera View offers visible. These packs are low-priority
+        # sales metadata and must not churn while the user navigates in Active View.
     try:
-        from .credit_api import get_region_pack_offers
-        from .planetka_runtime.view_telemetry import current_full_quality_pricing_tiles_for_region_offers
-        prefs = get_prefs()
-        base_path = str(getattr(prefs, "texture_base_path", "") or "").strip()
-        offer_tile_keys = current_full_quality_pricing_tiles_for_region_offers(
-            scene=scene,
-            scope_mode="CAMERA",
-            base_path=base_path,
-        )
-        offers = get_region_pack_offers(location[0], location[1], tile_keys=offer_tile_keys)
+        from .planetka_runtime.view_telemetry import get_cached_region_pack_offers
+        offer_payload = get_cached_region_pack_offers(scene=scene)
+        offers = list(offer_payload.get("offers", ()) or ()) if isinstance(offer_payload, dict) else []
+        status = str(offer_payload.get("status", "") or "").strip().upper() if isinstance(offer_payload, dict) else ""
     except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed drawing broader region offers", exc_info=True)
+        logger.debug("Planetka: failed drawing cached Full Quality Data Packs", exc_info=True)
         offers = []
+        status = ""
     offers = [offer for offer in offers if isinstance(offer, dict) and bool(offer.get("ok", True))]
     if not offers:
-        layout.label(text="No broader packs available for this view yet.", icon="INFO")
+        if status == "LOADING":
+            layout.label(text="Updating Full Quality Data Packs after Camera View Resolve.", icon="TIME")
+        else:
+            layout.label(text="Full Quality Data Packs update after Camera View Resolve.", icon="INFO")
         return
     for offer in offers[:8]:
         name = str(offer.get("name", "") or offer.get("region_pack_name", "") or "Region Pack").strip()
@@ -1542,7 +1537,7 @@ def _draw_live_telemetry(layout, scene):
         )
         if data_packs_box is not None:
             if world_full_quality_unlocked:
-                data_packs_box.label(text="All broader Full Quality packs are already licenced.", icon="CHECKMARK")
+                data_packs_box.label(text="All Full Quality Data Packs are already licenced.", icon="CHECKMARK")
             else:
                 _draw_broader_region_offers(data_packs_box, scene, active_view_scope=active_view_scope)
 

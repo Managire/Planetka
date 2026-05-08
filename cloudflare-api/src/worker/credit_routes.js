@@ -34,6 +34,7 @@ const SQL_VARIABLE_SAFE_CHUNK_SIZE = 75;
 const REGION_PACK_TILE_CHUNK_SIZE = SQL_VARIABLE_SAFE_CHUNK_SIZE;
 const REGION_PACK_PAID_Z_LEVELS = [1, 2, 4, 8, 15, 30];
 const REGION_PACK_MAP_MAX_OUTLINE_POINTS = 250_000;
+const REGION_OFFER_MAX_TILE_COUNTRY_DISTANCE_DEG = 4.0;
 const REGION_PRODUCTS = Array.isArray(GENERATED_REGION_PACK_PRODUCTS) ? GENERATED_REGION_PACK_PRODUCTS : [];
 
 function normalizeTileKey(value) {
@@ -483,6 +484,32 @@ function bboxArea(product) {
   return width * height;
 }
 
+function longitudeDistanceDegrees(a, b) {
+  const diff = Math.abs(Number(a) - Number(b));
+  if (!Number.isFinite(diff)) {
+    return 180.0;
+  }
+  return Math.min(diff, 360.0 - diff);
+}
+
+function pointToBboxDistanceDegrees(latitudeDeg, longitudeDeg, product) {
+  const bbox = product && product.bbox || [];
+  if (!Array.isArray(bbox) || bbox.length < 4) {
+    return 0;
+  }
+  const lon = clampNumber(longitudeDeg, -180.0, 180.0);
+  const lat = clampNumber(latitudeDeg, -90.0, 90.0);
+  const minLon = Math.min(Number(bbox[0]), Number(bbox[2]));
+  const maxLon = Math.max(Number(bbox[0]), Number(bbox[2]));
+  const minLat = Math.min(Number(bbox[1]), Number(bbox[3]));
+  const maxLat = Math.max(Number(bbox[1]), Number(bbox[3]));
+  const latDistance = lat < minLat ? minLat - lat : lat > maxLat ? lat - maxLat : 0;
+  const lonDistance = lon >= minLon && lon <= maxLon
+    ? 0
+    : Math.min(longitudeDistanceDegrees(lon, minLon), longitudeDistanceDegrees(lon, maxLon));
+  return Math.sqrt(latDistance * latDistance + lonDistance * lonDistance);
+}
+
 function productSpecificityScore(product) {
   const tileCount = Number.parseInt(product && product.tile_count || 0, 10) || 0;
   if (tileCount > 0) {
@@ -785,7 +812,7 @@ function finestPaidTilesForRegionOffers(tileKeys) {
   return result;
 }
 
-function regionCountryProductsForTileKeys(tileKeys, limit = 8) {
+function regionCountryProductsForTileKeys(tileKeys, latitudeDeg, longitudeDeg, limit = 8) {
   const parsedTiles = finestPaidTilesForRegionOffers(tileKeys);
   if (!parsedTiles.length) {
     return [];
@@ -811,12 +838,16 @@ function regionCountryProductsForTileKeys(tileKeys, limit = 8) {
       }
     }
     if (overlap > 0) {
-      matches.push({ product, overlap });
+      const distanceDeg = pointToBboxDistanceDegrees(latitudeDeg, longitudeDeg, product);
+      if (distanceDeg <= REGION_OFFER_MAX_TILE_COUNTRY_DISTANCE_DEG) {
+        matches.push({ product, overlap, distanceDeg });
+      }
     }
   }
   return matches
     .sort((a, b) => (
       Number(b.overlap || 0) - Number(a.overlap || 0)
+      || Number(a.distanceDeg || 0) - Number(b.distanceDeg || 0)
       || bboxArea(a.product) - bboxArea(b.product)
       || String(a.product && a.product.name || "").localeCompare(String(b.product && b.product.name || ""))
     ))
@@ -857,7 +888,7 @@ function regionProductsContainingAnyCountry(countryIds, type, limit = 3) {
 
 function suggestedRegionProductsForContext(latitudeDeg, longitudeDeg, tileKeys = []) {
   const pointProducts = suggestedRegionProductsForPoint(latitudeDeg, longitudeDeg);
-  const tileCountryProducts = regionCountryProductsForTileKeys(tileKeys, 6);
+  const tileCountryProducts = regionCountryProductsForTileKeys(tileKeys, latitudeDeg, longitudeDeg, 8);
   const selected = [];
   const seen = new Set();
   const addProduct = (product) => {
