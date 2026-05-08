@@ -58,6 +58,7 @@ TILE_KEY_RE = re.compile(r"x(\d{3})_y(\d{3})_z(\d{3})_d(\d{3})", re.IGNORECASE)
 EUROPE_CLIP_BBOX = (-25.0, 34.0, 45.0, 72.0)
 SOUTH_AMERICA_CLIP_BBOX = (-92.5, -60.0, -30.0, 15.0)
 CARIBBEAN_CLIP_BBOX = (-90.0, 5.0, -55.0, 30.0)
+CENTRAL_AMERICA_CLIP_BBOX = (-93.0, 5.0, -76.0, 20.0)
 AUSTRALIA_CLIP_BBOX = (110.0, -45.0, 155.0, -9.0)
 NEW_ZEALAND_CLIP_BBOX = (165.0, -53.0, 180.0, -29.0)
 AFRICA_CLIP_BBOX = (-26.0, -41.0, 64.0, 38.0)
@@ -96,6 +97,10 @@ CARIBBEAN_LARGE_ISLAND_CODES = (
 CARIBBEAN_SMALL_ISLAND_CODES = (
     "ABW", "AIA", "ATG", "BES", "BRB", "CUW", "CYM", "DMA", "GLP", "GRD",
     "KNA", "LCA", "MSR", "MTQ", "SXM", "TCA", "VCT", "VGB", "VIR",
+)
+
+CENTRAL_AMERICA_COUNTRY_CODES = (
+    "BLZ", "CRI", "SLV", "GTM", "HND", "NIC", "PAN",
 )
 
 AUSTRALIA_MAINLAND_REGION_CODES = (
@@ -180,7 +185,7 @@ CANADA_EAST_CODES = ("CAN.4_1", "CAN.5_1", "CAN.7_1", "CAN.9_1", "CAN.10_1", "CA
 CANADA_NORTH_CODES = ("CAN.6_1", "CAN.8_1", "CAN.13_1")
 
 NORTH_ATLANTIC_ISLAND_CODES = ("BMU", "SPM")
-NORTH_AMERICA_COUNTRY_CODES = ("GRL", "MEX", *NORTH_ATLANTIC_ISLAND_CODES)
+NORTH_AMERICA_COUNTRY_CODES = ("GRL", "MEX", *NORTH_ATLANTIC_ISLAND_CODES, *CENTRAL_AMERICA_COUNTRY_CODES)
 NORTH_AMERICA_ALL_MEMBERS = (
     *USA_STATE_CODES,
     *CANADA_REGION_CODES,
@@ -189,22 +194,21 @@ NORTH_AMERICA_ALL_MEMBERS = (
 
 AFRICA_COUNTRY_CODES = (
     "AGO", "BEN", "BFA", "BDI", "BWA", "CAF", "CIV", "CMR", "COD", "COG",
-    "COM", "CPV", "DJI", "DZA", "EGY", "ERI", "ESH", "ETH", "GAB", "GHA",
+    "COM", "DJI", "DZA", "EGY", "ERI", "ESH", "ETH", "GAB", "GHA",
     "GIN", "GMB", "GNB", "GNQ", "KEN", "LBR", "LBY", "LSO", "MAR", "MDG",
-    "MLI", "MOZ", "MRT", "MUS", "MWI", "MYT", "NAM", "NER", "NGA", "REU",
-    "RWA", "SDN", "SEN", "SHN", "SLE", "SOM", "SSD", "STP", "SWZ", "SYC",
+    "MLI", "MOZ", "MRT", "MWI", "NAM", "NER", "NGA",
+    "RWA", "SDN", "SEN", "SLE", "SOM", "SSD", "STP", "SWZ",
     "TCD", "TGO", "TUN", "TZA", "UGA", "ZAF", "ZMB", "ZWE",
 )
 
 AFRICA_PRODUCT_OVERRIDES = {
-    "SHN": {"id": "saint_helena_ascension_and_tristan_da_cunha", "name": "Saint Helena, Ascension and Tristan da Cunha"},
     "SWZ": {"id": "eswatini", "name": "Eswatini"},
 }
 
 NORTH_AFRICA_CODES = ("DZA", "EGY", "ESH", "LBY", "MAR", "MRT", "SDN", "TUN")
-WEST_AFRICA_CODES = ("BEN", "BFA", "CIV", "CPV", "GHA", "GIN", "GMB", "GNB", "LBR", "MLI", "MRT", "NER", "NGA", "SEN", "SLE", "TGO")
+WEST_AFRICA_CODES = ("BEN", "BFA", "CIV", "GHA", "GIN", "GMB", "GNB", "LBR", "MLI", "MRT", "NER", "NGA", "SEN", "SLE", "TGO")
 CENTRAL_AFRICA_CODES = ("AGO", "CAF", "CMR", "COD", "COG", "GAB", "GNQ", "STP", "TCD")
-EAST_AFRICA_CODES = ("BDI", "COM", "DJI", "ERI", "ETH", "KEN", "MDG", "MOZ", "MUS", "MWI", "MYT", "REU", "RWA", "SOM", "SSD", "SYC", "TZA", "UGA", "ZMB")
+EAST_AFRICA_CODES = ("BDI", "COM", "DJI", "ERI", "ETH", "KEN", "MDG", "MOZ", "MWI", "RWA", "SOM", "SSD", "TZA", "UGA", "ZMB")
 SOUTHERN_AFRICA_CODES = ("AGO", "BWA", "LSO", "MOZ", "MWI", "NAM", "SWZ", "ZAF", "ZMB", "ZWE")
 HORN_OF_AFRICA_CODES = ("DJI", "ERI", "ETH", "SOM")
 SAHEL_CODES = ("BFA", "TCD", "MLI", "MRT", "NER", "SDN", "SEN", "SSD")
@@ -254,9 +258,9 @@ LOCAL_ADM0_EXPANSIONS = {
 }
 
 ASIA_COUNTRY_CODES = (
-    "AFG", "ARM", "AZE", "BGD", "BHR", "BRN", "BTN", "CCK", "CXR", "GEO",
-    "IDN", "IND", "IOT", "IRN", "IRQ", "ISR", "JPN", "JOR", "KAZ", "KGZ",
-    "KHM", "KOR", "KWT", "LAO", "LBN", "LKA", "MDV", "MMR", "MNG", "MYS",
+    "AFG", "ARM", "AZE", "BGD", "BHR", "BRN", "BTN", "GEO",
+    "IDN", "IND", "IRN", "IRQ", "ISR", "JPN", "JOR", "KAZ", "KGZ",
+    "KHM", "KOR", "KWT", "LAO", "LBN", "LKA", "MMR", "MNG", "MYS",
     "NPL", "OMN", "PAK", "PHL", "PRK", "PSE", "QAT", "RUS", "SAU", "SGP",
     "SYR", "THA", "TJK", "TKM", "TLS", "TUR", "TWN", "ARE", "UZB", "VNM",
     "YEM",
@@ -264,10 +268,7 @@ ASIA_COUNTRY_CODES = (
 
 ASIA_PRODUCT_OVERRIDES = {
     "ARE": {"id": "united_arab_emirates", "name": "United Arab Emirates"},
-    "CCK": {"id": "cocos_islands", "name": "Cocos Islands"},
-    "CXR": {"id": "christmas_island", "name": "Christmas Island"},
     "GEO": {"id": "georgia_country", "name": "Georgia"},
-    "IOT": {"id": "british_indian_ocean_territory", "name": "British Indian Ocean Territory"},
     "RUS": {
         "id": "russia",
         "name": "Russia",
@@ -282,7 +283,7 @@ GULF_STATES_CODES = ("BHR", "KWT", "OMN", "QAT", "SAU", "ARE")
 LEVANT_CODES = ("CYP", "ISR", "JOR", "LBN", "PSE", "SYR", "TUR")
 CAUCASUS_CODES = ("ARM", "AZE", "GEO")
 CENTRAL_ASIA_CODES = ("KAZ", "KGZ", "TJK", "TKM", "UZB")
-SOUTH_ASIA_CODES = ("AFG", "BGD", "BTN", "IND", "MDV", "NPL", "PAK", "LKA", *HIMALAYAN_DISPUTED_CODES)
+SOUTH_ASIA_CODES = ("AFG", "BGD", "BTN", "IND", "NPL", "PAK", "LKA", *HIMALAYAN_DISPUTED_CODES)
 SOUTHEAST_ASIA_CODES = ("BRN", "KHM", "IDN", "LAO", "MYS", "MMR", "PHL", "SGP", "THA", "TLS", "VNM", *SOUTH_CHINA_SEA_DISPUTED_CODES)
 EAST_ASIA_COUNTRY_CODES = ("JPN", "KOR", "MNG", "PRK", "TWN", *SOUTH_CHINA_SEA_DISPUTED_CODES)
 ASIA_ALL_ADM0_CODES = (
@@ -290,6 +291,9 @@ ASIA_ALL_ADM0_CODES = (
     *HIMALAYAN_DISPUTED_CODES,
     *SOUTH_CHINA_SEA_DISPUTED_CODES,
 )
+
+PACIFIC_COUNTRY_CODES = ("PNG",)
+OCEANIA_COUNTRY_CODES = ("NZL", *PACIFIC_COUNTRY_CODES)
 
 
 def expanded_adm0_codes(code: str) -> tuple[str, ...]:
@@ -303,7 +307,7 @@ LOCAL_PRODUCT_SPECS = (
             "membership_codes": (code,),
             "clip_bbox": EUROPE_CLIP_BBOX,
             "merge_scope": "europe",
-            "auto_merge": True,
+            "auto_merge": False,
             "discount_percent": 20,
         }
         for code in EUROPE_COUNTRY_CODES
@@ -340,6 +344,17 @@ LOCAL_PRODUCT_SPECS = (
         "discount_percent": 20,
         "source_note": "GADM 4.10 ADM_0 polygon intersection; grouped small Caribbean island nations and territories",
     },
+    *(
+        {
+            "adm0_codes": (code,),
+            "membership_codes": (code,),
+            "clip_bbox": CENTRAL_AMERICA_CLIP_BBOX,
+            "merge_scope": "north_america",
+            "auto_merge": False,
+            "discount_percent": 20,
+        }
+        for code in CENTRAL_AMERICA_COUNTRY_CODES
+    ),
     *(
         {
             "adm1_codes": (code,),
@@ -382,6 +397,16 @@ LOCAL_PRODUCT_SPECS = (
         "discount_percent": 20,
         "source_note": "GADM 4.10 ADM_0 polygon intersection; clipped to the main New Zealand longitudes to avoid antimeridian map wrapping",
     },
+    *(
+        {
+            "adm0_codes": (code,),
+            "membership_codes": (code,),
+            "merge_scope": "oceania",
+            "auto_merge": False,
+            "discount_percent": 20,
+        }
+        for code in PACIFIC_COUNTRY_CODES
+    ),
     *(
         {
             "adm1_codes": (code,),
@@ -463,6 +488,7 @@ LOCAL_PRODUCT_SPECS = (
         "merge_scope": "asia",
         "auto_merge": False,
         "discount_percent": 20,
+        "publish_product": False,
         "source_note": "GADM 4.10 ADM_0 polygon intersection; disputed South China Sea island group",
     },
     {
@@ -474,6 +500,7 @@ LOCAL_PRODUCT_SPECS = (
         "merge_scope": "asia",
         "auto_merge": False,
         "discount_percent": 20,
+        "publish_product": False,
         "source_note": "GADM 4.10 ADM_0 polygon intersection; disputed South China Sea island group",
     },
     *(
@@ -661,6 +688,21 @@ MACRO_PACKS = (
         "outline_mode": "union",
     },
     {
+        "id": "pacific_islands",
+        "name": "Pacific Islands",
+        "type": "macro_region",
+        "discount_percent": 30,
+        "adm0_codes": PACIFIC_COUNTRY_CODES,
+    },
+    {
+        "id": "oceania",
+        "name": "Oceania",
+        "type": "continent",
+        "discount_percent": 50,
+        "adm0_codes": OCEANIA_COUNTRY_CODES,
+        "adm1_codes": AUSTRALIA_ALL_REGION_CODES,
+    },
+    {
         "id": "western_united_states",
         "name": "Western United States",
         "type": "macro_region",
@@ -724,6 +766,14 @@ MACRO_PACKS = (
         "type": "macro_region",
         "discount_percent": 30,
         "adm1_codes": CANADA_REGION_CODES,
+    },
+    {
+        "id": "central_america",
+        "name": "Central America",
+        "type": "macro_region",
+        "discount_percent": 30,
+        "adm0_codes": CENTRAL_AMERICA_COUNTRY_CODES,
+        "clip_bbox": CENTRAL_AMERICA_CLIP_BBOX,
     },
     {
         "id": "north_america",

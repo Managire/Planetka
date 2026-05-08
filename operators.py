@@ -489,13 +489,6 @@ def _region_offer_countries_text(offer):
     return str(countries or "")
 
 
-INCLUDED_AREA_NEUTRALITY_NOTICE = (
-    "Included area labels describe possible texture coverage only. They do not define borders, "
-    "sovereignty, or political status. Planetka does not draw or decide national borders; "
-    "the pack simply unlocks texture tiles that may be relevant to the selected area."
-)
-
-
 def _populate_region_pack_info_operator(operator, offer):
     name = str((offer or {}).get("name", "") or (offer or {}).get("region_pack_name", "") or "Region Pack").strip()
     region_id = str((offer or {}).get("id", "") or (offer or {}).get("region_pack_id", "") or "").strip()
@@ -1324,7 +1317,6 @@ class PLANETKA_OT_RegionPackInfo(bpy.types.Operator):
         summary.label(text=f"Price: €{float(getattr(self, 'price_eur', 0.0) or 0.0):.2f}", icon="USER")
         country_box = layout.box()
         country_box.label(text="Included Area Labels", icon="WORLD_DATA")
-        self._wrapped_label(country_box, INCLUDED_AREA_NEUTRALITY_NOTICE, icon="INFO")
         country_text = f"Area labels: {', '.join(countries)}" if countries else "Area label list is not available for this pack yet."
         self._wrapped_label(country_box, country_text)
         self._wrapped_label(
