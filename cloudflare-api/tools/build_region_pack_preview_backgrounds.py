@@ -104,13 +104,37 @@ def frame_for_bounds(bounds: dict[str, float], width: int = 1000, min_height: in
     scale = min(inner_w / lon_span, inner_h / lat_span)
     used_w = lon_span * scale
     used_h = lat_span * scale
-    return {"used_w": used_w, "used_h": used_h, "height": height}
+    return {
+        "bounds": bounds,
+        "width": width,
+        "height": height,
+        "scale": scale,
+        "used_w": used_w,
+        "used_h": used_h,
+        "ox": (width - used_w) / 2.0,
+        "oy": (height - used_h) / 2.0,
+    }
+
+
+def full_canvas_bounds(bounds: dict[str, float], width: int = 1000, min_height: int = 320, max_height: int = 820, pad: int = 20) -> dict[str, float]:
+    frame = frame_for_bounds(bounds, width=width, min_height=min_height, max_height=max_height, pad=pad)
+    scale = max(1e-9, float(frame["scale"]))
+    min_lon = float(bounds["min_lon"]) - float(frame["ox"]) / scale
+    max_lon = float(bounds["max_lon"]) + (float(frame["width"]) - float(frame["ox"]) - float(frame["used_w"])) / scale
+    max_lat = float(bounds["max_lat"]) + float(frame["oy"]) / scale
+    min_lat = float(bounds["min_lat"]) - (float(frame["height"]) - float(frame["oy"]) - float(frame["used_h"])) / scale
+    return {
+        "min_lon": max(-180.0, min_lon),
+        "min_lat": max(-90.0, min_lat),
+        "max_lon": min(180.0, max_lon),
+        "max_lat": min(90.0, max_lat),
+    }
 
 
 def target_size(bounds: dict[str, float], device_scale: float, max_side: int) -> tuple[int, int]:
     frame = frame_for_bounds(bounds)
-    width = max(1, round(frame["used_w"] * device_scale))
-    height = max(1, round(frame["used_h"] * device_scale))
+    width = max(1, round(frame["width"] * device_scale))
+    height = max(1, round(frame["height"] * device_scale))
     largest = max(width, height)
     if largest > max_side:
         ratio = max_side / largest
@@ -273,10 +297,11 @@ def render_background(asset_path: Path, out_path: Path, s2_dir: Path, cache: Ima
     asset = json.loads(asset_path.read_text())
     product = asset.get("region_pack") if isinstance(asset.get("region_pack"), dict) else {}
     product_id = str(product.get("id") or asset_path.stem)
-    bounds = normalize_bounds(asset.get("bounds"))
-    if not bounds:
+    product_bounds = normalize_bounds(asset.get("bounds"))
+    if not product_bounds:
         raise RuntimeError("missing or invalid bounds")
-    out_w, out_h = target_size(bounds, device_scale=device_scale, max_side=max_side)
+    bounds = full_canvas_bounds(product_bounds)
+    out_w, out_h = target_size(product_bounds, device_scale=device_scale, max_side=max_side)
     tiles, reason = choose_tiles(asset, bounds, out_w, out_h, s2_dir, cache)
     canvas = Image.new("RGB", (out_w, out_h), (13, 17, 24))
     pasted = 0
