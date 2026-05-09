@@ -22,6 +22,9 @@ const METRIC_SCALE = 1_000_000;
 // The R2 map assets are allowed to be larger than Worker inline payloads.  A low
 // cap here corrupts borders by drawing shortcut chords across complex polygons.
 const REGION_PACK_MAP_MAX_OUTLINE_POINTS = 250_000;
+const REGION_SIMILAR_COUNTRY_MAX_DISTANCE_DEG = 2.0;
+const COUNTRY_LIKE_REGION_PRODUCT_IDS = new Set(["australia", "canada", "china", "united_states"]);
+const NORTH_AMERICA_SIMILAR_COUNTRY_LIKE_IDS = new Set(["canada", "united_states"]);
 const DISPLAY_AREA_LABEL_BY_ADM0_CODE = new Map([
   ["Z01", "Himalayan Disputed Territories"],
   ["Z02", "Himalayan Disputed Territories"],
@@ -98,6 +101,136 @@ function parseTileKey(value) {
   };
 }
 
+function mergeCircularIntervals(intervals) {
+  const normalized = intervals
+    .map(([start, end]) => [
+      Math.max(0, Math.min(360, Number(start))),
+      Math.max(0, Math.min(360, Number(end))),
+    ])
+    .filter(([start, end]) => Number.isFinite(start) && Number.isFinite(end) && end > start)
+    .sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const merged = [];
+  for (const [start, end] of normalized) {
+    const last = merged[merged.length - 1];
+    if (last && start <= last[1]) {
+      last[1] = Math.max(last[1], end);
+    } else {
+      merged.push([start, end]);
+    }
+  }
+  return merged;
+}
+
+function displayLongitudeDomainForRows(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return null;
+  }
+  const intervals = rows
+    .map((row) => [Number(row.x), Number(row.x) + Number(row.z)])
+    .filter(([start, end]) => Number.isFinite(start) && Number.isFinite(end) && end > start);
+  const merged = mergeCircularIntervals(intervals);
+  let minLon = 180;
+  let maxLon = -180;
+  for (const row of rows) {
+    minLon = Math.min(minLon, Number(row.lon_min));
+    maxLon = Math.max(maxLon, Number(row.lon_max));
+  }
+  const rawWidth = maxLon - minLon;
+  if (merged.length === 1) {
+    const [start, end] = merged[0];
+    if (end >= 359.5 && start > 180) {
+      return {
+        start_angle: start,
+        compact_width: end - start,
+        raw_width: rawWidth,
+      };
+    }
+    return null;
+  }
+  if (!Number.isFinite(rawWidth) || rawWidth <= 180) {
+    return null;
+  }
+  let largestGap = { size: -1, start: 0, end: 0 };
+  for (let index = 0; index < merged.length; index += 1) {
+    const current = merged[index];
+    const next = merged[(index + 1) % merged.length];
+    const gapStart = current[1];
+    const gapEnd = index + 1 < merged.length ? next[0] : next[0] + 360;
+    const size = gapEnd - gapStart;
+    if (size > largestGap.size) {
+      largestGap = { size, start: gapStart, end: gapEnd };
+    }
+  }
+  const compactWidth = 360 - largestGap.size;
+  if (!Number.isFinite(compactWidth) || compactWidth <= 0 || compactWidth >= rawWidth - 10) {
+    return null;
+  }
+  return {
+    start_angle: largestGap.end % 360,
+    compact_width: compactWidth,
+    raw_width: rawWidth,
+  };
+}
+
+function displayLonFromAngle(angle, startAngle) {
+  let adjusted = Number(angle);
+  while (adjusted < startAngle) {
+    adjusted += 360;
+  }
+  while (adjusted >= startAngle + 360) {
+    adjusted -= 360;
+  }
+  return adjusted - 180;
+}
+
+function displayLon(lon, startAngle) {
+  return displayLonFromAngle(Number(lon) + 180, startAngle);
+}
+
+function wrapPointForDisplay(point, startAngle) {
+  if (!Array.isArray(point) || point.length < 2) {
+    return point;
+  }
+  const lon = Number(point[0]);
+  const lat = Number(point[1]);
+  if (!Number.isFinite(lon) || !Number.isFinite(lat)) {
+    return point;
+  }
+  return [displayLon(lon, startAngle), lat];
+}
+
+function applyDisplayLongitudeWrap(asset) {
+  const rows = Array.isArray(asset && asset.tiles) ? asset.tiles : [];
+  const domain = displayLongitudeDomainForRows(rows);
+  if (!domain) {
+    return asset;
+  }
+  const startAngle = Number(domain.start_angle);
+  for (const row of rows) {
+    const x = Number(row.x);
+    const z = Number(row.z);
+    if (!Number.isFinite(x) || !Number.isFinite(z)) {
+      continue;
+    }
+    row.lon_min = displayLonFromAngle(x, startAngle);
+    row.lon_max = displayLonFromAngle(x + z, startAngle);
+    if (row.lon_max <= row.lon_min) {
+      row.lon_max += 360;
+    }
+  }
+  asset.outlines = (Array.isArray(asset.outlines) ? asset.outlines : []).map((outline) => ({
+    ...outline,
+    polygons: (Array.isArray(outline.polygons) ? outline.polygons : []).map((polygon) => polygon.map((point) => wrapPointForDisplay(point, startAngle))),
+  }));
+  asset.bounds = boundsForProduct(null, null, rows);
+  asset.display_longitude_wrap = {
+    start_angle: startAngle,
+    compact_width: domain.compact_width,
+    raw_width: domain.raw_width,
+  };
+  return asset;
+}
+
 function freeReasonForTile(parsed) {
   if (!parsed) {
     return "invalid_tile_key";
@@ -145,6 +278,48 @@ function bboxArea(product) {
     return Number.POSITIVE_INFINITY;
   }
   return Math.max(0, Number(bbox[2]) - Number(bbox[0])) * Math.max(0, Number(bbox[3]) - Number(bbox[1]));
+}
+
+function bboxIntersects(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length < 4 || b.length < 4) {
+    return false;
+  }
+  return Number(a[0]) <= Number(b[2])
+    && Number(a[2]) >= Number(b[0])
+    && Number(a[1]) <= Number(b[3])
+    && Number(a[3]) >= Number(b[1]);
+}
+
+function bboxDistanceDegrees(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length < 4 || b.length < 4) {
+    return Number.POSITIVE_INFINITY;
+  }
+  if (bboxIntersects(a, b)) {
+    return 0;
+  }
+  const aMinLon = Math.min(Number(a[0]), Number(a[2]));
+  const aMaxLon = Math.max(Number(a[0]), Number(a[2]));
+  const aMinLat = Math.min(Number(a[1]), Number(a[3]));
+  const aMaxLat = Math.max(Number(a[1]), Number(a[3]));
+  const bMinLon = Math.min(Number(b[0]), Number(b[2]));
+  const bMaxLon = Math.max(Number(b[0]), Number(b[2]));
+  const bMinLat = Math.min(Number(b[1]), Number(b[3]));
+  const bMaxLat = Math.max(Number(b[1]), Number(b[3]));
+  const lonDistance = Math.max(0, Math.max(aMinLon, bMinLon) - Math.min(aMaxLon, bMaxLon));
+  const latDistance = Math.max(0, Math.max(aMinLat, bMinLat) - Math.min(aMaxLat, bMaxLat));
+  return Math.hypot(lonDistance, latDistance);
+}
+
+function bboxLongitudeSpanDegrees(bbox) {
+  if (!Array.isArray(bbox) || bbox.length < 4) {
+    return 360.0;
+  }
+  const minLon = Math.min(Number(bbox[0]), Number(bbox[2]));
+  const maxLon = Math.max(Number(bbox[0]), Number(bbox[2]));
+  if (!Number.isFinite(minLon) || !Number.isFinite(maxLon)) {
+    return 360.0;
+  }
+  return Math.max(0, maxLon - minLon);
 }
 
 function productRank(product) {
@@ -288,6 +463,40 @@ function buildHelpers(generated, catalog = {}) {
     }
     return keys;
   };
+  const z001CellCache = new Map();
+  const z001Cells = (sourceProduct) => {
+    const productId = String(sourceProduct && sourceProduct.id || "").trim();
+    if (!productId) {
+      return new Set();
+    }
+    if (z001CellCache.has(productId)) {
+      return z001CellCache.get(productId);
+    }
+    const cells = new Set();
+    for (const key of tileKeys(sourceProduct)) {
+      const parsed = parseTileKey(key);
+      if (parsed && parsed.z === 1 && parsed.d === 1) {
+        cells.add(`${parsed.x},${parsed.y}`);
+      }
+    }
+    z001CellCache.set(productId, cells);
+    return cells;
+  };
+  const z001FootprintsOverlap = (sourceProduct, candidateProduct) => {
+    const sourceCells = z001Cells(sourceProduct);
+    const candidateCells = z001Cells(candidateProduct);
+    if (!sourceCells.size || !candidateCells.size) {
+      return false;
+    }
+    const smaller = sourceCells.size <= candidateCells.size ? sourceCells : candidateCells;
+    const larger = sourceCells.size <= candidateCells.size ? candidateCells : sourceCells;
+    for (const cell of smaller) {
+      if (larger.has(cell)) {
+        return true;
+      }
+    }
+    return false;
+  };
   const outlines = (sourceProduct) => {
     const sourceDetail = detail(sourceProduct && sourceProduct.id);
     if (Array.isArray(sourceDetail.outlines) && sourceDetail.outlines.length) {
@@ -348,13 +557,125 @@ function buildHelpers(generated, catalog = {}) {
     }
     return false;
   };
+  const countryOption = (candidate) => {
+    const id = String(candidate && candidate.id || "").trim();
+    const type = String(candidate && candidate.type || "").trim().toLowerCase();
+    if (COUNTRY_LIKE_REGION_PRODUCT_IDS.has(id)) {
+      return true;
+    }
+    return type === "country" && !(Array.isArray(candidate && candidate.adm1_codes) && candidate.adm1_codes.length);
+  };
+  const subset = (candidateSet, parentSet) => {
+    if (!candidateSet.size || !parentSet.size) {
+      return false;
+    }
+    for (const id of candidateSet) {
+      if (!parentSet.has(id)) {
+        return false;
+      }
+    }
+    return true;
+  };
+  const includedCountries = (sourceProduct) => {
+    const currentId = String(sourceProduct && sourceProduct.id || "").trim();
+    const currentRank = productRank(sourceProduct);
+    if (!currentId || currentRank <= 1) {
+      return [];
+    }
+    const parentSet = countrySet(sourceProduct);
+    return products
+      .filter((candidate) => {
+        const candidateId = String(candidate && candidate.id || "").trim();
+        return candidateId
+          && candidateId !== currentId
+          && !candidate.hidden
+          && countryOption(candidate)
+          && subset(countrySet(candidate), parentSet);
+      })
+      .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+  };
+  const includedAreas = (sourceProduct) => {
+    const currentId = String(sourceProduct && sourceProduct.id || "").trim();
+    const currentRank = productRank(sourceProduct);
+    if (!currentId || currentRank !== 3) {
+      return [];
+    }
+    const parentSet = countrySet(sourceProduct);
+    return products
+      .filter((candidate) => {
+        const candidateId = String(candidate && candidate.id || "").trim();
+        return candidateId
+          && candidateId !== currentId
+          && !candidate.hidden
+          && (
+            !COUNTRY_LIKE_REGION_PRODUCT_IDS.has(candidateId)
+            || (currentId === "north_america" && NORTH_AMERICA_SIMILAR_COUNTRY_LIKE_IDS.has(candidateId))
+          )
+          && productRank(candidate) === 2
+          && subset(countrySet(candidate), parentSet);
+      })
+      .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+  };
   const related = (sourceProduct, limit = 3) => {
     const currentRank = productRank(sourceProduct);
     const currentId = String(sourceProduct && sourceProduct.id || "").trim();
     if (!currentId || currentRank <= 0) {
       return [];
     }
-    return products
+    const result = [];
+    const seen = new Set([currentId]);
+    const add = (candidate) => {
+      const id = String(candidate && candidate.id || "").trim();
+      if (!id || seen.has(id)) {
+        return;
+      }
+      seen.add(id);
+      result.push(candidate);
+    };
+    const sourceIsCountryOption = countryOption(sourceProduct) && currentRank !== 3;
+    if (currentRank === 1 || sourceIsCountryOption) {
+      for (const candidate of products
+        .filter((candidate) => {
+          const candidateId = String(candidate && candidate.id || "").trim();
+          if (!candidateId || candidateId === currentId) {
+            return false;
+          }
+          if (sourceIsCountryOption) {
+            return countryOption(candidate) && z001FootprintsOverlap(sourceProduct, candidate);
+          }
+          if (productRank(candidate) !== 1) {
+            return false;
+          }
+          const candidateBbox = candidate && candidate.bbox || [];
+          if (
+            bboxLongitudeSpanDegrees(candidateBbox) >= 180.0
+            && !z001FootprintsOverlap(sourceProduct, candidate)
+          ) {
+            return false;
+          }
+          const distance = bboxDistanceDegrees(sourceProduct && sourceProduct.bbox || [], candidateBbox);
+          return Number.isFinite(distance) && distance <= REGION_SIMILAR_COUNTRY_MAX_DISTANCE_DEG;
+        })
+        .sort((a, b) => (
+          bboxDistanceDegrees(sourceProduct && sourceProduct.bbox || [], a && a.bbox || [])
+          - bboxDistanceDegrees(sourceProduct && sourceProduct.bbox || [], b && b.bbox || [])
+          || productSpecificityScore(a) - productSpecificityScore(b)
+          || bboxArea(a) - bboxArea(b)
+          || String(a.name || "").localeCompare(String(b.name || ""))
+        ))) {
+        add(candidate);
+      }
+    }
+    const areas = includedAreas(sourceProduct);
+    for (const candidate of areas) {
+      add(candidate);
+    }
+    const includeCountries = currentRank !== 3;
+    const included = includeCountries ? includedCountries(sourceProduct) : [];
+    for (const candidate of included) {
+      add(candidate);
+    }
+    for (const candidate of products
       .filter((candidate) => {
         const candidateId = String(candidate && candidate.id || "").trim();
         const candidateRank = productRank(candidate);
@@ -369,8 +690,16 @@ function buildHelpers(generated, catalog = {}) {
         || productSpecificityScore(a) - productSpecificityScore(b)
         || bboxArea(a) - bboxArea(b)
         || String(a.name || "").localeCompare(String(b.name || ""))
-      ))
-      .slice(0, limit);
+      ))) {
+      add(candidate);
+    }
+    if (currentRank === 1 || sourceIsCountryOption) {
+      return result;
+    }
+    if (areas.length || included.length) {
+      return result;
+    }
+    return result.slice(0, limit);
   };
   return { products, product, detail, tileKeys, outlines, related };
 }
@@ -493,7 +822,7 @@ function assetForProduct(product, helpers, generated) {
     .filter(Boolean)
     .sort((a, b) => a.tile_key.localeCompare(b.tile_key));
   const levels = Array.from(new Set(rows.map((row) => row.z))).sort((a, b) => a - b);
-  return {
+  return applyDisplayLongitudeWrap({
     ok: true,
     static_asset: true,
     catalog_version: generated.GENERATED_REGION_PACK_CATALOG_VERSION || "unknown",
@@ -507,7 +836,7 @@ function assetForProduct(product, helpers, generated) {
     levels,
     tiles: rows,
     upsell_ids: helpers.related(product, 3).map((entry) => String(entry && entry.id || "")).filter(Boolean),
-  };
+  });
 }
 
 async function main() {

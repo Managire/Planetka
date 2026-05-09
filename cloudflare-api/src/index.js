@@ -2737,6 +2737,7 @@ async function ensureCreditTables(db) {
         world_full_quality_unlocked_at TEXT,
         world_full_quality_checkout_session_id TEXT,
         world_full_quality_paid_eur REAL NOT NULL DEFAULT 0,
+        pricing_version INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       )
@@ -2757,6 +2758,7 @@ async function ensureCreditTables(db) {
     `ALTER TABLE user_credit_accounts ADD COLUMN world_full_quality_unlocked_at TEXT`,
     `ALTER TABLE user_credit_accounts ADD COLUMN world_full_quality_checkout_session_id TEXT`,
     `ALTER TABLE user_credit_accounts ADD COLUMN world_full_quality_paid_eur REAL NOT NULL DEFAULT 0`,
+    `ALTER TABLE user_credit_accounts ADD COLUMN pricing_version INTEGER NOT NULL DEFAULT 0`,
   ]) {
     try {
       await dbRun(db, statement);

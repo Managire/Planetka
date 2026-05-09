@@ -815,7 +815,7 @@ from .planetka_ops.navigation_helpers import (
 
 class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
     bl_idname = "planetka.set_texture_quality_and_resolve"
-    bl_label = "Texture Quality"
+    bl_label = "Purchase Confirmation"
     bl_description = "Select Preview or Standard for personal-use automated resolving, or licence Full Quality textures for commercial use"
 
     texture_quality_mode: EnumProperty(

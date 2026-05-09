@@ -411,7 +411,19 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
       && creditTileKey
       && !isFreeCreditTileKey(creditTileKey)
     ) {
-      const unlocked = await isTileUnlockedForUser(db, user && user.id, creditTileKey, deps, { folder });
+      const unlocked = await isTileUnlockedForUser(
+        db,
+        user && user.id,
+        creditTileKey,
+        deps,
+        {
+          folder,
+          // Paid session unlocks and tile downloads can land on different Worker
+          // isolates. Bypass per-isolate entitlement caches here so a freshly
+          // purchased Resolve is immediately usable on the first attempt.
+          authoritative: true,
+        },
+      );
       if (!unlocked) {
         eventStatusCode = 402;
         eventErrorCode = "tile_not_unlocked";

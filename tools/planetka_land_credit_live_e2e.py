@@ -28,6 +28,7 @@ DEFAULT_API_BASE_URL = os.getenv("PLANETKA_API_BASE_URL", "https://api.planetka.
 DEFAULT_KEY_JSON = Path("/Volumes/SSDA/Renders/credits_planetka_io_api_key.json")
 TEST_EMAIL = "credits@planetka.io"
 STANDARD_BALANCE = 100.0
+WORKER_ACCOUNT_CACHE_TTL_SECONDS = 30
 
 ANIMATION_SECOND_TILE = "x339_y143_z001_d002"
 FULL_TILE = "x075_y149_z001_d001"
@@ -153,7 +154,7 @@ def sql_literal(value: str) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def reset_test_account(cwd: Path, account_type="standard", balance=STANDARD_BALANCE) -> None:
+def reset_test_account(cwd: Path, account_type="standard", balance=STANDARD_BALANCE, settle_worker_cache=True) -> None:
     email_sql = sql_literal(TEST_EMAIL)
     account_type_sql = sql_literal(account_type)
     now_sql = sql_literal(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
@@ -163,15 +164,27 @@ def reset_test_account(cwd: Path, account_type="standard", balance=STANDARD_BALA
       DELETE FROM credit_ledger
       WHERE user_id = (SELECT id FROM users WHERE LOWER(email) = {email_sql})
         AND reason = 'tile_unlock';
+      DELETE FROM user_entitlement_summaries
+      WHERE user_id = (SELECT id FROM users WHERE LOWER(email) = {email_sql});
       UPDATE user_credit_accounts
       SET account_type = {account_type_sql},
           balance_credits = {float(balance):.6f},
           total_granted_credits = {float(balance):.6f},
           total_spent_credits = 0,
+          world_full_quality_unlocked_at = NULL,
+          world_full_quality_checkout_session_id = NULL,
+          world_full_quality_paid_eur = 0,
+          pricing_version = COALESCE(pricing_version, 0) + 1,
           updated_at = {now_sql}
       WHERE user_id = (SELECT id FROM users WHERE LOWER(email) = {email_sql});
     """
     wrangler_d1(command, cwd)
+    if settle_worker_cache:
+        # This test resets D1 out-of-band. Production writes invalidate Worker
+        # caches through the API path, but direct wrangler mutations cannot clear
+        # already-running Worker isolates. Wait for the short account cache to
+        # expire so the next assertion observes the reset state.
+        time.sleep(WORKER_ACCOUNT_CACHE_TTL_SECONDS + 1)
 
 
 def account_row(cwd: Path) -> dict:

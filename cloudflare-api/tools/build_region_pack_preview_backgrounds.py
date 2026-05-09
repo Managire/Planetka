@@ -2,7 +2,7 @@
 """Build static high-resolution preview backgrounds for Full Quality data-pack maps.
 
 The web maps are static product views. This tool renders their photographic
-backgrounds offline from the local S2 tile pyramid, so the Worker only serves
+backgrounds offline from the local tile pyramid, so the Worker only serves
 prebuilt JPEGs and never stitches imagery at request time.
 """
 
@@ -23,8 +23,11 @@ from PIL import Image
 
 TILE_KEY_RE = re.compile(r"x(\d{3})_y(\d{3})_z(\d{3})_d(\d{3})", re.IGNORECASE)
 DEFAULT_S2_DIR = Path("/Volumes/SSDA/Planetka Assets/S2")
+DEFAULT_WT_DIR = Path("/Volumes/SSDA/Planetka Assets/WT")
 DEFAULT_ASSETS_DIR = Path("/tmp/planetka_region_pack_map_assets")
 DEFAULT_OUT_DIR = Path("/tmp/planetka_region_pack_preview_backgrounds")
+DEFAULT_WT_WATER_RGB = (18, 64, 125)
+DEFAULT_WT_LAND_RGB = (0, 0, 0)
 
 
 @dataclass(frozen=True)
@@ -44,7 +47,7 @@ class TileInfo:
 
     @property
     def lon_max(self) -> float:
-        return float(self.x - 180 + self.z)
+        return float(self.x - 180 + self.lon_span)
 
     @property
     def lat_min(self) -> float:
@@ -52,15 +55,28 @@ class TileInfo:
 
     @property
     def lat_max(self) -> float:
-        return float(self.y - 90 + self.z)
+        return float(self.y - 90 + self.lat_span)
+
+    @property
+    def lon_span(self) -> float:
+        return float(self.z)
+
+    @property
+    def lat_span(self) -> float:
+        # The global z360 source spans 360 degrees in longitude but only the
+        # normal Earth latitude range, -90..90. Regular square tiles use z for
+        # both axes.
+        if self.x == 0 and self.y == 0 and self.z == 360:
+            return 180.0
+        return float(self.z)
 
     @property
     def ppd_x(self) -> float:
-        return self.width / max(1.0, float(self.z))
+        return self.width / max(1.0, self.lon_span)
 
     @property
     def ppd_y(self) -> float:
-        return self.height / max(1.0, float(self.z))
+        return self.height / max(1.0, self.lat_span)
 
 
 class ImageInfoCache:
@@ -124,10 +140,13 @@ def full_canvas_bounds(bounds: dict[str, float], width: int = 1000, min_height: 
     max_lat = float(bounds["max_lat"]) + float(frame["oy"]) / scale
     min_lat = float(bounds["min_lat"]) - (float(frame["height"]) - float(frame["oy"]) - float(frame["used_h"])) / scale
     return {
-        "min_lon": max(-180.0, min_lon),
-        "min_lat": max(-90.0, min_lat),
-        "max_lon": min(180.0, max_lon),
-        "max_lat": min(90.0, max_lat),
+        # Keep the full padded SVG canvas, even when the product touches the
+        # world edge. Source tile reads are clipped later; clamping here shifts
+        # the rendered background relative to the SVG tile overlay.
+        "min_lon": min_lon,
+        "min_lat": min_lat,
+        "max_lon": max_lon,
+        "max_lat": max_lat,
     }
 
 
@@ -171,57 +190,110 @@ def normalize_bounds(raw: object) -> dict[str, float] | None:
     return bounds
 
 
+def tile_display_shifts(tile: TileInfo, bounds: dict[str, float]) -> list[float]:
+    if tile.lat_max <= bounds["min_lat"] or tile.lat_min >= bounds["max_lat"]:
+        return []
+    shifts: list[float] = []
+    for shift in (-360.0, 0.0, 360.0):
+        if tile.lon_max + shift > bounds["min_lon"] and tile.lon_min + shift < bounds["max_lon"]:
+            shifts.append(shift)
+    return shifts
+
+
 def intersects(tile: TileInfo, bounds: dict[str, float]) -> bool:
-    return (
-        tile.lon_max > bounds["min_lon"]
-        and tile.lon_min < bounds["max_lon"]
-        and tile.lat_max > bounds["min_lat"]
-        and tile.lat_min < bounds["max_lat"]
-    )
+    return bool(tile_display_shifts(tile, bounds))
 
 
 def source_pixel_area(tile: TileInfo, bounds: dict[str, float]) -> int:
-    lon_min = max(bounds["min_lon"], tile.lon_min)
-    lon_max = min(bounds["max_lon"], tile.lon_max)
     lat_min = max(bounds["min_lat"], tile.lat_min)
     lat_max = min(bounds["max_lat"], tile.lat_max)
-    if lon_max <= lon_min or lat_max <= lat_min:
+    if lat_max <= lat_min:
         return 0
-    px = max(1, math.ceil((lon_max - lon_min) / tile.z * tile.width))
-    py = max(1, math.ceil((lat_max - lat_min) / tile.z * tile.height))
-    return px * py
+    total = 0
+    for shift in tile_display_shifts(tile, bounds):
+        lon_min = max(bounds["min_lon"], tile.lon_min + shift) - shift
+        lon_max = min(bounds["max_lon"], tile.lon_max + shift) - shift
+        if lon_max <= lon_min:
+            continue
+        px = max(1, math.ceil((lon_max - lon_min) / tile.lon_span * tile.width))
+        py = max(1, math.ceil((lat_max - lat_min) / tile.lat_span * tile.height))
+        total += px * py
+    return total
 
 
-def tile_info_for_row(row: dict[str, object], s2_dir: Path, cache: ImageInfoCache) -> TileInfo | None:
+def parse_rgb(value: str, fallback: tuple[int, int, int]) -> tuple[int, int, int]:
+    parts = [item.strip() for item in str(value or "").split(",")]
+    if len(parts) != 3:
+        return fallback
+    try:
+        rgb = tuple(max(0, min(255, int(part))) for part in parts)
+    except ValueError:
+        return fallback
+    return rgb  # type: ignore[return-value]
+
+
+def normalize_source_kind(value: str) -> str:
+    kind = str(value or "").strip().lower()
+    if kind not in {"s2", "wt"}:
+        raise ValueError(f"unsupported source kind: {value}")
+    return kind
+
+
+def source_prefix_for_kind(source_kind: str) -> str:
+    return "WT" if source_kind == "wt" else "S2"
+
+
+def global_tile_info(source_dir: Path, source_kind: str, cache: ImageInfoCache) -> TileInfo | None:
+    prefix = source_prefix_for_kind(source_kind)
+    for key in ("x000_y000_z360_d360", "x000_y000_z360_d720", "x000_y000_z180_d180", "x000_y000_z360_d000"):
+        path = source_dir / f"{prefix}_{key}.exr"
+        if not path.exists():
+            continue
+        parsed = parse_tile_key(key)
+        if not parsed:
+            continue
+        x, y, z, d = parsed
+        width, height = cache.dimensions(path)
+        return TileInfo(key=key, x=x, y=y, z=z, d=d, path=path, width=width, height=height)
+    return None
+
+
+def tile_info_for_row(row: dict[str, object], source_dir: Path, source_kind: str, cache: ImageInfoCache) -> TileInfo | None:
     parsed = parse_tile_key(str(row.get("tile_key") or ""))
     if not parsed:
         return None
     x, y, z, d = parsed
     key = f"x{x:03d}_y{y:03d}_z{z:03d}_d{d:03d}"
-    path = s2_dir / f"S2_{key}.exr"
+    path = source_dir / f"{source_prefix_for_kind(source_kind)}_{key}.exr"
     if not path.exists():
         return None
     width, height = cache.dimensions(path)
     return TileInfo(key=key, x=x, y=y, z=z, d=d, path=path, width=width, height=height)
 
 
-def choose_tiles(asset: dict[str, object], bounds: dict[str, float], out_w: int, out_h: int, s2_dir: Path, cache: ImageInfoCache) -> tuple[list[TileInfo], str]:
+def choose_tiles(asset: dict[str, object], bounds: dict[str, float], out_w: int, out_h: int, source_dir: Path, source_kind: str, cache: ImageInfoCache) -> tuple[list[TileInfo], str]:
     lon_span = max(1e-6, bounds["max_lon"] - bounds["min_lon"])
     lat_span = max(1e-6, bounds["max_lat"] - bounds["min_lat"])
     required_ppd_x = out_w / lon_span
     required_ppd_y = out_h / lat_span
 
     groups: dict[tuple[int, int], list[TileInfo]] = {}
+    global_info = global_tile_info(source_dir, source_kind, cache)
+    if global_info and global_info.d > 0 and intersects(global_info, bounds):
+        global_ratio = min(global_info.ppd_x / required_ppd_x, global_info.ppd_y / required_ppd_y)
+        if global_ratio >= 1.0:
+            return [global_info], f"global_no_upscale_ratio_{global_ratio:.3f}"
+        groups.setdefault((global_info.z, global_info.d), []).append(global_info)
     for row in asset.get("tiles") or []:
         if not isinstance(row, dict):
             continue
-        info = tile_info_for_row(row, s2_dir, cache)
+        info = tile_info_for_row(row, source_dir, source_kind, cache)
         if not info or info.d <= 0 or not intersects(info, bounds):
             continue
         groups.setdefault((info.z, info.d), []).append(info)
 
     if not groups:
-        raise RuntimeError("no source S2 tiles available")
+        raise RuntimeError(f"no source {source_prefix_for_kind(source_kind)} tiles available")
 
     candidates: list[tuple[int, int, float, int, list[TileInfo]]] = []
     fallback: tuple[int, int, float, int, list[TileInfo]] | None = None
@@ -245,22 +317,41 @@ def choose_tiles(asset: dict[str, object], bounds: dict[str, float], out_w: int,
         chosen = fallback
         reason = f"best_available_ratio_{chosen[2]:.3f}" if chosen else "missing"
     if not chosen:
-        raise RuntimeError("no usable S2 tile group")
+        raise RuntimeError(f"no usable {source_prefix_for_kind(source_kind)} tile group")
     return chosen[4], reason
 
 
-def read_tile_crop(tile: TileInfo, bounds: dict[str, float]) -> tuple[Image.Image, tuple[int, int, int, int]] | None:
-    lon_min = max(bounds["min_lon"], tile.lon_min)
-    lon_max = min(bounds["max_lon"], tile.lon_max)
+def exr_rgb_to_output(arr: np.ndarray, source_kind: str, wt_water_rgb: tuple[int, int, int], wt_land_rgb: tuple[int, int, int]) -> np.ndarray:
+    arr = np.clip(arr, 0.0, 1.0)
+    if source_kind == "wt":
+        # WT uses black for land and several colors for water classes. For web
+        # previews all non-black classes are intentionally merged into one blue
+        # water color while preserving antialiased coast intensity.
+        intensity = np.max(arr, axis=2, keepdims=True)
+        intensity = np.power(np.clip(intensity, 0.0, 1.0), 1.0 / 2.2)
+        water = np.array(wt_water_rgb, dtype=np.float32).reshape(1, 1, 3)
+        land = np.array(wt_land_rgb, dtype=np.float32).reshape(1, 1, 3)
+        rgb = land * (1.0 - intensity) + water * intensity
+        return np.clip(rgb + 0.5, 0, 255).astype(np.uint8)
+
+    arr = np.power(arr, 1.0 / 2.2)
+    return np.clip(arr * 255.0 + 0.5, 0, 255).astype(np.uint8)
+
+
+def read_tile_crop(tile: TileInfo, bounds: dict[str, float], source_kind: str, wt_water_rgb: tuple[int, int, int], wt_land_rgb: tuple[int, int, int], shift: float = 0.0) -> tuple[Image.Image, tuple[float, float, float, float]] | None:
+    display_lon_min = max(bounds["min_lon"], tile.lon_min + shift)
+    display_lon_max = min(bounds["max_lon"], tile.lon_max + shift)
+    lon_min = display_lon_min - shift
+    lon_max = display_lon_max - shift
     lat_min = max(bounds["min_lat"], tile.lat_min)
     lat_max = min(bounds["max_lat"], tile.lat_max)
-    if lon_max <= lon_min or lat_max <= lat_min:
+    if display_lon_max <= display_lon_min or lon_max <= lon_min or lat_max <= lat_min:
         return None
 
-    px0 = max(0, min(tile.width - 1, math.floor((lon_min - tile.lon_min) / tile.z * tile.width)))
-    px1 = max(px0 + 1, min(tile.width, math.ceil((lon_max - tile.lon_min) / tile.z * tile.width)))
-    py0 = max(0, min(tile.height - 1, math.floor((tile.lat_max - lat_max) / tile.z * tile.height)))
-    py1 = max(py0 + 1, min(tile.height, math.ceil((tile.lat_max - lat_min) / tile.z * tile.height)))
+    px0 = max(0, min(tile.width - 1, math.floor((lon_min - tile.lon_min) / tile.lon_span * tile.width)))
+    px1 = max(px0 + 1, min(tile.width, math.ceil((lon_max - tile.lon_min) / tile.lon_span * tile.width)))
+    py0 = max(0, min(tile.height - 1, math.floor((tile.lat_max - lat_max) / tile.lat_span * tile.height)))
+    py1 = max(py0 + 1, min(tile.height, math.ceil((tile.lat_max - lat_min) / tile.lat_span * tile.height)))
 
     inp = oiio.ImageInput.open(str(tile.path))
     if inp is None:
@@ -272,10 +363,8 @@ def read_tile_crop(tile: TileInfo, bounds: dict[str, float]) -> tuple[Image.Imag
     arr = arr[:, px0:px1, :3]
     if arr.size == 0:
         return None
-    arr = np.clip(arr, 0.0, 1.0)
-    arr = np.power(arr, 1.0 / 2.2)
-    arr8 = np.clip(arr * 255.0 + 0.5, 0, 255).astype(np.uint8)
-    return Image.fromarray(arr8, mode="RGB"), (lon_min, lat_min, lon_max, lat_max)
+    arr8 = exr_rgb_to_output(arr, source_kind, wt_water_rgb, wt_land_rgb)
+    return Image.fromarray(arr8, mode="RGB"), (display_lon_min, lat_min, display_lon_max, lat_max)
 
 
 def output_rect(bounds: dict[str, float], out_w: int, out_h: int, crop_bounds: tuple[float, float, float, float]) -> tuple[int, int, int, int]:
@@ -293,7 +382,23 @@ def output_rect(bounds: dict[str, float], out_w: int, out_h: int, crop_bounds: t
     return x0, y0, x1, y1
 
 
-def render_background(asset_path: Path, out_path: Path, s2_dir: Path, cache: ImageInfoCache, device_scale: float, max_side: int, quality: int) -> dict[str, object]:
+def paste_tile_to_canvas(canvas: Image.Image, tile: TileInfo, bounds: dict[str, float], source_kind: str, wt_water_rgb: tuple[int, int, int], wt_land_rgb: tuple[int, int, int]) -> bool:
+    pasted = False
+    for shift in tile_display_shifts(tile, bounds):
+        crop = read_tile_crop(tile, bounds, source_kind, wt_water_rgb, wt_land_rgb, shift=shift)
+        if not crop:
+            continue
+        image, crop_bounds = crop
+        x0, y0, x1, y1 = output_rect(bounds, canvas.width, canvas.height, crop_bounds)
+        dest_size = (x1 - x0, y1 - y0)
+        if image.size != dest_size:
+            image = image.resize(dest_size, Image.Resampling.LANCZOS)
+        canvas.paste(image, (x0, y0))
+        pasted = True
+    return pasted
+
+
+def render_background(asset_path: Path, out_path: Path, source_dir: Path, source_kind: str, cache: ImageInfoCache, device_scale: float, max_side: int, quality: int, wt_water_rgb: tuple[int, int, int], wt_land_rgb: tuple[int, int, int]) -> dict[str, object]:
     asset = json.loads(asset_path.read_text())
     product = asset.get("region_pack") if isinstance(asset.get("region_pack"), dict) else {}
     product_id = str(product.get("id") or asset_path.stem)
@@ -302,20 +407,19 @@ def render_background(asset_path: Path, out_path: Path, s2_dir: Path, cache: Ima
         raise RuntimeError("missing or invalid bounds")
     bounds = full_canvas_bounds(product_bounds)
     out_w, out_h = target_size(product_bounds, device_scale=device_scale, max_side=max_side)
-    tiles, reason = choose_tiles(asset, bounds, out_w, out_h, s2_dir, cache)
-    canvas = Image.new("RGB", (out_w, out_h), (13, 17, 24))
+    tiles, reason = choose_tiles(asset, bounds, out_w, out_h, source_dir, source_kind, cache)
+    canvas_fill = wt_water_rgb if source_kind == "wt" else (13, 17, 24)
+    canvas = Image.new("RGB", (out_w, out_h), canvas_fill)
     pasted = 0
+    base_tile = global_tile_info(source_dir, source_kind, cache)
+    if base_tile and intersects(base_tile, bounds):
+        if paste_tile_to_canvas(canvas, base_tile, bounds, source_kind, wt_water_rgb, wt_land_rgb):
+            pasted += 1
     for tile in tiles:
-        crop = read_tile_crop(tile, bounds)
-        if not crop:
+        if base_tile and tile.path == base_tile.path:
             continue
-        image, crop_bounds = crop
-        x0, y0, x1, y1 = output_rect(bounds, out_w, out_h, crop_bounds)
-        dest_size = (x1 - x0, y1 - y0)
-        if image.size != dest_size:
-            image = image.resize(dest_size, Image.Resampling.LANCZOS)
-        canvas.paste(image, (x0, y0))
-        pasted += 1
+        if paste_tile_to_canvas(canvas, tile, bounds, source_kind, wt_water_rgb, wt_land_rgb):
+            pasted += 1
     out_path.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(out_path, "JPEG", quality=quality, optimize=True, progressive=True)
     min_ratio = min(
@@ -337,13 +441,57 @@ def render_background(asset_path: Path, out_path: Path, s2_dir: Path, cache: Ima
         "choice": reason,
         "bytes": out_path.stat().st_size,
         "path": str(out_path),
+        "source_kind": source_kind,
+    }
+
+
+def render_world_background(out_path: Path, source_dir: Path, source_kind: str, max_side: int, quality: int, wt_water_rgb: tuple[int, int, int], wt_land_rgb: tuple[int, int, int]) -> dict[str, object]:
+    prefix = source_prefix_for_kind(source_kind)
+    candidates = [
+        source_dir / f"{prefix}_x000_y000_z360_d360.exr",
+        source_dir / f"{prefix}_x000_y000_z360_d720.exr",
+        source_dir / f"{prefix}_x000_y000_z180_d180.exr",
+        source_dir / f"{prefix}_x000_y000_z360_d000.exr",
+    ]
+    source = next((path for path in candidates if path.exists()), None)
+    if source is None:
+        raise RuntimeError(f"no world {prefix} source tile found")
+    inp = oiio.ImageInput.open(str(source))
+    if inp is None:
+        raise RuntimeError(f"failed to open world source image: {source}")
+    try:
+        spec = inp.spec()
+        arr = np.asarray(inp.read_scanlines(0, int(spec.height), 0, 0, 3, oiio.FLOAT), dtype=np.float32)
+    finally:
+        inp.close()
+    arr = arr.reshape((int(spec.height), int(spec.width), 3))
+    arr8 = exr_rgb_to_output(arr, source_kind, wt_water_rgb, wt_land_rgb)
+    image = Image.fromarray(arr8, mode="RGB")
+    if max(image.size) > max_side:
+        ratio = max_side / max(image.size)
+        image = image.resize((max(1, round(image.width * ratio)), max(1, round(image.height * ratio))), Image.Resampling.LANCZOS)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(out_path, "JPEG", quality=quality, optimize=True, progressive=True)
+    return {
+        "id": "world",
+        "width": image.width,
+        "height": image.height,
+        "source": str(source),
+        "bytes": out_path.stat().st_size,
+        "path": str(out_path),
+        "source_kind": source_kind,
     }
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--assets-dir", type=Path, default=DEFAULT_ASSETS_DIR, help="Directory containing generated region-pack JSON map assets")
+    parser.add_argument("--source-kind", choices=("s2", "wt"), default="s2", help="Source imagery kind for backgrounds")
+    parser.add_argument("--source-dir", type=Path, default=None, help="Directory containing source *_xNNN_yNNN_zNNN_dNNN.exr tiles")
     parser.add_argument("--s2-dir", type=Path, default=DEFAULT_S2_DIR, help="Directory containing local S2_*.exr source tiles")
+    parser.add_argument("--wt-dir", type=Path, default=DEFAULT_WT_DIR, help="Directory containing local WT_*.exr source tiles")
+    parser.add_argument("--wt-water-rgb", default=",".join(str(v) for v in DEFAULT_WT_WATER_RGB), help="RGB color for merged WT water classes, e.g. 0,66,180")
+    parser.add_argument("--wt-land-rgb", default=",".join(str(v) for v in DEFAULT_WT_LAND_RGB), help="RGB color for WT land pixels, e.g. 0,0,0")
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT_DIR, help="Output directory for JPEG backgrounds")
     parser.add_argument("--device-scale", type=float, default=2.0, help="CSS pixel multiplier for generated backgrounds")
     parser.add_argument("--max-side", type=int, default=2400, help="Maximum generated image side in pixels")
@@ -351,13 +499,19 @@ def main() -> int:
     parser.add_argument("--only", action="append", default=[], help="Only render selected product id; may be repeated")
     parser.add_argument("--limit", type=int, default=0, help="Render at most this many products")
     parser.add_argument("--manifest", type=Path, default=None, help="Optional manifest JSON path")
+    parser.add_argument("--world-output", type=Path, default=None, help="Optional output path for global fallback background")
+    parser.add_argument("--skip-world", action="store_true", help="Do not render the global fallback background")
     args = parser.parse_args()
 
     assets_dir = args.assets_dir
     if not assets_dir.exists():
         raise SystemExit(f"assets dir does not exist: {assets_dir}")
-    if not args.s2_dir.exists():
-        raise SystemExit(f"S2 dir does not exist: {args.s2_dir}")
+    source_kind = normalize_source_kind(args.source_kind)
+    source_dir = args.source_dir or (args.wt_dir if source_kind == "wt" else args.s2_dir)
+    if not source_dir.exists():
+        raise SystemExit(f"{source_prefix_for_kind(source_kind)} dir does not exist: {source_dir}")
+    wt_water_rgb = parse_rgb(args.wt_water_rgb, DEFAULT_WT_WATER_RGB)
+    wt_land_rgb = parse_rgb(args.wt_land_rgb, DEFAULT_WT_LAND_RGB)
     args.out.mkdir(parents=True, exist_ok=True)
 
     selected = {item.strip().lower() for item in args.only if item.strip()}
@@ -370,10 +524,19 @@ def main() -> int:
     cache = ImageInfoCache()
     manifest: list[dict[str, object]] = []
     failures: list[dict[str, str]] = []
+    world_row = None
+    if not args.skip_world:
+        world_path = args.world_output or args.out / f"world_{source_kind}_background.jpg"
+        try:
+            world_row = render_world_background(world_path, source_dir, source_kind, args.max_side, args.quality, wt_water_rgb, wt_land_rgb)
+            print(f"[world] {world_row['width']}x{world_row['height']} bytes={world_row['bytes']} source={world_row['source']}")
+        except Exception as error:  # noqa: BLE001
+            failures.append({"id": "world", "error": str(error)})
+            print(f"[world] FAILED {error}", file=sys.stderr)
     for index, asset_path in enumerate(asset_paths, start=1):
         out_path = args.out / f"{asset_path.stem}.jpg"
         try:
-            row = render_background(asset_path, out_path, args.s2_dir, cache, args.device_scale, args.max_side, args.quality)
+            row = render_background(asset_path, out_path, source_dir, source_kind, cache, args.device_scale, args.max_side, args.quality, wt_water_rgb, wt_land_rgb)
             manifest.append(row)
             print(f"[{index}/{len(asset_paths)}] {row['id']}: {row['width']}x{row['height']} z={row['source_z']} d={row['source_d']} output_ratio={row['min_source_to_output_ratio']} display_ratio={row['min_source_to_display_ratio']} bytes={row['bytes']}")
         except Exception as error:  # noqa: BLE001 - CLI should keep rendering other products.
@@ -385,6 +548,8 @@ def main() -> int:
         "count": len(manifest),
         "failed": len(failures),
         "total_bytes": sum(int(row.get("bytes") or 0) for row in manifest),
+        "source_kind": source_kind,
+        "world": world_row,
         "backgrounds": manifest,
         "failures": failures,
     }
