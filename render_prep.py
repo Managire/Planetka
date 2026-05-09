@@ -83,6 +83,15 @@ LAST_MANUAL_RESOLVE_TOTAL_SECONDS_KEY = "planetka_last_manual_resolve_total_seco
 
 
 _TILE_ZD_PATTERN = re.compile(r"_z(\d+)_d(\d+)$")
+_PREFETCH_ACCESS_FAILURE_TOKENS = (
+    "not been licenced",
+    "tile_not_unlocked",
+    "not unlocked",
+    "licence could not be confirmed",
+    "license could not be confirmed",
+    "request limit reached",
+    "tile_unlock_verification_failed",
+)
 
 
 @dataclass
@@ -586,6 +595,21 @@ def _validate_resolve_completion_integrity(scene, earth_surface, requested_tiles
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             issues.append("Scene root collection is unavailable after resolve.")
     return issues
+
+
+def _prefetch_missing_details_indicate_access_failure(details):
+    if not isinstance(details, (tuple, list)):
+        return False
+    for entry in details:
+        if not isinstance(entry, dict):
+            continue
+        combined = " ".join((
+            str(entry.get("fetch_error", "") or ""),
+            str(entry.get("remote_error", "") or ""),
+        )).lower()
+        if any(token in combined for token in _PREFETCH_ACCESS_FAILURE_TOKENS):
+            return True
+    return False
 
 
 class PLANETKA_OT_LoadTextures(bpy.types.Operator):
@@ -1239,6 +1263,23 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 logger=logger,
             )
         if int(payload_data.prefetch_missing_count) > 0:
+            if _prefetch_missing_details_indicate_access_failure(payload_data.prefetch_missing_details):
+                access_message = (
+                    "Planetka texture download session was not confirmed. "
+                    "No texture data was applied. Please retry."
+                )
+                coded_access_message = with_error_code(ErrorCode.RESOLVE_REFRESH_FAILED, access_message)
+                _store_last_resolve_error(
+                    scene,
+                    coded_access_message,
+                    "failed storing access resolve error on scene",
+                )
+                return fail(
+                    self,
+                    access_message,
+                    code=ErrorCode.RESOLVE_REFRESH_FAILED,
+                    logger=logger,
+                )
             required_missing_details = []
             if payload_data.prefetch_missing_details:
                 for entry in payload_data.prefetch_missing_details:

@@ -131,6 +131,18 @@ export async function handleTileSessionStart(request, env, deps) {
       env,
     );
   }
+  if (unlockResult && unlockResult.error === "tile_unlock_verification_failed") {
+    return jsonResponse(
+      {
+        ok: false,
+        error: "tile_unlock_verification_failed",
+        message: String(unlockResult.message || "Planetka Full Quality licence could not be confirmed for this Resolve."),
+        tile_key: String(unlockResult.missing_tile_key || ""),
+      },
+      503,
+      env,
+    );
+  }
   if (unlockResult && unlockResult.error === "insufficient_credits") {
     return jsonResponse(
       {
@@ -143,6 +155,17 @@ export async function handleTileSessionStart(request, env, deps) {
         tile_count: Number(unlockResult.tile_count || 0),
       },
       402,
+      env,
+    );
+  }
+  if (unlockResult && unlockResult.error) {
+    return jsonResponse(
+      {
+        ok: false,
+        error: String(unlockResult.error || "tile_unlock_failed"),
+        message: String(unlockResult.message || "Planetka Full Quality licence could not be confirmed for this Resolve."),
+      },
+      503,
       env,
     );
   }

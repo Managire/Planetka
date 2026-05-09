@@ -44,6 +44,15 @@ _AUTH_DISCONNECT_TOKENS = (
     "missing_refresh_token",
     "invalid_api_key",
 )
+_LICENCE_FAILURE_TOKENS = (
+    "not been licenced",
+    "tile_not_unlocked",
+    "not unlocked",
+    "licence could not be confirmed",
+    "license could not be confirmed",
+    "request limit reached",
+    "tile_unlock_verification_failed",
+)
 
 
 def _normalize_tiles(visible_tiles):
@@ -90,7 +99,7 @@ def _prefetch_result_indicates_licence_failure(prefetch_result):
     if not isinstance(prefetch_result, dict):
         return False
     text = str(prefetch_result.get("fatal_error", "") or "").strip().lower()
-    if "not been licenced" in text or "tile_not_unlocked" in text or "not unlocked" in text:
+    if any(token in text for token in _LICENCE_FAILURE_TOKENS):
         return True
     details = prefetch_result.get("missing_details", ())
     if not isinstance(details, (tuple, list)):
@@ -102,7 +111,7 @@ def _prefetch_result_indicates_licence_failure(prefetch_result):
             str(entry.get("fetch_error", "") or ""),
             str(entry.get("remote_error", "") or ""),
         )).lower()
-        if "not been licenced" in combined or "tile_not_unlocked" in combined or "not unlocked" in combined:
+        if any(token in combined for token in _LICENCE_FAILURE_TOKENS):
             return True
     return False
 
@@ -403,6 +412,17 @@ def prefetch_resolve_plan(
     if prefetch_failed and not cancelled:
         prefetch_result["fatal_error"] = str(prefetch_result.get("fatal_error", "") or "").strip() or (
             str(prefetch_error_text or "").strip() or "Planetka resolve prefetch failed."
+        )
+        prefetch_result["error_count"] = max(int(prefetch_result.get("error_count", 0) or 0), 1)
+
+    if (
+        normalized_quality_mode == "FULL"
+        and not str(prefetch_result.get("fatal_error", "") or "").strip()
+        and _prefetch_result_indicates_licence_failure(prefetch_result)
+    ):
+        prefetch_result["fatal_error"] = (
+            "Planetka Full Quality licence was not confirmed for this Resolve. "
+            "No texture data was downloaded. Please retry."
         )
         prefetch_result["error_count"] = max(int(prefetch_result.get("error_count", 0) or 0), 1)
 

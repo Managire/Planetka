@@ -758,6 +758,25 @@ async function touchUserPricingVersion(db, userId, deps, timestamp = "") {
   invalidateUserPricingCaches(safeUserId);
 }
 
+async function verifyInsertedTileEntitlements(db, userId, insertedTiles, deps) {
+  const safeUserId = String(userId || "").trim();
+  const keys = normalizeTileKeys((insertedTiles || []).map((tile) => tile && tile.tile_key || ""));
+  if (!safeUserId || !keys.length) {
+    return [];
+  }
+  const failed = [];
+  for (const key of keys) {
+    if (isFreeCreditTileKey(key)) {
+      continue;
+    }
+    const unlocked = await isTileUnlockedForUser(db, safeUserId, key, deps);
+    if (!unlocked) {
+      failed.push(key);
+    }
+  }
+  return failed;
+}
+
 async function ownedEntitlementSummaryForUser(db, userId, deps, options = {}) {
   await deps.ensureCreditTables(db);
   const safeUserId = String(userId || "").trim();
@@ -3861,6 +3880,31 @@ export async function unlockTilesForSession(db, userId, qualityMode, tileKeys, r
     }
   }
 
+  if (insertedTiles.length > 0) {
+    await touchUserPricingVersion(db, safeUserId, deps, now);
+    const verificationFailures = await verifyInsertedTileEntitlements(db, safeUserId, insertedTiles, deps);
+    if (verificationFailures.length > 0) {
+      for (const tile of insertedTiles) {
+        await deps.dbRun(
+          db,
+          `DELETE FROM user_tile_entitlements WHERE user_id = ? AND tile_key = ?`,
+          [safeUserId, tile.tile_key],
+        );
+      }
+      await touchUserPricingVersion(db, safeUserId, deps, deps.nowIso());
+      return {
+        error: "tile_unlock_verification_failed",
+        message: "Planetka Full Quality licence could not be confirmed for all requested tiles.",
+        missing_tile_key: verificationFailures[0],
+        tile_keys: verificationFailures.slice(0, 10),
+        required_credits: actualCredits,
+        balance_credits: balance,
+        paid_tile_count: insertedTiles.filter((tile) => normalizeCreditAmount(tile && tile.credits) > 0).length,
+        tile_count: estimate.tile_count,
+      };
+    }
+  }
+
   if (actualCredits > 0 && balance <= 0) {
     for (const tile of insertedTiles) {
       await deps.dbRun(
@@ -3868,6 +3912,9 @@ export async function unlockTilesForSession(db, userId, qualityMode, tileKeys, r
         `DELETE FROM user_tile_entitlements WHERE user_id = ? AND tile_key = ?`,
         [safeUserId, tile.tile_key],
       );
+    }
+    if (insertedTiles.length > 0) {
+      await touchUserPricingVersion(db, safeUserId, deps, deps.nowIso());
     }
     return {
       error: "insufficient_credits",
@@ -3898,6 +3945,9 @@ export async function unlockTilesForSession(db, userId, qualityMode, tileKeys, r
           `DELETE FROM user_tile_entitlements WHERE user_id = ? AND tile_key = ?`,
           [safeUserId, tile.tile_key],
         );
+      }
+      if (insertedTiles.length > 0) {
+        await touchUserPricingVersion(db, safeUserId, deps, deps.nowIso());
       }
       const fresh = await ensureCreditAccount(db, safeUserId, deps);
       return {
