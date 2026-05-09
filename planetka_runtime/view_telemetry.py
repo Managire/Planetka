@@ -21,7 +21,7 @@ _REGION_OFFERS_UPDATED_AT_KEY = "planetka_region_pack_offers_updated_at"
 _REGION_OFFERS_LATITUDE_KEY = "planetka_region_pack_offers_latitude"
 _REGION_OFFERS_LONGITUDE_KEY = "planetka_region_pack_offers_longitude"
 _FULL_PRICE_CACHE_TTL_SECONDS = 300.0
-_REGION_OFFERS_REFRESH_DELAY_SECONDS = 0.75
+_REGION_OFFERS_REFRESH_DELAY_SECONDS = 1.25
 _REGION_OFFERS_STALE_DISTANCE_DEG = 4.0
 _FULL_PRICE_CACHE = {}
 _FULL_PRICE_IN_FLIGHT = set()
@@ -1260,7 +1260,7 @@ def get_cached_region_pack_offers(scene=None, runtime=None):
         and _location_distance_degrees(current_location, (stored_lat, stored_lon)) > _REGION_OFFERS_STALE_DISTANCE_DEG
     ):
         payload["status"] = "STALE"
-        payload["message"] = "Full Quality Data Packs update after Camera View Resolve."
+        payload["message"] = "Data Packs update after Resolve."
         return payload
     try:
         offers = json.loads(raw)
@@ -1279,7 +1279,7 @@ def _set_region_offer_pending(scene, deps, signature, camera_signature_value, la
         scene[_REGION_OFFERS_CAMERA_SIGNATURE_KEY] = _camera_signature_text(camera_signature_value)
         # Keep the previous completed payload visible while a low-priority refresh runs.
         scene[_REGION_OFFERS_STATUS_KEY] = "LOADING"
-        scene[_REGION_OFFERS_MESSAGE_KEY] = "Updating Full Quality Data Packs after Camera View Resolve."
+        scene[_REGION_OFFERS_MESSAGE_KEY] = "Updating Data Packs..."
     except deps.recoverable_exceptions:
         deps.logger.debug("Planetka: failed storing region-pack offer pending state", exc_info=True)
     except (RuntimeError, TypeError, ValueError, AttributeError):
@@ -1290,12 +1290,14 @@ def _store_region_pack_offers(scene, deps, signature, offers, latitude_deg=None,
     if scene is None:
         return
     safe_offers = [dict(offer) for offer in offers if isinstance(offer, dict)]
+    status = "READY" if safe_offers else "EMPTY"
+    message = "" if safe_offers else "No Data Packs for this view."
     try:
         scene[_REGION_OFFERS_JSON_KEY] = json.dumps(safe_offers, separators=(",", ":"), sort_keys=True)
         scene[_REGION_OFFERS_SIGNATURE_KEY] = str(signature or "")
         scene[_REGION_OFFERS_PENDING_SIGNATURE_KEY] = ""
-        scene[_REGION_OFFERS_STATUS_KEY] = "READY"
-        scene[_REGION_OFFERS_MESSAGE_KEY] = ""
+        scene[_REGION_OFFERS_STATUS_KEY] = status
+        scene[_REGION_OFFERS_MESSAGE_KEY] = message
         scene[_REGION_OFFERS_UPDATED_AT_KEY] = float(time.time())
         if latitude_deg is not None and longitude_deg is not None:
             scene[_REGION_OFFERS_LATITUDE_KEY] = float(latitude_deg)
@@ -1306,6 +1308,27 @@ def _store_region_pack_offers(scene, deps, signature, offers, latitude_deg=None,
         deps.logger.debug("Planetka: failed storing cached Full Quality Data Packs", exc_info=True)
 
 
+def _store_region_pack_offer_error(scene, deps, signature, message="", latitude_deg=None, longitude_deg=None):
+    if scene is None:
+        return
+    text = str(message or "Data Packs update failed.").strip()
+    try:
+        scene[_REGION_OFFERS_JSON_KEY] = "[]"
+        if str(scene.get(_REGION_OFFERS_PENDING_SIGNATURE_KEY, "") or "") == str(signature or ""):
+            scene[_REGION_OFFERS_PENDING_SIGNATURE_KEY] = ""
+        scene[_REGION_OFFERS_SIGNATURE_KEY] = str(signature or "")
+        scene[_REGION_OFFERS_STATUS_KEY] = "ERROR"
+        scene[_REGION_OFFERS_MESSAGE_KEY] = text
+        scene[_REGION_OFFERS_UPDATED_AT_KEY] = float(time.time())
+        if latitude_deg is not None and longitude_deg is not None:
+            scene[_REGION_OFFERS_LATITUDE_KEY] = float(latitude_deg)
+            scene[_REGION_OFFERS_LONGITUDE_KEY] = float(longitude_deg)
+    except deps.recoverable_exceptions:
+        deps.logger.debug("Planetka: failed storing Full Quality Data Packs error state", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        deps.logger.debug("Planetka: failed storing Full Quality Data Packs error state", exc_info=True)
+
+
 def _discard_stale_region_pack_offer_result(scene, deps, signature):
     if scene is None:
         return
@@ -1313,11 +1336,22 @@ def _discard_stale_region_pack_offer_result(scene, deps, signature):
         if str(scene.get(_REGION_OFFERS_PENDING_SIGNATURE_KEY, "") or "") == str(signature or ""):
             scene[_REGION_OFFERS_PENDING_SIGNATURE_KEY] = ""
             scene[_REGION_OFFERS_STATUS_KEY] = "STALE"
-            scene[_REGION_OFFERS_MESSAGE_KEY] = "Full Quality Data Packs update after Camera View Resolve."
+            scene[_REGION_OFFERS_MESSAGE_KEY] = "Data Packs update after Resolve."
     except deps.recoverable_exceptions:
         deps.logger.debug("Planetka: failed discarding stale Full Quality Data Packs", exc_info=True)
     except (RuntimeError, TypeError, ValueError, AttributeError):
         deps.logger.debug("Planetka: failed discarding stale Full Quality Data Packs", exc_info=True)
+
+
+def _region_pack_offer_result_still_relevant(scene, result):
+    current_location = _region_offer_location_for_scene(scene)
+    if current_location is None:
+        return True
+    try:
+        result_location = (float(result.get("latitude_deg")), float(result.get("longitude_deg")))
+    except (TypeError, ValueError):
+        return True
+    return _location_distance_degrees(current_location, result_location) <= _REGION_OFFERS_STALE_DISTANCE_DEG
 
 
 def _apply_region_pack_offer_results_timer():
@@ -1349,6 +1383,13 @@ def _apply_region_pack_offer_results_timer():
         except (TypeError, ValueError):
             result_generation = -1
         if result_generation != current_generation:
+            try:
+                scene = _find_scene_by_key(deps, result.get("scene_id"))
+                if scene is not None:
+                    _discard_stale_region_pack_offer_result(scene, deps, result.get("signature"))
+                    redraw = True
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                pass
             continue
         signature = str(result.get("signature", "") or "")
         scene = _find_scene_by_key(deps, result.get("scene_id"))
@@ -1364,12 +1405,19 @@ def _apply_region_pack_offer_results_timer():
             continue
         current_camera_signature = _camera_signature_text(camera_signature(scene))
         result_camera_signature = str(result.get("camera_signature_text", "") or "")
-        if current_camera_signature != result_camera_signature:
+        if current_camera_signature != result_camera_signature and not _region_pack_offer_result_still_relevant(scene, result):
             _discard_stale_region_pack_offer_result(scene, deps, signature)
             redraw = True
             continue
         if not bool(result.get("ok", False)):
-            _discard_stale_region_pack_offer_result(scene, deps, signature)
+            _store_region_pack_offer_error(
+                scene,
+                deps,
+                signature,
+                result.get("message", ""),
+                latitude_deg=result.get("latitude_deg"),
+                longitude_deg=result.get("longitude_deg"),
+            )
             redraw = True
             continue
         _store_region_pack_offers(
@@ -1430,11 +1478,30 @@ def schedule_region_pack_offer_refresh(
     signature = _region_offer_signature(lat, lon, safe_tiles, camera_signature_value)
     try:
         existing_signature = str(scene.get(_REGION_OFFERS_SIGNATURE_KEY, "") or "")
+        existing_status = str(scene.get(_REGION_OFFERS_STATUS_KEY, "") or "").strip().upper()
+        existing_raw = str(scene.get(_REGION_OFFERS_JSON_KEY, "") or "")
     except deps.recoverable_exceptions:
         existing_signature = ""
+        existing_status = ""
+        existing_raw = ""
     except (RuntimeError, TypeError, ValueError, AttributeError):
         existing_signature = ""
-    if existing_signature == signature and not bool(force):
+        existing_status = ""
+        existing_raw = ""
+    has_ready_offers = False
+    if existing_raw:
+        try:
+            has_ready_offers = bool(json.loads(existing_raw) or [])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            has_ready_offers = False
+    if (
+        existing_signature == signature
+        and not bool(force)
+        and (
+            (existing_status == "READY" and has_ready_offers)
+            or existing_status == "EMPTY"
+        )
+    ):
         return False
 
     with _REGION_OFFERS_LOCK:
@@ -1464,6 +1531,7 @@ def schedule_region_pack_offer_refresh(
     def _worker():
         offers = []
         ok = False
+        message = ""
         try:
             delay = max(0.0, float(delay_seconds or 0.0))
         except (TypeError, ValueError):
@@ -1472,11 +1540,13 @@ def schedule_region_pack_offer_refresh(
             time.sleep(delay)
         try:
             from ..credit_api import get_region_pack_offers
-            offers = get_region_pack_offers(lat, lon, tile_keys=safe_tiles, force=force)
+            offers = get_region_pack_offers(lat, lon, tile_keys=safe_tiles, force=force, raise_errors=True)
             ok = True
         except deps.import_recoverable_exceptions:
+            message = "Data Packs update failed."
             deps.logger.debug("Planetka: Full Quality Data Packs refresh failed", exc_info=True)
         except (RuntimeError, TypeError, ValueError, AttributeError):
+            message = "Data Packs update failed."
             deps.logger.debug("Planetka: Full Quality Data Packs refresh failed", exc_info=True)
         with _REGION_OFFERS_LOCK:
             _REGION_OFFERS_RESULTS.append(
@@ -1488,6 +1558,7 @@ def schedule_region_pack_offer_refresh(
                     "longitude_deg": lon,
                     "offers": offers,
                     "ok": ok,
+                    "message": message,
                     "generation": generation,
                 }
             )

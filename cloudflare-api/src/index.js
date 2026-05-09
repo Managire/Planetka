@@ -108,7 +108,9 @@ import {
   handleCreditRegionPackMap as handleCreditRegionPackMapRoute,
   handleCreditRegionPackMapAsset as handleCreditRegionPackMapAssetRoute,
   handleCreditRegionPackMapBackground as handleCreditRegionPackMapBackgroundRoute,
+  handleCreditRegionPackPageAsset as handleCreditRegionPackPageAssetRoute,
   handleCreditRegionOffers as handleCreditRegionOffersRoute,
+  handleCreditRegionPackRelatedOffers as handleCreditRegionPackRelatedOffersRoute,
   handleCreditUnlocked as handleCreditUnlockedRoute,
 } from "./worker/credit_routes.js";
 import {
@@ -2825,6 +2827,17 @@ async function ensureCreditTables(db) {
   await dbRun(
     db,
     `
+      CREATE TABLE IF NOT EXISTS user_entitlement_summaries (
+        user_id TEXT PRIMARY KEY,
+        version TEXT NOT NULL,
+        rows_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `,
+  );
+  await dbRun(
+    db,
+    `
       CREATE TABLE IF NOT EXISTS credit_ledger (
         id TEXT PRIMARY KEY,
         user_id TEXT NOT NULL,
@@ -4042,6 +4055,11 @@ async function dispatchExactRoute(request, env, path) {
         return await handleCreditRegionOffersRoute(request, env, TILE_ROUTE_DEPS);
       }
       return null;
+    case "/credits/region-pack-related-offers":
+      if (request.method === "POST") {
+        return await handleCreditRegionPackRelatedOffersRoute(request, env, TILE_ROUTE_DEPS);
+      }
+      return null;
     case "/credits/region-pack-detail-link":
       if (request.method === "POST") {
         return await handleCreditRegionPackDetailLinkRoute(request, env, TILE_ROUTE_DEPS);
@@ -4070,6 +4088,16 @@ async function dispatchExactRoute(request, env, path) {
     case "/credits/region-pack-map-background.jpg":
       if (request.method === "GET" || request.method === "HEAD") {
         return await handleCreditRegionPackMapBackgroundRoute(request, env, TILE_ROUTE_DEPS);
+      }
+      return null;
+    case "/credits/page-assets/region-pack-map.css":
+    case "/credits/page-assets/region-pack-map.js":
+    case "/credits/page-assets/region-pack-dynamic-map.css":
+    case "/credits/page-assets/region-pack-dynamic-map.js":
+    case "/credits/page-assets/region-pack-catalog.css":
+    case "/credits/page-assets/region-pack-catalog.js":
+      if (request.method === "GET" || request.method === "HEAD") {
+        return await handleCreditRegionPackPageAssetRoute(request, env, TILE_ROUTE_DEPS);
       }
       return null;
     case "/credits/region-pack-catalog":

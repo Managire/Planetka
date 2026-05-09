@@ -942,7 +942,7 @@ def _draw_licenced_download_controls(layout, prefs):
 
 def _draw_broader_region_offers(layout, scene, active_view_scope=False):
     if active_view_scope:
-        layout.label(text="Full Quality Data Packs use Camera View.", icon="CAMERA_DATA")
+        layout.label(text="Camera View only.", icon="CAMERA_DATA")
         # Keep the last Camera View offers visible. These packs are low-priority
         # sales metadata and must not churn while the user navigates in Active View.
     try:
@@ -950,16 +950,22 @@ def _draw_broader_region_offers(layout, scene, active_view_scope=False):
         offer_payload = get_cached_region_pack_offers(scene=scene)
         offers = list(offer_payload.get("offers", ()) or ()) if isinstance(offer_payload, dict) else []
         status = str(offer_payload.get("status", "") or "").strip().upper() if isinstance(offer_payload, dict) else ""
+        message = str(offer_payload.get("message", "") or "").strip() if isinstance(offer_payload, dict) else ""
     except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
         logger.debug("Planetka: failed drawing cached Full Quality Data Packs", exc_info=True)
         offers = []
         status = ""
+        message = ""
     offers = [offer for offer in offers if isinstance(offer, dict) and bool(offer.get("ok", True))]
     if not offers:
         if status == "LOADING":
-            layout.label(text="Updating Full Quality Data Packs after Camera View Resolve.", icon="TIME")
+            layout.label(text="Updating Data Packs...", icon="TIME")
+        elif status == "ERROR":
+            layout.label(text=message or "Data Packs update failed.", icon="ERROR")
+        elif status == "EMPTY":
+            layout.label(text=message or "No Data Packs for this view.", icon="INFO")
         else:
-            layout.label(text="Full Quality Data Packs update after Camera View Resolve.", icon="INFO")
+            layout.label(text="Data Packs update after Resolve.", icon="INFO")
         return
     for offer in offers[:8]:
         name = str(offer.get("name", "") or offer.get("region_pack_name", "") or "Region Pack").strip()
@@ -979,7 +985,10 @@ def _draw_broader_region_offers(layout, scene, active_view_scope=False):
         except (TypeError, ValueError):
             gross = 0.0
         try:
-            new_tiles = max(0, int(offer.get("new_tile_count", offer.get("paid_tile_count", 0)) or 0))
+            new_tiles = max(
+                0,
+                int(offer.get("unlicenced_tile_count", offer.get("new_tile_count", offer.get("paid_tile_count", 0))) or 0),
+            )
         except (TypeError, ValueError):
             new_tiles = 0
         try:
@@ -1455,9 +1464,9 @@ def _draw_live_telemetry(layout, scene):
         full_box = quality_box.box()
         full_button_row = full_box.row(align=True)
         full_button_row.scale_y = 1.1
-        full_button_label = "Full Quality Textures"
-        if full_price_known and not active_view_scope:
-            full_button_label = f"Full Quality Textures ({_estimate_eur_label('FULL')})"
+        full_button_label = "Full Quality"
+        if full_price_known and full_has_new_cost and not active_view_scope:
+            full_button_label = f"Full Quality ({_estimate_eur_label('FULL')})"
         full_download = full_button_row.row(align=True)
         full_download.enabled = bool(full_allowed)
         if full_routes_to_scene_checkout:

@@ -1089,20 +1089,12 @@ def _ctx_finalize_auto_resolve_apply(ctx, scene, scene_id, job, manual_request, 
             or latest_output_signature != job_output_signature
         ):
             deps.request_auto_resolve(scene, immediate=False, mark_dirty=True)
-    if latest_camera_signature == job_camera_signature and latest_output_signature == job_output_signature:
-        try:
-            from .view_telemetry import schedule_region_pack_offer_refresh
-            schedule_region_pack_offer_refresh(
-                scene,
-                ctx,
-                latitude_deg=deps.job_field(job, "nav_latitude_deg", None),
-                longitude_deg=deps.job_field(job, "nav_longitude_deg", None),
-                camera_signature_value=latest_camera_signature,
-            )
-        except deps.recoverable_exceptions:
-            deps.logger.debug("Planetka: failed scheduling Full Quality Data Packs refresh", exc_info=True)
-        except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-            deps.logger.debug("Planetka: failed scheduling Full Quality Data Packs refresh", exc_info=True)
+    if not _is_active_view_resolve_signature(job_camera_signature):
+        _ctx_schedule_region_pack_offers_after_camera_view(
+            ctx,
+            scene,
+            camera_signature_value=latest_camera_signature,
+        )
     deps.resolve_trace(
         f"Shader update finished (request_id={deps.job_field(job, 'request_id')}, tiles={len(job_target_tiles)})"
     )
@@ -1641,6 +1633,35 @@ def _auto_resolve_update_size_estimation(scene, scope, active_view_signature, ta
         target_tiles,
         props,
     )
+
+
+def _is_active_view_resolve_signature(signature):
+    return (
+        isinstance(signature, (tuple, list))
+        and len(signature) >= 1
+        and str(signature[0] or "").strip().upper() == "ACTIVE_VIEW"
+    )
+
+
+def _ctx_schedule_region_pack_offers_after_camera_view(ctx, scene, camera_signature_value=None):
+    deps = ctx.deps
+    if scene is None:
+        return False
+    signature = camera_signature_value if camera_signature_value is not None else deps.camera_signature(scene)
+    if signature is None or _is_active_view_resolve_signature(signature):
+        return False
+    try:
+        from .view_telemetry import schedule_region_pack_offer_refresh
+        return bool(schedule_region_pack_offer_refresh(
+            scene,
+            ctx,
+            camera_signature_value=signature,
+        ))
+    except deps.recoverable_exceptions:
+        deps.logger.debug("Planetka: failed scheduling Full Quality Data Packs refresh", exc_info=True)
+    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+        deps.logger.debug("Planetka: failed scheduling Full Quality Data Packs refresh", exc_info=True)
+    return False
 
 
 def _ctx_arm_auto_resolve_noncritical_timer(ctx):

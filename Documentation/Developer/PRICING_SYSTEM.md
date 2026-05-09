@@ -279,6 +279,7 @@ Constants:
 ```js
 DATASET_BASE_MPP = 10.0
 EQUATOR_Z001_AREA_KM2 = (40075.016686 / 360.0) ** 2
+FULL_QUALITY_PRICE_COEFFICIENT = 1.20
 ```
 
 Delivered metres per pixel:
@@ -301,11 +302,19 @@ Detail factor:
 quality_factor = (10 / max(10, delivered_mpp)) ^ 2
 ```
 
+Base gross price before the internal coefficient:
+
+```text
+base_gross_price_eur = round_to_cents(base_eur * quality_factor)
+```
+
 Final gross price:
 
 ```text
-gross_price_eur = round_to_cents(base_eur * quality_factor)
+gross_price_eur = round_to_cents(base_gross_price_eur * FULL_QUALITY_PRICE_COEFFICIENT)
 ```
+
+`FULL_QUALITY_PRICE_COEFFICIENT` is an internal global multiplier in `cloudflare-api/src/worker/credit_routes.js`. It is currently `1.20`. Changing it scales all Full Quality scene tile prices, generated tile prices, data-pack gross prices, volume-discounted pack prices, Stripe checkout totals, and map/catalog page prices. It does not change land-area metrics, free-tile rules, entitlement coverage, or volume-discount percentages.
 
 Examples by d-level for the same land area:
 

@@ -1131,8 +1131,8 @@ def _request_tile_session_token(resolve_id, quality_mode, allow_refresh=True):
 
     try:
         return _attempt(bool(allow_refresh))
-    except AuthApiError:
-        return "", 0.0
+    except AuthApiError as exc:
+        raise RuntimeError("Planetka login expired. Log in again.") from exc
     except urllib.error.HTTPError as exc:
         error_payload = {}
         try:
@@ -1141,6 +1141,12 @@ def _request_tile_session_token(resolve_id, quality_mode, allow_refresh=True):
         except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
             error_payload = {}
         error_code = str(error_payload.get("error", "") or "").strip().lower()
+        error_message = str(
+            error_payload.get("message", "")
+            or error_payload.get("detail", "")
+            or error_payload.get("error_description", "")
+            or ""
+        ).strip()
         if int(getattr(exc, "code", 0) or 0) == 402 and error_code == "insufficient_credits":
             required = error_payload.get("required_credits", 0)
             balance = error_payload.get("balance_credits", 0)
@@ -1152,10 +1158,16 @@ def _request_tile_session_token(resolve_id, quality_mode, allow_refresh=True):
                 refresh_auth_session()
                 return _attempt(False)
             except (AuthApiError, urllib.error.HTTPError, urllib.error.URLError, RuntimeError, TypeError, ValueError, AttributeError, OSError):
-                return "", 0.0
-        return "", 0.0
-    except (urllib.error.URLError, RuntimeError, TypeError, ValueError, AttributeError, OSError):
-        return "", 0.0
+                raise RuntimeError("Planetka login expired. Log in again.") from exc
+        if int(getattr(exc, "code", 0)) == 429:
+            if error_message:
+                raise RuntimeError(f"Planetka request limit reached: {error_message}") from exc
+            raise RuntimeError("Planetka request limit reached for this account.") from exc
+        if error_message:
+            raise RuntimeError(f"Planetka Full Quality licence could not be confirmed: {error_message}") from exc
+        raise RuntimeError("Planetka Full Quality licence could not be confirmed. Please retry.") from exc
+    except (urllib.error.URLError, RuntimeError, TypeError, ValueError, AttributeError, OSError) as exc:
+        raise RuntimeError(f"Planetka Full Quality licence could not be confirmed: {exc}") from exc
 
 
 def _get_request_context_tile_token(allow_refresh=True):
@@ -1224,7 +1236,10 @@ def ensure_resolve_pricing_session(allow_refresh=True):
         pricing_tiles = tuple(key for key in (_REQUEST_CONTEXT_PRICING_TILES or ()) if str(key or "").strip())
     if quality_mode != "full" or not pricing_tiles:
         return ""
-    return _get_request_context_tile_token(allow_refresh=allow_refresh)
+    token = _get_request_context_tile_token(allow_refresh=allow_refresh)
+    if not str(token or "").strip():
+        raise RuntimeError("Planetka Full Quality licence could not be confirmed. Please retry.")
+    return token
 
 
 @contextmanager

@@ -323,6 +323,10 @@ _POST_CHECKOUT_MONITOR = {}
 _POST_CHECKOUT_MONITOR_REGISTERED = False
 _POST_CHECKOUT_POLL_INTERVAL_SEC = 3.0
 _POST_CHECKOUT_TIMEOUT_SEC = 300.0
+_REGION_PACK_PURCHASE_MONITOR = {}
+_REGION_PACK_PURCHASE_MONITOR_REGISTERED = False
+_REGION_PACK_PURCHASE_POLL_INTERVAL_SEC = 4.0
+_REGION_PACK_PURCHASE_TIMEOUT_SEC = 300.0
 
 
 def _is_active_view_resolve_scope(scene):
@@ -389,6 +393,30 @@ def _schedule_region_pack_offers_after_camera_resolve(scene):
         logger.debug("Planetka: failed scheduling Full Quality Data Packs refresh", exc_info=True)
     except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
         logger.debug("Planetka: failed scheduling Full Quality Data Packs refresh", exc_info=True)
+
+
+def _force_region_pack_offers_refresh(scene, *, clear_caches=True):
+    if scene is None:
+        return False
+    if clear_caches:
+        try:
+            from .credit_api import clear_credit_caches
+            clear_credit_caches()
+        except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed clearing credit caches before Full Quality Data Packs refresh", exc_info=True)
+    try:
+        from .planetka_runtime.view_telemetry import camera_signature, schedule_region_pack_offer_refresh
+        return bool(schedule_region_pack_offer_refresh(
+            scene,
+            camera_signature_value=camera_signature(scene),
+            delay_seconds=0.0,
+            force=True,
+        ))
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed forcing Full Quality Data Packs refresh", exc_info=True)
+    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed forcing Full Quality Data Packs refresh", exc_info=True)
+    return False
 
 
 def _run_camera_full_quality_resolve_after_checkout(scene):
@@ -495,7 +523,14 @@ def _populate_region_pack_info_operator(operator, offer):
     operator.region_pack_id = region_id
     operator.region_pack_name = name
     operator.included_countries = _region_offer_countries_text(offer)
-    operator.new_tile_count = max(0, _region_offer_int(offer, "new_tile_count", _region_offer_int(offer, "paid_tile_count", 0)))
+    operator.new_tile_count = max(
+        0,
+        _region_offer_int(
+            offer,
+            "unlicenced_tile_count",
+            _region_offer_int(offer, "new_tile_count", _region_offer_int(offer, "paid_tile_count", 0)),
+        ),
+    )
     operator.total_tile_count = max(0, _region_offer_int(offer, "tile_count", 0))
     operator.already_licenced_tile_count = max(0, _region_offer_int(offer, "already_licenced_tile_count", 0))
     operator.already_licenced_saving_eur = max(0.0, _region_offer_number(offer, "already_licenced_saving_eur", 0.0))
@@ -507,25 +542,23 @@ def _populate_region_pack_info_operator(operator, offer):
 
 def _draw_region_pack_upsell_options(layout, context, *, current_region_pack_id="", title="Full Quality Data Pack options"):
     location = _region_offer_location_for_context(context)
-    if location is None:
+    current_id = str(current_region_pack_id or "").strip()
+    if location is None and not current_id:
         return
     try:
-        from .credit_api import get_region_pack_offers
-        offers = get_region_pack_offers(location[0], location[1])
+        from .credit_api import get_region_pack_offers, get_region_pack_related_offers
+        offers = get_region_pack_related_offers(current_id) if current_id else []
+        if not offers and location is not None:
+            offers = get_region_pack_offers(location[0], location[1])
     except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
         logger.debug("Planetka: failed fetching Full Quality Data Pack options for popup", exc_info=True)
         return
     offers = [offer for offer in offers if isinstance(offer, dict) and bool(offer.get("ok", True))]
-    current_id = str(current_region_pack_id or "").strip()
     if current_id:
-        current_index = next(
-            (index for index, offer in enumerate(offers) if str(offer.get("id", "") or offer.get("region_pack_id", "") or "").strip() == current_id),
-            -1,
-        )
-        if current_index >= 0:
-            offers = offers[current_index + 1:]
-        else:
-            offers = [offer for offer in offers if str(offer.get("id", "") or offer.get("region_pack_id", "") or "").strip() != current_id]
+        offers = [
+            offer for offer in offers
+            if str(offer.get("id", "") or offer.get("region_pack_id", "") or "").strip() != current_id
+        ]
     if not offers:
         return
     box = layout.box()
@@ -536,7 +569,14 @@ def _draw_region_pack_upsell_options(layout, context, *, current_region_pack_id=
         if not name or not region_id:
             continue
         price = max(0.0, _region_offer_number(offer, "price_eur", _region_offer_number(offer, "credits", 0.0)))
-        new_tiles = max(0, _region_offer_int(offer, "new_tile_count", _region_offer_int(offer, "paid_tile_count", 0)))
+        new_tiles = max(
+            0,
+            _region_offer_int(
+                offer,
+                "unlicenced_tile_count",
+                _region_offer_int(offer, "new_tile_count", _region_offer_int(offer, "paid_tile_count", 0)),
+            ),
+        )
         row = box.row(align=True)
         row.alignment = 'EXPAND'
         button = row.row(align=True)
@@ -610,6 +650,102 @@ def _start_post_checkout_scene_monitor(scene):
         _POST_CHECKOUT_MONITOR_REGISTERED = True
     except (RuntimeError, TypeError, ValueError, AttributeError):
         logger.debug("Planetka: failed starting scene payment monitor", exc_info=True)
+
+
+def _region_pack_offer_is_settled(scene, region_pack_id):
+    safe_id = str(region_pack_id or "").strip()
+    if scene is None or not safe_id:
+        return False
+    try:
+        from .planetka_runtime.view_telemetry import get_cached_region_pack_offers
+        payload = get_cached_region_pack_offers(scene=scene)
+    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed reading cached Full Quality Data Packs during purchase monitor", exc_info=True)
+        return False
+    if not isinstance(payload, dict):
+        return False
+    status = str(payload.get("status", "") or "").strip().upper()
+    if status not in {"READY", "STALE"}:
+        return False
+    offers = [offer for offer in list(payload.get("offers", ()) or ()) if isinstance(offer, dict)]
+    target = next(
+        (
+            offer for offer in offers
+            if str(offer.get("id", "") or offer.get("region_pack_id", "") or "").strip() == safe_id
+        ),
+        None,
+    )
+    if target is None:
+        return True
+    try:
+        price = max(0.0, float(target.get("price_eur", target.get("credits", 0.0)) or 0.0))
+    except (TypeError, ValueError):
+        price = 0.0
+    try:
+        charged = max(0, int(target.get("charged_tile_count", target.get("paid_tile_count", 0)) or 0))
+    except (TypeError, ValueError):
+        charged = 0
+    return bool(price <= 0.000001 and charged <= 0)
+
+
+def _region_pack_purchase_monitor_timer():
+    global _REGION_PACK_PURCHASE_MONITOR
+    global _REGION_PACK_PURCHASE_MONITOR_REGISTERED
+    monitor = dict(_REGION_PACK_PURCHASE_MONITOR or {})
+    if not monitor:
+        _REGION_PACK_PURCHASE_MONITOR_REGISTERED = False
+        return None
+    try:
+        deadline = float(monitor.get("deadline", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        deadline = 0.0
+    if deadline > 0.0 and time.monotonic() > deadline:
+        _REGION_PACK_PURCHASE_MONITOR = {}
+        _REGION_PACK_PURCHASE_MONITOR_REGISTERED = False
+        return None
+    scene = _checkout_monitor_scene(monitor.get("scene_name", ""))
+    region_pack_id = str(monitor.get("region_pack_id", "") or "").strip()
+    if scene is None or not region_pack_id:
+        _REGION_PACK_PURCHASE_MONITOR = {}
+        _REGION_PACK_PURCHASE_MONITOR_REGISTERED = False
+        return None
+    if _region_pack_offer_is_settled(scene, region_pack_id):
+        _REGION_PACK_PURCHASE_MONITOR = {}
+        _REGION_PACK_PURCHASE_MONITOR_REGISTERED = False
+        _tag_view3d_redraw()
+        return None
+    try:
+        next_refresh_at = float(monitor.get("next_refresh_at", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        next_refresh_at = 0.0
+    now = time.monotonic()
+    if now >= next_refresh_at:
+        _force_region_pack_offers_refresh(scene, clear_caches=False)
+        monitor["next_refresh_at"] = now + max(4.0, _REGION_PACK_PURCHASE_POLL_INTERVAL_SEC)
+        _REGION_PACK_PURCHASE_MONITOR = monitor
+    return _REGION_PACK_PURCHASE_POLL_INTERVAL_SEC
+
+
+def _start_region_pack_purchase_monitor(scene, region_pack_id):
+    global _REGION_PACK_PURCHASE_MONITOR
+    global _REGION_PACK_PURCHASE_MONITOR_REGISTERED
+    safe_id = str(region_pack_id or "").strip()
+    if scene is None or not safe_id:
+        return
+    _REGION_PACK_PURCHASE_MONITOR = {
+        "scene_name": str(getattr(scene, "name", "") or ""),
+        "region_pack_id": safe_id,
+        "deadline": float(time.monotonic() + _REGION_PACK_PURCHASE_TIMEOUT_SEC),
+        "next_refresh_at": 0.0,
+    }
+    _force_region_pack_offers_refresh(scene)
+    if _REGION_PACK_PURCHASE_MONITOR_REGISTERED:
+        return
+    try:
+        bpy.app.timers.register(_region_pack_purchase_monitor_timer, first_interval=_REGION_PACK_PURCHASE_POLL_INTERVAL_SEC)
+        _REGION_PACK_PURCHASE_MONITOR_REGISTERED = True
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed starting Full Quality Data Pack purchase monitor", exc_info=True)
 
 
 def _persist_user_preferences():
@@ -808,7 +944,7 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
             width=64,
         )
         box = layout.box()
-        box.label(text=f"New tiles: {int(getattr(self, 'confirm_new_tile_count', 0) or 0)}", icon="TEXTURE")
+        box.label(text=f"Charged tiles: {int(getattr(self, 'confirm_new_tile_count', 0) or 0)}", icon="TEXTURE")
         box.label(
             text=f"Already licenced: {int(getattr(self, 'confirm_already_licenced_tile_count', 0) or 0)}",
             icon="CHECKMARK",
@@ -1150,6 +1286,11 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
                 region_pack_id=str(getattr(self, "region_pack_id", "") or ""),
             )
         except Exception as exc:
+            if option == "REGION_PACK":
+                _force_region_pack_offers_refresh(getattr(context, "scene", None))
+                logger.debug("Planetka region pack checkout creation failed; refreshing offers", exc_info=True)
+                self.report({'WARNING'}, f"Unable to open Planetka Data Pack payment yet: {exc}. Prices are refreshing.")
+                return {'CANCELLED'}
             return fail(
                 self,
                 f"Unable to open Planetka payment: {exc}",
@@ -1173,6 +1314,8 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
                     clear_credit_caches()
                 except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
                     logger.debug("Planetka: failed clearing credit cache after region pack no-payment check", exc_info=True)
+                scene = getattr(context, "scene", None)
+                _force_region_pack_offers_refresh(scene)
                 pack_name = str(getattr(self, "region_pack_name", "") or "Region Pack").strip()
                 self.report({'INFO'}, f"{pack_name} is already licenced or has no newly charged tiles.")
                 return {'FINISHED'}
@@ -1191,6 +1334,11 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
             )
         if option in {"SCENE", "REGION_PACK"}:
             _start_post_checkout_scene_monitor(getattr(context, "scene", None))
+        if option == "REGION_PACK":
+            _start_region_pack_purchase_monitor(
+                getattr(context, "scene", None),
+                str(getattr(self, "region_pack_id", "") or ""),
+            )
         self.report({'INFO'}, "Planetka payment page opened in browser.")
         return {'FINISHED'}
 
@@ -1224,7 +1372,7 @@ class PLANETKA_OT_OpenRegionPackMap(bpy.types.Operator):
         options={'HIDDEN', 'SKIP_SAVE'},
     )
 
-    def execute(self, _context):
+    def execute(self, context):
         region_id = str(getattr(self, "region_pack_id", "") or "").strip()
         if not region_id:
             return fail(
@@ -1253,6 +1401,7 @@ class PLANETKA_OT_OpenRegionPackMap(bpy.types.Operator):
                 code=ErrorCode.RESOLVE_PRECHECK_FAILED,
                 logger=logger,
             )
+        _start_region_pack_purchase_monitor(getattr(context, "scene", None), region_id)
         self.report({'INFO'}, "Planetka region pack map opened in browser.")
         return {'FINISHED'}
 
@@ -1295,35 +1444,37 @@ class PLANETKA_OT_RegionPackInfo(bpy.types.Operator):
         countries = [part.strip() for part in str(getattr(self, "included_countries", "") or "").split("|") if part.strip()]
         layout.label(text=name, icon="WORLD")
         summary = layout.box()
-        summary.label(text=f"New Tiles: {int(getattr(self, 'new_tile_count', 0) or 0)}", icon="TEXTURE")
-        summary.label(text=f"Total Tiles: {int(getattr(self, 'total_tile_count', 0) or 0)}", icon="GRID")
-        licenced = int(getattr(self, "already_licenced_tile_count", 0) or 0)
-        if licenced > 0:
-            saving = float(getattr(self, "already_licenced_saving_eur", 0.0) or 0.0)
-            licenced_text = f"Already Licenced: {licenced} tile{'s' if licenced != 1 else ''}"
-            if saving > 0.000001:
-                licenced_text += f" (-{_format_eur_for_ui(saving)})"
-            summary.label(text=licenced_text, icon="CHECKMARK")
+        summary.label(
+            text=(
+                f"New Tiles / Total Tiles: "
+                f"{int(getattr(self, 'new_tile_count', 0) or 0)} / "
+                f"{int(getattr(self, 'total_tile_count', 0) or 0)}"
+            ),
+            icon="TEXTURE",
+        )
         summary.label(text=f"Full Price: €{float(getattr(self, 'full_price_eur', 0.0) or 0.0):.2f}", icon="SOLO_ON")
+        licenced = int(getattr(self, "already_licenced_tile_count", 0) or 0)
+        saving = float(getattr(self, "already_licenced_saving_eur", 0.0) or 0.0)
+        summary.label(
+            text=(
+                f"Already Licenced: {licenced} tile{'s' if licenced != 1 else ''} "
+                f"(-{_format_eur_for_ui(saving)})"
+            ),
+            icon="CHECKMARK",
+        )
         discount = int(getattr(self, "discount_percent", 0) or 0)
-        if discount > 0:
-            summary.label(
-                text=(
-                    f"Volume Discount: {discount}% "
-                    f"(€{float(getattr(self, 'discount_eur', 0.0) or 0.0):.2f})"
-                ),
-                icon="SORTSIZE",
-            )
-        summary.label(text=f"Price: €{float(getattr(self, 'price_eur', 0.0) or 0.0):.2f}", icon="USER")
+        summary.label(
+            text=(
+                f"Volume Discount: {discount}% "
+                f"(-{_format_eur_for_ui(float(getattr(self, 'discount_eur', 0.0) or 0.0))})"
+            ),
+            icon="SORTSIZE",
+        )
+        summary.label(text=f"Final Price: €{float(getattr(self, 'price_eur', 0.0) or 0.0):.2f}", icon="USER")
         country_box = layout.box()
         country_box.label(text="Included Area Labels", icon="WORLD_DATA")
         country_text = f"Area labels: {', '.join(countries)}" if countries else "Area label list is not available for this pack yet."
         self._wrapped_label(country_box, country_text)
-        self._wrapped_label(
-            layout,
-            "Price uses only new Full Quality tiles; already licenced tiles are excluded before the volume discount is applied.",
-            icon="INFO",
-        )
         actions = layout.row(align=True)
         map_op = actions.operator("planetka.open_region_pack_map", text="Detailed Map", icon="URL")
         map_op.region_pack_id = str(getattr(self, "region_pack_id", "") or "")
@@ -1340,7 +1491,7 @@ class PLANETKA_OT_RegionPackInfo(bpy.types.Operator):
             layout,
             context,
             current_region_pack_id=str(getattr(self, "region_pack_id", "") or ""),
-            title="Larger Full Quality options",
+            title="Similar Options",
         )
 
     def execute(self, _context):
@@ -1553,8 +1704,12 @@ class PLANETKA_OT_DataCostBreakdown(bpy.types.Operator):
             header.label(text="Reconnect Planetka Cloud and refresh Resolve to get the exact price.")
             return
         header.label(text=f"Total data size: {_format_bytes_for_ui(int(total_bytes or 0))}")
-        header.label(text=f"Total price: {'Free' if mode == 'PREVIEW' else self._price_text(total_credits)}")
-        if mode != "PREVIEW":
+        has_nonzero_price = bool(mode != "PREVIEW" and float(total_credits or 0.0) > 0.000001)
+        if mode == "PREVIEW":
+            header.label(text="Total price: Free")
+        elif has_nonzero_price:
+            header.label(text=f"Total price: {self._price_text(total_credits)}")
+        if mode != "PREVIEW" and has_nonzero_price:
             header.label(
                 text="Price is based on land area and texture detail; ocean-only, coarse, and already-licenced tiles are not charged.",
                 icon="INFO",

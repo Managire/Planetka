@@ -86,6 +86,27 @@ def _prefetch_result_indicates_auth_disconnect(prefetch_result):
     return False
 
 
+def _prefetch_result_indicates_licence_failure(prefetch_result):
+    if not isinstance(prefetch_result, dict):
+        return False
+    text = str(prefetch_result.get("fatal_error", "") or "").strip().lower()
+    if "not been licenced" in text or "tile_not_unlocked" in text or "not unlocked" in text:
+        return True
+    details = prefetch_result.get("missing_details", ())
+    if not isinstance(details, (tuple, list)):
+        return False
+    for entry in details:
+        if not isinstance(entry, dict):
+            continue
+        combined = " ".join((
+            str(entry.get("fetch_error", "") or ""),
+            str(entry.get("remote_error", "") or ""),
+        )).lower()
+        if "not been licenced" in combined or "tile_not_unlocked" in combined or "not unlocked" in combined:
+            return True
+    return False
+
+
 def _staged_prefetch_key(visible_tiles, base_path, texture_quality_mode="PREVIEW"):
     return (
         _normalize_tiles(visible_tiles),
@@ -379,9 +400,17 @@ def prefetch_resolve_plan(
     else:
         prefetch_result = {}
 
+    if prefetch_failed and not cancelled:
+        prefetch_result["fatal_error"] = str(prefetch_result.get("fatal_error", "") or "").strip() or (
+            str(prefetch_error_text or "").strip() or "Planetka resolve prefetch failed."
+        )
+        prefetch_result["error_count"] = max(int(prefetch_result.get("error_count", 0) or 0), 1)
+
     # Resolve integrity:
     # - no post-prefetch fallback fetches here (shader fallback images handle EL/WT/PO misses)
     # - only missing S2 is fatal; missing EL/WT/PO proceeds with fallback images
+    # - licence/session failures must remain licence failures, not be reworded as
+    #   missing S2 assets.
     resolved_paths = _build_prefetched_paths(index, base_path, allow_fallback=not use_remote)
     unresolved_s2_required = sum(
         1
@@ -404,16 +433,16 @@ def prefetch_resolve_plan(
                     "Planetka Cloud is not connected. "
                     "Reconnect your account and retry Resolve."
                 )
+            elif _prefetch_result_indicates_licence_failure(prefetch_result):
+                prefetch_result["fatal_error"] = (
+                    "Planetka Full Quality licence was not confirmed for this Resolve. "
+                    "No texture data was downloaded. Please retry."
+                )
             else:
                 prefetch_result["fatal_error"] = (
                     "Planetka resolve requires S2 tile assets. "
                     "One or more required S2 files are unavailable."
                 )
-    if prefetch_failed and not cancelled:
-        prefetch_result["fatal_error"] = str(prefetch_result.get("fatal_error", "") or "").strip() or (
-            str(prefetch_error_text or "").strip() or "Planetka resolve prefetch failed."
-        )
-        prefetch_result["error_count"] = max(int(prefetch_result.get("error_count", 0) or 0), 1)
     prefetch_result["cancelled"] = bool(cancelled)
 
     return {

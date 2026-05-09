@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 _ACCOUNT_CACHE = {"timestamp": 0.0, "payload": {}}
 _UNLOCKED_CACHE = {"timestamp": 0.0, "payload": []}
 _REGION_OFFERS_CACHE = {"timestamp": 0.0, "key": "", "payload": []}
+_REGION_RELATED_OFFERS_CACHE = {"timestamp": 0.0, "key": "", "payload": []}
 _ACCOUNT_CACHE_TTL_SECONDS = 5.0
 _UNLOCKED_CACHE_TTL_SECONDS = 10.0
 _REGION_OFFERS_CACHE_TTL_SECONDS = 30.0
@@ -63,11 +64,14 @@ _PRICE_FIELDS = {
     "price_eur",
     "gross_credits",
     "gross_price_eur",
+    "full_price_eur",
     "upgrade_credit_applied",
     "paid_eur",
     "nominal_eur",
     "gross_eur",
     "discount_eur",
+    "already_licenced_gross_eur",
+    "already_licenced_saving_eur",
     "minimum_eur",
     "added_eur",
     "added_credits",
@@ -265,6 +269,9 @@ def clear_credit_caches():
     _REGION_OFFERS_CACHE["timestamp"] = 0.0
     _REGION_OFFERS_CACHE["key"] = ""
     _REGION_OFFERS_CACHE["payload"] = []
+    _REGION_RELATED_OFFERS_CACHE["timestamp"] = 0.0
+    _REGION_RELATED_OFFERS_CACHE["key"] = ""
+    _REGION_RELATED_OFFERS_CACHE["payload"] = []
     try:
         from .planetka_runtime.view_telemetry import clear_full_price_estimate_cache, clear_region_pack_offer_cache
         clear_full_price_estimate_cache()
@@ -468,7 +475,7 @@ def estimate_credit_breakdown_for_tiles(tiles, quality_mode="FULL") -> dict:
     return estimate_credits_for_tiles(tiles, quality_mode=mode)
 
 
-def get_region_pack_offers(latitude_deg, longitude_deg, tile_keys=None, force=False) -> list[dict]:
+def get_region_pack_offers(latitude_deg, longitude_deg, tile_keys=None, force=False, raise_errors=False) -> list[dict]:
     if isinstance(tile_keys, bool) and not force:
         force = bool(tile_keys)
         tile_keys = None
@@ -505,6 +512,8 @@ def get_region_pack_offers(latitude_deg, longitude_deg, tile_keys=None, force=Fa
             timeout=45,
         )
     except (AuthApiError, CreditApiError, RuntimeError, TypeError, ValueError, OSError):
+        if bool(raise_errors):
+            raise
         logger.debug("Planetka: failed fetching region pack offers", exc_info=True)
         return []
     offers = payload.get("offers", []) if isinstance(payload, dict) else []
@@ -514,6 +523,42 @@ def get_region_pack_offers(latitude_deg, longitude_deg, tile_keys=None, force=Fa
     _REGION_OFFERS_CACHE["timestamp"] = now
     _REGION_OFFERS_CACHE["key"] = key
     _REGION_OFFERS_CACHE["payload"] = [dict(item) for item in offers]
+    return [dict(item) for item in offers]
+
+
+def get_region_pack_related_offers(region_pack_id, force=False, raise_errors=False) -> list[dict]:
+    safe_id = str(region_pack_id or "").strip()
+    if not safe_id:
+        return []
+    key = safe_id
+    now = time.monotonic()
+    cached = _REGION_RELATED_OFFERS_CACHE.get("payload")
+    if (
+        not force
+        and _REGION_RELATED_OFFERS_CACHE.get("key") == key
+        and isinstance(cached, list)
+        and (now - float(_REGION_RELATED_OFFERS_CACHE.get("timestamp", 0.0) or 0.0)) < _REGION_OFFERS_CACHE_TTL_SECONDS
+    ):
+        return [dict(item) for item in cached if isinstance(item, dict)]
+    try:
+        payload = _request_json(
+            "POST",
+            "/credits/region-pack-related-offers",
+            body={"region_pack_id": safe_id},
+            timeout=45,
+        )
+    except (AuthApiError, CreditApiError, RuntimeError, TypeError, ValueError, OSError):
+        if bool(raise_errors):
+            raise
+        logger.debug("Planetka: failed fetching related region pack offers", exc_info=True)
+        return []
+    offers = payload.get("offers", []) if isinstance(payload, dict) else []
+    if not isinstance(offers, list):
+        offers = []
+    offers = [_round_price_fields(entry) for entry in offers if isinstance(entry, dict)]
+    _REGION_RELATED_OFFERS_CACHE["timestamp"] = now
+    _REGION_RELATED_OFFERS_CACHE["key"] = key
+    _REGION_RELATED_OFFERS_CACHE["payload"] = [dict(item) for item in offers]
     return [dict(item) for item in offers]
 
 
