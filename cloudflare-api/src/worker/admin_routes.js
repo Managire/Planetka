@@ -9,6 +9,7 @@ export async function dispatchAdminRoute(request, env, path, deps) {
     handleAdminAnalyticsUsersPage,
     handleAdminAnalyticsData,
     handleAdminAnalyticsTileMapImage,
+    handleAdminSetPricingSettings,
     handleAdminLoginPage,
     handleAdminPasswordLogin,
     handleAdminSessionStartPage,
@@ -20,7 +21,6 @@ export async function dispatchAdminRoute(request, env, path, deps) {
     handleAdminUserSetPreviewHold,
     handleAdminUserReleasePreviewHold,
     handleAdminUserHardBlock,
-    handleAdminSetMonthlyBilling,
     handleAdminUserSetPlan,
     handleAdminUserSetUnrestrictedQuality,
     handleAdminQaAuthReset,
@@ -78,6 +78,11 @@ export async function dispatchAdminRoute(request, env, path, deps) {
         return await handleAdminSetGlobalUnrestrictedQuality(request, env);
       }
       return null;
+    case "/admin/settings/pricing":
+      if (request.method === "POST") {
+        return await handleAdminSetPricingSettings(request, env);
+      }
+      return null;
     case "/admin/users/block":
       if (request.method === "POST") {
         return await handleAdminUserBlock(request, env);
@@ -111,11 +116,6 @@ export async function dispatchAdminRoute(request, env, path, deps) {
     case "/admin/users/set-unrestricted-quality":
       if (request.method === "POST") {
         return await handleAdminUserSetUnrestrictedQuality(request, env);
-      }
-      return null;
-    case "/admin/users/monthly-billing":
-      if (request.method === "POST") {
-        return await handleAdminSetMonthlyBilling(request, env);
       }
       return null;
     case "/admin/qa/auth-reset":

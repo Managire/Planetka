@@ -66,8 +66,8 @@ export async function handleTileSessionStart(request, env, deps) {
     return jsonResponse(
       {
         ok: false,
-        error: "standard_quality_removed",
-        message: "Standard Quality is no longer available. Use Preview or Full Quality.",
+        error: "unsupported_quality_mode",
+        message: "Only Preview and Full Quality are available.",
         requested_quality_mode: normalizedRequestedQualityMode,
       },
       410,
@@ -143,20 +143,15 @@ export async function handleTileSessionStart(request, env, deps) {
     unlockResult
     && (
       unlockResult.error === "payment_required"
-      || unlockResult.error === "monthly_billing_not_active"
-      || unlockResult.error === "monthly_billing_cap_exceeded"
     )
   ) {
     return jsonResponse(
       {
         ok: false,
         error: String(unlockResult.error || "payment_required"),
-        message: unlockResult.error === "monthly_billing_cap_exceeded"
-          ? "This Resolve exceeds the active Monthly Billing cap."
-          : "Full Quality requires direct payment or active Monthly Billing.",
+        message: "Full Quality requires direct payment.",
         required_credits: Number(unlockResult.required_credits || 0),
         price_eur: Number(unlockResult.price_eur || unlockResult.required_credits || 0),
-        monthly_billing: unlockResult.monthly_billing || null,
         paid_tile_count: Number(unlockResult.paid_tile_count || 0),
         tile_count: Number(unlockResult.tile_count || 0),
       },
@@ -323,12 +318,12 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
     eventQualityMode = effectiveQualityMode;
     if ((request.method === "GET" || request.method === "HEAD") && effectiveQualityMode === "balanced") {
       eventStatusCode = 410;
-      eventErrorCode = "standard_quality_removed";
+      eventErrorCode = "unsupported_quality_mode";
       return json(
         {
           ok: false,
-          error: "standard_quality_removed",
-          message: "Standard Quality is no longer available. Use Preview or Full Quality.",
+          error: "unsupported_quality_mode",
+          message: "Only Preview and Full Quality are available.",
           requested_quality_mode: effectiveQualityMode,
         },
         410,
@@ -350,12 +345,12 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
       && tileRequiredQualityMode === "full"
     ) {
       eventStatusCode = 403;
-      eventErrorCode = "standard_quality_cannot_access_full_tile";
+      eventErrorCode = "unsupported_quality_mode";
       return json(
         {
           ok: false,
-          error: "standard_quality_cannot_access_full_tile",
-          message: "Standard Quality cannot download Full Quality-only tile data.",
+          error: "unsupported_quality_mode",
+          message: "Only Preview and Full Quality are available.",
           requested_quality_mode: effectiveQualityMode,
           required_quality_mode: tileRequiredQualityMode,
           file_name: fileName,
@@ -474,20 +469,15 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
         unlockResult
         && (
           unlockResult.error === "payment_required"
-          || unlockResult.error === "monthly_billing_not_active"
-          || unlockResult.error === "monthly_billing_cap_exceeded"
         )
       ) {
         return json(
           {
             ok: false,
             error: String(unlockResult.error || "payment_required"),
-            message: unlockResult.error === "monthly_billing_cap_exceeded"
-              ? "This tile exceeds the active Monthly Billing cap."
-              : "Full Quality requires direct payment or active Monthly Billing.",
+            message: "Full Quality requires direct payment.",
             required_credits: Number(unlockResult.required_credits || 0),
             price_eur: Number(unlockResult.price_eur || unlockResult.required_credits || 0),
-            monthly_billing: unlockResult.monthly_billing || null,
             paid_tile_count: Number(unlockResult.paid_tile_count || 0),
             tile_count: Number(unlockResult.tile_count || 0),
           },

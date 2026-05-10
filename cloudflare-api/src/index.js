@@ -17,7 +17,6 @@ import {
   PLAN_CODE_FREE,
   PLAN_CODE_COMMERCIAL,
   commercialUseAllowed,
-  evaluateStripePlanPurchaseGuard,
   isBlockedStatus,
   isDeviceLimitExemptEmail,
   isQualityModeAllowedForPlan,
@@ -48,6 +47,7 @@ import {
 import {
   handleAdminAnalyticsData as handleAdminAnalyticsDataRoute,
   handleAdminAnalyticsPage as handleAdminAnalyticsPageRoute,
+  handleAdminSetPricingSettings as handleAdminSetPricingSettingsRoute,
   handleAdminAnalyticsTileMapImage as handleAdminAnalyticsTileMapImageRoute,
   handleAdminAnalyticsUserPage as handleAdminAnalyticsUserPageRoute,
   handleAdminAnalyticsUsersPage as handleAdminAnalyticsUsersPageRoute,
@@ -89,11 +89,9 @@ import {
   handleAdminUserUnblock as handleAdminUserUnblockRoute,
 } from "./worker/admin_user_handlers.js";
 import {
-  handleAdminSetMonthlyBilling as handleAdminSetMonthlyBillingRoute,
   handleCreditCheckout as handleCreditCheckoutRoute,
   handleCreditEstimate as handleCreditEstimateRoute,
   handleCreditMe as handleCreditMeRoute,
-  handleCreditMonthlyBillingRequest as handleCreditMonthlyBillingRequestRoute,
   handleCreditPaymentCancelled as handleCreditPaymentCancelledRoute,
   handleCreditPaymentSuccess as handleCreditPaymentSuccessRoute,
   handleCreditPurchaseHistory as handleCreditPurchaseHistoryRoute,
@@ -111,7 +109,8 @@ import {
   handleCreditRegionOffers as handleCreditRegionOffersRoute,
   handleCreditRegionPackRelatedOffers as handleCreditRegionPackRelatedOffersRoute,
   handleCreditUnlocked as handleCreditUnlockedRoute,
-  runMonthlyBillingInvoiceJob as runMonthlyBillingInvoiceJobRoute,
+  getRuntimePricingSettings,
+  setRuntimePricingSettings,
 } from "./worker/credit_routes.js";
 import {
   handleStripeWebhook as handleStripeWebhookRoute,
@@ -275,6 +274,7 @@ const ANALYTICS_QUERY_DEPS = {
   countRowsFromQuery,
   dbAll,
   dbGet,
+  dbRun,
   ensureCreditTables,
   ensureUserQualityAccessColumns,
   ensureAuthRefreshEventsTable,
@@ -335,6 +335,7 @@ const ADMIN_ANALYTICS_DEPS = {
   listAnalyticsUsers: (db, env, options = {}) => listAnalyticsUsersQuery(db, env, options, ANALYTICS_QUERY_DEPS),
   loadAnalyticsSnapshot,
   loadAnalyticsUsersSnapshot,
+  getRuntimePricingSettings,
   normalizePlanCode,
   nowIso,
   parseAnalyticsUsersSort: (value) => parseAnalyticsUsersSortQuery(value),
@@ -350,9 +351,11 @@ const ADMIN_ANALYTICS_DEPS = {
     sanitizeAnalyticsMinutesQuery(value, fallback, ANALYTICS_QUERY_DEPS),
   sanitizeLiveTileMapMinutes: (value, fallback = DEFAULT_LIVE_TILE_MAP_WINDOW_MINUTES) =>
     sanitizeLiveTileMapMinutesQuery(value, fallback, ANALYTICS_QUERY_DEPS),
+  setRuntimePricingSettings,
   storeAnalyticsSnapshot,
   dbAll,
   dbGet,
+  dbRun,
   ensureCreditTables,
   BYTES_PER_GB,
 };
@@ -423,37 +426,20 @@ const ADMIN_USER_DEPS = {
 };
 
 const BILLING_DEPS = {
-  dbAll,
-  dbGet,
-  dbMetaChanges,
   dbRun,
   ensureCreditTables,
   ensureStripeWebhookEventsTable,
-  enforceUserPlanPolicy,
-  evaluateStripePlanPurchaseGuard,
   findUserById,
   findUserByEmail,
   hmacSha256Hex,
   invalidateAnalyticsSnapshots,
-  isBlockedStatus,
   json,
   normalizeEmail,
-  normalizePlanCode,
   normalizeQualityMode,
-  normalizeRequestedPlan,
-  normalizeUserStatus,
   nowIso,
   parsePositiveNumber,
-  planDisplayName,
-  PLAN_CODE_PERSONAL,
-  PLAN_CODE_FREE,
-  PLAN_CODE_COMMERCIAL,
-  randomToken,
   requireDb,
   requireSecret,
-  resolvePlanCode,
-  resolvePlanPriority,
-  upsertUserByEmail,
 };
 
 const PUBLIC_MISC_DEPS = {
@@ -2100,7 +2086,7 @@ async function userHasStripePaidActivity(db, userId) {
       SELECT COUNT(*) AS count
       FROM credit_ledger
       WHERE user_id = ?
-        AND LOWER(COALESCE(reason, '')) IN ('stripe_scene_purchase', 'stripe_region_pack_purchase', 'monthly_billing_scene_purchase', 'monthly_billing_region_pack_purchase')
+        AND LOWER(COALESCE(reason, '')) IN ('stripe_scene_purchase', 'stripe_region_pack_purchase')
     `,
     [safeUserId],
   );
@@ -2716,11 +2702,33 @@ async function ensureApiKeyTables(db) {
   apiKeyTablesReady = true;
 }
 
-const DEFAULT_STARTING_EUR_BALANCE = 0.0;
-
 async function ensureCreditTables(db) {
   if (creditTablesReady) {
     return;
+  }
+  const accountColumns = await dbAll(db, `PRAGMA table_info(user_credit_accounts)`);
+  if (accountColumns.some((column) => [
+    "balance_credits",
+    "total_granted_credits",
+    "total_spent_credits",
+    "standard_quality_unlocked_at",
+    "standard_quality_checkout_session_id",
+    "standard_quality_paid_eur",
+    "monthly_billing_status",
+    "monthly_billing_limit_eur",
+    "monthly_billing_spent_eur",
+  ].includes(String(column && column.name || "").trim().toLowerCase()))) {
+    await dbRun(db, `DROP TABLE IF EXISTS user_credit_accounts`);
+  }
+  const ledgerColumns = await dbAll(db, `PRAGMA table_info(credit_ledger)`);
+  if (ledgerColumns.some((column) => [
+    "delta_credits",
+    "balance_after_credits",
+  ].includes(String(column && column.name || "").trim().toLowerCase()))) {
+    await dbRun(db, `DROP TABLE IF EXISTS credit_ledger`);
+  }
+  for (const retiredTable of ["monthly_billing_purchases", "monthly_billing_request_tokens"]) {
+    await dbRun(db, `DROP TABLE IF EXISTS ${retiredTable}`);
   }
   await dbRun(
     db,
@@ -2728,29 +2736,10 @@ async function ensureCreditTables(db) {
       CREATE TABLE IF NOT EXISTS user_credit_accounts (
         user_id TEXT PRIMARY KEY,
         account_type TEXT NOT NULL DEFAULT 'standard',
-        balance_credits REAL NOT NULL DEFAULT 0,
-        total_granted_credits REAL NOT NULL DEFAULT 0,
-        total_spent_credits REAL NOT NULL DEFAULT 0,
-        standard_quality_unlocked_at TEXT,
-        standard_quality_checkout_session_id TEXT,
-        standard_quality_paid_eur REAL NOT NULL DEFAULT 0,
         world_full_quality_unlocked_at TEXT,
         world_full_quality_checkout_session_id TEXT,
         world_full_quality_paid_eur REAL NOT NULL DEFAULT 0,
         pricing_version INTEGER NOT NULL DEFAULT 0,
-        monthly_billing_status TEXT NOT NULL DEFAULT 'none',
-        monthly_billing_limit_eur REAL NOT NULL DEFAULT 0,
-        monthly_billing_period_start TEXT,
-        monthly_billing_period_end TEXT,
-        monthly_billing_spent_eur REAL NOT NULL DEFAULT 0,
-        monthly_billing_stripe_customer_id TEXT,
-        monthly_billing_stripe_setup_intent_id TEXT,
-        monthly_billing_default_payment_method_id TEXT,
-        monthly_billing_payment_method_verified_at TEXT,
-        monthly_billing_custom_approved_at TEXT,
-        monthly_billing_custom_approved_by_admin_id TEXT,
-        monthly_billing_custom_approved_limit_eur REAL NOT NULL DEFAULT 0,
-        monthly_billing_invoice_status TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       )
@@ -2765,26 +2754,10 @@ async function ensureCreditTables(db) {
     }
   }
   for (const statement of [
-    `ALTER TABLE user_credit_accounts ADD COLUMN standard_quality_unlocked_at TEXT`,
-    `ALTER TABLE user_credit_accounts ADD COLUMN standard_quality_checkout_session_id TEXT`,
-    `ALTER TABLE user_credit_accounts ADD COLUMN standard_quality_paid_eur REAL NOT NULL DEFAULT 0`,
     `ALTER TABLE user_credit_accounts ADD COLUMN world_full_quality_unlocked_at TEXT`,
     `ALTER TABLE user_credit_accounts ADD COLUMN world_full_quality_checkout_session_id TEXT`,
     `ALTER TABLE user_credit_accounts ADD COLUMN world_full_quality_paid_eur REAL NOT NULL DEFAULT 0`,
     `ALTER TABLE user_credit_accounts ADD COLUMN pricing_version INTEGER NOT NULL DEFAULT 0`,
-    `ALTER TABLE user_credit_accounts ADD COLUMN monthly_billing_status TEXT NOT NULL DEFAULT 'none'`,
-    `ALTER TABLE user_credit_accounts ADD COLUMN monthly_billing_limit_eur REAL NOT NULL DEFAULT 0`,
-    `ALTER TABLE user_credit_accounts ADD COLUMN monthly_billing_period_start TEXT`,
-    `ALTER TABLE user_credit_accounts ADD COLUMN monthly_billing_period_end TEXT`,
-    `ALTER TABLE user_credit_accounts ADD COLUMN monthly_billing_spent_eur REAL NOT NULL DEFAULT 0`,
-    `ALTER TABLE user_credit_accounts ADD COLUMN monthly_billing_stripe_customer_id TEXT`,
-    `ALTER TABLE user_credit_accounts ADD COLUMN monthly_billing_stripe_setup_intent_id TEXT`,
-    `ALTER TABLE user_credit_accounts ADD COLUMN monthly_billing_default_payment_method_id TEXT`,
-    `ALTER TABLE user_credit_accounts ADD COLUMN monthly_billing_payment_method_verified_at TEXT`,
-    `ALTER TABLE user_credit_accounts ADD COLUMN monthly_billing_custom_approved_at TEXT`,
-    `ALTER TABLE user_credit_accounts ADD COLUMN monthly_billing_custom_approved_by_admin_id TEXT`,
-    `ALTER TABLE user_credit_accounts ADD COLUMN monthly_billing_custom_approved_limit_eur REAL NOT NULL DEFAULT 0`,
-    `ALTER TABLE user_credit_accounts ADD COLUMN monthly_billing_invoice_status TEXT`,
   ]) {
     try {
       await dbRun(db, statement);
@@ -2808,13 +2781,13 @@ async function ensureCreditTables(db) {
       db,
       `
         INSERT OR IGNORE INTO user_credit_accounts (
-          user_id, account_type, balance_credits, total_granted_credits, total_spent_credits, created_at, updated_at
+          user_id, account_type, created_at, updated_at
         )
-        SELECT id, 'standard', ?, ?, 0, ?, ?
+        SELECT id, 'standard', ?, ?
         FROM users
         WHERE id IS NOT NULL AND TRIM(id) != ''
       `,
-      [DEFAULT_STARTING_EUR_BALANCE, DEFAULT_STARTING_EUR_BALANCE, nowIso(), nowIso()],
+      [nowIso(), nowIso()],
     );
   } catch (error) {
     const message = String(error && error.message || "").toLowerCase();
@@ -2822,16 +2795,6 @@ async function ensureCreditTables(db) {
       throw error;
     }
   }
-  await dbRun(
-    db,
-    `
-      UPDATE user_credit_accounts
-      SET
-        balance_credits = ROUND(balance_credits * 100.0) / 100.0,
-        total_granted_credits = ROUND(total_granted_credits * 100.0) / 100.0,
-        total_spent_credits = ROUND(total_spent_credits * 100.0) / 100.0
-    `,
-  );
   await dbRun(
     db,
     `
@@ -2869,8 +2832,7 @@ async function ensureCreditTables(db) {
       CREATE TABLE IF NOT EXISTS credit_ledger (
         id TEXT PRIMARY KEY,
         user_id TEXT NOT NULL,
-        delta_credits REAL NOT NULL,
-        balance_after_credits REAL NOT NULL,
+        amount_eur REAL NOT NULL DEFAULT 0,
         reason TEXT NOT NULL,
         metadata_json TEXT,
         created_at TEXT NOT NULL
@@ -2880,39 +2842,6 @@ async function ensureCreditTables(db) {
   await dbRun(
     db,
     `CREATE INDEX IF NOT EXISTS idx_credit_ledger_user_created ON credit_ledger(user_id, created_at DESC)`,
-  );
-  await dbRun(
-    db,
-    `
-      CREATE TABLE IF NOT EXISTS monthly_billing_purchases (
-        id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL,
-        user_email TEXT,
-        purchase_type TEXT NOT NULL,
-        amount_eur REAL NOT NULL DEFAULT 0,
-        region_pack_id TEXT,
-        region_pack_name TEXT,
-        tile_count_total INTEGER NOT NULL DEFAULT 0,
-        tile_count_new INTEGER NOT NULL DEFAULT 0,
-        period_start TEXT,
-        period_end TEXT,
-        status TEXT NOT NULL DEFAULT 'pending_invoice',
-        stripe_invoice_id TEXT,
-        stripe_invoice_item_id TEXT,
-        metadata_json TEXT,
-        created_at TEXT NOT NULL,
-        invoiced_at TEXT,
-        paid_at TEXT
-      )
-    `,
-  );
-  await dbRun(
-    db,
-    `CREATE INDEX IF NOT EXISTS idx_monthly_billing_purchases_user_created ON monthly_billing_purchases(user_id, created_at DESC)`,
-  );
-  await dbRun(
-    db,
-    `CREATE INDEX IF NOT EXISTS idx_monthly_billing_purchases_status_period ON monthly_billing_purchases(status, period_end)`,
   );
   await dbRun(
     db,
@@ -3041,21 +2970,6 @@ async function ensureCreditTables(db) {
   await dbRun(
     db,
     `
-      CREATE TABLE IF NOT EXISTS monthly_billing_request_tokens (
-        token TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        expires_at TEXT NOT NULL
-      )
-    `,
-  );
-  await dbRun(
-    db,
-    `CREATE INDEX IF NOT EXISTS idx_monthly_billing_request_tokens_expires ON monthly_billing_request_tokens(expires_at)`,
-  );
-  await dbRun(
-    db,
-    `
       CREATE TABLE IF NOT EXISTS tile_land_stats (
         tile_key TEXT PRIMARY KEY,
         x INTEGER NOT NULL,
@@ -3090,7 +3004,7 @@ async function ensureCreditTables(db) {
   creditTablesReady = true;
 }
 
-async function ensureStandardCreditAccountForUser(db, userId) {
+async function ensureCreditAccountForUser(db, userId) {
   const safeUserId = String(userId || "").trim();
   if (!safeUserId) {
     return;
@@ -3101,29 +3015,17 @@ async function ensureStandardCreditAccountForUser(db, userId) {
     db,
     `
       INSERT OR IGNORE INTO user_credit_accounts (
-        user_id, account_type, balance_credits, total_granted_credits, total_spent_credits, created_at, updated_at
+        user_id, account_type, created_at, updated_at
       )
-      VALUES (?, 'standard', ?, ?, 0, ?, ?)
+      VALUES (?, 'standard', ?, ?)
     `,
-    [safeUserId, DEFAULT_STARTING_EUR_BALANCE, DEFAULT_STARTING_EUR_BALANCE, now, now],
+    [safeUserId, now, now],
   );
   await dbRun(
     db,
     `
       UPDATE user_credit_accounts
       SET account_type = 'standard',
-          balance_credits = CASE
-            WHEN LOWER(TRIM(account_type)) = 'unlimited' THEN ?
-            ELSE ROUND(balance_credits * 100.0) / 100.0
-          END,
-          total_granted_credits = CASE
-            WHEN LOWER(TRIM(account_type)) = 'unlimited' THEN ?
-            ELSE ROUND(total_granted_credits * 100.0) / 100.0
-          END,
-          total_spent_credits = CASE
-            WHEN LOWER(TRIM(account_type)) = 'unlimited' THEN 0
-            ELSE ROUND(total_spent_credits * 100.0) / 100.0
-          END,
           updated_at = ?
       WHERE user_id = ?
         AND (
@@ -3132,7 +3034,7 @@ async function ensureStandardCreditAccountForUser(db, userId) {
           OR LOWER(TRIM(account_type)) = 'unlimited'
         )
     `,
-    [DEFAULT_STARTING_EUR_BALANCE, DEFAULT_STARTING_EUR_BALANCE, now, safeUserId],
+    [now, safeUserId],
   );
 }
 
@@ -3247,7 +3149,7 @@ async function upsertUserByEmail(db, email, status = PLAN_CODE_FREE, options = {
         user.id,
       ],
     );
-    await ensureStandardCreditAccountForUser(db, user.id);
+    await ensureCreditAccountForUser(db, user.id);
     const refreshedUser = await findUserById(db, user.id);
     if (refreshedUser) {
       return refreshedUser;
@@ -3288,7 +3190,7 @@ async function upsertUserByEmail(db, email, status = PLAN_CODE_FREE, options = {
       privacyVersion,
     ],
   );
-  await ensureStandardCreditAccountForUser(db, id);
+  await ensureCreditAccountForUser(db, id);
   if (!parseBooleanFlag(options.suppressNewUserAlert)) {
     try {
       await sendNewUserLoginAlert(env, {
@@ -4038,6 +3940,7 @@ const ADMIN_ROUTE_DEPS = {
   handleAdminAnalyticsTileMapImage: (request, env) => handleAdminAnalyticsTileMapImageRoute(request, env, ADMIN_ANALYTICS_DEPS),
   handleAdminAnalyticsUserPage: (request, env) => handleAdminAnalyticsUserPageRoute(request, env, ADMIN_ANALYTICS_DEPS),
   handleAdminAnalyticsUsersPage: (request, env) => handleAdminAnalyticsUsersPageRoute(request, env, ADMIN_ANALYTICS_DEPS),
+  handleAdminSetPricingSettings: (request, env) => handleAdminSetPricingSettingsRoute(request, env, ADMIN_ANALYTICS_DEPS),
   handleAdminLoginPage: (request, env) => handleAdminLoginPageRoute(request, env, ADMIN_SESSION_DEPS),
   handleAdminPasswordLogin: (request, env) => handleAdminPasswordLoginRoute(request, env, ADMIN_SESSION_DEPS),
   handleAdminSessionLogout: (request, env) => handleAdminSessionLogoutRoute(request, env, ADMIN_SESSION_DEPS),
@@ -4049,7 +3952,6 @@ const ADMIN_ROUTE_DEPS = {
   handleAdminUserReleasePreviewHold: (request, env) => handleAdminUserReleasePreviewHoldRoute(request, env, ADMIN_USER_DEPS),
   handleAdminUserSetPreviewHold: (request, env) => handleAdminUserSetPreviewHoldRoute(request, env, ADMIN_USER_DEPS),
   handleAdminQaAuthReset: (request, env) => handleAdminQaAuthResetRoute(request, env, ADMIN_USER_DEPS),
-  handleAdminSetMonthlyBilling: (request, env) => handleAdminSetMonthlyBillingRoute(request, env, ADMIN_USER_DEPS),
   handleAdminUserSetPlan: (request, env) => handleAdminUserSetPlanRoute(request, env, ADMIN_USER_DEPS),
   handleAdminUserSetUnrestrictedQuality: (request, env) => handleAdminUserSetUnrestrictedQualityRoute(request, env, ADMIN_USER_DEPS),
   handleAdminUserUnblock: (request, env) => handleAdminUserUnblockRoute(request, env, ADMIN_USER_DEPS),
@@ -4059,6 +3961,9 @@ async function dispatchExactRoute(request, env, path) {
   const adminMatch = await dispatchAdminRoute(request, env, path, ADMIN_ROUTE_DEPS);
   if (adminMatch) {
     return adminMatch;
+  }
+  if (String(path || "").startsWith("/credits/") || String(path || "") === "/tiles/session") {
+    await getRuntimePricingSettings(env, TILE_ROUTE_DEPS);
   }
   switch (path) {
     case "/health":
@@ -4124,11 +4029,6 @@ async function dispatchExactRoute(request, env, path) {
     case "/credits/checkout":
       if (request.method === "POST") {
         return await handleCreditCheckoutRoute(request, env, TILE_ROUTE_DEPS);
-      }
-      return null;
-    case "/credits/monthly-billing-request":
-      if (request.method === "GET" || request.method === "HEAD" || request.method === "POST") {
-        return await handleCreditMonthlyBillingRequestRoute(request, env, TILE_ROUTE_DEPS);
       }
       return null;
     case "/credits/region-offers":
@@ -4233,6 +4133,7 @@ async function dispatchExactRoute(request, env, path) {
       return null;
     case "/stripe/webhook":
       if (request.method === "POST") {
+        await getRuntimePricingSettings(env, TILE_ROUTE_DEPS);
         return await handleStripeWebhookRoute(request, env, BILLING_DEPS);
       }
       return null;
@@ -4361,12 +4262,6 @@ export default {
           env,
           ADMIN_ANALYTICS_DEPS,
         );
-        const monthlyBillingInvoiceSummary = await runMonthlyBillingInvoiceJobRoute(
-          db,
-          env,
-          runStartedAt,
-          TILE_ROUTE_DEPS,
-        );
         console.log(
           "worker.db_cleanup.completed",
           JSON.stringify({
@@ -4376,7 +4271,6 @@ export default {
             monthly_cost_summary: maintenance.monthlyCostSummary,
             analytics_snapshot_summary: analyticsSnapshotSummary,
             analytics_users_snapshot_rows: Number(analyticsUsersSnapshot && analyticsUsersSnapshot.total_rows || 0),
-            monthly_billing_invoice_summary: monthlyBillingInvoiceSummary,
           }),
         );
       } catch (error) {

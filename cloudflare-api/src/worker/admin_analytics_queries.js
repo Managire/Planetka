@@ -268,7 +268,7 @@ export function parseAnalyticsUsersSort(value) {
   const normalized = String(value || "").trim().toLowerCase();
   if (normalized === "resolves") return "paid_resolves";
   if (normalized === "lifetime") return "preview_lifetime";
-  const allowed = new Set(["monthly_billing", "paid_eur", "paid_resolves", "paid_tiles", "data_downloaded", "preview_lifetime", "last_seen"]);
+  const allowed = new Set(["paid_eur", "paid_resolves", "paid_tiles", "data_downloaded", "preview_lifetime", "last_seen"]);
   return allowed.has(normalized) ? normalized : "paid_eur";
 }
 
@@ -714,7 +714,7 @@ export async function collectAnalyticsSnapshot(
       WITH paid_ledger AS (
         SELECT
           LOWER(COALESCE(cl.reason, '')) AS reason_norm,
-          COALESCE(cl.delta_credits, 0) AS delta_credits,
+          cl.amount_eur AS amount_eur,
           CASE
             WHEN json_valid(COALESCE(cl.metadata_json, '')) THEN cl.metadata_json
             ELSE NULL
@@ -728,11 +728,13 @@ export async function collectAnalyticsSnapshot(
         SELECT
           CASE
             WHEN reason_norm = 'stripe_scene_purchase' THEN COALESCE(
+              CASE WHEN amount_eur > 0 THEN amount_eur ELSE NULL END,
               CAST(json_extract(metadata_json, '$.paid_eur') AS REAL),
               CAST(json_extract(metadata_json, '$.nominal_eur') AS REAL),
               0
             )
             WHEN reason_norm = 'stripe_region_pack_purchase' THEN COALESCE(
+              CASE WHEN amount_eur > 0 THEN amount_eur ELSE NULL END,
               CAST(json_extract(metadata_json, '$.paid_eur') AS REAL),
               CAST(json_extract(metadata_json, '$.nominal_eur') AS REAL),
               0
@@ -740,19 +742,11 @@ export async function collectAnalyticsSnapshot(
             ELSE 0
           END AS amount_eur
         FROM paid_ledger
-      ),
-      monthly_paid AS (
-        SELECT COALESCE(ROUND(SUM(COALESCE(p.amount_eur, 0)) * 100.0) / 100.0, 0) AS amount_eur
-        FROM monthly_billing_purchases p
-        LEFT JOIN users u ON u.id = p.user_id
-        WHERE LOWER(COALESCE(p.status, '')) = 'paid'
-        ${revenueEmailFilterAliasU.condition ? `AND ${revenueEmailFilterAliasU.condition}` : ""}
       )
       SELECT
-        COALESCE((SELECT ROUND(SUM(CASE WHEN amount_eur > 0 THEN amount_eur ELSE 0 END) * 100.0) / 100.0 FROM paid_amounts), 0)
-        + COALESCE((SELECT amount_eur FROM monthly_paid), 0) AS total_earned_eur
+        COALESCE((SELECT ROUND(SUM(CASE WHEN amount_eur > 0 THEN amount_eur ELSE 0 END) * 100.0) / 100.0 FROM paid_amounts), 0) AS total_earned_eur
     `,
-    [...revenueEmailFilterAliasU.bindings, ...revenueEmailFilterAliasU.bindings],
+    [...revenueEmailFilterAliasU.bindings],
   );
 
   const topLinePaidResolves = await deps.dbGet(
@@ -761,7 +755,7 @@ export async function collectAnalyticsSnapshot(
       SELECT COUNT(*) AS total_paid_resolves
       FROM credit_ledger cl
       LEFT JOIN users u ON u.id = cl.user_id
-      WHERE LOWER(COALESCE(cl.reason, '')) IN ('tile_unlock', 'stripe_scene_purchase', 'monthly_billing_scene_purchase')
+      WHERE LOWER(COALESCE(cl.reason, '')) IN ('tile_unlock', 'stripe_scene_purchase')
         AND json_valid(COALESCE(cl.metadata_json, ''))
         AND LOWER(COALESCE(json_extract(cl.metadata_json, '$.quality_mode'), '')) = 'full'
         AND COALESCE(CAST(json_extract(cl.metadata_json, '$.tile_count') AS INTEGER), 0) > 0
@@ -1476,7 +1470,6 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
   const query = String(options.query || "").trim().toLowerCase();
   const limit = Math.max(1, Math.min(5000, deps.parseNonNegativeInteger(options.limit, 5000)));
   const orderSqlByKey = {
-    monthly_billing: "monthly_billing_limit_eur",
     paid_eur: "paid_eur_lifetime",
     paid_resolves: "paid_full_resolve_count",
     paid_tiles: "unlocked_tile_count",
@@ -1559,7 +1552,7 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
           user_id,
           COUNT(*) AS paid_full_resolve_count
         FROM credit_ledger
-        WHERE LOWER(COALESCE(reason, '')) IN ('tile_unlock', 'stripe_scene_purchase', 'monthly_billing_scene_purchase')
+        WHERE LOWER(COALESCE(reason, '')) IN ('tile_unlock', 'stripe_scene_purchase')
           AND LOWER(COALESCE(json_extract(metadata_json, '$.quality_mode'), '')) = 'full'
           AND COALESCE(CAST(json_extract(metadata_json, '$.tile_count') AS INTEGER), 0) > 0
         GROUP BY user_id
@@ -1573,11 +1566,13 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
             cl.user_id AS user_id,
             CASE
               WHEN LOWER(COALESCE(cl.reason, '')) = 'stripe_scene_purchase' THEN COALESCE(
+                CASE WHEN cl.amount_eur > 0 THEN cl.amount_eur ELSE NULL END,
                 CAST(json_extract(CASE WHEN json_valid(COALESCE(cl.metadata_json, '')) THEN cl.metadata_json ELSE NULL END, '$.paid_eur') AS REAL),
                 CAST(json_extract(CASE WHEN json_valid(COALESCE(cl.metadata_json, '')) THEN cl.metadata_json ELSE NULL END, '$.nominal_eur') AS REAL),
                 0
               )
               WHEN LOWER(COALESCE(cl.reason, '')) = 'stripe_region_pack_purchase' THEN COALESCE(
+                CASE WHEN cl.amount_eur > 0 THEN cl.amount_eur ELSE NULL END,
                 CAST(json_extract(CASE WHEN json_valid(COALESCE(cl.metadata_json, '')) THEN cl.metadata_json ELSE NULL END, '$.paid_eur') AS REAL),
                 CAST(json_extract(CASE WHEN json_valid(COALESCE(cl.metadata_json, '')) THEN cl.metadata_json ELSE NULL END, '$.nominal_eur') AS REAL),
                 0
@@ -1586,12 +1581,6 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
             END AS amount_eur
           FROM credit_ledger cl
           WHERE LOWER(COALESCE(cl.reason, '')) IN ('stripe_scene_purchase', 'stripe_region_pack_purchase')
-          UNION ALL
-          SELECT
-            p.user_id AS user_id,
-            COALESCE(p.amount_eur, 0) AS amount_eur
-          FROM monthly_billing_purchases p
-          WHERE LOWER(COALESCE(p.status, '')) = 'paid'
         )
         GROUP BY user_id
       ),
@@ -1616,16 +1605,6 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
         NULLIF(TRIM(LOWER(u.status)), '') AS user_status,
         COALESCE(NULLIF(TRIM(u.preview_fair_usage_hold_at), ''), '') AS preview_fair_usage_hold_at,
         COALESCE(NULLIF(TRIM(u.preview_fair_usage_hold_reason), ''), '') AS preview_fair_usage_hold_reason,
-        COALESCE(ca.balance_credits, 0) AS balance_credits,
-        COALESCE(ca.total_granted_credits, 0) AS total_granted_credits,
-        COALESCE(ca.total_spent_credits, 0) AS total_spent_credits,
-        COALESCE(NULLIF(TRIM(ca.monthly_billing_status), ''), 'none') AS monthly_billing_status,
-        COALESCE(ca.monthly_billing_limit_eur, 0) AS monthly_billing_limit_eur,
-        COALESCE(ca.monthly_billing_spent_eur, 0) AS monthly_billing_spent_eur,
-        COALESCE(ca.monthly_billing_custom_approved_limit_eur, 0) AS monthly_billing_custom_approved_limit_eur,
-        COALESCE(NULLIF(TRIM(ca.monthly_billing_payment_method_verified_at), ''), '') AS monthly_billing_payment_method_verified_at,
-        COALESCE(NULLIF(TRIM(ca.monthly_billing_custom_approved_at), ''), '') AS monthly_billing_custom_approved_at,
-        COALESCE(NULLIF(TRIM(ca.monthly_billing_invoice_status), ''), '') AS monthly_billing_invoice_status,
         COALESCE(pe.paid_eur_lifetime, 0) AS paid_eur_lifetime,
         COALESCE(ut.unlocked_tile_count, 0) AS unlocked_tile_count,
         COALESCE(rc.resolve_count, 0) AS resolve_count,

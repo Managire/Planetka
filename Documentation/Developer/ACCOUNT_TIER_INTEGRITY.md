@@ -52,10 +52,7 @@ Tier changes are allowed only in these paths:
 - `cloudflare-api/src/index.js` (`upsertUserByEmail`) inserts `users.status` for new users.
 - Existing users are not re-tiered in `upsertUserByEmail`.
 
-2. Payment gate entitlement
-- `cloudflare-api/src/worker/billing_handlers.js` (`applyPermanentLicenseEntitlement`) applies paid tier to `users.status`.
-
-3. Explicit manual/admin intervention
+2. Explicit manual/admin intervention
 - `cloudflare-api/src/worker/admin_user_handlers.js`
   - `handleAdminUserSetPlan`
   - `handleAdminUserUnblock`

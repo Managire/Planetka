@@ -36,19 +36,19 @@ PAID_Z_LEVELS = (1, 2, 4, 8, 15, 30)
 FREE_D_THRESHOLD = 60
 MERGE_DIFFERENCE_RATIO = 0.50
 SMALL_COUNTRY_AUTO_MERGE_TILE_LIMIT = 30
-WORLD_VOLUME_DISCOUNT_PERCENT = 50
-DEFAULT_VOLUME_DISCOUNT_PERCENT = 20
+WORLD_VOLUME_DISCOUNT_PERCENT = 75
+DEFAULT_VOLUME_DISCOUNT_PERCENT = 0
 VOLUME_DISCOUNT_SHARE_BUCKETS = (
     # Discount depends on the product's z001 billable land share of World.
-    # The widening buckets keep small products at 20% while still giving
-    # materially larger packs a clearer volume discount.
-    (0.75, 50),
-    (0.25, 45),
-    (0.125, 40),
-    (0.10, 35),
-    (0.07, 30),
-    (0.05, 25),
-    (0.0, 20),
+    # The buckets preserve the previous size thresholds but stretch the public
+    # pack discount range from 0% for small packs to 75% for World-scale packs.
+    (0.75, 75),
+    (0.25, 65),
+    (0.125, 50),
+    (0.10, 40),
+    (0.07, 25),
+    (0.05, 15),
+    (0.0, 0),
 )
 DATASET_BASE_MPP = Decimal("10.0")
 EQUATOR_Z001_AREA_KM2 = (Decimal("40075.016686") / Decimal("360.0")) ** 2

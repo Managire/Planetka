@@ -1359,40 +1359,6 @@ def _draw_account_panel(layout):
             unlocked_count = int(credit_payload.get("unlocked_tile_count", 0) or 0)
         except (TypeError, ValueError, AttributeError):
             unlocked_count = 0
-        monthly = credit_payload.get("monthly_billing", {}) if isinstance(credit_payload, dict) else {}
-        monthly_active = bool(
-            isinstance(monthly, dict)
-            and (monthly.get("active", False) or credit_payload.get("monthly_billing_active", False))
-        )
-        monthly_status = str(
-            (monthly.get("status") if isinstance(monthly, dict) else "")
-            or credit_payload.get("monthly_billing_status", "")
-            or "none"
-        ).strip().lower()
-        try:
-            monthly_limit = float(
-                (monthly.get("limit_eur") if isinstance(monthly, dict) else None)
-                if isinstance(monthly, dict) and monthly.get("limit_eur") is not None
-                else credit_payload.get("monthly_billing_limit_eur", 0.0)
-            )
-        except (TypeError, ValueError, AttributeError):
-            monthly_limit = 0.0
-        try:
-            monthly_spent = float(
-                (monthly.get("spent_eur") if isinstance(monthly, dict) else None)
-                if isinstance(monthly, dict) and monthly.get("spent_eur") is not None
-                else credit_payload.get("monthly_billing_spent_eur", 0.0)
-            )
-        except (TypeError, ValueError, AttributeError):
-            monthly_spent = 0.0
-        try:
-            monthly_remaining = float(
-                (monthly.get("remaining_eur") if isinstance(monthly, dict) else None)
-                if isinstance(monthly, dict) and monthly.get("remaining_eur") is not None
-                else credit_payload.get("monthly_billing_remaining_eur", 0.0)
-            )
-        except (TypeError, ValueError, AttributeError):
-            monthly_remaining = 0.0
         preview_hold = {}
         try:
             preview_hold = credit_payload.get("preview_fair_usage_hold", {}) or credit_payload.get("previewFairUsageHold", {}) or {}
@@ -1402,26 +1368,6 @@ def _draw_account_panel(layout):
             (isinstance(preview_hold, dict) and preview_hold.get("held", False))
             or credit_payload.get("preview_fair_usage_held", False)
         )
-        monthly_row = layout.row(align=True)
-        if not credit_known:
-            monthly_row.label(text="Monthly Billing: —", icon="USER")
-        elif monthly_active:
-            monthly_row.label(
-                text=f"Monthly Billing: €{monthly_spent:.2f} / €{monthly_limit:.2f}",
-                icon="CHECKMARK",
-            )
-            remaining_row = layout.row(align=True)
-            remaining_row.label(text=f"Remaining this month: €{max(0.0, monthly_remaining):.2f}", icon="TIME")
-        else:
-            monthly_row.label(text="Monthly Billing: Not active", icon="USER")
-            setup_row = layout.row(align=True)
-            setup_row.operator(
-                "planetka.open_credit_checkout",
-                text="Request Monthly Billing",
-                icon="URL",
-            ).checkout_option = "MONTHLY_BILLING_SETUP"
-            if monthly_status == "custom_pending_payment":
-                layout.label(text="Custom cap approved. Verify payment method to activate.", icon="INFO")
         layout.label(text=f"Licenced tiles: {unlocked_count}", icon="TEXTURE")
         world_full_quality_unlocked = bool(
             isinstance(credit_payload, dict)
@@ -1601,35 +1547,6 @@ def _draw_live_telemetry(layout, scene):
             credit_account = {}
         if not credit_account:
             _schedule_sidebar_account_refresh(force=False)
-        monthly = credit_account.get("monthly_billing", {}) if isinstance(credit_account, dict) else {}
-        monthly_active = bool(
-            isinstance(monthly, dict)
-            and (monthly.get("active", False) or credit_account.get("monthly_billing_active", False))
-        )
-        try:
-            monthly_remaining = float(
-                (monthly.get("remaining_eur") if isinstance(monthly, dict) else None)
-                if isinstance(monthly, dict) and monthly.get("remaining_eur") is not None
-                else credit_account.get("monthly_billing_remaining_eur", 0.0)
-            )
-        except (AttributeError, TypeError, ValueError):
-            monthly_remaining = 0.0
-        try:
-            monthly_limit = float(
-                (monthly.get("limit_eur") if isinstance(monthly, dict) else None)
-                if isinstance(monthly, dict) and monthly.get("limit_eur") is not None
-                else credit_account.get("monthly_billing_limit_eur", 0.0)
-            )
-        except (AttributeError, TypeError, ValueError):
-            monthly_limit = 0.0
-        try:
-            monthly_spent = float(
-                (monthly.get("spent_eur") if isinstance(monthly, dict) else None)
-                if isinstance(monthly, dict) and monthly.get("spent_eur") is not None
-                else credit_account.get("monthly_billing_spent_eur", 0.0)
-            )
-        except (AttributeError, TypeError, ValueError):
-            monthly_spent = 0.0
         world_full_quality_unlocked = bool(
             isinstance(credit_account, dict)
             and (
@@ -1702,7 +1619,6 @@ def _draw_live_telemetry(layout, scene):
             full_allowed
             and full_has_new_cost
             and displayed_quality_mode != "FULL"
-            and (not monthly_active or monthly_remaining + 0.000001 < full_credits)
         )
 
         full_box = quality_box.box()
@@ -1734,7 +1650,7 @@ def _draw_live_telemetry(layout, scene):
                 "planetka.open_credit_checkout",
                 text=full_button_label,
                 icon="URL",
-            ).checkout_option = "OPTIONS"
+            ).checkout_option = "SCENE"
         else:
             full_download.operator(
                 "planetka.set_texture_quality_and_resolve",
@@ -1779,22 +1695,6 @@ def _draw_live_telemetry(layout, scene):
         elif not full_size_known or not full_price_known:
             estimate_notice = full_box.row(align=True)
             estimate_notice.label(text="Full Quality price is being calculated.", icon="INFO")
-        if monthly_active and monthly_limit > 0.0:
-            billed = max(0.0, float(monthly_spent or 0.0))
-            limit = max(0.0, float(monthly_limit or 0.0))
-            factor = max(0.0, min(1.0, billed / limit)) if limit > 0.0 else 0.0
-            if hasattr(full_box, "progress"):
-                full_box.progress(
-                    factor=factor,
-                    type='BAR',
-                    text=f"€{billed:.2f} / €{limit:.2f} billed this month",
-                )
-            else:
-                full_box.label(
-                    text=f"Billed this month: €{billed:.2f} / €{limit:.2f}",
-                    icon="TIME",
-                )
-
         data_packs_box = _draw_collapsible_subsection(
             quality_box,
             scene,
@@ -2821,32 +2721,10 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         if not anim_price_known:
             final_render_box.label(text="Animation price is not available yet. Generate keyframes or refresh pricing.", icon="INFO")
         if anim_credits > 0.0:
-            anim_account_known = False
-            monthly_active = False
-            monthly_remaining = 0.0
-            try:
-                from .credit_api import get_cached_credit_account
-                anim_account = get_cached_credit_account()
-                anim_account_known = bool(anim_account)
-                monthly = anim_account.get("monthly_billing", {}) if isinstance(anim_account, dict) else {}
-                monthly_active = bool(
-                    isinstance(monthly, dict)
-                    and (monthly.get("active", False) or anim_account.get("monthly_billing_active", False))
-                )
-                monthly_remaining = float(
-                    (monthly.get("remaining_eur") if isinstance(monthly, dict) and monthly.get("remaining_eur") is not None else anim_account.get("monthly_billing_remaining_eur", 0.0))
-                    if isinstance(anim_account, dict) else 0.0
-                )
-            except (AuthApiError, TypeError, ValueError, RuntimeError, AttributeError):
-                anim_account_known = False
-                monthly_active = False
-                monthly_remaining = 0.0
-            if not anim_account_known:
-                _schedule_sidebar_account_refresh(force=False)
             anim_has_new_cost = bool(anim_credits > 0.000001)
-            if anim_account_known and anim_has_new_cost and (not monthly_active or monthly_remaining + 0.000001 < anim_credits):
+            if anim_has_new_cost:
                 final_render_allowed = False
-                final_render_box.label(text=f"Request Monthly Billing or free cap space (€{monthly_remaining:.2f} remaining).", icon="INFO")
+                final_render_box.label(text="Licence the required Full Quality tiles before final animation render.", icon="INFO")
         if _is_animation_render_running():
             runtime, runtime_code, runtime_text = _resolve_runtime_display(scene)
             _draw_resolve_download_indicator(final_render_box, scene, runtime, runtime_code, runtime_text)
@@ -2869,4 +2747,4 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             icon="INFO",
         )
         if not final_render_allowed:
-            final_render_box.label(text="Final Animation Render requires enough Monthly Billing capacity for selected tiles.", icon="INFO")
+            final_render_box.label(text="Final Animation Render uses already licenced Full Quality tiles.", icon="INFO")

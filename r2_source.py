@@ -1295,19 +1295,10 @@ def _request_tile_session_token(resolve_id, quality_mode, allow_refresh=True):
         ).strip()
         if int(getattr(exc, "code", 0) or 0) == 402 and error_code in {
             "payment_required",
-            "monthly_billing_not_active",
-            "monthly_billing_cap_exceeded",
-            "insufficient_credits",
         }:
             required = error_payload.get("price_eur", error_payload.get("required_credits", 0))
-            monthly = error_payload.get("monthly_billing") if isinstance(error_payload, dict) else {}
-            remaining = monthly.get("remaining_eur", 0) if isinstance(monthly, dict) else 0
-            if error_code == "monthly_billing_cap_exceeded":
-                raise RuntimeError(
-                    f"Monthly Billing cap reached for this Resolve (required=€{required}, remaining=€{remaining})."
-                ) from exc
             raise RuntimeError(
-                f"Full Quality requires direct payment or active Monthly Billing (required=€{required})."
+                f"Full Quality requires direct payment (required=€{required})."
             ) from exc
         if int(getattr(exc, "code", 0)) == 401 and bool(allow_refresh):
             try:
@@ -1643,10 +1634,10 @@ def _r2_request(
                 return False
             if exc.code in {402, 429}:
                 combined = f"{error_code} {error_message}".lower()
-                if "insufficient_credits" in combined or "tile_not_unlocked" in combined:
+                if "payment_required" in combined or "tile_not_unlocked" in combined:
                     if error_message:
                         raise RuntimeError(error_message)
-                    raise RuntimeError("Not enough Planetka credits for this Resolve.")
+                    raise RuntimeError("Full Quality requires direct payment for this Resolve.")
                 if any(token in combined for token in ("quality_mode_not_allowed", "not_allowed_for_tier", "access_denied")):
                     try:
                         sync_account_profile()

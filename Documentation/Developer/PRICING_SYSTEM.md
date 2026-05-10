@@ -2,7 +2,7 @@
 
 This document describes the current EUR land-detail pricing system from a technical point of view. It is an internal implementation reference, not public legal text.
 
-Last updated: 2026-05-08
+Last updated: 2026-05-10
 
 ## 1. Design Goals
 
@@ -22,12 +22,12 @@ Core goals:
 
 User-facing UI should use these terms:
 
-- `EUR` / `€`: The displayed balance and price currency.
+- `EUR` / `€`: The displayed price currency.
 - `Licenced`: A tile the user has paid for or otherwise received rights to use.
 - `Full Quality Textures`: The primary paid action for the current Camera View.
 - `Preview`: Free low-detail data used for normal browsing and Quick Preview animation.
 
-Implementation still uses older internal field names such as `credits`, `balance_credits`, and `credit_ledger`. These now represent EUR values and should be treated as legacy internal naming.
+Some internal API fields still use `credits` for historical reasons. In the current implementation they mean EUR price values, not a user-held balance.
 
 ## 3. Authoritative Components
 
@@ -42,7 +42,6 @@ Primary files:
 
 The Cloudflare Worker is the authority for:
 
-- Account balance.
 - Tile licence/entitlement state.
 - Full Quality price calculation.
 - Stripe Checkout session creation.
@@ -66,7 +65,7 @@ The Blender client is responsible for:
 
 - Computing the current visible tile set for the Camera View.
 - Asking the backend for authoritative EUR estimates.
-- Displaying prices, balances, data sizes, and breakdowns.
+- Displaying prices, data sizes, and breakdowns.
 - Starting Stripe Checkout when needed.
 - Starting paid Full Quality resolves only after backend licence/session confirmation.
 - Downloading licenced assets from Cloudflare R2 or from Local Source.
@@ -85,16 +84,15 @@ Important columns:
 
 - `user_id`: Primary key.
 - `account_type`: Currently always `standard`.
-- `balance_credits`: EUR balance, rounded to cents.
-- `total_granted_credits`: Total EUR added to the account.
-- `total_spent_credits`: Total EUR deducted by tile unlocks.
+- `world_full_quality_unlocked_at`, `world_full_quality_paid_eur`: World-pack entitlement summary.
+- `pricing_version`: Incremented when user entitlements change so pricing caches invalidate.
 - `created_at`, `updated_at`.
 
 Current account model:
 
 - There is only one account type: `standard`.
-- New accounts get `DEFAULT_STARTING_CREDITS = 100.0` / `DEFAULT_STARTING_EUR_BALANCE`.
-- Old `unlimited` account state is coerced back to `standard` with the default starting balance.
+- New accounts do not receive or hold prepaid balance.
+- Old account state is coerced back to `standard`.
 
 ### `user_tile_entitlements`
 
@@ -105,7 +103,7 @@ Important columns:
 - `user_id`.
 - `tile_key`: Example `x075_y149_z001_d001`.
 - `quality_mode`: Currently `full` for paid/licenced data.
-- `credits_spent`: EUR charged for this entitlement row.
+- `credits_spent`: EUR value assigned to this entitlement row at unlock time.
 - `land_km2`, `billable_land_km2`: Backend metadata snapshot at unlock time.
 - `source`: `backend_d1`, `stripe_checkout`, etc.
 - `unlocked_at`.
@@ -124,9 +122,8 @@ Financial audit trail.
 
 Important columns:
 
-- `delta_credits`: Positive for top-up/admin grant, negative for balance deduction, zero for direct scene purchase that does not touch balance.
-- `balance_after_credits`: Balance after the operation.
-- `reason`: Examples `tile_unlock`, `stripe_scene_purchase`, `stripe_balance_top_up`, `admin_top_up`, `admin_balance_subtract`.
+- `amount_eur`: Amount actually paid for this purchase event.
+- `reason`: Examples `stripe_scene_purchase`, `stripe_region_pack_purchase`, `region_pack_no_payment`.
 - `metadata_json`: Resolve ID, quality mode, tile count, Stripe session ID, etc.
 
 ### `tile_land_stats`
@@ -449,7 +446,6 @@ Response includes:
 - `excluded_tiles`: already licenced rows.
 - `integrity_warnings`.
 - `metadata_missing_tile_keys`.
-- `balance_credits` / `balance_eur`.
 
 ## 12. Full Quality Resolve Purchase/Unlock Flow
 
@@ -461,12 +457,12 @@ Primary files:
 - `cloudflare-api/src/worker/tile_routes.js`
 - `cloudflare-api/src/worker/credit_routes.js`
 
-Normal balance path:
+Direct-payment path:
 
 1. User clicks `Full Quality Textures`.
 2. `PLANETKA_OT_SetTextureQualityAndResolve` checks Camera View, Quick Preview state, account, and authoritative price.
-3. If price is positive and balance is `<= 0`, it opens Stripe scene checkout instead of attempting a resolve.
-4. If balance is positive or price is zero, it starts `bpy.ops.planetka.load_textures(... texture_quality_mode_override="FULL")`.
+3. If price is positive, it opens Stripe scene checkout.
+4. If price is zero because all tiles are already licenced/free, it starts `bpy.ops.planetka.load_textures(... texture_quality_mode_override="FULL")`.
 5. Streaming creates a resolve request context containing:
    - `resolve_id`
    - `texture_quality_mode = full`
@@ -483,19 +479,14 @@ Normal balance path:
 ```
 
 7. Backend calls `unlockTilesForSession()` before issuing the tile token.
-8. If charge is allowed, backend writes `user_tile_entitlements`, deducts balance, writes `credit_ledger`, and returns a short-lived tile token.
+8. If all required Full Quality tiles are already licenced/free, backend returns a short-lived tile token.
 9. Subsequent R2 tile GETs include `X-Planetka-Tile-Token` and are allowed only if the tile is free or licenced.
 
-Balance rule:
+Payment rule:
 
-- If account balance is positive, one paid resolve can make it negative.
-- If account balance is zero or negative at session start, a paid resolve is blocked with `402 insufficient_credits`.
-- Preview and already-free/already-licenced Full Quality resolves do not require positive balance.
-
-The Worker checks balance twice:
-
-- Before inserting entitlements.
-- After insertion, before balance deduction, rolling back new entitlements if needed.
+- Paid Full Quality scene/data-pack purchases go through direct Stripe Checkout.
+- `/tiles/session` does not deduct money. It only verifies that requested Full Quality tiles are already licenced/free.
+- Preview and already-free/already-licenced Full Quality resolves do not require payment.
 
 ## 13. Stripe Checkout Flow
 
@@ -515,8 +506,7 @@ POST /credits/checkout
 Supported options:
 
 - `scene`: Pay exact current Full Quality scene price.
-- `balance_options`: Open the Planetka balance top-up selector.
-- Direct balance shortcuts: `balance_10`, `balance_25`, `balance_50`, `balance_100`, `balance_250`, `balance_500`.
+- `region_pack` / `broader_pack`: Pay exact current user-specific data-pack price.
 
 ### Scene Purchase
 
@@ -534,7 +524,7 @@ Backend behavior:
 
 1. Recalculates the scene price authoritatively in D1.
 2. If price is `0`, it unlocks any free/no-charge tiles immediately and returns `no_payment_required: true`.
-3. If price is below Stripe minimum (`€0.50`), it returns `amount_below_stripe_minimum` and the user should add balance instead.
+3. If price is below Stripe minimum (`€0.50`), it returns `amount_below_stripe_minimum`; the user should licence a larger scene or data pack.
 4. Otherwise, creates a Stripe Checkout Session with product name `Planetka Full Quality Scene Data`.
 5. Metadata includes:
    - `planetka_purchase_type = scene_tiles`
@@ -551,53 +541,17 @@ Webhook behavior:
 2. `checkout.session.completed` is idempotently claimed in `stripe_webhook_events`.
 3. For `scene_tiles`, it calls `grantPaidSceneTileEntitlements()`.
 4. Entitlements are inserted with source `stripe_checkout`.
-5. A ledger row is added with reason `stripe_scene_purchase`, `delta_credits = 0`, and metadata containing nominal/paid EUR.
-6. Account balance is not changed by direct scene purchase.
+5. A ledger row is added with reason `stripe_scene_purchase` and metadata containing nominal/paid EUR.
+6. No user balance exists or changes.
 
 After returning to Blender:
 
 - The client monitors the scene price.
 - Once backend estimate returns `€0.00`, it automatically starts the Full Quality resolve for the Camera View.
 
-### EUR Balance Top-Up Options
+### Removed Payment Surfaces
 
-Request:
-
-```json
-{
-  "option": "balance_options"
-}
-```
-
-Backend behavior:
-
-- Creates a short-lived `/credits/balance` selector link.
-- The selector presents the allowed top-up options and then creates a Stripe Checkout Session for the selected amount.
-- Direct shortcuts still work for internal/backward compatibility.
-
-| Paid | Bonus | Balance added |
-|---:|---:|---:|
-| EUR 10 | 10% | EUR 11.00 |
-| EUR 25 | 12.5% | EUR 28.13 |
-| EUR 50 | 15% | EUR 57.50 |
-| EUR 100 | 20% | EUR 120.00 |
-| EUR 250 | 22.5% | EUR 306.25 |
-| EUR 500 | 25% | EUR 625.00 |
-
-Checkout metadata includes:
-
-- `planetka_purchase_type = balance_top_up`
-- `planetka_top_up_payment_eur`: amount paid through Stripe.
-- `planetka_top_up_eur`: amount credited to Planetka balance, including bonus.
-- `planetka_top_up_bonus_eur`: bonus amount.
-- `planetka_top_up_bonus_percent`: bonus percentage.
-
-Webhook behavior:
-
-- Calls `addCreditBalance()` with reason `stripe_balance_top_up`.
-- Balance and `total_granted_credits` increase by the credited amount including bonus.
-- A ledger row is created.
-- Purchase history records both the paid EUR and credited EUR so revenue and user balance remain separate.
+Planetka currently does not use prepaid balance, monthly billing, or Standard/Balanced unlock purchases. Unsupported checkout options are rejected; the only customer payment path is direct Stripe Checkout for scene-specific Full Quality data or Full Quality data packs.
 
 ## 14. Animation Render Pricing Flow
 
@@ -726,14 +680,8 @@ S2 is the paid/detail base. Missing EL/WT/PO support files can fall back when th
 
 Relevant backend/admin behavior:
 
-- Analytics user list includes balance, total granted/spent, unlocked tile count, paid Full Quality resolve count, Preview usage, and Full Quality usage.
-- Admin can add or subtract EUR from a user balance through the credit adjustment route.
+- Analytics user list includes paid EUR, unlocked tile count, paid Full Quality resolve count, licenced download totals, Preview usage, and Full Quality usage.
 - Account plans and unrestricted modes are deprecated/removed from the pricing model.
-
-Admin balance changes write `credit_ledger` rows:
-
-- Positive: `admin_top_up`.
-- Negative: `admin_balance_subtract`.
 
 ## 19. Validation and Test Coverage
 
@@ -750,11 +698,8 @@ Covered cases:
 - `d >= 060` tiles are free.
 - Full Quality new tile charges once.
 - Repeat Full Quality resolve is free.
-- Zero balance blocks paid unlock before tile download.
-- Small positive balance may go negative once.
-- Negative balance blocks the next paid unlock.
+- Paid Full Quality tiles cannot stream until a direct Stripe purchase has created entitlements.
 - Animation estimate matches segment unlocking.
-- Test account is restored to standard EUR 100 state at the end.
 
 Recommended checks before release or after pricing changes:
 
@@ -789,7 +734,7 @@ Do not violate these invariants:
 - Do not charge Preview quality.
 - Do not charge `d >= 060` tiles.
 - Do not allow Full Quality tile GETs for unlicenced non-free tiles under the `land_credits_v1` protocol.
-- Do not allow a paid Full Quality resolve to start from zero or negative balance unless it goes through Stripe scene checkout.
+- Do not allow paid Full Quality tile streaming before Stripe checkout has created the required entitlements.
 - Do not silently change price formula constants without regenerating/revalidating backend pricing behavior and updating this document.
 - Do not count Full Quality/licenced traffic into Preview fair-usage enforcement.
 - Do not use Stripe Checkout metadata as the pricing authority; webhook processing must re-evaluate/grant using backend logic.
@@ -806,7 +751,6 @@ Backend pricing:
 - `handleCreditEstimate()`
 - `handleCreditCheckout()`
 - `handleCreditUnlocked()`
-- `handleAdminGiftCredits()`
 
 Tile access enforcement:
 
@@ -820,7 +764,6 @@ Stripe:
 - `cloudflare-api/src/worker/billing_handlers.js`
 - `handleStripeWebhook()`
 - `claimStripeWebhookEvent()`
-- `addCreditBalance()`
 - `grantPaidSceneTileEntitlements()`
 
 Blender client API:

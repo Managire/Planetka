@@ -1,5 +1,4 @@
 import {
-  activateMonthlyBillingFromStripeSetupSession,
   grantPaidSceneTileEntitlements,
   grantRegionPackEntitlements,
 } from "./credit_routes.js";
@@ -110,230 +109,6 @@ async function claimStripeWebhookEvent(db, event, deps) {
   return { inserted, eventId, eventType };
 }
 
-function parseStripePlanMap(value, deps) {
-  const map = new Map();
-  const source = String(value || "").trim();
-  if (!source) {
-    return map;
-  }
-  for (const token of source.split(",")) {
-    const pair = String(token || "").trim();
-    if (!pair) {
-      continue;
-    }
-    const [idRaw, planRaw] = pair.split(":", 2);
-    const id = String(idRaw || "").trim();
-    const planCode = deps.normalizeRequestedPlan(String(planRaw || "").trim());
-    if (!id || !planCode) {
-      continue;
-    }
-    map.set(id, planCode);
-  }
-  return map;
-}
-
-function collectStripeLineItemsWithQuantity(lineItems) {
-  const rows = [];
-  for (const item of Array.isArray(lineItems) ? lineItems : []) {
-    const price = item && typeof item === "object" ? item.price : null;
-    if (!price || typeof price !== "object") {
-      continue;
-    }
-    const priceId = String(price.id || "").trim();
-    const productId = String(price.product || "").trim();
-    const quantityRaw = Number(item && item.quantity);
-    const quantity = Number.isFinite(quantityRaw) && quantityRaw > 0 ? Math.floor(quantityRaw) : 1;
-    rows.push({
-      priceId,
-      productId,
-      quantity,
-    });
-  }
-  return rows;
-}
-
-function resolveStripePlanEntitlement(lineItems, env, deps) {
-  const byPrice = parseStripePlanMap(env.STRIPE_PLAN_PRICE_CODE_MAP, deps);
-  const byProduct = parseStripePlanMap(env.STRIPE_PLAN_PRODUCT_CODE_MAP, deps);
-  let resolvedPlan = "";
-  const matched = [];
-  for (const item of collectStripeLineItemsWithQuantity(lineItems)) {
-    let planCode = "";
-    if (item.priceId && byPrice.has(item.priceId)) {
-      planCode = deps.normalizeRequestedPlan(byPrice.get(item.priceId));
-    } else if (item.productId && byProduct.has(item.productId)) {
-      planCode = deps.normalizeRequestedPlan(byProduct.get(item.productId));
-    }
-    if (!planCode) {
-      continue;
-    }
-    matched.push({
-      price_id: item.priceId,
-      product_id: item.productId,
-      quantity: item.quantity,
-      plan_code: planCode,
-    });
-    if (deps.resolvePlanPriority(planCode) > deps.resolvePlanPriority(resolvedPlan)) {
-      resolvedPlan = planCode;
-    }
-  }
-  return {
-    planCode: deps.normalizeRequestedPlan(resolvedPlan || ""),
-    matched,
-  };
-}
-
-async function fetchStripeCheckoutSessionLineItems(env, sessionId, deps) {
-  const secretKey = deps.requireSecret(env, "STRIPE_SECRET_KEY");
-  const baseUrl = `https://api.stripe.com/v1/checkout/sessions/${encodeURIComponent(sessionId)}/line_items`;
-  let nextUrl = `${baseUrl}?limit=100`;
-  const lineItems = [];
-
-  while (nextUrl) {
-    const response = await fetch(nextUrl, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${secretKey}`,
-      },
-    });
-    if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`stripe_line_items_fetch_failed_${response.status}_${body}`);
-    }
-    const payload = await response.json();
-    const pageItems = Array.isArray(payload && payload.data) ? payload.data : [];
-    lineItems.push(...pageItems);
-
-    if (!Boolean(payload && payload.has_more) || pageItems.length === 0) {
-      break;
-    }
-    const lastItem = pageItems[pageItems.length - 1];
-    const lastId = String(lastItem && lastItem.id || "").trim();
-    if (!lastId) {
-      break;
-    }
-    nextUrl = `${baseUrl}?limit=100&starting_after=${encodeURIComponent(lastId)}`;
-  }
-
-  return lineItems;
-}
-
-async function createStripeRefundForCheckoutSession(env, session, details = {}, deps) {
-  const paymentIntentId = String(session && session.payment_intent || "").trim();
-  const chargeId = String(session && session.charge || "").trim();
-  if (!paymentIntentId && !chargeId) {
-    return {
-      attempted: false,
-      refunded: false,
-      reason: "missing_payment_reference",
-      refundId: "",
-      status: "skipped",
-      error: "",
-    };
-  }
-  const reason = String(details.reason || "").trim() || "requested_by_customer";
-  const secretKey = deps.requireSecret(env, "STRIPE_SECRET_KEY");
-  const body = new URLSearchParams();
-  if (paymentIntentId) {
-    body.set("payment_intent", paymentIntentId);
-  } else {
-    body.set("charge", chargeId);
-  }
-  body.set("reason", "requested_by_customer");
-  const existingPlanCode = deps.normalizeRequestedPlan(details.existingPlanCode || "");
-  const requestedPlanCode = deps.normalizeRequestedPlan(details.requestedPlanCode || "");
-  if (reason) {
-    body.set("metadata[planetka_reason]", reason);
-  }
-  if (existingPlanCode) {
-    body.set("metadata[planetka_existing_plan]", existingPlanCode);
-  }
-  if (requestedPlanCode) {
-    body.set("metadata[planetka_requested_plan]", requestedPlanCode);
-  }
-  const response = await fetch("https://api.stripe.com/v1/refunds", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${secretKey}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: body.toString(),
-  });
-  if (!response.ok) {
-    const bodyText = await response.text();
-    return {
-      attempted: true,
-      refunded: false,
-      reason,
-      refundId: "",
-      status: "failed",
-      error: `stripe_refund_failed_${response.status}:${String(bodyText || "").slice(0, 500)}`,
-    };
-  }
-  const payload = await response.json();
-  return {
-    attempted: true,
-    refunded: Boolean(payload && payload.id),
-    reason,
-    refundId: String(payload && payload.id || "").trim(),
-    status: String(payload && payload.status || "").trim() || "unknown",
-    error: "",
-  };
-}
-
-async function applyPermanentLicenseEntitlement(db, env, details = {}, deps) {
-  const email = deps.normalizeEmail(details.email || "");
-  if (!email) {
-    throw new Error("missing_customer_email");
-  }
-  const requestedPlan = deps.normalizePlanCode(details.planCode || "");
-  if (!requestedPlan || (requestedPlan !== deps.PLAN_CODE_PERSONAL && requestedPlan !== deps.PLAN_CODE_COMMERCIAL)) {
-    throw new Error("missing_plan_code");
-  }
-  const existingUser = await deps.findUserByEmail(db, email);
-  const existingStatus = deps.normalizeUserStatus(existingUser && existingUser.status);
-  const finalPlan = (
-    requestedPlan === deps.PLAN_CODE_PERSONAL
-    && existingStatus === deps.PLAN_CODE_COMMERCIAL
-  )
-    ? deps.PLAN_CODE_COMMERCIAL
-    : requestedPlan;
-
-  let user = await deps.upsertUserByEmail(db, email, finalPlan, {}, env);
-  user = await deps.enforceUserPlanPolicy(db, user, env);
-  if (!user || !user.id) {
-    throw new Error("user_upsert_failed");
-  }
-  const currentPlanCode = deps.normalizeRequestedPlan(user && user.status || "");
-  let appliedPlanCode = currentPlanCode;
-  if (currentPlanCode !== finalPlan) {
-    await deps.dbRun(
-      db,
-      `UPDATE users SET status = ? WHERE id = ?`,
-      [finalPlan, String(user.id || "").trim()],
-    );
-    appliedPlanCode = finalPlan;
-    user = { ...user, status: finalPlan };
-  }
-  await deps.dbRun(
-    db,
-    `
-      UPDATE api_keys
-      SET
-        plan_code = ?,
-        expires_at = NULL
-      WHERE user_id = ?
-        AND status = 'active'
-    `,
-    [appliedPlanCode, String(user.id || "").trim()],
-  );
-
-  return {
-    user,
-    planCode: appliedPlanCode,
-  };
-}
-
 export async function handleStripeWebhook(request, env, deps) {
   const db = deps.requireDb(env);
   await deps.ensureStripeWebhookEventsTable(db);
@@ -360,85 +135,6 @@ export async function handleStripeWebhook(request, env, deps) {
     );
   }
   console.log("stripe.webhook.received", JSON.stringify({ event_type: eventType, event_id: eventId }));
-
-  if (eventType === "invoice.payment_succeeded" || eventType === "invoice.payment_failed") {
-    const invoice = event.data && event.data.object ? event.data.object : null;
-    const invoiceId = String(invoice && invoice.id || "").trim();
-    const metadata = stripeMetadata(invoice);
-    let userId = String(metadata.planetka_user_id || "").trim();
-    if (!userId && invoiceId) {
-      const row = await deps.dbGet(
-        db,
-        `
-          SELECT user_id
-          FROM monthly_billing_purchases
-          WHERE stripe_invoice_id = ?
-          LIMIT 1
-        `,
-        [invoiceId],
-      );
-      userId = String(row && row.user_id || "").trim();
-    }
-    if (!invoiceId) {
-      return deps.json({ ok: false, error: "missing_invoice_id" }, 400, env);
-    }
-    await deps.ensureCreditTables(db);
-    const paid = eventType === "invoice.payment_succeeded";
-    const now = deps.nowIso();
-    await deps.dbRun(
-      db,
-      `
-        UPDATE monthly_billing_purchases
-        SET status = ?,
-            paid_at = CASE WHEN ? THEN ? ELSE paid_at END
-        WHERE stripe_invoice_id = ?
-      `,
-      [paid ? "paid" : "payment_failed", paid ? 1 : 0, now, invoiceId],
-    );
-    if (userId) {
-      await deps.dbRun(
-        db,
-        `
-          UPDATE user_credit_accounts
-          SET monthly_billing_invoice_status = ?,
-              monthly_billing_status = CASE
-                WHEN ? THEN monthly_billing_status
-                ELSE 'suspended'
-              END,
-              pricing_version = COALESCE(pricing_version, 0) + 1,
-              updated_at = ?
-          WHERE user_id = ?
-        `,
-        [paid ? "paid" : "payment_failed", paid ? 1 : 0, now, userId],
-      );
-      if (typeof deps.invalidateAnalyticsSnapshots === "function") {
-        try {
-          await deps.invalidateAnalyticsSnapshots(env);
-        } catch (error) {
-          console.warn(
-            "stripe.webhook.monthly_billing_invoice_snapshot_invalidate_failed",
-            JSON.stringify({ error: String(error && error.message || "snapshot_invalidate_failed"), user_id: userId }),
-          );
-        }
-      }
-    }
-    console.log(
-      paid ? "stripe.webhook.monthly_billing_invoice_paid" : "stripe.webhook.monthly_billing_invoice_failed",
-      JSON.stringify({ event_type: eventType, invoice_id: invoiceId, user_id: userId }),
-    );
-    return deps.json(
-      {
-        ok: true,
-        processed: true,
-        event_type: eventType,
-        invoice_id: invoiceId,
-        user_id: userId,
-        status: paid ? "paid" : "payment_failed",
-      },
-      200,
-      env,
-    );
-  }
 
   if (eventType !== "checkout.session.completed") {
     console.log("stripe.webhook.ignored", JSON.stringify({ event_type: eventType }));
@@ -485,16 +181,16 @@ export async function handleStripeWebhook(request, env, deps) {
   }
 
   const purchaseType = String(metadata.planetka_purchase_type || "").trim().toLowerCase();
-  if (purchaseType === "balance_top_up" || purchaseType === "standard_quality_unlock") {
+  if (!["scene_tiles", "region_pack"].includes(purchaseType)) {
     console.warn(
-      "stripe.webhook.retired_purchase_type_ignored",
+      "stripe.webhook.unsupported_purchase_type_ignored",
       JSON.stringify({ event_type: eventType, email, session_id: sessionId, purchase_type: purchaseType }),
     );
     return deps.json(
       {
         ok: true,
         ignored: true,
-        reason: "retired_purchase_type",
+        reason: "unsupported_purchase_type",
         event_type: eventType,
         purchase_type: purchaseType,
       },
@@ -505,7 +201,6 @@ export async function handleStripeWebhook(request, env, deps) {
   if (
     purchaseType === "scene_tiles"
     || purchaseType === "region_pack"
-    || purchaseType === "monthly_billing_setup"
   ) {
     const metadataUserId = String(metadata.planetka_user_id || "").trim();
     let targetUser = metadataUserId && typeof deps.findUserById === "function"
@@ -525,39 +220,6 @@ export async function handleStripeWebhook(request, env, deps) {
     const userId = String(targetUser.id || "").trim();
     const amountPaidEur = eurFromStripeAmountCents(session.amount_total);
     const stripePaymentIntentId = String(session.payment_intent || session.payment_intent_id || "").trim();
-    if (purchaseType === "monthly_billing_setup") {
-      const setup = await activateMonthlyBillingFromStripeSetupSession(db, session, env, deps, email);
-      if (setup && setup.error) {
-        return deps.json({ ok: false, error: setup.error }, 400, env);
-      }
-      if (typeof deps.invalidateAnalyticsSnapshots === "function") {
-        try {
-          await deps.invalidateAnalyticsSnapshots(env);
-        } catch (error) {
-          console.warn(
-            "stripe.webhook.monthly_billing_setup_snapshot_invalidate_failed",
-            JSON.stringify({ error: String(error && error.message || "snapshot_invalidate_failed"), user_id: userId }),
-          );
-        }
-      }
-      console.log(
-        "stripe.webhook.monthly_billing_setup_processed",
-        JSON.stringify({ event_type: eventType, email, session_id: sessionId, user_id: userId }),
-      );
-      return deps.json(
-        {
-          ok: true,
-          processed: true,
-          event_type: eventType,
-          email,
-          purchase_type: purchaseType,
-          monthly_billing: setup.monthly_billing,
-        },
-        200,
-        env,
-      );
-    }
-
     if (purchaseType === "region_pack") {
       const regionPackId = String(metadata.planetka_region_id || "").trim();
       const grant = await grantRegionPackEntitlements(
@@ -684,122 +346,11 @@ export async function handleStripeWebhook(request, env, deps) {
     );
   }
 
-  const lineItems = await fetchStripeCheckoutSessionLineItems(env, sessionId, deps);
-  const planEntitlement = resolveStripePlanEntitlement(lineItems, env, deps);
-  if (planEntitlement.planCode) {
-    let existingPlanCode = deps.PLAN_CODE_FREE;
-    const existingUser = await deps.findUserByEmail(db, email);
-    if (existingUser && !deps.isBlockedStatus(existingUser.status)) {
-      const enforcedUser = await deps.enforceUserPlanPolicy(db, existingUser, env);
-      existingPlanCode = deps.normalizeRequestedPlan(deps.resolvePlanCode(enforcedUser, env));
-    }
-    const purchaseGuard = deps.evaluateStripePlanPurchaseGuard(existingPlanCode, planEntitlement.planCode);
-    if (purchaseGuard.blocked) {
-      const refund = await createStripeRefundForCheckoutSession(
-        env,
-        session,
-        {
-          reason: purchaseGuard.reason,
-          existingPlanCode: purchaseGuard.existingPlanCode,
-          requestedPlanCode: purchaseGuard.requestedPlanCode,
-        },
-        deps,
-      );
-      console.log(
-        "stripe.webhook.ignored_existing_licence",
-        JSON.stringify({
-          event_type: eventType,
-          email,
-          session_id: sessionId,
-          reason: purchaseGuard.reason,
-          existing_plan: purchaseGuard.existingPlanCode,
-          requested_plan: purchaseGuard.requestedPlanCode,
-          refund_attempted: refund.attempted,
-          refund_status: refund.status,
-          refund_id: refund.refundId,
-          refund_error: refund.error || "",
-          matched: planEntitlement.matched.slice(0, 50),
-        }),
-      );
-      return deps.json(
-        {
-          ok: true,
-          ignored: true,
-          reason: purchaseGuard.reason,
-          event_type: eventType,
-          email,
-          existing_plan_code: purchaseGuard.existingPlanCode,
-          requested_plan_code: purchaseGuard.requestedPlanCode,
-          message: `This email already has ${deps.planDisplayName(purchaseGuard.existingPlanCode)}.`,
-          refund_attempted: refund.attempted,
-          refund_status: refund.status,
-          refund_id: refund.refundId,
-        },
-        200,
-        env,
-      );
-    }
-    const applied = await applyPermanentLicenseEntitlement(
-      db,
-      env,
-      {
-        email,
-        planCode: planEntitlement.planCode,
-      },
-      deps,
-    );
-    console.log(
-      "stripe.webhook.plan_entitlement_processed",
-      JSON.stringify({
-        event_type: eventType,
-        email,
-        session_id: sessionId,
-        requested_plan: planEntitlement.planCode,
-        applied_plan: applied.planCode,
-        matched: planEntitlement.matched.slice(0, 50),
-      }),
-    );
-    return deps.json(
-      {
-        ok: true,
-        processed: true,
-        event_type: eventType,
-        email,
-        plan_code: applied.planCode,
-      },
-      200,
-      env,
-    );
-  }
-  console.log(
-    "stripe.webhook.ignored_no_plan_mapping",
-    JSON.stringify({
-      event_type: eventType,
-      email,
-      session_id: sessionId,
-    }),
-  );
-  return deps.json(
-    {
-      ok: true,
-      ignored: true,
-      reason: "no_plan_mapping",
-      event_type: eventType,
-      email,
-    },
-    200,
-    env,
-  );
+  return deps.json({ ok: true, ignored: true, reason: "unsupported_purchase_type", event_type: eventType }, 200, env);
 }
 
 export const billingInternals = {
-  applyPermanentLicenseEntitlement,
   claimStripeWebhookEvent,
-  collectStripeLineItemsWithQuantity,
-  createStripeRefundForCheckoutSession,
-  fetchStripeCheckoutSessionLineItems,
-  parseStripePlanMap,
-  resolveStripePlanEntitlement,
   stripeSignatureHeaderParts,
   verifyStripeWebhook,
 };

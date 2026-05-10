@@ -27,6 +27,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     billableCostClassB,
     billableUnknownOps,
     billableCostTotal,
+    pricingSettings,
   } = context || {};
 
   const safeTopLine = snapshotTopLine && typeof snapshotTopLine === "object" ? snapshotTopLine : {};
@@ -54,6 +55,16 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
   const topGbServedSplitHtml = renderTotalValue(topLineGbServed, (value) => `${fmtGbLocal(value)} GB`, topLineGbServed.total);
   const topEarnedEurHtml = renderTotalValue(topLineEarnedEur, (value) => fmtEurLocal(value), topLineEarnedEur.total);
   const topPaidResolvesHtml = renderTotalValue(topLinePaidResolves, (value) => fmtIntLocal(value), topLinePaidResolves.total);
+  const safePricingSettings = pricingSettings && typeof pricingSettings === "object" ? pricingSettings : {};
+  const pricingCoefficient = Number.isFinite(Number(safePricingSettings.full_quality_price_coefficient))
+    ? Number(safePricingSettings.full_quality_price_coefficient).toFixed(2)
+    : "5.00";
+  const pricingMinDiscount = Number.isFinite(Number(safePricingSettings.region_pack_discount_min_percent))
+    ? String(Math.round(Number(safePricingSettings.region_pack_discount_min_percent)))
+    : "0";
+  const pricingMaxDiscount = Number.isFinite(Number(safePricingSettings.region_pack_discount_max_percent))
+    ? String(Math.round(Number(safePricingSettings.region_pack_discount_max_percent)))
+    : "75";
   return `
 <!doctype html>
 <html>
@@ -75,7 +86,8 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     .map-bg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
     .map-svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
     .map-canvas { position: absolute; inset: 0; width: 100%; height: 100%; background: transparent; }
-    select, button { background:#111827; color:#e5e7eb; border:1px solid #374151; border-radius:8px; padding:7px 10px; }
+    select, button, input { background:#111827; color:#e5e7eb; border:1px solid #374151; border-radius:8px; padding:7px 10px; }
+    input[type=number] { width: 90px; }
     .action-btn { font-size: 12px; padding: 4px 8px; margin-right: 6px; margin-bottom: 4px; cursor: pointer; }
     .action-btn.warn { border-color: #9a3412; color: #fed7aa; }
     .action-btn.danger { border-color: #991b1b; color: #fecaca; }
@@ -95,8 +107,8 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     <a href="/admin/analytics/users" style="color:#93c5fd; text-decoration:none;">All users</a>
     <a href="/admin/session/logout" style="color:#fca5a5; text-decoration:none;">Sign Out</a>
   </div>
-  <div class="controls">
-    <label for="window">Window:</label>
+	  <div class="controls">
+	    <label for="window">Window:</label>
     <select id="window">
       <option value="15">15 min</option>
       <option value="60">60 min</option>
@@ -111,9 +123,23 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
       <option value="10" selected>10 min</option>
     </select>
     <a id="refresh" href="/admin/analytics?refresh=${encodeURIComponent(buildStamp)}" style="display:inline-block;background:#111827;color:#e5e7eb;border:1px solid #374151;border-radius:8px;padding:7px 10px;text-decoration:none;">Refresh now</a>
-    <span id="status" class="muted">Snapshot updated: ${snapshotGeneratedAt} UTC</span>
-  </div>
-  <div class="grid">
+	    <span id="status" class="muted">Snapshot updated: ${snapshotGeneratedAt} UTC</span>
+	  </div>
+	  <div class="section card" style="max-width: 980px;">
+	    <h3 style="margin-top:0;">Pricing Controls</h3>
+	    <form id="pricingSettingsForm" class="controls" style="margin-bottom:6px;">
+	      <label for="pricingCoefficient">Price coefficient</label>
+	      <input id="pricingCoefficient" name="full_quality_price_coefficient" type="number" min="0.01" max="1000" step="0.01" value="${escapeHtml(pricingCoefficient)}" />
+	      <label for="pricingMinDiscount">Pack min discount %</label>
+	      <input id="pricingMinDiscount" name="region_pack_discount_min_percent" type="number" min="0" max="95" step="5" value="${escapeHtml(pricingMinDiscount)}" />
+	      <label for="pricingMaxDiscount">Pack max discount %</label>
+	      <input id="pricingMaxDiscount" name="region_pack_discount_max_percent" type="number" min="0" max="95" step="5" value="${escapeHtml(pricingMaxDiscount)}" />
+	      <button type="submit">Save Pricing</button>
+	      <span id="pricingSettingsStatus" class="muted">Applied live; no catalog rebuild needed.</span>
+	    </form>
+	    <div class="muted">Generated product and tile prices stay as coefficient-1.0 gross values. The Worker applies this coefficient and discount spread at request time.</div>
+	  </div>
+	  <div class="grid">
     <div class="card"><div class="label">Total Earned</div><div id="topEarnedEur" class="value">${topEarnedEurHtml}</div></div>
     <div class="card"><div class="label">Total Paid Resolves</div><div id="topPaidResolves" class="value">${topPaidResolvesHtml}</div></div>
     <div class="card"><div class="label">Total Users</div><div id="topUsersSplit" class="value">${topUsersSplitHtml}</div></div>
@@ -189,9 +215,11 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
       statusEl.textContent = "Booting analytics...";
       statusEl.className = "muted";
     }
-    const windowEl = document.getElementById("window");
-    const tileMapWindowEl = document.getElementById("tileMapWindow");
-    const refreshBtn = document.getElementById("refresh");
+	    const windowEl = document.getElementById("window");
+	    const tileMapWindowEl = document.getElementById("tileMapWindow");
+	    const refreshBtn = document.getElementById("refresh");
+	    const pricingSettingsForm = document.getElementById("pricingSettingsForm");
+	    const pricingSettingsStatus = document.getElementById("pricingSettingsStatus");
     const setText = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
     window.addEventListener("error", (event) => {
       const message = "Runtime error: " + String(event && event.message || "unknown_error");
@@ -605,15 +633,46 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         }
       }
     }
-    if (refreshBtn) {
-      refreshBtn.addEventListener("click", (event) => {
+	    if (refreshBtn) {
+	      refreshBtn.addEventListener("click", (event) => {
         if (event && typeof event.preventDefault === "function") {
           event.preventDefault();
         }
         loadAnalytics();
       });
-    }
-    if (windowEl) windowEl.addEventListener("change", loadAnalytics);
+	    }
+	    if (pricingSettingsForm) {
+	      pricingSettingsForm.addEventListener("submit", async (event) => {
+	        event.preventDefault();
+	        if (pricingSettingsStatus) {
+	          pricingSettingsStatus.textContent = "Saving...";
+	          pricingSettingsStatus.className = "muted";
+	        }
+	        try {
+	          const form = new FormData(pricingSettingsForm);
+	          const res = await fetch("/admin/settings/pricing", {
+	            method: "POST",
+	            credentials: "same-origin",
+	            headers: { "Content-Type": "application/json" },
+	            body: JSON.stringify(Object.fromEntries(form.entries())),
+	          });
+	          const data = await res.json();
+	          if (!res.ok || !data.ok) {
+	            throw new Error(String(data && (data.message || data.error) || ("HTTP " + res.status)));
+	          }
+	          if (pricingSettingsStatus) {
+	            pricingSettingsStatus.textContent = "Saved. New prices are live.";
+	            pricingSettingsStatus.className = "muted";
+	          }
+	        } catch (error) {
+	          if (pricingSettingsStatus) {
+	            pricingSettingsStatus.textContent = "Pricing save failed: " + String(error && error.message || error);
+	            pricingSettingsStatus.className = "error";
+	          }
+	        }
+	      });
+	    }
+	    if (windowEl) windowEl.addEventListener("change", loadAnalytics);
     if (tileMapWindowEl) tileMapWindowEl.addEventListener("change", loadAnalytics);
     document.addEventListener("click", (event) => {
       const button = event.target && event.target.closest ? event.target.closest("button.action-btn") : null;

@@ -498,7 +498,7 @@ export async function handleAdminUserSetPlan(request, env, deps) {
     {
       ok: false,
       error: "account_tiers_removed",
-      message: "Planetka account tiers are no longer editable. Use Full Quality direct payment or Monthly Billing.",
+      message: "Planetka account tiers are no longer editable. Use Full Quality direct payment.",
     },
     410,
     env,

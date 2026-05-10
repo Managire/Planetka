@@ -37,14 +37,13 @@ function filterAnalyticsUsersRows(rows, query) {
 }
 
 function analyticsUsersSortValue(row, sortBy) {
-  if (sortBy === "monthly_billing") return Number(row && row.monthly_billing_limit_eur || 0);
-  if (sortBy === "paid_eur") return Number(row && row.paid_eur_lifetime || row && row.total_spent_credits || 0);
+  if (sortBy === "paid_eur") return Number(row && row.paid_eur_lifetime || 0);
   if (sortBy === "paid_resolves") return Number(row && row.paid_full_resolve_count || 0);
   if (sortBy === "paid_tiles") return Number(row && row.unlocked_tile_count || 0);
   if (sortBy === "data_downloaded") return Number(row && row.licenced_downloaded_bytes || 0);
   if (sortBy === "preview_lifetime") return Number(row && row.preview_lifetime_bytes || 0);
   if (sortBy === "last_seen") return Date.parse(String(row && row.last_seen_at || "")) || 0;
-  return Number(row && row.total_spent_credits || 0);
+  return Number(row && row.paid_eur_lifetime || 0);
 }
 
 function fmtEurLocal(value) {
@@ -156,6 +155,51 @@ export async function handleAdminAnalyticsTileMapImage(request, env, deps) {
     "Cache-Control": "public, max-age=3600",
   };
   return new Response(object.body, { status: 200, headers });
+}
+
+export async function handleAdminSetPricingSettings(request, env, deps) {
+  const auth = await deps.requireAnalyticsAdmin(request, env);
+  if (auth.error) {
+    return auth.error;
+  }
+  if (String(request.method || "GET").trim().toUpperCase() !== "POST") {
+    return deps.json({ ok: false, error: "method_not_allowed" }, 405, env);
+  }
+  let payload = {};
+  try {
+    const contentType = String(request.headers.get("Content-Type") || "").toLowerCase();
+    if (contentType.includes("application/json")) {
+      payload = await request.json();
+    } else {
+      const form = await request.formData();
+      payload = Object.fromEntries(form.entries());
+    }
+  } catch (_error) {
+    payload = {};
+  }
+  try {
+    const settings = await deps.setRuntimePricingSettings(
+      auth.db,
+      {
+        full_quality_price_coefficient: payload.full_quality_price_coefficient,
+        region_pack_discount_min_percent: payload.region_pack_discount_min_percent,
+        region_pack_discount_max_percent: payload.region_pack_discount_max_percent,
+      },
+      auth.user && auth.user.id || "",
+      deps,
+    );
+    return deps.json({ ok: true, pricing_settings: settings }, 200, env);
+  } catch (error) {
+    return deps.json(
+      {
+        ok: false,
+        error: "pricing_settings_update_failed",
+        message: String(error && error.message || "Pricing settings could not be saved."),
+      },
+      500,
+      env,
+    );
+  }
 }
 
 export async function handleAdminAnalyticsPage(request, env, deps) {
@@ -273,6 +317,9 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
     .join("");
   const snapshotGeneratedAt = deps.escapeHtml(String(initialSnapshot && initialSnapshot.generated_at || deps.nowIso()));
   const buildStamp = deps.nowIso();
+  const pricingSettings = deps.getRuntimePricingSettings
+    ? await deps.getRuntimePricingSettings(env, deps, { force: false })
+    : {};
   const htmlContent = buildAdminAnalyticsPageHtml({
     escapeHtml: deps.escapeHtml,
     encodeURIComponent,
@@ -301,6 +348,7 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
     billableCostClassB,
     billableUnknownOps,
     billableCostTotal,
+    pricingSettings,
   });
   if (tokenSource === "bearer") {
     const authHeader = String(request.headers.get("Authorization") || "");
@@ -362,17 +410,6 @@ export async function handleAdminAnalyticsUserPage(request, env, deps) {
     `,
     [targetUserId],
   );
-  const monthlyPurchases = await deps.dbAll(
-    db,
-    `
-      SELECT *
-      FROM monthly_billing_purchases
-      WHERE user_id = ?
-      ORDER BY created_at DESC
-      LIMIT 250
-    `,
-    [targetUserId],
-  );
   const purchaseIds = (purchases || []).map((row) => String(row && row.id || "").trim()).filter(Boolean);
   const tileRows = purchaseIds.length
     ? await deps.dbAll(
@@ -394,9 +431,6 @@ export async function handleAdminAnalyticsUserPage(request, env, deps) {
     }
     tilesByPurchase.get(purchaseId).push(tile);
   }
-  const monthlyStatus = String(account && account.monthly_billing_status || "none").trim() || "none";
-  const monthlyLimit = Number(account && account.monthly_billing_limit_eur || 0);
-  const monthlySpent = Number(account && account.monthly_billing_spent_eur || 0);
   const licencedSummary = await deps.dbGet(
     db,
     `
@@ -411,19 +445,11 @@ export async function handleAdminAnalyticsUserPage(request, env, deps) {
   const paidSummary = await deps.dbGet(
     db,
     `
-      SELECT COALESCE(ROUND(SUM(amount_eur) * 100.0) / 100.0, 0) AS paid_eur
-      FROM (
-        SELECT amount_paid_eur AS amount_eur
-        FROM purchase_history
-        WHERE user_id = ?
-        UNION ALL
-        SELECT amount_eur AS amount_eur
-        FROM monthly_billing_purchases
-        WHERE user_id = ?
-          AND LOWER(COALESCE(status, '')) = 'paid'
-      )
+      SELECT COALESCE(ROUND(SUM(amount_paid_eur) * 100.0) / 100.0, 0) AS paid_eur
+      FROM purchase_history
+      WHERE user_id = ?
     `,
-    [targetUserId, targetUserId],
+    [targetUserId],
   );
   const purchaseRowsHtml = (purchases || []).map((row) => {
     const purchaseId = String(row && row.id || "");
@@ -454,34 +480,6 @@ export async function handleAdminAnalyticsUserPage(request, env, deps) {
       <td>${metadataLine}${tileDetails}</td>
     </tr>`;
   }).join("");
-  const monthlyPurchaseRowsHtml = (monthlyPurchases || []).map((row) => {
-    let metadata = {};
-    try {
-      metadata = JSON.parse(String(row && row.metadata_json || "{}"));
-    } catch (_error) {
-      metadata = {};
-    }
-    const regionName = String(row && row.region_pack_name || row && row.region_pack_id || "").trim();
-    const purchaseType = String(row && row.purchase_type || "").trim();
-    const typeLabel = purchaseType === "region_pack"
-      ? `Region Pack${regionName ? `: ${deps.escapeHtml(regionName)}` : ""}`
-      : "Scene Full Quality";
-    const tileKeys = Array.isArray(metadata && metadata.purchased_tile_keys)
-      ? metadata.purchased_tile_keys.map((key) => String(key || "").trim()).filter(Boolean)
-      : [];
-    const details = tileKeys.length
-      ? `Tile keys: ${deps.escapeHtml(tileKeys.slice(0, 40).join(", "))}${tileKeys.length > 40 ? " ..." : ""}`
-      : deps.escapeHtml(String(row && row.region_pack_id || ""));
-    return `<tr>
-      <td>${deps.escapeHtml(String(row && row.created_at || ""))}</td>
-      <td>${typeLabel}</td>
-      <td>${deps.escapeHtml(fmtEurLocal(row && row.amount_eur))}</td>
-      <td>${deps.escapeHtml(String(row && row.status || ""))}</td>
-      <td>${Number(row && row.tile_count_new || 0).toLocaleString()} new / ${Number(row && row.tile_count_total || 0).toLocaleString()} total</td>
-      <td>${deps.escapeHtml(String(row && row.stripe_invoice_id || ""))}</td>
-      <td>${details}</td>
-    </tr>`;
-  }).join("");
   const htmlContent = `<!doctype html>
 <html>
 <head>
@@ -509,7 +507,6 @@ export async function handleAdminAnalyticsUserPage(request, env, deps) {
   <div class="muted">Signed in as ${deps.escapeHtml(String(adminUser.email || ""))}</div>
   <p><a href="/admin/analytics/users">Back to users</a> · <a href="/admin/analytics">Back to analytics</a></p>
   <section class="cards">
-    <div class="card"><span>Monthly Billing</span><b>${deps.escapeHtml(monthlyStatus)}</b><br><span class="muted">${deps.escapeHtml(fmtEurLocal(monthlySpent))} / ${deps.escapeHtml(fmtEurLocal(monthlyLimit))}</span></div>
     <div class="card"><span>Paid EUR</span><b>${deps.escapeHtml(fmtEurLocal(paidSummary && paidSummary.paid_eur))}</b></div>
     <div class="card"><span>Licenced Tiles</span><b>${Number(licencedSummary && licencedSummary.tile_count || 0).toLocaleString()}</b></div>
     <div class="card"><span>Nominal Tile Value</span><b>${deps.escapeHtml(fmtEurLocal(licencedSummary && licencedSummary.nominal_eur))}</b></div>
@@ -528,21 +525,6 @@ export async function handleAdminAnalyticsUserPage(request, env, deps) {
       </tr>
     </thead>
     <tbody>${purchaseRowsHtml || `<tr><td colspan="7" class="muted">No purchase history recorded yet.</td></tr>`}</tbody>
-  </table>
-  <h2>Monthly Billing Purchases</h2>
-  <table>
-    <thead>
-      <tr>
-        <th>Time</th>
-        <th>Transaction</th>
-        <th>Amount</th>
-        <th>Status</th>
-        <th>Tiles</th>
-        <th>Stripe Invoice</th>
-        <th>Details</th>
-      </tr>
-    </thead>
-    <tbody>${monthlyPurchaseRowsHtml || `<tr><td colspan="7" class="muted">No Monthly Billing purchases recorded yet.</td></tr>`}</tbody>
   </table>
 </body>
 </html>`;
@@ -596,26 +578,18 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
       : `/admin/analytics/user?email=${encodeURIComponent(userEmailRaw)}`;
     const status = String(row && row.user_status || "").trim().toLowerCase();
     const previewHeld = Boolean(String(row && row.preview_fair_usage_hold_at || "").trim());
-    const monthlyStatus = String(row && row.monthly_billing_status || "none").trim() || "none";
-    const monthlyLimit = Number(row && row.monthly_billing_limit_eur || 0);
-    const monthlySpent = Number(row && row.monthly_billing_spent_eur || 0);
-    const monthlyText = monthlyStatus === "none"
-      ? "Not active"
-      : `${deps.escapeHtml(monthlyStatus)}<br><span class="muted">${deps.escapeHtml(fmtEur(monthlySpent))} / ${deps.escapeHtml(fmtEur(monthlyLimit))}</span>`;
-    const monthlyButton = `<button class="action-btn" data-action="approve-monthly-billing" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Approve Custom Billing</button><button class="action-btn warn" data-action="suspend-monthly-billing" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Suspend Billing</button>`;
     const previewHoldButton = previewHeld
       ? `<button class="action-btn warn" data-action="release-preview-hold" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Release Preview Hold</button>`
       : `<button class="action-btn warn" data-action="set-preview-hold" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Pause Preview</button>`;
     let actionButtons = "";
     if (status === "blocked") {
-      actionButtons = `${monthlyButton}${previewHoldButton}<button class="action-btn warn" data-action="unblock" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Unblock</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
+      actionButtons = `${previewHoldButton}<button class="action-btn warn" data-action="unblock" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Unblock</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
     } else {
-      actionButtons = `${monthlyButton}${previewHoldButton}<button class="action-btn danger" data-action="block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Block</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
+      actionButtons = `${previewHoldButton}<button class="action-btn danger" data-action="block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Block</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
     }
     return `<tr${previewHeld ? ` class="preview-held"` : ""}>
       <td><a href="${deps.escapeHtml(userHref)}">${userEmail}</a></td>
-      <td>${deps.escapeHtml(fmtEur(row && (row.paid_eur_lifetime ?? row.total_spent_credits)))}</td>
-      <td>${monthlyText}</td>
+      <td>${deps.escapeHtml(fmtEur(row && row.paid_eur_lifetime))}</td>
       <td>${fmtInt(row && row.paid_full_resolve_count)}</td>
       <td>${fmtInt(row && row.unlocked_tile_count)}</td>
       <td>${fmtMb(row && row.licenced_downloaded_bytes)} MB<br><span class="muted">${fmtInt(row && row.licenced_downloaded_tiles)} tiles</span></td>
@@ -670,7 +644,6 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
       <tr>
         <th>Email</th>
         <th><a href="${buildSortHref("paid_eur")}">Paid EUR${sortMarker("paid_eur")}</a></th>
-        <th><a href="${buildSortHref("monthly_billing")}">Monthly Billing${sortMarker("monthly_billing")}</a></th>
         <th><a href="${buildSortHref("paid_resolves")}">Paid Resolves${sortMarker("paid_resolves")}</a></th>
         <th><a href="${buildSortHref("paid_tiles")}">Paid Tiles${sortMarker("paid_tiles")}</a></th>
         <th><a href="${buildSortHref("data_downloaded")}">Data Downloaded${sortMarker("data_downloaded")}</a></th>
@@ -707,8 +680,6 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
         block: "/admin/users/block",
         unblock: "/admin/users/unblock",
         "hard-block": "/admin/users/hard-block",
-        "approve-monthly-billing": "/admin/users/monthly-billing",
-        "suspend-monthly-billing": "/admin/users/monthly-billing",
         "set-preview-hold": "/admin/users/set-preview-hold",
         "release-preview-hold": "/admin/users/release-preview-hold",
       };
@@ -716,8 +687,6 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
         block: "Block this user account now?",
         unblock: "Unblock this user account now?",
         "hard-block": "Hard block this user and block same-computer attempts?",
-        "approve-monthly-billing": "Approve a custom Monthly Billing cap for this user?",
-        "suspend-monthly-billing": "Suspend Monthly Billing for this user?",
         "set-preview-hold": "Pause Preview streaming for this user? Full Quality remains available.",
         "release-preview-hold": "Release this user's Preview fair-usage hold?",
       };
@@ -726,21 +695,6 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
       if (!window.confirm(confirmation[safeAction] || "Confirm action?")) return;
       const payload = { email: safeUserEmail };
       if (safeUserId) payload.user_id = safeUserId;
-      if (safeAction === "approve-monthly-billing") {
-        const amount = window.prompt("Custom monthly cap in EUR:", "500");
-        if (amount === null) return;
-        const parsedAmount = Number(amount);
-        if (!Number.isFinite(parsedAmount) || parsedAmount <= 50) {
-          statusEl.textContent = "Action failed: custom cap must be above €50.";
-          statusEl.className = "error";
-          return;
-        }
-        payload.action = "approve_custom";
-        payload.limit_eur = parsedAmount;
-      }
-      if (safeAction === "suspend-monthly-billing") {
-        payload.action = "suspend";
-      }
       statusEl.textContent = "Applying action...";
       statusEl.className = "muted";
       try {

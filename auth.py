@@ -165,7 +165,7 @@ def describe_auth_error(error):
     if "quality_mode_not_allowed" in lowered or "not_allowed_for_tier" in lowered or "insufficient_data" in lowered:
         return "This Resolve needs Full Quality licensing for the selected tiles."
     if "insufficient_credits" in lowered:
-        return "Monthly Billing is not available or the monthly cap is reached for this Resolve."
+        return "Full Quality requires direct payment."
     if "missing_resolve_id" in lowered:
         return "Resolve metadata is missing. Retry Resolve and ensure Planetka is up to date."
     return f"Planetka login failed: {message.replace('_', ' ')}."

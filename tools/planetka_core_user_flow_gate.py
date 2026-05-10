@@ -181,7 +181,7 @@ def _set_quality_and_expect(mode, expected_ok, report_entry):
             raise
         denied_markers = (
             "PKA-RES-003",
-            "Standard Quality is not unlocked",
+            "Only Preview and Full Quality are available",
             "requires Personal or Commercial",
             "requires Commercial",
             "not available for this account tier",
@@ -248,7 +248,6 @@ def main():
         geonames = import_submodule(base_module, "geonames_db")
         state = import_submodule(base_module, "state")
         auth = import_submodule(base_module, "auth")
-        credit_api = import_submodule(base_module, "credit_api")
         r2_source = import_submodule(base_module, "r2_source")
         _force_hermetic_local_texture_mode(r2_source)
 
@@ -370,20 +369,6 @@ def main():
             }
             _set_quality_and_expect(mode, expected_ok, entry)
             report["quality_matrix"].append(entry)
-
-        original_standard_access = getattr(credit_api, "has_standard_quality_access", None)
-        credit_api.has_standard_quality_access = lambda force=False: True
-        try:
-            entry = {
-                "account": "standard_quality_unlocked",
-                "mode": "BALANCED",
-                "expected_ok": True,
-            }
-            _set_quality_and_expect("BALANCED", True, entry)
-            report["quality_matrix"].append(entry)
-        finally:
-            if original_standard_access is not None:
-                credit_api.has_standard_quality_access = original_standard_access
 
         # Final sanity render after a rejected Full Quality attempt.
         report["renders"].append(_render_checkpoint(scene, output_dir, "preview_after_full_rejection"))

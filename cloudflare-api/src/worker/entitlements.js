@@ -91,7 +91,7 @@ export function normalizeQualityMode(value) {
 export function isQualityModeAllowedForPlan(planCode, qualityMode) {
   void planCode;
   const safeMode = normalizeQualityMode(qualityMode);
-  return safeMode === "preview" || safeMode === "balanced" || safeMode === "full";
+  return safeMode === "preview" || safeMode === "full";
 }
 
 export function qualityModeNotAllowedMessage(planCode, qualityMode) {
@@ -101,9 +101,9 @@ export function qualityModeNotAllowedMessage(planCode, qualityMode) {
     return "Preview quality is free.";
   }
   if (safeMode === "balanced") {
-    return "Standard Quality is no longer available. Use Preview or Full Quality.";
+    return "Only Preview and Full Quality are available.";
   }
-  return "Full Quality requires direct payment or active Monthly Billing.";
+  return "Full Quality requires direct payment.";
 }
 
 export function commercialUseAllowed(planCode) {
@@ -121,7 +121,7 @@ export function planDisplayName(planCode) {
 
 export function planAccessSummary(planCode) {
   void planCode;
-  return "Preview is free. Full Quality is licenced through direct payment or Monthly Billing.";
+  return "Preview is free. Full Quality is licenced through direct payment.";
 }
 
 export function resolvePlanPriority(planCode) {

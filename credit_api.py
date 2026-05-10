@@ -257,21 +257,10 @@ def _normalize_account_payload(payload):
         return {}
     out = dict(payload)
     for field in (
-        "total_granted_credits",
-        "total_spent_credits",
         "world_full_quality_paid_eur",
-        "monthly_billing_limit_eur",
-        "monthly_billing_spent_eur",
-        "monthly_billing_remaining_eur",
     ):
         if field in out:
             out[field] = _signed_money_round(out.get(field, 0.0))
-    monthly = out.get("monthly_billing")
-    if isinstance(monthly, dict):
-        out["monthly_billing"] = dict(monthly)
-        for field in ("limit_eur", "spent_eur", "remaining_eur", "custom_approved_limit_eur"):
-            if field in out["monthly_billing"]:
-                out["monthly_billing"][field] = _signed_money_round(out["monthly_billing"].get(field, 0.0))
     return out
 
 
@@ -333,14 +322,6 @@ def get_credit_account(force=False, timeout=15, allow_refresh=True) -> dict:
     _ACCOUNT_CACHE["timestamp"] = now
     _ACCOUNT_CACHE["payload"] = dict(payload or {})
     return dict(payload or {})
-
-
-def has_standard_quality_access_cached() -> bool:
-    return False
-
-
-def has_standard_quality_access(force=False) -> bool:
-    return False
 
 
 def get_unlocked_tiles(force=False) -> list[dict]:
@@ -566,17 +547,14 @@ def get_region_pack_related_offers(region_pack_id, force=False, raise_errors=Fal
 
 
 def create_checkout_session(option: str, tiles=None, quality_mode="FULL", region_pack_id: str = "") -> dict:
-    """Create a Stripe Checkout Session or payment-selection page for Planetka purchases."""
+    """Create a Stripe Checkout Session for a direct Planetka purchase."""
     safe_option = str(option or "scene").strip().lower()
     if safe_option not in {
         "scene",
-        "monthly_billing_setup",
-        "monthly_billing",
-        "limited_monthly_billing",
         "region_pack",
         "broader_pack",
     }:
-        safe_option = "scene"
+        raise ValueError("unsupported_checkout_option")
     tile_keys = []
     if safe_option == "scene":
         for entry in list(tiles or ()):
@@ -587,13 +565,7 @@ def create_checkout_session(option: str, tiles=None, quality_mode="FULL", region
             if key and key not in tile_keys:
                 tile_keys.append(key)
     payload = {
-        "option": (
-            "monthly_billing_setup"
-            if safe_option in {"monthly_billing_setup", "monthly_billing", "limited_monthly_billing"}
-            else safe_option
-            if safe_option in {"region_pack", "broader_pack"}
-            else "scene"
-        ),
+        "option": safe_option if safe_option in {"region_pack", "broader_pack"} else "scene",
         "quality_mode": str(quality_mode or "FULL").strip().lower(),
         "tile_keys": tile_keys,
     }

@@ -17,7 +17,7 @@ patterns, but it should not copy wording from Mapbox or any other provider.
 This draft assumes the newer Planetka model:
 
 - There are no Free, Personal, Commercial, Pro, Unlimited, or Unrestricted account plans.
-- Each account has one EUR balance.
+- Each account may hold Full Quality tile entitlements purchased through direct payment.
 - Preview Quality is free for normal interactive use inside Planetka.
 - Full Quality data is paid/licenced by tile.
 - A user pays only for newly licenced Full Quality tiles.
@@ -46,7 +46,7 @@ Suggested definitions for lawyer review:
 - **Planetka** means the Planetka add-on, Planetka account system, Planetka cloud services, Planetka-hosted data delivery, and related websites or APIs.
 - **Preview Quality** means free lower-resolution or reduced-detail data made available for interactive exploration, layout, testing, and preview rendering inside Planetka.
 - **Full Quality** means paid higher-detail Earth texture data made available after the relevant tile licence has been purchased or otherwise granted.
-- **Licenced Tile** means a Full Quality tile that has been unlocked for a specific user account through payment, balance deduction, free grant, admin grant, or other Planetka-approved entitlement.
+- **Licenced Tile** means a Full Quality tile that has been unlocked for a specific user account through direct payment, free grant, admin grant, or other Planetka-approved entitlement.
 - **Source Data** means texture files, tile files, masks, metadata, elevation data, and other data files delivered by Planetka services.
 - **Rendered Output** means images, videos, animations, screenshots, and similar creative outputs rendered by the user from a Planetka scene.
 - **Dataset Reconstruction** means using Planetka to build, mirror, scrape, harvest, or systematically collect Planetka source data outside normal creative use.
@@ -128,7 +128,7 @@ Users must not:
 - perform bulk or automated requests intended to collect map content or texture files;
 - use Preview Quality to build a local or remote source-data archive;
 - use Planetka as a generic API or backend data service outside the add-on's intended workflow;
-- bypass, disable, circumvent, or interfere with authentication, API keys, tile-session tokens, licence checks, balance checks, pricing checks, fair-usage checks, request limits, monitoring, caching controls, or entitlement controls;
+- bypass, disable, circumvent, or interfere with authentication, API keys, tile-session tokens, licence checks, pricing checks, fair-usage checks, request limits, monitoring, caching controls, or entitlement controls;
 - share account credentials or API keys outside the normal single-user account model;
 - use multiple accounts, scripts, proxies, VPN rotation, token rotation, or other techniques to avoid Preview usage monitoring;
 - redistribute raw Preview files, raw Full Quality tile files, masks, metadata, or other Planetka Source Data as a dataset or asset pack;
@@ -234,12 +234,12 @@ Full Quality local storage:
 If Planetka updates a tile, the user may be allowed to re-download the updated
 version without paying again for the same licenced tile.
 
-## 14. Payments, Balance, and Tile Licencing
+## 14. Payments and Tile Licencing
 
 Suggested terms:
 
-- EUR balance may be used to licence Full Quality tiles.
-- A user may also pay the exact current scene price through a checkout flow where available.
+- Users licence Full Quality tiles through direct checkout payment.
+- A user may pay the exact current scene price or the current data-pack price through a checkout flow where available.
 - Planetka calculates the tile price based on Planetka's pricing system and backend records.
 - The client UI may display estimates or pre-check calculations, but backend records determine the final licence transaction.
 - Once a tile is licenced, repeat use of that exact entitlement does not create a new charge.
@@ -248,7 +248,7 @@ Suggested terms:
 - Planetka may correct pricing, entitlement, or accounting errors where necessary.
 
 Point for lawyer/accounting review: define refund policy for exact-scene
-payments, balance top-ups, failed downloads, accidental purchases, and chargebacks.
+payments, data-pack payments, failed downloads, accidental purchases, and chargebacks.
 
 ## 15. Monitoring and Telemetry
 
@@ -266,7 +266,7 @@ Telemetry may include:
 - request timestamps;
 - coarse IP-derived abuse signals;
 - entitlement checks;
-- balance and tile-licence events;
+- checkout, payment, and tile-licence events;
 - checkout and payment status events;
 - add-on version and compatibility details;
 - error and performance diagnostics.
@@ -303,7 +303,7 @@ Planetka should reserve the right to:
 - replace or update source textures;
 - change fair-usage thresholds;
 - change pricing for future tile licences;
-- correct errors in account balances or tile entitlements;
+- correct errors in payments, pricing, or tile entitlements;
 - discontinue beta or test features;
 - require add-on updates for continued cloud-service access.
 
@@ -349,12 +349,12 @@ Ask the lawyer specifically:
 3. Can users share raw files with contractors working on the same project?
 4. Should raw tile redistribution be completely prohibited?
 5. Should AI/ML restrictions apply to rendered outputs, raw data only, or both?
-6. How should refunds work for exact-scene payments and balance top-ups?
+6. How should refunds work for exact-scene payments and data-pack payments?
 7. Is immediate Preview Hold without notice acceptable under applicable consumer and platform laws?
 8. What telemetry wording is required for GDPR/privacy compliance?
 9. Should Preview cache restrictions be in Terms, Fair Usage Policy, EULA, or all three?
 10. Should public Terms distinguish account suspension from temporary Preview streaming review?
-11. Are there mandatory consumer-law disclosures for EUR balance and digital data access?
+11. Are there mandatory consumer-law disclosures for digital data access and direct checkout payments?
 12. Should licenced tile access survive account closure, refund, chargeback, or Terms breach?
 
 ## 20. Public Document Split Recommendation
