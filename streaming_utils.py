@@ -9,7 +9,7 @@ from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from .r2_source import (
     begin_resolve_download_capture,
     end_resolve_download_capture,
-    estimate_total_resolve_bytes,
+    estimate_resolve_download_availability,
     find_local_source_asset,
     get_remote_cache_folder,
     ensure_resolve_pricing_session,
@@ -530,17 +530,26 @@ def estimate_remote_download_bytes_for_visible_tiles(
         texture_quality_mode=texture_quality_mode,
     )
     requests = list(plan_payload.get("requests", ()) or ())
-    # Estimate full dataset size for the currently required tile set,
-    # independent of what's already cached locally.
-    estimate = estimate_total_resolve_bytes(requests, allow_remote_probe=bool(allow_remote_probe))
+    # Estimate full dataset size and what is already available locally. The UI
+    # shows local/cache availability over the total required scene data.
+    estimate = estimate_resolve_download_availability(
+        requests,
+        allow_remote_probe=bool(allow_remote_probe),
+    )
     if not isinstance(estimate, dict):
         return {
             "planned_total_bytes": 0,
+            "local_available_bytes": 0,
+            "planned_download_bytes": 0,
             "planned_file_count": 0,
+            "planned_download_file_count": 0,
             "unknown_file_count": 0,
         }
     return {
         "planned_total_bytes": int(estimate.get("planned_total_bytes", 0) or 0),
+        "local_available_bytes": int(estimate.get("local_available_bytes", 0) or 0),
+        "planned_download_bytes": int(estimate.get("planned_download_bytes", 0) or 0),
         "planned_file_count": int(estimate.get("planned_file_count", 0) or 0),
+        "planned_download_file_count": int(estimate.get("planned_download_file_count", 0) or 0),
         "unknown_file_count": int(estimate.get("unknown_file_count", 0) or 0),
     }

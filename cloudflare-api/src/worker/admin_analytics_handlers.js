@@ -49,7 +49,7 @@ function analyticsUsersSortValue(row, sortBy) {
 
 function fmtEurLocal(value) {
   const numeric = Number(value);
-  return Number.isFinite(numeric) ? `${numeric.toFixed(2)} €` : "0.00 €";
+  return Number.isFinite(numeric) ? `€${numeric.toFixed(2)}` : "€0.00";
 }
 
 function parseMetadataJson(value) {
@@ -576,7 +576,7 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
   const fmtMb = (value) => fmtMbLocal(value, deps.parseNonNegativeInteger);
   const fmtEur = (value) => {
     const numeric = Number(value);
-    return Number.isFinite(numeric) ? `${numeric.toFixed(2)} €` : "0.00 €";
+    return Number.isFinite(numeric) ? `€${numeric.toFixed(2)}` : "€0.00";
   };
   const buildSortHref = (key) => {
     const params = new URLSearchParams();

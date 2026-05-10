@@ -1011,7 +1011,13 @@ def clear_resolve_size_estimates(scene, runtime=None):
         deps.resolve_estimate_preview_bytes_key,
         deps.resolve_estimate_full_credits_key,
         deps.resolve_estimate_preview_credits_key,
+        "planetka_resolve_estimate_full_available_bytes",
+        "planetka_resolve_estimate_preview_available_bytes",
+        "planetka_resolve_estimate_full_download_bytes",
+        "planetka_resolve_estimate_preview_download_bytes",
         "planetka_resolve_estimate_balanced_bytes",
+        "planetka_resolve_estimate_balanced_available_bytes",
+        "planetka_resolve_estimate_balanced_download_bytes",
         "planetka_resolve_estimate_balanced_credits",
         _REGION_OFFER_PRICING_TILES_KEY,
     )
@@ -1028,6 +1034,19 @@ def clear_resolve_size_estimates(scene, runtime=None):
 
 
 def estimate_download_bytes_for_visible_tiles(tiles, base_path, runtime=None, texture_quality_mode="PREVIEW"):
+    estimate = estimate_download_availability_for_visible_tiles(
+        tiles,
+        base_path,
+        runtime=runtime,
+        texture_quality_mode=texture_quality_mode,
+    )
+    try:
+        return int(max(0, int(estimate.get("total_bytes", 0) or 0)))
+    except (AttributeError, TypeError, ValueError):
+        return 0
+
+
+def estimate_download_availability_for_visible_tiles(tiles, base_path, runtime=None, texture_quality_mode="PREVIEW"):
     deps = _coerce_ctx(runtime).deps
     logger = deps.logger
     recoverable_exceptions = deps.recoverable_exceptions
@@ -1035,12 +1054,12 @@ def estimate_download_bytes_for_visible_tiles(tiles, base_path, runtime=None, te
     normalized_mode = deps.normalize_texture_quality_mode(texture_quality_mode)
     safe_tiles = canonical_tiles(tiles)
     if not safe_tiles:
-        return 0
+        return {"total_bytes": 0, "available_bytes": 0, "download_bytes": 0}
     if streaming_utils is None:
-        return 0
+        return {"total_bytes": 0, "available_bytes": 0, "download_bytes": 0}
     estimate_fn = getattr(streaming_utils, "estimate_remote_download_bytes_for_visible_tiles", None)
     if not callable(estimate_fn):
-        return 0
+        return {"total_bytes": 0, "available_bytes": 0, "download_bytes": 0}
     try:
         estimate = estimate_fn(
             safe_tiles,
@@ -1050,7 +1069,7 @@ def estimate_download_bytes_for_visible_tiles(tiles, base_path, runtime=None, te
         )
     except recoverable_exceptions:
         logger.debug("Planetka: resolve-size estimate failed", exc_info=True)
-        return 0
+        return {"total_bytes": 0, "available_bytes": 0, "download_bytes": 0}
     except TypeError:
         try:
             estimate = estimate_fn(
@@ -1060,28 +1079,45 @@ def estimate_download_bytes_for_visible_tiles(tiles, base_path, runtime=None, te
             )
         except recoverable_exceptions:
             logger.debug("Planetka: resolve-size estimate failed", exc_info=True)
-            return 0
+            return {"total_bytes": 0, "available_bytes": 0, "download_bytes": 0}
         except TypeError:
             try:
                 estimate = estimate_fn(safe_tiles, str(base_path or ""))
             except recoverable_exceptions:
                 logger.debug("Planetka: resolve-size estimate failed", exc_info=True)
-                return 0
+                return {"total_bytes": 0, "available_bytes": 0, "download_bytes": 0}
             except (RuntimeError, TypeError, ValueError, AttributeError):
                 logger.debug("Planetka: resolve-size estimate failed", exc_info=True)
-                return 0
+                return {"total_bytes": 0, "available_bytes": 0, "download_bytes": 0}
         except (RuntimeError, TypeError, ValueError, AttributeError):
             logger.debug("Planetka: resolve-size estimate failed", exc_info=True)
-            return 0
+            return {"total_bytes": 0, "available_bytes": 0, "download_bytes": 0}
     except (RuntimeError, TypeError, ValueError, AttributeError):
         logger.debug("Planetka: resolve-size estimate failed", exc_info=True)
-        return 0
+        return {"total_bytes": 0, "available_bytes": 0, "download_bytes": 0}
     if not isinstance(estimate, dict):
-        return 0
+        return {"total_bytes": 0, "available_bytes": 0, "download_bytes": 0}
     try:
-        return int(max(0, int(estimate.get("planned_total_bytes", 0) or 0)))
+        total_bytes = int(max(0, int(estimate.get("planned_total_bytes", 0) or 0)))
     except (TypeError, ValueError):
-        return 0
+        total_bytes = 0
+    try:
+        available_bytes = int(max(0, int(estimate.get("local_available_bytes", 0) or 0)))
+    except (TypeError, ValueError):
+        available_bytes = 0
+    try:
+        download_bytes = int(max(0, int(estimate.get("planned_download_bytes", 0) or 0)))
+    except (TypeError, ValueError):
+        download_bytes = 0
+    if available_bytes <= 0 and total_bytes > 0 and download_bytes > 0:
+        available_bytes = int(max(0, total_bytes - min(download_bytes, total_bytes)))
+    if download_bytes <= 0 and total_bytes > 0 and available_bytes > 0:
+        download_bytes = int(max(0, total_bytes - min(available_bytes, total_bytes)))
+    return {
+        "total_bytes": int(max(0, total_bytes)),
+        "available_bytes": int(max(0, min(available_bytes, total_bytes))) if total_bytes > 0 else int(max(0, available_bytes)),
+        "download_bytes": int(max(0, min(download_bytes, total_bytes))) if total_bytes > 0 else int(max(0, download_bytes)),
+    }
 
 
 def _pricing_tiles_for_visible_tiles(tiles, runtime=None, texture_quality_mode="PREVIEW", base_path=""):
@@ -1945,6 +1981,8 @@ def build_resolve_cost_breakdown(scene=None, runtime=None, scope_mode="CAMERA", 
                 "price_factor": float(price_record.get("price_factor", 0.0) or 0.0),
                 "free_reason": str(price_record.get("free_reason", "") or "").strip(),
                 "already_owned": bool(price_record.get("already_owned", False)) or str(price_record.get("free_reason", "") or "").strip() == "already_unlocked",
+                "upgrade_credit_applied": float(price_record.get("upgrade_credit_applied", 0.0) or 0.0),
+                "partially_licenced": bool(price_record.get("partially_licenced", False)),
                 "assets": assets,
             }
         )
@@ -1969,19 +2007,28 @@ def build_resolve_cost_breakdown(scene=None, runtime=None, scope_mode="CAMERA", 
         if row.get("already_owned") or str(row.get("tile_key", "") or "") in excluded_keys
     ]
     charged_tiles = [row for row in tile_rows if float(row.get("credits", 0.0) or 0.0) > 0.0]
+    partial_tiles = [
+        row for row in charged_tiles
+        if bool(row.get("partially_licenced", False))
+        or float(row.get("upgrade_credit_applied", 0.0) or 0.0) > 0.0
+    ]
     free_tiles = [row for row in tile_rows if float(row.get("credits", 0.0) or 0.0) <= 0.0 and row not in excluded_tiles]
     total_credits = _money_round(sum(float(row.get("credits", 0.0) or 0.0) for row in tile_rows))
+    partial_credit = _money_round(sum(float(row.get("upgrade_credit_applied", 0.0) or 0.0) for row in partial_tiles))
 
     return {
         "ok": True,
         "quality_mode": normalized_mode,
         "tiles": tile_rows,
         "charged_tiles": charged_tiles,
+        "partial_tiles": partial_tiles,
         "excluded_tiles": excluded_tiles,
         "free_tiles": free_tiles,
         "total_bytes": int(max(0, total_bytes)),
         "tile_bytes_sum": int(max(0, sum(int(row.get("bytes", 0) or 0) for row in tile_rows))),
         "total_credits": float(total_credits),
+        "partial_licence_tile_count": int(len(partial_tiles)),
+        "partial_licence_credit_eur": float(partial_credit),
         "paid_tile_count": int(len(charged_tiles)),
         "free_tile_count": int(len(free_tiles)),
         "pricing_authoritative": bool(pricing_authoritative),
@@ -2048,18 +2095,24 @@ def update_resolve_size_estimates(
         clear_resolve_size_estimates(scene, runtime)
         return False
 
-    full_bytes = estimate_download_bytes_for_visible_tiles(
+    full_availability = estimate_download_availability_for_visible_tiles(
         full_tiles,
         base_path,
         runtime,
         texture_quality_mode="FULL",
     )
-    preview_bytes = estimate_download_bytes_for_visible_tiles(
+    preview_availability = estimate_download_availability_for_visible_tiles(
         preview_tiles,
         base_path,
         runtime,
         texture_quality_mode="PREVIEW",
     )
+    full_bytes = int(max(0, int((full_availability or {}).get("total_bytes", 0) or 0)))
+    preview_bytes = int(max(0, int((preview_availability or {}).get("total_bytes", 0) or 0)))
+    full_available_bytes = int(max(0, int((full_availability or {}).get("available_bytes", 0) or 0)))
+    preview_available_bytes = int(max(0, int((preview_availability or {}).get("available_bytes", 0) or 0)))
+    full_download_bytes = int(max(0, int((full_availability or {}).get("download_bytes", 0) or 0)))
+    preview_download_bytes = int(max(0, int((preview_availability or {}).get("download_bytes", 0) or 0)))
     full_pricing_tiles = _pricing_tiles_for_visible_tiles(
         full_tiles,
         runtime,
@@ -2105,6 +2158,12 @@ def update_resolve_size_estimates(
         scene[resolve_estimate_full_bytes_key] = int(max(0, int(full_bytes)))
         scene[resolve_estimate_preview_bytes_key] = int(max(0, int(preview_bytes)))
         scene["planetka_resolve_estimate_balanced_bytes"] = int(max(0, int(preview_bytes)))
+        scene["planetka_resolve_estimate_full_available_bytes"] = int(max(0, int(full_available_bytes)))
+        scene["planetka_resolve_estimate_preview_available_bytes"] = int(max(0, int(preview_available_bytes)))
+        scene["planetka_resolve_estimate_full_download_bytes"] = int(max(0, int(full_download_bytes)))
+        scene["planetka_resolve_estimate_preview_download_bytes"] = int(max(0, int(preview_download_bytes)))
+        scene["planetka_resolve_estimate_balanced_available_bytes"] = int(max(0, int(preview_available_bytes)))
+        scene["planetka_resolve_estimate_balanced_download_bytes"] = int(max(0, int(preview_download_bytes)))
         scene[_REGION_OFFER_PRICING_TILES_KEY] = "|".join(str(tile) for tile in full_pricing_tiles[:256])
         scene[_FULL_PRICE_SIGNATURE_KEY] = str(full_price_signature or "")
         if full_price_pending:
@@ -2170,6 +2229,12 @@ def get_resolve_size_estimates(scene=None, runtime=None):
         "FULL": _read_int(resolve_estimate_full_bytes_key),
         "BALANCED": _read_int("planetka_resolve_estimate_balanced_bytes"),
         "PREVIEW": _read_int(resolve_estimate_preview_bytes_key),
+        "FULL_AVAILABLE": _read_int("planetka_resolve_estimate_full_available_bytes"),
+        "BALANCED_AVAILABLE": _read_int("planetka_resolve_estimate_balanced_available_bytes"),
+        "PREVIEW_AVAILABLE": _read_int("planetka_resolve_estimate_preview_available_bytes"),
+        "FULL_DOWNLOAD": _read_int("planetka_resolve_estimate_full_download_bytes"),
+        "BALANCED_DOWNLOAD": _read_int("planetka_resolve_estimate_balanced_download_bytes"),
+        "PREVIEW_DOWNLOAD": _read_int("planetka_resolve_estimate_preview_download_bytes"),
         "FULL_CREDITS": _read_float(deps.resolve_estimate_full_credits_key),
         "FULL_CREDITS_PENDING": _read_bool(_FULL_PRICE_PENDING_KEY),
         "BALANCED_CREDITS": _read_float("planetka_resolve_estimate_balanced_credits"),

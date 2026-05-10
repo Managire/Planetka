@@ -111,10 +111,9 @@ class PLANETKA_OT_AccountOpenLogin(bpy.types.Operator):
         scene = getattr(context, "scene", None) if context is not None else None
         if scene is not None:
             try:
-                if ACCOUNT_PANEL_DEFAULT_COLLAPSED_KEY in scene:
-                    del scene[ACCOUNT_PANEL_DEFAULT_COLLAPSED_KEY]
+                scene[ACCOUNT_PANEL_DEFAULT_COLLAPSED_KEY] = False
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                logger.debug("Planetka: failed clearing account panel default-collapsed marker", exc_info=True)
+                logger.debug("Planetka: failed opening account panel after login", exc_info=True)
         self.report({'INFO'}, "Planetka API key connected.")
         return {'FINISHED'}
 

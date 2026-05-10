@@ -701,7 +701,95 @@ function buildHelpers(generated, catalog = {}) {
     }
     return result.slice(0, limit);
   };
-  return { products, product, detail, tileKeys, outlines, related };
+  const directChildIds = (sourceProduct) => {
+    const ids = [];
+    const seenIds = new Set();
+    for (const childId of Array.isArray(sourceProduct && sourceProduct.countries) ? sourceProduct.countries : []) {
+      const id = String(childId || "").trim();
+      if (!id || seenIds.has(id) || !product(id)) {
+        continue;
+      }
+      seenIds.add(id);
+      ids.push(id);
+    }
+    return ids;
+  };
+  const hierarchyChildren = (sourceProduct) => {
+    const currentId = String(sourceProduct && sourceProduct.id || "").trim();
+    const currentRank = productRank(sourceProduct);
+    if (!currentId || currentRank <= 0) {
+      return [];
+    }
+    const result = [];
+    const seenIds = new Set([currentId]);
+    const add = (candidate) => {
+      const id = String(candidate && candidate.id || "").trim();
+      if (!id || seenIds.has(id) || candidate.hidden) {
+        return;
+      }
+      seenIds.add(id);
+      result.push(candidate);
+    };
+    if (currentRank === 4) {
+      for (const candidate of products
+        .filter((candidate) => productRank(candidate) === 3 && !candidate.hidden)
+        .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")))) {
+        add(candidate);
+      }
+      return result;
+    }
+    if (currentRank === 3) {
+      const parentSet = countrySet(sourceProduct);
+      const covered = new Set();
+      const macroChildren = products
+        .filter((candidate) => {
+          const id = String(candidate && candidate.id || "").trim();
+          return id
+            && id !== currentId
+            && !candidate.hidden
+            && productRank(candidate) === 2
+            && subset(countrySet(candidate), parentSet);
+        })
+        .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+      for (const candidate of macroChildren) {
+        add(candidate);
+        for (const id of countrySet(candidate)) {
+          covered.add(id);
+        }
+      }
+      for (const candidate of products
+        .filter((candidate) => {
+          const id = String(candidate && candidate.id || "").trim();
+          if (!id || id === currentId || candidate.hidden || !countryOption(candidate)) {
+            return false;
+          }
+          const candidateSet = countrySet(candidate);
+          if (!subset(candidateSet, parentSet)) {
+            return false;
+          }
+          if (!COUNTRY_LIKE_REGION_PRODUCT_IDS.has(id)) {
+            for (const countryId of candidateSet) {
+              if (covered.has(countryId)) {
+                return false;
+              }
+            }
+          }
+          return true;
+        })
+        .sort((a, b) => productSpecificityScore(a) - productSpecificityScore(b) || String(a.name || "").localeCompare(String(b.name || "")))) {
+        add(candidate);
+      }
+      return result;
+    }
+    for (const id of directChildIds(sourceProduct)) {
+      const child = product(id);
+      if (child) {
+        add(child);
+      }
+    }
+    return result;
+  };
+  return { products, product, detail, tileKeys, outlines, related, directChildIds, hierarchyChildren };
 }
 
 function boundsForProduct(sourceProduct, sourceDetail, rows) {
@@ -769,9 +857,13 @@ function uniqueIncludedCountries(values, helpers) {
 }
 
 function catalogGroupForProduct(product) {
+  const id = String(product && product.id || "").trim().toLowerCase();
   const type = String(product && product.type || "").trim().toLowerCase();
   if (type === "world") {
     return { key: "world", label: "World" };
+  }
+  if (COUNTRY_LIKE_REGION_PRODUCT_IDS.has(id)) {
+    return { key: "countries", label: "Countries" };
   }
   if (type === "continent") {
     return { key: "continents", label: "Continents" };
@@ -866,6 +958,10 @@ async function main() {
         discount_percent: Math.max(0, Number.parseInt(product && product.discount_percent || 0, 10) || 0),
         total_tiles: Math.max(0, Number.parseInt(product && product.tile_count || 0, 10) || 0),
         full_price_cents: fullPriceCents,
+        child_ids: [],
+        hierarchy_child_ids: helpers.hierarchyChildren(product)
+          .map((entry) => String(entry && entry.id || ""))
+          .filter(Boolean),
         tiles: [],
         world: true,
       });
@@ -885,6 +981,10 @@ async function main() {
       discount_percent: Math.max(0, Number.parseInt(product && product.discount_percent || 0, 10) || 0),
       total_tiles: asset.tiles.length,
       full_price_cents: fullPriceCents,
+      child_ids: helpers.directChildIds(product),
+      hierarchy_child_ids: helpers.hierarchyChildren(product)
+        .map((entry) => String(entry && entry.id || ""))
+        .filter(Boolean),
       tiles: asset.tiles.map((tile) => [
         tile.tile_key,
         Math.max(0, Number.parseInt(tile.full_price_cents || 0, 10) || 0),

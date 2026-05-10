@@ -45,7 +45,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
   };
   const fmtEurLocal = (value) => {
     const numeric = Number(value);
-    return Number.isFinite(numeric) ? `${numeric.toFixed(2)} €` : "0.00 €";
+    return Number.isFinite(numeric) ? `€${numeric.toFixed(2)}` : "€0.00";
   };
 
   const topUsersSplitHtml = renderTotalValue(topLineUsers, (value) => fmtIntLocal(value), topLineUsers.total);
@@ -215,7 +215,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     const fmtGb = (v) => (Number(v || 0) / (1024 * 1024 * 1024)).toFixed(3);
     const fmtEur = (v) => {
       const numeric = Number(v);
-      return Number.isFinite(numeric) ? numeric.toFixed(2) + " €" : "0.00 €";
+      return Number.isFinite(numeric) ? "€" + numeric.toFixed(2) : "€0.00";
     };
     const fmtFixed = (v, digits = 2) => {
       const numeric = Number(v);

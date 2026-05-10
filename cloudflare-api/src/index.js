@@ -93,6 +93,7 @@ import {
   handleCreditCheckout as handleCreditCheckoutRoute,
   handleCreditEstimate as handleCreditEstimateRoute,
   handleCreditMe as handleCreditMeRoute,
+  handleCreditMonthlyBillingRequest as handleCreditMonthlyBillingRequestRoute,
   handleCreditPaymentCancelled as handleCreditPaymentCancelledRoute,
   handleCreditPaymentSuccess as handleCreditPaymentSuccessRoute,
   handleCreditPurchaseHistory as handleCreditPurchaseHistoryRoute,
@@ -3040,6 +3041,21 @@ async function ensureCreditTables(db) {
   await dbRun(
     db,
     `
+      CREATE TABLE IF NOT EXISTS monthly_billing_request_tokens (
+        token TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+      )
+    `,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_monthly_billing_request_tokens_expires ON monthly_billing_request_tokens(expires_at)`,
+  );
+  await dbRun(
+    db,
+    `
       CREATE TABLE IF NOT EXISTS tile_land_stats (
         tile_key TEXT PRIMARY KEY,
         x INTEGER NOT NULL,
@@ -4108,6 +4124,11 @@ async function dispatchExactRoute(request, env, path) {
     case "/credits/checkout":
       if (request.method === "POST") {
         return await handleCreditCheckoutRoute(request, env, TILE_ROUTE_DEPS);
+      }
+      return null;
+    case "/credits/monthly-billing-request":
+      if (request.method === "GET" || request.method === "HEAD" || request.method === "POST") {
+        return await handleCreditMonthlyBillingRequestRoute(request, env, TILE_ROUTE_DEPS);
       }
       return null;
     case "/credits/region-offers":

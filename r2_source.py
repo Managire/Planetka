@@ -433,6 +433,10 @@ def verify_remote_stream_health(force=False):
 
 
 def get_download_progress():
+    with _REQUEST_CONTEXT_LOCK:
+        quality_mode = str(_REQUEST_CONTEXT_TEXTURE_MODE or "").strip().lower()
+    if quality_mode not in {"preview", "full"}:
+        quality_mode = ""
     with _METRICS_LOCK:
         active_requests = int(max(0, _ACTIVE_DOWNLOADS))
         capture_enabled = bool(_CAPTURE_ENABLED)
@@ -448,6 +452,7 @@ def get_download_progress():
             "preparing": bool(capture_enabled and active_requests <= 0),
             "downloaded_bytes": downloaded_bytes,
             "total_bytes": total_bytes,
+            "quality_mode": quality_mode,
         }
 
 
@@ -674,7 +679,7 @@ def _lookup_remote_texture_size(folder, file_name):
     return size
 
 
-def plan_resolve_downloads(requests, allow_remote_probe=None):
+def plan_resolve_downloads(requests, allow_remote_probe=None, update_capture=True):
     global _CAPTURE_PLANNED_TOTAL_BYTES
 
     if allow_remote_probe is None:
@@ -744,12 +749,151 @@ def plan_resolve_downloads(requests, allow_remote_probe=None):
         planned_total += int(max(0, local_size))
 
     with _METRICS_LOCK:
-        if _CAPTURE_ENABLED:
+        if bool(update_capture) and _CAPTURE_ENABLED:
             _CAPTURE_PLANNED_TOTAL_BYTES = int(max(0, planned_total))
 
     return {
         "planned_total_bytes": int(max(0, planned_total)),
         "planned_file_count": int(max(0, planned_files)),
+        "unknown_file_count": int(max(0, unknown_files)),
+    }
+
+
+def estimate_resolve_download_availability(requests, allow_remote_probe=None):
+    """Estimate total required bytes and bytes already available locally.
+
+    ``planned_download_bytes`` is the amount that still needs network transfer.
+    ``local_available_bytes`` covers usable files found in the user local source
+    or the Planetka cache. This function must not update active download capture
+    totals; it is used by the UI before a resolve starts.
+    """
+    if allow_remote_probe is None:
+        allow_remote_probe = _parse_bool_env("PLANETKA_R2_PLAN_REMOTE_HEAD", default=False)
+    allow_remote_probe = bool(allow_remote_probe)
+
+    if not is_remote_source_configured(None):
+        return {
+            "planned_total_bytes": 0,
+            "local_available_bytes": 0,
+            "planned_download_bytes": 0,
+            "planned_file_count": 0,
+            "planned_download_file_count": 0,
+            "unknown_file_count": 0,
+        }
+
+    cfg = _get_config()
+    if cfg is None:
+        return {
+            "planned_total_bytes": 0,
+            "local_available_bytes": 0,
+            "planned_download_bytes": 0,
+            "planned_file_count": 0,
+            "planned_download_file_count": 0,
+            "unknown_file_count": 0,
+        }
+
+    seen = set()
+    total_bytes = 0
+    available_bytes = 0
+    download_bytes = 0
+    planned_files = 0
+    planned_download_files = 0
+    unknown_files = 0
+
+    for request in requests or ():
+        if not isinstance(request, (tuple, list)) or len(request) != 4:
+            continue
+        folder, prefix, filename, extensions = request
+        folder = str(folder or "").strip()
+        prefix = str(prefix or "").strip()
+        filename = str(filename or "").strip()
+        if not folder or not prefix or not filename:
+            continue
+        exts = tuple(extensions or (".exr",))
+
+        selected_file_name = ""
+        selected_size = None
+        selected_available_size = None
+        for ext in exts:
+            ext_text = str(ext or "")
+            candidate_file_name = f"{prefix}_{filename}{ext_text}"
+
+            # Availability must be exact-file based. A locally cached/licenced
+            # coarser sibling such as z001_d002 must not count towards a
+            # required z001_d001 file; Blender will not use it for that resolve.
+            local_source_path = _find_user_local_source_file(folder, candidate_file_name)
+            if local_source_path:
+                selected_file_name = candidate_file_name
+                try:
+                    selected_size = int(max(0, os.path.getsize(local_source_path)))
+                except (OSError, RuntimeError, TypeError, ValueError):
+                    selected_size = texture_asset_size_bytes(
+                        folder,
+                        candidate_file_name,
+                        allow_remote_probe=allow_remote_probe,
+                    )
+                selected_available_size = int(max(0, int(selected_size or 0)))
+                break
+
+            cached_path = _cached_remote_path(folder, candidate_file_name)
+            if cached_path and _is_cache_file_usable(cached_path):
+                selected_file_name = candidate_file_name
+                try:
+                    selected_size = int(max(0, os.path.getsize(cached_path)))
+                except (OSError, RuntimeError, TypeError, ValueError):
+                    selected_size = texture_asset_size_bytes(
+                        folder,
+                        candidate_file_name,
+                        allow_remote_probe=allow_remote_probe,
+                    )
+                selected_available_size = int(max(0, int(selected_size or 0)))
+                break
+            _remove_invalid_cache_file(cached_path)
+
+            if not selected_file_name:
+                selected_file_name = candidate_file_name
+            known_size = texture_asset_size_bytes(folder, candidate_file_name, allow_remote_probe=False)
+            if known_size is not None:
+                selected_file_name = candidate_file_name
+                selected_size = int(max(0, int(known_size)))
+                selected_available_size = 0
+                break
+            if allow_remote_probe:
+                remote_size = _lookup_remote_texture_size(folder, candidate_file_name)
+                if remote_size is not None:
+                    selected_file_name = candidate_file_name
+                    selected_size = int(max(0, int(remote_size)))
+                    selected_available_size = 0
+                    break
+
+        if not selected_file_name:
+            continue
+
+        dedupe_key = f"{folder}/{selected_file_name}"
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        planned_files += 1
+
+        if selected_size is None:
+            unknown_files += 1
+            planned_download_files += 1
+            continue
+
+        safe_size = int(max(0, int(selected_size)))
+        safe_available = int(max(0, min(int(selected_available_size or 0), safe_size)))
+        total_bytes += safe_size
+        available_bytes += safe_available
+        if safe_available < safe_size:
+            download_bytes += int(max(0, safe_size - safe_available))
+            planned_download_files += 1
+
+    return {
+        "planned_total_bytes": total_bytes,
+        "local_available_bytes": available_bytes,
+        "planned_download_bytes": download_bytes,
+        "planned_file_count": int(max(0, planned_files)),
+        "planned_download_file_count": int(max(0, planned_download_files)),
         "unknown_file_count": int(max(0, unknown_files)),
     }
 

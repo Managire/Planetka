@@ -273,8 +273,15 @@ def _normalize_texture_quality_for_ui(value):
 
 
 def _last_visible_texture_quality_label(scene):
+    mode = _last_visible_texture_quality_mode(scene)
+    if mode == "FULL":
+        return "Full Quality"
+    return "Preview"
+
+
+def _last_visible_texture_quality_mode(scene):
     if _is_animation_prepared(scene):
-        return "Preview"
+        return "PREVIEW"
     mode = ""
     if scene is not None:
         try:
@@ -287,9 +294,7 @@ def _last_visible_texture_quality_label(scene):
                 mode = _normalize_texture_quality_for_ui(getattr(props, "texture_quality_mode", ""))
             except (AttributeError, RuntimeError, TypeError, ValueError):
                 mode = ""
-    if mode == "FULL":
-        return "Full Quality"
-    return "Preview"
+    return "FULL" if mode == "FULL" else "PREVIEW"
 
 
 def _last_resolve_download_bytes_for_ui(scene):
@@ -454,7 +459,6 @@ def _navigation_has_camera_keyframe_lock(scene):
 
 
 def _resolve_runtime_display(scene):
-    progress = get_download_progress()
     active_download = is_download_active()
     runtime = get_resolve_runtime_status(scene)
     runtime_code = str(runtime.get("code", "IDLE") or "IDLE").upper()
@@ -473,7 +477,7 @@ def _resolve_runtime_display(scene):
     return runtime, runtime_code, runtime_text
 
 
-def _draw_resolve_download_indicator(layout, scene, runtime, runtime_code, runtime_text):
+def _resolve_download_indicator_state(scene, runtime, runtime_code, runtime_text):
     resolve_failure_message = _resolve_failure_message_for_ui(scene)
     inside_earth_warning = _inside_earth_warning_for_ui(scene)
     low_altitude_warning = _low_altitude_warning_for_ui(scene)
@@ -502,6 +506,7 @@ def _draw_resolve_download_indicator(layout, scene, runtime, runtime_code, runti
         status_label_text = f"Complete - Showing {_last_visible_texture_quality_label(scene)}"
 
     progress = get_download_progress()
+    progress_quality_mode = _normalize_texture_quality_for_ui(progress.get("quality_mode", ""))
     total_bytes = int(progress.get("total_bytes", 0) or 0)
     downloaded_bytes = int(progress.get("downloaded_bytes", 0) or 0)
     progress_download_active = bool(progress.get("download_active", False))
@@ -561,14 +566,155 @@ def _draw_resolve_download_indicator(layout, scene, runtime, runtime_code, runti
     else:
         progress_text = "Waiting for data"
 
+    active_status = status_token in {"QUEUED", "PREPARING", "DOWNLOADING", "FINALIZING", "FINALIZE_QUEUED"}
+    active = bool(progress_download_active or active_status or runtime.get("running", False))
+    quality_mode = progress_quality_mode if active else ""
+    if not quality_mode and active:
+        try:
+            props = getattr(scene, "planetka", None)
+            quality_mode = _normalize_texture_quality_for_ui(getattr(props, "texture_quality_mode", ""))
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            quality_mode = ""
+    if not quality_mode:
+        quality_mode = _last_visible_texture_quality_mode(scene)
+
+    return {
+        "status_text": status_label_text,
+        "status_icon": status_icon,
+        "alert": bool(alert),
+        "factor": factor,
+        "progress_text": progress_text,
+        "total_bytes": total_bytes,
+        "downloaded_bytes": downloaded_bytes,
+        "download_active": bool(progress_download_active),
+        "active": active,
+        "runtime_code": status_token,
+        "quality_mode": quality_mode,
+    }
+
+
+def _draw_resolve_download_indicator(layout, scene, runtime, runtime_code, runtime_text):
+    state = _resolve_download_indicator_state(scene, runtime, runtime_code, runtime_text)
     box = layout.box()
-    box.alert = bool(alert)
-    box.label(text=status_label_text, icon=status_icon)
+    box.alert = bool(state.get("alert", False))
+    box.label(text=str(state.get("status_text", "") or "Idle"), icon=str(state.get("status_icon", "INFO") or "INFO"))
     box.progress(
-        factor=factor,
+        factor=float(state.get("factor", 0.0) or 0.0),
         type='BAR',
-        text=progress_text,
+        text=str(state.get("progress_text", "") or "Waiting for data"),
     )
+
+
+def _estimate_bytes_for_quality(estimates, mode):
+    mode_key = str(mode or "").upper()
+    try:
+        value = estimates.get(mode_key)
+    except (AttributeError, TypeError, ValueError):
+        value = None
+    if value is None:
+        return None
+    try:
+        return int(max(0, round(float(value))))
+    except (TypeError, ValueError):
+        return None
+
+
+def _estimate_available_bytes_for_quality(estimates, mode):
+    mode_key = str(mode or "").upper()
+    try:
+        value = estimates.get(f"{mode_key}_AVAILABLE")
+    except (AttributeError, TypeError, ValueError):
+        value = None
+    if value is None:
+        return None
+    try:
+        return int(max(0, round(float(value))))
+    except (TypeError, ValueError):
+        return None
+
+
+def _quality_progress_values(mode, estimate_bytes, estimate_available_bytes, download_state, displayed_mode):
+    mode_key = str(mode or "").upper()
+    state_mode = _normalize_texture_quality_for_ui(download_state.get("quality_mode", ""))
+    state_matches = state_mode == mode_key
+    state_active = bool(download_state.get("active", False))
+    total_bytes = int(max(0, estimate_bytes or 0)) if estimate_bytes is not None else 0
+    available_bytes = int(max(0, estimate_available_bytes or 0)) if estimate_available_bytes is not None else 0
+    network_total_bytes = 0
+    network_downloaded_bytes = 0
+    if state_matches:
+        network_total_bytes = int(download_state.get("total_bytes", 0) or 0)
+        network_downloaded_bytes = int(download_state.get("downloaded_bytes", 0) or 0)
+        if total_bytes <= 0:
+            total_bytes = int(max(0, network_total_bytes))
+        if estimate_available_bytes is None and total_bytes > 0 and network_total_bytes > 0:
+            available_bytes = int(max(0, total_bytes - min(network_total_bytes, total_bytes)))
+        available_bytes = int(max(0, available_bytes + max(0, network_downloaded_bytes)))
+    if (
+        estimate_available_bytes is None
+        and not state_active
+        and str(displayed_mode or "").upper() == mode_key
+        and total_bytes > 0
+    ):
+        available_bytes = total_bytes
+    available_bytes = int(max(0, min(available_bytes, total_bytes))) if total_bytes > 0 else int(max(0, available_bytes))
+    return available_bytes, total_bytes, bool(state_active and state_matches)
+
+
+def _quality_progress_label(mode, estimate_bytes, estimate_available_bytes, download_state, displayed_mode):
+    mode_key = str(mode or "").upper()
+    downloaded_bytes, total_bytes, state_matches_active = _quality_progress_values(
+        mode,
+        estimate_bytes,
+        estimate_available_bytes,
+        download_state,
+        displayed_mode,
+    )
+    state_active = bool(download_state.get("active", False))
+    has_explicit_availability = estimate_available_bytes is not None
+    if total_bytes > 0:
+        done = bool(
+            (not has_explicit_availability and not state_active and str(displayed_mode or "").upper() == mode_key)
+            or (state_matches_active and downloaded_bytes >= total_bytes)
+            or downloaded_bytes >= total_bytes
+        )
+        suffix = " ✓" if done else ""
+        return f"{_fmt_bytes(downloaded_bytes)} / {_fmt_bytes(total_bytes)}{suffix}"
+    if downloaded_bytes > 0:
+        return f"{_fmt_bytes(downloaded_bytes)} downloaded"
+    return "— MB"
+
+
+def _quality_progress_factor(mode, download_state, displayed_mode, estimate_bytes=None, estimate_available_bytes=None):
+    mode_key = str(mode or "").upper()
+    state_mode = _normalize_texture_quality_for_ui(download_state.get("quality_mode", ""))
+    if bool(download_state.get("active", False)) and state_mode in {"PREVIEW", "FULL"}:
+        if state_mode == mode_key:
+            downloaded_bytes, total_bytes, _state_active = _quality_progress_values(
+                mode,
+                estimate_bytes,
+                estimate_available_bytes,
+                download_state,
+                displayed_mode,
+            )
+            if total_bytes > 0:
+                return max(0.0, min(1.0, float(downloaded_bytes) / float(total_bytes)))
+            return max(0.0, min(1.0, float(download_state.get("factor", 0.0) or 0.0)))
+        return None
+    return None
+
+
+def _draw_quality_meta_row(layout, progress_text, usage_label=""):
+    if not str(usage_label or "").strip():
+        row = layout.row(align=True)
+        row.label(text=str(progress_text or "— MB"), icon="DISK_DRIVE")
+        return
+    row = layout.split(factor=0.68, align=True)
+    left = row.row(align=True)
+    left.label(text=str(progress_text or "— MB"), icon="DISK_DRIVE")
+    right = row.row(align=True)
+    right.alignment = 'RIGHT'
+    right.label(text=str(usage_label or ""))
 
 
 def _earth_radius_bu_for_ui(scene):
@@ -832,16 +978,18 @@ def _account_panel_should_default_collapsed(context=None):
     prefs = get_prefs()
     if not is_authenticated(prefs):
         return False
-    cloud_status = get_cached_cloud_connection_status()
-    if not bool(cloud_status.get("checked", False)) or not bool(cloud_status.get("online", False)):
-        return False
     target_scene = getattr(context, "scene", None) if context is not None else getattr(getattr(bpy, "context", None), "scene", None)
     if target_scene is None:
-        return False
+        return True
     try:
-        return bool(target_scene.get(ACCOUNT_PANEL_DEFAULT_COLLAPSED_KEY, False))
+        if ACCOUNT_PANEL_DEFAULT_COLLAPSED_KEY in target_scene:
+            return bool(target_scene.get(ACCOUNT_PANEL_DEFAULT_COLLAPSED_KEY, True))
     except (TypeError, ValueError, RuntimeError, AttributeError):
-        return False
+        return True
+    # Missing scene marker happens briefly in newly opened Blender files before
+    # load handlers write persistent UI defaults. Keep the authenticated default
+    # collapsed immediately to avoid a visible open-then-close flash.
+    return True
 
 
 def _is_paid_connected_account():
@@ -1069,6 +1217,14 @@ def _draw_broader_region_offers(layout, scene, active_view_scope=False):
         except (TypeError, ValueError):
             already_licenced_saving = 0.0
         try:
+            partial_licence_count = max(0, int(offer.get("partial_licence_tile_count", 0) or 0))
+        except (TypeError, ValueError):
+            partial_licence_count = 0
+        try:
+            partial_licence_credit = max(0.0, float(offer.get("partial_licence_credit_eur", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            partial_licence_credit = 0.0
+        try:
             discount_eur = max(0.0, float(offer.get("discount_eur", 0.0) or 0.0))
         except (TypeError, ValueError):
             discount_eur = 0.0
@@ -1105,6 +1261,8 @@ def _draw_broader_region_offers(layout, scene, active_view_scope=False):
         info.total_tile_count = int(total_tiles)
         info.already_licenced_tile_count = int(already_licenced_count)
         info.already_licenced_saving_eur = float(already_licenced_saving)
+        info.partial_licence_tile_count = int(partial_licence_count)
+        info.partial_licence_credit_eur = float(partial_licence_credit)
         info.full_price_eur = float(gross)
         info.discount_percent = int(discount)
         info.discount_eur = float(discount_eur)
@@ -1259,7 +1417,7 @@ def _draw_account_panel(layout):
             setup_row = layout.row(align=True)
             setup_row.operator(
                 "planetka.open_credit_checkout",
-                text="Set Up Monthly Billing",
+                text="Request Monthly Billing",
                 icon="URL",
             ).checkout_option = "MONTHLY_BILLING_SETUP"
             if monthly_status == "custom_pending_payment":
@@ -1406,27 +1564,13 @@ def _draw_live_telemetry(layout, scene):
     if props is not None and is_authenticated(prefs):
         estimates = get_resolve_size_estimates(scene)
 
-        def _estimate_mb_label(mode):
-            mode_key = str(mode or "").upper()
-            try:
-                size_bytes = estimates.get(mode_key)
-            except (AttributeError, TypeError, ValueError):
-                size_bytes = None
-            if size_bytes is None:
-                return "— MB"
-            try:
-                size_mb = float(size_bytes) / float(1024.0 ** 2)
-            except (TypeError, ValueError, ZeroDivisionError):
-                return "— MB"
-            return f"{max(0.0, size_mb):.0f} MB"
-
         def _estimate_eur_label(mode):
             mode_key = str(mode or "").upper()
             try:
                 eur_value = estimates.get(f"{mode_key}_CREDITS")
                 if eur_value is None:
                     return "—"
-                return f"{max(0.0, float(eur_value)):.2f} €"
+                return _fmt_eur(eur_value)
             except (AttributeError, TypeError, ValueError):
                 return "—"
 
@@ -1447,7 +1591,8 @@ def _draw_live_telemetry(layout, scene):
             toggle=True,
         )
         runtime, runtime_code, runtime_text = _resolve_runtime_display(scene)
-        _draw_resolve_download_indicator(quality_box, scene, runtime, runtime_code, runtime_text)
+        download_state = _resolve_download_indicator_state(scene, runtime, runtime_code, runtime_text)
+        displayed_quality_mode = _last_visible_texture_quality_mode(scene)
 
         try:
             from .credit_api import get_cached_credit_account
@@ -1456,7 +1601,6 @@ def _draw_live_telemetry(layout, scene):
             credit_account = {}
         if not credit_account:
             _schedule_sidebar_account_refresh(force=False)
-        credit_known = bool(credit_account)
         monthly = credit_account.get("monthly_billing", {}) if isinstance(credit_account, dict) else {}
         monthly_active = bool(
             isinstance(monthly, dict)
@@ -1470,6 +1614,22 @@ def _draw_live_telemetry(layout, scene):
             )
         except (AttributeError, TypeError, ValueError):
             monthly_remaining = 0.0
+        try:
+            monthly_limit = float(
+                (monthly.get("limit_eur") if isinstance(monthly, dict) else None)
+                if isinstance(monthly, dict) and monthly.get("limit_eur") is not None
+                else credit_account.get("monthly_billing_limit_eur", 0.0)
+            )
+        except (AttributeError, TypeError, ValueError):
+            monthly_limit = 0.0
+        try:
+            monthly_spent = float(
+                (monthly.get("spent_eur") if isinstance(monthly, dict) else None)
+                if isinstance(monthly, dict) and monthly.get("spent_eur") is not None
+                else credit_account.get("monthly_billing_spent_eur", 0.0)
+            )
+        except (AttributeError, TypeError, ValueError):
+            monthly_spent = 0.0
         world_full_quality_unlocked = bool(
             isinstance(credit_account, dict)
             and (
@@ -1482,15 +1642,39 @@ def _draw_live_telemetry(layout, scene):
             selected_auto_quality = "PREVIEW"
 
         preview_box = quality_box.box()
-        quality_buttons = preview_box.row(align=True)
-        preview_col = quality_buttons.column(align=True)
-        preview_col.operator(
-            "planetka.set_texture_quality_and_resolve",
-            text="Preview",
-            icon="HIDE_OFF",
-            depress=(selected_auto_quality == "PREVIEW"),
-        ).texture_quality_mode = "PREVIEW"
-        preview_col.label(text=_estimate_mb_label("PREVIEW"), icon="DISK_DRIVE")
+        preview_col = preview_box.column(align=True)
+        preview_estimate_bytes = _estimate_bytes_for_quality(estimates, "PREVIEW")
+        preview_available_bytes = _estimate_available_bytes_for_quality(estimates, "PREVIEW")
+        preview_factor = _quality_progress_factor(
+            "PREVIEW",
+            download_state,
+            displayed_quality_mode,
+            estimate_bytes=preview_estimate_bytes,
+            estimate_available_bytes=preview_available_bytes,
+        )
+        if preview_factor is not None and hasattr(preview_col, "progress"):
+            preview_col.progress(
+                factor=preview_factor,
+                type='BAR',
+                text="Preview",
+            )
+        else:
+            preview_col.operator(
+                "planetka.set_texture_quality_and_resolve",
+                text="Preview",
+                icon="HIDE_OFF",
+                depress=(selected_auto_quality == "PREVIEW" and displayed_quality_mode == "PREVIEW"),
+            ).texture_quality_mode = "PREVIEW"
+        _draw_quality_meta_row(
+            preview_col,
+            _quality_progress_label(
+                "PREVIEW",
+                preview_estimate_bytes,
+                preview_available_bytes,
+                download_state,
+                displayed_quality_mode,
+            ),
+        )
 
         quick_preview_prepared = _is_animation_prepared(scene)
         active_view_scope = _is_active_view_resolve_scope(scene)
@@ -1507,7 +1691,7 @@ def _draw_live_telemetry(layout, scene):
             full_credits = float(estimates.get("FULL_CREDITS", 0.0) or 0.0)
         except (AttributeError, TypeError, ValueError):
             full_credits = 0.0
-        if not credit_known or not full_size_known or not full_price_known:
+        if not full_size_known or not full_price_known:
             full_allowed = False
         full_has_new_cost = bool(full_price_known and full_credits > 0.000001)
         if quick_preview_prepared:
@@ -1516,30 +1700,47 @@ def _draw_live_telemetry(layout, scene):
             full_allowed = False
         full_routes_to_scene_checkout = bool(
             full_allowed
-            and credit_known
             and full_has_new_cost
+            and displayed_quality_mode != "FULL"
             and (not monthly_active or monthly_remaining + 0.000001 < full_credits)
         )
 
         full_box = quality_box.box()
         full_button_row = full_box.row(align=True)
         full_button_row.scale_y = 1.1
+        full_estimate_bytes = _estimate_bytes_for_quality(estimates, "FULL")
+        full_available_bytes = _estimate_available_bytes_for_quality(estimates, "FULL")
+        full_factor = _quality_progress_factor(
+            "FULL",
+            download_state,
+            displayed_quality_mode,
+            estimate_bytes=full_estimate_bytes,
+            estimate_available_bytes=full_available_bytes,
+        )
         full_button_label = "Full Quality"
-        if full_price_known and full_has_new_cost and not active_view_scope:
+        if full_price_known and full_has_new_cost and not active_view_scope and full_factor is None and displayed_quality_mode != "FULL":
             full_button_label = f"Full Quality ({_estimate_eur_label('FULL')})"
         full_download = full_button_row.row(align=True)
         full_download.enabled = bool(full_allowed)
-        if full_routes_to_scene_checkout:
+        if full_factor is not None and hasattr(full_download, "progress"):
+            full_download.enabled = True
+            full_download.progress(
+                factor=full_factor,
+                type='BAR',
+                text=full_button_label,
+            )
+        elif full_routes_to_scene_checkout:
             full_download.operator(
                 "planetka.open_credit_checkout",
                 text=full_button_label,
                 icon="URL",
-            ).checkout_option = "SCENE"
+            ).checkout_option = "OPTIONS"
         else:
             full_download.operator(
                 "planetka.set_texture_quality_and_resolve",
                 text=full_button_label,
                 icon="IMPORT",
+                depress=(displayed_quality_mode == "FULL"),
             ).texture_quality_mode = "FULL"
         full_details = full_button_row.row(align=True)
         full_details.enabled = bool(full_price_known and not active_view_scope)
@@ -1548,6 +1749,16 @@ def _draw_live_telemetry(layout, scene):
             text="",
             icon="INFO",
         ).texture_quality_mode = "FULL"
+        _draw_quality_meta_row(
+            full_box,
+            _quality_progress_label(
+                "FULL",
+                full_estimate_bytes,
+                full_available_bytes,
+                download_state,
+                displayed_quality_mode,
+            ),
+        )
         if active_view_scope:
             camera_view_row = full_box.row(align=True)
             camera_view_row.label(text="Full Quality uses Camera View.", icon="CAMERA_DATA")
@@ -1556,12 +1767,6 @@ def _draw_live_telemetry(layout, scene):
                 text="Bring Camera",
                 icon="CAMERA_DATA",
             )
-        else:
-            full_meta_row = full_box.row(align=True)
-            full_meta_row.label(text=_estimate_mb_label("FULL"), icon="DISK_DRIVE")
-        if not full_allowed and not active_view_scope:
-            credit_notice = full_box.row(align=True)
-            credit_notice.label(text="Account status unavailable", icon="INFO")
         if quick_preview_prepared:
             estimate_notice = full_box.row(align=True)
             estimate_notice.label(text="Clear Quick Preview before downloading Full Quality.", icon="INFO")
@@ -1574,6 +1779,21 @@ def _draw_live_telemetry(layout, scene):
         elif not full_size_known or not full_price_known:
             estimate_notice = full_box.row(align=True)
             estimate_notice.label(text="Full Quality price is being calculated.", icon="INFO")
+        if monthly_active and monthly_limit > 0.0:
+            billed = max(0.0, float(monthly_spent or 0.0))
+            limit = max(0.0, float(monthly_limit or 0.0))
+            factor = max(0.0, min(1.0, billed / limit)) if limit > 0.0 else 0.0
+            if hasattr(full_box, "progress"):
+                full_box.progress(
+                    factor=factor,
+                    type='BAR',
+                    text=f"€{billed:.2f} / €{limit:.2f} billed this month",
+                )
+            else:
+                full_box.label(
+                    text=f"Billed this month: €{billed:.2f} / €{limit:.2f}",
+                    icon="TIME",
+                )
 
         data_packs_box = _draw_collapsible_subsection(
             quality_box,
@@ -2626,7 +2846,7 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             anim_has_new_cost = bool(anim_credits > 0.000001)
             if anim_account_known and anim_has_new_cost and (not monthly_active or monthly_remaining + 0.000001 < anim_credits):
                 final_render_allowed = False
-                final_render_box.label(text=f"Set up Monthly Billing or free cap space (€{monthly_remaining:.2f} remaining).", icon="INFO")
+                final_render_box.label(text=f"Request Monthly Billing or free cap space (€{monthly_remaining:.2f} remaining).", icon="INFO")
         if _is_animation_render_running():
             runtime, runtime_code, runtime_text = _resolve_runtime_display(scene)
             _draw_resolve_download_indicator(final_render_box, scene, runtime, runtime_code, runtime_text)

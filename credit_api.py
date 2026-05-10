@@ -72,6 +72,7 @@ _PRICE_FIELDS = {
     "discount_eur",
     "already_licenced_gross_eur",
     "already_licenced_saving_eur",
+    "partial_licence_credit_eur",
     "minimum_eur",
     "added_eur",
     "added_credits",
@@ -425,11 +426,25 @@ def estimate_credits_for_tiles(tiles, quality_mode="FULL") -> dict:
         )
         return _zero_backend_unavailable_payload(tile_keys, reason="backend_incomplete")
     payload_summary = _summarize_pricing_rows(payload_tiles)
+    partial_credit = _money_round(payload.get("partial_licence_credit_eur", 0.0))
+    partial_count = int(payload.get("partial_licence_tile_count", 0) or 0)
+    if partial_count <= 0:
+        partial_rows = [
+            row for row in payload_tiles
+            if isinstance(row, dict) and bool(row.get("partially_licenced", False))
+        ]
+        partial_count = len(partial_rows)
+        partial_credit = _money_round(sum(
+            _money_round(row.get("upgrade_credit_applied", 0.0))
+            for row in partial_rows
+        ))
     return {
         "credits": _money_round(payload_summary.get("credits", 0.0)),
         "paid_tile_count": int(payload_summary.get("paid_tile_count", 0) or 0),
         "free_tile_count": int(payload_summary.get("free_tile_count", 0) or 0),
         "tile_count": int(payload_summary.get("tile_count", len(payload_tiles)) or 0),
+        "partial_licence_tile_count": int(partial_count),
+        "partial_licence_credit_eur": float(partial_credit),
         "tiles": payload_tiles,
         "excluded_tiles": [_round_price_fields(entry) for entry in list(payload.get("excluded_tiles", ()) or ())],
         "authoritative": True,

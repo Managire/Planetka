@@ -350,11 +350,6 @@ def _scene_full_quality_price_eur(scene):
     if scene is None:
         return None
     try:
-        from .credit_api import clear_credit_caches
-        clear_credit_caches()
-    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed clearing credit caches during checkout refresh", exc_info=True)
-    try:
         prefs = get_prefs()
         base_path = _normalize_texture_source_path(str(getattr(prefs, "texture_base_path", "") or "")) if prefs else ""
         from .planetka_runtime.view_telemetry import build_resolve_cost_breakdown
@@ -532,6 +527,8 @@ def _populate_region_pack_info_operator(operator, offer):
     operator.total_tile_count = max(0, _region_offer_int(offer, "tile_count", 0))
     operator.already_licenced_tile_count = max(0, _region_offer_int(offer, "already_licenced_tile_count", 0))
     operator.already_licenced_saving_eur = max(0.0, _region_offer_number(offer, "already_licenced_saving_eur", 0.0))
+    operator.partial_licence_tile_count = max(0, _region_offer_int(offer, "partial_licence_tile_count", 0))
+    operator.partial_licence_credit_eur = max(0.0, _region_offer_number(offer, "partial_licence_credit_eur", 0.0))
     operator.full_price_eur = max(0.0, _region_offer_number(offer, "gross_eur", _region_offer_number(offer, "gross_price_eur", 0.0)))
     operator.discount_percent = max(0, _region_offer_int(offer, "discount_percent", 0))
     operator.discount_eur = max(0.0, _region_offer_number(offer, "discount_eur", 0.0))
@@ -836,8 +833,12 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
     confirm_purchase: BoolProperty(default=False, options={'HIDDEN', 'SKIP_SAVE'})
     confirm_new_tile_count: IntProperty(default=0, options={'HIDDEN', 'SKIP_SAVE'})
     confirm_already_licenced_tile_count: IntProperty(default=0, options={'HIDDEN', 'SKIP_SAVE'})
+    confirm_already_licenced_saving_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
+    confirm_partially_licenced_tile_count: IntProperty(default=0, options={'HIDDEN', 'SKIP_SAVE'})
     confirm_free_tile_count: IntProperty(default=0, options={'HIDDEN', 'SKIP_SAVE'})
     confirm_total_bytes: StringProperty(default="0", options={'HIDDEN', 'SKIP_SAVE'})
+    confirm_full_price_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
+    confirm_partial_credit_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
     confirm_price_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
     confirm_monthly_spent_after_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
     confirm_monthly_limit_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
@@ -871,8 +872,12 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
                 self.confirm_purchase = True
                 self.confirm_new_tile_count = int((summary or {}).get("new_tile_count", 0) or 0)
                 self.confirm_already_licenced_tile_count = int((summary or {}).get("already_licenced_tile_count", 0) or 0)
+                self.confirm_already_licenced_saving_eur = float((summary or {}).get("already_licenced_saving_eur", 0.0) or 0.0)
+                self.confirm_partially_licenced_tile_count = int((summary or {}).get("partial_licence_tile_count", 0) or 0)
                 self.confirm_free_tile_count = int((summary or {}).get("free_tile_count", 0) or 0)
                 self.confirm_total_bytes = str(int((summary or {}).get("total_bytes", 0) or 0))
+                self.confirm_full_price_eur = float((summary or {}).get("full_price_eur", 0.0) or 0.0)
+                self.confirm_partial_credit_eur = float((summary or {}).get("partial_licence_credit_eur", 0.0) or 0.0)
                 self.confirm_price_eur = float(price)
                 self.confirm_monthly_spent_after_eur = float((summary or {}).get("monthly_spent_eur", 0.0) or 0.0) + float(price)
                 self.confirm_monthly_limit_eur = float((summary or {}).get("monthly_limit_eur", 0.0) or 0.0)
@@ -922,8 +927,25 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
         if isinstance(estimates, dict) and estimates.get("FULL") is not None:
             total_bytes = estimates.get("FULL")
         charged_tiles = list(breakdown.get("charged_tiles", ()) or ())
+        partial_tiles = list(breakdown.get("partial_tiles", ()) or ())
         excluded_tiles = list(breakdown.get("excluded_tiles", ()) or ())
         free_tiles = list(breakdown.get("free_tiles", ()) or ())
+        full_price = 0.0
+        already_licenced_saving = 0.0
+        for entry in list(breakdown.get("tiles", ()) or ()):
+            if not isinstance(entry, dict):
+                continue
+            try:
+                full_price += max(0.0, float(entry.get("gross_price_eur", entry.get("gross_credits", entry.get("credits", 0.0))) or 0.0))
+            except (TypeError, ValueError):
+                pass
+        for entry in excluded_tiles:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                already_licenced_saving += max(0.0, float(entry.get("gross_price_eur", entry.get("gross_credits", entry.get("credits", 0.0))) or 0.0))
+            except (TypeError, ValueError):
+                pass
         charged_tile_keys = []
         for entry in charged_tiles:
             key = str(entry.get("tile_key", "") if isinstance(entry, dict) else entry or "").strip()
@@ -935,9 +957,13 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
             "monthly_spent_eur": monthly_spent,
             "monthly_remaining_eur": monthly_remaining,
             "price_eur": float(max(0.0, float(breakdown.get("total_credits", 0.0) or 0.0))),
+            "full_price_eur": float(max(0.0, full_price)),
             "total_bytes": int(max(0, int(total_bytes or 0))),
             "new_tile_count": len(charged_tiles),
             "already_licenced_tile_count": len(excluded_tiles),
+            "already_licenced_saving_eur": float(max(0.0, already_licenced_saving)),
+            "partial_licence_tile_count": int(breakdown.get("partial_licence_tile_count", len(partial_tiles)) or 0),
+            "partial_licence_credit_eur": float(max(0.0, float(breakdown.get("partial_licence_credit_eur", 0.0) or 0.0))),
             "free_tile_count": len(free_tiles),
             "charged_tile_keys": charged_tile_keys,
         }
@@ -955,10 +981,21 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
         )
         box = layout.box()
         box.label(text=f"Charged tiles: {int(getattr(self, 'confirm_new_tile_count', 0) or 0)}", icon="TEXTURE")
+        box.label(text=f"Full Price: {_format_eur_for_ui(getattr(self, 'confirm_full_price_eur', 0.0))}", icon="SOLO_ON")
         box.label(
-            text=f"Already licenced: {int(getattr(self, 'confirm_already_licenced_tile_count', 0) or 0)}",
+            text=(
+                f"Already Licenced: {int(getattr(self, 'confirm_already_licenced_tile_count', 0) or 0)} "
+                f"(-{_format_eur_for_ui(getattr(self, 'confirm_already_licenced_saving_eur', 0.0))})"
+            ),
             icon="CHECKMARK",
         )
+        partial_count = int(getattr(self, "confirm_partially_licenced_tile_count", 0) or 0)
+        partial_credit = float(getattr(self, "confirm_partial_credit_eur", 0.0) or 0.0)
+        box.label(
+            text=f"Partially Licenced: {partial_count} (-{_format_eur_for_ui(partial_credit)})",
+            icon="INFO",
+        )
+        box.label(text="Volume Discount: 0% (-€0.00)", icon="SORTSIZE")
         free_count = int(getattr(self, "confirm_free_tile_count", 0) or 0)
         if free_count > 0:
             box.label(text=f"Free / not charged: {free_count}", icon="HIDE_OFF")
@@ -967,7 +1004,7 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
         except (TypeError, ValueError):
             total_bytes = 0
         box.label(text=f"Data size: {_format_bytes_for_ui(total_bytes)}", icon="DISK_DRIVE")
-        box.label(text=f"Price: {_format_eur_for_ui(getattr(self, 'confirm_price_eur', 0.0))}", icon="USER")
+        box.label(text=f"Final Price: {_format_eur_for_ui(getattr(self, 'confirm_price_eur', 0.0))}", icon="USER")
         spent_after = float(getattr(self, "confirm_monthly_spent_after_eur", 0.0) or 0.0)
         monthly_limit = float(getattr(self, "confirm_monthly_limit_eur", 0.0) or 0.0)
         if monthly_limit > 0.0:
@@ -1131,7 +1168,10 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
                 monthly_remaining = 0.0
                 scene_price = 0.0
             if scene_price > 0.000001 and (not monthly_active or monthly_remaining + 0.000001 < scene_price):
-                checkout_result = bpy.ops.planetka.open_credit_checkout(checkout_option="SCENE")
+                checkout_result = bpy.ops.planetka.open_credit_checkout(
+                    'INVOKE_DEFAULT',
+                    checkout_option="OPTIONS",
+                )
                 return {'FINISHED'} if "FINISHED" in checkout_result else {'CANCELLED'}
 
         try:
@@ -1181,7 +1221,7 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
 class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
     bl_idname = "planetka.open_credit_checkout"
     bl_label = "Open Planetka Payment"
-    bl_description = "Open Planetka payment for Full Quality data or Monthly Billing setup"
+    bl_description = "Open Planetka payment for Full Quality data or request Monthly Billing"
 
     checkout_option: EnumProperty(
         name="Payment Option",
@@ -1189,7 +1229,7 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
             ("OPTIONS", "Payment Options", "Choose how to pay for Planetka data"),
             ("SCENE", "Buy This Scene", "Pay the exact current Full Quality scene price"),
             ("REGION_PACK", "Buy Region Pack", "Buy a Full Quality Data Pack"),
-            ("MONTHLY_BILLING_SETUP", "Set Up Monthly Billing", "Verify a payment method and enable the limited monthly cap"),
+            ("MONTHLY_BILLING_SETUP", "Request Monthly Billing", "Request monthly billing access"),
         ),
         default="OPTIONS",
         options={'HIDDEN', 'SKIP_SAVE'},
@@ -1211,6 +1251,31 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
         default="FULL",
         options={'HIDDEN', 'SKIP_SAVE'},
     )
+
+    def _checkout_error_message(self, exc):
+        payload = getattr(exc, "payload", None)
+        if not isinstance(payload, dict):
+            payload = {}
+        message = str(payload.get("message") or payload.get("error") or getattr(exc, "error", "") or exc or "").strip()
+        if not message:
+            message = "Checkout could not be created."
+        if "amount_below_stripe_minimum" in message or str(payload.get("error", "")).strip() == "amount_below_stripe_minimum":
+            minimum = payload.get("minimum_eur")
+            try:
+                minimum_text = f"€{float(minimum):.2f}"
+            except (TypeError, ValueError):
+                minimum_text = "Stripe's minimum"
+            return (
+                f"This scene price is below {minimum_text}. "
+                "Use Request Monthly Billing or choose a larger Full Quality data pack."
+            )
+        return message.replace("_", " ")
+
+    def _checkout_error_key(self, exc):
+        payload = getattr(exc, "payload", None)
+        if not isinstance(payload, dict):
+            payload = {}
+        return str(payload.get("error") or getattr(exc, "error", "") or exc or "").strip().lower()
 
     def _open_url(self, url):
         safe_url = str(url or "").strip()
@@ -1271,7 +1336,7 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
         ).checkout_option = "SCENE"
         layout.operator(
             "planetka.open_credit_checkout",
-            text="Set Up Monthly Billing",
+            text="Request Monthly Billing",
             icon="URL",
         ).checkout_option = "MONTHLY_BILLING_SETUP"
 
@@ -1305,10 +1370,14 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
                 logger.debug("Planetka region pack checkout creation failed; refreshing offers", exc_info=True)
                 self.report({'WARNING'}, f"Unable to open Planetka Data Pack payment yet: {exc}. Prices are refreshing.")
                 return {'CANCELLED'}
+            checkout_message = self._checkout_error_message(exc)
+            if self._checkout_error_key(exc) == "amount_below_stripe_minimum":
+                self.report({'WARNING'}, checkout_message)
+                return {'CANCELLED'}
             return fail(
                 self,
-                f"Unable to open Planetka payment: {exc}",
-                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                f"Unable to open Planetka payment: {checkout_message}",
+                code=ErrorCode.PAYMENT_CHECKOUT_FAILED,
                 logger=logger,
                 exc=exc,
                 log_message="Planetka checkout creation failed",
@@ -1338,7 +1407,7 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
             return fail(
                 self,
                 "Could not open Planetka payment page.",
-                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                code=ErrorCode.PAYMENT_CHECKOUT_FAILED,
                 logger=logger,
             )
         if option in {"SCENE", "REGION_PACK"}:
@@ -1427,6 +1496,8 @@ class PLANETKA_OT_RegionPackInfo(bpy.types.Operator):
     total_tile_count: IntProperty(default=0, options={'HIDDEN', 'SKIP_SAVE'})
     already_licenced_tile_count: IntProperty(default=0, options={'HIDDEN', 'SKIP_SAVE'})
     already_licenced_saving_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
+    partial_licence_tile_count: IntProperty(default=0, options={'HIDDEN', 'SKIP_SAVE'})
+    partial_licence_credit_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
     full_price_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
     discount_percent: IntProperty(default=0, options={'HIDDEN', 'SKIP_SAVE'})
     discount_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
@@ -1471,6 +1542,15 @@ class PLANETKA_OT_RegionPackInfo(bpy.types.Operator):
             ),
             icon="CHECKMARK",
         )
+        partial_count = int(getattr(self, "partial_licence_tile_count", 0) or 0)
+        partial_credit = float(getattr(self, "partial_licence_credit_eur", 0.0) or 0.0)
+        summary.label(
+            text=(
+                f"Partially Licenced: {partial_count} tile{'s' if partial_count != 1 else ''} "
+                f"(-{_format_eur_for_ui(partial_credit)})"
+            ),
+            icon="INFO",
+        )
         discount = int(getattr(self, "discount_percent", 0) or 0)
         summary.label(
             text=(
@@ -1496,12 +1576,6 @@ class PLANETKA_OT_RegionPackInfo(bpy.types.Operator):
         checkout.region_pack_id = str(getattr(self, "region_pack_id", "") or "")
         checkout.region_pack_name = name
         checkout.included_countries = str(getattr(self, "included_countries", "") or "")
-        _draw_region_pack_upsell_options(
-            layout,
-            context,
-            current_region_pack_id=str(getattr(self, "region_pack_id", "") or ""),
-            title="Similar Options",
-        )
 
     def execute(self, _context):
         return {'FINISHED'}
@@ -1595,18 +1669,17 @@ class PLANETKA_OT_DataCostBreakdown(bpy.types.Operator):
             price_text = self._price_text(entry.get("credits", 0.0))
             original_price = 0.0
             charged_price = 0.0
-            if show_original_price:
-                try:
-                    original_price = float(
-                        entry.get(
-                            "gross_price_eur",
-                            entry.get("gross_credits", entry.get("credits", 0.0)),
-                        ) or 0.0
-                    )
-                    charged_price = float(entry.get("credits", 0.0) or 0.0)
-                except (TypeError, ValueError):
-                    original_price = 0.0
-                    charged_price = 0.0
+            try:
+                original_price = float(
+                    entry.get(
+                        "gross_price_eur",
+                        entry.get("gross_credits", entry.get("credits", 0.0)),
+                    ) or 0.0
+                )
+                charged_price = float(entry.get("credits", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                original_price = 0.0
+                charged_price = 0.0
             reason = str(entry.get("free_reason", "") or "").strip()
             row = box.row(align=True)
             row.label(text=tile_key or "Unknown")
@@ -1622,12 +1695,25 @@ class PLANETKA_OT_DataCostBreakdown(bpy.types.Operator):
             if upgrade_credit > 0.0:
                 upgrade_row = box.row(align=True)
                 upgrade_row.label(
-                    text=f"  upgrade credit from previously licenced lower detail: {self._price_text(upgrade_credit)}",
+                    text=(
+                        f"  Full Price: {self._price_text(original_price)}; "
+                        f"Already Licenced: -€0.00; "
+                        f"Partially Licenced: -{self._price_text(upgrade_credit)}; "
+                        f"Volume Discount: 0% (-€0.00); "
+                        f"Final Price: {self._price_text(charged_price)}"
+                    ),
                     icon="INFO",
                 )
             if show_original_price and original_price > charged_price + 1e-9:
                 original_row = box.row(align=True)
-                original_row.label(text=f"  No charge: already licenced. Original price: {self._price_text(original_price)}", icon="INFO")
+                original_row.label(
+                    text=(
+                        f"  Full Price: {self._price_text(original_price)}; "
+                        f"Already Licenced: -{self._price_text(original_price)}; "
+                        f"Volume Discount: 0% (-€0.00); Final Price: €0.00"
+                    ),
+                    icon="INFO",
+                )
             if (
                 reason
                 and reason not in {"already_unlocked", "already_owned", "already_listed_in_earlier_segment"}
@@ -1713,20 +1799,64 @@ class PLANETKA_OT_DataCostBreakdown(bpy.types.Operator):
         has_nonzero_price = bool(mode != "PREVIEW" and float(total_credits or 0.0) > 0.000001)
         if mode == "PREVIEW":
             header.label(text="Total price: Free")
-        elif has_nonzero_price:
-            header.label(text=f"Total price: {self._price_text(total_credits)}")
-        if mode != "PREVIEW" and has_nonzero_price:
-            header.label(
-                text="Price is based on land area and texture detail; ocean-only, coarse, and already-licenced tiles are not charged.",
+        if mode != "PREVIEW":
+            all_tiles = list(breakdown.get("tiles", ()) or ())
+            charged_tiles = list(breakdown.get("charged_tiles", ()) or ())
+            excluded_tiles = list(breakdown.get("excluded_tiles", ()) or ())
+            partial_count = int(breakdown.get("partial_licence_tile_count", len(breakdown.get("partial_tiles", ()) or ())) or 0)
+            partial_credit = float(breakdown.get("partial_licence_credit_eur", 0.0) or 0.0)
+            full_price = 0.0
+            already_deduction = 0.0
+            for entry in all_tiles:
+                if not isinstance(entry, dict):
+                    continue
+                try:
+                    gross = float(entry.get("gross_price_eur", entry.get("gross_credits", entry.get("credits", 0.0))) or 0.0)
+                except (TypeError, ValueError):
+                    gross = 0.0
+                full_price += max(0.0, gross)
+            for entry in excluded_tiles:
+                if not isinstance(entry, dict):
+                    continue
+                try:
+                    gross = float(entry.get("gross_price_eur", entry.get("gross_credits", entry.get("credits", 0.0))) or 0.0)
+                except (TypeError, ValueError):
+                    gross = 0.0
+                already_deduction += max(0.0, gross)
+            price_box = header.box()
+            price_box.label(
+                text=f"New Tiles / Total Tiles: {len(charged_tiles)} / {len(all_tiles)}",
+                icon="TEXTURE",
+            )
+            price_box.label(text=f"Full Price: {self._price_text(full_price)}", icon="SOLO_ON")
+            price_box.label(
+                text=(
+                    f"Already Licenced: {len(excluded_tiles)} tile{'s' if len(excluded_tiles) != 1 else ''} "
+                    f"(-{self._price_text(already_deduction)})"
+                ),
+                icon="CHECKMARK",
+            )
+            price_box.label(
+                text=(
+                    f"Partially Licenced: {partial_count} tile{'s' if partial_count != 1 else ''} "
+                    f"(-{self._price_text(partial_credit)})"
+                ),
                 icon="INFO",
             )
-        header.label(
-            text=(
-                f"Tiles: {len(breakdown.get('tiles', ()) or ())} total, "
-                f"{len(breakdown.get('charged_tiles', ()) or ())} charged, "
-                f"{len(breakdown.get('excluded_tiles', ()) or ())} already licenced"
+            price_box.label(text="Volume Discount: 0% (-€0.00)", icon="SORTSIZE")
+            price_box.label(text=f"Final Price: {self._price_text(total_credits)}", icon="USER")
+            if has_nonzero_price:
+                header.label(
+                    text="Price is based on land area and texture detail; ocean-only, coarse, and already-licenced tiles are not charged.",
+                    icon="INFO",
+                )
+            header.label(
+                text=(
+                    f"Tiles: {len(all_tiles)} total, "
+                    f"{len(charged_tiles)} charged, "
+                    f"{len(excluded_tiles)} already licenced"
+                )
             )
-        )
 
         self._draw_rows(
             layout,
