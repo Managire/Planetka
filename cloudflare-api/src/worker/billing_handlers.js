@@ -84,7 +84,7 @@ async function verifyStripeWebhook(request, env, rawBody, deps) {
 async function claimStripeWebhookEvent(db, event, deps) {
   const eventId = String(event && event.id || "").trim();
   if (!eventId) {
-    return { inserted: false, eventId: "" };
+    return { inserted: false, eventId: "", processingNeeded: false };
   }
   const eventType = String(event && event.type || "").trim() || "unknown";
   const stripeCreatedRaw = Number(event && event.created);
@@ -99,14 +99,119 @@ async function claimStripeWebhookEvent(db, event, deps) {
         event_id,
         event_type,
         stripe_created,
-        received_at
-      ) VALUES (?, ?, ?, ?, ?)
+        received_at,
+        processing_status,
+        last_attempt_at,
+        attempt_count
+      ) VALUES (?, ?, ?, ?, ?, 'processing', ?, 1)
       ON CONFLICT(event_id) DO NOTHING
     `,
-    [crypto.randomUUID(), eventId, eventType, stripeCreated, deps.nowIso()],
+    [crypto.randomUUID(), eventId, eventType, stripeCreated, deps.nowIso(), deps.nowIso()],
   );
   const inserted = Number(result && result.meta && result.meta.changes) > 0;
-  return { inserted, eventId, eventType };
+  if (inserted) {
+    return { inserted: true, eventId, eventType, processingNeeded: true, status: "processing" };
+  }
+  const existing = await deps.dbGet(
+    db,
+    `
+      SELECT processing_status, attempt_count, last_attempt_at
+      FROM stripe_webhook_events
+      WHERE event_id = ?
+      LIMIT 1
+    `,
+    [eventId],
+  );
+  const status = String(existing && existing.processing_status || "").trim().toLowerCase();
+  if (status === "processed") {
+    return {
+      inserted: false,
+      eventId,
+      eventType,
+      processingNeeded: false,
+      status: "processed",
+      attemptCount: Number(existing && existing.attempt_count || 0) || 0,
+    };
+  }
+  const lastAttemptMs = Date.parse(String(existing && existing.last_attempt_at || ""));
+  const processingAgeSeconds = Number.isFinite(lastAttemptMs)
+    ? Math.max(0, Math.floor((Date.now() - lastAttemptMs) / 1000))
+    : 999999;
+  if (status === "processing" && processingAgeSeconds < 300) {
+    return {
+      inserted: false,
+      eventId,
+      eventType,
+      processingNeeded: false,
+      inProgress: true,
+      status: "processing",
+      processingAgeSeconds,
+      attemptCount: Number(existing && existing.attempt_count || 0) || 0,
+    };
+  }
+  await deps.dbRun(
+    db,
+    `
+      UPDATE stripe_webhook_events
+      SET
+        processing_status = 'processing',
+        last_attempt_at = ?,
+        attempt_count = COALESCE(attempt_count, 0) + 1,
+        error_message = NULL
+      WHERE event_id = ?
+        AND COALESCE(processing_status, 'processing') != 'processed'
+    `,
+    [deps.nowIso(), eventId],
+  );
+  return {
+    inserted: false,
+    eventId,
+    eventType,
+    processingNeeded: true,
+    status: status || "processing",
+    retry: true,
+    attemptCount: Number(existing && existing.attempt_count || 0) || 0,
+  };
+}
+
+async function markStripeWebhookEventProcessed(db, eventId, deps) {
+  const safeEventId = String(eventId || "").trim();
+  if (!safeEventId) {
+    return;
+  }
+  await deps.dbRun(
+    db,
+    `
+      UPDATE stripe_webhook_events
+      SET
+        processing_status = 'processed',
+        processed_at = ?,
+        last_attempt_at = ?,
+        error_message = NULL
+      WHERE event_id = ?
+    `,
+    [deps.nowIso(), deps.nowIso(), safeEventId],
+  );
+}
+
+async function markStripeWebhookEventFailed(db, eventId, deps, error) {
+  const safeEventId = String(eventId || "").trim();
+  if (!safeEventId) {
+    return;
+  }
+  const message = String(error && error.message || error || "stripe_webhook_processing_failed").slice(0, 1000);
+  await deps.dbRun(
+    db,
+    `
+      UPDATE stripe_webhook_events
+      SET
+        processing_status = 'failed',
+        last_attempt_at = ?,
+        error_message = ?
+      WHERE event_id = ?
+    `,
+    [deps.nowIso(), message, safeEventId],
+  );
 }
 
 export async function handleStripeWebhook(request, env, deps) {
@@ -120,13 +225,34 @@ export async function handleStripeWebhook(request, env, deps) {
   if (!eventId) {
     return deps.json({ ok: false, error: "missing_stripe_event_id" }, 400, env);
   }
-  if (!claimedEvent.inserted) {
-    console.log("stripe.webhook.duplicate", JSON.stringify({ event_type: eventType, event_id: eventId }));
+  if (!claimedEvent.processingNeeded) {
+    if (claimedEvent.inProgress) {
+      console.log(
+        "stripe.webhook.processing_in_progress",
+        JSON.stringify({
+          event_type: eventType,
+          event_id: eventId,
+          age_seconds: claimedEvent.processingAgeSeconds || 0,
+        }),
+      );
+      return deps.json(
+        {
+          ok: false,
+          retry: true,
+          reason: "event_processing_in_progress",
+          event_type: eventType,
+          event_id: eventId,
+        },
+        409,
+        env,
+      );
+    }
+    console.log("stripe.webhook.duplicate_processed", JSON.stringify({ event_type: eventType, event_id: eventId }));
     return deps.json(
       {
         ok: true,
         ignored: true,
-        reason: "duplicate_event",
+        reason: "duplicate_event_processed",
         event_type: eventType,
         event_id: eventId,
       },
@@ -134,20 +260,32 @@ export async function handleStripeWebhook(request, env, deps) {
       env,
     );
   }
-  console.log("stripe.webhook.received", JSON.stringify({ event_type: eventType, event_id: eventId }));
+  console.log(
+    claimedEvent.inserted ? "stripe.webhook.received" : "stripe.webhook.retrying",
+    JSON.stringify({ event_type: eventType, event_id: eventId, status: claimedEvent.status || "" }),
+  );
+
+  const processedJson = async (payload, status = 200) => {
+    await markStripeWebhookEventProcessed(db, eventId, deps);
+    return deps.json(payload, status, env);
+  };
+  const failedJson = async (payload, status = 500, error = null) => {
+    await markStripeWebhookEventFailed(db, eventId, deps, error || payload && payload.error || "stripe_webhook_failed");
+    return deps.json(payload, status, env);
+  };
 
   if (eventType !== "checkout.session.completed") {
     console.log("stripe.webhook.ignored", JSON.stringify({ event_type: eventType }));
-    return deps.json({ ok: true, ignored: true, event_type: eventType }, 200, env);
+    return processedJson({ ok: true, ignored: true, event_type: eventType }, 200);
   }
 
   const session = event.data && event.data.object ? event.data.object : null;
   if (!session) {
-    return deps.json({ ok: false, error: "missing_checkout_session" }, 400, env);
+    return failedJson({ ok: false, error: "missing_checkout_session" }, 400);
   }
   const sessionId = String(session.id || "").trim();
   if (!sessionId) {
-    return deps.json({ ok: false, error: "missing_checkout_session_id" }, 400, env);
+    return failedJson({ ok: false, error: "missing_checkout_session_id" }, 400);
   }
   const metadata = stripeMetadata(session);
   const email = deps.normalizeEmail(
@@ -157,7 +295,7 @@ export async function handleStripeWebhook(request, env, deps) {
   );
   if (!email) {
     console.error("stripe.webhook.missing_email", JSON.stringify({ event_type: eventType }));
-    return deps.json({ ok: false, error: "missing_customer_email" }, 400, env);
+    return failedJson({ ok: false, error: "missing_customer_email" }, 400);
   }
   const paymentStatus = String(session.payment_status || "").trim().toLowerCase();
   const paidCheckout = paymentStatus === "paid" || paymentStatus === "no_payment_required";
@@ -166,7 +304,7 @@ export async function handleStripeWebhook(request, env, deps) {
       "stripe.webhook.ignored_unpaid_checkout",
       JSON.stringify({ event_type: eventType, email, payment_status: paymentStatus }),
     );
-    return deps.json(
+    return processedJson(
       {
         ok: true,
         ignored: true,
@@ -176,7 +314,6 @@ export async function handleStripeWebhook(request, env, deps) {
         payment_status: paymentStatus,
       },
       200,
-      env,
     );
   }
 
@@ -186,7 +323,7 @@ export async function handleStripeWebhook(request, env, deps) {
       "stripe.webhook.unsupported_purchase_type_ignored",
       JSON.stringify({ event_type: eventType, email, session_id: sessionId, purchase_type: purchaseType }),
     );
-    return deps.json(
+    return processedJson(
       {
         ok: true,
         ignored: true,
@@ -195,7 +332,6 @@ export async function handleStripeWebhook(request, env, deps) {
         purchase_type: purchaseType,
       },
       200,
-      env,
     );
   }
   if (
@@ -214,7 +350,7 @@ export async function handleStripeWebhook(request, env, deps) {
         "stripe.webhook.credit_purchase_missing_user",
         JSON.stringify({ event_type: eventType, email, session_id: sessionId, purchase_type: purchaseType }),
       );
-      return deps.json({ ok: false, error: "credit_purchase_user_not_found" }, 404, env);
+      return failedJson({ ok: false, error: "credit_purchase_user_not_found" }, 404);
     }
     await deps.ensureCreditTables(db);
     const userId = String(targetUser.id || "").trim();
@@ -244,7 +380,7 @@ export async function handleStripeWebhook(request, env, deps) {
             error: grant.error,
           }),
         );
-        return deps.json({ ok: false, error: grant.error }, 500, env);
+        return failedJson({ ok: false, error: grant.error }, 500, grant.error);
       }
       if (typeof deps.invalidateAnalyticsSnapshots === "function") {
         try {
@@ -268,7 +404,7 @@ export async function handleStripeWebhook(request, env, deps) {
           unlocked_tile_count: grant && grant.paid_tile_count || 0,
         }),
       );
-      return deps.json(
+      return processedJson(
         {
           ok: true,
           processed: true,
@@ -279,7 +415,6 @@ export async function handleStripeWebhook(request, env, deps) {
           unlocked_tile_count: grant && grant.paid_tile_count || 0,
         },
         200,
-        env,
       );
     }
 
@@ -308,7 +443,7 @@ export async function handleStripeWebhook(request, env, deps) {
           missing_tile_key: grant.missing_tile_key || "",
         }),
       );
-      return deps.json({ ok: false, error: grant.error, tile_key: grant.missing_tile_key || "" }, 500, env);
+      return failedJson({ ok: false, error: grant.error, tile_key: grant.missing_tile_key || "" }, 500, grant.error);
     }
     if (typeof deps.invalidateAnalyticsSnapshots === "function") {
       try {
@@ -332,7 +467,7 @@ export async function handleStripeWebhook(request, env, deps) {
         unlocked_tile_count: grant && grant.paid_tile_count || 0,
       }),
     );
-    return deps.json(
+    return processedJson(
       {
         ok: true,
         processed: true,
@@ -342,11 +477,10 @@ export async function handleStripeWebhook(request, env, deps) {
         unlocked_tile_count: grant && grant.paid_tile_count || 0,
       },
       200,
-      env,
     );
   }
 
-  return deps.json({ ok: true, ignored: true, reason: "unsupported_purchase_type", event_type: eventType }, 200, env);
+  return processedJson({ ok: true, ignored: true, reason: "unsupported_purchase_type", event_type: eventType }, 200);
 }
 
 export const billingInternals = {

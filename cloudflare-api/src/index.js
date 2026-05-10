@@ -2491,13 +2491,53 @@ async function ensureStripeWebhookEventsTable(db) {
         event_id TEXT NOT NULL UNIQUE,
         event_type TEXT NOT NULL,
         stripe_created INTEGER,
-        received_at TEXT NOT NULL
+        received_at TEXT NOT NULL,
+        processing_status TEXT NOT NULL DEFAULT 'processing',
+        processed_at TEXT,
+        last_attempt_at TEXT,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        error_message TEXT
       )
+    `,
+  );
+  for (const statement of [
+    `ALTER TABLE stripe_webhook_events ADD COLUMN processing_status TEXT NOT NULL DEFAULT 'processing'`,
+    `ALTER TABLE stripe_webhook_events ADD COLUMN processed_at TEXT`,
+    `ALTER TABLE stripe_webhook_events ADD COLUMN last_attempt_at TEXT`,
+    `ALTER TABLE stripe_webhook_events ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE stripe_webhook_events ADD COLUMN error_message TEXT`,
+  ]) {
+    try {
+      await dbRun(db, statement);
+    } catch (error) {
+      const message = String(error && error.message || "").toLowerCase();
+      if (!message.includes("duplicate column")) {
+        throw error;
+      }
+    }
+  }
+  await dbRun(
+    db,
+    `
+      UPDATE stripe_webhook_events
+      SET
+        processing_status = 'processed',
+        processed_at = COALESCE(processed_at, received_at),
+        last_attempt_at = COALESCE(last_attempt_at, received_at),
+        attempt_count = CASE
+          WHEN COALESCE(attempt_count, 0) <= 0 THEN 1
+          ELSE attempt_count
+        END
+      WHERE processing_status IS NULL OR TRIM(processing_status) = ''
     `,
   );
   await dbRun(
     db,
     `CREATE INDEX IF NOT EXISTS idx_stripe_webhook_events_received_at ON stripe_webhook_events(received_at DESC)`,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_stripe_webhook_events_status ON stripe_webhook_events(processing_status, received_at DESC)`,
   );
   stripeWebhookEventsTableReady = true;
 }
@@ -2705,30 +2745,6 @@ async function ensureApiKeyTables(db) {
 async function ensureCreditTables(db) {
   if (creditTablesReady) {
     return;
-  }
-  const accountColumns = await dbAll(db, `PRAGMA table_info(user_credit_accounts)`);
-  if (accountColumns.some((column) => [
-    "balance_credits",
-    "total_granted_credits",
-    "total_spent_credits",
-    "standard_quality_unlocked_at",
-    "standard_quality_checkout_session_id",
-    "standard_quality_paid_eur",
-    "monthly_billing_status",
-    "monthly_billing_limit_eur",
-    "monthly_billing_spent_eur",
-  ].includes(String(column && column.name || "").trim().toLowerCase()))) {
-    await dbRun(db, `DROP TABLE IF EXISTS user_credit_accounts`);
-  }
-  const ledgerColumns = await dbAll(db, `PRAGMA table_info(credit_ledger)`);
-  if (ledgerColumns.some((column) => [
-    "delta_credits",
-    "balance_after_credits",
-  ].includes(String(column && column.name || "").trim().toLowerCase()))) {
-    await dbRun(db, `DROP TABLE IF EXISTS credit_ledger`);
-  }
-  for (const retiredTable of ["monthly_billing_purchases", "monthly_billing_request_tokens"]) {
-    await dbRun(db, `DROP TABLE IF EXISTS ${retiredTable}`);
   }
   await dbRun(
     db,
