@@ -14,7 +14,6 @@ from .auth import (
     get_connected_email,
     get_status_message,
     is_authenticated,
-    sync_account_profile,
 )
 from .extension_prefs import get_earth_object, get_prefs
 from .geonames_db import get_search_status_text
@@ -55,12 +54,13 @@ RESOLVE_FAILURE_MESSAGE_KEY = "planetka_resolve_integrity_message"
 LAST_RESOLVE_TEXTURE_QUALITY_MODE_KEY = "planetka_last_resolve_texture_quality_mode"
 EARTH_TRANSFORM_SECTION_OPEN_KEY = "planetka_ui_earth_transform_open"
 DATA_CONTROL_MORE_OPTIONS_SECTION_OPEN_KEY = "planetka_ui_data_more_options_open"
-STANDARD_RESOLUTION_INFO_URL = "https://www.planetka.io/blender/standard-resolution-info"
 EARTH_RADIUS_SAFE_MIN_BU = 0.2
 EARTH_RADIUS_SAFE_MAX_BU = 20.0
 LOW_ALTITUDE_WARNING_EPS_KM = 0.05
-ACCOUNT_PANEL_PROFILE_SYNC_INTERVAL_SEC = 120.0
-_ACCOUNT_PANEL_LAST_PROFILE_SYNC_AT = 0.0
+SIDEBAR_ACCOUNT_REFRESH_INTERVAL_SEC = 20.0
+SIDEBAR_ACCOUNT_REFRESH_INITIAL_DELAY_SEC = 0.35
+_SIDEBAR_ACCOUNT_REFRESH_LAST_AT = 0.0
+_SIDEBAR_ACCOUNT_REFRESH_TIMER_REGISTERED = False
 
 
 def _float_close(value, target, tol=1e-4):
@@ -86,6 +86,73 @@ def _fmt_ms(value):
         return f"{float(value):.1f} ms"
     except (TypeError, ValueError):
         return "—"
+
+
+def _tag_view3d_redraw():
+    try:
+        wm = getattr(getattr(bpy, "context", None), "window_manager", None)
+        if wm is None:
+            return
+        for window in wm.windows:
+            screen = getattr(window, "screen", None)
+            if screen is None:
+                continue
+            for area in screen.areas:
+                if getattr(area, "type", "") == "VIEW_3D":
+                    area.tag_redraw()
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed tagging UI redraw", exc_info=True)
+
+
+def _sidebar_account_refresh_timer():
+    global _SIDEBAR_ACCOUNT_REFRESH_LAST_AT
+    global _SIDEBAR_ACCOUNT_REFRESH_TIMER_REGISTERED
+
+    _SIDEBAR_ACCOUNT_REFRESH_TIMER_REGISTERED = False
+    prefs = get_prefs()
+    if prefs is None or not is_authenticated(prefs):
+        return None
+
+    try:
+        cloud_status = get_cloud_connection_status(prefs=prefs, force=True, timeout=1.0)
+    except (AuthApiError, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: deferred Planetka Cloud refresh failed", exc_info=True)
+        cloud_status = {"online": False}
+
+    if bool(cloud_status.get("online", False)):
+        try:
+            from .credit_api import get_credit_account
+            get_credit_account(force=True, timeout=4.0, allow_refresh=False)
+        except (AuthApiError, TypeError, ValueError, RuntimeError, AttributeError):
+            logger.debug("Planetka: deferred credit account refresh failed", exc_info=True)
+
+    _SIDEBAR_ACCOUNT_REFRESH_LAST_AT = time.time()
+    _tag_view3d_redraw()
+    return None
+
+
+def _schedule_sidebar_account_refresh(force=False):
+    global _SIDEBAR_ACCOUNT_REFRESH_TIMER_REGISTERED
+
+    prefs = get_prefs()
+    if prefs is None or not is_authenticated(prefs):
+        return
+    now_ts = time.time()
+    cloud_status = get_cached_cloud_connection_status()
+    should_refresh = bool(force) or not bool(cloud_status.get("checked", False))
+    if not should_refresh:
+        elapsed = now_ts - float(_SIDEBAR_ACCOUNT_REFRESH_LAST_AT)
+        should_refresh = elapsed >= float(SIDEBAR_ACCOUNT_REFRESH_INTERVAL_SEC)
+    if not should_refresh or _SIDEBAR_ACCOUNT_REFRESH_TIMER_REGISTERED:
+        return
+    try:
+        bpy.app.timers.register(
+            _sidebar_account_refresh_timer,
+            first_interval=float(SIDEBAR_ACCOUNT_REFRESH_INITIAL_DELAY_SEC),
+        )
+        _SIDEBAR_ACCOUNT_REFRESH_TIMER_REGISTERED = True
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed scheduling deferred account refresh", exc_info=True)
 
 
 def _fmt_km(value):
@@ -199,7 +266,7 @@ def _normalize_texture_quality_for_ui(value):
     if token == "FULL":
         return "FULL"
     if token in {"BALANCED", "HALF"}:
-        return "BALANCED"
+        return "PREVIEW"
     if token == "PREVIEW":
         return "PREVIEW"
     return ""
@@ -222,8 +289,6 @@ def _last_visible_texture_quality_label(scene):
                 mode = ""
     if mode == "FULL":
         return "Full Quality"
-    if mode == "BALANCED":
-        return "Standard"
     return "Preview"
 
 
@@ -755,11 +820,11 @@ def _is_connected():
     prefs = get_prefs()
     if not is_authenticated(prefs):
         return False
-    try:
-        status = get_cloud_connection_status(prefs=prefs, force=False, timeout=1.5)
-    except (AuthApiError, RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed checking Planetka Cloud connectivity", exc_info=True)
+    status = get_cached_cloud_connection_status()
+    if not bool(status.get("checked", False)):
+        _schedule_sidebar_account_refresh(force=True)
         return False
+    _schedule_sidebar_account_refresh(force=False)
     return bool(status.get("online", False))
 
 
@@ -1052,30 +1117,17 @@ def _draw_account_panel(layout):
 
     from .extension_prefs import get_prefs
 
-    global _ACCOUNT_PANEL_LAST_PROFILE_SYNC_AT
-
     prefs = get_prefs()
     authenticated = bool(is_authenticated(prefs))
+    if authenticated:
+        _schedule_sidebar_account_refresh(force=False)
     cloud_status = (
-        get_cloud_connection_status(prefs=prefs, force=False, timeout=1.5)
+        get_cached_cloud_connection_status()
         if authenticated
         else {"online": False, "message": "", "checked": False}
     )
-    connected = bool(authenticated and cloud_status.get("online", False))
-    now_ts = time.time()
-    if connected and (now_ts - float(_ACCOUNT_PANEL_LAST_PROFILE_SYNC_AT)) >= float(ACCOUNT_PANEL_PROFILE_SYNC_INTERVAL_SEC):
-        _ACCOUNT_PANEL_LAST_PROFILE_SYNC_AT = now_ts
-        try:
-            sync_account_profile(prefs)
-        except (AuthApiError, TypeError, ValueError, RuntimeError, AttributeError):
-            logger.debug("Planetka: account panel profile sync failed", exc_info=True)
-    authenticated = bool(is_authenticated(prefs))
-    cloud_status = (
-        get_cloud_connection_status(prefs=prefs, force=False, timeout=1.5)
-        if authenticated
-        else {"online": False, "message": "", "checked": False}
-    )
-    connected = bool(authenticated and cloud_status.get("online", False))
+    checked = bool(cloud_status.get("checked", False))
+    connected = bool(authenticated and checked and cloud_status.get("online", False))
     status_message = get_status_message(prefs)
     key_text = str(getattr(prefs, "auth_api_key_input", "") or "").strip()
     key_mask = str(getattr(prefs, "auth_api_key_mask", "") or "").strip()
@@ -1115,20 +1167,22 @@ def _draw_account_panel(layout):
         email = str(get_connected_email(prefs) or "").strip()
     except (TypeError, ValueError, RuntimeError, AttributeError):
         email = str(getattr(prefs, "auth_email", "") or "").strip()
-    status_icon = "CHECKMARK" if connected else "ERROR"
+    status_icon = "CHECKMARK" if connected else ("INFO" if authenticated and not checked else "ERROR")
     if connected:
         status_text = "Status: Connected to Planetka Cloud"
+    elif authenticated and not checked:
+        status_text = "Status: Checking Planetka Cloud"
     elif authenticated:
         status_text = "Status: Not connected to Planetka Cloud"
     else:
         status_text = "Status: Not connected"
     status_row = layout.row(align=True)
-    status_row.alert = not bool(connected)
+    status_row.alert = bool(authenticated and checked and not connected)
     status_row.label(text=status_text, icon=status_icon)
     layout.label(text=f"Account: {email or '-'}", icon="USER")
 
     cloud_message = str(cloud_status.get("message", "") or "").strip()
-    if authenticated and not connected:
+    if authenticated and checked and not connected:
         warning_box = layout.box()
         warning_box.alert = True
         warning_box.label(text="Planetka Cloud connection required.", icon="ERROR")
@@ -1137,20 +1191,50 @@ def _draw_account_panel(layout):
     if connected:
         credit_payload = {}
         try:
-            from .credit_api import get_credit_account
-            credit_payload = get_credit_account(force=False)
+            from .credit_api import get_cached_credit_account
+            credit_payload = get_cached_credit_account()
         except (AuthApiError, TypeError, ValueError, RuntimeError, AttributeError):
             logger.debug("Planetka: failed reading credit account for UI", exc_info=True)
             credit_payload = {}
         credit_known = bool(credit_payload)
         try:
-            balance = float(credit_payload.get("balance_credits", 0.0) or 0.0)
-        except (TypeError, ValueError, AttributeError):
-            balance = 0.0
-        try:
             unlocked_count = int(credit_payload.get("unlocked_tile_count", 0) or 0)
         except (TypeError, ValueError, AttributeError):
             unlocked_count = 0
+        monthly = credit_payload.get("monthly_billing", {}) if isinstance(credit_payload, dict) else {}
+        monthly_active = bool(
+            isinstance(monthly, dict)
+            and (monthly.get("active", False) or credit_payload.get("monthly_billing_active", False))
+        )
+        monthly_status = str(
+            (monthly.get("status") if isinstance(monthly, dict) else "")
+            or credit_payload.get("monthly_billing_status", "")
+            or "none"
+        ).strip().lower()
+        try:
+            monthly_limit = float(
+                (monthly.get("limit_eur") if isinstance(monthly, dict) else None)
+                if isinstance(monthly, dict) and monthly.get("limit_eur") is not None
+                else credit_payload.get("monthly_billing_limit_eur", 0.0)
+            )
+        except (TypeError, ValueError, AttributeError):
+            monthly_limit = 0.0
+        try:
+            monthly_spent = float(
+                (monthly.get("spent_eur") if isinstance(monthly, dict) else None)
+                if isinstance(monthly, dict) and monthly.get("spent_eur") is not None
+                else credit_payload.get("monthly_billing_spent_eur", 0.0)
+            )
+        except (TypeError, ValueError, AttributeError):
+            monthly_spent = 0.0
+        try:
+            monthly_remaining = float(
+                (monthly.get("remaining_eur") if isinstance(monthly, dict) else None)
+                if isinstance(monthly, dict) and monthly.get("remaining_eur") is not None
+                else credit_payload.get("monthly_billing_remaining_eur", 0.0)
+            )
+        except (TypeError, ValueError, AttributeError):
+            monthly_remaining = 0.0
         preview_hold = {}
         try:
             preview_hold = credit_payload.get("preview_fair_usage_hold", {}) or credit_payload.get("previewFairUsageHold", {}) or {}
@@ -1160,39 +1244,33 @@ def _draw_account_panel(layout):
             (isinstance(preview_hold, dict) and preview_hold.get("held", False))
             or credit_payload.get("preview_fair_usage_held", False)
         )
-        balance_row = layout.row(align=True)
-        if credit_known and balance < 0.0:
-            balance_row.alert = True
+        monthly_row = layout.row(align=True)
         if not credit_known:
-            balance_row.label(text="Balance: —", icon="USER")
-        else:
-            balance_row.label(text=f"Balance: €{balance:.2f}", icon="USER")
-            add_balance_row = layout.row(align=True)
-            if balance < 0.0:
-                add_balance_row.alert = True
-            add_balance_row.operator(
-                "planetka.open_credit_checkout",
-                text="Add Balance",
-                icon="URL",
-            ).checkout_option = "BALANCE_OPTIONS"
-        layout.label(text=f"Licenced tiles: {unlocked_count}", icon="TEXTURE")
-        standard_unlocked = bool(
-            isinstance(credit_payload, dict)
-            and (
-                credit_payload.get("standard_quality_unlocked", False)
-                or str(credit_payload.get("standard_quality_unlocked_at", "") or "").strip()
+            monthly_row.label(text="Monthly Billing: —", icon="USER")
+        elif monthly_active:
+            monthly_row.label(
+                text=f"Monthly Billing: €{monthly_spent:.2f} / €{monthly_limit:.2f}",
+                icon="CHECKMARK",
             )
-        )
+            remaining_row = layout.row(align=True)
+            remaining_row.label(text=f"Remaining this month: €{max(0.0, monthly_remaining):.2f}", icon="TIME")
+        else:
+            monthly_row.label(text="Monthly Billing: Not active", icon="USER")
+            setup_row = layout.row(align=True)
+            setup_row.operator(
+                "planetka.open_credit_checkout",
+                text="Set Up Monthly Billing",
+                icon="URL",
+            ).checkout_option = "MONTHLY_BILLING_SETUP"
+            if monthly_status == "custom_pending_payment":
+                layout.label(text="Custom cap approved. Verify payment method to activate.", icon="INFO")
+        layout.label(text=f"Licenced tiles: {unlocked_count}", icon="TEXTURE")
         world_full_quality_unlocked = bool(
             isinstance(credit_payload, dict)
             and (
                 credit_payload.get("world_full_quality_unlocked", False)
                 or str(credit_payload.get("world_full_quality_unlocked_at", "") or "").strip()
             )
-        )
-        layout.label(
-            text=f"Standard Quality: {'Unlocked' if standard_unlocked else 'Not unlocked'}",
-            icon="CHECKMARK" if standard_unlocked else "LOCKED",
         )
         if world_full_quality_unlocked:
             layout.label(text="World Full Quality: Licenced", icon="WORLD")
@@ -1372,24 +1450,26 @@ def _draw_live_telemetry(layout, scene):
         _draw_resolve_download_indicator(quality_box, scene, runtime, runtime_code, runtime_text)
 
         try:
-            from .credit_api import get_credit_account
-            credit_account = get_credit_account(force=False)
+            from .credit_api import get_cached_credit_account
+            credit_account = get_cached_credit_account()
         except (AuthApiError, TypeError, ValueError, RuntimeError, AttributeError):
             credit_account = {}
+        if not credit_account:
+            _schedule_sidebar_account_refresh(force=False)
         credit_known = bool(credit_account)
-        try:
-            credit_balance = float(credit_account.get("balance_credits", 0.0) or 0.0)
-        except (AttributeError, TypeError, ValueError):
-            credit_balance = 0.0
-        standard_unlocked = bool(
-            isinstance(credit_account, dict)
-            and (
-                credit_account.get("standard_quality_unlocked", False)
-                or credit_account.get("balanced_quality_unlocked", False)
-                or str(credit_account.get("standard_quality_unlocked_at", "") or "").strip()
-                or str(credit_account.get("balanced_quality_unlocked_at", "") or "").strip()
-            )
+        monthly = credit_account.get("monthly_billing", {}) if isinstance(credit_account, dict) else {}
+        monthly_active = bool(
+            isinstance(monthly, dict)
+            and (monthly.get("active", False) or credit_account.get("monthly_billing_active", False))
         )
+        try:
+            monthly_remaining = float(
+                (monthly.get("remaining_eur") if isinstance(monthly, dict) else None)
+                if isinstance(monthly, dict) and monthly.get("remaining_eur") is not None
+                else credit_account.get("monthly_billing_remaining_eur", 0.0)
+            )
+        except (AttributeError, TypeError, ValueError):
+            monthly_remaining = 0.0
         world_full_quality_unlocked = bool(
             isinstance(credit_account, dict)
             and (
@@ -1398,13 +1478,11 @@ def _draw_live_telemetry(layout, scene):
             )
         )
         selected_auto_quality = _normalize_texture_quality_for_ui(getattr(props, "texture_quality_mode", "PREVIEW"))
-        if selected_auto_quality == "BALANCED" and not standard_unlocked:
-            selected_auto_quality = "PREVIEW"
-        if selected_auto_quality not in {"PREVIEW", "BALANCED"}:
+        if selected_auto_quality != "PREVIEW":
             selected_auto_quality = "PREVIEW"
 
-        standard_box = quality_box.box()
-        quality_buttons = standard_box.row(align=True)
+        preview_box = quality_box.box()
+        quality_buttons = preview_box.row(align=True)
         preview_col = quality_buttons.column(align=True)
         preview_col.operator(
             "planetka.set_texture_quality_and_resolve",
@@ -1413,24 +1491,6 @@ def _draw_live_telemetry(layout, scene):
             depress=(selected_auto_quality == "PREVIEW"),
         ).texture_quality_mode = "PREVIEW"
         preview_col.label(text=_estimate_mb_label("PREVIEW"), icon="DISK_DRIVE")
-
-        standard_col = quality_buttons.column(align=True)
-        standard_button = standard_col.row(align=True)
-        standard_button.enabled = bool(standard_unlocked)
-        standard_button.operator(
-            "planetka.set_texture_quality_and_resolve",
-            text="Standard",
-            icon="SHADING_TEXTURE",
-            depress=(selected_auto_quality == "BALANCED"),
-        ).texture_quality_mode = "BALANCED"
-        standard_col.label(text=_estimate_mb_label("BALANCED"), icon="DISK_DRIVE")
-        if not standard_unlocked:
-            unlock_row = standard_box.row(align=True)
-            unlock_row.operator(
-                "wm.url_open",
-                text="Unlock Standard Quality",
-                icon="URL",
-            ).url = STANDARD_RESOLUTION_INFO_URL
 
         quick_preview_prepared = _is_animation_prepared(scene)
         active_view_scope = _is_active_view_resolve_scope(scene)
@@ -1458,7 +1518,7 @@ def _draw_live_telemetry(layout, scene):
             full_allowed
             and credit_known
             and full_has_new_cost
-            and credit_balance <= 0.0
+            and (not monthly_active or monthly_remaining + 0.000001 < full_credits)
         )
 
         full_box = quality_box.box()
@@ -1499,30 +1559,9 @@ def _draw_live_telemetry(layout, scene):
         else:
             full_meta_row = full_box.row(align=True)
             full_meta_row.label(text=_estimate_mb_label("FULL"), icon="DISK_DRIVE")
-            if credit_known:
-                balance_meta = full_meta_row.row(align=True)
-                balance_meta.alignment = 'RIGHT'
-                if credit_balance < 0.0:
-                    balance_meta.alert = True
-                balance_meta.label(text=f"Balance: €{credit_balance:.2f}", icon="USER")
-
-        if credit_known:
-            if active_view_scope:
-                credit_notice = full_box.row(align=True)
-                if credit_balance < 0.0:
-                    credit_notice.alert = True
-                credit_notice.label(text=f"Balance: €{credit_balance:.2f}", icon="USER")
-            if credit_balance < 0.0:
-                add_balance_row = full_box.row(align=True)
-                add_balance_row.alert = True
-                add_balance_row.operator(
-                    "planetka.open_credit_checkout",
-                    text="Add Balance",
-                    icon="URL",
-                ).checkout_option = "BALANCE_OPTIONS"
-        elif not full_allowed and not active_view_scope:
+        if not full_allowed and not active_view_scope:
             credit_notice = full_box.row(align=True)
-            credit_notice.label(text="Balance unavailable", icon="INFO")
+            credit_notice.label(text="Account status unavailable", icon="INFO")
         if quick_preview_prepared:
             estimate_notice = full_box.row(align=True)
             estimate_notice.label(text="Clear Quick Preview before downloading Full Quality.", icon="INFO")
@@ -1539,14 +1578,14 @@ def _draw_live_telemetry(layout, scene):
         data_packs_box = _draw_collapsible_subsection(
             quality_box,
             scene,
-            "Full Quality Data Packs",
+            "Relevant Data Packs",
             "WORLD_DATA",
             DATA_CONTROL_MORE_OPTIONS_SECTION_OPEN_KEY,
             default_open=False,
         )
         if data_packs_box is not None:
             if world_full_quality_unlocked:
-                data_packs_box.label(text="All Full Quality Data Packs are already licenced.", icon="CHECKMARK")
+                data_packs_box.label(text="All relevant data packs are already licenced.", icon="CHECKMARK")
             else:
                 _draw_broader_region_offers(data_packs_box, scene, active_view_scope=active_view_scope)
 
@@ -2563,18 +2602,31 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             final_render_box.label(text="Animation price is not available yet. Generate keyframes or refresh pricing.", icon="INFO")
         if anim_credits > 0.0:
             anim_account_known = False
+            monthly_active = False
+            monthly_remaining = 0.0
             try:
-                from .credit_api import get_credit_account
-                anim_account = get_credit_account(force=False)
+                from .credit_api import get_cached_credit_account
+                anim_account = get_cached_credit_account()
                 anim_account_known = bool(anim_account)
-                anim_balance = float(anim_account.get("balance_credits", 0.0) or 0.0)
+                monthly = anim_account.get("monthly_billing", {}) if isinstance(anim_account, dict) else {}
+                monthly_active = bool(
+                    isinstance(monthly, dict)
+                    and (monthly.get("active", False) or anim_account.get("monthly_billing_active", False))
+                )
+                monthly_remaining = float(
+                    (monthly.get("remaining_eur") if isinstance(monthly, dict) and monthly.get("remaining_eur") is not None else anim_account.get("monthly_billing_remaining_eur", 0.0))
+                    if isinstance(anim_account, dict) else 0.0
+                )
             except (AuthApiError, TypeError, ValueError, RuntimeError, AttributeError):
                 anim_account_known = False
-                anim_balance = 0.0
+                monthly_active = False
+                monthly_remaining = 0.0
+            if not anim_account_known:
+                _schedule_sidebar_account_refresh(force=False)
             anim_has_new_cost = bool(anim_credits > 0.000001)
-            if anim_account_known and anim_has_new_cost and anim_balance <= 0.0:
+            if anim_account_known and anim_has_new_cost and (not monthly_active or monthly_remaining + 0.000001 < anim_credits):
                 final_render_allowed = False
-                final_render_box.label(text=f"Add balance to continue (€{anim_balance:.2f} available).", icon="INFO")
+                final_render_box.label(text=f"Set up Monthly Billing or free cap space (€{monthly_remaining:.2f} remaining).", icon="INFO")
         if _is_animation_render_running():
             runtime, runtime_code, runtime_text = _resolve_runtime_display(scene)
             _draw_resolve_download_indicator(final_render_box, scene, runtime, runtime_code, runtime_text)
@@ -2597,4 +2649,4 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             icon="INFO",
         )
         if not final_render_allowed:
-            final_render_box.label(text="Final Animation Render requires enough balance for selected tiles.", icon="INFO")
+            final_render_box.label(text="Final Animation Render requires enough Monthly Billing capacity for selected tiles.", icon="INFO")

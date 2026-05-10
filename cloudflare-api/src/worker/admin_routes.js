@@ -20,7 +20,7 @@ export async function dispatchAdminRoute(request, env, path, deps) {
     handleAdminUserSetPreviewHold,
     handleAdminUserReleasePreviewHold,
     handleAdminUserHardBlock,
-    handleAdminGiftCredits,
+    handleAdminSetMonthlyBilling,
     handleAdminUserSetPlan,
     handleAdminUserSetUnrestrictedQuality,
     handleAdminQaAuthReset,
@@ -113,9 +113,9 @@ export async function dispatchAdminRoute(request, env, path, deps) {
         return await handleAdminUserSetUnrestrictedQuality(request, env);
       }
       return null;
-    case "/admin/users/gift-credits":
+    case "/admin/users/monthly-billing":
       if (request.method === "POST") {
-        return await handleAdminGiftCredits(request, env);
+        return await handleAdminSetMonthlyBilling(request, env);
       }
       return null;
     case "/admin/qa/auth-reset":

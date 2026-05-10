@@ -186,8 +186,8 @@ class ResolveEarlyResult:
 def _normalize_texture_quality_mode(value):
     token = str(value or "").strip().upper()
     if token in {"HALF", "BALANCED"}:
-        return "BALANCED"
-    if token in {"FULL", "BALANCED", "PREVIEW"}:
+        return "PREVIEW"
+    if token in {"FULL", "PREVIEW"}:
         return token
     return "PREVIEW"
 

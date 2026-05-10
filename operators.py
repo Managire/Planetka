@@ -99,8 +99,6 @@ from .r2_source import (
     texture_file_exists,
 )
 
-STANDARD_RESOLUTION_INFO_URL = "https://www.planetka.io/blender/standard-resolution-info"
-
 _UNLOCKED_DOWNLOAD_REDRAW_TIMER_REGISTERED = False
 
 
@@ -540,7 +538,7 @@ def _populate_region_pack_info_operator(operator, offer):
     operator.price_eur = max(0.0, _region_offer_number(offer, "price_eur", _region_offer_number(offer, "credits", 0.0)))
 
 
-def _draw_region_pack_upsell_options(layout, context, *, current_region_pack_id="", title="Full Quality Data Pack options"):
+def _draw_region_pack_upsell_options(layout, context, *, current_region_pack_id="", title="Relevant Data Packs"):
     location = _region_offer_location_for_context(context)
     current_id = str(current_region_pack_id or "").strip()
     if location is None and not current_id:
@@ -816,7 +814,7 @@ from .planetka_ops.navigation_helpers import (
 class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
     bl_idname = "planetka.set_texture_quality_and_resolve"
     bl_label = "Purchase Confirmation"
-    bl_description = "Select Preview or Standard for personal-use automated resolving, or licence Full Quality textures for commercial use"
+    bl_description = "Select Preview resolving or licence Full Quality textures for commercial use"
 
     texture_quality_mode: EnumProperty(
         name="Texture Quality",
@@ -825,11 +823,6 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
                 "PREVIEW",
                 "Preview",
                 "Personal use only. Streamed/cached Preview textures for Planetka use",
-            ),
-            (
-                "BALANCED",
-                "Standard",
-                "Personal use only. Streamed/cached Standard Quality textures for Planetka use",
             ),
             (
                 "FULL",
@@ -846,7 +839,8 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
     confirm_free_tile_count: IntProperty(default=0, options={'HIDDEN', 'SKIP_SAVE'})
     confirm_total_bytes: StringProperty(default="0", options={'HIDDEN', 'SKIP_SAVE'})
     confirm_price_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
-    confirm_balance_after_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
+    confirm_monthly_spent_after_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
+    confirm_monthly_limit_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
     confirm_charged_tile_keys: StringProperty(default="", options={'HIDDEN', 'SKIP_SAVE'})
 
     @classmethod
@@ -856,8 +850,6 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
         )
         if mode == "PREVIEW":
             return "Use Preview textures for automated resolving. Personal use only."
-        if mode == "BALANCED":
-            return "Use Standard Quality textures for automated resolving. Personal use only."
         return "Licence and download Full Quality textures for Camera View. Commercial licence included."
 
     def invoke(self, context, event):
@@ -865,37 +857,52 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
         target_mode = _normalize_startup_texture_quality_mode(getattr(self, "texture_quality_mode", "PREVIEW"))
         if target_mode == "FULL" and not bool(getattr(self, "confirm_purchase", False)):
             try:
-                summary = self._positive_balance_purchase_summary(context)
+                summary = self._monthly_billing_purchase_summary(context)
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                logger.debug("Planetka: failed preparing Full Quality balance-purchase confirmation", exc_info=True)
+                logger.debug("Planetka: failed preparing Full Quality monthly-billing confirmation", exc_info=True)
                 summary = {}
             except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-                logger.debug("Planetka: failed preparing Full Quality balance-purchase confirmation", exc_info=True)
+                logger.debug("Planetka: failed preparing Full Quality monthly-billing confirmation", exc_info=True)
                 summary = {}
             price = float((summary or {}).get("price_eur", 0.0) or 0.0)
-            balance = float((summary or {}).get("balance_eur", 0.0) or 0.0)
-            if price > 0.000001 and balance > 0.0:
+            monthly_active = bool((summary or {}).get("monthly_active", False))
+            monthly_remaining = float((summary or {}).get("monthly_remaining_eur", 0.0) or 0.0)
+            if price > 0.000001 and monthly_active and monthly_remaining + 0.000001 >= price:
                 self.confirm_purchase = True
                 self.confirm_new_tile_count = int((summary or {}).get("new_tile_count", 0) or 0)
                 self.confirm_already_licenced_tile_count = int((summary or {}).get("already_licenced_tile_count", 0) or 0)
                 self.confirm_free_tile_count = int((summary or {}).get("free_tile_count", 0) or 0)
                 self.confirm_total_bytes = str(int((summary or {}).get("total_bytes", 0) or 0))
                 self.confirm_price_eur = float(price)
-                self.confirm_balance_after_eur = float(balance - price)
+                self.confirm_monthly_spent_after_eur = float((summary or {}).get("monthly_spent_eur", 0.0) or 0.0) + float(price)
+                self.confirm_monthly_limit_eur = float((summary or {}).get("monthly_limit_eur", 0.0) or 0.0)
                 self.confirm_charged_tile_keys = "|".join(str(key) for key in (summary or {}).get("charged_tile_keys", ()) if str(key).strip())
                 wm = getattr(context, "window_manager", None)
                 if wm is not None:
                     return wm.invoke_props_dialog(self, width=520)
         return self.execute(context)
 
-    def _positive_balance_purchase_summary(self, context):
+    def _monthly_billing_purchase_summary(self, context):
         scene = getattr(context, "scene", None)
         prefs = get_prefs()
         base_path = _normalize_texture_source_path(str(getattr(prefs, "texture_base_path", "") or "")) if prefs else ""
         from .credit_api import get_credit_account
         from .planetka_runtime.view_telemetry import build_resolve_cost_breakdown, get_resolve_size_estimates
         account = get_credit_account(force=False)
-        balance = float(account.get("balance_credits", 0.0) or 0.0) if account else 0.0
+        monthly = account.get("monthly_billing", {}) if isinstance(account, dict) else {}
+        monthly_active = bool(isinstance(monthly, dict) and (monthly.get("active", False) or account.get("monthly_billing_active", False)))
+        monthly_limit = float(
+            (monthly.get("limit_eur") if isinstance(monthly, dict) and monthly.get("limit_eur") is not None else account.get("monthly_billing_limit_eur", 0.0))
+            if isinstance(account, dict) else 0.0
+        )
+        monthly_spent = float(
+            (monthly.get("spent_eur") if isinstance(monthly, dict) and monthly.get("spent_eur") is not None else account.get("monthly_billing_spent_eur", 0.0))
+            if isinstance(account, dict) else 0.0
+        )
+        monthly_remaining = float(
+            (monthly.get("remaining_eur") if isinstance(monthly, dict) and monthly.get("remaining_eur") is not None else account.get("monthly_billing_remaining_eur", 0.0))
+            if isinstance(account, dict) else 0.0
+        )
         breakdown = build_resolve_cost_breakdown(
             scene=scene,
             scope_mode="CAMERA",
@@ -907,9 +914,9 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
         try:
             update_resolve_size_estimates(scene, scope_mode="CAMERA", base_path=base_path, include_full_price=False)
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed refreshing Full Quality estimates for balance-purchase confirmation", exc_info=True)
+            logger.debug("Planetka: failed refreshing Full Quality estimates for monthly-billing confirmation", exc_info=True)
         except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka: failed refreshing Full Quality estimates for balance-purchase confirmation", exc_info=True)
+            logger.debug("Planetka: failed refreshing Full Quality estimates for monthly-billing confirmation", exc_info=True)
         estimates = get_resolve_size_estimates(scene)
         total_bytes = breakdown.get("total_bytes", 0)
         if isinstance(estimates, dict) and estimates.get("FULL") is not None:
@@ -923,7 +930,10 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
             if key:
                 charged_tile_keys.append(key)
         return {
-            "balance_eur": balance,
+            "monthly_active": monthly_active,
+            "monthly_limit_eur": monthly_limit,
+            "monthly_spent_eur": monthly_spent,
+            "monthly_remaining_eur": monthly_remaining,
             "price_eur": float(max(0.0, float(breakdown.get("total_credits", 0.0) or 0.0))),
             "total_bytes": int(max(0, int(total_bytes or 0))),
             "new_tile_count": len(charged_tiles),
@@ -958,8 +968,10 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
             total_bytes = 0
         box.label(text=f"Data size: {_format_bytes_for_ui(total_bytes)}", icon="DISK_DRIVE")
         box.label(text=f"Price: {_format_eur_for_ui(getattr(self, 'confirm_price_eur', 0.0))}", icon="USER")
-        balance_after = float(getattr(self, "confirm_balance_after_eur", 0.0) or 0.0)
-        box.label(text=f"Balance after purchase: €{balance_after:.2f}", icon="USER")
+        spent_after = float(getattr(self, "confirm_monthly_spent_after_eur", 0.0) or 0.0)
+        monthly_limit = float(getattr(self, "confirm_monthly_limit_eur", 0.0) or 0.0)
+        if monthly_limit > 0.0:
+            box.label(text=f"Monthly Billing after purchase: €{spent_after:.2f} / €{monthly_limit:.2f}", icon="TIME")
         keys = [part.strip() for part in str(getattr(self, "confirm_charged_tile_keys", "") or "").split("|") if part.strip()]
         if keys:
             tile_box = layout.box()
@@ -975,7 +987,7 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
         _draw_region_pack_upsell_options(
             layout,
             context,
-            title="Full Quality Data Pack options",
+            title="Relevant Data Packs",
         )
 
     def execute(self, context):
@@ -998,6 +1010,13 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
             )
 
         target_mode = _normalize_startup_texture_quality_mode(getattr(self, "texture_quality_mode", "PREVIEW"))
+        if target_mode == "BALANCED":
+            return fail(
+                self,
+                "Standard Quality is no longer available. Use Preview or Full Quality.",
+                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                logger=logger,
+            )
         if target_mode == "FULL":
             if _is_active_view_resolve_scope(scene):
                 return fail(
@@ -1026,14 +1045,14 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
             if target_mode == "BALANCED":
                 return fail(
                     self,
-                    "Standard Quality is not unlocked for this Planetka account.",
+                    "Standard Quality is no longer available. Use Preview or Full Quality.",
                     code=ErrorCode.RESOLVE_PRECHECK_FAILED,
                     logger=logger,
                 )
             if target_mode == "FULL":
                 return fail(
                     self,
-                    "Full Quality requires non-negative Planetka balance.",
+                    "Full Quality requires direct payment or active Monthly Billing.",
                     code=ErrorCode.RESOLVE_PRECHECK_FAILED,
                     logger=logger,
                 )
@@ -1083,7 +1102,12 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
                 from .credit_api import get_credit_account
                 from .planetka_runtime.view_telemetry import build_resolve_cost_breakdown
                 account = get_credit_account(force=False)
-                balance = float(account.get("balance_credits", 0.0) or 0.0) if account else 0.0
+                monthly = account.get("monthly_billing", {}) if isinstance(account, dict) else {}
+                monthly_active = bool(isinstance(monthly, dict) and (monthly.get("active", False) or account.get("monthly_billing_active", False)))
+                monthly_remaining = float(
+                    (monthly.get("remaining_eur") if isinstance(monthly, dict) and monthly.get("remaining_eur") is not None else account.get("monthly_billing_remaining_eur", 0.0))
+                    if isinstance(account, dict) else 0.0
+                )
                 base_path = _normalize_texture_source_path(str(getattr(prefs, "texture_base_path", "") or ""))
                 breakdown = build_resolve_cost_breakdown(
                     scene=scene,
@@ -1102,10 +1126,11 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
                     (breakdown or {}).get("total_credits", (breakdown or {}).get("credits", 0.0)) or 0.0
                 )
             except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-                logger.debug("Planetka: failed checking balance before Full Quality resolve", exc_info=True)
-                balance = 0.0
+                logger.debug("Planetka: failed checking Monthly Billing before Full Quality resolve", exc_info=True)
+                monthly_active = False
+                monthly_remaining = 0.0
                 scene_price = 0.0
-            if scene_price > 0.000001 and balance <= 0.0:
+            if scene_price > 0.000001 and (not monthly_active or monthly_remaining + 0.000001 < scene_price):
                 checkout_result = bpy.ops.planetka.open_credit_checkout(checkout_option="SCENE")
                 return {'FINISHED'} if "FINISHED" in checkout_result else {'CANCELLED'}
 
@@ -1156,17 +1181,15 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
 class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
     bl_idname = "planetka.open_credit_checkout"
     bl_label = "Open Planetka Payment"
-    bl_description = "Open Stripe Checkout for Standard Quality, Full Quality scene data, or EUR balance"
+    bl_description = "Open Planetka payment for Full Quality data or Monthly Billing setup"
 
     checkout_option: EnumProperty(
         name="Payment Option",
         items=(
             ("OPTIONS", "Payment Options", "Choose how to pay for Planetka data"),
-            ("STANDARD_UNLOCK", "Unlock Standard Quality", "Unlock Standard Quality forever for this account"),
             ("SCENE", "Buy This Scene", "Pay the exact current Full Quality scene price"),
             ("REGION_PACK", "Buy Region Pack", "Buy a Full Quality Data Pack"),
-            ("BALANCE_OPTIONS", "Add Balance", "Choose a Planetka balance top-up amount"),
-            ("BALANCE_10", "Add €10 Balance", "Add €10 to your Planetka balance"),
+            ("MONTHLY_BILLING_SETUP", "Set Up Monthly Billing", "Verify a payment method and enable the limited monthly cap"),
         ),
         default="OPTIONS",
         options={'HIDDEN', 'SKIP_SAVE'},
@@ -1183,7 +1206,6 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
     texture_quality_mode: EnumProperty(
         name="Texture Quality",
         items=(
-            ("BALANCED", "Standard", "Standard Quality one-time unlock"),
             ("FULL", "Full Quality", "Full Quality paid land-detail data"),
         ),
         default="FULL",
@@ -1243,20 +1265,15 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
         layout = self.layout
         layout.label(text="Planetka payment", icon="URL")
         layout.operator(
-            "wm.url_open",
-            text="Unlock Standard Quality",
-            icon="URL",
-        ).url = STANDARD_RESOLUTION_INFO_URL
-        layout.operator(
             "planetka.open_credit_checkout",
             text="Buy This Scene",
             icon="URL",
         ).checkout_option = "SCENE"
         layout.operator(
             "planetka.open_credit_checkout",
-            text="Add Balance",
+            text="Set Up Monthly Billing",
             icon="URL",
-        ).checkout_option = "BALANCE_OPTIONS"
+        ).checkout_option = "MONTHLY_BILLING_SETUP"
 
     def execute(self, context):
         if _cancel_if_animation_render_active(self, "Planetka payment"):
@@ -1267,17 +1284,14 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
         try:
             from .credit_api import create_checkout_session
             tile_keys = self._current_scene_tile_keys(context) if option == "SCENE" else []
-            if option == "STANDARD_UNLOCK":
-                checkout_option = "standard_unlock"
-                quality_mode = "BALANCED"
-            elif option == "REGION_PACK":
+            if option == "REGION_PACK":
                 checkout_option = "region_pack"
                 quality_mode = "FULL"
-            elif option in {"BALANCE_OPTIONS", "BALANCE"}:
-                checkout_option = "balance_options"
+            elif option == "MONTHLY_BILLING_SETUP":
+                checkout_option = "monthly_billing_setup"
                 quality_mode = "FULL"
             else:
-                checkout_option = "balance_10" if option == "BALANCE_10" else "scene"
+                checkout_option = "scene"
                 quality_mode = "FULL"
             checkout = create_checkout_session(
                 checkout_option,
@@ -1300,13 +1314,8 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
                 log_message="Planetka checkout creation failed",
             )
         if bool(checkout.get("no_payment_required", False)):
-            if option == "STANDARD_UNLOCK":
-                try:
-                    from .credit_api import clear_credit_caches
-                    clear_credit_caches()
-                except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-                    logger.debug("Planetka: failed clearing credit cache after Standard unlock check", exc_info=True)
-                self.report({'INFO'}, "Standard Quality is already unlocked.")
+            if option == "MONTHLY_BILLING_SETUP":
+                self.report({'INFO'}, "Monthly Billing is already active.")
                 return {'FINISHED'}
             if option == "REGION_PACK":
                 try:
@@ -1507,7 +1516,6 @@ class PLANETKA_OT_DataCostBreakdown(bpy.types.Operator):
         name="Texture Quality",
         items=(
             ("PREVIEW", "Preview", "Preview data is free"),
-            ("BALANCED", "Standard", "Standard Quality data"),
             ("FULL", "Full Quality", "Full Quality paid land-detail data"),
         ),
         default="FULL",
@@ -1687,8 +1695,6 @@ class PLANETKA_OT_DataCostBreakdown(bpy.types.Operator):
         mode = str(breakdown.get("quality_mode", getattr(self, "texture_quality_mode", "FULL")) or "FULL").strip().upper()
         if mode == "PREVIEW":
             mode_label = "Preview"
-        elif mode == "BALANCED":
-            mode_label = "Standard"
         else:
             mode_label = "Full Quality"
         total_bytes = breakdown.get("panel_total_bytes")
@@ -1748,7 +1754,7 @@ class PLANETKA_OT_DataCostBreakdown(bpy.types.Operator):
             _draw_region_pack_upsell_options(
                 layout,
                 context,
-                title="Full Quality Data Pack options",
+                title="Relevant Data Packs",
             )
 
     def execute(self, context):

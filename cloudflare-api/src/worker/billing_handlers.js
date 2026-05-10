@@ -1,8 +1,7 @@
 import {
-  addCreditBalance,
+  activateMonthlyBillingFromStripeSetupSession,
   grantPaidSceneTileEntitlements,
   grantRegionPackEntitlements,
-  grantStandardQualityUnlock,
 } from "./credit_routes.js";
 
 function stripeSignatureHeaderParts(header) {
@@ -44,14 +43,6 @@ function eurFromStripeAmountCents(value) {
     return 0;
   }
   return Math.round((cents / 100.0) * 100.0) / 100.0;
-}
-
-function normalizeEur(value) {
-  const parsed = Number.parseFloat(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return 0;
-  }
-  return Math.round((parsed + Number.EPSILON) * 100.0) / 100.0;
 }
 
 async function verifyStripeWebhook(request, env, rawBody, deps) {
@@ -370,6 +361,85 @@ export async function handleStripeWebhook(request, env, deps) {
   }
   console.log("stripe.webhook.received", JSON.stringify({ event_type: eventType, event_id: eventId }));
 
+  if (eventType === "invoice.payment_succeeded" || eventType === "invoice.payment_failed") {
+    const invoice = event.data && event.data.object ? event.data.object : null;
+    const invoiceId = String(invoice && invoice.id || "").trim();
+    const metadata = stripeMetadata(invoice);
+    let userId = String(metadata.planetka_user_id || "").trim();
+    if (!userId && invoiceId) {
+      const row = await deps.dbGet(
+        db,
+        `
+          SELECT user_id
+          FROM monthly_billing_purchases
+          WHERE stripe_invoice_id = ?
+          LIMIT 1
+        `,
+        [invoiceId],
+      );
+      userId = String(row && row.user_id || "").trim();
+    }
+    if (!invoiceId) {
+      return deps.json({ ok: false, error: "missing_invoice_id" }, 400, env);
+    }
+    await deps.ensureCreditTables(db);
+    const paid = eventType === "invoice.payment_succeeded";
+    const now = deps.nowIso();
+    await deps.dbRun(
+      db,
+      `
+        UPDATE monthly_billing_purchases
+        SET status = ?,
+            paid_at = CASE WHEN ? THEN ? ELSE paid_at END
+        WHERE stripe_invoice_id = ?
+      `,
+      [paid ? "paid" : "payment_failed", paid ? 1 : 0, now, invoiceId],
+    );
+    if (userId) {
+      await deps.dbRun(
+        db,
+        `
+          UPDATE user_credit_accounts
+          SET monthly_billing_invoice_status = ?,
+              monthly_billing_status = CASE
+                WHEN ? THEN monthly_billing_status
+                ELSE 'suspended'
+              END,
+              pricing_version = COALESCE(pricing_version, 0) + 1,
+              updated_at = ?
+          WHERE user_id = ?
+        `,
+        [paid ? "paid" : "payment_failed", paid ? 1 : 0, now, userId],
+      );
+      if (typeof deps.invalidateAnalyticsSnapshots === "function") {
+        try {
+          await deps.invalidateAnalyticsSnapshots(env);
+        } catch (error) {
+          console.warn(
+            "stripe.webhook.monthly_billing_invoice_snapshot_invalidate_failed",
+            JSON.stringify({ error: String(error && error.message || "snapshot_invalidate_failed"), user_id: userId }),
+          );
+        }
+      }
+    }
+    console.log(
+      paid ? "stripe.webhook.monthly_billing_invoice_paid" : "stripe.webhook.monthly_billing_invoice_failed",
+      JSON.stringify({ event_type: eventType, invoice_id: invoiceId, user_id: userId }),
+    );
+    return deps.json(
+      {
+        ok: true,
+        processed: true,
+        event_type: eventType,
+        invoice_id: invoiceId,
+        user_id: userId,
+        status: paid ? "paid" : "payment_failed",
+      },
+      200,
+      env,
+    );
+  }
+
   if (eventType !== "checkout.session.completed") {
     console.log("stripe.webhook.ignored", JSON.stringify({ event_type: eventType }));
     return deps.json({ ok: true, ignored: true, event_type: eventType }, 200, env);
@@ -383,10 +453,11 @@ export async function handleStripeWebhook(request, env, deps) {
   if (!sessionId) {
     return deps.json({ ok: false, error: "missing_checkout_session_id" }, 400, env);
   }
+  const metadata = stripeMetadata(session);
   const email = deps.normalizeEmail(
     session.customer_details && session.customer_details.email
       ? session.customer_details.email
-      : session.customer_email,
+      : (session.customer_email || metadata.planetka_email),
   );
   if (!email) {
     console.error("stripe.webhook.missing_email", JSON.stringify({ event_type: eventType }));
@@ -413,13 +484,28 @@ export async function handleStripeWebhook(request, env, deps) {
     );
   }
 
-  const metadata = stripeMetadata(session);
   const purchaseType = String(metadata.planetka_purchase_type || "").trim().toLowerCase();
+  if (purchaseType === "balance_top_up" || purchaseType === "standard_quality_unlock") {
+    console.warn(
+      "stripe.webhook.retired_purchase_type_ignored",
+      JSON.stringify({ event_type: eventType, email, session_id: sessionId, purchase_type: purchaseType }),
+    );
+    return deps.json(
+      {
+        ok: true,
+        ignored: true,
+        reason: "retired_purchase_type",
+        event_type: eventType,
+        purchase_type: purchaseType,
+      },
+      200,
+      env,
+    );
+  }
   if (
-    purchaseType === "balance_top_up"
-    || purchaseType === "scene_tiles"
-    || purchaseType === "standard_quality_unlock"
+    purchaseType === "scene_tiles"
     || purchaseType === "region_pack"
+    || purchaseType === "monthly_billing_setup"
   ) {
     const metadataUserId = String(metadata.planetka_user_id || "").trim();
     let targetUser = metadataUserId && typeof deps.findUserById === "function"
@@ -439,63 +525,24 @@ export async function handleStripeWebhook(request, env, deps) {
     const userId = String(targetUser.id || "").trim();
     const amountPaidEur = eurFromStripeAmountCents(session.amount_total);
     const stripePaymentIntentId = String(session.payment_intent || session.payment_intent_id || "").trim();
-    if (purchaseType === "balance_top_up") {
-      const requestedTopUp = Number.parseFloat(metadata.planetka_top_up_eur || "");
-      const topUpEur = Number.isFinite(requestedTopUp) && requestedTopUp > 0
-        ? normalizeEur(requestedTopUp)
-        : amountPaidEur;
-      const requestedPayment = Number.parseFloat(metadata.planetka_top_up_payment_eur || "");
-      const topUpPaymentEur = Number.isFinite(requestedPayment) && requestedPayment > 0
-        ? normalizeEur(requestedPayment)
-        : amountPaidEur;
-      const requestedBonus = Number.parseFloat(metadata.planetka_top_up_bonus_eur || "");
-      const topUpBonusEur = Number.isFinite(requestedBonus) && requestedBonus > 0
-        ? normalizeEur(requestedBonus)
-        : normalizeEur(Math.max(0, topUpEur - topUpPaymentEur));
-      const requestedBonusPercent = Number.parseFloat(metadata.planetka_top_up_bonus_percent || "");
-      const topUpBonusPercent = Number.isFinite(requestedBonusPercent) && requestedBonusPercent > 0
-        ? Math.round(requestedBonusPercent * 1000) / 1000
-        : 0;
-      const topUp = await addCreditBalance(
-        db,
-        userId,
-        topUpEur,
-        "stripe_balance_top_up",
-        {
-          stripe_session_id: sessionId,
-          stripe_payment_intent_id: stripePaymentIntentId,
-          stripe_amount_paid_eur: amountPaidEur,
-          top_up_payment_eur: topUpPaymentEur,
-          top_up_bonus_eur: topUpBonusEur,
-          top_up_bonus_percent: topUpBonusPercent,
-          top_up_balance_eur: topUpEur,
-          customer_email: email,
-        },
-        deps,
-      );
-      if (topUp.error) {
-        return deps.json({ ok: false, error: topUp.error }, 400, env);
+    if (purchaseType === "monthly_billing_setup") {
+      const setup = await activateMonthlyBillingFromStripeSetupSession(db, session, env, deps, email);
+      if (setup && setup.error) {
+        return deps.json({ ok: false, error: setup.error }, 400, env);
       }
       if (typeof deps.invalidateAnalyticsSnapshots === "function") {
         try {
           await deps.invalidateAnalyticsSnapshots(env);
         } catch (error) {
           console.warn(
-            "stripe.webhook.balance_top_up_snapshot_invalidate_failed",
+            "stripe.webhook.monthly_billing_setup_snapshot_invalidate_failed",
             JSON.stringify({ error: String(error && error.message || "snapshot_invalidate_failed"), user_id: userId }),
           );
         }
       }
       console.log(
-        "stripe.webhook.balance_top_up_processed",
-        JSON.stringify({
-          event_type: eventType,
-          email,
-          session_id: sessionId,
-          user_id: userId,
-          top_up_eur: topUpEur,
-          balance_eur: topUp.balance_eur,
-        }),
+        "stripe.webhook.monthly_billing_setup_processed",
+        JSON.stringify({ event_type: eventType, email, session_id: sessionId, user_id: userId }),
       );
       return deps.json(
         {
@@ -504,55 +551,7 @@ export async function handleStripeWebhook(request, env, deps) {
           event_type: eventType,
           email,
           purchase_type: purchaseType,
-          balance_eur: topUp.balance_eur,
-        },
-        200,
-        env,
-      );
-    }
-
-    if (purchaseType === "standard_quality_unlock") {
-      const unlock = await grantStandardQualityUnlock(
-        db,
-        userId,
-        sessionId,
-        amountPaidEur,
-        deps,
-        email,
-        stripePaymentIntentId,
-      );
-      if (unlock && unlock.error) {
-        return deps.json({ ok: false, error: unlock.error }, 400, env);
-      }
-      if (typeof deps.invalidateAnalyticsSnapshots === "function") {
-        try {
-          await deps.invalidateAnalyticsSnapshots(env);
-        } catch (error) {
-          console.warn(
-            "stripe.webhook.standard_quality_snapshot_invalidate_failed",
-            JSON.stringify({ error: String(error && error.message || "snapshot_invalidate_failed"), user_id: userId }),
-          );
-        }
-      }
-      console.log(
-        "stripe.webhook.standard_quality_unlock_processed",
-        JSON.stringify({
-          event_type: eventType,
-          email,
-          session_id: sessionId,
-          user_id: userId,
-          amount_paid_eur: amountPaidEur,
-          already_unlocked: Boolean(unlock && unlock.already_unlocked),
-        }),
-      );
-      return deps.json(
-        {
-          ok: true,
-          processed: true,
-          event_type: eventType,
-          email,
-          purchase_type: purchaseType,
-          standard_quality_unlocked: Boolean(unlock && unlock.standard_quality_unlocked),
+          monthly_billing: setup.monthly_billing,
         },
         200,
         env,

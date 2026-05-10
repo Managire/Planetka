@@ -1,7 +1,6 @@
 import { corsHeaders, json } from "./responses.js";
 import {
   isFreeCreditTileKey,
-  isStandardQualityUnlockedForUser,
   isTileUnlockedForUser,
   tileKeyFromFileName,
   unlockTilesForSession,
@@ -63,26 +62,23 @@ export async function handleTileSessionStart(request, env, deps) {
     body && body.quality_mode ? body.quality_mode : request.headers.get("X-Planetka-Quality-Mode") || "",
   ).trim();
   const normalizedRequestedQualityMode = normalizeQualityMode(requestedQualityMode);
+  if (normalizedRequestedQualityMode === "balanced") {
+    return jsonResponse(
+      {
+        ok: false,
+        error: "standard_quality_removed",
+        message: "Standard Quality is no longer available. Use Preview or Full Quality.",
+        requested_quality_mode: normalizedRequestedQualityMode,
+      },
+      410,
+      env,
+    );
+  }
   if (normalizedRequestedQualityMode === "preview") {
     const hold = await getPreviewFairUsageHoldForUser(db, auth.user && auth.user.id);
     if (hold && hold.held) {
       return previewFairUsageBlockedResponse(env, hold.message);
     }
-  }
-  const standardQualityUnlocked = normalizedRequestedQualityMode === "balanced"
-    ? await isStandardQualityUnlockedForUser(db, auth.user && auth.user.id, deps)
-    : true;
-  if (normalizedRequestedQualityMode === "balanced" && !standardQualityUnlocked) {
-    return jsonResponse(
-      {
-        ok: false,
-        error: "standard_quality_not_unlocked",
-        message: "Standard Quality is not unlocked for this account.",
-        requested_quality_mode: normalizedRequestedQualityMode,
-      },
-      403,
-      env,
-    );
   }
   const requestedResolveId = String(
     body && body.resolve_id ? body.resolve_id : request.headers.get("X-Planetka-Resolve-Id") || "",
@@ -143,14 +139,24 @@ export async function handleTileSessionStart(request, env, deps) {
       env,
     );
   }
-  if (unlockResult && unlockResult.error === "insufficient_credits") {
+  if (
+    unlockResult
+    && (
+      unlockResult.error === "payment_required"
+      || unlockResult.error === "monthly_billing_not_active"
+      || unlockResult.error === "monthly_billing_cap_exceeded"
+    )
+  ) {
     return jsonResponse(
       {
         ok: false,
-        error: "insufficient_credits",
-        message: "Not enough Planetka balance for this Resolve.",
+        error: String(unlockResult.error || "payment_required"),
+        message: unlockResult.error === "monthly_billing_cap_exceeded"
+          ? "This Resolve exceeds the active Monthly Billing cap."
+          : "Full Quality requires direct payment or active Monthly Billing.",
         required_credits: Number(unlockResult.required_credits || 0),
-        balance_credits: Number(unlockResult.balance_credits || 0),
+        price_eur: Number(unlockResult.price_eur || unlockResult.required_credits || 0),
+        monthly_billing: unlockResult.monthly_billing || null,
         paid_tile_count: Number(unlockResult.paid_tile_count || 0),
         tile_count: Number(unlockResult.tile_count || 0),
       },
@@ -315,6 +321,20 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
     }
     const effectiveQualityMode = tokenQualityMode || requestedQualityMode;
     eventQualityMode = effectiveQualityMode;
+    if ((request.method === "GET" || request.method === "HEAD") && effectiveQualityMode === "balanced") {
+      eventStatusCode = 410;
+      eventErrorCode = "standard_quality_removed";
+      return json(
+        {
+          ok: false,
+          error: "standard_quality_removed",
+          message: "Standard Quality is no longer available. Use Preview or Full Quality.",
+          requested_quality_mode: effectiveQualityMode,
+        },
+        410,
+        env,
+      );
+    }
     if ((request.method === "GET" || request.method === "HEAD") && effectiveQualityMode === "preview") {
       const hold = await getPreviewFairUsageHoldForUser(db, user && user.id);
       if (hold && hold.held) {
@@ -359,27 +379,6 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
           ok: false,
           error: "quality_mode_not_allowed_for_tier",
           message: qualityModeNotAllowedMessage(planCode, effectiveQualityMode),
-          requested_quality_mode: effectiveQualityMode,
-        },
-        403,
-        env,
-      );
-    }
-    const standardTileRequestUnlocked = effectiveQualityMode === "balanced"
-      ? await isStandardQualityUnlockedForUser(db, user && user.id, deps)
-      : true;
-    if (
-      (request.method === "GET" || request.method === "HEAD")
-      && effectiveQualityMode === "balanced"
-      && !standardTileRequestUnlocked
-    ) {
-      eventStatusCode = 403;
-      eventErrorCode = "standard_quality_not_unlocked";
-      return json(
-        {
-          ok: false,
-          error: "standard_quality_not_unlocked",
-          message: "Standard Quality is not unlocked for this account.",
           requested_quality_mode: effectiveQualityMode,
         },
         403,
@@ -471,14 +470,24 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
           env,
         );
       }
-      if (unlockResult && unlockResult.error === "insufficient_credits") {
+      if (
+        unlockResult
+        && (
+          unlockResult.error === "payment_required"
+          || unlockResult.error === "monthly_billing_not_active"
+          || unlockResult.error === "monthly_billing_cap_exceeded"
+        )
+      ) {
         return json(
           {
             ok: false,
-            error: "insufficient_credits",
-            message: "Not enough Planetka balance for this tile.",
+            error: String(unlockResult.error || "payment_required"),
+            message: unlockResult.error === "monthly_billing_cap_exceeded"
+              ? "This tile exceeds the active Monthly Billing cap."
+              : "Full Quality requires direct payment or active Monthly Billing.",
             required_credits: Number(unlockResult.required_credits || 0),
-            balance_credits: Number(unlockResult.balance_credits || 0),
+            price_eur: Number(unlockResult.price_eur || unlockResult.required_credits || 0),
+            monthly_billing: unlockResult.monthly_billing || null,
             paid_tile_count: Number(unlockResult.paid_tile_count || 0),
             tile_count: Number(unlockResult.tile_count || 0),
           },

@@ -368,8 +368,8 @@ def camera_signature(scene):
 def normalize_texture_quality_mode(value):
     token = str(value or "").strip().upper()
     if token in {"HALF", "BALANCED"}:
-        return "BALANCED"
-    if token in {"FULL", "BALANCED", "PREVIEW"}:
+        return "PREVIEW"
+    if token in {"FULL", "PREVIEW"}:
         return token
     return "PREVIEW"
 
@@ -377,13 +377,6 @@ def normalize_texture_quality_mode(value):
 def _ctx_enforce_texture_quality_mode_for_account(ctx, scene, requested_mode):
     del ctx
     mode = normalize_texture_quality_mode(requested_mode)
-    if mode == "BALANCED":
-        try:
-            from ..credit_api import has_standard_quality_access_cached
-            if not has_standard_quality_access_cached():
-                return "PREVIEW"
-        except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-            return "PREVIEW"
     return mode
 
 
@@ -2049,10 +2042,9 @@ def update_resolve_size_estimates(
             return None
 
     full_tiles = _compute_mode_tiles("FULL", override_tiles=full_tiles_override)
-    balanced_tiles = _compute_mode_tiles("BALANCED")
     preview_tiles = _compute_mode_tiles("PREVIEW")
 
-    if full_tiles is None or balanced_tiles is None or preview_tiles is None:
+    if full_tiles is None or preview_tiles is None:
         clear_resolve_size_estimates(scene, runtime)
         return False
 
@@ -2067,12 +2059,6 @@ def update_resolve_size_estimates(
         base_path,
         runtime,
         texture_quality_mode="PREVIEW",
-    )
-    balanced_bytes = estimate_download_bytes_for_visible_tiles(
-        balanced_tiles,
-        base_path,
-        runtime,
-        texture_quality_mode="BALANCED",
     )
     full_pricing_tiles = _pricing_tiles_for_visible_tiles(
         full_tiles,
@@ -2118,7 +2104,7 @@ def update_resolve_size_estimates(
     try:
         scene[resolve_estimate_full_bytes_key] = int(max(0, int(full_bytes)))
         scene[resolve_estimate_preview_bytes_key] = int(max(0, int(preview_bytes)))
-        scene["planetka_resolve_estimate_balanced_bytes"] = int(max(0, int(balanced_bytes)))
+        scene["planetka_resolve_estimate_balanced_bytes"] = int(max(0, int(preview_bytes)))
         scene[_REGION_OFFER_PRICING_TILES_KEY] = "|".join(str(tile) for tile in full_pricing_tiles[:256])
         scene[_FULL_PRICE_SIGNATURE_KEY] = str(full_price_signature or "")
         if full_price_pending:

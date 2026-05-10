@@ -37,9 +37,8 @@ function filterAnalyticsUsersRows(rows, query) {
 }
 
 function analyticsUsersSortValue(row, sortBy) {
-  if (sortBy === "balance") return Number(row && row.balance_credits || 0);
+  if (sortBy === "monthly_billing") return Number(row && row.monthly_billing_limit_eur || 0);
   if (sortBy === "paid_eur") return Number(row && row.paid_eur_lifetime || row && row.total_spent_credits || 0);
-  if (sortBy === "standard") return Number(row && row.standard_quality_unlocked || 0);
   if (sortBy === "paid_resolves") return Number(row && row.paid_full_resolve_count || 0);
   if (sortBy === "paid_tiles") return Number(row && row.unlocked_tile_count || 0);
   if (sortBy === "data_downloaded") return Number(row && row.licenced_downloaded_bytes || 0);
@@ -363,6 +362,17 @@ export async function handleAdminAnalyticsUserPage(request, env, deps) {
     `,
     [targetUserId],
   );
+  const monthlyPurchases = await deps.dbAll(
+    db,
+    `
+      SELECT *
+      FROM monthly_billing_purchases
+      WHERE user_id = ?
+      ORDER BY created_at DESC
+      LIMIT 250
+    `,
+    [targetUserId],
+  );
   const purchaseIds = (purchases || []).map((row) => String(row && row.id || "").trim()).filter(Boolean);
   const tileRows = purchaseIds.length
     ? await deps.dbAll(
@@ -384,6 +394,9 @@ export async function handleAdminAnalyticsUserPage(request, env, deps) {
     }
     tilesByPurchase.get(purchaseId).push(tile);
   }
+  const monthlyStatus = String(account && account.monthly_billing_status || "none").trim() || "none";
+  const monthlyLimit = Number(account && account.monthly_billing_limit_eur || 0);
+  const monthlySpent = Number(account && account.monthly_billing_spent_eur || 0);
   const licencedSummary = await deps.dbGet(
     db,
     `
@@ -398,11 +411,19 @@ export async function handleAdminAnalyticsUserPage(request, env, deps) {
   const paidSummary = await deps.dbGet(
     db,
     `
-      SELECT COALESCE(ROUND(SUM(amount_paid_eur) * 100.0) / 100.0, 0) AS paid_eur
-      FROM purchase_history
-      WHERE user_id = ?
+      SELECT COALESCE(ROUND(SUM(amount_eur) * 100.0) / 100.0, 0) AS paid_eur
+      FROM (
+        SELECT amount_paid_eur AS amount_eur
+        FROM purchase_history
+        WHERE user_id = ?
+        UNION ALL
+        SELECT amount_eur AS amount_eur
+        FROM monthly_billing_purchases
+        WHERE user_id = ?
+          AND LOWER(COALESCE(status, '')) = 'paid'
+      )
     `,
-    [targetUserId],
+    [targetUserId, targetUserId],
   );
   const purchaseRowsHtml = (purchases || []).map((row) => {
     const purchaseId = String(row && row.id || "");
@@ -414,7 +435,7 @@ export async function handleAdminAnalyticsUserPage(request, env, deps) {
       ? `Region Pack${packName ? `: ${deps.escapeHtml(packName)}` : ""}`
       : (purchaseType === "scene_tiles"
         ? "Scene Full Quality"
-        : (purchaseType === "standard_quality_unlock" ? "Standard Quality Unlock" : "Balance Top-Up"));
+        : "Retired Product");
     const tileDetails = tiles.length
       ? `<details><summary>${tiles.length} purchased tile(s)</summary><table class="inner"><thead><tr><th>Tile</th><th>Status</th><th>Price</th><th>Gross</th><th>Land km²</th></tr></thead><tbody>${tiles.map((tile) => `<tr><td>${deps.escapeHtml(String(tile && tile.tile_key || ""))}</td><td>${deps.escapeHtml(String(tile && tile.tile_status || ""))}</td><td>${deps.escapeHtml(fmtEurLocal(tile && tile.price_eur))}</td><td>${deps.escapeHtml(fmtEurLocal(tile && tile.gross_price_eur))}</td><td>${Number(tile && tile.billable_land_km2 || 0).toFixed(2)}</td></tr>`).join("")}</tbody></table></details>`
       : "";
@@ -431,6 +452,34 @@ export async function handleAdminAnalyticsUserPage(request, env, deps) {
       <td>${Number(row && row.tile_count_new || 0).toLocaleString()} new / ${Number(row && row.tile_count_total || 0).toLocaleString()} total</td>
       <td>${deps.escapeHtml(String(row && row.stripe_session_id || ""))}</td>
       <td>${metadataLine}${tileDetails}</td>
+    </tr>`;
+  }).join("");
+  const monthlyPurchaseRowsHtml = (monthlyPurchases || []).map((row) => {
+    let metadata = {};
+    try {
+      metadata = JSON.parse(String(row && row.metadata_json || "{}"));
+    } catch (_error) {
+      metadata = {};
+    }
+    const regionName = String(row && row.region_pack_name || row && row.region_pack_id || "").trim();
+    const purchaseType = String(row && row.purchase_type || "").trim();
+    const typeLabel = purchaseType === "region_pack"
+      ? `Region Pack${regionName ? `: ${deps.escapeHtml(regionName)}` : ""}`
+      : "Scene Full Quality";
+    const tileKeys = Array.isArray(metadata && metadata.purchased_tile_keys)
+      ? metadata.purchased_tile_keys.map((key) => String(key || "").trim()).filter(Boolean)
+      : [];
+    const details = tileKeys.length
+      ? `Tile keys: ${deps.escapeHtml(tileKeys.slice(0, 40).join(", "))}${tileKeys.length > 40 ? " ..." : ""}`
+      : deps.escapeHtml(String(row && row.region_pack_id || ""));
+    return `<tr>
+      <td>${deps.escapeHtml(String(row && row.created_at || ""))}</td>
+      <td>${typeLabel}</td>
+      <td>${deps.escapeHtml(fmtEurLocal(row && row.amount_eur))}</td>
+      <td>${deps.escapeHtml(String(row && row.status || ""))}</td>
+      <td>${Number(row && row.tile_count_new || 0).toLocaleString()} new / ${Number(row && row.tile_count_total || 0).toLocaleString()} total</td>
+      <td>${deps.escapeHtml(String(row && row.stripe_invoice_id || ""))}</td>
+      <td>${details}</td>
     </tr>`;
   }).join("");
   const htmlContent = `<!doctype html>
@@ -460,7 +509,7 @@ export async function handleAdminAnalyticsUserPage(request, env, deps) {
   <div class="muted">Signed in as ${deps.escapeHtml(String(adminUser.email || ""))}</div>
   <p><a href="/admin/analytics/users">Back to users</a> · <a href="/admin/analytics">Back to analytics</a></p>
   <section class="cards">
-    <div class="card"><span>Balance</span><b>${deps.escapeHtml(fmtEurLocal(account && account.balance_credits))}</b></div>
+    <div class="card"><span>Monthly Billing</span><b>${deps.escapeHtml(monthlyStatus)}</b><br><span class="muted">${deps.escapeHtml(fmtEurLocal(monthlySpent))} / ${deps.escapeHtml(fmtEurLocal(monthlyLimit))}</span></div>
     <div class="card"><span>Paid EUR</span><b>${deps.escapeHtml(fmtEurLocal(paidSummary && paidSummary.paid_eur))}</b></div>
     <div class="card"><span>Licenced Tiles</span><b>${Number(licencedSummary && licencedSummary.tile_count || 0).toLocaleString()}</b></div>
     <div class="card"><span>Nominal Tile Value</span><b>${deps.escapeHtml(fmtEurLocal(licencedSummary && licencedSummary.nominal_eur))}</b></div>
@@ -479,6 +528,21 @@ export async function handleAdminAnalyticsUserPage(request, env, deps) {
       </tr>
     </thead>
     <tbody>${purchaseRowsHtml || `<tr><td colspan="7" class="muted">No purchase history recorded yet.</td></tr>`}</tbody>
+  </table>
+  <h2>Monthly Billing Purchases</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Time</th>
+        <th>Transaction</th>
+        <th>Amount</th>
+        <th>Status</th>
+        <th>Tiles</th>
+        <th>Stripe Invoice</th>
+        <th>Details</th>
+      </tr>
+    </thead>
+    <tbody>${monthlyPurchaseRowsHtml || `<tr><td colspan="7" class="muted">No Monthly Billing purchases recorded yet.</td></tr>`}</tbody>
   </table>
 </body>
 </html>`;
@@ -532,22 +596,26 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
       : `/admin/analytics/user?email=${encodeURIComponent(userEmailRaw)}`;
     const status = String(row && row.user_status || "").trim().toLowerCase();
     const previewHeld = Boolean(String(row && row.preview_fair_usage_hold_at || "").trim());
-    const standardUnlocked = Boolean(Number(row && row.standard_quality_unlocked || 0));
-    const creditButtons = `<button class="action-btn" data-action="gift-credits" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Top Up €</button><button class="action-btn warn" data-action="subtract-credits" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Take €</button>`;
+    const monthlyStatus = String(row && row.monthly_billing_status || "none").trim() || "none";
+    const monthlyLimit = Number(row && row.monthly_billing_limit_eur || 0);
+    const monthlySpent = Number(row && row.monthly_billing_spent_eur || 0);
+    const monthlyText = monthlyStatus === "none"
+      ? "Not active"
+      : `${deps.escapeHtml(monthlyStatus)}<br><span class="muted">${deps.escapeHtml(fmtEur(monthlySpent))} / ${deps.escapeHtml(fmtEur(monthlyLimit))}</span>`;
+    const monthlyButton = `<button class="action-btn" data-action="approve-monthly-billing" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Approve Custom Billing</button><button class="action-btn warn" data-action="suspend-monthly-billing" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Suspend Billing</button>`;
     const previewHoldButton = previewHeld
       ? `<button class="action-btn warn" data-action="release-preview-hold" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Release Preview Hold</button>`
       : `<button class="action-btn warn" data-action="set-preview-hold" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Pause Preview</button>`;
     let actionButtons = "";
     if (status === "blocked") {
-      actionButtons = `${creditButtons}${previewHoldButton}<button class="action-btn warn" data-action="unblock" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Unblock</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
+      actionButtons = `${monthlyButton}${previewHoldButton}<button class="action-btn warn" data-action="unblock" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Unblock</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
     } else {
-      actionButtons = `${creditButtons}${previewHoldButton}<button class="action-btn danger" data-action="block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Block</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
+      actionButtons = `${monthlyButton}${previewHoldButton}<button class="action-btn danger" data-action="block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Block</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
     }
     return `<tr${previewHeld ? ` class="preview-held"` : ""}>
       <td><a href="${deps.escapeHtml(userHref)}">${userEmail}</a></td>
-      <td>${deps.escapeHtml(fmtEur(row && row.balance_credits))}</td>
       <td>${deps.escapeHtml(fmtEur(row && (row.paid_eur_lifetime ?? row.total_spent_credits)))}</td>
-      <td>${standardUnlocked ? "Unlocked" : "—"}</td>
+      <td>${monthlyText}</td>
       <td>${fmtInt(row && row.paid_full_resolve_count)}</td>
       <td>${fmtInt(row && row.unlocked_tile_count)}</td>
       <td>${fmtMb(row && row.licenced_downloaded_bytes)} MB<br><span class="muted">${fmtInt(row && row.licenced_downloaded_tiles)} tiles</span></td>
@@ -601,9 +669,8 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
     <thead>
       <tr>
         <th>Email</th>
-        <th><a href="${buildSortHref("balance")}">Balance${sortMarker("balance")}</a></th>
         <th><a href="${buildSortHref("paid_eur")}">Paid EUR${sortMarker("paid_eur")}</a></th>
-        <th><a href="${buildSortHref("standard")}">Standard${sortMarker("standard")}</a></th>
+        <th><a href="${buildSortHref("monthly_billing")}">Monthly Billing${sortMarker("monthly_billing")}</a></th>
         <th><a href="${buildSortHref("paid_resolves")}">Paid Resolves${sortMarker("paid_resolves")}</a></th>
         <th><a href="${buildSortHref("paid_tiles")}">Paid Tiles${sortMarker("paid_tiles")}</a></th>
         <th><a href="${buildSortHref("data_downloaded")}">Data Downloaded${sortMarker("data_downloaded")}</a></th>
@@ -640,8 +707,8 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
         block: "/admin/users/block",
         unblock: "/admin/users/unblock",
         "hard-block": "/admin/users/hard-block",
-        "gift-credits": "/admin/users/gift-credits",
-        "subtract-credits": "/admin/users/gift-credits",
+        "approve-monthly-billing": "/admin/users/monthly-billing",
+        "suspend-monthly-billing": "/admin/users/monthly-billing",
         "set-preview-hold": "/admin/users/set-preview-hold",
         "release-preview-hold": "/admin/users/release-preview-hold",
       };
@@ -649,8 +716,8 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
         block: "Block this user account now?",
         unblock: "Unblock this user account now?",
         "hard-block": "Hard block this user and block same-computer attempts?",
-        "gift-credits": "Top up this account's EUR balance?",
-        "subtract-credits": "Take EUR away from this account balance?",
+        "approve-monthly-billing": "Approve a custom Monthly Billing cap for this user?",
+        "suspend-monthly-billing": "Suspend Monthly Billing for this user?",
         "set-preview-hold": "Pause Preview streaming for this user? Full Quality remains available.",
         "release-preview-hold": "Release this user's Preview fair-usage hold?",
       };
@@ -659,18 +726,20 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
       if (!window.confirm(confirmation[safeAction] || "Confirm action?")) return;
       const payload = { email: safeUserEmail };
       if (safeUserId) payload.user_id = safeUserId;
-      if (safeAction === "gift-credits" || safeAction === "subtract-credits") {
-        const amount = window.prompt(safeAction === "gift-credits" ? "EUR to add:" : "EUR to take away:", safeAction === "gift-credits" ? "100" : "10");
+      if (safeAction === "approve-monthly-billing") {
+        const amount = window.prompt("Custom monthly cap in EUR:", "500");
         if (amount === null) return;
         const parsedAmount = Number(amount);
-        if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
-          statusEl.textContent = "Action failed: enter a positive EUR amount.";
+        if (!Number.isFinite(parsedAmount) || parsedAmount <= 50) {
+          statusEl.textContent = "Action failed: custom cap must be above €50.";
           statusEl.className = "error";
           return;
         }
-        payload.delta_credits = safeAction === "gift-credits" ? parsedAmount : -parsedAmount;
-        payload.operation = safeAction === "gift-credits" ? "top_up" : "subtract";
-        payload.reason = safeAction === "gift-credits" ? "admin_top_up" : "admin_balance_subtract";
+        payload.action = "approve_custom";
+        payload.limit_eur = parsedAmount;
+      }
+      if (safeAction === "suspend-monthly-billing") {
+        payload.action = "suspend";
       }
       statusEl.textContent = "Applying action...";
       statusEl.className = "muted";

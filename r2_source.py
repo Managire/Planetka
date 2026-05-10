@@ -1004,9 +1004,9 @@ def set_resolve_request_context(
     with _REQUEST_CONTEXT_LOCK:
         _REQUEST_CONTEXT_RESOLVE_ID = str(resolve_id or "").strip()[:128]
         safe_mode = str(texture_quality_mode or "").strip().lower()
-        if safe_mode == "half":
-            safe_mode = "balanced"
-        if safe_mode not in {"preview", "balanced", "full"}:
+        if safe_mode in {"half", "balanced"}:
+            safe_mode = "preview"
+        if safe_mode not in {"preview", "full"}:
             safe_mode = ""
         _REQUEST_CONTEXT_TEXTURE_MODE = safe_mode
         _REQUEST_CONTEXT_CANCEL_EVENT = cancel_event
@@ -1073,7 +1073,9 @@ def _request_tile_session_token(resolve_id, quality_mode, allow_refresh=True):
         return "", 0.0
     safe_resolve_id = str(resolve_id or "").strip()[:128]
     safe_quality_mode = str(quality_mode or "").strip().lower()
-    if safe_quality_mode not in {"preview", "balanced", "full"}:
+    if safe_quality_mode in {"half", "balanced"}:
+        safe_quality_mode = "preview"
+    if safe_quality_mode not in {"preview", "full"}:
         return "", 0.0
     if not safe_resolve_id:
         return "", 0.0
@@ -1147,11 +1149,21 @@ def _request_tile_session_token(resolve_id, quality_mode, allow_refresh=True):
             or error_payload.get("error_description", "")
             or ""
         ).strip()
-        if int(getattr(exc, "code", 0) or 0) == 402 and error_code == "insufficient_credits":
-            required = error_payload.get("required_credits", 0)
-            balance = error_payload.get("balance_credits", 0)
+        if int(getattr(exc, "code", 0) or 0) == 402 and error_code in {
+            "payment_required",
+            "monthly_billing_not_active",
+            "monthly_billing_cap_exceeded",
+            "insufficient_credits",
+        }:
+            required = error_payload.get("price_eur", error_payload.get("required_credits", 0))
+            monthly = error_payload.get("monthly_billing") if isinstance(error_payload, dict) else {}
+            remaining = monthly.get("remaining_eur", 0) if isinstance(monthly, dict) else 0
+            if error_code == "monthly_billing_cap_exceeded":
+                raise RuntimeError(
+                    f"Monthly Billing cap reached for this Resolve (required=€{required}, remaining=€{remaining})."
+                ) from exc
             raise RuntimeError(
-                f"Not enough Planetka credits for this Resolve (required={required}, balance={balance})."
+                f"Full Quality requires direct payment or active Monthly Billing (required=€{required})."
             ) from exc
         if int(getattr(exc, "code", 0)) == 401 and bool(allow_refresh):
             try:
@@ -1183,7 +1195,7 @@ def _get_request_context_tile_token(allow_refresh=True):
         now = float(time.time())
         if current_token and current_expiry > (now + 5.0):
             return current_token
-        if quality_mode not in {"preview", "balanced", "full"}:
+        if quality_mode not in {"preview", "full"}:
             return ""
     # Do not hold _REQUEST_CONTEXT_LOCK while requesting a tile session token:
     # _request_tile_session_token() also reads request context. Holding the lock
@@ -1298,7 +1310,7 @@ def _signed_headers(cfg, method, key, allow_refresh=True):
         nav_alt = str(_REQUEST_CONTEXT_NAV_ALT_KM or "").strip()
     if resolve_id:
         headers["X-Planetka-Resolve-Id"] = resolve_id
-    if quality_mode in {"full", "balanced", "preview"}:
+    if quality_mode in {"full", "preview"}:
         headers["X-Planetka-Quality-Mode"] = quality_mode
     if nav_lat:
         headers["X-Planetka-Nav-Latitude"] = nav_lat

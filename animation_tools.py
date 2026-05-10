@@ -164,7 +164,7 @@ def _require_animation_texture_quality_access(operator, prefs=None, texture_qual
     if operator is not None:
         fail(
             operator,
-            "Final Animation Rendering with Full Quality textures requires enough Planetka balance for selected tiles.",
+            "Final Animation Rendering with Full Quality textures requires direct licensing or active Monthly Billing.",
             code=ErrorCode.RENDER_FAILED,
             logger=logger,
         )
@@ -3736,7 +3736,7 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
         )
         layout.label(text=f"Price: {_animation_price_text(getattr(self, 'confirm_price_eur', 0.0))}", icon="SOLO_ON")
         layout.separator()
-        layout.label(text="This will start the full animation render and spend balance for new Full Quality tiles.", icon="INFO")
+        layout.label(text="This will licence new Full Quality animation tiles and add them to Monthly Billing.", icon="INFO")
 
     def _get_selected_texture_quality_mode(self, props):
         del props

@@ -101,9 +101,9 @@ export function qualityModeNotAllowedMessage(planCode, qualityMode) {
     return "Preview quality is free.";
   }
   if (safeMode === "balanced") {
-    return "Standard Quality requires a one-time unlock.";
+    return "Standard Quality is no longer available. Use Preview or Full Quality.";
   }
-  return "This quality level requires non-negative Planetka balance.";
+  return "Full Quality requires direct payment or active Monthly Billing.";
 }
 
 export function commercialUseAllowed(planCode) {
@@ -121,7 +121,7 @@ export function planDisplayName(planCode) {
 
 export function planAccessSummary(planCode) {
   void planCode;
-  return "Preview is free. Standard Quality is a one-time unlock. Full Quality uses Planetka balance for newly licenced land tiles.";
+  return "Preview is free. Full Quality is licenced through direct payment or Monthly Billing.";
 }
 
 export function resolvePlanPriority(planCode) {

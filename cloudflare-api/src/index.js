@@ -89,9 +89,7 @@ import {
   handleAdminUserUnblock as handleAdminUserUnblockRoute,
 } from "./worker/admin_user_handlers.js";
 import {
-  handleAdminGiftCredits as handleAdminGiftCreditsRoute,
-  handleCreditBalanceTopUpCheckoutFromToken as handleCreditBalanceTopUpCheckoutFromTokenRoute,
-  handleCreditBalanceTopUpPage as handleCreditBalanceTopUpPageRoute,
+  handleAdminSetMonthlyBilling as handleAdminSetMonthlyBillingRoute,
   handleCreditCheckout as handleCreditCheckoutRoute,
   handleCreditEstimate as handleCreditEstimateRoute,
   handleCreditMe as handleCreditMeRoute,
@@ -112,6 +110,7 @@ import {
   handleCreditRegionOffers as handleCreditRegionOffersRoute,
   handleCreditRegionPackRelatedOffers as handleCreditRegionPackRelatedOffersRoute,
   handleCreditUnlocked as handleCreditUnlockedRoute,
+  runMonthlyBillingInvoiceJob as runMonthlyBillingInvoiceJobRoute,
 } from "./worker/credit_routes.js";
 import {
   handleStripeWebhook as handleStripeWebhookRoute,
@@ -2100,7 +2099,7 @@ async function userHasStripePaidActivity(db, userId) {
       SELECT COUNT(*) AS count
       FROM credit_ledger
       WHERE user_id = ?
-        AND LOWER(COALESCE(reason, '')) IN ('stripe_balance_top_up', 'stripe_scene_purchase', 'stripe_standard_quality_unlock')
+        AND LOWER(COALESCE(reason, '')) IN ('stripe_scene_purchase', 'stripe_region_pack_purchase', 'monthly_billing_scene_purchase', 'monthly_billing_region_pack_purchase')
     `,
     [safeUserId],
   );
@@ -2716,7 +2715,7 @@ async function ensureApiKeyTables(db) {
   apiKeyTablesReady = true;
 }
 
-const DEFAULT_STARTING_EUR_BALANCE = 100.0;
+const DEFAULT_STARTING_EUR_BALANCE = 0.0;
 
 async function ensureCreditTables(db) {
   if (creditTablesReady) {
@@ -2738,6 +2737,19 @@ async function ensureCreditTables(db) {
         world_full_quality_checkout_session_id TEXT,
         world_full_quality_paid_eur REAL NOT NULL DEFAULT 0,
         pricing_version INTEGER NOT NULL DEFAULT 0,
+        monthly_billing_status TEXT NOT NULL DEFAULT 'none',
+        monthly_billing_limit_eur REAL NOT NULL DEFAULT 0,
+        monthly_billing_period_start TEXT,
+        monthly_billing_period_end TEXT,
+        monthly_billing_spent_eur REAL NOT NULL DEFAULT 0,
+        monthly_billing_stripe_customer_id TEXT,
+        monthly_billing_stripe_setup_intent_id TEXT,
+        monthly_billing_default_payment_method_id TEXT,
+        monthly_billing_payment_method_verified_at TEXT,
+        monthly_billing_custom_approved_at TEXT,
+        monthly_billing_custom_approved_by_admin_id TEXT,
+        monthly_billing_custom_approved_limit_eur REAL NOT NULL DEFAULT 0,
+        monthly_billing_invoice_status TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       )
@@ -2759,6 +2771,19 @@ async function ensureCreditTables(db) {
     `ALTER TABLE user_credit_accounts ADD COLUMN world_full_quality_checkout_session_id TEXT`,
     `ALTER TABLE user_credit_accounts ADD COLUMN world_full_quality_paid_eur REAL NOT NULL DEFAULT 0`,
     `ALTER TABLE user_credit_accounts ADD COLUMN pricing_version INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE user_credit_accounts ADD COLUMN monthly_billing_status TEXT NOT NULL DEFAULT 'none'`,
+    `ALTER TABLE user_credit_accounts ADD COLUMN monthly_billing_limit_eur REAL NOT NULL DEFAULT 0`,
+    `ALTER TABLE user_credit_accounts ADD COLUMN monthly_billing_period_start TEXT`,
+    `ALTER TABLE user_credit_accounts ADD COLUMN monthly_billing_period_end TEXT`,
+    `ALTER TABLE user_credit_accounts ADD COLUMN monthly_billing_spent_eur REAL NOT NULL DEFAULT 0`,
+    `ALTER TABLE user_credit_accounts ADD COLUMN monthly_billing_stripe_customer_id TEXT`,
+    `ALTER TABLE user_credit_accounts ADD COLUMN monthly_billing_stripe_setup_intent_id TEXT`,
+    `ALTER TABLE user_credit_accounts ADD COLUMN monthly_billing_default_payment_method_id TEXT`,
+    `ALTER TABLE user_credit_accounts ADD COLUMN monthly_billing_payment_method_verified_at TEXT`,
+    `ALTER TABLE user_credit_accounts ADD COLUMN monthly_billing_custom_approved_at TEXT`,
+    `ALTER TABLE user_credit_accounts ADD COLUMN monthly_billing_custom_approved_by_admin_id TEXT`,
+    `ALTER TABLE user_credit_accounts ADD COLUMN monthly_billing_custom_approved_limit_eur REAL NOT NULL DEFAULT 0`,
+    `ALTER TABLE user_credit_accounts ADD COLUMN monthly_billing_invoice_status TEXT`,
   ]) {
     try {
       await dbRun(db, statement);
@@ -2854,6 +2879,39 @@ async function ensureCreditTables(db) {
   await dbRun(
     db,
     `CREATE INDEX IF NOT EXISTS idx_credit_ledger_user_created ON credit_ledger(user_id, created_at DESC)`,
+  );
+  await dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS monthly_billing_purchases (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        user_email TEXT,
+        purchase_type TEXT NOT NULL,
+        amount_eur REAL NOT NULL DEFAULT 0,
+        region_pack_id TEXT,
+        region_pack_name TEXT,
+        tile_count_total INTEGER NOT NULL DEFAULT 0,
+        tile_count_new INTEGER NOT NULL DEFAULT 0,
+        period_start TEXT,
+        period_end TEXT,
+        status TEXT NOT NULL DEFAULT 'pending_invoice',
+        stripe_invoice_id TEXT,
+        stripe_invoice_item_id TEXT,
+        metadata_json TEXT,
+        created_at TEXT NOT NULL,
+        invoiced_at TEXT,
+        paid_at TEXT
+      )
+    `,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_monthly_billing_purchases_user_created ON monthly_billing_purchases(user_id, created_at DESC)`,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_monthly_billing_purchases_status_period ON monthly_billing_purchases(status, period_end)`,
   );
   await dbRun(
     db,
@@ -3975,7 +4033,7 @@ const ADMIN_ROUTE_DEPS = {
   handleAdminUserReleasePreviewHold: (request, env) => handleAdminUserReleasePreviewHoldRoute(request, env, ADMIN_USER_DEPS),
   handleAdminUserSetPreviewHold: (request, env) => handleAdminUserSetPreviewHoldRoute(request, env, ADMIN_USER_DEPS),
   handleAdminQaAuthReset: (request, env) => handleAdminQaAuthResetRoute(request, env, ADMIN_USER_DEPS),
-  handleAdminGiftCredits: (request, env) => handleAdminGiftCreditsRoute(request, env, ADMIN_USER_DEPS),
+  handleAdminSetMonthlyBilling: (request, env) => handleAdminSetMonthlyBillingRoute(request, env, ADMIN_USER_DEPS),
   handleAdminUserSetPlan: (request, env) => handleAdminUserSetPlanRoute(request, env, ADMIN_USER_DEPS),
   handleAdminUserSetUnrestrictedQuality: (request, env) => handleAdminUserSetUnrestrictedQualityRoute(request, env, ADMIN_USER_DEPS),
   handleAdminUserUnblock: (request, env) => handleAdminUserUnblockRoute(request, env, ADMIN_USER_DEPS),
@@ -4115,16 +4173,6 @@ async function dispatchExactRoute(request, env, path) {
     case "/credits/region-pack-checkout":
       if (request.method === "GET" || request.method === "HEAD" || request.method === "POST") {
         return await handleCreditRegionPackCheckoutFromTokenRoute(request, env, TILE_ROUTE_DEPS);
-      }
-      return null;
-    case "/credits/balance":
-      if (request.method === "GET" || request.method === "HEAD") {
-        return await handleCreditBalanceTopUpPageRoute(request, env, TILE_ROUTE_DEPS);
-      }
-      return null;
-    case "/credits/balance-checkout":
-      if (request.method === "GET" || request.method === "HEAD") {
-        return await handleCreditBalanceTopUpCheckoutFromTokenRoute(request, env, TILE_ROUTE_DEPS);
       }
       return null;
     case "/credits/payment-success":
@@ -4292,6 +4340,12 @@ export default {
           env,
           ADMIN_ANALYTICS_DEPS,
         );
+        const monthlyBillingInvoiceSummary = await runMonthlyBillingInvoiceJobRoute(
+          db,
+          env,
+          runStartedAt,
+          TILE_ROUTE_DEPS,
+        );
         console.log(
           "worker.db_cleanup.completed",
           JSON.stringify({
@@ -4301,6 +4355,7 @@ export default {
             monthly_cost_summary: maintenance.monthlyCostSummary,
             analytics_snapshot_summary: analyticsSnapshotSummary,
             analytics_users_snapshot_rows: Number(analyticsUsersSnapshot && analyticsUsersSnapshot.total_rows || 0),
+            monthly_billing_invoice_summary: monthlyBillingInvoiceSummary,
           }),
         );
       } catch (error) {

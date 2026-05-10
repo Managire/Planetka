@@ -1170,15 +1170,10 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
                 "Preview",
                 "Uses 1/4 size of Full Quality on each axis (effective 1/16 resolution); fastest download with lowest memory and recalculation cost",
             ),
-            (
-                "BALANCED",
-                "Standard",
-                "Uses half the edge size of Full Quality textures; unlocked by a one-time Standard Quality purchase",
-            ),
             ("FULL", "Full Quality", "Highest quality texture data"),
         ),
         default="PREVIEW",
-        description="Choose Preview, Standard, or Full Quality texture mode",
+        description="Choose Preview or Full Quality texture mode",
         update=update_texture_quality_mode,
     )
 

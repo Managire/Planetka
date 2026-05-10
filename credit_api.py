@@ -255,9 +255,22 @@ def _normalize_account_payload(payload):
     if not isinstance(payload, dict):
         return {}
     out = dict(payload)
-    for field in ("balance_credits", "balance_eur", "total_granted_credits", "total_spent_credits", "world_full_quality_paid_eur"):
+    for field in (
+        "total_granted_credits",
+        "total_spent_credits",
+        "world_full_quality_paid_eur",
+        "monthly_billing_limit_eur",
+        "monthly_billing_spent_eur",
+        "monthly_billing_remaining_eur",
+    ):
         if field in out:
             out[field] = _signed_money_round(out.get(field, 0.0))
+    monthly = out.get("monthly_billing")
+    if isinstance(monthly, dict):
+        out["monthly_billing"] = dict(monthly)
+        for field in ("limit_eur", "spent_eur", "remaining_eur", "custom_approved_limit_eur"):
+            if field in out["monthly_billing"]:
+                out["monthly_billing"][field] = _signed_money_round(out["monthly_billing"].get(field, 0.0))
     return out
 
 
@@ -280,7 +293,23 @@ def clear_credit_caches():
         logger.debug("Planetka: failed clearing Full Quality estimate cache", exc_info=True)
 
 
-def get_credit_account(force=False) -> dict:
+def get_cached_credit_account(max_age_seconds=None) -> dict:
+    payload = _ACCOUNT_CACHE.get("payload")
+    if not isinstance(payload, dict) or not payload:
+        return {}
+    if max_age_seconds is not None:
+        try:
+            max_age = float(max_age_seconds)
+        except (TypeError, ValueError):
+            max_age = 0.0
+        if max_age > 0.0:
+            age = time.monotonic() - float(_ACCOUNT_CACHE.get("timestamp", 0.0) or 0.0)
+            if age > max_age:
+                return {}
+    return dict(payload)
+
+
+def get_credit_account(force=False, timeout=15, allow_refresh=True) -> dict:
     now = time.monotonic()
     payload = _ACCOUNT_CACHE.get("payload")
     if (
@@ -291,7 +320,11 @@ def get_credit_account(force=False) -> dict:
     ):
         return dict(payload) if isinstance(payload, dict) else {}
     try:
-        payload = _request_json("GET", "/credits/me", timeout=15)
+        try:
+            request_timeout = max(1.0, float(timeout))
+        except (TypeError, ValueError):
+            request_timeout = 15.0
+        payload = _request_json("GET", "/credits/me", timeout=request_timeout, allow_refresh=bool(allow_refresh))
     except (AuthApiError, CreditApiError, RuntimeError, TypeError, ValueError, OSError):
         logger.debug("Planetka: failed fetching credit account", exc_info=True)
         return {}
@@ -302,27 +335,11 @@ def get_credit_account(force=False) -> dict:
 
 
 def has_standard_quality_access_cached() -> bool:
-    account = _ACCOUNT_CACHE.get("payload")
-    if not isinstance(account, dict) or not account:
-        return False
-    return bool(
-        account.get("standard_quality_unlocked", False)
-        or account.get("balanced_quality_unlocked", False)
-        or str(account.get("standard_quality_unlocked_at", "") or "").strip()
-        or str(account.get("balanced_quality_unlocked_at", "") or "").strip()
-    )
+    return False
 
 
 def has_standard_quality_access(force=False) -> bool:
-    account = get_credit_account(force=bool(force))
-    if not isinstance(account, dict):
-        return False
-    return bool(
-        account.get("standard_quality_unlocked", False)
-        or account.get("balanced_quality_unlocked", False)
-        or str(account.get("standard_quality_unlocked_at", "") or "").strip()
-        or str(account.get("balanced_quality_unlocked_at", "") or "").strip()
-    )
+    return False
 
 
 def get_unlocked_tiles(force=False) -> list[dict]:
@@ -393,33 +410,6 @@ def estimate_credits_for_tiles(tiles, quality_mode="FULL") -> dict:
     if not isinstance(payload, dict) or not payload.get("ok", False):
         return _zero_backend_unavailable_payload(tile_keys, reason="backend_rejected")
     _log_pricing_integrity_warnings(payload)
-    if "balance_credits" in payload:
-        cached_account = dict(_ACCOUNT_CACHE.get("payload") or {})
-        account_update = {
-            "ok": True,
-            "account_type": str(payload.get("account_type", "standard") or "standard"),
-            "unlimited_credits": bool(payload.get("unlimited_credits", False)),
-            "balance_credits": _signed_money_round(payload.get("balance_credits", 0.0)),
-            "balance_eur": _signed_money_round(payload.get("balance_eur", payload.get("balance_credits", 0.0))),
-        }
-        for key in (
-            "unlocked_tile_count",
-            "standard_quality_unlocked",
-            "standard_quality_unlocked_at",
-            "standard_quality_price_eur",
-            "balanced_quality_unlocked",
-            "balanced_quality_unlocked_at",
-            "balanced_quality_price_eur",
-            "world_full_quality_unlocked",
-            "world_full_quality_unlocked_at",
-            "world_full_quality_paid_eur",
-            "world_full_quality_tile_count",
-            "world_full_quality_licensable_tile_count",
-        ):
-            if key in payload:
-                account_update[key] = payload.get(key)
-        _ACCOUNT_CACHE["timestamp"] = time.monotonic()
-        _ACCOUNT_CACHE["payload"] = _normalize_account_payload({**cached_account, **account_update})
     payload_tiles = [_round_price_fields(entry) for entry in list(payload.get("tiles", ()) or ())]
     returned_keys = {
         str(entry.get("tile_key", "") or "").strip()
@@ -440,7 +430,6 @@ def estimate_credits_for_tiles(tiles, quality_mode="FULL") -> dict:
         "paid_tile_count": int(payload_summary.get("paid_tile_count", 0) or 0),
         "free_tile_count": int(payload_summary.get("free_tile_count", 0) or 0),
         "tile_count": int(payload_summary.get("tile_count", len(payload_tiles)) or 0),
-        "balance_credits": _signed_money_round(payload.get("balance_eur", payload.get("balance_credits", 0.0))),
         "tiles": payload_tiles,
         "excluded_tiles": [_round_price_fields(entry) for entry in list(payload.get("excluded_tiles", ()) or ())],
         "authoritative": True,
@@ -452,7 +441,6 @@ def estimate_credit_breakdown_for_tiles(tiles, quality_mode="FULL") -> dict:
     mode = str(quality_mode or "FULL").strip().upper()
     if mode in {"PREVIEW", "BALANCED", "HALF"}:
         normalized_tiles = _normalize_tile_keys(tiles)
-        free_reason = "standard_quality_unlock" if mode in {"BALANCED", "HALF"} else "preview_quality"
         return {
             "credits": 0.0,
             "paid_tile_count": 0,
@@ -463,7 +451,7 @@ def estimate_credit_breakdown_for_tiles(tiles, quality_mode="FULL") -> dict:
                     "tile_key": tile,
                     "credits": 0.0,
                     "gross_credits": 0.0,
-                    "free_reason": free_reason,
+                    "free_reason": "preview_quality",
                     "already_owned": False,
                 }
                 for tile in normalized_tiles
@@ -565,26 +553,14 @@ def get_region_pack_related_offers(region_pack_id, force=False, raise_errors=Fal
 def create_checkout_session(option: str, tiles=None, quality_mode="FULL", region_pack_id: str = "") -> dict:
     """Create a Stripe Checkout Session or payment-selection page for Planetka purchases."""
     safe_option = str(option or "scene").strip().lower()
-    balance_direct_match = re.fullmatch(r"(?:balance|top[_-]?up|topup)[_-]?(10|25|50|100|250|500)", safe_option)
     if safe_option not in {
         "scene",
-        "balance",
-        "balance_options",
-        "add_balance",
-        "top_up_options",
-        "balance_10",
-        "balance_25",
-        "balance_50",
-        "balance_100",
-        "balance_250",
-        "balance_500",
-        "top_up_10",
-        "topup_10",
-        "standard_unlock",
-        "balanced_unlock",
+        "monthly_billing_setup",
+        "monthly_billing",
+        "limited_monthly_billing",
         "region_pack",
         "broader_pack",
-    } and not balance_direct_match:
+    }:
         safe_option = "scene"
     tile_keys = []
     if safe_option == "scene":
@@ -597,17 +573,11 @@ def create_checkout_session(option: str, tiles=None, quality_mode="FULL", region
                 tile_keys.append(key)
     payload = {
         "option": (
-            "balance_options"
-            if safe_option in {"balance", "balance_options", "add_balance", "top_up_options"}
-            else "balance_10"
-            if safe_option in {"balance_10", "top_up_10", "topup_10"}
+            "monthly_billing_setup"
+            if safe_option in {"monthly_billing_setup", "monthly_billing", "limited_monthly_billing"}
             else safe_option
-            if balance_direct_match or safe_option in {"balance_25", "balance_50", "balance_100", "balance_250", "balance_500"}
-            else (
-                "standard_unlock"
-                if safe_option in {"standard_unlock", "balanced_unlock"}
-                else ("region_pack" if safe_option in {"region_pack", "broader_pack"} else "scene")
-            )
+            if safe_option in {"region_pack", "broader_pack"}
+            else "scene"
         ),
         "quality_mode": str(quality_mode or "FULL").strip().lower(),
         "tile_keys": tile_keys,
@@ -616,10 +586,7 @@ def create_checkout_session(option: str, tiles=None, quality_mode="FULL", region
         payload["region_pack_id"] = str(region_pack_id or "").strip()
     result = _request_json("POST", "/credits/checkout", body=payload, timeout=30)
     if isinstance(result, dict) and result.get("ok", False):
-        normalized = _round_price_fields(result)
-        if "balance_credits" in normalized or "balance_eur" in normalized:
-            normalized = _normalize_account_payload(normalized)
-        return dict(normalized)
+        return dict(_round_price_fields(result))
     error = "checkout_create_failed"
     if isinstance(result, dict):
         error = str(result.get("error", "") or error)

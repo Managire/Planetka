@@ -13,21 +13,14 @@ const TILE_KEY_RE = /x(\d{3})_y(\d{3})_z(\d{3})_d(\d{3})/i;
 const ASSET_RE = /^(?:S2|EL|WT|PO)_(x\d{3}_y\d{3}_z\d{3}_d\d{3})\.(?:exr|tif)$/i;
 const FREE_D_THRESHOLD = 60;
 const ACCOUNT_TYPE_STANDARD = "standard";
-const DEFAULT_STARTING_CREDITS = 100.0;
+const DEFAULT_STARTING_CREDITS = 0.0;
 const DATASET_BASE_MPP = 10.0;
 const EQUATOR_Z001_AREA_KM2 = (40075.016686 / 360.0) ** 2;
 // Internal global Full Quality price multiplier. Keep this at 1.00 for base
 // prices; increase/decrease it to adjust all scene and data-pack pricing.
 const FULL_QUALITY_PRICE_COEFFICIENT = 1.00;
-const BALANCE_TOP_UP_OPTIONS = [
-  { amount_eur: 10, bonus_percent: 10, guide_region_pack_id: "denmark", guide_label: "Denmark" },
-  { amount_eur: 25, bonus_percent: 12.5, guide_region_pack_id: "united_kingdom", guide_label: "United Kingdom" },
-  { amount_eur: 50, bonus_percent: 15, guide_region_pack_id: "germany", guide_label: "Germany" },
-  { amount_eur: 100, bonus_percent: 20, guide_region_pack_id: "central_europe", guide_label: "Central Europe" },
-  { amount_eur: 250, bonus_percent: 22.5, guide_region_pack_id: "argentina", guide_label: "Argentina" },
-  { amount_eur: 500, bonus_percent: 25, guide_region_pack_id: "east_africa", guide_label: "East Africa" },
-];
 const STANDARD_QUALITY_UNLOCK_EUR = 50.0;
+const MONTHLY_BILLING_LIMITED_CAP_EUR = 50.0;
 const STRIPE_MIN_CHECKOUT_AMOUNT_CENTS = 50;
 const MONEY_SCALE = 100;
 const METRIC_SCALE = 1_000_000;
@@ -180,6 +173,70 @@ function normalizeSignedCreditAmount(value) {
   return sign * Math.round((Math.abs(parsed) + Number.EPSILON) * MONEY_SCALE) / MONEY_SCALE;
 }
 
+function monthlyBillingLimitedCapEur(env = {}) {
+  const configured = Number.parseFloat(env.MONTHLY_BILLING_LIMITED_CAP_EUR || "");
+  if (Number.isFinite(configured) && configured > 0) {
+    return normalizeCreditAmount(configured);
+  }
+  return MONTHLY_BILLING_LIMITED_CAP_EUR;
+}
+
+function monthlyBillingStatus(account) {
+  return String(account && account.monthly_billing_status || "none").trim().toLowerCase() || "none";
+}
+
+function isMonthlyBillingActive(account) {
+  return ["limited", "custom"].includes(monthlyBillingStatus(account))
+    && Boolean(String(account && account.monthly_billing_payment_method_verified_at || "").trim());
+}
+
+function monthlyBillingLimitEur(account) {
+  return normalizeCreditAmount(account && account.monthly_billing_limit_eur);
+}
+
+function monthlyBillingSpentEur(account) {
+  return normalizeCreditAmount(account && account.monthly_billing_spent_eur);
+}
+
+function monthlyBillingRemainingEur(account) {
+  if (!isMonthlyBillingActive(account)) {
+    return 0;
+  }
+  return normalizeCreditAmount(Math.max(0, monthlyBillingLimitEur(account) - monthlyBillingSpentEur(account)));
+}
+
+function monthlyBillingPeriodForIso(isoValue) {
+  const parsed = Date.parse(String(isoValue || ""));
+  const date = Number.isFinite(parsed) ? new Date(parsed) : new Date();
+  const start = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1, 0, 0, 0, 0));
+  const end = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 1, 0, 0, 0, 0));
+  return {
+    start: start.toISOString(),
+    end: end.toISOString(),
+    key: `${start.getUTCFullYear()}-${String(start.getUTCMonth() + 1).padStart(2, "0")}`,
+  };
+}
+
+function monthlyBillingPublicPayload(account) {
+  const active = isMonthlyBillingActive(account);
+  const status = monthlyBillingStatus(account);
+  const limit = monthlyBillingLimitEur(account);
+  const spent = monthlyBillingSpentEur(account);
+  return {
+    status,
+    active,
+    plan: active ? status : "",
+    limit_eur: limit,
+    spent_eur: spent,
+    remaining_eur: active ? normalizeCreditAmount(Math.max(0, limit - spent)) : 0,
+    period_start: String(account && account.monthly_billing_period_start || ""),
+    period_end: String(account && account.monthly_billing_period_end || ""),
+    payment_method_verified_at: String(account && account.monthly_billing_payment_method_verified_at || ""),
+    custom_approved_at: String(account && account.monthly_billing_custom_approved_at || ""),
+    custom_approved_limit_eur: normalizeCreditAmount(account && account.monthly_billing_custom_approved_limit_eur),
+  };
+}
+
 function normalizeMetricAmount(value) {
   const parsed = Number.parseFloat(value);
   if (!Number.isFinite(parsed) || parsed <= 0) {
@@ -202,45 +259,6 @@ function standardQualityUnlockPriceEur(env = {}) {
     return normalizeCreditAmount(configured);
   }
   return STANDARD_QUALITY_UNLOCK_EUR;
-}
-
-function balanceTopUpOptions() {
-  return BALANCE_TOP_UP_OPTIONS.map((option) => {
-    const amount = normalizeCreditAmount(option.amount_eur);
-    const bonusPercent = Math.max(0, Number.parseFloat(option.bonus_percent || 0) || 0);
-    const bonus = normalizeCreditAmount(amount * bonusPercent / 100.0);
-    const guideProduct = regionProductById(option.guide_region_pack_id);
-    const guideSummary = guideProduct ? regionProductPricingSummary(guideProduct) : null;
-    const guideAmount = guideProduct && guideSummary
-      ? discountedRegionPackAmount(guideSummary.gross_eur, guideProduct.discount_percent)
-      : null;
-    return {
-      amount_eur: amount,
-      bonus_percent: bonusPercent,
-      bonus_eur: bonus,
-      balance_eur: normalizeCreditAmount(amount + bonus),
-      guide_region_pack_id: String(option.guide_region_pack_id || "").trim(),
-      guide_label: String(option.guide_label || guideProduct && guideProduct.name || "").trim(),
-      guide_price_eur: guideAmount ? guideAmount.price : 0,
-    };
-  });
-}
-
-function balanceTopUpOptionForAmount(value) {
-  const amount = normalizeCreditAmount(value);
-  if (amount <= 0) {
-    return null;
-  }
-  return balanceTopUpOptions().find((option) => Math.abs(option.amount_eur - amount) < 0.001) || null;
-}
-
-function balanceTopUpOptionFromCheckoutOption(option) {
-  const safe = String(option || "").trim().toLowerCase();
-  const match = /(?:balance|top[_-]?up|topup)[_-]?(\d+(?:\.\d+)?)/.exec(safe);
-  if (!match) {
-    return null;
-  }
-  return balanceTopUpOptionForAmount(match[1]);
 }
 
 function defaultCheckoutSuccessUrl(env) {
@@ -928,6 +946,44 @@ async function ensureFreshCreditAccountForUser(db, userId, deps) {
   await ensureCreditAccount(db, safeUserId, deps);
   account = await freshCreditAccountForUser(db, safeUserId, deps);
   return cloneCreditAccount(account);
+}
+
+async function ensureCurrentMonthlyBillingPeriod(db, userId, deps, account = null) {
+  const safeUserId = String(userId || "").trim();
+  if (!safeUserId) {
+    return null;
+  }
+  const current = account ? cloneCreditAccount(account) : await ensureFreshCreditAccountForUser(db, safeUserId, deps);
+  if (!current || !isMonthlyBillingActive(current)) {
+    return current;
+  }
+  const now = deps.nowIso && deps.nowIso() || new Date().toISOString();
+  const period = monthlyBillingPeriodForIso(now);
+  const currentStart = String(current.monthly_billing_period_start || "").trim();
+  if (currentStart === period.start) {
+    return current;
+  }
+  await deps.dbRun(
+    db,
+    `
+      UPDATE user_credit_accounts
+      SET
+        monthly_billing_period_start = ?,
+        monthly_billing_period_end = ?,
+        monthly_billing_spent_eur = 0,
+        monthly_billing_invoice_status = '',
+        updated_at = ?
+      WHERE user_id = ?
+    `,
+    [period.start, period.end, now, safeUserId],
+  );
+  invalidateUserPricingCaches(safeUserId);
+  return await ensureFreshCreditAccountForUser(db, safeUserId, deps);
+}
+
+async function ensureMonthlyBillingAccount(db, userId, deps) {
+  const account = await ensureFreshCreditAccountForUser(db, userId, deps);
+  return await ensureCurrentMonthlyBillingPeriod(db, userId, deps, account);
 }
 
 async function tileUnlockedAuthoritative(db, userId, family, requestedD, deps) {
@@ -3299,25 +3355,6 @@ async function ensureSceneFullQualityDetailTokenTable(db, deps) {
   );
 }
 
-async function ensureBalanceTopUpTokenTable(db, deps) {
-  await deps.ensureCreditTables(db);
-  await deps.dbRun(
-    db,
-    `
-      CREATE TABLE IF NOT EXISTS balance_top_up_tokens (
-        token TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        expires_at TEXT NOT NULL
-      )
-    `,
-  );
-  await deps.dbRun(
-    db,
-    `CREATE INDEX IF NOT EXISTS idx_balance_top_up_tokens_expires ON balance_top_up_tokens(expires_at)`,
-  );
-}
-
 function regionPackDetailTokenTtlMinutes(env = {}) {
   const configured = Number.parseFloat(env.REGION_PACK_DETAIL_TOKEN_TTL_MINUTES || "");
   if (Number.isFinite(configured) && configured > 0) {
@@ -3351,30 +3388,6 @@ async function createRegionPackDetailTokenForUser(db, userId, regionPackId, env,
     token,
     user_id: String(userId || "").trim(),
     region_pack_id: String(regionPackId || "").trim(),
-    created_at: now,
-    expires_at: expiresAt,
-  });
-  return { token, expires_at: expiresAt };
-}
-
-async function createBalanceTopUpTokenForUser(db, userId, env, deps) {
-  await ensureBalanceTopUpTokenTable(db, deps);
-  const now = deps.nowIso();
-  await deps.dbRun(db, `DELETE FROM balance_top_up_tokens WHERE expires_at <= ?`, [now]);
-  const token = deps.randomToken(32);
-  const expiresAt = addMinutesIsoFromDeps(deps, regionPackDetailTokenTtlMinutes(env));
-  await deps.dbRun(
-    db,
-    `
-      INSERT INTO balance_top_up_tokens (
-        token, user_id, created_at, expires_at
-      ) VALUES (?, ?, ?, ?)
-    `,
-    [token, String(userId || "").trim(), now, expiresAt],
-  );
-  cacheDetailToken("balance", token, {
-    token,
-    user_id: String(userId || "").trim(),
     created_at: now,
     expires_at: expiresAt,
   });
@@ -3603,125 +3616,6 @@ function regionPackStaticCatalogHtml(data) {
 <script src="/credits/page-assets/region-pack-catalog.js?v=${encodeURIComponent(REGION_PACK_MAP_ASSET_REVISION)}" defer></script>
 </body>
 </html>`;
-}
-
-function balanceTopUpPageHtml(data) {
-  const token = encodeURIComponent(String(data && data.token || ""));
-  const options = Array.isArray(data && data.options) ? data.options : [];
-  const fmt = (value) => `€${(Number.parseFloat(value || 0) || 0).toFixed(2)}`;
-  const pct = (value) => {
-    const parsed = Number.parseFloat(value || 0) || 0;
-    return `${Number(parsed.toFixed(1))}%`;
-  };
-  const cards = options.map((option) => {
-    const amount = Number.parseFloat(option && option.amount_eur || 0) || 0;
-    const bonus = Number.parseFloat(option && option.bonus_eur || 0) || 0;
-    const href = `/credits/balance-checkout?token=${token}&amount_eur=${encodeURIComponent(String(amount))}`;
-    const guideLabel = String(option && option.guide_label || "a regional pack").trim();
-    return `<article class="card">
-<div class="top">
-<div>
-<div class="pay">Pay ${fmt(amount)}</div>
-<div class="balance">Balance credited: ${fmt(option && option.balance_eur)}</div>
-</div>
-<div class="bonus">Bonus ${pct(option && option.bonus_percent)}<br><span class="small">+${fmt(bonus)}</span></div>
-</div>
-<div class="guide">Roughly comparable to ${escapeHtmlText(guideLabel)} (${fmt(option && option.guide_price_eur)})</div>
-<a class="button" href="${escapeHtmlText(href)}">Add ${fmt(amount)} (+ ${fmt(bonus)} bonus)</a>
-</article>`;
-  }).join("");
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Planetka Add Balance</title>
-<style>
-:root{color-scheme:dark;--bg:#111;--panel:#1b1b1b;--line:#3c3c3c;--text:#eee;--muted:#aaa;--accent:#d9a441}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-main{max-width:1120px;margin:0 auto;padding:24px}h1{margin:0 0 8px;font-size:30px;font-weight:700}p{margin:8px 0}.muted{color:var(--muted)}.small{font-size:13px}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;margin-top:18px;align-items:stretch}.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;display:flex;flex-direction:column;gap:12px;min-height:190px}
-.top{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;min-height:62px}.pay{font-size:26px;font-weight:750;line-height:1.1}.bonus{color:#bdeaa7;font-weight:700;text-align:right;white-space:nowrap}.balance{font-size:18px;font-weight:700;margin-top:4px}.guide{color:var(--muted);min-height:42px}
-.button{display:inline-flex;align-items:center;justify-content:center;min-height:44px;margin-top:auto;padding:10px 12px;border-radius:9px;background:var(--accent);color:#111;text-decoration:none;font-weight:750;text-align:center}
-@media (max-width:520px){main{padding:18px}.grid{grid-template-columns:1fr}.top{min-height:0}.bonus{white-space:normal}}
-</style>
-</head>
-<body>
-<main>
-<h1>Add Planetka Balance</h1>
-<p class="muted">Choose how much balance to add. Bonus balance is added automatically after Stripe confirms the payment.</p>
-<section id="options" class="grid">${cards || `<p class="muted">No balance options are currently available. Please reopen this page from Blender.</p>`}</section>
-<p class="muted small">Comparison examples are approximate and based on current Full Quality pack prices. Actual scene prices depend on the visible tiles and any data already licenced to your account.</p>
-</main>
-</body>
-</html>`;
-}
-
-export async function handleCreditBalanceTopUpPage(request, env, deps) {
-  const url = new URL(request.url);
-  const token = String(url.searchParams.get("token") || "").trim();
-  const db = deps.requireDb(env);
-  const tokenResult = await getValidBalanceTopUpToken(db, token, deps);
-  if (tokenResult.error) {
-    return html(
-      "<!doctype html><title>Planetka Add Balance</title><h1>This balance top-up link expired.</h1><p>Please open Add Balance again from Blender.</p>",
-      tokenResult.status || 410,
-      env,
-    );
-  }
-  return html(
-    balanceTopUpPageHtml({
-      ok: true,
-      catalog_version: REGION_PACK_CATALOG_VERSION,
-      map_asset_revision: REGION_PACK_MAP_ASSET_REVISION,
-      price_coefficient: fullQualityPriceCoefficient(),
-      token,
-      options: balanceTopUpOptions(),
-    }),
-    200,
-    env,
-  );
-}
-
-export async function handleCreditBalanceTopUpCheckoutFromToken(request, env, deps) {
-  const url = new URL(request.url);
-  const token = String(url.searchParams.get("token") || "").trim();
-  const topUpOption = balanceTopUpOptionForAmount(url.searchParams.get("amount_eur") || url.searchParams.get("amount") || "");
-  if (!topUpOption) {
-    return html(
-      "<!doctype html><title>Planetka Add Balance</title><h1>Unknown balance top-up amount.</h1><p>Please choose one of the listed Planetka balance options.</p>",
-      400,
-      env,
-    );
-  }
-  const db = deps.requireDb(env);
-  const tokenResult = await getValidBalanceTopUpToken(db, token, deps);
-  if (tokenResult.error) {
-    return html(
-      "<!doctype html><title>Planetka Add Balance</title><h1>This balance top-up link expired.</h1><p>Please open Add Balance again from Blender.</p>",
-      tokenResult.status || 410,
-      env,
-    );
-  }
-  const userId = String(tokenResult.row && tokenResult.row.user_id || "").trim();
-  const user = await deps.dbGet(db, `SELECT id, email FROM users WHERE id = ? LIMIT 1`, [userId]);
-  const email = deps.normalizeEmail(user && user.email || "");
-  if (!userId || !email) {
-    return html(
-      "<!doctype html><title>Planetka Add Balance</title><h1>Account not found.</h1><p>Please return to Blender and sign in again.</p>",
-      404,
-      env,
-    );
-  }
-  const session = await createBalanceTopUpStripeSession(env, topUpOption, email, userId, deps);
-  if (session.error || !session.checkout_url) {
-    return html(
-      `<!doctype html><title>Planetka Add Balance</title><h1>Could not open payment.</h1><p>${escapeHtmlText(session.message || session.error || "Stripe Checkout could not be created.")}</p>`,
-      502,
-      env,
-    );
-  }
-  return Response.redirect(session.checkout_url, 303);
 }
 
 function checkoutMetadataValue(value, maxLength = 480) {
@@ -4214,13 +4108,23 @@ export async function unlockTilesForSession(db, userId, qualityMode, tileKeys, r
     return estimate;
   }
   const requiredCredits = normalizeCreditAmount(estimate.credits);
-  const account = await ensureFreshCreditAccountForUser(db, safeUserId, deps);
-  const balance = normalizeSignedCreditAmount(account && account.balance_credits);
-  if (requiredCredits > 0 && balance <= 0) {
+  const account = await ensureMonthlyBillingAccount(db, safeUserId, deps);
+  if (requiredCredits > 0 && !isMonthlyBillingActive(account)) {
     return {
-      error: "insufficient_credits",
+      error: "payment_required",
       required_credits: requiredCredits,
-      balance_credits: balance,
+      price_eur: requiredCredits,
+      monthly_billing: monthlyBillingPublicPayload(account),
+      paid_tile_count: estimate.paid_tile_count,
+      tile_count: estimate.tile_count,
+    };
+  }
+  if (requiredCredits > 0 && monthlyBillingRemainingEur(account) + 0.000001 < requiredCredits) {
+    return {
+      error: "monthly_billing_cap_exceeded",
+      required_credits: requiredCredits,
+      price_eur: requiredCredits,
+      monthly_billing: monthlyBillingPublicPayload(account),
       paid_tile_count: estimate.paid_tile_count,
       tile_count: estimate.tile_count,
     };
@@ -4274,48 +4178,30 @@ export async function unlockTilesForSession(db, userId, qualityMode, tileKeys, r
         missing_tile_key: verificationFailures[0],
         tile_keys: verificationFailures.slice(0, 10),
         required_credits: actualCredits,
-        balance_credits: balance,
+        monthly_billing: monthlyBillingPublicPayload(account),
         paid_tile_count: insertedTiles.filter((tile) => normalizeCreditAmount(tile && tile.credits) > 0).length,
         tile_count: estimate.tile_count,
       };
     }
   }
 
-  if (actualCredits > 0 && balance <= 0) {
-    for (const tile of insertedTiles) {
-      await deps.dbRun(
-        db,
-        `DELETE FROM user_tile_entitlements WHERE user_id = ? AND tile_key = ?`,
-        [safeUserId, tile.tile_key],
-      );
-    }
-    if (insertedTiles.length > 0) {
-      await touchUserPricingVersion(db, safeUserId, deps, deps.nowIso());
-    }
-    return {
-      error: "insufficient_credits",
-      required_credits: actualCredits,
-      balance_credits: balance,
-      paid_tile_count: insertedTiles.filter((tile) => normalizeCreditAmount(tile && tile.credits) > 0).length,
-      tile_count: estimate.tile_count,
-    };
-  }
-
   if (actualCredits > 0) {
-    const update = await deps.dbRun(
+    const reserve = await reserveMonthlyBillingAmount(
       db,
-      `
-        UPDATE user_credit_accounts
-        SET
-	          balance_credits = ROUND((balance_credits - ?) * 100.0) / 100.0,
-	          total_spent_credits = ROUND((total_spent_credits + ?) * 100.0) / 100.0,
-	          pricing_version = COALESCE(pricing_version, 0) + 1,
-	          updated_at = ?
-	        WHERE user_id = ?
-	      `,
-      [actualCredits, actualCredits, now, safeUserId],
+      safeUserId,
+      actualCredits,
+      deps,
+      {
+        purchase_type: "scene_tiles",
+        purchase_id: `monthly_scene_${deps.randomToken(16)}`,
+        tile_count_total: Math.max(0, Number.parseInt(estimate && estimate.tile_count || 0, 10) || 0),
+        tile_count_new: insertedTiles.length,
+        resolve_id: String(resolveId || ""),
+        quality_mode: safeMode,
+        purchased_tile_keys: insertedTiles.map((tile) => normalizeTileKey(tile && tile.tile_key || "")).filter(Boolean),
+      },
     );
-    if (deps.dbMetaChanges(update) <= 0) {
+    if (reserve && reserve.error) {
       for (const tile of insertedTiles) {
         await deps.dbRun(
           db,
@@ -4328,29 +4214,33 @@ export async function unlockTilesForSession(db, userId, qualityMode, tileKeys, r
       }
       const fresh = await ensureFreshCreditAccountForUser(db, safeUserId, deps);
       return {
-        error: "insufficient_credits",
+        error: reserve.error,
         required_credits: actualCredits,
-        balance_credits: normalizeSignedCreditAmount(fresh && fresh.balance_credits),
+        monthly_billing: monthlyBillingPublicPayload(fresh),
         paid_tile_count: insertedTiles.filter((tile) => normalizeCreditAmount(tile && tile.credits) > 0).length,
         tile_count: estimate.tile_count,
       };
     }
     invalidateUserPricingCaches(safeUserId);
-    const balanceAfter = normalizeSignedCreditAmount(balance - actualCredits);
     await deps.dbRun(
       db,
       `
         INSERT INTO credit_ledger (
           id, user_id, delta_credits, balance_after_credits, reason, metadata_json, created_at
         )
-        VALUES (?, ?, ?, ?, 'tile_unlock', ?, ?)
+        VALUES (?, ?, 0, (SELECT balance_credits FROM user_credit_accounts WHERE user_id = ?), 'monthly_billing_scene_purchase', ?, ?)
       `,
       [
         deps.randomToken(16),
         safeUserId,
-        -actualCredits,
-        balanceAfter,
-        JSON.stringify({ resolve_id: String(resolveId || ""), quality_mode: safeMode, tile_count: insertedTiles.length }),
+        safeUserId,
+        JSON.stringify({
+          resolve_id: String(resolveId || ""),
+          quality_mode: safeMode,
+          tile_count: insertedTiles.length,
+          paid_eur: actualCredits,
+          monthly_billing_purchase_id: reserve.purchase_id,
+        }),
         now,
       ],
     );
@@ -4367,124 +4257,6 @@ export async function unlockTilesForSession(db, userId, qualityMode, tileKeys, r
     paid_tile_count: insertedPaidCount,
     free_tile_count: estimatedFreeCount + skippedPaidCount,
     new_tiles: insertedTiles,
-  };
-}
-
-export async function addCreditBalance(db, userId, amountEur, reason, metadata, deps) {
-  const safeUserId = String(userId || "").trim();
-  const amount = normalizeCreditAmount(amountEur);
-  if (!safeUserId || amount <= 0) {
-    return { error: "missing_positive_amount", balance_credits: 0 };
-  }
-  const safeReason = String(reason || "balance_top_up").trim().slice(0, 160) || "balance_top_up";
-  const stripeSessionId = String(metadata && metadata.stripe_session_id || "").trim();
-  const now = deps.nowIso();
-  await ensureCreditAccount(db, safeUserId, deps);
-  if (safeReason === "stripe_balance_top_up" && stripeSessionId) {
-    const existingPurchase = await loadPurchaseHistoryByStripeSession(db, stripeSessionId, deps);
-    if (existingPurchase && existingPurchase.id) {
-      const existingAccount = await ensureFreshCreditAccountForUser(db, safeUserId, deps);
-      return {
-        ok: true,
-        duplicate_session: true,
-        added_credits: 0,
-        added_eur: 0,
-        balance_credits: normalizeSignedCreditAmount(existingAccount && existingAccount.balance_credits),
-        balance_eur: normalizeSignedCreditAmount(existingAccount && existingAccount.balance_credits),
-      };
-    }
-    const existingLedger = await deps.dbGet(
-      db,
-      `
-        SELECT COUNT(*) AS count
-        FROM credit_ledger
-        WHERE user_id = ?
-          AND LOWER(COALESCE(reason, '')) = 'stripe_balance_top_up'
-          AND json_valid(COALESCE(metadata_json, ''))
-          AND COALESCE(json_extract(metadata_json, '$.stripe_session_id'), '') = ?
-      `,
-      [safeUserId, stripeSessionId],
-    );
-    if (Number(existingLedger && existingLedger.count || 0) > 0) {
-      const existingAccount = await ensureFreshCreditAccountForUser(db, safeUserId, deps);
-      return {
-        ok: true,
-        duplicate_session: true,
-        added_credits: 0,
-        added_eur: 0,
-        balance_credits: normalizeSignedCreditAmount(existingAccount && existingAccount.balance_credits),
-        balance_eur: normalizeSignedCreditAmount(existingAccount && existingAccount.balance_credits),
-      };
-    }
-  }
-  await deps.dbRun(
-    db,
-    `
-      UPDATE user_credit_accounts
-      SET
-	        balance_credits = ROUND((balance_credits + ?) * 100.0) / 100.0,
-	        total_granted_credits = ROUND((total_granted_credits + ?) * 100.0) / 100.0,
-	        pricing_version = COALESCE(pricing_version, 0) + 1,
-	        updated_at = ?
-	      WHERE user_id = ?
-	    `,
-    [amount, amount, now, safeUserId],
-  );
-  invalidateUserPricingCaches(safeUserId);
-  const account = await ensureFreshCreditAccountForUser(db, safeUserId, deps);
-  const balanceAfter = normalizeSignedCreditAmount(account && account.balance_credits);
-  await deps.dbRun(
-    db,
-    `
-      INSERT INTO credit_ledger (
-        id, user_id, delta_credits, balance_after_credits, reason, metadata_json, created_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `,
-    [
-      deps.randomToken(16),
-      safeUserId,
-      amount,
-      balanceAfter,
-      safeReason,
-      JSON.stringify(metadata && typeof metadata === "object" ? metadata : {}),
-      now,
-    ],
-  );
-  if (safeReason === "stripe_balance_top_up" && stripeSessionId) {
-    await recordPurchaseHistoryBestEffort(
-      db,
-      {
-        user_id: safeUserId,
-        user_email: String(metadata && metadata.customer_email || "").trim().toLowerCase(),
-        purchase_type: "balance_top_up",
-        stripe_session_id: stripeSessionId,
-        stripe_payment_intent_id: String(metadata && metadata.stripe_payment_intent_id || "").trim(),
-        amount_paid_eur: normalizeCreditAmount(metadata && (metadata.stripe_amount_paid_eur ?? amount)),
-        nominal_eur: amount,
-        gross_eur: amount,
-        tile_count_total: 0,
-        tile_count_new: 0,
-        metadata: {
-          stripe_amount_paid_eur: normalizeCreditAmount(metadata && metadata.stripe_amount_paid_eur),
-          stripe_payment_intent_id: String(metadata && metadata.stripe_payment_intent_id || "").trim(),
-          top_up_payment_eur: normalizeCreditAmount(metadata && (metadata.top_up_payment_eur ?? metadata.stripe_amount_paid_eur)),
-          top_up_bonus_eur: normalizeCreditAmount(metadata && metadata.top_up_bonus_eur),
-          top_up_bonus_percent: Math.max(0, Number.parseFloat(metadata && metadata.top_up_bonus_percent || 0) || 0),
-          top_up_eur: amount,
-          balance_added_eur: amount,
-        },
-        created_at: now,
-      },
-      deps,
-    );
-  }
-  return {
-    ok: true,
-    added_credits: amount,
-    added_eur: amount,
-    balance_credits: balanceAfter,
-    balance_eur: balanceAfter,
   };
 }
 
@@ -4697,14 +4469,14 @@ export async function grantRegionPackEntitlements(db, userId, regionPackId, stri
       || (safeStripeSessionId.startsWith("region_pack_no_payment_") ? "none" : "stripe")
       || "",
   ).trim().toLowerCase();
-  const paymentSource = paymentSourceRaw === "balance" || paymentSourceRaw === "none" ? paymentSourceRaw : "stripe";
-  const ledgerReason = paymentSource === "balance"
-    ? "balance_region_pack_purchase"
+  const paymentSource = ["monthly_billing", "none"].includes(paymentSourceRaw) ? paymentSourceRaw : "stripe";
+  const ledgerReason = paymentSource === "monthly_billing"
+    ? "monthly_billing_region_pack_purchase"
     : paymentSource === "none"
     ? "region_pack_no_payment"
     : "stripe_region_pack_purchase";
-  const entitlementSource = paymentSource === "balance"
-    ? "balance_region_pack"
+  const entitlementSource = paymentSource === "monthly_billing"
+    ? "monthly_billing_region_pack"
     : paymentSource === "none"
     ? "region_pack_no_payment"
     : "stripe_region_pack";
@@ -5158,6 +4930,234 @@ async function createStripeCheckoutSession(env, params, deps) {
   };
 }
 
+async function createStripeCustomer(env, email, userId, deps) {
+  const secretKey = deps.requireSecret(env, "STRIPE_SECRET_KEY");
+  const body = new URLSearchParams();
+  body.set("email", checkoutMetadataValue(email || "", 320));
+  body.set("metadata[planetka_user_id]", checkoutMetadataValue(userId || ""));
+  body.set("metadata[planetka_email]", checkoutMetadataValue(email || "", 320));
+  const response = await fetch("https://api.stripe.com/v1/customers", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${secretKey}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: body.toString(),
+  });
+  const responseText = await response.text();
+  let payload = {};
+  try {
+    payload = JSON.parse(responseText || "{}");
+  } catch (_error) {
+    payload = {};
+  }
+  if (!response.ok) {
+    return {
+      error: "stripe_customer_create_failed",
+      status: response.status,
+      message: String(payload && payload.error && payload.error.message || responseText || "").slice(0, 500),
+    };
+  }
+  return { ok: true, customer_id: String(payload && payload.id || "") };
+}
+
+async function createStripeSetupCheckoutSession(env, params, deps) {
+  const secretKey = deps.requireSecret(env, "STRIPE_SECRET_KEY");
+  const metadata = params.metadata && typeof params.metadata === "object" ? params.metadata : {};
+  const body = new URLSearchParams();
+  body.set("mode", "setup");
+  body.set("success_url", checkoutReturnUrl(defaultCheckoutSuccessUrl(env), "{CHECKOUT_SESSION_ID}"));
+  body.set("cancel_url", defaultCheckoutCancelUrl(env));
+  body.set("client_reference_id", checkoutMetadataValue(params.clientReferenceId || ""));
+  if (params.customerId) {
+    body.set("customer", checkoutMetadataValue(params.customerId || "", 320));
+  } else if (params.customerEmail) {
+    body.set("customer_email", checkoutMetadataValue(params.customerEmail || "", 320));
+  }
+  body.set("setup_intent_data[usage]", "off_session");
+  for (const [key, value] of Object.entries(metadata)) {
+    const safeKey = String(key || "").trim().slice(0, 40);
+    if (!safeKey) {
+      continue;
+    }
+    const safeValue = checkoutMetadataValue(value, 480);
+    body.set(`metadata[${safeKey}]`, safeValue);
+    body.set(`setup_intent_data[metadata][${safeKey}]`, safeValue);
+  }
+  const response = await fetch("https://api.stripe.com/v1/checkout/sessions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${secretKey}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: body.toString(),
+  });
+  const responseText = await response.text();
+  let payload = {};
+  try {
+    payload = JSON.parse(responseText || "{}");
+  } catch (_error) {
+    payload = {};
+  }
+  if (!response.ok) {
+    return {
+      error: "stripe_setup_checkout_create_failed",
+      status: response.status,
+      message: String(payload && payload.error && payload.error.message || responseText || "").slice(0, 500),
+    };
+  }
+  return {
+    ok: true,
+    session_id: String(payload && payload.id || ""),
+    checkout_url: String(payload && payload.url || ""),
+  };
+}
+
+async function fetchStripeSetupIntent(env, setupIntentId, deps) {
+  const safeId = String(setupIntentId || "").trim();
+  if (!safeId) {
+    return { error: "missing_setup_intent" };
+  }
+  const secretKey = deps.requireSecret(env, "STRIPE_SECRET_KEY");
+  const response = await fetch(`https://api.stripe.com/v1/setup_intents/${encodeURIComponent(safeId)}`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${secretKey}` },
+  });
+  const responseText = await response.text();
+  let payload = {};
+  try {
+    payload = JSON.parse(responseText || "{}");
+  } catch (_error) {
+    payload = {};
+  }
+  if (!response.ok) {
+    return {
+      error: "stripe_setup_intent_fetch_failed",
+      status: response.status,
+      message: String(payload && payload.error && payload.error.message || responseText || "").slice(0, 500),
+    };
+  }
+  return { ok: true, setup_intent: payload };
+}
+
+async function setStripeCustomerDefaultPaymentMethod(env, customerId, paymentMethodId, deps) {
+  const safeCustomer = String(customerId || "").trim();
+  const safePaymentMethod = String(paymentMethodId || "").trim();
+  if (!safeCustomer || !safePaymentMethod) {
+    return { error: "missing_customer_or_payment_method" };
+  }
+  const secretKey = deps.requireSecret(env, "STRIPE_SECRET_KEY");
+  const body = new URLSearchParams();
+  body.set("invoice_settings[default_payment_method]", safePaymentMethod);
+  const response = await fetch(`https://api.stripe.com/v1/customers/${encodeURIComponent(safeCustomer)}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${secretKey}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: body.toString(),
+  });
+  const responseText = await response.text();
+  if (!response.ok) {
+    let payload = {};
+    try {
+      payload = JSON.parse(responseText || "{}");
+    } catch (_error) {
+      payload = {};
+    }
+    return {
+      error: "stripe_customer_payment_method_update_failed",
+      status: response.status,
+      message: String(payload && payload.error && payload.error.message || responseText || "").slice(0, 500),
+    };
+  }
+  return { ok: true };
+}
+
+async function createStripeInvoiceItem(env, customerId, amountEur, description, metadata, deps) {
+  const amountCents = centsForEur(amountEur);
+  if (!customerId || amountCents <= 0) {
+    return { error: "missing_invoice_item_amount_or_customer" };
+  }
+  const secretKey = deps.requireSecret(env, "STRIPE_SECRET_KEY");
+  const body = new URLSearchParams();
+  body.set("customer", checkoutMetadataValue(customerId || "", 320));
+  body.set("amount", String(amountCents));
+  body.set("currency", "eur");
+  body.set("description", checkoutMetadataValue(description || "Planetka Monthly Billing", 320));
+  for (const [key, value] of Object.entries(metadata && typeof metadata === "object" ? metadata : {})) {
+    const safeKey = String(key || "").trim().slice(0, 40);
+    if (!safeKey) {
+      continue;
+    }
+    body.set(`metadata[${safeKey}]`, checkoutMetadataValue(value, 480));
+  }
+  const response = await fetch("https://api.stripe.com/v1/invoiceitems", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${secretKey}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: body.toString(),
+  });
+  const responseText = await response.text();
+  let payload = {};
+  try {
+    payload = JSON.parse(responseText || "{}");
+  } catch (_error) {
+    payload = {};
+  }
+  if (!response.ok) {
+    return {
+      error: "stripe_invoice_item_create_failed",
+      status: response.status,
+      message: String(payload && payload.error && payload.error.message || responseText || "").slice(0, 500),
+    };
+  }
+  return { ok: true, invoice_item_id: String(payload && payload.id || "") };
+}
+
+async function createStripeInvoice(env, customerId, metadata, deps) {
+  if (!customerId) {
+    return { error: "missing_invoice_customer" };
+  }
+  const secretKey = deps.requireSecret(env, "STRIPE_SECRET_KEY");
+  const body = new URLSearchParams();
+  body.set("customer", checkoutMetadataValue(customerId || "", 320));
+  body.set("collection_method", "charge_automatically");
+  body.set("auto_advance", "true");
+  for (const [key, value] of Object.entries(metadata && typeof metadata === "object" ? metadata : {})) {
+    const safeKey = String(key || "").trim().slice(0, 40);
+    if (!safeKey) {
+      continue;
+    }
+    body.set(`metadata[${safeKey}]`, checkoutMetadataValue(value, 480));
+  }
+  const response = await fetch("https://api.stripe.com/v1/invoices", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${secretKey}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: body.toString(),
+  });
+  const responseText = await response.text();
+  let payload = {};
+  try {
+    payload = JSON.parse(responseText || "{}");
+  } catch (_error) {
+    payload = {};
+  }
+  if (!response.ok) {
+    return {
+      error: "stripe_invoice_create_failed",
+      status: response.status,
+      message: String(payload && payload.error && payload.error.message || responseText || "").slice(0, 500),
+    };
+  }
+  return { ok: true, invoice_id: String(payload && payload.id || ""), invoice: payload };
+}
+
 async function fetchStripeCheckoutSession(env, sessionId, deps) {
   const safeSessionId = String(sessionId || "").trim();
   if (!safeSessionId) {
@@ -5187,32 +5187,6 @@ async function fetchStripeCheckoutSession(env, sessionId, deps) {
   return { ok: true, session: payload };
 }
 
-async function createBalanceTopUpStripeSession(env, topUpOption, email, userId, deps) {
-  const amountEur = normalizeCreditAmount(topUpOption && topUpOption.amount_eur);
-  const balanceEur = normalizeCreditAmount(topUpOption && topUpOption.balance_eur);
-  const bonusEur = normalizeCreditAmount(topUpOption && topUpOption.bonus_eur);
-  const bonusPercent = Math.max(0, Number.parseFloat(topUpOption && topUpOption.bonus_percent || 0) || 0);
-  return await createStripeCheckoutSession(
-    env,
-    {
-      amountCents: centsForEur(amountEur),
-      customerEmail: email,
-      clientReferenceId: userId,
-      productName: `Planetka €${amountEur.toFixed(2)} Balance Top-Up (+${bonusPercent}% Bonus)`,
-      metadata: {
-        planetka_purchase_type: "balance_top_up",
-        planetka_user_id: userId,
-        planetka_email: email,
-        planetka_top_up_payment_eur: amountEur.toFixed(2),
-        planetka_top_up_eur: balanceEur.toFixed(2),
-        planetka_top_up_bonus_eur: bonusEur.toFixed(2),
-        planetka_top_up_bonus_percent: String(bonusPercent),
-      },
-    },
-    deps,
-  );
-}
-
 function stripeSessionMetadata(session) {
   return session && session.metadata && typeof session.metadata === "object" ? session.metadata : {};
 }
@@ -5234,6 +5208,354 @@ function eurFromStripeAmountCents(value) {
   return normalizeCreditAmount(cents / 100.0);
 }
 
+export async function activateMonthlyBillingFromStripeSetupSession(db, session, env, deps, userEmail = "") {
+  await deps.ensureCreditTables(db);
+  const sessionId = String(session && session.id || "").trim();
+  const metadata = stripeSessionMetadata(session);
+  const userId = String(metadata.planetka_user_id || session && session.client_reference_id || "").trim();
+  if (!userId) {
+    return { error: "missing_user_id" };
+  }
+  const now = deps.nowIso();
+  await ensureCreditAccount(db, userId, deps);
+  if (sessionId) {
+    const existing = await deps.dbGet(
+      db,
+      `
+        SELECT id
+        FROM credit_ledger
+        WHERE user_id = ?
+          AND LOWER(COALESCE(reason, '')) = 'monthly_billing_setup'
+          AND COALESCE(json_extract(metadata_json, '$.stripe_session_id'), '') = ?
+        LIMIT 1
+      `,
+      [userId, sessionId],
+    );
+    if (existing && existing.id) {
+      const refreshed = await ensureMonthlyBillingAccount(db, userId, deps);
+      return { ok: true, applied: false, duplicate_session: true, monthly_billing: monthlyBillingPublicPayload(refreshed) };
+    }
+  }
+  const account = await ensureFreshCreditAccountForUser(db, userId, deps);
+  const customerId = String(session && session.customer || account && account.monthly_billing_stripe_customer_id || "").trim();
+  const setupIntentId = String(session && session.setup_intent || "").trim();
+  let paymentMethodId = "";
+  if (setupIntentId) {
+    const setupIntent = await fetchStripeSetupIntent(env, setupIntentId, deps);
+    if (setupIntent && setupIntent.ok) {
+      paymentMethodId = String(setupIntent.setup_intent && setupIntent.setup_intent.payment_method || "").trim();
+      if (customerId && paymentMethodId) {
+        await setStripeCustomerDefaultPaymentMethod(env, customerId, paymentMethodId, deps);
+      }
+    } else if (setupIntent && setupIntent.error) {
+      return setupIntent;
+    }
+  }
+  if (!customerId || !setupIntentId || !paymentMethodId) {
+    return { error: "monthly_billing_payment_method_not_verified" };
+  }
+  const customLimit = normalizeCreditAmount(account && account.monthly_billing_custom_approved_limit_eur);
+  const hasCustomApproval = Boolean(String(account && account.monthly_billing_custom_approved_at || "").trim()) && customLimit > monthlyBillingLimitedCapEur(env);
+  const status = hasCustomApproval ? "custom" : "limited";
+  const limit = hasCustomApproval ? customLimit : monthlyBillingLimitedCapEur(env);
+  const period = monthlyBillingPeriodForIso(now);
+  await deps.dbRun(
+    db,
+    `
+      UPDATE user_credit_accounts
+      SET
+        monthly_billing_status = ?,
+        monthly_billing_limit_eur = ?,
+        monthly_billing_period_start = ?,
+        monthly_billing_period_end = ?,
+        monthly_billing_spent_eur = CASE
+          WHEN monthly_billing_period_start = ? THEN COALESCE(monthly_billing_spent_eur, 0)
+          ELSE 0
+        END,
+        monthly_billing_stripe_customer_id = ?,
+        monthly_billing_stripe_setup_intent_id = ?,
+        monthly_billing_default_payment_method_id = ?,
+        monthly_billing_payment_method_verified_at = ?,
+        monthly_billing_invoice_status = '',
+        pricing_version = COALESCE(pricing_version, 0) + 1,
+        updated_at = ?
+      WHERE user_id = ?
+    `,
+    [
+      status,
+      limit,
+      period.start,
+      period.end,
+      period.start,
+      customerId || null,
+      setupIntentId || null,
+      paymentMethodId || null,
+      now,
+      now,
+      userId,
+    ],
+  );
+  await deps.dbRun(
+    db,
+    `
+      INSERT INTO credit_ledger (
+        id, user_id, delta_credits, balance_after_credits, reason, metadata_json, created_at
+      )
+      VALUES (?, ?, 0, (SELECT balance_credits FROM user_credit_accounts WHERE user_id = ?), 'monthly_billing_setup', ?, ?)
+    `,
+    [
+      deps.randomToken(16),
+      userId,
+      userId,
+      JSON.stringify({
+        stripe_session_id: sessionId,
+        stripe_setup_intent_id: setupIntentId,
+        stripe_customer_id: customerId,
+        stripe_payment_method_id: paymentMethodId,
+        monthly_billing_status: status,
+        monthly_billing_limit_eur: limit,
+        user_email: String(userEmail || metadata.planetka_email || "").trim().toLowerCase(),
+      }),
+      now,
+    ],
+  );
+  invalidateUserPricingCaches(userId);
+  const refreshed = await ensureMonthlyBillingAccount(db, userId, deps);
+  return { ok: true, monthly_billing: monthlyBillingPublicPayload(refreshed) };
+}
+
+async function createMonthlyBillingSetupSession(db, env, userId, email, deps) {
+  let account = await ensureFreshCreditAccountForUser(db, userId, deps);
+  let customerId = String(account && account.monthly_billing_stripe_customer_id || "").trim();
+  if (!customerId) {
+    const customer = await createStripeCustomer(env, email, userId, deps);
+    if (customer.error || !customer.customer_id) {
+      return customer;
+    }
+    customerId = customer.customer_id;
+    await deps.dbRun(
+      db,
+      `
+        UPDATE user_credit_accounts
+        SET monthly_billing_stripe_customer_id = ?, updated_at = ?
+        WHERE user_id = ?
+      `,
+      [customerId, deps.nowIso(), userId],
+    );
+    account = await ensureFreshCreditAccountForUser(db, userId, deps);
+  }
+  const cap = monthlyBillingLimitedCapEur(env);
+  return await createStripeSetupCheckoutSession(
+    env,
+    {
+      customerId,
+      customerEmail: email,
+      clientReferenceId: userId,
+      metadata: {
+        planetka_purchase_type: "monthly_billing_setup",
+        planetka_user_id: userId,
+        planetka_email: email,
+        planetka_monthly_billing_level: "limited",
+        planetka_monthly_billing_cap_eur: cap.toFixed(2),
+      },
+    },
+    deps,
+  );
+}
+
+async function reserveMonthlyBillingAmount(db, userId, amountEur, deps, metadata = {}) {
+  const safeUserId = String(userId || "").trim();
+  const amount = normalizeCreditAmount(amountEur);
+  if (!safeUserId || amount <= 0) {
+    return { error: "missing_monthly_billing_amount" };
+  }
+  const account = await ensureMonthlyBillingAccount(db, safeUserId, deps);
+  if (!isMonthlyBillingActive(account)) {
+    return { error: "monthly_billing_not_active", monthly_billing: monthlyBillingPublicPayload(account) };
+  }
+  const remaining = monthlyBillingRemainingEur(account);
+  if (remaining + 0.000001 < amount) {
+    return {
+      error: "monthly_billing_cap_exceeded",
+      required_eur: amount,
+      remaining_eur: remaining,
+      monthly_billing: monthlyBillingPublicPayload(account),
+    };
+  }
+  const now = deps.nowIso();
+  const update = await deps.dbRun(
+    db,
+    `
+      UPDATE user_credit_accounts
+      SET
+        monthly_billing_spent_eur = ROUND((COALESCE(monthly_billing_spent_eur, 0) + ?) * 100.0) / 100.0,
+        updated_at = ?
+      WHERE user_id = ?
+        AND COALESCE(monthly_billing_limit_eur, 0) - COALESCE(monthly_billing_spent_eur, 0) >= ?
+        AND monthly_billing_status IN ('limited', 'custom')
+        AND COALESCE(NULLIF(TRIM(monthly_billing_payment_method_verified_at), ''), '') != ''
+    `,
+    [amount, now, safeUserId, amount],
+  );
+  if (deps.dbMetaChanges(update) <= 0) {
+    const fresh = await ensureMonthlyBillingAccount(db, safeUserId, deps);
+    return {
+      error: "monthly_billing_cap_exceeded",
+      required_eur: amount,
+      remaining_eur: monthlyBillingRemainingEur(fresh),
+      monthly_billing: monthlyBillingPublicPayload(fresh),
+    };
+  }
+  const purchaseId = String(metadata && metadata.purchase_id || "").trim() || `monthly_${deps.randomToken(16)}`;
+  await deps.dbRun(
+    db,
+    `
+      INSERT INTO monthly_billing_purchases (
+        id, user_id, user_email, purchase_type, amount_eur, region_pack_id, region_pack_name,
+        tile_count_total, tile_count_new, period_start, period_end, status, metadata_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_invoice', ?, ?)
+    `,
+    [
+      purchaseId,
+      safeUserId,
+      String(metadata && metadata.user_email || "").trim().toLowerCase(),
+      String(metadata && metadata.purchase_type || "scene_tiles").trim().toLowerCase(),
+      amount,
+      String(metadata && metadata.region_pack_id || "").trim(),
+      String(metadata && metadata.region_pack_name || "").trim(),
+      Math.max(0, Number.parseInt(metadata && metadata.tile_count_total || 0, 10) || 0),
+      Math.max(0, Number.parseInt(metadata && metadata.tile_count_new || 0, 10) || 0),
+      String(account && account.monthly_billing_period_start || ""),
+      String(account && account.monthly_billing_period_end || ""),
+      JSON.stringify(metadata && typeof metadata === "object" ? metadata : {}),
+      now,
+    ],
+  );
+  invalidateUserPricingCaches(safeUserId);
+  const refreshed = await ensureMonthlyBillingAccount(db, safeUserId, deps);
+  return {
+    ok: true,
+    purchase_id: purchaseId,
+    amount_eur: amount,
+    monthly_billing: monthlyBillingPublicPayload(refreshed),
+  };
+}
+
+export async function runMonthlyBillingInvoiceJob(db, env, nowIsoValue, deps) {
+  await deps.ensureCreditTables(db);
+  const now = String(nowIsoValue || deps.nowIso()).trim() || deps.nowIso();
+  const rows = await deps.dbAll(
+    db,
+    `
+      SELECT
+        p.user_id AS user_id,
+        COALESCE(NULLIF(TRIM(p.user_email), ''), u.email, '') AS user_email,
+        COALESCE(NULLIF(TRIM(ca.monthly_billing_stripe_customer_id), ''), '') AS stripe_customer_id,
+        COALESCE(NULLIF(TRIM(p.period_start), ''), '') AS period_start,
+        COALESCE(NULLIF(TRIM(p.period_end), ''), '') AS period_end,
+        ROUND(SUM(COALESCE(p.amount_eur, 0)) * 100.0) / 100.0 AS amount_eur,
+        GROUP_CONCAT(p.id, ',') AS purchase_ids,
+        COUNT(*) AS purchase_count
+      FROM monthly_billing_purchases p
+      INNER JOIN user_credit_accounts ca ON ca.user_id = p.user_id
+      LEFT JOIN users u ON u.id = p.user_id
+      WHERE LOWER(COALESCE(p.status, '')) = 'pending_invoice'
+        AND COALESCE(p.period_end, '') != ''
+        AND p.period_end <= ?
+      GROUP BY p.user_id, p.period_start, p.period_end
+      ORDER BY p.period_end ASC, p.user_id ASC
+      LIMIT 25
+    `,
+    [now],
+  );
+  const summary = {
+    checked: rows.length,
+    invoiced: 0,
+    skipped: 0,
+    errors: 0,
+    amount_eur: 0,
+  };
+  for (const row of rows || []) {
+    const userId = String(row && row.user_id || "").trim();
+    const customerId = String(row && row.stripe_customer_id || "").trim();
+    const amount = normalizeCreditAmount(row && row.amount_eur);
+    const purchaseIds = String(row && row.purchase_ids || "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
+    if (!userId || !customerId || amount <= 0 || purchaseIds.length <= 0) {
+      summary.skipped += 1;
+      continue;
+    }
+    const periodStart = String(row && row.period_start || "").trim();
+    const periodEnd = String(row && row.period_end || "").trim();
+    const metadata = {
+      planetka_monthly_billing: "true",
+      planetka_user_id: userId,
+      planetka_email: String(row && row.user_email || "").trim().toLowerCase(),
+      planetka_period_start: periodStart,
+      planetka_period_end: periodEnd,
+      planetka_purchase_count: String(Math.max(0, Number.parseInt(row && row.purchase_count || 0, 10) || 0)),
+    };
+    try {
+      const invoiceItem = await createStripeInvoiceItem(
+        env,
+        customerId,
+        amount,
+        `Planetka Monthly Billing ${periodStart.slice(0, 10)} to ${periodEnd.slice(0, 10)}`,
+        metadata,
+        deps,
+      );
+      if (invoiceItem.error) {
+        throw new Error(`${invoiceItem.error}:${invoiceItem.message || invoiceItem.status || ""}`);
+      }
+      const invoice = await createStripeInvoice(env, customerId, metadata, deps);
+      if (invoice.error) {
+        throw new Error(`${invoice.error}:${invoice.message || invoice.status || ""}`);
+      }
+      const placeholders = purchaseIds.map(() => "?").join(",");
+      await deps.dbRun(
+        db,
+        `
+          UPDATE monthly_billing_purchases
+          SET status = 'invoiced',
+              stripe_invoice_id = ?,
+              stripe_invoice_item_id = ?,
+              invoiced_at = ?
+          WHERE id IN (${placeholders})
+            AND LOWER(COALESCE(status, '')) = 'pending_invoice'
+        `,
+        [invoice.invoice_id, invoiceItem.invoice_item_id, now, ...purchaseIds],
+      );
+      await deps.dbRun(
+        db,
+        `
+          UPDATE user_credit_accounts
+          SET monthly_billing_invoice_status = 'invoiced',
+              updated_at = ?
+          WHERE user_id = ?
+        `,
+        [now, userId],
+      );
+      summary.invoiced += 1;
+      summary.amount_eur = normalizeCreditAmount(summary.amount_eur + amount);
+    } catch (error) {
+      summary.errors += 1;
+      console.error(
+        "planetka.monthly_billing.invoice_job_error",
+        JSON.stringify({
+          user_id: userId,
+          amount_eur: amount,
+          period_start: periodStart,
+          period_end: periodEnd,
+          error: String(error && error.message || "invoice_failed"),
+        }),
+      );
+    }
+  }
+  return summary;
+}
+
 export async function handleCreditCheckout(request, env, deps) {
   const auth = await deps.requireAuthenticatedUserContext(request, env, { enforceApiKeyDevicePolicy: false });
   if (auth.error) {
@@ -5246,83 +5568,55 @@ export async function handleCreditCheckout(request, env, deps) {
   const email = deps.normalizeEmail(auth.user && auth.user.email || "");
   const userId = String(auth.user && auth.user.id || "").trim();
 
-  if (option === "balance_options" || option === "balance" || option === "add_balance" || option === "top_up_options") {
-    const tokenResult = await createBalanceTopUpTokenForUser(db, userId, env, deps);
-    const url = new URL(request.url);
-    url.pathname = "/credits/balance";
-    url.search = "";
-    url.searchParams.set("token", tokenResult.token);
-    return deps.json(
-      {
-        ok: true,
-        option: "balance_options",
-        checkout_url: url.toString(),
-        top_up_options: balanceTopUpOptions(),
-        expires_at: tokenResult.expires_at,
-      },
-      200,
-      env,
-    );
-  }
-
-  const topUpOption = balanceTopUpOptionFromCheckoutOption(option);
-  if (topUpOption) {
-    const amountEur = topUpOption.amount_eur;
-    const balanceEur = topUpOption.balance_eur;
-    const bonusEur = topUpOption.bonus_eur;
-    const session = await createBalanceTopUpStripeSession(env, topUpOption, email, userId, deps);
-    if (session.error) {
-      return deps.json({ ok: false, ...session }, 502, env);
-    }
-    return deps.json({
-      ok: true,
-      option: `balance_${String(amountEur).replace(".", "_")}`,
-      price_eur: amountEur,
-      balance_eur: balanceEur,
-      bonus_eur: bonusEur,
-      bonus_percent: topUpOption.bonus_percent,
-      ...session,
-    }, 200, env);
-  }
-
-  if (option === "standard_unlock" || option === "balanced_unlock") {
-    const account = await ensureCreditAccount(db, userId, deps);
-    if (isStandardQualityUnlocked(account)) {
+  if (option === "monthly_billing_setup" || option === "monthly_billing" || option === "limited_monthly_billing") {
+    const account = await ensureMonthlyBillingAccount(db, userId, deps);
+    if (isMonthlyBillingActive(account)) {
       return deps.json(
         {
           ok: true,
-          option: "standard_unlock",
+          option: "monthly_billing_setup",
           no_payment_required: true,
-          standard_quality_unlocked: true,
-          price_eur: 0,
-          message: "Standard Quality is already unlocked for this account.",
+          monthly_billing: monthlyBillingPublicPayload(account),
+          message: "Monthly billing is already active for this account.",
         },
         200,
         env,
       );
     }
-    const amountEur = standardQualityUnlockPriceEur(env);
-    const session = await createStripeCheckoutSession(
-      env,
-      {
-        amountCents: centsForEur(amountEur),
-        customerEmail: email,
-        clientReferenceId: userId,
-        productName: "Planetka Standard Quality Unlock",
-        metadata: {
-          planetka_purchase_type: "standard_quality_unlock",
-          planetka_user_id: userId,
-          planetka_email: email,
-          planetka_quality_mode: "balanced",
-          planetka_standard_quality_price_eur: amountEur.toFixed(2),
-        },
-      },
-      deps,
-    );
+    const session = await createMonthlyBillingSetupSession(db, env, userId, email, deps);
     if (session.error) {
       return deps.json({ ok: false, ...session }, 502, env);
     }
-    return deps.json({ ok: true, option: "standard_unlock", price_eur: amountEur, ...session }, 200, env);
+    return deps.json({
+      ok: true,
+      option: "monthly_billing_setup",
+      monthly_billing_cap_eur: monthlyBillingLimitedCapEur(env),
+      ...session,
+    }, 200, env);
+  }
+
+  if (option === "balance_options" || option === "balance" || option === "add_balance" || option === "top_up_options") {
+    return deps.json(
+      {
+        ok: false,
+        error: "balance_top_up_removed",
+        message: "Planetka balance top-ups have been replaced by direct payments and monthly billing.",
+      },
+      410,
+      env,
+    );
+  }
+
+  if (option === "standard_unlock" || option === "balanced_unlock") {
+    return deps.json(
+      {
+        ok: false,
+        error: "standard_quality_removed",
+        message: "Standard Quality is not available.",
+      },
+      410,
+      env,
+    );
   }
 
   if (option === "region_pack" || option === "broader_pack") {
@@ -5412,7 +5706,7 @@ export async function handleCreditCheckout(request, env, deps) {
         error: "amount_below_stripe_minimum",
         price_eur: priceEur,
         minimum_eur: STRIPE_MIN_CHECKOUT_AMOUNT_CENTS / 100.0,
-        message: "This scene price is below Stripe's minimum checkout amount. Add Planetka balance instead.",
+        message: "This scene price is below Stripe's minimum checkout amount. Use monthly billing or choose a larger Full Quality data pack.",
       },
       400,
       env,
@@ -5462,7 +5756,7 @@ export async function handleCreditMe(request, env, deps) {
     return auth.error;
   }
   const db = deps.requireDb(env);
-  const account = await ensureFreshCreditAccountForUser(db, auth.user.id, deps);
+  const account = await ensureMonthlyBillingAccount(db, auth.user.id, deps);
   const worldUnlocked = isWorldFullQualityUnlocked(account);
   const worldSummary = worldRegionProductSummary();
   const countRow = await deps.dbGet(
@@ -5478,14 +5772,15 @@ export async function handleCreditMe(request, env, deps) {
       ok: true,
       account_type: normalizeAccountType(account && account.account_type),
       unlimited_credits: isUnlimitedCreditAccount(account),
-      balance_credits: normalizeSignedCreditAmount(account && account.balance_credits),
-      balance_eur: normalizeSignedCreditAmount(account && account.balance_credits),
+      monthly_billing: monthlyBillingPublicPayload(account),
+      monthly_billing_status: monthlyBillingStatus(account),
+      monthly_billing_active: isMonthlyBillingActive(account),
+      monthly_billing_limit_eur: monthlyBillingLimitEur(account),
+      monthly_billing_spent_eur: monthlyBillingSpentEur(account),
+      monthly_billing_remaining_eur: monthlyBillingRemainingEur(account),
       unlocked_tile_count: worldUnlocked
         ? Math.max(Number(countRow && countRow.count || 0), Number(worldSummary.licensable_tile_count || 0))
         : Number(countRow && countRow.count || 0),
-      standard_quality_unlocked: isStandardQualityUnlocked(account),
-      standard_quality_unlocked_at: String(account && account.standard_quality_unlocked_at || ""),
-      standard_quality_price_eur: standardQualityUnlockPriceEur(env),
       world_full_quality_unlocked: worldUnlocked,
       world_full_quality_unlocked_at: String(account && account.world_full_quality_unlocked_at || ""),
       world_full_quality_paid_eur: normalizeCreditAmount(account && account.world_full_quality_paid_eur),
@@ -5514,6 +5809,17 @@ export async function handleCreditEstimate(request, env, deps) {
   const body = await deps.parseJson(request);
   const tileKeys = requestTileKeysFromBody(body);
   const qualityMode = deps.normalizeQualityMode(body && body.quality_mode || body && body.qualityMode || "full");
+  if (qualityMode === "balanced") {
+    return deps.json(
+      {
+        ok: false,
+        error: "standard_quality_removed",
+        message: "Standard Quality is no longer available. Use Preview or Full Quality.",
+      },
+      410,
+      env,
+    );
+  }
   timing.mark("parse");
   const estimate = await estimateNewCredits(db, auth.user.id, tileKeys, qualityMode, deps);
   timing.mark("estimate");
@@ -5542,11 +5848,6 @@ export async function handleCreditEstimate(request, env, deps) {
       free_tile_count: estimate.free_tile_count,
       account_type: normalizeAccountType(account && account.account_type),
       unlimited_credits: unlimited,
-      balance_credits: normalizeSignedCreditAmount(account && account.balance_credits),
-      balance_eur: normalizeSignedCreditAmount(account && account.balance_credits),
-      standard_quality_unlocked: isStandardQualityUnlocked(account),
-      standard_quality_unlocked_at: String(account && account.standard_quality_unlocked_at || ""),
-      standard_quality_price_eur: standardQualityUnlockPriceEur(env),
       world_full_quality_unlocked: worldUnlocked,
       world_full_quality_unlocked_at: String(account && account.world_full_quality_unlocked_at || ""),
       world_full_quality_paid_eur: normalizeCreditAmount(account && account.world_full_quality_paid_eur),
@@ -5881,34 +6182,6 @@ async function getValidSceneFullQualityDetailToken(db, token, deps) {
   return { ok: true, row: { ...row, tile_keys: tileKeys } };
 }
 
-async function getValidBalanceTopUpToken(db, token, deps) {
-  const safeToken = String(token || "").trim();
-  if (!safeToken) {
-    return { error: "missing_token", status: 400 };
-  }
-  const cached = cachedDetailToken("balance", safeToken, deps);
-  if (cached) {
-    return { ok: true, row: cached, cache_hit: true };
-  }
-  await ensureBalanceTopUpTokenTable(db, deps);
-  const now = deps.nowIso();
-  const row = await deps.dbGet(
-    db,
-    `
-      SELECT token, user_id, expires_at
-      FROM balance_top_up_tokens
-      WHERE token = ?
-      LIMIT 1
-    `,
-    [safeToken],
-  );
-  if (!row || String(row.expires_at || "") <= now) {
-    return { error: "expired_token", status: 410 };
-  }
-  cacheDetailToken("balance", safeToken, row);
-  return { ok: true, row };
-}
-
 async function getValidAnyDetailToken(db, token, deps) {
   const region = await getValidRegionPackDetailToken(db, token, deps);
   if (region && region.ok) {
@@ -5973,8 +6246,6 @@ function regionPackPaymentChoiceHtml(data) {
   const regionPackId = escapeHtmlText(String(product && product.id || ""));
   const catalogInput = data && data.catalog_mode ? `<input type="hidden" name="catalog" value="1">` : "";
   const catalogParam = data && data.catalog_mode ? "&catalog=1" : "";
-  const balanceTopUpToken = String(data && data.balance_top_up_token || "").trim();
-  const balanceTopUpHref = balanceTopUpToken ? `/credits/balance?token=${escapeHtmlText(encodeURIComponent(balanceTopUpToken))}` : "";
   const mapHref = `/credits/region-pack-map?token=${escapeHtmlText(encodeURIComponent(String(data && data.token || "")))}&region_pack_id=${escapeHtmlText(encodeURIComponent(String(product && product.id || "")))}${catalogParam}`;
   const priceEur = normalizeCreditAmount(estimate && estimate.price_eur);
   const fullPriceEur = normalizeCreditAmount(regionProductPricingSummary(product) && regionProductPricingSummary(product).gross_eur);
@@ -5983,16 +6254,17 @@ function regionPackPaymentChoiceHtml(data) {
   const discountEur = normalizeCreditAmount(estimate && estimate.discount_eur);
   const discountPercent = Math.max(0, Number.parseInt(product && product.discount_percent || 0, 10) || 0);
   const unlicencedTileCount = estimateUnlicencedTileCount(estimate);
-  const balanceEur = normalizeSignedCreditAmount(account && account.balance_credits);
-  const canUseBalance = priceEur > 0 && balanceEur >= priceEur;
+  const monthly = monthlyBillingPublicPayload(account);
+  const canUseMonthly = priceEur > 0 && Boolean(monthly.active) && Number(monthly.remaining_eur || 0) + 0.000001 >= priceEur;
   const stripeAvailable = centsForEur(priceEur) >= STRIPE_MIN_CHECKOUT_AMOUNT_CENTS;
-  const insufficientBalance = priceEur > 0 && !canUseBalance;
   const stripeButton = stripeAvailable
-    ? `<form method="post" action="/credits/region-pack-checkout"><input type="hidden" name="token" value="${token}"><input type="hidden" name="region_pack_id" value="${regionPackId}">${catalogInput}<input type="hidden" name="method" value="stripe"><button class="button" type="submit">Pay through payment gateway (€${priceEur.toFixed(2)})</button></form>`
+    ? `<form method="post" action="/credits/region-pack-checkout"><input type="hidden" name="token" value="${token}"><input type="hidden" name="region_pack_id" value="${regionPackId}">${catalogInput}<input type="hidden" name="method" value="stripe"><button class="button" type="submit">Pay Now (€${priceEur.toFixed(2)})</button></form>`
     : `<button class="button disabled" type="button" disabled>Payment gateway unavailable below €${(STRIPE_MIN_CHECKOUT_AMOUNT_CENTS / 100).toFixed(2)}</button>`;
-  const balanceButton = canUseBalance
-    ? `<form method="post" action="/credits/region-pack-checkout"><input type="hidden" name="token" value="${token}"><input type="hidden" name="region_pack_id" value="${regionPackId}">${catalogInput}<input type="hidden" name="method" value="balance"><button class="button secondary" type="submit">Use Planetka balance (€${priceEur.toFixed(2)})</button></form>`
-    : `<button class="button disabled" type="button" disabled>Use Planetka balance (€${balanceEur.toFixed(2)} available)</button>`;
+  const monthlyButton = canUseMonthly
+    ? `<form method="post" action="/credits/region-pack-checkout"><input type="hidden" name="token" value="${token}"><input type="hidden" name="region_pack_id" value="${regionPackId}">${catalogInput}<input type="hidden" name="method" value="monthly"><button class="button secondary" type="submit">Use Monthly Billing (€${priceEur.toFixed(2)})</button></form>`
+    : monthly.active
+    ? `<button class="button disabled" type="button" disabled>Monthly Billing remaining €${Number(monthly.remaining_eur || 0).toFixed(2)}</button>`
+    : `<form method="post" action="/credits/region-pack-checkout"><input type="hidden" name="token" value="${token}"><input type="hidden" name="region_pack_id" value="${regionPackId}">${catalogInput}<input type="hidden" name="method" value="setup_monthly"><button class="button secondary" type="submit">Set up Monthly Billing</button></form>`;
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -6016,15 +6288,13 @@ main{max-width:760px;margin:0 auto;padding:24px}h1{margin:0 0 10px;font-size:28p
 	<div class="card"><span>Already Licenced</span><b>${Math.max(0, Number.parseInt(estimate && estimate.excluded_tiles && estimate.excluded_tiles.length || 0, 10) || 0)} tiles (-€${alreadyLicencedDeductionEur.toFixed(2)})</b></div>
 	<div class="card"><span>Volume Discount</span><b>${discountPercent}% (-€${discountEur.toFixed(2)})</b></div>
 	<div class="card"><span>Final Price</span><b>€${priceEur.toFixed(2)}</b></div>
-	<div class="card"><span>Your Balance</span><b>€${balanceEur.toFixed(2)}</b></div>
+	<div class="card"><span>Monthly Billing</span><b>${monthly.active ? `€${Number(monthly.spent_eur || 0).toFixed(2)} / €${Number(monthly.limit_eur || 0).toFixed(2)}` : "Not active"}</b></div>
 	</div>
-	${insufficientBalance ? `<p class="notice">Your balance is lower than this pack price. Use the payment gateway or add balance first.</p>` : ""}
 <div class="actions">
 ${stripeButton}
-${balanceButton}
+${monthlyButton}
 </div>
 <div class="links">
-${balanceTopUpHref ? `<a href="${balanceTopUpHref}">Add balance</a>` : ""}
 <a href="${mapHref}">View detailed map</a>
 </div>
 </section>
@@ -6033,81 +6303,37 @@ ${balanceTopUpHref ? `<a href="${balanceTopUpHref}">Add balance</a>` : ""}
 </html>`;
 }
 
-async function grantRegionPackFromBalance(db, userId, email, product, priceEur, estimate, deps) {
+async function grantRegionPackWithMonthlyBilling(db, userId, email, product, priceEur, estimate, deps) {
   const safeUserId = String(userId || "").trim();
   const amount = normalizeCreditAmount(priceEur);
   if (!safeUserId || amount <= 0) {
     return { error: "missing_positive_region_pack_amount" };
   }
-  const account = await ensureFreshCreditAccountForUser(db, safeUserId, deps);
-  const balanceBefore = normalizeSignedCreditAmount(account && account.balance_credits);
-  if (balanceBefore < amount) {
-    return {
-      error: "insufficient_balance",
-      balance_credits: balanceBefore,
-      required_credits: amount,
-    };
-  }
-  const now = deps.nowIso();
-  const balancePurchaseId = `balance_region_pack_${deps.randomToken(16)}`;
-  const update = await deps.dbRun(
+  const reserve = await reserveMonthlyBillingAmount(
     db,
-    `
-      UPDATE user_credit_accounts
-      SET
-        balance_credits = ROUND((balance_credits - ?) * 100.0) / 100.0,
-        total_spent_credits = ROUND((total_spent_credits + ?) * 100.0) / 100.0,
-        pricing_version = COALESCE(pricing_version, 0) + 1,
-        updated_at = ?
-      WHERE user_id = ?
-        AND balance_credits >= ?
-    `,
-    [amount, amount, now, safeUserId, amount],
+    safeUserId,
+    amount,
+    deps,
+    {
+      purchase_type: "region_pack",
+      purchase_id: `monthly_region_pack_${deps.randomToken(16)}`,
+      user_email: email,
+      region_pack_id: String(product && product.id || ""),
+      region_pack_name: String(product && product.name || ""),
+      region_pack_type: String(product && product.type || ""),
+      catalog_version: REGION_PACK_CATALOG_VERSION,
+      discount_percent: Math.max(0, Number.parseInt(product && product.discount_percent || 0, 10) || 0),
+      discount_eur: normalizeCreditAmount(estimate && estimate.discount_eur),
+      gross_eur: normalizeCreditAmount(estimate && estimate.gross_eur),
+      paid_eur: amount,
+      tile_count_total: Math.max(0, Number.parseInt(estimate && estimate.tile_count || 0, 10) || 0),
+      tile_count_new: Math.max(0, Number.parseInt(estimate && estimate.new_tile_count || 0, 10) || 0),
+      tile_count_already_licenced: Math.max(0, Array.isArray(estimate && estimate.excluded_tiles) ? estimate.excluded_tiles.length : 0),
+    },
   );
-  if (deps.dbMetaChanges(update) <= 0) {
-    const fresh = await ensureFreshCreditAccountForUser(db, safeUserId, deps);
-    return {
-      error: "insufficient_balance",
-      balance_credits: normalizeSignedCreditAmount(fresh && fresh.balance_credits),
-      required_credits: amount,
-    };
+  if (reserve && reserve.error) {
+    return reserve;
   }
-  invalidateUserPricingCaches(safeUserId);
-  const afterAccount = await ensureFreshCreditAccountForUser(db, safeUserId, deps);
-  const balanceAfter = normalizeSignedCreditAmount(afterAccount && afterAccount.balance_credits);
-  await deps.dbRun(
-    db,
-    `
-      INSERT INTO credit_ledger (
-        id, user_id, delta_credits, balance_after_credits, reason, metadata_json, created_at
-      )
-      VALUES (?, ?, ?, ?, 'balance_region_pack_purchase', ?, ?)
-    `,
-    [
-      deps.randomToken(16),
-      safeUserId,
-      -amount,
-      balanceAfter,
-      JSON.stringify({
-        payment_source: "balance",
-        payment_reference_id: balancePurchaseId,
-        region_pack_id: String(product && product.id || ""),
-        region_pack_name: String(product && product.name || ""),
-        region_pack_type: String(product && product.type || ""),
-        catalog_version: REGION_PACK_CATALOG_VERSION,
-        discount_percent: Math.max(0, Number.parseInt(product && product.discount_percent || 0, 10) || 0),
-        discount_eur: normalizeCreditAmount(estimate && estimate.discount_eur),
-        quality_mode: "full",
-        tile_count: Math.max(0, Number.parseInt(estimate && estimate.new_tile_count || 0, 10) || 0),
-        tile_count_total: Math.max(0, Number.parseInt(estimate && estimate.tile_count || 0, 10) || 0),
-        tile_count_new: Math.max(0, Number.parseInt(estimate && estimate.new_tile_count || 0, 10) || 0),
-        tile_count_already_licenced: Math.max(0, Array.isArray(estimate && estimate.excluded_tiles) ? estimate.excluded_tiles.length : 0),
-        gross_eur: normalizeCreditAmount(estimate && estimate.gross_eur),
-        paid_eur: amount,
-      }),
-      now,
-    ],
-  );
   const grant = await grantRegionPackEntitlements(
     db,
     safeUserId,
@@ -6118,33 +6344,45 @@ async function grantRegionPackFromBalance(db, userId, email, product, priceEur, 
     email,
     "",
     {
-      payment_source: "balance",
-      payment_reference_id: balancePurchaseId,
-      purchase_history_id: balancePurchaseId,
-      skip_credit_ledger: true,
+      payment_source: "monthly_billing",
+      payment_reference_id: reserve.purchase_id,
+      purchase_history_id: reserve.purchase_id,
     },
   );
   if (grant && grant.error) {
-    await addCreditBalance(
+    // The monthly billing ledger is append-only for auditability. If this rare
+    // case happens, mark the reserve as cancelled and subtract it from the cap.
+    const now = deps.nowIso();
+    await deps.dbRun(
       db,
-      safeUserId,
-      amount,
-      "balance_region_pack_refund",
-      {
-        payment_source: "balance",
-        payment_reference_id: balancePurchaseId,
-        region_pack_id: String(product && product.id || ""),
-        refund_reason: String(grant.error || "region_pack_grant_failed"),
-      },
-      deps,
+      `
+        UPDATE monthly_billing_purchases
+        SET status = 'cancelled', metadata_json = ?
+        WHERE id = ? AND user_id = ?
+      `,
+      [
+        JSON.stringify({ error: String(grant.error || "region_pack_grant_failed") }),
+        reserve.purchase_id,
+        safeUserId,
+      ],
     );
+    await deps.dbRun(
+      db,
+      `
+        UPDATE user_credit_accounts
+        SET monthly_billing_spent_eur = ROUND(MAX(0, COALESCE(monthly_billing_spent_eur, 0) - ?) * 100.0) / 100.0,
+            updated_at = ?
+        WHERE user_id = ?
+      `,
+      [amount, now, safeUserId],
+    );
+    invalidateUserPricingCaches(safeUserId);
     return grant;
   }
   return {
     ok: true,
-    balance_before_credits: balanceBefore,
-    balance_after_credits: balanceAfter,
-    payment_reference_id: balancePurchaseId,
+    payment_reference_id: reserve.purchase_id,
+    monthly_billing: reserve.monthly_billing,
     grant,
   };
 }
@@ -6249,38 +6487,48 @@ export async function handleCreditRegionPackCheckoutFromToken(request, env, deps
     );
   }
   const amountCents = centsForEur(priceEur);
-  const balanceToken = await createBalanceTopUpTokenForUser(db, userId, env, deps);
-  timing.mark("balance_token");
 
-  if (method === "balance") {
-    const balanceGrant = await grantRegionPackFromBalance(db, userId, email, product, priceEur, estimate, deps);
-    if (balanceGrant && balanceGrant.error) {
+  if (method === "setup_monthly" || method === "monthly_setup") {
+    const setup = await createMonthlyBillingSetupSession(db, env, userId, email, deps);
+    timing.mark("monthly_setup");
+    if (setup && setup.error) {
+      return withEndpointTiming(html(
+        `<!doctype html><title>Planetka Monthly Billing</title><h1>Monthly Billing setup failed.</h1><p>${escapeHtmlText(setup.message || setup.error || "setup_failed")}</p>`,
+        502,
+        env,
+      ), timing, env, { error: setup.error, region_pack_id: String(product && product.id || "") });
+    }
+    return withEndpointTiming(Response.redirect(setup.checkout_url, 303), timing, env, { region_pack_id: String(product && product.id || ""), payment_source: "monthly_setup" });
+  }
+
+  if (method === "monthly" || method === "monthly_billing") {
+    const monthlyGrant = await grantRegionPackWithMonthlyBilling(db, userId, email, product, priceEur, estimate, deps);
+    if (monthlyGrant && monthlyGrant.error) {
       return withEndpointTiming(html(
         regionPackPaymentChoiceHtml({
           token,
           product,
           estimate,
-          account: await ensureFreshCreditAccountForUser(db, userId, deps),
+          account: await ensureMonthlyBillingAccount(db, userId, deps),
           catalog_mode: allowCatalogProduct,
-          balance_top_up_token: balanceToken && balanceToken.token,
         }),
-        balanceGrant.error === "insufficient_balance" ? 402 : 500,
+        monthlyGrant.error === "monthly_billing_cap_exceeded" ? 402 : 500,
         env,
-      ), timing, env, { error: balanceGrant.error, region_pack_id: String(product && product.id || "") });
+      ), timing, env, { error: monthlyGrant.error, region_pack_id: String(product && product.id || "") });
     }
     if (typeof deps.invalidateAnalyticsSnapshots === "function") {
       try {
         await deps.invalidateAnalyticsSnapshots(env);
       } catch (error) {
         console.warn(
-          "region_pack.balance_purchase_snapshot_invalidate_failed",
+          "region_pack.monthly_billing_purchase_snapshot_invalidate_failed",
           JSON.stringify({ user_id: userId, region_pack_id: String(product.id || ""), error: String(error && error.message || "snapshot_invalidate_failed") }),
         );
       }
     }
     const success = {
       title: "Licence applied",
-      message: `€${priceEur.toFixed(2)} was deducted from your Planetka balance. ${String(product.name || "This pack")} is now licenced to your account.`,
+      message: `${String(product.name || "This pack")} is now licenced to your account. €${priceEur.toFixed(2)} was added to this month's Planetka billing.`,
     };
     if (String(product.id || "").trim().toLowerCase() === "world") {
       const safeToken = escapeHtmlText(encodeURIComponent(token));
@@ -6289,7 +6537,7 @@ export async function handleCreditRegionPackCheckoutFromToken(request, env, deps
         `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Planetka World Pack</title><style>:root{color-scheme:dark}body{margin:0;background:#111;color:#eee;font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:820px;margin:0 auto;padding:24px}.panel{background:#1b1b1b;border:1px solid #3c3c3c;border-radius:12px;padding:14px;margin-top:14px}.button{display:inline-flex;align-items:center;justify-content:center;margin:8px 8px 0 0;padding:9px 12px;border-radius:8px;background:#d9a441;color:#111;text-decoration:none;font-weight:700}.secondary{background:#2a2a2a;color:#eee;border:1px solid #3c3c3c}.muted{color:#aaa}</style></head><body><main><h1>World Full Quality Pack</h1><section class="panel"><h2>${escapeHtmlText(success.title)}</h2><p>${escapeHtmlText(success.message)}</p></section><section class="panel"><p>The World pack includes the complete Full Quality texture dataset. A full interactive tile map is intentionally not generated because it would be too large for a useful browser view.</p><p class="muted">Full price: €${fullPrice}<br>Final price: €${priceEur.toFixed(2)}</p><a class="button secondary" href="/credits/region-pack-catalog?token=${safeToken}">View all data packs</a></section></main></body></html>`,
         200,
         env,
-      ), timing, env, { region_pack_id: "world", payment_source: "balance" });
+      ), timing, env, { region_pack_id: "world", payment_source: "monthly_billing" });
     }
     const ownedRows = await ownedTileRowsForUser(db, userId, deps);
     const refreshedAccount = await ensureFreshCreditAccountForUser(db, userId, deps);
@@ -6299,7 +6547,7 @@ export async function handleCreditRegionPackCheckoutFromToken(request, env, deps
     });
     return withEndpointTiming(html(regionPackStaticMapHtml(data), 200, env), timing, env, {
       region_pack_id: String(product && product.id || ""),
-      payment_source: "balance",
+      payment_source: "monthly_billing",
     });
   }
 
@@ -6311,7 +6559,6 @@ export async function handleCreditRegionPackCheckoutFromToken(request, env, deps
         estimate,
         account,
         catalog_mode: allowCatalogProduct,
-        balance_top_up_token: balanceToken && balanceToken.token,
       }),
       200,
       env,
@@ -6326,7 +6573,6 @@ export async function handleCreditRegionPackCheckoutFromToken(request, env, deps
         estimate,
         account,
         catalog_mode: allowCatalogProduct,
-        balance_top_up_token: balanceToken && balanceToken.token,
       }),
       400,
       env,
@@ -6859,42 +7105,16 @@ export async function handleCreditPaymentSuccess(request, env, deps) {
     }
   }
 
-  if (purchaseType === "standard_quality_unlock") {
+  if (purchaseType === "monthly_billing_setup") {
+    const account = userId ? await ensureMonthlyBillingAccount(db, userId, deps) : null;
+    const monthly = monthlyBillingPublicPayload(account);
     return html(
       checkoutReturnHtml({
-        title: "Planetka Standard Quality",
-        heading: "Standard Quality unlocked",
-        message: `Payment successful${amountPaidEur > 0 ? ` (€${amountPaidEur.toFixed(2)})` : ""}. Standard Quality textures are now unlocked for this account.`,
-        icon: "OK",
-        tone: "success",
-      }),
-      200,
-      env,
-    );
-  }
-
-  if (purchaseType === "balance_top_up") {
-    let creditedEur = normalizeCreditAmount(
-      purchase && purchase.nominal_eur
-        || metadata.planetka_top_up_eur
-        || amountPaidEur,
-    );
-    let bonusEur = normalizeCreditAmount(metadata.planetka_top_up_bonus_eur || 0);
-    if (purchase && purchase.metadata_json) {
-      try {
-        const purchaseMetadata = JSON.parse(String(purchase.metadata_json || "{}"));
-        creditedEur = normalizeCreditAmount(purchaseMetadata.balance_added_eur || purchaseMetadata.top_up_eur || creditedEur);
-        bonusEur = normalizeCreditAmount(purchaseMetadata.top_up_bonus_eur || bonusEur);
-      } catch (_error) {
-        // The success page is best-effort; webhook state remains authoritative.
-      }
-    }
-    const bonusText = bonusEur > 0 ? ` including €${bonusEur.toFixed(2)} bonus` : "";
-    return html(
-      checkoutReturnHtml({
-        title: "Planetka Balance Added",
-        heading: "Balance added",
-        message: `Payment successful${amountPaidEur > 0 ? ` (€${amountPaidEur.toFixed(2)})` : ""}. €${creditedEur.toFixed(2)} was added to your Planetka balance${bonusText}. Blender will refresh automatically.`,
+        title: "Planetka Monthly Billing",
+        heading: monthly.active ? "Monthly Billing active" : "Payment method verified",
+        message: monthly.active
+          ? `Monthly Billing is active with a €${normalizeCreditAmount(monthly.limit_eur).toFixed(2)} monthly cap. Return to Blender; the panel will refresh automatically.`
+          : "Your payment method was verified. Monthly Billing will refresh in Blender shortly.",
         icon: "OK",
         tone: "success",
       }),
@@ -7065,50 +7285,14 @@ async function applyStripeCreditPurchaseFromSession(db, session, deps, env) {
   const amountPaidEur = eurFromStripeAmountCents(session && session.amount_total);
   const stripePaymentIntentId = String(session && (session.payment_intent || session.payment_intent_id) || "").trim();
   let result = null;
-  if (purchaseType === "balance_top_up") {
-    const requestedTopUp = Number.parseFloat(metadata.planetka_top_up_eur || "");
-    const topUpEur = Number.isFinite(requestedTopUp) && requestedTopUp > 0
-      ? normalizeCreditAmount(requestedTopUp)
-      : amountPaidEur;
-    const requestedPayment = Number.parseFloat(metadata.planetka_top_up_payment_eur || "");
-    const topUpPaymentEur = Number.isFinite(requestedPayment) && requestedPayment > 0
-      ? normalizeCreditAmount(requestedPayment)
-      : amountPaidEur;
-    const requestedBonus = Number.parseFloat(metadata.planetka_top_up_bonus_eur || "");
-    const topUpBonusEur = Number.isFinite(requestedBonus) && requestedBonus > 0
-      ? normalizeCreditAmount(requestedBonus)
-      : normalizeCreditAmount(Math.max(0, topUpEur - topUpPaymentEur));
-    const requestedBonusPercent = Number.parseFloat(metadata.planetka_top_up_bonus_percent || "");
-    const topUpBonusPercent = Number.isFinite(requestedBonusPercent) && requestedBonusPercent > 0
-      ? Math.round(requestedBonusPercent * 1000) / 1000
-      : 0;
-    result = await addCreditBalance(
-      db,
-      userId,
-      topUpEur,
-      "stripe_balance_top_up",
-      {
-        stripe_session_id: sessionId,
-        stripe_payment_intent_id: stripePaymentIntentId,
-        stripe_amount_paid_eur: amountPaidEur,
-        top_up_payment_eur: topUpPaymentEur,
-        top_up_bonus_eur: topUpBonusEur,
-        top_up_bonus_percent: topUpBonusPercent,
-        top_up_balance_eur: topUpEur,
-        customer_email: email,
-      },
-      deps,
-    );
-  } else if (purchaseType === "standard_quality_unlock") {
-    result = await grantStandardQualityUnlock(
-      db,
-      userId,
-      sessionId,
-      amountPaidEur,
-      deps,
-      email,
-      stripePaymentIntentId,
-    );
+  if (purchaseType === "monthly_billing_setup") {
+    result = await activateMonthlyBillingFromStripeSetupSession(db, session, env, deps, email);
+  } else if (
+    purchaseType === "balance_top_up"
+    || purchaseType === "legacy_balance_top_up"
+    || purchaseType === "standard_quality_unlock"
+  ) {
+    return { error: "retired_purchase_type", purchase_type: purchaseType };
   } else if (purchaseType === "region_pack") {
     result = await grantRegionPackEntitlements(
       db,
@@ -7438,7 +7622,7 @@ export async function handleCreditUnlocked(request, env, deps) {
   }, 200, env);
 }
 
-export async function handleAdminGiftCredits(request, env, deps) {
+export async function handleAdminSetMonthlyBilling(request, env, deps) {
   const auth = await deps.requireAnalyticsAdmin(request, env);
   if (auth.error) {
     return auth.error;
@@ -7457,67 +7641,73 @@ export async function handleAdminGiftCredits(request, env, deps) {
   if (!targetUser) {
     return deps.json({ ok: false, error: "user_not_found" }, 404, env);
   }
-  const rawDelta = body && (
-    body.delta_credits ?? body.delta_eur ?? body.credits ?? body.amount
-  );
-  let delta = normalizeSignedCreditAmount(rawDelta);
-  const operation = String(body && (body.operation || body.action) || "").trim().toLowerCase();
-  if (delta > 0 && ["subtract", "take", "remove", "deduct", "withdraw"].includes(operation)) {
-    delta = -delta;
-  }
-  if (delta === 0) {
-    return deps.json({ ok: false, error: "missing_nonzero_credits" }, 400, env);
-  }
-  const grantedDelta = delta > 0 ? delta : 0;
-  const defaultReason = delta < 0 ? "admin_balance_subtract" : "admin_top_up";
-  const reason = String(body && body.reason || defaultReason).trim().slice(0, 160) || defaultReason;
+  const action = String(body && (body.action || body.operation) || "approve_custom").trim().toLowerCase();
   const userId = String(targetUser.id || "").trim();
   const now = deps.nowIso();
   await ensureCreditAccount(db, userId, deps);
-  await deps.dbRun(
-    db,
-    `
-      UPDATE user_credit_accounts
-      SET
-        balance_credits = ROUND((balance_credits + ?) * 100.0) / 100.0,
-        total_granted_credits = ROUND((total_granted_credits + ?) * 100.0) / 100.0,
-        pricing_version = COALESCE(pricing_version, 0) + 1,
-        updated_at = ?
-      WHERE user_id = ?
-    `,
-    [delta, grantedDelta, now, userId],
-  );
+  if (action === "disable" || action === "suspend") {
+    await deps.dbRun(
+      db,
+      `
+        UPDATE user_credit_accounts
+        SET monthly_billing_status = ?,
+            monthly_billing_limit_eur = 0,
+            monthly_billing_invoice_status = ?,
+            pricing_version = COALESCE(pricing_version, 0) + 1,
+            updated_at = ?
+        WHERE user_id = ?
+      `,
+      [action === "suspend" ? "suspended" : "none", action, now, userId],
+    );
+  } else {
+    const rawLimit = Number.parseFloat(body && (body.limit_eur ?? body.limit ?? body.cap_eur ?? body.amount) || "");
+    const limit = normalizeCreditAmount(rawLimit);
+    if (!Number.isFinite(rawLimit) || limit <= monthlyBillingLimitedCapEur(env)) {
+      return deps.json(
+        {
+          ok: false,
+          error: "custom_limit_must_exceed_limited_cap",
+          limited_cap_eur: monthlyBillingLimitedCapEur(env),
+        },
+        400,
+        env,
+      );
+    }
+    const account = await ensureMonthlyBillingAccount(db, userId, deps);
+    const hasVerifiedPaymentMethod = Boolean(String(account && account.monthly_billing_payment_method_verified_at || "").trim());
+    await deps.dbRun(
+      db,
+      `
+        UPDATE user_credit_accounts
+        SET monthly_billing_status = ?,
+            monthly_billing_limit_eur = CASE WHEN ? THEN ? ELSE monthly_billing_limit_eur END,
+            monthly_billing_custom_approved_at = ?,
+            monthly_billing_custom_approved_by_admin_id = ?,
+            monthly_billing_custom_approved_limit_eur = ?,
+            pricing_version = COALESCE(pricing_version, 0) + 1,
+            updated_at = ?
+        WHERE user_id = ?
+      `,
+      [
+        hasVerifiedPaymentMethod ? "custom" : "custom_pending_payment",
+        hasVerifiedPaymentMethod ? 1 : 0,
+        limit,
+        now,
+        String(adminUser && adminUser.id || ""),
+        limit,
+        now,
+        userId,
+      ],
+    );
+  }
   invalidateUserPricingCaches(userId);
-  const account = await ensureFreshCreditAccountForUser(db, userId, deps);
-  const balanceAfter = normalizeSignedCreditAmount(account && account.balance_credits);
-  await deps.dbRun(
-    db,
-    `
-      INSERT INTO credit_ledger (
-        id, user_id, delta_credits, balance_after_credits, reason, metadata_json, created_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `,
-    [
-      deps.randomToken(16),
-      userId,
-      delta,
-      balanceAfter,
-      reason,
-      JSON.stringify({
-        admin_user_id: String(adminUser && adminUser.id || ""),
-        admin_email: deps.normalizeEmail(adminUser && adminUser.email || ""),
-        operation: delta < 0 ? "subtract" : "top_up",
-      }),
-      now,
-    ],
-  );
+  const refreshed = await ensureMonthlyBillingAccount(db, userId, deps);
   if (typeof deps.invalidateAnalyticsSnapshots === "function") {
     try {
       await deps.invalidateAnalyticsSnapshots(env);
     } catch (error) {
       console.warn(
-        "planetka.admin.credit_adjustment_snapshot_invalidate_failed",
+        "planetka.admin.monthly_billing_snapshot_invalidate_failed",
         JSON.stringify({
           error: String(error && error.message || "analytics_snapshot_invalidate_failed"),
           user_id: userId,
@@ -7528,16 +7718,9 @@ export async function handleAdminGiftCredits(request, env, deps) {
   return deps.json(
     {
       ok: true,
-      action: delta < 0 ? "subtract_eur" : "top_up_eur",
       user_id: userId,
       user_email: deps.normalizeEmail(targetUser.email || ""),
-      delta_credits: delta,
-      delta_eur: delta,
-      top_up_eur: delta > 0 ? delta : 0,
-      subtracted_eur: delta < 0 ? Math.abs(delta) : 0,
-      gifted_credits: delta > 0 ? delta : 0,
-      balance_credits: balanceAfter,
-      balance_eur: balanceAfter,
+      monthly_billing: monthlyBillingPublicPayload(refreshed),
       updated_at: now,
     },
     200,
