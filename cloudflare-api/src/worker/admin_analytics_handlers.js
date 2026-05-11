@@ -267,6 +267,13 @@ export async function handleAdminAnalyticsProductsPage(request, env, deps) {
     return Number.isFinite(numeric) ? `€${numeric.toFixed(2)}` : "€0.00";
   };
   const fmtPercent = (value) => `${Math.max(0, Math.min(100, Math.round(Number(value || 0) || 0)))}%`;
+  const fmtLandPercent = (value) => {
+    const numeric = Number(value) * 100;
+    if (!Number.isFinite(numeric) || numeric <= 0) {
+      return "0%";
+    }
+    return `${numeric.toFixed(4).replace(/\.?0+$/, "")}%`;
+  };
   const fmtInt = (value) => Number(deps.parseNonNegativeInteger(value, 0)).toLocaleString();
   const productData = await deps.listRegionProductPricingRows(env, deps);
   const rawRows = Array.isArray(productData && productData.rows) ? productData.rows : [];
@@ -306,6 +313,7 @@ export async function handleAdminAnalyticsProductsPage(request, env, deps) {
     "product",
     "type",
     "tiles",
+    "land_percent",
     "gross_base",
     "full_price",
     "default_discount",
@@ -324,6 +332,7 @@ export async function handleAdminAnalyticsProductsPage(request, env, deps) {
     if (key === "product") return String(row && row.name || "").toLowerCase();
     if (key === "type") return String(row && row.type || "").toLowerCase();
     if (key === "tiles") return sortNumber(row && row.tile_count);
+    if (key === "land_percent") return sortNumber(row && row.world_land_share);
     if (key === "gross_base") return sortNumber(row && row.gross_base_eur);
     if (key === "full_price") return sortNumber(row && row.full_price_eur);
     if (key === "default_discount") return sortNumber(row && row.default_discount_percent);
@@ -361,16 +370,18 @@ export async function handleAdminAnalyticsProductsPage(request, env, deps) {
     const overrideLabel = hasOverride ? fmtPercent(row.override_discount_percent) : "default";
     const finalClass = Number(row && row.final_price_eur || 0) <= 0 ? " free-price" : "";
     const tileCount = sortNumber(row && row.tile_count);
+    const landPercent = sortNumber(row && row.world_land_share);
     const grossBaseEur = sortNumber(row && row.gross_base_eur);
     const fullPriceEur = sortNumber(row && row.full_price_eur);
     const defaultDiscount = sortNumber(row && row.default_discount_percent);
     const overrideDiscount = hasOverride ? sortNumber(row && row.override_discount_percent) : -1;
     const discountEur = sortNumber(row && row.discount_eur);
     const finalPriceEur = sortNumber(row && row.final_price_eur);
-    return `<tr data-pack-id="${deps.escapeHtml(id)}" data-name="${deps.escapeHtml(name.toLowerCase())}" data-type="${deps.escapeHtml(type.toLowerCase())}" data-sort-product="${deps.escapeHtml(name.toLowerCase())}" data-sort-type="${deps.escapeHtml(type.toLowerCase())}" data-sort-tiles="${tileCount}" data-sort-gross-base="${grossBaseEur}" data-sort-full-price="${fullPriceEur}" data-sort-default-discount="${defaultDiscount}" data-sort-override="${overrideDiscount}" data-sort-discount-eur="${discountEur}" data-sort-final-price="${finalPriceEur}" data-sort-set-discount="${overrideDiscount}"${hasOverride ? ` class="override-row"` : ""}>
+    return `<tr data-pack-id="${deps.escapeHtml(id)}" data-name="${deps.escapeHtml(name.toLowerCase())}" data-type="${deps.escapeHtml(type.toLowerCase())}" data-sort-product="${deps.escapeHtml(name.toLowerCase())}" data-sort-type="${deps.escapeHtml(type.toLowerCase())}" data-sort-tiles="${tileCount}" data-sort-land-percent="${landPercent}" data-sort-gross-base="${grossBaseEur}" data-sort-full-price="${fullPriceEur}" data-sort-default-discount="${defaultDiscount}" data-sort-override="${overrideDiscount}" data-sort-discount-eur="${discountEur}" data-sort-final-price="${finalPriceEur}" data-sort-set-discount="${overrideDiscount}"${hasOverride ? ` class="override-row"` : ""}>
       <td><strong>${deps.escapeHtml(name)}</strong><br><span class="muted">${deps.escapeHtml(id)}</span></td>
       <td>${deps.escapeHtml(type || "-")}</td>
       <td>${fmtInt(row && row.tile_count)}<br><span class="muted">${fmtInt(row && row.paid_tile_count)} paid / ${fmtInt(row && row.free_tile_count)} free</span></td>
+      <td>${deps.escapeHtml(fmtLandPercent(row && row.world_land_share))}</td>
       <td>${deps.escapeHtml(fmtEur(row && row.gross_base_eur))}</td>
       <td>${deps.escapeHtml(fmtEur(row && row.full_price_eur))}</td>
       <td>${deps.escapeHtml(fmtPercent(row && row.default_discount_percent))}</td>
@@ -476,6 +487,7 @@ export async function handleAdminAnalyticsProductsPage(request, env, deps) {
         <th><a href="${buildSortHref("product")}">Product${sortMarker("product")}</a></th>
         <th><a href="${buildSortHref("type")}">Type${sortMarker("type")}</a></th>
         <th><a href="${buildSortHref("tiles")}">Tiles${sortMarker("tiles")}</a></th>
+        <th><a href="${buildSortHref("land_percent")}">% of Land${sortMarker("land_percent")}</a></th>
         <th><a href="${buildSortHref("gross_base")}">Gross Base${sortMarker("gross_base")}</a><br><span class="muted">coefficient 1.0</span></th>
         <th><a href="${buildSortHref("full_price")}">Full Price${sortMarker("full_price")}</a><br><span class="muted">current coefficient</span></th>
         <th><a href="${buildSortHref("default_discount")}">Default Discount${sortMarker("default_discount")}</a></th>
