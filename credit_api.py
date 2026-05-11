@@ -76,6 +76,12 @@ _PRICE_FIELDS = {
     "minimum_eur",
     "added_eur",
     "added_credits",
+    "raw_credits",
+    "raw_price_eur",
+    "scene_tile_price_eur",
+    "custom_scene_licence_eur",
+    "scene_payable_eur",
+    "scene_small_free_threshold_eur",
 }
 _CENT = Decimal("0.01")
 _TILE_RE = re.compile(r"x(\d{3})_y(\d{3})_z(\d{3})_d(\d{3})", re.IGNORECASE)
@@ -419,8 +425,19 @@ def estimate_credits_for_tiles(tiles, quality_mode="FULL") -> dict:
             _money_round(row.get("upgrade_credit_applied", 0.0))
             for row in partial_rows
         ))
-    return {
-        "credits": _money_round(payload_summary.get("credits", 0.0)),
+    display_credits = _money_round(payload.get("credits", payload.get("price_eur", payload_summary.get("credits", 0.0))))
+    raw_credits = _money_round(payload.get("raw_credits", payload.get("raw_price_eur", payload_summary.get("credits", 0.0))))
+    result = {
+        "credits": display_credits,
+        "raw_credits": raw_credits,
+        "raw_price_eur": _money_round(payload.get("raw_price_eur", raw_credits)),
+        "scene_tile_price_eur": _money_round(payload.get("scene_tile_price_eur", raw_credits)),
+        "custom_scene_licence_eur": _money_round(payload.get("custom_scene_licence_eur", 0.0)),
+        "scene_payable_eur": _money_round(payload.get("scene_payable_eur", display_credits)),
+        "scene_small_free_threshold_eur": _money_round(payload.get("scene_small_free_threshold_eur", 0.0)),
+        "scene_custom_licence_label": str(payload.get("scene_custom_licence_label", "") or ""),
+        "scene_custom_licence_applied": bool(payload.get("scene_custom_licence_applied", False)),
+        "scene_small_free_threshold_applied": bool(payload.get("scene_small_free_threshold_applied", False)),
         "paid_tile_count": int(payload_summary.get("paid_tile_count", 0) or 0),
         "free_tile_count": int(payload_summary.get("free_tile_count", 0) or 0),
         "tile_count": int(payload_summary.get("tile_count", len(payload_tiles)) or 0),
@@ -431,6 +448,7 @@ def estimate_credits_for_tiles(tiles, quality_mode="FULL") -> dict:
         "authoritative": True,
         "pricing_source": "backend",
     }
+    return result
 
 
 def estimate_credit_breakdown_for_tiles(tiles, quality_mode="FULL") -> dict:

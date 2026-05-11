@@ -39,6 +39,9 @@ const DEFAULT_REGION_PACK_DISCOUNT_SHARE_BUCKETS = [
   [0.0, 0.0],
 ];
 const STRIPE_MIN_CHECKOUT_AMOUNT_CENTS = 50;
+const SCENE_SMALL_FREE_THRESHOLD_CENTS = 50;
+const SCENE_CUSTOM_LICENCE_CENTS = 150;
+const SCENE_CUSTOM_LICENCE_LABEL = "Custom scene-specific licence";
 const MONEY_SCALE = 100;
 const METRIC_SCALE = 1_000_000;
 const REGION_PACK_CATALOG_VERSION = GENERATED_REGION_PACK_CATALOG_VERSION || "gadm_regions_v8";
@@ -3990,6 +3993,7 @@ function buildSceneFullQualityMapData(estimate, options = {}) {
   const alreadyLicencedSaving = normalizeCreditAmount(tileRows
     .filter((row) => String(row.status || "") === "licenced")
     .reduce((total, row) => total + normalizeCreditAmount(row.full_price_eur), 0));
+  const scenePolicy = scenePaymentPolicyForEstimate(estimate);
   return {
     ok: true,
     scene_detail: true,
@@ -4023,7 +4027,15 @@ function buildSceneFullQualityMapData(estimate, options = {}) {
       full_price_eur: fullPrice,
       discount_percent: 0,
       discount_eur: 0,
-      price_eur: normalizeCreditAmount(estimate && estimate.price_eur),
+      price_eur: scenePolicy.scene_payable_eur,
+      raw_price_eur: scenePolicy.scene_tile_price_eur,
+      scene_tile_price_eur: scenePolicy.scene_tile_price_eur,
+      custom_scene_licence_eur: scenePolicy.custom_scene_licence_eur,
+      custom_scene_licence_cents: scenePolicy.custom_scene_licence_cents,
+      scene_custom_licence_label: SCENE_CUSTOM_LICENCE_LABEL,
+      scene_custom_licence_applied: scenePolicy.scene_custom_licence_applied,
+      scene_small_free_threshold_eur: scenePolicy.scene_small_free_threshold_eur,
+      scene_small_free_threshold_applied: scenePolicy.scene_small_free_threshold_applied,
       tile_price_sum_eur: normalizeCreditAmount(tileRows.reduce((total, row) => total + normalizeCreditAmount(row.price_eur), 0)),
     },
     tiles: tileRows,
@@ -4370,6 +4382,8 @@ function regionPackMapHtml(data) {
   const alreadyLicencedDeductionEur = Number(summary.already_licenced_deduction_eur ?? summary.already_licenced_saving_eur ?? 0) + partialLicenceCreditEur;
   const totalTiles = Number(summary.total_tiles || 0);
   const newTiles = Math.max(0, Number(summary.new_tiles || 0) - partialLicenceTiles);
+  const customSceneLicenceEur = Number(summary.custom_scene_licence_eur || 0);
+  const sceneSmallFreeApplied = Boolean(summary.scene_small_free_threshold_applied);
   const payload = jsonForInlineScript(data);
   return `<!doctype html>
 <html lang="en">
@@ -4388,6 +4402,8 @@ function regionPackMapHtml(data) {
 		<div class="card"><span>Full Price</span><b>€${Number(summary.full_price_eur || 0).toFixed(2)}</b></div>
 		${alreadyLicencedDeductionEur > 0 ? `<div class="card"><span>Already Licenced</span><b>${alreadyLicencedTiles} tiles (-€${alreadyLicencedDeductionEur.toFixed(2)})</b></div>` : ""}
 		${Number(summary.discount_eur || 0) > 0 ? `<div class="card"><span>Volume Discount</span><b>${Number(summary.discount_percent || 0)}% (-€${Number(summary.discount_eur || 0).toFixed(2)})</b></div>` : ""}
+		${customSceneLicenceEur > 0 ? `<div class="card"><span>${escapeHtmlText(summary.scene_custom_licence_label || SCENE_CUSTOM_LICENCE_LABEL)}</span><b>€${customSceneLicenceEur.toFixed(2)}</b></div>` : ""}
+		${customSceneLicenceEur <= 0 && sceneSmallFreeApplied ? `<div class="card"><span>Small Scene</span><b>Free below €${Number(summary.scene_small_free_threshold_eur || 0.5).toFixed(2)}</b></div>` : ""}
 	<div class="card final-price"><span>Final Price</span><b>€${Number(summary.price_eur || 0).toFixed(2)}</b>${primaryBuyHref ? `<a class="button buy-now" href="${primaryBuyHref}">${Number(summary.price_eur || 0) > 0 ? "Buy Now" : "Licence Now"}</a>` : ""}</div>
 	</section>
 <section class="panel">
@@ -5058,7 +5074,42 @@ async function estimateNewCredits(db, userId, tileKeys, qualityMode, deps) {
   };
 }
 
-export async function unlockTilesForSession(db, userId, qualityMode, tileKeys, resolveId, deps) {
+function scenePaymentPolicyForEstimate(estimate) {
+  const tileCents = centsForEur(estimate && (estimate.credits ?? estimate.price_eur));
+  const smallFreeApplied = tileCents > 0 && tileCents < SCENE_SMALL_FREE_THRESHOLD_CENTS;
+  const customLicenceCents = tileCents >= SCENE_SMALL_FREE_THRESHOLD_CENTS
+    ? SCENE_CUSTOM_LICENCE_CENTS
+    : 0;
+  const payableCents = smallFreeApplied ? 0 : tileCents + customLicenceCents;
+  return {
+    scene_tile_price_cents: tileCents,
+    scene_tile_price_eur: normalizeCreditAmount(tileCents / 100),
+    custom_scene_licence_cents: customLicenceCents,
+    custom_scene_licence_eur: normalizeCreditAmount(customLicenceCents / 100),
+    scene_custom_licence_label: SCENE_CUSTOM_LICENCE_LABEL,
+    scene_custom_licence_applied: customLicenceCents > 0,
+    scene_small_free_threshold_cents: SCENE_SMALL_FREE_THRESHOLD_CENTS,
+    scene_small_free_threshold_eur: normalizeCreditAmount(SCENE_SMALL_FREE_THRESHOLD_CENTS / 100),
+    scene_small_free_threshold_applied: smallFreeApplied,
+    scene_payable_cents: payableCents,
+    scene_payable_eur: normalizeCreditAmount(payableCents / 100),
+  };
+}
+
+function sceneEstimateWithPaymentPolicy(estimate) {
+  const policy = scenePaymentPolicyForEstimate(estimate);
+  const rawCredits = normalizeCreditAmount(estimate && (estimate.credits ?? estimate.price_eur));
+  return {
+    ...estimate,
+    ...policy,
+    raw_credits: rawCredits,
+    raw_price_eur: rawCredits,
+    credits: policy.scene_payable_eur,
+    price_eur: policy.scene_payable_eur,
+  };
+}
+
+export async function unlockTilesForSession(db, userId, qualityMode, tileKeys, resolveId, deps, options = {}) {
   const safeMode = deps.normalizeQualityMode(qualityMode || "");
   if (safeMode === "balanced") {
     return {
@@ -5075,11 +5126,21 @@ export async function unlockTilesForSession(db, userId, qualityMode, tileKeys, r
     return estimate;
   }
   const requiredCredits = normalizeCreditAmount(estimate.credits);
-  if (requiredCredits > 0) {
+  const policy = scenePaymentPolicyForEstimate(estimate);
+  const allowSmallSceneFree = Boolean(options && options.allowSmallSceneFree);
+  const freeSmallScene = allowSmallSceneFree && Boolean(policy.scene_small_free_threshold_applied);
+  if (requiredCredits > 0 && !freeSmallScene) {
+    const paymentRequiredPrice = policy.scene_payable_cents > 0 ? policy.scene_payable_eur : requiredCredits;
     return {
       error: "payment_required",
       required_credits: requiredCredits,
-      price_eur: requiredCredits,
+      price_eur: paymentRequiredPrice,
+      scene_tile_price_eur: policy.scene_tile_price_eur,
+      custom_scene_licence_eur: policy.custom_scene_licence_eur,
+      scene_custom_licence_label: SCENE_CUSTOM_LICENCE_LABEL,
+      scene_custom_licence_applied: policy.scene_custom_licence_applied,
+      scene_small_free_threshold_eur: policy.scene_small_free_threshold_eur,
+      scene_small_free_threshold_applied: false,
       paid_tile_count: estimate.paid_tile_count,
       tile_count: estimate.tile_count,
     };
@@ -5089,7 +5150,17 @@ export async function unlockTilesForSession(db, userId, qualityMode, tileKeys, r
   const insertedTiles = [];
   let actualCredits = 0;
   for (const tile of estimate.new_tiles || []) {
-    const tileCredits = normalizeCreditAmount(tile.credits);
+    const tileCredits = freeSmallScene ? 0 : normalizeCreditAmount(tile.credits);
+    const insertedTile = freeSmallScene
+      ? {
+        ...tile,
+        credits: 0,
+        price_eur: 0,
+        scene_small_free: true,
+        gross_credits: normalizeCreditAmount(tile && (tile.gross_credits ?? tile.credits)),
+        gross_price_eur: normalizeCreditAmount(tile && (tile.gross_price_eur ?? tile.gross_credits ?? tile.credits)),
+      }
+      : tile;
     const insert = await deps.dbRun(
       db,
       `
@@ -5105,12 +5176,12 @@ export async function unlockTilesForSession(db, userId, qualityMode, tileKeys, r
         tileCredits,
         Math.max(0, Number.parseFloat(tile.land_km2 || 0) || 0),
         Math.max(0, Number.parseFloat(tile.billable_land_km2 || 0) || 0),
-        String(tile.stats_source || "backend_d1").trim() || "backend_d1",
+        freeSmallScene ? "scene_small_free" : (String(tile.stats_source || "backend_d1").trim() || "backend_d1"),
         now,
       ],
     );
     if (deps.dbMetaChanges(insert) > 0) {
-      insertedTiles.push(tile);
+      insertedTiles.push(insertedTile);
       actualCredits = normalizeCreditAmount(actualCredits + tileCredits);
     }
   }
@@ -5167,6 +5238,12 @@ export async function unlockTilesForSession(db, userId, qualityMode, tileKeys, r
     ...estimate,
     credits: normalizeCreditAmount(actualCredits),
     price_eur: normalizeCreditAmount(actualCredits),
+    scene_tile_price_eur: policy.scene_tile_price_eur,
+    custom_scene_licence_eur: freeSmallScene ? 0 : policy.custom_scene_licence_eur,
+    scene_custom_licence_label: SCENE_CUSTOM_LICENCE_LABEL,
+    scene_custom_licence_applied: false,
+    scene_small_free_threshold_eur: policy.scene_small_free_threshold_eur,
+    scene_small_free_threshold_applied: freeSmallScene,
     paid_tile_count: insertedPaidCount,
     free_tile_count: estimatedFreeCount + skippedPaidCount,
     new_tiles: insertedTiles,
@@ -5225,6 +5302,7 @@ export async function grantPaidSceneTileEntitlements(db, userId, qualityMode, ti
   if (estimate && estimate.error) {
     return estimate;
   }
+  const policy = scenePaymentPolicyForEstimate(estimate);
   const now = deps.nowIso();
   const insertedTiles = [];
   let nominalCredits = 0;
@@ -5286,6 +5364,13 @@ export async function grantPaidSceneTileEntitlements(db, userId, qualityMode, ti
         partial_licence_credit_eur: normalizeCreditAmount(estimate && estimate.partial_licence_credit_eur),
         nominal_eur: nominalCredits,
         paid_eur: normalizeCreditAmount(amountPaidEur),
+        scene_tile_price_eur: policy.scene_tile_price_eur,
+        custom_scene_licence_eur: policy.custom_scene_licence_eur,
+        scene_payable_eur: policy.scene_payable_eur,
+        scene_custom_licence_label: SCENE_CUSTOM_LICENCE_LABEL,
+        scene_custom_licence_applied: policy.scene_custom_licence_applied,
+        scene_small_free_threshold_eur: policy.scene_small_free_threshold_eur,
+        scene_small_free_threshold_applied: policy.scene_small_free_threshold_applied,
         purchased_tile_keys: purchasedTileKeys,
         purchased_tiles: purchasedTileRows.map((tile) => compactPurchaseTile(tile, "new")).filter(Boolean),
       }),
@@ -5312,6 +5397,13 @@ export async function grantPaidSceneTileEntitlements(db, userId, qualityMode, ti
         purchased_tile_keys: purchasedTileKeys,
         partial_licence_tile_count: Math.max(0, Number.parseInt(estimate && estimate.partial_licence_tile_count || 0, 10) || 0),
         partial_licence_credit_eur: normalizeCreditAmount(estimate && estimate.partial_licence_credit_eur),
+        scene_tile_price_eur: policy.scene_tile_price_eur,
+        custom_scene_licence_eur: policy.custom_scene_licence_eur,
+        scene_payable_eur: policy.scene_payable_eur,
+        scene_custom_licence_label: SCENE_CUSTOM_LICENCE_LABEL,
+        scene_custom_licence_applied: policy.scene_custom_licence_applied,
+        scene_small_free_threshold_eur: policy.scene_small_free_threshold_eur,
+        scene_small_free_threshold_applied: policy.scene_small_free_threshold_applied,
       },
       created_at: now,
     },
@@ -5326,6 +5418,10 @@ export async function grantPaidSceneTileEntitlements(db, userId, qualityMode, ti
     price_eur: 0,
     paid_eur: normalizeCreditAmount(amountPaidEur),
     nominal_eur: nominalCredits,
+    scene_tile_price_eur: policy.scene_tile_price_eur,
+    custom_scene_licence_eur: policy.custom_scene_licence_eur,
+    scene_payable_eur: policy.scene_payable_eur,
+    scene_custom_licence_label: SCENE_CUSTOM_LICENCE_LABEL,
     paid_tile_count: insertedPaidCount,
     new_tiles: insertedTiles,
   };
@@ -5910,8 +6006,10 @@ export async function handleCreditCheckout(request, env, deps) {
       env,
     );
   }
-  const priceEur = normalizeCreditAmount(estimate && estimate.credits);
-  if (priceEur <= 0) {
+  const scenePolicy = scenePaymentPolicyForEstimate(estimate);
+  const rawScenePriceEur = scenePolicy.scene_tile_price_eur;
+  const priceEur = scenePolicy.scene_payable_eur;
+  if (scenePolicy.scene_payable_cents <= 0) {
     const unlockResult = await unlockTilesForSession(
       db,
       userId,
@@ -5919,19 +6017,30 @@ export async function handleCreditCheckout(request, env, deps) {
       tileKeys,
       `checkout_no_payment_${deps.randomToken(8)}`,
       deps,
+      { allowSmallSceneFree: true },
     );
     if (unlockResult && unlockResult.error) {
       return deps.json({ ok: false, ...unlockResult }, 400, env);
     }
+    const smallFree = Boolean(scenePolicy.scene_small_free_threshold_applied);
     return deps.json(
       {
         ok: true,
         option: "scene",
         no_payment_required: true,
         price_eur: 0,
+        raw_price_eur: rawScenePriceEur,
+        scene_tile_price_eur: rawScenePriceEur,
+        custom_scene_licence_eur: 0,
+        scene_custom_licence_label: SCENE_CUSTOM_LICENCE_LABEL,
+        scene_custom_licence_applied: false,
+        scene_small_free_threshold_eur: scenePolicy.scene_small_free_threshold_eur,
+        scene_small_free_threshold_applied: smallFree,
         paid_tile_count: unlockResult && unlockResult.paid_tile_count || 0,
         tile_count: unlockResult && unlockResult.tile_count || estimate.tile_count,
-        message: "This scene has no newly charged Full Quality tiles.",
+        message: smallFree
+          ? "This small Full Quality scene is below €0.50 and has been licenced at no charge."
+          : "This scene has no newly charged Full Quality tiles.",
       },
       200,
       env,
@@ -5959,7 +6068,7 @@ export async function handleCreditCheckout(request, env, deps) {
       amountCents,
       customerEmail: email,
       clientReferenceId: userId,
-      productName: "Planetka Full Quality Scene Data",
+      productName: "Planetka Custom Scene-Specific Licence",
       metadata: {
         planetka_purchase_type: "scene_tiles",
         planetka_user_id: userId,
@@ -5967,6 +6076,13 @@ export async function handleCreditCheckout(request, env, deps) {
         planetka_quality_mode: "full",
         planetka_tile_keys_json: JSON.stringify(normalizedKeys),
         planetka_price_eur: priceEur.toFixed(2),
+        planetka_scene_tile_price_eur: rawScenePriceEur.toFixed(2),
+        planetka_custom_scene_licence_eur: scenePolicy.custom_scene_licence_eur.toFixed(2),
+        planetka_scene_payable_eur: scenePolicy.scene_payable_eur.toFixed(2),
+        planetka_custom_scene_licence_label: SCENE_CUSTOM_LICENCE_LABEL,
+        planetka_scene_custom_licence_applied: scenePolicy.scene_custom_licence_applied ? "1" : "0",
+        planetka_scene_small_free_threshold_eur: scenePolicy.scene_small_free_threshold_eur.toFixed(2),
+        planetka_scene_small_free_threshold_applied: scenePolicy.scene_small_free_threshold_applied ? "1" : "0",
         planetka_paid_tile_count: String(Math.max(0, Number.parseInt(estimate && estimate.paid_tile_count || 0, 10) || 0)),
       },
     },
@@ -5980,6 +6096,14 @@ export async function handleCreditCheckout(request, env, deps) {
       ok: true,
       option: "scene",
       price_eur: priceEur,
+      raw_price_eur: rawScenePriceEur,
+      scene_tile_price_eur: rawScenePriceEur,
+      custom_scene_licence_eur: scenePolicy.custom_scene_licence_eur,
+      scene_payable_eur: scenePolicy.scene_payable_eur,
+      scene_custom_licence_label: SCENE_CUSTOM_LICENCE_LABEL,
+      scene_custom_licence_applied: scenePolicy.scene_custom_licence_applied,
+      scene_small_free_threshold_eur: scenePolicy.scene_small_free_threshold_eur,
+      scene_small_free_threshold_applied: scenePolicy.scene_small_free_threshold_applied,
       paid_tile_count: estimate.paid_tile_count,
       tile_count: estimate.tile_count,
       ...session,
@@ -6071,14 +6195,17 @@ export async function handleCreditEstimate(request, env, deps) {
   const unlimited = isUnlimitedCreditAccount(account);
   const worldUnlocked = isWorldFullQualityUnlocked(account);
   const worldSummary = worldRegionProductSummary();
+  const publicEstimate = qualityMode === "full"
+    ? sceneEstimateWithPaymentPolicy(estimate)
+    : estimate;
   const response = deps.json(
     {
       ok: true,
-      ...estimate,
-      credits: estimate.credits,
-      price_eur: normalizeCreditAmount(estimate.credits),
-      paid_tile_count: estimate.paid_tile_count,
-      free_tile_count: estimate.free_tile_count,
+      ...publicEstimate,
+      credits: publicEstimate.credits,
+      price_eur: normalizeCreditAmount(publicEstimate.credits),
+      paid_tile_count: publicEstimate.paid_tile_count,
+      free_tile_count: publicEstimate.free_tile_count,
       account_type: normalizeAccountType(account && account.account_type),
       unlimited_credits: unlimited,
       world_full_quality_unlocked: worldUnlocked,
@@ -6093,7 +6220,7 @@ export async function handleCreditEstimate(request, env, deps) {
   return withEndpointTiming(response, timing, env, {
     tile_count: tileKeys.length,
     quality_mode: qualityMode,
-    price_eur: normalizeCreditAmount(estimate && estimate.credits),
+    price_eur: normalizeCreditAmount(publicEstimate && publicEstimate.credits),
   });
 }
 
@@ -7392,11 +7519,28 @@ function sceneEstimateFromPurchaseTiles(purchase, rows) {
       free_reason: "",
     });
   }
+  const metadata = parsePurchaseMetadataJson(purchase);
   const amountPaid = normalizeCreditAmount(purchase && purchase.amount_paid_eur);
+  const customSceneLicenceEur = normalizeCreditAmount(metadata.custom_scene_licence_eur);
+  const scenePayableEur = normalizeCreditAmount(
+    metadata.scene_payable_eur
+      || amountPaid
+      || total + customSceneLicenceEur,
+  );
   return {
     ok: true,
-    credits: amountPaid > 0 ? amountPaid : total,
-    price_eur: amountPaid > 0 ? amountPaid : total,
+    credits: total,
+    price_eur: total,
+    scene_tile_price_eur: total,
+    raw_credits: total,
+    raw_price_eur: total,
+    custom_scene_licence_eur: customSceneLicenceEur,
+    scene_payable_eur: scenePayableEur,
+    scene_custom_licence_label: String(metadata.scene_custom_licence_label || SCENE_CUSTOM_LICENCE_LABEL),
+    scene_custom_licence_applied: customSceneLicenceEur > 0,
+    scene_small_free_threshold_eur: normalizeCreditAmount(metadata.scene_small_free_threshold_eur || SCENE_SMALL_FREE_THRESHOLD_CENTS / 100),
+    scene_small_free_threshold_applied: Boolean(metadata.scene_small_free_threshold_applied),
+    amount_paid_eur: amountPaid,
     paid_tile_count: tiles.length,
     free_tile_count: 0,
     tile_count: Math.max(tiles.length, Number.parseInt(purchase && purchase.tile_count_total || 0, 10) || 0),

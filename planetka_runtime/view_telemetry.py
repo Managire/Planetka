@@ -2013,8 +2013,41 @@ def build_resolve_cost_breakdown(scene=None, runtime=None, scope_mode="CAMERA", 
         or float(row.get("upgrade_credit_applied", 0.0) or 0.0) > 0.0
     ]
     free_tiles = [row for row in tile_rows if float(row.get("credits", 0.0) or 0.0) <= 0.0 and row not in excluded_tiles]
-    total_credits = _money_round(sum(float(row.get("credits", 0.0) or 0.0) for row in tile_rows))
+    raw_total_credits = _money_round(sum(float(row.get("credits", 0.0) or 0.0) for row in tile_rows))
+    total_credits = raw_total_credits
+    if normalized_mode != "PREVIEW" and isinstance(credit_summary, dict):
+        try:
+            total_credits = _money_round(max(0.0, float(credit_summary.get("credits", raw_total_credits) or 0.0)))
+        except (TypeError, ValueError):
+            total_credits = raw_total_credits
     partial_credit = _money_round(sum(float(row.get("upgrade_credit_applied", 0.0) or 0.0) for row in partial_tiles))
+    scene_tile_price = raw_total_credits
+    custom_scene_licence = 0.0
+    scene_payable = total_credits
+    scene_small_free = False
+    scene_custom_applied = False
+    scene_small_free_threshold = 0.0
+    scene_custom_label = ""
+    if isinstance(credit_summary, dict):
+        try:
+            scene_tile_price = _money_round(float(credit_summary.get("scene_tile_price_eur", raw_total_credits) or 0.0))
+        except (TypeError, ValueError):
+            scene_tile_price = raw_total_credits
+        try:
+            custom_scene_licence = _money_round(float(credit_summary.get("custom_scene_licence_eur", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            custom_scene_licence = 0.0
+        try:
+            scene_payable = _money_round(float(credit_summary.get("scene_payable_eur", total_credits) or 0.0))
+        except (TypeError, ValueError):
+            scene_payable = total_credits
+        scene_small_free = bool(credit_summary.get("scene_small_free_threshold_applied", False))
+        scene_custom_applied = bool(credit_summary.get("scene_custom_licence_applied", custom_scene_licence > 0.0))
+        try:
+            scene_small_free_threshold = _money_round(float(credit_summary.get("scene_small_free_threshold_eur", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            scene_small_free_threshold = 0.0
+        scene_custom_label = str(credit_summary.get("scene_custom_licence_label", "") or "")
 
     return {
         "ok": True,
@@ -2027,6 +2060,14 @@ def build_resolve_cost_breakdown(scene=None, runtime=None, scope_mode="CAMERA", 
         "total_bytes": int(max(0, total_bytes)),
         "tile_bytes_sum": int(max(0, sum(int(row.get("bytes", 0) or 0) for row in tile_rows))),
         "total_credits": float(total_credits),
+        "raw_total_credits": float(raw_total_credits),
+        "scene_tile_price_eur": float(scene_tile_price),
+        "custom_scene_licence_eur": float(custom_scene_licence),
+        "scene_payable_eur": float(scene_payable),
+        "scene_custom_licence_label": scene_custom_label,
+        "scene_custom_licence_applied": bool(scene_custom_applied),
+        "scene_small_free_threshold_eur": float(scene_small_free_threshold),
+        "scene_small_free_threshold_applied": bool(scene_small_free),
         "partial_licence_tile_count": int(len(partial_tiles)),
         "partial_licence_credit_eur": float(partial_credit),
         "paid_tile_count": int(len(charged_tiles)),

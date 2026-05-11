@@ -113,6 +113,7 @@ export async function handleTileSessionStart(request, env, deps) {
       creditTileKeys,
       issued.resolveId,
       deps,
+      { allowSmallSceneFree: true },
     )
     : { credits: 0, paid_tile_count: 0, free_tile_count: 0, tile_count: 0, legacy_compat: true };
   if (unlockResult && unlockResult.error === "credit_pricing_missing_tile_stats") {

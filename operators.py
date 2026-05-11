@@ -853,6 +853,10 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
     confirm_total_bytes: StringProperty(default="0", options={'HIDDEN', 'SKIP_SAVE'})
     confirm_full_price_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
     confirm_partial_credit_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
+    confirm_scene_tile_price_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
+    confirm_custom_scene_licence_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
+    confirm_scene_small_free_threshold_applied: BoolProperty(default=False, options={'HIDDEN', 'SKIP_SAVE'})
+    confirm_scene_small_free_threshold_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
     confirm_price_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
     confirm_charged_tile_keys: StringProperty(default="", options={'HIDDEN', 'SKIP_SAVE'})
 
@@ -904,6 +908,16 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
         except (TypeError, ValueError):
             total_bytes = 0
         box.label(text=f"Data size: {_format_bytes_for_ui(total_bytes)}", icon="DISK_DRIVE")
+        custom_scene_licence = float(getattr(self, "confirm_custom_scene_licence_eur", 0.0) or 0.0)
+        if custom_scene_licence > 0.000001:
+            box.label(
+                text=f"Custom scene-specific licence: {_format_eur_for_ui(custom_scene_licence)}",
+                icon="URL",
+            )
+        elif bool(getattr(self, "confirm_scene_small_free_threshold_applied", False)):
+            threshold = float(getattr(self, "confirm_scene_small_free_threshold_eur", 0.0) or 0.0)
+            threshold_text = _format_eur_for_ui(threshold) if threshold > 0.000001 else "€0.50"
+            box.label(text=f"Small scene below {threshold_text}: Free", icon="CHECKMARK")
         box.label(text=f"Final Price: {_format_eur_for_ui(getattr(self, 'confirm_price_eur', 0.0))}", icon="USER")
         keys = [part.strip() for part in str(getattr(self, "confirm_charged_tile_keys", "") or "").split("|") if part.strip()]
         if keys:
@@ -1267,7 +1281,8 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
             scene = getattr(context, "scene", None)
             _scene_full_quality_price_eur(scene)
             _run_camera_full_quality_resolve_after_checkout(scene)
-            self.report({'INFO'}, "No payment required for this Full Quality purchase.")
+            message = str(checkout.get("message", "") or "").strip() or "No payment required for this Full Quality purchase."
+            self.report({'INFO'}, message)
             return {'FINISHED'}
         checkout_url = str(checkout.get("checkout_url", "") or "").strip()
         if not self._open_url(checkout_url):
@@ -1701,6 +1716,16 @@ class PLANETKA_OT_DataCostBreakdown(bpy.types.Operator):
                     ),
                     icon="CHECKMARK",
                 )
+            custom_scene_licence = float(breakdown.get("custom_scene_licence_eur", 0.0) or 0.0)
+            if custom_scene_licence > 0.000001:
+                price_box.label(
+                    text=f"Custom scene-specific licence: {self._price_text(custom_scene_licence)}",
+                    icon="URL",
+                )
+            elif bool(breakdown.get("scene_small_free_threshold_applied", False)):
+                threshold = float(breakdown.get("scene_small_free_threshold_eur", 0.0) or 0.0)
+                threshold_text = self._price_text(threshold) if threshold > 0.000001 else "€0.50"
+                price_box.label(text=f"Small scene below {threshold_text}: Free", icon="CHECKMARK")
             price_box.label(text=f"Final Price: {self._price_text(total_credits)}", icon="USER")
             if has_nonzero_price:
                 header.label(

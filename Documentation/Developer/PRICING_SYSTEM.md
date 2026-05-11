@@ -505,7 +505,7 @@ POST /credits/checkout
 
 Supported options:
 
-- `scene`: Pay exact current Full Quality scene price.
+- `scene`: Pay current Full Quality scene price with scene-specific payment policy applied.
 - `region_pack` / `broader_pack`: Pay exact current user-specific data-pack price.
 
 ### Scene Purchase
@@ -523,16 +523,21 @@ Request:
 Backend behavior:
 
 1. Recalculates the scene price authoritatively in D1.
-2. If price is `0`, it unlocks any free/no-charge tiles immediately and returns `no_payment_required: true`.
-3. If price is below Stripe minimum (`€0.50`), it returns `amount_below_stripe_minimum`; the user should licence a larger scene or data pack.
-4. Otherwise, creates a Stripe Checkout Session with product name `Planetka Full Quality Scene Data`.
-5. Metadata includes:
+2. Applies scene-specific payment policy after all existing-licence and partial-licence deductions.
+3. If the post-deduction tile price is `0`, it unlocks any free/no-charge tiles immediately and returns `no_payment_required: true`.
+4. If the post-deduction tile price is below `€0.50`, it licences the scene at no charge and returns `no_payment_required: true`.
+5. If the post-deduction tile price is `€0.50` or higher, it adds the `€1.50` `Custom scene-specific licence` line item into the Checkout amount. Minimum direct scene payment is therefore `€2.00`.
+6. For paid scenes, creates a Stripe Checkout Session with product name `Planetka Custom Scene-Specific Licence`.
+7. Metadata includes:
    - `planetka_purchase_type = scene_tiles`
    - `planetka_user_id`
    - `planetka_email`
    - `planetka_quality_mode = full`
    - `planetka_tile_keys_json`
    - `planetka_price_eur`
+   - `planetka_scene_tile_price_eur`
+   - `planetka_custom_scene_licence_eur`
+   - `planetka_scene_payable_eur`
    - `planetka_paid_tile_count`
 
 Webhook behavior:
