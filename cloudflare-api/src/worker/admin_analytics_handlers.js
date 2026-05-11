@@ -269,7 +269,7 @@ export async function handleAdminAnalyticsProductsPage(request, env, deps) {
   const fmtPercent = (value) => `${Math.max(0, Math.min(100, Math.round(Number(value || 0) || 0)))}%`;
   const fmtInt = (value) => Number(deps.parseNonNegativeInteger(value, 0)).toLocaleString();
   const productData = await deps.listRegionProductPricingRows(env, deps);
-  const rows = Array.isArray(productData && productData.rows) ? productData.rows : [];
+  const rawRows = Array.isArray(productData && productData.rows) ? productData.rows : [];
   const settings = productData && productData.pricing_settings || {};
   const coefficient = Number.isFinite(Number(settings.full_quality_price_coefficient))
     ? Number(settings.full_quality_price_coefficient).toFixed(2)
@@ -302,6 +302,56 @@ export async function handleAdminAnalyticsProductsPage(request, env, deps) {
     const numeric = Number(value);
     return Number.isFinite(numeric) ? numeric : fallback;
   };
+  const allowedSortKeys = new Set([
+    "product",
+    "type",
+    "tiles",
+    "gross_base",
+    "full_price",
+    "default_discount",
+    "override",
+    "discount_eur",
+    "final_price",
+    "set_discount",
+  ]);
+  const sortBy = allowedSortKeys.has(String(url.searchParams.get("sort") || "").trim())
+    ? String(url.searchParams.get("sort") || "").trim()
+    : "product";
+  const sortDir = String(url.searchParams.get("dir") || "asc").trim().toLowerCase() === "desc" ? "desc" : "asc";
+  const sortMultiplier = sortDir === "desc" ? -1 : 1;
+  const sortValue = (row, key) => {
+    const hasOverride = Boolean(row && row.has_override);
+    if (key === "product") return String(row && row.name || "").toLowerCase();
+    if (key === "type") return String(row && row.type || "").toLowerCase();
+    if (key === "tiles") return sortNumber(row && row.tile_count);
+    if (key === "gross_base") return sortNumber(row && row.gross_base_eur);
+    if (key === "full_price") return sortNumber(row && row.full_price_eur);
+    if (key === "default_discount") return sortNumber(row && row.default_discount_percent);
+    if (key === "override" || key === "set_discount") return hasOverride ? sortNumber(row && row.override_discount_percent) : -1;
+    if (key === "discount_eur") return sortNumber(row && row.discount_eur);
+    if (key === "final_price") return sortNumber(row && row.final_price_eur);
+    return String(row && row.name || "").toLowerCase();
+  };
+  const rows = rawRows.slice().sort((left, right) => {
+    const leftValue = sortValue(left, sortBy);
+    const rightValue = sortValue(right, sortBy);
+    if (typeof leftValue === "number" || typeof rightValue === "number") {
+      const diff = (Number(leftValue) || 0) - (Number(rightValue) || 0);
+      if (diff !== 0) return diff * sortMultiplier;
+    } else {
+      const diff = String(leftValue || "").localeCompare(String(rightValue || ""));
+      if (diff !== 0) return diff * sortMultiplier;
+    }
+    return String(left && left.name || "").localeCompare(String(right && right.name || ""));
+  });
+  const buildSortHref = (key) => {
+    const params = new URLSearchParams();
+    params.set("sort", key);
+    const nextDir = sortBy === key && sortDir === "desc" ? "asc" : "desc";
+    params.set("dir", nextDir);
+    return `/admin/analytics/products?${params.toString()}`;
+  };
+  const sortMarker = (key) => (sortBy === key ? (sortDir === "desc" ? " ▼" : " ▲") : "");
   const rowsHtml = rows.map((row) => {
     const id = String(row && row.id || "");
     const name = String(row && row.name || "");
@@ -361,6 +411,8 @@ export async function handleAdminAnalyticsProductsPage(request, env, deps) {
     .bucket-table input[type=number] { width: 120px; }
     .bucket-table th { position: static; background: transparent; }
     .bucket-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    th a { color:#93c5fd; text-decoration:none; }
+    th a:hover { color:#bfdbfe; text-decoration:underline; }
     .sort-button { appearance:none; border:0; background:transparent; color:#93c5fd; padding:0; font:inherit; font-weight:600; cursor:pointer; text-align:left; }
     .sort-button:hover { color:#bfdbfe; }
     .sort-indicator { display:inline-block; min-width:1em; color:#f4d28d; }
@@ -421,16 +473,16 @@ export async function handleAdminAnalyticsProductsPage(request, env, deps) {
   <table id="productsTable">
     <thead>
       <tr>
-        <th><button type="button" class="sort-button" data-sort-key="product" data-sort-type="text">Product <span class="sort-indicator"></span></button></th>
-        <th><button type="button" class="sort-button" data-sort-key="type" data-sort-type="text">Type <span class="sort-indicator"></span></button></th>
-        <th><button type="button" class="sort-button" data-sort-key="tiles" data-sort-type="number">Tiles <span class="sort-indicator"></span></button></th>
-        <th><button type="button" class="sort-button" data-sort-key="gross-base" data-sort-type="number">Gross Base <span class="sort-indicator"></span></button><br><span class="muted">coefficient 1.0</span></th>
-        <th><button type="button" class="sort-button" data-sort-key="full-price" data-sort-type="number">Full Price <span class="sort-indicator"></span></button><br><span class="muted">current coefficient</span></th>
-        <th><button type="button" class="sort-button" data-sort-key="default-discount" data-sort-type="number">Default Discount <span class="sort-indicator"></span></button></th>
-        <th><button type="button" class="sort-button" data-sort-key="override" data-sort-type="number">Override <span class="sort-indicator"></span></button></th>
-        <th><button type="button" class="sort-button" data-sort-key="discount-eur" data-sort-type="number">Discount EUR <span class="sort-indicator"></span></button></th>
-        <th><button type="button" class="sort-button" data-sort-key="final-price" data-sort-type="number">Final Price <span class="sort-indicator"></span></button></th>
-        <th><button type="button" class="sort-button" data-sort-key="set-discount" data-sort-type="number">Set Product Discount <span class="sort-indicator"></span></button></th>
+        <th><a href="${buildSortHref("product")}">Product${sortMarker("product")}</a></th>
+        <th><a href="${buildSortHref("type")}">Type${sortMarker("type")}</a></th>
+        <th><a href="${buildSortHref("tiles")}">Tiles${sortMarker("tiles")}</a></th>
+        <th><a href="${buildSortHref("gross_base")}">Gross Base${sortMarker("gross_base")}</a><br><span class="muted">coefficient 1.0</span></th>
+        <th><a href="${buildSortHref("full_price")}">Full Price${sortMarker("full_price")}</a><br><span class="muted">current coefficient</span></th>
+        <th><a href="${buildSortHref("default_discount")}">Default Discount${sortMarker("default_discount")}</a></th>
+        <th><a href="${buildSortHref("override")}">Override${sortMarker("override")}</a></th>
+        <th><a href="${buildSortHref("discount_eur")}">Discount EUR${sortMarker("discount_eur")}</a></th>
+        <th><a href="${buildSortHref("final_price")}">Final Price${sortMarker("final_price")}</a></th>
+        <th><a href="${buildSortHref("set_discount")}">Set Product Discount${sortMarker("set_discount")}</a></th>
       </tr>
     </thead>
     <tbody>${rowsHtml}</tbody>
@@ -443,11 +495,9 @@ export async function handleAdminAnalyticsProductsPage(request, env, deps) {
     const overridesOnlyEl = document.getElementById("overridesOnly");
     const visibleCountEl = document.getElementById("visibleCount");
     const table = document.getElementById("productsTable");
-    const tbody = table ? table.querySelector("tbody") : null;
     const discountBucketTable = document.getElementById("discountBucketTable");
     const discountBucketBody = discountBucketTable ? discountBucketTable.querySelector("tbody") : null;
     const addBucketRowButton = document.getElementById("addBucketRow");
-    const sortState = { key: "product", direction: "asc", type: "text" };
     function setStatus(message, isError = false) {
       productStatusEl.textContent = message;
       productStatusEl.className = isError ? "error" : "muted";
@@ -465,41 +515,6 @@ export async function handleAdminAnalyticsProductsPage(request, env, deps) {
         if (show) visible += 1;
       }
       visibleCountEl.textContent = visible.toLocaleString() + " products";
-    }
-    function sortValue(row, key, type) {
-      const raw = row.getAttribute("data-sort-" + key) || "";
-      if (type === "number") {
-        const numeric = Number(raw);
-        return Number.isFinite(numeric) ? numeric : Number.NEGATIVE_INFINITY;
-      }
-      return raw.toLowerCase();
-    }
-    function updateSortIndicators() {
-      for (const button of table.querySelectorAll(".sort-button")) {
-        const active = button.getAttribute("data-sort-key") === sortState.key;
-        const indicator = button.querySelector(".sort-indicator");
-        button.setAttribute("aria-sort", active ? sortState.direction : "none");
-        if (indicator) {
-          indicator.textContent = active ? (sortState.direction === "asc" ? "▲" : "▼") : "";
-        }
-      }
-    }
-    function sortRows() {
-      if (!tbody) return;
-      const rows = Array.from(tbody.querySelectorAll("tr"));
-      const direction = sortState.direction === "desc" ? -1 : 1;
-      rows.sort((left, right) => {
-        const leftValue = sortValue(left, sortState.key, sortState.type);
-        const rightValue = sortValue(right, sortState.key, sortState.type);
-        if (leftValue < rightValue) return -1 * direction;
-        if (leftValue > rightValue) return 1 * direction;
-        return String(left.getAttribute("data-name") || "").localeCompare(String(right.getAttribute("data-name") || ""));
-      });
-      for (const row of rows) {
-        tbody.appendChild(row);
-      }
-      updateSortIndicators();
-      applyFilter();
     }
     function addDiscountBucketRow(threshold = "", ratio = "") {
       if (!discountBucketBody) return;
@@ -596,23 +611,9 @@ export async function handleAdminAnalyticsProductsPage(request, env, deps) {
       const row = button.closest(".discount-bucket-row");
       if (row) row.remove();
     });
-    document.addEventListener("click", (event) => {
-      const button = event.target && event.target.closest ? event.target.closest(".sort-button") : null;
-      if (!button) return;
-      const key = button.getAttribute("data-sort-key") || "product";
-      const type = button.getAttribute("data-sort-type") || "text";
-      if (sortState.key === key) {
-        sortState.direction = sortState.direction === "asc" ? "desc" : "asc";
-      } else {
-        sortState.key = key;
-        sortState.type = type;
-        sortState.direction = type === "number" ? "desc" : "asc";
-      }
-      sortRows();
-    });
     filterEl.addEventListener("input", applyFilter);
     overridesOnlyEl.addEventListener("change", applyFilter);
-    sortRows();
+    applyFilter();
   </script>
 </body>
 </html>`;
