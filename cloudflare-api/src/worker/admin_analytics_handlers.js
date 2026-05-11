@@ -281,18 +281,28 @@ export async function handleAdminAnalyticsProductsPage(request, env, deps) {
   const coefficient = Number.isFinite(Number(settings.full_quality_price_coefficient))
     ? Number(settings.full_quality_price_coefficient).toFixed(2)
     : "1.00";
-  const minDiscount = Number.isFinite(Number(settings.region_pack_discount_min_percent))
-    ? String(Math.round(Number(settings.region_pack_discount_min_percent)))
-    : "0";
-  const maxDiscount = Number.isFinite(Number(settings.region_pack_discount_max_percent))
-    ? String(Math.round(Number(settings.region_pack_discount_max_percent)))
-    : "75";
+  const minDiscountValue = Number.isFinite(Number(settings.region_pack_discount_min_percent))
+    ? Math.round(Number(settings.region_pack_discount_min_percent))
+    : 0;
+  const maxDiscountValue = Number.isFinite(Number(settings.region_pack_discount_max_percent))
+    ? Math.round(Number(settings.region_pack_discount_max_percent))
+    : 75;
+  const minDiscount = String(minDiscountValue);
+  const maxDiscount = String(maxDiscountValue);
   const fmtBucketNumber = (value) => {
     const numeric = Number(value);
     if (!Number.isFinite(numeric)) {
       return "0";
     }
     return numeric.toFixed(4).replace(/\.?0+$/, "");
+  };
+  const roundBucketDiscount = (value) => Math.max(0, Math.min(95, Math.round((Number(value) || 0) / 5) * 5));
+  const bucketDiscountPercent = (ratio) => {
+    const minPercent = Math.min(minDiscountValue, maxDiscountValue);
+    const maxPercent = Math.max(minDiscountValue, maxDiscountValue);
+    const range = Math.max(0, maxPercent - minPercent);
+    const normalizedRatio = Math.max(0, Math.min(1, Number(ratio) || 0));
+    return roundBucketDiscount(minPercent + (range * normalizedRatio));
   };
   const discountBuckets = Array.isArray(settings.region_pack_discount_share_buckets)
     ? settings.region_pack_discount_share_buckets
@@ -301,7 +311,7 @@ export async function handleAdminAnalyticsProductsPage(request, env, deps) {
     .filter(([threshold]) => Number(threshold) > 0)
     .map(([threshold, ratio]) => `<tr class="discount-bucket-row">
       <td><input class="bucket-threshold" type="number" min="0.0001" max="100" step="0.0001" value="${deps.escapeHtml(fmtBucketNumber(Number(threshold) * 100))}" /></td>
-      <td><input class="bucket-ratio" type="number" min="0" max="100" step="0.0001" value="${deps.escapeHtml(fmtBucketNumber(Number(ratio) * 100))}" /></td>
+      <td><input class="bucket-discount" type="number" min="0" max="95" step="5" value="${deps.escapeHtml(fmtBucketNumber(bucketDiscountPercent(ratio)))}" /></td>
       <td><button type="button" class="remove-bucket-row">Remove</button></td>
     </tr>`)
     .join("");
@@ -456,12 +466,12 @@ export async function handleAdminAnalyticsProductsPage(request, env, deps) {
       <span id="productStatus" class="muted">Product overrides are applied live to Blender, web pages, and checkout.</span>
     </div>
     <h4 style="margin:12px 0 4px;">Volume Discount Buckets</h4>
-    <div class="muted">Each row means: if a data pack covers at least this share of world land, apply this percentage of the current discount range. Anything below the lowest threshold uses the minimum discount.</div>
+    <div class="muted">Each row means: if a data pack covers at least this share of world land, apply this actual volume discount percentage. Anything below the lowest threshold uses the minimum discount.</div>
     <table class="bucket-table" id="discountBucketTable">
       <thead>
         <tr>
           <th>Land share &gt;= %</th>
-          <th>% of discount range</th>
+          <th>Discount %</th>
           <th>Action</th>
         </tr>
       </thead>
@@ -469,7 +479,7 @@ export async function handleAdminAnalyticsProductsPage(request, env, deps) {
     </table>
     <div class="bucket-actions">
       <button type="button" id="addBucketRow">Add bucket</button>
-      <span class="muted">Example: 40 and 100 means packs covering at least 40% of world land receive the maximum pack discount.</span>
+      <span class="muted">Example: 40 and 75 means packs covering at least 40% of world land receive a 75% volume discount.</span>
     </div>
     <div class="muted">Generated product and tile prices stay as coefficient-1.0 gross values. The Worker applies this coefficient and discount spread at request time.</div>
   </section>
@@ -528,13 +538,25 @@ export async function handleAdminAnalyticsProductsPage(request, env, deps) {
       }
       visibleCountEl.textContent = visible.toLocaleString() + " products";
     }
-    function addDiscountBucketRow(threshold = "", ratio = "") {
+    function roundDiscountPercent(value) {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) return 0;
+      return Math.max(0, Math.min(95, Math.round(numeric / 5) * 5));
+    }
+    function bucketDiscountToRatio(discountPercent) {
+      const minDiscount = roundDiscountPercent(document.getElementById("pricingMinDiscount") && document.getElementById("pricingMinDiscount").value);
+      const maxDiscount = Math.max(minDiscount, roundDiscountPercent(document.getElementById("pricingMaxDiscount") && document.getElementById("pricingMaxDiscount").value));
+      const range = Math.max(0, maxDiscount - minDiscount);
+      if (range <= 0) return 0;
+      return Math.max(0, Math.min(1, (roundDiscountPercent(discountPercent) - minDiscount) / range));
+    }
+    function addDiscountBucketRow(threshold = "", discount = "") {
       if (!discountBucketBody) return;
       const row = document.createElement("tr");
       row.className = "discount-bucket-row";
-      row.innerHTML = "<td><input class=\"bucket-threshold\" type=\"number\" min=\"0.0001\" max=\"100\" step=\"0.0001\" value=\"" + String(threshold || "") + "\" /></td>"
-        + "<td><input class=\"bucket-ratio\" type=\"number\" min=\"0\" max=\"100\" step=\"0.0001\" value=\"" + String(ratio || "") + "\" /></td>"
-        + "<td><button type=\"button\" class=\"remove-bucket-row\">Remove</button></td>";
+      row.innerHTML = '<td><input class="bucket-threshold" type="number" min="0.0001" max="100" step="0.0001" value="' + String(threshold || "") + '" /></td>'
+        + '<td><input class="bucket-discount" type="number" min="0" max="95" step="5" value="' + String(discount || "") + '" /></td>'
+        + '<td><button type="button" class="remove-bucket-row">Remove</button></td>';
       discountBucketBody.appendChild(row);
     }
     function collectDiscountBuckets() {
@@ -542,9 +564,9 @@ export async function handleAdminAnalyticsProductsPage(request, env, deps) {
       if (!discountBucketBody) return buckets;
       for (const row of discountBucketBody.querySelectorAll(".discount-bucket-row")) {
         const threshold = Number(row.querySelector(".bucket-threshold") && row.querySelector(".bucket-threshold").value);
-        const ratio = Number(row.querySelector(".bucket-ratio") && row.querySelector(".bucket-ratio").value);
-        if (Number.isFinite(threshold) && threshold > 0 && Number.isFinite(ratio) && ratio >= 0) {
-          buckets.push([threshold / 100, ratio / 100]);
+        const discount = Number(row.querySelector(".bucket-discount") && row.querySelector(".bucket-discount").value);
+        if (Number.isFinite(threshold) && threshold > 0 && Number.isFinite(discount) && discount >= 0) {
+          buckets.push([threshold / 100, bucketDiscountToRatio(discount)]);
         }
       }
       return buckets;
