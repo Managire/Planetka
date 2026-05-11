@@ -202,6 +202,235 @@ export async function handleAdminSetPricingSettings(request, env, deps) {
   }
 }
 
+export async function handleAdminSetProductDiscount(request, env, deps) {
+  const auth = await deps.requireAnalyticsAdmin(request, env);
+  if (auth.error) {
+    return auth.error;
+  }
+  if (String(request.method || "GET").trim().toUpperCase() !== "POST") {
+    return deps.json({ ok: false, error: "method_not_allowed" }, 405, env);
+  }
+  let payload = {};
+  try {
+    const contentType = String(request.headers.get("Content-Type") || "").toLowerCase();
+    if (contentType.includes("application/json")) {
+      payload = await request.json();
+    } else {
+      const form = await request.formData();
+      payload = Object.fromEntries(form.entries());
+    }
+  } catch (_error) {
+    payload = {};
+  }
+  const regionPackId = String(payload.region_pack_id || payload.product_id || "").trim();
+  const resetRequested = payload.reset === true || payload.reset === 1 || String(payload.reset || "").trim().toLowerCase() === "true";
+  const rawDiscount = resetRequested ? null : payload.discount_percent;
+  const discountPercent = rawDiscount === null || rawDiscount === undefined || String(rawDiscount).trim() === ""
+    ? null
+    : rawDiscount;
+  try {
+    const settings = await deps.setRegionProductDiscountOverride(
+      auth.db,
+      env,
+      regionPackId,
+      discountPercent,
+      auth.user && auth.user.id || "",
+      deps,
+    );
+    return deps.json({ ok: true, pricing_settings: settings }, 200, env);
+  } catch (error) {
+    return deps.json(
+      {
+        ok: false,
+        error: "product_discount_update_failed",
+        message: String(error && error.message || "Product discount could not be saved."),
+      },
+      400,
+      env,
+    );
+  }
+}
+
+export async function handleAdminAnalyticsProductsPage(request, env, deps) {
+  const url = new URL(request.url);
+  if (String(url.searchParams.get("access_token") || url.searchParams.get("token") || "").trim()) {
+    return deps.json({ ok: false, error: "query_token_not_allowed" }, 400, env);
+  }
+  const auth = await deps.requireAnalyticsAdmin(request, env);
+  if (auth.error) {
+    return auth.error;
+  }
+  const { user } = auth;
+  const fmtEur = (value) => {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? `€${numeric.toFixed(2)}` : "€0.00";
+  };
+  const fmtPercent = (value) => `${Math.max(0, Math.min(100, Math.round(Number(value || 0) || 0)))}%`;
+  const fmtInt = (value) => Number(deps.parseNonNegativeInteger(value, 0)).toLocaleString();
+  const productData = await deps.listRegionProductPricingRows(env, deps);
+  const rows = Array.isArray(productData && productData.rows) ? productData.rows : [];
+  const settings = productData && productData.pricing_settings || {};
+  const coefficient = Number.isFinite(Number(settings.full_quality_price_coefficient))
+    ? Number(settings.full_quality_price_coefficient).toFixed(2)
+    : "1.00";
+  const minDiscount = Number.isFinite(Number(settings.region_pack_discount_min_percent))
+    ? String(Math.round(Number(settings.region_pack_discount_min_percent)))
+    : "0";
+  const maxDiscount = Number.isFinite(Number(settings.region_pack_discount_max_percent))
+    ? String(Math.round(Number(settings.region_pack_discount_max_percent)))
+    : "75";
+  const rowsHtml = rows.map((row) => {
+    const id = String(row && row.id || "");
+    const name = String(row && row.name || "");
+    const type = String(row && row.type || "");
+    const hasOverride = Boolean(row && row.has_override);
+    const overrideValue = hasOverride ? String(Math.round(Number(row.override_discount_percent || 0))) : "";
+    const overrideLabel = hasOverride ? fmtPercent(row.override_discount_percent) : "default";
+    const finalClass = Number(row && row.final_price_eur || 0) <= 0 ? " free-price" : "";
+    return `<tr data-pack-id="${deps.escapeHtml(id)}" data-name="${deps.escapeHtml(name.toLowerCase())}" data-type="${deps.escapeHtml(type.toLowerCase())}"${hasOverride ? ` class="override-row"` : ""}>
+      <td><strong>${deps.escapeHtml(name)}</strong><br><span class="muted">${deps.escapeHtml(id)}</span></td>
+      <td>${deps.escapeHtml(type || "-")}</td>
+      <td>${fmtInt(row && row.tile_count)}<br><span class="muted">${fmtInt(row && row.paid_tile_count)} paid / ${fmtInt(row && row.free_tile_count)} free</span></td>
+      <td>${deps.escapeHtml(fmtEur(row && row.gross_base_eur))}</td>
+      <td>${deps.escapeHtml(fmtEur(row && row.full_price_eur))}</td>
+      <td>${deps.escapeHtml(fmtPercent(row && row.default_discount_percent))}</td>
+      <td>${deps.escapeHtml(overrideLabel)}</td>
+      <td>${deps.escapeHtml(fmtEur(row && row.discount_eur))}</td>
+      <td class="price${finalClass}">${deps.escapeHtml(fmtEur(row && row.final_price_eur))}</td>
+      <td>
+        <form class="product-discount-form" data-region-pack-id="${deps.escapeHtml(id)}">
+          <input name="discount_percent" type="number" min="0" max="100" step="1" value="${deps.escapeHtml(overrideValue)}" placeholder="default" />
+          <button type="submit">Save</button>
+          <button type="button" class="reset-discount">Reset</button>
+        </form>
+      </td>
+    </tr>`;
+  }).join("");
+  const htmlContent = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Planetka Analytics - Product Pricing</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; margin: 20px; background: #0b1020; color: #e5e7eb; }
+    h1 { margin: 0 0 8px; font-size: 24px; }
+    .muted { color: #9ca3af; font-size: 13px; }
+    .controls { display:flex; gap:10px; align-items:center; flex-wrap: wrap; margin: 8px 0 16px; }
+    .card { background:#111827; border:1px solid #1f2937; border-radius:10px; padding:12px; margin: 12px 0; }
+    input, button, select { background:#111827; color:#e5e7eb; border:1px solid #374151; border-radius:8px; padding:7px 10px; }
+    input[type=number] { width: 92px; }
+    table { width:100%; border-collapse: collapse; margin: 8px 0 16px; font-size: 13px; }
+    th, td { border-bottom: 1px solid #1f2937; padding: 8px 6px; text-align:left; vertical-align: top; }
+    th { color:#93c5fd; font-weight:600; white-space: nowrap; position: sticky; top: 0; background: #0b1020; z-index: 1; }
+    .price { font-weight: 700; color: #f4d28d; white-space: nowrap; }
+    .free-price { color: #86efac; }
+    .override-row td { background: rgba(217, 164, 65, 0.08); }
+    .product-discount-form { display:flex; gap:6px; align-items:center; flex-wrap: nowrap; }
+    .error { color:#fca5a5; }
+  </style>
+</head>
+<body>
+  <h1>Product Pricing</h1>
+  <div class="muted">Signed in as ${deps.escapeHtml(String(user.email || ""))}. Catalog: ${deps.escapeHtml(String(productData && productData.catalog_version || ""))}</div>
+  <div class="controls">
+    <a href="/admin/analytics" style="color:#93c5fd; text-decoration:none;">Back to analytics</a>
+    <a href="/admin/analytics/users" style="color:#93c5fd; text-decoration:none;">All users</a>
+    <a href="/admin/session/logout" style="color:#fca5a5; text-decoration:none;">Sign Out</a>
+  </div>
+  <section class="card">
+    <div class="controls" style="margin-bottom:6px;">
+      <span>Current coefficient: <strong>${deps.escapeHtml(coefficient)}</strong></span>
+      <span>Default pack discount range: <strong>${deps.escapeHtml(minDiscount)}%-${deps.escapeHtml(maxDiscount)}%</strong></span>
+      <span id="status" class="muted">Product overrides are applied live to Blender, web pages, and checkout.</span>
+    </div>
+    <div class="controls">
+      <label for="filter">Filter products:</label>
+      <input id="filter" type="text" placeholder="country, region, id, type" style="min-width:280px;" />
+      <label><input id="overridesOnly" type="checkbox" /> Overrides only</label>
+      <span class="muted" id="visibleCount">${fmtInt(rows.length)} products</span>
+    </div>
+  </section>
+  <table id="productsTable">
+    <thead>
+      <tr>
+        <th>Product</th>
+        <th>Type</th>
+        <th>Tiles</th>
+        <th>Gross Base<br><span class="muted">coefficient 1.0</span></th>
+        <th>Full Price<br><span class="muted">current coefficient</span></th>
+        <th>Default Discount</th>
+        <th>Override</th>
+        <th>Discount EUR</th>
+        <th>Final Price</th>
+        <th>Set Product Discount</th>
+      </tr>
+    </thead>
+    <tbody>${rowsHtml}</tbody>
+  </table>
+  <script>
+    const statusEl = document.getElementById("status");
+    const filterEl = document.getElementById("filter");
+    const overridesOnlyEl = document.getElementById("overridesOnly");
+    const visibleCountEl = document.getElementById("visibleCount");
+    const table = document.getElementById("productsTable");
+    function setStatus(message, isError = false) {
+      statusEl.textContent = message;
+      statusEl.className = isError ? "error" : "muted";
+    }
+    function applyFilter() {
+      const needle = String(filterEl.value || "").trim().toLowerCase();
+      const overridesOnly = Boolean(overridesOnlyEl.checked);
+      let visible = 0;
+      for (const row of table.querySelectorAll("tbody tr")) {
+        const text = [row.getAttribute("data-pack-id"), row.getAttribute("data-name"), row.getAttribute("data-type")].join(" ");
+        const matchesText = !needle || text.includes(needle);
+        const matchesOverride = !overridesOnly || row.classList.contains("override-row");
+        const show = matchesText && matchesOverride;
+        row.style.display = show ? "" : "none";
+        if (show) visible += 1;
+      }
+      visibleCountEl.textContent = visible.toLocaleString() + " products";
+    }
+    async function saveProductDiscount(regionPackId, discountPercent) {
+      setStatus("Saving product discount...");
+      const res = await fetch("/admin/settings/product-discount", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ region_pack_id: regionPackId, discount_percent: discountPercent }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        throw new Error((data && (data.message || data.error)) || ("HTTP " + res.status));
+      }
+      setStatus("Saved. Reloading prices...");
+      window.location.reload();
+    }
+    document.addEventListener("submit", (event) => {
+      const form = event.target && event.target.closest ? event.target.closest(".product-discount-form") : null;
+      if (!form) return;
+      event.preventDefault();
+      const regionPackId = form.getAttribute("data-region-pack-id") || "";
+      const input = form.querySelector("input[name=discount_percent]");
+      const value = input ? String(input.value || "").trim() : "";
+      saveProductDiscount(regionPackId, value).catch((error) => setStatus("Save failed: " + String(error && error.message || error), true));
+    });
+    document.addEventListener("click", (event) => {
+      const button = event.target && event.target.closest ? event.target.closest(".reset-discount") : null;
+      if (!button) return;
+      const form = button.closest(".product-discount-form");
+      const regionPackId = form ? form.getAttribute("data-region-pack-id") || "" : "";
+      saveProductDiscount(regionPackId, null).catch((error) => setStatus("Reset failed: " + String(error && error.message || error), true));
+    });
+    filterEl.addEventListener("input", applyFilter);
+    overridesOnlyEl.addEventListener("change", applyFilter);
+  </script>
+</body>
+</html>`;
+  return deps.html(htmlContent, 200, env);
+}
+
 export async function handleAdminAnalyticsPage(request, env, deps) {
   const url = new URL(request.url);
   if (String(url.searchParams.get("access_token") || url.searchParams.get("token") || "").trim()) {
@@ -628,6 +857,7 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
   <div class="muted">Signed in as ${deps.escapeHtml(String(user.email || ""))}</div>
   <div class="controls">
     <a href="/admin/analytics" style="color:#93c5fd; text-decoration:none;">Back to analytics</a>
+    <a href="/admin/analytics/products" style="color:#93c5fd; text-decoration:none;">Product pricing</a>
     <a href="/admin/session/logout" style="color:#fca5a5; text-decoration:none;">Sign Out</a>
   </div>
   <form class="controls" method="GET" action="/admin/analytics/users">

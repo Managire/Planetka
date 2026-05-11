@@ -47,7 +47,9 @@ import {
 import {
   handleAdminAnalyticsData as handleAdminAnalyticsDataRoute,
   handleAdminAnalyticsPage as handleAdminAnalyticsPageRoute,
+  handleAdminAnalyticsProductsPage as handleAdminAnalyticsProductsPageRoute,
   handleAdminSetPricingSettings as handleAdminSetPricingSettingsRoute,
+  handleAdminSetProductDiscount as handleAdminSetProductDiscountRoute,
   handleAdminAnalyticsTileMapImage as handleAdminAnalyticsTileMapImageRoute,
   handleAdminAnalyticsUserPage as handleAdminAnalyticsUserPageRoute,
   handleAdminAnalyticsUsersPage as handleAdminAnalyticsUsersPageRoute,
@@ -110,6 +112,8 @@ import {
   handleCreditRegionPackRelatedOffers as handleCreditRegionPackRelatedOffersRoute,
   handleCreditUnlocked as handleCreditUnlockedRoute,
   getRuntimePricingSettings,
+  listRegionProductPricingRows,
+  setRegionProductDiscountOverride,
   setRuntimePricingSettings,
 } from "./worker/credit_routes.js";
 import {
@@ -332,6 +336,7 @@ const ADMIN_ANALYTICS_DEPS = {
   html,
   isAnalyticsSnapshotStale,
   json,
+  listRegionProductPricingRows,
   listAnalyticsUsers: (db, env, options = {}) => listAnalyticsUsersQuery(db, env, options, ANALYTICS_QUERY_DEPS),
   loadAnalyticsSnapshot,
   loadAnalyticsUsersSnapshot,
@@ -351,6 +356,7 @@ const ADMIN_ANALYTICS_DEPS = {
     sanitizeAnalyticsMinutesQuery(value, fallback, ANALYTICS_QUERY_DEPS),
   sanitizeLiveTileMapMinutes: (value, fallback = DEFAULT_LIVE_TILE_MAP_WINDOW_MINUTES) =>
     sanitizeLiveTileMapMinutesQuery(value, fallback, ANALYTICS_QUERY_DEPS),
+  setRegionProductDiscountOverride,
   setRuntimePricingSettings,
   storeAnalyticsSnapshot,
   dbAll,
@@ -3953,9 +3959,11 @@ const TILE_EVENT_QUEUE_DEPS = {
 const ADMIN_ROUTE_DEPS = {
   handleAdminAnalyticsData: (request, env) => handleAdminAnalyticsDataRoute(request, env, ADMIN_ANALYTICS_DEPS),
   handleAdminAnalyticsPage: (request, env) => handleAdminAnalyticsPageRoute(request, env, ADMIN_ANALYTICS_DEPS),
+  handleAdminAnalyticsProductsPage: (request, env) => handleAdminAnalyticsProductsPageRoute(request, env, ADMIN_ANALYTICS_DEPS),
   handleAdminAnalyticsTileMapImage: (request, env) => handleAdminAnalyticsTileMapImageRoute(request, env, ADMIN_ANALYTICS_DEPS),
   handleAdminAnalyticsUserPage: (request, env) => handleAdminAnalyticsUserPageRoute(request, env, ADMIN_ANALYTICS_DEPS),
   handleAdminAnalyticsUsersPage: (request, env) => handleAdminAnalyticsUsersPageRoute(request, env, ADMIN_ANALYTICS_DEPS),
+  handleAdminSetProductDiscount: (request, env) => handleAdminSetProductDiscountRoute(request, env, ADMIN_ANALYTICS_DEPS),
   handleAdminSetPricingSettings: (request, env) => handleAdminSetPricingSettingsRoute(request, env, ADMIN_ANALYTICS_DEPS),
   handleAdminLoginPage: (request, env) => handleAdminLoginPageRoute(request, env, ADMIN_SESSION_DEPS),
   handleAdminPasswordLogin: (request, env) => handleAdminPasswordLoginRoute(request, env, ADMIN_SESSION_DEPS),
