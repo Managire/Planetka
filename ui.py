@@ -1194,7 +1194,7 @@ def _draw_broader_region_offers(layout, scene, active_view_scope=False):
         except (TypeError, ValueError):
             price = 0.0
         try:
-            gross = max(0.0, float(offer.get("gross_eur", offer.get("gross_price_eur", 0.0)) or 0.0))
+            gross = max(0.0, float(offer.get("full_price_eur", offer.get("gross_eur", offer.get("gross_price_eur", 0.0))) or 0.0))
         except (TypeError, ValueError):
             gross = 0.0
         try:
@@ -1213,7 +1213,7 @@ def _draw_broader_region_offers(layout, scene, active_view_scope=False):
         except (TypeError, ValueError):
             already_licenced_count = 0
         try:
-            already_licenced_saving = max(0.0, float(offer.get("already_licenced_saving_eur", 0.0) or 0.0))
+            already_licenced_saving = max(0.0, float(offer.get("already_licenced_deduction_eur", offer.get("already_licenced_saving_eur", 0.0)) or 0.0))
         except (TypeError, ValueError):
             already_licenced_saving = 0.0
         try:

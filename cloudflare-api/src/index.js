@@ -101,7 +101,7 @@ import {
   handleCreditSceneDetailLink as handleCreditSceneDetailLinkRoute,
   handleCreditSceneMap as handleCreditSceneMapRoute,
   handleCreditRegionPackDetailLink as handleCreditRegionPackDetailLinkRoute,
-  handleCreditRegionPackCatalogAsset as handleCreditRegionPackCatalogAssetRoute,
+  handleCreditRegionPackCatalogPage as handleCreditRegionPackCatalogPageRoute,
   handleCreditRegionPackCatalog as handleCreditRegionPackCatalogRoute,
   handleCreditRegionPackCheckoutFromToken as handleCreditRegionPackCheckoutFromTokenRoute,
   handleCreditRegionPackMap as handleCreditRegionPackMapRoute,
@@ -3987,7 +3987,12 @@ async function dispatchExactRoute(request, env, path) {
     return adminMatch;
   }
   if (String(path || "").startsWith("/credits/") || String(path || "") === "/tiles/session") {
-    await getRuntimePricingSettings(env, TILE_ROUTE_DEPS);
+    const safePath = String(path || "");
+    const pricingStaticAsset = safePath.startsWith("/credits/page-assets/")
+      || safePath === "/credits/region-pack-map-asset"
+      || safePath === "/credits/region-pack-map-background.jpg";
+    const forcePricingRefresh = safePath.startsWith("/credits/") && !pricingStaticAsset;
+    await getRuntimePricingSettings(env, TILE_ROUTE_DEPS, { force: forcePricingRefresh });
   }
   switch (path) {
     case "/health":
@@ -4099,8 +4104,6 @@ async function dispatchExactRoute(request, env, path) {
     case "/credits/page-assets/region-pack-map.js":
     case "/credits/page-assets/region-pack-dynamic-map.css":
     case "/credits/page-assets/region-pack-dynamic-map.js":
-    case "/credits/page-assets/region-pack-catalog.css":
-    case "/credits/page-assets/region-pack-catalog.js":
       if (request.method === "GET" || request.method === "HEAD") {
         return await handleCreditRegionPackPageAssetRoute(request, env, TILE_ROUTE_DEPS);
       }
@@ -4110,9 +4113,9 @@ async function dispatchExactRoute(request, env, path) {
         return await handleCreditRegionPackCatalogRoute(request, env, TILE_ROUTE_DEPS);
       }
       return null;
-    case "/credits/region-pack-catalog-asset":
+    case "/credits/region-pack-catalog-page":
       if (request.method === "GET" || request.method === "HEAD") {
-        return await handleCreditRegionPackCatalogAssetRoute(request, env, TILE_ROUTE_DEPS);
+        return await handleCreditRegionPackCatalogPageRoute(request, env, TILE_ROUTE_DEPS);
       }
       return null;
     case "/credits/region-pack-checkout":
@@ -4157,7 +4160,7 @@ async function dispatchExactRoute(request, env, path) {
       return null;
     case "/stripe/webhook":
       if (request.method === "POST") {
-        await getRuntimePricingSettings(env, TILE_ROUTE_DEPS);
+        await getRuntimePricingSettings(env, TILE_ROUTE_DEPS, { force: true });
         return await handleStripeWebhookRoute(request, env, BILLING_DEPS);
       }
       return null;

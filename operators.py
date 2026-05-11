@@ -526,10 +526,24 @@ def _populate_region_pack_info_operator(operator, offer):
     )
     operator.total_tile_count = max(0, _region_offer_int(offer, "tile_count", 0))
     operator.already_licenced_tile_count = max(0, _region_offer_int(offer, "already_licenced_tile_count", 0))
-    operator.already_licenced_saving_eur = max(0.0, _region_offer_number(offer, "already_licenced_saving_eur", 0.0))
+    operator.already_licenced_saving_eur = max(
+        0.0,
+        _region_offer_number(
+            offer,
+            "already_licenced_deduction_eur",
+            _region_offer_number(offer, "already_licenced_saving_eur", 0.0),
+        ),
+    )
     operator.partial_licence_tile_count = max(0, _region_offer_int(offer, "partial_licence_tile_count", 0))
     operator.partial_licence_credit_eur = max(0.0, _region_offer_number(offer, "partial_licence_credit_eur", 0.0))
-    operator.full_price_eur = max(0.0, _region_offer_number(offer, "gross_eur", _region_offer_number(offer, "gross_price_eur", 0.0)))
+    operator.full_price_eur = max(
+        0.0,
+        _region_offer_number(
+            offer,
+            "full_price_eur",
+            _region_offer_number(offer, "gross_eur", _region_offer_number(offer, "gross_price_eur", 0.0)),
+        ),
+    )
     operator.discount_percent = max(0, _region_offer_int(offer, "discount_percent", 0))
     operator.discount_eur = max(0.0, _region_offer_number(offer, "discount_eur", 0.0))
     operator.price_eur = max(0.0, _region_offer_number(offer, "price_eur", _region_offer_number(offer, "credits", 0.0)))

@@ -42,7 +42,7 @@ const STRIPE_MIN_CHECKOUT_AMOUNT_CENTS = 50;
 const MONEY_SCALE = 100;
 const METRIC_SCALE = 1_000_000;
 const REGION_PACK_CATALOG_VERSION = GENERATED_REGION_PACK_CATALOG_VERSION || "gadm_regions_v8";
-const REGION_PACK_MAP_ASSET_REVISION = `${REGION_PACK_CATALOG_VERSION}:outline-v4-product-bg-wt-blue-v4-partial-dateline-v7-admin-labels-v1-success-upsell-v1-catalog-flat-v1-price-breakdown-v1-hover-breakdown-v1-summary-partial-v1-pricing-runtime-v5-runtime-buckets-v1`;
+const REGION_PACK_MAP_ASSET_REVISION = `${REGION_PACK_CATALOG_VERSION}:outline-v4-product-bg-wt-blue-v4-partial-dateline-v7-admin-labels-v1-success-upsell-v1-catalog-flat-v1-price-breakdown-v1-hover-breakdown-v1-summary-partial-v1-pricing-runtime-v5-runtime-buckets-v1-canonical-pricing-v2`;
 const SQL_VARIABLE_SAFE_CHUNK_SIZE = 75;
 const REGION_PACK_TILE_CHUNK_SIZE = SQL_VARIABLE_SAFE_CHUNK_SIZE;
 const REGION_PACK_PAID_Z_LEVELS = [1, 2, 4, 8, 15, 30];
@@ -56,14 +56,12 @@ const REGION_PRODUCT_BY_ID = new Map(REGION_PRODUCTS.map((product) => [
 ]).filter(([id]) => Boolean(id)));
 const REGION_PRODUCT_TILE_KEYS_CACHE = new Map();
 const REGION_PRODUCT_SORTED_TILE_KEYS_CACHE = new Map();
-const REGION_PRODUCT_DIRECT_TILE_SET_CACHE = new Map();
-const REGION_PRODUCT_Z001_CELL_SET_CACHE = new Map();
 const REGION_PRODUCT_COUNTRY_ID_SET_CACHE = new Map();
 const REGION_PRODUCT_GROSS_CENTS_CACHE = new Map();
-const REGION_PRODUCT_STATIC_MODEL_CACHE = new Map();
 const USER_CREDIT_ACCOUNT_CACHE = new Map();
 const USER_ENTITLEMENT_SUMMARY_CACHE = new Map();
 const REGION_OFFERS_RESPONSE_CACHE = new Map();
+const REGION_PACK_ESTIMATE_CACHE = new Map();
 const DETAIL_TOKEN_CACHE = new Map();
 let PRICING_SETTINGS_CACHE = {
   loaded_at_ms: 0,
@@ -74,12 +72,24 @@ const NORTH_AMERICA_SIMILAR_COUNTRY_LIKE_IDS = new Set(["canada", "united_states
 const USER_CREDIT_ACCOUNT_CACHE_MAX = 2048;
 const USER_ENTITLEMENT_SUMMARY_CACHE_MAX = 512;
 const REGION_OFFERS_RESPONSE_CACHE_MAX = 1024;
+const REGION_PACK_ESTIMATE_CACHE_MAX = 256;
 const DETAIL_TOKEN_CACHE_MAX = 4096;
+const REGION_PRODUCT_TILE_KEYS_CACHE_MAX = 24;
+const REGION_PRODUCT_SORTED_TILE_KEYS_CACHE_MAX = 24;
+const REGION_PRODUCT_TILE_KEYS_CACHE_MAX_KEYS = 1200;
+const REGION_PACK_CATALOG_PAGE_MAX_LIMIT = 1;
 const USER_CREDIT_ACCOUNT_CACHE_TTL_MS = 30 * 1000;
 const USER_ENTITLEMENT_SUMMARY_CACHE_TTL_MS = 2 * 60 * 1000;
 const REGION_OFFERS_RESPONSE_CACHE_TTL_MS = 20 * 1000;
+const REGION_PACK_ESTIMATE_CACHE_TTL_MS = 90 * 1000;
 const DETAIL_TOKEN_CACHE_TTL_MS = 5 * 60 * 1000;
 const ENDPOINT_TIMING_LOG_THRESHOLD_MS = 1200;
+
+function clearRegionPackMapVolatileCaches() {
+  REGION_PRODUCT_TILE_KEYS_CACHE.clear();
+  REGION_PRODUCT_SORTED_TILE_KEYS_CACHE.clear();
+  REGION_PRODUCT_COUNTRY_ID_SET_CACHE.clear();
+}
 
 function normalizeTileKey(value) {
   const raw = String(value || "").trim();
@@ -305,6 +315,7 @@ function invalidateUserPricingCaches(userId) {
   deleteCacheEntriesByPrefix(USER_CREDIT_ACCOUNT_CACHE, `${safeUserId}|`);
   deleteCacheEntriesByPrefix(USER_ENTITLEMENT_SUMMARY_CACHE, `${safeUserId}|`);
   deleteCacheEntriesByPrefix(REGION_OFFERS_RESPONSE_CACHE, `${safeUserId}|`);
+  deleteCacheEntriesByPrefix(REGION_PACK_ESTIMATE_CACHE, `${safeUserId}|`);
 }
 
 function accountEntitlementVersion(account) {
@@ -746,8 +757,8 @@ export function invalidatePricingSettingsCache() {
     settings: null,
   };
   REGION_PRODUCT_GROSS_CENTS_CACHE.clear();
-  REGION_PRODUCT_STATIC_MODEL_CACHE.clear();
   REGION_OFFERS_RESPONSE_CACHE.clear();
+  REGION_PACK_ESTIMATE_CACHE.clear();
 }
 
 export async function getRuntimePricingSettings(env = {}, deps = {}, options = {}) {
@@ -1019,9 +1030,6 @@ function regionProductDirectTileSet(productId, cache = {}) {
   if (!safeId) {
     return new Set();
   }
-  if (REGION_PRODUCT_DIRECT_TILE_SET_CACHE.has(safeId)) {
-    return REGION_PRODUCT_DIRECT_TILE_SET_CACHE.get(safeId);
-  }
   if (!cache.directTileSets) {
     cache.directTileSets = new Map();
   }
@@ -1030,7 +1038,6 @@ function regionProductDirectTileSet(productId, cache = {}) {
   }
   const set = new Set(normalizeTileKeys(GENERATED_REGION_PACK_TILE_KEYS[safeId] || []));
   cache.directTileSets.set(safeId, set);
-  REGION_PRODUCT_DIRECT_TILE_SET_CACHE.set(safeId, set);
   return set;
 }
 
@@ -1038,9 +1045,6 @@ function regionProductZ001CellSet(product, cache = {}) {
   const productId = String(product && product.id || product || "").trim();
   if (!productId) {
     return new Set();
-  }
-  if (REGION_PRODUCT_Z001_CELL_SET_CACHE.has(productId)) {
-    return REGION_PRODUCT_Z001_CELL_SET_CACHE.get(productId);
   }
   if (!cache.z001CellSets) {
     cache.z001CellSets = new Map();
@@ -1056,7 +1060,6 @@ function regionProductZ001CellSet(product, cache = {}) {
     }
   }
   cache.z001CellSets.set(productId, cells);
-  REGION_PRODUCT_Z001_CELL_SET_CACHE.set(productId, cells);
   return cells;
 }
 
@@ -1137,6 +1140,22 @@ function cloneOwnedRows(rows) {
   return (Array.isArray(rows) ? rows : [])
     .map((row) => ({ tile_key: normalizeTileKey(row && row.tile_key || "") }))
     .filter((row) => row.tile_key);
+}
+
+function ownedRowsFromFamilyMap(ownedByFamily) {
+  if (!(ownedByFamily instanceof Map) || ownedByFamily.size <= 0) {
+    return [];
+  }
+  const rows = [];
+  for (const entries of ownedByFamily.values()) {
+    for (const entry of Array.isArray(entries) ? entries : []) {
+      const key = normalizeTileKey(entry && entry.key || "");
+      if (key) {
+        rows.push({ tile_key: key });
+      }
+    }
+  }
+  return rows;
 }
 
 async function loadStoredEntitlementSummary(db, userId, version, deps) {
@@ -1245,6 +1264,7 @@ async function ownedEntitlementSummaryForUser(db, userId, deps, options = {}) {
   if (!safeUserId) {
     return { rows: [], ownedByFamily: new Map(), cache_hit: false, version: "" };
   }
+  const includeRows = !(options && options.includeRows === false);
   const account = options && options.account ? options.account : await ensureCreditAccount(db, safeUserId, deps);
   const version = accountEntitlementVersion(account);
   const cacheKey = `${safeUserId}|${version}`;
@@ -1253,9 +1273,11 @@ async function ownedEntitlementSummaryForUser(db, userId, deps, options = {}) {
   if (
     cached
     && (nowMs - Number(cached.cached_at_ms || 0)) <= USER_ENTITLEMENT_SUMMARY_CACHE_TTL_MS
-  ) {
+    ) {
     return {
-      rows: cloneOwnedRows(cached.rows),
+      rows: includeRows
+        ? (cached.has_rows ? cloneOwnedRows(cached.rows) : ownedRowsFromFamilyMap(cached.ownedByFamily))
+        : [],
       ownedByFamily: cached.ownedByFamily,
       cache_hit: true,
       version,
@@ -1265,17 +1287,18 @@ async function ownedEntitlementSummaryForUser(db, userId, deps, options = {}) {
   if (storedRows) {
     const ownedByFamily = ownedByFamilyFromTileRows(storedRows);
     boundedCacheSet(
-      USER_ENTITLEMENT_SUMMARY_CACHE,
-      cacheKey,
-      {
-        rows: storedRows,
-        ownedByFamily,
-        cached_at_ms: nowMs,
+        USER_ENTITLEMENT_SUMMARY_CACHE,
+        cacheKey,
+        {
+          rows: includeRows ? storedRows : [],
+          has_rows: includeRows,
+          ownedByFamily,
+          cached_at_ms: nowMs,
       },
       USER_ENTITLEMENT_SUMMARY_CACHE_MAX,
     );
     return {
-      rows: cloneOwnedRows(storedRows),
+      rows: includeRows ? cloneOwnedRows(storedRows) : [],
       ownedByFamily,
       cache_hit: true,
       version,
@@ -1298,14 +1321,15 @@ async function ownedEntitlementSummaryForUser(db, userId, deps, options = {}) {
     USER_ENTITLEMENT_SUMMARY_CACHE,
     cacheKey,
     {
-      rows: safeRows,
+      rows: includeRows ? safeRows : [],
+      has_rows: includeRows,
       ownedByFamily,
       cached_at_ms: nowMs,
     },
     USER_ENTITLEMENT_SUMMARY_CACHE_MAX,
   );
   return {
-    rows: cloneOwnedRows(safeRows),
+    rows: includeRows ? cloneOwnedRows(safeRows) : [],
     ownedByFamily,
     cache_hit: false,
     version,
@@ -1709,9 +1733,7 @@ const REGION_PACK_PAGE_ASSETS = new Map([
   ["region-pack-dynamic-map.css", { content_type: "text/css; charset=utf-8", body: ":root{color-scheme:dark;--bg:#111;--panel:#1b1b1b;--line:#3c3c3c;--text:#eee;--muted:#aaa;--new:#e45745;--partial:#e2bc49;--licenced:#4fa86a;--free:#69707a;--country:#2a3748;--country-line:#98b4d8}\n*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 -apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif}\nmain{max-width:1180px;margin:0 auto;padding:24px}h1{margin:0 0 8px;font-size:28px;font-weight:650}.muted{color:var(--muted)}\n.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:18px 0}.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px}.card b{display:block;font-size:22px;margin-top:4px}.card.final-price{border-color:#8f732f;box-shadow:0 0 0 1px rgba(217,164,65,.16) inset}.card.final-price b{font-size:26px}.buy-now{width:100%;font-size:16px}\n.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;margin-top:14px}.toolbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px}\nselect{background:#262626;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:7px 10px}svg{width:100%;height:auto;background:#0d1118;border:1px solid var(--line);border-radius:10px}\n.legend{display:flex;gap:16px;flex-wrap:wrap;margin:10px 0 0}.swatch{display:inline-block;width:14px;height:14px;border-radius:3px;margin-right:6px;vertical-align:-2px}.new{background:var(--new)}.partial{background:var(--partial)}.licenced{background:var(--licenced)}.free{background:var(--free)}\n.countries{columns:2;column-gap:26px}.countries div{break-inside:avoid;margin:2px 0}.small{font-size:13px}\n.upsells{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}.upsell{background:#151515;border:1px solid var(--line);border-radius:12px;padding:12px}.upsell h3{margin:0 0 8px;font-size:18px}.upsell p{margin:6px 0}.upsell svg{min-height:0}.button{display:inline-flex;align-items:center;justify-content:center;margin-top:10px;padding:9px 12px;border-radius:8px;background:#d9a441;color:#111;text-decoration:none;font-weight:700}.button.secondary{margin-left:8px;background:#2a2a2a;color:var(--text);border:1px solid var(--line)}" }],
   ["region-pack-dynamic-map.js", { content_type: "application/javascript; charset=utf-8", body: "const DATA=window.PLANETKA_REGION_PACK_DATA||{};\nconst NS=\"http://www.w3.org/2000/svg\";\nconst fmt=(v)=>\"€\"+Number(v||0).toFixed(2);\nconst cents=(v)=>Math.max(0,Math.round(Number(v||0)*100)||0);\nfunction priceBreakdownText(tile,discountPct){const full=cents(tile.full_price_eur);const final=cents(tile.price_eur);const status=String(tile.status||\"\");const already=status===\"licenced\"?full:0;const partial=status===\"partial\"?Math.min(Math.max(0,full-already),cents(tile.upgrade_credit_eur)):0;const preDiscount=Math.max(0,full-already-partial);const discount=Math.max(0,preDiscount-final);const pct=Math.max(0,Number(discountPct||0)||0);const lines=[\"Full Price: \"+fmt(full/100)];if(already>0)lines.push(\"Licenced: - \"+fmt(already/100));if(partial>0)lines.push(\"Partially licenced: - \"+fmt(partial/100));if(discount>0)lines.push(\"Volume Discount (\"+pct+\"%): - \"+fmt(discount/100));lines.push(\"Final Price: \"+fmt(final/100));return lines.join(\"\\n\")}\nconst MAP_BG=\"/credits/region-pack-map-background.jpg?v=\"+encodeURIComponent(String(DATA.catalog_version||DATA.token||Date.now()));\nfunction mapBgHref(id){const safe=encodeURIComponent(String(id||\"\").trim());return safe?\"/credits/region-pack-map-background.jpg?region_pack_id=\"+safe+\"&v=\"+encodeURIComponent(String(DATA.catalog_version||DATA.token||Date.now())):MAP_BG}\nconst bounds=DATA.bounds||{min_lon:-10,min_lat:35,max_lon:30,max_lat:48};\nfunction frameForBounds(rawBounds,width,minHeight,maxHeight,padSize){const b=rawBounds||{min_lon:-10,min_lat:35,max_lon:30,max_lat:48};const minLon=Number.isFinite(Number(b.min_lon))?Number(b.min_lon):-10,minLat=Number.isFinite(Number(b.min_lat))?Number(b.min_lat):35,maxLon=Number.isFinite(Number(b.max_lon))?Number(b.max_lon):30,maxLat=Number.isFinite(Number(b.max_lat))?Number(b.max_lat):48;const lonSpan=Math.max(1e-6,maxLon-minLon),latSpan=Math.max(1e-6,maxLat-minLat),innerW=Math.max(1,width-padSize*2);const naturalH=Math.round(latSpan*(innerW/lonSpan))+padSize*2,height=Math.max(minHeight,Math.min(maxHeight,naturalH)),innerH=Math.max(1,height-padSize*2),scale=Math.min(innerW/lonSpan,innerH/latSpan),usedW=lonSpan*scale,usedH=latSpan*scale;return{bounds:{min_lon:minLon,min_lat:minLat,max_lon:maxLon,max_lat:maxLat},width,height,scale,ox:(width-usedW)/2,oy:(height-usedH)/2}}\nconst W=1000, mainFrame=frameForBounds(bounds,W,320,820,20), H=mainFrame.height;\nfunction xy(lon,lat){return [mainFrame.ox+(lon-mainFrame.bounds.min_lon)*mainFrame.scale,mainFrame.oy+(mainFrame.bounds.max_lat-lat)*mainFrame.scale]}\nfunction el(name,attrs){const node=document.createElementNS(NS,name);for(const[k,v]of Object.entries(attrs||{})){node.setAttribute(k,String(v))}return node}\nfunction addMapBackground(svg,project,width,height,id,bounds){svg.appendChild(el(\"rect\",{x:0,y:0,width,height,fill:\"#0d1118\"}));const safeId=String(id||\"\").trim();if(safeId&&safeId!==\"scene\"){svg.appendChild(el(\"image\",{href:mapBgHref(safeId),x:0,y:0,width,height,preserveAspectRatio:\"none\",opacity:\"1.0\"}))}else{const tl=project(-180,90),br=project(180,-90);svg.appendChild(el(\"image\",{href:MAP_BG,x:tl[0],y:tl[1],width:br[0]-tl[0],height:br[1]-tl[1],preserveAspectRatio:\"none\",opacity:\"1.0\"}))}svg.appendChild(el(\"rect\",{x:0,y:0,width,height,fill:\"#05070a\",opacity:\"0.0\"}))}\nfunction pathFor(poly){return poly.map((pt,i)=>{const p=xy(pt[0],pt[1]);return (i?\"L\":\"M\")+p[0].toFixed(2)+\" \"+p[1].toFixed(2)}).join(\" \")}\nfunction render(level){const svg=document.getElementById(\"map\");svg.replaceChildren();svg.setAttribute(\"viewBox\",\"0 0 \"+W+\" \"+H);\n  svg.setAttribute(\"preserveAspectRatio\",\"xMidYMid meet\");\n  addMapBackground(svg,xy,W,H,DATA.region_pack&&DATA.region_pack.id,bounds);\n  for(const outline of DATA.outlines||[]){for(const poly of outline.polygons||[]){const p=el(\"path\",{d:pathFor(poly),fill:\"none\",stroke:\"var(--country-line)\",\"stroke-width\":\"0.7\",opacity:\"0.72\"});const t=el(\"title\",{});t.textContent=outline.name; p.appendChild(t); svg.appendChild(p);}}\n  const rows=(DATA.tiles||[]).filter(t=>Number(t.z)===Number(level)); let chargedCount=0, licencedCount=0, partialCount=0, freeCount=0, price=0;\n  for(const tile of rows){const a=xy(tile.lon_min,tile.lat_max), b=xy(tile.lon_max,tile.lat_min); const cls=tile.status===\"new\"?\"var(--new)\":(tile.status===\"partial\"?\"var(--partial)\":(tile.status===\"licenced\"?\"var(--licenced)\":\"var(--free)\"));\n    if(tile.status===\"new\"||tile.status===\"partial\"){chargedCount++; price+=Number(tile.price_eur||0); if(tile.status===\"partial\") partialCount++} else if(tile.status===\"licenced\"){licencedCount++} else {freeCount++}\n    const r=el(\"rect\",{x:a[0],y:a[1],width:Math.max(1,b[0]-a[0]),height:Math.max(1,b[1]-a[1]),fill:cls,stroke:\"#fff\",\"stroke-width\":\"0.45\",opacity:(tile.status===\"new\"||tile.status===\"partial\")?\"0.58\":\"0.43\"});\n    const title=el(\"title\",{}); const statusText=tile.status===\"partial\"?\"partially licenced (upgrade price only)\":tile.status; let hover=tile.tile_key+\"\\nLand: \"+Number(tile.billable_land_km2||0).toFixed(2)+\" km²\"+\"\\nStatus: \"+statusText+\"\\n\"+priceBreakdownText(tile,DATA.summary&&DATA.summary.discount_percent||0); title.textContent=hover; r.appendChild(title); svg.appendChild(r);}\n  const licenceBenefitCount=licencedCount+partialCount;\n  const newCount=Math.max(0,rows.length-licenceBenefitCount);\n  document.getElementById(\"levelSummary\").textContent=rows.length+\" tiles at \"+zoomLabel(level)+\" · new \"+newCount+\" · charged \"+chargedCount+\" · already licenced \"+licenceBenefitCount+\" · free \"+freeCount+\" · current zoom price \"+fmt(price);\n}\nconst levels=(DATA.levels&&DATA.levels.length?DATA.levels:[1]); function zoomLabel(level){const i=Math.max(0,levels.indexOf(Number(level)));return \"Zoom \"+(i+1)+(i===0?\" - closest\":\"\")} const select=document.getElementById(\"levelSelect\");\nfor(const z of levels){const o=document.createElement(\"option\");o.value=String(z);o.textContent=zoomLabel(z);select.appendChild(o)}\nselect.addEventListener(\"change\",()=>render(Number(select.value))); render(Number(select.value||levels[0]));\nfunction miniFrame(bounds){return frameForBounds(bounds,1000,320,820,20)}\nfunction miniXY(frame,lon,lat){return [frame.ox+(lon-frame.bounds.min_lon)*frame.scale,frame.oy+(frame.bounds.max_lat-lat)*frame.scale]}\nfunction renderMiniMap(svg,card){const b=card.bounds||{min_lon:-10,min_lat:35,max_lon:30,max_lat:48};const frame=miniFrame(b),w=frame.width,h=frame.height;svg.setAttribute(\"viewBox\",\"0 0 \"+w+\" \"+h);svg.style.aspectRatio=w+\" / \"+h;svg.setAttribute(\"preserveAspectRatio\",\"xMidYMid meet\");svg.replaceChildren();const bgId=card&&card.region_pack&&card.region_pack.id||\"\";addMapBackground(svg,(lon,lat)=>miniXY(frame,lon,lat),w,h,bgId,b);for(const tile of card.tiles||[]){const a=miniXY(frame,tile.lon_min,tile.lat_max),c=miniXY(frame,tile.lon_max,tile.lat_min);const cls=tile.status===\"new\"?\"var(--new)\":(tile.status===\"partial\"?\"var(--partial)\":(tile.status===\"licenced\"?\"var(--licenced)\":\"var(--free)\"));const r=el(\"rect\",{x:a[0],y:a[1],width:Math.max(1,c[0]-a[0]),height:Math.max(1,c[1]-a[1]),fill:cls,stroke:\"#fff\",\"stroke-width\":\"0.5\",opacity:(tile.status===\"new\"||tile.status===\"partial\")?\"0.58\":\"0.43\"});svg.appendChild(r)}}\nfunction renderUpsells(){const grid=document.getElementById(\"upsellGrid\");if(!grid)return;const token=encodeURIComponent(DATA.token||\"\");const catalog=\"&catalog=1\";for(const card of DATA.upsells||[]){const pack=card.region_pack||{},s=card.summary||{};const id=encodeURIComponent(pack.id||\"\");const div=document.createElement(\"div\");div.className=\"upsell\";const title=document.createElement(\"h3\");title.textContent=pack.name||\"Region Pack\";div.appendChild(title);const map=document.createElementNS(NS,\"svg\");div.appendChild(map);renderMiniMap(map,card);const meta=document.createElement(\"p\");meta.className=\"muted small\";const alreadyValue=Number(s.already_licenced_deduction_eur||s.already_licenced_saving_eur||0)+Number(s.partial_licence_credit_eur||0);const bits=[\"Full \"+fmt(s.full_price_eur)];if(alreadyValue>0)bits.push(\"Already -\"+fmt(alreadyValue));if(Number(s.discount_eur||0)>0)bits.push(\"Discount \"+Number(s.discount_percent||0)+\"% (-\"+fmt(s.discount_eur)+\")\");bits.push(\"Final \"+fmt(s.price_eur));meta.textContent=bits.join(\" · \" );div.appendChild(meta);const checkout=document.createElement(\"a\");checkout.className=\"button\";checkout.href=\"/credits/region-pack-checkout?token=\"+token+\"&region_pack_id=\"+id+catalog;checkout.textContent=\"Buy \"+(pack.name||\"Pack\")+\" (\"+fmt(s.price_eur)+\")\";div.appendChild(checkout);const detail=document.createElement(\"a\");detail.className=\"button secondary\";detail.href=\"/credits/region-pack-map?token=\"+token+\"&region_pack_id=\"+id+catalog;detail.textContent=\"View map\";div.appendChild(detail);grid.appendChild(div)}}\nrenderUpsells();" }],
   ["region-pack-map.css", { content_type: "text/css; charset=utf-8", body: ":root{color-scheme:dark;--bg:#111;--panel:#1b1b1b;--line:#3c3c3c;--text:#eee;--muted:#aaa;--new:#e45745;--partial:#e2bc49;--licenced:#4fa86a;--free:#69707a;--country:#2a3748;--country-line:#98b4d8;--accent:#d9a441}\n*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 -apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif}\nmain{max-width:1180px;margin:0 auto;padding:24px}h1{margin:0 0 8px;font-size:28px;font-weight:650}.muted{color:var(--muted)}\n.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:18px 0}.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px}.card b{display:block;font-size:22px;margin-top:4px}.card.final-price{border-color:#8f732f;box-shadow:0 0 0 1px rgba(217,164,65,.16) inset}.card.final-price b{font-size:26px}.buy-now{width:100%;font-size:16px}\n.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;margin-top:14px}.toolbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px}\nselect{background:#262626;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:7px 10px}svg{width:100%;height:auto;background:#0d1118;border:1px solid var(--line);border-radius:10px}\n.legend{display:flex;gap:16px;flex-wrap:wrap;margin:10px 0 0}.swatch{display:inline-block;width:14px;height:14px;border-radius:3px;margin-right:6px;vertical-align:-2px}.new{background:var(--new)}.partial{background:var(--partial)}.licenced{background:var(--licenced)}.free{background:var(--free)}\n.countries{columns:2;column-gap:26px}.countries div{break-inside:avoid;margin:2px 0}.small{font-size:13px}.error{color:#ffb4a9}\n.upsells{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}.upsell{background:#151515;border:1px solid var(--line);border-radius:12px;padding:12px}.upsell h3{margin:0 0 8px;font-size:18px}.upsell p{margin:6px 0}.upsell svg{min-height:0}\n.button{display:inline-flex;align-items:center;justify-content:center;margin-top:10px;padding:9px 12px;border-radius:8px;background:var(--accent);color:#111;text-decoration:none;font-weight:700}.button.secondary{margin-left:8px;background:#2a2a2a;color:var(--text);border:1px solid var(--line)}" }],
-  ["region-pack-map.js", { content_type: "application/javascript; charset=utf-8", body: "const DATA=window.PLANETKA_REGION_PACK_DATA||{};\nconst NS=\"http://www.w3.org/2000/svg\";\nconst fmtCents=(v)=>\"€\"+(Math.max(0,Number(v||0)||0)/100).toFixed(2);\nconst int=(v)=>Math.max(0,Math.round(Number(v||0)||0));\nfunction priceBreakdownCents(tile,discountPct){const full=int(tile.full_price_cents);const final=int(tile.price_cents);const status=String(tile.status||\"\");const already=status===\"licenced\"?full:0;const partial=status===\"partial\"?Math.min(Math.max(0,full-already),int(tile.upgrade_credit_cents)):0;const preDiscount=Math.max(0,full-already-partial);const discount=Math.max(0,preDiscount-final);const pct=Math.max(0,Number(discountPct||0)||0);const lines=[\"Full Price: \"+fmtCents(full)];if(already>0)lines.push(\"Licenced: - \"+fmtCents(already));if(partial>0)lines.push(\"Partially licenced: - \"+fmtCents(partial));if(discount>0)lines.push(\"Volume Discount (\"+pct+\"%): - \"+fmtCents(discount));lines.push(\"Final Price: \"+fmtCents(final));return lines.join(\"\\n\")}\nfunction zoomLabel(level){const list=(window.PLANETKA_MAP_ZOOM_LEVELS&&window.PLANETKA_MAP_ZOOM_LEVELS.length?window.PLANETKA_MAP_ZOOM_LEVELS:[Number(level)]).map(Number);const i=Math.max(0,list.indexOf(Number(level)));return \"Zoom \"+(i+1)+(i===0?\" - closest\":\"\")}\nconst PRICE_COEFFICIENT=Math.max(0.000001,Number(DATA.price_coefficient||1)||1);\nfunction discountShare(row){return Math.max(0,Number(row&&row.volume_discount_basis&&row.volume_discount_basis.world_land_share||0)||0)}\nfunction roundDiscount(v){return Math.max(0,Math.min(95,Math.round((Number(v||0)||0)/5)*5))}\nconst DISCOUNT_MIN=roundDiscount(DATA.region_pack_discount_min_percent||0);\nconst DISCOUNT_MAX=Math.max(DISCOUNT_MIN,roundDiscount(DATA.region_pack_discount_max_percent||75));\nconst PRODUCT_DISCOUNT_OVERRIDES=DATA.product_discount_overrides||{};\nconst DISCOUNT_SHARE_BUCKETS=Array.isArray(DATA.region_pack_discount_share_buckets)?DATA.region_pack_discount_share_buckets:[[0.40,1],[0.20,5/6],[0.10,4/6],[0.05,3/6],[0.025,2/6],[0.0125,1/6],[0,0]];\nfunction discountBucketRatio(share){for(const pair of DISCOUNT_SHARE_BUCKETS){const threshold=Number(Array.isArray(pair)?pair[0]:pair&&pair.threshold);const ratio=Number(Array.isArray(pair)?pair[1]:pair&&pair.ratio);if(Number.isFinite(threshold)&&Number.isFinite(ratio)&&share>=threshold)return Math.max(0,Math.min(1,ratio))}return 0}\nfunction productDiscountOverride(id){const raw=PRODUCT_DISCOUNT_OVERRIDES[String(id||'').toLowerCase()];const n=Number(raw);return Number.isFinite(n)?Math.max(0,Math.min(100,Math.round(n))):null}\nfunction discountPercentForRow(row){const id=String(row&&row.id||'').toLowerCase();const override=productDiscountOverride(id);if(override!==null)return override;if(id==='world')return DISCOUNT_MAX;const share=discountShare(row);if(share<=0&&row&&row.discount_percent!==undefined)return Math.max(0,Math.min(95,Number(row.discount_percent||0)||0));const ratio=discountBucketRatio(share);return roundDiscount(DISCOUNT_MIN+(DISCOUNT_MAX-DISCOUNT_MIN)*ratio)}\nconst scaleFullCents=(v)=>Math.max(0,Math.round(int(v)*PRICE_COEFFICIENT));\nconst assetCache=new Map();\nconst assetVersion=encodeURIComponent(String(DATA.map_asset_revision||DATA.catalog_version||DATA.token||Date.now()));\nconst MAP_BG=\"/credits/region-pack-map-background.jpg?v=\"+assetVersion;\nfunction mapBgHref(id){const safe=encodeURIComponent(String(id||\"\").trim());return safe?\"/credits/region-pack-map-background.jpg?region_pack_id=\"+safe+\"&v=\"+assetVersion:MAP_BG}\nconst currentToken=encodeURIComponent(DATA.token||\"\");\nconst currentPackIdEncoded=encodeURIComponent(DATA.asset_id||DATA.region_pack&&DATA.region_pack.id||\"\");\nconst currentCatalog=DATA.catalog_mode?\"&catalog=1\":\"\";\nfunction esc(value){return String(value||\"\").replace(/&/g,\"&amp;\").replace(/</g,\"&lt;\").replace(/>/g,\"&gt;\").replace(/\"/g,\"&quot;\")}\nfunction countryName(value){return typeof value===\"object\"&&value?String(value.name||value.COUNTRY||value.NAME_1||value.GID_0||\"\"):String(value||\"\")}\nconst CHINA_ADMIN_LABELS=new Set([\"anhui\",\"beijing\",\"chongqing\",\"fujian\",\"gansu\",\"guangdong\",\"guangxi\",\"guizhou\",\"hainan\",\"hebei\",\"heilongjiang\",\"henan\",\"hong kong\",\"hubei\",\"hunan\",\"jiangsu\",\"jiangxi\",\"jilin\",\"liaoning\",\"macau\",\"nei mongol\",\"ningxia hui\",\"qinghai\",\"shaanxi\",\"shandong\",\"shanghai\",\"shanxi\",\"sichuan\",\"tianjin\",\"xinjiang uygur\",\"xizang\",\"yunnan\",\"zhejiang\"]);\nconst US_ADMIN_LABELS=new Set([\"alabama\",\"alaska\",\"arizona\",\"arkansas\",\"california\",\"colorado\",\"connecticut\",\"delaware\",\"district of columbia\",\"florida\",\"georgia\",\"hawaii\",\"idaho\",\"illinois\",\"indiana\",\"iowa\",\"kansas\",\"kentucky\",\"louisiana\",\"maine\",\"maryland\",\"massachusetts\",\"michigan\",\"minnesota\",\"mississippi\",\"missouri\",\"montana\",\"nebraska\",\"nevada\",\"new hampshire\",\"new jersey\",\"new mexico\",\"new york\",\"north carolina\",\"north dakota\",\"ohio\",\"oklahoma\",\"oregon\",\"pennsylvania\",\"rhode island\",\"south carolina\",\"south dakota\",\"tennessee\",\"texas\",\"utah\",\"vermont\",\"virginia\",\"washington\",\"west virginia\",\"wisconsin\",\"wyoming\"]);\nconst CANADA_ADMIN_LABELS=new Set([\"alberta\",\"british columbia\",\"manitoba\",\"new brunswick\",\"newfoundland and labrador\",\"northwest territories\",\"nova scotia\",\"nunavut\",\"ontario\",\"prince edward island\",\"québec\",\"quebec\",\"saskatchewan\",\"yukon\"]);\nfunction currentPackId(){return String(DATA.asset_id||DATA.region_pack&&DATA.region_pack.id||\"\").trim().toLowerCase()}\nfunction collapsedIncludedLabel(key){const id=currentPackId();if(CHINA_ADMIN_LABELS.has(key))return \"China\";if((id===\"north_america\"||id===\"united_states\")&&US_ADMIN_LABELS.has(key))return \"United States\";if((id===\"north_america\"||id===\"canada\")&&CANADA_ADMIN_LABELS.has(key))return \"Canada\";return \"\"}\nfunction uniqueCountryNames(values){const seen=new Set(),out=[];for(const entry of Array.isArray(values)?values:[]){let label=countryName(entry).trim();let key=label.toLowerCase();const collapsed=collapsedIncludedLabel(key);if(collapsed){label=collapsed;key=label.toLowerCase()}if(!label||seen.has(key))continue;seen.add(key);out.push(label)}return out.sort((a,b)=>a.localeCompare(b))}\nfunction parseTileKey(key){const m=/x(\\d{3})_y(\\d{3})_z(\\d{3})_d(\\d{3})/i.exec(String(key||\"\"));return m?{key:m[0],x:Number(m[1]),y:Number(m[2]),z:Number(m[3]),d:Number(m[4])}:null}\nfunction family(parsed){return parsed?\"x\"+String(parsed.x).padStart(3,\"0\")+\"_y\"+String(parsed.y).padStart(3,\"0\")+\"_z\"+String(parsed.z).padStart(3,\"0\"):\"\"}\nfunction tileSort(a,b){const pa=parseTileKey(a.tile_key),pb=parseTileKey(b.tile_key),fa=family(pa),fb=family(pb);return fa===fb?(Number(pa&&pa.d||0)-Number(pb&&pb.d||0)):fa<fb?-1:1}\n\tfunction buildOwnedByFamily(){const map=new Map();for(const row of DATA.owned_tiles||[]){const p=parseTileKey(row.tile_key);const f=family(p);if(!p||!f)continue;if(!map.has(f))map.set(f,[]);map.get(f).push({d:p.d,gross_cents:int(row.gross_cents)})}return map}\n\tasync function loadAsset(id){const safe=String(id||\"\").trim();if(assetCache.has(safe))return assetCache.get(safe);const res=await fetch(\"/credits/region-pack-map-asset?region_pack_id=\"+encodeURIComponent(safe)+\"&v=\"+assetVersion,{cache:\"reload\"});if(!res.ok)throw new Error(\"map_asset_\"+res.status);const asset=await res.json();assetCache.set(safe,asset);return asset}\n\tfunction rawPackGrossCents(rows){const owned=new Map();let total=0;for(const tile of rows){const p=parseTileKey(tile.tile_key);const f=family(p);const full=scaleFullCents(tile.full_price_cents||tile.gross_cents);const globallyFree=!!tile.globally_free||full<=0;if(!p||!f||globallyFree)continue;if(!owned.has(f))owned.set(f,[]);const entries=owned.get(f);const covered=entries.some((entry)=>Number(entry.d)<=Number(p.d));let coarser=0;for(const entry of entries){if(Number(entry.d)>Number(p.d))coarser=Math.max(coarser,int(entry.gross_cents))}const charge=covered?0:Math.max(0,full-coarser);if(charge>0){total+=charge;entries.push({d:Number(p.d),gross_cents:full})}}return total}\n\tfunction computeAsset(asset){const initiallyOwned=buildOwnedByFamily();const owned=buildOwnedByFamily();const world=!!DATA.world_full_quality_unlocked;const discountPct=discountPercentForRow(asset&&asset.region_pack||{});const rows=(asset.tiles||[]).slice().sort(tileSort);const rawFullCents=rawPackGrossCents(rows);const paid=[];let grossCents=0,alreadyCount=0,freeCount=0,alreadyDeductionCents=0,partialCount=0,partialCreditCents=0;\n\t  for(const tile of rows){const p=parseTileKey(tile.tile_key);const f=family(p);const full=scaleFullCents(tile.full_price_cents||tile.gross_cents);const globallyFree=!!tile.globally_free||full<=0;if(!owned.has(f))owned.set(f,[]);const entries=owned.get(f);const initialEntries=initiallyOwned.get(f)||[];const previouslyCovered=world||initialEntries.some((entry)=>Number(entry.d)<=Number(p&&p.d||0));const coveredForCharge=world||entries.some((entry)=>Number(entry.d)<=Number(p&&p.d||0));let coarser=0;for(const entry of entries){if(Number(entry.d)>Number(p&&p.d||0))coarser=Math.max(coarser,int(entry.gross_cents))}let initialCoarser=0;for(const entry of initialEntries){if(Number(entry.d)>Number(p&&p.d||0))initialCoarser=Math.max(initialCoarser,int(entry.gross_cents))}\n\t    const charge=globallyFree||coveredForCharge?0:Math.max(0,full-coarser);const appliedPartial=!globallyFree&&!previouslyCovered&&!coveredForCharge?Math.min(full,initialCoarser):0;let status=\"free\";if(previouslyCovered&&!globallyFree){status=\"licenced\";alreadyCount+=1;alreadyDeductionCents+=full}else if(charge>0){status=appliedPartial>0?\"partial\":\"new\";if(appliedPartial>0){partialCount+=1;partialCreditCents+=appliedPartial}grossCents+=charge;paid.push({tile,cents:charge})}else{if(appliedPartial>0){status=\"partial\";partialCount+=1;partialCreditCents+=appliedPartial}else{freeCount+=1}}\n\t    if(charge>0&&entries){entries.push({d:Number(p&&p.d||0),gross_cents:full})}\n\t    tile.x=p?p.x:null;tile.y=p?p.y:null;tile.z=p?p.z:null;tile.d=p?p.d:null;const lonMin=Number(tile.lon_min),lonMax=Number(tile.lon_max),latMin=Number(tile.lat_min),latMax=Number(tile.lat_max);tile.lon_min=Number.isFinite(lonMin)?lonMin:(p?p.x-180:null);tile.lon_max=Number.isFinite(lonMax)?lonMax:(p?p.x-180+p.z:null);tile.lat_min=Number.isFinite(latMin)?latMin:(p?p.y-90:null);tile.lat_max=Number.isFinite(latMax)?latMax:(p?p.y-90+p.z:null);tile.status=status;tile.charge_cents=charge;tile.upgrade_credit_cents=appliedPartial;tile.partially_licenced=status===\"partial\";tile.price_cents=0;tile.full_price_cents=full;tile.full_price_eur=full/100;tile.price_eur=0;\n\t  }\n\t  const discountCents=Math.round(grossCents*discountPct/100);const targetCents=Math.max(0,grossCents-discountCents);let allocated=0;const alloc=paid.map((entry,index)=>{const raw=grossCents>0?(entry.cents*targetCents/grossCents):0;const floor=Math.floor(raw);allocated+=floor;return{entry,index,cents:floor,remainder:raw-floor}}).sort((a,b)=>b.remainder!==a.remainder?b.remainder-a.remainder:a.index-b.index);let rem=Math.max(0,targetCents-allocated);for(const item of alloc){if(rem<=0)break;item.cents+=1;rem-=1}for(const item of alloc){item.entry.tile.price_cents=item.cents;item.entry.tile.price_eur=item.cents/100;if(item.cents<=0&&item.entry.tile.status!==\"partial\")item.entry.tile.status=\"free\"}\n\t  const levels=Array.from(new Set(rows.map((row)=>Number(row.z)).filter(Number.isFinite))).sort((a,b)=>a-b);const unlicencedCount=world?0:Math.max(0,rows.length-alreadyCount);return{asset,rows,levels,summary:{new_tiles:unlicencedCount,charged_tiles:paid.filter((entry)=>entry.tile.price_cents>0).length,total_tiles:rows.length,already_licenced_tiles:alreadyCount,partial_licence_tiles:partialCount,free_tiles:freeCount,full_price_cents:rawFullCents,discount_percent:discountPct,discount_cents:discountCents,price_cents:targetCents,already_licenced_deduction_cents:alreadyDeductionCents,already_licenced_saving_cents:alreadyDeductionCents,partial_licence_credit_cents:partialCreditCents}}}\n\tfunction currentBuyHref(){return currentPackIdEncoded?\"/credits/region-pack-checkout?token=\"+currentToken+\"&region_pack_id=\"+currentPackIdEncoded+currentCatalog:\"\"}\n\tfunction renderCards(vm){const s=vm.summary;const partialTiles=Number(s.partial_licence_tiles||0);const alreadyTiles=Number(s.already_licenced_tiles||0)+partialTiles;const alreadyValue=int(s.already_licenced_deduction_cents)+int(s.partial_licence_credit_cents);const discountValue=int(s.discount_cents);const newTiles=Math.max(0,Number(s.new_tiles||0)-partialTiles);const cards=[[\"New Tiles / Total Tiles\",newTiles+\" / \"+Number(s.total_tiles||0)],[\"Full Price\",fmtCents(s.full_price_cents)]];if(alreadyValue>0)cards.push([\"Already Licenced\",alreadyTiles+\" tiles (-\"+fmtCents(alreadyValue)+\")\"]);if(discountValue>0)cards.push([\"Volume Discount\",Number(s.discount_percent||0)+\"% (-\"+fmtCents(discountValue)+\")\"]);const buy=currentBuyHref()?\"<a class=\\\"button buy-now\\\" href=\\\"\"+currentBuyHref()+\"\\\">\"+(int(s.price_cents)>0?\"Buy Now\":\"Licence Now\")+\"</a>\":\"\";cards.push([\"Final Price\",fmtCents(s.price_cents),buy]);document.getElementById(\"cards\").innerHTML=cards.map((c)=>\"<div class=\\\"card \"+(c[0]===\"Final Price\"?\"final-price\":\"\")+\"\\\"><span>\"+esc(c[0])+\"</span><b>\"+esc(c[1])+\"</b>\"+(c[2]||\"\")+\"</div>\").join(\"\")}\nfunction frameForBounds(rawBounds,width,minHeight,maxHeight,padSize){const b=rawBounds||{min_lon:-10,min_lat:35,max_lon:30,max_lat:48};const minLon=Number.isFinite(Number(b.min_lon))?Number(b.min_lon):-10,minLat=Number.isFinite(Number(b.min_lat))?Number(b.min_lat):35,maxLon=Number.isFinite(Number(b.max_lon))?Number(b.max_lon):30,maxLat=Number.isFinite(Number(b.max_lat))?Number(b.max_lat):48;const lonSpan=Math.max(1e-6,maxLon-minLon),latSpan=Math.max(1e-6,maxLat-minLat),innerW=Math.max(1,width-padSize*2);const naturalH=Math.round(latSpan*(innerW/lonSpan))+padSize*2,height=Math.max(minHeight,Math.min(maxHeight,naturalH)),innerH=Math.max(1,height-padSize*2),scale=Math.min(innerW/lonSpan,innerH/latSpan),usedW=lonSpan*scale,usedH=latSpan*scale;return{bounds:{min_lon:minLon,min_lat:minLat,max_lon:maxLon,max_lat:maxLat},width,height,scale,ox:(width-usedW)/2,oy:(height-usedH)/2}}\nlet currentFrame=frameForBounds({min_lon:-10,min_lat:35,max_lon:30,max_lat:48},1000,320,820,20),W=currentFrame.width,H=currentFrame.height;\nfunction setBounds(bounds){currentFrame=frameForBounds(bounds||currentFrame.bounds,1000,320,820,20);W=currentFrame.width;H=currentFrame.height}\nfunction xy(lon,lat){return [currentFrame.ox+(lon-currentFrame.bounds.min_lon)*currentFrame.scale,currentFrame.oy+(currentFrame.bounds.max_lat-lat)*currentFrame.scale]}\nfunction el(name,attrs){const node=document.createElementNS(NS,name);for(const k in attrs||{})node.setAttribute(k,String(attrs[k]));return node}\nfunction addMapBackground(svg,project,width,height,id,bounds){svg.appendChild(el(\"rect\",{x:0,y:0,width,height,fill:\"#0d1118\"}));const safeId=String(id||\"\").trim();if(safeId&&safeId!==\"scene\"){svg.appendChild(el(\"image\",{href:mapBgHref(safeId),x:0,y:0,width,height,preserveAspectRatio:\"none\",opacity:\"1.0\"}))}else{const tl=project(-180,90),br=project(180,-90);svg.appendChild(el(\"image\",{href:MAP_BG,x:tl[0],y:tl[1],width:br[0]-tl[0],height:br[1]-tl[1],preserveAspectRatio:\"none\",opacity:\"1.0\"}))}svg.appendChild(el(\"rect\",{x:0,y:0,width,height,fill:\"#05070a\",opacity:\"0.0\"}))}\nfunction pathFor(poly){return(poly||[]).map((pt,i)=>{const p=xy(pt[0],pt[1]);return(i?\"L\":\"M\")+p[0].toFixed(2)+\" \"+p[1].toFixed(2)}).join(\" \")}\nfunction renderMap(vm,level){const svg=document.getElementById(\"map\");svg.replaceChildren();svg.setAttribute(\"viewBox\",\"0 0 \"+W+\" \"+H);svg.setAttribute(\"preserveAspectRatio\",\"xMidYMid meet\");addMapBackground(svg,xy,W,H,vm.asset&&vm.asset.region_pack&&vm.asset.region_pack.id,vm.asset&&vm.asset.bounds);for(const outline of vm.asset.outlines||[]){for(const poly of outline.polygons||[]){const p=el(\"path\",{d:pathFor(poly),fill:\"none\",stroke:\"var(--country-line)\",\"stroke-width\":\"0.7\",opacity:\"0.72\"});const t=el(\"title\",{});t.textContent=outline.name;p.appendChild(t);svg.appendChild(p)}}const rows=vm.rows.filter((row)=>Number(row.z)===Number(level));let chargedCount=0,licencedCount=0,partialCount=0,freeCount=0,price=0;for(const tile of rows){const a=xy(tile.lon_min,tile.lat_max),b=xy(tile.lon_max,tile.lat_min);const cls=tile.status===\"new\"?\"var(--new)\":(tile.status===\"partial\"?\"var(--partial)\":(tile.status===\"licenced\"?\"var(--licenced)\":\"var(--free)\"));if(tile.status===\"new\"||tile.status===\"partial\"){chargedCount++;price+=int(tile.price_cents);if(tile.status===\"partial\")partialCount++}else if(tile.status===\"licenced\"){licencedCount++}else{freeCount++}const r=el(\"rect\",{x:a[0],y:a[1],width:Math.max(1,b[0]-a[0]),height:Math.max(1,b[1]-a[1]),fill:cls,stroke:\"#fff\",\"stroke-width\":\"0.45\",opacity:(tile.status===\"new\"||tile.status===\"partial\")?\"0.58\":\"0.43\"});const title=el(\"title\",{});const statusText=tile.status===\"partial\"?\"partially licenced (upgrade price only)\":tile.status;let hover=tile.tile_key+\"\\nLand: \"+Number(tile.billable_land_km2||0).toFixed(2)+\" km²\\nStatus: \"+statusText+\"\\n\"+priceBreakdownCents(tile,vm.summary&&vm.summary.discount_percent||0);title.textContent=hover;r.appendChild(title);svg.appendChild(r)}const licenceBenefitCount=licencedCount+partialCount;const newCount=Math.max(0,rows.length-licenceBenefitCount);document.getElementById(\"levelSummary\").textContent=rows.length+\" tiles at \"+zoomLabel(level)+\" · new \"+newCount+\" · charged \"+chargedCount+\" · already licenced \"+licenceBenefitCount+\" · free \"+freeCount+\" · current zoom price \"+fmtCents(price)}\nfunction miniFrame(bounds){return frameForBounds(bounds,1000,320,820,20)}\nfunction miniXY(frame,lon,lat){return[frame.ox+(lon-frame.bounds.min_lon)*frame.scale,frame.oy+(frame.bounds.max_lat-lat)*frame.scale]}\nfunction renderMiniMap(svg,vm){const b=vm.asset.bounds||{min_lon:-10,min_lat:35,max_lon:30,max_lat:48};const frame=miniFrame(b),w=frame.width,h=frame.height;svg.setAttribute(\"viewBox\",\"0 0 \"+w+\" \"+h);svg.style.aspectRatio=w+\" / \"+h;svg.setAttribute(\"preserveAspectRatio\",\"xMidYMid meet\");svg.replaceChildren();const bgId=vm&&vm.asset&&vm.asset.region_pack&&vm.asset.region_pack.id||\"\";addMapBackground(svg,(lon,lat)=>miniXY(frame,lon,lat),w,h,bgId,b);const first=vm.levels.length?vm.levels[0]:null;for(const tile of vm.rows.filter((row)=>Number(row.z)===Number(first))){const a=miniXY(frame,tile.lon_min,tile.lat_max),c=miniXY(frame,tile.lon_max,tile.lat_min);const cls=tile.status===\"new\"?\"var(--new)\":(tile.status===\"partial\"?\"var(--partial)\":(tile.status===\"licenced\"?\"var(--licenced)\":\"var(--free)\"));svg.appendChild(el(\"rect\",{x:a[0],y:a[1],width:Math.max(1,c[0]-a[0]),height:Math.max(1,c[1]-a[1]),fill:cls,stroke:\"#fff\",\"stroke-width\":\"0.5\",opacity:(tile.status===\"new\"||tile.status===\"partial\")?\"0.58\":\"0.43\"}))}}\nasync function renderUpsells(asset){const ids=Array.isArray(DATA.similar_pack_ids)?DATA.similar_pack_ids:(Array.isArray(asset.upsell_ids)?asset.upsell_ids:[]);const grid=document.getElementById(\"upsellGrid\");if(!grid||!ids.length)return;const token=encodeURIComponent(DATA.token||\"\");const catalog=\"&catalog=1\";for(const idRaw of ids){try{const upAsset=await loadAsset(idRaw);const vm=computeAsset(upAsset);if(vm.summary.price_cents<=0&&Number(vm.summary.charged_tiles||0)<=0)continue;const id=encodeURIComponent(upAsset.region_pack.id||idRaw);const div=document.createElement(\"div\");div.className=\"upsell\";const title=document.createElement(\"h3\");title.textContent=upAsset.region_pack.name||\"Region Pack\";div.appendChild(title);const map=document.createElementNS(NS,\"svg\");div.appendChild(map);renderMiniMap(map,vm);const meta=document.createElement(\"p\");meta.className=\"muted small\";const alreadyValue=int(vm.summary.already_licenced_deduction_cents)+int(vm.summary.partial_licence_credit_cents);const bits=[\"Full \"+fmtCents(vm.summary.full_price_cents)];if(alreadyValue>0)bits.push(\"Already -\"+fmtCents(alreadyValue));if(int(vm.summary.discount_cents)>0)bits.push(\"Discount \"+Number(vm.summary.discount_percent||0)+\"% (-\"+fmtCents(vm.summary.discount_cents)+\")\");bits.push(\"Final \"+fmtCents(vm.summary.price_cents));meta.textContent=bits.join(\" · \" );div.appendChild(meta);const checkout=document.createElement(\"a\");checkout.className=\"button\";checkout.href=\"/credits/region-pack-checkout?token=\"+token+\"&region_pack_id=\"+id+catalog;checkout.textContent=\"Buy \"+(upAsset.region_pack.name||\"Pack\")+\" (\"+fmtCents(vm.summary.price_cents)+\")\";div.appendChild(checkout);const detail=document.createElement(\"a\");detail.className=\"button secondary\";detail.href=\"/credits/region-pack-map?token=\"+token+\"&region_pack_id=\"+id+catalog;detail.textContent=\"View map\";div.appendChild(detail);grid.appendChild(div);document.getElementById(\"upsellsPanel\").style.display=\"\"}catch(error){console.warn(\"Planetka upsell map failed\",idRaw,error)}}}\nasync function init(){try{const asset=await loadAsset(DATA.asset_id);const titlePrefix=String(DATA.title_prefix||DATA.success&&DATA.success.context_title_prefix||\"\").trim();document.getElementById(\"pageTitle\").textContent=(titlePrefix?titlePrefix+\": \":\"\")+(asset.region_pack.name||\"Region Pack\")+\" Full Quality Pack\";const vm=computeAsset(asset);renderCards(vm);setBounds(asset.bounds);const countries=uniqueCountryNames(asset.included_countries);if(countries.length){document.getElementById(\"countries\").innerHTML=countries.map((c)=>\"<div>\"+esc(c)+\"</div>\").join(\"\");document.getElementById(\"countriesPanel\").style.display=\"\"}const select=document.getElementById(\"levelSelect\");select.replaceChildren();const levels=vm.levels.length?vm.levels:[1];window.PLANETKA_MAP_ZOOM_LEVELS=levels;for(const z of levels){const o=document.createElement(\"option\");o.value=String(z);o.textContent=zoomLabel(z);select.appendChild(o)}select.addEventListener(\"change\",()=>renderMap(vm,Number(select.value)));renderMap(vm,Number(select.value||levels[0]));document.getElementById(\"mapStatus\").textContent=\"Map loaded.\";renderUpsells(asset)}catch(error){console.warn(\"Planetka region-pack map failed\",error);document.getElementById(\"mapStatus\").className=\"error small\";document.getElementById(\"mapStatus\").textContent=\"Map failed to load. Please reopen this page from Blender.\"}}\ninit();" }],
-  ["region-pack-catalog.css", { content_type: "text/css; charset=utf-8", body: ":root{color-scheme:dark;--bg:#111;--panel:#1b1b1b;--line:#3c3c3c;--text:#eee;--muted:#aaa;--accent:#d9a441;--soft:#262626}\n*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 -apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif}\nmain{max-width:1180px;margin:0 auto;padding:24px}h1{margin:0 0 8px;font-size:28px;font-weight:650}h2{margin:26px 0 10px;font-size:19px}.muted{color:var(--muted)}\n.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;margin-top:14px}.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:12px 0}\ninput{min-width:260px;flex:1;background:var(--soft);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:9px 11px}.small{font-size:13px}.saving{color:#9dd18d}.price{font-weight:700;color:#f4d28d}.error{color:#ffb4a9}.empty{padding:12px;color:var(--muted)}\n.catalog-section{margin-top:14px}.subsection-title{margin:18px 0 8px;color:#ddd;font-size:15px;font-weight:700}.catalog-table{width:100%;border-collapse:separate;border-spacing:0 7px}.catalog-table th{padding:0 10px 5px;text-align:right;color:var(--muted);font-size:12px;font-weight:650}.catalog-table th:first-child{text-align:left}.catalog-table td{padding:10px;background:#151515;border-top:1px solid var(--line);border-bottom:1px solid var(--line);text-align:right;vertical-align:middle;white-space:nowrap}.catalog-table td:first-child{border-left:1px solid var(--line);border-radius:9px 0 0 9px;text-align:left;white-space:normal}.catalog-table td:last-child{border-right:1px solid var(--line);border-radius:0 9px 9px 0}.catalog-table tr:hover td{border-color:#575757;background:#181818}.pack-name{font-weight:700}.pack-kind{display:block;color:var(--muted);font-size:12px;margin-top:1px}.actions{display:flex;justify-content:flex-end;gap:7px;flex-wrap:wrap}.button{display:inline-flex;align-items:center;justify-content:center;padding:7px 10px;border-radius:8px;background:var(--accent);color:#111;text-decoration:none;font-weight:700;border:0}.button.secondary{background:#2a2a2a;color:var(--text);border:1px solid var(--line)}\n@media(max-width:760px){main{padding:16px}.catalog-table,.catalog-table tbody,.catalog-table tr,.catalog-table td{display:block;width:100%}.catalog-table thead{display:none}.catalog-table tr{margin:0 0 9px}.catalog-table td{border-left:1px solid var(--line);border-right:1px solid var(--line);border-radius:0;text-align:left}.catalog-table td:first-child{border-radius:9px 9px 0 0}.catalog-table td:last-child{border-radius:0 0 9px 9px}.catalog-table td[data-label]::before{content:attr(data-label);display:block;color:var(--muted);font-size:12px}.actions{justify-content:flex-start}}" }],
-  ["region-pack-catalog.js", { content_type: "application/javascript; charset=utf-8", body: "const DATA=window.PLANETKA_REGION_PACK_DATA||{};\nconst fmtCents=(v)=>\"\u20ac\"+(Math.max(0,Number(v||0)||0)/100).toFixed(2);\nconst int=(v)=>Math.max(0,Math.round(Number(v||0)||0));\nconst PRICE_COEFFICIENT=Math.max(0.000001,Number(DATA.price_coefficient||1)||1);\nfunction discountShare(row){return Math.max(0,Number(row&&row.volume_discount_basis&&row.volume_discount_basis.world_land_share||0)||0)}\nfunction roundDiscount(v){return Math.max(0,Math.min(95,Math.round((Number(v||0)||0)/5)*5))}\nconst DISCOUNT_MIN=roundDiscount(DATA.region_pack_discount_min_percent||0);\nconst DISCOUNT_MAX=Math.max(DISCOUNT_MIN,roundDiscount(DATA.region_pack_discount_max_percent||75));\nconst PRODUCT_DISCOUNT_OVERRIDES=DATA.product_discount_overrides||{};\nconst DISCOUNT_SHARE_BUCKETS=Array.isArray(DATA.region_pack_discount_share_buckets)?DATA.region_pack_discount_share_buckets:[[0.40,1],[0.20,5/6],[0.10,4/6],[0.05,3/6],[0.025,2/6],[0.0125,1/6],[0,0]];\nfunction discountBucketRatio(share){for(const pair of DISCOUNT_SHARE_BUCKETS){const threshold=Number(Array.isArray(pair)?pair[0]:pair&&pair.threshold);const ratio=Number(Array.isArray(pair)?pair[1]:pair&&pair.ratio);if(Number.isFinite(threshold)&&Number.isFinite(ratio)&&share>=threshold)return Math.max(0,Math.min(1,ratio))}return 0}\nfunction productDiscountOverride(id){const raw=PRODUCT_DISCOUNT_OVERRIDES[String(id||'').toLowerCase()];const n=Number(raw);return Number.isFinite(n)?Math.max(0,Math.min(100,Math.round(n))):null}\nfunction discountPercentForRow(row){const id=String(row&&row.id||'').toLowerCase();const override=productDiscountOverride(id);if(override!==null)return override;if(id==='world')return DISCOUNT_MAX;const share=discountShare(row);if(share<=0&&row&&row.discount_percent!==undefined)return Math.max(0,Math.min(95,Number(row.discount_percent||0)||0));const ratio=discountBucketRatio(share);return roundDiscount(DISCOUNT_MIN+(DISCOUNT_MAX-DISCOUNT_MIN)*ratio)}\nconst scaleFullCents=(v)=>Math.max(0,Math.round(int(v)*PRICE_COEFFICIENT));\nconst token=encodeURIComponent(DATA.token||\"\");\nconst COUNTRY_LIKE_IDS=new Set([\"australia\",\"canada\",\"china\",\"united_states\"]);\nconst STATE_PARENT_IDS={\n  \"Australia\":new Set([\"new_south_wales\",\"northern_territory\",\"queensland\",\"south_australia\",\"tasmania\",\"victoria\",\"western_australia\"]),\n  \"Canada\":new Set([\"alberta\",\"british_columbia\",\"manitoba\",\"new_brunswick\",\"newfoundland_and_labrador\",\"northwest_territories\",\"nova_scotia\",\"nunavut\",\"ontario\",\"prince_edward_island\",\"quebec\",\"saskatchewan\",\"yukon\"]),\n  \"China\":new Set([\"anhui\",\"beijing\",\"chongqing\",\"fujian\",\"gansu\",\"guangdong\",\"guangxi\",\"guizhou\",\"hainan\",\"hebei\",\"heilongjiang\",\"henan\",\"hong_kong\",\"hubei\",\"hunan\",\"jiangsu\",\"jiangxi\",\"jilin\",\"liaoning\",\"macau\",\"nei_mongol\",\"ningxia_hui\",\"qinghai\",\"shaanxi\",\"shandong\",\"shanghai\",\"shanxi\",\"sichuan\",\"tianjin\",\"xinjiang_uygur\",\"xizang\",\"yunnan\",\"zhejiang\"]),\n  \"United States\":new Set([\"alabama\",\"alaska\",\"arizona\",\"arkansas\",\"california\",\"colorado\",\"connecticut\",\"delaware\",\"district_of_columbia\",\"florida\",\"georgia\",\"hawaii\",\"idaho\",\"illinois\",\"indiana\",\"iowa\",\"kansas\",\"kentucky\",\"louisiana\",\"maine\",\"maryland\",\"massachusetts\",\"michigan\",\"minnesota\",\"mississippi\",\"missouri\",\"montana\",\"nebraska\",\"nevada\",\"new_hampshire\",\"new_jersey\",\"new_mexico\",\"new_york\",\"north_carolina\",\"north_dakota\",\"ohio\",\"oklahoma\",\"oregon\",\"pennsylvania\",\"rhode_island\",\"south_carolina\",\"south_dakota\",\"tennessee\",\"texas\",\"utah\",\"vermont\",\"virginia\",\"washington\",\"west_virginia\",\"wisconsin\",\"wyoming\"])\n};\nfunction esc(value){return String(value||\"\").replace(/&/g,\"&amp;\").replace(/</g,\"&lt;\").replace(/>/g,\"&gt;\").replace(/\\\"/g,\"&quot;\")}\nfunction parseTileKey(key){const m=/x(\\d{3})_y(\\d{3})_z(\\d{3})_d(\\d{3})/i.exec(String(key||\"\"));return m?{key:m[0],x:Number(m[1]),y:Number(m[2]),z:Number(m[3]),d:Number(m[4])}:null}\nfunction family(parsed){return parsed?\"x\"+String(parsed.x).padStart(3,\"0\")+\"_y\"+String(parsed.y).padStart(3,\"0\")+\"_z\"+String(parsed.z).padStart(3,\"0\"):\"\"}\nfunction tileSort(a,b){const pa=parseTileKey(a[0]),pb=parseTileKey(b[0]),fa=family(pa),fb=family(pb);return fa===fb?(Number(pa&&pa.d||0)-Number(pb&&pb.d||0)):fa<fb?-1:1}\nfunction buildOwnedByFamily(){const map=new Map();for(const row of DATA.owned_tiles||[]){const p=parseTileKey(row.tile_key);const f=family(p);if(!p||!f)continue;if(!map.has(f))map.set(f,[]);map.get(f).push({d:p.d,gross_cents:int(row.gross_cents)})}return map}\nfunction rawProductGrossCents(row){const tiles=(row.tiles||[]).slice().sort(tileSort);if(!tiles.length)return scaleFullCents(row.full_price_cents||row.gross_cents);const owned=new Map();let total=0;for(const tile of tiles){const p=parseTileKey(tile[0]);const f=family(p);const full=scaleFullCents(tile[1]);const globallyFree=!!tile[2]||full<=0;if(!p||!f||globallyFree)continue;if(!owned.has(f))owned.set(f,[]);const entries=owned.get(f);const covered=entries.some((entry)=>Number(entry.d)<=Number(p.d));let coarser=0;for(const entry of entries){if(Number(entry.d)>Number(p.d))coarser=Math.max(coarser,int(entry.gross_cents))}const charge=covered?0:Math.max(0,full-coarser);if(charge>0){total+=charge;entries.push({d:Number(p.d),gross_cents:full})}}return total}\nfunction computeProduct(row){const discountPct=discountPercentForRow(row);const fullGross=rawProductGrossCents(row);if(row.world){const discount=Math.round(fullGross*discountPct/100);const price=DATA.world_full_quality_unlocked?0:Math.max(0,fullGross-discount);const already=DATA.world_full_quality_unlocked?fullGross:0;return{...row,new_tiles:DATA.world_full_quality_unlocked?0:Number(row.total_tiles||0),charged_tiles:DATA.world_full_quality_unlocked?0:Number(row.total_tiles||0),already_licenced_tiles:DATA.world_full_quality_unlocked?Number(row.total_tiles||0):0,full_price_cents:fullGross,chargeable_full_price_cents:DATA.world_full_quality_unlocked?0:fullGross,discount_cents:DATA.world_full_quality_unlocked?0:discount,price_cents:price,already_licenced_deduction_cents:already,already_licenced_saving_cents:already}}\n  const initiallyOwned=buildOwnedByFamily();const owned=buildOwnedByFamily();const world=!!DATA.world_full_quality_unlocked;const tiles=(row.tiles||[]).slice().sort(tileSort);let gross=0,alreadyCount=0,freeCount=0,chargedCount=0,already=0,partialCount=0,partialCredit=0;for(const tile of tiles){const p=parseTileKey(tile[0]);const f=family(p);const full=scaleFullCents(tile[1]);const globallyFree=!!tile[2]||full<=0;if(!owned.has(f))owned.set(f,[]);const entries=owned.get(f);const initialEntries=initiallyOwned.get(f)||[];const previouslyCovered=world||initialEntries.some((entry)=>Number(entry.d)<=Number(p&&p.d||0));const coveredForCharge=world||entries.some((entry)=>Number(entry.d)<=Number(p&&p.d||0));let coarser=0;for(const entry of entries){if(Number(entry.d)>Number(p&&p.d||0))coarser=Math.max(coarser,int(entry.gross_cents))}let initialCoarser=0;for(const entry of initialEntries){if(Number(entry.d)>Number(p&&p.d||0))initialCoarser=Math.max(initialCoarser,int(entry.gross_cents))}const charge=globallyFree||coveredForCharge?0:Math.max(0,full-coarser);const appliedPartial=!globallyFree&&!previouslyCovered&&!coveredForCharge?Math.min(full,initialCoarser):0;if(previouslyCovered&&!globallyFree){alreadyCount++;already+=full}else if(charge>0){chargedCount++;gross+=charge;if(appliedPartial>0){partialCount++;partialCredit+=appliedPartial}entries.push({d:Number(p&&p.d||0),gross_cents:full})}else{if(appliedPartial>0){partialCount++;partialCredit+=appliedPartial}else{freeCount++}}}const discount=Math.round(gross*discountPct/100);const price=Math.max(0,gross-discount);const newCount=world?0:Math.max(0,tiles.length-alreadyCount);return{...row,new_tiles:newCount,charged_tiles:chargedCount,already_licenced_tiles:alreadyCount,partial_licence_tiles:partialCount,free_tiles:freeCount,full_price_cents:fullGross,chargeable_full_price_cents:gross,discount_cents:discount,price_cents:price,already_licenced_deduction_cents:already,already_licenced_saving_cents:already,partial_licence_credit_cents:partialCredit}}\nfunction kindLabel(row){return String(row.group_label||row.type||\"Data Pack\")}\nfunction buyHref(row){return \"/credits/region-pack-checkout?token=\"+token+\"&region_pack_id=\"+encodeURIComponent(row.id||\"\")+\"&catalog=1\"}\nfunction mapHref(row){return \"/credits/region-pack-map?token=\"+token+\"&region_pack_id=\"+encodeURIComponent(row.id||\"\")+\"&catalog=1\"}\nfunction parentLabel(row){const id=String(row&&row.id||\"\").toLowerCase();for(const [label,ids] of Object.entries(STATE_PARENT_IDS)){if(ids.has(id))return label}return \"Other\"}\nfunction sectionKey(row){const id=String(row&&row.id||\"\").toLowerCase();const group=String(row&&row.group_key||\"\").toLowerCase();const type=String(row&&row.type||\"\").toLowerCase();if(id===\"world\"||group===\"world\"||row.world)return \"world\";if(COUNTRY_LIKE_IDS.has(id))return \"countries\";if(group===\"states_provinces\")return \"states_provinces\";if(group===\"continents\")return \"continents\";if(group===\"regions\")return \"regions\";if(group===\"countries\"||type===\"country\"||type===\"admin_region\")return \"countries\";return \"regions\"}\nfunction rowHtml(row){return \"<tr>\"\n+\"<td><span class=\\\"pack-name\\\">\"+esc(row.name||\"Data Pack\")+\"</span></td>\"\n+\"<td data-label=\\\"New / Total\\\">\"+Number(row.new_tiles||0)+\" / \"+Number(row.total_tiles||0)+\"</td>\"\n+\"<td data-label=\\\"Full Price\\\">\"+fmtCents(row.full_price_cents)+\"</td>\"\n+\"<td data-label=\\\"Final Price\\\" class=\\\"price\\\">\"+fmtCents(row.price_cents)+\"</td>\"\n+\"<td data-label=\\\"Buy\\\"><a class=\\\"button\\\" href=\\\"\"+buyHref(row)+\"\\\">Buy</a></td>\"\n+\"<td data-label=\\\"Map\\\"><a class=\\\"button secondary\\\" href=\\\"\"+mapHref(row)+\"\\\">Map</a></td>\"\n+\"</tr>\"}\nfunction tableHtml(rows){if(!rows.length)return \"<div class=\\\"empty\\\">No data packs in this section.</div>\";return \"<table class=\\\"catalog-table\\\"><thead><tr><th>Data Pack</th><th>New / Total</th><th>Full Price</th><th>Final Price</th><th>Buy</th><th>Map</th></tr></thead><tbody>\"+rows.map(rowHtml).join(\"\")+\"</tbody></table>\"}\nfunction sortRows(rows){return rows.slice().sort((a,b)=>String(a.name||\"\").localeCompare(String(b.name||\"\")))}\nfunction renderSections(rows){const buckets={countries:[],regions:[],states_provinces:[],continents:[],world:[]};for(const row of rows){(buckets[sectionKey(row)]||buckets.regions).push(row)}let html=\"\";html+=\"<section class=\\\"catalog-section\\\"><h2>Countries</h2>\"+tableHtml(sortRows(buckets.countries))+\"</section>\";html+=\"<section class=\\\"catalog-section\\\"><h2>Regions</h2>\"+tableHtml(sortRows(buckets.regions))+\"</section>\";html+=\"<section class=\\\"catalog-section\\\"><h2>States / Provinces</h2>\";const stateGroups=new Map();for(const row of buckets.states_provinces){const parent=parentLabel(row);if(!stateGroups.has(parent))stateGroups.set(parent,[]);stateGroups.get(parent).push(row)}const parents=[...stateGroups.keys()].sort((a,b)=>a.localeCompare(b));if(!parents.length){html+=\"<div class=\\\"empty\\\">No state or province packs available.</div>\"}else{for(const parent of parents){html+=\"<h3 class=\\\"subsection-title\\\">\"+esc(parent)+\"</h3>\"+tableHtml(sortRows(stateGroups.get(parent)||[]))}}html+=\"</section>\";html+=\"<section class=\\\"catalog-section\\\"><h2>Continents</h2>\"+tableHtml(sortRows(buckets.continents))+\"</section>\";html+=\"<section class=\\\"catalog-section\\\"><h2>World</h2>\"+tableHtml(sortRows(buckets.world))+\"</section>\";return html}\nlet ROWS=[];\nfunction render(){const filter=String(document.getElementById(\"filter\").value||\"\").trim().toLowerCase();let rows=ROWS;if(filter){rows=ROWS.filter((row)=>String(row.name||\"\").toLowerCase().includes(filter)||String(row.group_label||\"\").toLowerCase().includes(filter)||String(row.id||\"\").toLowerCase().includes(filter)||parentLabel(row).toLowerCase().includes(filter))}document.getElementById(\"catalog\").innerHTML=renderSections(rows);document.getElementById(\"count\").textContent=rows.length+\" data packs\"}\nasync function init(){try{const res=await fetch(\"/credits/region-pack-catalog-asset?v=\"+encodeURIComponent(String(DATA.map_asset_revision||DATA.catalog_version||Date.now())),{cache:\"force-cache\"});if(!res.ok)throw new Error(\"catalog_asset_\"+res.status);const data=await res.json();ROWS=(data.products||[]).map(computeProduct);document.getElementById(\"filter\").addEventListener(\"input\",render);render()}catch(error){console.warn(\"Planetka catalog failed\",error);document.getElementById(\"count\").className=\"error small\";document.getElementById(\"count\").textContent=\"Data-pack catalog failed to load.\"}}\ninit();" }],
+  ["region-pack-map.js", { content_type: "application/javascript; charset=utf-8", body: "const DATA=window.PLANETKA_REGION_PACK_DATA||{};\nconst NS=\"http://www.w3.org/2000/svg\";\nconst fmtCents=(v)=>\"€\"+(Math.max(0,Number(v||0)||0)/100).toFixed(2);\nconst int=(v)=>Math.max(0,Math.round(Number(v||0)||0));\nfunction priceBreakdownCents(tile,discountPct){const full=int(tile.full_price_cents);const final=int(tile.price_cents);const status=String(tile.status||\"\");const already=status===\"licenced\"?full:0;const partial=status===\"partial\"?Math.min(Math.max(0,full-already),int(tile.upgrade_credit_cents)):0;const preDiscount=Math.max(0,full-already-partial);const discount=Math.max(0,preDiscount-final);const pct=Math.max(0,Number(discountPct||0)||0);const lines=[\"Full Price: \"+fmtCents(full)];if(already>0)lines.push(\"Licenced: - \"+fmtCents(already));if(partial>0)lines.push(\"Partially licenced: - \"+fmtCents(partial));if(discount>0)lines.push(\"Volume Discount (\"+pct+\"%): - \"+fmtCents(discount));lines.push(\"Final Price: \"+fmtCents(final));return lines.join(\"\\n\")}\nfunction zoomLabel(level){const list=(window.PLANETKA_MAP_ZOOM_LEVELS&&window.PLANETKA_MAP_ZOOM_LEVELS.length?window.PLANETKA_MAP_ZOOM_LEVELS:[Number(level)]).map(Number);const i=Math.max(0,list.indexOf(Number(level)));return \"Zoom \"+(i+1)+(i===0?\" - closest\":\"\")}\nconst PRICE_COEFFICIENT=Math.max(0.000001,Number(DATA.price_coefficient||1)||1);\nfunction discountShare(row){return Math.max(0,Number(row&&row.volume_discount_basis&&row.volume_discount_basis.world_land_share||0)||0)}\nfunction roundDiscount(v){return Math.max(0,Math.min(95,Math.round((Number(v||0)||0)/5)*5))}\nconst DISCOUNT_MIN=roundDiscount(DATA.region_pack_discount_min_percent||0);\nconst DISCOUNT_MAX=Math.max(DISCOUNT_MIN,roundDiscount(DATA.region_pack_discount_max_percent||75));\nconst PRODUCT_DISCOUNT_OVERRIDES=DATA.product_discount_overrides||{};\nconst DISCOUNT_SHARE_BUCKETS=Array.isArray(DATA.region_pack_discount_share_buckets)?DATA.region_pack_discount_share_buckets:[[0.40,1],[0.20,5/6],[0.10,4/6],[0.05,3/6],[0.025,2/6],[0.0125,1/6],[0,0]];\nfunction discountBucketRatio(share){for(const pair of DISCOUNT_SHARE_BUCKETS){const threshold=Number(Array.isArray(pair)?pair[0]:pair&&pair.threshold);const ratio=Number(Array.isArray(pair)?pair[1]:pair&&pair.ratio);if(Number.isFinite(threshold)&&Number.isFinite(ratio)&&share>=threshold)return Math.max(0,Math.min(1,ratio))}return 0}\nfunction productDiscountOverride(id){const raw=PRODUCT_DISCOUNT_OVERRIDES[String(id||'').toLowerCase()];const n=Number(raw);return Number.isFinite(n)?Math.max(0,Math.min(100,Math.round(n))):null}\nfunction discountPercentForRow(row){const id=String(row&&row.id||'').toLowerCase();const override=productDiscountOverride(id);if(override!==null)return override;if(id==='world')return DISCOUNT_MAX;const share=discountShare(row);if(share<=0&&row&&row.discount_percent!==undefined)return Math.max(0,Math.min(95,Number(row.discount_percent||0)||0));const ratio=discountBucketRatio(share);return roundDiscount(DISCOUNT_MIN+(DISCOUNT_MAX-DISCOUNT_MIN)*ratio)}\nconst scaleFullCents=(v)=>Math.max(0,Math.round(int(v)*PRICE_COEFFICIENT));\nconst assetCache=new Map();\nconst assetVersion=encodeURIComponent(String(DATA.map_asset_revision||DATA.catalog_version||DATA.token||Date.now()));\nconst MAP_BG=\"/credits/region-pack-map-background.jpg?v=\"+assetVersion;\nfunction mapBgHref(id){const safe=encodeURIComponent(String(id||\"\").trim());return safe?\"/credits/region-pack-map-background.jpg?region_pack_id=\"+safe+\"&v=\"+assetVersion:MAP_BG}\nconst currentToken=encodeURIComponent(DATA.token||\"\");\nconst currentPackIdEncoded=encodeURIComponent(DATA.asset_id||DATA.region_pack&&DATA.region_pack.id||\"\");\nconst currentCatalog=DATA.catalog_mode?\"&catalog=1\":\"\";\nfunction esc(value){return String(value||\"\").replace(/&/g,\"&amp;\").replace(/</g,\"&lt;\").replace(/>/g,\"&gt;\").replace(/\"/g,\"&quot;\")}\nfunction countryName(value){return typeof value===\"object\"&&value?String(value.name||value.COUNTRY||value.NAME_1||value.GID_0||\"\"):String(value||\"\")}\nconst CHINA_ADMIN_LABELS=new Set([\"anhui\",\"beijing\",\"chongqing\",\"fujian\",\"gansu\",\"guangdong\",\"guangxi\",\"guizhou\",\"hainan\",\"hebei\",\"heilongjiang\",\"henan\",\"hong kong\",\"hubei\",\"hunan\",\"jiangsu\",\"jiangxi\",\"jilin\",\"liaoning\",\"macau\",\"nei mongol\",\"ningxia hui\",\"qinghai\",\"shaanxi\",\"shandong\",\"shanghai\",\"shanxi\",\"sichuan\",\"tianjin\",\"xinjiang uygur\",\"xizang\",\"yunnan\",\"zhejiang\"]);\nconst US_ADMIN_LABELS=new Set([\"alabama\",\"alaska\",\"arizona\",\"arkansas\",\"california\",\"colorado\",\"connecticut\",\"delaware\",\"district of columbia\",\"florida\",\"georgia\",\"hawaii\",\"idaho\",\"illinois\",\"indiana\",\"iowa\",\"kansas\",\"kentucky\",\"louisiana\",\"maine\",\"maryland\",\"massachusetts\",\"michigan\",\"minnesota\",\"mississippi\",\"missouri\",\"montana\",\"nebraska\",\"nevada\",\"new hampshire\",\"new jersey\",\"new mexico\",\"new york\",\"north carolina\",\"north dakota\",\"ohio\",\"oklahoma\",\"oregon\",\"pennsylvania\",\"rhode island\",\"south carolina\",\"south dakota\",\"tennessee\",\"texas\",\"utah\",\"vermont\",\"virginia\",\"washington\",\"west virginia\",\"wisconsin\",\"wyoming\"]);\nconst CANADA_ADMIN_LABELS=new Set([\"alberta\",\"british columbia\",\"manitoba\",\"new brunswick\",\"newfoundland and labrador\",\"northwest territories\",\"nova scotia\",\"nunavut\",\"ontario\",\"prince edward island\",\"québec\",\"quebec\",\"saskatchewan\",\"yukon\"]);\nfunction currentPackId(){return String(DATA.asset_id||DATA.region_pack&&DATA.region_pack.id||\"\").trim().toLowerCase()}\nfunction collapsedIncludedLabel(key){const id=currentPackId();if(CHINA_ADMIN_LABELS.has(key))return \"China\";if((id===\"north_america\"||id===\"united_states\")&&US_ADMIN_LABELS.has(key))return \"United States\";if((id===\"north_america\"||id===\"canada\")&&CANADA_ADMIN_LABELS.has(key))return \"Canada\";return \"\"}\nfunction uniqueCountryNames(values){const seen=new Set(),out=[];for(const entry of Array.isArray(values)?values:[]){let label=countryName(entry).trim();let key=label.toLowerCase();const collapsed=collapsedIncludedLabel(key);if(collapsed){label=collapsed;key=label.toLowerCase()}if(!label||seen.has(key))continue;seen.add(key);out.push(label)}return out.sort((a,b)=>a.localeCompare(b))}\nfunction parseTileKey(key){const m=/x(\\d{3})_y(\\d{3})_z(\\d{3})_d(\\d{3})/i.exec(String(key||\"\"));return m?{key:m[0],x:Number(m[1]),y:Number(m[2]),z:Number(m[3]),d:Number(m[4])}:null}\nfunction family(parsed){return parsed?\"x\"+String(parsed.x).padStart(3,\"0\")+\"_y\"+String(parsed.y).padStart(3,\"0\")+\"_z\"+String(parsed.z).padStart(3,\"0\"):\"\"}\nfunction tileSort(a,b){const pa=parseTileKey(a.tile_key),pb=parseTileKey(b.tile_key),fa=family(pa),fb=family(pb);return fa===fb?(Number(pa&&pa.d||0)-Number(pb&&pb.d||0)):fa<fb?-1:1}\n\tfunction buildOwnedByFamily(asset){const map=new Map();const grossByKey=new Map();for(const tile of asset&&asset.tiles||[]){const p=parseTileKey(tile.tile_key);if(p)grossByKey.set(p.key,int(tile.full_price_cents||tile.gross_cents))}const source=Array.isArray(DATA.owned_tile_keys)&&DATA.owned_tile_keys.length?DATA.owned_tile_keys:(DATA.owned_tiles||[]);for(const row of source){const key=typeof row==='string'?row:row&&row.tile_key;const p=parseTileKey(key);const f=family(p);if(!p||!f)continue;if(!map.has(f))map.set(f,[]);const rowGross=typeof row==='string'?grossByKey.get(p.key):int(row&&row.gross_cents);map.get(f).push({d:p.d,gross_cents:int(rowGross)})}return map}\n\tasync function loadAsset(id){const safe=String(id||\"\").trim();if(assetCache.has(safe))return assetCache.get(safe);const res=await fetch(\"/credits/region-pack-map-asset?region_pack_id=\"+encodeURIComponent(safe)+\"&v=\"+assetVersion,{cache:\"reload\"});if(!res.ok)throw new Error(\"map_asset_\"+res.status);const asset=await res.json();assetCache.set(safe,asset);return asset}\n\tfunction rawPackGrossCents(rows){const owned=new Map();let total=0;for(const tile of rows){const p=parseTileKey(tile.tile_key);const f=family(p);const full=scaleFullCents(tile.full_price_cents||tile.gross_cents);const globallyFree=!!tile.globally_free||full<=0;if(!p||!f||globallyFree)continue;if(!owned.has(f))owned.set(f,[]);const entries=owned.get(f);const covered=entries.some((entry)=>Number(entry.d)<=Number(p.d));let coarser=0;for(const entry of entries){if(Number(entry.d)>Number(p.d))coarser=Math.max(coarser,int(entry.gross_cents))}const charge=covered?0:Math.max(0,full-coarser);if(charge>0){total+=charge;entries.push({d:Number(p.d),gross_cents:full})}}return total}\n\tfunction computeAsset(asset){const initiallyOwned=buildOwnedByFamily(asset);const owned=buildOwnedByFamily(asset);const world=!!DATA.world_full_quality_unlocked;const discountPct=discountPercentForRow(asset&&asset.region_pack||{});const rows=(asset.tiles||[]).slice().sort(tileSort);const rawFullCents=rawPackGrossCents(rows);const paid=[];let grossCents=0,alreadyCount=0,freeCount=0,alreadyDeductionCents=0,partialCount=0,partialCreditCents=0;\n\t  for(const tile of rows){const p=parseTileKey(tile.tile_key);const f=family(p);const full=scaleFullCents(tile.full_price_cents||tile.gross_cents);const globallyFree=!!tile.globally_free||full<=0;if(!owned.has(f))owned.set(f,[]);const entries=owned.get(f);const initialEntries=initiallyOwned.get(f)||[];const previouslyCovered=world||initialEntries.some((entry)=>Number(entry.d)<=Number(p&&p.d||0));const coveredForCharge=world||entries.some((entry)=>Number(entry.d)<=Number(p&&p.d||0));let coarser=0;for(const entry of entries){if(Number(entry.d)>Number(p&&p.d||0))coarser=Math.max(coarser,int(entry.gross_cents))}let initialCoarser=0;for(const entry of initialEntries){if(Number(entry.d)>Number(p&&p.d||0))initialCoarser=Math.max(initialCoarser,int(entry.gross_cents))}\n\t    const charge=globallyFree||coveredForCharge?0:Math.max(0,full-coarser);const appliedPartial=!globallyFree&&!previouslyCovered&&!coveredForCharge?Math.min(full,initialCoarser):0;let status=\"free\";if(previouslyCovered&&!globallyFree){status=\"licenced\";alreadyCount+=1;alreadyDeductionCents+=full}else if(charge>0){status=appliedPartial>0?\"partial\":\"new\";if(appliedPartial>0){partialCount+=1;partialCreditCents+=appliedPartial}grossCents+=charge;paid.push({tile,cents:charge})}else{if(appliedPartial>0){status=\"partial\";partialCount+=1;partialCreditCents+=appliedPartial}else{freeCount+=1}}\n\t    if(charge>0&&entries){entries.push({d:Number(p&&p.d||0),gross_cents:full})}\n\t    tile.x=p?p.x:null;tile.y=p?p.y:null;tile.z=p?p.z:null;tile.d=p?p.d:null;const lonMin=Number(tile.lon_min),lonMax=Number(tile.lon_max),latMin=Number(tile.lat_min),latMax=Number(tile.lat_max);tile.lon_min=Number.isFinite(lonMin)?lonMin:(p?p.x-180:null);tile.lon_max=Number.isFinite(lonMax)?lonMax:(p?p.x-180+p.z:null);tile.lat_min=Number.isFinite(latMin)?latMin:(p?p.y-90:null);tile.lat_max=Number.isFinite(latMax)?latMax:(p?p.y-90+p.z:null);tile.status=status;tile.charge_cents=charge;tile.upgrade_credit_cents=appliedPartial;tile.partially_licenced=status===\"partial\";tile.price_cents=0;tile.full_price_cents=full;tile.full_price_eur=full/100;tile.price_eur=0;\n\t  }\n\t  const discountCents=Math.round(grossCents*discountPct/100);const targetCents=Math.max(0,grossCents-discountCents);let allocated=0;const alloc=paid.map((entry,index)=>{const raw=grossCents>0?(entry.cents*targetCents/grossCents):0;const floor=Math.floor(raw);allocated+=floor;return{entry,index,cents:floor,remainder:raw-floor}}).sort((a,b)=>b.remainder!==a.remainder?b.remainder-a.remainder:a.index-b.index);let rem=Math.max(0,targetCents-allocated);for(const item of alloc){if(rem<=0)break;item.cents+=1;rem-=1}for(const item of alloc){item.entry.tile.price_cents=item.cents;item.entry.tile.price_eur=item.cents/100;if(item.cents<=0&&item.entry.tile.status!==\"partial\")item.entry.tile.status=\"free\"}\n\t  const levels=Array.from(new Set(rows.map((row)=>Number(row.z)).filter(Number.isFinite))).sort((a,b)=>a-b);const unlicencedCount=world?0:Math.max(0,rows.length-alreadyCount);return{asset,rows,levels,summary:{new_tiles:unlicencedCount,charged_tiles:paid.filter((entry)=>entry.tile.price_cents>0).length,total_tiles:rows.length,already_licenced_tiles:alreadyCount,partial_licence_tiles:partialCount,free_tiles:freeCount,full_price_cents:rawFullCents,discount_percent:discountPct,discount_cents:discountCents,price_cents:targetCents,already_licenced_deduction_cents:alreadyDeductionCents,already_licenced_saving_cents:alreadyDeductionCents,partial_licence_credit_cents:partialCreditCents}}}\n\tfunction currentBuyHref(){return currentPackIdEncoded?\"/credits/region-pack-checkout?token=\"+currentToken+\"&region_pack_id=\"+currentPackIdEncoded+currentCatalog:\"\"}\n\tfunction renderCards(vm){const s=DATA.summary||vm.summary;const partialTiles=Number(s.partial_licence_tiles||0);const alreadyTiles=Number(s.already_licenced_tiles||0)+partialTiles;const alreadyValue=int(s.already_licenced_deduction_cents)+int(s.partial_licence_credit_cents);const discountValue=int(s.discount_cents);const newTiles=Math.max(0,Number(s.new_tiles||0)-partialTiles);const cards=[[\"New Tiles / Total Tiles\",newTiles+\" / \"+Number(s.total_tiles||0)],[\"Full Price\",fmtCents(s.full_price_cents)]];if(alreadyValue>0)cards.push([\"Already Licenced\",alreadyTiles+\" tiles (-\"+fmtCents(alreadyValue)+\")\"]);if(discountValue>0)cards.push([\"Volume Discount\",Number(s.discount_percent||0)+\"% (-\"+fmtCents(discountValue)+\")\"]);const buy=currentBuyHref()?\"<a class=\\\"button buy-now\\\" href=\\\"\"+currentBuyHref()+\"\\\">\"+(int(s.price_cents)>0?\"Buy Now\":\"Licence Now\")+\"</a>\":\"\";cards.push([\"Final Price\",fmtCents(s.price_cents),buy]);document.getElementById(\"cards\").innerHTML=cards.map((c)=>\"<div class=\\\"card \"+(c[0]===\"Final Price\"?\"final-price\":\"\")+\"\\\"><span>\"+esc(c[0])+\"</span><b>\"+esc(c[1])+\"</b>\"+(c[2]||\"\")+\"</div>\").join(\"\")}\nfunction frameForBounds(rawBounds,width,minHeight,maxHeight,padSize){const b=rawBounds||{min_lon:-10,min_lat:35,max_lon:30,max_lat:48};const minLon=Number.isFinite(Number(b.min_lon))?Number(b.min_lon):-10,minLat=Number.isFinite(Number(b.min_lat))?Number(b.min_lat):35,maxLon=Number.isFinite(Number(b.max_lon))?Number(b.max_lon):30,maxLat=Number.isFinite(Number(b.max_lat))?Number(b.max_lat):48;const lonSpan=Math.max(1e-6,maxLon-minLon),latSpan=Math.max(1e-6,maxLat-minLat),innerW=Math.max(1,width-padSize*2);const naturalH=Math.round(latSpan*(innerW/lonSpan))+padSize*2,height=Math.max(minHeight,Math.min(maxHeight,naturalH)),innerH=Math.max(1,height-padSize*2),scale=Math.min(innerW/lonSpan,innerH/latSpan),usedW=lonSpan*scale,usedH=latSpan*scale;return{bounds:{min_lon:minLon,min_lat:minLat,max_lon:maxLon,max_lat:maxLat},width,height,scale,ox:(width-usedW)/2,oy:(height-usedH)/2}}\nlet currentFrame=frameForBounds({min_lon:-10,min_lat:35,max_lon:30,max_lat:48},1000,320,820,20),W=currentFrame.width,H=currentFrame.height;\nfunction setBounds(bounds){currentFrame=frameForBounds(bounds||currentFrame.bounds,1000,320,820,20);W=currentFrame.width;H=currentFrame.height}\nfunction xy(lon,lat){return [currentFrame.ox+(lon-currentFrame.bounds.min_lon)*currentFrame.scale,currentFrame.oy+(currentFrame.bounds.max_lat-lat)*currentFrame.scale]}\nfunction el(name,attrs){const node=document.createElementNS(NS,name);for(const k in attrs||{})node.setAttribute(k,String(attrs[k]));return node}\nfunction addMapBackground(svg,project,width,height,id,bounds){svg.appendChild(el(\"rect\",{x:0,y:0,width,height,fill:\"#0d1118\"}));const safeId=String(id||\"\").trim();if(safeId&&safeId!==\"scene\"){svg.appendChild(el(\"image\",{href:mapBgHref(safeId),x:0,y:0,width,height,preserveAspectRatio:\"none\",opacity:\"1.0\"}))}else{const tl=project(-180,90),br=project(180,-90);svg.appendChild(el(\"image\",{href:MAP_BG,x:tl[0],y:tl[1],width:br[0]-tl[0],height:br[1]-tl[1],preserveAspectRatio:\"none\",opacity:\"1.0\"}))}svg.appendChild(el(\"rect\",{x:0,y:0,width,height,fill:\"#05070a\",opacity:\"0.0\"}))}\nfunction pathFor(poly){return(poly||[]).map((pt,i)=>{const p=xy(pt[0],pt[1]);return(i?\"L\":\"M\")+p[0].toFixed(2)+\" \"+p[1].toFixed(2)}).join(\" \")}\nfunction renderMap(vm,level){const svg=document.getElementById(\"map\");svg.replaceChildren();svg.setAttribute(\"viewBox\",\"0 0 \"+W+\" \"+H);svg.setAttribute(\"preserveAspectRatio\",\"xMidYMid meet\");addMapBackground(svg,xy,W,H,vm.asset&&vm.asset.region_pack&&vm.asset.region_pack.id,vm.asset&&vm.asset.bounds);for(const outline of vm.asset.outlines||[]){for(const poly of outline.polygons||[]){const p=el(\"path\",{d:pathFor(poly),fill:\"none\",stroke:\"var(--country-line)\",\"stroke-width\":\"0.7\",opacity:\"0.72\"});const t=el(\"title\",{});t.textContent=outline.name;p.appendChild(t);svg.appendChild(p)}}const rows=vm.rows.filter((row)=>Number(row.z)===Number(level));let chargedCount=0,licencedCount=0,partialCount=0,freeCount=0,price=0;for(const tile of rows){const a=xy(tile.lon_min,tile.lat_max),b=xy(tile.lon_max,tile.lat_min);const cls=tile.status===\"new\"?\"var(--new)\":(tile.status===\"partial\"?\"var(--partial)\":(tile.status===\"licenced\"?\"var(--licenced)\":\"var(--free)\"));if(tile.status===\"new\"||tile.status===\"partial\"){chargedCount++;price+=int(tile.price_cents);if(tile.status===\"partial\")partialCount++}else if(tile.status===\"licenced\"){licencedCount++}else{freeCount++}const r=el(\"rect\",{x:a[0],y:a[1],width:Math.max(1,b[0]-a[0]),height:Math.max(1,b[1]-a[1]),fill:cls,stroke:\"#fff\",\"stroke-width\":\"0.45\",opacity:(tile.status===\"new\"||tile.status===\"partial\")?\"0.58\":\"0.43\"});const title=el(\"title\",{});const statusText=tile.status===\"partial\"?\"partially licenced (upgrade price only)\":tile.status;let hover=tile.tile_key+\"\\nLand: \"+Number(tile.billable_land_km2||0).toFixed(2)+\" km²\\nStatus: \"+statusText+\"\\n\"+priceBreakdownCents(tile,vm.summary&&vm.summary.discount_percent||0);title.textContent=hover;r.appendChild(title);svg.appendChild(r)}const licenceBenefitCount=licencedCount+partialCount;const newCount=Math.max(0,rows.length-licenceBenefitCount);document.getElementById(\"levelSummary\").textContent=rows.length+\" tiles at \"+zoomLabel(level)+\" · new \"+newCount+\" · charged \"+chargedCount+\" · already licenced \"+licenceBenefitCount+\" · free \"+freeCount+\" · current zoom price \"+fmtCents(price)}\nfunction miniFrame(bounds){return frameForBounds(bounds,1000,320,820,20)}\nfunction miniXY(frame,lon,lat){return[frame.ox+(lon-frame.bounds.min_lon)*frame.scale,frame.oy+(frame.bounds.max_lat-lat)*frame.scale]}\nfunction renderMiniMap(svg,vm){const b=vm.asset.bounds||{min_lon:-10,min_lat:35,max_lon:30,max_lat:48};const frame=miniFrame(b),w=frame.width,h=frame.height;svg.setAttribute(\"viewBox\",\"0 0 \"+w+\" \"+h);svg.style.aspectRatio=w+\" / \"+h;svg.setAttribute(\"preserveAspectRatio\",\"xMidYMid meet\");svg.replaceChildren();const bgId=vm&&vm.asset&&vm.asset.region_pack&&vm.asset.region_pack.id||\"\";addMapBackground(svg,(lon,lat)=>miniXY(frame,lon,lat),w,h,bgId,b);const first=vm.levels.length?vm.levels[0]:null;for(const tile of vm.rows.filter((row)=>Number(row.z)===Number(first))){const a=miniXY(frame,tile.lon_min,tile.lat_max),c=miniXY(frame,tile.lon_max,tile.lat_min);const cls=tile.status===\"new\"?\"var(--new)\":(tile.status===\"partial\"?\"var(--partial)\":(tile.status===\"licenced\"?\"var(--licenced)\":\"var(--free)\"));svg.appendChild(el(\"rect\",{x:a[0],y:a[1],width:Math.max(1,c[0]-a[0]),height:Math.max(1,c[1]-a[1]),fill:cls,stroke:\"#fff\",\"stroke-width\":\"0.5\",opacity:(tile.status===\"new\"||tile.status===\"partial\")?\"0.58\":\"0.43\"}))}}\nasync function renderUpsells(asset){\nconst serverUpsells=Array.isArray(DATA.upsells)?DATA.upsells:[];\nconst serverById=new Map(serverUpsells.map((row)=>[String(row&&row.asset_id||row&&row.region_pack&&row.region_pack.id||\"\").trim().toLowerCase(),row]));\nconst ids=Array.isArray(DATA.similar_pack_ids)?DATA.similar_pack_ids:(serverUpsells.length?serverUpsells.map((row)=>row.asset_id):(Array.isArray(asset.upsell_ids)?asset.upsell_ids:[]));\nconst grid=document.getElementById(\"upsellGrid\");if(!grid||!ids.length)return;\nconst token=encodeURIComponent(DATA.token||\"\");const catalog=\"&catalog=1\";\nfor(const idRaw of ids){try{\nconst upAsset=await loadAsset(idRaw);\nconst vm=computeAsset(upAsset);\nconst serverCard=serverById.get(String(idRaw||\"\").trim().toLowerCase())||{};\nconst summary=serverCard.summary||vm.summary;\nif(int(summary.price_cents)<=0&&Number(summary.charged_tiles||0)<=0)continue;\nconst pack=serverCard.region_pack||upAsset.region_pack||{};\nconst id=encodeURIComponent(pack.id||upAsset.region_pack&&upAsset.region_pack.id||idRaw);\nconst div=document.createElement(\"div\");div.className=\"upsell\";\nconst title=document.createElement(\"h3\");title.textContent=pack.name||upAsset.region_pack&&upAsset.region_pack.name||\"Region Pack\";div.appendChild(title);\nconst map=document.createElementNS(NS,\"svg\");div.appendChild(map);renderMiniMap(map,vm);\nconst meta=document.createElement(\"p\");meta.className=\"muted small\";\nconst alreadyValue=int(summary.already_licenced_deduction_cents)+int(summary.partial_licence_credit_cents);\nconst bits=[\"Full \"+fmtCents(summary.full_price_cents)];\nif(alreadyValue>0)bits.push(\"Already -\"+fmtCents(alreadyValue));\nif(int(summary.discount_cents)>0)bits.push(\"Discount \"+Number(summary.discount_percent||0)+\"% (-\"+fmtCents(summary.discount_cents)+\")\");\nbits.push(\"Final \"+fmtCents(summary.price_cents));meta.textContent=bits.join(\" · \" );div.appendChild(meta);\nconst checkout=document.createElement(\"a\");checkout.className=\"button\";checkout.href=\"/credits/region-pack-checkout?token=\"+token+\"&region_pack_id=\"+id+catalog;checkout.textContent=\"Buy \"+(pack.name||upAsset.region_pack&&upAsset.region_pack.name||\"Pack\")+\" (\"+fmtCents(summary.price_cents)+\")\";div.appendChild(checkout);\nconst detail=document.createElement(\"a\");detail.className=\"button secondary\";detail.href=\"/credits/region-pack-map?token=\"+token+\"&region_pack_id=\"+id+catalog;detail.textContent=\"View map\";div.appendChild(detail);\ngrid.appendChild(div);document.getElementById(\"upsellsPanel\").style.display=\"\";\n}catch(error){console.warn(\"Planetka upsell map failed\",idRaw,error)}}}\nasync function init(){try{const asset=await loadAsset(DATA.asset_id);const titlePrefix=String(DATA.title_prefix||DATA.success&&DATA.success.context_title_prefix||\"\").trim();document.getElementById(\"pageTitle\").textContent=(titlePrefix?titlePrefix+\": \":\"\")+(asset.region_pack.name||\"Region Pack\")+\" Full Quality Pack\";const vm=computeAsset(asset);renderCards(vm);setBounds(asset.bounds);const countries=uniqueCountryNames(asset.included_countries);if(countries.length){document.getElementById(\"countries\").innerHTML=countries.map((c)=>\"<div>\"+esc(c)+\"</div>\").join(\"\");document.getElementById(\"countriesPanel\").style.display=\"\"}const select=document.getElementById(\"levelSelect\");select.replaceChildren();const levels=vm.levels.length?vm.levels:[1];window.PLANETKA_MAP_ZOOM_LEVELS=levels;for(const z of levels){const o=document.createElement(\"option\");o.value=String(z);o.textContent=zoomLabel(z);select.appendChild(o)}select.addEventListener(\"change\",()=>renderMap(vm,Number(select.value)));renderMap(vm,Number(select.value||levels[0]));document.getElementById(\"mapStatus\").textContent=\"Map loaded.\";renderUpsells(asset)}catch(error){console.warn(\"Planetka region-pack map failed\",error);document.getElementById(\"mapStatus\").className=\"error small\";document.getElementById(\"mapStatus\").textContent=\"Map failed to load. Please reopen this page from Blender.\"}}\ninit();" }],
 ]);
 
 export function handleCreditRegionPackPageAsset(request, env, deps) {
@@ -1755,9 +1777,107 @@ function ownedTilePayloadRows(ownedRows) {
     .filter(Boolean);
 }
 
+function regionProductContainsOwnedFamily(product, parsedOwnedTile, cache = {}) {
+  if (!product || !parsedOwnedTile) {
+    return false;
+  }
+  const dLevels = paidDLevelsForRegionZ(parsedOwnedTile.z);
+  const paidD = dLevels.length ? dLevels[0] : 0;
+  if (!paidD) {
+    return false;
+  }
+  const productBbox = Array.isArray(product && product.bbox) ? product.bbox : null;
+  if (productBbox && !bboxIntersects(productBbox, parsedTileBbox(parsedOwnedTile))) {
+    return false;
+  }
+  const productId = String(product && product.id || "").trim();
+  if (!productId) {
+    return false;
+  }
+  // Generated product tile-key lists are complete for every non-world pack.
+  // Use the direct set here instead of recursive child-product membership;
+  // this route runs for every owned tile when pricing large packs.
+  return regionProductDirectTileSet(productId, cache)
+    .has(regionTileKey(parsedOwnedTile.x, parsedOwnedTile.y, parsedOwnedTile.z, paidD));
+}
+
+function ownedRowsForRegionMapPayload(ownedRows, products = []) {
+  const rows = Array.isArray(ownedRows) ? ownedRows : [];
+  if (!rows.length) {
+    return [];
+  }
+  const relevantProducts = (Array.isArray(products) ? products : [])
+    .filter((product) => product && typeof product === "object");
+  if (!relevantProducts.length) {
+    return [];
+  }
+  const membershipCache = { directTileSets: new Map(), membership: new Map() };
+  return rows.filter((row) => {
+    const parsed = parseTileKey(row && row.tile_key || "");
+    if (!parsed) {
+      return false;
+    }
+    return relevantProducts.some((product) => regionProductContainsOwnedFamily(product, parsed, membershipCache));
+  });
+}
+
+function ownedRowsForRegionMapPayloadFromFamilies(ownedByFamily, product) {
+  if (!(ownedByFamily instanceof Map) || ownedByFamily.size <= 0 || !product) {
+    return [];
+  }
+  const rows = [];
+  const seen = new Set();
+  const families = new Set();
+  for (const key of regionProductTileKeys(product)) {
+    const family = tileFamilyKey(parseTileKey(key));
+    if (family) {
+      families.add(family);
+    }
+  }
+  for (const family of families) {
+    const entries = safeOwnedEntriesForFamily(ownedByFamily, family);
+    for (const entry of entries) {
+      const key = normalizeTileKey(entry && entry.key || "");
+      if (!key || seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      rows.push({ tile_key: key });
+    }
+  }
+  return rows;
+}
+
 function regionPackStaticMapPayload(product, token, account, ownedRows, options = {}) {
   const success = options && options.success && typeof options.success === "object" ? options.success : null;
   const pricingSettings = activePricingSettings();
+  const estimate = options && options.estimate && typeof options.estimate === "object" ? options.estimate : null;
+  const upsellProducts = [];
+  const upsells = Array.isArray(options && options.upsells)
+    ? options.upsells
+      .map((entry) => {
+        const upsellProduct = entry && entry.product || null;
+        const upsellEstimate = entry && entry.estimate || null;
+        if (!upsellProduct || !upsellEstimate || upsellEstimate.error) {
+          return null;
+        }
+        upsellProducts.push(upsellProduct);
+        return {
+          region_pack: regionProductPublicPayload(upsellProduct),
+          asset_id: String(upsellProduct && upsellProduct.id || ""),
+          summary: buildCanonicalRegionPackSummary(upsellProduct, upsellEstimate),
+        };
+      })
+      .filter(Boolean)
+    : [];
+  const similarPackIds = upsells.length
+    ? upsells.map((entry) => String(entry && entry.asset_id || "").trim()).filter(Boolean)
+    : relatedRegionProducts(product, 6)
+      .map((candidate) => String(candidate && candidate.id || "").trim())
+      .filter(Boolean);
+  const relevantOwnedRows = options && options.ownedByFamily
+    ? ownedRowsForRegionMapPayloadFromFamilies(options.ownedByFamily, product)
+    : ownedRowsForRegionMapPayload(ownedRows, [product, ...upsellProducts]);
   return {
     ok: true,
     static_asset_mode: true,
@@ -1772,10 +1892,11 @@ function regionPackStaticMapPayload(product, token, account, ownedRows, options 
     catalog_mode: Boolean(options && options.catalogMode),
     asset_id: String(product && product.id || ""),
     region_pack: regionProductPublicPayload(product),
-    similar_pack_ids: relatedRegionProducts(product, 6)
-      .map((candidate) => String(candidate && candidate.id || "").trim())
-      .filter(Boolean),
-    owned_tiles: ownedTilePayloadRows(ownedRows),
+    summary: estimate && !estimate.error ? buildCanonicalRegionPackSummary(product, estimate) : null,
+    similar_pack_ids: similarPackIds,
+    upsells,
+    owned_tiles: [],
+    owned_tile_keys: ownedTilePayloadRows(relevantOwnedRows).map((row) => row.tile_key).filter(Boolean),
     world_full_quality_unlocked: isWorldFullQualityUnlocked(account),
     title_prefix: String(options && options.titlePrefix || success && success.context_title_prefix || "").trim(),
     success,
@@ -2331,6 +2452,11 @@ function relatedSimilarRegionProducts(product, limit = 3) {
         return false;
       }
       if (currentIsCountryOption) {
+        const candidateBbox = candidate && candidate.bbox || [];
+        const distance = bboxDistanceDegrees(currentBbox, candidateBbox);
+        if (!Number.isFinite(distance) || distance > REGION_SIMILAR_COUNTRY_MAX_DISTANCE_DEG) {
+          return false;
+        }
         return isCountryOptionRegionProduct(candidate)
           && regionProductsShareZ001Footprint(product, candidate, footprintCache);
       }
@@ -2372,7 +2498,7 @@ function relatedRegionProducts(product, limit = 6) {
     result.push(candidate);
   };
   const isCountryOptionPage = isCountryOptionRegionProduct(product) && currentRank !== 3;
-  const similarLimit = currentRank === 1 || isCountryOptionPage ? 0 : 3;
+  const similarLimit = currentRank === 1 || isCountryOptionPage ? 8 : 3;
   for (const candidate of relatedSimilarRegionProducts(product, similarLimit)) {
     add(candidate);
   }
@@ -2434,8 +2560,13 @@ function regionProductTileKeys(product, seenProductIds = new Set()) {
   }
   const finish = (keys) => {
     const safeKeys = normalizeTileKeys(keys || []);
-    if (useCache) {
-      REGION_PRODUCT_TILE_KEYS_CACHE.set(productId, safeKeys);
+    if (useCache && safeKeys.length <= REGION_PRODUCT_TILE_KEYS_CACHE_MAX_KEYS) {
+      boundedCacheSet(
+        REGION_PRODUCT_TILE_KEYS_CACHE,
+        productId,
+        safeKeys,
+        REGION_PRODUCT_TILE_KEYS_CACHE_MAX,
+      );
     }
     return safeKeys.slice();
   };
@@ -2531,8 +2662,13 @@ function regionProductSortedTileKeys(product) {
     return REGION_PRODUCT_SORTED_TILE_KEYS_CACHE.get(productId).slice();
   }
   const keys = regionProductTileKeys(product).sort(compareRegionTileKeys);
-  if (productId) {
-    REGION_PRODUCT_SORTED_TILE_KEYS_CACHE.set(productId, keys);
+  if (productId && keys.length <= REGION_PRODUCT_TILE_KEYS_CACHE_MAX_KEYS) {
+    boundedCacheSet(
+      REGION_PRODUCT_SORTED_TILE_KEYS_CACHE,
+      productId,
+      keys,
+      REGION_PRODUCT_SORTED_TILE_KEYS_CACHE_MAX,
+    );
   }
   return keys.slice();
 }
@@ -2617,74 +2753,34 @@ function estimateRegionPackFamilyRows(rows, ownedEntries = []) {
   };
 }
 
-function regionProductStaticModel(product) {
-  if (!product || typeof product !== "object") {
-    return null;
+function regionProductOwnedFamilyRows(product, ownedByFamily, options = {}) {
+  if (!product || !(ownedByFamily instanceof Map) || ownedByFamily.size <= 0) {
+    return new Map();
   }
-  const productId = String(product.id || "").trim();
-  const cacheKey = `${productId || "anon"}|${fullQualityPriceCoefficient().toFixed(6)}`;
-  if (productId && REGION_PRODUCT_STATIC_MODEL_CACHE.has(cacheKey)) {
-    return REGION_PRODUCT_STATIC_MODEL_CACHE.get(cacheKey);
-  }
-
-  const rows = [];
-  const familyRows = new Map();
+  const families = new Map();
+  const seenFamilies = new Set();
   for (const tileKey of regionProductSortedTileKeys(product)) {
     const parsed = parseTileKey(tileKey);
-    const family = tileFamilyKey(parsed);
-    if (!parsed || !family) {
+    const productFamily = tileFamilyKey(parsed);
+    if (!parsed || !productFamily || seenFamilies.has(productFamily) || !ownedByFamily.has(productFamily)) {
       continue;
     }
+    seenFamilies.add(productFamily);
     const grossCents = generatedTileGrossCents(tileKey);
     const row = {
       key: tileKey,
       parsed,
-      family,
+      family: productFamily,
       gross_cents: grossCents,
       base_gross_cents: generatedTileBaseGrossCents(tileKey),
       globally_free: Boolean(isFreeCreditTileKey(tileKey) || grossCents <= 0),
     };
-    rows.push(row);
-    if (!familyRows.has(family)) {
-      familyRows.set(family, []);
+    if (!families.has(productFamily)) {
+      families.set(productFamily, []);
     }
-    familyRows.get(family).push(row);
+    families.get(productFamily).push(row);
   }
-
-  const families = [];
-  let grossCents = 0;
-  let paidTileCount = 0;
-  let freeTileCount = 0;
-  for (const [family, familyTileRows] of familyRows.entries()) {
-    const staticEstimate = estimateRegionPackFamilyRows(familyTileRows, []);
-    grossCents += staticEstimate.gross_cents;
-    paidTileCount += staticEstimate.paid_tile_count;
-    freeTileCount += staticEstimate.free_tile_count;
-    families.push({
-      family,
-      rows: familyTileRows,
-      static_gross_cents: staticEstimate.gross_cents,
-      static_paid_tile_count: staticEstimate.paid_tile_count,
-      static_free_tile_count: staticEstimate.free_tile_count,
-      static_already_licenced_count: staticEstimate.already_licenced_count,
-      static_already_licenced_gross_cents: staticEstimate.already_licenced_gross_cents,
-    });
-  }
-
-  const model = {
-    product_id: productId,
-    coefficient: fullQualityPriceCoefficient(),
-    rows,
-    families,
-    gross_cents: Math.max(0, Number.parseInt(grossCents || 0, 10) || 0),
-    paid_tile_count: paidTileCount,
-    free_tile_count: freeTileCount,
-    tile_count: rows.length,
-  };
-  if (productId) {
-    REGION_PRODUCT_STATIC_MODEL_CACHE.set(cacheKey, model);
-  }
-  return model;
+  return families;
 }
 
 function tileFamilyFromKey(tileKey) {
@@ -2933,36 +3029,65 @@ function estimateRegionPackSummaryWithOwned(product, account, ownedByFamily, opt
       tiles: [],
     };
   }
-  const model = regionProductStaticModel(product);
-  if (!model) {
-    return { error: "missing_region_pack_static_model" };
+  const ownedFamilyRows = regionProductOwnedFamilyRows(product, ownedByFamily, options);
+  if (!ownedFamilyRows.size) {
+    const amounts = discountedRegionPackAmount(summary.gross_eur, discountPercent);
+    return {
+      ok: true,
+      summary_estimate: true,
+      static_catalog_estimate: true,
+      no_owned_family_overlap: true,
+      region_pack: regionProductPublicPayload(product),
+      region_pack_id: String(product.id || ""),
+      region_pack_name: String(product.name || ""),
+      catalog_version: REGION_PACK_CATALOG_VERSION,
+      discount_percent: discountPercent,
+      gross_eur: amounts.gross,
+      gross_price_eur: amounts.gross,
+      discount_eur: amounts.discount,
+      already_licenced_gross_eur: 0,
+      already_licenced_saving_eur: 0,
+      credits: amounts.price,
+      price_eur: amounts.price,
+      paid_tile_count: summary.paid_tile_count,
+      free_tile_count: summary.free_tile_count,
+      tile_count: summary.tile_count,
+      unlicenced_tile_count: summary.tile_count,
+      charged_tile_count: summary.paid_tile_count,
+      new_tile_count: summary.paid_tile_count,
+      new_tiles: [],
+      excluded_tiles: [],
+      integrity_warnings: [],
+      metadata_missing_tile_keys: [],
+      tiles: [],
+    };
   }
   let alreadyLicencedCount = 0;
-  let grossCents = 0;
+  let grossCents = Math.max(0, Number.parseInt(summary.gross_cents || 0, 10) || 0);
   let alreadyLicencedGrossCents = 0;
   let partialLicenceCount = 0;
   let partialLicenceCreditCents = 0;
-  let paidTileCount = 0;
-  let freeTileCount = 0;
+  let paidTileCount = Math.max(0, Number.parseInt(summary.paid_tile_count || 0, 10) || 0);
+  let freeTileCount = Math.max(0, Number.parseInt(summary.free_tile_count || 0, 10) || 0);
 
-  for (const familyModel of model.families || []) {
-    const family = String(familyModel && familyModel.family || "");
+  for (const [family, familyRows] of ownedFamilyRows.entries()) {
     const ownedEntries = safeOwnedEntriesForFamily(ownedByFamily, family);
     if (!ownedEntries.length) {
-      grossCents += Math.max(0, Number.parseInt(familyModel && familyModel.static_gross_cents || 0, 10) || 0);
-      paidTileCount += Math.max(0, Number.parseInt(familyModel && familyModel.static_paid_tile_count || 0, 10) || 0);
-      freeTileCount += Math.max(0, Number.parseInt(familyModel && familyModel.static_free_tile_count || 0, 10) || 0);
       continue;
     }
-    const familyEstimate = estimateRegionPackFamilyRows(familyModel.rows, ownedEntries);
-    grossCents += familyEstimate.gross_cents;
+    const staticEstimate = estimateRegionPackFamilyRows(familyRows, []);
+    const familyEstimate = estimateRegionPackFamilyRows(familyRows, ownedEntries);
+    grossCents += familyEstimate.gross_cents - staticEstimate.gross_cents;
     alreadyLicencedCount += familyEstimate.already_licenced_count;
     alreadyLicencedGrossCents += familyEstimate.already_licenced_gross_cents;
     partialLicenceCount += Math.max(0, Number.parseInt(familyEstimate.partial_licence_count || 0, 10) || 0);
     partialLicenceCreditCents += Math.max(0, Number.parseInt(familyEstimate.partial_licence_credit_cents || 0, 10) || 0);
-    paidTileCount += familyEstimate.paid_tile_count;
-    freeTileCount += familyEstimate.free_tile_count;
+    paidTileCount += familyEstimate.paid_tile_count - staticEstimate.paid_tile_count;
+    freeTileCount += familyEstimate.free_tile_count - staticEstimate.free_tile_count;
   }
+  grossCents = Math.max(0, Math.round(grossCents));
+  paidTileCount = Math.max(0, Math.round(paidTileCount));
+  freeTileCount = Math.max(0, Math.round(freeTileCount));
 
   const grossEur = normalizeCreditAmount(grossCents / 100.0);
   const amounts = discountedRegionPackAmount(grossEur, discountPercent);
@@ -3001,11 +3126,85 @@ function estimateRegionPackSummaryWithOwned(product, account, ownedByFamily, opt
   };
 }
 
+function regionPackEstimateCacheKey(product, account) {
+  const userId = String(account && account.user_id || account && account.id || "").trim();
+  const productId = String(product && product.id || "").trim().toLowerCase();
+  if (!userId || !productId) {
+    return "";
+  }
+  return [
+    userId,
+    productId,
+    REGION_PACK_CATALOG_VERSION,
+    pricingSettingsCacheKey(),
+    accountEntitlementVersion(account),
+  ].join("|");
+}
+
+function estimateAlreadyLicencedTileCount(estimate) {
+  if (!estimate || typeof estimate !== "object") {
+    return 0;
+  }
+  if (Object.prototype.hasOwnProperty.call(estimate, "already_licenced_tile_count")) {
+    return Math.max(0, Number.parseInt(estimate.already_licenced_tile_count || 0, 10) || 0);
+  }
+  return Array.isArray(estimate.excluded_tiles) ? estimate.excluded_tiles.length : 0;
+}
+
+function compactRegionPackSummaryEstimate(estimate) {
+  if (!estimate || typeof estimate !== "object") {
+    return estimate;
+  }
+  const alreadyLicencedCount = estimateAlreadyLicencedTileCount(estimate);
+  const compact = {
+    ...estimate,
+    already_licenced_tile_count: alreadyLicencedCount,
+  };
+  delete compact.excluded_tiles;
+  delete compact.new_tiles;
+  delete compact.tiles;
+  return compact;
+}
+
+function estimateRegionPackSummaryCached(product, account, ownedByFamily, options = {}) {
+  const useCache = !(options && options.cache === false);
+  const cacheKey = useCache ? regionPackEstimateCacheKey(product, account) : "";
+  const nowMs = monotonicNowMs();
+  if (cacheKey) {
+    const cached = REGION_PACK_ESTIMATE_CACHE.get(cacheKey);
+    if (
+      cached
+      && (nowMs - Number(cached.cached_at_ms || 0)) <= REGION_PACK_ESTIMATE_CACHE_TTL_MS
+      && cached.estimate
+    ) {
+      return {
+        ...cached.estimate,
+        estimate_cache_hit: true,
+      };
+    }
+  }
+  const estimate = compactRegionPackSummaryEstimate(
+    estimateRegionPackSummaryWithOwned(product, account, ownedByFamily, options),
+  );
+  if (cacheKey && estimate && !estimate.error) {
+    boundedCacheSet(
+      REGION_PACK_ESTIMATE_CACHE,
+      cacheKey,
+      {
+        estimate,
+        cached_at_ms: nowMs,
+      },
+      REGION_PACK_ESTIMATE_CACHE_MAX,
+    );
+  }
+  return estimate;
+}
+
 async function estimateRegionPackSummary(db, userId, product, deps) {
   await deps.ensureCreditTables(db);
   const account = await ensureFreshCreditAccountForUser(db, userId, deps);
-  const ownedSummary = await ownedEntitlementSummaryForUser(db, userId, deps, { account });
-  return estimateRegionPackSummaryWithOwned(
+  const ownedSummary = await ownedEntitlementSummaryForUser(db, userId, deps, { account, includeRows: false });
+  return estimateRegionPackSummaryCached(
     product,
     account,
     ownedSummary.ownedByFamily,
@@ -3562,7 +3761,7 @@ function buildRegionPackUpsellCardData(product, estimate, options = {}) {
       new_tiles: estimateUnlicencedTileCount(estimate),
       charged_tiles: estimateChargedTileCount(estimate),
       total_tiles: Math.max(0, Number.parseInt(estimate && estimate.tile_count || 0, 10) || 0),
-      already_licenced_tiles: Math.max(0, Array.isArray(estimate && estimate.excluded_tiles) ? estimate.excluded_tiles.length : 0),
+      already_licenced_tiles: estimateAlreadyLicencedTileCount(estimate),
       full_price_eur: fullPriceEur,
       already_licenced_deduction_eur: normalizeCreditAmount(estimate && estimate.already_licenced_gross_eur),
       partial_licence_tiles: Math.max(0, Number.parseInt(estimate && estimate.partial_licence_tile_count || 0, 10) || 0),
@@ -3571,6 +3770,36 @@ function buildRegionPackUpsellCardData(product, estimate, options = {}) {
       discount_eur: normalizeCreditAmount(estimate && estimate.discount_eur),
       price_eur: normalizeCreditAmount(estimate && estimate.price_eur),
     },
+  };
+}
+
+function buildCanonicalRegionPackSummary(product, estimate) {
+  const productSummary = regionProductPricingSummary(product) || {};
+  const partialLicenceTiles = Math.max(0, Number.parseInt(estimate && estimate.partial_licence_tile_count || 0, 10) || 0);
+  const excludedTileCount = estimateAlreadyLicencedTileCount(estimate);
+  const fullPriceEur = normalizeCreditAmount(productSummary.gross_eur);
+  const alreadyLicencedEur = normalizeCreditAmount(estimate && estimate.already_licenced_gross_eur);
+  const partialLicenceEur = normalizeCreditAmount(estimate && estimate.partial_licence_credit_eur);
+  const discountEur = normalizeCreditAmount(estimate && estimate.discount_eur);
+  const priceEur = normalizeCreditAmount(estimate && estimate.price_eur);
+  return {
+    new_tiles: estimateUnlicencedTileCount(estimate),
+    charged_tiles: estimateChargedTileCount(estimate),
+    total_tiles: Math.max(0, Number.parseInt(productSummary.tile_count || estimate && estimate.tile_count || 0, 10) || 0),
+    already_licenced_tiles: excludedTileCount,
+    partial_licence_tiles: partialLicenceTiles,
+    full_price_eur: fullPriceEur,
+    full_price_cents: centsForEur(fullPriceEur),
+    already_licenced_deduction_eur: alreadyLicencedEur,
+    already_licenced_deduction_cents: centsForEur(alreadyLicencedEur),
+    already_licenced_saving_eur: normalizeCreditAmount(estimate && estimate.already_licenced_saving_eur),
+    partial_licence_credit_eur: partialLicenceEur,
+    partial_licence_credit_cents: centsForEur(partialLicenceEur),
+    discount_percent: Math.max(0, Number.parseInt(estimate && estimate.discount_percent || regionProductDiscountPercent(product), 10) || 0),
+    discount_eur: discountEur,
+    discount_cents: centsForEur(discountEur),
+    price_eur: priceEur,
+    price_cents: centsForEur(priceEur),
   };
 }
 
@@ -3599,7 +3828,7 @@ function buildRegionPackMapData(product, estimate, options = {}) {
       new_tiles: estimateUnlicencedTileCount(estimate),
       charged_tiles: estimateChargedTileCount(estimate),
       total_tiles: Math.max(0, Number.parseInt(estimate && estimate.tile_count || 0, 10) || 0),
-      already_licenced_tiles: Math.max(0, Array.isArray(estimate && estimate.excluded_tiles) ? estimate.excluded_tiles.length : 0),
+      already_licenced_tiles: estimateAlreadyLicencedTileCount(estimate),
       already_licenced_saving_eur: normalizeCreditAmount(estimate && estimate.already_licenced_gross_eur),
       already_licenced_deduction_eur: normalizeCreditAmount(estimate && estimate.already_licenced_gross_eur),
       partial_licence_tiles: Math.max(0, Number.parseInt(estimate && estimate.partial_licence_tile_count || 0, 10) || 0),
@@ -3786,7 +4015,7 @@ function buildSceneFullQualityMapData(estimate, options = {}) {
       new_tiles: estimateUnlicencedTileCount(estimate),
       charged_tiles: estimateChargedTileCount(estimate),
       total_tiles: Math.max(0, Number.parseInt(estimate && estimate.tile_count || 0, 10) || 0),
-      already_licenced_tiles: Math.max(0, Array.isArray(estimate && estimate.excluded_tiles) ? estimate.excluded_tiles.length : 0),
+      already_licenced_tiles: estimateAlreadyLicencedTileCount(estimate),
       partial_licence_tiles: partialLicenceCount,
       partial_licence_credit_eur: partialLicenceCredit,
       already_licenced_saving_eur: alreadyLicencedSaving,
@@ -3804,28 +4033,36 @@ function buildSceneFullQualityMapData(estimate, options = {}) {
 }
 
 function regionPackOfferPayload(product, estimate) {
+  const summary = buildCanonicalRegionPackSummary(product, estimate);
   const priceEur = normalizeCreditAmount(estimate && estimate.price_eur);
   const chargedTileCount = estimateChargedTileCount(estimate);
   const newTileCount = estimateUnlicencedTileCount(estimate);
   return {
     ok: true,
     ...regionProductPublicPayload(product),
+    full_price_eur: summary.full_price_eur,
+    full_price_cents: summary.full_price_cents,
     gross_eur: normalizeCreditAmount(estimate && estimate.gross_eur),
     gross_price_eur: normalizeCreditAmount(estimate && estimate.gross_price_eur),
-    discount_eur: normalizeCreditAmount(estimate && estimate.discount_eur),
+    discount_eur: summary.discount_eur,
+    discount_cents: summary.discount_cents,
     already_licenced_gross_eur: normalizeCreditAmount(estimate && estimate.already_licenced_gross_eur),
-    already_licenced_saving_eur: normalizeCreditAmount(estimate && estimate.already_licenced_saving_eur),
-    partial_licence_tile_count: Math.max(0, Number.parseInt(estimate && estimate.partial_licence_tile_count || 0, 10) || 0),
-    partial_licence_credit_eur: normalizeCreditAmount(estimate && estimate.partial_licence_credit_eur),
+    already_licenced_deduction_eur: summary.already_licenced_deduction_eur,
+    already_licenced_deduction_cents: summary.already_licenced_deduction_cents,
+    already_licenced_saving_eur: summary.already_licenced_saving_eur,
+    partial_licence_tile_count: summary.partial_licence_tiles,
+    partial_licence_credit_eur: summary.partial_licence_credit_eur,
+    partial_licence_credit_cents: summary.partial_licence_credit_cents,
     credits: normalizeCreditAmount(estimate && estimate.credits),
     price_eur: priceEur,
+    price_cents: summary.price_cents,
     paid_tile_count: Math.max(0, Number.parseInt(estimate && estimate.paid_tile_count || 0, 10) || 0),
     free_tile_count: Math.max(0, Number.parseInt(estimate && estimate.free_tile_count || 0, 10) || 0),
     tile_count: Math.max(0, Number.parseInt(estimate && estimate.tile_count || 0, 10) || 0),
     unlicenced_tile_count: newTileCount,
     new_tile_count: newTileCount,
     charged_tile_count: chargedTileCount,
-    already_licenced_tile_count: Math.max(0, Number.parseInt(estimate && estimate.excluded_tiles && estimate.excluded_tiles.length || 0, 10) || 0),
+    already_licenced_tile_count: summary.already_licenced_tiles,
     metadata_missing_tile_keys: Array.isArray(estimate && estimate.metadata_missing_tile_keys)
       ? estimate.metadata_missing_tile_keys.slice(0, 100)
       : [],
@@ -3865,9 +4102,7 @@ function estimateUnlicencedTileCount(estimate) {
     return Math.max(0, Number.parseInt(estimate.unlicenced_tile_count || 0, 10) || 0);
   }
   const total = Math.max(0, Number.parseInt(estimate && estimate.tile_count || 0, 10) || 0);
-  const already = Array.isArray(estimate && estimate.excluded_tiles)
-    ? estimate.excluded_tiles.length
-    : Math.max(0, Number.parseInt(estimate && estimate.already_licenced_tile_count || 0, 10) || 0);
+  const already = estimateAlreadyLicencedTileCount(estimate);
   return Math.max(0, total - already);
 }
 
@@ -3888,7 +4123,7 @@ function estimateChargedTileCount(estimate) {
 }
 
 function regionPackCatalogRow(product, estimate) {
-  const productSummary = regionProductPricingSummary(product) || {};
+  const summary = buildCanonicalRegionPackSummary(product, estimate);
   const group = regionProductCatalogGroup(product);
   return {
     id: String(product && product.id || ""),
@@ -3896,17 +4131,22 @@ function regionPackCatalogRow(product, estimate) {
     type: String(product && product.type || ""),
     group_key: group.key,
     group_label: group.label,
-    total_tiles: Math.max(0, Number.parseInt(productSummary.tile_count || estimate && estimate.tile_count || 0, 10) || 0),
-    new_tiles: estimateUnlicencedTileCount(estimate),
-    unlicenced_tile_count: estimateUnlicencedTileCount(estimate),
-    charged_tiles: estimateChargedTileCount(estimate),
-    already_licenced_tiles: Math.max(0, Array.isArray(estimate && estimate.excluded_tiles) ? estimate.excluded_tiles.length : 0),
-    full_price_eur: normalizeCreditAmount(productSummary.gross_eur),
+    total_tiles: summary.total_tiles,
+    new_tiles: summary.new_tiles,
+    unlicenced_tile_count: summary.new_tiles,
+    charged_tiles: summary.charged_tiles,
+    already_licenced_tiles: summary.already_licenced_tiles,
+    partial_licence_tiles: summary.partial_licence_tiles,
+    full_price_eur: summary.full_price_eur,
+    full_price_cents: summary.full_price_cents,
     chargeable_full_price_eur: normalizeCreditAmount(estimate && estimate.gross_eur),
-    already_licenced_saving_eur: normalizeCreditAmount(estimate && estimate.already_licenced_saving_eur),
-    discount_percent: Math.max(0, Number.parseInt(estimate && estimate.discount_percent || regionProductDiscountPercent(product), 10) || 0),
-    discount_eur: normalizeCreditAmount(estimate && estimate.discount_eur),
-    price_eur: normalizeCreditAmount(estimate && estimate.price_eur),
+    already_licenced_deduction_eur: summary.already_licenced_deduction_eur,
+    already_licenced_saving_eur: summary.already_licenced_saving_eur,
+    partial_licence_credit_eur: summary.partial_licence_credit_eur,
+    discount_percent: summary.discount_percent,
+    discount_eur: summary.discount_eur,
+    price_eur: summary.price_eur,
+    price_cents: summary.price_cents,
   };
 }
 
@@ -3918,7 +4158,7 @@ async function buildRegionPackCatalogData(db, userId, token, deps) {
   const membershipCache = { directTileSets: new Map(), membership: new Map() };
   const rows = REGION_PRODUCTS
     .map((product) => {
-      const estimate = estimateRegionPackSummaryWithOwned(product, account, ownedByFamily, { membershipCache });
+      const estimate = estimateRegionPackSummaryCached(product, account, ownedByFamily, { membershipCache, cache: false });
       if (!estimate || estimate.error) {
         return null;
       }
@@ -3929,7 +4169,7 @@ async function buildRegionPackCatalogData(db, userId, token, deps) {
       String(a.group_label || "").localeCompare(String(b.group_label || ""))
       || String(a.name || "").localeCompare(String(b.name || ""))
     ));
-  const groupOrder = ["world", "continents", "regions", "countries", "states_provinces", "other"];
+  const groupOrder = ["countries", "regions", "states_provinces", "continents", "world", "other"];
   const groups = [];
   for (const key of groupOrder) {
     const groupRows = rows.filter((row) => String(row.group_key || "") === key);
@@ -3948,6 +4188,61 @@ async function buildRegionPackCatalogData(db, userId, token, deps) {
     token: String(token || ""),
     total_packs: rows.length,
     groups,
+  };
+}
+
+function sortedCatalogProducts() {
+  const groupOrder = new Map([
+    ["countries", 0],
+    ["regions", 1],
+    ["states_provinces", 2],
+    ["continents", 3],
+    ["world", 4],
+    ["other", 5],
+  ]);
+  return REGION_PRODUCTS
+    .filter((product) => product && !isHiddenRegionProduct(product))
+    .slice()
+    .sort((a, b) => {
+      const groupA = regionProductCatalogGroup(a);
+      const groupB = regionProductCatalogGroup(b);
+      const orderA = groupOrder.has(groupA.key) ? groupOrder.get(groupA.key) : 99;
+      const orderB = groupOrder.has(groupB.key) ? groupOrder.get(groupB.key) : 99;
+      return (orderA - orderB)
+        || String(a && a.name || "").localeCompare(String(b && b.name || ""));
+    });
+}
+
+async function buildRegionPackCatalogPageData(db, userId, token, deps, options = {}) {
+  await deps.ensureCreditTables(db);
+  const products = sortedCatalogProducts();
+  const total = products.length;
+  const offset = Math.max(0, Number.parseInt(options && options.offset || 0, 10) || 0);
+  const limit = Math.max(1, Math.min(REGION_PACK_CATALOG_PAGE_MAX_LIMIT, Number.parseInt(options && options.limit || 1, 10) || 1));
+  const account = await ensureFreshCreditAccountForUser(db, userId, deps);
+  const ownedSummary = await ownedEntitlementSummaryForUser(db, userId, deps, { account, includeRows: false });
+  const ownedByFamily = ownedSummary.ownedByFamily;
+  const membershipCache = { directTileSets: new Map(), membership: new Map() };
+  const rows = products
+    .slice(offset, offset + limit)
+    .map((product) => {
+      const estimate = estimateRegionPackSummaryCached(product, account, ownedByFamily, { membershipCache, cache: false });
+      if (!estimate || estimate.error) {
+        return null;
+      }
+      return regionPackCatalogRow(product, estimate);
+    })
+    .filter(Boolean);
+  return {
+    ok: true,
+    catalog_version: REGION_PACK_CATALOG_VERSION,
+    token: String(token || ""),
+    offset,
+    limit,
+    total_packs: total,
+    next_offset: offset + rows.length < total ? offset + rows.length : null,
+    rows,
+    entitlement_cache_hit: Boolean(ownedSummary.cache_hit),
   };
 }
 
@@ -4218,7 +4513,7 @@ table{width:100%;border-collapse:collapse;background:#151515;border:1px solid va
 <script>const DATA=${payload};
 const fmt=(v)=>"€"+Number(v||0).toFixed(2);
 const token=encodeURIComponent(DATA.token||"");
-function rowHtml(row){const id=encodeURIComponent(row.id||"");const partialCount=Number(row.partial_licence_tiles??row.partial_licence_tile_count??0);const partial=Number(row.partial_licence_credit_eur||0);const licenced=Number(row.already_licenced_tiles||0)+partialCount;const saving=Number(row.already_licenced_deduction_eur??row.already_licenced_saving_eur??0)+partial;const newTiles=Math.max(0,Number(row.new_tiles||0)-partialCount);const mapLink=String(row.id||"").toLowerCase()==="world"?"":" <a class=\\"button secondary\\" href=\\"/credits/region-pack-map?token="+token+"&region_pack_id="+id+"&catalog=1\\">Map</a>";return "<tr>"
+function rowHtml(row){const id=encodeURIComponent(row.id||"");const partialCount=Number(row.partial_licence_tiles??row.partial_licence_tile_count??0);const partial=Number(row.partial_licence_credit_eur||0);const licenced=Number(row.already_licenced_tiles||0)+partialCount;const saving=Number(row.already_licenced_deduction_eur??row.already_licenced_saving_eur??0)+partial;const newTiles=Math.max(0,Number(row.new_tiles||0)-partialCount);const mapLink=" <a class=\\"button secondary\\" href=\\"/credits/region-pack-map?token="+token+"&region_pack_id="+id+"&catalog=1\\">Map</a>";return "<tr>"
 +"<td><b>"+escapeCell(row.name||"Data Pack")+"</b><div class=\\"muted small\\">"+escapeCell(row.group_label||"")+"</div></td>"
 +"<td>"+newTiles+" / "+Number(row.total_tiles||0)+"</td>"
 +"<td>"+fmt(row.full_price_eur)+"</td>"
@@ -4234,7 +4529,7 @@ function render(){const filter=String(document.getElementById("filter").value||"
 </html>`;
 }
 
-function regionPackStaticCatalogHtml(data) {
+function regionPackCatalogShellHtml(data) {
   const payload = jsonForInlineScript(data);
   return `<!doctype html>
 <html lang="en">
@@ -4242,7 +4537,16 @@ function regionPackStaticCatalogHtml(data) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Planetka Full Quality Data Packs</title>
-<link rel="stylesheet" href="/credits/page-assets/region-pack-catalog.css?v=${encodeURIComponent(REGION_PACK_MAP_ASSET_REVISION)}">
+<style>
+:root{color-scheme:dark;--bg:#111;--panel:#1b1b1b;--line:#3c3c3c;--text:#eee;--muted:#aaa;--accent:#d9a441}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+main{max-width:1180px;margin:0 auto;padding:24px}h1{margin:0 0 8px;font-size:28px;font-weight:650}h2{margin:22px 0 10px}.muted{color:var(--muted)}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;margin-top:14px}.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:12px 0}
+input{min-width:260px;flex:1;background:#262626;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:9px 11px}
+table{width:100%;border-collapse:collapse;background:#151515;border:1px solid var(--line);border-radius:10px;overflow:hidden}th,td{padding:8px 10px;border-bottom:1px solid #2d2d2d;text-align:right;white-space:nowrap}th:first-child,td:first-child{text-align:left;white-space:normal}tr:last-child td{border-bottom:0}th{color:#ddd;background:#202020;font-weight:650}.small{font-size:13px}.saving{color:#9dd18d}.price{font-weight:700;color:#f4d28d}
+.button{display:inline-flex;align-items:center;justify-content:center;padding:7px 10px;border-radius:8px;background:var(--accent);color:#111;text-decoration:none;font-weight:700}.button.secondary{background:#2a2a2a;color:var(--text);border:1px solid var(--line)}
+.empty{padding:12px;color:var(--muted)}
+</style>
 </head>
 <body>
 <main>
@@ -4256,8 +4560,25 @@ function regionPackStaticCatalogHtml(data) {
 <div id="catalog"></div>
 </section>
 </main>
-<script>window.PLANETKA_REGION_PACK_DATA=${payload};</script>
-<script src="/credits/page-assets/region-pack-catalog.js?v=${encodeURIComponent(REGION_PACK_MAP_ASSET_REVISION)}" defer></script>
+<script>const DATA=${payload};
+const fmt=(v)=>"€"+Number(v||0).toFixed(2);
+const token=encodeURIComponent(DATA.token||"");
+  let ROWS=[];let loading=false;let loadedAll=false;let nextOffset=0;const LIMIT=1;
+function escapeCell(value){return String(value||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}
+function rowHtml(row){const id=encodeURIComponent(row.id||"");const partialCount=Number(row.partial_licence_tiles??row.partial_licence_tile_count??0);const partial=Number(row.partial_licence_credit_eur||0);const licenced=Number(row.already_licenced_tiles||0)+partialCount;const saving=Number(row.already_licenced_deduction_eur??row.already_licenced_saving_eur??0)+partial;const newTiles=Math.max(0,Number(row.new_tiles||0)-partialCount);const mapLink=" <a class=\\"button secondary\\" href=\\"/credits/region-pack-map?token="+token+"&region_pack_id="+id+"&catalog=1\\">Map</a>";return "<tr>"
++"<td><b>"+escapeCell(row.name||"Data Pack")+"</b><div class=\\"muted small\\">"+escapeCell(row.group_label||"")+"</div></td>"
++"<td>"+newTiles+" / "+Number(row.total_tiles||0)+"</td>"
++"<td>"+fmt(row.full_price_eur)+"</td>"
++"<td>"+(saving>0?licenced+" tiles <span class=\\"saving\\">(-"+fmt(saving)+")</span>":"")+"</td>"
++"<td>"+(Number(row.discount_eur||0)>0?Number(row.discount_percent||0)+"% <span class=\\"saving\\">(-"+fmt(row.discount_eur)+")</span>":"")+"</td>"
++"<td class=\\"price\\">"+fmt(row.price_eur)+"</td>"
++"<td><a class=\\"button\\" href=\\"/credits/region-pack-checkout?token="+token+"&region_pack_id="+id+"&catalog=1\\">Buy</a>"+mapLink+"</td>"
++"</tr>"}
+function groupRows(rows){const groups=[];const byKey=new Map();for(const row of rows){const key=String(row.group_key||"other");if(!byKey.has(key)){byKey.set(key,{key,label:String(row.group_label||key),rows:[]});groups.push(byKey.get(key));}byKey.get(key).rows.push(row)}return groups}
+function render(){const filter=String(document.getElementById("filter").value||"").trim().toLowerCase();let shown=0;const rows=ROWS.filter(row=>!filter||String(row.name||"").toLowerCase().includes(filter)||String(row.group_label||"").toLowerCase().includes(filter)||String(row.id||"").toLowerCase().includes(filter));const html=groupRows(rows).map(group=>{const groupRows=group.rows||[];if(!groupRows.length)return "";shown+=groupRows.length;return "<h2>"+escapeCell(group.label)+"</h2><table><thead><tr><th>Data Pack</th><th>New Tiles / Total Tiles</th><th>Full Price</th><th>Already Licenced</th><th>Volume Discount</th><th>Final Price</th><th>Actions</th></tr></thead><tbody>"+groupRows.map(rowHtml).join("")+"</tbody></table>"}).join("");document.getElementById("catalog").innerHTML=html||"<div class=\\"empty\\">"+(loading?"Loading data packs...":"No data packs match this search.")+"</div>";const total=Number(DATA.total_packs||ROWS.length||0);document.getElementById("count").textContent=shown+" shown · "+ROWS.length+"/"+total+" loaded";}
+async function loadNext(){if(loading||loadedAll)return;loading=true;render();try{const url="/credits/region-pack-catalog-page?token="+token+"&offset="+encodeURIComponent(String(nextOffset))+"&limit="+encodeURIComponent(String(LIMIT));const res=await fetch(url,{cache:"no-store"});if(!res.ok)throw new Error("catalog_page_"+res.status);const page=await res.json();ROWS=ROWS.concat(Array.isArray(page.rows)?page.rows:[]);if(Number.isFinite(Number(page.total_packs)))DATA.total_packs=Number(page.total_packs);if(page.next_offset===null||page.next_offset===undefined){loadedAll=true}else{nextOffset=Number(page.next_offset||ROWS.length)}loading=false;render();if(!loadedAll)setTimeout(loadNext,20)}catch(error){console.warn("Planetka catalog page failed",error);loading=false;document.getElementById("count").className="error small";document.getElementById("count").textContent="Data-pack catalog failed to load.";render();}}
+document.getElementById("filter").addEventListener("input",render);loadNext();
+</script>
 </body>
 </html>`;
 }
@@ -4431,7 +4752,7 @@ export async function isTileUnlockedForUser(db, userId, tileKey, deps, options =
   if (authoritative) {
     return await tileUnlockedAuthoritative(db, userId, family, requestedD, deps);
   }
-  const ownedSummary = await ownedEntitlementSummaryForUser(db, userId, deps, { account });
+  const ownedSummary = await ownedEntitlementSummaryForUser(db, userId, deps, { account, includeRows: false });
   const familyEntries = ownedSummary.ownedByFamily.get(family) || [];
   return familyEntries.some((entry) => Number(entry && entry.d) <= requestedD);
 }
@@ -4939,9 +5260,7 @@ export async function grantPaidSceneTileEntitlements(db, userId, qualityMode, ti
     tile_status: "new",
   }));
   const purchasedTileKeys = purchasedTileRows.map((tile) => normalizeTileKey(tile && tile.tile_key || "")).filter(Boolean);
-  const alreadyLicencedCount = Array.isArray(estimate && estimate.excluded_tiles)
-    ? estimate.excluded_tiles.length
-    : 0;
+  const alreadyLicencedCount = estimateAlreadyLicencedTileCount(estimate);
   await deps.dbRun(
     db,
     `
@@ -5156,7 +5475,7 @@ export async function grantRegionPackEntitlements(db, userId, regionPackId, stri
   const paidEur = normalizeCreditAmount(amountPaidEur);
   const estimateTotalTiles = Math.max(0, Number.parseInt(estimate && estimate.tile_count || 0, 10) || 0);
   const estimateNewTiles = Math.max(0, Number.parseInt(estimate && estimate.new_tile_count || 0, 10) || 0);
-  const alreadyLicencedTiles = Math.max(0, Array.isArray(estimate && estimate.excluded_tiles) ? estimate.excluded_tiles.length : 0);
+  const alreadyLicencedTiles = estimateAlreadyLicencedTileCount(estimate);
   const grossEur = normalizeCreditAmount(estimate && estimate.gross_eur);
   const discountEur = normalizeCreditAmount(estimate && estimate.discount_eur);
   const discountPercent = regionProductDiscountPercent(product);
@@ -5828,12 +6147,12 @@ export async function handleCreditRegionOffers(request, env, deps) {
   timing.mark("parse");
   const products = suggestedRegionProductsForContext(latitude, longitude, tileKeys);
   timing.mark("products");
-  const ownedSummary = await ownedEntitlementSummaryForUser(db, auth.user.id, deps, { account });
+  const ownedSummary = await ownedEntitlementSummaryForUser(db, auth.user.id, deps, { account, includeRows: false });
   const ownedByFamily = ownedSummary.ownedByFamily;
   timing.mark(ownedSummary.cache_hit ? "entitlements_cache" : "entitlements_d1");
   const offers = [];
   for (const product of products) {
-    const estimate = estimateRegionPackSummaryWithOwned(product, account, ownedByFamily);
+    const estimate = estimateRegionPackSummaryCached(product, account, ownedByFamily);
     if (estimate && estimate.error) {
       offers.push({
         ok: false,
@@ -5901,12 +6220,12 @@ export async function handleCreditRegionPackRelatedOffers(request, env, deps) {
   timing.mark("parse");
   const products = relatedRegionProducts(product, 6);
   timing.mark("products");
-  const ownedSummary = await ownedEntitlementSummaryForUser(db, auth.user.id, deps, { account });
+  const ownedSummary = await ownedEntitlementSummaryForUser(db, auth.user.id, deps, { account, includeRows: false });
   const ownedByFamily = ownedSummary.ownedByFamily;
   timing.mark(ownedSummary.cache_hit ? "entitlements_cache" : "entitlements_d1");
   const offers = [];
   for (const candidate of products) {
-    const estimate = estimateRegionPackSummaryWithOwned(candidate, account, ownedByFamily);
+    const estimate = estimateRegionPackSummaryCached(candidate, account, ownedByFamily);
     if (estimate && estimate.error) {
       offers.push({
         ok: false,
@@ -6194,7 +6513,7 @@ function regionPackPaymentChoiceHtml(data) {
   const alreadyLicencedDeductionEur = normalizeCreditAmount(estimate && estimate.already_licenced_gross_eur);
   const partialLicenceCount = Math.max(0, Number.parseInt(estimate && estimate.partial_licence_tile_count || 0, 10) || 0);
   const partialLicenceCreditEur = normalizeCreditAmount(estimate && estimate.partial_licence_credit_eur);
-  const displayedAlreadyLicencedCount = Math.max(0, Number.parseInt(estimate && estimate.excluded_tiles && estimate.excluded_tiles.length || 0, 10) || 0) + partialLicenceCount;
+  const displayedAlreadyLicencedCount = estimateAlreadyLicencedTileCount(estimate) + partialLicenceCount;
   const displayedAlreadyLicencedDeductionEur = normalizeCreditAmount(alreadyLicencedDeductionEur + partialLicenceCreditEur);
   const discountEur = normalizeCreditAmount(estimate && estimate.discount_eur);
   const discountPercent = regionProductDiscountPercent(product);
@@ -6283,10 +6602,10 @@ export async function handleCreditRegionPackCheckoutFromToken(request, env, deps
   const product = productResult.product;
   const account = await ensureFreshCreditAccountForUser(db, userId, deps);
   timing.mark("account");
-  const ownedSummary = await ownedEntitlementSummaryForUser(db, userId, deps, { account });
+  const ownedSummary = await ownedEntitlementSummaryForUser(db, userId, deps, { account, includeRows: false });
   const ownedByFamily = ownedSummary.ownedByFamily;
   timing.mark(ownedSummary.cache_hit ? "entitlements_cache" : "entitlements_d1");
-  const estimate = estimateRegionPackSummaryWithOwned(product, account, ownedByFamily);
+  const estimate = estimateRegionPackSummaryCached(product, account, ownedByFamily, { cache: false });
   timing.mark("estimate");
   if (estimate && estimate.error) {
     return withEndpointTiming(html(
@@ -6295,7 +6614,8 @@ export async function handleCreditRegionPackCheckoutFromToken(request, env, deps
       env,
     ), timing, env, { error: estimate.error, region_pack_id: String(product && product.id || "") });
   }
-  const priceEur = normalizeCreditAmount(estimate && estimate.price_eur);
+  const summary = buildCanonicalRegionPackSummary(product, estimate);
+  const priceEur = normalizeCreditAmount(summary.price_eur);
   if (priceEur <= 0) {
     if (estimateChargedTileCount(estimate) <= 0) {
       return html(
@@ -6338,7 +6658,7 @@ export async function handleCreditRegionPackCheckoutFromToken(request, env, deps
       env,
     );
   }
-  const amountCents = centsForEur(priceEur);
+  const amountCents = Math.max(0, Number.parseInt(summary.price_cents || 0, 10) || 0);
 
   if (method && method !== "stripe") {
     return withEndpointTiming(html(
@@ -6381,17 +6701,18 @@ export async function handleCreditRegionPackCheckoutFromToken(request, env, deps
         planetka_quality_mode: "full",
         planetka_region_id: String(product.id || ""),
         planetka_region_name: String(product.name || ""),
-        planetka_region_type: String(product.type || ""),
-        planetka_catalog_version: REGION_PACK_CATALOG_VERSION,
-        planetka_price_eur: priceEur.toFixed(2),
-        planetka_gross_eur: normalizeCreditAmount(estimate && estimate.gross_eur).toFixed(2),
-        planetka_discount_percent: String(regionProductDiscountPercent(product)),
-        planetka_discount_eur: normalizeCreditAmount(estimate && estimate.discount_eur).toFixed(2),
-        planetka_already_licenced_gross_eur: normalizeCreditAmount(estimate && estimate.already_licenced_gross_eur).toFixed(2),
-        planetka_partial_licence_credit_eur: normalizeCreditAmount(estimate && estimate.partial_licence_credit_eur).toFixed(2),
-        planetka_checkout_source: allowCatalogProduct ? "region_pack_catalog" : "region_pack_map_upsell",
-      },
-    },
+	        planetka_region_type: String(product.type || ""),
+	        planetka_catalog_version: REGION_PACK_CATALOG_VERSION,
+	        planetka_price_eur: summary.price_eur.toFixed(2),
+	        planetka_price_cents: String(summary.price_cents),
+	        planetka_gross_eur: summary.full_price_eur.toFixed(2),
+	        planetka_discount_percent: String(summary.discount_percent),
+	        planetka_discount_eur: summary.discount_eur.toFixed(2),
+	        planetka_already_licenced_gross_eur: summary.already_licenced_deduction_eur.toFixed(2),
+	        planetka_partial_licence_credit_eur: summary.partial_licence_credit_eur.toFixed(2),
+	        planetka_checkout_source: allowCatalogProduct ? "region_pack_catalog" : "region_pack_map_upsell",
+	      },
+	    },
     deps,
   );
   timing.mark("stripe_session");
@@ -6402,7 +6723,15 @@ export async function handleCreditRegionPackCheckoutFromToken(request, env, deps
       env,
     ), timing, env, { error: session.message || session.error || "checkout_failed", region_pack_id: String(product && product.id || "") });
   }
-  return withEndpointTiming(Response.redirect(session.checkout_url, 303), timing, env, {
+  return withEndpointTiming(new Response(null, {
+    status: 303,
+    headers: {
+      Location: session.checkout_url,
+      "Cache-Control": "no-store",
+      "X-Planetka-Price-Cents": String(amountCents),
+      "X-Planetka-Region-Pack-Id": String(product && product.id || ""),
+    },
+  }), timing, env, {
     region_pack_id: String(product && product.id || ""),
     amount_cents: amountCents,
   });
@@ -6410,6 +6739,7 @@ export async function handleCreditRegionPackCheckoutFromToken(request, env, deps
 
 export async function handleCreditRegionPackMap(request, env, deps) {
   const timing = createEndpointTimer("credits.region_pack_map");
+  clearRegionPackMapVolatileCaches();
   const url = new URL(request.url);
   const token = String(url.searchParams.get("token") || "").trim();
   const allowCatalogProduct = String(url.searchParams.get("catalog") || "") === "1";
@@ -6479,9 +6809,31 @@ export async function handleCreditRegionPackMap(request, env, deps) {
       env,
     ), timing, env, { region_pack_id: "world", price_eur: price });
   }
-  const ownedSummary = await ownedEntitlementSummaryForUser(db, userId, deps, { account });
+  const ownedSummary = await ownedEntitlementSummaryForUser(db, userId, deps, { account, includeRows: false });
   timing.mark(ownedSummary.cache_hit ? "entitlements_cache" : "entitlements_d1");
-  const data = regionPackStaticMapPayload(product, token, account, ownedSummary.rows, { catalogMode: allowCatalogProduct });
+  const ownedByFamily = ownedSummary.ownedByFamily;
+  const estimate = estimateRegionPackSummaryCached(product, account, ownedByFamily, { cache: false });
+  timing.mark("estimate");
+  if (estimate && estimate.error) {
+    return withEndpointTiming(html(
+      `<!doctype html><title>Planetka Region Pack</title><h1>Region pack estimate failed.</h1><p>${escapeHtmlText(estimate.error)}</p>`,
+      500,
+      env,
+    ), timing, env, { error: estimate.error, region_pack_id: String(product && product.id || "") });
+  }
+  const upsells = relatedRegionProducts(product, 6)
+    .map((candidate) => ({
+      product: candidate,
+      estimate: estimateRegionPackSummaryCached(candidate, account, ownedByFamily),
+    }))
+    .filter((entry) => entry && entry.product && entry.estimate && !entry.estimate.error);
+  timing.mark("upsell_estimates");
+  const data = regionPackStaticMapPayload(product, token, account, ownedSummary.rows, {
+    catalogMode: allowCatalogProduct,
+    estimate,
+    upsells,
+    ownedByFamily,
+  });
   timing.mark("payload");
   return withEndpointTiming(html(regionPackStaticMapHtml(data), 200, env), timing, env, {
     region_pack_id: String(product && product.id || ""),
@@ -6549,28 +6901,6 @@ export async function handleCreditRegionPackMapBackground(request, env, deps) {
   }), timing, env, { region_pack_id: regionPackId || "world", key });
 }
 
-export async function handleCreditRegionPackCatalogAsset(request, env, deps) {
-  void request;
-  const timing = createEndpointTimer("credits.region_pack_catalog_asset");
-  const bucket = env && env.PLANETKA_DATA;
-  if (!bucket || typeof bucket.get !== "function") {
-    return withEndpointTiming(deps.json({ ok: false, error: "r2_binding_unavailable" }, 500, env), timing, env);
-  }
-  const object = await bucket.get(regionPackCatalogAssetKey(env));
-  timing.mark("r2_get");
-  if (!object || !object.body) {
-    return withEndpointTiming(deps.json({ ok: false, error: "region_pack_catalog_asset_missing" }, 404, env), timing, env);
-  }
-  return withEndpointTiming(new Response(object.body, {
-    status: 200,
-    headers: {
-      "Content-Type": "application/json; charset=utf-8",
-      "Cache-Control": "public, max-age=86400",
-      ...corsHeaders(env),
-    },
-  }), timing, env);
-}
-
 export async function handleCreditRegionPackCatalog(request, env, deps) {
   const url = new URL(request.url);
   const token = String(url.searchParams.get("token") || "").trim();
@@ -6590,30 +6920,43 @@ export async function handleCreditRegionPackCatalog(request, env, deps) {
       env,
     );
   }
-  const userId = String(tokenResult.row && tokenResult.row.user_id || "").trim();
   const timing = createEndpointTimer("credits.region_pack_catalog");
-  const account = await ensureFreshCreditAccountForUser(db, userId, deps);
-  timing.mark("account");
-  const ownedSummary = await ownedEntitlementSummaryForUser(db, userId, deps, { account });
-  timing.mark(ownedSummary.cache_hit ? "entitlements_cache" : "entitlements_d1");
-  const pricingSettings = activePricingSettings();
+  const productCount = sortedCatalogProducts().length;
+  timing.mark("shell");
   return withEndpointTiming(html(
-    regionPackStaticCatalogHtml({
+    regionPackCatalogShellHtml({
       ok: true,
       catalog_version: REGION_PACK_CATALOG_VERSION,
-      map_asset_revision: REGION_PACK_MAP_ASSET_REVISION,
-      price_coefficient: fullQualityPriceCoefficient(),
-      region_pack_discount_min_percent: Number(pricingSettings.region_pack_discount_min_percent || 0),
-      region_pack_discount_max_percent: Number(pricingSettings.region_pack_discount_max_percent || 0),
-      region_pack_discount_share_buckets: pricingSettings.region_pack_discount_share_buckets || DEFAULT_REGION_PACK_DISCOUNT_SHARE_BUCKETS,
-      product_discount_overrides: pricingSettings.product_discount_overrides || {},
       token,
-      owned_tiles: ownedTilePayloadRows(ownedSummary.rows),
-      world_full_quality_unlocked: isWorldFullQualityUnlocked(account),
+      total_packs: productCount,
     }),
     200,
     env,
-  ), timing, env, { entitlement_cache_hit: Boolean(ownedSummary.cache_hit) });
+  ), timing, env, { product_count: productCount, paged: true });
+}
+
+export async function handleCreditRegionPackCatalogPage(request, env, deps) {
+  const timing = createEndpointTimer("credits.region_pack_catalog_page");
+  const url = new URL(request.url);
+  const token = String(url.searchParams.get("token") || "").trim();
+  const offset = Math.max(0, Number.parseInt(url.searchParams.get("offset") || "0", 10) || 0);
+  const limit = Math.max(1, Math.min(REGION_PACK_CATALOG_PAGE_MAX_LIMIT, Number.parseInt(url.searchParams.get("limit") || "1", 10) || 1));
+  const db = deps.requireDb(env);
+  const tokenResult = await getValidAnyDetailToken(db, token, deps);
+  timing.mark("token");
+  if (tokenResult.error) {
+    return withEndpointTiming(deps.json({ ok: false, error: tokenResult.error }, tokenResult.status || 400, env), timing, env, { error: tokenResult.error });
+  }
+  const userId = String(tokenResult.row && tokenResult.row.user_id || "").trim();
+  const data = await buildRegionPackCatalogPageData(db, userId, token, deps, { offset, limit });
+  timing.mark("catalog_page");
+  return withEndpointTiming(deps.json(data, 200, env), timing, env, {
+    offset,
+    limit,
+    row_count: Array.isArray(data && data.rows) ? data.rows.length : 0,
+    total_packs: Number(data && data.total_packs || 0),
+    entitlement_cache_hit: Boolean(data && data.entitlement_cache_hit),
+  });
 }
 
 export async function handleCreditSceneMap(request, env, deps) {
@@ -6657,12 +7000,12 @@ export async function handleCreditSceneMap(request, env, deps) {
     : [];
   const contextProduct = contextProducts.length ? contextProducts[0] : null;
   timing.mark("products");
-  const ownedSummary = await ownedEntitlementSummaryForUser(db, userId, deps, { account });
+  const ownedSummary = await ownedEntitlementSummaryForUser(db, userId, deps, { account, includeRows: false });
   const ownedByFamily = ownedSummary.ownedByFamily;
   timing.mark(ownedSummary.cache_hit ? "entitlements_cache" : "entitlements_d1");
   const upsells = [];
   for (const product of contextProducts.slice(0, 4)) {
-    const relatedEstimate = estimateRegionPackSummaryWithOwned(product, account, ownedByFamily);
+    const relatedEstimate = estimateRegionPackSummaryCached(product, account, ownedByFamily);
     if (relatedEstimate && !relatedEstimate.error) {
       const relatedPrice = normalizeCreditAmount(relatedEstimate && relatedEstimate.price_eur);
       const relatedNewTiles = Math.max(0, Number.parseInt(relatedEstimate && relatedEstimate.new_tile_count || 0, 10) || 0);
