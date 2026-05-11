@@ -339,11 +339,25 @@ export async function handleAdminAnalyticsProductsPage(request, env, deps) {
     <a href="/admin/session/logout" style="color:#fca5a5; text-decoration:none;">Sign Out</a>
   </div>
   <section class="card">
+    <h3 style="margin-top:0;">Pricing Controls</h3>
+    <form id="pricingSettingsForm" class="controls" style="margin-bottom:6px;">
+      <label for="pricingCoefficient">Price coefficient</label>
+      <input id="pricingCoefficient" name="full_quality_price_coefficient" type="number" min="0.01" max="1000" step="0.01" value="${deps.escapeHtml(coefficient)}" />
+      <label for="pricingMinDiscount">Pack min discount %</label>
+      <input id="pricingMinDiscount" name="region_pack_discount_min_percent" type="number" min="0" max="95" step="5" value="${deps.escapeHtml(minDiscount)}" />
+      <label for="pricingMaxDiscount">Pack max discount %</label>
+      <input id="pricingMaxDiscount" name="region_pack_discount_max_percent" type="number" min="0" max="95" step="5" value="${deps.escapeHtml(maxDiscount)}" />
+      <button type="submit">Save Pricing</button>
+      <span id="pricingSettingsStatus" class="muted">Applied live; no catalog rebuild needed.</span>
+    </form>
     <div class="controls" style="margin-bottom:6px;">
       <span>Current coefficient: <strong>${deps.escapeHtml(coefficient)}</strong></span>
       <span>Default pack discount range: <strong>${deps.escapeHtml(minDiscount)}%-${deps.escapeHtml(maxDiscount)}%</strong></span>
-      <span id="status" class="muted">Product overrides are applied live to Blender, web pages, and checkout.</span>
+      <span id="productStatus" class="muted">Product overrides are applied live to Blender, web pages, and checkout.</span>
     </div>
+    <div class="muted">Generated product and tile prices stay as coefficient-1.0 gross values. The Worker applies this coefficient and discount spread at request time.</div>
+  </section>
+  <section class="card">
     <div class="controls">
       <label for="filter">Filter products:</label>
       <input id="filter" type="text" placeholder="country, region, id, type" style="min-width:280px;" />
@@ -369,14 +383,16 @@ export async function handleAdminAnalyticsProductsPage(request, env, deps) {
     <tbody>${rowsHtml}</tbody>
   </table>
   <script>
-    const statusEl = document.getElementById("status");
+    const productStatusEl = document.getElementById("productStatus");
+    const pricingSettingsForm = document.getElementById("pricingSettingsForm");
+    const pricingSettingsStatus = document.getElementById("pricingSettingsStatus");
     const filterEl = document.getElementById("filter");
     const overridesOnlyEl = document.getElementById("overridesOnly");
     const visibleCountEl = document.getElementById("visibleCount");
     const table = document.getElementById("productsTable");
     function setStatus(message, isError = false) {
-      statusEl.textContent = message;
-      statusEl.className = isError ? "error" : "muted";
+      productStatusEl.textContent = message;
+      productStatusEl.className = isError ? "error" : "muted";
     }
     function applyFilter() {
       const needle = String(filterEl.value || "").trim().toLowerCase();
@@ -406,6 +422,38 @@ export async function handleAdminAnalyticsProductsPage(request, env, deps) {
       }
       setStatus("Saved. Reloading prices...");
       window.location.reload();
+    }
+    if (pricingSettingsForm) {
+      pricingSettingsForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (pricingSettingsStatus) {
+          pricingSettingsStatus.textContent = "Saving...";
+          pricingSettingsStatus.className = "muted";
+        }
+        try {
+          const form = new FormData(pricingSettingsForm);
+          const res = await fetch("/admin/settings/pricing", {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(Object.fromEntries(form.entries())),
+          });
+          const data = await res.json();
+          if (!res.ok || !data.ok) {
+            throw new Error(String(data && (data.message || data.error) || ("HTTP " + res.status)));
+          }
+          if (pricingSettingsStatus) {
+            pricingSettingsStatus.textContent = "Saved. Reloading product prices...";
+            pricingSettingsStatus.className = "muted";
+          }
+          window.location.reload();
+        } catch (error) {
+          if (pricingSettingsStatus) {
+            pricingSettingsStatus.textContent = "Pricing save failed: " + String(error && error.message || error);
+            pricingSettingsStatus.className = "error";
+          }
+        }
+      });
     }
     document.addEventListener("submit", (event) => {
       const form = event.target && event.target.closest ? event.target.closest(".product-discount-form") : null;
@@ -546,9 +594,6 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
     .join("");
   const snapshotGeneratedAt = deps.escapeHtml(String(initialSnapshot && initialSnapshot.generated_at || deps.nowIso()));
   const buildStamp = deps.nowIso();
-  const pricingSettings = deps.getRuntimePricingSettings
-    ? await deps.getRuntimePricingSettings(env, deps, { force: false })
-    : {};
   const htmlContent = buildAdminAnalyticsPageHtml({
     escapeHtml: deps.escapeHtml,
     encodeURIComponent,
@@ -577,7 +622,6 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
     billableCostClassB,
     billableUnknownOps,
     billableCostTotal,
-    pricingSettings,
   });
   if (tokenSource === "bearer") {
     const authHeader = String(request.headers.get("Authorization") || "");

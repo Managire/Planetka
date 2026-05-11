@@ -27,7 +27,6 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     billableCostClassB,
     billableUnknownOps,
     billableCostTotal,
-    pricingSettings,
   } = context || {};
 
   const safeTopLine = snapshotTopLine && typeof snapshotTopLine === "object" ? snapshotTopLine : {};
@@ -55,16 +54,6 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
   const topGbServedSplitHtml = renderTotalValue(topLineGbServed, (value) => `${fmtGbLocal(value)} GB`, topLineGbServed.total);
   const topEarnedEurHtml = renderTotalValue(topLineEarnedEur, (value) => fmtEurLocal(value), topLineEarnedEur.total);
   const topPaidResolvesHtml = renderTotalValue(topLinePaidResolves, (value) => fmtIntLocal(value), topLinePaidResolves.total);
-  const safePricingSettings = pricingSettings && typeof pricingSettings === "object" ? pricingSettings : {};
-  const pricingCoefficient = Number.isFinite(Number(safePricingSettings.full_quality_price_coefficient))
-    ? Number(safePricingSettings.full_quality_price_coefficient).toFixed(2)
-    : "5.00";
-  const pricingMinDiscount = Number.isFinite(Number(safePricingSettings.region_pack_discount_min_percent))
-    ? String(Math.round(Number(safePricingSettings.region_pack_discount_min_percent)))
-    : "0";
-  const pricingMaxDiscount = Number.isFinite(Number(safePricingSettings.region_pack_discount_max_percent))
-    ? String(Math.round(Number(safePricingSettings.region_pack_discount_max_percent)))
-    : "75";
   return `
 <!doctype html>
 <html>
@@ -125,20 +114,6 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     </select>
     <a id="refresh" href="/admin/analytics?refresh=${encodeURIComponent(buildStamp)}" style="display:inline-block;background:#111827;color:#e5e7eb;border:1px solid #374151;border-radius:8px;padding:7px 10px;text-decoration:none;">Refresh now</a>
 	    <span id="status" class="muted">Snapshot updated: ${snapshotGeneratedAt} UTC</span>
-	  </div>
-	  <div class="section card" style="max-width: 980px;">
-	    <h3 style="margin-top:0;">Pricing Controls</h3>
-	    <form id="pricingSettingsForm" class="controls" style="margin-bottom:6px;">
-	      <label for="pricingCoefficient">Price coefficient</label>
-	      <input id="pricingCoefficient" name="full_quality_price_coefficient" type="number" min="0.01" max="1000" step="0.01" value="${escapeHtml(pricingCoefficient)}" />
-	      <label for="pricingMinDiscount">Pack min discount %</label>
-	      <input id="pricingMinDiscount" name="region_pack_discount_min_percent" type="number" min="0" max="95" step="5" value="${escapeHtml(pricingMinDiscount)}" />
-	      <label for="pricingMaxDiscount">Pack max discount %</label>
-	      <input id="pricingMaxDiscount" name="region_pack_discount_max_percent" type="number" min="0" max="95" step="5" value="${escapeHtml(pricingMaxDiscount)}" />
-	      <button type="submit">Save Pricing</button>
-	      <span id="pricingSettingsStatus" class="muted">Applied live; no catalog rebuild needed.</span>
-	    </form>
-	    <div class="muted">Generated product and tile prices stay as coefficient-1.0 gross values. The Worker applies this coefficient and discount spread at request time.</div>
 	  </div>
 	  <div class="grid">
     <div class="card"><div class="label">Total Earned</div><div id="topEarnedEur" class="value">${topEarnedEurHtml}</div></div>
@@ -219,8 +194,6 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
 	    const windowEl = document.getElementById("window");
 	    const tileMapWindowEl = document.getElementById("tileMapWindow");
 	    const refreshBtn = document.getElementById("refresh");
-	    const pricingSettingsForm = document.getElementById("pricingSettingsForm");
-	    const pricingSettingsStatus = document.getElementById("pricingSettingsStatus");
     const setText = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
     window.addEventListener("error", (event) => {
       const message = "Runtime error: " + String(event && event.message || "unknown_error");
@@ -641,37 +614,6 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         }
         loadAnalytics();
       });
-	    }
-	    if (pricingSettingsForm) {
-	      pricingSettingsForm.addEventListener("submit", async (event) => {
-	        event.preventDefault();
-	        if (pricingSettingsStatus) {
-	          pricingSettingsStatus.textContent = "Saving...";
-	          pricingSettingsStatus.className = "muted";
-	        }
-	        try {
-	          const form = new FormData(pricingSettingsForm);
-	          const res = await fetch("/admin/settings/pricing", {
-	            method: "POST",
-	            credentials: "same-origin",
-	            headers: { "Content-Type": "application/json" },
-	            body: JSON.stringify(Object.fromEntries(form.entries())),
-	          });
-	          const data = await res.json();
-	          if (!res.ok || !data.ok) {
-	            throw new Error(String(data && (data.message || data.error) || ("HTTP " + res.status)));
-	          }
-	          if (pricingSettingsStatus) {
-	            pricingSettingsStatus.textContent = "Saved. New prices are live.";
-	            pricingSettingsStatus.className = "muted";
-	          }
-	        } catch (error) {
-	          if (pricingSettingsStatus) {
-	            pricingSettingsStatus.textContent = "Pricing save failed: " + String(error && error.message || error);
-	            pricingSettingsStatus.className = "error";
-	          }
-	        }
-	      });
 	    }
 	    if (windowEl) windowEl.addEventListener("change", loadAnalytics);
     if (tileMapWindowEl) tileMapWindowEl.addEventListener("change", loadAnalytics);
