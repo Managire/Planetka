@@ -444,7 +444,7 @@ def _run_camera_full_quality_resolve_after_checkout(scene):
                 base_path=base_path,
                 force_full_price_refresh=True,
             )
-            _schedule_region_pack_offers_after_camera_resolve(scene)
+            _force_region_pack_offers_refresh(scene, clear_caches=False)
             _tag_view3d_redraw()
             logger.info("Planetka: Full Quality resolve started after scene payment.")
             return True
@@ -638,7 +638,9 @@ def _post_checkout_monitor_timer():
     if price_eur is not None and price_eur <= 0.000001:
         _POST_CHECKOUT_MONITOR = {}
         _POST_CHECKOUT_MONITOR_REGISTERED = False
-        _run_camera_full_quality_resolve_after_checkout(scene)
+        if not _run_camera_full_quality_resolve_after_checkout(scene):
+            _force_region_pack_offers_refresh(scene)
+            _tag_view3d_redraw()
         return None
     return _POST_CHECKOUT_POLL_INTERVAL_SEC
 
@@ -1280,7 +1282,8 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
                 return {'FINISHED'}
             scene = getattr(context, "scene", None)
             _scene_full_quality_price_eur(scene)
-            _run_camera_full_quality_resolve_after_checkout(scene)
+            if not _run_camera_full_quality_resolve_after_checkout(scene):
+                _force_region_pack_offers_refresh(scene)
             message = str(checkout.get("message", "") or "").strip() or "No payment required for this Full Quality purchase."
             self.report({'INFO'}, message)
             return {'FINISHED'}
