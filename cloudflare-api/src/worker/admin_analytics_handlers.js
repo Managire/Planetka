@@ -184,6 +184,7 @@ export async function handleAdminSetPricingSettings(request, env, deps) {
         full_quality_price_coefficient: payload.full_quality_price_coefficient,
         region_pack_discount_min_percent: payload.region_pack_discount_min_percent,
         region_pack_discount_max_percent: payload.region_pack_discount_max_percent,
+        region_pack_discount_share_buckets_json: payload.region_pack_discount_share_buckets_json,
       },
       auth.user && auth.user.id || "",
       deps,
@@ -279,6 +280,28 @@ export async function handleAdminAnalyticsProductsPage(request, env, deps) {
   const maxDiscount = Number.isFinite(Number(settings.region_pack_discount_max_percent))
     ? String(Math.round(Number(settings.region_pack_discount_max_percent)))
     : "75";
+  const fmtBucketNumber = (value) => {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) {
+      return "0";
+    }
+    return numeric.toFixed(4).replace(/\.?0+$/, "");
+  };
+  const discountBuckets = Array.isArray(settings.region_pack_discount_share_buckets)
+    ? settings.region_pack_discount_share_buckets
+    : [];
+  const bucketRowsHtml = discountBuckets
+    .filter(([threshold]) => Number(threshold) > 0)
+    .map(([threshold, ratio]) => `<tr class="discount-bucket-row">
+      <td><input class="bucket-threshold" type="number" min="0.0001" max="100" step="0.0001" value="${deps.escapeHtml(fmtBucketNumber(Number(threshold) * 100))}" /></td>
+      <td><input class="bucket-ratio" type="number" min="0" max="100" step="0.0001" value="${deps.escapeHtml(fmtBucketNumber(Number(ratio) * 100))}" /></td>
+      <td><button type="button" class="remove-bucket-row">Remove</button></td>
+    </tr>`)
+    .join("");
+  const sortNumber = (value, fallback = 0) => {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : fallback;
+  };
   const rowsHtml = rows.map((row) => {
     const id = String(row && row.id || "");
     const name = String(row && row.name || "");
@@ -287,7 +310,14 @@ export async function handleAdminAnalyticsProductsPage(request, env, deps) {
     const overrideValue = hasOverride ? String(Math.round(Number(row.override_discount_percent || 0))) : "";
     const overrideLabel = hasOverride ? fmtPercent(row.override_discount_percent) : "default";
     const finalClass = Number(row && row.final_price_eur || 0) <= 0 ? " free-price" : "";
-    return `<tr data-pack-id="${deps.escapeHtml(id)}" data-name="${deps.escapeHtml(name.toLowerCase())}" data-type="${deps.escapeHtml(type.toLowerCase())}"${hasOverride ? ` class="override-row"` : ""}>
+    const tileCount = sortNumber(row && row.tile_count);
+    const grossBaseEur = sortNumber(row && row.gross_base_eur);
+    const fullPriceEur = sortNumber(row && row.full_price_eur);
+    const defaultDiscount = sortNumber(row && row.default_discount_percent);
+    const overrideDiscount = hasOverride ? sortNumber(row && row.override_discount_percent) : -1;
+    const discountEur = sortNumber(row && row.discount_eur);
+    const finalPriceEur = sortNumber(row && row.final_price_eur);
+    return `<tr data-pack-id="${deps.escapeHtml(id)}" data-name="${deps.escapeHtml(name.toLowerCase())}" data-type="${deps.escapeHtml(type.toLowerCase())}" data-sort-product="${deps.escapeHtml(name.toLowerCase())}" data-sort-type="${deps.escapeHtml(type.toLowerCase())}" data-sort-tiles="${tileCount}" data-sort-gross-base="${grossBaseEur}" data-sort-full-price="${fullPriceEur}" data-sort-default-discount="${defaultDiscount}" data-sort-override="${overrideDiscount}" data-sort-discount-eur="${discountEur}" data-sort-final-price="${finalPriceEur}" data-sort-set-discount="${overrideDiscount}"${hasOverride ? ` class="override-row"` : ""}>
       <td><strong>${deps.escapeHtml(name)}</strong><br><span class="muted">${deps.escapeHtml(id)}</span></td>
       <td>${deps.escapeHtml(type || "-")}</td>
       <td>${fmtInt(row && row.tile_count)}<br><span class="muted">${fmtInt(row && row.paid_tile_count)} paid / ${fmtInt(row && row.free_tile_count)} free</span></td>
@@ -327,6 +357,13 @@ export async function handleAdminAnalyticsProductsPage(request, env, deps) {
     .free-price { color: #86efac; }
     .override-row td { background: rgba(217, 164, 65, 0.08); }
     .product-discount-form { display:flex; gap:6px; align-items:center; flex-wrap: nowrap; }
+    .bucket-table { width:auto; min-width:520px; max-width:760px; margin: 8px 0 10px; }
+    .bucket-table input[type=number] { width: 120px; }
+    .bucket-table th { position: static; background: transparent; }
+    .bucket-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .sort-button { appearance:none; border:0; background:transparent; color:#93c5fd; padding:0; font:inherit; font-weight:600; cursor:pointer; text-align:left; }
+    .sort-button:hover { color:#bfdbfe; }
+    .sort-indicator { display:inline-block; min-width:1em; color:#f4d28d; }
     .error { color:#fca5a5; }
   </style>
 </head>
@@ -355,6 +392,22 @@ export async function handleAdminAnalyticsProductsPage(request, env, deps) {
       <span>Default pack discount range: <strong>${deps.escapeHtml(minDiscount)}%-${deps.escapeHtml(maxDiscount)}%</strong></span>
       <span id="productStatus" class="muted">Product overrides are applied live to Blender, web pages, and checkout.</span>
     </div>
+    <h4 style="margin:12px 0 4px;">Volume Discount Buckets</h4>
+    <div class="muted">Each row means: if a data pack covers at least this share of world land, apply this percentage of the current discount range. Anything below the lowest threshold uses the minimum discount.</div>
+    <table class="bucket-table" id="discountBucketTable">
+      <thead>
+        <tr>
+          <th>Land share &gt;= %</th>
+          <th>% of discount range</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>${bucketRowsHtml}</tbody>
+    </table>
+    <div class="bucket-actions">
+      <button type="button" id="addBucketRow">Add bucket</button>
+      <span class="muted">Example: 40 and 100 means packs covering at least 40% of world land receive the maximum pack discount.</span>
+    </div>
     <div class="muted">Generated product and tile prices stay as coefficient-1.0 gross values. The Worker applies this coefficient and discount spread at request time.</div>
   </section>
   <section class="card">
@@ -368,16 +421,16 @@ export async function handleAdminAnalyticsProductsPage(request, env, deps) {
   <table id="productsTable">
     <thead>
       <tr>
-        <th>Product</th>
-        <th>Type</th>
-        <th>Tiles</th>
-        <th>Gross Base<br><span class="muted">coefficient 1.0</span></th>
-        <th>Full Price<br><span class="muted">current coefficient</span></th>
-        <th>Default Discount</th>
-        <th>Override</th>
-        <th>Discount EUR</th>
-        <th>Final Price</th>
-        <th>Set Product Discount</th>
+        <th><button type="button" class="sort-button" data-sort-key="product" data-sort-type="text">Product <span class="sort-indicator"></span></button></th>
+        <th><button type="button" class="sort-button" data-sort-key="type" data-sort-type="text">Type <span class="sort-indicator"></span></button></th>
+        <th><button type="button" class="sort-button" data-sort-key="tiles" data-sort-type="number">Tiles <span class="sort-indicator"></span></button></th>
+        <th><button type="button" class="sort-button" data-sort-key="gross-base" data-sort-type="number">Gross Base <span class="sort-indicator"></span></button><br><span class="muted">coefficient 1.0</span></th>
+        <th><button type="button" class="sort-button" data-sort-key="full-price" data-sort-type="number">Full Price <span class="sort-indicator"></span></button><br><span class="muted">current coefficient</span></th>
+        <th><button type="button" class="sort-button" data-sort-key="default-discount" data-sort-type="number">Default Discount <span class="sort-indicator"></span></button></th>
+        <th><button type="button" class="sort-button" data-sort-key="override" data-sort-type="number">Override <span class="sort-indicator"></span></button></th>
+        <th><button type="button" class="sort-button" data-sort-key="discount-eur" data-sort-type="number">Discount EUR <span class="sort-indicator"></span></button></th>
+        <th><button type="button" class="sort-button" data-sort-key="final-price" data-sort-type="number">Final Price <span class="sort-indicator"></span></button></th>
+        <th><button type="button" class="sort-button" data-sort-key="set-discount" data-sort-type="number">Set Product Discount <span class="sort-indicator"></span></button></th>
       </tr>
     </thead>
     <tbody>${rowsHtml}</tbody>
@@ -390,6 +443,11 @@ export async function handleAdminAnalyticsProductsPage(request, env, deps) {
     const overridesOnlyEl = document.getElementById("overridesOnly");
     const visibleCountEl = document.getElementById("visibleCount");
     const table = document.getElementById("productsTable");
+    const tbody = table ? table.querySelector("tbody") : null;
+    const discountBucketTable = document.getElementById("discountBucketTable");
+    const discountBucketBody = discountBucketTable ? discountBucketTable.querySelector("tbody") : null;
+    const addBucketRowButton = document.getElementById("addBucketRow");
+    const sortState = { key: "product", direction: "asc", type: "text" };
     function setStatus(message, isError = false) {
       productStatusEl.textContent = message;
       productStatusEl.className = isError ? "error" : "muted";
@@ -407,6 +465,62 @@ export async function handleAdminAnalyticsProductsPage(request, env, deps) {
         if (show) visible += 1;
       }
       visibleCountEl.textContent = visible.toLocaleString() + " products";
+    }
+    function sortValue(row, key, type) {
+      const raw = row.getAttribute("data-sort-" + key) || "";
+      if (type === "number") {
+        const numeric = Number(raw);
+        return Number.isFinite(numeric) ? numeric : Number.NEGATIVE_INFINITY;
+      }
+      return raw.toLowerCase();
+    }
+    function updateSortIndicators() {
+      for (const button of table.querySelectorAll(".sort-button")) {
+        const active = button.getAttribute("data-sort-key") === sortState.key;
+        const indicator = button.querySelector(".sort-indicator");
+        button.setAttribute("aria-sort", active ? sortState.direction : "none");
+        if (indicator) {
+          indicator.textContent = active ? (sortState.direction === "asc" ? "▲" : "▼") : "";
+        }
+      }
+    }
+    function sortRows() {
+      if (!tbody) return;
+      const rows = Array.from(tbody.querySelectorAll("tr"));
+      const direction = sortState.direction === "desc" ? -1 : 1;
+      rows.sort((left, right) => {
+        const leftValue = sortValue(left, sortState.key, sortState.type);
+        const rightValue = sortValue(right, sortState.key, sortState.type);
+        if (leftValue < rightValue) return -1 * direction;
+        if (leftValue > rightValue) return 1 * direction;
+        return String(left.getAttribute("data-name") || "").localeCompare(String(right.getAttribute("data-name") || ""));
+      });
+      for (const row of rows) {
+        tbody.appendChild(row);
+      }
+      updateSortIndicators();
+      applyFilter();
+    }
+    function addDiscountBucketRow(threshold = "", ratio = "") {
+      if (!discountBucketBody) return;
+      const row = document.createElement("tr");
+      row.className = "discount-bucket-row";
+      row.innerHTML = "<td><input class=\"bucket-threshold\" type=\"number\" min=\"0.0001\" max=\"100\" step=\"0.0001\" value=\"" + String(threshold || "") + "\" /></td>"
+        + "<td><input class=\"bucket-ratio\" type=\"number\" min=\"0\" max=\"100\" step=\"0.0001\" value=\"" + String(ratio || "") + "\" /></td>"
+        + "<td><button type=\"button\" class=\"remove-bucket-row\">Remove</button></td>";
+      discountBucketBody.appendChild(row);
+    }
+    function collectDiscountBuckets() {
+      const buckets = [];
+      if (!discountBucketBody) return buckets;
+      for (const row of discountBucketBody.querySelectorAll(".discount-bucket-row")) {
+        const threshold = Number(row.querySelector(".bucket-threshold") && row.querySelector(".bucket-threshold").value);
+        const ratio = Number(row.querySelector(".bucket-ratio") && row.querySelector(".bucket-ratio").value);
+        if (Number.isFinite(threshold) && threshold > 0 && Number.isFinite(ratio) && ratio >= 0) {
+          buckets.push([threshold / 100, ratio / 100]);
+        }
+      }
+      return buckets;
     }
     async function saveProductDiscount(regionPackId, discountPercent) {
       setStatus("Saving product discount...");
@@ -432,11 +546,13 @@ export async function handleAdminAnalyticsProductsPage(request, env, deps) {
         }
         try {
           const form = new FormData(pricingSettingsForm);
+          const payload = Object.fromEntries(form.entries());
+          payload.region_pack_discount_share_buckets_json = JSON.stringify(collectDiscountBuckets());
           const res = await fetch("/admin/settings/pricing", {
             method: "POST",
             credentials: "same-origin",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(Object.fromEntries(form.entries())),
+            body: JSON.stringify(payload),
           });
           const data = await res.json();
           if (!res.ok || !data.ok) {
@@ -455,6 +571,9 @@ export async function handleAdminAnalyticsProductsPage(request, env, deps) {
         }
       });
     }
+    if (addBucketRowButton) {
+      addBucketRowButton.addEventListener("click", () => addDiscountBucketRow("", ""));
+    }
     document.addEventListener("submit", (event) => {
       const form = event.target && event.target.closest ? event.target.closest(".product-discount-form") : null;
       if (!form) return;
@@ -471,8 +590,29 @@ export async function handleAdminAnalyticsProductsPage(request, env, deps) {
       const regionPackId = form ? form.getAttribute("data-region-pack-id") || "" : "";
       saveProductDiscount(regionPackId, null).catch((error) => setStatus("Reset failed: " + String(error && error.message || error), true));
     });
+    document.addEventListener("click", (event) => {
+      const button = event.target && event.target.closest ? event.target.closest(".remove-bucket-row") : null;
+      if (!button) return;
+      const row = button.closest(".discount-bucket-row");
+      if (row) row.remove();
+    });
+    document.addEventListener("click", (event) => {
+      const button = event.target && event.target.closest ? event.target.closest(".sort-button") : null;
+      if (!button) return;
+      const key = button.getAttribute("data-sort-key") || "product";
+      const type = button.getAttribute("data-sort-type") || "text";
+      if (sortState.key === key) {
+        sortState.direction = sortState.direction === "asc" ? "desc" : "asc";
+      } else {
+        sortState.key = key;
+        sortState.type = type;
+        sortState.direction = type === "number" ? "desc" : "asc";
+      }
+      sortRows();
+    });
     filterEl.addEventListener("input", applyFilter);
     overridesOnlyEl.addEventListener("change", applyFilter);
+    sortRows();
   </script>
 </body>
 </html>`;
@@ -749,8 +889,8 @@ export async function handleAdminAnalyticsUserPage(request, env, deps) {
       <td>${deps.escapeHtml(fmtEurLocal(row && row.amount_paid_eur))}</td>
       <td>${deps.escapeHtml(fmtEurLocal(row && row.gross_eur))}</td>
       <td>${Number(row && row.tile_count_new || 0).toLocaleString()} new / ${Number(row && row.tile_count_total || 0).toLocaleString()} total</td>
-      <td>${deps.escapeHtml(String(row && row.stripe_session_id || ""))}</td>
       <td>${metadataLine}${tileDetails}</td>
+      <td>${deps.escapeHtml(String(row && row.stripe_session_id || ""))}</td>
     </tr>`;
   }).join("");
   const htmlContent = `<!doctype html>
@@ -793,8 +933,8 @@ export async function handleAdminAnalyticsUserPage(request, env, deps) {
         <th>Paid</th>
         <th>Full Price</th>
         <th>Tiles</th>
-        <th>Stripe Session</th>
         <th>Details</th>
+        <th>Stripe Session</th>
       </tr>
     </thead>
     <tbody>${purchaseRowsHtml || `<tr><td colspan="7" class="muted">No purchase history recorded yet.</td></tr>`}</tbody>
@@ -888,6 +1028,8 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
     th, td { border-bottom: 1px solid #1f2937; padding: 8px 6px; text-align:left; vertical-align: top; }
     th { color:#93c5fd; font-weight:600; white-space: nowrap; }
     th a { color:#93c5fd; text-decoration:none; }
+    td a { color:#e5e7eb; text-decoration:none; }
+    td a:hover { color:#ffffff; text-decoration:underline; }
     .action-btn { font-size: 12px; padding: 4px 8px; margin-right: 6px; margin-bottom: 4px; cursor: pointer; }
     .action-btn.warn { border-color: #9a3412; color: #fed7aa; }
     .action-btn.danger { border-color: #991b1b; color: #fecaca; }
