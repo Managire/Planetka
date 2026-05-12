@@ -388,7 +388,7 @@ def _schedule_region_pack_offers_after_camera_resolve(scene):
         logger.debug("Planetka: failed scheduling Full Quality Data Packs refresh", exc_info=True)
 
 
-def _force_region_pack_offers_refresh(scene, *, clear_caches=True):
+def _force_region_pack_offers_refresh(scene, *, clear_caches=True, delay_seconds=0.0):
     if scene is None:
         return False
     if clear_caches:
@@ -402,7 +402,7 @@ def _force_region_pack_offers_refresh(scene, *, clear_caches=True):
         return bool(schedule_region_pack_offer_refresh(
             scene,
             camera_signature_value=camera_signature(scene),
-            delay_seconds=0.0,
+            delay_seconds=max(0.0, float(delay_seconds or 0.0)),
             force=True,
         ))
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
@@ -444,7 +444,7 @@ def _run_camera_full_quality_resolve_after_checkout(scene):
                 base_path=base_path,
                 force_full_price_refresh=True,
             )
-            _force_region_pack_offers_refresh(scene, clear_caches=False)
+            _force_region_pack_offers_refresh(scene, clear_caches=False, delay_seconds=2.0)
             _tag_view3d_redraw()
             logger.info("Planetka: Full Quality resolve started after scene payment.")
             return True
@@ -639,7 +639,7 @@ def _post_checkout_monitor_timer():
         _POST_CHECKOUT_MONITOR = {}
         _POST_CHECKOUT_MONITOR_REGISTERED = False
         if not _run_camera_full_quality_resolve_after_checkout(scene):
-            _force_region_pack_offers_refresh(scene)
+            _force_region_pack_offers_refresh(scene, delay_seconds=2.0)
             _tag_view3d_redraw()
         return None
     return _POST_CHECKOUT_POLL_INTERVAL_SEC

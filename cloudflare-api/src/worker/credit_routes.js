@@ -822,9 +822,19 @@ export async function getRuntimePricingSettings(env = {}, deps = {}, options = {
     console.error("planetka.pricing_settings_load_failed", JSON.stringify({
       error: String(error && error.message || error || "pricing_settings_load_failed"),
     }));
+    if (options && options.strict) {
+      throw error;
+    }
     PRICING_SETTINGS_CACHE = { loaded_at_ms: now, settings: defaults };
     return defaults;
   }
+}
+
+async function ensureRuntimePricingSettings(env = {}, deps = {}) {
+  // Pricing settings live in D1 and Worker isolates are independent. Always
+  // load them before any public pricing calculation so Blender, map pages,
+  // success pages, and Stripe checkout cannot diverge.
+  return await getRuntimePricingSettings(env, deps, { force: true, strict: true });
 }
 
 export async function setRuntimePricingSettings(db, values = {}, adminUserId = "", deps = {}) {
@@ -1910,6 +1920,17 @@ function regionPackStaticMapPayload(product, token, account, ownedRows, options 
     title_prefix: String(options && options.titlePrefix || success && success.context_title_prefix || "").trim(),
     success,
   };
+}
+
+function relatedRegionPackEstimateEntries(product, account, ownedByFamily, options = {}) {
+  const limit = Math.max(0, Number.parseInt(options && options.limit || 6, 10) || 6);
+  const forceFresh = Boolean(options && options.forceFresh);
+  return relatedRegionProducts(product, limit)
+    .map((candidate) => ({
+      product: candidate,
+      estimate: estimateRegionPackSummaryCached(candidate, account, ownedByFamily, { cache: !forceFresh }),
+    }))
+    .filter((entry) => entry && entry.product && entry.estimate && !entry.estimate.error);
 }
 
 function pointInGeneratedRegionOutlines(product, latitudeDeg, longitudeDeg) {
@@ -6476,6 +6497,7 @@ function eurFromStripeAmountCents(value) {
 }
 
 export async function handleCreditCheckout(request, env, deps) {
+  await ensureRuntimePricingSettings(env, deps);
   const auth = await deps.requireAuthenticatedUserContext(request, env, { enforceApiKeyDevicePolicy: false });
   if (auth.error) {
     return auth.error;
@@ -6800,6 +6822,7 @@ export async function handleCreditCheckout(request, env, deps) {
 }
 
 export async function handleCreditMe(request, env, deps) {
+  await ensureRuntimePricingSettings(env, deps);
   const auth = await deps.requireAuthenticatedUserContext(request, env, { enforceApiKeyDevicePolicy: false });
   if (auth.error) {
     return auth.error;
@@ -6840,6 +6863,7 @@ export async function handleCreditMe(request, env, deps) {
 }
 
 export async function handleCreditEstimate(request, env, deps) {
+  await ensureRuntimePricingSettings(env, deps);
   const timing = createEndpointTimer("credits.estimate");
   const auth = await deps.requireAuthenticatedUserContext(request, env, { enforceApiKeyDevicePolicy: false });
   if (auth.error) {
@@ -6911,6 +6935,7 @@ export async function handleCreditEstimate(request, env, deps) {
 }
 
 export async function handleCreditRegionOffers(request, env, deps) {
+  await ensureRuntimePricingSettings(env, deps);
   const timing = createEndpointTimer("credits.region_offers");
   const auth = await deps.requireAuthenticatedUserContext(request, env, { enforceApiKeyDevicePolicy: false });
   if (auth.error) {
@@ -7009,6 +7034,7 @@ export async function handleCreditRegionOffers(request, env, deps) {
 }
 
 export async function handleCreditRegionPackRelatedOffers(request, env, deps) {
+  await ensureRuntimePricingSettings(env, deps);
   const timing = createEndpointTimer("credits.region_pack_related_offers");
   const auth = await deps.requireAuthenticatedUserContext(request, env, { enforceApiKeyDevicePolicy: false });
   if (auth.error) {
@@ -7372,6 +7398,7 @@ main{max-width:760px;margin:0 auto;padding:24px}h1{margin:0 0 10px;font-size:28p
 }
 
 export async function handleCreditRegionPackCheckoutFromToken(request, env, deps) {
+  await ensureRuntimePricingSettings(env, deps);
   const timing = createEndpointTimer("credits.region_pack_checkout");
   const { token, requestedRegionId, allowCatalogProduct, method } = await regionPackCheckoutParams(request);
   timing.mark("params");
@@ -7551,6 +7578,7 @@ export async function handleCreditRegionPackCheckoutFromToken(request, env, deps
 }
 
 export async function handleCreditRegionPackMap(request, env, deps) {
+  await ensureRuntimePricingSettings(env, deps);
   const timing = createEndpointTimer("credits.region_pack_map");
   clearRegionPackMapVolatileCaches();
   const url = new URL(request.url);
@@ -7634,12 +7662,7 @@ export async function handleCreditRegionPackMap(request, env, deps) {
       env,
     ), timing, env, { error: estimate.error, region_pack_id: String(product && product.id || "") });
   }
-  const upsells = relatedRegionProducts(product, 6)
-    .map((candidate) => ({
-      product: candidate,
-      estimate: estimateRegionPackSummaryCached(candidate, account, ownedByFamily),
-    }))
-    .filter((entry) => entry && entry.product && entry.estimate && !entry.estimate.error);
+  const upsells = relatedRegionPackEstimateEntries(product, account, ownedByFamily);
   timing.mark("upsell_estimates");
   const data = regionPackStaticMapPayload(product, token, account, ownedSummary.rows, {
     catalogMode: allowCatalogProduct,
@@ -7749,6 +7772,7 @@ export async function handleCreditRegionPackCatalog(request, env, deps) {
 }
 
 export async function handleCreditRegionPackCatalogPage(request, env, deps) {
+  await ensureRuntimePricingSettings(env, deps);
   const timing = createEndpointTimer("credits.region_pack_catalog_page");
   const url = new URL(request.url);
   const token = String(url.searchParams.get("token") || "").trim();
@@ -7773,6 +7797,7 @@ export async function handleCreditRegionPackCatalogPage(request, env, deps) {
 }
 
 export async function handleCreditSceneMap(request, env, deps) {
+  await ensureRuntimePricingSettings(env, deps);
   const timing = createEndpointTimer("credits.scene_map");
   const url = new URL(request.url);
   const token = String(url.searchParams.get("token") || "").trim();
@@ -7910,6 +7935,7 @@ function checkoutReturnHtml({ title, heading, message, icon, tone }) {
 }
 
 export async function handleCreditPaymentSuccess(request, env, deps) {
+  await ensureRuntimePricingSettings(env, deps);
   const url = new URL(request.url);
   const sessionId = String(url.searchParams.get("session_id") || "").trim();
   if (!sessionId) {
@@ -8015,9 +8041,14 @@ export async function handleCreditPaymentSuccess(request, env, deps) {
       if (contextProduct) {
         const tokenResult = await createRegionPackDetailTokenForUser(db, userId, String(contextProduct.id || ""), env, deps);
         const account = await ensureFreshCreditAccountForUser(db, userId, deps);
-        const ownedRows = await ownedTileRowsForUser(db, userId, deps);
-        const data = regionPackStaticMapPayload(contextProduct, tokenResult.token, account, ownedRows, {
+        const ownedSummary = await ownedEntitlementSummaryForUser(db, userId, deps, { account, includeRows: false });
+        const contextEstimate = estimateRegionPackSummaryCached(contextProduct, account, ownedSummary.ownedByFamily, { cache: false });
+        const upsells = relatedRegionPackEstimateEntries(contextProduct, account, ownedSummary.ownedByFamily, { forceFresh: true });
+        const data = regionPackStaticMapPayload(contextProduct, tokenResult.token, account, ownedSummary.rows, {
           catalogMode: true,
+          estimate: contextEstimate && !contextEstimate.error ? contextEstimate : null,
+          upsells,
+          ownedByFamily: ownedSummary.ownedByFamily,
           titlePrefix: "Data Pack to Consider",
           success: {
             title: paymentSuccessTitle,
@@ -8055,9 +8086,14 @@ export async function handleCreditPaymentSuccess(request, env, deps) {
       if (contextProduct) {
         const tokenResult = await createRegionPackDetailTokenForUser(db, userId, String(contextProduct.id || ""), env, deps);
         const account = await ensureFreshCreditAccountForUser(db, userId, deps);
-        const ownedRows = await ownedTileRowsForUser(db, userId, deps);
-        const data = regionPackStaticMapPayload(contextProduct, tokenResult.token, account, ownedRows, {
+        const ownedSummary = await ownedEntitlementSummaryForUser(db, userId, deps, { account, includeRows: false });
+        const contextEstimate = estimateRegionPackSummaryCached(contextProduct, account, ownedSummary.ownedByFamily, { cache: false });
+        const upsells = relatedRegionPackEstimateEntries(contextProduct, account, ownedSummary.ownedByFamily, { forceFresh: true });
+        const data = regionPackStaticMapPayload(contextProduct, tokenResult.token, account, ownedSummary.rows, {
           catalogMode: true,
+          estimate: contextEstimate && !contextEstimate.error ? contextEstimate : null,
+          upsells,
+          ownedByFamily: ownedSummary.ownedByFamily,
           titlePrefix: "Data Pack to Consider",
           success: {
             title: paymentSuccessTitle,
@@ -8118,9 +8154,14 @@ export async function handleCreditPaymentSuccess(request, env, deps) {
         );
       }
       const account = await ensureFreshCreditAccountForUser(db, userId, deps);
-      const ownedRows = await ownedTileRowsForUser(db, userId, deps);
-      const data = regionPackStaticMapPayload(product, tokenResult.token, account, ownedRows, {
+      const ownedSummary = await ownedEntitlementSummaryForUser(db, userId, deps, { account, includeRows: false });
+      const estimate = estimateRegionPackSummaryCached(product, account, ownedSummary.ownedByFamily, { cache: false });
+      const upsells = relatedRegionPackEstimateEntries(product, account, ownedSummary.ownedByFamily, { forceFresh: true });
+      const data = regionPackStaticMapPayload(product, tokenResult.token, account, ownedSummary.rows, {
         catalogMode: true,
+        estimate: estimate && !estimate.error ? estimate : null,
+        upsells,
+        ownedByFamily: ownedSummary.ownedByFamily,
         success,
       });
       return html(regionPackStaticMapHtml(data), 200, env);
@@ -8280,6 +8321,7 @@ function sceneEstimateFromPurchaseTiles(purchase, rows) {
 }
 
 async function applyStripeCreditPurchaseFromSession(db, session, deps, env) {
+  await ensureRuntimePricingSettings(env, deps);
   const sessionId = String(session && session.id || "").trim();
   if (!sessionId) {
     return { error: "missing_session_id" };
