@@ -26,11 +26,14 @@ from .animation_tools import (
     ANIMATION_RENDER_STATUS_ICON_KEY,
     ANIMATION_RENDER_STATUS_TEXT_KEY,
     ANIMATION_STATS_CREDITS_KEY,
+    ANIMATION_STATS_CUSTOM_LICENCE_KEY,
+    ANIMATION_STATS_CUSTOM_LICENCE_SEGMENTS_KEY,
     ANIMATION_STATS_LEGACY_CREDITS_KEY,
     ANIMATION_STATS_LEGACY_NEW_TILE_COUNT_KEY,
     ANIMATION_STATS_NEW_TILE_COUNT_KEY,
     ANIMATION_STATS_PRICE_KNOWN_KEY,
     ANIMATION_STATS_SEGMENTS_KEY,
+    ANIMATION_STATS_TILE_PRICE_KEY,
 )
 from .state import (
     ACCOUNT_PANEL_DEFAULT_COLLAPSED_KEY,
@@ -2711,15 +2714,27 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
                     scene.get(ANIMATION_STATS_LEGACY_NEW_TILE_COUNT_KEY, 0),
                 ) or 0
             )
+            anim_tile_price = float(scene.get(ANIMATION_STATS_TILE_PRICE_KEY, anim_credits) or 0.0)
+            anim_custom_licence = float(scene.get(ANIMATION_STATS_CUSTOM_LICENCE_KEY, 0.0) or 0.0)
+            anim_custom_licence_segments = int(scene.get(ANIMATION_STATS_CUSTOM_LICENCE_SEGMENTS_KEY, 0) or 0)
         except (TypeError, ValueError, RuntimeError, AttributeError):
             anim_price_known = False
             anim_credits = 0.0
             anim_paid_tiles = 0
+            anim_tile_price = 0.0
+            anim_custom_licence = 0.0
+            anim_custom_licence_segments = 0
         if not anim_price_known:
             final_render_allowed = False
         final_render_box.label(text=f"New Tiles to be Licenced and Downloaded: {anim_paid_tiles}", icon="TEXTURE")
         if not anim_price_known:
             final_render_box.label(text="Animation price is not available yet. Generate keyframes or refresh pricing.", icon="INFO")
+        elif anim_custom_licence > 0.000001:
+            final_render_box.label(text=f"Tile price: €{max(0.0, anim_tile_price):.2f}", icon="TEXTURE")
+            final_render_box.label(
+                text=f"Animation licence: {anim_custom_licence_segments} x €1.00 = €{max(0.0, anim_custom_licence):.2f}",
+                icon="URL",
+            )
         if anim_credits > 0.0:
             anim_has_new_cost = bool(anim_credits > 0.000001)
             if anim_has_new_cost:

@@ -580,23 +580,35 @@ User-facing workflow:
 1. Camera keyframes/animation segment plan are generated.
 2. Planetka calculates all Full Quality tiles needed by all time segments.
 3. It asks the backend for an authoritative price for the unique tile set.
-4. UI displays:
+4. Client-side animation pricing uses the authoritative per-tile rows from `/credits/estimate`, not the scene-level `credits` field, because scene-level estimates include the still-scene custom licence policy.
+5. UI displays:
    - New Tiles to be Licenced and Downloaded.
-   - Price.
+   - Full Quality tile price.
+   - Custom animation licence total, if any.
+   - Final price.
    - Details popup with per-segment tile rows.
-5. User clicks `Render Animation (€X.XX)` and confirms.
-6. Before frame rendering starts:
+6. User clicks `Render Animation (€X.XX)` and confirms.
+7. Before frame rendering starts:
    - Backend licences all unique Full Quality animation tiles via `/tiles/session` and `land_credits_v1`.
    - UI price is set to `€0.00` because all tiles are now licenced.
    - All required texture files are downloaded up front into cache.
-7. Segment resolves during the render should use already licenced/downloaded data. Online access remains only as a fallback.
-8. If the user cancels or Blender crashes, the licenced tiles remain licenced and can be reused later without extra charge.
+8. Segment resolves during the render should use already licenced/downloaded data. Online access remains only as a fallback.
+9. If the user cancels or Blender crashes, the licenced tiles remain licenced and can be reused later without extra charge.
 
 Animation breakdown rule:
 
 - Each tile is charged once across the full animation.
 - Later segments using the same tile show `€0.00` with reason `already counted in an earlier animation segment`.
 - Tiles licenced before the render show `€0.00` with reason `already licenced before this render`.
+- Each animation segment has its own post-deduction tile value.
+- If a segment's new tile value is greater than `€0.50`, add a `€1.00` `Custom animation licence` fee for that segment.
+- Segments at or below `€0.50` do not add the custom animation licence fee.
+- Final animation price is:
+
+```text
+sum(unique new Full Quality tile prices across all segments)
++ (number of segments with new tile value > €0.50 * €1.00)
+```
 
 ## 15. Downloading Licenced Tiles and Local Source
 
