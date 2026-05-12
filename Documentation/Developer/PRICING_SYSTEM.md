@@ -601,12 +601,13 @@ Animation breakdown rule:
 - Later segments using the same tile show `€0.00` with reason `already counted in an earlier animation segment`.
 - Tiles licenced before the render show `€0.00` with reason `already licenced before this render`.
 - Each animation segment has its own post-deduction tile value.
-- If a segment's new tile value is greater than `€0.50`, add a `€1.00` `Custom animation licence` fee for that segment.
-- Segments at or below `€0.50` do not add the custom animation licence fee.
+- If a segment's new tile value is below `€0.50`, that segment is licenced at no charge.
+- If a segment's new tile value is greater than `€0.50`, charge the segment tile value and add a `€1.00` `Custom animation licence` fee for that segment.
+- Segments at exactly `€0.50` charge the tile value but do not add the custom animation licence fee.
 - Final animation price is:
 
 ```text
-sum(unique new Full Quality tile prices across all segments)
+sum(payable segment Full Quality tile prices after small-segment waivers)
 + (number of segments with new tile value > €0.50 * €1.00)
 ```
 
