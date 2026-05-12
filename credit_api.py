@@ -82,6 +82,12 @@ _PRICE_FIELDS = {
     "custom_scene_licence_eur",
     "scene_payable_eur",
     "scene_small_free_threshold_eur",
+    "tile_price_eur",
+    "raw_tile_price_eur",
+    "waived_tile_price_eur",
+    "custom_animation_licence_eur",
+    "custom_animation_licence_fee_eur",
+    "custom_animation_licence_threshold_eur",
 }
 _CENT = Decimal("0.01")
 _TILE_RE = re.compile(r"x(\d{3})_y(\d{3})_z(\d{3})_d(\d{3})", re.IGNORECASE)
@@ -593,6 +599,57 @@ def create_checkout_session(option: str, tiles=None, quality_mode="FULL", region
     if isinstance(result, dict) and result.get("ok", False):
         return dict(_round_price_fields(result))
     error = "checkout_create_failed"
+    if isinstance(result, dict):
+        error = str(result.get("error", "") or error)
+    raise CreditApiError(0, error, payload=result if isinstance(result, dict) else {})
+
+
+def create_animation_checkout_session(segments, quality_mode="FULL") -> dict:
+    """Create a Stripe Checkout Session for a dynamic Full Quality animation licence."""
+    normalized_segments = []
+    for index, segment in enumerate(list(segments or ()), start=1):
+        if not isinstance(segment, dict):
+            continue
+        raw_tiles = (
+            segment.get("tile_keys")
+            or segment.get("tileKeys")
+            or segment.get("tiles")
+            or segment.get("pricing_tiles")
+            or segment.get("pricingTiles")
+            or []
+        )
+        tile_keys = _normalize_tile_keys(raw_tiles)
+        if not tile_keys:
+            continue
+        try:
+            start = int(segment.get("start", segment.get("frame_start", segment.get("frameStart", 0))) or 0)
+        except (TypeError, ValueError):
+            start = 0
+        try:
+            end = int(segment.get("end", segment.get("frame_end", segment.get("frameEnd", start))) or start)
+        except (TypeError, ValueError):
+            end = start
+        try:
+            segment_index = int(segment.get("index", index) or index)
+        except (TypeError, ValueError):
+            segment_index = index
+        normalized_segments.append(
+            {
+                "index": max(1, int(segment_index)),
+                "start": max(0, int(start)),
+                "end": max(max(0, int(start)), int(end)),
+                "tile_keys": tile_keys,
+            }
+        )
+    payload = {
+        "option": "animation",
+        "quality_mode": str(quality_mode or "FULL").strip().lower(),
+        "segments": normalized_segments,
+    }
+    result = _request_json("POST", "/credits/checkout", body=payload, timeout=45)
+    if isinstance(result, dict) and result.get("ok", False):
+        return dict(_round_price_fields(result))
+    error = "animation_checkout_create_failed"
     if isinstance(result, dict):
         error = str(result.get("error", "") or error)
     raise CreditApiError(0, error, payload=result if isinstance(result, dict) else {})

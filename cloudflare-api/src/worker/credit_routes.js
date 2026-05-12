@@ -42,6 +42,12 @@ const STRIPE_MIN_CHECKOUT_AMOUNT_CENTS = 50;
 const SCENE_SMALL_FREE_THRESHOLD_CENTS = 50;
 const SCENE_CUSTOM_LICENCE_CENTS = 150;
 const SCENE_CUSTOM_LICENCE_LABEL = "Custom scene-specific licence";
+const ANIMATION_SEGMENT_SMALL_FREE_THRESHOLD_CENTS = 50;
+const ANIMATION_CUSTOM_LICENCE_CENTS = 100;
+const ANIMATION_CUSTOM_LICENCE_LABEL = "Custom animation licence";
+const ANIMATION_CHECKOUT_TTL_SECONDS = 2 * 60 * 60;
+const ANIMATION_CHECKOUT_MAX_SEGMENTS = 1000;
+const ANIMATION_CHECKOUT_MAX_UNIQUE_TILES = 5000;
 const MONEY_SCALE = 100;
 const METRIC_SCALE = 1_000_000;
 const REGION_PACK_CATALOG_VERSION = GENERATED_REGION_PACK_CATALOG_VERSION || "gadm_regions_v8";
@@ -5109,6 +5115,338 @@ function sceneEstimateWithPaymentPolicy(estimate) {
   };
 }
 
+function normalizeAnimationSegments(value) {
+  const source = Array.isArray(value) ? value : [];
+  const segments = [];
+  for (const entry of source) {
+    const rawTiles = entry && typeof entry === "object"
+      ? (
+        entry.tile_keys
+        || entry.tileKeys
+        || entry.tiles
+        || entry.pricing_tiles
+        || entry.pricingTiles
+      )
+      : [];
+    const tileKeys = normalizeTileKeys(rawTiles);
+    if (!tileKeys.length) {
+      continue;
+    }
+    const index = Math.max(1, Number.parseInt(entry && entry.index || segments.length + 1, 10) || segments.length + 1);
+    const start = Math.max(0, Number.parseInt(entry && entry.start || entry && entry.frame_start || entry && entry.frameStart || 0, 10) || 0);
+    const end = Math.max(start, Number.parseInt(entry && entry.end || entry && entry.frame_end || entry && entry.frameEnd || start, 10) || start);
+    segments.push({
+      index,
+      start,
+      end,
+      tile_keys: tileKeys,
+    });
+  }
+  return segments;
+}
+
+function uniqueAnimationTileKeys(segments) {
+  const keys = [];
+  const seen = new Set();
+  for (const segment of segments || []) {
+    for (const key of normalizeTileKeys(segment && segment.tile_keys || [])) {
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      keys.push(key);
+    }
+  }
+  return keys;
+}
+
+function estimateAnimationCheckoutPricingFromEstimate(segments, estimate) {
+  const recordsByKey = new Map();
+  for (const row of Array.isArray(estimate && estimate.tiles) ? estimate.tiles : []) {
+    const key = normalizeTileKey(row && row.tile_key || "");
+    if (key) {
+      recordsByKey.set(key, { ...row, tile_key: key });
+    }
+  }
+
+  const seen = new Set();
+  const segmentBreakdowns = [];
+  const licenceTiles = [];
+  let rawTileCentsTotal = 0;
+  let payableTileCentsTotal = 0;
+  let waivedTileCentsTotal = 0;
+  let customLicenceCentsTotal = 0;
+  let customLicenceSegments = 0;
+  let smallFreeSegments = 0;
+  let newTileCount = 0;
+
+  for (const segment of segments || []) {
+    const rows = [];
+    let segmentRawCents = 0;
+    let segmentNewTileCount = 0;
+    for (const tileKey of normalizeTileKeys(segment && segment.tile_keys || [])) {
+      const original = recordsByKey.get(tileKey) || { tile_key: tileKey, credits: 0, price_eur: 0 };
+      const row = { ...original, tile_key: tileKey };
+      let rowCents = centsForEur(row.credits ?? row.price_eur);
+      if (rowCents > 0) {
+        if (seen.has(tileKey)) {
+          row.credits = 0;
+          row.price_eur = 0;
+          row.free_reason = "already_listed_in_earlier_animation_segment";
+          rowCents = 0;
+        } else {
+          seen.add(tileKey);
+          segmentRawCents += rowCents;
+          segmentNewTileCount += 1;
+        }
+      }
+      rows.push(row);
+    }
+
+    const smallFree = segmentRawCents > 0 && segmentRawCents < ANIMATION_SEGMENT_SMALL_FREE_THRESHOLD_CENTS;
+    const segmentPayableCents = smallFree ? 0 : segmentRawCents;
+    const segmentLicenceCents = segmentPayableCents > ANIMATION_SEGMENT_SMALL_FREE_THRESHOLD_CENTS
+      ? ANIMATION_CUSTOM_LICENCE_CENTS
+      : 0;
+    if (smallFree) {
+      smallFreeSegments += 1;
+      waivedTileCentsTotal += segmentRawCents;
+    }
+    if (segmentLicenceCents > 0) {
+      customLicenceSegments += 1;
+      customLicenceCentsTotal += segmentLicenceCents;
+    }
+    rawTileCentsTotal += segmentRawCents;
+    payableTileCentsTotal += segmentPayableCents;
+    newTileCount += segmentNewTileCount;
+
+    for (const row of rows) {
+      const originalCents = centsForEur(row.credits ?? row.price_eur);
+      if (originalCents <= 0 || String(row.free_reason || "") === "already_listed_in_earlier_animation_segment") {
+        continue;
+      }
+      const grossCents = centsForEur(row.gross_price_eur ?? row.gross_credits ?? row.credits ?? row.price_eur);
+      const entitlementCents = smallFree ? 0 : originalCents;
+      if (smallFree) {
+        row.gross_credits = normalizeCreditAmount(grossCents / 100);
+        row.gross_price_eur = normalizeCreditAmount(grossCents / 100);
+        row.credits = 0;
+        row.price_eur = 0;
+        row.free_reason = "animation_segment_below_minimum";
+      }
+      licenceTiles.push({
+        ...row,
+        credits: normalizeCreditAmount(entitlementCents / 100),
+        price_eur: normalizeCreditAmount(entitlementCents / 100),
+        gross_credits: normalizeCreditAmount(grossCents / 100),
+        gross_price_eur: normalizeCreditAmount(grossCents / 100),
+        tile_status: entitlementCents > 0 ? "new" : "animation_segment_below_minimum",
+        entitlement_source: entitlementCents > 0 ? "stripe_animation" : "animation_segment_small_free",
+      });
+    }
+
+    segmentBreakdowns.push({
+      index: Math.max(1, Number.parseInt(segment && segment.index || segmentBreakdowns.length + 1, 10) || segmentBreakdowns.length + 1),
+      start: Math.max(0, Number.parseInt(segment && segment.start || 0, 10) || 0),
+      end: Math.max(0, Number.parseInt(segment && segment.end || segment && segment.start || 0, 10) || 0),
+      raw_tile_price_eur: normalizeCreditAmount(segmentRawCents / 100),
+      tile_price_eur: normalizeCreditAmount(segmentPayableCents / 100),
+      custom_animation_licence_eur: normalizeCreditAmount(segmentLicenceCents / 100),
+      price_eur: normalizeCreditAmount((segmentPayableCents + segmentLicenceCents) / 100),
+      animation_segment_below_minimum: smallFree,
+      new_tile_count: segmentNewTileCount,
+      tile_count: rows.length,
+      tiles: rows,
+    });
+  }
+
+  const priceCents = payableTileCentsTotal + customLicenceCentsTotal;
+  return {
+    ok: true,
+    quality_mode: "full",
+    segments: segmentBreakdowns,
+    licence_tiles: licenceTiles,
+    raw_tile_price_eur: normalizeCreditAmount(rawTileCentsTotal / 100),
+    waived_tile_price_eur: normalizeCreditAmount(waivedTileCentsTotal / 100),
+    tile_price_eur: normalizeCreditAmount(payableTileCentsTotal / 100),
+    custom_animation_licence_eur: normalizeCreditAmount(customLicenceCentsTotal / 100),
+    custom_animation_licence_segments: customLicenceSegments,
+    custom_animation_licence_fee_eur: normalizeCreditAmount(ANIMATION_CUSTOM_LICENCE_CENTS / 100),
+    custom_animation_licence_threshold_eur: normalizeCreditAmount(ANIMATION_SEGMENT_SMALL_FREE_THRESHOLD_CENTS / 100),
+    small_free_segments: smallFreeSegments,
+    price_eur: normalizeCreditAmount(priceCents / 100),
+    credits: normalizeCreditAmount(priceCents / 100),
+    new_tile_count: newTileCount,
+    paid_tile_count: licenceTiles.filter((tile) => centsForEur(tile && (tile.credits ?? tile.price_eur)) > 0).length,
+    free_tile_count: licenceTiles.filter((tile) => centsForEur(tile && (tile.credits ?? tile.price_eur)) <= 0).length,
+    tile_count: Math.max(0, Number.parseInt(estimate && estimate.tile_count || uniqueAnimationTileKeys(segments).length, 10) || uniqueAnimationTileKeys(segments).length),
+    integrity_warnings: Array.isArray(estimate && estimate.integrity_warnings) ? estimate.integrity_warnings : [],
+    metadata_missing_tile_keys: Array.isArray(estimate && estimate.metadata_missing_tile_keys) ? estimate.metadata_missing_tile_keys : [],
+  };
+}
+
+async function estimateAnimationCheckoutPricing(db, userId, segments, deps) {
+  if (Array.isArray(segments) && segments.length > ANIMATION_CHECKOUT_MAX_SEGMENTS) {
+    return {
+      error: "animation_checkout_too_many_segments",
+      message: "This animation contains too many segments for direct animation checkout. Reduce segment count or use data packs for this render.",
+      segment_count: segments.length,
+      max_segment_count: ANIMATION_CHECKOUT_MAX_SEGMENTS,
+    };
+  }
+  const normalizedSegments = normalizeAnimationSegments(segments);
+  if (!normalizedSegments.length) {
+    return { error: "missing_animation_segments" };
+  }
+  const uniqueKeys = uniqueAnimationTileKeys(normalizedSegments);
+  if (!uniqueKeys.length) {
+    return { error: "missing_animation_tiles" };
+  }
+  if (uniqueKeys.length > ANIMATION_CHECKOUT_MAX_UNIQUE_TILES) {
+    return {
+      error: "animation_checkout_too_large",
+      message: "This animation contains too many unique Full Quality tiles for direct animation checkout. Use data packs for this render.",
+      tile_count: uniqueKeys.length,
+      max_tile_count: ANIMATION_CHECKOUT_MAX_UNIQUE_TILES,
+    };
+  }
+  const estimate = await estimateNewCredits(db, userId, uniqueKeys, "full", deps);
+  if (estimate && estimate.error) {
+    return estimate;
+  }
+  const pricing = estimateAnimationCheckoutPricingFromEstimate(normalizedSegments, estimate);
+  return {
+    ...pricing,
+    normalized_segments: normalizedSegments,
+    tile_keys: uniqueKeys,
+  };
+}
+
+function parseAnimationCheckoutJson(row, field, fallback) {
+  try {
+    const raw = row && row[field];
+    return raw ? JSON.parse(String(raw || "")) : fallback;
+  } catch (_error) {
+    return fallback;
+  }
+}
+
+function compactAnimationCheckoutPricingForStorage(pricing) {
+  const source = pricing && typeof pricing === "object" ? pricing : {};
+  const compactSegments = (Array.isArray(source.segments) ? source.segments : []).map((segment) => ({
+    index: Math.max(1, Number.parseInt(segment && segment.index || 0, 10) || 1),
+    start: Math.max(0, Number.parseInt(segment && segment.start || 0, 10) || 0),
+    end: Math.max(0, Number.parseInt(segment && segment.end || 0, 10) || 0),
+    raw_tile_price_eur: normalizeCreditAmount(segment && segment.raw_tile_price_eur),
+    tile_price_eur: normalizeCreditAmount(segment && segment.tile_price_eur),
+    custom_animation_licence_eur: normalizeCreditAmount(segment && segment.custom_animation_licence_eur),
+    price_eur: normalizeCreditAmount(segment && segment.price_eur),
+    animation_segment_below_minimum: Boolean(segment && segment.animation_segment_below_minimum),
+    new_tile_count: Math.max(0, Number.parseInt(segment && segment.new_tile_count || 0, 10) || 0),
+    tile_count: Math.max(0, Number.parseInt(segment && segment.tile_count || 0, 10) || 0),
+  }));
+  const compactLicenceTiles = (Array.isArray(source.licence_tiles) ? source.licence_tiles : [])
+    .map((tile) => {
+      const tileKey = normalizeTileKey(tile && tile.tile_key || "");
+      if (!tileKey) {
+        return null;
+      }
+      return {
+        tile_key: tileKey,
+        credits: normalizeCreditAmount(tile && (tile.credits ?? tile.price_eur)),
+        price_eur: normalizeCreditAmount(tile && (tile.price_eur ?? tile.credits)),
+        gross_credits: normalizeCreditAmount(tile && (tile.gross_credits ?? tile.gross_price_eur ?? tile.credits ?? tile.price_eur)),
+        gross_price_eur: normalizeCreditAmount(tile && (tile.gross_price_eur ?? tile.gross_credits ?? tile.credits ?? tile.price_eur)),
+        land_km2: normalizeMetricAmount(tile && tile.land_km2),
+        billable_land_km2: normalizeMetricAmount(tile && tile.billable_land_km2),
+        tile_status: String(tile && tile.tile_status || "").trim(),
+        entitlement_source: String(tile && tile.entitlement_source || "").trim(),
+      };
+    })
+    .filter(Boolean);
+  return {
+    ok: Boolean(source.ok !== false),
+    quality_mode: "full",
+    raw_tile_price_eur: normalizeCreditAmount(source.raw_tile_price_eur),
+    waived_tile_price_eur: normalizeCreditAmount(source.waived_tile_price_eur),
+    tile_price_eur: normalizeCreditAmount(source.tile_price_eur),
+    custom_animation_licence_eur: normalizeCreditAmount(source.custom_animation_licence_eur),
+    custom_animation_licence_segments: Math.max(0, Number.parseInt(source.custom_animation_licence_segments || 0, 10) || 0),
+    custom_animation_licence_fee_eur: normalizeCreditAmount(source.custom_animation_licence_fee_eur || ANIMATION_CUSTOM_LICENCE_CENTS / 100),
+    custom_animation_licence_threshold_eur: normalizeCreditAmount(source.custom_animation_licence_threshold_eur || ANIMATION_SEGMENT_SMALL_FREE_THRESHOLD_CENTS / 100),
+    small_free_segments: Math.max(0, Number.parseInt(source.small_free_segments || 0, 10) || 0),
+    price_eur: normalizeCreditAmount(source.price_eur),
+    credits: normalizeCreditAmount(source.credits ?? source.price_eur),
+    new_tile_count: Math.max(0, Number.parseInt(source.new_tile_count || 0, 10) || 0),
+    paid_tile_count: Math.max(0, Number.parseInt(source.paid_tile_count || 0, 10) || 0),
+    free_tile_count: Math.max(0, Number.parseInt(source.free_tile_count || 0, 10) || 0),
+    tile_count: Math.max(0, Number.parseInt(source.tile_count || 0, 10) || 0),
+    segments: compactSegments,
+    licence_tiles: compactLicenceTiles,
+  };
+}
+
+async function createAnimationCheckoutRecord(db, userId, userEmail, segments, pricing, deps) {
+  await deps.ensureCreditTables(db);
+  const checkoutId = `anim_${deps.randomToken(20)}`;
+  const now = deps.nowIso();
+  const expiresAt = new Date(Date.now() + ANIMATION_CHECKOUT_TTL_SECONDS * 1000).toISOString();
+  const tileKeys = Array.isArray(pricing && pricing.tile_keys) ? pricing.tile_keys : uniqueAnimationTileKeys(segments);
+  const storedPricing = compactAnimationCheckoutPricingForStorage(pricing);
+  await deps.dbRun(
+    db,
+    `
+      INSERT INTO animation_checkout_sessions (
+        id, user_id, user_email, quality_mode, segments_json, pricing_json, tile_keys_json,
+        price_eur, tile_price_eur, custom_animation_licence_eur, custom_animation_licence_segments,
+        status, created_at, expires_at, updated_at
+      )
+      VALUES (?, ?, ?, 'full', ?, ?, ?, ?, ?, ?, ?, 'created', ?, ?, ?)
+    `,
+    [
+      checkoutId,
+      String(userId || "").trim(),
+      String(userEmail || "").trim().toLowerCase(),
+      JSON.stringify(segments || []),
+      JSON.stringify(storedPricing),
+      JSON.stringify(tileKeys || []),
+      normalizeCreditAmount(storedPricing && storedPricing.price_eur),
+      normalizeCreditAmount(storedPricing && storedPricing.tile_price_eur),
+      normalizeCreditAmount(storedPricing && storedPricing.custom_animation_licence_eur),
+      Math.max(0, Number.parseInt(storedPricing && storedPricing.custom_animation_licence_segments || 0, 10) || 0),
+      now,
+      expiresAt,
+      now,
+    ],
+  );
+  return { id: checkoutId, expires_at: expiresAt };
+}
+
+async function updateAnimationCheckoutStripeSession(db, checkoutId, stripeSessionId, deps, status = "stripe_created") {
+  await deps.dbRun(
+    db,
+    `
+      UPDATE animation_checkout_sessions
+      SET stripe_session_id = ?, status = ?, updated_at = ?
+      WHERE id = ?
+    `,
+    [String(stripeSessionId || "").trim(), String(status || "stripe_created").trim(), deps.nowIso(), String(checkoutId || "").trim()],
+  );
+}
+
+async function loadAnimationCheckoutRecord(db, checkoutId, deps) {
+  await deps.ensureCreditTables(db);
+  const safeId = String(checkoutId || "").trim();
+  if (!safeId) {
+    return null;
+  }
+  return await deps.dbGet(
+    db,
+    `SELECT * FROM animation_checkout_sessions WHERE id = ? LIMIT 1`,
+    [safeId],
+  );
+}
+
 export async function unlockTilesForSession(db, userId, qualityMode, tileKeys, resolveId, deps, options = {}) {
   const safeMode = deps.normalizeQualityMode(qualityMode || "");
   if (safeMode === "balanced") {
@@ -5423,6 +5761,213 @@ export async function grantPaidSceneTileEntitlements(db, userId, qualityMode, ti
     scene_payable_eur: policy.scene_payable_eur,
     scene_custom_licence_label: SCENE_CUSTOM_LICENCE_LABEL,
     paid_tile_count: insertedPaidCount,
+    new_tiles: insertedTiles,
+  };
+}
+
+export async function grantPaidAnimationTileEntitlements(
+  db,
+  userId,
+  animationCheckoutId,
+  stripeSessionId,
+  amountPaidEur,
+  deps,
+  userEmail = "",
+  stripePaymentIntentId = "",
+) {
+  const safeUserId = String(userId || "").trim();
+  const safeCheckoutId = String(animationCheckoutId || "").trim();
+  const safeStripeSessionId = String(stripeSessionId || "").trim();
+  if (!safeUserId) {
+    return { error: "missing_user_id" };
+  }
+  if (!safeCheckoutId) {
+    return { error: "missing_animation_checkout_id" };
+  }
+  await ensureCreditAccount(db, safeUserId, deps);
+  const checkout = await loadAnimationCheckoutRecord(db, safeCheckoutId, deps);
+  if (!checkout) {
+    return { error: "animation_checkout_not_found" };
+  }
+  if (String(checkout.user_id || "").trim() !== safeUserId) {
+    return { error: "animation_checkout_user_mismatch" };
+  }
+  if (safeStripeSessionId) {
+    const existingPurchase = await deps.dbGet(
+      db,
+      `SELECT id FROM purchase_history WHERE stripe_session_id = ? LIMIT 1`,
+      [safeStripeSessionId],
+    );
+    if (existingPurchase && existingPurchase.id) {
+      return {
+        ok: true,
+        duplicate_session: true,
+        paid_eur: 0,
+        paid_tile_count: 0,
+        new_tiles: [],
+      };
+    }
+  }
+
+  const pricing = parseAnimationCheckoutJson(checkout, "pricing_json", {});
+  const segments = parseAnimationCheckoutJson(checkout, "segments_json", []);
+  const licenceTiles = Array.isArray(pricing && pricing.licence_tiles) ? pricing.licence_tiles : [];
+  const now = deps.nowIso();
+  const insertedTiles = [];
+  let nominalCredits = 0;
+  for (const tile of licenceTiles) {
+    const tileKey = normalizeTileKey(tile && tile.tile_key || "");
+    if (!tileKey || isFreeCreditTileKey(tileKey)) {
+      continue;
+    }
+    const tileCredits = normalizeCreditAmount(tile && (tile.credits ?? tile.price_eur));
+    const source = String(tile && tile.entitlement_source || (tileCredits > 0 ? "stripe_animation" : "animation_segment_small_free")).trim()
+      || (tileCredits > 0 ? "stripe_animation" : "animation_segment_small_free");
+    const insert = await deps.dbRun(
+      db,
+      `
+        INSERT OR IGNORE INTO user_tile_entitlements (
+          user_id, tile_key, quality_mode, credits_spent, land_km2, billable_land_km2, source, unlocked_at
+        )
+        VALUES (?, ?, 'full', ?, ?, ?, ?, ?)
+      `,
+      [
+        safeUserId,
+        tileKey,
+        tileCredits,
+        Math.max(0, Number.parseFloat(tile && tile.land_km2 || 0) || 0),
+        Math.max(0, Number.parseFloat(tile && tile.billable_land_km2 || 0) || 0),
+        source,
+        now,
+      ],
+    );
+    if (deps.dbMetaChanges(insert) > 0) {
+      insertedTiles.push({
+        ...tile,
+        tile_key: tileKey,
+        credits: tileCredits,
+        price_eur: tileCredits,
+        tile_status: tileCredits > 0 ? "new" : "animation_segment_below_minimum",
+      });
+      nominalCredits = normalizeCreditAmount(nominalCredits + tileCredits);
+    }
+  }
+  if (insertedTiles.length > 0) {
+    await touchUserPricingVersion(db, safeUserId, deps, now);
+    const verificationFailures = await verifyInsertedTileEntitlements(db, safeUserId, insertedTiles, deps);
+    if (verificationFailures.length > 0) {
+      for (const tile of insertedTiles) {
+        await deps.dbRun(
+          db,
+          `DELETE FROM user_tile_entitlements WHERE user_id = ? AND tile_key = ?`,
+          [safeUserId, tile.tile_key],
+        );
+      }
+      await touchUserPricingVersion(db, safeUserId, deps, deps.nowIso());
+      return {
+        error: "tile_unlock_verification_failed",
+        message: "Planetka Full Quality animation licence could not be confirmed for all requested tiles.",
+        missing_tile_key: verificationFailures[0],
+        tile_keys: verificationFailures.slice(0, 10),
+      };
+    }
+  }
+
+  const paymentSource = safeStripeSessionId ? "stripe" : "none";
+  const ledgerReason = safeStripeSessionId ? "stripe_animation_purchase" : "animation_no_payment";
+  const paidEur = normalizeCreditAmount(amountPaidEur);
+  const insertedPaidCount = insertedTiles.filter((tile) => normalizeCreditAmount(tile && (tile.credits ?? tile.price_eur)) > 0).length;
+  const insertedFreeCount = Math.max(0, insertedTiles.length - insertedPaidCount);
+  await deps.dbRun(
+    db,
+    `
+      INSERT INTO credit_ledger (
+        id, user_id, amount_eur, reason, metadata_json, created_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?)
+    `,
+    [
+      deps.randomToken(16),
+      safeUserId,
+      paidEur,
+      ledgerReason,
+      JSON.stringify({
+        stripe_session_id: safeStripeSessionId,
+        stripe_payment_intent_id: String(stripePaymentIntentId || "").trim(),
+        animation_checkout_id: safeCheckoutId,
+        payment_source: paymentSource,
+        quality_mode: "full",
+        segment_count: Array.isArray(segments) ? segments.length : 0,
+        tile_count: insertedTiles.length,
+        tile_count_total: Math.max(0, Number.parseInt(pricing && pricing.tile_count || 0, 10) || 0),
+        tile_count_new: insertedTiles.length,
+        paid_tile_count: insertedPaidCount,
+        free_small_tile_count: insertedFreeCount,
+        raw_tile_price_eur: normalizeCreditAmount(pricing && pricing.raw_tile_price_eur),
+        waived_tile_price_eur: normalizeCreditAmount(pricing && pricing.waived_tile_price_eur),
+        tile_price_eur: normalizeCreditAmount(pricing && pricing.tile_price_eur),
+        custom_animation_licence_eur: normalizeCreditAmount(pricing && pricing.custom_animation_licence_eur),
+        custom_animation_licence_segments: Math.max(0, Number.parseInt(pricing && pricing.custom_animation_licence_segments || 0, 10) || 0),
+        custom_animation_licence_fee_eur: normalizeCreditAmount(pricing && pricing.custom_animation_licence_fee_eur),
+        custom_animation_licence_threshold_eur: normalizeCreditAmount(pricing && pricing.custom_animation_licence_threshold_eur),
+        paid_eur: paidEur,
+        nominal_eur: nominalCredits,
+      }),
+      now,
+    ],
+  );
+  await recordPurchaseHistoryBestEffort(
+    db,
+    {
+      user_id: safeUserId,
+      user_email: String(userEmail || checkout.user_email || "").trim().toLowerCase(),
+      purchase_type: "animation_tiles",
+      stripe_session_id: safeStripeSessionId,
+      stripe_payment_intent_id: String(stripePaymentIntentId || "").trim(),
+      amount_paid_eur: paidEur,
+      nominal_eur: nominalCredits,
+      gross_eur: normalizeCreditAmount(pricing && pricing.raw_tile_price_eur),
+      quality_mode: "full",
+      tile_count_total: Math.max(0, Number.parseInt(pricing && pricing.tile_count || 0, 10) || 0),
+      tile_count_new: insertedTiles.length,
+      tile_count_already_licenced: Math.max(0, Math.max(0, Number.parseInt(pricing && pricing.tile_count || 0, 10) || 0) - insertedTiles.length),
+      tiles: insertedTiles,
+      metadata: {
+        animation_checkout_id: safeCheckoutId,
+        segment_count: Array.isArray(segments) ? segments.length : 0,
+        raw_tile_price_eur: normalizeCreditAmount(pricing && pricing.raw_tile_price_eur),
+        waived_tile_price_eur: normalizeCreditAmount(pricing && pricing.waived_tile_price_eur),
+        tile_price_eur: normalizeCreditAmount(pricing && pricing.tile_price_eur),
+        custom_animation_licence_eur: normalizeCreditAmount(pricing && pricing.custom_animation_licence_eur),
+        custom_animation_licence_segments: Math.max(0, Number.parseInt(pricing && pricing.custom_animation_licence_segments || 0, 10) || 0),
+        custom_animation_licence_label: ANIMATION_CUSTOM_LICENCE_LABEL,
+        custom_animation_licence_fee_eur: normalizeCreditAmount(pricing && pricing.custom_animation_licence_fee_eur),
+        custom_animation_licence_threshold_eur: normalizeCreditAmount(pricing && pricing.custom_animation_licence_threshold_eur),
+        small_free_segments: Math.max(0, Number.parseInt(pricing && pricing.small_free_segments || 0, 10) || 0),
+      },
+      created_at: now,
+    },
+    deps,
+  );
+  await deps.dbRun(
+    db,
+    `
+      UPDATE animation_checkout_sessions
+      SET status = 'applied',
+          stripe_session_id = COALESCE(NULLIF(TRIM(stripe_session_id), ''), ?),
+          updated_at = ?
+      WHERE id = ?
+    `,
+    [safeStripeSessionId || null, now, safeCheckoutId],
+  );
+  return {
+    ok: true,
+    credits: 0,
+    price_eur: 0,
+    paid_eur: paidEur,
+    nominal_eur: nominalCredits,
+    paid_tile_count: insertedPaidCount,
+    free_tile_count: insertedFreeCount,
     new_tiles: insertedTiles,
   };
 }
@@ -5942,14 +6487,155 @@ export async function handleCreditCheckout(request, env, deps) {
   const email = deps.normalizeEmail(auth.user && auth.user.email || "");
   const userId = String(auth.user && auth.user.id || "").trim();
 
-  if (!["scene", "region_pack", "broader_pack"].includes(option)) {
+  if (!["scene", "region_pack", "broader_pack", "animation", "animation_tiles"].includes(option)) {
     return deps.json(
       {
         ok: false,
         error: "unsupported_checkout_option",
-        message: "Planetka supports direct payment for Full Quality scenes and data packs only.",
+        message: "Planetka supports direct payment for Full Quality scenes, animations, and data packs only.",
       },
       400,
+      env,
+    );
+  }
+
+  if (option === "animation" || option === "animation_tiles") {
+    const animationQualityMode = deps.normalizeQualityMode(body && body.quality_mode || body && body.qualityMode || "full");
+    if (animationQualityMode !== "full") {
+      return deps.json({ ok: false, error: "unsupported_checkout_quality" }, 400, env);
+    }
+    const rawSegments = body && (
+      body.segments
+      || body.animation_segments
+      || body.animationSegments
+      || body.segment_plan
+      || body.segmentPlan
+    );
+    const pricing = await estimateAnimationCheckoutPricing(db, userId, rawSegments, deps);
+    if (pricing && pricing.error) {
+      const status = ["animation_checkout_too_large", "animation_checkout_too_many_segments"].includes(String(pricing.error || ""))
+        ? 413
+        : 400;
+      return deps.json({ ok: false, ...pricing }, status, env);
+    }
+    const checkoutRecord = await createAnimationCheckoutRecord(
+      db,
+      userId,
+      email,
+      pricing.normalized_segments,
+      pricing,
+      deps,
+    );
+    const priceEur = normalizeCreditAmount(pricing && pricing.price_eur);
+    const amountCents = centsForEur(priceEur);
+    if (amountCents <= 0) {
+      const grant = await grantPaidAnimationTileEntitlements(
+        db,
+        userId,
+        checkoutRecord.id,
+        "",
+        0,
+        deps,
+        email,
+        "",
+      );
+      if (grant && grant.error) {
+        return deps.json({ ok: false, ...grant }, 500, env);
+      }
+      return deps.json(
+        {
+          ok: true,
+          option: "animation",
+          no_payment_required: true,
+          animation_checkout_id: checkoutRecord.id,
+          price_eur: 0,
+          raw_tile_price_eur: normalizeCreditAmount(pricing && pricing.raw_tile_price_eur),
+          waived_tile_price_eur: normalizeCreditAmount(pricing && pricing.waived_tile_price_eur),
+          tile_price_eur: normalizeCreditAmount(pricing && pricing.tile_price_eur),
+          custom_animation_licence_eur: 0,
+          custom_animation_licence_segments: 0,
+          custom_animation_licence_fee_eur: normalizeCreditAmount(ANIMATION_CUSTOM_LICENCE_CENTS / 100),
+          custom_animation_licence_threshold_eur: normalizeCreditAmount(ANIMATION_SEGMENT_SMALL_FREE_THRESHOLD_CENTS / 100),
+          small_free_segments: Math.max(0, Number.parseInt(pricing && pricing.small_free_segments || 0, 10) || 0),
+          paid_tile_count: grant && grant.paid_tile_count || 0,
+          free_tile_count: grant && grant.free_tile_count || 0,
+          tile_count: Math.max(0, Number.parseInt(pricing && pricing.tile_count || 0, 10) || 0),
+          segment_count: Array.isArray(pricing && pricing.normalized_segments) ? pricing.normalized_segments.length : 0,
+          message: "This animation has no newly charged Full Quality segments and has been licenced at no charge.",
+        },
+        200,
+        env,
+      );
+    }
+    if (amountCents < STRIPE_MIN_CHECKOUT_AMOUNT_CENTS) {
+      return deps.json(
+        {
+          ok: false,
+          error: "amount_below_stripe_minimum",
+          price_eur: priceEur,
+          minimum_eur: STRIPE_MIN_CHECKOUT_AMOUNT_CENTS / 100.0,
+          message: "This animation price is below Stripe's minimum checkout amount.",
+        },
+        400,
+        env,
+      );
+    }
+
+    const session = await createStripeCheckoutSession(
+      env,
+      {
+        amountCents,
+        customerEmail: email,
+        clientReferenceId: userId,
+        productName: "Planetka Custom Animation Licence",
+        metadata: {
+          planetka_purchase_type: "animation_tiles",
+          planetka_animation_checkout_id: checkoutRecord.id,
+          planetka_user_id: userId,
+          planetka_email: email,
+          planetka_quality_mode: "full",
+          planetka_price_eur: priceEur.toFixed(2),
+          planetka_raw_tile_price_eur: normalizeCreditAmount(pricing && pricing.raw_tile_price_eur).toFixed(2),
+          planetka_waived_tile_price_eur: normalizeCreditAmount(pricing && pricing.waived_tile_price_eur).toFixed(2),
+          planetka_animation_tile_price_eur: normalizeCreditAmount(pricing && pricing.tile_price_eur).toFixed(2),
+          planetka_custom_animation_licence_eur: normalizeCreditAmount(pricing && pricing.custom_animation_licence_eur).toFixed(2),
+          planetka_custom_animation_licence_segments: String(Math.max(0, Number.parseInt(pricing && pricing.custom_animation_licence_segments || 0, 10) || 0)),
+          planetka_custom_animation_licence_label: ANIMATION_CUSTOM_LICENCE_LABEL,
+          planetka_custom_animation_licence_fee_eur: normalizeCreditAmount(ANIMATION_CUSTOM_LICENCE_CENTS / 100).toFixed(2),
+          planetka_custom_animation_licence_threshold_eur: normalizeCreditAmount(ANIMATION_SEGMENT_SMALL_FREE_THRESHOLD_CENTS / 100).toFixed(2),
+          planetka_small_free_segments: String(Math.max(0, Number.parseInt(pricing && pricing.small_free_segments || 0, 10) || 0)),
+          planetka_tile_count: String(Math.max(0, Number.parseInt(pricing && pricing.tile_count || 0, 10) || 0)),
+          planetka_segment_count: String(Array.isArray(pricing && pricing.normalized_segments) ? pricing.normalized_segments.length : 0),
+        },
+      },
+      deps,
+    );
+    if (session.error) {
+      await updateAnimationCheckoutStripeSession(db, checkoutRecord.id, "", deps, "stripe_failed");
+      return deps.json({ ok: false, ...session }, 502, env);
+    }
+    await updateAnimationCheckoutStripeSession(db, checkoutRecord.id, session.session_id, deps);
+    return deps.json(
+      {
+        ok: true,
+        option: "animation",
+        animation_checkout_id: checkoutRecord.id,
+        price_eur: priceEur,
+        raw_tile_price_eur: normalizeCreditAmount(pricing && pricing.raw_tile_price_eur),
+        waived_tile_price_eur: normalizeCreditAmount(pricing && pricing.waived_tile_price_eur),
+        tile_price_eur: normalizeCreditAmount(pricing && pricing.tile_price_eur),
+        custom_animation_licence_eur: normalizeCreditAmount(pricing && pricing.custom_animation_licence_eur),
+        custom_animation_licence_segments: Math.max(0, Number.parseInt(pricing && pricing.custom_animation_licence_segments || 0, 10) || 0),
+        custom_animation_licence_fee_eur: normalizeCreditAmount(ANIMATION_CUSTOM_LICENCE_CENTS / 100),
+        custom_animation_licence_threshold_eur: normalizeCreditAmount(ANIMATION_SEGMENT_SMALL_FREE_THRESHOLD_CENTS / 100),
+        small_free_segments: Math.max(0, Number.parseInt(pricing && pricing.small_free_segments || 0, 10) || 0),
+        paid_tile_count: Math.max(0, Number.parseInt(pricing && pricing.paid_tile_count || 0, 10) || 0),
+        free_tile_count: Math.max(0, Number.parseInt(pricing && pricing.free_tile_count || 0, 10) || 0),
+        tile_count: Math.max(0, Number.parseInt(pricing && pricing.tile_count || 0, 10) || 0),
+        segment_count: Array.isArray(pricing && pricing.normalized_segments) ? pricing.normalized_segments.length : 0,
+        ...session,
+      },
+      200,
       env,
     );
   }
@@ -7344,6 +8030,46 @@ export async function handleCreditPaymentSuccess(request, env, deps) {
     }
   }
 
+  if (purchaseType === "animation_tiles") {
+    const historyTiles = purchase && purchase.id ? await loadPurchaseHistoryTiles(db, purchase.id, deps) : [];
+    const tileKeys = historyTiles.length
+      ? normalizeTileKeys(historyTiles.map((row) => row && row.tile_key || ""))
+      : [];
+    if (!tileKeys.length) {
+      return html(
+        checkoutReturnHtml({
+          title: "Planetka Payment Complete",
+          heading: "Payment successful",
+          message: "Your Full Quality animation purchase was completed. Return to Blender; the panel will refresh automatically.",
+          icon: "OK",
+          tone: "success",
+        }),
+        200,
+        env,
+      );
+    }
+    const estimate = sceneEstimateFromPurchaseTiles(purchase, historyTiles);
+    if (estimate && !estimate.error) {
+      const preliminaryRows = allocatedRegionPackTileRows(estimate);
+      const contextProduct = sceneSuccessContextProduct(tileKeys, preliminaryRows);
+      if (contextProduct) {
+        const tokenResult = await createRegionPackDetailTokenForUser(db, userId, String(contextProduct.id || ""), env, deps);
+        const account = await ensureFreshCreditAccountForUser(db, userId, deps);
+        const ownedRows = await ownedTileRowsForUser(db, userId, deps);
+        const data = regionPackStaticMapPayload(contextProduct, tokenResult.token, account, ownedRows, {
+          catalogMode: true,
+          titlePrefix: "Data Pack to Consider",
+          success: {
+            title: paymentSuccessTitle,
+            message: "Your Full Quality animation purchase is complete. The map below shows a relevant data pack containing the animation area; the tiles you just licenced are shown as already licenced on this map.",
+            context_title_prefix: "Data Pack to Consider",
+          },
+        });
+        return html(regionPackStaticMapHtml(data), 200, env);
+      }
+    }
+  }
+
   if (purchaseType === "region_pack") {
     const regionPackId = String(purchase && purchase.region_pack_id || metadata.planetka_region_id || "").trim();
     const product = regionProductById(regionPackId);
@@ -7586,6 +8312,17 @@ async function applyStripeCreditPurchaseFromSession(db, session, deps, env) {
       db,
       userId,
       String(metadata.planetka_region_id || "").trim(),
+      sessionId,
+      amountPaidEur,
+      deps,
+      email,
+      stripePaymentIntentId,
+    );
+  } else if (purchaseType === "animation_tiles") {
+    result = await grantPaidAnimationTileEntitlements(
+      db,
+      userId,
+      String(metadata.planetka_animation_checkout_id || "").trim(),
       sessionId,
       amountPaidEur,
       deps,

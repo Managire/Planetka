@@ -4,6 +4,7 @@ import math
 import os
 import threading
 import time
+import webbrowser
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
@@ -113,6 +114,13 @@ ANIMATION_RENDER_USER_STOP_SETTLE_SEC = 1.0
 ANIMATION_RENDER_APP_JOB_FALLBACK_GRACE_SEC = 5.0
 ANIMATION_RENDER_LAUNCH_RETRY_MAX_ATTEMPTS = 2
 ANIMATION_HORIZON_SEGMENT_HYSTERESIS_ENABLED = True
+_ANIMATION_PURCHASE_MONITOR = {
+    "active": False,
+    "scene_name": "",
+    "started_at": 0.0,
+    "timeout_sec": 240.0,
+}
+_ANIMATION_PURCHASE_MONITOR_REGISTERED = False
 
 
 @dataclass
@@ -705,6 +713,23 @@ def _animation_price_text(value):
         return "€0.00"
 
 
+def _open_external_url(url):
+    safe_url = str(url or "").strip()
+    if not safe_url:
+        return False
+    try:
+        result = bpy.ops.wm.url_open(url=safe_url)
+        if "FINISHED" in result:
+            return True
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka animation: failed opening URL through Blender", exc_info=True)
+    try:
+        return bool(webbrowser.open(safe_url))
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka animation: failed opening URL in system browser", exc_info=True)
+    return False
+
+
 def _animation_money_round(value):
     try:
         amount = Decimal(str(value or "0"))
@@ -713,6 +738,84 @@ def _animation_money_round(value):
     if amount <= 0:
         return 0.0
     return float(amount.quantize(_ANIMATION_CENT, rounding=ROUND_HALF_UP))
+
+
+def _tag_animation_ui_redraw():
+    try:
+        wm = getattr(getattr(bpy, "context", None), "window_manager", None)
+        if wm is None:
+            return
+        for window in wm.windows:
+            screen = getattr(window, "screen", None)
+            if screen is None:
+                continue
+            for area in screen.areas:
+                if getattr(area, "type", "") == "VIEW_3D":
+                    area.tag_redraw()
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka animation: failed tagging UI redraw", exc_info=True)
+
+
+def _animation_scene_price_is_settled(scene):
+    if scene is None:
+        return False
+    props = getattr(scene, "planetka", None)
+    if props is None:
+        return False
+    try:
+        from .credit_api import clear_credit_caches
+        clear_credit_caches()
+    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka animation: failed clearing credit caches during purchase monitor", exc_info=True)
+    try:
+        price_eur, _new_tiles = update_animation_credit_estimate(scene, props, texture_quality_mode="FULL")
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka animation: purchase monitor price refresh failed", exc_info=True)
+        return False
+    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka animation: purchase monitor price refresh failed", exc_info=True)
+        return False
+    _tag_animation_ui_redraw()
+    return bool(float(price_eur or 0.0) <= 0.000001)
+
+
+def _animation_purchase_monitor_timer():
+    global _ANIMATION_PURCHASE_MONITOR_REGISTERED
+    _ANIMATION_PURCHASE_MONITOR_REGISTERED = False
+    if not bool(_ANIMATION_PURCHASE_MONITOR.get("active", False)):
+        return None
+    started = float(_ANIMATION_PURCHASE_MONITOR.get("started_at", 0.0) or 0.0)
+    timeout = max(30.0, float(_ANIMATION_PURCHASE_MONITOR.get("timeout_sec", 240.0) or 240.0))
+    if started > 0.0 and (time.time() - started) > timeout:
+        _ANIMATION_PURCHASE_MONITOR["active"] = False
+        return None
+    scene_name = str(_ANIMATION_PURCHASE_MONITOR.get("scene_name", "") or "").strip()
+    scene = bpy.data.scenes.get(scene_name) if scene_name else getattr(bpy.context, "scene", None)
+    if scene is not None and _animation_scene_price_is_settled(scene):
+        _ANIMATION_PURCHASE_MONITOR["active"] = False
+        return None
+    _ANIMATION_PURCHASE_MONITOR_REGISTERED = True
+    return 3.0
+
+
+def _start_animation_purchase_monitor(scene):
+    global _ANIMATION_PURCHASE_MONITOR_REGISTERED
+    if scene is None:
+        return
+    _ANIMATION_PURCHASE_MONITOR.update(
+        {
+            "active": True,
+            "scene_name": str(getattr(scene, "name", "") or ""),
+            "started_at": time.time(),
+            "timeout_sec": 240.0,
+        }
+    )
+    if not _ANIMATION_PURCHASE_MONITOR_REGISTERED:
+        try:
+            bpy.app.timers.register(_animation_purchase_monitor_timer, first_interval=3.0)
+            _ANIMATION_PURCHASE_MONITOR_REGISTERED = True
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka animation: failed registering purchase monitor", exc_info=True)
 
 
 def _animation_area_text(value):
@@ -4839,6 +4942,37 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             )
         if not _ensure_remote_auth_ready_for_final_render(self, prefs, base_path):
             return {'CANCELLED'}
+        if selected_texture_quality_mode == "FULL":
+            try:
+                from .credit_api import clear_credit_caches
+                clear_credit_caches()
+            except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka animation: failed clearing credit caches before final render price check", exc_info=True)
+            try:
+                current_price, _new_tiles = update_animation_credit_estimate(scene, props, texture_quality_mode="FULL")
+            except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
+                return fail(
+                    self,
+                    f"Animation price is not available: {exc}",
+                    code=ErrorCode.PAYMENT_CHECKOUT_FAILED,
+                    logger=logger,
+                    exc=exc,
+                    log_message="Planetka animation final-render price check failed",
+                )
+            except (RuntimeError, TypeError, ValueError, AttributeError) as exc:
+                return fail(
+                    self,
+                    f"Animation price is not available: {exc}",
+                    code=ErrorCode.PAYMENT_CHECKOUT_FAILED,
+                    logger=logger,
+                )
+            if float(current_price or 0.0) > 0.000001:
+                return fail(
+                    self,
+                    "Buy Animation before starting Final Animation Render.",
+                    code=ErrorCode.PAYMENT_CHECKOUT_FAILED,
+                    logger=logger,
+                )
         if _is_movie_output(scene):
             return fail(
                 self,
@@ -5176,6 +5310,128 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             return {'RUNNING_MODAL'}
 
         return {'RUNNING_MODAL'}
+
+
+class PLANETKA_OT_AnimationCheckout(bpy.types.Operator):
+    bl_idname = "planetka.animation_checkout"
+    bl_label = "Buy Animation"
+    bl_description = "Open Stripe Checkout for the current dynamic Full Quality animation licence"
+
+    def _checkout_error_message(self, exc):
+        payload = getattr(exc, "payload", None)
+        if not isinstance(payload, dict):
+            payload = {}
+        message = str(payload.get("message") or payload.get("error") or getattr(exc, "error", "") or exc or "").strip()
+        return message.replace("_", " ") if message else "Animation checkout could not be created."
+
+    def _segment_payload(self, segments):
+        payload = []
+        for index, segment in enumerate(list(segments or ()), start=1):
+            if not isinstance(segment, dict):
+                continue
+            tile_keys = _animation_segment_tile_keys(segment)
+            if not tile_keys:
+                continue
+            try:
+                seg_index = int(segment.get("index", index) or index)
+            except (TypeError, ValueError):
+                seg_index = index
+            try:
+                start = int(segment.get("start", 0) or 0)
+            except (TypeError, ValueError):
+                start = 0
+            try:
+                end = int(segment.get("end", start) or start)
+            except (TypeError, ValueError):
+                end = start
+            payload.append(
+                {
+                    "index": max(1, seg_index),
+                    "start": max(0, start),
+                    "end": max(max(0, start), end),
+                    "tile_keys": tile_keys,
+                }
+            )
+        return payload
+
+    def execute(self, context):
+        if _cancel_if_animation_render_active(self, "Animation payment"):
+            return {'CANCELLED'}
+        scene = require_scene(self, context, logger=logger)
+        if scene is None:
+            return {'CANCELLED'}
+        props = require_planetka_props(self, context, logger=logger)
+        if props is None:
+            return {'CANCELLED'}
+        prefs = get_prefs()
+        base_path = str(getattr(prefs, "texture_base_path", "") or "") if prefs else ""
+        if (not base_path or not os.path.isdir(base_path)) and not is_remote_source_configured(base_path):
+            return fail(
+                self,
+                "Planetka Cloud source is not available. Log in and retry.",
+                code=ErrorCode.RESOLVE_PATH_INVALID,
+                logger=logger,
+            )
+        if not _ensure_remote_auth_ready_for_final_render(self, prefs, base_path):
+            return {'CANCELLED'}
+        try:
+            segment_plan = _final_animation_segment_plan(scene, props, texture_quality_mode="FULL")
+            segments = self._segment_payload(segment_plan.segments or ())
+        except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
+            return fail(
+                self,
+                f"Unable to calculate animation licence: {exc}",
+                code=ErrorCode.PAYMENT_CHECKOUT_FAILED,
+                logger=logger,
+                exc=exc,
+                log_message="Planetka animation checkout planning failed",
+            )
+        except (RuntimeError, TypeError, ValueError, AttributeError) as exc:
+            return fail(
+                self,
+                f"Unable to calculate animation licence: {exc}",
+                code=ErrorCode.PAYMENT_CHECKOUT_FAILED,
+                logger=logger,
+            )
+        if not segments:
+            self.report({'INFO'}, "Animation has no Full Quality tiles to licence.")
+            try:
+                update_animation_credit_estimate(scene, props, texture_quality_mode="FULL")
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka animation: failed refreshing zero animation price", exc_info=True)
+            return {'FINISHED'}
+        try:
+            from .credit_api import clear_credit_caches, create_animation_checkout_session
+            checkout = create_animation_checkout_session(segments, quality_mode="FULL")
+        except Exception as exc:
+            return fail(
+                self,
+                f"Unable to open Planetka animation payment: {self._checkout_error_message(exc)}",
+                code=ErrorCode.PAYMENT_CHECKOUT_FAILED,
+                logger=logger,
+                exc=exc,
+                log_message="Planetka animation checkout creation failed",
+            )
+        try:
+            clear_credit_caches()
+        except (NameError, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka animation: failed clearing credit cache after animation checkout", exc_info=True)
+        if bool(checkout.get("no_payment_required", False)):
+            _animation_scene_price_is_settled(scene)
+            message = str(checkout.get("message", "") or "").strip() or "Animation Full Quality tiles are already licenced or free."
+            self.report({'INFO'}, message)
+            return {'FINISHED'}
+        checkout_url = str(checkout.get("checkout_url", "") or "").strip()
+        if not _open_external_url(checkout_url):
+            return fail(
+                self,
+                "Could not open Planetka animation payment page.",
+                code=ErrorCode.PAYMENT_CHECKOUT_FAILED,
+                logger=logger,
+            )
+        _start_animation_purchase_monitor(scene)
+        self.report({'INFO'}, "Planetka animation payment page opened in browser.")
+        return {'FINISHED'}
 
 
 class PLANETKA_OT_AnimationRenderCostBreakdown(bpy.types.Operator):

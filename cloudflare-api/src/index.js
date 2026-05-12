@@ -2992,6 +2992,37 @@ async function ensureCreditTables(db) {
   await dbRun(
     db,
     `
+      CREATE TABLE IF NOT EXISTS animation_checkout_sessions (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        user_email TEXT,
+        quality_mode TEXT NOT NULL DEFAULT 'full',
+        segments_json TEXT NOT NULL,
+        pricing_json TEXT NOT NULL,
+        tile_keys_json TEXT NOT NULL,
+        price_eur REAL NOT NULL DEFAULT 0,
+        tile_price_eur REAL NOT NULL DEFAULT 0,
+        custom_animation_licence_eur REAL NOT NULL DEFAULT 0,
+        custom_animation_licence_segments INTEGER NOT NULL DEFAULT 0,
+        stripe_session_id TEXT,
+        status TEXT NOT NULL DEFAULT 'created',
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `,
+  );
+  await dbRun(
+    db,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_animation_checkout_sessions_stripe ON animation_checkout_sessions(stripe_session_id) WHERE stripe_session_id IS NOT NULL AND stripe_session_id != ''`,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_animation_checkout_sessions_user_created ON animation_checkout_sessions(user_id, created_at DESC)`,
+  );
+  await dbRun(
+    db,
+    `
       CREATE TABLE IF NOT EXISTS tile_land_stats (
         tile_key TEXT PRIMARY KEY,
         x INTEGER NOT NULL,

@@ -507,6 +507,7 @@ Supported options:
 
 - `scene`: Pay current Full Quality scene price with scene-specific payment policy applied.
 - `region_pack` / `broader_pack`: Pay exact current user-specific data-pack price.
+- `animation`: Pay the current dynamic Full Quality animation price with animation segment policy applied.
 
 ### Scene Purchase
 
@@ -556,14 +557,17 @@ After returning to Blender:
 
 ### Removed Payment Surfaces
 
-Planetka currently does not use prepaid balance, monthly billing, or Standard/Balanced unlock purchases. Unsupported checkout options are rejected; the only customer payment path is direct Stripe Checkout for scene-specific Full Quality data or Full Quality data packs.
+Planetka currently does not use prepaid balance, monthly billing, or Standard/Balanced unlock purchases. Unsupported checkout options are rejected; the only customer payment path is direct Stripe Checkout for scene-specific Full Quality data, dynamic animation Full Quality data, or Full Quality data packs.
 
 ## 14. Animation Render Pricing Flow
 
-Primary file:
+Primary files:
 
 ```text
 animation_tools.py
+credit_api.py
+cloudflare-api/src/worker/credit_routes.js
+cloudflare-api/src/worker/billing_handlers.js
 ```
 
 Important functions:
@@ -587,13 +591,14 @@ User-facing workflow:
    - Custom animation licence total, if any.
    - Final price.
    - Details popup with per-segment tile rows.
-6. User clicks `Render Animation (€X.XX)` and confirms.
-7. Before frame rendering starts:
-   - Backend licences all unique Full Quality animation tiles via `/tiles/session` and `land_credits_v1`.
-   - UI price is set to `€0.00` because all tiles are now licenced.
-   - All required texture files are downloaded up front into cache.
-8. Segment resolves during the render should use already licenced/downloaded data. Online access remains only as a fallback.
-9. If the user cancels or Blender crashes, the licenced tiles remain licenced and can be reused later without extra charge.
+6. If the price is positive, UI shows `Buy Animation (€X.XX)`.
+7. `planetka.animation_checkout` sends the segment tile plan to `POST /credits/checkout` with `option = animation`.
+8. Backend recalculates the animation price from authoritative D1 pricing rows, stores the full segment/pricing snapshot in `animation_checkout_sessions`, and creates a Stripe Checkout Session carrying only the short `planetka_animation_checkout_id` metadata value.
+9. Stripe webhook and the payment-success page both call `grantPaidAnimationTileEntitlements()` idempotently for `planetka_purchase_type = animation_tiles`.
+10. Entitlements are inserted with source `stripe_animation` or `animation_segment_small_free`.
+11. Blender monitors the animation price after opening Checkout; once the estimate returns `€0.00`, the UI is ready for `Render Animation (€0.00)`.
+12. Before frame rendering starts, Planetka verifies the already-licenced Full Quality tiles, pre-downloads all required texture files into cache, and then renders segment-by-segment.
+13. If the user cancels or Blender crashes after payment, the licenced tiles remain licenced and can be reused later without extra charge.
 
 Animation breakdown rule:
 
@@ -610,6 +615,10 @@ Animation breakdown rule:
 sum(payable segment Full Quality tile prices after small-segment waivers)
 + (number of segments with new tile value > €0.50 * €1.00)
 ```
+
+Important implementation rule:
+
+- Stripe metadata is not the animation pricing authority and must not contain the full tile/segment plan. It carries only `planetka_animation_checkout_id`; the backend loads the frozen authoritative record from `animation_checkout_sessions` during webhook/payment-success processing.
 
 ## 15. Downloading Licenced Tiles and Local Source
 

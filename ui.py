@@ -2738,8 +2738,7 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         if anim_credits > 0.0:
             anim_has_new_cost = bool(anim_credits > 0.000001)
             if anim_has_new_cost:
-                final_render_allowed = False
-                final_render_box.label(text="Licence the required Full Quality tiles before final animation render.", icon="INFO")
+                final_render_box.label(text="Payment required before final animation render.", icon="INFO")
         if _is_animation_render_running():
             runtime, runtime_code, runtime_text = _resolve_runtime_display(scene)
             _draw_resolve_download_indicator(final_render_box, scene, runtime, runtime_code, runtime_text)
@@ -2748,11 +2747,18 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         render_button_row = render_row.row(align=True)
         render_button_row.scale_y = 1.2
         render_button_row.enabled = bool(final_render_allowed) and bool(earth_workflow_enabled)
-        render_button_row.operator(
-            "planetka.animation_render",
-            text=f"Render Animation (€{anim_credits:.2f})",
-            icon="RENDER_ANIMATION",
-        )
+        if anim_price_known and anim_credits > 0.000001:
+            render_button_row.operator(
+                "planetka.animation_checkout",
+                text=f"Buy Animation (€{anim_credits:.2f})",
+                icon="URL",
+            )
+        else:
+            render_button_row.operator(
+                "planetka.animation_render",
+                text=f"Render Animation (€{anim_credits:.2f})",
+                icon="RENDER_ANIMATION",
+            )
         render_info_row = render_row.row(align=True)
         render_info_row.scale_y = 1.2
         render_info_row.enabled = bool(earth_workflow_enabled)
@@ -2761,5 +2767,5 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             text="",
             icon="INFO",
         )
-        if not final_render_allowed:
+        if not final_render_allowed and anim_price_known and not (anim_credits > 0.000001):
             final_render_box.label(text="Final Animation Render uses already licenced Full Quality tiles.", icon="INFO")

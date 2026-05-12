@@ -1,4 +1,5 @@
 import {
+  grantPaidAnimationTileEntitlements,
   grantPaidSceneTileEntitlements,
   grantRegionPackEntitlements,
 } from "./credit_routes.js";
@@ -318,7 +319,7 @@ export async function handleStripeWebhook(request, env, deps) {
   }
 
   const purchaseType = String(metadata.planetka_purchase_type || "").trim().toLowerCase();
-  if (!["scene_tiles", "region_pack"].includes(purchaseType)) {
+  if (!["scene_tiles", "region_pack", "animation_tiles"].includes(purchaseType)) {
     console.warn(
       "stripe.webhook.unsupported_purchase_type_ignored",
       JSON.stringify({ event_type: eventType, email, session_id: sessionId, purchase_type: purchaseType }),
@@ -337,6 +338,7 @@ export async function handleStripeWebhook(request, env, deps) {
   if (
     purchaseType === "scene_tiles"
     || purchaseType === "region_pack"
+    || purchaseType === "animation_tiles"
   ) {
     const metadataUserId = String(metadata.planetka_user_id || "").trim();
     let targetUser = metadataUserId && typeof deps.findUserById === "function"
@@ -356,6 +358,70 @@ export async function handleStripeWebhook(request, env, deps) {
     const userId = String(targetUser.id || "").trim();
     const amountPaidEur = eurFromStripeAmountCents(session.amount_total);
     const stripePaymentIntentId = String(session.payment_intent || session.payment_intent_id || "").trim();
+    if (purchaseType === "animation_tiles") {
+      const animationCheckoutId = String(metadata.planetka_animation_checkout_id || "").trim();
+      const grant = await grantPaidAnimationTileEntitlements(
+        db,
+        userId,
+        animationCheckoutId,
+        sessionId,
+        amountPaidEur,
+        deps,
+        email,
+        stripePaymentIntentId,
+      );
+      if (grant && grant.error) {
+        console.error(
+          "stripe.webhook.animation_purchase_failed",
+          JSON.stringify({
+            event_type: eventType,
+            email,
+            session_id: sessionId,
+            user_id: userId,
+            animation_checkout_id: animationCheckoutId,
+            error: grant.error,
+            missing_tile_key: grant.missing_tile_key || "",
+          }),
+        );
+        return failedJson({ ok: false, error: grant.error, tile_key: grant.missing_tile_key || "" }, 500, grant.error);
+      }
+      if (typeof deps.invalidateAnalyticsSnapshots === "function") {
+        try {
+          await deps.invalidateAnalyticsSnapshots(env);
+        } catch (error) {
+          console.warn(
+            "stripe.webhook.animation_snapshot_invalidate_failed",
+            JSON.stringify({ error: String(error && error.message || "snapshot_invalidate_failed"), user_id: userId }),
+          );
+        }
+      }
+      console.log(
+        "stripe.webhook.animation_purchase_processed",
+        JSON.stringify({
+          event_type: eventType,
+          email,
+          session_id: sessionId,
+          user_id: userId,
+          amount_paid_eur: amountPaidEur,
+          animation_checkout_id: animationCheckoutId,
+          unlocked_tile_count: grant && grant.paid_tile_count || 0,
+          free_tile_count: grant && grant.free_tile_count || 0,
+        }),
+      );
+      return processedJson(
+        {
+          ok: true,
+          processed: true,
+          event_type: eventType,
+          email,
+          purchase_type: purchaseType,
+          animation_checkout_id: animationCheckoutId,
+          unlocked_tile_count: grant && grant.paid_tile_count || 0,
+          free_tile_count: grant && grant.free_tile_count || 0,
+        },
+        200,
+      );
+    }
     if (purchaseType === "region_pack") {
       const regionPackId = String(metadata.planetka_region_id || "").trim();
       const grant = await grantRegionPackEntitlements(

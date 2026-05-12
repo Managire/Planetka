@@ -12,6 +12,7 @@ from . import updater as _planetka_updater
 from .animation_tools import (
     PLANETKA_OT_AnimationClearCameraKeyframes,
     PLANETKA_OT_AnimationClearPrepared,
+    PLANETKA_OT_AnimationCheckout,
     PLANETKA_OT_AnimationGenerateCameraKeyframes,
     PLANETKA_OT_AnimationMakeReady,
     PLANETKA_OT_AnimationPreviewShot,
@@ -229,6 +230,7 @@ classes = (
     PLANETKA_OT_AnimationWaypointCaptureCurrent,
     PLANETKA_OT_AnimationWaypointApply,
     PLANETKA_OT_AnimationRender,
+    PLANETKA_OT_AnimationCheckout,
     PLANETKA_OT_AnimationRenderCostBreakdown,
     PLANETKA_OT_AnimationMakeReady,
     PLANETKA_OT_AnimationClearPrepared,
