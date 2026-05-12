@@ -62,18 +62,6 @@ export async function handleTileSessionStart(request, env, deps) {
     body && body.quality_mode ? body.quality_mode : request.headers.get("X-Planetka-Quality-Mode") || "",
   ).trim();
   const normalizedRequestedQualityMode = normalizeQualityMode(requestedQualityMode);
-  if (normalizedRequestedQualityMode === "balanced") {
-    return jsonResponse(
-      {
-        ok: false,
-        error: "unsupported_quality_mode",
-        message: "Only Preview and Full Quality are available.",
-        requested_quality_mode: normalizedRequestedQualityMode,
-      },
-      410,
-      env,
-    );
-  }
   if (normalizedRequestedQualityMode === "preview") {
     const hold = await getPreviewFairUsageHoldForUser(db, auth.user && auth.user.id);
     if (hold && hold.held) {
@@ -317,20 +305,6 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
     }
     const effectiveQualityMode = tokenQualityMode || requestedQualityMode;
     eventQualityMode = effectiveQualityMode;
-    if ((request.method === "GET" || request.method === "HEAD") && effectiveQualityMode === "balanced") {
-      eventStatusCode = 410;
-      eventErrorCode = "unsupported_quality_mode";
-      return json(
-        {
-          ok: false,
-          error: "unsupported_quality_mode",
-          message: "Only Preview and Full Quality are available.",
-          requested_quality_mode: effectiveQualityMode,
-        },
-        410,
-        env,
-      );
-    }
     if ((request.method === "GET" || request.method === "HEAD") && effectiveQualityMode === "preview") {
       const hold = await getPreviewFairUsageHoldForUser(db, user && user.id);
       if (hold && hold.held) {
@@ -340,30 +314,8 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
       }
     }
     const tileRequiredQualityMode = minimumPlanQualityForTile(fileName);
-    if (
-      (request.method === "GET" || request.method === "HEAD")
-      && effectiveQualityMode === "balanced"
-      && tileRequiredQualityMode === "full"
-    ) {
-      eventStatusCode = 403;
-      eventErrorCode = "unsupported_quality_mode";
-      return json(
-        {
-          ok: false,
-          error: "unsupported_quality_mode",
-          message: "Only Preview and Full Quality are available.",
-          requested_quality_mode: effectiveQualityMode,
-          required_quality_mode: tileRequiredQualityMode,
-          file_name: fileName,
-        },
-        403,
-        env,
-      );
-    }
     const creditBillingQualityMode = normalizeQualityMode(
-      effectiveQualityMode === "balanced"
-        ? "preview"
-        : (effectiveQualityMode !== "preview" ? effectiveQualityMode : tileRequiredQualityMode),
+      effectiveQualityMode !== "preview" ? effectiveQualityMode : tileRequiredQualityMode,
     );
     if ((request.method === "GET" || request.method === "HEAD")
     && !tokenCreditEnforced

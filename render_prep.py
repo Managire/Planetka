@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 import bpy
 from bpy.props import BoolProperty, EnumProperty, StringProperty
 
-from .auth import allows_balanced_full_quality_for_context, get_cloud_connection_status, is_authenticated
+from .auth import allows_texture_quality_for_context, get_cloud_connection_status, is_authenticated
 from .asset_builder import (
     _ensure_surface_elevation_radius_driver,
     ensure_earth_surface_parent,
@@ -185,8 +185,6 @@ class ResolveEarlyResult:
 
 def _normalize_texture_quality_mode(value):
     token = str(value or "").strip().upper()
-    if token in {"HALF", "BALANCED"}:
-        return "PREVIEW"
     if token in {"FULL", "PREVIEW"}:
         return token
     return "PREVIEW"
@@ -603,6 +601,9 @@ def _prefetch_missing_details_indicate_access_failure(details):
     for entry in details:
         if not isinstance(entry, dict):
             continue
+        folder_value = str(entry.get("folder", "") or "").strip().upper()
+        if folder_value != "S2":
+            continue
         combined = " ".join((
             str(entry.get("fetch_error", "") or ""),
             str(entry.get("remote_error", "") or ""),
@@ -757,7 +758,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 return ResolvePrepareContextResult(
                     response=fail(
                         self,
-                        "Connect Planetka API key before resolving remote Earth data.",
+                        "Connect your Planetka account before resolving remote Earth data.",
                         code=ErrorCode.RESOLVE_PRECHECK_FAILED,
                         logger=logger,
                     ),
@@ -931,7 +932,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             texture_quality_mode = "PREVIEW"
         try:
-            if not allows_balanced_full_quality_for_context(
+            if not allows_texture_quality_for_context(
                 prefs=get_prefs(),
                 source=props,
                 requested_mode=texture_quality_mode,
@@ -1291,6 +1292,8 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                     ext_value = str(entry.get("ext", "") or "").strip().lower()
                     if not folder_value or not prefix_value or not tile_value:
                         continue
+                    if folder_value != "S2":
+                        continue
                     if ext_value and not ext_value.startswith("."):
                         ext_value = f".{ext_value}"
                     if not ext_value:
@@ -1301,18 +1304,14 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                     required_missing_details.append(entry)
             required_missing_count = int(len(required_missing_details))
             if required_missing_count > 0:
-                required_missing_s2_count = 0
-                for entry in required_missing_details:
-                    if str(entry.get("folder", "") or "").strip().upper() == "S2":
-                        required_missing_s2_count += 1
+                required_missing_s2_count = int(required_missing_count)
                 logger.warning(
-                    "Planetka: resolve prefetch missing required indexed files "
-                    "(required_missing=%d total_missing=%d resolved=%d errors=%d required_s2=%d).",
-                    int(required_missing_count),
+                    "Planetka: resolve prefetch missing required S2 files "
+                    "(required_s2=%d total_missing=%d resolved=%d errors=%d).",
+                    int(required_missing_s2_count),
                     int(payload_data.prefetch_missing_count),
                     int(payload_data.prefetch_resolved_count),
                     int(payload_data.prefetch_error_count),
-                    int(required_missing_s2_count),
                 )
                 for entry in required_missing_details:
                     logger.warning(
@@ -1325,8 +1324,8 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                         str(entry.get("remote_error", "") or ""),
                     )
                 missing_message = (
-                    "Planetka resolve download completed with missing required indexed files "
-                    f"({int(required_missing_count)} required missing, {int(required_missing_s2_count)} required S2 missing, "
+                    "Planetka resolve download completed with missing required S2 files "
+                    f"({int(required_missing_s2_count)} required S2 missing, "
                     f"{int(payload_data.prefetch_missing_count)} total missing, {int(payload_data.prefetch_resolved_count)} resolved, "
                     f"{int(payload_data.prefetch_error_count)} errors)."
                 )

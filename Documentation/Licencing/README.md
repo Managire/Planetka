@@ -1,51 +1,34 @@
-# Planetka Licensing Guide
+# Planetka Licensing Overview
 
-This folder is organized in two levels:
+Last updated: 2026-05-12
 
-## Start here
+This folder contains the user-facing Planetka licence, privacy, attribution, and source-compliance documents included with the public add-on package.
 
-If you use Planetka to create still images or animations, these are the main
-documents you usually need:
+## Public texture access model
 
-- `Using Planetka Commercially.txt`
-- `Attribution for User Renders.txt`
-- `TERMS_OF_SERVICE.md`
-- `PRIVACY_POLICY.md`
+Planetka has two public texture-quality modes:
 
-Service terms note:
-- The add-on code is licenced under GPL-3.0-or-later.
-- Planetka account access and hosted tile delivery are governed separately by
-  `TERMS_OF_SERVICE.md`.
-- Privacy and telemetry handling are described in `PRIVACY_POLICY.md`.
-- Current `v0.7.0` beta note: beta access currently runs in
-  `unrestricted` mode, so hosted-service access behaves as Commercial during
-  testing regardless of stored account tier.
-- Current tier model:
-  - Free: unlimited `Preview` only, no commercial use
-  - Personal: unlimited `Preview` and `Balanced`, no commercial use
-  - Commercial: unlimited `Preview`, `Balanced`, and `Full Quality`,
-    commercial use allowed
-- Planetka built-in `Final Animation Rendering` is licenced for Commercial
-  only.
-- Personal and Commercial are one-time licences.
-- Significant future feature releases may be optional paid upgrades.
-- Paid Personal and Commercial purchases include a minimum 5-year guarantee for
-  support and Planetka-hosted cloud data availability from the purchase date.
+- **Preview**: free streamed/cached texture access for personal, non-commercial use inside Planetka.
+- **Full Quality**: paid texture access with a commercial licence included for the Full Quality texture data licenced to the user's account.
 
-## Detailed records
+Full Quality may be purchased as scene-specific texture data, animation texture data, or predefined data packs such as countries, states, regions, continents, and world coverage.
 
-The `Compliance/` subfolder contains the detailed source records, attribution
-references, and provenance records for the bundled datasets:
+## What a Full Quality licence allows
 
-- `Compliance/Earth Surface Data Sources.txt`
-- `Compliance/GeoNames Attribution (CC BY 4.0).txt`
-- `Compliance/Copernicus Sentinel-2 Attribution.txt`
-- `Compliance/JAXA AW3D30 Attribution and Terms.txt`
-- `Compliance/DLR World Settlement Footprint 2015 Attribution (CC BY 4.0).txt`
-- `Compliance/Detailed Source Records.txt`
+A Full Quality licence allows commercial and non-commercial use of the licenced texture data in renders, animations, client work, and supported download/offline workflows. It does not allow resale, redistribution, hosting, API access, extraction, scraping, AI dataset use, or operation of a competing map/texture service.
 
-## Software licence
+## Attribution
 
-- Add-on code: `LICENSE` (GPL-3.0-or-later)
-- Planetka hosted service terms: `TERMS_OF_SERVICE.md`
-- Planetka privacy policy: `PRIVACY_POLICY.md`
+Planetka texture data is derived from several credited data sources. Use the attribution documents in this folder when publishing work made with Planetka data.
+
+Recommended short attribution:
+
+`Planetka Earth textures derived from Copernicus Sentinel-2, NASA Blue Marble, JAXA AW3D30, DLR WSF 2015, GeoNames, and other credited sources.`
+
+## Key documents
+
+- `TERMS_OF_SERVICE.md` and `TERMS_OF_SERVICE.pdf`: Planetka hosted-service and texture-licence terms.
+- `PRIVACY_POLICY.md` and `PRIVACY_POLICY.pdf`: account, payment-status, purchase-history, usage, and diagnostic-data handling.
+- `Using Planetka Commercially.txt`: practical commercial-use summary.
+- `Attribution for User Renders.txt`: recommended attribution wording.
+- `Compliance/`: source-specific attribution and compliance notes.

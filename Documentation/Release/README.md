@@ -1,43 +1,34 @@
-# Planetka Release Pack
+# Planetka Release Documentation
 
-This folder contains release-process documents for public extension builds:
+Last updated: 2026-05-12
 
-- `VERSIONING_POLICY.md`
-- `CHANGELOG_DISCIPLINE.md`
-- `QA_CHECKLIST.md`
-- `FREE_TEST_GROUP_RELEASE_CHECKLIST.md`
-- `SYSTEM_REQUIREMENTS.md`
-- `RELEASE_NOTES_TEMPLATE.md`
-- `COMPATIBILITY_MATRIX.md`
-- `ROLLBACK_SAFE_UPDATE_TESTING.md`
+This folder contains release-support documents for Planetka. Only the files listed in `package_allowlist_public.txt` are included in the public add-on package.
 
-## Current Release State
+## Public-package documents
 
-Planetka is currently in **Public Beta**.
+The public package includes:
 
-- Beta distribution is for tester feedback and stability validation.
-- Current `v0.7.0` beta access mode is `unrestricted`, so beta users receive Commercial-equivalent hosted-service access during testing regardless of stored account tier.
-- Stored account tiers are `Free`, `Personal`, and `Commercial`.
-- Product contract for `v0.7.0`:
-  - Free: unlimited `Preview` only, no commercial use
-  - Personal: unlimited `Preview` and `Balanced`, no commercial use
-  - Commercial: unlimited `Preview`, `Balanced`, `Full Quality`, and built-in `Final Animation Rendering`, commercial use allowed
-- Personal and Commercial are one-time licences.
-- Significant future feature releases may be optional paid upgrades.
-- EEVEE and Cycles are both supported in the current beta candidate.
-- Terms for beta access are in `Documentation/Licencing/TERMS_OF_SERVICE.md`.
+- `Documentation/Release/FAIR_USAGE_POLICY.md`
+- `Documentation/Release/SYSTEM_REQUIREMENTS.md`
+- user-facing licensing, privacy, attribution, and compliance documents from `Documentation/Licencing/`
 
-## Required Release Gate
+Internal release checklists, runbooks, compatibility notes, and QA notes are repository-maintenance documents only and must not be included in the user-facing package unless deliberately rewritten for users.
 
-Run this before publishing:
+## Current public-release model
 
-```bash
-python3 tools/release_gate.py
-```
+- Preview access is free and personal / non-commercial.
+- Full Quality access is paid or explicitly granted, with commercial texture rights for licenced Full Quality data.
+- Standard/Balanced, prepaid balance, monthly billing, and unrestricted-quality access are not public-release products.
+- Data-pack, scene-specific, and animation purchases must show consistent prices across Blender UI, web pages, success pages, and Stripe checkout.
+- Legal PDFs served from the Worker must match `Documentation/Licencing/TERMS_OF_SERVICE.md` and `Documentation/Licencing/PRIVACY_POLICY.md`.
 
-The gate validates:
+## Public release checks
 
-1. Manifest version follows semantic versioning (`MAJOR.MINOR.PATCH`).
-2. Changelog has a top release entry for current manifest version.
-3. Compatibility matrix references current extension version.
-4. Release checklist includes rollback-safe update testing.
+Before publishing a release:
+
+- build the package through `tools/build_addon_zip.py` using `package_allowlist_public.txt`;
+- verify the built file list contains no internal runbooks, checklists, developer notes, or archived beta documents;
+- regenerate legal PDFs with `tools/generate_legal_pdfs.py` after any terms/privacy change;
+- upload the release zip and legal PDFs to the configured R2 keys;
+- deploy the Worker after confirming `wrangler deploy --dry-run` shows restricted public access, current legal versions, and current updater metadata;
+- run Blender smoke tests for Create Earth, Preview resolve, Full Quality purchase flow, data-pack page opening, animation preflight, and offline/error handling.

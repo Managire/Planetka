@@ -5,7 +5,7 @@ import bpy
 from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, StringProperty
 
 from .auth import (
-    allows_balanced_full_quality_for_context,
+    allows_texture_quality_for_context,
     is_authenticated,
 )
 from .planetka_ops.account_ops import (
@@ -164,17 +164,17 @@ def _wrapped_label(layout, text, icon='NONE', width=58):
 
 class PLANETKA_OT_AccountDownloadUnlockedTiles(bpy.types.Operator):
     bl_idname = "planetka.account_download_unlocked_tiles"
-    bl_label = "Download Licenced Tiles"
-    bl_description = "Download all licenced tiles to a local source folder"
+    bl_label = "Download Licenced Data"
+    bl_description = "Download your licenced Full Quality data to a local folder"
 
     period: EnumProperty(
         name="Data Range",
-        description="Choose which licenced tiles should be downloaded",
+        description="Choose which licenced data should be downloaded",
         items=(
-            ("TODAY", "Today", "Download tiles licenced today"),
-            ("THIS_WEEK", "This Week", "Download tiles licenced this week"),
-            ("THIS_MONTH", "This Month", "Download tiles licenced this month"),
-            ("ALL", "All Data", "Download every licenced tile"),
+            ("TODAY", "Today", "Download data licenced today"),
+            ("THIS_WEEK", "This Week", "Download data licenced this week"),
+            ("THIS_MONTH", "This Month", "Download data licenced this month"),
+            ("ALL", "All Data", "Download all licenced data"),
         ),
         default="ALL",
         options={'SKIP_SAVE'},
@@ -511,7 +511,7 @@ def _region_offer_countries_text(offer):
 
 
 def _populate_region_pack_info_operator(operator, offer):
-    name = str((offer or {}).get("name", "") or (offer or {}).get("region_pack_name", "") or "Region Pack").strip()
+    name = str((offer or {}).get("name", "") or (offer or {}).get("region_pack_name", "") or "Data Pack").strip()
     region_id = str((offer or {}).get("id", "") or (offer or {}).get("region_pack_id", "") or "").strip()
     operator.region_pack_id = region_id
     operator.region_pack_name = name
@@ -573,7 +573,7 @@ def _draw_region_pack_upsell_options(layout, context, *, current_region_pack_id=
     box = layout.box()
     box.label(text=title, icon="WORLD_DATA")
     for offer in offers[:4]:
-        name = str(offer.get("name", "") or offer.get("region_pack_name", "") or "Region Pack").strip()
+        name = str(offer.get("name", "") or offer.get("region_pack_name", "") or "Data Pack").strip()
         region_id = str(offer.get("id", "") or offer.get("region_pack_id", "") or "").strip()
         if not name or not region_id:
             continue
@@ -827,7 +827,7 @@ from .planetka_ops.navigation_helpers import (
 class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
     bl_idname = "planetka.set_texture_quality_and_resolve"
     bl_label = "Purchase Confirmation"
-    bl_description = "Select Preview resolving or licence Full Quality textures for commercial use"
+    bl_description = "Use Preview or buy Full Quality textures for the current Camera View"
 
     texture_quality_mode: EnumProperty(
         name="Texture Quality",
@@ -835,12 +835,12 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
             (
                 "PREVIEW",
                 "Preview",
-                "Personal use only. Streamed/cached Preview textures for Planetka use",
+                "Personal use only. Fast streaming textures for preview work",
             ),
             (
                 "FULL",
                 "Full Quality",
-                "Commercial licence included for licenced Full Quality texture data",
+                "Commercial licence included after purchase",
             ),
         ),
         default="PREVIEW",
@@ -869,7 +869,7 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
         )
         if mode == "PREVIEW":
             return "Use Preview textures for automated resolving. Personal use only."
-        return "Licence and download Full Quality textures for Camera View. Commercial licence included."
+        return "Buy and download Full Quality textures for Camera View. Commercial licence included."
 
     def invoke(self, context, event):
         del event
@@ -959,13 +959,6 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
             )
 
         target_mode = _normalize_startup_texture_quality_mode(getattr(self, "texture_quality_mode", "PREVIEW"))
-        if target_mode == "BALANCED":
-            return fail(
-                self,
-                "Only Preview and Full Quality are available.",
-                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-                logger=logger,
-            )
         if target_mode == "FULL":
             if _is_active_view_resolve_scope(scene):
                 return fail(
@@ -986,18 +979,11 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
                     code=ErrorCode.RESOLVE_PRECHECK_FAILED,
                     logger=logger,
                 )
-        if not allows_balanced_full_quality_for_context(
+        if not allows_texture_quality_for_context(
             prefs=prefs,
             source=props,
             requested_mode=target_mode,
         ):
-            if target_mode == "BALANCED":
-                return fail(
-                    self,
-                    "Only Preview and Full Quality are available.",
-                    code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-                    logger=logger,
-                )
             if target_mode == "FULL":
                 return fail(
                     self,
@@ -1012,7 +998,7 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
                 logger=logger,
             )
 
-        if target_mode in {"PREVIEW", "BALANCED"}:
+        if target_mode == "PREVIEW":
             try:
                 previous_mode = _normalize_startup_texture_quality_mode(
                     getattr(props, "texture_quality_mode", "PREVIEW")
@@ -1077,7 +1063,7 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
                 return {'FINISHED'} if "FINISHED" in checkout_result else {'CANCELLED'}
 
         try:
-            if target_mode in {"BALANCED", "FULL"}:
+            if target_mode == "FULL":
                 stop_auto_resolve_download_pipeline()
             result = bpy.ops.planetka.load_textures(
                 scope_mode="CAMERA" if target_mode == "FULL" else "AUTO",
@@ -1129,24 +1115,24 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
         name="Payment Option",
         items=(
             ("SCENE", "Buy This Scene", "Pay the exact current Full Quality scene price"),
-            ("REGION_PACK", "Buy Region Pack", "Buy a Full Quality Data Pack"),
+            ("REGION_PACK", "Buy Data Pack", "Buy a Full Quality data pack"),
         ),
         default="SCENE",
         options={'HIDDEN', 'SKIP_SAVE'},
     )
 
     region_pack_id: StringProperty(
-        name="Region Pack",
+        name="Data Pack",
         default="",
         options={'HIDDEN', 'SKIP_SAVE'},
     )
-    region_pack_name: StringProperty(default="Region Pack", options={'HIDDEN', 'SKIP_SAVE'})
+    region_pack_name: StringProperty(default="Data Pack", options={'HIDDEN', 'SKIP_SAVE'})
     included_countries: StringProperty(default="", options={'HIDDEN', 'SKIP_SAVE'})
 
     texture_quality_mode: EnumProperty(
         name="Texture Quality",
         items=(
-            ("FULL", "Full Quality", "Full Quality paid land-detail data"),
+            ("FULL", "Full Quality", "Full Quality texture data with commercial licence after purchase"),
         ),
         default="FULL",
         options={'HIDDEN', 'SKIP_SAVE'},
@@ -1164,7 +1150,7 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
             try:
                 minimum_text = f"€{float(minimum):.2f}"
             except (TypeError, ValueError):
-                minimum_text = "Stripe's minimum"
+                minimum_text = "the minimum payment amount"
             return (
                 f"This scene price is below {minimum_text}. "
                 "Choose a larger Full Quality scene or data pack."
@@ -1277,7 +1263,7 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
                     logger.debug("Planetka: failed clearing credit cache after region pack no-payment check", exc_info=True)
                 scene = getattr(context, "scene", None)
                 _force_region_pack_offers_refresh(scene)
-                pack_name = str(getattr(self, "region_pack_name", "") or "Region Pack").strip()
+                pack_name = str(getattr(self, "region_pack_name", "") or "Data Pack").strip()
                 self.report({'INFO'}, f"{pack_name} is already licenced or has no newly charged tiles.")
                 return {'FINISHED'}
             scene = getattr(context, "scene", None)
@@ -1326,11 +1312,11 @@ def _open_external_url(url):
 
 class PLANETKA_OT_OpenRegionPackMap(bpy.types.Operator):
     bl_idname = "planetka.open_region_pack_map"
-    bl_label = "Open Region Pack Map"
-    bl_description = "Open the detailed user-specific region-pack map in a browser"
+    bl_label = "Open Data Pack Map"
+    bl_description = "Open the detailed map for this data pack in your browser"
 
     region_pack_id: StringProperty(
-        name="Region Pack",
+        name="Data Pack",
         default="",
         options={'HIDDEN', 'SKIP_SAVE'},
     )
@@ -1340,7 +1326,7 @@ class PLANETKA_OT_OpenRegionPackMap(bpy.types.Operator):
         if not region_id:
             return fail(
                 self,
-                "No region pack selected.",
+                "No data pack selected.",
                 code=ErrorCode.RESOLVE_PRECHECK_FAILED,
                 logger=logger,
             )
@@ -1350,7 +1336,7 @@ class PLANETKA_OT_OpenRegionPackMap(bpy.types.Operator):
         except Exception as exc:
             return fail(
                 self,
-                f"Unable to open region pack map: {exc}",
+                f"Unable to open data pack map: {exc}",
                 code=ErrorCode.RESOLVE_PRECHECK_FAILED,
                 logger=logger,
                 exc=exc,
@@ -1360,22 +1346,22 @@ class PLANETKA_OT_OpenRegionPackMap(bpy.types.Operator):
         if not _open_external_url(url):
             return fail(
                 self,
-                "Could not open Planetka region pack map.",
+                "Could not open Planetka data pack map.",
                 code=ErrorCode.RESOLVE_PRECHECK_FAILED,
                 logger=logger,
             )
         _start_region_pack_purchase_monitor(getattr(context, "scene", None), region_id)
-        self.report({'INFO'}, "Planetka region pack map opened in browser.")
+        self.report({'INFO'}, "Planetka data pack map opened in browser.")
         return {'FINISHED'}
 
 
 class PLANETKA_OT_RegionPackInfo(bpy.types.Operator):
     bl_idname = "planetka.region_pack_info"
-    bl_label = "Region Pack Details"
+    bl_label = "Data Pack Details"
     bl_description = "Show what is included in this Full Quality Data Pack"
 
     region_pack_id: StringProperty(default="", options={'HIDDEN', 'SKIP_SAVE'})
-    region_pack_name: StringProperty(default="Region Pack", options={'HIDDEN', 'SKIP_SAVE'})
+    region_pack_name: StringProperty(default="Data Pack", options={'HIDDEN', 'SKIP_SAVE'})
     included_countries: StringProperty(default="", options={'HIDDEN', 'SKIP_SAVE'})
     new_tile_count: IntProperty(default=0, options={'HIDDEN', 'SKIP_SAVE'})
     total_tile_count: IntProperty(default=0, options={'HIDDEN', 'SKIP_SAVE'})
@@ -1405,7 +1391,7 @@ class PLANETKA_OT_RegionPackInfo(bpy.types.Operator):
 
     def draw(self, context):
         layout = self.layout
-        name = str(getattr(self, "region_pack_name", "") or "Region Pack").strip()
+        name = str(getattr(self, "region_pack_name", "") or "Data Pack").strip()
         countries = [part.strip() for part in str(getattr(self, "included_countries", "") or "").split("|") if part.strip()]
         layout.label(text=name, icon="WORLD")
         summary = layout.box()
@@ -1450,7 +1436,7 @@ class PLANETKA_OT_RegionPackInfo(bpy.types.Operator):
         map_op.region_pack_id = str(getattr(self, "region_pack_id", "") or "")
         checkout = actions.operator(
             "planetka.open_credit_checkout",
-            text=f"Licence {name} ({_format_eur_for_ui(getattr(self, 'price_eur', 0.0))})",
+            text=f"Buy {name} ({_format_eur_for_ui(getattr(self, 'price_eur', 0.0))})",
             icon="URL",
         )
         checkout.checkout_option = "REGION_PACK"
@@ -1732,7 +1718,7 @@ class PLANETKA_OT_DataCostBreakdown(bpy.types.Operator):
             price_box.label(text=f"Final Price: {self._price_text(total_credits)}", icon="USER")
             if has_nonzero_price:
                 header.label(
-                    text="Price is based on land area and texture detail; ocean-only, coarse, and already-licenced tiles are not charged.",
+                    text="Price is based on land area and texture detail; ocean-only and already-licenced tiles are not charged.",
                     icon="INFO",
                 )
             header.label(

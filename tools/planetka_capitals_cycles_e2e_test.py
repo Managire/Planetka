@@ -393,7 +393,7 @@ def main():
         prefs.texture_base_path = "planetka-remote"
         props = scene.planetka
         props.auto_resolve = False
-        props.texture_quality_mode = "BALANCED"
+        props.texture_quality_mode = "PREVIEW"
         props.show_earth_preview = False
 
         # Keep E2E coverage broad (50 locations) by using a lightweight render preset.

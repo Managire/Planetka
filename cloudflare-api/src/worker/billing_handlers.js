@@ -1,7 +1,5 @@
 import {
-  grantPaidAnimationTileEntitlements,
-  grantPaidSceneTileEntitlements,
-  grantRegionPackEntitlements,
+  applyStripeCreditPurchaseFromSession,
 } from "./credit_routes.js";
 
 function stripeSignatureHeaderParts(header) {
@@ -26,15 +24,6 @@ function stripeMetadata(session) {
     ? session.metadata
     : {};
   return metadata || {};
-}
-
-function parseStripeMetadataTileKeys(value) {
-  try {
-    const parsed = JSON.parse(String(value || "[]"));
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (_error) {
-    return [];
-  }
 }
 
 function eurFromStripeAmountCents(value) {
@@ -335,218 +324,71 @@ export async function handleStripeWebhook(request, env, deps) {
       200,
     );
   }
-  if (
-    purchaseType === "scene_tiles"
-    || purchaseType === "region_pack"
-    || purchaseType === "animation_tiles"
-  ) {
-    const metadataUserId = String(metadata.planetka_user_id || "").trim();
-    let targetUser = metadataUserId && typeof deps.findUserById === "function"
-      ? await deps.findUserById(db, metadataUserId)
-      : null;
-    if (!targetUser) {
-      targetUser = await deps.findUserByEmail(db, email);
-    }
-    if (!targetUser || !targetUser.id) {
-      console.error(
-        "stripe.webhook.credit_purchase_missing_user",
-        JSON.stringify({ event_type: eventType, email, session_id: sessionId, purchase_type: purchaseType }),
-      );
-      return failedJson({ ok: false, error: "credit_purchase_user_not_found" }, 404);
-    }
-    await deps.ensureCreditTables(db);
-    const userId = String(targetUser.id || "").trim();
-    const amountPaidEur = eurFromStripeAmountCents(session.amount_total);
-    const stripePaymentIntentId = String(session.payment_intent || session.payment_intent_id || "").trim();
-    if (purchaseType === "animation_tiles") {
-      const animationCheckoutId = String(metadata.planetka_animation_checkout_id || "").trim();
-      const grant = await grantPaidAnimationTileEntitlements(
-        db,
-        userId,
-        animationCheckoutId,
-        sessionId,
-        amountPaidEur,
-        deps,
-        email,
-        stripePaymentIntentId,
-      );
-      if (grant && grant.error) {
-        console.error(
-          "stripe.webhook.animation_purchase_failed",
-          JSON.stringify({
-            event_type: eventType,
-            email,
-            session_id: sessionId,
-            user_id: userId,
-            animation_checkout_id: animationCheckoutId,
-            error: grant.error,
-            missing_tile_key: grant.missing_tile_key || "",
-          }),
-        );
-        return failedJson({ ok: false, error: grant.error, tile_key: grant.missing_tile_key || "" }, 500, grant.error);
-      }
-      if (typeof deps.invalidateAnalyticsSnapshots === "function") {
-        try {
-          await deps.invalidateAnalyticsSnapshots(env);
-        } catch (error) {
-          console.warn(
-            "stripe.webhook.animation_snapshot_invalidate_failed",
-            JSON.stringify({ error: String(error && error.message || "snapshot_invalidate_failed"), user_id: userId }),
-          );
-        }
-      }
-      console.log(
-        "stripe.webhook.animation_purchase_processed",
-        JSON.stringify({
-          event_type: eventType,
-          email,
-          session_id: sessionId,
-          user_id: userId,
-          amount_paid_eur: amountPaidEur,
-          animation_checkout_id: animationCheckoutId,
-          unlocked_tile_count: grant && grant.paid_tile_count || 0,
-          free_tile_count: grant && grant.free_tile_count || 0,
-        }),
-      );
-      return processedJson(
-        {
-          ok: true,
-          processed: true,
-          event_type: eventType,
-          email,
-          purchase_type: purchaseType,
-          animation_checkout_id: animationCheckoutId,
-          unlocked_tile_count: grant && grant.paid_tile_count || 0,
-          free_tile_count: grant && grant.free_tile_count || 0,
-        },
-        200,
-      );
-    }
-    if (purchaseType === "region_pack") {
-      const regionPackId = String(metadata.planetka_region_id || "").trim();
-      const grant = await grantRegionPackEntitlements(
-        db,
-        userId,
-        regionPackId,
-        sessionId,
-        amountPaidEur,
-        deps,
-        email,
-        stripePaymentIntentId,
-      );
-      if (grant && grant.error) {
-        console.error(
-          "stripe.webhook.region_pack_purchase_failed",
-          JSON.stringify({
-            event_type: eventType,
-            email,
-            session_id: sessionId,
-            user_id: userId,
-            region_pack_id: regionPackId,
-            error: grant.error,
-          }),
-        );
-        return failedJson({ ok: false, error: grant.error }, 500, grant.error);
-      }
-      if (typeof deps.invalidateAnalyticsSnapshots === "function") {
-        try {
-          await deps.invalidateAnalyticsSnapshots(env);
-        } catch (error) {
-          console.warn(
-            "stripe.webhook.region_pack_snapshot_invalidate_failed",
-            JSON.stringify({ error: String(error && error.message || "snapshot_invalidate_failed"), user_id: userId }),
-          );
-        }
-      }
-      console.log(
-        "stripe.webhook.region_pack_purchase_processed",
-        JSON.stringify({
-          event_type: eventType,
-          email,
-          session_id: sessionId,
-          user_id: userId,
-          amount_paid_eur: amountPaidEur,
-          region_pack_id: regionPackId,
-          unlocked_tile_count: grant && grant.paid_tile_count || 0,
-        }),
-      );
-      return processedJson(
-        {
-          ok: true,
-          processed: true,
-          event_type: eventType,
-          email,
-          purchase_type: purchaseType,
-          region_pack_id: regionPackId,
-          unlocked_tile_count: grant && grant.paid_tile_count || 0,
-        },
-        200,
-      );
-    }
-
-    const tileKeys = parseStripeMetadataTileKeys(metadata.planetka_tile_keys_json);
-    const qualityMode = deps.normalizeQualityMode(metadata.planetka_quality_mode || "full");
-    const grant = await grantPaidSceneTileEntitlements(
-      db,
-      userId,
-      qualityMode,
-      tileKeys,
-      sessionId,
-      amountPaidEur,
-      deps,
-      email,
-      stripePaymentIntentId,
+  const metadataUserId = String(metadata.planetka_user_id || "").trim();
+  let targetUser = metadataUserId && typeof deps.findUserById === "function"
+    ? await deps.findUserById(db, metadataUserId)
+    : null;
+  if (!targetUser) {
+    targetUser = await deps.findUserByEmail(db, email);
+  }
+  if (!targetUser || !targetUser.id) {
+    console.error(
+      "stripe.webhook.credit_purchase_missing_user",
+      JSON.stringify({ event_type: eventType, email, session_id: sessionId, purchase_type: purchaseType }),
     );
-    if (grant && grant.error) {
-      console.error(
-        "stripe.webhook.scene_purchase_failed",
-        JSON.stringify({
-          event_type: eventType,
-          email,
-          session_id: sessionId,
-          user_id: userId,
-          error: grant.error,
-          missing_tile_key: grant.missing_tile_key || "",
-        }),
-      );
-      return failedJson({ ok: false, error: grant.error, tile_key: grant.missing_tile_key || "" }, 500, grant.error);
-    }
-    if (typeof deps.invalidateAnalyticsSnapshots === "function") {
-      try {
-        await deps.invalidateAnalyticsSnapshots(env);
-      } catch (error) {
-        console.warn(
-          "stripe.webhook.scene_purchase_snapshot_invalidate_failed",
-          JSON.stringify({ error: String(error && error.message || "snapshot_invalidate_failed"), user_id: userId }),
-        );
-      }
-    }
-    console.log(
-      "stripe.webhook.scene_purchase_processed",
+    return failedJson({ ok: false, error: "credit_purchase_user_not_found" }, 404);
+  }
+  await deps.ensureCreditTables(db);
+  const applyResult = await applyStripeCreditPurchaseFromSession(db, session, deps, env);
+  if (applyResult && applyResult.error) {
+    console.error(
+      "stripe.webhook.credit_purchase_failed",
       JSON.stringify({
         event_type: eventType,
         email,
         session_id: sessionId,
-        user_id: userId,
-        amount_paid_eur: amountPaidEur,
-        tile_count: Array.isArray(tileKeys) ? tileKeys.length : 0,
-        unlocked_tile_count: grant && grant.paid_tile_count || 0,
+        user_id: String(targetUser.id || ""),
+        purchase_type: purchaseType,
+        error: applyResult.error,
+        missing_tile_key: applyResult.missing_tile_key || "",
       }),
     );
-    return processedJson(
-      {
-        ok: true,
-        processed: true,
-        event_type: eventType,
-        email,
-        purchase_type: purchaseType,
-        unlocked_tile_count: grant && grant.paid_tile_count || 0,
-      },
-      200,
+    return failedJson(
+      { ok: false, error: applyResult.error, tile_key: applyResult.missing_tile_key || "" },
+      500,
+      applyResult.error,
     );
   }
-
-  return processedJson({ ok: true, ignored: true, reason: "unsupported_purchase_type", event_type: eventType }, 200);
+  const grant = applyResult && applyResult.result || {};
+  console.log(
+    "stripe.webhook.credit_purchase_processed",
+    JSON.stringify({
+      event_type: eventType,
+      email,
+      session_id: sessionId,
+      user_id: String(targetUser.id || ""),
+      purchase_type: purchaseType,
+      amount_paid_eur: eurFromStripeAmountCents(session.amount_total),
+      applied: Boolean(applyResult && applyResult.applied),
+      duplicate_session: Boolean(applyResult && applyResult.duplicate_session),
+      unlocked_tile_count: grant && grant.paid_tile_count || 0,
+      free_tile_count: grant && grant.free_tile_count || 0,
+    }),
+  );
+  return processedJson(
+    {
+      ok: true,
+      processed: true,
+      event_type: eventType,
+      email,
+      purchase_type: purchaseType,
+      applied: Boolean(applyResult && applyResult.applied),
+      duplicate_session: Boolean(applyResult && applyResult.duplicate_session),
+      unlocked_tile_count: grant && grant.paid_tile_count || 0,
+      free_tile_count: grant && grant.free_tile_count || 0,
+    },
+    200,
+  );
 }
 
 export const billingInternals = {

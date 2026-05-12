@@ -1,5 +1,3 @@
-const DEFAULT_BETA_ACCESS_MODE = "restricted";
-
 export function parseBooleanFlag(value) {
   if (typeof value === "boolean") {
     return value;
@@ -22,35 +20,4 @@ export function parseNonNegativeInteger(value, fallback = 0) {
     return fallback;
   }
   return Math.max(0, Math.floor(parsed));
-}
-
-export function normalizeBetaAccessMode(value) {
-  const normalized = String(value || "").trim().toLowerCase();
-  if (!normalized) {
-    return "";
-  }
-  if (normalized === "unrestricted") {
-    return "unrestricted";
-  }
-  if (
-    normalized === "restricted"
-    || normalized === "off"
-    || normalized === "disabled"
-    || normalized === "normal"
-  ) {
-    return "restricted";
-  }
-  return "";
-}
-
-export function resolveBetaAccessMode(env = {}) {
-  const explicitMode = normalizeBetaAccessMode(env.BETA_ACCESS_MODE);
-  if (explicitMode) {
-    return explicitMode;
-  }
-  return DEFAULT_BETA_ACCESS_MODE;
-}
-
-export function isBetaUnrestrictedAccessEnabled(env = {}) {
-  return resolveBetaAccessMode(env) === "unrestricted";
 }

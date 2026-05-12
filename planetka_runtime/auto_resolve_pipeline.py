@@ -192,29 +192,10 @@ def _show_download_status_popup():
 
 
 def _ctx_auto_resolve_texture_quality_mode(ctx, scene, props=None):
-    deps = ctx.deps
-    if props is None and scene is not None:
-        props = getattr(scene, "planetka", None)
-    try:
-        requested = deps.normalize_texture_quality_mode(getattr(props, "texture_quality_mode", "PREVIEW"))
-    except deps.recoverable_exceptions:
-        requested = "PREVIEW"
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        requested = "PREVIEW"
-
-    # Automated resolving supports the selectable live modes only. Full Quality
-    # remains a deliberate paid/manual Camera View operation.
-    if requested != "BALANCED":
-        return "PREVIEW"
-
-    try:
-        enforced = deps.enforce_texture_quality_mode_for_account(scene, requested)
-        enforced = deps.normalize_texture_quality_mode(enforced)
-    except deps.recoverable_exceptions:
-        enforced = "PREVIEW"
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        enforced = "PREVIEW"
-    return "BALANCED" if enforced == "BALANCED" else "PREVIEW"
+    del ctx, scene, props
+    # Automated resolving is Preview-only. Full Quality remains a deliberate
+    # paid/manual Camera View operation.
+    return "PREVIEW"
 
 
 def _ctx_schedule_auto_resolve_download(

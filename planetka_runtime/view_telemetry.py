@@ -367,8 +367,6 @@ def camera_signature(scene):
 
 def normalize_texture_quality_mode(value):
     token = str(value or "").strip().upper()
-    if token in {"HALF", "BALANCED"}:
-        return "PREVIEW"
     if token in {"FULL", "PREVIEW"}:
         return token
     return "PREVIEW"
@@ -1015,10 +1013,6 @@ def clear_resolve_size_estimates(scene, runtime=None):
         "planetka_resolve_estimate_preview_available_bytes",
         "planetka_resolve_estimate_full_download_bytes",
         "planetka_resolve_estimate_preview_download_bytes",
-        "planetka_resolve_estimate_balanced_bytes",
-        "planetka_resolve_estimate_balanced_available_bytes",
-        "planetka_resolve_estimate_balanced_download_bytes",
-        "planetka_resolve_estimate_balanced_credits",
         _REGION_OFFER_PRICING_TILES_KEY,
     )
     if scene is None:
@@ -2198,13 +2192,10 @@ def update_resolve_size_estimates(
     try:
         scene[resolve_estimate_full_bytes_key] = int(max(0, int(full_bytes)))
         scene[resolve_estimate_preview_bytes_key] = int(max(0, int(preview_bytes)))
-        scene["planetka_resolve_estimate_balanced_bytes"] = int(max(0, int(preview_bytes)))
         scene["planetka_resolve_estimate_full_available_bytes"] = int(max(0, int(full_available_bytes)))
         scene["planetka_resolve_estimate_preview_available_bytes"] = int(max(0, int(preview_available_bytes)))
         scene["planetka_resolve_estimate_full_download_bytes"] = int(max(0, int(full_download_bytes)))
         scene["planetka_resolve_estimate_preview_download_bytes"] = int(max(0, int(preview_download_bytes)))
-        scene["planetka_resolve_estimate_balanced_available_bytes"] = int(max(0, int(preview_available_bytes)))
-        scene["planetka_resolve_estimate_balanced_download_bytes"] = int(max(0, int(preview_download_bytes)))
         scene[_REGION_OFFER_PRICING_TILES_KEY] = "|".join(str(tile) for tile in full_pricing_tiles[:256])
         scene[_FULL_PRICE_SIGNATURE_KEY] = str(full_price_signature or "")
         if full_price_pending:
@@ -2217,7 +2208,6 @@ def update_resolve_size_estimates(
             scene[_FULL_PRICE_PENDING_KEY] = False
             scene[deps.resolve_estimate_full_credits_key] = float(max(0.0, float(full_credits)))
         scene[deps.resolve_estimate_preview_credits_key] = float(max(0.0, float(preview_credits)))
-        scene["planetka_resolve_estimate_balanced_credits"] = 0.0
     except recoverable_exceptions:
         logger.debug("Planetka: failed storing resolve-size estimates", exc_info=True)
         return False
@@ -2234,7 +2224,7 @@ def get_resolve_size_estimates(scene=None, runtime=None):
     resolve_estimate_full_bytes_key = deps.resolve_estimate_full_bytes_key
     resolve_estimate_preview_bytes_key = deps.resolve_estimate_preview_bytes_key
     if target_scene is None:
-        return {"FULL": None, "BALANCED": None, "PREVIEW": None}
+        return {"FULL": None, "PREVIEW": None}
 
     def _read_int(key):
         try:
@@ -2268,17 +2258,13 @@ def get_resolve_size_estimates(scene=None, runtime=None):
 
     return {
         "FULL": _read_int(resolve_estimate_full_bytes_key),
-        "BALANCED": _read_int("planetka_resolve_estimate_balanced_bytes"),
         "PREVIEW": _read_int(resolve_estimate_preview_bytes_key),
         "FULL_AVAILABLE": _read_int("planetka_resolve_estimate_full_available_bytes"),
-        "BALANCED_AVAILABLE": _read_int("planetka_resolve_estimate_balanced_available_bytes"),
         "PREVIEW_AVAILABLE": _read_int("planetka_resolve_estimate_preview_available_bytes"),
         "FULL_DOWNLOAD": _read_int("planetka_resolve_estimate_full_download_bytes"),
-        "BALANCED_DOWNLOAD": _read_int("planetka_resolve_estimate_balanced_download_bytes"),
         "PREVIEW_DOWNLOAD": _read_int("planetka_resolve_estimate_preview_download_bytes"),
         "FULL_CREDITS": _read_float(deps.resolve_estimate_full_credits_key),
         "FULL_CREDITS_PENDING": _read_bool(_FULL_PRICE_PENDING_KEY),
-        "BALANCED_CREDITS": _read_float("planetka_resolve_estimate_balanced_credits"),
         "PREVIEW_CREDITS": _read_float(deps.resolve_estimate_preview_credits_key),
     }
 

@@ -107,6 +107,9 @@ def _prefetch_result_indicates_licence_failure(prefetch_result):
     for entry in details:
         if not isinstance(entry, dict):
             continue
+        folder_value = str(entry.get("folder", "") or "").strip().upper()
+        if folder_value != "S2":
+            continue
         combined = " ".join((
             str(entry.get("fetch_error", "") or ""),
             str(entry.get("remote_error", "") or ""),
@@ -191,9 +194,7 @@ def _build_resolve_download_requests(resolved_tiles, ocean_tiles=None):
 
 def _normalize_texture_quality_mode(value):
     token = str(value or "").strip().upper()
-    if token in {"HALF", "BALANCED"}:
-        return "BALANCED"
-    if token in {"FULL", "BALANCED", "PREVIEW"}:
+    if token in {"FULL", "PREVIEW"}:
         return token
     return "PREVIEW"
 
@@ -202,7 +203,6 @@ def _apply_fixed_z180_quality_targets(visible_tiles, texture_quality_mode="PREVI
     mode = _normalize_texture_quality_mode(texture_quality_mode)
     target_by_mode = {
         "PREVIEW": 720,
-        "BALANCED": 360,
         "FULL": 180,
     }
     target_d = int(target_by_mode.get(mode, 720))

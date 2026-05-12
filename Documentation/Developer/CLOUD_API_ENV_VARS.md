@@ -2,11 +2,11 @@
 
 This document lists the runtime environment variables used by the Planetka Worker.
 
-The 0.7.0 model is simple:
-- auth is API-key based
-- access is tier-based (`Free` / `Personal` / `Commercial`)
-- beta can override effective access with `BETA_ACCESS_MODE=unrestricted`
-- there is no magic-link auth, device-login flow, or time-limited recurring-plan state in the Worker
+The 0.7.0 public-release model is:
+- auth is API-key based;
+- Preview access is free for authenticated add-on use;
+- Full Quality access is granted through direct purchase, promotion, or explicit entitlement;
+- Standard/Balanced, prepaid balance, monthly billing, and unrestricted quality access are not public-release products.
 
 ## Rate Limiting
 
@@ -21,15 +21,13 @@ These limits protect the public API-key request flow and admin login.
 - `RATE_LIMIT_ADMIN_LOGIN_IP_LIMIT` (default: `20`)
 - `RATE_LIMIT_ADMIN_LOGIN_IP_WINDOW_SECONDS` (default: `300`)
 
-## Beta Access Mode
+## Legal Document Versions
 
-- `BETA_ACCESS_MODE` (default: empty)
-
-Supported values:
-- empty / unset: normal stored-tier behavior
-- `unrestricted`: all beta users receive Commercial-equivalent hosted-service access while beta is active
-
-This override affects effective access only. It does not rewrite the user's stored tier in D1.
+- `LEGAL_VERSION` (recommended current value: `2026-05-12`)
+- `TERMS_VERSION` (recommended current value: `2026-05-12`)
+- `PRIVACY_VERSION` (recommended current value: `2026-05-12`)
+- `LEGAL_TERMS_KEY` (default R2 key: `legal/terms-of-service.pdf`)
+- `LEGAL_PRIVACY_KEY` (default R2 key: `legal/privacy-policy.pdf`)
 
 ## Admin Dashboard Login
 
@@ -105,11 +103,9 @@ Alert email is sent to `SECURITY_ALERT_EMAIL` when suspicious patterns are detec
 
 ## Access Model
 
-Worker-side access control is tier-based only:
+Worker-side access control should treat Preview as the default authenticated texture mode and Full Quality as entitlement/payment controlled.
 
-- `free`: Preview
-- `personal`: Preview + Balanced
-- `commercial`: Preview + Balanced + Full + Final Animation Render
+Do not expose legacy Standard/Balanced, prepaid balance, monthly-billing, or unrestricted-quality flows unless they are deliberately reintroduced as public products.
 
 ## Monthly Cost Estimate Alerts
 
@@ -130,9 +126,9 @@ These controls estimate monthly R2 cost and notify ops when estimate crosses thr
 
 These power the addon update manifest endpoint at `GET /addon/update-manifest`.
 
-- `ADDON_UPDATE_VERSION` (default: `0.5.3`)
-- `ADDON_UPDATE_DOWNLOAD_URL` (default: empty; when empty, `available=false`)
-- `ADDON_UPDATE_SHA256` (optional)
+- `ADDON_UPDATE_VERSION` (current public value: `0.7.0`)
+- `ADDON_UPDATE_DOWNLOAD_URL` (current public value: `https://pub-563b561afd7a4af4ad4c0ffe54b1e665.r2.dev/releases/Planetka_update_0.7.0.zip`)
+- `ADDON_UPDATE_SHA256` (current public value: `285000b7578111b0ea3f3885596faa7a13d467d6a9e4beb8b77eccd03b8fca96`)
 - `ADDON_UPDATE_RELEASE_NOTES_URL` (default: `https://www.planetka.io/blender/documentation/`)
 - `ADDON_UPDATE_CHANNEL` (default: `stable`)
 - `ADDON_UPDATE_MIN_BLENDER` (default: `4.5.7`)

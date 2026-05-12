@@ -80,18 +80,8 @@ Documentation/Licencing/README.md
 Documentation/Licencing/TERMS_OF_SERVICE.md
 Documentation/Licencing/TERMS_OF_SERVICE.pdf
 Documentation/Licencing/Using Planetka Commercially.txt
-Documentation/Release/CHANGELOG_DISCIPLINE.md
-Documentation/Release/COMPATIBILITY_MATRIX.md
 Documentation/Release/FAIR_USAGE_POLICY.md
-Documentation/Release/FREE_TEST_GROUP_RELEASE_CHECKLIST.md
-Documentation/Release/PRODUCTION_ALERT_RUNBOOK.md
-Documentation/Release/QA_CHECKLIST.md
-Documentation/Release/README.md
-Documentation/Release/RELEASE_NOTES_TEMPLATE.md
-Documentation/Release/REQUIRED_STATUS_CHECKS.md
-Documentation/Release/ROLLBACK_SAFE_UPDATE_TESTING.md
 Documentation/Release/SYSTEM_REQUIREMENTS.md
-Documentation/Release/VERSIONING_POLICY.md
 
 # Bundled resources
 Resources/Fallback Images/black_pixel_20.exr

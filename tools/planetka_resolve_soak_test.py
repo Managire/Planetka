@@ -801,7 +801,7 @@ def main():
         _assert(auth_module.is_authenticated(prefs), "Account is not logged in.")
         auth_module.sync_account_profile(prefs)
         user_email = str(auth_module.get_connected_email(prefs) or "").strip().lower()
-        plan_code = str(auth_module.get_plan_code(prefs) or "").strip().lower()
+        plan_code = str(getattr(prefs, "auth_plan_code", "") or "").strip().lower()
         if expected_email:
             _assert(user_email == expected_email, f"Logged-in account mismatch. expected={expected_email} got={user_email}")
         _log(f"Authenticated account: email={user_email} plan={plan_code}")

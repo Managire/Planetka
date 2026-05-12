@@ -756,7 +756,7 @@ def main():
         auth_module.sync_account_profile(prefs)
 
         user_email = str(auth_module.get_connected_email(prefs) or "").strip().lower()
-        plan_code = str(auth_module.get_plan_code(prefs) or "").strip().lower()
+        plan_code = str(getattr(prefs, "auth_plan_code", "") or "").strip().lower()
         _log(f"Authenticated account: email={user_email or 'unknown'} plan={plan_code or 'unknown'}")
 
         scene = bpy.context.scene
@@ -767,7 +767,7 @@ def main():
         prefs.texture_base_path = "planetka-remote"
         props = scene.planetka
         props.auto_resolve = False
-        props.texture_quality_mode = "BALANCED"
+        props.texture_quality_mode = "PREVIEW"
         props.show_earth_preview = False
 
         scene.render.resolution_x = 1920

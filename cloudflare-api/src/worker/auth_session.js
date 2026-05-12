@@ -129,9 +129,6 @@ export async function requireAuthenticatedUserContext(request, env, options = {}
   const tokenQualityAccessPlanCode = tokenQualityAccessPlanRaw && typeof deps.normalizeTierCodeStrict === "function"
     ? deps.normalizeTierCodeStrict(tokenQualityAccessPlanRaw)
     : tokenPlanCode;
-  const tokenUnrestrictedQualityAccess = deps.parseBooleanFlag(
-    access.unrestricted_quality_access ?? access.unrestrictedQualityAccess,
-  );
   if (
     lightweightAccessClaims
     && !requireAdmin
@@ -156,7 +153,6 @@ export async function requireAuthenticatedUserContext(request, env, options = {}
         access,
         planCode: tokenPlanCode,
         qualityAccessPlanCode: tokenQualityAccessPlanCode || tokenPlanCode,
-        unrestrictedQualityAccess: Boolean(tokenUnrestrictedQualityAccess),
         authMethod,
         apiKeyId,
         deviceId,
@@ -214,7 +210,6 @@ export async function requireAuthenticatedUserContext(request, env, options = {}
     access,
     planCode,
     qualityAccessPlanCode,
-    unrestrictedQualityAccess: Boolean(qualityAccess.unrestrictedQualityAccess),
     authMethod,
     apiKeyId,
     deviceId,

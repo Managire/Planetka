@@ -1,35 +1,62 @@
 # Planetka Internal Pricing System Reference
 
-This document describes the current EUR land-detail pricing system from a technical point of view. It is an internal implementation reference, not public legal text.
+This document describes the current Planetka pricing system from a technical point of view. It is an internal implementation reference, not public legal text.
 
-Last updated: 2026-05-10
+Last updated: 2026-05-12
 
-## 1. Design Goals
+## 1. Current Product Model
 
-The pricing system sells licenced access to Full Quality land-detail texture tiles while keeping Preview data free.
+Planetka currently has two customer-facing texture access modes:
 
-Core goals:
+- `Preview`: free streaming quality for browsing, tests, and personal preview work.
+- `Full Quality`: paid/licenced texture data with commercial licence included for the licenced data.
 
-- Preview quality is free and unlimited from the user-experience point of view, subject to fair-usage monitoring.
-- Full Quality is paid/licenced per tile, but users are charged only once for the same tile detail entitlement.
-- Price is based on land area and delivered texture detail, not on raw file size or number of downloads.
-- Once a tile is licenced, the user can download it again without paying again.
-- Pricing must be backend-authoritative. The Blender client may display estimates, but must not be trusted to decide the final charge.
-- Missing or inconsistent backend pricing metadata must never overcharge users. Such cases are charged at EUR 0.00 and logged as pricing integrity events.
-- Animation render should pre-licence and pre-download all required Full Quality data before frame rendering starts.
+The removed or inactive models are intentionally not part of the current customer flow:
 
-## 2. User-Facing Terminology
+- No prepaid balance.
+- No monthly billing.
+- No Standard/Balanced paid unlock.
+- No account tier that changes pricing.
+- No client-side authoritative pricing.
 
-User-facing UI should use these terms:
+The live model is simple:
 
-- `EUR` / `€`: The displayed price currency.
-- `Licenced`: A tile the user has paid for or otherwise received rights to use.
-- `Full Quality Textures`: The primary paid action for the current Camera View.
-- `Preview`: Free low-detail data used for normal browsing and Quick Preview animation.
+```text
+Price is calculated by backend -> user pays direct Stripe Checkout -> backend grants tile entitlements -> user can reuse/download those tiles later without paying again.
+```
 
-Some internal API fields still use `credits` for historical reasons. In the current implementation they mean EUR price values, not a user-held balance.
+## 2. Core Pricing Principles
 
-## 3. Authoritative Components
+The current pricing system is built around these invariants:
+
+- Full Quality pricing is backend-authoritative.
+- The Blender client may display estimates, but the backend recalculates before any payment or entitlement grant.
+- Users pay only for newly licenced Full Quality tile coverage.
+- A finer tile licence covers coarser tiles in the same tile family.
+- A coarser tile licence gives upgrade credit when the user later buys a finer tile in the same tile family.
+- Scene-specific purchases and animation purchases are direct Stripe payments.
+- Region/data-pack purchases are direct Stripe payments.
+- Region/data-pack gross totals are static generated catalog values, then adjusted at request time by the live pricing settings and user entitlements.
+- Missing pricing metadata must never overcharge users; affected tiles are priced at `€0.00` and logged as integrity events.
+- Preview telemetry and Full Quality/licenced telemetry are separate products operationally.
+
+## 3. User-Facing Terms
+
+Use these terms consistently in UI and web pages:
+
+- `Preview`: free lower-detail streaming.
+- `Full Quality`: paid/licenced high-detail texture data.
+- `Relevant Data Packs`: data-pack suggestions for the current view.
+- `Licenced`: tile data already paid for, granted, or covered by World entitlement.
+- `Full Price`: price before user-specific entitlement deductions and volume discount.
+- `Already Licenced`: value deducted because the user already owns equivalent/finer tiles.
+- `Partially Licenced`: value deducted because the user owns a coarser tile in the same family and is paying only the upgrade difference.
+- `Volume Discount`: data-pack percentage discount applied after entitlement deductions.
+- `Final Price`: actual amount due now.
+
+Historical API fields still use `credits`. In the current implementation, `credits` means EUR price/charge, not user-held balance.
+
+## 4. Authoritative Components
 
 ### Backend Worker
 
@@ -39,15 +66,20 @@ Primary files:
 - `cloudflare-api/src/worker/tile_routes.js`
 - `cloudflare-api/src/worker/billing_handlers.js`
 - `cloudflare-api/src/index.js`
+- `cloudflare-api/src/worker/admin_analytics_handlers.js`
 
-The Cloudflare Worker is the authority for:
+The Worker is authoritative for:
 
-- Tile licence/entitlement state.
+- Runtime pricing settings.
+- Tile land metadata lookup.
 - Full Quality price calculation.
+- Existing entitlement and partial-upgrade deductions.
+- Region/data-pack volume discounts.
 - Stripe Checkout session creation.
 - Stripe webhook processing.
-- Blocking unauthorised Full Quality tile requests.
-- Preview fair-usage telemetry and alerts.
+- Purchase history and ledger records.
+- Full Quality tile access enforcement.
+- Preview fair-usage telemetry and alerting.
 
 ### Blender Client
 
@@ -63,231 +95,184 @@ Primary files:
 
 The Blender client is responsible for:
 
-- Computing the current visible tile set for the Camera View.
+- Computing visible/pricing tile candidates for Camera View or animation segments.
 - Asking the backend for authoritative EUR estimates.
-- Displaying prices, data sizes, and breakdowns.
-- Starting Stripe Checkout when needed.
-- Starting paid Full Quality resolves only after backend licence/session confirmation.
-- Downloading licenced assets from Cloudflare R2 or from Local Source.
+- Displaying price, size, and breakdown information.
+- Opening Stripe Checkout or no-payment unlock flows.
+- Waiting until backend entitlements are visible after payment.
+- Downloading licenced assets from Cloudflare R2 or Local Source.
 
 The client must not calculate final charge locally.
 
-## 4. Data Model
+## 5. Runtime Pricing Settings
 
-The backend D1 database contains the authoritative account, licence, pricing, and ledger tables.
+Runtime pricing settings are stored in D1 `app_settings` and managed in Analytics -> Product Pricing.
 
-### `user_credit_accounts`
+Table:
 
-Created in `ensureCreditTables()` in `cloudflare-api/src/index.js`.
-
-Important columns:
-
-- `user_id`: Primary key.
-- `account_type`: Currently always `standard`.
-- `world_full_quality_unlocked_at`, `world_full_quality_paid_eur`: World-pack entitlement summary.
-- `pricing_version`: Incremented when user entitlements change so pricing caches invalidate.
-- `created_at`, `updated_at`.
-
-Current account model:
-
-- There is only one account type: `standard`.
-- New accounts do not receive or hold prepaid balance.
-- Old account state is coerced back to `standard`.
-
-### `user_tile_entitlements`
-
-Stores licenced tiles.
-
-Important columns:
-
-- `user_id`.
-- `tile_key`: Example `x075_y149_z001_d001`.
-- `quality_mode`: Currently `full` for paid/licenced data.
-- `credits_spent`: EUR value assigned to this entitlement row at unlock time.
-- `land_km2`, `billable_land_km2`: Backend metadata snapshot at unlock time.
-- `source`: `backend_d1`, `stripe_checkout`, etc.
-- `unlocked_at`.
-
-Primary key:
-
-- `(user_id, tile_key)`.
-
-Important rule:
-
-- Entitlement is evaluated by tile family `x/y/z` and `d` level. A finer licence covers coarser variants in the same family.
-
-### `credit_ledger`
-
-Financial audit trail.
-
-Important columns:
-
-- `amount_eur`: Amount actually paid for this purchase event.
-- `reason`: Examples `stripe_scene_purchase`, `stripe_region_pack_purchase`, `region_pack_no_payment`.
-- `metadata_json`: Resolve ID, quality mode, tile count, Stripe session ID, etc.
-
-### `tile_land_stats`
-
-Authoritative pricing metadata in backend D1.
-
-Important columns:
-
-- `tile_key`.
-- `x`, `y`, `z`, `d`.
-- `land_km2`.
-- `billable_land_km2`.
-- `free_reason`.
-- `updated_at`.
-
-This table is the backend source for pricing. The local `Resources/tile_sizes.sqlite` may contain land metadata for tooling/reference, but Blender runtime pricing must not rely on local SQLite because backend prices/rules may change.
-
-### `tile_commercial_value`
-
-Internal analysis table in `Resources/tile_sizes.sqlite`.
-
-This table stores experimental GeoNames/population-derived commercial value tiers and multipliers. It is kept for future pricing analysis only.
-
-Active public pricing must ignore `tile_commercial_value`. The live formula uses only backend `tile_land_stats.billable_land_km2`, tile `d` detail, free-tile rules, licence coverage, and the region-pack volume discount.
-
-### `pricing_integrity_events`
-
-Records backend pricing metadata problems.
-
-Current critical case:
-
-- `pricing_metadata_missing`: A requested, non-free S2 tile key has no matching backend pricing metadata.
-
-In that case, the affected tile is charged EUR 0.00 and the event is recorded for investigation.
-
-### Stripe Webhook Events
-
-`stripe_webhook_events` stores processed Stripe event IDs so webhooks are idempotent.
-
-## 5. Tile Key and Asset Model
-
-Canonical tile key format:
-
-```text
-xNNN_yNNN_zNNN_dNNN
+```sql
+app_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  updated_by_user_id TEXT
+)
 ```
 
-Example:
+Current setting keys:
 
-```text
-x075_y149_z001_d001
+- `full_quality_price_coefficient`
+- `region_pack_discount_min_percent`
+- `region_pack_discount_max_percent`
+- `region_pack_discount_share_buckets_json`
+- `custom_scene_licence_fee_eur`
+- `custom_animation_licence_fee_eur`
+- `region_pack_discount_override:<product_id>`
+
+Defaults in `credit_routes.js`:
+
+```js
+DEFAULT_FULL_QUALITY_PRICE_COEFFICIENT = 5.00
+DEFAULT_REGION_PACK_DISCOUNT_MIN_PERCENT = 0
+DEFAULT_REGION_PACK_DISCOUNT_MAX_PERCENT = 75
+DEFAULT_SCENE_CUSTOM_LICENCE_FEE_EUR = 1.50
+DEFAULT_ANIMATION_CUSTOM_LICENCE_FEE_EUR = 4.50
+SCENE_SMALL_FREE_THRESHOLD_CENTS = 50
 ```
 
-Asset files for one tile normally include:
+Important runtime behavior:
+
+- `getRuntimePricingSettings()` loads settings from D1.
+- `ensureRuntimePricingSettings()` is called before public pricing/checkout routes.
+- Worker isolates cache settings briefly with `PRICING_SETTINGS_CACHE_TTL_MS = 30 seconds`.
+- Saving pricing settings invalidates pricing caches.
+- Pricing cache keys include coefficient, discount range, discount buckets, custom fees, and product overrides.
+
+## 6. Price Coefficient Semantics
+
+The Analytics-facing `Price coefficient` is defined as:
 
 ```text
-S2/S2_x075_y149_z001_d001.exr
-EL/EL_x075_y149_z001_d001.exr
-WT/WT_x075_y149_z001_d001.exr
-PO/PO_x075_y149_z001_d001.tif
+coefficient 1.00 = €1.00 per 10,000 km² at d001 / 10 m per pixel, before free rules, licence deductions, custom scene/animation fees, and pack discounts.
 ```
 
-`defaultAssetsForTile()` in `credit_routes.js` defines the default asset list.
+Current default:
 
-Special EL alias:
+```text
+coefficient = 5.00
+```
 
-- For `z001_d002`, EL uses the `d001` file internally.
-- `isTileUnlockedForUser()` handles this so EL aliasing does not create a separate entitlement problem.
+That means:
 
-Pricing is always associated with the S2 tile key, not with individual EL/WT/PO support files.
+```text
+d001 gross base = €5.00 per 10,000 km² of billable land
+```
 
-## 6. Land Metadata Generation
+Generated data-pack catalogs store static coefficient-1.0 gross prices from the older base:
 
-Tool:
+```js
+EQUATOR_Z001_AREA_KM2 = (40075.016686 / 360.0) ** 2
+```
+
+To keep generated catalog files static while changing the meaning of the public coefficient, the Worker converts the public coefficient to an internal generated-catalog multiplier:
+
+```js
+PUBLIC_COEFFICIENT_TO_LEGACY_GROSS_MULTIPLIER = EQUATOR_Z001_AREA_KM2 / 10000
+internal_multiplier = public_coefficient * PUBLIC_COEFFICIENT_TO_LEGACY_GROSS_MULTIPLIER
+```
+
+This is why data-pack prices can update instantly without rebuilding the generated catalog.
+
+Do not add a separate `price per 10,000 km²` setting. The coefficient is the single global tile-price control.
+
+## 7. Tile Land Metadata
+
+Authoritative backend table:
+
+```sql
+tile_land_stats (
+  tile_key TEXT PRIMARY KEY,
+  x INTEGER NOT NULL,
+  y INTEGER NOT NULL,
+  z INTEGER NOT NULL,
+  d INTEGER NOT NULL,
+  land_km2 REAL NOT NULL DEFAULT 0,
+  billable_land_km2 REAL NOT NULL DEFAULT 0,
+  free_reason TEXT,
+  updated_at TEXT NOT NULL
+)
+```
+
+Generated by:
 
 ```text
 tools/build_tile_land_stats.py
 ```
 
-Primary input source:
+Primary texture source:
 
 ```text
 /Volumes/SSDA/Planetka Assets/S2
 ```
 
-S2 ocean reference:
+Normal land/ocean rule:
 
-```text
-Resources/Fallback Images/ocean_pixel_final_20.exr
-```
+- S2 ocean fallback pixels are excluded from land.
+- Non-ocean S2 pixels count as land.
+- `billable_land_km2` is normally equal to `land_km2`, unless the tile is globally free.
 
-Special Antarctica/Greenland support source:
+Antarctica and Greenland rule:
 
-```text
-/Volumes/SSDA/Planetka Assets/WT
-```
+- Latitude itself no longer makes tiles free.
+- For Antarctica and Greenland, WT and S2-white masking removes ocean/ice areas from billable land.
+- Pure white S2 pixels are removed from land for these special areas.
+- This makes most Antarctica/Greenland ice tiles free or very cheap because their billable land becomes zero or low.
 
-Rules:
-
-- Every S2 pixel is counted as land unless it matches the S2 ocean fallback RGB value within tolerance `1e-5`.
-- Land includes normal land, rivers, lakes, snow/ice, and any non-ocean S2 pixel.
-- Ocean-only pixels do not contribute to `land_km2` or `billable_land_km2`.
-- For Antarctica tiles (`north edge <= 60°S`) and all Greenland product tiles, the land mask is stricter:
-- WT blue (`RGB 0,0,1`) is treated as ocean.
-- S2 white pixels (`R >= 1`, `G >= 1`, `B >= 1`) are removed from land, so ice/snow does not become billable land.
-- If a special Antarctica/Greenland WT tile is missing, S2 ocean plus S2 white exclusion is used as the fallback and recorded in `source`.
-- Latitude no longer makes a tile free by itself.
-
-Area calculation:
-
-- The tool calculates spherical row areas from tile bounds using Earth radius `6371.0088 km`.
-- It accumulates land area per scanline using the fraction of non-ocean pixels in that row.
-- `billable_land_km2` is equal to `land_km2` unless the tile is globally free by d-level.
-
-Free metadata reasons generated by the tool:
+Free metadata reasons generated by tooling include:
 
 - `d000_global_free`
 - `coarse_detail_free`
 
-The local build table contains more metadata fields (`land_fraction`, `paid_lat_fraction`, `source`), but the Worker currently needs only `tile_key`, coordinates, land areas, `free_reason`, and `updated_at`. `paid_lat_fraction` is retained for schema compatibility; it is now `1.0` for paid tiles and `0.0` for globally free tiles because latitude is no longer a free-pricing rule. The `source` value is still useful for audits:
+## 8. Free Tile Rules
 
-- `S2`: normal S2 ocean-color exclusion.
-- `WT_S2_WHITE`: special Antarctica/Greenland WT ocean exclusion plus S2 white exclusion.
-- `S2_WHITE_FALLBACK`: special Antarctica/Greenland fallback when matching WT is missing.
+Implemented in `freeReasonForTile()` and pricing metadata generation.
 
-## 7. Free Tile Rules
+A tile is free when:
 
-Implemented in `freeReasonForTile()` in `credit_routes.js` and mirrored in `tools/build_tile_land_stats.py`.
+- It is invalid or non-priceable.
+- `d <= 0` (`d000_global_free`).
+- `d >= 60` (`coarse_detail_free`).
+- It is Preview quality (`preview_quality`).
+- It has `billable_land_km2 = 0`.
+- It is already covered by the user's existing Full Quality licence.
+- The user has World Full Quality unlocked.
+- Backend pricing metadata is missing; this is not a valid expected free case, but it is priced at `€0.00` to avoid overcharging and logged as an integrity event.
 
-A tile is free when any of the following is true:
+Important current rules:
 
-- Invalid tile key: `invalid_tile_key`.
-- `d <= 0`: `d000_global_free`.
-- `d >= 60`: `coarse_detail_free`.
-- Quality mode is Preview: `preview_quality`.
-- Tile is already covered by an existing licence: `already_unlocked` / user-facing `already licenced`.
-- Tile is ocean fallback / ocean-only and therefore has `billable_land_km2 = 0`.
+- High latitude is not a free rule.
+- `z015_d030` is not automatically free.
+- Only `d >= 060` is coarse-detail free.
+- Ocean fallback tiles should be excluded from pricing candidates before reaching checkout.
 
-Important current rule:
+## 9. Scene Tile Price Formula
 
-- `z015_d030` is not free just because `z=015`. Only `d >= 060` is coarse-detail free.
-- Antarctica and Greenland are not automatically free by latitude. They become free or cheaper only when the WT/S2-white land mask produces zero or low billable land area. High Arctic tiles outside Greenland use the normal S2 ocean-color rule.
-
-## 8. Price Formula
-
-Implemented in `creditsForTileStats()` in `cloudflare-api/src/worker/credit_routes.js`.
+Implemented in `creditsForTileStats()`.
 
 Constants:
 
 ```js
 DATASET_BASE_MPP = 10.0
 EQUATOR_Z001_AREA_KM2 = (40075.016686 / 360.0) ** 2
-FULL_QUALITY_PRICE_COEFFICIENT = 1.20
 ```
 
 Delivered metres per pixel:
 
 ```text
-delivered_mpp = 10m * d
+delivered_mpp = 10 * d
 ```
 
-For `d <= 0`, the internal fallback delivered MPP is `1440`, but `d000` is free anyway.
-
-Base price before detail factor:
+Base land price before detail factor:
 
 ```text
 base_eur = billable_land_km2 / EQUATOR_Z001_AREA_KM2
@@ -299,120 +284,215 @@ Detail factor:
 quality_factor = (10 / max(10, delivered_mpp)) ^ 2
 ```
 
-Base gross price before the internal coefficient:
+Coefficient-1.0 generated gross before public coefficient conversion:
 
 ```text
-base_gross_price_eur = round_to_cents(base_eur * quality_factor)
+base_gross_eur = round_to_cents(base_eur * quality_factor)
 ```
 
-Final gross price:
+Final current gross price:
 
 ```text
-gross_price_eur = round_to_cents(base_gross_price_eur * FULL_QUALITY_PRICE_COEFFICIENT)
+final_gross_eur = round_to_cents(base_gross_eur * internal_multiplier)
 ```
 
-`FULL_QUALITY_PRICE_COEFFICIENT` is an internal global multiplier in `cloudflare-api/src/worker/credit_routes.js`. It is currently `1.20`. Changing it scales all Full Quality scene tile prices, generated tile prices, data-pack gross prices, volume-discounted pack prices, Stripe checkout totals, and map/catalog page prices. It does not change land-area metrics, free-tile rules, entitlement coverage, or volume-discount percentages.
+Because `internal_multiplier = public_coefficient * EQUATOR_Z001_AREA_KM2 / 10000`, the practical d001 meaning is:
 
-Examples by d-level for the same land area:
+```text
+d001 gross = billable_land_km2 / 10000 * public_coefficient
+```
 
-- `d001`: full 10 m/px price.
-- `d002`: one quarter of `d001` price.
-- `d004`: one sixteenth of `d001` price.
-- `d060+`: free by rule, not just cheaper.
+Examples at coefficient `1.00`:
 
-All backend money output is rounded to cents using `MONEY_SCALE = 100`. The client also rounds all received price fields to two decimals before display and summation, so the UI total matches the visible row prices.
+- `10,000 km²` at `d001` -> `€1.00` before deductions/discounts.
+- `10,000 km²` at `d002` -> about `€0.25` before rounding/deductions.
+- `10,000 km²` at `d004` -> about `€0.06` before rounding/deductions.
 
-## 9. Region-Pack Volume Discounts
+Examples at coefficient `5.00`:
 
-Implemented in `tools/build_region_pack_catalog.py` and exported as static region-pack metadata.
+- `10,000 km²` at `d001` -> `€5.00` before deductions/discounts.
+- `10,000 km²` at `d002` -> about `€1.25` before rounding/deductions.
+- `10,000 km²` at `d004` -> about `€0.31` before rounding/deductions.
 
-Region-pack discounts are size-based, not category-based. The builder calculates each product's `d001` billable land area and compares it with the `World` product's `d001` billable land area. `d001` is used so the same ground is not double-counted through lower-detail tile levels.
+All displayed prices must use two decimals. The backend rounds monetary values to cents with `MONEY_SCALE = 100`.
 
-The active discount buckets are:
+## 10. Entitlements, Families, and Partial Upgrades
 
-| Product share of World `d001` billable land | Volume discount |
-|---:|---:|
-| `< 5%` | `20%` |
-| `5% - < 7%` | `25%` |
-| `7% - < 10%` | `30%` |
-| `10% - < 12.5%` | `35%` |
-| `12.5% - < 25%` | `40%` |
-| `25% - < 75%` | `45%` |
-| `>= 75%` | `50%` |
+Canonical tile key:
 
-The World pack is fixed at `50%`.
+```text
+xNNN_yNNN_zNNN_dNNN
+```
 
-This creates a non-linear volume curve: small countries remain at the baseline discount, medium/large countries move higher, continent-scale products get materially larger volume discounts, and World remains the maximum-value purchase.
-
-## 10. Licence Cascade and Upgrade Logic
-
-Implemented in `estimateNewCredits()` and `isTileUnlockedForUser()`.
-
-Terminology:
-
-- Smaller `d` means finer texture detail.
-- Larger `d` means coarser texture detail.
-
-Family key:
+Tile family:
 
 ```text
 xNNN_yNNN_zNNN
 ```
 
-A licence for a finer tile covers coarser variants in the same family:
+Important rule:
 
-- Licenced `x075_y149_z001_d001` covers `d002`, `d004`, ..., `d060`.
-- Licenced `x075_y149_z001_d002` does not cover `d001`.
+```text
+smaller d = finer texture detail
+larger d = coarser texture detail
+```
 
-Upgrade pricing:
+Coverage rule:
 
-- If the user previously licenced a coarser tile and later needs a finer tile in the same family, the backend charges only the difference.
-- The existing coarser gross price is reported as `upgrade_credit_applied`.
+- A licenced finer tile covers coarser variants in the same family.
+- A licenced coarser tile does not cover finer variants.
+
+Examples:
+
+```text
+Licenced x075_y149_z001_d001 covers d002, d004, d008, ...
+Licenced x075_y149_z001_d002 does not cover d001.
+```
+
+Partial upgrade rule:
+
+```text
+charge_now = finer_gross_price - best_existing_coarser_gross_price
+```
 
 Example:
 
 ```text
-Previously licenced: z001_d002 gross price €0.13
-New requested:       z001_d001 gross price €0.50
-Charge now:          €0.37
+Existing coarser licence: d002 gross €0.13
+New requested finer tile: d001 gross €0.50
+Upgrade charge: €0.37
 ```
 
-The estimate response includes both:
+Estimate fields:
 
-- `credits` / `price_eur`: charge now.
-- `gross_credits` / `gross_price_eur`: original tile price before entitlement/upgrade deductions.
+- `gross_price_eur`: full tile price before entitlement deductions.
+- `price_eur`: charge now.
+- `upgrade_credit_applied`: amount deducted because of existing coarser licence.
+- `partially_licenced`: true when an upgrade credit is applied and a positive upgrade price remains.
 
-## 11. Resolve Price Estimation Flow
+Map colors:
 
-### Client-side visible tile planning
+- Red: new in this pack/purchase.
+- Yellow: partially licenced, upgrade price only.
+- Green: already licenced.
+- Grey: free/not charged.
 
-File:
+## 11. Main Data Tables
+
+### `user_credit_accounts`
+
+Despite the historical name, this table is not a prepaid balance table in the current model.
+
+Important columns:
+
+- `user_id`
+- `account_type`: currently coerced to `standard`.
+- `world_full_quality_unlocked_at`
+- `world_full_quality_checkout_session_id`
+- `world_full_quality_paid_eur`
+- `pricing_version`
+- `created_at`
+- `updated_at`
+
+`pricing_version` is incremented when entitlements change. It invalidates user-specific pricing caches.
+
+### `user_tile_entitlements`
+
+Stores licenced Full Quality tiles.
+
+Important columns:
+
+- `user_id`
+- `tile_key`
+- `quality_mode`
+- `credits_spent`: EUR value of this entitlement row.
+- `land_km2`
+- `billable_land_km2`
+- `source`
+- `unlocked_at`
+
+Primary key:
+
+```sql
+(user_id, tile_key)
+```
+
+### `user_entitlement_summaries`
+
+Compact per-user entitlement summary cache.
+
+Purpose:
+
+- Avoid repeatedly loading thousands of entitlement rows for region-pack price estimates.
+- Versioned by account entitlement state.
+- Invalidated when entitlements or pricing version change.
+
+### `credit_ledger`
+
+Financial audit trail.
+
+Important columns:
+
+- `amount_eur`
+- `reason`
+- `metadata_json`
+- `created_at`
+
+Examples of `reason`:
+
+- `stripe_scene_purchase`
+- `stripe_animation_purchase`
+- `stripe_region_pack_purchase`
+- `region_pack_no_payment`
+
+### `purchase_history`
+
+User-facing/admin purchase history summary.
+
+Important columns:
+
+- `purchase_type`
+- `stripe_session_id`
+- `amount_paid_eur`
+- `nominal_eur`
+- `gross_eur`
+- `discount_eur`
+- `discount_percent`
+- `region_pack_id`
+- `region_pack_name`
+- `tile_count_total`
+- `tile_count_new`
+- `tile_count_already_licenced`
+- `metadata_json`
+
+There is a unique index on `stripe_session_id` for idempotency.
+
+### `purchase_history_tiles`
+
+Per-tile purchase detail for scene/animation and when needed for audit.
+
+Important columns:
+
+- `purchase_id`
+- `tile_key`
+- `tile_status`
+- `price_eur`
+- `gross_price_eur`
+- `land_km2`
+- `billable_land_km2`
+- `quality_mode`
+
+### `pricing_integrity_events`
+
+Records pricing metadata failures such as missing backend metadata.
+
+Expected production state:
 
 ```text
-planetka_runtime/view_telemetry.py
+COUNT(*) should normally be 0 or investigated quickly.
 ```
 
-Functions:
-
-- `build_resolve_cost_breakdown()`
-- `estimate_credits_for_visible_tiles()`
-- `_pricing_tiles_for_visible_tiles()`
-
-Flow:
-
-1. Tile selection computes visible tiles for the current Camera View using `tile_utils.main()`.
-2. Streaming planning resolves the actual downloadable tile set via `streaming_utils.build_resolve_download_requests_for_visible_tiles()`.
-3. Ocean fallback tiles are excluded from pricing with `ocean_tiles` from the download plan.
-4. The resulting pricing tile list is sent to the backend `/credits/estimate` endpoint.
-5. The UI receives authoritative price rows and combines them with asset sizes for the breakdown popup.
-
-Important UI rule:
-
-- Full Quality is locked to Camera View.
-- Active View shows a `Bring Camera` action instead of allowing Full Quality purchase directly.
-- Quick Preview prepared state disables Full Quality until Quick Preview is cleared.
-
-### Backend estimate endpoint
+## 12. Price Estimate Endpoint
 
 Endpoint:
 
@@ -426,90 +506,55 @@ Handler:
 handleCreditEstimate() in credit_routes.js
 ```
 
-Request fields:
+Typical scene request:
 
 ```json
 {
   "quality_mode": "full",
+  "pricing_context": "scene",
   "tile_keys": ["x075_y149_z001_d001"]
+}
+```
+
+Typical animation request:
+
+```json
+{
+  "quality_mode": "full",
+  "pricing_context": "animation",
+  "tile_keys": ["x075_y149_z001_d001", "x076_y149_z001_d001"]
 }
 ```
 
 Response includes:
 
-- `credits` / `price_eur`: total charge now.
-- `paid_tile_count`.
-- `free_tile_count`.
-- `tile_count`.
-- `tiles`: all priced rows.
-- `new_tiles`: rows that would create new licences.
-- `excluded_tiles`: already licenced rows.
+- `credits` / `price_eur`: final public payable amount for the requested context.
+- `raw_credits` / `raw_price_eur`: raw tile amount before scene/animation custom licence policy.
+- `scene_tile_price_eur` or `animation_tile_price_eur`: tile subtotal after entitlement deductions.
+- `custom_scene_licence_eur` or `custom_animation_licence_eur`: custom licence fee applied if applicable.
+- `scene_small_free_threshold_applied` / `animation_small_free_threshold_applied`.
+- `tiles`: priced tile rows.
+- `new_tiles`: rows that would create or upgrade entitlements.
+- `excluded_tiles`: already covered tiles.
+- `partial_licence_tile_count`.
+- `partial_licence_credit_eur`.
 - `integrity_warnings`.
 - `metadata_missing_tile_keys`.
 
-## 12. Full Quality Resolve Purchase/Unlock Flow
+Important:
 
-Primary files:
+- `/credits/estimate` applies the scene or animation custom licence policy only to the public total.
+- Tile rows still expose per-tile gross/current price for detailed breakdowns.
 
-- `operators.py`
-- `streaming_utils.py`
-- `r2_source.py`
-- `cloudflare-api/src/worker/tile_routes.js`
-- `cloudflare-api/src/worker/credit_routes.js`
+## 13. Scene-Specific Purchase Policy
 
-Direct-payment path:
+Scene purchase uses direct Stripe Checkout.
 
-1. User clicks `Full Quality Textures`.
-2. `PLANETKA_OT_SetTextureQualityAndResolve` checks Camera View, Quick Preview state, account, and authoritative price.
-3. If price is positive, it opens Stripe scene checkout.
-4. If price is zero because all tiles are already licenced/free, it starts `bpy.ops.planetka.load_textures(... texture_quality_mode_override="FULL")`.
-5. Streaming creates a resolve request context containing:
-   - `resolve_id`
-   - `texture_quality_mode = full`
-   - `pricing_tiles`
-6. `ensure_resolve_pricing_session()` posts to `/tiles/session` with:
-
-```json
-{
-  "resolve_id": "...",
-  "quality_mode": "full",
-  "credit_protocol": "land_credits_v1",
-  "tile_keys": ["..."]
-}
-```
-
-7. Backend calls `unlockTilesForSession()` before issuing the tile token.
-8. If all required Full Quality tiles are already licenced/free, backend returns a short-lived tile token.
-9. Subsequent R2 tile GETs include `X-Planetka-Tile-Token` and are allowed only if the tile is free or licenced.
-
-Payment rule:
-
-- Paid Full Quality scene/data-pack purchases go through direct Stripe Checkout.
-- `/tiles/session` does not deduct money. It only verifies that requested Full Quality tiles are already licenced/free.
-- Preview and already-free/already-licenced Full Quality resolves do not require payment.
-
-## 13. Stripe Checkout Flow
-
-Primary files:
-
-- `operators.py`
-- `credit_api.py`
-- `cloudflare-api/src/worker/credit_routes.js`
-- `cloudflare-api/src/worker/billing_handlers.js`
-
-Checkout endpoint:
+Endpoint:
 
 ```text
 POST /credits/checkout
 ```
-
-Supported options:
-
-- `scene`: Pay current Full Quality scene price with scene-specific payment policy applied.
-- `region_pack` / `broader_pack`: Pay exact current user-specific data-pack price.
-- `animation`: Pay the current dynamic Full Quality animation price with animation segment policy applied.
-
-### Scene Purchase
 
 Request:
 
@@ -521,106 +566,434 @@ Request:
 }
 ```
 
-Backend behavior:
+Backend flow:
 
-1. Recalculates the scene price authoritatively in D1.
-2. Applies scene-specific payment policy after all existing-licence and partial-licence deductions.
-3. If the post-deduction tile price is `0`, it unlocks any free/no-charge tiles immediately and returns `no_payment_required: true`.
-4. If the post-deduction tile price is below `€0.50`, it licences the scene at no charge and returns `no_payment_required: true`.
-5. If the post-deduction tile price is `€0.50` or higher, it adds the `€1.50` `Custom scene-specific licence` line item into the Checkout amount. Minimum direct scene payment is therefore `€2.00`.
-6. For paid scenes, creates a Stripe Checkout Session with product name `Planetka Custom Scene-Specific Licence`.
-7. Metadata includes:
-   - `planetka_purchase_type = scene_tiles`
-   - `planetka_user_id`
-   - `planetka_email`
-   - `planetka_quality_mode = full`
-   - `planetka_tile_keys_json`
-   - `planetka_price_eur`
-   - `planetka_scene_tile_price_eur`
-   - `planetka_custom_scene_licence_eur`
-   - `planetka_scene_payable_eur`
-   - `planetka_paid_tile_count`
+1. Recalculate current tile price with `estimateNewCredits()`.
+2. Apply entitlement and partial-upgrade deductions.
+3. Apply scene custom licence policy with `scenePaymentPolicyForEstimate()`.
+4. If final payable is `€0.00`, unlock no-payment/free tiles immediately.
+5. If payable is positive, create Stripe Checkout.
+6. Stripe webhook grants entitlements after successful payment.
+7. Blender monitors price until it becomes `€0.00`, then starts Full Quality resolve.
 
-Webhook behavior:
-
-1. `/stripe/webhook` verifies Stripe signature.
-2. `checkout.session.completed` is idempotently claimed in `stripe_webhook_events`.
-3. For `scene_tiles`, it calls `grantPaidSceneTileEntitlements()`.
-4. Entitlements are inserted with source `stripe_checkout`.
-5. A ledger row is added with reason `stripe_scene_purchase` and metadata containing nominal/paid EUR.
-6. No user balance exists or changes.
-
-After returning to Blender:
-
-- The client monitors the scene price.
-- Once backend estimate returns `€0.00`, it automatically starts the Full Quality resolve for the Camera View.
-
-### Removed Payment Surfaces
-
-Planetka currently does not use prepaid balance, monthly billing, or Standard/Balanced unlock purchases. Unsupported checkout options are rejected; the only customer payment path is direct Stripe Checkout for scene-specific Full Quality data, dynamic animation Full Quality data, or Full Quality data packs.
-
-## 14. Animation Render Pricing Flow
-
-Primary files:
+Policy:
 
 ```text
-animation_tools.py
-credit_api.py
-cloudflare-api/src/worker/credit_routes.js
-cloudflare-api/src/worker/billing_handlers.js
+if post-deduction tile price is 0:
+  payable = 0
+elif post-deduction tile price is below €0.50:
+  payable = 0
+  tiles are licenced at no charge
+else:
+  payable = post-deduction tile price + Custom scene-specific licence fee
 ```
 
-Important functions:
-
-- `_plan_animation_segments()`
-- `_unique_tiles_for_segments()`
-- `update_animation_credit_estimate()`
-- `_build_animation_credit_breakdown()`
-- `_unlock_animation_tiles_before_download()`
-- `_start_animation_data_preload()`
-
-User-facing workflow:
-
-1. Camera keyframes/animation segment plan are generated.
-2. Planetka calculates all Full Quality tiles needed by all time segments.
-3. It asks the backend for an authoritative price for the unique tile set.
-4. Client-side animation pricing uses the authoritative per-tile rows from `/credits/estimate`, not the scene-level `credits` field, because scene-level estimates include the still-scene custom licence policy.
-5. UI displays:
-   - New Tiles to be Licenced and Downloaded.
-   - Full Quality tile price.
-   - Custom animation licence total, if any.
-   - Final price.
-   - Details popup with per-segment tile rows.
-6. If the price is positive, UI shows `Buy Animation (€X.XX)`.
-7. `planetka.animation_checkout` sends the segment tile plan to `POST /credits/checkout` with `option = animation`.
-8. Backend recalculates the animation price from authoritative D1 pricing rows, stores the full segment/pricing snapshot in `animation_checkout_sessions`, and creates a Stripe Checkout Session carrying only the short `planetka_animation_checkout_id` metadata value.
-9. Stripe webhook and the payment-success page both call `grantPaidAnimationTileEntitlements()` idempotently for `planetka_purchase_type = animation_tiles`.
-10. Entitlements are inserted with source `stripe_animation` or `animation_segment_small_free`.
-11. Blender monitors the animation price after opening Checkout; once the estimate returns `€0.00`, the UI is ready for `Render Animation (€0.00)`.
-12. Before frame rendering starts, Planetka verifies the already-licenced Full Quality tiles, pre-downloads all required texture files into cache, and then renders segment-by-segment.
-13. If the user cancels or Blender crashes after payment, the licenced tiles remain licenced and can be reused later without extra charge.
-
-Animation breakdown rule:
-
-- Each tile is charged once across the full animation.
-- Later segments using the same tile show `€0.00` with reason `already counted in an earlier animation segment`.
-- Tiles licenced before the render show `€0.00` with reason `already licenced before this render`.
-- Each animation segment has its own post-deduction tile value.
-- If a segment's new tile value is below `€0.50`, that segment is licenced at no charge.
-- If a segment's new tile value is greater than `€0.50`, charge the segment tile value and add a `€1.00` `Custom animation licence` fee for that segment.
-- Segments at exactly `€0.50` charge the tile value but do not add the custom animation licence fee.
-- Final animation price is:
+Current default:
 
 ```text
-sum(payable segment Full Quality tile prices after small-segment waivers)
-+ (number of segments with new tile value > €0.50 * €1.00)
+Custom scene-specific licence fee = €1.50
+Small scene free threshold = below €0.50
+Minimum paid scene checkout = €2.00
 ```
 
-Important implementation rule:
+The scene fee is configurable in Analytics -> Product Pricing.
 
-- Stripe metadata is not the animation pricing authority and must not contain the full tile/segment plan. It carries only `planetka_animation_checkout_id`; the backend loads the frozen authoritative record from `animation_checkout_sessions` during webhook/payment-success processing.
+Stripe product name:
 
-## 15. Downloading Licenced Tiles and Local Source
+```text
+Planetka Custom Scene-Specific Licence
+```
+
+Stripe metadata includes:
+
+- `planetka_purchase_type = scene_tiles`
+- `planetka_user_id`
+- `planetka_email`
+- `planetka_quality_mode = full`
+- `planetka_tile_keys_json`
+- `planetka_price_eur`
+- `planetka_scene_tile_price_eur`
+- `planetka_custom_scene_licence_eur`
+- `planetka_scene_payable_eur`
+- `planetka_paid_tile_count`
+
+Webhook grant function:
+
+```text
+grantPaidSceneTileEntitlements()
+```
+
+## 14. Animation Purchase Policy
+
+Animation uses the same tile entitlement model as scene purchases.
+
+Primary client flow:
+
+1. Animation tools create a segment plan.
+2. Client builds the unique set of all Full Quality tile keys needed by all segments.
+3. Client asks `/credits/estimate` with `pricing_context = animation`.
+4. Backend calculates one price for the unique tile set.
+5. Backend applies animation custom licence policy.
+6. Client opens Stripe Checkout if payable is positive.
+7. Stripe webhook grants entitlements to all newly licenced animation tiles.
+8. Blender waits until estimate becomes `€0.00`, then preloads Full Quality data before rendering.
+
+Current policy:
+
+```text
+if post-deduction unique animation tile price is 0:
+  payable = 0
+elif post-deduction unique animation tile price is below €0.50:
+  payable = 0
+  tiles are licenced at no charge
+else:
+  payable = post-deduction unique animation tile price + Custom animation licence fee
+```
+
+Current default:
+
+```text
+Custom animation licence fee = €4.50
+Small animation free threshold = below €0.50
+Minimum paid animation checkout = €5.00
+```
+
+The animation fee is configurable in Analytics -> Product Pricing.
+
+Important implementation details:
+
+- Animation checkout currently sends unique tile keys, not the full heavy segment pricing snapshot.
+- `create_animation_checkout_session()` posts `option = animation`, `tile_keys`, and `segment_count`.
+- Backend limits animation checkout to `ANIMATION_CHECKOUT_MAX_UNIQUE_TILES = 5000`.
+- Backend stores a short-lived scene/detail token for the tile set and passes token metadata to Stripe.
+- Webhook resolves the token and grants the tile entitlements.
+- The segment plan is used for user-facing breakdown only; entitlement purchase is by unique tile set.
+
+Stripe product name:
+
+```text
+Planetka Custom Animation Licence
+```
+
+Stripe metadata includes:
+
+- `planetka_purchase_type = animation_tiles`
+- `planetka_tile_set_token`
+- `planetka_raw_tile_price_eur`
+- `planetka_animation_tile_price_eur`
+- `planetka_custom_animation_licence_eur`
+- `planetka_custom_animation_licence_fee_eur`
+- `planetka_segment_count`
+
+Webhook grant path:
+
+```text
+applyStripeCreditPurchaseFromSession()
+-> checkoutTileKeysFromMetadata()
+-> grantPaidSceneTileEntitlements(... purchaseType: "animation_tiles", customLicenceCents: customAnimationLicenceCents())
+```
+
+## 15. Region/Data-Pack Catalog
+
+Generated by:
+
+```text
+tools/build_region_pack_catalog.py
+```
+
+Generated file:
+
+```text
+cloudflare-api/src/worker/region_packs.generated.js
+```
+
+Each product contains static catalog data:
+
+- `id`
+- `name`
+- `type`
+- `tile_count`
+- `paid_tile_count`
+- `free_tile_count`
+- `licensable_tile_count`
+- `gross_cents` / `gross_eur` at coefficient-1.0 generated base.
+- `volume_discount_basis.world_land_share`
+- `countries` / `adm0_codes` / `adm1_codes`
+- bounds and tile memberships.
+
+Runtime region/data-pack pricing does not recalculate gross pack price from polygons on every request. It uses static catalog totals and applies:
+
+1. Current price coefficient.
+2. Current user entitlement deductions.
+3. Current volume discount or product override.
+
+This keeps pack estimates fast and consistent across Blender, map pages, catalog pages, and Stripe Checkout.
+
+## 16. Region/Data-Pack Price Breakdown
+
+For any data pack, user-facing breakdown must follow this order:
+
+```text
+New Tiles / Total Tiles
+Full Price
+Already Licenced - N tiles (-€X.XX)
+Volume Discount - P% (-€Y.YY)
+Final Price
+```
+
+For partially licenced tiles, the partial-upgrade value is included in the already-licenced deduction value. Detailed hover/breakdown can call it `Partially licenced` where useful.
+
+Do not show zero-value deduction rows. If a deduction does not affect price, omit it.
+
+Definitions:
+
+- `Full Price`: gross pack price with current coefficient, before user deductions and volume discount.
+- `Already Licenced`: gross value already covered by the user's entitlements, including partial-upgrade credits.
+- `Volume Discount`: discount applied to the remaining chargeable amount after user entitlement deductions.
+- `Final Price`: actual amount due now.
+
+Formula:
+
+```text
+chargeable_before_discount = full_price - already_licenced_value - partial_licence_credit
+volume_discount_value = chargeable_before_discount * effective_discount_percent
+final_price = chargeable_before_discount - volume_discount_value
+```
+
+All values are rounded to cents.
+
+## 17. Region/Data-Pack Discount System
+
+Runtime discount settings:
+
+```text
+min discount percent = default 0
+max discount percent = default 75
+```
+
+Default discount buckets:
+
+| Product share of World d001 billable land | Ratio of min-to-max range |
+|---:|---:|
+| `>= 40%` | `100%` |
+| `>= 20%` | `5/6` |
+| `>= 10%` | `4/6` |
+| `>= 5%` | `3/6` |
+| `>= 2.5%` | `2/6` |
+| `>= 1.25%` | `1/6` |
+| `< 1.25%` | minimum discount |
+
+Calculation:
+
+```text
+default_discount = round_to_nearest_5(min_discount + ((max_discount - min_discount) * bucket_ratio))
+```
+
+World product rule:
+
+```text
+World always uses max_discount unless manually overridden.
+```
+
+Per-product override:
+
+- Stored as `region_pack_discount_override:<product_id>` in `app_settings`.
+- Valid range `0%` to `100%`.
+- Overrides default bucket discount completely.
+- Used for product-specific promotions, including temporary free country/product offers.
+
+Admin page:
+
+```text
+/admin/analytics/products
+```
+
+Supports:
+
+- Editing price coefficient.
+- Editing discount min/max.
+- Editing bucket thresholds/ratios.
+- Editing custom scene and animation fees.
+- Editing per-product discount overrides.
+- Sorting product pricing table.
+- Viewing `% of land`, full price, discount, and final price.
+
+## 18. Region/Data-Pack Purchase Flow
+
+Blender region/data-pack checkout request:
+
+```json
+{
+  "option": "region_pack",
+  "region_pack_id": "italy"
+}
+```
+
+Current backend behavior:
+
+1. `POST /credits/checkout` does not immediately create Stripe Checkout for region packs.
+2. It creates a short-lived detail token.
+3. It returns a browser `checkout_url` for `/credits/region-pack-checkout`.
+4. The browser page recalculates current user-specific price authoritatively.
+5. User clicks Buy/Checkout on the web page.
+6. Backend creates Stripe Checkout for the current final price.
+7. Stripe webhook grants all new pack entitlements.
+8. Payment-success page shows the purchased pack or a related upsell map.
+
+This web step exists so users can see the map and current price before paying.
+
+## 19. Region/Data-Pack Map Pages
+
+Main endpoints/functions:
+
+- `/credits/region-pack-map`
+- `/credits/region-pack-map-asset`
+- `/credits/region-pack-map-background.jpg`
+- `regionPackStaticMapPayload()`
+- `regionPackStaticMapHtml()`
+
+Map pages show:
+
+- Current user-specific price breakdown.
+- Zoom/detail selector (`Zoom 1 - closest`, `Zoom 2`, etc.).
+- Tile overlay by state: new, partially licenced, already licenced, free.
+- Included country/area labels with neutrality disclaimer.
+- Similar Options.
+- Buy Now button for the current pack.
+
+Map hover must show complete price explanation:
+
+```text
+Full Price: €X.XX
+Licenced: - €Y.YY                 only if applicable
+Partially licenced: - €Z.ZZ       only if applicable
+Volume Discount (P%): - €A.AA     only if applicable
+Final Price: €B.BB
+```
+
+Do not show zero-value deduction lines.
+
+## 20. Similar Options
+
+Similar Options are a sales/navigation aid, not a pricing authority.
+
+They should include contextually useful alternatives such as:
+
+- Parent macro regions/continents.
+- Neighbouring countries for country pages.
+- Contained states/territories for countries that have state-level products.
+- Macro regions for continent pages.
+
+They must use the same backend pricing summary as the main product. They must not use stale page-local prices.
+
+## 21. World Pack
+
+World is special:
+
+- It unlocks effectively all Full Quality licensable tiles.
+- Once World is purchased, Full Quality paid options should no longer be offered because all Full Quality data is free for that user.
+- `world_full_quality_unlocked_at` on `user_credit_accounts` is the fast entitlement flag.
+- `isWorldFullQualityUnlocked()` makes tile access checks return true.
+
+Pricing:
+
+- World gross comes from the generated catalog.
+- World default discount is the current max discount.
+- Existing user entitlements must be deducted before calculating final price.
+- Per-product override can still be used if configured.
+
+Operational note:
+
+- Avoid expanding full World into hundreds of thousands of entitlement rows unless a specific download workflow needs it.
+- Access checks should use the account-level World flag.
+
+## 22. Purchase History and Audit Requirements
+
+Every paid purchase must leave enough data to reconstruct what happened.
+
+For scene purchases:
+
+- Store top-line purchase in `purchase_history`.
+- Store purchased tile rows in `purchase_history_tiles`.
+- Store purchased tile keys and price breakdown metadata in ledger metadata.
+
+For animation purchases:
+
+- Store top-line purchase in `purchase_history` with `purchase_type = animation_tiles`.
+- Store the unique purchased tile rows.
+- Store segment count and animation fee metadata.
+
+For region/data-pack purchases:
+
+- Store top-line purchase with `region_pack_id`, name, type, catalog version, discount, gross, final price, and tile counts.
+- Full tile list can be reconstructed from static catalog plus purchase timestamp/catalog version.
+- Newly granted entitlement rows are stored in `user_tile_entitlements`.
+
+For World purchases:
+
+- Store purchase history and set account-level World entitlement.
+
+## 23. Stripe Processing and Idempotency
+
+Stripe webhook processing must be idempotent.
+
+Mechanisms:
+
+- `stripe_webhook_events` records processed event IDs.
+- `purchase_history.stripe_session_id` has a unique index.
+- `grantPaidSceneTileEntitlements()` checks existing purchase/ledger rows for the same session.
+- `INSERT OR IGNORE` protects `user_tile_entitlements` from duplicate tile inserts.
+
+Supported purchase types:
+
+- `scene_tiles`
+- `animation_tiles`
+- `region_pack`
+
+Unsupported old payment types must fail rather than silently doing legacy work.
+
+## 24. Tile Access Enforcement
+
+Full Quality tile GETs must only succeed when the tile is:
+
+- globally free,
+- already licenced/covered by finer entitlement,
+- covered by World entitlement,
+- covered by a valid short-lived tile session token after backend verification.
+
+Main enforcement path:
+
+```text
+streaming_utils.py / r2_source.py
+-> /tiles/session
+-> unlockTilesForSession()
+-> tile token
+-> tile_routes.js GET authorization
+```
+
+Important rule:
+
+```text
+/tiles/session does not deduct money.
+```
+
+It only verifies that all requested paid Full Quality tiles are already licenced/free, or it returns `payment_required`.
+
+## 25. Full Quality Resolve Flow in Blender
+
+Still-image Full Quality flow:
+
+1. User selects/clicks `Full Quality` in Camera View.
+2. Client checks account/auth status and authoritative price estimate.
+3. If payable amount is positive, client opens direct purchase workflow.
+4. If no payment is required, client requests tile session and starts resolve.
+5. Backend verifies entitlements before issuing tile token.
+6. Client downloads S2/EL/WT/PO assets or uses Local Source/cache.
+7. UI refreshes price and Relevant Data Packs after successful resolve/payment.
+
+Full Quality must stay Camera View oriented. Active View should not trigger direct Full Quality purchasing.
+
+## 26. Downloading Licenced Tiles
 
 Primary file:
 
@@ -628,25 +1001,30 @@ Primary file:
 credit_api.py
 ```
 
-Features:
+Backend endpoint:
 
-- `GET /credits/unlocked` returns licenced tile rows and default asset lists.
-- User can download licenced tiles to a chosen Local Source folder.
-- Download ranges currently include Today, This Week, This Month, and All Data.
-- Download progress is tracked separately from Resolve download progress.
-- Downloaded assets are not meant to create additional charges because they are tied to already licenced tile keys.
+```text
+GET /credits/unlocked
+```
 
-Local Source behavior:
+Behavior:
 
+- Returns licenced tile rows and default asset lists.
+- Manual download is in the Account panel.
+- Downloaded files do not create additional charges.
 - Local Source is searched before cloud download.
-- Local files are used directly when valid.
-- If cloud data is newer or local metadata is stale, the user should be notified to re-download, without being charged again.
+- Download telemetry records total files/tiles/bytes, not every detailed file forever.
 
-## 16. Preview Fair-Usage Separation
+Tables:
 
-Preview quality is free, but backend telemetry tracks it separately from Full Quality.
+- `user_licenced_download_stats`
+- `user_licenced_download_events`
 
-Primary tables:
+## 27. Preview Fair Usage
+
+Preview is free but monitored.
+
+Relevant tables:
 
 - `tile_request_rollup_hourly_account_quality`
 - `tile_request_rollup_daily_account_quality`
@@ -654,88 +1032,102 @@ Primary tables:
 
 Rules:
 
-- Preview usage monitoring counts only successful `GET` requests with effective quality mode `preview`.
-- Full Quality/licenced traffic is not part of Preview fair-usage limits.
-- Current strict fair-usage thresholds are alert-only unless explicitly changed to enforce holds.
-- Preview fair-usage hold state is separate from hard account block.
+- Preview limits observe Preview quality only.
+- Full Quality/licenced traffic is separate and must not trigger Preview fair-usage enforcement.
+- Current fair-usage enforcement should be alert-only unless explicitly changed.
+- Preview hold must not block already-licenced Full Quality access.
 
-Tile route behavior:
+## 28. Pricing Integrity Failure Rules
 
-- Preview fair-usage hold blocks Preview tile-session creation.
-- Preview fair-usage hold also blocks Preview tile GETs even if an old tile session token exists.
-- Full Quality licenced data remains available while Preview is on hold.
+### Backend unavailable
 
-## 17. Pricing Integrity and Failure Rules
-
-### Backend unavailable on client
-
-If `/credits/estimate` fails or returns an incomplete response, `credit_api.py` returns a non-authoritative zero-price payload:
+If backend estimate fails, Blender may receive a non-authoritative zero-like fallback:
 
 ```text
 authoritative = False
 pricing_source = backend_unavailable | backend_rejected | backend_incomplete
-credits = 0.0
 ```
 
-The Full Quality UI must not treat this as a valid free purchase. For paid modes, UI and animation code require `authoritative = True`.
+Full Quality purchase/resolve must not treat that as a real free price.
 
-### Missing backend pricing metadata
+### Missing metadata
 
 If a requested non-free tile is missing from `tile_land_stats`:
 
-- Backend prices it as `€0.00`.
-- `free_reason = pricing_metadata_missing`.
-- `pricing_integrity_events` row is written.
-- Worker logs `planetka_pricing_metadata_missing`.
+- Price it at `€0.00`.
+- Mark `free_reason = pricing_metadata_missing`.
+- Record `pricing_integrity_events`.
+- Log `planetka_pricing_metadata_missing`.
 
-This prevents overcharging while making the data problem visible.
+This prevents overcharging, but it is still a production data bug and should be investigated.
 
-Expected state for production:
+### R2/data availability
 
-- `pricing_integrity_events` should normally stay at zero.
-- R2 S2 tile keys and D1 `tile_land_stats` rows should match exactly.
+Pricing correctness does not guarantee R2 data availability. A paid tile should still be downloadable. Missing S2 assets are resolve/data integrity errors and must not cause charges without usable data.
 
-### Ocean fallback tiles
+## 29. Current Admin Operations
 
-The client excludes tiles listed as `ocean_tiles` by the streaming plan from the pricing tile list. Ocean fallback assets should not contribute to price.
+### Change global pricing
 
-### S2 required, support files fallback
+Use Analytics -> Product Pricing:
 
-S2 is the paid/detail base. Missing EL/WT/PO support files can fall back when the tile is not expected in the database; they should not create pricing failures. Missing required S2 data is a separate resolve/data availability problem.
+- Edit `Price coefficient (€/10,000 km²)`.
+- Save pricing.
+- Prices update through runtime settings and cache invalidation.
+- No catalog rebuild is required.
 
-## 18. Analytics and Admin Controls
+### Change volume discount curve
 
-Relevant backend/admin behavior:
+Use Product Pricing:
 
-- Analytics user list includes paid EUR, unlocked tile count, paid Full Quality resolve count, licenced download totals, Preview usage, and Full Quality usage.
-- Account plans and unrestricted modes are deprecated/removed from the pricing model.
+- Edit min/max discount.
+- Edit bucket thresholds/ratios.
+- Save pricing.
+- The system recalculates product effective discounts dynamically.
 
-## 19. Validation and Test Coverage
+### Run a country promotion
 
-Primary live pricing E2E test:
+Use Product Pricing:
 
-```text
-tools/planetka_land_credit_live_e2e.py
-```
+- Set product discount override to `100` for that product.
+- User-specific final price becomes `€0.00` for new chargeable tiles in that product.
+- Remove override when promotion ends.
 
-Covered cases:
+### Change scene/animation fees
 
-- Preview resolve is free and does not create entitlement.
-- Same-family entitlement cascade and upgrade difference.
-- `d >= 060` tiles are free.
-- Full Quality new tile charges once.
-- Repeat Full Quality resolve is free.
-- Paid Full Quality tiles cannot stream until a direct Stripe purchase has created entitlements.
-- Animation estimate matches segment unlocking.
+Use Product Pricing:
 
-Recommended checks before release or after pricing changes:
+- `Scene licence fee €` controls custom scene-specific licence fee.
+- `Animation licence fee €` controls custom animation licence fee.
+- Changes apply to future estimates/checkouts.
+
+## 30. Required Consistency Rules
+
+The same final price must appear in:
+
+- Blender UI button.
+- Blender details popup.
+- Data-pack web map page.
+- All data packs catalog page.
+- Similar Options cards.
+- Stripe Checkout amount.
+- Payment-success page.
+- Analytics Product Pricing page.
+
+The price authority must be the backend calculation using current `app_settings`, current catalog, and current user entitlements.
+
+If two surfaces show different prices for the same user/product/time after cache refresh, treat it as a critical pricing bug.
+
+## 31. Validation Commands
+
+Basic local checks:
 
 ```bash
-python3 tools/planetka_land_credit_live_e2e.py --report /tmp/planetka_land_credit_live_e2e.json
-python3 -m compileall -q .
 node --check cloudflare-api/src/worker/credit_routes.js
+node --check cloudflare-api/src/worker/admin_analytics_handlers.js
 node --check cloudflare-api/src/worker/billing_handlers.js
 node --check cloudflare-api/src/index.js
+python3 -m py_compile credit_api.py animation_tools.py ui.py operators.py
 git diff --check
 ```
 
@@ -749,35 +1141,59 @@ SELECT free_reason, COUNT(*) FROM tile_land_stats GROUP BY free_reason ORDER BY 
 
 R2/D1 metadata alignment should be checked after any dataset update:
 
-- Every S2 object in R2 should have a `tile_land_stats` row.
-- Every `tile_land_stats` row should correspond to an S2 object in R2.
+- Every non-free S2 object in R2 should have a `tile_land_stats` row.
+- Every `tile_land_stats` row should correspond to an expected S2 object.
+- Region-pack generated tile memberships should reference valid tile keys.
 
-## 20. Operational Rules for Future Changes
+## 32. Do-Not-Break Invariants
 
 Do not violate these invariants:
 
 - Do not reintroduce local client pricing as authoritative.
-- Do not charge for missing pricing metadata.
+- Do not reintroduce prepaid balance or monthly billing without legal/accounting review and explicit product decision.
 - Do not charge Preview quality.
 - Do not charge `d >= 060` tiles.
-- Do not allow Full Quality tile GETs for unlicenced non-free tiles under the `land_credits_v1` protocol.
-- Do not allow paid Full Quality tile streaming before Stripe checkout has created the required entitlements.
-- Do not silently change price formula constants without regenerating/revalidating backend pricing behavior and updating this document.
+- Do not charge missing pricing metadata.
+- Do not allow unlicenced paid Full Quality tile GETs.
+- Do not allow paid Full Quality resolve before backend licence/session confirmation.
+- Do not use Stripe metadata as the only pricing authority.
+- Do not let web pages, Blender, Analytics, and Stripe use different pricing branches.
+- Do not show `Full Price -> Final Price` without showing non-zero deductions in between.
+- Do not show zero-value deductions.
 - Do not count Full Quality/licenced traffic into Preview fair-usage enforcement.
-- Do not use Stripe Checkout metadata as the pricing authority; webhook processing must re-evaluate/grant using backend logic.
 
-## 21. File/Function Map
+## 33. File and Function Map
 
-Backend pricing:
+Backend pricing/settings:
 
 - `cloudflare-api/src/worker/credit_routes.js`
+- `getRuntimePricingSettings()`
+- `setRuntimePricingSettings()`
+- `fullQualityPublicPriceCoefficient()`
+- `fullQualityPriceCoefficient()`
 - `creditsForTileStats()`
 - `estimateNewCredits()`
-- `unlockTilesForSession()`
-- `grantPaidSceneTileEntitlements()`
-- `handleCreditEstimate()`
+- `sceneEstimateWithPaymentPolicy()`
+- `animationEstimateWithScenePolicy()`
+- `regionProductPricingSummary()`
+- `regionProductDiscountPercent()`
+- `estimateRegionPackSummaryCached()`
+
+Admin Product Pricing:
+
+- `cloudflare-api/src/worker/admin_analytics_handlers.js`
+- `handleAdminAnalyticsProductsPage()`
+- `handleAdminSetPricingSettings()`
+- `handleAdminSetProductDiscount()`
+
+Stripe and purchase grants:
+
+- `cloudflare-api/src/worker/credit_routes.js`
 - `handleCreditCheckout()`
-- `handleCreditUnlocked()`
+- `applyStripeCreditPurchaseFromSession()`
+- `grantPaidSceneTileEntitlements()`
+- `grantRegionPackEntitlements()`
+- `recordPurchaseHistoryBestEffort()`
 
 Tile access enforcement:
 
@@ -785,24 +1201,19 @@ Tile access enforcement:
 - `handleTileSessionStart()`
 - `handleTileRequest()`
 - `isTileUnlockedForUser()`
-
-Stripe:
-
-- `cloudflare-api/src/worker/billing_handlers.js`
-- `handleStripeWebhook()`
-- `claimStripeWebhookEvent()`
-- `grantPaidSceneTileEntitlements()`
+- `unlockTilesForSession()`
 
 Blender client API:
 
 - `credit_api.py`
 - `estimate_credits_for_tiles()`
-- `estimate_credit_breakdown_for_tiles()`
 - `create_checkout_session()`
-- `get_credit_account()`
+- `create_animation_checkout_session()`
+- `create_region_pack_detail_link()`
+- `create_scene_detail_link()`
 - `get_unlocked_tiles()`
 
-Resolve UI and action flow:
+Resolve UI and operations:
 
 - `operators.py`
 - `PLANETKA_OT_SetTextureQualityAndResolve`
@@ -810,7 +1221,7 @@ Resolve UI and action flow:
 - `PLANETKA_OT_DataCostBreakdown`
 - `ui.py`
 
-Camera View cost breakdown:
+Camera View pricing:
 
 - `planetka_runtime/view_telemetry.py`
 - `build_resolve_cost_breakdown()`
@@ -820,17 +1231,15 @@ Camera View cost breakdown:
 Animation pricing:
 
 - `animation_tools.py`
+- `_estimate_animation_pricing_for_segments()`
+- `_animation_pricing_from_credit_summary()`
 - `update_animation_credit_estimate()`
-- `_build_animation_credit_breakdown()`
 - `_unlock_animation_tiles_before_download()`
 - `_start_animation_data_preload()`
 - `PLANETKA_OT_AnimationRenderCostBreakdown`
 
-Metadata build:
+Metadata/catalog build:
 
 - `tools/build_tile_land_stats.py`
+- `tools/build_region_pack_catalog.py`
 - `tools/build_tile_commercial_value.py` for inactive internal commercial-value analysis only.
-
-Live E2E verification:
-
-- `tools/planetka_land_credit_live_e2e.py`

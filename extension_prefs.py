@@ -28,10 +28,6 @@ FALLBACK_AUTH_PLAN_CODE_KEY = "planetka_auth_plan_code"
 FALLBACK_AUTH_PLAN_NAME_KEY = "planetka_auth_plan_name"
 FALLBACK_AUTH_STORED_PLAN_CODE_KEY = "planetka_auth_stored_plan_code"
 FALLBACK_AUTH_STORED_PLAN_NAME_KEY = "planetka_auth_stored_plan_name"
-FALLBACK_AUTH_QUALITY_ACCESS_PLAN_CODE_KEY = "planetka_auth_quality_access_plan_code"
-FALLBACK_AUTH_UNRESTRICTED_QUALITY_ACCESS_KEY = "planetka_auth_unrestricted_quality_access"
-FALLBACK_AUTH_UNRESTRICTED_QUALITY_OVERRIDE_KEY = "planetka_auth_unrestricted_quality_override"
-FALLBACK_AUTH_UNRESTRICTED_QUALITY_GLOBAL_KEY = "planetka_auth_unrestricted_quality_global"
 FALLBACK_AUTH_CONTACT_URL_KEY = "planetka_auth_contact_url"
 FALLBACK_AUTH_UPGRADE_URL_KEY = "planetka_auth_upgrade_url"
 FALLBACK_AUTH_LOGIN_STATE_KEY = "planetka_auth_login_state"
@@ -102,10 +98,6 @@ class PlanetkaExtensionPreferences(AddonPreferences):
     auth_plan_name: StringProperty(name="Auth Plan Name", default="", options={'HIDDEN'})
     auth_stored_plan_code: StringProperty(name="Auth Stored Plan Code", default="", options={'HIDDEN'})
     auth_stored_plan_name: StringProperty(name="Auth Stored Plan Name", default="", options={'HIDDEN'})
-    auth_quality_access_plan_code: StringProperty(name="Auth Quality Access Plan Code", default="", options={'HIDDEN'})
-    auth_unrestricted_quality_access: StringProperty(name="Auth Unrestricted Quality Access", default="", options={'HIDDEN'})
-    auth_unrestricted_quality_override: StringProperty(name="Auth Unrestricted Quality Override", default="", options={'HIDDEN'})
-    auth_unrestricted_quality_global: StringProperty(name="Auth Unrestricted Quality Global", default="", options={'HIDDEN'})
     auth_contact_url: StringProperty(name="Auth Contact URL", default="", options={'HIDDEN'})
     auth_upgrade_url: StringProperty(name="Auth Upgrade URL", default="", options={'HIDDEN'})
     auth_login_state: StringProperty(name="Auth Login State", default="logged_out", options={'HIDDEN'})
@@ -321,22 +313,6 @@ def get_prefs():
         auth_stored_plan_name = property(
             lambda self: self._get_value(FALLBACK_AUTH_STORED_PLAN_NAME_KEY, ""),
             lambda self, value: self._set_value(FALLBACK_AUTH_STORED_PLAN_NAME_KEY, value),
-        )
-        auth_quality_access_plan_code = property(
-            lambda self: self._get_value(FALLBACK_AUTH_QUALITY_ACCESS_PLAN_CODE_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_QUALITY_ACCESS_PLAN_CODE_KEY, value),
-        )
-        auth_unrestricted_quality_access = property(
-            lambda self: self._get_value(FALLBACK_AUTH_UNRESTRICTED_QUALITY_ACCESS_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_UNRESTRICTED_QUALITY_ACCESS_KEY, value),
-        )
-        auth_unrestricted_quality_override = property(
-            lambda self: self._get_value(FALLBACK_AUTH_UNRESTRICTED_QUALITY_OVERRIDE_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_UNRESTRICTED_QUALITY_OVERRIDE_KEY, value),
-        )
-        auth_unrestricted_quality_global = property(
-            lambda self: self._get_value(FALLBACK_AUTH_UNRESTRICTED_QUALITY_GLOBAL_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_UNRESTRICTED_QUALITY_GLOBAL_KEY, value),
         )
         auth_contact_url = property(
             lambda self: self._get_value(FALLBACK_AUTH_CONTACT_URL_KEY, ""),

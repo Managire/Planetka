@@ -1,135 +1,61 @@
 # Planetka: What Changed from v0.5.3 to v0.7.0
 
-Last updated: 2026-05-01
-Audience: users, testers, support
+Last updated: 2026-05-12
+Audience: support and release review
 
 ## Quick Overview
 
-`v0.7.0` is a major quality and workflow upgrade over `v0.5.3`.
-
-The focus was:
-
-- safer scene/camera behavior
-- much better animation workflow
-- clearer status/warnings
-- stronger stability for long renders
+`v0.7.0` is a public-release candidate focused on safer scene handling, clearer Full Quality licensing, stronger animation workflows, and a more transparent payment/data-pack experience.
 
 ## Biggest User-Facing Changes
 
-### 1) Final Animation Render now uses normal Blender UI rendering
+### 1) Public texture access model
 
-This is one of the biggest changes.
+Planetka now presents two public quality modes:
 
-Before, animation rendering used a separate non-UI render path.
-Now it runs through normal Blender render UI behavior.
+- Preview: free, streamed/cached, personal / non-commercial use.
+- Full Quality: paid or explicitly granted, with commercial texture rights for licenced Full Quality data.
 
-What this means for users:
+### 2) Direct Full Quality purchasing
 
-- Rendering behaves more like standard Blender render flow.
-- You can stop render in the usual way (closing render window / stopping render in UI flow).
-- Output and progress are easier to follow visually.
+Scene-specific, animation, and data-pack Full Quality purchases use direct checkout. Pricing is shown before payment and should match across Blender UI, web map pages, payment-success pages, and Stripe checkout.
 
-### 2) Animation setup is clearer and more controllable
+### 3) Relevant Data Packs
 
-Animation tools were simplified so users have clearer control over when keyframes are generated and how frame ranges are used.
+The Blender UI can suggest relevant Full Quality data packs for the resolved camera view. Data-pack web pages show visual tile coverage, already-licenced deductions, discounts, and final price.
 
-Improvements include:
+### 4) Animation workflow improvements
 
-- explicit camera keyframe generation flow
-- clearer frame-range handling for preview vs final render behavior
-- better protection against accidental edits during active final rendering
+Animation tools were simplified and hardened:
 
-### 3) Final render stability got major hardening
+- clearer camera-keyframe generation;
+- Quick Preview for preview-quality segment preparation;
+- Full Quality animation purchase workflow;
+- stronger preflight checks before segmented animation rendering starts.
 
-A lot of work was done to reduce common animation failures:
+### 5) Safer scene and camera behavior
 
-- resolve/finalize hang handling improved
-- safer cleanup after stop/cancel
-- better recovery back to normal addon state after render ends
-- less chance of endless retry/loop behavior in render-time resolve pipeline
+`Create Earth` and related actions now use Planetka-owned scene objects more consistently and avoid unnecessary mutation of user scene content.
 
-### 4) Scene and camera safety improved
+### 6) Clearer warnings and diagnostics
 
-`Create Earth` and related actions were made much safer:
+The add-on has clearer warnings for invalid states, offline/unavailable service states, and scene-health issues.
 
-- Planetka now uses dedicated Planetka-owned camera flow
-- less chance of unexpectedly changing user’s existing camera setup
-- better preservation of existing scene content
-- improved `Rebuild Earth` behavior that preserves more user context
+## Release Requirements
 
-### 5) New health checks and clearer warnings
+Before publishing v0.7.0:
 
-Troubleshooting is much easier now:
-
-- `Scene Health Check` added
-- clearer warnings for invalid states (for example below-surface/too-low cases)
-- better status reporting in Data Control and resolve lifecycle
-
-## Rendering and Visual Continuity Improvements
-
-### 6) Better segment-boundary consistency for animation
-
-A lot of effort went into reducing subtle flicker/drift/edge artifacts between animation segments.
-
-This includes:
-
-- safer subdivision behavior in Cycles animation workflows
-- stronger tile continuity rules across segment boundaries
-- better handling of difficult horizon/edge tile visibility cases
-
-### 7) Better handling when tile count is too high
-
-When a view is too demanding, tile selection/reduction now follows a more robust strategy to preserve visual quality as much as possible before any destructive fallback is used.
-
-Result for users:
-
-- fewer broken frames from tile budget pressure
-- more predictable output in extreme camera shots
-
-## UI and Workflow Quality Improvements
-
-### 8) Stronger UI guarding during active render
-
-While Final Animation Render is active, critical controls are locked more consistently to prevent accidental destructive actions.
-
-### 9) Camera keyframe awareness in navigation workflows
-
-When camera keyframes are present, the UI behavior is clearer so users understand why camera movement controls may be constrained until keyframes are cleared.
-
-## Account / Access / Release-State Changes
-
-### 10) Clearer account state messaging
-
-Account/tier/connectivity messaging in UI was improved (especially around API-key/session state and upgrade path visibility).
-
-### 11) v0.7.0 beta policy note
-
-For this beta phase, documentation and release flow were aligned around the current `v0.7.0` beta candidate state (private candidate, public channel still on `v0.5.3` until explicit publish decision).
-
-## Reliability and Maintainability (High-Level)
-
-Even though users do not see all of this directly, these changes matter:
-
-- large internal refactor to reduce fragile monolithic code paths
-- better test gates for animation/render critical paths
-- improved error logging and diagnostics for faster issue resolution
-
-## Practical Upgrade Advice (v0.5.3 -> v0.7.0)
-
-1. Open a copy of your production `.blend` first.
-2. Run `Create Earth` once in the new version.
-3. Run `Scene Health Check` and resolve warnings.
-4. Test short `Quick Preview` and short `Final Animation Render` before long production jobs.
-5. Validate segment transitions visually in your real shot path.
-
-## Summary in One Line
-
-`v0.7.0` is a workflow-and-reliability release: safer scene behavior, much improved UI-based animation rendering, and significantly stronger stability for long segmented Earth animations.
+- build with `tools/build_addon_zip.py` and `package_allowlist_public.txt`;
+- verify no internal release checklists, runbooks, developer docs, or archived tester notes are packaged;
+- regenerate legal PDFs after any terms/privacy change;
+- upload the release zip and legal PDFs to the configured R2 keys;
+- confirm Worker dry-run shows restricted access, current legal versions, and current updater metadata;
+- run Blender smoke tests for Create Earth, Preview resolve, Full Quality scene purchase, data-pack page opening, and animation preflight.
 
 ## Reference Sources
 
 - `CHANGELOG.md`
+- `Documentation/Release/README.md`
 - `Documentation/Release/COMPATIBILITY_MATRIX.md`
-- `Documentation/Release/FREE_TEST_GROUP_RELEASE_CHECKLIST.md`
-- `Documentation/Developer/CYCLES_SVM_TILE_LIMIT.md`
-- `Documentation/Developer/TILE_LOADING_STATIC_12_DESIGN.md`
+- `Documentation/Licencing/TERMS_OF_SERVICE.md`
+- `Documentation/Licencing/PRIVACY_POLICY.md`

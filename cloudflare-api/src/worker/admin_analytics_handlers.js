@@ -185,6 +185,8 @@ export async function handleAdminSetPricingSettings(request, env, deps) {
         region_pack_discount_min_percent: payload.region_pack_discount_min_percent,
         region_pack_discount_max_percent: payload.region_pack_discount_max_percent,
         region_pack_discount_share_buckets_json: payload.region_pack_discount_share_buckets_json,
+        custom_scene_licence_fee_eur: payload.custom_scene_licence_fee_eur,
+        custom_animation_licence_fee_eur: payload.custom_animation_licence_fee_eur,
       },
       auth.user && auth.user.id || "",
       deps,
@@ -287,6 +289,12 @@ export async function handleAdminAnalyticsProductsPage(request, env, deps) {
   const maxDiscountValue = Number.isFinite(Number(settings.region_pack_discount_max_percent))
     ? Math.round(Number(settings.region_pack_discount_max_percent))
     : 75;
+  const sceneCustomLicenceFee = Number.isFinite(Number(settings.custom_scene_licence_fee_eur))
+    ? Number(settings.custom_scene_licence_fee_eur).toFixed(2)
+    : "1.50";
+  const animationCustomLicenceFee = Number.isFinite(Number(settings.custom_animation_licence_fee_eur))
+    ? Number(settings.custom_animation_licence_fee_eur).toFixed(2)
+    : "4.50";
   const minDiscount = String(minDiscountValue);
   const maxDiscount = String(maxDiscountValue);
   const fmtBucketNumber = (value) => {
@@ -451,18 +459,24 @@ export async function handleAdminAnalyticsProductsPage(request, env, deps) {
   <section class="card">
     <h3 style="margin-top:0;">Pricing Controls</h3>
     <form id="pricingSettingsForm" class="controls" style="margin-bottom:6px;">
-      <label for="pricingCoefficient">Price coefficient</label>
+      <label for="pricingCoefficient">Price coefficient (€/10,000 km²)</label>
       <input id="pricingCoefficient" name="full_quality_price_coefficient" type="number" min="0.01" max="1000" step="0.01" value="${deps.escapeHtml(coefficient)}" />
       <label for="pricingMinDiscount">Pack min discount %</label>
       <input id="pricingMinDiscount" name="region_pack_discount_min_percent" type="number" min="0" max="95" step="5" value="${deps.escapeHtml(minDiscount)}" />
       <label for="pricingMaxDiscount">Pack max discount %</label>
       <input id="pricingMaxDiscount" name="region_pack_discount_max_percent" type="number" min="0" max="95" step="5" value="${deps.escapeHtml(maxDiscount)}" />
+      <label for="sceneCustomLicenceFee">Scene licence fee €</label>
+      <input id="sceneCustomLicenceFee" name="custom_scene_licence_fee_eur" type="number" min="0" max="1000" step="0.01" value="${deps.escapeHtml(sceneCustomLicenceFee)}" />
+      <label for="animationCustomLicenceFee">Animation licence fee €</label>
+      <input id="animationCustomLicenceFee" name="custom_animation_licence_fee_eur" type="number" min="0" max="1000" step="0.01" value="${deps.escapeHtml(animationCustomLicenceFee)}" />
       <button type="submit">Save Pricing</button>
       <span id="pricingSettingsStatus" class="muted">Applied live; no catalog rebuild needed.</span>
     </form>
     <div class="controls" style="margin-bottom:6px;">
-      <span>Current coefficient: <strong>${deps.escapeHtml(coefficient)}</strong></span>
+      <span>Current coefficient: <strong>${deps.escapeHtml(coefficient)}</strong> €/10,000 km²</span>
       <span>Default pack discount range: <strong>${deps.escapeHtml(minDiscount)}%-${deps.escapeHtml(maxDiscount)}%</strong></span>
+      <span>Scene fee: <strong>€${deps.escapeHtml(sceneCustomLicenceFee)}</strong></span>
+      <span>Animation fee: <strong>€${deps.escapeHtml(animationCustomLicenceFee)}</strong></span>
       <span id="productStatus" class="muted">Product overrides are applied live to Blender, web pages, and checkout.</span>
     </div>
     <h4 style="margin:12px 0 4px;">Volume Discount Buckets</h4>
@@ -906,7 +920,7 @@ export async function handleAdminAnalyticsUserPage(request, env, deps) {
     const packName = String(row && row.region_pack_name || row && row.region_pack_id || "");
     const purchaseType = String(row && row.purchase_type || "");
     const typeLabel = purchaseType === "region_pack"
-      ? `Region Pack${packName ? `: ${deps.escapeHtml(packName)}` : ""}`
+      ? `Data Pack${packName ? `: ${deps.escapeHtml(packName)}` : ""}`
       : (purchaseType === "scene_tiles"
         ? "Scene Full Quality"
         : "Retired Product");

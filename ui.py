@@ -8,7 +8,7 @@ from .asset_builder import PLANETKA_ROOT_OBJECT_NAME
 from .auth import (
     AuthApiError,
     allows_animation_render_for_context,
-    allows_balanced_full_quality_for_context,
+    allows_texture_quality_for_context,
     get_cached_cloud_connection_status,
     get_cloud_connection_status,
     get_connected_email,
@@ -268,8 +268,6 @@ def _normalize_texture_quality_for_ui(value):
     token = str(value or "").strip().upper()
     if token == "FULL":
         return "FULL"
-    if token in {"BALANCED", "HALF"}:
-        return "PREVIEW"
     if token == "PREVIEW":
         return "PREVIEW"
     return ""
@@ -1146,7 +1144,7 @@ def _draw_licenced_download_controls(layout, prefs):
         if bool(unlocked_progress.get("active", False)):
             progress_box.operator("planetka.account_cancel_unlocked_download", text="Cancel Download", icon="CANCEL")
 
-    layout.operator("planetka.account_download_unlocked_tiles", text="Download Licenced", icon="IMPORT")
+    layout.operator("planetka.account_download_unlocked_tiles", text="Download Licenced Data", icon="IMPORT")
     local_row = layout.row()
     local_row.prop(prefs, "local_texture_source_path", text="Local Source")
     local_notice = get_local_source_stale_notice()
@@ -1175,16 +1173,16 @@ def _draw_broader_region_offers(layout, scene, active_view_scope=False):
     offers = [offer for offer in offers if isinstance(offer, dict) and bool(offer.get("ok", True))]
     if not offers:
         if status == "LOADING":
-            layout.label(text="Updating Data Packs...", icon="TIME")
+            layout.label(text="Updating relevant packs...", icon="TIME")
         elif status == "ERROR":
-            layout.label(text=message or "Data Packs update failed.", icon="ERROR")
+            layout.label(text=message or "Relevant pack update failed.", icon="ERROR")
         elif status == "EMPTY":
-            layout.label(text=message or "No Data Packs for this view.", icon="INFO")
+            layout.label(text=message or "No relevant data packs for this view.", icon="INFO")
         else:
-            layout.label(text="Data Packs update after Resolve.", icon="INFO")
+            layout.label(text="Updates after Camera View Resolve.", icon="INFO")
         return
     for offer in offers[:8]:
-        name = str(offer.get("name", "") or offer.get("region_pack_name", "") or "Region Pack").strip()
+        name = str(offer.get("name", "") or offer.get("region_pack_name", "") or "Data Pack").strip()
         region_id = str(offer.get("id", "") or offer.get("region_pack_id", "") or "").strip()
         if not name or not region_id:
             continue
@@ -1302,18 +1300,18 @@ def _draw_account_panel(layout):
 
     request_row = layout.row()
     request_row.enabled = not key_locked
-    request_row.operator("planetka.account_login", text="Request API Key", icon="URL")
+    request_row.operator("planetka.account_login", text="Request Account Access", icon="URL")
 
     key_row = layout.row(align=True)
     if key_locked:
         key_row.enabled = False
         if key_mask:
-            key_row.prop(prefs, "auth_api_key_mask", text="API Key")
+            key_row.prop(prefs, "auth_api_key_mask", text="Access Key")
         else:
-            key_row.prop(prefs, "auth_api_key_input", text="API Key")
+            key_row.prop(prefs, "auth_api_key_input", text="Access Key")
     else:
         key_row.enabled = True
-        key_row.prop(prefs, "auth_api_key_input", text="API Key")
+        key_row.prop(prefs, "auth_api_key_input", text="Access Key")
     if inline_status_text and not connected:
         key_status = key_row.row(align=True)
         key_status.alert = bool(inline_status_alert)
@@ -1322,7 +1320,7 @@ def _draw_account_panel(layout):
     key_action_row = layout.row(align=True)
     connect_row = key_action_row.row(align=True)
     connect_row.enabled = (not key_locked) and bool(key_text)
-    connect_row.operator("planetka.account_open_login", text="Connect API Key", icon="CHECKMARK")
+    connect_row.operator("planetka.account_open_login", text="Connect Account", icon="CHECKMARK")
 
     try:
         email = str(get_connected_email(prefs) or "").strip()
@@ -1598,7 +1596,7 @@ def _draw_live_telemetry(layout, scene):
 
         quick_preview_prepared = _is_animation_prepared(scene)
         active_view_scope = _is_active_view_resolve_scope(scene)
-        full_allowed = allows_balanced_full_quality_for_context(prefs=prefs, source=props, requested_mode="FULL")
+        full_allowed = allows_texture_quality_for_context(prefs=prefs, source=props, requested_mode="FULL")
         full_size_known = False
         full_price_known = False
         try:
@@ -1610,6 +1608,9 @@ def _draw_live_telemetry(layout, scene):
         try:
             full_credits = float(estimates.get("FULL_CREDITS", 0.0) or 0.0)
         except (AttributeError, TypeError, ValueError):
+            full_credits = 0.0
+        if world_full_quality_unlocked:
+            full_price_known = True
             full_credits = 0.0
         if not full_size_known or not full_price_known:
             full_allowed = False
@@ -2716,23 +2717,21 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             )
             anim_tile_price = float(scene.get(ANIMATION_STATS_TILE_PRICE_KEY, anim_credits) or 0.0)
             anim_custom_licence = float(scene.get(ANIMATION_STATS_CUSTOM_LICENCE_KEY, 0.0) or 0.0)
-            anim_custom_licence_segments = int(scene.get(ANIMATION_STATS_CUSTOM_LICENCE_SEGMENTS_KEY, 0) or 0)
         except (TypeError, ValueError, RuntimeError, AttributeError):
             anim_price_known = False
             anim_credits = 0.0
             anim_paid_tiles = 0
             anim_tile_price = 0.0
             anim_custom_licence = 0.0
-            anim_custom_licence_segments = 0
         if not anim_price_known:
             final_render_allowed = False
-        final_render_box.label(text=f"New Tiles to be Licenced and Downloaded: {anim_paid_tiles}", icon="TEXTURE")
+        final_render_box.label(text=f"New Full Quality Tiles: {anim_paid_tiles}", icon="TEXTURE")
         if not anim_price_known:
             final_render_box.label(text="Animation price is not available yet. Generate keyframes or refresh pricing.", icon="INFO")
         elif anim_custom_licence > 0.000001:
             final_render_box.label(text=f"Tile price: €{max(0.0, anim_tile_price):.2f}", icon="TEXTURE")
             final_render_box.label(
-                text=f"Animation licence: {anim_custom_licence_segments} x €1.00 = €{max(0.0, anim_custom_licence):.2f}",
+                text=f"Animation licence: €{max(0.0, anim_custom_licence):.2f}",
                 icon="URL",
             )
         if anim_credits > 0.0:

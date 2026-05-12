@@ -65,7 +65,7 @@ MAX_SHADER_TILE_BUDGET = 12
 # Keep only real resolved tiles unless future renderer-safe padding is introduced.
 MIN_SHADER_TILE_FLOOR = 0
 SHADER_PAD_TILE_PREFIX = "__PKA_PAD_TILE"
-TEXTURE_QUALITY_MODES = {"FULL", "BALANCED", "PREVIEW"}
+TEXTURE_QUALITY_MODES = {"FULL", "PREVIEW"}
 VIEWPORT_RESOLUTION_X = 1920.0
 VIEWPORT_RESOLUTION_Y = 1080.0
 LAST_TILE_BUDGET_TRACE = []
@@ -734,8 +734,8 @@ def _log_destructive_budget_trim(removed, before_trim_count, after_trim_count, m
     budget_value = int(max_tiles)
     input_count = int(before_trim_count)
     output_count = int(after_trim_count)
-    logger.warning(
-        "Planetka: CRITICAL tile budget destructive trim removed=%d input=%d output=%d budget=%d",
+    logger.debug(
+        "Planetka: tile budget trim removed=%d input=%d output=%d budget=%d",
         removed_count,
         input_count,
         output_count,
@@ -745,22 +745,13 @@ def _log_destructive_budget_trim(removed, before_trim_count, after_trim_count, m
         dropped_tile = str(event.get("dropped", "") or "").strip()
         ratio = float(event.get("ratio", 0.0) or 0.0)
         distance = float(event.get("distance", 0.0) or 0.0)
-        logger.warning(
-            "Planetka: CRITICAL destructive drop #%d/%d tile=%s ratio=%.6f distance=%.3f",
+        logger.debug(
+            "Planetka: tile budget trimmed drop #%d/%d tile=%s ratio=%.6f distance=%.3f",
             int(index),
             removed_count,
             dropped_tile,
             ratio,
             distance,
-        )
-        # Mirror into stdout so this remains visible even if logger level filtering hides warnings.
-        print(
-            (
-                "Planetka: CRITICAL destructive tile drop "
-                f"{int(index)}/{removed_count} tile={dropped_tile} "
-                f"ratio={ratio:.6f} distance={distance:.3f}"
-            ),
-            flush=True,
         )
 
 
@@ -964,8 +955,6 @@ def _apply_temporal_z_hysteresis(scene, requested_z, distance_value):
 def _texture_quality_mode(scene, override_mode=None):
     def _normalize_quality_token(value):
         token = str(value or "").strip().upper()
-        if token == "HALF":
-            return "BALANCED"
         if token in TEXTURE_QUALITY_MODES:
             return token
         return "PREVIEW"
@@ -2389,9 +2378,7 @@ def _enforce_minimum_d_level(tiles, min_d):
 def _apply_texture_quality_mode(tiles, scene, override_mode=None):
     mode = _texture_quality_mode(scene, override_mode=override_mode)
     result = list(tiles or [])
-    if mode == "BALANCED":
-        result = _coarsen_tiles_n_d_levels(tiles, 1)
-    elif mode == "PREVIEW":
+    if mode == "PREVIEW":
         result = _coarsen_tiles_n_d_levels(tiles, 2)
     return _sort_tiles_for_apply(result)
 
@@ -2400,11 +2387,9 @@ def _apply_fixed_z180_quality_targets(tiles, mode):
     # Fixed z180 texture-quality targets regardless of camera altitude/distance.
     # As soon as a z180 tile is used, enforce:
     # - Preview  -> d720
-    # - Balanced -> d360
     # - Full     -> d180
     target_by_mode = {
         "PREVIEW": 720,
-        "BALANCED": 360,
         "FULL": 180,
     }
     target_d = int(target_by_mode.get(str(mode or "").strip().upper(), 720))

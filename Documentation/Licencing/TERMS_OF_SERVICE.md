@@ -1,216 +1,120 @@
 # Planetka Terms of Service
 
-Last updated: 2026-04-25
+Last updated: 2026-05-12
 
-These Terms of Service govern access to the Planetka service layer, including
-Planetka account login, Planetka-hosted tile delivery, and related web/API
-functions used by the Blender add-on.
+These Terms govern your use of the Planetka Blender add-on when it connects to Planetka-hosted services, including account access, streamed texture delivery, Full Quality purchases, data-pack purchases, downloads, and related web pages.
 
-These Terms do not replace the GNU GPL licence for the add-on source code.
-The add-on code is licenced separately under GPL-3.0-or-later. These Terms
-apply to Planetka accounts, hosted services, and remote data access.
+The Planetka add-on source code may be distributed under a separate open-source licence. That software licence does not grant access to Planetka-hosted data, paid texture data, payment services, or commercial texture rights. Hosted-service access and texture licences are governed by these Terms.
 
 ## 1. Acceptance
 
-By creating a Planetka account, signing in, or using Planetka-hosted services,
-you agree to these Terms and to the Planetka Privacy Policy.
+By using Planetka-hosted services, creating or using a Planetka account, requesting an API key, opening a Planetka checkout page, or purchasing Full Quality texture data, you agree to these Terms and to the Planetka Privacy Policy.
 
-If you do not agree, do not create an account and do not use Planetka-hosted
-services.
+If you use Planetka for a company, studio, institution, client, or other organisation, you confirm that you have authority to accept these Terms for that organisation.
 
-## 2. Beta Access Model
+## 2. Product model
 
-Planetka is currently released as a **public beta**.
+Planetka provides two public texture-quality modes:
 
-- Access is currently intended for beta testing and feedback.
-- Access is tied to one specific email address and one computer at one time.
-- Planetka may change beta limits, access rules, and feature behavior during
-  this beta period.
-- Planetka currently offers three account tiers: **Free**, **Personal**, and
-  **Commercial**.
-- For the current `v0.7.0` beta phase, Planetka may run hosted-service access
-  in an **unrestricted** mode for testing. In that mode, hosted-service access
-  behaves as **Commercial** regardless of the stored account tier.
+- **Preview**: free streamed/cached texture data for personal, non-commercial use inside Planetka.
+- **Full Quality**: paid texture data for still scenes, animation resolves, and predefined data packs. A commercial texture licence is included for Full Quality texture data that has been licenced to your account.
 
-## 3. Intended Use
+Only the products, prices, and rights shown in the current Planetka user interface, web pages, checkout pages, receipts, or written agreements apply. Older drafts, internal notes, test labels, or unreleased product names do not grant rights.
 
-Planetka is intended for creating still images and animations in Blender.
+## 3. Preview texture access
 
-That intended use includes normal interactive work such as:
+Preview texture access is intended to let users explore Planetka and create personal, non-commercial work inside the add-on.
 
-- creating and resolving Earth scenes
-- rendering still images
-- rendering animation sequences
-- normal caching required for those workflows
+Preview textures are streamed and may be held in a temporary local cache. The cache is not a supported download product, archive product, or reusable texture dataset. You may not use Preview textures for commercial production, paid client work, resale, redistribution, dataset extraction, training datasets, or any workflow outside the intended Planetka preview workflow.
 
-Standard Planetka access does not include rights to use Planetka-hosted
-services or Planetka-provided data for artificial intelligence, machine
-learning, or similar model-development workflows. Those rights are available
-only under a separate custom licence released by Planetka in writing.
+## 4. Full Quality texture licences
 
-## 4. Licence Scope by Account Tier
+Full Quality texture data is licenced to your Planetka account when a purchase, promotional grant, or other authorised entitlement is completed.
 
-Subject to these Terms, Planetka-hosted service use is licenced per account
-tier as follows:
+A Full Quality licence allows you to:
 
-- **Free**: personal, non-commercial Blender rendering workflows only.
-- **Personal**: personal, non-commercial Blender rendering workflows with
-  unlimited `Preview` and `Balanced` quality.
-- **Commercial**: personal and commercial Blender rendering workflows with
-  unlimited `Preview`, `Balanced`, and `Full Quality`.
+- use the licenced Full Quality texture data for commercial and non-commercial renders, animations, still images, videos, and client work;
+- download licenced Full Quality texture data where Planetka offers a supported download workflow;
+- reuse licenced Full Quality texture data in your own creative and production workflows, including outside Blender, subject to these Terms and applicable source-attribution requirements.
 
-For clarity:
+A Full Quality licence does not transfer ownership of the underlying data sources, derived datasets, Planetka processing, or Planetka services. You may not resell, sublicense, redistribute, publish, or operate the licenced texture data as a standalone texture library, map product, dataset, API, tile server, training dataset, or competing service.
 
-- Free includes unlimited `Preview` quality only.
-- Personal includes unlimited `Preview` and `Balanced` quality only.
-- Commercial includes unlimited `Preview`, `Balanced`, and `Full Quality`.
-- Final Animation Rendering in Planetka's built-in animation rendering system
-  is licenced only for Commercial.
-- Free and Personal do **not** include commercial use rights.
-- Commercial includes commercial use rights, subject to all other Terms in this
-  document.
-- During the current beta phase, if Planetka runs beta access in unrestricted
-  mode, that Commercial-equivalent beta access governs your permitted use
-  until Planetka changes that beta-access policy.
-- All hosted-service access is unlimited only within Planetka's Fair Usage
-  Policy and abuse-prevention safeguards.
+## 5. Scene, animation, and data-pack purchases
 
-## 5. Purchases, Upgrades, and Service Term
+Planetka may offer Full Quality access as:
 
-- Personal and Commercial are one-time licence purchases.
-- Future versions with significant new functionality may be offered as optional
-  paid upgrades, but those upgrades are not required to keep using the version
-  you already purchased while it remains supported.
-- For paid Personal and Commercial purchases, Planetka guarantees support for
-  the purchased version and Planetka-hosted cloud data availability for a
-  minimum of **5 years from the date of purchase**.
+- a scene-specific licence for the Full Quality texture data needed for a still scene;
+- an animation licence for the Full Quality texture data needed for an animation resolve;
+- a data-pack licence for a predefined country, state, region, continent, world, or other area pack.
 
-You may keep and use your own rendered outputs, subject to attribution and
-source-data obligations described in Planetka licensing documentation.
+Planetka may also apply product discounts, volume discounts, promotional discounts, custom scene licence fees, or custom animation licence fees. The final price shown before payment is the price that applies to that transaction.
 
-## 6. Prohibited Use
+If a tile, data pack, or part of a purchase is already licenced to your account, Planetka may deduct that previously licenced value from later purchases where the current product rules support that deduction. The purchase page and checkout workflow show the applicable price before payment.
 
-You must not:
+Small scene-specific or animation-specific amounts may be treated as free if they fall below Planetka's active charging threshold. This threshold may change over time.
 
-- scrape, mirror, or systematically extract Planetka-hosted source data
-- use automated requests to harvest tiles or datasets outside normal rendering
-  use
-- attempt to bypass technical or account controls
-- share one account across multiple simultaneous computers or users
-- use Planetka-hosted services as a generic data-delivery API
-- resell, sublicence, rent, lease, or provide Planetka-hosted service access
-  to third parties
-- use Planetka-hosted services or Planetka-provided data to train, pre-train,
-  fine-tune, adapt, align, benchmark, validate, or evaluate any artificial
-  intelligence, machine learning, computer vision, generative, or similar
-  model or system
-- use Planetka-hosted services or Planetka-provided data to create, enrich,
-  prepare, transform, or supply datasets, labels, captions, embeddings,
-  synthetic pairs, ground-truth assets, or other structured inputs primarily
-  intended for artificial intelligence, machine learning, or similar
-  model-development workflows
-- use rendered outputs, tiles, cached files, or extracted data from Planetka-
-  hosted services as training material or evaluation material for artificial
-  intelligence, machine learning, or similar systems where Planetka-hosted
-  services or Planetka-provided data are a material input to that workflow
-- probe, stress, or abuse the service in a way that degrades availability
-- use bots or scripts to build bulk local copies of the underlying source data
-- circumvent account limits, authentication, rate controls, or enforcement
-  logic
-- use Free or Personal tier access for commercial production, paid client work,
-  paid deliverables, resale, enterprise deployment, or other business use
+## 6. Payments and checkout
 
-Any attempt to use Planetka primarily as a source-data extraction tool rather
-than a Blender rendering tool is prohibited.
+Payments are processed through Stripe or another payment provider shown during checkout. Planetka does not store your card number or full payment-card details.
 
-Artificial intelligence / machine learning use may be permitted only if
-Planetka releases a separate custom licence for that use in writing.
+Stripe or the relevant payment provider may send receipts, payment confirmations, or invoices according to its own systems and the information collected during checkout. If you need a specific invoice or business document, contact Planetka support with the transaction details.
 
-## 7. Enforcement
+Planetka currently uses direct payment for paid public purchases unless a separate written agreement says otherwise.
 
-Planetka may suspend or terminate access, block accounts, or limit requests if
-Planetka reasonably believes an account is being used in breach of these Terms
-or in a way that threatens service stability, data integrity, or other users.
+## 7. Area labels, borders, and disputed territories
 
-Planetka may act automatically where needed for abuse prevention or service
-protection.
+Included area labels are provided only to describe possible texture coverage for a data pack. They do not define borders, sovereignty, or political status. Planetka does not draw or decide national borders; a pack simply unlocks texture tiles that may be relevant to the selected area.
 
-## 8. Account Responsibility
+Where disputed territories, overseas territories, detached territories, or administrative regions are mentioned, the labels are used only for product discovery and texture-coverage explanation. They are not a political statement.
 
-You are responsible for activity under your account and for keeping access to
-your email account secure.
+## 8. Attribution and source obligations
 
-You must provide a valid email address that you control.
+Planetka texture data is derived from multiple public and third-party data sources. Some sources require attribution or specific notices. You must follow the attribution instructions included with Planetka documentation and any attribution information shown by Planetka for the data you use.
 
-You are responsible for selecting and using the correct account tier for your
-intended use (personal/non-commercial vs commercial).
+For normal rendered outputs, the recommended attribution is:
 
-## 9. No Warranty; Service Availability
+`Planetka Earth textures derived from Copernicus Sentinel-2, NASA Blue Marble, JAXA AW3D30, DLR WSF 2015, GeoNames, and other credited sources.`
 
-Planetka-hosted services are provided on an "as is" and "as available" basis.
-No warranty is given that the service will always be available, uninterrupted,
-error-free, or suitable for any specific purpose.
+If your project has special distribution requirements, broadcast requirements, legal review, or source-credit formatting requirements, contact Planetka before publication.
 
-Planetka gives no guarantee of uninterrupted future availability beyond the
-minimum support and cloud-data availability period stated above for paid
-Personal and Commercial purchases.
+## 9. Prohibited uses
 
-## 10. Access Continuity
+You may not:
 
-Beta access is provided on an "as available" basis.
+- bypass Planetka account, payment, entitlement, download, or rate-limit controls;
+- share API keys, account access, or paid entitlements outside your authorised team or licence scope;
+- scrape, bulk-download, reverse-engineer, or reconstruct Planetka-hosted data except through supported paid download workflows;
+- use Preview textures for commercial work;
+- use Planetka-hosted data to build, train, benchmark, validate, or distribute machine-learning datasets or AI models without a separate written licence;
+- resell, redistribute, sublicense, host, publish, or expose Planetka texture data as standalone map tiles, source imagery, a dataset, a GIS product, a texture pack, an API, or a competing service;
+- use Planetka in a way that overloads, attacks, interferes with, or attempts to bypass Planetka services.
 
-Planetka may change technical limits, anti-abuse safeguards, fair-usage
-protections, and beta access conditions over time to keep service available for
-all users.
+## 10. Account and access controls
 
-## 11. Telemetry and Internal Analytics
+You are responsible for keeping your account, API key, and local installation secure. Planetka may suspend or restrict access if it detects abuse, unauthorised sharing, payment problems, security risk, excessive automated requests, or violation of these Terms.
 
-Planetka may collect usage, performance, and account metrics needed to operate,
-secure, monitor, and improve the service.
+Planetka may apply reasonable request limits, download limits, cache rules, device checks, or fair-use controls to protect service reliability.
 
-Planetka does not sell that information and does not share it with third
-parties except where needed to operate infrastructure, comply with law, or
-protect the service.
+## 11. Service availability and changes
 
-See the Planetka Privacy Policy for more detail.
+Planetka depends on hosted infrastructure, storage, payment processors, third-party data sources, Blender compatibility, and network availability. Planetka will make commercially reasonable efforts to keep the service reliable, but service may be unavailable, interrupted, delayed, or changed.
 
-## 12. Outputs and Source Data
+Planetka may update features, pricing, discounts, thresholds, data packs, tile catalogues, UI wording, supported Blender versions, and service limits over time. Completed purchases remain governed by the rights granted at the time of purchase, subject to these Terms.
 
-As between you and Planetka, you retain rights in your own creative rendered
-outputs, except where third-party source-data terms impose attribution or other
-requirements.
+## 12. Refunds and corrections
 
-Planetka does not claim ownership of your rendered still images or animations
-solely because they were created with Planetka.
+If a payment, entitlement, price, or download appears incorrect, contact Planetka support with your account email, transaction time, product name, and any relevant screenshots. Planetka may correct account entitlements, refund payments, or otherwise resolve issues at its discretion and according to applicable law.
 
-When you publicly share rendered outputs made with Planetka (including social
-posts, videos, reels, portfolios, or client deliveries), you must include any
-third-party source attribution required by the source-data licences and terms.
-Those attribution requirements are documented in:
+## 13. Warranty disclaimer and liability limit
 
-- Documentation/Licencing/Attribution for User Renders.txt
-- Documentation/Licencing/Compliance/*
+Planetka is provided as-is and as-available. Planetka does not guarantee that the data is error-free, complete, suitable for navigation, suitable for surveying, suitable for safety-critical use, or suitable for legal boundary determination.
 
-## 13. Public Sharing and Planetka Credit
+To the maximum extent allowed by law, Planetka's liability for claims related to the service, data, or these Terms is limited to the amount you paid to Planetka for the affected transaction or service during the twelve months before the claim.
 
-When sharing Planetka-based work publicly, crediting Planetka is strongly
-encouraged (for example: "Created with Planetka for Blender").
+## 14. Privacy
 
-This Planetka credit is requested for visibility and sustainability and helps
-support keeping the service sustainable long-term. It is encouraged, but not a
-separate third-party source-data requirement.
-
-## 14. Changes
-
-Planetka may update these Terms from time to time. Updated Terms apply to
-future use after publication.
+Planetka handles account, usage, payment-status, purchase-history, licence, and download information according to the Planetka Privacy Policy.
 
 ## 15. Contact
 
-Questions about these Terms can be sent to:
-
-- info@planetka.io
-- https://www.planetka.io/contact-me
-
-Requests for AI / machine learning training rights should be sent as a custom
-licence inquiry to the same contact details above.
+For support, licence questions, invoice requests, commercial questions, or enterprise arrangements, contact Planetka through the support or contact address provided on [planetka.io](https://www.planetka.io).

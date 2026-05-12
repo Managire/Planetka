@@ -1,54 +1,13 @@
 Using Planetka Commercially
-===========================
+Last updated: 2026-05-12
 
-1. Planetka account tiers define commercial rights:
-   - Free: unlimited Preview only, personal / non-commercial use only
-   - Personal: unlimited Preview and Balanced only, personal / non-commercial use only
-   - Commercial: unlimited Preview, Balanced, and Full Quality; commercial use allowed
-2. Current `v0.7.0` beta note: beta access currently runs in unrestricted
-   mode, so hosted-service access behaves as Commercial during testing
-   regardless of stored account tier.
-3. If your work is commercial, use Commercial tier.
-4. If your work is personal/non-commercial, Free or Personal may be used.
-5. Planetka built-in Final Animation Rendering is licenced for Commercial only.
-6. Personal and Commercial are one-time licences.
-7. Significant future feature releases may be offered as optional paid
-   upgrades.
-8. Paid Personal and Commercial purchases include a minimum 5-year guarantee
-   for support and Planetka-hosted cloud data availability from the purchase
-   date.
-9. If you publish images or animations, include attribution in the accompanying
-   text or credits.
-10. The easiest way to do that is to use:
-   `Attribution for User Renders.txt`
-11. Service access, account use, and prohibited scraping / abusive use are
-   governed by `TERMS_OF_SERVICE.md`.
-12. AI / machine learning use is not included. That includes training, fine-tuning, evaluation,
-   benchmarking, and dataset preparation. Those uses require a separate custom
-   licence from Planetka.
-
-Required attribution summary
-----------------------------
-Published renders should include credit covering these bundled data sources:
-
-- Contains modified Copernicus Sentinel data (2023).
-- Credit: AW3D30 (ALOS World 3D - 30m) (JAXA).
-
-Include this additional line if Night Lights are visible in the published work:
-
-- World Settlement Footprint 2015 (WSF2015 v2), DLR (German Aerospace Center),
-  licenced under CC BY 4.0; modified by Planetka.
-
-Planetka credit
----------------
-A separate credit to Planetka / Tomas Griger is not required, but appreciated.
-
-Private work
-------------
-If you do not publish your work, the attribution text is generally not relevant
-to your private workflow.
-
-Detailed records
-----------------
-If you need the source-by-source records, they are in:
-- `Compliance/`
+1. Preview texture access is free, streamed/cached, and personal / non-commercial only.
+2. Full Quality texture data includes a commercial licence for the Full Quality data licenced to your account.
+3. Full Quality can be licenced through a scene-specific purchase, animation purchase, promotional grant, or predefined data pack.
+4. Full Quality data that has been licenced to your account can be reused without being charged again where Planetka's current product rules support that reuse.
+5. Supported Full Quality downloads may be used in Blender or in other creative/production tools, subject to the Terms of Service and source-attribution requirements.
+6. You may not resell, redistribute, sublicense, host, publish, or expose Planetka texture data as a standalone map product, dataset, tile server, API, texture library, training dataset, or competing service.
+7. You may not use Preview textures for paid client work, broadcast work, commercial production, resale, dataset extraction, or any workflow outside the intended Planetka preview workflow.
+8. You must include required source attribution where applicable. The recommended short attribution is:
+   Planetka Earth textures derived from Copernicus Sentinel-2, NASA Blue Marble, JAXA AW3D30, DLR WSF 2015, GeoNames, and other credited sources.
+9. For enterprise, broadcast, aerospace, large-documentary, AI/ML, data-redistribution, or unusual licensing requirements, contact Planetka before use.

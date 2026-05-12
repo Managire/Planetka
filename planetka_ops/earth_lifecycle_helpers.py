@@ -54,7 +54,7 @@ def _require_authenticated_account(operator, prefs):
     if not is_authenticated(prefs):
         fail(
             operator,
-            "Connect Planetka API key before using remote Earth data.",
+            "Connect your Planetka account before using remote Earth data.",
             code=ErrorCode.RESOLVE_PRECHECK_FAILED,
             logger=logger,
         )

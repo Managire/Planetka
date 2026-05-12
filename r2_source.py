@@ -1148,8 +1148,6 @@ def set_resolve_request_context(
     with _REQUEST_CONTEXT_LOCK:
         _REQUEST_CONTEXT_RESOLVE_ID = str(resolve_id or "").strip()[:128]
         safe_mode = str(texture_quality_mode or "").strip().lower()
-        if safe_mode in {"half", "balanced"}:
-            safe_mode = "preview"
         if safe_mode not in {"preview", "full"}:
             safe_mode = ""
         _REQUEST_CONTEXT_TEXTURE_MODE = safe_mode
@@ -1217,8 +1215,6 @@ def _request_tile_session_token(resolve_id, quality_mode, allow_refresh=True):
         return "", 0.0
     safe_resolve_id = str(resolve_id or "").strip()[:128]
     safe_quality_mode = str(quality_mode or "").strip().lower()
-    if safe_quality_mode in {"half", "balanced"}:
-        safe_quality_mode = "preview"
     if safe_quality_mode not in {"preview", "full"}:
         return "", 0.0
     if not safe_resolve_id:
@@ -2116,7 +2112,7 @@ def prefetch_resolve_downloads(requests, base_path=None, cancel_event=None):
             error_text = str(exc)
             if _is_cancelled_prefetch_error(error_text):
                 return {"state": "cancelled", "task": task}
-            if _is_fatal_prefetch_error(error_text):
+            if str(task_folder or "").strip().upper() == "S2" and _is_fatal_prefetch_error(error_text):
                 return {"state": "fatal", "task": task, "error": error_text}
             return {"state": "error", "task": task, "error": error_text}
         except (AuthApiError, urllib.error.HTTPError, urllib.error.URLError, RuntimeError, TypeError, ValueError, OSError) as exc:
@@ -2207,6 +2203,8 @@ def prefetch_resolve_downloads(requests, base_path=None, cancel_event=None):
             ext_value = str(entry.get("ext", "") or "").strip().lower()
             if not folder_value or not prefix_value or not tile_value:
                 continue
+            if folder_value != "S2":
+                continue
             if ext_value and not ext_value.startswith("."):
                 ext_value = f".{ext_value}"
             if not ext_value:
@@ -2217,7 +2215,7 @@ def prefetch_resolve_downloads(requests, base_path=None, cancel_event=None):
             reportable_missing_details.append(entry)
         if reportable_missing_details:
             logger.warning(
-                "Planetka resolve prefetch diagnostics: required_missing=%d resolved=%d error=%d sample=%s",
+                "Planetka resolve prefetch diagnostics: required_s2_missing=%d resolved=%d error=%d sample=%s",
                 int(len(reportable_missing_details)),
                 int(resolved_count),
                 int(error_count),

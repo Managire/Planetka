@@ -7,7 +7,6 @@ import {
   publicErrorMessage,
 } from "./worker/responses.js";
 import {
-  isBetaUnrestrictedAccessEnabled,
   parseBooleanFlag,
   parseNonNegativeInteger,
   parsePositiveNumber,
@@ -81,13 +80,11 @@ import {
 } from "./worker/admin_session_handlers.js";
 import {
   handleAdminUserBlock as handleAdminUserBlockRoute,
-  handleAdminSetGlobalUnrestrictedQuality as handleAdminSetGlobalUnrestrictedQualityRoute,
   handleAdminUserHardBlock as handleAdminUserHardBlockRoute,
   handleAdminUserReleasePreviewHold as handleAdminUserReleasePreviewHoldRoute,
   handleAdminUserSetPreviewHold as handleAdminUserSetPreviewHoldRoute,
   handleAdminQaAuthReset as handleAdminQaAuthResetRoute,
   handleAdminUserSetPlan as handleAdminUserSetPlanRoute,
-  handleAdminUserSetUnrestrictedQuality as handleAdminUserSetUnrestrictedQualityRoute,
   handleAdminUserUnblock as handleAdminUserUnblockRoute,
 } from "./worker/admin_user_handlers.js";
 import {
@@ -157,7 +154,7 @@ const DEFAULT_ADMIN_ANALYTICS_TILE_MAP_KEY = "planetka-assets/Admin/world_map_72
 const DEFAULT_ADMIN_SUPPORT_MISSING_MANIFEST_KEY = "planetka-assets/Admin/support_missing_manifest.json";
 const DEFAULT_TERMS_URL = "https://api.planetka.io/legal/terms-of-service.pdf";
 const DEFAULT_PRIVACY_URL = "https://api.planetka.io/legal/privacy-policy.pdf";
-const DEFAULT_LEGAL_VERSION = "2026-03-26";
+const DEFAULT_LEGAL_VERSION = "2026-05-12";
 const DEFAULT_ADDON_UPDATE_MANIFEST_VERSION = "0.2.0";
 const DEFAULT_ADDON_UPDATE_CHANNEL = "stable";
 const DEFAULT_ADDON_UPDATE_MANIFEST_MAX_AGE_SECONDS = 300;
@@ -425,7 +422,6 @@ const ADMIN_USER_DEPS = {
   requestClientIp,
   resolveUserQualityAccessState,
   resolveFixedInternalPlanForEmail,
-  setGlobalUnrestrictedQualityEnabled,
   requireAnalyticsAdmin: (request, env) => requireAnalyticsAdmin(request, env, AUTH_SESSION_DEPS),
   sha256Hex,
   upsertUserByEmail,
@@ -2381,8 +2377,6 @@ async function buildAccountState(db, user, env) {
     accountTier: storedAccountTier,
     storedAccountTier,
     qualityAccessPlanCode: qualityAccess.qualityAccessPlanCode,
-    unrestrictedQualityAccess: Boolean(qualityAccess.unrestrictedQualityAccess),
-    unrestrictedQualityOverride: String(qualityAccess.overrideMode || "normal"),
     commercialUseAllowed: commercialUseAllowed(storedPlanCode),
     upgradeUrl: String(env.UPGRADE_URL || DEFAULT_UPGRADE_URL).trim() || DEFAULT_UPGRADE_URL,
     contactUrl: normalizeContactUrl(env.PLANETKA_CONTACT_URL || DEFAULT_CONTACT_URL),
@@ -2406,8 +2400,6 @@ function serializeAccountState(state) {
     stored_plan_code: storedPlanCode || "",
     stored_account_tier: storedTier || "",
     quality_access_plan_code: qualityAccessPlanCode || "",
-    unrestricted_quality_access: Boolean(safeState.unrestrictedQualityAccess),
-    unrestricted_quality_override: String(safeState.unrestrictedQualityOverride || "normal"),
     commercial_use_allowed: Boolean(safeState.commercialUseAllowed),
     upgrade_url: safeState.upgradeUrl,
     contact_url: safeState.contactUrl,
@@ -2425,7 +2417,6 @@ async function findUserByEmail(db, email) {
         u.id,
         u.email,
         u.status,
-        u.unrestricted_quality_override,
         u.preview_fair_usage_hold_at,
         u.preview_fair_usage_hold_reason,
         u.preview_fair_usage_hold_details_json,
@@ -2448,7 +2439,6 @@ async function findUserById(db, userId) {
         u.id,
         u.email,
         u.status,
-        u.unrestricted_quality_override,
         u.preview_fair_usage_hold_at,
         u.preview_fair_usage_hold_reason,
         u.preview_fair_usage_hold_details_json,
@@ -2992,37 +2982,6 @@ async function ensureCreditTables(db) {
   await dbRun(
     db,
     `
-      CREATE TABLE IF NOT EXISTS animation_checkout_sessions (
-        id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL,
-        user_email TEXT,
-        quality_mode TEXT NOT NULL DEFAULT 'full',
-        segments_json TEXT NOT NULL,
-        pricing_json TEXT NOT NULL,
-        tile_keys_json TEXT NOT NULL,
-        price_eur REAL NOT NULL DEFAULT 0,
-        tile_price_eur REAL NOT NULL DEFAULT 0,
-        custom_animation_licence_eur REAL NOT NULL DEFAULT 0,
-        custom_animation_licence_segments INTEGER NOT NULL DEFAULT 0,
-        stripe_session_id TEXT,
-        status TEXT NOT NULL DEFAULT 'created',
-        created_at TEXT NOT NULL,
-        expires_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      )
-    `,
-  );
-  await dbRun(
-    db,
-    `CREATE UNIQUE INDEX IF NOT EXISTS idx_animation_checkout_sessions_stripe ON animation_checkout_sessions(stripe_session_id) WHERE stripe_session_id IS NOT NULL AND stripe_session_id != ''`,
-  );
-  await dbRun(
-    db,
-    `CREATE INDEX IF NOT EXISTS idx_animation_checkout_sessions_user_created ON animation_checkout_sessions(user_id, created_at DESC)`,
-  );
-  await dbRun(
-    db,
-    `
       CREATE TABLE IF NOT EXISTS tile_land_stats (
         tile_key TEXT PRIMARY KEY,
         x INTEGER NOT NULL,
@@ -3157,7 +3116,6 @@ async function upsertUserByEmail(db, email, status = PLAN_CODE_FREE, options = {
   if (!requestedStatus) {
     throw new Error("invalid_plan_code");
   }
-  const grantBetaUnrestrictedToNewUser = isBetaUnrestrictedAccessEnabled(env);
   let user = await findUserByEmail(db, normalizedEmail);
   if (user) {
     const currentStatus = String(user.status || "").trim().toLowerCase();
@@ -3223,19 +3181,17 @@ async function upsertUserByEmail(db, email, status = PLAN_CODE_FREE, options = {
         id,
         email,
         status,
-        unrestricted_quality_override,
         created_at,
         terms_accepted_at,
         privacy_accepted_at,
         terms_version,
         privacy_version
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `,
     [
       id,
       normalizedEmail,
       requestedStatus,
-      grantBetaUnrestrictedToNewUser ? 1 : null,
       createdAt,
       termsAcceptedAt,
       privacyAcceptedAt,
@@ -3304,28 +3260,6 @@ function resolveFixedInternalPlanForEmail(email, requestedPlan = PLAN_CODE_FREE)
   return normalizeTierCodeStrict(requestedPlan);
 }
 
-function normalizeUserQualityAccessOverride(value) {
-  if (value === null || value === undefined) {
-    return null;
-  }
-  const text = String(value).trim().toLowerCase();
-  if (!text) {
-    return null;
-  }
-  if (text === "1" || text === "true" || text === "yes" || text === "unrestricted") {
-    return true;
-  }
-  if (
-    text === "0"
-    || text === "false"
-    || text === "no"
-    || text === "normal"
-  ) {
-    return null;
-  }
-  return null;
-}
-
 async function ensureUserQualityAccessColumns(db) {
   if (userQualityAccessColumnsReady) {
     return;
@@ -3336,16 +3270,6 @@ async function ensureUserQualityAccessColumns(db) {
     return;
   }
   const names = new Set(rows.map((row) => String(row && row.name || "").trim().toLowerCase()));
-  if (!names.has("unrestricted_quality_override")) {
-    try {
-      await dbRun(db, `ALTER TABLE users ADD COLUMN unrestricted_quality_override INTEGER`);
-    } catch (error) {
-      const message = String(error && error.message || "");
-      if (!message.toLowerCase().includes("duplicate column")) {
-        throw error;
-      }
-    }
-  }
   if (!names.has("preview_fair_usage_hold_at")) {
     try {
       await dbRun(db, `ALTER TABLE users ADD COLUMN preview_fair_usage_hold_at TEXT`);
@@ -3379,59 +3303,23 @@ async function ensureUserQualityAccessColumns(db) {
   userQualityAccessColumnsReady = true;
 }
 
-async function setGlobalUnrestrictedQualityEnabled(db, enabled) {
-  await ensureUserQualityAccessColumns(db);
-  const now = nowIso();
-  const overrideValue = enabled ? 1 : null;
-  const result = await dbRun(
-    db,
-    `
-      UPDATE users
-      SET unrestricted_quality_override = ?
-    `,
-    [overrideValue],
-  );
-  return {
-    enabled: Boolean(enabled),
-    updatedAt: now,
-    affectedCount: dbMetaChanges(result),
-  };
-}
-
 async function resolveUserQualityAccessState(db, user, env = {}) {
-  let effectiveUser = user || null;
-  if (
-    effectiveUser
-    && effectiveUser.id
-    && effectiveUser.unrestricted_quality_override === undefined
-  ) {
-    const hydratedUser = await findUserById(db, effectiveUser.id);
-    if (hydratedUser) {
-      effectiveUser = hydratedUser;
-    }
-  }
+  void db;
+  void env;
+  const effectiveUser = user || null;
   const storedPlanCode = normalizeTierCodeStrict(effectiveUser && effectiveUser.status);
   if (!effectiveUser || !effectiveUser.id) {
     return {
       storedPlanCode: PLAN_CODE_FREE,
-      unrestrictedQualityAccess: false,
       qualityAccessPlanCode: PLAN_CODE_FREE,
-      overrideMode: "normal",
-      globalEnabled: false,
     };
   }
   if (!storedPlanCode && !isBlockedStatus(effectiveUser && effectiveUser.status)) {
     throw new Error("invalid_user_status");
   }
-  await ensureUserQualityAccessColumns(db);
-  const overrideValue = normalizeUserQualityAccessOverride(effectiveUser && effectiveUser.unrestricted_quality_override);
-  const unrestrictedQualityAccess = Boolean(storedPlanCode === PLAN_CODE_COMMERCIAL || overrideValue === true);
   return {
     storedPlanCode: storedPlanCode || "",
-    unrestrictedQualityAccess,
-    qualityAccessPlanCode: unrestrictedQualityAccess ? PLAN_CODE_COMMERCIAL : (storedPlanCode || ""),
-    overrideMode: overrideValue === true ? "unrestricted" : "normal",
-    globalEnabled: false,
+    qualityAccessPlanCode: storedPlanCode || "",
   };
 }
 
@@ -3458,19 +3346,10 @@ function minimumPlanQualityForTile(fileName) {
   }
   const d = Math.max(1, Number(parsed.d));
   const z = Math.max(1, Number(parsed.z));
-  const textureType = String(parsed.textureType || "").toUpperCase();
+  void z;
 
-  // Dataset alias:
-  // Some legacy clients may request EL z001 d002, but the actual stored file is
-  // EL z001 d001 (see streaming_utils.py replacement). Do not classify this
-  // compatibility alias as Full-only.
-  if (textureType === "EL" && z === 1 && d === 1) {
-    return "balanced";
-  }
-
-  // d001 => Full-only, d002/d003 => legacy paid-quality compatibility, d004+ => Preview+
-  if (d <= 1) return "full";
-  if (d <= 3) return "balanced";
+  // d001-d003 are paid Full Quality data. d004+ is Preview-accessible.
+  if (d <= 3) return "full";
   return "preview";
 }
 
@@ -3489,22 +3368,22 @@ async function sendApiKeyActivationEmail(env, email, token) {
     body: JSON.stringify({
       from,
       to: [email],
-      subject: "Your Planetka API key activation link",
+      subject: "Your Planetka account access link",
       text: [
-        "Planetka API key request received.",
+        "Planetka account access request received.",
         "",
-        "Open this activation link to generate your key:",
+        "Open this activation link to generate your access key:",
         activationUrl,
         "",
         "The link expires in 30 minutes.",
       ].join("\n"),
       html: `
         <div style="font-family: Arial, sans-serif; line-height: 1.5; color: #111827;">
-          <h2 style="margin-bottom: 16px;">Activate your Planetka API key</h2>
-          <p>Use the button below to generate your API key for Blender.</p>
+          <h2 style="margin-bottom: 16px;">Activate your Planetka account access</h2>
+          <p>Use the button below to generate your access key for Blender.</p>
           <p style="margin: 24px 0;">
             <a href="${activationUrl}" style="background:#111827;color:#ffffff;padding:12px 18px;text-decoration:none;border-radius:8px;display:inline-block;">
-              Activate API Key
+              Activate Account Access
             </a>
           </p>
           <p>If the button does not work, open this link:</p>
@@ -3537,24 +3416,24 @@ async function sendApiKeyIssuedEmail(env, email, apiKeyValue, planCode, expiresA
     body: JSON.stringify({
       from,
       to: [email],
-      subject: "Your Planetka API key",
+      subject: "Your Planetka account access key",
       text: [
-        "Your Planetka API key is ready.",
+        "Your Planetka account access key is ready.",
         "",
         `Access: ${displayPlan}`,
         accessSummary,
         "",
-        "API key:",
+        "Access key:",
         apiKeyValue,
         "",
         "Paste this key in Blender > Planetka > Account.",
       ].join("\n"),
       html: `
         <div style="font-family: Arial, sans-serif; line-height: 1.5; color: #111827;">
-          <h2 style="margin-bottom: 16px;">Your Planetka API key</h2>
+          <h2 style="margin-bottom: 16px;">Your Planetka account access key</h2>
           <p><strong>Access:</strong> ${displayPlan}</p>
           <p>${escapeHtml(accessSummary)}</p>
-          <p style="margin: 16px 0;">Paste this key in Blender &rarr; Planetka &rarr; Account:</p>
+          <p style="margin: 16px 0;">Paste this access key in Blender &rarr; Planetka &rarr; Account:</p>
           <pre style="padding:12px;border-radius:8px;background:#111827;color:#e5e7eb;overflow:auto;">${escapeHtml(apiKeyValue)}</pre>
         </div>
       `,
@@ -4001,14 +3880,12 @@ const ADMIN_ROUTE_DEPS = {
   handleAdminSessionLogout: (request, env) => handleAdminSessionLogoutRoute(request, env, ADMIN_SESSION_DEPS),
   handleAdminSessionStart: (request, env) => handleAdminSessionStartRoute(request, env, ADMIN_SESSION_DEPS),
   handleAdminSessionStartPage: (request, env) => handleAdminSessionStartPageRoute(request, env, ADMIN_SESSION_DEPS),
-  handleAdminSetGlobalUnrestrictedQuality: (request, env) => handleAdminSetGlobalUnrestrictedQualityRoute(request, env, ADMIN_USER_DEPS),
   handleAdminUserBlock: (request, env) => handleAdminUserBlockRoute(request, env, ADMIN_USER_DEPS),
   handleAdminUserHardBlock: (request, env) => handleAdminUserHardBlockRoute(request, env, ADMIN_USER_DEPS),
   handleAdminUserReleasePreviewHold: (request, env) => handleAdminUserReleasePreviewHoldRoute(request, env, ADMIN_USER_DEPS),
   handleAdminUserSetPreviewHold: (request, env) => handleAdminUserSetPreviewHoldRoute(request, env, ADMIN_USER_DEPS),
   handleAdminQaAuthReset: (request, env) => handleAdminQaAuthResetRoute(request, env, ADMIN_USER_DEPS),
   handleAdminUserSetPlan: (request, env) => handleAdminUserSetPlanRoute(request, env, ADMIN_USER_DEPS),
-  handleAdminUserSetUnrestrictedQuality: (request, env) => handleAdminUserSetUnrestrictedQualityRoute(request, env, ADMIN_USER_DEPS),
   handleAdminUserUnblock: (request, env) => handleAdminUserUnblockRoute(request, env, ADMIN_USER_DEPS),
 };
 

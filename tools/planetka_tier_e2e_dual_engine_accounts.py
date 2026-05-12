@@ -356,7 +356,7 @@ def main():
                     })
 
                 # Global sample stills at 30 km using the best allowed mode per tier.
-                props.texture_quality_mode = "FULL" if plan == "commercial" else ("BALANCED" if plan == "personal" else "PREVIEW")
+                props.texture_quality_mode = "FULL" if plan == "commercial" else ("PREVIEW" if plan == "personal" else "PREVIEW")
                 sample_quality = str(props.texture_quality_mode).lower()
                 for city in (AUCKLAND, CHRISTCHURCH, WELLINGTON):
                     _set_navigation(

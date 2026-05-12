@@ -89,9 +89,7 @@ def detail_price_factor(tile: TileCode | str | None) -> float:
 
 def normalize_quality_mode(value: str) -> str:
     token = str(value or "").strip().upper()
-    if token in {"HALF", "BALANCED"}:
-        return "BALANCED"
-    if token in {"FULL", "BALANCED", "PREVIEW"}:
+    if token in {"FULL", "PREVIEW"}:
         return token
     return "PREVIEW"
 

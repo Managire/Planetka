@@ -571,7 +571,7 @@ class PlanetkaAnimationWaypoint(bpy.types.PropertyGroup):
 
     city_search: StringProperty(
         name="Place Search",
-        description="Search GeoNames places and apply selected location to this waypoint",
+        description="Search for a city or place and apply it to this waypoint",
         search=_search_city_names,
         get=_get_waypoint_city_search,
         set=_set_waypoint_city_search,
@@ -664,8 +664,7 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         name="Use Lower Texture Quality in Active View",
         default=True,
         description=(
-            "When resolving from Active View, uses one coarser d-level for responsiveness, "
-            "then restores full quality when resolving from Camera View"
+            "Use lighter textures while navigating outside Camera View, then restore full quality in Camera View"
         ),
         update=update_auto_resolve,
     )
@@ -680,28 +679,28 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
     atmosphere_enabled: BoolProperty(
         name="Enable Atmosphere",
         default=False,
-        description="Show or hide the Atmosphere collection (volumetric + EEVEE supplement)",
+        description="Show or hide Planetka atmosphere effects",
         update=update_atmosphere_enabled,
     )
 
     enable_global_clouds: BoolProperty(
         name="Enable Global Clouds",
         default=False,
-        description="Include Global Clouds collection in viewport and render",
+        description="Show or hide global cloud coverage in the viewport and render",
         update=update_enable_global_clouds,
     )
 
     enable_local_clouds: BoolProperty(
         name="Enable Local Clouds",
         default=False,
-        description="Include Local Clouds collection in viewport and render",
+        description="Show or hide local cloud objects in the viewport and render",
         update=update_enable_local_clouds,
     )
 
     enable_vdb_clouds: BoolProperty(
         name="Enable VDB Clouds",
         default=False,
-        description="Include VDB Clouds collection in viewport and render",
+        description="Show or hide VDB cloud objects in the viewport and render",
         update=update_enable_vdb_clouds,
     )
 
@@ -854,7 +853,7 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
 
     nav_city_search: StringProperty(
         name="Place Search",
-        description="Search GeoNames places and apply the selected location to Navigation fields",
+        description="Search for a city or place and move the camera there",
         search=_search_city_names,
         get=_get_nav_city_search,
         set=_set_nav_city_search,
@@ -928,7 +927,7 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
             ("A_TO_B", "A to B", "Interpolate between saved camera views A and B"),
         ),
         default="NONE",
-        description="Cinematic camera movement preset used for preview/make-ready keyframe generation",
+        description="Choose the camera movement used for preview and animation keyframes",
         update=_update_anim_preset_defaults,
     )
 
@@ -1168,12 +1167,12 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
             (
                 "PREVIEW",
                 "Preview",
-                "Uses 1/4 size of Full Quality on each axis (effective 1/16 resolution); fastest download with lowest memory and recalculation cost",
+                "Fast lower-resolution streaming textures for personal preview work",
             ),
-            ("FULL", "Full Quality", "Highest quality texture data"),
+            ("FULL", "Full Quality", "Highest quality texture data. Commercial licence included after purchase"),
         ),
         default="PREVIEW",
-        description="Choose Preview or Full Quality texture mode",
+        description="Choose Preview or Full Quality texture resolving",
         update=update_texture_quality_mode,
     )
 

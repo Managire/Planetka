@@ -115,22 +115,6 @@ async function invalidateAdminAnalyticsSnapshots(env, deps) {
   }
 }
 
-export async function handleAdminSetGlobalUnrestrictedQuality(request, env, deps) {
-  const auth = await deps.requireAnalyticsAdmin(request, env);
-  if (auth.error) {
-    return auth.error;
-  }
-  return deps.json(
-    {
-      ok: false,
-      error: "unrestricted_quality_mode_removed",
-      message: "Per-user unrestricted quality mode has been removed.",
-    },
-    410,
-    env,
-  );
-}
-
 export async function handleAdminUserBlock(request, env, deps) {
   const auth = await deps.requireAnalyticsAdmin(request, env);
   if (auth.error) {
@@ -499,22 +483,6 @@ export async function handleAdminUserSetPlan(request, env, deps) {
       ok: false,
       error: "account_tiers_removed",
       message: "Planetka account tiers are no longer editable. Use Full Quality direct payment.",
-    },
-    410,
-    env,
-  );
-}
-
-export async function handleAdminUserSetUnrestrictedQuality(request, env, deps) {
-  const auth = await deps.requireAnalyticsAdmin(request, env);
-  if (auth.error) {
-    return auth.error;
-  }
-  return deps.json(
-    {
-      ok: false,
-      error: "unrestricted_quality_mode_removed",
-      message: "Per-user unrestricted quality mode has been removed.",
     },
     410,
     env,

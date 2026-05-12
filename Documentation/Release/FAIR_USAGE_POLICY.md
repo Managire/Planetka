@@ -1,28 +1,34 @@
 # Planetka Fair Usage Policy
 
-Planetka provides unlimited access for normal creative use in Blender: exploring locations, scene setup, and rendering images or animations.
+Last updated: 2026-05-12
 
-## Allowed Use
+Planetka is an online texture-streaming and Full Quality data-delivery service. This Fair Usage Policy protects service reliability for all users.
 
-- Interactive scene exploration in Blender.
-- Manual and normal automated rendering workflows in Blender.
-- Reasonable tile downloads required for standard creative work.
+## Normal use
 
-## Prohibited Use
+Normal use includes:
 
-- Source-data farming or systematic tile scraping.
-- Bulk extraction intended to replicate or rebuild Planetka datasets.
-- Automated API traffic designed to bypass normal addon workflows.
-- Any behavior that degrades service quality for other users.
+- exploring Earth with Preview texture streaming inside the Planetka add-on;
+- resolving scenes and animations through supported Planetka workflows;
+- purchasing and downloading licenced Full Quality texture data through supported workflows;
+- revisiting previously licenced Full Quality texture data from the same account;
+- using Planetka for normal creative, educational, freelance, studio, and commercial rendering workflows.
 
-## Enforcement
+## Not allowed
 
-Planetka monitors request patterns for security and service stability. If suspicious behavior is detected, Planetka may:
+You may not:
 
-- temporarily restrict or block hosted-service access,
-- request user verification or support contact,
-- apply additional restrictions, including account blocking, when necessary.
+- scrape, mirror, bulk-download, or reconstruct Planetka-hosted data outside supported paid download workflows;
+- share API keys, account credentials, or paid entitlements outside your authorised licence scope;
+- run automated extraction jobs, crawlers, or scripts intended to copy Planetka data at scale;
+- bypass payment, entitlement, rate-limit, cache, or access-control systems;
+- use Preview texture access as a free commercial texture source;
+- use Planetka-hosted data to create standalone datasets, tile services, AI/ML training data, or competing map/texture products without a separate written licence.
 
-## Monitoring Scope
+## Service controls
 
-Monitoring is focused on operational and security metrics such as request patterns, abuse indicators, and platform health. It is used to protect platform availability and prevent dataset abuse.
+Planetka may apply request limits, download limits, caching rules, abuse detection, account checks, and temporary throttling to protect the service. If a legitimate production workflow needs higher limits, contact Planetka before running it.
+
+## Support
+
+If you believe your account was limited incorrectly, contact Planetka support with your account email, approximate time, workflow description, and any relevant error message.

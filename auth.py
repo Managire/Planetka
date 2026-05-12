@@ -35,15 +35,6 @@ DEFAULT_API_KEY_REQUEST_URL = str(
 ).strip()
 
 
-ACCOUNT_TIER_FREE = "free"
-ACCOUNT_TIER_PERSONAL = "personal"
-ACCOUNT_TIER_COMMERCIAL = "commercial"
-PLAN_CODE_FREE = "free"
-PLAN_CODE_PERSONAL = "personal"
-PLAN_CODE_COMMERCIAL = "commercial"
-PLAN_NAME_FREE = "Free"
-PLAN_NAME_PERSONAL = "Personal"
-PLAN_NAME_COMMERCIAL = "Commercial"
 TIER_INTEGRITY_ERROR_CODE = "tier_integrity_violation"
 TIER_INTEGRITY_STATUS_MESSAGE = (
     "Critical account tier integrity error detected. "
@@ -141,17 +132,17 @@ def describe_auth_error(error):
     lowered = message.lower()
     if TIER_INTEGRITY_ERROR_CODE in lowered:
         return (
-            "Critical account tier integrity error detected. "
-            "Planetka was locked for safety. Reconnect and contact info@planetka.io if it persists."
+            "Planetka could not verify this account safely. "
+            "Reconnect and contact info@planetka.io if the problem persists."
         )
     if "invalid_api_key" in lowered:
-        return "Invalid Planetka API key."
+        return "Invalid Planetka access key."
     if "api_key_expired" in lowered:
-        return "Planetka API key expired. Request a new key."
+        return "Planetka access key expired. Request a new key."
     if "api_key_revoked" in lowered:
-        return "Planetka API key is revoked. Request a new key."
+        return "Planetka access key is no longer valid. Request a new key."
     if "device_limit_exceeded" in lowered:
-        return "This API key is already active on the maximum number of computers."
+        return "This Planetka account is already active on the maximum number of computers."
     if "missing_device_id" in lowered:
         return "Planetka device identity is missing. Restart Blender and try again."
     if "account_blocked" in lowered or "account is blocked" in lowered:
@@ -161,83 +152,14 @@ def describe_auth_error(error):
     if "network_error" in lowered:
         return _CLOUD_CONNECTION_OFFLINE_MESSAGE
     if "missing_stripe_payment_link_url" in lowered:
-        return "Planetka checkout URL is not configured on the API."
+        return "Planetka payment page is not configured. Contact Planetka support."
     if "quality_mode_not_allowed" in lowered or "not_allowed_for_tier" in lowered or "insufficient_data" in lowered:
         return "This Resolve needs Full Quality licensing for the selected tiles."
     if "insufficient_credits" in lowered:
         return "Full Quality requires direct payment."
     if "missing_resolve_id" in lowered:
-        return "Resolve metadata is missing. Retry Resolve and ensure Planetka is up to date."
+        return "Purchase details are missing. Retry Resolve and ensure Planetka is up to date."
     return f"Planetka login failed: {message.replace('_', ' ')}."
-
-
-def _normalize_account_tier(value):
-    plan_code = _normalize_plan_code(value)
-    if plan_code == PLAN_CODE_COMMERCIAL:
-        return ACCOUNT_TIER_COMMERCIAL
-    if plan_code == PLAN_CODE_PERSONAL:
-        return ACCOUNT_TIER_PERSONAL
-    if plan_code == PLAN_CODE_FREE:
-        return ACCOUNT_TIER_FREE
-    tier = str(value or "").strip().lower()
-    if tier in {ACCOUNT_TIER_FREE, ACCOUNT_TIER_PERSONAL, ACCOUNT_TIER_COMMERCIAL}:
-        return tier
-    return ""
-
-
-def _normalize_plan_code(value):
-    token = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
-    if token in {"", "none", "null"}:
-        return ""
-    if token == PLAN_CODE_FREE:
-        return PLAN_CODE_FREE
-    if token == PLAN_CODE_PERSONAL:
-        return PLAN_CODE_PERSONAL
-    if token == PLAN_CODE_COMMERCIAL:
-        return PLAN_CODE_COMMERCIAL
-    return ""
-
-
-def _plan_name_for_code(plan_code):
-    safe = _normalize_plan_code(plan_code)
-    if safe == PLAN_CODE_COMMERCIAL:
-        return PLAN_NAME_COMMERCIAL
-    if safe == PLAN_CODE_FREE:
-        return PLAN_NAME_FREE
-    if safe == PLAN_CODE_PERSONAL:
-        return PLAN_NAME_PERSONAL
-    return ""
-
-
-def _parse_int_or_none(value):
-    text = str(value or "").strip()
-    if not text:
-        return None
-    lowered = text.lower()
-    if lowered in {"none", "null", "unlimited", "inf", "infinite"}:
-        return None
-    try:
-        return int(text)
-    except (TypeError, ValueError):
-        return None
-
-
-def _parse_bool(value):
-    if isinstance(value, bool):
-        return value
-    token = str(value or "").strip().lower()
-    if token in {"1", "true", "yes", "y", "on"}:
-        return True
-    if token in {"0", "false", "no", "n", "off"}:
-        return False
-    return False
-
-
-def _parse_optional_bool(value):
-    text = str(value or "").strip().lower()
-    if text in {"", "none", "null"}:
-        return None
-    return bool(_parse_bool(value))
 
 
 def _first_non_empty(*values):
@@ -246,161 +168,6 @@ def _first_non_empty(*values):
         if text:
             return text
     return ""
-
-
-def _extract_account_tier(payload):
-    if not isinstance(payload, dict):
-        return ""
-    return _normalize_account_tier(payload.get("account_tier"))
-
-
-def _extract_stored_account_tier(payload):
-    if not isinstance(payload, dict):
-        return ""
-    return _normalize_account_tier(
-        _first_non_empty(
-            payload.get("stored_account_tier"),
-            payload.get("storedAccountTier"),
-            payload.get("stored_plan_code"),
-            payload.get("storedPlanCode"),
-        ),
-    )
-
-
-def _extract_plan(payload):
-    if not isinstance(payload, dict):
-        return {"code": "", "name": ""}
-
-    plan_obj = payload.get("plan")
-    if not isinstance(plan_obj, dict):
-        plan_obj = {}
-
-    code = _normalize_plan_code(
-        _first_non_empty(
-            plan_obj.get("code"),
-            payload.get("plan_code"),
-            payload.get("account_tier"),
-        ),
-    )
-    return {
-        "code": code or "",
-        "name": _plan_name_for_code(code) or "",
-    }
-
-
-def _extract_stored_plan(payload):
-    if not isinstance(payload, dict):
-        return {"code": "", "name": ""}
-
-    code = _normalize_plan_code(
-        _first_non_empty(
-            payload.get("stored_plan_code"),
-            payload.get("storedPlanCode"),
-            payload.get("stored_account_tier"),
-            payload.get("storedAccountTier"),
-        ),
-    )
-
-    return {
-        "code": code or "",
-        "name": _plan_name_for_code(code) or "",
-    }
-
-
-def _extract_quality_access_plan(payload):
-    if not isinstance(payload, dict):
-        return ""
-    code = _normalize_plan_code(
-        _first_non_empty(
-            payload.get("quality_access_plan_code"),
-            payload.get("qualityAccessPlanCode"),
-        ),
-    )
-    if code:
-        return code
-    if _extract_unrestricted_quality_access(payload):
-        return PLAN_CODE_COMMERCIAL
-    return _extract_plan(payload)["code"]
-
-
-def _extract_unrestricted_quality_access(payload):
-    if not isinstance(payload, dict):
-        return False
-    for candidate in (
-        payload.get("unrestricted_quality_access"),
-        payload.get("unrestrictedQualityAccess"),
-    ):
-        parsed = _parse_optional_bool(candidate)
-        if parsed is not None:
-            return bool(parsed)
-    return False
-
-
-def _extract_unrestricted_quality_override(payload):
-    if not isinstance(payload, dict):
-        return ""
-    token = str(
-        _first_non_empty(
-            payload.get("unrestricted_quality_override"),
-            payload.get("unrestrictedQualityOverride"),
-        ),
-    ).strip().lower()
-    if token in {"normal", "unrestricted"}:
-        return token
-    return ""
-
-
-def _extract_unrestricted_quality_global(payload):
-    if not isinstance(payload, dict):
-        return False
-    for candidate in (
-        payload.get("unrestricted_quality_global"),
-        payload.get("unrestrictedQualityGlobal"),
-    ):
-        parsed = _parse_optional_bool(candidate)
-        if parsed is not None:
-            return bool(parsed)
-    return False
-
-
-def _derive_commercial_use_allowed(plan_code):
-    safe = _normalize_plan_code(plan_code)
-    return bool(safe == PLAN_CODE_COMMERCIAL)
-
-
-def _extract_commercial_use_allowed(payload, plan=None):
-    if not isinstance(payload, dict):
-        code = plan["code"] if isinstance(plan, dict) else PLAN_CODE_FREE
-        return _derive_commercial_use_allowed(code)
-
-    plan_obj = payload.get("plan")
-    if not isinstance(plan_obj, dict):
-        plan_obj = {}
-    entitlements_obj = payload.get("entitlements")
-    if not isinstance(entitlements_obj, dict):
-        entitlements_obj = {}
-
-    plan_code = ""
-    if isinstance(plan, dict):
-        plan_code = _normalize_plan_code(plan.get("code"))
-    if not plan_code:
-        plan_code = _normalize_plan_code(payload.get("plan_code") or payload.get("account_tier"))
-
-    for candidate in (
-        plan_obj.get("commercial_use_allowed"),
-        payload.get("commercial_use_allowed"),
-        payload.get("license_commercial_use_allowed"),
-        entitlements_obj.get("commercial_use_allowed"),
-    ):
-        parsed = _parse_optional_bool(candidate)
-        if parsed is not None:
-            return bool(parsed)
-
-    if plan_code:
-        return _derive_commercial_use_allowed(plan_code)
-    if isinstance(plan, dict):
-        return _derive_commercial_use_allowed(plan.get("code"))
-    return _derive_commercial_use_allowed(payload.get("plan_code") or payload.get("account_tier"))
 
 
 def get_api_base_url():
@@ -573,10 +340,6 @@ def clear_auth_session(prefs=None, state="logged_out", status_message=""):
     prefs.auth_plan_name = ""
     prefs.auth_stored_plan_code = ""
     prefs.auth_stored_plan_name = ""
-    prefs.auth_quality_access_plan_code = ""
-    prefs.auth_unrestricted_quality_access = ""
-    prefs.auth_unrestricted_quality_override = ""
-    prefs.auth_unrestricted_quality_global = ""
     prefs.auth_contact_url = ""
     prefs.auth_upgrade_url = ""
     prefs.auth_login_state = str(state or "logged_out")
@@ -679,43 +442,11 @@ def get_account_tier(prefs=None):
     return ""
 
 
-def get_stored_account_tier(prefs=None):
-    return get_account_tier(prefs)
-
-
-def is_commercial_account(prefs=None):
-    return get_account_tier(prefs) == ACCOUNT_TIER_COMMERCIAL
-
-
-def is_free_account(prefs=None):
-    return get_account_tier(prefs) == ACCOUNT_TIER_FREE
-
-
-def is_personal_account(prefs=None):
-    return get_account_tier(prefs) == ACCOUNT_TIER_PERSONAL
-
-
-def allows_balanced_full_quality(prefs=None):
-    del prefs
-    return True
-
-
 def _normalize_texture_quality_token(value):
     token = str(value or "").strip().upper()
-    if token in {"HALF", "BALANCED"}:
-        return "PREVIEW"
     if token in {"PREVIEW", "FULL"}:
         return token
     return "PREVIEW"
-
-
-def _is_high_quality_mode(value):
-    return _normalize_texture_quality_token(value) == "FULL"
-
-
-def allows_balanced_for_context(prefs=None, source=None):
-    del prefs, source
-    return False
 
 
 def allows_full_quality_for_context(prefs=None, source=None):
@@ -734,46 +465,12 @@ def allows_animation_render_for_context(prefs=None, source=None, requested_mode=
     return allows_full_quality_for_context(prefs)
 
 
-def requires_d090_cap_for_context(prefs=None, source=None):
-    del prefs, source
-    return False
-
-
-def allows_balanced_full_quality_for_context(prefs=None, source=None, requested_mode="PREVIEW"):
+def allows_texture_quality_for_context(prefs=None, source=None, requested_mode="PREVIEW"):
     del prefs, source
     mode = _normalize_texture_quality_token(requested_mode)
     if mode == "PREVIEW":
         return True
     return mode == "FULL"
-
-
-def get_plan_code(prefs=None):
-    del prefs
-    return ""
-
-
-def get_stored_plan_code(prefs=None):
-    return get_plan_code(prefs)
-
-
-def get_stored_plan_name(prefs=None):
-    del prefs
-    return ""
-
-
-def get_plan_name(prefs=None):
-    del prefs
-    return ""
-
-
-def get_quality_access_plan_code(prefs=None):
-    del prefs
-    return ""
-
-
-def has_unrestricted_quality_access(prefs=None):
-    del prefs
-    return False
 
 
 def get_commercial_use_allowed(prefs=None):
@@ -963,10 +660,6 @@ def _apply_auth_payload(prefs, payload, login_state="authenticated", status_mess
     prefs.auth_plan_name = ""
     prefs.auth_stored_plan_code = ""
     prefs.auth_stored_plan_name = ""
-    prefs.auth_quality_access_plan_code = ""
-    prefs.auth_unrestricted_quality_access = ""
-    prefs.auth_unrestricted_quality_override = ""
-    prefs.auth_unrestricted_quality_global = ""
     prefs.auth_commercial_use_allowed = "1"
     prefs.auth_stored_account_tier = ""
     prefs.auth_account_tier = ""
@@ -998,10 +691,6 @@ def _apply_account_profile_fields(prefs, payload):
     prefs.auth_plan_name = ""
     prefs.auth_stored_plan_code = ""
     prefs.auth_stored_plan_name = ""
-    prefs.auth_quality_access_plan_code = ""
-    prefs.auth_unrestricted_quality_access = ""
-    prefs.auth_unrestricted_quality_override = ""
-    prefs.auth_unrestricted_quality_global = ""
     prefs.auth_commercial_use_allowed = "1"
     prefs.auth_stored_account_tier = ""
     prefs.auth_account_tier = ""

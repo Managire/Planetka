@@ -361,9 +361,9 @@ def main():
             not bool(r2_source.is_remote_source_configured(prefs.texture_base_path)),
             f"Hermetic gate switched to remote texture source unexpectedly: {prefs.texture_base_path}",
         )
-        for mode, expected_ok in (("PREVIEW", True), ("BALANCED", False), ("FULL", False)):
+        for mode, expected_ok in (("PREVIEW", True), ("FULL", False)):
             entry = {
-                "account": "standard",
+                "account": "logged_out_local_fixture",
                 "mode": mode,
                 "expected_ok": bool(expected_ok),
             }

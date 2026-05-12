@@ -84,7 +84,6 @@ export function resolvePlanCode(user, env = {}) {
 export function normalizeQualityMode(value) {
   const safe = String(value || "").trim().toLowerCase();
   if (safe === "full") return "full";
-  if (safe === "balanced") return "balanced";
   return "preview";
 }
 
@@ -99,9 +98,6 @@ export function qualityModeNotAllowedMessage(planCode, qualityMode) {
   const safeMode = normalizeQualityMode(qualityMode);
   if (safeMode === "preview") {
     return "Preview quality is free.";
-  }
-  if (safeMode === "balanced") {
-    return "Only Preview and Full Quality are available.";
   }
   return "Full Quality requires direct payment.";
 }

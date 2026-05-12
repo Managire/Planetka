@@ -163,13 +163,11 @@ class Runner:
             raise E2EError(
                 f"Connected tier mismatch: expected={self.expected_tier} got={tier}"
             )
-        unrestricted = bool(self.auth.has_unrestricted_quality_access(self.prefs))
         self._record_step(
             "connect_account",
             "ok",
             connected_email=connected_email,
             connected_tier=tier,
-            unrestricted_quality=unrestricted,
         )
 
     def _prepare_scene(self):
@@ -575,15 +573,6 @@ class Runner:
                     quality="PREVIEW",
                 ),
             )
-            self._queue_step(
-                "personal_balanced_paris_still",
-                lambda: self._resolve_and_render_still(
-                    label="personal_paris_balanced",
-                    query="Paris",
-                    country_hint="FR",
-                    quality="BALANCED",
-                ),
-            )
             self._queue_step("personal_preview_zoom_3f", lambda: self._run_preview_zoom_check(label="personal", frames=3))
             return
 
@@ -595,15 +584,6 @@ class Runner:
                 query="Chicago",
                 country_hint="US",
                 quality="PREVIEW",
-            ),
-        )
-        self._queue_step(
-            "commercial_balanced_chicago_still",
-            lambda: self._resolve_and_render_still(
-                label="commercial_chicago_balanced",
-                query="Chicago",
-                country_hint="US",
-                quality="BALANCED",
             ),
         )
         self._queue_step(

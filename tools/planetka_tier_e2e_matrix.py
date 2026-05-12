@@ -478,12 +478,12 @@ def main():
                     "enforced_mode": enforced_mode,
                 })
             elif tier == "personal":
-                balanced_result = _attempt_set_quality_and_resolve("BALANCED")
+                preview_result = _attempt_set_quality_and_resolve("PREVIEW")
                 scenario_result["checks"].append({
-                    "name": "personal_milan_balanced_allowed",
-                    "passed": bool(balanced_result["ok"] and "FINISHED" in balanced_result["result"]),
-                    "result": list(balanced_result["result"]),
-                    "error": balanced_result["error"],
+                    "name": "personal_milan_preview_allowed",
+                    "passed": bool(preview_result["ok"] and "FINISHED" in preview_result["result"]),
+                    "result": list(preview_result["result"]),
+                    "error": preview_result["error"],
                 })
                 full_result = _attempt_set_quality_and_resolve("FULL")
                 scenario_result["checks"].append({
@@ -502,7 +502,7 @@ def main():
                 })
 
             # Milan still render for Personal and Commercial, and one for Free as reference
-            milan_quality = "FULL" if tier == "commercial" else ("BALANCED" if tier == "personal" else "PREVIEW")
+            milan_quality = "FULL" if tier == "commercial" else ("PREVIEW" if tier == "personal" else "PREVIEW")
             props.texture_quality_mode = milan_quality
             resolve_result = _resolve_now(state_module=state_module)
             if "FINISHED" not in resolve_result:
@@ -513,7 +513,7 @@ def main():
 
             # Global sample stills at 30 km.
             for city in (AUCKLAND, CHRISTCHURCH, WELLINGTON):
-                props.texture_quality_mode = "FULL" if tier == "commercial" else ("BALANCED" if tier == "personal" else "PREVIEW")
+                props.texture_quality_mode = "FULL" if tier == "commercial" else ("PREVIEW" if tier == "personal" else "PREVIEW")
                 _set_navigation(props, state_module, city["lat"], city["lon"], 30.0, heading_deg=rng.uniform(-20, 20), tilt_deg=50.0, roll_deg=rng.uniform(-5, 5))
                 result = _resolve_now(state_module=state_module)
                 if "FINISHED" not in result:
@@ -524,7 +524,7 @@ def main():
 
             # 30-frame Auckland zoom (2000km -> 30km)
             # Use the best allowed mode per tier.
-            props.texture_quality_mode = "FULL" if tier == "commercial" else ("BALANCED" if tier == "personal" else "PREVIEW")
+            props.texture_quality_mode = "FULL" if tier == "commercial" else ("PREVIEW" if tier == "personal" else "PREVIEW")
 
             anim_dir = os.path.join(render_dir, f"{session_prefix}_{tier}_auckland_zoom")
             frames = _render_zoom_sequence(

@@ -160,7 +160,6 @@ export function createAuthSessionRouteHandlers(deps) {
         stored_plan_code: String(accountState.storedPlanCode || ""),
         stored_account_tier: String(accountState.storedAccountTier || ""),
         quality_access_plan_code: String(accountState.qualityAccessPlanCode || ""),
-        unrestricted_quality_access: Boolean(accountState.unrestrictedQualityAccess),
         auth_method: String(session.auth_method || "").trim(),
         api_key_id: String(session.api_key_id || "").trim(),
         device_id: String(session.device_id || "").trim(),

@@ -245,7 +245,7 @@ def ensure_authenticated(auth_module, prefs, payload_path="", api_key="", api_ke
     return {
         "email": str(auth_module.get_connected_email(prefs) or "").strip(),
         "account_tier": str(auth_module.get_account_tier(prefs) or "").strip(),
-        "plan_code": str(auth_module.get_plan_code(prefs) or "").strip(),
+        "plan_code": str(getattr(prefs, "auth_plan_code", "") or "").strip(),
         "commercial_use_allowed": bool(auth_module.get_commercial_use_allowed(prefs)),
         "auth_bootstrap": bootstrap,
         "device_id": str(getattr(prefs, "auth_device_id", "") or "").strip(),

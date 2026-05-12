@@ -8,13 +8,13 @@ function renderApiKeyRequestPage(env, deps, message = "", requestedPlan = "") {
     : `<p id="status" style="margin-top:14px;color:#cbd5e1;"></p>`;
   void requestedPlan;
   const safePlan = deps.PLAN_CODE_FREE;
-  const subTitle = "Request an API key to connect Blender and access Planetka-hosted data.";
+  const subTitle = "Request account access to connect Blender and access Planetka-hosted data.";
   return deps.html(`<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Planetka API Key Access</title>
+    <title>Planetka Account Access</title>
     <style>
       :root { color-scheme: dark; }
       body { margin:0; min-height:100vh; display:grid; place-items:center; background:linear-gradient(180deg,#07111f 0%, #0b1424 100%); font-family: Inter, system-ui, sans-serif; color:#e5edf7; }
@@ -35,7 +35,7 @@ function renderApiKeyRequestPage(env, deps, message = "", requestedPlan = "") {
   </head>
   <body>
     <main class="card">
-      <h1>Request API Key</h1>
+      <h1>Request Account Access</h1>
       <p>${deps.escapeHtml(subTitle)}</p>
       <form id="form">
         <label for="email">Email</label>
@@ -49,7 +49,7 @@ function renderApiKeyRequestPage(env, deps, message = "", requestedPlan = "") {
           <label for="news">Opt in for quarterly Planetka updates by email. Email addresses are not shared with third parties.</label>
         </div>
         <input id="website" class="hidden" type="text" autocomplete="off" tabindex="-1" />
-        <button id="submit" type="submit">Request API Key</button>
+        <button id="submit" type="submit">Request Account Access</button>
       </form>
       ${messageMarkup}
       <p class="help">Problem connecting? <a href="${contactUrl}" target="_blank" rel="noopener noreferrer">Contact Me</a></p>
@@ -135,7 +135,7 @@ function renderApiKeyActivatedPage(env, deps, data = {}) {
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Planetka API Key Ready</title>
+    <title>Planetka Account Access Ready</title>
     <style>
       :root { color-scheme: dark; }
       body { margin:0; min-height:100vh; display:grid; place-items:center; background:linear-gradient(180deg,#07111f 0%, #0b1424 100%); font-family: Inter, system-ui, sans-serif; color:#e5edf7; }
@@ -150,14 +150,14 @@ function renderApiKeyActivatedPage(env, deps, data = {}) {
   </head>
   <body>
     <main class="card">
-      <h1>API key generated</h1>
+      <h1>Access key generated</h1>
       <p>Email: <strong>${deps.escapeHtml(email || "unknown")}</strong></p>
       <p>Access: <strong>${deps.escapeHtml(planLabel)}</strong></p>
       <p>${deps.escapeHtml(accessSummary)}</p>
       <pre id="apiKey">${deps.escapeHtml(key)}</pre>
-      <button id="copyBtn" type="button">Copy API key</button>
+      <button id="copyBtn" type="button">Copy access key</button>
       <p class="muted" id="copyStatus">Key mask: ${deps.escapeHtml(keyMask)}</p>
-      <p>Paste this key in Blender: Planetka &rarr; Account.</p>
+      <p>Paste this access key in Blender: Planetka &rarr; Account.</p>
       <p>Problem connecting? <a href="${contactUrl}" target="_blank" rel="noopener noreferrer">Contact Me</a></p>
     </main>
     <script>

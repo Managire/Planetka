@@ -415,7 +415,6 @@ export function createAuthApiKeyHandlers(deps) {
         stored_plan_code: String(accountState.storedPlanCode || ""),
         stored_account_tier: String(accountState.storedAccountTier || ""),
         quality_access_plan_code: String(accountState.qualityAccessPlanCode || ""),
-        unrestricted_quality_access: Boolean(accountState.unrestrictedQualityAccess),
         api_key_id: String(record.api_key_id || ""),
         device_id: deviceId,
         auth_method: "api_key",

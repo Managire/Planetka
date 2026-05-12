@@ -27,8 +27,8 @@ _LOGOUT_RECOVERABLE_EXCEPTIONS = (AuthApiError,) + PLANETKA_RECOVERABLE_EXCEPTIO
 
 class PLANETKA_OT_AccountLogin(bpy.types.Operator):
     bl_idname = "planetka.account_login"
-    bl_label = "Request API Key"
-    bl_description = "Open Planetka API key request page (opens browser)"
+    bl_label = "Request Account Access"
+    bl_description = "Open the Planetka account access page in your browser"
 
     def execute(self, context):
         prefs = get_prefs()
@@ -42,7 +42,7 @@ class PLANETKA_OT_AccountLogin(bpy.types.Operator):
 
         verification_url = str(get_api_key_request_url() or "").strip()
         if not verification_url:
-            return fail(self, "Planetka API key request URL is not configured.", logger=logger)
+            return fail(self, "Planetka account access page is not configured. Contact Planetka support.", logger=logger)
 
         opened = False
         try:
@@ -55,24 +55,24 @@ class PLANETKA_OT_AccountLogin(bpy.types.Operator):
             try:
                 opened = bool(webbrowser.open(verification_url))
             except (RuntimeError, TypeError, ValueError, OSError):
-                logger.debug("Planetka: failed opening API key request URL in system browser", exc_info=True)
+                logger.debug("Planetka: failed opening account access URL in system browser", exc_info=True)
                 opened = False
 
         if not opened:
             return fail(
                 self,
-                "Planetka could not open API key request page automatically.",
+                "Planetka could not open the account access page automatically.",
                 logger=logger,
             )
 
-        self.report({'INFO'}, "Request API key in browser, then paste it into Blender.")
+        self.report({'INFO'}, "Request account access in your browser, then paste the access key into Blender.")
         return {'FINISHED'}
 
 
 class PLANETKA_OT_AccountOpenLogin(bpy.types.Operator):
     bl_idname = "planetka.account_open_login"
-    bl_label = "Connect API Key"
-    bl_description = "Connect Planetka using the pasted API key"
+    bl_label = "Connect Account"
+    bl_description = "Connect Planetka using the pasted account access key"
 
     def execute(self, context):
         prefs = get_prefs()
@@ -92,7 +92,7 @@ class PLANETKA_OT_AccountOpenLogin(bpy.types.Operator):
                 prefs.auth_status_message = str(status_text or "")
                 prefs.auth_login_state = "logged_out"
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                logger.debug("Planetka: failed storing API key auth error status", exc_info=True)
+                logger.debug("Planetka: failed storing account access error status", exc_info=True)
             return fail(
                 self,
                 status_text,
@@ -107,21 +107,21 @@ class PLANETKA_OT_AccountOpenLogin(bpy.types.Operator):
         try:
             prefs.auth_status_message = ""
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed clearing API key auth status message", exc_info=True)
+            logger.debug("Planetka: failed clearing account access status message", exc_info=True)
         scene = getattr(context, "scene", None) if context is not None else None
         if scene is not None:
             try:
                 scene[ACCOUNT_PANEL_DEFAULT_COLLAPSED_KEY] = False
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka: failed opening account panel after login", exc_info=True)
-        self.report({'INFO'}, "Planetka API key connected.")
+        self.report({'INFO'}, "Planetka account connected.")
         return {'FINISHED'}
 
 
 class PLANETKA_OT_CheckUpdates(bpy.types.Operator):
     bl_idname = "planetka.check_updates"
     bl_label = "Check for Updates"
-    bl_description = "Check Cloud for newer Planetka addon version"
+    bl_description = "Check for a newer Planetka add-on version"
 
     force: BoolProperty(default=True, options={'HIDDEN', 'SKIP_SAVE'})
 

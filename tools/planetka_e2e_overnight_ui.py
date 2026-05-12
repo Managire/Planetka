@@ -197,9 +197,9 @@ STILL_CASES = (
         "resolution_bias": 0.0,
     },
     {
-        "id": "still_balanced_eevee_singapore",
+        "id": "still_preview_eevee_singapore",
         "engine": "EEVEE",
-        "quality": "BALANCED",
+        "quality": "PREVIEW",
         "query": "Singapore",
         "country_hint": "SG",
         "sunlight_preset": "MID_AFTERNOON",
@@ -661,7 +661,7 @@ class OvernightRunner:
             "sunlight_strength": 17.0,
             "sunlight_seasonal_tilt_deg": 12.0,
             "earth_radius_bu": 3.5,
-            "texture_quality_mode": "BALANCED",
+            "texture_quality_mode": "PREVIEW",
             "auto_resolve": False,
             "show_earth_preview": False,
             "anim_camera_preset": "ZOOM",
@@ -760,7 +760,7 @@ class OvernightRunner:
         if "FINISHED" not in rebuild_result:
             raise E2EError(f"Rebuild Earth failed after object rename tamper: {rebuild_result}")
         drain_queued_resolve(self.state, self.scene, timeout_sec=120.0)
-        resolve_textures(self.state, self.scene, texture_quality_mode="BALANCED")
+        resolve_textures(self.state, self.scene, texture_quality_mode="PREVIEW")
         repaired_health = self._scene_health_summary()
         out_path = self.session_dir / "rogue_object_rename_rebuild.png"
         configure_eevee(self.scene)
@@ -799,7 +799,7 @@ class OvernightRunner:
         if "FINISHED" not in rebuild_result:
             raise E2EError(f"Rebuild Earth failed after surface delete tamper: {rebuild_result}")
         drain_queued_resolve(self.state, self.scene, timeout_sec=120.0)
-        resolve_textures(self.state, self.scene, texture_quality_mode="BALANCED")
+        resolve_textures(self.state, self.scene, texture_quality_mode="PREVIEW")
         repaired_health = self._scene_health_summary()
         out_path = self.session_dir / "rogue_surface_delete_rebuild.png"
         configure_eevee(self.scene)
@@ -834,7 +834,7 @@ class OvernightRunner:
         if "FINISHED" not in rebuild_result:
             raise E2EError(f"Rebuild Earth failed after material delete tamper: {rebuild_result}")
         drain_queued_resolve(self.state, self.scene, timeout_sec=120.0)
-        resolve_textures(self.state, self.scene, texture_quality_mode="BALANCED")
+        resolve_textures(self.state, self.scene, texture_quality_mode="PREVIEW")
         repaired_health = self._scene_health_summary()
         out_path = self.session_dir / "rogue_material_delete_rebuild.png"
         configure_eevee(self.scene)
@@ -874,7 +874,7 @@ class OvernightRunner:
         if "FINISHED" not in rebuild_result:
             raise E2EError(f"Rebuild Earth failed after shader tamper: {rebuild_result}")
         drain_queued_resolve(self.state, self.scene, timeout_sec=120.0)
-        resolve_textures(self.state, self.scene, texture_quality_mode="BALANCED")
+        resolve_textures(self.state, self.scene, texture_quality_mode="PREVIEW")
         repaired_health = self._scene_health_summary()
         out_path = self.session_dir / "rogue_shader_rebuild.png"
         configure_eevee(self.scene)
@@ -1127,7 +1127,7 @@ class OvernightRunner:
             "access_token": access_token,
             "refresh_token": refresh_token,
             "api_key_mask": str(getattr(self.prefs, "auth_api_key_mask", "") or "").strip(),
-            "plan_code": str(self.auth.get_plan_code(self.prefs) or getattr(self.prefs, "auth_plan_code", "") or "").strip(),
+            "plan_code": str(getattr(self.prefs, "auth_plan_code", "") or "").strip(),
             "plan_name": str(getattr(self.prefs, "auth_plan_name", "") or "").strip(),
             "account_tier": str(self.auth.get_account_tier(self.prefs) or getattr(self.prefs, "auth_account_tier", "") or "").strip(),
             "commercial_use_allowed": bool(self.auth.get_commercial_use_allowed(self.prefs)),

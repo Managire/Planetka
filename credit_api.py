@@ -82,12 +82,15 @@ _PRICE_FIELDS = {
     "custom_scene_licence_eur",
     "scene_payable_eur",
     "scene_small_free_threshold_eur",
-    "tile_price_eur",
-    "raw_tile_price_eur",
-    "waived_tile_price_eur",
     "custom_animation_licence_eur",
     "custom_animation_licence_fee_eur",
     "custom_animation_licence_threshold_eur",
+    "animation_tile_price_eur",
+    "animation_payable_eur",
+    "animation_small_free_threshold_eur",
+    "tile_price_eur",
+    "raw_tile_price_eur",
+    "waived_tile_price_eur",
 }
 _CENT = Decimal("0.01")
 _TILE_RE = re.compile(r"x(\d{3})_y(\d{3})_z(\d{3})_d(\d{3})", re.IGNORECASE)
@@ -375,7 +378,7 @@ def build_pricing_payload_for_tiles(tiles, quality_mode="FULL") -> list[dict]:
     return [{"tile_key": key, "quality_mode": mode} for key in _normalize_tile_keys(tiles)]
 
 
-def estimate_credits_for_tiles(tiles, quality_mode="FULL") -> dict:
+def estimate_credits_for_tiles(tiles, quality_mode="FULL", pricing_context="scene") -> dict:
     tile_keys = _normalize_tile_keys(tiles)
     if not tile_keys:
         return {
@@ -394,6 +397,7 @@ def estimate_credits_for_tiles(tiles, quality_mode="FULL") -> dict:
             "/credits/estimate",
             body={
                 "quality_mode": str(quality_mode or "FULL").strip().lower(),
+                "pricing_context": str(pricing_context or "scene").strip().lower(),
                 "tile_keys": tile_keys,
             },
             timeout=20,
@@ -444,6 +448,15 @@ def estimate_credits_for_tiles(tiles, quality_mode="FULL") -> dict:
         "scene_custom_licence_label": str(payload.get("scene_custom_licence_label", "") or ""),
         "scene_custom_licence_applied": bool(payload.get("scene_custom_licence_applied", False)),
         "scene_small_free_threshold_applied": bool(payload.get("scene_small_free_threshold_applied", False)),
+        "custom_animation_licence_eur": _money_round(payload.get("custom_animation_licence_eur", payload.get("custom_scene_licence_eur", 0.0))),
+        "custom_animation_licence_fee_eur": _money_round(payload.get("custom_animation_licence_fee_eur", 0.0)),
+        "custom_animation_licence_threshold_eur": _money_round(payload.get("custom_animation_licence_threshold_eur", payload.get("scene_small_free_threshold_eur", 0.0))),
+        "custom_animation_licence_label": str(payload.get("custom_animation_licence_label", "") or ""),
+        "custom_animation_licence_applied": bool(payload.get("custom_animation_licence_applied", False)),
+        "animation_tile_price_eur": _money_round(payload.get("animation_tile_price_eur", payload.get("scene_tile_price_eur", raw_credits))),
+        "animation_payable_eur": _money_round(payload.get("animation_payable_eur", payload.get("scene_payable_eur", display_credits))),
+        "animation_small_free_threshold_eur": _money_round(payload.get("animation_small_free_threshold_eur", payload.get("scene_small_free_threshold_eur", 0.0))),
+        "animation_small_free_threshold_applied": bool(payload.get("animation_small_free_threshold_applied", False)),
         "paid_tile_count": int(payload_summary.get("paid_tile_count", 0) or 0),
         "free_tile_count": int(payload_summary.get("free_tile_count", 0) or 0),
         "tile_count": int(payload_summary.get("tile_count", len(payload_tiles)) or 0),
@@ -459,7 +472,7 @@ def estimate_credits_for_tiles(tiles, quality_mode="FULL") -> dict:
 
 def estimate_credit_breakdown_for_tiles(tiles, quality_mode="FULL") -> dict:
     mode = str(quality_mode or "FULL").strip().upper()
-    if mode in {"PREVIEW", "BALANCED", "HALF"}:
+    if mode != "FULL":
         normalized_tiles = _normalize_tile_keys(tiles)
         return {
             "credits": 0.0,
@@ -607,6 +620,8 @@ def create_checkout_session(option: str, tiles=None, quality_mode="FULL", region
 def create_animation_checkout_session(segments, quality_mode="FULL") -> dict:
     """Create a Stripe Checkout Session for a dynamic Full Quality animation licence."""
     normalized_segments = []
+    unique_tile_keys = []
+    seen_tile_keys = set()
     for index, segment in enumerate(list(segments or ()), start=1):
         if not isinstance(segment, dict):
             continue
@@ -621,6 +636,11 @@ def create_animation_checkout_session(segments, quality_mode="FULL") -> dict:
         tile_keys = _normalize_tile_keys(raw_tiles)
         if not tile_keys:
             continue
+        for tile_key in tile_keys:
+            if tile_key in seen_tile_keys:
+                continue
+            seen_tile_keys.add(tile_key)
+            unique_tile_keys.append(tile_key)
         try:
             start = int(segment.get("start", segment.get("frame_start", segment.get("frameStart", 0))) or 0)
         except (TypeError, ValueError):
@@ -644,7 +664,10 @@ def create_animation_checkout_session(segments, quality_mode="FULL") -> dict:
     payload = {
         "option": "animation",
         "quality_mode": str(quality_mode or "FULL").strip().lower(),
+        "tile_keys": unique_tile_keys,
         "segments": normalized_segments,
+        "animation_segments": normalized_segments,
+        "segment_count": len(normalized_segments),
     }
     result = _request_json("POST", "/credits/checkout", body=payload, timeout=45)
     if isinstance(result, dict) and result.get("ok", False):

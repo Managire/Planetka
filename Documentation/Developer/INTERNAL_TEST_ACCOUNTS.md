@@ -25,7 +25,7 @@ Do not create ad-hoc temporary test users unless explicitly required for a one-o
 - `free@planetka.io`
   Use for tier gating, disabled-quality checks, and free-tier UX validation.
 - `personal@planetka.io`
-  Use for personal-tier gating, Preview/Balanced access checks, and upgrade-path validation.
+  Use for historical personal-tier gating and upgrade-path validation.
 - `commercial@planetka.io`
   Use for full-quality still renders, final animation renders, stress tests, and backend soak tests.
 
