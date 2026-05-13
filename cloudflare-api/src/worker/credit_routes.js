@@ -25,6 +25,7 @@ const DEFAULT_REGION_PACK_DISCOUNT_MAX_PERCENT = 75;
 const DEFAULT_SCENE_CUSTOM_LICENCE_FEE_EUR = 1.50;
 const DEFAULT_ANIMATION_CUSTOM_LICENCE_FEE_EUR = 4.50;
 const BETA_FULL_WORLD_ACCESS_ENABLED = true;
+const BETA_FULL_WORLD_ACCESS_EXCLUDED_EMAILS = new Set(["tom.griger@gmail.com"]);
 const PRICING_SETTINGS_CACHE_TTL_MS = 30 * 1000;
 const PRICING_SETTINGS_KEYS = {
   coefficient: "full_quality_price_coefficient",
@@ -332,6 +333,7 @@ function invalidateUserPricingCaches(userId) {
 function accountEntitlementVersion(account) {
   return [
     BETA_FULL_WORLD_ACCESS_ENABLED ? "beta_full_world_access" : "",
+    String(account && (account.user_email || account.email) || "").trim().toLowerCase(),
     String((account && account.pricing_version) ?? ""),
     String(account && account.updated_at || ""),
     String(account && account.world_full_quality_unlocked_at || ""),
@@ -1435,7 +1437,13 @@ async function freshCreditAccountForUser(db, userId, deps) {
   }
   return await deps.dbGet(
     db,
-    `SELECT * FROM user_credit_accounts WHERE user_id = ? LIMIT 1`,
+    `
+      SELECT ca.*, u.email AS user_email
+      FROM user_credit_accounts ca
+      LEFT JOIN users u ON u.id = ca.user_id
+      WHERE ca.user_id = ?
+      LIMIT 1
+    `,
     [safeUserId],
   );
 }
@@ -4534,7 +4542,11 @@ function isUnlimitedCreditAccount(account) {
 }
 
 export function isWorldFullQualityUnlocked(account) {
-  if (BETA_FULL_WORLD_ACCESS_ENABLED) {
+  const email = String(account && (account.user_email || account.email) || "").trim().toLowerCase();
+  if (
+    BETA_FULL_WORLD_ACCESS_ENABLED
+    && (!email || !BETA_FULL_WORLD_ACCESS_EXCLUDED_EMAILS.has(email))
+  ) {
     return true;
   }
   return Boolean(String(account && (
@@ -4586,7 +4598,7 @@ async function ensureCreditAccount(db, userId, deps) {
   }
   await deps.ensureCreditTables(db);
   const now = deps.nowIso();
-  let account = await deps.dbGet(db, `SELECT * FROM user_credit_accounts WHERE user_id = ? LIMIT 1`, [safeUserId]);
+  let account = await freshCreditAccountForUser(db, safeUserId, deps);
   if (!account) {
     await deps.dbRun(
       db,
@@ -4598,7 +4610,7 @@ async function ensureCreditAccount(db, userId, deps) {
       `,
       [safeUserId, now, now],
     );
-    account = await deps.dbGet(db, `SELECT * FROM user_credit_accounts WHERE user_id = ? LIMIT 1`, [safeUserId]);
+    account = await freshCreditAccountForUser(db, safeUserId, deps);
   } else if (String(account && account.account_type || "").trim().toLowerCase() !== "standard") {
     await deps.dbRun(
       db,
@@ -4611,7 +4623,7 @@ async function ensureCreditAccount(db, userId, deps) {
       `,
       [now, safeUserId],
     );
-    account = await deps.dbGet(db, `SELECT * FROM user_credit_accounts WHERE user_id = ? LIMIT 1`, [safeUserId]);
+    account = await freshCreditAccountForUser(db, safeUserId, deps);
   }
   cacheCreditAccount(account);
   return cloneCreditAccount(account);
