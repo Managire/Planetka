@@ -1,4 +1,7 @@
 export function createAuthApiKeyHandlers(deps) {
+  const NEWSLETTER_CONSENT_TEXT = "Opt in to receive Planetka updates and offers by email. Email addresses are not shared with third parties.";
+  const NEWSLETTER_CONSENT_VERSION = "2026-05-13-updates-offers";
+
   const strictStoredTier = (value) => {
     const normalized = typeof deps.normalizeTierCodeStrict === "function"
       ? deps.normalizeTierCodeStrict(value)
@@ -149,7 +152,10 @@ export function createAuthApiKeyHandlers(deps) {
       env,
     );
     if (optInNews) {
-      await deps.recordNewsletterOptIn(db, email, "api_key_request");
+      await deps.recordNewsletterOptIn(db, email, "api_key_request", {
+        consentText: NEWSLETTER_CONSENT_TEXT,
+        consentVersion: NEWSLETTER_CONSENT_VERSION,
+      });
     }
 
     const token = deps.randomToken(36);

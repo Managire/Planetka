@@ -1,6 +1,6 @@
 # Planetka Terms of Service
 
-Last updated: 2026-05-12
+Last updated: 2026-05-13
 
 These Terms govern your use of the Planetka Blender add-on when it connects to Planetka-hosted services, including account access, streamed texture delivery, Full Quality purchases, data-pack purchases, downloads, and related web pages.
 
@@ -14,10 +14,12 @@ If you use Planetka for a company, studio, institution, client, or other organis
 
 ## 2. Product model
 
+Planetka account access is provided at no charge. An account identifies the user, stores account access, legal consent, usage records, purchase history, and Full Quality texture entitlements. Planetka does not sell separate public account tiers. Charges apply to Full Quality texture licences, not to having an account.
+
 Planetka provides two public texture-quality modes:
 
-- **Preview**: free streamed/cached texture data for personal, non-commercial use inside Planetka.
-- **Full Quality**: paid texture data for still scenes, animation resolves, and predefined data packs. A commercial texture licence is included for Full Quality texture data that has been licenced to your account.
+- Preview: free streamed/cached texture data for personal, non-commercial use inside Planetka. Preview access is subject to Preview fair-usage and anti-abuse controls.
+- Full Quality: paid texture data for still scenes, animation resolves, and predefined data packs. A commercial texture licence is included for Full Quality texture data that has been licenced to your account. Licenced Full Quality texture data is not subject to Preview fair-usage volume limits.
 
 Only the products, prices, and rights shown in the current Planetka user interface, web pages, checkout pages, receipts, or written agreements apply. Older drafts, internal notes, test labels, or unreleased product names do not grant rights.
 
@@ -26,6 +28,8 @@ Only the products, prices, and rights shown in the current Planetka user interfa
 Preview texture access is intended to let users explore Planetka and create personal, non-commercial work inside the add-on.
 
 Preview textures are streamed and may be held in a temporary local cache. The cache is not a supported download product, archive product, or reusable texture dataset. You may not use Preview textures for commercial production, paid client work, resale, redistribution, dataset extraction, training datasets, or any workflow outside the intended Planetka preview workflow.
+
+Planetka may monitor and limit Preview texture access to protect the service and prevent automated extraction, excessive use, scraping, or other misuse. These Preview fair-usage controls do not reduce the rights attached to Full Quality texture data that has already been licenced to your account.
 
 ## 4. Full Quality texture licences
 
@@ -93,11 +97,13 @@ You may not:
 
 You are responsible for keeping your account, API key, and local installation secure. Planetka may suspend or restrict access if it detects abuse, unauthorised sharing, payment problems, security risk, excessive automated requests, or violation of these Terms.
 
-Planetka may apply reasonable request limits, download limits, cache rules, device checks, or fair-use controls to protect service reliability.
+Planetka may apply reasonable request limits, cache rules, device checks, Preview fair-usage controls, and anti-abuse controls to protect service reliability. Paid/licenced Full Quality texture data is not subject to Preview fair-usage volume limits, but Full Quality access may still be restricted where necessary for fraud prevention, payment disputes, security incidents, account sharing, technical abuse, or breach of these Terms.
 
 ## 11. Service availability and changes
 
 Planetka depends on hosted infrastructure, storage, payment processors, third-party data sources, Blender compatibility, and network availability. Planetka will make commercially reasonable efforts to keep the service reliable, but service may be unavailable, interrupted, delayed, or changed.
+
+Preview texture streaming may be changed, limited, paused, or discontinued. This does not change the account model and does not create any minimum hosting, uptime, support, or availability guarantee. Full Quality texture licence rights apply to the Full Quality texture data licenced to your account, subject to these Terms and the supported access/download workflows available at the time.
 
 Planetka may update features, pricing, discounts, thresholds, data packs, tile catalogues, UI wording, supported Blender versions, and service limits over time. Completed purchases remain governed by the rights granted at the time of purchase, subject to these Terms.
 

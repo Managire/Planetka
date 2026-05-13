@@ -1,6 +1,6 @@
 # Planetka Privacy Policy
 
-Last updated: 2026-05-12
+Last updated: 2026-05-13
 
 This Privacy Policy explains what information Planetka collects and uses when you access Planetka-hosted services from the Blender add-on, Planetka web pages, checkout pages, or related account workflows.
 
@@ -22,7 +22,7 @@ Planetka does not intentionally collect your Blender project files, scene conten
 
 Payments are processed by Stripe or another payment provider shown during checkout. Planetka does not store your full card number or full payment-card details.
 
-Stripe may collect payment details, billing details, tax details, fraud-prevention information, and other payment information under Stripe's own terms and privacy policy. Planetka stores only the payment status and metadata needed to connect the payment to your Planetka account and entitlements.
+When you choose to make a payment, payment details are entered directly into the payment provider's checkout flow and are handled under that provider's own terms and privacy policy. Planetka stores only the payment status and metadata needed to connect the payment to your Planetka account and entitlements.
 
 ## 3. How Planetka uses information
 
@@ -39,11 +39,11 @@ Planetka uses collected information to:
 - provide customer support, invoice support, and account troubleshooting;
 - comply with legal, tax, accounting, security, and operational obligations.
 
-## 4. Sharing and processors
+## 4. No data sharing
 
-Planetka may share information with service providers that are necessary to operate the product, including hosting, storage, database, analytics, email, payment, security, and support providers. These providers process information for Planetka or for payment/legal purposes.
+Planetka does not sell, rent, trade, disclose, or share account, usage, purchase, entitlement, telemetry, or support data with third parties. Planetka does not provide user email addresses or usage data to third parties for marketing, advertising, profiling, analytics, or independent use.
 
-Planetka does not sell personal information as a standalone product.
+Data stays in Planetka-controlled systems and is used only to operate Planetka, provide account access, deliver texture data, record purchases and entitlements, provide support, secure the service, and maintain required operational records.
 
 ## 5. Retention
 
@@ -59,13 +59,13 @@ Planetka uses reasonable technical and organisational measures to protect accoun
 
 You may contact Planetka to request access, correction, export, or deletion of personal information where applicable by law. Some information, such as purchase history, entitlement records, payment metadata, and legal/accounting records, may need to be retained even if other account information is deleted.
 
-## 8. International processing
+## 8. Data location and processing
 
-Planetka services and providers may process information in countries other than your country of residence. By using Planetka, you understand that information may be processed where Planetka or its service providers operate.
+Planetka data is kept in Planetka-controlled systems. Some hosted infrastructure may physically operate in data centres outside your country of residence, but Planetka does not share your account, usage, purchase, entitlement, telemetry, or support data with third parties for their own use.
 
 ## 9. Changes
 
-Planetka may update this Privacy Policy as the product, payment model, legal requirements, or service providers change. The updated policy will show a new last-updated date.
+Planetka may update this Privacy Policy as the product, payment model, legal requirements, or service infrastructure changes. The updated policy will show a new last-updated date.
 
 ## 10. Contact
 

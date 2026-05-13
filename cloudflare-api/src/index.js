@@ -214,8 +214,9 @@ const MAX_ANALYTICS_WINDOW_MINUTES = 10080;
 const DEFAULT_LIVE_TILE_MAP_WINDOW_MINUTES = 1;
 const ALLOWED_LIVE_TILE_MAP_WINDOW_MINUTES = new Set([1, 3, 10]);
 const DEFAULT_AUTH_REFRESH_HEALTH_WINDOW_SECONDS = 7 * 86400;
-const DEFAULT_ANALYTICS_EXCLUDED_EMAIL_PATTERNS = "stressfree%";
-const DEFAULT_ANALYTICS_REVENUE_EXCLUDED_EMAIL_PATTERNS = "tom.griger@gmail.com,info@planetka.io,free@planetka.io,personal@planetka.io,commercial@planetka.io,credits@planetka.io";
+const INTERNAL_TEST_ANALYTICS_EMAIL_PATTERNS = "%@planetka.io,tom.griger@gmail.com,tom.griger@yahoo.com";
+const DEFAULT_ANALYTICS_EXCLUDED_EMAIL_PATTERNS = `stressfree%,${INTERNAL_TEST_ANALYTICS_EMAIL_PATTERNS}`;
+const DEFAULT_ANALYTICS_REVENUE_EXCLUDED_EMAIL_PATTERNS = INTERNAL_TEST_ANALYTICS_EMAIL_PATTERNS;
 const DEFAULT_ANALYTICS_ADMIN_EMAILS = "info@planetka.io,tom.griger@gmail.com";
 const DEFAULT_ADMIN_LOGIN_EMAIL = "tom.griger@gmail.com";
 const DEFAULT_TILE_EVENT_RETENTION_DAYS = 30;
@@ -267,6 +268,7 @@ const ANALYTICS_QUERY_DEPS = {
   DEFAULT_R2_ESTIMATED_STORAGE_GB,
   DEFAULT_R2_STORAGE_FREE_GB_MONTH,
   DEFAULT_R2_STORAGE_PRICE_PER_GB_MONTH_USD,
+  INTERNAL_TEST_ANALYTICS_EMAIL_PATTERNS,
   MAX_ANALYTICS_WINDOW_MINUTES,
   PLAN_CODE_PERSONAL,
   PLAN_CODE_FREE,
@@ -2463,11 +2465,33 @@ async function ensureNewsletterContactsTable(db) {
         id TEXT PRIMARY KEY,
         email TEXT NOT NULL UNIQUE,
         source TEXT NOT NULL DEFAULT 'unknown',
+        consent_text TEXT,
+        consent_version TEXT,
         opted_in_at TEXT NOT NULL,
         last_opt_in_at TEXT NOT NULL
       )
     `,
   );
+  const newsletterPragma = await db.prepare(`PRAGMA table_info(newsletter_contacts)`).all();
+  const newsletterRows = Array.isArray(newsletterPragma && newsletterPragma.results)
+    ? newsletterPragma.results
+    : [];
+  const newsletterColumns = new Set(
+    newsletterRows.map((row) => String(row && row.name || "").trim().toLowerCase()),
+  );
+  for (const statement of [
+    !newsletterColumns.has("consent_text") ? `ALTER TABLE newsletter_contacts ADD COLUMN consent_text TEXT` : "",
+    !newsletterColumns.has("consent_version") ? `ALTER TABLE newsletter_contacts ADD COLUMN consent_version TEXT` : "",
+  ].filter(Boolean)) {
+    try {
+      await dbRun(db, statement);
+    } catch (error) {
+      const message = String(error && error.message || "").toLowerCase();
+      if (!message.includes("duplicate column")) {
+        throw error;
+      }
+    }
+  }
   await dbRun(
     db,
     `CREATE INDEX IF NOT EXISTS idx_newsletter_contacts_last_opt_in ON newsletter_contacts(last_opt_in_at DESC)`,
@@ -2538,13 +2562,15 @@ async function ensureStripeWebhookEventsTable(db) {
   stripeWebhookEventsTableReady = true;
 }
 
-async function recordNewsletterOptIn(db, email, source = "unknown") {
+async function recordNewsletterOptIn(db, email, source = "unknown", options = {}) {
   const normalizedEmail = normalizeEmail(email);
   if (!normalizedEmail || !normalizedEmail.includes("@")) {
     return;
   }
   await ensureNewsletterContactsTable(db);
   const now = nowIso();
+  const consentText = String(options && options.consentText || "").trim();
+  const consentVersion = String(options && options.consentVersion || "").trim();
   await dbRun(
     db,
     `
@@ -2552,14 +2578,26 @@ async function recordNewsletterOptIn(db, email, source = "unknown") {
         id,
         email,
         source,
+        consent_text,
+        consent_version,
         opted_in_at,
         last_opt_in_at
-      ) VALUES (?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(email) DO UPDATE SET
         source = excluded.source,
+        consent_text = excluded.consent_text,
+        consent_version = excluded.consent_version,
         last_opt_in_at = excluded.last_opt_in_at
     `,
-    [crypto.randomUUID(), normalizedEmail, String(source || "unknown"), now, now],
+    [
+      crypto.randomUUID(),
+      normalizedEmail,
+      String(source || "unknown"),
+      consentText || null,
+      consentVersion || null,
+      now,
+      now,
+    ],
   );
 }
 

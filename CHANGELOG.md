@@ -2,6 +2,17 @@
 
 All notable public changes to Planetka are documented in this file.
 
+## [v0.7.2] - 2026-05-13
+
+### Changed
+- Simplified beta wording in the Licenced Data account section.
+- Moved Log Out directly below the account connection controls.
+- Removed zero-price labels from the Final Animation Render button and animation price summaries.
+- Removed nonessential "New Full Quality Tiles" labels from animation render UI.
+
+### Fixed
+- Final Animation Render now removes its temporary Full Quality cache files after a successful render so large animation downloads do not remain idle on disk.
+
 ## [v0.7.1] - 2026-05-13
 
 ### Changed

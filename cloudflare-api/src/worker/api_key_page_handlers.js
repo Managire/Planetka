@@ -46,7 +46,7 @@ function renderApiKeyRequestPage(env, deps, message = "", requestedPlan = "") {
         </div>
         <div class="checkbox">
           <input id="news" type="checkbox" />
-          <label for="news">Opt in for quarterly Planetka updates by email. Email addresses are not shared with third parties.</label>
+          <label for="news">Opt in to receive Planetka updates and offers by email. Email addresses are not shared with third parties.</label>
         </div>
         <input id="website" class="hidden" type="text" autocomplete="off" tabindex="-1" />
         <button id="submit" type="submit">Request Account Access</button>

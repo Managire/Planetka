@@ -23,7 +23,7 @@ const PUBLIC_COEFFICIENT_TO_LEGACY_GROSS_MULTIPLIER = EQUATOR_Z001_AREA_KM2 / 10
 const DEFAULT_REGION_PACK_DISCOUNT_MIN_PERCENT = 0;
 const DEFAULT_REGION_PACK_DISCOUNT_MAX_PERCENT = 75;
 const DEFAULT_SCENE_CUSTOM_LICENCE_FEE_EUR = 1.50;
-const DEFAULT_ANIMATION_CUSTOM_LICENCE_FEE_EUR = 4.50;
+const DEFAULT_ANIMATION_CUSTOM_LICENCE_MAX_FEE_EUR = 9.00;
 const BETA_FULL_WORLD_ACCESS_ENABLED = true;
 const BETA_FULL_WORLD_ACCESS_EXCLUDED_EMAILS = new Set(["tom.griger@gmail.com"]);
 const PRICING_SETTINGS_CACHE_TTL_MS = 30 * 1000;
@@ -33,7 +33,8 @@ const PRICING_SETTINGS_KEYS = {
   maxDiscount: "region_pack_discount_max_percent",
   discountShareBuckets: "region_pack_discount_share_buckets_json",
   sceneCustomLicenceFee: "custom_scene_licence_fee_eur",
-  animationCustomLicenceFee: "custom_animation_licence_fee_eur",
+  animationCustomLicenceMaxFee: "custom_animation_licence_max_fee_eur",
+  legacyAnimationCustomLicenceFee: "custom_animation_licence_fee_eur",
   productDiscountPrefix: "region_pack_discount_override:",
 };
 const DEFAULT_REGION_PACK_DISCOUNT_SHARE_BUCKETS = [
@@ -655,9 +656,9 @@ function defaultRuntimePricingSettings(env = {}) {
     DEFAULT_SCENE_CUSTOM_LICENCE_FEE_EUR,
     { min: 0, max: 1000 },
   ));
-  const animationCustomLicenceFee = normalizeCreditAmount(parsePricingNumber(
-    env && env.CUSTOM_ANIMATION_LICENCE_FEE_EUR,
-    DEFAULT_ANIMATION_CUSTOM_LICENCE_FEE_EUR,
+  const animationCustomLicenceMaxFee = normalizeCreditAmount(parsePricingNumber(
+    env && (env.CUSTOM_ANIMATION_LICENCE_MAX_FEE_EUR ?? env.CUSTOM_ANIMATION_LICENCE_FEE_EUR),
+    DEFAULT_ANIMATION_CUSTOM_LICENCE_MAX_FEE_EUR,
     { min: 0, max: 1000 },
   ));
   return {
@@ -667,7 +668,7 @@ function defaultRuntimePricingSettings(env = {}) {
     region_pack_discount_share_buckets: normalizeDiscountShareBuckets(DEFAULT_REGION_PACK_DISCOUNT_SHARE_BUCKETS),
     region_pack_discount_share_buckets_signature: discountShareBucketsSignature(DEFAULT_REGION_PACK_DISCOUNT_SHARE_BUCKETS),
     custom_scene_licence_fee_eur: sceneCustomLicenceFee,
-    custom_animation_licence_fee_eur: animationCustomLicenceFee,
+    custom_animation_licence_max_fee_eur: animationCustomLicenceMaxFee,
     product_discount_overrides: {},
     product_discount_overrides_signature: "",
   };
@@ -740,9 +741,9 @@ function normalizeRuntimePricingSettings(raw, env = {}) {
     fallback.custom_scene_licence_fee_eur,
     { min: 0, max: 1000 },
   ));
-  const animationCustomLicenceFee = normalizeCreditAmount(parsePricingNumber(
-    raw && raw.custom_animation_licence_fee_eur,
-    fallback.custom_animation_licence_fee_eur,
+  const animationCustomLicenceMaxFee = normalizeCreditAmount(parsePricingNumber(
+    raw && (raw.custom_animation_licence_max_fee_eur ?? raw.custom_animation_licence_fee_eur),
+    fallback.custom_animation_licence_max_fee_eur,
     { min: 0, max: 1000 },
   ));
   const productDiscountOverrides = normalizeProductDiscountOverrides(raw && raw.product_discount_overrides);
@@ -753,7 +754,7 @@ function normalizeRuntimePricingSettings(raw, env = {}) {
     region_pack_discount_share_buckets: discountShareBuckets,
     region_pack_discount_share_buckets_signature: discountShareBucketsSignature(discountShareBuckets),
     custom_scene_licence_fee_eur: sceneCustomLicenceFee,
-    custom_animation_licence_fee_eur: animationCustomLicenceFee,
+    custom_animation_licence_max_fee_eur: animationCustomLicenceMaxFee,
     product_discount_overrides: productDiscountOverrides,
     product_discount_overrides_signature: productDiscountOverridesSignature(productDiscountOverrides),
   };
@@ -771,7 +772,7 @@ function pricingSettingsCacheKey() {
     Number(settings.region_pack_discount_max_percent || 0),
     String(settings.region_pack_discount_share_buckets_signature || ""),
     Number(settings.custom_scene_licence_fee_eur || 0).toFixed(2),
-    Number(settings.custom_animation_licence_fee_eur || 0).toFixed(2),
+    Number(settings.custom_animation_licence_max_fee_eur || 0).toFixed(2),
     String(settings.product_discount_overrides_signature || ""),
   ].join("|");
 }
@@ -821,14 +822,15 @@ export async function getRuntimePricingSettings(env = {}, deps = {}, options = {
     await ensurePricingSettingsTable(db, deps);
     const rows = await deps.dbAll(
       db,
-      `SELECT key, value FROM app_settings WHERE key IN (?, ?, ?, ?, ?, ?) OR key LIKE ?`,
+      `SELECT key, value FROM app_settings WHERE key IN (?, ?, ?, ?, ?, ?, ?) OR key LIKE ?`,
       [
         PRICING_SETTINGS_KEYS.coefficient,
         PRICING_SETTINGS_KEYS.minDiscount,
         PRICING_SETTINGS_KEYS.maxDiscount,
         PRICING_SETTINGS_KEYS.discountShareBuckets,
         PRICING_SETTINGS_KEYS.sceneCustomLicenceFee,
-        PRICING_SETTINGS_KEYS.animationCustomLicenceFee,
+        PRICING_SETTINGS_KEYS.animationCustomLicenceMaxFee,
+        PRICING_SETTINGS_KEYS.legacyAnimationCustomLicenceFee,
         `${PRICING_SETTINGS_KEYS.productDiscountPrefix}%`,
       ],
     );
@@ -841,7 +843,7 @@ export async function getRuntimePricingSettings(env = {}, deps = {}, options = {
       if (key === PRICING_SETTINGS_KEYS.maxDiscount) raw.region_pack_discount_max_percent = row.value;
       if (key === PRICING_SETTINGS_KEYS.discountShareBuckets) raw.region_pack_discount_share_buckets_json = row.value;
       if (key === PRICING_SETTINGS_KEYS.sceneCustomLicenceFee) raw.custom_scene_licence_fee_eur = row.value;
-      if (key === PRICING_SETTINGS_KEYS.animationCustomLicenceFee) raw.custom_animation_licence_fee_eur = row.value;
+      if (key === PRICING_SETTINGS_KEYS.animationCustomLicenceMaxFee) raw.custom_animation_licence_max_fee_eur = row.value;
       if (key.startsWith(PRICING_SETTINGS_KEYS.productDiscountPrefix)) {
         const productId = normalizeRegionProductId(key.slice(PRICING_SETTINGS_KEYS.productDiscountPrefix.length));
         if (productId) {
@@ -894,7 +896,7 @@ export async function setRuntimePricingSettings(db, values = {}, adminUserId = "
     [PRICING_SETTINGS_KEYS.maxDiscount, String(settings.region_pack_discount_max_percent)],
     [PRICING_SETTINGS_KEYS.discountShareBuckets, discountShareBucketsStorageValue(settings.region_pack_discount_share_buckets)],
     [PRICING_SETTINGS_KEYS.sceneCustomLicenceFee, String(settings.custom_scene_licence_fee_eur)],
-    [PRICING_SETTINGS_KEYS.animationCustomLicenceFee, String(settings.custom_animation_licence_fee_eur)],
+    [PRICING_SETTINGS_KEYS.animationCustomLicenceMaxFee, String(settings.custom_animation_licence_max_fee_eur)],
   ];
   for (const [key, value] of pairs) {
     await deps.dbRun(
@@ -908,6 +910,7 @@ export async function setRuntimePricingSettings(db, values = {}, adminUserId = "
       [key, value, updatedAt, adminId],
     );
   }
+  await deps.dbRun(db, `DELETE FROM app_settings WHERE key = ?`, [PRICING_SETTINGS_KEYS.legacyAnimationCustomLicenceFee]);
   const overrideRows = await deps.dbAll(
     db,
     `SELECT key, value FROM app_settings WHERE key LIKE ?`,
@@ -1064,8 +1067,12 @@ function customSceneLicenceCents() {
   return centsForEur(activePricingSettings().custom_scene_licence_fee_eur);
 }
 
-function customAnimationLicenceCents() {
-  return centsForEur(activePricingSettings().custom_animation_licence_fee_eur);
+function customAnimationLicencePerResolveCents() {
+  return customSceneLicenceCents();
+}
+
+function customAnimationLicenceMaxCents() {
+  return centsForEur(activePricingSettings().custom_animation_licence_max_fee_eur);
 }
 
 function checkoutMetadataCents(metadata, key, fallbackCents) {
@@ -5047,9 +5054,104 @@ function uniqueAnimationTileKeys(segments) {
   return keys;
 }
 
-function animationEstimateWithScenePolicy(estimate) {
-  const animationFeeCents = customAnimationLicenceCents();
-  const policy = paymentPolicyForEstimate(estimate, animationFeeCents, ANIMATION_CUSTOM_LICENCE_LABEL);
+function animationEstimateRecordCentsByKey(estimate) {
+  const records = new Map();
+  for (const source of [estimate && estimate.tiles, estimate && estimate.new_tiles]) {
+    for (const row of Array.isArray(source) ? source : []) {
+      const tileKey = normalizeTileKey(row && row.tile_key || "");
+      if (!tileKey) {
+        continue;
+      }
+      records.set(tileKey, centsForEur(row && (row.credits ?? row.price_eur)));
+    }
+  }
+  return records;
+}
+
+function animationSegmentLicencePolicy(estimate, segments = []) {
+  const records = animationEstimateRecordCentsByKey(estimate);
+  const normalizedSegments = normalizeAnimationSegments(segments);
+  const fallbackTileKeys = normalizeTileKeys(
+    (estimate && estimate.new_tiles || []).map((row) => row && row.tile_key || ""),
+  );
+  const effectiveSegments = normalizedSegments.length
+    ? normalizedSegments
+    : (fallbackTileKeys.length ? [{ index: 1, start: 0, end: 0, tile_keys: fallbackTileKeys }] : []);
+  const perResolveCents = customAnimationLicencePerResolveCents();
+  const maxCents = customAnimationLicenceMaxCents();
+  const thresholdCents = SCENE_SMALL_FREE_THRESHOLD_CENTS;
+  const chargedSeen = new Set();
+  const breakdown = [];
+  let totalLicenceCents = 0;
+  let chargeableSegments = 0;
+
+  for (const segment of effectiveSegments) {
+    let segmentTileCents = 0;
+    let newTileCount = 0;
+    for (const tileKey of normalizeTileKeys(segment && segment.tile_keys || [])) {
+      const tileCents = Math.max(0, Number.parseInt(records.get(tileKey) || 0, 10) || 0);
+      if (tileCents <= 0 || chargedSeen.has(tileKey)) {
+        continue;
+      }
+      chargedSeen.add(tileKey);
+      segmentTileCents += tileCents;
+      newTileCount += 1;
+    }
+    const chargeable = segmentTileCents > thresholdCents && perResolveCents > 0 && totalLicenceCents < maxCents;
+    const licenceCents = chargeable
+      ? Math.min(perResolveCents, Math.max(0, maxCents - totalLicenceCents))
+      : 0;
+    if (licenceCents > 0) {
+      chargeableSegments += 1;
+      totalLicenceCents += licenceCents;
+    }
+    breakdown.push({
+      index: Math.max(1, Number.parseInt(segment && segment.index || breakdown.length + 1, 10) || breakdown.length + 1),
+      start: Math.max(0, Number.parseInt(segment && segment.start || 0, 10) || 0),
+      end: Math.max(0, Number.parseInt(segment && segment.end || segment && segment.start || 0, 10) || 0),
+      tile_price_cents: segmentTileCents,
+      tile_price_eur: normalizeCreditAmount(segmentTileCents / 100),
+      custom_animation_licence_cents: licenceCents,
+      custom_animation_licence_eur: normalizeCreditAmount(licenceCents / 100),
+      custom_animation_licence_applied: licenceCents > 0,
+      new_tile_count: newTileCount,
+    });
+  }
+
+  return {
+    custom_animation_licence_cents: totalLicenceCents,
+    custom_animation_licence_eur: normalizeCreditAmount(totalLicenceCents / 100),
+    custom_animation_licence_segments: chargeableSegments,
+    custom_animation_licence_per_resolve_cents: perResolveCents,
+    custom_animation_licence_per_resolve_eur: normalizeCreditAmount(perResolveCents / 100),
+    custom_animation_licence_max_cents: maxCents,
+    custom_animation_licence_max_eur: normalizeCreditAmount(maxCents / 100),
+    custom_animation_licence_threshold_cents: thresholdCents,
+    custom_animation_licence_threshold_eur: normalizeCreditAmount(thresholdCents / 100),
+    animation_segment_breakdown: breakdown,
+  };
+}
+
+function animationEstimateWithScenePolicy(estimate, segments = []) {
+  const animationPolicy = animationSegmentLicencePolicy(estimate, segments);
+  const tileCents = centsForEur(estimate && (estimate.credits ?? estimate.price_eur));
+  const smallFreeApplied = tileCents > 0 && tileCents < SCENE_SMALL_FREE_THRESHOLD_CENTS;
+  const payableCents = smallFreeApplied
+    ? 0
+    : tileCents + Math.max(0, Number.parseInt(animationPolicy.custom_animation_licence_cents || 0, 10) || 0);
+  const policy = {
+    scene_tile_price_cents: tileCents,
+    scene_tile_price_eur: normalizeCreditAmount(tileCents / 100),
+    custom_scene_licence_cents: smallFreeApplied ? 0 : animationPolicy.custom_animation_licence_cents,
+    custom_scene_licence_eur: smallFreeApplied ? 0 : animationPolicy.custom_animation_licence_eur,
+    scene_custom_licence_label: ANIMATION_CUSTOM_LICENCE_LABEL,
+    scene_custom_licence_applied: !smallFreeApplied && animationPolicy.custom_animation_licence_cents > 0,
+    scene_small_free_threshold_cents: SCENE_SMALL_FREE_THRESHOLD_CENTS,
+    scene_small_free_threshold_eur: normalizeCreditAmount(SCENE_SMALL_FREE_THRESHOLD_CENTS / 100),
+    scene_small_free_threshold_applied: smallFreeApplied,
+    scene_payable_cents: payableCents,
+    scene_payable_eur: normalizeCreditAmount(payableCents / 100),
+  };
   const rawCredits = normalizeCreditAmount(estimate && (estimate.credits ?? estimate.price_eur));
   const publicEstimate = {
     ...estimate,
@@ -5061,11 +5163,16 @@ function animationEstimateWithScenePolicy(estimate) {
   };
   return {
     ...publicEstimate,
-    custom_animation_licence_eur: publicEstimate.custom_scene_licence_eur,
+    custom_animation_licence_eur: publicEstimate.scene_small_free_threshold_applied ? 0 : animationPolicy.custom_animation_licence_eur,
     custom_animation_licence_label: ANIMATION_CUSTOM_LICENCE_LABEL,
     custom_animation_licence_applied: publicEstimate.scene_custom_licence_applied,
-    custom_animation_licence_fee_eur: normalizeCreditAmount(animationFeeCents / 100),
+    custom_animation_licence_segments: publicEstimate.scene_small_free_threshold_applied ? 0 : animationPolicy.custom_animation_licence_segments,
+    custom_animation_licence_fee_eur: animationPolicy.custom_animation_licence_per_resolve_eur,
+    custom_animation_licence_per_resolve_eur: animationPolicy.custom_animation_licence_per_resolve_eur,
+    custom_animation_licence_max_fee_eur: animationPolicy.custom_animation_licence_max_eur,
+    custom_animation_licence_max_eur: animationPolicy.custom_animation_licence_max_eur,
     custom_animation_licence_threshold_eur: publicEstimate.scene_small_free_threshold_eur,
+    animation_segment_breakdown: animationPolicy.animation_segment_breakdown,
     animation_tile_price_eur: publicEstimate.scene_tile_price_eur,
     animation_payable_eur: publicEstimate.scene_payable_eur,
     animation_small_free_threshold_eur: publicEstimate.scene_small_free_threshold_eur,
@@ -5100,6 +5207,7 @@ async function animationCheckoutTileKeysFromBody(db, userId, body, env, deps) {
   return {
     ok: true,
     tile_keys: tileKeys,
+    segments,
     tile_set_token: tokenResult.token,
     expires_at: tokenResult.expires_at,
     segment_count: segments.length || Math.max(0, Number.parseInt(body && (body.segment_count || body.segmentCount) || 0, 10) || 0),
@@ -6014,7 +6122,7 @@ export async function handleCreditCheckout(request, env, deps) {
     if (estimate && estimate.error) {
       return deps.json({ ok: false, ...estimate }, 400, env);
     }
-    const animationPolicy = animationEstimateWithScenePolicy(estimate);
+    const animationPolicy = animationEstimateWithScenePolicy(estimate, keyResult.segments);
     const rawTilePriceEur = normalizeCreditAmount(animationPolicy.scene_tile_price_eur);
     const priceEur = normalizeCreditAmount(animationPolicy.scene_payable_eur);
     const amountCents = centsForEur(priceEur);
@@ -6042,6 +6150,9 @@ export async function handleCreditCheckout(request, env, deps) {
           custom_animation_licence_eur: 0,
           custom_animation_licence_label: ANIMATION_CUSTOM_LICENCE_LABEL,
           custom_animation_licence_fee_eur: normalizeCreditAmount(animationPolicy.custom_animation_licence_fee_eur),
+          custom_animation_licence_per_resolve_eur: normalizeCreditAmount(animationPolicy.custom_animation_licence_per_resolve_eur),
+          custom_animation_licence_max_fee_eur: normalizeCreditAmount(animationPolicy.custom_animation_licence_max_fee_eur),
+          custom_animation_licence_segments: 0,
           custom_animation_licence_threshold_eur: animationPolicy.scene_small_free_threshold_eur,
           animation_small_free_threshold_applied: Boolean(animationPolicy.scene_small_free_threshold_applied),
           paid_tile_count: grant && grant.paid_tile_count || 0,
@@ -6091,6 +6202,9 @@ export async function handleCreditCheckout(request, env, deps) {
           planetka_custom_scene_licence_eur: normalizeCreditAmount(animationPolicy.custom_animation_licence_eur).toFixed(2),
           planetka_custom_animation_licence_label: ANIMATION_CUSTOM_LICENCE_LABEL,
           planetka_custom_animation_licence_fee_eur: normalizeCreditAmount(animationPolicy.custom_animation_licence_fee_eur).toFixed(2),
+          planetka_custom_animation_licence_per_resolve_eur: normalizeCreditAmount(animationPolicy.custom_animation_licence_per_resolve_eur).toFixed(2),
+          planetka_custom_animation_licence_max_fee_eur: normalizeCreditAmount(animationPolicy.custom_animation_licence_max_fee_eur).toFixed(2),
+          planetka_custom_animation_licence_segments: String(Math.max(0, Number.parseInt(animationPolicy.custom_animation_licence_segments || 0, 10) || 0)),
           planetka_custom_animation_licence_threshold_eur: animationPolicy.scene_small_free_threshold_eur.toFixed(2),
           planetka_animation_small_free_threshold_applied: animationPolicy.scene_small_free_threshold_applied ? "1" : "0",
           planetka_tile_count: String(Math.max(0, Number.parseInt(estimate && estimate.tile_count || tileKeys.length, 10) || tileKeys.length)),
@@ -6112,6 +6226,9 @@ export async function handleCreditCheckout(request, env, deps) {
         custom_animation_licence_eur: normalizeCreditAmount(animationPolicy.custom_animation_licence_eur),
         custom_animation_licence_label: ANIMATION_CUSTOM_LICENCE_LABEL,
         custom_animation_licence_fee_eur: normalizeCreditAmount(animationPolicy.custom_animation_licence_fee_eur),
+        custom_animation_licence_per_resolve_eur: normalizeCreditAmount(animationPolicy.custom_animation_licence_per_resolve_eur),
+        custom_animation_licence_max_fee_eur: normalizeCreditAmount(animationPolicy.custom_animation_licence_max_fee_eur),
+        custom_animation_licence_segments: Math.max(0, Number.parseInt(animationPolicy.custom_animation_licence_segments || 0, 10) || 0),
         custom_animation_licence_threshold_eur: animationPolicy.scene_small_free_threshold_eur,
         animation_small_free_threshold_applied: Boolean(animationPolicy.scene_small_free_threshold_applied),
         paid_tile_count: Math.max(0, Number.parseInt(estimate && estimate.paid_tile_count || 0, 10) || 0),
@@ -7835,12 +7952,15 @@ export async function applyStripeCreditPurchaseFromSession(db, session, deps, en
         ledgerReason: "stripe_animation_purchase",
         entitlementSource: "stripe_animation",
         customLicenceLabel: ANIMATION_CUSTOM_LICENCE_LABEL,
-        customLicenceCents: checkoutMetadataCents(metadata, "planetka_custom_animation_licence_eur", customAnimationLicenceCents()),
+        customLicenceCents: checkoutMetadataCents(metadata, "planetka_custom_animation_licence_eur", 0),
         metadata: {
           segment_count: Math.max(0, Number.parseInt(metadata.planetka_segment_count || 0, 10) || 0),
           custom_animation_licence_eur: normalizeCreditAmount(metadata.planetka_custom_animation_licence_eur),
           custom_animation_licence_label: ANIMATION_CUSTOM_LICENCE_LABEL,
-          custom_animation_licence_fee_eur: normalizeCreditAmount(metadata.planetka_custom_animation_licence_fee_eur || customAnimationLicenceCents() / 100),
+          custom_animation_licence_segments: Math.max(0, Number.parseInt(metadata.planetka_custom_animation_licence_segments || 0, 10) || 0),
+          custom_animation_licence_fee_eur: normalizeCreditAmount(metadata.planetka_custom_animation_licence_fee_eur || customAnimationLicencePerResolveCents() / 100),
+          custom_animation_licence_per_resolve_eur: normalizeCreditAmount(metadata.planetka_custom_animation_licence_per_resolve_eur || metadata.planetka_custom_animation_licence_fee_eur || customAnimationLicencePerResolveCents() / 100),
+          custom_animation_licence_max_fee_eur: normalizeCreditAmount(metadata.planetka_custom_animation_licence_max_fee_eur || customAnimationLicenceMaxCents() / 100),
           custom_animation_licence_threshold_eur: normalizeCreditAmount(metadata.planetka_custom_animation_licence_threshold_eur || SCENE_SMALL_FREE_THRESHOLD_CENTS / 100),
           animation_tile_price_eur: normalizeCreditAmount(metadata.planetka_animation_tile_price_eur || metadata.planetka_scene_tile_price_eur),
           tile_set_token: String(metadata.planetka_tile_set_token || "").trim(),

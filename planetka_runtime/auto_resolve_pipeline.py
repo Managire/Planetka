@@ -192,9 +192,19 @@ def _show_download_status_popup():
 
 
 def _ctx_auto_resolve_texture_quality_mode(ctx, scene, props=None):
-    del ctx, scene, props
-    # Automated resolving is Preview-only. Full Quality remains a deliberate
-    # paid/manual Camera View operation.
+    deps = ctx.deps
+    try:
+        requested_mode = deps.normalize_texture_quality_mode(getattr(props, "texture_quality_mode", "PREVIEW"))
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        requested_mode = "PREVIEW"
+    try:
+        return deps.normalize_texture_quality_mode(
+            deps.enforce_texture_quality_mode_for_account(scene, requested_mode)
+        )
+    except deps.recoverable_exceptions:
+        deps.logger.debug("Planetka: failed enforcing resolve texture quality mode", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        deps.logger.debug("Planetka: failed enforcing resolve texture quality mode", exc_info=True)
     return "PREVIEW"
 
 

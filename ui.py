@@ -299,6 +299,48 @@ def _last_visible_texture_quality_mode(scene):
     return "FULL" if mode == "FULL" else "PREVIEW"
 
 
+def _is_planetka_camera_object(camera):
+    if camera is None or str(getattr(camera, "type", "")) != "CAMERA":
+        return False
+    try:
+        if str(camera.get("planetka_role", "") or "").strip().lower() == "camera":
+            return True
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        pass
+    try:
+        name = str(getattr(camera, "name", "") or "")
+        return name.startswith("Planetka Camera")
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return False
+
+
+def _id_block_has_keyframes(id_block):
+    if id_block is None:
+        return False
+    try:
+        animation_data = getattr(id_block, "animation_data", None)
+        action = getattr(animation_data, "action", None) if animation_data is not None else None
+        for fcurve in tuple(getattr(action, "fcurves", ()) or ()):
+            if len(getattr(fcurve, "keyframe_points", ()) or ()) > 0:
+                return True
+        for track in tuple(getattr(animation_data, "nla_tracks", ()) if animation_data is not None else ()):
+            for strip in tuple(getattr(track, "strips", ()) or ()):
+                strip_action = getattr(strip, "action", None)
+                for fcurve in tuple(getattr(strip_action, "fcurves", ()) or ()):
+                    if len(getattr(fcurve, "keyframe_points", ()) or ()) > 0:
+                        return True
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return False
+    return False
+
+
+def _planetka_camera_has_keyframes(scene):
+    camera = getattr(scene, "camera", None) if scene is not None else None
+    if not _is_planetka_camera_object(camera):
+        return False
+    return _id_block_has_keyframes(camera) or _id_block_has_keyframes(getattr(camera, "data", None))
+
+
 def _last_resolve_download_bytes_for_ui(scene):
     if scene is None:
         return 0
@@ -1147,8 +1189,7 @@ def _draw_licenced_download_controls(layout, prefs):
 
     if BETA_DISABLE_FULL_QUALITY_DATA_DOWNLOADS:
         beta_box = layout.box()
-        beta_box.label(text="Full Quality data download is disabled during beta.", icon="INFO")
-        beta_box.label(text="Streaming Full Quality remains available.", icon="CHECKMARK")
+        beta_box.label(text="Not available in Beta", icon="INFO")
         download_row = layout.row()
         download_row.enabled = False
         download_row.operator("planetka.account_download_unlocked_tiles", text="Download Licenced Data", icon="IMPORT")
@@ -1165,11 +1206,7 @@ def _draw_licenced_download_controls(layout, prefs):
         notice_row.label(text=local_notice, icon="INFO")
 
 
-def _draw_broader_region_offers(layout, scene, active_view_scope=False):
-    if active_view_scope:
-        layout.label(text="Camera View only.", icon="CAMERA_DATA")
-        # Keep the last Camera View offers visible. These packs are low-priority
-        # sales metadata and must not churn while the user navigates in Active View.
+def _load_relevant_region_pack_offers(scene):
     try:
         from .planetka_runtime.view_telemetry import get_cached_region_pack_offers
         offer_payload = get_cached_region_pack_offers(scene=scene)
@@ -1182,6 +1219,33 @@ def _draw_broader_region_offers(layout, scene, active_view_scope=False):
         status = ""
         message = ""
     offers = [offer for offer in offers if isinstance(offer, dict) and bool(offer.get("ok", True))]
+    return offers, status, message
+
+
+def _offer_is_licensable(offer):
+    if not isinstance(offer, dict):
+        return False
+    try:
+        price = max(0.0, float(offer.get("price_eur", offer.get("credits", 0.0)) or 0.0))
+    except (TypeError, ValueError):
+        price = 0.0
+    try:
+        new_tiles = max(
+            0,
+            int(offer.get("unlicenced_tile_count", offer.get("new_tile_count", offer.get("paid_tile_count", 0))) or 0),
+        )
+    except (TypeError, ValueError):
+        new_tiles = 0
+    return bool(price > 0.000001 or new_tiles > 0)
+
+
+def _draw_broader_region_offers(layout, scene, active_view_scope=False):
+    if active_view_scope:
+        layout.label(text="Camera View only.", icon="CAMERA_DATA")
+        # Keep the last Camera View offers visible. These packs are low-priority
+        # sales metadata and must not churn while the user navigates in Active View.
+    offers, status, message = _load_relevant_region_pack_offers(scene)
+    offers = [offer for offer in offers if _offer_is_licensable(offer)]
     if not offers:
         if status == "LOADING":
             layout.label(text="Updating relevant packs...", icon="TIME")
@@ -1333,6 +1397,10 @@ def _draw_account_panel(layout):
     connect_row.enabled = (not key_locked) and bool(key_text)
     connect_row.operator("planetka.account_open_login", text="Connect Account", icon="CHECKMARK")
 
+    logout_row = layout.row(align=True)
+    logout_row.enabled = authenticated
+    logout_row.operator("planetka.account_logout", text="Log Out", icon="X")
+
     try:
         email = str(get_connected_email(prefs) or "").strip()
     except (TypeError, ValueError, RuntimeError, AttributeError):
@@ -1388,8 +1456,6 @@ def _draw_account_panel(layout):
                 or str(credit_payload.get("world_full_quality_unlocked_at", "") or "").strip()
             )
         )
-        if world_full_quality_unlocked:
-            layout.label(text="World Full Quality: Licenced", icon="WORLD")
         licenced_data_box = layout.box()
         licenced_data_box.label(text="Licenced Data", icon="IMPORT")
         _draw_licenced_download_controls(licenced_data_box, prefs)
@@ -1399,11 +1465,6 @@ def _draw_account_panel(layout):
             hold_row.alert = True
             hold_row.label(text="Preview streaming is paused for review.", icon="INFO")
             hold_box.label(text="Full Quality licenced data remains available.", icon="CHECKMARK")
-
-    action_row = layout.row(align=True)
-    logout_row = action_row.row(align=True)
-    logout_row.enabled = authenticated
-    logout_row.operator("planetka.account_logout", text="Log Out", icon="X")
 
     if status_message:
         layout.label(text=status_message, icon="INFO")
@@ -1567,8 +1628,6 @@ def _draw_live_telemetry(layout, scene):
             )
         )
         selected_auto_quality = _normalize_texture_quality_for_ui(getattr(props, "texture_quality_mode", "PREVIEW"))
-        if selected_auto_quality != "PREVIEW":
-            selected_auto_quality = "PREVIEW"
 
         preview_box = quality_box.box()
         preview_col = preview_box.column(align=True)
@@ -1704,25 +1763,22 @@ def _draw_live_telemetry(layout, scene):
         elif active_view_scope:
             estimate_notice = full_box.row(align=True)
             estimate_notice.label(text="Bring Camera to this view before using Full Quality.", icon="INFO")
-        elif world_full_quality_unlocked:
-            estimate_notice = full_box.row(align=True)
-            estimate_notice.label(text="World Full Quality is licenced for this account.", icon="CHECKMARK")
         elif not full_size_known or not full_price_known:
             estimate_notice = full_box.row(align=True)
             estimate_notice.label(text="Full Quality price is being calculated.", icon="INFO")
-        data_packs_box = _draw_collapsible_subsection(
-            quality_box,
-            scene,
-            "Relevant Data Packs",
-            "WORLD_DATA",
-            DATA_CONTROL_MORE_OPTIONS_SECTION_OPEN_KEY,
-            default_open=False,
-        )
-        if data_packs_box is not None:
-            if world_full_quality_unlocked:
-                data_packs_box.label(text="All relevant data packs are already licenced.", icon="CHECKMARK")
-            else:
-                _draw_broader_region_offers(data_packs_box, scene, active_view_scope=active_view_scope)
+        if not world_full_quality_unlocked:
+            region_offers, _region_status, _region_message = _load_relevant_region_pack_offers(scene)
+            if any(_offer_is_licensable(offer) for offer in region_offers):
+                data_packs_box = _draw_collapsible_subsection(
+                    quality_box,
+                    scene,
+                    "Relevant Data Packs",
+                    "WORLD_DATA",
+                    DATA_CONTROL_MORE_OPTIONS_SECTION_OPEN_KEY,
+                    default_open=False,
+                )
+                if data_packs_box is not None:
+                    _draw_broader_region_offers(data_packs_box, scene, active_view_scope=active_view_scope)
 
     throttle_message = str(get_status_message(prefs) or "").strip()
     if throttle_message and "throttl" in throttle_message.lower():
@@ -1772,7 +1828,7 @@ def _draw_navigation(layout, context, controls_enabled=True):
         lock_box.label(text="Camera keyframes are active. Clear Camera Keyframes to unlock.", icon="LOCKED")
         unlock_row = lock_box.row(align=True)
         unlock_row.scale_y = 1.05
-        unlock_row.enabled = bool(base_enabled)
+        unlock_row.enabled = bool(base_enabled) and _planetka_camera_has_keyframes(scene)
         unlock_row.operator(
             "planetka.animation_clear_camera_keyframes",
             text="Clear Camera Keyframes",
@@ -1787,9 +1843,6 @@ def _draw_navigation(layout, context, controls_enabled=True):
         location_box.label(text=geonames_status, icon=status_icon)
     location_box.label(text="Location", icon="PINNED")
     location_box.prop(props, "nav_city_search", text="Place Search")
-    selected_place = str(getattr(props, "nav_city_selected_name", "") or "")
-    if selected_place:
-        location_box.label(text=f"Selected: {selected_place}", icon="BOOKMARKS")
     latlon_row = location_box.row(align=True)
     latlon_row.use_property_split = False
     latlon_row.use_property_decorate = False
@@ -1832,7 +1885,7 @@ def _draw_navigation(layout, context, controls_enabled=True):
     roll_label.alignment = 'CENTER'
     roll_label.label(text="Roll")
     roll_col.prop(props, "nav_roll_deg", text="")
-    shot_box.prop(props, "nav_focal_length_mm", text="Focal Length (mm)")
+    shot_box.prop(props, "nav_focal_length_mm", text="Focal Length (mm)", icon="CAMERA_DATA")
 
     preset_box = layout.box()
     preset_box.enabled = navigation_unlocked
@@ -1938,6 +1991,13 @@ _SURFACE_GRADING_SECTION_RESET_KEY = {
     "Night Lights": "NIGHT",
 }
 
+_SURFACE_GRADING_SECTION_ICON = {
+    "Global": "WORLD",
+    "Water": "MODIFIER",
+    "Elevation": "SORTSIZE",
+    "Night Lights": "LIGHT_SUN",
+}
+
 
 def _surface_grading_section_for_socket(socket_name):
     normalized = str(socket_name or "").strip().lower()
@@ -1994,7 +2054,7 @@ def _draw_surface_grading(layout):
                 continue
             section_box = container.box()
             section_header = section_box.row(align=True)
-            section_header.label(text=section)
+            section_header.label(text=section, icon=_SURFACE_GRADING_SECTION_ICON.get(section, "NONE"))
             reset_section = _SURFACE_GRADING_SECTION_RESET_KEY.get(section, "")
             if reset_section:
                 reset_button = section_header.row(align=True)
@@ -2371,7 +2431,6 @@ class PLANETKA_PT_LinksPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
         row = layout.row(align=True)
         row.operator("wm.url_open", text="Tutorials", icon="PLAY").url = "https://www.youtube.com/@tomasgriger-planetka/videos"
-        row.operator("planetka.report_bug", text="Send Feedback", icon="INFO")
 
         layout.operator(
             "wm.url_open",
@@ -2400,7 +2459,6 @@ class PLANETKA_PT_LinksPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel)
 
         row = layout.row(align=True)
         row.operator("wm.url_open", text="Tutorials", icon="PLAY").url = "https://www.youtube.com/@tomasgriger-planetka/videos"
-        row.operator("planetka.report_bug", text="Send Feedback", icon="INFO")
 
         layout.operator(
             "wm.url_open",
@@ -2666,7 +2724,7 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
         clear_keys_row = cinematic_box.row(align=True)
         clear_keys_row.scale_y = 1.05
-        clear_keys_row.enabled = bool(controls_enabled)
+        clear_keys_row.enabled = bool(controls_enabled) and _planetka_camera_has_keyframes(scene)
         clear_keys_row.operator(
             "planetka.animation_clear_camera_keyframes",
             text="Clear Camera Keyframes",
@@ -2736,7 +2794,6 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             anim_custom_licence = 0.0
         if not anim_price_known:
             final_render_allowed = False
-        final_render_box.label(text=f"New Full Quality Tiles: {anim_paid_tiles}", icon="TEXTURE")
         if not anim_price_known:
             final_render_box.label(text="Animation price is not available yet. Generate keyframes or refresh pricing.", icon="INFO")
         elif anim_custom_licence > 0.000001:
@@ -2766,7 +2823,7 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         else:
             render_button_row.operator(
                 "planetka.animation_render",
-                text=f"Render Animation (€{anim_credits:.2f})",
+                text="Render Animation" if anim_credits <= 0.000001 else f"Render Animation (€{anim_credits:.2f})",
                 icon="RENDER_ANIMATION",
             )
         render_info_row = render_row.row(align=True)

@@ -192,20 +192,23 @@ function isExpectedSupportFallbackMiss(row, supportMissingManifest, deps) {
   return layerSet.has(fileName);
 }
 
-function parseAnalyticsExcludedEmailPatterns(env = {}, deps) {
-  const source = String(
-    env.ANALYTICS_EXCLUDED_EMAIL_PATTERNS || deps.DEFAULT_ANALYTICS_EXCLUDED_EMAIL_PATTERNS,
-  ).trim();
-  if (!source) {
-    return [];
-  }
+function uniqueEmailPatternsFromSources(sources) {
   const unique = new Set();
-  for (const token of source.split(",")) {
-    const pattern = String(token || "").trim().toLowerCase();
-    if (!pattern) continue;
-    unique.add(pattern);
+  for (const source of (Array.isArray(sources) ? sources : [])) {
+    for (const token of String(source || "").split(",")) {
+      const pattern = String(token || "").trim().toLowerCase();
+      if (!pattern) continue;
+      unique.add(pattern);
+    }
   }
   return Array.from(unique);
+}
+
+function parseAnalyticsExcludedEmailPatterns(env = {}, deps) {
+  return uniqueEmailPatternsFromSources([
+    env.ANALYTICS_EXCLUDED_EMAIL_PATTERNS || deps.DEFAULT_ANALYTICS_EXCLUDED_EMAIL_PATTERNS,
+    deps.INTERNAL_TEST_ANALYTICS_EMAIL_PATTERNS,
+  ]);
 }
 
 function parseAnalyticsRevenueExcludedEmailPatterns(env = {}, deps) {
@@ -217,15 +220,11 @@ function parseAnalyticsRevenueExcludedEmailPatterns(env = {}, deps) {
       || deps.DEFAULT_ANALYTICS_REVENUE_EXCLUDED_EMAIL_PATTERNS
       || "tom.griger@gmail.com,info@planetka.io,free@planetka.io,personal@planetka.io,commercial@planetka.io,credits@planetka.io",
   ).trim();
-  const unique = new Set();
-  for (const source of [baseSource, revenueSource]) {
-    for (const token of String(source || "").split(",")) {
-      const pattern = String(token || "").trim().toLowerCase();
-      if (!pattern) continue;
-      unique.add(pattern);
-    }
-  }
-  return Array.from(unique);
+  return uniqueEmailPatternsFromSources([
+    baseSource,
+    revenueSource,
+    deps.INTERNAL_TEST_ANALYTICS_EMAIL_PATTERNS,
+  ]);
 }
 
 function buildAnalyticsExcludedEmailFilter(emailColumnSql, env = {}, deps) {

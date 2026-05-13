@@ -318,7 +318,6 @@ from .state import (
     logger,
     remove_object_and_unused_mesh,
     resume_navigation_shot_updates,
-    stop_auto_resolve_download_pipeline,
     suspend_navigation_shot_updates,
     update_resolve_size_estimates,
     warm_base_sphere_mesh_cache,
@@ -433,11 +432,18 @@ def _run_camera_full_quality_resolve_after_checkout(scene):
         _tag_view3d_redraw()
         return False
     try:
-        stop_auto_resolve_download_pipeline()
+        props = getattr(scene, "planetka", None)
+        if props is not None:
+            try:
+                props.texture_quality_mode = "FULL"
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka: failed setting Full Quality mode after checkout", exc_info=True)
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka: failed setting Full Quality mode after checkout", exc_info=True)
         result = bpy.ops.planetka.load_textures(
             scope_mode="CAMERA",
             skip_render_compatibility=True,
-            defer_download=False,
+            defer_download=True,
             texture_quality_mode_override="FULL",
         )
         if "FINISHED" in result:
@@ -452,6 +458,7 @@ def _run_camera_full_quality_resolve_after_checkout(scene):
                 scene,
                 scope_mode="CAMERA",
                 base_path=base_path,
+                async_full_price=True,
                 force_full_price_refresh=True,
             )
             _force_region_pack_offers_refresh(scene, clear_caches=False, delay_seconds=2.0)
@@ -1074,11 +1081,11 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
 
         try:
             if target_mode == "FULL":
-                stop_auto_resolve_download_pipeline()
+                props.texture_quality_mode = "FULL"
             result = bpy.ops.planetka.load_textures(
                 scope_mode="CAMERA" if target_mode == "FULL" else "AUTO",
                 skip_render_compatibility=True,
-                defer_download=False,
+                defer_download=(target_mode == "FULL"),
                 texture_quality_mode_override=target_mode,
             )
         except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
@@ -1103,7 +1110,7 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
                 scene,
                 scope_mode="CAMERA" if target_mode == "FULL" else "AUTO",
                 base_path=base_path,
-                async_full_price=(target_mode != "FULL"),
+                async_full_price=True,
                 force_full_price_refresh=(target_mode == "FULL"),
             )
             if target_mode == "FULL":
