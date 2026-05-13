@@ -100,6 +100,7 @@ from .r2_source import (
 )
 
 _UNLOCKED_DOWNLOAD_REDRAW_TIMER_REGISTERED = False
+BETA_DISABLE_FULL_QUALITY_DATA_DOWNLOADS = True
 
 
 def _tag_view3d_for_unlocked_download():
@@ -196,6 +197,9 @@ class PLANETKA_OT_AccountDownloadUnlockedTiles(bpy.types.Operator):
 
     def draw(self, _context):
         layout = self.layout
+        if BETA_DISABLE_FULL_QUALITY_DATA_DOWNLOADS:
+            layout.label(text="Full Quality data download is disabled during beta.", icon="INFO")
+            return
         if not bool(getattr(self, "confirmed", False)):
             layout.prop(self, "period", text="Download")
             layout.prop(self, "directory", text="To")
@@ -215,6 +219,9 @@ class PLANETKA_OT_AccountDownloadUnlockedTiles(bpy.types.Operator):
         layout.label(text=f"Folder: {self.directory}")
 
     def invoke(self, context, _event):
+        if BETA_DISABLE_FULL_QUALITY_DATA_DOWNLOADS:
+            self.report({'WARNING'}, "Full Quality data download is disabled during beta.")
+            return {'CANCELLED'}
         if bool(getattr(self, "confirmed", False)):
             wm = getattr(context, "window_manager", None)
             if wm is None:
@@ -232,6 +239,9 @@ class PLANETKA_OT_AccountDownloadUnlockedTiles(bpy.types.Operator):
         return wm.invoke_props_dialog(self, width=520)
 
     def execute(self, context):
+        if BETA_DISABLE_FULL_QUALITY_DATA_DOWNLOADS:
+            self.report({'WARNING'}, "Full Quality data download is disabled during beta.")
+            return {'CANCELLED'}
         try:
             from .credit_api import (
                 is_unlocked_download_active,

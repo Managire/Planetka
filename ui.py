@@ -49,6 +49,7 @@ from .state import (
 )
 
 SHOW_INTERNAL_ANIMATION_UI = False
+BETA_DISABLE_FULL_QUALITY_DATA_DOWNLOADS = True
 CLIPPING_AUTO_NOTICE_KEY = "planetka_status_clip_auto_notice"
 CACHE_NOTICE_KEY = "planetka_status_cache_notice"
 RADIUS_SYNC_NOTICE_KEY = "planetka_status_radius_sync_notice"
@@ -1144,8 +1145,18 @@ def _draw_licenced_download_controls(layout, prefs):
         if bool(unlocked_progress.get("active", False)):
             progress_box.operator("planetka.account_cancel_unlocked_download", text="Cancel Download", icon="CANCEL")
 
-    layout.operator("planetka.account_download_unlocked_tiles", text="Download Licenced Data", icon="IMPORT")
-    local_row = layout.row()
+    if BETA_DISABLE_FULL_QUALITY_DATA_DOWNLOADS:
+        beta_box = layout.box()
+        beta_box.label(text="Full Quality data download is disabled during beta.", icon="INFO")
+        beta_box.label(text="Streaming Full Quality remains available.", icon="CHECKMARK")
+        download_row = layout.row()
+        download_row.enabled = False
+        download_row.operator("planetka.account_download_unlocked_tiles", text="Download Licenced Data", icon="IMPORT")
+        local_row = layout.row()
+        local_row.enabled = False
+    else:
+        layout.operator("planetka.account_download_unlocked_tiles", text="Download Licenced Data", icon="IMPORT")
+        local_row = layout.row()
     local_row.prop(prefs, "local_texture_source_path", text="Local Source")
     local_notice = get_local_source_stale_notice()
     if local_notice:

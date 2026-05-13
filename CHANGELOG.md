@@ -2,6 +2,11 @@
 
 All notable public changes to Planetka are documented in this file.
 
+## [v0.7.1] - 2026-05-13
+
+### Changed
+- Temporarily disabled manual Full Quality data downloads during beta while Full Quality streaming access is free.
+
 ## [v0.7.0] - 2026-05-12
 
 ### Added

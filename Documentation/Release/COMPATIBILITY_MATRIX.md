@@ -1,11 +1,12 @@
 # Planetka Compatibility Matrix
 
-Last updated: 2026-05-12
+Last updated: 2026-05-13
 
 This internal matrix records the current compatibility baseline for public-release QA.
 
 | Planetka version | Blender versions | Smoke status | Notes |
 | --- | --- | --- | --- |
+| v0.7.1 | Blender 5.0 primary; Blender 4.5 LTS expected with verification | Pass required before publication | Beta patch: manual Full Quality data downloads are disabled while beta accounts have free Full Quality streaming access. |
 | v0.7.0 | Blender 5.0 primary; Blender 4.5 LTS expected with verification | Pass required before publication | Public-release model: Preview plus paid Full Quality. Package/docs must use the public allowlist and current legal PDFs. |
 
 ## Required checks before publication

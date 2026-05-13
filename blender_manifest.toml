@@ -1,6 +1,6 @@
 schema_version = "1.0.0"
 id = "planetka"
-version = "0.7.0"
+version = "0.7.1"
 name = "Planetka - the Earth"
 tagline = "Cinematic Earth Visualisation System"
 maintainer = "Tomas Griger <info@planetka.io>"
