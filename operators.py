@@ -13,6 +13,7 @@ from .planetka_ops.account_ops import (
     PLANETKA_OT_AccountLogin,
     PLANETKA_OT_AccountLogout,
     PLANETKA_OT_AccountOpenLogin,
+    PLANETKA_OT_AccountPurchaseHistory,
     PLANETKA_OT_AccountUpgrade,
     PLANETKA_OT_CheckUpdates,
     PLANETKA_OT_UpdateNow,
@@ -361,20 +362,26 @@ def _scene_full_quality_price_eur(scene):
     try:
         prefs = get_prefs()
         base_path = _normalize_texture_source_path(str(getattr(prefs, "texture_base_path", "") or "")) if prefs else ""
-        from .planetka_runtime.view_telemetry import build_resolve_cost_breakdown
+        from .planetka_runtime.view_telemetry import build_resolve_cost_breakdown, store_full_price_estimate_from_breakdown
         breakdown = build_resolve_cost_breakdown(
             scene=scene,
             scope_mode="CAMERA",
             base_path=base_path,
             texture_quality_mode="FULL",
         )
-        update_resolve_size_estimates(scene, scope_mode="CAMERA", base_path=base_path, include_full_price=False)
-        _tag_view3d_redraw()
         if not isinstance(breakdown, dict):
             return None
         if not bool(breakdown.get("ok", True)):
             return None
-        return float(max(0.0, float(breakdown.get("total_credits", 0.0) or 0.0)))
+        price_eur = float(max(0.0, float(breakdown.get("total_credits", 0.0) or 0.0)))
+        update_resolve_size_estimates(scene, scope_mode="CAMERA", base_path=base_path, include_full_price=False)
+        store_full_price_estimate_from_breakdown(
+            scene,
+            breakdown,
+            texture_quality_mode="FULL",
+        )
+        _tag_view3d_redraw()
+        return price_eur
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed refreshing checkout price state", exc_info=True)
     except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
@@ -406,6 +413,12 @@ def _force_region_pack_offers_refresh(scene, *, clear_caches=True, delay_seconds
             clear_credit_caches()
         except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
             logger.debug("Planetka: failed clearing credit caches before Full Quality Data Packs refresh", exc_info=True)
+        try:
+            from .planetka_runtime.view_telemetry import clear_full_price_estimate_cache, clear_region_pack_offer_cache
+            clear_full_price_estimate_cache()
+            clear_region_pack_offer_cache()
+        except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed clearing Blender price caches before Full Quality Data Packs refresh", exc_info=True)
     try:
         from .planetka_runtime.view_telemetry import camera_signature, schedule_region_pack_offer_refresh
         return bool(schedule_region_pack_offer_refresh(
@@ -432,14 +445,6 @@ def _run_camera_full_quality_resolve_after_checkout(scene):
         _tag_view3d_redraw()
         return False
     try:
-        props = getattr(scene, "planetka", None)
-        if props is not None:
-            try:
-                props.texture_quality_mode = "FULL"
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                logger.debug("Planetka: failed setting Full Quality mode after checkout", exc_info=True)
-            except (RuntimeError, TypeError, ValueError, AttributeError):
-                logger.debug("Planetka: failed setting Full Quality mode after checkout", exc_info=True)
         result = bpy.ops.planetka.load_textures(
             scope_mode="CAMERA",
             skip_render_compatibility=True,
@@ -740,6 +745,18 @@ def _region_pack_purchase_monitor_timer():
     if _region_pack_offer_is_settled(scene, region_pack_id):
         _REGION_PACK_PURCHASE_MONITOR = {}
         _REGION_PACK_PURCHASE_MONITOR_REGISTERED = False
+        try:
+            from .credit_api import clear_credit_caches
+            clear_credit_caches()
+        except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed clearing credit caches after Full Quality Data Pack purchase", exc_info=True)
+        try:
+            from .planetka_runtime.view_telemetry import clear_full_price_estimate_cache
+            clear_full_price_estimate_cache()
+        except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed clearing scene price cache after Full Quality Data Pack purchase", exc_info=True)
+        _scene_full_quality_price_eur(scene)
+        _force_region_pack_offers_refresh(scene, clear_caches=False, delay_seconds=0.5)
         _tag_view3d_redraw()
         return None
     try:
@@ -748,7 +765,7 @@ def _region_pack_purchase_monitor_timer():
         next_refresh_at = 0.0
     now = time.monotonic()
     if now >= next_refresh_at:
-        _force_region_pack_offers_refresh(scene, clear_caches=False)
+        _force_region_pack_offers_refresh(scene, clear_caches=True)
         monitor["next_refresh_at"] = now + max(4.0, _REGION_PACK_PURCHASE_POLL_INTERVAL_SEC)
         _REGION_PACK_PURCHASE_MONITOR = monitor
     return _REGION_PACK_PURCHASE_POLL_INTERVAL_SEC
@@ -1080,8 +1097,6 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
                 return {'FINISHED'} if "FINISHED" in checkout_result else {'CANCELLED'}
 
         try:
-            if target_mode == "FULL":
-                props.texture_quality_mode = "FULL"
             result = bpy.ops.planetka.load_textures(
                 scope_mode="CAMERA" if target_mode == "FULL" else "AUTO",
                 skip_render_compatibility=True,
@@ -1279,6 +1294,7 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
                 except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
                     logger.debug("Planetka: failed clearing credit cache after region pack no-payment check", exc_info=True)
                 scene = getattr(context, "scene", None)
+                _scene_full_quality_price_eur(scene)
                 _force_region_pack_offers_refresh(scene)
                 pack_name = str(getattr(self, "region_pack_name", "") or "Data Pack").strip()
                 self.report({'INFO'}, f"{pack_name} is already licenced or has no newly charged tiles.")
@@ -1612,7 +1628,11 @@ class PLANETKA_OT_DataCostBreakdown(bpy.types.Operator):
         try:
             prefs = get_prefs()
             base_path = str(getattr(prefs, "texture_base_path", "") or "") if prefs else ""
-            from .planetka_runtime.view_telemetry import build_resolve_cost_breakdown, get_resolve_size_estimates
+            from .planetka_runtime.view_telemetry import (
+                build_resolve_cost_breakdown,
+                get_resolve_size_estimates,
+                store_full_price_estimate_from_breakdown,
+            )
             breakdown = build_resolve_cost_breakdown(
                 scene=getattr(context, "scene", None),
                 scope_mode="CAMERA",
@@ -1630,6 +1650,12 @@ class PLANETKA_OT_DataCostBreakdown(bpy.types.Operator):
                 logger.debug("Planetka: failed refreshing resolve estimates before cost breakdown", exc_info=True)
             except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
                 logger.debug("Planetka: failed refreshing resolve estimates before cost breakdown", exc_info=True)
+            if mode == "FULL" and isinstance(breakdown, dict):
+                store_full_price_estimate_from_breakdown(
+                    getattr(context, "scene", None),
+                    breakdown,
+                    texture_quality_mode="FULL",
+                )
             estimates = get_resolve_size_estimates(getattr(context, "scene", None))
             if isinstance(breakdown, dict):
                 breakdown["panel_total_bytes"] = estimates.get(mode) if isinstance(estimates, dict) else None

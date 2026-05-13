@@ -1671,7 +1671,21 @@ def _draw_scene_health_report_layout(layout, health, title_text="Scene Health Ch
     summary.label(text=str(title_text or "Scene Health Check"), icon="CHECKMARK")
     summary_row = summary.row()
     summary_row.alert = bool(errors or warnings)
-    summary_row.label(text=f"Errors: {len(errors)} | Warnings: {len(warnings)} | Info: {len(info)}")
+    summary_parts = [f"Errors: {len(errors)}", f"Warnings: {len(warnings)}"]
+    if info:
+        summary_parts.append(f"Notes: {len(info)}")
+    summary_row.label(text=" | ".join(summary_parts))
+
+    if info:
+        notes_box = layout.box()
+        notes_box.label(text="Notes", icon="INFO")
+        seen_notes = set()
+        for note in info:
+            note_text = str(note or "").strip()
+            if not note_text or note_text in seen_notes:
+                continue
+            seen_notes.add(note_text)
+            notes_box.label(text=note_text, icon="BLANK1")
 
     grouped = {}
     for check in checks:

@@ -40,6 +40,8 @@ def clear_full_price_estimate_cache():
     global _FULL_PRICE_GENERATION
     with _FULL_PRICE_LOCK:
         _FULL_PRICE_CACHE.clear()
+        _FULL_PRICE_IN_FLIGHT.clear()
+        _FULL_PRICE_RESULTS.clear()
         _FULL_PRICE_GENERATION += 1
 
 
@@ -1652,6 +1654,37 @@ def _store_full_price_estimate(scene, deps, signature, credits):
         deps.logger.debug("Planetka: failed storing Full Quality price estimate", exc_info=True)
 
 
+def store_full_price_estimate_from_breakdown(scene, breakdown, runtime=None, texture_quality_mode="FULL"):
+    """Store a fresh authoritative scene price in the sidebar estimate cache."""
+    ctx = _coerce_ctx(runtime)
+    deps = ctx.deps
+    if scene is None or not isinstance(breakdown, dict):
+        return False
+    if not bool(breakdown.get("ok", True)):
+        return False
+    if str(texture_quality_mode or "FULL").strip().upper() != "PREVIEW":
+        if not bool(breakdown.get("pricing_authoritative", False)):
+            return False
+    pricing_tiles = []
+    for row in list(breakdown.get("tiles", ()) or ()):
+        key = ""
+        if isinstance(row, dict):
+            key = str(row.get("tile_key", "") or "").strip()
+        else:
+            key = str(row or "").strip()
+        if key:
+            pricing_tiles.append(key)
+    signature = _full_price_signature(pricing_tiles, texture_quality_mode)
+    credits = _money_round(breakdown.get("total_credits", breakdown.get("credits", 0.0)))
+    _store_full_price_estimate(scene, deps, signature, credits)
+    with _FULL_PRICE_LOCK:
+        _FULL_PRICE_CACHE[signature] = {
+            "time": time.monotonic(),
+            "credits": credits,
+        }
+    return True
+
+
 def _estimate_full_credits_for_pricing_tiles(pricing_tiles):
     safe_tiles = canonical_tiles(pricing_tiles)
     if not safe_tiles:
@@ -2155,6 +2188,8 @@ def update_resolve_size_estimates(
         base_path=base_path,
     )
     full_price_signature = _full_price_signature(full_pricing_tiles, "FULL")
+    if bool(force_full_price_refresh):
+        clear_full_price_estimate_cache()
     full_credits = None
     full_price_pending = False
     existing_signature = ""

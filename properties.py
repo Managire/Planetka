@@ -2,7 +2,6 @@ import bpy
 import importlib
 import logging
 import math
-import re
 from types import SimpleNamespace
 from bpy.props import (
     BoolProperty,
@@ -72,7 +71,6 @@ PLACE_SEARCH_DEFAULT_TILT_DEG = 45.0
 SEASONAL_TILT_PRESET_LIMIT_DEG = 23.44
 logger = logging.getLogger(__name__)
 _ANIM_PREVIEW_UPDATE_GUARD = False
-_PREVIEW_TILE_ZD_RE = re.compile(r"_z(\d+)_d(\d+)\.", re.IGNORECASE)
 
 
 def _safe_bpy_context():
@@ -161,32 +159,7 @@ def _set_hold_resolve(self, value):
 
 
 def _show_earth_preview_description():
-    base = "Show or hide the low-detail Earth preview helper mesh"
-    module_name = f"{__package__}.mesh_utils" if __package__ else "mesh_utils"
-    try:
-        mesh_utils = importlib.import_module(module_name)
-        bindings = tuple(getattr(mesh_utils, "_PREVIEW_STATIC_BINDINGS", ()) or ())
-    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-        bindings = ()
-
-    zd_tokens = []
-    seen = set()
-    for binding in bindings:
-        if not isinstance(binding, (tuple, list)) or len(binding) < 2:
-            continue
-        filename = str(binding[1] or "")
-        match = _PREVIEW_TILE_ZD_RE.search(filename)
-        if not match:
-            continue
-        token = f"z{int(match.group(1)):03d}/d{int(match.group(2)):03d}"
-        if token in seen:
-            continue
-        seen.add(token)
-        zd_tokens.append(token)
-
-    if zd_tokens:
-        return f"{base}. Current preview texture resolution: {', '.join(zd_tokens)}."
-    return f"{base}."
+    return "Show or hide the lightweight whole-Earth preview used while detailed textures are loading."
 
 
 def _get_earth_radius_bu(self):
@@ -237,7 +210,7 @@ def _set_earth_radius_bu(self, value):
                 scene = _safe_context_scene()
             set_radius_fn(scene, float(target))
             apply_clip_fn = getattr(operators, "_apply_radius_based_clipping", None)
-            if callable(apply_clip_fn):
+            if callable(apply_clip_fn) and bool(getattr(self, "auto_adjust_clipping_values", True)):
                 apply_clip_fn(scene, float(target))
     except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
         logger.debug("Planetka: failed applying Earth radius change", exc_info=True)
@@ -752,7 +725,7 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
     auto_adjust_clipping_values: BoolProperty(
         name="Auto-adjust clipping",
         default=True,
-        description="Automatically apply recommended Camera/Viewport clipping values during Create Earth",
+        description="Automatically apply recommended Camera and viewport clipping values during Create Earth and Earth Radius changes",
     )
 
     nav_longitude_deg: FloatProperty(

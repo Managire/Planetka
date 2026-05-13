@@ -1418,6 +1418,9 @@ def _draw_account_panel(layout):
     status_row.alert = bool(authenticated and checked and not connected)
     status_row.label(text=status_text, icon=status_icon)
     layout.label(text=f"Account: {email or '-'}", icon="USER")
+    history_row = layout.row(align=True)
+    history_row.enabled = bool(authenticated)
+    history_row.operator("planetka.account_purchase_history", text="View Account & Purchase History", icon="URL")
 
     cloud_message = str(cloud_status.get("message", "") or "").strip()
     if authenticated and checked and not connected:
@@ -1434,11 +1437,6 @@ def _draw_account_panel(layout):
         except (AuthApiError, TypeError, ValueError, RuntimeError, AttributeError):
             logger.debug("Planetka: failed reading credit account for UI", exc_info=True)
             credit_payload = {}
-        credit_known = bool(credit_payload)
-        try:
-            unlocked_count = int(credit_payload.get("unlocked_tile_count", 0) or 0)
-        except (TypeError, ValueError, AttributeError):
-            unlocked_count = 0
         preview_hold = {}
         try:
             preview_hold = credit_payload.get("preview_fair_usage_hold", {}) or credit_payload.get("previewFairUsageHold", {}) or {}
@@ -1447,14 +1445,6 @@ def _draw_account_panel(layout):
         preview_hold_active = bool(
             (isinstance(preview_hold, dict) and preview_hold.get("held", False))
             or credit_payload.get("preview_fair_usage_held", False)
-        )
-        layout.label(text=f"Licenced tiles: {unlocked_count}", icon="TEXTURE")
-        world_full_quality_unlocked = bool(
-            isinstance(credit_payload, dict)
-            and (
-                credit_payload.get("world_full_quality_unlocked", False)
-                or str(credit_payload.get("world_full_quality_unlocked_at", "") or "").strip()
-            )
         )
         licenced_data_box = layout.box()
         licenced_data_box.label(text="Licenced Data", icon="IMPORT")
@@ -1993,8 +1983,8 @@ _SURFACE_GRADING_SECTION_RESET_KEY = {
 
 _SURFACE_GRADING_SECTION_ICON = {
     "Global": "WORLD",
-    "Water": "MODIFIER",
-    "Elevation": "SORTSIZE",
+    "Water": "MOD_OCEAN",
+    "Elevation": "MESH_CONE",
     "Night Lights": "LIGHT_SUN",
 }
 

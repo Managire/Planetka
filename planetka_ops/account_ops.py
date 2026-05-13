@@ -14,6 +14,7 @@ from ..auth import (
     logout_remote_session,
     sync_account_profile,
 )
+from ..credit_api import CreditApiError, create_account_page_link
 from ..error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from ..extension_prefs import get_prefs
 from ..operator_utils import ErrorCode, fail
@@ -255,6 +256,32 @@ class PLANETKA_OT_AccountUpgrade(bpy.types.Operator):
         if not _open_account_url(upgrade_url):
             return fail(self, "Could not open Planetka pricing page.", logger=logger)
         self.report({'INFO'}, "Planetka pricing page opened in browser.")
+        return {'FINISHED'}
+
+
+class PLANETKA_OT_AccountPurchaseHistory(bpy.types.Operator):
+    bl_idname = "planetka.account_purchase_history"
+    bl_label = "View Account & Purchase History"
+    bl_description = "Open your Planetka account page with purchase history"
+
+    def execute(self, context):
+        del context
+        try:
+            link = create_account_page_link()
+        except (AuthApiError, CreditApiError) as exc:
+            return fail(
+                self,
+                "Could not open your Planetka account page. Check your connection and try again.",
+                logger=logger,
+                exc=exc,
+            )
+
+        url = str(link.get("url") or "").strip() if isinstance(link, dict) else ""
+        if not url:
+            return fail(self, "Planetka account page link was not returned by the server.", logger=logger)
+        if not _open_account_url(url):
+            return fail(self, "Could not open your Planetka account page.", logger=logger)
+        self.report({'INFO'}, "Planetka account page opened in browser.")
         return {'FINISHED'}
 
 

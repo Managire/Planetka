@@ -2,6 +2,25 @@
 
 All notable public changes to Planetka are documented in this file.
 
+## [v0.7.3] - 2026-05-14
+
+### Added
+- Account page link from the Blender account panel with purchase history and a licenced-tile map.
+- Light/dark browser theme support for Planetka web pages.
+- Internal live pricing consistency harness for scene, country, and region purchase checks against the sandbox backend.
+
+### Changed
+- Beta accounts are treated as having Full Quality access while public payments remain disabled for beta testing.
+- Refined Account, Navigation, Earth settings, and Animation UI labels/tooltips to remove internal tile terminology.
+- Improved Full Quality resolve handling so manual Full Quality resolves do not remain selected for later automatic camera movement resolves.
+- Simplified successful purchase pages and account page summaries.
+
+### Fixed
+- Fixed pack/scene price refresh after purchases so Blender UI, pack pages, success pages, and checkout estimates use the same current pricing state.
+- Fixed account-page route handling and licenced-tile map display.
+- Fixed Worker map-page CPU pressure by deferring expensive Similar Options pricing work from initial map responses.
+- Fixed animation cost/detail summaries and cleaned up zero-value pricing rows.
+
 ## [v0.7.2] - 2026-05-13
 
 ### Changed

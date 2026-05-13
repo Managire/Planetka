@@ -1,11 +1,22 @@
+const API_KEY_PAGE_CSS = `:root{color-scheme:light dark;--bg1:#07111f;--bg2:#0b1424;--card:rgba(8,15,29,.82);--line:rgba(148,163,184,.2);--field:rgba(15,23,42,.85);--field-line:rgba(148,163,184,.35);--text:#e5edf7;--muted:#cbd5e1;--subtle:#94a3b8;--link:#93c5fd;--button:#1d4ed8;--button-text:#fff;--pre:#0f172a;--pre-text:#f8fafc;--status-muted:#cbd5e1;--status-ok:#86efac;--status-error:#fca5a5;--shadow:0 20px 60px rgba(0,0,0,.35)}
+@media (prefers-color-scheme:light){:root{--bg1:#f7f2e8;--bg2:#efe4d2;--card:rgba(255,250,242,.92);--line:rgba(83,65,39,.16);--field:#fffdf8;--field-line:#d9cbb8;--text:#1f252d;--muted:#4b5563;--subtle:#667085;--link:#1d4ed8;--button:#1d4ed8;--button-text:#fff;--pre:#f4eadb;--pre-text:#1f252d;--status-muted:#667085;--status-ok:#247a3e;--status-error:#b42318;--shadow:0 20px 60px rgba(60,47,26,.14)}}
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:linear-gradient(180deg,var(--bg1) 0%,var(--bg2) 100%);font-family:Inter,system-ui,sans-serif;color:var(--text)}
+.card{width:min(92vw,560px);padding:28px;border-radius:18px;background:var(--card);border:1px solid var(--line);box-shadow:var(--shadow)}
+h1{margin:0 0 12px;font-size:30px}p{margin:0 0 16px;color:var(--muted);line-height:1.5}label{display:block;margin:0 0 8px;color:var(--muted);font-size:14px}
+input[type="email"],input[type="text"]{width:100%;box-sizing:border-box;padding:14px 16px;border-radius:10px;border:1px solid var(--field-line);background:var(--field);color:var(--pre-text);font-size:16px;margin-bottom:14px}
+.checkbox{display:flex;gap:8px;align-items:flex-start;margin:10px 0;font-size:14px;color:var(--muted)}.checkbox input{margin-top:3px}.checkbox a,a{color:var(--link);text-decoration:underline}
+button{margin-top:14px;width:100%;border:none;border-radius:12px;padding:13px 16px;background:var(--button);color:var(--button-text);font-size:16px;font-weight:600;cursor:pointer}button:disabled{opacity:.6;cursor:wait}
+.help{margin-top:12px;font-size:13px;color:var(--subtle)}.hidden{display:none!important}.status{margin-top:14px;color:var(--status-muted)}.status.success{color:var(--status-ok)}.status.error{color:var(--status-error)}
+pre{margin:10px 0 12px;padding:12px;border-radius:10px;background:var(--pre);border:1px solid var(--line);color:var(--pre-text);overflow:auto}.muted{color:var(--subtle);font-size:13px}`;
+
 function renderApiKeyRequestPage(env, deps, message = "", requestedPlan = "") {
   const termsUrl = String(env.TERMS_URL || deps.DEFAULT_TERMS_URL).trim() || deps.DEFAULT_TERMS_URL;
   const privacyUrl = String(env.PRIVACY_URL || deps.DEFAULT_PRIVACY_URL).trim() || deps.DEFAULT_PRIVACY_URL;
   const contactUrl = deps.normalizeContactUrl(env.CONTACT_URL || deps.DEFAULT_CONTACT_URL);
   const safeMessage = String(message || "").trim();
   const messageMarkup = safeMessage
-    ? `<p id="status" style="margin-top:14px;color:#86efac;">${deps.escapeHtml(safeMessage)}</p>`
-    : `<p id="status" style="margin-top:14px;color:#cbd5e1;"></p>`;
+    ? `<p id="status" class="status success">${deps.escapeHtml(safeMessage)}</p>`
+    : `<p id="status" class="status"></p>`;
   void requestedPlan;
   const safePlan = deps.PLAN_CODE_FREE;
   const subTitle = "Request account access to connect Blender and access Planetka-hosted data.";
@@ -15,23 +26,7 @@ function renderApiKeyRequestPage(env, deps, message = "", requestedPlan = "") {
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Planetka Account Access</title>
-    <style>
-      :root { color-scheme: dark; }
-      body { margin:0; min-height:100vh; display:grid; place-items:center; background:linear-gradient(180deg,#07111f 0%, #0b1424 100%); font-family: Inter, system-ui, sans-serif; color:#e5edf7; }
-      .card { width:min(92vw,520px); padding:28px; border-radius:18px; background:rgba(8,15,29,.82); border:1px solid rgba(148,163,184,.2); box-shadow:0 20px 60px rgba(0,0,0,.35); }
-      h1 { margin:0 0 10px; font-size:30px; }
-      p { margin:0 0 16px; color:#cbd5e1; line-height:1.5; }
-      label { display:block; margin:0 0 8px; color:#cbd5e1; font-size:14px; }
-      input[type="email"], input[type="text"] { width:100%; box-sizing:border-box; padding:14px 16px; border-radius:10px; border:1px solid rgba(148,163,184,.35); background:rgba(15,23,42,.85); color:#f8fafc; font-size:16px; margin-bottom:14px; }
-      .checkbox { display:flex; gap:8px; align-items:flex-start; margin:10px 0; font-size:14px; color:#cbd5e1; }
-      .checkbox input { margin-top:3px; }
-      .checkbox a { color:#93c5fd; text-decoration:underline; }
-      button { margin-top:14px; width:100%; border:none; border-radius:12px; padding:13px 16px; background:#1d4ed8; color:#fff; font-size:16px; font-weight:600; cursor:pointer; }
-      button:disabled { opacity:.6; cursor:wait; }
-      .help { margin-top:12px; font-size:13px; color:#94a3b8; }
-      .help a { color:#93c5fd; }
-      .hidden { display:none !important; }
-    </style>
+    <style>${API_KEY_PAGE_CSS}</style>
   </head>
   <body>
     <main class="card">
@@ -84,7 +79,7 @@ function renderApiKeyRequestPage(env, deps, message = "", requestedPlan = "") {
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
         submit.disabled = true;
-        status.style.color = "#cbd5e1";
+        status.style.color = "var(--status-muted)";
         status.textContent = "Sending...";
         try {
           const payload = {
@@ -107,10 +102,10 @@ function renderApiKeyRequestPage(env, deps, message = "", requestedPlan = "") {
             const errorMessage = errorMessageFromCode(errorCode, data && data.message);
             throw new Error(String(errorMessage || "Request failed."));
           }
-          status.style.color = "#86efac";
+          status.style.color = "var(--status-ok)";
           status.textContent = "Check your email for the activation link.";
         } catch (error) {
-          status.style.color = "#fca5a5";
+          status.style.color = "var(--status-error)";
           status.textContent = String(error && error.message || "Request failed. Please try again.");
           console.error("planetka api-key request failed", error);
         } finally {
@@ -136,17 +131,7 @@ function renderApiKeyActivatedPage(env, deps, data = {}) {
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Planetka Account Access Ready</title>
-    <style>
-      :root { color-scheme: dark; }
-      body { margin:0; min-height:100vh; display:grid; place-items:center; background:linear-gradient(180deg,#07111f 0%, #0b1424 100%); font-family: Inter, system-ui, sans-serif; color:#e5edf7; }
-      .card { width:min(92vw,560px); padding:28px; border-radius:18px; background:rgba(8,15,29,.82); border:1px solid rgba(148,163,184,.2); box-shadow:0 20px 60px rgba(0,0,0,.35); }
-      h1 { margin:0 0 12px; font-size:30px; }
-      p { margin:0 0 12px; color:#cbd5e1; line-height:1.5; }
-      pre { margin:10px 0 12px; padding:12px; border-radius:10px; background:#0f172a; border:1px solid rgba(148,163,184,.28); color:#f8fafc; overflow:auto; }
-      button { border:none; border-radius:10px; background:#1d4ed8; color:#fff; padding:10px 14px; cursor:pointer; font-weight:600; }
-      a { color:#93c5fd; }
-      .muted { color:#94a3b8; font-size:13px; }
-    </style>
+    <style>${API_KEY_PAGE_CSS}</style>
   </head>
   <body>
     <main class="card">
@@ -168,10 +153,10 @@ function renderApiKeyActivatedPage(env, deps, data = {}) {
         try {
           await navigator.clipboard.writeText(text);
           status.textContent = "Copied to clipboard.";
-          status.style.color = "#86efac";
+          status.style.color = "var(--status-ok)";
         } catch (error) {
           status.textContent = "Copy failed. Select and copy manually.";
-          status.style.color = "#fca5a5";
+          status.style.color = "var(--status-error)";
         }
       });
     </script>

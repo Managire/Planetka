@@ -731,6 +731,22 @@ def create_scene_detail_link(tiles, quality_mode="FULL") -> dict:
     raise CreditApiError(0, error, payload=result if isinstance(result, dict) else {})
 
 
+def create_account_page_link() -> dict:
+    """Create a short-lived browser link for the current user's account page."""
+    result = _request_json(
+        "POST",
+        "/credits/account-page-link",
+        body={},
+        timeout=30,
+    )
+    if isinstance(result, dict) and result.get("ok", False):
+        return dict(result)
+    error = "account_page_link_failed"
+    if isinstance(result, dict):
+        error = str(result.get("error", "") or error)
+    raise CreditApiError(0, error, payload=result if isinstance(result, dict) else {})
+
+
 def report_licenced_download_usage(
     *,
     downloaded_bytes: int,

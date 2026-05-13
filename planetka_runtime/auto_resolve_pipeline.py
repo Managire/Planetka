@@ -191,10 +191,21 @@ def _show_download_status_popup():
     return
 
 
-def _ctx_auto_resolve_texture_quality_mode(ctx, scene, props=None):
+def _ctx_auto_resolve_texture_quality_mode(
+    ctx,
+    scene,
+    props=None,
+    manual_request=False,
+    texture_quality_mode_override=None,
+):
     deps = ctx.deps
+    if not bool(manual_request):
+        return "PREVIEW"
     try:
-        requested_mode = deps.normalize_texture_quality_mode(getattr(props, "texture_quality_mode", "PREVIEW"))
+        override_text = str(texture_quality_mode_override or "").strip()
+        requested_mode = deps.normalize_texture_quality_mode(
+            override_text if override_text else getattr(props, "texture_quality_mode", "PREVIEW")
+        )
     except (RuntimeError, TypeError, ValueError, AttributeError):
         requested_mode = "PREVIEW"
     try:
@@ -215,6 +226,7 @@ def _ctx_schedule_auto_resolve_download(
     camera_signature,
     output_signature,
     manual_request=False,
+    texture_quality_mode_override=None,
 ):
     deps = ctx.deps
     state = ctx.state
@@ -229,7 +241,13 @@ def _ctx_schedule_auto_resolve_download(
     prefs = deps.get_prefs()
     props = getattr(scene, "planetka", None)
     base_path = str(getattr(prefs, "texture_base_path", "") or "") if prefs else ""
-    texture_quality_mode = _ctx_auto_resolve_texture_quality_mode(ctx, scene, props)
+    texture_quality_mode = _ctx_auto_resolve_texture_quality_mode(
+        ctx,
+        scene,
+        props,
+        manual_request=manual_request,
+        texture_quality_mode_override=texture_quality_mode_override,
+    )
     target_tiles_tuple = tuple(target_tiles or ())
     try:
         nav_latitude_deg = float(getattr(props, "nav_latitude_deg", 0.0)) if props is not None else 0.0
@@ -323,6 +341,7 @@ def _schedule_auto_resolve_download(
     camera_signature,
     output_signature,
     manual_request=False,
+    texture_quality_mode_override=None,
 ):
     return _ctx_schedule_auto_resolve_download(
         _require_download_ctx(),
@@ -331,10 +350,11 @@ def _schedule_auto_resolve_download(
         camera_signature,
         output_signature,
         manual_request=manual_request,
+        texture_quality_mode_override=texture_quality_mode_override,
     )
 
 
-def _ctx_queue_resolve_download(ctx, scene, target_tiles, manual_request=False):
+def _ctx_queue_resolve_download(ctx, scene, target_tiles, manual_request=False, texture_quality_mode_override=None):
     deps = ctx.deps
     state = ctx.state
     if scene is None:
@@ -361,18 +381,20 @@ def _ctx_queue_resolve_download(ctx, scene, target_tiles, manual_request=False):
         camera_signature,
         output_signature,
         manual_request=bool(manual_request),
+        texture_quality_mode_override=texture_quality_mode_override,
     )
     if queued:
         state.last_change_time[deps.scene_key(scene)] = time.monotonic()
     return bool(queued)
 
 
-def queue_resolve_download(scene, target_tiles, manual_request=False):
+def queue_resolve_download(scene, target_tiles, manual_request=False, texture_quality_mode_override=None):
     return _ctx_queue_resolve_download(
         _require_download_ctx(),
         scene,
         target_tiles,
         manual_request=manual_request,
+        texture_quality_mode_override=texture_quality_mode_override,
     )
 
 
@@ -1875,6 +1897,7 @@ def _ctx_auto_resolve_plan_job(ctx, scene, props, detect_ctx):
         target_tiles = deps.canonical_tiles(
             tile_utils.main(
                 scope_mode="ACTIVE_VIEW" if (scope == "ACTIVE_VIEW" and active_view_signature is not None) else "CAMERA",
+                texture_quality_mode_override="PREVIEW",
             )
         )
     except deps.recoverable_exceptions:

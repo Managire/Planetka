@@ -89,6 +89,8 @@ import {
 } from "./worker/admin_user_handlers.js";
 import {
   handleCreditCheckout as handleCreditCheckoutRoute,
+  handleCreditAccountPage as handleCreditAccountPageRoute,
+  handleCreditAccountPageLink as handleCreditAccountPageLinkRoute,
   handleCreditEstimate as handleCreditEstimateRoute,
   handleCreditMe as handleCreditMeRoute,
   handleCreditPaymentCancelled as handleCreditPaymentCancelledRoute,
@@ -104,6 +106,7 @@ import {
   handleCreditRegionPackMap as handleCreditRegionPackMapRoute,
   handleCreditRegionPackMapAsset as handleCreditRegionPackMapAssetRoute,
   handleCreditRegionPackMapBackground as handleCreditRegionPackMapBackgroundRoute,
+  handleCreditAccountCountryBorders as handleCreditAccountCountryBordersRoute,
   handleCreditRegionPackPageAsset as handleCreditRegionPackPageAssetRoute,
   handleCreditRegionOffers as handleCreditRegionOffersRoute,
   handleCreditRegionPackRelatedOffers as handleCreditRegionPackRelatedOffersRoute,
@@ -3936,7 +3939,8 @@ async function dispatchExactRoute(request, env, path) {
     const safePath = String(path || "");
     const pricingStaticAsset = safePath.startsWith("/credits/page-assets/")
       || safePath === "/credits/region-pack-map-asset"
-      || safePath === "/credits/region-pack-map-background.jpg";
+      || safePath === "/credits/region-pack-map-background.jpg"
+      || safePath === "/credits/account-country-borders.json";
     const forcePricingRefresh = safePath.startsWith("/credits/") && !pricingStaticAsset;
     await getRuntimePricingSettings(env, TILE_ROUTE_DEPS, { force: forcePricingRefresh });
   }
@@ -3996,6 +4000,16 @@ async function dispatchExactRoute(request, env, path) {
         return await handleCreditMeRoute(request, env, TILE_ROUTE_DEPS);
       }
       return null;
+    case "/credits/account-page-link":
+      if (request.method === "POST") {
+        return await handleCreditAccountPageLinkRoute(request, env, TILE_ROUTE_DEPS);
+      }
+      return null;
+    case "/credits/account":
+      if (request.method === "GET" || request.method === "HEAD") {
+        return await handleCreditAccountPageRoute(request, env, TILE_ROUTE_DEPS);
+      }
+      return null;
     case "/credits/estimate":
       if (request.method === "POST") {
         return await handleCreditEstimateRoute(request, env, TILE_ROUTE_DEPS);
@@ -4044,6 +4058,11 @@ async function dispatchExactRoute(request, env, path) {
     case "/credits/region-pack-map-background.jpg":
       if (request.method === "GET" || request.method === "HEAD") {
         return await handleCreditRegionPackMapBackgroundRoute(request, env, TILE_ROUTE_DEPS);
+      }
+      return null;
+    case "/credits/account-country-borders.json":
+      if (request.method === "GET" || request.method === "HEAD") {
+        return await handleCreditAccountCountryBordersRoute(request, env, TILE_ROUTE_DEPS);
       }
       return null;
     case "/credits/page-assets/region-pack-map.css":
