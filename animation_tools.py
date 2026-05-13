@@ -739,6 +739,16 @@ def _animation_price_text(value):
         return "€0.00"
 
 
+def _animation_bytes_text(size_bytes):
+    try:
+        value = max(0.0, float(size_bytes or 0.0))
+    except (TypeError, ValueError):
+        value = 0.0
+    if value >= 1024.0 ** 3:
+        return f"{value / (1024.0 ** 3):.2f} GB"
+    return f"{value / (1024.0 ** 2):.2f} MB"
+
+
 def _open_external_url(url):
     safe_url = str(url or "").strip()
     if not safe_url:
@@ -933,6 +943,17 @@ def _build_animation_credit_breakdown(scene, props, texture_quality_mode="FULL")
         if not bool(summary.get("authoritative", False)):
             raise RuntimeError("Animation pricing is unavailable because Planetka Cloud could not confirm the price.")
     pricing = _animation_pricing_from_credit_summary(segments, summary)
+    total_bytes = 0
+    try:
+        prefs = get_prefs()
+        base_path = str(getattr(prefs, "texture_base_path", "") or "") if prefs is not None else ""
+        total_bytes = int(_estimate_texture_bytes_for_segments(segments, base_path))
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka animation: failed estimating animation detail data size", exc_info=True)
+        total_bytes = 0
+    except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
+        logger.debug("Planetka animation: failed estimating animation detail data size", exc_info=True)
+        total_bytes = 0
 
     return {
         "quality_mode": mode,
@@ -949,6 +970,7 @@ def _build_animation_credit_breakdown(scene, props, texture_quality_mode="FULL")
         "custom_animation_licence_threshold_eur": float(_animation_money_round(pricing.get("custom_animation_licence_threshold_eur", ANIMATION_CUSTOM_LICENCE_THRESHOLD_EUR))),
         "new_tile_count": int(pricing.get("new_tile_count", 0) or 0),
         "tile_count": int(len(unique_tiles)),
+        "total_bytes": int(max(0, total_bytes)),
     }
 
 
@@ -4015,7 +4037,7 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
     def draw(self, _context):
         layout = self.layout
         layout.label(text="Confirm Final Animation Render", icon="RENDER_ANIMATION")
-        layout.label(text=f"Full Quality tile price: {_animation_price_text(getattr(self, 'confirm_tile_price_eur', 0.0))}", icon="TEXTURE")
+        layout.label(text=f"Full Quality data: {_animation_price_text(getattr(self, 'confirm_tile_price_eur', 0.0))}", icon="TEXTURE")
         custom_licence = float(getattr(self, "confirm_custom_animation_licence_eur", 0.0) or 0.0)
         if custom_licence > 0.000001:
             custom_segments = int(getattr(self, "confirm_custom_animation_licence_segments", 0) or 0)
@@ -5514,26 +5536,86 @@ class PLANETKA_OT_AnimationCheckout(bpy.types.Operator):
 class PLANETKA_OT_AnimationRenderCostBreakdown(bpy.types.Operator):
     bl_idname = "planetka.animation_render_cost_breakdown"
     bl_label = "Final Animation Render Cost Breakdown"
-    bl_description = "Show segment-by-segment Full Quality tile price breakdown for Final Animation Render"
+    bl_description = "Show segment-by-segment Full Quality breakdown for Final Animation Render"
 
     _breakdown = None
 
-    def _price_for_row(self, row):
+    def _price_value_for_row(self, row):
         try:
-            price = max(0.0, float(row.get("credits", 0.0) or 0.0))
+            return max(0.0, float(row.get("credits", row.get("price_eur", 0.0)) or 0.0))
         except (TypeError, ValueError, AttributeError):
-            price = 0.0
-        return _animation_price_text(price)
+            return 0.0
 
-    def _original_price_for_row(self, row):
+    def _gross_price_value_for_row(self, row):
+        price = self._price_value_for_row(row)
         try:
-            price = max(0.0, float(row.get("credits", 0.0) or 0.0))
-            original = max(
+            return max(
                 0.0,
                 float(row.get("gross_price_eur", row.get("gross_credits", price)) or 0.0),
             )
         except (TypeError, ValueError, AttributeError):
-            return 0.0
+            return price
+
+    def _summary_totals(self, segments, breakdown):
+        unique_rows = {}
+        for segment in segments or ():
+            if not isinstance(segment, dict):
+                continue
+            for row in list(segment.get("tiles", ()) or ()):
+                if not isinstance(row, dict):
+                    continue
+                key = str(row.get("tile_key", "") or "").strip()
+                if not key:
+                    continue
+                existing = unique_rows.get(key)
+                if existing is None or str(existing.get("free_reason", "") or "") == "already_listed_in_earlier_segment":
+                    unique_rows[key] = row
+
+        full_price = 0.0
+        already_count = 0
+        already_deduction = 0.0
+        partial_count = 0
+        for row in unique_rows.values():
+            gross = self._gross_price_value_for_row(row)
+            price = self._price_value_for_row(row)
+            full_price = _animation_money_round(full_price + gross)
+            deduction = _animation_money_round(max(0.0, gross - price))
+            if deduction <= 0.000001:
+                continue
+            reason = str(row.get("free_reason", "") or "").strip()
+            is_previous_licence = (
+                bool(row.get("already_owned", False))
+                or bool(row.get("partially_licenced", False))
+                or reason in {"already_unlocked", "already_owned", "world_full_quality_licence"}
+            )
+            if not is_previous_licence:
+                continue
+            already_count += 1
+            already_deduction = _animation_money_round(already_deduction + deduction)
+            if bool(row.get("partially_licenced", False)):
+                partial_count += 1
+
+        tile_price = _animation_money_round(breakdown.get("tile_price_eur", 0.0))
+        if full_price <= 0.000001 and tile_price > 0.000001:
+            full_price = _animation_money_round(tile_price + already_deduction)
+        total_tiles = int(breakdown.get("tile_count", len(unique_rows)) or len(unique_rows))
+        new_tiles = int(breakdown.get("new_tile_count", 0) or 0)
+        if partial_count > 0:
+            new_tiles = max(0, new_tiles - partial_count)
+        return {
+            "full_price": float(_animation_money_round(full_price)),
+            "already_count": int(already_count),
+            "already_deduction": float(_animation_money_round(already_deduction)),
+            "new_tiles": int(max(0, new_tiles)),
+            "total_tiles": int(max(0, total_tiles)),
+        }
+
+    def _price_for_row(self, row):
+        return _animation_price_text(self._price_value_for_row(row))
+
+    def _original_price_for_row(self, row):
+        price = self._price_value_for_row(row)
+        original = self._gross_price_value_for_row(row)
         return original if original > price + 1e-9 else 0.0
 
     def _zero_price_note_for_row(self, row):
@@ -5605,8 +5687,22 @@ class PLANETKA_OT_AnimationRenderCostBreakdown(bpy.types.Operator):
         segments = list(breakdown.get("segments", ()) or ())
 
         header = layout.box()
+        totals = self._summary_totals(segments, breakdown)
         header.label(text="Final Animation Render Full Quality Breakdown", icon="INFO")
-        header.label(text=f"Full Quality tile price: {_animation_price_text(breakdown.get('tile_price_eur', 0.0))}")
+        header.label(text=f"Total data size: {_animation_bytes_text(breakdown.get('total_bytes', 0))}", icon="DISK_DRIVE")
+        header.label(
+            text=f"New Tiles / Total Tiles: {totals['new_tiles']} / {totals['total_tiles']}",
+            icon="TEXTURE",
+        )
+        header.label(text=f"Full Price: {_animation_price_text(totals['full_price'])}", icon="SOLO_ON")
+        if totals["already_count"] > 0 and totals["already_deduction"] > 0.000001:
+            header.label(
+                text=(
+                    f"Already Licenced: {totals['already_count']} tiles "
+                    f"(-{_animation_price_text(totals['already_deduction'])})"
+                ),
+                icon="CHECKMARK",
+            )
         custom_licence = float(breakdown.get("custom_animation_licence_eur", 0.0) or 0.0)
         if custom_licence > 0.000001:
             custom_segments = int(breakdown.get("custom_animation_licence_segments", 0) or 0)
@@ -5620,9 +5716,9 @@ class PLANETKA_OT_AnimationRenderCostBreakdown(bpy.types.Operator):
         if segments:
             header.label(
                 text=(
-                    f"Frames: {int(breakdown.get('frame_start', 0) or 0):04d}-"
+                    f"Frames: {int(breakdown.get('frame_start', 0) or 0):04d} - "
                     f"{int(breakdown.get('frame_end', 0) or 0):04d}, "
-                    f"Segments: {len(segments)}, Unique tiles: {int(breakdown.get('tile_count', 0) or 0)}"
+                    f"Segments: {len(segments)}, Unique Tiles: {int(breakdown.get('tile_count', 0) or 0)}"
                 )
             )
         header.label(
@@ -5646,7 +5742,6 @@ class PLANETKA_OT_AnimationRenderCostBreakdown(bpy.types.Operator):
                 ),
                 icon="RENDER_ANIMATION",
             )
-            segment_box.label(text=f"Tile price: {_animation_price_text(segment.get('tile_price_eur', 0.0))}", icon="TEXTURE")
             segment_fee = float(segment.get("custom_animation_licence_eur", 0.0) or 0.0)
             if segment_fee > 0.000001:
                 segment_box.label(text=f"Custom animation licence: {_animation_price_text(segment_fee)}", icon="URL")
