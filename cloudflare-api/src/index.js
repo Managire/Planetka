@@ -2940,6 +2940,10 @@ async function ensureCreditTables(db) {
   );
   await dbRun(
     db,
+    `CREATE INDEX IF NOT EXISTS idx_purchase_history_user_type ON purchase_history(user_id, purchase_type, catalog_version, region_pack_id)`,
+  );
+  await dbRun(
+    db,
     `
       CREATE TABLE IF NOT EXISTS purchase_history_tiles (
         purchase_id TEXT NOT NULL,
@@ -2958,6 +2962,10 @@ async function ensureCreditTables(db) {
   await dbRun(
     db,
     `CREATE INDEX IF NOT EXISTS idx_purchase_history_tiles_tile ON purchase_history_tiles(tile_key)`,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_purchase_history_tiles_purchase ON purchase_history_tiles(purchase_id)`,
   );
   await dbRun(
     db,
@@ -3070,6 +3078,31 @@ async function ensureCreditTables(db) {
   await dbRun(
     db,
     `CREATE INDEX IF NOT EXISTS idx_region_pack_tile_entries_tile ON region_pack_tile_entries(catalog_version, tile_key)`,
+  );
+  await dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS region_pack_relations (
+        catalog_version TEXT NOT NULL,
+        target_region_pack_id TEXT NOT NULL,
+        owned_region_pack_id TEXT NOT NULL,
+        relation_type TEXT NOT NULL DEFAULT 'exclusive',
+        target_tile_count INTEGER NOT NULL DEFAULT 0,
+        owned_tile_count INTEGER NOT NULL DEFAULT 0,
+        overlap_tile_count INTEGER NOT NULL DEFAULT 0,
+        overlap_paid_tile_count INTEGER NOT NULL DEFAULT 0,
+        overlap_free_tile_count INTEGER NOT NULL DEFAULT 0,
+        overlap_base_gross_cents INTEGER NOT NULL DEFAULT 0,
+        target_base_gross_cents INTEGER NOT NULL DEFAULT 0,
+        owned_base_gross_cents INTEGER NOT NULL DEFAULT 0,
+        computed_at TEXT NOT NULL,
+        PRIMARY KEY (catalog_version, target_region_pack_id, owned_region_pack_id)
+      )
+    `,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_region_pack_relations_owned ON region_pack_relations(catalog_version, owned_region_pack_id, target_region_pack_id)`,
   );
   await dbRun(
     db,

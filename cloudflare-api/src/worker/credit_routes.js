@@ -74,6 +74,7 @@ const USER_CREDIT_ACCOUNT_CACHE = new Map();
 const USER_ENTITLEMENT_SUMMARY_CACHE = new Map();
 const REGION_OFFERS_RESPONSE_CACHE = new Map();
 const REGION_PACK_ESTIMATE_CACHE = new Map();
+const REGION_PACK_RELATION_CACHE = new Map();
 const DETAIL_TOKEN_CACHE = new Map();
 let PRICING_SETTINGS_CACHE = {
   loaded_at_ms: 0,
@@ -85,6 +86,7 @@ const USER_CREDIT_ACCOUNT_CACHE_MAX = 2048;
 const USER_ENTITLEMENT_SUMMARY_CACHE_MAX = 32;
 const REGION_OFFERS_RESPONSE_CACHE_MAX = 1024;
 const REGION_PACK_ESTIMATE_CACHE_MAX = 512;
+const REGION_PACK_RELATION_CACHE_MAX = 4096;
 const DETAIL_TOKEN_CACHE_MAX = 4096;
 const REGION_PRODUCT_TILE_KEYS_CACHE_MAX = 128;
 const REGION_PRODUCT_SORTED_TILE_KEYS_CACHE_MAX = 128;
@@ -751,6 +753,806 @@ async function regionProductPricingSummaryD1(db, product, deps) {
   };
   boundedCacheSet(REGION_PRODUCT_PRICING_SUMMARY_CACHE, cacheKey, summary, 512);
   return { ...summary };
+}
+
+function normalizedRegionPackProductId(productOrId) {
+  return String(productOrId && productOrId.id || productOrId || "").trim().toLowerCase();
+}
+
+function regionPackRelationCacheKey(targetId, ownedId) {
+  const target = normalizedRegionPackProductId(targetId);
+  const owned = normalizedRegionPackProductId(ownedId);
+  return target && owned ? `${REGION_PACK_CATALOG_VERSION}|${target}|${owned}` : "";
+}
+
+function normalizedRegionPackRelationRow(row) {
+  if (!row || typeof row !== "object") {
+    return null;
+  }
+  const targetId = normalizedRegionPackProductId(row.target_region_pack_id);
+  const ownedId = normalizedRegionPackProductId(row.owned_region_pack_id);
+  if (!targetId || !ownedId) {
+    return null;
+  }
+  return {
+    catalog_version: String(row.catalog_version || REGION_PACK_CATALOG_VERSION),
+    target_region_pack_id: targetId,
+    owned_region_pack_id: ownedId,
+    relation_type: String(row.relation_type || "exclusive").trim().toLowerCase() || "exclusive",
+    target_tile_count: Math.max(0, Number.parseInt(row.target_tile_count || 0, 10) || 0),
+    owned_tile_count: Math.max(0, Number.parseInt(row.owned_tile_count || 0, 10) || 0),
+    overlap_tile_count: Math.max(0, Number.parseInt(row.overlap_tile_count || 0, 10) || 0),
+    overlap_paid_tile_count: Math.max(0, Number.parseInt(row.overlap_paid_tile_count || 0, 10) || 0),
+    overlap_free_tile_count: Math.max(0, Number.parseInt(row.overlap_free_tile_count || 0, 10) || 0),
+    overlap_base_gross_cents: Math.max(0, Number.parseInt(row.overlap_base_gross_cents || 0, 10) || 0),
+    target_base_gross_cents: Math.max(0, Number.parseInt(row.target_base_gross_cents || 0, 10) || 0),
+    owned_base_gross_cents: Math.max(0, Number.parseInt(row.owned_base_gross_cents || 0, 10) || 0),
+    computed_at: String(row.computed_at || ""),
+  };
+}
+
+function relationTypeFromOverlapCounts(targetId, ownedId, targetTileCount, ownedTileCount, overlapTileCount) {
+  const target = normalizedRegionPackProductId(targetId);
+  const owned = normalizedRegionPackProductId(ownedId);
+  const targetCount = Math.max(0, Number.parseInt(targetTileCount || 0, 10) || 0);
+  const ownedCount = Math.max(0, Number.parseInt(ownedTileCount || 0, 10) || 0);
+  const overlapCount = Math.max(0, Number.parseInt(overlapTileCount || 0, 10) || 0);
+  if (!target || !owned || overlapCount <= 0) {
+    return "exclusive";
+  }
+  if (target === owned) {
+    return "self";
+  }
+  if (targetCount > 0 && overlapCount >= targetCount) {
+    return "parent_covers_target";
+  }
+  if (ownedCount > 0 && overlapCount >= ownedCount) {
+    return "owned_child_of_target";
+  }
+  return "overlap";
+}
+
+function regionPackRelationCoversTarget(relation) {
+  const type = String(relation && relation.relation_type || "").trim().toLowerCase();
+  return type === "self" || type === "parent_covers_target";
+}
+
+function regionPackRelationHasOverlap(relation) {
+  if (!relation) {
+    return false;
+  }
+  if (regionPackRelationCoversTarget(relation)) {
+    return true;
+  }
+  return Math.max(0, Number.parseInt(relation.overlap_tile_count || 0, 10) || 0) > 0
+    && String(relation.relation_type || "").trim().toLowerCase() !== "exclusive";
+}
+
+function syntheticRegionPackRelation(targetProduct, ownedProduct, relationType = "") {
+  const targetId = normalizedRegionPackProductId(targetProduct);
+  const ownedId = normalizedRegionPackProductId(ownedProduct);
+  if (!targetId || !ownedId) {
+    return null;
+  }
+  const targetSummary = regionProductPricingSummary(targetProduct) || {};
+  const ownedSummary = regionProductPricingSummary(ownedProduct) || {};
+  const targetTileCount = Math.max(0, Number.parseInt(targetSummary.tile_count || 0, 10) || 0);
+  const ownedTileCount = Math.max(0, Number.parseInt(ownedSummary.tile_count || 0, 10) || 0);
+  const overlapTileCount = relationType === "parent_covers_target" || relationType === "self"
+    ? targetTileCount
+    : ownedTileCount;
+  return normalizedRegionPackRelationRow({
+    catalog_version: REGION_PACK_CATALOG_VERSION,
+    target_region_pack_id: targetId,
+    owned_region_pack_id: ownedId,
+    relation_type: relationType || relationTypeFromOverlapCounts(targetId, ownedId, targetTileCount, ownedTileCount, overlapTileCount),
+    target_tile_count: targetTileCount,
+    owned_tile_count: ownedTileCount,
+    overlap_tile_count: overlapTileCount,
+    overlap_paid_tile_count: relationType === "parent_covers_target" || relationType === "self"
+      ? Math.max(0, Number.parseInt(targetSummary.paid_tile_count || 0, 10) || 0)
+      : Math.max(0, Number.parseInt(ownedSummary.paid_tile_count || 0, 10) || 0),
+    overlap_free_tile_count: relationType === "parent_covers_target" || relationType === "self"
+      ? Math.max(0, Number.parseInt(targetSummary.free_tile_count || 0, 10) || 0)
+      : Math.max(0, Number.parseInt(ownedSummary.free_tile_count || 0, 10) || 0),
+    overlap_base_gross_cents: relationType === "parent_covers_target" || relationType === "self"
+      ? Math.max(0, Number.parseInt(targetProduct && targetProduct.gross_cents || 0, 10) || 0)
+      : Math.max(0, Number.parseInt(ownedProduct && ownedProduct.gross_cents || 0, 10) || 0),
+    target_base_gross_cents: Math.max(0, Number.parseInt(targetProduct && targetProduct.gross_cents || 0, 10) || 0),
+    owned_base_gross_cents: Math.max(0, Number.parseInt(ownedProduct && ownedProduct.gross_cents || 0, 10) || 0),
+    computed_at: "",
+  });
+}
+
+async function computeRegionPackRelation(db, targetProduct, ownedProduct, deps) {
+  const targetId = normalizedRegionPackProductId(targetProduct);
+  const ownedId = normalizedRegionPackProductId(ownedProduct);
+  if (!targetId || !ownedId) {
+    return null;
+  }
+  const targetSummary = await regionProductPricingSummaryD1(db, targetProduct, deps);
+  const ownedSummary = await regionProductPricingSummaryD1(db, ownedProduct, deps);
+  const targetTileCount = Math.max(0, Number.parseInt(targetSummary && targetSummary.tile_count || 0, 10) || 0);
+  const ownedTileCount = Math.max(0, Number.parseInt(ownedSummary && ownedSummary.tile_count || 0, 10) || 0);
+  let overlapTileCount = 0;
+  let overlapPaidTileCount = 0;
+  let overlapFreeTileCount = 0;
+  let overlapBaseGrossCents = 0;
+  if (targetId === ownedId) {
+    overlapTileCount = targetTileCount;
+    overlapPaidTileCount = Math.max(0, Number.parseInt(targetSummary && targetSummary.paid_tile_count || 0, 10) || 0);
+    overlapFreeTileCount = Math.max(0, Number.parseInt(targetSummary && targetSummary.free_tile_count || 0, 10) || 0);
+    overlapBaseGrossCents = Math.max(0, Number.parseInt(targetProduct && targetProduct.gross_cents || 0, 10) || 0);
+  } else {
+    const row = await deps.dbGet(
+      db,
+      `
+        SELECT
+          COUNT(*) AS overlap_tile_count,
+          COALESCE(SUM(CASE WHEN t.globally_free = 0 AND t.base_gross_cents > 0 THEN 1 ELSE 0 END), 0) AS overlap_paid_tile_count,
+          COALESCE(SUM(CASE WHEN t.globally_free != 0 OR t.base_gross_cents <= 0 THEN 1 ELSE 0 END), 0) AS overlap_free_tile_count,
+          COALESCE(SUM(t.base_gross_cents), 0) AS overlap_base_gross_cents
+        FROM region_pack_tile_entries AS t
+        INNER JOIN region_pack_tile_entries AS o
+          ON o.catalog_version = t.catalog_version
+         AND o.tile_key = t.tile_key
+        WHERE t.catalog_version = ?
+          AND t.region_pack_id = ?
+          AND o.region_pack_id = ?
+      `,
+      [REGION_PACK_CATALOG_VERSION, targetId, ownedId],
+    );
+    overlapTileCount = Math.max(0, Number.parseInt(row && row.overlap_tile_count || 0, 10) || 0);
+    overlapPaidTileCount = Math.max(0, Number.parseInt(row && row.overlap_paid_tile_count || 0, 10) || 0);
+    overlapFreeTileCount = Math.max(0, Number.parseInt(row && row.overlap_free_tile_count || 0, 10) || 0);
+    overlapBaseGrossCents = Math.max(0, Number.parseInt(row && row.overlap_base_gross_cents || 0, 10) || 0);
+  }
+  return normalizedRegionPackRelationRow({
+    catalog_version: REGION_PACK_CATALOG_VERSION,
+    target_region_pack_id: targetId,
+    owned_region_pack_id: ownedId,
+    relation_type: relationTypeFromOverlapCounts(targetId, ownedId, targetTileCount, ownedTileCount, overlapTileCount),
+    target_tile_count: targetTileCount,
+    owned_tile_count: ownedTileCount,
+    overlap_tile_count: overlapTileCount,
+    overlap_paid_tile_count: overlapPaidTileCount,
+    overlap_free_tile_count: overlapFreeTileCount,
+    overlap_base_gross_cents: overlapBaseGrossCents,
+    target_base_gross_cents: Math.max(0, Number.parseInt(targetProduct && targetProduct.gross_cents || 0, 10) || 0),
+    owned_base_gross_cents: Math.max(0, Number.parseInt(ownedProduct && ownedProduct.gross_cents || 0, 10) || 0),
+    computed_at: deps.nowIso(),
+  });
+}
+
+async function regionPackRelationForPair(db, targetProduct, ownedProduct, deps) {
+  const targetId = normalizedRegionPackProductId(targetProduct);
+  const ownedId = normalizedRegionPackProductId(ownedProduct);
+  const cacheKey = regionPackRelationCacheKey(targetId, ownedId);
+  if (!targetId || !ownedId || !cacheKey) {
+    return null;
+  }
+  if (targetId === ownedId) {
+    return syntheticRegionPackRelation(targetProduct, ownedProduct, "self");
+  }
+  if (ownedId === "world") {
+    return syntheticRegionPackRelation(targetProduct, ownedProduct, "parent_covers_target");
+  }
+  if (targetId === "world") {
+    return syntheticRegionPackRelation(targetProduct, ownedProduct, "owned_child_of_target");
+  }
+  const cached = REGION_PACK_RELATION_CACHE.get(cacheKey);
+  if (cached) {
+    return { ...cached };
+  }
+  await deps.ensureCreditTables(db);
+  const existing = normalizedRegionPackRelationRow(await deps.dbGet(
+    db,
+    `
+      SELECT *
+      FROM region_pack_relations
+      WHERE catalog_version = ?
+        AND target_region_pack_id = ?
+        AND owned_region_pack_id = ?
+      LIMIT 1
+    `,
+    [REGION_PACK_CATALOG_VERSION, targetId, ownedId],
+  ));
+  if (existing) {
+    boundedCacheSet(REGION_PACK_RELATION_CACHE, cacheKey, existing, REGION_PACK_RELATION_CACHE_MAX);
+    return { ...existing };
+  }
+  const relation = await computeRegionPackRelation(db, targetProduct, ownedProduct, deps);
+  if (!relation) {
+    return null;
+  }
+  await deps.dbRun(
+    db,
+    `
+      INSERT OR REPLACE INTO region_pack_relations (
+        catalog_version,
+        target_region_pack_id,
+        owned_region_pack_id,
+        relation_type,
+        target_tile_count,
+        owned_tile_count,
+        overlap_tile_count,
+        overlap_paid_tile_count,
+        overlap_free_tile_count,
+        overlap_base_gross_cents,
+        target_base_gross_cents,
+        owned_base_gross_cents,
+        computed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    [
+      relation.catalog_version,
+      relation.target_region_pack_id,
+      relation.owned_region_pack_id,
+      relation.relation_type,
+      relation.target_tile_count,
+      relation.owned_tile_count,
+      relation.overlap_tile_count,
+      relation.overlap_paid_tile_count,
+      relation.overlap_free_tile_count,
+      relation.overlap_base_gross_cents,
+      relation.target_base_gross_cents,
+      relation.owned_base_gross_cents,
+      relation.computed_at,
+    ],
+  );
+  boundedCacheSet(REGION_PACK_RELATION_CACHE, cacheKey, relation, REGION_PACK_RELATION_CACHE_MAX);
+  return { ...relation };
+}
+
+async function purchasedRegionPackIdsForUser(db, userId, deps) {
+  const safeUserId = String(userId || "").trim();
+  if (!safeUserId) {
+    return [];
+  }
+  await deps.ensureCreditTables(db);
+  const rows = await deps.dbAll(
+    db,
+    `
+      SELECT DISTINCT LOWER(TRIM(region_pack_id)) AS region_pack_id
+      FROM purchase_history
+      WHERE user_id = ?
+        AND LOWER(TRIM(purchase_type)) = 'region_pack'
+        AND catalog_version = ?
+        AND region_pack_id IS NOT NULL
+        AND TRIM(region_pack_id) != ''
+    `,
+    [safeUserId, REGION_PACK_CATALOG_VERSION],
+  );
+  return Array.from(new Set((rows || [])
+    .map((row) => normalizedRegionPackProductId(row && row.region_pack_id))
+    .filter((id) => id && regionProductById(id))));
+}
+
+async function purchasedSceneTileRowsForUser(db, userId, deps) {
+  const safeUserId = String(userId || "").trim();
+  if (!safeUserId) {
+    return [];
+  }
+  await deps.ensureCreditTables(db);
+  const rows = await deps.dbAll(
+    db,
+    `
+      SELECT
+        pht.tile_key AS tile_key,
+        MAX(CAST(ROUND(COALESCE(NULLIF(pht.gross_price_eur, 0), pht.price_eur, 0) * 100.0) AS INTEGER)) AS value_cents
+      FROM purchase_history AS ph
+      INNER JOIN purchase_history_tiles AS pht
+        ON pht.purchase_id = ph.id
+      WHERE ph.user_id = ?
+        AND LOWER(TRIM(ph.purchase_type)) IN ('scene_tiles', 'animation_tiles')
+        AND pht.tile_key IS NOT NULL
+        AND TRIM(pht.tile_key) != ''
+      GROUP BY pht.tile_key
+    `,
+    [safeUserId],
+  );
+  return (rows || [])
+    .map((row) => {
+      const key = normalizeTileKey(row && row.tile_key || "");
+      const parsed = parseTileKey(key);
+      const family = tileFamilyKey(parsed);
+      if (!key || !parsed || !family) {
+        return null;
+      }
+      return {
+        tile_key: key,
+        key,
+        family,
+        d: Number(parsed.d),
+        value_cents: integerCents(row && row.value_cents),
+      };
+    })
+    .filter(Boolean);
+}
+
+function ownedByFamilyFromSceneTileRows(rows) {
+  const ownedByFamily = new Map();
+  for (const row of rows || []) {
+    const key = normalizeTileKey(row && (row.key || row.tile_key) || "");
+    const parsed = parseTileKey(key);
+    const family = String(row && row.family || tileFamilyKey(parsed) || "");
+    if (!key || !parsed || !family) {
+      continue;
+    }
+    if (!ownedByFamily.has(family)) {
+      ownedByFamily.set(family, []);
+    }
+    ownedByFamily.get(family).push({
+      key,
+      d: Number(parsed.d),
+      value_cents: integerCents(row && row.value_cents),
+    });
+  }
+  return ownedByFamily;
+}
+
+async function regionPackPricingOwnershipContext(db, userId, account, deps, options = {}) {
+  if (options && options.pricingOwnershipContext) {
+    return options.pricingOwnershipContext;
+  }
+  const safeUserId = String(userId || "").trim();
+  if (!safeUserId) {
+    return {
+      purchasedPackIds: [],
+      purchasedPackIdSet: new Set(),
+      sceneTileRows: [],
+      sceneOwnedByFamily: new Map(),
+      hasPurchaseHistoryFacts: false,
+    };
+  }
+  const purchasedPackIds = await purchasedRegionPackIdsForUser(db, safeUserId, deps);
+  const sceneTileRows = await purchasedSceneTileRowsForUser(db, safeUserId, deps);
+  return {
+    purchasedPackIds,
+    purchasedPackIdSet: new Set(purchasedPackIds),
+    sceneTileRows,
+    sceneOwnedByFamily: ownedByFamilyFromSceneTileRows(sceneTileRows),
+    hasPurchaseHistoryFacts: purchasedPackIds.length > 0 || sceneTileRows.length > 0,
+    world_full_quality_unlocked: isWorldFullQualityUnlocked(account),
+  };
+}
+
+async function relevantPurchasedPackRelations(db, targetProduct, purchasedPackIds, deps) {
+  const targetId = normalizedRegionPackProductId(targetProduct);
+  const relations = [];
+  if (!targetId || !Array.isArray(purchasedPackIds) || !purchasedPackIds.length) {
+    return relations;
+  }
+  for (const ownedId of purchasedPackIds) {
+    const ownedProduct = regionProductById(ownedId);
+    if (!ownedProduct || isHiddenRegionProduct(ownedProduct)) {
+      continue;
+    }
+    const relation = await regionPackRelationForPair(db, targetProduct, ownedProduct, deps);
+    if (regionPackRelationHasOverlap(relation)) {
+      relations.push(relation);
+    }
+  }
+  return relations;
+}
+
+async function packCoverageAggregateForTarget(db, targetProduct, ownedPackIds, deps) {
+  const targetId = normalizedRegionPackProductId(targetProduct);
+  const ids = Array.from(new Set((Array.isArray(ownedPackIds) ? ownedPackIds : [])
+    .map(normalizedRegionPackProductId)
+    .filter((id) => id && id !== targetId && regionProductById(id))));
+  if (!targetId || !ids.length) {
+    return {
+      tile_count: 0,
+      paid_tile_count: 0,
+      free_tile_count: 0,
+      base_gross_cents: 0,
+    };
+  }
+  await ensureRegionPackTileEntryTable(db, deps);
+  if (ids.length > SQL_VARIABLE_SAFE_CHUNK_SIZE) {
+    const byTileKey = new Map();
+    for (const chunk of fixedSizeChunks(ids, SQL_VARIABLE_SAFE_CHUNK_SIZE)) {
+      const rows = await deps.dbAll(
+        db,
+        `
+          SELECT DISTINCT
+            t.tile_key,
+            t.base_gross_cents,
+            t.globally_free
+          FROM region_pack_tile_entries AS owned
+          INNER JOIN region_pack_tile_entries AS t
+            ON t.catalog_version = owned.catalog_version
+           AND t.tile_key = owned.tile_key
+          WHERE owned.catalog_version = ?
+            AND owned.region_pack_id IN (${chunk.map(() => "?").join(",")})
+            AND t.region_pack_id = ?
+        `,
+        [REGION_PACK_CATALOG_VERSION, ...chunk, targetId],
+      );
+      for (const row of rows || []) {
+        const key = normalizeTileKey(row && row.tile_key || "");
+        if (key && !byTileKey.has(key)) {
+          byTileKey.set(key, row);
+        }
+      }
+    }
+    let paidTileCount = 0;
+    let freeTileCount = 0;
+    let baseGrossCents = 0;
+    for (const row of byTileKey.values()) {
+      const baseCents = Math.max(0, Number.parseInt(row && row.base_gross_cents || 0, 10) || 0);
+      const globallyFree = Boolean(Number(row && row.globally_free || 0) || baseCents <= 0);
+      if (globallyFree) {
+        freeTileCount += 1;
+      } else {
+        paidTileCount += 1;
+      }
+      baseGrossCents += baseCents;
+    }
+    return {
+      tile_count: byTileKey.size,
+      paid_tile_count: paidTileCount,
+      free_tile_count: freeTileCount,
+      base_gross_cents: baseGrossCents,
+    };
+  }
+  let tileCount = 0;
+  let paidTileCount = 0;
+  let freeTileCount = 0;
+  let baseGrossCents = 0;
+  for (const chunk of fixedSizeChunks(ids, SQL_VARIABLE_SAFE_CHUNK_SIZE)) {
+    const row = await deps.dbGet(
+      db,
+      `
+        SELECT
+          COUNT(*) AS tile_count,
+          COALESCE(SUM(CASE WHEN globally_free = 0 AND base_gross_cents > 0 THEN 1 ELSE 0 END), 0) AS paid_tile_count,
+          COALESCE(SUM(CASE WHEN globally_free != 0 OR base_gross_cents <= 0 THEN 1 ELSE 0 END), 0) AS free_tile_count,
+          COALESCE(SUM(base_gross_cents), 0) AS base_gross_cents
+        FROM (
+          SELECT DISTINCT
+            t.tile_key,
+            t.base_gross_cents,
+            t.globally_free
+          FROM region_pack_tile_entries AS owned
+          INNER JOIN region_pack_tile_entries AS t
+            ON t.catalog_version = owned.catalog_version
+           AND t.tile_key = owned.tile_key
+          WHERE owned.catalog_version = ?
+            AND owned.region_pack_id IN (${chunk.map(() => "?").join(",")})
+            AND t.region_pack_id = ?
+        )
+      `,
+      [REGION_PACK_CATALOG_VERSION, ...chunk, targetId],
+    );
+    tileCount += Math.max(0, Number.parseInt(row && row.tile_count || 0, 10) || 0);
+    paidTileCount += Math.max(0, Number.parseInt(row && row.paid_tile_count || 0, 10) || 0);
+    freeTileCount += Math.max(0, Number.parseInt(row && row.free_tile_count || 0, 10) || 0);
+    baseGrossCents += Math.max(0, Number.parseInt(row && row.base_gross_cents || 0, 10) || 0);
+  }
+  return {
+    tile_count: tileCount,
+    paid_tile_count: paidTileCount,
+    free_tile_count: freeTileCount,
+    base_gross_cents: baseGrossCents,
+  };
+}
+
+async function packCoveredTileKeysForFamilies(db, targetProduct, ownedPackIds, familyKeys, deps) {
+  const targetId = normalizedRegionPackProductId(targetProduct);
+  const ids = Array.from(new Set((Array.isArray(ownedPackIds) ? ownedPackIds : [])
+    .map(normalizedRegionPackProductId)
+    .filter((id) => id && id !== targetId && regionProductById(id))));
+  const families = Array.from(new Set((Array.isArray(familyKeys) ? familyKeys : [])
+    .map((family) => String(family || "").trim())
+    .filter(Boolean)));
+  const covered = new Set();
+  if (!targetId || !ids.length || !families.length) {
+    return covered;
+  }
+  await ensureRegionPackTileEntryTable(db, deps);
+  for (const familyChunk of fixedSizeChunks(families, SQL_VARIABLE_SAFE_CHUNK_SIZE)) {
+    for (const idChunk of fixedSizeChunks(ids, Math.max(1, SQL_VARIABLE_SAFE_CHUNK_SIZE - familyChunk.length - 8))) {
+      const rows = await deps.dbAll(
+        db,
+        `
+          SELECT DISTINCT t.tile_key AS tile_key
+          FROM region_pack_tile_entries AS owned
+          INNER JOIN region_pack_tile_entries AS t
+            ON t.catalog_version = owned.catalog_version
+           AND t.tile_key = owned.tile_key
+          WHERE owned.catalog_version = ?
+            AND owned.region_pack_id IN (${idChunk.map(() => "?").join(",")})
+            AND t.region_pack_id = ?
+            AND t.family_key IN (${familyChunk.map(() => "?").join(",")})
+        `,
+        [REGION_PACK_CATALOG_VERSION, ...idChunk, targetId, ...familyChunk],
+      );
+      for (const row of rows || []) {
+        const key = normalizeTileKey(row && row.tile_key || "");
+        if (key) {
+          covered.add(key);
+        }
+      }
+    }
+  }
+  return covered;
+}
+
+async function ownedTileKeysForRegionPackMap(db, targetProduct, ownershipContext, deps) {
+  const targetId = normalizedRegionPackProductId(targetProduct);
+  if (!targetId || !ownershipContext || ownershipContext.world_full_quality_unlocked) {
+    return [];
+  }
+  const purchasedPackIds = Array.from(new Set(Array.isArray(ownershipContext.purchasedPackIds)
+    ? ownershipContext.purchasedPackIds.map(normalizedRegionPackProductId).filter(Boolean)
+    : []));
+  const relations = await relevantPurchasedPackRelations(db, targetProduct, purchasedPackIds, deps);
+  const packIds = relations
+    .filter(regionPackRelationHasOverlap)
+    .map((relation) => normalizedRegionPackProductId(relation.owned_region_pack_id))
+    .filter((id) => id && id !== targetId);
+  const keys = new Set();
+  if (relations.some(regionPackRelationCoversTarget) || (ownershipContext.purchasedPackIdSet && ownershipContext.purchasedPackIdSet.has(targetId))) {
+    const rows = await regionPackAllTileRowsForProduct(db, targetProduct, deps);
+    for (const row of rows) {
+      const key = normalizeTileKey(row && row.key || row && row.tile_key || "");
+      if (key) {
+        keys.add(key);
+      }
+    }
+  } else if (packIds.length) {
+    await ensureRegionPackTileEntryTable(db, deps);
+    for (const chunk of fixedSizeChunks(packIds, SQL_VARIABLE_SAFE_CHUNK_SIZE)) {
+      const rows = await deps.dbAll(
+        db,
+        `
+          SELECT DISTINCT t.tile_key AS tile_key
+          FROM region_pack_tile_entries AS owned
+          INNER JOIN region_pack_tile_entries AS t
+            ON t.catalog_version = owned.catalog_version
+           AND t.tile_key = owned.tile_key
+          WHERE owned.catalog_version = ?
+            AND owned.region_pack_id IN (${chunk.map(() => "?").join(",")})
+            AND t.region_pack_id = ?
+        `,
+        [REGION_PACK_CATALOG_VERSION, ...chunk, targetId],
+      );
+      for (const row of rows || []) {
+        const key = normalizeTileKey(row && row.tile_key || "");
+        if (key) {
+          keys.add(key);
+        }
+      }
+    }
+  }
+  const sceneRows = Array.isArray(ownershipContext.sceneTileRows) ? ownershipContext.sceneTileRows : [];
+  if (sceneRows.length) {
+    if (targetId === "world") {
+      for (const row of sceneRows) {
+        const key = normalizeTileKey(row && (row.key || row.tile_key) || "");
+        if (key) {
+          keys.add(key);
+        }
+      }
+    } else {
+      const familySet = await regionProductTileFamilySet(db, targetProduct, deps);
+      for (const row of sceneRows) {
+        const key = normalizeTileKey(row && (row.key || row.tile_key) || "");
+        const parsed = parseTileKey(key);
+        const family = tileFamilyKey(parsed);
+        if (key && family && familySet.has(family)) {
+          keys.add(key);
+        }
+      }
+    }
+  }
+  return Array.from(keys).sort(compareRegionTileKeys);
+}
+
+async function estimateRegionPackSummaryWithPackRelations(db, product, account, ownershipContext, deps, options = {}) {
+  const summary = await regionProductPricingSummaryD1(db, product, deps);
+  if (!summary) {
+    return { error: "missing_region_pack_summary" };
+  }
+  const discountPercent = regionProductDiscountPercent(product);
+  const productId = normalizedRegionPackProductId(product);
+  if (isWorldFullQualityUnlocked(account)) {
+    const fullCents = integerCents(summary.gross_cents);
+    return {
+      ok: true,
+      summary_estimate: true,
+      relation_pricing_estimate: true,
+      world_full_quality_unlocked: true,
+      region_pack: regionProductPublicPayload(product),
+      region_pack_id: String(product.id || ""),
+      region_pack_name: String(product.name || ""),
+      catalog_version: REGION_PACK_CATALOG_VERSION,
+      discount_percent: discountPercent,
+      gross_eur: 0,
+      gross_cents: 0,
+      gross_price_eur: 0,
+      gross_price_cents: 0,
+      discount_eur: 0,
+      discount_cents: 0,
+      already_licenced_gross_eur: centsToEur(fullCents),
+      already_licenced_gross_cents: fullCents,
+      already_licenced_saving_eur: centsToEur(fullCents),
+      already_licenced_saving_cents: fullCents,
+      credits: 0,
+      credits_cents: 0,
+      price_eur: 0,
+      price_cents: 0,
+      paid_tile_count: 0,
+      free_tile_count: summary.tile_count,
+      tile_count: summary.tile_count,
+      unlicenced_tile_count: 0,
+      charged_tile_count: 0,
+      new_tile_count: 0,
+      new_tiles: [],
+      excluded_tiles: new Array(summary.licensable_tile_count).fill(null),
+      already_licenced_tile_count: summary.tile_count,
+      partial_licence_tile_count: 0,
+      partial_licence_credit_eur: 0,
+      partial_licence_credit_cents: 0,
+      integrity_warnings: [],
+      metadata_missing_tile_keys: [],
+      tiles: [],
+    };
+  }
+  const context = ownershipContext || await regionPackPricingOwnershipContext(
+    db,
+    account && account.user_id || "",
+    account,
+    deps,
+    options,
+  );
+  const purchasedPackIds = Array.from(new Set(Array.isArray(context && context.purchasedPackIds) ? context.purchasedPackIds : []));
+  const relations = await relevantPurchasedPackRelations(db, product, purchasedPackIds, deps);
+  if (relations.some(regionPackRelationCoversTarget)) {
+    const fullCents = integerCents(summary.gross_cents);
+    return {
+      ok: true,
+      summary_estimate: true,
+      relation_pricing_estimate: true,
+      covered_by_region_pack_relation: true,
+      region_pack: regionProductPublicPayload(product),
+      region_pack_id: String(product.id || ""),
+      region_pack_name: String(product.name || ""),
+      catalog_version: REGION_PACK_CATALOG_VERSION,
+      discount_percent: discountPercent,
+      gross_eur: 0,
+      gross_cents: 0,
+      gross_price_eur: 0,
+      gross_price_cents: 0,
+      discount_eur: 0,
+      discount_cents: 0,
+      already_licenced_gross_eur: centsToEur(fullCents),
+      already_licenced_gross_cents: fullCents,
+      already_licenced_saving_eur: centsToEur(fullCents),
+      already_licenced_saving_cents: fullCents,
+      credits: 0,
+      credits_cents: 0,
+      price_eur: 0,
+      price_cents: 0,
+      paid_tile_count: 0,
+      free_tile_count: summary.tile_count,
+      tile_count: summary.tile_count,
+      unlicenced_tile_count: 0,
+      charged_tile_count: 0,
+      new_tile_count: 0,
+      new_tiles: [],
+      excluded_tiles: new Array(summary.tile_count).fill(null),
+      already_licenced_tile_count: summary.tile_count,
+      partial_licence_tile_count: 0,
+      partial_licence_credit_eur: 0,
+      partial_licence_credit_cents: 0,
+      integrity_warnings: [],
+      metadata_missing_tile_keys: [],
+      tiles: [],
+    };
+  }
+
+  const relevantPackIds = relations
+    .filter(regionPackRelationHasOverlap)
+    .map((relation) => normalizedRegionPackProductId(relation.owned_region_pack_id))
+    .filter(Boolean);
+  const packCoverage = await packCoverageAggregateForTarget(db, product, relevantPackIds, deps);
+  let grossCents = Math.max(0, integerCents(summary.gross_cents) - applyFullQualityPriceCoefficientCents(packCoverage.base_gross_cents));
+  let paidTileCount = Math.max(0, Number.parseInt(summary.paid_tile_count || 0, 10) - Math.max(0, Number.parseInt(packCoverage.paid_tile_count || 0, 10) || 0));
+  let freeTileCount = Math.max(0, Number.parseInt(summary.free_tile_count || 0, 10) - Math.max(0, Number.parseInt(packCoverage.free_tile_count || 0, 10) || 0));
+  let alreadyLicencedCount = Math.max(0, Number.parseInt(packCoverage.tile_count || 0, 10) || 0);
+  let alreadyLicencedGrossCents = applyFullQualityPriceCoefficientCents(packCoverage.base_gross_cents);
+  let partialLicenceCount = 0;
+  let partialLicenceCreditCents = 0;
+
+  const sceneOwnedByFamily = context && context.sceneOwnedByFamily instanceof Map
+    ? context.sceneOwnedByFamily
+    : new Map();
+  if (sceneOwnedByFamily.size > 0) {
+    const familyKeys = Array.from(sceneOwnedByFamily.keys());
+    const familyRowsRaw = await regionPackTileRowsForProductFamilies(db, product, familyKeys, deps);
+    const packCoveredKeys = await packCoveredTileKeysForFamilies(db, product, relevantPackIds, familyKeys, deps);
+    const rowsByFamily = new Map();
+    for (const row of familyRowsRaw) {
+      const key = normalizeTileKey(row && row.key || row && row.tile_key || "");
+      if (key && packCoveredKeys.has(key)) {
+        continue;
+      }
+      const family = String(row && row.family || "");
+      if (!family || !sceneOwnedByFamily.has(family)) {
+        continue;
+      }
+      if (!rowsByFamily.has(family)) {
+        rowsByFamily.set(family, []);
+      }
+      rowsByFamily.get(family).push(row);
+    }
+    for (const [family, familyRows] of rowsByFamily.entries()) {
+      const ownedEntries = safeOwnedEntriesForFamily(sceneOwnedByFamily, family, familyRows);
+      if (!ownedEntries.length) {
+        continue;
+      }
+      const staticEstimate = estimateRegionPackFamilyRows(familyRows, []);
+      const familyEstimate = estimateRegionPackFamilyRows(familyRows, ownedEntries);
+      grossCents += familyEstimate.gross_cents - staticEstimate.gross_cents;
+      paidTileCount += familyEstimate.paid_tile_count - staticEstimate.paid_tile_count;
+      freeTileCount += familyEstimate.free_tile_count - staticEstimate.free_tile_count;
+      alreadyLicencedCount += familyEstimate.already_licenced_count;
+      alreadyLicencedGrossCents += familyEstimate.already_licenced_gross_cents;
+      partialLicenceCount += Math.max(0, Number.parseInt(familyEstimate.partial_licence_count || 0, 10) || 0);
+      partialLicenceCreditCents += Math.max(0, Number.parseInt(familyEstimate.partial_licence_credit_cents || 0, 10) || 0);
+    }
+  }
+
+  grossCents = Math.max(0, Math.round(grossCents));
+  paidTileCount = Math.max(0, Math.round(paidTileCount));
+  freeTileCount = Math.max(0, Math.round(freeTileCount));
+  alreadyLicencedGrossCents = Math.max(0, Math.min(integerCents(summary.gross_cents), Math.round(alreadyLicencedGrossCents)));
+  const amounts = discountedRegionPackAmountCents(grossCents, discountPercent);
+  const unlicencedTileCount = regionPackVisibleNewTileCount(paidTileCount, freeTileCount);
+  return {
+    ok: true,
+    summary_estimate: true,
+    relation_pricing_estimate: true,
+    relation_count: relations.length,
+    relation_pack_count: relevantPackIds.length,
+    region_pack: regionProductPublicPayload(product),
+    region_pack_id: String(product.id || ""),
+    region_pack_name: String(product.name || ""),
+    catalog_version: REGION_PACK_CATALOG_VERSION,
+    discount_percent: discountPercent,
+    gross_eur: amounts.gross,
+    gross_cents: amounts.gross_cents,
+    gross_price_eur: amounts.gross,
+    gross_price_cents: amounts.gross_cents,
+    discount_eur: amounts.discount,
+    discount_cents: amounts.discount_cents,
+    already_licenced_gross_eur: centsToEur(alreadyLicencedGrossCents),
+    already_licenced_gross_cents: alreadyLicencedGrossCents,
+    already_licenced_saving_eur: centsToEur(alreadyLicencedGrossCents),
+    already_licenced_saving_cents: alreadyLicencedGrossCents,
+    credits: amounts.price,
+    credits_cents: amounts.price_cents,
+    price_eur: amounts.price,
+    price_cents: amounts.price_cents,
+    paid_tile_count: paidTileCount,
+    free_tile_count: freeTileCount,
+    tile_count: summary.tile_count,
+    unlicenced_tile_count: unlicencedTileCount,
+    charged_tile_count: paidTileCount,
+    new_tile_count: paidTileCount,
+    already_licenced_tile_count: alreadyLicencedCount,
+    partial_licence_tile_count: partialLicenceCount,
+    partial_licence_credit_eur: centsToEur(partialLicenceCreditCents),
+    partial_licence_credit_cents: partialLicenceCreditCents,
+    new_tiles: [],
+    excluded_tiles: new Array(alreadyLicencedCount).fill(null),
+    integrity_warnings: [],
+    metadata_missing_tile_keys: [],
+    tiles: [],
+  };
 }
 
 function worldRegionProductSummary() {
@@ -1573,6 +2375,40 @@ async function ownedTileRowsForUser(db, userId, deps, options = {}) {
   return cloneOwnedRows(summary.rows);
 }
 
+async function ownedTileRowsForUserFamilies(db, userId, familyKeys, deps) {
+  await deps.ensureCreditTables(db);
+  const safeUserId = String(userId || "").trim();
+  const families = Array.from(new Set((Array.isArray(familyKeys) ? familyKeys : [])
+    .map((family) => String(family || "").trim())
+    .filter(Boolean)));
+  if (!safeUserId || !families.length) {
+    return [];
+  }
+  const rows = [];
+  const rangesPerChunk = Math.max(1, Math.floor((SQL_VARIABLE_SAFE_CHUNK_SIZE - 1) / 2));
+  for (const chunk of fixedSizeChunks(families, rangesPerChunk)) {
+    const params = [safeUserId];
+    const clauses = [];
+    for (const family of chunk) {
+      const prefix = `${family}_d`;
+      const end = `${family}_e`;
+      clauses.push("(tile_key >= ? AND tile_key < ?)");
+      params.push(prefix, end);
+    }
+    rows.push(...await deps.dbAll(
+      db,
+      `
+        SELECT tile_key
+        FROM user_tile_entitlements
+        WHERE user_id = ?
+          AND (${clauses.join(" OR ")})
+      `,
+      params,
+    ));
+  }
+  return cloneOwnedRows(rows);
+}
+
 async function freshCreditAccountForUser(db, userId, deps) {
   await deps.ensureCreditTables(db);
   const safeUserId = String(userId || "").trim();
@@ -2342,13 +3178,13 @@ function regionPackStaticMapPayload(product, token, account, ownedRows, options 
   };
 }
 
-async function relatedRegionPackQuoteEntries(db, product, userId, account, ownedSummary, deps, options = {}) {
+async function relatedRegionPackQuoteEntries(db, product, userId, account, pricingOwnershipContext, deps, options = {}) {
   const limit = Math.max(0, Number.parseInt(options && options.limit || 6, 10) || 6);
   const entries = [];
   for (const candidate of await relatedRegionProducts(db, product, deps, limit)) {
     const quote = await createRegionPackQuote(db, userId, candidate, deps, {
       account,
-      ownedSummary,
+      pricingOwnershipContext,
     });
     if (quote && !quote.error) {
       entries.push({ product: candidate, quote });
@@ -3039,7 +3875,10 @@ function safeOwnedEntriesForFamily(ownedByFamily, family, familyRows = []) {
     ? source.map((entry) => ({
       key: normalizeTileKey(entry && entry.key),
       d: Number(entry && entry.d),
-      value: valueByKey.get(normalizeTileKey(entry && entry.key)) || 0,
+      value: valueByKey.get(normalizeTileKey(entry && entry.key))
+        || integerCents(entry && (entry.value_cents ?? entry.gross_cents))
+        || centsForEur(entry && (entry.value_eur ?? entry.gross_price_eur ?? entry.price_eur))
+        || 0,
     })).filter((entry) => entry.key && Number.isFinite(entry.d))
     : [];
 }
@@ -3554,8 +4393,24 @@ async function estimateRegionPackSummaryCached(db, product, account, ownedByFami
       };
     }
   }
+  let estimateSource = null;
+  if (!(options && options.useRelationPricing === false)) {
+    const ownershipContext = options && options.pricingOwnershipContext
+      ? options.pricingOwnershipContext
+      : await regionPackPricingOwnershipContext(db, account && account.user_id || "", account, deps, options);
+    estimateSource = await estimateRegionPackSummaryWithPackRelations(
+      db,
+      product,
+      account,
+      ownershipContext,
+      deps,
+      options,
+    );
+  } else {
+    estimateSource = await estimateRegionPackSummaryWithOwned(db, product, account, ownedByFamily, deps, options);
+  }
   const estimate = compactRegionPackSummaryEstimate(
-    await estimateRegionPackSummaryWithOwned(db, product, account, ownedByFamily, deps, options),
+    estimateSource,
   );
   if (cacheKey && estimate && !estimate.error) {
     boundedCacheSet(
@@ -4309,12 +5164,12 @@ async function buildRegionPackCatalogPageData(db, userId, token, deps, options =
   const limit = Math.max(1, Math.min(REGION_PACK_CATALOG_PAGE_MAX_LIMIT, Number.parseInt(options && options.limit || 1, 10) || 1));
   const account = await ensureFreshCreditAccountForUser(db, userId, deps);
   const pageProducts = products.slice(offset, offset + limit);
-  const ownedSummary = await ownedEntitlementSummaryForUser(db, userId, deps, { account, includeRows: false });
+  const pricingOwnershipContext = await regionPackPricingOwnershipContext(db, userId, account, deps);
   const rows = [];
   for (const product of pageProducts) {
     const quote = await createRegionPackQuote(db, userId, product, deps, {
       account,
-      ownedSummary,
+      pricingOwnershipContext,
     });
     if (!quote || quote.error) {
       continue;
@@ -4334,6 +5189,8 @@ async function buildRegionPackCatalogPageData(db, userId, token, deps, options =
     next_offset: offset + pageProducts.length < total ? offset + pageProducts.length : null,
     rows,
     quote_pricing: true,
+    ownership_pack_count: Array.isArray(pricingOwnershipContext && pricingOwnershipContext.purchasedPackIds) ? pricingOwnershipContext.purchasedPackIds.length : 0,
+    ownership_scene_tile_count: Array.isArray(pricingOwnershipContext && pricingOwnershipContext.sceneTileRows) ? pricingOwnershipContext.sceneTileRows.length : 0,
   };
 }
 
@@ -4597,10 +5454,13 @@ async function createRegionPackQuote(db, userId, product, deps, options = {}) {
   if (regionPackQuoteMatches(cached, { userId: safeUserId, product, account })) {
     return cached;
   }
-  const ownedSummary = options && options.ownedSummary
-    ? options.ownedSummary
-    : await ownedEntitlementSummaryForUser(db, safeUserId, deps, { account, includeRows: false });
-  const estimate = await estimateRegionPackSummaryCached(db, product, account, ownedSummary.ownedByFamily, deps, { cache: true });
+  const pricingOwnershipContext = options && options.pricingOwnershipContext
+    ? options.pricingOwnershipContext
+    : await regionPackPricingOwnershipContext(db, safeUserId, account, deps, options);
+  const estimate = await estimateRegionPackSummaryCached(db, product, account, null, deps, {
+    cache: true,
+    pricingOwnershipContext,
+  });
   if (!estimate || estimate.error) {
     return {
       error: estimate && estimate.error || "region_pack_quote_estimate_failed",
@@ -5067,8 +5927,8 @@ export async function isTileUnlockedForUser(db, userId, tileKey, deps, options =
   if (authoritative) {
     return await tileUnlockedAuthoritative(db, userId, family, requestedD, deps);
   }
-  const ownedSummary = await ownedEntitlementSummaryForUser(db, userId, deps, { account, includeRows: false });
-  const familyEntries = ownedSummary.ownedByFamily.get(family) || [];
+  const ownedRows = await ownedTileRowsForUserFamilies(db, userId, [family], deps);
+  const familyEntries = ownedByFamilyFromTileRows(ownedRows).get(family) || [];
   return familyEntries.some((entry) => Number(entry && entry.d) <= requestedD);
 }
 
@@ -5250,12 +6110,7 @@ async function estimateNewCredits(db, userId, tileKeys, qualityMode, deps) {
     };
   }
   const familyList = Array.from(families);
-  const familySet = new Set(familyList);
-  const ownedSummary = await ownedEntitlementSummaryForUser(db, userId, deps, { account });
-  const rows = (ownedSummary.rows || []).filter((row) => {
-    const owned = parseTileKey(row && row.tile_key || "");
-    return familySet.has(tileFamilyKey(owned));
-  });
+  const rows = await ownedTileRowsForUserFamilies(db, userId, familyList, deps);
   const ownedKeys = normalizeTileKeys((rows || []).map((row) => row && row.tile_key || ""));
   const ownedPricing = ownedKeys.length ? await backendPricingRecordsForTileKeys(db, ownedKeys, "full", deps) : [];
   const ownedByFamily = new Map();
@@ -7025,13 +7880,13 @@ export async function handleCreditRegionOffers(request, env, deps) {
   timing.mark("parse");
   const products = await suggestedRegionProductsForContext(db, latitude, longitude, tileKeys, deps);
   timing.mark("products");
-  const ownedSummary = await ownedEntitlementSummaryForUser(db, auth.user.id, deps, { account, includeRows: false });
-  timing.mark(ownedSummary.cache_hit ? "entitlements_cache" : "entitlements_d1");
+  const pricingOwnershipContext = await regionPackPricingOwnershipContext(db, auth.user.id, account, deps);
+  timing.mark("ownership");
   const offers = [];
   for (const product of products) {
     const quote = await createRegionPackQuote(db, auth.user.id, product, deps, {
       account,
-      ownedSummary,
+      pricingOwnershipContext,
     });
     if (!quote || quote.error) {
       offers.push({
@@ -7068,7 +7923,8 @@ export async function handleCreditRegionOffers(request, env, deps) {
   const response = deps.json(payload, 200, env);
   return withEndpointTiming(response, timing, env, {
     cache_hit: false,
-    entitlement_cache_hit: Boolean(ownedSummary.cache_hit),
+    ownership_pack_count: Array.isArray(pricingOwnershipContext && pricingOwnershipContext.purchasedPackIds) ? pricingOwnershipContext.purchasedPackIds.length : 0,
+    ownership_scene_tile_count: Array.isArray(pricingOwnershipContext && pricingOwnershipContext.sceneTileRows) ? pricingOwnershipContext.sceneTileRows.length : 0,
     product_count: products.length,
     offer_count: offers.length,
   });
@@ -7100,13 +7956,13 @@ export async function handleCreditRegionPackRelatedOffers(request, env, deps) {
   timing.mark("parse");
   const products = await relatedRegionProducts(db, product, deps, 6);
   timing.mark("products");
-  const ownedSummary = await ownedEntitlementSummaryForUser(db, auth.user.id, deps, { account, includeRows: false });
-  timing.mark(ownedSummary.cache_hit ? "entitlements_cache" : "entitlements_d1");
+  const pricingOwnershipContext = await regionPackPricingOwnershipContext(db, auth.user.id, account, deps);
+  timing.mark("ownership");
   const offers = [];
   for (const candidate of products) {
     const quote = await createRegionPackQuote(db, auth.user.id, candidate, deps, {
       account,
-      ownedSummary,
+      pricingOwnershipContext,
     });
     if (!quote || quote.error) {
       offers.push({
@@ -7134,7 +7990,8 @@ export async function handleCreditRegionPackRelatedOffers(request, env, deps) {
     env,
   );
   return withEndpointTiming(response, timing, env, {
-    entitlement_cache_hit: Boolean(ownedSummary.cache_hit),
+    ownership_pack_count: Array.isArray(pricingOwnershipContext && pricingOwnershipContext.purchasedPackIds) ? pricingOwnershipContext.purchasedPackIds.length : 0,
+    ownership_scene_tile_count: Array.isArray(pricingOwnershipContext && pricingOwnershipContext.sceneTileRows) ? pricingOwnershipContext.sceneTileRows.length : 0,
     product_count: products.length,
     offer_count: offers.length,
   });
@@ -7782,19 +8639,17 @@ export async function handleCreditRegionPackMap(request, env, deps) {
       env,
     ), timing, env, { region_pack_id: "world", price_eur: price, quote_id: String(quote.quote_id || "") });
   }
-  const includeOwnedRows = !isWorldFullQualityUnlocked(account);
-  const ownedSummary = await ownedEntitlementSummaryForUser(db, userId, deps, { account, includeRows: includeOwnedRows });
-  timing.mark(ownedSummary.cache_hit ? "entitlements_cache" : "entitlements_d1");
-  const ownedTileKeys = includeOwnedRows
-    ? normalizeTileKeys((ownedSummary.rows || []).map((row) => row && row.tile_key || ""))
-    : [];
-  const upsells = await relatedRegionPackQuoteEntries(db, product, userId, account, ownedSummary, deps);
+  const pricingOwnershipContext = await regionPackPricingOwnershipContext(db, userId, account, deps);
+  timing.mark("ownership");
+  const ownedTileKeys = await ownedTileKeysForRegionPackMap(db, product, pricingOwnershipContext, deps);
+  timing.mark("owned_map_tiles");
+  const upsells = await relatedRegionPackQuoteEntries(db, product, userId, account, pricingOwnershipContext, deps);
   timing.mark("upsell_quotes");
   // Keep the initial map response as a lightweight static shell. The browser
   // fetches the prebuilt map asset for geometry only; all displayed prices come
   // from backend quotes.
   timing.mark("static_shell");
-  const data = regionPackStaticMapPayload(product, token, account, ownedSummary.rows, {
+  const data = regionPackStaticMapPayload(product, token, account, [], {
     catalogMode: allowCatalogProduct,
     quote,
     upsells,
@@ -7803,7 +8658,8 @@ export async function handleCreditRegionPackMap(request, env, deps) {
   timing.mark("payload");
   return withEndpointTiming(html(regionPackStaticMapHtml(data), 200, env), timing, env, {
     region_pack_id: String(product && product.id || ""),
-    entitlement_cache_hit: Boolean(ownedSummary.cache_hit),
+    ownership_pack_count: Array.isArray(pricingOwnershipContext && pricingOwnershipContext.purchasedPackIds) ? pricingOwnershipContext.purchasedPackIds.length : 0,
+    ownership_scene_tile_count: Array.isArray(pricingOwnershipContext && pricingOwnershipContext.sceneTileRows) ? pricingOwnershipContext.sceneTileRows.length : 0,
     quote_id: String(quote.quote_id || ""),
   });
 }
@@ -7944,7 +8800,8 @@ export async function handleCreditRegionPackCatalogPage(request, env, deps) {
     limit,
     row_count: Array.isArray(data && data.rows) ? data.rows.length : 0,
     total_packs: Number(data && data.total_packs || 0),
-    entitlement_cache_hit: Boolean(data && data.entitlement_cache_hit),
+    ownership_pack_count: Number(data && data.ownership_pack_count || 0),
+    ownership_scene_tile_count: Number(data && data.ownership_scene_tile_count || 0),
   });
 }
 
@@ -7990,13 +8847,13 @@ export async function handleCreditSceneMap(request, env, deps) {
     : [];
   const contextProduct = contextProducts.length ? contextProducts[0] : null;
   timing.mark("products");
-  const ownedSummary = await ownedEntitlementSummaryForUser(db, userId, deps, { account, includeRows: false });
-  timing.mark(ownedSummary.cache_hit ? "entitlements_cache" : "entitlements_d1");
+  const pricingOwnershipContext = await regionPackPricingOwnershipContext(db, userId, account, deps);
+  timing.mark("ownership");
   const upsells = [];
   for (const product of contextProducts.slice(0, 4)) {
     const quote = await createRegionPackQuote(db, userId, product, deps, {
       account,
-      ownedSummary,
+      pricingOwnershipContext,
     });
     if (quote && !quote.error) {
       const relatedSummary = regionPackQuoteSummary(quote);
@@ -8013,7 +8870,8 @@ export async function handleCreditSceneMap(request, env, deps) {
   const data = buildSceneFullQualityMapData(estimate, { token, contextProduct, upsells });
   timing.mark("html");
   return withEndpointTiming(html(regionPackMapHtml(data), 200, env), timing, env, {
-    entitlement_cache_hit: Boolean(ownedSummary.cache_hit),
+    ownership_pack_count: Array.isArray(pricingOwnershipContext && pricingOwnershipContext.purchasedPackIds) ? pricingOwnershipContext.purchasedPackIds.length : 0,
+    ownership_scene_tile_count: Array.isArray(pricingOwnershipContext && pricingOwnershipContext.sceneTileRows) ? pricingOwnershipContext.sceneTileRows.length : 0,
     tile_count: tileKeys.length,
     upsell_count: upsells.length,
   });
@@ -8213,14 +9071,15 @@ export async function handleCreditPaymentSuccess(request, env, deps) {
       if (contextProduct) {
         const tokenResult = await createRegionPackDetailTokenForUser(db, userId, String(contextProduct.id || ""), env, deps);
         const account = await ensureFreshCreditAccountForUser(db, userId, deps);
-        const ownedSummary = await ownedEntitlementSummaryForUser(db, userId, deps, { account, includeRows: true });
-        const quote = await createRegionPackQuote(db, userId, contextProduct, deps, { account, ownedSummary });
-        const upsells = await relatedRegionPackQuoteEntries(db, contextProduct, userId, account, ownedSummary, deps);
-        const data = regionPackStaticMapPayload(contextProduct, tokenResult.token, account, ownedSummary.rows, {
+        const pricingOwnershipContext = await regionPackPricingOwnershipContext(db, userId, account, deps);
+        const ownedTileKeys = await ownedTileKeysForRegionPackMap(db, contextProduct, pricingOwnershipContext, deps);
+        const quote = await createRegionPackQuote(db, userId, contextProduct, deps, { account, pricingOwnershipContext });
+        const upsells = await relatedRegionPackQuoteEntries(db, contextProduct, userId, account, pricingOwnershipContext, deps);
+        const data = regionPackStaticMapPayload(contextProduct, tokenResult.token, account, [], {
           catalogMode: true,
           quote: quote && !quote.error ? quote : null,
           upsells,
-          ownedByFamily: ownedSummary.ownedByFamily,
+          ownedTileKeys,
           titlePrefix: "Data Pack to Consider",
           success: {
             title: paymentSuccessTitle,
@@ -8260,14 +9119,15 @@ export async function handleCreditPaymentSuccess(request, env, deps) {
       if (contextProduct) {
         const tokenResult = await createRegionPackDetailTokenForUser(db, userId, String(contextProduct.id || ""), env, deps);
         const account = await ensureFreshCreditAccountForUser(db, userId, deps);
-        const ownedSummary = await ownedEntitlementSummaryForUser(db, userId, deps, { account, includeRows: true });
-        const quote = await createRegionPackQuote(db, userId, contextProduct, deps, { account, ownedSummary });
-        const upsells = await relatedRegionPackQuoteEntries(db, contextProduct, userId, account, ownedSummary, deps);
-        const data = regionPackStaticMapPayload(contextProduct, tokenResult.token, account, ownedSummary.rows, {
+        const pricingOwnershipContext = await regionPackPricingOwnershipContext(db, userId, account, deps);
+        const ownedTileKeys = await ownedTileKeysForRegionPackMap(db, contextProduct, pricingOwnershipContext, deps);
+        const quote = await createRegionPackQuote(db, userId, contextProduct, deps, { account, pricingOwnershipContext });
+        const upsells = await relatedRegionPackQuoteEntries(db, contextProduct, userId, account, pricingOwnershipContext, deps);
+        const data = regionPackStaticMapPayload(contextProduct, tokenResult.token, account, [], {
           catalogMode: true,
           quote: quote && !quote.error ? quote : null,
           upsells,
-          ownedByFamily: ownedSummary.ownedByFamily,
+          ownedTileKeys,
           titlePrefix: "Data Pack to Consider",
           success: {
             title: paymentSuccessTitle,
@@ -8337,14 +9197,15 @@ export async function handleCreditPaymentSuccess(request, env, deps) {
         await touchUserPricingVersion(db, userId, deps, repairNow);
       }
       const account = await ensureFreshCreditAccountForUser(db, userId, deps);
-      const ownedSummary = await ownedEntitlementSummaryForUser(db, userId, deps, { account, includeRows: true });
-      const quote = await createRegionPackQuote(db, userId, product, deps, { account, ownedSummary });
-      const upsells = await relatedRegionPackQuoteEntries(db, product, userId, account, ownedSummary, deps);
-      const data = regionPackStaticMapPayload(product, tokenResult.token, account, ownedSummary.rows, {
+      const pricingOwnershipContext = await regionPackPricingOwnershipContext(db, userId, account, deps);
+      const ownedTileKeys = await ownedTileKeysForRegionPackMap(db, product, pricingOwnershipContext, deps);
+      const quote = await createRegionPackQuote(db, userId, product, deps, { account, pricingOwnershipContext });
+      const upsells = await relatedRegionPackQuoteEntries(db, product, userId, account, pricingOwnershipContext, deps);
+      const data = regionPackStaticMapPayload(product, tokenResult.token, account, [], {
         catalogMode: true,
         quote: quote && !quote.error ? quote : null,
         upsells,
-        ownedByFamily: ownedSummary.ownedByFamily,
+        ownedTileKeys,
         success,
       });
       return html(regionPackStaticMapHtml(data), 200, env);
