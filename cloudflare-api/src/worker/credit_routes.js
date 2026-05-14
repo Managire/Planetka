@@ -6444,6 +6444,15 @@ async function createStripeCheckoutSession(env, params, deps) {
     payload = {};
   }
   if (!response.ok) {
+    console.warn(
+      "planetka.stripe.checkout_create_failed",
+      JSON.stringify({
+        status: response.status,
+        purchase_type: String(metadata && metadata.planetka_purchase_type || ""),
+        amount_cents: Math.max(0, Math.floor(params.amountCents || 0)),
+        message: String(payload && payload.error && payload.error.message || responseText || "").slice(0, 500),
+      }),
+    );
     return {
       error: "stripe_checkout_create_failed",
       status: response.status,
@@ -6691,26 +6700,20 @@ export async function handleCreditCheckout(request, env, deps) {
     if (!product) {
       return deps.json({ ok: false, error: "unknown_region_pack" }, 404, env);
     }
-    const quoteId = String(body && (body.quote_id || body.quoteId) || "").trim();
-    if (!quoteId) {
-      return deps.json(
-        {
-          ok: false,
-          error: "missing_region_pack_quote",
-          message: "This data-pack price needs to be refreshed before checkout.",
-        },
-        409,
-        env,
-      );
-    }
     const account = await ensureFreshCreditAccountForUser(db, userId, deps);
-    const quote = await createRegionPackQuote(db, userId, product, deps, { account, quoteId });
+    const quoteId = String(body && (body.quote_id || body.quoteId) || "").trim();
+    let quote = quoteId
+      ? await createRegionPackQuote(db, userId, product, deps, { account, quoteId })
+      : null;
+    if (!quoteId || (quote && quote.error === "stale_or_invalid_quote")) {
+      quote = await createRegionPackQuote(db, userId, product, deps, { account });
+    }
     if (!quote || quote.error) {
       return deps.json(
         {
           ok: false,
           error: String(quote && quote.error || "stale_or_invalid_quote"),
-          message: "This data-pack price changed. Refresh the Relevant Data Packs list and try again.",
+          message: "This data-pack price could not be refreshed. Reopen the data pack and try again.",
         },
         quote && quote.status || 409,
         env,
@@ -7536,17 +7539,41 @@ export async function handleCreditRegionPackCheckoutFromToken(request, env, deps
   const product = productResult.product;
   const account = await ensureFreshCreditAccountForUser(db, userId, deps);
   timing.mark("account");
-  const quote = await createRegionPackQuote(db, userId, product, deps, {
-    account,
-    quoteId,
-  });
+  let quote = quoteId
+    ? await createRegionPackQuote(db, userId, product, deps, {
+      account,
+      quoteId,
+    })
+    : null;
+  let quoteWasRefreshed = false;
+  if (!quoteId || (quote && quote.error === "stale_or_invalid_quote")) {
+    quote = await createRegionPackQuote(db, userId, product, deps, { account });
+    quoteWasRefreshed = true;
+  }
   timing.mark("quote");
-  if (!quoteId || !quote || quote.error) {
+  if (!quote || quote.error) {
     return withEndpointTiming(html(
       `<!doctype html><title>Planetka Data Pack</title><h1>Data pack price expired.</h1><p>Please reopen this data pack from Blender or the data-pack list.</p>`,
       quote && quote.status || 409,
       env,
     ), timing, env, { error: quote && quote.error || "quote_failed", region_pack_id: String(product && product.id || "") });
+  }
+  if (method === "stripe" && quoteWasRefreshed) {
+    return withEndpointTiming(html(
+      regionPackPaymentChoiceHtml({
+        token,
+        product,
+        account,
+        quote,
+        catalog_mode: allowCatalogProduct,
+      }),
+      200,
+      env,
+    ), timing, env, {
+      region_pack_id: String(product && product.id || ""),
+      quote_id: String(quote && quote.quote_id || ""),
+      quote_refreshed: true,
+    });
   }
   const summary = regionPackQuoteSummary(quote);
   const priceCents = integerCents(summary.price_cents);
