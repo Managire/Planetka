@@ -1068,7 +1068,10 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
 
         if target_mode == "FULL":
             try:
-                from .planetka_runtime.view_telemetry import build_resolve_cost_breakdown
+                from .planetka_runtime.view_telemetry import (
+                    build_resolve_cost_breakdown,
+                    store_full_price_estimate_from_breakdown,
+                )
                 base_path = _normalize_texture_source_path(str(getattr(prefs, "texture_base_path", "") or ""))
                 breakdown = build_resolve_cost_breakdown(
                     scene=scene,
@@ -1086,9 +1089,19 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
                 scene_price = float(
                     (breakdown or {}).get("total_credits", (breakdown or {}).get("credits", 0.0)) or 0.0
                 )
+                store_full_price_estimate_from_breakdown(
+                    scene,
+                    breakdown,
+                    texture_quality_mode="FULL",
+                )
             except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
                 logger.debug("Planetka: failed checking direct payment before Full Quality resolve", exc_info=True)
-                scene_price = 0.0
+                return fail(
+                    self,
+                    "Full Quality pricing is not available. Reconnect Planetka Cloud and retry.",
+                    code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                    logger=logger,
+                )
             if scene_price > 0.000001:
                 checkout_result = bpy.ops.planetka.open_credit_checkout(
                     'INVOKE_DEFAULT',

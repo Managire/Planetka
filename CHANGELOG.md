@@ -2,6 +2,13 @@
 
 All notable public changes to Planetka are documented in this file.
 
+## [v0.7.4] - 2026-05-14
+
+### Fixed
+- Fixed the Blender Full Quality button getting stuck after a data-pack purchase while the sidebar price estimate was still refreshing.
+- Fixed Full Quality resolve safety so missing authoritative pricing fails closed instead of being treated as free.
+- Fixed a Relevant Data Packs background refresh context bug that could throw a thread exception during sidebar updates.
+
 ## [v0.7.3] - 2026-05-14
 
 ### Added

@@ -101,7 +101,7 @@ from .validation import (
 bl_info = {
     "name": "Planetka - the Earth",
     "author": "Tomas Griger",
-    "version": (0, 7, 3),
+    "version": (0, 7, 4),
     "blender": (3, 6, 0),
     "location": "View3D > Sidebar > Planetka",
     "description": "Cinematic Earth visualisation system",

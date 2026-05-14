@@ -64,7 +64,7 @@ def _require_authenticated_account(operator, prefs):
         message = str(status.get("message", "") or "").strip()
         fail(
             operator,
-            message or "Planetka Cloud is not reachable. Check your internet connection.",
+            message or "Planetka Cloud is not reachable. Check your internet connection or try again later.",
             code=ErrorCode.RESOLVE_PRECHECK_FAILED,
             logger=logger,
         )

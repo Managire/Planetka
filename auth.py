@@ -48,7 +48,7 @@ _CLOUD_CONNECTION_CACHE = {
     "message": "",
 }
 _CLOUD_CONNECTION_TTL_SECONDS = 5.0
-_CLOUD_CONNECTION_OFFLINE_MESSAGE = "Planetka Cloud is not reachable. Check your internet connection."
+_CLOUD_CONNECTION_OFFLINE_MESSAGE = "Planetka Cloud is not reachable. Check your internet connection or try again later."
 
 
 class AuthApiError(RuntimeError):

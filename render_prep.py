@@ -770,7 +770,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                     response=fail(
                         self,
                         str(cloud_status.get("message", "") or "").strip()
-                        or "Planetka Cloud is not reachable. Check your internet connection.",
+                        or "Planetka Cloud is not reachable. Check your internet connection or try again later.",
                         code=ErrorCode.RESOLVE_PRECHECK_FAILED,
                         logger=logger,
                     ),

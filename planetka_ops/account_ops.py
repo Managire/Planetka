@@ -139,7 +139,7 @@ class PLANETKA_OT_CheckUpdates(bpy.types.Operator):
 class PLANETKA_OT_UpdateNow(bpy.types.Operator):
     bl_idname = "planetka.update_now"
     bl_label = "Update Now"
-    bl_description = "Download and install available Planetka update"
+    bl_description = "Download and install the available Planetka update. Restart Blender afterwards to load all changes."
 
     def execute(self, context):
         del context

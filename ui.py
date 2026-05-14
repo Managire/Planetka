@@ -65,6 +65,8 @@ SIDEBAR_ACCOUNT_REFRESH_INTERVAL_SEC = 20.0
 SIDEBAR_ACCOUNT_REFRESH_INITIAL_DELAY_SEC = 0.35
 _SIDEBAR_ACCOUNT_REFRESH_LAST_AT = 0.0
 _SIDEBAR_ACCOUNT_REFRESH_TIMER_REGISTERED = False
+UPDATER_UI_REDRAW_INTERVAL_SEC = 0.25
+_UPDATER_UI_REDRAW_TIMER_REGISTERED = False
 
 
 def _float_close(value, target, tol=1e-4):
@@ -157,6 +159,45 @@ def _schedule_sidebar_account_refresh(force=False):
         _SIDEBAR_ACCOUNT_REFRESH_TIMER_REGISTERED = True
     except (RuntimeError, TypeError, ValueError, AttributeError):
         logger.debug("Planetka: failed scheduling deferred account refresh", exc_info=True)
+
+
+def _updater_is_busy(status):
+    phase = str((status or {}).get("phase", "") or "").strip().lower()
+    return bool((status or {}).get("checking", False)) or phase in {
+        "checking_manifest",
+        "downloading",
+        "verifying",
+        "installing",
+    }
+
+
+def _updater_redraw_timer():
+    global _UPDATER_UI_REDRAW_TIMER_REGISTERED
+    try:
+        status = get_updater_public_status()
+        busy = _updater_is_busy(status)
+    except (TypeError, ValueError, RuntimeError, AttributeError):
+        logger.debug("Planetka: updater redraw timer failed", exc_info=True)
+        busy = False
+    _tag_view3d_redraw()
+    if busy:
+        return float(UPDATER_UI_REDRAW_INTERVAL_SEC)
+    _UPDATER_UI_REDRAW_TIMER_REGISTERED = False
+    return None
+
+
+def _schedule_updater_ui_redraw():
+    global _UPDATER_UI_REDRAW_TIMER_REGISTERED
+    if _UPDATER_UI_REDRAW_TIMER_REGISTERED:
+        return
+    try:
+        bpy.app.timers.register(
+            _updater_redraw_timer,
+            first_interval=float(UPDATER_UI_REDRAW_INTERVAL_SEC),
+        )
+        _UPDATER_UI_REDRAW_TIMER_REGISTERED = True
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed scheduling updater UI redraw", exc_info=True)
 
 
 def _fmt_km(value):
@@ -732,7 +773,15 @@ def _quality_progress_label(mode, estimate_bytes, estimate_available_bytes, down
 def _quality_progress_factor(mode, download_state, displayed_mode, estimate_bytes=None, estimate_available_bytes=None):
     mode_key = str(mode or "").upper()
     state_mode = _normalize_texture_quality_for_ui(download_state.get("quality_mode", ""))
-    if bool(download_state.get("active", False)) and state_mode in {"PREVIEW", "FULL"}:
+    runtime_code = str(download_state.get("runtime_code", "") or "").upper()
+    actual_download_active = bool(download_state.get("download_active", False)) or runtime_code in {
+        "QUEUED",
+        "PREPARING",
+        "DOWNLOADING",
+        "FINALIZING",
+        "FINALIZE_QUEUED",
+    }
+    if actual_download_active and state_mode in {"PREVIEW", "FULL"}:
         if state_mode == mode_key:
             downloaded_bytes, total_bytes, _state_active = _quality_progress_values(
                 mode,
@@ -1114,18 +1163,61 @@ def _draw_addon_update_controls(layout):
         logger.debug("Planetka: failed reading updater status in settings panel", exc_info=True)
         updater = {}
     updater_ready = bool(updater.get("update_ready", False))
+    updater_busy = _updater_is_busy(updater)
     latest_version = str(updater.get("latest_version") or "").strip()
     current_version = str(updater.get("current_version") or "").strip()
+    phase = str(updater.get("phase") or "").strip().lower()
+    message = str(updater.get("message") or "").strip()
+    last_error = str(updater.get("last_error") or "").strip()
+    try:
+        downloaded_bytes = int(updater.get("downloaded_bytes", 0) or 0)
+    except (TypeError, ValueError):
+        downloaded_bytes = 0
+    try:
+        total_bytes = int(updater.get("download_total_bytes", 0) or 0)
+    except (TypeError, ValueError):
+        total_bytes = 0
+
+    if updater_busy:
+        _schedule_updater_ui_redraw()
 
     version_row = layout.row()
     version_row.label(text=f"Addon version: {current_version or 'unknown'}", icon="BLENDER")
     updates_row = layout.row()
+    updates_row.enabled = not updater_busy
     updates_row.operator("planetka.check_updates", text="Check for updates", icon="FILE_REFRESH")
-    if updater_ready and latest_version:
+    if updater_busy:
+        status_box = layout.box()
+        status_box.label(
+            text=message or f"Updating Planetka{_status_activity_suffix(True)}",
+            icon="TIME",
+        )
+        if total_bytes > 0 and hasattr(status_box, "progress"):
+            factor = max(0.0, min(1.0, float(downloaded_bytes) / float(total_bytes)))
+            status_box.progress(
+                factor=factor,
+                type='BAR',
+                text=f"{_fmt_bytes(downloaded_bytes)} / {_fmt_bytes(total_bytes)}",
+            )
+        elif phase in {"verifying", "installing"} and hasattr(status_box, "progress"):
+            status_box.progress(
+                factor=1.0,
+                type='BAR',
+                text=message or "Finishing update",
+            )
+        else:
+            status_box.label(text=f"Please wait{_status_activity_suffix(True)}", icon="INFO")
+    elif updater_ready and latest_version:
         row = layout.row()
         row.alert = True
         row.label(text=f"Update available: {latest_version}", icon="ERROR")
         row.operator("planetka.update_now", text="Update now", icon="IMPORT")
+    elif message:
+        message_box = layout.box()
+        message_box.alert = bool(phase == "error" or last_error)
+        message_box.label(text=message, icon="ERROR" if message_box.alert else "CHECKMARK")
+        if "restart blender" in message.lower():
+            message_box.label(text="Restart Blender before continuing serious work.", icon="INFO")
 
 
 def _draw_licenced_download_controls(layout, prefs):
@@ -1672,7 +1764,7 @@ def _draw_live_telemetry(layout, scene):
         if world_full_quality_unlocked:
             full_price_known = True
             full_credits = 0.0
-        if not full_size_known or not full_price_known:
+        if not full_size_known:
             full_allowed = False
         full_has_new_cost = bool(full_price_known and full_credits > 0.000001)
         if quick_preview_prepared:
@@ -1753,9 +1845,12 @@ def _draw_live_telemetry(layout, scene):
         elif active_view_scope:
             estimate_notice = full_box.row(align=True)
             estimate_notice.label(text="Bring Camera to this view before using Full Quality.", icon="INFO")
-        elif not full_size_known or not full_price_known:
+        elif not full_size_known:
             estimate_notice = full_box.row(align=True)
-            estimate_notice.label(text="Full Quality price is being calculated.", icon="INFO")
+            estimate_notice.label(text="Full Quality data size is being calculated.", icon="INFO")
+        elif not full_price_known:
+            estimate_notice = full_box.row(align=True)
+            estimate_notice.label(text="Full Quality price will be verified before download.", icon="INFO")
         if not world_full_quality_unlocked:
             region_offers, _region_status, _region_message = _load_relevant_region_pack_offers(scene)
             if any(_offer_is_licensable(offer) for offer in region_offers):

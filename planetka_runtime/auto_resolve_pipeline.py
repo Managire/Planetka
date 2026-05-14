@@ -1667,7 +1667,6 @@ def _ctx_schedule_region_pack_offers_after_camera_view(ctx, scene, camera_signat
         from .view_telemetry import schedule_region_pack_offer_refresh
         return bool(schedule_region_pack_offer_refresh(
             scene,
-            ctx,
             camera_signature_value=signature,
         ))
     except deps.recoverable_exceptions:
