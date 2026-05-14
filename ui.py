@@ -7,6 +7,7 @@ import time
 from .asset_builder import PLANETKA_ROOT_OBJECT_NAME
 from .auth import (
     AuthApiError,
+    CLOUD_OVERLOADED_MESSAGE,
     allows_animation_render_for_context,
     allows_texture_quality_for_context,
     get_cached_cloud_connection_status,
@@ -1497,11 +1498,15 @@ def _draw_account_panel(layout):
         email = str(get_connected_email(prefs) or "").strip()
     except (TypeError, ValueError, RuntimeError, AttributeError):
         email = str(getattr(prefs, "auth_email", "") or "").strip()
+    cloud_message = str(cloud_status.get("message", "") or "").strip()
+    cloud_overloaded = bool(cloud_message == CLOUD_OVERLOADED_MESSAGE)
     status_icon = "CHECKMARK" if connected else ("INFO" if authenticated and not checked else "ERROR")
     if connected:
         status_text = "Status: Connected to Planetka Cloud"
     elif authenticated and not checked:
         status_text = "Status: Checking Planetka Cloud"
+    elif authenticated and cloud_overloaded:
+        status_text = "Status: Planetka Cloud overloaded"
     elif authenticated:
         status_text = "Status: Not connected to Planetka Cloud"
     else:
@@ -1514,11 +1519,13 @@ def _draw_account_panel(layout):
     history_row.enabled = bool(authenticated)
     history_row.operator("planetka.account_purchase_history", text="View Account & Purchase History", icon="URL")
 
-    cloud_message = str(cloud_status.get("message", "") or "").strip()
     if authenticated and checked and not connected:
         warning_box = layout.box()
         warning_box.alert = True
-        warning_box.label(text="Planetka Cloud connection required.", icon="ERROR")
+        if cloud_overloaded:
+            warning_box.label(text="Planetka Cloud is busy.", icon="ERROR")
+        else:
+            warning_box.label(text="Planetka Cloud connection required.", icon="ERROR")
         warning_box.label(text=cloud_message or "Check your internet connection and try again.")
 
     if connected:

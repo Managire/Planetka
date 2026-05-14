@@ -5,6 +5,7 @@ from bpy.props import BoolProperty
 
 from ..auth import (
     AuthApiError,
+    CLOUD_OVERLOADED_MESSAGE,
     clear_auth_session,
     connect_with_prefs_api_key,
     describe_auth_error,
@@ -269,9 +270,12 @@ class PLANETKA_OT_AccountPurchaseHistory(bpy.types.Operator):
         try:
             link = create_account_page_link()
         except (AuthApiError, CreditApiError) as exc:
+            message = str(exc or "").strip()
+            if message != CLOUD_OVERLOADED_MESSAGE:
+                message = "Could not open your Planetka account page. Check your connection and try again."
             return fail(
                 self,
-                "Could not open your Planetka account page. Check your connection and try again.",
+                message,
                 logger=logger,
                 exc=exc,
             )

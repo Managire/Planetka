@@ -1338,16 +1338,13 @@ def _store_region_pack_offer_error(scene, deps, signature, message="", latitude_
         return
     text = str(message or "Data Packs update failed.").strip()
     try:
-        scene[_REGION_OFFERS_JSON_KEY] = "[]"
         if str(scene.get(_REGION_OFFERS_PENDING_SIGNATURE_KEY, "") or "") == str(signature or ""):
             scene[_REGION_OFFERS_PENDING_SIGNATURE_KEY] = ""
-        scene[_REGION_OFFERS_SIGNATURE_KEY] = str(signature or "")
+        # Keep the last successful offers visible during transient backend errors.
+        # Updating the signature/location here would make stale offers look current.
         scene[_REGION_OFFERS_STATUS_KEY] = "ERROR"
         scene[_REGION_OFFERS_MESSAGE_KEY] = text
         scene[_REGION_OFFERS_UPDATED_AT_KEY] = float(time.time())
-        if latitude_deg is not None and longitude_deg is not None:
-            scene[_REGION_OFFERS_LATITUDE_KEY] = float(latitude_deg)
-            scene[_REGION_OFFERS_LONGITUDE_KEY] = float(longitude_deg)
     except deps.recoverable_exceptions:
         deps.logger.debug("Planetka: failed storing Full Quality Data Packs error state", exc_info=True)
     except (RuntimeError, TypeError, ValueError, AttributeError):

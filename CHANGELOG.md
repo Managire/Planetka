@@ -2,6 +2,15 @@
 
 All notable public changes to Planetka are documented in this file.
 
+## [v0.7.5] - 2026-05-14
+
+### Changed
+- Moved exact Full Quality data-pack tile pricing to D1-backed product tile rows so large packs no longer require the Worker to load the generated tile-data module.
+- Reduced Worker bundle size for data-pack pricing routes while preserving exact user-specific entitlement deductions.
+
+### Fixed
+- Fixed a cent-level residual pricing path where a fully licenced data pack could still show a tiny remaining checkout amount.
+
 ## [v0.7.4] - 2026-05-14
 
 ### Fixed

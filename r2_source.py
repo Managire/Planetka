@@ -19,7 +19,16 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from collections import OrderedDict
 
-from .auth import AuthApiError, get_authorized_headers, get_api_base_url, refresh_auth_session, sync_account_profile
+from .auth import (
+    AuthApiError,
+    CLOUD_OVERLOADED_MESSAGE,
+    get_authorized_headers,
+    get_api_base_url,
+    looks_like_planetka_overload,
+    mark_planetka_cloud_overloaded,
+    refresh_auth_session,
+    sync_account_profile,
+)
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 
 try:
@@ -310,6 +319,8 @@ def _ensure_remote_authentication(allow_cached_on_network_error=False):
             **get_authorized_headers(allow_refresh=True),
         }
     except AuthApiError as exc:
+        if looks_like_planetka_overload(getattr(exc, "status", 0), getattr(exc, "error", ""), str(exc)):
+            raise RuntimeError(CLOUD_OVERLOADED_MESSAGE) from exc
         raise RuntimeError("Planetka login expired. Log in again.") from exc
 
     auth_header = str(headers.get("Authorization", "") or "").strip()
@@ -328,6 +339,9 @@ def _ensure_remote_authentication(allow_cached_on_network_error=False):
             if int(getattr(exc, "code", 0)) in {401, 403}:
                 raise RuntimeError("Planetka login expired. Log in again.") from exc
             if int(getattr(exc, "code", 0)) != 404:
+                if looks_like_planetka_overload(getattr(exc, "code", 0), f"http_{getattr(exc, 'code', 0)}"):
+                    mark_planetka_cloud_overloaded(reason=f"http_{getattr(exc, 'code', 0)}")
+                    raise RuntimeError(CLOUD_OVERLOADED_MESSAGE) from exc
                 raise RuntimeError(f"Planetka could not verify login session: HTTP {exc.code}.") from exc
         except (urllib.error.URLError, OSError, ValueError) as exc:
             if allow_cached_on_network_error:
@@ -1274,12 +1288,16 @@ def _request_tile_session_token(resolve_id, quality_mode, allow_refresh=True):
     try:
         return _attempt(bool(allow_refresh))
     except AuthApiError as exc:
+        if looks_like_planetka_overload(getattr(exc, "status", 0), getattr(exc, "error", ""), str(exc)):
+            raise RuntimeError(CLOUD_OVERLOADED_MESSAGE) from exc
         raise RuntimeError("Planetka login expired. Log in again.") from exc
     except urllib.error.HTTPError as exc:
         error_payload = {}
+        raw_error_text = ""
         try:
             raw_error = exc.read() or b"{}"
-            error_payload = json.loads(raw_error.decode("utf-8", errors="replace") or "{}")
+            raw_error_text = raw_error.decode("utf-8", errors="replace")
+            error_payload = json.loads(raw_error_text or "{}")
         except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
             error_payload = {}
         error_code = str(error_payload.get("error", "") or "").strip().lower()
@@ -1289,6 +1307,14 @@ def _request_tile_session_token(resolve_id, quality_mode, allow_refresh=True):
             or error_payload.get("error_description", "")
             or ""
         ).strip()
+        if looks_like_planetka_overload(
+            getattr(exc, "code", 0),
+            error_code,
+            error_message,
+            raw_error_text,
+        ):
+            mark_planetka_cloud_overloaded(reason=raw_error_text or error_message or f"http_{getattr(exc, 'code', 0)}")
+            raise RuntimeError(CLOUD_OVERLOADED_MESSAGE) from exc
         if int(getattr(exc, "code", 0) or 0) == 402 and error_code in {
             "payment_required",
         }:
@@ -1593,15 +1619,16 @@ def _r2_request(
         except urllib.error.HTTPError as exc:
             error_message = ""
             error_code = ""
+            raw_text = ""
             try:
                 raw = exc.read()
             except (RuntimeError, ValueError, OSError):
                 raw = b""
             if raw:
-                text = raw.decode("utf-8", errors="replace").strip()
-                if text:
+                raw_text = raw.decode("utf-8", errors="replace").strip()
+                if raw_text:
                     try:
-                        payload = json.loads(text)
+                        payload = json.loads(raw_text)
                     except (TypeError, ValueError):
                         payload = None
                     if isinstance(payload, dict):
@@ -1613,7 +1640,15 @@ def _r2_request(
                             or ""
                         ).strip()
                     else:
-                        error_message = text
+                        error_message = raw_text
+            if looks_like_planetka_overload(
+                getattr(exc, "code", 0),
+                error_code,
+                error_message,
+                raw_text,
+            ):
+                mark_planetka_cloud_overloaded(reason=raw_text or error_message or f"http_{getattr(exc, 'code', 0)}")
+                raise RuntimeError(CLOUD_OVERLOADED_MESSAGE) from exc
             if exc.code == 401 and not refreshed:
                 request_headers = headers if isinstance(headers, dict) else {}
                 if str(request_headers.get("X-Planetka-Tile-Token", "") or "").strip():
@@ -1662,7 +1697,7 @@ def _r2_request(
                 raise RuntimeError("Planetka account does not have access to remote Earth data.")
             last_error = exc
         except AuthApiError as exc:
-            raise RuntimeError(str(exc.error).replace("_", " ")) from exc
+            raise RuntimeError(str(exc)) from exc
         except (urllib.error.URLError, OSError, ValueError) as exc:
             last_error = exc
         finally:
@@ -2003,6 +2038,8 @@ def prefetch_resolve_downloads(requests, base_path=None, cancel_event=None):
         text = str(message or "").strip().lower()
         if not text:
             return False
+        if looks_like_planetka_overload(0, text):
+            return True
         return any(
             token in text
             for token in (

@@ -18,10 +18,14 @@ from uuid import uuid4
 
 from .auth import (
     AuthApiError,
+    CLOUD_OVERLOADED_ERROR_CODE,
+    CLOUD_OVERLOADED_MESSAGE,
     get_api_base_url,
     get_authorized_headers,
+    looks_like_planetka_overload,
     mark_planetka_cloud_offline,
     mark_planetka_cloud_online,
+    mark_planetka_cloud_overloaded,
     refresh_auth_session,
 )
 
@@ -102,7 +106,8 @@ _ASSET_RE = re.compile(r"^(?:S2|EL|WT|PO)_(x\d{3}_y\d{3}_z\d{3}_d\d{3})\.(?:exr|
 
 class CreditApiError(RuntimeError):
     def __init__(self, status=0, error="", payload=None):
-        super().__init__(str(error or f"http_{status}"))
+        display = CLOUD_OVERLOADED_MESSAGE if str(error or "") == CLOUD_OVERLOADED_ERROR_CODE else str(error or f"http_{status}")
+        super().__init__(display)
         self.status = int(status or 0)
         self.error = str(error or f"http_{status}")
         self.payload = payload if isinstance(payload, dict) else {}
@@ -213,10 +218,20 @@ def _log_pricing_integrity_warnings(payload):
 
 def _request_json(method: str, path: str, body=None, allow_refresh=True, timeout=30):
     payload = None
-    headers = {
-        "User-Agent": "Planetka-Blender",
-        **get_authorized_headers(allow_refresh=allow_refresh),
-    }
+    try:
+        headers = {
+            "User-Agent": "Planetka-Blender",
+            **get_authorized_headers(allow_refresh=allow_refresh),
+        }
+    except AuthApiError as exc:
+        if looks_like_planetka_overload(getattr(exc, "status", 0), getattr(exc, "error", ""), str(exc)):
+            mark_planetka_cloud_overloaded(reason=str(exc))
+            raise CreditApiError(
+                getattr(exc, "status", 0),
+                CLOUD_OVERLOADED_ERROR_CODE,
+                payload={"error": CLOUD_OVERLOADED_ERROR_CODE, "message": CLOUD_OVERLOADED_MESSAGE},
+            ) from exc
+        raise
     if body is not None:
         payload = json.dumps(body, ensure_ascii=True).encode("utf-8")
         headers["Content-Type"] = "application/json; charset=utf-8"
@@ -228,13 +243,21 @@ def _request_json(method: str, path: str, body=None, allow_refresh=True, timeout
         text = raw.decode("utf-8", errors="replace")
         return json.loads(text or "{}")
     except urllib.error.HTTPError as exc:
-        mark_planetka_cloud_online()
         raw = exc.read() or b"{}"
         text = raw.decode("utf-8", errors="replace")
         try:
             data = json.loads(text or "{}")
         except (TypeError, ValueError, json.JSONDecodeError):
             data = {"error": text or f"http_{exc.code}"}
+        error_text = " ".join(str(data.get(key, "") or "") for key in ("error", "message", "detail"))
+        if looks_like_planetka_overload(exc.code, error_text, text):
+            mark_planetka_cloud_overloaded(reason=text or error_text or f"http_{exc.code}")
+            raise CreditApiError(
+                exc.code,
+                CLOUD_OVERLOADED_ERROR_CODE,
+                payload={"error": CLOUD_OVERLOADED_ERROR_CODE, "message": CLOUD_OVERLOADED_MESSAGE},
+            ) from exc
+        mark_planetka_cloud_online()
         if int(getattr(exc, "code", 0) or 0) == 401 and allow_refresh:
             try:
                 refresh_auth_session()

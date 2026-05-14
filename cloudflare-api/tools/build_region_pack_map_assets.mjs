@@ -8,7 +8,8 @@ import { promisify } from "node:util";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..", "..");
-const generatedSource = path.join(repoRoot, "cloudflare-api", "src", "worker", "region_packs.generated.js");
+const generatedProductsSource = path.join(repoRoot, "cloudflare-api", "src", "worker", "region_packs.products.generated.js");
+const generatedTileDataSource = path.join(repoRoot, "cloudflare-api", "src", "worker", "region_packs.tile_data.generated.js");
 const catalogSource = path.join(repoRoot, "Resources", "Region Packs", "region_packs_gadm.json");
 const dissolveOutlinesScript = path.join(__dirname, "dissolve_region_pack_map_outlines.py");
 const defaultOut = path.join(os.tmpdir(), "planetka_region_pack_map_assets");
@@ -367,12 +368,17 @@ function simplifyRingForMap(ring, stride) {
 }
 
 async function loadGenerated() {
-  const tmp = path.join(os.tmpdir(), `planetka_region_packs_${process.pid}_${Date.now()}.mjs`);
-  await fs.copyFile(generatedSource, tmp);
+  const tmpProducts = path.join(os.tmpdir(), `planetka_region_pack_products_${process.pid}_${Date.now()}.mjs`);
+  const tmpTileData = path.join(os.tmpdir(), `planetka_region_pack_tile_data_${process.pid}_${Date.now()}.mjs`);
+  await fs.copyFile(generatedProductsSource, tmpProducts);
+  await fs.copyFile(generatedTileDataSource, tmpTileData);
   try {
-    return await import(pathToFileURL(tmp).href);
+    const products = await import(pathToFileURL(tmpProducts).href);
+    const tileData = await import(pathToFileURL(tmpTileData).href);
+    return { ...products, ...tileData };
   } finally {
-    await fs.rm(tmp, { force: true });
+    await fs.rm(tmpProducts, { force: true });
+    await fs.rm(tmpTileData, { force: true });
   }
 }
 

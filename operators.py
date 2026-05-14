@@ -329,12 +329,13 @@ _RECOVERABLE_LOG_COUNTS = {}
 _DOWNLOAD_POPUP_WM_FLAG = "planetka_download_popup_running"
 _POST_CHECKOUT_MONITOR = {}
 _POST_CHECKOUT_MONITOR_REGISTERED = False
-_POST_CHECKOUT_POLL_INTERVAL_SEC = 3.0
+_POST_CHECKOUT_POLL_INTERVAL_SEC = 6.0
+_POST_CHECKOUT_MAX_POLL_INTERVAL_SEC = 24.0
 _POST_CHECKOUT_TIMEOUT_SEC = 300.0
 _REGION_PACK_PURCHASE_MONITOR = {}
 _REGION_PACK_PURCHASE_MONITOR_REGISTERED = False
-_REGION_PACK_PURCHASE_POLL_INTERVAL_SEC = 4.0
-_REGION_PACK_PURCHASE_TIMEOUT_SEC = 300.0
+_REGION_PACK_PURCHASE_POLL_INTERVAL_SEC = 12.0
+_REGION_PACK_PURCHASE_TIMEOUT_SEC = 180.0
 
 
 def _is_active_view_resolve_scope(scene):
@@ -664,7 +665,13 @@ def _post_checkout_monitor_timer():
             _force_region_pack_offers_refresh(scene, delay_seconds=2.0)
             _tag_view3d_redraw()
         return None
-    return _POST_CHECKOUT_POLL_INTERVAL_SEC
+    try:
+        interval = float(monitor.get("poll_interval", _POST_CHECKOUT_POLL_INTERVAL_SEC) or _POST_CHECKOUT_POLL_INTERVAL_SEC)
+    except (TypeError, ValueError):
+        interval = _POST_CHECKOUT_POLL_INTERVAL_SEC
+    monitor["poll_interval"] = min(_POST_CHECKOUT_MAX_POLL_INTERVAL_SEC, max(_POST_CHECKOUT_POLL_INTERVAL_SEC, interval * 1.5))
+    _POST_CHECKOUT_MONITOR = monitor
+    return max(_POST_CHECKOUT_POLL_INTERVAL_SEC, interval)
 
 
 def _start_post_checkout_scene_monitor(scene):
@@ -675,6 +682,7 @@ def _start_post_checkout_scene_monitor(scene):
     _POST_CHECKOUT_MONITOR = {
         "scene_name": str(getattr(scene, "name", "") or ""),
         "deadline": float(time.monotonic() + _POST_CHECKOUT_TIMEOUT_SEC),
+        "poll_interval": _POST_CHECKOUT_POLL_INTERVAL_SEC,
     }
     if _POST_CHECKOUT_MONITOR_REGISTERED:
         return
@@ -781,7 +789,7 @@ def _start_region_pack_purchase_monitor(scene, region_pack_id):
         "scene_name": str(getattr(scene, "name", "") or ""),
         "region_pack_id": safe_id,
         "deadline": float(time.monotonic() + _REGION_PACK_PURCHASE_TIMEOUT_SEC),
-        "next_refresh_at": 0.0,
+        "next_refresh_at": float(time.monotonic() + _REGION_PACK_PURCHASE_POLL_INTERVAL_SEC),
     }
     _force_region_pack_offers_refresh(scene)
     if _REGION_PACK_PURCHASE_MONITOR_REGISTERED:
@@ -1327,7 +1335,7 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
                 code=ErrorCode.PAYMENT_CHECKOUT_FAILED,
                 logger=logger,
             )
-        if option in {"SCENE", "REGION_PACK"}:
+        if option == "SCENE":
             _start_post_checkout_scene_monitor(getattr(context, "scene", None))
         if option == "REGION_PACK":
             _start_region_pack_purchase_monitor(

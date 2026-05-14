@@ -40,6 +40,8 @@ TIER_INTEGRITY_STATUS_MESSAGE = (
     "Critical account tier integrity error detected. "
     "Planetka is locked until resolved. Contact info@planetka.io."
 )
+CLOUD_OVERLOADED_ERROR_CODE = "planetka_cloud_overloaded"
+CLOUD_OVERLOADED_MESSAGE = "Planetka servers are temporarily overloaded. Please wait a few moments and try again."
 _ADDON_VERSION_CACHE = None
 _CLOUD_CONNECTION_CACHE = {
     "checked": False,
@@ -49,11 +51,50 @@ _CLOUD_CONNECTION_CACHE = {
 }
 _CLOUD_CONNECTION_TTL_SECONDS = 5.0
 _CLOUD_CONNECTION_OFFLINE_MESSAGE = "Planetka Cloud is not reachable. Check your internet connection or try again later."
+_OVERLOAD_HTTP_STATUSES = {429, 503, 520, 522, 524, 529}
+_ACCOUNT_LIMIT_OR_ACCESS_TOKENS = (
+    "request limit reached",
+    "request limit reached for this account",
+    "planetka request limit reached for this account",
+    "rate_limit_auth",
+    "device_limit_exceeded",
+    "account_blocked",
+    "access_denied",
+    "not_allowed_for_tier",
+    "quality_mode_not_allowed",
+    "payment_required",
+    "tile_not_unlocked",
+)
+_KNOWN_NON_OVERLOAD_ERROR_TOKENS = (
+    "credit_pricing_missing_tile_stats",
+    "pricing metadata is missing",
+    "tile_unlock_verification_failed",
+    "tile_unlock_failed",
+    "licence could not be confirmed",
+    "license could not be confirmed",
+    "full quality requires direct payment",
+)
+_OVERLOAD_TEXT_TOKENS = (
+    CLOUD_OVERLOADED_ERROR_CODE,
+    "1102",
+    "worker exceeded resource",
+    "worker exceeded cpu",
+    "exceeded resource limits",
+    "service unavailable",
+    "temporarily overloaded",
+    "server overloaded",
+    "too many requests",
+    "rate limited",
+    "bad gateway",
+    "gateway timeout",
+    "connection timed out",
+)
 
 
 class AuthApiError(RuntimeError):
     def __init__(self, status, error, payload=None):
-        super().__init__(str(error or f"http_{status}"))
+        display = CLOUD_OVERLOADED_MESSAGE if str(error or "") == CLOUD_OVERLOADED_ERROR_CODE else str(error or f"http_{status}")
+        super().__init__(display)
         self.status = int(status or 0)
         self.error = str(error or f"http_{status}")
         self.payload = payload if isinstance(payload, dict) else {}
@@ -129,6 +170,16 @@ def _report_critical_disconnect(prefs, source, primary_error=None, secondary_err
 
 def describe_auth_error(error):
     message = str(getattr(error, "error", error) or "login_failed")
+    payload = getattr(error, "payload", {})
+    payload_text = ""
+    if isinstance(payload, dict):
+        payload_text = " ".join(str(payload.get(key, "") or "") for key in ("error", "message", "detail"))
+    if looks_like_planetka_overload(
+        getattr(error, "status", 0),
+        message,
+        payload_text,
+    ):
+        return CLOUD_OVERLOADED_MESSAGE
     lowered = message.lower()
     if TIER_INTEGRITY_ERROR_CODE in lowered:
         return (
@@ -174,10 +225,46 @@ def get_api_base_url():
     return DEFAULT_API_BASE_URL
 
 
+def _coerce_status_code(status):
+    try:
+        return int(status or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def looks_like_planetka_overload(status=0, *details):
+    status_code = _coerce_status_code(status)
+    combined = " ".join(str(detail or "") for detail in details if detail is not None).strip().lower()
+    if combined and any(token in combined for token in _ACCOUNT_LIMIT_OR_ACCESS_TOKENS):
+        return False
+    if combined and any(token in combined for token in _OVERLOAD_TEXT_TOKENS):
+        return True
+    if combined and any(token in combined for token in _KNOWN_NON_OVERLOAD_ERROR_TOKENS):
+        return False
+    if status_code in _OVERLOAD_HTTP_STATUSES and not combined:
+        return True
+    return False
+
+
+def mark_planetka_cloud_overloaded(prefs=None, reason=""):
+    reason_text = str(reason or "").strip()
+    if reason_text:
+        logger.debug("Planetka Cloud overload detected: %s", reason_text[:300])
+    _CLOUD_CONNECTION_CACHE["checked"] = True
+    _CLOUD_CONNECTION_CACHE["timestamp"] = time.monotonic()
+    _CLOUD_CONNECTION_CACHE["online"] = False
+    _CLOUD_CONNECTION_CACHE["message"] = CLOUD_OVERLOADED_MESSAGE
+    prefs = prefs or get_prefs()
+    if prefs is not None and is_authenticated(prefs):
+        _set_auth_status_message(prefs, CLOUD_OVERLOADED_MESSAGE)
+    _tag_ui_redraw()
+
+
 def _is_cloud_offline_status_message(message):
     lowered = str(message or "").strip().lower()
     return bool(
         lowered.startswith(_CLOUD_CONNECTION_OFFLINE_MESSAGE.lower())
+        or lowered.startswith(CLOUD_OVERLOADED_MESSAGE.lower())
         or "check your internet connection" in lowered
         or "could not connect right now" in lowered
     )
@@ -220,6 +307,23 @@ def mark_planetka_cloud_offline(reason="", prefs=None):
     _tag_ui_redraw()
 
 
+def _mark_planetka_cloud_http_unavailable(status, detail="", prefs=None):
+    status_code = _coerce_status_code(status)
+    detail_text = str(detail or "").strip()
+    if looks_like_planetka_overload(status_code, detail_text):
+        mark_planetka_cloud_overloaded(prefs=prefs, reason=detail_text or f"http_{status_code}")
+        return CLOUD_OVERLOADED_MESSAGE
+    message = f"Planetka Cloud is unavailable right now (HTTP {status_code})."
+    _CLOUD_CONNECTION_CACHE["checked"] = True
+    _CLOUD_CONNECTION_CACHE["timestamp"] = time.monotonic()
+    _CLOUD_CONNECTION_CACHE["online"] = False
+    _CLOUD_CONNECTION_CACHE["message"] = message
+    if prefs is not None and is_authenticated(prefs):
+        _set_auth_status_message(prefs, message)
+    _tag_ui_redraw()
+    return message
+
+
 def get_cloud_connection_status(prefs=None, force=False, timeout=2.0):
     prefs = prefs or get_prefs()
     now = time.monotonic()
@@ -241,32 +345,24 @@ def get_cloud_connection_status(prefs=None, force=False, timeout=2.0):
             status = int(getattr(response, "status", 200) or 200)
             # Read a tiny response body so connection failures surface while
             # keeping the check cheap for UI redraws.
-            response.read(256)
+            raw = response.read(256)
+            detail = raw.decode("utf-8", errors="replace") if raw else ""
         if 200 <= status < 500:
             mark_planetka_cloud_online(prefs)
             return {"online": True, "message": "", "checked": True}
-        message = f"Planetka Cloud is unavailable right now (HTTP {status})."
-        _CLOUD_CONNECTION_CACHE["checked"] = True
-        _CLOUD_CONNECTION_CACHE["timestamp"] = time.monotonic()
-        _CLOUD_CONNECTION_CACHE["online"] = False
-        _CLOUD_CONNECTION_CACHE["message"] = message
-        if prefs is not None and is_authenticated(prefs):
-            _set_auth_status_message(prefs, message)
-        _tag_ui_redraw()
+        message = _mark_planetka_cloud_http_unavailable(status, detail, prefs=prefs)
         return {"online": False, "message": message, "checked": True}
     except urllib.error.HTTPError as exc:
         status = int(getattr(exc, "code", 0) or 0)
+        try:
+            raw = exc.read(512)
+        except (RuntimeError, ValueError, OSError):
+            raw = b""
+        detail = raw.decode("utf-8", errors="replace") if raw else ""
         if 200 <= status < 500:
             mark_planetka_cloud_online(prefs)
             return {"online": True, "message": "", "checked": True}
-        message = f"Planetka Cloud is unavailable right now (HTTP {status})."
-        _CLOUD_CONNECTION_CACHE["checked"] = True
-        _CLOUD_CONNECTION_CACHE["timestamp"] = time.monotonic()
-        _CLOUD_CONNECTION_CACHE["online"] = False
-        _CLOUD_CONNECTION_CACHE["message"] = message
-        if prefs is not None and is_authenticated(prefs):
-            _set_auth_status_message(prefs, message)
-        _tag_ui_redraw()
+        message = _mark_planetka_cloud_http_unavailable(status, detail, prefs=prefs)
         return {"online": False, "message": message, "checked": True}
     except urllib.error.URLError as exc:
         mark_planetka_cloud_offline(str(getattr(exc, "reason", exc) or exc), prefs=prefs)
@@ -568,13 +664,21 @@ def _json_request(method, path, body=None, headers=None, timeout=30):
             mark_planetka_cloud_online()
             return int(getattr(response, "status", 200) or 200), data
     except urllib.error.HTTPError as exc:
-        mark_planetka_cloud_online()
         raw = exc.read()
         text = raw.decode("utf-8", errors="replace") if raw else "{}"
         try:
             data = json.loads(text or "{}")
         except (TypeError, ValueError, json.JSONDecodeError):
             data = {"error": text or f"http_{exc.code}"}
+        error_text = " ".join(str(data.get(key, "") or "") for key in ("error", "message", "detail"))
+        if looks_like_planetka_overload(exc.code, error_text, text):
+            mark_planetka_cloud_overloaded(reason=text or error_text or f"http_{exc.code}")
+            raise AuthApiError(
+                exc.code,
+                CLOUD_OVERLOADED_ERROR_CODE,
+                payload={"error": CLOUD_OVERLOADED_ERROR_CODE, "message": CLOUD_OVERLOADED_MESSAGE},
+            ) from exc
+        mark_planetka_cloud_online()
         raise AuthApiError(exc.code, data.get("error") or f"http_{exc.code}", payload=data) from exc
     except urllib.error.URLError as exc:
         mark_planetka_cloud_offline(str(getattr(exc, "reason", exc) or exc))

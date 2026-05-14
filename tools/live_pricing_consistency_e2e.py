@@ -36,12 +36,18 @@ ROOT = pathlib.Path(
 )
 CLOUDFLARE_DIR = ROOT / "cloudflare-api"
 CATALOG_PATH = ROOT / "cloudflare-api/src/worker/region_packs.generated.js"
+CATALOG_PRODUCTS_PATH = ROOT / "cloudflare-api/src/worker/region_packs.products.generated.js"
+CATALOG_TILE_DATA_PATH = ROOT / "cloudflare-api/src/worker/region_packs.tile_data.generated.js"
 API_BASE = "https://api.planetka.io"
 TARGET_EMAIL = "tom.griger@gmail.com"
 RANDOM_SEED = 20260513
 SCENE_TESTS = int(os.environ.get("PLANETKA_E2E_SCENE_TESTS", "100") or "100")
 COUNTRY_TESTS = int(os.environ.get("PLANETKA_E2E_COUNTRY_TESTS", "50") or "50")
 REGION_TESTS = int(os.environ.get("PLANETKA_E2E_REGION_TESTS", "5") or "5")
+RESET_E2E_ENTITLEMENTS = str(os.environ.get("PLANETKA_E2E_RESET_ENTITLEMENTS") or "1").strip().lower() not in {"0", "false", "no", "off"}
+PACE_SEC = float(os.environ.get("PLANETKA_E2E_PACE_SEC", "3.0") or "3.0")
+MAX_COUNTRY_TILES = int(os.environ.get("PLANETKA_E2E_MAX_COUNTRY_TILES", "1200") or "1200")
+MAX_REGION_TILES = int(os.environ.get("PLANETKA_E2E_MAX_REGION_TILES", "1500") or "1500")
 
 
 @dataclass
@@ -79,13 +85,16 @@ def sql_quote(value: str) -> str:
 
 
 def parse_catalog() -> tuple[list[dict[str, Any]], dict[str, list[str]]]:
-    text = CATALOG_PATH.read_text(encoding="utf-8")
+    products_source = CATALOG_PRODUCTS_PATH if CATALOG_PRODUCTS_PATH.exists() else CATALOG_PATH
+    tile_data_source = CATALOG_TILE_DATA_PATH if CATALOG_TILE_DATA_PATH.exists() else CATALOG_PATH
+    products_text = products_source.read_text(encoding="utf-8")
+    tile_text = tile_data_source.read_text(encoding="utf-8")
     products_match = re.search(
-        r"GENERATED_REGION_PACK_PRODUCTS = (\[.*?\]);\nexport const GENERATED_REGION_PACK_TILE_KEYS",
-        text,
+        r"GENERATED_REGION_PACK_PRODUCTS = (\[.*?\]);",
+        products_text,
         re.S,
     )
-    keys_match = re.search(r"GENERATED_REGION_PACK_TILE_KEYS = (\{.*?\});\n", text, re.S)
+    keys_match = re.search(r"GENERATED_REGION_PACK_TILE_KEYS = (\{.*?\});\n", tile_text, re.S)
     if not products_match or not keys_match:
         raise RuntimeError("generated region pack catalog could not be parsed")
     products = json.loads(products_match.group(1))
@@ -160,6 +169,33 @@ def grant_entitlements(user_id: str, tile_keys: list[str], source: str) -> int:
         + sql_quote(user_id)
     )
     return inserted
+
+
+def reset_e2e_entitlements(user_id: str) -> None:
+    """Remove only entitlements created by this live E2E harness.
+
+    Keeping old synthetic purchases makes later runs spend hundreds of attempts
+    looking for unowned tiles and can itself overload the live Worker. This does
+    not touch manual sandbox purchases or non-E2E account state.
+    """
+
+    run_d1(
+        """
+        DELETE FROM user_tile_entitlements
+        WHERE user_id =
+        """
+        + sql_quote(user_id)
+        + " AND source LIKE 'live_e2e_%'"
+    )
+    run_d1(
+        """
+        UPDATE user_credit_accounts
+        SET pricing_version = COALESCE(pricing_version, 0) + 1,
+            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        WHERE user_id =
+        """
+        + sql_quote(user_id)
+    )
 
 
 def fetch_json_from_map_page(url: str) -> dict[str, Any]:
@@ -344,6 +380,9 @@ def main() -> int:
     if not user_id:
         print(json.dumps({"ok": False, "error": "missing_user_id", "account": account}))
         return 2
+    if RESET_E2E_ENTITLEMENTS:
+        reset_e2e_entitlements(user_id)
+        credit_api.clear_credit_caches()
 
     products, product_tile_keys = parse_catalog()
     by_id = {str(p.get("id") or ""): p for p in products}
@@ -369,6 +408,8 @@ def main() -> int:
         rng.shuffle(keys)
         sample = keys[: rng.randint(1, min(5, len(keys)))]
         verify_scene_purchase(stats, credit_api, user_id, str(product.get("id")), sample)
+        if PACE_SEC > 0:
+            time.sleep(PACE_SEC)
         if stats.scenes and stats.scenes % 10 == 0:
             print(json.dumps({"progress": "scenes", "passed": stats.scenes, "failures": len(stats.failures)}), flush=True)
 
@@ -378,6 +419,7 @@ def main() -> int:
         and str(p.get("type") or "") == "country"
         and not p.get("adm1_codes")
         and int(p.get("paid_tile_count") or 0) > 0
+        and int(p.get("tile_count") or 0) <= MAX_COUNTRY_TILES
         and str(p.get("id") or "") not in {"world"}
     ]
     rng.shuffle(countries)
@@ -392,15 +434,18 @@ def main() -> int:
             product_tile_keys.get(str(product.get("id")), []),
             "country",
         )
+        if PACE_SEC > 0:
+            time.sleep(PACE_SEC)
         if stats.countries and stats.countries % 10 == 0:
             print(json.dumps({"progress": "countries", "passed": stats.countries, "failures": len(stats.failures)}), flush=True)
 
     regions = [
         p for p in products
         if p.get("id") in product_tile_keys
-        and str(p.get("type") or "") in {"macro_region", "continent"}
+        and str(p.get("type") or "") == "macro_region"
         and str(p.get("id") or "") != "world"
         and int(p.get("paid_tile_count") or 0) > 0
+        and int(p.get("tile_count") or 0) <= MAX_REGION_TILES
     ]
     rng.shuffle(regions)
     for product in regions:
@@ -414,6 +459,8 @@ def main() -> int:
             product_tile_keys.get(str(product.get("id")), []),
             "region",
         )
+        if PACE_SEC > 0:
+            time.sleep(PACE_SEC)
         print(json.dumps({"progress": "regions", "passed": stats.regions, "failures": len(stats.failures)}), flush=True)
 
     report = {
@@ -424,6 +471,9 @@ def main() -> int:
             "scenes": SCENE_TESTS,
             "countries": COUNTRY_TESTS,
             "regions": REGION_TESTS,
+            "pace_sec": PACE_SEC,
+            "max_country_tiles": MAX_COUNTRY_TILES,
+            "max_region_tiles": MAX_REGION_TILES,
         },
         "passed": {
             "scenes": stats.scenes,

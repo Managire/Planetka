@@ -3039,6 +3039,36 @@ async function ensureCreditTables(db) {
   await dbRun(
     db,
     `
+      CREATE TABLE IF NOT EXISTS region_pack_tile_entries (
+        catalog_version TEXT NOT NULL,
+        region_pack_id TEXT NOT NULL,
+        tile_key TEXT NOT NULL,
+        family_key TEXT NOT NULL,
+        x INTEGER NOT NULL,
+        y INTEGER NOT NULL,
+        z INTEGER NOT NULL,
+        d INTEGER NOT NULL,
+        base_gross_cents INTEGER NOT NULL DEFAULT 0,
+        globally_free INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (catalog_version, region_pack_id, tile_key)
+      )
+    `,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_region_pack_tile_entries_pack_family ON region_pack_tile_entries(catalog_version, region_pack_id, family_key)`,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_region_pack_tile_entries_pack_z001 ON region_pack_tile_entries(catalog_version, region_pack_id, z, d, x, y)`,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_region_pack_tile_entries_tile ON region_pack_tile_entries(catalog_version, tile_key)`,
+  );
+  await dbRun(
+    db,
+    `
       CREATE TABLE IF NOT EXISTS pricing_integrity_events (
         id TEXT PRIMARY KEY,
         user_id TEXT,
