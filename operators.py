@@ -538,6 +538,7 @@ def _populate_region_pack_info_operator(operator, offer):
     region_id = str((offer or {}).get("id", "") or (offer or {}).get("region_pack_id", "") or "").strip()
     operator.region_pack_id = region_id
     operator.region_pack_name = name
+    operator.quote_id = str((offer or {}).get("quote_id", "") or (offer or {}).get("quoteId", "") or "").strip()
     operator.included_countries = _region_offer_countries_text(offer)
     operator.new_tile_count = max(
         0,
@@ -622,6 +623,7 @@ def _draw_region_pack_upsell_options(layout, context, *, current_region_pack_id=
         checkout.checkout_option = "REGION_PACK"
         checkout.region_pack_id = region_id
         checkout.region_pack_name = name
+        checkout.quote_id = str(offer.get("quote_id", "") or offer.get("quoteId", "") or "")
         checkout.included_countries = _region_offer_countries_text(offer)
         info = row.operator("planetka.region_pack_info", text="", icon="INFO")
         _populate_region_pack_info_operator(info, offer)
@@ -1180,6 +1182,7 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
         options={'HIDDEN', 'SKIP_SAVE'},
     )
     region_pack_name: StringProperty(default="Data Pack", options={'HIDDEN', 'SKIP_SAVE'})
+    quote_id: StringProperty(default="", options={'HIDDEN', 'SKIP_SAVE'})
     included_countries: StringProperty(default="", options={'HIDDEN', 'SKIP_SAVE'})
 
     texture_quality_mode: EnumProperty(
@@ -1288,6 +1291,7 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
                 tiles=tile_keys,
                 quality_mode=quality_mode,
                 region_pack_id=str(getattr(self, "region_pack_id", "") or ""),
+                quote_id=str(getattr(self, "quote_id", "") or ""),
             )
         except Exception as exc:
             if option == "REGION_PACK":
@@ -1416,6 +1420,7 @@ class PLANETKA_OT_RegionPackInfo(bpy.types.Operator):
 
     region_pack_id: StringProperty(default="", options={'HIDDEN', 'SKIP_SAVE'})
     region_pack_name: StringProperty(default="Data Pack", options={'HIDDEN', 'SKIP_SAVE'})
+    quote_id: StringProperty(default="", options={'HIDDEN', 'SKIP_SAVE'})
     included_countries: StringProperty(default="", options={'HIDDEN', 'SKIP_SAVE'})
     new_tile_count: IntProperty(default=0, options={'HIDDEN', 'SKIP_SAVE'})
     total_tile_count: IntProperty(default=0, options={'HIDDEN', 'SKIP_SAVE'})
@@ -1496,6 +1501,7 @@ class PLANETKA_OT_RegionPackInfo(bpy.types.Operator):
         checkout.checkout_option = "REGION_PACK"
         checkout.region_pack_id = str(getattr(self, "region_pack_id", "") or "")
         checkout.region_pack_name = name
+        checkout.quote_id = str(getattr(self, "quote_id", "") or "")
         checkout.included_countries = str(getattr(self, "included_countries", "") or "")
 
     def execute(self, _context):

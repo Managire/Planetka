@@ -2,6 +2,15 @@
 
 All notable public changes to Planetka are documented in this file.
 
+## [v0.7.6] - 2026-05-14
+
+### Changed
+- Data-pack checkout now uses a single backend quote object across Blender UI, web map pages, catalog rows, payment choice pages, Stripe metadata, and webhook fulfilment.
+- Removed alternate data-pack checkout/pricing branches so Stripe can only charge an existing quote amount.
+
+### Fixed
+- Prevented data-pack checkout links from proceeding with stale or missing quote IDs after pricing or entitlement changes.
+
 ## [v0.7.5] - 2026-05-14
 
 ### Changed

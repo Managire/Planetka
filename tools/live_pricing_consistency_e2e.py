@@ -304,7 +304,8 @@ def verify_pack_purchase(
         detail = credit_api.create_region_pack_detail_link(product_id)
         data = fetch_json_from_map_page(detail["detail_url"])
         summary = data.get("summary") or {}
-        checkout = credit_api.create_checkout_session("region_pack", region_pack_id=product_id)
+        quote_id = str(((data.get("quote") or {}).get("quote_id")) or "")
+        checkout = credit_api.create_checkout_session("region_pack", region_pack_id=product_id, quote_id=quote_id)
         stats.checkout_sessions += 1
         checkout_cents, status, payload = fetch_checkout_redirect_cents(checkout["checkout_url"])
     except Exception as exc:  # noqa: BLE001

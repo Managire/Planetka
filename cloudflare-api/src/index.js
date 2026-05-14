@@ -3925,6 +3925,7 @@ const TILE_ROUTE_DEPS = {
   resolveTileCacheControl,
   getPreviewFairUsageHoldForUser,
   previewFairUsageBlockedResponse,
+  sha256Hex,
   json,
 };
 

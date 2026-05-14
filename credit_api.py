@@ -611,7 +611,7 @@ def get_region_pack_related_offers(region_pack_id, force=False, raise_errors=Fal
     return [dict(item) for item in offers]
 
 
-def create_checkout_session(option: str, tiles=None, quality_mode="FULL", region_pack_id: str = "") -> dict:
+def create_checkout_session(option: str, tiles=None, quality_mode="FULL", region_pack_id: str = "", quote_id: str = "") -> dict:
     """Create a Stripe Checkout Session for a direct Planetka purchase."""
     safe_option = str(option or "scene").strip().lower()
     if safe_option not in {
@@ -636,6 +636,7 @@ def create_checkout_session(option: str, tiles=None, quality_mode="FULL", region
     }
     if safe_option in {"region_pack", "broader_pack"}:
         payload["region_pack_id"] = str(region_pack_id or "").strip()
+        payload["quote_id"] = str(quote_id or "").strip()
     result = _request_json("POST", "/credits/checkout", body=payload, timeout=30)
     if isinstance(result, dict) and result.get("ok", False):
         return dict(_round_price_fields(result))

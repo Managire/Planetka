@@ -1421,10 +1421,12 @@ def _draw_broader_region_offers(layout, scene, active_view_scope=False):
         action.checkout_option = "REGION_PACK"
         action.region_pack_id = region_id
         action.region_pack_name = name
+        action.quote_id = str(offer.get("quote_id", "") or offer.get("quoteId", "") or "")
         action.included_countries = included_countries
         info = action_row.operator("planetka.region_pack_info", text="", icon="INFO")
         info.region_pack_id = region_id
         info.region_pack_name = name
+        info.quote_id = str(offer.get("quote_id", "") or offer.get("quoteId", "") or "")
         info.included_countries = included_countries
         info.new_tile_count = int(new_tiles)
         info.total_tile_count = int(total_tiles)

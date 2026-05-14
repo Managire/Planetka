@@ -6,6 +6,7 @@ This internal matrix records the current compatibility baseline for public-relea
 
 | Planetka version | Blender versions | Smoke status | Notes |
 | --- | --- | --- | --- |
+| v0.7.6 | Blender 5.0 primary; Blender 4.5 LTS expected with verification | Pass required before publication | Beta patch: quote-only Full Quality data-pack pricing/checkout across Blender, web pages, catalog, Stripe, and webhook fulfilment. |
 | v0.7.5 | Blender 5.0 primary; Blender 4.5 LTS expected with verification | Pass required before publication | Beta patch: D1-backed exact data-pack pricing and reduced Worker runtime bundle for large pack pricing routes. |
 | v0.7.4 | Blender 5.0 primary; Blender 4.5 LTS expected with verification | Pass required before publication | Beta patch: Full Quality post-purchase sidebar recovery and Relevant Data Packs background refresh safety. |
 | v0.7.3 | Blender 5.0 primary; Blender 4.5 LTS expected with verification | Pass required before publication | Beta patch: account page, UI wording/icon refinements, pricing refresh consistency, and Worker map-page CPU reduction. |
