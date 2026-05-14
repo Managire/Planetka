@@ -359,13 +359,11 @@ def prefetch_resolve_plan(
 
     normalized_quality_mode = _normalize_texture_quality_mode(texture_quality_mode)
     use_remote = bool(is_remote_source_configured(base_path))
-    ocean_lookup = set(ocean_tiles or ())
     credit_tile_keys = []
     if normalized_quality_mode == "FULL" and bool(enforce_pricing_session):
         credit_tile_keys = [
             str(tile)
             for tile in resolved_tiles
-            if str(tile) not in ocean_lookup
         ]
 
     if capture and use_remote:

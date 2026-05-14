@@ -115,7 +115,12 @@ import {
   listRegionProductPricingRows,
   setRegionProductDiscountOverride,
   setRuntimePricingSettings,
+  unlockTilesForSession,
 } from "./worker/credit_routes.js";
+import {
+  createTileDownloadSession,
+  normalizeTileKeys,
+} from "./worker/tile_sessions.js";
 import {
   handleStripeWebhook as handleStripeWebhookRoute,
 } from "./worker/billing_handlers.js";
@@ -3916,6 +3921,9 @@ const TILE_ROUTE_DEPS = {
   readTileSessionClaims,
   recordTileRequestEvent,
   recordPreviewUsageAndMaybeAlert,
+  unlockTilesForSession,
+  createTileDownloadSession,
+  normalizeTileKeys,
   invalidateAnalyticsSnapshots,
   requestClientIp,
   requestCountry,
@@ -3934,6 +3942,7 @@ const TILE_EVENT_QUEUE_DEPS = {
   isTileHotPathMonitoringEnabled,
   maybeSignalTileFarmingActivity,
   nowIso,
+  recordPreviewUsageAndMaybeAlert,
   recordTileRequestEvent,
   requireDb,
 };

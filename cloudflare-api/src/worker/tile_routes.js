@@ -1,10 +1,9 @@
 import { corsHeaders, json } from "./responses.js";
 import {
   isFreeCreditTileKey,
-  isTileUnlockedForUser,
   tileKeyFromFileName,
-  unlockTilesForSession,
-} from "./credit_routes.js";
+  isTileAllowedByDownloadSession,
+} from "./tile_sessions.js";
 
 function guessContentType(fileName) {
   const lower = String(fileName || "").toLowerCase();
@@ -46,6 +45,9 @@ export async function handleTileSessionStart(request, env, deps) {
     previewFairUsageBlockedResponse,
     requireDb,
     json: jsonResponse,
+    authorizeFullTileSession,
+    createTileDownloadSession,
+    normalizeTileKeys,
   } = deps;
 
   const auth = await requireAuthenticatedUserContext(
@@ -80,6 +82,10 @@ export async function handleTileSessionStart(request, env, deps) {
     || body.pricingTiles
   );
   const creditEnforced = creditProtocol === "land_credits_v1" && Array.isArray(creditTileKeys);
+  if (creditEnforced && typeof authorizeFullTileSession === "function") {
+    return await authorizeFullTileSession(request, env, body);
+  }
+  const sessionId = creditEnforced ? crypto.randomUUID() : "";
   const issued = await issueTileSessionToken(
     env,
     auth,
@@ -88,13 +94,15 @@ export async function handleTileSessionStart(request, env, deps) {
     {
       creditProtocol,
       creditEnforced,
+      sessionId,
     },
   );
   if (issued && issued.error) {
     return issued.error;
   }
   const unlockResult = creditEnforced
-    ? await unlockTilesForSession(
+    && typeof deps.unlockTilesForSession === "function"
+    ? await deps.unlockTilesForSession(
       db,
       auth.user && auth.user.id,
       issued.qualityMode,
@@ -159,6 +167,28 @@ export async function handleTileSessionStart(request, env, deps) {
       env,
     );
   }
+  const allowedTileKeys = normalizeTileKeys
+    ? normalizeTileKeys(
+      body && (
+        body.allowed_tile_keys
+        || body.allowedTileKeys
+        || body.session_tile_keys
+        || body.sessionTileKeys
+        || creditTileKeys
+      ),
+    )
+    : Array.isArray(creditTileKeys) ? creditTileKeys : [];
+  if (creditEnforced && typeof createTileDownloadSession === "function") {
+    await createTileDownloadSession(db, {
+      id: sessionId,
+      userId: auth.user && auth.user.id,
+      resolveId: issued.resolveId,
+      qualityMode: issued.qualityMode,
+      creditEnforced: true,
+      allowedTileKeys,
+      expiresAt: issued.expiresAt,
+    });
+  }
   return json(
     {
       ok: true,
@@ -170,6 +200,7 @@ export async function handleTileSessionStart(request, env, deps) {
       plan_code: normalizeRequestedPlan(auth && auth.planCode),
       credit_protocol: creditEnforced ? "land_credits_v1" : "legacy_compat",
       credit_enforced: Boolean(creditEnforced),
+      tile_session_id: sessionId,
       credits_charged: Number(unlockResult && unlockResult.credits || 0),
       eur_charged: Number(unlockResult && unlockResult.credits || 0),
       paid_tile_count: Number(unlockResult && unlockResult.paid_tile_count || 0),
@@ -305,7 +336,11 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
     }
     const effectiveQualityMode = tokenQualityMode || requestedQualityMode;
     eventQualityMode = effectiveQualityMode;
-    if ((request.method === "GET" || request.method === "HEAD") && effectiveQualityMode === "preview") {
+    if (
+      (request.method === "GET" || request.method === "HEAD")
+      && effectiveQualityMode === "preview"
+      && !(tileSessionAuth && tileSessionAuth.claims)
+    ) {
       const hold = await getPreviewFairUsageHoldForUser(db, user && user.id);
       if (hold && hold.held) {
         eventStatusCode = 403;
@@ -358,9 +393,9 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
       && creditTileKey
       && !isFreeCreditTileKey(creditTileKey)
     ) {
-      const unlocked = await isTileUnlockedForUser(
+      const unlocked = await isTileAllowedByDownloadSession(
         db,
-        user && user.id,
+        tileSessionAuth && tileSessionAuth.claims,
         creditTileKey,
         deps,
         {
@@ -398,7 +433,18 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
       ) {
         return null;
       }
-      const unlockResult = await unlockTilesForSession(
+      if (typeof deps.unlockTilesForSession !== "function") {
+        return json(
+          {
+            ok: false,
+            error: "full_quality_session_required",
+            message: "Full Quality requires a confirmed Resolve session.",
+          },
+          402,
+          env,
+        );
+      }
+      const unlockResult = await deps.unlockTilesForSession(
         db,
         user && user.id,
         creditBillingQualityMode,
@@ -526,7 +572,7 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
     eventBytesServed = objectSize;
     eventCacheStatus = cacheStatus;
     if (effectiveQualityMode === "preview" && request.method === "GET") {
-      await recordPreviewUsageAndMaybeAlert(db, env, {
+      const previewUsageWrite = recordPreviewUsageAndMaybeAlert(db, env, {
         created_at_unix: Math.floor(Date.now() / 1000),
         user_id: String(user.id || ""),
         user_email: String(user.email || ""),
@@ -536,6 +582,11 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
         bytes_served: objectSize,
         tile_key: creditTileKey || eventTileKey,
       });
+      if (ctx && typeof ctx.waitUntil === "function") {
+        ctx.waitUntil(previewUsageWrite);
+      } else {
+        await previewUsageWrite;
+      }
     }
     return new Response(responseBody, {
       status: 200,
@@ -569,9 +620,8 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
       error_code: errorCode,
       monitoring_enabled: monitoringEnabled,
     };
-    const telemetryWrite = recordTileRequestEvent(db, tileEventPayload);
     const processSignals = async () => {
-      await telemetryWrite;
+      await recordTileRequestEvent(db, tileEventPayload);
       if (!monitoringEnabled) {
         return;
       }

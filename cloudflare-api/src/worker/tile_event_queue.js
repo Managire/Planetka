@@ -34,6 +34,23 @@ export async function handleTileEventQueueBatch(batch, env, deps) {
         client_ip: String(payload.client_ip || ""),
         error_code: String(payload.error_code || ""),
       });
+      if (
+        String(payload.quality_mode || payload.qualityMode || "").trim().toLowerCase() === "preview"
+        && String(payload.method || "GET").trim().toUpperCase() === "GET"
+        && deps.clampNonNegativeInt(payload.status_code) === 200
+        && typeof deps.recordPreviewUsageAndMaybeAlert === "function"
+      ) {
+        await deps.recordPreviewUsageAndMaybeAlert(db, env, {
+          created_at_unix: deps.clampNonNegativeInt(payload.created_at_unix),
+          user_id: String(payload.user_id || ""),
+          user_email: String(payload.user_email || ""),
+          method: String(payload.method || "GET"),
+          quality_mode: String(payload.quality_mode || payload.qualityMode || "preview"),
+          status_code: deps.clampNonNegativeInt(payload.status_code),
+          bytes_served: deps.clampNonNegativeInt(payload.bytes_served),
+          tile_key: String(payload.tile_key || ""),
+        });
+      }
 
       if (
         payload.monitoring_enabled

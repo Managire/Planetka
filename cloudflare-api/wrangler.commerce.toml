@@ -1,0 +1,51 @@
+name = "planetka-commerce"
+main = "src/index.js"
+compatibility_date = "2026-03-15"
+find_additional_modules = true
+routes = [
+  { pattern = "api.planetka.io/*", zone_name = "planetka.io" }
+]
+
+[observability]
+enabled = true
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 0.01
+
+[observability.traces]
+enabled = true
+head_sampling_rate = 0.01
+
+[vars]
+R2_PREFIX = "planetka-assets"
+TILE_BROWSER_MAX_AGE_SECONDS = "86400"
+TILE_EDGE_MAX_AGE_SECONDS = "604800"
+TILE_CACHE_IMMUTABLE = "1"
+ANALYTICS_ADMIN_EMAILS = "info@planetka.io,tom.griger@gmail.com"
+LEGAL_VERSION = "2026-05-12"
+TERMS_VERSION = "2026-05-12"
+PRIVACY_VERSION = "2026-05-12"
+MONTHLY_COST_ALERT_BASE_USD = "50"
+MONTHLY_COST_ALERT_STEP_USD = "10"
+R2_ESTIMATED_STORAGE_GB = "2600"
+AUTH_REFRESH_HEALTH_WINDOW_SECONDS = "604800"
+RATE_LIMIT_AUTH_EXCHANGE_IP_LIMIT = "30"
+RATE_LIMIT_AUTH_EXCHANGE_IP_WINDOW_SECONDS = "60"
+RATE_LIMIT_AUTH_REFRESH_IP_LIMIT = "60"
+RATE_LIMIT_AUTH_REFRESH_IP_WINDOW_SECONDS = "60"
+ADDON_UPDATE_VERSION = "0.7.6"
+ADDON_UPDATE_DOWNLOAD_URL = "https://pub-563b561afd7a4af4ad4c0ffe54b1e665.r2.dev/releases/Planetka_update_0.7.6.zip"
+ADDON_UPDATE_SHA256 = "8c2c321669d8b6f91dfd0b8471ae33d40df22add2f72430c43556ae733f5892f"
+ADDON_UPDATE_PUBLISHED_AT = "2026-05-14T17:41:59Z"
+ADDON_UPDATE_RELEASE_NOTES_URL = "https://www.planetka.io/blender/documentation/"
+ADDON_UPDATE_CHANNEL = "stable"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "planetka-auth"
+database_id = "8dd80102-88df-4105-9884-8e231875bc6d"
+
+[[r2_buckets]]
+binding = "PLANETKA_DATA"
+bucket_name = "planetka-data"
