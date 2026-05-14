@@ -89,7 +89,7 @@ const DETAIL_TOKEN_CACHE_MAX = 4096;
 const REGION_PRODUCT_TILE_KEYS_CACHE_MAX = 128;
 const REGION_PRODUCT_SORTED_TILE_KEYS_CACHE_MAX = 128;
 const REGION_PRODUCT_TILE_KEYS_CACHE_MAX_KEYS = 1200;
-const REGION_PACK_CATALOG_PAGE_MAX_LIMIT = 50;
+const REGION_PACK_CATALOG_PAGE_MAX_LIMIT = 20;
 const USER_CREDIT_ACCOUNT_CACHE_TTL_MS = 30 * 1000;
 const USER_ENTITLEMENT_SUMMARY_CACHE_TTL_MS = 2 * 60 * 1000;
 const REGION_OFFERS_RESPONSE_CACHE_TTL_MS = 20 * 1000;
@@ -3085,6 +3085,52 @@ async function regionProductOwnedFamilyRows(db, product, ownedByFamily, deps, op
   return families;
 }
 
+async function regionProductIdsWithOwnedFamilyOverlap(db, productIds, ownedByFamily, deps) {
+  const ids = Array.from(new Set((Array.isArray(productIds) ? productIds : [])
+    .map((value) => String(value || "").trim().toLowerCase())
+    .filter(Boolean)));
+  const result = new Set();
+  if (!ids.length || !(ownedByFamily instanceof Map) || ownedByFamily.size <= 0) {
+    return result;
+  }
+  if (ids.includes("world")) {
+    result.add("world");
+  }
+  const queryIds = ids.filter((id) => id !== "world");
+  if (!queryIds.length) {
+    return result;
+  }
+  const familyKeys = Array.from(ownedByFamily.keys())
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  if (!familyKeys.length) {
+    return result;
+  }
+  await ensureRegionPackTileEntryTable(db, deps);
+  for (const idChunk of fixedSizeChunks(queryIds, 20)) {
+    for (const familyChunk of fixedSizeChunks(familyKeys, 70)) {
+      const rows = await deps.dbAll(
+        db,
+        `
+          SELECT DISTINCT region_pack_id
+          FROM region_pack_tile_entries
+          WHERE catalog_version = ?
+            AND region_pack_id IN (${idChunk.map(() => "?").join(",")})
+            AND family_key IN (${familyChunk.map(() => "?").join(",")})
+        `,
+        [REGION_PACK_CATALOG_VERSION, ...idChunk, ...familyChunk],
+      );
+      for (const row of rows || []) {
+        const id = String(row && row.region_pack_id || "").trim().toLowerCase();
+        if (id) {
+          result.add(id);
+        }
+      }
+    }
+  }
+  return result;
+}
+
 function regionPackVisibleNewTileCount(chargeableTileCount, freeTileCount) {
   const chargeable = Math.max(0, Number.parseInt(chargeableTileCount || 0, 10) || 0);
   const free = Math.max(0, Number.parseInt(freeTileCount || 0, 10) || 0);
@@ -3520,6 +3566,93 @@ async function estimateRegionPackSummaryCached(db, product, account, ownedByFami
     );
   }
   return estimate;
+}
+
+function staticRegionPackSummaryEstimate(product, account = null) {
+  const summary = regionProductPricingSummary(product);
+  if (!summary) {
+    return { error: "missing_region_pack_summary" };
+  }
+  const discountPercent = regionProductDiscountPercent(product);
+  const fullCents = Math.max(0, Number.parseInt(summary.gross_cents || 0, 10) || 0);
+  if (isWorldFullQualityUnlocked(account)) {
+    return {
+      ok: true,
+      summary_estimate: true,
+      static_catalog_estimate: true,
+      world_full_quality_unlocked: true,
+      region_pack: regionProductPublicPayload(product),
+      region_pack_id: String(product && product.id || ""),
+      region_pack_name: String(product && product.name || ""),
+      catalog_version: REGION_PACK_CATALOG_VERSION,
+      discount_percent: discountPercent,
+      gross_eur: 0,
+      gross_cents: 0,
+      gross_price_eur: 0,
+      gross_price_cents: 0,
+      full_pack_gross_eur: centsToEur(fullCents),
+      full_pack_gross_cents: fullCents,
+      discount_eur: 0,
+      discount_cents: 0,
+      already_licenced_gross_eur: centsToEur(fullCents),
+      already_licenced_gross_cents: fullCents,
+      already_licenced_saving_eur: centsToEur(fullCents),
+      already_licenced_saving_cents: fullCents,
+      credits: 0,
+      credits_cents: 0,
+      price_eur: 0,
+      price_cents: 0,
+      paid_tile_count: 0,
+      free_tile_count: summary.tile_count,
+      tile_count: summary.tile_count,
+      unlicenced_tile_count: 0,
+      charged_tile_count: 0,
+      new_tile_count: 0,
+      already_licenced_tile_count: summary.tile_count,
+      partial_licence_tile_count: 0,
+      partial_licence_credit_eur: 0,
+      partial_licence_credit_cents: 0,
+      integrity_warnings: [],
+      metadata_missing_tile_keys: [],
+    };
+  }
+  const amounts = discountedRegionPackAmountCents(fullCents, discountPercent);
+  return {
+    ok: true,
+    summary_estimate: true,
+    static_catalog_estimate: true,
+    region_pack: regionProductPublicPayload(product),
+    region_pack_id: String(product && product.id || ""),
+    region_pack_name: String(product && product.name || ""),
+    catalog_version: REGION_PACK_CATALOG_VERSION,
+    discount_percent: discountPercent,
+    gross_eur: centsToEur(fullCents),
+    gross_cents: fullCents,
+    gross_price_eur: centsToEur(fullCents),
+    gross_price_cents: fullCents,
+    discount_eur: amounts.discount,
+    discount_cents: amounts.discount_cents,
+    already_licenced_gross_eur: 0,
+    already_licenced_gross_cents: 0,
+    already_licenced_saving_eur: 0,
+    already_licenced_saving_cents: 0,
+    credits: amounts.price,
+    credits_cents: amounts.price_cents,
+    price_eur: amounts.price,
+    price_cents: amounts.price_cents,
+    paid_tile_count: summary.paid_tile_count,
+    free_tile_count: summary.free_tile_count,
+    tile_count: summary.tile_count,
+    unlicenced_tile_count: regionPackVisibleNewTileCount(summary.paid_tile_count, summary.free_tile_count),
+    charged_tile_count: summary.paid_tile_count,
+    new_tile_count: summary.paid_tile_count,
+    already_licenced_tile_count: 0,
+    partial_licence_tile_count: 0,
+    partial_licence_credit_eur: 0,
+    partial_licence_credit_cents: 0,
+    integrity_warnings: [],
+    metadata_missing_tile_keys: [],
+  };
 }
 
 async function estimateRegionPackSummary(db, userId, product, deps) {
@@ -4388,9 +4521,21 @@ async function buildRegionPackCatalogPageData(db, userId, token, deps, options =
   const account = await ensureFreshCreditAccountForUser(db, userId, deps);
   const ownedSummary = await ownedEntitlementSummaryForUser(db, userId, deps, { account, includeRows: false });
   const ownedByFamily = ownedSummary.ownedByFamily;
+  const pageProducts = products.slice(offset, offset + limit);
+  const overlapIds = isWorldFullQualityUnlocked(account)
+    ? new Set()
+    : await regionProductIdsWithOwnedFamilyOverlap(
+      db,
+      pageProducts.map((product) => product && product.id),
+      ownedByFamily,
+      deps,
+    );
   const rows = [];
-  for (const product of products.slice(offset, offset + limit)) {
-    const estimate = await estimateRegionPackSummaryCached(db, product, account, ownedByFamily, deps, { cache: false });
+  for (const product of pageProducts) {
+    const productId = String(product && product.id || "").trim().toLowerCase();
+    const estimate = overlapIds.has(productId)
+      ? await estimateRegionPackSummaryCached(db, product, account, ownedByFamily, deps)
+      : staticRegionPackSummaryEstimate(product, account);
     if (!estimate || estimate.error) {
       continue;
     }
@@ -4403,9 +4548,10 @@ async function buildRegionPackCatalogPageData(db, userId, token, deps, options =
     offset,
     limit,
     total_packs: total,
-    next_offset: offset + rows.length < total ? offset + rows.length : null,
+    next_offset: offset + pageProducts.length < total ? offset + pageProducts.length : null,
     rows,
     entitlement_cache_hit: Boolean(ownedSummary.cache_hit),
+    overlap_count: overlapIds.size,
   };
 }
 
@@ -4720,7 +4866,7 @@ function regionPackCatalogShellHtml(data) {
 <script>const DATA=${payload};
 const fmt=(v)=>"€"+Number(v||0).toFixed(2);
 const token=encodeURIComponent(DATA.token||"");
-  let ROWS=[];let loading=false;let loadedAll=false;let nextOffset=0;const LIMIT=50;
+  let ROWS=[];let loading=false;let loadedAll=false;let nextOffset=0;const FIRST_LIMIT=5;const NEXT_LIMIT=20;
 function escapeCell(value){return String(value||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}
 function rowHtml(row){const id=encodeURIComponent(row.id||"");const partialCount=Number(row.partial_licence_tiles??row.partial_licence_tile_count??0);const partial=Number(row.partial_licence_credit_eur||0);const licenced=Number(row.already_licenced_tiles||0)+partialCount;const saving=Number(row.already_licenced_deduction_eur??row.already_licenced_saving_eur??0)+partial;const newTiles=Math.max(0,Number(row.new_tiles||0)-partialCount);const mapLink=" <a class=\\"button secondary\\" href=\\"/credits/region-pack-map?token="+token+"&region_pack_id="+id+"&catalog=1\\">Map</a>";return "<tr>"
 +"<td><b>"+escapeCell(row.name||"Data Pack")+"</b><div class=\\"muted small\\">"+escapeCell(row.group_label||"")+"</div></td>"
@@ -4733,7 +4879,7 @@ function rowHtml(row){const id=encodeURIComponent(row.id||"");const partialCount
 +"</tr>"}
 function groupRows(rows){const groups=[];const byKey=new Map();for(const row of rows){const key=String(row.group_key||"other");if(!byKey.has(key)){byKey.set(key,{key,label:String(row.group_label||key),rows:[]});groups.push(byKey.get(key));}byKey.get(key).rows.push(row)}return groups}
 function render(){const filter=String(document.getElementById("filter").value||"").trim().toLowerCase();let shown=0;const rows=ROWS.filter(row=>!filter||String(row.name||"").toLowerCase().includes(filter)||String(row.group_label||"").toLowerCase().includes(filter)||String(row.id||"").toLowerCase().includes(filter));const html=groupRows(rows).map(group=>{const groupRows=group.rows||[];if(!groupRows.length)return "";shown+=groupRows.length;return "<h2>"+escapeCell(group.label)+"</h2><table><thead><tr><th>Data Pack</th><th>New Tiles / Total Tiles</th><th>Full Price</th><th>Already Licenced</th><th>Volume Discount</th><th>Final Price</th><th>Actions</th></tr></thead><tbody>"+groupRows.map(rowHtml).join("")+"</tbody></table>"}).join("");document.getElementById("catalog").innerHTML=html||"<div class=\\"empty\\">"+(loading?"Loading data packs...":"No data packs match this search.")+"</div>";const total=Number(DATA.total_packs||ROWS.length||0);document.getElementById("count").textContent=shown+" shown · "+ROWS.length+"/"+total+" loaded";}
-async function loadNext(){if(loading||loadedAll)return;loading=true;render();try{const url="/credits/region-pack-catalog-page?token="+token+"&offset="+encodeURIComponent(String(nextOffset))+"&limit="+encodeURIComponent(String(LIMIT));const res=await fetch(url,{cache:"no-store"});if(!res.ok)throw new Error("catalog_page_"+res.status);const page=await res.json();ROWS=ROWS.concat(Array.isArray(page.rows)?page.rows:[]);if(Number.isFinite(Number(page.total_packs)))DATA.total_packs=Number(page.total_packs);if(page.next_offset===null||page.next_offset===undefined){loadedAll=true}else{nextOffset=Number(page.next_offset||ROWS.length)}loading=false;render();if(!loadedAll)setTimeout(loadNext,20)}catch(error){console.warn("Planetka catalog page failed",error);loading=false;document.getElementById("count").className="error small";document.getElementById("count").textContent="Data-pack catalog failed to load.";render();}}
+async function loadNext(){if(loading||loadedAll)return;loading=true;render();try{const pageLimit=ROWS.length?NEXT_LIMIT:FIRST_LIMIT;const url="/credits/region-pack-catalog-page?token="+token+"&offset="+encodeURIComponent(String(nextOffset))+"&limit="+encodeURIComponent(String(pageLimit));const res=await fetch(url,{cache:"no-store"});if(!res.ok)throw new Error("catalog_page_"+res.status);const page=await res.json();ROWS=ROWS.concat(Array.isArray(page.rows)?page.rows:[]);if(Number.isFinite(Number(page.total_packs)))DATA.total_packs=Number(page.total_packs);if(page.next_offset===null||page.next_offset===undefined){loadedAll=true}else{nextOffset=Number(page.next_offset||ROWS.length)}loading=false;render();if(!loadedAll)setTimeout(loadNext,80)}catch(error){console.warn("Planetka catalog page failed",error);loading=false;document.getElementById("count").className="error small";document.getElementById("count").textContent="Data-pack catalog failed to load.";render();}}
 document.getElementById("filter").addEventListener("input",render);loadNext();
 </script>
 </body>
