@@ -3095,7 +3095,8 @@ function computeAsset(asset){const owned=buildOwnedFamilies();const rows=(asset.
 function normaliseStoredTile(tile){const p=parseTileKey(tile&&tile.tile_key);const lonMin=Number(tile&&tile.lon_min),lonMax=Number(tile&&tile.lon_max),latMin=Number(tile&&tile.lat_min),latMax=Number(tile&&tile.lat_max);return{...tile,tile_key:p?p.key:String(tile&&tile.tile_key||""),x:p?p.x:null,y:p?p.y:null,z:p?p.z:null,d:p?p.d:null,lon_min:Number.isFinite(lonMin)?lonMin:(p?p.x-180:null),lon_max:Number.isFinite(lonMax)?lonMax:(p?p.x-180+p.z:null),lat_min:Number.isFinite(latMin)?latMin:(p?p.y-90:null),lat_max:Number.isFinite(latMax)?latMax:(p?p.y-90+p.z:null),status:String(tile&&tile.status||"free")}}
 function statusMapFromState(state){const map=new Map();for(const entry of Array.isArray(state&&state.tile_statuses)?state.tile_statuses:[]){if(Array.isArray(entry)){const key=String(entry[0]||"");if(key)map.set(key,{status:String(entry[1]||"new"),full_price_cents:int(entry[2]),gross_cents:int(entry[2]),final_price_cents:int(entry[3]),price_cents:int(entry[3]),price_eur:int(entry[3])/100,partial_licence_credit_cents:int(entry[4]),already_licenced_cents:int(entry[5]),discount_cents:int(entry[6])})}else if(entry&&typeof entry==="object"){const key=String(entry.tile_key||"");if(key)map.set(key,entry)}}return map}
 function applyStatusMap(tile,statusMap){const extra=statusMap.get(tile.tile_key);if(!extra)return tile;return{...tile,...extra,status:String(extra.status||tile.status||"new")}}
-function computeViewModel(asset){const state=DATA.map_state_ready&&DATA.map_state&&typeof DATA.map_state==="object"?DATA.map_state:null;if(state&&Array.isArray(state.tiles)){const rows=state.tiles.map(normaliseStoredTile).filter((tile)=>tile.tile_key&&Number.isFinite(tile.x)&&Number.isFinite(tile.y)&&Number.isFinite(tile.z)).sort(tileSort);const levels=(Array.isArray(state.levels)&&state.levels.length?state.levels:Array.from(new Set(rows.map((row)=>Number(row.z)).filter(Number.isFinite)))).map(Number).filter(Number.isFinite).sort((a,b)=>a-b);return{asset:{...asset,bounds:state.bounds||asset.bounds,outlines:Array.isArray(state.outlines)?state.outlines:asset.outlines,included_countries:Array.isArray(state.included_countries)?state.included_countries:asset.included_countries,region_pack:state.region_pack||asset.region_pack},rows,levels}}if(state&&Array.isArray(state.tile_statuses)){const statusMap=statusMapFromState(state);const base=computeAsset(asset);const rows=base.rows.map((tile)=>applyStatusMap(tile,statusMap)).sort(tileSort);const levels=(Array.isArray(state.levels)&&state.levels.length?state.levels:base.levels).map(Number).filter(Number.isFinite).sort((a,b)=>a-b);return{asset:{...asset,bounds:state.bounds||asset.bounds,outlines:Array.isArray(state.outlines)?state.outlines:asset.outlines,included_countries:Array.isArray(state.included_countries)?state.included_countries:asset.included_countries,region_pack:state.region_pack||asset.region_pack},rows,levels}}if(DATA.product_full_quality_unlocked||DATA.world_full_quality_unlocked||(Array.isArray(DATA.owned_tile_keys)&&DATA.owned_tile_keys.length)){return computeAsset(asset)}return{asset,rows:[],levels:[]}}
+function enrichTilePrices(rows,targetFinalCents){const entries=[];let total=0;for(let i=0;i<(rows||[]).length;i++){const tile=rows[i];const full=int(tile.full_price_cents!==undefined?tile.full_price_cents:tile.gross_cents);const status=String(tile.status||"new");const partial=int(tile.partial_licence_credit_cents);const pre=status==="new"?full:(status==="partial"?Math.max(0,full-partial):0);tile.full_price_cents=full;tile.gross_cents=full;tile.already_licenced_cents=status==="licenced"?full:int(tile.already_licenced_cents);tile.pre_discount_cents=pre;if(pre>0){entries.push({tile,index:i,base:pre,cents:0,rem:0});total+=pre}else{tile.final_price_cents=0;tile.price_cents=0;tile.price_eur=0;tile.discount_cents=0}}const target=Math.max(0,Math.min(total,int(targetFinalCents)));if(!entries.length||target<=0){for(const entry of entries){entry.tile.final_price_cents=0;entry.tile.price_cents=0;entry.tile.price_eur=0;entry.tile.discount_cents=entry.base}return rows}let allocated=0;for(const entry of entries){const raw=entry.base*target/total;entry.cents=Math.floor(raw);entry.rem=raw-entry.cents;allocated+=entry.cents}entries.sort((a,b)=>b.rem!==a.rem?b.rem-a.rem:a.index-b.index);let remaining=target-allocated;for(const entry of entries){if(remaining<=0)break;entry.cents+=1;remaining--}for(const entry of entries){entry.tile.final_price_cents=entry.cents;entry.tile.price_cents=entry.cents;entry.tile.price_eur=entry.cents/100;entry.tile.discount_cents=Math.max(0,entry.base-entry.cents)}return rows}
+function computeViewModel(asset){const state=DATA.map_state_ready&&DATA.map_state&&typeof DATA.map_state==="object"?DATA.map_state:null;if(state&&Array.isArray(state.tiles)){const rows=state.tiles.map(normaliseStoredTile).filter((tile)=>tile.tile_key&&Number.isFinite(tile.x)&&Number.isFinite(tile.y)&&Number.isFinite(tile.z)).sort(tileSort);const levels=(Array.isArray(state.levels)&&state.levels.length?state.levels:Array.from(new Set(rows.map((row)=>Number(row.z)).filter(Number.isFinite)))).map(Number).filter(Number.isFinite).sort((a,b)=>a-b);return{asset:{...asset,bounds:state.bounds||asset.bounds,outlines:Array.isArray(state.outlines)?state.outlines:asset.outlines,included_countries:Array.isArray(state.included_countries)?state.included_countries:asset.included_countries,region_pack:state.region_pack||asset.region_pack},rows,levels}}if(state&&Array.isArray(state.tile_statuses)){const statusMap=statusMapFromState(state);const base=computeAsset(asset);const rows=enrichTilePrices(base.rows.map((tile)=>applyStatusMap(tile,statusMap)).sort(tileSort),DATA.summary&&DATA.summary.price_cents);const levels=(Array.isArray(state.levels)&&state.levels.length?state.levels:base.levels).map(Number).filter(Number.isFinite).sort((a,b)=>a-b);return{asset:{...asset,bounds:state.bounds||asset.bounds,outlines:Array.isArray(state.outlines)?state.outlines:asset.outlines,included_countries:Array.isArray(state.included_countries)?state.included_countries:asset.included_countries,region_pack:state.region_pack||asset.region_pack},rows,levels}}if(DATA.product_full_quality_unlocked||DATA.world_full_quality_unlocked||(Array.isArray(DATA.owned_tile_keys)&&DATA.owned_tile_keys.length)){const base=computeAsset(asset);base.rows=enrichTilePrices(base.rows,DATA.summary&&DATA.summary.price_cents);return base}return{asset,rows:[],levels:[]}}
 function priceBreakdownText(tile){const full=int(tile.full_price_cents!==undefined?tile.full_price_cents:tile.gross_cents);const already=int(tile.already_licenced_cents);const partial=int(tile.partial_licence_credit_cents);const discount=int(tile.discount_cents);const final=int(tile.final_price_cents!==undefined?tile.final_price_cents:tile.price_cents);const pct=int(tile.discount_percent!==undefined?tile.discount_percent:DATA.summary&&DATA.summary.discount_percent);const lines=["Full Price: "+fmtCents(full)];if(already>0)lines.push("Licenced: - "+fmtCents(already));if(partial>0)lines.push("Partially licenced: - "+fmtCents(partial));if(discount>0)lines.push("Volume Discount ("+pct+"%): - "+fmtCents(discount));lines.push("Final Price: "+fmtCents(final));return lines.join("\\n")}
 function tileTooltipText(tile,statusText){return tile.tile_key+"\\nLand: "+Number(tile.billable_land_km2||0).toFixed(2)+" km²\\nStatus: "+statusText+"\\n"+priceBreakdownText(tile)}
 function zoomLabel(level){const list=(window.PLANETKA_MAP_ZOOM_LEVELS&&window.PLANETKA_MAP_ZOOM_LEVELS.length?window.PLANETKA_MAP_ZOOM_LEVELS:[Number(level)]).map(Number);const i=Math.max(0,list.indexOf(Number(level)));return "Zoom "+(i+1)+(i===0?" - closest":"")}
@@ -3231,7 +3232,10 @@ function regionPackStaticMapPayload(product, token, account, ownedRows, options 
       ? explicitOwnedTileKeys
       : ownedTilePayloadRows(ownedRows).map((row) => row.tile_key).filter(Boolean),
     world_full_quality_unlocked: isWorldFullQualityUnlocked(account),
-    product_full_quality_unlocked: Boolean(options && options.productUnlocked),
+    product_full_quality_unlocked: Boolean(
+      options && options.productUnlocked
+      || mapState && mapState.product_full_quality_unlocked
+    ),
     title_prefix: String(options && options.titlePrefix || success && success.context_title_prefix || "").trim(),
     success,
   };
@@ -5174,6 +5178,7 @@ const USER_PRODUCT_QUOTE_JOB_LOCK_TTL_SECONDS = 45;
 const USER_PRODUCT_QUOTE_JOB_DEFAULT_MAX_JOBS = 2;
 const USER_PRODUCT_QUOTE_JOB_DEFAULT_MAX_MS = 3500;
 const USER_PRODUCT_QUOTE_JOB_MAX_ATTEMPTS = 3;
+const USER_PRODUCT_QUOTE_JOB_STALE_RUNNING_SECONDS = 120;
 const USER_PRODUCT_QUOTE_FAST_TRACK_AVAILABLE_AT = "1970-01-01T00:00:00.000Z";
 
 function userProductQuoteWorkerId(deps) {
@@ -5187,6 +5192,12 @@ function addSecondsIsoFromDeps(deps, seconds) {
   const base = Date.parse(String(deps && deps.nowIso && deps.nowIso() || ""));
   const nowMs = Number.isFinite(base) ? base : Date.now();
   return new Date(nowMs + (Math.max(1, Number(seconds) || 1) * 1000)).toISOString();
+}
+
+function addRawSecondsIsoFromDeps(deps, seconds) {
+  const base = Date.parse(String(deps && deps.nowIso && deps.nowIso() || ""));
+  const nowMs = Number.isFinite(base) ? base : Date.now();
+  return new Date(nowMs + ((Number(seconds) || 0) * 1000)).toISOString();
 }
 
 async function enqueueUserProductQuoteJob(db, userId, productId, pricingVersion, entitlementVersion, deps, options = {}) {
@@ -5708,6 +5719,61 @@ async function releaseUserProductQuoteJobLock(db, deps, lockToken) {
   );
 }
 
+async function requeueStaleRunningUserProductQuoteJobs(db, deps) {
+  const now = quoteIsoNow(deps);
+  const cutoff = addRawSecondsIsoFromDeps(deps, -USER_PRODUCT_QUOTE_JOB_STALE_RUNNING_SECONDS);
+  const result = await deps.dbRun(
+    db,
+    `
+      UPDATE user_product_quote_jobs
+      SET status = 'queued',
+          available_at = ?,
+          lock_token = NULL,
+          locked_at = NULL,
+          worker_id = NULL,
+          last_error = ?,
+          updated_at = ?
+      WHERE status = 'running'
+        AND catalog_version = ?
+        AND locked_at <= ?
+        AND COALESCE(attempts, 0) < ?
+    `,
+    [
+      now,
+      "Recovered stale running quote job after Worker interruption.",
+      now,
+      REGION_PACK_CATALOG_VERSION,
+      cutoff,
+      USER_PRODUCT_QUOTE_JOB_MAX_ATTEMPTS,
+    ],
+  );
+  const recovered = deps.dbMetaChanges(result);
+  const failed = await deps.dbRun(
+    db,
+    `
+      UPDATE user_product_quote_jobs
+      SET status = 'failed',
+          lock_token = NULL,
+          locked_at = NULL,
+          worker_id = NULL,
+          last_error = ?,
+          updated_at = ?
+      WHERE status = 'running'
+        AND catalog_version = ?
+        AND locked_at <= ?
+        AND COALESCE(attempts, 0) >= ?
+    `,
+    [
+      "Quote job failed after repeated Worker interruptions.",
+      now,
+      REGION_PACK_CATALOG_VERSION,
+      cutoff,
+      USER_PRODUCT_QUOTE_JOB_MAX_ATTEMPTS,
+    ],
+  );
+  return { recovered, failed: deps.dbMetaChanges(failed) };
+}
+
 async function claimNextUserProductQuoteJob(db, deps, lockToken, workerId) {
   const now = quoteIsoNow(deps);
   const row = await deps.dbGet(
@@ -6060,7 +6126,12 @@ export async function processUserProductQuoteJobs(db, env = {}, deps = {}, optio
   let requeued = 0;
   let failed = 0;
   let cancelled = 0;
+  let staleRecovered = 0;
+  let staleFailed = 0;
   try {
+    const stale = await requeueStaleRunningUserProductQuoteJobs(db, deps);
+    staleRecovered = Math.max(0, Number.parseInt(stale && stale.recovered || 0, 10) || 0);
+    staleFailed = Math.max(0, Number.parseInt(stale && stale.failed || 0, 10) || 0);
     while (processed < maxJobs && (monotonicNowMs() - startedMs) < maxMs) {
       const job = await claimNextUserProductQuoteJob(db, deps, lockToken, workerId);
       if (!job) {
@@ -6098,6 +6169,8 @@ export async function processUserProductQuoteJobs(db, env = {}, deps = {}, optio
     requeued,
     failed,
     cancelled,
+    stale_recovered: staleRecovered,
+    stale_failed: staleFailed,
     max_jobs: maxJobs,
     max_ms: maxMs,
     elapsed_ms: Math.round(monotonicNowMs() - startedMs),
@@ -6425,26 +6498,34 @@ async function buildUserProductMapState(db, product, quote, account, deps, optio
   if (!db || !productId || !product || !quote || !quote.summary) {
     throw new Error("invalid_user_product_map_state_context");
   }
-  const rows = await regionPackAllTileRowsForProduct(db, product, deps);
   const ownershipContext = await regionPackPricingOwnershipContext(db, userId, account, deps, options);
   const purchasedSet = ownershipContext && ownershipContext.purchasedPackIdSet instanceof Set
     ? ownershipContext.purchasedPackIdSet
     : new Set();
+  const purchasedRelations = await relevantPurchasedPackRelations(db, product, ownershipContext && ownershipContext.purchasedPackIds || [], deps);
   const targetFullyCovered = Boolean(
     ownershipContext && ownershipContext.world_full_quality_unlocked
     || purchasedSet.has(productId)
-    || (await relevantPurchasedPackRelations(db, product, ownershipContext && ownershipContext.purchasedPackIds || [], deps))
-      .some(regionPackRelationCoversTarget),
+    || purchasedRelations.some(regionPackRelationCoversTarget),
   );
   const ownedTileKeys = targetFullyCovered
-    ? rows.map((row) => row && row.tile_key || row && row.key || "").filter(Boolean)
+    ? []
     : await ownedTileKeysForRegionPackMap(db, product, ownershipContext, deps);
   const ownedDByFamily = mapStateOwnedDLevelsByFamily(ownedTileKeys);
   const sceneOwnedByFamily = ownershipContext && ownershipContext.sceneOwnedByFamily instanceof Map
     ? ownershipContext.sceneOwnedByFamily
     : new Map();
+  const overrideFamilyKeys = targetFullyCovered
+    ? []
+    : Array.from(new Set([
+      ...Array.from(ownedDByFamily.keys()),
+      ...Array.from(sceneOwnedByFamily.keys()),
+    ].filter(Boolean)));
+  const overrideRows = overrideFamilyKeys.length
+    ? await regionPackTileRowsForProductFamilies(db, product, overrideFamilyKeys, deps)
+    : [];
   const mapTiles = [];
-  for (const row of rows) {
+  for (const row of overrideRows) {
     const parsed = row && row.parsed || parseTileKey(row && (row.tile_key || row.key) || "");
     const key = normalizeTileKey(row && (row.tile_key || row.key) || "");
     const family = String(row && row.family || tileFamilyKey(parsed) || "");
@@ -6462,10 +6543,11 @@ async function buildUserProductMapState(db, product, quote, account, deps, optio
     let status = "new";
     if (licencedByExisting) {
       status = "licenced";
-    } else if (globallyFree) {
-      status = "free";
     } else if (partialCreditCents > 0) {
       status = "partial";
+    }
+    if (status === "new" || globallyFree) {
+      continue;
     }
     const alreadyLicencedCents = status === "licenced" ? fullCents : 0;
     const preDiscountCents = status === "new"
@@ -6498,13 +6580,16 @@ async function buildUserProductMapState(db, product, quote, account, deps, optio
       globally_free: globallyFree,
     });
   }
-  allocateFinalMapTilePrices(mapTiles, quote.summary.price_cents);
-  const levels = Array.from(new Set(mapTiles.map((row) => Number(row.z)).filter(Number.isFinite)))
-    .sort((a, b) => a - b);
+  const tileStatusOverrides = mapTiles.map(compactUserProductMapTile);
+  const levels = [];
   const detail = GENERATED_REGION_PACK_DETAILS[String(product && product.id || "")] || {};
   return {
     schema: 2,
     compact_tile_statuses: true,
+    tile_status_mode: "overrides",
+    tile_status_count: tileStatusOverrides.length,
+    total_tile_status_count: Math.max(0, Number.parseInt(product && product.tile_count || 0, 10) || 0),
+    product_full_quality_unlocked: targetFullyCovered,
     generated_at: quoteIsoNow(deps),
     catalog_version: REGION_PACK_CATALOG_VERSION,
     pricing_version: String(quote.pricing_version || ""),
@@ -6515,7 +6600,7 @@ async function buildUserProductMapState(db, product, quote, account, deps, optio
     outlines: regionProductOutlinesForMap(product),
     included_countries: regionProductIncludedCountries(product),
     levels,
-    tile_statuses: mapTiles.map(compactUserProductMapTile),
+    tile_statuses: tileStatusOverrides,
   };
 }
 
