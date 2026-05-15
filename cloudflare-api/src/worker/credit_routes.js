@@ -1493,37 +1493,6 @@ async function estimateRegionPackSummaryWithPackRelations(db, product, account, 
     deps,
     options,
   );
-  if (productId === "world") {
-    const entitlementSummary = await ownedEntitlementSummaryForUser(
-      db,
-      account && account.user_id || "",
-      deps,
-      { account },
-    );
-    const ownedByFamily = new Map(entitlementSummary && entitlementSummary.ownedByFamily instanceof Map
-      ? entitlementSummary.ownedByFamily
-      : []);
-    const sceneOwnedByFamily = context && context.sceneOwnedByFamily instanceof Map
-      ? context.sceneOwnedByFamily
-      : new Map();
-    for (const [family, entries] of sceneOwnedByFamily.entries()) {
-      if (!ownedByFamily.has(family)) {
-        ownedByFamily.set(family, []);
-      }
-      ownedByFamily.get(family).push(...(Array.isArray(entries) ? entries : []));
-    }
-    const directEstimate = await estimateRegionPackSummaryWithOwned(
-      db,
-      product,
-      account,
-      ownedByFamily,
-      deps,
-      options,
-    );
-    return directEstimate && typeof directEstimate === "object"
-      ? { ...directEstimate, world_direct_entitlement_estimate: true }
-      : directEstimate;
-  }
   const purchasedPackIds = Array.from(new Set(Array.isArray(context && context.purchasedPackIds) ? context.purchasedPackIds : []));
   const relations = await relevantPurchasedPackRelations(db, product, purchasedPackIds, deps);
   if (relations.some(regionPackRelationCoversTarget)) {
