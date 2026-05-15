@@ -9318,15 +9318,17 @@ export async function handleCreditRegionOffers(request, env, deps) {
     pending_quote_count: pendingQuoteCount,
     server_cache_hit: false,
   };
-  boundedCacheSet(
-    REGION_OFFERS_RESPONSE_CACHE,
-    cacheKey,
-    {
-      payload,
-      cached_at_ms: nowMs,
-    },
-    REGION_OFFERS_RESPONSE_CACHE_MAX,
-  );
+  if (pendingQuoteCount <= 0) {
+    boundedCacheSet(
+      REGION_OFFERS_RESPONSE_CACHE,
+      cacheKey,
+      {
+        payload,
+        cached_at_ms: nowMs,
+      },
+      REGION_OFFERS_RESPONSE_CACHE_MAX,
+    );
+  }
   const response = deps.json(payload, 200, env);
   return withEndpointTiming(response, timing, env, {
     cache_hit: false,

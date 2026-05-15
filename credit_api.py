@@ -629,18 +629,37 @@ def get_region_pack_offers(
         request_timeout = max(1.0, float(timeout))
     except (TypeError, ValueError):
         request_timeout = 45.0
+    body = {"latitude_deg": lat, "longitude_deg": lon}
+    if normalized_tile_keys:
+        body["tile_keys"] = normalized_tile_keys[:256]
+    deadline = time.monotonic() + request_timeout
+    payload = {}
+    offers = []
+    pending = False
     try:
-        body = {"latitude_deg": lat, "longitude_deg": lon}
-        if normalized_tile_keys:
-            body["tile_keys"] = normalized_tile_keys[:256]
-        payload = _request_json(
-            "POST",
-            "/credits/region-offers",
-            body=body,
-            timeout=request_timeout,
-        )
-        if bool(background):
-            _clear_commerce_background_cooldown()
+        while True:
+            remaining = max(0.5, deadline - time.monotonic())
+            payload = _request_json(
+                "POST",
+                "/credits/region-offers",
+                body=body,
+                timeout=max(1.0, min(3.0, remaining)),
+            )
+            if bool(background):
+                _clear_commerce_background_cooldown()
+            offers = payload.get("offers", []) if isinstance(payload, dict) else []
+            if not isinstance(offers, list):
+                offers = []
+            pending = bool(
+                isinstance(payload, dict)
+                and (
+                    payload.get("price_pending")
+                    or int(payload.get("pending_quote_count") or 0) > 0
+                )
+            )
+            if not pending or time.monotonic() >= deadline:
+                break
+            time.sleep(min(1.5, max(0.25, deadline - time.monotonic())))
     except (AuthApiError, CreditApiError, RuntimeError, TypeError, ValueError, OSError) as exc:
         if bool(background):
             _mark_commerce_background_failure(exc)
@@ -648,9 +667,11 @@ def get_region_pack_offers(
             raise
         logger.debug("Planetka: failed fetching region pack offers", exc_info=True)
         return []
-    offers = payload.get("offers", []) if isinstance(payload, dict) else []
-    if not isinstance(offers, list):
-        offers = []
+    if pending and not offers:
+        error = CreditApiError(202, "region_pack_offers_pending", payload=payload if isinstance(payload, dict) else {})
+        if bool(raise_errors):
+            raise error
+        return []
     offers = [_round_price_fields(entry) for entry in offers if isinstance(entry, dict)]
     _REGION_OFFERS_CACHE["timestamp"] = now
     _REGION_OFFERS_CACHE["key"] = key

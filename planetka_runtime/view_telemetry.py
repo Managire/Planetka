@@ -1568,7 +1568,7 @@ def schedule_region_pack_offer_refresh(
                 tile_keys=safe_tiles,
                 force=force,
                 raise_errors=True,
-                timeout=6.0,
+                timeout=12.0,
                 background=True,
             )
             ok = True
