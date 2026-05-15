@@ -1943,10 +1943,171 @@ def normalized_outline_catalog(catalog: dict) -> dict:
     return payload
 
 
+def relation_type_from_overlap_counts(target_id: str, owned_id: str, target_count: int, owned_count: int, overlap_count: int) -> str:
+    if overlap_count <= 0:
+        return "exclusive"
+    if target_id == owned_id:
+        return "self"
+    if target_count > 0 and overlap_count >= target_count:
+        return "parent_covers_target"
+    if owned_count > 0 and overlap_count >= owned_count:
+        return "owned_child_of_target"
+    return "overlap"
+
+
+def relation_impact_class(product: dict) -> str:
+    product_id = str(product.get("id") or "")
+    product_type = str(product.get("type") or "")
+    tile_count = int(product.get("tile_count") or 0)
+    if product_id == "world" or product_type == "world":
+        return "world"
+    if product_type == "continent":
+        return "continent"
+    if tile_count >= 8000:
+        return "large"
+    if tile_count >= 1500:
+        return "medium"
+    return "small"
+
+
+def unique_string_list(values) -> list[str]:
+    seen = set()
+    result = []
+    for value in values or []:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
+
+
+def build_region_pack_relation_graph(catalog: dict, tile_keys_by_product: dict) -> dict:
+    gross_cents_by_tile = catalog.get("tile_gross_cents") or {}
+    relation_products = []
+    for payload in catalog.get("products") or []:
+        product_id = str(payload.get("id") or "").strip()
+        if not product_id:
+            continue
+        tile_keys = unique_string_list(tile_keys_by_product.get(product_id) or [])
+        if not tile_keys:
+            continue
+        relation_products.append({
+            "id": product_id,
+            "type": str(payload.get("type") or ""),
+            "tile_count": len(tile_keys),
+            "base_gross_cents": int(payload.get("gross_cents") or 0),
+            "tile_keys": tile_keys,
+        })
+
+    product_by_id = {product["id"]: product for product in relation_products}
+    product_ids_by_tile = {}
+    for product in relation_products:
+        for tile_key in product["tile_keys"]:
+            product_ids_by_tile.setdefault(tile_key, []).append(product["id"])
+
+    by_target = {}
+    by_owned = {}
+    type_counts = {
+        "parent_covers_target": 0,
+        "owned_child_of_target": 0,
+        "overlap": 0,
+    }
+    edge_count = 0
+
+    for target in relation_products:
+        overlap_by_owned_id = {}
+        for tile_key in target["tile_keys"]:
+            gross_cents = int(gross_cents_by_tile.get(tile_key) or 0)
+            for owned_id in product_ids_by_tile.get(tile_key, []):
+                if owned_id == target["id"]:
+                    continue
+                row = overlap_by_owned_id.setdefault(owned_id, {
+                    "overlap_tile_count": 0,
+                    "overlap_paid_tile_count": 0,
+                    "overlap_free_tile_count": 0,
+                    "overlap_base_gross_cents": 0,
+                })
+                row["overlap_tile_count"] += 1
+                row["overlap_base_gross_cents"] += gross_cents
+                if gross_cents > 0:
+                    row["overlap_paid_tile_count"] += 1
+                else:
+                    row["overlap_free_tile_count"] += 1
+
+        target_rows = []
+        for owned_id in sorted(overlap_by_owned_id):
+            owned = product_by_id.get(owned_id)
+            if not owned:
+                continue
+            overlap = overlap_by_owned_id[owned_id]
+            relation_type = relation_type_from_overlap_counts(
+                target["id"],
+                owned["id"],
+                target["tile_count"],
+                owned["tile_count"],
+                overlap["overlap_tile_count"],
+            )
+            if relation_type in {"exclusive", "self"}:
+                continue
+            row = [
+                owned["id"],
+                relation_type,
+                overlap["overlap_tile_count"],
+                overlap["overlap_paid_tile_count"],
+                overlap["overlap_free_tile_count"],
+                overlap["overlap_base_gross_cents"],
+                target["tile_count"],
+                owned["tile_count"],
+                target["base_gross_cents"],
+                owned["base_gross_cents"],
+                relation_impact_class(target),
+            ]
+            target_rows.append(row)
+            by_owned.setdefault(owned["id"], []).append([
+                target["id"],
+                relation_type,
+                overlap["overlap_tile_count"],
+                overlap["overlap_paid_tile_count"],
+                overlap["overlap_free_tile_count"],
+                overlap["overlap_base_gross_cents"],
+                target["tile_count"],
+                owned["tile_count"],
+                target["base_gross_cents"],
+                owned["base_gross_cents"],
+                relation_impact_class(target),
+            ])
+            type_counts[relation_type] = int(type_counts.get(relation_type) or 0) + 1
+            edge_count += 1
+        if target_rows:
+            by_target[target["id"]] = target_rows
+
+    for rows in by_owned.values():
+        rows.sort(key=lambda row: str(row[0]))
+
+    product_count = len(relation_products)
+    total_ordered_pairs = product_count * product_count
+    return {
+        "by_target": by_target,
+        "by_owned": by_owned,
+        "counts": {
+            "product_count": product_count,
+            "meaningful_edge_count": edge_count,
+            "parent_covers_target_edge_count": int(type_counts.get("parent_covers_target") or 0),
+            "owned_child_of_target_edge_count": int(type_counts.get("owned_child_of_target") or 0),
+            "overlap_edge_count": int(type_counts.get("overlap") or 0),
+            "self_pair_count": product_count,
+            "omitted_exclusive_pair_count": max(0, total_ordered_pairs - product_count - edge_count),
+            "total_ordered_pair_count": total_ordered_pairs,
+        },
+    }
+
+
 def write_js(path: Path, catalog: dict, include_details: bool = False):
     path.parent.mkdir(parents=True, exist_ok=True)
     products_path = path.with_name("region_packs.products.generated.js")
     tile_data_path = path.with_name("region_packs.tile_data.generated.js")
+    relation_graph_path = path.with_name("region_packs.relations.generated.js")
     pack_payloads = catalog.get("products") or []
     outline_payload = {}
     outline_refs_by_product = {}
@@ -2008,6 +2169,18 @@ def write_js(path: Path, catalog: dict, include_details: bool = False):
     tile_lines.append("")
     tile_lines.append(f"export const GENERATED_REGION_PACK_OUTLINES = {json.dumps(outline_payload if include_details else {}, ensure_ascii=True, separators=(',', ':'))};")
     tile_data_path.write_text("\n".join(tile_lines) + "\n", encoding="utf-8")
+
+    relation_graph = build_region_pack_relation_graph(catalog, tile_keys_by_product)
+    relation_lines = [
+        "// Generated by tools/build_region_pack_catalog.py. Do not edit by hand.",
+        f"export const GENERATED_REGION_PACK_RELATION_GRAPH_VERSION = {json.dumps(catalog.get('catalog_version') or CATALOG_VERSION)};",
+        'export const GENERATED_REGION_PACK_RELATION_TARGET_ROW_FIELDS = ["owned_region_pack_id","relation_type","overlap_tile_count","overlap_paid_tile_count","overlap_free_tile_count","overlap_base_gross_cents","target_tile_count","owned_tile_count","target_base_gross_cents","owned_base_gross_cents","impact_class"];',
+        'export const GENERATED_REGION_PACK_RELATION_OWNED_ROW_FIELDS = ["target_region_pack_id","relation_type","overlap_tile_count","overlap_paid_tile_count","overlap_free_tile_count","overlap_base_gross_cents","target_tile_count","owned_tile_count","target_base_gross_cents","owned_base_gross_cents","impact_class"];',
+        f"export const GENERATED_REGION_PACK_RELATIONS_BY_TARGET = {json.dumps(relation_graph['by_target'], ensure_ascii=True, separators=(',', ':'))};",
+        f"export const GENERATED_REGION_PACK_RELATIONS_BY_OWNED = {json.dumps(relation_graph['by_owned'], ensure_ascii=True, separators=(',', ':'))};",
+        f"export const GENERATED_REGION_PACK_RELATION_COUNTS = {json.dumps(relation_graph['counts'], ensure_ascii=True, separators=(',', ':'))};",
+    ]
+    relation_graph_path.write_text("\n".join(relation_lines) + "\n", encoding="utf-8")
 
     path.write_text(
         "\n".join([

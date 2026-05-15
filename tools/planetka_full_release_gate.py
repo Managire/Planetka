@@ -342,6 +342,19 @@ def _build_steps(args: argparse.Namespace, package_path: Path) -> list[Step]:
                     ],
                     timeout_sec=240,
                 ),
+                Step(
+                    name="stale_auth_recovery_gate",
+                    category="auth",
+                    command=[
+                        blender_bin,
+                        "--background",
+                        "--factory-startup",
+                        "--debug-python",
+                        "--python",
+                        "tools/planetka_stale_auth_recovery_gate.py",
+                    ],
+                    timeout_sec=180,
+                ),
             ]
         )
     if not args.skip_live_pricing:
@@ -360,8 +373,8 @@ def _build_steps(args: argparse.Namespace, package_path: Path) -> list[Step]:
             )
         steps.append(
             Step(
-                name="live_pricing_consistency_e2e",
-                category="live_pricing",
+                name="live_pricing_stress_maintenance" if profile == "stress" else "bounded_live_health_gate",
+                category="stress" if profile == "stress" else "live_health",
                 command=[
                     blender_bin,
                     "--background",

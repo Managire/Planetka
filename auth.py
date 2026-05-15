@@ -42,6 +42,7 @@ TIER_INTEGRITY_STATUS_MESSAGE = (
 )
 CLOUD_OVERLOADED_ERROR_CODE = "planetka_cloud_overloaded"
 CLOUD_OVERLOADED_MESSAGE = "Planetka servers are temporarily overloaded. Please wait a few moments and try again."
+SESSION_EXPIRED_MESSAGE = "Planetka session expired. Connect your account again."
 _ADDON_VERSION_CACHE = None
 _CLOUD_CONNECTION_CACHE = {
     "checked": False,
@@ -137,7 +138,9 @@ def is_terminal_auth_error(error):
             http_code = 0
         if http_code in {401, 403}:
             return True
-    if status in {401, 403} and code not in {"network_error", "invalid_json_response"}:
+    if status == 401 and code not in {"network_error", "invalid_json_response"}:
+        return True
+    if status == 403 and code in _TERMINAL_AUTH_ERROR_CODES:
         return True
     return False
 
@@ -151,7 +154,7 @@ def _critical_disconnect_status_message(primary_error=None, secondary_error=None
         message = describe_auth_error(secondary_error)
         if message:
             return message
-    return "Session expired. Connect again."
+    return SESSION_EXPIRED_MESSAGE
 
 
 def _report_critical_disconnect(prefs, source, primary_error=None, secondary_error=None):
@@ -192,6 +195,18 @@ def describe_auth_error(error):
         return "Planetka access key expired. Request a new key."
     if "api_key_revoked" in lowered:
         return "Planetka access key is no longer valid. Request a new key."
+    if any(
+        token in lowered
+        for token in (
+            "account_not_connected",
+            "missing_refresh_token",
+            "invalid_refresh_token",
+            "refresh_token_revoked",
+            "refresh_token_expired",
+            "auth_failed",
+        )
+    ):
+        return SESSION_EXPIRED_MESSAGE
     if "device_limit_exceeded" in lowered:
         return "This Planetka account is already active on the maximum number of computers."
     if "missing_device_id" in lowered:
@@ -211,6 +226,36 @@ def describe_auth_error(error):
     if "missing_resolve_id" in lowered:
         return "Purchase details are missing. Retry Resolve and ensure Planetka is up to date."
     return f"Planetka login failed: {message.replace('_', ' ')}."
+
+
+def recover_from_terminal_auth_error(error, prefs=None, source=""):
+    """Clear stale local auth after backend-confirmed terminal auth failures.
+
+    Network outages and Cloudflare overloads must not log the user out. This is
+    only for definitive auth/session failures such as revoked or expired saved
+    sessions.
+    """
+    if not is_terminal_auth_error(error):
+        return False
+    prefs = prefs or get_prefs()
+    if prefs is None:
+        return False
+    _report_critical_disconnect(
+        prefs,
+        str(source or "terminal_auth_error").strip() or "terminal_auth_error",
+        primary_error=error,
+    )
+    _clear_auth_session_preserve_api_key(
+        prefs,
+        state="logged_out",
+        status_message=_critical_disconnect_status_message(error),
+    )
+    try:
+        from .credit_api import clear_credit_caches
+        clear_credit_caches()
+    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed clearing credit caches after auth recovery", exc_info=True)
+    return True
 
 
 def _first_non_empty(*values):
@@ -819,8 +864,12 @@ def sync_account_profile(prefs=None):
     if not is_authenticated(prefs):
         return False
 
-    headers = get_authorized_headers(prefs=prefs, allow_refresh=True)
-    _status, payload = _json_request("GET", "/me", None, headers=headers)
+    try:
+        headers = get_authorized_headers(prefs=prefs, allow_refresh=True)
+        _status, payload = _json_request("GET", "/me", None, headers=headers)
+    except AuthApiError as exc:
+        recover_from_terminal_auth_error(exc, prefs=prefs, source="sync_account_profile")
+        raise
     _apply_account_profile_fields(prefs, payload)
     _save_user_prefs()
     _tag_ui_redraw()
@@ -910,7 +959,10 @@ def get_access_token(prefs=None, allow_refresh=True):
         try:
             _reauth_with_api_key(prefs)
             return str(getattr(prefs, "auth_access_token", "") or "").strip()
-        except AuthApiError:
+        except AuthApiError as exc:
+            if is_terminal_auth_error(exc):
+                recover_from_terminal_auth_error(exc, prefs=prefs, source="get_access_token_reauth_failed")
+                return ""
             return access_token
     return refresh_auth_session(prefs)
 

@@ -20,12 +20,14 @@ from .auth import (
     AuthApiError,
     CLOUD_OVERLOADED_ERROR_CODE,
     CLOUD_OVERLOADED_MESSAGE,
+    SESSION_EXPIRED_MESSAGE,
     get_api_base_url,
     get_authorized_headers,
     looks_like_planetka_overload,
     mark_planetka_cloud_offline,
     mark_planetka_cloud_online,
     mark_planetka_cloud_overloaded,
+    recover_from_terminal_auth_error,
     refresh_auth_session,
 )
 
@@ -231,6 +233,12 @@ def _request_json(method: str, path: str, body=None, allow_refresh=True, timeout
                 CLOUD_OVERLOADED_ERROR_CODE,
                 payload={"error": CLOUD_OVERLOADED_ERROR_CODE, "message": CLOUD_OVERLOADED_MESSAGE},
             ) from exc
+        if recover_from_terminal_auth_error(exc, source="credit_api_request_headers"):
+            raise CreditApiError(
+                getattr(exc, "status", 401),
+                "account_not_connected",
+                payload={"error": "account_not_connected", "message": str(exc)},
+            ) from exc
         raise
     if body is not None:
         payload = json.dumps(body, ensure_ascii=True).encode("utf-8")
@@ -263,8 +271,21 @@ def _request_json(method: str, path: str, body=None, allow_refresh=True, timeout
                 refresh_auth_session()
                 return _request_json(method, path, body=body, allow_refresh=False, timeout=timeout)
             except AuthApiError as refresh_error:
+                if recover_from_terminal_auth_error(refresh_error, source="credit_api_refresh_failed"):
+                    raise CreditApiError(
+                        exc.code,
+                        "account_not_connected",
+                        payload={"error": "account_not_connected", "message": SESSION_EXPIRED_MESSAGE},
+                    ) from refresh_error
                 raise CreditApiError(exc.code, data.get("error") or "auth_failed", payload=data) from refresh_error
-        raise CreditApiError(exc.code, data.get("error") or f"http_{exc.code}", payload=data) from exc
+        api_error = CreditApiError(exc.code, data.get("error") or f"http_{exc.code}", payload=data)
+        if recover_from_terminal_auth_error(api_error, source="credit_api_http_error"):
+            raise CreditApiError(
+                exc.code,
+                "account_not_connected",
+                payload={"error": "account_not_connected", "message": SESSION_EXPIRED_MESSAGE},
+            ) from exc
+        raise api_error from exc
     except urllib.error.URLError as exc:
         mark_planetka_cloud_offline(str(getattr(exc, "reason", exc) or exc))
         raise CreditApiError(0, f"network_error_{exc.reason}") from exc

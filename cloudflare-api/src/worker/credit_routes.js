@@ -3,6 +3,10 @@ import {
   GENERATED_REGION_PACK_CATALOG_VERSION,
   GENERATED_REGION_PACK_PRODUCTS,
 } from "./region_packs.products.generated.js";
+import {
+  GENERATED_REGION_PACK_RELATION_GRAPH_VERSION,
+  GENERATED_REGION_PACK_RELATIONS_BY_TARGET,
+} from "./region_packs.relations.generated.js";
 
 const TILE_KEY_RE = /x(\d{3})_y(\d{3})_z(\d{3})_d(\d{3})/i;
 const ASSET_RE = /^(?:S2|EL|WT|PO)_(x\d{3}_y\d{3}_z\d{3}_d\d{3})\.(?:exr|tif)$/i;
@@ -65,6 +69,9 @@ const REGION_PRODUCT_BY_ID = new Map(REGION_PRODUCTS.map((product) => [
   String(product && product.id || "").trim().toLowerCase(),
   product,
 ]).filter(([id]) => Boolean(id)));
+const REGION_PACK_STATIC_RELATION_GRAPH_READY = String(GENERATED_REGION_PACK_RELATION_GRAPH_VERSION || "") === REGION_PACK_CATALOG_VERSION
+  && GENERATED_REGION_PACK_RELATIONS_BY_TARGET
+  && typeof GENERATED_REGION_PACK_RELATIONS_BY_TARGET === "object";
 const REGION_PRODUCT_COUNTRY_ID_SET_CACHE = new Map();
 const REGION_PRODUCT_GROSS_CENTS_CACHE = new Map();
 const REGION_PRODUCT_PRICING_SUMMARY_CACHE = new Map();
@@ -864,6 +871,58 @@ function syntheticRegionPackRelation(targetProduct, ownedProduct, relationType =
   });
 }
 
+function staticRegionPackRelationForPair(targetProduct, ownedProduct) {
+  if (!REGION_PACK_STATIC_RELATION_GRAPH_READY) {
+    return null;
+  }
+  const targetId = normalizedRegionPackProductId(targetProduct);
+  const ownedId = normalizedRegionPackProductId(ownedProduct);
+  if (!targetId || !ownedId) {
+    return null;
+  }
+  if (targetId === ownedId) {
+    return syntheticRegionPackRelation(targetProduct, ownedProduct, "self");
+  }
+  const targetRows = Array.isArray(GENERATED_REGION_PACK_RELATIONS_BY_TARGET[targetId])
+    ? GENERATED_REGION_PACK_RELATIONS_BY_TARGET[targetId]
+    : [];
+  const row = targetRows.find((entry) => Array.isArray(entry) && String(entry[0] || "").trim().toLowerCase() === ownedId);
+  if (row) {
+    return normalizedRegionPackRelationRow({
+      catalog_version: REGION_PACK_CATALOG_VERSION,
+      target_region_pack_id: targetId,
+      owned_region_pack_id: ownedId,
+      relation_type: row[1],
+      overlap_tile_count: row[2],
+      overlap_paid_tile_count: row[3],
+      overlap_free_tile_count: row[4],
+      overlap_base_gross_cents: row[5],
+      target_tile_count: row[6],
+      owned_tile_count: row[7],
+      target_base_gross_cents: row[8],
+      owned_base_gross_cents: row[9],
+      computed_at: "",
+    });
+  }
+  const targetSummary = regionProductPricingSummary(targetProduct) || {};
+  const ownedSummary = regionProductPricingSummary(ownedProduct) || {};
+  return normalizedRegionPackRelationRow({
+    catalog_version: REGION_PACK_CATALOG_VERSION,
+    target_region_pack_id: targetId,
+    owned_region_pack_id: ownedId,
+    relation_type: "exclusive",
+    target_tile_count: targetSummary.tile_count,
+    owned_tile_count: ownedSummary.tile_count,
+    overlap_tile_count: 0,
+    overlap_paid_tile_count: 0,
+    overlap_free_tile_count: 0,
+    overlap_base_gross_cents: 0,
+    target_base_gross_cents: targetProduct && targetProduct.gross_cents,
+    owned_base_gross_cents: ownedProduct && ownedProduct.gross_cents,
+    computed_at: "",
+  });
+}
+
 async function computeRegionPackRelation(db, targetProduct, ownedProduct, deps) {
   const targetId = normalizedRegionPackProductId(targetProduct);
   const ownedId = normalizedRegionPackProductId(ownedProduct);
@@ -934,15 +993,20 @@ async function regionPackRelationForPair(db, targetProduct, ownedProduct, deps) 
   if (targetId === ownedId) {
     return syntheticRegionPackRelation(targetProduct, ownedProduct, "self");
   }
+  const cached = REGION_PACK_RELATION_CACHE.get(cacheKey);
+  if (cached) {
+    return { ...cached };
+  }
+  const staticRelation = staticRegionPackRelationForPair(targetProduct, ownedProduct);
+  if (staticRelation) {
+    boundedCacheSet(REGION_PACK_RELATION_CACHE, cacheKey, staticRelation, REGION_PACK_RELATION_CACHE_MAX);
+    return { ...staticRelation };
+  }
   if (ownedId === "world") {
     return syntheticRegionPackRelation(targetProduct, ownedProduct, "parent_covers_target");
   }
   if (targetId === "world") {
     return syntheticRegionPackRelation(targetProduct, ownedProduct, "owned_child_of_target");
-  }
-  const cached = REGION_PACK_RELATION_CACHE.get(cacheKey);
-  if (cached) {
-    return { ...cached };
   }
   await deps.ensureCreditTables(db);
   const existing = normalizedRegionPackRelationRow(await deps.dbGet(
@@ -1098,6 +1162,7 @@ async function regionPackPricingOwnershipContext(db, userId, account, deps, opti
   const safeUserId = String(userId || "").trim();
   if (!safeUserId) {
     return {
+      userId: "",
       purchasedPackIds: [],
       purchasedPackIdSet: new Set(),
       sceneTileRows: [],
@@ -1106,14 +1171,16 @@ async function regionPackPricingOwnershipContext(db, userId, account, deps, opti
     };
   }
   const purchasedPackIds = await purchasedRegionPackIdsForUser(db, safeUserId, deps);
+  const purchasedPackIdSet = new Set(purchasedPackIds);
   const sceneTileRows = await purchasedSceneTileRowsForUser(db, safeUserId, deps);
   return {
+    userId: safeUserId,
     purchasedPackIds,
-    purchasedPackIdSet: new Set(purchasedPackIds),
+    purchasedPackIdSet,
     sceneTileRows,
     sceneOwnedByFamily: ownedByFamilyFromSceneTileRows(sceneTileRows),
     hasPurchaseHistoryFacts: purchasedPackIds.length > 0 || sceneTileRows.length > 0,
-    world_full_quality_unlocked: isWorldFullQualityUnlocked(account),
+    world_full_quality_unlocked: isWorldFullQualityUnlocked(account) || purchasedPackIdSet.has("world"),
   };
 }
 
@@ -1288,6 +1355,24 @@ async function ownedTileKeysForRegionPackMap(db, targetProduct, ownershipContext
   const purchasedPackIds = Array.from(new Set(Array.isArray(ownershipContext.purchasedPackIds)
     ? ownershipContext.purchasedPackIds.map(normalizedRegionPackProductId).filter(Boolean)
     : []));
+  if (targetId === "world") {
+    const userId = String(ownershipContext.userId || "").trim();
+    const rows = userId ? await ownedTileRowsForUser(db, userId, deps) : [];
+    const keys = new Set();
+    for (const row of rows || []) {
+      const key = normalizeTileKey(row && (row.key || row.tile_key) || "");
+      if (key) {
+        keys.add(key);
+      }
+    }
+    for (const row of Array.isArray(ownershipContext.sceneTileRows) ? ownershipContext.sceneTileRows : []) {
+      const key = normalizeTileKey(row && (row.key || row.tile_key) || "");
+      if (key) {
+        keys.add(key);
+      }
+    }
+    return Array.from(keys).sort(compareRegionTileKeys);
+  }
   const relations = await relevantPurchasedPackRelations(db, targetProduct, purchasedPackIds, deps);
   const packIds = relations
     .filter(regionPackRelationHasOverlap)
@@ -1408,6 +1493,37 @@ async function estimateRegionPackSummaryWithPackRelations(db, product, account, 
     deps,
     options,
   );
+  if (productId === "world") {
+    const entitlementSummary = await ownedEntitlementSummaryForUser(
+      db,
+      account && account.user_id || "",
+      deps,
+      { account },
+    );
+    const ownedByFamily = new Map(entitlementSummary && entitlementSummary.ownedByFamily instanceof Map
+      ? entitlementSummary.ownedByFamily
+      : []);
+    const sceneOwnedByFamily = context && context.sceneOwnedByFamily instanceof Map
+      ? context.sceneOwnedByFamily
+      : new Map();
+    for (const [family, entries] of sceneOwnedByFamily.entries()) {
+      if (!ownedByFamily.has(family)) {
+        ownedByFamily.set(family, []);
+      }
+      ownedByFamily.get(family).push(...(Array.isArray(entries) ? entries : []));
+    }
+    const directEstimate = await estimateRegionPackSummaryWithOwned(
+      db,
+      product,
+      account,
+      ownedByFamily,
+      deps,
+      options,
+    );
+    return directEstimate && typeof directEstimate === "object"
+      ? { ...directEstimate, world_direct_entitlement_estimate: true }
+      : directEstimate;
+  }
   const purchasedPackIds = Array.from(new Set(Array.isArray(context && context.purchasedPackIds) ? context.purchasedPackIds : []));
   const relations = await relevantPurchasedPackRelations(db, product, purchasedPackIds, deps);
   if (relations.some(regionPackRelationCoversTarget)) {
@@ -2837,10 +2953,6 @@ const REGION_PACK_CHECKOUT_CSS = `:root{color-scheme:light dark;--bg:#111;--pane
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 main{max-width:760px;margin:0 auto;padding:24px}h1{margin:0 0 10px;font-size:28px;font-weight:650}.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;margin-top:14px}.muted{color:var(--muted)}.summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-top:12px}.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px}.card b{display:block;font-size:21px;margin-top:3px}.actions{display:grid;gap:10px;margin-top:14px}.button{width:100%;display:inline-flex;align-items:center;justify-content:center;padding:11px 13px;border:0;border-radius:9px;background:var(--button-accent);color:var(--button-text,#111);text-decoration:none;font-weight:750;font:inherit;cursor:pointer}.button.secondary{background:var(--secondary-btn);color:var(--text);border:1px solid var(--line)}.button.disabled{background:var(--disabled);color:var(--disabled-text);border:1px solid var(--line);cursor:not-allowed}.notice{color:var(--notice)}.links{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px}.links a{color:var(--link);text-decoration:none}`;
 
-const WORLD_PACK_PAGE_CSS = `:root{color-scheme:light dark;--bg:#111;--panel:#1b1b1b;--line:#3c3c3c;--text:#eee;--muted:#aaa;--map-bg:#0d1118;--accent:#d9a441;--button-accent:#d9a441;--secondary-btn:#2a2a2a}
-@media (prefers-color-scheme:light){:root{--bg:#f6f2ea;--panel:#fffaf2;--line:#dacdbb;--text:#1f252d;--muted:#667085;--map-bg:#eef2f6;--accent:#c28a21;--button-accent:#8f732f;--button-text:#fff;--secondary-btn:#f3eadc}}
-body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:1180px;margin:0 auto;padding:24px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;margin-top:14px}.world-map{background:var(--map-bg);border:1px solid var(--line);border-radius:12px;overflow:hidden;margin:14px 0}.world-map img{display:block;width:100%;height:auto}.button{display:inline-flex;align-items:center;justify-content:center;margin:8px 8px 0 0;padding:9px 12px;border-radius:8px;background:var(--button-accent);color:var(--button-text,#111);text-decoration:none;font-weight:700}.secondary{background:var(--secondary-btn);color:var(--text);border:1px solid var(--line)}.muted{color:var(--muted)}`;
-
 const ACCOUNT_PAGE_CSS = `:root{color-scheme:light dark;--bg:#111;--panel:#1b1b1b;--line:#3c3c3c;--text:#eee;--muted:#aaa;--accent:#d9a441;--green:#4fa86a;--map-bg:#0d1118;--grid:rgba(255,255,255,.34);--country-border:rgba(230,238,248,.72);--input:#262626;--code:#f7e6b0}
 @media (prefers-color-scheme:light){:root{--bg:#f6f2ea;--panel:#fffaf2;--line:#dacdbb;--text:#1f252d;--muted:#667085;--accent:#c28a21;--green:#3f9657;--map-bg:#eef2f6;--grid:rgba(34,44,58,.38);--country-border:rgba(42,67,91,.62);--input:#fffdf8;--code:#6d4a00}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:1180px;margin:0 auto;padding:24px}h1{margin:0 0 8px;font-size:30px}h2{margin:0 0 10px;font-size:20px}.muted{color:var(--muted)}.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;margin-top:14px}.toolbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:8px 0 12px}select{background:var(--input);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:7px 10px}.coverage-map{width:100%;aspect-ratio:2 / 1;background:var(--map-bg);border:1px solid var(--line);border-radius:10px}.coverage-map .country-border{fill:none;stroke:var(--country-border);stroke-width:.55;opacity:.78;vector-effect:non-scaling-stroke;pointer-events:none}.coverage-map .owned-tile{fill:var(--green);opacity:.68;stroke:none}.coverage-map .world-owned-fill{fill:var(--green);opacity:.52;stroke:none}.legend{display:flex;gap:16px;flex-wrap:wrap;margin:10px 0 0}.swatch{display:inline-block;width:14px;height:14px;border-radius:3px;margin-right:6px;vertical-align:-2px}.licenced{background:var(--green)}table{width:100%;border-collapse:collapse;font-size:13px}th,td{border-bottom:1px solid var(--line);padding:8px 6px;text-align:left;vertical-align:top}th{color:var(--accent);font-weight:650;white-space:nowrap}details summary{cursor:pointer;color:var(--accent)}.tile-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:4px 12px;margin-top:8px}code{color:var(--code)}`;
@@ -3791,6 +3903,9 @@ async function relatedSimilarRegionProducts(db, product, deps, limit = 3) {
 
 async function relatedRegionProducts(db, product, deps, limit = 6) {
   const currentRank = regionProductRank(product);
+  if (currentRank >= 4) {
+    return [];
+  }
   const result = [];
   const seen = new Set([String(product && product.id || "").trim()]);
   const add = (candidate) => {
@@ -8619,26 +8734,6 @@ export async function handleCreditRegionPackMap(request, env, deps) {
       env,
     ), timing, env, { error: quote && quote.error || "quote_failed", region_pack_id: String(product && product.id || "") });
   }
-  if (String(product && product.id || "").trim().toLowerCase() === "world") {
-    const safeToken = escapeHtmlText(encodeURIComponent(token));
-    const safeRevision = escapeHtmlText(encodeURIComponent(REGION_PACK_MAP_ASSET_REVISION));
-    const safeQuote = escapeHtmlText(encodeURIComponent(String(quote.quote_id || "")));
-    const summary = regionPackQuoteSummary(quote);
-    const price = summary.price_eur;
-    const worldBreakdown = fullQualityPriceBreakdownHtml({
-      fullPriceEur: summary.full_price_eur,
-      alreadyLicencedEur: summary.already_licenced_deduction_eur,
-      partialLicenceEur: summary.partial_licence_credit_eur,
-      discountPercent: summary.discount_percent,
-      discountEur: summary.discount_eur,
-      finalPriceEur: price,
-    });
-    return withEndpointTiming(html(
-      `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Planetka World Pack</title><style>${WORLD_PACK_PAGE_CSS}</style></head><body><main><h1>World Full Quality Pack</h1><section class="panel"><p>The World pack includes the complete Full Quality texture dataset.</p><div class="world-map"><img src="/credits/region-pack-map-background.jpg?v=${safeRevision}" alt="World map overview"></div>${worldBreakdown}<a class="button" href="/credits/region-pack-checkout?token=${safeToken}&region_pack_id=world&catalog=1&quote_id=${safeQuote}">Buy World (€${price.toFixed(2)})</a><a class="button secondary" href="/credits/region-pack-catalog?token=${safeToken}">Back to all data packs</a></section></main></body></html>`,
-      200,
-      env,
-    ), timing, env, { region_pack_id: "world", price_eur: price, quote_id: String(quote.quote_id || "") });
-  }
   const pricingOwnershipContext = await regionPackPricingOwnershipContext(db, userId, account, deps);
   timing.mark("ownership");
   const ownedTileKeys = await ownedTileKeysForRegionPackMap(db, product, pricingOwnershipContext, deps);
@@ -8669,7 +8764,7 @@ export async function handleCreditRegionPackMapAsset(request, env, deps) {
   const url = new URL(request.url);
   const regionPackId = String(url.searchParams.get("region_pack_id") || url.searchParams.get("id") || "").trim();
   const product = regionProductById(regionPackId);
-  if (!product || isHiddenRegionProduct(product) || String(product.id || "").trim().toLowerCase() === "world") {
+  if (!product || isHiddenRegionProduct(product)) {
     return withEndpointTiming(deps.json({ ok: false, error: "region_pack_map_asset_not_available" }, 404, env), timing, env, { region_pack_id: regionPackId });
   }
   const bucket = env && env.PLANETKA_DATA;
@@ -9145,54 +9240,18 @@ export async function handleCreditPaymentSuccess(request, env, deps) {
     const product = regionProductById(regionPackId);
     if (product) {
       const tokenResult = await createRegionPackDetailTokenForUser(db, userId, String(product.id || ""), env, deps);
-      if (String(product.id || "").trim().toLowerCase() === "world") {
-        const purchaseMeta = parsePurchaseMetadataJson(purchase);
-        const fullPrice = normalizeCreditAmount(
-          purchase && purchase.gross_eur
-            || metadata.planetka_gross_eur,
-        );
-        const rawFullPrice = fullPrice;
-        const price = amountPaidEur;
-        const partialLicenceEur = normalizeCreditAmount(
-          purchaseMeta.partial_licence_credit_eur
-            || metadata.planetka_partial_licence_credit_eur,
-        );
-        const alreadyLicencedEur = normalizeCreditAmount(
-          purchaseMeta.already_licenced_gross_eur
-            || metadata.planetka_already_licenced_gross_eur,
-        );
-        const discountPercent = Math.max(
-          0,
-          Number.parseInt(purchase && purchase.discount_percent || metadata.planetka_discount_percent || 0, 10) || 0,
-        );
-        const discountEur = normalizeCreditAmount(
-          purchase && purchase.discount_eur
-            || metadata.planetka_discount_eur,
-        );
-        const worldBreakdown = fullQualityPriceBreakdownHtml({
-          fullPriceEur: rawFullPrice,
-          alreadyLicencedEur,
-          partialLicenceEur,
-          discountPercent,
-          discountEur,
-          finalPriceEur: price,
-        });
-        const safeToken = escapeHtmlText(encodeURIComponent(tokenResult.token));
-        return html(
-          `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Planetka World Pack</title><style>${WORLD_PACK_PAGE_CSS}</style></head><body><main><h1>World Full Quality Pack</h1><section class="panel"><h2>Payment successful</h2><p>${escapeHtmlText(success.message)}</p></section><section class="panel"><p>The World pack includes the complete Full Quality texture dataset. A full interactive tile map is intentionally not generated because it would be too large for a useful browser view.</p>${worldBreakdown}<a class="button secondary" href="/credits/region-pack-catalog?token=${safeToken}">View all data packs</a></section></main></body></html>`,
-          200,
-          env,
-        );
-      }
       const repairNow = deps.nowIso();
-      const repairedTiles = await reconcileRegionPackEntitlements(
-        db,
-        userId,
-        product,
-        "stripe_region_pack_success_repair",
-        repairNow,
-        deps,
-      );
+      const isWorldPack = String(product.id || "").trim().toLowerCase() === "world";
+      const repairedTiles = isWorldPack
+        ? []
+        : await reconcileRegionPackEntitlements(
+          db,
+          userId,
+          product,
+          "stripe_region_pack_success_repair",
+          repairNow,
+          deps,
+        );
       if (repairedTiles.length > 0) {
         await touchUserPricingVersion(db, userId, deps, repairNow);
       }

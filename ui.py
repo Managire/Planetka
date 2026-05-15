@@ -1151,6 +1151,8 @@ def _api_key_inline_status(prefs, connected, status_message):
     )
     if any(token in lowered for token in invalid_tokens):
         return "Key invalid", "ERROR", True
+    if "session expired" in lowered or "connect your account again" in lowered:
+        return "Session expired", "ERROR", True
     if "critical account tier integrity error" in lowered or "tier integrity" in lowered:
         return "Critical tier integrity error", "ERROR", True
 

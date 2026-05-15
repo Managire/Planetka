@@ -22,10 +22,12 @@ from collections import OrderedDict
 from .auth import (
     AuthApiError,
     CLOUD_OVERLOADED_MESSAGE,
+    describe_auth_error,
     get_authorized_headers,
     get_api_base_url,
     looks_like_planetka_overload,
     mark_planetka_cloud_overloaded,
+    recover_from_terminal_auth_error,
     refresh_auth_session,
     sync_account_profile,
 )
@@ -321,6 +323,7 @@ def _ensure_remote_authentication(allow_cached_on_network_error=False):
     except AuthApiError as exc:
         if looks_like_planetka_overload(getattr(exc, "status", 0), getattr(exc, "error", ""), str(exc)):
             raise RuntimeError(CLOUD_OVERLOADED_MESSAGE) from exc
+        recover_from_terminal_auth_error(exc, source="r2_authentication_headers")
         raise RuntimeError("Planetka login expired. Log in again.") from exc
 
     auth_header = str(headers.get("Authorization", "") or "").strip()
@@ -337,7 +340,27 @@ def _ensure_remote_authentication(allow_cached_on_network_error=False):
                 pass
         except urllib.error.HTTPError as exc:
             if int(getattr(exc, "code", 0)) in {401, 403}:
-                raise RuntimeError("Planetka login expired. Log in again.") from exc
+                try:
+                    refresh_auth_session()
+                    retry_headers = {
+                        "User-Agent": "Planetka-Blender",
+                        **get_authorized_headers(allow_refresh=False),
+                    }
+                    retry_request = urllib.request.Request(url, method="HEAD", headers=retry_headers)
+                    with urllib.request.urlopen(retry_request, timeout=_R2_TIMEOUT_SECONDS):
+                        pass
+                except AuthApiError as refresh_exc:
+                    recover_from_terminal_auth_error(refresh_exc, source="r2_authentication_sentinel")
+                    raise RuntimeError(describe_auth_error(refresh_exc)) from refresh_exc
+                except urllib.error.HTTPError as retry_exc:
+                    terminal_error = AuthApiError(
+                        int(getattr(retry_exc, "code", 0) or 0),
+                        f"http_{int(getattr(retry_exc, 'code', 0) or 0)}",
+                    )
+                    recover_from_terminal_auth_error(terminal_error, source="r2_authentication_sentinel_retry")
+                    raise RuntimeError("Planetka login expired. Log in again.") from retry_exc
+                except (urllib.error.URLError, RuntimeError, TypeError, ValueError, AttributeError, OSError) as retry_exc:
+                    raise RuntimeError(f"Planetka remote source check failed: {retry_exc}") from retry_exc
             if int(getattr(exc, "code", 0)) != 404:
                 if looks_like_planetka_overload(getattr(exc, "code", 0), f"http_{getattr(exc, 'code', 0)}"):
                     mark_planetka_cloud_overloaded(reason=f"http_{getattr(exc, 'code', 0)}")
@@ -1290,6 +1313,7 @@ def _request_tile_session_token(resolve_id, quality_mode, allow_refresh=True):
     except AuthApiError as exc:
         if looks_like_planetka_overload(getattr(exc, "status", 0), getattr(exc, "error", ""), str(exc)):
             raise RuntimeError(CLOUD_OVERLOADED_MESSAGE) from exc
+        recover_from_terminal_auth_error(exc, source="tile_session_headers")
         raise RuntimeError("Planetka login expired. Log in again.") from exc
     except urllib.error.HTTPError as exc:
         error_payload = {}
@@ -1326,8 +1350,17 @@ def _request_tile_session_token(resolve_id, quality_mode, allow_refresh=True):
             try:
                 refresh_auth_session()
                 return _attempt(False)
-            except (AuthApiError, urllib.error.HTTPError, urllib.error.URLError, RuntimeError, TypeError, ValueError, AttributeError, OSError):
+            except (AuthApiError, urllib.error.HTTPError, urllib.error.URLError, RuntimeError, TypeError, ValueError, AttributeError, OSError) as refresh_exc:
+                if isinstance(refresh_exc, AuthApiError):
+                    recover_from_terminal_auth_error(refresh_exc, source="tile_session_refresh_failed")
                 raise RuntimeError("Planetka login expired. Log in again.") from exc
+        if int(getattr(exc, "code", 0)) in {401, 403}:
+            terminal_error = AuthApiError(
+                int(getattr(exc, "code", 0) or 0),
+                error_code or f"http_{int(getattr(exc, 'code', 0) or 0)}",
+                payload=error_payload,
+            )
+            recover_from_terminal_auth_error(terminal_error, source="tile_session_http_error")
         if int(getattr(exc, "code", 0)) == 429:
             if error_message:
                 raise RuntimeError(f"Planetka request limit reached: {error_message}") from exc
@@ -1660,6 +1693,7 @@ def _r2_request(
                     refreshed = True
                     continue
                 except AuthApiError as refresh_exc:
+                    recover_from_terminal_auth_error(refresh_exc, source="r2_request_refresh_failed")
                     raise RuntimeError("Planetka login expired. Log in again.") from refresh_exc
             if exc.code == 404:
                 return False
@@ -1683,6 +1717,10 @@ def _r2_request(
             if exc.code == 403:
                 combined = f"{error_code} {error_message}".lower()
                 if "account_blocked" in combined or "account is blocked" in combined:
+                    recover_from_terminal_auth_error(
+                        AuthApiError(exc.code, "account_blocked", payload={"error": error_code, "message": error_message}),
+                        source="r2_request_account_blocked",
+                    )
                     raise RuntimeError("Planetka account is blocked. Contact info@planetka.io.")
                 if any(token in combined for token in ("quality_mode_not_allowed", "not_allowed_for_tier", "access_denied")):
                     try:
@@ -1697,7 +1735,10 @@ def _r2_request(
                 raise RuntimeError("Planetka account does not have access to remote Earth data.")
             last_error = exc
         except AuthApiError as exc:
-            raise RuntimeError(str(exc)) from exc
+            if looks_like_planetka_overload(getattr(exc, "status", 0), getattr(exc, "error", ""), str(exc)):
+                raise RuntimeError(CLOUD_OVERLOADED_MESSAGE) from exc
+            recover_from_terminal_auth_error(exc, source="r2_request_headers")
+            raise RuntimeError(describe_auth_error(exc)) from exc
         except (urllib.error.URLError, OSError, ValueError) as exc:
             last_error = exc
         finally:

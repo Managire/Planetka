@@ -2,7 +2,14 @@ import math
 
 import bpy
 
-from ..auth import get_cloud_connection_status, is_authenticated
+from ..auth import (
+    AuthApiError,
+    describe_auth_error,
+    get_cloud_connection_status,
+    is_authenticated,
+    recover_from_terminal_auth_error,
+    sync_account_profile,
+)
 from ..asset_builder import PLANETKA_ROOT_OBJECT_NAME, ensure_earth_surface_parent, ensure_planetka_root
 from ..error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from ..extension_prefs import mark_earth_object
@@ -57,6 +64,27 @@ def _require_authenticated_account(operator, prefs):
             "Connect your Planetka account before using remote Earth data.",
             code=ErrorCode.RESOLVE_PRECHECK_FAILED,
             logger=logger,
+        )
+        return False
+    try:
+        sync_account_profile(prefs)
+    except AuthApiError as exc:
+        recover_from_terminal_auth_error(exc, prefs=prefs, source="create_earth_account_profile")
+        fail(
+            operator,
+            describe_auth_error(exc),
+            code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+            logger=logger,
+        )
+        return False
+    except (RuntimeError, TypeError, ValueError, AttributeError, OSError) as exc:
+        fail(
+            operator,
+            "Planetka account status could not be verified. Check your connection and try again.",
+            code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+            logger=logger,
+            exc=exc,
+            log_message="Planetka Create Earth account verification failed",
         )
         return False
     status = get_cloud_connection_status(prefs=prefs, force=True, timeout=4.0)

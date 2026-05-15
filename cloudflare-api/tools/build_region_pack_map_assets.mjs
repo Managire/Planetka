@@ -955,6 +955,11 @@ async function main() {
     const group = catalogGroupForProduct(product);
     const fullPriceCents = Math.max(0, Number.parseInt(product && product.gross_cents || 0, 10) || 0);
     if (id.toLowerCase() === "world") {
+      const asset = assetForProduct(product, helpers, generated);
+      const body = JSON.stringify(asset);
+      await fs.writeFile(path.join(outDir, `${id}.json`), body);
+      count += 1;
+      totalBytes += Buffer.byteLength(body);
       catalogProducts.push({
         id,
         name: String(product && product.name || ""),
@@ -962,12 +967,13 @@ async function main() {
         group_key: group.key,
         group_label: group.label,
         discount_percent: Math.max(0, Number.parseInt(product && product.discount_percent || 0, 10) || 0),
-        total_tiles: Math.max(0, Number.parseInt(product && product.tile_count || 0, 10) || 0),
+        total_tiles: asset.tiles.length,
         full_price_cents: fullPriceCents,
-        child_ids: [],
+        child_ids: helpers.directChildIds(product),
         hierarchy_child_ids: helpers.hierarchyChildren(product)
           .map((entry) => String(entry && entry.id || ""))
           .filter(Boolean),
+        // Keep the catalog small; the full World tile payload lives in world.json.
         tiles: [],
         world: true,
       });

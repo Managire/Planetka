@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const productsFile = resolve(rootDir, "src/worker/region_packs.products.generated.js");
-const tileDataFile = resolve(rootDir, "src/worker/region_packs.tile_data.generated.js");
+const relationsFile = resolve(rootDir, "src/worker/region_packs.relations.generated.js");
 const insertBatchSize = Math.max(1, Number.parseInt(process.env.PLANETKA_RELATION_INSERT_BATCH_SIZE || "500", 10) || 500);
 
 function extractJson(source, regex, label) {
@@ -41,57 +41,23 @@ function runWranglerSql(sql) {
   }
 }
 
-function relationType(targetId, ownedId, targetCount, ownedCount, overlapCount) {
-  if (!overlapCount) {
-    return "exclusive";
-  }
-  if (targetId === ownedId) {
-    return "self";
-  }
-  if (overlapCount >= targetCount) {
-    return "parent_covers_target";
-  }
-  if (overlapCount >= ownedCount) {
-    return "owned_child_of_target";
-  }
-  return "overlap";
-}
-
 const productsSource = readFileSync(productsFile, "utf8");
-const tileDataSource = readFileSync(tileDataFile, "utf8");
+const relationsSource = readFileSync(relationsFile, "utf8");
 const catalogVersion = extractJson(productsSource, /GENERATED_REGION_PACK_CATALOG_VERSION\s*=\s*(".*?");/s, "catalog version");
-const products = extractJson(productsSource, /GENERATED_REGION_PACK_PRODUCTS\s*=\s*(\[.*\]);/s, "products");
-const tileKeysByProduct = extractJson(
-  tileDataSource,
-  /GENERATED_REGION_PACK_TILE_KEYS\s*=\s*(\{.*?\});\s*export const GENERATED_REGION_PACK_TILE_REFS/s,
-  "tile keys",
+const graphVersion = extractJson(relationsSource, /GENERATED_REGION_PACK_RELATION_GRAPH_VERSION\s*=\s*(".*?");/s, "relation graph version");
+const relationsByTarget = extractJson(
+  relationsSource,
+  /GENERATED_REGION_PACK_RELATIONS_BY_TARGET\s*=\s*(\{.*?\});\s*export const GENERATED_REGION_PACK_RELATIONS_BY_OWNED/s,
+  "relations by target",
 );
-const grossCentsByTile = extractJson(
-  tileDataSource,
-  /GENERATED_REGION_PACK_TILE_GROSS_CENTS\s*=\s*(\{.*?\});/s,
-  "tile gross cents",
+const relationCounts = extractJson(
+  relationsSource,
+  /GENERATED_REGION_PACK_RELATION_COUNTS\s*=\s*(\{.*?\});/s,
+  "relation counts",
 );
 
-const visibleProducts = products
-  .filter((product) => product && product.id && Array.isArray(tileKeysByProduct[product.id]))
-  .map((product) => ({
-    id: String(product.id),
-    tile_count: Math.max(0, Number.parseInt(product.tile_count || tileKeysByProduct[product.id].length || 0, 10) || 0),
-    paid_tile_count: Math.max(0, Number.parseInt(product.paid_tile_count || 0, 10) || 0),
-    free_tile_count: Math.max(0, Number.parseInt(product.free_tile_count || 0, 10) || 0),
-    base_gross_cents: Math.max(0, Number.parseInt(product.gross_cents || 0, 10) || 0),
-    tile_keys: tileKeysByProduct[product.id],
-  }));
-const productById = new Map(visibleProducts.map((product) => [product.id, product]));
-
-const productIdsByTile = new Map();
-for (const product of visibleProducts) {
-  for (const tileKey of product.tile_keys) {
-    if (!productIdsByTile.has(tileKey)) {
-      productIdsByTile.set(tileKey, []);
-    }
-    productIdsByTile.get(tileKey).push(product.id);
-  }
+if (graphVersion !== catalogVersion) {
+  throw new Error(`Relation graph version ${graphVersion} does not match catalog version ${catalogVersion}.`);
 }
 
 const computedAt = new Date().toISOString();
@@ -146,71 +112,42 @@ function flushRows() {
   runWranglerSql(sql);
   writtenRows += pendingRows.length;
   pendingRows = [];
-  console.log(`Wrote ${writtenRows} region pack relation rows...`);
+  console.log(`Wrote ${writtenRows} meaningful region pack relation rows...`);
 }
 
-for (const [targetIndex, target] of visibleProducts.entries()) {
-  const overlapByOwnedId = new Map();
-  for (const tileKey of target.tile_keys) {
-    const grossCents = Math.max(0, Number.parseInt(grossCentsByTile[tileKey] || 0, 10) || 0);
-    const ownedIds = productIdsByTile.get(tileKey) || [];
-    for (const ownedId of ownedIds) {
-      let row = overlapByOwnedId.get(ownedId);
-      if (!row) {
-        row = {
-          overlap_tile_count: 0,
-          overlap_paid_tile_count: 0,
-          overlap_free_tile_count: 0,
-          overlap_base_gross_cents: 0,
-        };
-        overlapByOwnedId.set(ownedId, row);
-      }
-      row.overlap_tile_count += 1;
-      row.overlap_base_gross_cents += grossCents;
-      if (grossCents > 0) {
-        row.overlap_paid_tile_count += 1;
-      } else {
-        row.overlap_free_tile_count += 1;
-      }
-    }
-  }
-
-  for (const owned of visibleProducts) {
-    const overlap = overlapByOwnedId.get(owned.id) || {
-      overlap_tile_count: 0,
-      overlap_paid_tile_count: 0,
-      overlap_free_tile_count: 0,
-      overlap_base_gross_cents: 0,
-    };
+for (const [targetId, rows] of Object.entries(relationsByTarget)) {
+  for (const row of rows || []) {
+    const ownedId = String(row[0] || "");
+    const relationType = String(row[1] || "overlap");
     pendingRows.push(`(${[
       sqlString(catalogVersion),
-      sqlString(target.id),
-      sqlString(owned.id),
-      sqlString(relationType(target.id, owned.id, target.tile_count, owned.tile_count, overlap.overlap_tile_count)),
-      sqlNumber(target.tile_count),
-      sqlNumber(owned.tile_count),
-      sqlNumber(overlap.overlap_tile_count),
-      sqlNumber(overlap.overlap_paid_tile_count),
-      sqlNumber(overlap.overlap_free_tile_count),
-      sqlNumber(overlap.overlap_base_gross_cents),
-      sqlNumber(target.base_gross_cents),
-      sqlNumber(productById.get(owned.id)?.base_gross_cents || 0),
+      sqlString(targetId),
+      sqlString(ownedId),
+      sqlString(relationType),
+      sqlNumber(row[6]),
+      sqlNumber(row[7]),
+      sqlNumber(row[2]),
+      sqlNumber(row[3]),
+      sqlNumber(row[4]),
+      sqlNumber(row[5]),
+      sqlNumber(row[8]),
+      sqlNumber(row[9]),
       sqlString(computedAt),
     ].join(", ")})`);
     if (pendingRows.length >= insertBatchSize) {
       flushRows();
     }
   }
-  if ((targetIndex + 1) % 25 === 0 || targetIndex + 1 === visibleProducts.length) {
-    console.log(`Prepared relations for ${targetIndex + 1}/${visibleProducts.length} products.`);
-  }
 }
 
 flushRows();
+console.log("Static relation graph summary:", JSON.stringify(relationCounts));
 runWranglerSql(`
 SELECT
   COUNT(*) AS relation_rows,
-  SUM(CASE WHEN relation_type != 'exclusive' THEN 1 ELSE 0 END) AS overlapping_rows
+  SUM(CASE WHEN relation_type = 'parent_covers_target' THEN 1 ELSE 0 END) AS parent_covers_target_rows,
+  SUM(CASE WHEN relation_type = 'owned_child_of_target' THEN 1 ELSE 0 END) AS owned_child_of_target_rows,
+  SUM(CASE WHEN relation_type = 'overlap' THEN 1 ELSE 0 END) AS overlap_rows
 FROM region_pack_relations
 WHERE catalog_version = ${sqlString(catalogVersion)};
 `);

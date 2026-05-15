@@ -29,8 +29,12 @@
   - `/Applications/Blender.app/Contents/MacOS/Blender --background --python tools/planetka_schema_migration_test.py`
 - [ ] Worker auth/device integration test pass:
   - `python3 tools/worker_auth_integration_test.py`
-- [ ] Worker abuse simulation pass (plan tampering, token-query rejection, legacy-auth disabled, high-volume tile flood sanity):
-  - `python3 tools/worker_abuse_simulation.py --base-url https://api.planetka.io`
+- [ ] Stale-auth recovery gate pass:
+  - `/Applications/Blender5.0.app/Contents/MacOS/Blender --background --factory-startup --python tools/planetka_stale_auth_recovery_gate.py`
+- [ ] Bounded live health gate pass:
+  - `/Applications/Blender5.0.app/Contents/MacOS/Blender --background --python tools/live_pricing_consistency_e2e.py`
+- [ ] Worker abuse/stress simulation pass only in a maintenance window or isolated backend:
+  - `PLANETKA_ALLOW_LIVE_STRESS=1 python3 tools/worker_abuse_simulation.py --base-url https://api.planetka.io`
 - [ ] Addon auto-updater manifest endpoint responds:
   - `curl -sS https://api.planetka.io/addon/update-manifest | jq .`
 - [ ] Cloud API env vars reviewed against:

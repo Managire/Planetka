@@ -9,6 +9,11 @@ Run with Blender Python so the installed add-on authentication is reused:
 This intentionally targets the live sandbox backend and the currently
 authenticated add-on account. It validates that estimate, checkout, entitlement
 state, and post-purchase estimates stay cent-exact.
+
+Default counts are deliberately bounded for regular release health checks:
+10 scene quotes/purchases, 5 country packs, and 2 regions. Larger stress runs
+must set PLANETKA_ALLOW_LIVE_STRESS=1 because they can push production Workers
+into Cloudflare 1102/503 and temporarily affect real users.
 """
 
 from __future__ import annotations
@@ -41,13 +46,31 @@ CATALOG_TILE_DATA_PATH = ROOT / "cloudflare-api/src/worker/region_packs.tile_dat
 API_BASE = "https://api.planetka.io"
 TARGET_EMAIL = "tom.griger@gmail.com"
 RANDOM_SEED = 20260513
-SCENE_TESTS = int(os.environ.get("PLANETKA_E2E_SCENE_TESTS", "100") or "100")
-COUNTRY_TESTS = int(os.environ.get("PLANETKA_E2E_COUNTRY_TESTS", "50") or "50")
-REGION_TESTS = int(os.environ.get("PLANETKA_E2E_REGION_TESTS", "5") or "5")
+BOUNDED_SCENE_TESTS = 10
+BOUNDED_COUNTRY_TESTS = 5
+BOUNDED_REGION_TESTS = 2
+SCENE_TESTS = int(os.environ.get("PLANETKA_E2E_SCENE_TESTS", str(BOUNDED_SCENE_TESTS)) or str(BOUNDED_SCENE_TESTS))
+COUNTRY_TESTS = int(os.environ.get("PLANETKA_E2E_COUNTRY_TESTS", str(BOUNDED_COUNTRY_TESTS)) or str(BOUNDED_COUNTRY_TESTS))
+REGION_TESTS = int(os.environ.get("PLANETKA_E2E_REGION_TESTS", str(BOUNDED_REGION_TESTS)) or str(BOUNDED_REGION_TESTS))
 RESET_E2E_ENTITLEMENTS = str(os.environ.get("PLANETKA_E2E_RESET_ENTITLEMENTS") or "1").strip().lower() not in {"0", "false", "no", "off"}
 PACE_SEC = float(os.environ.get("PLANETKA_E2E_PACE_SEC", "3.0") or "3.0")
 MAX_COUNTRY_TILES = int(os.environ.get("PLANETKA_E2E_MAX_COUNTRY_TILES", "1200") or "1200")
 MAX_REGION_TILES = int(os.environ.get("PLANETKA_E2E_MAX_REGION_TILES", "1500") or "1500")
+
+
+def stress_explicitly_allowed() -> bool:
+    return str(os.environ.get("PLANETKA_ALLOW_LIVE_STRESS") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def requested_live_workload_is_bounded() -> bool:
+    return (
+        SCENE_TESTS <= BOUNDED_SCENE_TESTS
+        and COUNTRY_TESTS <= BOUNDED_COUNTRY_TESTS
+        and REGION_TESTS <= BOUNDED_REGION_TESTS
+        and PACE_SEC >= 1.0
+        and MAX_COUNTRY_TILES <= 1200
+        and MAX_REGION_TILES <= 1500
+    )
 
 
 @dataclass
@@ -368,6 +391,26 @@ def verify_pack_purchase(
 
 
 def main() -> int:
+    if not requested_live_workload_is_bounded() and not stress_explicitly_allowed():
+        report = {
+            "ok": False,
+            "error": "live_stress_not_allowed",
+            "message": (
+                "Requested live workload exceeds the regular bounded health gate. "
+                "Set PLANETKA_ALLOW_LIVE_STRESS=1 only during a controlled maintenance window."
+            ),
+            "targets": {
+                "scenes": SCENE_TESTS,
+                "countries": COUNTRY_TESTS,
+                "regions": REGION_TESTS,
+                "pace_sec": PACE_SEC,
+                "max_country_tiles": MAX_COUNTRY_TILES,
+                "max_region_tiles": MAX_REGION_TILES,
+            },
+        }
+        print("PLANETKA_LIVE_PRICING_E2E_RESULT " + json.dumps(report, sort_keys=True))
+        return 2
+
     addon_utils.enable("bl_ext.user_default.Planetka", default_set=False)
     from bl_ext.user_default.Planetka import auth, credit_api  # noqa: PLC0415
 
