@@ -394,6 +394,9 @@ export function createAuthApiKeyHandlers(deps) {
       if (code === "missing_device_id") {
         return deps.json({ ok: false, error: "missing_device_id" }, 400, env);
       }
+      if (code !== "device_limit_exceeded") {
+        throw error;
+      }
       return deps.json(
         {
           ok: false,

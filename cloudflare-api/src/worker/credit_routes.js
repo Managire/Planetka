@@ -5,6 +5,7 @@ import {
 } from "./region_packs.products.generated.js";
 import {
   GENERATED_REGION_PACK_RELATION_GRAPH_VERSION,
+  GENERATED_REGION_PACK_RELATIONS_BY_OWNED,
   GENERATED_REGION_PACK_RELATIONS_BY_TARGET,
 } from "./region_packs.relations.generated.js";
 
@@ -2874,8 +2875,8 @@ const REGION_PACK_CATALOG_CSS = `:root{color-scheme:light dark;--bg:#111;--panel
 main{max-width:1180px;margin:0 auto;padding:24px}h1{margin:0 0 8px;font-size:28px;font-weight:650}h2{margin:22px 0 10px}.muted{color:var(--muted)}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;margin-top:14px}.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:12px 0}
 input{min-width:260px;flex:1;background:var(--input);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:9px 11px}
-table{width:100%;border-collapse:collapse;background:var(--subpanel);border:1px solid var(--line);border-radius:10px;overflow:hidden}th,td{padding:8px 10px;border-bottom:1px solid var(--table-line);text-align:right;white-space:nowrap}th:first-child,td:first-child{text-align:left;white-space:normal}tr:last-child td{border-bottom:0}th{color:var(--text);background:var(--table-head);font-weight:650}.small{font-size:13px}.saving{color:var(--saving)}.price{font-weight:700;color:var(--price)}
-.button{display:inline-flex;align-items:center;justify-content:center;padding:7px 10px;border-radius:8px;background:var(--button-accent);color:var(--button-text,#111);text-decoration:none;font-weight:700}.button.secondary{background:var(--secondary-btn);color:var(--text);border:1px solid var(--line)}.empty{padding:12px;color:var(--muted)}.loading-more{display:flex;align-items:center;gap:9px;margin:14px 0 2px;padding:10px 12px;border:1px dashed var(--line);border-radius:10px;background:var(--subpanel);color:var(--muted)}.spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}`;
+table{width:100%;border-collapse:collapse;background:var(--subpanel);border:1px solid var(--line);border-radius:10px;overflow:hidden}th,td{padding:8px 10px;border-bottom:1px solid var(--table-line);text-align:right;white-space:nowrap}th:first-child,td:first-child{text-align:left;white-space:normal}tr:last-child td{border-bottom:0}th{color:var(--text);background:var(--table-head);font-weight:650}.small{font-size:13px}.saving{color:var(--saving)}.price{font-weight:700;color:var(--price)}.pending{color:var(--muted);font-weight:650}
+.button{display:inline-flex;align-items:center;justify-content:center;padding:7px 10px;border-radius:8px;background:var(--button-accent);color:var(--button-text,#111);text-decoration:none;font-weight:700}.button.secondary{background:var(--secondary-btn);color:var(--text);border:1px solid var(--line)}.button.disabled{opacity:.55;pointer-events:none;filter:grayscale(.25)}.empty{padding:12px;color:var(--muted)}.loading-more{display:flex;align-items:center;gap:9px;margin:14px 0 2px;padding:10px 12px;border:1px dashed var(--line);border-radius:10px;background:var(--subpanel);color:var(--muted)}.spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}`;
 
 const REGION_PACK_CHECKOUT_CSS = `:root{color-scheme:light dark;--bg:#111;--panel:#1b1b1b;--card:#151515;--line:#3c3c3c;--text:#eee;--muted:#aaa;--accent:#d9a441;--button-accent:#d9a441;--secondary-btn:#2a2a2a;--disabled:#333;--disabled-text:#888;--notice:#f2c36b;--link:#f4d28d}
 @media (prefers-color-scheme:light){:root{--bg:#f6f2ea;--panel:#fffaf2;--card:#fbf2e5;--line:#dacdbb;--text:#1f252d;--muted:#667085;--accent:#c28a21;--button-accent:#8f732f;--button-text:#fff;--secondary-btn:#f3eadc;--disabled:#e4ded5;--disabled-text:#8a8177;--notice:#936500;--link:#966915}}
@@ -3089,11 +3090,17 @@ function family(parsed){return parsed?"x"+String(parsed.x).padStart(3,"0")+"_y"+
 function tileSort(a,b){const pa=parseTileKey(a.tile_key),pb=parseTileKey(b.tile_key),fa=family(pa),fb=family(pb);return fa===fb?(Number(pa&&pa.d||0)-Number(pb&&pb.d||0)):fa<fb?-1:1}
 function buildOwnedFamilies(){const map=new Map();const source=Array.isArray(DATA.owned_tile_keys)&&DATA.owned_tile_keys.length?DATA.owned_tile_keys:(DATA.owned_tiles||[]);for(const row of source){const key=typeof row==="string"?row:row&&row.tile_key;const p=parseTileKey(key);const f=family(p);if(!p||!f)continue;if(!map.has(f))map.set(f,new Set());map.get(f).add(Number(p.d))}return map}
 async function loadAsset(id){const safe=String(id||"").trim();if(assetCache.has(safe))return assetCache.get(safe);const res=await fetch("/credits/region-pack-map-asset?region_pack_id="+encodeURIComponent(safe)+"&v="+assetVersion,{cache:"reload"});if(!res.ok)throw new Error("map_asset_"+res.status);const asset=await res.json();assetCache.set(safe,asset);return asset}
-function normaliseTile(tile,owned){const p=parseTileKey(tile&&tile.tile_key);const f=family(p);const ownedDs=owned.get(f)||new Set();const gross=int(tile&&((tile.gross_cents!==undefined?tile.gross_cents:tile.full_price_cents)));const globallyFree=!!(tile&&tile.globally_free)||gross<=0;let status="new";if(DATA.world_full_quality_unlocked||Array.from(ownedDs).some((d)=>Number(d)<=Number(p&&p.d||0))){status="licenced"}else if(globallyFree){status="free"}else if(Array.from(ownedDs).some((d)=>Number(d)>Number(p&&p.d||0))){status="partial"}const lonMin=Number(tile&&tile.lon_min),lonMax=Number(tile&&tile.lon_max),latMin=Number(tile&&tile.lat_min),latMax=Number(tile&&tile.lat_max);return{...tile,tile_key:p?p.key:String(tile&&tile.tile_key||""),x:p?p.x:null,y:p?p.y:null,z:p?p.z:null,d:p?p.d:null,lon_min:Number.isFinite(lonMin)?lonMin:(p?p.x-180:null),lon_max:Number.isFinite(lonMax)?lonMax:(p?p.x-180+p.z:null),lat_min:Number.isFinite(latMin)?latMin:(p?p.y-90:null),lat_max:Number.isFinite(latMax)?latMax:(p?p.y-90+p.z:null),status}}
+function normaliseTile(tile,owned){const p=parseTileKey(tile&&tile.tile_key);const f=family(p);const ownedDs=owned.get(f)||new Set();const gross=int(tile&&((tile.gross_cents!==undefined?tile.gross_cents:tile.full_price_cents)));const globallyFree=!!(tile&&tile.globally_free)||gross<=0;let status="new";if(DATA.world_full_quality_unlocked||DATA.product_full_quality_unlocked||Array.from(ownedDs).some((d)=>Number(d)<=Number(p&&p.d||0))){status="licenced"}else if(globallyFree){status="free"}else if(Array.from(ownedDs).some((d)=>Number(d)>Number(p&&p.d||0))){status="partial"}const lonMin=Number(tile&&tile.lon_min),lonMax=Number(tile&&tile.lon_max),latMin=Number(tile&&tile.lat_min),latMax=Number(tile&&tile.lat_max);return{...tile,tile_key:p?p.key:String(tile&&tile.tile_key||""),x:p?p.x:null,y:p?p.y:null,z:p?p.z:null,d:p?p.d:null,lon_min:Number.isFinite(lonMin)?lonMin:(p?p.x-180:null),lon_max:Number.isFinite(lonMax)?lonMax:(p?p.x-180+p.z:null),lat_min:Number.isFinite(latMin)?latMin:(p?p.y-90:null),lat_max:Number.isFinite(latMax)?latMax:(p?p.y-90+p.z:null),full_price_cents:gross,gross_cents:gross,status}}
 function computeAsset(asset){const owned=buildOwnedFamilies();const rows=(asset.tiles||[]).map((tile)=>normaliseTile(tile,owned)).filter((tile)=>tile.tile_key&&Number.isFinite(tile.x)&&Number.isFinite(tile.y)&&Number.isFinite(tile.z)).sort(tileSort);const levels=Array.from(new Set(rows.map((row)=>Number(row.z)).filter(Number.isFinite))).sort((a,b)=>a-b);return{asset,rows,levels}}
+function normaliseStoredTile(tile){const p=parseTileKey(tile&&tile.tile_key);const lonMin=Number(tile&&tile.lon_min),lonMax=Number(tile&&tile.lon_max),latMin=Number(tile&&tile.lat_min),latMax=Number(tile&&tile.lat_max);return{...tile,tile_key:p?p.key:String(tile&&tile.tile_key||""),x:p?p.x:null,y:p?p.y:null,z:p?p.z:null,d:p?p.d:null,lon_min:Number.isFinite(lonMin)?lonMin:(p?p.x-180:null),lon_max:Number.isFinite(lonMax)?lonMax:(p?p.x-180+p.z:null),lat_min:Number.isFinite(latMin)?latMin:(p?p.y-90:null),lat_max:Number.isFinite(latMax)?latMax:(p?p.y-90+p.z:null),status:String(tile&&tile.status||"free")}}
+function statusMapFromState(state){const map=new Map();for(const entry of Array.isArray(state&&state.tile_statuses)?state.tile_statuses:[]){if(Array.isArray(entry)){const key=String(entry[0]||"");if(key)map.set(key,{status:String(entry[1]||"new"),full_price_cents:int(entry[2]),gross_cents:int(entry[2]),final_price_cents:int(entry[3]),price_cents:int(entry[3]),price_eur:int(entry[3])/100,partial_licence_credit_cents:int(entry[4]),already_licenced_cents:int(entry[5]),discount_cents:int(entry[6])})}else if(entry&&typeof entry==="object"){const key=String(entry.tile_key||"");if(key)map.set(key,entry)}}return map}
+function applyStatusMap(tile,statusMap){const extra=statusMap.get(tile.tile_key);if(!extra)return tile;return{...tile,...extra,status:String(extra.status||tile.status||"new")}}
+function computeViewModel(asset){const state=DATA.map_state_ready&&DATA.map_state&&typeof DATA.map_state==="object"?DATA.map_state:null;if(state&&Array.isArray(state.tiles)){const rows=state.tiles.map(normaliseStoredTile).filter((tile)=>tile.tile_key&&Number.isFinite(tile.x)&&Number.isFinite(tile.y)&&Number.isFinite(tile.z)).sort(tileSort);const levels=(Array.isArray(state.levels)&&state.levels.length?state.levels:Array.from(new Set(rows.map((row)=>Number(row.z)).filter(Number.isFinite)))).map(Number).filter(Number.isFinite).sort((a,b)=>a-b);return{asset:{...asset,bounds:state.bounds||asset.bounds,outlines:Array.isArray(state.outlines)?state.outlines:asset.outlines,included_countries:Array.isArray(state.included_countries)?state.included_countries:asset.included_countries,region_pack:state.region_pack||asset.region_pack},rows,levels}}if(state&&Array.isArray(state.tile_statuses)){const statusMap=statusMapFromState(state);const base=computeAsset(asset);const rows=base.rows.map((tile)=>applyStatusMap(tile,statusMap)).sort(tileSort);const levels=(Array.isArray(state.levels)&&state.levels.length?state.levels:base.levels).map(Number).filter(Number.isFinite).sort((a,b)=>a-b);return{asset:{...asset,bounds:state.bounds||asset.bounds,outlines:Array.isArray(state.outlines)?state.outlines:asset.outlines,included_countries:Array.isArray(state.included_countries)?state.included_countries:asset.included_countries,region_pack:state.region_pack||asset.region_pack},rows,levels}}if(DATA.product_full_quality_unlocked||DATA.world_full_quality_unlocked||(Array.isArray(DATA.owned_tile_keys)&&DATA.owned_tile_keys.length)){return computeAsset(asset)}return{asset,rows:[],levels:[]}}
+function priceBreakdownText(tile){const full=int(tile.full_price_cents!==undefined?tile.full_price_cents:tile.gross_cents);const already=int(tile.already_licenced_cents);const partial=int(tile.partial_licence_credit_cents);const discount=int(tile.discount_cents);const final=int(tile.final_price_cents!==undefined?tile.final_price_cents:tile.price_cents);const pct=int(tile.discount_percent!==undefined?tile.discount_percent:DATA.summary&&DATA.summary.discount_percent);const lines=["Full Price: "+fmtCents(full)];if(already>0)lines.push("Licenced: - "+fmtCents(already));if(partial>0)lines.push("Partially licenced: - "+fmtCents(partial));if(discount>0)lines.push("Volume Discount ("+pct+"%): - "+fmtCents(discount));lines.push("Final Price: "+fmtCents(final));return lines.join("\\n")}
+function tileTooltipText(tile,statusText){return tile.tile_key+"\\nLand: "+Number(tile.billable_land_km2||0).toFixed(2)+" km²\\nStatus: "+statusText+"\\n"+priceBreakdownText(tile)}
 function zoomLabel(level){const list=(window.PLANETKA_MAP_ZOOM_LEVELS&&window.PLANETKA_MAP_ZOOM_LEVELS.length?window.PLANETKA_MAP_ZOOM_LEVELS:[Number(level)]).map(Number);const i=Math.max(0,list.indexOf(Number(level)));return "Zoom "+(i+1)+(i===0?" - closest":"")}
 function currentBuyHref(){const q=encodeURIComponent(String(DATA.quote&&DATA.quote.quote_id||""));return currentPackIdEncoded&&q?"/credits/region-pack-checkout?token="+currentToken+"&region_pack_id="+currentPackIdEncoded+currentCatalog+"&quote_id="+q:""}
-function renderCards(){const s=DATA.summary;if(!s){document.getElementById("cards").innerHTML="<div class=\"card final-price\"><span>Price unavailable</span><b>Reopen this page</b></div>";return}const partialTiles=Number(s.partial_licence_tiles||0);const alreadyTiles=Number(s.already_licenced_tiles||0)+partialTiles;const alreadyValue=int(s.already_licenced_deduction_cents)+int(s.partial_licence_credit_cents);const discountValue=int(s.discount_cents);const newTiles=Math.max(0,Number(s.new_tiles||0)-partialTiles);const cards=[["New Tiles / Total Tiles",newTiles+" / "+Number(s.total_tiles||0)],["Full Price",fmtCents(s.full_price_cents)]];if(alreadyValue>0)cards.push(["Already Licenced",alreadyTiles+" tiles (-"+fmtCents(alreadyValue)+")"]);if(discountValue>0)cards.push(["Volume Discount",Number(s.discount_percent||0)+"% (-"+fmtCents(discountValue)+")"]);const buy=currentBuyHref()?"<a class=\"button buy-now\" href=\""+currentBuyHref()+"\">"+(int(s.price_cents)>0?"Buy Now":"Licence Now")+"</a>":"";cards.push(["Final Price",fmtCents(s.price_cents),buy]);document.getElementById("cards").innerHTML=cards.map((c)=>"<div class=\"card "+(c[0]==="Final Price"?"final-price":"")+"\"><span>"+esc(c[0])+"</span><b>"+esc(c[1])+"</b>"+(c[2]||"")+"</div>").join("")}
+function renderCards(){const s=DATA.summary;if(!s){const label=DATA.price_pending?"Price updating":"Price unavailable";const detail=DATA.price_pending?"Please wait a few moments.":"Reopen this page from Blender or the data-pack list.";document.getElementById("cards").innerHTML="<div class=\"card final-price\"><span>"+label+"</span><b>"+detail+"</b></div>";return}const partialTiles=Number(s.partial_licence_tiles||0);const alreadyTiles=Number(s.already_licenced_tiles||0)+partialTiles;const alreadyValue=int(s.already_licenced_deduction_cents)+int(s.partial_licence_credit_cents);const discountValue=int(s.discount_cents);const newTiles=Math.max(0,Number(s.new_tiles||0)-partialTiles);const cards=[["New Tiles / Total Tiles",newTiles+" / "+Number(s.total_tiles||0)],["Full Price",fmtCents(s.full_price_cents)]];if(alreadyValue>0)cards.push(["Already Licenced",alreadyTiles+" tiles (-"+fmtCents(alreadyValue)+")"]);if(discountValue>0)cards.push(["Volume Discount",Number(s.discount_percent||0)+"% (-"+fmtCents(discountValue)+")"]);const buy=currentBuyHref()?"<a class=\"button buy-now\" href=\""+currentBuyHref()+"\">"+(int(s.price_cents)>0?"Buy Now":"Licence Now")+"</a>":"";cards.push(["Final Price",fmtCents(s.price_cents),buy]);document.getElementById("cards").innerHTML=cards.map((c)=>"<div class=\"card "+(c[0]==="Final Price"?"final-price":"")+"\"><span>"+esc(c[0])+"</span><b>"+esc(c[1])+"</b>"+(c[2]||"")+"</div>").join("")}
 function frameForBounds(rawBounds,width,minHeight,maxHeight,padSize){const b=rawBounds||{min_lon:-10,min_lat:35,max_lon:30,max_lat:48};const minLon=Number.isFinite(Number(b.min_lon))?Number(b.min_lon):-10,minLat=Number.isFinite(Number(b.min_lat))?Number(b.min_lat):35,maxLon=Number.isFinite(Number(b.max_lon))?Number(b.max_lon):30,maxLat=Number.isFinite(Number(b.max_lat))?Number(b.max_lat):48;const lonSpan=Math.max(1e-6,maxLon-minLon),latSpan=Math.max(1e-6,maxLat-minLat),innerW=Math.max(1,width-padSize*2);const naturalH=Math.round(latSpan*(innerW/lonSpan))+padSize*2,height=Math.max(minHeight,Math.min(maxHeight,naturalH)),innerH=Math.max(1,height-padSize*2),scale=Math.min(innerW/lonSpan,innerH/latSpan),usedW=lonSpan*scale,usedH=latSpan*scale;return{bounds:{min_lon:minLon,min_lat:minLat,max_lon:maxLon,max_lat:maxLat},width,height,scale,ox:(width-usedW)/2,oy:(height-usedH)/2}}
 let currentFrame=frameForBounds({min_lon:-10,min_lat:35,max_lon:30,max_lat:48},1000,320,820,20),W=currentFrame.width,H=currentFrame.height;
 function setBounds(bounds){currentFrame=frameForBounds(bounds||currentFrame.bounds,1000,320,820,20);W=currentFrame.width;H=currentFrame.height}
@@ -3102,12 +3109,12 @@ function el(name,attrs){const node=document.createElementNS(NS,name);for(const k
 let activeTileTooltip=null;function tileTooltip(){let node=document.getElementById("tileTooltip");if(!node){node=document.createElement("div");node.id="tileTooltip";node.className="tile-tooltip";document.body.appendChild(node)}return node}function moveTileTooltip(event){if(!activeTileTooltip)return;const pad=14;activeTileTooltip.style.left=Math.min(window.innerWidth-activeTileTooltip.offsetWidth-pad,event.clientX+pad)+"px";activeTileTooltip.style.top=Math.min(window.innerHeight-activeTileTooltip.offsetHeight-pad,event.clientY+pad)+"px"}function showTileTooltip(text,event){const node=tileTooltip();node.textContent=text;node.style.display="block";activeTileTooltip=node;moveTileTooltip(event)}function hideTileTooltip(){if(activeTileTooltip){activeTileTooltip.style.display="none";activeTileTooltip=null}}function attachTileTooltip(node,text){node.addEventListener("pointerenter",event=>showTileTooltip(text,event));node.addEventListener("pointermove",moveTileTooltip);node.addEventListener("pointerleave",hideTileTooltip)}
 function addMapBackground(svg,project,width,height,id,bounds){svg.appendChild(el("rect",{x:0,y:0,width,height,fill:"#0d1118"}));const safeId=String(id||"").trim();if(safeId&&safeId!=="scene"){svg.appendChild(el("image",{href:mapBgHref(safeId),x:0,y:0,width,height,preserveAspectRatio:"none",opacity:"1.0"}))}else{const tl=project(-180,90),br=project(180,-90);svg.appendChild(el("image",{href:MAP_BG,x:tl[0],y:tl[1],width:br[0]-tl[0],height:br[1]-tl[1],preserveAspectRatio:"none",opacity:"1.0"}))}svg.appendChild(el("rect",{x:0,y:0,width,height,fill:"#05070a",opacity:"0.0"}))}
 function pathFor(poly){return(poly||[]).map((pt,i)=>{const p=xy(pt[0],pt[1]);return(i?"L":"M")+p[0].toFixed(2)+" "+p[1].toFixed(2)}).join(" ")}
-function renderMap(vm,level){const svg=document.getElementById("map");svg.replaceChildren();svg.setAttribute("viewBox","0 0 "+W+" "+H);svg.setAttribute("preserveAspectRatio","xMidYMid meet");addMapBackground(svg,xy,W,H,vm.asset&&vm.asset.region_pack&&vm.asset.region_pack.id,vm.asset&&vm.asset.bounds);for(const outline of vm.asset.outlines||[]){for(const poly of outline.polygons||[]){const p=el("path",{d:pathFor(poly),fill:"none",stroke:"var(--country-line)","stroke-width":"0.7",opacity:"0.72"});const t=el("title",{});t.textContent=outline.name;p.appendChild(t);svg.appendChild(p)}}const rows=vm.rows.filter((row)=>Number(row.z)===Number(level));let newCount=0,licencedCount=0,partialCount=0,freeCount=0;for(const tile of rows){const a=xy(tile.lon_min,tile.lat_max),b=xy(tile.lon_max,tile.lat_min);const cls=tile.status==="new"?"var(--new)":(tile.status==="partial"?"var(--partial)":(tile.status==="licenced"?"var(--licenced)":"var(--free)"));if(tile.status==="new")newCount++;else if(tile.status==="partial")partialCount++;else if(tile.status==="licenced")licencedCount++;else freeCount++;const r=el("rect",{x:a[0],y:a[1],width:Math.max(1,b[0]-a[0]),height:Math.max(1,b[1]-a[1]),fill:cls,stroke:"#fff","stroke-width":"0.45",opacity:(tile.status==="new"||tile.status==="partial")?"0.58":"0.43"});const statusText=tile.status==="partial"?"partially licenced":tile.status;attachTileTooltip(r,tile.tile_key+"\nLand: "+Number(tile.billable_land_km2||0).toFixed(2)+" km²\nStatus: "+statusText);svg.appendChild(r)}document.getElementById("levelSummary").textContent=rows.length+" tiles at "+zoomLabel(level)+" · new "+newCount+" · already licenced "+(licencedCount+partialCount)+" · free "+freeCount}
+function renderMap(vm,level){const svg=document.getElementById("map");svg.replaceChildren();svg.setAttribute("viewBox","0 0 "+W+" "+H);svg.setAttribute("preserveAspectRatio","xMidYMid meet");addMapBackground(svg,xy,W,H,vm.asset&&vm.asset.region_pack&&vm.asset.region_pack.id,vm.asset&&vm.asset.bounds);for(const outline of vm.asset.outlines||[]){for(const poly of outline.polygons||[]){const p=el("path",{d:pathFor(poly),fill:"none",stroke:"var(--country-line)","stroke-width":"0.7",opacity:"0.72"});const t=el("title",{});t.textContent=outline.name;p.appendChild(t);svg.appendChild(p)}}const rows=vm.rows.filter((row)=>Number(row.z)===Number(level));let newCount=0,licencedCount=0,partialCount=0,freeCount=0;for(const tile of rows){const a=xy(tile.lon_min,tile.lat_max),b=xy(tile.lon_max,tile.lat_min);const cls=tile.status==="new"?"var(--new)":(tile.status==="partial"?"var(--partial)":(tile.status==="licenced"?"var(--licenced)":"var(--free)"));if(tile.status==="new")newCount++;else if(tile.status==="partial")partialCount++;else if(tile.status==="licenced")licencedCount++;else freeCount++;const r=el("rect",{x:a[0],y:a[1],width:Math.max(1,b[0]-a[0]),height:Math.max(1,b[1]-a[1]),fill:cls,stroke:"#fff","stroke-width":"0.45",opacity:(tile.status==="new"||tile.status==="partial")?"0.58":"0.43"});const statusText=tile.status==="partial"?"partially licenced":tile.status;attachTileTooltip(r,tileTooltipText(tile,statusText));svg.appendChild(r)}document.getElementById("levelSummary").textContent=rows.length+" tiles at "+zoomLabel(level)+" · new "+newCount+" · already licenced "+(licencedCount+partialCount)+" · free "+freeCount}
 function miniFrame(bounds){return frameForBounds(bounds,1000,320,820,20)}
 function miniXY(frame,lon,lat){return[frame.ox+(lon-frame.bounds.min_lon)*frame.scale,frame.oy+(frame.bounds.max_lat-lat)*frame.scale]}
 function renderMiniMap(svg,vm){const b=vm.asset.bounds||{min_lon:-10,min_lat:35,max_lon:30,max_lat:48};const frame=miniFrame(b),w=frame.width,h=frame.height;svg.setAttribute("viewBox","0 0 "+w+" "+h);svg.style.aspectRatio=w+" / "+h;svg.setAttribute("preserveAspectRatio","xMidYMid meet");svg.replaceChildren();const bgId=vm&&vm.asset&&vm.asset.region_pack&&vm.asset.region_pack.id||"";addMapBackground(svg,(lon,lat)=>miniXY(frame,lon,lat),w,h,bgId,b);const first=vm.levels.length?vm.levels[0]:null;for(const tile of vm.rows.filter((row)=>Number(row.z)===Number(first))){const a=miniXY(frame,tile.lon_min,tile.lat_max),c=miniXY(frame,tile.lon_max,tile.lat_min);const cls=tile.status==="new"?"var(--new)":(tile.status==="partial"?"var(--partial)":(tile.status==="licenced"?"var(--licenced)":"var(--free)"));svg.appendChild(el("rect",{x:a[0],y:a[1],width:Math.max(1,c[0]-a[0]),height:Math.max(1,c[1]-a[1]),fill:cls,stroke:"#fff","stroke-width":"0.5",opacity:(tile.status==="new"||tile.status==="partial")?"0.58":"0.43"}))}}
 async function renderUpsells(){const serverUpsells=Array.isArray(DATA.upsells)?DATA.upsells:[];const grid=document.getElementById("upsellGrid");if(!grid||!serverUpsells.length)return;const token=encodeURIComponent(DATA.token||"");const catalog="&catalog=1";for(const card of serverUpsells){try{const idRaw=card.asset_id||card.region_pack&&card.region_pack.id||"";const upAsset=await loadAsset(idRaw);const vm=computeAsset(upAsset);const summary=card.summary;if(!summary)continue;if(int(summary.price_cents)<=0&&Number(summary.charged_tiles||0)<=0)continue;const pack=card.region_pack||upAsset.region_pack||{};const id=encodeURIComponent(pack.id||idRaw);const div=document.createElement("div");div.className="upsell";const title=document.createElement("h3");title.textContent=pack.name||"Data Pack";div.appendChild(title);const map=document.createElementNS(NS,"svg");div.appendChild(map);renderMiniMap(map,vm);const meta=document.createElement("p");meta.className="muted small";const alreadyValue=int(summary.already_licenced_deduction_cents)+int(summary.partial_licence_credit_cents);const bits=["Full "+fmtCents(summary.full_price_cents)];if(alreadyValue>0)bits.push("Already -"+fmtCents(alreadyValue));if(int(summary.discount_cents)>0)bits.push("Discount "+Number(summary.discount_percent||0)+"% (-"+fmtCents(summary.discount_cents)+")");bits.push("Final "+fmtCents(summary.price_cents));meta.textContent=bits.join(" · ");div.appendChild(meta);const q=encodeURIComponent(String(card.quote_id||""));if(!q)continue;const checkout=document.createElement("a");checkout.className="button";checkout.href="/credits/region-pack-checkout?token="+token+"&region_pack_id="+id+catalog+"&quote_id="+q;checkout.textContent="Buy "+(pack.name||"Pack")+" ("+fmtCents(summary.price_cents)+")";div.appendChild(checkout);const detail=document.createElement("a");detail.className="button secondary";detail.href="/credits/region-pack-map?token="+token+"&region_pack_id="+id+catalog+"&quote_id="+q;detail.textContent="View map";div.appendChild(detail);grid.appendChild(div);document.getElementById("upsellsPanel").style.display=""}catch(error){console.warn("Planetka upsell map failed",card,error)}}}
-async function init(){try{const asset=await loadAsset(DATA.asset_id);const titlePrefix=String(DATA.title_prefix||DATA.success&&DATA.success.context_title_prefix||"").trim();document.getElementById("pageTitle").textContent=(titlePrefix?titlePrefix+": ":"")+(asset.region_pack.name||"Data Pack")+" Full Quality Pack";const vm=computeAsset(asset);renderCards();setBounds(asset.bounds);const countries=uniqueCountryNames(asset.included_countries);if(countries.length){document.getElementById("countries").innerHTML=countries.map((c)=>"<div>"+esc(c)+"</div>").join("");document.getElementById("countriesPanel").style.display=""}const select=document.getElementById("levelSelect");select.replaceChildren();const levels=vm.levels.length?vm.levels:[1];window.PLANETKA_MAP_ZOOM_LEVELS=levels;for(const z of levels){const o=document.createElement("option");o.value=String(z);o.textContent=zoomLabel(z);select.appendChild(o)}select.addEventListener("change",()=>renderMap(vm,Number(select.value)));renderMap(vm,Number(select.value||levels[0]));document.getElementById("mapStatus").textContent="Map loaded.";renderUpsells()}catch(error){console.warn("Planetka region-pack map failed",error);document.getElementById("mapStatus").className="error small";document.getElementById("mapStatus").textContent="Map failed to load. Please reopen this page from Blender."}}
+async function init(){try{const asset=await loadAsset(DATA.asset_id);const titlePrefix=String(DATA.title_prefix||DATA.success&&DATA.success.context_title_prefix||"").trim();document.getElementById("pageTitle").textContent=(titlePrefix?titlePrefix+": ":"")+(asset.region_pack.name||"Data Pack")+" Full Quality Pack";const vm=computeViewModel(asset);renderCards();setBounds(vm.asset.bounds);const countries=uniqueCountryNames(vm.asset.included_countries);if(countries.length){document.getElementById("countries").innerHTML=countries.map((c)=>"<div>"+esc(c)+"</div>").join("");document.getElementById("countriesPanel").style.display=""}const select=document.getElementById("levelSelect");select.replaceChildren();const levels=vm.levels.length?vm.levels:[1];window.PLANETKA_MAP_ZOOM_LEVELS=levels;for(const z of levels){const o=document.createElement("option");o.value=String(z);o.textContent=zoomLabel(z);select.appendChild(o)}select.addEventListener("change",()=>renderMap(vm,Number(select.value)));renderMap(vm,Number(select.value||levels[0]));if(!DATA.map_state_ready){document.getElementById("mapStatus").textContent=DATA.price_pending?"Price and map are updating. Please wait a few moments.":"Map is updating. Please wait a few moments.";if(DATA.map_pending)setTimeout(()=>window.location.reload(),6000);return}document.getElementById("mapStatus").textContent="Map loaded.";renderUpsells()}catch(error){console.warn("Planetka region-pack map failed",error);document.getElementById("mapStatus").className="error small";document.getElementById("mapStatus").textContent="Map failed to load. Please reopen this page from Blender."}}
 init();`;
 
 const REGION_PACK_PAGE_ASSETS = new Map([
@@ -3162,7 +3169,11 @@ function regionPackStaticMapPayload(product, token, account, ownedRows, options 
   const quote = options && options.quote && typeof options.quote === "object"
     ? options.quote
     : null;
-  const upsells = Array.isArray(options && options.upsells)
+  const mapState = options && options.mapState && typeof options.mapState === "object"
+    ? options.mapState
+    : null;
+  const storedUpsells = mapState && Array.isArray(mapState.upsells) ? mapState.upsells : null;
+  const upsells = storedUpsells || (Array.isArray(options && options.upsells)
     ? options.upsells
       .map((entry) => {
         const upsellProduct = entry && entry.product || null;
@@ -3179,7 +3190,7 @@ function regionPackStaticMapPayload(product, token, account, ownedRows, options 
         };
       })
       .filter(Boolean)
-    : [];
+    : []);
   const explicitSimilarPackIds = Array.isArray(options && options.similarPackIds)
     ? options.similarPackIds.map((entry) => String(entry || "").trim()).filter(Boolean)
     : null;
@@ -3207,6 +3218,12 @@ function regionPackStaticMapPayload(product, token, account, ownedRows, options 
       entitlement_version: String(quote.entitlement_version || ""),
     } : null,
     summary: quote && quote.summary ? quote.summary : null,
+    quote_status: String(options && options.quoteStatus || (quote ? "ready" : "missing")),
+    price_pending: Boolean(options && options.pricePending),
+    map_state_status: String(options && options.mapStateStatus || mapState && "ready" || "not_requested"),
+    map_state_ready: Boolean(mapState),
+    map_pending: Boolean(options && options.mapPending),
+    map_state: mapState,
     ...(similarPackIds && similarPackIds.length ? { similar_pack_ids: similarPackIds } : {}),
     upsells,
     owned_tiles: [],
@@ -3214,23 +3231,29 @@ function regionPackStaticMapPayload(product, token, account, ownedRows, options 
       ? explicitOwnedTileKeys
       : ownedTilePayloadRows(ownedRows).map((row) => row.tile_key).filter(Boolean),
     world_full_quality_unlocked: isWorldFullQualityUnlocked(account),
+    product_full_quality_unlocked: Boolean(options && options.productUnlocked),
     title_prefix: String(options && options.titlePrefix || success && success.context_title_prefix || "").trim(),
     success,
   };
 }
 
-async function relatedRegionPackQuoteEntries(db, product, userId, account, pricingOwnershipContext, deps, options = {}) {
+async function relatedRegionPackQuoteEntries(db, product, userId, account, _pricingOwnershipContext, deps, options = {}) {
   const limit = Math.max(0, Number.parseInt(options && options.limit || 6, 10) || 6);
-  const entries = [];
-  for (const candidate of await relatedRegionProducts(db, product, deps, limit)) {
-    const quote = await createRegionPackQuote(db, userId, candidate, deps, {
-      account,
-      pricingOwnershipContext,
-    });
-    if (quote && !quote.error) {
-      entries.push({ product: candidate, quote });
-    }
-  }
+  const candidates = await relatedRegionProducts(db, product, deps, limit);
+  const quoteResults = await materializedRegionPackQuoteResults(db, userId, candidates, account, deps, {
+    fastTrack: Boolean(options && options.fastTrack),
+    jobRound: options && Object.prototype.hasOwnProperty.call(options, "jobRound") ? options.jobRound : 0,
+    priority: options && Object.prototype.hasOwnProperty.call(options, "priority") ? options.priority : 40,
+    triggerType: String(options && options.triggerType || "related_offer_requested"),
+    staleReason: String(options && options.staleReason || "related_offer_quote_not_ready"),
+    sourceProductId: normalizedRegionPackProductId(product),
+  });
+  const entries = candidates
+    .map((candidate) => {
+      const entry = quoteResults.get(normalizedRegionPackProductId(candidate));
+      return entry && entry.quote ? { product: candidate, quote: entry.quote } : null;
+    })
+    .filter(Boolean);
   return entries;
 }
 
@@ -5067,39 +5090,1432 @@ function estimateChargedTileCount(estimate) {
   return Math.max(0, Number.parseInt(estimate.paid_tile_count || 0, 10) || 0);
 }
 
-function regionPackCatalogRow(product, quote) {
-  if (!quote || !quote.summary) {
-    return null;
+function productQuoteStatus(row, pricingVersion, entitlementVersion) {
+  if (!row || typeof row !== "object") {
+    return "missing";
   }
-  const summary = quote.summary;
+  const status = String(row.status || "").trim().toLowerCase();
+  if (
+    String(row.pricing_version || "") !== String(pricingVersion || "")
+    || String(row.entitlement_version || "") !== String(entitlementVersion || "")
+    || String(row.catalog_version || "") !== REGION_PACK_CATALOG_VERSION
+  ) {
+    return "stale";
+  }
+  if (status === "ready") {
+    if (!String(row.quote_id || "").trim()) {
+      return "stale";
+    }
+    return "ready";
+  }
+  if (status === "error" || status === "failed") {
+    return "error";
+  }
+  return status || "updating";
+}
+
+function regionPackCatalogQuoteRow(product, row, status) {
   const group = regionProductCatalogGroup(product);
+  const ready = status === "ready";
+  const fullPriceCents = ready ? integerCents(row && row.full_price_cents) : 0;
+  const alreadyLicencedCents = ready ? integerCents(row && row.already_licenced_cents) : 0;
+  const partialLicenceCreditCents = ready ? integerCents(row && row.partial_licence_credit_cents) : 0;
+  const discountCents = ready ? integerCents(row && row.discount_cents) : 0;
+  const priceCents = ready ? integerCents(row && row.final_price_cents) : 0;
   return {
     id: String(product && product.id || ""),
-    quote_id: String(quote && quote.quote_id || ""),
+    quote_id: ready ? String(row && row.quote_id || "") : "",
+    quote_status: status,
+    price_pending: !ready,
+    status_label: ready ? "" : (status === "error" ? "Price unavailable" : "Price updating"),
+    error_message: status === "error" ? String(row && row.error_message || "Price could not be calculated.") : "",
     name: String(product && product.name || ""),
     type: String(product && product.type || ""),
     group_key: group.key,
     group_label: group.label,
-    total_tiles: summary.total_tiles,
-    new_tiles: summary.new_tiles,
-    unlicenced_tile_count: summary.new_tiles,
-    charged_tiles: summary.charged_tiles,
-    already_licenced_tiles: summary.already_licenced_tiles,
-    partial_licence_tiles: summary.partial_licence_tiles,
-    full_price_eur: summary.full_price_eur,
-    full_price_cents: summary.full_price_cents,
-    chargeable_full_price_eur: normalizeCreditAmount(
-      summary.full_price_eur
-        - summary.already_licenced_deduction_eur
-        - summary.partial_licence_credit_eur,
-    ),
-    already_licenced_deduction_eur: summary.already_licenced_deduction_eur,
-    already_licenced_saving_eur: summary.already_licenced_saving_eur,
-    partial_licence_credit_eur: summary.partial_licence_credit_eur,
-    discount_percent: summary.discount_percent,
-    discount_eur: summary.discount_eur,
-    price_eur: summary.price_eur,
-    price_cents: summary.price_cents,
+    total_tiles: ready ? Math.max(0, Number.parseInt(row && row.total_tile_count || 0, 10) || 0) : null,
+    new_tiles: ready ? Math.max(0, Number.parseInt(row && row.new_tile_count || 0, 10) || 0) : null,
+    unlicenced_tile_count: ready ? Math.max(0, Number.parseInt(row && row.new_tile_count || 0, 10) || 0) : null,
+    charged_tiles: ready ? Math.max(0, Number.parseInt(row && row.charged_tile_count || 0, 10) || 0) : null,
+    already_licenced_tiles: ready ? Math.max(0, Number.parseInt(row && row.already_licenced_tile_count || 0, 10) || 0) : null,
+    partial_licence_tiles: ready ? Math.max(0, Number.parseInt(row && row.partial_licence_tile_count || 0, 10) || 0) : null,
+    full_price_eur: ready ? centsToEur(fullPriceCents) : null,
+    full_price_cents: ready ? fullPriceCents : null,
+    chargeable_full_price_eur: ready ? centsToEur(Math.max(0, fullPriceCents - alreadyLicencedCents - partialLicenceCreditCents)) : null,
+    already_licenced_deduction_eur: ready ? centsToEur(alreadyLicencedCents) : null,
+    already_licenced_saving_eur: ready ? centsToEur(alreadyLicencedCents) : null,
+    already_licenced_deduction_cents: ready ? alreadyLicencedCents : null,
+    partial_licence_credit_eur: ready ? centsToEur(partialLicenceCreditCents) : null,
+    partial_licence_credit_cents: ready ? partialLicenceCreditCents : null,
+    discount_percent: ready ? Math.max(0, Number.parseInt(row && row.discount_percent || 0, 10) || 0) : null,
+    discount_eur: ready ? centsToEur(discountCents) : null,
+    discount_cents: ready ? discountCents : null,
+    price_eur: ready ? centsToEur(priceCents) : null,
+    price_cents: ready ? priceCents : null,
+  };
+}
+
+function userProductQuoteJobId() {
+  const randomId = typeof crypto !== "undefined" && crypto && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  return `upqj_${String(randomId).replace(/[^A-Za-z0-9]/g, "").slice(0, 48)}`;
+}
+
+function userProductQuoteBatchId() {
+  const randomId = typeof crypto !== "undefined" && crypto && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  return `upqb_${String(randomId).replace(/[^A-Za-z0-9]/g, "").slice(0, 48)}`;
+}
+
+const USER_PRODUCT_QUOTE_JOB_LOCK_NAME = "user_product_quote_jobs_global";
+const USER_PRODUCT_QUOTE_JOB_LOCK_TTL_SECONDS = 45;
+const USER_PRODUCT_QUOTE_JOB_DEFAULT_MAX_JOBS = 2;
+const USER_PRODUCT_QUOTE_JOB_DEFAULT_MAX_MS = 3500;
+const USER_PRODUCT_QUOTE_JOB_MAX_ATTEMPTS = 3;
+const USER_PRODUCT_QUOTE_FAST_TRACK_AVAILABLE_AT = "1970-01-01T00:00:00.000Z";
+
+function userProductQuoteWorkerId(deps) {
+  const random = deps && typeof deps.randomToken === "function"
+    ? deps.randomToken(8)
+    : `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  return `upqw_${String(random || "").replace(/[^A-Za-z0-9]/g, "").slice(0, 24)}`;
+}
+
+function addSecondsIsoFromDeps(deps, seconds) {
+  const base = Date.parse(String(deps && deps.nowIso && deps.nowIso() || ""));
+  const nowMs = Number.isFinite(base) ? base : Date.now();
+  return new Date(nowMs + (Math.max(1, Number(seconds) || 1) * 1000)).toISOString();
+}
+
+async function enqueueUserProductQuoteJob(db, userId, productId, pricingVersion, entitlementVersion, deps, options = {}) {
+  const safeUserId = String(userId || "").trim();
+  const safeProductId = String(productId || "").trim().toLowerCase();
+  if (!safeUserId || !safeProductId) {
+    return false;
+  }
+  const now = quoteIsoNow(deps);
+  const rawJobRound = options && Object.prototype.hasOwnProperty.call(options, "jobRound") ? options.jobRound : 0;
+  const rawPriority = options && Object.prototype.hasOwnProperty.call(options, "priority") ? options.priority : 70;
+  const jobRound = Number.isFinite(Number(rawJobRound)) ? Math.max(0, Number.parseInt(rawJobRound, 10) || 0) : 0;
+  const priority = Number.isFinite(Number(rawPriority)) ? Math.max(0, Number.parseInt(rawPriority, 10) || 0) : 70;
+  const availableAt = Boolean(options && options.fastTrack)
+    ? USER_PRODUCT_QUOTE_FAST_TRACK_AVAILABLE_AT
+    : now;
+  const result = await deps.dbRun(
+    db,
+    `
+      INSERT OR IGNORE INTO user_product_quote_jobs (
+        id, batch_id, user_id, product_id, source_product_id, catalog_version,
+        pricing_version, entitlement_version, job_round, priority, status,
+        trigger_type, trigger_purchase_id, stale_reason, attempts, available_at,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, 0, ?, ?, ?)
+    `,
+    [
+      userProductQuoteJobId(),
+      String(options && options.batchId || "") || null,
+      safeUserId,
+      safeProductId,
+      String(options && options.sourceProductId || "") || null,
+      REGION_PACK_CATALOG_VERSION,
+      String(pricingVersion || ""),
+      String(entitlementVersion || ""),
+      jobRound,
+      priority,
+      String(options && options.triggerType || "catalog_view"),
+      String(options && options.triggerPurchaseId || "") || null,
+      String(options && options.staleReason || "catalog_quote_not_ready"),
+      availableAt,
+      now,
+      now,
+    ],
+  );
+  const inserted = deps.dbMetaChanges(result) > 0;
+  if (inserted || !Boolean(options && options.fastTrack)) {
+    return inserted;
+  }
+  // A stale product requested directly by the user must be promoted even if a
+  // low-priority batch job for the same product already exists. INSERT OR
+  // IGNORE alone would leave continent/world jobs stuck behind older rounds.
+  const promote = await deps.dbRun(
+    db,
+    `
+      UPDATE user_product_quote_jobs
+      SET
+        job_round = CASE WHEN job_round > ? THEN ? ELSE job_round END,
+        priority = CASE
+          WHEN job_round > ? OR priority > ? THEN ?
+          ELSE priority
+        END,
+        available_at = CASE WHEN available_at > ? THEN ? ELSE available_at END,
+        trigger_type = ?,
+        stale_reason = ?,
+        source_product_id = COALESCE(?, source_product_id),
+        trigger_purchase_id = COALESCE(?, trigger_purchase_id),
+        updated_at = ?
+      WHERE user_id = ?
+        AND product_id = ?
+        AND catalog_version = ?
+        AND pricing_version = ?
+        AND entitlement_version = ?
+        AND status = 'queued'
+    `,
+    [
+      jobRound,
+      jobRound,
+      jobRound,
+      priority,
+      priority,
+      availableAt,
+      availableAt,
+      String(options && options.triggerType || "product_requested"),
+      String(options && options.staleReason || "requested_quote_not_ready"),
+      String(options && options.sourceProductId || "") || null,
+      String(options && options.triggerPurchaseId || "") || null,
+      now,
+      safeUserId,
+      safeProductId,
+      REGION_PACK_CATALOG_VERSION,
+      String(pricingVersion || ""),
+      String(entitlementVersion || ""),
+    ],
+  );
+  return deps.dbMetaChanges(promote) > 0;
+}
+
+function quotePlanEntryForProduct(productId, jobRound, priority, relationType = "") {
+  const safeProductId = String(productId || "").trim().toLowerCase();
+  if (!safeProductId || !regionProductById(safeProductId)) {
+    return null;
+  }
+  return {
+    product_id: safeProductId,
+    job_round: Math.max(0, Number.parseInt(jobRound || 0, 10) || 0),
+    priority: Number.isFinite(Number(priority)) ? Math.max(0, Number.parseInt(priority, 10) || 0) : 70,
+    relation_type: String(relationType || "").trim().toLowerCase(),
+  };
+}
+
+function mergeQuotePlanEntry(plan, entry) {
+  if (!(plan instanceof Map) || !entry || !entry.product_id) {
+    return;
+  }
+  const current = plan.get(entry.product_id);
+  if (
+    !current
+    || entry.job_round < current.job_round
+    || (entry.job_round === current.job_round && entry.priority < current.priority)
+  ) {
+    plan.set(entry.product_id, entry);
+  }
+}
+
+function quoteJobRoundForOwnedRelation(targetProductId, relationType) {
+  const product = regionProductById(targetProductId);
+  const productType = String(product && product.type || "").trim().toLowerCase();
+  const type = String(relationType || "").trim().toLowerCase();
+  if (type === "parent_covers_target") {
+    return 1;
+  }
+  if (type === "owned_child_of_target") {
+    if (productType === "world") {
+      return 7;
+    }
+    if (productType === "continent") {
+      return 6;
+    }
+    return 4;
+  }
+  if (type === "overlap") {
+    return 5;
+  }
+  return 8;
+}
+
+function quoteJobPriorityForRound(jobRound, productId) {
+  const productType = String(regionProductById(productId) && regionProductById(productId).type || "").trim().toLowerCase();
+  const round = Math.max(0, Number.parseInt(jobRound || 0, 10) || 0);
+  if (round <= 0) {
+    return 0;
+  }
+  if (round === 1) {
+    return 10;
+  }
+  if (round === 2) {
+    return 20;
+  }
+  if (round === 4) {
+    return 40;
+  }
+  if (round === 5) {
+    return 50;
+  }
+  if (productType === "world") {
+    return 90;
+  }
+  if (productType === "continent") {
+    return 80;
+  }
+  return 70;
+}
+
+function quoteInvalidationPlanForRegionPackPurchase(sourceProductId) {
+  const safeSourceId = String(sourceProductId || "").trim().toLowerCase();
+  const plan = new Map();
+  if (!safeSourceId || !regionProductById(safeSourceId)) {
+    return plan;
+  }
+  mergeQuotePlanEntry(plan, quotePlanEntryForProduct(safeSourceId, 0, 0, "self"));
+  const relationRows = REGION_PACK_STATIC_RELATION_GRAPH_READY
+    && GENERATED_REGION_PACK_RELATIONS_BY_OWNED
+    && typeof GENERATED_REGION_PACK_RELATIONS_BY_OWNED === "object"
+    && Array.isArray(GENERATED_REGION_PACK_RELATIONS_BY_OWNED[safeSourceId])
+      ? GENERATED_REGION_PACK_RELATIONS_BY_OWNED[safeSourceId]
+      : [];
+  for (const row of relationRows) {
+    if (!Array.isArray(row)) {
+      continue;
+    }
+    const targetProductId = String(row[0] || "").trim().toLowerCase();
+    const relationType = String(row[1] || "").trim().toLowerCase();
+    if (!targetProductId || targetProductId === safeSourceId || !regionPackRelationHasOverlap({
+      relation_type: relationType,
+      overlap_tile_count: row[2],
+    })) {
+      continue;
+    }
+    const jobRound = quoteJobRoundForOwnedRelation(targetProductId, relationType);
+    mergeQuotePlanEntry(
+      plan,
+      quotePlanEntryForProduct(
+        targetProductId,
+        jobRound,
+        quoteJobPriorityForRound(jobRound, targetProductId),
+        relationType,
+      ),
+    );
+  }
+  return plan;
+}
+
+function quoteInvalidationPlanForAllProducts(reason = "entitlement_change") {
+  const plan = new Map();
+  for (const product of REGION_PRODUCTS) {
+    const productId = String(product && product.id || "").trim().toLowerCase();
+    if (!productId) {
+      continue;
+    }
+    const productType = String(product && product.type || "").trim().toLowerCase();
+    const jobRound = productType === "world"
+      ? 7
+      : productType === "continent"
+        ? 6
+        : productType === "macro_region"
+          ? 4
+          : 2;
+    mergeQuotePlanEntry(plan, quotePlanEntryForProduct(
+      productId,
+      jobRound,
+      quoteJobPriorityForRound(jobRound, productId),
+      reason,
+    ));
+  }
+  return plan;
+}
+
+async function productIdsAffectedByTileKeys(db, tileKeys, deps) {
+  const families = Array.from(new Set(normalizeTileKeys(tileKeys)
+    .map((tileKey) => tileFamilyKey(parseTileKey(tileKey)))
+    .filter(Boolean)));
+  if (!families.length) {
+    return [];
+  }
+  if (families.length > 250) {
+    return REGION_PRODUCTS.map((product) => String(product && product.id || "").trim().toLowerCase()).filter(Boolean);
+  }
+  await ensureRegionPackTileEntryTable(db, deps);
+  const productIds = new Set();
+  for (const chunk of fixedSizeChunks(families, SQL_VARIABLE_SAFE_CHUNK_SIZE)) {
+    const rows = await deps.dbAll(
+      db,
+      `
+        SELECT DISTINCT region_pack_id
+        FROM region_pack_tile_entries
+        WHERE catalog_version = ?
+          AND family_key IN (${chunk.map(() => "?").join(",")})
+      `,
+      [REGION_PACK_CATALOG_VERSION, ...chunk],
+    );
+    for (const row of rows || []) {
+      const productId = String(row && row.region_pack_id || "").trim().toLowerCase();
+      if (productId) {
+        productIds.add(productId);
+      }
+    }
+  }
+  return Array.from(productIds);
+}
+
+async function quoteInvalidationPlanForScenePurchase(db, tileKeys, deps) {
+  const productIds = await productIdsAffectedByTileKeys(db, tileKeys, deps);
+  const plan = new Map();
+  for (const productId of productIds) {
+    const product = regionProductById(productId);
+    const productType = String(product && product.type || "").trim().toLowerCase();
+    const jobRound = productType === "world"
+      ? 7
+      : productType === "continent"
+        ? 6
+        : productType === "macro_region"
+          ? 4
+          : 2;
+    mergeQuotePlanEntry(plan, quotePlanEntryForProduct(
+      productId,
+      jobRound,
+      quoteJobPriorityForRound(jobRound, productId),
+      "scene_tile_overlap",
+    ));
+  }
+  return plan;
+}
+
+async function markUserProductQuotesStale(db, userId, productIds, deps, reason, timestamp) {
+  const safeUserId = String(userId || "").trim();
+  const ids = Array.from(new Set((Array.isArray(productIds) ? productIds : [])
+    .map((id) => String(id || "").trim().toLowerCase())
+    .filter(Boolean)));
+  if (!safeUserId || !ids.length) {
+    return 0;
+  }
+  let changed = 0;
+  const now = String(timestamp || quoteIsoNow(deps));
+  for (const chunk of fixedSizeChunks(ids, SQL_VARIABLE_SAFE_CHUNK_SIZE)) {
+    const result = await deps.dbRun(
+      db,
+      `
+        UPDATE user_product_quotes
+        SET
+          status = 'stale',
+          map_state_status = CASE
+            WHEN COALESCE(map_state_status, '') = 'ready' THEN 'stale'
+            ELSE COALESCE(map_state_status, 'stale')
+          END,
+          stale_reason = ?,
+          error_code = NULL,
+          error_message = NULL,
+          updated_at = ?
+        WHERE user_id = ?
+          AND catalog_version = ?
+          AND product_id IN (${chunk.map(() => "?").join(",")})
+      `,
+      [String(reason || "entitlement_changed"), now, safeUserId, REGION_PACK_CATALOG_VERSION, ...chunk],
+    );
+    changed += Math.max(0, deps.dbMetaChanges(result) || 0);
+  }
+  return changed;
+}
+
+async function cancelSupersededUserProductQuoteJobs(db, userId, entitlementVersion, deps, timestamp) {
+  const safeUserId = String(userId || "").trim();
+  if (!safeUserId) {
+    return 0;
+  }
+  const now = String(timestamp || quoteIsoNow(deps));
+  const result = await deps.dbRun(
+    db,
+    `
+      UPDATE user_product_quote_jobs
+      SET status = 'cancelled',
+          last_error = 'Superseded by a newer purchase.',
+          updated_at = ?,
+          finished_at = ?
+      WHERE user_id = ?
+        AND catalog_version = ?
+        AND status = 'queued'
+        AND entitlement_version != ?
+    `,
+    [now, now, safeUserId, REGION_PACK_CATALOG_VERSION, String(entitlementVersion || "")],
+  );
+  return Math.max(0, deps.dbMetaChanges(result) || 0);
+}
+
+async function insertUserProductQuoteBatch(db, userId, pricingVersion, entitlementVersion, deps, options = {}) {
+  const safeUserId = String(userId || "").trim();
+  if (!safeUserId) {
+    return "";
+  }
+  const now = quoteIsoNow(deps);
+  const batchId = userProductQuoteBatchId();
+  await deps.dbRun(
+    db,
+    `
+      INSERT INTO user_product_quote_batches (
+        id, user_id, trigger_type, trigger_purchase_id, source_product_id,
+        pricing_version, entitlement_version, catalog_version, status,
+        max_round, queued_job_count, completed_job_count, failed_job_count,
+        created_at, updated_at, finished_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, 0, 0, 0, ?, ?, NULL)
+    `,
+    [
+      batchId,
+      safeUserId,
+      String(options && options.triggerType || "entitlement_changed"),
+      String(options && options.triggerPurchaseId || "") || null,
+      String(options && options.sourceProductId || "") || null,
+      String(pricingVersion || ""),
+      String(entitlementVersion || ""),
+      REGION_PACK_CATALOG_VERSION,
+      Math.max(0, Number.parseInt(options && options.maxRound || 0, 10) || 0),
+      now,
+      now,
+    ],
+  );
+  return batchId;
+}
+
+async function updateUserProductQuoteBatchCount(db, batchId, queuedJobCount, deps) {
+  const safeBatchId = String(batchId || "").trim();
+  if (!safeBatchId) {
+    return;
+  }
+  const count = Math.max(0, Number.parseInt(queuedJobCount || 0, 10) || 0);
+  const now = quoteIsoNow(deps);
+  await deps.dbRun(
+    db,
+    `
+      UPDATE user_product_quote_batches
+      SET queued_job_count = ?,
+          status = ?,
+          updated_at = ?,
+          finished_at = CASE WHEN ? = 0 THEN ? ELSE finished_at END
+      WHERE id = ?
+    `,
+    [count, count > 0 ? "queued" : "finished", now, count, now, safeBatchId],
+  );
+}
+
+async function enqueueUserProductQuotePlan(db, userId, plan, pricingVersion, entitlementVersion, deps, options = {}) {
+  const safeUserId = String(userId || "").trim();
+  const entries = Array.from((plan instanceof Map ? plan.values() : []))
+    .filter((entry) => entry && entry.product_id)
+    .sort((a, b) => (a.job_round - b.job_round) || (a.priority - b.priority) || a.product_id.localeCompare(b.product_id));
+  if (!safeUserId || !entries.length) {
+    return { queued_job_count: 0, affected_product_count: 0, batch_id: "" };
+  }
+  const maxRound = entries.reduce((max, entry) => Math.max(max, entry.job_round), 0);
+  const batchId = await insertUserProductQuoteBatch(db, safeUserId, pricingVersion, entitlementVersion, deps, {
+    ...options,
+    maxRound,
+  });
+  let queued = 0;
+  for (const entry of entries) {
+    const inserted = await enqueueUserProductQuoteJob(
+      db,
+      safeUserId,
+      entry.product_id,
+      pricingVersion,
+      entitlementVersion,
+      deps,
+      {
+        ...options,
+        batchId,
+        jobRound: entry.job_round,
+        priority: entry.priority,
+        staleReason: String(options && options.staleReason || "entitlement_changed"),
+      },
+    );
+    if (inserted) {
+      queued += 1;
+    }
+  }
+  await updateUserProductQuoteBatchCount(db, batchId, queued, deps);
+  return { queued_job_count: queued, affected_product_count: entries.length, batch_id: batchId };
+}
+
+async function invalidateAndQueueUserProductQuotes(db, userId, deps, options = {}) {
+  const safeUserId = String(userId || "").trim();
+  if (!safeUserId) {
+    return { queued_job_count: 0, affected_product_count: 0, stale_quote_count: 0 };
+  }
+  await deps.ensureCreditTables(db);
+  const account = await ensureFreshCreditAccountForUser(db, safeUserId, deps);
+  const pricingVersion = pricingSettingsCacheKey();
+  const entitlementVersion = accountEntitlementVersion(account);
+  const sourceProductId = String(options && options.sourceProductId || options && options.regionPackId || "").trim().toLowerCase();
+  const tileKeys = normalizeTileKeys(options && options.tileKeys || []);
+  const staleReason = String(options && options.staleReason || "entitlement_changed");
+  let plan = new Map();
+  if (sourceProductId) {
+    plan = quoteInvalidationPlanForRegionPackPurchase(sourceProductId);
+  } else if (tileKeys.length) {
+    plan = await quoteInvalidationPlanForScenePurchase(db, tileKeys, deps);
+  } else {
+    plan = quoteInvalidationPlanForAllProducts(staleReason);
+  }
+  const productIds = Array.from(plan.keys());
+  const staleQuoteCount = await markUserProductQuotesStale(db, safeUserId, productIds, deps, staleReason, quoteIsoNow(deps));
+  const cancelledJobCount = await cancelSupersededUserProductQuoteJobs(db, safeUserId, entitlementVersion, deps, quoteIsoNow(deps));
+  const result = await enqueueUserProductQuotePlan(db, safeUserId, plan, pricingVersion, entitlementVersion, deps, {
+    triggerType: String(options && options.triggerType || "entitlement_changed"),
+    triggerPurchaseId: String(options && options.triggerPurchaseId || "") || null,
+    sourceProductId: sourceProductId || null,
+    staleReason,
+  });
+  return {
+    ...result,
+    stale_quote_count: staleQuoteCount,
+    cancelled_job_count: cancelledJobCount,
+    pricing_version: pricingVersion,
+    entitlement_version: entitlementVersion,
+  };
+}
+
+async function acquireUserProductQuoteJobLock(db, deps, workerId) {
+  const now = quoteIsoNow(deps);
+  const expiresAt = addSecondsIsoFromDeps(deps, USER_PRODUCT_QUOTE_JOB_LOCK_TTL_SECONDS);
+  await deps.dbRun(
+    db,
+    `DELETE FROM user_product_quote_job_locks WHERE lock_name = ? AND expires_at <= ?`,
+    [USER_PRODUCT_QUOTE_JOB_LOCK_NAME, now],
+  );
+  const token = userProductQuoteJobId();
+  const result = await deps.dbRun(
+    db,
+    `
+      INSERT OR IGNORE INTO user_product_quote_job_locks (
+        lock_name, lock_token, worker_id, current_job_id, locked_at, expires_at, updated_at
+      ) VALUES (?, ?, ?, NULL, ?, ?, ?)
+    `,
+    [USER_PRODUCT_QUOTE_JOB_LOCK_NAME, token, workerId, now, expiresAt, now],
+  );
+  if (deps.dbMetaChanges(result) <= 0) {
+    return "";
+  }
+  return token;
+}
+
+async function releaseUserProductQuoteJobLock(db, deps, lockToken) {
+  const safeToken = String(lockToken || "").trim();
+  if (!safeToken) {
+    return;
+  }
+  await deps.dbRun(
+    db,
+    `DELETE FROM user_product_quote_job_locks WHERE lock_name = ? AND lock_token = ?`,
+    [USER_PRODUCT_QUOTE_JOB_LOCK_NAME, safeToken],
+  );
+}
+
+async function claimNextUserProductQuoteJob(db, deps, lockToken, workerId) {
+  const now = quoteIsoNow(deps);
+  const row = await deps.dbGet(
+    db,
+    `
+      SELECT *
+      FROM user_product_quote_jobs
+      WHERE status = 'queued'
+        AND catalog_version = ?
+        AND available_at <= ?
+      ORDER BY job_round ASC, priority ASC, available_at ASC, created_at ASC
+      LIMIT 1
+    `,
+    [REGION_PACK_CATALOG_VERSION, now],
+  );
+  if (!row || !row.id) {
+    return null;
+  }
+  const result = await deps.dbRun(
+    db,
+    `
+      UPDATE user_product_quote_jobs
+      SET
+        status = 'running',
+        attempts = COALESCE(attempts, 0) + 1,
+        locked_at = ?,
+        lock_token = ?,
+        worker_id = ?,
+        updated_at = ?
+      WHERE id = ?
+        AND status = 'queued'
+    `,
+    [now, lockToken, workerId, now, String(row.id || "")],
+  );
+  if (deps.dbMetaChanges(result) <= 0) {
+    return null;
+  }
+  await deps.dbRun(
+    db,
+    `
+      UPDATE user_product_quote_job_locks
+      SET current_job_id = ?,
+          updated_at = ?
+      WHERE lock_name = ?
+        AND lock_token = ?
+    `,
+    [String(row.id || ""), now, USER_PRODUCT_QUOTE_JOB_LOCK_NAME, lockToken],
+  );
+  return {
+    ...row,
+    attempts: Math.max(1, Number.parseInt(row.attempts || 0, 10) + 1 || 1),
+  };
+}
+
+async function refreshUserProductQuoteBatchStatus(db, batchId, deps) {
+  const safeBatchId = String(batchId || "").trim();
+  if (!safeBatchId) {
+    return null;
+  }
+  const row = await deps.dbGet(
+    db,
+    `
+      SELECT
+        COUNT(*) AS total_count,
+        SUM(CASE WHEN status IN ('queued', 'running') THEN 1 ELSE 0 END) AS active_count,
+        SUM(CASE WHEN status = 'finished' THEN 1 ELSE 0 END) AS completed_count,
+        SUM(CASE WHEN status IN ('failed', 'error') THEN 1 ELSE 0 END) AS failed_count
+      FROM user_product_quote_jobs
+      WHERE batch_id = ?
+    `,
+    [safeBatchId],
+  );
+  const active = Math.max(0, Number.parseInt(row && row.active_count || 0, 10) || 0);
+  const completed = Math.max(0, Number.parseInt(row && row.completed_count || 0, 10) || 0);
+  const failed = Math.max(0, Number.parseInt(row && row.failed_count || 0, 10) || 0);
+  const status = active > 0 ? "queued" : (failed > 0 ? "finished_with_errors" : "finished");
+  const now = quoteIsoNow(deps);
+  await deps.dbRun(
+    db,
+    `
+      UPDATE user_product_quote_batches
+      SET
+        completed_job_count = ?,
+        failed_job_count = ?,
+        status = ?,
+        updated_at = ?,
+        finished_at = CASE WHEN ? = 0 THEN COALESCE(finished_at, ?) ELSE finished_at END
+      WHERE id = ?
+    `,
+    [completed, failed, status, now, active, now, safeBatchId],
+  );
+  return { active_count: active, completed_count: completed, failed_count: failed, status };
+}
+
+async function storeUserProductQuoteFromQuote(db, quote, deps, options = {}) {
+  const productId = String(quote && (quote.subject_id || quote.region_pack_id) || "").trim().toLowerCase();
+  const userId = String(quote && quote.user_id || "").trim();
+  if (!quote || !userId || !productId) {
+    throw new Error("invalid_user_product_quote_payload");
+  }
+  const summary = regionPackQuoteSummary(quote);
+  const now = quoteIsoNow(deps);
+  const mapState = options && options.mapState && typeof options.mapState === "object"
+    ? options.mapState
+    : null;
+  const mapStateStatus = mapState ? "ready" : String(options && options.mapStateStatus || "stale");
+  const mapStateJson = mapState ? JSON.stringify({ map_state: mapState }) : null;
+  const mapStateUpdatedAt = mapState ? now : null;
+  await deps.dbRun(
+    db,
+    `
+      INSERT INTO user_product_quotes (
+        user_id, product_id, catalog_version, pricing_version, entitlement_version,
+        quote_id, status, currency, full_price_cents, already_licenced_cents,
+        partial_licence_credit_cents, discount_percent, discount_cents,
+        final_price_cents, total_tile_count, new_tile_count, charged_tile_count,
+        already_licenced_tile_count, partial_licence_tile_count, free_tile_count,
+        summary_json, map_state_status, map_state_json, map_state_updated_at,
+        stale_reason, error_code, error_message, requested_at, calculated_at,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'ready', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?)
+      ON CONFLICT(user_id, product_id, catalog_version) DO UPDATE SET
+        pricing_version = excluded.pricing_version,
+        entitlement_version = excluded.entitlement_version,
+        quote_id = excluded.quote_id,
+        status = 'ready',
+        currency = excluded.currency,
+        full_price_cents = excluded.full_price_cents,
+        already_licenced_cents = excluded.already_licenced_cents,
+        partial_licence_credit_cents = excluded.partial_licence_credit_cents,
+        discount_percent = excluded.discount_percent,
+        discount_cents = excluded.discount_cents,
+        final_price_cents = excluded.final_price_cents,
+        total_tile_count = excluded.total_tile_count,
+        new_tile_count = excluded.new_tile_count,
+        charged_tile_count = excluded.charged_tile_count,
+        already_licenced_tile_count = excluded.already_licenced_tile_count,
+        partial_licence_tile_count = excluded.partial_licence_tile_count,
+        free_tile_count = excluded.free_tile_count,
+        summary_json = excluded.summary_json,
+        map_state_status = CASE
+          WHEN excluded.map_state_status = 'ready' THEN excluded.map_state_status
+          WHEN user_product_quotes.pricing_version = excluded.pricing_version
+           AND user_product_quotes.entitlement_version = excluded.entitlement_version
+          THEN user_product_quotes.map_state_status
+          ELSE 'stale'
+        END,
+        map_state_json = CASE
+          WHEN excluded.map_state_status = 'ready' THEN excluded.map_state_json
+          WHEN user_product_quotes.pricing_version = excluded.pricing_version
+           AND user_product_quotes.entitlement_version = excluded.entitlement_version
+          THEN user_product_quotes.map_state_json
+          ELSE NULL
+        END,
+        map_state_updated_at = CASE
+          WHEN excluded.map_state_status = 'ready' THEN excluded.map_state_updated_at
+          WHEN user_product_quotes.pricing_version = excluded.pricing_version
+           AND user_product_quotes.entitlement_version = excluded.entitlement_version
+          THEN user_product_quotes.map_state_updated_at
+          ELSE NULL
+        END,
+        stale_reason = NULL,
+        error_code = NULL,
+        error_message = NULL,
+        requested_at = excluded.requested_at,
+        calculated_at = excluded.calculated_at,
+        updated_at = excluded.updated_at
+    `,
+    [
+      userId,
+      productId,
+      REGION_PACK_CATALOG_VERSION,
+      String(quote.pricing_version || ""),
+      String(quote.entitlement_version || ""),
+      String(quote.quote_id || ""),
+      String(quote.currency || "eur"),
+      integerCents(summary.full_price_cents),
+      integerCents(summary.already_licenced_deduction_cents),
+      integerCents(summary.partial_licence_credit_cents),
+      Math.max(0, Number.parseInt(summary.discount_percent || 0, 10) || 0),
+      integerCents(summary.discount_cents),
+      integerCents(summary.price_cents),
+      Math.max(0, Number.parseInt(summary.total_tiles || 0, 10) || 0),
+      Math.max(0, Number.parseInt(summary.new_tiles || 0, 10) || 0),
+      Math.max(0, Number.parseInt(summary.charged_tiles || 0, 10) || 0),
+      Math.max(0, Number.parseInt(summary.already_licenced_tiles || 0, 10) || 0),
+      Math.max(0, Number.parseInt(summary.partial_licence_tiles || 0, 10) || 0),
+      Math.max(0, Number.parseInt(summary.free_tiles || 0, 10) || 0),
+      JSON.stringify(summary),
+      mapStateStatus,
+      mapStateJson,
+      mapStateUpdatedAt,
+      now,
+      now,
+      now,
+      now,
+    ],
+  );
+  return summary;
+}
+
+async function finishUserProductQuoteJob(db, job, deps, status, message = "") {
+  const now = quoteIsoNow(deps);
+  await deps.dbRun(
+    db,
+    `
+      UPDATE user_product_quote_jobs
+      SET status = ?,
+          last_error = ?,
+          lock_token = NULL,
+          locked_at = NULL,
+          worker_id = NULL,
+          updated_at = ?,
+          finished_at = ?
+      WHERE id = ?
+    `,
+    [String(status || "finished"), String(message || "") || null, now, now, String(job && job.id || "")],
+  );
+  await refreshUserProductQuoteBatchStatus(db, job && job.batch_id, deps);
+}
+
+async function retryOrFailUserProductQuoteJob(db, job, deps, error) {
+  const attempts = Math.max(0, Number.parseInt(job && job.attempts || 0, 10) || 0);
+  const now = quoteIsoNow(deps);
+  const message = String(error && error.message || error || "quote_job_failed").slice(0, 500);
+  if (attempts < USER_PRODUCT_QUOTE_JOB_MAX_ATTEMPTS) {
+    const delaySeconds = Math.min(15 * attempts, 120);
+    await deps.dbRun(
+      db,
+      `
+        UPDATE user_product_quote_jobs
+        SET status = 'queued',
+            available_at = ?,
+            last_error = ?,
+            lock_token = NULL,
+            locked_at = NULL,
+            worker_id = NULL,
+            updated_at = ?
+        WHERE id = ?
+      `,
+      [addSecondsIsoFromDeps(deps, delaySeconds), message, now, String(job && job.id || "")],
+    );
+    await refreshUserProductQuoteBatchStatus(db, job && job.batch_id, deps);
+    return "requeued";
+  }
+  await deps.dbRun(
+    db,
+    `
+      INSERT INTO user_product_quotes (
+        user_id, product_id, catalog_version, pricing_version, entitlement_version,
+        quote_id, status, currency, stale_reason, error_code, error_message,
+        requested_at, calculated_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'error', 'eur', ?, 'quote_job_failed', ?, ?, ?, ?, ?)
+      ON CONFLICT(user_id, product_id, catalog_version) DO UPDATE SET
+        pricing_version = excluded.pricing_version,
+        entitlement_version = excluded.entitlement_version,
+        quote_id = excluded.quote_id,
+        status = 'error',
+        stale_reason = excluded.stale_reason,
+        error_code = excluded.error_code,
+        error_message = excluded.error_message,
+        requested_at = excluded.requested_at,
+        calculated_at = excluded.calculated_at,
+        updated_at = excluded.updated_at
+    `,
+    [
+      String(job && job.user_id || ""),
+      String(job && job.product_id || "").trim().toLowerCase(),
+      REGION_PACK_CATALOG_VERSION,
+      String(job && job.pricing_version || ""),
+      String(job && job.entitlement_version || ""),
+      `upq_error_${String(job && job.id || "").replace(/[^A-Za-z0-9]/g, "").slice(0, 40)}`,
+      String(job && job.stale_reason || "quote_job_failed"),
+      message,
+      now,
+      now,
+      now,
+      now,
+    ],
+  );
+  await finishUserProductQuoteJob(db, job, deps, "failed", message);
+  return "failed";
+}
+
+function userProductQuoteJobWantsMapState(job) {
+  const triggerType = String(job && job.trigger_type || "").trim().toLowerCase();
+  const staleReason = String(job && job.stale_reason || "").trim().toLowerCase();
+  return triggerType.includes("map_state") || staleReason.includes("map_state");
+}
+
+async function processSingleUserProductQuoteJob(db, job, deps) {
+  const userId = String(job && job.user_id || "").trim();
+  const productId = String(job && job.product_id || "").trim().toLowerCase();
+  const product = regionProductById(productId);
+  if (!userId || !product) {
+    await finishUserProductQuoteJob(db, job, deps, "cancelled", "Product is no longer available.");
+    return { status: "cancelled", reason: "invalid_product" };
+  }
+  const account = await ensureFreshCreditAccountForUser(db, userId, deps);
+  const pricingVersion = pricingSettingsCacheKey();
+  const entitlementVersion = accountEntitlementVersion(account);
+  if (
+    String(job.pricing_version || "") !== pricingVersion
+    || String(job.entitlement_version || "") !== entitlementVersion
+    || String(job.catalog_version || "") !== REGION_PACK_CATALOG_VERSION
+  ) {
+    await finishUserProductQuoteJob(db, job, deps, "cancelled", "Superseded by newer pricing or entitlement version.");
+    return { status: "cancelled", reason: "superseded" };
+  }
+  const quote = await createRegionPackQuote(db, userId, product, deps, { account });
+  if (!quote || quote.error) {
+    const message = quote && (quote.error || quote.status) || "quote_creation_failed";
+    throw new Error(String(message));
+  }
+  // Quote payloads are always written first. Map-state payloads are secondary
+  // and only built for explicit map-state jobs, usually fast-tracked by a
+  // product page the user is actively viewing.
+  const summary = await storeUserProductQuoteFromQuote(db, quote, deps);
+  if (userProductQuoteJobWantsMapState(job)) {
+    const mapState = await buildUserProductMapState(db, product, quote, account, deps, { userId });
+    await storeUserProductQuoteFromQuote(db, quote, deps, { mapState });
+  }
+  await finishUserProductQuoteJob(db, job, deps, "finished");
+  return {
+    status: "finished",
+    product_id: productId,
+    quote_id: String(quote.quote_id || ""),
+    final_price_cents: integerCents(summary && summary.price_cents),
+  };
+}
+
+export async function processUserProductQuoteJobs(db, env = {}, deps = {}, options = {}) {
+  if (!db || !deps || typeof deps.dbRun !== "function") {
+    return { ok: false, error: "quote_job_db_unavailable" };
+  }
+  await deps.ensureCreditTables(db);
+  if (!Boolean(options && options.skipPricingSettingsLoad)) {
+    await ensureRuntimePricingSettings(env, deps);
+  }
+  const maxJobs = Math.max(1, Math.min(3, Number.parseInt(options && options.maxJobs || USER_PRODUCT_QUOTE_JOB_DEFAULT_MAX_JOBS, 10) || USER_PRODUCT_QUOTE_JOB_DEFAULT_MAX_JOBS));
+  const maxMs = Math.max(500, Math.min(5000, Number.parseInt(options && options.maxMs || USER_PRODUCT_QUOTE_JOB_DEFAULT_MAX_MS, 10) || USER_PRODUCT_QUOTE_JOB_DEFAULT_MAX_MS));
+  const workerId = userProductQuoteWorkerId(deps);
+  const lockToken = await acquireUserProductQuoteJobLock(db, deps, workerId);
+  if (!lockToken) {
+    return { ok: true, lock_acquired: false, processed: 0, message: "quote_job_processor_already_running" };
+  }
+  const startedMs = monotonicNowMs();
+  const results = [];
+  let processed = 0;
+  let requeued = 0;
+  let failed = 0;
+  let cancelled = 0;
+  try {
+    while (processed < maxJobs && (monotonicNowMs() - startedMs) < maxMs) {
+      const job = await claimNextUserProductQuoteJob(db, deps, lockToken, workerId);
+      if (!job) {
+        break;
+      }
+      try {
+        const result = await processSingleUserProductQuoteJob(db, job, deps);
+        results.push(result);
+        if (result && result.status === "cancelled") {
+          cancelled += 1;
+        } else {
+          processed += 1;
+        }
+      } catch (error) {
+        const retryStatus = await retryOrFailUserProductQuoteJob(db, job, deps, error);
+        if (retryStatus === "requeued") {
+          requeued += 1;
+        } else {
+          failed += 1;
+        }
+        results.push({
+          status: retryStatus,
+          product_id: String(job && job.product_id || ""),
+          error: String(error && error.message || error || "quote_job_failed"),
+        });
+      }
+    }
+  } finally {
+    await releaseUserProductQuoteJobLock(db, deps, lockToken);
+  }
+  return {
+    ok: true,
+    lock_acquired: true,
+    processed,
+    requeued,
+    failed,
+    cancelled,
+    max_jobs: maxJobs,
+    max_ms: maxMs,
+    elapsed_ms: Math.round(monotonicNowMs() - startedMs),
+    results,
+  };
+}
+
+async function loadUserProductQuoteRows(db, userId, productIds, deps, options = {}) {
+  const ids = Array.from(new Set((Array.isArray(productIds) ? productIds : [])
+    .map((id) => String(id || "").trim().toLowerCase())
+    .filter(Boolean)));
+  if (!ids.length) {
+    return new Map();
+  }
+  const includeMapState = Boolean(options && options.includeMapState);
+  const placeholders = ids.map(() => "?").join(", ");
+  const rows = await deps.dbAll(
+    db,
+    `
+      SELECT user_id, product_id, catalog_version, pricing_version, entitlement_version,
+             quote_id, status, currency, full_price_cents, already_licenced_cents,
+             partial_licence_credit_cents, discount_percent, discount_cents,
+             final_price_cents, total_tile_count, new_tile_count, charged_tile_count,
+             already_licenced_tile_count, partial_licence_tile_count, free_tile_count,
+             summary_json, map_state_status,
+             ${includeMapState ? "map_state_json," : ""}
+             map_state_updated_at,
+             stale_reason, error_code, error_message,
+             requested_at, calculated_at, created_at, updated_at
+      FROM user_product_quotes
+      WHERE user_id = ?
+        AND catalog_version = ?
+        AND product_id IN (${placeholders})
+    `,
+    [String(userId || "").trim(), REGION_PACK_CATALOG_VERSION, ...ids],
+  );
+  const result = new Map();
+  for (const row of rows || []) {
+    const productId = String(row && row.product_id || "").trim().toLowerCase();
+    if (productId) {
+      result.set(productId, row);
+    }
+  }
+  return result;
+}
+
+function userProductQuoteSummaryFromRow(row) {
+  if (!row || typeof row !== "object") {
+    return null;
+  }
+  const fullPriceCents = integerCents(row.full_price_cents);
+  const alreadyLicencedCents = integerCents(row.already_licenced_cents);
+  const partialLicenceCreditCents = integerCents(row.partial_licence_credit_cents);
+  const discountCents = integerCents(row.discount_cents);
+  const finalPriceCents = integerCents(row.final_price_cents);
+  return {
+    new_tiles: Math.max(0, Number.parseInt(row.new_tile_count || 0, 10) || 0),
+    charged_tiles: Math.max(0, Number.parseInt(row.charged_tile_count || 0, 10) || 0),
+    total_tiles: Math.max(0, Number.parseInt(row.total_tile_count || 0, 10) || 0),
+    already_licenced_tiles: Math.max(0, Number.parseInt(row.already_licenced_tile_count || 0, 10) || 0),
+    partial_licence_tiles: Math.max(0, Number.parseInt(row.partial_licence_tile_count || 0, 10) || 0),
+    free_tiles: Math.max(0, Number.parseInt(row.free_tile_count || 0, 10) || 0),
+    full_price_eur: centsToEur(fullPriceCents),
+    full_price_cents: fullPriceCents,
+    already_licenced_deduction_eur: centsToEur(alreadyLicencedCents),
+    already_licenced_deduction_cents: alreadyLicencedCents,
+    already_licenced_saving_eur: centsToEur(alreadyLicencedCents),
+    partial_licence_credit_eur: centsToEur(partialLicenceCreditCents),
+    partial_licence_credit_cents: partialLicenceCreditCents,
+    discount_percent: Math.max(0, Number.parseInt(row.discount_percent || 0, 10) || 0),
+    discount_eur: centsToEur(discountCents),
+    discount_cents: discountCents,
+    price_eur: centsToEur(finalPriceCents),
+    price_cents: finalPriceCents,
+  };
+}
+
+function userProductQuoteFromRow(row) {
+  const summary = userProductQuoteSummaryFromRow(row);
+  if (!summary) {
+    return null;
+  }
+  return {
+    quote_id: String(row && row.quote_id || ""),
+    quote_type: "region_pack",
+    user_id: String(row && row.user_id || ""),
+    subject_id: String(row && row.product_id || ""),
+    pricing_version: String(row && row.pricing_version || ""),
+    entitlement_version: String(row && row.entitlement_version || ""),
+    catalog_version: String(row && row.catalog_version || REGION_PACK_CATALOG_VERSION),
+    amount_cents: integerCents(row && row.final_price_cents),
+    currency: String(row && row.currency || "eur"),
+    summary,
+  };
+}
+
+async function materializedRegionPackQuoteResults(db, userId, products, account, deps, options = {}) {
+  const safeUserId = String(userId || "").trim();
+  const productList = Array.isArray(products) ? products.filter(Boolean) : [];
+  const result = new Map();
+  if (!safeUserId || !productList.length) {
+    return result;
+  }
+  const productIds = productList
+    .map((product) => normalizedRegionPackProductId(product))
+    .filter(Boolean);
+  const pricingVersion = String(options && options.pricingVersion || pricingSettingsCacheKey());
+  const entitlementVersion = String(options && options.entitlementVersion || accountEntitlementVersion(account));
+  const quoteRows = await loadUserProductQuoteRows(
+    db,
+    safeUserId,
+    productIds,
+    deps,
+    { includeMapState: Boolean(options && options.includeMapState) },
+  );
+  for (const product of productList) {
+    const productId = normalizedRegionPackProductId(product);
+    if (!productId) {
+      continue;
+    }
+    const row = quoteRows.get(productId) || null;
+    const status = productQuoteStatus(row, pricingVersion, entitlementVersion);
+    const quote = status === "ready" ? userProductQuoteFromRow(row) : null;
+    if (!quote) {
+      await enqueueUserProductQuoteJob(db, safeUserId, productId, pricingVersion, entitlementVersion, deps, {
+        jobRound: options && Object.prototype.hasOwnProperty.call(options, "jobRound") ? options.jobRound : 0,
+        priority: options && Object.prototype.hasOwnProperty.call(options, "priority") ? options.priority : 30,
+        triggerType: String(options && options.triggerType || "public_quote_requested"),
+        staleReason: String(options && options.staleReason || `quote_${status || "missing"}`),
+        fastTrack: Boolean(options && options.fastTrack),
+        sourceProductId: String(options && options.sourceProductId || "") || null,
+        triggerPurchaseId: String(options && options.triggerPurchaseId || "") || null,
+      });
+    } else if (Boolean(options && options.includeMapState)) {
+      const mapState = parseUserProductMapState(row);
+      const mapStateStatus = String(row && row.map_state_status || (mapState ? "ready" : "not_requested")).trim().toLowerCase() || "not_requested";
+      if (!mapState || mapStateStatus !== "ready") {
+        const baseTrigger = String(options && options.triggerType || "public_quote_requested").trim() || "public_quote_requested";
+        await enqueueUserProductQuoteJob(db, safeUserId, productId, pricingVersion, entitlementVersion, deps, {
+          jobRound: options && Object.prototype.hasOwnProperty.call(options, "jobRound") ? options.jobRound : 0,
+          priority: Boolean(options && options.fastTrack)
+            ? 0
+            : Math.max(80, Number.parseInt(options && options.priority || 80, 10) || 80),
+          triggerType: `${baseTrigger}_map_state_requested`,
+          staleReason: `map_state_${mapStateStatus || "missing"}`,
+          fastTrack: Boolean(options && options.fastTrack),
+          sourceProductId: String(options && options.sourceProductId || "") || null,
+          triggerPurchaseId: String(options && options.triggerPurchaseId || "") || null,
+        });
+      }
+    }
+    result.set(productId, {
+      product,
+      quote,
+      quoteRow: row,
+      quoteStatus: status,
+      pricePending: !quote,
+      pricingVersion,
+      entitlementVersion,
+    });
+  }
+  return result;
+}
+
+async function materializedRegionPackQuoteResult(db, userId, product, account, deps, options = {}) {
+  const productId = normalizedRegionPackProductId(product);
+  if (!productId) {
+    return {
+      product,
+      quote: null,
+      quoteRow: null,
+      quoteStatus: "missing",
+      pricePending: true,
+      requestedQuoteMismatch: false,
+    };
+  }
+  const results = await materializedRegionPackQuoteResults(db, userId, [product], account, deps, options);
+  const entry = results.get(productId) || {
+    product,
+    quote: null,
+    quoteRow: null,
+    quoteStatus: "missing",
+    pricePending: true,
+    pricingVersion: pricingSettingsCacheKey(),
+    entitlementVersion: accountEntitlementVersion(account),
+  };
+  const requestedQuoteId = String(options && options.quoteId || "").trim();
+  const actualQuoteId = String(entry.quote && entry.quote.quote_id || "").trim();
+  return {
+    ...entry,
+    requestedQuoteMismatch: Boolean(requestedQuoteId && actualQuoteId && requestedQuoteId !== actualQuoteId),
+  };
+}
+
+function parseUserProductMapState(row) {
+  if (!row || typeof row !== "object") {
+    return null;
+  }
+  if (String(row.map_state_status || "").trim().toLowerCase() !== "ready") {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(String(row.map_state_json || "{}"));
+    const mapState = parsed && parsed.map_state && typeof parsed.map_state === "object"
+      ? parsed.map_state
+      : parsed;
+    return mapState && typeof mapState === "object" ? mapState : null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function mapStateOwnedDLevelsByFamily(tileKeys = []) {
+  const result = new Map();
+  for (const key of normalizeTileKeys(tileKeys)) {
+    const parsed = parseTileKey(key);
+    const family = tileFamilyKey(parsed);
+    if (!parsed || !family) {
+      continue;
+    }
+    if (!result.has(family)) {
+      result.set(family, []);
+    }
+    result.get(family).push(Number(parsed.d));
+  }
+  for (const levels of result.values()) {
+    levels.sort((a, b) => a - b);
+  }
+  return result;
+}
+
+function mapStateSceneCreditForCoarserTile(sceneOwnedByFamily, family, targetD) {
+  const source = sceneOwnedByFamily instanceof Map ? sceneOwnedByFamily.get(family) : [];
+  if (!Array.isArray(source) || !source.length) {
+    return 0;
+  }
+  let creditCents = 0;
+  for (const entry of source) {
+    const ownedD = Number(entry && entry.d);
+    if (Number.isFinite(ownedD) && ownedD > Number(targetD)) {
+      creditCents = Math.max(creditCents, integerCents(entry && entry.value_cents));
+    }
+  }
+  return creditCents;
+}
+
+function allocateFinalMapTilePrices(mapTiles, targetFinalCents) {
+  const rows = (Array.isArray(mapTiles) ? mapTiles : [])
+    .map((tile, index) => ({
+      tile,
+      index,
+      base: Math.max(0, integerCents(tile && tile.pre_discount_cents)),
+    }))
+    .filter((entry) => entry.base > 0);
+  const totalBase = rows.reduce((total, entry) => total + entry.base, 0);
+  const target = Math.max(0, Math.min(totalBase, integerCents(targetFinalCents)));
+  if (!rows.length || totalBase <= 0 || target <= 0) {
+    for (const tile of mapTiles || []) {
+      tile.final_price_cents = 0;
+      tile.price_cents = 0;
+      tile.price_eur = 0;
+      tile.discount_cents = Math.max(0, integerCents(tile && tile.pre_discount_cents));
+      tile.discount_eur = centsToEur(tile.discount_cents);
+    }
+    return;
+  }
+  let allocated = 0;
+  const priced = rows.map((entry) => {
+    const raw = (entry.base * target) / totalBase;
+    const floor = Math.floor(raw);
+    allocated += floor;
+    return {
+      ...entry,
+      cents: floor,
+      remainder: raw - floor,
+    };
+  }).sort((a, b) => {
+    if (b.remainder !== a.remainder) {
+      return b.remainder - a.remainder;
+    }
+    return a.index - b.index;
+  });
+  let remaining = Math.max(0, target - allocated);
+  for (const entry of priced) {
+    if (remaining <= 0) {
+      break;
+    }
+    entry.cents += 1;
+    remaining -= 1;
+  }
+  for (const entry of priced) {
+    entry.tile.final_price_cents = Math.max(0, entry.cents);
+    entry.tile.price_cents = entry.tile.final_price_cents;
+    entry.tile.price_eur = centsToEur(entry.tile.final_price_cents);
+    entry.tile.discount_cents = Math.max(0, entry.base - entry.tile.final_price_cents);
+    entry.tile.discount_eur = centsToEur(entry.tile.discount_cents);
+  }
+  for (const tile of mapTiles || []) {
+    if (integerCents(tile && tile.pre_discount_cents) > 0) {
+      continue;
+    }
+    tile.final_price_cents = 0;
+    tile.price_cents = 0;
+    tile.price_eur = 0;
+    tile.discount_cents = 0;
+    tile.discount_eur = 0;
+  }
+}
+
+function compactUserProductMapTile(tile) {
+  return [
+    String(tile && tile.tile_key || ""),
+    String(tile && tile.status || "new"),
+    integerCents(tile && tile.full_price_cents),
+    integerCents(tile && tile.final_price_cents),
+    integerCents(tile && tile.partial_licence_credit_cents),
+    integerCents(tile && tile.already_licenced_cents),
+    integerCents(tile && tile.discount_cents),
+  ];
+}
+
+async function buildUserProductMapState(db, product, quote, account, deps, options = {}) {
+  const productId = normalizedRegionPackProductId(product);
+  const userId = String(quote && quote.user_id || account && account.user_id || options && options.userId || "").trim();
+  if (!db || !productId || !product || !quote || !quote.summary) {
+    throw new Error("invalid_user_product_map_state_context");
+  }
+  const rows = await regionPackAllTileRowsForProduct(db, product, deps);
+  const ownershipContext = await regionPackPricingOwnershipContext(db, userId, account, deps, options);
+  const purchasedSet = ownershipContext && ownershipContext.purchasedPackIdSet instanceof Set
+    ? ownershipContext.purchasedPackIdSet
+    : new Set();
+  const targetFullyCovered = Boolean(
+    ownershipContext && ownershipContext.world_full_quality_unlocked
+    || purchasedSet.has(productId)
+    || (await relevantPurchasedPackRelations(db, product, ownershipContext && ownershipContext.purchasedPackIds || [], deps))
+      .some(regionPackRelationCoversTarget),
+  );
+  const ownedTileKeys = targetFullyCovered
+    ? rows.map((row) => row && row.tile_key || row && row.key || "").filter(Boolean)
+    : await ownedTileKeysForRegionPackMap(db, product, ownershipContext, deps);
+  const ownedDByFamily = mapStateOwnedDLevelsByFamily(ownedTileKeys);
+  const sceneOwnedByFamily = ownershipContext && ownershipContext.sceneOwnedByFamily instanceof Map
+    ? ownershipContext.sceneOwnedByFamily
+    : new Map();
+  const mapTiles = [];
+  for (const row of rows) {
+    const parsed = row && row.parsed || parseTileKey(row && (row.tile_key || row.key) || "");
+    const key = normalizeTileKey(row && (row.tile_key || row.key) || "");
+    const family = String(row && row.family || tileFamilyKey(parsed) || "");
+    if (!key || !parsed || !family) {
+      continue;
+    }
+    const fullCents = Math.max(0, integerCents(row && row.gross_cents));
+    const globallyFree = Boolean(row && row.globally_free) || fullCents <= 0;
+    const ownedDLevels = ownedDByFamily.get(family) || [];
+    const licencedByExisting = targetFullyCovered
+      || ownedDLevels.some((ownedD) => Number(ownedD) <= Number(parsed.d));
+    const partialCreditCents = licencedByExisting || globallyFree
+      ? 0
+      : Math.min(fullCents, mapStateSceneCreditForCoarserTile(sceneOwnedByFamily, family, parsed.d));
+    let status = "new";
+    if (licencedByExisting) {
+      status = "licenced";
+    } else if (globallyFree) {
+      status = "free";
+    } else if (partialCreditCents > 0) {
+      status = "partial";
+    }
+    const alreadyLicencedCents = status === "licenced" ? fullCents : 0;
+    const preDiscountCents = status === "new"
+      ? fullCents
+      : status === "partial"
+        ? Math.max(0, fullCents - partialCreditCents)
+        : 0;
+    mapTiles.push({
+      tile_key: key,
+      x: parsed.x,
+      y: parsed.y,
+      z: parsed.z,
+      d: parsed.d,
+      lon_min: parsed.x - 180,
+      lon_max: parsed.x - 180 + parsed.z,
+      lat_min: parsed.y - 90,
+      lat_max: parsed.y - 90 + parsed.z,
+      status,
+      full_price_cents: fullCents,
+      full_price_eur: centsToEur(fullCents),
+      gross_cents: fullCents,
+      gross_eur: centsToEur(fullCents),
+      already_licenced_cents: alreadyLicencedCents,
+      already_licenced_eur: centsToEur(alreadyLicencedCents),
+      partial_licence_credit_cents: partialCreditCents,
+      partial_licence_credit_eur: centsToEur(partialCreditCents),
+      pre_discount_cents: preDiscountCents,
+      pre_discount_eur: centsToEur(preDiscountCents),
+      discount_percent: Math.max(0, Number.parseInt(quote.summary.discount_percent || 0, 10) || 0),
+      globally_free: globallyFree,
+    });
+  }
+  allocateFinalMapTilePrices(mapTiles, quote.summary.price_cents);
+  const levels = Array.from(new Set(mapTiles.map((row) => Number(row.z)).filter(Number.isFinite)))
+    .sort((a, b) => a - b);
+  const detail = GENERATED_REGION_PACK_DETAILS[String(product && product.id || "")] || {};
+  return {
+    schema: 2,
+    compact_tile_statuses: true,
+    generated_at: quoteIsoNow(deps),
+    catalog_version: REGION_PACK_CATALOG_VERSION,
+    pricing_version: String(quote.pricing_version || ""),
+    entitlement_version: String(quote.entitlement_version || ""),
+    quote_id: String(quote.quote_id || ""),
+    region_pack: regionProductPublicPayload(product),
+    bounds: regionMapBounds(product, detail, mapTiles),
+    outlines: regionProductOutlinesForMap(product),
+    included_countries: regionProductIncludedCountries(product),
+    levels,
+    tile_statuses: mapTiles.map(compactUserProductMapTile),
   };
 }
 
@@ -5133,20 +6549,32 @@ async function buildRegionPackCatalogPageData(db, userId, token, deps, options =
   const limit = Math.max(1, Math.min(REGION_PACK_CATALOG_PAGE_MAX_LIMIT, Number.parseInt(options && options.limit || 1, 10) || 1));
   const account = await ensureFreshCreditAccountForUser(db, userId, deps);
   const pageProducts = products.slice(offset, offset + limit);
-  const pricingOwnershipContext = await regionPackPricingOwnershipContext(db, userId, account, deps);
+  const pricingVersion = pricingSettingsCacheKey();
+  const entitlementVersion = accountEntitlementVersion(account);
+  const productIds = pageProducts.map((product) => String(product && product.id || "").trim().toLowerCase()).filter(Boolean);
+  const quoteRows = await loadUserProductQuoteRows(db, userId, productIds, deps);
   const rows = [];
+  let queuedQuoteJobs = 0;
+  let readyQuoteRows = 0;
+  // Catalog requests must stay read-only for pricing. Missing/stale prices are
+  // queued for the quote worker instead of calculated inside this request.
   for (const product of pageProducts) {
-    const quote = await createRegionPackQuote(db, userId, product, deps, {
-      account,
-      pricingOwnershipContext,
-    });
-    if (!quote || quote.error) {
-      continue;
+    const productId = String(product && product.id || "").trim().toLowerCase();
+    const quoteRow = quoteRows.get(productId) || null;
+    const status = productQuoteStatus(quoteRow, pricingVersion, entitlementVersion);
+    if (status !== "ready") {
+      const queued = await enqueueUserProductQuoteJob(db, userId, productId, pricingVersion, entitlementVersion, deps, {
+        staleReason: status === "missing" ? "catalog_quote_missing" : `catalog_quote_${status}`,
+        priority: 70,
+        triggerType: "catalog_view",
+      });
+      if (queued) {
+        queuedQuoteJobs += 1;
+      }
+    } else {
+      readyQuoteRows += 1;
     }
-    const row = regionPackCatalogRow(product, quote);
-    if (row) {
-      rows.push(row);
-    }
+    rows.push(regionPackCatalogQuoteRow(product, quoteRow, status));
   }
   return {
     ok: true,
@@ -5158,8 +6586,9 @@ async function buildRegionPackCatalogPageData(db, userId, token, deps, options =
     next_offset: offset + pageProducts.length < total ? offset + pageProducts.length : null,
     rows,
     quote_pricing: true,
-    ownership_pack_count: Array.isArray(pricingOwnershipContext && pricingOwnershipContext.purchasedPackIds) ? pricingOwnershipContext.purchasedPackIds.length : 0,
-    ownership_scene_tile_count: Array.isArray(pricingOwnershipContext && pricingOwnershipContext.sceneTileRows) ? pricingOwnershipContext.sceneTileRows.length : 0,
+    quote_rows_read_only: true,
+    ready_quote_rows: readyQuoteRows,
+    queued_quote_jobs: queuedQuoteJobs,
   };
 }
 
@@ -5702,14 +7131,14 @@ const fmt=(v)=>"€"+Number(v||0).toFixed(2);
 const token=encodeURIComponent(DATA.token||"");
   let ROWS=[];let loading=false;let loadedAll=false;let nextOffset=0;const FIRST_LIMIT=5;const NEXT_LIMIT=20;
 function escapeCell(value){return String(value||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}
-	function rowHtml(row){const id=encodeURIComponent(row.id||"");const quote=encodeURIComponent(row.quote_id||"");const quoteParam=quote?"&quote_id="+quote:"";const partialCount=Number(row.partial_licence_tiles??row.partial_licence_tile_count??0);const partial=Number(row.partial_licence_credit_eur||0);const licenced=Number(row.already_licenced_tiles||0)+partialCount;const saving=Number(row.already_licenced_deduction_eur??row.already_licenced_saving_eur??0)+partial;const newTiles=Math.max(0,Number(row.new_tiles||0)-partialCount);const mapLink=" <a class=\\"button secondary\\" href=\\"/credits/region-pack-map?token="+token+"&region_pack_id="+id+"&catalog=1"+quoteParam+"\\">Map</a>";return "<tr>"
+	function rowHtml(row){const id=encodeURIComponent(row.id||"");const quote=encodeURIComponent(row.quote_id||"");const ready=String(row.quote_status||"ready")==="ready"&&!row.price_pending&&quote;const quoteParam=quote?"&quote_id="+quote:"";const partialCount=Number(row.partial_licence_tiles??row.partial_licence_tile_count??0);const partial=Number(row.partial_licence_credit_eur||0);const licenced=Number(row.already_licenced_tiles||0)+partialCount;const saving=Number(row.already_licenced_deduction_eur??row.already_licenced_saving_eur??0)+partial;const newTiles=Math.max(0,Number(row.new_tiles||0)-partialCount);const pending="<span class=\\"pending\\">"+escapeCell(row.status_label||"Price updating")+"</span>";const mapLink=ready?" <a class=\\"button secondary\\" href=\\"/credits/region-pack-map?token="+token+"&region_pack_id="+id+"&catalog=1"+quoteParam+"\\">Map</a>":" <span class=\\"button secondary disabled\\">Map</span>";return "<tr>"
 +"<td><b>"+escapeCell(row.name||"Data Pack")+"</b><div class=\\"muted small\\">"+escapeCell(row.group_label||"")+"</div></td>"
-+"<td>"+newTiles+" / "+Number(row.total_tiles||0)+"</td>"
-+"<td>"+fmt(row.full_price_eur)+"</td>"
-+"<td>"+(saving>0?licenced+" tiles <span class=\\"saving\\">(-"+fmt(saving)+")</span>":"")+"</td>"
-+"<td>"+(Number(row.discount_eur||0)>0?Number(row.discount_percent||0)+"% <span class=\\"saving\\">(-"+fmt(row.discount_eur)+")</span>":"")+"</td>"
-+"<td class=\\"price\\">"+fmt(row.price_eur)+"</td>"
-	+"<td><a class=\\"button\\" href=\\"/credits/region-pack-checkout?token="+token+"&region_pack_id="+id+"&catalog=1"+quoteParam+"\\">Buy</a>"+mapLink+"</td>"
++"<td>"+(ready?newTiles+" / "+Number(row.total_tiles||0):pending)+"</td>"
++"<td>"+(ready?fmt(row.full_price_eur):pending)+"</td>"
++"<td>"+(ready&&saving>0?licenced+" tiles <span class=\\"saving\\">(-"+fmt(saving)+")</span>":"")+"</td>"
++"<td>"+(ready&&Number(row.discount_eur||0)>0?Number(row.discount_percent||0)+"% <span class=\\"saving\\">(-"+fmt(row.discount_eur)+")</span>":"")+"</td>"
++"<td class=\\"price\\">"+(ready?fmt(row.price_eur):pending)+"</td>"
+	+"<td>"+(ready?"<a class=\\"button\\" href=\\"/credits/region-pack-checkout?token="+token+"&region_pack_id="+id+"&catalog=1"+quoteParam+"\\">Buy</a>":"<span class=\\"button disabled\\">Buy</span>")+mapLink+"</td>"
 +"</tr>"}
 function groupRows(rows){const groups=[];const byKey=new Map();for(const row of rows){const key=String(row.group_key||"other");if(!byKey.has(key)){byKey.set(key,{key,label:String(row.group_label||key),rows:[]});groups.push(byKey.get(key));}byKey.get(key).rows.push(row)}return groups}
 function render(){const filter=String(document.getElementById("filter").value||"").trim().toLowerCase();let shown=0;const total=Number(DATA.total_packs||ROWS.length||0);const rows=ROWS.filter(row=>!filter||String(row.name||"").toLowerCase().includes(filter)||String(row.group_label||"").toLowerCase().includes(filter)||String(row.id||"").toLowerCase().includes(filter));let html=groupRows(rows).map(group=>{const groupRows=group.rows||[];if(!groupRows.length)return "";shown+=groupRows.length;return "<h2>"+escapeCell(group.label)+"</h2><table><thead><tr><th>Data Pack</th><th>New Tiles / Total Tiles</th><th>Full Price</th><th>Already Licenced</th><th>Volume Discount</th><th>Final Price</th><th>Actions</th></tr></thead><tbody>"+groupRows.map(rowHtml).join("")+"</tbody></table>"}).join("");if(!html){html="<div class=\\"empty\\">"+(loading?"Loading data packs...":(!loadedAll?"No loaded data packs match this search yet. More data packs are still loading.":"No data packs match this search."))+"</div>"}const loadingHtml=!loadedAll?"<div class=\\"loading-more\\"><span class=\\"spinner\\"></span><span>"+(loading?"Loading more data packs...":"More data packs are loading automatically.")+" "+ROWS.length+"/"+total+" loaded</span></div>":"";document.getElementById("catalog").innerHTML=loadingHtml+html;document.getElementById("count").textContent=shown+" shown · "+ROWS.length+"/"+total+" loaded"+(!loadedAll?" · loading...":"");}
@@ -6568,6 +7997,15 @@ export async function unlockTilesForSession(db, userId, qualityMode, tileKeys, r
     };
   }
 
+  if (insertedTiles.length > 0) {
+    await invalidateAndQueueUserProductQuotes(db, safeUserId, deps, {
+      tileKeys: insertedTiles.map((tile) => tile && tile.tile_key || "").filter(Boolean),
+      triggerType: freeSmallScene ? "scene_small_free" : "scene_unlock",
+      triggerPurchaseId: String(resolveId || ""),
+      staleReason: freeSmallScene ? "scene_small_free_entitlement" : "scene_entitlement_changed",
+    });
+  }
+
   const estimatedPaidCount = Math.max(0, Number.parseInt(estimate.paid_tile_count || 0, 10) || 0);
   const estimatedFreeCount = Math.max(0, Number.parseInt(estimate.free_tile_count || 0, 10) || 0);
   const insertedPaidCount = insertedTiles.filter((tile) => normalizeCreditAmount(tile && tile.credits) > 0).length;
@@ -6774,6 +8212,12 @@ export async function grantPaidSceneTileEntitlements(
   );
   if (insertedTiles.length > 0) {
     await touchUserPricingVersion(db, safeUserId, deps, now);
+    await invalidateAndQueueUserProductQuotes(db, safeUserId, deps, {
+      tileKeys: purchasedTileKeys,
+      triggerType: purchaseType,
+      triggerPurchaseId: safeResolveId,
+      staleReason: `${purchaseType}_entitlement_changed`,
+    });
   }
   return {
     ...estimate,
@@ -6976,6 +8420,12 @@ export async function grantRegionPackEntitlements(db, userId, regionPackId, stri
       );
       if (repairedTiles.length > 0) {
         await touchUserPricingVersion(db, safeUserId, deps, now);
+        await invalidateAndQueueUserProductQuotes(db, safeUserId, deps, {
+          sourceProductId: String(product.id || ""),
+          triggerType: "region_pack_repair",
+          triggerPurchaseId: safeStripeSessionId,
+          staleReason: "region_pack_repair_entitlement_changed",
+        });
       }
       return {
         ok: true,
@@ -7096,6 +8546,12 @@ export async function grantRegionPackEntitlements(db, userId, regionPackId, stri
   );
   if (insertedTiles.length > 0) {
     await touchUserPricingVersion(db, safeUserId, deps, now);
+    await invalidateAndQueueUserProductQuotes(db, safeUserId, deps, {
+      sourceProductId: String(product.id || ""),
+      triggerType: "region_pack_purchase",
+      triggerPurchaseId: safeStripeSessionId || paymentReferenceId || purchaseHistoryId,
+      staleReason: "region_pack_entitlement_changed",
+    });
   }
   return {
     ok: true,
@@ -7413,20 +8869,24 @@ export async function handleCreditCheckout(request, env, deps) {
     }
     const account = await ensureFreshCreditAccountForUser(db, userId, deps);
     const quoteId = String(body && (body.quote_id || body.quoteId) || "").trim();
-    let quote = quoteId
-      ? await createRegionPackQuote(db, userId, product, deps, { account, quoteId })
-      : null;
-    if (!quoteId || (quote && quote.error === "stale_or_invalid_quote")) {
-      quote = await createRegionPackQuote(db, userId, product, deps, { account });
-    }
-    if (!quote || quote.error) {
+    const quoteResult = await materializedRegionPackQuoteResult(db, userId, product, account, deps, {
+      quoteId,
+      fastTrack: true,
+      jobRound: 0,
+      priority: 0,
+      triggerType: "checkout_region_pack_requested",
+      staleReason: "checkout_quote_not_ready",
+    });
+    const quote = quoteResult.quote;
+    if (!quote) {
       return deps.json(
         {
           ok: false,
-          error: String(quote && quote.error || "stale_or_invalid_quote"),
-          message: "This data-pack price could not be refreshed. Reopen the data pack and try again.",
+          error: "data_pack_price_updating",
+          quote_status: String(quoteResult.quoteStatus || "missing"),
+          message: "This data-pack price is updating. Please wait a few moments and try again.",
         },
-        quote && quote.status || 409,
+        409,
         env,
       );
     }
@@ -7736,20 +9196,21 @@ export async function handleCreditRegionOffers(request, env, deps) {
   timing.mark("parse");
   const products = await suggestedRegionProductsForContext(db, latitude, longitude, tileKeys, deps);
   timing.mark("products");
-  const pricingOwnershipContext = await regionPackPricingOwnershipContext(db, auth.user.id, account, deps);
-  timing.mark("ownership");
+  const quoteResults = await materializedRegionPackQuoteResults(db, auth.user.id, products, account, deps, {
+    fastTrack: true,
+    jobRound: 0,
+    priority: 15,
+    triggerType: "region_offers_requested",
+    staleReason: "region_offer_quote_not_ready",
+  });
+  timing.mark("quotes");
   const offers = [];
+  let pendingQuoteCount = 0;
   for (const product of products) {
-    const quote = await createRegionPackQuote(db, auth.user.id, product, deps, {
-      account,
-      pricingOwnershipContext,
-    });
-    if (!quote || quote.error) {
-      offers.push({
-        ok: false,
-        ...regionProductPublicPayload(product),
-        error: String(quote && quote.error || "region_pack_quote_failed"),
-      });
+    const quoteEntry = quoteResults.get(normalizedRegionPackProductId(product));
+    const quote = quoteEntry && quoteEntry.quote;
+    if (!quote) {
+      pendingQuoteCount += 1;
       continue;
     }
     const offer = regionPackOfferPayload(product, quote);
@@ -7765,6 +9226,8 @@ export async function handleCreditRegionOffers(request, env, deps) {
     latitude_deg: latitude,
     longitude_deg: longitude,
     offers,
+    price_pending: pendingQuoteCount > 0,
+    pending_quote_count: pendingQuoteCount,
     server_cache_hit: false,
   };
   boundedCacheSet(
@@ -7779,9 +9242,8 @@ export async function handleCreditRegionOffers(request, env, deps) {
   const response = deps.json(payload, 200, env);
   return withEndpointTiming(response, timing, env, {
     cache_hit: false,
-    ownership_pack_count: Array.isArray(pricingOwnershipContext && pricingOwnershipContext.purchasedPackIds) ? pricingOwnershipContext.purchasedPackIds.length : 0,
-    ownership_scene_tile_count: Array.isArray(pricingOwnershipContext && pricingOwnershipContext.sceneTileRows) ? pricingOwnershipContext.sceneTileRows.length : 0,
     product_count: products.length,
+    pending_quote_count: pendingQuoteCount,
     offer_count: offers.length,
   });
 }
@@ -7812,20 +9274,22 @@ export async function handleCreditRegionPackRelatedOffers(request, env, deps) {
   timing.mark("parse");
   const products = await relatedRegionProducts(db, product, deps, 6);
   timing.mark("products");
-  const pricingOwnershipContext = await regionPackPricingOwnershipContext(db, auth.user.id, account, deps);
-  timing.mark("ownership");
+  const quoteResults = await materializedRegionPackQuoteResults(db, auth.user.id, products, account, deps, {
+    fastTrack: true,
+    jobRound: 0,
+    priority: 20,
+    triggerType: "region_pack_related_offers_requested",
+    staleReason: "region_pack_related_quote_not_ready",
+    sourceProductId: normalizedRegionPackProductId(product),
+  });
+  timing.mark("quotes");
   const offers = [];
+  let pendingQuoteCount = 0;
   for (const candidate of products) {
-    const quote = await createRegionPackQuote(db, auth.user.id, candidate, deps, {
-      account,
-      pricingOwnershipContext,
-    });
-    if (!quote || quote.error) {
-      offers.push({
-        ok: false,
-        ...regionProductPublicPayload(candidate),
-        error: String(quote && quote.error || "region_pack_quote_failed"),
-      });
+    const quoteEntry = quoteResults.get(normalizedRegionPackProductId(candidate));
+    const quote = quoteEntry && quoteEntry.quote;
+    if (!quote) {
+      pendingQuoteCount += 1;
       continue;
     }
     const offer = regionPackOfferPayload(candidate, quote);
@@ -7841,14 +9305,15 @@ export async function handleCreditRegionPackRelatedOffers(request, env, deps) {
       catalog_version: REGION_PACK_CATALOG_VERSION,
       region_pack: regionProductPublicPayload(product),
       offers,
+      price_pending: pendingQuoteCount > 0,
+      pending_quote_count: pendingQuoteCount,
     },
     200,
     env,
   );
   return withEndpointTiming(response, timing, env, {
-    ownership_pack_count: Array.isArray(pricingOwnershipContext && pricingOwnershipContext.purchasedPackIds) ? pricingOwnershipContext.purchasedPackIds.length : 0,
-    ownership_scene_tile_count: Array.isArray(pricingOwnershipContext && pricingOwnershipContext.sceneTileRows) ? pricingOwnershipContext.sceneTileRows.length : 0,
     product_count: products.length,
+    pending_quote_count: pendingQuoteCount,
     offer_count: offers.length,
   });
 }
@@ -8152,7 +9617,7 @@ function regionPackPaymentChoiceHtml(data) {
   void account;
   const quote = data && data.quote && typeof data.quote === "object" ? data.quote : null;
   if (!quote || !quote.summary) {
-    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Planetka Data Pack Payment</title><style>${REGION_PACK_CHECKOUT_CSS}</style></head><body><main><section class="panel"><h1>Data pack price expired.</h1><p>Please reopen this data pack from Blender or the data-pack list.</p></section></main></body></html>`;
+    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Planetka Data Pack Payment</title><style>${REGION_PACK_CHECKOUT_CSS}</style></head><body><main><section class="panel"><h1>Data pack price is updating.</h1><p>Please wait a few moments, then reload this page or reopen the data pack from Blender.</p></section></main></body></html>`;
   }
   const summary = quote.summary;
   const name = String(product && product.name || "Data Pack").trim() || "Data Pack";
@@ -8252,26 +9717,28 @@ export async function handleCreditRegionPackCheckoutFromToken(request, env, deps
   const product = productResult.product;
   const account = await ensureFreshCreditAccountForUser(db, userId, deps);
   timing.mark("account");
-  let quote = quoteId
-    ? await createRegionPackQuote(db, userId, product, deps, {
-      account,
-      quoteId,
-    })
-    : null;
-  let quoteWasRefreshed = false;
-  if (!quoteId || (quote && quote.error === "stale_or_invalid_quote")) {
-    quote = await createRegionPackQuote(db, userId, product, deps, { account });
-    quoteWasRefreshed = true;
-  }
+  const quoteResult = await materializedRegionPackQuoteResult(db, userId, product, account, deps, {
+    quoteId,
+    fastTrack: true,
+    jobRound: 0,
+    priority: 0,
+    triggerType: "region_pack_checkout_page_requested",
+    staleReason: "region_pack_checkout_quote_not_ready",
+  });
+  const quote = quoteResult.quote;
   timing.mark("quote");
-  if (!quote || quote.error) {
+  if (!quote) {
     return withEndpointTiming(html(
-      `<!doctype html><title>Planetka Data Pack</title><h1>Data pack price expired.</h1><p>Please reopen this data pack from Blender or the data-pack list.</p>`,
-      quote && quote.status || 409,
+      `<!doctype html><title>Planetka Data Pack</title><h1>Data pack price is updating.</h1><p>Please wait a few moments, then reload this page or reopen the data pack from Blender.</p>`,
+      409,
       env,
-    ), timing, env, { error: quote && quote.error || "quote_failed", region_pack_id: String(product && product.id || "") });
+    ), timing, env, {
+      error: "data_pack_price_updating",
+      quote_status: String(quoteResult.quoteStatus || "missing"),
+      region_pack_id: String(product && product.id || ""),
+    });
   }
-  if (method === "stripe" && quoteWasRefreshed) {
+  if (method === "stripe" && quoteResult.requestedQuoteMismatch) {
     return withEndpointTiming(html(
       regionPackPaymentChoiceHtml({
         token,
@@ -8285,7 +9752,7 @@ export async function handleCreditRegionPackCheckoutFromToken(request, env, deps
     ), timing, env, {
       region_pack_id: String(product && product.id || ""),
       quote_id: String(quote && quote.quote_id || ""),
-      quote_refreshed: true,
+      quote_id_mismatch: true,
     });
   }
   const summary = regionPackQuoteSummary(quote);
@@ -8463,40 +9930,53 @@ export async function handleCreditRegionPackMap(request, env, deps) {
   const account = await ensureFreshCreditAccountForUser(db, userId, deps);
   timing.mark("account");
   const requestedQuoteId = String(url.searchParams.get("quote_id") || "").trim();
-  const quote = await createRegionPackQuote(db, userId, product, deps, {
-    account,
-    quoteId: requestedQuoteId,
-  });
-  timing.mark("quote");
-  if (!quote || quote.error) {
-    return withEndpointTiming(html(
-      `<!doctype html><title>Planetka Data Pack</title><h1>Data pack price expired.</h1><p>Please reopen this page from Blender or the data-pack list.</p>`,
-      quote && quote.status || 409,
-      env,
-    ), timing, env, { error: quote && quote.error || "quote_failed", region_pack_id: String(product && product.id || "") });
+  const pricingVersion = pricingSettingsCacheKey();
+  const entitlementVersion = accountEntitlementVersion(account);
+  const productId = String(product && product.id || "").trim().toLowerCase();
+  const quoteRows = await loadUserProductQuoteRows(db, userId, [productId], deps, { includeMapState: true });
+  const quoteRow = quoteRows.get(productId) || null;
+  let quoteStatus = productQuoteStatus(quoteRow, pricingVersion, entitlementVersion);
+  let quote = quoteStatus === "ready" ? userProductQuoteFromRow(quoteRow) : null;
+  const requestedQuoteMismatch = Boolean(requestedQuoteId && quote && String(quote.quote_id || "") !== requestedQuoteId);
+  const mapState = quoteStatus === "ready" ? parseUserProductMapState(quoteRow) : null;
+  const mapStateStatus = String(quoteRow && quoteRow.map_state_status || (mapState ? "ready" : "not_requested")).trim().toLowerCase() || "not_requested";
+  if (quoteStatus !== "ready") {
+    await enqueueUserProductQuoteJob(db, userId, productId, pricingVersion, entitlementVersion, deps, {
+      staleReason: `product_page_quote_${quoteStatus}`,
+      jobRound: 0,
+      priority: 0,
+      triggerType: "product_page_view",
+      fastTrack: true,
+    });
+  } else if (!mapState || mapStateStatus !== "ready") {
+    await enqueueUserProductQuoteJob(db, userId, productId, pricingVersion, entitlementVersion, deps, {
+      staleReason: `product_page_map_state_${mapStateStatus || "missing"}`,
+      jobRound: 0,
+      priority: 0,
+      triggerType: "product_page_map_state_requested",
+      fastTrack: true,
+    });
   }
-  const pricingOwnershipContext = await regionPackPricingOwnershipContext(db, userId, account, deps);
-  timing.mark("ownership");
-  const ownedTileKeys = await ownedTileKeysForRegionPackMap(db, product, pricingOwnershipContext, deps);
-  timing.mark("owned_map_tiles");
-  const upsells = await relatedRegionPackQuoteEntries(db, product, userId, account, pricingOwnershipContext, deps);
-  timing.mark("upsell_quotes");
-  // Keep the initial map response as a lightweight static shell. The browser
-  // fetches the prebuilt map asset for geometry only; all displayed prices come
-  // from backend quotes.
-  timing.mark("static_shell");
+  timing.mark("quote_rows");
+  // Product pages only read materialized quote/map-state rows. Missing rows are
+  // queued above and shown as updating instead of calculated in this request.
   const data = regionPackStaticMapPayload(product, token, account, [], {
     catalogMode: allowCatalogProduct,
     quote,
-    upsells,
-    ownedTileKeys,
+    quoteStatus,
+    pricePending: quoteStatus !== "ready",
+    mapState,
+    mapStateStatus,
+    mapPending: quoteStatus !== "ready" || !mapState || mapStateStatus !== "ready",
   });
   timing.mark("payload");
   return withEndpointTiming(html(regionPackStaticMapHtml(data), 200, env), timing, env, {
     region_pack_id: String(product && product.id || ""),
-    ownership_pack_count: Array.isArray(pricingOwnershipContext && pricingOwnershipContext.purchasedPackIds) ? pricingOwnershipContext.purchasedPackIds.length : 0,
-    ownership_scene_tile_count: Array.isArray(pricingOwnershipContext && pricingOwnershipContext.sceneTileRows) ? pricingOwnershipContext.sceneTileRows.length : 0,
-    quote_id: String(quote.quote_id || ""),
+    quote_rows_read_only: true,
+    quote_status: quoteStatus,
+    map_state_status: mapStateStatus,
+    quote_id: String(quote && quote.quote_id || ""),
+    quote_id_mismatch: requestedQuoteMismatch,
   });
 }
 
@@ -8636,8 +10116,9 @@ export async function handleCreditRegionPackCatalogPage(request, env, deps) {
     limit,
     row_count: Array.isArray(data && data.rows) ? data.rows.length : 0,
     total_packs: Number(data && data.total_packs || 0),
-    ownership_pack_count: Number(data && data.ownership_pack_count || 0),
-    ownership_scene_tile_count: Number(data && data.ownership_scene_tile_count || 0),
+    ready_quote_rows: Number(data && data.ready_quote_rows || 0),
+    queued_quote_jobs: Number(data && data.queued_quote_jobs || 0),
+    quote_rows_read_only: Boolean(data && data.quote_rows_read_only),
   });
 }
 
@@ -8683,31 +10164,34 @@ export async function handleCreditSceneMap(request, env, deps) {
     : [];
   const contextProduct = contextProducts.length ? contextProducts[0] : null;
   timing.mark("products");
-  const pricingOwnershipContext = await regionPackPricingOwnershipContext(db, userId, account, deps);
-  timing.mark("ownership");
   const upsells = [];
-  for (const product of contextProducts.slice(0, 4)) {
-    const quote = await createRegionPackQuote(db, userId, product, deps, {
-      account,
-      pricingOwnershipContext,
-    });
-    if (quote && !quote.error) {
-      const relatedSummary = regionPackQuoteSummary(quote);
-      if (integerCents(relatedSummary.price_cents) <= 0 && Number(relatedSummary.charged_tiles || 0) <= 0) {
-        continue;
-      }
-      const card = buildRegionPackUpsellCardData(product, quote, { includeTiles: false });
-      if (card) {
-        upsells.push(card);
-      }
+  const upsellProducts = contextProducts.slice(0, 4);
+  const quoteResults = await materializedRegionPackQuoteResults(db, userId, upsellProducts, account, deps, {
+    fastTrack: true,
+    jobRound: 0,
+    priority: 25,
+    triggerType: "scene_map_upsell_requested",
+    staleReason: "scene_map_upsell_quote_not_ready",
+  });
+  for (const product of upsellProducts) {
+    const quoteEntry = quoteResults.get(normalizedRegionPackProductId(product));
+    const quote = quoteEntry && quoteEntry.quote;
+    if (!quote) {
+      continue;
+    }
+    const relatedSummary = regionPackQuoteSummary(quote);
+    if (integerCents(relatedSummary.price_cents) <= 0 && Number(relatedSummary.charged_tiles || 0) <= 0) {
+      continue;
+    }
+    const card = buildRegionPackUpsellCardData(product, quote, { includeTiles: false });
+    if (card) {
+      upsells.push(card);
     }
   }
   timing.mark("upsells");
   const data = buildSceneFullQualityMapData(estimate, { token, contextProduct, upsells });
   timing.mark("html");
   return withEndpointTiming(html(regionPackMapHtml(data), 200, env), timing, env, {
-    ownership_pack_count: Array.isArray(pricingOwnershipContext && pricingOwnershipContext.purchasedPackIds) ? pricingOwnershipContext.purchasedPackIds.length : 0,
-    ownership_scene_tile_count: Array.isArray(pricingOwnershipContext && pricingOwnershipContext.sceneTileRows) ? pricingOwnershipContext.sceneTileRows.length : 0,
     tile_count: tileKeys.length,
     upsell_count: upsells.length,
   });
@@ -8907,15 +10391,32 @@ export async function handleCreditPaymentSuccess(request, env, deps) {
       if (contextProduct) {
         const tokenResult = await createRegionPackDetailTokenForUser(db, userId, String(contextProduct.id || ""), env, deps);
         const account = await ensureFreshCreditAccountForUser(db, userId, deps);
-        const pricingOwnershipContext = await regionPackPricingOwnershipContext(db, userId, account, deps);
-        const ownedTileKeys = await ownedTileKeysForRegionPackMap(db, contextProduct, pricingOwnershipContext, deps);
-        const quote = await createRegionPackQuote(db, userId, contextProduct, deps, { account, pricingOwnershipContext });
-        const upsells = await relatedRegionPackQuoteEntries(db, contextProduct, userId, account, pricingOwnershipContext, deps);
+        const quoteResult = await materializedRegionPackQuoteResult(db, userId, contextProduct, account, deps, {
+          includeMapState: true,
+          fastTrack: true,
+          jobRound: 0,
+          priority: 5,
+          triggerType: "scene_success_context_requested",
+          staleReason: "scene_success_context_quote_not_ready",
+        });
+        const mapState = parseUserProductMapState(quoteResult.quoteRow);
+        const mapStateStatus = String(quoteResult.quoteRow && quoteResult.quoteRow.map_state_status || (mapState ? "ready" : "not_requested")).trim().toLowerCase() || "not_requested";
+        const upsells = await relatedRegionPackQuoteEntries(db, contextProduct, userId, account, null, deps, {
+          fastTrack: true,
+          priority: 35,
+          triggerType: "scene_success_related_requested",
+          staleReason: "scene_success_related_quote_not_ready",
+        });
         const data = regionPackStaticMapPayload(contextProduct, tokenResult.token, account, [], {
           catalogMode: true,
-          quote: quote && !quote.error ? quote : null,
+          quote: quoteResult.quote,
+          quoteStatus: quoteResult.quoteStatus,
+          pricePending: !quoteResult.quote,
+          mapState,
+          mapStateStatus,
+          mapPending: !mapState || mapStateStatus !== "ready",
           upsells,
-          ownedTileKeys,
+          ownedTileKeys: tileKeys,
           titlePrefix: "Data Pack to Consider",
           success: {
             title: paymentSuccessTitle,
@@ -8955,15 +10456,32 @@ export async function handleCreditPaymentSuccess(request, env, deps) {
       if (contextProduct) {
         const tokenResult = await createRegionPackDetailTokenForUser(db, userId, String(contextProduct.id || ""), env, deps);
         const account = await ensureFreshCreditAccountForUser(db, userId, deps);
-        const pricingOwnershipContext = await regionPackPricingOwnershipContext(db, userId, account, deps);
-        const ownedTileKeys = await ownedTileKeysForRegionPackMap(db, contextProduct, pricingOwnershipContext, deps);
-        const quote = await createRegionPackQuote(db, userId, contextProduct, deps, { account, pricingOwnershipContext });
-        const upsells = await relatedRegionPackQuoteEntries(db, contextProduct, userId, account, pricingOwnershipContext, deps);
+        const quoteResult = await materializedRegionPackQuoteResult(db, userId, contextProduct, account, deps, {
+          includeMapState: true,
+          fastTrack: true,
+          jobRound: 0,
+          priority: 5,
+          triggerType: "animation_success_context_requested",
+          staleReason: "animation_success_context_quote_not_ready",
+        });
+        const mapState = parseUserProductMapState(quoteResult.quoteRow);
+        const mapStateStatus = String(quoteResult.quoteRow && quoteResult.quoteRow.map_state_status || (mapState ? "ready" : "not_requested")).trim().toLowerCase() || "not_requested";
+        const upsells = await relatedRegionPackQuoteEntries(db, contextProduct, userId, account, null, deps, {
+          fastTrack: true,
+          priority: 35,
+          triggerType: "animation_success_related_requested",
+          staleReason: "animation_success_related_quote_not_ready",
+        });
         const data = regionPackStaticMapPayload(contextProduct, tokenResult.token, account, [], {
           catalogMode: true,
-          quote: quote && !quote.error ? quote : null,
+          quote: quoteResult.quote,
+          quoteStatus: quoteResult.quoteStatus,
+          pricePending: !quoteResult.quote,
+          mapState,
+          mapStateStatus,
+          mapPending: !mapState || mapStateStatus !== "ready",
           upsells,
-          ownedTileKeys,
+          ownedTileKeys: tileKeys,
           titlePrefix: "Data Pack to Consider",
           success: {
             title: paymentSuccessTitle,
@@ -8992,17 +10510,42 @@ export async function handleCreditPaymentSuccess(request, env, deps) {
       );
       if (repairedTiles.length > 0) {
         await touchUserPricingVersion(db, userId, deps, repairNow);
+        await invalidateAndQueueUserProductQuotes(db, userId, deps, {
+          sourceProductId: String(product.id || ""),
+          triggerType: "region_pack_success_repair",
+          triggerPurchaseId: sessionId,
+          staleReason: "region_pack_success_repair_entitlement_changed",
+        });
       }
       const account = await ensureFreshCreditAccountForUser(db, userId, deps);
-      const pricingOwnershipContext = await regionPackPricingOwnershipContext(db, userId, account, deps);
-      const ownedTileKeys = await ownedTileKeysForRegionPackMap(db, product, pricingOwnershipContext, deps);
-      const quote = await createRegionPackQuote(db, userId, product, deps, { account, pricingOwnershipContext });
-      const upsells = await relatedRegionPackQuoteEntries(db, product, userId, account, pricingOwnershipContext, deps);
+      const quoteResult = await materializedRegionPackQuoteResult(db, userId, product, account, deps, {
+        includeMapState: true,
+        fastTrack: true,
+        jobRound: 0,
+        priority: 0,
+        triggerType: "region_pack_success_product_requested",
+        staleReason: "region_pack_success_quote_not_ready",
+        triggerPurchaseId: sessionId,
+      });
+      const mapState = parseUserProductMapState(quoteResult.quoteRow);
+      const mapStateStatus = String(quoteResult.quoteRow && quoteResult.quoteRow.map_state_status || (mapState ? "ready" : "not_requested")).trim().toLowerCase() || "not_requested";
+      const upsells = await relatedRegionPackQuoteEntries(db, product, userId, account, null, deps, {
+        fastTrack: true,
+        priority: 30,
+        triggerType: "region_pack_success_related_requested",
+        staleReason: "region_pack_success_related_quote_not_ready",
+        triggerPurchaseId: sessionId,
+      });
       const data = regionPackStaticMapPayload(product, tokenResult.token, account, [], {
         catalogMode: true,
-        quote: quote && !quote.error ? quote : null,
+        quote: quoteResult.quote,
+        quoteStatus: quoteResult.quoteStatus,
+        pricePending: !quoteResult.quote,
+        mapState,
+        mapStateStatus,
+        mapPending: !mapState || mapStateStatus !== "ready",
         upsells,
-        ownedTileKeys,
+        productUnlocked: true,
         success,
       });
       return html(regionPackStaticMapHtml(data), 200, env);

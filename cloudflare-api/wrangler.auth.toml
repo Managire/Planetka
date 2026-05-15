@@ -1,0 +1,59 @@
+name = "planetka-auth"
+main = "src/auth_worker.js"
+compatibility_date = "2026-03-15"
+find_additional_modules = true
+
+routes = [
+  { pattern = "api.planetka.io/auth/*", zone_name = "planetka.io" },
+  { pattern = "api.planetka.io/api-key", zone_name = "planetka.io" },
+  { pattern = "api.planetka.io/api-key/*", zone_name = "planetka.io" },
+  { pattern = "api.planetka.io/me", zone_name = "planetka.io" },
+  { pattern = "api.planetka.io/health", zone_name = "planetka.io" },
+  { pattern = "api.planetka.io/addon/update-manifest", zone_name = "planetka.io" },
+  { pattern = "api.planetka.io/legal/*", zone_name = "planetka.io" }
+]
+
+[observability]
+enabled = true
+
+[vars]
+APP_ORIGIN = "*"
+API_BASE_URL = "https://api.planetka.io"
+LOGIN_URL = "https://www.planetka.io/login"
+CONTACT_URL = "https://www.planetka.io/contact-me"
+PLANETKA_CONTACT_URL = "https://www.planetka.io/contact-me"
+TERMS_URL = "https://api.planetka.io/legal/terms-of-service.pdf"
+PRIVACY_URL = "https://api.planetka.io/legal/privacy-policy.pdf"
+LEGAL_VERSION = "2026-05-12"
+TERMS_VERSION = "2026-05-12"
+PRIVACY_VERSION = "2026-05-12"
+DEVICE_LIMIT_EXEMPT_EMAILS = "tom.griger@gmail.com"
+RATE_LIMIT_AUTH_START_IP_LIMIT = "20"
+RATE_LIMIT_AUTH_START_IP_WINDOW_SECONDS = "60"
+RATE_LIMIT_AUTH_START_EMAIL_LIMIT = "6"
+RATE_LIMIT_AUTH_START_EMAIL_WINDOW_SECONDS = "900"
+RATE_LIMIT_AUTH_EXCHANGE_IP_LIMIT = "30"
+RATE_LIMIT_AUTH_EXCHANGE_IP_WINDOW_SECONDS = "60"
+RATE_LIMIT_AUTH_REFRESH_IP_LIMIT = "60"
+RATE_LIMIT_AUTH_REFRESH_IP_WINDOW_SECONDS = "60"
+API_KEY_REQUEST_MIN_AGE_SECONDS = "2"
+API_KEY_DEVICE_ACTIVE_WINDOW_SECONDS = "900"
+AUTH_CONTEXT_CACHE_TTL_SECONDS = "60"
+AUTH_CONTEXT_CACHE_MAX_ENTRIES = "4096"
+ADDON_UPDATE_CHANNEL = "stable"
+ADDON_UPDATE_VERSION = "0.7.6"
+ADDON_UPDATE_DOWNLOAD_URL = "https://pub-563b561afd7a4af4ad4c0ffe54b1e665.r2.dev/releases/Planetka_update_0.7.6.zip"
+ADDON_UPDATE_SHA256 = "8c2c321669d8b6f91dfd0b8471ae33d40df22add2f72430c43556ae733f5892f"
+ADDON_UPDATE_PUBLISHED_AT = "2026-05-14T17:41:59Z"
+ADDON_UPDATE_RELEASE_NOTES_URL = "https://www.planetka.io/blender/documentation/"
+ADDON_UPDATE_MIN_BLENDER = "4.5.7"
+ADDON_UPDATE_MANIFEST_MAX_AGE_SECONDS = "300"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "planetka-auth"
+database_id = "8dd80102-88df-4105-9884-8e231875bc6d"
+
+[[r2_buckets]]
+binding = "PLANETKA_DATA"
+bucket_name = "planetka-data"

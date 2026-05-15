@@ -1562,7 +1562,15 @@ def schedule_region_pack_offer_refresh(
             time.sleep(delay)
         try:
             from ..credit_api import get_region_pack_offers
-            offers = get_region_pack_offers(lat, lon, tile_keys=safe_tiles, force=force, raise_errors=True)
+            offers = get_region_pack_offers(
+                lat,
+                lon,
+                tile_keys=safe_tiles,
+                force=force,
+                raise_errors=True,
+                timeout=6.0,
+                background=True,
+            )
             ok = True
         except deps.import_recoverable_exceptions:
             message = "Data Packs update failed."
@@ -1687,7 +1695,7 @@ def _estimate_full_credits_for_pricing_tiles(pricing_tiles):
     if not safe_tiles:
         return 0.0
     from ..credit_api import estimate_credits_for_tiles
-    summary = estimate_credits_for_tiles(safe_tiles, quality_mode="FULL")
+    summary = estimate_credits_for_tiles(safe_tiles, quality_mode="FULL", timeout=6.0, background=True)
     if not isinstance(summary, dict) or not bool(summary.get("authoritative", False)):
         return None
     return _money_round(max(0.0, float(summary.get("credits", 0.0) or 0.0)))
@@ -1825,7 +1833,7 @@ def estimate_credits_for_visible_tiles(tiles, runtime=None, texture_quality_mode
         return 0.0
     try:
         from ..credit_api import estimate_credits_for_tiles
-        summary = estimate_credits_for_tiles(safe_tiles, quality_mode=normalized_mode)
+        summary = estimate_credits_for_tiles(safe_tiles, quality_mode=normalized_mode, timeout=6.0, background=True)
         if normalized_mode != "PREVIEW" and not bool(summary.get("authoritative", False)):
             return None
         return float(max(0.0, float(summary.get("credits", 0.0) or 0.0)))

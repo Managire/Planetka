@@ -24,9 +24,6 @@ from .auth import (
     get_api_base_url,
     get_authorized_headers,
     looks_like_planetka_overload,
-    mark_planetka_cloud_offline,
-    mark_planetka_cloud_online,
-    mark_planetka_cloud_overloaded,
     recover_from_terminal_auth_error,
     refresh_auth_session,
 )
@@ -41,6 +38,9 @@ _REGION_RELATED_OFFERS_CACHE = {"timestamp": 0.0, "key": "", "payload": []}
 _ACCOUNT_CACHE_TTL_SECONDS = 5.0
 _UNLOCKED_CACHE_TTL_SECONDS = 10.0
 _REGION_OFFERS_CACHE_TTL_SECONDS = 30.0
+_COMMERCE_BACKGROUND_COOLDOWN_SECONDS = 20.0
+_COMMERCE_BACKGROUND_COOLDOWN = {"until": 0.0, "reason": ""}
+_COMMERCE_BACKGROUND_LOCK = threading.Lock()
 _UNLOCKED_DOWNLOAD_LOCK = threading.Lock()
 _UNLOCKED_DOWNLOAD_CANCEL = None
 _UNLOCKED_DOWNLOAD_THREAD = None
@@ -190,6 +190,43 @@ def _zero_backend_unavailable_payload(tile_keys, reason="backend_unavailable") -
     }
 
 
+def _commerce_background_cooldown_active() -> bool:
+    with _COMMERCE_BACKGROUND_LOCK:
+        return time.monotonic() < float(_COMMERCE_BACKGROUND_COOLDOWN.get("until", 0.0) or 0.0)
+
+
+def _is_transient_commerce_failure(error) -> bool:
+    if isinstance(error, CreditApiError):
+        if str(getattr(error, "error", "") or "") == CLOUD_OVERLOADED_ERROR_CODE:
+            return True
+        status = int(getattr(error, "status", 0) or 0)
+        if status == 0 or status >= 500:
+            return True
+        text = f"{getattr(error, 'error', '')} {error}".lower()
+        return "network" in text or "timeout" in text or "temporarily" in text
+    if isinstance(error, AuthApiError):
+        if looks_like_planetka_overload(getattr(error, "status", 0), getattr(error, "error", ""), str(error)):
+            return True
+    if isinstance(error, (urllib.error.URLError, TimeoutError, OSError)):
+        return True
+    text = str(error or "").lower()
+    return "timed out" in text or "timeout" in text or "temporarily" in text
+
+
+def _mark_commerce_background_failure(error) -> None:
+    if not _is_transient_commerce_failure(error):
+        return
+    with _COMMERCE_BACKGROUND_LOCK:
+        _COMMERCE_BACKGROUND_COOLDOWN["until"] = time.monotonic() + _COMMERCE_BACKGROUND_COOLDOWN_SECONDS
+        _COMMERCE_BACKGROUND_COOLDOWN["reason"] = str(getattr(error, "error", "") or error or "transient_failure")
+
+
+def _clear_commerce_background_cooldown() -> None:
+    with _COMMERCE_BACKGROUND_LOCK:
+        _COMMERCE_BACKGROUND_COOLDOWN["until"] = 0.0
+        _COMMERCE_BACKGROUND_COOLDOWN["reason"] = ""
+
+
 def _log_pricing_integrity_warnings(payload):
     if not isinstance(payload, dict):
         return
@@ -227,7 +264,6 @@ def _request_json(method: str, path: str, body=None, allow_refresh=True, timeout
         }
     except AuthApiError as exc:
         if looks_like_planetka_overload(getattr(exc, "status", 0), getattr(exc, "error", ""), str(exc)):
-            mark_planetka_cloud_overloaded(reason=str(exc))
             raise CreditApiError(
                 getattr(exc, "status", 0),
                 CLOUD_OVERLOADED_ERROR_CODE,
@@ -247,7 +283,6 @@ def _request_json(method: str, path: str, body=None, allow_refresh=True, timeout
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             raw = response.read() or b"{}"
-        mark_planetka_cloud_online()
         text = raw.decode("utf-8", errors="replace")
         return json.loads(text or "{}")
     except urllib.error.HTTPError as exc:
@@ -259,13 +294,11 @@ def _request_json(method: str, path: str, body=None, allow_refresh=True, timeout
             data = {"error": text or f"http_{exc.code}"}
         error_text = " ".join(str(data.get(key, "") or "") for key in ("error", "message", "detail"))
         if looks_like_planetka_overload(exc.code, error_text, text):
-            mark_planetka_cloud_overloaded(reason=text or error_text or f"http_{exc.code}")
             raise CreditApiError(
                 exc.code,
                 CLOUD_OVERLOADED_ERROR_CODE,
                 payload={"error": CLOUD_OVERLOADED_ERROR_CODE, "message": CLOUD_OVERLOADED_MESSAGE},
             ) from exc
-        mark_planetka_cloud_online()
         if int(getattr(exc, "code", 0) or 0) == 401 and allow_refresh:
             try:
                 refresh_auth_session()
@@ -287,10 +320,8 @@ def _request_json(method: str, path: str, body=None, allow_refresh=True, timeout
             ) from exc
         raise api_error from exc
     except urllib.error.URLError as exc:
-        mark_planetka_cloud_offline(str(getattr(exc, "reason", exc) or exc))
         raise CreditApiError(0, f"network_error_{exc.reason}") from exc
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
-        mark_planetka_cloud_online()
         raise CreditApiError(0, "invalid_json_response") from exc
 
 
@@ -425,7 +456,7 @@ def build_pricing_payload_for_tiles(tiles, quality_mode="FULL") -> list[dict]:
     return [{"tile_key": key, "quality_mode": mode} for key in _normalize_tile_keys(tiles)]
 
 
-def estimate_credits_for_tiles(tiles, quality_mode="FULL", pricing_context="scene") -> dict:
+def estimate_credits_for_tiles(tiles, quality_mode="FULL", pricing_context="scene", timeout=20, background=False) -> dict:
     tile_keys = _normalize_tile_keys(tiles)
     if not tile_keys:
         return {
@@ -438,6 +469,12 @@ def estimate_credits_for_tiles(tiles, quality_mode="FULL", pricing_context="scen
             "authoritative": True,
             "pricing_source": "backend",
         }
+    if bool(background) and _commerce_background_cooldown_active():
+        return _zero_backend_unavailable_payload(tile_keys, reason="commerce_background_cooldown")
+    try:
+        request_timeout = max(1.0, float(timeout))
+    except (TypeError, ValueError):
+        request_timeout = 20.0
     try:
         payload = _request_json(
             "POST",
@@ -447,9 +484,13 @@ def estimate_credits_for_tiles(tiles, quality_mode="FULL", pricing_context="scen
                 "pricing_context": str(pricing_context or "scene").strip().lower(),
                 "tile_keys": tile_keys,
             },
-            timeout=20,
+            timeout=request_timeout,
         )
-    except (AuthApiError, CreditApiError, RuntimeError, TypeError, ValueError, OSError):
+        if bool(background):
+            _clear_commerce_background_cooldown()
+    except (AuthApiError, CreditApiError, RuntimeError, TypeError, ValueError, OSError) as exc:
+        if bool(background):
+            _mark_commerce_background_failure(exc)
         logger.debug("Planetka: backend credit estimate unavailable; no local pricing fallback is allowed", exc_info=True)
         return _zero_backend_unavailable_payload(tile_keys, reason="backend_unavailable")
     if not isinstance(payload, dict) or not payload.get("ok", False):
@@ -545,7 +586,15 @@ def estimate_credit_breakdown_for_tiles(tiles, quality_mode="FULL") -> dict:
     return estimate_credits_for_tiles(tiles, quality_mode=mode)
 
 
-def get_region_pack_offers(latitude_deg, longitude_deg, tile_keys=None, force=False, raise_errors=False) -> list[dict]:
+def get_region_pack_offers(
+    latitude_deg,
+    longitude_deg,
+    tile_keys=None,
+    force=False,
+    raise_errors=False,
+    timeout=45,
+    background=False,
+) -> list[dict]:
     if isinstance(tile_keys, bool) and not force:
         force = bool(tile_keys)
         tile_keys = None
@@ -571,6 +620,15 @@ def get_region_pack_offers(latitude_deg, longitude_deg, tile_keys=None, force=Fa
         and (now - float(_REGION_OFFERS_CACHE.get("timestamp", 0.0) or 0.0)) < _REGION_OFFERS_CACHE_TTL_SECONDS
     ):
         return [dict(item) for item in cached if isinstance(item, dict)]
+    if bool(background) and _commerce_background_cooldown_active():
+        error = CreditApiError(0, "commerce_background_cooldown")
+        if bool(raise_errors):
+            raise error
+        return []
+    try:
+        request_timeout = max(1.0, float(timeout))
+    except (TypeError, ValueError):
+        request_timeout = 45.0
     try:
         body = {"latitude_deg": lat, "longitude_deg": lon}
         if normalized_tile_keys:
@@ -579,9 +637,13 @@ def get_region_pack_offers(latitude_deg, longitude_deg, tile_keys=None, force=Fa
             "POST",
             "/credits/region-offers",
             body=body,
-            timeout=45,
+            timeout=request_timeout,
         )
-    except (AuthApiError, CreditApiError, RuntimeError, TypeError, ValueError, OSError):
+        if bool(background):
+            _clear_commerce_background_cooldown()
+    except (AuthApiError, CreditApiError, RuntimeError, TypeError, ValueError, OSError) as exc:
+        if bool(background):
+            _mark_commerce_background_failure(exc)
         if bool(raise_errors):
             raise
         logger.debug("Planetka: failed fetching region pack offers", exc_info=True)

@@ -17,6 +17,9 @@ head_sampling_rate = 0.01
 enabled = true
 head_sampling_rate = 0.01
 
+[triggers]
+crons = ["* * * * *"]
+
 [vars]
 R2_PREFIX = "planetka-assets"
 TILE_BROWSER_MAX_AGE_SECONDS = "86400"

@@ -2,7 +2,7 @@
 
 This document describes the current Planetka pricing system from a technical point of view. It is an internal implementation reference, not public legal text.
 
-Last updated: 2026-05-12
+Last updated: 2026-05-15
 
 ## 1. Current Product Model
 
@@ -490,6 +490,83 @@ Expected production state:
 
 ```text
 COUNT(*) should normally be 0 or investigated quickly.
+```
+
+### `user_product_quotes`
+
+Planned materialized data-pack pricing source of truth.
+
+Primary key:
+
+```sql
+(user_id, product_id, catalog_version)
+```
+
+Important columns:
+
+- `quote_id`: stable quote identifier used by pages and checkout.
+- `status`: `ready`, `stale`, `recalculating`, or `error`.
+- `pricing_version`: runtime pricing-settings version/hash.
+- `entitlement_version`: user entitlement version.
+- `full_price_cents`
+- `already_licenced_cents`
+- `partial_licence_credit_cents`
+- `discount_percent`
+- `discount_cents`
+- `final_price_cents`
+- tile-count fields used by catalog/map UI.
+- `summary_json`: complete top-line quote payload.
+- `map_state_status` / `map_state_json`: optional precomputed map overlay state.
+
+This table is intended to replace request-time data-pack quote calculation for
+catalog pages, data-pack pages, Relevant Data Packs, Similar Options, and
+Stripe data-pack checkout.
+
+### `user_product_quote_batches`
+
+Groups recalculation jobs caused by a single trigger such as a successful
+purchase or pricing-settings change.
+
+Important columns:
+
+- `user_id`
+- `trigger_type`
+- `trigger_purchase_id`
+- `source_product_id`
+- `pricing_version`
+- `entitlement_version`
+- `catalog_version`
+- `status`
+- job counters.
+
+### `user_product_quote_jobs`
+
+Serialized queue of small data-pack quote recalculation jobs.
+
+Important columns:
+
+- `batch_id`
+- `user_id`
+- `product_id`
+- `source_product_id`
+- `job_round`
+- `priority`
+- `status`: `queued`, `running`, `done`, `failed`, or `cancelled`.
+- `attempts`
+- lock fields.
+
+The queue order must prioritize lower `job_round` globally before higher
+rounds. This is what prevents one large purchase recalculation from blocking
+round-one updates from a newer purchase.
+
+### `user_product_quote_job_locks`
+
+Global lock table for quote processing.
+
+Purpose:
+
+```text
+Guarantee only one data-pack quote recalculation job runs at a time.
 ```
 
 ## 12. Price Estimate Endpoint
@@ -1138,7 +1215,68 @@ The price authority must be the backend calculation using current `app_settings`
 
 If two surfaces show different prices for the same user/product/time after cache refresh, treat it as a critical pricing bug.
 
-## 31. Validation Commands
+## 31. Planned Materialized User-Product Pricing
+
+The next pricing architecture should move data-pack pricing away from public
+request-time calculation and into a materialized user-product pricing table.
+
+Core rule:
+
+```text
+Catalog pages, data-pack map pages, Blender Relevant Data Packs, Similar Options, and checkout should read the same materialized user-product pricing row.
+```
+
+This table is not a loose cache. It is the source of truth for data-pack
+quotes until the user's entitlement version or the global pricing version
+changes.
+
+Planned behavior:
+
+- Public requests must not perform heavy data-pack pricing work.
+- Public requests may read materialized rows, enqueue missing/stale rows, and return `price updating` when a row is not ready.
+- Checkout is disabled when the required product quote row is missing, stale, or recalculating.
+- Stripe Checkout must use the existing quote/materialized row and must not calculate a separate price.
+- Scene-specific and animation purchases remain dynamic because their tile sets are unique and small.
+
+Purchase invalidation flow:
+
+1. Successful purchase increments the user's entitlement version.
+2. Related user-product pricing rows are marked stale/recalculating.
+3. The purchased product itself is updated first and becomes `€0.00`.
+4. Exact-contained children are updated next and become `€0.00`.
+5. Parents, overlaps, continent-level products, and World are queued after that.
+
+Recalculation queue ordering:
+
+```text
+All recalculation jobs must run through one serialized global queue.
+No two pricing recalculation jobs may run simultaneously, even for different users.
+```
+
+If multiple purchases happen close together, recalculation ordering is by
+round across all purchases, not by completing one purchase fully before the
+next purchase starts.
+
+Example:
+
+```text
+Purchase A is currently recalculating round 4.
+Purchase B happens.
+After the currently running job finishes, B round 1 is queued before A round 5.
+Then B round 2, B round 3, and B round 4 are queued before either purchase runs round 5.
+Then round 5 jobs for both purchases run, then round 6 jobs, etc.
+```
+
+Operational reason:
+
+- A user or multiple users making purchases at the same time must not cause
+  parallel recalculation bursts.
+- The queue may take longer to finish, but it must stay below Worker/D1 limits.
+- Freshly viewed products can be fast-tracked by moving their job to the front
+  of the queue for the current round, but they must still run as queued jobs,
+  never synchronously inside the public page/API request.
+
+## 32. Validation Commands
 
 Basic local checks:
 
@@ -1165,7 +1303,7 @@ R2/D1 metadata alignment should be checked after any dataset update:
 - Every `tile_land_stats` row should correspond to an expected S2 object.
 - Region-pack generated tile memberships should reference valid tile keys.
 
-## 32. Do-Not-Break Invariants
+## 33. Do-Not-Break Invariants
 
 Do not violate these invariants:
 
@@ -1178,6 +1316,7 @@ Do not violate these invariants:
 - Do not allow paid Full Quality resolve before backend licence/session confirmation.
 - Do not use Stripe metadata as the only pricing authority.
 - Do not let web pages, Blender, Analytics, and Stripe use different pricing branches.
+- Do not run multiple data-pack pricing recalculation jobs concurrently.
 - Do not show `Full Price -> Final Price` without showing non-zero deductions in between.
 - Do not show zero-value deductions.
 - Do not count Full Quality/licenced traffic into Preview fair-usage enforcement.

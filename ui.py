@@ -121,17 +121,9 @@ def _sidebar_account_refresh_timer():
         return None
 
     try:
-        cloud_status = get_cloud_connection_status(prefs=prefs, force=True, timeout=1.0)
+        get_cloud_connection_status(prefs=prefs, force=True, timeout=1.0)
     except (AuthApiError, RuntimeError, TypeError, ValueError, AttributeError):
         logger.debug("Planetka: deferred Planetka Cloud refresh failed", exc_info=True)
-        cloud_status = {"online": False}
-
-    if bool(cloud_status.get("online", False)):
-        try:
-            from .credit_api import get_credit_account
-            get_credit_account(force=True, timeout=4.0, allow_refresh=False)
-        except (AuthApiError, TypeError, ValueError, RuntimeError, AttributeError):
-            logger.debug("Planetka: deferred credit account refresh failed", exc_info=True)
 
     _SIDEBAR_ACCOUNT_REFRESH_LAST_AT = time.time()
     _tag_view3d_redraw()
@@ -1219,8 +1211,10 @@ def _draw_addon_update_controls(layout):
         message_box = layout.box()
         message_box.alert = bool(phase == "error" or last_error)
         message_box.label(text=message, icon="ERROR" if message_box.alert else "CHECKMARK")
-        if "restart blender" in message.lower():
-            message_box.label(text="Restart Blender before continuing serious work.", icon="INFO")
+        if message.lower().startswith("updated to "):
+            message_box.label(text="Restart Blender to finish the update.", icon="INFO")
+        elif "restart blender" in message.lower():
+            message_box.label(text="Restart Blender to finish the update.", icon="INFO")
 
 
 def _draw_licenced_download_controls(layout, prefs):
@@ -1862,19 +1856,16 @@ def _draw_live_telemetry(layout, scene):
         elif not full_price_known:
             estimate_notice = full_box.row(align=True)
             estimate_notice.label(text="Full Quality price will be verified before download.", icon="INFO")
-        if not world_full_quality_unlocked:
-            region_offers, _region_status, _region_message = _load_relevant_region_pack_offers(scene)
-            if any(_offer_is_licensable(offer) for offer in region_offers):
-                data_packs_box = _draw_collapsible_subsection(
-                    quality_box,
-                    scene,
-                    "Relevant Data Packs",
-                    "WORLD_DATA",
-                    DATA_CONTROL_MORE_OPTIONS_SECTION_OPEN_KEY,
-                    default_open=False,
-                )
-                if data_packs_box is not None:
-                    _draw_broader_region_offers(data_packs_box, scene, active_view_scope=active_view_scope)
+        data_packs_box = _draw_collapsible_subsection(
+            quality_box,
+            scene,
+            "Relevant Data Packs",
+            "WORLD_DATA",
+            DATA_CONTROL_MORE_OPTIONS_SECTION_OPEN_KEY,
+            default_open=False,
+        )
+        if data_packs_box is not None:
+            _draw_broader_region_offers(data_packs_box, scene, active_view_scope=active_view_scope)
 
     throttle_message = str(get_status_message(prefs) or "").strip()
     if throttle_message and "throttl" in throttle_message.lower():

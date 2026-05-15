@@ -1337,7 +1337,8 @@ def _request_tile_session_token(resolve_id, quality_mode, allow_refresh=True):
             error_message,
             raw_error_text,
         ):
-            mark_planetka_cloud_overloaded(reason=raw_error_text or error_message or f"http_{getattr(exc, 'code', 0)}")
+            if safe_quality_mode == "preview":
+                mark_planetka_cloud_overloaded(reason=raw_error_text or error_message or f"http_{getattr(exc, 'code', 0)}")
             raise RuntimeError(CLOUD_OVERLOADED_MESSAGE) from exc
         if int(getattr(exc, "code", 0) or 0) == 402 and error_code in {
             "payment_required",
