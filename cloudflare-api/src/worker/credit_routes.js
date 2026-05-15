@@ -5175,8 +5175,8 @@ function userProductQuoteBatchId() {
 
 const USER_PRODUCT_QUOTE_JOB_LOCK_NAME = "user_product_quote_jobs_global";
 const USER_PRODUCT_QUOTE_JOB_LOCK_TTL_SECONDS = 45;
-const USER_PRODUCT_QUOTE_JOB_DEFAULT_MAX_JOBS = 2;
-const USER_PRODUCT_QUOTE_JOB_DEFAULT_MAX_MS = 3500;
+const USER_PRODUCT_QUOTE_JOB_DEFAULT_MAX_JOBS = 12;
+const USER_PRODUCT_QUOTE_JOB_DEFAULT_MAX_MS = 20000;
 const USER_PRODUCT_QUOTE_JOB_MAX_ATTEMPTS = 3;
 const USER_PRODUCT_QUOTE_JOB_STALE_RUNNING_SECONDS = 120;
 const USER_PRODUCT_QUOTE_FAST_TRACK_AVAILABLE_AT = "1970-01-01T00:00:00.000Z";
@@ -6064,7 +6064,7 @@ function userProductQuoteJobWantsMapState(job) {
   return triggerType.includes("map_state") || staleReason.includes("map_state");
 }
 
-async function processSingleUserProductQuoteJob(db, job, deps) {
+async function processSingleUserProductQuoteJob(db, job, deps, runContext = {}) {
   const userId = String(job && job.user_id || "").trim();
   const productId = String(job && job.product_id || "").trim().toLowerCase();
   const product = regionProductById(productId);
@@ -6072,7 +6072,16 @@ async function processSingleUserProductQuoteJob(db, job, deps) {
     await finishUserProductQuoteJob(db, job, deps, "cancelled", "Product is no longer available.");
     return { status: "cancelled", reason: "invalid_product" };
   }
-  const account = await ensureFreshCreditAccountForUser(db, userId, deps);
+  const accountCache = runContext && runContext.accountByUser instanceof Map
+    ? runContext.accountByUser
+    : null;
+  let account = accountCache ? accountCache.get(userId) : null;
+  if (!account) {
+    account = await ensureFreshCreditAccountForUser(db, userId, deps);
+    if (accountCache) {
+      accountCache.set(userId, account);
+    }
+  }
   const pricingVersion = pricingSettingsCacheKey();
   const entitlementVersion = accountEntitlementVersion(account);
   if (
@@ -6083,7 +6092,18 @@ async function processSingleUserProductQuoteJob(db, job, deps) {
     await finishUserProductQuoteJob(db, job, deps, "cancelled", "Superseded by newer pricing or entitlement version.");
     return { status: "cancelled", reason: "superseded" };
   }
-  const quote = await createRegionPackQuote(db, userId, product, deps, { account });
+  const ownershipContextCache = runContext && runContext.ownershipContextByVersion instanceof Map
+    ? runContext.ownershipContextByVersion
+    : null;
+  const ownershipContextKey = `${userId}:${pricingVersion}:${entitlementVersion}`;
+  let pricingOwnershipContext = ownershipContextCache ? ownershipContextCache.get(ownershipContextKey) : null;
+  if (!pricingOwnershipContext) {
+    pricingOwnershipContext = await regionPackPricingOwnershipContext(db, userId, account, deps);
+    if (ownershipContextCache) {
+      ownershipContextCache.set(ownershipContextKey, pricingOwnershipContext);
+    }
+  }
+  const quote = await createRegionPackQuote(db, userId, product, deps, { account, pricingOwnershipContext });
   if (!quote || quote.error) {
     const message = quote && (quote.error || quote.status) || "quote_creation_failed";
     throw new Error(String(message));
@@ -6113,9 +6133,13 @@ export async function processUserProductQuoteJobs(db, env = {}, deps = {}, optio
   if (!Boolean(options && options.skipPricingSettingsLoad)) {
     await ensureRuntimePricingSettings(env, deps);
   }
-  const maxJobs = Math.max(1, Math.min(3, Number.parseInt(options && options.maxJobs || USER_PRODUCT_QUOTE_JOB_DEFAULT_MAX_JOBS, 10) || USER_PRODUCT_QUOTE_JOB_DEFAULT_MAX_JOBS));
-  const maxMs = Math.max(500, Math.min(5000, Number.parseInt(options && options.maxMs || USER_PRODUCT_QUOTE_JOB_DEFAULT_MAX_MS, 10) || USER_PRODUCT_QUOTE_JOB_DEFAULT_MAX_MS));
+  const maxJobs = Math.max(1, Math.min(20, Number.parseInt(options && options.maxJobs || USER_PRODUCT_QUOTE_JOB_DEFAULT_MAX_JOBS, 10) || USER_PRODUCT_QUOTE_JOB_DEFAULT_MAX_JOBS));
+  const maxMs = Math.max(500, Math.min(28000, Number.parseInt(options && options.maxMs || USER_PRODUCT_QUOTE_JOB_DEFAULT_MAX_MS, 10) || USER_PRODUCT_QUOTE_JOB_DEFAULT_MAX_MS));
   const workerId = userProductQuoteWorkerId(deps);
+  const runContext = {
+    accountByUser: new Map(),
+    ownershipContextByVersion: new Map(),
+  };
   const lockToken = await acquireUserProductQuoteJobLock(db, deps, workerId);
   if (!lockToken) {
     return { ok: true, lock_acquired: false, processed: 0, message: "quote_job_processor_already_running" };
@@ -6137,13 +6161,17 @@ export async function processUserProductQuoteJobs(db, env = {}, deps = {}, optio
       if (!job) {
         break;
       }
+      const jobIncludesMapState = userProductQuoteJobWantsMapState(job);
       try {
-        const result = await processSingleUserProductQuoteJob(db, job, deps);
+        const result = await processSingleUserProductQuoteJob(db, job, deps, runContext);
         results.push(result);
         if (result && result.status === "cancelled") {
           cancelled += 1;
         } else {
           processed += 1;
+        }
+        if (jobIncludesMapState) {
+          break;
         }
       } catch (error) {
         const retryStatus = await retryOrFailUserProductQuoteJob(db, job, deps, error);
@@ -6157,6 +6185,9 @@ export async function processUserProductQuoteJobs(db, env = {}, deps = {}, optio
           product_id: String(job && job.product_id || ""),
           error: String(error && error.message || error || "quote_job_failed"),
         });
+        if (jobIncludesMapState) {
+          break;
+        }
       }
     }
   } finally {
@@ -6653,8 +6684,9 @@ async function buildRegionPackCatalogPageData(db, userId, token, deps, options =
     if (status !== "ready") {
       const queued = await enqueueUserProductQuoteJob(db, userId, productId, pricingVersion, entitlementVersion, deps, {
         staleReason: status === "missing" ? "catalog_quote_missing" : `catalog_quote_${status}`,
-        priority: 70,
-        triggerType: "catalog_view",
+        priority: 25,
+        triggerType: "catalog_page_visible_requested",
+        fastTrack: true,
       });
       if (queued) {
         queuedQuoteJobs += 1;
@@ -7217,7 +7249,7 @@ function regionPackCatalogShellHtml(data) {
 <script>const DATA=${payload};
 const fmt=(v)=>"€"+Number(v||0).toFixed(2);
 const token=encodeURIComponent(DATA.token||"");
-  let ROWS=[];let loading=false;let loadedAll=false;let nextOffset=0;const FIRST_LIMIT=5;const NEXT_LIMIT=20;
+  let ROWS=[];let loading=false;let loadedAll=false;let nextOffset=0;const FIRST_LIMIT=20;const NEXT_LIMIT=20;
 function escapeCell(value){return String(value||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}
 	function rowHtml(row){const id=encodeURIComponent(row.id||"");const quote=encodeURIComponent(row.quote_id||"");const ready=String(row.quote_status||"ready")==="ready"&&!row.price_pending&&quote;const quoteParam=quote?"&quote_id="+quote:"";const partialCount=Number(row.partial_licence_tiles??row.partial_licence_tile_count??0);const partial=Number(row.partial_licence_credit_eur||0);const licenced=Number(row.already_licenced_tiles||0)+partialCount;const saving=Number(row.already_licenced_deduction_eur??row.already_licenced_saving_eur??0)+partial;const newTiles=Math.max(0,Number(row.new_tiles||0)-partialCount);const pending="<span class=\\"pending\\">"+escapeCell(row.status_label||"Price updating")+"</span>";const mapLink=ready?" <a class=\\"button secondary\\" href=\\"/credits/region-pack-map?token="+token+"&region_pack_id="+id+"&catalog=1"+quoteParam+"\\">Map</a>":" <span class=\\"button secondary disabled\\">Map</span>";return "<tr>"
 +"<td><b>"+escapeCell(row.name||"Data Pack")+"</b><div class=\\"muted small\\">"+escapeCell(row.group_label||"")+"</div></td>"
@@ -7230,8 +7262,10 @@ function escapeCell(value){return String(value||"").replace(/&/g,"&amp;").replac
 +"</tr>"}
 function groupRows(rows){const groups=[];const byKey=new Map();for(const row of rows){const key=String(row.group_key||"other");if(!byKey.has(key)){byKey.set(key,{key,label:String(row.group_label||key),rows:[]});groups.push(byKey.get(key));}byKey.get(key).rows.push(row)}return groups}
 function render(){const filter=String(document.getElementById("filter").value||"").trim().toLowerCase();let shown=0;const total=Number(DATA.total_packs||ROWS.length||0);const rows=ROWS.filter(row=>!filter||String(row.name||"").toLowerCase().includes(filter)||String(row.group_label||"").toLowerCase().includes(filter)||String(row.id||"").toLowerCase().includes(filter));let html=groupRows(rows).map(group=>{const groupRows=group.rows||[];if(!groupRows.length)return "";shown+=groupRows.length;return "<h2>"+escapeCell(group.label)+"</h2><table><thead><tr><th>Data Pack</th><th>New Tiles / Total Tiles</th><th>Full Price</th><th>Already Licenced</th><th>Volume Discount</th><th>Final Price</th><th>Actions</th></tr></thead><tbody>"+groupRows.map(rowHtml).join("")+"</tbody></table>"}).join("");if(!html){html="<div class=\\"empty\\">"+(loading?"Loading data packs...":(!loadedAll?"No loaded data packs match this search yet. More data packs are still loading.":"No data packs match this search."))+"</div>"}const loadingHtml=!loadedAll?"<div class=\\"loading-more\\"><span class=\\"spinner\\"></span><span>"+(loading?"Loading more data packs...":"More data packs are loading automatically.")+" "+ROWS.length+"/"+total+" loaded</span></div>":"";document.getElementById("catalog").innerHTML=loadingHtml+html;document.getElementById("count").textContent=shown+" shown · "+ROWS.length+"/"+total+" loaded"+(!loadedAll?" · loading...":"");}
-async function loadNext(){if(loading||loadedAll)return;loading=true;render();try{const pageLimit=ROWS.length?NEXT_LIMIT:FIRST_LIMIT;const url="/credits/region-pack-catalog-page?token="+token+"&offset="+encodeURIComponent(String(nextOffset))+"&limit="+encodeURIComponent(String(pageLimit));const res=await fetch(url,{cache:"no-store"});if(!res.ok)throw new Error("catalog_page_"+res.status);const page=await res.json();ROWS=ROWS.concat(Array.isArray(page.rows)?page.rows:[]);if(Number.isFinite(Number(page.total_packs)))DATA.total_packs=Number(page.total_packs);if(page.next_offset===null||page.next_offset===undefined){loadedAll=true}else{nextOffset=Number(page.next_offset||ROWS.length)}loading=false;render();if(!loadedAll)setTimeout(loadNext,80)}catch(error){console.warn("Planetka catalog page failed",error);loading=false;document.getElementById("count").className="error small";document.getElementById("count").textContent="Data-pack catalog failed to load.";render();}}
-document.getElementById("filter").addEventListener("input",render);loadNext();
+function nearBottom(){return window.innerHeight+window.scrollY>=document.documentElement.scrollHeight-360}
+function maybeLoadMore(){if(!loading&&!loadedAll&&nearBottom())loadNext()}
+async function loadNext(){if(loading||loadedAll)return;loading=true;render();try{const pageLimit=ROWS.length?NEXT_LIMIT:FIRST_LIMIT;const url="/credits/region-pack-catalog-page?token="+token+"&offset="+encodeURIComponent(String(nextOffset))+"&limit="+encodeURIComponent(String(pageLimit));const res=await fetch(url,{cache:"no-store"});if(!res.ok)throw new Error("catalog_page_"+res.status);const page=await res.json();ROWS=ROWS.concat(Array.isArray(page.rows)?page.rows:[]);if(Number.isFinite(Number(page.total_packs)))DATA.total_packs=Number(page.total_packs);if(page.next_offset===null||page.next_offset===undefined){loadedAll=true}else{nextOffset=Number(page.next_offset||ROWS.length)}loading=false;render();setTimeout(maybeLoadMore,120)}catch(error){console.warn("Planetka catalog page failed",error);loading=false;document.getElementById("count").className="error small";document.getElementById("count").textContent="Data-pack catalog failed to load.";render();}}
+document.getElementById("filter").addEventListener("input",render);window.addEventListener("scroll",maybeLoadMore,{passive:true});loadNext();
 </script>
 </body>
 </html>`;

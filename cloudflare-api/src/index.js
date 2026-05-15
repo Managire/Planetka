@@ -4434,7 +4434,7 @@ function maybeKickProductQuoteQueue(ctx, env, path) {
         db,
         env,
         TILE_ROUTE_DEPS,
-        { maxJobs: 1, maxMs: 2500 },
+        { maxJobs: 12, maxMs: 20000 },
       );
       if (summary && summary.processed > 0) {
         console.log(
@@ -4538,7 +4538,7 @@ export default {
           db,
           env,
           TILE_ROUTE_DEPS,
-          { maxJobs: 2, maxMs: 3500 },
+          { maxJobs: 20, maxMs: 26000 },
         );
         const scheduledDate = new Date(controller.scheduledTime || Date.now());
         const runHourlyMaintenance = scheduledDate.getUTCMinutes() === 0;
