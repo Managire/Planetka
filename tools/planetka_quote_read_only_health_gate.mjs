@@ -406,8 +406,12 @@ async function main() {
     const mapHtml = await mapCase.response.text();
     assert(mapHtml.includes('"price_pending":true'), `${productId}_map: page did not mark price pending`);
     assert(mapHtml.includes('"map_pending":true'), `${productId}_map: page did not mark map pending`);
+    assert(
+      mapCase.state.jobs.some((job) => job.trigger_type === "product_page_quote_map_state_requested"),
+      `${productId}_map: expected a combined quote+map fast-track job, got ${JSON.stringify(mapCase.state.jobs)}`,
+    );
     report.steps.push({
-      name: `${productId}_map_read_only_fast_track`,
+      name: `${productId}_map_read_only_fast_track_quote_and_map`,
       ok: true,
       query_count: mapCase.state.queries.length,
       queued_jobs: mapCase.state.jobs,

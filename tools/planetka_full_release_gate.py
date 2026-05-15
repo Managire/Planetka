@@ -60,11 +60,28 @@ OPERATIONAL_NOTES = (
 )
 
 
-PROFILE_COUNTS = {
-    "quick": {"scenes": 3, "countries": 2, "regions": 1},
-    "release": {"scenes": 10, "countries": 5, "regions": 2},
-    "full": {"scenes": 10, "countries": 5, "regions": 2},
-    "stress": {"scenes": 100, "countries": 50, "regions": 5},
+PROFILE_LIVE_TARGETS = {
+    "quick": {
+        "scene_targets": "slovakia:1",
+        "country_targets": "belize",
+        "region_targets": "",
+    },
+    "release": {
+        "scene_targets": "slovakia:2,belgium:2",
+        "country_targets": "belize",
+        "region_targets": "central_europe",
+    },
+    "full": {
+        "scene_targets": "slovakia:2,belgium:2",
+        "country_targets": "belize",
+        "region_targets": "central_europe",
+    },
+    # Still deterministic, but intentionally larger. Requires PLANETKA_ALLOW_LIVE_STRESS=1.
+    "stress": {
+        "scene_targets": "slovakia:2,belgium:2,italy:2,germany:2,spain:2",
+        "country_targets": "belize,costa_rica,slovakia,belgium",
+        "region_targets": "central_europe,southern_europe",
+    },
 }
 
 
@@ -260,7 +277,7 @@ def _check_public_web_endpoints() -> dict[str, Any]:
 def _build_steps(args: argparse.Namespace, package_path: Path) -> list[Step]:
     blender_bin = str(args.blender_bin or BLENDER_BIN_DEFAULT)
     profile = str(args.profile)
-    counts = PROFILE_COUNTS[profile]
+    live_targets = PROFILE_LIVE_TARGETS[profile]
     steps = [
         Step(
             name="python_compile",
@@ -365,16 +382,14 @@ def _build_steps(args: argparse.Namespace, package_path: Path) -> list[Step]:
         )
     if not args.skip_live_pricing:
         live_env = {
-            "PLANETKA_E2E_SCENE_TESTS": str(args.scene_tests if args.scene_tests is not None else counts["scenes"]),
-            "PLANETKA_E2E_COUNTRY_TESTS": str(args.country_tests if args.country_tests is not None else counts["countries"]),
-            "PLANETKA_E2E_REGION_TESTS": str(args.region_tests if args.region_tests is not None else counts["regions"]),
+            "PLANETKA_E2E_SCENE_TARGETS": str(args.live_scene_targets or live_targets["scene_targets"]),
+            "PLANETKA_E2E_COUNTRY_TARGETS": str(args.live_country_targets or live_targets["country_targets"]),
+            "PLANETKA_E2E_REGION_TARGETS": str(args.live_region_targets or live_targets["region_targets"]),
         }
         if profile == "stress":
             live_env.update(
                 {
                     "PLANETKA_E2E_PACE_SEC": "0",
-                    "PLANETKA_E2E_MAX_COUNTRY_TILES": "1000000",
-                    "PLANETKA_E2E_MAX_REGION_TILES": "1000000",
                 }
             )
         steps.append(
@@ -439,14 +454,17 @@ def _write_markdown(report_path: Path, report: dict[str, Any]) -> Path:
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the comprehensive Planetka release gate.")
-    parser.add_argument("--profile", choices=sorted(PROFILE_COUNTS), default="release")
+    parser.add_argument("--profile", choices=sorted(PROFILE_LIVE_TARGETS), default="release")
     parser.add_argument("--report-dir", default=str(REPORT_ROOT_DEFAULT))
     parser.add_argument("--blender-bin", default=str(os.environ.get("BLENDER_BIN") or BLENDER_BIN_DEFAULT))
     parser.add_argument("--skip-blender", action="store_true")
     parser.add_argument("--skip-live-pricing", action="store_true")
-    parser.add_argument("--scene-tests", type=int, default=None)
-    parser.add_argument("--country-tests", type=int, default=None)
-    parser.add_argument("--region-tests", type=int, default=None)
+    parser.add_argument("--live-scene-targets", default=None, help="Comma-separated product_id:tile_count scene targets for the live pricing gate.")
+    parser.add_argument("--live-country-targets", default=None, help="Comma-separated country product IDs for the live pricing gate.")
+    parser.add_argument("--live-region-targets", default=None, help="Comma-separated region product IDs for the live pricing gate.")
+    parser.add_argument("--scene-tests", type=int, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--country-tests", type=int, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--region-tests", type=int, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--blender-timeout-sec", type=int, default=900)
     parser.add_argument("--live-pricing-timeout-sec", type=int, default=7200)
     return parser.parse_args(argv)

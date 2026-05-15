@@ -6295,11 +6295,14 @@ async function materializedRegionPackQuoteResults(db, userId, products, account,
     const status = productQuoteStatus(row, pricingVersion, entitlementVersion);
     const quote = status === "ready" ? userProductQuoteFromRow(row) : null;
     if (!quote) {
+      const includeMapState = Boolean(options && options.includeMapState);
+      const baseTrigger = String(options && options.triggerType || "public_quote_requested").trim() || "public_quote_requested";
+      const baseStaleReason = String(options && options.staleReason || `quote_${status || "missing"}`).trim() || `quote_${status || "missing"}`;
       await enqueueUserProductQuoteJob(db, safeUserId, productId, pricingVersion, entitlementVersion, deps, {
         jobRound: options && Object.prototype.hasOwnProperty.call(options, "jobRound") ? options.jobRound : 0,
         priority: options && Object.prototype.hasOwnProperty.call(options, "priority") ? options.priority : 30,
-        triggerType: String(options && options.triggerType || "public_quote_requested"),
-        staleReason: String(options && options.staleReason || `quote_${status || "missing"}`),
+        triggerType: includeMapState ? `${baseTrigger}_map_state_requested` : baseTrigger,
+        staleReason: includeMapState ? `${baseStaleReason}_map_state_requested` : baseStaleReason,
         fastTrack: Boolean(options && options.fastTrack),
         sourceProductId: String(options && options.sourceProductId || "") || null,
         triggerPurchaseId: String(options && options.triggerPurchaseId || "") || null,
@@ -10025,20 +10028,18 @@ export async function handleCreditRegionPackMap(request, env, deps) {
   const requestedQuoteMismatch = Boolean(requestedQuoteId && quote && String(quote.quote_id || "") !== requestedQuoteId);
   const mapState = quoteStatus === "ready" ? parseUserProductMapState(quoteRow) : null;
   const mapStateStatus = String(quoteRow && quoteRow.map_state_status || (mapState ? "ready" : "not_requested")).trim().toLowerCase() || "not_requested";
-  if (quoteStatus !== "ready") {
+  const mapNeedsUpdate = !mapState || mapStateStatus !== "ready";
+  if (quoteStatus !== "ready" || mapNeedsUpdate) {
+    const quoteNeedsUpdate = quoteStatus !== "ready";
     await enqueueUserProductQuoteJob(db, userId, productId, pricingVersion, entitlementVersion, deps, {
-      staleReason: `product_page_quote_${quoteStatus}`,
+      staleReason: quoteNeedsUpdate
+        ? `product_page_quote_${quoteStatus}_map_state_requested`
+        : `product_page_map_state_${mapStateStatus || "missing"}`,
       jobRound: 0,
       priority: 0,
-      triggerType: "product_page_view",
-      fastTrack: true,
-    });
-  } else if (!mapState || mapStateStatus !== "ready") {
-    await enqueueUserProductQuoteJob(db, userId, productId, pricingVersion, entitlementVersion, deps, {
-      staleReason: `product_page_map_state_${mapStateStatus || "missing"}`,
-      jobRound: 0,
-      priority: 0,
-      triggerType: "product_page_map_state_requested",
+      triggerType: quoteNeedsUpdate
+        ? "product_page_quote_map_state_requested"
+        : "product_page_map_state_requested",
       fastTrack: true,
     });
   }
