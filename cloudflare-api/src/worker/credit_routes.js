@@ -6112,11 +6112,22 @@ async function processSingleUserProductQuoteJob(db, job, deps, runContext = {}) 
   // and only built for explicit map-state jobs, usually fast-tracked by a
   // product page the user is actively viewing.
   const summary = await storeUserProductQuoteFromQuote(db, quote, deps);
-  if (userProductQuoteJobWantsMapState(job)) {
+  const jobIncludesMapState = userProductQuoteJobWantsMapState(job);
+  if (jobIncludesMapState) {
     const mapState = await buildUserProductMapState(db, product, quote, account, deps, { userId });
     await storeUserProductQuoteFromQuote(db, quote, deps, { mapState });
   }
   await finishUserProductQuoteJob(db, job, deps, "finished");
+  if (!jobIncludesMapState) {
+    await enqueueUserProductQuoteJob(db, userId, productId, String(quote.pricing_version || ""), String(quote.entitlement_version || ""), deps, {
+      jobRound: Math.max(0, Number.parseInt(job && job.job_round || 0, 10) || 0) + 10,
+      priority: Math.max(100, (Number.parseInt(job && job.priority || 0, 10) || 0) + 50),
+      triggerType: "quote_ready_map_state_followup",
+      staleReason: "map_state_pending_after_quote_ready",
+      sourceProductId: String(job && job.source_product_id || "") || null,
+      triggerPurchaseId: String(job && job.trigger_purchase_id || "") || null,
+    });
+  }
   return {
     status: "finished",
     product_id: productId,
