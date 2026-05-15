@@ -4400,6 +4400,64 @@ async function dispatchRequest(request, env, path, ctx) {
   );
 }
 
+function shouldKickProductQuoteQueue(path) {
+  const safePath = String(path || "");
+  if (!safePath.startsWith("/credits/")) {
+    return false;
+  }
+  if (
+    safePath.startsWith("/credits/page-assets/")
+    || safePath === "/credits/region-pack-map-asset"
+    || safePath === "/credits/region-pack-map-background.jpg"
+    || safePath === "/credits/account-country-borders.json"
+  ) {
+    return false;
+  }
+  return safePath === "/credits/checkout"
+    || safePath === "/credits/region-offers"
+    || safePath === "/credits/region-pack-related-offers"
+    || safePath === "/credits/region-pack-detail-link"
+    || safePath === "/credits/region-pack-map"
+    || safePath === "/credits/region-pack-catalog-page"
+    || safePath === "/credits/region-pack-checkout"
+    || safePath === "/credits/payment-success";
+}
+
+function maybeKickProductQuoteQueue(ctx, env, path) {
+  if (!ctx || typeof ctx.waitUntil !== "function" || !shouldKickProductQuoteQueue(path)) {
+    return;
+  }
+  ctx.waitUntil((async () => {
+    try {
+      const db = requireDb(env);
+      const summary = await processUserProductQuoteJobs(
+        db,
+        env,
+        TILE_ROUTE_DEPS,
+        { maxJobs: 1, maxMs: 2500 },
+      );
+      if (summary && summary.processed > 0) {
+        console.log(
+          "worker.product_quote_queue.kicked",
+          JSON.stringify({
+            path,
+            processed: Number(summary.processed || 0),
+            requeued: Number(summary.requeued || 0),
+            failed: Number(summary.failed || 0),
+            cancelled: Number(summary.cancelled || 0),
+            elapsed_ms: Number(summary.elapsed_ms || 0),
+          }),
+        );
+      }
+    } catch (error) {
+      console.warn(
+        "worker.product_quote_queue.kick_failed",
+        JSON.stringify({ path, error: String(error && error.message || "quote_queue_kick_failed") }),
+      );
+    }
+  })());
+}
+
 async function trackAuthEndpointError(path, method, env, error) {
   if (!isAuthOrDevicePath(path)) {
     return;
@@ -4447,7 +4505,9 @@ export default {
       if (isAdminRoutePath(path) && queryToken) {
         return json({ ok: false, error: "query_token_not_allowed" }, 400, env);
       }
-      return await dispatchRequest(request, env, path, ctx);
+      const response = await dispatchRequest(request, env, path, ctx);
+      maybeKickProductQuoteQueue(ctx, env, path);
+      return response;
     } catch (error) {
       await trackAuthEndpointError(path, request.method, env, error);
       console.error(
