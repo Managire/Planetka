@@ -55,7 +55,8 @@ const CHECKOUT_TILE_SET_TOKEN_TTL_MINUTES = 24 * 60;
 const MONEY_SCALE = 100;
 const METRIC_SCALE = 1_000_000;
 const REGION_PACK_CATALOG_VERSION = GENERATED_REGION_PACK_CATALOG_VERSION || "gadm_regions_v8";
-const REGION_PACK_MAP_ASSET_REVISION = `${REGION_PACK_CATALOG_VERSION}:outline-v4-product-bg-wt-blue-v4-partial-dateline-v7-admin-labels-v1-success-upsell-v1-catalog-flat-v1-price-breakdown-v1-hover-breakdown-v1-summary-partial-v1-pricing-runtime-v5-runtime-buckets-v1-canonical-pricing-v2-coeff-km2-v1-post-purchase-new-v1-button-border-gold-v1-tile-tooltip-v2-static-js-v2-compact-state-v1`;
+const REGION_PACK_MAP_ASSET_REVISION = `${REGION_PACK_CATALOG_VERSION}:outline-v4-product-bg-wt-blue-v4-partial-dateline-v7-admin-labels-v1-success-upsell-v1-catalog-flat-v1-price-breakdown-v1-hover-breakdown-v1-summary-partial-v1-pricing-runtime-v5-runtime-buckets-v1-canonical-pricing-v2-coeff-km2-v1-post-purchase-new-v1-button-border-gold-v1-tile-tooltip-v2-static-js-v4-full-map-state-v1`;
+const REGION_PACK_PRICING_ENGINE_REVISION = "d1-complete-map-state-v2";
 const ACCOUNT_COUNTRY_BORDERS_ASSET_REVISION = `${REGION_PACK_CATALOG_VERSION}:account-country-borders-v1`;
 const SQL_VARIABLE_SAFE_CHUNK_SIZE = 75;
 const REGION_PACK_TILE_CHUNK_SIZE = SQL_VARIABLE_SAFE_CHUNK_SIZE;
@@ -1206,6 +1207,7 @@ async function packCoverageAggregateForTarget(db, targetProduct, ownedPackIds, d
       paid_tile_count: 0,
       free_tile_count: 0,
       base_gross_cents: 0,
+      gross_cents: 0,
     };
   }
   await ensureRegionPackTileEntryTable(db, deps);
@@ -1239,41 +1241,48 @@ async function packCoverageAggregateForTarget(db, targetProduct, ownedPackIds, d
     let paidTileCount = 0;
     let freeTileCount = 0;
     let baseGrossCents = 0;
+    let grossCents = 0;
     for (const row of byTileKey.values()) {
       const baseCents = Math.max(0, Number.parseInt(row && row.base_gross_cents || 0, 10) || 0);
-      const globallyFree = Boolean(Number(row && row.globally_free || 0) || baseCents <= 0);
+      const runtimeCents = applyFullQualityPriceCoefficientCents(baseCents);
+      const globallyFree = Boolean(Number(row && row.globally_free || 0) || runtimeCents <= 0);
       if (globallyFree) {
         freeTileCount += 1;
       } else {
         paidTileCount += 1;
       }
       baseGrossCents += baseCents;
+      grossCents += runtimeCents;
     }
     return {
       tile_count: byTileKey.size,
       paid_tile_count: paidTileCount,
       free_tile_count: freeTileCount,
       base_gross_cents: baseGrossCents,
+      gross_cents: grossCents,
     };
   }
   let tileCount = 0;
   let paidTileCount = 0;
   let freeTileCount = 0;
   let baseGrossCents = 0;
+  let grossCents = 0;
   for (const chunk of fixedSizeChunks(ids, SQL_VARIABLE_SAFE_CHUNK_SIZE)) {
     const row = await deps.dbGet(
       db,
       `
         SELECT
           COUNT(*) AS tile_count,
-          COALESCE(SUM(CASE WHEN globally_free = 0 AND base_gross_cents > 0 THEN 1 ELSE 0 END), 0) AS paid_tile_count,
-          COALESCE(SUM(CASE WHEN globally_free != 0 OR base_gross_cents <= 0 THEN 1 ELSE 0 END), 0) AS free_tile_count,
-          COALESCE(SUM(base_gross_cents), 0) AS base_gross_cents
+          COALESCE(SUM(CASE WHEN globally_free = 0 AND gross_cents > 0 THEN 1 ELSE 0 END), 0) AS paid_tile_count,
+          COALESCE(SUM(CASE WHEN globally_free != 0 OR gross_cents <= 0 THEN 1 ELSE 0 END), 0) AS free_tile_count,
+          COALESCE(SUM(base_gross_cents), 0) AS base_gross_cents,
+          COALESCE(SUM(gross_cents), 0) AS gross_cents
         FROM (
           SELECT DISTINCT
             t.tile_key,
             t.base_gross_cents,
-            t.globally_free
+            t.globally_free,
+            CAST(ROUND(t.base_gross_cents * ?) AS INTEGER) AS gross_cents
           FROM region_pack_tile_entries AS owned
           INNER JOIN region_pack_tile_entries AS t
             ON t.catalog_version = owned.catalog_version
@@ -1283,18 +1292,20 @@ async function packCoverageAggregateForTarget(db, targetProduct, ownedPackIds, d
             AND t.region_pack_id = ?
         )
       `,
-      [REGION_PACK_CATALOG_VERSION, ...chunk, targetId],
+      [fullQualityPriceCoefficient(), REGION_PACK_CATALOG_VERSION, ...chunk, targetId],
     );
     tileCount += Math.max(0, Number.parseInt(row && row.tile_count || 0, 10) || 0);
     paidTileCount += Math.max(0, Number.parseInt(row && row.paid_tile_count || 0, 10) || 0);
     freeTileCount += Math.max(0, Number.parseInt(row && row.free_tile_count || 0, 10) || 0);
     baseGrossCents += Math.max(0, Number.parseInt(row && row.base_gross_cents || 0, 10) || 0);
+    grossCents += Math.max(0, Number.parseInt(row && row.gross_cents || 0, 10) || 0);
   }
   return {
     tile_count: tileCount,
     paid_tile_count: paidTileCount,
     free_tile_count: freeTileCount,
     base_gross_cents: baseGrossCents,
+    gross_cents: grossCents,
   };
 }
 
@@ -1509,11 +1520,12 @@ async function estimateRegionPackSummaryWithPackRelations(db, product, account, 
     .map((relation) => normalizedRegionPackProductId(relation.owned_region_pack_id))
     .filter(Boolean);
   const packCoverage = await packCoverageAggregateForTarget(db, product, relevantPackIds, deps);
-  let grossCents = Math.max(0, integerCents(summary.gross_cents) - applyFullQualityPriceCoefficientCents(packCoverage.base_gross_cents));
+  const packCoverageGrossCents = Math.max(0, integerCents(packCoverage.gross_cents));
+  let grossCents = Math.max(0, integerCents(summary.gross_cents) - packCoverageGrossCents);
   let paidTileCount = Math.max(0, Number.parseInt(summary.paid_tile_count || 0, 10) - Math.max(0, Number.parseInt(packCoverage.paid_tile_count || 0, 10) || 0));
   let freeTileCount = Math.max(0, Number.parseInt(summary.free_tile_count || 0, 10) - Math.max(0, Number.parseInt(packCoverage.free_tile_count || 0, 10) || 0));
   let alreadyLicencedCount = Math.max(0, Number.parseInt(packCoverage.tile_count || 0, 10) || 0);
-  let alreadyLicencedGrossCents = applyFullQualityPriceCoefficientCents(packCoverage.base_gross_cents);
+  let alreadyLicencedGrossCents = packCoverageGrossCents;
   let partialLicenceCount = 0;
   let partialLicenceCreditCents = 0;
 
@@ -1864,6 +1876,7 @@ function activePricingSettings() {
 function pricingSettingsCacheKey() {
   const settings = activePricingSettings();
   return [
+    REGION_PACK_PRICING_ENGINE_REVISION,
     Number(settings.full_quality_price_coefficient || 1).toFixed(6),
     Number(settings.region_pack_discount_min_percent || 0),
     Number(settings.region_pack_discount_max_percent || 0),
@@ -3093,10 +3106,7 @@ async function loadAsset(id){const safe=String(id||"").trim();if(assetCache.has(
 function normaliseTile(tile,owned){const p=parseTileKey(tile&&tile.tile_key);const f=family(p);const ownedDs=owned.get(f)||new Set();const gross=int(tile&&((tile.gross_cents!==undefined?tile.gross_cents:tile.full_price_cents)));const globallyFree=!!(tile&&tile.globally_free)||gross<=0;let status="new";if(DATA.world_full_quality_unlocked||DATA.product_full_quality_unlocked||Array.from(ownedDs).some((d)=>Number(d)<=Number(p&&p.d||0))){status="licenced"}else if(globallyFree){status="free"}else if(Array.from(ownedDs).some((d)=>Number(d)>Number(p&&p.d||0))){status="partial"}const lonMin=Number(tile&&tile.lon_min),lonMax=Number(tile&&tile.lon_max),latMin=Number(tile&&tile.lat_min),latMax=Number(tile&&tile.lat_max);return{...tile,tile_key:p?p.key:String(tile&&tile.tile_key||""),x:p?p.x:null,y:p?p.y:null,z:p?p.z:null,d:p?p.d:null,lon_min:Number.isFinite(lonMin)?lonMin:(p?p.x-180:null),lon_max:Number.isFinite(lonMax)?lonMax:(p?p.x-180+p.z:null),lat_min:Number.isFinite(latMin)?latMin:(p?p.y-90:null),lat_max:Number.isFinite(latMax)?latMax:(p?p.y-90+p.z:null),full_price_cents:gross,gross_cents:gross,status}}
 function computeAsset(asset){const owned=buildOwnedFamilies();const rows=(asset.tiles||[]).map((tile)=>normaliseTile(tile,owned)).filter((tile)=>tile.tile_key&&Number.isFinite(tile.x)&&Number.isFinite(tile.y)&&Number.isFinite(tile.z)).sort(tileSort);const levels=Array.from(new Set(rows.map((row)=>Number(row.z)).filter(Number.isFinite))).sort((a,b)=>a-b);return{asset,rows,levels}}
 function normaliseStoredTile(tile){const p=parseTileKey(tile&&tile.tile_key);const lonMin=Number(tile&&tile.lon_min),lonMax=Number(tile&&tile.lon_max),latMin=Number(tile&&tile.lat_min),latMax=Number(tile&&tile.lat_max);return{...tile,tile_key:p?p.key:String(tile&&tile.tile_key||""),x:p?p.x:null,y:p?p.y:null,z:p?p.z:null,d:p?p.d:null,lon_min:Number.isFinite(lonMin)?lonMin:(p?p.x-180:null),lon_max:Number.isFinite(lonMax)?lonMax:(p?p.x-180+p.z:null),lat_min:Number.isFinite(latMin)?latMin:(p?p.y-90:null),lat_max:Number.isFinite(latMax)?latMax:(p?p.y-90+p.z:null),status:String(tile&&tile.status||"free")}}
-function statusMapFromState(state){const map=new Map();for(const entry of Array.isArray(state&&state.tile_statuses)?state.tile_statuses:[]){if(Array.isArray(entry)){const key=String(entry[0]||"");if(key)map.set(key,{status:String(entry[1]||"new"),full_price_cents:int(entry[2]),gross_cents:int(entry[2]),final_price_cents:int(entry[3]),price_cents:int(entry[3]),price_eur:int(entry[3])/100,partial_licence_credit_cents:int(entry[4]),already_licenced_cents:int(entry[5]),discount_cents:int(entry[6])})}else if(entry&&typeof entry==="object"){const key=String(entry.tile_key||"");if(key)map.set(key,entry)}}return map}
-function applyStatusMap(tile,statusMap){const extra=statusMap.get(tile.tile_key);if(!extra)return tile;return{...tile,...extra,status:String(extra.status||tile.status||"new")}}
-function enrichTilePrices(rows,targetFinalCents){const entries=[];let total=0;for(let i=0;i<(rows||[]).length;i++){const tile=rows[i];const full=int(tile.full_price_cents!==undefined?tile.full_price_cents:tile.gross_cents);const status=String(tile.status||"new");const partial=int(tile.partial_licence_credit_cents);const pre=status==="new"?full:(status==="partial"?Math.max(0,full-partial):0);tile.full_price_cents=full;tile.gross_cents=full;tile.already_licenced_cents=status==="licenced"?full:int(tile.already_licenced_cents);tile.pre_discount_cents=pre;if(pre>0){entries.push({tile,index:i,base:pre,cents:0,rem:0});total+=pre}else{tile.final_price_cents=0;tile.price_cents=0;tile.price_eur=0;tile.discount_cents=0}}const target=Math.max(0,Math.min(total,int(targetFinalCents)));if(!entries.length||target<=0){for(const entry of entries){entry.tile.final_price_cents=0;entry.tile.price_cents=0;entry.tile.price_eur=0;entry.tile.discount_cents=entry.base}return rows}let allocated=0;for(const entry of entries){const raw=entry.base*target/total;entry.cents=Math.floor(raw);entry.rem=raw-entry.cents;allocated+=entry.cents}entries.sort((a,b)=>b.rem!==a.rem?b.rem-a.rem:a.index-b.index);let remaining=target-allocated;for(const entry of entries){if(remaining<=0)break;entry.cents+=1;remaining--}for(const entry of entries){entry.tile.final_price_cents=entry.cents;entry.tile.price_cents=entry.cents;entry.tile.price_eur=entry.cents/100;entry.tile.discount_cents=Math.max(0,entry.base-entry.cents)}return rows}
-function computeViewModel(asset){const state=DATA.map_state_ready&&DATA.map_state&&typeof DATA.map_state==="object"?DATA.map_state:null;if(state&&Array.isArray(state.tiles)&&state.tiles.length){const rows=state.tiles.map(normaliseStoredTile).filter((tile)=>tile.tile_key&&Number.isFinite(tile.x)&&Number.isFinite(tile.y)&&Number.isFinite(tile.z)).sort(tileSort);const levels=(Array.isArray(state.levels)&&state.levels.length?state.levels:Array.from(new Set(rows.map((row)=>Number(row.z)).filter(Number.isFinite)))).map(Number).filter(Number.isFinite).sort((a,b)=>a-b);return{asset:{...asset,bounds:state.bounds||asset.bounds,outlines:Array.isArray(state.outlines)?state.outlines:asset.outlines,included_countries:Array.isArray(state.included_countries)?state.included_countries:asset.included_countries,region_pack:state.region_pack||asset.region_pack},rows,levels}}if(state&&Array.isArray(state.tile_statuses)){const statusMap=statusMapFromState(state);const base=computeAsset(asset);const rows=enrichTilePrices(base.rows.map((tile)=>applyStatusMap(tile,statusMap)).sort(tileSort),DATA.summary&&DATA.summary.price_cents);const levels=(Array.isArray(state.levels)&&state.levels.length?state.levels:base.levels).map(Number).filter(Number.isFinite).sort((a,b)=>a-b);return{asset:{...asset,bounds:state.bounds||asset.bounds,outlines:Array.isArray(state.outlines)?state.outlines:asset.outlines,included_countries:Array.isArray(state.included_countries)?state.included_countries:asset.included_countries,region_pack:state.region_pack||asset.region_pack},rows,levels}}if(DATA.product_full_quality_unlocked||DATA.world_full_quality_unlocked||(Array.isArray(DATA.owned_tile_keys)&&DATA.owned_tile_keys.length)){const base=computeAsset(asset);base.rows=enrichTilePrices(base.rows,DATA.summary&&DATA.summary.price_cents);return base}return{asset,rows:[],levels:[]}}
+function computeViewModel(asset){const state=DATA.map_state_ready&&DATA.map_state&&typeof DATA.map_state==="object"?DATA.map_state:null;if(state&&Array.isArray(state.tiles)&&state.tiles.length){const rows=state.tiles.map(normaliseStoredTile).filter((tile)=>tile.tile_key&&Number.isFinite(tile.x)&&Number.isFinite(tile.y)&&Number.isFinite(tile.z)).sort(tileSort);const levels=(Array.isArray(state.levels)&&state.levels.length?state.levels:Array.from(new Set(rows.map((row)=>Number(row.z)).filter(Number.isFinite)))).map(Number).filter(Number.isFinite).sort((a,b)=>a-b);return{asset:{...asset,bounds:state.bounds||asset.bounds,outlines:Array.isArray(state.outlines)?state.outlines:asset.outlines,included_countries:Array.isArray(state.included_countries)?state.included_countries:asset.included_countries,region_pack:state.region_pack||asset.region_pack},rows,levels}}return{asset,rows:[],levels:[]}}
 function priceBreakdownText(tile){const full=int(tile.full_price_cents!==undefined?tile.full_price_cents:tile.gross_cents);const already=int(tile.already_licenced_cents);const partial=int(tile.partial_licence_credit_cents);const discount=int(tile.discount_cents);const final=int(tile.final_price_cents!==undefined?tile.final_price_cents:tile.price_cents);const pct=int(tile.discount_percent!==undefined?tile.discount_percent:DATA.summary&&DATA.summary.discount_percent);const lines=["Full Price: "+fmtCents(full)];if(already>0)lines.push("Licenced: - "+fmtCents(already));if(partial>0)lines.push("Partially licenced: - "+fmtCents(partial));if(discount>0)lines.push("Volume Discount ("+pct+"%): - "+fmtCents(discount));lines.push("Final Price: "+fmtCents(final));return lines.join("\\n")}
 function tileTooltipText(tile,statusText){return tile.tile_key+"\\nLand: "+Number(tile.billable_land_km2||0).toFixed(2)+" km²\\nStatus: "+statusText+"\\n"+priceBreakdownText(tile)}
 function zoomLabel(level){const list=(window.PLANETKA_MAP_ZOOM_LEVELS&&window.PLANETKA_MAP_ZOOM_LEVELS.length?window.PLANETKA_MAP_ZOOM_LEVELS:[Number(level)]).map(Number);const i=Math.max(0,list.indexOf(Number(level)));return "Zoom "+(i+1)+(i===0?" - closest":"")}
@@ -6422,7 +6432,13 @@ function parseUserProductMapState(row) {
     const mapState = parsed && parsed.map_state && typeof parsed.map_state === "object"
       ? parsed.map_state
       : parsed;
-    return mapState && typeof mapState === "object" ? mapState : null;
+    if (!mapState || typeof mapState !== "object") {
+      return null;
+    }
+    if (Number.parseInt(mapState.schema || 0, 10) < 3 || !Array.isArray(mapState.tiles) || mapState.tiles.length <= 0) {
+      return null;
+    }
+    return mapState;
   } catch (_error) {
     return null;
   }
@@ -6525,18 +6541,6 @@ function allocateFinalMapTilePrices(mapTiles, targetFinalCents) {
   }
 }
 
-function compactUserProductMapTile(tile) {
-  return [
-    String(tile && tile.tile_key || ""),
-    String(tile && tile.status || "new"),
-    integerCents(tile && tile.full_price_cents),
-    integerCents(tile && tile.final_price_cents),
-    integerCents(tile && tile.partial_licence_credit_cents),
-    integerCents(tile && tile.already_licenced_cents),
-    integerCents(tile && tile.discount_cents),
-  ];
-}
-
 async function buildUserProductMapState(db, product, quote, account, deps, options = {}) {
   const productId = normalizedRegionPackProductId(product);
   const userId = String(quote && quote.user_id || account && account.user_id || options && options.userId || "").trim();
@@ -6560,17 +6564,13 @@ async function buildUserProductMapState(db, product, quote, account, deps, optio
   const sceneOwnedByFamily = ownershipContext && ownershipContext.sceneOwnedByFamily instanceof Map
     ? ownershipContext.sceneOwnedByFamily
     : new Map();
-  const overrideFamilyKeys = targetFullyCovered
-    ? []
-    : Array.from(new Set([
-      ...Array.from(ownedDByFamily.keys()),
-      ...Array.from(sceneOwnedByFamily.keys()),
-    ].filter(Boolean)));
-  const overrideRows = overrideFamilyKeys.length
-    ? await regionPackTileRowsForProductFamilies(db, product, overrideFamilyKeys, deps)
-    : [];
+  const allRows = await regionPackAllTileRowsForProduct(db, product, deps);
+  const expectedTileCount = Math.max(0, Number.parseInt(product && product.tile_count || 0, 10) || 0);
+  if (expectedTileCount > 0 && allRows.length !== expectedTileCount) {
+    throw new Error(`map_state_tile_count_mismatch:${productId}:${allRows.length}:${expectedTileCount}`);
+  }
   const mapTiles = [];
-  for (const row of overrideRows) {
+  for (const row of allRows) {
     const parsed = row && row.parsed || parseTileKey(row && (row.tile_key || row.key) || "");
     const key = normalizeTileKey(row && (row.tile_key || row.key) || "");
     const family = String(row && row.family || tileFamilyKey(parsed) || "");
@@ -6588,11 +6588,10 @@ async function buildUserProductMapState(db, product, quote, account, deps, optio
     let status = "new";
     if (licencedByExisting) {
       status = "licenced";
+    } else if (globallyFree) {
+      status = "free";
     } else if (partialCreditCents > 0) {
       status = "partial";
-    }
-    if (status === "new" || globallyFree) {
-      continue;
     }
     const alreadyLicencedCents = status === "licenced" ? fullCents : 0;
     const preDiscountCents = status === "new"
@@ -6625,15 +6624,23 @@ async function buildUserProductMapState(db, product, quote, account, deps, optio
       globally_free: globallyFree,
     });
   }
-  const tileStatusOverrides = mapTiles.map(compactUserProductMapTile);
-  const levels = [];
+  const preDiscountTotalCents = mapTiles.reduce((total, tile) => total + Math.max(0, integerCents(tile && tile.pre_discount_cents)), 0);
+  const targetFinalCents = integerCents(quote.summary.price_cents);
+  if (targetFinalCents > preDiscountTotalCents) {
+    throw new Error(`map_state_price_total_mismatch:${productId}:${targetFinalCents}:${preDiscountTotalCents}`);
+  }
+  allocateFinalMapTilePrices(mapTiles, targetFinalCents);
+  const allocatedFinalCents = mapTiles.reduce((total, tile) => total + Math.max(0, integerCents(tile && tile.final_price_cents)), 0);
+  if (allocatedFinalCents !== targetFinalCents) {
+    throw new Error(`map_state_final_price_allocation_mismatch:${productId}:${allocatedFinalCents}:${targetFinalCents}`);
+  }
+  const levels = Array.from(new Set(mapTiles.map((tile) => Number(tile && tile.z)).filter(Number.isFinite))).sort((a, b) => a - b);
   const detail = GENERATED_REGION_PACK_DETAILS[String(product && product.id || "")] || {};
   return {
-    schema: 2,
-    compact_tile_statuses: true,
-    tile_status_mode: "overrides",
-    tile_status_count: tileStatusOverrides.length,
-    total_tile_status_count: Math.max(0, Number.parseInt(product && product.tile_count || 0, 10) || 0),
+    schema: 3,
+    tile_status_mode: "complete",
+    tile_status_count: mapTiles.length,
+    total_tile_status_count: expectedTileCount || mapTiles.length,
     product_full_quality_unlocked: targetFullyCovered,
     generated_at: quoteIsoNow(deps),
     catalog_version: REGION_PACK_CATALOG_VERSION,
@@ -6645,7 +6652,7 @@ async function buildUserProductMapState(db, product, quote, account, deps, optio
     outlines: regionProductOutlinesForMap(product),
     included_countries: regionProductIncludedCountries(product),
     levels,
-    tile_statuses: tileStatusOverrides,
+    tiles: mapTiles,
   };
 }
 

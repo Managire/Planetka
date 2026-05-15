@@ -38,6 +38,7 @@ const FORBIDDEN_SQL_PATTERNS = [
   /pricing_quotes/i,
 ];
 const DEFAULT_PRICING_VERSION = [
+  "d1-complete-map-state-v2",
   "5.000000",
   "0",
   "75",
