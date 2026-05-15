@@ -56,6 +56,8 @@ RESET_E2E_ENTITLEMENTS = str(os.environ.get("PLANETKA_E2E_RESET_ENTITLEMENTS") o
 PACE_SEC = float(os.environ.get("PLANETKA_E2E_PACE_SEC", "3.0") or "3.0")
 MAX_COUNTRY_TILES = int(os.environ.get("PLANETKA_E2E_MAX_COUNTRY_TILES", "1200") or "1200")
 MAX_REGION_TILES = int(os.environ.get("PLANETKA_E2E_MAX_REGION_TILES", "1500") or "1500")
+QUOTE_WAIT_TIMEOUT_SEC = float(os.environ.get("PLANETKA_E2E_QUOTE_WAIT_TIMEOUT_SEC", "240") or "240")
+QUOTE_WAIT_POLL_SEC = float(os.environ.get("PLANETKA_E2E_QUOTE_WAIT_POLL_SEC", "6") or "6")
 
 
 def stress_explicitly_allowed() -> bool:
@@ -221,12 +223,30 @@ def reset_e2e_entitlements(user_id: str) -> None:
     )
 
 
-def fetch_json_from_map_page(url: str) -> dict[str, Any]:
-    raw = urllib.request.urlopen(url, timeout=45).read().decode("utf-8", errors="replace")
-    match = re.search(r"window\.PLANETKA_REGION_PACK_DATA=(\{.*?\});</script>", raw, re.S)
-    if not match:
-        raise RuntimeError("map page did not contain PLANETKA_REGION_PACK_DATA")
-    return json.loads(html.unescape(match.group(1)))
+def fetch_json_from_map_page(url: str, *, wait_for_price: bool = True) -> dict[str, Any]:
+    deadline = time.monotonic() + max(1.0, QUOTE_WAIT_TIMEOUT_SEC)
+    last_data: dict[str, Any] | None = None
+    last_error: str = ""
+    while True:
+        try:
+            raw = urllib.request.urlopen(url, timeout=45).read().decode("utf-8", errors="replace")
+            match = re.search(r"window\.PLANETKA_REGION_PACK_DATA=(\{.*?\});</script>", raw, re.S)
+            if not match:
+                raise RuntimeError("map page did not contain PLANETKA_REGION_PACK_DATA")
+            data = json.loads(html.unescape(match.group(1)))
+            last_data = data
+            if not wait_for_price:
+                return data
+            if not bool(data.get("price_pending")) and data.get("quote"):
+                return data
+            last_error = f"quote pending, status={data.get('quote_status')}"
+        except Exception as exc:  # noqa: BLE001
+            last_error = str(exc)
+        if time.monotonic() >= deadline:
+            if last_data is not None:
+                return last_data
+            raise RuntimeError(f"map page quote did not become ready: {last_error}")
+        time.sleep(max(1.0, QUOTE_WAIT_POLL_SEC))
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
