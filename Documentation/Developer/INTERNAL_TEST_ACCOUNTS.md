@@ -12,22 +12,12 @@ Do not duplicate live API keys into this repository.
 
 ## Approved Internal Accounts
 
-Only use these three internal accounts for addon, backend, stress, and entitlement tests:
+Use purpose-specific accounts rather than account tiers. The current important accounts are:
 
-- `free@planetka.io`
-- `personal@planetka.io`
-- `commercial@planetka.io`
+- `free@planetka.io`: general authenticated beta workflow checks.
+- `tom.griger@gmail.com`: purchase-testing account. This account is excluded from beta world-access grants so real purchase and pricing flows can be tested.
 
-Do not create ad-hoc temporary test users unless explicitly required for a one-off scenario. If temporary users are ever created, they should be removed after the test.
-
-## Intended Use
-
-- `free@planetka.io`
-  Use for tier gating, disabled-quality checks, and free-tier UX validation.
-- `personal@planetka.io`
-  Use for historical personal-tier gating and upgrade-path validation.
-- `commercial@planetka.io`
-  Use for full-quality still renders, final animation renders, stress tests, and backend soak tests.
+Do not create ad-hoc temporary test users unless explicitly required for a one-off scenario. If temporary users are created, remove them after the test.
 
 ## Loading Keys For Existing Tools
 
@@ -45,19 +35,8 @@ textutil -convert txt -stdout \
   "/Users/tomasgriger/Library/Mobile Documents/com~apple~CloudDocs/Planetka APIs.rtf"
 ```
 
-Example derived JSON for tier E2E scripts:
-
-```json
-{
-  "free@planetka.io": {"plan": "free", "api_key": "pka_..."},
-  "personal@planetka.io": {"plan": "personal", "api_key": "pka_..."},
-  "commercial@planetka.io": {"plan": "commercial", "api_key": "pka_..."}
-}
-```
-
 ## Handling Rules
 
 - Treat the external RTF file as sensitive internal operational material.
 - Do not paste live API keys into commits, issues, public docs, changelogs, or release artifacts.
 - Do not include this credentials source in public `.zip` packages.
-- When running unattended tests, prefer the account that matches the scenario instead of reusing Commercial for everything.

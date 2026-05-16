@@ -12,7 +12,7 @@ import {
 const TILE_KEY_RE = /x(\d{3})_y(\d{3})_z(\d{3})_d(\d{3})/i;
 const ASSET_RE = /^(?:S2|EL|WT|PO)_(x\d{3}_y\d{3}_z\d{3}_d\d{3})\.(?:exr|tif)$/i;
 const FREE_D_THRESHOLD = 60;
-const ACCOUNT_TYPE_STANDARD = "standard";
+const ACCOUNT_TYPE_DEFAULT = "account";
 const DATASET_BASE_MPP = 10.0;
 const EQUATOR_Z001_AREA_KM2 = (40075.016686 / 360.0) ** 2;
 // Runtime pricing policy. Generated catalogs keep coefficient-1.0 gross prices;
@@ -59,7 +59,7 @@ const CHECKOUT_TILE_SET_TOKEN_TTL_MINUTES = 24 * 60;
 const MONEY_SCALE = 100;
 const METRIC_SCALE = 1_000_000;
 const REGION_PACK_CATALOG_VERSION = GENERATED_REGION_PACK_CATALOG_VERSION || "gadm_regions_v8";
-const REGION_PACK_MAP_ASSET_REVISION = `${REGION_PACK_CATALOG_VERSION}:outline-v4-product-bg-wt-blue-v4-partial-dateline-v7-admin-labels-v1-success-upsell-v1-catalog-flat-v1-price-breakdown-v1-hover-breakdown-v1-summary-partial-v1-pricing-runtime-v5-runtime-buckets-v1-canonical-pricing-v2-coeff-km2-v1-post-purchase-new-v1-button-border-gold-v1-tile-tooltip-v5-immediate-static-js-v10-product-outlines-v1-on-demand-map-v4-incremental-chunks-v1-geo-bg-v1-soft-red-v1-scene-map-v1-tooltip-cardinal-v2-product-bg-frame-v1-white-bg-v1-light-upsells-v1-scene-page-v3`;
+const REGION_PACK_MAP_ASSET_REVISION = `${REGION_PACK_CATALOG_VERSION}:outline-v4-product-bg-wt-blue-v4-partial-dateline-v7-admin-labels-v1-success-upsell-v1-catalog-flat-v1-price-breakdown-v1-hover-breakdown-v1-summary-partial-v1-pricing-runtime-v5-runtime-buckets-v1-canonical-pricing-v2-coeff-km2-v1-post-purchase-new-v1-button-border-gold-v1-tile-tooltip-v5-immediate-static-js-v10-product-outlines-v1-on-demand-map-v4-incremental-chunks-v1-geo-bg-v1-soft-red-v1-scene-map-v1-tooltip-cardinal-v2-product-bg-frame-v1-white-bg-v2-mini-upsell-tiles-v2-product-map-d-equals-z-v1-chunk1000-v2-wt-tile-bg-v2-scene-page-v3-map-loading-v6-live-bounds-nofallback-bg-v1`;
 const REGION_PACK_PRICING_ENGINE_REVISION = "d1-complete-map-state-v2";
 const ACCOUNT_COUNTRY_BORDERS_ASSET_REVISION = `${REGION_PACK_CATALOG_VERSION}:account-country-borders-v1`;
 const SQL_VARIABLE_SAFE_CHUNK_SIZE = 75;
@@ -105,7 +105,7 @@ const REGION_PRODUCT_TILE_KEYS_CACHE_MAX = 128;
 const REGION_PRODUCT_SORTED_TILE_KEYS_CACHE_MAX = 128;
 const REGION_PRODUCT_TILE_KEYS_CACHE_MAX_KEYS = 1200;
 const REGION_PACK_CATALOG_PAGE_MAX_LIMIT = 20;
-const REGION_PACK_MAP_LEVEL_CHUNK_LIMIT = 2500;
+const REGION_PACK_MAP_LEVEL_CHUNK_LIMIT = 1000;
 const USER_CREDIT_ACCOUNT_CACHE_TTL_MS = 30 * 1000;
 const USER_ENTITLEMENT_SUMMARY_CACHE_TTL_MS = 2 * 60 * 1000;
 const REGION_OFFERS_RESPONSE_CACHE_TTL_MS = 20 * 1000;
@@ -334,6 +334,7 @@ async function regionPackTileRowsForProductLevelAfterCursor(db, product, level, 
       WHERE e.catalog_version = ?
         AND e.region_pack_id = ?
         AND e.z = ?
+        AND e.d = e.z
         ${hasCursor ? `
           AND (
             e.family_key > ?
@@ -364,6 +365,7 @@ async function regionPackTileLevelCountsForProduct(db, product, deps) {
       FROM region_pack_tile_entries
       WHERE catalog_version = ?
         AND region_pack_id = ?
+        AND d = z
       GROUP BY z
       ORDER BY z ASC
     `,
@@ -3107,20 +3109,20 @@ function regionPackMapProductBackgroundKey(env, regionPackId) {
 
 
 const REGION_PACK_SHARED_CSS = `:root{color-scheme:light dark;--bg:#000;--panel:#1b1b1b;--subpanel:#151515;--line:#3c3c3c;--text:#eee;--muted:#aaa;--input:#262626;--table-line:#2d2d2d;--table-head:#202020;--secondary-btn:#2a2a2a;--map-bg:#0d1118;--new:#d76d62;--partial:#e2bc49;--licenced:#4fa86a;--free:#69707a;--country:#2a3748;--country-line:#98b4d8;--accent:#d9a441;--button-accent:#d9a441;--button-text:#111}
-@media (prefers-color-scheme:light){:root{--bg:#fff;--panel:#fffaf2;--subpanel:#fbf2e5;--line:#dacdbb;--text:#1f252d;--muted:#667085;--input:#fffdf8;--table-line:#e7dac8;--table-head:#f0e4d2;--secondary-btn:#f3eadc;--map-bg:#eef2f6;--country:#dbe8f2;--country-line:#45637d;--accent:#c28a21;--button-accent:#8f732f;--button-text:#fff}}
+@media (prefers-color-scheme:light){:root{--bg:#fff;--panel:#fff;--subpanel:#fff;--line:#d8d8d8;--text:#1f252d;--muted:#667085;--input:#fff;--table-line:#e4e4e4;--table-head:#fff;--secondary-btn:#fff;--map-bg:#eef2f6;--country:#dbe8f2;--country-line:#45637d;--accent:#c28a21;--button-accent:#8f732f;--button-text:#fff}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 main{max-width:1180px;margin:0 auto;padding:24px}h1{margin:0 0 8px;font-size:28px;font-weight:650}.muted{color:var(--muted)}
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:18px 0}.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px}.card b{display:block;font-size:22px;margin-top:4px}.card.final-price{border-color:#8f732f;box-shadow:0 0 0 1px rgba(217,164,65,.16) inset}.card.final-price b{font-size:26px}.buy-now{width:100%;font-size:16px}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;margin-top:14px}.toolbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
-select,input{background:var(--input);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:7px 10px}svg{width:100%;height:auto;background:var(--map-bg);border:1px solid var(--line);border-radius:10px}
+select,input{background:var(--input);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:7px 10px}svg{width:100%;height:auto;background:var(--map-bg);border:1px solid var(--line);border-radius:10px}.map-shell{position:relative}.map-loading-overlay{position:absolute;inset:0;z-index:2;display:grid;place-items:center;pointer-events:none;font-weight:750;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.65)}.map-loading-overlay span{display:inline-flex;align-items:center;gap:8px;padding:10px 14px;border-radius:999px;background:rgba(7,10,16,.72);border:1px solid rgba(255,255,255,.25)}.map-loading-overlay span::before{content:"";width:13px;height:13px;border-radius:50%;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;animation:planetka-spin .75s linear infinite}@keyframes planetka-spin{to{transform:rotate(360deg)}}.map-loading-overlay.hidden{display:none}
 .legend{display:flex;gap:16px;flex-wrap:wrap;margin:10px 0 0}.swatch{display:inline-block;width:14px;height:14px;border-radius:3px;margin-right:6px;vertical-align:-2px}.new{background:var(--new)}.partial{background:var(--partial)}.licenced{background:var(--licenced)}.free{background:var(--free)}
 .countries{columns:2;column-gap:26px}.countries div{break-inside:avoid;margin:2px 0}.small{font-size:13px}.error{color:#d24533}
-.tile-tooltip{position:fixed;z-index:50;display:none;max-width:340px;white-space:pre-line;pointer-events:none;background:rgba(13,17,24,.95);color:#eef2f7;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:12px;line-height:1.35;box-shadow:0 10px 30px rgba(0,0,0,.28)}@media (prefers-color-scheme:light){.tile-tooltip{background:#fffaf2;color:#1f252d;border-color:#dacdbb;box-shadow:0 10px 28px rgba(60,47,26,.18)}}
-.upsells{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}.upsell{background:var(--subpanel);border:1px solid var(--line);border-radius:12px;padding:12px}.upsell h3{margin:0 0 8px;font-size:18px}.upsell p{margin:6px 0}.upsell svg{min-height:0}
+.tile-tooltip{position:fixed;z-index:50;display:none;max-width:340px;white-space:pre-line;pointer-events:none;background:rgba(13,17,24,.95);color:#eef2f7;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:12px;line-height:1.35;box-shadow:0 10px 30px rgba(0,0,0,.28)}@media (prefers-color-scheme:light){.tile-tooltip{background:#fff;color:#1f252d;border-color:#d8d8d8;box-shadow:0 10px 28px rgba(20,25,32,.14)}}
+.upsells{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}.upsell{background:var(--subpanel);border:1px solid var(--line);border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:10px}.upsell h3{margin:0;font-size:18px}.upsell p{margin:0}.upsell-map-link{display:block;width:100%;aspect-ratio:1 / 1;overflow:hidden;border:1px solid var(--line);border-radius:10px;background:var(--map-bg)}.upsell-map-link svg{width:100%;height:100%;display:block;border:0;border-radius:0;min-height:0}.upsell .button{width:100%;box-sizing:border-box;text-align:center;min-height:46px;display:flex;align-items:center;justify-content:center}.upsell .button.secondary{margin-left:0}.upsell .upsell-buy{min-height:54px}
 .button{display:inline-flex;align-items:center;justify-content:center;margin-top:10px;padding:9px 12px;border-radius:8px;background:var(--button-accent);color:var(--button-text,#111);text-decoration:none;font-weight:700}.button.secondary{margin-left:8px;background:var(--secondary-btn);color:var(--text);border:1px solid var(--line)}`;
 
 const REGION_PACK_CATALOG_CSS = `:root{color-scheme:light dark;--bg:#000;--panel:#1b1b1b;--subpanel:#151515;--line:#3c3c3c;--table-line:#2d2d2d;--table-head:#202020;--text:#eee;--muted:#aaa;--input:#262626;--accent:#d9a441;--button-accent:#d9a441;--secondary-btn:#2a2a2a;--saving:#9dd18d;--price:#f4d28d}
-@media (prefers-color-scheme:light){:root{--bg:#fff;--panel:#fffaf2;--subpanel:#fbf2e5;--line:#dacdbb;--table-line:#e7dac8;--table-head:#f0e4d2;--text:#1f252d;--muted:#667085;--input:#fffdf8;--accent:#c28a21;--button-accent:#8f732f;--button-text:#fff;--secondary-btn:#f3eadc;--saving:#2f7d3b;--price:#966915}}
+@media (prefers-color-scheme:light){:root{--bg:#fff;--panel:#fff;--subpanel:#fff;--line:#d8d8d8;--table-line:#e4e4e4;--table-head:#fff;--text:#1f252d;--muted:#667085;--input:#fff;--accent:#c28a21;--button-accent:#8f732f;--button-text:#fff;--secondary-btn:#fff;--saving:#2f7d3b;--price:#966915}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 main{max-width:1180px;margin:0 auto;padding:24px}h1{margin:0 0 8px;font-size:28px;font-weight:650}h2{margin:22px 0 10px}.muted{color:var(--muted)}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;margin-top:14px}.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:12px 0}
@@ -3129,12 +3131,12 @@ table{width:100%;border-collapse:separate;border-spacing:0;background:var(--subp
 .button{display:inline-flex;align-items:center;justify-content:center;padding:7px 10px;border-radius:8px;background:var(--button-accent);color:var(--button-text,#111);text-decoration:none;font-weight:700}.button.secondary{background:var(--secondary-btn);color:var(--text);border:1px solid var(--line)}.button.disabled{opacity:.55;pointer-events:none;filter:grayscale(.25)}.empty{padding:12px;color:var(--muted)}.load-status{display:inline-grid;grid-template-columns:auto 3ch auto 3ch;column-gap:4px;align-items:baseline;font-variant-numeric:tabular-nums}.load-status .loaded{text-align:right}.load-status .total{text-align:left}.spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}`;
 
 const REGION_PACK_CHECKOUT_CSS = `:root{color-scheme:light dark;--bg:#000;--panel:#1b1b1b;--card:#151515;--line:#3c3c3c;--text:#eee;--muted:#aaa;--accent:#d9a441;--button-accent:#d9a441;--secondary-btn:#2a2a2a;--disabled:#333;--disabled-text:#888;--notice:#f2c36b;--link:#f4d28d}
-@media (prefers-color-scheme:light){:root{--bg:#fff;--panel:#fffaf2;--card:#fbf2e5;--line:#dacdbb;--text:#1f252d;--muted:#667085;--accent:#c28a21;--button-accent:#8f732f;--button-text:#fff;--secondary-btn:#f3eadc;--disabled:#e4ded5;--disabled-text:#8a8177;--notice:#936500;--link:#966915}}
+@media (prefers-color-scheme:light){:root{--bg:#fff;--panel:#fff;--card:#fff;--line:#d8d8d8;--text:#1f252d;--muted:#667085;--accent:#c28a21;--button-accent:#8f732f;--button-text:#fff;--secondary-btn:#fff;--disabled:#e7e7e7;--disabled-text:#777;--notice:#936500;--link:#966915}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 main{max-width:760px;margin:0 auto;padding:24px}h1{margin:0 0 10px;font-size:28px;font-weight:650}.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;margin-top:14px}.muted{color:var(--muted)}.summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-top:12px}.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px}.card b{display:block;font-size:21px;margin-top:3px}.actions{display:grid;gap:10px;margin-top:14px}.button{width:100%;display:inline-flex;align-items:center;justify-content:center;padding:11px 13px;border:0;border-radius:9px;background:var(--button-accent);color:var(--button-text,#111);text-decoration:none;font-weight:750;font:inherit;cursor:pointer}.button.secondary{background:var(--secondary-btn);color:var(--text);border:1px solid var(--line)}.button.disabled{background:var(--disabled);color:var(--disabled-text);border:1px solid var(--line);cursor:not-allowed}.notice{color:var(--notice)}.links{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px}.links a{color:var(--link);text-decoration:none}`;
 
 const ACCOUNT_PAGE_CSS = `:root{color-scheme:light dark;--bg:#000;--panel:#1b1b1b;--line:#3c3c3c;--text:#eee;--muted:#aaa;--accent:#d9a441;--green:#4fa86a;--map-bg:#0d1118;--grid:rgba(255,255,255,.34);--country-border:rgba(230,238,248,.72);--input:#262626;--code:#f7e6b0}
-@media (prefers-color-scheme:light){:root{--bg:#fff;--panel:#fffaf2;--line:#dacdbb;--text:#1f252d;--muted:#667085;--accent:#c28a21;--green:#3f9657;--map-bg:#eef2f6;--grid:rgba(34,44,58,.38);--country-border:rgba(42,67,91,.62);--input:#fffdf8;--code:#6d4a00}}
+@media (prefers-color-scheme:light){:root{--bg:#fff;--panel:#fff;--line:#d8d8d8;--text:#1f252d;--muted:#667085;--accent:#c28a21;--green:#3f9657;--map-bg:#eef2f6;--grid:rgba(34,44,58,.38);--country-border:rgba(42,67,91,.62);--input:#fff;--code:#6d4a00}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:1180px;margin:0 auto;padding:24px}h1{margin:0 0 8px;font-size:30px}h2{margin:0 0 10px;font-size:20px}.muted{color:var(--muted)}.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;margin-top:14px}.toolbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:8px 0 12px}select{background:var(--input);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:7px 10px}.coverage-map{width:100%;aspect-ratio:2 / 1;background:var(--map-bg);border:1px solid var(--line);border-radius:10px}.coverage-map .country-border{fill:none;stroke:var(--country-border);stroke-width:.55;opacity:.78;vector-effect:non-scaling-stroke;pointer-events:none}.coverage-map .owned-tile{fill:var(--green);opacity:.68;stroke:none}.coverage-map .world-owned-fill{fill:var(--green);opacity:.52;stroke:none}.legend{display:flex;gap:16px;flex-wrap:wrap;margin:10px 0 0}.swatch{display:inline-block;width:14px;height:14px;border-radius:3px;margin-right:6px;vertical-align:-2px}.licenced{background:var(--green)}table{width:100%;border-collapse:collapse;font-size:13px}th,td{border-bottom:1px solid var(--line);padding:8px 6px;text-align:left;vertical-align:top}th{color:var(--accent);font-weight:650;white-space:nowrap}details summary{cursor:pointer;color:var(--accent)}.tile-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:4px 12px;margin-top:8px}code{color:var(--code)}`;
 
 const ACCOUNT_PAGE_MAP_JS = `(() => {
@@ -3324,6 +3326,7 @@ const assetCache=new Map();
 const assetVersion=encodeURIComponent(String(DATA.map_asset_revision||DATA.catalog_version||DATA.token||Date.now()));
 const MAP_BG="/credits/region-pack-map-background.jpg?v="+assetVersion;
 const outlinesUrl=(id)=>"/credits/region-pack-map-outlines?region_pack_id="+encodeURIComponent(String(id||""))+"&v="+assetVersion;
+const miniOutlinesUrl="/credits/account-country-borders.json?v="+assetVersion;
 const currentToken=encodeURIComponent(DATA.token||"");
 const currentPackIdEncoded=encodeURIComponent(DATA.asset_id||DATA.region_pack&&DATA.region_pack.id||"");
 const currentCatalog=DATA.catalog_mode?"&catalog=1":"";
@@ -3361,7 +3364,7 @@ function setBounds(bounds){currentFrame=frameForBounds(bounds||currentFrame.boun
 function xy(lon,lat){return[currentFrame.ox+(lon-currentFrame.bounds.min_lon)*currentFrame.scale,currentFrame.oy+(currentFrame.bounds.max_lat-lat)*currentFrame.scale]}
 function el(name,attrs){const node=document.createElementNS(NS,name);for(const k in attrs||{})node.setAttribute(k,String(attrs[k]));return node}
 let activeTileTooltip=null;function tileTooltip(){let node=document.getElementById("tileTooltip");if(!node){node=document.createElement("div");node.id="tileTooltip";node.className="tile-tooltip";document.body.appendChild(node)}return node}function moveTileTooltip(event){if(!activeTileTooltip)return;const pad=14;activeTileTooltip.style.left=Math.min(window.innerWidth-activeTileTooltip.offsetWidth-pad,event.clientX+pad)+"px";activeTileTooltip.style.top=Math.min(window.innerHeight-activeTileTooltip.offsetHeight-pad,event.clientY+pad)+"px"}function showTileTooltip(text,event){const node=tileTooltip();node.textContent=text;node.style.display="block";activeTileTooltip=node;moveTileTooltip(event)}function hideTileTooltip(){if(activeTileTooltip){activeTileTooltip.style.display="none";activeTileTooltip=null}}function attachTileTooltip(node,text){node.addEventListener("pointerenter",event=>showTileTooltip(text,event));node.addEventListener("pointermove",moveTileTooltip);node.addEventListener("pointerleave",hideTileTooltip)}
-function addMapBackground(svg,project,width,height,id,bounds){svg.appendChild(el("rect",{x:0,y:0,width,height,fill:"#0d1118"}));const tl=project(-180,90),br=project(180,-90);svg.appendChild(el("image",{href:MAP_BG,x:tl[0],y:tl[1],width:br[0]-tl[0],height:br[1]-tl[1],preserveAspectRatio:"none",opacity:"1.0"}));const productHref=productMapBgHref(id);if(productHref){const img=el("image",{href:productHref,x:0,y:0,width,height,preserveAspectRatio:"none",opacity:"1.0"});img.addEventListener("error",()=>img.remove());svg.appendChild(img)}svg.appendChild(el("rect",{x:0,y:0,width,height,fill:"#05070a",opacity:"0.0"}))}
+function addMapBackground(svg,project,width,height,id,bounds){svg.appendChild(el("rect",{x:0,y:0,width,height,fill:"#0d1118"}));const productHref=productMapBgHref(id);if(productHref){const img=el("image",{href:productHref,x:0,y:0,width,height,preserveAspectRatio:"none",opacity:"1.0"});img.addEventListener("error",()=>img.remove());svg.appendChild(img)}else{const tl=project(-180,90),br=project(180,-90);svg.appendChild(el("image",{href:MAP_BG,x:tl[0],y:tl[1],width:br[0]-tl[0],height:br[1]-tl[1],preserveAspectRatio:"none",opacity:"1.0"}))}svg.appendChild(el("rect",{x:0,y:0,width,height,fill:"#05070a",opacity:"0.0"}))}
 function pathFor(poly){return(poly||[]).map((pt,i)=>{const p=xy(pt[0],pt[1]);return(i?"L":"M")+p[0].toFixed(2)+" "+p[1].toFixed(2)}).join(" ")}
 function drawOutlineRingPath(ring){let path="",previousLon=null,started=false;for(const point of Array.isArray(ring)?ring:[]){const lon=Number(point&&point[0]),lat=Number(point&&point[1]);if(!Number.isFinite(lon)||!Number.isFinite(lat)){started=false;previousLon=null;continue}if(previousLon!==null&&Math.abs(lon-previousLon)>180)started=false;const p=xy(lon,lat);path+=(started?"L":"M")+p[0].toFixed(2)+" "+p[1].toFixed(2);started=true;previousLon=lon}return path}
 async function loadProductOutlines(asset){const current=Array.isArray(asset&&asset.outlines)?asset.outlines:[];if(current.length)return current;const id=asset&&asset.region_pack&&asset.region_pack.id||currentPackId();if(!id)return current;try{const response=await fetch(outlinesUrl(id),{cache:"force-cache"});if(!response.ok)return current;const payload=await response.json();const outlines=Array.isArray(payload&&payload.outlines)?payload.outlines:[];if(outlines.length)asset.outlines=outlines;return outlines}catch(_error){return current}}
@@ -3375,7 +3378,9 @@ function shardCacheKey(level){return String(Number(level)||level||"")}
 function mapStateShardUrl(level,index){const q=encodeURIComponent(String(DATA.quote&&DATA.quote.quote_id||""));return"/credits/region-pack-map-state-shard?token="+currentToken+"&region_pack_id="+currentPackIdEncoded+currentCatalog+"&quote_id="+q+"&level="+encodeURIComponent(String(level))+"&shard="+encodeURIComponent(String(index))}
 function mapLevelChunkUrl(level,cursor){const q=encodeURIComponent(String(DATA.quote&&DATA.quote.quote_id||""));let url="/credits/region-pack-map-level-chunk?token="+currentToken+"&region_pack_id="+currentPackIdEncoded+currentCatalog+"&quote_id="+q+"&level="+encodeURIComponent(String(level));if(cursor&&cursor.family_key&&cursor.tile_key){url+="&cursor_family_key="+encodeURIComponent(cursor.family_key)+"&cursor_d="+encodeURIComponent(String(cursor.d||0))+"&cursor_tile_key="+encodeURIComponent(cursor.tile_key)}return url}
 function mapCounts(){return{total:0,newCount:0,licencedCount:0,partialCount:0,freeCount:0}}
-function updateMapSummary(level,counts,loaded,expected,complete){const summary=document.getElementById("levelSummary");if(complete){summary.textContent=counts.total+" tiles at "+zoomLabel(level)+" · new "+counts.newCount+" · already licenced "+(counts.licencedCount+counts.partialCount)+" · free "+counts.freeCount;document.getElementById("mapStatus").textContent="Map loaded.";return}summary.textContent="Loading "+zoomLabel(level)+" tiles... "+Number(loaded||0).toLocaleString("en-US")+" / "+Number(expected||0).toLocaleString("en-US");document.getElementById("mapStatus").textContent="Loading map tiles... "+Number(loaded||0).toLocaleString("en-US")+" / "+Number(expected||0).toLocaleString("en-US")}
+function setMapLoading(active,text){const overlay=document.getElementById("mapLoadingOverlay");if(!overlay)return;overlay.classList.toggle("hidden",!active);const label=overlay.querySelector("span");if(label&&text)label.textContent=text}
+function completeMapLoading(){window.setTimeout(()=>setMapLoading(false),120)}
+function updateMapSummary(level,counts,loaded,expected,complete){const summary=document.getElementById("levelSummary");if(complete){summary.textContent=counts.total+" tiles at "+zoomLabel(level)+" · new "+counts.newCount+" · already licenced "+(counts.licencedCount+counts.partialCount)+" · free "+counts.freeCount;document.getElementById("mapStatus").textContent="Map loaded.";completeMapLoading();return}summary.textContent="Loading "+zoomLabel(level)+" tiles... "+Number(loaded||0).toLocaleString("en-US")+" / "+Number(expected||0).toLocaleString("en-US");document.getElementById("mapStatus").textContent="Loading map tiles... "+Number(loaded||0).toLocaleString("en-US")+" / "+Number(expected||0).toLocaleString("en-US");setMapLoading(true,"Loading map...")}
 function drawMapBase(vm){const svg=document.getElementById("map");svg.replaceChildren();svg.setAttribute("viewBox","0 0 "+W+" "+H);svg.setAttribute("preserveAspectRatio","xMidYMid meet");addMapBackground(svg,xy,W,H,vm.asset&&vm.asset.region_pack&&vm.asset.region_pack.id,vm.asset&&vm.asset.bounds);drawProductOutlines(svg,vm.asset);return svg}
 function appendTileRows(svg,level,sourceRows,counts){const rows=(Array.isArray(sourceRows)?sourceRows:[]).filter((row)=>Number(row.z)===Number(level));for(const tile of rows){const a=xy(tile.lon_min,tile.lat_max),b=xy(tile.lon_max,tile.lat_min);const contextOnly=tile.status==="context";const lower=tile.status==="lower_resolution";const cls=contextOnly?"none":(tile.status==="new"?"var(--new)":((tile.status==="partial"||lower)?"var(--partial)":(tile.status==="licenced"?"var(--licenced)":"var(--free)")));if(!contextOnly){if(tile.status==="new"||lower)counts.newCount++;else if(tile.status==="partial")counts.partialCount++;else if(tile.status==="licenced")counts.licencedCount++;else counts.freeCount++}counts.total++;const r=el("rect",{x:a[0],y:a[1],width:Math.max(1,b[0]-a[0]),height:Math.max(1,b[1]-a[1]),fill:cls,stroke:"#fff","stroke-width":contextOnly?"0.35":"0.45",opacity:contextOnly?"0.26":((tile.status==="new"||tile.status==="partial"||lower)?"0.58":"0.43")});const statusText=contextOnly?"outside this scene":(lower?"new lower resolution tile":(tile.status==="partial"?"partially licenced":tile.status));attachTileTooltip(r,tileTooltipText(tile,statusText));svg.appendChild(r)}}
 function drawMapRows(vm,level,sourceRows){const svg=drawMapBase(vm);const counts=mapCounts();appendTileRows(svg,level,sourceRows,counts);updateMapSummary(level,counts,counts.total,counts.total,true)}
@@ -3383,13 +3388,16 @@ async function loadShardedRows(vm,level,onChunk){const key=shardCacheKey(level);
 function shardedRowsIfLoaded(vm,level){return shardRowsCache.get(shardCacheKey(level))||null}
 function onDemandRowsIfLoaded(vm,level){return levelRowsCache.get(shardCacheKey(level))||null}
 async function loadOnDemandRows(vm,level,onChunk){const key=shardCacheKey(level);if(levelRowsCache.has(key))return levelRowsCache.get(key);if(levelRowsLoading.has(key))return levelRowsLoading.get(key);const expected=Math.max(0,Number(vm&&vm.state&&vm.state.level_tile_counts&&vm.state.level_tile_counts[key]||0)||0);const promise=(async()=>{const rows=[];let cursor=null;let guard=0;for(;;){const res=await fetch(mapLevelChunkUrl(level,cursor),{cache:"no-store"});if(!res.ok)throw new Error("map_level_chunk_"+res.status);const payload=await res.json();const chunk=(Array.isArray(payload&&payload.tiles)?payload.tiles:[]).map(normaliseStoredTile).filter((tile)=>tile.tile_key&&Number.isFinite(tile.x)&&Number.isFinite(tile.y)&&Number.isFinite(tile.z));rows.push(...chunk);if(typeof onChunk==="function")onChunk(chunk,rows.length,expected);cursor=payload&&payload.next_cursor||null;guard+=1;if(!cursor||guard>1000)break;}rows.sort(tileSort);if(expected>0&&rows.length===0)throw new Error("map_level_empty_"+key);levelRowsCache.set(key,rows);levelRowsLoading.delete(key);return rows})().catch((error)=>{levelRowsLoading.delete(key);throw error});levelRowsLoading.set(key,promise);return promise}
-function renderMap(vm,level){const seq=++mapRenderSeq;const key=shardCacheKey(level);const expected=Math.max(0,Number(vm&&vm.state&&vm.state.level_tile_counts&&vm.state.level_tile_counts[key]||0)||0);document.getElementById("mapStatus").className="muted small";if(vm.onDemand){const cached=onDemandRowsIfLoaded(vm,level);if(cached){drawMapRows(vm,level,cached);return}const svg=drawMapBase(vm),counts=mapCounts();updateMapSummary(level,counts,0,expected,false);loadOnDemandRows(vm,level,(chunk,loaded,total)=>{if(seq!==mapRenderSeq)return;appendTileRows(svg,level,chunk,counts);updateMapSummary(level,counts,loaded,total,false)}).then((rows)=>{if(seq===mapRenderSeq)drawMapRows(vm,level,rows)}).catch((error)=>{if(seq!==mapRenderSeq)return;console.warn("Planetka map level failed",error);document.getElementById("mapStatus").className="error small";document.getElementById("mapStatus").textContent="Map tiles failed to load. Please refresh this page.";});return}if(vm.sharded){const cached=shardedRowsIfLoaded(vm,level);if(cached){drawMapRows(vm,level,cached);return}const shards=vm&&vm.state&&vm.state.level_shards&&vm.state.level_shards[key]||[];const svg=drawMapBase(vm),counts=mapCounts();updateMapSummary(level,counts,0,expected||0,false);loadShardedRows(vm,level,(chunk,loaded)=>{if(seq!==mapRenderSeq)return;appendTileRows(svg,level,chunk,counts);updateMapSummary(level,counts,loaded,expected||loaded,false)}).then((rows)=>{if(seq===mapRenderSeq)drawMapRows(vm,level,rows)}).catch((error)=>{if(seq!==mapRenderSeq)return;console.warn("Planetka map shard failed",error);document.getElementById("mapStatus").className="error small";document.getElementById("mapStatus").textContent="Map tiles failed to load. Please refresh this page.";});return}drawMapRows(vm,level,vm.rows)}
+function renderMap(vm,level){const seq=++mapRenderSeq;const key=shardCacheKey(level);const expected=Math.max(0,Number(vm&&vm.state&&vm.state.level_tile_counts&&vm.state.level_tile_counts[key]||0)||0);document.getElementById("mapStatus").className="muted small";if(vm.onDemand){const cached=onDemandRowsIfLoaded(vm,level);if(cached){drawMapRows(vm,level,cached);return}const svg=drawMapBase(vm),counts=mapCounts();updateMapSummary(level,counts,0,expected,false);loadOnDemandRows(vm,level,(chunk,loaded,total)=>{if(seq!==mapRenderSeq)return;appendTileRows(svg,level,chunk,counts);updateMapSummary(level,counts,loaded,total,false)}).then((rows)=>{if(seq===mapRenderSeq)drawMapRows(vm,level,rows)}).catch((error)=>{if(seq!==mapRenderSeq)return;console.warn("Planetka map level failed",error);setMapLoading(false);document.getElementById("mapStatus").className="error small";document.getElementById("mapStatus").textContent="Map tiles failed to load. Please refresh this page.";});return}if(vm.sharded){const cached=shardedRowsIfLoaded(vm,level);if(cached){drawMapRows(vm,level,cached);return}const shards=vm&&vm.state&&vm.state.level_shards&&vm.state.level_shards[key]||[];const svg=drawMapBase(vm),counts=mapCounts();updateMapSummary(level,counts,0,expected||0,false);loadShardedRows(vm,level,(chunk,loaded)=>{if(seq!==mapRenderSeq)return;appendTileRows(svg,level,chunk,counts);updateMapSummary(level,counts,loaded,expected||loaded,false)}).then((rows)=>{if(seq===mapRenderSeq)drawMapRows(vm,level,rows)}).catch((error)=>{if(seq!==mapRenderSeq)return;console.warn("Planetka map shard failed",error);setMapLoading(false);document.getElementById("mapStatus").className="error small";document.getElementById("mapStatus").textContent="Map tiles failed to load. Please refresh this page.";});return}drawMapRows(vm,level,vm.rows)}
 function miniFrame(bounds){return frameForBounds(bounds,1000,320,820,20)}
 function miniXY(frame,lon,lat){return[frame.ox+(lon-frame.bounds.min_lon)*frame.scale,frame.oy+(frame.bounds.max_lat-lat)*frame.scale]}
-function renderMiniMap(svg,vm){const b=vm.asset.bounds||{min_lon:-10,min_lat:35,max_lon:30,max_lat:48};const frame=miniFrame(b),w=frame.width,h=frame.height;svg.setAttribute("viewBox","0 0 "+w+" "+h);svg.style.aspectRatio=w+" / "+h;svg.setAttribute("preserveAspectRatio","xMidYMid meet");svg.replaceChildren();const bgId=vm&&vm.asset&&vm.asset.region_pack&&vm.asset.region_pack.id||"";addMapBackground(svg,(lon,lat)=>miniXY(frame,lon,lat),w,h,bgId,b);const first=vm.levels.length?vm.levels[0]:null;for(const tile of vm.rows.filter((row)=>Number(row.z)===Number(first))){const a=miniXY(frame,tile.lon_min,tile.lat_max),c=miniXY(frame,tile.lon_max,tile.lat_min);const cls=tile.status==="new"?"var(--new)":(tile.status==="partial"?"var(--partial)":(tile.status==="licenced"?"var(--licenced)":"var(--free)"));svg.appendChild(el("rect",{x:a[0],y:a[1],width:Math.max(1,c[0]-a[0]),height:Math.max(1,c[1]-a[1]),fill:cls,stroke:"#fff","stroke-width":"0.5",opacity:(tile.status==="new"||tile.status==="partial")?"0.58":"0.43"}))}}
-async function renderUpsells(){const serverUpsells=Array.isArray(DATA.upsells)?DATA.upsells:[];const grid=document.getElementById("upsellGrid");if(!grid||!serverUpsells.length)return;const token=encodeURIComponent(DATA.token||"");const catalog="&catalog=1";for(const card of serverUpsells){try{const idRaw=card.asset_id||card.region_pack&&card.region_pack.id||"";const pack=card.region_pack||{};const summary=card.summary||null;if(!DATA.scene_detail&&(!summary||int(summary.price_cents)<=0&&Number(summary.charged_tiles||0)<=0))continue;const id=encodeURIComponent(pack.id||idRaw);const div=document.createElement("div");div.className="upsell";const title=document.createElement("h3");title.textContent=pack.name||"Data Pack";div.appendChild(title);const q=encodeURIComponent(String(card.quote_id||""));const quoteParam=q?"&quote_id="+q:"";const detailHref="/credits/region-pack-map?token="+token+"&region_pack_id="+id+catalog+quoteParam;const mapLink=document.createElement("a");mapLink.href=detailHref;mapLink.className="upsell-map-link";mapLink.setAttribute("aria-label","View map for "+(pack.name||"data pack"));const map=document.createElementNS(NS,"svg");mapLink.appendChild(map);div.appendChild(mapLink);renderMiniMap(map,{asset:{bounds:pack.bounds||null,region_pack:{id:pack.id||idRaw,name:pack.name||"Data Pack"}},rows:[],levels:[]});const meta=document.createElement("p");meta.className="muted small";if(summary){const alreadyValue=int(summary.already_licenced_deduction_cents)+int(summary.partial_licence_credit_cents);const bits=["Full "+fmtCents(summary.full_price_cents)];if(alreadyValue>0)bits.push("Already -"+fmtCents(alreadyValue));if(int(summary.discount_cents)>0)bits.push("Discount "+Number(summary.discount_percent||0)+"% (-"+fmtCents(summary.discount_cents)+")");bits.push("Final "+fmtCents(summary.price_cents));meta.textContent=bits.join(" · ");}else{meta.textContent="Price updating";}div.appendChild(meta);if(summary&&q){const checkout=document.createElement("a");checkout.className="button";checkout.href="/credits/region-pack-checkout?token="+token+"&region_pack_id="+id+catalog+"&quote_id="+q;checkout.textContent="Buy "+(pack.name||"Pack")+" ("+fmtCents(summary.price_cents)+")";div.appendChild(checkout);}const detail=document.createElement("a");detail.className="button secondary";detail.href=detailHref;detail.textContent="View map";div.appendChild(detail);grid.appendChild(div);document.getElementById("upsellsPanel").style.display=""}catch(error){console.warn("Planetka upsell map failed",card,error)}}}
+let miniOutlinesPromise=null;async function loadMiniOutlines(){if(!miniOutlinesPromise){miniOutlinesPromise=fetch(miniOutlinesUrl,{cache:"force-cache"}).then((res)=>res.ok?res.json():null).then((payload)=>Array.isArray(payload&&payload.outlines)?payload.outlines:[]).catch(()=>[])}return miniOutlinesPromise}
+function drawMiniOutlines(svg,frame,asset){const outlines=Array.isArray(asset&&asset.outlines)?asset.outlines:[];if(!outlines.length)return;const group=el("g",{class:"product-outlines","aria-hidden":"true"});for(const outline of outlines){for(const ring of Array.isArray(outline&&outline.polygons)?outline.polygons:[]){let path="",previousLon=null,started=false;for(const point of Array.isArray(ring)?ring:[]){const lon=Number(point&&point[0]),lat=Number(point&&point[1]);if(!Number.isFinite(lon)||!Number.isFinite(lat)){started=false;previousLon=null;continue}if(previousLon!==null&&Math.abs(lon-previousLon)>180)started=false;const p=miniXY(frame,lon,lat);path+=(started?"L":"M")+p[0].toFixed(2)+" "+p[1].toFixed(2);started=true;previousLon=lon}if(path)group.appendChild(el("path",{d:path,fill:"none",stroke:"var(--country-line)","stroke-width":"0.7",opacity:"0.72"}))}}svg.appendChild(group)}
+function renderMiniMap(svg,vm){const asset=vm&&vm.asset||{};const b=asset.bounds||{min_lon:-10,min_lat:35,max_lon:30,max_lat:48};const frame=miniFrame(b),w=frame.width,h=frame.height;svg.setAttribute("viewBox","0 0 "+w+" "+h);svg.style.aspectRatio="1 / 1";svg.setAttribute("preserveAspectRatio","xMidYMid meet");svg.replaceChildren();const bgId=asset&&asset.region_pack&&asset.region_pack.id||"";addMapBackground(svg,(lon,lat)=>miniXY(frame,lon,lat),w,h,bgId,b);drawMiniOutlines(svg,frame,asset);const first=vm&&vm.levels&&vm.levels.length?vm.levels[0]:null;for(const tile of (Array.isArray(vm&&vm.rows)?vm.rows:[]).filter((row)=>Number(row.z)===Number(first))){const a=miniXY(frame,tile.lon_min,tile.lat_max),c=miniXY(frame,tile.lon_max,tile.lat_min);const lower=tile.status==="lower_resolution";const cls=tile.status==="new"?"var(--new)":((tile.status==="partial"||lower)?"var(--partial)":(tile.status==="licenced"?"var(--licenced)":"var(--free)"));svg.appendChild(el("rect",{x:a[0],y:a[1],width:Math.max(1,c[0]-a[0]),height:Math.max(1,c[1]-a[1]),fill:cls,stroke:"#fff","stroke-width":"0.5",opacity:(tile.status==="new"||tile.status==="partial"||lower)?"0.58":"0.43"}))}}
+async function loadMiniMap(id,q){const url="/credits/region-pack-mini-map?token="+currentToken+"&region_pack_id="+encodeURIComponent(String(id||""))+currentCatalog+(q?"&quote_id="+encodeURIComponent(String(q)):"");const res=await fetch(url,{cache:"no-store"});if(!res.ok)throw new Error("mini_map_"+res.status);return res.json()}
+async function renderUpsells(){const serverUpsells=Array.isArray(DATA.upsells)?DATA.upsells:[];const grid=document.getElementById("upsellGrid");if(!grid||!serverUpsells.length)return;const token=encodeURIComponent(DATA.token||"");const catalog="&catalog=1";for(const card of serverUpsells){try{const idRaw=card.asset_id||card.region_pack&&card.region_pack.id||"";const pack=card.region_pack||{};const summary=card.summary||null;if(!idRaw&&!pack.id)continue;const id=encodeURIComponent(pack.id||idRaw);const div=document.createElement("div");div.className="upsell";const title=document.createElement("h3");title.textContent=pack.name||"Data Pack";div.appendChild(title);const q=String(card.quote_id||"");const quoteParam=q?"&quote_id="+encodeURIComponent(q):"";const detailHref="/credits/region-pack-map?token="+token+"&region_pack_id="+id+catalog+quoteParam;const mapLink=document.createElement("a");mapLink.href=detailHref;mapLink.className="upsell-map-link";mapLink.setAttribute("aria-label","View map for "+(pack.name||"data pack"));const map=document.createElementNS(NS,"svg");mapLink.appendChild(map);div.appendChild(mapLink);renderMiniMap(map,{asset:{bounds:pack.bounds||null,region_pack:{id:pack.id||idRaw,name:pack.name||"Data Pack"},outlines:[]},rows:[],levels:[]});Promise.all([loadMiniMap(pack.id||idRaw,q),loadMiniOutlines()]).then(([mini,outlines])=>{const rows=(Array.isArray(mini&&mini.tiles)?mini.tiles:[]).map(normaliseStoredTile);renderMiniMap(map,{asset:{bounds:mini.bounds||pack.bounds||null,region_pack:mini.region_pack||{id:pack.id||idRaw,name:pack.name||"Data Pack"},outlines:Array.isArray(outlines)?outlines:[]},rows,levels:[Number(mini&&mini.level||0)||null].filter(Boolean)})}).catch((error)=>console.warn("Planetka upsell mini map failed",card,error));const meta=document.createElement("p");meta.className="muted small";if(summary){const alreadyValue=int(summary.already_licenced_deduction_cents)+int(summary.partial_licence_credit_cents);const bits=["Full "+fmtCents(summary.full_price_cents)];if(alreadyValue>0)bits.push("Already -"+fmtCents(alreadyValue));if(int(summary.discount_cents)>0)bits.push("Discount "+Number(summary.discount_percent||0)+"% (-"+fmtCents(summary.discount_cents)+")");bits.push("Final "+fmtCents(summary.price_cents));meta.textContent=bits.join(" · ");}else{meta.textContent="Price updating";}div.appendChild(meta);if(summary&&q&&int(summary.price_cents)>0){const checkout=document.createElement("a");checkout.className="button upsell-buy";checkout.href="/credits/region-pack-checkout?token="+token+"&region_pack_id="+id+catalog+"&quote_id="+encodeURIComponent(q);checkout.textContent=(pack.name||"Pack")+" ("+fmtCents(summary.price_cents)+")";div.appendChild(checkout);}const detail=document.createElement("a");detail.className="button secondary";detail.href=detailHref;detail.textContent="View map";div.appendChild(detail);grid.appendChild(div);document.getElementById("upsellsPanel").style.display=""}catch(error){console.warn("Planetka upsell map failed",card,error)}}}
 function serverMapAsset(){const state=DATA.map_state_ready&&DATA.map_state&&typeof DATA.map_state==="object"?DATA.map_state:null;if(state&&state.on_demand){return{region_pack:state.region_pack||DATA.region_pack||{},bounds:state.bounds||{min_lon:-10,min_lat:35,max_lon:30,max_lat:48},outlines:Array.isArray(state.outlines)?state.outlines:[],included_countries:Array.isArray(state.included_countries)?state.included_countries:[],tiles:[]}}return null}
-async function init(){try{const asset=serverMapAsset()||await loadAsset(DATA.asset_id);const titlePrefix=String(DATA.title_prefix||DATA.success&&DATA.success.context_title_prefix||"").trim();const explicitTitle=String(DATA.page_title||"").trim();document.getElementById("pageTitle").textContent=explicitTitle||((titlePrefix?titlePrefix+": ":"")+(asset.region_pack.name||"Data Pack")+" Full Quality Pack");const vm=computeViewModel(asset);renderCards();setBounds(vm.asset.bounds);const countries=uniqueCountryNames(vm.asset.included_countries);if(countries.length){document.getElementById("countries").innerHTML=countries.map((c)=>"<div>"+esc(c)+"</div>").join("");document.getElementById("countriesPanel").style.display=""}const select=document.getElementById("levelSelect");select.replaceChildren();let levels=vm.levels.length?vm.levels:[1];const preferred=Number(vm&&vm.state&&vm.state.default_level);if(DATA.scene_detail&&levels.includes(preferred))levels=[preferred];window.PLANETKA_MAP_ZOOM_LEVELS=levels;for(const z of levels){const o=document.createElement("option");o.value=String(z);o.textContent=zoomLabel(z);select.appendChild(o)}const defaultLevel=levels.includes(preferred)?preferred:levels[0];select.value=String(defaultLevel);if(DATA.scene_detail&&select.closest("label"))select.closest("label").style.display="none";else select.addEventListener("change",()=>renderMap(vm,Number(select.value)));await loadProductOutlines(vm.asset);renderMap(vm,Number(select.value||defaultLevel));if(!DATA.map_state_ready){document.getElementById("mapStatus").textContent=DATA.price_pending?"Price and map are updating. Please wait a few moments.":"Map is updating. Please wait a few moments.";if(DATA.map_pending)setTimeout(()=>window.location.reload(),6000);return}renderUpsells()}catch(error){console.warn("Planetka region-pack map failed",error);document.getElementById("mapStatus").className="error small";document.getElementById("mapStatus").textContent="Map failed to load. Please reopen this page from Blender."}}
+async function init(){try{setMapLoading(true,"Loading map...");const asset=serverMapAsset()||await loadAsset(DATA.asset_id);const titlePrefix=String(DATA.title_prefix||DATA.success&&DATA.success.context_title_prefix||"").trim();const explicitTitle=String(DATA.page_title||"").trim();document.getElementById("pageTitle").textContent=explicitTitle||((titlePrefix?titlePrefix+": ":"")+(asset.region_pack.name||"Data Pack")+" Full Quality Pack");const vm=computeViewModel(asset);renderCards();setBounds(vm.asset.bounds);const countries=uniqueCountryNames(vm.asset.included_countries);if(countries.length){document.getElementById("countries").innerHTML=countries.map((c)=>"<div>"+esc(c)+"</div>").join("");document.getElementById("countriesPanel").style.display=""}const select=document.getElementById("levelSelect");select.replaceChildren();let levels=vm.levels.length?vm.levels:[1];const preferred=Number(vm&&vm.state&&vm.state.default_level);if(DATA.scene_detail&&levels.includes(preferred))levels=[preferred];window.PLANETKA_MAP_ZOOM_LEVELS=levels;for(const z of levels){const o=document.createElement("option");o.value=String(z);o.textContent=zoomLabel(z);select.appendChild(o)}const defaultLevel=levels.includes(preferred)?preferred:levels[0];select.value=String(defaultLevel);if(DATA.scene_detail&&select.closest("label"))select.closest("label").style.display="none";else select.addEventListener("change",()=>renderMap(vm,Number(select.value)));await loadProductOutlines(vm.asset);renderMap(vm,Number(select.value||defaultLevel));if(!DATA.map_state_ready){document.getElementById("mapStatus").textContent=DATA.price_pending?"Price and map are updating. Please wait a few moments.":"Map is updating. Please wait a few moments.";if(DATA.map_pending)setTimeout(()=>window.location.reload(),6000);return}renderUpsells()}catch(error){console.warn("Planetka region-pack map failed",error);document.getElementById("mapStatus").className="error small";document.getElementById("mapStatus").textContent="Map failed to load. Please reopen this page from Blender."}}
 init();`;
 
 const REGION_PACK_PAGE_ASSETS = new Map([
@@ -3521,6 +3529,7 @@ function regionPackStaticMapPayload(product, token, account, ownedRows, options 
 
 async function relatedRegionPackQuoteEntries(db, product, userId, account, _pricingOwnershipContext, deps, options = {}) {
   const limit = Math.max(0, Number.parseInt(options && options.limit || 6, 10) || 6);
+  const includePending = Boolean(options && options.includePending);
   const candidates = await relatedRegionProducts(db, product, deps, limit);
   const quoteResults = await materializedRegionPackQuoteResults(db, userId, candidates, account, deps, {
     fastTrack: Boolean(options && options.fastTrack),
@@ -3533,7 +3542,10 @@ async function relatedRegionPackQuoteEntries(db, product, userId, account, _pric
   const entries = candidates
     .map((candidate) => {
       const entry = quoteResults.get(normalizedRegionPackProductId(candidate));
-      return entry && entry.quote ? { product: candidate, quote: entry.quote } : null;
+      if (entry && entry.quote) {
+        return { product: candidate, quote: entry.quote };
+      }
+      return includePending ? { product: candidate, quote: null } : null;
     })
     .filter(Boolean);
   return entries;
@@ -4163,7 +4175,7 @@ async function relatedSimilarRegionProducts(db, product, deps, limit = 3) {
   const currentId = String(product && product.id || "").trim();
   const currentBbox = product && product.bbox || [];
   const currentIsCountryOption = isCountryOptionRegionProduct(product) && currentRank !== 3;
-  if (!currentId || (!currentIsCountryOption && currentRank !== 1) || !Array.isArray(currentBbox) || currentBbox.length < 4) {
+  if (!currentId || (!currentIsCountryOption && currentRank !== 1 && currentRank !== 2) || !Array.isArray(currentBbox) || currentBbox.length < 4) {
     return [];
   }
   const matches = [];
@@ -4235,7 +4247,7 @@ async function relatedRegionProducts(db, product, deps, limit = 6) {
     result.push(candidate);
   };
   const isCountryOptionPage = isCountryOptionRegionProduct(product) && currentRank !== 3;
-  const similarLimit = currentRank === 1 || isCountryOptionPage ? 8 : 3;
+  const similarLimit = currentRank === 1 || isCountryOptionPage ? 8 : (currentRank === 2 ? 12 : 3);
   for (const candidate of await relatedSimilarRegionProducts(db, product, deps, similarLimit)) {
     add(candidate);
   }
@@ -5698,17 +5710,28 @@ function regionPackCatalogQuoteRow(product, row, status) {
   };
 }
 
+function secureRandomIdentifier(byteLength = 16) {
+  if (typeof crypto === "undefined" || !crypto) {
+    throw new Error("crypto_unavailable");
+  }
+  if (typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  if (typeof crypto.getRandomValues === "function") {
+    const bytes = new Uint8Array(Math.max(8, Math.min(64, Number.parseInt(byteLength || 16, 10) || 16)));
+    crypto.getRandomValues(bytes);
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+  throw new Error("crypto_unavailable");
+}
+
 function userProductQuoteJobId() {
-  const randomId = typeof crypto !== "undefined" && crypto && typeof crypto.randomUUID === "function"
-    ? crypto.randomUUID()
-    : `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  const randomId = secureRandomIdentifier(24);
   return `upqj_${String(randomId).replace(/[^A-Za-z0-9]/g, "").slice(0, 48)}`;
 }
 
 function userProductQuoteBatchId() {
-  const randomId = typeof crypto !== "undefined" && crypto && typeof crypto.randomUUID === "function"
-    ? crypto.randomUUID()
-    : `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  const randomId = secureRandomIdentifier(24);
   return `upqb_${String(randomId).replace(/[^A-Za-z0-9]/g, "").slice(0, 48)}`;
 }
 
@@ -5730,7 +5753,7 @@ const USER_PRODUCT_MAP_STATE_SHARD_STEP_TILE_LIMIT = 3000;
 function userProductQuoteWorkerId(deps) {
   const random = deps && typeof deps.randomToken === "function"
     ? deps.randomToken(8)
-    : `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+    : secureRandomIdentifier(8);
   return `upqw_${String(random || "").replace(/[^A-Za-z0-9]/g, "").slice(0, 24)}`;
 }
 
@@ -9057,7 +9080,10 @@ ${isSceneDetail ? `<select id="levelSelect" style="display:none"></select>` : `<
 </div>
 ${isSceneDetail ? "" : `<p class="muted small">Included zoom levels are part of the Full Quality pack and are required for reliable Planetka rendering across different camera distances.</p>`}
 <p class="muted small">Hover over any tile to see individual tile details.</p>
+<div class="map-shell">
 <svg id="map" role="img" aria-label="${escapeHtmlText(name)} tile map"></svg>
+<div id="mapLoadingOverlay" class="map-loading-overlay"><span>Loading map...</span></div>
+</div>
 	<p class="muted small">Tile hover shows tile status and land coverage. The purchase price above is generated by the backend quote.</p>
 <div class="legend">
 <span><i class="swatch new"></i>${isSceneDetail ? "Red - New full resolution tile" : "New in this pack"}</span>
@@ -9114,7 +9140,10 @@ ${isSceneDetail ? `<select id="levelSelect" style="display:none"></select>` : `<
 </div>
 ${isSceneDetail ? "" : `<p class="muted small">Included zoom levels are part of the Full Quality pack and are required for reliable Planetka rendering across different camera distances.</p>`}
 <p class="muted small">Hover over any tile to see individual tile details.</p>
+<div class="map-shell">
 <svg id="map" role="img" aria-label="${escapeHtmlText(name)} tile map"></svg>
+<div id="mapLoadingOverlay" class="map-loading-overlay"><span>Loading map...</span></div>
+</div>
 <p class="muted small">Tile hover shows tile status and land coverage. The purchase price above is generated by the backend quote.</p>
 <div class="legend">
 <span><i class="swatch new"></i>${data && data.scene_detail ? "Red - New full resolution tile" : "New in this pack"}</span>
@@ -9234,11 +9263,8 @@ function creditsForTileStats(tile, stats, qualityMode) {
 }
 
 function normalizeAccountType(value) {
-  const token = String(value || "").trim().toLowerCase();
-  if (token === "standard" || token === "credits" || token === "credit") {
-    return ACCOUNT_TYPE_STANDARD;
-  }
-  return ACCOUNT_TYPE_STANDARD;
+  void value;
+  return ACCOUNT_TYPE_DEFAULT;
 }
 
 function isUnlimitedCreditAccount(account) {
@@ -9318,17 +9344,17 @@ async function ensureCreditAccount(db, userId, deps) {
         INSERT OR IGNORE INTO user_credit_accounts (
           user_id, account_type, created_at, updated_at
         )
-        VALUES (?, 'standard', ?, ?)
+        VALUES (?, 'account', ?, ?)
       `,
       [safeUserId, now, now],
     );
     account = await freshCreditAccountForUser(db, safeUserId, deps);
-  } else if (String(account && account.account_type || "").trim().toLowerCase() !== "standard") {
+  } else if (String(account && account.account_type || "").trim().toLowerCase() !== ACCOUNT_TYPE_DEFAULT) {
     await deps.dbRun(
       db,
       `
         UPDATE user_credit_accounts
-        SET account_type = 'standard',
+        SET account_type = 'account',
             pricing_version = COALESCE(pricing_version, 0) + 1,
             updated_at = ?
         WHERE user_id = ?
@@ -12052,8 +12078,15 @@ export async function handleCreditRegionPackMap(request, env, deps) {
   timing.mark("quote_rows");
   // Product pages only read materialized quote/map-state rows. Missing rows are
   // queued above and shown as updating instead of calculated in this request.
+  const relatedLimit = regionProductRank(product) === 2 ? 96 : 16;
   const upsells = quoteStatus === "ready"
-    ? await relatedRegionPackReadyQuoteEntries(db, product, userId, account, deps, { limit: 8 })
+    ? await relatedRegionPackQuoteEntries(db, product, userId, account, null, deps, {
+      limit: relatedLimit,
+      priority: 60,
+      triggerType: "product_page_related_quote_requested",
+      staleReason: "product_page_related_quote_not_ready",
+      includePending: true,
+    })
     : [];
   timing.mark("upsells");
   const data = regionPackStaticMapPayload(product, token, account, [], {
@@ -12246,6 +12279,104 @@ export async function handleCreditRegionPackMapStateShard(request, env, deps) {
       ...corsHeaders(env),
     },
   }), timing, env, { region_pack_id: productId, level, shard_index: shardIndex });
+}
+
+
+function chooseMiniMapPreviewLevel(levelCounts, maxTiles = 250) {
+  const entries = Object.entries(levelCounts || {})
+    .map(([level, count]) => [Math.max(1, Number.parseInt(level || 0, 10) || 0), Math.max(0, Number.parseInt(count || 0, 10) || 0)])
+    .filter(([level, count]) => isRegionPackPaidZLevel(level) && count > 0)
+    .sort((a, b) => a[0] - b[0]);
+  const underLimit = entries.find(([, count]) => count <= maxTiles);
+  if (underLimit) {
+    return underLimit[0];
+  }
+  return entries.length ? entries[entries.length - 1][0] : 1;
+}
+
+export async function handleCreditRegionPackMiniMap(request, env, deps) {
+  await ensureRuntimePricingSettings(env, deps);
+  const timing = createEndpointTimer("credits.region_pack_mini_map");
+  const url = new URL(request.url);
+  const token = String(url.searchParams.get("token") || "").trim();
+  const allowCatalogProduct = String(url.searchParams.get("catalog") || "") === "1";
+  if (!token) {
+    return withEndpointTiming(deps.json({ ok: false, error: "missing_token" }, 400, env), timing, env, { error: "missing_token" });
+  }
+  const db = deps.requireDb(env);
+  const tokenResult = allowCatalogProduct
+    ? await getValidAnyDetailToken(db, token, deps)
+    : await getValidRegionPackDetailToken(db, token, deps);
+  if (tokenResult.error) {
+    return withEndpointTiming(deps.json({ ok: false, error: tokenResult.error }, tokenResult.status || 410, env), timing, env, { error: tokenResult.error });
+  }
+  const requestedRegionId = String(url.searchParams.get("region_pack_id") || "").trim();
+  const productResult = allowCatalogProduct
+    ? (() => {
+      const product = regionProductById(requestedRegionId || tokenResult.row && tokenResult.row.region_pack_id);
+      return product ? { ok: true, product } : { error: "region_pack_not_available_for_this_detail_link", status: 403 };
+    })()
+    : await resolveRegionPackFromDetailTokenRow(db, tokenResult.row, requestedRegionId, deps);
+  if (productResult.error) {
+    return withEndpointTiming(deps.json({ ok: false, error: productResult.error }, productResult.status || 404, env), timing, env, { error: productResult.error });
+  }
+  const userId = String(tokenResult.row && tokenResult.row.user_id || "").trim();
+  const product = productResult.product;
+  const productId = String(product && product.id || "").trim().toLowerCase();
+  const account = await ensureFreshCreditAccountForUser(db, userId, deps);
+  const pricingVersion = pricingSettingsCacheKey();
+  const entitlementVersion = accountEntitlementVersion(account);
+  const quoteUserId = productQuoteLookupUserIdForAccount(userId, account);
+  const quoteRows = await loadUserProductQuoteRows(db, quoteUserId, [productId], deps, { includeMapState: false });
+  const quoteRow = quoteRows.get(productId) || null;
+  const quoteStatus = productQuoteStatus(quoteRow, pricingVersion, entitlementVersion);
+  if (quoteStatus !== "ready") {
+    return withEndpointTiming(deps.json({ ok: false, error: "quote_not_ready", quote_status: quoteStatus }, 409, env), timing, env, { region_pack_id: productId, quote_status: quoteStatus });
+  }
+  const requestedQuoteId = String(url.searchParams.get("quote_id") || "").trim();
+  if (requestedQuoteId && String(quoteRow && quoteRow.quote_id || "") !== requestedQuoteId) {
+    return withEndpointTiming(deps.json({ ok: false, error: "quote_id_mismatch" }, 409, env), timing, env, { region_pack_id: productId });
+  }
+  const quote = userProductQuoteFromRow(quoteRow);
+  if (!quote || !quote.summary) {
+    return withEndpointTiming(deps.json({ ok: false, error: "quote_payload_unavailable" }, 409, env), timing, env, { region_pack_id: productId });
+  }
+  const levelCounts = await regionPackTileLevelCountsForProduct(db, product, deps);
+  const productIdForLevel = String(product && product.id || "").trim().toLowerCase();
+  const level = productIdForLevel === "world" ? 30 : chooseMiniMapPreviewLevel(levelCounts, 250);
+  const levelTileCount = Math.max(0, Number.parseInt(levelCounts[String(level)] || 0, 10) || 0);
+  const rowLimit = levelTileCount > 250 ? Math.min(levelTileCount, 500) : 250;
+  timing.mark("level");
+  const rows = await regionPackTileRowsForProductLevelAfterCursor(db, product, level, deps, { limit: rowLimit });
+  timing.mark("tile_rows");
+  const context = await buildUserProductMapChunkContext(db, product, quote, account, deps, rows, { userId });
+  const tiles = [];
+  for (const row of rows) {
+    const tile = buildUserProductMapTileFromRow(row, context);
+    if (tile) {
+      const priced = applyOnDemandMapTileDiscount(tile, context);
+      tiles.push({
+        tile_key: priced.tile_key,
+        status: priced.status,
+        lon_min: priced.lon_min,
+        lon_max: priced.lon_max,
+        lat_min: priced.lat_min,
+        lat_max: priced.lat_max,
+      });
+    }
+  }
+  timing.mark("tiles");
+  const publicProduct = regionProductPublicPayload(product);
+  return withEndpointTiming(deps.json({
+    ok: true,
+    catalog_version: REGION_PACK_CATALOG_VERSION,
+    region_pack: publicProduct,
+    bounds: publicProduct.bounds,
+    outlines: [],
+    level,
+    level_tile_count: levelTileCount || rows.length,
+    tiles,
+  }, 200, env, { "Cache-Control": "no-store" }), timing, env, { region_pack_id: productId, level, count: tiles.length });
 }
 
 export async function handleCreditRegionPackMapAsset(request, env, deps) {

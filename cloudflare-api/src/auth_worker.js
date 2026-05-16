@@ -11,10 +11,7 @@ import {
   parsePositiveNumber,
 } from "./worker/env.js";
 import {
-  PLAN_CODE_COMMERCIAL,
   PLAN_CODE_FREE,
-  PLAN_CODE_PERSONAL,
-  commercialUseAllowed,
   isBlockedStatus,
   isDeviceLimitExemptEmail,
   isQualityModeAllowedForPlan,
@@ -78,8 +75,6 @@ const RATE_LIMIT_ENTRY_TTL_SECONDS = 172800;
 
 const FIXED_INTERNAL_TEST_PLAN_BY_EMAIL = Object.freeze({
   "free@planetka.io": PLAN_CODE_FREE,
-  "personal@planetka.io": PLAN_CODE_PERSONAL,
-  "commercial@planetka.io": PLAN_CODE_COMMERCIAL,
 });
 
 let rateLimitsTableReady = false;
@@ -330,7 +325,7 @@ function normalizeDeviceId(value) {
 
 function normalizeTierCodeStrict(value) {
   const normalized = normalizePlanCode(value);
-  if (normalized === PLAN_CODE_FREE || normalized === PLAN_CODE_PERSONAL || normalized === PLAN_CODE_COMMERCIAL) {
+  if (normalized === PLAN_CODE_FREE) {
     return normalized;
   }
   return "";
@@ -589,7 +584,7 @@ async function ensureMinimalCreditAccountTable(db) {
     `
       CREATE TABLE IF NOT EXISTS user_credit_accounts (
         user_id TEXT PRIMARY KEY,
-        account_type TEXT NOT NULL DEFAULT 'standard',
+        account_type TEXT NOT NULL DEFAULT 'account',
         world_full_quality_unlocked_at TEXT,
         world_full_quality_checkout_session_id TEXT,
         world_full_quality_paid_eur REAL NOT NULL DEFAULT 0,
@@ -613,7 +608,7 @@ async function ensureCreditAccountForUser(db, userId) {
     db,
     `
       INSERT OR IGNORE INTO user_credit_accounts (user_id, account_type, created_at, updated_at)
-      VALUES (?, 'standard', ?, ?)
+      VALUES (?, 'account', ?, ?)
     `,
     [safeUserId, now, now],
   );
@@ -996,7 +991,6 @@ async function buildAccountState(db, user, env) {
     accountTier: storedPlanCode,
     storedAccountTier: storedPlanCode,
     qualityAccessPlanCode: qualityAccess.qualityAccessPlanCode,
-    commercialUseAllowed: commercialUseAllowed(storedPlanCode),
     upgradeUrl: String(env.UPGRADE_URL || DEFAULT_UPGRADE_URL).trim() || DEFAULT_UPGRADE_URL,
     contactUrl: normalizeContactUrl(env.PLANETKA_CONTACT_URL || DEFAULT_CONTACT_URL),
     previewFairUsageHold: getPreviewFairUsageHoldForUserFromRow(user),
@@ -1017,7 +1011,6 @@ function serializeAccountState(state) {
     stored_plan_code: storedPlanCode || "",
     stored_account_tier: storedTier || "",
     quality_access_plan_code: qualityAccessPlanCode || "",
-    commercial_use_allowed: Boolean(safeState.commercialUseAllowed),
     upgrade_url: safeState.upgradeUrl,
     contact_url: safeState.contactUrl,
     preview_fair_usage_hold: safeState.previewFairUsageHold || { held: false },
@@ -1245,7 +1238,6 @@ const readBearerUser = (request, env) => readBearerUserRoute(request, env, authS
 const requireAuthenticatedUserContext = (request, env, options = {}) => requireAuthenticatedUserContextRoute(request, env, options, authSessionDeps);
 
 const authCoreDeps = {
-  PLAN_CODE_PERSONAL,
   PLAN_CODE_FREE,
   DEFAULT_API_KEY_DEVICE_ACTIVE_WINDOW_SECONDS,
   DEFAULT_TILE_SESSION_TOKEN_TTL_SECONDS,
@@ -1288,7 +1280,6 @@ const authSessionDeps = {
 };
 
 const authApiKeyDeps = {
-  PLAN_CODE_PERSONAL,
   PLAN_CODE_FREE,
   DEFAULT_API_KEY_REQUEST_MIN_AGE_SECONDS,
   DEFAULT_RATE_LIMIT_AUTH_START_IP_LIMIT,
@@ -1386,7 +1377,6 @@ const authSessionRouteDeps = {
 const authSessionRouteHandlers = createAuthSessionRouteHandlers(authSessionRouteDeps);
 
 const apiKeyPageDeps = {
-  PLAN_CODE_PERSONAL,
   PLAN_CODE_FREE,
   DEFAULT_CONTACT_URL,
   DEFAULT_PRIVACY_URL,

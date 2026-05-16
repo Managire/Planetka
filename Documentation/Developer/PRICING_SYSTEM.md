@@ -8,7 +8,7 @@ Last updated: 2026-05-15
 
 Planetka currently has two customer-facing texture access modes:
 
-- `Preview`: free streaming quality for browsing, tests, and personal preview work.
+- `Preview`: free streaming quality for browsing, tests, and preview work.
 - `Full Quality`: paid/licenced texture data with commercial licence included for the licenced data.
 
 The removed or inactive models are intentionally not part of the current customer flow:
@@ -386,7 +386,7 @@ Despite the historical name, this table is not a prepaid balance table in the cu
 Important columns:
 
 - `user_id`
-- `account_type`: currently coerced to `standard`.
+- `account_type`: retained as a compatibility column and coerced to `account`.
 - `world_full_quality_unlocked_at`
 - `world_full_quality_checkout_session_id`
 - `world_full_quality_paid_eur`

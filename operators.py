@@ -897,7 +897,7 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
             (
                 "PREVIEW",
                 "Preview",
-                "Personal use only. Fast streaming textures for preview work",
+                "Fast streaming textures for preview work",
             ),
             (
                 "FULL",
@@ -930,7 +930,7 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
             getattr(properties, "texture_quality_mode", "PREVIEW")
         )
         if mode == "PREVIEW":
-            return "Use Preview textures for automated resolving. Personal use only."
+            return "Use Preview textures for automated resolving."
         return "Buy and download Full Quality textures for Camera View. Commercial licence included."
 
     def invoke(self, context, event):

@@ -1,6 +1,4 @@
 export const PLAN_CODE_FREE = "free";
-export const PLAN_CODE_PERSONAL = "personal";
-export const PLAN_CODE_COMMERCIAL = "commercial";
 
 const DEFAULT_DEVICE_LIMIT_EXEMPT_EMAILS = "tom.griger@gmail.com";
 
@@ -10,12 +8,6 @@ function normalizeEmail(value) {
 
 export function normalizeUserStatus(value) {
   const normalized = String(value || "").trim().toLowerCase();
-  if (normalized === PLAN_CODE_COMMERCIAL) {
-    return PLAN_CODE_COMMERCIAL;
-  }
-  if (normalized === PLAN_CODE_PERSONAL) {
-    return PLAN_CODE_PERSONAL;
-  }
   if (normalized === PLAN_CODE_FREE) {
     return PLAN_CODE_FREE;
   }
@@ -56,13 +48,7 @@ export function isBlockedStatus(statusValue) {
 
 export function normalizeRequestedPlan(value) {
   const normalized = normalizePlanCode(value);
-  if (normalized === PLAN_CODE_COMMERCIAL) {
-    return PLAN_CODE_COMMERCIAL;
-  }
-  if (normalized === PLAN_CODE_PERSONAL) {
-    return PLAN_CODE_PERSONAL;
-  }
-  return PLAN_CODE_FREE;
+  return normalized === PLAN_CODE_FREE ? PLAN_CODE_FREE : PLAN_CODE_FREE;
 }
 
 export function resolvePolicyPlanCode(user, env = {}) {
@@ -102,10 +88,6 @@ export function qualityModeNotAllowedMessage(planCode, qualityMode) {
   return "Full Quality requires direct payment.";
 }
 
-export function commercialUseAllowed(planCode) {
-  return normalizeRequestedPlan(planCode) === PLAN_CODE_COMMERCIAL;
-}
-
 export function accountTierForPlanCode(planCode) {
   return normalizeRequestedPlan(planCode);
 }
@@ -121,43 +103,16 @@ export function planAccessSummary(planCode) {
 }
 
 export function resolvePlanPriority(planCode) {
-  const normalized = normalizeRequestedPlan(planCode);
-  if (normalized === PLAN_CODE_COMMERCIAL) {
-    return 2;
-  }
-  if (normalized === PLAN_CODE_PERSONAL) {
-    return 1;
-  }
+  void planCode;
   return 0;
 }
 
 export function evaluateStripePlanPurchaseGuard(existingPlanCode, requestedPlanCode) {
   const existing = normalizeRequestedPlan(existingPlanCode);
   const requested = normalizeRequestedPlan(requestedPlanCode);
-  const existingPriority = resolvePlanPriority(existing);
-  const requestedPriority = resolvePlanPriority(requested);
-  if (existingPriority <= 0 || requestedPriority <= 0) {
-    return {
-      blocked: false,
-      reason: "",
-      existingPlanCode: existing,
-      requestedPlanCode: requested,
-    };
-  }
-  if (existingPriority < requestedPriority) {
-    return {
-      blocked: false,
-      reason: "",
-      existingPlanCode: existing,
-      requestedPlanCode: requested,
-    };
-  }
-  const reason = existingPriority === requestedPriority
-    ? "already_has_licence"
-    : "higher_tier_already_active";
   return {
-    blocked: true,
-    reason,
+    blocked: false,
+    reason: "",
     existingPlanCode: existing,
     requestedPlanCode: requested,
   };

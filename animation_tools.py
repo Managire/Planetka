@@ -166,7 +166,7 @@ def _normalize_animation_render_texture_quality_mode(value):
     return "FULL"
 
 
-def _require_commercial_animation_render_access(operator, prefs=None):
+def _require_animation_render_access(operator, prefs=None):
     del operator, prefs
     return True
 
@@ -3846,7 +3846,7 @@ class PLANETKA_OT_AnimationPreviewShot(bpy.types.Operator):
             return {'CANCELLED'}
 
         prefs = get_prefs()
-        if not _require_commercial_animation_render_access(self, prefs):
+        if not _require_animation_render_access(self, prefs):
             return {'CANCELLED'}
         start_frame, end_frame = _cinematic_frame_range_from_props(scene, props)
         if int(end_frame) < int(start_frame):

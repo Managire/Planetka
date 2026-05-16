@@ -134,7 +134,7 @@ class GuardedDb {
         user_id: this.userId,
         user_email: this.email,
         email: this.email,
-        account_type: "standard",
+        account_type: "account",
         pricing_version: 0,
         updated_at: "2026-05-15T00:00:00.000Z",
         world_full_quality_unlocked_at: "",

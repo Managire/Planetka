@@ -476,7 +476,6 @@ def clear_auth_session(prefs=None, state="logged_out", status_message=""):
     prefs.auth_refresh_token = ""
     prefs.auth_account_tier = ""
     prefs.auth_stored_account_tier = ""
-    prefs.auth_commercial_use_allowed = ""
     prefs.auth_plan_code = ""
     prefs.auth_plan_name = ""
     prefs.auth_stored_plan_code = ""
@@ -612,10 +611,6 @@ def allows_texture_quality_for_context(prefs=None, source=None, requested_mode="
     if mode == "PREVIEW":
         return True
     return mode == "FULL"
-
-
-def get_commercial_use_allowed(prefs=None):
-    return bool(is_authenticated(prefs or get_prefs()))
 
 
 def get_upgrade_url(prefs=None):
@@ -809,7 +804,6 @@ def _apply_auth_payload(prefs, payload, login_state="authenticated", status_mess
     prefs.auth_plan_name = ""
     prefs.auth_stored_plan_code = ""
     prefs.auth_stored_plan_name = ""
-    prefs.auth_commercial_use_allowed = "1"
     prefs.auth_stored_account_tier = ""
     prefs.auth_account_tier = ""
     prefs.auth_contact_url = _first_non_empty(
@@ -840,7 +834,6 @@ def _apply_account_profile_fields(prefs, payload):
     prefs.auth_plan_name = ""
     prefs.auth_stored_plan_code = ""
     prefs.auth_stored_plan_name = ""
-    prefs.auth_commercial_use_allowed = "1"
     prefs.auth_stored_account_tier = ""
     prefs.auth_account_tier = ""
 

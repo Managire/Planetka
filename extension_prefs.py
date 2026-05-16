@@ -23,7 +23,6 @@ FALLBACK_AUTH_ACCESS_TOKEN_KEY = "planetka_auth_access_token"
 FALLBACK_AUTH_REFRESH_TOKEN_KEY = "planetka_auth_refresh_token"
 FALLBACK_AUTH_ACCOUNT_TIER_KEY = "planetka_auth_account_tier"
 FALLBACK_AUTH_STORED_ACCOUNT_TIER_KEY = "planetka_auth_stored_account_tier"
-FALLBACK_AUTH_COMMERCIAL_USE_ALLOWED_KEY = "planetka_auth_commercial_use_allowed"
 FALLBACK_AUTH_PLAN_CODE_KEY = "planetka_auth_plan_code"
 FALLBACK_AUTH_PLAN_NAME_KEY = "planetka_auth_plan_name"
 FALLBACK_AUTH_STORED_PLAN_CODE_KEY = "planetka_auth_stored_plan_code"
@@ -93,7 +92,6 @@ class PlanetkaExtensionPreferences(AddonPreferences):
     auth_refresh_token: StringProperty(name="Auth Refresh Token", default="", options={'HIDDEN'})
     auth_account_tier: StringProperty(name="Auth Account Tier", default="", options={'HIDDEN'})
     auth_stored_account_tier: StringProperty(name="Auth Stored Account Tier", default="", options={'HIDDEN'})
-    auth_commercial_use_allowed: StringProperty(name="Auth Commercial Use Allowed", default="", options={'HIDDEN'})
     auth_plan_code: StringProperty(name="Auth Plan Code", default="", options={'HIDDEN'})
     auth_plan_name: StringProperty(name="Auth Plan Name", default="", options={'HIDDEN'})
     auth_stored_plan_code: StringProperty(name="Auth Stored Plan Code", default="", options={'HIDDEN'})
@@ -293,10 +291,6 @@ def get_prefs():
         auth_stored_account_tier = property(
             lambda self: self._get_value(FALLBACK_AUTH_STORED_ACCOUNT_TIER_KEY, ""),
             lambda self, value: self._set_value(FALLBACK_AUTH_STORED_ACCOUNT_TIER_KEY, value),
-        )
-        auth_commercial_use_allowed = property(
-            lambda self: self._get_value(FALLBACK_AUTH_COMMERCIAL_USE_ALLOWED_KEY, ""),
-            lambda self, value: self._set_value(FALLBACK_AUTH_COMMERCIAL_USE_ALLOWED_KEY, value),
         )
         auth_plan_code = property(
             lambda self: self._get_value(FALLBACK_AUTH_PLAN_CODE_KEY, ""),

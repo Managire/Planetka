@@ -16,8 +16,6 @@ async function resolveTargetUser(db, body, deps) {
 
 const DEFAULT_INTERNAL_QA_RESET_EMAILS = [
   "free@planetka.io",
-  "personal@planetka.io",
-  "commercial@planetka.io",
   "tom.griger@gmail.com",
 ].join(",");
 
@@ -39,12 +37,6 @@ function isAllowedQaResetEmail(email, env, deps) {
 
 function defaultQaPlanForEmail(email, deps) {
   const normalized = deps.normalizeEmail(email || "");
-  if (normalized === "personal@planetka.io") {
-    return "personal";
-  }
-  if (normalized === "commercial@planetka.io") {
-    return "commercial";
-  }
   if (normalized === "free@planetka.io") {
     return "free";
   }
@@ -56,7 +48,7 @@ function defaultQaPlanForEmail(email, deps) {
 
 function resolveQaResetPlanCode(email, requestedPlanCode, existingUser, deps) {
   const explicitPlan = deps.normalizePlanCode(requestedPlanCode || "");
-  if (["free", "personal", "commercial"].includes(explicitPlan)) {
+  if (explicitPlan === "free") {
     return explicitPlan;
   }
   const emailDefault = defaultQaPlanForEmail(email, deps);
@@ -64,7 +56,7 @@ function resolveQaResetPlanCode(email, requestedPlanCode, existingUser, deps) {
     return emailDefault;
   }
   const existingPlan = deps.normalizePlanCode(existingUser && existingUser.status || "");
-  if (["free", "personal", "commercial"].includes(existingPlan)) {
+  if (existingPlan === "free") {
     return existingPlan;
   }
   return deps.normalizeRequestedPlan(existingPlan || "free");
@@ -516,7 +508,7 @@ export async function handleAdminQaAuthReset(request, env, deps) {
     existingUser,
     deps,
   );
-  if (!["free", "personal", "commercial"].includes(targetPlan)) {
+  if (targetPlan !== "free") {
     return deps.json({ ok: false, error: "missing_plan_code" }, 400, env);
   }
 

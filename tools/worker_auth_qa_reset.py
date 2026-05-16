@@ -7,10 +7,10 @@ Usage examples:
     --bearer-token "$PLANETKA_ADMIN_BEARER_TOKEN"
 
   python3 tools/worker_auth_qa_reset.py \
-    --email personal@planetka.io \
+    --email free@planetka.io \
     --device-id 1de81a60-831d-4aac-9e66-e86af91a900b \
-    --auth-payload-out /tmp/personal_auth.json \
-    --api-key-out /tmp/personal_api_key.json \
+    --auth-payload-out /tmp/free_auth.json \
+    --api-key-out /tmp/free_api_key.json \
     --bearer-token "$PLANETKA_ADMIN_BEARER_TOKEN"
 """
 
@@ -75,7 +75,7 @@ def parse_args() -> argparse.Namespace:
         default=str(os.environ.get("PLANETKA_API_BASE_URL") or DEFAULT_BASE_URL).strip() or DEFAULT_BASE_URL,
         help="Worker base URL. Default: https://api.planetka.io",
     )
-    parser.add_argument("--plan-code", default="", help="Optional stored tier override: free, personal, or commercial.")
+    parser.add_argument("--plan-code", default="", help="Optional stored tier override. Current supported value: free.")
     parser.add_argument(
         "--bearer-token",
         default=str(os.environ.get("PLANETKA_ADMIN_BEARER_TOKEN") or "").strip(),

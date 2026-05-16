@@ -182,8 +182,7 @@ def _set_quality_and_expect(mode, expected_ok, report_entry):
         denied_markers = (
             "PKA-RES-003",
             "Only Preview and Full Quality are available",
-            "requires Personal or Commercial",
-            "requires Commercial",
+            "not available for this account",
             "not available for this account tier",
         )
         _assert(

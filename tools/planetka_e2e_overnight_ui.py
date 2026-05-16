@@ -1130,7 +1130,6 @@ class OvernightRunner:
             "plan_code": str(getattr(self.prefs, "auth_plan_code", "") or "").strip(),
             "plan_name": str(getattr(self.prefs, "auth_plan_name", "") or "").strip(),
             "account_tier": str(self.auth.get_account_tier(self.prefs) or getattr(self.prefs, "auth_account_tier", "") or "").strip(),
-            "commercial_use_allowed": bool(self.auth.get_commercial_use_allowed(self.prefs)),
             "contact_url": str(getattr(self.prefs, "auth_contact_url", "") or "").strip(),
             "upgrade_url": str(getattr(self.prefs, "auth_upgrade_url", "") or "").strip(),
         }

@@ -82,6 +82,17 @@ export async function handleTileSessionStart(request, env, deps) {
     || body.pricingTiles
   );
   const creditEnforced = creditProtocol === "land_credits_v1" && Array.isArray(creditTileKeys);
+  if (!creditEnforced && normalizedRequestedQualityMode !== "preview") {
+    return jsonResponse(
+      {
+        ok: false,
+        error: "full_quality_session_required",
+        message: "Full Quality requires a confirmed session.",
+      },
+      402,
+      env,
+    );
+  }
   if (creditEnforced && typeof authorizeFullTileSession === "function") {
     return await authorizeFullTileSession(request, env, body);
   }
@@ -111,7 +122,7 @@ export async function handleTileSessionStart(request, env, deps) {
       deps,
       { allowSmallSceneFree: true },
     )
-    : { credits: 0, paid_tile_count: 0, free_tile_count: 0, tile_count: 0, legacy_compat: true };
+    : { credits: 0, paid_tile_count: 0, free_tile_count: 0, tile_count: 0 };
   if (unlockResult && unlockResult.error === "credit_pricing_missing_tile_stats") {
     return jsonResponse(
       {
@@ -198,7 +209,7 @@ export async function handleTileSessionStart(request, env, deps) {
       expires_in_seconds: issued.expiresInSeconds,
       expires_at: issued.expiresAt,
       plan_code: normalizeRequestedPlan(auth && auth.planCode),
-      credit_protocol: creditEnforced ? "land_credits_v1" : "legacy_compat",
+      credit_protocol: creditEnforced ? "land_credits_v1" : "none",
       credit_enforced: Boolean(creditEnforced),
       tile_session_id: sessionId,
       credits_charged: Number(unlockResult && unlockResult.credits || 0),
@@ -298,7 +309,6 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
   let eventFileName = "";
   let eventTileKey = "";
   let eventQualityMode = "";
-  let legacyCreditUnlockResult = null;
 
   try {
     const parts = path.replace(/^\/tiles\//, "").split("/");
@@ -349,9 +359,6 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
       }
     }
     const tileRequiredQualityMode = minimumPlanQualityForTile(fileName);
-    const creditBillingQualityMode = normalizeQualityMode(
-      effectiveQualityMode !== "preview" ? effectiveQualityMode : tileRequiredQualityMode,
-    );
     if ((request.method === "GET" || request.method === "HEAD")
     && !tokenCreditEnforced
     && !isQualityModeAllowedForPlan(qualityAccessPlanCode, effectiveQualityMode)) {
@@ -383,6 +390,21 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
           file_name: fileName,
         },
         403,
+        env,
+      );
+    }
+    if ((request.method === "GET" || request.method === "HEAD")
+      && effectiveQualityMode !== "preview"
+      && !tokenCreditEnforced) {
+      eventStatusCode = 402;
+      eventErrorCode = "full_quality_session_required";
+      return json(
+        {
+          ok: false,
+          error: "full_quality_session_required",
+          message: "Full Quality requires a confirmed session.",
+        },
+        402,
         env,
       );
     }
@@ -422,71 +444,6 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
         );
       }
     }
-
-    const enforceLegacyCreditUnlock = async () => {
-      if (
-        request.method !== "GET"
-        || tokenCreditEnforced
-        || creditBillingQualityMode === "preview"
-        || !creditTileKey
-        || isFreeCreditTileKey(creditTileKey)
-      ) {
-        return null;
-      }
-      if (typeof deps.unlockTilesForSession !== "function") {
-        return json(
-          {
-            ok: false,
-            error: "full_quality_session_required",
-            message: "Full Quality requires a confirmed Resolve session.",
-          },
-          402,
-          env,
-        );
-      }
-      const unlockResult = await deps.unlockTilesForSession(
-        db,
-        user && user.id,
-        creditBillingQualityMode,
-        [creditTileKey],
-        resolveId,
-        deps,
-      );
-      if (unlockResult && unlockResult.error === "credit_pricing_missing_tile_stats") {
-        return json(
-          {
-            ok: false,
-            error: "credit_pricing_missing_tile_stats",
-            message: "Planetka EUR pricing metadata is missing for a requested tile.",
-            tile_key: String(unlockResult.missing_tile_key || creditTileKey || ""),
-          },
-          503,
-          env,
-        );
-      }
-      if (
-        unlockResult
-        && (
-          unlockResult.error === "payment_required"
-        )
-      ) {
-        return json(
-          {
-            ok: false,
-            error: String(unlockResult.error || "payment_required"),
-            message: "Full Quality requires direct payment.",
-            required_credits: Number(unlockResult.required_credits || 0),
-            price_eur: Number(unlockResult.price_eur || unlockResult.required_credits || 0),
-            paid_tile_count: Number(unlockResult.paid_tile_count || 0),
-            tile_count: Number(unlockResult.tile_count || 0),
-          },
-          402,
-          env,
-        );
-      }
-      legacyCreditUnlockResult = unlockResult || { credits: 0 };
-      return null;
-    };
 
     if (request.method === "HEAD") {
       const objectHead = await env.PLANETKA_DATA.head(key);
@@ -545,13 +502,6 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
       responseBody = cacheableResponse.body;
     }
 
-    const legacyCreditError = await enforceLegacyCreditUnlock();
-    if (legacyCreditError) {
-      eventStatusCode = Number(legacyCreditError.status || 0) || 402;
-      eventErrorCode = "legacy_credit_unlock_failed";
-      return legacyCreditError;
-    }
-
     const responseHeaders = new Headers({
       ...corsHeaders(env),
       "Content-Type": contentType,
@@ -560,10 +510,6 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
       "X-Planetka-Cache": cacheStatus,
       "X-Planetka-Quality-Mode": effectiveQualityMode,
     });
-    if (legacyCreditUnlockResult) {
-      responseHeaders.set("X-Planetka-Credit-Protocol", "legacy_per_tile");
-      responseHeaders.set("X-Planetka-EUR-Charged", String(Number(legacyCreditUnlockResult.credits || 0)));
-    }
     if (etag) {
       responseHeaders.set("ETag", etag);
     }

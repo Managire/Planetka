@@ -99,6 +99,30 @@ class ImageInfoCache:
         return dims
 
 
+class SourceTileIndex:
+    def __init__(self) -> None:
+        self._cache: dict[tuple[str, str], list[tuple[Path, int, int, int, int]]] = {}
+
+    def paths(self, source_dir: Path, source_kind: str) -> list[tuple[Path, int, int, int, int]]:
+        cache_key = (str(source_dir), source_kind)
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+        prefix = source_prefix_for_kind(source_kind)
+        allowed_z = {1, 2, 4, 8, 15, 30}
+        rows: list[tuple[Path, int, int, int, int]] = []
+        for path in source_dir.glob(f"{prefix}_x*_y*_z*_d*.exr"):
+            parsed = parse_tile_key(path.name)
+            if not parsed:
+                continue
+            x, y, z, d = parsed
+            if z not in allowed_z or d != z:
+                continue
+            rows.append((path, x, y, z, d))
+        self._cache[cache_key] = rows
+        return rows
+
+
 def parse_tile_key(value: str) -> tuple[int, int, int, int] | None:
     match = TILE_KEY_RE.search(str(value or ""))
     if not match:
@@ -190,6 +214,25 @@ def normalize_bounds(raw: object) -> dict[str, float] | None:
     return bounds
 
 
+def load_product_bounds(products_file: Path | None) -> dict[str, dict[str, float]]:
+    if not products_file:
+        return {}
+    text = products_file.read_text()
+    match = re.search(r"GENERATED_REGION_PACK_PRODUCTS\s*=\s*(\[.*?\]);", text, re.S)
+    if not match:
+        raise RuntimeError(f"failed to find GENERATED_REGION_PACK_PRODUCTS in {products_file}")
+    products = json.loads(match.group(1))
+    result: dict[str, dict[str, float]] = {}
+    for product in products:
+        if not isinstance(product, dict):
+            continue
+        product_id = str(product.get("id") or "").strip()
+        bounds = normalize_bounds(product.get("bounds") or product.get("bbox"))
+        if product_id and bounds:
+            result[product_id] = bounds
+    return result
+
+
 def tile_display_shifts(tile: TileInfo, bounds: dict[str, float]) -> list[float]:
     if tile.lat_max <= bounds["min_lat"] or tile.lat_min >= bounds["max_lat"]:
         return []
@@ -271,14 +314,87 @@ def tile_info_for_row(row: dict[str, object], source_dir: Path, source_kind: str
     return TileInfo(key=key, x=x, y=y, z=z, d=d, path=path, width=width, height=height)
 
 
-def choose_tiles(asset: dict[str, object], bounds: dict[str, float], out_w: int, out_h: int, source_dir: Path, source_kind: str, cache: ImageInfoCache) -> tuple[list[TileInfo], str]:
+def tile_info_for_path(path: Path, source_kind: str, cache: ImageInfoCache) -> TileInfo | None:
+    parsed = parse_tile_key(path.name)
+    if not parsed:
+        return None
+    x, y, z, d = parsed
+    expected_prefix = f"{source_prefix_for_kind(source_kind)}_"
+    if not path.name.startswith(expected_prefix):
+        return None
+    width, height = cache.dimensions(path)
+    return TileInfo(key=f"x{x:03d}_y{y:03d}_z{z:03d}_d{d:03d}", x=x, y=y, z=z, d=d, path=path, width=width, height=height)
+
+
+def source_tiles_for_bounds(source_dir: Path, source_kind: str, bounds: dict[str, float], cache: ImageInfoCache, source_index: SourceTileIndex | None = None) -> list[TileInfo]:
+    tiles: list[TileInfo] = []
+    # Backgrounds are preview imagery. Use real source tiles at sensible map
+    # levels, not the global fallback image and not only the licensable product
+    # tile rows. This keeps map context complete without silently switching to a
+    # different global source.
+    rows = source_index.paths(source_dir, source_kind) if source_index else []
+    if not rows:
+        prefix = source_prefix_for_kind(source_kind)
+        rows = []
+        for path in source_dir.glob(f"{prefix}_x*_y*_z*_d*.exr"):
+            parsed = parse_tile_key(path.name)
+            if not parsed:
+                continue
+            x, y, z, d = parsed
+            if z in {1, 2, 4, 8, 15, 30} and d == z:
+                rows.append((path, x, y, z, d))
+    for path, x, y, z, d in rows:
+        probe = TileInfo(key=f"x{x:03d}_y{y:03d}_z{z:03d}_d{d:03d}", x=x, y=y, z=z, d=d, path=path, width=1, height=1)
+        if not intersects(probe, bounds):
+            continue
+        info = tile_info_for_path(path, source_kind, cache)
+        if info:
+            tiles.append(info)
+    return tiles
+
+
+def choose_tiles_from_source_bounds(bounds: dict[str, float], out_w: int, out_h: int, source_dir: Path, source_kind: str, cache: ImageInfoCache, source_index: SourceTileIndex | None = None) -> tuple[list[TileInfo], str]:
+    lon_span = max(1e-6, bounds["max_lon"] - bounds["min_lon"])
+    lat_span = max(1e-6, bounds["max_lat"] - bounds["min_lat"])
+    required_ppd_x = out_w / lon_span
+    required_ppd_y = out_h / lat_span
+    groups: dict[tuple[int, int], list[TileInfo]] = {}
+    for info in source_tiles_for_bounds(source_dir, source_kind, bounds, cache, source_index=source_index):
+        groups.setdefault((info.z, info.d), []).append(info)
+    if not groups:
+        raise RuntimeError(f"no source {source_prefix_for_kind(source_kind)} tiles available for bounds")
+    candidates: list[tuple[int, int, float, int, list[TileInfo]]] = []
+    fallback: tuple[int, int, float, int, list[TileInfo]] | None = None
+    for (z, d), tiles in groups.items():
+        min_ratio = min(
+            min(tile.ppd_x / required_ppd_x, tile.ppd_y / required_ppd_y)
+            for tile in tiles
+        )
+        area = sum(source_pixel_area(tile, bounds) for tile in tiles)
+        entry = (d, z, min_ratio, area, tiles)
+        if min_ratio >= 1.0:
+            candidates.append(entry)
+        if fallback is None or min_ratio > fallback[2] or (math.isclose(min_ratio, fallback[2]) and area < fallback[3]):
+            fallback = entry
+    if candidates:
+        chosen = min(candidates, key=lambda item: (item[3], -item[0], item[1]))
+        reason = "source_bounds_no_upscale"
+    else:
+        chosen = fallback
+        reason = f"source_bounds_best_available_ratio_{chosen[2]:.3f}" if chosen else "source_bounds_missing"
+    if not chosen:
+        raise RuntimeError(f"no usable source-bound {source_prefix_for_kind(source_kind)} tile group")
+    return chosen[4], reason
+
+
+def choose_tiles(asset: dict[str, object], bounds: dict[str, float], out_w: int, out_h: int, source_dir: Path, source_kind: str, cache: ImageInfoCache, use_global_source: bool = True) -> tuple[list[TileInfo], str]:
     lon_span = max(1e-6, bounds["max_lon"] - bounds["min_lon"])
     lat_span = max(1e-6, bounds["max_lat"] - bounds["min_lat"])
     required_ppd_x = out_w / lon_span
     required_ppd_y = out_h / lat_span
 
     groups: dict[tuple[int, int], list[TileInfo]] = {}
-    global_info = global_tile_info(source_dir, source_kind, cache)
+    global_info = global_tile_info(source_dir, source_kind, cache) if use_global_source else None
     if global_info and global_info.d > 0 and intersects(global_info, bounds):
         global_ratio = min(global_info.ppd_x / required_ppd_x, global_info.ppd_y / required_ppd_y)
         if global_ratio >= 1.0:
@@ -398,20 +514,23 @@ def paste_tile_to_canvas(canvas: Image.Image, tile: TileInfo, bounds: dict[str, 
     return pasted
 
 
-def render_background(asset_path: Path, out_path: Path, source_dir: Path, source_kind: str, cache: ImageInfoCache, device_scale: float, max_side: int, quality: int, wt_water_rgb: tuple[int, int, int], wt_land_rgb: tuple[int, int, int]) -> dict[str, object]:
+def render_background(asset_path: Path, out_path: Path, source_dir: Path, source_kind: str, cache: ImageInfoCache, device_scale: float, max_side: int, quality: int, wt_water_rgb: tuple[int, int, int], wt_land_rgb: tuple[int, int, int], use_global_source: bool = True, use_source_bounds: bool = False, product_bounds_overrides: dict[str, dict[str, float]] | None = None, source_index: SourceTileIndex | None = None) -> dict[str, object]:
     asset = json.loads(asset_path.read_text())
     product = asset.get("region_pack") if isinstance(asset.get("region_pack"), dict) else {}
     product_id = str(product.get("id") or asset_path.stem)
-    product_bounds = normalize_bounds(asset.get("bounds"))
+    product_bounds = (product_bounds_overrides or {}).get(product_id) or normalize_bounds(asset.get("bounds"))
     if not product_bounds:
         raise RuntimeError("missing or invalid bounds")
     bounds = full_canvas_bounds(product_bounds)
     out_w, out_h = target_size(product_bounds, device_scale=device_scale, max_side=max_side)
-    tiles, reason = choose_tiles(asset, bounds, out_w, out_h, source_dir, source_kind, cache)
+    if use_source_bounds:
+        tiles, reason = choose_tiles_from_source_bounds(bounds, out_w, out_h, source_dir, source_kind, cache, source_index=source_index)
+    else:
+        tiles, reason = choose_tiles(asset, bounds, out_w, out_h, source_dir, source_kind, cache, use_global_source=use_global_source)
     canvas_fill = wt_water_rgb if source_kind == "wt" else (13, 17, 24)
     canvas = Image.new("RGB", (out_w, out_h), canvas_fill)
     pasted = 0
-    base_tile = global_tile_info(source_dir, source_kind, cache)
+    base_tile = global_tile_info(source_dir, source_kind, cache) if use_global_source else None
     if base_tile and intersects(base_tile, bounds):
         if paste_tile_to_canvas(canvas, base_tile, bounds, source_kind, wt_water_rgb, wt_land_rgb):
             pasted += 1
@@ -499,8 +618,11 @@ def main() -> int:
     parser.add_argument("--only", action="append", default=[], help="Only render selected product id; may be repeated")
     parser.add_argument("--limit", type=int, default=0, help="Render at most this many products")
     parser.add_argument("--manifest", type=Path, default=None, help="Optional manifest JSON path")
+    parser.add_argument("--products-file", type=Path, default=None, help="Optional generated products JS file; when set, product bbox values are used as the map frame to match the live web pages")
     parser.add_argument("--world-output", type=Path, default=None, help="Optional output path for global fallback background")
     parser.add_argument("--skip-world", action="store_true", help="Do not render the global fallback background")
+    parser.add_argument("--no-global-source", action="store_true", help="Render product backgrounds only from product tile rows, not the global fallback tile")
+    parser.add_argument("--source-bounds", action="store_true", help="Render product backgrounds from real source tiles intersecting the map bounds, without using the global fallback image")
     args = parser.parse_args()
 
     assets_dir = args.assets_dir
@@ -522,6 +644,8 @@ def main() -> int:
         asset_paths = asset_paths[: args.limit]
 
     cache = ImageInfoCache()
+    source_index = SourceTileIndex()
+    product_bounds_overrides = load_product_bounds(args.products_file)
     manifest: list[dict[str, object]] = []
     failures: list[dict[str, str]] = []
     world_row = None
@@ -536,7 +660,7 @@ def main() -> int:
     for index, asset_path in enumerate(asset_paths, start=1):
         out_path = args.out / f"{asset_path.stem}.jpg"
         try:
-            row = render_background(asset_path, out_path, source_dir, source_kind, cache, args.device_scale, args.max_side, args.quality, wt_water_rgb, wt_land_rgb)
+            row = render_background(asset_path, out_path, source_dir, source_kind, cache, args.device_scale, args.max_side, args.quality, wt_water_rgb, wt_land_rgb, use_global_source=not args.no_global_source, use_source_bounds=args.source_bounds, product_bounds_overrides=product_bounds_overrides, source_index=source_index)
             manifest.append(row)
             print(f"[{index}/{len(asset_paths)}] {row['id']}: {row['width']}x{row['height']} z={row['source_z']} d={row['source_d']} output_ratio={row['min_source_to_output_ratio']} display_ratio={row['min_source_to_display_ratio']} bytes={row['bytes']}")
         except Exception as error:  # noqa: BLE001 - CLI should keep rendering other products.

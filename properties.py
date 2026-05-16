@@ -1140,7 +1140,7 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
             (
                 "PREVIEW",
                 "Preview",
-                "Fast lower-resolution streaming textures for personal preview work",
+                "Fast lower-resolution streaming textures for preview work",
             ),
             ("FULL", "Full Quality", "Highest quality texture data. Commercial licence included after purchase"),
         ),

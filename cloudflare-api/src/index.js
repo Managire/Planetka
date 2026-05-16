@@ -12,10 +12,7 @@ import {
   parsePositiveNumber,
 } from "./worker/env.js";
 import {
-  PLAN_CODE_PERSONAL,
   PLAN_CODE_FREE,
-  PLAN_CODE_COMMERCIAL,
-  commercialUseAllowed,
   isBlockedStatus,
   isDeviceLimitExemptEmail,
   isQualityModeAllowedForPlan,
@@ -106,6 +103,7 @@ import {
   handleCreditRegionPackCheckoutFromToken as handleCreditRegionPackCheckoutFromTokenRoute,
   handleCreditRegionPackMap as handleCreditRegionPackMapRoute,
   handleCreditRegionPackMapLevelChunk as handleCreditRegionPackMapLevelChunkRoute,
+  handleCreditRegionPackMiniMap as handleCreditRegionPackMiniMapRoute,
   handleCreditRegionPackMapStateShard as handleCreditRegionPackMapStateShardRoute,
   handleCreditRegionPackMapAsset as handleCreditRegionPackMapAssetRoute,
   handleCreditRegionPackMapOutlines as handleCreditRegionPackMapOutlinesRoute,
@@ -256,8 +254,6 @@ let userQualityAccessColumnsReady = false;
 let adminFeatureFlagsTableReady = false;
 const FIXED_INTERNAL_TEST_PLAN_BY_EMAIL = Object.freeze({
   "free@planetka.io": PLAN_CODE_FREE,
-  "personal@planetka.io": PLAN_CODE_PERSONAL,
-  "commercial@planetka.io": PLAN_CODE_COMMERCIAL,
 });
 let adminHardBlocksTableReady = false;
 let newsletterContactsTableReady = false;
@@ -284,9 +280,7 @@ const ANALYTICS_QUERY_DEPS = {
   DEFAULT_R2_STORAGE_PRICE_PER_GB_MONTH_USD,
   INTERNAL_TEST_ANALYTICS_EMAIL_PATTERNS,
   MAX_ANALYTICS_WINDOW_MINUTES,
-  PLAN_CODE_PERSONAL,
   PLAN_CODE_FREE,
-  PLAN_CODE_COMMERCIAL,
   clampNonNegativeInt,
   countRowsFromQuery,
   dbAll,
@@ -360,9 +354,7 @@ const ADMIN_ANALYTICS_DEPS = {
   parseAnalyticsUsersSortDirection: (value) => parseAnalyticsUsersSortDirectionQuery(value),
   parseHeavyUserPlanFilter: (value) => parseHeavyUserPlanFilterQuery(value, ANALYTICS_QUERY_DEPS),
   parseNonNegativeInteger,
-  PLAN_CODE_PERSONAL,
   PLAN_CODE_FREE,
-  PLAN_CODE_COMMERCIAL,
   publicErrorMessage,
   requireAnalyticsAdmin: (request, env) => requireAnalyticsAdmin(request, env, AUTH_SESSION_DEPS),
   sanitizeAnalyticsMinutes: (value, fallback = DEFAULT_ANALYTICS_WINDOW_MINUTES) =>
@@ -396,7 +388,7 @@ const ADMIN_SESSION_DEPS = {
   nowIso,
   parseJson,
   parseRateLimitInteger,
-  PLAN_CODE_COMMERCIAL,
+  PLAN_CODE_FREE,
   rateLimitedResponse,
   requestClientIp,
   requireAuthenticatedUserContext: (request, env, options) => requireAuthenticatedUserContext(request, env, options, AUTH_SESSION_DEPS),
@@ -481,7 +473,6 @@ const PUBLIC_MISC_DEPS = {
 };
 
 const API_KEY_PAGE_DEPS = {
-  PLAN_CODE_PERSONAL,
   PLAN_CODE_FREE,
   DEFAULT_CONTACT_URL,
   DEFAULT_PRIVACY_URL,
@@ -2393,7 +2384,6 @@ async function buildAccountState(db, user, env) {
     accountTier: storedAccountTier,
     storedAccountTier,
     qualityAccessPlanCode: qualityAccess.qualityAccessPlanCode,
-    commercialUseAllowed: commercialUseAllowed(storedPlanCode),
     upgradeUrl: String(env.UPGRADE_URL || DEFAULT_UPGRADE_URL).trim() || DEFAULT_UPGRADE_URL,
     contactUrl: normalizeContactUrl(env.PLANETKA_CONTACT_URL || DEFAULT_CONTACT_URL),
     previewFairUsageHold,
@@ -2416,7 +2406,6 @@ function serializeAccountState(state) {
     stored_plan_code: storedPlanCode || "",
     stored_account_tier: storedTier || "",
     quality_access_plan_code: qualityAccessPlanCode || "",
-    commercial_use_allowed: Boolean(safeState.commercialUseAllowed),
     upgrade_url: safeState.upgradeUrl,
     contact_url: safeState.contactUrl,
     preview_fair_usage_hold: safeState.previewFairUsageHold || { held: false },
@@ -2799,7 +2788,7 @@ async function ensureCreditTables(db) {
     `
       CREATE TABLE IF NOT EXISTS user_credit_accounts (
         user_id TEXT PRIMARY KEY,
-        account_type TEXT NOT NULL DEFAULT 'standard',
+        account_type TEXT NOT NULL DEFAULT 'account',
         world_full_quality_unlocked_at TEXT,
         world_full_quality_checkout_session_id TEXT,
         world_full_quality_paid_eur REAL NOT NULL DEFAULT 0,
@@ -2810,7 +2799,7 @@ async function ensureCreditTables(db) {
     `,
   );
   try {
-    await dbRun(db, `ALTER TABLE user_credit_accounts ADD COLUMN account_type TEXT NOT NULL DEFAULT 'standard'`);
+    await dbRun(db, `ALTER TABLE user_credit_accounts ADD COLUMN account_type TEXT NOT NULL DEFAULT 'account'`);
   } catch (error) {
     const message = String(error && error.message || "").toLowerCase();
     if (!message.includes("duplicate column")) {
@@ -2836,7 +2825,7 @@ async function ensureCreditTables(db) {
     db,
     `
       UPDATE user_credit_accounts
-      SET account_type = 'standard'
+      SET account_type = 'account'
       WHERE account_type IS NULL OR TRIM(account_type) = ''
     `,
   );
@@ -2847,7 +2836,7 @@ async function ensureCreditTables(db) {
         INSERT OR IGNORE INTO user_credit_accounts (
           user_id, account_type, created_at, updated_at
         )
-        SELECT id, 'standard', ?, ?
+        SELECT id, 'account', ?, ?
         FROM users
         WHERE id IS NOT NULL AND TRIM(id) != ''
       `,
@@ -3306,7 +3295,7 @@ async function ensureCreditAccountForUser(db, userId) {
       INSERT OR IGNORE INTO user_credit_accounts (
         user_id, account_type, created_at, updated_at
       )
-      VALUES (?, 'standard', ?, ?)
+      VALUES (?, 'account', ?, ?)
     `,
     [safeUserId, now, now],
   );
@@ -3314,7 +3303,7 @@ async function ensureCreditAccountForUser(db, userId) {
     db,
     `
       UPDATE user_credit_accounts
-      SET account_type = 'standard',
+      SET account_type = 'account',
           updated_at = ?
       WHERE user_id = ?
         AND (
@@ -3377,8 +3366,6 @@ function normalizeTierCodeStrict(value) {
   const normalized = normalizePlanCode(value);
   if (
     normalized === PLAN_CODE_FREE
-    || normalized === PLAN_CODE_PERSONAL
-    || normalized === PLAN_CODE_COMMERCIAL
   ) {
     return normalized;
   }
@@ -3827,7 +3814,6 @@ async function enforceSingleActiveFreeApiKey(db, userId, preferredApiKeyId = "")
 }
 
 const AUTH_CORE_DEPS = {
-  PLAN_CODE_PERSONAL,
   PLAN_CODE_FREE,
   DEFAULT_API_KEY_DEVICE_ACTIVE_WINDOW_SECONDS,
   DEFAULT_TILE_SESSION_TOKEN_TTL_SECONDS,
@@ -3881,7 +3867,6 @@ const AUTH_API_KEY_DEPS = {
   DEFAULT_RATE_LIMIT_AUTH_START_EMAIL_WINDOW_SECONDS,
   DEFAULT_RATE_LIMIT_AUTH_START_IP_LIMIT,
   DEFAULT_RATE_LIMIT_AUTH_START_IP_WINDOW_SECONDS,
-  PLAN_CODE_PERSONAL,
   PLAN_CODE_FREE,
   addDaysIso,
   addMinutesIso,
@@ -3941,7 +3926,6 @@ function getAuthApiKeyHandlers() {
 const AUTH_SESSION_ROUTE_DEPS = {
   DEFAULT_RATE_LIMIT_AUTH_REFRESH_IP_LIMIT,
   DEFAULT_RATE_LIMIT_AUTH_REFRESH_IP_WINDOW_SECONDS,
-  PLAN_CODE_PERSONAL,
   blockedAccountResponse,
   buildAccountState,
   createAccessToken,
@@ -4184,6 +4168,7 @@ async function dispatchExactRoute(request, env, path) {
       || safePath === "/credits/region-pack-map-asset"
       || safePath === "/credits/region-pack-map-outlines"
       || safePath === "/credits/region-pack-map-level-chunk"
+      || safePath === "/credits/region-pack-mini-map"
       || safePath === "/credits/region-pack-map-state-shard"
       || safePath === "/credits/region-pack-map-background.jpg"
       || safePath === "/credits/account-country-borders.json";
@@ -4304,6 +4289,11 @@ async function dispatchExactRoute(request, env, path) {
     case "/credits/region-pack-map-level-chunk":
       if (request.method === "GET" || request.method === "HEAD") {
         return await handleCreditRegionPackMapLevelChunkRoute(request, env, TILE_ROUTE_DEPS);
+      }
+      return null;
+    case "/credits/region-pack-mini-map":
+      if (request.method === "GET" || request.method === "HEAD") {
+        return await handleCreditRegionPackMiniMapRoute(request, env, TILE_ROUTE_DEPS);
       }
       return null;
     case "/credits/region-pack-map-state-shard":
@@ -4445,6 +4435,7 @@ function shouldKickProductQuoteQueue(path) {
     || safePath === "/credits/region-pack-map-asset"
     || safePath === "/credits/region-pack-map-outlines"
     || safePath === "/credits/region-pack-map-level-chunk"
+    || safePath === "/credits/region-pack-mini-map"
     || safePath === "/credits/region-pack-map-state-shard"
     || safePath === "/credits/region-pack-map-background.jpg"
     || safePath === "/credits/account-country-borders.json"
