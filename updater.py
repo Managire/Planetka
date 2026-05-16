@@ -478,7 +478,7 @@ def apply_pending_update_on_import():
 
 
 def _run_update_check_worker(force=False):
-    del force
+    manual_check = bool(force)
     state = _load_state()
     now_ts = int(time.time())
     local_version = get_local_version()
@@ -508,8 +508,8 @@ def _run_update_check_worker(force=False):
                 release_notes_url=str(release_notes_url or ""),
                 update_ready=False,
                 last_check_at=now_ts,
-                message="",
-                phase="idle",
+                message="Planetka is up to date." if manual_check else "",
+                phase="checked" if manual_check else "idle",
                 downloaded_bytes=0,
                 download_total_bytes=0,
             )
@@ -518,17 +518,24 @@ def _run_update_check_worker(force=False):
             return
 
         if not _is_newer_version(latest_version, local_version):
+            version_label = str(local_version or latest_version or "").strip()
+            if manual_check and version_label:
+                message = f"Planetka is up to date ({version_label})."
+            elif manual_check:
+                message = "Planetka is up to date."
+            else:
+                message = ""
             state["available_update"] = None
             state["pending"] = None
             _save_state(state)
             _set_runtime(
                 checking=False,
-                latest_version="",
-                release_notes_url="",
+                latest_version=str(latest_version or "") if manual_check else "",
+                release_notes_url=str(release_notes_url or "") if manual_check else "",
                 update_ready=False,
                 last_check_at=now_ts,
-                message="",
-                phase="idle",
+                message=message,
+                phase="checked" if manual_check else "idle",
                 downloaded_bytes=0,
                 download_total_bytes=0,
             )
