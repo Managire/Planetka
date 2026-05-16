@@ -59,7 +59,7 @@ const CHECKOUT_TILE_SET_TOKEN_TTL_MINUTES = 24 * 60;
 const MONEY_SCALE = 100;
 const METRIC_SCALE = 1_000_000;
 const REGION_PACK_CATALOG_VERSION = GENERATED_REGION_PACK_CATALOG_VERSION || "gadm_regions_v8";
-const REGION_PACK_MAP_ASSET_REVISION = `${REGION_PACK_CATALOG_VERSION}:outline-v4-product-bg-wt-blue-v4-partial-dateline-v7-admin-labels-v1-success-upsell-v1-catalog-flat-v1-price-breakdown-v1-hover-breakdown-v1-summary-partial-v1-pricing-runtime-v5-runtime-buckets-v1-canonical-pricing-v2-coeff-km2-v1-post-purchase-new-v1-button-border-gold-v1-tile-tooltip-v5-immediate-static-js-v10-product-outlines-v1-on-demand-map-v4-incremental-chunks-v1-geo-bg-v1-soft-red-v1-scene-map-v1-tooltip-cardinal-v2-product-bg-disabled-v1-scene-page-v3`;
+const REGION_PACK_MAP_ASSET_REVISION = `${REGION_PACK_CATALOG_VERSION}:outline-v4-product-bg-wt-blue-v4-partial-dateline-v7-admin-labels-v1-success-upsell-v1-catalog-flat-v1-price-breakdown-v1-hover-breakdown-v1-summary-partial-v1-pricing-runtime-v5-runtime-buckets-v1-canonical-pricing-v2-coeff-km2-v1-post-purchase-new-v1-button-border-gold-v1-tile-tooltip-v5-immediate-static-js-v10-product-outlines-v1-on-demand-map-v4-incremental-chunks-v1-geo-bg-v1-soft-red-v1-scene-map-v1-tooltip-cardinal-v2-product-bg-frame-v1-scene-page-v3`;
 const REGION_PACK_PRICING_ENGINE_REVISION = "d1-complete-map-state-v2";
 const ACCOUNT_COUNTRY_BORDERS_ASSET_REVISION = `${REGION_PACK_CATALOG_VERSION}:account-country-borders-v1`;
 const SQL_VARIABLE_SAFE_CHUNK_SIZE = 75;
@@ -3322,7 +3322,7 @@ const outlinesUrl=(id)=>"/credits/region-pack-map-outlines?region_pack_id="+enco
 const currentToken=encodeURIComponent(DATA.token||"");
 const currentPackIdEncoded=encodeURIComponent(DATA.asset_id||DATA.region_pack&&DATA.region_pack.id||"");
 const currentCatalog=DATA.catalog_mode?"&catalog=1":"";
-function mapBgHref(id){void id;return MAP_BG}
+function productMapBgHref(id){const safe=encodeURIComponent(String(id||"").trim());return safe?"/credits/region-pack-map-background.jpg?region_pack_id="+safe+"&v="+assetVersion:""}
 function esc(value){return String(value||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/\"/g,"&quot;")}
 function countryName(value){return typeof value==="object"&&value?String(value.name||value.COUNTRY||value.NAME_1||value.GID_0||""):String(value||"")}
 const CHINA_ADMIN_LABELS=new Set(["anhui","beijing","chongqing","fujian","gansu","guangdong","guangxi","guizhou","hainan","hebei","heilongjiang","henan","hong kong","hubei","hunan","jiangsu","jiangxi","jilin","liaoning","macau","nei mongol","ningxia hui","qinghai","shaanxi","shandong","shanghai","shanxi","sichuan","tianjin","xinjiang uygur","xizang","yunnan","zhejiang"]);
@@ -3356,7 +3356,7 @@ function setBounds(bounds){currentFrame=frameForBounds(bounds||currentFrame.boun
 function xy(lon,lat){return[currentFrame.ox+(lon-currentFrame.bounds.min_lon)*currentFrame.scale,currentFrame.oy+(currentFrame.bounds.max_lat-lat)*currentFrame.scale]}
 function el(name,attrs){const node=document.createElementNS(NS,name);for(const k in attrs||{})node.setAttribute(k,String(attrs[k]));return node}
 let activeTileTooltip=null;function tileTooltip(){let node=document.getElementById("tileTooltip");if(!node){node=document.createElement("div");node.id="tileTooltip";node.className="tile-tooltip";document.body.appendChild(node)}return node}function moveTileTooltip(event){if(!activeTileTooltip)return;const pad=14;activeTileTooltip.style.left=Math.min(window.innerWidth-activeTileTooltip.offsetWidth-pad,event.clientX+pad)+"px";activeTileTooltip.style.top=Math.min(window.innerHeight-activeTileTooltip.offsetHeight-pad,event.clientY+pad)+"px"}function showTileTooltip(text,event){const node=tileTooltip();node.textContent=text;node.style.display="block";activeTileTooltip=node;moveTileTooltip(event)}function hideTileTooltip(){if(activeTileTooltip){activeTileTooltip.style.display="none";activeTileTooltip=null}}function attachTileTooltip(node,text){node.addEventListener("pointerenter",event=>showTileTooltip(text,event));node.addEventListener("pointermove",moveTileTooltip);node.addEventListener("pointerleave",hideTileTooltip)}
-function addMapBackground(svg,project,width,height,id,bounds){svg.appendChild(el("rect",{x:0,y:0,width,height,fill:"#0d1118"}));const tl=project(-180,90),br=project(180,-90);svg.appendChild(el("image",{href:mapBgHref(id),x:tl[0],y:tl[1],width:br[0]-tl[0],height:br[1]-tl[1],preserveAspectRatio:"none",opacity:"1.0"}));svg.appendChild(el("rect",{x:0,y:0,width,height,fill:"#05070a",opacity:"0.0"}))}
+function addMapBackground(svg,project,width,height,id,bounds){svg.appendChild(el("rect",{x:0,y:0,width,height,fill:"#0d1118"}));const tl=project(-180,90),br=project(180,-90);svg.appendChild(el("image",{href:MAP_BG,x:tl[0],y:tl[1],width:br[0]-tl[0],height:br[1]-tl[1],preserveAspectRatio:"none",opacity:"1.0"}));const productHref=productMapBgHref(id);if(productHref){const img=el("image",{href:productHref,x:0,y:0,width,height,preserveAspectRatio:"none",opacity:"1.0"});img.addEventListener("error",()=>img.remove());svg.appendChild(img)}svg.appendChild(el("rect",{x:0,y:0,width,height,fill:"#05070a",opacity:"0.0"}))}
 function pathFor(poly){return(poly||[]).map((pt,i)=>{const p=xy(pt[0],pt[1]);return(i?"L":"M")+p[0].toFixed(2)+" "+p[1].toFixed(2)}).join(" ")}
 function drawOutlineRingPath(ring){let path="",previousLon=null,started=false;for(const point of Array.isArray(ring)?ring:[]){const lon=Number(point&&point[0]),lat=Number(point&&point[1]);if(!Number.isFinite(lon)||!Number.isFinite(lat)){started=false;previousLon=null;continue}if(previousLon!==null&&Math.abs(lon-previousLon)>180)started=false;const p=xy(lon,lat);path+=(started?"L":"M")+p[0].toFixed(2)+" "+p[1].toFixed(2);started=true;previousLon=lon}return path}
 async function loadProductOutlines(asset){const current=Array.isArray(asset&&asset.outlines)?asset.outlines:[];if(current.length)return current;const id=asset&&asset.region_pack&&asset.region_pack.id||currentPackId();if(!id)return current;try{const response=await fetch(outlinesUrl(id),{cache:"force-cache"});if(!response.ok)return current;const payload=await response.json();const outlines=Array.isArray(payload&&payload.outlines)?payload.outlines:[];if(outlines.length)asset.outlines=outlines;return outlines}catch(_error){return current}}
@@ -12348,6 +12348,9 @@ export async function handleCreditRegionPackMapBackground(request, env, deps) {
     key = regionPackMapProductBackgroundKey(env, regionPackId);
     object = key ? await bucket.get(key) : null;
     timing.mark(object && object.body ? "r2_get_product" : "r2_get_product_miss");
+  }
+  if (regionPackId && (!object || !object.body)) {
+    return withEndpointTiming(deps.json({ ok: false, error: "region_pack_product_background_missing" }, 404, env), timing, env, { region_pack_id: regionPackId, key });
   }
   if (!object || !object.body) {
     key = regionPackMapBackgroundKey(env);
