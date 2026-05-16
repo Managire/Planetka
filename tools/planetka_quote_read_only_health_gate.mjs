@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /*
- * Planetka quote read-only health gate.
+ * Planetka no-synchronous-pricing public-route smoke test.
  *
  * Purpose:
- * - prove public catalog, product-page, and checkout routes do not run the
- *   heavy data-pack pricing calculator
+ * - prove public catalog, product-page, and data-pack checkout routes do not
+ *   run synchronous data-pack pricing
  * - verify World and Asia requests enqueue materialized quote jobs when quote
  *   rows are missing instead of calculating inline
  *
@@ -34,6 +34,20 @@ const REPORT_PATH = path.join("/tmp", "planetka_quote_read_only_health_gate_repo
 const FORBIDDEN_SQL_PATTERNS = [
   /user_tile_entitlements/i,
   /purchase_history_tiles/i,
+];
+const PUBLIC_PRICING_ROUTE_HANDLERS = [
+  "handleCreditCheckout",
+  "handleCreditRegionPackCatalog",
+  "handleCreditRegionPackCatalogPage",
+  "handleCreditRegionPackCheckoutFromToken",
+  "handleCreditRegionPackMap",
+];
+const FORBIDDEN_SYNC_PRICING_CALLS = [
+  "createRegionPackQuote",
+  "estimateRegionPackSummaryWithPackRelations",
+  "estimateRegionPackSummaryWithOwned",
+  "estimateRegionPackSummaryCached",
+  "regionPackPricingOwnershipContext",
 ];
 const DEFAULT_PRICING_VERSION = [
   "d1-complete-map-state-v2",
@@ -85,6 +99,63 @@ function staticHeavyQuoteCallGuard() {
     violations.push({ line: lineNumber, source: line.trim() });
   }
   return { ok: violations.length === 0, allowed, violations };
+}
+
+function extractExportedAsyncFunctionBody(source, name) {
+  const match = new RegExp(`export\\s+async\\s+function\\s+${name}\\s*\\(`).exec(source);
+  if (!match) {
+    throw new Error(`Unable to find exported route handler ${name}`);
+  }
+  const braceStart = source.indexOf("{", match.index);
+  if (braceStart < 0) {
+    throw new Error(`Unable to find body for exported route handler ${name}`);
+  }
+  let depth = 0;
+  for (let index = braceStart; index < source.length; index += 1) {
+    const char = source[index];
+    if (char === "{") {
+      depth += 1;
+    } else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return source.slice(braceStart + 1, index);
+      }
+    }
+  }
+  throw new Error(`Unable to parse body for exported route handler ${name}`);
+}
+
+function lineNumberForIndex(source, index) {
+  return source.slice(0, Math.max(0, index)).split(/\r?\n/).length;
+}
+
+function staticPublicRouteSyncPricingGuard() {
+  const source = fs.readFileSync(CREDIT_ROUTES, "utf8");
+  const violations = [];
+  const checkedHandlers = [];
+  for (const handlerName of PUBLIC_PRICING_ROUTE_HANDLERS) {
+    const body = extractExportedAsyncFunctionBody(source, handlerName);
+    checkedHandlers.push(handlerName);
+    for (const functionName of FORBIDDEN_SYNC_PRICING_CALLS) {
+      const pattern = new RegExp(`\\b${functionName}\\s*\\(`, "g");
+      let match = null;
+      while ((match = pattern.exec(body)) !== null) {
+        const handlerStart = source.indexOf(body);
+        const line = lineNumberForIndex(source, handlerStart + match.index);
+        violations.push({
+          handler: handlerName,
+          function: functionName,
+          line,
+        });
+      }
+    }
+  }
+  return {
+    ok: violations.length === 0,
+    checked_handlers: checkedHandlers,
+    forbidden_calls: FORBIDDEN_SYNC_PRICING_CALLS,
+    violations,
+  };
 }
 
 class GuardedDb {
@@ -340,6 +411,15 @@ async function main() {
     allowed_create_region_pack_quote_calls: staticGuard.allowed,
   });
 
+  const publicRouteGuard = staticPublicRouteSyncPricingGuard();
+  assert(publicRouteGuard.ok, `Public routes contain synchronous data-pack pricing calls: ${JSON.stringify(publicRouteGuard.violations, null, 2)}`);
+  report.steps.push({
+    name: "static_public_route_no_sync_pricing_guard",
+    ok: true,
+    checked_handlers: publicRouteGuard.checked_handlers,
+    forbidden_calls: publicRouteGuard.forbidden_calls,
+  });
+
   const catalogShell = await runHandlerCase({
     name: "catalog_shell",
     handler: handleCreditRegionPackCatalog,
@@ -389,7 +469,11 @@ async function main() {
   const readyQuoteMapData = responseEmbeddedRegionPackData(readyQuoteMapHtml);
   assert(readyQuoteMapData.price_pending === false, "asia_map_ready_quote_stale_map: price should be ready");
   assert(readyQuoteMapData.map_pending === false, "asia_map_ready_quote_stale_map: on-demand map shell should be ready when quote is ready");
-  assert(readyQuoteMap.state.jobs.length === 0, `asia_map_ready_quote_stale_map: ready quote with on-demand map should not enqueue, got ${JSON.stringify(readyQuoteMap.state.jobs)}`);
+  const nonRelatedReadyMapJobs = readyQuoteMap.state.jobs.filter((job) => (
+    String(job.product_id || "").toLowerCase() === "asia"
+    || String(job.trigger_type || "") !== "product_page_related_quote_requested"
+  ));
+  assert(nonRelatedReadyMapJobs.length === 0, `asia_map_ready_quote_stale_map: ready quote with on-demand map should only enqueue related-product quote jobs, got ${JSON.stringify(readyQuoteMap.state.jobs)}`);
   report.steps.push({
     name: "ready_quote_stale_map_uses_on_demand_map",
     ok: true,

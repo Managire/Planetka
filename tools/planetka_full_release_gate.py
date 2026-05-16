@@ -317,9 +317,9 @@ def _build_steps(args: argparse.Namespace, package_path: Path) -> list[Step]:
             timeout_sec=60,
         ),
         Step(
-            name="quote_read_only_health_gate",
+            name="no_sync_pricing_public_routes_smoke",
             category="worker",
-            command=["node", "tools/planetka_quote_read_only_health_gate.mjs"],
+            command=["node", "tools/planetka_no_sync_pricing_public_routes_smoke.mjs"],
             timeout_sec=120,
         ),
         Step(
