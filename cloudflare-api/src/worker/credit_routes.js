@@ -59,7 +59,7 @@ const CHECKOUT_TILE_SET_TOKEN_TTL_MINUTES = 24 * 60;
 const MONEY_SCALE = 100;
 const METRIC_SCALE = 1_000_000;
 const REGION_PACK_CATALOG_VERSION = GENERATED_REGION_PACK_CATALOG_VERSION || "gadm_regions_v8";
-const REGION_PACK_MAP_ASSET_REVISION = `${REGION_PACK_CATALOG_VERSION}:outline-v4-product-bg-wt-blue-v4-partial-dateline-v7-admin-labels-v1-success-upsell-v1-catalog-flat-v1-price-breakdown-v1-hover-breakdown-v1-summary-partial-v1-pricing-runtime-v5-runtime-buckets-v1-canonical-pricing-v2-coeff-km2-v1-post-purchase-new-v1-button-border-gold-v1-tile-tooltip-v5-immediate-static-js-v10-product-outlines-v1-on-demand-map-v4-incremental-chunks-v1-geo-bg-v1-soft-red-v1-scene-map-v1-tooltip-cardinal-v2-product-bg-v1`;
+const REGION_PACK_MAP_ASSET_REVISION = `${REGION_PACK_CATALOG_VERSION}:outline-v4-product-bg-wt-blue-v4-partial-dateline-v7-admin-labels-v1-success-upsell-v1-catalog-flat-v1-price-breakdown-v1-hover-breakdown-v1-summary-partial-v1-pricing-runtime-v5-runtime-buckets-v1-canonical-pricing-v2-coeff-km2-v1-post-purchase-new-v1-button-border-gold-v1-tile-tooltip-v5-immediate-static-js-v10-product-outlines-v1-on-demand-map-v4-incremental-chunks-v1-geo-bg-v1-soft-red-v1-scene-map-v1-tooltip-cardinal-v2-product-bg-v1-scene-page-v2`;
 const REGION_PACK_PRICING_ENGINE_REVISION = "d1-complete-map-state-v2";
 const ACCOUNT_COUNTRY_BORDERS_ASSET_REVISION = `${REGION_PACK_CATALOG_VERSION}:account-country-borders-v1`;
 const SQL_VARIABLE_SAFE_CHUNK_SIZE = 75;
@@ -3382,7 +3382,7 @@ function renderMap(vm,level){const seq=++mapRenderSeq;const key=shardCacheKey(le
 function miniFrame(bounds){return frameForBounds(bounds,1000,320,820,20)}
 function miniXY(frame,lon,lat){return[frame.ox+(lon-frame.bounds.min_lon)*frame.scale,frame.oy+(frame.bounds.max_lat-lat)*frame.scale]}
 function renderMiniMap(svg,vm){const b=vm.asset.bounds||{min_lon:-10,min_lat:35,max_lon:30,max_lat:48};const frame=miniFrame(b),w=frame.width,h=frame.height;svg.setAttribute("viewBox","0 0 "+w+" "+h);svg.style.aspectRatio=w+" / "+h;svg.setAttribute("preserveAspectRatio","xMidYMid meet");svg.replaceChildren();const bgId=vm&&vm.asset&&vm.asset.region_pack&&vm.asset.region_pack.id||"";addMapBackground(svg,(lon,lat)=>miniXY(frame,lon,lat),w,h,bgId,b);const first=vm.levels.length?vm.levels[0]:null;for(const tile of vm.rows.filter((row)=>Number(row.z)===Number(first))){const a=miniXY(frame,tile.lon_min,tile.lat_max),c=miniXY(frame,tile.lon_max,tile.lat_min);const cls=tile.status==="new"?"var(--new)":(tile.status==="partial"?"var(--partial)":(tile.status==="licenced"?"var(--licenced)":"var(--free)"));svg.appendChild(el("rect",{x:a[0],y:a[1],width:Math.max(1,c[0]-a[0]),height:Math.max(1,c[1]-a[1]),fill:cls,stroke:"#fff","stroke-width":"0.5",opacity:(tile.status==="new"||tile.status==="partial")?"0.58":"0.43"}))}}
-async function renderUpsells(){const serverUpsells=Array.isArray(DATA.upsells)?DATA.upsells:[];const grid=document.getElementById("upsellGrid");if(!grid||!serverUpsells.length)return;const token=encodeURIComponent(DATA.token||"");const catalog="&catalog=1";for(const card of serverUpsells){try{const idRaw=card.asset_id||card.region_pack&&card.region_pack.id||"";const upAsset=await loadAsset(idRaw);const vm=computeAsset(upAsset);const summary=card.summary;if(!summary)continue;if(!DATA.scene_detail&&int(summary.price_cents)<=0&&Number(summary.charged_tiles||0)<=0)continue;const pack=card.region_pack||upAsset.region_pack||{};const id=encodeURIComponent(pack.id||idRaw);const div=document.createElement("div");div.className="upsell";const title=document.createElement("h3");title.textContent=pack.name||"Data Pack";div.appendChild(title);const q=encodeURIComponent(String(card.quote_id||""));if(!q)continue;const detailHref="/credits/region-pack-map?token="+token+"&region_pack_id="+id+catalog+"&quote_id="+q;const mapLink=document.createElement("a");mapLink.href=detailHref;mapLink.className="upsell-map-link";mapLink.setAttribute("aria-label","View map for "+(pack.name||"data pack"));const map=document.createElementNS(NS,"svg");mapLink.appendChild(map);div.appendChild(mapLink);renderMiniMap(map,vm);const meta=document.createElement("p");meta.className="muted small";const alreadyValue=int(summary.already_licenced_deduction_cents)+int(summary.partial_licence_credit_cents);const bits=["Full "+fmtCents(summary.full_price_cents)];if(alreadyValue>0)bits.push("Already -"+fmtCents(alreadyValue));if(int(summary.discount_cents)>0)bits.push("Discount "+Number(summary.discount_percent||0)+"% (-"+fmtCents(summary.discount_cents)+")");bits.push("Final "+fmtCents(summary.price_cents));meta.textContent=bits.join(" · ");div.appendChild(meta);const checkout=document.createElement("a");checkout.className="button";checkout.href="/credits/region-pack-checkout?token="+token+"&region_pack_id="+id+catalog+"&quote_id="+q;checkout.textContent="Buy "+(pack.name||"Pack")+" ("+fmtCents(summary.price_cents)+")";div.appendChild(checkout);const detail=document.createElement("a");detail.className="button secondary";detail.href=detailHref;detail.textContent="View map";div.appendChild(detail);grid.appendChild(div);document.getElementById("upsellsPanel").style.display=""}catch(error){console.warn("Planetka upsell map failed",card,error)}}}
+async function renderUpsells(){const serverUpsells=Array.isArray(DATA.upsells)?DATA.upsells:[];const grid=document.getElementById("upsellGrid");if(!grid||!serverUpsells.length)return;const token=encodeURIComponent(DATA.token||"");const catalog="&catalog=1";for(const card of serverUpsells){try{const idRaw=card.asset_id||card.region_pack&&card.region_pack.id||"";const upAsset=await loadAsset(idRaw);const vm=computeAsset(upAsset);const summary=card.summary||null;if(!DATA.scene_detail&&(!summary||int(summary.price_cents)<=0&&Number(summary.charged_tiles||0)<=0))continue;const pack=card.region_pack||upAsset.region_pack||{};const id=encodeURIComponent(pack.id||idRaw);const div=document.createElement("div");div.className="upsell";const title=document.createElement("h3");title.textContent=pack.name||"Data Pack";div.appendChild(title);const q=encodeURIComponent(String(card.quote_id||""));const quoteParam=q?"&quote_id="+q:"";const detailHref="/credits/region-pack-map?token="+token+"&region_pack_id="+id+catalog+quoteParam;const mapLink=document.createElement("a");mapLink.href=detailHref;mapLink.className="upsell-map-link";mapLink.setAttribute("aria-label","View map for "+(pack.name||"data pack"));const map=document.createElementNS(NS,"svg");mapLink.appendChild(map);div.appendChild(mapLink);renderMiniMap(map,vm);const meta=document.createElement("p");meta.className="muted small";if(summary){const alreadyValue=int(summary.already_licenced_deduction_cents)+int(summary.partial_licence_credit_cents);const bits=["Full "+fmtCents(summary.full_price_cents)];if(alreadyValue>0)bits.push("Already -"+fmtCents(alreadyValue));if(int(summary.discount_cents)>0)bits.push("Discount "+Number(summary.discount_percent||0)+"% (-"+fmtCents(summary.discount_cents)+")");bits.push("Final "+fmtCents(summary.price_cents));meta.textContent=bits.join(" · ");}else{meta.textContent="Price updating";}div.appendChild(meta);if(summary&&q){const checkout=document.createElement("a");checkout.className="button";checkout.href="/credits/region-pack-checkout?token="+token+"&region_pack_id="+id+catalog+"&quote_id="+q;checkout.textContent="Buy "+(pack.name||"Pack")+" ("+fmtCents(summary.price_cents)+")";div.appendChild(checkout);}const detail=document.createElement("a");detail.className="button secondary";detail.href=detailHref;detail.textContent="View map";div.appendChild(detail);grid.appendChild(div);document.getElementById("upsellsPanel").style.display=""}catch(error){console.warn("Planetka upsell map failed",card,error)}}}
 function serverMapAsset(){const state=DATA.map_state_ready&&DATA.map_state&&typeof DATA.map_state==="object"?DATA.map_state:null;if(state&&state.on_demand){return{region_pack:state.region_pack||DATA.region_pack||{},bounds:state.bounds||{min_lon:-10,min_lat:35,max_lon:30,max_lat:48},outlines:Array.isArray(state.outlines)?state.outlines:[],included_countries:Array.isArray(state.included_countries)?state.included_countries:[],tiles:[]}}return null}
 async function init(){try{const asset=serverMapAsset()||await loadAsset(DATA.asset_id);const titlePrefix=String(DATA.title_prefix||DATA.success&&DATA.success.context_title_prefix||"").trim();const explicitTitle=String(DATA.page_title||"").trim();document.getElementById("pageTitle").textContent=explicitTitle||((titlePrefix?titlePrefix+": ":"")+(asset.region_pack.name||"Data Pack")+" Full Quality Pack");const vm=computeViewModel(asset);renderCards();setBounds(vm.asset.bounds);const countries=uniqueCountryNames(vm.asset.included_countries);if(countries.length){document.getElementById("countries").innerHTML=countries.map((c)=>"<div>"+esc(c)+"</div>").join("");document.getElementById("countriesPanel").style.display=""}const select=document.getElementById("levelSelect");select.replaceChildren();let levels=vm.levels.length?vm.levels:[1];const preferred=Number(vm&&vm.state&&vm.state.default_level);if(DATA.scene_detail&&levels.includes(preferred))levels=[preferred];window.PLANETKA_MAP_ZOOM_LEVELS=levels;for(const z of levels){const o=document.createElement("option");o.value=String(z);o.textContent=zoomLabel(z);select.appendChild(o)}const defaultLevel=levels.includes(preferred)?preferred:levels[0];select.value=String(defaultLevel);if(DATA.scene_detail&&select.closest("label"))select.closest("label").style.display="none";else select.addEventListener("change",()=>renderMap(vm,Number(select.value)));await loadProductOutlines(vm.asset);renderMap(vm,Number(select.value||defaultLevel));if(!DATA.map_state_ready){document.getElementById("mapStatus").textContent=DATA.price_pending?"Price and map are updating. Please wait a few moments.":"Map is updating. Please wait a few moments.";if(DATA.map_pending)setTimeout(()=>window.location.reload(),6000);return}renderUpsells()}catch(error){console.warn("Planetka region-pack map failed",error);document.getElementById("mapStatus").className="error small";document.getElementById("mapStatus").textContent="Map failed to load. Please reopen this page from Blender."}}
 init();`;
@@ -3590,10 +3590,10 @@ async function relevantSceneProductPackReadyQuoteEntries(db, contextProduct, use
       const candidateId = String(candidate && candidate.id || "").trim().toLowerCase();
       const row = quoteRows.get(candidateId) || null;
       if (productQuoteStatus(row, pricingVersion, entitlementVersion) !== "ready") {
-        return null;
+        return { product: candidate, quote: null };
       }
       const quote = userProductQuoteFromRow(row);
-      return quote && quote.summary ? { product: candidate, quote } : null;
+      return { product: candidate, quote: quote && quote.summary ? quote : null };
     })
     .filter(Boolean);
 }
@@ -5438,7 +5438,7 @@ async function sceneProductContextMapState(db, product, estimate, deps) {
     const sceneParsed = sceneRow ? parseTileKey(sceneRow.tile_key || "") : null;
     const lowerResolutionSceneTile = Boolean(sceneParsed && sceneParsed.d > parsed.d);
     const sceneStatus = sceneRow
-      ? (lowerResolutionSceneTile && String(sceneRow.status || "") === "new" ? "lower_resolution" : String(sceneRow.status || "free"))
+      ? (lowerResolutionSceneTile && String(sceneRow.status || "") !== "licenced" ? "lower_resolution" : String(sceneRow.status || "free"))
       : "context";
     const displayKey = sceneParsed ? sceneParsed.key : "";
     if (displayKey) {
@@ -5479,7 +5479,7 @@ async function sceneProductContextMapState(db, product, estimate, deps) {
       continue;
     }
     const lowerResolutionSceneTile = parsed.d > parsed.z;
-    const sceneStatus = lowerResolutionSceneTile && String(sceneRow.status || "") === "new"
+    const sceneStatus = lowerResolutionSceneTile && String(sceneRow.status || "") !== "licenced"
       ? "lower_resolution"
       : String(sceneRow.status || "free");
     const grossCents = centsForEur(sceneRow.full_price_eur);
@@ -9047,16 +9047,16 @@ function regionPackMapHtml(data) {
 	</section>
 <section class="panel">
 <div class="toolbar">
-<label>Zoom level <select id="levelSelect"></select></label>
+${isSceneDetail ? `<select id="levelSelect" style="display:none"></select>` : `<label>Zoom level <select id="levelSelect"></select></label>`}
 <span id="levelSummary" class="muted"></span>
 </div>
-<p class="muted small">Included zoom levels are part of the Full Quality pack and are required for reliable Planetka rendering across different camera distances.</p>
+${isSceneDetail ? "" : `<p class="muted small">Included zoom levels are part of the Full Quality pack and are required for reliable Planetka rendering across different camera distances.</p>`}
 <p class="muted small">Hover over any tile to see individual tile details.</p>
 <svg id="map" role="img" aria-label="${escapeHtmlText(name)} tile map"></svg>
 	<p class="muted small">Tile hover shows tile status and land coverage. The purchase price above is generated by the backend quote.</p>
 <div class="legend">
-<span><i class="swatch new"></i>${data && data.scene_detail ? "Red - New full resolution tile" : "New in this pack"}</span>
-<span><i class="swatch partial"></i>${data && data.scene_detail ? "Yellow - New lower resolution tile" : "Partially licenced"}</span>
+<span><i class="swatch new"></i>${isSceneDetail ? "Red - New full resolution tile" : "New in this pack"}</span>
+<span><i class="swatch partial"></i>${isSceneDetail ? "Yellow - New lower resolution tile" : "Partially licenced"}</span>
 <span><i class="swatch licenced"></i>Already licenced</span>
 <span><i class="swatch free"></i>Free / not charged</span>
 </div>
@@ -9087,6 +9087,7 @@ function regionPackStaticMapHtml(data) {
   const titlePrefix = String(data && data.title_prefix || success && success.context_title_prefix || "").trim();
   const explicitPageTitle = String(data && data.page_title || "").trim();
   const pageTitle = explicitPageTitle || `${titlePrefix ? `${titlePrefix}: ` : ""}${name} Full Quality Pack`;
+  const isSceneDetail = Boolean(data && data.scene_detail);
   const payload = jsonForInlineScript(data);
   return `<!doctype html>
 <html lang="en">
@@ -9103,10 +9104,10 @@ ${success ? `<section class="panel"><h2>${escapeHtmlText(success.title || "Payme
 <section id="cards" class="cards"></section>
 <section class="panel">
 <div class="toolbar">
-<label>Zoom level <select id="levelSelect"></select></label>
+${isSceneDetail ? `<select id="levelSelect" style="display:none"></select>` : `<label>Zoom level <select id="levelSelect"></select></label>`}
 <span id="levelSummary" class="muted"></span>
 </div>
-<p class="muted small">Included zoom levels are part of the Full Quality pack and are required for reliable Planetka rendering across different camera distances.</p>
+${isSceneDetail ? "" : `<p class="muted small">Included zoom levels are part of the Full Quality pack and are required for reliable Planetka rendering across different camera distances.</p>`}
 <p class="muted small">Hover over any tile to see individual tile details.</p>
 <svg id="map" role="img" aria-label="${escapeHtmlText(name)} tile map"></svg>
 <p class="muted small">Tile hover shows tile status and land coverage. The purchase price above is generated by the backend quote.</p>
@@ -12479,8 +12480,17 @@ export async function handleCreditSceneMap(request, env, deps) {
   const upsells = [];
   const relatedEntries = await relevantSceneProductPackReadyQuoteEntries(db, contextProduct, userId, account, deps, { limit: 8 });
   for (const entry of relatedEntries) {
-    const card = buildRegionPackUpsellCardData(entry.product, entry.quote, { includeTiles: false });
-    if (card) upsells.push(card);
+    const card = entry.quote
+      ? buildRegionPackUpsellCardData(entry.product, entry.quote, { includeTiles: false })
+      : {
+        region_pack: regionProductPublicPayload(entry.product),
+        asset_id: String(entry.product && entry.product.id || ""),
+        quote_id: "",
+        summary: null,
+      };
+    if (card) {
+      upsells.push(card);
+    }
   }
   timing.mark("upsells");
   const quote = sceneQuoteForStaticMap(estimate, userId, account, token, deps);
