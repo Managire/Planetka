@@ -27,6 +27,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     billableCostClassB,
     billableUnknownOps,
     billableCostTotal,
+    quoteQueueHealth,
   } = context || {};
 
   const safeTopLine = snapshotTopLine && typeof snapshotTopLine === "object" ? snapshotTopLine : {};
@@ -54,6 +55,32 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
   const topGbServedSplitHtml = renderTotalValue(topLineGbServed, (value) => `${fmtGbLocal(value)} GB`, topLineGbServed.total);
   const topEarnedEurHtml = renderTotalValue(topLineEarnedEur, (value) => fmtEurLocal(value), topLineEarnedEur.total);
   const topPaidResolvesHtml = renderTotalValue(topLinePaidResolves, (value) => fmtIntLocal(value), topLinePaidResolves.total);
+  const safeQuoteQueueHealth = quoteQueueHealth && typeof quoteQueueHealth === "object" ? quoteQueueHealth : {};
+  const safeQuoteQueueLock = safeQuoteQueueHealth.active_lock && typeof safeQuoteQueueHealth.active_lock === "object"
+    ? safeQuoteQueueHealth.active_lock
+    : null;
+  const safeQuoteQueueBatch = safeQuoteQueueHealth.last_processed_batch && typeof safeQuoteQueueHealth.last_processed_batch === "object"
+    ? safeQuoteQueueHealth.last_processed_batch
+    : null;
+  const fmtDuration = (ms) => {
+    const numeric = Number(ms);
+    if (!Number.isFinite(numeric) || numeric <= 0) return "-";
+    if (numeric < 1000) return `${Math.round(numeric)} ms`;
+    return `${(numeric / 1000).toFixed(2)} s`;
+  };
+  const fmtAge = (seconds) => {
+    const numeric = Math.max(0, Math.floor(Number(seconds) || 0));
+    if (numeric <= 0) return "-";
+    if (numeric < 60) return `${numeric}s`;
+    if (numeric < 3600) return `${Math.floor(numeric / 60)}m ${numeric % 60}s`;
+    return `${Math.floor(numeric / 3600)}h ${Math.floor((numeric % 3600) / 60)}m`;
+  };
+  const quoteQueueLockHtml = safeQuoteQueueLock
+    ? `${escapeHtml(String(safeQuoteQueueLock.current_job_id || "active"))}<br><span class="muted">${escapeHtml(fmtAge(safeQuoteQueueLock.age_seconds))}</span>`
+    : "None";
+  const quoteQueueBatchHtml = safeQuoteQueueBatch
+    ? `${escapeHtml(String(safeQuoteQueueBatch.status || "-"))}<br><span class="muted">${escapeHtml(fmtDuration(safeQuoteQueueBatch.duration_ms))}</span>`
+    : "-";
   return `
 <!doctype html>
 <html>
@@ -87,6 +114,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     .section { margin-top: 20px; }
     .error { color: #fca5a5; }
     .user-filter-active { outline: 1px solid #60a5fa; outline-offset: -1px; }
+    .subvalue { color:#9ca3af; font-size:12px; line-height:1.35; margin-top:4px; }
   </style>
 </head>
 <body>
@@ -133,6 +161,17 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     <div class="card"><div class="label">Refresh Failure Rate</div><div id="authRefreshFailureRate" class="value">-</div></div>
     <div class="card"><div class="label">Critical Disconnects (7d)</div><div id="authRefreshCriticalFailures" class="value">-</div></div>
     <div class="card"><div class="label">Critical Affected Users (7d)</div><div id="authRefreshCriticalUsers" class="value">-</div></div>
+  </div>
+
+  <div class="section">
+    <h3>Quote Queue Health</h3>
+    <div class="grid">
+      <div class="card"><div class="label">Queued Jobs</div><div id="quoteQueueQueued" class="value">${escapeHtml(fmtIntLocal(safeQuoteQueueHealth.queued_count))}</div></div>
+      <div class="card"><div class="label">Failed Jobs</div><div id="quoteQueueFailed" class="value">${escapeHtml(fmtIntLocal(safeQuoteQueueHealth.failed_count))}</div></div>
+      <div class="card"><div class="label">Oldest Queued Job</div><div id="quoteQueueOldestAge" class="value">${escapeHtml(fmtAge(safeQuoteQueueHealth.oldest_queued_age_seconds))}</div><div id="quoteQueueOldestAt" class="subvalue">${escapeHtml(String(safeQuoteQueueHealth.oldest_queued_at || ""))}</div></div>
+      <div class="card"><div class="label">Active Lock</div><div id="quoteQueueLock" class="value">${quoteQueueLockHtml}</div><div id="quoteQueueLockMeta" class="subvalue">${escapeHtml(safeQuoteQueueLock ? String(safeQuoteQueueLock.worker_id || "") : "")}</div></div>
+      <div class="card"><div class="label">Last Batch Timing</div><div id="quoteQueueBatchTiming" class="value">${quoteQueueBatchHtml}</div><div id="quoteQueueBatchMeta" class="subvalue">${escapeHtml(safeQuoteQueueBatch ? `${fmtIntLocal(safeQuoteQueueBatch.completed_job_count)} done · ${fmtIntLocal(safeQuoteQueueBatch.failed_job_count)} failed` : "")}</div></div>
+    </div>
   </div>
 
   <div class="section">
@@ -223,6 +262,19 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
       const numeric = Number(v);
       return Number.isFinite(numeric) ? numeric.toFixed(digits) : "0.00";
     };
+    const fmtDuration = (ms) => {
+      const numeric = Number(ms);
+      if (!Number.isFinite(numeric) || numeric <= 0) return "-";
+      if (numeric < 1000) return Math.round(numeric) + " ms";
+      return (numeric / 1000).toFixed(2) + " s";
+    };
+    const fmtAge = (seconds) => {
+      const numeric = Math.max(0, Math.floor(Number(seconds) || 0));
+      if (numeric <= 0) return "-";
+      if (numeric < 60) return numeric + "s";
+      if (numeric < 3600) return Math.floor(numeric / 60) + "m " + (numeric % 60) + "s";
+      return Math.floor(numeric / 3600) + "h " + Math.floor((numeric % 3600) / 60) + "m";
+    };
     const renderTotalMetric = (id, values, asGb = false, fallbackTotal = 0) => {
       const target = document.getElementById(id);
       if (!target) return;
@@ -308,6 +360,32 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
       setText("billableClassBCost", fmtFixed(data && data.estimated_cost_usd && data.estimated_cost_usd.class_b, 2));
       setText("billableUnknownUsage", fmtInt(data && data.unknown_operations));
       setText("billableTotalCost", fmtFixed(data && data.estimated_cost_usd && data.estimated_cost_usd.total, 2));
+    }
+    function renderQuoteQueueHealth(payload) {
+      const data = payload && typeof payload === "object" ? payload : {};
+      const lock = data.active_lock && typeof data.active_lock === "object" ? data.active_lock : null;
+      const batch = data.last_processed_batch && typeof data.last_processed_batch === "object" ? data.last_processed_batch : null;
+      setText("quoteQueueQueued", fmtInt(data.queued_count));
+      setText("quoteQueueFailed", fmtInt(data.failed_count));
+      setText("quoteQueueOldestAge", fmtAge(data.oldest_queued_age_seconds));
+      setText("quoteQueueOldestAt", data.oldest_queued_at || "");
+      if (lock) {
+        setText("quoteQueueLock", String(lock.current_job_id || "active"));
+        setText("quoteQueueLockMeta", fmtAge(lock.age_seconds) + " · " + String(lock.worker_id || ""));
+      } else {
+        setText("quoteQueueLock", "None");
+        setText("quoteQueueLockMeta", "");
+      }
+      if (batch) {
+        setText("quoteQueueBatchTiming", String(batch.status || "-"));
+        setText(
+          "quoteQueueBatchMeta",
+          fmtDuration(batch.duration_ms) + " · " + fmtInt(batch.completed_job_count) + " done · " + fmtInt(batch.failed_job_count) + " failed",
+        );
+      } else {
+        setText("quoteQueueBatchTiming", "-");
+        setText("quoteQueueBatchMeta", "");
+      }
     }
     const TILE_COLOR_ACTIVE = "#60a5fa";
     const TILE_MAP_BASEMAP_URL = "/admin/analytics/world-map.jpg";
@@ -563,6 +641,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         const hitRatio = Number(s.request_count || 0) > 0 ? (100 * Number(s.cache_hit_count || 0) / Number(s.request_count || 1)) : 0;
         setText("hitRatio", hitRatio.toFixed(2) + "%");
         setText("resolveCount", fmtInt(s.tagged_resolve_count));
+        renderQuoteQueueHealth(data.quote_queue_health || {});
         const refreshHealth = data.auth_refresh_health || {};
         const refreshTotal = Number(refreshHealth.total_count || 0);
         const refreshFailures = Number(refreshHealth.failure_count || 0);

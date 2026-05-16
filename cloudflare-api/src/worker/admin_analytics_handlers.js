@@ -101,11 +101,24 @@ export async function handleAdminAnalyticsData(request, env, deps) {
       };
       await deps.storeAnalyticsSnapshot(env, windowMinutes, planFilter, tileMapMinutes, snapshot);
     }
+    let quoteQueueHealth = { available: false, error: "quote_queue_health_unavailable" };
+    if (typeof deps.collectQuoteQueueHealth === "function") {
+      try {
+        quoteQueueHealth = await deps.collectQuoteQueueHealth(db);
+      } catch (error) {
+        quoteQueueHealth = {
+          available: false,
+          error: "quote_queue_health_failed",
+          message: String(error && error.message || "quote_queue_health_failed"),
+        };
+      }
+    }
     return deps.json(
       {
         ok: true,
         admin_email: String(user.email || ""),
         ...snapshot,
+        quote_queue_health: quoteQueueHealth,
       },
       200,
       env,
@@ -679,6 +692,7 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
   }
   const { user, tokenSource } = auth;
   let initialSnapshot = null;
+  let initialQuoteQueueHealth = null;
   try {
     initialSnapshot = await deps.loadAnalyticsSnapshot(env, 10080, "all", 10);
     if (!initialSnapshot || deps.isAnalyticsSnapshotStale(initialSnapshot)) {
@@ -697,6 +711,17 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
         snapshot_source: "live_rebuild",
       };
       await deps.storeAnalyticsSnapshot(env, 10080, "all", 10, initialSnapshot);
+    }
+    if (typeof deps.collectQuoteQueueHealth === "function") {
+      try {
+        initialQuoteQueueHealth = await deps.collectQuoteQueueHealth(auth.db);
+      } catch (error) {
+        initialQuoteQueueHealth = {
+          available: false,
+          error: "quote_queue_health_failed",
+          message: String(error && error.message || "quote_queue_health_failed"),
+        };
+      }
     }
   } catch (error) {
     console.error(
@@ -722,6 +747,9 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
   const snapshotBillable = initialSnapshot && initialSnapshot.cloudflare_billable_usage
     ? initialSnapshot.cloudflare_billable_usage
     : {};
+  const snapshotQuoteQueueHealth = initialQuoteQueueHealth
+    || initialSnapshot && initialSnapshot.quote_queue_health
+    || {};
   const fmtInt = (value) => fmtIntLocal(value, deps.parseNonNegativeInteger);
   const fmtGb = (value) => fmtGbLocal(value, deps.parseNonNegativeInteger, deps.BYTES_PER_GB);
   const fmtFloatLocal = (value, digits = 2) => {
@@ -811,6 +839,7 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
     billableCostClassB,
     billableUnknownOps,
     billableCostTotal,
+    quoteQueueHealth: snapshotQuoteQueueHealth,
   });
   if (tokenSource === "bearer") {
     const authHeader = String(request.headers.get("Authorization") || "");

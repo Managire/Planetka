@@ -52,6 +52,7 @@ import {
 } from "./worker/admin_analytics_handlers.js";
 import {
   collectAnalyticsSnapshot as collectAnalyticsSnapshotQuery,
+  collectQuoteQueueHealth as collectQuoteQueueHealthQuery,
   listAnalyticsUsers as listAnalyticsUsersQuery,
   parseAnalyticsUsersSort as parseAnalyticsUsersSortQuery,
   parseAnalyticsUsersSortDirection as parseAnalyticsUsersSortDirectionQuery,
@@ -333,6 +334,7 @@ const ADMIN_ANALYTICS_DEPS = {
   buildAnalyticsUsersSnapshot: (db, env) => buildAnalyticsUsersSnapshot(db, env, ADMIN_ANALYTICS_DEPS),
   collectAnalyticsSnapshot: (db, minutes, planFilter, liveTileMapWindowMinutes, env) =>
     collectAnalyticsSnapshotQuery(db, minutes, planFilter, liveTileMapWindowMinutes, env, ANALYTICS_QUERY_DEPS),
+  collectQuoteQueueHealth: (db) => collectQuoteQueueHealthQuery(db, ANALYTICS_QUERY_DEPS),
   corsHeaders,
   DEFAULT_ADMIN_ANALYTICS_TILE_MAP_KEY,
   DEFAULT_ANALYTICS_WINDOW_MINUTES,

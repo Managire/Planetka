@@ -80,6 +80,127 @@ export function sanitizeLiveTileMapMinutes(value, fallback, deps) {
   return parsed;
 }
 
+function quoteQueueAgeSeconds(nowIso, isoValue) {
+  const nowMs = Date.parse(String(nowIso || ""));
+  const thenMs = Date.parse(String(isoValue || ""));
+  if (!Number.isFinite(nowMs) || !Number.isFinite(thenMs) || thenMs <= 0) {
+    return 0;
+  }
+  return Math.max(0, Math.floor((nowMs - thenMs) / 1000));
+}
+
+export async function collectQuoteQueueHealth(db, deps) {
+  if (!db || !deps || typeof deps.dbGet !== "function") {
+    return {
+      available: false,
+      error: "db_unavailable",
+    };
+  }
+  if (typeof deps.ensureCreditTables === "function") {
+    await deps.ensureCreditTables(db);
+  }
+  const now = deps.nowIso();
+  const counts = await deps.dbGet(
+    db,
+    `
+      SELECT
+        SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END) AS queued_count,
+        SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running_count,
+        SUM(CASE WHEN status IN ('failed', 'error') THEN 1 ELSE 0 END) AS failed_count,
+        MIN(CASE WHEN status = 'queued' THEN created_at ELSE NULL END) AS oldest_queued_at
+      FROM user_product_quote_jobs
+    `,
+  );
+  const lock = await deps.dbGet(
+    db,
+    `
+      SELECT
+        lock_name,
+        lock_token,
+        worker_id,
+        current_job_id,
+        locked_at,
+        expires_at,
+        updated_at
+      FROM user_product_quote_job_locks
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `,
+  );
+  const lastBatch = await deps.dbGet(
+    db,
+    `
+      SELECT
+        id,
+        user_id,
+        trigger_type,
+        source_product_id,
+        status,
+        queued_job_count,
+        completed_job_count,
+        failed_job_count,
+        created_at,
+        updated_at,
+        finished_at
+      FROM user_product_quote_batches
+      WHERE finished_at IS NOT NULL
+        OR COALESCE(completed_job_count, 0) > 0
+        OR COALESCE(failed_job_count, 0) > 0
+      ORDER BY COALESCE(finished_at, updated_at, created_at) DESC
+      LIMIT 1
+    `,
+  );
+  const oldestQueuedAt = String(counts && counts.oldest_queued_at || "");
+  const batchCreatedAt = String(lastBatch && lastBatch.created_at || "");
+  const batchFinishedAt = String(lastBatch && (lastBatch.finished_at || lastBatch.updated_at) || "");
+  const batchDurationMs = (() => {
+    const start = Date.parse(batchCreatedAt);
+    const end = Date.parse(batchFinishedAt);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) {
+      return 0;
+    }
+    return Math.max(0, Math.round(end - start));
+  })();
+  const lockExpiresAt = String(lock && lock.expires_at || "");
+  const lockActive = Boolean(lock && lock.lock_name && (!lockExpiresAt || Date.parse(lockExpiresAt) > Date.now()));
+  return {
+    available: true,
+    generated_at: now,
+    queued_count: deps.clampNonNegativeInt(counts && counts.queued_count),
+    running_count: deps.clampNonNegativeInt(counts && counts.running_count),
+    failed_count: deps.clampNonNegativeInt(counts && counts.failed_count),
+    oldest_queued_at: oldestQueuedAt,
+    oldest_queued_age_seconds: oldestQueuedAt ? quoteQueueAgeSeconds(now, oldestQueuedAt) : 0,
+    active_lock: lockActive
+      ? {
+        lock_name: String(lock && lock.lock_name || ""),
+        worker_id: String(lock && lock.worker_id || ""),
+        current_job_id: String(lock && lock.current_job_id || ""),
+        locked_at: String(lock && lock.locked_at || ""),
+        expires_at: lockExpiresAt,
+        updated_at: String(lock && lock.updated_at || ""),
+        age_seconds: quoteQueueAgeSeconds(now, lock && lock.locked_at),
+      }
+      : null,
+    last_processed_batch: lastBatch && lastBatch.id
+      ? {
+        id: String(lastBatch.id || ""),
+        user_id: String(lastBatch.user_id || ""),
+        trigger_type: String(lastBatch.trigger_type || ""),
+        source_product_id: String(lastBatch.source_product_id || ""),
+        status: String(lastBatch.status || ""),
+        queued_job_count: deps.clampNonNegativeInt(lastBatch.queued_job_count),
+        completed_job_count: deps.clampNonNegativeInt(lastBatch.completed_job_count),
+        failed_job_count: deps.clampNonNegativeInt(lastBatch.failed_job_count),
+        created_at: batchCreatedAt,
+        updated_at: String(lastBatch.updated_at || ""),
+        finished_at: String(lastBatch.finished_at || ""),
+        duration_ms: batchDurationMs,
+      }
+      : null,
+  };
+}
+
 function normalizeTierCodeStrict(value, deps) {
   const normalized = String(deps.normalizePlanCode(value) || "").trim().toLowerCase();
   if (normalized === deps.PLAN_CODE_FREE) return deps.PLAN_CODE_FREE;
