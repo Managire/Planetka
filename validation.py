@@ -957,7 +957,7 @@ def _check_scene_health_data_source(ctx, payload):
     base_path = str(getattr(ctx.prefs, "texture_base_path", "") or "").strip() if ctx.prefs is not None else ""
     remote_ready = bool(is_remote_source_configured(base_path))
     if remote_ready:
-        payload["info"].append("Data source: Cloud.")
+        payload["info"].append("Data source: Planetka Cloud.")
         _append_scene_health_check(
             payload,
             "General",
@@ -965,7 +965,7 @@ def _check_scene_health_data_source(ctx, payload):
             "SOURCE_REMOTE",
             "INFO",
             True,
-            "Cloud source is configured.",
+            "Planetka Cloud source is configured.",
         )
     else:
         if not base_path:

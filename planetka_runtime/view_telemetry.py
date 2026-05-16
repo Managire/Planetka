@@ -1316,7 +1316,7 @@ def _store_region_pack_offers(scene, deps, signature, offers, latitude_deg=None,
         return
     safe_offers = [dict(offer) for offer in offers if isinstance(offer, dict)]
     status = "READY" if safe_offers else "EMPTY"
-    message = "" if safe_offers else "No Data Packs for this view."
+    message = ""
     try:
         scene[_REGION_OFFERS_JSON_KEY] = json.dumps(safe_offers, separators=(",", ":"), sort_keys=True)
         scene[_REGION_OFFERS_SIGNATURE_KEY] = str(signature or "")

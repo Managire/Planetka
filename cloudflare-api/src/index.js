@@ -97,6 +97,7 @@ import {
   handleCreditPaymentSuccess as handleCreditPaymentSuccessRoute,
   handleCreditPurchaseHistory as handleCreditPurchaseHistoryRoute,
   handleCreditLicencedDownloadReport as handleCreditLicencedDownloadReportRoute,
+  handleCreditSceneCheckout as handleCreditSceneCheckoutRoute,
   handleCreditSceneDetailLink as handleCreditSceneDetailLinkRoute,
   handleCreditSceneMap as handleCreditSceneMapRoute,
   handleCreditRegionPackDetailLink as handleCreditRegionPackDetailLinkRoute,
@@ -104,13 +105,17 @@ import {
   handleCreditRegionPackCatalog as handleCreditRegionPackCatalogRoute,
   handleCreditRegionPackCheckoutFromToken as handleCreditRegionPackCheckoutFromTokenRoute,
   handleCreditRegionPackMap as handleCreditRegionPackMapRoute,
+  handleCreditRegionPackMapLevelChunk as handleCreditRegionPackMapLevelChunkRoute,
+  handleCreditRegionPackMapStateShard as handleCreditRegionPackMapStateShardRoute,
   handleCreditRegionPackMapAsset as handleCreditRegionPackMapAssetRoute,
+  handleCreditRegionPackMapOutlines as handleCreditRegionPackMapOutlinesRoute,
   handleCreditRegionPackMapBackground as handleCreditRegionPackMapBackgroundRoute,
   handleCreditAccountCountryBorders as handleCreditAccountCountryBordersRoute,
   handleCreditRegionPackPageAsset as handleCreditRegionPackPageAssetRoute,
   handleCreditRegionOffers as handleCreditRegionOffersRoute,
   handleCreditRegionPackRelatedOffers as handleCreditRegionPackRelatedOffersRoute,
   handleCreditUnlocked as handleCreditUnlockedRoute,
+  enqueueDefaultNoPurchaseProductQuoteJobs,
   getRuntimePricingSettings,
   listRegionProductPricingRows,
   processUserProductQuoteJobs,
@@ -4174,7 +4179,12 @@ async function dispatchExactRoute(request, env, path) {
   if (String(path || "").startsWith("/credits/") || String(path || "") === "/tiles/session") {
     const safePath = String(path || "");
     const pricingStaticAsset = safePath.startsWith("/credits/page-assets/")
+      || safePath === PRODUCT_QUOTE_QUEUE_KICK_PATH
+      || safePath === DEFAULT_PRODUCT_QUOTES_PREWARM_PATH
       || safePath === "/credits/region-pack-map-asset"
+      || safePath === "/credits/region-pack-map-outlines"
+      || safePath === "/credits/region-pack-map-level-chunk"
+      || safePath === "/credits/region-pack-map-state-shard"
       || safePath === "/credits/region-pack-map-background.jpg"
       || safePath === "/credits/account-country-borders.json";
     const forcePricingRefresh = safePath.startsWith("/credits/") && !pricingStaticAsset;
@@ -4281,14 +4291,34 @@ async function dispatchExactRoute(request, env, path) {
         return await handleCreditSceneMapRoute(request, env, TILE_ROUTE_DEPS);
       }
       return null;
+    case "/credits/scene-checkout":
+      if (request.method === "GET" || request.method === "HEAD") {
+        return await handleCreditSceneCheckoutRoute(request, env, TILE_ROUTE_DEPS);
+      }
+      return null;
     case "/credits/region-pack-map":
       if (request.method === "GET" || request.method === "HEAD") {
         return await handleCreditRegionPackMapRoute(request, env, TILE_ROUTE_DEPS);
       }
       return null;
+    case "/credits/region-pack-map-level-chunk":
+      if (request.method === "GET" || request.method === "HEAD") {
+        return await handleCreditRegionPackMapLevelChunkRoute(request, env, TILE_ROUTE_DEPS);
+      }
+      return null;
+    case "/credits/region-pack-map-state-shard":
+      if (request.method === "GET" || request.method === "HEAD") {
+        return await handleCreditRegionPackMapStateShardRoute(request, env, TILE_ROUTE_DEPS);
+      }
+      return null;
     case "/credits/region-pack-map-asset":
       if (request.method === "GET" || request.method === "HEAD") {
         return await handleCreditRegionPackMapAssetRoute(request, env, TILE_ROUTE_DEPS);
+      }
+      return null;
+    case "/credits/region-pack-map-outlines":
+      if (request.method === "GET" || request.method === "HEAD") {
+        return await handleCreditRegionPackMapOutlinesRoute(request, env, TILE_ROUTE_DEPS);
       }
       return null;
     case "/credits/region-pack-map-background.jpg":
@@ -4402,12 +4432,20 @@ async function dispatchRequest(request, env, path, ctx) {
 
 function shouldKickProductQuoteQueue(path) {
   const safePath = String(path || "");
+  if (safePath === "/stripe/webhook") {
+    return true;
+  }
   if (!safePath.startsWith("/credits/")) {
     return false;
   }
   if (
     safePath.startsWith("/credits/page-assets/")
+    || safePath === PRODUCT_QUOTE_QUEUE_KICK_PATH
+    || safePath === DEFAULT_PRODUCT_QUOTES_PREWARM_PATH
     || safePath === "/credits/region-pack-map-asset"
+    || safePath === "/credits/region-pack-map-outlines"
+    || safePath === "/credits/region-pack-map-level-chunk"
+    || safePath === "/credits/region-pack-map-state-shard"
     || safePath === "/credits/region-pack-map-background.jpg"
     || safePath === "/credits/account-country-borders.json"
   ) {
@@ -4423,31 +4461,166 @@ function shouldKickProductQuoteQueue(path) {
     || safePath === "/credits/payment-success";
 }
 
-function maybeKickProductQuoteQueue(ctx, env, path) {
+const PRODUCT_QUOTE_QUEUE_KICK_PATH = "/credits/internal/product-quote-queue-kick";
+const DEFAULT_PRODUCT_QUOTES_PREWARM_PATH = "/credits/internal/default-product-quotes-prewarm";
+const PRODUCT_QUOTE_QUEUE_INTERNAL_SECRET_HEADER = "x-planetka-internal-secret";
+const PRODUCT_QUOTE_QUEUE_BATCH_MAX_JOBS = 60;
+const PRODUCT_QUOTE_QUEUE_BATCH_MAX_MS = 26000;
+const PRODUCT_QUOTE_QUEUE_FOLLOWUP_CHAIN_LIMIT = 30;
+
+async function countQueuedProductQuoteJobs(db) {
+  const row = await dbGet(
+    db,
+    `
+      SELECT
+        COUNT(*) AS queued_count,
+        SUM(CASE WHEN available_at <= ? THEN 1 ELSE 0 END) AS available_count
+      FROM user_product_quote_jobs
+      WHERE status = 'queued'
+    `,
+    [nowIso()],
+  );
+  return {
+    queued: Math.max(0, Number.parseInt(row && row.queued_count || 0, 10) || 0),
+    available: Math.max(0, Number.parseInt(row && row.available_count || 0, 10) || 0),
+  };
+}
+
+async function runProductQuoteQueueBatch(env, path) {
+  const db = requireDb(env);
+  const summary = await processUserProductQuoteJobs(
+    db,
+    env,
+    TILE_ROUTE_DEPS,
+    {
+      maxJobs: PRODUCT_QUOTE_QUEUE_BATCH_MAX_JOBS,
+      maxMs: PRODUCT_QUOTE_QUEUE_BATCH_MAX_MS,
+      maxMapJobs: 10,
+      maxHeavyMapJobs: 1,
+    },
+  );
+  const remaining = await countQueuedProductQuoteJobs(db);
+  if (summary && (summary.processed > 0 || summary.requeued > 0 || summary.failed > 0 || summary.cancelled > 0)) {
+    console.log(
+      "worker.product_quote_queue.kicked",
+      JSON.stringify({
+        path,
+        processed: Number(summary.processed || 0),
+        requeued: Number(summary.requeued || 0),
+        failed: Number(summary.failed || 0),
+        cancelled: Number(summary.cancelled || 0),
+        map_processed: Number(summary.map_processed || 0),
+        heavy_map_processed: Number(summary.heavy_map_processed || 0),
+        map_deferred: Number(summary.map_deferred || 0),
+        elapsed_ms: Number(summary.elapsed_ms || 0),
+        queued_remaining: remaining.queued,
+        available_remaining: remaining.available,
+      }),
+    );
+  }
+  return { summary, remaining };
+}
+
+function scheduleProductQuoteQueueFollowup(ctx, requestUrl, env, remainingChain) {
+  if (!ctx || typeof ctx.waitUntil !== "function") {
+    return;
+  }
+  const chainLeft = Math.max(0, Math.min(PRODUCT_QUOTE_QUEUE_FOLLOWUP_CHAIN_LIMIT, Number.parseInt(remainingChain || 0, 10) || 0));
+  const secret = String(env && env.JWT_SIGNING_SECRET || "").trim();
+  if (!chainLeft || !secret) {
+    return;
+  }
+  const url = new URL(PRODUCT_QUOTE_QUEUE_KICK_PATH, requestUrl || "https://api.planetka.io/");
+  url.searchParams.set("remaining", String(chainLeft));
+  ctx.waitUntil((async () => {
+    try {
+      await fetch(url.toString(), {
+        method: "POST",
+        headers: {
+          [PRODUCT_QUOTE_QUEUE_INTERNAL_SECRET_HEADER]: secret,
+        },
+      });
+    } catch (error) {
+      console.warn(
+        "worker.product_quote_queue.followup_failed",
+        JSON.stringify({ error: String(error && error.message || "quote_queue_followup_failed") }),
+      );
+    }
+  })());
+}
+
+async function handleInternalProductQuoteQueueKick(request, env, ctx) {
+  if (request.method !== "POST") {
+    return json({ ok: false, error: "method_not_allowed" }, 405, env);
+  }
+  const expectedSecret = String(env && env.JWT_SIGNING_SECRET || "").trim();
+  const suppliedSecret = String(request.headers.get(PRODUCT_QUOTE_QUEUE_INTERNAL_SECRET_HEADER) || "").trim();
+  if (!expectedSecret || suppliedSecret !== expectedSecret) {
+    return json({ ok: false, error: "not_found" }, 404, env);
+  }
+  const url = new URL(request.url);
+  const remainingChain = Math.max(0, Math.min(PRODUCT_QUOTE_QUEUE_FOLLOWUP_CHAIN_LIMIT, Number.parseInt(url.searchParams.get("remaining") || "0", 10) || 0));
+  const result = await runProductQuoteQueueBatch(env, PRODUCT_QUOTE_QUEUE_KICK_PATH);
+  if (result.summary && result.summary.lock_acquired !== false && result.remaining.queued > 0 && remainingChain > 0) {
+    scheduleProductQuoteQueueFollowup(ctx, request.url, env, remainingChain - 1);
+  }
+  return json(
+    {
+      ok: true,
+      processed: Number(result.summary && result.summary.processed || 0),
+      requeued: Number(result.summary && result.summary.requeued || 0),
+      failed: Number(result.summary && result.summary.failed || 0),
+      cancelled: Number(result.summary && result.summary.cancelled || 0),
+      elapsed_ms: Number(result.summary && result.summary.elapsed_ms || 0),
+      queued_remaining: result.remaining.queued,
+      available_remaining: result.remaining.available,
+      followup_scheduled: result.summary && result.summary.lock_acquired !== false && result.remaining.queued > 0 && remainingChain > 0,
+    },
+    200,
+    env,
+  );
+}
+
+async function handleInternalDefaultProductQuotesPrewarm(request, env, ctx) {
+  if (request.method !== "POST") {
+    return json({ ok: false, error: "method_not_allowed" }, 405, env);
+  }
+  const expectedSecret = String(env && env.JWT_SIGNING_SECRET || "").trim();
+  const suppliedSecret = String(request.headers.get(PRODUCT_QUOTE_QUEUE_INTERNAL_SECRET_HEADER) || "").trim();
+  if (!expectedSecret || suppliedSecret !== expectedSecret) {
+    return json({ ok: false, error: "not_found" }, 404, env);
+  }
+  const db = requireDb(env);
+  const prewarm = await enqueueDefaultNoPurchaseProductQuoteJobs(db, TILE_ROUTE_DEPS, { fastTrack: true });
+  const result = await runProductQuoteQueueBatch(env, DEFAULT_PRODUCT_QUOTES_PREWARM_PATH);
+  if (result.summary && result.summary.lock_acquired !== false && result.remaining.queued > 0) {
+    scheduleProductQuoteQueueFollowup(ctx, request.url, env, PRODUCT_QUOTE_QUEUE_FOLLOWUP_CHAIN_LIMIT);
+  }
+  return json(
+    {
+      ...prewarm,
+      processed: Number(result.summary && result.summary.processed || 0),
+      requeued: Number(result.summary && result.summary.requeued || 0),
+      failed: Number(result.summary && result.summary.failed || 0),
+      cancelled: Number(result.summary && result.summary.cancelled || 0),
+      elapsed_ms: Number(result.summary && result.summary.elapsed_ms || 0),
+      queued_remaining: result.remaining.queued,
+      available_remaining: result.remaining.available,
+    },
+    200,
+    env,
+  );
+}
+
+function maybeKickProductQuoteQueue(ctx, env, path, requestUrl) {
   if (!ctx || typeof ctx.waitUntil !== "function" || !shouldKickProductQuoteQueue(path)) {
     return;
   }
   ctx.waitUntil((async () => {
     try {
-      const db = requireDb(env);
-      const summary = await processUserProductQuoteJobs(
-        db,
-        env,
-        TILE_ROUTE_DEPS,
-        { maxJobs: 12, maxMs: 20000 },
-      );
-      if (summary && summary.processed > 0) {
-        console.log(
-          "worker.product_quote_queue.kicked",
-          JSON.stringify({
-            path,
-            processed: Number(summary.processed || 0),
-            requeued: Number(summary.requeued || 0),
-            failed: Number(summary.failed || 0),
-            cancelled: Number(summary.cancelled || 0),
-            elapsed_ms: Number(summary.elapsed_ms || 0),
-          }),
-        );
+      const result = await runProductQuoteQueueBatch(env, path);
+      if (result.summary && result.summary.lock_acquired !== false && result.remaining.queued > 0) {
+        scheduleProductQuoteQueueFollowup(ctx, requestUrl || "https://api.planetka.io/", env, PRODUCT_QUOTE_QUEUE_FOLLOWUP_CHAIN_LIMIT);
       }
     } catch (error) {
       console.warn(
@@ -4502,11 +4675,17 @@ export default {
     const queryToken = String(url.searchParams.get("access_token") || url.searchParams.get("token") || "").trim();
 
     try {
+      if (path === PRODUCT_QUOTE_QUEUE_KICK_PATH) {
+        return await handleInternalProductQuoteQueueKick(request, env, ctx);
+      }
+      if (path === DEFAULT_PRODUCT_QUOTES_PREWARM_PATH) {
+        return await handleInternalDefaultProductQuotesPrewarm(request, env, ctx);
+      }
       if (isAdminRoutePath(path) && queryToken) {
         return json({ ok: false, error: "query_token_not_allowed" }, 400, env);
       }
       const response = await dispatchRequest(request, env, path, ctx);
-      maybeKickProductQuoteQueue(ctx, env, path);
+      maybeKickProductQuoteQueue(ctx, env, path, request.url);
       return response;
     } catch (error) {
       await trackAuthEndpointError(path, request.method, env, error);
@@ -4538,7 +4717,7 @@ export default {
           db,
           env,
           TILE_ROUTE_DEPS,
-          { maxJobs: 20, maxMs: 26000 },
+          { maxJobs: 40, maxMs: 26000, maxMapJobs: 12, maxHeavyMapJobs: 1 },
         );
         const scheduledDate = new Date(controller.scheduledTime || Date.now());
         const runHourlyMaintenance = scheduledDate.getUTCMinutes() === 0;

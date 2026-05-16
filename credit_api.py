@@ -830,6 +830,23 @@ def create_region_pack_detail_link(region_pack_id: str) -> dict:
     raise CreditApiError(0, error, payload=result if isinstance(result, dict) else {})
 
 
+def create_region_pack_catalog_link() -> dict:
+    """Create a short-lived user-specific browser link for the product catalog."""
+    result = create_region_pack_detail_link("world")
+    detail_url = str(result.get("detail_url", "") or "").strip()
+    if not detail_url:
+        raise CreditApiError(0, "region_pack_catalog_link_failed", payload=result if isinstance(result, dict) else {})
+    try:
+        from urllib.parse import urlparse, urlunparse
+        parsed = urlparse(detail_url)
+        catalog_url = urlunparse(parsed._replace(path="/credits/region-pack-catalog"))
+    except (TypeError, ValueError, AttributeError):
+        catalog_url = detail_url.replace("/credits/region-pack-map", "/credits/region-pack-catalog")
+    payload = dict(result)
+    payload["catalog_url"] = catalog_url
+    return payload
+
+
 def create_scene_detail_link(tiles, quality_mode="FULL") -> dict:
     """Create a short-lived user-specific browser map link for current scene tiles."""
     tile_keys = []

@@ -59,6 +59,8 @@ RESOLVE_FAILURE_MESSAGE_KEY = "planetka_resolve_integrity_message"
 LAST_RESOLVE_TEXTURE_QUALITY_MODE_KEY = "planetka_last_resolve_texture_quality_mode"
 EARTH_TRANSFORM_SECTION_OPEN_KEY = "planetka_ui_earth_transform_open"
 DATA_CONTROL_MORE_OPTIONS_SECTION_OPEN_KEY = "planetka_ui_data_more_options_open"
+REGION_PACK_UI_REFRESH_LAST_AT_KEY = "planetka_ui_region_pack_refresh_last_at"
+REGION_PACK_UI_REFRESH_INTERVAL_SEC = 12.0
 EARTH_RADIUS_SAFE_MIN_BU = 0.2
 EARTH_RADIUS_SAFE_MAX_BU = 20.0
 LOW_ALTITUDE_WARNING_EPS_KM = 0.05
@@ -1328,22 +1330,60 @@ def _offer_is_licensable(offer):
     return bool(price > 0.000001 or new_tiles > 0)
 
 
+def _has_active_camera(scene):
+    return bool(scene is not None and getattr(scene, "camera", None) is not None)
+
+
+def _maybe_schedule_relevant_region_pack_refresh(scene, status):
+    if not _has_active_camera(scene):
+        return False
+    if str(status or "").strip().upper() == "LOADING":
+        return False
+    now = time.time()
+    try:
+        last_refresh = float(scene.get(REGION_PACK_UI_REFRESH_LAST_AT_KEY, 0.0) or 0.0)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        last_refresh = 0.0
+    if now - last_refresh < REGION_PACK_UI_REFRESH_INTERVAL_SEC:
+        return False
+    try:
+        from .planetka_runtime.view_telemetry import camera_signature, schedule_region_pack_offer_refresh
+        signature = camera_signature(scene)
+        if signature is None:
+            return False
+        scene[REGION_PACK_UI_REFRESH_LAST_AT_KEY] = now
+        return bool(
+            schedule_region_pack_offer_refresh(
+                scene,
+                camera_signature_value=signature,
+                delay_seconds=0.2,
+                force=True,
+            )
+        )
+    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed scheduling Relevant Data Packs refresh from UI", exc_info=True)
+    return False
+
+
+def _draw_product_catalog_button(layout):
+    row = layout.row(align=True)
+    row.operator("planetka.open_region_pack_catalog", text="Product Catalog", icon="URL")
+
+
 def _draw_broader_region_offers(layout, scene, active_view_scope=False):
-    if active_view_scope:
-        layout.label(text="Camera View only.", icon="CAMERA_DATA")
-        # Keep the last Camera View offers visible. These packs are low-priority
-        # sales metadata and must not churn while the user navigates in Active View.
     offers, status, message = _load_relevant_region_pack_offers(scene)
     offers = [offer for offer in offers if _offer_is_licensable(offer)]
     if not offers:
-        if status == "LOADING":
+        if not _has_active_camera(scene):
+            layout.label(text="Active Camera needed to list options.", icon="CAMERA_DATA")
+        elif status == "LOADING":
             layout.label(text="Updating relevant packs...", icon="TIME")
         elif status == "ERROR":
             layout.label(text=message or "Relevant pack update failed.", icon="ERROR")
-        elif status == "EMPTY":
-            layout.label(text=message or "No relevant data packs for this view.", icon="INFO")
         else:
-            layout.label(text="Updates after Camera View Resolve.", icon="INFO")
+            if _maybe_schedule_relevant_region_pack_refresh(scene, status):
+                layout.label(text="Updating relevant packs...", icon="TIME")
+        _draw_product_catalog_button(layout)
         return
     for offer in offers[:8]:
         name = str(offer.get("name", "") or offer.get("region_pack_name", "") or "Data Pack").strip()
@@ -1434,6 +1474,7 @@ def _draw_broader_region_offers(layout, scene, active_view_scope=False):
         info.discount_percent = int(discount)
         info.discount_eur = float(discount_eur)
         info.price_eur = float(price)
+    _draw_product_catalog_button(layout)
 
 
 def _draw_account_panel(layout):

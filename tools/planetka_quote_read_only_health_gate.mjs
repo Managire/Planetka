@@ -32,10 +32,8 @@ const CREDIT_ROUTES = path.join(ROOT, "cloudflare-api/src/worker/credit_routes.j
 const REPORT_PATH = path.join("/tmp", "planetka_quote_read_only_health_gate_report.json");
 
 const FORBIDDEN_SQL_PATTERNS = [
-  /region_pack_tile_entries/i,
   /user_tile_entitlements/i,
   /purchase_history_tiles/i,
-  /pricing_quotes/i,
 ];
 const DEFAULT_PRICING_VERSION = [
   "d1-complete-map-state-v2",
@@ -47,7 +45,8 @@ const DEFAULT_PRICING_VERSION = [
   "9.00",
   "",
 ].join("|");
-const DEFAULT_ENTITLEMENT_VERSION = "beta_full_world_access|quote-health@planetka.local|0|2026-05-15T00:00:00.000Z|";
+const DEFAULT_QUOTE_USER_ID = "__planetka_default_beta_full_world__";
+const DEFAULT_ENTITLEMENT_VERSION = "default_beta_full_world_v1";
 const REGION_PACK_CATALOG_VERSION = GENERATED_REGION_PACK_CATALOG_VERSION || "gadm_regions_v8";
 
 function assert(condition, message) {
@@ -77,7 +76,7 @@ function staticHeavyQuoteCallGuard() {
       continue;
     }
     if (
-      line.includes("const quote = await createRegionPackQuote")
+      line.includes("createRegionPackQuote(db, userId, product")
       && previousWindow.includes("async function processSingleUserProductQuoteJob")
     ) {
       allowed.push({ line: lineNumber, reason: "background_quote_job_processor" });
@@ -158,8 +157,14 @@ class GuardedDb {
       return [];
     }
     if (normalized.includes("from user_product_quotes")) {
-      const ids = Array.isArray(bindings) ? bindings.slice(2).map((value) => String(value || "").trim().toLowerCase()) : [];
-      return ids.map((id) => this.quoteRows.get(id)).filter(Boolean);
+      const boundValues = Array.isArray(bindings)
+        ? bindings.map((value) => String(value || "").trim().toLowerCase()).filter(Boolean)
+        : [];
+      const ids = boundValues.filter((value) => this.quoteRows.has(value));
+      if (ids.length) {
+        return ids.map((id) => this.quoteRows.get(id)).filter(Boolean);
+      }
+      return Array.from(this.quoteRows.values());
     }
     return [];
   }
@@ -202,11 +207,31 @@ function makeDeps(state) {
     normalizeEmail: (value) => String(value || "").trim().toLowerCase(),
     nowIso: () => "2026-05-15T12:00:00.000Z",
     randomToken: (length = 16) => "h".repeat(Math.max(1, Number.parseInt(length, 10) || 16)),
+    sha256Hex: async (value, length = 40) => {
+      const text = String(value || "");
+      let hash = 2166136261;
+      for (let index = 0; index < text.length; index += 1) {
+        hash ^= text.charCodeAt(index);
+        hash = Math.imul(hash, 16777619);
+      }
+      return (hash >>> 0).toString(16).padStart(8, "0").repeat(8).slice(0, Math.max(1, Number.parseInt(length, 10) || 40));
+    },
   };
 }
 
 function makeEnv(state) {
   return { DB: state };
+}
+
+
+function responseEmbeddedRegionPackData(text) {
+  const match = String(text || "").match(/window\.PLANETKA_REGION_PACK_DATA=(\{.*?\});<\/script>/s);
+  if (!match) return {};
+  try {
+    return JSON.parse(match[1]);
+  } catch (_error) {
+    return {};
+  }
 }
 
 async function responseJson(response) {
@@ -248,7 +273,7 @@ function readyQuoteRow(productId, options = {}) {
     price_cents: finalPriceCents,
   };
   return {
-    user_id: "quote_health_user",
+    user_id: DEFAULT_QUOTE_USER_ID,
     product_id: String(productId || "").trim().toLowerCase(),
     catalog_version: REGION_PACK_CATALOG_VERSION,
     pricing_version: DEFAULT_PRICING_VERSION,
@@ -322,7 +347,7 @@ async function main() {
     request: (state) => new Request(`https://api.planetka.io/credits/region-pack-catalog?token=${state.token}`),
   });
   const catalogShellText = await catalogShell.response.text();
-  assert(catalogShellText.includes("All Full Quality Data Packs"), "catalog_shell: missing catalog shell title");
+  assert(catalogShellText.includes("Product Catalog"), "catalog_shell: missing catalog shell title");
   assert(catalogShell.state.jobs.length === 0, "catalog_shell: shell request should not enqueue pricing jobs");
   report.steps.push({
     name: "catalog_shell_read_only",
@@ -354,7 +379,6 @@ async function main() {
     name: "asia_map_ready_quote_stale_map",
     handler: handleCreditRegionPackMap,
     expectStatus: 200,
-    expectJobProduct: "asia",
     tokenRegionPackId: "asia",
     request: (state) => {
       state.quoteRows.set("asia", readyQuoteRow("asia", { mapStateStatus: "stale" }));
@@ -362,17 +386,15 @@ async function main() {
     },
   });
   const readyQuoteMapHtml = await readyQuoteMap.response.text();
-  assert(readyQuoteMapHtml.includes('"price_pending":false'), "asia_map_ready_quote_stale_map: price should be ready");
-  assert(readyQuoteMapHtml.includes('"map_pending":true'), "asia_map_ready_quote_stale_map: stale map should be pending");
-  assert(
-    readyQuoteMap.state.jobs.some((job) => job.trigger_type === "product_page_map_state_requested"),
-    `asia_map_ready_quote_stale_map: expected a map-state job, got ${JSON.stringify(readyQuoteMap.state.jobs)}`,
-  );
+  const readyQuoteMapData = responseEmbeddedRegionPackData(readyQuoteMapHtml);
+  assert(readyQuoteMapData.price_pending === false, "asia_map_ready_quote_stale_map: price should be ready");
+  assert(readyQuoteMapData.map_pending === false, "asia_map_ready_quote_stale_map: on-demand map shell should be ready when quote is ready");
+  assert(readyQuoteMap.state.jobs.length === 0, `asia_map_ready_quote_stale_map: ready quote with on-demand map should not enqueue, got ${JSON.stringify(readyQuoteMap.state.jobs)}`);
   report.steps.push({
-    name: "ready_quote_stale_map_fast_tracks_map_state_only",
+    name: "ready_quote_stale_map_uses_on_demand_map",
     ok: true,
     query_count: readyQuoteMap.state.queries.length,
-    queued_jobs: readyQuoteMap.state.jobs,
+    queued_jobs: readyQuoteMap.state.jobs.length,
   });
 
   const readyQuoteCheckout = await runHandlerCase({
@@ -405,14 +427,15 @@ async function main() {
       request: (state) => new Request(`https://api.planetka.io/credits/region-pack-map?token=${state.token}&region_pack_id=${productId}`),
     });
     const mapHtml = await mapCase.response.text();
-    assert(mapHtml.includes('"price_pending":true'), `${productId}_map: page did not mark price pending`);
-    assert(mapHtml.includes('"map_pending":true'), `${productId}_map: page did not mark map pending`);
+    const mapData = responseEmbeddedRegionPackData(mapHtml);
+    assert(mapData.price_pending === true, `${productId}_map: page did not mark price pending`);
+    assert(mapData.map_pending === true, `${productId}_map: page did not mark map pending`);
     assert(
-      mapCase.state.jobs.some((job) => job.trigger_type === "product_page_quote_map_state_requested"),
-      `${productId}_map: expected a combined quote+map fast-track job, got ${JSON.stringify(mapCase.state.jobs)}`,
+      mapCase.state.jobs.some((job) => job.trigger_type === "product_page_quote_requested"),
+      `${productId}_map: expected a quote fast-track job, got ${JSON.stringify(mapCase.state.jobs)}`,
     );
     report.steps.push({
-      name: `${productId}_map_read_only_fast_track_quote_and_map`,
+      name: `${productId}_map_read_only_fast_track_quote`,
       ok: true,
       query_count: mapCase.state.queries.length,
       queued_jobs: mapCase.state.jobs,

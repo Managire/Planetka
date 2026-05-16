@@ -1442,6 +1442,37 @@ function methodNotAllowed(env) {
   return json({ ok: false, error: "method_not_allowed" }, 405, env);
 }
 
+async function handleAddonReleaseDownload(request, env, path) {
+  if (!env || !env.PLANETKA_DATA || typeof env.PLANETKA_DATA.get !== "function") {
+    return json({ ok: false, error: "release_storage_unavailable" }, 503, env);
+  }
+  const fileName = decodeURIComponent(String(path || "").replace(/^\/addon\/releases\//, "")).trim();
+  if (!/^Planetka_update_\d+\.\d+\.\d+\.zip$/.test(fileName)) {
+    return notFound(env);
+  }
+  const key = `releases/${fileName}`;
+  const object = request.method === "HEAD"
+    ? await env.PLANETKA_DATA.head(key)
+    : await env.PLANETKA_DATA.get(key);
+  if (!object) {
+    return notFound(env);
+  }
+  const headers = new Headers(corsHeaders(env));
+  headers.set("Content-Type", "application/zip");
+  headers.set("Cache-Control", "public, max-age=300");
+  headers.set("Content-Disposition", `attachment; filename="${fileName}"`);
+  if (object.size !== undefined && object.size !== null) {
+    headers.set("Content-Length", String(object.size));
+  }
+  if (object.httpEtag) {
+    headers.set("ETag", object.httpEtag);
+  }
+  return new Response(request.method === "HEAD" ? null : object.body, {
+    status: 200,
+    headers,
+  });
+}
+
 async function dispatchAuthRequest(request, env) {
   const url = new URL(request.url);
   const path = url.pathname;
@@ -1462,6 +1493,12 @@ async function dispatchAuthRequest(request, env) {
       return methodNotAllowed(env);
     }
     return handleAddonUpdateManifest(request, env, updateManifestDeps);
+  }
+  if (path.startsWith("/addon/releases/")) {
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      return methodNotAllowed(env);
+    }
+    return handleAddonReleaseDownload(request, env, path);
   }
   if (path.startsWith("/legal/")) {
     if (request.method !== "GET" && request.method !== "HEAD") {

@@ -1,3 +1,4 @@
+import json
 import textwrap
 import time
 
@@ -533,6 +534,21 @@ def _region_offer_countries_text(offer):
     return str(countries or "")
 
 
+def _region_offer_is_licensable(offer):
+    if not isinstance(offer, dict):
+        return False
+    price = max(0.0, _region_offer_number(offer, "price_eur", _region_offer_number(offer, "credits", 0.0)))
+    new_tiles = max(
+        0,
+        _region_offer_int(
+            offer,
+            "unlicenced_tile_count",
+            _region_offer_int(offer, "new_tile_count", _region_offer_int(offer, "paid_tile_count", 0)),
+        ),
+    )
+    return bool(price > 0.000001 or new_tiles > 0)
+
+
 def _populate_region_pack_info_operator(operator, offer):
     name = str((offer or {}).get("name", "") or (offer or {}).get("region_pack_name", "") or "Data Pack").strip()
     region_id = str((offer or {}).get("id", "") or (offer or {}).get("region_pack_id", "") or "").strip()
@@ -574,15 +590,15 @@ def _populate_region_pack_info_operator(operator, offer):
 
 
 def _draw_region_pack_upsell_options(layout, context, *, current_region_pack_id="", title="Relevant Data Packs"):
-    location = _region_offer_location_for_context(context)
     current_id = str(current_region_pack_id or "").strip()
-    if location is None and not current_id:
-        return
     try:
-        from .credit_api import get_region_pack_offers, get_region_pack_related_offers
-        offers = get_region_pack_related_offers(current_id) if current_id else []
-        if not offers and location is not None:
-            offers = get_region_pack_offers(location[0], location[1])
+        if current_id:
+            from .credit_api import get_region_pack_related_offers
+            offers = get_region_pack_related_offers(current_id)
+        else:
+            from .planetka_runtime.view_telemetry import get_cached_region_pack_offers
+            payload = get_cached_region_pack_offers(scene=getattr(context, "scene", None))
+            offers = list(payload.get("offers", ()) or ()) if isinstance(payload, dict) else []
     except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
         logger.debug("Planetka: failed fetching Full Quality Data Pack options for popup", exc_info=True)
         return
@@ -592,6 +608,8 @@ def _draw_region_pack_upsell_options(layout, context, *, current_region_pack_id=
             offer for offer in offers
             if str(offer.get("id", "") or offer.get("region_pack_id", "") or "").strip() != current_id
         ]
+    else:
+        offers = [offer for offer in offers if _region_offer_is_licensable(offer)]
     if not offers:
         return
     box = layout.box()
@@ -1413,6 +1431,88 @@ class PLANETKA_OT_OpenRegionPackMap(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class PLANETKA_OT_OpenSceneDetailMap(bpy.types.Operator):
+    bl_idname = "planetka.open_scene_detail_map"
+    bl_label = "Open Scene Map"
+    bl_description = "Open the detailed Full Quality map for this scene in your browser"
+
+    tile_keys_json: StringProperty(
+        name="Scene Tiles",
+        default="",
+        options={'HIDDEN', 'SKIP_SAVE'},
+    )
+
+    def execute(self, _context):
+        try:
+            raw = json.loads(str(getattr(self, "tile_keys_json", "") or "[]"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raw = []
+        tile_keys = []
+        for entry in list(raw or ()):
+            key = str(entry or "").strip()
+            if key and key not in tile_keys:
+                tile_keys.append(key)
+        if not tile_keys:
+            return fail(
+                self,
+                "No scene Full Quality tiles are available for the detailed map.",
+                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                logger=logger,
+            )
+        try:
+            from .credit_api import create_scene_detail_link
+            link = create_scene_detail_link(tile_keys, quality_mode="FULL")
+        except Exception as exc:
+            return fail(
+                self,
+                f"Unable to open scene map: {exc}",
+                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                logger=logger,
+                exc=exc,
+                log_message="Planetka scene detail link creation failed",
+            )
+        url = str(link.get("detail_url", "") or "").strip()
+        if not _open_external_url(url):
+            return fail(
+                self,
+                "Could not open Planetka scene map.",
+                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                logger=logger,
+            )
+        self.report({'INFO'}, "Planetka scene map opened in browser.")
+        return {'FINISHED'}
+
+
+class PLANETKA_OT_OpenRegionPackCatalog(bpy.types.Operator):
+    bl_idname = "planetka.open_region_pack_catalog"
+    bl_label = "Product Catalog"
+    bl_description = "Open the Planetka Product Catalog in your browser"
+
+    def execute(self, context):
+        try:
+            from .credit_api import create_region_pack_catalog_link
+            link = create_region_pack_catalog_link()
+        except Exception as exc:
+            return fail(
+                self,
+                f"Unable to open Product Catalog: {exc}",
+                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                logger=logger,
+                exc=exc,
+                log_message="Planetka product catalog link creation failed",
+            )
+        url = str(link.get("catalog_url", "") or link.get("detail_url", "") or "").strip()
+        if not _open_external_url(url):
+            return fail(
+                self,
+                "Could not open Planetka Product Catalog.",
+                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                logger=logger,
+            )
+        self.report({'INFO'}, "Planetka Product Catalog opened in browser.")
+        return {'FINISHED'}
+
+
 class PLANETKA_OT_RegionPackInfo(bpy.types.Operator):
     bl_idname = "planetka.region_pack_info"
     bl_label = "Data Pack Details"
@@ -1786,6 +1886,24 @@ class PLANETKA_OT_DataCostBreakdown(bpy.types.Operator):
                 threshold_text = self._price_text(threshold) if threshold > 0.000001 else "€0.50"
                 price_box.label(text=f"Small scene below {threshold_text}: Free", icon="CHECKMARK")
             price_box.label(text=f"Final Price: {self._price_text(total_credits)}", icon="USER")
+            scene_tile_keys = []
+            for entry in all_tiles:
+                if not isinstance(entry, dict):
+                    continue
+                key = str(entry.get("tile_key", "") or "").strip()
+                if key and key not in scene_tile_keys:
+                    scene_tile_keys.append(key)
+            if scene_tile_keys:
+                actions = header.row(align=True)
+                map_op = actions.operator("planetka.open_scene_detail_map", text="Detailed Map", icon="URL")
+                map_op.tile_keys_json = json.dumps(scene_tile_keys)
+                checkout = actions.operator(
+                    "planetka.open_credit_checkout",
+                    text=f"Buy Full Quality ({self._price_text(total_credits)})",
+                    icon="URL",
+                )
+                checkout.checkout_option = "SCENE"
+                checkout.texture_quality_mode = "FULL"
             if has_nonzero_price:
                 header.label(
                     text="Price is based on land area and texture detail; ocean-only and already-licenced tiles are not charged.",
@@ -1811,7 +1929,7 @@ class PLANETKA_OT_DataCostBreakdown(bpy.types.Operator):
             "Excluded From Price: Already Licenced",
             breakdown.get("excluded_tiles", ()),
             icon="CHECKMARK",
-            empty_text="No already-licenced tiles in this Resolve.",
+            empty_text="No already-licenced tiles in this Camera View.",
             show_original_price=True,
         )
         self._draw_rows(
