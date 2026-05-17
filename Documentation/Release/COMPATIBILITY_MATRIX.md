@@ -1,11 +1,12 @@
 # Planetka Compatibility Matrix
 
-Last updated: 2026-05-14
+Last updated: 2026-05-17
 
 This internal matrix records the current compatibility baseline for public-release QA.
 
 | Planetka version | Blender versions | Smoke status | Notes |
 | --- | --- | --- | --- |
+| v0.7.8 | Blender 5.0 primary; Blender 4.5 LTS expected with verification | Pass required before publication | Beta patch: release metadata consistency, split-worker release-gate checks, animation checkout cancellation safety, and current web UI colour/wording updates. |
 | v0.7.6 | Blender 5.0 primary; Blender 4.5 LTS expected with verification | Pass required before publication | Beta patch: quote-only Full Quality data-pack pricing/checkout across Blender, web pages, catalog, Stripe, and webhook fulfilment. |
 | v0.7.5 | Blender 5.0 primary; Blender 4.5 LTS expected with verification | Pass required before publication | Beta patch: D1-backed exact data-pack pricing and reduced Worker runtime bundle for large pack pricing routes. |
 | v0.7.4 | Blender 5.0 primary; Blender 4.5 LTS expected with verification | Pass required before publication | Beta patch: Full Quality post-purchase sidebar recovery and Relevant Data Packs background refresh safety. |
@@ -23,4 +24,4 @@ This internal matrix records the current compatibility baseline for public-relea
 - Open Relevant Data Packs and verify web-map links.
 - Run animation preview/preflight and confirm required texture files are downloaded before segmented render starts.
 - Build the explicit public zip with `tools/build_addon_zip.py`.
-- Confirm `wrangler deploy --dry-run` shows restricted public access and current updater/legal metadata.
+- Confirm each split Worker `wrangler deploy --config ... --dry-run` shows restricted public access and current updater/legal metadata.

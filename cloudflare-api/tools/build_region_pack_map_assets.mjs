@@ -26,6 +26,12 @@ const REGION_PACK_MAP_MAX_OUTLINE_POINTS = 250_000;
 const REGION_SIMILAR_COUNTRY_MAX_DISTANCE_DEG = 2.0;
 const COUNTRY_LIKE_REGION_PRODUCT_IDS = new Set(["australia", "canada", "china", "united_states"]);
 const NORTH_AMERICA_SIMILAR_COUNTRY_LIKE_IDS = new Set(["canada", "united_states"]);
+const WORLD_FRAME_PRODUCT_IDS = new Set(["oceania", "pacific_islands"]);
+const PACIFIC_INCLUDED_AREA_CODES = new Set([
+  "ASM", "COK", "FJI", "FSM", "GUM", "KIR", "MHL", "MNP",
+  "NCL", "NIU", "NRU", "PCN", "PLW", "PYF", "SLB", "TKL",
+  "TON", "TUV", "VUT", "WLF", "WSM",
+]);
 const DISPLAY_AREA_LABEL_BY_ADM0_CODE = new Map([
   ["Z01", "Himalayan Disputed Territories"],
   ["Z02", "Himalayan Disputed Territories"],
@@ -799,6 +805,10 @@ function buildHelpers(generated, catalog = {}) {
 }
 
 function boundsForProduct(sourceProduct, sourceDetail, rows) {
+  const productId = String(sourceProduct && sourceProduct.id || "").trim().toLowerCase();
+  if (WORLD_FRAME_PRODUCT_IDS.has(productId)) {
+    return { min_lon: -180, min_lat: -90, max_lon: 180, max_lat: 90 };
+  }
   const detailBounds = sourceDetail && Array.isArray(sourceDetail.bounds) ? sourceDetail.bounds : null;
   const bbox = sourceProduct && Array.isArray(sourceProduct.bbox) ? sourceProduct.bbox : null;
   const bounds = detailBounds && detailBounds.length >= 4 ? detailBounds : bbox;
@@ -835,7 +845,8 @@ function productPublicPayload(product, version, includedCountries) {
 function includedCountryDisplayName(value, helpers) {
   if (value && typeof value === "object") {
     const code = String(value.GID_0 || "").trim().toUpperCase();
-    return String(DISPLAY_AREA_LABEL_BY_ADM0_CODE.get(code) || value.name || value.COUNTRY || value.NAME_1 || value.GID_0 || "").trim();
+    const label = String(DISPLAY_AREA_LABEL_BY_ADM0_CODE.get(code) || value.name || value.COUNTRY || value.NAME_1 || value.GID_0 || "").trim();
+    return label && PACIFIC_INCLUDED_AREA_CODES.has(code) ? `${label} ${code}` : label;
   }
   const id = String(value || "").trim();
   const product = helpers && typeof helpers.product === "function" ? helpers.product(id) : null;
@@ -920,7 +931,7 @@ function assetForProduct(product, helpers, generated) {
     .filter(Boolean)
     .sort((a, b) => a.tile_key.localeCompare(b.tile_key));
   const levels = Array.from(new Set(rows.map((row) => row.z))).sort((a, b) => a - b);
-  return applyDisplayLongitudeWrap({
+  const asset = {
     ok: true,
     static_asset: true,
     catalog_version: generated.GENERATED_REGION_PACK_CATALOG_VERSION || "unknown",
@@ -934,7 +945,10 @@ function assetForProduct(product, helpers, generated) {
     levels,
     tiles: rows,
     upsell_ids: helpers.related(product, 3).map((entry) => String(entry && entry.id || "")).filter(Boolean),
-  });
+  };
+  return WORLD_FRAME_PRODUCT_IDS.has(String(product && product.id || "").trim().toLowerCase())
+    ? asset
+    : applyDisplayLongitudeWrap(asset);
 }
 
 async function main() {

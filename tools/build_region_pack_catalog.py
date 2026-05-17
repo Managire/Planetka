@@ -31,7 +31,7 @@ DEFAULT_JSON = Path("Resources/Region Packs/region_packs_gadm.json")
 DEFAULT_JS = Path("cloudflare-api/src/worker/region_packs.generated.js")
 DEFAULT_PNG = Path("Resources/Region Packs/region_packs_gadm.png")
 DEFAULT_TILE_DB = Path("Resources/tile_sizes.sqlite")
-CATALOG_VERSION = "gadm_regions_v8"
+CATALOG_VERSION = "gadm_regions_v9"
 PAID_Z_LEVELS = (1, 2, 4, 8, 15, 30)
 FREE_D_THRESHOLD = 60
 MERGE_DIFFERENCE_RATIO = 0.50
@@ -292,8 +292,33 @@ ASIA_ALL_ADM0_CODES = (
     *SOUTH_CHINA_SEA_DISPUTED_CODES,
 )
 
-PACIFIC_COUNTRY_CODES = ("PNG",)
-OCEANIA_COUNTRY_CODES = ("NZL", *PACIFIC_COUNTRY_CODES)
+PACIFIC_COUNTRY_CODES = (
+    "ASM",  # American Samoa
+    "COK",  # Cook Islands
+    "FJI",  # Fiji
+    "FSM",  # Micronesia
+    "GUM",  # Guam
+    "KIR",  # Kiribati
+    "MHL",  # Marshall Islands
+    "MNP",  # Northern Mariana Islands
+    "NCL",  # New Caledonia
+    "NFK",  # Norfolk Island
+    "NIU",  # Niue
+    "NRU",  # Nauru
+    "PCN",  # Pitcairn Islands
+    "PLW",  # Palau
+    "PNG",  # Papua New Guinea
+    "PYF",  # French Polynesia
+    "SLB",  # Solomon Islands
+    "TKL",  # Tokelau
+    "TON",  # Tonga
+    "TUV",  # Tuvalu
+    "VUT",  # Vanuatu
+    "WLF",  # Wallis and Futuna
+    "WSM",  # Samoa
+)
+PACIFIC_ISLANDS_PRODUCT_CODES = ("NZL", *PACIFIC_COUNTRY_CODES)
+OCEANIA_COUNTRY_CODES = PACIFIC_ISLANDS_PRODUCT_CODES
 
 
 def expanded_adm0_codes(code: str) -> tuple[str, ...]:
@@ -392,7 +417,7 @@ LOCAL_PRODUCT_SPECS = (
         "name": "New Zealand",
         "adm0_codes": ("NZL",),
         "clip_bbox": NEW_ZEALAND_CLIP_BBOX,
-        "merge_scope": "australia",
+        "merge_scope": "oceania",
         "auto_merge": False,
         "discount_percent": 20,
         "source_note": "GADM 4.10 ADM_0 polygon intersection; clipped to the main New Zealand longitudes to avoid antimeridian map wrapping",
@@ -400,10 +425,11 @@ LOCAL_PRODUCT_SPECS = (
     *(
         {
             "adm0_codes": (code,),
-            "membership_codes": (code,),
             "merge_scope": "oceania",
             "auto_merge": False,
             "discount_percent": 20,
+            "publish_product": False,
+            "source_note": "GADM 4.10 ADM_0 polygon intersection; hidden component used by Pacific Islands and Australia and Oceania packs",
         }
         for code in PACIFIC_COUNTRY_CODES
     ),
@@ -681,7 +707,7 @@ MACRO_PACKS = (
     {
         "id": "australia",
         "name": "Australia",
-        "type": "continent",
+        "type": "country",
         "discount_percent": 50,
         "adm1_codes": AUSTRALIA_ALL_REGION_CODES,
         "clip_bbox": AUSTRALIA_CLIP_BBOX,
@@ -692,11 +718,11 @@ MACRO_PACKS = (
         "name": "Pacific Islands",
         "type": "macro_region",
         "discount_percent": 30,
-        "adm0_codes": PACIFIC_COUNTRY_CODES,
+        "adm0_codes": PACIFIC_ISLANDS_PRODUCT_CODES,
     },
     {
         "id": "oceania",
-        "name": "Oceania",
+        "name": "Australia and Oceania",
         "type": "continent",
         "discount_percent": 50,
         "adm0_codes": OCEANIA_COUNTRY_CODES,

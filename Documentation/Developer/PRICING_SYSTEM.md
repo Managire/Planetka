@@ -65,7 +65,6 @@ Primary files:
 - `cloudflare-api/src/worker/credit_routes.js`
 - `cloudflare-api/src/worker/tile_routes.js`
 - `cloudflare-api/src/worker/billing_handlers.js`
-- `cloudflare-api/src/index.js`
 - `cloudflare-api/src/worker/admin_analytics_handlers.js`
 
 The Worker is authoritative for:
@@ -1284,7 +1283,10 @@ Basic local checks:
 node --check cloudflare-api/src/worker/credit_routes.js
 node --check cloudflare-api/src/worker/admin_analytics_handlers.js
 node --check cloudflare-api/src/worker/billing_handlers.js
-node --check cloudflare-api/src/index.js
+node --check cloudflare-api/src/auth_worker.js
+node --check cloudflare-api/src/tile_worker.js
+node --check cloudflare-api/src/commerce_worker.js
+node --check cloudflare-api/src/analytics_worker.js
 python3 -m py_compile credit_api.py animation_tools.py ui.py operators.py
 git diff --check
 ```

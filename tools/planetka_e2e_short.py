@@ -49,6 +49,7 @@ from planetka_e2e_common import (
     configure_eevee,
     configure_png_output,
     create_earth_and_wait,
+    drain_queued_resolve,
     enable_module,
     ensure_authenticated,
     ensure_camera,
@@ -161,9 +162,12 @@ def main():
             op_result = bpy.ops.planetka.set_texture_quality_and_resolve(texture_quality_mode=quality)
             if "FINISHED" not in op_result:
                 raise E2EError(f"Texture quality resolve failed for {quality}: {op_result}")
+            immediate_runtime_status = state.get_resolve_runtime_status(scene)
+            final_runtime_status = drain_queued_resolve(state, scene, timeout_sec=120.0, sleep_sec=0.05)
             resolve_results[quality.lower()] = {
                 "operator_result": list(op_result),
-                "runtime_status": state.get_resolve_runtime_status(scene),
+                "runtime_status_immediate": immediate_runtime_status,
+                "runtime_status_final": final_runtime_status,
                 "tile_count": int(getattr(scene, "get", lambda *_args, **_kwargs: 0)("planetka_last_manual_resolve_tile_count", 0) or 0),
             }
         payload["coverage"]["quality_resolves"] = resolve_results

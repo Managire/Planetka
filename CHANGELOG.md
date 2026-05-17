@@ -2,6 +2,17 @@
 
 All notable public changes to Planetka are documented in this file.
 
+## [v0.7.8] - 2026-05-17
+
+### Changed
+- Released the current beta state with consistent add-on, updater, changelog, and compatibility metadata.
+- Updated web Buy buttons to use the same red colour as new tiles.
+- Updated animation render payment wording to say Render Animation instead of Buy Animation.
+
+### Fixed
+- Removed the abandoned-animation-payment polling loop that could keep recalculating animation pricing on Blender's main thread after a Stripe checkout page was closed.
+- Updated release-gate backend checks for the current split Cloudflare Worker structure.
+
 ## [v0.7.6] - 2026-05-14
 
 ### Changed

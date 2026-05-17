@@ -180,11 +180,19 @@ def main() -> int:
     compatibility_path = root / "Documentation" / "Release" / "COMPATIBILITY_MATRIX.md"
     checklist_path = root / "Documentation" / "Release" / "QA_CHECKLIST.md"
     template_path = root / "Documentation" / "Release" / "RELEASE_NOTES_TEMPLATE.md"
-    worker_path = root / "cloudflare-api" / "src" / "index.js"
+    worker_auth_path = root / "cloudflare-api" / "src" / "auth_worker.js"
+    worker_tiles_path = root / "cloudflare-api" / "src" / "tile_worker.js"
+    worker_commerce_path = root / "cloudflare-api" / "src" / "commerce_worker.js"
+    worker_analytics_path = root / "cloudflare-api" / "src" / "analytics_worker.js"
     worker_tile_routes_path = root / "cloudflare-api" / "src" / "worker" / "tile_routes.js"
     worker_admin_analytics_path = root / "cloudflare-api" / "src" / "worker" / "admin_analytics_handlers.js"
     worker_maintenance_path = root / "cloudflare-api" / "src" / "worker" / "maintenance_jobs.js"
-    wrangler_path = root / "cloudflare-api" / "wrangler.toml"
+    wrangler_paths = [
+        root / "cloudflare-api" / "wrangler.auth.toml",
+        root / "cloudflare-api" / "wrangler.tiles.toml",
+        root / "cloudflare-api" / "wrangler.commerce.toml",
+        root / "cloudflare-api" / "wrangler.analytics.toml",
+    ]
     fallback_dir = root / "Resources" / "Fallback Images"
 
     errors: list[str] = []
@@ -255,16 +263,32 @@ def main() -> int:
             "but release notes must document them explicitly."
         )
 
-    worker_src = ""
+    worker_auth_src = ""
+    worker_tiles_src = ""
+    worker_commerce_src = ""
+    worker_analytics_src = ""
     worker_tile_routes_src = ""
     worker_admin_analytics_src = ""
     worker_maintenance_src = ""
     worker_auth_api_key_src = ""
     worker_auth_api_key_path = root / "cloudflare-api" / "src" / "worker" / "auth_api_key_handlers.js"
-    if not worker_path.exists():
-        errors.append("Missing cloudflare-api/src/index.js")
-    else:
-        worker_src = read_text(worker_path)
+    split_worker_paths = [
+        ("auth Worker", worker_auth_path),
+        ("tiles Worker", worker_tiles_path),
+        ("commerce Worker", worker_commerce_path),
+        ("analytics Worker", worker_analytics_path),
+    ]
+    for label, path in split_worker_paths:
+        if not path.exists():
+            errors.append(f"Missing {label} entrypoint: {path.relative_to(root)}")
+    if worker_auth_path.exists():
+        worker_auth_src = read_text(worker_auth_path)
+    if worker_tiles_path.exists():
+        worker_tiles_src = read_text(worker_tiles_path)
+    if worker_commerce_path.exists():
+        worker_commerce_src = read_text(worker_commerce_path)
+    if worker_analytics_path.exists():
+        worker_analytics_src = read_text(worker_analytics_path)
     if worker_tile_routes_path.exists():
         worker_tile_routes_src = read_text(worker_tile_routes_path)
     if worker_admin_analytics_path.exists():
@@ -276,7 +300,10 @@ def main() -> int:
     combined_worker_src = "\n".join(
         part
         for part in [
-            worker_src,
+            worker_auth_src,
+            worker_tiles_src,
+            worker_commerce_src,
+            worker_analytics_src,
             worker_tile_routes_src,
             worker_admin_analytics_src,
             worker_maintenance_src,
@@ -285,7 +312,7 @@ def main() -> int:
         if part
     )
 
-    # 6) Worker access model must match the 0.7.0 plan-based product
+    # 6) Worker access model must match the split-worker public account/product model
     if combined_worker_src:
         required_worker_markers = [
             (
@@ -303,7 +330,7 @@ def main() -> int:
                     f"{label} ({' or '.join(repr(marker) for marker in markers)})"
                 )
     tile_quality_marker_present = (
-        "X-Planetka-Quality-Mode" in worker_src
+        "X-Planetka-Quality-Mode" in worker_tiles_src
         or "X-Planetka-Quality-Mode" in worker_tile_routes_src
     )
     if not tile_quality_marker_present:
@@ -313,9 +340,9 @@ def main() -> int:
         )
 
     # 7) Admin analytics must reject token query params
-    if worker_src:
+    if worker_analytics_src or worker_admin_analytics_src:
         query_token_reject_count = (
-            worker_src.count("query_token_not_allowed")
+            worker_analytics_src.count("query_token_not_allowed")
             + worker_admin_analytics_src.count("query_token_not_allowed")
         )
         if query_token_reject_count < 2:
@@ -325,7 +352,7 @@ def main() -> int:
             )
 
     # 8) Legacy auth/throttle/claim systems must be absent from the worker surface
-    if worker_src:
+    if combined_worker_src:
         forbidden_worker_markers = [
             ("legacy auth route", '"/auth/start"'),
             ("legacy auth route", '"/auth/verify"'),
@@ -340,10 +367,15 @@ def main() -> int:
             ("claim rejection alert", "PROD_ALERT_CLAIM_REJECTION"),
         ]
         for label, marker in forbidden_worker_markers:
-            if marker in worker_src:
+            if marker in combined_worker_src:
                 errors.append(f"Worker still contains {label} marker: '{marker}'")
 
-    if wrangler_path.exists() and tomllib is not None:
+    for wrangler_path in wrangler_paths:
+        if not wrangler_path.exists():
+            errors.append(f"Missing split Worker Wrangler config: {wrangler_path.relative_to(root)}")
+            continue
+        if tomllib is None:
+            continue
         try:
             wrangler = tomllib.loads(read_text(wrangler_path))
             vars_table = wrangler.get("vars", {}) if isinstance(wrangler, dict) else {}
@@ -359,9 +391,9 @@ def main() -> int:
             if isinstance(vars_table, dict):
                 for var_name in forbidden_vars:
                     if var_name in vars_table:
-                        errors.append(f"wrangler.toml still defines legacy var '{var_name}'")
+                        errors.append(f"{wrangler_path.name} still defines legacy var '{var_name}'")
         except TOOL_RECOVERABLE_EXCEPTIONS as exc:  # noqa: BLE001 - release gate hard-fail
-            errors.append(f"wrangler.toml parse failed: {exc}")
+            errors.append(f"{wrangler_path.name} parse failed: {exc}")
 
     # 9) Required fallback assets must exist; deprecated red fallback must be absent
     required_fallback_assets = [

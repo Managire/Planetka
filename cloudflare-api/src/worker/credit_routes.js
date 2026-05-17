@@ -53,13 +53,13 @@ const DEFAULT_REGION_PACK_DISCOUNT_SHARE_BUCKETS = [
 const STRIPE_MIN_CHECKOUT_AMOUNT_CENTS = 50;
 const SCENE_SMALL_FREE_THRESHOLD_CENTS = 50;
 const SCENE_CUSTOM_LICENCE_LABEL = "Custom scene-specific licence";
-const ANIMATION_CUSTOM_LICENCE_LABEL = "Custom animation licence";
+const ANIMATION_CUSTOM_LICENCE_LABEL = "Custom animation render";
 const ANIMATION_CHECKOUT_MAX_UNIQUE_TILES = 5000;
 const CHECKOUT_TILE_SET_TOKEN_TTL_MINUTES = 24 * 60;
 const MONEY_SCALE = 100;
 const METRIC_SCALE = 1_000_000;
 const REGION_PACK_CATALOG_VERSION = GENERATED_REGION_PACK_CATALOG_VERSION || "gadm_regions_v8";
-const REGION_PACK_MAP_ASSET_REVISION = `${REGION_PACK_CATALOG_VERSION}:outline-v4-product-bg-wt-blue-v4-partial-dateline-v7-admin-labels-v1-success-upsell-v1-catalog-flat-v1-price-breakdown-v1-hover-breakdown-v1-summary-partial-v1-pricing-runtime-v5-runtime-buckets-v1-canonical-pricing-v2-coeff-km2-v1-post-purchase-new-v1-button-border-gold-v1-tile-tooltip-v5-immediate-static-js-v10-product-outlines-v1-on-demand-map-v4-incremental-chunks-v1-geo-bg-v1-soft-red-v1-scene-map-v1-tooltip-cardinal-v2-product-bg-frame-v1-white-bg-v2-mini-upsell-tiles-v2-product-map-d-equals-z-v1-chunk1000-v2-wt-tile-bg-v2-scene-page-v3-map-loading-v6-live-bounds-nofallback-bg-v1`;
+const REGION_PACK_MAP_ASSET_REVISION = `${REGION_PACK_CATALOG_VERSION}:outline-v4-product-bg-wt-blue-v4-partial-dateline-v7-admin-labels-v1-success-upsell-v1-catalog-flat-v1-price-breakdown-v1-hover-breakdown-v1-summary-partial-v1-pricing-runtime-v5-runtime-buckets-v1-canonical-pricing-v2-coeff-km2-v1-post-purchase-new-v1-button-border-gold-v1-tile-tooltip-v5-immediate-static-js-v10-product-outlines-v1-on-demand-map-v4-incremental-chunks-v1-geo-bg-v1-soft-red-v1-scene-map-v1-tooltip-cardinal-v2-product-bg-frame-v1-white-bg-v2-mini-upsell-tiles-v2-product-map-d-equals-z-v1-chunk1000-v2-wt-tile-bg-v2-scene-page-v3-map-loading-v6-live-bounds-nofallback-bg-v1-mini-square-bg-v1-world-bg-align-v1-mini-cover-v1`;
 const REGION_PACK_PRICING_ENGINE_REVISION = "d1-complete-map-state-v2";
 const ACCOUNT_COUNTRY_BORDERS_ASSET_REVISION = `${REGION_PACK_CATALOG_VERSION}:account-country-borders-v1`;
 const SQL_VARIABLE_SAFE_CHUNK_SIZE = 75;
@@ -1271,11 +1271,10 @@ async function purchasedRegionPackIdsForUser(db, userId, deps) {
       FROM purchase_history
       WHERE user_id = ?
         AND LOWER(TRIM(purchase_type)) = 'region_pack'
-        AND catalog_version = ?
         AND region_pack_id IS NOT NULL
         AND TRIM(region_pack_id) != ''
     `,
-    [safeUserId, REGION_PACK_CATALOG_VERSION],
+    [safeUserId],
   );
   return Array.from(new Set((rows || [])
     .map((row) => normalizedRegionPackProductId(row && row.region_pack_id))
@@ -2734,6 +2733,38 @@ const DISPLAY_AREA_LABEL_BY_ADM0_CODE = new Map([
   ["ZNC", "Northern Cyprus"],
   ["XAD", "Akrotiri and Dhekelia"],
 ]);
+const WORLD_FRAME_REGION_PACK_IDS = new Set(["oceania", "pacific_islands"]);
+const PACIFIC_INCLUDED_AREA_CODES = new Set([
+  "ASM", "COK", "FJI", "FSM", "GUM", "KIR", "MHL", "MNP",
+  "NCL", "NIU", "NRU", "PCN", "PLW", "PYF", "SLB", "TKL",
+  "TON", "TUV", "VUT", "WLF", "WSM",
+]);
+const PACIFIC_INCLUDED_AREA_LABEL_BY_CODE = new Map([
+  ["ASM", "American Samoa"],
+  ["COK", "Cook Islands"],
+  ["FJI", "Fiji"],
+  ["FSM", "Micronesia"],
+  ["GUM", "Guam"],
+  ["KIR", "Kiribati"],
+  ["MHL", "Marshall Islands"],
+  ["MNP", "Northern Mariana Islands"],
+  ["NCL", "New Caledonia"],
+  ["NFK", "Norfolk Island"],
+  ["NIU", "Niue"],
+  ["NRU", "Nauru"],
+  ["NZL", "New Zealand"],
+  ["PCN", "Pitcairn Islands"],
+  ["PLW", "Palau"],
+  ["PNG", "Papua New Guinea"],
+  ["PYF", "French Polynesia"],
+  ["SLB", "Solomon Islands"],
+  ["TKL", "Tokelau"],
+  ["TON", "Tonga"],
+  ["TUV", "Tuvalu"],
+  ["VUT", "Vanuatu"],
+  ["WLF", "Wallis and Futuna"],
+  ["WSM", "Samoa"],
+]);
 const CHINA_ADMIN_REGION_LABELS = new Set([
   "anhui",
   "beijing",
@@ -2833,12 +2864,27 @@ function regionProductIncludedCountries(product) {
     return [];
   }
   const id = String(product.id || "").trim();
+  if (id === "pacific_islands" || id === "oceania") {
+    const labels = [];
+    if (id === "oceania") {
+      labels.push("Australia");
+    }
+    for (const codeRaw of Array.isArray(product.adm0_codes) ? product.adm0_codes : []) {
+      const code = String(codeRaw || "").trim().toUpperCase();
+      const label = String(PACIFIC_INCLUDED_AREA_LABEL_BY_CODE.get(code) || DISPLAY_AREA_LABEL_BY_ADM0_CODE.get(code) || "").trim();
+      if (label) {
+        labels.push(label);
+      }
+    }
+    return uniqueDisplayStrings(labels).sort((a, b) => a.localeCompare(b));
+  }
   const generated = GENERATED_REGION_PACK_DETAILS[id];
   if (generated && Array.isArray(generated.countries)) {
     return collapseChinaAdminRegionLabels(generated.countries
       .map((entry) => {
         const code = String(entry && entry.GID_0 || "").trim().toUpperCase();
-        return String(DISPLAY_AREA_LABEL_BY_ADM0_CODE.get(code) || entry && (entry.NAME_1 || entry.name || entry.COUNTRY) || "").trim();
+        const label = String(DISPLAY_AREA_LABEL_BY_ADM0_CODE.get(code) || entry && (entry.NAME_1 || entry.name || entry.COUNTRY) || "").trim();
+        return label;
       })
       .filter(Boolean));
   }
@@ -3099,6 +3145,9 @@ function regionPackMapBackgroundKey(env) {
 function regionPackMapProductBackgroundKey(env, regionPackId) {
   const prefix = cleanR2Prefix(env);
   const id = String(regionPackId || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "");
+  if (WORLD_FRAME_REGION_PACK_IDS.has(id) || id === "world") {
+    return regionPackMapBackgroundKey(env);
+  }
   if (!id) {
     return "";
   }
@@ -3108,8 +3157,8 @@ function regionPackMapProductBackgroundKey(env, regionPackId) {
 
 
 
-const REGION_PACK_SHARED_CSS = `:root{color-scheme:light dark;--bg:#000;--panel:#1b1b1b;--subpanel:#151515;--line:#3c3c3c;--text:#eee;--muted:#aaa;--input:#262626;--table-line:#2d2d2d;--table-head:#202020;--secondary-btn:#2a2a2a;--map-bg:#0d1118;--new:#d76d62;--partial:#e2bc49;--licenced:#4fa86a;--free:#69707a;--country:#2a3748;--country-line:#98b4d8;--accent:#d9a441;--button-accent:#d9a441;--button-text:#111}
-@media (prefers-color-scheme:light){:root{--bg:#fff;--panel:#fff;--subpanel:#fff;--line:#d8d8d8;--text:#1f252d;--muted:#667085;--input:#fff;--table-line:#e4e4e4;--table-head:#fff;--secondary-btn:#fff;--map-bg:#eef2f6;--country:#dbe8f2;--country-line:#45637d;--accent:#c28a21;--button-accent:#8f732f;--button-text:#fff}}
+const REGION_PACK_SHARED_CSS = `:root{color-scheme:light dark;--bg:#000;--panel:#1b1b1b;--subpanel:#151515;--line:#3c3c3c;--text:#eee;--muted:#aaa;--input:#262626;--table-line:#2d2d2d;--table-head:#202020;--secondary-btn:#2a2a2a;--map-bg:#0d1118;--new:#d76d62;--partial:#e2bc49;--licenced:#4fa86a;--free:#69707a;--country:#2a3748;--country-line:#98b4d8;--accent:#d9a441;--button-accent:#d76d62;--button-text:#fff}
+@media (prefers-color-scheme:light){:root{--bg:#fff;--panel:#fff;--subpanel:#fff;--line:#d8d8d8;--text:#1f252d;--muted:#667085;--input:#fff;--table-line:#e4e4e4;--table-head:#fff;--secondary-btn:#fff;--map-bg:#eef2f6;--country:#dbe8f2;--country-line:#45637d;--accent:#c28a21;--button-accent:#d76d62;--button-text:#fff}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 main{max-width:1180px;margin:0 auto;padding:24px}h1{margin:0 0 8px;font-size:28px;font-weight:650}.muted{color:var(--muted)}
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:18px 0}.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px}.card b{display:block;font-size:22px;margin-top:4px}.card.final-price{border-color:#8f732f;box-shadow:0 0 0 1px rgba(217,164,65,.16) inset}.card.final-price b{font-size:26px}.buy-now{width:100%;font-size:16px}
@@ -3121,8 +3170,8 @@ select,input{background:var(--input);color:var(--text);border:1px solid var(--li
 .upsells{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}.upsell{background:var(--subpanel);border:1px solid var(--line);border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:10px}.upsell h3{margin:0;font-size:18px}.upsell p{margin:0}.upsell-map-link{display:block;width:100%;aspect-ratio:1 / 1;overflow:hidden;border:1px solid var(--line);border-radius:10px;background:var(--map-bg)}.upsell-map-link svg{width:100%;height:100%;display:block;border:0;border-radius:0;min-height:0}.upsell .button{width:100%;box-sizing:border-box;text-align:center;min-height:46px;display:flex;align-items:center;justify-content:center}.upsell .button.secondary{margin-left:0}.upsell .upsell-buy{min-height:54px}
 .button{display:inline-flex;align-items:center;justify-content:center;margin-top:10px;padding:9px 12px;border-radius:8px;background:var(--button-accent);color:var(--button-text,#111);text-decoration:none;font-weight:700}.button.secondary{margin-left:8px;background:var(--secondary-btn);color:var(--text);border:1px solid var(--line)}`;
 
-const REGION_PACK_CATALOG_CSS = `:root{color-scheme:light dark;--bg:#000;--panel:#1b1b1b;--subpanel:#151515;--line:#3c3c3c;--table-line:#2d2d2d;--table-head:#202020;--text:#eee;--muted:#aaa;--input:#262626;--accent:#d9a441;--button-accent:#d9a441;--secondary-btn:#2a2a2a;--saving:#9dd18d;--price:#f4d28d}
-@media (prefers-color-scheme:light){:root{--bg:#fff;--panel:#fff;--subpanel:#fff;--line:#d8d8d8;--table-line:#e4e4e4;--table-head:#fff;--text:#1f252d;--muted:#667085;--input:#fff;--accent:#c28a21;--button-accent:#8f732f;--button-text:#fff;--secondary-btn:#fff;--saving:#2f7d3b;--price:#966915}}
+const REGION_PACK_CATALOG_CSS = `:root{color-scheme:light dark;--bg:#000;--panel:#1b1b1b;--subpanel:#151515;--line:#3c3c3c;--table-line:#2d2d2d;--table-head:#202020;--text:#eee;--muted:#aaa;--input:#262626;--accent:#d9a441;--button-accent:#d76d62;--button-text:#fff;--secondary-btn:#2a2a2a;--saving:#9dd18d;--price:#f4d28d}
+@media (prefers-color-scheme:light){:root{--bg:#fff;--panel:#fff;--subpanel:#fff;--line:#d8d8d8;--table-line:#e4e4e4;--table-head:#fff;--text:#1f252d;--muted:#667085;--input:#fff;--accent:#c28a21;--button-accent:#d76d62;--button-text:#fff;--secondary-btn:#fff;--saving:#2f7d3b;--price:#966915}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 main{max-width:1180px;margin:0 auto;padding:24px}h1{margin:0 0 8px;font-size:28px;font-weight:650}h2{margin:22px 0 10px}.muted{color:var(--muted)}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;margin-top:14px}.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:12px 0}
@@ -3130,8 +3179,8 @@ input{min-width:260px;flex:1;background:var(--input);color:var(--text);border:1p
 table{width:100%;border-collapse:separate;border-spacing:0;background:var(--subpanel);border:1px solid var(--line);border-radius:10px;overflow:visible}th,td{padding:8px 10px;border-bottom:1px solid var(--table-line);text-align:right;white-space:nowrap}th:first-child,td:first-child{text-align:left;white-space:normal}tr:last-child td{border-bottom:0}th{position:sticky;top:0;z-index:5;color:var(--text);background:var(--table-head);font-weight:650;box-shadow:0 1px 0 var(--table-line),0 8px 14px rgba(0,0,0,.18)}thead th:first-child{border-top-left-radius:9px}thead th:last-child{border-top-right-radius:9px}.small{font-size:13px}.saving{color:var(--saving)}.price{font-weight:700;color:var(--price)}.pending{color:var(--muted);font-weight:650}
 .button{display:inline-flex;align-items:center;justify-content:center;padding:7px 10px;border-radius:8px;background:var(--button-accent);color:var(--button-text,#111);text-decoration:none;font-weight:700}.button.secondary{background:var(--secondary-btn);color:var(--text);border:1px solid var(--line)}.button.disabled{opacity:.55;pointer-events:none;filter:grayscale(.25)}.empty{padding:12px;color:var(--muted)}.load-status{display:inline-grid;grid-template-columns:auto 3ch auto 3ch;column-gap:4px;align-items:baseline;font-variant-numeric:tabular-nums}.load-status .loaded{text-align:right}.load-status .total{text-align:left}.spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}`;
 
-const REGION_PACK_CHECKOUT_CSS = `:root{color-scheme:light dark;--bg:#000;--panel:#1b1b1b;--card:#151515;--line:#3c3c3c;--text:#eee;--muted:#aaa;--accent:#d9a441;--button-accent:#d9a441;--secondary-btn:#2a2a2a;--disabled:#333;--disabled-text:#888;--notice:#f2c36b;--link:#f4d28d}
-@media (prefers-color-scheme:light){:root{--bg:#fff;--panel:#fff;--card:#fff;--line:#d8d8d8;--text:#1f252d;--muted:#667085;--accent:#c28a21;--button-accent:#8f732f;--button-text:#fff;--secondary-btn:#fff;--disabled:#e7e7e7;--disabled-text:#777;--notice:#936500;--link:#966915}}
+const REGION_PACK_CHECKOUT_CSS = `:root{color-scheme:light dark;--bg:#000;--panel:#1b1b1b;--card:#151515;--line:#3c3c3c;--text:#eee;--muted:#aaa;--accent:#d9a441;--button-accent:#d76d62;--button-text:#fff;--secondary-btn:#2a2a2a;--disabled:#333;--disabled-text:#888;--notice:#f2c36b;--link:#f4d28d}
+@media (prefers-color-scheme:light){:root{--bg:#fff;--panel:#fff;--card:#fff;--line:#d8d8d8;--text:#1f252d;--muted:#667085;--accent:#c28a21;--button-accent:#d76d62;--button-text:#fff;--secondary-btn:#fff;--disabled:#e7e7e7;--disabled-text:#777;--notice:#936500;--link:#966915}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 main{max-width:760px;margin:0 auto;padding:24px}h1{margin:0 0 10px;font-size:28px;font-weight:650}.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;margin-top:14px}.muted{color:var(--muted)}.summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-top:12px}.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px}.card b{display:block;font-size:21px;margin-top:3px}.actions{display:grid;gap:10px;margin-top:14px}.button{width:100%;display:inline-flex;align-items:center;justify-content:center;padding:11px 13px;border:0;border-radius:9px;background:var(--button-accent);color:var(--button-text,#111);text-decoration:none;font-weight:750;font:inherit;cursor:pointer}.button.secondary{background:var(--secondary-btn);color:var(--text);border:1px solid var(--line)}.button.disabled{background:var(--disabled);color:var(--disabled-text);border:1px solid var(--line);cursor:not-allowed}.notice{color:var(--notice)}.links{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px}.links a{color:var(--link);text-decoration:none}`;
 
@@ -3330,7 +3379,8 @@ const miniOutlinesUrl="/credits/account-country-borders.json?v="+assetVersion;
 const currentToken=encodeURIComponent(DATA.token||"");
 const currentPackIdEncoded=encodeURIComponent(DATA.asset_id||DATA.region_pack&&DATA.region_pack.id||"");
 const currentCatalog=DATA.catalog_mode?"&catalog=1":"";
-function productMapBgHref(id){const safe=encodeURIComponent(String(id||"").trim());return safe?"/credits/region-pack-map-background.jpg?region_pack_id="+safe+"&v="+assetVersion:""}
+const WORLD_FRAME_MAP_IDS=new Set(["world","oceania","pacific_islands"]);
+function productMapBgHref(id){const raw=String(id||"").trim().toLowerCase();if(WORLD_FRAME_MAP_IDS.has(raw))return MAP_BG;const safe=encodeURIComponent(raw);return safe?"/credits/region-pack-map-background.jpg?region_pack_id="+safe+"&v="+assetVersion:""}
 function esc(value){return String(value||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/\"/g,"&quot;")}
 function countryName(value){return typeof value==="object"&&value?String(value.name||value.COUNTRY||value.NAME_1||value.GID_0||""):String(value||"")}
 const CHINA_ADMIN_LABELS=new Set(["anhui","beijing","chongqing","fujian","gansu","guangdong","guangxi","guizhou","hainan","hebei","heilongjiang","henan","hong kong","hubei","hunan","jiangsu","jiangxi","jilin","liaoning","macau","nei mongol","ningxia hui","qinghai","shaanxi","shandong","shanghai","shanxi","sichuan","tianjin","xinjiang uygur","xizang","yunnan","zhejiang"]);
@@ -3364,7 +3414,7 @@ function setBounds(bounds){currentFrame=frameForBounds(bounds||currentFrame.boun
 function xy(lon,lat){return[currentFrame.ox+(lon-currentFrame.bounds.min_lon)*currentFrame.scale,currentFrame.oy+(currentFrame.bounds.max_lat-lat)*currentFrame.scale]}
 function el(name,attrs){const node=document.createElementNS(NS,name);for(const k in attrs||{})node.setAttribute(k,String(attrs[k]));return node}
 let activeTileTooltip=null;function tileTooltip(){let node=document.getElementById("tileTooltip");if(!node){node=document.createElement("div");node.id="tileTooltip";node.className="tile-tooltip";document.body.appendChild(node)}return node}function moveTileTooltip(event){if(!activeTileTooltip)return;const pad=14;activeTileTooltip.style.left=Math.min(window.innerWidth-activeTileTooltip.offsetWidth-pad,event.clientX+pad)+"px";activeTileTooltip.style.top=Math.min(window.innerHeight-activeTileTooltip.offsetHeight-pad,event.clientY+pad)+"px"}function showTileTooltip(text,event){const node=tileTooltip();node.textContent=text;node.style.display="block";activeTileTooltip=node;moveTileTooltip(event)}function hideTileTooltip(){if(activeTileTooltip){activeTileTooltip.style.display="none";activeTileTooltip=null}}function attachTileTooltip(node,text){node.addEventListener("pointerenter",event=>showTileTooltip(text,event));node.addEventListener("pointermove",moveTileTooltip);node.addEventListener("pointerleave",hideTileTooltip)}
-function addMapBackground(svg,project,width,height,id,bounds){svg.appendChild(el("rect",{x:0,y:0,width,height,fill:"#0d1118"}));const productHref=productMapBgHref(id);if(productHref){const img=el("image",{href:productHref,x:0,y:0,width,height,preserveAspectRatio:"none",opacity:"1.0"});img.addEventListener("error",()=>img.remove());svg.appendChild(img)}else{const tl=project(-180,90),br=project(180,-90);svg.appendChild(el("image",{href:MAP_BG,x:tl[0],y:tl[1],width:br[0]-tl[0],height:br[1]-tl[1],preserveAspectRatio:"none",opacity:"1.0"}))}svg.appendChild(el("rect",{x:0,y:0,width,height,fill:"#05070a",opacity:"0.0"}))}
+function addMapBackground(svg,project,width,height,id,bounds){svg.appendChild(el("rect",{x:0,y:0,width,height,fill:"#0d1118"}));const rawId=String(id||"").trim().toLowerCase();const productHref=productMapBgHref(id);if(productHref&&WORLD_FRAME_MAP_IDS.has(rawId)){const tl=project(-180,90),br=project(180,-90);const img=el("image",{href:productHref,x:tl[0],y:tl[1],width:br[0]-tl[0],height:br[1]-tl[1],preserveAspectRatio:"none",opacity:"1.0"});img.addEventListener("error",()=>img.remove());svg.appendChild(img)}else if(productHref){const img=el("image",{href:productHref,x:0,y:0,width,height,preserveAspectRatio:"none",opacity:"1.0"});img.addEventListener("error",()=>img.remove());svg.appendChild(img)}else{const tl=project(-180,90),br=project(180,-90);svg.appendChild(el("image",{href:MAP_BG,x:tl[0],y:tl[1],width:br[0]-tl[0],height:br[1]-tl[1],preserveAspectRatio:"none",opacity:"1.0"}))}svg.appendChild(el("rect",{x:0,y:0,width,height,fill:"#05070a",opacity:"0.0"}))}
 function pathFor(poly){return(poly||[]).map((pt,i)=>{const p=xy(pt[0],pt[1]);return(i?"L":"M")+p[0].toFixed(2)+" "+p[1].toFixed(2)}).join(" ")}
 function drawOutlineRingPath(ring){let path="",previousLon=null,started=false;for(const point of Array.isArray(ring)?ring:[]){const lon=Number(point&&point[0]),lat=Number(point&&point[1]);if(!Number.isFinite(lon)||!Number.isFinite(lat)){started=false;previousLon=null;continue}if(previousLon!==null&&Math.abs(lon-previousLon)>180)started=false;const p=xy(lon,lat);path+=(started?"L":"M")+p[0].toFixed(2)+" "+p[1].toFixed(2);started=true;previousLon=lon}return path}
 async function loadProductOutlines(asset){const current=Array.isArray(asset&&asset.outlines)?asset.outlines:[];if(current.length)return current;const id=asset&&asset.region_pack&&asset.region_pack.id||currentPackId();if(!id)return current;try{const response=await fetch(outlinesUrl(id),{cache:"force-cache"});if(!response.ok)return current;const payload=await response.json();const outlines=Array.isArray(payload&&payload.outlines)?payload.outlines:[];if(outlines.length)asset.outlines=outlines;return outlines}catch(_error){return current}}
@@ -3389,11 +3439,12 @@ function shardedRowsIfLoaded(vm,level){return shardRowsCache.get(shardCacheKey(l
 function onDemandRowsIfLoaded(vm,level){return levelRowsCache.get(shardCacheKey(level))||null}
 async function loadOnDemandRows(vm,level,onChunk){const key=shardCacheKey(level);if(levelRowsCache.has(key))return levelRowsCache.get(key);if(levelRowsLoading.has(key))return levelRowsLoading.get(key);const expected=Math.max(0,Number(vm&&vm.state&&vm.state.level_tile_counts&&vm.state.level_tile_counts[key]||0)||0);const promise=(async()=>{const rows=[];let cursor=null;let guard=0;for(;;){const res=await fetch(mapLevelChunkUrl(level,cursor),{cache:"no-store"});if(!res.ok)throw new Error("map_level_chunk_"+res.status);const payload=await res.json();const chunk=(Array.isArray(payload&&payload.tiles)?payload.tiles:[]).map(normaliseStoredTile).filter((tile)=>tile.tile_key&&Number.isFinite(tile.x)&&Number.isFinite(tile.y)&&Number.isFinite(tile.z));rows.push(...chunk);if(typeof onChunk==="function")onChunk(chunk,rows.length,expected);cursor=payload&&payload.next_cursor||null;guard+=1;if(!cursor||guard>1000)break;}rows.sort(tileSort);if(expected>0&&rows.length===0)throw new Error("map_level_empty_"+key);levelRowsCache.set(key,rows);levelRowsLoading.delete(key);return rows})().catch((error)=>{levelRowsLoading.delete(key);throw error});levelRowsLoading.set(key,promise);return promise}
 function renderMap(vm,level){const seq=++mapRenderSeq;const key=shardCacheKey(level);const expected=Math.max(0,Number(vm&&vm.state&&vm.state.level_tile_counts&&vm.state.level_tile_counts[key]||0)||0);document.getElementById("mapStatus").className="muted small";if(vm.onDemand){const cached=onDemandRowsIfLoaded(vm,level);if(cached){drawMapRows(vm,level,cached);return}const svg=drawMapBase(vm),counts=mapCounts();updateMapSummary(level,counts,0,expected,false);loadOnDemandRows(vm,level,(chunk,loaded,total)=>{if(seq!==mapRenderSeq)return;appendTileRows(svg,level,chunk,counts);updateMapSummary(level,counts,loaded,total,false)}).then((rows)=>{if(seq===mapRenderSeq)drawMapRows(vm,level,rows)}).catch((error)=>{if(seq!==mapRenderSeq)return;console.warn("Planetka map level failed",error);setMapLoading(false);document.getElementById("mapStatus").className="error small";document.getElementById("mapStatus").textContent="Map tiles failed to load. Please refresh this page.";});return}if(vm.sharded){const cached=shardedRowsIfLoaded(vm,level);if(cached){drawMapRows(vm,level,cached);return}const shards=vm&&vm.state&&vm.state.level_shards&&vm.state.level_shards[key]||[];const svg=drawMapBase(vm),counts=mapCounts();updateMapSummary(level,counts,0,expected||0,false);loadShardedRows(vm,level,(chunk,loaded)=>{if(seq!==mapRenderSeq)return;appendTileRows(svg,level,chunk,counts);updateMapSummary(level,counts,loaded,expected||loaded,false)}).then((rows)=>{if(seq===mapRenderSeq)drawMapRows(vm,level,rows)}).catch((error)=>{if(seq!==mapRenderSeq)return;console.warn("Planetka map shard failed",error);setMapLoading(false);document.getElementById("mapStatus").className="error small";document.getElementById("mapStatus").textContent="Map tiles failed to load. Please refresh this page.";});return}drawMapRows(vm,level,vm.rows)}
-function miniFrame(bounds){return frameForBounds(bounds,1000,320,820,20)}
-function miniXY(frame,lon,lat){return[frame.ox+(lon-frame.bounds.min_lon)*frame.scale,frame.oy+(frame.bounds.max_lat-lat)*frame.scale]}
+function miniFrame(bounds){const b=bounds||{min_lon:-10,min_lat:35,max_lon:30,max_lat:48};const minLon=Number.isFinite(Number(b.min_lon))?Number(b.min_lon):-10,minLat=Number.isFinite(Number(b.min_lat))?Number(b.min_lat):35,maxLon=Number.isFinite(Number(b.max_lon))?Number(b.max_lon):30,maxLat=Number.isFinite(Number(b.max_lat))?Number(b.max_lat):48;const width=1000,height=1000,lonSpan=Math.max(1e-6,maxLon-minLon),latSpan=Math.max(1e-6,maxLat-minLat),scale=Math.max(width/lonSpan,height/latSpan),usedW=lonSpan*scale,usedH=latSpan*scale;return{bounds:{min_lon:minLon,min_lat:minLat,max_lon:maxLon,max_lat:maxLat},width,height,scale,ox:(width-usedW)/2,oy:(height-usedH)/2}}
+function miniXY(frame,lon,lat){const s=Number.isFinite(Number(frame.scale))?Number(frame.scale):1;return[frame.ox+(lon-frame.bounds.min_lon)*s,frame.oy+(frame.bounds.max_lat-lat)*s]}
+function addMiniMapBackground(svg,frame,id){const width=frame.width,height=frame.height;svg.appendChild(el("rect",{x:0,y:0,width,height,fill:"#0d1118"}));const rawId=String(id||"").trim().toLowerCase();const productHref=productMapBgHref(id);if(productHref&&WORLD_FRAME_MAP_IDS.has(rawId)){const tl=miniXY(frame,-180,90),br=miniXY(frame,180,-90);const img=el("image",{href:productHref,x:tl[0],y:tl[1],width:br[0]-tl[0],height:br[1]-tl[1],preserveAspectRatio:"none",opacity:"1.0"});img.addEventListener("error",()=>img.remove());svg.appendChild(img)}else if(productHref){const tl=miniXY(frame,frame.bounds.min_lon,frame.bounds.max_lat),br=miniXY(frame,frame.bounds.max_lon,frame.bounds.min_lat);const img=el("image",{href:productHref,x:tl[0],y:tl[1],width:br[0]-tl[0],height:br[1]-tl[1],preserveAspectRatio:"none",opacity:"1.0"});img.addEventListener("error",()=>img.remove());svg.appendChild(img)}else{const tl=miniXY(frame,-180,90),br=miniXY(frame,180,-90);svg.appendChild(el("image",{href:MAP_BG,x:tl[0],y:tl[1],width:br[0]-tl[0],height:br[1]-tl[1],preserveAspectRatio:"none",opacity:"1.0"}))}}
 let miniOutlinesPromise=null;async function loadMiniOutlines(){if(!miniOutlinesPromise){miniOutlinesPromise=fetch(miniOutlinesUrl,{cache:"force-cache"}).then((res)=>res.ok?res.json():null).then((payload)=>Array.isArray(payload&&payload.outlines)?payload.outlines:[]).catch(()=>[])}return miniOutlinesPromise}
 function drawMiniOutlines(svg,frame,asset){const outlines=Array.isArray(asset&&asset.outlines)?asset.outlines:[];if(!outlines.length)return;const group=el("g",{class:"product-outlines","aria-hidden":"true"});for(const outline of outlines){for(const ring of Array.isArray(outline&&outline.polygons)?outline.polygons:[]){let path="",previousLon=null,started=false;for(const point of Array.isArray(ring)?ring:[]){const lon=Number(point&&point[0]),lat=Number(point&&point[1]);if(!Number.isFinite(lon)||!Number.isFinite(lat)){started=false;previousLon=null;continue}if(previousLon!==null&&Math.abs(lon-previousLon)>180)started=false;const p=miniXY(frame,lon,lat);path+=(started?"L":"M")+p[0].toFixed(2)+" "+p[1].toFixed(2);started=true;previousLon=lon}if(path)group.appendChild(el("path",{d:path,fill:"none",stroke:"var(--country-line)","stroke-width":"0.7",opacity:"0.72"}))}}svg.appendChild(group)}
-function renderMiniMap(svg,vm){const asset=vm&&vm.asset||{};const b=asset.bounds||{min_lon:-10,min_lat:35,max_lon:30,max_lat:48};const frame=miniFrame(b),w=frame.width,h=frame.height;svg.setAttribute("viewBox","0 0 "+w+" "+h);svg.style.aspectRatio="1 / 1";svg.setAttribute("preserveAspectRatio","xMidYMid meet");svg.replaceChildren();const bgId=asset&&asset.region_pack&&asset.region_pack.id||"";addMapBackground(svg,(lon,lat)=>miniXY(frame,lon,lat),w,h,bgId,b);drawMiniOutlines(svg,frame,asset);const first=vm&&vm.levels&&vm.levels.length?vm.levels[0]:null;for(const tile of (Array.isArray(vm&&vm.rows)?vm.rows:[]).filter((row)=>Number(row.z)===Number(first))){const a=miniXY(frame,tile.lon_min,tile.lat_max),c=miniXY(frame,tile.lon_max,tile.lat_min);const lower=tile.status==="lower_resolution";const cls=tile.status==="new"?"var(--new)":((tile.status==="partial"||lower)?"var(--partial)":(tile.status==="licenced"?"var(--licenced)":"var(--free)"));svg.appendChild(el("rect",{x:a[0],y:a[1],width:Math.max(1,c[0]-a[0]),height:Math.max(1,c[1]-a[1]),fill:cls,stroke:"#fff","stroke-width":"0.5",opacity:(tile.status==="new"||tile.status==="partial"||lower)?"0.58":"0.43"}))}}
+function renderMiniMap(svg,vm){const asset=vm&&vm.asset||{};const b=asset.bounds||{min_lon:-10,min_lat:35,max_lon:30,max_lat:48};const frame=miniFrame(b),w=frame.width,h=frame.height;svg.setAttribute("viewBox","0 0 "+w+" "+h);svg.style.aspectRatio="1 / 1";svg.setAttribute("preserveAspectRatio","xMidYMid slice");svg.replaceChildren();const bgId=asset&&asset.region_pack&&asset.region_pack.id||"";addMiniMapBackground(svg,frame,bgId);drawMiniOutlines(svg,frame,asset);const first=vm&&vm.levels&&vm.levels.length?vm.levels[0]:null;for(const tile of (Array.isArray(vm&&vm.rows)?vm.rows:[]).filter((row)=>Number(row.z)===Number(first))){const a=miniXY(frame,tile.lon_min,tile.lat_max),c=miniXY(frame,tile.lon_max,tile.lat_min);const lower=tile.status==="lower_resolution";const cls=tile.status==="new"?"var(--new)":((tile.status==="partial"||lower)?"var(--partial)":(tile.status==="licenced"?"var(--licenced)":"var(--free)"));svg.appendChild(el("rect",{x:a[0],y:a[1],width:Math.max(1,c[0]-a[0]),height:Math.max(1,c[1]-a[1]),fill:cls,stroke:"#fff","stroke-width":"0.5",opacity:(tile.status==="new"||tile.status==="partial"||lower)?"0.58":"0.43"}))}}
 async function loadMiniMap(id,q){const url="/credits/region-pack-mini-map?token="+currentToken+"&region_pack_id="+encodeURIComponent(String(id||""))+currentCatalog+(q?"&quote_id="+encodeURIComponent(String(q)):"");const res=await fetch(url,{cache:"no-store"});if(!res.ok)throw new Error("mini_map_"+res.status);return res.json()}
 async function renderUpsells(){const serverUpsells=Array.isArray(DATA.upsells)?DATA.upsells:[];const grid=document.getElementById("upsellGrid");if(!grid||!serverUpsells.length)return;const token=encodeURIComponent(DATA.token||"");const catalog="&catalog=1";for(const card of serverUpsells){try{const idRaw=card.asset_id||card.region_pack&&card.region_pack.id||"";const pack=card.region_pack||{};const summary=card.summary||null;if(!idRaw&&!pack.id)continue;const id=encodeURIComponent(pack.id||idRaw);const div=document.createElement("div");div.className="upsell";const title=document.createElement("h3");title.textContent=pack.name||"Data Pack";div.appendChild(title);const q=String(card.quote_id||"");const quoteParam=q?"&quote_id="+encodeURIComponent(q):"";const detailHref="/credits/region-pack-map?token="+token+"&region_pack_id="+id+catalog+quoteParam;const mapLink=document.createElement("a");mapLink.href=detailHref;mapLink.className="upsell-map-link";mapLink.setAttribute("aria-label","View map for "+(pack.name||"data pack"));const map=document.createElementNS(NS,"svg");mapLink.appendChild(map);div.appendChild(mapLink);renderMiniMap(map,{asset:{bounds:pack.bounds||null,region_pack:{id:pack.id||idRaw,name:pack.name||"Data Pack"},outlines:[]},rows:[],levels:[]});Promise.all([loadMiniMap(pack.id||idRaw,q),loadMiniOutlines()]).then(([mini,outlines])=>{const rows=(Array.isArray(mini&&mini.tiles)?mini.tiles:[]).map(normaliseStoredTile);renderMiniMap(map,{asset:{bounds:mini.bounds||pack.bounds||null,region_pack:mini.region_pack||{id:pack.id||idRaw,name:pack.name||"Data Pack"},outlines:Array.isArray(outlines)?outlines:[]},rows,levels:[Number(mini&&mini.level||0)||null].filter(Boolean)})}).catch((error)=>console.warn("Planetka upsell mini map failed",card,error));const meta=document.createElement("p");meta.className="muted small";if(summary){const alreadyValue=int(summary.already_licenced_deduction_cents)+int(summary.partial_licence_credit_cents);const bits=["Full "+fmtCents(summary.full_price_cents)];if(alreadyValue>0)bits.push("Already -"+fmtCents(alreadyValue));if(int(summary.discount_cents)>0)bits.push("Discount "+Number(summary.discount_percent||0)+"% (-"+fmtCents(summary.discount_cents)+")");bits.push("Final "+fmtCents(summary.price_cents));meta.textContent=bits.join(" · ");}else{meta.textContent="Price updating";}div.appendChild(meta);if(summary&&q&&int(summary.price_cents)>0){const checkout=document.createElement("a");checkout.className="button upsell-buy";checkout.href="/credits/region-pack-checkout?token="+token+"&region_pack_id="+id+catalog+"&quote_id="+encodeURIComponent(q);checkout.textContent=(pack.name||"Pack")+" ("+fmtCents(summary.price_cents)+")";div.appendChild(checkout);}const detail=document.createElement("a");detail.className="button secondary";detail.href=detailHref;detail.textContent="View map";div.appendChild(detail);grid.appendChild(div);document.getElementById("upsellsPanel").style.display=""}catch(error){console.warn("Planetka upsell map failed",card,error)}}}
 function serverMapAsset(){const state=DATA.map_state_ready&&DATA.map_state&&typeof DATA.map_state==="object"?DATA.map_state:null;if(state&&state.on_demand){return{region_pack:state.region_pack||DATA.region_pack||{},bounds:state.bounds||{min_lon:-10,min_lat:35,max_lon:30,max_lat:48},outlines:Array.isArray(state.outlines)?state.outlines:[],included_countries:Array.isArray(state.included_countries)?state.included_countries:[],tiles:[]}}return null}
@@ -5067,6 +5118,10 @@ function allocatedRegionPackTileRows(estimate) {
 }
 
 function regionMapBounds(product, detail, tileRows) {
+  const productId = String(product && product.id || "").trim().toLowerCase();
+  if (productId === "world" || WORLD_FRAME_REGION_PACK_IDS.has(productId)) {
+    return { min_lon: -180, min_lat: -90, max_lon: 180, max_lat: 90 };
+  }
   const bounds = detail && Array.isArray(detail.bounds) ? detail.bounds : null;
   if (bounds && bounds.length >= 4) {
     return {
@@ -8542,11 +8597,11 @@ async function buildUserProductShardedMapStateStep(db, product, quote, account, 
 
 function sortedCatalogProducts() {
   const groupOrder = new Map([
-    ["countries", 0],
-    ["regions", 1],
-    ["states_provinces", 2],
-    ["continents", 3],
-    ["world", 4],
+    ["world", 0],
+    ["continents", 1],
+    ["countries", 2],
+    ["regions", 3],
+    ["states_provinces", 4],
     ["other", 5],
   ]);
   return REGION_PRODUCTS
@@ -10891,7 +10946,7 @@ export async function handleCreditCheckout(request, env, deps) {
         amountCents,
         customerEmail: email,
         clientReferenceId: userId,
-        productName: "Planetka Custom Animation Licence",
+        productName: "Planetka Animation Render",
         metadata: {
           planetka_purchase_type: "animation_tiles",
           planetka_user_id: userId,

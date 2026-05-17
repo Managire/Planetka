@@ -30,5 +30,5 @@ Before publishing a release:
 - verify the built file list contains no internal runbooks, checklists, developer notes, or archived beta documents;
 - regenerate legal PDFs with `tools/generate_legal_pdfs.py` after any terms/privacy change;
 - upload the release zip and legal PDFs to the configured R2 keys;
-- deploy the Worker after confirming `wrangler deploy --dry-run` shows restricted public access, current legal versions, and current updater metadata;
+- deploy the split Workers only with explicit `--config` files after confirming each `wrangler deploy --config ... --dry-run` shows restricted public access, current legal versions, and current updater metadata;
 - run Blender smoke tests for Create Earth, Preview resolve, Full Quality purchase flow, data-pack page opening, animation preflight, and offline/error handling.

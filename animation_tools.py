@@ -115,13 +115,6 @@ ANIMATION_RENDER_USER_STOP_SETTLE_SEC = 1.0
 ANIMATION_RENDER_APP_JOB_FALLBACK_GRACE_SEC = 5.0
 ANIMATION_RENDER_LAUNCH_RETRY_MAX_ATTEMPTS = 2
 ANIMATION_HORIZON_SEGMENT_HYSTERESIS_ENABLED = True
-_ANIMATION_PURCHASE_MONITOR = {
-    "active": False,
-    "scene_name": "",
-    "started_at": 0.0,
-    "timeout_sec": 240.0,
-}
-_ANIMATION_PURCHASE_MONITOR_REGISTERED = False
 
 
 @dataclass
@@ -813,45 +806,6 @@ def _animation_scene_price_is_settled(scene):
         return False
     _tag_animation_ui_redraw()
     return bool(float(price_eur or 0.0) <= 0.000001)
-
-
-def _animation_purchase_monitor_timer():
-    global _ANIMATION_PURCHASE_MONITOR_REGISTERED
-    _ANIMATION_PURCHASE_MONITOR_REGISTERED = False
-    if not bool(_ANIMATION_PURCHASE_MONITOR.get("active", False)):
-        return None
-    started = float(_ANIMATION_PURCHASE_MONITOR.get("started_at", 0.0) or 0.0)
-    timeout = max(30.0, float(_ANIMATION_PURCHASE_MONITOR.get("timeout_sec", 240.0) or 240.0))
-    if started > 0.0 and (time.time() - started) > timeout:
-        _ANIMATION_PURCHASE_MONITOR["active"] = False
-        return None
-    scene_name = str(_ANIMATION_PURCHASE_MONITOR.get("scene_name", "") or "").strip()
-    scene = bpy.data.scenes.get(scene_name) if scene_name else getattr(bpy.context, "scene", None)
-    if scene is not None and _animation_scene_price_is_settled(scene):
-        _ANIMATION_PURCHASE_MONITOR["active"] = False
-        return None
-    _ANIMATION_PURCHASE_MONITOR_REGISTERED = True
-    return 3.0
-
-
-def _start_animation_purchase_monitor(scene):
-    global _ANIMATION_PURCHASE_MONITOR_REGISTERED
-    if scene is None:
-        return
-    _ANIMATION_PURCHASE_MONITOR.update(
-        {
-            "active": True,
-            "scene_name": str(getattr(scene, "name", "") or ""),
-            "started_at": time.time(),
-            "timeout_sec": 240.0,
-        }
-    )
-    if not _ANIMATION_PURCHASE_MONITOR_REGISTERED:
-        try:
-            bpy.app.timers.register(_animation_purchase_monitor_timer, first_interval=3.0)
-            _ANIMATION_PURCHASE_MONITOR_REGISTERED = True
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka animation: failed registering purchase monitor", exc_info=True)
 
 
 def _animation_area_text(value):
@@ -4038,13 +3992,6 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
         layout = self.layout
         layout.label(text="Confirm Final Animation Render", icon="RENDER_ANIMATION")
         layout.label(text=f"Full Quality data: {_animation_price_text(getattr(self, 'confirm_tile_price_eur', 0.0))}", icon="TEXTURE")
-        custom_licence = float(getattr(self, "confirm_custom_animation_licence_eur", 0.0) or 0.0)
-        if custom_licence > 0.000001:
-            custom_segments = int(getattr(self, "confirm_custom_animation_licence_segments", 0) or 0)
-            layout.label(
-                text=f"Custom animation licence: {_animation_price_text(custom_licence)} ({custom_segments} payable resolves)",
-                icon="URL",
-            )
         final_price = float(getattr(self, "confirm_price_eur", 0.0) or 0.0)
         if final_price > 0.000001:
             layout.label(text=f"Final Price: {_animation_price_text(final_price)}", icon="SOLO_ON")
@@ -5068,7 +5015,7 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             if float(current_price or 0.0) > 0.000001:
                 return fail(
                     self,
-                    "Buy Animation before starting Final Animation Render.",
+                    "Render Animation before starting Final Animation Render.",
                     code=ErrorCode.PAYMENT_CHECKOUT_FAILED,
                     logger=logger,
                 )
@@ -5413,8 +5360,8 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
 
 class PLANETKA_OT_AnimationCheckout(bpy.types.Operator):
     bl_idname = "planetka.animation_checkout"
-    bl_label = "Buy Animation"
-    bl_description = "Open Planetka payment for the current Full Quality animation licence"
+    bl_label = "Render Animation"
+    bl_description = "Open Planetka payment for the current Full Quality animation render"
 
     def _checkout_error_message(self, exc):
         payload = getattr(exc, "payload", None)
@@ -5528,7 +5475,6 @@ class PLANETKA_OT_AnimationCheckout(bpy.types.Operator):
                 code=ErrorCode.PAYMENT_CHECKOUT_FAILED,
                 logger=logger,
             )
-        _start_animation_purchase_monitor(scene)
         self.report({'INFO'}, "Planetka animation payment page opened in browser.")
         return {'FINISHED'}
 
@@ -5703,13 +5649,6 @@ class PLANETKA_OT_AnimationRenderCostBreakdown(bpy.types.Operator):
                 ),
                 icon="CHECKMARK",
             )
-        custom_licence = float(breakdown.get("custom_animation_licence_eur", 0.0) or 0.0)
-        if custom_licence > 0.000001:
-            custom_segments = int(breakdown.get("custom_animation_licence_segments", 0) or 0)
-            header.label(
-                text=f"Custom animation licence: {_animation_price_text(custom_licence)} ({custom_segments} payable resolves)",
-                icon="URL",
-            )
         final_price = float(breakdown.get("price_eur", 0.0) or 0.0)
         if final_price > 0.000001:
             header.label(text=f"Final Price: {_animation_price_text(final_price)}", icon="SOLO_ON")
@@ -5742,9 +5681,6 @@ class PLANETKA_OT_AnimationRenderCostBreakdown(bpy.types.Operator):
                 ),
                 icon="RENDER_ANIMATION",
             )
-            segment_fee = float(segment.get("custom_animation_licence_eur", 0.0) or 0.0)
-            if segment_fee > 0.000001:
-                segment_box.label(text=f"Custom animation licence: {_animation_price_text(segment_fee)}", icon="URL")
             rows = list(segment.get("tiles", ()) or ())
             if not rows:
                 segment_box.label(text="No tiles in this segment.", icon="INFO")

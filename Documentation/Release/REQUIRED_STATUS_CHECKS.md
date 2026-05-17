@@ -30,7 +30,7 @@ The bounded release profile includes:
 - admin analytics query-token rejection is incomplete
 - legacy magic-link/device-login routes reappear
 - legacy download-throttle / claim-workflow markers reappear
-- forbidden legacy vars reappear in `wrangler.toml`
+- forbidden legacy vars reappear in any split Worker wrangler config
 - required fallback assets are missing or deprecated `red_pixel_20.exr` returns
 - telemetry retention cleanup wiring is missing
 
