@@ -28,6 +28,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     billableUnknownOps,
     billableCostTotal,
     quoteQueueHealth,
+    workerOverloadHealth,
   } = context || {};
 
   const safeTopLine = snapshotTopLine && typeof snapshotTopLine === "object" ? snapshotTopLine : {};
@@ -62,6 +63,13 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
   const safeQuoteQueueBatch = safeQuoteQueueHealth.last_processed_batch && typeof safeQuoteQueueHealth.last_processed_batch === "object"
     ? safeQuoteQueueHealth.last_processed_batch
     : null;
+  const safeWorkerOverloadHealth = workerOverloadHealth && typeof workerOverloadHealth === "object" ? workerOverloadHealth : {};
+  const safeWorkerOverloadState = safeWorkerOverloadHealth.monitor_state && typeof safeWorkerOverloadHealth.monitor_state === "object"
+    ? safeWorkerOverloadHealth.monitor_state
+    : null;
+  const safeWorkerOverloadLatest = safeWorkerOverloadHealth.latest && typeof safeWorkerOverloadHealth.latest === "object"
+    ? safeWorkerOverloadHealth.latest
+    : null;
   const fmtDuration = (ms) => {
     const numeric = Number(ms);
     if (!Number.isFinite(numeric) || numeric <= 0) return "-";
@@ -81,6 +89,13 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
   const quoteQueueBatchHtml = safeQuoteQueueBatch
     ? `${escapeHtml(String(safeQuoteQueueBatch.status || "-"))}<br><span class="muted">${escapeHtml(fmtDuration(safeQuoteQueueBatch.duration_ms))}</span>`
     : "-";
+  const workerOverloadLatestHtml = safeWorkerOverloadLatest
+    ? `${escapeHtml(String(safeWorkerOverloadLatest.worker_name || "-"))}<br><span class="muted">${escapeHtml(String(safeWorkerOverloadLatest.status || ""))}</span>`
+    : "None";
+  const workerOverloadRecentRowsHtml = (Array.isArray(safeWorkerOverloadHealth.recent) ? safeWorkerOverloadHealth.recent : [])
+    .slice(0, 20)
+    .map((row) => `<tr><td>${escapeHtml(String(row && row.created_at || ""))}</td><td>${escapeHtml(String(row && row.worker_name || ""))}</td><td>${escapeHtml(String(row && row.status || ""))}</td><td>${escapeHtml(fmtIntLocal(row && row.request_count))}</td><td>${escapeHtml(fmtIntLocal(row && row.error_count))}</td><td>${escapeHtml(String(row && row.alerted_at || ""))}</td></tr>`)
+    .join("");
   return `
 <!doctype html>
 <html>
@@ -175,6 +190,17 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
   </div>
 
   <div class="section">
+    <h3>Worker Overload Monitor</h3>
+    <div class="grid">
+      <div class="card"><div class="label">Overloads (24h)</div><div id="workerOverload24h" class="value">${escapeHtml(fmtIntLocal(safeWorkerOverloadHealth.count_24h))}</div></div>
+      <div class="card"><div class="label">Overloads (7d)</div><div id="workerOverload7d" class="value">${escapeHtml(fmtIntLocal(safeWorkerOverloadHealth.count_7d))}</div></div>
+      <div class="card"><div class="label">Latest Overload</div><div id="workerOverloadLatest" class="value">${workerOverloadLatestHtml}</div><div id="workerOverloadLatestMeta" class="subvalue">${escapeHtml(safeWorkerOverloadLatest ? String(safeWorkerOverloadLatest.event_window_start || "") : "")}</div></div>
+      <div class="card"><div class="label">Monitor Last Checked</div><div id="workerOverloadChecked" class="value">${escapeHtml(String(safeWorkerOverloadState && safeWorkerOverloadState.last_checked_at || "-"))}</div><div id="workerOverloadState" class="subvalue">${escapeHtml(String(safeWorkerOverloadState && safeWorkerOverloadState.last_error || "OK"))}</div></div>
+    </div>
+    <table id="workerOverloadTable"><thead><tr><th>Detected</th><th>Worker</th><th>Status</th><th>Requests</th><th>Errors</th><th>Alerted</th></tr></thead><tbody>${workerOverloadRecentRowsHtml}</tbody></table>
+  </div>
+
+  <div class="section">
     <h3>Active Users (Last 10 min)</h3>
     <table id="activeUsersTable"><thead><tr><th>Email</th><th>Requests</th><th>Resolves</th><th>GB</th><th>Last seen</th></tr></thead><tbody>${serverActiveUsersRowsHtml}</tbody></table>
   </div>
@@ -234,6 +260,11 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
 	    const tileMapWindowEl = document.getElementById("tileMapWindow");
 	    const refreshBtn = document.getElementById("refresh");
     const setText = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    const escapeHtml = (value) => String(value || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
     window.addEventListener("error", (event) => {
       const message = "Runtime error: " + String(event && event.message || "unknown_error");
       if (statusEl) {
@@ -385,6 +416,34 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
       } else {
         setText("quoteQueueBatchTiming", "-");
         setText("quoteQueueBatchMeta", "");
+      }
+    }
+    function renderWorkerOverloadHealth(payload) {
+      const data = payload && typeof payload === "object" ? payload : {};
+      const state = data.monitor_state && typeof data.monitor_state === "object" ? data.monitor_state : null;
+      const latest = data.latest && typeof data.latest === "object" ? data.latest : null;
+      setText("workerOverload24h", fmtInt(data.count_24h));
+      setText("workerOverload7d", fmtInt(data.count_7d));
+      if (latest) {
+        setText("workerOverloadLatest", String(latest.worker_name || "-") + " / " + String(latest.status || ""));
+        setText("workerOverloadLatestMeta", String(latest.event_window_start || ""));
+      } else {
+        setText("workerOverloadLatest", "None");
+        setText("workerOverloadLatestMeta", "");
+      }
+      setText("workerOverloadChecked", state ? String(state.last_checked_at || "-") : "-");
+      setText("workerOverloadState", state ? String(state.last_error || "OK") : "Not checked yet");
+      const tbody = document.querySelector("#workerOverloadTable tbody");
+      if (tbody) {
+        const rows = Array.isArray(data.recent) ? data.recent : [];
+        tbody.innerHTML = rows.slice(0, 20).map((row) => "<tr>"
+          + "<td>" + escapeHtml(String(row.created_at || "")) + "</td>"
+          + "<td>" + escapeHtml(String(row.worker_name || "")) + "</td>"
+          + "<td>" + escapeHtml(String(row.status || "")) + "</td>"
+          + "<td>" + fmtInt(row.request_count) + "</td>"
+          + "<td>" + fmtInt(row.error_count) + "</td>"
+          + "<td>" + escapeHtml(String(row.alerted_at || "")) + "</td>"
+          + "</tr>").join("");
       }
     }
     const TILE_COLOR_ACTIVE = "#60a5fa";
@@ -642,6 +701,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         setText("hitRatio", hitRatio.toFixed(2) + "%");
         setText("resolveCount", fmtInt(s.tagged_resolve_count));
         renderQuoteQueueHealth(data.quote_queue_health || {});
+        renderWorkerOverloadHealth(data.worker_overload_health || {});
         const refreshHealth = data.auth_refresh_health || {};
         const refreshTotal = Number(refreshHealth.total_count || 0);
         const refreshFailures = Number(refreshHealth.failure_count || 0);

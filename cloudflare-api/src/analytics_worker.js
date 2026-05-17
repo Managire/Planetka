@@ -112,6 +112,10 @@ import {
 import {
   handleTileEventQueueBatch,
 } from "./worker/tile_event_queue.js";
+import {
+  collectWorkerOverloadHealth,
+  runWorkerOverloadMonitor,
+} from "./worker/worker_overload_monitor.js";
 
 const encoder = new TextEncoder();
 const ADDON_ID = "planetka";
@@ -1983,6 +1987,7 @@ const ADMIN_ANALYTICS_DEPS = {
   collectAnalyticsSnapshot: (db, minutes, planFilter, liveTileMapWindowMinutes, env) =>
     collectAnalyticsSnapshotQuery(db, minutes, planFilter, liveTileMapWindowMinutes, env, ANALYTICS_QUERY_DEPS),
   collectQuoteQueueHealth: (db) => collectQuoteQueueHealthQuery(db, ANALYTICS_QUERY_DEPS),
+  collectWorkerOverloadHealth: (db) => collectWorkerOverloadHealth(db, WORKER_OVERLOAD_MONITOR_DEPS),
   corsHeaders,
   DEFAULT_ADMIN_ANALYTICS_TILE_MAP_KEY,
   DEFAULT_ANALYTICS_WINDOW_MINUTES,
@@ -2020,6 +2025,17 @@ const ADMIN_ANALYTICS_DEPS = {
   requireDb,
   ensureCreditTables,
   BYTES_PER_GB: 1024 * 1024 * 1024,
+};
+
+const WORKER_OVERLOAD_MONITOR_DEPS = {
+  clampNonNegativeInt,
+  dbAll,
+  dbGet,
+  dbMetaChanges,
+  dbRun,
+  nowIso,
+  parseNonNegativeInteger,
+  sendOpsAlertEmail,
 };
 
 const ADMIN_SESSION_DEPS = {
@@ -2204,11 +2220,22 @@ export default {
     const runStartedAt = nowIso();
     ctx.waitUntil((async () => {
       const db = requireDb(env);
-      const maintenance = await runScheduledMaintenanceJobs(db, env, runStartedAt, MAINTENANCE_JOB_DEPS);
-      const analyticsSnapshotSummary = await buildAnalyticsSnapshotMatrix(db, env, ADMIN_ANALYTICS_DEPS);
-      const analyticsUsersSnapshot = await buildAnalyticsUsersSnapshot(db, env, ADMIN_ANALYTICS_DEPS);
+      const cron = String(controller && controller.cron || "").trim();
+      const overloadMonitor = await runWorkerOverloadMonitor(db, env, WORKER_OVERLOAD_MONITOR_DEPS);
+      let maintenance = null;
+      let analyticsSnapshotSummary = null;
+      let analyticsUsersSnapshot = null;
+      const scheduledTime = Number(controller && controller.scheduledTime || Date.now());
+      const scheduledDate = new Date(Number.isFinite(scheduledTime) ? scheduledTime : Date.now());
+      if (scheduledDate.getUTCMinutes() === 0) {
+        maintenance = await runScheduledMaintenanceJobs(db, env, runStartedAt, MAINTENANCE_JOB_DEPS);
+        analyticsSnapshotSummary = await buildAnalyticsSnapshotMatrix(db, env, ADMIN_ANALYTICS_DEPS);
+        analyticsUsersSnapshot = await buildAnalyticsUsersSnapshot(db, env, ADMIN_ANALYTICS_DEPS);
+      }
       console.log("analytics_worker.scheduled.complete", JSON.stringify({
-        scheduled_at: new Date(controller.scheduledTime || Date.now()).toISOString(),
+        scheduled_at: scheduledDate.toISOString(),
+        cron,
+        overload_monitor: overloadMonitor,
         maintenance,
         analytics_snapshot_summary: analyticsSnapshotSummary,
         analytics_users_snapshot: analyticsUsersSnapshot,

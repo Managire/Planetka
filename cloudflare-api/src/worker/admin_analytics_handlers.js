@@ -113,12 +113,25 @@ export async function handleAdminAnalyticsData(request, env, deps) {
         };
       }
     }
+    let workerOverloadHealth = { available: false, error: "worker_overload_health_unavailable" };
+    if (typeof deps.collectWorkerOverloadHealth === "function") {
+      try {
+        workerOverloadHealth = await deps.collectWorkerOverloadHealth(db);
+      } catch (error) {
+        workerOverloadHealth = {
+          available: false,
+          error: "worker_overload_health_failed",
+          message: String(error && error.message || "worker_overload_health_failed"),
+        };
+      }
+    }
     return deps.json(
       {
         ok: true,
         admin_email: String(user.email || ""),
         ...snapshot,
         quote_queue_health: quoteQueueHealth,
+        worker_overload_health: workerOverloadHealth,
       },
       200,
       env,
@@ -693,6 +706,7 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
   const { user, tokenSource } = auth;
   let initialSnapshot = null;
   let initialQuoteQueueHealth = null;
+  let initialWorkerOverloadHealth = null;
   try {
     initialSnapshot = await deps.loadAnalyticsSnapshot(env, 10080, "all", 10);
     if (!initialSnapshot || deps.isAnalyticsSnapshotStale(initialSnapshot)) {
@@ -723,6 +737,17 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
         };
       }
     }
+    if (typeof deps.collectWorkerOverloadHealth === "function") {
+      try {
+        initialWorkerOverloadHealth = await deps.collectWorkerOverloadHealth(auth.db);
+      } catch (error) {
+        initialWorkerOverloadHealth = {
+          available: false,
+          error: "worker_overload_health_failed",
+          message: String(error && error.message || "worker_overload_health_failed"),
+        };
+      }
+    }
   } catch (error) {
     console.error(
       "planetka.admin.analytics.page_snapshot_failed",
@@ -749,6 +774,9 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
     : {};
   const snapshotQuoteQueueHealth = initialQuoteQueueHealth
     || initialSnapshot && initialSnapshot.quote_queue_health
+    || {};
+  const snapshotWorkerOverloadHealth = initialWorkerOverloadHealth
+    || initialSnapshot && initialSnapshot.worker_overload_health
     || {};
   const fmtInt = (value) => fmtIntLocal(value, deps.parseNonNegativeInteger);
   const fmtGb = (value) => fmtGbLocal(value, deps.parseNonNegativeInteger, deps.BYTES_PER_GB);
@@ -840,6 +868,7 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
     billableUnknownOps,
     billableCostTotal,
     quoteQueueHealth: snapshotQuoteQueueHealth,
+    workerOverloadHealth: snapshotWorkerOverloadHealth,
   });
   if (tokenSource === "bearer") {
     const authHeader = String(request.headers.get("Authorization") || "");
