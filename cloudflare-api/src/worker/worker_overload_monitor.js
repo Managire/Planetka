@@ -1,4 +1,4 @@
-const DEFAULT_WORKER_OVERLOAD_MONITOR_WORKERS = "planetka-auth,planetka-tiles,planetka-commerce,planetka-analytics";
+const DEFAULT_WORKER_OVERLOAD_MONITOR_WORKERS = "planetka-auth,planetka-tiles,planetka-commerce,planetka-analytics,planetka-maps";
 const DEFAULT_WORKER_OVERLOAD_LOOKBACK_MINUTES = 15;
 const DEFAULT_WORKER_OVERLOAD_RECENT_LIMIT = 20;
 

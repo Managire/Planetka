@@ -4,12 +4,28 @@ function resolveLegalDocumentConfig(path, env) {
     return {
       key: String(env.LEGAL_TERMS_KEY || "legal/terms-of-service.pdf").trim() || "legal/terms-of-service.pdf",
       fileName: "Planetka-Terms-of-Service.pdf",
+      contentType: "application/pdf",
     };
   }
   if (normalized === "/legal/privacy-policy.pdf") {
     return {
       key: String(env.LEGAL_PRIVACY_KEY || "legal/privacy-policy.pdf").trim() || "legal/privacy-policy.pdf",
       fileName: "Planetka-Privacy-Policy.pdf",
+      contentType: "application/pdf",
+    };
+  }
+  if (normalized === "/legal/using-planetka-commercially.txt") {
+    return {
+      key: String(env.LEGAL_COMMERCIAL_USE_KEY || "legal/using-planetka-commercially.txt").trim() || "legal/using-planetka-commercially.txt",
+      fileName: "Planetka-Using-Planetka-Commercially.txt",
+      contentType: "text/plain; charset=utf-8",
+    };
+  }
+  if (normalized === "/legal/attribution-for-user-renders.txt") {
+    return {
+      key: String(env.LEGAL_ATTRIBUTION_KEY || "legal/attribution-for-user-renders.txt").trim() || "legal/attribution-for-user-renders.txt",
+      fileName: "Planetka-Attribution-for-User-Renders.txt",
+      contentType: "text/plain; charset=utf-8",
     };
   }
   return null;
@@ -89,7 +105,7 @@ export async function handleLegalDocumentRequest(request, env, path, deps) {
   }
   const headers = new Headers({
     ...deps.corsHeaders(env),
-    "Content-Type": "application/pdf",
+    "Content-Type": doc.contentType || "application/octet-stream",
     "Content-Disposition": `inline; filename="${doc.fileName}"`,
     "Cache-Control": "public, max-age=300, s-maxage=86400",
   });

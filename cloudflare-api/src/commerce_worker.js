@@ -3676,6 +3676,7 @@ async function dispatchCommerceRoute(request, env, path) {
       return null;
     case "/credits/page-assets/region-pack-map.js":
     case "/credits/page-assets/region-pack-dynamic-map.js":
+    case "/credits/page-assets/checkout-frisco4k.jpg":
     case "/credits/page-assets/checkout-planet.jpg":
       if (request.method === "GET" || request.method === "HEAD") return await handleCreditRegionPackPageAssetRoute(request, env, TILE_ROUTE_DEPS);
       return null;

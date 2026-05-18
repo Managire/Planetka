@@ -116,6 +116,9 @@ import {
   collectWorkerOverloadHealth,
   runWorkerOverloadMonitor,
 } from "./worker/worker_overload_monitor.js";
+import {
+  collectMapServiceBusyHealth,
+} from "./worker/map_service_busy_monitor.js";
 
 const encoder = new TextEncoder();
 const ADDON_ID = "planetka";
@@ -1986,6 +1989,7 @@ const ADMIN_ANALYTICS_DEPS = {
   buildAnalyticsUsersSnapshot: (db, env) => buildAnalyticsUsersSnapshot(db, env, ADMIN_ANALYTICS_DEPS),
   collectAnalyticsSnapshot: (db, minutes, planFilter, liveTileMapWindowMinutes, env) =>
     collectAnalyticsSnapshotQuery(db, minutes, planFilter, liveTileMapWindowMinutes, env, ANALYTICS_QUERY_DEPS),
+  collectMapServiceBusyHealth: (db) => collectMapServiceBusyHealth(db, WORKER_OVERLOAD_MONITOR_DEPS),
   collectQuoteQueueHealth: (db) => collectQuoteQueueHealthQuery(db, ANALYTICS_QUERY_DEPS),
   collectWorkerOverloadHealth: (db) => collectWorkerOverloadHealth(db, WORKER_OVERLOAD_MONITOR_DEPS),
   corsHeaders,

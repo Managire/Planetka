@@ -29,6 +29,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     billableCostTotal,
     quoteQueueHealth,
     workerOverloadHealth,
+    mapServiceBusyHealth,
   } = context || {};
 
   const safeTopLine = snapshotTopLine && typeof snapshotTopLine === "object" ? snapshotTopLine : {};
@@ -70,6 +71,10 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
   const safeWorkerOverloadLatest = safeWorkerOverloadHealth.latest && typeof safeWorkerOverloadHealth.latest === "object"
     ? safeWorkerOverloadHealth.latest
     : null;
+  const safeMapServiceBusyHealth = mapServiceBusyHealth && typeof mapServiceBusyHealth === "object" ? mapServiceBusyHealth : {};
+  const safeMapServiceBusyActive = safeMapServiceBusyHealth.active && typeof safeMapServiceBusyHealth.active === "object"
+    ? safeMapServiceBusyHealth.active
+    : null;
   const fmtDuration = (ms) => {
     const numeric = Number(ms);
     if (!Number.isFinite(numeric) || numeric <= 0) return "-";
@@ -95,6 +100,10 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
   const workerOverloadRecentRowsHtml = (Array.isArray(safeWorkerOverloadHealth.recent) ? safeWorkerOverloadHealth.recent : [])
     .slice(0, 20)
     .map((row) => `<tr><td>${escapeHtml(String(row && row.created_at || ""))}</td><td>${escapeHtml(String(row && row.worker_name || ""))}</td><td>${escapeHtml(String(row && row.status || ""))}</td><td>${escapeHtml(fmtIntLocal(row && row.request_count))}</td><td>${escapeHtml(fmtIntLocal(row && row.error_count))}</td><td>${escapeHtml(String(row && row.alerted_at || ""))}</td></tr>`)
+    .join("");
+  const mapServiceBusyRowsHtml = (Array.isArray(safeMapServiceBusyHealth.warnings) ? safeMapServiceBusyHealth.warnings : [])
+    .slice(0, 30)
+    .map((row) => `<tr><td>${escapeHtml(String(row && row.first_seen_at || ""))}</td><td>${escapeHtml(String(row && row.status || ""))}</td><td>${escapeHtml(fmtAge(row && (row.current_duration_seconds ?? row.duration_seconds)))}</td><td>${escapeHtml(fmtIntLocal(row && row.event_count))}</td><td>${escapeHtml(String(row && row.last_product_id || ""))}</td><td>${escapeHtml(String(row && row.last_path || ""))}</td><td>${escapeHtml(String(row && row.last_error || ""))}</td></tr>`)
     .join("");
   return `
 <!doctype html>
@@ -198,6 +207,15 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
       <div class="card"><div class="label">Monitor Last Checked</div><div id="workerOverloadChecked" class="value">${escapeHtml(String(safeWorkerOverloadState && safeWorkerOverloadState.last_checked_at || "-"))}</div><div id="workerOverloadState" class="subvalue">${escapeHtml(String(safeWorkerOverloadState && safeWorkerOverloadState.last_error || "OK"))}</div></div>
     </div>
     <table id="workerOverloadTable"><thead><tr><th>Detected</th><th>Worker</th><th>Status</th><th>Requests</th><th>Errors</th><th>Alerted</th></tr></thead><tbody>${workerOverloadRecentRowsHtml}</tbody></table>
+  </div>
+
+  <div class="section">
+    <h3>Map Service Busy Warnings</h3>
+    <div class="grid">
+      <div class="card"><div class="label">Warning Periods</div><div id="mapBusyWarningCount" class="value">${escapeHtml(fmtIntLocal(safeMapServiceBusyHealth.warning_count))}</div><div class="subvalue">Periods lasting at least 60 seconds</div></div>
+      <div class="card"><div class="label">Active Period</div><div id="mapBusyActive" class="value">${escapeHtml(safeMapServiceBusyActive ? fmtAge(safeMapServiceBusyActive.current_duration_seconds) : "None")}</div><div id="mapBusyActiveMeta" class="subvalue">${escapeHtml(safeMapServiceBusyActive ? String(safeMapServiceBusyActive.first_seen_at || "") : "")}</div></div>
+    </div>
+    <table id="mapBusyTable"><thead><tr><th>First Seen</th><th>Status</th><th>Duration</th><th>Events</th><th>Product</th><th>Path</th><th>Last Error</th></tr></thead><tbody>${mapServiceBusyRowsHtml}</tbody></table>
   </div>
 
   <div class="section">
@@ -443,6 +461,31 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
           + "<td>" + fmtInt(row.request_count) + "</td>"
           + "<td>" + fmtInt(row.error_count) + "</td>"
           + "<td>" + escapeHtml(String(row.alerted_at || "")) + "</td>"
+          + "</tr>").join("");
+      }
+    }
+    function renderMapServiceBusyHealth(payload) {
+      const data = payload && typeof payload === "object" ? payload : {};
+      const active = data.active && typeof data.active === "object" ? data.active : null;
+      setText("mapBusyWarningCount", fmtInt(data.warning_count));
+      if (active) {
+        setText("mapBusyActive", fmtAge(active.current_duration_seconds || active.duration_seconds));
+        setText("mapBusyActiveMeta", String(active.first_seen_at || ""));
+      } else {
+        setText("mapBusyActive", "None");
+        setText("mapBusyActiveMeta", "");
+      }
+      const tbody = document.querySelector("#mapBusyTable tbody");
+      if (tbody) {
+        const rows = Array.isArray(data.warnings) ? data.warnings : [];
+        tbody.innerHTML = rows.slice(0, 30).map((row) => "<tr>"
+          + "<td>" + escapeHtml(String(row.first_seen_at || "")) + "</td>"
+          + "<td>" + escapeHtml(String(row.status || "")) + "</td>"
+          + "<td>" + fmtAge(row.current_duration_seconds || row.duration_seconds) + "</td>"
+          + "<td>" + fmtInt(row.event_count) + "</td>"
+          + "<td>" + escapeHtml(String(row.last_product_id || "")) + "</td>"
+          + "<td>" + escapeHtml(String(row.last_path || "")) + "</td>"
+          + "<td>" + escapeHtml(String(row.last_error || "")) + "</td>"
           + "</tr>").join("");
       }
     }
@@ -702,6 +745,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         setText("resolveCount", fmtInt(s.tagged_resolve_count));
         renderQuoteQueueHealth(data.quote_queue_health || {});
         renderWorkerOverloadHealth(data.worker_overload_health || {});
+        renderMapServiceBusyHealth(data.map_service_busy_health || {});
         const refreshHealth = data.auth_refresh_health || {};
         const refreshTotal = Number(refreshHealth.total_count || 0);
         const refreshFailures = Number(refreshHealth.failure_count || 0);

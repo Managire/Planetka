@@ -33,9 +33,14 @@ h1{font-size:34px;margin:0 0 8px}h2{font-size:22px;margin:0 0 6px}.muted{color:v
 /* Variant 1: puzzle pop-in */
 .puzzle .tile{transform-box:fill-box;transform-origin:center;animation:puzzleIn 1.35s cubic-bezier(.18,.9,.2,1) both;animation-delay:calc(var(--i) * 18ms)}
 @keyframes puzzleIn{0%{opacity:0;transform:scale(.55) rotate(-2deg);filter:blur(3px)}58%{opacity:.72;transform:scale(1.04) rotate(.5deg);filter:blur(0)}100%{opacity:.58;transform:scale(1) rotate(0)}}
+/* Variant 5: puzzle pop-in with scattered random order */
+.puzzle-random .tile{transform-box:fill-box;transform-origin:center;animation:puzzleIn .337s cubic-bezier(.18,.9,.2,1) both;animation-delay:calc(var(--rnd) * 4.5ms)}
 /* Variant 2: draw grid first, then color wash */
 .draw-then-fill .outline-only{stroke-dasharray:160;stroke-dashoffset:160;animation:drawLine .85s ease-out both;animation-delay:calc(var(--i) * 8ms)}
 .draw-then-fill .tile{opacity:0;animation:colorWash .85s ease-out both;animation-delay:calc(.65s + var(--i) * 8ms)}
+/* Variant 6: draw grid first, then color wash with scattered random order */
+.draw-then-fill-random .outline-only{stroke-dasharray:160;stroke-dashoffset:160;animation:drawLine .85s ease-out both;animation-delay:calc(var(--rnd) * 8ms)}
+.draw-then-fill-random .tile{opacity:0;animation:colorWash .85s ease-out both;animation-delay:calc(.65s + var(--rnd) * 8ms)}
 @keyframes drawLine{to{stroke-dashoffset:0}}
 @keyframes colorWash{0%{opacity:0;filter:saturate(.4)}100%{opacity:.58;filter:saturate(1)}}
 /* Variant 3: wave scan from west to east */
@@ -60,6 +65,8 @@ const variants=[
   {id:'draw-then-fill', title:'Option B - Draw Lines, Then Fill', note:'More technical/professional: grid outlines draw first, then colors fade in.'},
   {id:'wave', title:'Option C - Geographic Wave', note:'Tiles sweep from west to east with a subtle wave. Good for large maps.'},
   {id:'cinematic', title:'Option D - Soft Reveal', note:'Subtle premium feel: a light sweep and gentle tile fade. Least distracting.'},
+  {id:'puzzle-random', title:'Option E - Random Puzzle Pop-in', note:'Same feel as Option A, twice as fast, with tiles appearing in a scattered random order.'},
+  {id:'draw-then-fill-random', title:'Option F - Random Draw Lines, Then Fill', note:'Same as Option B, but outlines and colors appear in scattered random tile order.'},
 ];
 const tiles=[];
 const cols=23, rows=11;
@@ -74,10 +81,18 @@ for(let r=0;r<rows;r++){
     tiles.push({x:18+c*14,y:24+r*12,w:14,h:12,row:r,col:c,status});
   }
 }
+function fract(value){return value-Math.floor(value)}
+tiles
+  .map((tile,index)=>({
+    index,
+    order:fract(Math.sin((tile.col+1)*12.9898+(tile.row+1)*78.233)*43758.5453)
+  }))
+  .sort((a,b)=>a.order-b.order)
+  .forEach((entry,rank)=>{tiles[entry.index].rnd=rank});
 function landShape(){return `<path class="land" d="M20 64 C62 31 122 22 178 42 C216 55 233 89 282 82 C334 74 392 56 443 69 C520 89 520 151 465 170 C424 185 370 175 325 181 C271 188 240 202 190 188 C141 173 119 148 78 147 C44 147 17 127 20 64 Z"/><path class="land" d="M398 38 C430 23 475 28 498 56 C523 89 496 113 463 107 C431 102 386 74 398 38 Z"/><path class="river" d="M100 74 C151 60 201 96 256 91 C302 88 338 66 392 82"/><path class="border" d="M70 53 C115 78 161 84 204 73"/><path class="border" d="M238 91 C262 124 286 151 332 179"/><path class="border" d="M360 72 C379 96 415 123 462 106"/>`}
 function svgFor(variant){
-  const drawLines = variant.id==='draw-then-fill';
-  const rects = tiles.map((t,i)=>`${drawLines?`<rect class="outline-only" x="${t.x}" y="${t.y}" width="${t.w}" height="${t.h}" style="--i:${i};--row:${t.row};--col:${t.col}"></rect>`:''}<rect class="tile ${t.status}" x="${t.x}" y="${t.y}" width="${t.w}" height="${t.h}" style="--i:${i};--row:${t.row};--col:${t.col}"></rect>`).join('');
+  const drawLines = variant.id==='draw-then-fill' || variant.id==='draw-then-fill-random';
+  const rects = tiles.map((t,i)=>`${drawLines?`<rect class="outline-only" x="${t.x}" y="${t.y}" width="${t.w}" height="${t.h}" style="--i:${i};--rnd:${t.rnd};--row:${t.row};--col:${t.col}"></rect>`:''}<rect class="tile ${t.status}" x="${t.x}" y="${t.y}" width="${t.w}" height="${t.h}" style="--i:${i};--rnd:${t.rnd};--row:${t.row};--col:${t.col}"></rect>`).join('');
   return `<svg viewBox="0 0 360 180" role="img" aria-label="${variant.title}"><defs><linearGradient id="sweep-${variant.id}" x1="0" x2="1"><stop offset="0" stop-color="transparent"/><stop offset=".5" stop-color="white" stop-opacity=".35"/><stop offset="1" stop-color="transparent"/></linearGradient></defs><rect x="0" y="0" width="360" height="180" fill="#214b88"/>${landShape()}<rect class="map-bg-overlay" x="-120" y="0" width="170" height="180" fill="url(#sweep-${variant.id})"/>${rects}</svg>`
 }
 function render(){

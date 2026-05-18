@@ -131,6 +131,18 @@ export async function handleAdminAnalyticsData(request, env, deps) {
         };
       }
     }
+    let mapServiceBusyHealth = { available: false, error: "map_service_busy_health_unavailable" };
+    if (typeof deps.collectMapServiceBusyHealth === "function") {
+      try {
+        mapServiceBusyHealth = await deps.collectMapServiceBusyHealth(db);
+      } catch (error) {
+        mapServiceBusyHealth = {
+          available: false,
+          error: "map_service_busy_health_failed",
+          message: String(error && error.message || "map_service_busy_health_failed"),
+        };
+      }
+    }
     return deps.json(
       {
         ok: true,
@@ -138,6 +150,7 @@ export async function handleAdminAnalyticsData(request, env, deps) {
         ...snapshot,
         quote_queue_health: quoteQueueHealth,
         worker_overload_health: workerOverloadHealth,
+        map_service_busy_health: mapServiceBusyHealth,
       },
       200,
       env,
@@ -713,6 +726,7 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
   let initialSnapshot = null;
   let initialQuoteQueueHealth = null;
   let initialWorkerOverloadHealth = null;
+  let initialMapServiceBusyHealth = null;
   try {
     initialSnapshot = await deps.loadAnalyticsSnapshot(env, 10080, "all", 10);
     if (!initialSnapshot || deps.isAnalyticsSnapshotStale(initialSnapshot)) {
@@ -754,6 +768,17 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
         };
       }
     }
+    if (typeof deps.collectMapServiceBusyHealth === "function") {
+      try {
+        initialMapServiceBusyHealth = await deps.collectMapServiceBusyHealth(auth.db);
+      } catch (error) {
+        initialMapServiceBusyHealth = {
+          available: false,
+          error: "map_service_busy_health_failed",
+          message: String(error && error.message || "map_service_busy_health_failed"),
+        };
+      }
+    }
   } catch (error) {
     console.error(
       "planetka.admin.analytics.page_snapshot_failed",
@@ -783,6 +808,9 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
     || {};
   const snapshotWorkerOverloadHealth = initialWorkerOverloadHealth
     || initialSnapshot && initialSnapshot.worker_overload_health
+    || {};
+  const snapshotMapServiceBusyHealth = initialMapServiceBusyHealth
+    || initialSnapshot && initialSnapshot.map_service_busy_health
     || {};
   const fmtInt = (value) => fmtIntLocal(value, deps.parseNonNegativeInteger);
   const fmtGb = (value) => fmtGbLocal(value, deps.parseNonNegativeInteger, deps.BYTES_PER_GB);
@@ -875,6 +903,7 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
     billableCostTotal,
     quoteQueueHealth: snapshotQuoteQueueHealth,
     workerOverloadHealth: snapshotWorkerOverloadHealth,
+    mapServiceBusyHealth: snapshotMapServiceBusyHealth,
   });
   if (tokenSource === "bearer") {
     const authHeader = String(request.headers.get("Authorization") || "");

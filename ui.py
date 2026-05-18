@@ -1765,6 +1765,7 @@ def _draw_live_telemetry(layout, scene):
 
         preview_box = quality_box.box()
         preview_col = preview_box.column(align=True)
+        preview_col.label(text="Personal use", icon="USER")
         preview_estimate_bytes = _estimate_bytes_for_quality(estimates, "PREVIEW")
         preview_available_bytes = _estimate_available_bytes_for_quality(estimates, "PREVIEW")
         preview_factor = _quality_progress_factor(
@@ -1830,6 +1831,7 @@ def _draw_live_telemetry(layout, scene):
         )
 
         full_box = quality_box.box()
+        full_box.label(text="Commercial use", icon="SOLO_ON")
         full_button_row = full_box.row(align=True)
         full_button_row.scale_y = 1.1
         full_estimate_bytes = _estimate_bytes_for_quality(estimates, "FULL")
