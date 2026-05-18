@@ -1869,7 +1869,7 @@ def _draw_live_telemetry(layout, scene):
                 depress=(displayed_quality_mode == "FULL"),
             ).texture_quality_mode = "FULL"
         full_details = full_button_row.row(align=True)
-        full_details.enabled = bool(full_price_known and not active_view_scope)
+        full_details.enabled = bool(full_size_known)
         full_details.operator(
             "planetka.data_cost_breakdown",
             text="",

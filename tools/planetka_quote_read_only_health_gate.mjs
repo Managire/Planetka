@@ -13,6 +13,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -50,7 +51,7 @@ const FORBIDDEN_SYNC_PRICING_CALLS = [
   "regionPackPricingOwnershipContext",
 ];
 const DEFAULT_PRICING_VERSION = [
-  "d1-complete-map-state-v2",
+  "d1-complete-map-state-v3",
   "5.000000",
   "0",
   "75",
@@ -158,6 +159,69 @@ function staticPublicRouteSyncPricingGuard() {
   };
 }
 
+function staticRegionPackInvalidationDeltaGuard() {
+  const source = fs.readFileSync(CREDIT_ROUTES, "utf8");
+  const requiredSnippets = [
+    "if (!sourceProductId && deltaTileKeys.length && plan.size)",
+    "if (!sourceProductId && deltaTileKeys.length && productIds.length)",
+    "deltaTileKeys: sourceProductId ? [] : deltaTileKeys",
+  ];
+  const missing = requiredSnippets.filter((snippet) => !source.includes(snippet));
+  return {
+    ok: missing.length === 0,
+    required_snippets: requiredSnippets,
+    missing,
+  };
+}
+
+function staticBackgroundQuoteRecomputeGuard() {
+  const source = fs.readFileSync(CREDIT_ROUTES, "utf8");
+  const requiredSnippets = [
+    "const forceRecompute = Boolean(options && (options.forceRecompute || options.bypassStoredQuote))",
+    "cache: !forceRecompute",
+    "forceRecompute: true",
+    "Pricing must be derived from the complete current entitlement state",
+    "return null;",
+  ];
+  const missing = requiredSnippets.filter((snippet) => !source.includes(snippet));
+  return {
+    ok: missing.length === 0,
+    required_snippets: requiredSnippets,
+    missing,
+  };
+}
+
+function staticMapQuoteConsistencyGuard() {
+  const source = fs.readFileSync(CREDIT_ROUTES, "utf8");
+  const requiredSnippets = [
+    "function assertMapStateMatchesQuoteSummary",
+    "map_state_already_licenced_mismatch",
+    "map_state_partial_licence_mismatch",
+    "map_state_pre_discount_mismatch",
+    "assertMapStateMatchesQuoteSummary(productId, mapTiles, quote)",
+  ];
+  const missing = requiredSnippets.filter((snippet) => !source.includes(snippet));
+  return {
+    ok: missing.length === 0,
+    required_snippets: requiredSnippets,
+    missing,
+  };
+}
+
+function staticWorldMapDefaultLevelGuard() {
+  const source = fs.readFileSync(CREDIT_ROUTES, "utf8");
+  const requiredSnippets = [
+    'if (productId === "world") {\n    return 3;\n  }',
+    'if(productId==="world"&&available.includes(3))return 3;if(DATA.map_state_ready)',
+  ];
+  const missing = requiredSnippets.filter((snippet) => !source.includes(snippet));
+  return {
+    ok: missing.length === 0,
+    required_snippets: requiredSnippets,
+    missing,
+  };
+}
+
 class GuardedDb {
   constructor(name, options = {}) {
     this.name = String(name || "case");
@@ -165,6 +229,16 @@ class GuardedDb {
     this.email = String(options.email || "quote-health@planetka.local");
     this.token = String(options.token || `${this.name}_token`);
     this.tokenRegionPackId = String(options.tokenRegionPackId || "world");
+    this.account = {
+      user_id: this.userId,
+      user_email: this.email,
+      email: this.email,
+      account_type: "account",
+      pricing_version: options.pricingVersion ?? 0,
+      updated_at: options.updatedAt || "2026-05-15T00:00:00.000Z",
+      world_full_quality_unlocked_at: options.worldFullQualityUnlockedAt || "",
+      ...(options.account || {}),
+    };
     this.queries = [];
     this.jobs = [];
     this.quoteRows = new Map();
@@ -201,15 +275,7 @@ class GuardedDb {
       return null;
     }
     if (normalized.includes("from user_credit_accounts")) {
-      return {
-        user_id: this.userId,
-        user_email: this.email,
-        email: this.email,
-        account_type: "account",
-        pricing_version: 0,
-        updated_at: "2026-05-15T00:00:00.000Z",
-        world_full_quality_unlocked_at: "",
-      };
+      return { ...this.account };
     }
     if (normalized.includes("select id, email from users")) {
       return { id: this.userId, email: this.email };
@@ -305,6 +371,20 @@ function responseEmbeddedRegionPackData(text) {
   }
 }
 
+function assertEmbeddedScriptsAreSyntaxValid(htmlText, name) {
+  const scripts = Array.from(String(htmlText || "").matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi));
+  for (let index = 0; index < scripts.length; index += 1) {
+    const source = scripts[index][1] || "";
+    if (!source.trim()) {
+      continue;
+    }
+    const filePath = path.join("/tmp", `planetka_${String(name || "page").replace(/[^a-z0-9_-]+/gi, "_")}_script_${index}.js`);
+    fs.writeFileSync(filePath, source, "utf8");
+    execFileSync(process.execPath, ["--check", filePath], { stdio: "pipe" });
+  }
+  return scripts.length;
+}
+
 async function responseJson(response) {
   const text = await response.text();
   try {
@@ -378,8 +458,16 @@ function readyQuoteRow(productId, options = {}) {
   };
 }
 
-async function runHandlerCase({ name, handler, request, expectStatus, expectJobProduct = "", tokenRegionPackId = "world" }) {
-  const state = new GuardedDb(name, { token: `${name}_token`, tokenRegionPackId });
+async function runHandlerCase({
+  name,
+  handler,
+  request,
+  expectStatus,
+  expectJobProduct = "",
+  tokenRegionPackId = "world",
+  stateOptions = {},
+}) {
+  const state = new GuardedDb(name, { token: `${name}_token`, tokenRegionPackId, ...stateOptions });
   const response = await handler(request(state), makeEnv(state), makeDeps(state));
   assert(response && typeof response.status === "number", `${name}: handler did not return a Response`);
   if (expectStatus !== undefined) {
@@ -420,6 +508,38 @@ async function main() {
     forbidden_calls: publicRouteGuard.forbidden_calls,
   });
 
+  const deltaGuard = staticRegionPackInvalidationDeltaGuard();
+  assert(deltaGuard.ok, `Region-pack invalidation is still narrowed by exact scene-tile deltas: ${JSON.stringify(deltaGuard.missing, null, 2)}`);
+  report.steps.push({
+    name: "static_region_pack_invalidation_delta_guard",
+    ok: true,
+    required_snippets: deltaGuard.required_snippets,
+  });
+
+  const recomputeGuard = staticBackgroundQuoteRecomputeGuard();
+  assert(recomputeGuard.ok, `Background quote jobs can still reuse stale quote/cache data: ${JSON.stringify(recomputeGuard.missing, null, 2)}`);
+  report.steps.push({
+    name: "static_background_quote_recompute_guard",
+    ok: true,
+    required_snippets: recomputeGuard.required_snippets,
+  });
+
+  const mapQuoteGuard = staticMapQuoteConsistencyGuard();
+  assert(mapQuoteGuard.ok, `Map-state generation is not guarded against quote mismatches: ${JSON.stringify(mapQuoteGuard.missing, null, 2)}`);
+  report.steps.push({
+    name: "static_map_quote_consistency_guard",
+    ok: true,
+    required_snippets: mapQuoteGuard.required_snippets,
+  });
+
+  const worldDefaultGuard = staticWorldMapDefaultLevelGuard();
+  assert(worldDefaultGuard.ok, `World map default level is not forced to Zoom 3 in all page states: ${JSON.stringify(worldDefaultGuard.missing, null, 2)}`);
+  report.steps.push({
+    name: "static_world_map_default_level_guard",
+    ok: true,
+    required_snippets: worldDefaultGuard.required_snippets,
+  });
+
   const catalogShell = await runHandlerCase({
     name: "catalog_shell",
     handler: handleCreditRegionPackCatalog,
@@ -428,12 +548,14 @@ async function main() {
   });
   const catalogShellText = await catalogShell.response.text();
   assert(catalogShellText.includes("Product Catalog"), "catalog_shell: missing catalog shell title");
+  const catalogScriptCount = assertEmbeddedScriptsAreSyntaxValid(catalogShellText, "catalog_shell");
   assert(catalogShell.state.jobs.length === 0, "catalog_shell: shell request should not enqueue pricing jobs");
   report.steps.push({
     name: "catalog_shell_read_only",
     ok: true,
     query_count: catalogShell.state.queries.length,
     queued_jobs: catalogShell.state.jobs.length,
+    embedded_scripts_checked: catalogScriptCount,
   });
 
   const catalogPage = await runHandlerCase({
@@ -504,6 +626,65 @@ async function main() {
     ok: true,
     query_count: readyQuoteCheckout.state.queries.length,
     queued_jobs: readyQuoteCheckout.state.jobs.length,
+  });
+
+  const staleQuoteCheckout = await runHandlerCase({
+    name: "vietnam_checkout_stale_user_quote_blocked",
+    handler: handleCreditRegionPackCheckoutFromToken,
+    expectStatus: 409,
+    expectJobProduct: "vietnam",
+    tokenRegionPackId: "vietnam",
+    stateOptions: {
+      pricingVersion: 7,
+      updatedAt: "2026-05-18T15:59:25.447Z",
+    },
+    request: (state) => {
+      state.quoteRows.set("vietnam", {
+        ...readyQuoteRow("vietnam", { finalPriceCents: 12640, fullPriceCents: 14257, mapStateStatus: "ready" }),
+        user_id: state.userId,
+        entitlement_version: "stale_before_southeast_asia_purchase",
+      });
+      return new Request(`https://api.planetka.io/credits/region-pack-checkout?token=${state.token}&region_pack_id=vietnam`);
+    },
+  });
+  const staleQuoteCheckoutHtml = await staleQuoteCheckout.response.text();
+  assert(staleQuoteCheckoutHtml.includes("Data pack price is updating"), "vietnam_checkout_stale_user_quote_blocked: stale ready quote was not blocked");
+  report.steps.push({
+    name: "checkout_stale_user_quote_is_fail_closed",
+    ok: true,
+    query_count: staleQuoteCheckout.state.queries.length,
+    queued_jobs: staleQuoteCheckout.state.jobs,
+  });
+
+  const staleUiCheckout = await runHandlerCase({
+    name: "ui_checkout_vietnam_stale_user_quote_blocked",
+    handler: handleCreditCheckout,
+    expectStatus: 409,
+    expectJobProduct: "vietnam",
+    stateOptions: {
+      pricingVersion: 7,
+      updatedAt: "2026-05-18T15:59:25.447Z",
+    },
+    request: (state) => {
+      state.quoteRows.set("vietnam", {
+        ...readyQuoteRow("vietnam", { finalPriceCents: 12640, fullPriceCents: 14257, mapStateStatus: "ready" }),
+        user_id: state.userId,
+        entitlement_version: "stale_before_southeast_asia_purchase",
+      });
+      return new Request("https://api.planetka.io/credits/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ option: "region_pack", region_pack_id: "vietnam" }),
+      });
+    },
+  });
+  const staleUiPayload = await responseJson(staleUiCheckout.response);
+  assert(staleUiPayload.error === "data_pack_price_updating", `ui_checkout_vietnam_stale_user_quote_blocked: unexpected error payload ${JSON.stringify(staleUiPayload)}`);
+  report.steps.push({
+    name: "ui_checkout_stale_user_quote_is_fail_closed",
+    ok: true,
+    query_count: staleUiCheckout.state.queries.length,
+    queued_jobs: staleUiCheckout.state.jobs,
   });
 
   for (const productId of ["world", "asia"]) {

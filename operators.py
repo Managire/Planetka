@@ -1179,8 +1179,11 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
                     texture_quality_mode="FULL",
                 )
                 if not isinstance(breakdown, dict) or not bool(breakdown.get("ok", True)):
-                    logger.debug(
-                        "Planetka: Full Quality price precheck unavailable; proceeding to licenced download check."
+                    return fail(
+                        self,
+                        "Full Quality pricing is not available. Please retry in a few moments.",
+                        code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                        logger=logger,
                     )
                 else:
                     scene_price = float(
@@ -1192,8 +1195,15 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
                         breakdown,
                         texture_quality_mode="FULL",
                     )
-            except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-                logger.debug("Planetka: failed checking direct payment before Full Quality resolve", exc_info=True)
+            except (ImportError, RuntimeError, TypeError, ValueError, AttributeError) as exc:
+                return fail(
+                    self,
+                    "Full Quality pricing is not available. Please retry in a few moments.",
+                    code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                    logger=logger,
+                    exc=exc,
+                    log_message="Planetka: failed checking direct payment before Full Quality resolve",
+                )
             if pricing_verified and scene_price > 0.000001:
                 _clear_full_quality_hold_for_manual_preview(scene)
                 checkout_result = bpy.ops.planetka.open_credit_checkout(

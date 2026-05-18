@@ -124,15 +124,30 @@ def _test_price_pending_does_not_disable_full_quality() -> dict:
 
 def _test_full_quality_pricing_fails_closed() -> dict:
     text = _source_text("operators.py")
-    pattern = re.compile(
-        r"failed checking direct payment before Full Quality resolve.*?"
-        r"return fail\(\s*self,\s*\"Full Quality pricing is not available",
-        re.S,
+    _assert(
+        'return fail(\n                        self,\n                        "Full Quality pricing is not available. Please retry in a few moments."' in text,
+        "Full Quality pricing exceptions must fail closed.",
     )
-    _assert(pattern.search(text) is not None, "Full Quality pricing exceptions must fail closed.")
+    _assert(
+        "Full Quality price precheck unavailable; proceeding to licenced download check." not in text,
+        "Full Quality pricing precheck failure must not proceed to the download path.",
+    )
     _assert(
         "scene_price = 0.0\n            if scene_price > 0.000001" not in text,
         "Full Quality pricing exceptions must not fall through as a free resolve.",
+    )
+    return {"checked": True}
+
+
+def _test_full_quality_details_not_disabled_by_price_cache() -> dict:
+    text = _source_text("ui.py")
+    _assert(
+        "full_details.enabled = bool(full_price_known" not in text,
+        "Full Quality Details must not be disabled just because the sidebar price cache is missing.",
+    )
+    _assert(
+        "full_details.enabled = bool(full_size_known)" in text,
+        "Full Quality Details should stay available once the scene data size is known.",
     )
     return {"checked": True}
 
@@ -160,6 +175,7 @@ def main() -> int:
             ("full_quality_progress_not_shown_without_download", lambda: _test_full_quality_progress_not_shown_without_download(ui_module)),
             ("price_pending_does_not_disable_full_quality", _test_price_pending_does_not_disable_full_quality),
             ("full_quality_pricing_fails_closed", _test_full_quality_pricing_fails_closed),
+            ("full_quality_details_not_disabled_by_price_cache", _test_full_quality_details_not_disabled_by_price_cache),
             ("region_pack_offer_context_is_correct", _test_region_pack_offer_context_is_not_download_context),
         )
         for name, fn in checks:
