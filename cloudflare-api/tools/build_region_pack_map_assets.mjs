@@ -26,7 +26,7 @@ const REGION_PACK_MAP_MAX_OUTLINE_POINTS = 250_000;
 const REGION_SIMILAR_COUNTRY_MAX_DISTANCE_DEG = 2.0;
 const COUNTRY_LIKE_REGION_PRODUCT_IDS = new Set(["australia", "canada", "china", "united_states"]);
 const NORTH_AMERICA_SIMILAR_COUNTRY_LIKE_IDS = new Set(["canada", "united_states"]);
-const WORLD_FRAME_PRODUCT_IDS = new Set(["oceania", "pacific_islands"]);
+const WORLD_FRAME_PRODUCT_IDS = new Set(["oceania", "pacific_islands", "russia"]);
 const PACIFIC_INCLUDED_AREA_CODES = new Set([
   "ASM", "COK", "FJI", "FSM", "GUM", "KIR", "MHL", "MNP",
   "NCL", "NIU", "NRU", "PCN", "PLW", "PYF", "SLB", "TKL",
@@ -809,6 +809,15 @@ function boundsForProduct(sourceProduct, sourceDetail, rows) {
   if (WORLD_FRAME_PRODUCT_IDS.has(productId)) {
     return { min_lon: -180, min_lat: -90, max_lon: 180, max_lat: 90 };
   }
+  const mapBounds = sourceProduct && Array.isArray(sourceProduct.map_bounds) ? sourceProduct.map_bounds : null;
+  if (mapBounds && mapBounds.length >= 4) {
+    return {
+      min_lon: Number(mapBounds[0]),
+      min_lat: Number(mapBounds[1]),
+      max_lon: Number(mapBounds[2]),
+      max_lat: Number(mapBounds[3]),
+    };
+  }
   const detailBounds = sourceDetail && Array.isArray(sourceDetail.bounds) ? sourceDetail.bounds : null;
   const bbox = sourceProduct && Array.isArray(sourceProduct.bbox) ? sourceProduct.bbox : null;
   const bounds = detailBounds && detailBounds.length >= 4 ? detailBounds : bbox;
@@ -946,9 +955,15 @@ function assetForProduct(product, helpers, generated) {
     tiles: rows,
     upsell_ids: helpers.related(product, 3).map((entry) => String(entry && entry.id || "")).filter(Boolean),
   };
-  return WORLD_FRAME_PRODUCT_IDS.has(String(product && product.id || "").trim().toLowerCase())
-    ? asset
-    : applyDisplayLongitudeWrap(asset);
+  const productId = String(product && product.id || "").trim().toLowerCase();
+  if (WORLD_FRAME_PRODUCT_IDS.has(productId)) {
+    return asset;
+  }
+  const wrapped = applyDisplayLongitudeWrap(asset);
+  if (Array.isArray(product && product.map_bounds) && product.map_bounds.length >= 4) {
+    wrapped.bounds = boundsForProduct(product, sourceDetail, rows);
+  }
+  return wrapped;
 }
 
 async function main() {

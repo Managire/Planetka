@@ -268,6 +268,15 @@ def _ctx_schedule_auto_resolve_download(
     except (RuntimeError, TypeError, ValueError, AttributeError):
         nav_altitude_km = 0.0
 
+    def _is_manual_full_job(job):
+        return (
+            deps.is_auto_resolve_download_job(job)
+            and bool(deps.job_field(job, "manual_request", False))
+            and deps.normalize_texture_quality_mode(
+                deps.job_field(job, "texture_quality_mode", "PREVIEW")
+            ) == "FULL"
+        )
+
     job_to_start = None
     should_arm_timer = False
     with state.download_lock:
@@ -292,7 +301,31 @@ def _ctx_schedule_auto_resolve_download(
         new_sig = _ctx_auto_resolve_download_job_signature(ctx, new_job)
         active_sig = _ctx_auto_resolve_download_job_signature(ctx, state.download_active_job)
         pending_sig = _ctx_auto_resolve_download_job_signature(ctx, state.download_pending_job)
-        if new_sig == active_sig or new_sig == pending_sig:
+        completed_job = (
+            state.download_completed.get("job")
+            if isinstance(state.download_completed, dict)
+            else None
+        )
+        suppress_auto_preview_for_manual_full = (
+            not bool(manual_request)
+            and texture_quality_mode == "PREVIEW"
+            and (
+                _is_manual_full_job(state.download_active_job)
+                or _is_manual_full_job(state.download_pending_job)
+                or _is_manual_full_job(completed_job)
+            )
+        )
+        if suppress_auto_preview_for_manual_full:
+            deps.resolve_trace(
+                f"queue suppressed automatic Preview request_id={request_id}; "
+                "manual Full Quality resolve is active"
+            )
+            should_arm_timer = (
+                state.download_active_job is not None
+                or state.download_pending_job is not None
+                or state.download_completed is not None
+            )
+        elif new_sig == active_sig or new_sig == pending_sig:
             if bool(manual_request):
                 if new_sig == active_sig and deps.is_auto_resolve_download_job(state.download_active_job):
                     deps.job_set_field(state.download_active_job, "manual_request", True)

@@ -470,10 +470,15 @@ async function main() {
   assert(readyQuoteMapData.price_pending === false, "asia_map_ready_quote_stale_map: price should be ready");
   assert(readyQuoteMapData.map_pending === false, "asia_map_ready_quote_stale_map: on-demand map shell should be ready when quote is ready");
   const nonRelatedReadyMapJobs = readyQuoteMap.state.jobs.filter((job) => (
-    String(job.product_id || "").toLowerCase() === "asia"
-    || String(job.trigger_type || "") !== "product_page_related_quote_requested"
+    !(
+      String(job.trigger_type || "") === "product_page_related_quote_requested"
+      || (
+        String(job.product_id || "").toLowerCase() === "asia"
+        && String(job.trigger_type || "") === "product_page_map_state_prewarm"
+      )
+    )
   ));
-  assert(nonRelatedReadyMapJobs.length === 0, `asia_map_ready_quote_stale_map: ready quote with on-demand map should only enqueue related-product quote jobs, got ${JSON.stringify(readyQuoteMap.state.jobs)}`);
+  assert(nonRelatedReadyMapJobs.length === 0, `asia_map_ready_quote_stale_map: ready quote with on-demand map should only enqueue related-product quote jobs or bounded map prewarm, got ${JSON.stringify(readyQuoteMap.state.jobs)}`);
   report.steps.push({
     name: "ready_quote_stale_map_uses_on_demand_map",
     ok: true,

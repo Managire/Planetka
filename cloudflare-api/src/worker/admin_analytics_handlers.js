@@ -5,11 +5,17 @@ function fmtIntLocal(value, parseNonNegativeInteger) {
 }
 
 function fmtGbLocal(value, parseNonNegativeInteger, bytesPerGb) {
-  return (Number(parseNonNegativeInteger(value, 0)) / bytesPerGb).toFixed(3);
+  return (Number(parseNonNegativeInteger(value, 0)) / bytesPerGb).toLocaleString("en-US", {
+    minimumFractionDigits: 3,
+    maximumFractionDigits: 3,
+  });
 }
 
 function fmtMbLocal(value, parseNonNegativeInteger) {
-  return (Number(parseNonNegativeInteger(value, 0)) / (1024 * 1024)).toFixed(2);
+  return (Number(parseNonNegativeInteger(value, 0)) / (1024 * 1024)).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
 }
 
 const ANALYTICS_TILE_COLOR = "#60a5fa";
@@ -48,7 +54,7 @@ function analyticsUsersSortValue(row, sortBy) {
 
 function fmtEurLocal(value) {
   const numeric = Number(value);
-  return Number.isFinite(numeric) ? `€${numeric.toFixed(2)}` : "€0.00";
+  return Number.isFinite(numeric) ? `€${numeric.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "€0.00";
 }
 
 function parseMetadataJson(value) {
@@ -292,7 +298,7 @@ export async function handleAdminAnalyticsProductsPage(request, env, deps) {
   const { user } = auth;
   const fmtEur = (value) => {
     const numeric = Number(value);
-    return Number.isFinite(numeric) ? `€${numeric.toFixed(2)}` : "€0.00";
+    return Number.isFinite(numeric) ? `€${numeric.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "€0.00";
   };
   const fmtPercent = (value) => `${Math.max(0, Math.min(100, Math.round(Number(value || 0) || 0)))}%`;
   const fmtLandPercent = (value) => {
@@ -983,7 +989,7 @@ export async function handleAdminAnalyticsUserPage(request, env, deps) {
         ? "Scene Full Quality"
         : "Retired Product");
     const tileDetails = tiles.length
-      ? `<details><summary>${tiles.length} purchased tile(s)</summary><table class="inner"><thead><tr><th>Tile</th><th>Status</th><th>Price</th><th>Gross</th><th>Land km²</th></tr></thead><tbody>${tiles.map((tile) => `<tr><td>${deps.escapeHtml(String(tile && tile.tile_key || ""))}</td><td>${deps.escapeHtml(String(tile && tile.tile_status || ""))}</td><td>${deps.escapeHtml(fmtEurLocal(tile && tile.price_eur))}</td><td>${deps.escapeHtml(fmtEurLocal(tile && tile.gross_price_eur))}</td><td>${Number(tile && tile.billable_land_km2 || 0).toFixed(2)}</td></tr>`).join("")}</tbody></table></details>`
+      ? `<details><summary>${fmtIntLocal(tiles.length, deps.parseNonNegativeInteger)} purchased tile(s)</summary><table class="inner"><thead><tr><th>Tile</th><th>Status</th><th>Price</th><th>Gross</th><th>Land km²</th></tr></thead><tbody>${tiles.map((tile) => `<tr><td>${deps.escapeHtml(String(tile && tile.tile_key || ""))}</td><td>${deps.escapeHtml(String(tile && tile.tile_status || ""))}</td><td>${deps.escapeHtml(fmtEurLocal(tile && tile.price_eur))}</td><td>${deps.escapeHtml(fmtEurLocal(tile && tile.gross_price_eur))}</td><td>${Number(tile && tile.billable_land_km2 || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td></tr>`).join("")}</tbody></table></details>`
       : "";
     const metadataLine = purchaseType === "region_pack"
       ? `Catalog: ${deps.escapeHtml(String(row && row.catalog_version || ""))} · Discount: ${Number(row && row.discount_percent || 0)}% (${deps.escapeHtml(fmtEurLocal(row && row.discount_eur))})`
@@ -1078,7 +1084,7 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
   const fmtMb = (value) => fmtMbLocal(value, deps.parseNonNegativeInteger);
   const fmtEur = (value) => {
     const numeric = Number(value);
-    return Number.isFinite(numeric) ? `€${numeric.toFixed(2)}` : "€0.00";
+    return Number.isFinite(numeric) ? `€${numeric.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "€0.00";
   };
   const buildSortHref = (key) => {
     const params = new URLSearchParams();

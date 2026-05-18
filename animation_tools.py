@@ -727,9 +727,16 @@ def _estimate_animation_pricing_for_segments(segments, texture_quality_mode="FUL
 
 def _animation_price_text(value):
     try:
-        return f"€{max(0.0, float(value or 0.0)):.2f}"
+        return f"€{max(0.0, float(value or 0.0)):,.2f}"
     except (TypeError, ValueError):
         return "€0.00"
+
+
+def _animation_int_text(value):
+    try:
+        return f"{int(value or 0):,}"
+    except (TypeError, ValueError):
+        return "0"
 
 
 def _animation_bytes_text(size_bytes):
@@ -738,8 +745,8 @@ def _animation_bytes_text(size_bytes):
     except (TypeError, ValueError):
         value = 0.0
     if value >= 1024.0 ** 3:
-        return f"{value / (1024.0 ** 3):.2f} GB"
-    return f"{value / (1024.0 ** 2):.2f} MB"
+        return f"{value / (1024.0 ** 3):,.2f} GB"
+    return f"{value / (1024.0 ** 2):,.2f} MB"
 
 
 def _open_external_url(url):
@@ -5637,14 +5644,14 @@ class PLANETKA_OT_AnimationRenderCostBreakdown(bpy.types.Operator):
         header.label(text="Final Animation Render Full Quality Breakdown", icon="INFO")
         header.label(text=f"Total data size: {_animation_bytes_text(breakdown.get('total_bytes', 0))}", icon="DISK_DRIVE")
         header.label(
-            text=f"New Tiles / Total Tiles: {totals['new_tiles']} / {totals['total_tiles']}",
+            text=f"New Tiles / Total Tiles: {_animation_int_text(totals['new_tiles'])} / {_animation_int_text(totals['total_tiles'])}",
             icon="TEXTURE",
         )
         header.label(text=f"Full Price: {_animation_price_text(totals['full_price'])}", icon="SOLO_ON")
         if totals["already_count"] > 0 and totals["already_deduction"] > 0.000001:
             header.label(
                 text=(
-                    f"Already Licenced: {totals['already_count']} tiles "
+                    f"Already Licenced: {_animation_int_text(totals['already_count'])} tiles "
                     f"(-{_animation_price_text(totals['already_deduction'])})"
                 ),
                 icon="CHECKMARK",
@@ -5657,7 +5664,7 @@ class PLANETKA_OT_AnimationRenderCostBreakdown(bpy.types.Operator):
                 text=(
                     f"Frames: {int(breakdown.get('frame_start', 0) or 0):04d} - "
                     f"{int(breakdown.get('frame_end', 0) or 0):04d}, "
-                    f"Segments: {len(segments)}, Unique Tiles: {int(breakdown.get('tile_count', 0) or 0)}"
+                    f"Segments: {_animation_int_text(len(segments))}, Unique Tiles: {_animation_int_text(breakdown.get('tile_count', 0))}"
                 )
             )
         header.label(

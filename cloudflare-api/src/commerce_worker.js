@@ -2767,6 +2767,10 @@ async function ensureCreditTables(db) {
   );
   await dbRun(
     db,
+    `CREATE INDEX IF NOT EXISTS idx_region_pack_tile_entries_family_pack ON region_pack_tile_entries(catalog_version, family_key, region_pack_id)`,
+  );
+  await dbRun(
+    db,
     `CREATE INDEX IF NOT EXISTS idx_region_pack_tile_entries_pack_z001 ON region_pack_tile_entries(catalog_version, region_pack_id, z, d, x, y)`,
   );
   await dbRun(
@@ -3782,9 +3786,14 @@ function shouldKickProductQuoteQueue(path) {
 const PRODUCT_QUOTE_QUEUE_KICK_PATH = "/credits/internal/product-quote-queue-kick";
 const DEFAULT_PRODUCT_QUOTES_PREWARM_PATH = "/credits/internal/default-product-quotes-prewarm";
 const PRODUCT_QUOTE_QUEUE_INTERNAL_SECRET_HEADER = "x-planetka-internal-secret";
-const PRODUCT_QUOTE_QUEUE_BATCH_MAX_JOBS = 60;
-const PRODUCT_QUOTE_QUEUE_BATCH_MAX_MS = 26000;
-const PRODUCT_QUOTE_QUEUE_FOLLOWUP_CHAIN_LIMIT = 30;
+const PRODUCT_QUOTE_QUEUE_PUBLIC_MAX_JOBS = 3;
+const PRODUCT_QUOTE_QUEUE_PUBLIC_MAX_MS = 2500;
+const PRODUCT_QUOTE_QUEUE_INTERNAL_MAX_JOBS = 6;
+const PRODUCT_QUOTE_QUEUE_INTERNAL_MAX_MS = 4500;
+const PRODUCT_QUOTE_QUEUE_SCHEDULED_MAX_JOBS = 10;
+const PRODUCT_QUOTE_QUEUE_SCHEDULED_MAX_MS = 7000;
+const PRODUCT_QUOTE_QUEUE_FOLLOWUP_CHAIN_LIMIT = 60;
+const PRODUCT_QUOTE_QUEUE_FOLLOWUP_DELAY_MS = 1500;
 
 async function countQueuedProductQuoteJobs(db) {
   const row = await dbGet(
@@ -3804,17 +3813,44 @@ async function countQueuedProductQuoteJobs(db) {
   };
 }
 
+function productQuoteQueueBatchLimits(path) {
+  const safePath = String(path || "");
+  if (safePath === PRODUCT_QUOTE_QUEUE_KICK_PATH || safePath === DEFAULT_PRODUCT_QUOTES_PREWARM_PATH) {
+    return {
+      maxJobs: PRODUCT_QUOTE_QUEUE_INTERNAL_MAX_JOBS,
+      maxMs: PRODUCT_QUOTE_QUEUE_INTERNAL_MAX_MS,
+      maxMapJobs: 2,
+      maxHeavyMapJobs: 1,
+    };
+  }
+  if (safePath === "scheduled") {
+    return {
+      maxJobs: PRODUCT_QUOTE_QUEUE_SCHEDULED_MAX_JOBS,
+      maxMs: PRODUCT_QUOTE_QUEUE_SCHEDULED_MAX_MS,
+      maxMapJobs: 2,
+      maxHeavyMapJobs: 1,
+    };
+  }
+  return {
+    maxJobs: PRODUCT_QUOTE_QUEUE_PUBLIC_MAX_JOBS,
+    maxMs: PRODUCT_QUOTE_QUEUE_PUBLIC_MAX_MS,
+    maxMapJobs: 0,
+    maxHeavyMapJobs: 0,
+  };
+}
+
 async function runProductQuoteQueueBatch(env, path) {
   const db = requireDb(env);
+  const limits = productQuoteQueueBatchLimits(path);
   const summary = await processUserProductQuoteJobs(
     db,
     env,
     TILE_ROUTE_DEPS,
     {
-      maxJobs: PRODUCT_QUOTE_QUEUE_BATCH_MAX_JOBS,
-      maxMs: PRODUCT_QUOTE_QUEUE_BATCH_MAX_MS,
-      maxMapJobs: 10,
-      maxHeavyMapJobs: 1,
+      maxJobs: limits.maxJobs,
+      maxMs: limits.maxMs,
+      maxMapJobs: limits.maxMapJobs,
+      maxHeavyMapJobs: limits.maxHeavyMapJobs,
     },
   );
   const remaining = await countQueuedProductQuoteJobs(db);
@@ -3830,6 +3866,10 @@ async function runProductQuoteQueueBatch(env, path) {
         map_processed: Number(summary.map_processed || 0),
         heavy_map_processed: Number(summary.heavy_map_processed || 0),
         map_deferred: Number(summary.map_deferred || 0),
+        max_jobs: limits.maxJobs,
+        max_ms: limits.maxMs,
+        max_map_jobs: limits.maxMapJobs,
+        max_heavy_map_jobs: limits.maxHeavyMapJobs,
         elapsed_ms: Number(summary.elapsed_ms || 0),
         queued_remaining: remaining.queued,
         available_remaining: remaining.available,
@@ -3852,6 +3892,7 @@ function scheduleProductQuoteQueueFollowup(ctx, requestUrl, env, remainingChain)
   url.searchParams.set("remaining", String(chainLeft));
   ctx.waitUntil((async () => {
     try {
+      await new Promise((resolve) => setTimeout(resolve, PRODUCT_QUOTE_QUEUE_FOLLOWUP_DELAY_MS));
       await fetch(url.toString(), {
         method: "POST",
         headers: {
@@ -4006,12 +4047,7 @@ export default {
     ctx.waitUntil((async () => {
       try {
         const db = requireDb(env);
-        const quoteJobSummary = await processUserProductQuoteJobs(
-          db,
-          env,
-          TILE_ROUTE_DEPS,
-          { maxJobs: 40, maxMs: 26000, maxMapJobs: 12, maxHeavyMapJobs: 1 },
-        );
+        const quoteJobSummary = await runProductQuoteQueueBatch(env, "scheduled");
         console.log("commerce_worker.quote_queue.completed", JSON.stringify({ scheduled_at: scheduledAt, quote_job_summary: quoteJobSummary }));
       } catch (error) {
         console.error("commerce_worker.quote_queue.error", JSON.stringify({ scheduled_at: scheduledAt, error: String(error && error.message || "quote_queue_failed") }));

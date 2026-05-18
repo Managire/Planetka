@@ -102,6 +102,7 @@ class ImageInfoCache:
 class SourceTileIndex:
     def __init__(self) -> None:
         self._cache: dict[tuple[str, str], list[tuple[Path, int, int, int, int]]] = {}
+        self._path_cache: dict[tuple[str, str], dict[tuple[int, int, int, int], Path]] = {}
 
     def paths(self, source_dir: Path, source_kind: str) -> list[tuple[Path, int, int, int, int]]:
         cache_key = (str(source_dir), source_kind)
@@ -120,6 +121,40 @@ class SourceTileIndex:
                 continue
             rows.append((path, x, y, z, d))
         self._cache[cache_key] = rows
+        return rows
+
+    def path_map(self, source_dir: Path, source_kind: str) -> dict[tuple[int, int, int, int], Path]:
+        cache_key = (str(source_dir), source_kind)
+        cached = self._path_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        mapping = {
+            (x, y, z, d): path
+            for path, x, y, z, d in self.paths(source_dir, source_kind)
+        }
+        self._path_cache[cache_key] = mapping
+        return mapping
+
+    def paths_for_bounds(self, source_dir: Path, source_kind: str, bounds: dict[str, float]) -> list[tuple[Path, int, int, int, int]]:
+        mapping = self.path_map(source_dir, source_kind)
+        rows: list[tuple[Path, int, int, int, int]] = []
+        allowed_z = (1, 2, 4, 8, 15, 30)
+        min_lon = float(bounds["min_lon"])
+        max_lon = float(bounds["max_lon"])
+        min_lat = float(bounds["min_lat"])
+        max_lat = float(bounds["max_lat"])
+        for z in allowed_z:
+            min_x = max(0, math.floor((min_lon + 180.0) / z) * z)
+            max_x = min(360 - z, math.floor((max_lon + 180.0 - 1e-9) / z) * z)
+            min_y = max(0, math.floor((min_lat + 90.0) / z) * z)
+            max_y = min(180 - z, math.floor((max_lat + 90.0 - 1e-9) / z) * z)
+            if max_x < min_x or max_y < min_y:
+                continue
+            for x in range(int(min_x), int(max_x) + 1, z):
+                for y in range(int(min_y), int(max_y) + 1, z):
+                    path = mapping.get((x, y, z, z))
+                    if path:
+                        rows.append((path, x, y, z, z))
         return rows
 
 
@@ -227,7 +262,7 @@ def load_product_bounds(products_file: Path | None) -> dict[str, dict[str, float
         if not isinstance(product, dict):
             continue
         product_id = str(product.get("id") or "").strip()
-        bounds = normalize_bounds(product.get("bounds") or product.get("bbox"))
+        bounds = normalize_bounds(product.get("map_bounds") or product.get("bounds") or product.get("bbox"))
         if product_id and bounds:
             result[product_id] = bounds
     return result
@@ -332,7 +367,7 @@ def source_tiles_for_bounds(source_dir: Path, source_kind: str, bounds: dict[str
     # levels, not the global fallback image and not only the licensable product
     # tile rows. This keeps map context complete without silently switching to a
     # different global source.
-    rows = source_index.paths(source_dir, source_kind) if source_index else []
+    rows = source_index.paths_for_bounds(source_dir, source_kind, bounds) if source_index else []
     if not rows:
         prefix = source_prefix_for_kind(source_kind)
         rows = []

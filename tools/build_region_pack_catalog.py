@@ -1725,6 +1725,19 @@ def load_valid_region_tile_keys(tile_db_path: Path) -> set[str]:
         conn.close()
 
 
+def tile_size_inventory_keys(conn: sqlite3.Connection) -> list[str]:
+    """Return every canonical tile key represented in the local tile database."""
+    rows = conn.execute(
+        """
+          SELECT x, y, z, d
+          FROM tile_sizes
+          GROUP BY x, y, z, d
+          ORDER BY z, d, x, y
+        """
+    ).fetchall()
+    return [tile_key(int(x), int(y), int(z), int(d)) for x, y, z, d in rows]
+
+
 def world_tile_keys_from_db(tile_db_path: Path) -> list[str]:
     if not tile_db_path.exists():
         raise FileNotFoundError(f"World region pack requires tile size DB: {tile_db_path}")
@@ -1734,6 +1747,8 @@ def world_tile_keys_from_db(tile_db_path: Path) -> list[str]:
             str(row[0])
             for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         }
+        if "tile_sizes" in tables:
+            return tile_size_inventory_keys(conn)
         if "tile_land_stats" in tables:
             rows = conn.execute(
                 """
@@ -1744,14 +1759,7 @@ def world_tile_keys_from_db(tile_db_path: Path) -> list[str]:
                 """
             ).fetchall()
             return [str(row[0]).strip() for row in rows if str(row[0]).strip()]
-        rows = conn.execute(
-            """
-              SELECT DISTINCT x, y, z, d
-              FROM tile_sizes
-              WHERE folder = 'S2'
-              ORDER BY z, d, x, y
-            """
-        ).fetchall()
+        rows = []
     finally:
         conn.close()
     return [tile_key(int(x), int(y), int(z), int(d)) for x, y, z, d in rows]
@@ -1769,28 +1777,43 @@ def load_tile_pricing(tile_db_path: Path) -> dict[str, dict]:
         }
         if "tile_land_stats" not in tables:
             raise RuntimeError("Region pack pricing requires tile_land_stats in Resources/tile_sizes.sqlite")
-        rows = conn.execute(
+        size_rows = conn.execute(
             """
-              SELECT tile_key, z, d, billable_land_km2, free_reason
+              SELECT x, y, z, d, COALESCE(SUM(size_bytes), 0) AS data_size_bytes
+              FROM tile_sizes
+              GROUP BY x, y, z, d
+              ORDER BY z, d, x, y
+            """
+        ).fetchall()
+        stat_rows = conn.execute(
+            """
+              SELECT tile_key, x, y, z, d, billable_land_km2, free_reason
               FROM tile_land_stats
               WHERE tile_key IS NOT NULL
-              ORDER BY tile_key
             """
         ).fetchall()
     finally:
         conn.close()
+    stats_by_coords = {
+        (int(row["x"]), int(row["y"]), int(row["z"]), int(row["d"])): row
+        for row in stat_rows
+    }
     pricing = {}
-    for row in rows:
-        key = str(row["tile_key"] or "").strip()
+    for row in size_rows:
+        coords = (int(row["x"]), int(row["y"]), int(row["z"]), int(row["d"]))
+        stats = stats_by_coords.get(coords)
+        key = str(stats["tile_key"] if stats else tile_key(*coords)).strip()
         if not key:
             continue
-        free_reason = str(row["free_reason"] or "").strip()
+        free_reason = str(stats["free_reason"] if stats else "dataset_tile_without_land_pricing").strip()
+        billable_land_km2 = stats["billable_land_km2"] if stats else 0
         pricing[key] = {
             "z": int(row["z"] or 0),
             "d": int(row["d"] or 0),
-            "billable_land_km2": float(row["billable_land_km2"] or 0.0),
-            "gross_cents": credit_cents_for_land(key, row["billable_land_km2"], free_reason),
+            "billable_land_km2": float(billable_land_km2 or 0.0),
+            "gross_cents": credit_cents_for_land(key, billable_land_km2, free_reason),
             "free_reason": free_reason or free_reason_for_tile_key(key),
+            "data_size_bytes": int(row["data_size_bytes"] or 0),
         }
     return pricing
 
@@ -1842,15 +1865,63 @@ def apply_dynamic_volume_discounts(products: list[dict], tile_pricing: dict[str,
 def apply_pricing_summaries(products: list[dict], tile_pricing: dict[str, dict]) -> None:
     for product in products:
         summary = pricing_summary_for_tile_keys(product.get("tile_keys") or [], tile_pricing)
+        data_size_bytes = 0
+        seen_size_keys: set[str] = set()
+        for key in product.get("tile_keys") or []:
+            safe_key = str(key or "").strip()
+            if not safe_key or safe_key in seen_size_keys:
+                continue
+            seen_size_keys.add(safe_key)
+            data_size_bytes += int((tile_pricing.get(safe_key) or {}).get("data_size_bytes") or 0)
         product["pricing_summary"] = summary
         product["gross_cents"] = int(summary["gross_cents"])
         product["gross_eur"] = float(summary["gross_eur"])
         product["paid_tile_count"] = int(summary["paid_tile_count"])
         product["free_tile_count"] = int(summary["free_tile_count"])
         product["licensable_tile_count"] = int(summary["licensable_tile_count"])
+        product["data_size_bytes"] = int(max(0, data_size_bytes))
         if summary["metadata_missing_tile_count"]:
             product["metadata_missing_tile_count"] = int(summary["metadata_missing_tile_count"])
             product["metadata_missing_tile_keys"] = list(summary["metadata_missing_tile_keys"])
+
+
+WORLD_FRAME_MAP_PRODUCT_IDS = {"world", "russia", "oceania", "pacific_islands"}
+
+
+def should_use_country_bounds_for_map(product: dict) -> bool:
+    product_id = str(product.get("id") or "").strip().lower()
+    return product_id in WORLD_FRAME_MAP_PRODUCT_IDS
+
+
+def tile_padded_map_bounds(product: dict) -> list[float] | None:
+    if should_use_country_bounds_for_map(product):
+        return None
+    parsed_rows = [parse_tile_key(key) for key in product.get("tile_keys") or []]
+    parsed_rows = [row for row in parsed_rows if row]
+    if not parsed_rows:
+        return None
+    min_lon = min(float(x_value - 180) for x_value, _y_value, _z_value, _d_value in parsed_rows)
+    min_lat = min(float(y_value - 90) for _x_value, y_value, _z_value, _d_value in parsed_rows)
+    max_lon = max(float(x_value - 180 + z_value) for x_value, _y_value, z_value, _d_value in parsed_rows)
+    max_lat = max(float(y_value - 90 + z_value) for _x_value, y_value, z_value, _d_value in parsed_rows)
+    pad = min(float(z_value) for _x_value, _y_value, z_value, _d_value in parsed_rows if z_value > 0)
+    if max_lon <= min_lon or max_lat <= min_lat or pad <= 0:
+        return None
+    return [
+        max(-180.0, min_lon - pad),
+        max(-90.0, min_lat - pad),
+        min(180.0, max_lon + pad),
+        min(90.0, max_lat + pad),
+    ]
+
+
+def apply_map_bounds(products: list[dict]) -> None:
+    for product in products:
+        bounds = tile_padded_map_bounds(product)
+        if bounds:
+            product["map_bounds"] = bounds
+        else:
+            product.pop("map_bounds", None)
 
 
 def world_product_payload(tile_db_path: Path) -> dict:
@@ -1892,6 +1963,7 @@ def build_catalog(gpkg_path: Path, tile_db_path: Path = DEFAULT_TILE_DB) -> dict
     products = local_products + macro_products + [world_product_payload(tile_db_path)]
     apply_pricing_summaries(products, tile_pricing)
     apply_dynamic_volume_discounts(products, tile_pricing)
+    apply_map_bounds(products)
     validate_unique_product_ids(products)
     products.sort(key=lambda payload: (0 if payload["type"] == "country" else 1 if payload["type"] == "macro_region" else 2, payload["name"]))
     return {
@@ -1929,7 +2001,10 @@ def public_product_payload(payload: dict) -> dict:
         "paid_tile_count": int(payload.get("paid_tile_count") or 0),
         "free_tile_count": int(payload.get("free_tile_count") or 0),
         "licensable_tile_count": int(payload.get("licensable_tile_count") or 0),
+        "data_size_bytes": int(payload.get("data_size_bytes") or 0),
     }
+    if payload.get("map_bounds"):
+        result["map_bounds"] = payload["map_bounds"]
     if payload.get("volume_discount_basis"):
         result["volume_discount_basis"] = payload["volume_discount_basis"]
     if payload.get("country_product_ids"):

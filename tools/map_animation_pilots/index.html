@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Planetka Map Tile Animation Pilots</title>
+<style>
+:root{
+  color-scheme:light dark;
+  --bg:#fff;
+  --panel:#fff;
+  --line:#d8d8d8;
+  --text:#20242b;
+  --muted:#677187;
+  --map-bg:#143e7b;
+  --new:#d76d62;
+  --partial:#e2bc49;
+  --licenced:#4fa86a;
+  --free:#69707a;
+  --accent:#d76d62;
+}
+@media (prefers-color-scheme: dark){
+  :root{--bg:#000;--panel:#1b1b1b;--line:#3c3c3c;--text:#eee;--muted:#aaa;--map-bg:#173f7a;}
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+main{max-width:1240px;margin:0 auto;padding:28px}
+h1{font-size:34px;margin:0 0 8px}h2{font-size:22px;margin:0 0 6px}.muted{color:var(--muted)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(520px,1fr));gap:18px;margin-top:22px}.panel{border:1px solid var(--line);border-radius:18px;background:var(--panel);padding:18px;box-shadow:0 12px 30px rgba(0,0,0,.06)}
+.map-shell{position:relative;border:1px solid var(--line);border-radius:14px;overflow:hidden;background:#080b10;margin-top:12px}.map-shell svg{width:100%;display:block;aspect-ratio:2/1;background:var(--map-bg)}
+.land{fill:#050608;opacity:.86}.border{fill:none;stroke:rgba(255,255,255,.55);stroke-width:.55;vector-effect:non-scaling-stroke}.river{fill:none;stroke:#215aab;stroke-width:.9;opacity:.55}.tile{stroke:#fff;stroke-width:.45;vector-effect:non-scaling-stroke;opacity:.58}.new{fill:var(--new)}.partial{fill:var(--partial)}.licenced{fill:var(--licenced)}.free{fill:var(--free);opacity:.45}.outline-only{fill:transparent;stroke:#fff;stroke-width:.8;opacity:.78}.button-row{display:flex;gap:10px;align-items:center;margin-top:12px}.replay{border:0;border-radius:999px;background:var(--accent);color:#fff;font-weight:800;padding:9px 14px;cursor:pointer}.caption{margin:8px 0 0;color:var(--muted)}
+.legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:10px}.sw{display:inline-block;width:13px;height:13px;border-radius:3px;margin-right:6px;vertical-align:-2px}.sw.new{background:var(--new)}.sw.partial{background:var(--partial)}.sw.licenced{background:var(--licenced)}.sw.free{background:var(--free)}
+/* Variant 1: puzzle pop-in */
+.puzzle .tile{transform-box:fill-box;transform-origin:center;animation:puzzleIn 1.35s cubic-bezier(.18,.9,.2,1) both;animation-delay:calc(var(--i) * 18ms)}
+@keyframes puzzleIn{0%{opacity:0;transform:scale(.55) rotate(-2deg);filter:blur(3px)}58%{opacity:.72;transform:scale(1.04) rotate(.5deg);filter:blur(0)}100%{opacity:.58;transform:scale(1) rotate(0)}}
+/* Variant 2: draw grid first, then color wash */
+.draw-then-fill .outline-only{stroke-dasharray:160;stroke-dashoffset:160;animation:drawLine .85s ease-out both;animation-delay:calc(var(--i) * 8ms)}
+.draw-then-fill .tile{opacity:0;animation:colorWash .85s ease-out both;animation-delay:calc(.65s + var(--i) * 8ms)}
+@keyframes drawLine{to{stroke-dashoffset:0}}
+@keyframes colorWash{0%{opacity:0;filter:saturate(.4)}100%{opacity:.58;filter:saturate(1)}}
+/* Variant 3: wave scan from west to east */
+.wave .tile{opacity:0;transform-box:fill-box;transform-origin:center;animation:waveIn 1.5s ease-out both;animation-delay:calc(var(--col) * 45ms + var(--row) * 9ms)}
+@keyframes waveIn{0%{opacity:0;transform:translateY(8px)}45%{opacity:.75;transform:translateY(-1px)}100%{opacity:.58;transform:translateY(0)}}
+/* Variant 4: soft cinematic reveal */
+.cinematic .map-bg-overlay{animation:glowSweep 1.45s ease-out both}.cinematic .tile{opacity:0;animation:cinematicTile 1.15s ease-out both;animation-delay:calc(.22s + var(--i) * 12ms)}
+@keyframes cinematicTile{0%{opacity:0;filter:brightness(1.5) blur(2px)}100%{opacity:.58;filter:brightness(1) blur(0)}}
+@keyframes glowSweep{0%{opacity:.75;transform:translateX(-70%)}100%{opacity:0;transform:translateX(70%)}}
+@media (prefers-reduced-motion: reduce){.tile,.outline-only,.map-bg-overlay{animation:none!important}}
+</style>
+</head>
+<body>
+<main>
+<h1>Planetka Tile Overlay Animation Pilots</h1>
+<p class="muted">Standalone motion tests for product maps. They use the same basic layer order as the live maps: background, borders, tile overlay. Use Replay to compare each option.</p>
+<div class="grid" id="grid"></div>
+</main>
+<script>
+const variants=[
+  {id:'puzzle', title:'Option A - Puzzle Pop-in', note:'Fast, playful: tiles appear like puzzle pieces, staggered by tile order.'},
+  {id:'draw-then-fill', title:'Option B - Draw Lines, Then Fill', note:'More technical/professional: grid outlines draw first, then colors fade in.'},
+  {id:'wave', title:'Option C - Geographic Wave', note:'Tiles sweep from west to east with a subtle wave. Good for large maps.'},
+  {id:'cinematic', title:'Option D - Soft Reveal', note:'Subtle premium feel: a light sweep and gentle tile fade. Least distracting.'},
+];
+const tiles=[];
+const cols=23, rows=11;
+for(let r=0;r<rows;r++){
+  for(let c=0;c<cols;c++){
+    const mask = (c>2&&c<20&&r>1&&r<9) || (c>5&&c<16&&r===1) || (c>8&&c<21&&r===9) || (c===2&&r>4&&r<8) || (c===20&&r>3&&r<7);
+    if(!mask) continue;
+    let status='new';
+    if((c+r)%13===0) status='licenced';
+    else if((c*3+r)%17===0) status='partial';
+    else if((c+r*2)%11===0) status='free';
+    tiles.push({x:18+c*14,y:24+r*12,w:14,h:12,row:r,col:c,status});
+  }
+}
+function landShape(){return `<path class="land" d="M20 64 C62 31 122 22 178 42 C216 55 233 89 282 82 C334 74 392 56 443 69 C520 89 520 151 465 170 C424 185 370 175 325 181 C271 188 240 202 190 188 C141 173 119 148 78 147 C44 147 17 127 20 64 Z"/><path class="land" d="M398 38 C430 23 475 28 498 56 C523 89 496 113 463 107 C431 102 386 74 398 38 Z"/><path class="river" d="M100 74 C151 60 201 96 256 91 C302 88 338 66 392 82"/><path class="border" d="M70 53 C115 78 161 84 204 73"/><path class="border" d="M238 91 C262 124 286 151 332 179"/><path class="border" d="M360 72 C379 96 415 123 462 106"/>`}
+function svgFor(variant){
+  const drawLines = variant.id==='draw-then-fill';
+  const rects = tiles.map((t,i)=>`${drawLines?`<rect class="outline-only" x="${t.x}" y="${t.y}" width="${t.w}" height="${t.h}" style="--i:${i};--row:${t.row};--col:${t.col}"></rect>`:''}<rect class="tile ${t.status}" x="${t.x}" y="${t.y}" width="${t.w}" height="${t.h}" style="--i:${i};--row:${t.row};--col:${t.col}"></rect>`).join('');
+  return `<svg viewBox="0 0 360 180" role="img" aria-label="${variant.title}"><defs><linearGradient id="sweep-${variant.id}" x1="0" x2="1"><stop offset="0" stop-color="transparent"/><stop offset=".5" stop-color="white" stop-opacity=".35"/><stop offset="1" stop-color="transparent"/></linearGradient></defs><rect x="0" y="0" width="360" height="180" fill="#214b88"/>${landShape()}<rect class="map-bg-overlay" x="-120" y="0" width="170" height="180" fill="url(#sweep-${variant.id})"/>${rects}</svg>`
+}
+function render(){
+  const grid=document.getElementById('grid');
+  grid.innerHTML=variants.map(v=>`<section class="panel ${v.id}" data-variant="${v.id}"><h2>${v.title}</h2><p class="caption">${v.note}</p><div class="map-shell">${svgFor(v)}</div><div class="legend"><span><i class="sw new"></i>New</span><span><i class="sw partial"></i>Partial</span><span><i class="sw licenced"></i>Licenced</span><span><i class="sw free"></i>Free</span></div><div class="button-row"><button class="replay">Replay</button><span class="muted">Duration: about 1-2 seconds</span></div></section>`).join('');
+  grid.querySelectorAll('.replay').forEach(btn=>btn.addEventListener('click',()=>{
+    const panel=btn.closest('.panel');
+    const v=variants.find(x=>x.id===panel.dataset.variant);
+    const shell=panel.querySelector('.map-shell');
+    shell.innerHTML=svgFor(v);
+  }));
+}
+render();
+</script>
+</body>
+</html>

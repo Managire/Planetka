@@ -83,7 +83,7 @@ def _fmt_int(value):
     if value is None:
         return "—"
     try:
-        return str(int(value))
+        return f"{int(value):,}"
     except (TypeError, ValueError):
         return "—"
 
@@ -237,13 +237,13 @@ def _fmt_bytes(value):
     except (TypeError, ValueError):
         size = 0.0
     if size >= 1024.0 ** 3:
-        return f"{size / (1024.0 ** 3):.2f} GB"
-    return f"{size / (1024.0 ** 2):.2f} MB"
+        return f"{size / (1024.0 ** 3):,.2f} GB"
+    return f"{size / (1024.0 ** 2):,.2f} MB"
 
 
 def _fmt_eur(value):
     try:
-        return f"€{max(0.0, float(value or 0.0)):.2f}"
+        return f"€{max(0.0, float(value or 0.0)):,.2f}"
     except (TypeError, ValueError):
         return "€0.00"
 
@@ -1259,7 +1259,7 @@ def _draw_licenced_download_controls(layout, prefs):
             text=progress_text,
         )
         if total_files > 0:
-            files_text = f"{downloaded_files} / {total_files} files"
+            files_text = f"{_fmt_int(downloaded_files)} / {_fmt_int(total_files)} files"
         elif skipped_existing_files > 0:
             files_text = f"{skipped_existing_files} files already present"
         else:
@@ -1470,6 +1470,7 @@ def _draw_broader_region_offers(layout, scene, active_view_scope=False):
         info.already_licenced_saving_eur = float(already_licenced_saving)
         info.partial_licence_tile_count = int(partial_licence_count)
         info.partial_licence_credit_eur = float(partial_licence_credit)
+        info.data_size_bytes = max(0, int(offer.get("data_size_bytes", 0) or 0))
         info.full_price_eur = float(gross)
         info.discount_percent = int(discount)
         info.discount_eur = float(discount_eur)
@@ -1661,7 +1662,7 @@ def _draw_new_earth(layout):
     row.scale_y = ADD_EARTH_BUTTON_SCALE_Y
     row.alert = False
     row.enabled = (not has_earth) and connected and (not is_scene_background_black(scene))
-    row.operator("planetka.set_background_black", text="Set Background to Black", icon="WORLD_DATA")
+    row.operator("planetka.set_background_black", text="Set Background to Black", icon="SHADING_RENDERED")
 
     row = layout.row()
     row.scale_x = ADD_EARTH_BUTTON_SCALE_X
@@ -2935,13 +2936,13 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         if anim_price_known and anim_credits > 0.000001:
             render_button_row.operator(
                 "planetka.animation_checkout",
-                text=f"Render Animation (€{anim_credits:.2f})",
+                text=f"Render Animation (€{anim_credits:,.2f})",
                 icon="URL",
             )
         else:
             render_button_row.operator(
                 "planetka.animation_render",
-                text="Render Animation" if anim_credits <= 0.000001 else f"Render Animation (€{anim_credits:.2f})",
+                text="Render Animation" if anim_credits <= 0.000001 else f"Render Animation (€{anim_credits:,.2f})",
                 icon="RENDER_ANIMATION",
             )
         render_info_row = render_row.row(align=True)

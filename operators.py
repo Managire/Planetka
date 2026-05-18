@@ -145,13 +145,34 @@ def _format_bytes_for_ui(size_bytes):
     except (TypeError, ValueError):
         value = 0.0
     if value >= 1024.0 ** 3:
-        return f"{value / (1024.0 ** 3):.2f} GB"
-    return f"{value / (1024.0 ** 2):.2f} MB"
+        return f"{value / (1024.0 ** 3):,.2f} GB"
+    return f"{value / (1024.0 ** 2):,.2f} MB"
+
+
+def _format_pack_data_size_for_ui(size_bytes):
+    try:
+        value = max(0.0, float(size_bytes or 0))
+    except (TypeError, ValueError):
+        value = 0.0
+    mb = value / 1_000_000.0
+    if mb < 1000.0:
+        return f"{mb:,.2f} MB"
+    gb = value / 1_000_000_000.0
+    if gb < 1000.0:
+        return f"{gb:,.2f} GB"
+    return f"{value / 1_000_000_000_000.0:,.2f} TB"
+
+
+def _format_int_for_ui(value):
+    try:
+        return f"{int(value or 0):,}"
+    except (TypeError, ValueError):
+        return "0"
 
 
 def _format_eur_for_ui(value):
     try:
-        return f"€{max(0.0, float(value or 0.0)):.2f}"
+        return f"€{max(0.0, float(value or 0.0)):,.2f}"
     except (TypeError, ValueError):
         return "€0.00"
 
@@ -576,6 +597,7 @@ def _populate_region_pack_info_operator(operator, offer):
     )
     operator.partial_licence_tile_count = max(0, _region_offer_int(offer, "partial_licence_tile_count", 0))
     operator.partial_licence_credit_eur = max(0.0, _region_offer_number(offer, "partial_licence_credit_eur", 0.0))
+    operator.data_size_bytes = max(0, _region_offer_int(offer, "data_size_bytes", 0))
     operator.full_price_eur = max(
         0.0,
         _region_offer_number(
@@ -950,7 +972,7 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
             width=64,
         )
         box = layout.box()
-        box.label(text=f"Charged tiles: {int(getattr(self, 'confirm_new_tile_count', 0) or 0)}", icon="TEXTURE")
+        box.label(text=f"Charged tiles: {_format_int_for_ui(getattr(self, 'confirm_new_tile_count', 0))}", icon="TEXTURE")
         box.label(text=f"Full Price: {_format_eur_for_ui(getattr(self, 'confirm_full_price_eur', 0.0))}", icon="SOLO_ON")
         partial_count = int(getattr(self, "confirm_partially_licenced_tile_count", 0) or 0)
         partial_credit = float(getattr(self, "confirm_partial_credit_eur", 0.0) or 0.0)
@@ -959,14 +981,14 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
         if already_count > 0 or already_saving > 0.000001:
             box.label(
                 text=(
-                    f"Already Licenced: {already_count} "
+                    f"Already Licenced: {_format_int_for_ui(already_count)} "
                     f"(-{_format_eur_for_ui(already_saving)})"
                 ),
                 icon="CHECKMARK",
             )
         free_count = int(getattr(self, "confirm_free_tile_count", 0) or 0)
         if free_count > 0:
-            box.label(text=f"Free / not charged: {free_count}", icon="HIDE_OFF")
+            box.label(text=f"Free / not charged: {_format_int_for_ui(free_count)}", icon="HIDE_OFF")
         try:
             total_bytes = int(str(getattr(self, "confirm_total_bytes", "0") or "0"))
         except (TypeError, ValueError):
@@ -1222,7 +1244,7 @@ class PLANETKA_OT_OpenCreditCheckout(bpy.types.Operator):
         if "amount_below_stripe_minimum" in message or str(payload.get("error", "")).strip() == "amount_below_stripe_minimum":
             minimum = payload.get("minimum_eur")
             try:
-                minimum_text = f"€{float(minimum):.2f}"
+                minimum_text = f"€{float(minimum):,.2f}"
             except (TypeError, ValueError):
                 minimum_text = "the minimum payment amount"
             return (
@@ -1528,6 +1550,7 @@ class PLANETKA_OT_RegionPackInfo(bpy.types.Operator):
     already_licenced_saving_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
     partial_licence_tile_count: IntProperty(default=0, options={'HIDDEN', 'SKIP_SAVE'})
     partial_licence_credit_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
+    data_size_bytes: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
     full_price_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
     discount_percent: IntProperty(default=0, options={'HIDDEN', 'SKIP_SAVE'})
     discount_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
@@ -1560,20 +1583,24 @@ class PLANETKA_OT_RegionPackInfo(bpy.types.Operator):
         summary.label(
             text=(
                 f"New Tiles / Total Tiles: "
-                f"{new_count} / "
-                f"{int(getattr(self, 'total_tile_count', 0) or 0)}"
+                f"{_format_int_for_ui(new_count)} / "
+                f"{_format_int_for_ui(getattr(self, 'total_tile_count', 0))}"
             ),
             icon="TEXTURE",
         )
+        summary.label(
+            text=f"Data Size: {_format_pack_data_size_for_ui(getattr(self, 'data_size_bytes', 0))}",
+            icon="DISK_DRIVE",
+        )
         licenced = int(getattr(self, "already_licenced_tile_count", 0) or 0)
         saving = float(getattr(self, "already_licenced_saving_eur", 0.0) or 0.0)
-        summary.label(text=f"Full Price: €{float(getattr(self, 'full_price_eur', 0.0) or 0.0):.2f}", icon="SOLO_ON")
+        summary.label(text=f"Full Price: {_format_eur_for_ui(getattr(self, 'full_price_eur', 0.0))}", icon="SOLO_ON")
         licenced += partial_count
         saving += partial_credit
         if licenced > 0 or saving > 0.000001:
             summary.label(
                 text=(
-                    f"Already Licenced: {licenced} tile{'s' if licenced != 1 else ''} "
+                    f"Already Licenced: {_format_int_for_ui(licenced)} tile{'s' if licenced != 1 else ''} "
                     f"(-{_format_eur_for_ui(saving)})"
                 ),
                 icon="CHECKMARK",
@@ -1585,7 +1612,7 @@ class PLANETKA_OT_RegionPackInfo(bpy.types.Operator):
                 text=f"Volume Discount ({discount}%): - {_format_eur_for_ui(discount_eur)}",
                 icon="SORTSIZE",
             )
-        summary.label(text=f"Final Price: €{float(getattr(self, 'price_eur', 0.0) or 0.0):.2f}", icon="USER")
+        summary.label(text=f"Final Price: {_format_eur_for_ui(getattr(self, 'price_eur', 0.0))}", icon="USER")
         country_box = layout.box()
         country_box.label(text="Included Area Labels", icon="WORLD_DATA")
         country_text = f"Area labels: {', '.join(countries)}" if countries else "Area label list is not available for this pack yet."
@@ -1627,7 +1654,7 @@ class PLANETKA_OT_DataCostBreakdown(bpy.types.Operator):
 
     def _price_text(self, value):
         try:
-            return f"€{max(0.0, float(value or 0.0)):.2f}"
+            return f"€{max(0.0, float(value or 0.0)):,.2f}"
         except (TypeError, ValueError):
             return "€0.00"
 
@@ -1863,14 +1890,14 @@ class PLANETKA_OT_DataCostBreakdown(bpy.types.Operator):
             display_already_deduction = already_deduction + partial_credit
             display_new_count = max(0, len(charged_tiles) - partial_count)
             price_box.label(
-                text=f"New Tiles / Total Tiles: {display_new_count} / {len(all_tiles)}",
+                text=f"New Tiles / Total Tiles: {_format_int_for_ui(display_new_count)} / {_format_int_for_ui(len(all_tiles))}",
                 icon="TEXTURE",
             )
             price_box.label(text=f"Full Price: {self._price_text(full_price)}", icon="SOLO_ON")
             if display_already_count > 0 or display_already_deduction > 0.000001:
                 price_box.label(
                     text=(
-                        f"Already Licenced: {display_already_count} tile{'s' if display_already_count != 1 else ''} "
+                        f"Already Licenced: {_format_int_for_ui(display_already_count)} tile{'s' if display_already_count != 1 else ''} "
                         f"(-{self._price_text(display_already_deduction)})"
                     ),
                     icon="CHECKMARK",
@@ -1911,9 +1938,9 @@ class PLANETKA_OT_DataCostBreakdown(bpy.types.Operator):
                 )
             header.label(
                 text=(
-                    f"Tiles: {len(all_tiles)} total, "
-                    f"{display_new_count} charged, "
-                    f"{display_already_count} already licenced"
+                    f"Tiles: {_format_int_for_ui(len(all_tiles))} total, "
+                    f"{_format_int_for_ui(display_new_count)} charged, "
+                    f"{_format_int_for_ui(display_already_count)} already licenced"
                 )
             )
 
@@ -2044,14 +2071,14 @@ class PLANETKA_OT_DownloadStatusPopup(bpy.types.Operator):
         if total_bytes > 0:
             fraction = max(0.0, min(1.0, float(downloaded_bytes) / float(max(1, total_bytes))))
             if hasattr(layout, "progress"):
-                layout.progress(factor=fraction, type='BAR', text=f"{downloaded_mb:.2f} / {total_mb:.2f} MB")
+                layout.progress(factor=fraction, type='BAR', text=f"{downloaded_mb:,.2f} / {total_mb:,.2f} MB")
             else:
-                layout.label(text=f"{downloaded_mb:.2f} / {total_mb:.2f} MB")
+                layout.label(text=f"{downloaded_mb:,.2f} / {total_mb:,.2f} MB")
         else:
             if hasattr(layout, "progress"):
-                layout.progress(factor=0.0, type='BAR', text=f"{downloaded_mb:.2f} MB")
+                layout.progress(factor=0.0, type='BAR', text=f"{downloaded_mb:,.2f} MB")
             else:
-                layout.label(text=f"{downloaded_mb:.2f} MB")
+                layout.label(text=f"{downloaded_mb:,.2f} MB")
         layout.label(text="Window closes automatically when download completes.", icon='INFO')
 
 
