@@ -1266,10 +1266,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             )
         if int(payload_data.prefetch_missing_count) > 0:
             if _prefetch_missing_details_indicate_access_failure(payload_data.prefetch_missing_details):
-                access_message = (
-                    "Planetka texture download session was not confirmed. "
-                    "No texture data was applied. Please retry."
-                )
+                access_message = "Full Quality download could not be confirmed. Please retry."
                 coded_access_message = with_error_code(ErrorCode.RESOLVE_REFRESH_FAILED, access_message)
                 _store_last_resolve_error(
                     scene,
@@ -1324,12 +1321,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                         str(entry.get("fetch_error", "") or ""),
                         str(entry.get("remote_error", "") or ""),
                     )
-                missing_message = (
-                    "Planetka resolve download completed with missing required S2 files "
-                    f"({int(required_missing_s2_count)} required S2 missing, "
-                    f"{int(payload_data.prefetch_missing_count)} total missing, {int(payload_data.prefetch_resolved_count)} resolved, "
-                    f"{int(payload_data.prefetch_error_count)} errors)."
-                )
+                missing_message = "Some required texture data could not be downloaded. Please retry."
                 coded_missing_message = with_error_code(ErrorCode.RESOLVE_REFRESH_FAILED, missing_message)
                 _store_last_resolve_error(
                     scene,

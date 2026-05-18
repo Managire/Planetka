@@ -258,6 +258,15 @@ def _is_resolve_pipeline_busy(ctx=None):
     return False
 
 
+def _job_quality_mode(job, deps):
+    if not _is_auto_resolve_download_job(job):
+        return ""
+    try:
+        return deps.normalize_texture_quality_mode(_job_field(job, "texture_quality_mode", "PREVIEW"))
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return "PREVIEW"
+
+
 def get_resolve_runtime_status(scene=None, ctx=None):
     ctx = _coerce_ctx(ctx)
     deps = ctx.deps
@@ -274,10 +283,15 @@ def get_resolve_runtime_status(scene=None, ctx=None):
     in_flight = bool(state.in_flight)
     pending_count = int((1 if active_job else 0) + (1 if pending_job else 0))
     active_request_id = None
+    active_quality_mode = ""
     if _is_auto_resolve_download_job(active_job):
         active_request_id = _job_field(active_job, "request_id")
+        active_quality_mode = _job_quality_mode(active_job, deps)
     elif _is_auto_resolve_download_job(pending_job):
         active_request_id = _job_field(pending_job, "request_id")
+        active_quality_mode = _job_quality_mode(pending_job, deps)
+    if not active_quality_mode and isinstance(completed_payload, dict):
+        active_quality_mode = _job_quality_mode(completed_payload.get("job"), deps)
 
     status = {
         "code": "IDLE",
@@ -286,6 +300,7 @@ def get_resolve_runtime_status(scene=None, ctx=None):
         "active_request_id": active_request_id,
         "pending_count": pending_count,
         "completed_pending": bool(completed_payload),
+        "quality_mode": active_quality_mode,
     }
 
     if in_flight:

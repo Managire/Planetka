@@ -49,13 +49,6 @@ import {
   handleCreditRegionPackCatalog as handleCreditRegionPackCatalogRoute,
   handleCreditRegionPackCheckoutFromToken as handleCreditRegionPackCheckoutFromTokenRoute,
   handleCreditRegionPackMap as handleCreditRegionPackMapRoute,
-  handleCreditRegionPackMapLevelChunk as handleCreditRegionPackMapLevelChunkRoute,
-  handleCreditRegionPackMiniMap as handleCreditRegionPackMiniMapRoute,
-  handleCreditRegionPackMapStateShard as handleCreditRegionPackMapStateShardRoute,
-  handleCreditRegionPackMapAsset as handleCreditRegionPackMapAssetRoute,
-  handleCreditRegionPackMapOutlines as handleCreditRegionPackMapOutlinesRoute,
-  handleCreditRegionPackMapBackground as handleCreditRegionPackMapBackgroundRoute,
-  handleCreditAccountCountryBorders as handleCreditAccountCountryBordersRoute,
   handleCreditRegionPackPageAsset as handleCreditRegionPackPageAssetRoute,
   handleCreditRegionOffers as handleCreditRegionOffersRoute,
   handleCreditRegionPackRelatedOffers as handleCreditRegionPackRelatedOffersRoute,
@@ -72,6 +65,9 @@ import {
   createTileDownloadSession,
   normalizeTileKeys,
 } from "./worker/tile_sessions.js";
+import {
+  handleTileSessionStart as handleTileSessionStartRoute,
+} from "./worker/tile_routes.js";
 import {
   handleStripeWebhook as handleStripeWebhookRoute,
 } from "./worker/billing_handlers.js";
@@ -3624,21 +3620,13 @@ const TILE_ROUTE_DEPS = {
 
 function isCommercePricingStaticAsset(path) {
   const safePath = String(path || "");
-  return safePath.startsWith("/credits/page-assets/")
-    || safePath === PRODUCT_QUOTE_QUEUE_KICK_PATH
-    || safePath === DEFAULT_PRODUCT_QUOTES_PREWARM_PATH
-    || safePath === "/credits/region-pack-map-asset"
-    || safePath === "/credits/region-pack-map-outlines"
-    || safePath === "/credits/region-pack-map-level-chunk"
-    || safePath === "/credits/region-pack-mini-map"
-    || safePath === "/credits/region-pack-map-state-shard"
-    || safePath === "/credits/region-pack-map-background.jpg"
-    || safePath === "/credits/account-country-borders.json";
+  return safePath === PRODUCT_QUOTE_QUEUE_KICK_PATH
+    || safePath === DEFAULT_PRODUCT_QUOTES_PREWARM_PATH;
 }
 
 async function maybeRefreshCommercePricingSettings(path, env) {
   const safePath = String(path || "");
-  if (!safePath.startsWith("/credits/")) {
+  if (!safePath.startsWith("/credits/") && safePath !== "/tiles/session") {
     return;
   }
   await getRuntimePricingSettings(env, TILE_ROUTE_DEPS, { force: !isCommercePricingStaticAsset(safePath) });
@@ -3647,6 +3635,9 @@ async function maybeRefreshCommercePricingSettings(path, env) {
 async function dispatchCommerceRoute(request, env, path) {
   await maybeRefreshCommercePricingSettings(path, env);
   switch (path) {
+    case "/tiles/session":
+      if (request.method === "POST") return await handleTileSessionStartRoute(request, env, TILE_ROUTE_DEPS);
+      return null;
     case "/credits/me":
       if (request.method === "GET") return await handleCreditMeRoute(request, env, TILE_ROUTE_DEPS);
       return null;
@@ -3683,31 +3674,9 @@ async function dispatchCommerceRoute(request, env, path) {
     case "/credits/region-pack-map":
       if (request.method === "GET" || request.method === "HEAD") return await handleCreditRegionPackMapRoute(request, env, TILE_ROUTE_DEPS);
       return null;
-    case "/credits/region-pack-map-level-chunk":
-      if (request.method === "GET" || request.method === "HEAD") return await handleCreditRegionPackMapLevelChunkRoute(request, env, TILE_ROUTE_DEPS);
-      return null;
-    case "/credits/region-pack-mini-map":
-      if (request.method === "GET" || request.method === "HEAD") return await handleCreditRegionPackMiniMapRoute(request, env, TILE_ROUTE_DEPS);
-      return null;
-    case "/credits/region-pack-map-state-shard":
-      if (request.method === "GET" || request.method === "HEAD") return await handleCreditRegionPackMapStateShardRoute(request, env, TILE_ROUTE_DEPS);
-      return null;
-    case "/credits/region-pack-map-asset":
-      if (request.method === "GET" || request.method === "HEAD") return await handleCreditRegionPackMapAssetRoute(request, env, TILE_ROUTE_DEPS);
-      return null;
-    case "/credits/region-pack-map-outlines":
-      if (request.method === "GET" || request.method === "HEAD") return await handleCreditRegionPackMapOutlinesRoute(request, env, TILE_ROUTE_DEPS);
-      return null;
-    case "/credits/region-pack-map-background.jpg":
-      if (request.method === "GET" || request.method === "HEAD") return await handleCreditRegionPackMapBackgroundRoute(request, env, TILE_ROUTE_DEPS);
-      return null;
-    case "/credits/account-country-borders.json":
-      if (request.method === "GET" || request.method === "HEAD") return await handleCreditAccountCountryBordersRoute(request, env, TILE_ROUTE_DEPS);
-      return null;
-    case "/credits/page-assets/region-pack-map.css":
     case "/credits/page-assets/region-pack-map.js":
-    case "/credits/page-assets/region-pack-dynamic-map.css":
     case "/credits/page-assets/region-pack-dynamic-map.js":
+    case "/credits/page-assets/checkout-planet.jpg":
       if (request.method === "GET" || request.method === "HEAD") return await handleCreditRegionPackPageAssetRoute(request, env, TILE_ROUTE_DEPS);
       return null;
     case "/credits/region-pack-catalog":
@@ -3760,16 +3729,8 @@ function shouldKickProductQuoteQueue(path) {
     return false;
   }
   if (
-    safePath.startsWith("/credits/page-assets/")
-    || safePath === PRODUCT_QUOTE_QUEUE_KICK_PATH
+    safePath === PRODUCT_QUOTE_QUEUE_KICK_PATH
     || safePath === DEFAULT_PRODUCT_QUOTES_PREWARM_PATH
-    || safePath === "/credits/region-pack-map-asset"
-    || safePath === "/credits/region-pack-map-outlines"
-    || safePath === "/credits/region-pack-map-level-chunk"
-    || safePath === "/credits/region-pack-mini-map"
-    || safePath === "/credits/region-pack-map-state-shard"
-    || safePath === "/credits/region-pack-map-background.jpg"
-    || safePath === "/credits/account-country-borders.json"
   ) {
     return false;
   }
@@ -3804,6 +3765,10 @@ async function countQueuedProductQuoteJobs(db) {
         SUM(CASE WHEN available_at <= ? THEN 1 ELSE 0 END) AS available_count
       FROM user_product_quote_jobs
       WHERE status = 'queued'
+        AND NOT (
+          INSTR(LOWER(COALESCE(trigger_type, '')), 'map_state') > 0
+          OR INSTR(LOWER(COALESCE(stale_reason, '')), 'map_state') > 0
+        )
     `,
     [nowIso()],
   );
@@ -3819,16 +3784,16 @@ function productQuoteQueueBatchLimits(path) {
     return {
       maxJobs: PRODUCT_QUOTE_QUEUE_INTERNAL_MAX_JOBS,
       maxMs: PRODUCT_QUOTE_QUEUE_INTERNAL_MAX_MS,
-      maxMapJobs: 2,
-      maxHeavyMapJobs: 1,
+      maxMapJobs: 0,
+      maxHeavyMapJobs: 0,
     };
   }
   if (safePath === "scheduled") {
     return {
       maxJobs: PRODUCT_QUOTE_QUEUE_SCHEDULED_MAX_JOBS,
       maxMs: PRODUCT_QUOTE_QUEUE_SCHEDULED_MAX_MS,
-      maxMapJobs: 2,
-      maxHeavyMapJobs: 1,
+      maxMapJobs: 0,
+      maxHeavyMapJobs: 0,
     };
   }
   return {
@@ -3851,6 +3816,7 @@ async function runProductQuoteQueueBatch(env, path) {
       maxMs: limits.maxMs,
       maxMapJobs: limits.maxMapJobs,
       maxHeavyMapJobs: limits.maxHeavyMapJobs,
+      jobMode: "quote",
     },
   );
   const remaining = await countQueuedProductQuoteJobs(db);

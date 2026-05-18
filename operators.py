@@ -358,6 +358,50 @@ _REGION_PACK_PURCHASE_MONITOR = {}
 _REGION_PACK_PURCHASE_MONITOR_REGISTERED = False
 _REGION_PACK_PURCHASE_POLL_INTERVAL_SEC = 12.0
 _REGION_PACK_PURCHASE_TIMEOUT_SEC = 180.0
+_LAST_RESOLVE_TEXTURE_QUALITY_MODE_KEY = "planetka_last_resolve_texture_quality_mode"
+_FULL_QUALITY_HOLD_SIGNATURE_KEY = "planetka_full_quality_hold_signature"
+
+
+def _signature_token(signature):
+    try:
+        import json
+        return json.dumps(signature, sort_keys=True, separators=(",", ":"), default=str)
+    except (RuntimeError, TypeError, ValueError):
+        return repr(signature)
+
+
+def _store_full_quality_requested_for_camera(scene):
+    if scene is None:
+        return
+    signature = None
+    try:
+        from .planetka_runtime.view_telemetry import camera_signature
+        signature = camera_signature(scene)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        signature = None
+    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+        signature = None
+    try:
+        scene[_LAST_RESOLVE_TEXTURE_QUALITY_MODE_KEY] = "FULL"
+        if signature is not None:
+            scene[_FULL_QUALITY_HOLD_SIGNATURE_KEY] = _signature_token(signature)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed storing pending Full Quality selection", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed storing pending Full Quality selection", exc_info=True)
+
+
+def _clear_full_quality_hold_for_manual_preview(scene):
+    if scene is None:
+        return
+    try:
+        if _FULL_QUALITY_HOLD_SIGNATURE_KEY in scene:
+            del scene[_FULL_QUALITY_HOLD_SIGNATURE_KEY]
+        scene[_LAST_RESOLVE_TEXTURE_QUALITY_MODE_KEY] = "PREVIEW"
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed clearing Full Quality hold for Preview", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed clearing Full Quality hold for Preview", exc_info=True)
 
 
 def _is_active_view_resolve_scope(scene):
@@ -1083,6 +1127,7 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
             )
 
         if target_mode == "PREVIEW":
+            _clear_full_quality_hold_for_manual_preview(scene)
             try:
                 previous_mode = _normalize_startup_texture_quality_mode(
                     getattr(props, "texture_quality_mode", "PREVIEW")
@@ -1095,7 +1140,7 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
             except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
                 return fail(
                     self,
-                    f"Texture quality selection failed: {exc}",
+                    "Texture quality could not be changed. Please retry.",
                     code=ErrorCode.RESOLVE_REFRESH_FAILED,
                     logger=logger,
                     exc=exc,
@@ -1117,6 +1162,10 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
             return {'FINISHED'}
 
         if target_mode == "FULL":
+            _store_full_quality_requested_for_camera(scene)
+            _tag_view3d_redraw()
+            scene_price = 0.0
+            pricing_verified = False
             try:
                 from .planetka_runtime.view_telemetry import (
                     build_resolve_cost_breakdown,
@@ -1130,29 +1179,23 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
                     texture_quality_mode="FULL",
                 )
                 if not isinstance(breakdown, dict) or not bool(breakdown.get("ok", True)):
-                    return fail(
-                        self,
-                        "Full Quality pricing is not available. Reconnect Planetka Cloud and retry.",
-                        code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-                        logger=logger,
+                    logger.debug(
+                        "Planetka: Full Quality price precheck unavailable; proceeding to licenced download check."
                     )
-                scene_price = float(
-                    (breakdown or {}).get("total_credits", (breakdown or {}).get("credits", 0.0)) or 0.0
-                )
-                store_full_price_estimate_from_breakdown(
-                    scene,
-                    breakdown,
-                    texture_quality_mode="FULL",
-                )
+                else:
+                    scene_price = float(
+                        (breakdown or {}).get("total_credits", (breakdown or {}).get("credits", 0.0)) or 0.0
+                    )
+                    pricing_verified = True
+                    store_full_price_estimate_from_breakdown(
+                        scene,
+                        breakdown,
+                        texture_quality_mode="FULL",
+                    )
             except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
                 logger.debug("Planetka: failed checking direct payment before Full Quality resolve", exc_info=True)
-                return fail(
-                    self,
-                    "Full Quality pricing is not available. Reconnect Planetka Cloud and retry.",
-                    code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-                    logger=logger,
-                )
-            if scene_price > 0.000001:
+            if pricing_verified and scene_price > 0.000001:
+                _clear_full_quality_hold_for_manual_preview(scene)
                 checkout_result = bpy.ops.planetka.open_credit_checkout(
                     'INVOKE_DEFAULT',
                     checkout_option="SCENE",
@@ -1167,15 +1210,19 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
                 texture_quality_mode_override=target_mode,
             )
         except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
+            if target_mode == "FULL":
+                _clear_full_quality_hold_for_manual_preview(scene)
             return fail(
                 self,
-                f"Texture resolve failed: {exc}",
+                "Texture data could not be resolved. Please retry.",
                 code=ErrorCode.RESOLVE_REFRESH_FAILED,
                 logger=logger,
                 exc=exc,
                 log_message="Planetka texture quality change failed during resolve",
             )
         if "FINISHED" not in result:
+            if target_mode == "FULL":
+                _clear_full_quality_hold_for_manual_preview(scene)
             return {'CANCELLED'}
         try:
             from .credit_api import clear_credit_caches

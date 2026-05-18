@@ -650,6 +650,8 @@ def _resolve_download_indicator_state(scene, runtime, runtime_code, runtime_text
     active = bool(progress_download_active or active_status or runtime.get("running", False))
     quality_mode = progress_quality_mode if active else ""
     if not quality_mode and active:
+        quality_mode = _normalize_texture_quality_for_ui(runtime.get("quality_mode", ""))
+    if not quality_mode and active:
         try:
             props = getattr(scene, "planetka", None)
             quality_mode = _normalize_texture_quality_for_ui(getattr(props, "texture_quality_mode", ""))
@@ -762,7 +764,7 @@ def _quality_progress_label(mode, estimate_bytes, estimate_available_bytes, down
         return f"{_fmt_bytes(downloaded_bytes)} / {_fmt_bytes(total_bytes)}{suffix}"
     if downloaded_bytes > 0:
         return f"{_fmt_bytes(downloaded_bytes)} downloaded"
-    return "— MB"
+    return "-"
 
 
 def _quality_progress_factor(mode, download_state, displayed_mode, estimate_bytes=None, estimate_available_bytes=None):
@@ -795,11 +797,11 @@ def _quality_progress_factor(mode, download_state, displayed_mode, estimate_byte
 def _draw_quality_meta_row(layout, progress_text, usage_label=""):
     if not str(usage_label or "").strip():
         row = layout.row(align=True)
-        row.label(text=str(progress_text or "— MB"), icon="DISK_DRIVE")
+        row.label(text=str(progress_text or "-"), icon="DISK_DRIVE")
         return
     row = layout.split(factor=0.68, align=True)
     left = row.row(align=True)
-    left.label(text=str(progress_text or "— MB"), icon="DISK_DRIVE")
+    left.label(text=str(progress_text or "-"), icon="DISK_DRIVE")
     right = row.row(align=True)
     right.alignment = 'RIGHT'
     right.label(text=str(usage_label or ""))
@@ -1592,7 +1594,7 @@ def _draw_account_panel(layout):
             hold_box = layout.box()
             hold_row = hold_box.row(align=True)
             hold_row.alert = True
-            hold_row.label(text="Preview streaming is paused for review.", icon="INFO")
+            hold_row.label(text="Preview downloads are temporarily paused.", icon="INFO")
             hold_box.label(text="Full Quality licenced data remains available.", icon="CHECKMARK")
 
     if status_message:
@@ -1741,6 +1743,9 @@ def _draw_live_telemetry(layout, scene):
         runtime, runtime_code, runtime_text = _resolve_runtime_display(scene)
         download_state = _resolve_download_indicator_state(scene, runtime, runtime_code, runtime_text)
         displayed_quality_mode = _last_visible_texture_quality_mode(scene)
+        active_quality_mode = _normalize_texture_quality_for_ui(download_state.get("quality_mode", ""))
+        if bool(download_state.get("active", False)) and active_quality_mode:
+            displayed_quality_mode = active_quality_mode
 
         try:
             from .credit_api import get_cached_credit_account
@@ -1894,10 +1899,7 @@ def _draw_live_telemetry(layout, scene):
             estimate_notice.label(text="Bring Camera to this view before using Full Quality.", icon="INFO")
         elif not full_size_known:
             estimate_notice = full_box.row(align=True)
-            estimate_notice.label(text="Full Quality data size is being calculated.", icon="INFO")
-        elif not full_price_known:
-            estimate_notice = full_box.row(align=True)
-            estimate_notice.label(text="Full Quality price will be verified before download.", icon="INFO")
+            estimate_notice.label(text="Calculating scene data size.", icon="INFO")
         data_packs_box = _draw_collapsible_subsection(
             quality_box,
             scene,

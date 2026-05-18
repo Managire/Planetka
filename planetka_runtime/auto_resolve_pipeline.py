@@ -5,6 +5,83 @@ import time
 _AUTO_RESOLVE_DOWNLOAD_CTX = None
 _AUTO_RESOLVE_DECISION_CTX = None
 _AUTO_RESOLVE_NONCRITICAL_CTX = None
+_LAST_RESOLVE_TEXTURE_QUALITY_MODE_KEY = "planetka_last_resolve_texture_quality_mode"
+_FULL_QUALITY_HOLD_SIGNATURE_KEY = "planetka_full_quality_hold_signature"
+
+
+def _quality_mode_for_job(deps, job):
+    try:
+        return deps.normalize_texture_quality_mode(
+            deps.job_field(job, "texture_quality_mode", "PREVIEW")
+        )
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return "PREVIEW"
+
+
+def _signature_token(signature):
+    try:
+        return json.dumps(signature, sort_keys=True, separators=(",", ":"), default=str)
+    except (RuntimeError, TypeError, ValueError):
+        return repr(signature)
+
+
+def _scene_last_resolve_quality(scene, deps):
+    if scene is None:
+        return "PREVIEW"
+    try:
+        return deps.normalize_texture_quality_mode(
+            scene.get(_LAST_RESOLVE_TEXTURE_QUALITY_MODE_KEY, "PREVIEW")
+        )
+    except deps.recoverable_exceptions:
+        return "PREVIEW"
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return "PREVIEW"
+
+
+def _store_full_quality_hold(scene, deps, signature):
+    if scene is None or signature is None:
+        return
+    try:
+        scene[_FULL_QUALITY_HOLD_SIGNATURE_KEY] = _signature_token(signature)
+        scene[_LAST_RESOLVE_TEXTURE_QUALITY_MODE_KEY] = "FULL"
+    except deps.recoverable_exceptions:
+        deps.logger.debug("Planetka: failed storing Full Quality hold signature", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        deps.logger.debug("Planetka: failed storing Full Quality hold signature", exc_info=True)
+
+
+def _clear_full_quality_hold(scene, deps, *, mark_preview=False):
+    if scene is None:
+        return
+    try:
+        if _FULL_QUALITY_HOLD_SIGNATURE_KEY in scene:
+            del scene[_FULL_QUALITY_HOLD_SIGNATURE_KEY]
+        if bool(mark_preview) and _scene_last_resolve_quality(scene, deps) == "FULL":
+            scene[_LAST_RESOLVE_TEXTURE_QUALITY_MODE_KEY] = "PREVIEW"
+    except deps.recoverable_exceptions:
+        deps.logger.debug("Planetka: failed clearing Full Quality hold signature", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        deps.logger.debug("Planetka: failed clearing Full Quality hold signature", exc_info=True)
+
+
+def _full_quality_hold_status(scene, deps, scope, resolve_signature):
+    if _scene_last_resolve_quality(scene, deps) != "FULL":
+        return "NONE"
+    try:
+        stored_token = str(scene.get(_FULL_QUALITY_HOLD_SIGNATURE_KEY, "") or "").strip()
+    except deps.recoverable_exceptions:
+        stored_token = ""
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        stored_token = ""
+    if not stored_token:
+        return "NONE"
+    if str(scope or "").strip().upper() == "ACTIVE_VIEW" or _is_active_view_resolve_signature(resolve_signature):
+        _clear_full_quality_hold(scene, deps, mark_preview=True)
+        return "CLEARED"
+    if stored_token != _signature_token(resolve_signature):
+        _clear_full_quality_hold(scene, deps, mark_preview=True)
+        return "CLEARED"
+    return "HOLD"
 
 
 def _require_download_ctx():
@@ -677,6 +754,8 @@ def _ctx_handle_auto_resolve_download_failure(ctx, job, error_message):
             f"(manual={bool(deps.job_field(job, 'manual_request', False))}, request_id={deps.job_field(job, 'request_id')}, "
             f"error={str(error_message or '').strip() or 'unknown'})"
         )
+        if _quality_mode_for_job(deps, job) == "FULL":
+            _clear_full_quality_hold(scene, deps, mark_preview=True)
         _ctx_mark_manual_queued_resolve_error(
             ctx,
             scene,
@@ -739,6 +818,13 @@ def _ctx_auto_resolve_handle_cancel_or_failure(ctx, result, job, manual_request)
         deps.resolve_trace(
             f"Download finished cancelled (request_id={deps.job_field(job, 'request_id')}, manual={manual_request})"
         )
+        if bool(manual_request) and _quality_mode_for_job(deps, job) == "FULL":
+            try:
+                scene_id = int(deps.job_field(job, "scene_id", 0) or 0)
+            except (TypeError, ValueError):
+                scene_id = 0
+            scene = deps.scene_from_key(scene_id) if scene_id else None
+            _clear_full_quality_hold(scene, deps, mark_preview=True)
         return True
 
     if not bool(result.get("success", False)):
@@ -927,6 +1013,7 @@ def _ctx_auto_resolve_apply_downloaded_tiles(ctx, scene, scene_id, job, manual_r
         op_kwargs = {
             "scope_mode": "CAMERA",
             "skip_render_compatibility": True,
+            "skip_pricing_session": True,
             "defer_download": False,
             "tiles_override_json": json.dumps(list(job_target_tiles)),
             "texture_quality_mode_override": deps.normalize_texture_quality_mode(
@@ -1092,6 +1179,7 @@ def _auto_resolve_summary_total_bytes(job_target_tiles, job, result):
 
 def _ctx_finalize_auto_resolve_apply(ctx, scene, scene_id, job, manual_request, job_target_tiles, resolved_at, summary_total_bytes):
     deps = ctx.deps
+    job_quality_mode = _quality_mode_for_job(deps, job)
     try:
         created_at = float(deps.job_field(job, "created_at", resolved_at) or resolved_at)
     except (TypeError, ValueError):
@@ -1101,11 +1189,13 @@ def _ctx_finalize_auto_resolve_apply(ctx, scene, scene_id, job, manual_request, 
 
     scene_id = deps.scene_key(scene)
     latest_signature = deps.camera_signature(scene) or deps.job_field(job, "camera_signature")
+    latest_output_signature = deps.output_resolution_signature(scene)
     scene_state = deps.read_scene_auto_resolve_state(scene_id)
     if scene_state is not None:
         scene_state.last_resolve_time = resolved_at
         scene_state.last_change_time = resolved_at
         scene_state.last_camera_signature = latest_signature
+        scene_state.last_output_signature = latest_output_signature
         scene_state.last_processed_signature = latest_signature
         scene_state.pending_output_change = False
         deps.write_scene_auto_resolve_state(scene_state)
@@ -1118,16 +1208,21 @@ def _ctx_finalize_auto_resolve_apply(ctx, scene, scene_id, job, manual_request, 
     except (RuntimeError, TypeError, ValueError):
         deps.logger.debug("Planetka: failed clearing queued resolve error marker", exc_info=True)
     latest_camera_signature = deps.camera_signature(scene)
-    latest_output_signature = deps.output_resolution_signature(scene)
     job_camera_signature = deps.job_field(job, "camera_signature")
     job_output_signature = deps.job_field(job, "output_signature")
 
     if manual_request:
+        if job_quality_mode == "FULL":
+            _store_full_quality_hold(scene, deps, job_camera_signature or latest_camera_signature)
+        elif job_quality_mode == "PREVIEW":
+            _clear_full_quality_hold(scene, deps, mark_preview=True)
         deps.logger.warning(
             "Planetka queued resolve applied successfully (%d tile(s)).",
             len(job_target_tiles),
         )
     else:
+        if job_quality_mode == "PREVIEW":
+            _clear_full_quality_hold(scene, deps, mark_preview=True)
         # Auto-resolve should always finalize once download completes.
         # If the camera/output changed while downloading, queue another pass after this apply.
         if (
@@ -1872,6 +1967,18 @@ def _ctx_auto_resolve_detect_change(ctx, scene, props):
         output_signature,
         now,
     )
+    full_hold_status = _full_quality_hold_status(scene, deps, scope, resolve_signature)
+    if full_hold_status == "HOLD":
+        scene_state.last_camera_signature = resolve_signature
+        scene_state.last_output_signature = output_signature
+        scene_state.last_processed_signature = resolve_signature
+        scene_state.pending_output_change = False
+        deps.write_scene_auto_resolve_state(scene_state)
+        return {
+            "event": "NO_CHANGE",
+            "retry_delay": None,
+            "scene_state": scene_state,
+        }
 
     min_interval_sec = settings.min_interval_sec_default
     last_resolve = float(scene_state.last_resolve_time or 0.0)
