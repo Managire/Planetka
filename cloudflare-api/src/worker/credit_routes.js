@@ -56,6 +56,7 @@ const SCENE_CUSTOM_LICENCE_LABEL = "Custom scene-specific licence";
 const ANIMATION_CUSTOM_LICENCE_LABEL = "Custom animation render";
 const ANIMATION_CHECKOUT_MAX_UNIQUE_TILES = 5000;
 const CHECKOUT_TILE_SET_TOKEN_TTL_MINUTES = 24 * 60;
+const STRIPE_CHECKOUT_AMOUNT_RECORD_TTL_MINUTES = 24 * 60;
 const MONEY_SCALE = 100;
 const METRIC_SCALE = 1_000_000;
 const REGION_PACK_CATALOG_VERSION = GENERATED_REGION_PACK_CATALOG_VERSION || "gadm_regions_v8";
@@ -11385,6 +11386,117 @@ function eurFromStripeAmountCents(value) {
   return normalizeCreditAmount(cents / 100.0);
 }
 
+async function ensureStripeCheckoutAmountTable(db, deps) {
+  await deps.ensureCreditTables(db);
+  await deps.dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS stripe_checkout_amounts (
+        checkout_session_id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        purchase_type TEXT NOT NULL,
+        expected_amount_cents INTEGER NOT NULL,
+        currency TEXT NOT NULL DEFAULT 'eur',
+        metadata_json TEXT,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+      )
+    `,
+  );
+  await deps.dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_stripe_checkout_amounts_expires ON stripe_checkout_amounts(expires_at)`,
+  );
+}
+
+async function storeStripeCheckoutAmountRecord(db, details, deps) {
+  const sessionId = String(details && (details.checkout_session_id || details.checkoutSessionId) || "").trim();
+  const userId = String(details && details.user_id || "").trim();
+  const purchaseType = String(details && details.purchase_type || "").trim().toLowerCase();
+  const expectedAmountCents = integerCents(details && details.expected_amount_cents);
+  if (!sessionId || !userId || !purchaseType || expectedAmountCents <= 0) {
+    return { error: "invalid_checkout_amount_record" };
+  }
+  const now = quoteIsoNow(deps);
+  await ensureStripeCheckoutAmountTable(db, deps);
+  await deps.dbRun(
+    db,
+    `
+      INSERT OR REPLACE INTO stripe_checkout_amounts (
+        checkout_session_id, user_id, purchase_type, expected_amount_cents,
+        currency, metadata_json, created_at, expires_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    [
+      sessionId,
+      userId,
+      purchaseType,
+      expectedAmountCents,
+      String(details && details.currency || "eur").trim().toLowerCase() || "eur",
+      JSON.stringify(details && details.metadata && typeof details.metadata === "object" ? details.metadata : {}),
+      now,
+      addMinutesIsoFromDeps(deps, STRIPE_CHECKOUT_AMOUNT_RECORD_TTL_MINUTES),
+    ],
+  );
+  return { ok: true };
+}
+
+async function loadStripeCheckoutAmountRecord(db, sessionId, deps) {
+  const safeSessionId = String(sessionId || "").trim();
+  if (!safeSessionId) {
+    return null;
+  }
+  await ensureStripeCheckoutAmountTable(db, deps);
+  return await deps.dbGet(
+    db,
+    `
+      SELECT checkout_session_id, user_id, purchase_type, expected_amount_cents,
+             currency, metadata_json, created_at, expires_at
+      FROM stripe_checkout_amounts
+      WHERE checkout_session_id = ?
+      LIMIT 1
+    `,
+    [safeSessionId],
+  );
+}
+
+async function validateStripeCheckoutAmountRecord(db, session, deps, expectedPurchaseType) {
+  const sessionId = String(session && session.id || "").trim();
+  if (!sessionId) {
+    return { error: "missing_session_id" };
+  }
+  const record = await loadStripeCheckoutAmountRecord(db, sessionId, deps);
+  if (!record) {
+    return { error: "missing_checkout_amount_record", stripe_session_id: sessionId };
+  }
+  const metadata = stripeSessionMetadata(session);
+  const metadataUserId = String(metadata.planetka_user_id || session && session.client_reference_id || "").trim();
+  const purchaseType = String(metadata.planetka_purchase_type || "").trim().toLowerCase();
+  const requiredPurchaseType = String(expectedPurchaseType || purchaseType || "").trim().toLowerCase();
+  const recordPurchaseType = String(record.purchase_type || "").trim().toLowerCase();
+  if (!metadataUserId || String(record.user_id || "").trim() !== metadataUserId) {
+    return { error: "checkout_amount_user_mismatch" };
+  }
+  if (!requiredPurchaseType || recordPurchaseType !== requiredPurchaseType || purchaseType !== requiredPurchaseType) {
+    return { error: "checkout_amount_purchase_type_mismatch" };
+  }
+  const recordCurrency = String(record.currency || "eur").trim().toLowerCase();
+  const sessionCurrency = String(session && session.currency || "eur").trim().toLowerCase();
+  if (recordCurrency !== sessionCurrency) {
+    return { error: "checkout_amount_currency_mismatch" };
+  }
+  const expectedAmountCents = integerCents(record.expected_amount_cents);
+  const stripeAmountCents = integerCents(session && session.amount_total);
+  if (expectedAmountCents !== stripeAmountCents) {
+    return {
+      error: "checkout_amount_mismatch",
+      expected_amount_cents: expectedAmountCents,
+      stripe_amount_cents: stripeAmountCents,
+    };
+  }
+  return { ok: true, record };
+}
+
 export async function handleCreditCheckout(request, env, deps) {
   await ensureRuntimePricingSettings(env, deps);
   const auth = await deps.requireAuthenticatedUserContext(request, env, { enforceApiKeyDevicePolicy: false });
@@ -11530,6 +11642,26 @@ export async function handleCreditCheckout(request, env, deps) {
     );
     if (session.error) {
       return deps.json({ ok: false, ...session }, 502, env);
+    }
+    const checkoutAmountRecord = await storeStripeCheckoutAmountRecord(
+      db,
+      {
+        checkout_session_id: session.session_id,
+        user_id: userId,
+        purchase_type: "animation_tiles",
+        expected_amount_cents: amountCents,
+        currency: "eur",
+        metadata: {
+          tile_set_token: String(keyResult.tile_set_token || ""),
+          tile_count: Math.max(0, Number.parseInt(estimate && estimate.tile_count || tileKeys.length, 10) || tileKeys.length),
+          segment_count: Math.max(0, Number.parseInt(keyResult.segment_count || 0, 10) || 0),
+          price_eur: priceEur.toFixed(2),
+        },
+      },
+      deps,
+    );
+    if (checkoutAmountRecord && checkoutAmountRecord.error) {
+      return deps.json({ ok: false, ...checkoutAmountRecord }, 500, env);
     }
     return deps.json(
       {
@@ -11728,6 +11860,25 @@ export async function handleCreditCheckout(request, env, deps) {
   );
   if (session.error) {
     return deps.json({ ok: false, ...session }, 502, env);
+  }
+  const checkoutAmountRecord = await storeStripeCheckoutAmountRecord(
+    db,
+    {
+      checkout_session_id: session.session_id,
+      user_id: userId,
+      purchase_type: "scene_tiles",
+      expected_amount_cents: amountCents,
+      currency: "eur",
+      metadata: {
+        tile_keys: normalizedKeys,
+        paid_tile_count: Math.max(0, Number.parseInt(estimate && estimate.paid_tile_count || 0, 10) || 0),
+        price_eur: priceEur.toFixed(2),
+      },
+    },
+    deps,
+  );
+  if (checkoutAmountRecord && checkoutAmountRecord.error) {
+    return deps.json({ ok: false, ...checkoutAmountRecord }, 500, env);
   }
   return deps.json(
     {
@@ -13963,6 +14114,10 @@ export async function applyStripeCreditPurchaseFromSession(db, session, deps, en
       { quote },
     );
   } else if (purchaseType === "animation_tiles") {
+    const amountCheck = await validateStripeCheckoutAmountRecord(db, session, deps, "animation_tiles");
+    if (amountCheck && amountCheck.error) {
+      return amountCheck;
+    }
     const animationTileKeys = await checkoutTileKeysFromMetadata(db, metadata, deps);
     if (!animationTileKeys.length) {
       return { error: "missing_animation_tile_keys" };
@@ -13998,6 +14153,10 @@ export async function applyStripeCreditPurchaseFromSession(db, session, deps, en
       },
     );
   } else if (purchaseType === "scene_tiles") {
+    const amountCheck = await validateStripeCheckoutAmountRecord(db, session, deps, "scene_tiles");
+    if (amountCheck && amountCheck.error) {
+      return amountCheck;
+    }
     result = await grantPaidSceneTileEntitlements(
       db,
       userId,
