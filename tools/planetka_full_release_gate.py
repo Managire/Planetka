@@ -331,7 +331,14 @@ def _build_steps(args: argparse.Namespace, package_path: Path) -> list[Step]:
         Step(
             name="worker_deploy_dry_run",
             category="worker",
-            command=["npx", "wrangler", "deploy", "--dry-run"],
+            command=[
+                "zsh",
+                "-lc",
+                "for cfg in wrangler.auth.toml wrangler.tiles.toml wrangler.commerce.toml wrangler.analytics.toml wrangler.maps.toml; do "
+                "echo \"--- dry-run $cfg\"; "
+                "npx wrangler deploy -c \"$cfg\" --dry-run || exit $?; "
+                "done",
+            ],
             cwd=str(CLOUDFLARE_DIR),
             timeout_sec=240,
         ),
