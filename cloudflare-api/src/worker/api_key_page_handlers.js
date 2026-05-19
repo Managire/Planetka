@@ -103,7 +103,7 @@ function renderApiKeyRequestPage(env, deps, message = "", requestedPlan = "") {
             throw new Error(String(errorMessage || "Request failed."));
           }
           status.style.color = "var(--status-ok)";
-          status.textContent = "Check your email for the activation link.";
+          status.textContent = "Planetka access key activation link has been sent.";
         } catch (error) {
           status.style.color = "var(--status-error)";
           status.textContent = String(error && error.message || "Request failed. Please try again.");

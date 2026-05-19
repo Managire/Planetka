@@ -482,7 +482,7 @@ export function createAuthCore(deps) {
     return deps.json(
       {
         ok: true,
-        message: "If the email is valid, a Planetka API key activation link has been sent.",
+        message: "Planetka access key activation link has been sent.",
       },
       200,
       env,
