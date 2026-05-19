@@ -61,45 +61,24 @@ def _enable_addon() -> str:
     raise RuntimeError("Could not enable Planetka for UI-state regression gate.")
 
 
-def _test_full_quality_progress_not_shown_without_download(ui_module) -> dict:
-    """Regression for completed Full Quality bar replacing the clickable button.
+def _test_texture_quality_uses_single_status_line() -> dict:
+    """Texture quality buttons must stay static; progress belongs in the status row."""
 
-    Previously any active runtime state could return a Full Quality progress
-    factor, even with no active download. That turned the button into a passive
-    blue progress bar after purchases.
-    """
-
-    state = {
-        "active": True,
-        "download_active": False,
-        "runtime_code": "IDLE",
-        "quality_mode": "FULL",
-    }
-    factor = ui_module._quality_progress_factor(  # noqa: SLF001 - release gate targets internal UI logic.
-        "FULL",
-        state,
-        "PREVIEW",
-        estimate_bytes=143_280_000,
-        estimate_available_bytes=143_280_000,
+    text = _source_text("ui.py")
+    live_text = text[text.find("def _draw_live_telemetry"):text.find("def _draw_advanced_telemetry")]
+    _assert(
+        "_draw_resolve_status_line(layout, scene, runtime, runtime_code, runtime_text)" in live_text,
+        "Data Streaming must draw the shared resolve status line above Texture Quality.",
     )
-    _assert(factor is None, "Full Quality progress factor must be None when no Full Quality download is active.")
-
-    active_state = dict(state)
-    active_state["download_active"] = True
-    active_state["runtime_code"] = "DOWNLOADING"
-    active_factor = ui_module._quality_progress_factor(  # noqa: SLF001
-        "FULL",
-        active_state,
-        "PREVIEW",
-        estimate_bytes=100,
-        estimate_available_bytes=25,
+    _assert(
+        ".progress(" not in live_text,
+        "Texture Quality must not draw per-button download progress bars.",
     )
-    _assert(active_factor is not None, "Full Quality progress factor should exist during an active Full Quality download.")
-    _assert(0.0 <= float(active_factor) <= 1.0, f"Progress factor out of range: {active_factor}")
-    return {
-        "inactive_factor": factor,
-        "active_factor": active_factor,
-    }
+    _assert(
+        "_quality_progress_factor" not in text,
+        "Removed button-level download indicator helper must not return.",
+    )
+    return {"checked": True}
 
 
 def _test_streaming_quality_ui_has_no_pricing_gate() -> dict:
@@ -107,16 +86,20 @@ def _test_streaming_quality_ui_has_no_pricing_gate() -> dict:
 
     text = _source_text("ui.py")
     _assert(
-        'header_row.label(text="Textures Quality", icon="TEXTURE")' in text,
-        "Sidebar should expose the simplified Textures Quality section.",
+        'header_row.label(text="Texture Quality", icon="TEXTURE")' in text,
+        "Sidebar should expose the simplified Texture Quality section.",
+    )
+    _assert(
+        'bl_label = "Data Streaming"' in text,
+        "Sidebar panel should be named Data Streaming.",
     )
     _assert(
         '"BALANCED", "Balanced"' in text,
-        "Textures Quality must expose the Balanced streaming quality button.",
+        "Texture Quality must expose the Balanced streaming quality button.",
     )
     _assert(
         "planetka.open_credit_checkout" not in text[text.find("def _draw_live_telemetry"):text.find("def _draw_advanced_telemetry")],
-        "Textures Quality must not route Full Quality through checkout.",
+        "Texture Quality must not route Full Quality through checkout.",
     )
     return {"checked": True}
 
@@ -135,8 +118,63 @@ def _test_quality_operator_is_streaming_only() -> dict:
         "Texture quality operator must not open checkout.",
     )
     _assert(
-        "skip_pricing_session=True" in operator_text,
-        "Texture quality operator must not require a commerce pricing session.",
+        "bpy.ops.planetka.load_textures" in operator_text and "defer_download=True" in operator_text,
+        "Texture quality operator must explicitly queue the shared async resolve path.",
+    )
+    _assert(
+        "planetka_last_full_source_tiles" in operator_text
+        and "apply_texture_quality_to_full_tiles" in operator_text
+        and "tiles_override_json=tiles_override_json" in operator_text,
+        "Texture quality operator must reuse the last full-source tile list for fast quality switching.",
+    )
+    return {"checked": True}
+
+
+def _test_texture_quality_tile_levels(base_module: str) -> dict:
+    """Guard the core texture quality contract.
+
+    Full keeps the tile list generated for the view. Balanced requests the same
+    tiles at doubled d-levels. Preview requests the same tiles at four-times
+    d-levels, clamped to the nearest available dataset level.
+    """
+
+    render_prep = __import__(f"{base_module}.render_prep", fromlist=["dummy"])
+    full_tiles = [
+        "x000_y000_z001_d002",
+        "x010_y010_z001_d008",
+        "x020_y020_z180_d180",
+    ]
+    full = render_prep.apply_texture_quality_to_full_tiles(full_tiles, "FULL")
+    balanced = render_prep.apply_texture_quality_to_full_tiles(full_tiles, "BALANCED")
+    preview = render_prep.apply_texture_quality_to_full_tiles(full_tiles, "PREVIEW")
+    _assert("x000_y000_z001_d002" in full, f"Full must keep optimal d-levels: {full}")
+    _assert("x000_y000_z001_d004" in balanced, f"Balanced must double d-levels: {balanced}")
+    _assert("x000_y000_z001_d008" in preview, f"Preview must quadruple d-levels: {preview}")
+    _assert("x010_y010_z001_d030" in balanced, f"Balanced must clamp to next available doubled d-level: {balanced}")
+    _assert("x010_y010_z001_d060" in preview, f"Preview must clamp to next available quadrupled d-level: {preview}")
+    _assert("x020_y020_z180_d180" in full, f"Full z180 must stay d180: {full}")
+    _assert("x020_y020_z180_d360" in balanced, f"Balanced z180 must be d360: {balanced}")
+    _assert("x020_y020_z180_d720" in preview, f"Preview z180 must be d720: {preview}")
+    return {"full": full, "balanced": balanced, "preview": preview}
+
+
+def _test_quality_switch_fast_path() -> dict:
+    text = _source_text("planetka_runtime/auto_resolve_pipeline.py")
+    _assert(
+        "quality_switch_fast_path" in text,
+        "Auto-resolve planner must expose the quality-switch fast path.",
+    )
+    _assert(
+        "apply_texture_quality_to_full_tiles" in text,
+        "Quality changes must transform the last optimal source tile list instead of recomputing visibility.",
+    )
+    _assert(
+        "not quality_mode_changed and now - last_resolve < min_interval_sec" in text,
+        "Quality changes must not be delayed by the normal auto-resolve interval.",
+    )
+    _assert(
+        "and not quality_mode_changed" in text,
+        "Same camera signature must still plan when only the texture quality changed.",
     )
     return {"checked": True}
 
@@ -146,11 +184,11 @@ def _test_full_quality_details_removed_from_data_control() -> dict:
     data_control_text = text[text.find("def _draw_live_telemetry"):text.find("def _draw_advanced_telemetry")]
     _assert(
         "planetka.data_cost_breakdown" not in data_control_text,
-        "Textures Quality should not expose the old Full Quality Details pricing popup.",
+        "Texture Quality should not expose the old Full Quality Details pricing popup.",
     )
     _assert(
         "Relevant Data Packs" not in data_control_text,
-        "Textures Quality should not expose data-pack upsells.",
+        "Texture Quality should not expose data-pack upsells.",
     )
     return {"checked": True}
 
@@ -175,9 +213,11 @@ def main() -> int:
         base_module = _enable_addon()
         ui_module = __import__(f"{base_module}.ui", fromlist=["dummy"])
         checks = (
-            ("full_quality_progress_not_shown_without_download", lambda: _test_full_quality_progress_not_shown_without_download(ui_module)),
+            ("texture_quality_uses_single_status_line", _test_texture_quality_uses_single_status_line),
             ("streaming_quality_ui_has_no_pricing_gate", _test_streaming_quality_ui_has_no_pricing_gate),
             ("quality_operator_is_streaming_only", _test_quality_operator_is_streaming_only),
+            ("texture_quality_tile_levels", lambda: _test_texture_quality_tile_levels(base_module)),
+            ("quality_switch_fast_path", _test_quality_switch_fast_path),
             ("full_quality_details_removed_from_data_control", _test_full_quality_details_removed_from_data_control),
             ("region_pack_offer_context_is_correct", _test_region_pack_offer_context_is_not_download_context),
         )

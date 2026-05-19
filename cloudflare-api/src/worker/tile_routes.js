@@ -1,8 +1,6 @@
 import { corsHeaders, json } from "./responses.js";
 import {
-  isFreeCreditTileKey,
   tileKeyFromFileName,
-  isTileAllowedByDownloadSession,
 } from "./tile_sessions.js";
 
 function guessContentType(fileName) {
@@ -34,6 +32,14 @@ function buildTileResponseHeaders(resolveTileCacheControl, clampNonNegativeInt, 
   return headers;
 }
 
+function firstNonEmpty(...values) {
+  for (const value of values) {
+    const text = String(value ?? "").trim();
+    if (text) return text;
+  }
+  return "";
+}
+
 function parseFiniteNumber(value) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : NaN;
@@ -44,20 +50,17 @@ export async function handleTileSessionStart(request, env, deps) {
     requireAuthenticatedUserContext,
     parseJson,
     issueTileSessionToken,
-    getPreviewFairUsageHoldForUser,
     normalizeRequestedPlan,
-    normalizeQualityMode,
     isProfessionalPlan,
-    personalFreeLocationBlockedMessage,
     personalFreeRegionForPoint,
-    previewFairUsageBlockedResponse,
+    personalFreeLocationBlockedMessage,
     requireDb,
     json: jsonResponse,
     createTileDownloadSession,
     normalizeTileKeys,
   } = deps;
 
-  const auth = await requireAuthenticatedUserContext(
+  let auth = await requireAuthenticatedUserContext(
     request,
     env,
     { enforceApiKeyDevicePolicy: false, lightweightAccessClaims: false },
@@ -65,37 +68,53 @@ export async function handleTileSessionStart(request, env, deps) {
   if (auth.error) {
     return auth.error;
   }
-  const db = requireDb(env);
+  if (typeof deps.resolveTileSessionAuth === "function") {
+    const resolvedAuth = await deps.resolveTileSessionAuth(request, env, auth);
+    if (resolvedAuth && resolvedAuth.error) {
+      return resolvedAuth.error;
+    }
+    if (resolvedAuth) {
+      auth = resolvedAuth;
+    }
+  }
   const body = await parseJson(request);
   const requestedQualityMode = String(
     body && body.quality_mode ? body.quality_mode : request.headers.get("X-Planetka-Quality-Mode") || "",
   ).trim();
-  const normalizedRequestedQualityMode = normalizeQualityMode(requestedQualityMode);
-  if (normalizedRequestedQualityMode === "preview") {
-    const hold = await getPreviewFairUsageHoldForUser(db, auth.user && auth.user.id);
-    if (hold && hold.held) {
-      return previewFairUsageBlockedResponse(env, hold.message);
-    }
-  }
   const requestedResolveId = String(
     body && body.resolve_id ? body.resolve_id : request.headers.get("X-Planetka-Resolve-Id") || "",
   ).trim();
-  const navLatitude = parseFiniteNumber(
-    body && (
-      body.nav_latitude_deg
-      || body.navLatitudeDeg
-      || body.nav_latitude
-      || body.navLatitude
-    ) || request.headers.get("X-Planetka-Nav-Latitude") || "",
+  const planCode = normalizeRequestedPlan(
+    auth && (auth.qualityAccessPlanCode || auth.planCode || auth.user && auth.user.status),
   );
-  const navLongitude = parseFiniteNumber(
-    body && (
-      body.nav_longitude_deg
-      || body.navLongitudeDeg
-      || body.nav_longitude
-      || body.navLongitude
-    ) || request.headers.get("X-Planetka-Nav-Longitude") || "",
-  );
+  let personalFreeRegion = "";
+  if (!isProfessionalPlan(planCode)) {
+    const navLatitude = parseFiniteNumber(firstNonEmpty(
+      body && (body.nav_latitude_deg ?? body.navLatitudeDeg ?? body.nav_latitude ?? body.navLatitude),
+      request.headers.get("X-Planetka-Nav-Latitude"),
+    ));
+    const navLongitude = parseFiniteNumber(firstNonEmpty(
+      body && (body.nav_longitude_deg ?? body.navLongitudeDeg ?? body.nav_longitude ?? body.navLongitude),
+      request.headers.get("X-Planetka-Nav-Longitude"),
+    ));
+    const region = typeof personalFreeRegionForPoint === "function"
+      ? personalFreeRegionForPoint(navLatitude, navLongitude)
+      : null;
+    if (!region || !region.id) {
+      return jsonResponse(
+        {
+          ok: false,
+          error: "not_allowed_for_tier",
+          message: typeof personalFreeLocationBlockedMessage === "function"
+            ? personalFreeLocationBlockedMessage()
+            : "Personal accounts can stream Planetka free locations only.",
+        },
+        403,
+        env,
+      );
+    }
+    personalFreeRegion = String(region.id || "").trim();
+  }
   const creditProtocol = String(body && (body.credit_protocol || body.creditProtocol) || "").trim();
   const creditTileKeys = body && (
     body.tile_keys
@@ -117,24 +136,6 @@ export async function handleTileSessionStart(request, env, deps) {
     );
   }
   const sessionId = creditEnforced ? crypto.randomUUID() : "";
-  const qualityAccessPlanCode = normalizeRequestedPlan(auth && (auth.qualityAccessPlanCode || auth.planCode));
-  let personalFreeRegion = null;
-  if (!creditEnforced && !isProfessionalPlan(qualityAccessPlanCode)) {
-    personalFreeRegion = personalFreeRegionForPoint(navLatitude, navLongitude);
-    if (!personalFreeRegion) {
-      return jsonResponse(
-        {
-          ok: false,
-          error: "personal_location_not_allowed",
-          message: personalFreeLocationBlockedMessage(),
-          allowed_locations: ["New Zealand", "Iceland"],
-          requested_quality_mode: normalizedRequestedQualityMode,
-        },
-        403,
-        env,
-      );
-    }
-  }
   const issued = await issueTileSessionToken(
     env,
     auth,
@@ -144,7 +145,7 @@ export async function handleTileSessionStart(request, env, deps) {
       creditProtocol,
       creditEnforced,
       sessionId,
-      personalFreeRegion: personalFreeRegion && personalFreeRegion.id || "",
+      personalFreeRegion,
     },
   );
   if (issued && issued.error) {
@@ -153,7 +154,7 @@ export async function handleTileSessionStart(request, env, deps) {
   const unlockResult = creditEnforced
     && typeof deps.unlockTilesForSession === "function"
     ? await deps.unlockTilesForSession(
-      db,
+      requireDb(env),
       auth.user && auth.user.id,
       issued.qualityMode,
       creditTileKeys,
@@ -179,7 +180,7 @@ export async function handleTileSessionStart(request, env, deps) {
       {
         ok: false,
         error: "tile_unlock_verification_failed",
-        message: String(unlockResult.message || "Planetka Full Quality licence could not be confirmed for this Resolve."),
+        message: String(unlockResult.message || "This old tile-session flow is no longer available."),
         tile_key: String(unlockResult.missing_tile_key || ""),
       },
       503,
@@ -196,7 +197,7 @@ export async function handleTileSessionStart(request, env, deps) {
       {
         ok: false,
         error: String(unlockResult.error || "payment_required"),
-        message: "Full Quality requires a Professional account.",
+        message: "This old tile-session flow is no longer available.",
         required_credits: Number(unlockResult.required_credits || 0),
         price_eur: Number(unlockResult.price_eur || unlockResult.required_credits || 0),
         paid_tile_count: Number(unlockResult.paid_tile_count || 0),
@@ -211,7 +212,7 @@ export async function handleTileSessionStart(request, env, deps) {
       {
         ok: false,
         error: String(unlockResult.error || "tile_unlock_failed"),
-        message: String(unlockResult.message || "Planetka Full Quality licence could not be confirmed for this Resolve."),
+        message: String(unlockResult.message || "This old tile-session flow is no longer available."),
       },
       503,
       env,
@@ -229,7 +230,7 @@ export async function handleTileSessionStart(request, env, deps) {
     )
     : Array.isArray(creditTileKeys) ? creditTileKeys : [];
   if (creditEnforced && typeof createTileDownloadSession === "function") {
-    await createTileDownloadSession(db, {
+    await createTileDownloadSession(requireDb(env), {
       id: sessionId,
       userId: auth.user && auth.user.id,
       resolveId: issued.resolveId,
@@ -247,7 +248,8 @@ export async function handleTileSessionStart(request, env, deps) {
       tile_token: issued.token,
       expires_in_seconds: issued.expiresInSeconds,
       expires_at: issued.expiresAt,
-      plan_code: normalizeRequestedPlan(auth && auth.planCode),
+      plan_code: planCode,
+      personal_free_region: personalFreeRegion,
       credit_protocol: creditEnforced ? "land_credits_v1" : "none",
       credit_enforced: Boolean(creditEnforced),
       tile_session_id: sessionId,
@@ -262,23 +264,13 @@ export async function handleTileSessionStart(request, env, deps) {
 
 export async function handleTileRequest(request, env, path, ctx, deps) {
   const {
-    PLAN_CODE_FREE,
     clampNonNegativeInt,
-    isQualityModeAllowedForPlan,
     isTileEventQueueProducerEnabled,
     isTileHotPathMonitoringEnabled,
     maybeSignalTileFarmingActivity,
-    minimumPlanQualityForTile,
     normalizeDeviceId,
     normalizeQualityMode,
-    normalizeRequestedPlan,
     normalizeResolveId,
-    isProfessionalPlan,
-    personalFreeLocationBlockedMessage,
-    personalFreeRegionForTileFileName,
-    getPreviewFairUsageHoldForUser,
-    previewFairUsageBlockedResponse,
-    qualityModeNotAllowedMessage,
     readTileSessionClaims,
     recordPreviewUsageAndMaybeAlert,
     recordTileRequestEvent,
@@ -296,13 +288,9 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
 
   const db = requireDb(env);
   let user = { id: "", email: "" };
-  let planCode = PLAN_CODE_FREE;
-  let qualityAccessPlanCode = PLAN_CODE_FREE;
   let deviceId = "";
   let tokenQualityMode = "";
   let tokenResolveId = "";
-  let tokenCreditEnforced = false;
-  let tokenPersonalFreeRegion = "";
   const tileSessionAuth = await readTileSessionClaims(request, env);
   if (tileSessionAuth && tileSessionAuth.error) {
     return tileSessionAuth.error;
@@ -312,16 +300,13 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
       id: String(tileSessionAuth.claims.userId || "").trim(),
       email: String(tileSessionAuth.claims.userEmail || "").trim(),
     };
-    planCode = normalizeRequestedPlan(tileSessionAuth.claims.storedPlanCode || tileSessionAuth.claims.planCode);
-    qualityAccessPlanCode = normalizeRequestedPlan(
-      tileSessionAuth.claims.qualityAccessPlanCode || tileSessionAuth.claims.planCode,
-    );
     deviceId = normalizeDeviceId(tileSessionAuth.claims.deviceId || request.headers.get("X-Planetka-Device-Id") || "");
     tokenQualityMode = normalizeQualityMode(tileSessionAuth.claims.qualityMode || "");
     tokenResolveId = normalizeResolveId(tileSessionAuth.claims.resolveId || "");
-    tokenCreditEnforced = Boolean(tileSessionAuth.claims.creditEnforced);
-    tokenPersonalFreeRegion = String(tileSessionAuth.claims.personalFreeRegion || "").trim();
   } else {
+    if (request.method !== "HEAD") {
+      return json({ ok: false, error: "missing_tile_session_token" }, 401, env);
+    }
     const auth = await requireAuthenticatedUserContext(
       request,
       env,
@@ -331,8 +316,6 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
       return auth.error;
     }
     user = auth.user;
-    planCode = normalizeRequestedPlan(auth.planCode);
-    qualityAccessPlanCode = normalizeRequestedPlan(auth.qualityAccessPlanCode || auth.planCode);
     deviceId = normalizeDeviceId(auth.deviceId || request.headers.get("X-Planetka-Device-Id") || "");
   }
 
@@ -341,9 +324,6 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
   const cfCountry = requestCountry(request);
   const cfRay = String(request.headers.get("CF-Ray") || "").trim();
   const resolveIdHeader = normalizeResolveId(request.headers.get("X-Planetka-Resolve-Id") || "");
-  if (tokenResolveId && resolveIdHeader && tokenResolveId !== resolveIdHeader) {
-    return json({ ok: false, error: "tile_session_resolve_mismatch" }, 403, env);
-  }
   const resolveId = tokenResolveId || resolveIdHeader;
   let eventStatusCode = 0;
   let eventBytesServed = 0;
@@ -383,117 +363,8 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
     eventTileKey = key;
     const qualityModeRaw = String(request.headers.get("X-Planetka-Quality-Mode") || "").trim().toLowerCase();
     const requestedQualityMode = normalizeQualityMode(qualityModeRaw);
-    if (tokenQualityMode && qualityModeRaw && requestedQualityMode !== tokenQualityMode) {
-      eventStatusCode = 403;
-      eventErrorCode = "tile_session_quality_mismatch";
-      return json({ ok: false, error: "tile_session_quality_mismatch" }, 403, env);
-    }
-    const effectiveQualityMode = tokenQualityMode || requestedQualityMode;
+    const effectiveQualityMode = requestedQualityMode || tokenQualityMode;
     eventQualityMode = effectiveQualityMode;
-    if (
-      (request.method === "GET" || request.method === "HEAD")
-      && effectiveQualityMode === "preview"
-      && !(tileSessionAuth && tileSessionAuth.claims)
-    ) {
-      const hold = await getPreviewFairUsageHoldForUser(db, user && user.id);
-      if (hold && hold.held) {
-        eventStatusCode = 403;
-        eventErrorCode = "preview_fair_usage_hold";
-        return previewFairUsageBlockedResponse(env, hold.message);
-      }
-    }
-    const tileRequiredQualityMode = minimumPlanQualityForTile(fileName);
-    if ((request.method === "GET" || request.method === "HEAD")
-      && !tokenCreditEnforced
-      && !isProfessionalPlan(qualityAccessPlanCode)) {
-      const freeRegion = personalFreeRegionForTileFileName(fileName, tokenPersonalFreeRegion);
-      if (!freeRegion) {
-        eventStatusCode = 403;
-        eventErrorCode = "personal_location_not_allowed";
-        return json(
-          {
-            ok: false,
-            error: "personal_location_not_allowed",
-            message: personalFreeLocationBlockedMessage(),
-            allowed_locations: ["New Zealand", "Iceland"],
-            file_name: fileName,
-          },
-          403,
-          env,
-        );
-      }
-    }
-    if ((request.method === "GET" || request.method === "HEAD")
-    && !tokenCreditEnforced
-    && !isQualityModeAllowedForPlan(qualityAccessPlanCode, effectiveQualityMode)) {
-      eventStatusCode = 403;
-      eventErrorCode = "quality_mode_not_allowed_for_tier";
-      return json(
-        {
-          ok: false,
-          error: "quality_mode_not_allowed_for_tier",
-          message: qualityModeNotAllowedMessage(planCode, effectiveQualityMode),
-          requested_quality_mode: effectiveQualityMode,
-        },
-        403,
-        env,
-      );
-    }
-    if ((request.method === "GET" || request.method === "HEAD")
-      && !tokenCreditEnforced
-      && !isQualityModeAllowedForPlan(qualityAccessPlanCode, tileRequiredQualityMode)) {
-      eventStatusCode = 403;
-      eventErrorCode = "tile_quality_not_allowed_for_tier";
-      return json(
-        {
-          ok: false,
-          error: "tile_quality_not_allowed_for_tier",
-          message: qualityModeNotAllowedMessage(planCode, tileRequiredQualityMode),
-          requested_quality_mode: effectiveQualityMode,
-          required_quality_mode: tileRequiredQualityMode,
-          file_name: fileName,
-        },
-        403,
-        env,
-      );
-    }
-    if (
-      (request.method === "GET" || request.method === "HEAD")
-      && tokenCreditEnforced
-      && effectiveQualityMode !== "preview"
-      && creditTileKey
-      && !isFreeCreditTileKey(creditTileKey)
-    ) {
-      const unlocked = await isTileAllowedByDownloadSession(
-        db,
-        tileSessionAuth && tileSessionAuth.claims,
-        creditTileKey,
-        deps,
-        {
-          folder,
-          // Paid session unlocks and tile downloads can land on different Worker
-          // isolates. Bypass per-isolate entitlement caches here so a freshly
-          // purchased Resolve is immediately usable on the first attempt.
-          authoritative: true,
-        },
-      );
-      if (!unlocked) {
-        eventStatusCode = 402;
-        eventErrorCode = "tile_not_unlocked";
-        return json(
-          {
-            ok: false,
-            error: "tile_not_unlocked",
-            message: "This tile has not been licenced for this account.",
-            tile_key: creditTileKey,
-            requested_quality_mode: effectiveQualityMode,
-          },
-          402,
-          env,
-        );
-      }
-    }
-
     if (request.method === "HEAD") {
       const objectHead = await env.PLANETKA_DATA.head(key);
       if (!objectHead) {

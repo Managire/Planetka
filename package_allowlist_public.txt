@@ -20,7 +20,6 @@ diagnostics.py
 embedded_material_library.py
 error_utils.py
 extension_prefs.py
-fallback_utils.py
 geonames_db.py
 land_credits.py
 mesh_utils.py

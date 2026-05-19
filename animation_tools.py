@@ -2,7 +2,6 @@ import importlib
 import json
 import math
 import os
-import threading
 import time
 import webbrowser
 from dataclasses import dataclass
@@ -53,6 +52,9 @@ from .state import (
     update_navigation_shot,
 )
 from . import shader_utils
+
+
+_ACTIVE_ANIMATION_RENDER_OPERATOR = None
 
 
 ANIMATION_COLLECTION_NAME = "Planetka Animation Preview"
@@ -153,8 +155,10 @@ def _format_frame_timecode(scene, frame_value):
 
 
 def _normalize_animation_render_texture_quality_mode(value):
-    del value
-    return "FULL"
+    token = str(value or "").strip().upper()
+    if token not in {"PREVIEW", "BALANCED", "FULL"}:
+        token = "PREVIEW"
+    return token
 
 
 def _require_animation_render_access(operator, prefs=None):
@@ -169,7 +173,7 @@ def _require_animation_texture_quality_access(operator, prefs=None, texture_qual
     if operator is not None:
         fail(
             operator,
-            "Final Animation Rendering with Full Quality textures requires direct licensing.",
+            "This account cannot use the selected texture quality for Animation Render.",
             code=ErrorCode.RENDER_FAILED,
             logger=logger,
         )
@@ -258,6 +262,15 @@ def _cancel_if_animation_render_active(operator, action_label):
     except (AttributeError, RuntimeError, TypeError, ValueError):
         logger.debug("Planetka animation: failed checking active render lock for action cancel guard", exc_info=True)
     return False
+
+
+def _set_active_animation_render_operator(operator=None):
+    global _ACTIVE_ANIMATION_RENDER_OPERATOR
+    _ACTIVE_ANIMATION_RENDER_OPERATOR = operator
+
+
+def _get_active_animation_render_operator():
+    return _ACTIVE_ANIMATION_RENDER_OPERATOR
 
 
 def _update_active_view_layer():
@@ -515,21 +528,6 @@ def _estimate_texture_bytes_for_segments(segments, base_path):
         total_bytes, _unknown = _estimate_remote_texture_bytes_for_requests(requests)
         return int(total_bytes)
     return int(_estimate_local_texture_bytes_for_requests(base_path, requests))
-
-
-def _unique_tiles_for_segments(segments):
-    tiles = []
-    seen = set()
-    for segment in segments or ():
-        if not isinstance(segment, dict):
-            continue
-        for tile in segment.get("tiles", ()) or ():
-            tile_text = str(tile or "").strip()
-            if not tile_text or tile_text in seen:
-                continue
-            seen.add(tile_text)
-            tiles.append(tile_text)
-    return tiles
 
 
 def _animation_segment_tile_keys(segment):
@@ -858,16 +856,13 @@ def _resolve_tiles_for_frame(scene, frame, texture_quality_mode_override=None):
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka animation: suppressed recoverable exception", exc_info=True)
     try:
-        return list(
-            tile_utils.main(
-                scope_mode="CAMERA",
-                texture_quality_mode_override=texture_quality_mode_override,
-            )
-        )
+        full_source_tiles = tile_utils.main(scope_mode="CAMERA")
+        from .render_prep import apply_texture_quality_to_full_tiles
+        return list(apply_texture_quality_to_full_tiles(full_source_tiles, texture_quality_mode_override))
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka animation: tile resolve failed at frame %s", frame, exc_info=True)
         return []
-    except RuntimeError:
+    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
         logger.debug("Planetka animation: tile resolve runtime failure at frame %s", frame, exc_info=True)
         return []
 
@@ -1167,29 +1162,6 @@ def _estimate_texture_bytes_for_tiles(tiles, base_path):
             return None
         return int(total_bytes)
     return int(_estimate_local_texture_bytes_for_requests(base_path, requests))
-
-
-def _animation_preload_missing_assets(payload):
-    resolved_paths = payload.get("resolved_paths", {}) if isinstance(payload, dict) else {}
-    if not isinstance(resolved_paths, dict):
-        return []
-    missing = []
-    for key, path in resolved_paths.items():
-        if (
-            not isinstance(key, (tuple, list))
-            or len(key) < 2
-            or str(key[1] or "").strip().upper() != "S2"
-        ):
-            continue
-        safe_path = str(path or "").strip()
-        if safe_path:
-            try:
-                if os.path.isfile(safe_path) and int(os.path.getsize(safe_path)) > 0:
-                    continue
-            except (OSError, RuntimeError, TypeError, ValueError, AttributeError):
-                pass
-        missing.append(f"{key[1]}:{key[0]}")
-    return missing
 
 
 def _restore_base_surface_visibility(scene):
@@ -3606,7 +3578,7 @@ class PLANETKA_OT_AnimationClearPrepared(bpy.types.Operator):
 class PLANETKA_OT_AnimationRender(bpy.types.Operator):
     bl_idname = "planetka.animation_render"
     bl_label = "Render Animation"
-    bl_description = "Render animation in UI, segment-by-segment, using Full Quality textures"
+    bl_description = "Render animation segment by segment."
 
     confirmed: BoolProperty(default=False, options={'HIDDEN', 'SKIP_SAVE'})
     confirm_price_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
@@ -3638,11 +3610,6 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
     _stop_requested = False
     _stop_notice_sent = False
     _segment_cancel_epoch_before_launch = -1
-    _preload_thread = None
-    _preload_cancel_event = None
-    _preload_result = None
-    _preload_started = False
-    _preload_completed = False
     _animation_tiles = None
     _animation_resolve_id = ""
     _texture_quality_mode = "FULL"
@@ -3710,14 +3677,15 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
     def draw(self, _context):
         layout = self.layout
         layout.label(text="Confirm Final Animation Render", icon="RENDER_ANIMATION")
-        layout.label(text=f"Full Quality data: {_animation_price_text(getattr(self, 'confirm_tile_price_eur', 0.0))}", icon="TEXTURE")
+        layout.label(text=f"Texture data: {_animation_price_text(getattr(self, 'confirm_tile_price_eur', 0.0))}", icon="TEXTURE")
         final_price = float(getattr(self, "confirm_price_eur", 0.0) or 0.0)
         if final_price > 0.000001:
             layout.label(text=f"Final Price: {_animation_price_text(final_price)}", icon="SOLO_ON")
 
     def _get_selected_texture_quality_mode(self, props):
-        del props
-        return "FULL"
+        return _normalize_animation_render_texture_quality_mode(
+            getattr(props, "texture_quality_mode", "PREVIEW")
+        )
 
     def _remove_timer(self, context):
         wm = getattr(context, "window_manager", None)
@@ -3780,95 +3748,9 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
 
     def _unlock_animation_tiles_before_download(self):
         # Planetka 2026 is streaming-only. Animation render no longer performs
-        # per-tile licensing or checkout before the preload phase.
+        # per-tile licensing or checkout before segment rendering.
         self._set_animation_price_paid()
         return True, ""
-
-    def _start_animation_data_preload(self):
-        if bool(getattr(self, "_preload_started", False)):
-            return
-        tiles = list(getattr(self, "_animation_tiles", ()) or ())
-        self._preload_started = True
-        self._preload_result = None
-        if not tiles:
-            self._preload_result = {"ok": True, "message": "", "payload": {}}
-            return
-        cancel_event = threading.Event()
-        self._preload_cancel_event = cancel_event
-        base_path = str(getattr(self, "_base_path", "") or "")
-        texture_quality_mode = str(getattr(self, "_texture_quality_mode", "FULL") or "FULL").strip().upper()
-        resolve_id = str(getattr(self, "_animation_resolve_id", "") or "").strip()
-        if not resolve_id:
-            resolve_id = f"anim-{int(time.time() * 1000)}"
-            self._animation_resolve_id = resolve_id
-        self._set_ui_status("Downloading animation data", icon="IMPORT")
-
-        def _worker():
-            try:
-                streaming_utils = _get_streaming_utils_module()
-                prepare_fn = getattr(streaming_utils, "prepare_resolve_streaming_for_visible_tiles", None) if streaming_utils else None
-                if not callable(prepare_fn):
-                    self._preload_result = {"ok": False, "message": "Texture streaming module is unavailable."}
-                    return
-                payload = prepare_fn(
-                    tiles,
-                    base_path,
-                    cancel_event=cancel_event,
-                    capture=True,
-                    resolve_id=resolve_id,
-                    texture_quality_mode=texture_quality_mode,
-                    enforce_pricing_session=False,
-                )
-                if not isinstance(payload, dict):
-                    self._preload_result = {"ok": False, "message": "Animation data download failed."}
-                    return
-                if bool(payload.get("cancelled", False)):
-                    self._preload_result = {"ok": False, "cancelled": True, "message": "Animation data download was cancelled."}
-                    return
-                prefetch = payload.get("prefetch_result", {})
-                fatal_error = str(prefetch.get("fatal_error", "") or "").strip() if isinstance(prefetch, dict) else ""
-                if fatal_error:
-                    self._preload_result = {"ok": False, "message": fatal_error, "payload": payload}
-                    return
-                missing_assets = _animation_preload_missing_assets(payload)
-                if missing_assets:
-                    sample = ", ".join(missing_assets[:4])
-                    more = "" if len(missing_assets) <= 4 else f", +{len(missing_assets) - 4} more"
-                    self._preload_result = {
-                        "ok": False,
-                        "message": (
-                            "Animation data download did not complete. "
-                            f"{len(missing_assets)} required S2 texture file(s) are missing before render start: "
-                            f"{sample}{more}."
-                        ),
-                        "payload": payload,
-                    }
-                    return
-                self._preload_result = {"ok": True, "message": "", "payload": payload}
-            except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
-                logger.debug("Planetka animation: upfront data download failed", exc_info=True)
-                self._preload_result = {"ok": False, "message": str(exc)}
-            except (RuntimeError, TypeError, ValueError, AttributeError, OSError) as exc:
-                logger.debug("Planetka animation: upfront data download failed", exc_info=True)
-                self._preload_result = {"ok": False, "message": str(exc)}
-
-        thread = threading.Thread(
-            target=_worker,
-            name="PlanetkaAnimationDataDownload",
-            daemon=True,
-        )
-        self._preload_thread = thread
-        thread.start()
-
-    def _animation_data_preload_finished(self):
-        thread = getattr(self, "_preload_thread", None)
-        if thread is not None:
-            try:
-                if thread.is_alive():
-                    return False
-            except (RuntimeError, TypeError, ValueError, AttributeError):
-                return False
-        return self._preload_result is not None
 
     def _count_render_result_windows(self):
         try:
@@ -4009,6 +3891,17 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
                 logger.debug("Planetka animation: render cancel op raised recoverable exception", exc_info=True)
             except (RuntimeError, TypeError, ValueError, AttributeError):
                 logger.debug("Planetka animation: render cancel op raised unexpected exception", exc_info=True)
+
+    def _request_external_stop(self):
+        self._stop_requested = True
+        self._set_ui_status("Stopping Animation Render", icon="CANCEL")
+        try:
+            stop_auto_resolve_download_pipeline()
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka animation: failed stopping resolve pipeline during external stop", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka animation: failed stopping resolve pipeline during external stop", exc_info=True)
+        self._request_render_stop()
 
     def _read_render_heartbeat(self):
         try:
@@ -4179,17 +4072,19 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
                     logger.debug("Planetka animation: failed restoring auto-resolve state after render", exc_info=True)
                 except (RuntimeError, TypeError, ValueError, AttributeError):
                     logger.debug("Planetka animation: failed restoring auto-resolve state after render", exc_info=True)
+        if _get_active_animation_render_operator() is self:
+            _set_active_animation_render_operator(None)
 
-    def _cleanup(self, context, stop_render=False):
+    def _cleanup(self, context, stop_render=False, cancelled=True):
         if bool(stop_render):
             self._stop_render_before_cleanup()
-        cancel_event = getattr(self, "_preload_cancel_event", None)
-        if cancel_event is not None:
-            try:
-                cancel_event.set()
-            except (RuntimeError, TypeError, ValueError, AttributeError):
-                pass
         self._remove_timer(context)
+        try:
+            recover_post_render_state(self._scene, cancelled=bool(cancelled))
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka animation: failed recovering post-render state during cleanup", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka animation: failed recovering post-render state during cleanup", exc_info=True)
         self._restore_runtime_state()
         self._scene = None
         self._props = None
@@ -4207,11 +4102,6 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
         self._stop_requested = False
         self._stop_notice_sent = False
         self._segment_cancel_epoch_before_launch = -1
-        self._preload_thread = None
-        self._preload_cancel_event = None
-        self._preload_result = None
-        self._preload_started = False
-        self._preload_completed = False
         self._animation_tiles = []
         self._animation_resolve_id = ""
         self._texture_quality_mode = "FULL"
@@ -4234,7 +4124,7 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
         segment_count = len(self._segments or ())
         self._finalize_success_render_state()
         self._cleanup_successful_animation_cache()
-        self._cleanup(context)
+        self._cleanup(context, cancelled=False)
         self.report({'INFO'}, f"Animation render complete ({segment_count} segments).")
         if failures:
             self.report({'WARNING'}, f"{len(failures)} segment step(s) reported issues. See console.")
@@ -4301,10 +4191,6 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
         return self._dedupe_texture_requests(_build_texture_requests_for_tiles(segment_tiles))
 
     def _cleanup_completed_segment_cache(self, segment_index):
-        if bool(getattr(self, "_preload_completed", False)):
-            # Animation data is paid/licenced before frame 1. Keep it in cache so
-            # cancelled or interrupted renders can resume without re-downloading.
-            return
         prefs = get_prefs()
         base_path = str(getattr(prefs, "texture_base_path", "") or "")
         if not is_remote_source_configured(base_path):
@@ -4347,7 +4233,7 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             )
 
     def _cleanup_successful_animation_cache(self):
-        """Remove Full Quality animation downloads from the temp cache after success."""
+        """Remove temporary animation downloads from the temp cache after success."""
         prefs = get_prefs()
         base_path = str(getattr(prefs, "texture_base_path", "") or "")
         if not is_remote_source_configured(base_path):
@@ -4382,7 +4268,7 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
                     logger.debug("Planetka animation: failed deleting successful-render cache file", exc_info=True)
         if removed_files > 0:
             logger.info(
-                "Planetka animation: removed %d temporary Full Quality cache file(s) after successful render (%.2f MB).",
+                "Planetka animation: removed %d temporary animation cache file(s) after successful render (%.2f MB).",
                 int(removed_files),
                 float(removed_bytes) / (1024.0 * 1024.0),
             )
@@ -4402,11 +4288,13 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
         op_kwargs = {
             "scope_mode": "CAMERA",
             "defer_download": False,
-            "texture_quality_mode_override": "FULL",
-            # Animation render preflight downloads authoritative S2 before
-            # frame 1. EL/WT/PO support layers intentionally fall back if absent.
+            "texture_quality_mode_override": _normalize_animation_render_texture_quality_mode(
+                getattr(self, "_texture_quality_mode", "PREVIEW")
+            ),
+            # Final Animation downloads only the current segment before rendering it.
+            # EL/WT/PO support layers intentionally fall back if absent.
             "skip_pricing_session": True,
-            "capture_download_progress": False,
+            "capture_download_progress": True,
         }
         normalized_tiles = [str(tile or "").strip() for tile in (tiles_override or ()) if str(tile or "").strip()]
         if normalized_tiles:
@@ -4773,17 +4661,13 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             self._stop_requested = False
             self._stop_notice_sent = False
             self._segment_cancel_epoch_before_launch = -1
-            self._preload_thread = None
-            self._preload_cancel_event = None
-            self._preload_result = None
-            self._preload_started = False
-            self._preload_completed = False
-            self._animation_tiles = _unique_tiles_for_segments(segments)
+            self._animation_tiles = []
             self._animation_resolve_id = f"anim-{int(time.time() * 1000)}"
-            self._texture_quality_mode = str(selected_texture_quality_mode or "FULL").strip().upper() or "FULL"
+            self._texture_quality_mode = _normalize_animation_render_texture_quality_mode(selected_texture_quality_mode)
             self._base_path = str(base_path or "")
             try:
                 set_final_animation_render_active(True)
+                _set_active_animation_render_operator(self)
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka animation: failed setting final-render UI lock", exc_info=True)
             except (RuntimeError, TypeError, ValueError, AttributeError):
@@ -4845,27 +4729,6 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             ok, message = self._unlock_animation_tiles_before_download()
             if not ok:
                 return self._cancel_with_error(context, message)
-            self._start_animation_data_preload()
-            self._state = "PREFETCH"
-            return {'RUNNING_MODAL'}
-
-        if self._state == "PREFETCH":
-            if not self._animation_data_preload_finished():
-                return {'RUNNING_MODAL'}
-            result = self._preload_result if isinstance(self._preload_result, dict) else {}
-            if not bool(result.get("ok", False)):
-                if bool(result.get("cancelled", False)):
-                    self._report_user_stopped_render()
-                    self._cleanup(context, stop_render=False)
-                    return {'CANCELLED'}
-                message = str(result.get("message", "") or "").strip() or "Animation data download failed."
-                return self._cancel_with_error(context, message)
-            self._preload_completed = True
-            try:
-                from .credit_api import clear_credit_caches
-                clear_credit_caches()
-            except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-                logger.debug("Planetka animation: failed clearing credit caches after animation data download", exc_info=True)
             self._set_ui_status("Starting animation render", icon="RENDER_ANIMATION")
             self._state = "RESOLVE"
             return {'RUNNING_MODAL'}
@@ -4978,6 +4841,77 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             return {'RUNNING_MODAL'}
 
         return {'RUNNING_MODAL'}
+
+
+class PLANETKA_OT_AnimationStop(bpy.types.Operator):
+    bl_idname = "planetka.animation_stop"
+    bl_label = "Stop Animation Render"
+    bl_description = "Stop the active Planetka Animation Render and clean up render state"
+
+    def execute(self, context):
+        active_operator = _get_active_animation_render_operator()
+        if active_operator is not None:
+            try:
+                active_operator._request_external_stop()
+            except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
+                return fail(
+                    self,
+                    "Animation Render could not be stopped cleanly.",
+                    code=ErrorCode.RENDER_FAILED,
+                    logger=logger,
+                    exc=exc,
+                    log_message="Planetka animation external stop failed",
+                )
+            except (RuntimeError, TypeError, ValueError, AttributeError) as exc:
+                return fail(
+                    self,
+                    "Animation Render could not be stopped cleanly.",
+                    code=ErrorCode.RENDER_FAILED,
+                    logger=logger,
+                    exc=exc,
+                    log_message="Planetka animation external stop failed",
+                )
+            self.report({'INFO'}, "Stopping Final Animation Render...")
+            return {'FINISHED'}
+
+        try:
+            render_ops = getattr(bpy.ops, "render", None)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            render_ops = None
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            render_ops = None
+        if render_ops is not None:
+            for op_name in ("cancel", "view_cancel"):
+                cancel_op = getattr(render_ops, op_name, None)
+                if not callable(cancel_op):
+                    continue
+                try:
+                    cancel_op()
+                except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                    logger.debug("Planetka animation: fallback stop render cancel failed", exc_info=True)
+                except (RuntimeError, TypeError, ValueError, AttributeError):
+                    logger.debug("Planetka animation: fallback stop render cancel failed", exc_info=True)
+        try:
+            stop_auto_resolve_download_pipeline()
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka animation: fallback stop pipeline cleanup failed", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka animation: fallback stop pipeline cleanup failed", exc_info=True)
+        try:
+            recover_post_render_state(getattr(context, "scene", None), cancelled=True)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka animation: fallback stop recovery failed", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka animation: fallback stop recovery failed", exc_info=True)
+        try:
+            set_final_animation_render_active(False)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka animation: fallback stop lock cleanup failed", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka animation: fallback stop lock cleanup failed", exc_info=True)
+        _set_active_animation_render_operator(None)
+        self.report({'INFO'}, "Final Animation Render stopped.")
+        return {'FINISHED'}
 
 
 class PLANETKA_OT_AnimationMakeReady(bpy.types.Operator):

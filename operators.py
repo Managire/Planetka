@@ -3,12 +3,9 @@ import textwrap
 import time
 
 import bpy
-from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, StringProperty
+from bpy.props import BoolProperty, EnumProperty
 
-from .auth import (
-    allows_texture_quality_for_context,
-    is_authenticated,
-)
+from .auth import is_authenticated
 from .planetka_ops.account_ops import (
     PLANETKA_OT_AccountContact,
     PLANETKA_OT_AccountLogin,
@@ -100,44 +97,6 @@ from .r2_source import (
     texture_file_exists,
 )
 
-_UNLOCKED_DOWNLOAD_REDRAW_TIMER_REGISTERED = False
-BETA_DISABLE_FULL_QUALITY_DATA_DOWNLOADS = True
-
-
-def _tag_view3d_for_unlocked_download():
-    try:
-        context = getattr(bpy, "context", None)
-        wm = getattr(context, "window_manager", None)
-        if wm is None:
-            return None
-        for window in wm.windows:
-            screen = getattr(window, "screen", None)
-            if screen is None:
-                continue
-            for area in screen.areas:
-                if getattr(area, "type", "") == "VIEW_3D":
-                    area.tag_redraw()
-        from .credit_api import is_unlocked_download_active
-        if is_unlocked_download_active():
-            return 0.5
-    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed redrawing unlocked-download UI", exc_info=True)
-    global _UNLOCKED_DOWNLOAD_REDRAW_TIMER_REGISTERED
-    _UNLOCKED_DOWNLOAD_REDRAW_TIMER_REGISTERED = False
-    return None
-
-
-def _ensure_unlocked_download_redraw_timer():
-    global _UNLOCKED_DOWNLOAD_REDRAW_TIMER_REGISTERED
-    if _UNLOCKED_DOWNLOAD_REDRAW_TIMER_REGISTERED:
-        return
-    try:
-        bpy.app.timers.register(_tag_view3d_for_unlocked_download, first_interval=0.2)
-        _UNLOCKED_DOWNLOAD_REDRAW_TIMER_REGISTERED = True
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed starting unlocked-download redraw timer", exc_info=True)
-
-
 def _format_bytes_for_ui(size_bytes):
     try:
         value = float(size_bytes or 0)
@@ -185,27 +144,6 @@ def _wrapped_label(layout, text, icon='NONE', width=58):
         layout.label(text=line, icon=icon if index == 0 else 'BLANK1')
 
 
-class PLANETKA_OT_AccountCancelUnlockedDownload(bpy.types.Operator):
-    bl_idname = "planetka.account_cancel_unlocked_download"
-    bl_label = "Cancel Download"
-    bl_description = "Cancel the active licenced tile download"
-
-    def execute(self, _context):
-        try:
-            from .credit_api import cancel_unlocked_download
-            active = cancel_unlocked_download()
-        except Exception as exc:
-            return fail(
-                self,
-                f"Unable to cancel licenced tile download: {exc}",
-                code=ErrorCode.RESOLVE_REFRESH_FAILED,
-                logger=logger,
-                exc=exc,
-                log_message="Planetka licenced tile download cancel failed",
-            )
-        if active:
-            self.report({'INFO'}, "Cancelling licenced tile download...")
-        return {'FINISHED'}
 from .state import (
     ACCOUNT_PANEL_DEFAULT_COLLAPSED_KEY,
     _auto_resolve_scope_mode,
@@ -300,76 +238,6 @@ def _log_recoverable_once(code, message):
     _RECOVERABLE_LOG_COUNTS[code] = count + 1
 
 
-def _region_offer_location_for_context(context):
-    scene = getattr(context, "scene", None)
-    if scene is None:
-        return None
-    props = getattr(scene, "planetka", None)
-    lat_value = None
-    lon_value = None
-    try:
-        if props is not None:
-            lat_value = getattr(props, "nav_latitude_deg", 0.0)
-            lon_value = getattr(props, "nav_longitude_deg", 0.0)
-        if lat_value is None or lon_value is None:
-            from .diagnostics import read_diagnostics
-            diag = read_diagnostics(scene)
-            if lat_value is None and isinstance(diag, dict):
-                lat_value = diag.get("view_latitude_deg", None)
-            if lon_value is None and isinstance(diag, dict):
-                lon_value = diag.get("view_longitude_deg", None)
-        lat = max(-90.0, min(90.0, float(lat_value or 0.0)))
-        lon = max(-180.0, min(180.0, float(lon_value or 0.0)))
-        return lat, lon
-    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-        return None
-
-
-def _region_offer_number(offer, key, fallback=0.0):
-    try:
-        return float((offer or {}).get(key, fallback) or fallback)
-    except (TypeError, ValueError, AttributeError):
-        return float(fallback)
-
-
-def _region_offer_int(offer, key, fallback=0):
-    try:
-        return int((offer or {}).get(key, fallback) or fallback)
-    except (TypeError, ValueError, AttributeError):
-        return int(fallback)
-
-
-def _region_offer_countries_text(offer):
-    countries = (offer or {}).get("included_countries", ())
-    if isinstance(countries, (list, tuple)):
-        seen = set()
-        labels = []
-        for country in countries:
-            label = str(country).strip()
-            key = label.lower()
-            if not label or key in seen:
-                continue
-            seen.add(key)
-            labels.append(label)
-        return "|".join(labels)
-    return str(countries or "")
-
-
-def _region_offer_is_licensable(offer):
-    if not isinstance(offer, dict):
-        return False
-    price = max(0.0, _region_offer_number(offer, "price_eur", _region_offer_number(offer, "credits", 0.0)))
-    new_tiles = max(
-        0,
-        _region_offer_int(
-            offer,
-            "unlicenced_tile_count",
-            _region_offer_int(offer, "new_tile_count", _region_offer_int(offer, "paid_tile_count", 0)),
-        ),
-    )
-    return bool(price > 0.000001 or new_tiles > 0)
-
-
 def _persist_user_preferences():
     if bool(getattr(bpy.app, "background", False)):
         return False
@@ -446,48 +314,32 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
             (
                 "PREVIEW",
                 "Preview",
-                "Fast streaming textures for preview work",
+                "Uses two higher d-levels than Full Quality (effective 1/16 resolution); fastest download with lowest memory and recalculation cost",
             ),
             (
                 "BALANCED",
                 "Balanced",
-                "Medium-resolution streaming textures for normal work",
+                "Uses 1/2 width x 1/2 height of Full Quality textures (effective 1/4 resolution)",
             ),
             (
                 "FULL",
                 "Full Quality",
-                "Highest quality streaming textures",
+                "Highest quality texture data",
             ),
         ),
         default="PREVIEW",
         options={'HIDDEN', 'SKIP_SAVE'},
     )
-    confirm_purchase: BoolProperty(default=False, options={'HIDDEN', 'SKIP_SAVE'})
-    confirm_new_tile_count: IntProperty(default=0, options={'HIDDEN', 'SKIP_SAVE'})
-    confirm_already_licenced_tile_count: IntProperty(default=0, options={'HIDDEN', 'SKIP_SAVE'})
-    confirm_already_licenced_saving_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
-    confirm_partially_licenced_tile_count: IntProperty(default=0, options={'HIDDEN', 'SKIP_SAVE'})
-    confirm_free_tile_count: IntProperty(default=0, options={'HIDDEN', 'SKIP_SAVE'})
-    confirm_total_bytes: StringProperty(default="0", options={'HIDDEN', 'SKIP_SAVE'})
-    confirm_full_price_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
-    confirm_partial_credit_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
-    confirm_scene_tile_price_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
-    confirm_custom_scene_licence_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
-    confirm_scene_small_free_threshold_applied: BoolProperty(default=False, options={'HIDDEN', 'SKIP_SAVE'})
-    confirm_scene_small_free_threshold_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
-    confirm_price_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
-    confirm_charged_tile_keys: StringProperty(default="", options={'HIDDEN', 'SKIP_SAVE'})
-
     @classmethod
     def description(cls, _context, properties):
         mode = _normalize_startup_texture_quality_mode(
             getattr(properties, "texture_quality_mode", "PREVIEW")
         )
         if mode == "PREVIEW":
-            return "Use Preview streaming textures."
+            return "Uses two higher d-levels than Full Quality (effective 1/16 resolution); fastest download with lowest memory and recalculation cost"
         if mode == "BALANCED":
-            return "Use Balanced streaming textures."
-        return "Use Full Quality streaming textures."
+            return "Uses 1/2 width x 1/2 height of Full Quality textures (effective 1/4 resolution)"
+        return "Highest quality texture data"
 
     def invoke(self, context, event):
         del event
@@ -517,24 +369,48 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
             )
 
         target_mode = _normalize_startup_texture_quality_mode(getattr(self, "texture_quality_mode", "PREVIEW"))
-        if not allows_texture_quality_for_context(prefs=prefs, source=props, requested_mode=target_mode):
-            return fail(
-                self,
-                "Selected texture quality is not available.",
-                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-                logger=logger,
-            )
-
-        _clear_full_quality_hold_for_manual_preview(scene)
         try:
             previous_mode = _normalize_startup_texture_quality_mode(
                 getattr(props, "texture_quality_mode", "PREVIEW")
             )
             if previous_mode != target_mode:
                 props.texture_quality_mode = target_mode
-            else:
-                from .planetka_runtime.auto_resolve_pipeline import update_auto_resolve
-                update_auto_resolve(props, context)
+            scope_mode = _auto_resolve_scope_mode(scene)
+            if scope_mode not in {"ACTIVE_VIEW", "CAMERA"}:
+                scope_mode = "CAMERA"
+            tiles_override_json = ""
+            try:
+                from . import tile_utils as _tile_utils
+                from .render_prep import apply_texture_quality_to_full_tiles
+                source_tiles = scene.get("planetka_last_full_source_tiles", ())
+                max_tile_budget = int(getattr(_tile_utils, "MAX_SHADER_TILE_BUDGET", 12) or 12)
+                if source_tiles:
+                    target_tiles = [
+                        str(tile)
+                        for tile in apply_texture_quality_to_full_tiles(source_tiles, target_mode)
+                        if str(tile or "").strip()
+                    ]
+                    if target_tiles and len(target_tiles) <= max_tile_budget:
+                        tiles_override_json = json.dumps(target_tiles)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka: texture quality fast-path tile transform failed", exc_info=True)
+            except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka: texture quality fast-path tile transform failed unexpectedly", exc_info=True)
+            queued_result = bpy.ops.planetka.load_textures(
+                scope_mode=scope_mode,
+                skip_render_compatibility=True,
+                defer_download=True,
+                tiles_override_json=tiles_override_json,
+                texture_quality_mode_override=target_mode,
+            )
+            if "FINISHED" not in queued_result:
+                return fail(
+                    self,
+                    "Texture quality could not be resolved. Please retry.",
+                    code=ErrorCode.RESOLVE_REFRESH_FAILED,
+                    logger=logger,
+                )
+            _tag_view3d_redraw()
         except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
             return fail(
                 self,
@@ -545,109 +421,6 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
                 log_message="Planetka texture quality selection failed",
             )
 
-        try:
-            result = bpy.ops.planetka.load_textures(
-                scope_mode="AUTO",
-                skip_render_compatibility=True,
-                skip_pricing_session=True,
-                defer_download=False,
-                texture_quality_mode_override=target_mode,
-            )
-        except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
-            return fail(
-                self,
-                "Texture data could not be resolved. Please retry.",
-                code=ErrorCode.RESOLVE_REFRESH_FAILED,
-                logger=logger,
-                exc=exc,
-                log_message="Planetka texture quality change failed during resolve",
-            )
-        if "FINISHED" not in result:
-            return {'CANCELLED'}
-        try:
-            base_path = _normalize_texture_source_path(str(getattr(prefs, "texture_base_path", "") or ""))
-            update_resolve_size_estimates(
-                scene,
-                scope_mode="AUTO",
-                base_path=base_path,
-                async_full_price=False,
-                include_full_price=False,
-            )
-            _tag_view3d_redraw()
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed refreshing selected texture quality estimates", exc_info=True)
-        except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka: failed refreshing selected texture quality estimates", exc_info=True)
-        return {'FINISHED'}
-
-
-def _open_external_url(url):
-    safe_url = str(url or "").strip()
-    if not safe_url:
-        return False
-    try:
-        result = bpy.ops.wm.url_open(url=safe_url)
-        if "FINISHED" in result:
-            return True
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed opening URL through Blender", exc_info=True)
-    try:
-        import webbrowser
-        return bool(webbrowser.open(safe_url))
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed opening URL in system browser", exc_info=True)
-    return False
-
-
-class PLANETKA_OT_OpenSceneDetailMap(bpy.types.Operator):
-    bl_idname = "planetka.open_scene_detail_map"
-    bl_label = "Open Scene Map"
-    bl_description = "Open the detailed Full Quality map for this scene in your browser"
-
-    tile_keys_json: StringProperty(
-        name="Scene Tiles",
-        default="",
-        options={'HIDDEN', 'SKIP_SAVE'},
-    )
-
-    def execute(self, _context):
-        try:
-            raw = json.loads(str(getattr(self, "tile_keys_json", "") or "[]"))
-        except (TypeError, ValueError, json.JSONDecodeError):
-            raw = []
-        tile_keys = []
-        for entry in list(raw or ()):
-            key = str(entry or "").strip()
-            if key and key not in tile_keys:
-                tile_keys.append(key)
-        if not tile_keys:
-            return fail(
-                self,
-                "No scene Full Quality tiles are available for the detailed map.",
-                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-                logger=logger,
-            )
-        try:
-            from .credit_api import create_scene_detail_link
-            link = create_scene_detail_link(tile_keys, quality_mode="FULL")
-        except Exception as exc:
-            return fail(
-                self,
-                f"Unable to open scene map: {exc}",
-                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-                logger=logger,
-                exc=exc,
-                log_message="Planetka scene detail link creation failed",
-            )
-        url = str(link.get("detail_url", "") or "").strip()
-        if not _open_external_url(url):
-            return fail(
-                self,
-                "Could not open Planetka scene map.",
-                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-                logger=logger,
-            )
-        self.report({'INFO'}, "Planetka scene map opened in browser.")
         return {'FINISHED'}
 
 

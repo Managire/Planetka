@@ -43,16 +43,6 @@ _AUTH_DISCONNECT_TOKENS = (
     "missing_refresh_token",
     "invalid_api_key",
 )
-_LICENCE_FAILURE_TOKENS = (
-    "not been licenced",
-    "tile_not_unlocked",
-    "not unlocked",
-    "licence could not be confirmed",
-    "license could not be confirmed",
-    "request limit reached",
-    "tile_unlock_verification_failed",
-)
-
 
 def _normalize_tiles(visible_tiles):
     return tuple(sorted(str(tile) for tile in (visible_tiles or ())))
@@ -90,30 +80,6 @@ def _prefetch_result_indicates_auth_disconnect(prefetch_result):
         if _contains_auth_disconnect_text(entry.get("fetch_error", "")):
             return True
         if _contains_auth_disconnect_text(entry.get("remote_error", "")):
-            return True
-    return False
-
-
-def _prefetch_result_indicates_licence_failure(prefetch_result):
-    if not isinstance(prefetch_result, dict):
-        return False
-    text = str(prefetch_result.get("fatal_error", "") or "").strip().lower()
-    if any(token in text for token in _LICENCE_FAILURE_TOKENS):
-        return True
-    details = prefetch_result.get("missing_details", ())
-    if not isinstance(details, (tuple, list)):
-        return False
-    for entry in details:
-        if not isinstance(entry, dict):
-            continue
-        folder_value = str(entry.get("folder", "") or "").strip().upper()
-        if folder_value != "S2":
-            continue
-        combined = " ".join((
-            str(entry.get("fetch_error", "") or ""),
-            str(entry.get("remote_error", "") or ""),
-        )).lower()
-        if any(token in combined for token in _LICENCE_FAILURE_TOKENS):
             return True
     return False
 
@@ -196,41 +162,6 @@ def _normalize_texture_quality_mode(value):
     if token in {"FULL", "BALANCED", "PREVIEW"}:
         return token
     return "PREVIEW"
-
-
-def _apply_fixed_z180_quality_targets(visible_tiles, texture_quality_mode="PREVIEW"):
-    mode = _normalize_texture_quality_mode(texture_quality_mode)
-    target_by_mode = {
-        "PREVIEW": 720,
-        "BALANCED": 360,
-        "FULL": 180,
-    }
-    target_d = int(target_by_mode.get(mode, 720))
-    out = []
-    for tile in visible_tiles or ():
-        tile_text = str(tile or "").strip()
-        if not tile_text:
-            continue
-        parts = tile_text.split("_")
-        if len(parts) != 4:
-            out.append(tile_text)
-            continue
-        try:
-            x_value = int(parts[0][1:])
-            y_value = int(parts[1][1:])
-            z_value = int(parts[2][1:])
-            d_value = int(parts[3][1:])
-            if d_value == 0:
-                d_value = 1440
-        except (TypeError, ValueError, IndexError):
-            out.append(tile_text)
-            continue
-        if z_value == 180 and d_value != target_d:
-            d_code = 0 if target_d == 1440 else int(target_d)
-            out.append(f"x{x_value:03d}_y{y_value:03d}_z{z_value:03d}_d{d_code:03d}")
-            continue
-        out.append(tile_text)
-    return out
 
 
 def _prefetch_index(resolved_tiles, ocean_tiles=None):
@@ -317,12 +248,7 @@ def build_resolve_download_requests_for_visible_tiles(
     if not callable(resolve_tiles_fn):
         raise RuntimeError("Planetka shader tile resolve helper is unavailable.")
 
-    normalized_quality_mode = _normalize_texture_quality_mode(texture_quality_mode)
-    visible_tiles_adjusted = _apply_fixed_z180_quality_targets(
-        visible_tiles,
-        texture_quality_mode=normalized_quality_mode,
-    )
-    resolved_tiles, ocean_tiles = resolve_tiles_fn(visible_tiles_adjusted, base_path)
+    resolved_tiles, ocean_tiles = resolve_tiles_fn(visible_tiles, base_path)
     requests = _build_resolve_download_requests(resolved_tiles, ocean_tiles)
     return {
         "resolved_tiles": list(resolved_tiles),
@@ -407,8 +333,8 @@ def prefetch_resolve_plan(
     # Resolve integrity:
     # - no post-prefetch fallback fetches here (shader fallback images handle EL/WT/PO misses)
     # - only missing S2 is fatal; missing EL/WT/PO proceeds with fallback images
-    # - Full Quality is a streaming quality mode; legacy purchase/licence errors
-    #   are reported as account/session errors, not as missing S2 assets.
+    # - texture quality only changes which S2 level is requested; it does not
+    #   change account permissions or entitlement checks.
     resolved_paths = _build_prefetched_paths(index, base_path, allow_fallback=not use_remote)
     unresolved_s2_required = sum(
         1
@@ -430,11 +356,6 @@ def prefetch_resolve_plan(
                 prefetch_result["fatal_error"] = (
                     "Planetka Cloud is not connected. "
                     "Reconnect your account and retry Resolve."
-                )
-            elif _prefetch_result_indicates_licence_failure(prefetch_result):
-                prefetch_result["fatal_error"] = (
-                    "Planetka Full Quality streaming access could not be confirmed. "
-                    "Reconnect your account and retry."
                 )
             else:
                 prefetch_result["fatal_error"] = (

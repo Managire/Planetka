@@ -1,14 +1,10 @@
 import { corsHeaders, json } from "./worker/responses.js";
 import {
-  PLAN_CODE_FREE,
-  isQualityModeAllowedForPlan,
   isProfessionalPlan,
   normalizeQualityMode,
   normalizeRequestedPlan,
   personalFreeLocationBlockedMessage,
   personalFreeRegionForPoint,
-  personalFreeRegionForTileFileName,
-  qualityModeNotAllowedMessage,
 } from "./worker/entitlements.js";
 import {
   parseBooleanFlag,
@@ -23,7 +19,7 @@ import {
 } from "./worker/tile_sessions.js";
 
 const encoder = new TextEncoder();
-const DEFAULT_TILE_SESSION_TOKEN_TTL_SECONDS = 3600;
+const DEFAULT_TILE_SESSION_TOKEN_TTL_SECONDS = 1800;
 const MAX_TILE_MAX_AGE_SECONDS = 31536000;
 const DEFAULT_TILE_BROWSER_MAX_AGE_SECONDS = 86400;
 const DEFAULT_TILE_EDGE_MAX_AGE_SECONDS = 604800;
@@ -47,14 +43,6 @@ function requireSecret(env, name) {
   const value = String(env[name] || "").trim();
   if (!value) throw new Error(`missing_secret_${name}`);
   return value;
-}
-
-async function dbGet(db, sql, bindings = []) {
-  return db.prepare(sql).bind(...bindings).first();
-}
-
-async function dbRun(db, sql, bindings = []) {
-  return db.prepare(sql).bind(...bindings).run();
 }
 
 async function parseJson(request) {
@@ -194,9 +182,43 @@ async function requireAuthenticatedUserContext(request, env) {
   return result;
 }
 
+async function resolveTileSessionAuth(_request, env, auth) {
+  const db = requireDb(env);
+  const userId = String(auth && auth.user && auth.user.id || "").trim();
+  if (!userId) {
+    return { error: json({ ok: false, error: "invalid_access_token" }, 401, env) };
+  }
+  const row = await db.prepare(
+    `
+      SELECT id, email, status
+      FROM users
+      WHERE id = ?
+      LIMIT 1
+    `,
+  ).bind(userId).first();
+  if (!row || !row.id) {
+    return { error: json({ ok: false, error: "user_not_found" }, 404, env) };
+  }
+  const status = String(row.status || "").trim().toLowerCase();
+  if (status === "blocked") {
+    return { error: json({ ok: false, error: "account_blocked", message: "Planetka account is blocked. Contact info@planetka.io." }, 403, env) };
+  }
+  const currentPlan = normalizeRequestedPlan(status);
+  return {
+    ...auth,
+    user: {
+      id: String(row.id || "").trim(),
+      email: String(row.email || auth.user.email || "").trim(),
+      status: currentPlan,
+    },
+    planCode: currentPlan,
+    qualityAccessPlanCode: currentPlan,
+  };
+}
+
 function resolveTileSessionTokenTtlSeconds(env = {}) {
   const parsed = Number(env.TILE_SESSION_TOKEN_TTL_SECONDS || DEFAULT_TILE_SESSION_TOKEN_TTL_SECONDS);
-  return Math.min(3600, Math.max(60, Number.isFinite(parsed) ? Math.floor(parsed) : DEFAULT_TILE_SESSION_TOKEN_TTL_SECONDS));
+  return Math.min(1800, Math.max(60, Number.isFinite(parsed) ? Math.floor(parsed) : DEFAULT_TILE_SESSION_TOKEN_TTL_SECONDS));
 }
 
 function normalizeResolveId(value) {
@@ -208,20 +230,6 @@ async function issueTileSessionToken(env, auth, requestedQualityMode, requestedR
   const planCode = normalizeRequestedPlan(auth && auth.planCode);
   const qualityAccessPlanCode = normalizeRequestedPlan(auth && (auth.qualityAccessPlanCode || auth.planCode));
   const creditEnforced = Boolean(options && options.creditEnforced);
-  if (!creditEnforced && !isQualityModeAllowedForPlan(qualityAccessPlanCode, qualityMode)) {
-    return {
-      error: json(
-        {
-          ok: false,
-          error: "quality_mode_not_allowed_for_tier",
-          message: qualityModeNotAllowedMessage(planCode, qualityMode),
-          requested_quality_mode: qualityMode,
-        },
-        403,
-        env,
-      ),
-    };
-  }
   const ttlSeconds = resolveTileSessionTokenTtlSeconds(env);
   const exp = Math.floor(Date.now() / 1000) + ttlSeconds;
   const resolveId = normalizeResolveId(requestedResolveId) || crypto.randomUUID();
@@ -305,47 +313,6 @@ function requestCountry(request) {
   return country && country !== "XX" && country !== "T1" ? country : "UNKNOWN";
 }
 
-function parseTileQualityFromFileName(fileName) {
-  const match = /^(S2|EL|WT|PO)_x\d{3}_y\d{3}_z(\d{3})_d(\d{3})\.(?:exr|tif)$/i.exec(String(fileName || "").trim());
-  if (!match) return null;
-  return { z: Number.parseInt(match[2], 10), d: Number.parseInt(match[3], 10) };
-}
-
-function minimumPlanQualityForTile(fileName) {
-  const parsed = parseTileQualityFromFileName(fileName);
-  if (!parsed || !Number.isFinite(parsed.z) || !Number.isFinite(parsed.d)) return "preview";
-  const z = Math.max(1, Number(parsed.z) || 1);
-  const d = Math.max(1, Number(parsed.d) || 1);
-  if (d <= z) return "full";
-  if (d <= z * 2) return "balanced";
-  return "preview";
-}
-
-async function getPreviewFairUsageHoldForUser(db, userId) {
-  const safeUserId = String(userId || "").trim();
-  if (!safeUserId) return { held: false, message: "" };
-  try {
-    const row = await dbGet(
-      db,
-      `SELECT preview_fair_usage_hold_at, preview_fair_usage_hold_reason FROM users WHERE id = ? LIMIT 1`,
-      [safeUserId],
-    );
-    const holdAt = String(row && row.preview_fair_usage_hold_at || "").trim();
-    return {
-      held: Boolean(holdAt),
-      hold_at: holdAt,
-      reason: String(row && row.preview_fair_usage_hold_reason || "").trim(),
-      message: "Preview streaming is temporarily paused for this account while usage is reviewed. Full Quality licenced data and account access remain available.",
-    };
-  } catch (_error) {
-    return { held: false, message: "" };
-  }
-}
-
-function previewFairUsageBlockedResponse(env, message = "Preview streaming is temporarily paused for this account while usage is reviewed.") {
-  return json({ ok: false, error: "preview_fair_usage_hold", message }, 403, env);
-}
-
 function isTileEventQueueProducerEnabled(env = {}) {
   const raw = env.ENABLE_TILE_EVENT_QUEUE_PRODUCER;
   if (raw === undefined || raw === null || String(raw).trim() === "") return true;
@@ -357,32 +324,23 @@ function isTileHotPathMonitoringEnabled(env = {}) {
 }
 
 const TILE_DEPS = {
-  PLAN_CODE_FREE,
   clampNonNegativeInt,
   createTileDownloadSession: null,
-  dbGet,
-  dbRun,
-  getPreviewFairUsageHoldForUser,
-  isQualityModeAllowedForPlan,
-  isProfessionalPlan,
   isTileEventQueueProducerEnabled,
   isTileHotPathMonitoringEnabled,
+  isProfessionalPlan,
   issueTileSessionToken,
   json,
   maybeSignalTileFarmingActivity: async () => {},
-  minimumPlanQualityForTile,
   normalizeDeviceId,
   normalizeQualityMode,
   normalizeRequestedPlan,
   normalizeResolveId,
-  personalFreeLocationBlockedMessage,
-  personalFreeRegionForPoint,
-  personalFreeRegionForTileFileName,
   normalizeTileKeys,
   nowIso,
+  personalFreeLocationBlockedMessage,
+  personalFreeRegionForPoint,
   parseJson,
-  previewFairUsageBlockedResponse,
-  qualityModeNotAllowedMessage,
   readTileSessionClaims,
   recordPreviewUsageAndMaybeAlert: async () => ({ alerted: false }),
   recordTileRequestEvent: async () => {},
@@ -390,6 +348,7 @@ const TILE_DEPS = {
   requestCountry,
   requireAuthenticatedUserContext,
   requireDb,
+  resolveTileSessionAuth,
   resolveTileCacheControl,
 };
 

@@ -1172,7 +1172,6 @@ def current_full_quality_pricing_tiles_for_region_offers(scene=None, runtime=Non
         visible_tiles = canonical_tiles(
             tile_utils.main(
                 scope_mode=scope_token,
-                texture_quality_mode_override="FULL",
             )
         )
     except recoverable_exceptions:
@@ -1870,16 +1869,13 @@ def build_resolve_cost_breakdown(scene=None, runtime=None, scope_mode="CAMERA", 
         scope_token = "CAMERA"
 
     try:
-        visible_tiles = canonical_tiles(
-            tile_utils.main(
-                scope_mode=scope_token,
-                texture_quality_mode_override=normalized_mode,
-            )
-        )
+        full_source_tiles = tile_utils.main(scope_mode=scope_token)
+        from ..render_prep import apply_texture_quality_to_full_tiles
+        visible_tiles = canonical_tiles(apply_texture_quality_to_full_tiles(full_source_tiles, normalized_mode))
     except recoverable_exceptions:
         logger.debug("Planetka: failed computing tiles for resolve-cost breakdown", exc_info=True)
         visible_tiles = tuple()
-    except (RuntimeError, TypeError, ValueError, AttributeError):
+    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
         logger.debug("Planetka: failed computing tiles for resolve-cost breakdown", exc_info=True)
         visible_tiles = tuple()
 
@@ -2140,12 +2136,9 @@ def update_resolve_size_estimates(
         if override_tiles is not None:
             return canonical_tiles(override_tiles)
         try:
-            return canonical_tiles(
-                tile_utils.main(
-                    scope_mode=scope_token,
-                    texture_quality_mode_override=normalized_mode,
-                )
-            )
+            full_source_tiles = tile_utils.main(scope_mode=scope_token)
+            from ..render_prep import apply_texture_quality_to_full_tiles
+            return canonical_tiles(apply_texture_quality_to_full_tiles(full_source_tiles, normalized_mode))
         except recoverable_exceptions:
             logger.debug(
                 "Planetka: failed computing %s tiles for resolve-size estimate",
@@ -2153,7 +2146,7 @@ def update_resolve_size_estimates(
                 exc_info=True,
             )
             return None
-        except (RuntimeError, TypeError, ValueError, AttributeError):
+        except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
             logger.debug(
                 "Planetka: failed computing %s tiles for resolve-size estimate",
                 normalized_mode,

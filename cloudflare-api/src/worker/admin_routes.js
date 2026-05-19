@@ -6,7 +6,6 @@ export async function dispatchAdminRoute(request, env, path, deps) {
   const {
     handleAdminAnalyticsPage,
     handleAdminAnalyticsProductsPage,
-    handleAdminAnalyticsUserPage,
     handleAdminAnalyticsUsersPage,
     handleAdminAnalyticsData,
     handleAdminAnalyticsTileMapImage,
@@ -19,8 +18,6 @@ export async function dispatchAdminRoute(request, env, path, deps) {
     handleAdminSessionLogout,
     handleAdminUserBlock,
     handleAdminUserUnblock,
-    handleAdminUserSetPreviewHold,
-    handleAdminUserReleasePreviewHold,
     handleAdminUserHardBlock,
     handleAdminUserSetPlan,
     handleAdminQaAuthReset,
@@ -40,11 +37,6 @@ export async function dispatchAdminRoute(request, env, path, deps) {
     case "/admin/analytics/products":
       if (request.method === "GET") {
         return await handleAdminAnalyticsProductsPage(request, env);
-      }
-      return null;
-    case "/admin/analytics/user":
-      if (request.method === "GET") {
-        return await handleAdminAnalyticsUserPage(request, env);
       }
       return null;
     case "/admin/analytics/data":
@@ -96,16 +88,6 @@ export async function dispatchAdminRoute(request, env, path, deps) {
     case "/admin/users/unblock":
       if (request.method === "POST") {
         return await handleAdminUserUnblock(request, env);
-      }
-      return null;
-    case "/admin/users/release-preview-hold":
-      if (request.method === "POST") {
-        return await handleAdminUserReleasePreviewHold(request, env);
-      }
-      return null;
-    case "/admin/users/set-preview-hold":
-      if (request.method === "POST") {
-        return await handleAdminUserSetPreviewHold(request, env);
       }
       return null;
     case "/admin/users/hard-block":

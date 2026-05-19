@@ -384,10 +384,10 @@ export function parseHeavyUserPlanFilter(value, deps) {
 
 export function parseAnalyticsUsersSort(value) {
   const normalized = String(value || "").trim().toLowerCase();
-  if (normalized === "resolves") return "paid_resolves";
-  if (normalized === "lifetime") return "preview_lifetime";
-  const allowed = new Set(["paid_eur", "paid_resolves", "paid_tiles", "data_downloaded", "preview_lifetime", "last_seen"]);
-  return allowed.has(normalized) ? normalized : "paid_eur";
+  if (normalized === "resolves") return "total_resolves";
+  if (normalized === "lifetime") return "data_downloaded";
+  const allowed = new Set(["total_resolves", "data_downloaded", "last_seen"]);
+  return allowed.has(normalized) ? normalized : "data_downloaded";
 }
 
 export function parseAnalyticsUsersSortDirection(value) {
@@ -754,7 +754,7 @@ export async function collectAnalyticsSnapshot(
     db,
     `
       SELECT
-        COUNT(*) AS free_users,
+        COALESCE(SUM(CASE WHEN LOWER(COALESCE(status, '')) = 'professional' THEN 1 ELSE 0 END), 0) AS professional_users,
         COUNT(*) AS total_users
       FROM users
       WHERE 1 = 1
@@ -770,16 +770,17 @@ export async function collectAnalyticsSnapshot(
         SELECT
           r.request_count,
           r.bytes_served,
-          r.user_id
+          r.user_id,
+          LOWER(COALESCE(u.status, '')) AS user_status
         FROM tile_request_rollup_daily_account r
         LEFT JOIN users u ON u.id = r.user_id
         WHERE 1 = 1
         ${rollupEmailFilterAliasR.condition ? `AND ${rollupEmailFilterAliasR.condition}` : ""}
       )
       SELECT
-        COALESCE(SUM(request_count), 0) AS free_requests,
+        COALESCE(SUM(CASE WHEN user_status = 'professional' THEN request_count ELSE 0 END), 0) AS professional_requests,
         COALESCE(SUM(request_count), 0) AS total_requests,
-        COALESCE(SUM(bytes_served), 0) AS free_bytes,
+        COALESCE(SUM(CASE WHEN user_status = 'professional' THEN bytes_served ELSE 0 END), 0) AS professional_bytes,
         COALESCE(SUM(bytes_served), 0) AS total_bytes
       FROM traffic
     `,
@@ -793,7 +794,7 @@ export async function collectAnalyticsSnapshot(
         SELECT DISTINCT
           e.user_id,
           e.resolve_id,
-          e.user_id
+          LOWER(COALESCE(u.status, '')) AS user_status
         FROM tile_request_events e
         LEFT JOIN users u ON u.id = e.user_id
         WHERE
@@ -802,7 +803,7 @@ export async function collectAnalyticsSnapshot(
           ${eventEmailFilterAliasE.condition ? `AND ${eventEmailFilterAliasE.condition}` : ""}
       )
       SELECT
-        COUNT(*) AS free_resolves,
+        COALESCE(SUM(CASE WHEN user_status = 'professional' THEN 1 ELSE 0 END), 0) AS professional_resolves,
         COUNT(*) AS total_resolves
       FROM tagged_resolves
     `,
@@ -1014,23 +1015,6 @@ export async function collectAnalyticsSnapshot(
       LIMIT 20
     `,
     [windowStartUnix, ...eventEmailFilterAliasE.bindings],
-  );
-
-  const topTiles = await deps.dbAll(
-    db,
-    `
-      SELECT
-        tile_key,
-        COUNT(*) AS request_count,
-        COALESCE(SUM(bytes_served), 0) AS bytes_served
-      FROM tile_request_events
-      WHERE created_at_unix >= ? AND tile_key IS NOT NULL AND tile_key != ''
-      ${eventEmailFilter.condition ? `AND ${eventEmailFilter.condition}` : ""}
-      GROUP BY tile_key
-      ORDER BY request_count DESC
-      LIMIT 20
-    `,
-    [windowStartUnix, ...eventEmailFilter.bindings],
   );
 
   const tileMapWindowSeconds = Math.max(
@@ -1394,7 +1378,6 @@ export async function collectAnalyticsSnapshot(
     last_seen_at: String(row && row.last_seen_at || ""),
   }));
 
-  const cloudBillableUsage = await fetchCloudflareR2BillableUsage(env, db, deps);
   const totalEarnedEur = Number(topLineRevenue && topLineRevenue.total_earned_eur);
 
   return {
@@ -1403,19 +1386,19 @@ export async function collectAnalyticsSnapshot(
     window_start_unix: windowStartUnix,
     top_line: {
       users: {
-        free: deps.clampNonNegativeInt(topLineUsers && topLineUsers.free_users),
+        professional: deps.clampNonNegativeInt(topLineUsers && topLineUsers.professional_users),
         total: deps.clampNonNegativeInt(topLineUsers && topLineUsers.total_users),
       },
       resolves: {
-        free: deps.clampNonNegativeInt(topLineResolves && topLineResolves.free_resolves),
+        professional: deps.clampNonNegativeInt(topLineResolves && topLineResolves.professional_resolves),
         total: deps.clampNonNegativeInt(topLineResolves && topLineResolves.total_resolves),
       },
       tile_requests: {
-        free: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.free_requests),
+        professional: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.professional_requests),
         total: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.total_requests),
       },
       gb_served: {
-        free: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.free_bytes),
+        professional: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.professional_bytes),
         total: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.total_bytes),
       },
       earned_eur: {
@@ -1471,7 +1454,6 @@ export async function collectAnalyticsSnapshot(
     },
     active_users_10m: normalizedActiveUsers10m,
     top_users: Array.isArray(topUsers) ? topUsers : [],
-    top_tiles: Array.isArray(topTiles) ? topTiles : [],
     recent_failures: Array.isArray(recentFailures) ? recentFailures : [],
     auth_refresh_health: {
       window_seconds: authRefreshWindowSeconds,
@@ -1513,7 +1495,6 @@ export async function collectAnalyticsSnapshot(
       top_hour: attachHeavyResolveCounts(topHeavyHour),
     },
     heavy_users_30d: attachHeavyResolveCounts(heavyUsers30d),
-    cloudflare_billable_usage: cloudBillableUsage,
     live_tile_map: {
       generated_at: deps.nowIso(),
       window_seconds: tileMapWindowSeconds,
@@ -1530,25 +1511,16 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
   await deps.ensureTileRequestEventsTable(db);
   await deps.ensureTileRequestRollupTables(db);
   await deps.ensureUserQualityAccessColumns(db);
-  if (typeof deps.ensureCreditTables === "function") {
-    await deps.ensureCreditTables(db);
-  }
-  const nowUnix = Math.floor(Date.now() / 1000);
-  const currentHourUnix = deps.startOfHourUnix(nowUnix);
-  const currentDayUnix = deps.startOfDayUnix(nowUnix);
   const sortBy = parseAnalyticsUsersSort(options.sort_by);
   const sortDir = parseAnalyticsUsersSortDirection(options.sort_dir);
   const query = String(options.query || "").trim().toLowerCase();
   const limit = Math.max(1, Math.min(5000, deps.parseNonNegativeInteger(options.limit, 5000)));
   const orderSqlByKey = {
-    paid_eur: "paid_eur_lifetime",
-    paid_resolves: "paid_full_resolve_count",
-    paid_tiles: "unlocked_tile_count",
-    data_downloaded: "licenced_downloaded_bytes",
-    preview_lifetime: "preview_lifetime_bytes",
+    total_resolves: "total_resolve_count",
+    data_downloaded: "data_downloaded_bytes",
     last_seen: "last_seen_unix",
   };
-  const orderSql = orderSqlByKey[sortBy] || orderSqlByKey.paid_eur;
+  const orderSql = orderSqlByKey[sortBy] || orderSqlByKey.data_downloaded;
   const emailFilter = buildAnalyticsExcludedEmailFilter("u.email", env, deps);
   const whereParts = [];
   const bindings = [];
@@ -1567,7 +1539,7 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
       WITH resolve_counts AS (
         SELECT
           user_id,
-          COUNT(DISTINCT resolve_id) AS resolve_count
+          COUNT(DISTINCT resolve_id) AS total_resolve_count
         FROM tile_request_events
         WHERE resolve_id IS NOT NULL AND resolve_id != ''
         GROUP BY user_id
@@ -1575,124 +1547,17 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
       daily_usage AS (
         SELECT
           r.user_id,
-          COALESCE(SUM(r.bytes_served), 0) AS lifetime_bytes,
+          COALESCE(SUM(r.bytes_served), 0) AS data_downloaded_bytes,
           COALESCE(MAX(r.last_event_unix), 0) AS last_seen_unix
         FROM tile_request_rollup_daily_account r
         GROUP BY r.user_id
-      ),
-      preview_hour AS (
-        SELECT
-          user_id,
-          COALESCE(SUM(bytes_served), 0) AS preview_hour_bytes,
-          COALESCE(SUM(request_count), 0) AS preview_hour_requests,
-          COALESCE(MAX(d004_unique_count), 0) AS preview_d004_unique_hour
-        FROM preview_usage_hourly_account
-        WHERE bucket_start_unix = ?
-        GROUP BY user_id
-      ),
-      preview_day AS (
-        SELECT
-          user_id,
-          COALESCE(SUM(bytes_served), 0) AS preview_day_bytes,
-          COALESCE(SUM(request_count), 0) AS preview_day_requests
-        FROM tile_request_rollup_daily_account_quality
-        WHERE quality_mode = 'preview'
-          AND day_start_unix = ?
-        GROUP BY user_id
-      ),
-      preview_lifetime AS (
-        SELECT
-          user_id,
-          COALESCE(SUM(bytes_served), 0) AS preview_lifetime_bytes,
-          COALESCE(SUM(request_count), 0) AS preview_lifetime_requests
-        FROM tile_request_rollup_daily_account_quality
-        WHERE quality_mode = 'preview'
-        GROUP BY user_id
-      ),
-      full_lifetime AS (
-        SELECT
-          user_id,
-          COALESCE(SUM(bytes_served), 0) AS full_lifetime_bytes,
-          COALESCE(SUM(request_count), 0) AS full_lifetime_requests
-        FROM tile_request_rollup_daily_account_quality
-        WHERE quality_mode = 'full'
-        GROUP BY user_id
-      ),
-      paid_full_resolves AS (
-        SELECT
-          user_id,
-          COUNT(*) AS paid_full_resolve_count
-        FROM credit_ledger
-        WHERE LOWER(COALESCE(reason, '')) IN ('tile_unlock', 'stripe_scene_purchase')
-          AND LOWER(COALESCE(json_extract(metadata_json, '$.quality_mode'), '')) = 'full'
-          AND COALESCE(CAST(json_extract(metadata_json, '$.tile_count') AS INTEGER), 0) > 0
-        GROUP BY user_id
-      ),
-      paid_eur_lifetime AS (
-        SELECT
-          user_id,
-          COALESCE(ROUND(SUM(amount_eur) * 100.0) / 100.0, 0) AS paid_eur_lifetime
-        FROM (
-          SELECT
-            cl.user_id AS user_id,
-            CASE
-              WHEN LOWER(COALESCE(cl.reason, '')) = 'stripe_scene_purchase' THEN COALESCE(
-                CASE WHEN cl.amount_eur > 0 THEN cl.amount_eur ELSE NULL END,
-                CAST(json_extract(CASE WHEN json_valid(COALESCE(cl.metadata_json, '')) THEN cl.metadata_json ELSE NULL END, '$.paid_eur') AS REAL),
-                CAST(json_extract(CASE WHEN json_valid(COALESCE(cl.metadata_json, '')) THEN cl.metadata_json ELSE NULL END, '$.nominal_eur') AS REAL),
-                0
-              )
-              WHEN LOWER(COALESCE(cl.reason, '')) = 'stripe_region_pack_purchase' THEN COALESCE(
-                CASE WHEN cl.amount_eur > 0 THEN cl.amount_eur ELSE NULL END,
-                CAST(json_extract(CASE WHEN json_valid(COALESCE(cl.metadata_json, '')) THEN cl.metadata_json ELSE NULL END, '$.paid_eur') AS REAL),
-                CAST(json_extract(CASE WHEN json_valid(COALESCE(cl.metadata_json, '')) THEN cl.metadata_json ELSE NULL END, '$.nominal_eur') AS REAL),
-                0
-              )
-              ELSE 0
-            END AS amount_eur
-          FROM credit_ledger cl
-          WHERE LOWER(COALESCE(cl.reason, '')) IN ('stripe_scene_purchase', 'stripe_region_pack_purchase')
-        )
-        GROUP BY user_id
-      ),
-      unlocked_tiles AS (
-        SELECT
-          user_id,
-          COUNT(*) AS unlocked_tile_count
-        FROM user_tile_entitlements
-        GROUP BY user_id
-      ),
-      licenced_downloads AS (
-        SELECT
-          user_id,
-          COALESCE(total_downloaded_bytes, 0) AS licenced_downloaded_bytes,
-          COALESCE(total_downloaded_tiles, 0) AS licenced_downloaded_tiles,
-          COALESCE(total_downloaded_files, 0) AS licenced_downloaded_files
-        FROM user_licenced_download_stats
       )
       SELECT
         u.id AS user_id,
         u.email AS user_email,
         NULLIF(TRIM(LOWER(u.status)), '') AS user_status,
-        COALESCE(NULLIF(TRIM(u.preview_fair_usage_hold_at), ''), '') AS preview_fair_usage_hold_at,
-        COALESCE(NULLIF(TRIM(u.preview_fair_usage_hold_reason), ''), '') AS preview_fair_usage_hold_reason,
-        COALESCE(pe.paid_eur_lifetime, 0) AS paid_eur_lifetime,
-        COALESCE(ut.unlocked_tile_count, 0) AS unlocked_tile_count,
-        COALESCE(rc.resolve_count, 0) AS resolve_count,
-        COALESCE(du.lifetime_bytes, 0) AS lifetime_bytes,
-        COALESCE(ph.preview_hour_bytes, 0) AS preview_hour_bytes,
-        COALESCE(ph.preview_hour_requests, 0) AS preview_hour_requests,
-        COALESCE(ph.preview_d004_unique_hour, 0) AS preview_d004_unique_hour,
-        COALESCE(pd.preview_day_bytes, 0) AS preview_day_bytes,
-        COALESCE(pd.preview_day_requests, 0) AS preview_day_requests,
-        COALESCE(pl.preview_lifetime_bytes, 0) AS preview_lifetime_bytes,
-        COALESCE(pl.preview_lifetime_requests, 0) AS preview_lifetime_requests,
-        COALESCE(fl.full_lifetime_bytes, 0) AS full_lifetime_bytes,
-        COALESCE(fl.full_lifetime_requests, 0) AS full_lifetime_requests,
-        COALESCE(ld.licenced_downloaded_bytes, 0) AS licenced_downloaded_bytes,
-        COALESCE(ld.licenced_downloaded_tiles, 0) AS licenced_downloaded_tiles,
-        COALESCE(ld.licenced_downloaded_files, 0) AS licenced_downloaded_files,
-        COALESCE(pfr.paid_full_resolve_count, 0) AS paid_full_resolve_count,
+        COALESCE(rc.total_resolve_count, 0) AS total_resolve_count,
+        COALESCE(du.data_downloaded_bytes, 0) AS data_downloaded_bytes,
         COALESCE(
           NULLIF(TRIM(datetime(du.last_seen_unix, 'unixepoch')), ''),
           COALESCE(NULLIF(TRIM(u.last_login_at), ''), COALESCE(NULLIF(TRIM(u.created_at), ''), ''))
@@ -1701,19 +1566,10 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
       FROM users u
       LEFT JOIN daily_usage du ON du.user_id = u.id
       LEFT JOIN resolve_counts rc ON rc.user_id = u.id
-      LEFT JOIN preview_hour ph ON ph.user_id = u.id
-      LEFT JOIN preview_day pd ON pd.user_id = u.id
-      LEFT JOIN preview_lifetime pl ON pl.user_id = u.id
-      LEFT JOIN full_lifetime fl ON fl.user_id = u.id
-      LEFT JOIN paid_full_resolves pfr ON pfr.user_id = u.id
-      LEFT JOIN paid_eur_lifetime pe ON pe.user_id = u.id
-      LEFT JOIN user_credit_accounts ca ON ca.user_id = u.id
-      LEFT JOIN unlocked_tiles ut ON ut.user_id = u.id
-      LEFT JOIN licenced_downloads ld ON ld.user_id = u.id
       ${whereSql}
       ORDER BY ${orderSql} ${sortDir.toUpperCase()}, LOWER(COALESCE(u.email, '')) ASC
       LIMIT ${limit}
     `,
-    [currentHourUnix, currentDayUnix, ...bindings],
+    bindings,
   );
 }

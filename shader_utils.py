@@ -6,7 +6,6 @@ import logging
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 
 from .extension_prefs import get_prefs
-from .fallback_utils import ecosystem_safe_fallback
 
 logger = logging.getLogger(__name__)
 _RECOVERABLE_LOG_COUNTS = {}
@@ -132,21 +131,6 @@ def _tile_sort_key(tile):
         return (10**9, 10**9, 10**9, 10**9, str(tile))
     x, y, z, d = parsed
     return (d, z, x, y, tile)
-
-
-def _tiles_overlap(a, b):
-    parsed_a = parse_tile(a)
-    parsed_b = parse_tile(b)
-    if not parsed_a or not parsed_b:
-        return False
-    xa, ya, za, _ = parsed_a
-    xb, yb, zb, _ = parsed_b
-    return not (
-        xa + za <= xb
-        or xb + zb <= xa
-        or ya + za <= yb
-        or yb + zb <= ya
-    )
 
 
 def _is_land_tile(tile, coverage):
@@ -1242,7 +1226,6 @@ def _resolve_tiles_for_shader(visible_tiles, base_path):
     requested_tiles = _normalize_requested_tiles(visible_tiles)
     if not requested_tiles:
         return [], set()
-    ecosystem = detect_ecosystem(requested_tiles)
     coverage = _get_coverage_map()
 
     land_tiles = []
@@ -1253,31 +1236,8 @@ def _resolve_tiles_for_shader(visible_tiles, base_path):
         else:
             ocean_tiles.append(tile)
 
-    resolved_land = ecosystem_safe_fallback(
-        normalized_tiles=land_tiles,
-        ecosystem=ecosystem,
-        coverage=coverage,
-        base_path=base_path,
-    ) if land_tiles else []
-
-    if land_tiles and not resolved_land:
-        resolved_land = list(land_tiles)
-
-    resolved_ocean = []
-    if resolved_land:
-        for tile in ocean_tiles:
-            if any(_tiles_overlap(tile, land_tile) for land_tile in resolved_land):
-                continue
-            resolved_ocean.append(tile)
-    else:
-        resolved_ocean = list(ocean_tiles)
-
-    resolved_tiles = list(resolved_land) + list(resolved_ocean)
-    if not resolved_tiles:
-        resolved_tiles = list(requested_tiles)
-
-    resolved_tiles = sorted(set(resolved_tiles), key=_tile_sort_key)
-    ocean_tile_set = set(resolved_ocean).intersection(resolved_tiles)
+    resolved_tiles = sorted(set(requested_tiles), key=_tile_sort_key)
+    ocean_tile_set = set(ocean_tiles).intersection(resolved_tiles)
     return resolved_tiles, ocean_tile_set
 
 
@@ -2207,10 +2167,9 @@ def main(
     logger.debug("Texture base path: %s", base_path)
 
     if resolved_tiles_override is None or ocean_tiles_override is None:
-        resolved_tiles, ocean_tiles = _resolve_tiles_for_shader(visible_tiles, base_path)
-    else:
-        resolved_tiles = list(resolved_tiles_override or ())
-        ocean_tiles = set(ocean_tiles_override or ())
+        raise RuntimeError("Planetka shader requires upstream resolved tile classification.")
+    resolved_tiles = list(resolved_tiles_override or ())
+    ocean_tiles = set(ocean_tiles_override or ())
     requested_tiles = list(visible_tiles)
     result = update_shader_nodes(
         resolved_tiles,

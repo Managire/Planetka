@@ -9,102 +9,35 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     fmtIntLocal,
     fmtGbLocal,
     snapshotTopLine,
-    snapshotActive,
     snapshotSummary,
     snapshotLiveMap,
     serverActiveUsersRowsHtml,
     serverMapRectsSvg,
     serverHeavyRowsHtml,
-    billableStatusText,
-    billableStorageGb,
-    billableStorageGbBillable,
-    billableCostStorage,
-    billableClassAOps,
-    billableClassAOpsBillable,
-    billableCostClassA,
-    billableClassBOps,
-    billableClassBOpsBillable,
-    billableCostClassB,
-    billableUnknownOps,
-    billableCostTotal,
-    quoteQueueHealth,
-    workerOverloadHealth,
-    mapServiceBusyHealth,
   } = context || {};
 
   const safeTopLine = snapshotTopLine && typeof snapshotTopLine === "object" ? snapshotTopLine : {};
-  const safeActive = snapshotActive && typeof snapshotActive === "object" ? snapshotActive : {};
   const topLineUsers = safeTopLine.users && typeof safeTopLine.users === "object" ? safeTopLine.users : {};
   const topLineResolves = safeTopLine.resolves && typeof safeTopLine.resolves === "object" ? safeTopLine.resolves : {};
   const topLineTileRequests = safeTopLine.tile_requests && typeof safeTopLine.tile_requests === "object" ? safeTopLine.tile_requests : {};
   const topLineGbServed = safeTopLine.gb_served && typeof safeTopLine.gb_served === "object" ? safeTopLine.gb_served : {};
-  const topLineEarnedEur = safeTopLine.earned_eur && typeof safeTopLine.earned_eur === "object" ? safeTopLine.earned_eur : {};
-  const topLinePaidResolves = safeTopLine.paid_resolves && typeof safeTopLine.paid_resolves === "object" ? safeTopLine.paid_resolves : {};
 
   const renderTotalValue = (values = {}, valueFormatter, fallbackTotal = 0) => {
     const safeValues = values && typeof values === "object" ? values : {};
     const total = Number(safeValues.total || fallbackTotal || 0);
     return escapeHtml(String(valueFormatter(total)));
   };
-  const fmtEurLocal = (value) => {
-    const numeric = Number(value);
-    return Number.isFinite(numeric) ? `€${numeric.toFixed(2)}` : "€0.00";
+  const renderProfessionalSplitValue = (values = {}, valueFormatter, fallbackTotal = 0) => {
+    const safeValues = values && typeof values === "object" ? values : {};
+    const professional = Number(safeValues.professional || 0);
+    const total = Number(safeValues.total || fallbackTotal || 0);
+    return `${escapeHtml(String(valueFormatter(professional)))} / ${escapeHtml(String(valueFormatter(total)))}`;
   };
 
-  const topUsersSplitHtml = renderTotalValue(topLineUsers, (value) => fmtIntLocal(value), topLineUsers.total);
-  const topResolvesSplitHtml = renderTotalValue(topLineResolves, (value) => fmtIntLocal(value), topLineResolves.total);
+  const topUsersSplitHtml = renderProfessionalSplitValue(topLineUsers, (value) => fmtIntLocal(value), topLineUsers.total);
+  const topResolvesSplitHtml = renderProfessionalSplitValue(topLineResolves, (value) => fmtIntLocal(value), topLineResolves.total);
   const topTileRequestsSplitHtml = renderTotalValue(topLineTileRequests, (value) => fmtIntLocal(value), topLineTileRequests.total);
-  const topGbServedSplitHtml = renderTotalValue(topLineGbServed, (value) => `${fmtGbLocal(value)} GB`, topLineGbServed.total);
-  const topEarnedEurHtml = renderTotalValue(topLineEarnedEur, (value) => fmtEurLocal(value), topLineEarnedEur.total);
-  const topPaidResolvesHtml = renderTotalValue(topLinePaidResolves, (value) => fmtIntLocal(value), topLinePaidResolves.total);
-  const safeQuoteQueueHealth = quoteQueueHealth && typeof quoteQueueHealth === "object" ? quoteQueueHealth : {};
-  const safeQuoteQueueLock = safeQuoteQueueHealth.active_lock && typeof safeQuoteQueueHealth.active_lock === "object"
-    ? safeQuoteQueueHealth.active_lock
-    : null;
-  const safeQuoteQueueBatch = safeQuoteQueueHealth.last_processed_batch && typeof safeQuoteQueueHealth.last_processed_batch === "object"
-    ? safeQuoteQueueHealth.last_processed_batch
-    : null;
-  const safeWorkerOverloadHealth = workerOverloadHealth && typeof workerOverloadHealth === "object" ? workerOverloadHealth : {};
-  const safeWorkerOverloadState = safeWorkerOverloadHealth.monitor_state && typeof safeWorkerOverloadHealth.monitor_state === "object"
-    ? safeWorkerOverloadHealth.monitor_state
-    : null;
-  const safeWorkerOverloadLatest = safeWorkerOverloadHealth.latest && typeof safeWorkerOverloadHealth.latest === "object"
-    ? safeWorkerOverloadHealth.latest
-    : null;
-  const safeMapServiceBusyHealth = mapServiceBusyHealth && typeof mapServiceBusyHealth === "object" ? mapServiceBusyHealth : {};
-  const safeMapServiceBusyActive = safeMapServiceBusyHealth.active && typeof safeMapServiceBusyHealth.active === "object"
-    ? safeMapServiceBusyHealth.active
-    : null;
-  const fmtDuration = (ms) => {
-    const numeric = Number(ms);
-    if (!Number.isFinite(numeric) || numeric <= 0) return "-";
-    if (numeric < 1000) return `${Math.round(numeric)} ms`;
-    return `${(numeric / 1000).toFixed(2)} s`;
-  };
-  const fmtAge = (seconds) => {
-    const numeric = Math.max(0, Math.floor(Number(seconds) || 0));
-    if (numeric <= 0) return "-";
-    if (numeric < 60) return `${numeric}s`;
-    if (numeric < 3600) return `${Math.floor(numeric / 60)}m ${numeric % 60}s`;
-    return `${Math.floor(numeric / 3600)}h ${Math.floor((numeric % 3600) / 60)}m`;
-  };
-  const quoteQueueLockHtml = safeQuoteQueueLock
-    ? `${escapeHtml(String(safeQuoteQueueLock.current_job_id || "active"))}<br><span class="muted">${escapeHtml(fmtAge(safeQuoteQueueLock.age_seconds))}</span>`
-    : "None";
-  const quoteQueueBatchHtml = safeQuoteQueueBatch
-    ? `${escapeHtml(String(safeQuoteQueueBatch.status || "-"))}<br><span class="muted">${escapeHtml(fmtDuration(safeQuoteQueueBatch.duration_ms))}</span>`
-    : "-";
-  const workerOverloadLatestHtml = safeWorkerOverloadLatest
-    ? `${escapeHtml(String(safeWorkerOverloadLatest.worker_name || "-"))}<br><span class="muted">${escapeHtml(String(safeWorkerOverloadLatest.status || ""))}</span>`
-    : "None";
-  const workerOverloadRecentRowsHtml = (Array.isArray(safeWorkerOverloadHealth.recent) ? safeWorkerOverloadHealth.recent : [])
-    .slice(0, 20)
-    .map((row) => `<tr><td>${escapeHtml(String(row && row.created_at || ""))}</td><td>${escapeHtml(String(row && row.worker_name || ""))}</td><td>${escapeHtml(String(row && row.status || ""))}</td><td>${escapeHtml(fmtIntLocal(row && row.request_count))}</td><td>${escapeHtml(fmtIntLocal(row && row.error_count))}</td><td>${escapeHtml(String(row && row.alerted_at || ""))}</td></tr>`)
-    .join("");
-  const mapServiceBusyRowsHtml = (Array.isArray(safeMapServiceBusyHealth.warnings) ? safeMapServiceBusyHealth.warnings : [])
-    .slice(0, 30)
-    .map((row) => `<tr><td>${escapeHtml(String(row && row.first_seen_at || ""))}</td><td>${escapeHtml(String(row && row.status || ""))}</td><td>${escapeHtml(fmtAge(row && (row.current_duration_seconds ?? row.duration_seconds)))}</td><td>${escapeHtml(fmtIntLocal(row && row.event_count))}</td><td>${escapeHtml(String(row && row.last_product_id || ""))}</td><td>${escapeHtml(String(row && row.last_path || ""))}</td><td>${escapeHtml(String(row && row.last_error || ""))}</td></tr>`)
-    .join("");
+  const topGbServedSplitHtml = renderProfessionalSplitValue(topLineGbServed, (value) => `${fmtGbLocal(value)} GB`, topLineGbServed.total);
   return `
 <!doctype html>
 <html>
@@ -168,54 +101,19 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
 	    <span id="status" class="muted">Snapshot updated: ${snapshotGeneratedAt} UTC</span>
 	  </div>
 	  <div class="grid">
-    <div class="card"><div class="label">Total Earned</div><div id="topEarnedEur" class="value">${topEarnedEurHtml}</div></div>
-    <div class="card"><div class="label">Total Paid Resolves</div><div id="topPaidResolves" class="value">${topPaidResolvesHtml}</div></div>
-    <div class="card"><div class="label">Total Users</div><div id="topUsersSplit" class="value">${topUsersSplitHtml}</div></div>
-    <div class="card"><div class="label">Total Resolves</div><div id="topResolvesSplit" class="value">${topResolvesSplitHtml}</div></div>
+    <div class="card"><div class="label">Professional Users / All Users</div><div id="topUsersSplit" class="value">${topUsersSplitHtml}</div></div>
+    <div class="card"><div class="label">Professional Resolves / All Resolves</div><div id="topResolvesSplit" class="value">${topResolvesSplitHtml}</div></div>
     <div class="card"><div class="label">Tile Requests</div><div id="topRequestsSplit" class="value">${topTileRequestsSplitHtml}</div></div>
-    <div class="card"><div class="label">GB Served</div><div id="topGbSplit" class="value">${topGbServedSplitHtml}</div></div>
-    <div class="card"><div class="label">Live tile events (10s)</div><div id="live10s" class="value">${escapeHtml(fmtIntLocal(snapshotActive.tile_events_10s))}</div></div>
+    <div class="card"><div class="label">Professional GB / All GB</div><div id="topGbSplit" class="value">${topGbServedSplitHtml}</div></div>
     <div class="card"><div class="label">Tile requests (window)</div><div id="reqCount" class="value">${escapeHtml(fmtIntLocal(snapshotSummary.request_count))}</div></div>
     <div class="card"><div class="label">Bytes served (window)</div><div id="bytesServed" class="value">${escapeHtml(fmtGbLocal(snapshotSummary.bytes_served))} GB</div></div>
     <div class="card"><div class="label">Errors (window)</div><div id="errors" class="value">${escapeHtml(fmtIntLocal(snapshotSummary.error_count))}</div></div>
     <div class="card"><div class="label">Cache hit ratio</div><div id="hitRatio" class="value">${escapeHtml((Number(snapshotSummary.request_count || 0) > 0 ? (100 * Number(snapshotSummary.cache_hit_count || 0) / Number(snapshotSummary.request_count || 1)) : 0).toFixed(2))}%</div></div>
-    <div class="card"><div class="label">Tagged resolves</div><div id="resolveCount" class="value">${escapeHtml(fmtIntLocal(snapshotSummary.tagged_resolve_count))}</div></div>
     <div class="card"><div class="label" id="authRefreshAttemptsLabel">Refresh Attempts (7d)</div><div id="authRefreshTotal" class="value">-</div></div>
     <div class="card"><div class="label" id="authRefreshFailuresLabel">Refresh Failures (7d)</div><div id="authRefreshFailures" class="value">-</div></div>
     <div class="card"><div class="label">Refresh Failure Rate</div><div id="authRefreshFailureRate" class="value">-</div></div>
     <div class="card"><div class="label">Critical Disconnects (7d)</div><div id="authRefreshCriticalFailures" class="value">-</div></div>
     <div class="card"><div class="label">Critical Affected Users (7d)</div><div id="authRefreshCriticalUsers" class="value">-</div></div>
-  </div>
-
-  <div class="section">
-    <h3>Quote Queue Health</h3>
-    <div class="grid">
-      <div class="card"><div class="label">Queued Jobs</div><div id="quoteQueueQueued" class="value">${escapeHtml(fmtIntLocal(safeQuoteQueueHealth.queued_count))}</div></div>
-      <div class="card"><div class="label">Failed Jobs</div><div id="quoteQueueFailed" class="value">${escapeHtml(fmtIntLocal(safeQuoteQueueHealth.failed_count))}</div></div>
-      <div class="card"><div class="label">Oldest Queued Job</div><div id="quoteQueueOldestAge" class="value">${escapeHtml(fmtAge(safeQuoteQueueHealth.oldest_queued_age_seconds))}</div><div id="quoteQueueOldestAt" class="subvalue">${escapeHtml(String(safeQuoteQueueHealth.oldest_queued_at || ""))}</div></div>
-      <div class="card"><div class="label">Active Lock</div><div id="quoteQueueLock" class="value">${quoteQueueLockHtml}</div><div id="quoteQueueLockMeta" class="subvalue">${escapeHtml(safeQuoteQueueLock ? String(safeQuoteQueueLock.worker_id || "") : "")}</div></div>
-      <div class="card"><div class="label">Last Batch Timing</div><div id="quoteQueueBatchTiming" class="value">${quoteQueueBatchHtml}</div><div id="quoteQueueBatchMeta" class="subvalue">${escapeHtml(safeQuoteQueueBatch ? `${fmtIntLocal(safeQuoteQueueBatch.completed_job_count)} done · ${fmtIntLocal(safeQuoteQueueBatch.failed_job_count)} failed` : "")}</div></div>
-    </div>
-  </div>
-
-  <div class="section">
-    <h3>Worker Overload Monitor</h3>
-    <div class="grid">
-      <div class="card"><div class="label">Overloads (24h)</div><div id="workerOverload24h" class="value">${escapeHtml(fmtIntLocal(safeWorkerOverloadHealth.count_24h))}</div></div>
-      <div class="card"><div class="label">Overloads (7d)</div><div id="workerOverload7d" class="value">${escapeHtml(fmtIntLocal(safeWorkerOverloadHealth.count_7d))}</div></div>
-      <div class="card"><div class="label">Latest Overload</div><div id="workerOverloadLatest" class="value">${workerOverloadLatestHtml}</div><div id="workerOverloadLatestMeta" class="subvalue">${escapeHtml(safeWorkerOverloadLatest ? String(safeWorkerOverloadLatest.event_window_start || "") : "")}</div></div>
-      <div class="card"><div class="label">Monitor Last Checked</div><div id="workerOverloadChecked" class="value">${escapeHtml(String(safeWorkerOverloadState && safeWorkerOverloadState.last_checked_at || "-"))}</div><div id="workerOverloadState" class="subvalue">${escapeHtml(String(safeWorkerOverloadState && safeWorkerOverloadState.last_error || "OK"))}</div></div>
-    </div>
-    <table id="workerOverloadTable"><thead><tr><th>Detected</th><th>Worker</th><th>Status</th><th>Requests</th><th>Errors</th><th>Alerted</th></tr></thead><tbody>${workerOverloadRecentRowsHtml}</tbody></table>
-  </div>
-
-  <div class="section">
-    <h3>Map Service Busy Warnings</h3>
-    <div class="grid">
-      <div class="card"><div class="label">Warning Periods</div><div id="mapBusyWarningCount" class="value">${escapeHtml(fmtIntLocal(safeMapServiceBusyHealth.warning_count))}</div><div class="subvalue">Periods lasting at least 60 seconds</div></div>
-      <div class="card"><div class="label">Active Period</div><div id="mapBusyActive" class="value">${escapeHtml(safeMapServiceBusyActive ? fmtAge(safeMapServiceBusyActive.current_duration_seconds) : "None")}</div><div id="mapBusyActiveMeta" class="subvalue">${escapeHtml(safeMapServiceBusyActive ? String(safeMapServiceBusyActive.first_seen_at || "") : "")}</div></div>
-    </div>
-    <table id="mapBusyTable"><thead><tr><th>First Seen</th><th>Status</th><th>Duration</th><th>Events</th><th>Product</th><th>Path</th><th>Last Error</th></tr></thead><tbody>${mapServiceBusyRowsHtml}</tbody></table>
   </div>
 
   <div class="section">
@@ -234,10 +132,6 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     <table id="tileMapUsersTable" style="max-width: 980px;"><thead><tr><th>User</th><th>Tiles (window)</th><th>Requests (window)</th><th>GB (window)</th><th>Map</th></tr></thead><tbody></tbody></table>
   </div>
   <div class="section">
-    <h3>Top Tiles</h3>
-    <table id="tilesTable"><thead><tr><th>Tile key</th><th>Requests</th><th>GB</th></tr></thead><tbody></tbody></table>
-  </div>
-  <div class="section">
     <h3 id="authRefreshHeading">Auth Refresh Health (7d)</h3>
     <table id="authRefreshUsersTable"><thead><tr><th>User</th><th>Failure Count</th><th>Last Failure</th></tr></thead><tbody></tbody></table>
     <table id="authRefreshErrorsTable"><thead><tr><th>Error</th><th>Count</th></tr></thead><tbody></tbody></table>
@@ -253,21 +147,6 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     <h3>Heavy Users (Top 20 by Lifetime GB)</h3>
     <table id="heavyTable"><thead><tr><th>Email</th><th>Resolves</th><th>Lifetime GB</th><th>Last Seen</th></tr></thead><tbody>${serverHeavyRowsHtml}</tbody></table>
   </div>
-  <div class="section">
-    <h3>Cloud Billable Usage (R2)</h3>
-    <div class="muted" id="billableMeta">${billableStatusText}</div>
-    <table id="billableTable">
-      <thead><tr><th>Metric</th><th>Usage</th><th>Billable</th><th>Estimated Cost (USD)</th></tr></thead>
-      <tbody>
-        <tr><td>R2 Data Storage</td><td id="billableStorageUsage">${billableStorageGb} GB</td><td id="billableStorageBillable">${billableStorageGbBillable} GB</td><td id="billableStorageCost">${billableCostStorage}</td></tr>
-        <tr><td>Class A Operations</td><td id="billableClassAUsage">${billableClassAOps}</td><td id="billableClassABillable">${billableClassAOpsBillable}</td><td id="billableClassACost">${billableCostClassA}</td></tr>
-        <tr><td>Class B Operations</td><td id="billableClassBUsage">${billableClassBOps}</td><td id="billableClassBBillable">${billableClassBOpsBillable}</td><td id="billableClassBCost">${billableCostClassB}</td></tr>
-        <tr><td>Unknown Operations</td><td id="billableUnknownUsage">${billableUnknownOps}</td><td>-</td><td>-</td></tr>
-        <tr><td><strong>Total</strong></td><td>-</td><td>-</td><td id="billableTotalCost"><strong>${billableCostTotal}</strong></td></tr>
-      </tbody>
-    </table>
-  </div>
-
   <script>
     const statusEl = document.getElementById("status");
     if (statusEl) {
@@ -303,27 +182,6 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
       return n.toFixed(i === 0 ? 0 : 2) + " " + units[i];
     };
     const fmtGb = (v) => (Number(v || 0) / (1024 * 1024 * 1024)).toFixed(3);
-    const fmtEur = (v) => {
-      const numeric = Number(v);
-      return Number.isFinite(numeric) ? "€" + numeric.toFixed(2) : "€0.00";
-    };
-    const fmtFixed = (v, digits = 2) => {
-      const numeric = Number(v);
-      return Number.isFinite(numeric) ? numeric.toFixed(digits) : "0.00";
-    };
-    const fmtDuration = (ms) => {
-      const numeric = Number(ms);
-      if (!Number.isFinite(numeric) || numeric <= 0) return "-";
-      if (numeric < 1000) return Math.round(numeric) + " ms";
-      return (numeric / 1000).toFixed(2) + " s";
-    };
-    const fmtAge = (seconds) => {
-      const numeric = Math.max(0, Math.floor(Number(seconds) || 0));
-      if (numeric <= 0) return "-";
-      if (numeric < 60) return numeric + "s";
-      if (numeric < 3600) return Math.floor(numeric / 60) + "m " + (numeric % 60) + "s";
-      return Math.floor(numeric / 3600) + "h " + Math.floor((numeric % 3600) / 60) + "m";
-    };
     const renderTotalMetric = (id, values, asGb = false, fallbackTotal = 0) => {
       const target = document.getElementById(id);
       if (!target) return;
@@ -333,6 +191,16 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
       };
       const safeValues = values && typeof values === "object" ? values : {};
       target.textContent = fmtValue(Number(safeValues.total || fallbackTotal || 0));
+    };
+    const renderProfessionalSplitMetric = (id, values, asGb = false, fallbackTotal = 0) => {
+      const target = document.getElementById(id);
+      if (!target) return;
+      const fmtValue = (value) => {
+        if (asGb) return fmtGb(value) + " GB";
+        return fmtInt(value);
+      };
+      const safeValues = values && typeof values === "object" ? values : {};
+      target.textContent = fmtValue(Number(safeValues.professional || 0)) + " / " + fmtValue(Number(safeValues.total || fallbackTotal || 0));
     };
     const decodeDataValue = (v) => {
       try {
@@ -364,129 +232,6 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
           tr.innerHTML = String(built || "");
         }
         tbody.appendChild(tr);
-      }
-    }
-    function renderCloudBillableUsage(payload) {
-      const data = payload && typeof payload === "object" ? payload : {};
-      const available = Boolean(data.available);
-      const bucket = String(data.bucket_filter || "").trim();
-      const metaText = available
-        ? (data && data.estimated
-          ? ("Estimated billable usage from telemetry. Source: "
-            + String(data.source || "telemetry_estimate").replace(/cloudflare/gi, "cloud")
-            + ". Period: " + String(data.period_start || "-")
-            + " -> " + String(data.period_end || "-"))
-          : ("Cloud live data. Source: "
-            + String(data.source || "cloud_live").replace(/cloudflare/gi, "cloud")
-            + ". Bucket: " + (bucket || "all buckets")
-            + ". Period: " + String(data.period_start || "-")
-            + " -> " + String(data.period_end || "-")))
-        : ("Cloud billable usage unavailable. "
-          + String(data.message || data.reason || "Not configured."));
-      setText("billableMeta", metaText);
-      if (!available) {
-        setText("billableStorageUsage", "-");
-        setText("billableStorageBillable", "-");
-        setText("billableStorageCost", "-");
-        setText("billableClassAUsage", "-");
-        setText("billableClassABillable", "-");
-        setText("billableClassACost", "-");
-        setText("billableClassBUsage", "-");
-        setText("billableClassBBillable", "-");
-        setText("billableClassBCost", "-");
-        setText("billableUnknownUsage", "-");
-        setText("billableTotalCost", "-");
-        return;
-      }
-      setText("billableStorageUsage", fmtFixed(data && data.storage && data.storage.gb, 3) + " GB");
-      setText("billableStorageBillable", fmtFixed(data && data.storage && data.storage.billable_gb_rounded, 0) + " GB");
-      setText("billableStorageCost", fmtFixed(data && data.estimated_cost_usd && data.estimated_cost_usd.storage, 2));
-      setText("billableClassAUsage", fmtInt(data && data.class_a && data.class_a.operations));
-      setText("billableClassABillable", fmtInt(data && data.class_a && data.class_a.billable_operations));
-      setText("billableClassACost", fmtFixed(data && data.estimated_cost_usd && data.estimated_cost_usd.class_a, 2));
-      setText("billableClassBUsage", fmtInt(data && data.class_b && data.class_b.operations));
-      setText("billableClassBBillable", fmtInt(data && data.class_b && data.class_b.billable_operations));
-      setText("billableClassBCost", fmtFixed(data && data.estimated_cost_usd && data.estimated_cost_usd.class_b, 2));
-      setText("billableUnknownUsage", fmtInt(data && data.unknown_operations));
-      setText("billableTotalCost", fmtFixed(data && data.estimated_cost_usd && data.estimated_cost_usd.total, 2));
-    }
-    function renderQuoteQueueHealth(payload) {
-      const data = payload && typeof payload === "object" ? payload : {};
-      const lock = data.active_lock && typeof data.active_lock === "object" ? data.active_lock : null;
-      const batch = data.last_processed_batch && typeof data.last_processed_batch === "object" ? data.last_processed_batch : null;
-      setText("quoteQueueQueued", fmtInt(data.queued_count));
-      setText("quoteQueueFailed", fmtInt(data.failed_count));
-      setText("quoteQueueOldestAge", fmtAge(data.oldest_queued_age_seconds));
-      setText("quoteQueueOldestAt", data.oldest_queued_at || "");
-      if (lock) {
-        setText("quoteQueueLock", String(lock.current_job_id || "active"));
-        setText("quoteQueueLockMeta", fmtAge(lock.age_seconds) + " · " + String(lock.worker_id || ""));
-      } else {
-        setText("quoteQueueLock", "None");
-        setText("quoteQueueLockMeta", "");
-      }
-      if (batch) {
-        setText("quoteQueueBatchTiming", String(batch.status || "-"));
-        setText(
-          "quoteQueueBatchMeta",
-          fmtDuration(batch.duration_ms) + " · " + fmtInt(batch.completed_job_count) + " done · " + fmtInt(batch.failed_job_count) + " failed",
-        );
-      } else {
-        setText("quoteQueueBatchTiming", "-");
-        setText("quoteQueueBatchMeta", "");
-      }
-    }
-    function renderWorkerOverloadHealth(payload) {
-      const data = payload && typeof payload === "object" ? payload : {};
-      const state = data.monitor_state && typeof data.monitor_state === "object" ? data.monitor_state : null;
-      const latest = data.latest && typeof data.latest === "object" ? data.latest : null;
-      setText("workerOverload24h", fmtInt(data.count_24h));
-      setText("workerOverload7d", fmtInt(data.count_7d));
-      if (latest) {
-        setText("workerOverloadLatest", String(latest.worker_name || "-") + " / " + String(latest.status || ""));
-        setText("workerOverloadLatestMeta", String(latest.event_window_start || ""));
-      } else {
-        setText("workerOverloadLatest", "None");
-        setText("workerOverloadLatestMeta", "");
-      }
-      setText("workerOverloadChecked", state ? String(state.last_checked_at || "-") : "-");
-      setText("workerOverloadState", state ? String(state.last_error || "OK") : "Not checked yet");
-      const tbody = document.querySelector("#workerOverloadTable tbody");
-      if (tbody) {
-        const rows = Array.isArray(data.recent) ? data.recent : [];
-        tbody.innerHTML = rows.slice(0, 20).map((row) => "<tr>"
-          + "<td>" + escapeHtml(String(row.created_at || "")) + "</td>"
-          + "<td>" + escapeHtml(String(row.worker_name || "")) + "</td>"
-          + "<td>" + escapeHtml(String(row.status || "")) + "</td>"
-          + "<td>" + fmtInt(row.request_count) + "</td>"
-          + "<td>" + fmtInt(row.error_count) + "</td>"
-          + "<td>" + escapeHtml(String(row.alerted_at || "")) + "</td>"
-          + "</tr>").join("");
-      }
-    }
-    function renderMapServiceBusyHealth(payload) {
-      const data = payload && typeof payload === "object" ? payload : {};
-      const active = data.active && typeof data.active === "object" ? data.active : null;
-      setText("mapBusyWarningCount", fmtInt(data.warning_count));
-      if (active) {
-        setText("mapBusyActive", fmtAge(active.current_duration_seconds || active.duration_seconds));
-        setText("mapBusyActiveMeta", String(active.first_seen_at || ""));
-      } else {
-        setText("mapBusyActive", "None");
-        setText("mapBusyActiveMeta", "");
-      }
-      const tbody = document.querySelector("#mapBusyTable tbody");
-      if (tbody) {
-        const rows = Array.isArray(data.warnings) ? data.warnings : [];
-        tbody.innerHTML = rows.slice(0, 30).map((row) => "<tr>"
-          + "<td>" + escapeHtml(String(row.first_seen_at || "")) + "</td>"
-          + "<td>" + escapeHtml(String(row.status || "")) + "</td>"
-          + "<td>" + fmtAge(row.current_duration_seconds || row.duration_seconds) + "</td>"
-          + "<td>" + fmtInt(row.event_count) + "</td>"
-          + "<td>" + escapeHtml(String(row.last_product_id || "")) + "</td>"
-          + "<td>" + escapeHtml(String(row.last_path || "")) + "</td>"
-          + "<td>" + escapeHtml(String(row.last_error || "")) + "</td>"
-          + "</tr>").join("");
       }
     }
     const TILE_COLOR_ACTIVE = "#60a5fa";
@@ -728,24 +473,16 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
           throw new Error(serverMessage || ("HTTP " + res.status));
         }
         const s = data.summary || {};
-        const a = data.active || {};
         const topLine = data.top_line || {};
-        setText("topEarnedEur", fmtEur(topLine && topLine.earned_eur && topLine.earned_eur.total));
-        renderTotalMetric("topPaidResolves", topLine.paid_resolves || {}, false, Number(topLine && topLine.paid_resolves && topLine.paid_resolves.total || 0));
-        renderTotalMetric("topUsersSplit", topLine.users || {}, false, Number(topLine && topLine.users && topLine.users.total || 0));
-        renderTotalMetric("topResolvesSplit", topLine.resolves || {}, false, Number(topLine && topLine.resolves && topLine.resolves.total || 0));
+        renderProfessionalSplitMetric("topUsersSplit", topLine.users || {}, false, Number(topLine && topLine.users && topLine.users.total || 0));
+        renderProfessionalSplitMetric("topResolvesSplit", topLine.resolves || {}, false, Number(topLine && topLine.resolves && topLine.resolves.total || 0));
         renderTotalMetric("topRequestsSplit", topLine.tile_requests || {}, false, Number(topLine && topLine.tile_requests && topLine.tile_requests.total || 0));
-        renderTotalMetric("topGbSplit", topLine.gb_served || {}, true, Number(topLine && topLine.gb_served && topLine.gb_served.total || 0));
-        setText("live10s", fmtInt(a.tile_events_10s));
+        renderProfessionalSplitMetric("topGbSplit", topLine.gb_served || {}, true, Number(topLine && topLine.gb_served && topLine.gb_served.total || 0));
         setText("reqCount", fmtInt(s.request_count));
         setText("bytesServed", fmtBytes(s.bytes_served));
         setText("errors", fmtInt(s.error_count));
         const hitRatio = Number(s.request_count || 0) > 0 ? (100 * Number(s.cache_hit_count || 0) / Number(s.request_count || 1)) : 0;
         setText("hitRatio", hitRatio.toFixed(2) + "%");
-        setText("resolveCount", fmtInt(s.tagged_resolve_count));
-        renderQuoteQueueHealth(data.quote_queue_health || {});
-        renderWorkerOverloadHealth(data.worker_overload_health || {});
-        renderMapServiceBusyHealth(data.map_service_busy_health || {});
         const refreshHealth = data.auth_refresh_health || {};
         const refreshTotal = Number(refreshHealth.total_count || 0);
         const refreshFailures = Number(refreshHealth.failure_count || 0);
@@ -757,7 +494,6 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         setText("authRefreshFailureRate", refreshFailureRate.toFixed(2) + "%");
         setText("authRefreshCriticalFailures", fmtInt(refreshCriticalFailures));
         setText("authRefreshCriticalUsers", fmtInt(refreshCriticalUsers));
-        renderCloudBillableUsage(data.cloudflare_billable_usage || {});
         renderRows("activeUsersTable", data.active_users_10m, (row) => {
           return \`<td>\${row.user_email || ""}</td><td>\${fmtInt(row.request_count)}</td><td>\${fmtInt(row.resolve_count)}</td><td>\${fmtGb(row.bytes_served)}</td><td>\${row.last_seen_at || ""}</td>\`;
         });
@@ -769,7 +505,6 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
           return \`<td>\${row.user_email || ""}</td><td>\${fmtInt(row.resolve_count)}</td><td>\${fmtGb(lifetimeBytes)}</td><td>\${lastSeen}</td>\`;
         });
         renderLiveTileMap(data.live_tile_map || {});
-        renderRows("tilesTable", data.top_tiles, (row) => \`<td>\${row.tile_key || ""}</td><td>\${fmtInt(row.request_count)}</td><td>\${fmtGb(row.bytes_served)}</td>\`);
         renderRows("authRefreshUsersTable", refreshHealth.top_failure_users || [], (row) => \`<td>\${row.user_email || row.user_id || ""}</td><td>\${fmtInt(row.failure_count)}</td><td>\${row.last_failure_at || ""}</td>\`);
         renderRows("authRefreshErrorsTable", refreshHealth.error_breakdown || [], (row) => \`<td>\${row.error_code || ""}</td><td>\${fmtInt(row.count)}</td>\`);
         renderRows("authRefreshCriticalUsersTable", refreshHealth.top_critical_failure_users || [], (row) => \`<td>\${row.user_email || row.user_id || ""}</td><td>\${fmtInt(row.failure_count)}</td><td>\${row.last_failure_at || ""}</td>\`);

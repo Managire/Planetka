@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 import bpy
 from bpy.props import BoolProperty, EnumProperty, StringProperty
 
-from .auth import allows_texture_quality_for_context, get_cloud_connection_status, is_authenticated
+from .auth import get_cloud_connection_status, is_authenticated
 from .asset_builder import (
     _ensure_surface_elevation_radius_driver,
     ensure_earth_surface_parent,
@@ -199,6 +199,56 @@ def _get_tile_utils():
         except ImportError:
             _TILE_UTILS_MODULE = False
     return _TILE_UTILS_MODULE or None
+
+
+def apply_texture_quality_to_full_tiles(tiles, texture_quality_mode="PREVIEW"):
+    """Transform full-quality source tiles to the selected Texture Quality.
+
+    This is the only resolve-stage function allowed to alter S2 D-levels.
+    Z-levels are preserved. D-levels only move coarser, never sharper.
+    """
+    tile_utils = _get_tile_utils()
+    if tile_utils is None:
+        return [str(tile).strip() for tile in (tiles or ()) if str(tile or "").strip()]
+
+    sort_tiles = getattr(tile_utils, "_sort_tiles_for_apply", None)
+    parse_tile = getattr(tile_utils, "parse_tile", None)
+    format_tile = getattr(tile_utils, "format_tile", None)
+    d_levels_by_z = getattr(tile_utils, "D_LEVELS_BY_Z", {})
+    if not callable(sort_tiles) or not callable(parse_tile) or not callable(format_tile):
+        return [str(tile).strip() for tile in (tiles or ()) if str(tile or "").strip()]
+
+    mode = _normalize_texture_quality_mode(texture_quality_mode)
+    factor = 1
+    if mode == "BALANCED":
+        factor = 2
+    elif mode == "PREVIEW":
+        factor = 4
+    if factor == 1:
+        return list(sort_tiles(tiles or ()))
+
+    adjusted = []
+    for tile in (tiles or ()):
+        tile_text = str(tile or "").strip()
+        if not tile_text:
+            continue
+        parsed = parse_tile(tile_text)
+        if not parsed:
+            adjusted.append(tile_text)
+            continue
+        x, y, z, d = parsed
+        source_d = 1440 if int(d) == 0 else int(d)
+        target_d = int(source_d) * int(factor)
+        allowed = sorted({int(value) for value in d_levels_by_z.get(int(z), [int(z)])})
+        replacement = None
+        for candidate in allowed:
+            if int(candidate) >= int(target_d):
+                replacement = int(candidate)
+                break
+        if replacement is None:
+            replacement = int(max(allowed)) if allowed else int(target_d)
+        adjusted.append(format_tile(int(x), int(y), int(z), int(replacement)))
+    return list(sort_tiles(adjusted))
 
 
 def _validate_texture_source(base_path):
@@ -919,25 +969,14 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
     def _phase_select_tiles(self, scene, props, tile_utils, force_empty_once):
         ui_reports = []
         tiles_override = _parse_tiles_override(getattr(self, "tiles_override_json", ""))
-        texture_quality_mode = "PREVIEW"
         try:
             override_mode = str(getattr(self, "texture_quality_mode_override", "") or "").strip()
             if override_mode:
                 texture_quality_mode = _normalize_texture_quality_mode(override_mode)
             else:
-                # Plain Resolve without an explicit mode defaults to Preview.
-                # Auto-resolve also passes Preview explicitly; Full Quality must
-                # be requested by a manual action.
-                texture_quality_mode = "PREVIEW"
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            texture_quality_mode = "PREVIEW"
-        try:
-            if not allows_texture_quality_for_context(
-                prefs=get_prefs(),
-                source=props,
-                requested_mode=texture_quality_mode,
-            ):
-                texture_quality_mode = "PREVIEW"
+                texture_quality_mode = _normalize_texture_quality_mode(
+                    getattr(props, "texture_quality_mode", "PREVIEW")
+                )
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             texture_quality_mode = "PREVIEW"
         try:
@@ -960,9 +999,11 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             try:
                 computed_tiles = tile_utils.main(
                     scope_mode=str(getattr(self, "scope_mode", "AUTO") or "AUTO"),
-                    texture_quality_mode_override=texture_quality_mode,
                 )
-                tiles = [] if force_empty_once else computed_tiles
+                tiles = [] if force_empty_once else apply_texture_quality_to_full_tiles(
+                    computed_tiles,
+                    texture_quality_mode,
+                )
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.exception("Planetka tile resolve failed; resolving to no visible tiles")
                 tiles = []

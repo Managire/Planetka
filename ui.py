@@ -9,7 +9,6 @@ from .auth import (
     AuthApiError,
     CLOUD_OVERLOADED_MESSAGE,
     allows_animation_render_for_context,
-    allows_texture_quality_for_context,
     get_cached_cloud_connection_status,
     get_cloud_connection_status,
     get_account_tier,
@@ -60,8 +59,6 @@ RESOLVE_FAILURE_MESSAGE_KEY = "planetka_resolve_integrity_message"
 LAST_RESOLVE_TEXTURE_QUALITY_MODE_KEY = "planetka_last_resolve_texture_quality_mode"
 EARTH_TRANSFORM_SECTION_OPEN_KEY = "planetka_ui_earth_transform_open"
 DATA_CONTROL_MORE_OPTIONS_SECTION_OPEN_KEY = "planetka_ui_data_more_options_open"
-REGION_PACK_UI_REFRESH_LAST_AT_KEY = "planetka_ui_region_pack_refresh_last_at"
-REGION_PACK_UI_REFRESH_INTERVAL_SEC = 12.0
 EARTH_RADIUS_SAFE_MIN_BU = 0.2
 EARTH_RADIUS_SAFE_MAX_BU = 20.0
 LOW_ALTITUDE_WARNING_EPS_KM = 0.05
@@ -425,34 +422,6 @@ def _is_active_view_resolve_scope(scene):
     return scope == "ACTIVE_VIEW"
 
 
-def _region_offer_location_for_ui(scene):
-    if scene is None:
-        return None
-    props = getattr(scene, "planetka", None)
-    try:
-        diag = read_diagnostics(scene)
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        diag = {}
-    lat_value = None
-    lon_value = None
-    try:
-        # Full Quality Data Packs follow the user-selected/search target.
-        # Realtime camera-hit diagnostics can be stale or can point away from
-        # the target when the camera is tilted, so use them only as a fallback.
-        if props is not None:
-            lat_value = getattr(props, "nav_latitude_deg", 0.0)
-            lon_value = getattr(props, "nav_longitude_deg", 0.0)
-        if lat_value is None and isinstance(diag, dict):
-            lat_value = diag.get("view_latitude_deg", None)
-        if lon_value is None and isinstance(diag, dict):
-            lon_value = diag.get("view_longitude_deg", None)
-        lat = max(-90.0, min(90.0, float(lat_value or 0.0)))
-        lon = max(-180.0, min(180.0, float(lon_value or 0.0)))
-        return lat, lon
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        return None
-
-
 def _animation_render_status_for_ui(scene):
     text = ""
     icon = "RENDER_ANIMATION"
@@ -684,6 +653,57 @@ def _resolve_download_indicator_state(scene, runtime, runtime_code, runtime_text
     }
 
 
+def _draw_resolve_status_line(layout, scene, runtime, runtime_code, runtime_text):
+    resolve_failure_message = _resolve_failure_message_for_ui(scene)
+    inside_earth_warning = _inside_earth_warning_for_ui(scene)
+    low_altitude_warning = _low_altitude_warning_for_ui(scene)
+    animation_render_running = _is_animation_render_running()
+
+    status_token = str(runtime_code or "").upper()
+    status_text = str(runtime_text or "Idle")
+    status_icon = _status_icon(status_token)
+    alert = status_token in {"PREPARING", "DOWNLOADING", "FINALIZING", "FINALIZE_QUEUED", "QUEUED"}
+
+    if resolve_failure_message:
+        status_text = resolve_failure_message
+        status_icon = "ERROR"
+        alert = True
+    elif inside_earth_warning:
+        status_text = "Below Earth's surface"
+        status_icon = "ERROR"
+        alert = True
+    elif low_altitude_warning:
+        status_text = low_altitude_warning
+        status_icon = "ERROR"
+        alert = True
+    elif animation_render_running:
+        status_text, status_icon = _animation_render_status_for_ui(scene)
+        alert = True
+    elif status_token == "PREPARING":
+        status_text = "Preparing Download"
+    elif status_token == "DOWNLOADING":
+        progress = get_download_progress()
+        downloaded_bytes = int(progress.get("downloaded_bytes", 0) or 0)
+        total_bytes = int(progress.get("total_bytes", 0) or 0)
+        downloaded_mb = float(downloaded_bytes) / (1024.0 * 1024.0)
+        total_mb = float(total_bytes) / (1024.0 * 1024.0)
+        if total_bytes > 0:
+            status_text = f"Downloading ({downloaded_mb:.2f} / {total_mb:.2f} MB)"
+        else:
+            status_text = f"Downloading ({downloaded_mb:.2f} MB)"
+    elif status_token in {"", "IDLE", "MONITORING"}:
+        status_text = "Idle"
+        status_icon = "CHECKMARK"
+
+    suffix = _status_activity_suffix(runtime.get("running", False))
+    if status_token == "DOWNLOADING" or resolve_failure_message or inside_earth_warning or low_altitude_warning:
+        suffix = ""
+
+    status_row = layout.row()
+    status_row.alert = bool(alert)
+    status_row.label(text=f"{status_text}{suffix}", icon=status_icon)
+
+
 def _draw_resolve_download_indicator(layout, scene, runtime, runtime_code, runtime_text):
     state = _resolve_download_indicator_state(scene, runtime, runtime_code, runtime_text)
     box = layout.box()
@@ -710,106 +730,15 @@ def _estimate_bytes_for_quality(estimates, mode):
         return None
 
 
-def _estimate_available_bytes_for_quality(estimates, mode):
-    mode_key = str(mode or "").upper()
-    try:
-        value = estimates.get(f"{mode_key}_AVAILABLE")
-    except (AttributeError, TypeError, ValueError):
-        value = None
-    if value is None:
-        return None
-    try:
-        return int(max(0, round(float(value))))
-    except (TypeError, ValueError):
-        return None
-
-
-def _quality_progress_values(mode, estimate_bytes, estimate_available_bytes, download_state, displayed_mode):
-    mode_key = str(mode or "").upper()
-    state_mode = _normalize_texture_quality_for_ui(download_state.get("quality_mode", ""))
-    state_matches = state_mode == mode_key
-    state_active = bool(download_state.get("active", False))
-    total_bytes = int(max(0, estimate_bytes or 0)) if estimate_bytes is not None else 0
-    available_bytes = int(max(0, estimate_available_bytes or 0)) if estimate_available_bytes is not None else 0
-    network_total_bytes = 0
-    network_downloaded_bytes = 0
-    if state_matches:
-        network_total_bytes = int(download_state.get("total_bytes", 0) or 0)
-        network_downloaded_bytes = int(download_state.get("downloaded_bytes", 0) or 0)
-        if total_bytes <= 0:
-            total_bytes = int(max(0, network_total_bytes))
-        if estimate_available_bytes is None and total_bytes > 0 and network_total_bytes > 0:
-            available_bytes = int(max(0, total_bytes - min(network_total_bytes, total_bytes)))
-        available_bytes = int(max(0, available_bytes + max(0, network_downloaded_bytes)))
-    if (
-        estimate_available_bytes is None
-        and not state_active
-        and str(displayed_mode or "").upper() == mode_key
-        and total_bytes > 0
-    ):
-        available_bytes = total_bytes
-    available_bytes = int(max(0, min(available_bytes, total_bytes))) if total_bytes > 0 else int(max(0, available_bytes))
-    return available_bytes, total_bytes, bool(state_active and state_matches)
-
-
-def _quality_progress_label(mode, estimate_bytes, estimate_available_bytes, download_state, displayed_mode):
-    mode_key = str(mode or "").upper()
-    downloaded_bytes, total_bytes, state_matches_active = _quality_progress_values(
-        mode,
-        estimate_bytes,
-        estimate_available_bytes,
-        download_state,
-        displayed_mode,
-    )
-    state_active = bool(download_state.get("active", False))
-    has_explicit_availability = estimate_available_bytes is not None
-    if total_bytes > 0:
-        done = bool(
-            (not has_explicit_availability and not state_active and str(displayed_mode or "").upper() == mode_key)
-            or (state_matches_active and downloaded_bytes >= total_bytes)
-            or downloaded_bytes >= total_bytes
-        )
-        suffix = " ✓" if done else ""
-        return f"{_fmt_bytes(downloaded_bytes)} / {_fmt_bytes(total_bytes)}{suffix}"
-    if downloaded_bytes > 0:
-        return f"{_fmt_bytes(downloaded_bytes)} downloaded"
-    return "-"
-
-
-def _quality_progress_factor(mode, download_state, displayed_mode, estimate_bytes=None, estimate_available_bytes=None):
-    mode_key = str(mode or "").upper()
-    state_mode = _normalize_texture_quality_for_ui(download_state.get("quality_mode", ""))
-    runtime_code = str(download_state.get("runtime_code", "") or "").upper()
-    actual_download_active = bool(download_state.get("download_active", False)) or runtime_code in {
-        "QUEUED",
-        "PREPARING",
-        "DOWNLOADING",
-        "FINALIZING",
-        "FINALIZE_QUEUED",
-    }
-    if actual_download_active and state_mode in {"PREVIEW", "BALANCED", "FULL"}:
-        if state_mode == mode_key:
-            downloaded_bytes, total_bytes, _state_active = _quality_progress_values(
-                mode,
-                estimate_bytes,
-                estimate_available_bytes,
-                download_state,
-                displayed_mode,
-            )
-            if total_bytes > 0:
-                return max(0.0, min(1.0, float(downloaded_bytes) / float(total_bytes)))
-            return max(0.0, min(1.0, float(download_state.get("factor", 0.0) or 0.0)))
-        return None
-    return None
-
-
 def _draw_quality_meta_row(layout, progress_text, usage_label=""):
     if not str(usage_label or "").strip():
         row = layout.row(align=True)
+        row.alignment = 'CENTER'
         row.label(text=str(progress_text or "-"))
         return
     row = layout.split(factor=0.68, align=True)
     left = row.row(align=True)
+    left.alignment = 'CENTER'
     left.label(text=str(progress_text or "-"))
     right = row.row(align=True)
     right.alignment = 'RIGHT'
@@ -895,6 +824,33 @@ class _PLANETKA_PT_BaseSection:
     # Blender's tab/category ordering can be influenced by low panel bl_order values.
     bl_order = 9000
     bl_options = {'DEFAULT_CLOSED'}
+
+
+class PLANETKA_PT_AnimationStopPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
+    bl_label = "Animation Render"
+    bl_idname = "PLANETKA_PT_animation_stop"
+    bl_order = 8999
+    bl_options = set()
+
+    @classmethod
+    def poll(cls, context):
+        _ = context
+        return _is_animation_render_running()
+
+    def draw(self, context):
+        scene = getattr(context, "scene", None)
+        layout = self.layout
+        layout.enabled = True
+        status_text, status_icon = _animation_render_status_for_ui(scene)
+        layout.label(text=status_text, icon=status_icon)
+        stop_row = layout.row(align=True)
+        stop_row.alert = True
+        stop_row.scale_y = 1.45
+        stop_row.operator(
+            "planetka.animation_stop",
+            text="Stop Animation Render",
+            icon="CANCEL",
+        )
 
 
 class PLANETKA_OT_ToggleUiSection(bpy.types.Operator):
@@ -1239,23 +1195,6 @@ def _draw_addon_update_controls(layout):
             message_box.label(text="Restart Blender to finish the update.", icon="INFO")
 
 
-def _offer_is_licensable(offer):
-    if not isinstance(offer, dict):
-        return False
-    try:
-        price = max(0.0, float(offer.get("price_eur", offer.get("credits", 0.0)) or 0.0))
-    except (TypeError, ValueError):
-        price = 0.0
-    try:
-        new_tiles = max(
-            0,
-            int(offer.get("unlicenced_tile_count", offer.get("new_tile_count", offer.get("paid_tile_count", 0))) or 0),
-        )
-    except (TypeError, ValueError):
-        new_tiles = 0
-    return bool(price > 0.000001 or new_tiles > 0)
-
-
 def _has_active_camera(scene):
     return bool(scene is not None and getattr(scene, "camera", None) is not None)
 
@@ -1357,29 +1296,6 @@ def _draw_account_panel(layout):
         else:
             warning_box.label(text="Planetka Cloud connection required.", icon="ERROR")
         warning_box.label(text=cloud_message or "Check your internet connection and try again.")
-
-    if connected:
-        credit_payload = {}
-        try:
-            from .credit_api import get_cached_credit_account
-            credit_payload = get_cached_credit_account()
-        except (AuthApiError, TypeError, ValueError, RuntimeError, AttributeError):
-            logger.debug("Planetka: failed reading credit account for UI", exc_info=True)
-            credit_payload = {}
-        preview_hold = {}
-        try:
-            preview_hold = credit_payload.get("preview_fair_usage_hold", {}) or credit_payload.get("previewFairUsageHold", {}) or {}
-        except (AttributeError, TypeError, ValueError):
-            preview_hold = {}
-        preview_hold_active = bool(
-            (isinstance(preview_hold, dict) and preview_hold.get("held", False))
-            or credit_payload.get("preview_fair_usage_held", False)
-        )
-        if preview_hold_active:
-            hold_box = layout.box()
-            hold_row = hold_box.row(align=True)
-            hold_row.alert = True
-            hold_row.label(text="Preview downloads are temporarily paused.", icon="INFO")
 
     if status_message:
         layout.label(text=status_message, icon="INFO")
@@ -1498,21 +1414,13 @@ def _draw_live_telemetry(layout, scene):
     if props is not None and is_authenticated(prefs):
         estimates = get_resolve_size_estimates(scene)
 
-        def _estimate_eur_label(mode):
-            mode_key = str(mode or "").upper()
-            try:
-                eur_value = estimates.get(f"{mode_key}_CREDITS")
-                if eur_value is None:
-                    return "—"
-                return _fmt_eur(eur_value)
-            except (AttributeError, TypeError, ValueError):
-                return "—"
-
+        runtime, runtime_code, runtime_text = _resolve_runtime_display(scene)
+        _draw_resolve_status_line(layout, scene, runtime, runtime_code, runtime_text)
         quality_box = layout.box()
         header_row = quality_box.row(align=True)
         header_row.use_property_split = False
         header_row.use_property_decorate = False
-        header_row.label(text="Textures Quality", icon="TEXTURE")
+        header_row.label(text="Texture Quality", icon="TEXTURE")
         header_toggle = header_row.row(align=True)
         header_toggle.alignment = 'RIGHT'
         header_toggle.scale_x = 1.1
@@ -1524,51 +1432,36 @@ def _draw_live_telemetry(layout, scene):
             icon="PAUSE",
             toggle=True,
         )
-        runtime, runtime_code, runtime_text = _resolve_runtime_display(scene)
-        download_state = _resolve_download_indicator_state(scene, runtime, runtime_code, runtime_text)
-        displayed_quality_mode = _last_visible_texture_quality_mode(scene)
-        active_quality_mode = _normalize_texture_quality_for_ui(download_state.get("quality_mode", ""))
-        if bool(download_state.get("active", False)) and active_quality_mode:
-            displayed_quality_mode = active_quality_mode
+        resolve_failure_message = _resolve_failure_message_for_ui(scene)
 
         selected_auto_quality = _normalize_texture_quality_for_ui(getattr(props, "texture_quality_mode", "PREVIEW"))
         if not selected_auto_quality:
             selected_auto_quality = "PREVIEW"
 
         qualities = (
-            ("PREVIEW", "Preview", "HIDE_OFF"),
-            ("BALANCED", "Balanced", "MOD_SUBSURF"),
-            ("FULL", "Full", "IMPORT"),
+            ("PREVIEW", "Preview"),
+            ("BALANCED", "Balanced"),
+            ("FULL", "Full"),
         )
         button_row = quality_box.row(align=True)
-        for mode_key, label, icon in qualities:
+        for mode_key, label in qualities:
             mode_col = button_row.column(align=True)
             estimate_bytes = _estimate_bytes_for_quality(estimates, mode_key)
-            available_bytes = _estimate_available_bytes_for_quality(estimates, mode_key)
-            factor = _quality_progress_factor(
-                mode_key,
-                download_state,
-                displayed_quality_mode,
-                estimate_bytes=estimate_bytes,
-                estimate_available_bytes=available_bytes,
-            )
-            if factor is not None and hasattr(mode_col, "progress"):
-                mode_col.progress(
-                    factor=factor,
-                    type='BAR',
-                    text=label,
-                )
-            else:
-                mode_col.operator(
-                    "planetka.set_texture_quality_and_resolve",
-                    text=label,
-                    icon=icon,
-                    depress=(selected_auto_quality == mode_key),
-                ).texture_quality_mode = mode_key
+            operator_row = mode_col.row(align=True)
+            operator_row.alert = bool(resolve_failure_message and selected_auto_quality == mode_key)
+            operator_row.operator(
+                "planetka.set_texture_quality_and_resolve",
+                text=label,
+                depress=(selected_auto_quality == mode_key),
+            ).texture_quality_mode = mode_key
             _draw_quality_meta_row(
                 mode_col,
                 _quality_total_size_label(estimate_bytes),
             )
+        if resolve_failure_message:
+            error_row = quality_box.row(align=True)
+            error_row.alert = True
+            error_row.label(text=resolve_failure_message, icon="ERROR")
 
     throttle_message = str(get_status_message(prefs) or "").strip()
     if throttle_message and "throttl" in throttle_message.lower():
@@ -1784,7 +1677,7 @@ _SURFACE_GRADING_SECTION_RESET_KEY = {
 _SURFACE_GRADING_SECTION_ICON = {
     "Global": "WORLD",
     "Water": "MOD_OCEAN",
-    "Elevation": "MESH_CONE",
+    "Elevation": "MOD_DISPLACE",
     "Night Lights": "LIGHT_SUN",
 }
 
@@ -2150,7 +2043,7 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             )
 
 class PLANETKA_PT_LiveTelemetryPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Textures Quality"
+    bl_label = "Data Streaming"
     bl_idname = "PLANETKA_PT_live_telemetry"
     bl_order = 9001
     bl_options = set()
@@ -2167,7 +2060,7 @@ class PLANETKA_PT_LiveTelemetryPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
 
 class PLANETKA_PT_LiveTelemetryPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Textures Quality"
+    bl_label = "Data Streaming"
     bl_idname = "PLANETKA_PT_live_telemetry_collapsed"
     bl_order = 9001
     bl_options = {'DEFAULT_CLOSED'}
@@ -2185,7 +2078,7 @@ class PLANETKA_PT_LiveTelemetryPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.type
 
 
 class PLANETKA_PT_LiveTelemetryPanelFailure(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Textures Quality"
+    bl_label = "Data Streaming"
     bl_idname = "PLANETKA_PT_live_telemetry_failure"
     bl_order = 9001
     bl_options = set()
@@ -2549,7 +2442,7 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         final_render_box = layout.box()
         final_render_box.enabled = bool(controls_enabled)
         final_render_box.label(text="Final Animation Render", icon="RENDER_ANIMATION")
-        selected_final_quality = "FULL"
+        selected_final_quality = _normalize_texture_quality_for_ui(getattr(props, "texture_quality_mode", "PREVIEW"))
         final_render_allowed = allows_animation_render_for_context(
             prefs=get_prefs(),
             source=props,

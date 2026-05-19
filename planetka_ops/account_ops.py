@@ -15,7 +15,6 @@ from ..auth import (
     logout_remote_session,
     sync_account_profile,
 )
-from ..credit_api import CreditApiError, create_account_page_link
 from ..error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from ..extension_prefs import get_prefs
 from ..operator_utils import ErrorCode, fail

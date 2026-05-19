@@ -18,11 +18,14 @@ import {
   isBlockedStatus,
   isDeviceLimitExemptEmail,
   isQualityModeAllowedForPlan,
+  isProfessionalPlan,
   normalizePlanCode,
   normalizeQualityMode,
   normalizeRequestedPlan,
   normalizeUserStatus,
   parseCsvEmailSet,
+  personalFreeLocationBlockedMessage,
+  personalFreeRegionForPoint,
   planAccessSummary,
   planDisplayName,
   qualityModeNotAllowedMessage,
@@ -127,7 +130,7 @@ const DEFAULT_PREVIEW_FAIR_USAGE_NEW_USER_DAYS = 7;
 const DEFAULT_PREVIEW_D004_UNIQUE_ALERT_THRESHOLD = 100;
 const DEFAULT_PREVIEW_D004_UNIQUE_ALERT_WINDOW_SECONDS = 300;
 const DEFAULT_PREVIEW_FAIR_USAGE_ALERT_EMAIL_COOLDOWN_SECONDS = 3600;
-const DEFAULT_TILE_SESSION_TOKEN_TTL_SECONDS = 3600;
+const DEFAULT_TILE_SESSION_TOKEN_TTL_SECONDS = 1800;
 const DEFAULT_AUTH_CONTEXT_CACHE_TTL_SECONDS = 60;
 const DEFAULT_AUTH_CONTEXT_CACHE_MAX_ENTRIES = 4096;
 const DEFAULT_MONTHLY_COST_ALERT_BASE_USD = 50;
@@ -3581,6 +3584,31 @@ async function readTileSessionClaims(request, env) {
   return getAuthCore().readTileSessionClaims(request, env);
 }
 
+async function resolveTileSessionAuth(_request, env, auth) {
+  const db = requireDb(env);
+  const userId = String(auth && auth.user && auth.user.id || "").trim();
+  if (!userId) {
+    return { error: json({ ok: false, error: "invalid_access_token" }, 401, env) };
+  }
+  let user = await findUserById(db, userId);
+  if (!user) {
+    return { error: json({ ok: false, error: "user_not_found" }, 404, env) };
+  }
+  if (isBlockedStatus(user.status)) {
+    return { error: blockedAccountResponse(env) };
+  }
+  user = await enforceUserPlanPolicy(db, user, env);
+  const qualityAccess = await resolveUserQualityAccessState(db, user, env);
+  const planCode = qualityAccess.storedPlanCode;
+  const qualityAccessPlanCode = qualityAccess.qualityAccessPlanCode;
+  return {
+    ...auth,
+    user,
+    planCode,
+    qualityAccessPlanCode,
+  };
+}
+
 const TILE_ROUTE_DEPS = {
   PLAN_CODE_FREE,
   clampNonNegativeInt,
@@ -3592,6 +3620,7 @@ const TILE_ROUTE_DEPS = {
   isQualityModeAllowedForPlan,
   isTileEventQueueProducerEnabled,
   isTileHotPathMonitoringEnabled,
+  isProfessionalPlan,
   issueTileSessionToken,
   maybeSignalTileFarmingActivity,
   minimumPlanQualityForTile,
@@ -3602,6 +3631,8 @@ const TILE_ROUTE_DEPS = {
   normalizeResolveId,
   nowIso,
   parseJson,
+  personalFreeLocationBlockedMessage,
+  personalFreeRegionForPoint,
   qualityModeNotAllowedMessage,
   randomToken,
   rateLimitedResponse,
@@ -3617,6 +3648,7 @@ const TILE_ROUTE_DEPS = {
   requireAuthenticatedUserContext: (request, env, options) => requireAuthenticatedUserContext(request, env, options, AUTH_SESSION_DEPS),
   requireDb,
   requireSecret,
+  resolveTileSessionAuth,
   resolveTileCacheControl,
   getPreviewFairUsageHoldForUser,
   previewFairUsageBlockedResponse,

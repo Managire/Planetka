@@ -65,12 +65,12 @@ MAX_SHADER_TILE_BUDGET = 12
 # Keep only real resolved tiles unless future renderer-safe padding is introduced.
 MIN_SHADER_TILE_FLOOR = 0
 SHADER_PAD_TILE_PREFIX = "__PKA_PAD_TILE"
-TEXTURE_QUALITY_MODES = {"FULL", "BALANCED", "PREVIEW"}
 VIEWPORT_RESOLUTION_X = 1920.0
 VIEWPORT_RESOLUTION_Y = 1080.0
 LAST_TILE_BUDGET_TRACE = []
 LAST_TILE_BUDGET_INPUT = []
 LAST_TILE_BUDGET_OUTPUT = []
+LAST_FULL_SOURCE_TILES_KEY = "planetka_last_full_source_tiles"
 ADAPTIVE_HORIZON_PRECISION_ENABLED = True
 ADAPTIVE_HORIZON_REFINE_MAX_Z = 2
 ADAPTIVE_HORIZON_NEAR_MISS_NDC_THRESHOLD = 0.012
@@ -950,29 +950,6 @@ def _apply_temporal_z_hysteresis(scene, requested_z, distance_value):
     if current_distance <= (switch_distance + band):
         return previous_z
     return requested_z
-
-
-def _texture_quality_mode(scene, override_mode=None):
-    def _normalize_quality_token(value):
-        token = str(value or "").strip().upper()
-        if token in TEXTURE_QUALITY_MODES:
-            return token
-        return "PREVIEW"
-
-    if override_mode is not None:
-        return _normalize_quality_token(override_mode)
-    props = getattr(scene, "planetka", None) if scene else None
-    if props is None:
-        return "PREVIEW"
-    mode = _normalize_quality_token(getattr(props, "texture_quality_mode", "PREVIEW"))
-    return mode
-
-
-def _use_active_view_coarse_textures(scene):
-    props = getattr(scene, "planetka", None) if scene else None
-    if props is None:
-        return True
-    return bool(getattr(props, "viewport_opt_active_view_coarse_textures", True))
 
 
 def compute_z_value(required_mpp, bias_factor=1.0):
@@ -2303,112 +2280,15 @@ def _one_pass_selective_refinement(
     )
 
 
-def _coarsen_tile_one_d_level(tile):
-    parsed = parse_tile(tile)
-    if not parsed:
-        return tile
-    x, y, z, d = parsed
-    allowed = sorted(set(D_LEVELS_BY_Z.get(int(z), [int(z)])))
-    if not allowed:
-        return tile
-    if int(d) not in allowed:
-        allowed.append(int(d))
-        allowed = sorted(set(allowed))
-    for candidate in allowed:
-        if candidate > int(d):
-            return format_tile(x, y, z, candidate)
-    return tile
-
-
-def _coarsen_tiles_one_d_level(tiles):
-    coarsened = [_coarsen_tile_one_d_level(tile) for tile in (tiles or [])]
-    return sorted(
-        list(dict.fromkeys(coarsened)),
-        key=lambda tile: (
-            parse_tile(tile)[3] if parse_tile(tile) else 10**9,
-            (parse_tile(tile)[3] / parse_tile(tile)[2]) if parse_tile(tile) else 10**9,
-            tile,
-        ),
-    )
-
-
-def _coarsen_tiles_n_d_levels(tiles, steps):
-    count = max(0, int(steps))
-    result = list(tiles or [])
-    for _ in range(count):
-        result = _coarsen_tiles_one_d_level(result)
-    return result
-
-
-def _enforce_minimum_d_level(tiles, min_d):
-    safe_min_d = max(1, int(min_d))
-    adjusted = []
-    for tile in (tiles or []):
-        parsed = parse_tile(tile)
-        if not parsed:
-            adjusted.append(tile)
-            continue
-        x, y, z, d = parsed
-        target = int(d)
-        floor = max(int(z), safe_min_d)
-        if target < floor:
-            allowed = sorted(set(D_LEVELS_BY_Z.get(int(z), [int(z)])))
-            if int(target) not in allowed:
-                allowed.append(int(target))
-                allowed = sorted(set(allowed))
-            replacement = None
-            for candidate in allowed:
-                if int(candidate) >= int(floor):
-                    replacement = int(candidate)
-                    break
-            if replacement is None:
-                replacement = int(max(allowed)) if allowed else int(floor)
-            target = int(replacement)
-        adjusted.append(format_tile(x, y, z, target))
-    return sorted(
-        list(dict.fromkeys(adjusted)),
-        key=lambda tile: (
-            parse_tile(tile)[3] if parse_tile(tile) else 10**9,
-            (parse_tile(tile)[3] / parse_tile(tile)[2]) if parse_tile(tile) else 10**9,
-            tile,
-        ),
-    )
-
-
-def _apply_texture_quality_mode(tiles, scene, override_mode=None):
-    mode = _texture_quality_mode(scene, override_mode=override_mode)
-    result = list(tiles or [])
-    if mode == "PREVIEW":
-        result = _coarsen_tiles_n_d_levels(tiles, 2)
-    elif mode == "BALANCED":
-        result = _coarsen_tiles_n_d_levels(tiles, 1)
-    return _sort_tiles_for_apply(result)
-
-
-def _apply_fixed_z180_quality_targets(tiles, mode):
-    # Fixed z180 texture-quality targets regardless of camera altitude/distance.
-    # As soon as a z180 tile is used, enforce:
-    # - Preview  -> d720
-    # - Balanced -> d360
-    # - Full     -> d180
-    target_by_mode = {
-        "PREVIEW": 720,
-        "BALANCED": 360,
-        "FULL": 180,
-    }
-    target_d = int(target_by_mode.get(str(mode or "").strip().upper(), 720))
-    adjusted = []
-    for tile in (tiles or []):
-        parsed = parse_tile(tile)
-        if not parsed:
-            adjusted.append(tile)
-            continue
-        x, y, z, d = parsed
-        if int(z) == 180 and int(d) != target_d:
-            adjusted.append(format_tile(x, y, z, target_d))
-        else:
-            adjusted.append(tile)
-    return _sort_tiles_for_apply(adjusted)
+def _store_last_full_source_tiles(scene, tiles):
+    if scene is None:
+        return
+    try:
+        scene[LAST_FULL_SOURCE_TILES_KEY] = _sort_tiles_for_apply(tiles)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed storing optimal source tiles for quality switching", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed storing optimal source tiles for quality switching", exc_info=True)
 
 
 def _find_active_view3d_context():
@@ -2753,7 +2633,7 @@ def enforce_shader_tile_budget_for_tiles(tiles, max_tiles=MAX_SHADER_TILE_BUDGET
     )
 
 
-def main(scope_mode="AUTO", edge_boost=False, texture_quality_mode_override=None):
+def main(scope_mode="AUTO", edge_boost=False):
     global LAST_TILE_BUDGET_TRACE, LAST_TILE_BUDGET_INPUT, LAST_TILE_BUDGET_OUTPUT
     scene = bpy.context.scene
     camera_info = get_camera_info(scene, scope_mode=scope_mode)
@@ -2982,8 +2862,6 @@ def main(scope_mode="AUTO", edge_boost=False, texture_quality_mode_override=None
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed writing selected tile diagnostics", exc_info=True)
 
-    quality_mode = _texture_quality_mode(scene, override_mode=texture_quality_mode_override)
-
     final_tiles = find_optimizable_tiles(list(selected_tiles))
     final_tiles = _one_pass_selective_refinement(
         tiles=final_tiles,
@@ -3000,12 +2878,25 @@ def main(scope_mode="AUTO", edge_boost=False, texture_quality_mode_override=None
         ortho_scale=ortho_scale,
         frustum_margin=frustum_margin,
     )
-    final_tiles = _apply_texture_quality_mode(final_tiles, scene, override_mode=texture_quality_mode_override)
-    if scope_used == "ACTIVE_VIEW" and _use_active_view_coarse_textures(scene):
-        final_tiles = _coarsen_tiles_one_d_level(final_tiles)
-    LAST_TILE_BUDGET_INPUT = list(final_tiles)
+    full_source_tiles = _sort_tiles_for_apply(final_tiles)
+    fast_switch_source_tiles, _fast_switch_budget_trace, _fast_switch_budget_success = _enforce_shader_tile_budget(
+        full_source_tiles,
+        max_tiles=MAX_SHADER_TILE_BUDGET,
+        cam_pos_local=cam_pos_local,
+        earth_radius=earth_radius,
+    )
+    fast_switch_source_tiles, _fast_switch_floor_added = _enforce_shader_tile_floor(
+        fast_switch_source_tiles,
+        min_tiles=MIN_SHADER_TILE_FLOOR,
+        max_tiles=MAX_SHADER_TILE_BUDGET,
+    )
+    _store_last_full_source_tiles(
+        scene,
+        fast_switch_source_tiles,
+    )
+    LAST_TILE_BUDGET_INPUT = list(full_source_tiles)
     budgeted_tiles, budget_trace, budget_success = _enforce_shader_tile_budget(
-        final_tiles,
+        full_source_tiles,
         max_tiles=MAX_SHADER_TILE_BUDGET,
         cam_pos_local=cam_pos_local,
         earth_radius=earth_radius,
@@ -3015,7 +2906,7 @@ def main(scope_mode="AUTO", edge_boost=False, texture_quality_mode_override=None
         logger.info(
             "Planetka: tile budget optimization applied merges=%d input=%d output=%d budget=%d",
             len(budget_trace),
-            len(final_tiles),
+            len(full_source_tiles),
             len(budgeted_tiles),
             int(MAX_SHADER_TILE_BUDGET),
         )
@@ -3023,7 +2914,7 @@ def main(scope_mode="AUTO", edge_boost=False, texture_quality_mode_override=None
         logger.warning(
             "Planetka: unable to satisfy tile budget (budget=%d input=%d output=%d). Keeping quality constraints.",
             int(MAX_SHADER_TILE_BUDGET),
-            len(final_tiles),
+            len(full_source_tiles),
             len(budgeted_tiles),
         )
     final_tiles = list(budgeted_tiles)
@@ -3041,7 +2932,6 @@ def main(scope_mode="AUTO", edge_boost=False, texture_quality_mode_override=None
             int(MIN_SHADER_TILE_FLOOR),
             int(MAX_SHADER_TILE_BUDGET),
         )
-    final_tiles = _apply_fixed_z180_quality_targets(final_tiles, quality_mode)
     LAST_TILE_BUDGET_OUTPUT = list(final_tiles)
     write_tile_view_diagnostics(
         scene=scene,

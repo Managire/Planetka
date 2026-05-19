@@ -221,9 +221,9 @@ def describe_auth_error(error):
     if "missing_stripe_payment_link_url" in lowered:
         return "Planetka payment page is not configured. Contact Planetka support."
     if "quality_mode_not_allowed" in lowered or "not_allowed_for_tier" in lowered or "insufficient_data" in lowered:
-        return "This view needs a higher Planetka account level for the selected texture quality."
+        return "Planetka Cloud could not stream the selected texture quality. Please retry."
     if "insufficient_credits" in lowered:
-        return "Full Quality requires a Professional Planetka account."
+        return "Planetka Cloud could not stream the selected texture quality. Please retry."
     if "missing_resolve_id" in lowered:
         return "Purchase details are missing. Retry Resolve and ensure Planetka is up to date."
     return f"Planetka login failed: {message.replace('_', ' ')}."
@@ -663,7 +663,7 @@ def account_access_summary(prefs=None):
     return (
         "Professional account: Preview, Balanced, and Full Quality streaming worldwide."
         if is_professional_account(prefs)
-        else "Personal account: Preview, Balanced, and Full Quality streaming in New Zealand and Iceland."
+        else "Personal account: Preview, Balanced, and Full Quality streaming."
     )
 
 
@@ -696,14 +696,6 @@ def allows_animation_render_for_context(prefs=None, source=None, requested_mode=
             mode = "FULL"
     mode = _normalize_texture_quality_token(mode or "FULL")
     return allows_full_quality_for_context(prefs)
-
-
-def allows_texture_quality_for_context(prefs=None, source=None, requested_mode="PREVIEW"):
-    del prefs, source
-    mode = _normalize_texture_quality_token(requested_mode)
-    if mode in {"PREVIEW", "BALANCED", "FULL"}:
-        return True
-    return False
 
 
 def get_upgrade_url(prefs=None):

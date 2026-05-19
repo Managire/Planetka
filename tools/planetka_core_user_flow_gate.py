@@ -37,6 +37,7 @@ from planetka_e2e_common import (
     configure_eevee,
     configure_png_output,
     create_earth_and_wait,
+    drain_queued_resolve,
     enable_module,
     ensure_camera,
     ensure_standard_world,
@@ -204,6 +205,64 @@ def _set_quality_and_expect(mode, expected_ok, report_entry):
         _assert(cancelled and not ok, f"Expected {mode} to be rejected, got {result}")
 
 
+def _assigned_shader_s2_tiles():
+    material = bpy.data.materials.get("Planetka Earth Material")
+    _assert(material is not None, "Planetka Earth Material missing while checking shader quality.")
+    node_tree = getattr(material, "node_tree", None)
+    _assert(node_tree is not None, "Planetka Earth Material has no node tree while checking shader quality.")
+    loading_node = node_tree.nodes.get("Planetka Textures Loading")
+    _assert(loading_node is not None, "Planetka Textures Loading node missing while checking shader quality.")
+    loading_tree = getattr(loading_node, "node_tree", None)
+    _assert(loading_tree is not None, "Planetka Textures Loading node has no group tree.")
+
+    assigned = []
+    for node in loading_tree.nodes:
+        if not (str(getattr(node, "name", "") or "").startswith("TileImg_") and str(getattr(node, "name", "") or "").endswith("_S2")):
+            continue
+        image = getattr(node, "image", None)
+        if image is None:
+            continue
+        name = str(getattr(image, "name", "") or "")
+        filepath = str(getattr(image, "filepath_raw", "") or getattr(image, "filepath", "") or "")
+        combined = f"{name} {filepath}"
+        if "S2_" not in combined:
+            continue
+        marker = combined[combined.find("S2_"):].split()[0]
+        marker = Path(marker).name
+        if marker.endswith(".exr"):
+            marker = marker[:-4]
+        assigned.append(marker)
+    return sorted(set(assigned))
+
+
+def _wait_for_shader_quality(state_module, scene, mode, timeout_sec=120.0):
+    expected_d = {
+        "PREVIEW": "d720",
+        "BALANCED": "d360",
+        "FULL": "d180",
+    }[mode]
+    pump_fn = getattr(state_module, "_auto_resolve_download_pump_timer", None)
+    started = time.monotonic()
+    last_tiles = []
+    while (time.monotonic() - started) <= float(timeout_sec):
+        if callable(pump_fn):
+            pump_fn()
+        last_tiles = _assigned_shader_s2_tiles()
+        last_mode = str(scene.get("planetka_last_resolve_texture_quality_mode", "") or "")
+        if (
+            last_mode == str(mode)
+            and last_tiles
+            and all(str(tile).endswith(expected_d) for tile in last_tiles)
+        ):
+            return last_tiles
+        time.sleep(0.05)
+    raise E2EError(
+        f"{mode} button did not apply {expected_d} shader S2 tiles in time. "
+        f"last_mode={scene.get('planetka_last_resolve_texture_quality_mode', '')!r}, "
+        f"last_tiles={last_tiles}"
+    )
+
+
 def _render_checkpoint(scene, output_dir, label):
     output = Path(output_dir) / f"{label}.png"
     configure_png_output(
@@ -367,6 +426,17 @@ def main():
                 "expected_ok": True,
             }
             _set_quality_and_expect(mode, True, entry)
+            shader_s2_tiles = _wait_for_shader_quality(state, scene, mode, timeout_sec=120.0)
+            entry["shader_s2_tiles"] = shader_s2_tiles
+            expected_d = {
+                "PREVIEW": "d720",
+                "BALANCED": "d360",
+                "FULL": "d180",
+            }[mode]
+            _assert(
+                shader_s2_tiles and all(str(tile).endswith(expected_d) for tile in shader_s2_tiles),
+                f"{mode} button resolved but shader S2 tiles are not {expected_d}: {shader_s2_tiles}",
+            )
             render_info = _render_checkpoint(scene, output_dir, f"quality_{mode.lower()}")
             entry["render"] = render_info
             report["renders"].append(render_info)

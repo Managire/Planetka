@@ -306,7 +306,7 @@ export function createAuthCore(deps) {
 
   function resolveTileSessionTokenTtlSeconds(env = {}) {
     return Math.min(
-      3600,
+      1800,
       Math.max(
         60,
         deps.parseRateLimitInteger(
@@ -360,6 +360,7 @@ export function createAuthCore(deps) {
       credit_protocol: String(options && options.creditProtocol || "").trim(),
       credit_enforced: creditEnforced,
       session_id: sessionId,
+      personal_free_region: String(options && (options.personalFreeRegion || options.personal_free_region) || "").trim(),
       auth_method: String(auth && auth.authMethod || "").trim(),
       device_id: String(auth && auth.deviceId || "").trim(),
       exp,
@@ -433,6 +434,7 @@ export function createAuthCore(deps) {
       creditProtocol,
       creditEnforced: Boolean(payload && (payload.credit_enforced || payload.creditEnforced)),
       sessionId: String(payload && (payload.session_id || payload.sessionId) || "").trim(),
+      personalFreeRegion: String(payload && (payload.personal_free_region || payload.personalFreeRegion) || "").trim(),
       authMethod: String(payload && payload.auth_method || "").trim(),
       deviceId: deps.normalizeDeviceId(payload && payload.device_id || ""),
     };

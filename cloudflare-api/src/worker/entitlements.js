@@ -81,23 +81,14 @@ export function normalizeQualityMode(value) {
 
 export function isQualityModeAllowedForPlan(planCode, qualityMode) {
   void planCode;
-  const safeMode = normalizeQualityMode(qualityMode);
-  if (safeMode === "preview" || safeMode === "balanced") {
-    return true;
-  }
-  return safeMode === "full";
+  void qualityMode;
+  return true;
 }
 
 export function qualityModeNotAllowedMessage(planCode, qualityMode) {
   void planCode;
-  const safeMode = normalizeQualityMode(qualityMode);
-  if (safeMode === "preview") {
-    return "Preview quality is free.";
-  }
-  if (safeMode === "balanced") {
-    return "Balanced quality is available to connected Planetka accounts.";
-  }
-  return "Full Quality requires a Professional account.";
+  void qualityMode;
+  return "Selected texture quality is available.";
 }
 
 export function isProfessionalPlan(planCode) {
@@ -198,7 +189,7 @@ export function planDisplayName(planCode) {
 export function planAccessSummary(planCode) {
   return normalizeRequestedPlan(planCode) === PLAN_CODE_PROFESSIONAL
     ? "Professional account: Preview, Balanced, and Full Quality streaming."
-    : "Personal account: Preview, Balanced, and Full Quality streaming in New Zealand and Iceland.";
+    : "Personal account: Preview, Balanced, and Full Quality streaming.";
 }
 
 export function resolvePlanPriority(planCode) {

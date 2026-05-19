@@ -43,26 +43,10 @@ function filterAnalyticsUsersRows(rows, query) {
 }
 
 function analyticsUsersSortValue(row, sortBy) {
-  if (sortBy === "paid_eur") return Number(row && row.paid_eur_lifetime || 0);
-  if (sortBy === "paid_resolves") return Number(row && row.paid_full_resolve_count || 0);
-  if (sortBy === "paid_tiles") return Number(row && row.unlocked_tile_count || 0);
-  if (sortBy === "data_downloaded") return Number(row && row.licenced_downloaded_bytes || 0);
-  if (sortBy === "preview_lifetime") return Number(row && row.preview_lifetime_bytes || 0);
+  if (sortBy === "total_resolves") return Number(row && row.total_resolve_count || row && row.resolve_count || 0);
+  if (sortBy === "data_downloaded") return Number(row && row.data_downloaded_bytes || 0);
   if (sortBy === "last_seen") return Date.parse(String(row && row.last_seen_at || "")) || 0;
-  return Number(row && row.paid_eur_lifetime || 0);
-}
-
-function fmtEurLocal(value) {
-  const numeric = Number(value);
-  return Number.isFinite(numeric) ? `€${numeric.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "€0.00";
-}
-
-function parseMetadataJson(value) {
-  try {
-    return JSON.parse(String(value || "{}"));
-  } catch (_error) {
-    return {};
-  }
+  return Number(row && row.data_downloaded_bytes || 0);
 }
 
 function sortAnalyticsUsersRows(rows, sortBy, sortDir) {
@@ -107,50 +91,11 @@ export async function handleAdminAnalyticsData(request, env, deps) {
       };
       await deps.storeAnalyticsSnapshot(env, windowMinutes, planFilter, tileMapMinutes, snapshot);
     }
-    let quoteQueueHealth = { available: false, error: "quote_queue_health_unavailable" };
-    if (typeof deps.collectQuoteQueueHealth === "function") {
-      try {
-        quoteQueueHealth = await deps.collectQuoteQueueHealth(db);
-      } catch (error) {
-        quoteQueueHealth = {
-          available: false,
-          error: "quote_queue_health_failed",
-          message: String(error && error.message || "quote_queue_health_failed"),
-        };
-      }
-    }
-    let workerOverloadHealth = { available: false, error: "worker_overload_health_unavailable" };
-    if (typeof deps.collectWorkerOverloadHealth === "function") {
-      try {
-        workerOverloadHealth = await deps.collectWorkerOverloadHealth(db);
-      } catch (error) {
-        workerOverloadHealth = {
-          available: false,
-          error: "worker_overload_health_failed",
-          message: String(error && error.message || "worker_overload_health_failed"),
-        };
-      }
-    }
-    let mapServiceBusyHealth = { available: false, error: "map_service_busy_health_unavailable" };
-    if (typeof deps.collectMapServiceBusyHealth === "function") {
-      try {
-        mapServiceBusyHealth = await deps.collectMapServiceBusyHealth(db);
-      } catch (error) {
-        mapServiceBusyHealth = {
-          available: false,
-          error: "map_service_busy_health_failed",
-          message: String(error && error.message || "map_service_busy_health_failed"),
-        };
-      }
-    }
     return deps.json(
       {
         ok: true,
         admin_email: String(user.email || ""),
         ...snapshot,
-        quote_queue_health: quoteQueueHealth,
-        worker_overload_health: workerOverloadHealth,
-        map_service_busy_health: mapServiceBusyHealth,
       },
       200,
       env,
@@ -724,9 +669,6 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
   }
   const { user, tokenSource } = auth;
   let initialSnapshot = null;
-  let initialQuoteQueueHealth = null;
-  let initialWorkerOverloadHealth = null;
-  let initialMapServiceBusyHealth = null;
   try {
     initialSnapshot = await deps.loadAnalyticsSnapshot(env, 10080, "all", 10);
     if (!initialSnapshot || deps.isAnalyticsSnapshotStale(initialSnapshot)) {
@@ -746,39 +688,6 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
       };
       await deps.storeAnalyticsSnapshot(env, 10080, "all", 10, initialSnapshot);
     }
-    if (typeof deps.collectQuoteQueueHealth === "function") {
-      try {
-        initialQuoteQueueHealth = await deps.collectQuoteQueueHealth(auth.db);
-      } catch (error) {
-        initialQuoteQueueHealth = {
-          available: false,
-          error: "quote_queue_health_failed",
-          message: String(error && error.message || "quote_queue_health_failed"),
-        };
-      }
-    }
-    if (typeof deps.collectWorkerOverloadHealth === "function") {
-      try {
-        initialWorkerOverloadHealth = await deps.collectWorkerOverloadHealth(auth.db);
-      } catch (error) {
-        initialWorkerOverloadHealth = {
-          available: false,
-          error: "worker_overload_health_failed",
-          message: String(error && error.message || "worker_overload_health_failed"),
-        };
-      }
-    }
-    if (typeof deps.collectMapServiceBusyHealth === "function") {
-      try {
-        initialMapServiceBusyHealth = await deps.collectMapServiceBusyHealth(auth.db);
-      } catch (error) {
-        initialMapServiceBusyHealth = {
-          available: false,
-          error: "map_service_busy_health_failed",
-          message: String(error && error.message || "map_service_busy_health_failed"),
-        };
-      }
-    }
   } catch (error) {
     console.error(
       "planetka.admin.analytics.page_snapshot_failed",
@@ -791,7 +700,6 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
   }
   const snapshotTopLine = initialSnapshot && initialSnapshot.top_line ? initialSnapshot.top_line : {};
   const snapshotSummary = initialSnapshot && initialSnapshot.summary ? initialSnapshot.summary : {};
-  const snapshotActive = initialSnapshot && initialSnapshot.active ? initialSnapshot.active : {};
   const snapshotLiveMap = initialSnapshot && initialSnapshot.live_tile_map ? initialSnapshot.live_tile_map : {};
   const snapshotLiveRows = Array.isArray(snapshotLiveMap && snapshotLiveMap.rows) ? snapshotLiveMap.rows : [];
   const snapshotActiveUsers10m = Array.isArray(initialSnapshot && initialSnapshot.active_users_10m)
@@ -800,24 +708,8 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
   const snapshotHeavyUsers = Array.isArray(initialSnapshot && initialSnapshot.heavy_users_30d)
     ? initialSnapshot.heavy_users_30d
     : [];
-  const snapshotBillable = initialSnapshot && initialSnapshot.cloudflare_billable_usage
-    ? initialSnapshot.cloudflare_billable_usage
-    : {};
-  const snapshotQuoteQueueHealth = initialQuoteQueueHealth
-    || initialSnapshot && initialSnapshot.quote_queue_health
-    || {};
-  const snapshotWorkerOverloadHealth = initialWorkerOverloadHealth
-    || initialSnapshot && initialSnapshot.worker_overload_health
-    || {};
-  const snapshotMapServiceBusyHealth = initialMapServiceBusyHealth
-    || initialSnapshot && initialSnapshot.map_service_busy_health
-    || {};
   const fmtInt = (value) => fmtIntLocal(value, deps.parseNonNegativeInteger);
   const fmtGb = (value) => fmtGbLocal(value, deps.parseNonNegativeInteger, deps.BYTES_PER_GB);
-  const fmtFloatLocal = (value, digits = 2) => {
-    const numeric = Number(value);
-    return Number.isFinite(numeric) ? numeric.toFixed(digits) : "0.00";
-  };
   const serverActiveUsersRowsHtml = snapshotActiveUsers10m.map((row) => {
     const email = deps.escapeHtml(String(row && row.user_email || ""));
     return `<tr><td>${email}</td><td>${fmtInt(row && row.request_count)}</td><td>${fmtInt(row && row.resolve_count)}</td><td>${fmtGb(row && row.bytes_served)}</td><td>${deps.escapeHtml(String(row && row.last_seen_at || ""))}</td></tr>`;
@@ -830,29 +722,6 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
     const lifetimeBytes = row && (row.lifetime_bytes ?? row.bytes_served_lifetime ?? row.month_bytes ?? row.bytes_served_30d);
     return `<tr><td>${email}</td><td>${fmtInt(row && row.resolve_count)}</td><td>${fmtGb(lifetimeBytes)}</td><td>${deps.escapeHtml(lastSeen)}</td></tr>`;
   }).join("");
-  const billableAvailable = Boolean(snapshotBillable && snapshotBillable.available);
-  const billableSource = deps.escapeHtml(
-    String(snapshotBillable && snapshotBillable.source || "cloud_live").replace(/cloudflare/gi, "cloud"),
-  );
-  const billablePeriodStart = deps.escapeHtml(String(snapshotBillable && snapshotBillable.period_start || ""));
-  const billablePeriodEnd = deps.escapeHtml(String(snapshotBillable && snapshotBillable.period_end || ""));
-  const billableBucket = deps.escapeHtml(String(snapshotBillable && snapshotBillable.bucket_filter || ""));
-  const billableStorageGb = billableAvailable ? fmtFloatLocal(snapshotBillable && snapshotBillable.storage && snapshotBillable.storage.gb, 3) : "-";
-  const billableStorageGbBillable = billableAvailable ? fmtFloatLocal(snapshotBillable && snapshotBillable.storage && snapshotBillable.storage.billable_gb_rounded, 0) : "-";
-  const billableClassAOps = billableAvailable ? fmtInt(snapshotBillable && snapshotBillable.class_a && snapshotBillable.class_a.operations) : "-";
-  const billableClassAOpsBillable = billableAvailable ? fmtInt(snapshotBillable && snapshotBillable.class_a && snapshotBillable.class_a.billable_operations) : "-";
-  const billableClassBOps = billableAvailable ? fmtInt(snapshotBillable && snapshotBillable.class_b && snapshotBillable.class_b.operations) : "-";
-  const billableClassBOpsBillable = billableAvailable ? fmtInt(snapshotBillable && snapshotBillable.class_b && snapshotBillable.class_b.billable_operations) : "-";
-  const billableUnknownOps = billableAvailable ? fmtInt(snapshotBillable && snapshotBillable.unknown_operations) : "-";
-  const billableCostStorage = billableAvailable ? fmtFloatLocal(snapshotBillable && snapshotBillable.estimated_cost_usd && snapshotBillable.estimated_cost_usd.storage, 2) : "-";
-  const billableCostClassA = billableAvailable ? fmtFloatLocal(snapshotBillable && snapshotBillable.estimated_cost_usd && snapshotBillable.estimated_cost_usd.class_a, 2) : "-";
-  const billableCostClassB = billableAvailable ? fmtFloatLocal(snapshotBillable && snapshotBillable.estimated_cost_usd && snapshotBillable.estimated_cost_usd.class_b, 2) : "-";
-  const billableCostTotal = billableAvailable ? fmtFloatLocal(snapshotBillable && snapshotBillable.estimated_cost_usd && snapshotBillable.estimated_cost_usd.total, 2) : "-";
-  const billableStatusText = billableAvailable
-    ? (snapshotBillable && snapshotBillable.estimated
-      ? `Estimated billable usage from telemetry. Source: ${billableSource}. Period: ${billablePeriodStart} -> ${billablePeriodEnd}`
-      : `Cloud live data. Source: ${billableSource}. Bucket: ${billableBucket || "all buckets"}. Period: ${billablePeriodStart} -> ${billablePeriodEnd}`)
-    : `Cloud billable usage unavailable. ${deps.escapeHtml(String(snapshotBillable && snapshotBillable.message || snapshotBillable && snapshotBillable.reason || "Not configured."))}`;
   const serverMapRectsSvg = snapshotLiveRows
     .map((row) => {
       const parsed = parseLiveMapTile(row && row.tile_key);
@@ -883,27 +752,11 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
     fmtIntLocal: fmtInt,
     fmtGbLocal: fmtGb,
     snapshotTopLine,
-    snapshotActive,
     snapshotSummary,
     snapshotLiveMap,
     serverActiveUsersRowsHtml,
     serverMapRectsSvg,
     serverHeavyRowsHtml,
-    billableStatusText,
-    billableStorageGb,
-    billableStorageGbBillable,
-    billableCostStorage,
-    billableClassAOps,
-    billableClassAOpsBillable,
-    billableCostClassA,
-    billableClassBOps,
-    billableClassBOpsBillable,
-    billableCostClassB,
-    billableUnknownOps,
-    billableCostTotal,
-    quoteQueueHealth: snapshotQuoteQueueHealth,
-    workerOverloadHealth: snapshotWorkerOverloadHealth,
-    mapServiceBusyHealth: snapshotMapServiceBusyHealth,
   });
   if (tokenSource === "bearer") {
     const authHeader = String(request.headers.get("Authorization") || "");
@@ -921,168 +774,6 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
       }
     }
   }
-  return deps.html(htmlContent, 200, env);
-}
-
-export async function handleAdminAnalyticsUserPage(request, env, deps) {
-  const url = new URL(request.url);
-  if (String(url.searchParams.get("access_token") || url.searchParams.get("token") || "").trim()) {
-    return deps.json({ ok: false, error: "query_token_not_allowed" }, 400, env);
-  }
-  const auth = await deps.requireAnalyticsAdmin(request, env);
-  if (auth.error) {
-    return auth.error;
-  }
-  const { db, user: adminUser } = auth;
-  await deps.ensureCreditTables(db);
-  const requestedUserId = String(url.searchParams.get("user_id") || "").trim();
-  const requestedEmail = String(url.searchParams.get("email") || "").trim().toLowerCase();
-  const targetUser = requestedUserId
-    ? await deps.findUserById(db, requestedUserId)
-    : (requestedEmail ? await deps.findUserByEmail(db, requestedEmail) : null);
-  if (!targetUser || !targetUser.id) {
-    return deps.html(
-      `<!doctype html><title>Planetka User History</title><body style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;background:#0b1020;color:#e5e7eb;margin:20px"><h1>User not found</h1><p><a style="color:#93c5fd" href="/admin/analytics/users">Back to users</a></p></body>`,
-      404,
-      env,
-    );
-  }
-  const targetUserId = String(targetUser.id || "").trim();
-  const targetEmail = String(targetUser.email || "").trim().toLowerCase();
-  const account = await deps.dbGet(
-    db,
-    `SELECT * FROM user_credit_accounts WHERE user_id = ? LIMIT 1`,
-    [targetUserId],
-  );
-  const purchases = await deps.dbAll(
-    db,
-    `
-      SELECT *
-      FROM purchase_history
-      WHERE user_id = ?
-      ORDER BY created_at DESC
-      LIMIT 250
-    `,
-    [targetUserId],
-  );
-  const purchaseIds = (purchases || []).map((row) => String(row && row.id || "").trim()).filter(Boolean);
-  const tileRows = purchaseIds.length
-    ? await deps.dbAll(
-      db,
-      `
-        SELECT *
-        FROM purchase_history_tiles
-        WHERE purchase_id IN (${purchaseIds.map(() => "?").join(",")})
-        ORDER BY purchase_id ASC, tile_key ASC
-      `,
-      purchaseIds,
-    )
-    : [];
-  const tilesByPurchase = new Map();
-  for (const tile of tileRows || []) {
-    const purchaseId = String(tile && tile.purchase_id || "").trim();
-    if (!tilesByPurchase.has(purchaseId)) {
-      tilesByPurchase.set(purchaseId, []);
-    }
-    tilesByPurchase.get(purchaseId).push(tile);
-  }
-  const licencedSummary = await deps.dbGet(
-    db,
-    `
-      SELECT
-        COUNT(*) AS tile_count,
-        COALESCE(ROUND(SUM(credits_spent) * 100.0) / 100.0, 0) AS nominal_eur
-      FROM user_tile_entitlements
-      WHERE user_id = ?
-    `,
-    [targetUserId],
-  );
-  const paidSummary = await deps.dbGet(
-    db,
-    `
-      SELECT COALESCE(ROUND(SUM(amount_paid_eur) * 100.0) / 100.0, 0) AS paid_eur
-      FROM purchase_history
-      WHERE user_id = ?
-    `,
-    [targetUserId],
-  );
-  const purchaseRowsHtml = (purchases || []).map((row) => {
-    const purchaseId = String(row && row.id || "");
-    const metadata = parseMetadataJson(row && row.metadata_json);
-    const tiles = tilesByPurchase.get(purchaseId) || [];
-    const packName = String(row && row.region_pack_name || row && row.region_pack_id || "");
-    const purchaseType = String(row && row.purchase_type || "");
-    const typeLabel = purchaseType === "region_pack"
-      ? `Data Pack${packName ? `: ${deps.escapeHtml(packName)}` : ""}`
-      : (purchaseType === "scene_tiles"
-        ? "Scene Full Quality"
-        : "Retired Product");
-    const tileDetails = tiles.length
-      ? `<details><summary>${fmtIntLocal(tiles.length, deps.parseNonNegativeInteger)} purchased tile(s)</summary><table class="inner"><thead><tr><th>Tile</th><th>Status</th><th>Price</th><th>Gross</th><th>Land km²</th></tr></thead><tbody>${tiles.map((tile) => `<tr><td>${deps.escapeHtml(String(tile && tile.tile_key || ""))}</td><td>${deps.escapeHtml(String(tile && tile.tile_status || ""))}</td><td>${deps.escapeHtml(fmtEurLocal(tile && tile.price_eur))}</td><td>${deps.escapeHtml(fmtEurLocal(tile && tile.gross_price_eur))}</td><td>${Number(tile && tile.billable_land_km2 || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td></tr>`).join("")}</tbody></table></details>`
-      : "";
-    const metadataLine = purchaseType === "region_pack"
-      ? `Catalog: ${deps.escapeHtml(String(row && row.catalog_version || ""))} · Discount: ${Number(row && row.discount_percent || 0)}% (${deps.escapeHtml(fmtEurLocal(row && row.discount_eur))})`
-      : (metadata && metadata.purchased_tile_keys
-        ? `Tile keys: ${deps.escapeHtml((metadata.purchased_tile_keys || []).join(", "))}`
-        : "");
-    return `<tr>
-      <td>${deps.escapeHtml(String(row && row.created_at || ""))}</td>
-      <td>${typeLabel}</td>
-      <td>${deps.escapeHtml(fmtEurLocal(row && row.amount_paid_eur))}</td>
-      <td>${deps.escapeHtml(fmtEurLocal(row && row.gross_eur))}</td>
-      <td>${Number(row && row.tile_count_new || 0).toLocaleString()} new / ${Number(row && row.tile_count_total || 0).toLocaleString()} total</td>
-      <td>${metadataLine}${tileDetails}</td>
-      <td>${deps.escapeHtml(String(row && row.stripe_session_id || ""))}</td>
-    </tr>`;
-  }).join("");
-  const htmlContent = `<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Planetka Analytics - User Purchase History</title>
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; margin: 20px; background: #0b1020; color: #e5e7eb; }
-    h1 { margin: 0 0 8px; font-size: 24px; }
-    .muted { color: #9ca3af; font-size: 13px; }
-    .cards { display:grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap:10px; margin:16px 0; }
-    .card { background:#111827; border:1px solid #1f2937; border-radius:10px; padding:12px; }
-    .card b { display:block; font-size:20px; margin-top:4px; }
-    a { color:#93c5fd; text-decoration:none; }
-    table { width:100%; border-collapse: collapse; margin: 14px 0 16px; font-size: 13px; }
-    th, td { border-bottom: 1px solid #1f2937; padding: 8px 6px; text-align:left; vertical-align: top; }
-    th { color:#93c5fd; font-weight:600; white-space: nowrap; }
-    .inner { margin: 8px 0 0; font-size:12px; }
-    summary { cursor:pointer; color:#bfdbfe; margin-top:6px; }
-    code { color:#fef3c7; }
-  </style>
-</head>
-<body>
-  <h1>${deps.escapeHtml(targetEmail || targetUserId)}</h1>
-  <div class="muted">Signed in as ${deps.escapeHtml(String(adminUser.email || ""))}</div>
-  <p><a href="/admin/analytics/users">Back to users</a> · <a href="/admin/analytics">Back to analytics</a></p>
-  <section class="cards">
-    <div class="card"><span>Paid EUR</span><b>${deps.escapeHtml(fmtEurLocal(paidSummary && paidSummary.paid_eur))}</b></div>
-    <div class="card"><span>Licenced Tiles</span><b>${Number(licencedSummary && licencedSummary.tile_count || 0).toLocaleString()}</b></div>
-    <div class="card"><span>Nominal Tile Value</span><b>${deps.escapeHtml(fmtEurLocal(licencedSummary && licencedSummary.nominal_eur))}</b></div>
-  </section>
-  <h2>Purchase History</h2>
-  <table>
-    <thead>
-      <tr>
-        <th>Time</th>
-        <th>Transaction</th>
-        <th>Paid</th>
-        <th>Full Price</th>
-        <th>Tiles</th>
-        <th>Details</th>
-        <th>Stripe Session</th>
-      </tr>
-    </thead>
-    <tbody>${purchaseRowsHtml || `<tr><td colspan="7" class="muted">No purchase history recorded yet.</td></tr>`}</tbody>
-  </table>
-</body>
-</html>`;
   return deps.html(htmlContent, 200, env);
 }
 
@@ -1109,12 +800,7 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
     sortDir,
   );
   const fmtInt = (value) => fmtIntLocal(value, deps.parseNonNegativeInteger);
-  const fmtGb = (value) => fmtGbLocal(value, deps.parseNonNegativeInteger, deps.BYTES_PER_GB);
   const fmtMb = (value) => fmtMbLocal(value, deps.parseNonNegativeInteger);
-  const fmtEur = (value) => {
-    const numeric = Number(value);
-    return Number.isFinite(numeric) ? `€${numeric.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "€0.00";
-  };
   const buildSortHref = (key) => {
     const params = new URLSearchParams();
     if (query) params.set("q", query);
@@ -1128,33 +814,23 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
     const userIdRaw = String(row && row.user_id || "");
     const userEmailRaw = String(row && row.user_email || "");
     const userEmail = deps.escapeHtml(userEmailRaw);
-    const userHref = userIdRaw
-      ? `/admin/analytics/user?user_id=${encodeURIComponent(userIdRaw)}`
-      : `/admin/analytics/user?email=${encodeURIComponent(userEmailRaw)}`;
     const status = String(row && row.user_status || "").trim().toLowerCase();
     const plan = (status === "professional") ? "professional" : (status === "blocked" ? "blocked" : "personal");
     const planLabel = plan === "professional" ? "Professional" : (plan === "blocked" ? "Blocked" : "Personal");
     const nextPlan = plan === "professional" ? "personal" : "professional";
     const nextPlanLabel = nextPlan === "professional" ? "Professional" : "Personal";
-    const previewHeld = Boolean(String(row && row.preview_fair_usage_hold_at || "").trim());
-    const previewHoldButton = previewHeld
-      ? `<button class="action-btn warn" data-action="release-preview-hold" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Release Preview Hold</button>`
-      : `<button class="action-btn warn" data-action="set-preview-hold" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Pause Preview</button>`;
     const planButton = `<button class="action-btn plan" data-action="set-plan" data-plan-code="${encodeURIComponent(nextPlan)}" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set ${deps.escapeHtml(nextPlanLabel)}</button>`;
     let actionButtons = "";
     if (status === "blocked") {
-      actionButtons = `${previewHoldButton}<button class="action-btn warn" data-action="unblock" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Unblock</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
+      actionButtons = `<button class="action-btn warn" data-action="unblock" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Unblock</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
     } else {
-      actionButtons = `${planButton}${previewHoldButton}<button class="action-btn danger" data-action="block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Block</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
+      actionButtons = `${planButton}<button class="action-btn danger" data-action="block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Block</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
     }
-    return `<tr${previewHeld ? ` class="preview-held"` : ""}>
-      <td><a href="${deps.escapeHtml(userHref)}">${userEmail}</a></td>
+    return `<tr>
+      <td>${userEmail}</td>
       <td><span class="plan-pill ${deps.escapeHtml(plan)}">${deps.escapeHtml(planLabel)}</span></td>
-      <td>${deps.escapeHtml(fmtEur(row && row.paid_eur_lifetime))}</td>
-      <td>${fmtInt(row && row.paid_full_resolve_count)}</td>
-      <td>${fmtInt(row && row.unlocked_tile_count)}</td>
-      <td>${fmtMb(row && row.licenced_downloaded_bytes)} MB<br><span class="muted">${fmtInt(row && row.licenced_downloaded_tiles)} tiles</span></td>
-      <td>${fmtGb(row && row.preview_lifetime_bytes)}</td>
+      <td>${fmtInt(row && (row.total_resolve_count ?? row.resolve_count))}</td>
+      <td>${fmtMb(row && row.data_downloaded_bytes)} MB</td>
       <td>${deps.escapeHtml(String(row && row.last_seen_at || ""))}</td>
       <td class="action-wrap">${actionButtons}</td>
     </tr>`;
@@ -1176,17 +852,14 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
     th, td { border-bottom: 1px solid #1f2937; padding: 8px 6px; text-align:left; vertical-align: top; }
     th { color:#93c5fd; font-weight:600; white-space: nowrap; }
     th a { color:#93c5fd; text-decoration:none; }
-    td a { color:#e5e7eb; text-decoration:none; }
-    td a:hover { color:#ffffff; text-decoration:underline; }
     .action-btn { font-size: 12px; padding: 4px 8px; margin-right: 6px; margin-bottom: 4px; cursor: pointer; }
     .action-btn.plan { border-color: #1d4ed8; color: #bfdbfe; }
     .action-btn.warn { border-color: #9a3412; color: #fed7aa; }
     .action-btn.danger { border-color: #991b1b; color: #fecaca; }
-    .action-wrap { white-space: normal; min-width: 380px; }
+    .action-wrap { white-space: normal; min-width: 300px; }
     .plan-pill { display:inline-block; min-width:84px; text-align:center; border-radius:999px; padding:3px 8px; border:1px solid #374151; font-size:12px; }
     .plan-pill.professional { color:#bbf7d0; border-color:#166534; background:rgba(22,101,52,.18); }
     .plan-pill.personal { color:#bfdbfe; border-color:#1d4ed8; background:rgba(29,78,216,.16); }
-    .preview-held td { background: rgba(154, 52, 18, 0.12); }
     .error { color: #fca5a5; }
   </style>
 </head>
@@ -1212,11 +885,8 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
       <tr>
         <th>Email</th>
         <th>Account</th>
-        <th><a href="${buildSortHref("paid_eur")}">Paid EUR${sortMarker("paid_eur")}</a></th>
-        <th><a href="${buildSortHref("paid_resolves")}">Paid Resolves${sortMarker("paid_resolves")}</a></th>
-        <th><a href="${buildSortHref("paid_tiles")}">Paid Tiles${sortMarker("paid_tiles")}</a></th>
+        <th><a href="${buildSortHref("total_resolves")}">Total Resolves${sortMarker("total_resolves")}</a></th>
         <th><a href="${buildSortHref("data_downloaded")}">Data Downloaded${sortMarker("data_downloaded")}</a></th>
-        <th><a href="${buildSortHref("preview_lifetime")}">Preview GB Lifetime${sortMarker("preview_lifetime")}</a></th>
         <th><a href="${buildSortHref("last_seen")}">Last Seen${sortMarker("last_seen")}</a></th>
         <th>Actions</th>
       </tr>
@@ -1250,16 +920,12 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
         unblock: "/admin/users/unblock",
         "hard-block": "/admin/users/hard-block",
         "set-plan": "/admin/users/set-plan",
-        "set-preview-hold": "/admin/users/set-preview-hold",
-        "release-preview-hold": "/admin/users/release-preview-hold",
       };
       const confirmation = {
         block: "Block this user account now?",
         unblock: "Unblock this user account now?",
         "hard-block": "Hard block this user and block same-computer attempts?",
         "set-plan": "Change this user's account type?",
-        "set-preview-hold": "Pause Preview streaming for this user? Full Quality remains available.",
-        "release-preview-hold": "Release this user's Preview fair-usage hold?",
       };
       const endpoint = endpointByAction[safeAction];
       if (!endpoint) return;

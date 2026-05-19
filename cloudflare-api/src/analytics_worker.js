@@ -62,14 +62,12 @@ import {
   handleAdminAnalyticsPage as handleAdminAnalyticsPageRoute,
   handleAdminAnalyticsProductsPage as handleAdminAnalyticsProductsPageRoute,
   handleAdminAnalyticsTileMapImage as handleAdminAnalyticsTileMapImageRoute,
-  handleAdminAnalyticsUserPage as handleAdminAnalyticsUserPageRoute,
   handleAdminAnalyticsUsersPage as handleAdminAnalyticsUsersPageRoute,
   handleAdminSetPricingSettings as handleAdminSetPricingSettingsRoute,
   handleAdminSetProductDiscount as handleAdminSetProductDiscountRoute,
 } from "./worker/admin_analytics_handlers.js";
 import {
   collectAnalyticsSnapshot as collectAnalyticsSnapshotQuery,
-  collectQuoteQueueHealth as collectQuoteQueueHealthQuery,
   listAnalyticsUsers as listAnalyticsUsersQuery,
   parseAnalyticsUsersSort as parseAnalyticsUsersSortQuery,
   parseAnalyticsUsersSortDirection as parseAnalyticsUsersSortDirectionQuery,
@@ -97,9 +95,7 @@ import {
   handleAdminQaAuthReset as handleAdminQaAuthResetRoute,
   handleAdminUserBlock as handleAdminUserBlockRoute,
   handleAdminUserHardBlock as handleAdminUserHardBlockRoute,
-  handleAdminUserReleasePreviewHold as handleAdminUserReleasePreviewHoldRoute,
   handleAdminUserSetPlan as handleAdminUserSetPlanRoute,
-  handleAdminUserSetPreviewHold as handleAdminUserSetPreviewHoldRoute,
   handleAdminUserUnblock as handleAdminUserUnblockRoute,
 } from "./worker/admin_user_handlers.js";
 import {
@@ -115,12 +111,8 @@ import {
   handleTileEventQueueBatch,
 } from "./worker/tile_event_queue.js";
 import {
-  collectWorkerOverloadHealth,
   runWorkerOverloadMonitor,
 } from "./worker/worker_overload_monitor.js";
-import {
-  collectMapServiceBusyHealth,
-} from "./worker/map_service_busy_monitor.js";
 
 const encoder = new TextEncoder();
 const ADDON_ID = "planetka";
@@ -1996,9 +1988,6 @@ const ADMIN_ANALYTICS_DEPS = {
   buildAnalyticsUsersSnapshot: (db, env) => buildAnalyticsUsersSnapshot(db, env, ADMIN_ANALYTICS_DEPS),
   collectAnalyticsSnapshot: (db, minutes, planFilter, liveTileMapWindowMinutes, env) =>
     collectAnalyticsSnapshotQuery(db, minutes, planFilter, liveTileMapWindowMinutes, env, ANALYTICS_QUERY_DEPS),
-  collectMapServiceBusyHealth: (db) => collectMapServiceBusyHealth(db, WORKER_OVERLOAD_MONITOR_DEPS),
-  collectQuoteQueueHealth: (db) => collectQuoteQueueHealthQuery(db, ANALYTICS_QUERY_DEPS),
-  collectWorkerOverloadHealth: (db) => collectWorkerOverloadHealth(db, WORKER_OVERLOAD_MONITOR_DEPS),
   corsHeaders,
   DEFAULT_ADMIN_ANALYTICS_TILE_MAP_KEY,
   DEFAULT_ANALYTICS_WINDOW_MINUTES,
@@ -2181,7 +2170,6 @@ const ADMIN_ROUTE_DEPS = {
   handleAdminAnalyticsPage: (request, env) => handleAdminAnalyticsPageRoute(request, env, ADMIN_ANALYTICS_DEPS),
   handleAdminAnalyticsProductsPage: (request, env) => handleAdminAnalyticsProductsPageRoute(request, env, ADMIN_ANALYTICS_DEPS),
   handleAdminAnalyticsTileMapImage: (request, env) => handleAdminAnalyticsTileMapImageRoute(request, env, ADMIN_ANALYTICS_DEPS),
-  handleAdminAnalyticsUserPage: (request, env) => handleAdminAnalyticsUserPageRoute(request, env, ADMIN_ANALYTICS_DEPS),
   handleAdminAnalyticsUsersPage: (request, env) => handleAdminAnalyticsUsersPageRoute(request, env, ADMIN_ANALYTICS_DEPS),
   handleAdminSetProductDiscount: (request, env) => handleAdminSetProductDiscountRoute(request, env, ADMIN_ANALYTICS_DEPS),
   handleAdminSetPricingSettings: (request, env) => handleAdminSetPricingSettingsRoute(request, env, ADMIN_ANALYTICS_DEPS),
@@ -2192,8 +2180,6 @@ const ADMIN_ROUTE_DEPS = {
   handleAdminSessionStartPage: (request, env) => handleAdminSessionStartPageRoute(request, env, ADMIN_SESSION_DEPS),
   handleAdminUserBlock: (request, env) => handleAdminUserBlockRoute(request, env, ADMIN_USER_DEPS),
   handleAdminUserHardBlock: (request, env) => handleAdminUserHardBlockRoute(request, env, ADMIN_USER_DEPS),
-  handleAdminUserReleasePreviewHold: (request, env) => handleAdminUserReleasePreviewHoldRoute(request, env, ADMIN_USER_DEPS),
-  handleAdminUserSetPreviewHold: (request, env) => handleAdminUserSetPreviewHoldRoute(request, env, ADMIN_USER_DEPS),
   handleAdminQaAuthReset: (request, env) => handleAdminQaAuthResetRoute(request, env, ADMIN_USER_DEPS),
   handleAdminUserSetPlan: (request, env) => handleAdminUserSetPlanRoute(request, env, ADMIN_USER_DEPS),
   handleAdminUserUnblock: (request, env) => handleAdminUserUnblockRoute(request, env, ADMIN_USER_DEPS),

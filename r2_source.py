@@ -1201,8 +1201,6 @@ def set_resolve_request_context(
             _REQUEST_CONTEXT_NAV_ALT_KM = str(max(0.0, float(nav_altitude_km))).strip()
         except (TypeError, ValueError):
             _REQUEST_CONTEXT_NAV_ALT_KM = ""
-        _REQUEST_CONTEXT_TILE_TOKEN = ""
-        _REQUEST_CONTEXT_TILE_TOKEN_EXPIRES_AT = 0.0
         if isinstance(pricing_tiles, (list, tuple)):
             _REQUEST_CONTEXT_PRICING_TILES = tuple(
                 str(entry.get("tile_key") or entry.get("tileKey") or entry.get("key") or "").strip()
@@ -1341,10 +1339,7 @@ def _request_tile_session_token(resolve_id, quality_mode, allow_refresh=True):
         if int(getattr(exc, "code", 0) or 0) == 402 and error_code in {
             "payment_required",
         }:
-            required = error_payload.get("price_eur", error_payload.get("required_credits", 0))
-            raise RuntimeError(
-                f"Full Quality requires a Professional account (required=€{required})."
-            ) from exc
+            raise RuntimeError("Planetka Cloud could not start this texture streaming session. Please retry.") from exc
         if int(getattr(exc, "code", 0)) == 401 and bool(allow_refresh):
             try:
                 refresh_auth_session()
@@ -1397,15 +1392,8 @@ def _get_request_context_tile_token(allow_refresh=True):
         with _REQUEST_CONTEXT_LOCK:
             current_token = str(_REQUEST_CONTEXT_TILE_TOKEN or "").strip()
             current_expiry = float(_REQUEST_CONTEXT_TILE_TOKEN_EXPIRES_AT or 0.0)
-            current_resolve_id = str(_REQUEST_CONTEXT_RESOLVE_ID or "").strip()
-            current_quality_mode = str(_REQUEST_CONTEXT_TEXTURE_MODE or "").strip().lower()
             now = float(time.time())
-            if (
-                current_resolve_id == resolve_id
-                and current_quality_mode == quality_mode
-                and current_token
-                and current_expiry > (now + 5.0)
-            ):
+            if current_token and current_expiry > (now + 5.0):
                 return current_token
         token, expires_at = _request_tile_session_token(
             resolve_id=resolve_id,
@@ -1415,13 +1403,9 @@ def _get_request_context_tile_token(allow_refresh=True):
     safe_token = str(token or "").strip()
     safe_expires_at = float(expires_at or 0.0)
     with _REQUEST_CONTEXT_LOCK:
-        if (
-            str(_REQUEST_CONTEXT_RESOLVE_ID or "").strip() == resolve_id
-            and str(_REQUEST_CONTEXT_TEXTURE_MODE or "").strip().lower() == quality_mode
-        ):
-            _REQUEST_CONTEXT_TILE_TOKEN = safe_token
-            _REQUEST_CONTEXT_TILE_TOKEN_EXPIRES_AT = safe_expires_at
-            return str(_REQUEST_CONTEXT_TILE_TOKEN or "").strip()
+        _REQUEST_CONTEXT_TILE_TOKEN = safe_token
+        _REQUEST_CONTEXT_TILE_TOKEN_EXPIRES_AT = safe_expires_at
+        return str(_REQUEST_CONTEXT_TILE_TOKEN or "").strip()
     return safe_token
 
 
@@ -1699,14 +1683,14 @@ def _r2_request(
                 if "payment_required" in combined or "tile_not_unlocked" in combined:
                     if error_message:
                         raise RuntimeError(error_message)
-                    raise RuntimeError("Full Quality requires a Professional Planetka account.")
+                    raise RuntimeError("Planetka Cloud could not stream the requested texture file.")
                 if any(token in combined for token in ("quality_mode_not_allowed", "not_allowed_for_tier", "access_denied")):
                     try:
                         sync_account_profile()
                     except (AuthApiError, RuntimeError, TypeError, ValueError, AttributeError, OSError):
                         logger.debug("Planetka: failed syncing account profile after request-limit response", exc_info=True)
                     raise RuntimeError(
-                        "Planetka account does not currently have access to this remote data request."
+                        "Planetka Cloud could not stream the requested texture file."
                     )
                 if error_message:
                     raise RuntimeError(f"Planetka request limit reached: {error_message}")
@@ -1725,7 +1709,7 @@ def _r2_request(
                     except (AuthApiError, RuntimeError, TypeError, ValueError, AttributeError, OSError):
                         logger.debug("Planetka: failed syncing account profile after access-denied response", exc_info=True)
                     raise RuntimeError(
-                        "Planetka account does not currently have access to this remote data request."
+                        "Planetka Cloud could not stream the requested texture file."
                     )
                 if error_message:
                     raise RuntimeError(f"Planetka account does not have access to remote Earth data: {error_message}")
@@ -2085,8 +2069,6 @@ def prefetch_resolve_downloads(requests, base_path=None, cancel_event=None):
                 "account_blocked",
                 "login expired",
                 "log in again",
-                "does not have access to remote earth data",
-                "does not currently have access to this remote data request",
             )
         )
 

@@ -7,6 +7,7 @@ _AUTO_RESOLVE_DECISION_CTX = None
 _AUTO_RESOLVE_NONCRITICAL_CTX = None
 _LAST_RESOLVE_TEXTURE_QUALITY_MODE_KEY = "planetka_last_resolve_texture_quality_mode"
 _FULL_QUALITY_HOLD_SIGNATURE_KEY = "planetka_full_quality_hold_signature"
+_LAST_FULL_SOURCE_TILES_KEY = "planetka_last_full_source_tiles"
 
 
 def _quality_mode_for_job(deps, job):
@@ -36,6 +37,17 @@ def _scene_last_resolve_quality(scene, deps):
         return "PREVIEW"
     except (RuntimeError, TypeError, ValueError, AttributeError):
         return "PREVIEW"
+
+
+def _scene_last_full_source_tiles(scene, deps):
+    if scene is None:
+        return ()
+    try:
+        return deps.canonical_tiles(scene.get(_LAST_FULL_SOURCE_TILES_KEY, ()))
+    except deps.recoverable_exceptions:
+        return ()
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return ()
 
 
 def _store_full_quality_hold(scene, deps, signature):
@@ -278,19 +290,11 @@ def _ctx_auto_resolve_texture_quality_mode(
     deps = ctx.deps
     try:
         override_text = str(texture_quality_mode_override or "").strip()
-        requested_mode = deps.normalize_texture_quality_mode(
+        return deps.normalize_texture_quality_mode(
             override_text if override_text else getattr(props, "texture_quality_mode", "PREVIEW")
         )
     except (RuntimeError, TypeError, ValueError, AttributeError):
-        requested_mode = "PREVIEW"
-    try:
-        return deps.normalize_texture_quality_mode(
-            deps.enforce_texture_quality_mode_for_account(scene, requested_mode)
-        )
-    except deps.recoverable_exceptions:
-        deps.logger.debug("Planetka: failed enforcing resolve texture quality mode", exc_info=True)
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        deps.logger.debug("Planetka: failed enforcing resolve texture quality mode", exc_info=True)
+        pass
     return "PREVIEW"
 
 
@@ -619,8 +623,6 @@ def _is_non_retryable_resolve_error(message):
             "resolve integrity check failed",
             "panorama resolve exceeds tile limit",
             "no fallback parent found",
-            "does not currently have access to this remote data request",
-            "does not have access to remote earth data",
             "account blocked",
         )
     )
@@ -973,10 +975,11 @@ def _ctx_auto_resolve_prepare_apply_context(ctx, job, manual_request):
     if deps.is_render_job_active():
         if manual_request:
             deps.logger.info(
-                "Planetka: skipping queued manual resolve apply during active render "
+                "Planetka: waiting to apply queued manual resolve during active render "
                 "(request_id=%s).",
                 str(deps.job_field(job, "request_id", "")),
             )
+            return False, None, None, None
         else:
             deps.request_auto_resolve(scene, immediate=False, mark_dirty=False)
         return True, None, None, None
@@ -1939,29 +1942,23 @@ def _ctx_auto_resolve_detect_change(ctx, scene, props):
         output_signature,
         now,
     )
-    full_hold_status = _full_quality_hold_status(scene, deps, scope, resolve_signature)
-    if full_hold_status == "HOLD":
-        scene_state.last_camera_signature = resolve_signature
-        scene_state.last_output_signature = output_signature
-        scene_state.last_processed_signature = resolve_signature
-        scene_state.pending_output_change = False
-        deps.write_scene_auto_resolve_state(scene_state)
-        return {
-            "event": "NO_CHANGE",
-            "retry_delay": None,
-            "scene_state": scene_state,
-        }
+    current_quality_mode = _ctx_auto_resolve_texture_quality_mode(ctx, scene, props)
+    quality_mode_changed = _scene_last_resolve_quality(scene, deps) != current_quality_mode
 
     min_interval_sec = settings.min_interval_sec_default
     last_resolve = float(scene_state.last_resolve_time or 0.0)
-    if now - last_resolve < min_interval_sec:
+    if not quality_mode_changed and now - last_resolve < min_interval_sec:
         return {
             "event": "RETRY",
             "retry_delay": max(0.05, min_interval_sec - (now - last_resolve)),
             "scene_state": scene_state,
         }
 
-    if scene_state.last_processed_signature == resolve_signature and not pending_output_change:
+    if (
+        scene_state.last_processed_signature == resolve_signature
+        and not pending_output_change
+        and not quality_mode_changed
+    ):
         return {
             "event": "NO_CHANGE",
             "retry_delay": None,
@@ -1977,6 +1974,8 @@ def _ctx_auto_resolve_detect_change(ctx, scene, props):
         "resolve_signature": resolve_signature,
         "output_signature": output_signature,
         "pending_output_change": bool(pending_output_change),
+        "quality_mode_changed": bool(quality_mode_changed),
+        "current_quality_mode": current_quality_mode,
         "now": now,
     }
 
@@ -2004,23 +2003,57 @@ def _ctx_auto_resolve_plan_job(ctx, scene, props, detect_ctx):
 
     scope = str(detect_ctx.get("scope", "CAMERA") or "CAMERA")
     active_view_signature = detect_ctx.get("active_view_signature")
+    current_quality_mode = str(
+        detect_ctx.get("current_quality_mode")
+        or _ctx_auto_resolve_texture_quality_mode(ctx, scene, props)
+    )
+    if bool(detect_ctx.get("quality_mode_changed", False)) and not bool(detect_ctx.get("pending_output_change", False)):
+        source_tiles = _scene_last_full_source_tiles(scene, deps)
+        max_tile_budget = int(getattr(tile_utils, "MAX_SHADER_TILE_BUDGET", 12) or 12)
+        if source_tiles:
+            try:
+                from ..render_prep import apply_texture_quality_to_full_tiles
+                target_tiles = deps.canonical_tiles(
+                    apply_texture_quality_to_full_tiles(source_tiles, current_quality_mode)
+                )
+            except deps.recoverable_exceptions:
+                deps.logger.debug("Planetka auto-resolve: quality switch tile transform failed", exc_info=True)
+                target_tiles = ()
+            except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+                deps.logger.debug("Planetka auto-resolve: unexpected quality switch tile transform failure", exc_info=True)
+                target_tiles = ()
+            if target_tiles and len(target_tiles) <= max_tile_budget:
+                deps.enqueue_size_estimation(scene, scope, active_view_signature, target_tiles, props)
+                return {
+                    "event": "DISPATCH",
+                    "target_tiles": target_tiles,
+                    "retry_delay": None,
+                    "quality_switch_fast_path": True,
+                }
+
     try:
+        full_source_tiles = tile_utils.main(
+            scope_mode="ACTIVE_VIEW" if (scope == "ACTIVE_VIEW" and active_view_signature is not None) else "CAMERA",
+        )
+        from ..render_prep import apply_texture_quality_to_full_tiles
         target_tiles = deps.canonical_tiles(
-            tile_utils.main(
-                scope_mode="ACTIVE_VIEW" if (scope == "ACTIVE_VIEW" and active_view_signature is not None) else "CAMERA",
-                texture_quality_mode_override="PREVIEW",
-            )
+            apply_texture_quality_to_full_tiles(full_source_tiles, current_quality_mode)
         )
     except deps.recoverable_exceptions:
         deps.logger.debug("Planetka auto-resolve: tile computation failed", exc_info=True)
         return {"event": "RETRY", "retry_delay": settings.retry_delay_sec}
-    except (RuntimeError, TypeError, ValueError, AttributeError):
+    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
         deps.logger.debug("Planetka auto-resolve: unexpected tile computation failure", exc_info=True)
         return {"event": "RETRY", "retry_delay": settings.retry_delay_sec}
 
     deps.enqueue_size_estimation(scene, scope, active_view_signature, target_tiles, props)
 
-    if target_tiles == deps.last_resolved_tiles(scene) and not bool(detect_ctx.get("pending_output_change", False)):
+    last_quality_mode = _scene_last_resolve_quality(scene, deps)
+    if (
+        target_tiles == deps.last_resolved_tiles(scene)
+        and last_quality_mode == current_quality_mode
+        and not bool(detect_ctx.get("pending_output_change", False))
+    ):
         return {"event": "NO_CHANGE", "target_tiles": target_tiles, "retry_delay": None}
 
     return {"event": "DISPATCH", "target_tiles": target_tiles, "retry_delay": None}
