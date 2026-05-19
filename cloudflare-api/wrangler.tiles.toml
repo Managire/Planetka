@@ -36,7 +36,3 @@ bucket_name = "planetka-data"
 [[queues.producers]]
 binding = "TILE_EVENT_QUEUE"
 queue = "planetka-tile-events"
-
-[[services]]
-binding = "COMMERCE_WORKER"
-service = "planetka-commerce"

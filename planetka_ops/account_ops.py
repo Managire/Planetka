@@ -260,35 +260,6 @@ class PLANETKA_OT_AccountUpgrade(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class PLANETKA_OT_AccountPurchaseHistory(bpy.types.Operator):
-    bl_idname = "planetka.account_purchase_history"
-    bl_label = "View Account & Purchase History"
-    bl_description = "Open your Planetka account page with purchase history"
-
-    def execute(self, context):
-        del context
-        try:
-            link = create_account_page_link()
-        except (AuthApiError, CreditApiError) as exc:
-            message = str(exc or "").strip()
-            if message != CLOUD_OVERLOADED_MESSAGE:
-                message = "Could not open your Planetka account page. Check your connection and try again."
-            return fail(
-                self,
-                message,
-                logger=logger,
-                exc=exc,
-            )
-
-        url = str(link.get("url") or "").strip() if isinstance(link, dict) else ""
-        if not url:
-            return fail(self, "Planetka account page link was not returned by the server.", logger=logger)
-        if not _open_account_url(url):
-            return fail(self, "Could not open your Planetka account page.", logger=logger)
-        self.report({'INFO'}, "Planetka account page opened in browser.")
-        return {'FINISHED'}
-
-
 class PLANETKA_OT_AccountContact(bpy.types.Operator):
     bl_idname = "planetka.account_contact"
     bl_label = "Contact Me"

@@ -2,6 +2,8 @@
 
 These are user-facing requirements for Planetka public release use.
 
+Last updated: 2026-05-19
+
 ## Supported Blender versions
 
 - Primary supported version: Blender 5.0.
@@ -13,18 +15,25 @@ Planetka is developed and tested primarily on macOS. Windows and Linux may work 
 
 ## Internet access
 
-Planetka is an online streaming product. Creating Earth, resolving Preview textures, checking Full Quality prices, purchasing Full Quality data, downloading licenced tiles, and opening Planetka web pages require internet access.
+Planetka is an online streaming product. Creating Earth, connecting an account, checking for updates, and resolving Preview, Balanced, or Full Quality textures require internet access.
 
 If the computer is offline or Planetka services cannot be reached, the add-on should show a connection warning and online workflows may be unavailable.
 
 ## Disk space
 
-Planetka uses local cache storage for streamed and licenced texture data. Required space depends on the selected scene, quality mode, data packs, and download choices. Full Quality data packs can require substantial disk space.
+Planetka uses temporary local cache storage for streamed texture data. Required space depends on the selected scene, quality mode, camera movement, and animation workflow.
+
+The 0.8.1 add-on is not a raw-data download product. It does not provide a supported local archive of purchased data packs or licenced tiles.
 
 ## GPU and rendering
 
 Planetka can be used with Blender EEVEE and Cycles. Higher-resolution textures, close camera views, high render resolutions, and animation workflows require more GPU memory and system memory.
 
-## Account and payments
+## Account access
 
-Preview texture access is free for personal, non-commercial use. Full Quality texture data requires a completed licence purchase, promotional grant, or other authorised entitlement.
+Planetka uses two account types:
+
+- Personal account: selected free locations only, currently New Zealand and Iceland.
+- Professional account: worldwide streaming in Preview, Balanced, and Full Quality.
+
+Professional checkout must be implemented and tested before paid public Professional upgrades are offered.

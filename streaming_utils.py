@@ -12,7 +12,6 @@ from .r2_source import (
     estimate_resolve_download_availability,
     find_local_source_asset,
     get_remote_cache_folder,
-    ensure_resolve_pricing_session,
     is_remote_source_configured,
     plan_resolve_downloads,
     prefetch_resolve_downloads,
@@ -194,7 +193,7 @@ def _build_resolve_download_requests(resolved_tiles, ocean_tiles=None):
 
 def _normalize_texture_quality_mode(value):
     token = str(value or "").strip().upper()
-    if token in {"FULL", "PREVIEW"}:
+    if token in {"FULL", "BALANCED", "PREVIEW"}:
         return token
     return "PREVIEW"
 
@@ -203,6 +202,7 @@ def _apply_fixed_z180_quality_targets(visible_tiles, texture_quality_mode="PREVI
     mode = _normalize_texture_quality_mode(texture_quality_mode)
     target_by_mode = {
         "PREVIEW": 720,
+        "BALANCED": 360,
         "FULL": 180,
     }
     target_d = int(target_by_mode.get(mode, 720))
@@ -341,7 +341,7 @@ def prefetch_resolve_plan(
     nav_latitude_deg="",
     nav_longitude_deg="",
     nav_altitude_km="",
-    enforce_pricing_session=True,
+    enforce_pricing_session=False,
 ):
     resolved_tiles = list(plan_payload.get("resolved_tiles", ())) if isinstance(plan_payload, dict) else []
     ocean_tiles = list(plan_payload.get("ocean_tiles", ())) if isinstance(plan_payload, dict) else []
@@ -359,13 +359,6 @@ def prefetch_resolve_plan(
 
     normalized_quality_mode = _normalize_texture_quality_mode(texture_quality_mode)
     use_remote = bool(is_remote_source_configured(base_path))
-    credit_tile_keys = []
-    if normalized_quality_mode == "FULL" and bool(enforce_pricing_session):
-        credit_tile_keys = [
-            str(tile)
-            for tile in resolved_tiles
-        ]
-
     if capture and use_remote:
         begin_resolve_download_capture()
     try:
@@ -377,11 +370,9 @@ def prefetch_resolve_plan(
                 nav_latitude_deg=nav_latitude_deg,
                 nav_longitude_deg=nav_longitude_deg,
                 nav_altitude_km=nav_altitude_km,
-                pricing_tiles=credit_tile_keys,
+                pricing_tiles=None,
             ):
                 try:
-                    if normalized_quality_mode == "FULL" and credit_tile_keys and bool(enforce_pricing_session):
-                        ensure_resolve_pricing_session()
                     # Fast resolve path: skip remote HEAD preflight size probes so first GET
                     # requests start immediately.
                     plan_resolve_downloads(requests, allow_remote_probe=False)
@@ -413,22 +404,11 @@ def prefetch_resolve_plan(
         )
         prefetch_result["error_count"] = max(int(prefetch_result.get("error_count", 0) or 0), 1)
 
-    if (
-        normalized_quality_mode == "FULL"
-        and not str(prefetch_result.get("fatal_error", "") or "").strip()
-        and _prefetch_result_indicates_licence_failure(prefetch_result)
-    ):
-        prefetch_result["fatal_error"] = (
-            "Planetka Full Quality licence was not confirmed for this Resolve. "
-            "No texture data was downloaded. Please retry."
-        )
-        prefetch_result["error_count"] = max(int(prefetch_result.get("error_count", 0) or 0), 1)
-
     # Resolve integrity:
     # - no post-prefetch fallback fetches here (shader fallback images handle EL/WT/PO misses)
     # - only missing S2 is fatal; missing EL/WT/PO proceeds with fallback images
-    # - licence/session failures must remain licence failures, not be reworded as
-    #   missing S2 assets.
+    # - Full Quality is a streaming quality mode; legacy purchase/licence errors
+    #   are reported as account/session errors, not as missing S2 assets.
     resolved_paths = _build_prefetched_paths(index, base_path, allow_fallback=not use_remote)
     unresolved_s2_required = sum(
         1
@@ -453,8 +433,8 @@ def prefetch_resolve_plan(
                 )
             elif _prefetch_result_indicates_licence_failure(prefetch_result):
                 prefetch_result["fatal_error"] = (
-                    "Planetka Full Quality licence was not confirmed for this Resolve. "
-                    "No texture data was downloaded. Please retry."
+                    "Planetka Full Quality streaming access could not be confirmed. "
+                    "Reconnect your account and retry."
                 )
             else:
                 prefetch_result["fatal_error"] = (
@@ -486,7 +466,7 @@ def prepare_resolve_streaming_for_visible_tiles(
     nav_latitude_deg="",
     nav_longitude_deg="",
     nav_altitude_km="",
-    enforce_pricing_session=True,
+    enforce_pricing_session=False,
 ):
     plan_payload = build_resolve_download_requests_for_visible_tiles(
         visible_tiles,

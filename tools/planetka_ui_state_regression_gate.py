@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import sys
 import tempfile
 import time
@@ -103,51 +102,55 @@ def _test_full_quality_progress_not_shown_without_download(ui_module) -> dict:
     }
 
 
-def _test_price_pending_does_not_disable_full_quality() -> dict:
-    """Static guard until sidebar state is refactored into a view model."""
+def _test_streaming_quality_ui_has_no_pricing_gate() -> dict:
+    """Static guard for the simplified streaming-only texture-quality UI."""
 
     text = _source_text("ui.py")
     _assert(
-        "if not full_size_known or not full_price_known:" not in text,
-        "Full Quality must not be disabled solely because async price is pending.",
+        'header_row.label(text="Textures Quality", icon="TEXTURE")' in text,
+        "Sidebar should expose the simplified Textures Quality section.",
     )
     _assert(
-        re.search(r"if\s+not\s+full_size_known:\s*\n\s+full_allowed\s*=\s*False", text) is not None,
-        "Full Quality should only be disabled for missing size, not pending price.",
+        '"BALANCED", "Balanced"' in text,
+        "Textures Quality must expose the Balanced streaming quality button.",
     )
     _assert(
-        "Full Quality price is being calculated." not in text,
-        "Sidebar must not expose the old stuck price-calculation message.",
+        "planetka.open_credit_checkout" not in text[text.find("def _draw_live_telemetry"):text.find("def _draw_advanced_telemetry")],
+        "Textures Quality must not route Full Quality through checkout.",
     )
     return {"checked": True}
 
 
-def _test_full_quality_pricing_fails_closed() -> dict:
+def _test_quality_operator_is_streaming_only() -> dict:
     text = _source_text("operators.py")
+    start = text.find("class PLANETKA_OT_SetTextureQualityAndResolve")
+    end = text.find("class PLANETKA_OT_OpenCreditCheckout", start)
+    operator_text = text[start:end]
     _assert(
-        'return fail(\n                        self,\n                        "Full Quality pricing is not available. Please retry in a few moments."' in text,
-        "Full Quality pricing exceptions must fail closed.",
+        '"BALANCED",' in operator_text,
+        "Texture quality operator must accept Balanced mode.",
     )
     _assert(
-        "Full Quality price precheck unavailable; proceeding to licenced download check." not in text,
-        "Full Quality pricing precheck failure must not proceed to the download path.",
+        "open_credit_checkout" not in operator_text,
+        "Texture quality operator must not open checkout.",
     )
     _assert(
-        "scene_price = 0.0\n            if scene_price > 0.000001" not in text,
-        "Full Quality pricing exceptions must not fall through as a free resolve.",
+        "skip_pricing_session=True" in operator_text,
+        "Texture quality operator must not require a commerce pricing session.",
     )
     return {"checked": True}
 
 
-def _test_full_quality_details_not_disabled_by_price_cache() -> dict:
+def _test_full_quality_details_removed_from_data_control() -> dict:
     text = _source_text("ui.py")
+    data_control_text = text[text.find("def _draw_live_telemetry"):text.find("def _draw_advanced_telemetry")]
     _assert(
-        "full_details.enabled = bool(full_price_known" not in text,
-        "Full Quality Details must not be disabled just because the sidebar price cache is missing.",
+        "planetka.data_cost_breakdown" not in data_control_text,
+        "Textures Quality should not expose the old Full Quality Details pricing popup.",
     )
     _assert(
-        "full_details.enabled = bool(full_size_known)" in text,
-        "Full Quality Details should stay available once the scene data size is known.",
+        "Relevant Data Packs" not in data_control_text,
+        "Textures Quality should not expose data-pack upsells.",
     )
     return {"checked": True}
 
@@ -173,9 +176,9 @@ def main() -> int:
         ui_module = __import__(f"{base_module}.ui", fromlist=["dummy"])
         checks = (
             ("full_quality_progress_not_shown_without_download", lambda: _test_full_quality_progress_not_shown_without_download(ui_module)),
-            ("price_pending_does_not_disable_full_quality", _test_price_pending_does_not_disable_full_quality),
-            ("full_quality_pricing_fails_closed", _test_full_quality_pricing_fails_closed),
-            ("full_quality_details_not_disabled_by_price_cache", _test_full_quality_details_not_disabled_by_price_cache),
+            ("streaming_quality_ui_has_no_pricing_gate", _test_streaming_quality_ui_has_no_pricing_gate),
+            ("quality_operator_is_streaming_only", _test_quality_operator_is_streaming_only),
+            ("full_quality_details_removed_from_data_control", _test_full_quality_details_removed_from_data_control),
             ("region_pack_offer_context_is_correct", _test_region_pack_offer_context_is_not_download_context),
         )
         for name, fn in checks:

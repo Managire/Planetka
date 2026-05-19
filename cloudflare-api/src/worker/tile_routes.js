@@ -34,6 +34,11 @@ function buildTileResponseHeaders(resolveTileCacheControl, clampNonNegativeInt, 
   return headers;
 }
 
+function parseFiniteNumber(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : NaN;
+}
+
 export async function handleTileSessionStart(request, env, deps) {
   const {
     requireAuthenticatedUserContext,
@@ -42,10 +47,12 @@ export async function handleTileSessionStart(request, env, deps) {
     getPreviewFairUsageHoldForUser,
     normalizeRequestedPlan,
     normalizeQualityMode,
+    isProfessionalPlan,
+    personalFreeLocationBlockedMessage,
+    personalFreeRegionForPoint,
     previewFairUsageBlockedResponse,
     requireDb,
     json: jsonResponse,
-    authorizeFullTileSession,
     createTileDownloadSession,
     normalizeTileKeys,
   } = deps;
@@ -73,6 +80,22 @@ export async function handleTileSessionStart(request, env, deps) {
   const requestedResolveId = String(
     body && body.resolve_id ? body.resolve_id : request.headers.get("X-Planetka-Resolve-Id") || "",
   ).trim();
+  const navLatitude = parseFiniteNumber(
+    body && (
+      body.nav_latitude_deg
+      || body.navLatitudeDeg
+      || body.nav_latitude
+      || body.navLatitude
+    ) || request.headers.get("X-Planetka-Nav-Latitude") || "",
+  );
+  const navLongitude = parseFiniteNumber(
+    body && (
+      body.nav_longitude_deg
+      || body.navLongitudeDeg
+      || body.nav_longitude
+      || body.navLongitude
+    ) || request.headers.get("X-Planetka-Nav-Longitude") || "",
+  );
   const creditProtocol = String(body && (body.credit_protocol || body.creditProtocol) || "").trim();
   const creditTileKeys = body && (
     body.tile_keys
@@ -82,21 +105,36 @@ export async function handleTileSessionStart(request, env, deps) {
     || body.pricingTiles
   );
   const creditEnforced = creditProtocol === "land_credits_v1" && Array.isArray(creditTileKeys);
-  if (!creditEnforced && normalizedRequestedQualityMode !== "preview") {
+  if (creditEnforced) {
     return jsonResponse(
       {
         ok: false,
-        error: "full_quality_session_required",
-        message: "Full Quality requires a confirmed session.",
+        error: "legacy_pricing_disabled",
+        message: "This Planetka version no longer supports scene-purchase tile sessions. Update Planetka and reconnect your account.",
       },
-      402,
+      410,
       env,
     );
   }
-  if (creditEnforced && typeof authorizeFullTileSession === "function") {
-    return await authorizeFullTileSession(request, env, body);
-  }
   const sessionId = creditEnforced ? crypto.randomUUID() : "";
+  const qualityAccessPlanCode = normalizeRequestedPlan(auth && (auth.qualityAccessPlanCode || auth.planCode));
+  let personalFreeRegion = null;
+  if (!creditEnforced && !isProfessionalPlan(qualityAccessPlanCode)) {
+    personalFreeRegion = personalFreeRegionForPoint(navLatitude, navLongitude);
+    if (!personalFreeRegion) {
+      return jsonResponse(
+        {
+          ok: false,
+          error: "personal_location_not_allowed",
+          message: personalFreeLocationBlockedMessage(),
+          allowed_locations: ["New Zealand", "Iceland"],
+          requested_quality_mode: normalizedRequestedQualityMode,
+        },
+        403,
+        env,
+      );
+    }
+  }
   const issued = await issueTileSessionToken(
     env,
     auth,
@@ -106,6 +144,7 @@ export async function handleTileSessionStart(request, env, deps) {
       creditProtocol,
       creditEnforced,
       sessionId,
+      personalFreeRegion: personalFreeRegion && personalFreeRegion.id || "",
     },
   );
   if (issued && issued.error) {
@@ -157,7 +196,7 @@ export async function handleTileSessionStart(request, env, deps) {
       {
         ok: false,
         error: String(unlockResult.error || "payment_required"),
-        message: "Full Quality requires direct payment.",
+        message: "Full Quality requires a Professional account.",
         required_credits: Number(unlockResult.required_credits || 0),
         price_eur: Number(unlockResult.price_eur || unlockResult.required_credits || 0),
         paid_tile_count: Number(unlockResult.paid_tile_count || 0),
@@ -234,6 +273,9 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
     normalizeQualityMode,
     normalizeRequestedPlan,
     normalizeResolveId,
+    isProfessionalPlan,
+    personalFreeLocationBlockedMessage,
+    personalFreeRegionForTileFileName,
     getPreviewFairUsageHoldForUser,
     previewFairUsageBlockedResponse,
     qualityModeNotAllowedMessage,
@@ -260,6 +302,7 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
   let tokenQualityMode = "";
   let tokenResolveId = "";
   let tokenCreditEnforced = false;
+  let tokenPersonalFreeRegion = "";
   const tileSessionAuth = await readTileSessionClaims(request, env);
   if (tileSessionAuth && tileSessionAuth.error) {
     return tileSessionAuth.error;
@@ -277,6 +320,7 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
     tokenQualityMode = normalizeQualityMode(tileSessionAuth.claims.qualityMode || "");
     tokenResolveId = normalizeResolveId(tileSessionAuth.claims.resolveId || "");
     tokenCreditEnforced = Boolean(tileSessionAuth.claims.creditEnforced);
+    tokenPersonalFreeRegion = String(tileSessionAuth.claims.personalFreeRegion || "").trim();
   } else {
     const auth = await requireAuthenticatedUserContext(
       request,
@@ -360,6 +404,26 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
     }
     const tileRequiredQualityMode = minimumPlanQualityForTile(fileName);
     if ((request.method === "GET" || request.method === "HEAD")
+      && !tokenCreditEnforced
+      && !isProfessionalPlan(qualityAccessPlanCode)) {
+      const freeRegion = personalFreeRegionForTileFileName(fileName, tokenPersonalFreeRegion);
+      if (!freeRegion) {
+        eventStatusCode = 403;
+        eventErrorCode = "personal_location_not_allowed";
+        return json(
+          {
+            ok: false,
+            error: "personal_location_not_allowed",
+            message: personalFreeLocationBlockedMessage(),
+            allowed_locations: ["New Zealand", "Iceland"],
+            file_name: fileName,
+          },
+          403,
+          env,
+        );
+      }
+    }
+    if ((request.method === "GET" || request.method === "HEAD")
     && !tokenCreditEnforced
     && !isQualityModeAllowedForPlan(qualityAccessPlanCode, effectiveQualityMode)) {
       eventStatusCode = 403;
@@ -390,21 +454,6 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
           file_name: fileName,
         },
         403,
-        env,
-      );
-    }
-    if ((request.method === "GET" || request.method === "HEAD")
-      && effectiveQualityMode !== "preview"
-      && !tokenCreditEnforced) {
-      eventStatusCode = 402;
-      eventErrorCode = "full_quality_session_required";
-      return json(
-        {
-          ok: false,
-          error: "full_quality_session_required",
-          message: "Full Quality requires a confirmed session.",
-        },
-        402,
         env,
       );
     }

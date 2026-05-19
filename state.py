@@ -1032,7 +1032,7 @@ def update_resolve_size_estimates(
     scope_mode="CAMERA",
     base_path="",
     full_tiles_override=None,
-    include_full_price=True,
+    include_full_price=False,
     async_full_price=False,
     force_full_price_refresh=False,
 ):

@@ -33,6 +33,15 @@ import bpy
 
 TAG = "[Planetka Smoke Test]"
 
+_FIXTURE_TILE_IDS = (
+    "x000_y000_z180_d720",
+    "x180_y000_z180_d720",
+    "x000_y000_z180_d360",
+    "x180_y000_z180_d360",
+    "x000_y000_z180_d180",
+    "x180_y000_z180_d180",
+)
+
 
 def _log(message):
     print(f"{TAG} {message}")
@@ -124,6 +133,19 @@ def _import_submodule(base_module_name, submodule_name):
     _fail(f"Could not import submodule '{submodule_name}'. Tried: {', '.join(candidates)}")
 
 
+def _force_hermetic_local_texture_mode(r2_source_module):
+    if r2_source_module is None:
+        return
+    try:
+        if hasattr(r2_source_module, "get_unsupported_texture_source_mode"):
+            r2_source_module.get_unsupported_texture_source_mode = lambda: "LOCAL"
+        reset_fn = getattr(r2_source_module, "reset_config_cache", None)
+        if callable(reset_fn):
+            reset_fn()
+    except TOOL_RECOVERABLE_EXCEPTIONS:
+        pass
+
+
 def _purge_existing_planetka_data():
     for obj in list(bpy.data.objects):
         if obj.name.startswith("Planetka"):
@@ -175,6 +197,8 @@ def _make_texture_source_tree(base_dir):
         _assert(os.path.isfile(source), f"Missing bundled fallback texture sample: {source}")
         folder = os.path.join(base_dir, folder_name)
         os.makedirs(folder, exist_ok=True)
+        for tile_id in _FIXTURE_TILE_IDS:
+            shutil.copyfile(source, os.path.join(folder, f"{prefix}{tile_id}{ext}"))
         shutil.copyfile(source, os.path.join(folder, f"{prefix}x000_y000_z360_d360{ext}"))
         shutil.copyfile(source, os.path.join(folder, f"{prefix}x180_y000_z180_d180{ext}"))
 
@@ -247,6 +271,8 @@ def main():
         _assert(base_module_name is not None, "Could not enable Planetka extension module.")
         extension_prefs = _import_submodule(base_module_name, "extension_prefs")
         state = _import_submodule(base_module_name, "state")
+        r2_source = _import_submodule(base_module_name, "r2_source")
+        _force_hermetic_local_texture_mode(r2_source)
 
         _purge_existing_planetka_data()
 

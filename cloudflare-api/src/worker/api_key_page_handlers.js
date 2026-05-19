@@ -18,7 +18,7 @@ function renderApiKeyRequestPage(env, deps, message = "", requestedPlan = "") {
     ? `<p id="status" class="status success">${deps.escapeHtml(safeMessage)}</p>`
     : `<p id="status" class="status"></p>`;
   void requestedPlan;
-  const safePlan = deps.PLAN_CODE_FREE;
+  const safePlan = deps.PLAN_CODE_PROFESSIONAL || deps.PLAN_CODE_FREE;
   const subTitle = "Request account access to connect Blender and access Planetka-hosted data.";
   return deps.html(`<!doctype html>
 <html lang="en">
@@ -122,7 +122,7 @@ function renderApiKeyActivatedPage(env, deps, data = {}) {
   const key = String(data.apiKey || "").trim();
   const keyMask = key ? deps.maskApiKey(key) : "";
   const email = String(data.email || "").trim();
-  const planCode = deps.normalizeRequestedPlan(data.planCode || deps.PLAN_CODE_FREE);
+  const planCode = deps.normalizeRequestedPlan(data.planCode || deps.PLAN_CODE_PROFESSIONAL || deps.PLAN_CODE_FREE);
   const planLabel = deps.planDisplayName(planCode);
   const accessSummary = deps.planAccessSummary(planCode);
   return deps.html(`<!doctype html>
@@ -174,7 +174,7 @@ export function handleApiKeyPage(request, env, deps) {
       },
     });
   }
-  return renderApiKeyRequestPage(env, deps, "", deps.PLAN_CODE_FREE);
+  return renderApiKeyRequestPage(env, deps, "", deps.PLAN_CODE_PROFESSIONAL || deps.PLAN_CODE_FREE);
 }
 
 export async function handleApiKeyActivatePage(request, env, deps) {

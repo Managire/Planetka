@@ -13,6 +13,8 @@ import {
 } from "./worker/env.js";
 import {
   PLAN_CODE_FREE,
+  PLAN_CODE_PERSONAL,
+  PLAN_CODE_PROFESSIONAL,
   isBlockedStatus,
   isDeviceLimitExemptEmail,
   isQualityModeAllowedForPlan,
@@ -170,7 +172,7 @@ let refreshSessionColumnsReady = false;
 let userQualityAccessColumnsReady = false;
 let adminFeatureFlagsTableReady = false;
 const FIXED_INTERNAL_TEST_PLAN_BY_EMAIL = Object.freeze({
-  "free@planetka.io": PLAN_CODE_FREE,
+  "free@planetka.io": PLAN_CODE_PROFESSIONAL,
 });
 let adminHardBlocksTableReady = false;
 let newsletterContactsTableReady = false;
@@ -3065,13 +3067,17 @@ function normalizeTierCodeStrict(value) {
   const normalized = normalizePlanCode(value);
   if (
     normalized === PLAN_CODE_FREE
+    || normalized === PLAN_CODE_PERSONAL
   ) {
-    return normalized;
+    return PLAN_CODE_PERSONAL;
+  }
+  if (normalized === PLAN_CODE_PROFESSIONAL) {
+    return PLAN_CODE_PROFESSIONAL;
   }
   return "";
 }
 
-async function upsertUserByEmail(db, email, status = PLAN_CODE_FREE, options = {}, env = {}) {
+async function upsertUserByEmail(db, email, status = PLAN_CODE_PROFESSIONAL, options = {}, env = {}) {
   const normalizedEmail = normalizeEmail(email);
   await ensureUserConsentColumns(db);
   await ensureUserQualityAccessColumns(db);
@@ -3215,7 +3221,7 @@ function fixedInternalPlanForEmail(email) {
   return FIXED_INTERNAL_TEST_PLAN_BY_EMAIL[normalizedEmail] || "";
 }
 
-function resolveFixedInternalPlanForEmail(email, requestedPlan = PLAN_CODE_FREE) {
+function resolveFixedInternalPlanForEmail(email, requestedPlan = PLAN_CODE_PROFESSIONAL) {
   const fixedPlan = fixedInternalPlanForEmail(email);
   if (fixedPlan) {
     return fixedPlan;
@@ -3273,8 +3279,8 @@ async function resolveUserQualityAccessState(db, user, env = {}) {
   const storedPlanCode = normalizeTierCodeStrict(effectiveUser && effectiveUser.status);
   if (!effectiveUser || !effectiveUser.id) {
     return {
-      storedPlanCode: PLAN_CODE_FREE,
-      qualityAccessPlanCode: PLAN_CODE_FREE,
+      storedPlanCode: PLAN_CODE_PERSONAL,
+      qualityAccessPlanCode: PLAN_CODE_PERSONAL,
     };
   }
   if (!storedPlanCode && !isBlockedStatus(effectiveUser && effectiveUser.status)) {

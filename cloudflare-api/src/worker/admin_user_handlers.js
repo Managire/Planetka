@@ -191,7 +191,7 @@ export async function handleAdminUserUnblock(request, env, deps) {
 
   const targetUserId = String(target.user.id || "").trim();
   const targetEmail = deps.normalizeEmail(target.user.email || "");
-  const targetStatus = "free";
+  const targetStatus = deps.PLAN_CODE_PROFESSIONAL || "professional";
   const now = deps.nowIso();
   await deps.dbRun(db, `UPDATE users SET status = ? WHERE id = ?`, [targetStatus, targetUserId]);
   const apiKeysResult = await deps.dbRun(
@@ -470,13 +470,75 @@ export async function handleAdminUserSetPlan(request, env, deps) {
   if (auth.error) {
     return auth.error;
   }
+  const { db, user: adminUser } = auth;
+  await deps.ensureApiKeyTables(db);
+  await deps.ensureRefreshSessionColumns(db);
+  const body = await deps.parseJson(request);
+  const target = await resolveTargetUser(db, body, deps);
+  if (target.error) {
+    return deps.json({ ok: false, error: target.error }, target.error === "user_not_found" ? 404 : 400, env);
+  }
+
+  const targetPlan = deps.normalizeRequestedPlan(body && body.plan_code || "");
+  if (![deps.PLAN_CODE_PERSONAL, deps.PLAN_CODE_PROFESSIONAL].includes(targetPlan)) {
+    return deps.json({ ok: false, error: "invalid_plan_code" }, 400, env);
+  }
+  if (deps.isBlockedStatus && deps.isBlockedStatus(target.user.status)) {
+    return deps.json({ ok: false, error: "user_blocked", message: "Unblock the user before changing account type." }, 409, env);
+  }
+
+  const targetUserId = String(target.user.id || "").trim();
+  const targetEmail = deps.normalizeEmail(target.user.email || "");
+  const now = deps.nowIso();
+  await deps.dbRun(db, `UPDATE users SET status = ? WHERE id = ?`, [targetPlan, targetUserId]);
+  const apiKeysResult = await deps.dbRun(
+    db,
+    `
+      UPDATE api_keys
+      SET plan_code = ?
+      WHERE user_id = ?
+        AND status = 'active'
+    `,
+    [targetPlan, targetUserId],
+  );
+  const revokedSessionsResult = await deps.dbRun(
+    db,
+    `
+      UPDATE refresh_sessions
+      SET revoked_at = ?
+      WHERE user_id = ?
+        AND (revoked_at IS NULL OR revoked_at = '')
+    `,
+    [now, targetUserId],
+  );
+  try {
+    console.log(
+      "admin.user_plan_set",
+      JSON.stringify({
+        user_id: targetUserId,
+        user_email: targetEmail,
+        plan_code: targetPlan,
+        admin_email: deps.normalizeEmail(adminUser && adminUser.email || ""),
+        updated_active_api_keys: deps.dbMetaChanges(apiKeysResult),
+        revoked_sessions: deps.dbMetaChanges(revokedSessionsResult),
+      }),
+    );
+  } catch (_error) {
+    // no-op logging guard
+  }
+  await invalidateAdminAnalyticsSnapshots(env, deps);
   return deps.json(
     {
-      ok: false,
-      error: "account_tiers_removed",
-      message: "Planetka account tiers are no longer editable. Use Full Quality direct payment.",
+      ok: true,
+      action: "set_user_plan",
+      user_id: targetUserId,
+      user_email: targetEmail,
+      plan_code: targetPlan,
+      updated_active_api_keys: deps.dbMetaChanges(apiKeysResult),
+      revoked_sessions: deps.dbMetaChanges(revokedSessionsResult),
+      updated_at: now,
     },
-    410,
+    200,
     env,
   );
 }

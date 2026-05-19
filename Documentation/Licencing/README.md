@@ -1,21 +1,24 @@
 # Planetka Licensing Overview
 
-Last updated: 2026-05-12
+Last updated: 2026-05-19
 
 This folder contains the user-facing Planetka licence, privacy, attribution, and source-compliance documents included with the public add-on package.
 
-## Public texture access model
+## Public add-on access model
 
-Planetka has two public texture-quality modes:
+Planetka 0.8.1 uses a streaming account model:
 
-- **Preview**: free streamed/cached texture access for personal, non-commercial use inside Planetka.
-- **Full Quality**: paid texture access with a commercial licence included for the Full Quality texture data licenced to the user's account.
+- **Personal account**: free access to selected locations, currently New Zealand and Iceland.
+- **Professional account**: paid or manually granted access to worldwide Planetka streaming.
+- **Quality modes**: Preview, Balanced, and Full Quality are quality choices inside the add-on. They are not separate products or tile purchases.
 
-Full Quality may be purchased as scene-specific texture data, animation texture data, or predefined data packs such as countries, states, regions, continents, and world coverage.
+The active Blender add-on does not sell individual tiles, scene-specific tile licences, animation tile licences, or data packs. It also does not provide a purchase-history or raw-data download library.
 
-## What a Full Quality licence allows
+## What Professional access allows
 
-A Full Quality licence allows commercial and non-commercial use of the licenced texture data in renders, animations, client work, and supported download/offline workflows. It does not allow resale, redistribution, hosting, API access, extraction, scraping, AI dataset use, or operation of a competing map/texture service.
+Professional access allows commercial and non-commercial use of rendered outputs created with Planetka streamed textures, subject to these terms, attribution obligations, and fair-usage controls.
+
+Professional access does not allow resale, redistribution, hosting, API access, extraction, scraping, AI dataset use, raw tile redistribution, or operation of a competing map/texture service.
 
 ## Attribution
 
@@ -27,8 +30,8 @@ Recommended short attribution:
 
 ## Key documents
 
-- `TERMS_OF_SERVICE.md` and `TERMS_OF_SERVICE.pdf`: Planetka hosted-service and texture-licence terms.
-- `PRIVACY_POLICY.md` and `PRIVACY_POLICY.pdf`: account, payment-status, purchase-history, usage, and diagnostic-data handling.
+- `TERMS_OF_SERVICE.md` and `TERMS_OF_SERVICE.pdf`: Planetka hosted-service and texture-streaming terms.
+- `PRIVACY_POLICY.md` and `PRIVACY_POLICY.pdf`: account, consent, usage, and diagnostic-data handling.
 - `Using Planetka Commercially.txt`: practical commercial-use summary.
 - `Attribution for User Renders.txt`: recommended attribution wording.
 - `Compliance/`: source-specific attribution and compliance notes.

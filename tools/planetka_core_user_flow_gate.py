@@ -349,9 +349,9 @@ def main():
         report["renders"].append(_render_checkpoint(scene, output_dir, "after_radius_change"))
         record_step("earth_radius_change", earth_radius_bu=float(getattr(props, "earth_radius_bu", 0.0) or 0.0), apply_result=list(apply_radius))
 
-        # EUR-priced quality flow guardrails. This gate is hermetic/offline, so
-        # Preview must work and Full Quality must refuse to run without
-        # backend-authoritative pricing.
+        # Streaming quality flow guardrails. This gate is hermetic/offline, so
+        # all three streaming quality levels must resolve and render from the
+        # local fixture without pricing, checkout, or backend authorization.
         full_globe_result = bpy.ops.planetka.navigation_preset(preset="HIGH_ORBIT")
         _assert(_operator_ok(full_globe_result), f"HIGH_ORBIT preset failed before quality flow: {full_globe_result}")
         auth.clear_auth_session(prefs=prefs, state="logged_out", status_message="")
@@ -360,17 +360,18 @@ def main():
             not bool(r2_source.is_remote_source_configured(prefs.texture_base_path)),
             f"Hermetic gate switched to remote texture source unexpectedly: {prefs.texture_base_path}",
         )
-        for mode, expected_ok in (("PREVIEW", True), ("FULL", False)):
+        for mode in ("PREVIEW", "BALANCED", "FULL"):
             entry = {
                 "account": "logged_out_local_fixture",
                 "mode": mode,
-                "expected_ok": bool(expected_ok),
+                "expected_ok": True,
             }
-            _set_quality_and_expect(mode, expected_ok, entry)
+            _set_quality_and_expect(mode, True, entry)
+            render_info = _render_checkpoint(scene, output_dir, f"quality_{mode.lower()}")
+            entry["render"] = render_info
+            report["renders"].append(render_info)
             report["quality_matrix"].append(entry)
 
-        # Final sanity render after a rejected Full Quality attempt.
-        report["renders"].append(_render_checkpoint(scene, output_dir, "preview_after_full_rejection"))
         record_step("quality_matrix")
 
         report["status"] = "ok"

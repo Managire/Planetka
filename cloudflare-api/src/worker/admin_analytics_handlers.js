@@ -1132,18 +1132,24 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
       ? `/admin/analytics/user?user_id=${encodeURIComponent(userIdRaw)}`
       : `/admin/analytics/user?email=${encodeURIComponent(userEmailRaw)}`;
     const status = String(row && row.user_status || "").trim().toLowerCase();
+    const plan = (status === "professional") ? "professional" : (status === "blocked" ? "blocked" : "personal");
+    const planLabel = plan === "professional" ? "Professional" : (plan === "blocked" ? "Blocked" : "Personal");
+    const nextPlan = plan === "professional" ? "personal" : "professional";
+    const nextPlanLabel = nextPlan === "professional" ? "Professional" : "Personal";
     const previewHeld = Boolean(String(row && row.preview_fair_usage_hold_at || "").trim());
     const previewHoldButton = previewHeld
       ? `<button class="action-btn warn" data-action="release-preview-hold" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Release Preview Hold</button>`
       : `<button class="action-btn warn" data-action="set-preview-hold" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Pause Preview</button>`;
+    const planButton = `<button class="action-btn plan" data-action="set-plan" data-plan-code="${encodeURIComponent(nextPlan)}" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set ${deps.escapeHtml(nextPlanLabel)}</button>`;
     let actionButtons = "";
     if (status === "blocked") {
       actionButtons = `${previewHoldButton}<button class="action-btn warn" data-action="unblock" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Unblock</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
     } else {
-      actionButtons = `${previewHoldButton}<button class="action-btn danger" data-action="block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Block</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
+      actionButtons = `${planButton}${previewHoldButton}<button class="action-btn danger" data-action="block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Block</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
     }
     return `<tr${previewHeld ? ` class="preview-held"` : ""}>
       <td><a href="${deps.escapeHtml(userHref)}">${userEmail}</a></td>
+      <td><span class="plan-pill ${deps.escapeHtml(plan)}">${deps.escapeHtml(planLabel)}</span></td>
       <td>${deps.escapeHtml(fmtEur(row && row.paid_eur_lifetime))}</td>
       <td>${fmtInt(row && row.paid_full_resolve_count)}</td>
       <td>${fmtInt(row && row.unlocked_tile_count)}</td>
@@ -1173,9 +1179,13 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
     td a { color:#e5e7eb; text-decoration:none; }
     td a:hover { color:#ffffff; text-decoration:underline; }
     .action-btn { font-size: 12px; padding: 4px 8px; margin-right: 6px; margin-bottom: 4px; cursor: pointer; }
+    .action-btn.plan { border-color: #1d4ed8; color: #bfdbfe; }
     .action-btn.warn { border-color: #9a3412; color: #fed7aa; }
     .action-btn.danger { border-color: #991b1b; color: #fecaca; }
     .action-wrap { white-space: normal; min-width: 380px; }
+    .plan-pill { display:inline-block; min-width:84px; text-align:center; border-radius:999px; padding:3px 8px; border:1px solid #374151; font-size:12px; }
+    .plan-pill.professional { color:#bbf7d0; border-color:#166534; background:rgba(22,101,52,.18); }
+    .plan-pill.personal { color:#bfdbfe; border-color:#1d4ed8; background:rgba(29,78,216,.16); }
     .preview-held td { background: rgba(154, 52, 18, 0.12); }
     .error { color: #fca5a5; }
   </style>
@@ -1201,6 +1211,7 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
     <thead>
       <tr>
         <th>Email</th>
+        <th>Account</th>
         <th><a href="${buildSortHref("paid_eur")}">Paid EUR${sortMarker("paid_eur")}</a></th>
         <th><a href="${buildSortHref("paid_resolves")}">Paid Resolves${sortMarker("paid_resolves")}</a></th>
         <th><a href="${buildSortHref("paid_tiles")}">Paid Tiles${sortMarker("paid_tiles")}</a></th>
@@ -1238,6 +1249,7 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
         block: "/admin/users/block",
         unblock: "/admin/users/unblock",
         "hard-block": "/admin/users/hard-block",
+        "set-plan": "/admin/users/set-plan",
         "set-preview-hold": "/admin/users/set-preview-hold",
         "release-preview-hold": "/admin/users/release-preview-hold",
       };
@@ -1245,6 +1257,7 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
         block: "Block this user account now?",
         unblock: "Unblock this user account now?",
         "hard-block": "Hard block this user and block same-computer attempts?",
+        "set-plan": "Change this user's account type?",
         "set-preview-hold": "Pause Preview streaming for this user? Full Quality remains available.",
         "release-preview-hold": "Release this user's Preview fair-usage hold?",
       };
@@ -1253,6 +1266,7 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
       if (!window.confirm(confirmation[safeAction] || "Confirm action?")) return;
       const payload = { email: safeUserEmail };
       if (safeUserId) payload.user_id = safeUserId;
+      if (safeAction === "set-plan") payload.plan_code = String(planCode || "").trim();
       statusEl.textContent = "Applying action...";
       statusEl.className = "muted";
       try {

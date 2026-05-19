@@ -1,4 +1,4 @@
-# Planetka 0.7.5 public addon package allowlist.
+# Planetka 0.8.1 public addon package allowlist.
 # One repo-relative file path per line. Wildcards are intentionally not allowed.
 
 # Metadata

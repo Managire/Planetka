@@ -185,7 +185,7 @@ class ResolveEarlyResult:
 
 def _normalize_texture_quality_mode(value):
     token = str(value or "").strip().upper()
-    if token in {"FULL", "PREVIEW"}:
+    if token in {"FULL", "BALANCED", "PREVIEW"}:
         return token
     return "PREVIEW"
 
@@ -1057,6 +1057,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                     scope_mode=str(getattr(self, "scope_mode", "AUTO") or "AUTO"),
                     base_path=normalized,
                     full_tiles_override=full_tiles_override,
+                    include_full_price=False,
                     async_full_price=True,
                 )
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
@@ -1104,7 +1105,10 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 nav_latitude_deg=nav_latitude_deg,
                 nav_longitude_deg=nav_longitude_deg,
                 nav_altitude_km=nav_altitude_km,
-                enforce_pricing_session=not bool(getattr(self, "skip_pricing_session", False)),
+                # The 2026 streaming model treats Preview, Balanced, and Full
+                # Quality as quality modes, not per-resolve purchases. Do not
+                # attach any legacy pricing/session payload to resolve traffic.
+                enforce_pricing_session=False,
                 capture_download_progress=bool(capture_download_progress),
             )
             payload_data = self._parse_stream_payload(stream_payload)
@@ -1158,7 +1162,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         enforce_pricing_session=True,
         capture_download_progress=True,
     ):
-        use_pricing_session = bool(enforce_pricing_session)
+        use_pricing_session = False
         stream_payload = consume_staged_prefetch_payload(
             tiles,
             normalized,

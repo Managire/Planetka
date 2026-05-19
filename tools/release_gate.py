@@ -312,14 +312,14 @@ def main() -> int:
         if part
     )
 
-    # 6) Worker access model must match the split-worker public account/product model
+    # 6) Worker access model must match the split-worker account-tier model.
     if combined_worker_src:
         required_worker_markers = [
             (
-                "public API key request forces Free plan",
+                "beta public API key request defaults to Professional",
                 [
-                    "const requestedPlan = PLAN_CODE_FREE;",
-                    "const requestedPlan = deps.PLAN_CODE_FREE;",
+                    "const requestedPlan = PLAN_CODE_PROFESSIONAL",
+                    "const requestedPlan = deps.PLAN_CODE_PROFESSIONAL",
                 ],
             ),
         ]

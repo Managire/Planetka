@@ -74,6 +74,7 @@ _KNOWN_NON_OVERLOAD_ERROR_TOKENS = (
     "licence could not be confirmed",
     "license could not be confirmed",
     "full quality requires direct payment",
+    "full quality requires a professional",
 )
 _OVERLOAD_TEXT_TOKENS = (
     CLOUD_OVERLOADED_ERROR_CODE,
@@ -220,9 +221,9 @@ def describe_auth_error(error):
     if "missing_stripe_payment_link_url" in lowered:
         return "Planetka payment page is not configured. Contact Planetka support."
     if "quality_mode_not_allowed" in lowered or "not_allowed_for_tier" in lowered or "insufficient_data" in lowered:
-        return "This Resolve needs Full Quality licensing for the selected tiles."
+        return "This view needs a higher Planetka account level for the selected texture quality."
     if "insufficient_credits" in lowered:
-        return "Full Quality requires direct payment."
+        return "Full Quality requires a Professional Planetka account."
     if "missing_resolve_id" in lowered:
         return "Purchase details are missing. Retry Resolve and ensure Planetka is up to date."
     return f"Planetka login failed: {message.replace('_', ' ')}."
@@ -577,14 +578,106 @@ def _require_valid_authenticated_tier(prefs=None, context="runtime"):
     return ""
 
 
-def get_account_tier(prefs=None):
-    del prefs
+def _normalize_account_plan_code(value):
+    token = str(value or "").strip().lower()
+    if token in {"professional", "pro", "paid", "unlimited"}:
+        return "professional"
+    if token in {"personal", "free", ""}:
+        return "personal"
+    return token
+
+
+def _account_plan_name(plan_code):
+    return "Professional" if _normalize_account_plan_code(plan_code) == "professional" else "Personal"
+
+
+def _first_plan_code_from_payload(payload, *keys):
+    if not isinstance(payload, dict):
+        return ""
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, dict):
+            nested = _first_non_empty(value.get("code"), value.get("plan_code"), value.get("id"))
+            if nested:
+                return nested
+        else:
+            value = _first_non_empty(value)
+            if value:
+                return value
     return ""
+
+
+def _apply_account_plan_fields(prefs, payload):
+    if prefs is None or not isinstance(payload, dict):
+        return
+    plan_code = _normalize_account_plan_code(
+        _first_plan_code_from_payload(payload, "plan_code", "plan", "user_status", "account_tier")
+    )
+    stored_plan_code = _normalize_account_plan_code(
+        _first_plan_code_from_payload(payload, "stored_plan_code", "storedPlanCode", "stored_account_tier")
+        or plan_code
+    )
+    account_tier = _normalize_account_plan_code(
+        _first_plan_code_from_payload(payload, "account_tier", "accountTier")
+        or plan_code
+    )
+    prefs.auth_plan_code = plan_code
+    prefs.auth_plan_name = _account_plan_name(plan_code)
+    prefs.auth_stored_plan_code = stored_plan_code
+    prefs.auth_stored_plan_name = _account_plan_name(stored_plan_code)
+    prefs.auth_stored_account_tier = stored_plan_code
+    prefs.auth_account_tier = account_tier
+
+
+def get_account_tier(prefs=None):
+    prefs = prefs or get_prefs()
+    if prefs is None:
+        return ""
+    return _normalize_account_plan_code(
+        getattr(prefs, "auth_account_tier", "")
+        or getattr(prefs, "auth_plan_code", "")
+        or getattr(prefs, "auth_stored_plan_code", "")
+    )
+
+
+def get_account_plan_name(prefs=None):
+    prefs = prefs or get_prefs()
+    if prefs is None:
+        return ""
+    return str(getattr(prefs, "auth_plan_name", "") or _account_plan_name(get_account_tier(prefs))).strip()
+
+
+def is_professional_account(prefs=None):
+    return get_account_tier(prefs) == "professional"
+
+
+def is_personal_account(prefs=None):
+    return get_account_tier(prefs) == "personal"
+
+
+def personal_free_locations_label():
+    return "New Zealand and Iceland"
+
+
+def account_access_summary(prefs=None):
+    return (
+        "Professional account: Preview, Balanced, and Full Quality streaming worldwide."
+        if is_professional_account(prefs)
+        else "Personal account: Preview, Balanced, and Full Quality streaming in New Zealand and Iceland."
+    )
+
+
+def upgrade_checkout_available(prefs=None):
+    return bool(get_upgrade_url(prefs))
+
+
+def professional_account_required_message():
+    return "Upgrade to a Professional account for worldwide Planetka streaming."
 
 
 def _normalize_texture_quality_token(value):
     token = str(value or "").strip().upper()
-    if token in {"PREVIEW", "FULL"}:
+    if token in {"PREVIEW", "BALANCED", "FULL"}:
         return token
     return "PREVIEW"
 
@@ -608,9 +701,9 @@ def allows_animation_render_for_context(prefs=None, source=None, requested_mode=
 def allows_texture_quality_for_context(prefs=None, source=None, requested_mode="PREVIEW"):
     del prefs, source
     mode = _normalize_texture_quality_token(requested_mode)
-    if mode == "PREVIEW":
+    if mode in {"PREVIEW", "BALANCED", "FULL"}:
         return True
-    return mode == "FULL"
+    return False
 
 
 def get_upgrade_url(prefs=None):
@@ -800,12 +893,7 @@ def _apply_auth_payload(prefs, payload, login_state="authenticated", status_mess
     api_key_mask = str(payload.get("api_key_mask", "") or "").strip()
     if api_key_mask:
         prefs.auth_api_key_mask = api_key_mask
-    prefs.auth_plan_code = ""
-    prefs.auth_plan_name = ""
-    prefs.auth_stored_plan_code = ""
-    prefs.auth_stored_plan_name = ""
-    prefs.auth_stored_account_tier = ""
-    prefs.auth_account_tier = ""
+    _apply_account_plan_fields(prefs, payload)
     prefs.auth_contact_url = _first_non_empty(
         payload.get("contact_url"),
         payload.get("support_url"),
@@ -830,12 +918,7 @@ def _apply_account_profile_fields(prefs, payload):
     if email:
         prefs.auth_email = email
 
-    prefs.auth_plan_code = ""
-    prefs.auth_plan_name = ""
-    prefs.auth_stored_plan_code = ""
-    prefs.auth_stored_plan_name = ""
-    prefs.auth_stored_account_tier = ""
-    prefs.auth_account_tier = ""
+    _apply_account_plan_fields(prefs, payload)
 
     contact_url = _first_non_empty(
         payload.get("contact_url"),

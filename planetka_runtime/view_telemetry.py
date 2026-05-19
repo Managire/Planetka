@@ -369,7 +369,7 @@ def camera_signature(scene):
 
 def normalize_texture_quality_mode(value):
     token = str(value or "").strip().upper()
-    if token in {"FULL", "PREVIEW"}:
+    if token in {"FULL", "BALANCED", "PREVIEW"}:
         return token
     return "PREVIEW"
 
@@ -2114,7 +2114,7 @@ def update_resolve_size_estimates(
     scope_mode="CAMERA",
     base_path="",
     full_tiles_override=None,
-    include_full_price=True,
+    include_full_price=False,
     async_full_price=False,
     force_full_price_refresh=False,
 ):
@@ -2162,9 +2162,10 @@ def update_resolve_size_estimates(
             return None
 
     full_tiles = _compute_mode_tiles("FULL", override_tiles=full_tiles_override)
+    balanced_tiles = _compute_mode_tiles("BALANCED")
     preview_tiles = _compute_mode_tiles("PREVIEW")
 
-    if full_tiles is None or preview_tiles is None:
+    if full_tiles is None or balanced_tiles is None or preview_tiles is None:
         clear_resolve_size_estimates(scene, runtime)
         return False
 
@@ -2180,40 +2181,52 @@ def update_resolve_size_estimates(
         runtime,
         texture_quality_mode="PREVIEW",
     )
+    balanced_availability = estimate_download_availability_for_visible_tiles(
+        balanced_tiles,
+        base_path,
+        runtime,
+        texture_quality_mode="BALANCED",
+    )
     full_bytes = int(max(0, int((full_availability or {}).get("total_bytes", 0) or 0)))
+    balanced_bytes = int(max(0, int((balanced_availability or {}).get("total_bytes", 0) or 0)))
     preview_bytes = int(max(0, int((preview_availability or {}).get("total_bytes", 0) or 0)))
     full_available_bytes = int(max(0, int((full_availability or {}).get("available_bytes", 0) or 0)))
+    balanced_available_bytes = int(max(0, int((balanced_availability or {}).get("available_bytes", 0) or 0)))
     preview_available_bytes = int(max(0, int((preview_availability or {}).get("available_bytes", 0) or 0)))
     full_download_bytes = int(max(0, int((full_availability or {}).get("download_bytes", 0) or 0)))
+    balanced_download_bytes = int(max(0, int((balanced_availability or {}).get("download_bytes", 0) or 0)))
     preview_download_bytes = int(max(0, int((preview_availability or {}).get("download_bytes", 0) or 0)))
-    full_pricing_tiles = _pricing_tiles_for_visible_tiles(
-        full_tiles,
-        runtime,
-        texture_quality_mode="FULL",
-        base_path=base_path,
-    )
-    full_price_signature = _full_price_signature(full_pricing_tiles, "FULL")
-    if bool(force_full_price_refresh):
-        clear_full_price_estimate_cache()
     full_credits = None
     full_price_pending = False
-    existing_signature = ""
-    try:
-        existing_signature = str(scene.get(_FULL_PRICE_SIGNATURE_KEY, "") or "")
-    except recoverable_exceptions:
+    full_pricing_tiles = ()
+    full_price_signature = ""
+    if bool(include_full_price):
+        full_pricing_tiles = _pricing_tiles_for_visible_tiles(
+            full_tiles,
+            runtime,
+            texture_quality_mode="FULL",
+            base_path=base_path,
+        )
+        full_price_signature = _full_price_signature(full_pricing_tiles, "FULL")
+        if bool(force_full_price_refresh):
+            clear_full_price_estimate_cache()
         existing_signature = ""
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        existing_signature = ""
-    if not full_pricing_tiles:
-        full_credits = 0.0
-    elif existing_signature == full_price_signature and not bool(force_full_price_refresh):
         try:
-            if deps.resolve_estimate_full_credits_key in scene:
-                full_credits = float(max(0.0, float(scene.get(deps.resolve_estimate_full_credits_key, 0.0) or 0.0)))
+            existing_signature = str(scene.get(_FULL_PRICE_SIGNATURE_KEY, "") or "")
         except recoverable_exceptions:
-            full_credits = None
+            existing_signature = ""
         except (RuntimeError, TypeError, ValueError, AttributeError):
-            full_credits = None
+            existing_signature = ""
+        if not full_pricing_tiles:
+            full_credits = 0.0
+        elif existing_signature == full_price_signature and not bool(force_full_price_refresh):
+            try:
+                if deps.resolve_estimate_full_credits_key in scene:
+                    full_credits = float(max(0.0, float(scene.get(deps.resolve_estimate_full_credits_key, 0.0) or 0.0)))
+            except recoverable_exceptions:
+                full_credits = None
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                full_credits = None
     if full_credits is None and bool(include_full_price):
         if bool(async_full_price):
             _schedule_async_full_price_estimate(scene, runtime, full_pricing_tiles, full_price_signature)
@@ -2231,12 +2244,15 @@ def update_resolve_size_estimates(
 
     try:
         scene[resolve_estimate_full_bytes_key] = int(max(0, int(full_bytes)))
+        scene["planetka_resolve_estimate_balanced_bytes"] = int(max(0, int(balanced_bytes)))
         scene[resolve_estimate_preview_bytes_key] = int(max(0, int(preview_bytes)))
         scene["planetka_resolve_estimate_full_available_bytes"] = int(max(0, int(full_available_bytes)))
+        scene["planetka_resolve_estimate_balanced_available_bytes"] = int(max(0, int(balanced_available_bytes)))
         scene["planetka_resolve_estimate_preview_available_bytes"] = int(max(0, int(preview_available_bytes)))
         scene["planetka_resolve_estimate_full_download_bytes"] = int(max(0, int(full_download_bytes)))
+        scene["planetka_resolve_estimate_balanced_download_bytes"] = int(max(0, int(balanced_download_bytes)))
         scene["planetka_resolve_estimate_preview_download_bytes"] = int(max(0, int(preview_download_bytes)))
-        scene[_REGION_OFFER_PRICING_TILES_KEY] = "|".join(str(tile) for tile in full_pricing_tiles[:256])
+        scene[_REGION_OFFER_PRICING_TILES_KEY] = "|".join(str(tile) for tile in list(full_pricing_tiles)[:256])
         scene[_FULL_PRICE_SIGNATURE_KEY] = str(full_price_signature or "")
         if full_price_pending:
             scene[_FULL_PRICE_PENDING_KEY] = True
@@ -2264,7 +2280,7 @@ def get_resolve_size_estimates(scene=None, runtime=None):
     resolve_estimate_full_bytes_key = deps.resolve_estimate_full_bytes_key
     resolve_estimate_preview_bytes_key = deps.resolve_estimate_preview_bytes_key
     if target_scene is None:
-        return {"FULL": None, "PREVIEW": None}
+        return {"FULL": None, "BALANCED": None, "PREVIEW": None}
 
     def _read_int(key):
         try:
@@ -2298,13 +2314,17 @@ def get_resolve_size_estimates(scene=None, runtime=None):
 
     return {
         "FULL": _read_int(resolve_estimate_full_bytes_key),
+        "BALANCED": _read_int("planetka_resolve_estimate_balanced_bytes"),
         "PREVIEW": _read_int(resolve_estimate_preview_bytes_key),
         "FULL_AVAILABLE": _read_int("planetka_resolve_estimate_full_available_bytes"),
+        "BALANCED_AVAILABLE": _read_int("planetka_resolve_estimate_balanced_available_bytes"),
         "PREVIEW_AVAILABLE": _read_int("planetka_resolve_estimate_preview_available_bytes"),
         "FULL_DOWNLOAD": _read_int("planetka_resolve_estimate_full_download_bytes"),
+        "BALANCED_DOWNLOAD": _read_int("planetka_resolve_estimate_balanced_download_bytes"),
         "PREVIEW_DOWNLOAD": _read_int("planetka_resolve_estimate_preview_download_bytes"),
         "FULL_CREDITS": _read_float(deps.resolve_estimate_full_credits_key),
         "FULL_CREDITS_PENDING": _read_bool(_FULL_PRICE_PENDING_KEY),
+        "BALANCED_CREDITS": 0.0,
         "PREVIEW_CREDITS": _read_float(deps.resolve_estimate_preview_credits_key),
     }
 

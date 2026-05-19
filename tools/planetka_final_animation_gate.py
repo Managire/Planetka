@@ -46,6 +46,15 @@ STATE = {
     "temp_dirs": [],
 }
 
+_FIXTURE_TILE_IDS = (
+    "x000_y000_z180_d720",
+    "x180_y000_z180_d720",
+    "x000_y000_z180_d360",
+    "x180_y000_z180_d360",
+    "x000_y000_z180_d180",
+    "x180_y000_z180_d180",
+)
+
 
 def _log(message):
     print(f"{TAG} {message}", flush=True)
@@ -97,6 +106,24 @@ def _enable_module():
                 return mod
         except TOOL_RECOVERABLE_EXCEPTIONS:
             continue
+
+    parent_dir = os.path.dirname(_REPO_ROOT)
+    package_name = os.path.basename(_REPO_ROOT)
+    if parent_dir and parent_dir not in sys.path:
+        sys.path.insert(0, parent_dir)
+    try:
+        module = importlib.import_module(package_name)
+        if hasattr(module, "register"):
+            try:
+                module.unregister()
+            except TOOL_RECOVERABLE_EXCEPTIONS:
+                pass
+            module.register()
+        if hasattr(bpy.ops, "planetka") and hasattr(bpy.ops.planetka, "add_earth"):
+            _log(f"Enabled addon package from checkout: {package_name}")
+            return package_name
+    except TOOL_RECOVERABLE_EXCEPTIONS:
+        pass
     _fail(f"Could not enable Planetka module. Tried: {', '.join(candidates)}")
 
 
@@ -116,6 +143,20 @@ def _import_submodule(base_module_name, submodule_name):
         except TOOL_RECOVERABLE_EXCEPTIONS:
             continue
     _fail(f"Could not import submodule '{submodule_name}'. Tried: {', '.join(candidates)}")
+
+
+def _force_hermetic_local_texture_mode(r2_source_module):
+    """Force LOCAL texture-source mode for this offline render gate."""
+    if r2_source_module is None:
+        return
+    try:
+        if hasattr(r2_source_module, "get_unsupported_texture_source_mode"):
+            r2_source_module.get_unsupported_texture_source_mode = lambda: "LOCAL"
+        reset_fn = getattr(r2_source_module, "reset_config_cache", None)
+        if callable(reset_fn):
+            reset_fn()
+    except TOOL_RECOVERABLE_EXCEPTIONS:
+        pass
 
 
 def _purge_existing_planetka_data():
@@ -168,6 +209,8 @@ def _make_texture_source_tree(base_dir):
         _assert(source.is_file(), f"Missing bundled fallback texture sample: {source}")
         folder = base / folder_name
         folder.mkdir(parents=True, exist_ok=True)
+        for tile_id in _FIXTURE_TILE_IDS:
+            shutil.copyfile(source, folder / f"{prefix}{tile_id}{ext}")
         shutil.copyfile(source, folder / f"{prefix}x000_y000_z360_d360{ext}")
         shutil.copyfile(source, folder / f"{prefix}x180_y000_z180_d180{ext}")
     (base / "PO").mkdir(parents=True, exist_ok=True)
@@ -361,10 +404,10 @@ def _start_final_animation_case(scene, props, animation_tools, engine_id, output
     props.anim_camera_preset = "ZOOM"
     props.anim_frame_start = 1
     props.anim_frame_end = 3
-    props.anim_end_altitude_km = 80.0
+    props.anim_end_altitude_km = 25000.0
     props.anim_zoom_rotate_degrees = 0.0
     props.anim_motion_curve = "LINEAR"
-    props.nav_altitude_km = 30.0
+    props.nav_altitude_km = 30000.0
     props.nav_tilt_deg = 65.0
     apply_result = bpy.ops.planetka.navigation_apply_shot()
     _assert("FINISHED" in apply_result, f"navigation_apply_shot failed before {engine_id} render: {apply_result}")
@@ -488,6 +531,8 @@ def main():
         extension_prefs = _import_submodule(module_name, "extension_prefs")
         state = _import_submodule(module_name, "state")
         animation_tools = _import_submodule(module_name, "animation_tools")
+        r2_source = _import_submodule(module_name, "r2_source")
+        _force_hermetic_local_texture_mode(r2_source)
 
         _purge_existing_planetka_data()
         scene = bpy.context.scene

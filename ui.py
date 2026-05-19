@@ -12,6 +12,7 @@ from .auth import (
     allows_texture_quality_for_context,
     get_cached_cloud_connection_status,
     get_cloud_connection_status,
+    get_account_tier,
     get_connected_email,
     get_status_message,
     is_authenticated,
@@ -236,9 +237,11 @@ def _fmt_bytes(value):
         size = float(value or 0.0)
     except (TypeError, ValueError):
         size = 0.0
+    if size >= 1024.0 ** 4:
+        return f"{size / (1024.0 ** 4):,.0f} TB"
     if size >= 1024.0 ** 3:
-        return f"{size / (1024.0 ** 3):,.2f} GB"
-    return f"{size / (1024.0 ** 2):,.2f} MB"
+        return f"{size / (1024.0 ** 3):,.0f} GB"
+    return f"{size / (1024.0 ** 2):,.0f} MB"
 
 
 def _fmt_eur(value):
@@ -305,6 +308,8 @@ def _normalize_texture_quality_for_ui(value):
     token = str(value or "").strip().upper()
     if token == "FULL":
         return "FULL"
+    if token == "BALANCED":
+        return "BALANCED"
     if token == "PREVIEW":
         return "PREVIEW"
     return ""
@@ -313,7 +318,9 @@ def _normalize_texture_quality_for_ui(value):
 def _last_visible_texture_quality_label(scene):
     mode = _last_visible_texture_quality_mode(scene)
     if mode == "FULL":
-        return "Full Quality"
+        return "Full"
+    if mode == "BALANCED":
+        return "Balanced"
     return "Preview"
 
 
@@ -332,7 +339,9 @@ def _last_visible_texture_quality_mode(scene):
                 mode = _normalize_texture_quality_for_ui(getattr(props, "texture_quality_mode", ""))
             except (AttributeError, RuntimeError, TypeError, ValueError):
                 mode = ""
-    return "FULL" if mode == "FULL" else "PREVIEW"
+    if mode in {"PREVIEW", "BALANCED", "FULL"}:
+        return mode
+    return "PREVIEW"
 
 
 def _is_planetka_camera_object(camera):
@@ -778,7 +787,7 @@ def _quality_progress_factor(mode, download_state, displayed_mode, estimate_byte
         "FINALIZING",
         "FINALIZE_QUEUED",
     }
-    if actual_download_active and state_mode in {"PREVIEW", "FULL"}:
+    if actual_download_active and state_mode in {"PREVIEW", "BALANCED", "FULL"}:
         if state_mode == mode_key:
             downloaded_bytes, total_bytes, _state_active = _quality_progress_values(
                 mode,
@@ -797,14 +806,23 @@ def _quality_progress_factor(mode, download_state, displayed_mode, estimate_byte
 def _draw_quality_meta_row(layout, progress_text, usage_label=""):
     if not str(usage_label or "").strip():
         row = layout.row(align=True)
-        row.label(text=str(progress_text or "-"), icon="DISK_DRIVE")
+        row.label(text=str(progress_text or "-"))
         return
     row = layout.split(factor=0.68, align=True)
     left = row.row(align=True)
-    left.label(text=str(progress_text or "-"), icon="DISK_DRIVE")
+    left.label(text=str(progress_text or "-"))
     right = row.row(align=True)
     right.alignment = 'RIGHT'
     right.label(text=str(usage_label or ""))
+
+
+def _quality_total_size_label(estimate_bytes):
+    if estimate_bytes is None:
+        return "Calculating size"
+    try:
+        return _fmt_bytes(int(max(0, int(estimate_bytes))))
+    except (TypeError, ValueError):
+        return "Calculating size"
 
 
 def _earth_radius_bu_for_ui(scene):
@@ -1221,100 +1239,6 @@ def _draw_addon_update_controls(layout):
             message_box.label(text="Restart Blender to finish the update.", icon="INFO")
 
 
-def _draw_licenced_download_controls(layout, prefs):
-    try:
-        from .credit_api import get_unlocked_download_progress
-        unlocked_progress = get_unlocked_download_progress()
-    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-        unlocked_progress = {}
-    if unlocked_progress and (
-        bool(unlocked_progress.get("active", False))
-        or str(unlocked_progress.get("status", "") or "").upper() in {"FINISHED", "CANCELLED", "ERROR"}
-    ):
-        progress_box = layout.box()
-        status = str(unlocked_progress.get("status", "") or "").upper()
-        message = str(unlocked_progress.get("message", "") or "").strip() or "Licenced tile download"
-        progress_box.label(text=message, icon="IMPORT")
-        total_bytes = int(unlocked_progress.get("total_bytes", 0) or 0)
-        downloaded_bytes = int(unlocked_progress.get("downloaded_bytes", 0) or 0)
-        total_files = int(unlocked_progress.get("total_files", 0) or 0)
-        downloaded_files = int(unlocked_progress.get("downloaded_files", 0) or 0)
-        selected_tiles = int(unlocked_progress.get("selected_tiles", 0) or 0)
-        skipped_existing_files = int(unlocked_progress.get("skipped_existing_files", 0) or 0)
-        missing_files = int(unlocked_progress.get("missing_files", 0) or 0)
-        factor = 0.0
-        if total_bytes > 0:
-            factor = max(0.0, min(1.0, float(downloaded_bytes) / float(total_bytes)))
-        elif status == "FINISHED":
-            factor = 1.0
-        if total_bytes > 0:
-            progress_text = f"{_fmt_bytes(downloaded_bytes)} / {_fmt_bytes(total_bytes)}"
-        elif status == "FINISHED" and total_files <= 0 and skipped_existing_files > 0:
-            progress_text = "No download needed"
-        elif total_files > 0:
-            progress_text = "Size unavailable"
-        else:
-            progress_text = "No files to download"
-        progress_box.progress(
-            factor=factor,
-            type='BAR',
-            text=progress_text,
-        )
-        if total_files > 0:
-            files_text = f"{_fmt_int(downloaded_files)} / {_fmt_int(total_files)} files"
-        elif skipped_existing_files > 0:
-            files_text = f"{skipped_existing_files} files already present"
-        else:
-            files_text = "No files to download"
-        progress_box.label(text=files_text, icon="FILE")
-        if selected_tiles > 0:
-            progress_box.label(text=f"{selected_tiles} licenced tiles selected", icon="TEXTURE")
-        if total_files > 0 and skipped_existing_files > 0:
-            progress_box.label(text=f"{skipped_existing_files} files already present", icon="CHECKMARK")
-        if missing_files > 0:
-            progress_box.label(text=f"{missing_files} files missing", icon="ERROR")
-        if status == "ERROR" and str(unlocked_progress.get("error", "") or "").strip():
-            error_row = progress_box.row(align=True)
-            error_row.alert = True
-            error_row.label(text=str(unlocked_progress.get("error", "") or ""), icon="ERROR")
-        if bool(unlocked_progress.get("active", False)):
-            progress_box.operator("planetka.account_cancel_unlocked_download", text="Cancel Download", icon="CANCEL")
-
-    if BETA_DISABLE_FULL_QUALITY_DATA_DOWNLOADS:
-        beta_box = layout.box()
-        beta_box.label(text="Not available in Beta", icon="INFO")
-        download_row = layout.row()
-        download_row.enabled = False
-        download_row.operator("planetka.account_download_unlocked_tiles", text="Download Licenced Data", icon="IMPORT")
-        local_row = layout.row()
-        local_row.enabled = False
-    else:
-        layout.operator("planetka.account_download_unlocked_tiles", text="Download Licenced Data", icon="IMPORT")
-        local_row = layout.row()
-    local_row.prop(prefs, "local_texture_source_path", text="Local Source")
-    local_notice = get_local_source_stale_notice()
-    if local_notice:
-        notice_row = layout.row(align=True)
-        notice_row.alert = True
-        notice_row.label(text=local_notice, icon="INFO")
-
-
-def _load_relevant_region_pack_offers(scene):
-    try:
-        from .planetka_runtime.view_telemetry import get_cached_region_pack_offers
-        offer_payload = get_cached_region_pack_offers(scene=scene)
-        offers = list(offer_payload.get("offers", ()) or ()) if isinstance(offer_payload, dict) else []
-        status = str(offer_payload.get("status", "") or "").strip().upper() if isinstance(offer_payload, dict) else ""
-        message = str(offer_payload.get("message", "") or "").strip() if isinstance(offer_payload, dict) else ""
-    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed drawing cached Full Quality Data Packs", exc_info=True)
-        offers = []
-        status = ""
-        message = ""
-    offers = [offer for offer in offers if isinstance(offer, dict) and bool(offer.get("ok", True))]
-    return offers, status, message
-
-
 def _offer_is_licensable(offer):
     if not isinstance(offer, dict):
         return False
@@ -1334,150 +1258,6 @@ def _offer_is_licensable(offer):
 
 def _has_active_camera(scene):
     return bool(scene is not None and getattr(scene, "camera", None) is not None)
-
-
-def _maybe_schedule_relevant_region_pack_refresh(scene, status):
-    if not _has_active_camera(scene):
-        return False
-    if str(status or "").strip().upper() == "LOADING":
-        return False
-    now = time.time()
-    try:
-        last_refresh = float(scene.get(REGION_PACK_UI_REFRESH_LAST_AT_KEY, 0.0) or 0.0)
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        last_refresh = 0.0
-    if now - last_refresh < REGION_PACK_UI_REFRESH_INTERVAL_SEC:
-        return False
-    try:
-        from .planetka_runtime.view_telemetry import camera_signature, schedule_region_pack_offer_refresh
-        signature = camera_signature(scene)
-        if signature is None:
-            return False
-        scene[REGION_PACK_UI_REFRESH_LAST_AT_KEY] = now
-        return bool(
-            schedule_region_pack_offer_refresh(
-                scene,
-                camera_signature_value=signature,
-                delay_seconds=0.2,
-                force=True,
-            )
-        )
-    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed scheduling Relevant Data Packs refresh from UI", exc_info=True)
-    return False
-
-
-def _draw_product_catalog_button(layout):
-    row = layout.row(align=True)
-    row.operator("planetka.open_region_pack_catalog", text="Product Catalog", icon="URL")
-
-
-def _draw_broader_region_offers(layout, scene, active_view_scope=False):
-    offers, status, message = _load_relevant_region_pack_offers(scene)
-    offers = [offer for offer in offers if _offer_is_licensable(offer)]
-    if not offers:
-        if not _has_active_camera(scene):
-            layout.label(text="Active Camera needed to list options.", icon="CAMERA_DATA")
-        elif status == "LOADING":
-            layout.label(text="Updating relevant packs...", icon="TIME")
-        elif status == "ERROR":
-            layout.label(text=message or "Relevant pack update failed.", icon="ERROR")
-        else:
-            if _maybe_schedule_relevant_region_pack_refresh(scene, status):
-                layout.label(text="Updating relevant packs...", icon="TIME")
-        _draw_product_catalog_button(layout)
-        return
-    for offer in offers[:8]:
-        name = str(offer.get("name", "") or offer.get("region_pack_name", "") or "Data Pack").strip()
-        region_id = str(offer.get("id", "") or offer.get("region_pack_id", "") or "").strip()
-        if not name or not region_id:
-            continue
-        try:
-            discount = max(0, int(offer.get("discount_percent", 0) or 0))
-        except (TypeError, ValueError):
-            discount = 0
-        try:
-            price = max(0.0, float(offer.get("price_eur", offer.get("credits", 0.0)) or 0.0))
-        except (TypeError, ValueError):
-            price = 0.0
-        try:
-            gross = max(0.0, float(offer.get("full_price_eur", offer.get("gross_eur", offer.get("gross_price_eur", 0.0))) or 0.0))
-        except (TypeError, ValueError):
-            gross = 0.0
-        try:
-            new_tiles = max(
-                0,
-                int(offer.get("unlicenced_tile_count", offer.get("new_tile_count", offer.get("paid_tile_count", 0))) or 0),
-            )
-        except (TypeError, ValueError):
-            new_tiles = 0
-        try:
-            total_tiles = max(0, int(offer.get("tile_count", 0) or 0))
-        except (TypeError, ValueError):
-            total_tiles = 0
-        try:
-            already_licenced_count = max(0, int(offer.get("already_licenced_tile_count", 0) or 0))
-        except (TypeError, ValueError):
-            already_licenced_count = 0
-        try:
-            already_licenced_saving = max(0.0, float(offer.get("already_licenced_deduction_eur", offer.get("already_licenced_saving_eur", 0.0)) or 0.0))
-        except (TypeError, ValueError):
-            already_licenced_saving = 0.0
-        try:
-            partial_licence_count = max(0, int(offer.get("partial_licence_tile_count", 0) or 0))
-        except (TypeError, ValueError):
-            partial_licence_count = 0
-        try:
-            partial_licence_credit = max(0.0, float(offer.get("partial_licence_credit_eur", 0.0) or 0.0))
-        except (TypeError, ValueError):
-            partial_licence_credit = 0.0
-        try:
-            discount_eur = max(0.0, float(offer.get("discount_eur", 0.0) or 0.0))
-        except (TypeError, ValueError):
-            discount_eur = 0.0
-        countries = offer.get("included_countries", ())
-        included_countries = (
-            "|".join(dict.fromkeys(str(country).strip() for country in countries if str(country).strip()))
-            if isinstance(countries, (list, tuple))
-            else str(countries or "")
-        )
-        fully_licenced = bool(price <= 0 and new_tiles <= 0)
-        action_row = layout.row(align=True)
-        action_row.alignment = 'EXPAND'
-        action_button = action_row.row(align=True)
-        action_button.alignment = 'LEFT'
-        action_button.enabled = not fully_licenced
-        action = action_button.operator(
-            "planetka.open_credit_checkout",
-            text=(
-                "Already Licenced"
-                if fully_licenced
-                else (f"{name} (Free)" if price <= 0 else f"{name} ({_fmt_eur(price)})")
-            ),
-            icon=("CHECKMARK" if price <= 0 else "URL"),
-        )
-        action.checkout_option = "REGION_PACK"
-        action.region_pack_id = region_id
-        action.region_pack_name = name
-        action.quote_id = str(offer.get("quote_id", "") or offer.get("quoteId", "") or "")
-        action.included_countries = included_countries
-        info = action_row.operator("planetka.region_pack_info", text="", icon="INFO")
-        info.region_pack_id = region_id
-        info.region_pack_name = name
-        info.quote_id = str(offer.get("quote_id", "") or offer.get("quoteId", "") or "")
-        info.included_countries = included_countries
-        info.new_tile_count = int(new_tiles)
-        info.total_tile_count = int(total_tiles)
-        info.already_licenced_tile_count = int(already_licenced_count)
-        info.already_licenced_saving_eur = float(already_licenced_saving)
-        info.partial_licence_tile_count = int(partial_licence_count)
-        info.partial_licence_credit_eur = float(partial_licence_credit)
-        info.data_size_bytes = max(0, int(offer.get("data_size_bytes", 0) or 0))
-        info.full_price_eur = float(gross)
-        info.discount_percent = int(discount)
-        info.discount_eur = float(discount_eur)
-        info.price_eur = float(price)
-    _draw_product_catalog_button(layout)
 
 
 def _draw_account_panel(layout):
@@ -1557,9 +1337,17 @@ def _draw_account_panel(layout):
     status_row.alert = bool(authenticated and checked and not connected)
     status_row.label(text=status_text, icon=status_icon)
     layout.label(text=f"Account: {email or '-'}", icon="USER")
-    history_row = layout.row(align=True)
-    history_row.enabled = bool(authenticated)
-    history_row.operator("planetka.account_purchase_history", text="View Account & Purchase History", icon="URL")
+    try:
+        account_tier = str(get_account_tier(prefs) or "").strip().lower()
+    except (TypeError, ValueError, RuntimeError, AttributeError):
+        account_tier = ""
+    if account_tier == "professional":
+        account_type_label = "Professional"
+    elif account_tier == "personal":
+        account_type_label = "Personal (Free)"
+    else:
+        account_type_label = "-"
+    layout.label(text=f"Account type: {account_type_label}", icon="COMMUNITY")
 
     if authenticated and checked and not connected:
         warning_box = layout.box()
@@ -1587,15 +1375,11 @@ def _draw_account_panel(layout):
             (isinstance(preview_hold, dict) and preview_hold.get("held", False))
             or credit_payload.get("preview_fair_usage_held", False)
         )
-        licenced_data_box = layout.box()
-        licenced_data_box.label(text="Licenced Data", icon="IMPORT")
-        _draw_licenced_download_controls(licenced_data_box, prefs)
         if preview_hold_active:
             hold_box = layout.box()
             hold_row = hold_box.row(align=True)
             hold_row.alert = True
             hold_row.label(text="Preview downloads are temporarily paused.", icon="INFO")
-            hold_box.label(text="Full Quality licenced data remains available.", icon="CHECKMARK")
 
     if status_message:
         layout.label(text=status_message, icon="INFO")
@@ -1728,7 +1512,7 @@ def _draw_live_telemetry(layout, scene):
         header_row = quality_box.row(align=True)
         header_row.use_property_split = False
         header_row.use_property_decorate = False
-        header_row.label(text="Data Downloading", icon="TEXTURE")
+        header_row.label(text="Textures Quality", icon="TEXTURE")
         header_toggle = header_row.row(align=True)
         header_toggle.alignment = 'RIGHT'
         header_toggle.scale_x = 1.1
@@ -1747,171 +1531,44 @@ def _draw_live_telemetry(layout, scene):
         if bool(download_state.get("active", False)) and active_quality_mode:
             displayed_quality_mode = active_quality_mode
 
-        try:
-            from .credit_api import get_cached_credit_account
-            credit_account = get_cached_credit_account()
-        except (AuthApiError, TypeError, ValueError, RuntimeError, AttributeError):
-            credit_account = {}
-        if not credit_account:
-            _schedule_sidebar_account_refresh(force=False)
-        world_full_quality_unlocked = bool(
-            isinstance(credit_account, dict)
-            and (
-                credit_account.get("world_full_quality_unlocked", False)
-                or str(credit_account.get("world_full_quality_unlocked_at", "") or "").strip()
-            )
-        )
         selected_auto_quality = _normalize_texture_quality_for_ui(getattr(props, "texture_quality_mode", "PREVIEW"))
+        if not selected_auto_quality:
+            selected_auto_quality = "PREVIEW"
 
-        preview_box = quality_box.box()
-        preview_col = preview_box.column(align=True)
-        preview_col.label(text="Personal use", icon="USER")
-        preview_estimate_bytes = _estimate_bytes_for_quality(estimates, "PREVIEW")
-        preview_available_bytes = _estimate_available_bytes_for_quality(estimates, "PREVIEW")
-        preview_factor = _quality_progress_factor(
-            "PREVIEW",
-            download_state,
-            displayed_quality_mode,
-            estimate_bytes=preview_estimate_bytes,
-            estimate_available_bytes=preview_available_bytes,
+        qualities = (
+            ("PREVIEW", "Preview", "HIDE_OFF"),
+            ("BALANCED", "Balanced", "MOD_SUBSURF"),
+            ("FULL", "Full", "IMPORT"),
         )
-        if preview_factor is not None and hasattr(preview_col, "progress"):
-            preview_col.progress(
-                factor=preview_factor,
-                type='BAR',
-                text="Preview",
-            )
-        else:
-            preview_col.operator(
-                "planetka.set_texture_quality_and_resolve",
-                text="Preview",
-                icon="HIDE_OFF",
-                depress=(selected_auto_quality == "PREVIEW" and displayed_quality_mode == "PREVIEW"),
-            ).texture_quality_mode = "PREVIEW"
-        _draw_quality_meta_row(
-            preview_col,
-            _quality_progress_label(
-                "PREVIEW",
-                preview_estimate_bytes,
-                preview_available_bytes,
+        button_row = quality_box.row(align=True)
+        for mode_key, label, icon in qualities:
+            mode_col = button_row.column(align=True)
+            estimate_bytes = _estimate_bytes_for_quality(estimates, mode_key)
+            available_bytes = _estimate_available_bytes_for_quality(estimates, mode_key)
+            factor = _quality_progress_factor(
+                mode_key,
                 download_state,
                 displayed_quality_mode,
-            ),
-        )
-
-        quick_preview_prepared = _is_animation_prepared(scene)
-        active_view_scope = _is_active_view_resolve_scope(scene)
-        full_allowed = allows_texture_quality_for_context(prefs=prefs, source=props, requested_mode="FULL")
-        full_size_known = False
-        full_price_known = False
-        try:
-            full_size_known = estimates.get("FULL") is not None
-            full_price_known = estimates.get("FULL_CREDITS") is not None
-        except (AttributeError, TypeError, ValueError):
-            full_size_known = False
-            full_price_known = False
-        try:
-            full_credits = float(estimates.get("FULL_CREDITS", 0.0) or 0.0)
-        except (AttributeError, TypeError, ValueError):
-            full_credits = 0.0
-        if world_full_quality_unlocked:
-            full_price_known = True
-            full_credits = 0.0
-        if not full_size_known:
-            full_allowed = False
-        full_has_new_cost = bool(full_price_known and full_credits > 0.000001)
-        if quick_preview_prepared:
-            full_allowed = False
-        if active_view_scope:
-            full_allowed = False
-        full_routes_to_scene_checkout = bool(
-            full_allowed
-            and full_has_new_cost
-            and displayed_quality_mode != "FULL"
-        )
-
-        full_box = quality_box.box()
-        full_box.label(text="Commercial use", icon="SOLO_ON")
-        full_button_row = full_box.row(align=True)
-        full_button_row.scale_y = 1.1
-        full_estimate_bytes = _estimate_bytes_for_quality(estimates, "FULL")
-        full_available_bytes = _estimate_available_bytes_for_quality(estimates, "FULL")
-        full_factor = _quality_progress_factor(
-            "FULL",
-            download_state,
-            displayed_quality_mode,
-            estimate_bytes=full_estimate_bytes,
-            estimate_available_bytes=full_available_bytes,
-        )
-        full_button_label = "Full Quality"
-        if full_price_known and full_has_new_cost and not active_view_scope and full_factor is None and displayed_quality_mode != "FULL":
-            full_button_label = f"Full Quality ({_estimate_eur_label('FULL')})"
-        full_download = full_button_row.row(align=True)
-        full_download.enabled = bool(full_allowed)
-        if full_factor is not None and hasattr(full_download, "progress"):
-            full_download.enabled = True
-            full_download.progress(
-                factor=full_factor,
-                type='BAR',
-                text=full_button_label,
+                estimate_bytes=estimate_bytes,
+                estimate_available_bytes=available_bytes,
             )
-        elif full_routes_to_scene_checkout:
-            full_download.operator(
-                "planetka.open_credit_checkout",
-                text=full_button_label,
-                icon="URL",
-            ).checkout_option = "SCENE"
-        else:
-            full_download.operator(
-                "planetka.set_texture_quality_and_resolve",
-                text=full_button_label,
-                icon="IMPORT",
-                depress=(displayed_quality_mode == "FULL"),
-            ).texture_quality_mode = "FULL"
-        full_details = full_button_row.row(align=True)
-        full_details.enabled = bool(full_size_known)
-        full_details.operator(
-            "planetka.data_cost_breakdown",
-            text="",
-            icon="INFO",
-        ).texture_quality_mode = "FULL"
-        _draw_quality_meta_row(
-            full_box,
-            _quality_progress_label(
-                "FULL",
-                full_estimate_bytes,
-                full_available_bytes,
-                download_state,
-                displayed_quality_mode,
-            ),
-        )
-        if active_view_scope:
-            camera_view_row = full_box.row(align=True)
-            camera_view_row.label(text="Full Quality uses Camera View.", icon="CAMERA_DATA")
-            camera_view_row.operator(
-                "planetka.navigation_use_current_view",
-                text="Bring Camera",
-                icon="CAMERA_DATA",
+            if factor is not None and hasattr(mode_col, "progress"):
+                mode_col.progress(
+                    factor=factor,
+                    type='BAR',
+                    text=label,
+                )
+            else:
+                mode_col.operator(
+                    "planetka.set_texture_quality_and_resolve",
+                    text=label,
+                    icon=icon,
+                    depress=(selected_auto_quality == mode_key),
+                ).texture_quality_mode = mode_key
+            _draw_quality_meta_row(
+                mode_col,
+                _quality_total_size_label(estimate_bytes),
             )
-        if quick_preview_prepared:
-            estimate_notice = full_box.row(align=True)
-            estimate_notice.label(text="Clear Quick Preview before downloading Full Quality.", icon="INFO")
-        elif active_view_scope:
-            estimate_notice = full_box.row(align=True)
-            estimate_notice.label(text="Bring Camera to this view before using Full Quality.", icon="INFO")
-        elif not full_size_known:
-            estimate_notice = full_box.row(align=True)
-            estimate_notice.label(text="Calculating scene data size.", icon="INFO")
-        data_packs_box = _draw_collapsible_subsection(
-            quality_box,
-            scene,
-            "Relevant Data Packs",
-            "WORLD_DATA",
-            DATA_CONTROL_MORE_OPTIONS_SECTION_OPEN_KEY,
-            default_open=False,
-        )
-        if data_packs_box is not None:
-            _draw_broader_region_offers(data_packs_box, scene, active_view_scope=active_view_scope)
 
     throttle_message = str(get_status_message(prefs) or "").strip()
     if throttle_message and "throttl" in throttle_message.lower():
@@ -2493,7 +2150,7 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             )
 
 class PLANETKA_PT_LiveTelemetryPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Data Control"
+    bl_label = "Textures Quality"
     bl_idname = "PLANETKA_PT_live_telemetry"
     bl_order = 9001
     bl_options = set()
@@ -2510,7 +2167,7 @@ class PLANETKA_PT_LiveTelemetryPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
 
 class PLANETKA_PT_LiveTelemetryPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Data Control"
+    bl_label = "Textures Quality"
     bl_idname = "PLANETKA_PT_live_telemetry_collapsed"
     bl_order = 9001
     bl_options = {'DEFAULT_CLOSED'}
@@ -2528,7 +2185,7 @@ class PLANETKA_PT_LiveTelemetryPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.type
 
 
 class PLANETKA_PT_LiveTelemetryPanelFailure(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Data Control"
+    bl_label = "Textures Quality"
     bl_idname = "PLANETKA_PT_live_telemetry_failure"
     bl_order = 9001
     bl_options = set()
@@ -2898,64 +2555,15 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             source=props,
             requested_mode=selected_final_quality,
         )
-        try:
-            anim_price_known = bool(
-                scene.get(
-                    ANIMATION_STATS_PRICE_KNOWN_KEY,
-                    ANIMATION_STATS_CREDITS_KEY in scene or ANIMATION_STATS_LEGACY_CREDITS_KEY in scene,
-                )
-            )
-            anim_credits = float(
-                scene.get(
-                    ANIMATION_STATS_CREDITS_KEY,
-                    scene.get(ANIMATION_STATS_LEGACY_CREDITS_KEY, 0.0),
-                ) or 0.0
-            )
-            anim_paid_tiles = int(
-                scene.get(
-                    ANIMATION_STATS_NEW_TILE_COUNT_KEY,
-                    scene.get(ANIMATION_STATS_LEGACY_NEW_TILE_COUNT_KEY, 0),
-                ) or 0
-            )
-            anim_tile_price = float(scene.get(ANIMATION_STATS_TILE_PRICE_KEY, anim_credits) or 0.0)
-            anim_custom_licence = float(scene.get(ANIMATION_STATS_CUSTOM_LICENCE_KEY, 0.0) or 0.0)
-        except (TypeError, ValueError, RuntimeError, AttributeError):
-            anim_price_known = False
-            anim_credits = 0.0
-            anim_paid_tiles = 0
-            anim_tile_price = 0.0
-            anim_custom_licence = 0.0
-        if not anim_price_known:
-            final_render_allowed = False
-        if not anim_price_known:
-            final_render_box.label(text="Animation price is not available yet. Generate keyframes or refresh pricing.", icon="INFO")
         if _is_animation_render_running():
             runtime, runtime_code, runtime_text = _resolve_runtime_display(scene)
             _draw_resolve_download_indicator(final_render_box, scene, runtime, runtime_code, runtime_text)
 
-        render_row = final_render_box.row(align=True)
-        render_button_row = render_row.row(align=True)
+        render_button_row = final_render_box.row(align=True)
         render_button_row.scale_y = 1.2
         render_button_row.enabled = bool(final_render_allowed) and bool(earth_workflow_enabled)
-        if anim_price_known and anim_credits > 0.000001:
-            render_button_row.operator(
-                "planetka.animation_checkout",
-                text=f"Render Animation (€{anim_credits:,.2f})",
-                icon="URL",
-            )
-        else:
-            render_button_row.operator(
-                "planetka.animation_render",
-                text="Render Animation" if anim_credits <= 0.000001 else f"Render Animation (€{anim_credits:,.2f})",
-                icon="RENDER_ANIMATION",
-            )
-        render_info_row = render_row.row(align=True)
-        render_info_row.scale_y = 1.2
-        render_info_row.enabled = bool(earth_workflow_enabled)
-        render_info_row.operator(
-            "planetka.animation_render_cost_breakdown",
-            text="",
-            icon="INFO",
+        render_button_row.operator(
+            "planetka.animation_render",
+            text="Render Animation",
+            icon="RENDER_ANIMATION",
         )
-        if not final_render_allowed and anim_price_known and not (anim_credits > 0.000001):
-            final_render_box.label(text="Final Animation Render uses already licenced Full Quality tiles.", icon="INFO")

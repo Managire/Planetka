@@ -65,7 +65,7 @@ MAX_SHADER_TILE_BUDGET = 12
 # Keep only real resolved tiles unless future renderer-safe padding is introduced.
 MIN_SHADER_TILE_FLOOR = 0
 SHADER_PAD_TILE_PREFIX = "__PKA_PAD_TILE"
-TEXTURE_QUALITY_MODES = {"FULL", "PREVIEW"}
+TEXTURE_QUALITY_MODES = {"FULL", "BALANCED", "PREVIEW"}
 VIEWPORT_RESOLUTION_X = 1920.0
 VIEWPORT_RESOLUTION_Y = 1080.0
 LAST_TILE_BUDGET_TRACE = []
@@ -2380,6 +2380,8 @@ def _apply_texture_quality_mode(tiles, scene, override_mode=None):
     result = list(tiles or [])
     if mode == "PREVIEW":
         result = _coarsen_tiles_n_d_levels(tiles, 2)
+    elif mode == "BALANCED":
+        result = _coarsen_tiles_n_d_levels(tiles, 1)
     return _sort_tiles_for_apply(result)
 
 
@@ -2387,9 +2389,11 @@ def _apply_fixed_z180_quality_targets(tiles, mode):
     # Fixed z180 texture-quality targets regardless of camera altitude/distance.
     # As soon as a z180 tile is used, enforce:
     # - Preview  -> d720
+    # - Balanced -> d360
     # - Full     -> d180
     target_by_mode = {
         "PREVIEW": 720,
+        "BALANCED": 360,
         "FULL": 180,
     }
     target_d = int(target_by_mode.get(str(mode or "").strip().upper(), 720))

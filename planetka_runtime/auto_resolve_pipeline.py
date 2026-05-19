@@ -276,8 +276,6 @@ def _ctx_auto_resolve_texture_quality_mode(
     texture_quality_mode_override=None,
 ):
     deps = ctx.deps
-    if not bool(manual_request):
-        return "PREVIEW"
     try:
         override_text = str(texture_quality_mode_override or "").strip()
         requested_mode = deps.normalize_texture_quality_mode(
@@ -1230,12 +1228,6 @@ def _ctx_finalize_auto_resolve_apply(ctx, scene, scene_id, job, manual_request, 
             or latest_output_signature != job_output_signature
         ):
             deps.request_auto_resolve(scene, immediate=False, mark_dirty=True)
-    if not _is_active_view_resolve_signature(job_camera_signature):
-        _ctx_schedule_region_pack_offers_after_camera_view(
-            ctx,
-            scene,
-            camera_signature_value=latest_camera_signature,
-        )
     deps.resolve_trace(
         f"Shader update finished (request_id={deps.job_field(job, 'request_id')}, tiles={len(job_target_tiles)})"
     )
@@ -1749,7 +1741,7 @@ def _ctx_auto_resolve_update_size_estimation(ctx, scene, scope, active_view_sign
         base_path_for_estimate = ""
 
     full_tiles_override = None
-    include_full_price = estimation_scope == "CAMERA"
+    include_full_price = False
     try:
         deps.update_resolve_size_estimates(
             scene,
@@ -1782,26 +1774,6 @@ def _is_active_view_resolve_signature(signature):
         and len(signature) >= 1
         and str(signature[0] or "").strip().upper() == "ACTIVE_VIEW"
     )
-
-
-def _ctx_schedule_region_pack_offers_after_camera_view(ctx, scene, camera_signature_value=None):
-    deps = ctx.deps
-    if scene is None:
-        return False
-    signature = camera_signature_value if camera_signature_value is not None else deps.camera_signature(scene)
-    if signature is None or _is_active_view_resolve_signature(signature):
-        return False
-    try:
-        from .view_telemetry import schedule_region_pack_offer_refresh
-        return bool(schedule_region_pack_offer_refresh(
-            scene,
-            camera_signature_value=signature,
-        ))
-    except deps.recoverable_exceptions:
-        deps.logger.debug("Planetka: failed scheduling Full Quality Data Packs refresh", exc_info=True)
-    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-        deps.logger.debug("Planetka: failed scheduling Full Quality Data Packs refresh", exc_info=True)
-    return False
 
 
 def _ctx_arm_auto_resolve_noncritical_timer(ctx):

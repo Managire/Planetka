@@ -2,8 +2,12 @@ import { corsHeaders, json } from "./worker/responses.js";
 import {
   PLAN_CODE_FREE,
   isQualityModeAllowedForPlan,
+  isProfessionalPlan,
   normalizeQualityMode,
   normalizeRequestedPlan,
+  personalFreeLocationBlockedMessage,
+  personalFreeRegionForPoint,
+  personalFreeRegionForTileFileName,
   qualityModeNotAllowedMessage,
 } from "./worker/entitlements.js";
 import {
@@ -233,6 +237,7 @@ async function issueTileSessionToken(env, auth, requestedQualityMode, requestedR
     credit_protocol: String(options && options.creditProtocol || "").trim(),
     credit_enforced: creditEnforced,
     session_id: String(options && (options.sessionId || options.session_id) || "").trim(),
+    personal_free_region: String(options && (options.personalFreeRegion || options.personal_free_region) || "").trim(),
     auth_method: String(auth && auth.authMethod || "").trim(),
     device_id: String(auth && auth.deviceId || "").trim(),
     exp,
@@ -274,6 +279,7 @@ async function readTileSessionClaims(request, env) {
     creditProtocol: String(payload.credit_protocol || payload.creditProtocol || "").trim(),
     creditEnforced: Boolean(payload.credit_enforced || payload.creditEnforced),
     sessionId: String(payload.session_id || payload.sessionId || "").trim(),
+    personalFreeRegion: String(payload.personal_free_region || payload.personalFreeRegion || "").trim(),
     authMethod: String(payload.auth_method || "").trim(),
     deviceId: normalizeDeviceId(payload.device_id || ""),
   };
@@ -307,8 +313,12 @@ function parseTileQualityFromFileName(fileName) {
 
 function minimumPlanQualityForTile(fileName) {
   const parsed = parseTileQualityFromFileName(fileName);
-  if (!parsed || !Number.isFinite(parsed.d)) return "preview";
-  return Math.max(1, parsed.d) <= 3 ? "full" : "preview";
+  if (!parsed || !Number.isFinite(parsed.z) || !Number.isFinite(parsed.d)) return "preview";
+  const z = Math.max(1, Number(parsed.z) || 1);
+  const d = Math.max(1, Number(parsed.d) || 1);
+  if (d <= z) return "full";
+  if (d <= z * 2) return "balanced";
+  return "preview";
 }
 
 async function getPreviewFairUsageHoldForUser(db, userId) {
@@ -346,51 +356,15 @@ function isTileHotPathMonitoringEnabled(env = {}) {
   return parseBooleanFlag(env.ENABLE_TILE_HOT_PATH_MONITORING);
 }
 
-async function authorizeFullTileSession(request, env, body) {
-  if (!env.COMMERCE_WORKER || typeof env.COMMERCE_WORKER.fetch !== "function") {
-    return json(
-      {
-        ok: false,
-        error: "commerce_unavailable",
-        message: "Planetka payment and licence system is busy. Preview remains available. Try again in a few moments.",
-      },
-      503,
-      env,
-    );
-  }
-  const headers = new Headers(request.headers);
-  headers.set("Content-Type", "application/json; charset=utf-8");
-  headers.set("X-Planetka-Internal-Source", "tiles");
-  const forwarded = new Request(request.url, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body || {}),
-  });
-  try {
-    return await env.COMMERCE_WORKER.fetch(forwarded);
-  } catch (error) {
-    console.warn("planetka.tiles.commerce_session_failed", JSON.stringify({ error: String(error && error.message || "commerce_failed") }));
-    return json(
-      {
-        ok: false,
-        error: "commerce_overloaded",
-        message: "Planetka payment and licence system is busy. Preview remains available. Try again in a few moments.",
-      },
-      503,
-      env,
-    );
-  }
-}
-
 const TILE_DEPS = {
   PLAN_CODE_FREE,
-  authorizeFullTileSession,
   clampNonNegativeInt,
   createTileDownloadSession: null,
   dbGet,
   dbRun,
   getPreviewFairUsageHoldForUser,
   isQualityModeAllowedForPlan,
+  isProfessionalPlan,
   isTileEventQueueProducerEnabled,
   isTileHotPathMonitoringEnabled,
   issueTileSessionToken,
@@ -401,6 +375,9 @@ const TILE_DEPS = {
   normalizeQualityMode,
   normalizeRequestedPlan,
   normalizeResolveId,
+  personalFreeLocationBlockedMessage,
+  personalFreeRegionForPoint,
+  personalFreeRegionForTileFileName,
   normalizeTileKeys,
   nowIso,
   parseJson,

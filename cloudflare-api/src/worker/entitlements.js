@@ -1,4 +1,6 @@
 export const PLAN_CODE_FREE = "free";
+export const PLAN_CODE_PERSONAL = "personal";
+export const PLAN_CODE_PROFESSIONAL = "professional";
 
 const DEFAULT_DEVICE_LIMIT_EXEMPT_EMAILS = "tom.griger@gmail.com";
 
@@ -8,8 +10,11 @@ function normalizeEmail(value) {
 
 export function normalizeUserStatus(value) {
   const normalized = String(value || "").trim().toLowerCase();
-  if (normalized === PLAN_CODE_FREE) {
-    return PLAN_CODE_FREE;
+  if (["professional", "pro", "paid", "unlimited"].includes(normalized)) {
+    return PLAN_CODE_PROFESSIONAL;
+  }
+  if (["personal", PLAN_CODE_FREE, ""].includes(normalized)) {
+    return PLAN_CODE_PERSONAL;
   }
   return normalized;
 }
@@ -48,7 +53,7 @@ export function isBlockedStatus(statusValue) {
 
 export function normalizeRequestedPlan(value) {
   const normalized = normalizePlanCode(value);
-  return normalized === PLAN_CODE_FREE ? PLAN_CODE_FREE : PLAN_CODE_FREE;
+  return normalized === PLAN_CODE_PROFESSIONAL ? PLAN_CODE_PROFESSIONAL : PLAN_CODE_PERSONAL;
 }
 
 export function resolvePolicyPlanCode(user, env = {}) {
@@ -70,13 +75,17 @@ export function resolvePlanCode(user, env = {}) {
 export function normalizeQualityMode(value) {
   const safe = String(value || "").trim().toLowerCase();
   if (safe === "full") return "full";
+  if (safe === "balanced") return "balanced";
   return "preview";
 }
 
 export function isQualityModeAllowedForPlan(planCode, qualityMode) {
   void planCode;
   const safeMode = normalizeQualityMode(qualityMode);
-  return safeMode === "preview" || safeMode === "full";
+  if (safeMode === "preview" || safeMode === "balanced") {
+    return true;
+  }
+  return safeMode === "full";
 }
 
 export function qualityModeNotAllowedMessage(planCode, qualityMode) {
@@ -85,7 +94,97 @@ export function qualityModeNotAllowedMessage(planCode, qualityMode) {
   if (safeMode === "preview") {
     return "Preview quality is free.";
   }
-  return "Full Quality requires direct payment.";
+  if (safeMode === "balanced") {
+    return "Balanced quality is available to connected Planetka accounts.";
+  }
+  return "Full Quality requires a Professional account.";
+}
+
+export function isProfessionalPlan(planCode) {
+  return normalizeRequestedPlan(planCode) === PLAN_CODE_PROFESSIONAL;
+}
+
+const PERSONAL_FREE_REGION_BOXES = [
+  {
+    id: "new_zealand",
+    label: "New Zealand",
+    boxes: [
+      { latMin: -55, latMax: -29, lonMin: 156, lonMax: 180 },
+      { latMin: -55, latMax: -29, lonMin: -180, lonMax: -168 },
+    ],
+  },
+  {
+    id: "iceland",
+    label: "Iceland",
+    boxes: [
+      { latMin: 62, latMax: 68, lonMin: -26, lonMax: -11 },
+    ],
+  },
+];
+
+function normalizeLongitude(lon) {
+  const numeric = Number(lon);
+  if (!Number.isFinite(numeric)) return NaN;
+  let normalized = numeric;
+  while (normalized < -180) normalized += 360;
+  while (normalized > 180) normalized -= 360;
+  return normalized;
+}
+
+function pointInBox(lat, lon, box) {
+  return lat >= box.latMin && lat <= box.latMax && lon >= box.lonMin && lon <= box.lonMax;
+}
+
+function boxesIntersect(a, b) {
+  return a.latMin < b.latMax
+    && a.latMax > b.latMin
+    && a.lonMin < b.lonMax
+    && a.lonMax > b.lonMin;
+}
+
+export function personalFreeRegionForPoint(latValue, lonValue) {
+  const lat = Number(latValue);
+  const lon = normalizeLongitude(lonValue);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  for (const region of PERSONAL_FREE_REGION_BOXES) {
+    if (region.boxes.some((box) => pointInBox(lat, lon, box))) {
+      return { id: region.id, label: region.label };
+    }
+  }
+  return null;
+}
+
+function parsePlanetkaTileFileName(fileName) {
+  const match = /^(?:S2|EL|WT|PO)_x(\d+)_y(\d+)_z(\d+)_d(\d+)\.(?:exr|tif)$/i.exec(String(fileName || "").trim());
+  if (!match) return null;
+  const x = Number.parseInt(match[1], 10);
+  const y = Number.parseInt(match[2], 10);
+  const d = Number.parseInt(match[4], 10);
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(d) || d <= 0) {
+    return null;
+  }
+  const lonMin = Math.max(-180, x * d - 180);
+  const lonMax = Math.min(180, lonMin + d);
+  const latMax = Math.min(90, 90 - y * d);
+  const latMin = Math.max(-90, latMax - d);
+  return { latMin, latMax, lonMin, lonMax };
+}
+
+export function personalFreeRegionForTileFileName(fileName, expectedRegionId = "") {
+  const tileBox = parsePlanetkaTileFileName(fileName);
+  if (!tileBox) return null;
+  const expected = String(expectedRegionId || "").trim();
+  for (const region of PERSONAL_FREE_REGION_BOXES) {
+    if (expected && region.id !== expected) continue;
+    if (region.boxes.some((box) => boxesIntersect(tileBox, box))) {
+      return { id: region.id, label: region.label };
+    }
+  }
+  return null;
+}
+
+export function personalFreeLocationBlockedMessage() {
+  return "Personal accounts can stream Planetka free locations: New Zealand and Iceland. Upgrade to Professional for global access.";
 }
 
 export function accountTierForPlanCode(planCode) {
@@ -93,18 +192,17 @@ export function accountTierForPlanCode(planCode) {
 }
 
 export function planDisplayName(planCode) {
-  void planCode;
-  return "Free";
+  return normalizeRequestedPlan(planCode) === PLAN_CODE_PROFESSIONAL ? "Professional" : "Personal";
 }
 
 export function planAccessSummary(planCode) {
-  void planCode;
-  return "Preview is free. Full Quality is licenced through direct payment.";
+  return normalizeRequestedPlan(planCode) === PLAN_CODE_PROFESSIONAL
+    ? "Professional account: Preview, Balanced, and Full Quality streaming."
+    : "Personal account: Preview, Balanced, and Full Quality streaming in New Zealand and Iceland.";
 }
 
 export function resolvePlanPriority(planCode) {
-  void planCode;
-  return 0;
+  return normalizeRequestedPlan(planCode) === PLAN_CODE_PROFESSIONAL ? 10 : 0;
 }
 
 export function evaluateStripePlanPurchaseGuard(existingPlanCode, requestedPlanCode) {

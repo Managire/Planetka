@@ -119,7 +119,8 @@ export async function createTileDownloadSession(db, details = {}, deps = {}) {
   const id = String(details.id || crypto.randomUUID()).trim();
   const userId = String(details.userId || details.user_id || "").trim();
   const resolveId = String(details.resolveId || details.resolve_id || "").trim().slice(0, 128);
-  const qualityMode = String(details.qualityMode || details.quality_mode || "full").trim().toLowerCase() === "preview" ? "preview" : "full";
+  const rawQualityMode = String(details.qualityMode || details.quality_mode || "full").trim().toLowerCase();
+  const qualityMode = rawQualityMode === "preview" || rawQualityMode === "balanced" ? rawQualityMode : "full";
   const allowedTiles = normalizeTileKeys(details.allowedTileKeys || details.allowed_tile_keys || details.tileKeys || details.tile_keys || []);
   const expiresAt = String(details.expiresAt || details.expires_at || "").trim() || new Date(Date.now() + 3600 * 1000).toISOString();
   const row = {

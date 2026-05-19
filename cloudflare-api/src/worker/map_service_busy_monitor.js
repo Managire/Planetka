@@ -29,7 +29,9 @@ function randomSuffix() {
   if (typeof crypto !== "undefined" && crypto && typeof crypto.randomUUID === "function") {
     return crypto.randomUUID();
   }
-  return `${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+  const values = new Uint32Array(2);
+  crypto.getRandomValues(values);
+  return `${Date.now()}-${values[0].toString(16)}${values[1].toString(16)}`;
 }
 
 function normalizeText(value, maxLength = 240) {

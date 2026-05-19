@@ -26,11 +26,9 @@ from .error_utils import PLANETKA_IMPORT_RECOVERABLE_EXCEPTIONS, PLANETKA_RECOVE
 from .extension_prefs import get_earth_object, get_prefs
 from .operator_utils import ErrorCode, fail, require_planetka_props, require_scene
 from .r2_source import (
-    ensure_resolve_pricing_session,
     get_remote_cache_folder,
     is_remote_source_configured,
     plan_resolve_downloads,
-    resolve_request_context,
 )
 from .state import (
     _apply_sunlight_from_props,
@@ -519,19 +517,6 @@ def _estimate_texture_bytes_for_segments(segments, base_path):
     return int(_estimate_local_texture_bytes_for_requests(base_path, requests))
 
 
-def _estimate_credits_for_segments(segments, texture_quality_mode="FULL"):
-    mode = str(texture_quality_mode or "FULL").strip().upper()
-    if mode == "PREVIEW":
-        return 0.0, 0
-    pricing = _estimate_animation_pricing_for_segments(segments, texture_quality_mode=mode)
-    if pricing is None:
-        return None, 0
-    return (
-        _animation_money_round(pricing.get("price_eur", 0.0)),
-        int(pricing.get("new_tile_count", 0) or 0),
-    )
-
-
 def _unique_tiles_for_segments(segments):
     tiles = []
     seen = set()
@@ -555,174 +540,6 @@ def _animation_segment_tile_keys(segment):
         for tile in (segment.get("tiles", ()) or ())
         if str(tile or "").strip()
     ]
-
-
-def _animation_credit_records_by_key(summary):
-    records_by_key = {}
-    for record in list(summary.get("tiles", ()) if isinstance(summary, dict) else ()):
-        if not isinstance(record, dict):
-            continue
-        tile_key = str(record.get("tile_key", "") or "").strip()
-        if tile_key:
-            records_by_key[tile_key] = dict(record)
-    return records_by_key
-
-
-def _animation_pricing_from_credit_summary(segments, summary):
-    records_by_key = _animation_credit_records_by_key(summary)
-    charged_seen = set()
-    segment_breakdowns = []
-    try:
-        per_resolve_fee = max(
-            0.0,
-            float(
-                summary.get(
-                    "custom_animation_licence_per_resolve_eur",
-                    summary.get("custom_animation_licence_fee_eur", ANIMATION_CUSTOM_LICENCE_FEE_EUR),
-                )
-                if isinstance(summary, dict)
-                else ANIMATION_CUSTOM_LICENCE_FEE_EUR
-            ),
-        )
-    except (TypeError, ValueError, AttributeError):
-        per_resolve_fee = float(ANIMATION_CUSTOM_LICENCE_FEE_EUR)
-    per_resolve_fee = _animation_money_round(per_resolve_fee)
-    try:
-        max_licence_fee = max(
-            0.0,
-            float(
-                summary.get(
-                    "custom_animation_licence_max_fee_eur",
-                    summary.get("custom_animation_licence_max_eur", ANIMATION_CUSTOM_LICENCE_MAX_FEE_EUR),
-                )
-                if isinstance(summary, dict)
-                else ANIMATION_CUSTOM_LICENCE_MAX_FEE_EUR
-            ),
-        )
-    except (TypeError, ValueError, AttributeError):
-        max_licence_fee = float(ANIMATION_CUSTOM_LICENCE_MAX_FEE_EUR)
-    max_licence_fee = _animation_money_round(max_licence_fee)
-    accumulated_licence_fee = 0.0
-    chargeable_segments = 0
-
-    for segment in segments or ():
-        segment_rows = []
-        segment_tile_price = 0.0
-        segment_new_tiles = 0
-        for tile_key in _animation_segment_tile_keys(segment):
-            row = dict(records_by_key.get(tile_key) or {"tile_key": tile_key, "credits": 0.0})
-            row["tile_key"] = tile_key
-            try:
-                row_price = max(0.0, float(row.get("credits", row.get("price_eur", 0.0)) or 0.0))
-            except (TypeError, ValueError):
-                row_price = 0.0
-            row_price = _animation_money_round(row_price)
-            if row_price > 0.0:
-                if tile_key in charged_seen:
-                    row["credits"] = 0.0
-                    row["price_eur"] = 0.0
-                    row["free_reason"] = "already_listed_in_earlier_segment"
-                    row_price = 0.0
-                else:
-                    charged_seen.add(tile_key)
-                    segment_tile_price = _animation_money_round(segment_tile_price + row_price)
-                    segment_new_tiles += 1
-            segment_rows.append(row)
-
-        segment_raw_tile_price = _animation_money_round(segment_tile_price)
-        segment_fee = 0.0
-        if (
-            segment_raw_tile_price > float(ANIMATION_CUSTOM_LICENCE_THRESHOLD_EUR)
-            and per_resolve_fee > 0.0
-            and accumulated_licence_fee < max_licence_fee
-        ):
-            segment_fee = _animation_money_round(min(per_resolve_fee, max_licence_fee - accumulated_licence_fee))
-        if segment_fee > 0.0:
-            chargeable_segments += 1
-            accumulated_licence_fee = _animation_money_round(accumulated_licence_fee + segment_fee)
-        segment_breakdowns.append({
-            "index": int(segment.get("index", len(segment_breakdowns) + 1) if isinstance(segment, dict) else len(segment_breakdowns) + 1),
-            "start": int(segment.get("start", 0) if isinstance(segment, dict) else 0),
-            "end": int(segment.get("end", 0) if isinstance(segment, dict) else 0),
-            "raw_tile_price_eur": float(_animation_money_round(segment_raw_tile_price)),
-            "tile_price_eur": float(_animation_money_round(segment_raw_tile_price)),
-            "animation_segment_below_minimum": bool(0.0 < segment_raw_tile_price <= float(ANIMATION_CUSTOM_LICENCE_THRESHOLD_EUR)),
-            "custom_animation_licence_eur": float(segment_fee),
-            "custom_animation_licence_applied": bool(segment_fee > 0.0),
-            "price_eur": float(_animation_money_round(segment_raw_tile_price + segment_fee)),
-            "new_tile_count": int(segment_new_tiles),
-            "tiles": segment_rows,
-        })
-
-    tile_price_eur = _animation_money_round(
-        summary.get("scene_tile_price_eur", summary.get("raw_price_eur", summary.get("raw_credits", 0.0)))
-        if isinstance(summary, dict)
-        else 0.0
-    )
-    custom_licence_eur = _animation_money_round(accumulated_licence_fee)
-    total_price_eur = _animation_money_round(tile_price_eur + custom_licence_eur)
-    small_free = bool(summary.get("scene_small_free_threshold_applied", False)) if isinstance(summary, dict) else False
-    if small_free:
-        total_price_eur = 0.0
-        custom_licence_eur = 0.0
-    return {
-        "segments": segment_breakdowns,
-        "price_eur": float(total_price_eur),
-        "tile_price_eur": float(tile_price_eur),
-        "custom_animation_licence_eur": float(custom_licence_eur),
-        "custom_animation_licence_segments": int(chargeable_segments if custom_licence_eur > 0.0 else 0),
-        "custom_animation_licence_fee_eur": float(per_resolve_fee),
-        "custom_animation_licence_per_resolve_eur": float(per_resolve_fee),
-        "custom_animation_licence_max_fee_eur": float(max_licence_fee),
-        "custom_animation_licence_threshold_eur": float(_animation_money_round(summary.get("custom_animation_licence_threshold_eur", ANIMATION_CUSTOM_LICENCE_THRESHOLD_EUR) if isinstance(summary, dict) else ANIMATION_CUSTOM_LICENCE_THRESHOLD_EUR)),
-        "animation_small_free_threshold_applied": bool(small_free),
-        "new_tile_count": int(sum(int(segment.get("new_tile_count", 0) or 0) for segment in segment_breakdowns)),
-    }
-
-
-def _estimate_animation_pricing_for_segments(segments, texture_quality_mode="FULL"):
-    mode = str(texture_quality_mode or "FULL").strip().upper()
-    if mode == "PREVIEW":
-        return {
-            "segments": [],
-            "price_eur": 0.0,
-            "tile_price_eur": 0.0,
-            "custom_animation_licence_eur": 0.0,
-            "custom_animation_licence_segments": 0,
-            "new_tile_count": 0,
-            "tile_count": 0,
-            "authoritative": True,
-            "custom_animation_licence_fee_eur": float(ANIMATION_CUSTOM_LICENCE_FEE_EUR),
-            "custom_animation_licence_max_fee_eur": float(ANIMATION_CUSTOM_LICENCE_MAX_FEE_EUR),
-            "custom_animation_licence_threshold_eur": float(ANIMATION_CUSTOM_LICENCE_THRESHOLD_EUR),
-        }
-    tiles = _unique_tiles_for_segments(segments)
-    if not tiles:
-        return {
-            "segments": [],
-            "price_eur": 0.0,
-            "tile_price_eur": 0.0,
-            "custom_animation_licence_eur": 0.0,
-            "custom_animation_licence_segments": 0,
-            "new_tile_count": 0,
-            "tile_count": 0,
-            "authoritative": True,
-            "custom_animation_licence_fee_eur": float(ANIMATION_CUSTOM_LICENCE_FEE_EUR),
-            "custom_animation_licence_max_fee_eur": float(ANIMATION_CUSTOM_LICENCE_MAX_FEE_EUR),
-            "custom_animation_licence_threshold_eur": float(ANIMATION_CUSTOM_LICENCE_THRESHOLD_EUR),
-        }
-    try:
-        from .credit_api import estimate_credits_for_tiles
-        summary = estimate_credits_for_tiles(tiles, quality_mode=mode, pricing_context="animation")
-        if mode != "PREVIEW" and not bool(summary.get("authoritative", False)):
-            return None
-        pricing = _animation_pricing_from_credit_summary(segments, summary)
-        pricing["tile_count"] = int(len(tiles))
-        pricing["authoritative"] = True
-        return pricing
-    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka animation: failed estimating animation price", exc_info=True)
-        return None
 
 
 def _animation_price_text(value):
@@ -868,125 +685,20 @@ def _final_animation_segment_plan(scene, props, texture_quality_mode="FULL"):
     )
 
 
-def _build_animation_credit_breakdown(scene, props, texture_quality_mode="FULL"):
-    mode = _normalize_animation_render_texture_quality_mode(texture_quality_mode)
-    if mode == "PREVIEW":
-        return {
-            "quality_mode": mode,
-            "segments": [],
-            "price_eur": 0.0,
-            "tile_price_eur": 0.0,
-            "custom_animation_licence_eur": 0.0,
-            "custom_animation_licence_segments": 0,
-            "custom_animation_licence_fee_eur": float(ANIMATION_CUSTOM_LICENCE_FEE_EUR),
-            "custom_animation_licence_max_fee_eur": float(ANIMATION_CUSTOM_LICENCE_MAX_FEE_EUR),
-            "custom_animation_licence_threshold_eur": float(ANIMATION_CUSTOM_LICENCE_THRESHOLD_EUR),
-            "new_tile_count": 0,
-            "tile_count": 0,
-        }
-
-    segment_plan = _final_animation_segment_plan(scene, props, texture_quality_mode=mode)
-    segments = list(segment_plan.segments or ())
-    unique_tiles = []
-    seen = set()
-    for segment in segments:
-        for tile in segment.get("tiles", ()) if isinstance(segment, dict) else ():
-            tile_key = str(tile or "").strip()
-            if not tile_key or tile_key in seen:
-                continue
-            seen.add(tile_key)
-            unique_tiles.append(tile_key)
-
-    summary = {}
-    if unique_tiles:
-        from .credit_api import estimate_credits_for_tiles
-        summary = estimate_credits_for_tiles(unique_tiles, quality_mode=mode, pricing_context="animation")
-        if not bool(summary.get("authoritative", False)):
-            raise RuntimeError("Animation pricing is unavailable because Planetka Cloud could not confirm the price.")
-    pricing = _animation_pricing_from_credit_summary(segments, summary)
-    total_bytes = 0
-    try:
-        prefs = get_prefs()
-        base_path = str(getattr(prefs, "texture_base_path", "") or "") if prefs is not None else ""
-        total_bytes = int(_estimate_texture_bytes_for_segments(segments, base_path))
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka animation: failed estimating animation detail data size", exc_info=True)
-        total_bytes = 0
-    except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
-        logger.debug("Planetka animation: failed estimating animation detail data size", exc_info=True)
-        total_bytes = 0
-
-    return {
-        "quality_mode": mode,
-        "frame_start": int(segment_plan.frame_start),
-        "frame_end": int(segment_plan.frame_end),
-        "frame_step": int(segment_plan.frame_step),
-        "segments": list(pricing.get("segments", ()) or ()),
-        "price_eur": float(_animation_money_round(pricing.get("price_eur", 0.0))),
-        "tile_price_eur": float(_animation_money_round(pricing.get("tile_price_eur", 0.0))),
-        "custom_animation_licence_eur": float(_animation_money_round(pricing.get("custom_animation_licence_eur", 0.0))),
-        "custom_animation_licence_segments": int(pricing.get("custom_animation_licence_segments", 0) or 0),
-        "custom_animation_licence_fee_eur": float(_animation_money_round(pricing.get("custom_animation_licence_fee_eur", ANIMATION_CUSTOM_LICENCE_FEE_EUR))),
-        "custom_animation_licence_max_fee_eur": float(_animation_money_round(pricing.get("custom_animation_licence_max_fee_eur", ANIMATION_CUSTOM_LICENCE_MAX_FEE_EUR))),
-        "custom_animation_licence_threshold_eur": float(_animation_money_round(pricing.get("custom_animation_licence_threshold_eur", ANIMATION_CUSTOM_LICENCE_THRESHOLD_EUR))),
-        "new_tile_count": int(pricing.get("new_tile_count", 0) or 0),
-        "tile_count": int(len(unique_tiles)),
-        "total_bytes": int(max(0, total_bytes)),
-    }
-
-
 def update_animation_credit_estimate(scene, props, texture_quality_mode=None):
-    """Recalculate the current Final Animation Render EUR price."""
+    """Clear legacy animation price fields for the streaming-only product model."""
     if scene is None:
         return 0.0, 0
-    del texture_quality_mode
-    mode = "FULL"
-    segment_plan = _final_animation_segment_plan(scene, props, texture_quality_mode=mode)
-    pricing = _estimate_animation_pricing_for_segments(
-        list(segment_plan.segments or ()),
-        texture_quality_mode=mode,
-    )
-    if pricing is None:
-        for key in (
-            ANIMATION_STATS_CREDITS_KEY,
-            ANIMATION_STATS_NEW_TILE_COUNT_KEY,
-            ANIMATION_STATS_LEGACY_CREDITS_KEY,
-            ANIMATION_STATS_LEGACY_NEW_TILE_COUNT_KEY,
-            ANIMATION_STATS_TILE_PRICE_KEY,
-            ANIMATION_STATS_CUSTOM_LICENCE_KEY,
-            ANIMATION_STATS_CUSTOM_LICENCE_SEGMENTS_KEY,
-        ):
-            try:
-                if key in scene:
-                    del scene[key]
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                logger.debug("Planetka animation: failed clearing unavailable price key", exc_info=True)
-            except (RuntimeError, TypeError, ValueError, AttributeError):
-                logger.debug("Planetka animation: failed clearing unavailable price key", exc_info=True)
-        scene[ANIMATION_STATS_PRICE_KNOWN_KEY] = False
-        logger.info("Planetka animation price calculation unavailable; Planetka Cloud pricing is required.")
-        return 0.0, 0
-    credits = _animation_money_round(pricing.get("price_eur", 0.0))
-    tile_price = _animation_money_round(pricing.get("tile_price_eur", 0.0))
-    custom_licence = _animation_money_round(pricing.get("custom_animation_licence_eur", 0.0))
-    custom_licence_segments = int(pricing.get("custom_animation_licence_segments", 0) or 0)
-    paid_tile_count = int(pricing.get("new_tile_count", 0) or 0)
-    scene[ANIMATION_STATS_CREDITS_KEY] = float(max(0.0, credits))
+    del props, texture_quality_mode
+    scene[ANIMATION_STATS_CREDITS_KEY] = 0.0
     scene[ANIMATION_STATS_PRICE_KNOWN_KEY] = True
-    scene[ANIMATION_STATS_NEW_TILE_COUNT_KEY] = int(max(0, paid_tile_count))
-    scene[ANIMATION_STATS_TILE_PRICE_KEY] = float(max(0.0, tile_price))
-    scene[ANIMATION_STATS_CUSTOM_LICENCE_KEY] = float(max(0.0, custom_licence))
-    scene[ANIMATION_STATS_CUSTOM_LICENCE_SEGMENTS_KEY] = int(max(0, custom_licence_segments))
-    scene[ANIMATION_STATS_LEGACY_CREDITS_KEY] = float(max(0.0, credits))
-    scene[ANIMATION_STATS_LEGACY_NEW_TILE_COUNT_KEY] = int(max(0, paid_tile_count))
-    logger.info(
-        "Planetka animation price calculation: EUR %.2f for %d new tile(s), EUR %.2f animation licence (%s).",
-        float(credits),
-        int(paid_tile_count),
-        float(custom_licence),
-        mode,
-    )
-    return float(credits), int(paid_tile_count)
+    scene[ANIMATION_STATS_NEW_TILE_COUNT_KEY] = 0
+    scene[ANIMATION_STATS_TILE_PRICE_KEY] = 0.0
+    scene[ANIMATION_STATS_CUSTOM_LICENCE_KEY] = 0.0
+    scene[ANIMATION_STATS_CUSTOM_LICENCE_SEGMENTS_KEY] = 0
+    scene[ANIMATION_STATS_LEGACY_CREDITS_KEY] = 0.0
+    scene[ANIMATION_STATS_LEGACY_NEW_TILE_COUNT_KEY] = 0
+    return 0.0, 0
 
 
 def _ensure_collection(scene, name):
@@ -4067,74 +3779,8 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             logger.debug("Planetka animation: failed clearing paid animation price", exc_info=True)
 
     def _unlock_animation_tiles_before_download(self):
-        tiles = list(getattr(self, "_animation_tiles", ()) or ())
-        if not tiles:
-            self._set_animation_price_paid()
-            return True, ""
-        resolve_id = str(getattr(self, "_animation_resolve_id", "") or "").strip()
-        if not resolve_id:
-            resolve_id = f"anim-{int(time.time() * 1000)}"
-            self._animation_resolve_id = resolve_id
-        mode = str(getattr(self, "_texture_quality_mode", "FULL") or "FULL").strip().upper()
-        if mode != "FULL":
-            self._set_animation_price_paid()
-            return True, ""
-        base_path = str(getattr(self, "_base_path", "") or "")
-        if not is_remote_source_configured(base_path):
-            self._set_animation_price_paid()
-            return True, ""
-        self._set_ui_status("Confirming animation licence", icon="SOLO_ON")
-        try:
-            cached_price = float(getattr(self, "confirm_price_eur", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            cached_price = 0.0
-        if cached_price <= 0.000001:
-            segments = list(getattr(self, "_segments", ()) or ())
-            if segments:
-                try:
-                    for index, segment in enumerate(segments, start=1):
-                        segment_tiles = _animation_segment_tile_keys(segment)
-                        if not segment_tiles:
-                            continue
-                        with resolve_request_context(
-                            resolve_id=f"{resolve_id}-seg-{index}",
-                            texture_quality_mode="FULL",
-                            pricing_tiles=segment_tiles,
-                        ):
-                            token = ensure_resolve_pricing_session(allow_refresh=True)
-                        if not str(token or "").strip():
-                            return False, "Could not licence Full Quality animation tiles. Check connection and retry."
-                except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
-                    return False, f"Could not licence Full Quality animation tiles: {exc}"
-                except (RuntimeError, TypeError, ValueError, AttributeError, OSError) as exc:
-                    return False, f"Could not licence Full Quality animation tiles: {exc}"
-                try:
-                    from .credit_api import clear_credit_caches
-                    clear_credit_caches()
-                except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-                    logger.debug("Planetka animation: failed clearing credit caches after animation tile unlock", exc_info=True)
-                self._set_animation_price_paid()
-                return True, ""
-
-        try:
-            with resolve_request_context(
-                resolve_id=resolve_id,
-                texture_quality_mode="FULL",
-                pricing_tiles=tiles,
-            ):
-                token = ensure_resolve_pricing_session(allow_refresh=True)
-            if not str(token or "").strip():
-                return False, "Could not licence Full Quality animation tiles. Check connection and retry."
-        except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
-            return False, f"Could not licence Full Quality animation tiles: {exc}"
-        except (RuntimeError, TypeError, ValueError, AttributeError, OSError) as exc:
-            return False, f"Could not licence Full Quality animation tiles: {exc}"
-
-        try:
-            from .credit_api import clear_credit_caches
-            clear_credit_caches()
-        except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka animation: failed clearing credit caches after animation tile unlock", exc_info=True)
+        # Planetka 2026 is streaming-only. Animation render no longer performs
+        # per-tile licensing or checkout before the preload phase.
         self._set_animation_price_paid()
         return True, ""
 
@@ -4171,7 +3817,7 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
                     capture=True,
                     resolve_id=resolve_id,
                     texture_quality_mode=texture_quality_mode,
-                    enforce_pricing_session=True,
+                    enforce_pricing_session=False,
                 )
                 if not isinstance(payload, dict):
                     self._preload_result = {"ok": False, "message": "Animation data download failed."}
@@ -4995,37 +4641,6 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             )
         if not _ensure_remote_auth_ready_for_final_render(self, prefs, base_path):
             return {'CANCELLED'}
-        if selected_texture_quality_mode == "FULL":
-            try:
-                from .credit_api import clear_credit_caches
-                clear_credit_caches()
-            except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-                logger.debug("Planetka animation: failed clearing credit caches before final render price check", exc_info=True)
-            try:
-                current_price, _new_tiles = update_animation_credit_estimate(scene, props, texture_quality_mode="FULL")
-            except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
-                return fail(
-                    self,
-                    f"Animation price is not available: {exc}",
-                    code=ErrorCode.PAYMENT_CHECKOUT_FAILED,
-                    logger=logger,
-                    exc=exc,
-                    log_message="Planetka animation final-render price check failed",
-                )
-            except (RuntimeError, TypeError, ValueError, AttributeError) as exc:
-                return fail(
-                    self,
-                    f"Animation price is not available: {exc}",
-                    code=ErrorCode.PAYMENT_CHECKOUT_FAILED,
-                    logger=logger,
-                )
-            if float(current_price or 0.0) > 0.000001:
-                return fail(
-                    self,
-                    "Render Animation before starting Final Animation Render.",
-                    code=ErrorCode.PAYMENT_CHECKOUT_FAILED,
-                    logger=logger,
-                )
         if _is_movie_output(scene):
             return fail(
                 self,
@@ -5173,7 +4788,7 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
                 logger.debug("Planetka animation: failed setting final-render UI lock", exc_info=True)
             except (RuntimeError, TypeError, ValueError, AttributeError):
                 logger.debug("Planetka animation: failed setting final-render UI lock", exc_info=True)
-            self._set_ui_status("Confirming animation licence", icon="SOLO_ON")
+            self._set_ui_status("Preparing animation data", icon="IMPORT")
 
             wm = getattr(context, "window_manager", None)
             if wm is None:
@@ -5363,356 +4978,6 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             return {'RUNNING_MODAL'}
 
         return {'RUNNING_MODAL'}
-
-
-class PLANETKA_OT_AnimationCheckout(bpy.types.Operator):
-    bl_idname = "planetka.animation_checkout"
-    bl_label = "Render Animation"
-    bl_description = "Open Planetka payment for the current Full Quality animation render"
-
-    def _checkout_error_message(self, exc):
-        payload = getattr(exc, "payload", None)
-        if not isinstance(payload, dict):
-            payload = {}
-        message = str(payload.get("message") or payload.get("error") or getattr(exc, "error", "") or exc or "").strip()
-        return message.replace("_", " ") if message else "Animation checkout could not be created."
-
-    def _segment_payload(self, segments):
-        payload = []
-        for index, segment in enumerate(list(segments or ()), start=1):
-            if not isinstance(segment, dict):
-                continue
-            tile_keys = _animation_segment_tile_keys(segment)
-            if not tile_keys:
-                continue
-            try:
-                seg_index = int(segment.get("index", index) or index)
-            except (TypeError, ValueError):
-                seg_index = index
-            try:
-                start = int(segment.get("start", 0) or 0)
-            except (TypeError, ValueError):
-                start = 0
-            try:
-                end = int(segment.get("end", start) or start)
-            except (TypeError, ValueError):
-                end = start
-            payload.append(
-                {
-                    "index": max(1, seg_index),
-                    "start": max(0, start),
-                    "end": max(max(0, start), end),
-                    "tile_keys": tile_keys,
-                }
-            )
-        return payload
-
-    def execute(self, context):
-        if _cancel_if_animation_render_active(self, "Animation payment"):
-            return {'CANCELLED'}
-        scene = require_scene(self, context, logger=logger)
-        if scene is None:
-            return {'CANCELLED'}
-        props = require_planetka_props(self, context, logger=logger)
-        if props is None:
-            return {'CANCELLED'}
-        prefs = get_prefs()
-        base_path = str(getattr(prefs, "texture_base_path", "") or "") if prefs else ""
-        if (not base_path or not os.path.isdir(base_path)) and not is_remote_source_configured(base_path):
-            return fail(
-                self,
-                "Planetka Cloud source is not available. Log in and retry.",
-                code=ErrorCode.RESOLVE_PATH_INVALID,
-                logger=logger,
-            )
-        if not _ensure_remote_auth_ready_for_final_render(self, prefs, base_path):
-            return {'CANCELLED'}
-        try:
-            segment_plan = _final_animation_segment_plan(scene, props, texture_quality_mode="FULL")
-            segments = self._segment_payload(segment_plan.segments or ())
-        except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
-            return fail(
-                self,
-                f"Unable to calculate animation licence: {exc}",
-                code=ErrorCode.PAYMENT_CHECKOUT_FAILED,
-                logger=logger,
-                exc=exc,
-                log_message="Planetka animation checkout planning failed",
-            )
-        except (RuntimeError, TypeError, ValueError, AttributeError) as exc:
-            return fail(
-                self,
-                f"Unable to calculate animation licence: {exc}",
-                code=ErrorCode.PAYMENT_CHECKOUT_FAILED,
-                logger=logger,
-            )
-        if not segments:
-            self.report({'INFO'}, "Animation has no Full Quality tiles to licence.")
-            try:
-                update_animation_credit_estimate(scene, props, texture_quality_mode="FULL")
-            except (RuntimeError, TypeError, ValueError, AttributeError):
-                logger.debug("Planetka animation: failed refreshing zero animation price", exc_info=True)
-            return {'FINISHED'}
-        try:
-            from .credit_api import clear_credit_caches, create_animation_checkout_session
-            checkout = create_animation_checkout_session(segments, quality_mode="FULL")
-        except Exception as exc:
-            return fail(
-                self,
-                f"Unable to open Planetka animation payment: {self._checkout_error_message(exc)}",
-                code=ErrorCode.PAYMENT_CHECKOUT_FAILED,
-                logger=logger,
-                exc=exc,
-                log_message="Planetka animation checkout creation failed",
-            )
-        try:
-            clear_credit_caches()
-        except (NameError, RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka animation: failed clearing credit cache after animation checkout", exc_info=True)
-        if bool(checkout.get("no_payment_required", False)):
-            _animation_scene_price_is_settled(scene)
-            message = str(checkout.get("message", "") or "").strip() or "Animation Full Quality tiles are already licenced or free."
-            self.report({'INFO'}, message)
-            return {'FINISHED'}
-        checkout_url = str(checkout.get("checkout_url", "") or "").strip()
-        if not _open_external_url(checkout_url):
-            return fail(
-                self,
-                "Could not open Planetka animation payment page.",
-                code=ErrorCode.PAYMENT_CHECKOUT_FAILED,
-                logger=logger,
-            )
-        self.report({'INFO'}, "Planetka animation payment page opened in browser.")
-        return {'FINISHED'}
-
-
-class PLANETKA_OT_AnimationRenderCostBreakdown(bpy.types.Operator):
-    bl_idname = "planetka.animation_render_cost_breakdown"
-    bl_label = "Final Animation Render Cost Breakdown"
-    bl_description = "Show segment-by-segment Full Quality breakdown for Final Animation Render"
-
-    _breakdown = None
-
-    def _price_value_for_row(self, row):
-        try:
-            return max(0.0, float(row.get("credits", row.get("price_eur", 0.0)) or 0.0))
-        except (TypeError, ValueError, AttributeError):
-            return 0.0
-
-    def _gross_price_value_for_row(self, row):
-        price = self._price_value_for_row(row)
-        try:
-            return max(
-                0.0,
-                float(row.get("gross_price_eur", row.get("gross_credits", price)) or 0.0),
-            )
-        except (TypeError, ValueError, AttributeError):
-            return price
-
-    def _summary_totals(self, segments, breakdown):
-        unique_rows = {}
-        for segment in segments or ():
-            if not isinstance(segment, dict):
-                continue
-            for row in list(segment.get("tiles", ()) or ()):
-                if not isinstance(row, dict):
-                    continue
-                key = str(row.get("tile_key", "") or "").strip()
-                if not key:
-                    continue
-                existing = unique_rows.get(key)
-                if existing is None or str(existing.get("free_reason", "") or "") == "already_listed_in_earlier_segment":
-                    unique_rows[key] = row
-
-        full_price = 0.0
-        already_count = 0
-        already_deduction = 0.0
-        partial_count = 0
-        for row in unique_rows.values():
-            gross = self._gross_price_value_for_row(row)
-            price = self._price_value_for_row(row)
-            full_price = _animation_money_round(full_price + gross)
-            deduction = _animation_money_round(max(0.0, gross - price))
-            if deduction <= 0.000001:
-                continue
-            reason = str(row.get("free_reason", "") or "").strip()
-            is_previous_licence = (
-                bool(row.get("already_owned", False))
-                or bool(row.get("partially_licenced", False))
-                or reason in {"already_unlocked", "already_owned", "world_full_quality_licence"}
-            )
-            if not is_previous_licence:
-                continue
-            already_count += 1
-            already_deduction = _animation_money_round(already_deduction + deduction)
-            if bool(row.get("partially_licenced", False)):
-                partial_count += 1
-
-        tile_price = _animation_money_round(breakdown.get("tile_price_eur", 0.0))
-        if full_price <= 0.000001 and tile_price > 0.000001:
-            full_price = _animation_money_round(tile_price + already_deduction)
-        total_tiles = int(breakdown.get("tile_count", len(unique_rows)) or len(unique_rows))
-        new_tiles = int(breakdown.get("new_tile_count", 0) or 0)
-        if partial_count > 0:
-            new_tiles = max(0, new_tiles - partial_count)
-        return {
-            "full_price": float(_animation_money_round(full_price)),
-            "already_count": int(already_count),
-            "already_deduction": float(_animation_money_round(already_deduction)),
-            "new_tiles": int(max(0, new_tiles)),
-            "total_tiles": int(max(0, total_tiles)),
-        }
-
-    def _price_for_row(self, row):
-        return _animation_price_text(self._price_value_for_row(row))
-
-    def _original_price_for_row(self, row):
-        price = self._price_value_for_row(row)
-        original = self._gross_price_value_for_row(row)
-        return original if original > price + 1e-9 else 0.0
-
-    def _zero_price_note_for_row(self, row):
-        if not isinstance(row, dict):
-            return ""
-        try:
-            price = max(0.0, float(row.get("credits", 0.0) or 0.0))
-        except (TypeError, ValueError, AttributeError):
-            price = 0.0
-        if price > 1e-9:
-            return ""
-        reason = str(row.get("free_reason", "") or "").strip()
-        if reason in {"already_unlocked", "already_owned"}:
-            return "No charge: already licenced before this render."
-        if reason == "already_listed_in_earlier_segment":
-            return "No charge: already counted in an earlier animation segment."
-        if reason == "animation_segment_below_minimum":
-            return (
-                "No charge: this animation segment is below "
-                f"{_animation_price_text(ANIMATION_CUSTOM_LICENCE_THRESHOLD_EUR)}."
-            )
-        if reason:
-            return f"No charge: {reason.replace('_', ' ').replace('unlocked', 'licenced').replace('owned', 'licenced')}."
-        if self._original_price_for_row(row) > 0.0:
-            return "No charge: already licenced."
-        return ""
-
-    def invoke(self, context, event):
-        del event
-        scene = require_scene(self, context, logger=logger)
-        if scene is None:
-            return {'CANCELLED'}
-        props = require_planetka_props(self, context, logger=logger)
-        if props is None:
-            return {'CANCELLED'}
-        try:
-            self._breakdown = _build_animation_credit_breakdown(scene, props, texture_quality_mode="FULL")
-        except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
-            return fail(
-                self,
-                f"Unable to build animation price breakdown: {exc}",
-                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-                logger=logger,
-                exc=exc,
-                log_message="Planetka animation price breakdown failed",
-            )
-        except (ImportError, RuntimeError, TypeError, ValueError, AttributeError) as exc:
-            return fail(
-                self,
-                f"Unable to build animation price breakdown: {exc}",
-                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-                logger=logger,
-                exc=exc,
-                log_message="Planetka animation price breakdown failed",
-            )
-        if bool(getattr(bpy.app, "background", False)):
-            return {'FINISHED'}
-        wm = getattr(context, "window_manager", None)
-        if wm is None:
-            return {'FINISHED'}
-        return wm.invoke_popup(self, width=980)
-
-    def execute(self, context):
-        return self.invoke(context, None)
-
-    def draw(self, _context):
-        layout = self.layout
-        breakdown = self._breakdown if isinstance(self._breakdown, dict) else {}
-        segments = list(breakdown.get("segments", ()) or ())
-
-        header = layout.box()
-        totals = self._summary_totals(segments, breakdown)
-        header.label(text="Final Animation Render Full Quality Breakdown", icon="INFO")
-        header.label(text=f"Total data size: {_animation_bytes_text(breakdown.get('total_bytes', 0))}", icon="DISK_DRIVE")
-        header.label(
-            text=f"New Tiles / Total Tiles: {_animation_int_text(totals['new_tiles'])} / {_animation_int_text(totals['total_tiles'])}",
-            icon="TEXTURE",
-        )
-        header.label(text=f"Full Price: {_animation_price_text(totals['full_price'])}", icon="SOLO_ON")
-        if totals["already_count"] > 0 and totals["already_deduction"] > 0.000001:
-            header.label(
-                text=(
-                    f"Already Licenced: {_animation_int_text(totals['already_count'])} tiles "
-                    f"(-{_animation_price_text(totals['already_deduction'])})"
-                ),
-                icon="CHECKMARK",
-            )
-        final_price = float(breakdown.get("price_eur", 0.0) or 0.0)
-        if final_price > 0.000001:
-            header.label(text=f"Final Price: {_animation_price_text(final_price)}", icon="SOLO_ON")
-        if segments:
-            header.label(
-                text=(
-                    f"Frames: {int(breakdown.get('frame_start', 0) or 0):04d} - "
-                    f"{int(breakdown.get('frame_end', 0) or 0):04d}, "
-                    f"Segments: {_animation_int_text(len(segments))}, Unique Tiles: {_animation_int_text(breakdown.get('tile_count', 0))}"
-                )
-            )
-        header.label(
-            text="Each licenced tile is charged once; later segments using the same licenced tile show €0.00.",
-            icon="INFO",
-        )
-
-        if not segments:
-            layout.label(text="No animation segments available.", icon="INFO")
-            return
-
-        for segment in segments:
-            segment_box = layout.box()
-            seg_index = int(segment.get("index", 0) or 0)
-            seg_start = int(segment.get("start", 0) or 0)
-            seg_end = int(segment.get("end", seg_start) or seg_start)
-            segment_box.label(
-                text=(
-                    f"Segment {seg_index}: frames {seg_start:04d}-{seg_end:04d}  "
-                    f"Final Price: {_animation_price_text(segment.get('price_eur', 0.0))}"
-                ),
-                icon="RENDER_ANIMATION",
-            )
-            rows = list(segment.get("tiles", ()) or ())
-            if not rows:
-                segment_box.label(text="No tiles in this segment.", icon="INFO")
-                continue
-            table_header = segment_box.row(align=True)
-            table_header.label(text="Tile")
-            table_header.label(text="Land Area")
-            table_header.label(text="Texture Detail")
-            table_header.label(text="Price")
-            for row_data in rows:
-                if not isinstance(row_data, dict):
-                    continue
-                row = segment_box.row(align=True)
-                row.label(text=str(row_data.get("tile_key", "") or "Unknown"))
-                row.label(text=_animation_land_area_text(row_data))
-                row.label(text=_animation_mpp_text(row_data.get("delivered_mpp", 0.0)))
-                row.label(text=self._price_for_row(row_data))
-                zero_price_note = self._zero_price_note_for_row(row_data)
-                if zero_price_note:
-                    reason_row = segment_box.row(align=True)
-                    reason_row.label(text=f"  {zero_price_note}", icon="INFO")
-                original_price = self._original_price_for_row(row_data)
-                if original_price > 0.0:
-                    original_row = segment_box.row(align=True)
-                    original_row.label(text=f"  Original price: {_animation_price_text(original_price)}", icon="SOLO_ON")
 
 
 class PLANETKA_OT_AnimationMakeReady(bpy.types.Operator):

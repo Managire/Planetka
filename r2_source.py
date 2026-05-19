@@ -1185,7 +1185,7 @@ def set_resolve_request_context(
     with _REQUEST_CONTEXT_LOCK:
         _REQUEST_CONTEXT_RESOLVE_ID = str(resolve_id or "").strip()[:128]
         safe_mode = str(texture_quality_mode or "").strip().lower()
-        if safe_mode not in {"preview", "full"}:
+        if safe_mode not in {"preview", "balanced", "full"}:
             safe_mode = ""
         _REQUEST_CONTEXT_TEXTURE_MODE = safe_mode
         _REQUEST_CONTEXT_CANCEL_EVENT = cancel_event
@@ -1252,7 +1252,7 @@ def _request_tile_session_token(resolve_id, quality_mode, allow_refresh=True):
         return "", 0.0
     safe_resolve_id = str(resolve_id or "").strip()[:128]
     safe_quality_mode = str(quality_mode or "").strip().lower()
-    if safe_quality_mode not in {"preview", "full"}:
+    if safe_quality_mode not in {"preview", "balanced", "full"}:
         return "", 0.0
     if not safe_resolve_id:
         return "", 0.0
@@ -1263,10 +1263,15 @@ def _request_tile_session_token(resolve_id, quality_mode, allow_refresh=True):
         "quality_mode": safe_quality_mode,
     }
     with _REQUEST_CONTEXT_LOCK:
-        tile_keys = tuple(key for key in (_REQUEST_CONTEXT_PRICING_TILES or ()) if str(key or "").strip())
-    if tile_keys:
-        payload["credit_protocol"] = "land_credits_v1"
-        payload["tile_keys"] = list(tile_keys)
+        nav_lat = str(_REQUEST_CONTEXT_NAV_LAT or "").strip()
+        nav_lon = str(_REQUEST_CONTEXT_NAV_LON or "").strip()
+        nav_alt = str(_REQUEST_CONTEXT_NAV_ALT_KM or "").strip()
+    if nav_lat:
+        payload["nav_latitude_deg"] = nav_lat
+    if nav_lon:
+        payload["nav_longitude_deg"] = nav_lon
+    if nav_alt:
+        payload["nav_altitude_km"] = nav_alt
     payload_bytes = json.dumps(payload, ensure_ascii=True).encode("utf-8")
 
     def _attempt(refresh_allowed):
@@ -1290,13 +1295,6 @@ def _request_tile_session_token(resolve_id, quality_mode, allow_refresh=True):
             credits_charged = float(data.get("credits_charged", 0.0) or 0.0)
         except (TypeError, ValueError, AttributeError):
             credits_charged = 0.0
-        credit_protocol = str(data.get("credit_protocol", "") or "").strip()
-        if credits_charged > 0.0 or credit_protocol == "land_credits_v1":
-            try:
-                from .credit_api import clear_credit_caches
-                clear_credit_caches()
-            except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-                logger.debug("Planetka: failed clearing credit cache after tile unlock", exc_info=True)
         token = str(data.get("tile_token", "") or "").strip()
         if not token:
             return "", 0.0
@@ -1345,7 +1343,7 @@ def _request_tile_session_token(resolve_id, quality_mode, allow_refresh=True):
         }:
             required = error_payload.get("price_eur", error_payload.get("required_credits", 0))
             raise RuntimeError(
-                f"Full Quality requires direct payment (required=€{required})."
+                f"Full Quality requires a Professional account (required=€{required})."
             ) from exc
         if int(getattr(exc, "code", 0)) == 401 and bool(allow_refresh):
             try:
@@ -1367,10 +1365,10 @@ def _request_tile_session_token(resolve_id, quality_mode, allow_refresh=True):
                 raise RuntimeError(f"Planetka request limit reached: {error_message}") from exc
             raise RuntimeError("Planetka request limit reached for this account.") from exc
         if error_message:
-            raise RuntimeError(f"Planetka Full Quality licence could not be confirmed: {error_message}") from exc
-        raise RuntimeError("Planetka Full Quality licence could not be confirmed. Please retry.") from exc
+            raise RuntimeError(f"Planetka Full Quality streaming access could not be confirmed: {error_message}") from exc
+        raise RuntimeError("Planetka Full Quality streaming access could not be confirmed. Please retry.") from exc
     except (urllib.error.URLError, RuntimeError, TypeError, ValueError, AttributeError, OSError) as exc:
-        raise RuntimeError(f"Planetka Full Quality licence could not be confirmed: {exc}") from exc
+        raise RuntimeError(f"Planetka Full Quality streaming access could not be confirmed: {exc}") from exc
 
 
 def _get_request_context_tile_token(allow_refresh=True):
@@ -1386,7 +1384,7 @@ def _get_request_context_tile_token(allow_refresh=True):
         now = float(time.time())
         if current_token and current_expiry > (now + 5.0):
             return current_token
-        if quality_mode not in {"preview", "full"}:
+        if quality_mode not in {"preview", "balanced", "full"}:
             return ""
     # Do not hold _REQUEST_CONTEXT_LOCK while requesting a tile session token:
     # _request_tile_session_token() also reads request context. Holding the lock
@@ -1428,20 +1426,18 @@ def _get_request_context_tile_token(allow_refresh=True):
 
 
 def ensure_resolve_pricing_session(allow_refresh=True):
-    """Ensure the current Full Quality resolve has a backend unlock session.
+    """Compatibility shim for older internal callers.
 
-    Full Quality files may already be present in the local cache or Local Source.
-    Pricing must still be enforced per account before those files are used; the
-    download token is just the transport mechanism for the same unlock call.
+    Planetka 2026 uses account-tier streaming, not per-scene tile purchases.
+    Callers that still ask for this helper only need a normal tile token.
     """
     with _REQUEST_CONTEXT_LOCK:
         quality_mode = str(_REQUEST_CONTEXT_TEXTURE_MODE or "").strip().lower()
-        pricing_tiles = tuple(key for key in (_REQUEST_CONTEXT_PRICING_TILES or ()) if str(key or "").strip())
-    if quality_mode != "full" or not pricing_tiles:
+    if quality_mode != "full":
         return ""
     token = _get_request_context_tile_token(allow_refresh=allow_refresh)
     if not str(token or "").strip():
-        raise RuntimeError("Planetka Full Quality licence could not be confirmed. Please retry.")
+        raise RuntimeError("Planetka Full Quality streaming session could not be confirmed. Please retry.")
     return token
 
 
@@ -1501,7 +1497,7 @@ def _signed_headers(cfg, method, key, allow_refresh=True):
         nav_alt = str(_REQUEST_CONTEXT_NAV_ALT_KM or "").strip()
     if resolve_id:
         headers["X-Planetka-Resolve-Id"] = resolve_id
-    if quality_mode in {"full", "preview"}:
+    if quality_mode in {"full", "balanced", "preview"}:
         headers["X-Planetka-Quality-Mode"] = quality_mode
     if nav_lat:
         headers["X-Planetka-Nav-Latitude"] = nav_lat
@@ -1703,7 +1699,7 @@ def _r2_request(
                 if "payment_required" in combined or "tile_not_unlocked" in combined:
                     if error_message:
                         raise RuntimeError(error_message)
-                    raise RuntimeError("Full Quality requires direct payment for this Resolve.")
+                    raise RuntimeError("Full Quality requires a Professional Planetka account.")
                 if any(token in combined for token in ("quality_mode_not_allowed", "not_allowed_for_tier", "access_denied")):
                     try:
                         sync_account_profile()
