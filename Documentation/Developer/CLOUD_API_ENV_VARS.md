@@ -128,7 +128,7 @@ These power the addon update manifest endpoint at `GET /addon/update-manifest`.
 
 - `ADDON_UPDATE_VERSION` (prepared 0.8.1 value: `0.8.1`)
 - `ADDON_UPDATE_DOWNLOAD_URL` (prepared 0.8.1 value: `https://api.planetka.io/addon/releases/Planetka_update_0.8.1.zip`)
-- `ADDON_UPDATE_SHA256` (prepared 0.8.1 value: `e1c3785702a503f73006d702bd41a61f94e030b9c2afa086c915b16f073f7032`)
+- `ADDON_UPDATE_SHA256` (prepared 0.8.1 value: `c1641a4add02dcd0b603cde796e3e7dd2016ff27bb461c95e333e9e0f3e52d49`)
 - `ADDON_UPDATE_RELEASE_NOTES_URL` (default: `https://www.planetka.io/blender/documentation/`)
 - `ADDON_UPDATE_CHANNEL` (default: `stable`)
 - `ADDON_UPDATE_MIN_BLENDER` (default: `4.5.7`)
