@@ -37,7 +37,8 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
   const topUsersSplitHtml = renderProfessionalSplitValue(topLineUsers, (value) => fmtIntLocal(value), topLineUsers.total);
   const topResolvesSplitHtml = renderProfessionalSplitValue(topLineResolves, (value) => fmtIntLocal(value), topLineResolves.total);
   const topTileRequestsSplitHtml = renderTotalValue(topLineTileRequests, (value) => fmtIntLocal(value), topLineTileRequests.total);
-  const topGbServedSplitHtml = renderProfessionalSplitValue(topLineGbServed, (value) => `${fmtGbLocal(value)} GB`, topLineGbServed.total);
+  const fmtWholeGbLocal = (value) => `${Math.round(Number(value || 0) / (1024 * 1024 * 1024)).toLocaleString("en-US")} GB`;
+  const topGbServedSplitHtml = renderProfessionalSplitValue(topLineGbServed, fmtWholeGbLocal, topLineGbServed.total);
   return `
 <!doctype html>
 <html>
@@ -182,11 +183,12 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
       return n.toFixed(i === 0 ? 0 : 2) + " " + units[i];
     };
     const fmtGb = (v) => (Number(v || 0) / (1024 * 1024 * 1024)).toFixed(3);
+    const fmtWholeGb = (v) => Math.round(Number(v || 0) / (1024 * 1024 * 1024)).toLocaleString() + " GB";
     const renderTotalMetric = (id, values, asGb = false, fallbackTotal = 0) => {
       const target = document.getElementById(id);
       if (!target) return;
       const fmtValue = (value) => {
-        if (asGb) return fmtGb(value) + " GB";
+        if (asGb) return fmtWholeGb(value);
         return fmtInt(value);
       };
       const safeValues = values && typeof values === "object" ? values : {};
