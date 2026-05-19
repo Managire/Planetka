@@ -235,31 +235,57 @@ def _assigned_shader_s2_tiles():
     return sorted(set(assigned))
 
 
+def _expected_shader_s2_tiles_for_mode(scene, mode):
+    """Derive expected shader S2 tiles from the actual full-quality source list.
+
+    Far-away globe views may legitimately use coarse full-quality source tiles
+    such as z180_d360 or z180_d720. The gate must therefore validate the
+    production quality transform, not a hard-coded d-level.
+    """
+    render_prep = None
+    for name, module in list(sys.modules.items()):
+        if str(name).endswith(".render_prep"):
+            render_prep = module
+            break
+    if render_prep is None:
+        try:
+            import importlib
+            render_prep = importlib.import_module("render_prep")
+        except Exception:
+            render_prep = None
+    apply_quality = getattr(render_prep, "apply_texture_quality_to_full_tiles", None) if render_prep else None
+    _assert(callable(apply_quality), "Could not load production texture-quality transform.")
+    source_tiles = [str(tile) for tile in scene.get("planetka_last_full_source_tiles", ()) if str(tile or "").strip()]
+    _assert(source_tiles, "Full-quality source tile list missing while checking shader quality.")
+    return sorted({f"S2_{tile}" for tile in apply_quality(source_tiles, mode)})
+
+
 def _wait_for_shader_quality(state_module, scene, mode, timeout_sec=120.0):
-    expected_d = {
-        "PREVIEW": "d720",
-        "BALANCED": "d360",
-        "FULL": "d180",
-    }[mode]
     pump_fn = getattr(state_module, "_auto_resolve_download_pump_timer", None)
     started = time.monotonic()
     last_tiles = []
+    expected_tiles = []
     while (time.monotonic() - started) <= float(timeout_sec):
         if callable(pump_fn):
             pump_fn()
         last_tiles = _assigned_shader_s2_tiles()
         last_mode = str(scene.get("planetka_last_resolve_texture_quality_mode", "") or "")
+        try:
+            expected_tiles = _expected_shader_s2_tiles_for_mode(scene, mode)
+        except Exception:
+            expected_tiles = []
         if (
             last_mode == str(mode)
             and last_tiles
-            and all(str(tile).endswith(expected_d) for tile in last_tiles)
+            and expected_tiles
+            and sorted(last_tiles) == sorted(expected_tiles)
         ):
             return last_tiles
         time.sleep(0.05)
     raise E2EError(
-        f"{mode} button did not apply {expected_d} shader S2 tiles in time. "
+        f"{mode} button did not apply expected shader S2 tiles in time. "
         f"last_mode={scene.get('planetka_last_resolve_texture_quality_mode', '')!r}, "
-        f"last_tiles={last_tiles}"
+        f"expected_tiles={expected_tiles}, last_tiles={last_tiles}"
     )
 
 
@@ -428,15 +454,7 @@ def main():
             _set_quality_and_expect(mode, True, entry)
             shader_s2_tiles = _wait_for_shader_quality(state, scene, mode, timeout_sec=120.0)
             entry["shader_s2_tiles"] = shader_s2_tiles
-            expected_d = {
-                "PREVIEW": "d720",
-                "BALANCED": "d360",
-                "FULL": "d180",
-            }[mode]
-            _assert(
-                shader_s2_tiles and all(str(tile).endswith(expected_d) for tile in shader_s2_tiles),
-                f"{mode} button resolved but shader S2 tiles are not {expected_d}: {shader_s2_tiles}",
-            )
+            entry["expected_shader_s2_tiles"] = _expected_shader_s2_tiles_for_mode(scene, mode)
             render_info = _render_checkpoint(scene, output_dir, f"quality_{mode.lower()}")
             entry["render"] = render_info
             report["renders"].append(render_info)

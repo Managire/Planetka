@@ -143,6 +143,7 @@ def _test_texture_quality_tile_levels(base_module: str) -> dict:
         "x000_y000_z001_d002",
         "x010_y010_z001_d008",
         "x020_y020_z180_d180",
+        "x000_y000_z360_d360",
     ]
     full = render_prep.apply_texture_quality_to_full_tiles(full_tiles, "FULL")
     balanced = render_prep.apply_texture_quality_to_full_tiles(full_tiles, "BALANCED")
@@ -155,6 +156,9 @@ def _test_texture_quality_tile_levels(base_module: str) -> dict:
     _assert("x020_y020_z180_d180" in full, f"Full z180 must stay d180: {full}")
     _assert("x020_y020_z180_d360" in balanced, f"Balanced z180 must be d360: {balanced}")
     _assert("x020_y020_z180_d720" in preview, f"Preview z180 must be d720: {preview}")
+    _assert("x000_y000_z360_d360" in full, f"Full z360 must stay d360: {full}")
+    _assert("x000_y000_z360_d720" in balanced, f"Balanced z360 must be d720: {balanced}")
+    _assert("x000_y000_z360_d000" in preview, f"Preview z360 must be d000, the filename form of d1440: {preview}")
     return {"full": full, "balanced": balanced, "preview": preview}
 
 
