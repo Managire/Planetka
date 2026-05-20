@@ -423,6 +423,7 @@ def build_entries(allcountries_path, country_info_map):
                 "name": str(name).strip(),
                 "admin1_code": admin1_code,
                 "country_code": country_code,
+                "feature_code": feature_code,
                 "population": max(population, 0),
                 "latitude": latitude,
                 "longitude": longitude,

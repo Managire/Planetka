@@ -108,8 +108,8 @@ def _run_static_guard_checks(root: Path) -> tuple[int, int]:
             ["await deps.enforceApiKeyIssueDeviceLimit(", "await enforceApiKeyIssueDeviceLimit("],
         ),
         (
-            "public API key request forces free plan",
-            ["const requestedPlan = deps.PLAN_CODE_FREE;", "const requestedPlan = PLAN_CODE_FREE;"],
+            "public API key request uses beta-aware default plan",
+            ["deps.defaultSignupPlanCode(env)", "defaultSignupPlanCode(env)"],
         ),
         (
             "admin query-token rejection enabled",

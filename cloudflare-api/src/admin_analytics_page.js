@@ -22,23 +22,25 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
   const topLineTileRequests = safeTopLine.tile_requests && typeof safeTopLine.tile_requests === "object" ? safeTopLine.tile_requests : {};
   const topLineGbServed = safeTopLine.gb_served && typeof safeTopLine.gb_served === "object" ? safeTopLine.gb_served : {};
 
-  const renderTotalValue = (values = {}, valueFormatter, fallbackTotal = 0) => {
+  const renderTierSplitValue = (values = {}, valueFormatter, fallbackTotal = 0) => {
     const safeValues = values && typeof values === "object" ? values : {};
+    const free = Number(safeValues.free || 0);
+    const indie = Number(safeValues.indie || 0);
+    const pro = Number(safeValues.pro || safeValues.professional || 0);
     const total = Number(safeValues.total || fallbackTotal || 0);
-    return escapeHtml(String(valueFormatter(total)));
-  };
-  const renderProfessionalSplitValue = (values = {}, valueFormatter, fallbackTotal = 0) => {
-    const safeValues = values && typeof values === "object" ? values : {};
-    const professional = Number(safeValues.professional || 0);
-    const total = Number(safeValues.total || fallbackTotal || 0);
-    return `${escapeHtml(String(valueFormatter(professional)))} / ${escapeHtml(String(valueFormatter(total)))}`;
+    return [
+      `<span class="tier-free">${escapeHtml(String(valueFormatter(free)))}</span>`,
+      `<span class="tier-indie">${escapeHtml(String(valueFormatter(indie)))}</span>`,
+      `<span class="tier-pro">${escapeHtml(String(valueFormatter(pro)))}</span>`,
+      `<span class="tier-total">${escapeHtml(String(valueFormatter(total)))}</span>`,
+    ].join(' <span class="tier-separator">/</span> ');
   };
 
-  const topUsersSplitHtml = renderProfessionalSplitValue(topLineUsers, (value) => fmtIntLocal(value), topLineUsers.total);
-  const topResolvesSplitHtml = renderProfessionalSplitValue(topLineResolves, (value) => fmtIntLocal(value), topLineResolves.total);
-  const topTileRequestsSplitHtml = renderTotalValue(topLineTileRequests, (value) => fmtIntLocal(value), topLineTileRequests.total);
+  const topUsersSplitHtml = renderTierSplitValue(topLineUsers, (value) => fmtIntLocal(value), topLineUsers.total);
+  const topResolvesSplitHtml = renderTierSplitValue(topLineResolves, (value) => fmtIntLocal(value), topLineResolves.total);
+  const topTileRequestsSplitHtml = renderTierSplitValue(topLineTileRequests, (value) => fmtIntLocal(value), topLineTileRequests.total);
   const fmtWholeGbLocal = (value) => `${Math.round(Number(value || 0) / (1024 * 1024 * 1024)).toLocaleString("en-US")} GB`;
-  const topGbServedSplitHtml = renderProfessionalSplitValue(topLineGbServed, fmtWholeGbLocal, topLineGbServed.total);
+  const topGbServedSplitHtml = renderTierSplitValue(topLineGbServed, fmtWholeGbLocal, topLineGbServed.total);
   return `
 <!doctype html>
 <html>
@@ -55,6 +57,11 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     .card { background: #111827; border: 1px solid #1f2937; border-radius: 10px; padding: 12px; }
     .label { color: #93c5fd; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
     .value { font-size: 22px; margin-top: 6px; font-weight: 600; }
+    .tier-free { color: #22c55e; }
+    .tier-indie { color: #f59e0b; }
+    .tier-pro { color: #ef4444; }
+    .tier-total { color: #ffffff; }
+    .tier-separator { color: #64748b; font-weight: 500; }
     .controls { display:flex; gap:10px; align-items:center; margin: 8px 0 16px; }
     .map-shell { position: relative; width: 100%; max-width: 980px; aspect-ratio: 2 / 1; margin-top: 8px; border: 1px solid #1f2937; border-radius: 8px; overflow: hidden; background: #0a1628; }
     .map-bg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
@@ -102,10 +109,10 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
 	    <span id="status" class="muted">Snapshot updated: ${snapshotGeneratedAt} UTC</span>
 	  </div>
 	  <div class="grid">
-    <div class="card"><div class="label">Professional Users / All Users</div><div id="topUsersSplit" class="value">${topUsersSplitHtml}</div></div>
-    <div class="card"><div class="label">Professional Resolves / All Resolves</div><div id="topResolvesSplit" class="value">${topResolvesSplitHtml}</div></div>
-    <div class="card"><div class="label">Tile Requests</div><div id="topRequestsSplit" class="value">${topTileRequestsSplitHtml}</div></div>
-    <div class="card"><div class="label">Professional GB / All GB</div><div id="topGbSplit" class="value">${topGbServedSplitHtml}</div></div>
+    <div class="card"><div class="label">Users: Free / Indie / Pro / Total</div><div id="topUsersSplit" class="value">${topUsersSplitHtml}</div></div>
+    <div class="card"><div class="label">Resolves: Free / Indie / Pro / Total</div><div id="topResolvesSplit" class="value">${topResolvesSplitHtml}</div></div>
+    <div class="card"><div class="label">Tile Requests: Free / Indie / Pro / Total</div><div id="topRequestsSplit" class="value">${topTileRequestsSplitHtml}</div></div>
+    <div class="card"><div class="label">GB Served: Free / Indie / Pro / Total</div><div id="topGbSplit" class="value">${topGbServedSplitHtml}</div></div>
     <div class="card"><div class="label">Tile requests (window)</div><div id="reqCount" class="value">${escapeHtml(fmtIntLocal(snapshotSummary.request_count))}</div></div>
     <div class="card"><div class="label">Bytes served (window)</div><div id="bytesServed" class="value">${escapeHtml(fmtGbLocal(snapshotSummary.bytes_served))} GB</div></div>
     <div class="card"><div class="label">Errors (window)</div><div id="errors" class="value">${escapeHtml(fmtIntLocal(snapshotSummary.error_count))}</div></div>
@@ -184,7 +191,7 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     };
     const fmtGb = (v) => (Number(v || 0) / (1024 * 1024 * 1024)).toFixed(3);
     const fmtWholeGb = (v) => Math.round(Number(v || 0) / (1024 * 1024 * 1024)).toLocaleString() + " GB";
-    const renderTotalMetric = (id, values, asGb = false, fallbackTotal = 0) => {
+    const renderTierSplitMetric = (id, values, asGb = false, fallbackTotal = 0) => {
       const target = document.getElementById(id);
       if (!target) return;
       const fmtValue = (value) => {
@@ -192,17 +199,15 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         return fmtInt(value);
       };
       const safeValues = values && typeof values === "object" ? values : {};
-      target.textContent = fmtValue(Number(safeValues.total || fallbackTotal || 0));
-    };
-    const renderProfessionalSplitMetric = (id, values, asGb = false, fallbackTotal = 0) => {
-      const target = document.getElementById(id);
-      if (!target) return;
-      const fmtValue = (value) => {
-        if (asGb) return fmtGb(value) + " GB";
-        return fmtInt(value);
-      };
-      const safeValues = values && typeof values === "object" ? values : {};
-      target.textContent = fmtValue(Number(safeValues.professional || 0)) + " / " + fmtValue(Number(safeValues.total || fallbackTotal || 0));
+      const parts = [
+        ["tier-free", Number(safeValues.free || 0)],
+        ["tier-indie", Number(safeValues.indie || 0)],
+        ["tier-pro", Number(safeValues.pro || safeValues.professional || 0)],
+        ["tier-total", Number(safeValues.total || fallbackTotal || 0)],
+      ];
+      target.innerHTML = parts
+        .map(([className, value]) => '<span class="' + className + '">' + escapeHtml(fmtValue(value)) + '</span>')
+        .join(' <span class="tier-separator">/</span> ');
     };
     const decodeDataValue = (v) => {
       try {
@@ -476,10 +481,10 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
         }
         const s = data.summary || {};
         const topLine = data.top_line || {};
-        renderProfessionalSplitMetric("topUsersSplit", topLine.users || {}, false, Number(topLine && topLine.users && topLine.users.total || 0));
-        renderProfessionalSplitMetric("topResolvesSplit", topLine.resolves || {}, false, Number(topLine && topLine.resolves && topLine.resolves.total || 0));
-        renderTotalMetric("topRequestsSplit", topLine.tile_requests || {}, false, Number(topLine && topLine.tile_requests && topLine.tile_requests.total || 0));
-        renderProfessionalSplitMetric("topGbSplit", topLine.gb_served || {}, true, Number(topLine && topLine.gb_served && topLine.gb_served.total || 0));
+        renderTierSplitMetric("topUsersSplit", topLine.users || {}, false, Number(topLine && topLine.users && topLine.users.total || 0));
+        renderTierSplitMetric("topResolvesSplit", topLine.resolves || {}, false, Number(topLine && topLine.resolves && topLine.resolves.total || 0));
+        renderTierSplitMetric("topRequestsSplit", topLine.tile_requests || {}, false, Number(topLine && topLine.tile_requests && topLine.tile_requests.total || 0));
+        renderTierSplitMetric("topGbSplit", topLine.gb_served || {}, true, Number(topLine && topLine.gb_served && topLine.gb_served.total || 0));
         setText("reqCount", fmtInt(s.request_count));
         setText("bytesServed", fmtBytes(s.bytes_served));
         setText("errors", fmtInt(s.error_count));

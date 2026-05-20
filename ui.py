@@ -9,6 +9,7 @@ from .auth import (
     AuthApiError,
     CLOUD_OVERLOADED_MESSAGE,
     allows_animation_render_for_context,
+    allows_texture_quality_for_context,
     get_cached_cloud_connection_status,
     get_cloud_connection_status,
     get_account_tier,
@@ -1277,13 +1278,25 @@ def _draw_account_panel(layout):
         account_tier = str(get_account_tier(prefs) or "").strip().lower()
     except (TypeError, ValueError, RuntimeError, AttributeError):
         account_tier = ""
-    if account_tier == "professional":
-        account_type_label = "Professional"
-    elif account_tier == "personal":
-        account_type_label = "Personal (Free)"
+    if account_tier == "pro":
+        account_type_label = "Pro"
+    elif account_tier == "indie":
+        account_type_label = "Indie"
+    elif account_tier == "free":
+        account_type_label = "Free"
     else:
         account_type_label = "-"
     layout.label(text=f"Account type: {account_type_label}", icon="COMMUNITY")
+    if authenticated and account_tier in {"free", "indie"}:
+        upgrade_row = layout.row(align=True)
+        if account_tier == "free":
+            indie_op = upgrade_row.operator("planetka.account_upgrade", text="Upgrade to Indie (€70)", icon="URL")
+            indie_op.target_plan = "indie"
+            pro_op = upgrade_row.operator("planetka.account_upgrade", text="Upgrade to Pro (€280)", icon="URL")
+            pro_op.target_plan = "pro"
+        else:
+            pro_op = upgrade_row.operator("planetka.account_upgrade", text="Upgrade to Pro (€210)", icon="URL")
+            pro_op.target_plan = "pro"
 
     if authenticated and checked and not connected:
         warning_box = layout.box()
@@ -1445,6 +1458,7 @@ def _draw_live_telemetry(layout, scene):
             mode_col = button_row.column(align=True)
             estimate_bytes = _estimate_bytes_for_quality(estimates, mode_key)
             operator_row = mode_col.row(align=True)
+            operator_row.enabled = allows_texture_quality_for_context(prefs, mode_key)
             operator_row.alert = bool(resolve_failure_message and selected_auto_quality == mode_key)
             operator_row.operator(
                 "planetka.set_texture_quality_and_resolve",
@@ -1522,7 +1536,11 @@ def _draw_navigation(layout, context, controls_enabled=True):
         status_icon = "ERROR" if "not configured" in geonames_status else "INFO"
         location_box.label(text=geonames_status, icon=status_icon)
     location_box.label(text="Location", icon="PINNED")
-    location_box.prop(props, "nav_city_search", text="Place Search")
+    search_col = location_box.column(align=True)
+    search_col.use_property_split = False
+    search_col.use_property_decorate = False
+    search_col.label(text="Search")
+    search_col.prop(props, "nav_city_search", text="")
     latlon_row = location_box.row(align=True)
     latlon_row.use_property_split = False
     latlon_row.use_property_decorate = False
@@ -1797,14 +1815,51 @@ def _draw_earth_transform(layout, scene):
     )
 
 
-def _iter_atmosphere_nodes():
+_ATMOSPHERE_SOCKET_LABELS = {
+    "Scattering Color - Main": "Scattering Color",
+    "Anisotropy - Main": "Anisotropy",
+    "Scattering Color - Low Altitude": "Scattering Color",
+    "Anisotropy - Low Altitude": "Anisotropy",
+    "Absorbtion Color": "Absorption Color",
+    "Emission Srength": "Emission Strength",
+}
+
+_ATMOSPHERE_SOCKET_TOOLTIPS = {
+    "Height (km)": "Height of the atmosphere shell above Earth in kilometres. Higher values make the glow extend farther from the horizon.",
+    "Density Coefficient": "Multiplier for overall volume density. Higher values make the atmosphere thicker, brighter and more opaque.",
+    "Falloff Exponent": "Controls how quickly density fades with altitude. Higher values concentrate haze near the surface; lower values spread it upward.",
+    "Scattering Color - Main": "Primary color of scattered light through the upper atmosphere.",
+    "Anisotropy - Main": "Directionality of main scattering. Positive values push light forward for stronger rim and horizon glow; lower values look more even.",
+    "Absorption Color": "Color removed from light as it travels through the atmosphere. This tints sunsets and shadows toward the opposite color.",
+    "Absorbtion Color": "Color removed from light in the fake atmosphere shader. This tints the atmospheric glow.",
+    "Absorption Strength": "Strength of light absorption. Higher values make the atmosphere darker and more strongly color-filtered.",
+    "Scattering Color - Low Altitude": "Scattering color near the surface and horizon haze.",
+    "Anisotropy - Low Altitude": "Directionality of low-altitude haze. Higher values emphasize glancing-angle glow near the horizon.",
+    "Scattering Color": "Tint of the fake atmosphere glow.",
+    "Rim Exponent": "Controls how tightly the fake glow is concentrated around the rim. Higher values make a thinner rim.",
+    "Opacity": "Overall transparency of the fake atmosphere shell.",
+    "Emission Srength": "Brightness multiplier for the fake atmosphere emission.",
+}
+
+
+def _iter_atmosphere_nodes(mode="VOLUMETRIC"):
+    mode_token = str(mode or "VOLUMETRIC").strip().upper()
     object_name = "Atmosphere - Volumetric"
     group_name = "Planetka Atmosphere Group"
     try:
-        from .asset_builder import VOLUMETRIC_ATMOSPHERE_GROUP_NAME, VOLUMETRIC_ATMOSPHERE_OBJECT_NAME
+        from .asset_builder import (
+            FAKE_ATMOSPHERE_GROUP_NAME,
+            FAKE_ATMOSPHERE_OBJECT_NAME,
+            VOLUMETRIC_ATMOSPHERE_GROUP_NAME,
+            VOLUMETRIC_ATMOSPHERE_OBJECT_NAME,
+        )
 
-        object_name = str(VOLUMETRIC_ATMOSPHERE_OBJECT_NAME or object_name)
-        group_name = str(VOLUMETRIC_ATMOSPHERE_GROUP_NAME or group_name)
+        if mode_token in {"FAKE", "EEVEE", "STATIC"}:
+            object_name = str(FAKE_ATMOSPHERE_OBJECT_NAME or "Atmosphere - EEVEE supplement")
+            group_name = str(FAKE_ATMOSPHERE_GROUP_NAME or "Planetka Atmosphere Fake Group")
+        else:
+            object_name = str(VOLUMETRIC_ATMOSPHERE_OBJECT_NAME or object_name)
+            group_name = str(VOLUMETRIC_ATMOSPHERE_GROUP_NAME or group_name)
     except (ImportError, ModuleNotFoundError):
         logger.debug("Planetka: failed loading atmosphere identifiers", exc_info=True)
 
@@ -1826,7 +1881,10 @@ def _iter_atmosphere_nodes():
             node_group = getattr(node, "node_tree", None)
             node_group_name = str(getattr(node_group, "name", ""))
             lowered = node_group_name.lower()
-            if node_group_name == group_name or ("atmosphere" in lowered and "fake" not in lowered):
+            if node_group_name == group_name or (
+                "atmosphere" in lowered
+                and (("fake" in lowered) == (mode_token in {"FAKE", "EEVEE", "STATIC"}))
+            ):
                 nodes.append(node)
     return nodes
 
@@ -1845,8 +1903,132 @@ def _iter_atmosphere_input_sockets(node):
     return sockets
 
 
+def _socket_map(node):
+    return {str(getattr(socket, "name", "")): socket for socket in _iter_atmosphere_input_sockets(node)}
+
+
+def _apply_socket_tooltip(socket):
+    tooltip = _ATMOSPHERE_SOCKET_TOOLTIPS.get(str(getattr(socket, "name", "")))
+    if not tooltip:
+        return
+    try:
+        socket.description = str(tooltip)
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        pass
+
+
+def _draw_atmosphere_socket(container, socket, label=None):
+    if socket is None:
+        return
+    _apply_socket_tooltip(socket)
+    row = container.row()
+    try:
+        row.prop(socket, "default_value", text=str(label or _ATMOSPHERE_SOCKET_LABELS.get(socket.name, socket.name)))
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return
+
+
+def _draw_atmosphere_notice(layout, mode):
+    notice = layout.box()
+    if str(mode or "VOLUMETRIC").strip().upper() == "VOLUMETRIC":
+        for line in (
+            "Recommended Render Settings",
+            "In Volumes Section:",
+            "Biased: On",
+            "Step Rate Render: 1.00",
+            "Viewport: 1.00",
+            "Max Steps: 16 (+-8)",
+        ):
+            notice.label(text=line)
+    else:
+        for line in (
+            "Recommended Render Settings",
+            "In Volume section:",
+            "Resolution: 1:2 or 1:1",
+            "Steps: 32",
+            "Distribution: 1.000",
+            "Max Depth: 16",
+        ):
+            notice.label(text=line)
+
+
+def _draw_volumetric_atmosphere_node(layout, node):
+    sockets = _socket_map(node)
+    for socket_name in ("Height (km)", "Density Coefficient", "Falloff Exponent"):
+        _draw_atmosphere_socket(layout, sockets.get(socket_name))
+
+    main_box = layout.box()
+    main_box.label(text="Main Settings")
+    for socket_name in (
+        "Scattering Color - Main",
+        "Anisotropy - Main",
+        "Absorption Color",
+        "Absorption Strength",
+    ):
+        _draw_atmosphere_socket(main_box, sockets.get(socket_name))
+
+    low_box = layout.box()
+    low_box.label(text="Low Altitude Settings")
+    for socket_name in ("Scattering Color - Low Altitude", "Anisotropy - Low Altitude"):
+        _draw_atmosphere_socket(low_box, sockets.get(socket_name))
+
+
+def _draw_fake_atmosphere_node(layout, node):
+    sockets = _socket_map(node)
+    for socket_name in (
+        "Scattering Color",
+        "Absorbtion Color",
+        "Rim Exponent",
+        "Opacity",
+        "Emission Srength",
+    ):
+        _draw_atmosphere_socket(layout, sockets.get(socket_name))
+
+
+def _draw_global_clouds(layout, props):
+    box = layout.box()
+    box.label(text="Global Clouds", icon="FORCE_TURBULENCE")
+    box.prop(props, "enable_global_clouds", text="Enable Global Clouds")
+    if not bool(getattr(props, "enable_global_clouds", False)):
+        return
+
+    box.label(text="Texture Source")
+    source_row = box.row(align=True)
+    source_row.prop_enum(props, "global_cloud_texture_source", "CLOUD", text="Planetka Cloud")
+    source_row.prop_enum(props, "global_cloud_texture_source", "LOCAL", text="Local File")
+
+    source = str(getattr(props, "global_cloud_texture_source", "CLOUD") or "CLOUD").strip().upper()
+    if source == "LOCAL":
+        box.prop(props, "global_cloud_local_file", text="Cloud Texture")
+        if not str(getattr(props, "global_cloud_local_file", "") or "").strip():
+            box.label(text="Select a local Global Clouds texture file.", icon="INFO")
+    else:
+        box.prop(props, "global_cloud_folder", text="Clouds Folder")
+        if not str(getattr(props, "global_cloud_folder", "") or "").strip():
+            box.label(text="If empty, Planetka uses the texture cache folder.", icon="INFO")
+
+    obj = bpy.data.objects.get("Planetka Global Cloud Layer")
+    if obj is None:
+        box.label(text="Global Clouds will appear after Create Earth.", icon="INFO")
+    else:
+        box.label(text="Parented to Planetka Root.", icon="OUTLINER_OB_EMPTY")
+
+
+def _draw_clouds(layout, context):
+    layout.use_property_split = False
+    layout.use_property_decorate = False
+
+    scene = getattr(context, "scene", None)
+    props = getattr(scene, "planetka", None) if scene else None
+    if not props:
+        layout.label(text="Planetka settings unavailable.", icon="ERROR")
+        return
+
+    _draw_global_clouds(layout, props)
+
+
 def _draw_atmosphere(layout, context):
-    layout.use_property_split = True
+    layout.use_property_split = False
     layout.use_property_decorate = False
 
     scene = getattr(context, "scene", None)
@@ -1856,10 +2038,17 @@ def _draw_atmosphere(layout, context):
         return
 
     layout.prop(props, "atmosphere_enabled", text="Enable Atmosphere")
+    layout.label(text="Type")
+    mode_row = layout.row(align=True)
+    mode_row.prop_enum(props, "atmosphere_mode", "VOLUMETRIC", text="Cycles Optimized")
+    mode_row.prop_enum(props, "atmosphere_mode", "FAKE", text="EEVEE Optimized")
 
-    nodes = _iter_atmosphere_nodes()
+    mode = str(getattr(props, "atmosphere_mode", "VOLUMETRIC") or "VOLUMETRIC").strip().upper()
+    _draw_atmosphere_notice(layout, mode)
+
+    nodes = _iter_atmosphere_nodes(mode)
     if not nodes:
-        layout.label(text="Volumetric atmosphere shader not found.", icon="INFO")
+        layout.label(text="Atmosphere shader not found. Enable Atmosphere or Create Earth to append it.", icon="INFO")
         return
 
     many_nodes = len(nodes) > 1
@@ -1867,16 +2056,13 @@ def _draw_atmosphere(layout, context):
         container = layout.box() if many_nodes else layout
         if many_nodes:
             container.label(text=f"Atmosphere Shader Node {index}", icon="NODETREE")
-        sockets = _iter_atmosphere_input_sockets(node)
-        if not sockets:
+        if not _iter_atmosphere_input_sockets(node):
             container.label(text="No adjustable inputs found.", icon="INFO")
             continue
-        for socket in sockets:
-            row = container.row()
-            try:
-                row.prop(socket, "default_value", text=str(getattr(socket, "name", "Value")))
-            except (AttributeError, RuntimeError, TypeError, ValueError):
-                continue
+        if mode == "VOLUMETRIC":
+            _draw_volumetric_atmosphere_node(container, node)
+        else:
+            _draw_fake_atmosphere_node(container, node)
 
 
 class PLANETKA_PT_AccountPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
@@ -1963,7 +2149,7 @@ class PLANETKA_PT_NewEarthPanelFailure(_PLANETKA_PT_BaseSection, bpy.types.Panel
 
 
 class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Planetka Settings"
+    bl_label = "General Settings"
     bl_idname = "PLANETKA_PT_settings"
     bl_order = 9007
 
@@ -2200,7 +2386,7 @@ def _draw_earth_settings(layout, scene, enabled):
 
 
 class PLANETKA_PT_EarthSettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Earth Settings"
+    bl_label = "Earth Surface"
     bl_idname = "PLANETKA_PT_earth_settings"
     bl_order = 9004
 
@@ -2214,7 +2400,7 @@ class PLANETKA_PT_EarthSettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
 
 class PLANETKA_PT_EarthSettingsPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Earth Settings"
+    bl_label = "Earth Surface"
     bl_idname = "PLANETKA_PT_earth_settings_collapsed"
     bl_order = 9004
 
@@ -2234,7 +2420,7 @@ class PLANETKA_PT_AtmospherePanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        return False
+        return _is_earth_workflow_enabled()
 
     def draw(self, context):
         layout = self.layout
@@ -2249,7 +2435,7 @@ class PLANETKA_PT_AtmospherePanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.P
 
     @classmethod
     def poll(cls, context):
-        return False
+        return not _is_earth_workflow_enabled()
 
     def draw(self, context):
         layout = self.layout
@@ -2257,10 +2443,40 @@ class PLANETKA_PT_AtmospherePanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.P
         _draw_atmosphere(layout, context)
 
 
+class PLANETKA_PT_CloudsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
+    bl_label = "Clouds"
+    bl_idname = "PLANETKA_PT_clouds"
+    bl_order = 9006
+
+    @classmethod
+    def poll(cls, context):
+        return _is_earth_workflow_enabled()
+
+    def draw(self, context):
+        layout = self.layout
+        layout.enabled = _planetka_controls_enabled(_is_earth_workflow_enabled())
+        _draw_clouds(layout, context)
+
+
+class PLANETKA_PT_CloudsPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
+    bl_label = "Clouds"
+    bl_idname = "PLANETKA_PT_clouds_collapsed"
+    bl_order = 9006
+
+    @classmethod
+    def poll(cls, context):
+        return not _is_earth_workflow_enabled()
+
+    def draw(self, context):
+        layout = self.layout
+        layout.enabled = False
+        _draw_clouds(layout, context)
+
+
 class PLANETKA_PT_SunlightPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
     bl_label = "Sunlight"
     bl_idname = "PLANETKA_PT_sunlight"
-    bl_order = 9005
+    bl_order = 9007
     bl_options = {'DEFAULT_CLOSED'}
 
     @classmethod

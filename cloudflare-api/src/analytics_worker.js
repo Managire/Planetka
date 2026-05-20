@@ -12,8 +12,10 @@ import {
 } from "./worker/env.js";
 import {
   PLAN_CODE_FREE,
+  PLAN_CODE_INDIE,
   PLAN_CODE_PERSONAL,
   PLAN_CODE_PROFESSIONAL,
+  defaultSignupPlanCode,
   isBlockedStatus,
   isDeviceLimitExemptEmail,
   isQualityModeAllowedForPlan,
@@ -431,7 +433,10 @@ function normalizeDeviceId(value) {
 function normalizeTierCodeStrict(value) {
   const normalized = normalizePlanCode(value);
   if (normalized === PLAN_CODE_FREE || normalized === PLAN_CODE_PERSONAL) {
-    return PLAN_CODE_PERSONAL;
+    return PLAN_CODE_FREE;
+  }
+  if (normalized === PLAN_CODE_INDIE) {
+    return PLAN_CODE_INDIE;
   }
   if (normalized === PLAN_CODE_PROFESSIONAL) {
     return PLAN_CODE_PROFESSIONAL;
@@ -903,7 +908,7 @@ function fixedInternalPlanForEmail(email) {
   return FIXED_INTERNAL_TEST_PLAN_BY_EMAIL[normalizeEmail(email)] || "";
 }
 
-function resolveFixedInternalPlanForEmail(email, requestedPlan = PLAN_CODE_PROFESSIONAL) {
+function resolveFixedInternalPlanForEmail(email, requestedPlan = PLAN_CODE_FREE) {
   const fixedPlan = fixedInternalPlanForEmail(email);
   if (fixedPlan) {
     return fixedPlan;
@@ -970,7 +975,7 @@ async function sendNewUserLoginAlert(env, details = {}) {
   }
 }
 
-async function upsertUserByEmail(db, email, status = PLAN_CODE_PROFESSIONAL, options = {}, env = {}) {
+async function upsertUserByEmail(db, email, status = PLAN_CODE_FREE, options = {}, env = {}) {
   const normalizedEmail = normalizeEmail(email);
   await ensureUserConsentColumns(db);
   await ensureUserQualityAccessColumns(db);
@@ -1058,7 +1063,7 @@ async function resolveUserQualityAccessState(db, user, env = {}) {
   void env;
   const storedPlanCode = normalizeTierCodeStrict(user && user.status);
   if (!user || !user.id) {
-    return { storedPlanCode: PLAN_CODE_PERSONAL, qualityAccessPlanCode: PLAN_CODE_PERSONAL };
+    return { storedPlanCode: PLAN_CODE_FREE, qualityAccessPlanCode: PLAN_CODE_FREE };
   }
   if (!storedPlanCode && !isBlockedStatus(user && user.status)) {
     throw new Error("invalid_user_status");
@@ -1452,6 +1457,7 @@ const authSessionDeps = {
 const authApiKeyDeps = {
   PLAN_CODE_FREE,
   PLAN_CODE_PROFESSIONAL,
+  defaultSignupPlanCode,
   DEFAULT_API_KEY_REQUEST_MIN_AGE_SECONDS,
   DEFAULT_RATE_LIMIT_AUTH_START_IP_LIMIT,
   DEFAULT_RATE_LIMIT_AUTH_START_IP_WINDOW_SECONDS,
@@ -1550,6 +1556,7 @@ const authSessionRouteHandlers = createAuthSessionRouteHandlers(authSessionRoute
 const apiKeyPageDeps = {
   PLAN_CODE_FREE,
   PLAN_CODE_PROFESSIONAL,
+  defaultSignupPlanCode,
   DEFAULT_CONTACT_URL,
   DEFAULT_PRIVACY_URL,
   DEFAULT_TERMS_URL,
@@ -1951,6 +1958,8 @@ const ANALYTICS_QUERY_DEPS = {
   INTERNAL_TEST_ANALYTICS_EMAIL_PATTERNS,
   MAX_ANALYTICS_WINDOW_MINUTES,
   PLAN_CODE_FREE,
+  PLAN_CODE_INDIE,
+  PLAN_CODE_PROFESSIONAL,
   clampNonNegativeInt,
   countRowsFromQuery,
   dbAll,
@@ -2096,6 +2105,8 @@ const ADMIN_USER_DEPS = {
   parseCsvEmailSet,
   parseBooleanFlag,
   isBlockedStatus,
+  PLAN_CODE_FREE,
+  PLAN_CODE_INDIE,
   PLAN_CODE_PERSONAL,
   PLAN_CODE_PROFESSIONAL,
   randomToken,

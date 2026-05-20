@@ -9,8 +9,10 @@ Planetka 0.8.2 does not use tile-by-tile pricing, data-pack pricing, scene-speci
 The active add-on pricing/access model is intentionally simple:
 
 ```text
-Personal account -> free -> selected free locations only
-Professional account -> paid or manually granted -> worldwide streaming
+Free account -> free -> Preview texture quality worldwide
+Indie account -> EUR 70 one-time or manually granted -> Preview and Balanced texture quality worldwide
+Pro account -> EUR 280 one-time or manually granted -> Preview, Balanced, and Full texture quality worldwide
+Indie to Pro upgrade -> EUR 210 one-time
 ```
 
 Preview, Balanced, and Full Quality are quality modes, not purchasable products.
@@ -26,7 +28,7 @@ Do not use the legacy pricing system for the 0.8.2 Blender add-on:
 - no purchase-history UI;
 - no licenced-data download/archive UI;
 - no client-side or backend tile-price calculation for add-on resolves;
-- no checkout quote required before Full Quality resolve for Professional accounts.
+- no checkout quote required before Full Quality resolve for Pro accounts.
 
 ## Legacy Website/Data-Pack System
 
@@ -44,10 +46,10 @@ Active access decisions for 0.8.2 are made by:
 - `auth.py`
 - `r2_source.py`
 
-The Blender client sends the current navigation point when creating a tile session. The tile Worker enforces whether that account can stream the requested region and quality.
+The Blender client sends the requested texture quality when creating a tile session. The tile Worker enforces whether that account tier can stream that quality for the duration of the short-lived session.
 
-## Professional Checkout Status
+## Indie/Pro Checkout Status
 
-Professional checkout is not currently ready for public release. The current upgrade URL is a placeholder/missing page and must be implemented before paid Professional upgrades are offered.
+Indie/Pro checkout is not currently ready for public release. The current upgrade URL is a placeholder/missing page and must be implemented before paid upgrades are offered.
 
-Until checkout is implemented, Professional access must be granted manually or through controlled backend test setup.
+Until checkout is implemented, Indie and Pro access must be granted manually or through controlled backend test setup.

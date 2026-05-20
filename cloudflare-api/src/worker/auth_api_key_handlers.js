@@ -22,7 +22,9 @@ export function createAuthApiKeyHandlers(deps) {
     const acceptTerms = deps.parseBooleanFlag(body.accept_terms);
     const acceptPrivacy = deps.parseBooleanFlag(body.accept_privacy);
     const optInNews = deps.parseBooleanFlag(body.opt_in_news);
-    const requestedPlan = deps.PLAN_CODE_PROFESSIONAL || deps.PLAN_CODE_FREE;
+    const requestedPlan = typeof deps.defaultSignupPlanCode === "function"
+      ? deps.defaultSignupPlanCode(env)
+      : deps.PLAN_CODE_PROFESSIONAL;
     const honeypot = String(body.website || "").trim();
     const submittedAtMs = deps.parseNonNegativeInteger(body.submitted_at_ms, 0);
     const minFormAgeMs = Math.max(
@@ -242,7 +244,9 @@ export function createAuthApiKeyHandlers(deps) {
     let user = await deps.upsertUserByEmail(
       db,
       email,
-      deps.PLAN_CODE_PROFESSIONAL || deps.PLAN_CODE_FREE,
+      requestRow.requested_plan || (typeof deps.defaultSignupPlanCode === "function"
+        ? deps.defaultSignupPlanCode(env)
+        : deps.PLAN_CODE_PROFESSIONAL),
       {},
       env,
     );

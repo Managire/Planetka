@@ -1,6 +1,7 @@
 export const PLAN_CODE_FREE = "free";
-export const PLAN_CODE_PERSONAL = "personal";
-export const PLAN_CODE_PROFESSIONAL = "professional";
+export const PLAN_CODE_PERSONAL = PLAN_CODE_FREE;
+export const PLAN_CODE_INDIE = "indie";
+export const PLAN_CODE_PROFESSIONAL = "pro";
 
 const DEFAULT_DEVICE_LIMIT_EXEMPT_EMAILS = "tom.griger@gmail.com";
 
@@ -13,8 +14,11 @@ export function normalizeUserStatus(value) {
   if (["professional", "pro", "paid", "unlimited"].includes(normalized)) {
     return PLAN_CODE_PROFESSIONAL;
   }
+  if (["indie", "balanced"].includes(normalized)) {
+    return PLAN_CODE_INDIE;
+  }
   if (["personal", PLAN_CODE_FREE, ""].includes(normalized)) {
-    return PLAN_CODE_PERSONAL;
+    return PLAN_CODE_FREE;
   }
   return normalized;
 }
@@ -53,7 +57,23 @@ export function isBlockedStatus(statusValue) {
 
 export function normalizeRequestedPlan(value) {
   const normalized = normalizePlanCode(value);
-  return normalized === PLAN_CODE_PROFESSIONAL ? PLAN_CODE_PROFESSIONAL : PLAN_CODE_PERSONAL;
+  if (normalized === PLAN_CODE_PROFESSIONAL) return PLAN_CODE_PROFESSIONAL;
+  if (normalized === PLAN_CODE_INDIE) return PLAN_CODE_INDIE;
+  return PLAN_CODE_FREE;
+}
+
+export function betaProAccountsEnabled(env = {}) {
+  const raw = String(
+    env.PLANETKA_BETA_DEFAULT_PRO
+    ?? env.BETA_DEFAULT_PRO
+    ?? env.BETA_PRO_ACCOUNTS
+    ?? "1",
+  ).trim().toLowerCase();
+  return !["0", "false", "off", "no"].includes(raw);
+}
+
+export function defaultSignupPlanCode(env = {}) {
+  return betaProAccountsEnabled(env) ? PLAN_CODE_PROFESSIONAL : PLAN_CODE_FREE;
 }
 
 export function resolvePolicyPlanCode(user, env = {}) {
@@ -80,19 +100,31 @@ export function normalizeQualityMode(value) {
 }
 
 export function isQualityModeAllowedForPlan(planCode, qualityMode) {
-  void planCode;
-  void qualityMode;
-  return true;
+  const plan = normalizeRequestedPlan(planCode);
+  const quality = normalizeQualityMode(qualityMode);
+  if (plan === PLAN_CODE_PROFESSIONAL) return true;
+  if (plan === PLAN_CODE_INDIE) return quality === "preview" || quality === "balanced";
+  return quality === "preview";
 }
 
 export function qualityModeNotAllowedMessage(planCode, qualityMode) {
-  void planCode;
-  void qualityMode;
-  return "Selected texture quality is available.";
+  const plan = normalizeRequestedPlan(planCode);
+  const quality = normalizeQualityMode(qualityMode);
+  if (plan === PLAN_CODE_INDIE && quality === "full") {
+    return "Full texture quality requires a Pro account.";
+  }
+  if (plan === PLAN_CODE_FREE && quality !== "preview") {
+    return "Balanced and Full texture quality require an Indie or Pro account.";
+  }
+  return "Selected texture quality is not available for this account.";
 }
 
 export function isProfessionalPlan(planCode) {
   return normalizeRequestedPlan(planCode) === PLAN_CODE_PROFESSIONAL;
+}
+
+export function isIndiePlan(planCode) {
+  return normalizeRequestedPlan(planCode) === PLAN_CODE_INDIE;
 }
 
 const PERSONAL_FREE_REGION_BOXES = [
@@ -175,7 +207,7 @@ export function personalFreeRegionForTileFileName(fileName, expectedRegionId = "
 }
 
 export function personalFreeLocationBlockedMessage() {
-  return "Personal accounts can stream Planetka free locations: New Zealand and Iceland. Upgrade to Professional for global access.";
+  return "Free accounts can stream Preview texture quality worldwide. Upgrade to Indie for Balanced or Pro for Full.";
 }
 
 export function accountTierForPlanCode(planCode) {
@@ -183,17 +215,28 @@ export function accountTierForPlanCode(planCode) {
 }
 
 export function planDisplayName(planCode) {
-  return normalizeRequestedPlan(planCode) === PLAN_CODE_PROFESSIONAL ? "Professional" : "Personal";
+  const plan = normalizeRequestedPlan(planCode);
+  if (plan === PLAN_CODE_PROFESSIONAL) return "Pro";
+  if (plan === PLAN_CODE_INDIE) return "Indie";
+  return "Free";
 }
 
 export function planAccessSummary(planCode) {
-  return normalizeRequestedPlan(planCode) === PLAN_CODE_PROFESSIONAL
-    ? "Professional account: Preview, Balanced, and Full Quality streaming."
-    : "Personal account: Preview, Balanced, and Full Quality streaming.";
+  const plan = normalizeRequestedPlan(planCode);
+  if (plan === PLAN_CODE_PROFESSIONAL) {
+    return "Pro account: Preview, Balanced, and Full texture quality streaming.";
+  }
+  if (plan === PLAN_CODE_INDIE) {
+    return "Indie account: Preview and Balanced texture quality streaming.";
+  }
+  return "Free account: Preview texture quality streaming.";
 }
 
 export function resolvePlanPriority(planCode) {
-  return normalizeRequestedPlan(planCode) === PLAN_CODE_PROFESSIONAL ? 10 : 0;
+  const plan = normalizeRequestedPlan(planCode);
+  if (plan === PLAN_CODE_PROFESSIONAL) return 20;
+  if (plan === PLAN_CODE_INDIE) return 10;
+  return 0;
 }
 
 export function evaluateStripePlanPurchaseGuard(existingPlanCode, requestedPlanCode) {

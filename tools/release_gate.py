@@ -316,10 +316,10 @@ def main() -> int:
     if combined_worker_src:
         required_worker_markers = [
             (
-                "beta public API key request defaults to Professional",
+                "beta public API key request uses beta-aware default plan",
                 [
-                    "const requestedPlan = PLAN_CODE_PROFESSIONAL",
-                    "const requestedPlan = deps.PLAN_CODE_PROFESSIONAL",
+                    "deps.defaultSignupPlanCode(env)",
+                    "defaultSignupPlanCode(env)",
                 ],
             ),
         ]

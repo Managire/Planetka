@@ -1,7 +1,8 @@
 import webbrowser
+from urllib.parse import urlencode, urlsplit, urlunsplit, parse_qsl
 
 import bpy
-from bpy.props import BoolProperty
+from bpy.props import BoolProperty, StringProperty
 
 from ..auth import (
     AuthApiError,
@@ -240,6 +241,8 @@ class PLANETKA_OT_AccountUpgrade(bpy.types.Operator):
     bl_label = "Upgrade Licence"
     bl_description = "Open Planetka pricing page"
 
+    target_plan: StringProperty(default="")
+
     def execute(self, context):
         prefs = get_prefs()
         if not prefs:
@@ -253,6 +256,15 @@ class PLANETKA_OT_AccountUpgrade(bpy.types.Operator):
         upgrade_url = get_upgrade_url(prefs)
         if not upgrade_url:
             return fail(self, "Planetka pricing URL is not configured.", logger=logger)
+        target_plan = str(getattr(self, "target_plan", "") or "").strip().lower()
+        if target_plan in {"indie", "pro"}:
+            try:
+                parts = urlsplit(upgrade_url)
+                query = dict(parse_qsl(parts.query, keep_blank_values=True))
+                query["target"] = target_plan
+                upgrade_url = urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+            except (TypeError, ValueError):
+                pass
         if not _open_account_url(upgrade_url):
             return fail(self, "Could not open Planetka pricing page.", logger=logger)
         self.report({'INFO'}, "Planetka pricing page opened in browser.")

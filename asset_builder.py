@@ -2468,6 +2468,69 @@ def _configure_volumetric_atmosphere_object(obj):
         logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
 
 
+def _atmosphere_scale_for_radius(base_scale, scene=None, earth_radius_bu=None):
+    if earth_radius_bu is None:
+        earth_radius_bu = _scene_earth_radius_bu(scene)
+    try:
+        radius = max(1e-6, float(earth_radius_bu))
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        radius = 2.0
+    except (RuntimeError, TypeError, ValueError):
+        radius = 2.0
+    scale = float(base_scale) * (float(radius) / 2.0)
+    return (scale, scale, scale)
+
+
+def _sync_atmosphere_object_transform(obj, root, scale):
+    if obj is None:
+        return False
+    changed = False
+    try:
+        if root is not None:
+            if getattr(obj, "parent", None) is not root:
+                obj.parent = root
+                obj.matrix_parent_inverse = root.matrix_world.inverted()
+                changed = True
+        else:
+            if getattr(obj, "parent", None) is not None:
+                obj.parent = None
+                changed = True
+        if tuple(getattr(obj, "location", ())) != (0.0, 0.0, 0.0):
+            obj.location = (0.0, 0.0, 0.0)
+            changed = True
+        current_rotation = tuple(float(v) for v in tuple(getattr(obj, "rotation_euler", (0.0, 0.0, 0.0))))
+        if any(abs(current_rotation[index]) > 1e-9 for index in range(min(3, len(current_rotation)))):
+            obj.rotation_euler = (0.0, 0.0, 0.0)
+            changed = True
+        current_scale = tuple(float(v) for v in tuple(getattr(obj, "scale", (1.0, 1.0, 1.0))))
+        if any(abs(current_scale[index] - float(scale[index])) > 1e-9 for index in range(3)):
+            obj.scale = scale
+            changed = True
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+    return changed
+
+
+def sync_atmosphere_scale_for_radius(scene=None, earth_radius_bu=None):
+    scene = scene or getattr(bpy.context, "scene", None)
+    root = ensure_planetka_root(scene) if scene is not None else None
+    changed = False
+    changed |= _sync_atmosphere_object_transform(
+        _find_fake_atmosphere_object(),
+        root,
+        _atmosphere_scale_for_radius(FAKE_ATMOSPHERE_SCALE_FACTOR, scene=scene, earth_radius_bu=earth_radius_bu),
+    )
+    changed |= _sync_atmosphere_object_transform(
+        _find_volumetric_atmosphere_object(),
+        root,
+        _atmosphere_scale_for_radius(VOLUMETRIC_ATMOSPHERE_SCALE_FACTOR, scene=scene, earth_radius_bu=earth_radius_bu),
+    )
+    return bool(changed)
+
+
 def ensure_static_fake_atmosphere(scene=None, earth_surface=None):
     scene = scene or getattr(bpy.context, "scene", None)
     if scene is None:
@@ -2504,38 +2567,11 @@ def ensure_static_fake_atmosphere(scene=None, earth_surface=None):
     target_collections = [fake_collection] if fake_collection is not None else []
     _set_object_collections(fake_obj, target_collections)
 
-    try:
-        if root is not None:
-            fake_obj.parent = root
-            fake_obj.matrix_parent_inverse = root.matrix_world.inverted()
-            fake_obj.location = (0.0, 0.0, 0.0)
-            fake_obj.rotation_euler = (0.0, 0.0, 0.0)
-            fake_obj.scale = (
-                float(FAKE_ATMOSPHERE_SCALE_FACTOR),
-                float(FAKE_ATMOSPHERE_SCALE_FACTOR),
-                float(FAKE_ATMOSPHERE_SCALE_FACTOR),
-            )
-        elif earth_surface is not None:
-            fake_obj.parent = earth_surface
-            fake_obj.matrix_parent_inverse = earth_surface.matrix_world.inverted()
-            fake_obj.location = (0.0, 0.0, 0.0)
-            fake_obj.rotation_euler = (0.0, 0.0, 0.0)
-            fake_obj.scale = (
-                float(FAKE_ATMOSPHERE_SCALE_FACTOR),
-                float(FAKE_ATMOSPHERE_SCALE_FACTOR),
-                float(FAKE_ATMOSPHERE_SCALE_FACTOR),
-            )
-        else:
-            fake_obj.parent = None
-            fake_obj.scale = (
-                float(FAKE_ATMOSPHERE_SCALE_FACTOR),
-                float(FAKE_ATMOSPHERE_SCALE_FACTOR),
-                float(FAKE_ATMOSPHERE_SCALE_FACTOR),
-            )
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+    _sync_atmosphere_object_transform(
+        fake_obj,
+        root,
+        _atmosphere_scale_for_radius(FAKE_ATMOSPHERE_SCALE_FACTOR, scene=scene),
+    )
 
     try:
         fake_obj[FAKE_ATMOSPHERE_ROLE_KEY] = FAKE_ATMOSPHERE_ROLE_VALUE
@@ -2564,39 +2600,50 @@ def ensure_volumetric_atmosphere(scene=None, earth_surface=None):
     target_collections = [atmosphere_collection] if atmosphere_collection is not None else []
     _set_object_collections(atmosphere_obj, target_collections)
 
+    _sync_atmosphere_object_transform(
+        atmosphere_obj,
+        root,
+        _atmosphere_scale_for_radius(VOLUMETRIC_ATMOSPHERE_SCALE_FACTOR, scene=scene),
+    )
+
+    return atmosphere_obj
+
+
+def _set_atmosphere_object_visible(obj, visible):
+    if obj is None:
+        return False
+    hidden = not bool(visible)
+    changed = False
     try:
-        if root is not None:
-            atmosphere_obj.parent = root
-            atmosphere_obj.matrix_parent_inverse = root.matrix_world.inverted()
-            atmosphere_obj.location = (0.0, 0.0, 0.0)
-            atmosphere_obj.rotation_euler = (0.0, 0.0, 0.0)
-            atmosphere_obj.scale = (
-                float(VOLUMETRIC_ATMOSPHERE_SCALE_FACTOR),
-                float(VOLUMETRIC_ATMOSPHERE_SCALE_FACTOR),
-                float(VOLUMETRIC_ATMOSPHERE_SCALE_FACTOR),
-            )
-        elif earth_surface is not None:
-            atmosphere_obj.parent = earth_surface
-            atmosphere_obj.matrix_parent_inverse = earth_surface.matrix_world.inverted()
-            atmosphere_obj.location = (0.0, 0.0, 0.0)
-            atmosphere_obj.rotation_euler = (0.0, 0.0, 0.0)
-            atmosphere_obj.scale = (
-                float(VOLUMETRIC_ATMOSPHERE_SCALE_FACTOR),
-                float(VOLUMETRIC_ATMOSPHERE_SCALE_FACTOR),
-                float(VOLUMETRIC_ATMOSPHERE_SCALE_FACTOR),
-            )
-        else:
-            atmosphere_obj.scale = (
-                float(VOLUMETRIC_ATMOSPHERE_SCALE_FACTOR),
-                float(VOLUMETRIC_ATMOSPHERE_SCALE_FACTOR),
-                float(VOLUMETRIC_ATMOSPHERE_SCALE_FACTOR),
-            )
+        if bool(getattr(obj, "hide_viewport", False)) != hidden:
+            obj.hide_viewport = hidden
+            changed = True
+        if bool(getattr(obj, "hide_render", False)) != hidden:
+            obj.hide_render = hidden
+            changed = True
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
     except (RuntimeError, TypeError, ValueError, AttributeError):
         logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+    return changed
 
-    return atmosphere_obj
+
+def ensure_atmosphere_for_mode(scene=None, earth_surface=None, mode="VOLUMETRIC"):
+    scene = scene or getattr(bpy.context, "scene", None)
+    mode_token = str(mode or "VOLUMETRIC").strip().upper()
+    if mode_token in {"FAKE", "EEVEE", "STATIC"}:
+        active_obj = ensure_static_fake_atmosphere(scene=scene, earth_surface=earth_surface)
+        volumetric_obj = ensure_volumetric_atmosphere(scene=scene, earth_surface=earth_surface)
+        _set_atmosphere_object_visible(active_obj, True)
+        _set_atmosphere_object_visible(volumetric_obj, True)
+        return active_obj
+    else:
+        active_obj = ensure_volumetric_atmosphere(scene=scene, earth_surface=earth_surface)
+        inactive_obj = _find_fake_atmosphere_object()
+
+    _set_atmosphere_object_visible(active_obj, True)
+    _set_atmosphere_object_visible(inactive_obj, False)
+    return active_obj
 
 
 def set_atmosphere_collection_enabled(scene=None, enabled=True):

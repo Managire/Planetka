@@ -31,9 +31,10 @@ Planetka can be used with Blender EEVEE and Cycles. Higher-resolution textures, 
 
 ## Account access
 
-Planetka uses two account types:
+Planetka uses three account types:
 
-- Personal account: selected free locations only, currently New Zealand and Iceland.
-- Professional account: worldwide streaming in Preview, Balanced, and Full Quality.
+- Free account: worldwide streaming in Preview texture quality.
+- Indie account: worldwide streaming in Preview and Balanced texture quality.
+- Pro account: worldwide streaming in Preview, Balanced, and Full texture quality.
 
-Professional checkout must be implemented and tested before paid public Professional upgrades are offered.
+Indie/Pro checkout must be implemented and tested before paid public upgrades are offered.

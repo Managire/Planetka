@@ -736,64 +736,29 @@ def _run_update_install_worker(force=False):
             if actual_sha != expected_sha:
                 raise RuntimeError("update_sha256_mismatch")
 
+        state["pending"] = {
+            "version": latest_version,
+            "zip_path": str(zip_path),
+            "sha256": expected_sha,
+            "download_url": download_url,
+            "release_notes_url": release_notes_url,
+            "downloaded_at": now_ts,
+        }
+        state["available_update"] = None
+        _save_state(state)
         _set_runtime(
-            checking=True,
-            latest_version=latest_version,
-            release_notes_url=release_notes_url,
+            checking=False,
+            latest_version="",
+            release_notes_url="",
             update_ready=False,
-            message="Installing update…",
-            phase="installing",
+            last_check_at=now_ts,
+            message=f"Update {latest_version} downloaded. Restart Blender to finish installation.",
+            last_error="",
+            phase="ready",
+            downloaded_bytes=0,
+            download_total_bytes=0,
         )
-        try:
-            _apply_zip_update(zip_path, expected_version=latest_version)
-            refreshed = get_local_version()
-            installed_version = str(refreshed or latest_version).strip()
-            state["pending"] = None
-            state["available_update"] = None
-            state["last_apply_at"] = now_ts
-            state["last_applied_version"] = installed_version
-            state["current_version"] = installed_version
-            state["last_error"] = ""
-            _save_state(state)
-            _set_runtime(
-                checking=False,
-                current_version=installed_version,
-                latest_version="",
-                release_notes_url="",
-                update_ready=False,
-                last_check_at=now_ts,
-                message=f"Updated to {installed_version}.",
-                last_error="",
-                phase="idle",
-                downloaded_bytes=0,
-                download_total_bytes=0,
-            )
-            logger.info("Planetka updater: installed version %s", installed_version)
-        except _UPDATER_RUNTIME_EXCEPTIONS:
-            # Safe fallback: keep staged package for import-time apply.
-            state["pending"] = {
-                "version": latest_version,
-                "zip_path": str(zip_path),
-                "sha256": expected_sha,
-                "download_url": download_url,
-                "release_notes_url": release_notes_url,
-                "downloaded_at": now_ts,
-            }
-            state["available_update"] = None
-            _save_state(state)
-            _set_runtime(
-                checking=False,
-                latest_version="",
-                release_notes_url="",
-                update_ready=False,
-                last_check_at=now_ts,
-                message=f"Update {latest_version} downloaded. Restart Blender to finish installation.",
-                last_error="",
-                phase="ready",
-                downloaded_bytes=0,
-                download_total_bytes=0,
-            )
-            logger.debug("Planetka updater: live install failed, staged for restart apply", exc_info=True)
+        logger.info("Planetka updater: staged version %s for restart apply", latest_version)
     except urllib.error.HTTPError as exc:
         state["last_check_at"] = now_ts
         state["last_error"] = f"network:{exc}"

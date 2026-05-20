@@ -8,17 +8,18 @@ This folder contains the user-facing Planetka licence, privacy, attribution, and
 
 Planetka 0.8.2 uses a streaming account model:
 
-- **Personal account**: free access to selected locations, currently New Zealand and Iceland.
-- **Professional account**: paid or manually granted access to worldwide Planetka streaming.
+- **Free account**: free worldwide Preview texture-quality streaming.
+- **Indie account**: paid or manually granted worldwide Preview and Balanced texture-quality streaming.
+- **Pro account**: paid or manually granted worldwide Preview, Balanced, and Full texture-quality streaming.
 - **Quality modes**: Preview, Balanced, and Full Quality are quality choices inside the add-on. They are not separate products or tile purchases.
 
 The active Blender add-on does not sell individual tiles, scene-specific tile licences, animation tile licences, or data packs. It also does not provide a purchase-history or raw-data download library.
 
-## What Professional access allows
+## What paid access allows
 
-Professional access allows commercial and non-commercial use of rendered outputs created with Planetka streamed textures, subject to these terms, attribution obligations, and fair-usage controls.
+Indie and Pro access allow commercial and non-commercial use of rendered outputs created with Planetka streamed textures, subject to these terms, attribution obligations, and fair-usage controls.
 
-Professional access does not allow resale, redistribution, hosting, API access, extraction, scraping, AI dataset use, raw tile redistribution, or operation of a competing map/texture service.
+Paid access does not allow resale, redistribution, hosting, API access, extraction, scraping, AI dataset use, raw tile redistribution, or operation of a competing map/texture service.
 
 ## Attribution
 

@@ -692,6 +692,7 @@ def _normalize_extra_place_entry(raw):
         "name": name,
         "admin1_code": admin1_code,
         "country_code": country_code,
+        "feature_code": str(raw.get("feature_code", "") or "").strip().upper(),
         "population": int(population),
         "display_name": display_name,
         "latitude": latitude,
@@ -966,6 +967,17 @@ def _entry_place_type(entry):
     if category == "island":
         return "Island"
     if category.startswith("mountain"):
+        feature_code = str(entry.get("feature_code", "") or "").strip().upper()
+        if feature_code == "MTS":
+            return "Mountain Range"
+        mountain_text = " ".join(
+            [str(entry.get("name", "") or "")]
+            + [str(alias or "") for alias in entry.get("aliases", []) or []]
+        ).lower()
+        if any(token in mountain_text for token in (" range", " ranges", " mountains", " chain")):
+            return "Mountain Range"
+        if feature_code in {"VOLC", "VLC"}:
+            return "Volcano"
         return "Mountain"
     population = _parse_int(entry.get("population", 0), default=0)
     if population > 0:

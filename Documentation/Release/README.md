@@ -18,8 +18,10 @@ Internal release checklists, runbooks, compatibility notes, developer notes, and
 
 Planetka 0.8.2 is prepared around a simplified streaming model:
 
-- **Personal account**: free account access, limited to New Zealand and Iceland.
-- **Professional account**: paid or manually granted account access, worldwide streaming.
+- **Free account**: free account access, worldwide Preview texture-quality streaming.
+- **Indie account**: one-time EUR 70 paid or manually granted account access, worldwide Preview and Balanced texture-quality streaming.
+- **Pro account**: one-time EUR 280 paid or manually granted account access, worldwide Preview, Balanced, and Full texture-quality streaming.
+- **Indie to Pro upgrade**: one-time EUR 210.
 - **Quality modes**: Preview, Balanced, and Full Quality are normal streaming quality choices. They are not separate purchases.
 - **No in-addon data-pack commerce**: the Blender add-on no longer sells individual tiles, scene-specific texture licences, animation texture licences, or data packs.
 - **No purchase history/download archive**: the active add-on workflow streams required data into a temporary working cache. It does not provide a supported raw-data download library.
@@ -27,7 +29,7 @@ Planetka 0.8.2 is prepared around a simplified streaming model:
 
 ## Known blocker before public paid release
 
-Professional checkout is not ready for public use yet. The current upgrade URL points to `https://www.planetka.io/blender/pricing`, which currently returns 404. Do not publish paid Professional upgrades until the checkout page and backend fulfilment are implemented and tested end-to-end.
+Indie/Pro checkout is not ready for public use yet. The current upgrade URL points to `https://www.planetka.io/blender/pricing`, which currently returns 404. Do not publish paid upgrades until the checkout page and backend fulfilment are implemented and tested end-to-end.
 
 ## Public release checks
 
@@ -38,4 +40,4 @@ Before publishing a release:
 - regenerate legal PDFs with `tools/generate_legal_pdfs.py` after any terms/privacy change;
 - upload the release zip and legal PDFs to the configured R2 keys;
 - deploy split Workers only with explicit `--config` files after confirming each `wrangler deploy --config ... --dry-run` shows restricted public access, current legal versions, and current updater metadata;
-- run Blender smoke tests for Create Earth, Preview/Balanced/Full Quality resolves, Personal location restrictions, Professional worldwide access, animation preflight/rendering, update checks, and offline/error handling.
+- run Blender smoke tests for Create Earth, Free Preview-only access, Indie Preview/Balanced access, Pro Preview/Balanced/Full access, animation preflight/rendering, update checks, and offline/error handling.

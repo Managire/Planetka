@@ -3,7 +3,7 @@ import importlib
 import math
 from mathutils import Matrix, Quaternion, Vector
 
-from ..asset_builder import ensure_planetka_root
+from ..asset_builder import ensure_planetka_root, sync_atmosphere_scale_for_radius
 from ..error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from ..extension_prefs import get_earth_object, get_prefs
 from ..sanity_utils import _normalize_texture_source_path
@@ -388,6 +388,13 @@ def _set_planetka_earth_radius_bu(scene, target_radius_bu):
             ensure_preview_object(earth_obj)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         _log_recoverable_once("PKA-OPS-039", "Failed syncing preview radius after Earth radius change")
+
+    try:
+        sync_atmosphere_scale_for_radius(scene=scene, earth_radius_bu=float(target_radius))
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        _log_recoverable_once("PKA-OPS-040", "Failed syncing atmosphere radius after Earth radius change")
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        _log_recoverable_once("PKA-OPS-040", "Failed syncing atmosphere radius after Earth radius change")
 
     # Keep Planetka camera in the same relative navigation shot immediately
     # after radius change (without requiring a manual UI nudge), regardless

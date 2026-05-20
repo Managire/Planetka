@@ -1,6 +1,14 @@
 import bpy
 
 
+def _atmosphere_mode_for_create_earth(scene):
+    try:
+        engine = str(getattr(getattr(scene, "render", None), "engine", "") or "").upper()
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        engine = ""
+    return "VOLUMETRIC" if engine == "CYCLES" else "FAKE"
+
+
 def _snapshot_camera_view_areas(context):
     snapshots = []
     seen_region_data = set()
@@ -186,6 +194,8 @@ def add_earth_execute(operator, context, deps):
     _require_authenticated_account = deps["_require_authenticated_account"]
     invalidate_texture_source_health_cache = deps["invalidate_texture_source_health_cache"]
     ensure_planetka_assets = deps["ensure_planetka_assets"]
+    ensure_atmosphere_for_mode = deps.get("ensure_atmosphere_for_mode")
+    ensure_global_cloud_layer = deps.get("ensure_global_cloud_layer")
     _initialize_props_from_imported_planetka = deps["_initialize_props_from_imported_planetka"]
     _sync_idprops_from_props = deps["_sync_idprops_from_props"]
     ensure_planetka_root = deps["ensure_planetka_root"]
@@ -297,6 +307,23 @@ def add_earth_execute(operator, context, deps):
         _apply_startup_setup_for_create_earth(scene, props)
     except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed applying startup setup profile", exc_info=True)
+
+    try:
+        atmosphere_mode = _atmosphere_mode_for_create_earth(scene)
+        props.atmosphere_mode = atmosphere_mode
+        props.atmosphere_enabled = True
+        _sync_idprops_from_props(scene, ("atmosphere_mode", "atmosphere_enabled"))
+        if callable(ensure_atmosphere_for_mode):
+            ensure_atmosphere_for_mode(scene=scene, earth_surface=new_obj, mode=atmosphere_mode)
+    except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed creating default atmosphere on Create Earth", exc_info=True)
+
+    try:
+        if bool(getattr(props, "enable_global_clouds", False)) and callable(ensure_global_cloud_layer):
+            ensure_global_cloud_layer(scene=scene)
+    except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed creating global clouds on Create Earth", exc_info=True)
+
     planetka_camera = _ensure_planetka_create_camera(scene)
     if planetka_camera is None:
         logger.debug("Planetka: failed creating Planetka Camera", exc_info=True)

@@ -39,7 +39,7 @@ GLOBAL_CLOUD_REFERENCE_BLEND_PATH = os.path.join(
     "Resources",
     "planetka_global_cloud_layer_min.blend",
 )
-REMOTE_GLOBAL_CLOUDS_FOLDER = "clouds/global"
+REMOTE_GLOBAL_CLOUDS_FOLDER = "clouds_global"
 REMOTE_GLOBAL_CLOUD_TEXTURE_FILE = "Planetka_Global_Clouds_16K.tif"
 REMOTE_LOCAL_CLOUDS_FOLDER = "clouds/local"
 REMOTE_VDB_CLOUDS_FOLDER = "clouds/vdb"

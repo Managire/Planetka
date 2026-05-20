@@ -48,9 +48,9 @@ export async function handleTileSessionStart(request, env, deps) {
     parseJson,
     issueTileSessionToken,
     normalizeRequestedPlan,
-    isProfessionalPlan,
-    personalFreeRegionForPoint,
-    personalFreeLocationBlockedMessage,
+    normalizeQualityMode,
+    isQualityModeAllowedForPlan,
+    qualityModeNotAllowedMessage,
     requireDb,
     json: jsonResponse,
     createTileDownloadSession,
@@ -84,34 +84,26 @@ export async function handleTileSessionStart(request, env, deps) {
   const planCode = normalizeRequestedPlan(
     auth && (auth.qualityAccessPlanCode || auth.planCode || auth.user && auth.user.status),
   );
-  let personalFreeRegion = "";
-  if (!isProfessionalPlan(planCode)) {
-    const navLatitude = parseFiniteNumber(firstNonEmpty(
-      body && (body.nav_latitude_deg ?? body.navLatitudeDeg ?? body.nav_latitude ?? body.navLatitude),
-      request.headers.get("X-Planetka-Nav-Latitude"),
-    ));
-    const navLongitude = parseFiniteNumber(firstNonEmpty(
-      body && (body.nav_longitude_deg ?? body.navLongitudeDeg ?? body.nav_longitude ?? body.navLongitude),
-      request.headers.get("X-Planetka-Nav-Longitude"),
-    ));
-    const region = typeof personalFreeRegionForPoint === "function"
-      ? personalFreeRegionForPoint(navLatitude, navLongitude)
-      : null;
-    if (!region || !region.id) {
-      return jsonResponse(
-        {
-          ok: false,
-          error: "not_allowed_for_tier",
-          message: typeof personalFreeLocationBlockedMessage === "function"
-            ? personalFreeLocationBlockedMessage()
-            : "Personal accounts can stream Planetka free locations only.",
-        },
-        403,
-        env,
-      );
-    }
-    personalFreeRegion = String(region.id || "").trim();
+  const normalizedQualityMode = normalizeQualityMode(requestedQualityMode);
+  if (
+    typeof isQualityModeAllowedForPlan === "function"
+    && !isQualityModeAllowedForPlan(planCode, normalizedQualityMode)
+  ) {
+    return jsonResponse(
+      {
+        ok: false,
+        error: "quality_mode_not_allowed_for_tier",
+        message: typeof qualityModeNotAllowedMessage === "function"
+          ? qualityModeNotAllowedMessage(planCode, normalizedQualityMode)
+          : "Selected texture quality is not available for this account.",
+        requested_quality_mode: normalizedQualityMode,
+        plan_code: planCode,
+      },
+      403,
+      env,
+    );
   }
+  let personalFreeRegion = "";
   const creditProtocol = String(body && (body.credit_protocol || body.creditProtocol) || "").trim();
   const creditTileKeys = body && (
     body.tile_keys
@@ -132,6 +124,19 @@ export async function handleTileSessionStart(request, env, deps) {
       env,
     );
   }
+  const allowedTileFilesRaw = body && (
+    body.allowed_tile_files
+    || body.allowedTileFiles
+    || body.allowed_files
+    || body.allowedFiles
+  );
+  const allowedTileFiles = Array.isArray(allowedTileFilesRaw)
+    ? Array.from(new Set(
+      allowedTileFilesRaw
+        .map((value) => String(value || "").trim().replace(/^\/+/, ""))
+        .filter((value) => value && value.includes("/") && !value.includes("..")),
+    )).slice(0, 512)
+    : [];
   const sessionId = creditEnforced ? crypto.randomUUID() : "";
   const issued = await issueTileSessionToken(
     env,
@@ -143,6 +148,7 @@ export async function handleTileSessionStart(request, env, deps) {
       creditEnforced,
       sessionId,
       personalFreeRegion,
+      allowedTileFiles,
     },
   );
   if (issued && issued.error) {
@@ -369,6 +375,15 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
       fileName.includes("..")
     ) {
       return json({ ok: false, error: "invalid_tile_path" }, 400, env);
+    }
+    if (tileSessionAuth && tileSessionAuth.claims) {
+      const allowedTileFiles = Array.isArray(tileSessionAuth.claims.allowedTileFiles)
+        ? tileSessionAuth.claims.allowedTileFiles
+        : [];
+      const requestedFile = `${folder}/${fileName}`;
+      if (!allowedTileFiles.length || !allowedTileFiles.includes(requestedFile)) {
+        return json({ ok: false, error: "tile_not_in_session" }, 403, env);
+      }
     }
 
     const prefix = String(env.R2_PREFIX || "").trim().replace(/^\/+|\/+$/g, "");

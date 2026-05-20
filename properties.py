@@ -62,6 +62,18 @@ except (ImportError, ModuleNotFoundError):
     def update_enable_vdb_clouds(_self=None, _context=None):
         return None
 
+
+_ATMOSPHERE_MODE_ITEMS = (
+    ("VOLUMETRIC", "Cycles Optimized", "Use the volumetric Planetka atmosphere object optimized for Cycles"),
+    ("FAKE", "EEVEE Optimized", "Use the lightweight EEVEE-style fake atmosphere object"),
+)
+
+_GLOBAL_CLOUD_TEXTURE_SOURCE_ITEMS = (
+    ("CLOUD", "Planetka Cloud", "Download the Planetka global clouds texture from Planetka Cloud"),
+    ("LOCAL", "Local File", "Use a local global clouds texture file"),
+)
+
+
 NAV_DEFAULT_ALTITUDE_KM = 400.0
 NAV_DEFAULT_AZIMUTH_DEG = 0.0
 NAV_DEFAULT_TILT_DEG = 25.0
@@ -648,8 +660,16 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
 
     atmosphere_enabled: BoolProperty(
         name="Enable Atmosphere",
-        default=False,
+        default=True,
         description="Show or hide Planetka atmosphere effects",
+        update=update_atmosphere_enabled,
+    )
+
+    atmosphere_mode: EnumProperty(
+        name="Atmosphere Type",
+        description="Choose the atmosphere implementation to add to the scene",
+        items=_ATMOSPHERE_MODE_ITEMS,
+        default="VOLUMETRIC",
         update=update_atmosphere_enabled,
     )
 
@@ -657,6 +677,30 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         name="Enable Global Clouds",
         default=False,
         description="Show or hide global cloud coverage in the viewport and render",
+        update=update_enable_global_clouds,
+    )
+
+    global_cloud_texture_source: EnumProperty(
+        name="Global Clouds Source",
+        description="Choose whether Global Clouds use Planetka Cloud or a local texture file",
+        items=_GLOBAL_CLOUD_TEXTURE_SOURCE_ITEMS,
+        default="CLOUD",
+        update=update_enable_global_clouds,
+    )
+
+    global_cloud_folder: StringProperty(
+        name="Clouds Folder",
+        subtype='DIR_PATH',
+        description="Folder where Planetka Cloud global clouds are stored. If empty, the texture cache folder is used",
+        default="",
+        update=update_enable_global_clouds,
+    )
+
+    global_cloud_local_file: StringProperty(
+        name="Local Clouds Texture",
+        subtype='FILE_PATH',
+        description="Local texture file to use for Global Clouds",
+        default="",
         update=update_enable_global_clouds,
     )
 
@@ -868,14 +912,12 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
     sunlight_seasonal_tilt_deg: FloatProperty(
         name="Seasonal Tilt (°)",
         default=0.0,
-        min=-23.44,
-        max=23.44,
         soft_min=-23.44,
         soft_max=23.44,
         precision=2,
         description=(
             "Subsolar latitude (solar declination) in degrees. "
-            "Range is limited to Earth's axial tilt (±23.44°)."
+            "Dragging uses Earth's axial tilt range (±23.44°), but typed values can exceed it."
         ),
         update=update_sunlight_controls,
     )

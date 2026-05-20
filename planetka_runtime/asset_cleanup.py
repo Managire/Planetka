@@ -16,7 +16,16 @@ def _get_state_module():
 
 
 def _set_atmosphere_collection_enabled(scene, enabled):
-    _ = (scene, enabled)
+    try:
+        from ..asset_builder import set_atmosphere_collection_enabled
+
+        set_atmosphere_collection_enabled(scene=scene, enabled=enabled)
+    except (ImportError, ModuleNotFoundError):
+        logger.debug("Planetka: failed importing atmosphere collection helper", exc_info=True)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed setting atmosphere collection visibility", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed setting atmosphere collection visibility", exc_info=True)
 
 
 
@@ -279,8 +288,20 @@ def update_atmosphere_enabled(self, context):
     state_module = _get_state_module()
     scene = getattr(context, "scene", None) if context else None
     if scene:
-        state_module._sync_idprops_from_props(scene, ("atmosphere_enabled",))
-    _set_atmosphere_collection_enabled(
-        scene,
-        bool(getattr(self, "atmosphere_enabled", True)),
-    )
+        state_module._sync_idprops_from_props(scene, ("atmosphere_enabled", "atmosphere_mode"))
+    enabled = bool(getattr(self, "atmosphere_enabled", True))
+    if enabled:
+        try:
+            from ..asset_builder import ensure_atmosphere_for_mode
+
+            ensure_atmosphere_for_mode(
+                scene=scene,
+                mode=str(getattr(self, "atmosphere_mode", "VOLUMETRIC") or "VOLUMETRIC"),
+            )
+        except (ImportError, ModuleNotFoundError):
+            logger.debug("Planetka: failed importing atmosphere append helper", exc_info=True)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed enabling atmosphere", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed enabling atmosphere", exc_info=True)
+    _set_atmosphere_collection_enabled(scene, enabled)

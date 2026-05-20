@@ -29,9 +29,9 @@ When you choose to make a payment, payment details are entered directly into the
 Planetka uses collected information to:
 
 - authenticate users and access keys;
-- provide Personal or Professional Planetka streaming access;
-- enforce selected Personal free locations and Professional worldwide access;
-- create checkout sessions and confirm successful payments where Professional checkout is offered;
+- provide Free, Indie, or Pro Planetka streaming access;
+- enforce texture-quality access for Free, Indie, and Pro accounts;
+- create checkout sessions and confirm successful payments where Indie/Pro checkout is offered;
 - measure service reliability, performance, usage, and streamed data volume;
 - prevent abuse, unauthorised access, scraping, payment misuse, and excessive automated requests;
 - provide customer support, invoice support, and account troubleshooting;

@@ -5,7 +5,11 @@ import time
 import bpy
 from bpy.props import BoolProperty, EnumProperty
 
-from .auth import is_authenticated
+from .auth import (
+    allows_texture_quality_for_context,
+    is_authenticated,
+    texture_quality_not_allowed_message,
+)
 from .planetka_ops.account_ops import (
     PLANETKA_OT_AccountContact,
     PLANETKA_OT_AccountLogin,
@@ -75,9 +79,11 @@ from .planetka_ops.scene_setup_ops import (
 )
 from .asset_builder import (
     PLANETKA_ROOT_OBJECT_NAME,
+    ensure_atmosphere_for_mode,
     ensure_planetka_assets,
     ensure_planetka_root,
 )
+from .clouds_global import ensure_global_cloud_layer
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from .extension_prefs import (
     get_earth_object,
@@ -370,6 +376,13 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
             )
 
         target_mode = _normalize_startup_texture_quality_mode(getattr(self, "texture_quality_mode", "PREVIEW"))
+        if not allows_texture_quality_for_context(prefs, target_mode):
+            return fail(
+                self,
+                texture_quality_not_allowed_message(prefs, target_mode),
+                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                logger=logger,
+            )
         try:
             previous_mode = _normalize_startup_texture_quality_mode(
                 getattr(props, "texture_quality_mode", "PREVIEW")

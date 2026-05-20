@@ -290,6 +290,25 @@ def prefetch_resolve_plan(
         begin_resolve_download_capture()
     try:
         if use_remote:
+            session_file_entries = []
+            for req in requests:
+                if isinstance(req, dict):
+                    folder = str(req.get("folder", "") or "").strip().strip("/")
+                    file_name = str(req.get("file_name", "") or req.get("filename", "") or "").strip()
+                    if folder and file_name:
+                        session_file_entries.append(f"{folder}/{file_name}")
+                    continue
+                if isinstance(req, (tuple, list)) and len(req) == 4:
+                    folder, prefix, filename, extensions = req
+                    folder = str(folder or "").strip().strip("/")
+                    prefix = str(prefix or "").strip()
+                    filename = str(filename or "").strip()
+                    if not folder or not prefix or not filename:
+                        continue
+                    for ext in tuple(extensions or (".exr",)):
+                        ext_text = str(ext or "")
+                        session_file_entries.append(f"{folder}/{prefix}_{filename}{ext_text}")
+            session_files = tuple(dict.fromkeys(session_file_entries))
             with resolve_request_context(
                 normalized_resolve_id,
                 texture_quality_mode=normalized_quality_mode,
@@ -297,7 +316,7 @@ def prefetch_resolve_plan(
                 nav_latitude_deg=nav_latitude_deg,
                 nav_longitude_deg=nav_longitude_deg,
                 nav_altitude_km=nav_altitude_km,
-                pricing_tiles=None,
+                pricing_tiles=session_files,
             ):
                 try:
                     # Fast resolve path: skip remote HEAD preflight size probes so first GET

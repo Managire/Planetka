@@ -1270,6 +1270,11 @@ def _request_tile_session_token(resolve_id, quality_mode, allow_refresh=True):
         payload["nav_longitude_deg"] = nav_lon
     if nav_alt:
         payload["nav_altitude_km"] = nav_alt
+    with _REQUEST_CONTEXT_LOCK:
+        allowed_files = tuple(str(item or "").strip().strip("/") for item in _REQUEST_CONTEXT_PRICING_TILES)
+    allowed_files = tuple(item for item in allowed_files if item and "/" in item and ".." not in item)
+    if allowed_files:
+        payload["allowed_tile_files"] = list(dict.fromkeys(allowed_files))[:512]
     payload_bytes = json.dumps(payload, ensure_ascii=True).encode("utf-8")
 
     def _attempt(refresh_allowed):
@@ -1814,7 +1819,7 @@ def download_remote_asset_to_path(
         safe_resolve_id,
         texture_quality_mode=texture_quality_mode,
         cancel_event=cancel_event,
-        pricing_tiles=pricing_tiles or (),
+        pricing_tiles=pricing_tiles or (f"{safe_folder}/{safe_name}",),
     ):
         return _r2_request(
             "GET",

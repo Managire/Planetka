@@ -2,9 +2,9 @@
 
 Last updated: 2026-05-19
 
-These Terms govern your use of the Planetka Blender add-on when it connects to Planetka-hosted services, including account access, streamed texture delivery, Professional access, and related web pages.
+These Terms govern your use of the Planetka Blender add-on when it connects to Planetka-hosted services, including account access, streamed texture delivery, paid account access, and related web pages.
 
-The Planetka add-on source code may be distributed under a separate open-source licence. That software licence does not grant access to Planetka-hosted data, Professional access, payment services, or commercial texture rights. Hosted-service access and texture-streaming rights are governed by these Terms.
+The Planetka add-on source code may be distributed under a separate open-source licence. That software licence does not grant access to Planetka-hosted data, paid access, payment services, or commercial texture rights. Hosted-service access and texture-streaming rights are governed by these Terms.
 
 ## 1. Acceptance
 
@@ -14,10 +14,13 @@ If you use Planetka for a company, studio, institution, client, or other organis
 
 ## 2. Product model
 
-Planetka provides two account types for the add-on:
+Planetka provides three account types for the add-on:
 
-- **Personal account**: free account access limited to selected free locations, currently New Zealand and Iceland.
-- **Professional account**: paid or manually granted account access for worldwide Planetka streaming.
+- **Free account**: free account access with worldwide Preview texture-quality streaming.
+- **Indie account**: one-time EUR 70 paid or manually granted account access with worldwide Preview and Balanced texture-quality streaming.
+- **Pro account**: one-time EUR 280 paid or manually granted account access with worldwide Preview, Balanced, and Full texture-quality streaming.
+
+Indie accounts can upgrade to Pro for a one-time EUR 210 upgrade price.
 
 Planetka provides three texture quality modes inside the add-on:
 
@@ -29,19 +32,21 @@ These are streaming quality choices. They are not separate tile purchases, data-
 
 Only the account type, prices, and rights shown in the current Planetka user interface, checkout pages, receipts, or written agreements apply. Older drafts, internal notes, test labels, data-pack pages, or unreleased product names do not grant add-on access rights.
 
-## 3. Personal account access
+## 3. Free account access
 
-A Personal account is intended for evaluation and limited personal use of the Planetka add-on. Personal accounts can stream Planetka data only in the selected free locations shown by Planetka, currently New Zealand and Iceland.
+A Free account is intended for evaluation and personal use of the Planetka add-on. Free accounts can stream Planetka data worldwide in Preview texture quality.
 
-Planetka may change the selected free locations, usage limits, and fair-usage controls over time to protect service reliability and prevent automated extraction, excessive use, scraping, or other misuse.
+Planetka may change usage limits and fair-usage controls over time to protect service reliability and prevent automated extraction, excessive use, scraping, or other misuse.
 
-## 4. Professional account access
+## 4. Indie and Pro account access
 
-A Professional account allows worldwide Planetka streaming in Preview, Balanced, and Full Quality, subject to these Terms and fair-usage controls.
+An Indie account allows worldwide Planetka streaming in Preview and Balanced texture quality, subject to these Terms and fair-usage controls.
 
-Professional access allows commercial and non-commercial use of rendered outputs created with Planetka streamed textures, including renders, animations, still images, videos, and client work.
+A Pro account allows worldwide Planetka streaming in Preview, Balanced, and Full texture quality, subject to these Terms and fair-usage controls.
 
-Professional access does not transfer ownership of the underlying data sources, derived datasets, Planetka processing, or Planetka services. You may not resell, sublicense, redistribute, publish, extract, or operate Planetka texture data as a standalone texture library, map product, dataset, API, tile server, training dataset, or competing service.
+Indie and Pro access allow commercial and non-commercial use of rendered outputs created with Planetka streamed textures, including renders, animations, still images, videos, and client work.
+
+Indie and Pro access do not transfer ownership of the underlying data sources, derived datasets, Planetka processing, or Planetka services. You may not resell, sublicense, redistribute, publish, extract, or operate Planetka texture data as a standalone texture library, map product, dataset, API, tile server, training dataset, or competing service.
 
 ## 5. Streaming and local cache
 
@@ -53,7 +58,7 @@ The cache is not a supported download product, archive product, reusable texture
 
 Payments, where offered, are processed through Stripe or another payment provider shown during checkout. Planetka does not store your card number or full payment-card details.
 
-A Professional account becomes active only after Planetka confirms the payment, grant, or written agreement that enables it. Stripe or the relevant payment provider may send receipts, payment confirmations, or invoices according to its own systems and the information collected during checkout.
+An Indie or Pro account becomes active only after Planetka confirms the payment, grant, or written agreement that enables it. The relevant payment provider may send receipts, payment confirmations, or invoices according to its own systems and the information collected during checkout.
 
 If you need a specific invoice or business document, contact Planetka support with the transaction details.
 
@@ -82,9 +87,9 @@ If your project has special distribution requirements, broadcast requirements, l
 You may not:
 
 - bypass Planetka account, access, entitlement, cache, or rate-limit controls;
-- share API keys, account access, or Professional access outside your authorised team or licence scope;
+- share API keys, account access, or paid access outside your authorised team or licence scope;
 - scrape, bulk-download, reverse-engineer, reconstruct, or extract Planetka-hosted data;
-- use Personal access outside the selected free locations or intended evaluation/personal workflow;
+- bypass texture-quality limits for your account tier;
 - use Planetka-hosted data to build, train, benchmark, validate, or distribute machine-learning datasets or AI models without a separate written licence;
 - resell, redistribute, sublicense, host, publish, or expose Planetka texture data as standalone map tiles, source imagery, a dataset, a GIS product, a texture pack, an API, or a competing service;
 - use Planetka in a way that overloads, attacks, interferes with, or attempts to bypass Planetka services.
@@ -93,7 +98,7 @@ You may not:
 
 You are responsible for keeping your account, access key, and local installation secure. Planetka may suspend or restrict access if it detects abuse, unauthorised sharing, payment problems, security risk, excessive automated requests, or violation of these Terms.
 
-Planetka may apply reasonable request limits, cache rules, device checks, fair-usage controls, and anti-abuse controls to protect service reliability. Professional access may still be restricted where necessary for fraud prevention, payment disputes, security incidents, account sharing, technical abuse, or breach of these Terms.
+Planetka may apply reasonable request limits, cache rules, device checks, fair-usage controls, and anti-abuse controls to protect service reliability. Paid access may still be restricted where necessary for fraud prevention, payment disputes, security incidents, account sharing, technical abuse, or breach of these Terms.
 
 ## 12. Service availability and changes
 

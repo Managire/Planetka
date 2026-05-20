@@ -204,7 +204,20 @@ export async function collectQuoteQueueHealth(db, deps) {
 function normalizeTierCodeStrict(value, deps) {
   const normalized = String(deps.normalizePlanCode(value) || "").trim().toLowerCase();
   if (normalized === deps.PLAN_CODE_FREE) return deps.PLAN_CODE_FREE;
+  if (normalized === deps.PLAN_CODE_INDIE) return deps.PLAN_CODE_INDIE;
+  if (normalized === deps.PLAN_CODE_PROFESSIONAL) return deps.PLAN_CODE_PROFESSIONAL;
   return "";
+}
+
+function analyticsTierSqlExpression(columnExpression) {
+  const column = String(columnExpression || "status").trim() || "status";
+  return `
+    CASE
+      WHEN LOWER(COALESCE(${column}, '')) IN ('pro', 'professional', 'paid', 'unlimited') THEN 'pro'
+      WHEN LOWER(COALESCE(${column}, '')) IN ('indie', 'balanced') THEN 'indie'
+      ELSE 'free'
+    END
+  `;
 }
 
 function _normalizeErrorCode(value) {
@@ -754,7 +767,9 @@ export async function collectAnalyticsSnapshot(
     db,
     `
       SELECT
-        COALESCE(SUM(CASE WHEN LOWER(COALESCE(status, '')) = 'professional' THEN 1 ELSE 0 END), 0) AS professional_users,
+        COALESCE(SUM(CASE WHEN ${analyticsTierSqlExpression("status")} = 'free' THEN 1 ELSE 0 END), 0) AS free_users,
+        COALESCE(SUM(CASE WHEN ${analyticsTierSqlExpression("status")} = 'indie' THEN 1 ELSE 0 END), 0) AS indie_users,
+        COALESCE(SUM(CASE WHEN ${analyticsTierSqlExpression("status")} = 'pro' THEN 1 ELSE 0 END), 0) AS pro_users,
         COUNT(*) AS total_users
       FROM users
       WHERE 1 = 1
@@ -771,16 +786,20 @@ export async function collectAnalyticsSnapshot(
           r.request_count,
           r.bytes_served,
           r.user_id,
-          LOWER(COALESCE(u.status, '')) AS user_status
+          ${analyticsTierSqlExpression("u.status")} AS user_tier
         FROM tile_request_rollup_daily_account r
         LEFT JOIN users u ON u.id = r.user_id
         WHERE 1 = 1
         ${rollupEmailFilterAliasR.condition ? `AND ${rollupEmailFilterAliasR.condition}` : ""}
       )
       SELECT
-        COALESCE(SUM(CASE WHEN user_status = 'professional' THEN request_count ELSE 0 END), 0) AS professional_requests,
+        COALESCE(SUM(CASE WHEN user_tier = 'free' THEN request_count ELSE 0 END), 0) AS free_requests,
+        COALESCE(SUM(CASE WHEN user_tier = 'indie' THEN request_count ELSE 0 END), 0) AS indie_requests,
+        COALESCE(SUM(CASE WHEN user_tier = 'pro' THEN request_count ELSE 0 END), 0) AS pro_requests,
         COALESCE(SUM(request_count), 0) AS total_requests,
-        COALESCE(SUM(CASE WHEN user_status = 'professional' THEN bytes_served ELSE 0 END), 0) AS professional_bytes,
+        COALESCE(SUM(CASE WHEN user_tier = 'free' THEN bytes_served ELSE 0 END), 0) AS free_bytes,
+        COALESCE(SUM(CASE WHEN user_tier = 'indie' THEN bytes_served ELSE 0 END), 0) AS indie_bytes,
+        COALESCE(SUM(CASE WHEN user_tier = 'pro' THEN bytes_served ELSE 0 END), 0) AS pro_bytes,
         COALESCE(SUM(bytes_served), 0) AS total_bytes
       FROM traffic
     `,
@@ -794,7 +813,7 @@ export async function collectAnalyticsSnapshot(
         SELECT DISTINCT
           e.user_id,
           e.resolve_id,
-          LOWER(COALESCE(u.status, '')) AS user_status
+          ${analyticsTierSqlExpression("u.status")} AS user_tier
         FROM tile_request_events e
         LEFT JOIN users u ON u.id = e.user_id
         WHERE
@@ -803,7 +822,9 @@ export async function collectAnalyticsSnapshot(
           ${eventEmailFilterAliasE.condition ? `AND ${eventEmailFilterAliasE.condition}` : ""}
       )
       SELECT
-        COALESCE(SUM(CASE WHEN user_status = 'professional' THEN 1 ELSE 0 END), 0) AS professional_resolves,
+        COALESCE(SUM(CASE WHEN user_tier = 'free' THEN 1 ELSE 0 END), 0) AS free_resolves,
+        COALESCE(SUM(CASE WHEN user_tier = 'indie' THEN 1 ELSE 0 END), 0) AS indie_resolves,
+        COALESCE(SUM(CASE WHEN user_tier = 'pro' THEN 1 ELSE 0 END), 0) AS pro_resolves,
         COUNT(*) AS total_resolves
       FROM tagged_resolves
     `,
@@ -898,6 +919,8 @@ export async function collectAnalyticsSnapshot(
 
   const makeActiveSplit = () => ({
     free: 0,
+    indie: 0,
+    pro: 0,
     total: 0,
   });
   const activeWindows = {
@@ -919,6 +942,8 @@ export async function collectAnalyticsSnapshot(
   const resolveAnalyticsTierCode = (planValue) => {
     const normalized = normalizeTierCodeStrict(planValue, deps);
     if (normalized === deps.PLAN_CODE_FREE) return "free";
+    if (normalized === deps.PLAN_CODE_INDIE) return "indie";
+    if (normalized === deps.PLAN_CODE_PROFESSIONAL) return "pro";
     return "free";
   };
   for (const row of (Array.isArray(activeUserRows) ? activeUserRows : [])) {
@@ -939,7 +964,7 @@ export async function collectAnalyticsSnapshot(
         continue;
       }
       windowCounts.total += 1;
-      windowCounts.free += 1;
+      windowCounts[tierCode] += 1;
     }
   }
 
@@ -1386,19 +1411,27 @@ export async function collectAnalyticsSnapshot(
     window_start_unix: windowStartUnix,
     top_line: {
       users: {
-        professional: deps.clampNonNegativeInt(topLineUsers && topLineUsers.professional_users),
+        free: deps.clampNonNegativeInt(topLineUsers && topLineUsers.free_users),
+        indie: deps.clampNonNegativeInt(topLineUsers && topLineUsers.indie_users),
+        pro: deps.clampNonNegativeInt(topLineUsers && topLineUsers.pro_users),
         total: deps.clampNonNegativeInt(topLineUsers && topLineUsers.total_users),
       },
       resolves: {
-        professional: deps.clampNonNegativeInt(topLineResolves && topLineResolves.professional_resolves),
+        free: deps.clampNonNegativeInt(topLineResolves && topLineResolves.free_resolves),
+        indie: deps.clampNonNegativeInt(topLineResolves && topLineResolves.indie_resolves),
+        pro: deps.clampNonNegativeInt(topLineResolves && topLineResolves.pro_resolves),
         total: deps.clampNonNegativeInt(topLineResolves && topLineResolves.total_resolves),
       },
       tile_requests: {
-        professional: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.professional_requests),
+        free: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.free_requests),
+        indie: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.indie_requests),
+        pro: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.pro_requests),
         total: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.total_requests),
       },
       gb_served: {
-        professional: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.professional_bytes),
+        free: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.free_bytes),
+        indie: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.indie_bytes),
+        pro: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.pro_bytes),
         total: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.total_bytes),
       },
       earned_eur: {

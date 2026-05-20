@@ -1,11 +1,11 @@
-"""Live gate for Planetka Personal/Professional streaming access.
+"""Live gate for Planetka Free/Indie/Pro streaming access.
 
 Run from Blender after setting the target account plan in D1:
-  PLANETKA_EXPECTED_PLAN=personal /Applications/Blender5.0.app/Contents/MacOS/Blender --background \
+  PLANETKA_EXPECTED_PLAN=free /Applications/Blender5.0.app/Contents/MacOS/Blender --background \
     --python tools/planetka_account_tier_gate.py
 
-The gate verifies tile-session creation for New Zealand, Iceland, and a blocked
-global location across Preview, Balanced, and Full Quality.
+The gate verifies tile-session creation for several global locations across
+Preview, Balanced, and Full texture quality.
 """
 
 from __future__ import annotations
@@ -36,13 +36,17 @@ from planetka_e2e_common import (
 )
 
 TAG = "[Planetka Account Tier Gate]"
-EXPECTED_PLAN = str(os.environ.get("PLANETKA_EXPECTED_PLAN") or "personal").strip().lower()
+EXPECTED_PLAN = str(os.environ.get("PLANETKA_EXPECTED_PLAN") or "free").strip().lower()
+if EXPECTED_PLAN == "personal":
+    EXPECTED_PLAN = "free"
+elif EXPECTED_PLAN == "professional":
+    EXPECTED_PLAN = "pro"
 QUALITY_MODES = ("preview", "balanced", "full")
 LOCATIONS = (
-    {"name": "New Zealand", "lat": -41.2865, "lon": 174.7762, "personal_allowed": True},
-    {"name": "Iceland", "lat": 64.1466, "lon": -21.9426, "personal_allowed": True},
-    {"name": "Paris", "lat": 48.8566, "lon": 2.3522, "personal_allowed": False},
-    {"name": "Singapore", "lat": 1.3521, "lon": 103.8198, "personal_allowed": False},
+    {"name": "New Zealand", "lat": -41.2865, "lon": 174.7762},
+    {"name": "Iceland", "lat": 64.1466, "lon": -21.9426},
+    {"name": "Paris", "lat": 48.8566, "lon": 2.3522},
+    {"name": "Singapore", "lat": 1.3521, "lon": 103.8198},
 )
 
 
@@ -86,7 +90,7 @@ def main():
         "results": [],
     }
     try:
-        _assert(EXPECTED_PLAN in {"personal", "professional"}, "PLANETKA_EXPECTED_PLAN must be personal or professional.")
+        _assert(EXPECTED_PLAN in {"free", "indie", "pro"}, "PLANETKA_EXPECTED_PLAN must be free, indie, or pro.")
         base_module = enable_module(required_planetka_attr="add_earth")
         auth = import_submodule(base_module, "auth")
         extension_prefs = import_submodule(base_module, "extension_prefs")
@@ -115,7 +119,11 @@ def main():
         for location in LOCATIONS:
             for quality_mode in QUALITY_MODES:
                 result = _try_session(r2_source, location, quality_mode)
-                expected_ok = EXPECTED_PLAN == "professional" or bool(location["personal_allowed"])
+                expected_ok = (
+                    quality_mode == "preview"
+                    or (EXPECTED_PLAN == "indie" and quality_mode == "balanced")
+                    or EXPECTED_PLAN == "pro"
+                )
                 result.update(
                     {
                         "location": location["name"],
@@ -128,10 +136,10 @@ def main():
                 if expected_ok:
                     _assert(result["ok"], f"{EXPECTED_PLAN} account should access {location['name']} in {quality_mode}: {result['error']}")
                 else:
-                    _assert(not result["ok"], f"Personal account incorrectly accessed {location['name']} in {quality_mode}.")
+                    _assert(not result["ok"], f"{EXPECTED_PLAN} account incorrectly accessed {location['name']} in {quality_mode}.")
                     _assert(
-                        "New Zealand" in result["error"] and "Iceland" in result["error"],
-                        f"Blocked error should name the free locations: {result['error']}",
+                        "quality" in result["error"].lower() or "tier" in result["error"].lower() or "account" in result["error"].lower(),
+                        f"Blocked error should explain the quality-tier restriction: {result['error']}",
                     )
 
         payload["status"] = "passed"

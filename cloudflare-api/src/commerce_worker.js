@@ -13,8 +13,10 @@ import {
 } from "./worker/env.js";
 import {
   PLAN_CODE_FREE,
+  PLAN_CODE_INDIE,
   PLAN_CODE_PERSONAL,
   PLAN_CODE_PROFESSIONAL,
+  defaultSignupPlanCode,
   isBlockedStatus,
   isDeviceLimitExemptEmail,
   isQualityModeAllowedForPlan,
@@ -3072,7 +3074,10 @@ function normalizeTierCodeStrict(value) {
     normalized === PLAN_CODE_FREE
     || normalized === PLAN_CODE_PERSONAL
   ) {
-    return PLAN_CODE_PERSONAL;
+    return PLAN_CODE_FREE;
+  }
+  if (normalized === PLAN_CODE_INDIE) {
+    return PLAN_CODE_INDIE;
   }
   if (normalized === PLAN_CODE_PROFESSIONAL) {
     return PLAN_CODE_PROFESSIONAL;
@@ -3080,7 +3085,7 @@ function normalizeTierCodeStrict(value) {
   return "";
 }
 
-async function upsertUserByEmail(db, email, status = PLAN_CODE_PROFESSIONAL, options = {}, env = {}) {
+async function upsertUserByEmail(db, email, status = PLAN_CODE_FREE, options = {}, env = {}) {
   const normalizedEmail = normalizeEmail(email);
   await ensureUserConsentColumns(db);
   await ensureUserQualityAccessColumns(db);
@@ -3224,7 +3229,7 @@ function fixedInternalPlanForEmail(email) {
   return FIXED_INTERNAL_TEST_PLAN_BY_EMAIL[normalizedEmail] || "";
 }
 
-function resolveFixedInternalPlanForEmail(email, requestedPlan = PLAN_CODE_PROFESSIONAL) {
+function resolveFixedInternalPlanForEmail(email, requestedPlan = PLAN_CODE_FREE) {
   const fixedPlan = fixedInternalPlanForEmail(email);
   if (fixedPlan) {
     return fixedPlan;
@@ -3282,8 +3287,8 @@ async function resolveUserQualityAccessState(db, user, env = {}) {
   const storedPlanCode = normalizeTierCodeStrict(effectiveUser && effectiveUser.status);
   if (!effectiveUser || !effectiveUser.id) {
     return {
-      storedPlanCode: PLAN_CODE_PERSONAL,
-      qualityAccessPlanCode: PLAN_CODE_PERSONAL,
+      storedPlanCode: PLAN_CODE_FREE,
+      qualityAccessPlanCode: PLAN_CODE_FREE,
     };
   }
   if (!storedPlanCode && !isBlockedStatus(effectiveUser && effectiveUser.status)) {

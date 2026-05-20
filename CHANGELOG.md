@@ -22,22 +22,22 @@ All notable public changes to Planetka are documented in this file.
 ## [v0.8.1] - 2026-05-19
 
 ### Changed
-- Prepared the add-on for the simplified Personal / Professional streaming model.
-- During beta, existing and newly requested accounts default to Professional so testers can use worldwide streaming without payment.
-- Personal accounts can stream Planetka data only in the selected free locations: New Zealand and Iceland.
-- Professional accounts can stream worldwide in Preview, Balanced, and Full Quality.
+- Prepared the add-on for the simplified Free / Indie / Pro streaming model.
+- Free accounts can stream worldwide in Preview texture quality.
+- Indie accounts can stream worldwide in Preview and Balanced texture quality.
+- Pro accounts can stream worldwide in Preview, Balanced, and Full texture quality.
 - The add-on model is now streaming-first: in-addon data-pack purchases, scene-specific tile purchases, purchase history, and licenced-data downloads are no longer part of the active Planetka add-on workflow.
-- Full Quality now behaves like a normal quality mode for Professional accounts rather than a one-off purchase flow.
+- Full texture quality now behaves like a normal quality mode for Pro accounts rather than a one-off purchase flow.
 - Release documentation now separates the active add-on model from the legacy website/data-pack commerce system kept for future reference.
 
 ### Added
-- Account-tier enforcement checks for Personal and Professional access at the tile-session / tile-delivery layer.
-- Analytics All Users page controls for manually switching an account between Personal and Professional.
-- Automated account-tier gate covering Personal location restrictions and Professional worldwide access.
+- Account-tier enforcement checks for Free, Indie, and Pro access at the tile-session / tile-delivery layer.
+- Analytics All Users page controls for manually switching an account between Free, Indie, and Pro.
+- Automated account-tier gate covering Free, Indie, and Pro texture-quality restrictions.
 - Resolve timing gate for Preview, Balanced, and Full Quality quality modes.
 
 ### Known limitation
-- Professional checkout is not ready for public use yet. The current upgrade URL points to a missing pricing page and must be implemented before publishing paid Professional upgrades.
+- Indie/Pro checkout is not ready for public use yet. The current upgrade URL points to a missing pricing page and must be implemented before publishing paid upgrades.
 
 ## [v0.7.8] - 2026-05-17
 

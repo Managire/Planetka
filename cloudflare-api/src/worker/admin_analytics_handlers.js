@@ -20,6 +20,20 @@ function fmtMbLocal(value, parseNonNegativeInteger) {
 
 const ANALYTICS_TILE_COLOR = "#60a5fa";
 
+function snapshotHasTierSplit(snapshot) {
+  const topLine = snapshot && snapshot.top_line && typeof snapshot.top_line === "object" ? snapshot.top_line : {};
+  const users = topLine.users && typeof topLine.users === "object" ? topLine.users : {};
+  const resolves = topLine.resolves && typeof topLine.resolves === "object" ? topLine.resolves : {};
+  const tileRequests = topLine.tile_requests && typeof topLine.tile_requests === "object" ? topLine.tile_requests : {};
+  const gbServed = topLine.gb_served && typeof topLine.gb_served === "object" ? topLine.gb_served : {};
+  return ["free", "indie", "pro", "total"].every((key) =>
+    Object.prototype.hasOwnProperty.call(users, key)
+    && Object.prototype.hasOwnProperty.call(resolves, key)
+    && Object.prototype.hasOwnProperty.call(tileRequests, key)
+    && Object.prototype.hasOwnProperty.call(gbServed, key)
+  );
+}
+
 function parseLiveMapTile(tileKey) {
   const text = String(tileKey || "").trim();
   const match = /_x(\d{3})_y(\d{3})_z(\d{3})_d(\d{3})\.(?:exr|tif|tiff|png|jpe?g)$/i.exec(text);
@@ -80,7 +94,7 @@ export async function handleAdminAnalyticsData(request, env, deps) {
   const planFilter = "all";
   try {
     let snapshot = await deps.loadAnalyticsSnapshot(env, windowMinutes, planFilter, tileMapMinutes);
-    if (!snapshot || deps.isAnalyticsSnapshotStale(snapshot)) {
+    if (!snapshot || deps.isAnalyticsSnapshotStale(snapshot) || !snapshotHasTierSplit(snapshot)) {
       snapshot = await deps.collectAnalyticsSnapshot(db, windowMinutes, planFilter, tileMapMinutes, env);
       snapshot = {
         ...snapshot,
@@ -671,7 +685,7 @@ export async function handleAdminAnalyticsPage(request, env, deps) {
   let initialSnapshot = null;
   try {
     initialSnapshot = await deps.loadAnalyticsSnapshot(env, 10080, "all", 10);
-    if (!initialSnapshot || deps.isAnalyticsSnapshotStale(initialSnapshot)) {
+    if (!initialSnapshot || deps.isAnalyticsSnapshotStale(initialSnapshot) || !snapshotHasTierSplit(initialSnapshot)) {
       initialSnapshot = await deps.collectAnalyticsSnapshot(
         auth.db,
         10080,
@@ -815,16 +829,22 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
     const userEmailRaw = String(row && row.user_email || "");
     const userEmail = deps.escapeHtml(userEmailRaw);
     const status = String(row && row.user_status || "").trim().toLowerCase();
-    const plan = (status === "professional") ? "professional" : (status === "blocked" ? "blocked" : "personal");
-    const planLabel = plan === "professional" ? "Professional" : (plan === "blocked" ? "Blocked" : "Personal");
-    const nextPlan = plan === "professional" ? "personal" : "professional";
-    const nextPlanLabel = nextPlan === "professional" ? "Professional" : "Personal";
-    const planButton = `<button class="action-btn plan" data-action="set-plan" data-plan-code="${encodeURIComponent(nextPlan)}" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set ${deps.escapeHtml(nextPlanLabel)}</button>`;
+    const plan = (status === "pro" || status === "professional")
+      ? "pro"
+      : (status === "indie" ? "indie" : (status === "blocked" ? "blocked" : "free"));
+    const planLabel = plan === "pro" ? "Pro" : (plan === "indie" ? "Indie" : (plan === "blocked" ? "Blocked" : "Free"));
+    const planButtons = ["free", "indie", "pro"]
+      .filter((code) => code !== plan)
+      .map((code) => {
+        const label = code === "pro" ? "Pro" : (code === "indie" ? "Indie" : "Free");
+        return `<button class="action-btn plan" data-action="set-plan" data-plan-code="${encodeURIComponent(code)}" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set ${deps.escapeHtml(label)}</button>`;
+      })
+      .join("");
     let actionButtons = "";
     if (status === "blocked") {
       actionButtons = `<button class="action-btn warn" data-action="unblock" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Unblock</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
     } else {
-      actionButtons = `${planButton}<button class="action-btn danger" data-action="block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Block</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
+      actionButtons = `${planButtons}<button class="action-btn danger" data-action="block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Block</button><button class="action-btn danger" data-action="hard-block" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Hard Block</button>`;
     }
     return `<tr>
       <td>${userEmail}</td>
@@ -853,13 +873,14 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
     th { color:#93c5fd; font-weight:600; white-space: nowrap; }
     th a { color:#93c5fd; text-decoration:none; }
     .action-btn { font-size: 12px; padding: 4px 8px; margin-right: 6px; margin-bottom: 4px; cursor: pointer; }
-    .action-btn.plan { border-color: #1d4ed8; color: #bfdbfe; }
+    .action-btn.plan { border-color: #374151; color: #e5e7eb; }
     .action-btn.warn { border-color: #9a3412; color: #fed7aa; }
     .action-btn.danger { border-color: #991b1b; color: #fecaca; }
     .action-wrap { white-space: normal; min-width: 300px; }
     .plan-pill { display:inline-block; min-width:84px; text-align:center; border-radius:999px; padding:3px 8px; border:1px solid #374151; font-size:12px; }
-    .plan-pill.professional { color:#bbf7d0; border-color:#166534; background:rgba(22,101,52,.18); }
-    .plan-pill.personal { color:#bfdbfe; border-color:#1d4ed8; background:rgba(29,78,216,.16); }
+    .plan-pill.pro { color:#fecaca; border-color:#991b1b; background:rgba(153,27,27,.20); }
+    .plan-pill.indie { color:#fed7aa; border-color:#c2410c; background:rgba(194,65,12,.20); }
+    .plan-pill.free { color:#bbf7d0; border-color:#166534; background:rgba(22,101,52,.20); }
     .error { color: #fca5a5; }
   </style>
 </head>

@@ -178,17 +178,6 @@ def initialize_props_from_imported_planetka(scene, ctx=None):
     if not props:
         return
 
-    try:
-        # Atmosphere/cloud runtime features are disabled in this release.
-        scene["planetka_atmosphere_enabled"] = False
-        scene["planetka_enable_global_clouds"] = False
-        scene["planetka_enable_local_clouds"] = False
-        scene["planetka_enable_vdb_clouds"] = False
-    except deps.recoverable_exceptions:
-        deps.logger.debug("Planetka: failed forcing atmosphere/cloud scene idprops off", exc_info=True)
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        deps.logger.debug("Planetka: failed forcing atmosphere/cloud scene idprops off", exc_info=True)
-
     deps.sync_idprops_from_props(scene)
 
 

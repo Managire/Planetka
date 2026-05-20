@@ -366,7 +366,7 @@ export async function handleAdminUserSetPlan(request, env, deps) {
   }
 
   const targetPlan = deps.normalizeRequestedPlan(body && body.plan_code || "");
-  if (![deps.PLAN_CODE_PERSONAL, deps.PLAN_CODE_PROFESSIONAL].includes(targetPlan)) {
+  if (![deps.PLAN_CODE_FREE, deps.PLAN_CODE_PERSONAL, deps.PLAN_CODE_INDIE, deps.PLAN_CODE_PROFESSIONAL].includes(targetPlan)) {
     return deps.json({ ok: false, error: "invalid_plan_code" }, 400, env);
   }
   if (deps.isBlockedStatus && deps.isBlockedStatus(target.user.status)) {

@@ -12,7 +12,7 @@
 - [ ] `Create Earth` completes in a clean scene.
 - [ ] Preview resolve completes with a valid Planetka Cloud texture source.
 - [ ] Balanced resolve completes with a valid Planetka Cloud texture source.
-- [ ] Full Quality resolve completes for a Professional account with a valid Planetka Cloud texture source.
+- [ ] Full Quality resolve completes for a Pro account with a valid Planetka Cloud texture source.
 - [ ] Resolved object is named `Planetka Earth Surface`.
 - [ ] `Create Earth` places surface only in `Planetka - Earth Surface Collection`.
 - [ ] Resolve preserves the previous surface collection placement.
@@ -22,10 +22,13 @@
 
 ## 3. Account-Tier Gates
 
-- [ ] Personal account can stream New Zealand in Preview, Balanced, and Full Quality.
-- [ ] Personal account can stream Iceland in Preview, Balanced, and Full Quality.
-- [ ] Personal account is blocked outside New Zealand/Iceland with clear user-facing wording.
-- [ ] Professional account can stream worldwide in Preview, Balanced, and Full Quality.
+- [ ] During beta, new account access requests default to Pro (`PLANETKA_BETA_DEFAULT_PRO=1`).
+- [ ] Analytics can manually switch any user between Free, Indie, and Pro for tier testing.
+- [ ] Free account can stream worldwide in Preview texture quality.
+- [ ] Free account is blocked from Balanced and Full texture quality with clear wording.
+- [ ] Indie account can stream worldwide in Preview and Balanced texture quality.
+- [ ] Indie account is blocked from Full texture quality with clear wording.
+- [ ] Pro account can stream worldwide in Preview, Balanced, and Full texture quality.
 - [ ] Account creation, access-key connection, logout, reconnect, and stale-auth recovery do not depend on commerce/product-map routes.
 
 ## 4. Automated Validation
@@ -84,7 +87,7 @@
 ## 9. Release Decision
 
 - [ ] No unresolved blocker issue in core path (`Create Earth`, Preview/Balanced/Full Quality resolves, account connection).
-- [ ] Professional checkout implemented and tested before any paid public launch.
+- [ ] Indie/Pro checkout implemented and tested before any paid public launch.
 - [ ] Compatibility matrix updated for tested Blender versions.
 - [ ] Changelog entry added for current version.
 - [ ] Release notes drafted from template with semver rationale.

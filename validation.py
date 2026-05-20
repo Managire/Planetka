@@ -1687,6 +1687,13 @@ def _draw_scene_health_report_layout(layout, health, title_text="Scene Health Ch
             seen_notes.add(note_text)
             notes_box.label(text=note_text, icon="BLANK1")
 
+    section_labels = {
+        "S2": "S2 - Earth surface data",
+        "EL": "EL - Elevation data",
+        "WT": "Water Mask data",
+        "PO": "Night Lights data",
+    }
+
     grouped = {}
     for check in checks:
         section = str(check.get("section", "General") or "General")
@@ -1711,7 +1718,7 @@ def _draw_scene_health_report_layout(layout, health, title_text="Scene Health Ch
             continue
         rendered_sections.add(section_name)
         box = layout.box()
-        box.label(text=section_name)
+        box.label(text=section_labels.get(section_name, section_name))
         for entry in entries:
             ok = bool(entry.get("ok", False))
             severity = str(entry.get("severity", "INFO") or "INFO").upper()

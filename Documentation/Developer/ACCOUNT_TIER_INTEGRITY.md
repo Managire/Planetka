@@ -2,7 +2,7 @@
 
 Last updated: 2026-05-19
 
-Planetka 0.8.2 uses two active add-on account tiers: `personal` and `professional`.
+Planetka uses three active add-on account tiers: `free`, `indie`, and `pro`.
 
 ## Canonical Account State
 
@@ -10,47 +10,55 @@ Planetka 0.8.2 uses two active add-on account tiers: `personal` and `professiona
 
 Active add-on access tiers:
 
-- `personal`: free account access limited to selected free locations.
-- `professional`: worldwide Planetka streaming access.
+- `free`: worldwide Preview texture-quality streaming.
+- `indie`: worldwide Preview and Balanced texture-quality streaming.
+- `pro`: worldwide Preview, Balanced, and Full texture-quality streaming.
 
 Compatibility aliases:
 
-- legacy `free` is treated as `personal`.
-- legacy commercial/pro/unlimited labels must normalise to `professional` only where explicitly supported by backend compatibility code.
+- legacy `personal` is treated as `free`.
+- legacy `professional`, commercial, paid, or unlimited labels normalise to `pro` only where explicitly supported by backend compatibility code.
 
-## Personal Access
+## Free Access
 
-Personal accounts can stream only the selected free locations:
+Free accounts can stream worldwide in Preview texture quality.
 
-- New Zealand
-- Iceland
+Free access is enforced in the backend, not only in Blender UI. Enforcement occurs at tile-session start, before a short-lived tile token is issued for the requested texture quality.
 
-Personal access is enforced in the backend, not only in Blender UI. Enforcement occurs at:
+If Free requests Balanced or Full, the backend must deny the session with clear user-facing wording.
 
-- tile-session start, using the navigation latitude/longitude sent by the add-on;
-- tile request, using the requested tile's geographic coverage and the free-region claim stored in the tile session.
+## Indie Access
 
-If the requested area is outside the selected free locations, the backend must deny the session/request with clear user-facing wording.
-
-## Professional Access
-
-Professional accounts can stream worldwide in all active quality modes:
+Indie accounts can stream worldwide in:
 
 - Preview
 - Balanced
-- Full Quality
 
-Professional access is still subject to fair-usage, anti-abuse, authentication, and service-protection controls.
+If Indie requests Full, the backend must deny the session with clear user-facing wording.
+
+## Pro Access
+
+Pro accounts can stream worldwide in all active quality modes:
+
+- Preview
+- Balanced
+- Full
+
+Indie and Pro access remain subject to fair-usage, anti-abuse, authentication, and service-protection controls.
 
 ## Beta Default
 
-During beta, all existing users and newly requested access keys default to `professional`.
-This is a temporary release policy so testers can verify worldwide streaming without payment.
+During public beta, newly requested access keys default to `pro`. This is controlled by `PLANETKA_BETA_DEFAULT_PRO=1` on the auth worker.
+
+When beta ends, set `PLANETKA_BETA_DEFAULT_PRO=0` so newly requested access keys default to `free`.
+
+The beta backfill policy is: all existing non-blocked accounts are promoted to canonical `pro` once. This does not remove the ability to manually test `free` or `indie`; manual Analytics tier switches remain authoritative after the backfill.
 
 The Analytics All Users page may still manually switch any account between:
 
-- `personal`
-- `professional`
+- `free`
+- `indie`
+- `pro`
 
 The switch updates the user account row and all active access keys for that user. Existing short-lived access tokens may keep their previous tier until the next auth refresh.
 
@@ -80,9 +88,9 @@ Run against the live or staging backend before release:
 
 Expected result:
 
-- Personal account allows New Zealand and Iceland in Preview, Balanced, and Full Quality.
-- Personal account blocks other locations clearly.
-- Professional account allows tested worldwide locations in Preview, Balanced, and Full Quality.
+- Free account allows worldwide Preview and blocks Balanced/Full clearly.
+- Indie account allows worldwide Preview/Balanced and blocks Full clearly.
+- Pro account allows tested worldwide locations in Preview, Balanced, and Full.
 
 ## Audit Queries
 
@@ -100,4 +108,4 @@ GROUP BY LOWER(TRIM(COALESCE(plan_code, '')))
 ORDER BY count DESC;
 ```
 
-Expected active result: account states normalise to `personal` or `professional` for add-on access decisions.
+Expected active result: account states normalise to `free`, `indie`, or `pro` for add-on access decisions.

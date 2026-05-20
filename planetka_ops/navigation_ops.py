@@ -629,7 +629,7 @@ class PLANETKA_OT_SunlightPreset(bpy.types.Operator):
     bl_label = "Sunlight Preset"
     bl_description = (
         "Set Planetka Sunlight using common lighting presets around the current location "
-        "(seasonal tilt is clamped to ±23.5°)"
+        "(preset seasonal tilt uses Earth's axial tilt range)"
     )
 
     preset: EnumProperty(
