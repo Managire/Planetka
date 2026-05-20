@@ -91,6 +91,12 @@ def _safe_context_scene():
 
 
 def update_texture_quality_mode(self, context):
+    scene = getattr(context, "scene", None) if context is not None else _safe_context_scene()
+    try:
+        if scene is not None and bool(scene.get("planetka_suppress_texture_quality_update_auto_resolve", False)):
+            return
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        pass
     update_auto_resolve(self, context)
 
 
@@ -630,15 +636,6 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         max=2.0,
         precision=2,
         description="Wait time after motion stops before Adaptive Subdivision is restored in the viewport",
-        update=update_auto_resolve,
-    )
-
-    viewport_opt_active_view_coarse_textures: BoolProperty(
-        name="Use Lower Texture Quality in Active View",
-        default=True,
-        description=(
-            "Use lighter textures while navigating outside Camera View, then restore full quality in Camera View"
-        ),
         update=update_auto_resolve,
     )
 

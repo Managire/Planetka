@@ -1734,16 +1734,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             required_mpp = None
         resolved_tiles = shader_result.get("resolved_tiles", []) if isinstance(shader_result, dict) else []
         resolution_safety = _resolve_safety(required_mpp, resolved_tiles)
-        try:
-            scope_used = str(scene.get("planetka_last_scope_used", "CAMERA"))
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            scope_used = "CAMERA"
-        if (
-            scope_used == "ACTIVE_VIEW"
-            and bool(getattr(props, "viewport_opt_active_view_coarse_textures", True))
-            and str(resolution_safety) == "WARNING"
-        ):
-            resolution_safety = "CAUTION"
         write_resolve_diagnostics(
             scene=scene,
             tile_count=len(tiles),

@@ -662,7 +662,7 @@ def _draw_resolve_status_line(layout, scene, runtime, runtime_code, runtime_text
     status_token = str(runtime_code or "").upper()
     status_text = str(runtime_text or "Idle")
     status_icon = _status_icon(status_token)
-    alert = status_token in {"PREPARING", "DOWNLOADING", "FINALIZING", "FINALIZE_QUEUED", "QUEUED"}
+    alert = False
 
     if resolve_failure_message:
         status_text = resolve_failure_message
@@ -670,15 +670,12 @@ def _draw_resolve_status_line(layout, scene, runtime, runtime_code, runtime_text
         alert = True
     elif inside_earth_warning:
         status_text = "Below Earth's surface"
-        status_icon = "ERROR"
-        alert = True
+        status_icon = "INFO"
     elif low_altitude_warning:
         status_text = low_altitude_warning
-        status_icon = "ERROR"
-        alert = True
+        status_icon = "INFO"
     elif animation_render_running:
         status_text, status_icon = _animation_render_status_for_ui(scene)
-        alert = True
     elif status_token == "PREPARING":
         status_text = "Preparing Download"
     elif status_token == "DOWNLOADING":
@@ -2043,7 +2040,7 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             )
 
 class PLANETKA_PT_LiveTelemetryPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Data Streaming"
+    bl_label = "Data Control"
     bl_idname = "PLANETKA_PT_live_telemetry"
     bl_order = 9001
     bl_options = set()
@@ -2060,7 +2057,7 @@ class PLANETKA_PT_LiveTelemetryPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
 
 class PLANETKA_PT_LiveTelemetryPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Data Streaming"
+    bl_label = "Data Control"
     bl_idname = "PLANETKA_PT_live_telemetry_collapsed"
     bl_order = 9001
     bl_options = {'DEFAULT_CLOSED'}
@@ -2078,7 +2075,7 @@ class PLANETKA_PT_LiveTelemetryPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.type
 
 
 class PLANETKA_PT_LiveTelemetryPanelFailure(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Data Streaming"
+    bl_label = "Data Control"
     bl_idname = "PLANETKA_PT_live_telemetry_failure"
     bl_order = 9001
     bl_options = set()
@@ -2439,8 +2436,9 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             icon="TRASH",
         )
 
+        animation_render_running = _is_animation_render_running()
         final_render_box = layout.box()
-        final_render_box.enabled = bool(controls_enabled)
+        final_render_box.enabled = bool(earth_workflow_enabled) if animation_render_running else bool(controls_enabled)
         final_render_box.label(text="Final Animation Render", icon="RENDER_ANIMATION")
         selected_final_quality = _normalize_texture_quality_for_ui(getattr(props, "texture_quality_mode", "PREVIEW"))
         final_render_allowed = allows_animation_render_for_context(
@@ -2448,15 +2446,24 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             source=props,
             requested_mode=selected_final_quality,
         )
-        if _is_animation_render_running():
+        if animation_render_running:
             runtime, runtime_code, runtime_text = _resolve_runtime_display(scene)
             _draw_resolve_download_indicator(final_render_box, scene, runtime, runtime_code, runtime_text)
 
         render_button_row = final_render_box.row(align=True)
         render_button_row.scale_y = 1.2
-        render_button_row.enabled = bool(final_render_allowed) and bool(earth_workflow_enabled)
-        render_button_row.operator(
-            "planetka.animation_render",
-            text="Render Animation",
-            icon="RENDER_ANIMATION",
-        )
+        if animation_render_running:
+            render_button_row.enabled = True
+            render_button_row.alert = True
+            render_button_row.operator(
+                "planetka.animation_stop",
+                text="Stop",
+                icon="CANCEL",
+            )
+        else:
+            render_button_row.enabled = bool(final_render_allowed) and bool(earth_workflow_enabled)
+            render_button_row.operator(
+                "planetka.animation_render",
+                text="Render Animation",
+                icon="RENDER_ANIMATION",
+            )

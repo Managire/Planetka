@@ -146,7 +146,6 @@ EXTERNAL_SKIPS = {
 
 BOOL_SWEEPS = {
     "viewport_opt_suspend_subdivision": [False, True],
-    "viewport_opt_active_view_coarse_textures": [False, True],
     "show_earth_preview": [False, True],
     "auto_resolve": [False, True],
     "auto_adjust_clipping_values": [False, True],

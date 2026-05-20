@@ -2,7 +2,7 @@
 
 Last updated: 2026-05-19
 
-Planetka 0.8.1 uses two active add-on account tiers: `personal` and `professional`.
+Planetka 0.8.2 uses two active add-on account tiers: `personal` and `professional`.
 
 ## Canonical Account State
 
@@ -56,7 +56,7 @@ The switch updates the user account row and all active access keys for that user
 
 ## Removed Add-on Concepts
 
-The active 0.8.1 add-on model must not rely on:
+The active 0.8.2 add-on model must not rely on:
 
 - tile purchase entitlements for add-on access;
 - scene-specific tile purchases;
@@ -68,7 +68,7 @@ The active 0.8.1 add-on model must not rely on:
 - monthly billing;
 - Standard/Balanced paid unlock handlers.
 
-The website data-pack/catalog system may remain in Cloudflare for future or separate data products, but it must not be the authority for 0.8.1 Blender add-on streaming access.
+The website data-pack/catalog system may remain in Cloudflare for future or separate data products, but it must not be the authority for 0.8.2 Blender add-on streaming access.
 
 ## Required Tests
 

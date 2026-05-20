@@ -175,6 +175,7 @@ _REGION_PACK_PURCHASE_POLL_INTERVAL_SEC = 12.0
 _REGION_PACK_PURCHASE_TIMEOUT_SEC = 180.0
 _LAST_RESOLVE_TEXTURE_QUALITY_MODE_KEY = "planetka_last_resolve_texture_quality_mode"
 _FULL_QUALITY_HOLD_SIGNATURE_KEY = "planetka_full_quality_hold_signature"
+_SUPPRESS_TEXTURE_QUALITY_UPDATE_AUTO_RESOLVE_KEY = "planetka_suppress_texture_quality_update_auto_resolve"
 
 
 def _signature_token(signature):
@@ -374,33 +375,23 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
                 getattr(props, "texture_quality_mode", "PREVIEW")
             )
             if previous_mode != target_mode:
-                props.texture_quality_mode = target_mode
+                try:
+                    scene[_SUPPRESS_TEXTURE_QUALITY_UPDATE_AUTO_RESOLVE_KEY] = True
+                    props.texture_quality_mode = target_mode
+                finally:
+                    try:
+                        if _SUPPRESS_TEXTURE_QUALITY_UPDATE_AUTO_RESOLVE_KEY in scene:
+                            del scene[_SUPPRESS_TEXTURE_QUALITY_UPDATE_AUTO_RESOLVE_KEY]
+                    except (RuntimeError, TypeError, ValueError, AttributeError):
+                        logger.debug("Planetka: failed clearing texture-quality resolve suppression flag", exc_info=True)
             scope_mode = _auto_resolve_scope_mode(scene)
             if scope_mode not in {"ACTIVE_VIEW", "CAMERA"}:
                 scope_mode = "CAMERA"
-            tiles_override_json = ""
-            try:
-                from . import tile_utils as _tile_utils
-                from .render_prep import apply_texture_quality_to_full_tiles
-                source_tiles = scene.get("planetka_last_full_source_tiles", ())
-                max_tile_budget = int(getattr(_tile_utils, "MAX_SHADER_TILE_BUDGET", 12) or 12)
-                if source_tiles:
-                    target_tiles = [
-                        str(tile)
-                        for tile in apply_texture_quality_to_full_tiles(source_tiles, target_mode)
-                        if str(tile or "").strip()
-                    ]
-                    if target_tiles and len(target_tiles) <= max_tile_budget:
-                        tiles_override_json = json.dumps(target_tiles)
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                logger.debug("Planetka: texture quality fast-path tile transform failed", exc_info=True)
-            except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-                logger.debug("Planetka: texture quality fast-path tile transform failed unexpectedly", exc_info=True)
             queued_result = bpy.ops.planetka.load_textures(
                 scope_mode=scope_mode,
                 skip_render_compatibility=True,
                 defer_download=True,
-                tiles_override_json=tiles_override_json,
+                tiles_override_json="",
                 texture_quality_mode_override=target_mode,
             )
             if "FINISHED" not in queued_result:

@@ -126,9 +126,9 @@ These controls estimate monthly R2 cost and notify ops when estimate crosses thr
 
 These power the addon update manifest endpoint at `GET /addon/update-manifest`.
 
-- `ADDON_UPDATE_VERSION` (prepared 0.8.1 value: `0.8.1`)
-- `ADDON_UPDATE_DOWNLOAD_URL` (prepared 0.8.1 value: `https://api.planetka.io/addon/releases/Planetka_update_0.8.1.zip`)
-- `ADDON_UPDATE_SHA256` (prepared 0.8.1 value: `c1641a4add02dcd0b603cde796e3e7dd2016ff27bb461c95e333e9e0f3e52d49`)
+- `ADDON_UPDATE_VERSION` (prepared 0.8.2 value: `0.8.2`)
+- `ADDON_UPDATE_DOWNLOAD_URL` (prepared 0.8.2 value: `https://api.planetka.io/addon/releases/Planetka_update_0.8.2.zip`)
+- `ADDON_UPDATE_SHA256` (prepared 0.8.2 value: `b6d57f4d03308dfedb77366077015fe91d6cde81a91bb590aac5233c92c81df4`)
 - `ADDON_UPDATE_RELEASE_NOTES_URL` (default: `https://www.planetka.io/blender/documentation/`)
 - `ADDON_UPDATE_CHANNEL` (default: `stable`)
 - `ADDON_UPDATE_MIN_BLENDER` (default: `4.5.7`)

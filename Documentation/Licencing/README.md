@@ -6,7 +6,7 @@ This folder contains the user-facing Planetka licence, privacy, attribution, and
 
 ## Public add-on access model
 
-Planetka 0.8.1 uses a streaming account model:
+Planetka 0.8.2 uses a streaming account model:
 
 - **Personal account**: free access to selected locations, currently New Zealand and Iceland.
 - **Professional account**: paid or manually granted access to worldwide Planetka streaming.

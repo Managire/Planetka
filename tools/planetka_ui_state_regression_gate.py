@@ -68,7 +68,7 @@ def _test_texture_quality_uses_single_status_line() -> dict:
     live_text = text[text.find("def _draw_live_telemetry"):text.find("def _draw_advanced_telemetry")]
     _assert(
         "_draw_resolve_status_line(layout, scene, runtime, runtime_code, runtime_text)" in live_text,
-        "Data Streaming must draw the shared resolve status line above Texture Quality.",
+        "Data Control must draw the shared resolve status line above Texture Quality.",
     )
     _assert(
         ".progress(" not in live_text,
@@ -90,8 +90,8 @@ def _test_streaming_quality_ui_has_no_pricing_gate() -> dict:
         "Sidebar should expose the simplified Texture Quality section.",
     )
     _assert(
-        'bl_label = "Data Streaming"' in text,
-        "Sidebar panel should be named Data Streaming.",
+        'bl_label = "Data Control"' in text,
+        "Sidebar panel should be named Data Control.",
     )
     _assert(
         '"BALANCED", "Balanced"' in text,
@@ -108,6 +108,8 @@ def _test_quality_operator_is_streaming_only() -> dict:
     text = _source_text("operators.py")
     start = text.find("class PLANETKA_OT_SetTextureQualityAndResolve")
     end = text.find("class PLANETKA_OT_OpenCreditCheckout", start)
+    if end < 0:
+        end = len(text)
     operator_text = text[start:end]
     _assert(
         '"BALANCED",' in operator_text,
@@ -122,10 +124,21 @@ def _test_quality_operator_is_streaming_only() -> dict:
         "Texture quality operator must explicitly queue the shared async resolve path.",
     )
     _assert(
-        "planetka_last_full_source_tiles" in operator_text
-        and "apply_texture_quality_to_full_tiles" in operator_text
-        and "tiles_override_json=tiles_override_json" in operator_text,
-        "Texture quality operator must reuse the last full-source tile list for fast quality switching.",
+        "planetka_last_full_source_tiles" not in operator_text
+        and "apply_texture_quality_to_full_tiles" not in operator_text
+        and 'tiles_override_json=""' in operator_text,
+        "Texture quality operator must not reuse cached source tiles; it must run the shared resolve path.",
+    )
+    _assert(
+        "_SUPPRESS_TEXTURE_QUALITY_UPDATE_AUTO_RESOLVE_KEY" in operator_text
+        and "planetka_suppress_texture_quality_update_auto_resolve" in text,
+        "Texture quality operator must suppress the EnumProperty update auto-resolve and queue exactly one explicit resolve.",
+    )
+    properties_text = _source_text("properties.py")
+    _assert(
+        "planetka_suppress_texture_quality_update_auto_resolve" in properties_text
+        and "return" in properties_text[properties_text.find("def update_texture_quality_mode"):properties_text.find("def _request_resolve_kill_switch")],
+        "Texture quality property update must honor the operator suppression flag.",
     )
     return {"checked": True}
 
@@ -165,12 +178,15 @@ def _test_texture_quality_tile_levels(base_module: str) -> dict:
 def _test_quality_switch_fast_path() -> dict:
     text = _source_text("planetka_runtime/auto_resolve_pipeline.py")
     _assert(
-        "quality_switch_fast_path" in text,
-        "Auto-resolve planner must expose the quality-switch fast path.",
+        "quality_switch_fast_path" not in text
+        and "_scene_last_full_source_tiles" not in text
+        and "planetka_last_full_source_tiles" not in text,
+        "Texture quality changes must not use the obsolete shortcut source-tile cache.",
     )
     _assert(
-        "apply_texture_quality_to_full_tiles" in text,
-        "Quality changes must transform the last optimal source tile list instead of recomputing visibility.",
+        "full_source_tiles = tile_utils.main(" in text
+        and "apply_texture_quality_to_full_tiles(full_source_tiles, current_quality_mode)" in text,
+        "Auto-resolve must recompute full source tiles and apply quality through the normal path.",
     )
     _assert(
         "not quality_mode_changed and now - last_resolve < min_interval_sec" in text,
@@ -179,6 +195,103 @@ def _test_quality_switch_fast_path() -> dict:
     _assert(
         "and not quality_mode_changed" in text,
         "Same camera signature must still plan when only the texture quality changed.",
+    )
+    operators_text = _source_text("operators.py")
+    _assert(
+        "planetka_last_full_source_tiles" not in operators_text
+        and "texture quality fast-path" not in operators_text,
+        "Texture Quality buttons must not bypass the normal resolve path.",
+    )
+    return {"checked": True}
+
+
+def _test_obsolete_active_view_quality_override_removed() -> dict:
+    for name in (
+        "properties.py",
+        "state.py",
+        "render_prep.py",
+        "planetka_runtime/auto_resolve_pipeline.py",
+    ):
+        text = _source_text(name)
+        _assert(
+            "viewport_opt_active_view_coarse_textures" not in text
+            and "Use Lower Texture Quality in Active View" not in text,
+            f"Obsolete Active View lower-quality override must not exist in {name}.",
+        )
+    return {"checked": True}
+
+
+def _test_auto_resolve_has_no_forced_preview_jobs() -> dict:
+    text = _source_text("planetka_runtime/auto_resolve_pipeline.py")
+    context_text = _source_text("planetka_runtime/auto_resolve_context.py")
+    state_text = _source_text("state.py")
+    _assert(
+        "automatic Preview" not in text and "suppress_auto_preview" not in text,
+        "Normal auto-resolve must not contain a special automatic Preview job path.",
+    )
+    _assert(
+        "texture_quality_mode = _ctx_auto_resolve_texture_quality_mode(" in text
+        and "getattr(props, \"texture_quality_mode\", \"PREVIEW\")" in text,
+        "Normal auto-resolve must read the currently selected Texture Quality from scene properties.",
+    )
+    _assert(
+        "class AutoResolveDecisionDeps" in context_text
+        and "normalize_texture_quality_mode: Any" in context_text,
+        "Auto-resolve decision context must have the quality normalizer; otherwise it silently falls back to Preview.",
+    )
+    _assert(
+        "normalize_texture_quality_mode=_normalize_texture_quality_mode" in state_text[
+            state_text.find("decision_deps = AutoResolveDecisionDeps("):state_text.find("noncritical_deps = AutoResolveNonCriticalDeps(")
+        ],
+        "Auto-resolve decision deps must receive the quality normalizer from state.py.",
+    )
+    return {"checked": True}
+
+
+def _test_stale_completed_resolve_cannot_override_newer_request() -> dict:
+    text = _source_text("planetka_runtime/auto_resolve_pipeline.py")
+    _assert(
+        "_ctx_job_supersedes_completed_payload" in text,
+        "Download pump must be able to identify stale completed resolves superseded by newer requests.",
+    )
+    _assert(
+        "queue dropped stale completed resolve" in text,
+        "Queueing a newer request must clear an older completed payload before it can apply.",
+    )
+    _assert(
+        "Worker dropped completed resolve because a newer request is pending" in text,
+        "Download worker must not store an old completed payload when a newer different request is already pending.",
+    )
+    _assert(
+        "Pump dropped stale completed resolve before apply" in text,
+        "Pump must drop stale completed payloads before shader apply.",
+    )
+    return {"checked": True}
+
+
+def _test_animation_stop_is_cooperative() -> dict:
+    text = _source_text("animation_tools.py")
+    external_start = text.find("def _request_external_stop(self):")
+    external_end = text.find("def _read_render_heartbeat", external_start)
+    external_stop = text[external_start:external_end]
+    _assert(
+        "_request_render_stop()" not in external_stop,
+        "Animation Stop button must not call Blender render cancel directly from the UI operator.",
+    )
+    render_operator_start = text.find("class PLANETKA_OT_AnimationRender")
+    modal_start = text.find("def modal(self, context, event):", render_operator_start)
+    modal_render_start = text.find('if self._state == "RENDER":', modal_start)
+    modal_pre_render = text[modal_start:modal_render_start]
+    _assert(
+        "_request_render_stop()" not in modal_pre_render,
+        "Modal stop handling must be cooperative before entering the render-state branch.",
+    )
+    stop_operator_start = text.find("class PLANETKA_OT_AnimationStop")
+    stop_operator_end = text.find("class PLANETKA_OT_AnimationMakeReady", stop_operator_start)
+    stop_operator = text[stop_operator_start:stop_operator_end]
+    _assert(
+        "render.cancel" not in stop_operator and "view_cancel" not in stop_operator,
+        "Animation Stop fallback must not call Blender render.cancel/view_cancel directly.",
     )
     return {"checked": True}
 
@@ -222,6 +335,10 @@ def main() -> int:
             ("quality_operator_is_streaming_only", _test_quality_operator_is_streaming_only),
             ("texture_quality_tile_levels", lambda: _test_texture_quality_tile_levels(base_module)),
             ("quality_switch_fast_path", _test_quality_switch_fast_path),
+            ("obsolete_active_view_quality_override_removed", _test_obsolete_active_view_quality_override_removed),
+            ("auto_resolve_has_no_forced_preview_jobs", _test_auto_resolve_has_no_forced_preview_jobs),
+            ("stale_completed_resolve_cannot_override_newer_request", _test_stale_completed_resolve_cannot_override_newer_request),
+            ("animation_stop_is_cooperative", _test_animation_stop_is_cooperative),
             ("full_quality_details_removed_from_data_control", _test_full_quality_details_removed_from_data_control),
             ("region_pack_offer_context_is_correct", _test_region_pack_offer_context_is_not_download_context),
         )

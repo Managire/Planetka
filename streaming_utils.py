@@ -15,6 +15,7 @@ from .r2_source import (
     is_remote_source_configured,
     plan_resolve_downloads,
     prefetch_resolve_downloads,
+    report_resolve_usage_summary,
     resolve_request_context,
     resolve_texture_file,
 )
@@ -318,6 +319,19 @@ def prefetch_resolve_plan(
     finally:
         if capture and use_remote:
             capture_result = end_resolve_download_capture() or {}
+            try:
+                report_resolve_usage_summary(
+                    resolve_id=normalized_resolve_id,
+                    texture_quality_mode=normalized_quality_mode,
+                    downloaded_bytes=int(capture_result.get("downloaded_bytes", 0) or 0),
+                    total_bytes=int(capture_result.get("total_bytes", 0) or 0),
+                    tile_count=len(resolved_tiles),
+                    duration_ms=int(capture_result.get("download_ms", 0) or 0),
+                )
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka: failed scheduling resolve usage summary telemetry", exc_info=True)
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka: failed scheduling resolve usage summary telemetry", exc_info=True)
 
     if isinstance(prefetch_result, dict):
         cancelled = bool(prefetch_result.get("cancelled", False))

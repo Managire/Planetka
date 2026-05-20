@@ -1,7 +1,4 @@
 import { corsHeaders, json } from "./responses.js";
-import {
-  tileKeyFromFileName,
-} from "./tile_sessions.js";
 
 function guessContentType(fileName) {
   const lower = String(fileName || "").toLowerCase();
@@ -262,47 +259,87 @@ export async function handleTileSessionStart(request, env, deps) {
   );
 }
 
+export async function handleResolveSummary(request, env, deps) {
+  const {
+    clampNonNegativeInt,
+    json: jsonResponse,
+    normalizeQualityMode,
+    normalizeResolveId,
+    parseJson,
+    recordResolveSummaryEvent,
+    requireAuthenticatedUserContext,
+    requireDb,
+  } = deps;
+
+  const auth = await requireAuthenticatedUserContext(
+    request,
+    env,
+    { enforceApiKeyDevicePolicy: false, lightweightAccessClaims: false },
+  );
+  if (auth.error) {
+    return auth.error;
+  }
+
+  const body = await parseJson(request);
+  const resolveId = normalizeResolveId(
+    body && (body.resolve_id || body.resolveId) || request.headers.get("X-Planetka-Resolve-Id") || "",
+  );
+  if (!resolveId) {
+    return jsonResponse({ ok: false, error: "missing_resolve_id" }, 400, env);
+  }
+  const qualityMode = normalizeQualityMode(
+    body && (body.quality_mode || body.qualityMode) || request.headers.get("X-Planetka-Quality-Mode") || "",
+  );
+  const bytesServed = clampNonNegativeInt(body && (
+    body.bytes_served
+    || body.bytesServed
+    || body.downloaded_bytes
+    || body.downloadedBytes
+  ));
+  const totalBytes = clampNonNegativeInt(body && (body.total_bytes || body.totalBytes));
+  const tileCount = clampNonNegativeInt(body && (body.tile_count || body.tileCount));
+  const durationMs = clampNonNegativeInt(body && (body.duration_ms || body.durationMs));
+
+  if (typeof recordResolveSummaryEvent !== "function") {
+    return jsonResponse({ ok: false, error: "resolve_summary_unavailable" }, 503, env);
+  }
+
+  const result = await recordResolveSummaryEvent(requireDb(env), {
+    created_at: deps.nowIso(),
+    created_at_unix: Math.floor(Date.now() / 1000),
+    user_id: String(auth && auth.user && auth.user.id || ""),
+    user_email: String(auth && auth.user && auth.user.email || ""),
+    resolve_id: resolveId,
+    quality_mode: qualityMode,
+    bytes_served: bytesServed,
+    total_bytes: totalBytes,
+    tile_count: tileCount,
+    duration_ms: durationMs,
+    path: "/tiles/resolve-summary",
+  });
+  return jsonResponse({ ok: true, stored: Boolean(result && result.stored) }, 200, env);
+}
+
 export async function handleTileRequest(request, env, path, ctx, deps) {
   const {
     clampNonNegativeInt,
-    isTileEventQueueProducerEnabled,
-    isTileHotPathMonitoringEnabled,
-    maybeSignalTileFarmingActivity,
-    normalizeDeviceId,
     normalizeQualityMode,
-    normalizeResolveId,
     readTileSessionClaims,
-    recordPreviewUsageAndMaybeAlert,
-    recordTileRequestEvent,
-    requestClientIp,
-    requestCountry,
     requireAuthenticatedUserContext,
-    requireDb,
     resolveTileCacheControl,
-    nowIso,
   } = deps;
 
   if (!env.PLANETKA_DATA) {
     return json({ ok: false, error: "missing_r2_binding" }, 500, env);
   }
 
-  const db = requireDb(env);
-  let user = { id: "", email: "" };
-  let deviceId = "";
   let tokenQualityMode = "";
-  let tokenResolveId = "";
   const tileSessionAuth = await readTileSessionClaims(request, env);
   if (tileSessionAuth && tileSessionAuth.error) {
     return tileSessionAuth.error;
   }
   if (tileSessionAuth && tileSessionAuth.claims) {
-    user = {
-      id: String(tileSessionAuth.claims.userId || "").trim(),
-      email: String(tileSessionAuth.claims.userEmail || "").trim(),
-    };
-    deviceId = normalizeDeviceId(tileSessionAuth.claims.deviceId || request.headers.get("X-Planetka-Device-Id") || "");
     tokenQualityMode = normalizeQualityMode(tileSessionAuth.claims.qualityMode || "");
-    tokenResolveId = normalizeResolveId(tileSessionAuth.claims.resolveId || "");
   } else {
     if (request.method !== "HEAD") {
       return json({ ok: false, error: "missing_tile_session_token" }, 401, env);
@@ -315,65 +352,35 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
     if (auth.error) {
       return auth.error;
     }
-    user = auth.user;
-    deviceId = normalizeDeviceId(auth.deviceId || request.headers.get("X-Planetka-Device-Id") || "");
   }
-
-  const requestStartedAtMs = Date.now();
-  const clientIp = requestClientIp(request);
-  const cfCountry = requestCountry(request);
-  const cfRay = String(request.headers.get("CF-Ray") || "").trim();
-  const resolveIdHeader = normalizeResolveId(request.headers.get("X-Planetka-Resolve-Id") || "");
-  const resolveId = tokenResolveId || resolveIdHeader;
-  let eventStatusCode = 0;
-  let eventBytesServed = 0;
-  let eventCacheStatus = "";
-  let eventErrorCode = "";
-  let eventFolder = "";
-  let eventFileName = "";
-  let eventTileKey = "";
-  let eventQualityMode = "";
 
   try {
     const parts = path.replace(/^\/tiles\//, "").split("/");
     if (parts.length !== 2 || !parts[0] || !parts[1]) {
-      eventStatusCode = 400;
-      eventErrorCode = "invalid_tile_path";
       return json({ ok: false, error: "invalid_tile_path" }, 400, env);
     }
 
     const folder = decodeURIComponent(parts[0]);
     const fileName = decodeURIComponent(parts[1]);
-    const creditTileKey = tileKeyFromFileName(fileName);
-    eventFolder = folder;
-    eventFileName = fileName;
     if (
       folder.includes("/") ||
       fileName.includes("/") ||
       folder.includes("..") ||
       fileName.includes("..")
     ) {
-      eventStatusCode = 400;
-      eventErrorCode = "invalid_tile_path";
       return json({ ok: false, error: "invalid_tile_path" }, 400, env);
     }
 
     const prefix = String(env.R2_PREFIX || "").trim().replace(/^\/+|\/+$/g, "");
     const key = prefix ? `${prefix}/${folder}/${fileName}` : `${folder}/${fileName}`;
-    eventTileKey = key;
     const qualityModeRaw = String(request.headers.get("X-Planetka-Quality-Mode") || "").trim().toLowerCase();
     const requestedQualityMode = normalizeQualityMode(qualityModeRaw);
     const effectiveQualityMode = requestedQualityMode || tokenQualityMode;
-    eventQualityMode = effectiveQualityMode;
     if (request.method === "HEAD") {
       const objectHead = await env.PLANETKA_DATA.head(key);
       if (!objectHead) {
-        eventStatusCode = 404;
-        eventErrorCode = "tile_not_found";
         return new Response(null, { status: 404, headers: corsHeaders(env) });
       }
-      eventStatusCode = 200;
-      eventBytesServed = clampNonNegativeInt(objectHead.size);
       return new Response(null, {
         status: 200,
         headers: {
@@ -406,8 +413,6 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
       cacheStatus = "MISS";
       const object = await env.PLANETKA_DATA.get(key);
       if (!object) {
-        eventStatusCode = 404;
-        eventErrorCode = "tile_not_found";
         return new Response("Not Found", { status: 404, headers: corsHeaders(env) });
       }
       objectSize = clampNonNegativeInt(object.size);
@@ -434,109 +439,12 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
       responseHeaders.set("ETag", etag);
     }
 
-    eventStatusCode = 200;
-    eventBytesServed = objectSize;
-    eventCacheStatus = cacheStatus;
-    if (effectiveQualityMode === "preview" && request.method === "GET") {
-      const previewUsageWrite = recordPreviewUsageAndMaybeAlert(db, env, {
-        created_at_unix: Math.floor(Date.now() / 1000),
-        user_id: String(user.id || ""),
-        user_email: String(user.email || ""),
-        method: "GET",
-        quality_mode: effectiveQualityMode,
-        status_code: 200,
-        bytes_served: objectSize,
-        tile_key: creditTileKey || eventTileKey,
-      });
-      if (ctx && typeof ctx.waitUntil === "function") {
-        ctx.waitUntil(previewUsageWrite);
-      } else {
-        await previewUsageWrite;
-      }
-    }
     return new Response(responseBody, {
       status: 200,
       headers: responseHeaders,
     });
   } finally {
-    const durationMs = Math.max(0, Date.now() - requestStartedAtMs);
-    const statusCode = eventStatusCode > 0 ? eventStatusCode : 500;
-    const errorCode = String(eventErrorCode || (statusCode >= 400 ? "internal_error" : ""));
-    const monitoringEnabled = isTileHotPathMonitoringEnabled(env);
-    const tileEventPayload = {
-      created_at: nowIso(),
-      created_at_unix: Math.floor(Date.now() / 1000),
-      user_id: String(user.id || ""),
-      user_email: String(user.email || ""),
-      device_id: String(deviceId || ""),
-      resolve_id: resolveId,
-      method: String(request.method || "GET"),
-      path,
-      folder: eventFolder,
-      file_name: eventFileName,
-      tile_key: eventTileKey,
-      quality_mode: eventQualityMode,
-      status_code: statusCode,
-      bytes_served: eventBytesServed,
-      cache_status: eventCacheStatus,
-      duration_ms: durationMs,
-      cf_ray: cfRay,
-      cf_country: cfCountry,
-      client_ip: clientIp,
-      error_code: errorCode,
-      monitoring_enabled: monitoringEnabled,
-    };
-    const processSignals = async () => {
-      await recordTileRequestEvent(db, tileEventPayload);
-      if (!monitoringEnabled) {
-        return;
-      }
-      await maybeSignalTileFarmingActivity(db, env, {
-        userId: String(user.id || ""),
-        userEmail: String(user.email || ""),
-        ip: clientIp,
-        deviceId: String(deviceId || ""),
-        resolveId,
-        tileKey: eventTileKey,
-        method: String(request.method || "GET"),
-        path,
-        statusCode,
-      });
-    };
-    const enqueueTileEvent = async () => {
-      if (
-        !isTileEventQueueProducerEnabled(env)
-        || !env.TILE_EVENT_QUEUE
-        || typeof env.TILE_EVENT_QUEUE.send !== "function"
-      ) {
-        await processSignals();
-        return;
-      }
-      try {
-        await env.TILE_EVENT_QUEUE.send(tileEventPayload);
-      } catch (error) {
-        console.warn(
-          "worker.tile_event_queue.enqueue_failed",
-          JSON.stringify({
-            error: String(error && error.message || "tile_event_queue_enqueue_failed"),
-          }),
-        );
-        try {
-          await processSignals();
-        } catch (fallbackError) {
-          console.warn(
-            "worker.tile_event_queue.fallback_failed",
-            JSON.stringify({
-              error: String(fallbackError && fallbackError.message || "tile_event_fallback_failed"),
-            }),
-          );
-        }
-      }
-    };
-    if (ctx && typeof ctx.waitUntil === "function") {
-      ctx.waitUntil(enqueueTileEvent());
-    } else {
-      await enqueueTileEvent();
-    }
+    // Tile requests are the hot path. Usage analytics are recorded once per
+    // completed resolve through /tiles/resolve-summary, not once per tile file.
   }
 }

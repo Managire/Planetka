@@ -3894,14 +3894,13 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
 
     def _request_external_stop(self):
         self._stop_requested = True
-        self._set_ui_status("Stopping Animation Render", icon="CANCEL")
+        self._set_ui_status("Stopping after current render pass", icon="CANCEL")
         try:
             stop_auto_resolve_download_pipeline()
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka animation: failed stopping resolve pipeline during external stop", exc_info=True)
         except (RuntimeError, TypeError, ValueError, AttributeError):
             logger.debug("Planetka animation: failed stopping resolve pipeline during external stop", exc_info=True)
-        self._request_render_stop()
 
     def _read_render_heartbeat(self):
         try:
@@ -4714,12 +4713,11 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             if not bool(self._stop_notice_sent):
                 self.report({'INFO'}, "Stopping Final Animation Render...")
                 self._stop_notice_sent = True
-            self._request_render_stop()
-            if self._is_render_handler_running():
-                return {'RUNNING_MODAL'}
-            self._report_user_stopped_render()
-            self._cleanup(context, stop_render=False)
-            return {'CANCELLED'}
+            self._set_ui_status("Stopping after current render pass", icon="CANCEL")
+            if self._state != "RENDER":
+                self._report_user_stopped_render()
+                self._cleanup(context, stop_render=False)
+                return {'CANCELLED'}
 
         scene = self._scene
         if scene is None:
@@ -4778,6 +4776,10 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
                 if self._is_render_handler_running():
                     self._render_seen_active = True
                     return {'RUNNING_MODAL'}
+                if bool(self._stop_requested):
+                    self._report_user_stopped_render()
+                    self._cleanup(context, stop_render=False)
+                    return {'CANCELLED'}
                 self._cleanup_completed_segment_cache(self._segment_index)
                 self._segment_index += 1
                 self._active_segment = None
@@ -4874,23 +4876,6 @@ class PLANETKA_OT_AnimationStop(bpy.types.Operator):
             self.report({'INFO'}, "Stopping Final Animation Render...")
             return {'FINISHED'}
 
-        try:
-            render_ops = getattr(bpy.ops, "render", None)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            render_ops = None
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            render_ops = None
-        if render_ops is not None:
-            for op_name in ("cancel", "view_cancel"):
-                cancel_op = getattr(render_ops, op_name, None)
-                if not callable(cancel_op):
-                    continue
-                try:
-                    cancel_op()
-                except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                    logger.debug("Planetka animation: fallback stop render cancel failed", exc_info=True)
-                except (RuntimeError, TypeError, ValueError, AttributeError):
-                    logger.debug("Planetka animation: fallback stop render cancel failed", exc_info=True)
         try:
             stop_auto_resolve_download_pipeline()
         except PLANETKA_RECOVERABLE_EXCEPTIONS:

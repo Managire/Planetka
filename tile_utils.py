@@ -70,7 +70,6 @@ VIEWPORT_RESOLUTION_Y = 1080.0
 LAST_TILE_BUDGET_TRACE = []
 LAST_TILE_BUDGET_INPUT = []
 LAST_TILE_BUDGET_OUTPUT = []
-LAST_FULL_SOURCE_TILES_KEY = "planetka_last_full_source_tiles"
 ADAPTIVE_HORIZON_PRECISION_ENABLED = True
 ADAPTIVE_HORIZON_REFINE_MAX_Z = 2
 ADAPTIVE_HORIZON_NEAR_MISS_NDC_THRESHOLD = 0.012
@@ -2280,17 +2279,6 @@ def _one_pass_selective_refinement(
     )
 
 
-def _store_last_full_source_tiles(scene, tiles):
-    if scene is None:
-        return
-    try:
-        scene[LAST_FULL_SOURCE_TILES_KEY] = _sort_tiles_for_apply(tiles)
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed storing optimal source tiles for quality switching", exc_info=True)
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed storing optimal source tiles for quality switching", exc_info=True)
-
-
 def _find_active_view3d_context():
     context = bpy.context
     area = getattr(context, "area", None)
@@ -2879,21 +2867,6 @@ def main(scope_mode="AUTO", edge_boost=False):
         frustum_margin=frustum_margin,
     )
     full_source_tiles = _sort_tiles_for_apply(final_tiles)
-    fast_switch_source_tiles, _fast_switch_budget_trace, _fast_switch_budget_success = _enforce_shader_tile_budget(
-        full_source_tiles,
-        max_tiles=MAX_SHADER_TILE_BUDGET,
-        cam_pos_local=cam_pos_local,
-        earth_radius=earth_radius,
-    )
-    fast_switch_source_tiles, _fast_switch_floor_added = _enforce_shader_tile_floor(
-        fast_switch_source_tiles,
-        min_tiles=MIN_SHADER_TILE_FLOOR,
-        max_tiles=MAX_SHADER_TILE_BUDGET,
-    )
-    _store_last_full_source_tiles(
-        scene,
-        fast_switch_source_tiles,
-    )
     LAST_TILE_BUDGET_INPUT = list(full_source_tiles)
     budgeted_tiles, budget_trace, budget_success = _enforce_shader_tile_budget(
         full_source_tiles,

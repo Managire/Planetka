@@ -113,6 +113,7 @@ class AutoResolveDecisionDeps:
     get_earth_object: Any
     get_tile_utils: Any
     canonical_tiles: Any
+    normalize_texture_quality_mode: Any
     is_render_job_active: Any
     is_animation_playing: Any
     is_navigation_user_edit_active: Any

@@ -2,6 +2,23 @@
 
 All notable public changes to Planetka are documented in this file.
 
+## [v0.8.2] - 2026-05-20
+
+### Changed
+- Replaced per-tile Cloudflare Queue analytics with one resolve-summary event per completed resolve to reduce Queue usage and keep tile delivery lightweight.
+- Final Animation Render now uses the currently selected Texture Quality mode instead of forcing Full Quality.
+- Texture Quality switching now runs through the single shared resolve path instead of the removed quality-switch shortcut.
+- The Data Control status line is used for resolve progress; quality buttons stay static.
+
+### Fixed
+- Fixed Preview/Balanced/Full resolves so the final shader textures match the selected quality mode rather than being overwritten by Preview resolves.
+- Fixed competing auto-resolve jobs so stale completed resolves cannot override a newer explicit quality request.
+- Fixed the Final Animation Render Stop control to stop cooperatively without directly cancelling Blender render from the UI operator.
+- Removed the obsolete Active View lower-quality override.
+
+### Release note
+- Atmosphere integration is not included in this update.
+
 ## [v0.8.1] - 2026-05-19
 
 ### Changed

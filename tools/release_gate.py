@@ -338,6 +338,30 @@ def main() -> int:
             "Worker safeguard missing: tile requests read quality mode header "
             "('X-Planetka-Quality-Mode')"
         )
+    if worker_tiles_src or worker_tile_routes_src:
+        if "/tiles/resolve-summary" not in f"{worker_tiles_src}\n{worker_tile_routes_src}":
+            errors.append("Tiles Worker missing per-resolve usage summary endpoint: /tiles/resolve-summary")
+        forbidden_tile_queue_markers = [
+            "TILE_EVENT_QUEUE",
+            "ENABLE_TILE_EVENT_QUEUE_PRODUCER",
+            ".send(tileEventPayload",
+            "queues.producers",
+        ]
+        tiles_surface = "\n".join(
+            read_text(path)
+            for path in [
+                root / "cloudflare-api" / "wrangler.tiles.toml",
+                worker_tiles_path,
+                worker_tile_routes_path,
+            ]
+            if path.exists()
+        )
+        for marker in forbidden_tile_queue_markers:
+            if marker in tiles_surface:
+                errors.append(
+                    "Tiles Worker still contains per-tile Queue producer marker: "
+                    f"'{marker}'"
+                )
 
     # 7) Admin analytics must reject token query params
     if worker_analytics_src or worker_admin_analytics_src:

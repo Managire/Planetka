@@ -96,7 +96,6 @@ _FINAL_ANIMATION_RENDER_ACTIVE = False
 _SYNC_IDPROP_MAP = {
     "viewport_opt_suspend_subdivision": "planetka_viewport_opt_suspend_subdivision",
     "viewport_opt_subdivision_restore_delay_sec": "planetka_viewport_opt_subdivision_restore_delay_sec",
-    "viewport_opt_active_view_coarse_textures": "planetka_viewport_opt_active_view_coarse_textures",
     "show_earth_preview": "planetka_show_earth_preview",
     "atmosphere_enabled": "planetka_atmosphere_enabled",
     "enable_global_clouds": "planetka_enable_global_clouds",
@@ -1527,6 +1526,7 @@ def _build_auto_resolve_contexts():
         get_earth_object=get_earth_object,
         get_tile_utils=_get_tile_utils,
         canonical_tiles=_canonical_tiles,
+        normalize_texture_quality_mode=_normalize_texture_quality_mode,
         is_render_job_active=_is_auto_resolve_render_guard_active,
         is_animation_playing=_is_animation_playing,
         is_navigation_user_edit_active=_is_navigation_user_edit_active,

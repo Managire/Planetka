@@ -7,7 +7,6 @@ _AUTO_RESOLVE_DECISION_CTX = None
 _AUTO_RESOLVE_NONCRITICAL_CTX = None
 _LAST_RESOLVE_TEXTURE_QUALITY_MODE_KEY = "planetka_last_resolve_texture_quality_mode"
 _FULL_QUALITY_HOLD_SIGNATURE_KEY = "planetka_full_quality_hold_signature"
-_LAST_FULL_SOURCE_TILES_KEY = "planetka_last_full_source_tiles"
 
 
 def _quality_mode_for_job(deps, job):
@@ -37,17 +36,6 @@ def _scene_last_resolve_quality(scene, deps):
         return "PREVIEW"
     except (RuntimeError, TypeError, ValueError, AttributeError):
         return "PREVIEW"
-
-
-def _scene_last_full_source_tiles(scene, deps):
-    if scene is None:
-        return ()
-    try:
-        return deps.canonical_tiles(scene.get(_LAST_FULL_SOURCE_TILES_KEY, ()))
-    except deps.recoverable_exceptions:
-        return ()
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        return ()
 
 
 def _store_full_quality_hold(scene, deps, signature):
@@ -218,6 +206,37 @@ def _ctx_auto_resolve_download_job_signature(ctx, job):
     )
 
 
+def _ctx_job_request_id(ctx, job):
+    deps = ctx.deps
+    if not deps.is_auto_resolve_download_job(job):
+        return -1
+    try:
+        return int(deps.job_field(job, "request_id", -1) or -1)
+    except (TypeError, ValueError):
+        return -1
+
+
+def _ctx_completed_payload_job(ctx, payload):
+    if not isinstance(payload, dict):
+        return None
+    job = payload.get("job")
+    return job if ctx.deps.is_auto_resolve_download_job(job) else None
+
+
+def _ctx_job_supersedes_completed_payload(ctx, newer_job, completed_payload):
+    completed_job = _ctx_completed_payload_job(ctx, completed_payload)
+    if not ctx.deps.is_auto_resolve_download_job(newer_job) or not ctx.deps.is_auto_resolve_download_job(completed_job):
+        return False
+    newer_request_id = _ctx_job_request_id(ctx, newer_job)
+    completed_request_id = _ctx_job_request_id(ctx, completed_job)
+    if newer_request_id <= completed_request_id:
+        return False
+    return (
+        _ctx_auto_resolve_download_job_signature(ctx, newer_job)
+        != _ctx_auto_resolve_download_job_signature(ctx, completed_job)
+    )
+
+
 def _auto_resolve_download_job_signature(job):
     return _ctx_auto_resolve_download_job_signature(_require_download_ctx(), job)
 
@@ -347,15 +366,6 @@ def _ctx_schedule_auto_resolve_download(
     except (RuntimeError, TypeError, ValueError, AttributeError):
         nav_altitude_km = 0.0
 
-    def _is_manual_full_job(job):
-        return (
-            deps.is_auto_resolve_download_job(job)
-            and bool(deps.job_field(job, "manual_request", False))
-            and deps.normalize_texture_quality_mode(
-                deps.job_field(job, "texture_quality_mode", "PREVIEW")
-            ) == "FULL"
-        )
-
     job_to_start = None
     should_arm_timer = False
     with state.download_lock:
@@ -380,31 +390,15 @@ def _ctx_schedule_auto_resolve_download(
         new_sig = _ctx_auto_resolve_download_job_signature(ctx, new_job)
         active_sig = _ctx_auto_resolve_download_job_signature(ctx, state.download_active_job)
         pending_sig = _ctx_auto_resolve_download_job_signature(ctx, state.download_pending_job)
-        completed_job = (
-            state.download_completed.get("job")
-            if isinstance(state.download_completed, dict)
-            else None
-        )
-        suppress_auto_preview_for_manual_full = (
-            not bool(manual_request)
-            and texture_quality_mode == "PREVIEW"
-            and (
-                _is_manual_full_job(state.download_active_job)
-                or _is_manual_full_job(state.download_pending_job)
-                or _is_manual_full_job(completed_job)
-            )
-        )
-        if suppress_auto_preview_for_manual_full:
+        if _ctx_job_supersedes_completed_payload(ctx, new_job, state.download_completed):
+            completed_job = _ctx_completed_payload_job(ctx, state.download_completed)
             deps.resolve_trace(
-                f"queue suppressed automatic Preview request_id={request_id}; "
-                "manual Full Quality resolve is active"
+                "queue dropped stale completed resolve "
+                f"(completed_request_id={_ctx_job_request_id(ctx, completed_job)}, "
+                f"new_request_id={request_id})"
             )
-            should_arm_timer = (
-                state.download_active_job is not None
-                or state.download_pending_job is not None
-                or state.download_completed is not None
-            )
-        elif new_sig == active_sig or new_sig == pending_sig:
+            state.download_completed = None
+        if new_sig == active_sig or new_sig == pending_sig:
             if bool(manual_request):
                 if new_sig == active_sig and deps.is_auto_resolve_download_job(state.download_active_job):
                     deps.job_set_field(state.download_active_job, "manual_request", True)
@@ -1385,6 +1379,17 @@ def _ctx_auto_resolve_download_worker(ctx, job):
             job_epoch = int(deps.job_field(job, "epoch", -1))
             current_epoch = int(state.download_epoch)
             store_completed = (job_epoch == current_epoch)
+            if store_completed and _ctx_job_supersedes_completed_payload(
+                ctx,
+                state.download_pending_job,
+                {"job": job},
+            ):
+                store_completed = False
+                deps.resolve_trace(
+                    "Worker dropped completed resolve because a newer request is pending "
+                    f"(completed_request_id={_ctx_job_request_id(ctx, job)}, "
+                    f"pending_request_id={_ctx_job_request_id(ctx, state.download_pending_job)})"
+                )
             if store_completed:
                 state.download_completed = result
             deps.resolve_trace(
@@ -1433,64 +1438,81 @@ def _ctx_auto_resolve_download_pump_timer(ctx):
         if isinstance(completed, dict):
             completed_job = completed.get("job") if isinstance(completed, dict) else None
             completed_request_id = deps.job_field(completed_job, "request_id")
-            now = time.monotonic()
-            try:
-                completed_at = float(completed.get("completed_at", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                completed_at = 0.0
-            if completed_at <= 0.0:
-                try:
-                    completed_at = float(completed.get("_pump_seen_at", 0.0) or 0.0)
-                except (TypeError, ValueError):
-                    completed_at = 0.0
-                if completed_at <= 0.0:
-                    completed_at = float(now)
-                    completed["_pump_seen_at"] = float(completed_at)
-            completed_age = max(0.0, float(now) - float(completed_at))
-            if completed_age >= float(settings.download_completed_max_age_sec):
+            with state.download_lock:
+                superseding_pending_job = (
+                    state.download_pending_job
+                    if _ctx_job_supersedes_completed_payload(ctx, state.download_pending_job, completed)
+                    else None
+                )
+            if deps.is_auto_resolve_download_job(superseding_pending_job):
                 deps.resolve_trace(
-                    "Pump dropped stale completed download payload "
-                    f"(request_id={completed_request_id}, age={completed_age:.2f}s)"
+                    "Pump dropped stale completed resolve before apply "
+                    f"(completed_request_id={completed_request_id}, "
+                    f"pending_request_id={_ctx_job_request_id(ctx, superseding_pending_job)})"
                 )
                 with state.download_lock:
                     if state.download_completed is completed:
                         state.download_completed = None
                 completed = None
-            else:
-                deps.resolve_trace(
-                    f"Pump received completed download (request_id={completed_request_id}, age={completed_age:.2f}s)"
-                )
-                consume_completed = False
+            if completed is not None:
+                now = time.monotonic()
                 try:
-                    consume_completed = bool(_ctx_handle_auto_resolve_download_complete(ctx, completed))
-                except deps.recoverable_exceptions:
-                    _ctx_handle_auto_resolve_download_failure(
-                        ctx,
-                        completed_job,
-                        "Finalize crashed with recoverable exception.",
+                    completed_at = float(completed.get("completed_at", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    completed_at = 0.0
+                if completed_at <= 0.0:
+                    try:
+                        completed_at = float(completed.get("_pump_seen_at", 0.0) or 0.0)
+                    except (TypeError, ValueError):
+                        completed_at = 0.0
+                    if completed_at <= 0.0:
+                        completed_at = float(now)
+                        completed["_pump_seen_at"] = float(completed_at)
+                completed_age = max(0.0, float(now) - float(completed_at))
+                if completed_age >= float(settings.download_completed_max_age_sec):
+                    deps.resolve_trace(
+                        "Pump dropped stale completed download payload "
+                        f"(request_id={completed_request_id}, age={completed_age:.2f}s)"
                     )
-                    deps.logger.exception(
-                        "Planetka: auto-resolve finalize crashed for completed payload "
-                        "(request_id=%s). Dropping payload to keep pipeline alive.",
-                        str(completed_request_id),
-                    )
-                    consume_completed = True
-                except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
-                    _ctx_handle_auto_resolve_download_failure(
-                        ctx,
-                        completed_job,
-                        "Finalize crashed with unexpected exception.",
-                    )
-                    deps.logger.exception(
-                        "Planetka: auto-resolve finalize crashed unexpectedly for completed payload "
-                        "(request_id=%s). Dropping payload to keep pipeline alive.",
-                        str(completed_request_id),
-                    )
-                    consume_completed = True
-                if consume_completed:
                     with state.download_lock:
                         if state.download_completed is completed:
                             state.download_completed = None
+                    completed = None
+                else:
+                    deps.resolve_trace(
+                        f"Pump received completed download (request_id={completed_request_id}, age={completed_age:.2f}s)"
+                    )
+                    consume_completed = False
+                    try:
+                        consume_completed = bool(_ctx_handle_auto_resolve_download_complete(ctx, completed))
+                    except deps.recoverable_exceptions:
+                        _ctx_handle_auto_resolve_download_failure(
+                            ctx,
+                            completed_job,
+                            "Finalize crashed with recoverable exception.",
+                        )
+                        deps.logger.exception(
+                            "Planetka: auto-resolve finalize crashed for completed payload "
+                            "(request_id=%s). Dropping payload to keep pipeline alive.",
+                            str(completed_request_id),
+                        )
+                        consume_completed = True
+                    except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
+                        _ctx_handle_auto_resolve_download_failure(
+                            ctx,
+                            completed_job,
+                            "Finalize crashed with unexpected exception.",
+                        )
+                        deps.logger.exception(
+                            "Planetka: auto-resolve finalize crashed unexpectedly for completed payload "
+                            "(request_id=%s). Dropping payload to keep pipeline alive.",
+                            str(completed_request_id),
+                        )
+                        consume_completed = True
+                    if consume_completed:
+                        with state.download_lock:
+                            if state.download_completed is completed:
+                                state.download_completed = None
 
         job_to_start = None
         with state.download_lock:
@@ -1656,7 +1678,6 @@ def _ctx_update_auto_resolve(ctx, self, context):
             (
                 "viewport_opt_suspend_subdivision",
                 "viewport_opt_subdivision_restore_delay_sec",
-                "viewport_opt_active_view_coarse_textures",
                 "auto_resolve",
                 "auto_resolve_idle_sec",
                 "texture_quality_mode",
@@ -2007,30 +2028,6 @@ def _ctx_auto_resolve_plan_job(ctx, scene, props, detect_ctx):
         detect_ctx.get("current_quality_mode")
         or _ctx_auto_resolve_texture_quality_mode(ctx, scene, props)
     )
-    if bool(detect_ctx.get("quality_mode_changed", False)) and not bool(detect_ctx.get("pending_output_change", False)):
-        source_tiles = _scene_last_full_source_tiles(scene, deps)
-        max_tile_budget = int(getattr(tile_utils, "MAX_SHADER_TILE_BUDGET", 12) or 12)
-        if source_tiles:
-            try:
-                from ..render_prep import apply_texture_quality_to_full_tiles
-                target_tiles = deps.canonical_tiles(
-                    apply_texture_quality_to_full_tiles(source_tiles, current_quality_mode)
-                )
-            except deps.recoverable_exceptions:
-                deps.logger.debug("Planetka auto-resolve: quality switch tile transform failed", exc_info=True)
-                target_tiles = ()
-            except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-                deps.logger.debug("Planetka auto-resolve: unexpected quality switch tile transform failure", exc_info=True)
-                target_tiles = ()
-            if target_tiles and len(target_tiles) <= max_tile_budget:
-                deps.enqueue_size_estimation(scene, scope, active_view_signature, target_tiles, props)
-                return {
-                    "event": "DISPATCH",
-                    "target_tiles": target_tiles,
-                    "retry_delay": None,
-                    "quality_switch_fast_path": True,
-                }
-
     try:
         full_source_tiles = tile_utils.main(
             scope_mode="ACTIVE_VIEW" if (scope == "ACTIVE_VIEW" and active_view_signature is not None) else "CAMERA",

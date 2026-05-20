@@ -236,28 +236,10 @@ def _assigned_shader_s2_tiles():
 
 
 def _expected_shader_s2_tiles_for_mode(scene, mode):
-    """Derive expected shader S2 tiles from the actual full-quality source list.
-
-    Far-away globe views may legitimately use coarse full-quality source tiles
-    such as z180_d360 or z180_d720. The gate must therefore validate the
-    production quality transform, not a hard-coded d-level.
-    """
-    render_prep = None
-    for name, module in list(sys.modules.items()):
-        if str(name).endswith(".render_prep"):
-            render_prep = module
-            break
-    if render_prep is None:
-        try:
-            import importlib
-            render_prep = importlib.import_module("render_prep")
-        except Exception:
-            render_prep = None
-    apply_quality = getattr(render_prep, "apply_texture_quality_to_full_tiles", None) if render_prep else None
-    _assert(callable(apply_quality), "Could not load production texture-quality transform.")
-    source_tiles = [str(tile) for tile in scene.get("planetka_last_full_source_tiles", ()) if str(tile or "").strip()]
-    _assert(source_tiles, "Full-quality source tile list missing while checking shader quality.")
-    return sorted({f"S2_{tile}" for tile in apply_quality(source_tiles, mode)})
+    """Validate shader assignment against the final immutable resolve tile list."""
+    final_tiles = [str(tile) for tile in scene.get("planetka_last_resolved_tiles", ()) if str(tile or "").strip()]
+    _assert(final_tiles, "Final resolved tile list missing while checking shader quality.")
+    return sorted({f"S2_{tile}" for tile in final_tiles})
 
 
 def _wait_for_shader_quality(state_module, scene, mode, timeout_sec=120.0):

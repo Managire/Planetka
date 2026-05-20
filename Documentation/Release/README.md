@@ -1,6 +1,6 @@
 # Planetka Release Documentation
 
-Last updated: 2026-05-19
+Last updated: 2026-05-20
 
 This folder contains release-support documents for Planetka. Only the files listed in `package_allowlist_public.txt` are included in the public add-on package.
 
@@ -14,9 +14,9 @@ The public package includes:
 
 Internal release checklists, runbooks, compatibility notes, developer notes, and QA notes are repository-maintenance documents only and must not be included in the user-facing package unless deliberately rewritten for users.
 
-## Current 0.8.1 add-on model
+## Current 0.8.2 add-on model
 
-Planetka 0.8.1 is prepared around a simplified streaming model:
+Planetka 0.8.2 is prepared around a simplified streaming model:
 
 - **Personal account**: free account access, limited to New Zealand and Iceland.
 - **Professional account**: paid or manually granted account access, worldwide streaming.

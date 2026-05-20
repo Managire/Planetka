@@ -7,11 +7,11 @@ import {
   personalFreeRegionForPoint,
 } from "./worker/entitlements.js";
 import {
-  parseBooleanFlag,
   parseNonNegativeInteger,
 } from "./worker/env.js";
 import {
   handleTileRequest,
+  handleResolveSummary,
   handleTileSessionStart,
 } from "./worker/tile_routes.js";
 import {
@@ -304,34 +304,162 @@ function resolveTileCacheControl(env) {
     : `public, max-age=${browserMaxAge}, s-maxage=${edgeMaxAge}`;
 }
 
-function requestClientIp(request) {
-  return String(request.headers.get("CF-Connecting-IP") || request.headers.get("True-Client-IP") || request.headers.get("X-Forwarded-For") || "unknown").split(",")[0].trim() || "unknown";
+async function dbRun(db, sql, bindings = []) {
+  return db.prepare(sql).bind(...bindings).run();
 }
 
-function requestCountry(request) {
-  const country = String(request.headers.get("CF-IPCountry") || "").trim().toUpperCase();
-  return country && country !== "XX" && country !== "T1" ? country : "UNKNOWN";
+function normalizeEmail(value) {
+  return String(value || "").trim().toLowerCase();
 }
 
-function isTileEventQueueProducerEnabled(env = {}) {
-  const raw = env.ENABLE_TILE_EVENT_QUEUE_PRODUCER;
-  if (raw === undefined || raw === null || String(raw).trim() === "") return true;
-  return parseBooleanFlag(raw);
+async function ensureResolveUsageTables(db) {
+  await dbRun(db, `CREATE TABLE IF NOT EXISTS tile_request_events (
+    id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    created_at_unix INTEGER NOT NULL,
+    user_id TEXT,
+    user_email TEXT,
+    resolve_id TEXT,
+    method TEXT,
+    path TEXT,
+    folder TEXT,
+    file_name TEXT,
+    tile_key TEXT,
+    quality_mode TEXT,
+    status_code INTEGER NOT NULL DEFAULT 0,
+    bytes_served INTEGER NOT NULL DEFAULT 0,
+    cache_status TEXT,
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    cf_ray TEXT,
+    cf_country TEXT,
+    client_ip TEXT,
+    error_code TEXT
+  )`);
+  await dbRun(db, `CREATE INDEX IF NOT EXISTS idx_tile_request_events_created_unix ON tile_request_events(created_at_unix DESC)`);
+  await dbRun(db, `CREATE INDEX IF NOT EXISTS idx_tile_request_events_user_created ON tile_request_events(user_id, created_at_unix DESC)`);
+  await dbRun(db, `CREATE INDEX IF NOT EXISTS idx_tile_request_events_quality_created ON tile_request_events(quality_mode, created_at_unix DESC)`);
+  await dbRun(db, `CREATE TABLE IF NOT EXISTS tile_request_rollup_hourly_account (
+    bucket_start_unix INTEGER NOT NULL,
+    bucket_start TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    user_email TEXT,
+    request_count INTEGER NOT NULL DEFAULT 0,
+    bytes_served INTEGER NOT NULL DEFAULT 0,
+    error_count INTEGER NOT NULL DEFAULT 0,
+    cache_hit_count INTEGER NOT NULL DEFAULT 0,
+    tagged_request_count INTEGER NOT NULL DEFAULT 0,
+    last_event_unix INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (bucket_start_unix, user_id)
+  )`);
+  await dbRun(db, `CREATE TABLE IF NOT EXISTS tile_request_rollup_daily_account (
+    day_start_unix INTEGER NOT NULL,
+    day_start TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    user_email TEXT,
+    request_count INTEGER NOT NULL DEFAULT 0,
+    bytes_served INTEGER NOT NULL DEFAULT 0,
+    error_count INTEGER NOT NULL DEFAULT 0,
+    cache_hit_count INTEGER NOT NULL DEFAULT 0,
+    tagged_request_count INTEGER NOT NULL DEFAULT 0,
+    last_event_unix INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (day_start_unix, user_id)
+  )`);
 }
 
-function isTileHotPathMonitoringEnabled(env = {}) {
-  return parseBooleanFlag(env.ENABLE_TILE_HOT_PATH_MONITORING);
+function isoFromUnix(unixSeconds) {
+  return new Date(Math.max(0, clampNonNegativeInt(unixSeconds)) * 1000).toISOString();
+}
+
+async function recordResolveUsageRollups(db, payload) {
+  const createdAtUnix = clampNonNegativeInt(payload.created_at_unix || Math.floor(Date.now() / 1000));
+  const hourStart = Math.floor(createdAtUnix / 3600) * 3600;
+  const dayStart = Math.floor(createdAtUnix / 86400) * 86400;
+  const userId = String(payload.user_id || "unknown").trim() || "unknown";
+  const userEmail = normalizeEmail(payload.user_email || "");
+  const bytesServed = clampNonNegativeInt(payload.bytes_served);
+  const taggedRequest = String(payload.resolve_id || "").trim() ? 1 : 0;
+  const writeRollup = async (tableName, startColumn, labelColumn, startUnix) => {
+    await dbRun(
+      db,
+      `
+        INSERT INTO ${tableName} (
+          ${startColumn}, ${labelColumn}, user_id, user_email,
+          request_count, bytes_served, error_count, cache_hit_count, tagged_request_count, last_event_unix
+        ) VALUES (?, ?, ?, ?, 1, ?, 0, 0, ?, ?)
+        ON CONFLICT(${startColumn}, user_id) DO UPDATE SET
+          user_email = excluded.user_email,
+          request_count = ${tableName}.request_count + 1,
+          bytes_served = ${tableName}.bytes_served + excluded.bytes_served,
+          tagged_request_count = ${tableName}.tagged_request_count + excluded.tagged_request_count,
+          last_event_unix = CASE
+            WHEN excluded.last_event_unix > ${tableName}.last_event_unix THEN excluded.last_event_unix
+            ELSE ${tableName}.last_event_unix
+          END
+      `,
+      [startUnix, isoFromUnix(startUnix), userId, userEmail, bytesServed, taggedRequest, createdAtUnix],
+    );
+  };
+  await writeRollup("tile_request_rollup_hourly_account", "bucket_start_unix", "bucket_start", hourStart);
+  await writeRollup("tile_request_rollup_daily_account", "day_start_unix", "day_start", dayStart);
+}
+
+async function recordResolveSummaryEvent(db, payload = {}) {
+  await ensureResolveUsageTables(db);
+  const userId = String(payload.user_id || "").trim();
+  const resolveId = normalizeResolveId(payload.resolve_id || "");
+  if (!userId || !resolveId) return { stored: false };
+  const createdAt = String(payload.created_at || nowIso());
+  const createdAtUnix = clampNonNegativeInt(payload.created_at_unix || Math.floor(Date.now() / 1000));
+  const eventId = `resolve:${userId}:${resolveId}`.slice(0, 512);
+  const insertResult = await dbRun(
+    db,
+    `
+      INSERT OR IGNORE INTO tile_request_events (
+        id, created_at, created_at_unix, user_id, user_email, resolve_id, method, path, folder, file_name,
+        tile_key, quality_mode, status_code, bytes_served, cache_status, duration_ms, cf_ray, cf_country, client_ip, error_code
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    [
+      eventId,
+      createdAt,
+      createdAtUnix,
+      userId,
+      normalizeEmail(payload.user_email || ""),
+      resolveId,
+      "RESOLVE",
+      String(payload.path || "/tiles/resolve-summary"),
+      "",
+      "",
+      "",
+      normalizeQualityMode(payload.quality_mode || payload.qualityMode || ""),
+      200,
+      clampNonNegativeInt(payload.bytes_served),
+      "SUMMARY",
+      clampNonNegativeInt(payload.duration_ms),
+      "",
+      "",
+      "",
+      "",
+    ],
+  );
+  const changes = Number(insertResult && insertResult.meta && insertResult.meta.changes || 0);
+  if (changes > 0) {
+    await recordResolveUsageRollups(db, {
+      ...payload,
+      created_at_unix: createdAtUnix,
+      user_id: userId,
+      resolve_id: resolveId,
+    });
+  }
+  return { stored: changes > 0 };
 }
 
 const TILE_DEPS = {
   clampNonNegativeInt,
   createTileDownloadSession: null,
-  isTileEventQueueProducerEnabled,
-  isTileHotPathMonitoringEnabled,
   isProfessionalPlan,
   issueTileSessionToken,
   json,
-  maybeSignalTileFarmingActivity: async () => {},
   normalizeDeviceId,
   normalizeQualityMode,
   normalizeRequestedPlan,
@@ -342,10 +470,7 @@ const TILE_DEPS = {
   personalFreeRegionForPoint,
   parseJson,
   readTileSessionClaims,
-  recordPreviewUsageAndMaybeAlert: async () => ({ alerted: false }),
-  recordTileRequestEvent: async () => {},
-  requestClientIp,
-  requestCountry,
+  recordResolveSummaryEvent,
   requireAuthenticatedUserContext,
   requireDb,
   resolveTileSessionAuth,
@@ -365,6 +490,9 @@ export default {
       }
       if (path === "/tiles/session" && request.method === "POST") {
         return await handleTileSessionStart(request, env, TILE_DEPS);
+      }
+      if (path === "/tiles/resolve-summary" && request.method === "POST") {
+        return await handleResolveSummary(request, env, TILE_DEPS);
       }
       if ((request.method === "GET" || request.method === "HEAD") && path.startsWith("/tiles/")) {
         return await handleTileRequest(request, env, path, ctx, TILE_DEPS);

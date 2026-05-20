@@ -1366,6 +1366,53 @@ def _request_tile_session_token(resolve_id, quality_mode, allow_refresh=True):
         raise RuntimeError(f"Planetka Full Quality streaming access could not be confirmed: {exc}") from exc
 
 
+def report_resolve_usage_summary(
+    resolve_id="",
+    texture_quality_mode="",
+    downloaded_bytes=0,
+    total_bytes=0,
+    tile_count=0,
+    duration_ms=0,
+):
+    cfg = _get_config()
+    if cfg is None:
+        return False
+    safe_resolve_id = str(resolve_id or "").strip()[:128]
+    safe_quality_mode = str(texture_quality_mode or "").strip().lower()
+    if safe_quality_mode not in {"preview", "balanced", "full"}:
+        safe_quality_mode = ""
+    if not safe_resolve_id:
+        return False
+    payload = {
+        "resolve_id": safe_resolve_id,
+        "quality_mode": safe_quality_mode,
+        "downloaded_bytes": max(0, int(downloaded_bytes or 0)),
+        "total_bytes": max(0, int(total_bytes or 0)),
+        "tile_count": max(0, int(tile_count or 0)),
+        "duration_ms": max(0, int(duration_ms or 0)),
+    }
+    payload_bytes = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+    url = cfg.endpoint.rstrip("/") + "/tiles/resolve-summary"
+
+    def _send():
+        try:
+            headers = {
+                "User-Agent": "Planetka-Blender",
+                "Content-Type": "application/json; charset=utf-8",
+                **get_authorized_headers(allow_refresh=True),
+            }
+            request = urllib.request.Request(url, method="POST", headers=headers, data=payload_bytes)
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return 200 <= int(getattr(response, "status", 0) or 0) < 300
+        except (AuthApiError, urllib.error.HTTPError, urllib.error.URLError, RuntimeError, TypeError, ValueError, AttributeError, OSError):
+            logger.debug("Planetka: resolve usage summary telemetry failed", exc_info=True)
+            return False
+
+    thread = threading.Thread(target=_send, name="PlanetkaResolveUsageSummary", daemon=True)
+    thread.start()
+    return True
+
+
 def _get_request_context_tile_token(allow_refresh=True):
     global _REQUEST_CONTEXT_TILE_TOKEN
     global _REQUEST_CONTEXT_TILE_TOKEN_EXPIRES_AT

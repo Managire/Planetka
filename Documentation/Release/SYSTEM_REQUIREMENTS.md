@@ -23,7 +23,7 @@ If the computer is offline or Planetka services cannot be reached, the add-on sh
 
 Planetka uses temporary local cache storage for streamed texture data. Required space depends on the selected scene, quality mode, camera movement, and animation workflow.
 
-The 0.8.1 add-on is not a raw-data download product. It does not provide a supported local archive of purchased data packs or licenced tiles.
+The 0.8.2 add-on is not a raw-data download product. It does not provide a supported local archive of purchased data packs or licenced tiles.
 
 ## GPU and rendering
 
