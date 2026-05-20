@@ -120,7 +120,7 @@ def purge_disabled_atmosphere_and_cloud_assets(scene=None):
         "VDB Clouds",
     }
     material_exact = {
-        "Planetka Atmosphere Fake Material",
+        "Planetka Atmosphere EEVEE Supplement Material",
         "Planetka Atmosphere Material",
         "Planetka Global Clouds Shader",
         "Planetka Local Clouds Shader",
@@ -132,7 +132,7 @@ def purge_disabled_atmosphere_and_cloud_assets(scene=None):
     )
     node_group_exact = {
         "Planetka Atmosphere Group",
-        "Planetka Atmosphere Fake Group",
+        "Planetka Atmosphere EEVEE Supplement Group",
         "Planetka Fake Atmosphere Textures Group",
         "Planetka Global Clouds Shader Group",
         "Planetka Local Clouds Shader Group",
@@ -152,7 +152,6 @@ def purge_disabled_atmosphere_and_cloud_assets(scene=None):
                 object_names.add(value)
         for attr in (
             "FAKE_ATMOSPHERE_COLLECTION_NAME",
-            "_LEGACY_FAKE_ATMOSPHERE_COLLECTION_NAMES",
         ):
             value = getattr(asset_builder_module, attr, None)
             if isinstance(value, (list, tuple, set)):
@@ -199,7 +198,7 @@ def purge_disabled_atmosphere_and_cloud_assets(scene=None):
         should_remove = (
             name in object_names
             or any(name.startswith(prefix) for prefix in object_prefixes)
-            or role in {"fake_atmosphere", "atmosphere_volumetric"}
+            or role in {"eevee_supplement_atmosphere", "atmosphere_volumetric"}
             or bool(cloud_role)
         )
         if not should_remove:

@@ -28,26 +28,26 @@ NIGHTDAY_GROUP_NAME = "Planetka NightDay Transition Group"
 SUNLIGHT_OBJECT_NAME = "Planetka Sunlight"
 PLANETKA_ROOT_OBJECT_NAME = "Planetka Root"
 FAKE_ATMOSPHERE_OBJECT_NAME = "Atmosphere - EEVEE supplement"
-FAKE_ATMOSPHERE_MATERIAL_NAME = "Planetka Atmosphere Fake Material"
-FAKE_ATMOSPHERE_GROUP_NAME = "Planetka Atmosphere Fake Group"
+FAKE_ATMOSPHERE_MATERIAL_NAME = "Planetka Atmosphere EEVEE Supplement Material"
+SOURCE_FAKE_ATMOSPHERE_MATERIAL_NAME = "Planetka Atmosphere Fake Material"
+FAKE_ATMOSPHERE_GROUP_NAME = "Planetka Atmosphere EEVEE Supplement Group"
+SOURCE_FAKE_ATMOSPHERE_GROUP_NAME = "Planetka Atmosphere Fake Group"
 FAKE_ATMOSPHERE_TEXTURE_GROUP_NAME = "Planetka Fake Atmosphere Textures Group"
+FAKE_ATMOSPHERE_EL_MULTIPLIER_NODE_NAME = "Planetka EEVEE Supplement EL x8"
 FAKE_ATMOSPHERE_COLLECTION_NAME = "Atmosphere"
 FAKE_ATMOSPHERE_ROLE_KEY = "planetka_role"
-FAKE_ATMOSPHERE_ROLE_VALUE = "fake_atmosphere"
+FAKE_ATMOSPHERE_ROLE_VALUE = "eevee_supplement_atmosphere"
 FAKE_ATMOSPHERE_SOURCE_OBJECT_NAME = "Planetka Atmosphere Fake"
 FAKE_ATMOSPHERE_SCALE_FACTOR = 2.01
-_LEGACY_FAKE_ATMOSPHERE_COLLECTION_NAMES = ("Atmpshere",)
-_LEGACY_FAKE_ATMOSPHERE_OBJECT_NAMES = (
-    "Planetka Atmosphere Fake",
-    "Atmosphere - Fake",
-    "Fake Atmosphere",
-)
 VOLUMETRIC_ATMOSPHERE_OBJECT_NAME = "Atmosphere - Volumetric"
 VOLUMETRIC_ATMOSPHERE_SOURCE_OBJECT_NAME = "Planetka Atmosphere"
 VOLUMETRIC_ATMOSPHERE_MATERIAL_NAME = "Planetka Atmosphere Material"
 VOLUMETRIC_ATMOSPHERE_GROUP_NAME = "Planetka Atmosphere Group"
 VOLUMETRIC_ATMOSPHERE_ROLE_VALUE = "atmosphere_volumetric"
 VOLUMETRIC_ATMOSPHERE_SCALE_FACTOR = 2.0
+VOLUMETRIC_ATMOSPHERE_DENSITY_RADIUS_NODE_NAME = "Math.009"
+VOLUMETRIC_ATMOSPHERE_DENSITY_RADIUS_BASE_VALUE = 10.0
+VOLUMETRIC_ATMOSPHERE_DENSITY_RADIUS_BASE_RADIUS = 2.0
 DEFAULT_ELEVATION_COEFFICIENT = 1.0
 ELEVATION_SCALE_MULTIPLIER = 0.024
 DEFAULT_SURFACE_SATURATION = 1.0
@@ -583,6 +583,133 @@ def _scene_earth_radius_bu(scene):
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
         return 2.0
+
+
+def _volumetric_atmosphere_density_value_for_radius(earth_radius_bu):
+    try:
+        radius = max(1e-6, float(earth_radius_bu))
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        radius = VOLUMETRIC_ATMOSPHERE_DENSITY_RADIUS_BASE_RADIUS
+    except (RuntimeError, TypeError, ValueError):
+        radius = VOLUMETRIC_ATMOSPHERE_DENSITY_RADIUS_BASE_RADIUS
+    return (
+        float(VOLUMETRIC_ATMOSPHERE_DENSITY_RADIUS_BASE_VALUE)
+        * (float(VOLUMETRIC_ATMOSPHERE_DENSITY_RADIUS_BASE_RADIUS) / float(radius))
+    )
+
+
+def _ensure_volumetric_atmosphere_density_radius_driver(scene):
+    scene = scene or getattr(bpy.context, "scene", None)
+    node_group = bpy.data.node_groups.get(VOLUMETRIC_ATMOSPHERE_GROUP_NAME)
+    if scene is None or node_group is None:
+        return False
+
+    nodes = getattr(node_group, "nodes", None)
+    density_node = nodes.get(VOLUMETRIC_ATMOSPHERE_DENSITY_RADIUS_NODE_NAME) if nodes is not None else None
+    if density_node is None or str(getattr(density_node, "bl_idname", "")) != "ShaderNodeMath":
+        return False
+
+    changed = False
+    expression = (
+        f"{float(VOLUMETRIC_ATMOSPHERE_DENSITY_RADIUS_BASE_VALUE):.12g}"
+        f" * ({float(VOLUMETRIC_ATMOSPHERE_DENSITY_RADIUS_BASE_RADIUS):.12g} / earth_radius)"
+    )
+    try:
+        if str(getattr(density_node, "operation", "") or "") != "MULTIPLY":
+            density_node.operation = "MULTIPLY"
+            changed = True
+
+        socket = density_node.inputs[1]
+        fcurve = socket.driver_add("default_value")
+        driver = getattr(fcurve, "driver", None)
+        if driver is None:
+            return bool(changed)
+
+        if str(getattr(driver, "type", "") or "") != "SCRIPTED":
+            driver.type = "SCRIPTED"
+            changed = True
+        if str(getattr(driver, "expression", "") or "") != expression:
+            driver.expression = expression
+            changed = True
+
+        variables = list(getattr(driver, "variables", ()))
+        radius_var = None
+        for variable in variables:
+            if str(getattr(variable, "name", "") or "") == "earth_radius" and radius_var is None:
+                radius_var = variable
+                continue
+            driver.variables.remove(variable)
+            changed = True
+        if radius_var is None:
+            radius_var = driver.variables.new()
+            radius_var.name = "earth_radius"
+            changed = True
+        if str(getattr(radius_var, "type", "") or "") != "SINGLE_PROP":
+            radius_var.type = "SINGLE_PROP"
+            changed = True
+
+        targets = getattr(radius_var, "targets", ())
+        if not targets:
+            return bool(changed)
+        target = targets[0]
+        if str(getattr(target, "id_type", "") or "") != "SCENE":
+            target.id_type = "SCENE"
+            changed = True
+        if getattr(target, "id", None) is not scene:
+            target.id = scene
+            changed = True
+        if str(getattr(target, "data_path", "") or "") != "planetka.earth_radius_bu":
+            target.data_path = "planetka.earth_radius_bu"
+            changed = True
+
+        # Seed the value immediately as well; the driver then owns future updates.
+        density_node.inputs[1].default_value = _volumetric_atmosphere_density_value_for_radius(
+            _scene_earth_radius_bu(scene)
+        )
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError, IndexError):
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+    return bool(changed)
+
+
+def sync_volumetric_atmosphere_density_for_radius(scene=None, earth_radius_bu=None):
+    scene = scene or getattr(bpy.context, "scene", None)
+    node_group = bpy.data.node_groups.get(VOLUMETRIC_ATMOSPHERE_GROUP_NAME)
+    if node_group is None:
+        return False
+    nodes = getattr(node_group, "nodes", None)
+    density_node = nodes.get(VOLUMETRIC_ATMOSPHERE_DENSITY_RADIUS_NODE_NAME) if nodes is not None else None
+    if density_node is None or str(getattr(density_node, "bl_idname", "")) != "ShaderNodeMath":
+        return False
+
+    driver_changed = _ensure_volumetric_atmosphere_density_radius_driver(scene)
+    try:
+        animation_data = getattr(node_group, "animation_data", None)
+        drivers = getattr(animation_data, "drivers", None) if animation_data is not None else None
+        driver_data_path = f'nodes["{VOLUMETRIC_ATMOSPHERE_DENSITY_RADIUS_NODE_NAME}"].inputs[1].default_value'
+        if any(str(getattr(fcurve, "data_path", "") or "") == driver_data_path for fcurve in tuple(drivers or ())):
+            return bool(driver_changed)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError, IndexError):
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+    value = _volumetric_atmosphere_density_value_for_radius(
+        earth_radius_bu if earth_radius_bu is not None else _scene_earth_radius_bu(scene)
+    )
+    try:
+        current = float(density_node.inputs[1].default_value)
+        if abs(current - float(value)) <= 1e-9:
+            return bool(driver_changed)
+        density_node.inputs[1].default_value = float(value)
+        return True
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError, IndexError):
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+    return bool(driver_changed)
 
 
 def _ensure_interface_float_socket(node_group, name, *, default, min_value=0.0, max_value=1.0, description=""):
@@ -1980,14 +2107,22 @@ def _append_fake_atmosphere_assets_from_blend(blend_path):
             )
         if not object_names:
             raise RuntimeError(
-                f"Planetka: fake atmosphere object is missing in reference blend '{blend_path}'."
+                f"Planetka: EEVEE supplement atmosphere object is missing in reference blend '{blend_path}'."
             )
         data_to.objects = [object_names[0]]
 
-        data_to.materials = [FAKE_ATMOSPHERE_MATERIAL_NAME] if FAKE_ATMOSPHERE_MATERIAL_NAME in available_materials else []
+        data_to.materials = [
+            name
+            for name in (FAKE_ATMOSPHERE_MATERIAL_NAME, SOURCE_FAKE_ATMOSPHERE_MATERIAL_NAME)
+            if name in available_materials
+        ][:1]
         data_to.node_groups = [
             name
-            for name in (FAKE_ATMOSPHERE_GROUP_NAME, FAKE_ATMOSPHERE_TEXTURE_GROUP_NAME)
+            for name in (
+                FAKE_ATMOSPHERE_GROUP_NAME,
+                SOURCE_FAKE_ATMOSPHERE_GROUP_NAME,
+                FAKE_ATMOSPHERE_TEXTURE_GROUP_NAME,
+            )
             if name in available_groups
         ]
 
@@ -2203,18 +2338,50 @@ def _object_uses_fake_atmosphere_material(obj):
     return False
 
 
+def _normalize_eevee_supplement_data_names():
+    material = (
+        bpy.data.materials.get(FAKE_ATMOSPHERE_MATERIAL_NAME)
+        or bpy.data.materials.get(SOURCE_FAKE_ATMOSPHERE_MATERIAL_NAME)
+    )
+    if material is not None and str(getattr(material, "name", "")) != FAKE_ATMOSPHERE_MATERIAL_NAME:
+        try:
+            material.name = FAKE_ATMOSPHERE_MATERIAL_NAME
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+    source_object = bpy.data.objects.get(FAKE_ATMOSPHERE_SOURCE_OBJECT_NAME)
+    if source_object is not None and str(getattr(source_object, "name", "")) != FAKE_ATMOSPHERE_OBJECT_NAME:
+        try:
+            source_object.name = FAKE_ATMOSPHERE_OBJECT_NAME
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+    node_group = (
+        bpy.data.node_groups.get(FAKE_ATMOSPHERE_GROUP_NAME)
+        or bpy.data.node_groups.get(SOURCE_FAKE_ATMOSPHERE_GROUP_NAME)
+    )
+    if node_group is not None and str(getattr(node_group, "name", "")) != FAKE_ATMOSPHERE_GROUP_NAME:
+        try:
+            node_group.name = FAKE_ATMOSPHERE_GROUP_NAME
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+
 def _is_fake_atmosphere_candidate(obj):
     if obj is None or str(getattr(obj, "type", "")) != "MESH":
         return False
 
     name = str(getattr(obj, "name", ""))
-    lowered = name.lower()
-    legacy_names = {item.lower() for item in _LEGACY_FAKE_ATMOSPHERE_OBJECT_NAMES}
     if (
         name == FAKE_ATMOSPHERE_OBJECT_NAME
         or name.startswith(f"{FAKE_ATMOSPHERE_OBJECT_NAME}.")
-        or lowered in legacy_names
-        or ("atmosphere" in lowered and "fake" in lowered)
+        or name == FAKE_ATMOSPHERE_SOURCE_OBJECT_NAME
     ):
         return True
 
@@ -2253,9 +2420,10 @@ def _resolve_fake_atmosphere_object(ensure_exists=False):
 
     blend_path = _fake_atmosphere_library_path()
     if not os.path.isfile(blend_path):
-        raise RuntimeError(f"Planetka: fake atmosphere reference blend is missing: {blend_path}")
+        raise RuntimeError(f"Planetka: EEVEE supplement atmosphere reference blend is missing: {blend_path}")
 
     _append_fake_atmosphere_assets_from_blend(blend_path)
+    _normalize_eevee_supplement_data_names()
     fake_obj = _find_fake_atmosphere_object()
     if fake_obj is None:
         for obj in getattr(bpy.data, "objects", ()):
@@ -2266,7 +2434,7 @@ def _resolve_fake_atmosphere_object(ensure_exists=False):
                 fake_obj = obj
                 break
     if fake_obj is None:
-        raise RuntimeError("Planetka: failed importing fake atmosphere object from reference blend.")
+        raise RuntimeError("Planetka: failed importing EEVEE supplement atmosphere object from reference blend.")
 
     try:
         fake_obj.name = FAKE_ATMOSPHERE_OBJECT_NAME
@@ -2336,6 +2504,212 @@ def _bind_fake_atmosphere_images():
         )
 
 
+def _replace_fake_atmosphere_texture_group_with_live_loader(scene=None):
+    _normalize_eevee_supplement_data_names()
+    fake_group = bpy.data.node_groups.get(FAKE_ATMOSPHERE_GROUP_NAME)
+    fake_material = bpy.data.materials.get(FAKE_ATMOSPHERE_MATERIAL_NAME)
+    fake_material_tree = getattr(fake_material, "node_tree", None) if fake_material is not None else None
+    target_node_trees = tuple(
+        node_tree for node_tree in (fake_group, fake_material_tree) if node_tree is not None
+    )
+    if not target_node_trees:
+        return False
+
+    texture_group = bpy.data.node_groups.get(TEXTURE_LOADING_GROUP_NAME)
+    if texture_group is None:
+        try:
+            _ensure_embedded_material_library(scene)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        texture_group = bpy.data.node_groups.get(TEXTURE_LOADING_GROUP_NAME)
+    if texture_group is None:
+        return False
+
+    changed = False
+    output_name_map = {
+        "Surface": "S2",
+        "Water": "WT",
+        "Nightlights": "SE",
+        "Elevation": "EL",
+    }
+
+    def ensure_el_multiplier(target_node_tree, texture_node):
+        el_socket = _socket_output_by_name_or_index(texture_node.outputs, "EL", None)
+        if el_socket is None:
+            return False
+
+        direct_links = [
+            link for link in list(getattr(el_socket, "links", ()))
+            if str(getattr(link.to_node, "name", "")) != FAKE_ATMOSPHERE_EL_MULTIPLIER_NODE_NAME
+        ]
+        if not direct_links:
+            multiplier = target_node_tree.nodes.get(FAKE_ATMOSPHERE_EL_MULTIPLIER_NODE_NAME)
+            if multiplier and str(getattr(multiplier, "bl_idname", "")) == "ShaderNodeMath":
+                try:
+                    multiplier.operation = "MULTIPLY"
+                    multiplier.inputs[1].default_value = 8.0
+                except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                    logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+                except (RuntimeError, TypeError, ValueError, AttributeError, IndexError):
+                    logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+            return False
+
+        multiplier = target_node_tree.nodes.get(FAKE_ATMOSPHERE_EL_MULTIPLIER_NODE_NAME)
+        if multiplier is None or str(getattr(multiplier, "bl_idname", "")) != "ShaderNodeMath":
+            multiplier = target_node_tree.nodes.new("ShaderNodeMath")
+            multiplier.name = FAKE_ATMOSPHERE_EL_MULTIPLIER_NODE_NAME
+            multiplier.label = "EL x 8"
+        try:
+            multiplier.operation = "MULTIPLY"
+            multiplier.inputs[1].default_value = 8.0
+            multiplier.location = (
+                float(getattr(texture_node, "location", (0.0, 0.0))[0]) + 220.0,
+                float(getattr(texture_node, "location", (0.0, 0.0))[1]) - 140.0,
+            )
+            for link in direct_links:
+                to_socket = link.to_socket
+                target_node_tree.links.remove(link)
+                target_node_tree.links.new(multiplier.outputs[0], to_socket)
+            if not bool(getattr(multiplier.inputs[0], "is_linked", False)):
+                target_node_tree.links.new(el_socket, multiplier.inputs[0])
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError, IndexError):
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        return True
+
+    for target_node_tree in target_node_trees:
+        for node in getattr(target_node_tree, "nodes", ()):
+            if str(getattr(node, "bl_idname", "")) != "ShaderNodeGroup":
+                continue
+            node_tree = getattr(node, "node_tree", None)
+            node_tree_name = str(getattr(node_tree, "name", ""))
+            if node_tree_name == TEXTURE_LOADING_GROUP_NAME:
+                changed |= ensure_el_multiplier(target_node_tree, node)
+                continue
+            if node_tree_name != FAKE_ATMOSPHERE_TEXTURE_GROUP_NAME:
+                continue
+
+            outgoing_links = []
+            for output_socket in getattr(node, "outputs", ()):
+                target_output_name = output_name_map.get(str(getattr(output_socket, "name", "")))
+                if not target_output_name:
+                    continue
+                for link in list(getattr(output_socket, "links", ())):
+                    outgoing_links.append((target_output_name, link.to_socket))
+
+            try:
+                for output_socket in list(getattr(node, "outputs", ())):
+                    for link in list(getattr(output_socket, "links", ())):
+                        target_node_tree.links.remove(link)
+                node.node_tree = texture_group
+                changed = True
+                for output_name, to_socket in outgoing_links:
+                    from_socket = _socket_output_by_name_or_index(node.outputs, output_name, None)
+                    if from_socket is not None and to_socket is not None:
+                        target_node_tree.links.new(from_socket, to_socket)
+                changed |= ensure_el_multiplier(target_node_tree, node)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+    if changed:
+        _remove_node_group_if_exists(FAKE_ATMOSPHERE_TEXTURE_GROUP_NAME)
+    return changed
+
+
+def _configure_eevee_supplement_group_defaults():
+    _normalize_eevee_supplement_data_names()
+    node_group = bpy.data.node_groups.get(FAKE_ATMOSPHERE_GROUP_NAME)
+    if node_group is None:
+        return False
+
+    changed = False
+    for node in getattr(node_group, "nodes", ()):
+        if str(getattr(node, "bl_idname", "")) == "NodeGroupInput":
+            for socket in getattr(node, "outputs", ()):
+                socket_name = str(getattr(socket, "name", ""))
+                try:
+                    if socket_name == "Rim Exponent" and abs(float(socket.default_value) - 6.0) > 1e-9:
+                        socket.default_value = 6.0
+                        changed = True
+                    elif socket_name == "Opacity" and abs(float(socket.default_value) - 0.03) > 1e-9:
+                        socket.default_value = 0.03
+                        changed = True
+                except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                    logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+                except (RuntimeError, TypeError, ValueError, AttributeError):
+                    logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+            emission_socket = _socket_output_by_name_or_index(node.outputs, "Emission Srength", None)
+            if emission_socket is None:
+                emission_socket = _socket_output_by_name_or_index(node.outputs, "Emission Strength", None)
+            if emission_socket is not None:
+                try:
+                    for link in list(getattr(emission_socket, "links", ())):
+                        node_group.links.remove(link)
+                        changed = True
+                except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                    logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+                except (RuntimeError, TypeError, ValueError, AttributeError):
+                    logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+        if str(getattr(node, "name", "")) == "Math.004" and str(getattr(node, "bl_idname", "")) == "ShaderNodeMath":
+            try:
+                if len(node.inputs) > 1 and abs(float(node.inputs[1].default_value) - 1.0) > 1e-9:
+                    node.inputs[1].default_value = 1.0
+                    changed = True
+                if not bool(getattr(node.outputs[0], "is_linked", False)):
+                    node_group.nodes.remove(node)
+                    changed = True
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+            except (RuntimeError, TypeError, ValueError, AttributeError, IndexError):
+                logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+    interface = getattr(node_group, "interface", None)
+    if interface is not None:
+        for item in list(getattr(interface, "items_tree", ())):
+            item_name = str(getattr(item, "name", ""))
+            if item_name not in {"Emission Srength", "Emission Strength"}:
+                continue
+            try:
+                interface.remove(item)
+                changed = True
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+    for material in (bpy.data.materials.get(FAKE_ATMOSPHERE_MATERIAL_NAME),):
+        node_tree = getattr(material, "node_tree", None) if material is not None else None
+        if node_tree is None:
+            continue
+        for node in getattr(node_tree, "nodes", ()):
+            if str(getattr(node, "bl_idname", "")) != "ShaderNodeGroup":
+                continue
+            current_group = getattr(node, "node_tree", None)
+            if str(getattr(current_group, "name", "")) != FAKE_ATMOSPHERE_GROUP_NAME:
+                continue
+            for socket_name, value in (("Rim Exponent", 6.0), ("Opacity", 0.03)):
+                socket = _socket_input_by_name_or_index(node.inputs, socket_name, None)
+                if socket is None:
+                    continue
+                try:
+                    if abs(float(socket.default_value) - float(value)) > 1e-9:
+                        socket.default_value = float(value)
+                        changed = True
+                except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                    logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+                except (RuntimeError, TypeError, ValueError, AttributeError):
+                    logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+
+    return changed
+
+
 def _bind_fake_atmosphere_sunlight_object():
     sunlight_obj = bpy.data.objects.get(SUNLIGHT_OBJECT_NAME)
     if sunlight_obj is None:
@@ -2392,19 +2766,6 @@ def _ensure_fake_atmosphere_collection(scene):
         return None
 
     target = bpy.data.collections.get(FAKE_ATMOSPHERE_COLLECTION_NAME)
-    if target is None:
-        for legacy_name in _LEGACY_FAKE_ATMOSPHERE_COLLECTION_NAMES:
-            legacy = bpy.data.collections.get(legacy_name)
-            if legacy is None:
-                continue
-            try:
-                legacy.name = FAKE_ATMOSPHERE_COLLECTION_NAME
-                target = legacy
-                break
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
-                target = legacy
-                break
     if target is None:
         target = _ensure_collection(root, FAKE_ATMOSPHERE_COLLECTION_NAME)
     else:
@@ -2518,6 +2879,7 @@ def sync_atmosphere_scale_for_radius(scene=None, earth_radius_bu=None):
     scene = scene or getattr(bpy.context, "scene", None)
     root = ensure_planetka_root(scene) if scene is not None else None
     changed = False
+    changed |= sync_volumetric_atmosphere_density_for_radius(scene=scene, earth_radius_bu=earth_radius_bu)
     changed |= _sync_atmosphere_object_transform(
         _find_fake_atmosphere_object(),
         root,
@@ -2543,6 +2905,7 @@ def ensure_static_fake_atmosphere(scene=None, earth_surface=None):
     if fake_obj is None:
         return None
 
+    _normalize_eevee_supplement_data_names()
     fake_material = bpy.data.materials.get(FAKE_ATMOSPHERE_MATERIAL_NAME)
     if (
         fake_material is not None
@@ -2560,6 +2923,8 @@ def ensure_static_fake_atmosphere(scene=None, earth_surface=None):
             logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
 
     _bind_fake_atmosphere_images()
+    _replace_fake_atmosphere_texture_group_with_live_loader(scene)
+    _configure_eevee_supplement_group_defaults()
     _bind_fake_atmosphere_sunlight_object()
     _configure_fake_atmosphere_object(fake_obj)
 
@@ -2595,6 +2960,7 @@ def ensure_volumetric_atmosphere(scene=None, earth_surface=None):
         return None
 
     _configure_volumetric_atmosphere_object(atmosphere_obj)
+    sync_volumetric_atmosphere_density_for_radius(scene=scene)
 
     atmosphere_collection = _ensure_fake_atmosphere_collection(scene)
     target_collections = [atmosphere_collection] if atmosphere_collection is not None else []
@@ -2631,7 +2997,7 @@ def _set_atmosphere_object_visible(obj, visible):
 def ensure_atmosphere_for_mode(scene=None, earth_surface=None, mode="VOLUMETRIC"):
     scene = scene or getattr(bpy.context, "scene", None)
     mode_token = str(mode or "VOLUMETRIC").strip().upper()
-    if mode_token in {"FAKE", "EEVEE", "STATIC"}:
+    if mode_token == "EEVEE":
         active_obj = ensure_static_fake_atmosphere(scene=scene, earth_surface=earth_surface)
         volumetric_obj = ensure_volumetric_atmosphere(scene=scene, earth_surface=earth_surface)
         _set_atmosphere_object_visible(active_obj, True)

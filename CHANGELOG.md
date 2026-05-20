@@ -2,6 +2,22 @@
 
 All notable public changes to Planetka are documented in this file.
 
+## [v0.8.3] - 2026-05-20
+
+### Added
+- Restored the Atmosphere panel with Cycles Optimized and EEVEE Optimized atmosphere modes.
+- Create Earth now adds Atmosphere by default and selects the initial atmosphere mode from the active Blender render engine.
+
+### Changed
+- EEVEE Optimized Atmosphere now uses the EEVEE Supplement naming and shader controls.
+- EEVEE Supplement Atmosphere now uses the live Planetka texture loading group for elevation-aware shading.
+- Volumetric Atmosphere density scaling now follows Earth Radius using `10 * (2 / Radius)`.
+- Clouds UI remains disabled for this release.
+
+### Fixed
+- Fixed Create Earth not loading Atmosphere after the internal EEVEE atmosphere mode rename.
+- Fixed EEVEE-mode Create Earth selecting the wrong atmosphere mode.
+
 ## [v0.8.2] - 2026-05-20
 
 ### Changed

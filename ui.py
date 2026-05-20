@@ -1821,7 +1821,6 @@ _ATMOSPHERE_SOCKET_LABELS = {
     "Scattering Color - Low Altitude": "Scattering Color",
     "Anisotropy - Low Altitude": "Anisotropy",
     "Absorbtion Color": "Absorption Color",
-    "Emission Srength": "Emission Strength",
 }
 
 _ATMOSPHERE_SOCKET_TOOLTIPS = {
@@ -1831,14 +1830,13 @@ _ATMOSPHERE_SOCKET_TOOLTIPS = {
     "Scattering Color - Main": "Primary color of scattered light through the upper atmosphere.",
     "Anisotropy - Main": "Directionality of main scattering. Positive values push light forward for stronger rim and horizon glow; lower values look more even.",
     "Absorption Color": "Color removed from light as it travels through the atmosphere. This tints sunsets and shadows toward the opposite color.",
-    "Absorbtion Color": "Color removed from light in the fake atmosphere shader. This tints the atmospheric glow.",
+    "Absorbtion Color": "Color removed from light in the EEVEE supplement atmosphere shader. This tints the atmospheric glow.",
     "Absorption Strength": "Strength of light absorption. Higher values make the atmosphere darker and more strongly color-filtered.",
     "Scattering Color - Low Altitude": "Scattering color near the surface and horizon haze.",
     "Anisotropy - Low Altitude": "Directionality of low-altitude haze. Higher values emphasize glancing-angle glow near the horizon.",
-    "Scattering Color": "Tint of the fake atmosphere glow.",
-    "Rim Exponent": "Controls how tightly the fake glow is concentrated around the rim. Higher values make a thinner rim.",
-    "Opacity": "Overall transparency of the fake atmosphere shell.",
-    "Emission Srength": "Brightness multiplier for the fake atmosphere emission.",
+    "Scattering Color": "Tint of the EEVEE supplement atmosphere glow.",
+    "Rim Exponent": "Controls how tightly the EEVEE supplement glow is concentrated around the rim. Higher values make a thinner rim.",
+    "Opacity": "Overall transparency of the EEVEE supplement atmosphere shell.",
 }
 
 
@@ -1854,9 +1852,9 @@ def _iter_atmosphere_nodes(mode="VOLUMETRIC"):
             VOLUMETRIC_ATMOSPHERE_OBJECT_NAME,
         )
 
-        if mode_token in {"FAKE", "EEVEE", "STATIC"}:
+        if mode_token == "EEVEE":
             object_name = str(FAKE_ATMOSPHERE_OBJECT_NAME or "Atmosphere - EEVEE supplement")
-            group_name = str(FAKE_ATMOSPHERE_GROUP_NAME or "Planetka Atmosphere Fake Group")
+            group_name = str(FAKE_ATMOSPHERE_GROUP_NAME or "Planetka Atmosphere EEVEE Supplement Group")
         else:
             object_name = str(VOLUMETRIC_ATMOSPHERE_OBJECT_NAME or object_name)
             group_name = str(VOLUMETRIC_ATMOSPHERE_GROUP_NAME or group_name)
@@ -1883,7 +1881,7 @@ def _iter_atmosphere_nodes(mode="VOLUMETRIC"):
             lowered = node_group_name.lower()
             if node_group_name == group_name or (
                 "atmosphere" in lowered
-                and (("fake" in lowered) == (mode_token in {"FAKE", "EEVEE", "STATIC"}))
+                and ("eevee" in lowered and "supplement" in lowered) == (mode_token == "EEVEE")
             ):
                 nodes.append(node)
     return nodes
@@ -1973,14 +1971,13 @@ def _draw_volumetric_atmosphere_node(layout, node):
         _draw_atmosphere_socket(low_box, sockets.get(socket_name))
 
 
-def _draw_fake_atmosphere_node(layout, node):
+def _draw_eevee_supplement_atmosphere_node(layout, node):
     sockets = _socket_map(node)
     for socket_name in (
         "Scattering Color",
         "Absorbtion Color",
         "Rim Exponent",
         "Opacity",
-        "Emission Srength",
     ):
         _draw_atmosphere_socket(layout, sockets.get(socket_name))
 
@@ -2041,7 +2038,7 @@ def _draw_atmosphere(layout, context):
     layout.label(text="Type")
     mode_row = layout.row(align=True)
     mode_row.prop_enum(props, "atmosphere_mode", "VOLUMETRIC", text="Cycles Optimized")
-    mode_row.prop_enum(props, "atmosphere_mode", "FAKE", text="EEVEE Optimized")
+    mode_row.prop_enum(props, "atmosphere_mode", "EEVEE", text="EEVEE Optimized")
 
     mode = str(getattr(props, "atmosphere_mode", "VOLUMETRIC") or "VOLUMETRIC").strip().upper()
     _draw_atmosphere_notice(layout, mode)
@@ -2062,7 +2059,7 @@ def _draw_atmosphere(layout, context):
         if mode == "VOLUMETRIC":
             _draw_volumetric_atmosphere_node(container, node)
         else:
-            _draw_fake_atmosphere_node(container, node)
+            _draw_eevee_supplement_atmosphere_node(container, node)
 
 
 class PLANETKA_PT_AccountPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
@@ -2450,7 +2447,7 @@ class PLANETKA_PT_CloudsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        return _is_earth_workflow_enabled()
+        return False
 
     def draw(self, context):
         layout = self.layout
@@ -2465,7 +2462,7 @@ class PLANETKA_PT_CloudsPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel
 
     @classmethod
     def poll(cls, context):
-        return not _is_earth_workflow_enabled()
+        return False
 
     def draw(self, context):
         layout = self.layout

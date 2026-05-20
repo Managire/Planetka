@@ -6,7 +6,7 @@ def _atmosphere_mode_for_create_earth(scene):
         engine = str(getattr(getattr(scene, "render", None), "engine", "") or "").upper()
     except (RuntimeError, TypeError, ValueError, AttributeError):
         engine = ""
-    return "VOLUMETRIC" if engine == "CYCLES" else "FAKE"
+    return "VOLUMETRIC" if engine == "CYCLES" else "EEVEE"
 
 
 def _snapshot_camera_view_areas(context):

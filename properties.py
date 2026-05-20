@@ -65,7 +65,7 @@ except (ImportError, ModuleNotFoundError):
 
 _ATMOSPHERE_MODE_ITEMS = (
     ("VOLUMETRIC", "Cycles Optimized", "Use the volumetric Planetka atmosphere object optimized for Cycles"),
-    ("FAKE", "EEVEE Optimized", "Use the lightweight EEVEE-style fake atmosphere object"),
+    ("EEVEE", "EEVEE Optimized", "Use the lightweight EEVEE supplement atmosphere object"),
 )
 
 _GLOBAL_CLOUD_TEXTURE_SOURCE_ITEMS = (
