@@ -48,9 +48,6 @@ export async function handleTileSessionStart(request, env, deps) {
     parseJson,
     issueTileSessionToken,
     normalizeRequestedPlan,
-    normalizeQualityMode,
-    isQualityModeAllowedForPlan,
-    qualityModeNotAllowedMessage,
     requireDb,
     json: jsonResponse,
     createTileDownloadSession,
@@ -84,25 +81,6 @@ export async function handleTileSessionStart(request, env, deps) {
   const planCode = normalizeRequestedPlan(
     auth && (auth.qualityAccessPlanCode || auth.planCode || auth.user && auth.user.status),
   );
-  const normalizedQualityMode = normalizeQualityMode(requestedQualityMode);
-  if (
-    typeof isQualityModeAllowedForPlan === "function"
-    && !isQualityModeAllowedForPlan(planCode, normalizedQualityMode)
-  ) {
-    return jsonResponse(
-      {
-        ok: false,
-        error: "quality_mode_not_allowed_for_tier",
-        message: typeof qualityModeNotAllowedMessage === "function"
-          ? qualityModeNotAllowedMessage(planCode, normalizedQualityMode)
-          : "Selected texture quality is not available for this account.",
-        requested_quality_mode: normalizedQualityMode,
-        plan_code: planCode,
-      },
-      403,
-      env,
-    );
-  }
   let personalFreeRegion = "";
   const creditProtocol = String(body && (body.credit_protocol || body.creditProtocol) || "").trim();
   const creditTileKeys = body && (
@@ -124,19 +102,6 @@ export async function handleTileSessionStart(request, env, deps) {
       env,
     );
   }
-  const allowedTileFilesRaw = body && (
-    body.allowed_tile_files
-    || body.allowedTileFiles
-    || body.allowed_files
-    || body.allowedFiles
-  );
-  const allowedTileFiles = Array.isArray(allowedTileFilesRaw)
-    ? Array.from(new Set(
-      allowedTileFilesRaw
-        .map((value) => String(value || "").trim().replace(/^\/+/, ""))
-        .filter((value) => value && value.includes("/") && !value.includes("..")),
-    )).slice(0, 512)
-    : [];
   const sessionId = creditEnforced ? crypto.randomUUID() : "";
   const issued = await issueTileSessionToken(
     env,
@@ -148,7 +113,6 @@ export async function handleTileSessionStart(request, env, deps) {
       creditEnforced,
       sessionId,
       personalFreeRegion,
-      allowedTileFiles,
     },
   );
   if (issued && issued.error) {
@@ -330,9 +294,11 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
   const {
     clampNonNegativeInt,
     normalizeQualityMode,
+    isTileFileAllowedForPlan,
     readTileSessionClaims,
     requireAuthenticatedUserContext,
     resolveTileCacheControl,
+    tileFileNotAllowedMessage,
   } = deps;
 
   if (!env.PLANETKA_DATA) {
@@ -377,12 +343,27 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
       return json({ ok: false, error: "invalid_tile_path" }, 400, env);
     }
     if (tileSessionAuth && tileSessionAuth.claims) {
-      const allowedTileFiles = Array.isArray(tileSessionAuth.claims.allowedTileFiles)
-        ? tileSessionAuth.claims.allowedTileFiles
-        : [];
-      const requestedFile = `${folder}/${fileName}`;
-      if (!allowedTileFiles.length || !allowedTileFiles.includes(requestedFile)) {
-        return json({ ok: false, error: "tile_not_in_session" }, 403, env);
+      const planCode = firstNonEmpty(
+        tileSessionAuth.claims.qualityAccessPlanCode,
+        tileSessionAuth.claims.planCode,
+        tileSessionAuth.claims.storedPlanCode,
+      );
+      if (
+        typeof isTileFileAllowedForPlan === "function"
+        && !isTileFileAllowedForPlan(planCode, fileName)
+      ) {
+        return json(
+          {
+            ok: false,
+            error: "tile_quality_not_allowed_for_tier",
+            message: typeof tileFileNotAllowedMessage === "function"
+              ? tileFileNotAllowedMessage(planCode, fileName)
+              : "This texture file is not available for this account.",
+            plan_code: planCode,
+          },
+          403,
+          env,
+        );
       }
     }
 

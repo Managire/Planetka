@@ -321,15 +321,6 @@ export function createAuthCore(deps) {
     return String(value || "").trim().slice(0, 128);
   }
 
-  function normalizeAllowedTileFiles(value) {
-    if (!Array.isArray(value)) return [];
-    return Array.from(new Set(
-      value
-        .map((entry) => String(entry || "").trim().replace(/^\/+/, ""))
-        .filter((entry) => entry && entry.includes("/") && !entry.includes("..")),
-    )).slice(0, 512);
-  }
-
   async function issueTileSessionToken(env, auth, requestedQualityMode, requestedResolveId = "", options = {}) {
     const safeQualityMode = deps.normalizeQualityMode(requestedQualityMode);
     const safeStoredPlanCode = deps.normalizeRequestedPlan(auth && auth.planCode);
@@ -339,23 +330,6 @@ export function createAuthCore(deps) {
     const sessionId = String(
       options && (options.sessionId || options.session_id) || "",
     ).trim();
-    const allowedTileFiles = normalizeAllowedTileFiles(
-      options && (options.allowedTileFiles || options.allowed_tile_files),
-    );
-    if (!deps.isQualityModeAllowedForPlan(safeQualityAccessPlanCode, safeQualityMode)) {
-      return {
-        error: deps.json(
-          {
-            ok: false,
-            error: "quality_mode_not_allowed_for_tier",
-            message: deps.qualityModeNotAllowedMessage(safeQualityAccessPlanCode, safeQualityMode),
-            requested_quality_mode: safeQualityMode,
-          },
-          403,
-          env,
-        ),
-      };
-    }
     const safeResolveId = normalizeResolveId(requestedResolveId) || crypto.randomUUID();
     const ttlSeconds = resolveTileSessionTokenTtlSeconds(env);
     const exp = Math.floor(Date.now() / 1000) + ttlSeconds;
@@ -371,7 +345,6 @@ export function createAuthCore(deps) {
       credit_protocol: String(options && options.creditProtocol || "").trim(),
       credit_enforced: Boolean(options && options.creditEnforced),
       session_id: sessionId,
-      allowed_tile_files: allowedTileFiles,
       personal_free_region: String(options && (options.personalFreeRegion || options.personal_free_region) || "").trim(),
       auth_method: String(auth && auth.authMethod || "").trim(),
       device_id: String(auth && auth.deviceId || "").trim(),
@@ -435,9 +408,6 @@ export function createAuthCore(deps) {
     const qualityMode = deps.normalizeQualityMode(payload && payload.quality_mode || "");
     const resolveId = normalizeResolveId(payload && payload.resolve_id || "");
     const creditProtocol = String(payload && (payload.credit_protocol || payload.creditProtocol) || "").trim();
-    const allowedTileFiles = normalizeAllowedTileFiles(
-      payload && (payload.allowed_tile_files || payload.allowedTileFiles),
-    );
     const claims = {
       userId,
       userEmail: String(payload && payload.email || "").trim(),
@@ -447,7 +417,6 @@ export function createAuthCore(deps) {
       qualityMode,
       resolveId,
       creditProtocol,
-      allowedTileFiles,
       creditEnforced: Boolean(payload && (payload.credit_enforced || payload.creditEnforced)),
       sessionId: String(payload && (payload.session_id || payload.sessionId) || "").trim(),
       personalFreeRegion: String(payload && (payload.personal_free_region || payload.personalFreeRegion) || "").trim(),

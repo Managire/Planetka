@@ -123,7 +123,6 @@ _REQUEST_CONTEXT_NAV_LON = ""
 _REQUEST_CONTEXT_NAV_ALT_KM = ""
 _REQUEST_CONTEXT_TILE_TOKEN = ""
 _REQUEST_CONTEXT_TILE_TOKEN_EXPIRES_AT = 0.0
-_REQUEST_CONTEXT_PRICING_TILES = ()
 _TILE_FILE_RE = re.compile(
     r"^(S2|EL|WT|PO)_x(\d{3})_y(\d{3})_z(\d{3})_d(\d{3})\.(exr|tif)$",
     re.IGNORECASE,
@@ -1181,7 +1180,6 @@ def set_resolve_request_context(
     global _REQUEST_CONTEXT_NAV_ALT_KM
     global _REQUEST_CONTEXT_TILE_TOKEN
     global _REQUEST_CONTEXT_TILE_TOKEN_EXPIRES_AT
-    global _REQUEST_CONTEXT_PRICING_TILES
     with _REQUEST_CONTEXT_LOCK:
         _REQUEST_CONTEXT_RESOLVE_ID = str(resolve_id or "").strip()[:128]
         safe_mode = str(texture_quality_mode or "").strip().lower()
@@ -1201,15 +1199,11 @@ def set_resolve_request_context(
             _REQUEST_CONTEXT_NAV_ALT_KM = str(max(0.0, float(nav_altitude_km))).strip()
         except (TypeError, ValueError):
             _REQUEST_CONTEXT_NAV_ALT_KM = ""
-        if isinstance(pricing_tiles, (list, tuple)):
-            _REQUEST_CONTEXT_PRICING_TILES = tuple(
-                str(entry.get("tile_key") or entry.get("tileKey") or entry.get("key") or "").strip()
-                if isinstance(entry, dict)
-                else str(entry or "").strip()
-                for entry in pricing_tiles
-            )
-        else:
-            _REQUEST_CONTEXT_PRICING_TILES = ()
+        # Tile-session tokens carry the selected texture quality/tier for one
+        # resolve. Reusing one after camera/quality changes can make backend
+        # diagnostics and failures point at the wrong request.
+        _REQUEST_CONTEXT_TILE_TOKEN = ""
+        _REQUEST_CONTEXT_TILE_TOKEN_EXPIRES_AT = 0.0
 
 
 def clear_resolve_request_context():
@@ -1270,11 +1264,6 @@ def _request_tile_session_token(resolve_id, quality_mode, allow_refresh=True):
         payload["nav_longitude_deg"] = nav_lon
     if nav_alt:
         payload["nav_altitude_km"] = nav_alt
-    with _REQUEST_CONTEXT_LOCK:
-        allowed_files = tuple(str(item or "").strip().strip("/") for item in _REQUEST_CONTEXT_PRICING_TILES)
-    allowed_files = tuple(item for item in allowed_files if item and "/" in item and ".." not in item)
-    if allowed_files:
-        payload["allowed_tile_files"] = list(dict.fromkeys(allowed_files))[:512]
     payload_bytes = json.dumps(payload, ensure_ascii=True).encode("utf-8")
 
     def _attempt(refresh_allowed):

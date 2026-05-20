@@ -1,12 +1,9 @@
 import { corsHeaders, json } from "./worker/responses.js";
 import {
-  isProfessionalPlan,
-  isQualityModeAllowedForPlan,
+  isTileFileAllowedForPlan,
   normalizeQualityMode,
   normalizeRequestedPlan,
-  personalFreeLocationBlockedMessage,
-  personalFreeRegionForPoint,
-  qualityModeNotAllowedMessage,
+  tileFileNotAllowedMessage,
 } from "./worker/entitlements.js";
 import {
   parseNonNegativeInteger,
@@ -227,35 +224,10 @@ function normalizeResolveId(value) {
   return String(value || "").trim().slice(0, 128);
 }
 
-function normalizeAllowedTileFiles(value) {
-  if (!Array.isArray(value)) return [];
-  return Array.from(new Set(
-    value
-      .map((entry) => String(entry || "").trim().replace(/^\/+/, ""))
-      .filter((entry) => entry && entry.includes("/") && !entry.includes("..")),
-  )).slice(0, 512);
-}
-
 async function issueTileSessionToken(env, auth, requestedQualityMode, requestedResolveId = "", options = {}) {
   const qualityMode = normalizeQualityMode(requestedQualityMode);
   const planCode = normalizeRequestedPlan(auth && auth.planCode);
   const qualityAccessPlanCode = normalizeRequestedPlan(auth && (auth.qualityAccessPlanCode || auth.planCode));
-  if (!isQualityModeAllowedForPlan(qualityAccessPlanCode, qualityMode)) {
-    return {
-      error: json(
-        {
-          ok: false,
-          error: "quality_mode_not_allowed_for_tier",
-          message: qualityModeNotAllowedMessage(qualityAccessPlanCode, qualityMode),
-          requested_quality_mode: qualityMode,
-          plan_code: qualityAccessPlanCode,
-        },
-        403,
-        env,
-      ),
-    };
-  }
-  const allowedTileFiles = normalizeAllowedTileFiles(options && (options.allowedTileFiles || options.allowed_tile_files));
   const ttlSeconds = resolveTileSessionTokenTtlSeconds(env);
   const exp = Math.floor(Date.now() / 1000) + ttlSeconds;
   const resolveId = normalizeResolveId(requestedResolveId) || crypto.randomUUID();
@@ -271,7 +243,6 @@ async function issueTileSessionToken(env, auth, requestedQualityMode, requestedR
     credit_protocol: String(options && options.creditProtocol || "").trim(),
     credit_enforced: Boolean(options && options.creditEnforced),
     session_id: String(options && (options.sessionId || options.session_id) || "").trim(),
-    allowed_tile_files: allowedTileFiles,
     personal_free_region: String(options && (options.personalFreeRegion || options.personal_free_region) || "").trim(),
     auth_method: String(auth && auth.authMethod || "").trim(),
     device_id: String(auth && auth.deviceId || "").trim(),
@@ -313,7 +284,6 @@ async function readTileSessionClaims(request, env) {
     resolveId: normalizeResolveId(payload.resolve_id || ""),
     creditProtocol: String(payload.credit_protocol || payload.creditProtocol || "").trim(),
     creditEnforced: Boolean(payload.credit_enforced || payload.creditEnforced),
-    allowedTileFiles: normalizeAllowedTileFiles(payload.allowed_tile_files || payload.allowedTileFiles),
     sessionId: String(payload.session_id || payload.sessionId || "").trim(),
     personalFreeRegion: String(payload.personal_free_region || payload.personalFreeRegion || "").trim(),
     authMethod: String(payload.auth_method || "").trim(),
@@ -485,8 +455,7 @@ async function recordResolveSummaryEvent(db, payload = {}) {
 const TILE_DEPS = {
   clampNonNegativeInt,
   createTileDownloadSession: null,
-  isProfessionalPlan,
-  isQualityModeAllowedForPlan,
+  isTileFileAllowedForPlan,
   issueTileSessionToken,
   json,
   normalizeDeviceId,
@@ -495,9 +464,7 @@ const TILE_DEPS = {
   normalizeResolveId,
   normalizeTileKeys,
   nowIso,
-  personalFreeLocationBlockedMessage,
-  personalFreeRegionForPoint,
-  qualityModeNotAllowedMessage,
+  tileFileNotAllowedMessage,
   parseJson,
   readTileSessionClaims,
   recordResolveSummaryEvent,

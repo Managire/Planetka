@@ -119,6 +119,38 @@ export function qualityModeNotAllowedMessage(planCode, qualityMode) {
   return "Selected texture quality is not available for this account.";
 }
 
+function parseS2TextureTier(fileName) {
+  const match = /^S2_x\d+_y\d+_z(\d+)_d(\d+)\.exr$/i.exec(String(fileName || "").trim());
+  if (!match) return null;
+  return {
+    z: Number.parseInt(match[1], 10),
+    d: Number.parseInt(match[2], 10),
+  };
+}
+
+export function isTileFileAllowedForPlan(planCode, fileName) {
+  const tier = parseS2TextureTier(fileName);
+  if (!tier) return true;
+  const plan = normalizeRequestedPlan(planCode);
+  if (plan === PLAN_CODE_PROFESSIONAL) return true;
+  if (plan === PLAN_CODE_INDIE) {
+    return !(tier.z === 1 && tier.d === 1);
+  }
+  return !(tier.z === 1 && (tier.d === 1 || tier.d === 2));
+}
+
+export function tileFileNotAllowedMessage(planCode, fileName) {
+  const tier = parseS2TextureTier(fileName);
+  const plan = normalizeRequestedPlan(planCode);
+  if (plan === PLAN_CODE_INDIE && tier && tier.z === 1 && tier.d === 1) {
+    return "Full texture quality requires a Pro account.";
+  }
+  if (plan === PLAN_CODE_FREE && tier && tier.z === 1 && (tier.d === 1 || tier.d === 2)) {
+    return "Balanced and Full texture quality require an Indie or Pro account.";
+  }
+  return "This texture file is not available for this account.";
+}
+
 export function isProfessionalPlan(planCode) {
   return normalizeRequestedPlan(planCode) === PLAN_CODE_PROFESSIONAL;
 }
