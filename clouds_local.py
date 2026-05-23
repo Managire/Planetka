@@ -106,22 +106,6 @@ REMOTE_VDB_CLOUD_FILES = (
     "cloud001_vox063_120.vdb",
     "cloud001_vox063_130.vdb",
     "cloud001_vox063_150.vdb",
-    "cloud001_vox100_0.vdb",
-    "cloud001_vox100_10.vdb",
-    "cloud001_vox100_20.vdb",
-    "cloud001_vox100_30.vdb",
-    "cloud001_vox100_40.vdb",
-    "cloud001_vox100_50.vdb",
-    "cloud001_vox100_60.vdb",
-    "cloud001_vox100_70.vdb",
-    "cloud001_vox100_80.vdb",
-    "cloud001_vox100_90.vdb",
-    "cloud001_vox100_100.vdb",
-    "cloud001_vox100_110.vdb",
-    "cloud001_vox100_120.vdb",
-    "cloud001_vox100_130.vdb",
-    "cloud001_vox100_140.vdb",
-    "cloud001_vox100_150.vdb",
     "cloud002_vox063_0.vdb",
     "cloud002_vox063_10.vdb",
     "cloud002_vox063_20.vdb",
@@ -135,22 +119,6 @@ REMOTE_VDB_CLOUD_FILES = (
     "cloud002_vox063_100.vdb",
     "cloud002_vox063_110.vdb",
     "cloud002_vox063_120.vdb",
-    "cloud002_vox100_0.vdb",
-    "cloud002_vox100_10.vdb",
-    "cloud002_vox100_20.vdb",
-    "cloud002_vox100_30.vdb",
-    "cloud002_vox100_40.vdb",
-    "cloud002_vox100_50.vdb",
-    "cloud002_vox100_60.vdb",
-    "cloud002_vox100_70.vdb",
-    "cloud002_vox100_80.vdb",
-    "cloud002_vox100_90.vdb",
-    "cloud002_vox100_100.vdb",
-    "cloud002_vox100_110.vdb",
-    "cloud002_vox100_120.vdb",
-    "cloud002_vox100_130.vdb",
-    "cloud002_vox100_140.vdb",
-    "cloud002_vox100_150.vdb",
     "cloud003_vox063_0.vdb",
     "cloud003_vox063_10.vdb",
     "cloud003_vox063_20.vdb",
@@ -167,22 +135,6 @@ REMOTE_VDB_CLOUD_FILES = (
     "cloud003_vox063_130.vdb",
     "cloud003_vox063_140.vdb",
     "cloud003_vox063_150.vdb",
-    "cloud003_vox100_0.vdb",
-    "cloud003_vox100_10.vdb",
-    "cloud003_vox100_20.vdb",
-    "cloud003_vox100_30.vdb",
-    "cloud003_vox100_40.vdb",
-    "cloud003_vox100_50.vdb",
-    "cloud003_vox100_60.vdb",
-    "cloud003_vox100_70.vdb",
-    "cloud003_vox100_80.vdb",
-    "cloud003_vox100_90.vdb",
-    "cloud003_vox100_100.vdb",
-    "cloud003_vox100_110.vdb",
-    "cloud003_vox100_120.vdb",
-    "cloud003_vox100_130.vdb",
-    "cloud003_vox100_140.vdb",
-    "cloud003_vox100_150.vdb",
     "cloud004_vox063_0.vdb",
     "cloud004_vox063_10.vdb",
     "cloud004_vox063_20.vdb",
@@ -199,22 +151,6 @@ REMOTE_VDB_CLOUD_FILES = (
     "cloud004_vox063_130.vdb",
     "cloud004_vox063_140.vdb",
     "cloud004_vox063_150.vdb",
-    "cloud004_vox100_0.vdb",
-    "cloud004_vox100_10.vdb",
-    "cloud004_vox100_20.vdb",
-    "cloud004_vox100_30.vdb",
-    "cloud004_vox100_40.vdb",
-    "cloud004_vox100_50.vdb",
-    "cloud004_vox100_60.vdb",
-    "cloud004_vox100_70.vdb",
-    "cloud004_vox100_80.vdb",
-    "cloud004_vox100_90.vdb",
-    "cloud004_vox100_100.vdb",
-    "cloud004_vox100_110.vdb",
-    "cloud004_vox100_120.vdb",
-    "cloud004_vox100_130.vdb",
-    "cloud004_vox100_140.vdb",
-    "cloud004_vox100_150.vdb",
     "cloud005_vox063_0.vdb",
     "cloud005_vox063_10.vdb",
     "cloud005_vox063_20.vdb",
@@ -224,27 +160,7 @@ REMOTE_VDB_CLOUD_FILES = (
     "cloud005_vox063_60.vdb",
     "cloud005_vox063_70.vdb",
     "cloud005_vox063_80.vdb",
-    "cloud005_vox100_0.vdb",
-    "cloud005_vox100_10.vdb",
-    "cloud005_vox100_20.vdb",
-    "cloud005_vox100_30.vdb",
-    "cloud005_vox100_40.vdb",
-    "cloud005_vox100_50.vdb",
-    "cloud005_vox100_60.vdb",
-    "cloud005_vox100_70.vdb",
-    "cloud005_vox100_80.vdb",
-    "cloud005_vox100_90.vdb",
-    "cloud005_vox100_100.vdb",
-    "cloud005_vox100_110.vdb",
-    "cloud005_vox100_120.vdb",
-    "cloud005_vox100_130.vdb",
-    "cloud005_vox100_140.vdb",
-    "cloud005_vox100_150.vdb",
 )
-REMOTE_VDB_CLOUD_UNPUBLISHED_BASE_FILES = {
-    "cloud001_vox063_150.vdb",
-}
-
 CLOUDS_ROOT_COLLECTION_NAME = "Clouds"
 GLOBAL_CLOUDS_COLLECTION_NAME = "Global Clouds"
 LOCAL_CLOUDS_COLLECTION_NAME = "Texture-Based Clouds"
@@ -308,8 +224,10 @@ VDB_CLOUD_OBJ_SOURCE_FILE_PROP = "planetka_vdb_cloud_source_file"
 VDB_CLOUD_LOADED_FILE_PROP = "planetka_vdb_cloud_loaded_file"
 VDB_CLOUD_D_LEVEL_PROP = "planetka_vdb_cloud_d_level"
 VDB_CLOUD_FINAL_FILE_PROP = "planetka_vdb_cloud_final_file"
+VDB_CLOUD_BALANCED_FILE_PROP = "planetka_vdb_cloud_balanced_file"
 VDB_CLOUD_PREVIEW_FILE_PROP = "planetka_vdb_cloud_preview_file"
 VDB_CLOUD_FINAL_D_LEVEL_PROP = "planetka_vdb_cloud_final_d_level"
+VDB_CLOUD_BALANCED_D_LEVEL_PROP = "planetka_vdb_cloud_balanced_d_level"
 VDB_CLOUD_PREVIEW_D_LEVEL_PROP = "planetka_vdb_cloud_preview_d_level"
 VDB_CLOUD_PROJECTED_PIXELS_PROP = "planetka_vdb_cloud_projected_pixels"
 VDB_CLOUD_DENSITY_NODE_NAME = "VDB Density"
@@ -330,8 +248,10 @@ LOCAL_CLOUD_D_LEVEL_PROP = "planetka_texture_based_cloud_d_level"
 LOCAL_CLOUD_PROJECTED_PIXELS_PROP = "planetka_texture_based_cloud_projected_pixels"
 LOCAL_CLOUD_LOADED_TEXTURE_PROP = "planetka_texture_based_cloud_loaded_texture"
 LOCAL_CLOUD_FINAL_TEXTURE_PROP = "planetka_texture_based_cloud_final_texture"
+LOCAL_CLOUD_BALANCED_TEXTURE_PROP = "planetka_texture_based_cloud_balanced_texture"
 LOCAL_CLOUD_PREVIEW_TEXTURE_PROP = "planetka_texture_based_cloud_preview_texture"
 LOCAL_CLOUD_FINAL_D_LEVEL_PROP = "planetka_texture_based_cloud_final_d_level"
+LOCAL_CLOUD_BALANCED_D_LEVEL_PROP = "planetka_texture_based_cloud_balanced_d_level"
 LOCAL_CLOUD_PREVIEW_D_LEVEL_PROP = "planetka_texture_based_cloud_preview_d_level"
 LOCAL_CLOUD_GPU_LIMIT_PROP = "planetka_texture_based_cloud_gpu_limit_px"
 LOCAL_CLOUD_DOWNSCALE_WARNING_PROP = "planetka_texture_based_cloud_downscale_warning"
@@ -347,6 +267,22 @@ _local_cloud_asset_paths = {}
 _local_cloud_thumbnail_paths = {}
 _vdb_cloud_asset_paths = {}
 _vdb_cloud_thumbnail_paths = {}
+
+
+def _normalize_cloud_quality_mode(value):
+    token = str(value or "").strip().upper()
+    if token in {"FULL", "BALANCED", "PREVIEW"}:
+        return token
+    return "PREVIEW"
+
+
+def _cloud_quality_d_multiplier(value):
+    mode = _normalize_cloud_quality_mode(value)
+    if mode == "FULL":
+        return 1
+    if mode == "BALANCED":
+        return 2
+    return 4
 _cloud_download_progress = {
     "active": False,
     "label": "",
@@ -1028,12 +964,20 @@ def _resolve_local_cloud_source_path(obj, allow_download=True):
     return source_path
 
 
-def _store_local_cloud_prepared_variant(obj, variant, preview=False):
+def _local_cloud_quality_props(quality_mode):
+    mode = _normalize_cloud_quality_mode(quality_mode)
+    if mode == "FULL":
+        return LOCAL_CLOUD_FINAL_TEXTURE_PROP, LOCAL_CLOUD_FINAL_D_LEVEL_PROP
+    if mode == "BALANCED":
+        return LOCAL_CLOUD_BALANCED_TEXTURE_PROP, LOCAL_CLOUD_BALANCED_D_LEVEL_PROP
+    return LOCAL_CLOUD_PREVIEW_TEXTURE_PROP, LOCAL_CLOUD_PREVIEW_D_LEVEL_PROP
+
+
+def _store_local_cloud_prepared_variant(obj, variant, quality_mode="FULL"):
     texture_path = str((variant or {}).get("path", "") or "")
     if not texture_path:
         return False
-    path_prop = LOCAL_CLOUD_PREVIEW_TEXTURE_PROP if preview else LOCAL_CLOUD_FINAL_TEXTURE_PROP
-    d_prop = LOCAL_CLOUD_PREVIEW_D_LEVEL_PROP if preview else LOCAL_CLOUD_FINAL_D_LEVEL_PROP
+    path_prop, d_prop = _local_cloud_quality_props(quality_mode)
     try:
         obj[path_prop] = os.path.abspath(texture_path)
         obj[d_prop] = int((variant or {}).get("d_level", 1) or 1)
@@ -1059,6 +1003,13 @@ def _prepare_local_cloud_texture_variants(obj, scene=None, allow_download=True):
         filename=texture_name,
         d_level_multiplier=1,
     )
+    balanced_variant = _local_cloud_adaptive_texture_variant(
+        source_path,
+        obj,
+        scene=scene,
+        filename=texture_name,
+        d_level_multiplier=2,
+    )
     preview_variant = _local_cloud_adaptive_texture_variant(
         source_path,
         obj,
@@ -1066,12 +1017,13 @@ def _prepare_local_cloud_texture_variants(obj, scene=None, allow_download=True):
         filename=texture_name,
         d_level_multiplier=4,
     )
-    final_ok = _store_local_cloud_prepared_variant(obj, final_variant, preview=False)
-    preview_ok = _store_local_cloud_prepared_variant(obj, preview_variant, preview=True)
-    return bool(final_ok and preview_ok)
+    final_ok = _store_local_cloud_prepared_variant(obj, final_variant, quality_mode="FULL")
+    balanced_ok = _store_local_cloud_prepared_variant(obj, balanced_variant, quality_mode="BALANCED")
+    preview_ok = _store_local_cloud_prepared_variant(obj, preview_variant, quality_mode="PREVIEW")
+    return bool(final_ok and balanced_ok and preview_ok)
 
 
-def _apply_prepared_local_cloud_texture(obj, preview=False, scene=None, allow_prepare_missing=True):
+def _apply_prepared_local_cloud_texture(obj, preview=False, scene=None, allow_prepare_missing=True, quality_mode=None):
     if not _is_local_cloud_object(obj):
         return False
     material = _resolve_object_material(obj)
@@ -1079,8 +1031,9 @@ def _apply_prepared_local_cloud_texture(obj, preview=False, scene=None, allow_pr
     if image_node is None:
         return False
 
-    path_prop = LOCAL_CLOUD_PREVIEW_TEXTURE_PROP if preview else LOCAL_CLOUD_FINAL_TEXTURE_PROP
-    d_prop = LOCAL_CLOUD_PREVIEW_D_LEVEL_PROP if preview else LOCAL_CLOUD_FINAL_D_LEVEL_PROP
+    if quality_mode is None:
+        quality_mode = "PREVIEW" if preview else "FULL"
+    path_prop, d_prop = _local_cloud_quality_props(quality_mode)
     texture_path = str(obj.get(path_prop, "") or "")
     if texture_path:
         texture_path = bpy.path.abspath(texture_path)
@@ -1114,7 +1067,7 @@ def _apply_prepared_local_cloud_texture(obj, preview=False, scene=None, allow_pr
     return True
 
 
-def _update_local_cloud_adaptive_texture(obj, scene=None, preview=False):
+def _update_local_cloud_adaptive_texture(obj, scene=None, preview=False, quality_mode=None):
     if not _is_local_cloud_object(obj):
         return False
     if not _prepare_local_cloud_texture_variants(obj, scene=scene, allow_download=True):
@@ -1125,6 +1078,7 @@ def _update_local_cloud_adaptive_texture(obj, scene=None, preview=False):
         preview=preview,
         scene=scene,
         allow_prepare_missing=False,
+        quality_mode=quality_mode,
     )
 
 
@@ -1238,14 +1192,13 @@ def _resolve_remote_vdb_cloud_asset(file_name, progress_label=""):
 
     requested_base, requested_level = _split_vdb_lod_filename(safe_name)
     candidate_names = []
-    minimum_level = 2 if safe_name in REMOTE_VDB_CLOUD_UNPUBLISHED_BASE_FILES else int(requested_level)
     for level in sorted(
-        {int(value) for value in VDB_CLOUD_ADAPTIVE_D_LEVELS if int(value) >= int(minimum_level)}
+        {int(value) for value in VDB_CLOUD_ADAPTIVE_D_LEVELS if int(value) >= int(requested_level)}
     ):
         candidate = _vdb_lod_filename(requested_base, level)
         if candidate and candidate not in candidate_names:
             candidate_names.append(candidate)
-    if safe_name not in candidate_names and safe_name not in REMOTE_VDB_CLOUD_UNPUBLISHED_BASE_FILES:
+    if safe_name not in candidate_names:
         candidate_names.insert(0, safe_name)
 
     assets = _refresh_remote_vdb_cloud_assets(force=False)
@@ -1922,15 +1875,15 @@ def _set_local_cloud_texture_by_filename(obj, filename):
 
     scene = getattr(bpy.context, "scene", None)
     props = getattr(scene, "planetka", None) if scene else None
-    preview = not bool(getattr(props, "view_cloud_subdivision", False)) if props else True
+    quality_mode = _normalize_cloud_quality_mode(getattr(props, "texture_quality_mode", "PREVIEW") if props else "PREVIEW")
     if not _prepare_local_cloud_texture_variants(obj, scene=scene, allow_download=False):
         logger.error("Planetka clouds: local cloud texture variants could not be prepared: %s", texture_path)
         return False
     return _apply_prepared_local_cloud_texture(
         obj,
-        preview=preview,
         scene=scene,
         allow_prepare_missing=False,
+        quality_mode=quality_mode,
     )
 
 
@@ -2307,7 +2260,8 @@ def _set_universal_cloud_preview_value(preview_value):
 
 
 def _apply_universal_cloud_preview_state(props, context=None):
-    final_look = bool(getattr(props, "view_cloud_subdivision", False)) if props else False
+    quality_mode = _normalize_cloud_quality_mode(getattr(props, "texture_quality_mode", "PREVIEW") if props else "PREVIEW")
+    final_look = quality_mode != "PREVIEW"
     # Keep the diffuse preview surface visible in the viewport. The volumetric
     # branch can look invisible until render settings/view mode are configured,
     # so Final Look currently means higher cloud geometry, not hidden clouds.
@@ -2317,9 +2271,9 @@ def _apply_universal_cloud_preview_state(props, context=None):
     for cloud_obj in list(_iter_local_cloud_objects()):
         _apply_prepared_local_cloud_texture(
             cloud_obj,
-            preview=not final_look,
             scene=getattr(context, "scene", None) if context else getattr(bpy.context, "scene", None),
             allow_prepare_missing=True,
+            quality_mode=quality_mode,
         )
         for mod in _iter_cloud_subdivision_modifiers(cloud_obj):
             try:
@@ -2330,9 +2284,9 @@ def _apply_universal_cloud_preview_state(props, context=None):
     for cloud_obj in list(_iter_vdb_cloud_objects()):
         _apply_prepared_vdb_cloud_file(
             cloud_obj,
-            preview=not final_look,
             scene=getattr(context, "scene", None) if context else getattr(bpy.context, "scene", None),
             allow_prepare_missing=True,
+            quality_mode=quality_mode,
         )
         for mod in _iter_cloud_subdivision_modifiers(cloud_obj):
             try:
@@ -2529,7 +2483,8 @@ def _apply_local_cloud_object(obj, scene=None):
     finally:
         _end_cloud_update_suspend()
 
-    final_look = bool(getattr(props, "view_cloud_subdivision", False)) if props else False
+    quality_mode = _normalize_cloud_quality_mode(getattr(props, "texture_quality_mode", "PREVIEW") if props else "PREVIEW")
+    final_look = quality_mode != "PREVIEW"
 
     for mod in _iter_cloud_subdivision_modifiers(obj):
         try:
@@ -2541,10 +2496,12 @@ def _apply_local_cloud_object(obj, scene=None):
     _apply_local_cloud_material_controls(obj, material, final_look=final_look)
 
 
-def optimize_texture_based_clouds_for_camera(scene=None):
+def optimize_texture_based_clouds_for_camera(scene=None, quality_mode=None):
     scene = scene or getattr(bpy.context, "scene", None)
     props = getattr(scene, "planetka", None) if scene else None
-    preview = not bool(getattr(props, "view_cloud_subdivision", False)) if props else True
+    if quality_mode is None:
+        quality_mode = getattr(props, "texture_quality_mode", "PREVIEW") if props else "PREVIEW"
+    quality_mode = _normalize_cloud_quality_mode(quality_mode)
     optimized = 0
     failed = 0
     for obj in list(_iter_local_cloud_objects()):
@@ -2552,9 +2509,9 @@ def optimize_texture_based_clouds_for_camera(scene=None):
             _prepare_local_cloud_texture_variants(obj, scene=scene, allow_download=True)
             and _apply_prepared_local_cloud_texture(
                 obj,
-                preview=preview,
                 scene=scene,
                 allow_prepare_missing=False,
+                quality_mode=quality_mode,
             )
         ):
             optimized += 1
@@ -2707,6 +2664,15 @@ def _resolve_vdb_lod_path(source_path, d_level, allow_download=True):
     return os.path.abspath(source) if os.path.isfile(source) else ""
 
 
+def _vdb_cloud_quality_props(quality_mode):
+    mode = _normalize_cloud_quality_mode(quality_mode)
+    if mode == "FULL":
+        return VDB_CLOUD_FINAL_FILE_PROP, VDB_CLOUD_FINAL_D_LEVEL_PROP
+    if mode == "BALANCED":
+        return VDB_CLOUD_BALANCED_FILE_PROP, VDB_CLOUD_BALANCED_D_LEVEL_PROP
+    return VDB_CLOUD_PREVIEW_FILE_PROP, VDB_CLOUD_PREVIEW_D_LEVEL_PROP
+
+
 def _prepare_vdb_cloud_variants(obj, scene=None, allow_download=True):
     if not _is_vdb_cloud_object(obj):
         return False
@@ -2721,20 +2687,27 @@ def _prepare_vdb_cloud_variants(obj, scene=None, allow_download=True):
         return False
 
     final_d, projected_pixels = _select_vdb_cloud_adaptive_d_level(obj, scene, d_level_multiplier=1)
+    balanced_d = _coarser_vdb_cloud_d_level(final_d, multiplier=2)
     preview_d = _coarser_vdb_cloud_d_level(final_d, multiplier=4)
     final_path = _resolve_vdb_lod_path(source_path, final_d, allow_download=allow_download)
+    balanced_path = _resolve_vdb_lod_path(source_path, balanced_d, allow_download=allow_download)
     preview_path = _resolve_vdb_lod_path(source_path, preview_d, allow_download=allow_download)
     if not final_path or not os.path.isfile(final_path):
         final_path = source_path
     _base_name, final_d = _split_vdb_lod_filename(os.path.basename(final_path))
+    if not balanced_path or not os.path.isfile(balanced_path):
+        balanced_path = final_path
+    _base_name, balanced_d = _split_vdb_lod_filename(os.path.basename(balanced_path))
     if not preview_path or not os.path.isfile(preview_path):
-        preview_path = final_path
+        preview_path = balanced_path
     _base_name, preview_d = _split_vdb_lod_filename(os.path.basename(preview_path))
     try:
         obj[VDB_CLOUD_OBJ_SOURCE_FILE_PROP] = os.path.abspath(source_path)
         obj[VDB_CLOUD_FINAL_FILE_PROP] = os.path.abspath(final_path)
+        obj[VDB_CLOUD_BALANCED_FILE_PROP] = os.path.abspath(balanced_path)
         obj[VDB_CLOUD_PREVIEW_FILE_PROP] = os.path.abspath(preview_path)
         obj[VDB_CLOUD_FINAL_D_LEVEL_PROP] = int(final_d)
+        obj[VDB_CLOUD_BALANCED_D_LEVEL_PROP] = int(balanced_d)
         obj[VDB_CLOUD_PREVIEW_D_LEVEL_PROP] = int(preview_d)
         obj[VDB_CLOUD_PROJECTED_PIXELS_PROP] = float(projected_pixels)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
@@ -2742,11 +2715,12 @@ def _prepare_vdb_cloud_variants(obj, scene=None, allow_download=True):
     return True
 
 
-def _apply_prepared_vdb_cloud_file(obj, preview=False, scene=None, allow_prepare_missing=True):
+def _apply_prepared_vdb_cloud_file(obj, preview=False, scene=None, allow_prepare_missing=True, quality_mode=None):
     if not _is_vdb_cloud_object(obj):
         return False
-    file_prop = VDB_CLOUD_PREVIEW_FILE_PROP if preview else VDB_CLOUD_FINAL_FILE_PROP
-    d_prop = VDB_CLOUD_PREVIEW_D_LEVEL_PROP if preview else VDB_CLOUD_FINAL_D_LEVEL_PROP
+    if quality_mode is None:
+        quality_mode = "PREVIEW" if preview else "FULL"
+    file_prop, d_prop = _vdb_cloud_quality_props(quality_mode)
     file_path = str(obj.get(file_prop, "") or "")
     if file_path:
         file_path = bpy.path.abspath(file_path)
@@ -2769,10 +2743,12 @@ def _apply_prepared_vdb_cloud_file(obj, preview=False, scene=None, allow_prepare
     return True
 
 
-def optimize_vdb_clouds_for_camera(scene=None):
+def optimize_vdb_clouds_for_camera(scene=None, quality_mode=None):
     scene = scene or getattr(bpy.context, "scene", None)
     props = getattr(scene, "planetka", None) if scene else None
-    preview = not bool(getattr(props, "view_cloud_subdivision", False)) if props else True
+    if quality_mode is None:
+        quality_mode = getattr(props, "texture_quality_mode", "PREVIEW") if props else "PREVIEW"
+    quality_mode = _normalize_cloud_quality_mode(quality_mode)
     optimized = 0
     failed = 0
     for obj in list(_iter_vdb_cloud_objects()):
@@ -2780,9 +2756,9 @@ def optimize_vdb_clouds_for_camera(scene=None):
             _prepare_vdb_cloud_variants(obj, scene=scene, allow_download=True)
             and _apply_prepared_vdb_cloud_file(
                 obj,
-                preview=preview,
                 scene=scene,
                 allow_prepare_missing=False,
+                quality_mode=quality_mode,
             )
         ):
             optimized += 1
@@ -3059,11 +3035,6 @@ def update_enable_vdb_clouds(self, context):
     _sync_cloud_collection_visibility(scene, self)
 
 
-def update_view_cloud_subdivision(self, context):
-    scene = getattr(context, "scene", None) if context else None
-    _sync_scene_idprops(scene, ("view_cloud_subdivision",))
-    _apply_universal_cloud_preview_state(self, context=context)
-
 
 def update_local_cloud_object_texture(self, context):
     obj = self
@@ -3097,9 +3068,9 @@ def sync_cloud_system_scene(scene):
                 ensure_global_fn(scene=scene)
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka clouds: failed ensuring global cloud layer during sync", exc_info=True)
+    _apply_cloud_object_updates_for_scene(scene)
     if props is not None:
         _apply_universal_cloud_preview_state(props, context=None)
-    _apply_cloud_object_updates_for_scene(scene)
 
 
 def _is_workflow_enabled():
@@ -3127,228 +3098,6 @@ def _vdb_file_label(obj):
     if not path:
         return "No VDB file assigned"
     return os.path.basename(bpy.path.abspath(path))
-
-
-class PLANETKA_OT_SetCloudViewMode(bpy.types.Operator):
-    bl_idname = "planetka.set_cloud_view_mode"
-    bl_label = "Set Cloud View Mode"
-    bl_description = "Switch cloud shading mode"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    mode: EnumProperty(
-        name="Mode",
-        items=(
-            ("PREVIEW", "Preview", ""),
-            ("VOLUME", "Final Look", ""),
-        ),
-        default="VOLUME",
-    )
-
-    def execute(self, context):
-        scene = getattr(context, "scene", None)
-        props = getattr(scene, "planetka", None) if scene else None
-        if props is None:
-            self.report({'ERROR'}, "Planetka settings unavailable.")
-            return {'CANCELLED'}
-
-        desired_final_look = self.mode == "VOLUME"
-        if bool(getattr(props, "view_cloud_subdivision", False)) != desired_final_look:
-            props.view_cloud_subdivision = desired_final_look
-        else:
-            _apply_universal_cloud_preview_state(props, context=context)
-
-        self.report({'INFO'}, f"Cloud mode: {'Final Look' if desired_final_look else 'Preview'}")
-        return {'FINISHED'}
-
-
-class PLANETKA_OT_OptimizeClouds(bpy.types.Operator):
-    bl_idname = "planetka.optimize_clouds"
-    bl_label = "Optimize Clouds"
-    bl_description = "Adjust cloud resolution for the current camera position"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    _timer = None
-    _clouds = None
-    _index = 0
-    _optimized = 0
-    _failed = 0
-
-    def _finish(self, context, status):
-        wm = getattr(context, "window_manager", None)
-        if wm is not None and self._timer is not None:
-            try:
-                wm.event_timer_remove(self._timer)
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                pass
-        self._timer = None
-        _set_cloud_optimize_progress(
-            active=False,
-            current=int(self._index),
-            total=len(self._clouds or []),
-            optimized=int(self._optimized),
-            failed=int(self._failed),
-            finished_at=time.time(),
-        )
-        return status
-
-    def invoke(self, context, event):
-        if not is_pro_account():
-            self.report({'ERROR'}, "Cloud optimization requires a Pro account.")
-            return {'CANCELLED'}
-        scene = getattr(context, "scene", None)
-        self._clouds = [
-            *[(obj, "TEXTURE") for obj in _iter_local_cloud_objects()],
-            *[(obj, "VDB") for obj in _iter_vdb_cloud_objects()],
-        ]
-        self._index = 0
-        self._optimized = 0
-        self._failed = 0
-        total = len(self._clouds)
-        if total <= 0:
-            _set_cloud_optimize_progress(
-                active=False,
-                label="",
-                current=0,
-                total=0,
-                optimized=0,
-                failed=0,
-                error="",
-                finished_at=time.time(),
-            )
-            self.report({'INFO'}, "No clouds to optimize.")
-            return {'FINISHED'}
-
-        _set_cloud_optimize_progress(
-            active=True,
-            label="Preparing cloud optimization",
-            current=0,
-            total=total,
-            optimized=0,
-            failed=0,
-            error="",
-            started_at=time.time(),
-            finished_at=0.0,
-        )
-        wm = getattr(context, "window_manager", None)
-        if wm is None:
-            return self.execute(context)
-        self._timer = wm.event_timer_add(0.1, window=getattr(context, "window", None))
-        wm.modal_handler_add(self)
-        return {'RUNNING_MODAL'}
-
-    def modal(self, context, event):
-        if event.type != 'TIMER':
-            return {'RUNNING_MODAL'}
-
-        area = getattr(context, "area", None)
-        if area is not None:
-            try:
-                area.tag_redraw()
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                pass
-
-        if self._clouds is None:
-            self._clouds = [
-                *[(obj, "TEXTURE") for obj in _iter_local_cloud_objects()],
-                *[(obj, "VDB") for obj in _iter_vdb_cloud_objects()],
-            ]
-
-        total = len(self._clouds)
-        if self._index >= total:
-            if self._failed > 0:
-                self.report({'WARNING'}, f"Optimized {self._optimized} cloud(s); {self._failed} cloud(s) could not be optimized.")
-            else:
-                self.report({'INFO'}, f"Optimized {self._optimized} cloud(s).")
-            return self._finish(context, {'FINISHED'})
-
-        obj, cloud_kind = self._clouds[self._index]
-        cloud_name = _cloud_title(getattr(obj, "name", ""), self._index + 1, "Cloud No")
-        _set_cloud_optimize_progress(
-            active=True,
-            label=f"Optimizing: {cloud_name}",
-            current=self._index,
-            total=total,
-            optimized=int(self._optimized),
-            failed=int(self._failed),
-        )
-        try:
-            scene = getattr(context, "scene", None)
-            props = getattr(scene, "planetka", None) if scene else None
-            preview = not bool(getattr(props, "view_cloud_subdivision", False)) if props else True
-            if cloud_kind == "VDB":
-                ok = (
-                    _prepare_vdb_cloud_variants(obj, scene=scene, allow_download=True)
-                    and _apply_prepared_vdb_cloud_file(
-                        obj,
-                        preview=preview,
-                        scene=scene,
-                        allow_prepare_missing=False,
-                    )
-                )
-            else:
-                ok = (
-                    _prepare_local_cloud_texture_variants(obj, scene=scene, allow_download=True)
-                    and _apply_prepared_local_cloud_texture(
-                        obj,
-                        preview=preview,
-                        scene=scene,
-                        allow_prepare_missing=False,
-                    )
-                )
-            if ok:
-                self._optimized += 1
-            else:
-                self._failed += 1
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka clouds: failed optimizing cloud", exc_info=True)
-            self._failed += 1
-        self._index += 1
-        _set_cloud_optimize_progress(
-            active=True,
-            current=self._index,
-            total=total,
-            optimized=int(self._optimized),
-            failed=int(self._failed),
-        )
-        return {'RUNNING_MODAL'}
-
-    def execute(self, context):
-        if not is_pro_account():
-            self.report({'ERROR'}, "Cloud optimization requires a Pro account.")
-            return {'CANCELLED'}
-        scene = getattr(context, "scene", None)
-        _set_cloud_optimize_progress(
-            active=True,
-            label="Optimizing clouds",
-            current=0,
-            total=len(list(_iter_local_cloud_objects())) + len(list(_iter_vdb_cloud_objects())),
-            optimized=0,
-            failed=0,
-            error="",
-            started_at=time.time(),
-            finished_at=0.0,
-        )
-        texture_optimized, texture_failed = optimize_texture_based_clouds_for_camera(scene=scene)
-        vdb_optimized, vdb_failed = optimize_vdb_clouds_for_camera(scene=scene)
-        optimized = int(texture_optimized) + int(vdb_optimized)
-        failed = int(texture_failed) + int(vdb_failed)
-        _set_cloud_optimize_progress(
-            active=False,
-            label="",
-            current=int(optimized + failed),
-            total=int(optimized + failed),
-            optimized=int(optimized),
-            failed=int(failed),
-            finished_at=time.time(),
-        )
-        if optimized <= 0 and failed <= 0:
-            self.report({'INFO'}, "No clouds to optimize.")
-            return {'FINISHED'}
-        if failed > 0:
-            self.report({'WARNING'}, f"Optimized {optimized} cloud(s); {failed} cloud(s) could not be optimized.")
-        else:
-            self.report({'INFO'}, f"Optimized {optimized} cloud(s).")
-        return {'FINISHED'}
 
 
 class PLANETKA_OT_AddLocalCloud(bpy.types.Operator):
@@ -3814,13 +3563,13 @@ class PLANETKA_OT_AddVDBCloud(bpy.types.Operator):
             _end_cloud_update_suspend()
 
         _apply_vdb_cloud_object(new_obj, scene=scene)
-        preview = not bool(getattr(props, "view_cloud_subdivision", False)) if props else True
+        quality_mode = _normalize_cloud_quality_mode(getattr(props, "texture_quality_mode", "PREVIEW") if props else "PREVIEW")
         if _prepare_vdb_cloud_variants(new_obj, scene=scene, allow_download=True):
             _apply_prepared_vdb_cloud_file(
                 new_obj,
-                preview=preview,
                 scene=scene,
                 allow_prepare_missing=False,
+                quality_mode=quality_mode,
             )
 
         if source == "LOCAL":
@@ -4092,14 +3841,6 @@ class PLANETKA_PT_LocalCloudsPanel(bpy.types.Panel):
         row = box.row()
         row.use_property_split = False
         row.operator("planetka.add_local_cloud", text="Add Cloud", icon="ADD")
-
-        mode_row = box.row(align=True)
-        mode_row.use_property_split = False
-        preview_on = not bool(getattr(props, "view_cloud_subdivision", False))
-        op = mode_row.operator("planetka.set_cloud_view_mode", text="Preview", depress=preview_on)
-        op.mode = "PREVIEW"
-        op = mode_row.operator("planetka.set_cloud_view_mode", text="Final Look", depress=not preview_on)
-        op.mode = "VOLUME"
 
         clouds = _sort_cloud_objects_by_suffix(list(_iter_local_cloud_objects()))
         if not clouds:

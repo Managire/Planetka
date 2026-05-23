@@ -68,11 +68,11 @@ def _test_texture_quality_uses_single_status_line() -> dict:
     live_text = text[text.find("def _draw_live_telemetry"):text.find("def _draw_advanced_telemetry")]
     _assert(
         "_draw_resolve_status_line(layout, scene, runtime, runtime_code, runtime_text)" in live_text,
-        "Data Control must draw the shared resolve status line above Texture Quality.",
+        "Quality Settings must draw the shared resolve status line above Quality Level.",
     )
     _assert(
         ".progress(" not in live_text,
-        "Texture Quality must not draw per-button download progress bars.",
+        "Quality Level must not draw per-button download progress bars.",
     )
     _assert(
         "_quality_progress_factor" not in text,
@@ -82,24 +82,24 @@ def _test_texture_quality_uses_single_status_line() -> dict:
 
 
 def _test_streaming_quality_ui_has_no_pricing_gate() -> dict:
-    """Static guard for the simplified streaming-only texture-quality UI."""
+    """Static guard for the simplified streaming-only quality-level UI."""
 
     text = _source_text("ui.py")
     _assert(
-        'header_row.label(text="Texture Quality", icon="TEXTURE")' in text,
-        "Sidebar should expose the simplified Texture Quality section.",
+        'header_row.label(text="Quality Level", icon="TEXTURE")' in text,
+        "Sidebar should expose the simplified Quality Level section.",
     )
     _assert(
-        'bl_label = "Data Control"' in text,
-        "Sidebar panel should be named Data Control.",
+        'bl_label = "Quality Settings"' in text,
+        "Sidebar panel should be named Quality Settings.",
     )
     _assert(
         '"BALANCED", "Balanced"' in text,
-        "Texture Quality must expose the Balanced streaming quality button.",
+        "Quality Level must expose the Balanced streaming quality button.",
     )
     _assert(
         "planetka.open_credit_checkout" not in text[text.find("def _draw_live_telemetry"):text.find("def _draw_advanced_telemetry")],
-        "Texture Quality must not route Full Quality through checkout.",
+        "Quality Level must not route Full Quality through checkout.",
     )
     return {"checked": True}
 
@@ -200,7 +200,7 @@ def _test_quality_switch_fast_path() -> dict:
     _assert(
         "planetka_last_full_source_tiles" not in operators_text
         and "texture quality fast-path" not in operators_text,
-        "Texture Quality buttons must not bypass the normal resolve path.",
+        "Quality Level buttons must not bypass the normal resolve path.",
     )
     return {"checked": True}
 
@@ -232,7 +232,7 @@ def _test_auto_resolve_has_no_forced_preview_jobs() -> dict:
     _assert(
         "texture_quality_mode = _ctx_auto_resolve_texture_quality_mode(" in text
         and "getattr(props, \"texture_quality_mode\", \"PREVIEW\")" in text,
-        "Normal auto-resolve must read the currently selected Texture Quality from scene properties.",
+        "Normal auto-resolve must read the currently selected Quality Level from scene properties.",
     )
     _assert(
         "class AutoResolveDecisionDeps" in context_text
@@ -301,11 +301,11 @@ def _test_full_quality_details_removed_from_data_control() -> dict:
     data_control_text = text[text.find("def _draw_live_telemetry"):text.find("def _draw_advanced_telemetry")]
     _assert(
         "planetka.data_cost_breakdown" not in data_control_text,
-        "Texture Quality should not expose the old Full Quality Details pricing popup.",
+        "Quality Level should not expose the old Full Quality Details pricing popup.",
     )
     _assert(
         "Relevant Data Packs" not in data_control_text,
-        "Texture Quality should not expose data-pack upsells.",
+        "Quality Level should not expose data-pack upsells.",
     )
     return {"checked": True}
 

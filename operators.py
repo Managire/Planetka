@@ -312,11 +312,11 @@ from .planetka_ops.navigation_helpers import (
 
 class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
     bl_idname = "planetka.set_texture_quality_and_resolve"
-    bl_label = "Set Texture Quality"
+    bl_label = "Set Quality Level"
     bl_description = "Set Planetka streaming texture quality and resolve the current view"
 
     texture_quality_mode: EnumProperty(
-        name="Texture Quality",
+        name="Quality Level",
         items=(
             (
                 "PREVIEW",

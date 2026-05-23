@@ -1428,7 +1428,7 @@ def _draw_live_telemetry(layout, scene):
         header_row = quality_box.row(align=True)
         header_row.use_property_split = False
         header_row.use_property_decorate = False
-        header_row.label(text="Texture Quality", icon="TEXTURE")
+        header_row.label(text="Quality Level", icon="TEXTURE")
         resolve_failure_message = _resolve_failure_message_for_ui(scene)
 
         selected_auto_quality = _normalize_texture_quality_for_ui(getattr(props, "texture_quality_mode", "PREVIEW"))
@@ -1457,20 +1457,6 @@ def _draw_live_telemetry(layout, scene):
                 mode_col,
                 _quality_total_size_label(estimate_bytes),
             )
-        auto_box = quality_box.box()
-        auto_box.label(text="Auto-Resolve options")
-        auto_row = auto_box.row(align=True)
-        auto_row.prop_enum(props, "auto_resolve_mode", "NEVER", text="Never")
-        auto_row.prop_enum(props, "auto_resolve_mode", "CAMERA_VIEW", text="Camera only")
-        always_row = auto_row.row(align=True)
-        always_allowed = is_pro_account(prefs)
-        always_row.enabled = bool(always_allowed)
-        always_row.prop_enum(
-            props,
-            "auto_resolve_mode",
-            "ALWAYS",
-            text=("Always" if always_allowed else "Always (Pro only)"),
-        )
         if resolve_failure_message:
             error_row = quality_box.row(align=True)
             error_row.alert = True
@@ -2115,13 +2101,6 @@ def _draw_local_clouds(layout, context, props):
         err_box.alert = True
         err_box.label(text=progress_error, icon="ERROR")
 
-    mode_row = box.row(align=True)
-    preview_on = not bool(getattr(props, "view_cloud_subdivision", False))
-    op = mode_row.operator("planetka.set_cloud_view_mode", text="Preview", depress=preview_on)
-    op.mode = "PREVIEW"
-    op = mode_row.operator("planetka.set_cloud_view_mode", text="Final Look", depress=not preview_on)
-    op.mode = "VOLUME"
-
     clouds = cloud_runtime._sort_cloud_objects_by_suffix(list(cloud_runtime._iter_local_cloud_objects()))
     if not clouds:
         box.label(text="No texture-based clouds added yet.", icon="INFO")
@@ -2283,35 +2262,6 @@ def _draw_clouds(layout, context):
         layout.label(text="Planetka settings unavailable.", icon="ERROR")
         return
 
-    optimize_progress = {}
-    try:
-        from . import clouds_local as cloud_runtime
-        optimize_progress = cloud_runtime.get_cloud_optimize_progress()
-    except (ImportError, ModuleNotFoundError, AttributeError, RuntimeError, TypeError, ValueError):
-        optimize_progress = {}
-
-    pro_cloud_features = is_pro_account(get_prefs())
-    optimize_row = layout.row()
-    optimize_row.enabled = bool(pro_cloud_features) and not bool(optimize_progress.get("active", False))
-    optimize_row.operator(
-        "planetka.optimize_clouds",
-        text=("Optimize Clouds" if pro_cloud_features else "Optimize Clouds (Pro only)"),
-        icon="FORCE_WIND",
-    )
-    if bool(optimize_progress.get("active", False)):
-        current = max(0, int(optimize_progress.get("current", 0) or 0))
-        total = max(0, int(optimize_progress.get("total", 0) or 0))
-        label = str(optimize_progress.get("label", "") or "Optimizing clouds")
-        factor = min(1.0, max(0.0, current / float(total))) if total > 0 else 0.0
-        text = f"{label} ({current} / {total})" if total > 0 else label
-        try:
-            layout.progress(factor=factor, type='BAR', text=text)
-        except (AttributeError, TypeError, RuntimeError):
-            layout.label(text=text, icon="IMPORT")
-    elif str(optimize_progress.get("error", "") or "").strip():
-        err_box = layout.box()
-        err_box.alert = True
-        err_box.label(text=str(optimize_progress.get("error", "") or ""), icon="ERROR")
     _draw_global_clouds(layout, scene, props)
     _draw_local_clouds(layout, context, props)
     _draw_vdb_clouds(layout, context, props)
@@ -2486,6 +2436,22 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
                 icon="CHECKMARK",
             )
 
+            auto_box = layout.box()
+            auto_box.label(text="Auto-Resolve Options", icon="DRIVER")
+            auto_row = auto_box.row(align=True)
+            auto_row.use_property_split = False
+            auto_row.prop_enum(props, "auto_resolve_mode", "NEVER", text="Never")
+            auto_row.prop_enum(props, "auto_resolve_mode", "CAMERA_VIEW", text="Camera only")
+            always_row = auto_row.row(align=True)
+            always_allowed = is_pro_account(get_prefs())
+            always_row.enabled = bool(always_allowed)
+            always_row.prop_enum(
+                props,
+                "auto_resolve_mode",
+                "ALWAYS",
+                text=("Always" if always_allowed else "Always (Pro only)"),
+            )
+
             scene_objects_box = layout.box()
             scene_objects_box.enabled = workflow_enabled and (not prepared)
             scene_objects_box.label(text="Scene Objects", icon="OUTLINER_OB_EMPTY")
@@ -2517,7 +2483,7 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             )
 
 class PLANETKA_PT_LiveTelemetryPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Data Control"
+    bl_label = "Quality Settings"
     bl_idname = "PLANETKA_PT_live_telemetry"
     bl_order = 9001
     bl_options = set()
@@ -2534,7 +2500,7 @@ class PLANETKA_PT_LiveTelemetryPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
 
 class PLANETKA_PT_LiveTelemetryPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Data Control"
+    bl_label = "Quality Settings"
     bl_idname = "PLANETKA_PT_live_telemetry_collapsed"
     bl_order = 9001
     bl_options = {'DEFAULT_CLOSED'}
@@ -2552,7 +2518,7 @@ class PLANETKA_PT_LiveTelemetryPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.type
 
 
 class PLANETKA_PT_LiveTelemetryPanelFailure(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Data Control"
+    bl_label = "Quality Settings"
     bl_idname = "PLANETKA_PT_live_telemetry_failure"
     bl_order = 9001
     bl_options = set()

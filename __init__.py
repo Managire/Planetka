@@ -125,9 +125,7 @@ if _CLOUD_RUNTIME_ENABLED:
     from .clouds_local import (
         PLANETKA_OT_AddLocalCloud,
         PLANETKA_OT_DeleteLocalCloud,
-        PLANETKA_OT_OptimizeClouds,
         PLANETKA_OT_ResetLocalCloudToCameraView,
-        PLANETKA_OT_SetCloudViewMode,
         register_object_properties as register_cloud_object_properties,
         unregister_object_properties as unregister_cloud_object_properties,
     )
@@ -138,8 +136,6 @@ if _CLOUD_RUNTIME_ENABLED:
     )
 
     _CLOUD_CLASSES = (
-        PLANETKA_OT_SetCloudViewMode,
-        PLANETKA_OT_OptimizeClouds,
         PLANETKA_OT_AddLocalCloud,
         PLANETKA_OT_ResetLocalCloudToCameraView,
         PLANETKA_OT_DeleteLocalCloud,

@@ -113,8 +113,19 @@ def main():
                 "upgrade_url": str(auth.get_upgrade_url(prefs) or "").strip(),
             }
         )
+        actual_plan = str(auth.get_account_tier(prefs) or "").strip().lower()
+        if actual_plan == "professional":
+            actual_plan = "pro"
+        elif actual_plan == "personal":
+            actual_plan = "free"
+        account["actual_plan"] = actual_plan
         payload["account"] = account
         _assert(account["email"].lower() == "tom.griger@gmail.com", f"Unexpected test account: {account['email']}")
+        _assert(
+            actual_plan == EXPECTED_PLAN,
+            f"Test account tier is {actual_plan or 'unknown'}, but PLANETKA_EXPECTED_PLAN is {EXPECTED_PLAN}. "
+            "Set the account tier in Analytics/D1 before running this gate.",
+        )
 
         for location in LOCATIONS:
             for quality_mode in QUALITY_MODES:

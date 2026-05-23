@@ -109,7 +109,6 @@ _SYNC_IDPROP_MAP = {
     "enable_vdb_clouds": "planetka_enable_vdb_clouds",
     "vdb_cloud_source": "planetka_vdb_cloud_source",
     "vdb_cloud_preset": "planetka_vdb_cloud_preset",
-    "view_cloud_subdivision": "planetka_view_cloud_subdivision",
     "local_cloud_texture": "planetka_local_cloud_texture",
     "vdb_cloud_file": "planetka_vdb_cloud_file",
     "auto_resolve": "planetka_auto_resolve",

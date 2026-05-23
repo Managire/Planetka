@@ -58,6 +58,7 @@ export async function handleTileSessionStart(request, env, deps) {
     requireAuthenticatedUserContext,
     parseJson,
     issueTileSessionToken,
+    normalizeQualityMode,
     normalizeRequestedPlan,
     requireDb,
     json: jsonResponse,
@@ -95,7 +96,15 @@ export async function handleTileSessionStart(request, env, deps) {
   const planCode = normalizeRequestedPlan(
     auth && (auth.qualityAccessPlanCode || auth.planCode || auth.user && auth.user.status),
   );
+  const qualityMode = normalizeQualityMode(requestedQualityMode);
   if (planCode !== "pro") {
+    if (qualityMode === "full") {
+      return jsonResponse(
+        { ok: false, error: "quality_mode_not_allowed", message: "Full texture quality requires a Pro account." },
+        403,
+        env,
+      );
+    }
     if (requestedResolveId.toLowerCase().startsWith("anim-") || requestedFeature === "final_animation_render") {
       return jsonResponse(
         { ok: false, error: "pro_feature_required", message: "Final Animation Render requires a Pro account." },

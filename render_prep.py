@@ -192,6 +192,9 @@ class ResolveFinalizeResult:
     phase_post_delete_ms: float = 0.0
     phase_post_mark_ms: float = 0.0
     phase_post_preview_ms: float = 0.0
+    phase_cloud_optimize_ms: float = 0.0
+    cloud_optimize_optimized: int = 0
+    cloud_optimize_failed: int = 0
     missing_node_images: int = 0
 
 
@@ -208,6 +211,44 @@ def _normalize_texture_quality_mode(value):
     return "PREVIEW"
 
 
+def _optimize_enabled_clouds_for_resolve(scene, props, texture_quality_mode="PREVIEW"):
+    """Update cloud LODs as part of the resolve path, not as a separate UI action."""
+    if scene is None or props is None:
+        return 0, 0, 0.0
+    local_enabled = bool(getattr(props, "enable_local_clouds", False))
+    vdb_enabled = bool(getattr(props, "enable_vdb_clouds", False))
+    if not local_enabled and not vdb_enabled:
+        return 0, 0, 0.0
+
+    phase_start = time.perf_counter()
+    optimized = 0
+    failed = 0
+    try:
+        from . import clouds_local as cloud_runtime
+        if local_enabled:
+            local_optimized, local_failed = cloud_runtime.optimize_texture_based_clouds_for_camera(
+                scene=scene,
+                quality_mode=texture_quality_mode,
+            )
+            optimized += int(local_optimized or 0)
+            failed += int(local_failed or 0)
+        if vdb_enabled:
+            vdb_optimized, vdb_failed = cloud_runtime.optimize_vdb_clouds_for_camera(
+                scene=scene,
+                quality_mode=texture_quality_mode,
+            )
+            optimized += int(vdb_optimized or 0)
+            failed += int(vdb_failed or 0)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed optimizing clouds after resolve", exc_info=True)
+        failed += 1
+    except (ImportError, ModuleNotFoundError, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed optimizing clouds after resolve", exc_info=True)
+        failed += 1
+
+    return int(optimized), int(failed), (time.perf_counter() - phase_start) * 1000.0
+
+
 def _get_tile_utils():
     global _TILE_UTILS_MODULE
     if _TILE_UTILS_MODULE is None:
@@ -220,7 +261,7 @@ def _get_tile_utils():
 
 
 def apply_texture_quality_to_full_tiles(tiles, texture_quality_mode="PREVIEW"):
-    """Transform full-quality source tiles to the selected Texture Quality.
+    """Transform full-quality source tiles to the selected Quality Level.
 
     This is the only resolve-stage function allowed to alter S2 D-levels.
     Z-levels are preserved. D-levels only move coarser, never sharper.
@@ -728,7 +769,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
     )
 
     texture_quality_mode_override: StringProperty(
-        name="Texture Quality Override",
+        name="Quality Level Override",
         default="",
         options={'HIDDEN', 'SKIP_SAVE'},
     )
@@ -1505,6 +1546,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         force_empty_once,
         tiles,
         ui_reports,
+        texture_quality_mode,
     ):
         phase_start = time.perf_counter()
         try:
@@ -1557,11 +1599,33 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 ui_reports.append(self._ui_report("WARNING", "Planetka preview object refresh failed."))
             phase_post_preview_ms = (time.perf_counter() - phase_start) * 1000.0
 
+        cloud_sync_start = time.perf_counter()
+        try:
+            from .clouds_local import sync_cloud_system_scene
+            sync_cloud_system_scene(scene)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed syncing clouds after resolve", exc_info=True)
+        except (ImportError, ModuleNotFoundError, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed syncing clouds after resolve", exc_info=True)
+        phase_cloud_sync_ms = (time.perf_counter() - cloud_sync_start) * 1000.0
+
+        cloud_optimized, cloud_failed, phase_cloud_optimize_ms = _optimize_enabled_clouds_for_resolve(
+            scene,
+            props,
+            texture_quality_mode=texture_quality_mode,
+        )
+        phase_cloud_optimize_ms += phase_cloud_sync_ms
+        if int(cloud_failed) > 0:
+            ui_reports.append(self._ui_report("WARNING", "One or more clouds could not be optimized for this camera view."))
+
         return ResolveFinalizeResult(
-            phase_post_ms=phase_post_delete_ms + phase_post_mark_ms + phase_post_preview_ms,
+            phase_post_ms=phase_post_delete_ms + phase_post_mark_ms + phase_post_preview_ms + phase_cloud_optimize_ms,
             phase_post_delete_ms=phase_post_delete_ms,
             phase_post_mark_ms=phase_post_mark_ms,
             phase_post_preview_ms=phase_post_preview_ms,
+            phase_cloud_optimize_ms=phase_cloud_optimize_ms,
+            cloud_optimize_optimized=int(cloud_optimized),
+            cloud_optimize_failed=int(cloud_failed),
             missing_node_images=_count_missing_tile_loading_images(material_name="Planetka Earth Material"),
         )
 
@@ -1715,11 +1779,13 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             force_empty_once=force_empty_once,
             tiles=tiles,
             ui_reports=ui_reports,
+            texture_quality_mode=texture_quality_mode,
         )
         phase_post_ms = float(finalize_ctx.phase_post_ms or 0.0)
         phase_post_delete_ms = float(finalize_ctx.phase_post_delete_ms or 0.0)
         phase_post_mark_ms = float(finalize_ctx.phase_post_mark_ms or 0.0)
         phase_post_preview_ms = float(finalize_ctx.phase_post_preview_ms or 0.0)
+        phase_cloud_optimize_ms = float(finalize_ctx.phase_cloud_optimize_ms or 0.0)
         missing_node_images = int(finalize_ctx.missing_node_images or 0)
 
         if not (force_empty_once and len(tiles) == 0):
@@ -1793,6 +1859,9 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 "post_delete_ms": phase_post_delete_ms,
                 "post_mark_ms": phase_post_mark_ms,
                 "post_preview_ms": phase_post_preview_ms,
+                "cloud_optimize_ms": phase_cloud_optimize_ms,
+                "cloud_optimize_optimized": int(finalize_ctx.cloud_optimize_optimized or 0),
+                "cloud_optimize_failed": int(finalize_ctx.cloud_optimize_failed or 0),
                 "unaccounted_ms": phase_unaccounted_ms,
                 "required_mpp_m": required_mpp,
                 "resolution_safety": resolution_safety,
@@ -1882,13 +1951,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         except (RuntimeError, TypeError, ValueError):
             logger.debug("Planetka: failed storing last resolved texture quality", exc_info=True)
         mark_auto_resolve_clean_after_resolve(scene)
-        try:
-            from .clouds_local import sync_cloud_system_scene
-            sync_cloud_system_scene(scene)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed syncing clouds after resolve", exc_info=True)
-        except (ImportError, ModuleNotFoundError, RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka: failed syncing clouds after resolve", exc_info=True)
 
         self._flush_ui_reports(ui_reports)
         _restore_navigation_adaptive_state_safe("failed post-resolve adaptive viewport restore")

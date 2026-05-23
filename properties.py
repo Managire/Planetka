@@ -37,7 +37,6 @@ try:
         _local_cloud_texture_items,
         _vdb_cloud_preset_items,
         update_enable_local_clouds,
-        update_view_cloud_subdivision,
     )
     from .clouds_global import update_enable_global_clouds
     from .clouds_vdb import update_enable_vdb_clouds
@@ -55,10 +54,6 @@ except (ImportError, ModuleNotFoundError):
 
 
     def update_enable_local_clouds(_self=None, _context=None):
-        return None
-
-
-    def update_view_cloud_subdivision(_self=None, _context=None):
         return None
 
 
@@ -804,13 +799,6 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         items=_vdb_cloud_preset_items,
     )
 
-    view_cloud_subdivision: BoolProperty(
-        name="Cloud Final Look",
-        default=False,
-        description="Universal cloud mode: Final Look (on) or Preview (off) for Texture-Based and VDB clouds",
-        update=update_view_cloud_subdivision,
-    )
-
     local_cloud_texture: EnumProperty(
         name="Texture-Based Cloud Texture",
         description="Select a Planetka Cloud texture-based cloud mask",
@@ -1284,7 +1272,7 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
     )
 
     texture_quality_mode: EnumProperty(
-        name="Texture Quality",
+        name="Quality Level",
         items=(
             (
                 "PREVIEW",
