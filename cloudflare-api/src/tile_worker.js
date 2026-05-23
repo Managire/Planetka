@@ -243,7 +243,6 @@ async function issueTileSessionToken(env, auth, requestedQualityMode, requestedR
     credit_protocol: String(options && options.creditProtocol || "").trim(),
     credit_enforced: Boolean(options && options.creditEnforced),
     session_id: String(options && (options.sessionId || options.session_id) || "").trim(),
-    personal_free_region: String(options && (options.personalFreeRegion || options.personal_free_region) || "").trim(),
     auth_method: String(auth && auth.authMethod || "").trim(),
     device_id: String(auth && auth.deviceId || "").trim(),
     exp,
@@ -285,7 +284,6 @@ async function readTileSessionClaims(request, env) {
     creditProtocol: String(payload.credit_protocol || payload.creditProtocol || "").trim(),
     creditEnforced: Boolean(payload.credit_enforced || payload.creditEnforced),
     sessionId: String(payload.session_id || payload.sessionId || "").trim(),
-    personalFreeRegion: String(payload.personal_free_region || payload.personalFreeRegion || "").trim(),
     authMethod: String(payload.auth_method || "").trim(),
     deviceId: normalizeDeviceId(payload.device_id || ""),
   };

@@ -13,7 +13,6 @@ import {
 } from "./worker/env.js";
 import {
   PLAN_CODE_FREE,
-  PLAN_CODE_PERSONAL,
   PLAN_CODE_PROFESSIONAL,
   defaultSignupPlanCode,
   isBlockedStatus,
@@ -25,8 +24,6 @@ import {
   normalizeRequestedPlan,
   normalizeUserStatus,
   parseCsvEmailSet,
-  personalFreeLocationBlockedMessage,
-  personalFreeRegionForPoint,
   planAccessSummary,
   planDisplayName,
   qualityModeNotAllowedMessage,
@@ -3069,10 +3066,7 @@ async function ensureRefreshSessionColumns(db) {
 
 function normalizeTierCodeStrict(value) {
   const normalized = normalizePlanCode(value);
-  if (
-    normalized === PLAN_CODE_FREE
-    || normalized === PLAN_CODE_PERSONAL
-  ) {
+  if (normalized === PLAN_CODE_FREE) {
     return PLAN_CODE_FREE;
   }
   if (normalized === PLAN_CODE_PROFESSIONAL) {
@@ -3632,8 +3626,6 @@ const TILE_ROUTE_DEPS = {
   normalizeResolveId,
   nowIso,
   parseJson,
-  personalFreeLocationBlockedMessage,
-  personalFreeRegionForPoint,
   qualityModeNotAllowedMessage,
   randomToken,
   rateLimitedResponse,

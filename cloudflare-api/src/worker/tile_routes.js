@@ -48,11 +48,6 @@ function isPublicCloudAssetFolder(folder) {
     || normalized === "clouds_vdb";
 }
 
-function parseFiniteNumber(value) {
-  const numeric = Number(value);
-  return Number.isFinite(numeric) ? numeric : NaN;
-}
-
 export async function handleTileSessionStart(request, env, deps) {
   const {
     requireAuthenticatedUserContext,
@@ -120,7 +115,6 @@ export async function handleTileSessionStart(request, env, deps) {
       );
     }
   }
-  let personalFreeRegion = "";
   const creditProtocol = String(body && (body.credit_protocol || body.creditProtocol) || "").trim();
   const creditTileKeys = body && (
     body.tile_keys
@@ -151,7 +145,6 @@ export async function handleTileSessionStart(request, env, deps) {
       creditProtocol,
       creditEnforced,
       sessionId,
-      personalFreeRegion,
     },
   );
   if (issued && issued.error) {
@@ -255,7 +248,6 @@ export async function handleTileSessionStart(request, env, deps) {
       expires_in_seconds: issued.expiresInSeconds,
       expires_at: issued.expiresAt,
       plan_code: planCode,
-      personal_free_region: personalFreeRegion,
       credit_protocol: creditEnforced ? "land_credits_v1" : "none",
       credit_enforced: Boolean(creditEnforced),
       tile_session_id: sessionId,

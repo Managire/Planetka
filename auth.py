@@ -658,14 +658,6 @@ def is_pro_account(prefs=None):
     return is_professional_account(prefs)
 
 
-def is_personal_account(prefs=None):
-    return get_account_tier(prefs) == "free"
-
-
-def personal_free_locations_label():
-    return "Preview and Balanced texture quality worldwide"
-
-
 def account_access_summary(prefs=None):
     tier = get_account_tier(prefs)
     if tier == "pro":

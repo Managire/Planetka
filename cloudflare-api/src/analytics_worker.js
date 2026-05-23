@@ -12,7 +12,6 @@ import {
 } from "./worker/env.js";
 import {
   PLAN_CODE_FREE,
-  PLAN_CODE_PERSONAL,
   PLAN_CODE_PROFESSIONAL,
   defaultSignupPlanCode,
   isBlockedStatus,
@@ -431,7 +430,7 @@ function normalizeDeviceId(value) {
 
 function normalizeTierCodeStrict(value) {
   const normalized = normalizePlanCode(value);
-  if (normalized === PLAN_CODE_FREE || normalized === PLAN_CODE_PERSONAL) {
+  if (normalized === PLAN_CODE_FREE) {
     return PLAN_CODE_FREE;
   }
   if (normalized === PLAN_CODE_PROFESSIONAL) {
@@ -2060,7 +2059,6 @@ const ADMIN_SESSION_DEPS = {
   parseJson,
   parseRateLimitInteger,
   PLAN_CODE_FREE,
-  PLAN_CODE_PERSONAL,
   PLAN_CODE_PROFESSIONAL,
   rateLimitedResponse,
   requestClientIp,
@@ -2101,7 +2099,6 @@ const ADMIN_USER_DEPS = {
   parseBooleanFlag,
   isBlockedStatus,
   PLAN_CODE_FREE,
-  PLAN_CODE_PERSONAL,
   PLAN_CODE_PROFESSIONAL,
   randomToken,
   requestClientIp,
