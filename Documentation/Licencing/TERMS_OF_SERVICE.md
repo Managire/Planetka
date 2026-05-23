@@ -14,13 +14,11 @@ If you use Planetka for a company, studio, institution, client, or other organis
 
 ## 2. Product model
 
-Planetka provides three account types for the add-on:
+Planetka provides two account types for the add-on:
 
-- **Free account**: free account access with worldwide Preview texture-quality streaming.
-- **Indie account**: one-time EUR 70 paid or manually granted account access with worldwide Preview and Balanced texture-quality streaming.
-- **Pro account**: one-time EUR 280 paid or manually granted account access with worldwide Preview, Balanced, and Full texture-quality streaming.
+- **Free account**: free account access with worldwide Preview and Balanced texture-quality streaming for personal use.
+- **Pro account**: one-time EUR 280 paid or manually granted account access with worldwide Preview, Balanced, and Full texture-quality streaming for commercial and personal use.
 
-Indie accounts can upgrade to Pro for a one-time EUR 210 upgrade price.
 
 Planetka provides three texture quality modes inside the add-on:
 
@@ -34,19 +32,17 @@ Only the account type, prices, and rights shown in the current Planetka user int
 
 ## 3. Free account access
 
-A Free account is intended for evaluation and personal use of the Planetka add-on. Free accounts can stream Planetka data worldwide in Preview texture quality.
+A Free account is intended for evaluation and personal use of the Planetka add-on. Free accounts can stream Planetka data worldwide in Preview and Balanced texture quality.
 
 Planetka may change usage limits and fair-usage controls over time to protect service reliability and prevent automated extraction, excessive use, scraping, or other misuse.
 
-## 4. Indie and Pro account access
-
-An Indie account allows worldwide Planetka streaming in Preview and Balanced texture quality, subject to these Terms and fair-usage controls.
+## 4. Pro account access
 
 A Pro account allows worldwide Planetka streaming in Preview, Balanced, and Full texture quality, subject to these Terms and fair-usage controls.
 
-Indie and Pro access allow commercial and non-commercial use of rendered outputs created with Planetka streamed textures, including renders, animations, still images, videos, and client work.
+Pro access allows commercial and non-commercial use of rendered outputs created with Planetka streamed textures, including renders, animations, still images, videos, and client work.
 
-Indie and Pro access do not transfer ownership of the underlying data sources, derived datasets, Planetka processing, or Planetka services. You may not resell, sublicense, redistribute, publish, extract, or operate Planetka texture data as a standalone texture library, map product, dataset, API, tile server, training dataset, or competing service.
+Pro access does not transfer ownership of the underlying data sources, derived datasets, Planetka processing, or Planetka services. You may not resell, sublicense, redistribute, publish, extract, or operate Planetka texture data as a standalone texture library, map product, dataset, API, tile server, training dataset, or competing service.
 
 ## 5. Streaming and local cache
 
@@ -58,7 +54,7 @@ The cache is not a supported download product, archive product, reusable texture
 
 Payments, where offered, are processed through Stripe or another payment provider shown during checkout. Planetka does not store your card number or full payment-card details.
 
-An Indie or Pro account becomes active only after Planetka confirms the payment, grant, or written agreement that enables it. The relevant payment provider may send receipts, payment confirmations, or invoices according to its own systems and the information collected during checkout.
+A Pro account becomes active only after Planetka confirms the payment, grant, or written agreement that enables it. The relevant payment provider may send receipts, payment confirmations, or invoices according to its own systems and the information collected during checkout.
 
 If you need a specific invoice or business document, contact Planetka support with the transaction details.
 
@@ -104,7 +100,7 @@ Planetka may apply reasonable request limits, cache rules, device checks, fair-u
 
 Planetka depends on hosted infrastructure, storage, payment processors, third-party data sources, Blender compatibility, and network availability. Planetka will make commercially reasonable efforts to keep the service reliable, but service may be unavailable, interrupted, delayed, or changed.
 
-Planetka may update features, prices, selected Personal locations, account types, UI wording, supported Blender versions, and service limits over time. Active paid access remains governed by the rights granted at the time of payment or written agreement, subject to these Terms.
+Planetka may update features, prices, account types, UI wording, supported Blender versions, and service limits over time. Active paid access remains governed by the rights granted at the time of payment or written agreement, subject to these Terms.
 
 ## 13. Refunds and corrections
 

@@ -1,6 +1,5 @@
 export const PLAN_CODE_FREE = "free";
 export const PLAN_CODE_PERSONAL = PLAN_CODE_FREE;
-export const PLAN_CODE_INDIE = "indie";
 export const PLAN_CODE_PROFESSIONAL = "pro";
 
 const DEFAULT_DEVICE_LIMIT_EXEMPT_EMAILS = "tom.griger@gmail.com";
@@ -13,9 +12,6 @@ export function normalizeUserStatus(value) {
   const normalized = String(value || "").trim().toLowerCase();
   if (["professional", "pro", "paid", "unlimited"].includes(normalized)) {
     return PLAN_CODE_PROFESSIONAL;
-  }
-  if (["indie", "balanced"].includes(normalized)) {
-    return PLAN_CODE_INDIE;
   }
   if (["personal", PLAN_CODE_FREE, ""].includes(normalized)) {
     return PLAN_CODE_FREE;
@@ -58,7 +54,6 @@ export function isBlockedStatus(statusValue) {
 export function normalizeRequestedPlan(value) {
   const normalized = normalizePlanCode(value);
   if (normalized === PLAN_CODE_PROFESSIONAL) return PLAN_CODE_PROFESSIONAL;
-  if (normalized === PLAN_CODE_INDIE) return PLAN_CODE_INDIE;
   return PLAN_CODE_FREE;
 }
 
@@ -103,18 +98,14 @@ export function isQualityModeAllowedForPlan(planCode, qualityMode) {
   const plan = normalizeRequestedPlan(planCode);
   const quality = normalizeQualityMode(qualityMode);
   if (plan === PLAN_CODE_PROFESSIONAL) return true;
-  if (plan === PLAN_CODE_INDIE) return quality === "preview" || quality === "balanced";
-  return quality === "preview";
+  return quality === "preview" || quality === "balanced";
 }
 
 export function qualityModeNotAllowedMessage(planCode, qualityMode) {
   const plan = normalizeRequestedPlan(planCode);
   const quality = normalizeQualityMode(qualityMode);
-  if (plan === PLAN_CODE_INDIE && quality === "full") {
+  if (plan === PLAN_CODE_FREE && quality === "full") {
     return "Full texture quality requires a Pro account.";
-  }
-  if (plan === PLAN_CODE_FREE && quality !== "preview") {
-    return "Balanced and Full texture quality require an Indie or Pro account.";
   }
   return "Selected texture quality is not available for this account.";
 }
@@ -133,30 +124,20 @@ export function isTileFileAllowedForPlan(planCode, fileName) {
   if (!tier) return true;
   const plan = normalizeRequestedPlan(planCode);
   if (plan === PLAN_CODE_PROFESSIONAL) return true;
-  if (plan === PLAN_CODE_INDIE) {
-    return !(tier.z === 1 && tier.d === 1);
-  }
-  return !(tier.z === 1 && (tier.d === 1 || tier.d === 2));
+  return !(tier.z === 1 && tier.d === 1);
 }
 
 export function tileFileNotAllowedMessage(planCode, fileName) {
   const tier = parseS2TextureTier(fileName);
   const plan = normalizeRequestedPlan(planCode);
-  if (plan === PLAN_CODE_INDIE && tier && tier.z === 1 && tier.d === 1) {
+  if (plan === PLAN_CODE_FREE && tier && tier.z === 1 && tier.d === 1) {
     return "Full texture quality requires a Pro account.";
-  }
-  if (plan === PLAN_CODE_FREE && tier && tier.z === 1 && (tier.d === 1 || tier.d === 2)) {
-    return "Balanced and Full texture quality require an Indie or Pro account.";
   }
   return "This texture file is not available for this account.";
 }
 
 export function isProfessionalPlan(planCode) {
   return normalizeRequestedPlan(planCode) === PLAN_CODE_PROFESSIONAL;
-}
-
-export function isIndiePlan(planCode) {
-  return normalizeRequestedPlan(planCode) === PLAN_CODE_INDIE;
 }
 
 const PERSONAL_FREE_REGION_BOXES = [
@@ -239,7 +220,7 @@ export function personalFreeRegionForTileFileName(fileName, expectedRegionId = "
 }
 
 export function personalFreeLocationBlockedMessage() {
-  return "Free accounts can stream Preview texture quality worldwide. Upgrade to Indie for Balanced or Pro for Full.";
+  return "Free accounts can stream Preview and Balanced texture quality worldwide. Upgrade to Pro for Full.";
 }
 
 export function accountTierForPlanCode(planCode) {
@@ -249,25 +230,20 @@ export function accountTierForPlanCode(planCode) {
 export function planDisplayName(planCode) {
   const plan = normalizeRequestedPlan(planCode);
   if (plan === PLAN_CODE_PROFESSIONAL) return "Pro";
-  if (plan === PLAN_CODE_INDIE) return "Indie";
   return "Free";
 }
 
 export function planAccessSummary(planCode) {
   const plan = normalizeRequestedPlan(planCode);
   if (plan === PLAN_CODE_PROFESSIONAL) {
-    return "Pro account: Preview, Balanced, and Full texture quality streaming.";
+    return "Pro account: Preview, Balanced, and Full texture quality streaming with commercial licence.";
   }
-  if (plan === PLAN_CODE_INDIE) {
-    return "Indie account: Preview and Balanced texture quality streaming.";
-  }
-  return "Free account: Preview texture quality streaming.";
+  return "Free account: Preview and Balanced texture quality streaming for personal use.";
 }
 
 export function resolvePlanPriority(planCode) {
   const plan = normalizeRequestedPlan(planCode);
   if (plan === PLAN_CODE_PROFESSIONAL) return 20;
-  if (plan === PLAN_CODE_INDIE) return 10;
   return 0;
 }
 

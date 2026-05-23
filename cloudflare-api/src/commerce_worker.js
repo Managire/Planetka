@@ -13,7 +13,6 @@ import {
 } from "./worker/env.js";
 import {
   PLAN_CODE_FREE,
-  PLAN_CODE_INDIE,
   PLAN_CODE_PERSONAL,
   PLAN_CODE_PROFESSIONAL,
   defaultSignupPlanCode,
@@ -3075,9 +3074,6 @@ function normalizeTierCodeStrict(value) {
     || normalized === PLAN_CODE_PERSONAL
   ) {
     return PLAN_CODE_FREE;
-  }
-  if (normalized === PLAN_CODE_INDIE) {
-    return PLAN_CODE_INDIE;
   }
   if (normalized === PLAN_CODE_PROFESSIONAL) {
     return PLAN_CODE_PROFESSIONAL;

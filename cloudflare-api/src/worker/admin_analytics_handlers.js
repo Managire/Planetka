@@ -26,7 +26,7 @@ function snapshotHasTierSplit(snapshot) {
   const resolves = topLine.resolves && typeof topLine.resolves === "object" ? topLine.resolves : {};
   const tileRequests = topLine.tile_requests && typeof topLine.tile_requests === "object" ? topLine.tile_requests : {};
   const gbServed = topLine.gb_served && typeof topLine.gb_served === "object" ? topLine.gb_served : {};
-  return ["free", "indie", "pro", "total"].every((key) =>
+  return ["free", "pro", "total"].every((key) =>
     Object.prototype.hasOwnProperty.call(users, key)
     && Object.prototype.hasOwnProperty.call(resolves, key)
     && Object.prototype.hasOwnProperty.call(tileRequests, key)
@@ -831,12 +831,12 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
     const status = String(row && row.user_status || "").trim().toLowerCase();
     const plan = (status === "pro" || status === "professional")
       ? "pro"
-      : (status === "indie" ? "indie" : (status === "blocked" ? "blocked" : "free"));
-    const planLabel = plan === "pro" ? "Pro" : (plan === "indie" ? "Indie" : (plan === "blocked" ? "Blocked" : "Free"));
-    const planButtons = ["free", "indie", "pro"]
+      : (status === "blocked" ? "blocked" : "free");
+    const planLabel = plan === "pro" ? "Pro" : (plan === "blocked" ? "Blocked" : "Free");
+    const planButtons = ["free", "pro"]
       .filter((code) => code !== plan)
       .map((code) => {
-        const label = code === "pro" ? "Pro" : (code === "indie" ? "Indie" : "Free");
+        const label = code === "pro" ? "Pro" : "Free";
         return `<button class="action-btn plan" data-action="set-plan" data-plan-code="${encodeURIComponent(code)}" data-user-id="${encodeURIComponent(userIdRaw)}" data-user-email="${encodeURIComponent(userEmailRaw)}">Set ${deps.escapeHtml(label)}</button>`;
       })
       .join("");
@@ -879,7 +879,6 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
     .action-wrap { white-space: normal; min-width: 300px; }
     .plan-pill { display:inline-block; min-width:84px; text-align:center; border-radius:999px; padding:3px 8px; border:1px solid #374151; font-size:12px; }
     .plan-pill.pro { color:#fecaca; border-color:#991b1b; background:rgba(153,27,27,.20); }
-    .plan-pill.indie { color:#fed7aa; border-color:#c2410c; background:rgba(194,65,12,.20); }
     .plan-pill.free { color:#bbf7d0; border-color:#166534; background:rgba(22,101,52,.20); }
     .error { color: #fca5a5; }
   </style>

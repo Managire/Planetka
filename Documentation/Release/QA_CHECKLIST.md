@@ -23,11 +23,10 @@
 ## 3. Account-Tier Gates
 
 - [ ] During beta, new account access requests default to Pro (`PLANETKA_BETA_DEFAULT_PRO=1`).
-- [ ] Analytics can manually switch any user between Free, Indie, and Pro for tier testing.
-- [ ] Free account can stream worldwide in Preview texture quality.
-- [ ] Free account is blocked from Balanced and Full texture quality with clear wording.
-- [ ] Indie account can stream worldwide in Preview and Balanced texture quality.
-- [ ] Indie account is blocked from Full texture quality with clear wording.
+- [ ] Analytics can manually switch any user between Free and Pro for tier testing.
+- [ ] Free account can stream worldwide in Preview and Balanced texture quality.
+- [ ] Free account is blocked from Full texture quality with clear wording.
+- [ ] Free account is blocked from Standalone file export, Final Animation Render, Panoramic camera rendering, Texture-Based Clouds, and VDB Clouds with clear Pro-only wording.
 - [ ] Pro account can stream worldwide in Preview, Balanced, and Full texture quality.
 - [ ] Account creation, access-key connection, logout, reconnect, and stale-auth recovery do not depend on commerce/product-map routes.
 
@@ -87,7 +86,7 @@
 ## 9. Release Decision
 
 - [ ] No unresolved blocker issue in core path (`Create Earth`, Preview/Balanced/Full Quality resolves, account connection).
-- [ ] Indie/Pro checkout implemented and tested before any paid public launch.
+- [ ] Pro checkout implemented and tested before any paid public launch.
 - [ ] Compatibility matrix updated for tested Blender versions.
 - [ ] Changelog entry added for current version.
 - [ ] Release notes drafted from template with semver rationale.

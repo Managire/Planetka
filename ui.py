@@ -2,6 +2,7 @@
 
 import bpy
 import datetime
+import os
 import time
 
 from .asset_builder import PLANETKA_ROOT_OBJECT_NAME
@@ -16,6 +17,7 @@ from .auth import (
     get_connected_email,
     get_status_message,
     is_authenticated,
+    is_pro_account,
 )
 from .extension_prefs import get_earth_object, get_prefs
 from .geonames_db import get_search_status_text
@@ -363,15 +365,13 @@ def _id_block_has_keyframes(id_block):
     try:
         animation_data = getattr(id_block, "animation_data", None)
         action = getattr(animation_data, "action", None) if animation_data is not None else None
-        for fcurve in tuple(getattr(action, "fcurves", ()) or ()):
-            if len(getattr(fcurve, "keyframe_points", ()) or ()) > 0:
-                return True
+        if _action_has_keyframes(action):
+            return True
         for track in tuple(getattr(animation_data, "nla_tracks", ()) if animation_data is not None else ()):
             for strip in tuple(getattr(track, "strips", ()) or ()):
                 strip_action = getattr(strip, "action", None)
-                for fcurve in tuple(getattr(strip_action, "fcurves", ()) or ()):
-                    if len(getattr(fcurve, "keyframe_points", ()) or ()) > 0:
-                        return True
+                if _action_has_keyframes(strip_action):
+                    return True
     except (AttributeError, RuntimeError, TypeError, ValueError):
         return False
     return False
@@ -901,6 +901,12 @@ def _draw_collapsible_subsection(layout, scene, title, icon, section_key, defaul
     return box if expanded else None
 
 
+def _cloud_subsection_key(kind, cloud_obj):
+    name = str(getattr(cloud_obj, "name", "") or "cloud")
+    safe_name = "".join(ch if ch.isalnum() else "_" for ch in name).strip("_") or "cloud"
+    return f"planetka_ui_cloud_{kind}_{safe_name}_expanded"
+
+
 def _has_earth():
     return get_earth_object() is not None
 
@@ -1279,24 +1285,16 @@ def _draw_account_panel(layout):
     except (TypeError, ValueError, RuntimeError, AttributeError):
         account_tier = ""
     if account_tier == "pro":
-        account_type_label = "Pro"
-    elif account_tier == "indie":
-        account_type_label = "Indie"
+        account_type_label = "Pro (Commercial)"
     elif account_tier == "free":
-        account_type_label = "Free"
+        account_type_label = "Free (Personal)"
     else:
         account_type_label = "-"
     layout.label(text=f"Account type: {account_type_label}", icon="COMMUNITY")
-    if authenticated and account_tier in {"free", "indie"}:
+    if authenticated and account_tier == "free":
         upgrade_row = layout.row(align=True)
-        if account_tier == "free":
-            indie_op = upgrade_row.operator("planetka.account_upgrade", text="Upgrade to Indie (€70)", icon="URL")
-            indie_op.target_plan = "indie"
-            pro_op = upgrade_row.operator("planetka.account_upgrade", text="Upgrade to Pro (€280)", icon="URL")
-            pro_op.target_plan = "pro"
-        else:
-            pro_op = upgrade_row.operator("planetka.account_upgrade", text="Upgrade to Pro (€210)", icon="URL")
-            pro_op.target_plan = "pro"
+        pro_op = upgrade_row.operator("planetka.account_upgrade", text="Upgrade to Pro (€280)", icon="URL")
+        pro_op.target_plan = "pro"
 
     if authenticated and checked and not connected:
         warning_box = layout.box()
@@ -1431,17 +1429,6 @@ def _draw_live_telemetry(layout, scene):
         header_row.use_property_split = False
         header_row.use_property_decorate = False
         header_row.label(text="Texture Quality", icon="TEXTURE")
-        header_toggle = header_row.row(align=True)
-        header_toggle.alignment = 'RIGHT'
-        header_toggle.scale_x = 1.1
-        header_toggle.label(text="Pause")
-        header_toggle.prop(
-            props,
-            "hold_resolve",
-            text="",
-            icon="PAUSE",
-            toggle=True,
-        )
         resolve_failure_message = _resolve_failure_message_for_ui(scene)
 
         selected_auto_quality = _normalize_texture_quality_for_ui(getattr(props, "texture_quality_mode", "PREVIEW"))
@@ -1455,20 +1442,35 @@ def _draw_live_telemetry(layout, scene):
         )
         button_row = quality_box.row(align=True)
         for mode_key, label in qualities:
+            quality_allowed = allows_texture_quality_for_context(prefs, mode_key)
             mode_col = button_row.column(align=True)
             estimate_bytes = _estimate_bytes_for_quality(estimates, mode_key)
             operator_row = mode_col.row(align=True)
-            operator_row.enabled = allows_texture_quality_for_context(prefs, mode_key)
+            operator_row.enabled = quality_allowed
             operator_row.alert = bool(resolve_failure_message and selected_auto_quality == mode_key)
             operator_row.operator(
                 "planetka.set_texture_quality_and_resolve",
-                text=label,
+                text=(f"{label} (Pro only)" if not quality_allowed else label),
                 depress=(selected_auto_quality == mode_key),
             ).texture_quality_mode = mode_key
             _draw_quality_meta_row(
                 mode_col,
                 _quality_total_size_label(estimate_bytes),
             )
+        auto_box = quality_box.box()
+        auto_box.label(text="Auto-Resolve options")
+        auto_row = auto_box.row(align=True)
+        auto_row.prop_enum(props, "auto_resolve_mode", "NEVER", text="Never")
+        auto_row.prop_enum(props, "auto_resolve_mode", "CAMERA_VIEW", text="Camera only")
+        always_row = auto_row.row(align=True)
+        always_allowed = is_pro_account(prefs)
+        always_row.enabled = bool(always_allowed)
+        always_row.prop_enum(
+            props,
+            "auto_resolve_mode",
+            "ALWAYS",
+            text=("Always" if always_allowed else "Always (Pro only)"),
+        )
         if resolve_failure_message:
             error_row = quality_box.row(align=True)
             error_row.alert = True
@@ -1982,7 +1984,50 @@ def _draw_eevee_supplement_atmosphere_node(layout, node):
         _draw_atmosphere_socket(layout, sockets.get(socket_name))
 
 
-def _draw_global_clouds(layout, props):
+def _iter_global_cloud_material_nodes():
+    obj = bpy.data.objects.get("Planetka Global Cloud Layer")
+    if obj is None:
+        return []
+    nodes = []
+    for slot in getattr(obj, "material_slots", ()):
+        material = getattr(slot, "material", None)
+        node_tree = getattr(material, "node_tree", None)
+        if node_tree is None:
+            continue
+        for node in getattr(node_tree, "nodes", ()):
+            if str(getattr(node, "bl_idname", "")) != "ShaderNodeGroup":
+                continue
+            group = getattr(node, "node_tree", None)
+            group_name = str(getattr(group, "name", ""))
+            if group_name == "Planetka Cloud Material" or "global cloud" in group_name.lower():
+                nodes.append(node)
+    return nodes
+
+
+def _draw_global_cloud_material_settings(layout):
+    nodes = _iter_global_cloud_material_nodes()
+    if not nodes:
+        return
+    settings = layout.box()
+    settings.label(text="Settings")
+    for node in nodes:
+        sockets = _socket_map(node)
+        for socket_name in (
+            "Cloud Color",
+            "Density",
+            "Density Gamma",
+            "Contrast",
+            "Clouds on Horizon Transparency",
+            "Subsurface Scattering Scale Coefficient",
+            "IOR",
+            "Roughness",
+            "Anisotropy",
+            "Displacement (Bump) Scale Coefficient",
+        ):
+            _draw_atmosphere_socket(settings, sockets.get(socket_name))
+
+
+def _draw_global_clouds(layout, scene, props):
     box = layout.box()
     box.label(text="Global Clouds", icon="FORCE_TURBULENCE")
     box.prop(props, "enable_global_clouds", text="Enable Global Clouds")
@@ -1999,16 +2044,233 @@ def _draw_global_clouds(layout, props):
         box.prop(props, "global_cloud_local_file", text="Cloud Texture")
         if not str(getattr(props, "global_cloud_local_file", "") or "").strip():
             box.label(text="Select a local Global Clouds texture file.", icon="INFO")
-    else:
-        box.prop(props, "global_cloud_folder", text="Clouds Folder")
-        if not str(getattr(props, "global_cloud_folder", "") or "").strip():
-            box.label(text="If empty, Planetka uses the texture cache folder.", icon="INFO")
 
     obj = bpy.data.objects.get("Planetka Global Cloud Layer")
     if obj is None:
         box.label(text="Global Clouds will appear after Create Earth.", icon="INFO")
     else:
-        box.label(text="Parented to Planetka Root.", icon="OUTLINER_OB_EMPTY")
+        cloud_box = _draw_collapsible_subsection(
+            box,
+            scene,
+            "Global Cloud Layer",
+            "FORCE_TURBULENCE",
+            _cloud_subsection_key("global", obj),
+            default_open=True,
+        )
+        if cloud_box is not None:
+            _draw_global_cloud_material_settings(cloud_box)
+
+
+def _draw_local_clouds(layout, context, props):
+    try:
+        from . import clouds_local as cloud_runtime
+    except (ImportError, ModuleNotFoundError):
+        box = layout.box()
+        box.label(text="Texture-Based Clouds", icon="FORCE_WIND")
+        box.label(text="Texture-based cloud runtime is unavailable.", icon="ERROR")
+        return
+
+    box = layout.box()
+    box.label(text="Texture-Based Clouds", icon="FORCE_WIND")
+    box.prop(props, "enable_local_clouds", text="Enable Texture-Based Clouds")
+    if not bool(getattr(props, "enable_local_clouds", False)):
+        return
+
+    source_row = box.row(align=True)
+    source_row.prop_enum(props, "local_cloud_texture_source", "CLOUD", text="Planetka Cloud")
+    source_row.prop_enum(props, "local_cloud_texture_source", "LOCAL", text="Local EXR File")
+
+    source = str(getattr(props, "local_cloud_texture_source", "CLOUD") or "CLOUD").strip().upper()
+    picker_box = box.box()
+    if source == "LOCAL":
+        picker_box.prop(props, "local_cloud_local_file", text="Cloud Mask")
+        if not str(getattr(props, "local_cloud_local_file", "") or "").strip():
+            picker_box.label(text="Select a local EXR cloud mask file.", icon="INFO")
+    else:
+        picker_box.label(text="Planetka Cloud Masks", icon="IMAGE_DATA")
+        picker_box.template_icon_view(props, "local_cloud_texture", show_labels=True, scale=5.0, scale_popup=6.0)
+
+    add_row = picker_box.row(align=True)
+    add_row.operator("planetka.add_local_cloud", text="Add Cloud", icon="ADD")
+
+    progress = cloud_runtime.get_cloud_download_progress()
+    progress_error = str(progress.get("error", "") or "").strip()
+    progress_label = str(progress.get("label", "") or "")
+    is_texture_based_download = "TEXTURE-BASED" in progress_label.upper()
+    if bool(progress.get("active", False)) and is_texture_based_download:
+        downloaded = max(0, int(progress.get("downloaded_bytes", 0) or 0))
+        total = max(0, int(progress.get("total_bytes", 0) or 0))
+        if total > 0:
+            text = f"Downloading: {_fmt_bytes(downloaded)} / {_fmt_bytes(total)}"
+            factor = min(1.0, max(0.0, downloaded / float(total)))
+        else:
+            text = f"Downloading: {_fmt_bytes(downloaded)}"
+            factor = 0.0
+        try:
+            picker_box.progress(factor=factor, type='BAR', text=text)
+        except (AttributeError, TypeError, RuntimeError):
+            picker_box.label(text=text, icon="IMPORT")
+    elif progress_error and is_texture_based_download:
+        err_box = picker_box.box()
+        err_box.alert = True
+        err_box.label(text=progress_error, icon="ERROR")
+
+    mode_row = box.row(align=True)
+    preview_on = not bool(getattr(props, "view_cloud_subdivision", False))
+    op = mode_row.operator("planetka.set_cloud_view_mode", text="Preview", depress=preview_on)
+    op.mode = "PREVIEW"
+    op = mode_row.operator("planetka.set_cloud_view_mode", text="Final Look", depress=not preview_on)
+    op.mode = "VOLUME"
+
+    clouds = cloud_runtime._sort_cloud_objects_by_suffix(list(cloud_runtime._iter_local_cloud_objects()))
+    if not clouds:
+        box.label(text="No texture-based clouds added yet.", icon="INFO")
+        return
+
+    scene = getattr(context, "scene", None) if context else None
+    for idx, cloud_obj in enumerate(clouds, start=1):
+        cloud_box = _draw_collapsible_subsection(
+            box,
+            scene,
+            cloud_runtime._cloud_title(cloud_obj.name, idx, "Cloud No"),
+            "FORCE_WIND",
+            _cloud_subsection_key("local", cloud_obj),
+            default_open=True,
+        )
+        if cloud_box is None:
+            continue
+        cloud_box.prop(
+            cloud_obj,
+            "hide_viewport",
+            text="Show in Viewport" if bool(getattr(cloud_obj, "hide_viewport", False)) else "Hide in Viewport",
+            toggle=True,
+            icon="HIDE_OFF",
+        )
+        texture_path = str(cloud_obj.get(cloud_runtime.LOCAL_CLOUD_OBJ_TEXTURE_PATH_PROP, "") or "").strip()
+        texture_name = str(getattr(cloud_obj, cloud_runtime.LOCAL_CLOUD_OBJ_TEXTURE_PROP, "") or "").strip()
+        if not texture_name or texture_name == "NONE":
+            texture_name = os.path.basename(texture_path) if texture_path else "No cloud mask assigned"
+        cloud_box.label(text=texture_name, icon="IMAGE_DATA")
+
+        downscale_warning = str(cloud_obj.get(cloud_runtime.LOCAL_CLOUD_DOWNSCALE_WARNING_PROP, "") or "").strip()
+        if downscale_warning:
+            warning_box = cloud_box.box()
+            warning_box.label(text=downscale_warning, icon="INFO")
+
+        cloud_box.prop(cloud_obj, cloud_runtime.LOCAL_CLOUD_PROP_SIZE_COEF, text="Size")
+        cloud_box.prop(cloud_obj, cloud_runtime.LOCAL_CLOUD_PROP_LATITUDE, text="Latitude")
+        cloud_box.prop(cloud_obj, cloud_runtime.LOCAL_CLOUD_PROP_LONGITUDE, text="Longitude")
+        cloud_box.prop(cloud_obj, cloud_runtime.LOCAL_CLOUD_PROP_ROTATION_DEG, text="Rotation")
+        cloud_box.prop(cloud_obj, cloud_runtime.LOCAL_CLOUD_PROP_ALTITUDE_M, text="Altitude (m)")
+        cloud_box.prop(cloud_obj, cloud_runtime.LOCAL_CLOUD_PROP_THICKNESS_M, text="Thickness (m)")
+        cloud_box.prop(cloud_obj, cloud_runtime.LOCAL_CLOUD_PROP_DENSITY, text="Density")
+        cloud_box.prop(cloud_obj, cloud_runtime.LOCAL_CLOUD_PROP_DENSITY_GAMMA, text="Density Gamma")
+
+        row = cloud_box.row(align=True)
+        op = row.operator("planetka.reset_local_cloud_to_camera_view", text="Reset to Camera", icon="TRACKING")
+        op.object_name = cloud_obj.name
+        op = row.operator("planetka.delete_local_cloud", text="Delete", icon="TRASH")
+        op.object_name = cloud_obj.name
+
+
+def _draw_vdb_clouds(layout, context, props):
+    prefs = get_prefs()
+    if not is_pro_account(prefs):
+        box = layout.box()
+        box.enabled = False
+        box.label(text="VDB Clouds (Pro only)", icon="VOLUME_DATA")
+        box.prop(props, "enable_vdb_clouds", text="Enable VDB Clouds (Pro only)")
+        return
+
+    try:
+        from . import clouds_local as cloud_runtime
+    except (ImportError, ModuleNotFoundError):
+        box = layout.box()
+        box.label(text="VDB Clouds", icon="VOLUME_DATA")
+        box.label(text="VDB cloud runtime is unavailable.", icon="ERROR")
+        return
+
+    box = layout.box()
+    box.label(text="VDB Clouds", icon="VOLUME_DATA")
+    box.prop(props, "enable_vdb_clouds", text="Enable VDB Clouds")
+    if not bool(getattr(props, "enable_vdb_clouds", False)):
+        return
+
+    source_row = box.row(align=True)
+    source_row.prop_enum(props, "vdb_cloud_source", "CLOUD", text="Planetka Cloud")
+    source_row.prop_enum(props, "vdb_cloud_source", "LOCAL", text="Local VDB File")
+
+    source = str(getattr(props, "vdb_cloud_source", "CLOUD") or "CLOUD").strip().upper()
+    picker_box = box.box()
+    if source == "LOCAL":
+        picker_box.prop(props, "vdb_cloud_file", text="VDB File")
+        if not str(getattr(props, "vdb_cloud_file", "") or "").strip():
+            picker_box.label(text="Select a local VDB file.", icon="INFO")
+    else:
+        picker_box.label(text="Planetka Cloud VDB Presets", icon="VOLUME_DATA")
+        picker_box.template_icon_view(props, "vdb_cloud_preset", show_labels=True, scale=5.0, scale_popup=6.0)
+
+    add_row = picker_box.row(align=True)
+    add_row.operator("planetka.add_vdb_cloud", text="Add Cloud", icon="ADD")
+
+    progress = cloud_runtime.get_cloud_download_progress()
+    progress_error = str(progress.get("error", "") or "").strip()
+    progress_label = str(progress.get("label", "") or "")
+    if bool(progress.get("active", False)) and "VDB" in progress_label.upper():
+        downloaded = max(0, int(progress.get("downloaded_bytes", 0) or 0))
+        total = max(0, int(progress.get("total_bytes", 0) or 0))
+        if total > 0:
+            text = f"Downloading: {_fmt_bytes(downloaded)} / {_fmt_bytes(total)}"
+            factor = min(1.0, max(0.0, downloaded / float(total)))
+        else:
+            text = f"Downloading: {_fmt_bytes(downloaded)}"
+            factor = 0.0
+        try:
+            picker_box.progress(factor=factor, type='BAR', text=text)
+        except (AttributeError, TypeError, RuntimeError):
+            picker_box.label(text=text, icon="IMPORT")
+    elif progress_error and "VDB" in progress_label.upper():
+        err_box = picker_box.box()
+        err_box.alert = True
+        err_box.label(text=progress_error, icon="ERROR")
+
+    clouds = cloud_runtime._sort_cloud_objects_by_suffix(list(cloud_runtime._iter_vdb_cloud_objects()))
+    if not clouds:
+        box.label(text="No VDB clouds added yet.", icon="INFO")
+        return
+
+    scene = getattr(context, "scene", None) if context else None
+    for idx, cloud_obj in enumerate(clouds, start=1):
+        cloud_box = _draw_collapsible_subsection(
+            box,
+            scene,
+            cloud_runtime._cloud_title(cloud_obj.name, idx, "VDB Cloud No"),
+            "VOLUME_DATA",
+            _cloud_subsection_key("vdb", cloud_obj),
+            default_open=True,
+        )
+        if cloud_box is None:
+            continue
+        cloud_box.prop(
+            cloud_obj,
+            "hide_viewport",
+            text="Show in Viewport" if bool(getattr(cloud_obj, "hide_viewport", False)) else "Hide in Viewport",
+            toggle=True,
+            icon="HIDE_OFF",
+        )
+        cloud_box.label(text=f"File: {cloud_runtime._vdb_file_label(cloud_obj)}", icon="FILE")
+        cloud_box.prop(cloud_obj, cloud_runtime.VDB_CLOUD_PROP_SIZE_COEF, text="Size")
+        cloud_box.prop(cloud_obj, cloud_runtime.VDB_CLOUD_PROP_LATITUDE, text="Latitude")
+        cloud_box.prop(cloud_obj, cloud_runtime.VDB_CLOUD_PROP_LONGITUDE, text="Longitude")
+        cloud_box.prop(cloud_obj, cloud_runtime.VDB_CLOUD_PROP_ROTATION_DEG, text="Rotation")
+        cloud_box.prop(cloud_obj, cloud_runtime.VDB_CLOUD_PROP_ALTITUDE_M, text="Altitude (m)")
+        cloud_box.prop(cloud_obj, cloud_runtime.VDB_CLOUD_PROP_DENSITY, text="Density")
+
+        row = cloud_box.row(align=True)
+        op = row.operator("planetka.reset_vdb_cloud_to_camera_view", text="Reset to Camera", icon="TRACKING")
+        op.object_name = cloud_obj.name
+        op = row.operator("planetka.delete_vdb_cloud", text="Delete", icon="TRASH")
+        op.object_name = cloud_obj.name
 
 
 def _draw_clouds(layout, context):
@@ -2021,7 +2283,38 @@ def _draw_clouds(layout, context):
         layout.label(text="Planetka settings unavailable.", icon="ERROR")
         return
 
-    _draw_global_clouds(layout, props)
+    optimize_progress = {}
+    try:
+        from . import clouds_local as cloud_runtime
+        optimize_progress = cloud_runtime.get_cloud_optimize_progress()
+    except (ImportError, ModuleNotFoundError, AttributeError, RuntimeError, TypeError, ValueError):
+        optimize_progress = {}
+
+    pro_cloud_features = is_pro_account(get_prefs())
+    optimize_row = layout.row()
+    optimize_row.enabled = bool(pro_cloud_features) and not bool(optimize_progress.get("active", False))
+    optimize_row.operator(
+        "planetka.optimize_clouds",
+        text=("Optimize Clouds" if pro_cloud_features else "Optimize Clouds (Pro only)"),
+        icon="FORCE_WIND",
+    )
+    if bool(optimize_progress.get("active", False)):
+        current = max(0, int(optimize_progress.get("current", 0) or 0))
+        total = max(0, int(optimize_progress.get("total", 0) or 0))
+        label = str(optimize_progress.get("label", "") or "Optimizing clouds")
+        factor = min(1.0, max(0.0, current / float(total))) if total > 0 else 0.0
+        text = f"{label} ({current} / {total})" if total > 0 else label
+        try:
+            layout.progress(factor=factor, type='BAR', text=text)
+        except (AttributeError, TypeError, RuntimeError):
+            layout.label(text=text, icon="IMPORT")
+    elif str(optimize_progress.get("error", "") or "").strip():
+        err_box = layout.box()
+        err_box.alert = True
+        err_box.label(text=str(optimize_progress.get("error", "") or ""), icon="ERROR")
+    _draw_global_clouds(layout, scene, props)
+    _draw_local_clouds(layout, context, props)
+    _draw_vdb_clouds(layout, context, props)
 
 
 def _draw_atmosphere(layout, context):
@@ -2185,15 +2478,6 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
                 icon="LOOP_BACK",
             )
 
-            standalone_box = layout.box()
-            standalone_box.label(text="Standalone Export", icon="PACKAGE")
-            standalone_box.enabled = _has_earth()
-            standalone_box.operator(
-                "planetka.create_standalone_file",
-                text="Create Standalone File",
-                icon="FILE_BLEND",
-            )
-
             diagnostics_box = layout.box()
             diagnostics_box.label(text="Diagnostics", icon="CHECKMARK")
             diagnostics_box.operator(
@@ -2220,6 +2504,16 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
                 "auto_adjust_clipping_values",
                 text="Auto-adjust clipping",
                 toggle=True,
+            )
+
+            standalone_box = layout.box()
+            standalone_allowed = is_pro_account(get_prefs())
+            standalone_box.label(text=("Standalone Export" if standalone_allowed else "Standalone Export (Pro only)"), icon="PACKAGE")
+            standalone_box.enabled = _has_earth() and standalone_allowed
+            standalone_box.operator(
+                "planetka.create_standalone_file",
+                text=("Create Standalone File" if standalone_allowed else "Create Standalone File (Pro only)"),
+                icon="FILE_BLEND",
             )
 
 class PLANETKA_PT_LiveTelemetryPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
@@ -2447,7 +2741,7 @@ class PLANETKA_PT_CloudsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        return False
+        return _is_earth_workflow_enabled()
 
     def draw(self, context):
         layout = self.layout
@@ -2462,7 +2756,7 @@ class PLANETKA_PT_CloudsPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel
 
     @classmethod
     def poll(cls, context):
-        return False
+        return not _is_earth_workflow_enabled()
 
     def draw(self, context):
         layout = self.layout
@@ -2652,7 +2946,10 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         animation_render_running = _is_animation_render_running()
         final_render_box = layout.box()
         final_render_box.enabled = bool(earth_workflow_enabled) if animation_render_running else bool(controls_enabled)
-        final_render_box.label(text="Final Animation Render", icon="RENDER_ANIMATION")
+        final_render_box.label(
+            text=("Final Animation Render" if allows_animation_render_for_context(prefs=get_prefs()) else "Final Animation Render (Pro only)"),
+            icon="RENDER_ANIMATION",
+        )
         selected_final_quality = _normalize_texture_quality_for_ui(getattr(props, "texture_quality_mode", "PREVIEW"))
         final_render_allowed = allows_animation_render_for_context(
             prefs=get_prefs(),
@@ -2677,6 +2974,6 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             render_button_row.enabled = bool(final_render_allowed) and bool(earth_workflow_enabled)
             render_button_row.operator(
                 "planetka.animation_render",
-                text="Render Animation",
+                text=("Render Animation" if final_render_allowed else "Render Animation (Pro only)"),
                 icon="RENDER_ANIMATION",
             )

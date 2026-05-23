@@ -257,7 +257,7 @@ class PLANETKA_OT_AccountUpgrade(bpy.types.Operator):
         if not upgrade_url:
             return fail(self, "Planetka pricing URL is not configured.", logger=logger)
         target_plan = str(getattr(self, "target_plan", "") or "").strip().lower()
-        if target_plan in {"indie", "pro"}:
+        if target_plan == "pro":
             try:
                 parts = urlsplit(upgrade_url)
                 query = dict(parse_qsl(parts.query, keep_blank_values=True))

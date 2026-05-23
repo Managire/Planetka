@@ -269,6 +269,7 @@ def prefetch_resolve_plan(
     nav_longitude_deg="",
     nav_altitude_km="",
     enforce_pricing_session=False,
+    feature="",
 ):
     resolved_tiles = list(plan_payload.get("resolved_tiles", ())) if isinstance(plan_payload, dict) else []
     ocean_tiles = list(plan_payload.get("ocean_tiles", ())) if isinstance(plan_payload, dict) else []
@@ -317,6 +318,7 @@ def prefetch_resolve_plan(
                 nav_longitude_deg=nav_longitude_deg,
                 nav_altitude_km=nav_altitude_km,
                 pricing_tiles=session_files,
+                feature=feature,
             ):
                 try:
                     # Fast resolve path: skip remote HEAD preflight size probes so first GET
@@ -421,6 +423,7 @@ def prepare_resolve_streaming_for_visible_tiles(
     nav_longitude_deg="",
     nav_altitude_km="",
     enforce_pricing_session=False,
+    feature="",
 ):
     plan_payload = build_resolve_download_requests_for_visible_tiles(
         visible_tiles,
@@ -438,6 +441,7 @@ def prepare_resolve_streaming_for_visible_tiles(
         nav_longitude_deg=nav_longitude_deg,
         nav_altitude_km=nav_altitude_km,
         enforce_pricing_session=bool(enforce_pricing_session),
+        feature=feature,
     )
     result = dict(plan_payload)
     result.update(prefetch_payload)

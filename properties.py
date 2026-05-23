@@ -35,6 +35,7 @@ from .state import (
 try:
     from .clouds_local import (
         _local_cloud_texture_items,
+        _vdb_cloud_preset_items,
         update_enable_local_clouds,
         update_view_cloud_subdivision,
     )
@@ -42,6 +43,12 @@ try:
     from .clouds_vdb import update_enable_vdb_clouds
 except (ImportError, ModuleNotFoundError):
     def _local_cloud_texture_items(_self=None, _context=None):
+        return (
+            ("UNAVAILABLE", "Unavailable", "Cloud runtime is not included in this build"),
+        )
+
+
+    def _vdb_cloud_preset_items(_self=None, _context=None):
         return (
             ("UNAVAILABLE", "Unavailable", "Cloud runtime is not included in this build"),
         )
@@ -71,6 +78,16 @@ _ATMOSPHERE_MODE_ITEMS = (
 _GLOBAL_CLOUD_TEXTURE_SOURCE_ITEMS = (
     ("CLOUD", "Planetka Cloud", "Download the Planetka global clouds texture from Planetka Cloud"),
     ("LOCAL", "Local File", "Use a local global clouds texture file"),
+)
+
+_LOCAL_CLOUD_TEXTURE_SOURCE_ITEMS = (
+    ("CLOUD", "Planetka Cloud", "Download a Planetka texture-based cloud mask from Planetka Cloud"),
+    ("LOCAL", "Local EXR File", "Use a local EXR cloud mask file"),
+)
+
+_VDB_CLOUD_SOURCE_ITEMS = (
+    ("CLOUD", "Planetka Cloud", "Download a Planetka VDB preset from Planetka Cloud"),
+    ("LOCAL", "Local VDB File", "Use a local VDB file"),
 )
 
 
@@ -174,6 +191,45 @@ def _set_hold_resolve(self, value):
         except (RuntimeError, TypeError, ValueError, AttributeError):
             return
         update_auto_resolve(self, getattr(bpy, "context", None))
+
+
+def update_auto_resolve_mode(self, context):
+    mode = str(getattr(self, "auto_resolve_mode", "CAMERA_VIEW") or "CAMERA_VIEW").strip().upper()
+    if mode not in {"ALWAYS", "CAMERA_VIEW", "NEVER"}:
+        mode = "CAMERA_VIEW"
+    if mode == "ALWAYS":
+        try:
+            auth_module = importlib.import_module(f"{__package__}.auth" if __package__ else "auth")
+            is_pro_fn = getattr(auth_module, "is_pro_account", None)
+            if callable(is_pro_fn) and not bool(is_pro_fn(get_prefs())):
+                mode = "CAMERA_VIEW"
+                self["auto_resolve_mode"] = mode
+        except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+            mode = "CAMERA_VIEW"
+            try:
+                self["auto_resolve_mode"] = mode
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                pass
+    if mode == "NEVER":
+        _request_resolve_kill_switch()
+        target_auto_resolve = False
+    else:
+        _clear_resolve_kill_switch()
+        target_auto_resolve = True
+
+    try:
+        current_auto_resolve = bool(getattr(self, "auto_resolve", True))
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        current_auto_resolve = True
+    if current_auto_resolve != target_auto_resolve:
+        try:
+            self.auto_resolve = bool(target_auto_resolve)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            try:
+                self["auto_resolve"] = bool(target_auto_resolve)
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                pass
+    update_auto_resolve(self, context)
 
 
 def _show_earth_preview_description():
@@ -689,15 +745,15 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
     )
 
     global_cloud_folder: StringProperty(
-        name="Clouds Folder",
+        name="Legacy Global Clouds Folder",
         subtype='DIR_PATH',
-        description="Folder where Planetka Cloud global clouds are stored. If empty, the texture cache folder is used",
+        description="Legacy Global Clouds folder setting",
         default="",
         update=update_enable_global_clouds,
     )
 
     global_cloud_local_file: StringProperty(
-        name="Local Clouds Texture",
+        name="Texture-Based Clouds Texture",
         subtype='FILE_PATH',
         description="Local texture file to use for Global Clouds",
         default="",
@@ -705,9 +761,25 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
     )
 
     enable_local_clouds: BoolProperty(
-        name="Enable Local Clouds",
+        name="Enable Texture-Based Clouds",
         default=False,
-        description="Show or hide local cloud objects in the viewport and render",
+        description="Show or hide texture-based cloud objects in the viewport and render",
+        update=update_enable_local_clouds,
+    )
+
+    local_cloud_texture_source: EnumProperty(
+        name="Texture-Based Clouds Source",
+        description="Choose whether Texture-Based Clouds use Planetka Cloud masks or a local EXR file",
+        items=_LOCAL_CLOUD_TEXTURE_SOURCE_ITEMS,
+        default="CLOUD",
+        update=update_enable_local_clouds,
+    )
+
+    local_cloud_local_file: StringProperty(
+        name="Texture-Based Cloud EXR",
+        subtype='FILE_PATH',
+        description="Local EXR cloud mask used when adding a texture-based cloud patch",
+        default="",
         update=update_enable_local_clouds,
     )
 
@@ -718,23 +790,37 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         update=update_enable_vdb_clouds,
     )
 
+    vdb_cloud_source: EnumProperty(
+        name="VDB Clouds Source",
+        description="Choose whether VDB Clouds use Planetka Cloud presets or a local VDB file",
+        items=_VDB_CLOUD_SOURCE_ITEMS,
+        default="CLOUD",
+        update=update_enable_vdb_clouds,
+    )
+
+    vdb_cloud_preset: EnumProperty(
+        name="VDB Cloud Preset",
+        description="Select a Planetka Cloud VDB cloud preset",
+        items=_vdb_cloud_preset_items,
+    )
+
     view_cloud_subdivision: BoolProperty(
         name="Cloud Final Look",
         default=False,
-        description="Universal cloud mode: Final Look (on) or Preview (off) for Local and VDB clouds",
+        description="Universal cloud mode: Final Look (on) or Preview (off) for Texture-Based and VDB clouds",
         update=update_view_cloud_subdivision,
     )
 
     local_cloud_texture: EnumProperty(
-        name="Local Cloud Texture",
-        description="Select a local cloud texture",
+        name="Texture-Based Cloud Texture",
+        description="Select a Planetka Cloud texture-based cloud mask",
         items=_local_cloud_texture_items,
     )
 
     vdb_cloud_file: StringProperty(
         name="VDB Cloud File",
         subtype='FILE_PATH',
-        description="VDB file used when adding a new VDB cloud",
+        description="Local VDB file used when adding a new VDB cloud",
         default="",
     )
 
@@ -743,6 +829,30 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         default=True,
         description="Automatically runs Resolve after camera movement when the visible tile set changes",
         update=update_auto_resolve,
+    )
+
+    auto_resolve_mode: EnumProperty(
+        name="Auto-Resolve",
+        items=(
+            (
+                "NEVER",
+                "Never",
+                "Disable Auto-Resolve; use manual Resolve only",
+            ),
+            (
+                "CAMERA_VIEW",
+                "Camera only",
+                "Auto-resolve only from Camera View; Active View changes are ignored",
+            ),
+            (
+                "ALWAYS",
+                "Always",
+                "Auto-resolve from Camera View and Active View",
+            ),
+        ),
+        default="CAMERA_VIEW",
+        description="Choose when Planetka should run Auto-Resolve",
+        update=update_auto_resolve_mode,
     )
 
     hold_resolve: BoolProperty(

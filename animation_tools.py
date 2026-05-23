@@ -173,7 +173,7 @@ def _require_animation_texture_quality_access(operator, prefs=None, texture_qual
     if operator is not None:
         fail(
             operator,
-            "This account cannot use the selected texture quality for Animation Render.",
+            "Final Animation Render requires a Pro account.",
             code=ErrorCode.RENDER_FAILED,
             logger=logger,
         )

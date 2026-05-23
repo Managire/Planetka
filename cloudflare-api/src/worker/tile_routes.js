@@ -37,6 +37,17 @@ function firstNonEmpty(...values) {
   return "";
 }
 
+function isPublicCloudAssetFolder(folder) {
+  const normalized = String(folder || "").trim().toLowerCase();
+  return normalized === "clouds_global"
+    || normalized === "clouds_local"
+    || normalized === "clouds_local_thumbnails"
+    || normalized === "clouds_local_thumbnails_v2"
+    || normalized === "clouds_local_thumbnails_v3"
+    || normalized === "clouds_vdb_thumbnails_v1"
+    || normalized === "clouds_vdb";
+}
+
 function parseFiniteNumber(value) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : NaN;
@@ -78,9 +89,28 @@ export async function handleTileSessionStart(request, env, deps) {
   const requestedResolveId = String(
     body && body.resolve_id ? body.resolve_id : request.headers.get("X-Planetka-Resolve-Id") || "",
   ).trim();
+  const requestedFeature = String(
+    body && (body.feature || body.feature_code || body.featureCode) || request.headers.get("X-Planetka-Feature") || "",
+  ).trim().toLowerCase();
   const planCode = normalizeRequestedPlan(
     auth && (auth.qualityAccessPlanCode || auth.planCode || auth.user && auth.user.status),
   );
+  if (planCode !== "pro") {
+    if (requestedResolveId.toLowerCase().startsWith("anim-") || requestedFeature === "final_animation_render") {
+      return jsonResponse(
+        { ok: false, error: "pro_feature_required", message: "Final Animation Render requires a Pro account." },
+        403,
+        env,
+      );
+    }
+    if (requestedFeature === "panorama") {
+      return jsonResponse(
+        { ok: false, error: "pro_feature_required", message: "Panoramic camera rendering requires a Pro account." },
+        403,
+        env,
+      );
+    }
+  }
   let personalFreeRegion = "";
   const creditProtocol = String(body && (body.credit_protocol || body.creditProtocol) || "").trim();
   const creditTileKeys = body && (
@@ -305,6 +335,22 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
     return json({ ok: false, error: "missing_r2_binding" }, 500, env);
   }
 
+  const parts = path.replace(/^\/tiles\//, "").split("/");
+  if (parts.length !== 2 || !parts[0] || !parts[1]) {
+    return json({ ok: false, error: "invalid_tile_path" }, 400, env);
+  }
+  const folder = decodeURIComponent(parts[0]);
+  const fileName = decodeURIComponent(parts[1]);
+  if (
+    folder.includes("/")
+    || fileName.includes("/")
+    || folder.includes("..")
+    || fileName.includes("..")
+  ) {
+    return json({ ok: false, error: "invalid_tile_path" }, 400, env);
+  }
+  const publicCloudAsset = isPublicCloudAssetFolder(folder);
+
   let tokenQualityMode = "";
   const tileSessionAuth = await readTileSessionClaims(request, env);
   if (tileSessionAuth && tileSessionAuth.error) {
@@ -312,7 +358,7 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
   }
   if (tileSessionAuth && tileSessionAuth.claims) {
     tokenQualityMode = normalizeQualityMode(tileSessionAuth.claims.qualityMode || "");
-  } else {
+  } else if (!publicCloudAsset) {
     if (request.method !== "HEAD") {
       return json({ ok: false, error: "missing_tile_session_token" }, 401, env);
     }
@@ -327,21 +373,6 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
   }
 
   try {
-    const parts = path.replace(/^\/tiles\//, "").split("/");
-    if (parts.length !== 2 || !parts[0] || !parts[1]) {
-      return json({ ok: false, error: "invalid_tile_path" }, 400, env);
-    }
-
-    const folder = decodeURIComponent(parts[0]);
-    const fileName = decodeURIComponent(parts[1]);
-    if (
-      folder.includes("/") ||
-      fileName.includes("/") ||
-      folder.includes("..") ||
-      fileName.includes("..")
-    ) {
-      return json({ ok: false, error: "invalid_tile_path" }, 400, env);
-    }
     if (tileSessionAuth && tileSessionAuth.claims) {
       const planCode = firstNonEmpty(
         tileSessionAuth.claims.qualityAccessPlanCode,
@@ -349,6 +380,8 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
         tileSessionAuth.claims.storedPlanCode,
       );
       if (
+        !publicCloudAsset
+        &&
         typeof isTileFileAllowedForPlan === "function"
         && !isTileFileAllowedForPlan(planCode, fileName)
       ) {

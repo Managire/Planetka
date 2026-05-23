@@ -19,7 +19,13 @@ from dataclasses import dataclass, field
 import bpy
 from bpy.props import BoolProperty, EnumProperty, StringProperty
 
-from .auth import get_cloud_connection_status, is_authenticated
+from .auth import (
+    allows_texture_quality_for_context,
+    get_cloud_connection_status,
+    is_authenticated,
+    is_pro_account,
+    texture_quality_not_allowed_message,
+)
 from .asset_builder import (
     _ensure_surface_elevation_radius_driver,
     ensure_earth_surface_parent,
@@ -126,6 +132,18 @@ class ResolveTileSelectionResult:
     nav_altitude_km: float = 0.0
     phase_tile_select_ms: float = 0.0
     ui_reports: list = field(default_factory=list)
+
+
+def _scene_uses_equirectangular_panorama(scene):
+    try:
+        cam = getattr(scene, "camera", None)
+        cam_data = getattr(cam, "data", None)
+        return (
+            str(getattr(cam_data, "type", "") or "").upper() == "PANO"
+            and str(getattr(cam_data, "panorama_type", "") or "").upper() == "EQUIRECTANGULAR"
+        )
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return False
 
 
 @dataclass
@@ -979,6 +997,17 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 )
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             texture_quality_mode = "PREVIEW"
+        if not allows_texture_quality_for_context(get_prefs(), texture_quality_mode):
+            return ResolveTileSelectionResult(
+                response=fail(
+                    self,
+                    texture_quality_not_allowed_message(get_prefs(), texture_quality_mode),
+                    code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                    logger=logger,
+                ),
+                texture_quality_mode=texture_quality_mode,
+                ui_reports=ui_reports,
+            )
         try:
             nav_latitude_deg = float(getattr(props, "nav_latitude_deg", 0.0))
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
@@ -1135,6 +1164,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         nav_longitude_deg,
         nav_altitude_km,
         capture_download_progress=True,
+        feature="",
     ):
         ui_reports = []
         phase_start = time.perf_counter()
@@ -1146,6 +1176,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 nav_latitude_deg=nav_latitude_deg,
                 nav_longitude_deg=nav_longitude_deg,
                 nav_altitude_km=nav_altitude_km,
+                feature=feature,
                 # The 2026 streaming model treats Preview, Balanced, and Full
                 # Quality as quality modes, not per-resolve purchases. Do not
                 # attach any legacy pricing/session payload to resolve traffic.
@@ -1202,6 +1233,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         nav_altitude_km,
         enforce_pricing_session=True,
         capture_download_progress=True,
+        feature="",
     ):
         use_pricing_session = False
         stream_payload = consume_staged_prefetch_payload(
@@ -1218,6 +1250,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 nav_latitude_deg=nav_latitude_deg,
                 nav_longitude_deg=nav_longitude_deg,
                 nav_altitude_km=nav_altitude_km,
+                feature=feature,
                 enforce_pricing_session=use_pricing_session,
             )
         if _normalize_texture_quality_mode(stream_payload.get("texture_quality_mode", "PREVIEW")) != texture_quality_mode:
@@ -1229,6 +1262,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 nav_latitude_deg=nav_latitude_deg,
                 nav_longitude_deg=nav_longitude_deg,
                 nav_altitude_km=nav_altitude_km,
+                feature=feature,
                 enforce_pricing_session=use_pricing_session,
             )
         return stream_payload
@@ -1620,6 +1654,15 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         if getattr(early_result, "response", None) is not None:
             return early_result.response
 
+        streaming_feature = "panorama" if _scene_uses_equirectangular_panorama(scene) else ""
+        if streaming_feature == "panorama" and not is_pro_account(get_prefs()):
+            return fail(
+                self,
+                "Panoramic camera rendering requires a Pro account.",
+                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                logger=logger,
+            )
+
         stream_ctx = self._phase_prepare_streaming(
             scene,
             tiles,
@@ -1629,6 +1672,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             nav_longitude_deg,
             nav_altitude_km,
             capture_download_progress=bool(getattr(self, "capture_download_progress", True)),
+            feature=streaming_feature,
         )
         self._flush_ui_reports(getattr(stream_ctx, "ui_reports", ()))
         if getattr(stream_ctx, "response", None) is not None:
@@ -1838,6 +1882,13 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         except (RuntimeError, TypeError, ValueError):
             logger.debug("Planetka: failed storing last resolved texture quality", exc_info=True)
         mark_auto_resolve_clean_after_resolve(scene)
+        try:
+            from .clouds_local import sync_cloud_system_scene
+            sync_cloud_system_scene(scene)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka: failed syncing clouds after resolve", exc_info=True)
+        except (ImportError, ModuleNotFoundError, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed syncing clouds after resolve", exc_info=True)
 
         self._flush_ui_reports(ui_reports)
         _restore_navigation_adaptive_state_safe("failed post-resolve adaptive viewport restore")

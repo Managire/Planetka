@@ -1,4 +1,4 @@
-"""Live gate for Planetka Free/Indie/Pro streaming access.
+"""Live gate for Planetka Free/Pro streaming access.
 
 Run from Blender after setting the target account plan in D1:
   PLANETKA_EXPECTED_PLAN=free /Applications/Blender5.0.app/Contents/MacOS/Blender --background \
@@ -90,7 +90,7 @@ def main():
         "results": [],
     }
     try:
-        _assert(EXPECTED_PLAN in {"free", "indie", "pro"}, "PLANETKA_EXPECTED_PLAN must be free, indie, or pro.")
+        _assert(EXPECTED_PLAN in {"free", "pro"}, "PLANETKA_EXPECTED_PLAN must be free or pro.")
         base_module = enable_module(required_planetka_attr="add_earth")
         auth = import_submodule(base_module, "auth")
         extension_prefs = import_submodule(base_module, "extension_prefs")
@@ -120,8 +120,7 @@ def main():
             for quality_mode in QUALITY_MODES:
                 result = _try_session(r2_source, location, quality_mode)
                 expected_ok = (
-                    quality_mode == "preview"
-                    or (EXPECTED_PLAN == "indie" and quality_mode == "balanced")
+                    quality_mode in {"preview", "balanced"}
                     or EXPECTED_PLAN == "pro"
                 )
                 result.update(

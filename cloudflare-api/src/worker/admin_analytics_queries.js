@@ -204,7 +204,6 @@ export async function collectQuoteQueueHealth(db, deps) {
 function normalizeTierCodeStrict(value, deps) {
   const normalized = String(deps.normalizePlanCode(value) || "").trim().toLowerCase();
   if (normalized === deps.PLAN_CODE_FREE) return deps.PLAN_CODE_FREE;
-  if (normalized === deps.PLAN_CODE_INDIE) return deps.PLAN_CODE_INDIE;
   if (normalized === deps.PLAN_CODE_PROFESSIONAL) return deps.PLAN_CODE_PROFESSIONAL;
   return "";
 }
@@ -214,7 +213,6 @@ function analyticsTierSqlExpression(columnExpression) {
   return `
     CASE
       WHEN LOWER(COALESCE(${column}, '')) IN ('pro', 'professional', 'paid', 'unlimited') THEN 'pro'
-      WHEN LOWER(COALESCE(${column}, '')) IN ('indie', 'balanced') THEN 'indie'
       ELSE 'free'
     END
   `;
@@ -768,7 +766,6 @@ export async function collectAnalyticsSnapshot(
     `
       SELECT
         COALESCE(SUM(CASE WHEN ${analyticsTierSqlExpression("status")} = 'free' THEN 1 ELSE 0 END), 0) AS free_users,
-        COALESCE(SUM(CASE WHEN ${analyticsTierSqlExpression("status")} = 'indie' THEN 1 ELSE 0 END), 0) AS indie_users,
         COALESCE(SUM(CASE WHEN ${analyticsTierSqlExpression("status")} = 'pro' THEN 1 ELSE 0 END), 0) AS pro_users,
         COUNT(*) AS total_users
       FROM users
@@ -794,11 +791,9 @@ export async function collectAnalyticsSnapshot(
       )
       SELECT
         COALESCE(SUM(CASE WHEN user_tier = 'free' THEN request_count ELSE 0 END), 0) AS free_requests,
-        COALESCE(SUM(CASE WHEN user_tier = 'indie' THEN request_count ELSE 0 END), 0) AS indie_requests,
         COALESCE(SUM(CASE WHEN user_tier = 'pro' THEN request_count ELSE 0 END), 0) AS pro_requests,
         COALESCE(SUM(request_count), 0) AS total_requests,
         COALESCE(SUM(CASE WHEN user_tier = 'free' THEN bytes_served ELSE 0 END), 0) AS free_bytes,
-        COALESCE(SUM(CASE WHEN user_tier = 'indie' THEN bytes_served ELSE 0 END), 0) AS indie_bytes,
         COALESCE(SUM(CASE WHEN user_tier = 'pro' THEN bytes_served ELSE 0 END), 0) AS pro_bytes,
         COALESCE(SUM(bytes_served), 0) AS total_bytes
       FROM traffic
@@ -823,7 +818,6 @@ export async function collectAnalyticsSnapshot(
       )
       SELECT
         COALESCE(SUM(CASE WHEN user_tier = 'free' THEN 1 ELSE 0 END), 0) AS free_resolves,
-        COALESCE(SUM(CASE WHEN user_tier = 'indie' THEN 1 ELSE 0 END), 0) AS indie_resolves,
         COALESCE(SUM(CASE WHEN user_tier = 'pro' THEN 1 ELSE 0 END), 0) AS pro_resolves,
         COUNT(*) AS total_resolves
       FROM tagged_resolves
@@ -919,7 +913,6 @@ export async function collectAnalyticsSnapshot(
 
   const makeActiveSplit = () => ({
     free: 0,
-    indie: 0,
     pro: 0,
     total: 0,
   });
@@ -942,7 +935,6 @@ export async function collectAnalyticsSnapshot(
   const resolveAnalyticsTierCode = (planValue) => {
     const normalized = normalizeTierCodeStrict(planValue, deps);
     if (normalized === deps.PLAN_CODE_FREE) return "free";
-    if (normalized === deps.PLAN_CODE_INDIE) return "indie";
     if (normalized === deps.PLAN_CODE_PROFESSIONAL) return "pro";
     return "free";
   };
@@ -1412,25 +1404,21 @@ export async function collectAnalyticsSnapshot(
     top_line: {
       users: {
         free: deps.clampNonNegativeInt(topLineUsers && topLineUsers.free_users),
-        indie: deps.clampNonNegativeInt(topLineUsers && topLineUsers.indie_users),
         pro: deps.clampNonNegativeInt(topLineUsers && topLineUsers.pro_users),
         total: deps.clampNonNegativeInt(topLineUsers && topLineUsers.total_users),
       },
       resolves: {
         free: deps.clampNonNegativeInt(topLineResolves && topLineResolves.free_resolves),
-        indie: deps.clampNonNegativeInt(topLineResolves && topLineResolves.indie_resolves),
         pro: deps.clampNonNegativeInt(topLineResolves && topLineResolves.pro_resolves),
         total: deps.clampNonNegativeInt(topLineResolves && topLineResolves.total_resolves),
       },
       tile_requests: {
         free: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.free_requests),
-        indie: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.indie_requests),
         pro: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.pro_requests),
         total: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.total_requests),
       },
       gb_served: {
         free: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.free_bytes),
-        indie: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.indie_bytes),
         pro: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.pro_bytes),
         total: deps.clampNonNegativeInt(topLineTraffic && topLineTraffic.total_bytes),
       },

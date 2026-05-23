@@ -582,8 +582,6 @@ def _normalize_account_plan_code(value):
     token = str(value or "").strip().lower()
     if token in {"professional", "pro", "paid", "unlimited"}:
         return "pro"
-    if token in {"indie", "balanced"}:
-        return "indie"
     if token in {"personal", "free", ""}:
         return "free"
     return token
@@ -593,8 +591,6 @@ def _account_plan_name(plan_code):
     normalized = _normalize_account_plan_code(plan_code)
     if normalized == "pro":
         return "Pro"
-    if normalized == "indie":
-        return "Indie"
     return "Free"
 
 
@@ -662,25 +658,19 @@ def is_pro_account(prefs=None):
     return is_professional_account(prefs)
 
 
-def is_indie_account(prefs=None):
-    return get_account_tier(prefs) == "indie"
-
-
 def is_personal_account(prefs=None):
     return get_account_tier(prefs) == "free"
 
 
 def personal_free_locations_label():
-    return "Preview texture quality worldwide"
+    return "Preview and Balanced texture quality worldwide"
 
 
 def account_access_summary(prefs=None):
     tier = get_account_tier(prefs)
     if tier == "pro":
-        return "Pro account: Preview, Balanced, and Full texture quality."
-    if tier == "indie":
-        return "Indie account: Preview and Balanced texture quality."
-    return "Free account: Preview texture quality."
+        return "Pro account: Preview, Balanced, and Full texture quality with commercial licence."
+    return "Free account: Preview and Balanced texture quality for personal use."
 
 
 def upgrade_checkout_available(prefs=None):
@@ -688,7 +678,7 @@ def upgrade_checkout_available(prefs=None):
 
 
 def professional_account_required_message():
-    return "Upgrade to Pro for Full texture quality."
+    return "Upgrade to Pro for this feature."
 
 
 def _normalize_texture_quality_token(value):
@@ -703,18 +693,13 @@ def allows_texture_quality_for_context(prefs=None, requested_mode=None):
     tier = get_account_tier(prefs)
     if tier == "pro":
         return True
-    if tier == "indie":
-        return mode in {"PREVIEW", "BALANCED"}
-    return mode == "PREVIEW"
+    return mode in {"PREVIEW", "BALANCED"}
 
 
 def texture_quality_not_allowed_message(prefs=None, requested_mode=None):
     mode = _normalize_texture_quality_token(requested_mode or "PREVIEW")
-    tier = get_account_tier(prefs)
-    if tier == "indie" and mode == "FULL":
+    if mode == "FULL":
         return "Full texture quality requires a Pro account."
-    if tier == "free" and mode in {"BALANCED", "FULL"}:
-        return "Balanced and Full texture quality require an Indie or Pro account."
     return "Selected texture quality is not available for this account."
 
 
@@ -724,14 +709,8 @@ def allows_full_quality_for_context(prefs=None, source=None):
 
 
 def allows_animation_render_for_context(prefs=None, source=None, requested_mode=None):
-    mode = requested_mode
-    if mode is None and source is not None:
-        try:
-            mode = getattr(source, "anim_render_texture_quality_mode", "FULL")
-        except (TypeError, ValueError, AttributeError):
-            mode = "FULL"
-    mode = _normalize_texture_quality_token(mode or "FULL")
-    return allows_texture_quality_for_context(prefs, mode)
+    del source, requested_mode
+    return is_pro_account(prefs)
 
 
 def get_upgrade_url(prefs=None):

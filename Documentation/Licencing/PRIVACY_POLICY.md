@@ -11,7 +11,7 @@ Planetka may collect and store:
 - account email address and account status;
 - access-key records and authentication events;
 - accepted Terms and Privacy Policy versions;
-- account type, such as Personal or Professional;
+- account type, such as Free or Pro;
 - payment status, payment-provider session identifiers, customer identifiers, and transaction metadata when a payment is made;
 - tile requests, quality-mode requests, cache/session metadata, request counts, timing information, and service diagnostics;
 - technical information needed for security, abuse prevention, debugging, and support, such as IP-derived request metadata, user agent, add-on version, Blender version, and error logs.
@@ -29,9 +29,9 @@ When you choose to make a payment, payment details are entered directly into the
 Planetka uses collected information to:
 
 - authenticate users and access keys;
-- provide Free, Indie, or Pro Planetka streaming access;
-- enforce texture-quality access for Free, Indie, and Pro accounts;
-- create checkout sessions and confirm successful payments where Indie/Pro checkout is offered;
+- provide Free or Pro Planetka streaming access;
+- enforce texture-quality access for Free and Pro accounts;
+- create checkout sessions and confirm successful payments where Pro checkout is offered;
 - measure service reliability, performance, usage, and streamed data volume;
 - prevent abuse, unauthorised access, scraping, payment misuse, and excessive automated requests;
 - provide customer support, invoice support, and account troubleshooting;

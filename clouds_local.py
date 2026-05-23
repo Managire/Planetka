@@ -1,8 +1,16 @@
 import importlib
+import hashlib
 import logging
 import math
 import os
 import re
+import shutil
+import subprocess
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 
 import bpy
 import bpy.utils.previews
@@ -10,10 +18,10 @@ from bpy.props import EnumProperty, FloatProperty, StringProperty
 from mathutils import Vector
 
 from .asset_builder import ensure_planetka_root
-from .auth import is_authenticated
+from .auth import get_api_base_url, is_authenticated, is_pro_account
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from .extension_prefs import get_earth_object, get_prefs
-from .r2_source import get_remote_cache_folder, resolve_remote_asset
+from .r2_source import get_remote_cache_folder
 
 
 logger = logging.getLogger(__name__)
@@ -39,24 +47,207 @@ GLOBAL_CLOUD_REFERENCE_BLEND_PATH = os.path.join(
     "Resources",
     "planetka_global_cloud_layer_min.blend",
 )
+LOCAL_CLOUD_REFERENCE_BLEND_PATH = os.path.join(
+    os.path.dirname(__file__),
+    "Resources",
+    "planetka_local_cloud_material.blend",
+)
+VDB_CLOUD_REFERENCE_BLEND_PATH = os.path.join(
+    os.path.dirname(__file__),
+    "Resources",
+    "planetka_vdb_cloud_template.blend",
+)
 REMOTE_GLOBAL_CLOUDS_FOLDER = "clouds_global"
-REMOTE_GLOBAL_CLOUD_TEXTURE_FILE = "Planetka_Global_Clouds_16K.tif"
-REMOTE_LOCAL_CLOUDS_FOLDER = "clouds/local"
-REMOTE_VDB_CLOUDS_FOLDER = "clouds/vdb"
-REMOTE_TEST_LOCAL_CLOUD_FILES = (
+REMOTE_GLOBAL_CLOUD_TEXTURE_FILE = "Clouds_16K.exr"
+REMOTE_LOCAL_CLOUDS_FOLDER = "clouds_local"
+LOCAL_CLOUD_GPU_TEXTURES_FOLDER = "clouds_local_gpu"
+LOCAL_CLOUD_ADAPTIVE_TEXTURES_FOLDER = "clouds_local_adaptive"
+REMOTE_LOCAL_CLOUD_THUMBNAILS_FOLDER = "clouds_local_thumbnails_v3"
+REMOTE_VDB_CLOUDS_FOLDER = "clouds_vdb"
+REMOTE_VDB_CLOUD_THUMBNAILS_FOLDER = "clouds_vdb_thumbnails_v1"
+REMOTE_LOCAL_CLOUD_FILES = (
+    "Planetka Cloud 001 18000x12500.exr",
+    "Planetka Cloud 002 23300x16900.exr",
+    "Planetka Cloud 003 18100x13800.exr",
+    "Planetka Cloud 004 28100x16700.exr",
     "Planetka Cloud 005 4700x4400.exr",
     "Planetka Cloud 006 6300x6700.exr",
+    "Planetka Cloud 007 16600x11900.exr",
+    "Planetka Cloud 008 14900x8200.exr",
+    "Planetka Cloud 009 15000x10000.exr",
+    "Planetka Cloud 010 19000x8900.exr",
+    "Planetka Cloud 011 14700x8900.exr",
     "Planetka Cloud 012 7600x5500.exr",
+    "Planetka Cloud 013 25000x11000.exr",
+    "Planetka Cloud 014 16800x12100.exr",
+    "Planetka Cloud 015 11500x9500.exr",
+    "Planetka Cloud 016 21600x9900.exr",
+    "Planetka Cloud 017 16400x9200.exr",
+    "Planetka Cloud 018 10100x12300.exr",
+    "Planetka Cloud 019 14600x14600.exr",
+    "Planetka Cloud 020 11400x10500.exr",
+    "Planetka Cloud 021 10600x10200.exr",
+    "Planetka Cloud 022 13400x10700.exr",
+    "Planetka Cloud 023 8000x6200.exr",
 )
-REMOTE_TEST_VDB_CLOUD_FILES = (
-    "cloud003_vox100_50.vdb",
+REMOTE_VDB_CLOUD_FILES = (
+    "cloud001_vox063_0.vdb",
+    "cloud001_vox063_10.vdb",
+    "cloud001_vox063_20.vdb",
+    "cloud001_vox063_30.vdb",
+    "cloud001_vox063_40.vdb",
+    "cloud001_vox063_50.vdb",
+    "cloud001_vox063_60.vdb",
+    "cloud001_vox063_70.vdb",
+    "cloud001_vox063_80.vdb",
+    "cloud001_vox063_90.vdb",
+    "cloud001_vox063_100.vdb",
+    "cloud001_vox063_110.vdb",
+    "cloud001_vox063_120.vdb",
+    "cloud001_vox063_130.vdb",
+    "cloud001_vox063_150.vdb",
+    "cloud001_vox100_0.vdb",
+    "cloud001_vox100_10.vdb",
+    "cloud001_vox100_20.vdb",
+    "cloud001_vox100_30.vdb",
+    "cloud001_vox100_40.vdb",
     "cloud001_vox100_50.vdb",
+    "cloud001_vox100_60.vdb",
+    "cloud001_vox100_70.vdb",
+    "cloud001_vox100_80.vdb",
+    "cloud001_vox100_90.vdb",
+    "cloud001_vox100_100.vdb",
+    "cloud001_vox100_110.vdb",
+    "cloud001_vox100_120.vdb",
+    "cloud001_vox100_130.vdb",
+    "cloud001_vox100_140.vdb",
+    "cloud001_vox100_150.vdb",
+    "cloud002_vox063_0.vdb",
+    "cloud002_vox063_10.vdb",
+    "cloud002_vox063_20.vdb",
+    "cloud002_vox063_30.vdb",
+    "cloud002_vox063_40.vdb",
+    "cloud002_vox063_50.vdb",
+    "cloud002_vox063_60.vdb",
+    "cloud002_vox063_70.vdb",
+    "cloud002_vox063_80.vdb",
+    "cloud002_vox063_90.vdb",
+    "cloud002_vox063_100.vdb",
+    "cloud002_vox063_110.vdb",
+    "cloud002_vox063_120.vdb",
+    "cloud002_vox100_0.vdb",
+    "cloud002_vox100_10.vdb",
+    "cloud002_vox100_20.vdb",
+    "cloud002_vox100_30.vdb",
+    "cloud002_vox100_40.vdb",
+    "cloud002_vox100_50.vdb",
+    "cloud002_vox100_60.vdb",
+    "cloud002_vox100_70.vdb",
+    "cloud002_vox100_80.vdb",
+    "cloud002_vox100_90.vdb",
+    "cloud002_vox100_100.vdb",
+    "cloud002_vox100_110.vdb",
+    "cloud002_vox100_120.vdb",
+    "cloud002_vox100_130.vdb",
+    "cloud002_vox100_140.vdb",
+    "cloud002_vox100_150.vdb",
+    "cloud003_vox063_0.vdb",
+    "cloud003_vox063_10.vdb",
+    "cloud003_vox063_20.vdb",
+    "cloud003_vox063_30.vdb",
+    "cloud003_vox063_40.vdb",
+    "cloud003_vox063_50.vdb",
+    "cloud003_vox063_60.vdb",
+    "cloud003_vox063_70.vdb",
+    "cloud003_vox063_80.vdb",
+    "cloud003_vox063_90.vdb",
+    "cloud003_vox063_100.vdb",
+    "cloud003_vox063_110.vdb",
+    "cloud003_vox063_120.vdb",
+    "cloud003_vox063_130.vdb",
+    "cloud003_vox063_140.vdb",
+    "cloud003_vox063_150.vdb",
+    "cloud003_vox100_0.vdb",
+    "cloud003_vox100_10.vdb",
+    "cloud003_vox100_20.vdb",
+    "cloud003_vox100_30.vdb",
+    "cloud003_vox100_40.vdb",
+    "cloud003_vox100_50.vdb",
+    "cloud003_vox100_60.vdb",
+    "cloud003_vox100_70.vdb",
+    "cloud003_vox100_80.vdb",
+    "cloud003_vox100_90.vdb",
+    "cloud003_vox100_100.vdb",
+    "cloud003_vox100_110.vdb",
+    "cloud003_vox100_120.vdb",
+    "cloud003_vox100_130.vdb",
+    "cloud003_vox100_140.vdb",
+    "cloud003_vox100_150.vdb",
+    "cloud004_vox063_0.vdb",
+    "cloud004_vox063_10.vdb",
+    "cloud004_vox063_20.vdb",
+    "cloud004_vox063_30.vdb",
+    "cloud004_vox063_40.vdb",
+    "cloud004_vox063_50.vdb",
+    "cloud004_vox063_60.vdb",
+    "cloud004_vox063_70.vdb",
+    "cloud004_vox063_80.vdb",
+    "cloud004_vox063_90.vdb",
+    "cloud004_vox063_100.vdb",
+    "cloud004_vox063_110.vdb",
+    "cloud004_vox063_120.vdb",
+    "cloud004_vox063_130.vdb",
+    "cloud004_vox063_140.vdb",
+    "cloud004_vox063_150.vdb",
+    "cloud004_vox100_0.vdb",
+    "cloud004_vox100_10.vdb",
+    "cloud004_vox100_20.vdb",
+    "cloud004_vox100_30.vdb",
+    "cloud004_vox100_40.vdb",
     "cloud004_vox100_50.vdb",
+    "cloud004_vox100_60.vdb",
+    "cloud004_vox100_70.vdb",
+    "cloud004_vox100_80.vdb",
+    "cloud004_vox100_90.vdb",
+    "cloud004_vox100_100.vdb",
+    "cloud004_vox100_110.vdb",
+    "cloud004_vox100_120.vdb",
+    "cloud004_vox100_130.vdb",
+    "cloud004_vox100_140.vdb",
+    "cloud004_vox100_150.vdb",
+    "cloud005_vox063_0.vdb",
+    "cloud005_vox063_10.vdb",
+    "cloud005_vox063_20.vdb",
+    "cloud005_vox063_30.vdb",
+    "cloud005_vox063_40.vdb",
+    "cloud005_vox063_50.vdb",
+    "cloud005_vox063_60.vdb",
+    "cloud005_vox063_70.vdb",
+    "cloud005_vox063_80.vdb",
+    "cloud005_vox100_0.vdb",
+    "cloud005_vox100_10.vdb",
+    "cloud005_vox100_20.vdb",
+    "cloud005_vox100_30.vdb",
+    "cloud005_vox100_40.vdb",
+    "cloud005_vox100_50.vdb",
+    "cloud005_vox100_60.vdb",
+    "cloud005_vox100_70.vdb",
+    "cloud005_vox100_80.vdb",
+    "cloud005_vox100_90.vdb",
+    "cloud005_vox100_100.vdb",
+    "cloud005_vox100_110.vdb",
+    "cloud005_vox100_120.vdb",
+    "cloud005_vox100_130.vdb",
+    "cloud005_vox100_140.vdb",
+    "cloud005_vox100_150.vdb",
 )
+REMOTE_VDB_CLOUD_UNPUBLISHED_BASE_FILES = {
+    "cloud001_vox063_150.vdb",
+}
 
 CLOUDS_ROOT_COLLECTION_NAME = "Clouds"
 GLOBAL_CLOUDS_COLLECTION_NAME = "Global Clouds"
-LOCAL_CLOUDS_COLLECTION_NAME = "Local Clouds"
+LOCAL_CLOUDS_COLLECTION_NAME = "Texture-Based Clouds"
 VDB_CLOUDS_COLLECTION_NAME = "VDB Clouds"
 
 GLOBAL_CLOUD_LAYER_NAME = "Planetka Global Cloud Layer"
@@ -78,9 +269,9 @@ LOCAL_CLOUD_LAT_NODE_NAMES = ("Target Latitude +90 (deg)", "Target Latitude (deg
 LOCAL_CLOUD_SIZE_NODE_NAMES = ("Local Cloud Size (deg)", "Local Cloud Size")
 LOCAL_CLOUD_ROT_NODE_NAMES = ("Local Cloud Rotation (deg)", "Local Cloud Rotation")
 
-LOCAL_CLOUD_NUMBERED_PREFIX = "Local Cloud No "
+LOCAL_CLOUD_NUMBERED_PREFIX = "Texture-Based Cloud No "
 VDB_CLOUD_NUMBERED_PREFIX = "VDB Cloud No "
-LOCAL_CLOUD_CAP_MESH_PREFIX = "Planetka Local Cloud Cap Mesh"
+LOCAL_CLOUD_CAP_MESH_PREFIX = "Planetka Texture-Based Cloud Cap Mesh"
 
 CLOUD_ROLE_KEY = "planetka_cloud_role"
 GLOBAL_CLOUD_ROLE = "global_cloud"
@@ -100,6 +291,7 @@ LOCAL_CLOUD_PROP_DENSITY_GAMMA = "planetka_local_cloud_density_gamma"
 LOCAL_CLOUD_PROP_BASE_SCALE = "planetka_local_cloud_base_scale"
 LOCAL_CLOUD_PROP_CAP_HALF_ANGLE_DEG = "planetka_local_cloud_cap_half_angle_deg"
 LOCAL_CLOUD_OBJ_TEXTURE_PROP = "planetka_local_cloud_texture"
+LOCAL_CLOUD_OBJ_TEXTURE_PATH_PROP = "planetka_local_cloud_texture_path"
 
 VDB_CLOUD_PROP_LONGITUDE = "planetka_vdb_cloud_longitude"
 VDB_CLOUD_PROP_LATITUDE = "planetka_vdb_cloud_latitude"
@@ -112,19 +304,72 @@ VDB_CLOUD_PROP_BASE_SCALE_Y = "planetka_vdb_cloud_base_scale_y"
 VDB_CLOUD_PROP_BASE_SCALE_Z = "planetka_vdb_cloud_base_scale_z"
 VDB_CLOUD_PROP_BASE_RADIUS = "planetka_vdb_cloud_base_radius"
 VDB_CLOUD_OBJ_FILE_PROP = "planetka_vdb_cloud_file"
+VDB_CLOUD_OBJ_SOURCE_FILE_PROP = "planetka_vdb_cloud_source_file"
+VDB_CLOUD_LOADED_FILE_PROP = "planetka_vdb_cloud_loaded_file"
+VDB_CLOUD_D_LEVEL_PROP = "planetka_vdb_cloud_d_level"
+VDB_CLOUD_FINAL_FILE_PROP = "planetka_vdb_cloud_final_file"
+VDB_CLOUD_PREVIEW_FILE_PROP = "planetka_vdb_cloud_preview_file"
+VDB_CLOUD_FINAL_D_LEVEL_PROP = "planetka_vdb_cloud_final_d_level"
+VDB_CLOUD_PREVIEW_D_LEVEL_PROP = "planetka_vdb_cloud_preview_d_level"
+VDB_CLOUD_PROJECTED_PIXELS_PROP = "planetka_vdb_cloud_projected_pixels"
 VDB_CLOUD_DENSITY_NODE_NAME = "VDB Density"
 DEFAULT_CLOUD_ALTITUDE_M = 2000.0
+DEFAULT_VDB_CLOUD_DENSITY = 2.0
+VDB_CLOUD_REFERENCE_EARTH_RADIUS_BU = 2.0
+VDB_CLOUD_DEFAULT_SCALE_FACTOR = 5e-6
+VDB_CLOUD_SCALE_CALIBRATED_PROP = "planetka_vdb_cloud_scale_calibrated"
+VDB_CLOUD_ADAPTIVE_D_LEVELS = (1, 2, 4, 8, 16, 32, 64, 128, 256, 360)
+VDB_CLOUD_ADAPTIVE_OVERSAMPLE = 1.15
+LOCAL_CLOUD_GPU_TEXTURE_MAX_SIZE_FALLBACK = 16384
+LOCAL_CLOUD_GPU_TEXTURE_MAX_SIZE_MIN = 1024
 LOCAL_CLOUD_BASE_HALF_ANGLE_DEG = 0.08
-LOCAL_CLOUD_MIN_HALF_ANGLE_DEG = 0.01
-LOCAL_CLOUD_MAX_HALF_ANGLE_DEG = 70.0
 LOCAL_CLOUD_SIZE_REMOTE_SCALE = 0.01
+LOCAL_CLOUD_ADAPTIVE_D_LEVELS = (1, 2, 4, 8, 16, 32, 64, 128, 256, 360)
+LOCAL_CLOUD_ADAPTIVE_OVERSAMPLE = 1.15
+LOCAL_CLOUD_D_LEVEL_PROP = "planetka_texture_based_cloud_d_level"
+LOCAL_CLOUD_PROJECTED_PIXELS_PROP = "planetka_texture_based_cloud_projected_pixels"
+LOCAL_CLOUD_LOADED_TEXTURE_PROP = "planetka_texture_based_cloud_loaded_texture"
+LOCAL_CLOUD_FINAL_TEXTURE_PROP = "planetka_texture_based_cloud_final_texture"
+LOCAL_CLOUD_PREVIEW_TEXTURE_PROP = "planetka_texture_based_cloud_preview_texture"
+LOCAL_CLOUD_FINAL_D_LEVEL_PROP = "planetka_texture_based_cloud_final_d_level"
+LOCAL_CLOUD_PREVIEW_D_LEVEL_PROP = "planetka_texture_based_cloud_preview_d_level"
+LOCAL_CLOUD_GPU_LIMIT_PROP = "planetka_texture_based_cloud_gpu_limit_px"
+LOCAL_CLOUD_DOWNSCALE_WARNING_PROP = "planetka_texture_based_cloud_downscale_warning"
 
 _local_cloud_preview_collection = None
 _local_cloud_preview_signature = None
 _local_cloud_enum_items = []
+_vdb_cloud_preview_collection = None
+_vdb_cloud_preview_signature = None
+_vdb_cloud_enum_items = []
 _cloud_update_suspend_count = 0
 _local_cloud_asset_paths = {}
+_local_cloud_thumbnail_paths = {}
 _vdb_cloud_asset_paths = {}
+_vdb_cloud_thumbnail_paths = {}
+_cloud_download_progress = {
+    "active": False,
+    "label": "",
+    "file_name": "",
+    "downloaded_bytes": 0,
+    "total_bytes": 0,
+    "error": "",
+    "started_at": 0.0,
+    "finished_at": 0.0,
+}
+_cloud_download_progress_lock = threading.Lock()
+_cloud_optimize_progress = {
+    "active": False,
+    "label": "",
+    "current": 0,
+    "total": 0,
+    "optimized": 0,
+    "failed": 0,
+    "error": "",
+    "started_at": 0.0,
+    "finished_at": 0.0,
+}
+_cloud_optimize_progress_lock = threading.Lock()
 
 
 def _is_cloud_updates_suspended():
@@ -169,76 +414,957 @@ def _local_clouds_dir():
     return get_remote_cache_folder(REMOTE_LOCAL_CLOUDS_FOLDER)
 
 
+def _local_cloud_thumbnails_dir():
+    return get_remote_cache_folder(REMOTE_LOCAL_CLOUD_THUMBNAILS_FOLDER)
+
+
 def _vdb_clouds_dir():
     return get_remote_cache_folder(REMOTE_VDB_CLOUDS_FOLDER)
+
+
+def _vdb_cloud_thumbnails_dir():
+    return get_remote_cache_folder(REMOTE_VDB_CLOUD_THUMBNAILS_FOLDER)
+
+
+def _local_cloud_gpu_textures_dir():
+    return get_remote_cache_folder(LOCAL_CLOUD_GPU_TEXTURES_FOLDER)
+
+
+def _local_cloud_adaptive_textures_dir():
+    return get_remote_cache_folder(LOCAL_CLOUD_ADAPTIVE_TEXTURES_FOLDER)
+
+
+def _set_cloud_download_progress(**updates):
+    with _cloud_download_progress_lock:
+        _cloud_download_progress.update(updates)
+
+
+def get_cloud_download_progress():
+    with _cloud_download_progress_lock:
+        return dict(_cloud_download_progress)
+
+
+def _set_cloud_optimize_progress(**updates):
+    with _cloud_optimize_progress_lock:
+        _cloud_optimize_progress.update(updates)
+
+
+def get_cloud_optimize_progress():
+    with _cloud_optimize_progress_lock:
+        return dict(_cloud_optimize_progress)
+
+
+def _download_public_cloud_asset(folder, file_name, progress_label=""):
+    safe_folder = str(folder or "").strip().strip("/").replace("\\", "/")
+    safe_name = os.path.basename(str(file_name or ""))
+    if not safe_folder or not safe_name:
+        return ""
+
+    cache_dir = get_remote_cache_folder(safe_folder)
+    if not cache_dir:
+        return ""
+    destination = os.path.join(cache_dir, safe_name)
+    if os.path.isfile(destination) and os.path.getsize(destination) > 0:
+        if progress_label:
+            _set_cloud_download_progress(active=False, error="", file_name=safe_name)
+        return destination
+
+    base_url = get_api_base_url().rstrip("/")
+    url = f"{base_url}/tiles/{urllib.parse.quote(safe_folder, safe='')}/{urllib.parse.quote(safe_name, safe='')}"
+    temp_path = f"{destination}.part.{os.getpid()}"
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+        request = urllib.request.Request(url, method="GET", headers={"User-Agent": "Planetka-Blender"})
+        with urllib.request.urlopen(request, timeout=120) as response, open(temp_path, "wb") as handle:
+            total_bytes = 0
+            try:
+                total_bytes = int(response.headers.get("Content-Length") or 0)
+            except (TypeError, ValueError):
+                total_bytes = 0
+            if progress_label:
+                _set_cloud_download_progress(
+                    active=True,
+                    label=str(progress_label),
+                    file_name=safe_name,
+                    downloaded_bytes=0,
+                    total_bytes=max(0, total_bytes),
+                    error="",
+                    started_at=time.time(),
+                    finished_at=0.0,
+                )
+            downloaded_bytes = 0
+            while True:
+                chunk = response.read(4 * 1024 * 1024)
+                if not chunk:
+                    break
+                handle.write(chunk)
+                downloaded_bytes += len(chunk)
+                if progress_label:
+                    _set_cloud_download_progress(downloaded_bytes=downloaded_bytes, total_bytes=max(total_bytes, downloaded_bytes))
+        os.replace(temp_path, destination)
+        if progress_label:
+            final_size = os.path.getsize(destination) if os.path.isfile(destination) else 0
+            _set_cloud_download_progress(
+                active=False,
+                downloaded_bytes=final_size,
+                total_bytes=final_size,
+                finished_at=time.time(),
+            )
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError, RuntimeError, ValueError):
+        logger.debug("Planetka clouds: failed downloading public cloud asset", exc_info=True)
+        if progress_label:
+            _set_cloud_download_progress(active=False, error=f"Failed downloading {safe_name}", finished_at=time.time())
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except OSError:
+            pass
+        return ""
+    return destination if os.path.isfile(destination) and os.path.getsize(destination) > 0 else ""
 
 
 def _refresh_remote_local_cloud_assets(force=False):
     global _local_cloud_asset_paths
 
-    if _local_cloud_asset_paths and not force:
+    if _local_cloud_asset_paths:
         return dict(_local_cloud_asset_paths)
 
     resolved = {}
     cache_dir = _local_clouds_dir()
-    for file_name in REMOTE_TEST_LOCAL_CLOUD_FILES:
+    for file_name in REMOTE_LOCAL_CLOUD_FILES:
         path = ""
         if cache_dir:
             candidate = os.path.join(cache_dir, file_name)
             if os.path.isfile(candidate):
                 path = candidate
-        if not path and force:
-            try:
-                path = resolve_remote_asset(REMOTE_LOCAL_CLOUDS_FOLDER, file_name)
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                logger.debug("Planetka clouds: failed resolving local cloud texture asset", exc_info=True)
-                path = ""
         if path and os.path.isfile(path):
             resolved[file_name] = path
     _local_cloud_asset_paths = resolved
     return dict(_local_cloud_asset_paths)
 
 
+def _resolve_remote_local_cloud_asset(file_name, progress_label=""):
+    global _local_cloud_asset_paths
+
+    safe_name = os.path.basename(str(file_name or ""))
+    if safe_name not in REMOTE_LOCAL_CLOUD_FILES:
+        return ""
+
+    cached = _refresh_remote_local_cloud_assets(force=False).get(safe_name, "")
+    if cached and os.path.isfile(cached):
+        if progress_label:
+            _set_cloud_download_progress(active=False, error="", file_name=safe_name)
+        return cached
+
+    try:
+        resolved = _download_public_cloud_asset(REMOTE_LOCAL_CLOUDS_FOLDER, safe_name, progress_label=progress_label)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka clouds: failed resolving selected local cloud texture asset", exc_info=True)
+        resolved = ""
+    if resolved and os.path.isfile(resolved):
+        _local_cloud_asset_paths[safe_name] = resolved
+        return resolved
+    return ""
+
+
+def _local_cloud_thumbnail_file_name(file_name):
+    safe_name = os.path.basename(str(file_name or ""))
+    stem, _ext = os.path.splitext(safe_name)
+    return f"{stem}.png" if stem else ""
+
+
+def _magick_binary():
+    return shutil.which("magick") or shutil.which("convert")
+
+
+def _identify_image_dimensions(path):
+    source = os.path.abspath(str(path or ""))
+    if not source or not os.path.isfile(source):
+        return None
+    magick = _magick_binary()
+    if not magick:
+        return None
+    try:
+        output = subprocess.check_output(
+            [magick, "identify", "-format", "%w %h", source],
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+            text=True,
+        )
+        parts = str(output or "").strip().split()
+        if len(parts) >= 2:
+            return int(parts[0]), int(parts[1])
+    except (OSError, subprocess.SubprocessError, RuntimeError, TypeError, ValueError):
+        logger.debug("Planetka clouds: failed identifying local cloud texture dimensions", exc_info=True)
+    return None
+
+
+
+def _queried_gpu_texture_max_size():
+    try:
+        import gpu
+        max_size = int(gpu.capabilities.max_texture_size_get())
+        if max_size > 0:
+            return max_size
+    except (ImportError, AttributeError, RuntimeError, SystemError, TypeError, ValueError):
+        pass
+    return 0
+
+
+def _effective_local_cloud_gpu_texture_max_size():
+    """Return the maximum safe 2D texture edge for this Blender GPU backend."""
+    env_value = str(os.getenv("PLANETKA_CLOUD_MAX_TEXTURE_SIZE", "") or "").strip()
+    if env_value:
+        try:
+            override = int(float(env_value))
+            if override > 0:
+                return max(int(LOCAL_CLOUD_GPU_TEXTURE_MAX_SIZE_MIN), override)
+        except (TypeError, ValueError):
+            pass
+    queried = _queried_gpu_texture_max_size()
+    if queried > 0:
+        return max(int(LOCAL_CLOUD_GPU_TEXTURE_MAX_SIZE_MIN), queried)
+    return int(LOCAL_CLOUD_GPU_TEXTURE_MAX_SIZE_FALLBACK)
+
+
+def _local_cloud_proxy_path(source_path, max_texture_size=None):
+    source = os.path.abspath(str(source_path or ""))
+    cache_dir = _local_cloud_gpu_textures_dir()
+    if not source or not cache_dir:
+        return ""
+    stem, _ext = os.path.splitext(os.path.basename(source))
+    digest = hashlib.sha1(source.encode("utf-8", errors="ignore")).hexdigest()[:12]
+    limit = int(max_texture_size or _effective_local_cloud_gpu_texture_max_size())
+    return os.path.join(cache_dir, f"{stem}_{digest}_gpu{limit}.png")
+
+
+def _local_cloud_adaptive_proxy_path(source_path, d_level, max_texture_size=None):
+    source = os.path.abspath(str(source_path or ""))
+    cache_dir = _local_cloud_adaptive_textures_dir()
+    if not source or not cache_dir:
+        return ""
+    stem, _ext = os.path.splitext(os.path.basename(source))
+    try:
+        stat = os.stat(source)
+        signature = f"{source}|{int(stat.st_mtime_ns)}|{int(stat.st_size)}"
+    except OSError:
+        signature = source
+    digest = hashlib.sha1(signature.encode("utf-8", errors="ignore")).hexdigest()[:12]
+    limit = int(max_texture_size or _effective_local_cloud_gpu_texture_max_size())
+    return os.path.join(cache_dir, f"{stem}_{digest}_d{int(d_level):03d}_max{limit}.png")
+
+
+def _local_cloud_thumbnail_proxy(filename):
+    safe_name = os.path.basename(str(filename or ""))
+    if not safe_name:
+        return ""
+    thumb_name = _local_cloud_thumbnail_file_name(safe_name)
+    if not thumb_name:
+        return ""
+    candidate = os.path.join(_local_cloud_thumbnails_dir(), thumb_name)
+    if os.path.isfile(candidate):
+        return candidate
+    try:
+        return _download_public_cloud_asset(REMOTE_LOCAL_CLOUD_THUMBNAILS_FOLDER, thumb_name)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka clouds: failed resolving local cloud thumbnail fallback", exc_info=True)
+    return ""
+
+
+def _gpu_safe_local_cloud_texture_path(source_path, filename="", max_texture_size=None):
+    source = os.path.abspath(str(source_path or ""))
+    if not source or not os.path.isfile(source):
+        return ""
+
+    max_size = int(max_texture_size or _effective_local_cloud_gpu_texture_max_size())
+    dimensions = _identify_image_dimensions(source)
+    if dimensions is not None:
+        width, height = dimensions
+        if max(width, height) <= max_size:
+            return source
+
+    magick = _magick_binary()
+    target = _local_cloud_proxy_path(source, max_texture_size=max_size)
+    temp_target = f"{target}.part.{os.getpid()}" if target else ""
+    if magick and target:
+        try:
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            if (
+                os.path.isfile(target)
+                and os.path.getmtime(target) >= os.path.getmtime(source)
+                and os.path.getsize(target) > 0
+            ):
+                return target
+            resize_limit = f"{max_size}x{max_size}>"
+            subprocess.check_call(
+                [
+                    magick,
+                    source,
+                    "-auto-orient",
+                    "-resize",
+                    resize_limit,
+                    "-depth",
+                    "8",
+                    temp_target,
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=180,
+            )
+            os.replace(temp_target, target)
+            if os.path.isfile(target) and os.path.getsize(target) > 0:
+                return target
+        except (OSError, subprocess.SubprocessError, RuntimeError, TypeError, ValueError):
+            logger.debug("Planetka clouds: failed creating GPU-safe local cloud texture proxy", exc_info=True)
+            try:
+                if temp_target and os.path.exists(temp_target):
+                    os.remove(temp_target)
+            except OSError:
+                pass
+
+    fallback = _local_cloud_thumbnail_proxy(filename)
+    if fallback and os.path.isfile(fallback):
+        return fallback
+
+    if dimensions is not None:
+        width, height = dimensions
+        if max(width, height) > max_size:
+            return ""
+    return source
+
+
+def _render_resolution_pixels(scene):
+    render = getattr(scene, "render", None) if scene else None
+    try:
+        percentage = float(getattr(render, "resolution_percentage", 100.0) or 100.0) / 100.0
+        width = int(float(getattr(render, "resolution_x", 1920) or 1920) * percentage)
+        height = int(float(getattr(render, "resolution_y", 1080) or 1080) * percentage)
+    except (TypeError, ValueError, AttributeError):
+        width, height = 1920, 1080
+    return max(1, width), max(1, height)
+
+
+def _camera_world_location(scene):
+    camera = getattr(scene, "camera", None) if scene else None
+    if camera is None:
+        return None
+    try:
+        return camera.matrix_world.translation.copy()
+    except (AttributeError, TypeError, RuntimeError):
+        return None
+
+
+def _estimate_local_cloud_projected_pixels(obj, scene, source_dimensions):
+    if obj is None or scene is None or not source_dimensions:
+        return 0.0
+    camera = getattr(scene, "camera", None)
+    camera_location = _camera_world_location(scene)
+    if camera is None or camera_location is None:
+        return 0.0
+
+    try:
+        lon = math.radians(float(getattr(obj, LOCAL_CLOUD_PROP_LONGITUDE, 0.0)))
+        lat = math.radians(float(getattr(obj, LOCAL_CLOUD_PROP_LATITUDE, 0.0)))
+        altitude_m = float(getattr(obj, LOCAL_CLOUD_PROP_ALTITUDE_M, DEFAULT_CLOUD_ALTITUDE_M))
+        earth_radius = max(1e-6, float(_earth_radius_blender_units(get_earth_object())))
+        radius = earth_radius * max(0.001, (1.0 + (altitude_m / 6371000.0)))
+        normal = Vector((math.cos(lat) * math.cos(lon), math.cos(lat) * math.sin(lon), math.sin(lat)))
+        if normal.length <= 1e-9:
+            normal = Vector((0.0, 0.0, 1.0))
+        else:
+            normal.normalize()
+        center = normal * radius
+        half_angle = math.radians(abs(float(_local_cloud_half_angle_deg(getattr(obj, LOCAL_CLOUD_PROP_SIZE_COEF, 1.0)))))
+        world_diameter = 2.0 * radius * abs(math.sin(half_angle))
+        distance = max(1e-6, float((camera_location - center).length))
+    except (TypeError, ValueError, RuntimeError, AttributeError):
+        return 0.0
+    if world_diameter <= 0.0:
+        return 0.0
+
+    width, height = _render_resolution_pixels(scene)
+    data = getattr(camera, "data", None)
+    camera_type = str(getattr(data, "type", "PERSP") or "PERSP").upper()
+    try:
+        if camera_type == "ORTHO":
+            ortho_scale = max(1e-6, float(getattr(data, "ortho_scale", 1.0) or 1.0))
+            pixels_per_unit = max(width, height) / ortho_scale
+            return max(0.0, world_diameter * pixels_per_unit)
+        angle = max(1e-6, float(getattr(data, "angle", math.radians(50.0)) or math.radians(50.0)))
+        focal_pixels = max(width, height) / (2.0 * math.tan(angle * 0.5))
+        return max(0.0, (world_diameter / distance) * focal_pixels)
+    except (TypeError, ValueError, RuntimeError, AttributeError):
+        return 0.0
+
+
+def _coarser_local_cloud_d_level(d_level, multiplier=1):
+    levels = tuple(int(level) for level in LOCAL_CLOUD_ADAPTIVE_D_LEVELS if int(level) > 0)
+    if not levels:
+        return max(1, int(d_level or 1))
+    try:
+        target = max(1, int(d_level or 1) * max(1, int(multiplier or 1)))
+    except (TypeError, ValueError):
+        target = 1
+    candidates = [level for level in levels if level >= target]
+    return int(min(candidates) if candidates else max(levels))
+
+
+def _coarser_vdb_cloud_d_level(d_level, multiplier=1):
+    levels = tuple(int(level) for level in VDB_CLOUD_ADAPTIVE_D_LEVELS if int(level) > 0)
+    if not levels:
+        return max(1, int(d_level or 1))
+    try:
+        target = max(1, int(d_level or 1) * max(1, int(multiplier or 1)))
+    except (TypeError, ValueError):
+        target = 1
+    candidates = [level for level in levels if level >= target]
+    return int(min(candidates) if candidates else max(levels))
+
+
+def _select_local_cloud_adaptive_resolution(source_dimensions, projected_pixels, max_texture_size=None, d_level_multiplier=1):
+    if not source_dimensions:
+        return {
+            "d_level": 1,
+            "ideal_d_level": 1,
+            "gpu_limit": int(max_texture_size or _effective_local_cloud_gpu_texture_max_size()),
+            "warning": "",
+        }
+    source_edge = max(1, int(max(source_dimensions)))
+    gpu_limit = max(1, int(max_texture_size or _effective_local_cloud_gpu_texture_max_size()))
+    levels = tuple(int(level) for level in LOCAL_CLOUD_ADAPTIVE_D_LEVELS if int(level) > 0)
+    if not levels:
+        levels = (1,)
+    gpu_safe_levels = [level for level in levels if math.ceil(source_edge / float(level)) <= gpu_limit]
+    if not gpu_safe_levels:
+        gpu_safe_levels = [max(levels)]
+    # D001 is allowed even when the source exceeds the GPU cap because the
+    # builder creates a max-size proxy, e.g. d001_max16384, instead of loading
+    # the original oversized image into Blender.
+    if 1 in levels and 1 not in gpu_safe_levels:
+        gpu_safe_levels = [1, *gpu_safe_levels]
+    min_gpu_safe_level = min(gpu_safe_levels)
+
+    try:
+        required_edge = float(projected_pixels) * float(LOCAL_CLOUD_ADAPTIVE_OVERSAMPLE)
+    except (TypeError, ValueError):
+        required_edge = 0.0
+
+    if required_edge <= 1.0:
+        ideal_d_level = max(levels)
+    else:
+        candidates = [level for level in levels if (source_edge / float(level)) >= required_edge]
+        ideal_d_level = max(candidates) if candidates else min(levels)
+
+    d_level = max(int(ideal_d_level), int(min_gpu_safe_level))
+    if d_level not in gpu_safe_levels:
+        coarser = [level for level in gpu_safe_levels if level >= d_level]
+        d_level = min(coarser) if coarser else max(gpu_safe_levels)
+
+    requested_d_level = int(d_level)
+    d_level = _coarser_local_cloud_d_level(d_level, multiplier=d_level_multiplier)
+
+    warning = ""
+    if int(d_level) > int(ideal_d_level) or (int(d_level) == 1 and source_edge > gpu_limit):
+        warning = (
+            f"Cloud texture scaled down to {gpu_limit:,} px to fit this GPU texture-size limit."
+        )
+    return {
+        "d_level": int(d_level),
+        "ideal_d_level": int(ideal_d_level),
+        "requested_d_level": int(requested_d_level),
+        "gpu_limit": int(gpu_limit),
+        "warning": warning,
+    }
+
+
+def _select_local_cloud_adaptive_d_level(source_dimensions, projected_pixels):
+    return int(_select_local_cloud_adaptive_resolution(source_dimensions, projected_pixels).get("d_level", 1))
+
+
+def _build_local_cloud_adaptive_texture(source_path, d_level, source_dimensions, max_texture_size=None):
+    source = os.path.abspath(str(source_path or ""))
+    if not source or not os.path.isfile(source):
+        return ""
+    d_level = max(1, int(d_level))
+    max_size = int(max_texture_size or _effective_local_cloud_gpu_texture_max_size())
+    if d_level <= 1 and source_dimensions and max(source_dimensions) <= max_size:
+        return source
+
+    target = _local_cloud_adaptive_proxy_path(source, d_level, max_texture_size=max_size)
+    if not target:
+        return _gpu_safe_local_cloud_texture_path(source, max_texture_size=max_size)
+    try:
+        if (
+            os.path.isfile(target)
+            and os.path.getsize(target) > 0
+            and os.path.getmtime(target) >= os.path.getmtime(source)
+        ):
+            return target
+    except OSError:
+        pass
+
+    magick = _magick_binary()
+    if not magick:
+        return _gpu_safe_local_cloud_texture_path(source, max_texture_size=max_size)
+    temp_target = f"{target}.part.{os.getpid()}"
+    try:
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        if source_dimensions:
+            source_edge = max(1, int(max(source_dimensions)))
+        else:
+            source_edge = max_size * d_level
+        edge = max(1, min(max_size, int(math.ceil(source_edge / float(d_level)))))
+        subprocess.check_call(
+            [
+                magick,
+                source,
+                "-auto-orient",
+                "-resize",
+                f"{edge}x{edge}>",
+                "-depth",
+                "8",
+                temp_target,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=240,
+        )
+        os.replace(temp_target, target)
+        if os.path.isfile(target) and os.path.getsize(target) > 0:
+            return target
+    except (OSError, subprocess.SubprocessError, RuntimeError, TypeError, ValueError):
+        logger.debug("Planetka clouds: failed creating adaptive texture-based cloud proxy", exc_info=True)
+        try:
+            if temp_target and os.path.exists(temp_target):
+                os.remove(temp_target)
+        except OSError:
+            pass
+    return _gpu_safe_local_cloud_texture_path(source, max_texture_size=max_size)
+
+
+def _local_cloud_adaptive_texture_variant(source_path, obj, scene=None, filename="", d_level_multiplier=1):
+    source = os.path.abspath(str(source_path or ""))
+    if not source or not os.path.isfile(source):
+        return {}
+    max_size = _effective_local_cloud_gpu_texture_max_size()
+    dimensions = _identify_image_dimensions(source)
+    if dimensions is None:
+        texture_path = _gpu_safe_local_cloud_texture_path(source, filename=filename, max_texture_size=max_size)
+        return {
+            "path": os.path.abspath(texture_path) if texture_path else "",
+            "d_level": 1,
+            "projected_pixels": 0.0,
+            "gpu_limit": int(max_size),
+            "warning": "",
+        }
+    projected_pixels = _estimate_local_cloud_projected_pixels(obj, scene, dimensions)
+    selection = _select_local_cloud_adaptive_resolution(
+        dimensions,
+        projected_pixels,
+        max_texture_size=max_size,
+        d_level_multiplier=d_level_multiplier,
+    )
+    d_level = int(selection.get("d_level", 1) or 1)
+    texture_path = _build_local_cloud_adaptive_texture(source, d_level, dimensions, max_texture_size=max_size)
+    return {
+        "path": os.path.abspath(texture_path) if texture_path else "",
+        "d_level": int(d_level),
+        "projected_pixels": float(projected_pixels),
+        "gpu_limit": int(max_size),
+        "warning": str(selection.get("warning", "") or ""),
+    }
+
+
+def _adaptive_local_cloud_texture_path(source_path, obj, scene=None, filename="", d_level_multiplier=1):
+    variant = _local_cloud_adaptive_texture_variant(
+        source_path,
+        obj,
+        scene=scene,
+        filename=filename,
+        d_level_multiplier=d_level_multiplier,
+    )
+    texture_path = str(variant.get("path", "") or "")
+    if not texture_path:
+        return ""
+    try:
+        obj[LOCAL_CLOUD_D_LEVEL_PROP] = int(variant.get("d_level", 1) or 1)
+        obj[LOCAL_CLOUD_PROJECTED_PIXELS_PROP] = float(variant.get("projected_pixels", 0.0) or 0.0)
+        obj[LOCAL_CLOUD_LOADED_TEXTURE_PROP] = os.path.abspath(texture_path)
+        obj[LOCAL_CLOUD_GPU_LIMIT_PROP] = int(variant.get("gpu_limit", _effective_local_cloud_gpu_texture_max_size()) or _effective_local_cloud_gpu_texture_max_size())
+        obj[LOCAL_CLOUD_DOWNSCALE_WARNING_PROP] = str(variant.get("warning", "") or "")
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        pass
+    return texture_path
+
+
+def _resolve_local_cloud_source_path(obj, allow_download=True):
+    if not _is_local_cloud_object(obj):
+        return ""
+    source_path = str(obj.get(LOCAL_CLOUD_OBJ_TEXTURE_PATH_PROP, "") or "")
+    if source_path:
+        source_path = bpy.path.abspath(source_path)
+    if not source_path or not os.path.isfile(source_path):
+        texture_name = str(getattr(obj, LOCAL_CLOUD_OBJ_TEXTURE_PROP, "") or "")
+        loaded_path = str(obj.get(LOCAL_CLOUD_LOADED_TEXTURE_PROP, "") or "")
+        if loaded_path:
+            loaded_path = bpy.path.abspath(loaded_path)
+        if loaded_path and os.path.isfile(loaded_path):
+            # Existing scenes may only retain the GPU-safe proxy because the
+            # original EXR lived in a temporary cache. It is still a valid
+            # source for creating a lower-resolution display proxy.
+            source_path = loaded_path
+        elif allow_download and texture_name and texture_name in REMOTE_LOCAL_CLOUD_FILES:
+            source_path = _resolve_remote_local_cloud_asset(
+                texture_name,
+                progress_label="Downloading Texture-Based Cloud",
+            )
+            if source_path and os.path.isfile(source_path):
+                try:
+                    obj[LOCAL_CLOUD_OBJ_TEXTURE_PATH_PROP] = os.path.abspath(source_path)
+                except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                    pass
+        if not source_path or not os.path.isfile(source_path):
+            return ""
+    return source_path
+
+
+def _store_local_cloud_prepared_variant(obj, variant, preview=False):
+    texture_path = str((variant or {}).get("path", "") or "")
+    if not texture_path:
+        return False
+    path_prop = LOCAL_CLOUD_PREVIEW_TEXTURE_PROP if preview else LOCAL_CLOUD_FINAL_TEXTURE_PROP
+    d_prop = LOCAL_CLOUD_PREVIEW_D_LEVEL_PROP if preview else LOCAL_CLOUD_FINAL_D_LEVEL_PROP
+    try:
+        obj[path_prop] = os.path.abspath(texture_path)
+        obj[d_prop] = int((variant or {}).get("d_level", 1) or 1)
+        obj[LOCAL_CLOUD_PROJECTED_PIXELS_PROP] = float((variant or {}).get("projected_pixels", 0.0) or 0.0)
+        obj[LOCAL_CLOUD_GPU_LIMIT_PROP] = int((variant or {}).get("gpu_limit", _effective_local_cloud_gpu_texture_max_size()) or _effective_local_cloud_gpu_texture_max_size())
+        obj[LOCAL_CLOUD_DOWNSCALE_WARNING_PROP] = str((variant or {}).get("warning", "") or "")
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka clouds: failed storing prepared texture-based cloud variant", exc_info=True)
+    return True
+
+
+def _prepare_local_cloud_texture_variants(obj, scene=None, allow_download=True):
+    if not _is_local_cloud_object(obj):
+        return False
+    source_path = _resolve_local_cloud_source_path(obj, allow_download=allow_download)
+    if not source_path:
+        return False
+    texture_name = str(getattr(obj, LOCAL_CLOUD_OBJ_TEXTURE_PROP, "") or "")
+    final_variant = _local_cloud_adaptive_texture_variant(
+        source_path,
+        obj,
+        scene=scene,
+        filename=texture_name,
+        d_level_multiplier=1,
+    )
+    preview_variant = _local_cloud_adaptive_texture_variant(
+        source_path,
+        obj,
+        scene=scene,
+        filename=texture_name,
+        d_level_multiplier=4,
+    )
+    final_ok = _store_local_cloud_prepared_variant(obj, final_variant, preview=False)
+    preview_ok = _store_local_cloud_prepared_variant(obj, preview_variant, preview=True)
+    return bool(final_ok and preview_ok)
+
+
+def _apply_prepared_local_cloud_texture(obj, preview=False, scene=None, allow_prepare_missing=True):
+    if not _is_local_cloud_object(obj):
+        return False
+    material = _resolve_object_material(obj)
+    image_node = _find_image_texture_node(material)
+    if image_node is None:
+        return False
+
+    path_prop = LOCAL_CLOUD_PREVIEW_TEXTURE_PROP if preview else LOCAL_CLOUD_FINAL_TEXTURE_PROP
+    d_prop = LOCAL_CLOUD_PREVIEW_D_LEVEL_PROP if preview else LOCAL_CLOUD_FINAL_D_LEVEL_PROP
+    texture_path = str(obj.get(path_prop, "") or "")
+    if texture_path:
+        texture_path = bpy.path.abspath(texture_path)
+    if (not texture_path or not os.path.isfile(texture_path)) and allow_prepare_missing:
+        if not _prepare_local_cloud_texture_variants(obj, scene=scene, allow_download=True):
+            return False
+        texture_path = str(obj.get(path_prop, "") or "")
+        if texture_path:
+            texture_path = bpy.path.abspath(texture_path)
+    if not texture_path or not os.path.isfile(texture_path):
+        return False
+
+    material = _resolve_object_material(obj)
+    image_node = _find_image_texture_node(material)
+    if image_node is None:
+        return False
+    current_image = getattr(image_node, "image", None)
+    current_path = bpy.path.abspath(str(getattr(current_image, "filepath", "") or "")) if current_image else ""
+    if os.path.abspath(current_path) != os.path.abspath(texture_path):
+        try:
+            image = bpy.data.images.load(texture_path, check_existing=True)
+            image_node.image = image
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka clouds: failed loading prepared texture-based cloud texture", exc_info=True)
+            return False
+    try:
+        obj[LOCAL_CLOUD_LOADED_TEXTURE_PROP] = os.path.abspath(texture_path)
+        obj[LOCAL_CLOUD_D_LEVEL_PROP] = int(obj.get(d_prop, 1) or 1)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        pass
+    return True
+
+
+def _update_local_cloud_adaptive_texture(obj, scene=None, preview=False):
+    if not _is_local_cloud_object(obj):
+        return False
+    if not _prepare_local_cloud_texture_variants(obj, scene=scene, allow_download=True):
+        logger.error("Planetka clouds: texture-based cloud texture variants could not be prepared")
+        return False
+    return _apply_prepared_local_cloud_texture(
+        obj,
+        preview=preview,
+        scene=scene,
+        allow_prepare_missing=False,
+    )
+
+
+def _refresh_remote_local_cloud_thumbnails(force=False):
+    global _local_cloud_thumbnail_paths
+
+    if (
+        _local_cloud_thumbnail_paths
+        and not force
+        and all(
+            os.path.isfile(_local_cloud_thumbnail_paths.get(file_name, ""))
+            and os.path.getsize(_local_cloud_thumbnail_paths.get(file_name, "")) > 0
+            for file_name in REMOTE_LOCAL_CLOUD_FILES
+        )
+    ):
+        return dict(_local_cloud_thumbnail_paths)
+
+    resolved = dict(_local_cloud_thumbnail_paths) if not force else {}
+    cache_dir = _local_cloud_thumbnails_dir()
+    for file_name in REMOTE_LOCAL_CLOUD_FILES:
+        thumb_name = _local_cloud_thumbnail_file_name(file_name)
+        path = ""
+        if cache_dir and thumb_name:
+            candidate = os.path.join(cache_dir, thumb_name)
+            if os.path.isfile(candidate) and os.path.getsize(candidate) > 0:
+                path = candidate
+        if not path and thumb_name:
+            try:
+                path = _download_public_cloud_asset(REMOTE_LOCAL_CLOUD_THUMBNAILS_FOLDER, thumb_name)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka clouds: failed resolving local cloud thumbnail asset", exc_info=True)
+                path = ""
+        if path and os.path.isfile(path):
+            resolved[file_name] = path
+    _local_cloud_thumbnail_paths = resolved
+    return dict(_local_cloud_thumbnail_paths)
+
+
 def _refresh_remote_vdb_cloud_assets(force=False):
     global _vdb_cloud_asset_paths
 
-    if _vdb_cloud_asset_paths and not force:
+    if _vdb_cloud_asset_paths:
         return dict(_vdb_cloud_asset_paths)
 
     resolved = {}
     cache_dir = _vdb_clouds_dir()
-    for file_name in REMOTE_TEST_VDB_CLOUD_FILES:
+    for file_name in REMOTE_VDB_CLOUD_FILES:
         path = ""
         if cache_dir:
             candidate = os.path.join(cache_dir, file_name)
             if os.path.isfile(candidate):
                 path = candidate
-        if not path and force:
-            try:
-                path = resolve_remote_asset(REMOTE_VDB_CLOUDS_FOLDER, file_name)
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                logger.debug("Planetka clouds: failed resolving VDB cloud asset", exc_info=True)
-                path = ""
         if path and os.path.isfile(path):
             resolved[file_name] = path
     _vdb_cloud_asset_paths = resolved
     return dict(_vdb_cloud_asset_paths)
 
 
-def _build_local_cloud_signature(asset_paths):
-    if not asset_paths:
-        return None
-    entries = []
-    for name, path in sorted(asset_paths.items()):
+def _split_vdb_lod_filename(file_name):
+    safe_name = os.path.basename(str(file_name or ""))
+    stem, ext = os.path.splitext(safe_name)
+    if ext.lower() != ".vdb" or not stem:
+        return safe_name, 1
+    match = re.match(r"^(?P<base>.+)_d(?P<level>\d{3})$", stem, flags=re.IGNORECASE)
+    if not match:
+        return safe_name, 1
+    try:
+        level = max(1, int(match.group("level")))
+    except (TypeError, ValueError):
+        level = 1
+    return f"{match.group('base')}{ext}", level
+
+
+def _vdb_lod_filename(base_file_name, d_level):
+    base_name, _current_level = _split_vdb_lod_filename(base_file_name)
+    stem, ext = os.path.splitext(os.path.basename(base_name))
+    if not stem or ext.lower() != ".vdb":
+        return ""
+    try:
+        level = max(1, int(d_level))
+    except (TypeError, ValueError):
+        level = 1
+    if level <= 1:
+        return f"{stem}{ext}"
+    return f"{stem}_d{level:03d}{ext}"
+
+
+def _is_known_remote_vdb_cloud_file(file_name):
+    base_name, _level = _split_vdb_lod_filename(file_name)
+    return bool(base_name in REMOTE_VDB_CLOUD_FILES)
+
+
+def _candidate_local_vdb_lod_path(source_path, d_level):
+    source = bpy.path.abspath(str(source_path or ""))
+    if not source:
+        return ""
+    source_dir = os.path.dirname(source)
+    candidate_name = _vdb_lod_filename(os.path.basename(source), d_level)
+    if not source_dir or not candidate_name:
+        return ""
+    candidate = os.path.join(source_dir, candidate_name)
+    return os.path.abspath(candidate) if os.path.isfile(candidate) else ""
+
+
+def _resolve_remote_vdb_cloud_asset(file_name, progress_label=""):
+    global _vdb_cloud_asset_paths
+
+    safe_name = os.path.basename(str(file_name or ""))
+    if not _is_known_remote_vdb_cloud_file(safe_name):
+        return ""
+
+    requested_base, requested_level = _split_vdb_lod_filename(safe_name)
+    candidate_names = []
+    minimum_level = 2 if safe_name in REMOTE_VDB_CLOUD_UNPUBLISHED_BASE_FILES else int(requested_level)
+    for level in sorted(
+        {int(value) for value in VDB_CLOUD_ADAPTIVE_D_LEVELS if int(value) >= int(minimum_level)}
+    ):
+        candidate = _vdb_lod_filename(requested_base, level)
+        if candidate and candidate not in candidate_names:
+            candidate_names.append(candidate)
+    if safe_name not in candidate_names and safe_name not in REMOTE_VDB_CLOUD_UNPUBLISHED_BASE_FILES:
+        candidate_names.insert(0, safe_name)
+
+    assets = _refresh_remote_vdb_cloud_assets(force=False)
+    for candidate_name in candidate_names:
+        cached = assets.get(candidate_name, "")
+        if cached and os.path.isfile(cached):
+            if progress_label:
+                _set_cloud_download_progress(active=False, error="", file_name=candidate_name)
+            return cached
+
+    for candidate_name in candidate_names:
         try:
-            mtime_ns = os.stat(path).st_mtime_ns
+            resolved = _download_public_cloud_asset(REMOTE_VDB_CLOUDS_FOLDER, candidate_name, progress_label=progress_label)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka clouds: failed resolving selected VDB cloud asset", exc_info=True)
+            resolved = ""
+        if resolved and os.path.isfile(resolved):
+            _vdb_cloud_asset_paths[candidate_name] = resolved
+            return resolved
+    return ""
+
+
+def _vdb_cloud_thumbnail_file_name(file_name):
+    safe_name = os.path.basename(str(file_name or ""))
+    stem, _ext = os.path.splitext(safe_name)
+    return f"{stem}.png" if stem else ""
+
+
+def _refresh_remote_vdb_cloud_thumbnails(force=False):
+    global _vdb_cloud_thumbnail_paths
+
+    if (
+        _vdb_cloud_thumbnail_paths
+        and not force
+        and all(
+            os.path.isfile(_vdb_cloud_thumbnail_paths.get(file_name, ""))
+            and os.path.getsize(_vdb_cloud_thumbnail_paths.get(file_name, "")) > 0
+            for file_name in REMOTE_VDB_CLOUD_FILES
+        )
+    ):
+        return dict(_vdb_cloud_thumbnail_paths)
+
+    resolved = dict(_vdb_cloud_thumbnail_paths) if not force else {}
+    cache_dir = _vdb_cloud_thumbnails_dir()
+    for file_name in REMOTE_VDB_CLOUD_FILES:
+        thumb_name = _vdb_cloud_thumbnail_file_name(file_name)
+        path = ""
+        if cache_dir and thumb_name:
+            candidate = os.path.join(cache_dir, thumb_name)
+            if os.path.isfile(candidate) and os.path.getsize(candidate) > 0:
+                path = candidate
+        if not path and thumb_name:
+            try:
+                path = _download_public_cloud_asset(REMOTE_VDB_CLOUD_THUMBNAILS_FOLDER, thumb_name)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka clouds: failed resolving VDB cloud thumbnail asset", exc_info=True)
+                path = ""
+        if path and os.path.isfile(path):
+            resolved[file_name] = path
+    _vdb_cloud_thumbnail_paths = resolved
+    return dict(_vdb_cloud_thumbnail_paths)
+
+
+def _vdb_cloud_preset_items(_self=None, _context=None):
+    items = _ensure_vdb_cloud_previews()
+    if items:
+        return items
+    return [("NONE", "No VDB Cloud Presets Found", _vdb_clouds_dir(), 0, 0)]
+
+
+def _build_local_cloud_signature(thumbnail_paths):
+    entries = []
+    for name in REMOTE_LOCAL_CLOUD_FILES:
+        path = thumbnail_paths.get(name, "")
+        try:
+            mtime_ns = os.stat(path).st_mtime_ns if path else 0
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             mtime_ns = 0
         entries.append((name, mtime_ns))
     return (
-        os.path.normcase(os.path.normpath(_local_clouds_dir() or "")),
+        os.path.normcase(os.path.normpath(_local_cloud_thumbnails_dir() or "")),
         tuple(entries),
     )
+
+
+def _build_vdb_cloud_signature(thumbnail_paths):
+    entries = []
+    for name in REMOTE_VDB_CLOUD_FILES:
+        path = thumbnail_paths.get(name, "")
+        try:
+            mtime_ns = os.stat(path).st_mtime_ns if path else 0
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            mtime_ns = 0
+        entries.append((name, mtime_ns))
+    return (
+        os.path.normcase(os.path.normpath(_vdb_cloud_thumbnails_dir() or "")),
+        tuple(entries),
+    )
+
+
+def _preview_items_have_icons(items, expected_count):
+    if not items or len(items) < int(expected_count):
+        return False
+    for item in items:
+        try:
+            if int(item[3]) <= 0:
+                return False
+        except (TypeError, ValueError, IndexError):
+            return False
+    return True
+
+
+def _replace_preview_collection(collection):
+    if collection is not None:
+        try:
+            bpy.utils.previews.remove(collection)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka clouds: failed replacing preview collection", exc_info=True)
+    return bpy.utils.previews.new()
 
 
 def _ensure_local_cloud_previews(force=False):
@@ -246,49 +1372,84 @@ def _ensure_local_cloud_previews(force=False):
     global _local_cloud_preview_signature
     global _local_cloud_enum_items
 
-    asset_paths = _refresh_remote_local_cloud_assets(force=force)
-    signature = _build_local_cloud_signature(asset_paths)
+    thumbnail_paths = _refresh_remote_local_cloud_thumbnails(force=force)
+    signature = _build_local_cloud_signature(thumbnail_paths)
 
     if (
         not force
         and _local_cloud_preview_collection is not None
         and signature == _local_cloud_preview_signature
-        and _local_cloud_enum_items
+        and _preview_items_have_icons(_local_cloud_enum_items, len(REMOTE_LOCAL_CLOUD_FILES))
     ):
         return _local_cloud_enum_items
 
-    if _local_cloud_preview_collection is None:
-        _local_cloud_preview_collection = bpy.utils.previews.new()
-    else:
-        _local_cloud_preview_collection.clear()
+    _local_cloud_preview_collection = _replace_preview_collection(_local_cloud_preview_collection)
 
-    _local_cloud_enum_items = []
+    items = []
     _local_cloud_preview_signature = signature
-
-    if not signature:
-        return _local_cloud_enum_items
 
     _folder_key, file_entries = signature
     for idx, (filename, _mtime_ns) in enumerate(file_entries):
-        path = asset_paths.get(filename, "")
-        if not path:
-            continue
+        path = thumbnail_paths.get(filename, "")
+        icon_id = 0
         key = f"local_cloud_{filename}"
-        try:
-            thumb = _local_cloud_preview_collection.load(key, path, 'IMAGE')
-            icon_id = thumb.icon_id
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            icon_id = 0
+        if path:
+            try:
+                thumb = _local_cloud_preview_collection.load(key, path, 'IMAGE')
+                icon_id = thumb.icon_id
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                icon_id = 0
         label = os.path.splitext(filename)[0]
-        _local_cloud_enum_items.append((filename, label, path, icon_id, idx))
+        description = f"Planetka Cloud mask: {filename}"
+        items.append((filename, label, description, icon_id, idx))
+    _local_cloud_enum_items = items
     return _local_cloud_enum_items
+
+
+def _ensure_vdb_cloud_previews(force=False):
+    global _vdb_cloud_preview_collection
+    global _vdb_cloud_preview_signature
+    global _vdb_cloud_enum_items
+
+    thumbnail_paths = _refresh_remote_vdb_cloud_thumbnails(force=force)
+    signature = _build_vdb_cloud_signature(thumbnail_paths)
+
+    if (
+        not force
+        and _vdb_cloud_preview_collection is not None
+        and signature == _vdb_cloud_preview_signature
+        and _preview_items_have_icons(_vdb_cloud_enum_items, len(REMOTE_VDB_CLOUD_FILES))
+    ):
+        return _vdb_cloud_enum_items
+
+    _vdb_cloud_preview_collection = _replace_preview_collection(_vdb_cloud_preview_collection)
+
+    items = []
+    _vdb_cloud_preview_signature = signature
+
+    _folder_key, file_entries = signature
+    for idx, (filename, _mtime_ns) in enumerate(file_entries):
+        path = thumbnail_paths.get(filename, "")
+        icon_id = 0
+        key = f"vdb_cloud_{filename}"
+        if path:
+            try:
+                thumb = _vdb_cloud_preview_collection.load(key, path, 'IMAGE')
+                icon_id = thumb.icon_id
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                icon_id = 0
+        label = os.path.splitext(filename)[0]
+        description = f"Planetka Cloud VDB preset: {filename}"
+        items.append((filename, label, description, icon_id, idx))
+    _vdb_cloud_enum_items = items
+    return _vdb_cloud_enum_items
 
 
 def _local_cloud_texture_items(_self, _context):
     items = _ensure_local_cloud_previews()
     if items:
         return items
-    return [("NONE", "No Local Cloud Textures Found", _local_clouds_dir(), 0, 0)]
+    return [("NONE", "No Texture-Based Cloud Textures Found", _local_clouds_dir(), 0, 0)]
 
 
 def _free_local_cloud_previews():
@@ -304,6 +1465,21 @@ def _free_local_cloud_previews():
         _local_cloud_preview_collection = None
     _local_cloud_preview_signature = None
     _local_cloud_enum_items = []
+
+
+def _free_vdb_cloud_previews():
+    global _vdb_cloud_preview_collection
+    global _vdb_cloud_preview_signature
+    global _vdb_cloud_enum_items
+
+    if _vdb_cloud_preview_collection is not None:
+        try:
+            bpy.utils.previews.remove(_vdb_cloud_preview_collection)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            _log_recoverable_once("PKA-CLOUDL-024", "Failed removing VDB cloud preview collection")
+        _vdb_cloud_preview_collection = None
+    _vdb_cloud_preview_signature = None
+    _vdb_cloud_enum_items = []
 
 
 def _find_layer_collection_recursive(layer_collection, target_name):
@@ -370,9 +1546,10 @@ def _ensure_cloud_collections(scene=None):
 
 def _sync_cloud_collection_visibility(scene, props):
     _ensure_cloud_collections(scene)
-    enable_global = bool(getattr(props, "enable_global_clouds", True)) if props else False
+    enable_global = bool(getattr(props, "enable_global_clouds", False)) if props else False
+    pro_enabled = is_pro_account()
     enable_local = bool(getattr(props, "enable_local_clouds", False)) if props else False
-    enable_vdb = bool(getattr(props, "enable_vdb_clouds", False)) if props else False
+    enable_vdb = bool(getattr(props, "enable_vdb_clouds", False)) and pro_enabled if props else False
 
     _set_collection_enabled(scene, CLOUDS_ROOT_COLLECTION_NAME, enable_global or enable_local or enable_vdb)
     _set_collection_enabled(scene, GLOBAL_CLOUDS_COLLECTION_NAME, enable_global)
@@ -400,6 +1577,22 @@ def _set_object_collections(obj, collections):
                 col.objects.link(obj)
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka clouds: failed linking object to collection", exc_info=True)
+
+
+def _ensure_cloud_parented_to_root(obj, scene=None):
+    if obj is None:
+        return None
+    scene = scene or getattr(bpy.context, "scene", None)
+    root = ensure_planetka_root(scene) if scene is not None else None
+    if root is None:
+        return None
+    try:
+        if getattr(obj, "parent", None) is not root:
+            obj.parent = root
+            obj.matrix_parent_inverse = root.matrix_world.inverted()
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka clouds: failed parenting cloud object to Planetka Root", exc_info=True)
+    return root
 
 
 def _is_cloud_cull_modifier(modifier):
@@ -549,6 +1742,13 @@ def _is_vdb_cloud_object(obj):
     if obj is None:
         return False
     try:
+        if str(obj.get(CLOUD_ROLE_KEY, "")) == VDB_CLOUD_TEMPLATE_ROLE:
+            return False
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        _log_recoverable_once("PKA-CLOUDL-025", "Failed reading VDB-template role custom property")
+    if str(getattr(obj, "name", "")) == VDB_CLOUD_TEMPLATE_OBJECT_NAME:
+        return False
+    try:
         if str(obj.get(CLOUD_ROLE_KEY, "")) == VDB_CLOUD_ROLE:
             return True
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
@@ -650,8 +1850,8 @@ def _next_vdb_cloud_name():
 def _local_cloud_material_name_for_object(object_name):
     match = re.match(rf"^{re.escape(LOCAL_CLOUD_NUMBERED_PREFIX)}(\d{{3}})$", str(object_name or ""))
     if match:
-        return f"Planetka Local Cloud Shader No {match.group(1)}"
-    return "Planetka Local Cloud Shader"
+        return f"Planetka Texture-Based Cloud Shader No {match.group(1)}"
+    return "Planetka Texture-Based Cloud Shader"
 
 
 def _vdb_cloud_material_name_for_object(object_name):
@@ -690,12 +1890,23 @@ def _set_local_cloud_texture_by_filename(obj, filename):
         return False
     if not filename or filename == "NONE":
         return False
+    if os.path.isfile(str(filename)):
+        texture_path = os.path.abspath(str(filename))
+    else:
+        texture_path = ""
+    if not texture_path:
+        existing_path = str(obj.get(LOCAL_CLOUD_OBJ_TEXTURE_PATH_PROP, "") or "")
+        if existing_path:
+            existing_path = bpy.path.abspath(existing_path)
+            if os.path.isfile(existing_path):
+                texture_path = os.path.abspath(existing_path)
     assets = _refresh_remote_local_cloud_assets(force=False)
-    if str(filename) not in assets:
-        assets = _refresh_remote_local_cloud_assets(force=True)
-    texture_path = assets.get(str(filename), "")
-    if not texture_path and os.path.isfile(str(filename)):
-        texture_path = str(filename)
+    if not texture_path and str(filename) not in assets:
+        path = _resolve_remote_local_cloud_asset(str(filename))
+        if path:
+            assets = {**assets, str(filename): path}
+    if not texture_path:
+        texture_path = assets.get(str(filename), "")
     if not os.path.isfile(texture_path):
         return False
 
@@ -705,12 +1916,22 @@ def _set_local_cloud_texture_by_filename(obj, filename):
         return False
 
     try:
-        image = bpy.data.images.load(texture_path, check_existing=True)
-        image_node.image = image
-        return True
+        obj[LOCAL_CLOUD_OBJ_TEXTURE_PATH_PROP] = os.path.abspath(texture_path)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka clouds: failed loading local cloud texture", exc_info=True)
-    return False
+        pass
+
+    scene = getattr(bpy.context, "scene", None)
+    props = getattr(scene, "planetka", None) if scene else None
+    preview = not bool(getattr(props, "view_cloud_subdivision", False)) if props else True
+    if not _prepare_local_cloud_texture_variants(obj, scene=scene, allow_download=False):
+        logger.error("Planetka clouds: local cloud texture variants could not be prepared: %s", texture_path)
+        return False
+    return _apply_prepared_local_cloud_texture(
+        obj,
+        preview=preview,
+        scene=scene,
+        allow_prepare_missing=False,
+    )
 
 
 def _is_named_value_node(node, node_name):
@@ -865,103 +2086,54 @@ def _set_group_input_if_present(group_node, input_names, value):
 
 def _local_cloud_half_angle_deg(size_coef):
     try:
-        safe_size = float(size_coef)
+        raw_size = float(size_coef)
     except (TypeError, ValueError):
-        safe_size = 1.0
-    safe_size = max(0.05, min(10.0, safe_size))
-    angle = float(LOCAL_CLOUD_BASE_HALF_ANGLE_DEG) * safe_size
-    return max(float(LOCAL_CLOUD_MIN_HALF_ANGLE_DEG), min(float(LOCAL_CLOUD_MAX_HALF_ANGLE_DEG), angle))
+        raw_size = 1.0
+    return float(LOCAL_CLOUD_BASE_HALF_ANGLE_DEG) * max(1e-6, raw_size)
 
 
 def _build_local_cloud_cap_mesh(mesh, half_angle_deg, segments=96, rings=24, inner_ratio=0.992):
     if mesh is None:
         return
 
-    half_angle_rad = math.radians(max(0.1, float(half_angle_deg)))
-    segments = max(12, int(segments))
-    rings = max(4, int(rings))
-    inner_ratio = max(0.8, min(0.9999, float(inner_ratio)))
+    half_angle_rad = math.radians(float(half_angle_deg))
+    segments = max(1, int(segments))
+    rings = max(1, int(rings))
+    _ = inner_ratio
 
-    ring_radius_max = max(1e-6, math.sin(half_angle_rad))
+    half_extent = max(1e-12, abs(math.sin(half_angle_rad)))
 
     verts = []
     uvs = []
     faces = []
 
-    def add_vertex(x, y, z):
-        verts.append((float(x), float(y), float(z)))
-        u = 0.5 + 0.5 * (float(x) / ring_radius_max)
-        v = 0.5 + 0.5 * (float(y) / ring_radius_max)
-        uvs.append((max(0.0, min(1.0, u)), max(0.0, min(1.0, v))))
-        return len(verts) - 1
+    for y_index in range(rings + 1):
+        y_factor = float(y_index) / float(rings)
+        y = -half_extent + (2.0 * half_extent * y_factor)
+        for x_index in range(segments + 1):
+            x_factor = float(x_index) / float(segments)
+            x = -half_extent + (2.0 * half_extent * x_factor)
+            verts.append((float(x), float(y), 1.0))
+            uvs.append((x_factor, y_factor))
 
-    outer_top = add_vertex(0.0, 0.0, 1.0)
-    inner_top = add_vertex(0.0, 0.0, inner_ratio)
-
-    outer_rings = []
-    inner_rings = []
-
-    for ring_index in range(1, rings + 1):
-        theta = half_angle_rad * (float(ring_index) / float(rings))
-        sin_theta = math.sin(theta)
-        cos_theta = math.cos(theta)
-        outer_ring = []
-        inner_ring = []
-        for seg_index in range(segments):
-            phi = (2.0 * math.pi) * (float(seg_index) / float(segments))
-            cos_phi = math.cos(phi)
-            sin_phi = math.sin(phi)
-            ox = sin_theta * cos_phi
-            oy = sin_theta * sin_phi
-            oz = cos_theta
-            ix = ox * inner_ratio
-            iy = oy * inner_ratio
-            iz = oz * inner_ratio
-            outer_ring.append(add_vertex(ox, oy, oz))
-            inner_ring.append(add_vertex(ix, iy, iz))
-        outer_rings.append(outer_ring)
-        inner_rings.append(inner_ring)
-
-    first_outer = outer_rings[0]
-    first_inner = inner_rings[0]
-
-    for seg_index in range(segments):
-        next_index = (seg_index + 1) % segments
-        faces.append((outer_top, first_outer[seg_index], first_outer[next_index]))
-        faces.append((inner_top, first_inner[next_index], first_inner[seg_index]))
-
-    for ring_index in range(len(outer_rings) - 1):
-        outer_a = outer_rings[ring_index]
-        outer_b = outer_rings[ring_index + 1]
-        inner_a = inner_rings[ring_index]
-        inner_b = inner_rings[ring_index + 1]
-        for seg_index in range(segments):
-            next_index = (seg_index + 1) % segments
-            faces.append((outer_a[seg_index], outer_a[next_index], outer_b[next_index], outer_b[seg_index]))
-            faces.append((inner_a[seg_index], inner_b[seg_index], inner_b[next_index], inner_a[next_index]))
-
-    outer_boundary = outer_rings[-1]
-    inner_boundary = inner_rings[-1]
-    for seg_index in range(segments):
-        next_index = (seg_index + 1) % segments
-        faces.append(
-            (
-                outer_boundary[seg_index],
-                outer_boundary[next_index],
-                inner_boundary[next_index],
-                inner_boundary[seg_index],
-            )
-        )
+    stride = segments + 1
+    for y_index in range(rings):
+        for x_index in range(segments):
+            a = y_index * stride + x_index
+            b = a + 1
+            c = a + stride + 1
+            d = a + stride
+            faces.append((a, b, c, d))
 
     try:
         mesh.clear_geometry()
         mesh.from_pydata(verts, [], faces)
         mesh.update(calc_edges=True)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka clouds: failed rebuilding local cloud cap mesh", exc_info=True)
+        logger.debug("Planetka clouds: failed rebuilding local cloud plane mesh", exc_info=True)
         return
     except (RuntimeError, TypeError, ValueError):
-        logger.debug("Planetka clouds: failed rebuilding local cloud cap mesh", exc_info=True)
+        logger.debug("Planetka clouds: failed rebuilding local cloud plane mesh", exc_info=True)
         return
 
     uv_layer = mesh.uv_layers.active
@@ -978,9 +2150,9 @@ def _build_local_cloud_cap_mesh(mesh, half_angle_deg, segments=96, rings=24, inn
                 try:
                     uv_layer.data[loop_index].uv = uvs[vert_index]
                 except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                    logger.debug("Planetka clouds: failed assigning UV to local cloud cap", exc_info=True)
+                    logger.debug("Planetka clouds: failed assigning UV to local cloud plane", exc_info=True)
                 except (TypeError, ValueError, IndexError):
-                    logger.debug("Planetka clouds: failed assigning UV to local cloud cap", exc_info=True)
+                    logger.debug("Planetka clouds: failed assigning UV to local cloud plane", exc_info=True)
 
     for polygon in mesh.polygons:
         polygon.use_smooth = True
@@ -1020,8 +2192,18 @@ def _ensure_local_cloud_cap_geometry(obj):
         mesh = bpy.data.meshes.new(mesh_name)
         obj.data = mesh
 
+    is_plane_mesh = False
+    try:
+        is_plane_mesh = bool(getattr(mesh, "vertices", ())) and all(
+            abs(float(vertex.co.z) - 1.0) <= 1e-6
+            for vertex in getattr(mesh, "vertices", ())
+        )
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        is_plane_mesh = False
+
     needs_rebuild = (
         len(getattr(mesh, "vertices", ())) == 0
+        or not is_plane_mesh
         or abs(stored_angle - float(half_angle)) > 1e-3
     )
     if not needs_rebuild:
@@ -1126,10 +2308,32 @@ def _set_universal_cloud_preview_value(preview_value):
 
 def _apply_universal_cloud_preview_state(props, context=None):
     final_look = bool(getattr(props, "view_cloud_subdivision", False)) if props else False
-    preview_value = 0.0 if final_look else 1.0
+    # Keep the diffuse preview surface visible in the viewport. The volumetric
+    # branch can look invisible until render settings/view mode are configured,
+    # so Final Look currently means higher cloud geometry, not hidden clouds.
+    preview_value = 1.0
     _set_universal_cloud_preview_value(preview_value)
 
-    for cloud_obj in list(_iter_local_cloud_objects()) + list(_iter_vdb_cloud_objects()):
+    for cloud_obj in list(_iter_local_cloud_objects()):
+        _apply_prepared_local_cloud_texture(
+            cloud_obj,
+            preview=not final_look,
+            scene=getattr(context, "scene", None) if context else getattr(bpy.context, "scene", None),
+            allow_prepare_missing=True,
+        )
+        for mod in _iter_cloud_subdivision_modifiers(cloud_obj):
+            try:
+                mod.show_viewport = final_look
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka clouds: failed updating subdivision modifier state", exc_info=True)
+
+    for cloud_obj in list(_iter_vdb_cloud_objects()):
+        _apply_prepared_vdb_cloud_file(
+            cloud_obj,
+            preview=not final_look,
+            scene=getattr(context, "scene", None) if context else getattr(bpy.context, "scene", None),
+            allow_prepare_missing=True,
+        )
         for mod in _iter_cloud_subdivision_modifiers(cloud_obj):
             try:
                 mod.show_viewport = final_look
@@ -1205,6 +2409,7 @@ def _ensure_vdb_cloud_template(scene=None):
         _append_from_reference(
             object_names=(VDB_CLOUD_TEMPLATE_OBJECT_NAME,),
             material_names=(VDB_CLOUD_MATERIAL_TEMPLATE_NAME,),
+            blend_path=VDB_CLOUD_REFERENCE_BLEND_PATH,
         )
         source_obj = bpy.data.objects.get(VDB_CLOUD_TEMPLATE_OBJECT_NAME)
 
@@ -1217,13 +2422,7 @@ def _ensure_vdb_cloud_template(scene=None):
     if scene is not None:
         _clouds, _global_clouds, _local_clouds, vdb_clouds = _ensure_cloud_collections(scene)
         _set_object_collections(source_obj, [vdb_clouds])
-        root = ensure_planetka_root(scene)
-        try:
-            if root is not None:
-                source_obj.parent = root
-                source_obj.matrix_parent_inverse = root.matrix_world.inverted()
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka clouds: failed parenting VDB cloud template", exc_info=True)
+        _ensure_cloud_parented_to_root(source_obj, scene=scene)
 
     try:
         source_obj[CLOUD_ROLE_KEY] = VDB_CLOUD_TEMPLATE_ROLE
@@ -1238,7 +2437,10 @@ def _ensure_vdb_cloud_template(scene=None):
 
     mat = bpy.data.materials.get(VDB_CLOUD_MATERIAL_TEMPLATE_NAME)
     if mat is None:
-        _append_from_reference(material_names=(VDB_CLOUD_MATERIAL_TEMPLATE_NAME,))
+        _append_from_reference(
+            material_names=(VDB_CLOUD_MATERIAL_TEMPLATE_NAME,),
+            blend_path=VDB_CLOUD_REFERENCE_BLEND_PATH,
+        )
         mat = bpy.data.materials.get(VDB_CLOUD_MATERIAL_TEMPLATE_NAME)
     if mat is not None:
         _clear_drivers_on_id_data(mat)
@@ -1254,7 +2456,7 @@ def _apply_local_cloud_material_controls(obj, material, final_look=False):
     if node_tree is None:
         return
 
-    size = max(1e-6, float(getattr(obj, LOCAL_CLOUD_PROP_SIZE_COEF, 1.0)) * float(LOCAL_CLOUD_SIZE_REMOTE_SCALE))
+    size = float(getattr(obj, LOCAL_CLOUD_PROP_SIZE_COEF, 1.0)) * float(LOCAL_CLOUD_SIZE_REMOTE_SCALE)
     rot = float(getattr(obj, LOCAL_CLOUD_PROP_ROTATION_DEG, 0.0))
     thickness_m = max(0.0, float(getattr(obj, LOCAL_CLOUD_PROP_THICKNESS_M, 50.0)))
     density = max(0.0, float(getattr(obj, LOCAL_CLOUD_PROP_DENSITY, 10.0)))
@@ -1268,7 +2470,7 @@ def _apply_local_cloud_material_controls(obj, material, final_look=False):
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka clouds: failed setting local cloud UV rotation", exc_info=True)
 
-    preview_value = 0.0 if bool(final_look) else 1.0
+    preview_value = 1.0
     _set_named_value_nodes_recursive(node_tree, (LOCAL_CLOUD_PREVIEW_VALUE_NODE_NAME,), preview_value)
 
     for shader_node in _iter_group_nodes_recursive(node_tree, LOCAL_CLOUD_SHADER_GROUP_NAME):
@@ -1285,11 +2487,12 @@ def _apply_local_cloud_object(obj, scene=None):
         return
     scene = scene or getattr(bpy.context, "scene", None)
     props = getattr(scene, "planetka", None) if scene else None
+    _ensure_cloud_parented_to_root(obj, scene=scene)
 
     lon = float(getattr(obj, LOCAL_CLOUD_PROP_LONGITUDE, 0.0))
     lat = float(getattr(obj, LOCAL_CLOUD_PROP_LATITUDE, 0.0))
     altitude_m = float(getattr(obj, LOCAL_CLOUD_PROP_ALTITUDE_M, DEFAULT_CLOUD_ALTITUDE_M))
-    size_coef = max(0.05, float(getattr(obj, LOCAL_CLOUD_PROP_SIZE_COEF, 1.0)))
+    size_coef = max(1e-6, float(getattr(obj, LOCAL_CLOUD_PROP_SIZE_COEF, 1.0)))
 
     _ensure_local_cloud_cap_geometry(obj)
     _ensure_local_cloud_subdivision_modifier(obj)
@@ -1338,6 +2541,256 @@ def _apply_local_cloud_object(obj, scene=None):
     _apply_local_cloud_material_controls(obj, material, final_look=final_look)
 
 
+def optimize_texture_based_clouds_for_camera(scene=None):
+    scene = scene or getattr(bpy.context, "scene", None)
+    props = getattr(scene, "planetka", None) if scene else None
+    preview = not bool(getattr(props, "view_cloud_subdivision", False)) if props else True
+    optimized = 0
+    failed = 0
+    for obj in list(_iter_local_cloud_objects()):
+        if (
+            _prepare_local_cloud_texture_variants(obj, scene=scene, allow_download=True)
+            and _apply_prepared_local_cloud_texture(
+                obj,
+                preview=preview,
+                scene=scene,
+                allow_prepare_missing=False,
+            )
+        ):
+            optimized += 1
+        else:
+            failed += 1
+    return optimized, failed
+
+
+def _vdb_grid_voxel_size_from_volume(volume_data):
+    if volume_data is None:
+        return 0.0
+    grids = getattr(volume_data, "grids", None)
+    if grids is None:
+        return 0.0
+    try:
+        if hasattr(grids, "load") and not bool(getattr(grids, "is_loaded", False)):
+            grids.load()
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka clouds: failed loading VDB grids for voxel-size estimation", exc_info=True)
+    try:
+        for grid in grids:
+            matrix = getattr(grid, "matrix_object", None)
+            if matrix is None:
+                continue
+            x_len = Vector((matrix[0][0], matrix[1][0], matrix[2][0])).length
+            y_len = Vector((matrix[0][1], matrix[1][1], matrix[2][1])).length
+            z_len = Vector((matrix[0][2], matrix[1][2], matrix[2][2])).length
+            voxel_size = max(float(x_len), float(y_len), float(z_len))
+            if voxel_size > 1e-12:
+                return voxel_size
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka clouds: failed reading VDB grid matrix", exc_info=True)
+    except (AttributeError, TypeError, ValueError):
+        logger.debug("Planetka clouds: failed reading VDB grid matrix", exc_info=True)
+    return 0.0
+
+
+def _vdb_object_local_max_extent(obj):
+    if obj is None:
+        return 0.0
+    try:
+        corners = [Vector(corner) for corner in getattr(obj, "bound_box", [])]
+    except (TypeError, ValueError):
+        corners = []
+    if not corners:
+        return 0.0
+    min_x = min(float(c.x) for c in corners)
+    min_y = min(float(c.y) for c in corners)
+    min_z = min(float(c.z) for c in corners)
+    max_x = max(float(c.x) for c in corners)
+    max_y = max(float(c.y) for c in corners)
+    max_z = max(float(c.z) for c in corners)
+    return max(max_x - min_x, max_y - min_y, max_z - min_z, 0.0)
+
+
+def _estimate_vdb_cloud_projected_pixels(obj, scene):
+    if obj is None or scene is None:
+        return 0.0
+    camera = getattr(scene, "camera", None)
+    camera_location = _camera_world_location(scene)
+    if camera is None or camera_location is None:
+        return 0.0
+    try:
+        world_center = obj.matrix_world.translation.copy()
+        world_corners = [obj.matrix_world @ Vector(corner) for corner in getattr(obj, "bound_box", [])]
+        if world_corners:
+            min_x = min(float(c.x) for c in world_corners)
+            min_y = min(float(c.y) for c in world_corners)
+            min_z = min(float(c.z) for c in world_corners)
+            max_x = max(float(c.x) for c in world_corners)
+            max_y = max(float(c.y) for c in world_corners)
+            max_z = max(float(c.z) for c in world_corners)
+            world_diameter = max(max_x - min_x, max_y - min_y, max_z - min_z)
+        else:
+            world_diameter = max(float(value) for value in obj.dimensions)
+        distance = max(1e-6, float((camera_location - world_center).length))
+    except (TypeError, ValueError, RuntimeError, AttributeError):
+        return 0.0
+    if world_diameter <= 0.0:
+        return 0.0
+
+    width, height = _render_resolution_pixels(scene)
+    data = getattr(camera, "data", None)
+    camera_type = str(getattr(data, "type", "PERSP") or "PERSP").upper()
+    try:
+        if camera_type == "ORTHO":
+            ortho_scale = max(1e-6, float(getattr(data, "ortho_scale", 1.0) or 1.0))
+            return max(0.0, world_diameter * (max(width, height) / ortho_scale))
+        angle = max(1e-6, float(getattr(data, "angle", math.radians(50.0)) or math.radians(50.0)))
+        focal_pixels = max(width, height) / (2.0 * math.tan(angle * 0.5))
+        return max(0.0, (world_diameter / distance) * focal_pixels)
+    except (TypeError, ValueError, RuntimeError, AttributeError):
+        return 0.0
+
+
+def _select_vdb_cloud_adaptive_d_level(obj, scene, d_level_multiplier=1):
+    levels = tuple(int(level) for level in VDB_CLOUD_ADAPTIVE_D_LEVELS if int(level) > 0)
+    if not levels:
+        levels = (1,)
+    projected_pixels = _estimate_vdb_cloud_projected_pixels(obj, scene)
+    volume_data = getattr(obj, "data", None) if obj is not None else None
+    voxel_size = _vdb_grid_voxel_size_from_volume(volume_data)
+    current_d = 1
+    try:
+        current_d = max(1, int(obj.get(VDB_CLOUD_D_LEVEL_PROP, 1) or 1))
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        current_d = 1
+    local_extent = _vdb_object_local_max_extent(obj)
+    if voxel_size <= 1e-12 or local_extent <= 1e-12 or projected_pixels <= 1.0:
+        return max(levels), float(projected_pixels)
+
+    current_voxel_count = max(1.0, float(local_extent) / float(voxel_size))
+    source_voxel_count = max(1.0, current_voxel_count * float(current_d))
+    target_max_d = max(1.0, (source_voxel_count / (float(projected_pixels) * float(VDB_CLOUD_ADAPTIVE_OVERSAMPLE))))
+    candidates = [level for level in levels if float(level) <= target_max_d]
+    final_d = max(candidates) if candidates else min(levels)
+    final_d = _coarser_vdb_cloud_d_level(final_d, multiplier=d_level_multiplier)
+    return int(final_d), float(projected_pixels)
+
+
+def _resolve_vdb_lod_path(source_path, d_level, allow_download=True):
+    source = bpy.path.abspath(str(source_path or ""))
+    if not source:
+        return ""
+    source_name = os.path.basename(source)
+    try:
+        requested_level = max(1, int(d_level))
+    except (TypeError, ValueError):
+        requested_level = 1
+    levels = sorted(
+        {int(level) for level in VDB_CLOUD_ADAPTIVE_D_LEVELS if 0 < int(level) <= requested_level},
+        reverse=True,
+    )
+    if requested_level not in levels:
+        levels.insert(0, requested_level)
+    for level in levels:
+        desired_name = _vdb_lod_filename(source_name, level)
+        if not desired_name:
+            continue
+        if desired_name == source_name and os.path.isfile(source):
+            return os.path.abspath(source)
+        local_candidate = _candidate_local_vdb_lod_path(source, level)
+        if local_candidate:
+            return local_candidate
+        if allow_download and _is_known_remote_vdb_cloud_file(source_name):
+            remote_path = _resolve_remote_vdb_cloud_asset(desired_name, progress_label="Downloading VDB Cloud")
+            if remote_path and os.path.isfile(remote_path):
+                return os.path.abspath(remote_path)
+
+    return os.path.abspath(source) if os.path.isfile(source) else ""
+
+
+def _prepare_vdb_cloud_variants(obj, scene=None, allow_download=True):
+    if not _is_vdb_cloud_object(obj):
+        return False
+    source_path = str(obj.get(VDB_CLOUD_OBJ_SOURCE_FILE_PROP, "") or "")
+    if source_path:
+        source_path = bpy.path.abspath(source_path)
+    if not source_path or not os.path.isfile(source_path):
+        source_path = str(getattr(obj, VDB_CLOUD_OBJ_FILE_PROP, "") or "")
+        if source_path:
+            source_path = bpy.path.abspath(source_path)
+    if not source_path or not os.path.isfile(source_path):
+        return False
+
+    final_d, projected_pixels = _select_vdb_cloud_adaptive_d_level(obj, scene, d_level_multiplier=1)
+    preview_d = _coarser_vdb_cloud_d_level(final_d, multiplier=4)
+    final_path = _resolve_vdb_lod_path(source_path, final_d, allow_download=allow_download)
+    preview_path = _resolve_vdb_lod_path(source_path, preview_d, allow_download=allow_download)
+    if not final_path or not os.path.isfile(final_path):
+        final_path = source_path
+    _base_name, final_d = _split_vdb_lod_filename(os.path.basename(final_path))
+    if not preview_path or not os.path.isfile(preview_path):
+        preview_path = final_path
+    _base_name, preview_d = _split_vdb_lod_filename(os.path.basename(preview_path))
+    try:
+        obj[VDB_CLOUD_OBJ_SOURCE_FILE_PROP] = os.path.abspath(source_path)
+        obj[VDB_CLOUD_FINAL_FILE_PROP] = os.path.abspath(final_path)
+        obj[VDB_CLOUD_PREVIEW_FILE_PROP] = os.path.abspath(preview_path)
+        obj[VDB_CLOUD_FINAL_D_LEVEL_PROP] = int(final_d)
+        obj[VDB_CLOUD_PREVIEW_D_LEVEL_PROP] = int(preview_d)
+        obj[VDB_CLOUD_PROJECTED_PIXELS_PROP] = float(projected_pixels)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka clouds: failed storing VDB cloud variants", exc_info=True)
+    return True
+
+
+def _apply_prepared_vdb_cloud_file(obj, preview=False, scene=None, allow_prepare_missing=True):
+    if not _is_vdb_cloud_object(obj):
+        return False
+    file_prop = VDB_CLOUD_PREVIEW_FILE_PROP if preview else VDB_CLOUD_FINAL_FILE_PROP
+    d_prop = VDB_CLOUD_PREVIEW_D_LEVEL_PROP if preview else VDB_CLOUD_FINAL_D_LEVEL_PROP
+    file_path = str(obj.get(file_prop, "") or "")
+    if file_path:
+        file_path = bpy.path.abspath(file_path)
+    if (not file_path or not os.path.isfile(file_path)) and allow_prepare_missing:
+        if not _prepare_vdb_cloud_variants(obj, scene=scene, allow_download=True):
+            return False
+        file_path = str(obj.get(file_prop, "") or "")
+        if file_path:
+            file_path = bpy.path.abspath(file_path)
+    if not file_path or not os.path.isfile(file_path):
+        return False
+    if not _set_vdb_cloud_filepath(obj, file_path):
+        return False
+    try:
+        setattr(obj, VDB_CLOUD_OBJ_FILE_PROP, os.path.abspath(file_path))
+        obj[VDB_CLOUD_LOADED_FILE_PROP] = os.path.abspath(file_path)
+        obj[VDB_CLOUD_D_LEVEL_PROP] = int(obj.get(d_prop, 1) or 1)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka clouds: failed recording loaded VDB cloud file", exc_info=True)
+    return True
+
+
+def optimize_vdb_clouds_for_camera(scene=None):
+    scene = scene or getattr(bpy.context, "scene", None)
+    props = getattr(scene, "planetka", None) if scene else None
+    preview = not bool(getattr(props, "view_cloud_subdivision", False)) if props else True
+    optimized = 0
+    failed = 0
+    for obj in list(_iter_vdb_cloud_objects()):
+        if (
+            _prepare_vdb_cloud_variants(obj, scene=scene, allow_download=True)
+            and _apply_prepared_vdb_cloud_file(
+                obj,
+                preview=preview,
+                scene=scene,
+                allow_prepare_missing=False,
+            )
+        ):
+            optimized += 1
+        else:
+            failed += 1
+    return optimized, failed
+
+
 def _set_vdb_cloud_filepath(obj, filepath):
     if obj is None or not filepath:
         return False
@@ -1349,10 +2802,43 @@ def _set_vdb_cloud_filepath(obj, filepath):
         volume_data.filepath = abs_path
         if hasattr(volume_data, "is_sequence"):
             volume_data.is_sequence = False
+        if hasattr(volume_data, "grids") and hasattr(volume_data.grids, "load"):
+            volume_data.grids.load()
         return True
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka clouds: failed assigning VDB filepath", exc_info=True)
         return False
+
+
+def _copy_volume_display_settings(source_volume, target_volume):
+    if source_volume is None or target_volume is None:
+        return
+    for owner_name in ("display", "render"):
+        source_owner = getattr(source_volume, owner_name, None)
+        target_owner = getattr(target_volume, owner_name, None)
+        if source_owner is None or target_owner is None:
+            continue
+        for attr_name in (
+            "density",
+            "interpolation_method",
+            "slice_axis",
+            "slice_depth",
+            "use_slice",
+            "wireframe_detail",
+            "wireframe_type",
+            "clipping",
+            "precision",
+            "space",
+            "step_size",
+        ):
+            if not hasattr(source_owner, attr_name) or not hasattr(target_owner, attr_name):
+                continue
+            try:
+                setattr(target_owner, attr_name, getattr(source_owner, attr_name))
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka clouds: failed copying VDB volume display setting", exc_info=True)
+            except (AttributeError, TypeError, ValueError):
+                logger.debug("Planetka clouds: failed copying VDB volume display setting", exc_info=True)
 
 
 def _apply_vdb_cloud_material_density(obj):
@@ -1362,21 +2848,79 @@ def _apply_vdb_cloud_material_density(obj):
     node_tree = getattr(material, "node_tree", None)
     if node_tree is None:
         return
-    density = max(0.0, float(getattr(obj, VDB_CLOUD_PROP_DENSITY, 0.1)))
+    density = max(0.0, float(getattr(obj, VDB_CLOUD_PROP_DENSITY, DEFAULT_VDB_CLOUD_DENSITY)))
     _set_named_value_nodes_recursive(node_tree, (VDB_CLOUD_DENSITY_NODE_NAME,), density)
+
+
+def _vdb_parent_scale(obj):
+    parent_scale = 1.0
+    if getattr(obj, "parent", None) is not None:
+        try:
+            pscale = obj.parent.scale
+            parent_scale = max(abs(float(pscale.x)), abs(float(pscale.y)), abs(float(pscale.z)), 1e-6)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            parent_scale = 1.0
+        except (AttributeError, TypeError, ValueError):
+            parent_scale = 1.0
+    return max(1e-6, float(parent_scale))
+
+
+def _vdb_current_base_radius_for_parent(obj):
+    earth = get_earth_object()
+    earth_radius = max(1e-6, float(_earth_radius_blender_units(earth)))
+    return earth_radius / _vdb_parent_scale(obj)
+
+
+def _vdb_reference_base_radius_for_parent(obj):
+    return max(1e-6, float(VDB_CLOUD_REFERENCE_EARTH_RADIUS_BU) / _vdb_parent_scale(obj))
+
+
+def _calibrate_vdb_cloud_base_scale_if_needed(obj):
+    if obj is None:
+        return
+    try:
+        if bool(obj.get(VDB_CLOUD_SCALE_CALIBRATED_PROP, False)):
+            return
+        size = float(getattr(obj, VDB_CLOUD_PROP_SIZE_COEF, 1.0))
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        size = 1.0
+    # If the user already compensated manually with a tiny Size value, do not
+    # shrink that cloud a second time.
+    if size <= 0.001:
+        try:
+            obj[VDB_CLOUD_SCALE_CALIBRATED_PROP] = True
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            pass
+        return
+    for prop_name in (VDB_CLOUD_PROP_BASE_SCALE_X, VDB_CLOUD_PROP_BASE_SCALE_Y, VDB_CLOUD_PROP_BASE_SCALE_Z):
+        try:
+            current = float(getattr(obj, prop_name, 1.0))
+            if current > 0.001:
+                setattr(obj, prop_name, max(1e-12, current * float(VDB_CLOUD_DEFAULT_SCALE_FACTOR)))
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka clouds: failed calibrating VDB cloud base scale", exc_info=True)
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            logger.debug("Planetka clouds: failed calibrating VDB cloud base scale", exc_info=True)
+    try:
+        obj[VDB_CLOUD_SCALE_CALIBRATED_PROP] = True
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        pass
 
 
 def _apply_vdb_cloud_object(obj, scene=None):
     if not _is_vdb_cloud_object(obj):
         return
+    scene = scene or getattr(bpy.context, "scene", None)
+    _ensure_cloud_parented_to_root(obj, scene=scene)
+    _calibrate_vdb_cloud_base_scale_if_needed(obj)
 
     lon = float(getattr(obj, VDB_CLOUD_PROP_LONGITUDE, 0.0))
     lat = float(getattr(obj, VDB_CLOUD_PROP_LATITUDE, 0.0))
     alt = float(getattr(obj, VDB_CLOUD_PROP_ALTITUDE_M, 5000.0))
-    size = max(0.001, float(getattr(obj, VDB_CLOUD_PROP_SIZE_COEF, 1.0)))
+    size = max(1e-6, float(getattr(obj, VDB_CLOUD_PROP_SIZE_COEF, 1.0)))
     rot = float(getattr(obj, VDB_CLOUD_PROP_ROTATION_DEG, 0.0))
 
-    base_radius = max(1e-6, float(getattr(obj, VDB_CLOUD_PROP_BASE_RADIUS, 1.0)))
+    base_radius = _vdb_current_base_radius_for_parent(obj)
     radius = base_radius * (1.0 + alt / 6371000.0)
 
     lon_rad = math.radians(lon)
@@ -1404,9 +2948,10 @@ def _apply_vdb_cloud_object(obj, scene=None):
     base_x = max(1e-6, float(getattr(obj, VDB_CLOUD_PROP_BASE_SCALE_X, abs(obj.scale.x) if obj.scale else 1.0)))
     base_y = max(1e-6, float(getattr(obj, VDB_CLOUD_PROP_BASE_SCALE_Y, abs(obj.scale.y) if obj.scale else 1.0)))
     base_z = max(1e-6, float(getattr(obj, VDB_CLOUD_PROP_BASE_SCALE_Z, abs(obj.scale.z) if obj.scale else 1.0)))
+    radius_scale = base_radius / _vdb_reference_base_radius_for_parent(obj)
 
     try:
-        obj.scale = (base_x * size, base_y * size, base_z * size)
+        obj.scale = (base_x * radius_scale * size, base_y * radius_scale * size, base_z * radius_scale * size)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka clouds: failed updating VDB cloud scale", exc_info=True)
 
@@ -1420,15 +2965,13 @@ def _apply_vdb_cloud_object(obj, scene=None):
 def _resolve_vdb_path(raw_value):
     raw = str(raw_value or "").strip()
     assets = _refresh_remote_vdb_cloud_assets(force=False)
-    if raw and raw not in assets:
-        assets = _refresh_remote_vdb_cloud_assets(force=True)
     if not raw:
-        if assets:
-            first_key = sorted(assets.keys())[0]
-            return assets.get(first_key, "")
-        return ""
+        first_key = REMOTE_VDB_CLOUD_FILES[0] if REMOTE_VDB_CLOUD_FILES else ""
+        return _resolve_remote_vdb_cloud_asset(first_key) if first_key else ""
     if raw in assets:
         return assets.get(raw, "")
+    if _is_known_remote_vdb_cloud_file(raw):
+        return _resolve_remote_vdb_cloud_asset(raw)
     candidate = bpy.path.abspath(raw)
     if os.path.isdir(candidate):
         first = _first_vdb_in_dir(candidate)
@@ -1441,18 +2984,24 @@ def _resolve_vdb_path(raw_value):
     if fallback and os.path.isfile(fallback):
         return os.path.abspath(fallback)
 
+    basename = os.path.basename(raw)
+    if _is_known_remote_vdb_cloud_file(basename):
+        return _resolve_remote_vdb_cloud_asset(basename)
+
     return os.path.abspath(candidate)
 
 
 def _first_vdb_in_dir(folder):
     assets = _refresh_remote_vdb_cloud_assets(force=False)
-    if not assets:
-        assets = _refresh_remote_vdb_cloud_assets(force=True)
     if assets:
         first_key = sorted(assets.keys())[0]
         first_path = assets.get(first_key, "")
         if first_path and os.path.isfile(first_path):
             return os.path.abspath(first_path)
+    if REMOTE_VDB_CLOUD_FILES:
+        remote_path = _resolve_remote_vdb_cloud_asset(REMOTE_VDB_CLOUD_FILES[0])
+        if remote_path and os.path.isfile(remote_path):
+            return os.path.abspath(remote_path)
     if not folder or not os.path.isdir(folder):
         return ""
     for name in sorted(os.listdir(folder)):
@@ -1484,7 +3033,15 @@ def _apply_cloud_object_updates_for_scene(scene):
 
 def update_enable_local_clouds(self, context):
     scene = getattr(context, "scene", None) if context else None
-    _sync_scene_idprops(scene, ("enable_local_clouds",))
+    _sync_scene_idprops(
+        scene,
+        (
+            "enable_local_clouds",
+            "local_cloud_texture_source",
+            "local_cloud_local_file",
+            "local_cloud_texture",
+        ),
+    )
     _sync_cloud_collection_visibility(scene, self)
     if bool(getattr(self, "enable_local_clouds", False)):
         _apply_universal_cloud_preview_state(self, context=context)
@@ -1492,7 +3049,13 @@ def update_enable_local_clouds(self, context):
 
 def update_enable_vdb_clouds(self, context):
     scene = getattr(context, "scene", None) if context else None
-    _sync_scene_idprops(scene, ("enable_vdb_clouds",))
+    if bool(getattr(self, "enable_vdb_clouds", False)) and not is_pro_account():
+        try:
+            self.enable_vdb_clouds = False
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka clouds: failed disabling Pro-only VDB clouds", exc_info=True)
+        return
+    _sync_scene_idprops(scene, ("enable_vdb_clouds", "vdb_cloud_source", "vdb_cloud_preset", "vdb_cloud_file"))
     _sync_cloud_collection_visibility(scene, self)
 
 
@@ -1526,7 +3089,7 @@ def update_vdb_cloud_object_prop(self, context):
 def sync_cloud_system_scene(scene):
     props = getattr(scene, "planetka", None) if scene else None
     _sync_cloud_collection_visibility(scene, props)
-    if props is None or bool(getattr(props, "enable_global_clouds", True)):
+    if props is not None and bool(getattr(props, "enable_global_clouds", False)):
         clouds_global = _get_clouds_global_module()
         ensure_global_fn = getattr(clouds_global, "ensure_global_cloud_layer", None) if clouds_global else None
         if callable(ensure_global_fn):
@@ -1598,25 +3161,225 @@ class PLANETKA_OT_SetCloudViewMode(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class PLANETKA_OT_OptimizeClouds(bpy.types.Operator):
+    bl_idname = "planetka.optimize_clouds"
+    bl_label = "Optimize Clouds"
+    bl_description = "Adjust cloud resolution for the current camera position"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    _timer = None
+    _clouds = None
+    _index = 0
+    _optimized = 0
+    _failed = 0
+
+    def _finish(self, context, status):
+        wm = getattr(context, "window_manager", None)
+        if wm is not None and self._timer is not None:
+            try:
+                wm.event_timer_remove(self._timer)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                pass
+        self._timer = None
+        _set_cloud_optimize_progress(
+            active=False,
+            current=int(self._index),
+            total=len(self._clouds or []),
+            optimized=int(self._optimized),
+            failed=int(self._failed),
+            finished_at=time.time(),
+        )
+        return status
+
+    def invoke(self, context, event):
+        if not is_pro_account():
+            self.report({'ERROR'}, "Cloud optimization requires a Pro account.")
+            return {'CANCELLED'}
+        scene = getattr(context, "scene", None)
+        self._clouds = [
+            *[(obj, "TEXTURE") for obj in _iter_local_cloud_objects()],
+            *[(obj, "VDB") for obj in _iter_vdb_cloud_objects()],
+        ]
+        self._index = 0
+        self._optimized = 0
+        self._failed = 0
+        total = len(self._clouds)
+        if total <= 0:
+            _set_cloud_optimize_progress(
+                active=False,
+                label="",
+                current=0,
+                total=0,
+                optimized=0,
+                failed=0,
+                error="",
+                finished_at=time.time(),
+            )
+            self.report({'INFO'}, "No clouds to optimize.")
+            return {'FINISHED'}
+
+        _set_cloud_optimize_progress(
+            active=True,
+            label="Preparing cloud optimization",
+            current=0,
+            total=total,
+            optimized=0,
+            failed=0,
+            error="",
+            started_at=time.time(),
+            finished_at=0.0,
+        )
+        wm = getattr(context, "window_manager", None)
+        if wm is None:
+            return self.execute(context)
+        self._timer = wm.event_timer_add(0.1, window=getattr(context, "window", None))
+        wm.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
+
+    def modal(self, context, event):
+        if event.type != 'TIMER':
+            return {'RUNNING_MODAL'}
+
+        area = getattr(context, "area", None)
+        if area is not None:
+            try:
+                area.tag_redraw()
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                pass
+
+        if self._clouds is None:
+            self._clouds = [
+                *[(obj, "TEXTURE") for obj in _iter_local_cloud_objects()],
+                *[(obj, "VDB") for obj in _iter_vdb_cloud_objects()],
+            ]
+
+        total = len(self._clouds)
+        if self._index >= total:
+            if self._failed > 0:
+                self.report({'WARNING'}, f"Optimized {self._optimized} cloud(s); {self._failed} cloud(s) could not be optimized.")
+            else:
+                self.report({'INFO'}, f"Optimized {self._optimized} cloud(s).")
+            return self._finish(context, {'FINISHED'})
+
+        obj, cloud_kind = self._clouds[self._index]
+        cloud_name = _cloud_title(getattr(obj, "name", ""), self._index + 1, "Cloud No")
+        _set_cloud_optimize_progress(
+            active=True,
+            label=f"Optimizing: {cloud_name}",
+            current=self._index,
+            total=total,
+            optimized=int(self._optimized),
+            failed=int(self._failed),
+        )
+        try:
+            scene = getattr(context, "scene", None)
+            props = getattr(scene, "planetka", None) if scene else None
+            preview = not bool(getattr(props, "view_cloud_subdivision", False)) if props else True
+            if cloud_kind == "VDB":
+                ok = (
+                    _prepare_vdb_cloud_variants(obj, scene=scene, allow_download=True)
+                    and _apply_prepared_vdb_cloud_file(
+                        obj,
+                        preview=preview,
+                        scene=scene,
+                        allow_prepare_missing=False,
+                    )
+                )
+            else:
+                ok = (
+                    _prepare_local_cloud_texture_variants(obj, scene=scene, allow_download=True)
+                    and _apply_prepared_local_cloud_texture(
+                        obj,
+                        preview=preview,
+                        scene=scene,
+                        allow_prepare_missing=False,
+                    )
+                )
+            if ok:
+                self._optimized += 1
+            else:
+                self._failed += 1
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka clouds: failed optimizing cloud", exc_info=True)
+            self._failed += 1
+        self._index += 1
+        _set_cloud_optimize_progress(
+            active=True,
+            current=self._index,
+            total=total,
+            optimized=int(self._optimized),
+            failed=int(self._failed),
+        )
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context):
+        if not is_pro_account():
+            self.report({'ERROR'}, "Cloud optimization requires a Pro account.")
+            return {'CANCELLED'}
+        scene = getattr(context, "scene", None)
+        _set_cloud_optimize_progress(
+            active=True,
+            label="Optimizing clouds",
+            current=0,
+            total=len(list(_iter_local_cloud_objects())) + len(list(_iter_vdb_cloud_objects())),
+            optimized=0,
+            failed=0,
+            error="",
+            started_at=time.time(),
+            finished_at=0.0,
+        )
+        texture_optimized, texture_failed = optimize_texture_based_clouds_for_camera(scene=scene)
+        vdb_optimized, vdb_failed = optimize_vdb_clouds_for_camera(scene=scene)
+        optimized = int(texture_optimized) + int(vdb_optimized)
+        failed = int(texture_failed) + int(vdb_failed)
+        _set_cloud_optimize_progress(
+            active=False,
+            label="",
+            current=int(optimized + failed),
+            total=int(optimized + failed),
+            optimized=int(optimized),
+            failed=int(failed),
+            finished_at=time.time(),
+        )
+        if optimized <= 0 and failed <= 0:
+            self.report({'INFO'}, "No clouds to optimize.")
+            return {'FINISHED'}
+        if failed > 0:
+            self.report({'WARNING'}, f"Optimized {optimized} cloud(s); {failed} cloud(s) could not be optimized.")
+        else:
+            self.report({'INFO'}, f"Optimized {optimized} cloud(s).")
+        return {'FINISHED'}
+
+
 class PLANETKA_OT_AddLocalCloud(bpy.types.Operator):
     bl_idname = "planetka.add_local_cloud"
     bl_label = "Add Cloud"
-    bl_description = "Add a local cloud cap layer"
+    bl_description = "Add a texture-based cloud layer"
     bl_options = {'REGISTER', 'UNDO'}
 
-    def execute(self, context):
+    _timer = None
+    _download_thread = None
+    _download_done = False
+    _download_path = ""
+    _download_error = ""
+    _download_selected = ""
+
+    def _props(self, context):
         scene = getattr(context, "scene", None)
         props = getattr(scene, "planetka", None) if scene else None
+        return scene, props
+
+    def _selected_remote_cloud(self, props):
+        selected = str(getattr(props, "local_cloud_texture", "") or "")
+        if not selected or selected == "NONE":
+            return ""
+        return selected
+
+    def _create_cloud_from_texture(self, context, source, selected, texture_path):
+        scene, props = self._props(context)
         if props is None:
             self.report({'ERROR'}, "Planetka settings unavailable.")
             return {'CANCELLED'}
-
-        selected = str(getattr(props, "local_cloud_texture", "") or "")
-        if not selected or selected == "NONE":
-            self.report({'ERROR'}, "Select a local cloud texture first.")
-            return {'CANCELLED'}
-
-        texture_path = _refresh_remote_local_cloud_assets(force=True).get(selected, "")
         if not os.path.isfile(texture_path):
             self.report({'ERROR'}, f"Selected texture not found: {texture_path}")
             return {'CANCELLED'}
@@ -1626,9 +3389,12 @@ class PLANETKA_OT_AddLocalCloud(bpy.types.Operator):
         template_mat = bpy.data.materials.get(LOCAL_CLOUD_MATERIAL_TEMPLATE_NAME)
         if template_mat is None:
             try:
-                _append_from_reference(material_names=(LOCAL_CLOUD_MATERIAL_TEMPLATE_NAME,))
+                _append_from_reference(
+                    material_names=(LOCAL_CLOUD_MATERIAL_TEMPLATE_NAME,),
+                    blend_path=LOCAL_CLOUD_REFERENCE_BLEND_PATH,
+                )
             except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
-                self.report({'ERROR'}, f"Failed loading local cloud material template: {exc}")
+                self.report({'ERROR'}, f"Failed loading texture-based cloud material template: {exc}")
                 return {'CANCELLED'}
             template_mat = bpy.data.materials.get(LOCAL_CLOUD_MATERIAL_TEMPLATE_NAME)
         if template_mat is None:
@@ -1641,7 +3407,7 @@ class PLANETKA_OT_AddLocalCloud(bpy.types.Operator):
             mesh = bpy.data.meshes.new(mesh_name)
             new_obj = bpy.data.objects.new(new_name, mesh)
         except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
-            self.report({'ERROR'}, f"Failed creating local cloud cap object: {exc}")
+            self.report({'ERROR'}, f"Failed creating texture-based cloud object: {exc}")
             return {'CANCELLED'}
 
         try:
@@ -1656,7 +3422,7 @@ class PLANETKA_OT_AddLocalCloud(bpy.types.Operator):
                     bpy.data.meshes.remove(mesh)
                 except PLANETKA_RECOVERABLE_EXCEPTIONS:
                     _log_recoverable_once("PKA-CLOUDL-006", "Failed cleanup-removing local cloud mesh after link failure")
-            self.report({'ERROR'}, f"Failed linking local cloud: {exc}")
+            self.report({'ERROR'}, f"Failed linking texture-based cloud: {exc}")
             return {'CANCELLED'}
 
         new_mat = template_mat.copy()
@@ -1672,13 +3438,7 @@ class PLANETKA_OT_AddLocalCloud(bpy.types.Operator):
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka clouds: failed assigning local cloud material", exc_info=True)
 
-        root = ensure_planetka_root(scene)
-        try:
-            if root is not None:
-                new_obj.parent = root
-                new_obj.matrix_parent_inverse = root.matrix_world.inverted()
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka clouds: failed parenting local cloud", exc_info=True)
+        _ensure_cloud_parented_to_root(new_obj, scene=scene)
 
         try:
             new_obj[CLOUD_ROLE_KEY] = LOCAL_CLOUD_ROLE
@@ -1701,7 +3461,9 @@ class PLANETKA_OT_AddLocalCloud(bpy.types.Operator):
             setattr(new_obj, LOCAL_CLOUD_PROP_DENSITY_GAMMA, 1.0)
             setattr(new_obj, LOCAL_CLOUD_PROP_BASE_SCALE, float(max(1e-6, _earth_radius_blender_units(get_earth_object()))))
             setattr(new_obj, LOCAL_CLOUD_PROP_CAP_HALF_ANGLE_DEG, -1.0)
-            setattr(new_obj, LOCAL_CLOUD_OBJ_TEXTURE_PROP, selected)
+            if source != "LOCAL":
+                setattr(new_obj, LOCAL_CLOUD_OBJ_TEXTURE_PROP, selected)
+            new_obj[LOCAL_CLOUD_OBJ_TEXTURE_PATH_PROP] = os.path.abspath(texture_path)
         finally:
             _end_cloud_update_suspend()
 
@@ -1721,14 +3483,104 @@ class PLANETKA_OT_AddLocalCloud(bpy.types.Operator):
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             _log_recoverable_once("PKA-CLOUDL-008", "Failed selecting newly created local cloud object")
 
-        self.report({'INFO'}, f"Added local cloud: {new_obj.name}")
+        self.report({'INFO'}, f"Added texture-based cloud: {new_obj.name}")
         return {'FINISHED'}
+
+    def _start_remote_download(self, context, selected):
+        self._download_done = False
+        self._download_path = ""
+        self._download_error = ""
+        self._download_selected = selected
+
+        def worker():
+            try:
+                path = _resolve_remote_local_cloud_asset(selected, progress_label="Downloading Texture-Based Cloud")
+                self._download_path = path
+                if not path or not os.path.isfile(path):
+                    self._download_error = "Selected cloud mask could not be downloaded."
+            except Exception as exc:  # Keep the background thread from killing Blender.
+                logger.debug("Planetka clouds: local cloud download worker failed", exc_info=True)
+                self._download_error = str(exc) or "Selected cloud mask could not be downloaded."
+            finally:
+                self._download_done = True
+
+        self._download_thread = threading.Thread(target=worker, name="PlanetkaLocalCloudDownload", daemon=True)
+        self._download_thread.start()
+        wm = getattr(context, "window_manager", None)
+        if wm is not None:
+            self._timer = wm.event_timer_add(0.2, window=getattr(context, "window", None))
+            wm.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
+
+    def invoke(self, context, event):
+        scene, props = self._props(context)
+        if props is None:
+            self.report({'ERROR'}, "Planetka settings unavailable.")
+            return {'CANCELLED'}
+        source = str(getattr(props, "local_cloud_texture_source", "CLOUD") or "CLOUD").strip().upper()
+        if source == "LOCAL":
+            return self.execute(context)
+        selected = self._selected_remote_cloud(props)
+        if not selected:
+            self.report({'ERROR'}, "Select a Planetka Cloud mask first.")
+            return {'CANCELLED'}
+        cached = _refresh_remote_local_cloud_assets(force=False).get(selected, "")
+        if cached and os.path.isfile(cached):
+            return self._create_cloud_from_texture(context, "CLOUD", selected, cached)
+        return self._start_remote_download(context, selected)
+
+    def modal(self, context, event):
+        if event.type != 'TIMER':
+            return {'RUNNING_MODAL'}
+        area = getattr(context, "area", None)
+        if area is not None:
+            try:
+                area.tag_redraw()
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                pass
+        if not self._download_done:
+            return {'RUNNING_MODAL'}
+        wm = getattr(context, "window_manager", None)
+        if wm is not None and self._timer is not None:
+            try:
+                wm.event_timer_remove(self._timer)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                pass
+            self._timer = None
+        if self._download_error:
+            self.report({'ERROR'}, self._download_error)
+            return {'CANCELLED'}
+        return self._create_cloud_from_texture(context, "CLOUD", self._download_selected, self._download_path)
+
+    def execute(self, context):
+        scene, props = self._props(context)
+        if props is None:
+            self.report({'ERROR'}, "Planetka settings unavailable.")
+            return {'CANCELLED'}
+
+        source = str(getattr(props, "local_cloud_texture_source", "CLOUD") or "CLOUD").strip().upper()
+        selected = str(getattr(props, "local_cloud_texture", "") or "")
+        if source == "LOCAL":
+            texture_path = os.path.abspath(os.path.expanduser(str(getattr(props, "local_cloud_local_file", "") or "").strip()))
+            if not texture_path or not os.path.isfile(texture_path):
+                self.report({'ERROR'}, "Select a valid local EXR cloud mask first.")
+                return {'CANCELLED'}
+            if not texture_path.lower().endswith(".exr"):
+                self.report({'ERROR'}, "Texture-based cloud masks must be EXR files.")
+                return {'CANCELLED'}
+            selected = texture_path
+        else:
+            if not selected or selected == "NONE":
+                self.report({'ERROR'}, "Select a Planetka Cloud mask first.")
+                return {'CANCELLED'}
+            texture_path = _resolve_remote_local_cloud_asset(selected, progress_label="Downloading Texture-Based Cloud")
+        return self._create_cloud_from_texture(context, source, selected, texture_path)
 
 
 class PLANETKA_OT_ResetLocalCloudToCameraView(bpy.types.Operator):
     bl_idname = "planetka.reset_local_cloud_to_camera_view"
     bl_label = "Reset Cloud Position"
-    bl_description = "Reset selected local cloud to current Planetka camera target"
+    bl_description = "Reset selected texture-based cloud to current Planetka camera target"
     bl_options = {'REGISTER', 'UNDO'}
 
     object_name: StringProperty(
@@ -1751,15 +3603,15 @@ class PLANETKA_OT_ResetLocalCloudToCameraView(bpy.types.Operator):
     def execute(self, context):
         obj = self._resolve_target(context)
         if obj is None:
-            self.report({'ERROR'}, "Select a local cloud object first.")
+            self.report({'ERROR'}, "Select a texture-based cloud object first.")
             return {'CANCELLED'}
 
-        lon, lat, alt_km = _scene_target_lon_lat_alt(getattr(context, "scene", None))
+        lon, lat, _alt_km = _scene_target_lon_lat_alt(getattr(context, "scene", None))
         _begin_cloud_update_suspend()
         try:
             setattr(obj, LOCAL_CLOUD_PROP_LONGITUDE, float(lon))
             setattr(obj, LOCAL_CLOUD_PROP_LATITUDE, float(lat))
-            setattr(obj, LOCAL_CLOUD_PROP_ALTITUDE_M, (float(alt_km) + 10.0) * 1000.0)
+            setattr(obj, LOCAL_CLOUD_PROP_ALTITUDE_M, float(DEFAULT_CLOUD_ALTITUDE_M))
         finally:
             _end_cloud_update_suspend()
 
@@ -1771,7 +3623,7 @@ class PLANETKA_OT_ResetLocalCloudToCameraView(bpy.types.Operator):
 class PLANETKA_OT_DeleteLocalCloud(bpy.types.Operator):
     bl_idname = "planetka.delete_local_cloud"
     bl_label = "Delete Cloud"
-    bl_description = "Delete this local cloud"
+    bl_description = "Delete this texture-based cloud"
     bl_options = {'REGISTER', 'UNDO'}
 
     object_name: StringProperty(
@@ -1794,14 +3646,14 @@ class PLANETKA_OT_DeleteLocalCloud(bpy.types.Operator):
     def invoke(self, context, event):
         obj = self._resolve_target(context)
         if obj is None:
-            self.report({'ERROR'}, "Select a local cloud object first.")
+            self.report({'ERROR'}, "Select a texture-based cloud object first.")
             return {'CANCELLED'}
         return context.window_manager.invoke_confirm(self, event)
 
     def execute(self, context):
         obj = self._resolve_target(context)
         if obj is None:
-            self.report({'ERROR'}, "Select a local cloud object first.")
+            self.report({'ERROR'}, "Select a texture-based cloud object first.")
             return {'CANCELLED'}
 
         mesh = getattr(obj, "data", None)
@@ -1828,28 +3680,42 @@ class PLANETKA_OT_DeleteLocalCloud(bpy.types.Operator):
                 except PLANETKA_RECOVERABLE_EXCEPTIONS:
                     logger.debug("Planetka clouds: failed removing local cloud material", exc_info=True)
 
-        self.report({'INFO'}, "Local cloud deleted")
+        self.report({'INFO'}, "Texture-based cloud deleted")
         return {'FINISHED'}
 
 
 class PLANETKA_OT_AddVDBCloud(bpy.types.Operator):
     bl_idname = "planetka.add_vdb_cloud"
-    bl_label = "Add VDB Cloud"
+    bl_label = "Add Cloud"
     bl_description = "Add a VDB cloud from template"
     bl_options = {'REGISTER', 'UNDO'}
 
-    def execute(self, context):
+    _timer = None
+    _download_thread = None
+    _download_done = False
+    _download_path = ""
+    _download_error = ""
+    _download_selected = ""
+
+    def _props(self, context):
         scene = getattr(context, "scene", None)
         props = getattr(scene, "planetka", None) if scene else None
+        return scene, props
+
+    def _selected_remote_cloud(self, props):
+        selected = str(getattr(props, "vdb_cloud_preset", "") or "")
+        if not selected or selected == "NONE":
+            return ""
+        return selected
+
+    def _create_vdb_cloud_from_path(self, context, source, vdb_path):
+        if not is_pro_account():
+            self.report({'ERROR'}, "VDB clouds require a Pro account.")
+            return {'CANCELLED'}
+        scene, props = self._props(context)
         if props is None:
             self.report({'ERROR'}, "Planetka settings unavailable.")
             return {'CANCELLED'}
-
-        vdb_path = _resolve_vdb_path(getattr(props, "vdb_cloud_file", ""))
-        if not vdb_path:
-            vdb_path = _first_vdb_in_dir(_vdb_clouds_dir())
-            if vdb_path:
-                props.vdb_cloud_file = vdb_path
 
         if not vdb_path or not os.path.isfile(vdb_path):
             self.report({'ERROR'}, "Select a valid VDB file first.")
@@ -1866,33 +3732,19 @@ class PLANETKA_OT_AddVDBCloud(bpy.types.Operator):
             return {'CANCELLED'}
 
         _clouds, _global_clouds, _local_clouds, vdb_clouds = _ensure_cloud_collections(scene)
-
-        new_obj = source_obj.copy()
-        if getattr(source_obj, "data", None) is not None:
-            try:
-                new_obj.data = source_obj.data.copy()
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                _log_recoverable_once("PKA-CLOUDL-009", "Failed duplicating VDB cloud mesh data; using shared data")
-        try:
-            new_obj.animation_data_clear()
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            _log_recoverable_once("PKA-CLOUDL-010", "Failed clearing animation data on duplicated VDB cloud")
-        _remove_cloud_cull_modifiers(new_obj)
-        new_obj.name = _next_vdb_cloud_name()
+        new_name = _next_vdb_cloud_name()
 
         try:
+            volume_data = bpy.data.volumes.new(f"{new_name} Volume")
+            _copy_volume_display_settings(getattr(source_obj, "data", None), volume_data)
+            new_obj = bpy.data.objects.new(new_name, volume_data)
             vdb_clouds.objects.link(new_obj)
         except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
             self.report({'ERROR'}, f"Failed linking VDB cloud: {exc}")
             return {'CANCELLED'}
-
-        for col in list(new_obj.users_collection):
-            if col == vdb_clouds:
-                continue
-            try:
-                col.objects.unlink(new_obj)
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                _log_recoverable_once("PKA-CLOUDL-011", "Failed unlinking VDB cloud from non-target collection")
+        except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
+            self.report({'ERROR'}, f"Failed creating VDB cloud volume: {exc}")
+            return {'CANCELLED'}
 
         template_mat = _resolve_object_material(source_obj) or bpy.data.materials.get(VDB_CLOUD_MATERIAL_TEMPLATE_NAME)
         if template_mat is None:
@@ -1916,13 +3768,19 @@ class PLANETKA_OT_AddVDBCloud(bpy.types.Operator):
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka clouds: failed assigning VDB material", exc_info=True)
 
-        root = ensure_planetka_root(scene)
-        try:
-            if root is not None:
-                new_obj.parent = root
-                new_obj.matrix_parent_inverse = root.matrix_world.inverted()
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka clouds: failed parenting VDB cloud", exc_info=True)
+        _ensure_cloud_parented_to_root(new_obj, scene=scene)
+        if not _set_vdb_cloud_filepath(new_obj, vdb_path):
+            self.report({'ERROR'}, f"Failed loading VDB file: {vdb_path}")
+            try:
+                bpy.data.objects.remove(new_obj, do_unlink=True)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                _log_recoverable_once("PKA-CLOUDL-009", "Failed cleanup-removing VDB cloud object after file load error")
+            if int(getattr(volume_data, "users", 0)) == 0:
+                try:
+                    bpy.data.volumes.remove(volume_data)
+                except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                    _log_recoverable_once("PKA-CLOUDL-010", "Failed cleanup-removing VDB cloud volume after file load error")
+            return {'CANCELLED'}
 
         try:
             new_obj[CLOUD_ROLE_KEY] = VDB_CLOUD_ROLE
@@ -1931,16 +3789,7 @@ class PLANETKA_OT_AddVDBCloud(bpy.types.Operator):
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             _log_recoverable_once("PKA-CLOUDL-013", "Failed setting VDB cloud role/visibility flags")
 
-        earth = get_earth_object()
-        earth_radius = _earth_radius_blender_units(earth)
-        parent_scale = 1.0
-        if getattr(new_obj, "parent", None) is not None:
-            try:
-                pscale = new_obj.parent.scale
-                parent_scale = max(abs(float(pscale.x)), abs(float(pscale.y)), abs(float(pscale.z)), 1e-6)
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                parent_scale = 1.0
-        base_radius = max(1e-6, earth_radius / parent_scale)
+        base_radius = _vdb_current_base_radius_for_parent(new_obj)
 
         lon, lat, _alt_km = _scene_target_lon_lat_alt(scene)
         _begin_cloud_update_suspend()
@@ -1950,19 +3799,32 @@ class PLANETKA_OT_AddVDBCloud(bpy.types.Operator):
             setattr(new_obj, VDB_CLOUD_PROP_ALTITUDE_M, float(DEFAULT_CLOUD_ALTITUDE_M))
             setattr(new_obj, VDB_CLOUD_PROP_SIZE_COEF, 1.0)
             setattr(new_obj, VDB_CLOUD_PROP_ROTATION_DEG, 0.0)
-            setattr(new_obj, VDB_CLOUD_PROP_DENSITY, 0.1)
-            setattr(new_obj, VDB_CLOUD_PROP_BASE_SCALE_X, abs(float(new_obj.scale.x)))
-            setattr(new_obj, VDB_CLOUD_PROP_BASE_SCALE_Y, abs(float(new_obj.scale.y)))
-            setattr(new_obj, VDB_CLOUD_PROP_BASE_SCALE_Z, abs(float(new_obj.scale.z)))
+            setattr(new_obj, VDB_CLOUD_PROP_DENSITY, DEFAULT_VDB_CLOUD_DENSITY)
+            setattr(new_obj, VDB_CLOUD_PROP_BASE_SCALE_X, abs(float(new_obj.scale.x)) * float(VDB_CLOUD_DEFAULT_SCALE_FACTOR))
+            setattr(new_obj, VDB_CLOUD_PROP_BASE_SCALE_Y, abs(float(new_obj.scale.y)) * float(VDB_CLOUD_DEFAULT_SCALE_FACTOR))
+            setattr(new_obj, VDB_CLOUD_PROP_BASE_SCALE_Z, abs(float(new_obj.scale.z)) * float(VDB_CLOUD_DEFAULT_SCALE_FACTOR))
             setattr(new_obj, VDB_CLOUD_PROP_BASE_RADIUS, float(base_radius))
             setattr(new_obj, VDB_CLOUD_OBJ_FILE_PROP, os.path.abspath(vdb_path))
+            new_obj[VDB_CLOUD_OBJ_SOURCE_FILE_PROP] = os.path.abspath(vdb_path)
+            new_obj[VDB_CLOUD_LOADED_FILE_PROP] = os.path.abspath(vdb_path)
+            _base_name, source_d = _split_vdb_lod_filename(os.path.basename(vdb_path))
+            new_obj[VDB_CLOUD_D_LEVEL_PROP] = int(source_d)
+            new_obj[VDB_CLOUD_SCALE_CALIBRATED_PROP] = True
         finally:
             _end_cloud_update_suspend()
 
-        _set_vdb_cloud_filepath(new_obj, vdb_path)
         _apply_vdb_cloud_object(new_obj, scene=scene)
+        preview = not bool(getattr(props, "view_cloud_subdivision", False)) if props else True
+        if _prepare_vdb_cloud_variants(new_obj, scene=scene, allow_download=True):
+            _apply_prepared_vdb_cloud_file(
+                new_obj,
+                preview=preview,
+                scene=scene,
+                allow_prepare_missing=False,
+            )
 
-        props.vdb_cloud_file = os.path.abspath(vdb_path)
+        if source == "LOCAL":
+            props.vdb_cloud_file = os.path.abspath(vdb_path)
         try:
             props.enable_vdb_clouds = True
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
@@ -1976,6 +3838,95 @@ class PLANETKA_OT_AddVDBCloud(bpy.types.Operator):
 
         self.report({'INFO'}, f"Added VDB cloud: {new_obj.name}")
         return {'FINISHED'}
+
+    def _start_remote_download(self, context, selected):
+        self._download_done = False
+        self._download_path = ""
+        self._download_error = ""
+        self._download_selected = selected
+
+        def worker():
+            try:
+                path = _resolve_remote_vdb_cloud_asset(selected, progress_label="Downloading VDB Cloud")
+                self._download_path = path
+                if not path or not os.path.isfile(path):
+                    self._download_error = "Selected VDB cloud could not be downloaded."
+            except Exception as exc:  # Keep the background thread from killing Blender.
+                logger.debug("Planetka clouds: VDB cloud download worker failed", exc_info=True)
+                self._download_error = str(exc) or "Selected VDB cloud could not be downloaded."
+            finally:
+                self._download_done = True
+
+        self._download_thread = threading.Thread(target=worker, name="PlanetkaVDBCloudDownload", daemon=True)
+        self._download_thread.start()
+        wm = getattr(context, "window_manager", None)
+        if wm is not None:
+            self._timer = wm.event_timer_add(0.2, window=getattr(context, "window", None))
+            wm.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
+
+    def invoke(self, context, event):
+        if not is_pro_account():
+            self.report({'ERROR'}, "VDB clouds require a Pro account.")
+            return {'CANCELLED'}
+        scene, props = self._props(context)
+        if props is None:
+            self.report({'ERROR'}, "Planetka settings unavailable.")
+            return {'CANCELLED'}
+        source = str(getattr(props, "vdb_cloud_source", "CLOUD") or "CLOUD").strip().upper()
+        if source == "LOCAL":
+            return self.execute(context)
+        selected = self._selected_remote_cloud(props)
+        if not selected:
+            self.report({'ERROR'}, "Select a Planetka Cloud VDB preset first.")
+            return {'CANCELLED'}
+        cached = _refresh_remote_vdb_cloud_assets(force=False).get(selected, "")
+        if cached and os.path.isfile(cached):
+            return self._create_vdb_cloud_from_path(context, "CLOUD", cached)
+        return self._start_remote_download(context, selected)
+
+    def modal(self, context, event):
+        if event.type != 'TIMER':
+            return {'RUNNING_MODAL'}
+        area = getattr(context, "area", None)
+        if area is not None:
+            try:
+                area.tag_redraw()
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                pass
+        if not self._download_done:
+            return {'RUNNING_MODAL'}
+        wm = getattr(context, "window_manager", None)
+        if wm is not None and self._timer is not None:
+            try:
+                wm.event_timer_remove(self._timer)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                pass
+            self._timer = None
+        if self._download_error:
+            self.report({'ERROR'}, self._download_error)
+            return {'CANCELLED'}
+        return self._create_vdb_cloud_from_path(context, "CLOUD", self._download_path)
+
+    def execute(self, context):
+        if not is_pro_account():
+            self.report({'ERROR'}, "VDB clouds require a Pro account.")
+            return {'CANCELLED'}
+        scene, props = self._props(context)
+        if props is None:
+            self.report({'ERROR'}, "Planetka settings unavailable.")
+            return {'CANCELLED'}
+
+        source = str(getattr(props, "vdb_cloud_source", "CLOUD") or "CLOUD").strip().upper()
+        if source == "LOCAL":
+            vdb_path = _resolve_vdb_path(getattr(props, "vdb_cloud_file", ""))
+        else:
+            selected = self._selected_remote_cloud(props)
+            if not selected:
+                self.report({'ERROR'}, "Select a Planetka Cloud VDB preset first.")
+                return {'CANCELLED'}
+            vdb_path = _resolve_remote_vdb_cloud_asset(selected, progress_label="Downloading VDB Cloud")
+        return self._create_vdb_cloud_from_path(context, source, vdb_path)
 
 
 class PLANETKA_OT_ResetVDBCloudToCameraView(bpy.types.Operator):
@@ -2007,12 +3958,12 @@ class PLANETKA_OT_ResetVDBCloudToCameraView(bpy.types.Operator):
             self.report({'ERROR'}, "Select a VDB cloud object first.")
             return {'CANCELLED'}
 
-        lon, lat, alt_km = _scene_target_lon_lat_alt(getattr(context, "scene", None))
+        lon, lat, _alt_km = _scene_target_lon_lat_alt(getattr(context, "scene", None))
         _begin_cloud_update_suspend()
         try:
             setattr(obj, VDB_CLOUD_PROP_LONGITUDE, float(lon))
             setattr(obj, VDB_CLOUD_PROP_LATITUDE, float(lat))
-            setattr(obj, VDB_CLOUD_PROP_ALTITUDE_M, (float(alt_km) + 10.0) * 1000.0)
+            setattr(obj, VDB_CLOUD_PROP_ALTITUDE_M, float(DEFAULT_CLOUD_ALTITUDE_M))
         finally:
             _end_cloud_update_suspend()
 
@@ -2090,7 +4041,7 @@ class PLANETKA_OT_DeleteVDBCloud(bpy.types.Operator):
 
 
 class PLANETKA_PT_LocalCloudsPanel(bpy.types.Panel):
-    bl_label = "Local Clouds"
+    bl_label = "Texture-Based Clouds"
     bl_idname = "PLANETKA_PT_local_clouds"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
@@ -2118,7 +4069,7 @@ class PLANETKA_PT_LocalCloudsPanel(bpy.types.Panel):
         row.prop(
             props,
             "enable_local_clouds",
-            text="Disable Local Clouds" if bool(getattr(props, "enable_local_clouds", False)) else "Enable Local Clouds",
+            text="Disable Texture-Based Clouds" if bool(getattr(props, "enable_local_clouds", False)) else "Enable Texture-Based Clouds",
             toggle=True,
             invert_checkbox=True,
         )
@@ -2131,7 +4082,7 @@ class PLANETKA_PT_LocalCloudsPanel(bpy.types.Panel):
         box = layout.box()
         box.label(text="Texture Picker", icon="IMAGE_DATA")
         if not items:
-            box.label(text="No Cloud local-cloud test textures available.", icon="ERROR")
+            box.label(text="No texture-based cloud textures available.", icon="ERROR")
             cache_dir = _local_clouds_dir()
             if cache_dir:
                 box.label(text=cache_dir, icon="FILE_FOLDER")
@@ -2153,12 +4104,12 @@ class PLANETKA_PT_LocalCloudsPanel(bpy.types.Panel):
         clouds = _sort_cloud_objects_by_suffix(list(_iter_local_cloud_objects()))
         if not clouds:
             info = layout.box()
-            info.label(text="No local clouds added yet.", icon="INFO")
+            info.label(text="No texture-based clouds added yet.", icon="INFO")
             return
 
         for idx, cloud_obj in enumerate(clouds, start=1):
             panel_body = layout.box()
-            panel_body.label(text=_cloud_title(cloud_obj.name, idx, "Cloud No"), icon="MODIFIER")
+            panel_body.label(text=_cloud_title(cloud_obj.name, idx, "Cloud No"), icon="FORCE_WIND")
 
             vis_row = panel_body.row()
             vis_row.use_property_split = False
@@ -2170,13 +4121,11 @@ class PLANETKA_PT_LocalCloudsPanel(bpy.types.Panel):
                 icon="HIDE_OFF",
             )
 
-            panel_body.template_icon_view(
-                cloud_obj,
-                LOCAL_CLOUD_OBJ_TEXTURE_PROP,
-                show_labels=True,
-                scale=6.0,
-                scale_popup=6.0,
-            )
+            texture_path = str(cloud_obj.get(LOCAL_CLOUD_OBJ_TEXTURE_PATH_PROP, "") or "").strip()
+            texture_name = str(getattr(cloud_obj, LOCAL_CLOUD_OBJ_TEXTURE_PROP, "") or "").strip()
+            if not texture_name or texture_name == "NONE":
+                texture_name = os.path.basename(texture_path) if texture_path else "No cloud mask assigned"
+            panel_body.label(text=texture_name, icon="IMAGE_DATA")
 
             panel_body.prop(cloud_obj, LOCAL_CLOUD_PROP_SIZE_COEF, text="Size Coefficient")
             panel_body.prop(cloud_obj, LOCAL_CLOUD_PROP_LATITUDE, text="Latitude")
@@ -2291,8 +4240,8 @@ def register_object_properties():
             object_props,
             LOCAL_CLOUD_OBJ_TEXTURE_PROP,
             EnumProperty(
-                name="Local Cloud Texture",
-                description="Select a local cloud texture",
+                name="Texture-Based Cloud Texture",
+                description="Select a texture-based cloud texture",
                 items=_local_cloud_texture_items,
                 update=update_local_cloud_object_texture,
             ),
@@ -2301,51 +4250,51 @@ def register_object_properties():
     for name, kwargs in (
         (
             LOCAL_CLOUD_PROP_LONGITUDE,
-            dict(name="Local Cloud Longitude", default=0.0, min=-360.0, max=360.0, precision=3, update=update_local_cloud_object_prop),
+            dict(name="Texture-Based Cloud Longitude", default=0.0, min=-360.0, max=360.0, precision=3, step=1, update=update_local_cloud_object_prop),
         ),
         (
             LOCAL_CLOUD_PROP_LATITUDE,
-            dict(name="Local Cloud Latitude", default=0.0, min=-90.0, max=90.0, precision=3, update=update_local_cloud_object_prop),
+            dict(name="Texture-Based Cloud Latitude", default=0.0, min=-90.0, max=90.0, precision=3, step=1, update=update_local_cloud_object_prop),
         ),
         (
             LOCAL_CLOUD_PROP_ALTITUDE_M,
-            dict(name="Local Cloud Altitude (m)", default=5000.0, min=-100000.0, max=200000000.0, precision=2, update=update_local_cloud_object_prop),
+            dict(name="Texture-Based Cloud Altitude (m)", default=5000.0, min=-100000.0, max=200000000.0, precision=2, update=update_local_cloud_object_prop),
         ),
         (
             LOCAL_CLOUD_PROP_SIZE_COEF,
-            dict(name="Local Cloud Size Coef", default=1.0, min=0.001, max=1000.0, precision=3, update=update_local_cloud_object_prop),
+            dict(name="Texture-Based Cloud Size Coef", default=1.0, min=1e-6, precision=3, update=update_local_cloud_object_prop),
         ),
         (
             LOCAL_CLOUD_PROP_ROTATION_DEG,
-            dict(name="Local Cloud Rotation (deg)", default=0.0, min=-360.0, max=360.0, precision=3, update=update_local_cloud_object_prop),
+            dict(name="Texture-Based Cloud Rotation (deg)", default=0.0, min=-360.0, max=360.0, precision=3, update=update_local_cloud_object_prop),
         ),
         (
             LOCAL_CLOUD_PROP_THICKNESS_M,
-            dict(name="Local Cloud Thickness (m)", default=50.0, min=0.0, max=1000000.0, precision=2, update=update_local_cloud_object_prop),
+            dict(name="Texture-Based Cloud Thickness (m)", default=50.0, min=0.0, max=1000000.0, precision=2, update=update_local_cloud_object_prop),
         ),
         (
             LOCAL_CLOUD_PROP_DENSITY,
-            dict(name="Local Cloud Density", default=10.0, min=0.0, max=1000.0, precision=3, update=update_local_cloud_object_prop),
+            dict(name="Texture-Based Cloud Density", default=10.0, min=0.0, max=1000.0, precision=3, update=update_local_cloud_object_prop),
         ),
         (
             LOCAL_CLOUD_PROP_DENSITY_GAMMA,
-            dict(name="Local Cloud Density Gamma", default=1.0, min=0.0, max=1000.0, precision=3, update=update_local_cloud_object_prop),
+            dict(name="Texture-Based Cloud Density Gamma", default=1.0, min=0.0, max=1000.0, precision=3, update=update_local_cloud_object_prop),
         ),
         (
             LOCAL_CLOUD_PROP_BASE_SCALE,
-            dict(name="Local Cloud Base Scale", default=1.0, min=1e-6, options={'HIDDEN'}),
+            dict(name="Texture-Based Cloud Base Scale", default=1.0, min=1e-6, options={'HIDDEN'}),
         ),
         (
             LOCAL_CLOUD_PROP_CAP_HALF_ANGLE_DEG,
-            dict(name="Local Cloud Cap Half Angle", default=-1.0, min=-1.0, max=180.0, options={'HIDDEN'}),
+            dict(name="Texture-Based Cloud Cap Half Angle", default=-1.0, min=-1.0, max=180.0, options={'HIDDEN'}),
         ),
         (
             VDB_CLOUD_PROP_LONGITUDE,
-            dict(name="VDB Cloud Longitude", default=0.0, min=-360.0, max=360.0, precision=3, update=update_vdb_cloud_object_prop),
+            dict(name="VDB Cloud Longitude", default=0.0, min=-360.0, max=360.0, precision=3, step=1, update=update_vdb_cloud_object_prop),
         ),
         (
             VDB_CLOUD_PROP_LATITUDE,
-            dict(name="VDB Cloud Latitude", default=0.0, min=-90.0, max=90.0, precision=3, update=update_vdb_cloud_object_prop),
+            dict(name="VDB Cloud Latitude", default=0.0, min=-90.0, max=90.0, precision=3, step=1, update=update_vdb_cloud_object_prop),
         ),
         (
             VDB_CLOUD_PROP_ALTITUDE_M,
@@ -2353,7 +4302,7 @@ def register_object_properties():
         ),
         (
             VDB_CLOUD_PROP_SIZE_COEF,
-            dict(name="VDB Cloud Size Coef", default=1.0, min=0.001, max=1000.0, precision=3, update=update_vdb_cloud_object_prop),
+            dict(name="VDB Cloud Size Coef", default=1.0, min=1e-6, precision=3, update=update_vdb_cloud_object_prop),
         ),
         (
             VDB_CLOUD_PROP_ROTATION_DEG,
@@ -2361,7 +4310,7 @@ def register_object_properties():
         ),
         (
             VDB_CLOUD_PROP_DENSITY,
-            dict(name="VDB Cloud Density", default=0.1, min=0.0, max=1000.0, precision=3, update=update_vdb_cloud_object_prop),
+            dict(name="VDB Cloud Density", default=float(DEFAULT_VDB_CLOUD_DENSITY), min=0.0, max=1000.0, precision=3, update=update_vdb_cloud_object_prop),
         ),
         (
             VDB_CLOUD_PROP_BASE_SCALE_X,
@@ -2427,3 +4376,4 @@ def unregister_object_properties():
                 logger.debug("Planetka clouds: failed unregistering object property %s", name, exc_info=True)
 
     _free_local_cloud_previews()
+    _free_vdb_cloud_previews()

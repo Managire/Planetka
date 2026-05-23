@@ -15,9 +15,8 @@ Normal use includes:
 
 ## Account access
 
-- Free accounts can stream worldwide in Preview texture quality.
-- Indie accounts can stream worldwide in Preview and Balanced texture quality.
-- Pro accounts can stream worldwide in Preview, Balanced, and Full texture quality, subject to fair-usage and anti-abuse controls.
+- Free accounts can stream worldwide in Preview and Balanced texture quality for personal use.
+- Pro accounts can stream worldwide in Preview, Balanced, and Full texture quality for commercial and personal use, subject to fair-usage and anti-abuse controls.
 
 ## Not allowed
 

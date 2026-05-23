@@ -9,10 +9,8 @@ Planetka 0.8.2 does not use tile-by-tile pricing, data-pack pricing, scene-speci
 The active add-on pricing/access model is intentionally simple:
 
 ```text
-Free account -> free -> Preview texture quality worldwide
-Indie account -> EUR 70 one-time or manually granted -> Preview and Balanced texture quality worldwide
+Free account -> free -> Preview and Balanced texture quality worldwide
 Pro account -> EUR 280 one-time or manually granted -> Preview, Balanced, and Full texture quality worldwide
-Indie to Pro upgrade -> EUR 210 one-time
 ```
 
 Preview, Balanced, and Full Quality are quality modes, not purchasable products.
@@ -48,8 +46,8 @@ Active access decisions for 0.8.2 are made by:
 
 The Blender client sends the requested texture quality when creating a tile session. The tile Worker enforces whether that account tier can stream that quality for the duration of the short-lived session.
 
-## Indie/Pro Checkout Status
+## Pro Checkout Status
 
-Indie/Pro checkout is not currently ready for public release. The current upgrade URL is a placeholder/missing page and must be implemented before paid upgrades are offered.
+Pro checkout is not currently ready for public release. The current upgrade URL is a placeholder/missing page and must be implemented before paid upgrades are offered.
 
-Until checkout is implemented, Indie and Pro access must be granted manually or through controlled backend test setup.
+Until checkout is implemented, Pro access must be granted manually or through controlled backend test setup.

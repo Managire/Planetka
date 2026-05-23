@@ -1,12 +1,12 @@
 Using Planetka Commercially
 Last updated: 2026-05-19
 
-1. Personal accounts are intended for evaluation and limited personal use in selected free locations.
-2. Professional accounts allow commercial and non-commercial rendered output created with Planetka streamed textures.
+1. Free accounts are intended for evaluation and personal use worldwide in Preview and Balanced texture quality.
+2. Pro accounts allow commercial and non-commercial rendered output created with Planetka streamed textures.
 3. Preview, Balanced, and Full Quality are streaming quality modes, not separate tile purchases.
 4. The Planetka add-on is not a raw-data download product and does not provide a reusable texture-data archive.
 5. You may not resell, redistribute, sublicense, host, publish, extract, or expose Planetka texture data as a standalone map product, dataset, tile server, API, texture library, training dataset, or competing service.
-6. You may not use Personal access outside the selected free-location workflow or for paid client/commercial production.
+6. You may not use Free access for paid client or commercial production.
 7. You must include required source attribution where applicable. The recommended short attribution is:
    Planetka Earth textures derived from Copernicus Sentinel-2, NASA Blue Marble, JAXA AW3D30, DLR WSF 2015, GeoNames, and other credited sources.
 8. For enterprise, broadcast, aerospace, large-documentary, AI/ML, data-redistribution, or unusual licensing requirements, contact Planetka before use.

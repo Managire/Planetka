@@ -618,6 +618,8 @@ def _is_non_retryable_resolve_error(message):
             "panorama resolve exceeds tile limit",
             "no fallback parent found",
             "account blocked",
+            "planetka account does not have access",
+            "does not have access to remote earth data",
         )
     )
 
@@ -696,6 +698,56 @@ def _ctx_handle_apply_readonly_failure(ctx, scene, job, manual_request, lock_rea
     else:
         deps.request_auto_resolve(scene, immediate=False, mark_dirty=False)
     return False
+
+
+def _ctx_wait_or_drop_completed_during_guard(ctx, scene, job, manual_request, *, guard_name, user_message):
+    deps = ctx.deps
+    settings = ctx.settings
+    field_prefix = f"apply_{guard_name}_guard"
+    now = time.monotonic()
+    try:
+        guard_since = float(deps.job_field(job, f"{field_prefix}_since", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        guard_since = 0.0
+    if guard_since <= 0.0:
+        guard_since = now
+    try:
+        guard_attempts = int(deps.job_field(job, f"{field_prefix}_attempts", 0) or 0) + 1
+    except (TypeError, ValueError):
+        guard_attempts = 1
+    deps.job_set_field(job, f"{field_prefix}_since", float(guard_since))
+    deps.job_set_field(job, f"{field_prefix}_attempts", int(max(1, guard_attempts)))
+    waited_sec = max(0.0, float(now) - float(guard_since))
+    wait_budget_sec = min(
+        float(settings.download_completed_max_age_sec),
+        max(float(settings.download_scene_wait_sec), 6.0),
+    )
+    if waited_sec < wait_budget_sec:
+        deps.resolve_trace(
+            f"Download finished but {guard_name} guard is active; waiting "
+            f"(request_id={deps.job_field(job, 'request_id')}, waited={waited_sec:.2f}s, "
+            f"attempts={guard_attempts})"
+        )
+        return False, None, None, None
+
+    deps.resolve_trace(
+        f"Download completion dropped after persistent {guard_name} guard "
+        f"(request_id={deps.job_field(job, 'request_id')}, waited={waited_sec:.2f}s, "
+        f"attempts={guard_attempts})"
+    )
+    deps.logger.warning(
+        "Planetka: dropping completed auto-resolve payload after %.2fs waiting for %s guard "
+        "(request_id=%s, attempts=%d).",
+        float(waited_sec),
+        str(guard_name),
+        str(deps.job_field(job, "request_id", "")),
+        int(guard_attempts),
+    )
+    deps.job_set_field(job, f"{field_prefix}_since", 0.0)
+    deps.job_set_field(job, f"{field_prefix}_attempts", 0)
+    if manual_request:
+        _ctx_mark_manual_queued_resolve_error(ctx, scene, str(user_message or "Resolve was blocked."))
+    return True, None, None, None
 
 
 def _ctx_mark_auto_resolve_terminal_failure(ctx, scene, scene_id, job, message):
@@ -969,21 +1021,33 @@ def _ctx_auto_resolve_prepare_apply_context(ctx, job, manual_request):
     if deps.is_render_job_active():
         if manual_request:
             deps.logger.info(
-                "Planetka: waiting to apply queued manual resolve during active render "
+                "Planetka: applying queued manual resolve despite render guard because Blender data is writable "
                 "(request_id=%s).",
                 str(deps.job_field(job, "request_id", "")),
             )
-            return False, None, None, None
         else:
-            deps.request_auto_resolve(scene, immediate=False, mark_dirty=False)
-        return True, None, None, None
+            return _ctx_wait_or_drop_completed_during_guard(
+                ctx,
+                scene,
+                job,
+                manual_request,
+                guard_name="render",
+                user_message="Resolve was blocked by active render.",
+            )
 
     props = getattr(scene, "planetka", None)
     if deps.is_animation_playing() and bool(getattr(props, "lock_resolve_during_animation", True)):
         if manual_request:
             _ctx_mark_manual_queued_resolve_error(ctx, scene, "Blocked by animation playback lock.")
         else:
-            deps.request_auto_resolve(scene, immediate=False, mark_dirty=False)
+            return _ctx_wait_or_drop_completed_during_guard(
+                ctx,
+                scene,
+                job,
+                manual_request,
+                guard_name="animation",
+                user_message="Resolve was blocked by animation playback.",
+            )
         return True, None, None, None
 
     if manual_request:
@@ -1658,6 +1722,12 @@ def _ctx_can_auto_resolve_run(ctx, scene):
     props = getattr(scene, "planetka", None)
     if props is None:
         return False
+    try:
+        auto_mode = str(getattr(props, "auto_resolve_mode", "CAMERA_VIEW") or "CAMERA_VIEW").strip().upper()
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        auto_mode = "CAMERA_VIEW"
+    if auto_mode == "NEVER":
+        return False
     if not bool(getattr(props, "auto_resolve", False)):
         return False
     if deps.get_earth_object() is None:
@@ -1679,6 +1749,7 @@ def _ctx_update_auto_resolve(ctx, self, context):
                 "viewport_opt_suspend_subdivision",
                 "viewport_opt_subdivision_restore_delay_sec",
                 "auto_resolve",
+                "auto_resolve_mode",
                 "auto_resolve_idle_sec",
                 "texture_quality_mode",
                 "resolution_bias",

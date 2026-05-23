@@ -2,7 +2,7 @@
 
 Last updated: 2026-05-19
 
-Planetka uses three active add-on account tiers: `free`, `indie`, and `pro`.
+Planetka uses two active add-on account tiers: `free` and `pro`.
 
 ## Canonical Account State
 
@@ -10,8 +10,7 @@ Planetka uses three active add-on account tiers: `free`, `indie`, and `pro`.
 
 Active add-on access tiers:
 
-- `free`: worldwide Preview texture-quality streaming.
-- `indie`: worldwide Preview and Balanced texture-quality streaming.
+- `free`: worldwide Preview and Balanced texture-quality streaming for personal use.
 - `pro`: worldwide Preview, Balanced, and Full texture-quality streaming.
 
 Compatibility aliases:
@@ -21,20 +20,11 @@ Compatibility aliases:
 
 ## Free Access
 
-Free accounts can stream worldwide in Preview texture quality.
+Free accounts can stream worldwide in Preview and Balanced texture quality.
 
 Free access is enforced in the backend, not only in Blender UI. Enforcement occurs at tile-session start, before a short-lived tile token is issued for the requested texture quality.
 
-If Free requests Balanced or Full, the backend must deny the session with clear user-facing wording.
-
-## Indie Access
-
-Indie accounts can stream worldwide in:
-
-- Preview
-- Balanced
-
-If Indie requests Full, the backend must deny the session with clear user-facing wording.
+If Free requests Full, the backend must deny the session with clear user-facing wording.
 
 ## Pro Access
 
@@ -44,7 +34,7 @@ Pro accounts can stream worldwide in all active quality modes:
 - Balanced
 - Full
 
-Indie and Pro access remain subject to fair-usage, anti-abuse, authentication, and service-protection controls.
+Pro access remain subject to fair-usage, anti-abuse, authentication, and service-protection controls.
 
 ## Beta Default
 
@@ -52,12 +42,11 @@ During public beta, newly requested access keys default to `pro`. This is contro
 
 When beta ends, set `PLANETKA_BETA_DEFAULT_PRO=0` so newly requested access keys default to `free`.
 
-The beta backfill policy is: all existing non-blocked accounts are promoted to canonical `pro` once. This does not remove the ability to manually test `free` or `indie`; manual Analytics tier switches remain authoritative after the backfill.
+The beta backfill policy is: all existing non-blocked accounts are promoted to canonical `pro` once. This does not remove the ability to manually test `free`; manual Analytics tier switches remain authoritative after the backfill.
 
 The Analytics All Users page may still manually switch any account between:
 
 - `free`
-- `indie`
 - `pro`
 
 The switch updates the user account row and all active access keys for that user. Existing short-lived access tokens may keep their previous tier until the next auth refresh.
@@ -88,8 +77,7 @@ Run against the live or staging backend before release:
 
 Expected result:
 
-- Free account allows worldwide Preview and blocks Balanced/Full clearly.
-- Indie account allows worldwide Preview/Balanced and blocks Full clearly.
+- Free account allows worldwide Preview and Balanced and blocks Full clearly.
 - Pro account allows tested worldwide locations in Preview, Balanced, and Full.
 
 ## Audit Queries
@@ -108,4 +96,4 @@ GROUP BY LOWER(TRIM(COALESCE(plan_code, '')))
 ORDER BY count DESC;
 ```
 
-Expected active result: account states normalise to `free`, `indie`, or `pro` for add-on access decisions.
+Expected active result: account states normalise to `free` or `pro` for add-on access decisions.

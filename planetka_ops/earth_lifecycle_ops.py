@@ -284,8 +284,10 @@ def add_earth_execute(operator, context, deps):
 
     try:
         props.texture_quality_mode = "PREVIEW"
+        props.auto_resolve_mode = "CAMERA_VIEW"
+        props.auto_resolve = True
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed setting default texture quality to Preview", exc_info=True)
+        logger.debug("Planetka: failed setting default texture quality or auto-resolve mode", exc_info=True)
     warm_base_sphere_mesh_cache()
 
     new_obj = None
@@ -319,7 +321,11 @@ def add_earth_execute(operator, context, deps):
         logger.debug("Planetka: failed creating default atmosphere on Create Earth", exc_info=True)
 
     try:
-        if bool(getattr(props, "enable_global_clouds", False)) and callable(ensure_global_cloud_layer):
+        clouds_were_enabled = bool(getattr(props, "enable_global_clouds", False))
+        if not clouds_were_enabled:
+            props.enable_global_clouds = True
+            _sync_idprops_from_props(scene, ("enable_global_clouds",))
+        elif callable(ensure_global_cloud_layer):
             ensure_global_cloud_layer(scene=scene)
     except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka: failed creating global clouds on Create Earth", exc_info=True)
@@ -339,9 +345,11 @@ def add_earth_execute(operator, context, deps):
             logger.debug("Planetka: failed positioning Planetka Camera on Create Earth", exc_info=True)
     try:
         props.texture_quality_mode = "PREVIEW"
-        _sync_idprops_from_props(scene, ("texture_quality_mode",))
+        props.auto_resolve_mode = "CAMERA_VIEW"
+        props.auto_resolve = True
+        _sync_idprops_from_props(scene, ("texture_quality_mode", "auto_resolve_mode", "auto_resolve"))
     except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed enforcing Create Earth default texture quality mode", exc_info=True)
+        logger.debug("Planetka: failed enforcing Create Earth default texture quality or auto-resolve mode", exc_info=True)
     if bool(getattr(props, "auto_adjust_clipping_values", True)):
         try:
             camera_before_clip = getattr(scene, "camera", None)
@@ -393,9 +401,11 @@ def add_earth_execute(operator, context, deps):
         logger.debug("Planetka: post-resolve startup setup re-apply failed", exc_info=True)
     try:
         props.texture_quality_mode = "PREVIEW"
-        _sync_idprops_from_props(scene, ("texture_quality_mode",))
+        props.auto_resolve_mode = "CAMERA_VIEW"
+        props.auto_resolve = True
+        _sync_idprops_from_props(scene, ("texture_quality_mode", "auto_resolve_mode", "auto_resolve"))
     except PLANETKA_CREATE_EARTH_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka: failed enforcing post-resolve Create Earth texture quality mode", exc_info=True)
+        logger.debug("Planetka: failed enforcing post-resolve Create Earth texture quality or auto-resolve mode", exc_info=True)
 
     _earth_graph_rebind(scene=scene, earth_surface=get_earth_object() or new_obj)
     _hide_shot_anchor_in_viewport()

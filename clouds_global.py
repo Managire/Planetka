@@ -1,18 +1,21 @@
 import logging
 import os
-import shutil
 
 import bpy
 
-from .asset_builder import ensure_planetka_root
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from .extension_prefs import get_earth_object
-from .r2_source import resolve_remote_asset
 from . import clouds_local as _local
 
 
 logger = logging.getLogger(__name__)
 _RECOVERABLE_LOG_COUNTS = {}
+BUNDLED_GLOBAL_CLOUD_TEXTURE_PATH = os.path.join(
+    os.path.dirname(__file__),
+    "Resources",
+    "Clouds Global",
+    _local.REMOTE_GLOBAL_CLOUD_TEXTURE_FILE,
+)
 
 
 def _log_recoverable_once(code, message):
@@ -48,46 +51,19 @@ def _safe_existing_file(path):
     return ""
 
 
-def _copy_texture_to_cloud_folder(source_path, folder):
-    source = _safe_existing_file(source_path)
-    target_dir = os.path.abspath(os.path.expanduser(str(folder or "").strip()))
-    if not source or not target_dir:
-        return source
-    target = os.path.join(target_dir, _local.REMOTE_GLOBAL_CLOUD_TEXTURE_FILE)
-    try:
-        if os.path.isfile(target) and os.path.samefile(source, target):
-            return target
-    except (OSError, RuntimeError, TypeError, ValueError, AttributeError):
-        pass
-    try:
-        os.makedirs(target_dir, exist_ok=True)
-        if not _safe_existing_file(target):
-            shutil.copy2(source, target)
-        return _safe_existing_file(target) or source
-    except (OSError, RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka clouds: failed copying global cloud texture to selected folder", exc_info=True)
-    return source
-
-
 def _resolve_global_cloud_texture_path(scene=None):
     props = getattr(scene, "planetka", None) if scene else None
     source = str(getattr(props, "global_cloud_texture_source", "CLOUD") or "CLOUD").strip().upper()
     if source == "LOCAL":
         return _safe_existing_file(getattr(props, "global_cloud_local_file", ""))
 
-    selected_folder = str(getattr(props, "global_cloud_folder", "") or "").strip() if props else ""
-    if selected_folder:
-        target = os.path.join(
-            os.path.abspath(os.path.expanduser(selected_folder)),
-            _local.REMOTE_GLOBAL_CLOUD_TEXTURE_FILE,
-        )
-        cached_target = _safe_existing_file(target)
-        if cached_target:
-            return cached_target
+    bundled_path = _safe_existing_file(BUNDLED_GLOBAL_CLOUD_TEXTURE_PATH)
+    if bundled_path:
+        return bundled_path
 
     texture_path = ""
     try:
-        texture_path = resolve_remote_asset(
+        texture_path = _local._download_public_cloud_asset(
             _local.REMOTE_GLOBAL_CLOUDS_FOLDER,
             _local.REMOTE_GLOBAL_CLOUD_TEXTURE_FILE,
         )
@@ -96,8 +72,6 @@ def _resolve_global_cloud_texture_path(scene=None):
     except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
         logger.debug("Planetka clouds: failed resolving global cloud texture", exc_info=True)
 
-    if selected_folder:
-        return _copy_texture_to_cloud_folder(texture_path, selected_folder)
     return _safe_existing_file(texture_path)
 
 
@@ -128,6 +102,7 @@ def apply_global_cloud_object(obj, scene=None):
     if not _is_global_cloud_object(obj):
         return
     scene = scene or getattr(bpy.context, "scene", None)
+    _local._ensure_cloud_parented_to_root(obj, scene=scene)
     earth = get_earth_object()
     if earth is None:
         return
@@ -189,13 +164,7 @@ def ensure_global_cloud_layer(scene=None):
     if scene is not None:
         _clouds, global_clouds, _local_clouds, _vdb_clouds = _local._ensure_cloud_collections(scene)
         _local._set_object_collections(source_obj, [global_clouds])
-        root = ensure_planetka_root(scene)
-        try:
-            if root is not None:
-                source_obj.parent = root
-                source_obj.matrix_parent_inverse = root.matrix_world.inverted()
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka clouds: failed parenting global cloud layer", exc_info=True)
+        _local._ensure_cloud_parented_to_root(source_obj, scene=scene)
 
     try:
         source_obj[_local.CLOUD_ROLE_KEY] = _local.GLOBAL_CLOUD_ROLE
@@ -220,7 +189,7 @@ def update_enable_global_clouds(self, context):
         ),
     )
     _local._sync_cloud_collection_visibility(scene, self)
-    if bool(getattr(self, "enable_global_clouds", True)):
+    if bool(getattr(self, "enable_global_clouds", False)):
         try:
             ensure_global_cloud_layer(scene=scene)
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
@@ -256,12 +225,12 @@ class PLANETKA_PT_GlobalCloudsPanel(bpy.types.Panel):
         row.prop(
             props,
             "enable_global_clouds",
-            text="Disable Global Clouds" if bool(getattr(props, "enable_global_clouds", True)) else "Enable Global Clouds",
+            text="Disable Global Clouds" if bool(getattr(props, "enable_global_clouds", False)) else "Enable Global Clouds",
             toggle=True,
             invert_checkbox=True,
         )
 
-        if not bool(getattr(props, "enable_global_clouds", True)):
+        if not bool(getattr(props, "enable_global_clouds", False)):
             return
 
         obj = bpy.data.objects.get(_local.GLOBAL_CLOUD_LAYER_NAME)

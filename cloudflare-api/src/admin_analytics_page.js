@@ -25,12 +25,10 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
   const renderTierSplitValue = (values = {}, valueFormatter, fallbackTotal = 0) => {
     const safeValues = values && typeof values === "object" ? values : {};
     const free = Number(safeValues.free || 0);
-    const indie = Number(safeValues.indie || 0);
     const pro = Number(safeValues.pro || safeValues.professional || 0);
     const total = Number(safeValues.total || fallbackTotal || 0);
     return [
       `<span class="tier-free">${escapeHtml(String(valueFormatter(free)))}</span>`,
-      `<span class="tier-indie">${escapeHtml(String(valueFormatter(indie)))}</span>`,
       `<span class="tier-pro">${escapeHtml(String(valueFormatter(pro)))}</span>`,
       `<span class="tier-total">${escapeHtml(String(valueFormatter(total)))}</span>`,
     ].join(' <span class="tier-separator">/</span> ');
@@ -58,7 +56,6 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
     .label { color: #93c5fd; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
     .value { font-size: 22px; margin-top: 6px; font-weight: 600; }
     .tier-free { color: #22c55e; }
-    .tier-indie { color: #f59e0b; }
     .tier-pro { color: #ef4444; }
     .tier-total { color: #ffffff; }
     .tier-separator { color: #64748b; font-weight: 500; }
@@ -109,10 +106,10 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
 	    <span id="status" class="muted">Snapshot updated: ${snapshotGeneratedAt} UTC</span>
 	  </div>
 	  <div class="grid">
-    <div class="card"><div class="label">Users: Free / Indie / Pro / Total</div><div id="topUsersSplit" class="value">${topUsersSplitHtml}</div></div>
-    <div class="card"><div class="label">Resolves: Free / Indie / Pro / Total</div><div id="topResolvesSplit" class="value">${topResolvesSplitHtml}</div></div>
-    <div class="card"><div class="label">Tile Requests: Free / Indie / Pro / Total</div><div id="topRequestsSplit" class="value">${topTileRequestsSplitHtml}</div></div>
-    <div class="card"><div class="label">GB Served: Free / Indie / Pro / Total</div><div id="topGbSplit" class="value">${topGbServedSplitHtml}</div></div>
+    <div class="card"><div class="label">Users: Free / Pro / Total</div><div id="topUsersSplit" class="value">${topUsersSplitHtml}</div></div>
+    <div class="card"><div class="label">Resolves: Free / Pro / Total</div><div id="topResolvesSplit" class="value">${topResolvesSplitHtml}</div></div>
+    <div class="card"><div class="label">Tile Requests: Free / Pro / Total</div><div id="topRequestsSplit" class="value">${topTileRequestsSplitHtml}</div></div>
+    <div class="card"><div class="label">GB Served: Free / Pro / Total</div><div id="topGbSplit" class="value">${topGbServedSplitHtml}</div></div>
     <div class="card"><div class="label">Tile requests (window)</div><div id="reqCount" class="value">${escapeHtml(fmtIntLocal(snapshotSummary.request_count))}</div></div>
     <div class="card"><div class="label">Bytes served (window)</div><div id="bytesServed" class="value">${escapeHtml(fmtGbLocal(snapshotSummary.bytes_served))} GB</div></div>
     <div class="card"><div class="label">Errors (window)</div><div id="errors" class="value">${escapeHtml(fmtIntLocal(snapshotSummary.error_count))}</div></div>
@@ -201,7 +198,6 @@ export function buildAdminAnalyticsPageHtml(context = {}) {
       const safeValues = values && typeof values === "object" ? values : {};
       const parts = [
         ["tier-free", Number(safeValues.free || 0)],
-        ["tier-indie", Number(safeValues.indie || 0)],
         ["tier-pro", Number(safeValues.pro || safeValues.professional || 0)],
         ["tier-total", Number(safeValues.total || fallbackTotal || 0)],
       ];

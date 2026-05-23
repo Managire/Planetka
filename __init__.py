@@ -114,7 +114,7 @@ def _feature_flag_enabled(name, default=False):
     return token in {"1", "true", "yes", "on"}
 
 
-_CLOUD_RUNTIME_ENABLED = _feature_flag_enabled("PLANETKA_ENABLE_CLOUD_RUNTIME", default=False)
+_CLOUD_RUNTIME_ENABLED = _feature_flag_enabled("PLANETKA_ENABLE_CLOUD_RUNTIME", default=True)
 _PUBLIC_BUILD_PROFILE = _feature_flag_enabled("PLANETKA_PUBLIC_BUILD", default=True)
 _LEGACY_RUNTIME_ENABLED = _feature_flag_enabled(
     "PLANETKA_ENABLE_LEGACY_RUNTIME",
@@ -125,6 +125,7 @@ if _CLOUD_RUNTIME_ENABLED:
     from .clouds_local import (
         PLANETKA_OT_AddLocalCloud,
         PLANETKA_OT_DeleteLocalCloud,
+        PLANETKA_OT_OptimizeClouds,
         PLANETKA_OT_ResetLocalCloudToCameraView,
         PLANETKA_OT_SetCloudViewMode,
         register_object_properties as register_cloud_object_properties,
@@ -138,6 +139,7 @@ if _CLOUD_RUNTIME_ENABLED:
 
     _CLOUD_CLASSES = (
         PLANETKA_OT_SetCloudViewMode,
+        PLANETKA_OT_OptimizeClouds,
         PLANETKA_OT_AddLocalCloud,
         PLANETKA_OT_ResetLocalCloudToCameraView,
         PLANETKA_OT_DeleteLocalCloud,

@@ -12,7 +12,6 @@ import {
 } from "./worker/env.js";
 import {
   PLAN_CODE_FREE,
-  PLAN_CODE_INDIE,
   PLAN_CODE_PERSONAL,
   PLAN_CODE_PROFESSIONAL,
   defaultSignupPlanCode,
@@ -434,9 +433,6 @@ function normalizeTierCodeStrict(value) {
   const normalized = normalizePlanCode(value);
   if (normalized === PLAN_CODE_FREE || normalized === PLAN_CODE_PERSONAL) {
     return PLAN_CODE_FREE;
-  }
-  if (normalized === PLAN_CODE_INDIE) {
-    return PLAN_CODE_INDIE;
   }
   if (normalized === PLAN_CODE_PROFESSIONAL) {
     return PLAN_CODE_PROFESSIONAL;
@@ -1958,7 +1954,6 @@ const ANALYTICS_QUERY_DEPS = {
   INTERNAL_TEST_ANALYTICS_EMAIL_PATTERNS,
   MAX_ANALYTICS_WINDOW_MINUTES,
   PLAN_CODE_FREE,
-  PLAN_CODE_INDIE,
   PLAN_CODE_PROFESSIONAL,
   clampNonNegativeInt,
   countRowsFromQuery,
@@ -2106,7 +2101,6 @@ const ADMIN_USER_DEPS = {
   parseBooleanFlag,
   isBlockedStatus,
   PLAN_CODE_FREE,
-  PLAN_CODE_INDIE,
   PLAN_CODE_PERSONAL,
   PLAN_CODE_PROFESSIONAL,
   randomToken,

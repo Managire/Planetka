@@ -6,6 +6,7 @@ import bpy
 from bpy.props import FloatProperty, IntProperty, StringProperty
 
 from ..error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
+from ..auth import is_pro_account
 from ..operator_utils import ErrorCode, fail
 from ..state import logger
 
@@ -127,6 +128,13 @@ class PLANETKA_OT_CreateStandaloneFile(bpy.types.Operator):
 
     def invoke(self, context, event):
         del event
+        if not is_pro_account():
+            return fail(
+                self,
+                "Standalone file export requires a Pro account.",
+                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                logger=logger,
+            )
         source_path = str(getattr(bpy.data, "filepath", "") or "").strip()
         if source_path:
             source_abs = os.path.abspath(source_path)
@@ -141,6 +149,13 @@ class PLANETKA_OT_CreateStandaloneFile(bpy.types.Operator):
 
     def execute(self, context):
         del context
+        if not is_pro_account():
+            return fail(
+                self,
+                "Standalone file export requires a Pro account.",
+                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                logger=logger,
+            )
         source_path = str(getattr(bpy.data, "filepath", "") or "").strip()
         source_abs = os.path.abspath(source_path) if source_path else ""
         output_path = os.path.abspath(os.path.expanduser(str(getattr(self, "filepath", "") or "").strip()))
