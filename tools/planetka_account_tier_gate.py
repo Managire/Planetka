@@ -41,6 +41,7 @@ if EXPECTED_PLAN == "personal":
     EXPECTED_PLAN = "free"
 elif EXPECTED_PLAN == "professional":
     EXPECTED_PLAN = "pro"
+EXPECTED_EMAIL = str(os.environ.get("PLANETKA_EXPECTED_EMAIL") or "tom.griger@gmail.com").strip().lower()
 QUALITY_MODES = ("preview", "balanced", "full")
 LOCATIONS = (
     {"name": "New Zealand", "lat": -41.2865, "lon": 174.7762},
@@ -120,7 +121,7 @@ def main():
             actual_plan = "free"
         account["actual_plan"] = actual_plan
         payload["account"] = account
-        _assert(account["email"].lower() == "tom.griger@gmail.com", f"Unexpected test account: {account['email']}")
+        _assert(account["email"].lower() == EXPECTED_EMAIL, f"Unexpected test account: {account['email']}")
         _assert(
             actual_plan == EXPECTED_PLAN,
             f"Test account tier is {actual_plan or 'unknown'}, but PLANETKA_EXPECTED_PLAN is {EXPECTED_PLAN}. "

@@ -172,9 +172,7 @@ let apiKeyTablesReady = false;
 let refreshSessionColumnsReady = false;
 let userQualityAccessColumnsReady = false;
 let adminFeatureFlagsTableReady = false;
-const FIXED_INTERNAL_TEST_PLAN_BY_EMAIL = Object.freeze({
-  "free@planetka.io": PLAN_CODE_PROFESSIONAL,
-});
+const FIXED_INTERNAL_TEST_PLAN_BY_EMAIL = Object.freeze({});
 let adminHardBlocksTableReady = false;
 let newsletterContactsTableReady = false;
 let creditTablesReady = false;

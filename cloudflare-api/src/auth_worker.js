@@ -75,9 +75,7 @@ const DEFAULT_API_KEY_REQUEST_MIN_AGE_SECONDS = 2;
 const RATE_LIMIT_PRUNE_INTERVAL_SECONDS = 300;
 const RATE_LIMIT_ENTRY_TTL_SECONDS = 172800;
 
-const FIXED_INTERNAL_TEST_PLAN_BY_EMAIL = Object.freeze({
-  "free@planetka.io": PLAN_CODE_PROFESSIONAL,
-});
+const FIXED_INTERNAL_TEST_PLAN_BY_EMAIL = Object.freeze({});
 
 let rateLimitsTableReady = false;
 let adminHardBlocksTableReady = false;
