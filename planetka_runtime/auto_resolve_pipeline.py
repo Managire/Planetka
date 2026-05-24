@@ -1072,7 +1072,6 @@ def _ctx_auto_resolve_apply_downloaded_tiles(ctx, scene, scene_id, job, manual_r
         op_kwargs = {
             "scope_mode": "CAMERA",
             "skip_render_compatibility": True,
-            "skip_pricing_session": True,
             "defer_download": False,
             "tiles_override_json": json.dumps(list(job_target_tiles)),
             "texture_quality_mode_override": deps.normalize_texture_quality_mode(
@@ -1249,13 +1248,23 @@ def _ctx_finalize_auto_resolve_apply(ctx, scene, scene_id, job, manual_request, 
     scene_id = deps.scene_key(scene)
     latest_signature = deps.camera_signature(scene) or deps.job_field(job, "camera_signature")
     latest_output_signature = deps.output_resolution_signature(scene)
+    latest_camera_signature = deps.camera_signature(scene)
+    job_camera_signature = deps.job_field(job, "camera_signature")
+    job_output_signature = deps.job_field(job, "output_signature")
     scene_state = deps.read_scene_auto_resolve_state(scene_id)
     if scene_state is not None:
         scene_state.last_resolve_time = resolved_at
         scene_state.last_change_time = resolved_at
         scene_state.last_camera_signature = latest_signature
         scene_state.last_output_signature = latest_output_signature
-        scene_state.last_processed_signature = latest_signature
+        # The payload that was just applied belongs to the job signature, not
+        # necessarily to the current camera. If the camera/output changed while
+        # downloading, let the normal detector compare the current tile list
+        # before deciding whether another resolve is actually needed. Marking
+        # the current signature as processed here can hide a real movement;
+        # forcing a dirty pass can also loop forever when post-resolve cloud
+        # synchronization mutates scene data without changing visible tiles.
+        scene_state.last_processed_signature = job_camera_signature or latest_signature
         scene_state.pending_output_change = False
         deps.write_scene_auto_resolve_state(scene_state)
     deps.viewport_scope_last_resolve_time[scene_id] = resolved_at
@@ -1266,10 +1275,6 @@ def _ctx_finalize_auto_resolve_apply(ctx, scene, scene_id, job, manual_request, 
         deps.logger.debug("Planetka: failed clearing queued resolve error marker", exc_info=True)
     except (RuntimeError, TypeError, ValueError):
         deps.logger.debug("Planetka: failed clearing queued resolve error marker", exc_info=True)
-    latest_camera_signature = deps.camera_signature(scene)
-    job_camera_signature = deps.job_field(job, "camera_signature")
-    job_output_signature = deps.job_field(job, "output_signature")
-
     if manual_request:
         if job_quality_mode == "FULL":
             _store_full_quality_hold(scene, deps, job_camera_signature or latest_camera_signature)
@@ -1283,12 +1288,14 @@ def _ctx_finalize_auto_resolve_apply(ctx, scene, scene_id, job, manual_request, 
         if job_quality_mode == "PREVIEW":
             _clear_full_quality_hold(scene, deps, mark_preview=True)
         # Auto-resolve should always finalize once download completes.
-        # If the camera/output changed while downloading, queue another pass after this apply.
+        # If the camera/output changed while downloading, schedule a normal
+        # detector pass. Do not force dirty state; the detector can compare
+        # current target tiles against the applied list and avoid no-op loops.
         if (
             latest_camera_signature != job_camera_signature
             or latest_output_signature != job_output_signature
         ):
-            deps.request_auto_resolve(scene, immediate=False, mark_dirty=True)
+            deps.request_auto_resolve(scene, immediate=False, mark_dirty=False)
     deps.resolve_trace(
         f"Shader update finished (request_id={deps.job_field(job, 'request_id')}, tiles={len(job_target_tiles)})"
     )
@@ -1836,15 +1843,12 @@ def _ctx_auto_resolve_update_size_estimation(ctx, scene, scope, active_view_sign
         base_path_for_estimate = ""
 
     full_tiles_override = None
-    include_full_price = False
     try:
         deps.update_resolve_size_estimates(
             scene,
             scope_mode=estimation_scope,
             base_path=base_path_for_estimate,
             full_tiles_override=full_tiles_override,
-            include_full_price=include_full_price,
-            async_full_price=include_full_price,
         )
     except deps.recoverable_exceptions:
         deps.logger.debug("Planetka auto-resolve: failed updating resolve size estimates", exc_info=True)

@@ -90,13 +90,9 @@ LAST_MANUAL_RESOLVE_TOTAL_SECONDS_KEY = "planetka_last_manual_resolve_total_seco
 
 _TILE_ZD_PATTERN = re.compile(r"_z(\d+)_d(\d+)$")
 _PREFETCH_ACCESS_FAILURE_TOKENS = (
-    "not been licenced",
-    "tile_not_unlocked",
-    "not unlocked",
-    "licence could not be confirmed",
-    "license could not be confirmed",
     "request limit reached",
-    "tile_unlock_verification_failed",
+    "not_allowed_for_tier",
+    "quality_mode_not_allowed",
 )
 
 
@@ -750,12 +746,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         options={'HIDDEN', 'SKIP_SAVE'},
     )
 
-    skip_pricing_session: BoolProperty(
-        name="Skip Pricing Session",
-        default=False,
-        options={'HIDDEN', 'SKIP_SAVE'},
-    )
-
     capture_download_progress: BoolProperty(
         name="Capture Download Progress",
         default=True,
@@ -1168,8 +1158,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                     scope_mode=str(getattr(self, "scope_mode", "AUTO") or "AUTO"),
                     base_path=normalized,
                     full_tiles_override=full_tiles_override,
-                    include_full_price=False,
-                    async_full_price=True,
                 )
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka: failed updating resolve-size estimates before queued resolve", exc_info=True)
@@ -1218,10 +1206,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 nav_longitude_deg=nav_longitude_deg,
                 nav_altitude_km=nav_altitude_km,
                 feature=feature,
-                # The 2026 streaming model treats Preview, Balanced, and Full
-                # Quality as quality modes, not per-resolve purchases. Do not
-                # attach any legacy pricing/session payload to resolve traffic.
-                enforce_pricing_session=False,
                 capture_download_progress=bool(capture_download_progress),
             )
             payload_data = self._parse_stream_payload(stream_payload)
@@ -1272,11 +1256,9 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         nav_latitude_deg,
         nav_longitude_deg,
         nav_altitude_km,
-        enforce_pricing_session=True,
         capture_download_progress=True,
         feature="",
     ):
-        use_pricing_session = False
         stream_payload = consume_staged_prefetch_payload(
             tiles,
             normalized,
@@ -1292,7 +1274,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 nav_longitude_deg=nav_longitude_deg,
                 nav_altitude_km=nav_altitude_km,
                 feature=feature,
-                enforce_pricing_session=use_pricing_session,
             )
         if _normalize_texture_quality_mode(stream_payload.get("texture_quality_mode", "PREVIEW")) != texture_quality_mode:
             return prepare_resolve_streaming_for_visible_tiles(
@@ -1304,7 +1285,6 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 nav_longitude_deg=nav_longitude_deg,
                 nav_altitude_km=nav_altitude_km,
                 feature=feature,
-                enforce_pricing_session=use_pricing_session,
             )
         return stream_payload
 

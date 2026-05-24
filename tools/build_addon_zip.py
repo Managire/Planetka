@@ -45,6 +45,19 @@ FORBIDDEN_STAGE_SUFFIXES = {
 }
 
 
+def _remove_readonly_or_flagged(func, path, exc_info):
+    try:
+        os.chmod(path, 0o700)
+    except OSError:
+        pass
+    if hasattr(os, "chflags"):
+        try:
+            os.chflags(path, 0)
+        except OSError:
+            pass
+    func(path)
+
+
 def _read_manifest() -> dict:
     manifest_path = ROOT / "blender_manifest.toml"
     if tomllib is None:
@@ -190,7 +203,7 @@ def build_package(allowlist_path: Path, stage_root: Path, output_path: Path, kee
     stage_dir = stage_root / f"{addon_id}_{version}"
     payload_root = stage_dir / "payload"
     if stage_dir.exists():
-        shutil.rmtree(stage_dir)
+        shutil.rmtree(stage_dir, onerror=_remove_readonly_or_flagged)
     payload_root.mkdir(parents=True, exist_ok=True)
 
     expected_files: set[str] = set()
@@ -241,7 +254,7 @@ def build_package(allowlist_path: Path, stage_root: Path, output_path: Path, kee
     }
 
     if not keep_stage:
-        shutil.rmtree(stage_dir)
+        shutil.rmtree(stage_dir, onerror=_remove_readonly_or_flagged)
 
     return result
 

@@ -65,10 +65,6 @@ import {
   unlockTilesForSession,
 } from "./worker/credit_routes.js";
 import {
-  createTileDownloadSession,
-  normalizeTileKeys,
-} from "./worker/tile_sessions.js";
-import {
   handleTileSessionStart as handleTileSessionStartRoute,
 } from "./worker/tile_routes.js";
 import {
@@ -80,7 +76,7 @@ import {
 const encoder = new TextEncoder();
 const ADDON_ID = "planetka";
 const BYTES_PER_GB = 1024 * 1024 * 1024;
-const DEFAULT_UPGRADE_URL = "https://www.planetka.io/blender/pricing";
+const DEFAULT_UPGRADE_URL = "https://www.planetka.io/blender/upgrade";
 const DEFAULT_CONTACT_URL = "https://www.planetka.io/contact-me";
 const DEFAULT_ADMIN_ANALYTICS_TILE_MAP_KEY = "planetka-assets/Admin/world_map_720x360.jpg";
 const DEFAULT_ADMIN_SUPPORT_MISSING_MANIFEST_KEY = "planetka-assets/Admin/support_missing_manifest.json";
@@ -3631,8 +3627,6 @@ const TILE_ROUTE_DEPS = {
   recordTileRequestEvent,
   recordPreviewUsageAndMaybeAlert,
   unlockTilesForSession,
-  createTileDownloadSession,
-  normalizeTileKeys,
   invalidateAnalyticsSnapshots,
   requestClientIp,
   requestCountry,

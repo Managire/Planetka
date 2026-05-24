@@ -6,7 +6,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import sqlite3
 import threading
 import tempfile
@@ -109,8 +108,6 @@ _TILE_SIZE_DB_MODE = ""
 _TILE_SIZE_DB_FAILURE_KEYS = set()
 _STREAM_HEALTH_OK = None
 _STREAM_HEALTH_CHECKED_AT = 0.0
-_LOCAL_SOURCE_FRESHNESS_CHECKED = set()
-_LOCAL_SOURCE_STALE_NOTICE = ""
 _AUTH_CHECK_LOCK = threading.Lock()
 _AUTH_LAST_BEARER = ""
 _AUTH_LAST_CHECKED_AT = 0.0
@@ -756,9 +753,6 @@ def plan_resolve_downloads(requests, allow_remote_probe=None, update_capture=Tru
         for ext in exts:
             ext_text = str(ext or "")
             candidate_file_name = f"{prefix}_{filename}{ext_text}"
-            if _find_user_local_source_file(folder, candidate_file_name):
-                selected_file_name = ""
-                break
             cached_path = _cached_remote_path(folder, candidate_file_name)
             if cached_path and _is_cache_file_usable(cached_path):
                 selected_file_name = ""
@@ -859,23 +853,9 @@ def estimate_resolve_download_availability(requests, allow_remote_probe=None):
             ext_text = str(ext or "")
             candidate_file_name = f"{prefix}_{filename}{ext_text}"
 
-            # Availability must be exact-file based. A locally cached/licenced
+            # Availability must be exact-file based. A cached
             # coarser sibling such as z001_d002 must not count towards a
             # required z001_d001 file; Blender will not use it for that resolve.
-            local_source_path = _find_user_local_source_file(folder, candidate_file_name)
-            if local_source_path:
-                selected_file_name = candidate_file_name
-                try:
-                    selected_size = int(max(0, os.path.getsize(local_source_path)))
-                except (OSError, RuntimeError, TypeError, ValueError):
-                    selected_size = texture_asset_size_bytes(
-                        folder,
-                        candidate_file_name,
-                        allow_remote_probe=allow_remote_probe,
-                    )
-                selected_available_size = int(max(0, int(selected_size or 0)))
-                break
-
             cached_path = _cached_remote_path(folder, candidate_file_name)
             if cached_path and _is_cache_file_usable(cached_path):
                 selected_file_name = candidate_file_name
@@ -989,14 +969,6 @@ def estimate_total_resolve_bytes(requests, allow_remote_probe=None):
         for ext in exts:
             ext_text = str(ext or "")
             candidate_file_name = f"{prefix}_{filename}{ext_text}"
-            local_source_path = _find_user_local_source_file(folder, candidate_file_name)
-            if local_source_path:
-                selected_file_name = candidate_file_name
-                try:
-                    selected_size = int(max(0, os.path.getsize(local_source_path)))
-                except (OSError, RuntimeError, TypeError, ValueError):
-                    selected_size = texture_asset_size_bytes(folder, candidate_file_name, allow_remote_probe=allow_remote_probe)
-                break
             if not selected_file_name:
                 selected_file_name = candidate_file_name
             local_size = texture_asset_size_bytes(folder, candidate_file_name, allow_remote_probe=False)
@@ -1175,7 +1147,6 @@ def set_resolve_request_context(
     nav_latitude_deg="",
     nav_longitude_deg="",
     nav_altitude_km="",
-    pricing_tiles=None,
     feature="",
 ):
     global _REQUEST_CONTEXT_RESOLVE_ID
@@ -1223,7 +1194,6 @@ def clear_resolve_request_context():
         nav_latitude_deg="",
         nav_longitude_deg="",
         nav_altitude_km="",
-        pricing_tiles=None,
         feature="",
     )
 
@@ -1296,10 +1266,6 @@ def _request_tile_session_token(resolve_id, quality_mode, allow_refresh=True):
             data = json.loads(decoded)
         except (TypeError, ValueError):
             data = {}
-        try:
-            credits_charged = float(data.get("credits_charged", 0.0) or 0.0)
-        except (TypeError, ValueError, AttributeError):
-            credits_charged = 0.0
         token = str(data.get("tile_token", "") or "").strip()
         if not token:
             return "", 0.0
@@ -1343,10 +1309,6 @@ def _request_tile_session_token(resolve_id, quality_mode, allow_refresh=True):
             if safe_quality_mode == "preview":
                 mark_planetka_cloud_overloaded(reason=raw_error_text or error_message or f"http_{getattr(exc, 'code', 0)}")
             raise RuntimeError(CLOUD_OVERLOADED_MESSAGE) from exc
-        if int(getattr(exc, "code", 0) or 0) == 402 and error_code in {
-            "payment_required",
-        }:
-            raise RuntimeError("Planetka Cloud could not start this texture streaming session. Please retry.") from exc
         if int(getattr(exc, "code", 0)) == 401 and bool(allow_refresh):
             try:
                 refresh_auth_session()
@@ -1463,22 +1425,6 @@ def _get_request_context_tile_token(allow_refresh=True):
     return safe_token
 
 
-def ensure_resolve_pricing_session(allow_refresh=True):
-    """Compatibility shim for older internal callers.
-
-    Planetka 2026 uses account-tier streaming, not per-scene tile purchases.
-    Callers that still ask for this helper only need a normal tile token.
-    """
-    with _REQUEST_CONTEXT_LOCK:
-        quality_mode = str(_REQUEST_CONTEXT_TEXTURE_MODE or "").strip().lower()
-    if quality_mode != "full":
-        return ""
-    token = _get_request_context_tile_token(allow_refresh=allow_refresh)
-    if not str(token or "").strip():
-        raise RuntimeError("Planetka Full Quality streaming session could not be confirmed. Please retry.")
-    return token
-
-
 @contextmanager
 def resolve_request_context(
     resolve_id="",
@@ -1487,7 +1433,6 @@ def resolve_request_context(
     nav_latitude_deg="",
     nav_longitude_deg="",
     nav_altitude_km="",
-    pricing_tiles=None,
     feature="",
 ):
     set_resolve_request_context(
@@ -1497,7 +1442,6 @@ def resolve_request_context(
         nav_latitude_deg=nav_latitude_deg,
         nav_longitude_deg=nav_longitude_deg,
         nav_altitude_km=nav_altitude_km,
-        pricing_tiles=pricing_tiles,
         feature=feature,
     )
     try:
@@ -1590,7 +1534,7 @@ def _r2_request(
         try:
             progress_callback(int(max(0, int(delta_bytes or 0))), int(max(0, int(total_bytes or 0))))
         except (RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka: unlocked-download progress callback failed", exc_info=True)
+            logger.debug("Planetka: asset-download progress callback failed", exc_info=True)
 
     if _cancelled():
         raise RuntimeError("Planetka resolve request cancelled.")
@@ -1736,10 +1680,6 @@ def _r2_request(
                 return False
             if exc.code in {402, 429}:
                 combined = f"{error_code} {error_message}".lower()
-                if "payment_required" in combined or "tile_not_unlocked" in combined:
-                    if error_message:
-                        raise RuntimeError(error_message)
-                    raise RuntimeError("Planetka Cloud could not stream the requested texture file.")
                 if any(token in combined for token in ("quality_mode_not_allowed", "not_allowed_for_tier", "access_denied")):
                     try:
                         sync_account_profile()
@@ -1808,7 +1748,6 @@ def download_remote_asset_to_path(
     progress_callback=None,
     texture_quality_mode="FULL",
     resolve_id="",
-    pricing_tiles=None,
     track_global_progress=True,
 ):
     safe_folder = str(folder or "").strip().strip("/").replace("\\", "/")
@@ -1818,12 +1757,11 @@ def download_remote_asset_to_path(
         return False
     safe_resolve_id = str(resolve_id or "").strip()[:128]
     if not safe_resolve_id:
-        safe_resolve_id = f"download-unlocked-{int(time.time() * 1000)}"
+        safe_resolve_id = f"asset-download-{int(time.time() * 1000)}"
     with resolve_request_context(
         safe_resolve_id,
         texture_quality_mode=texture_quality_mode,
         cancel_event=cancel_event,
-        pricing_tiles=pricing_tiles or (f"{safe_folder}/{safe_name}",),
     ):
         return _r2_request(
             "GET",
@@ -1848,43 +1786,9 @@ def _local_candidate_paths(base_path, folder, file_name):
     return [os.path.join(base_abs, folder, file_name)]
 
 
-def _get_user_local_source_root():
-    try:
-        from .extension_prefs import get_prefs
-        prefs = get_prefs()
-        root = str(getattr(prefs, "local_texture_source_path", "") or "").strip()
-    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-        root = ""
-    if not root:
-        root = str(_env("PLANETKA_LOCAL_TEXTURE_SOURCE_PATH") or "").strip()
-    if not root:
-        return ""
-    try:
-        root = os.path.abspath(os.path.expanduser(root))
-    except (RuntimeError, TypeError, ValueError, OSError):
-        return ""
-    return root if os.path.isdir(root) else ""
-
-
-def _is_auto_download_unlocked_tiles_enabled():
-    # Manual "Download Licenced" is now the only supported local-copy workflow.
-    return False
-
-
 def _current_request_texture_mode():
     with _REQUEST_CONTEXT_LOCK:
         return str(_REQUEST_CONTEXT_TEXTURE_MODE or "").strip().lower()
-
-
-def _local_source_candidate_paths(folder, file_name):
-    root = _get_user_local_source_root()
-    if not root:
-        return []
-    safe_folder = str(folder or "").strip().strip("/").replace("\\", "/")
-    safe_name = os.path.basename(str(file_name or ""))
-    if not safe_folder or not safe_name:
-        return []
-    return [os.path.join(root, safe_folder, safe_name)]
 
 
 def _extension_root():
@@ -1913,24 +1817,8 @@ def _find_bundled_texture_file(folder, file_name):
     return ""
 
 
-def _find_user_local_source_file(folder, file_name):
-    for candidate in _local_source_candidate_paths(folder, file_name):
-        if _is_cache_file_usable(candidate):
-            return candidate
-    return ""
-
-
 def find_local_source_asset(folder, file_name):
-    return _find_user_local_source_file(folder, file_name) or _find_bundled_texture_file(folder, file_name)
-
-
-def get_local_source_stale_notice():
-    return str(_LOCAL_SOURCE_STALE_NOTICE or "")
-
-
-def clear_local_source_stale_notice():
-    global _LOCAL_SOURCE_STALE_NOTICE
-    _LOCAL_SOURCE_STALE_NOTICE = ""
+    return _find_bundled_texture_file(folder, file_name)
 
 
 def remote_asset_metadata(folder, file_name):
@@ -1951,73 +1839,6 @@ def remote_asset_metadata(folder, file_name):
     except (AuthApiError, urllib.error.HTTPError, urllib.error.URLError, RuntimeError, TypeError, ValueError, OSError):
         logger.debug("Planetka: failed reading remote asset metadata", exc_info=True)
         return {}
-
-
-def _check_local_source_freshness(folder, file_name, path):
-    global _LOCAL_SOURCE_STALE_NOTICE
-    sidecar_path = f"{path}.planetka.json"
-    key = f"{folder}/{file_name}"
-    if key in _LOCAL_SOURCE_FRESHNESS_CHECKED:
-        return
-    _LOCAL_SOURCE_FRESHNESS_CHECKED.add(key)
-    try:
-        with open(sidecar_path, "r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-    except (OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError):
-        return
-    local_etag = str(payload.get("etag", "") or "").strip()
-    if not local_etag:
-        return
-    remote = remote_asset_metadata(folder, file_name)
-    remote_etag = str(remote.get("etag", "") or "").strip()
-    if remote_etag and remote_etag != local_etag:
-        _LOCAL_SOURCE_STALE_NOTICE = (
-            f"Local Source has older licenced data for {key}. Use Download Licenced to refresh it."
-        )
-        logger.warning(
-            "Planetka local source asset is older than Cloudflare copy; re-download licenced tiles: %s",
-            key,
-        )
-
-
-def _copy_to_local_source(folder, file_name, source_path):
-    root = _get_user_local_source_root()
-    safe_folder = str(folder or "").strip().strip("/").replace("\\", "/")
-    safe_name = os.path.basename(str(file_name or ""))
-    source = str(source_path or "").strip()
-    if not root or not safe_folder or not safe_name or not source or not _is_cache_file_usable(source):
-        return False
-    target_dir = os.path.join(root, safe_folder)
-    target_path = os.path.join(target_dir, safe_name)
-    try:
-        if os.path.abspath(source) == os.path.abspath(target_path):
-            return True
-        os.makedirs(target_dir, exist_ok=True)
-        if _is_cache_file_usable(target_path):
-            return True
-        temp_path = f"{target_path}.part.{os.getpid()}.{threading.get_ident()}.{int(time.time() * 1_000_000)}"
-        try:
-            shutil.copyfile(source, temp_path)
-            os.replace(temp_path, target_path)
-        finally:
-            try:
-                if os.path.isfile(temp_path):
-                    os.remove(temp_path)
-            except (OSError, RuntimeError, TypeError, ValueError, AttributeError):
-                pass
-        return True
-    except (OSError, RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed auto-copying unlocked tile to Local Source", exc_info=True)
-        return False
-
-
-def _maybe_auto_copy_unlocked_asset(folder, file_name, source_path):
-    if not _is_auto_download_unlocked_tiles_enabled():
-        return
-    mode = _current_request_texture_mode()
-    if mode != "full":
-        return
-    _copy_to_local_source(folder, file_name, source_path)
 
 
 def _cached_remote_path(folder, file_name):
@@ -2070,7 +1891,6 @@ def resolve_remote_asset(folder, file_name):
 
     cached_path = _cached_remote_path(safe_folder, safe_name)
     if cached_path and _is_cache_file_usable(cached_path):
-        _maybe_auto_copy_unlocked_asset(safe_folder, safe_name, cached_path)
         return cached_path
     _remove_invalid_cache_file(cached_path)
 
@@ -2078,19 +1898,12 @@ def resolve_remote_asset(folder, file_name):
     if key and cached_path:
         downloaded = _r2_request("GET", key, destination_path=cached_path)
         if downloaded and _is_cache_file_usable(cached_path):
-            _maybe_auto_copy_unlocked_asset(safe_folder, safe_name, cached_path)
             return cached_path
     return ""
 
 
 def resolve_texture_file(base_path, folder, prefix, filename, extensions):
     exts = tuple(extensions or (".exr",))
-
-    for ext in exts:
-        file_name = f"{prefix}_{filename}{ext}"
-        local_source_path = _find_user_local_source_file(folder, file_name)
-        if local_source_path:
-            return local_source_path
 
     for ext in exts:
         file_name = f"{prefix}_{filename}{ext}"
@@ -2114,7 +1927,6 @@ def resolve_texture_file(base_path, folder, prefix, filename, extensions):
         file_name = f"{prefix}_{filename}{ext}"
         cached_path = _cached_remote_path(folder, file_name)
         if cached_path and _is_cache_file_usable(cached_path):
-            _maybe_auto_copy_unlocked_asset(folder, file_name, cached_path)
             return cached_path
         _remove_invalid_cache_file(cached_path)
 
@@ -2125,7 +1937,6 @@ def resolve_texture_file(base_path, folder, prefix, filename, extensions):
         if key and cached_path:
             downloaded = _r2_request("GET", key, destination_path=cached_path)
             if downloaded and _is_cache_file_usable(cached_path):
-                _maybe_auto_copy_unlocked_asset(folder, file_name, cached_path)
                 return cached_path
 
     return ""

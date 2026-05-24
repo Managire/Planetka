@@ -21,8 +21,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_API_BASE_URL = str(os.getenv("PLANETKA_API_BASE_URL") or "https://api.planetka.io").rstrip("/")
 DEFAULT_UPGRADE_URL = str(
     os.getenv("PLANETKA_UPGRADE_URL")
-    or os.getenv("PLANETKA_PRICING_URL")
-    or "https://www.planetka.io/blender/pricing"
+    or "https://www.planetka.io/blender/upgrade"
 ).strip()
 DEFAULT_CONTACT_URL = str(
     os.getenv("PLANETKA_CONTACT_URL")
@@ -63,17 +62,8 @@ _ACCOUNT_LIMIT_OR_ACCESS_TOKENS = (
     "access_denied",
     "not_allowed_for_tier",
     "quality_mode_not_allowed",
-    "payment_required",
-    "tile_not_unlocked",
 )
 _KNOWN_NON_OVERLOAD_ERROR_TOKENS = (
-    "credit_pricing_missing_tile_stats",
-    "pricing metadata is missing",
-    "tile_unlock_verification_failed",
-    "tile_unlock_failed",
-    "licence could not be confirmed",
-    "license could not be confirmed",
-    "full quality requires direct payment",
     "full quality requires a pro",
 )
 _OVERLOAD_TEXT_TOKENS = (
@@ -218,11 +208,7 @@ def describe_auth_error(error):
         return "Planetka connection was blocked by a security check. Please try again later or contact support."
     if "network_error" in lowered:
         return _CLOUD_CONNECTION_OFFLINE_MESSAGE
-    if "missing_stripe_payment_link_url" in lowered:
-        return "Planetka payment page is not configured. Contact Planetka support."
     if "quality_mode_not_allowed" in lowered or "not_allowed_for_tier" in lowered or "insufficient_data" in lowered:
-        return "Planetka Cloud could not stream the selected texture quality. Please retry."
-    if "insufficient_credits" in lowered:
         return "Planetka Cloud could not stream the selected texture quality. Please retry."
     if "missing_resolve_id" in lowered:
         return "Purchase details are missing. Retry Resolve and ensure Planetka is up to date."
@@ -251,11 +237,6 @@ def recover_from_terminal_auth_error(error, prefs=None, source=""):
         state="logged_out",
         status_message=_critical_disconnect_status_message(error),
     )
-    try:
-        from .credit_api import clear_credit_caches
-        clear_credit_caches()
-    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed clearing credit caches after auth recovery", exc_info=True)
     return True
 
 
@@ -665,10 +646,6 @@ def account_access_summary(prefs=None):
     return "Free account: Preview and Balanced texture quality for personal use."
 
 
-def upgrade_checkout_available(prefs=None):
-    return bool(get_upgrade_url(prefs))
-
-
 def professional_account_required_message():
     return "Upgrade to Pro for this feature."
 
@@ -901,11 +878,6 @@ def _apply_auth_payload(prefs, payload, login_state="authenticated", status_mess
     prefs.auth_login_state = str(login_state or "authenticated")
     prefs.auth_status_message = str(status_message or "")
     _require_valid_authenticated_tier(prefs, context="auth_payload")
-    try:
-        from .credit_api import clear_credit_caches
-        clear_credit_caches()
-    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka: failed clearing credit caches after auth payload update", exc_info=True)
     _save_user_prefs()
     _tag_ui_redraw()
 

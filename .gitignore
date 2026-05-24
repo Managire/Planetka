@@ -5,6 +5,7 @@ dist/
 logs/
 .wrangler/
 .build/
+generated/local_cloud_adaptive/
 
 # SQLite runtime sidecar files
 *.sqlite-shm

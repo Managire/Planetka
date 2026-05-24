@@ -22,22 +22,14 @@ from .auth import (
 from .extension_prefs import get_earth_object, get_prefs
 from .geonames_db import get_search_status_text
 from .diagnostics import read_diagnostics
-from .r2_source import get_download_progress, get_local_source_stale_notice, is_download_active, is_remote_source_configured
+from .r2_source import get_download_progress, is_download_active, is_remote_source_configured
 from .planetka_ops.scene_setup_ops import is_scene_background_black
 from .updater import get_public_status as get_updater_public_status
 from .animation_tools import (
     ANIMATION_SEGMENT_TAG_KEY,
     ANIMATION_RENDER_STATUS_ICON_KEY,
     ANIMATION_RENDER_STATUS_TEXT_KEY,
-    ANIMATION_STATS_CREDITS_KEY,
-    ANIMATION_STATS_CUSTOM_LICENCE_KEY,
-    ANIMATION_STATS_CUSTOM_LICENCE_SEGMENTS_KEY,
-    ANIMATION_STATS_LEGACY_CREDITS_KEY,
-    ANIMATION_STATS_LEGACY_NEW_TILE_COUNT_KEY,
-    ANIMATION_STATS_NEW_TILE_COUNT_KEY,
-    ANIMATION_STATS_PRICE_KNOWN_KEY,
     ANIMATION_STATS_SEGMENTS_KEY,
-    ANIMATION_STATS_TILE_PRICE_KEY,
 )
 from .state import (
     ACCOUNT_PANEL_DEFAULT_COLLAPSED_KEY,

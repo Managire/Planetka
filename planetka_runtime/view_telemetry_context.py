@@ -39,8 +39,6 @@ class ViewTelemetryDeps:
     live_z_levels: tuple[int, ...]
     resolve_estimate_full_bytes_key: str
     resolve_estimate_preview_bytes_key: str
-    resolve_estimate_full_credits_key: str
-    resolve_estimate_preview_credits_key: str
 
 
 @dataclass(slots=True)

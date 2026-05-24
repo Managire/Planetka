@@ -50,7 +50,7 @@ import {
 
 const encoder = new TextEncoder();
 const ADDON_ID = "planetka";
-const DEFAULT_UPGRADE_URL = "https://www.planetka.io/blender/pricing";
+const DEFAULT_UPGRADE_URL = "https://www.planetka.io/blender/upgrade";
 const DEFAULT_CONTACT_URL = "https://www.planetka.io/contact-me";
 const DEFAULT_TERMS_URL = "https://api.planetka.io/legal/terms-of-service.pdf";
 const DEFAULT_PRIVACY_URL = "https://api.planetka.io/legal/privacy-policy.pdf";
@@ -85,7 +85,6 @@ let userConsentColumnsReady = false;
 let userQualityAccessColumnsReady = false;
 let newsletterContactsTableReady = false;
 let authRefreshEventsTableReady = false;
-let creditAccountTableReady = false;
 let rateLimitsLastPruneAt = 0;
 const authContextCache = new Map();
 
@@ -578,45 +577,6 @@ async function ensureUserQualityAccessColumns(db) {
   userQualityAccessColumnsReady = true;
 }
 
-async function ensureMinimalCreditAccountTable(db) {
-  if (creditAccountTableReady) {
-    return;
-  }
-  await dbRun(
-    db,
-    `
-      CREATE TABLE IF NOT EXISTS user_credit_accounts (
-        user_id TEXT PRIMARY KEY,
-        account_type TEXT NOT NULL DEFAULT 'account',
-        world_full_quality_unlocked_at TEXT,
-        world_full_quality_checkout_session_id TEXT,
-        world_full_quality_paid_eur REAL NOT NULL DEFAULT 0,
-        pricing_version INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      )
-    `,
-  );
-  creditAccountTableReady = true;
-}
-
-async function ensureCreditAccountForUser(db, userId) {
-  const safeUserId = String(userId || "").trim();
-  if (!safeUserId) {
-    return;
-  }
-  await ensureMinimalCreditAccountTable(db);
-  const now = nowIso();
-  await dbRun(
-    db,
-    `
-      INSERT OR IGNORE INTO user_credit_accounts (user_id, account_type, created_at, updated_at)
-      VALUES (?, 'account', ?, ?)
-    `,
-    [safeUserId, now, now],
-  );
-}
-
 async function ensureNewsletterContactsTable(db) {
   if (newsletterContactsTableReady) {
     return;
@@ -896,7 +856,6 @@ async function upsertUserByEmail(db, email, status = PLAN_CODE_FREE, options = {
       `,
       [termsAcceptedAt, termsAcceptedAt, privacyAcceptedAt, privacyAcceptedAt, termsVersion, termsVersion, privacyVersion, privacyVersion, user.id],
     );
-    await ensureCreditAccountForUser(db, user.id);
     return await findUserById(db, user.id) || user;
   }
 
@@ -919,7 +878,6 @@ async function upsertUserByEmail(db, email, status = PLAN_CODE_FREE, options = {
       options.privacyVersion ? String(options.privacyVersion) : null,
     ],
   );
-  await ensureCreditAccountForUser(db, id);
   if (!parseBooleanFlag(options.suppressNewUserAlert)) {
     try {
       await sendNewUserLoginAlert(env, {
@@ -1417,11 +1375,10 @@ function authWorkerHealth(env) {
   return json(
     {
       ok: true,
-      service: "planetka-auth",
-      api_base_url: env.API_BASE_URL || "https://api.planetka.io",
-      db_bound: Boolean(env.DB),
-      pricing_isolated: true,
-    },
+	      service: "planetka-auth",
+	      api_base_url: env.API_BASE_URL || "https://api.planetka.io",
+	      db_bound: Boolean(env.DB),
+	    },
     200,
     env,
   );

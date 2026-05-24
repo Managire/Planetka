@@ -234,8 +234,6 @@ LAST_RESOLVE_DOWNLOADED_GB_KEY = "planetka_last_manual_resolve_downloaded_gb"
 LAST_RESOLVE_TOTAL_SECONDS_KEY = "planetka_last_manual_resolve_total_seconds"
 RESOLVE_ESTIMATE_FULL_BYTES_KEY = "planetka_resolve_estimate_full_bytes"
 RESOLVE_ESTIMATE_PREVIEW_BYTES_KEY = "planetka_resolve_estimate_preview_bytes"
-RESOLVE_ESTIMATE_FULL_CREDITS_KEY = "planetka_resolve_estimate_full_credits"
-RESOLVE_ESTIMATE_PREVIEW_CREDITS_KEY = "planetka_resolve_estimate_preview_credits"
 _VIEWPORT_OPT_LAST_SIGNATURE = {}
 _SUNLIGHT_LAST_SIGNATURE = {}
 _SUNLIGHT_OBJECT_NAME_CACHE = {}
@@ -1039,9 +1037,6 @@ def update_resolve_size_estimates(
     scope_mode="CAMERA",
     base_path="",
     full_tiles_override=None,
-    include_full_price=False,
-    async_full_price=False,
-    force_full_price_refresh=False,
 ):
     return _view_telemetry.update_resolve_size_estimates(
         scene,
@@ -1049,9 +1044,6 @@ def update_resolve_size_estimates(
         scope_mode=scope_mode,
         base_path=base_path,
         full_tiles_override=full_tiles_override,
-        include_full_price=include_full_price,
-        async_full_price=async_full_price,
-        force_full_price_refresh=force_full_price_refresh,
     )
 
 
@@ -1273,8 +1265,6 @@ def _build_view_telemetry_context():
         live_z_levels=_LIVE_Z_LEVELS,
         resolve_estimate_full_bytes_key=RESOLVE_ESTIMATE_FULL_BYTES_KEY,
         resolve_estimate_preview_bytes_key=RESOLVE_ESTIMATE_PREVIEW_BYTES_KEY,
-        resolve_estimate_full_credits_key=RESOLVE_ESTIMATE_FULL_CREDITS_KEY,
-        resolve_estimate_preview_credits_key=RESOLVE_ESTIMATE_PREVIEW_CREDITS_KEY,
     )
     state = ViewTelemetryState(
         viewport_opt_last_signature=_VIEWPORT_OPT_LAST_SIGNATURE,

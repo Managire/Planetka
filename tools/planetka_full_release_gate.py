@@ -4,13 +4,13 @@
 This script intentionally tests customer-visible workflows and state
 transitions, not only isolated backend functions. It runs existing gates plus
 targeted checks for Blender UI state, live Worker/update endpoints, packaging,
-and sandbox pricing consistency.
+and backend deployment readiness.
 
 Profiles:
   quick    short developer smoke; use before small commits
   release  normal pre-deploy gate; default, models ordinary user behavior
   full     same live workload as release, but keeps all non-live gates enabled
-  stress   heavy Worker capacity test; do not run against production casually
+  stress   reserved for heavy Worker capacity checks; do not run casually
 
 Example:
   python3 tools/planetka_full_release_gate.py --profile release
@@ -18,11 +18,10 @@ Example:
   PLANETKA_ALLOW_LIVE_STRESS=1 python3 tools/planetka_full_release_gate.py --profile stress
 
 Operational note:
-  Live stress testing can push the production Worker into Cloudflare 1102/503
-  resource-limit responses. When that happens, Blender cannot reliably fetch
-  Full Quality prices either, so this can temporarily affect real users. Keep
-  stress runs separate from release validation and run them only in a controlled
-  maintenance/testing window or against an isolated Worker/database.
+  Live stress testing can push production Workers into Cloudflare 1102/503
+  resource-limit responses. Keep stress runs separate from release validation
+  and run them only in a controlled maintenance/testing window or against an
+  isolated Worker/database.
 """
 
 from __future__ import annotations
@@ -55,34 +54,11 @@ LEGAL_URLS = (
 
 OPERATIONAL_NOTES = (
     "Live stress testing can push the production Cloudflare Worker into 1102/503 resource-limit responses. "
-    "When that happens, Blender Full Quality price calculation can fail for real users too, because the add-on depends on the same Worker endpoints. "
     "The regular release profile must model ordinary user pacing; the guarded stress profile is only for controlled capacity testing.",
 )
 
 
-PROFILE_LIVE_TARGETS = {
-    "quick": {
-        "scene_targets": "slovakia:1",
-        "country_targets": "belize",
-        "region_targets": "",
-    },
-    "release": {
-        "scene_targets": "slovakia:2,belgium:2",
-        "country_targets": "belize",
-        "region_targets": "central_europe",
-    },
-    "full": {
-        "scene_targets": "slovakia:2,belgium:2",
-        "country_targets": "belize",
-        "region_targets": "central_europe",
-    },
-    # Still deterministic, but intentionally larger. Requires PLANETKA_ALLOW_LIVE_STRESS=1.
-    "stress": {
-        "scene_targets": "slovakia:2,belgium:2,italy:2,germany:2,spain:2",
-        "country_targets": "belize,costa_rica,slovakia,belgium",
-        "region_targets": "central_europe,southern_europe",
-    },
-}
+PROFILE_NAMES = ("full", "quick", "release", "stress")
 
 
 @dataclass
@@ -277,7 +253,6 @@ def _check_public_web_endpoints() -> dict[str, Any]:
 def _build_steps(args: argparse.Namespace, package_path: Path) -> list[Step]:
     blender_bin = str(args.blender_bin or BLENDER_BIN_DEFAULT)
     profile = str(args.profile)
-    live_targets = PROFILE_LIVE_TARGETS[profile]
     steps = [
         Step(
             name="python_compile",
@@ -315,12 +290,6 @@ def _build_steps(args: argparse.Namespace, package_path: Path) -> list[Step]:
             category="static",
             command=["git", "diff", "--check"],
             timeout_sec=60,
-        ),
-        Step(
-            name="no_sync_pricing_public_routes_smoke",
-            category="worker",
-            command=["node", "tools/planetka_no_sync_pricing_public_routes_smoke.mjs"],
-            timeout_sec=120,
         ),
         Step(
             name="build_public_package",
@@ -387,33 +356,6 @@ def _build_steps(args: argparse.Namespace, package_path: Path) -> list[Step]:
                 ),
             ]
         )
-    if not args.skip_live_pricing:
-        live_env = {
-            "PLANETKA_E2E_SCENE_TARGETS": str(args.live_scene_targets or live_targets["scene_targets"]),
-            "PLANETKA_E2E_COUNTRY_TARGETS": str(args.live_country_targets or live_targets["country_targets"]),
-            "PLANETKA_E2E_REGION_TARGETS": str(args.live_region_targets or live_targets["region_targets"]),
-        }
-        if profile == "stress":
-            live_env.update(
-                {
-                    "PLANETKA_E2E_PACE_SEC": "0",
-                }
-            )
-        steps.append(
-            Step(
-                name="live_pricing_stress_maintenance" if profile == "stress" else "bounded_live_health_gate",
-                category="stress" if profile == "stress" else "live_health",
-                command=[
-                    blender_bin,
-                    "--background",
-                    "--debug-python",
-                    "--python",
-                    "tools/live_pricing_consistency_e2e.py",
-                ],
-                env=live_env,
-                timeout_sec=int(args.live_pricing_timeout_sec),
-            )
-        )
     return steps
 
 
@@ -461,19 +403,14 @@ def _write_markdown(report_path: Path, report: dict[str, Any]) -> Path:
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the comprehensive Planetka release gate.")
-    parser.add_argument("--profile", choices=sorted(PROFILE_LIVE_TARGETS), default="release")
+    parser.add_argument("--profile", choices=sorted(PROFILE_NAMES), default="release")
     parser.add_argument("--report-dir", default=str(REPORT_ROOT_DEFAULT))
     parser.add_argument("--blender-bin", default=str(os.environ.get("BLENDER_BIN") or BLENDER_BIN_DEFAULT))
     parser.add_argument("--skip-blender", action="store_true")
-    parser.add_argument("--skip-live-pricing", action="store_true")
-    parser.add_argument("--live-scene-targets", default=None, help="Comma-separated product_id:tile_count scene targets for the live pricing gate.")
-    parser.add_argument("--live-country-targets", default=None, help="Comma-separated country product IDs for the live pricing gate.")
-    parser.add_argument("--live-region-targets", default=None, help="Comma-separated region product IDs for the live pricing gate.")
     parser.add_argument("--scene-tests", type=int, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--country-tests", type=int, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--region-tests", type=int, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--blender-timeout-sec", type=int, default=900)
-    parser.add_argument("--live-pricing-timeout-sec", type=int, default=7200)
     return parser.parse_args(argv)
 
 
@@ -481,12 +418,11 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
     if (
         args.profile == "stress"
-        and not args.skip_live_pricing
         and str(os.environ.get("PLANETKA_ALLOW_LIVE_STRESS") or "").strip().lower() not in {"1", "true", "yes", "on"}
     ):
         print(
             "Refusing live stress profile without PLANETKA_ALLOW_LIVE_STRESS=1. "
-            "Live stress runs can push the production Worker into 1102/503 and temporarily block Blender pricing.",
+            "Live stress runs can push production Workers into 1102/503.",
             file=sys.stderr,
         )
         return 2

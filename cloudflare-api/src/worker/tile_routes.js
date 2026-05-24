@@ -41,6 +41,7 @@ function isPublicCloudAssetFolder(folder) {
   const normalized = String(folder || "").trim().toLowerCase();
   return normalized === "clouds_global"
     || normalized === "clouds_local"
+    || normalized === "clouds_local_adaptive"
     || normalized === "clouds_local_thumbnails"
     || normalized === "clouds_local_thumbnails_v2"
     || normalized === "clouds_local_thumbnails_v3"
@@ -55,10 +56,7 @@ export async function handleTileSessionStart(request, env, deps) {
     issueTileSessionToken,
     normalizeQualityMode,
     normalizeRequestedPlan,
-    requireDb,
     json: jsonResponse,
-    createTileDownloadSession,
-    normalizeTileKeys,
   } = deps;
 
   let auth = await requireAuthenticatedUserContext(
@@ -115,129 +113,15 @@ export async function handleTileSessionStart(request, env, deps) {
       );
     }
   }
-  const creditProtocol = String(body && (body.credit_protocol || body.creditProtocol) || "").trim();
-  const creditTileKeys = body && (
-    body.tile_keys
-    || body.tileKeys
-    || body.tiles
-    || body.pricing_tiles
-    || body.pricingTiles
-  );
-  const creditEnforced = creditProtocol === "land_credits_v1" && Array.isArray(creditTileKeys);
-  if (creditEnforced) {
-    return jsonResponse(
-      {
-        ok: false,
-        error: "legacy_pricing_disabled",
-        message: "This Planetka version no longer supports scene-purchase tile sessions. Update Planetka and reconnect your account.",
-      },
-      410,
-      env,
-    );
-  }
-  const sessionId = creditEnforced ? crypto.randomUUID() : "";
   const issued = await issueTileSessionToken(
     env,
     auth,
     requestedQualityMode,
     requestedResolveId,
-    {
-      creditProtocol,
-      creditEnforced,
-      sessionId,
-    },
+    {},
   );
   if (issued && issued.error) {
     return issued.error;
-  }
-  const unlockResult = creditEnforced
-    && typeof deps.unlockTilesForSession === "function"
-    ? await deps.unlockTilesForSession(
-      requireDb(env),
-      auth.user && auth.user.id,
-      issued.qualityMode,
-      creditTileKeys,
-      issued.resolveId,
-      deps,
-      { allowSmallSceneFree: true },
-    )
-    : { credits: 0, paid_tile_count: 0, free_tile_count: 0, tile_count: 0 };
-  if (unlockResult && unlockResult.error === "credit_pricing_missing_tile_stats") {
-    return jsonResponse(
-      {
-        ok: false,
-        error: "credit_pricing_missing_tile_stats",
-        message: "Planetka EUR pricing metadata is missing for a requested tile.",
-        tile_key: String(unlockResult.missing_tile_key || ""),
-      },
-      503,
-      env,
-    );
-  }
-  if (unlockResult && unlockResult.error === "tile_unlock_verification_failed") {
-    return jsonResponse(
-      {
-        ok: false,
-        error: "tile_unlock_verification_failed",
-        message: String(unlockResult.message || "This old tile-session flow is no longer available."),
-        tile_key: String(unlockResult.missing_tile_key || ""),
-      },
-      503,
-      env,
-    );
-  }
-  if (
-    unlockResult
-    && (
-      unlockResult.error === "payment_required"
-    )
-  ) {
-    return jsonResponse(
-      {
-        ok: false,
-        error: String(unlockResult.error || "payment_required"),
-        message: "This old tile-session flow is no longer available.",
-        required_credits: Number(unlockResult.required_credits || 0),
-        price_eur: Number(unlockResult.price_eur || unlockResult.required_credits || 0),
-        paid_tile_count: Number(unlockResult.paid_tile_count || 0),
-        tile_count: Number(unlockResult.tile_count || 0),
-      },
-      402,
-      env,
-    );
-  }
-  if (unlockResult && unlockResult.error) {
-    return jsonResponse(
-      {
-        ok: false,
-        error: String(unlockResult.error || "tile_unlock_failed"),
-        message: String(unlockResult.message || "This old tile-session flow is no longer available."),
-      },
-      503,
-      env,
-    );
-  }
-  const allowedTileKeys = normalizeTileKeys
-    ? normalizeTileKeys(
-      body && (
-        body.allowed_tile_keys
-        || body.allowedTileKeys
-        || body.session_tile_keys
-        || body.sessionTileKeys
-        || creditTileKeys
-      ),
-    )
-    : Array.isArray(creditTileKeys) ? creditTileKeys : [];
-  if (creditEnforced && typeof createTileDownloadSession === "function") {
-    await createTileDownloadSession(requireDb(env), {
-      id: sessionId,
-      userId: auth.user && auth.user.id,
-      resolveId: issued.resolveId,
-      qualityMode: issued.qualityMode,
-      creditEnforced: true,
-      allowedTileKeys,
-      expiresAt: issued.expiresAt,
-    });
   }
   return json(
     {
@@ -248,12 +132,6 @@ export async function handleTileSessionStart(request, env, deps) {
       expires_in_seconds: issued.expiresInSeconds,
       expires_at: issued.expiresAt,
       plan_code: planCode,
-      credit_protocol: creditEnforced ? "land_credits_v1" : "none",
-      credit_enforced: Boolean(creditEnforced),
-      tile_session_id: sessionId,
-      credits_charged: Number(unlockResult && unlockResult.credits || 0),
-      eur_charged: Number(unlockResult && unlockResult.credits || 0),
-      paid_tile_count: Number(unlockResult && unlockResult.paid_tile_count || 0),
     },
     200,
     env,

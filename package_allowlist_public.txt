@@ -15,13 +15,11 @@ clouds_global.py
 clouds_local.py
 clouds_vdb.py
 coverage.py
-credit_api.py
 diagnostics.py
 embedded_material_library.py
 error_utils.py
 extension_prefs.py
 geonames_db.py
-land_credits.py
 mesh_utils.py
 operator_utils.py
 operators.py

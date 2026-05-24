@@ -5,7 +5,6 @@ import os
 import time
 import webbrowser
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 import bpy
 from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty
@@ -66,14 +65,6 @@ ANIMATION_SEGMENT_GROUP_TAG_KEY = "planetka_animation_segment_group"
 ANIMATION_SEGMENT_MATERIAL_TAG_KEY = "planetka_animation_segment_material"
 ANIMATION_STATS_SEGMENTS_KEY = "planetka_anim_prepared_segments"
 ANIMATION_STATS_TEXTURE_MB_KEY = "planetka_anim_prepared_textures_mb"
-ANIMATION_STATS_CREDITS_KEY = "planetka_anim_full_quality_price_eur"
-ANIMATION_STATS_PRICE_KNOWN_KEY = "planetka_anim_full_quality_price_authoritative"
-ANIMATION_STATS_LEGACY_CREDITS_KEY = "planetka_anim_estimated_credits"
-ANIMATION_STATS_NEW_TILE_COUNT_KEY = "planetka_anim_full_quality_new_tile_count"
-ANIMATION_STATS_LEGACY_NEW_TILE_COUNT_KEY = "planetka_anim_estimated_paid_tile_count"
-ANIMATION_STATS_TILE_PRICE_KEY = "planetka_anim_full_quality_tile_price_eur"
-ANIMATION_STATS_CUSTOM_LICENCE_KEY = "planetka_anim_custom_licence_eur"
-ANIMATION_STATS_CUSTOM_LICENCE_SEGMENTS_KEY = "planetka_anim_custom_licence_segments"
 ANIMATION_STATS_START_KEY = "planetka_anim_prepared_start_frame"
 ANIMATION_STATS_END_KEY = "planetka_anim_prepared_end_frame"
 ANIMATION_RENDER_STATUS_TEXT_KEY = "planetka_anim_render_status_text"
@@ -93,7 +84,6 @@ QUICK_PREVIEW_SCENE_STATE_KEYS = (
     ANIMATION_BASE_SURFACE_HIDE_VIEWPORT_KEY,
 )
 QUICK_PREVIEW_MAX_SEGMENTS = 99
-_ANIMATION_CENT = Decimal("0.01")
 ANIMATION_CUSTOM_LICENCE_THRESHOLD_EUR = 0.50
 ANIMATION_CUSTOM_LICENCE_FEE_EUR = 1.50
 ANIMATION_CUSTOM_LICENCE_MAX_FEE_EUR = 9.00
@@ -540,13 +530,6 @@ def _animation_segment_tile_keys(segment):
     ]
 
 
-def _animation_price_text(value):
-    try:
-        return f"€{max(0.0, float(value or 0.0)):,.2f}"
-    except (TypeError, ValueError):
-        return "€0.00"
-
-
 def _animation_int_text(value):
     try:
         return f"{int(value or 0):,}"
@@ -581,16 +564,6 @@ def _open_external_url(url):
     return False
 
 
-def _animation_money_round(value):
-    try:
-        amount = Decimal(str(value or "0"))
-    except (InvalidOperation, TypeError, ValueError):
-        return 0.0
-    if amount <= 0:
-        return 0.0
-    return float(amount.quantize(_ANIMATION_CENT, rounding=ROUND_HALF_UP))
-
-
 def _tag_animation_ui_redraw():
     try:
         wm = getattr(getattr(bpy, "context", None), "window_manager", None)
@@ -605,29 +578,6 @@ def _tag_animation_ui_redraw():
                     area.tag_redraw()
     except (RuntimeError, TypeError, ValueError, AttributeError):
         logger.debug("Planetka animation: failed tagging UI redraw", exc_info=True)
-
-
-def _animation_scene_price_is_settled(scene):
-    if scene is None:
-        return False
-    props = getattr(scene, "planetka", None)
-    if props is None:
-        return False
-    try:
-        from .credit_api import clear_credit_caches
-        clear_credit_caches()
-    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka animation: failed clearing credit caches during purchase monitor", exc_info=True)
-    try:
-        price_eur, _new_tiles = update_animation_credit_estimate(scene, props, texture_quality_mode="FULL")
-    except PLANETKA_RECOVERABLE_EXCEPTIONS:
-        logger.debug("Planetka animation: purchase monitor price refresh failed", exc_info=True)
-        return False
-    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-        logger.debug("Planetka animation: purchase monitor price refresh failed", exc_info=True)
-        return False
-    _tag_animation_ui_redraw()
-    return bool(float(price_eur or 0.0) <= 0.000001)
 
 
 def _animation_area_text(value):
@@ -681,22 +631,6 @@ def _final_animation_segment_plan(scene, props, texture_quality_mode="FULL"):
         apply_segment_horizon_hysteresis=bool(ANIMATION_HORIZON_SEGMENT_HYSTERESIS_ENABLED),
         enable_adaptive_horizon_precision=True,
     )
-
-
-def update_animation_credit_estimate(scene, props, texture_quality_mode=None):
-    """Clear legacy animation price fields for the streaming-only product model."""
-    if scene is None:
-        return 0.0, 0
-    del props, texture_quality_mode
-    scene[ANIMATION_STATS_CREDITS_KEY] = 0.0
-    scene[ANIMATION_STATS_PRICE_KNOWN_KEY] = True
-    scene[ANIMATION_STATS_NEW_TILE_COUNT_KEY] = 0
-    scene[ANIMATION_STATS_TILE_PRICE_KEY] = 0.0
-    scene[ANIMATION_STATS_CUSTOM_LICENCE_KEY] = 0.0
-    scene[ANIMATION_STATS_CUSTOM_LICENCE_SEGMENTS_KEY] = 0
-    scene[ANIMATION_STATS_LEGACY_CREDITS_KEY] = 0.0
-    scene[ANIMATION_STATS_LEGACY_NEW_TILE_COUNT_KEY] = 0
-    return 0.0, 0
 
 
 def _ensure_collection(scene, name):
@@ -3125,13 +3059,6 @@ class PLANETKA_OT_AnimationGenerateCameraKeyframes(bpy.types.Operator):
                 logger=logger,
             )
 
-        try:
-            update_animation_credit_estimate(scene, props)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka animation: failed calculating keyframe price calculation", exc_info=True)
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka animation: failed calculating keyframe price calculation", exc_info=True)
-
         self.report(
             {'INFO'},
             f"Camera keyframes generated for frames {int(start_frame)}-{int(end_frame)}.",
@@ -3581,11 +3508,6 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
     bl_description = "Render animation segment by segment."
 
     confirmed: BoolProperty(default=False, options={'HIDDEN', 'SKIP_SAVE'})
-    confirm_price_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
-    confirm_tile_price_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
-    confirm_custom_animation_licence_eur: FloatProperty(default=0.0, options={'HIDDEN', 'SKIP_SAVE'})
-    confirm_custom_animation_licence_segments: IntProperty(default=0, options={'HIDDEN', 'SKIP_SAVE'})
-    confirm_new_tile_count: IntProperty(default=0, options={'HIDDEN', 'SKIP_SAVE'})
 
     _timer = None
     _scene = None
@@ -3615,59 +3537,6 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
     _texture_quality_mode = "FULL"
     _base_path = ""
 
-    def _read_cached_price_for_confirmation(self, context):
-        scene = getattr(context, "scene", None)
-        if scene is None:
-            return None
-        try:
-            price_known = bool(
-                scene.get(
-                    ANIMATION_STATS_PRICE_KNOWN_KEY,
-                    ANIMATION_STATS_CREDITS_KEY in scene or ANIMATION_STATS_LEGACY_CREDITS_KEY in scene,
-                )
-            )
-        except (TypeError, ValueError, RuntimeError, AttributeError):
-            price_known = False
-        if not price_known:
-            return None
-        try:
-            price_eur = float(
-                scene.get(
-                    ANIMATION_STATS_CREDITS_KEY,
-                    scene.get(ANIMATION_STATS_LEGACY_CREDITS_KEY, 0.0),
-                ) or 0.0
-            )
-        except (TypeError, ValueError, RuntimeError, AttributeError):
-            price_eur = 0.0
-        try:
-            new_tile_count = int(
-                scene.get(
-                    ANIMATION_STATS_NEW_TILE_COUNT_KEY,
-                    scene.get(ANIMATION_STATS_LEGACY_NEW_TILE_COUNT_KEY, 0),
-                ) or 0
-            )
-        except (TypeError, ValueError, RuntimeError, AttributeError):
-            new_tile_count = 0
-        try:
-            tile_price_eur = float(scene.get(ANIMATION_STATS_TILE_PRICE_KEY, price_eur) or 0.0)
-        except (TypeError, ValueError, RuntimeError, AttributeError):
-            tile_price_eur = float(price_eur)
-        try:
-            custom_licence_eur = float(scene.get(ANIMATION_STATS_CUSTOM_LICENCE_KEY, 0.0) or 0.0)
-        except (TypeError, ValueError, RuntimeError, AttributeError):
-            custom_licence_eur = 0.0
-        try:
-            custom_licence_segments = int(scene.get(ANIMATION_STATS_CUSTOM_LICENCE_SEGMENTS_KEY, 0) or 0)
-        except (TypeError, ValueError, RuntimeError, AttributeError):
-            custom_licence_segments = 0
-        return {
-            "price_eur": max(0.0, float(price_eur)),
-            "tile_price_eur": max(0.0, float(tile_price_eur)),
-            "custom_animation_licence_eur": max(0.0, float(custom_licence_eur)),
-            "custom_animation_licence_segments": max(0, int(custom_licence_segments)),
-            "new_tile_count": max(0, int(new_tile_count)),
-        }
-
     def invoke(self, context, event):
         del event
         if not bool(getattr(self, "confirmed", False)):
@@ -3677,10 +3546,7 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
     def draw(self, _context):
         layout = self.layout
         layout.label(text="Confirm Final Animation Render", icon="RENDER_ANIMATION")
-        layout.label(text=f"Texture data: {_animation_price_text(getattr(self, 'confirm_tile_price_eur', 0.0))}", icon="TEXTURE")
-        final_price = float(getattr(self, "confirm_price_eur", 0.0) or 0.0)
-        if final_price > 0.000001:
-            layout.label(text=f"Final Price: {_animation_price_text(final_price)}", icon="SOLO_ON")
+        layout.label(text="Planetka will stream the selected quality level segment by segment.", icon="TEXTURE")
 
     def _get_selected_texture_quality_mode(self, props):
         return _normalize_animation_render_texture_quality_mode(
@@ -3722,35 +3588,6 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             logger.debug("Planetka animation: failed updating render UI status", exc_info=True)
         except (RuntimeError, TypeError, ValueError, AttributeError):
             logger.debug("Planetka animation: failed updating render UI status", exc_info=True)
-
-    def _set_animation_price_paid(self):
-        scene = self._scene
-        if scene is None:
-            return
-        try:
-            scene[ANIMATION_STATS_CREDITS_KEY] = 0.0
-            scene[ANIMATION_STATS_PRICE_KNOWN_KEY] = True
-            scene[ANIMATION_STATS_NEW_TILE_COUNT_KEY] = 0
-            scene[ANIMATION_STATS_TILE_PRICE_KEY] = 0.0
-            scene[ANIMATION_STATS_CUSTOM_LICENCE_KEY] = 0.0
-            scene[ANIMATION_STATS_CUSTOM_LICENCE_SEGMENTS_KEY] = 0
-            scene[ANIMATION_STATS_LEGACY_CREDITS_KEY] = 0.0
-            scene[ANIMATION_STATS_LEGACY_NEW_TILE_COUNT_KEY] = 0
-            self.confirm_price_eur = 0.0
-            self.confirm_tile_price_eur = 0.0
-            self.confirm_custom_animation_licence_eur = 0.0
-            self.confirm_custom_animation_licence_segments = 0
-            self.confirm_new_tile_count = 0
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka animation: failed clearing paid animation price", exc_info=True)
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka animation: failed clearing paid animation price", exc_info=True)
-
-    def _unlock_animation_tiles_before_download(self):
-        # Planetka 2026 is streaming-only. Animation render no longer performs
-        # per-tile licensing or checkout before segment rendering.
-        self._set_animation_price_paid()
-        return True, ""
 
     def _count_render_result_windows(self):
         try:
@@ -4292,7 +4129,6 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             ),
             # Final Animation downloads only the current segment before rendering it.
             # EL/WT/PO support layers intentionally fall back if absent.
-            "skip_pricing_session": True,
             "capture_download_progress": True,
         }
         normalized_tiles = [str(tile or "").strip() for tile in (tiles_override or ()) if str(tile or "").strip()]
@@ -4643,7 +4479,7 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             self._segments = list(segments)
             self._segment_index = 0
             self._active_segment = None
-            self._state = "PURCHASE"
+            self._state = "RESOLVE"
             self._render_seen_active = False
             self._render_launch_time = 0.0
             self._render_launch_wall_time = 0.0
@@ -4722,14 +4558,6 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
         scene = self._scene
         if scene is None:
             return self._cancel_with_error(context, "Animation scene context was lost.")
-
-        if self._state == "PURCHASE":
-            ok, message = self._unlock_animation_tiles_before_download()
-            if not ok:
-                return self._cancel_with_error(context, message)
-            self._set_ui_status("Starting animation render", icon="RENDER_ANIMATION")
-            self._state = "RESOLVE"
-            return {'RUNNING_MODAL'}
 
         if self._state == "RESOLVE":
             if self._segment_index >= len(self._segments or ()):

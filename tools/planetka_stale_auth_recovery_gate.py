@@ -85,13 +85,11 @@ def main() -> int:
     original_functions = {}
     prefs_snapshot = {}
     prefs = None
-    credit_api = None
     earth_lifecycle_helpers = None
     try:
         addon_utils.enable("bl_ext.user_default.Planetka", default_set=False)
-        from bl_ext.user_default.Planetka import auth, credit_api as _credit_api  # noqa: PLC0415
+        from bl_ext.user_default.Planetka import auth  # noqa: PLC0415
         from bl_ext.user_default.Planetka.planetka_ops import earth_lifecycle_helpers as _earth_lifecycle_helpers  # noqa: PLC0415
-        credit_api = _credit_api
         earth_lifecycle_helpers = _earth_lifecycle_helpers
 
         prefs = auth.get_prefs()
@@ -107,21 +105,6 @@ def main() -> int:
         _assert(recovered, "direct recovery did not report recovered")
         _assert_recovered(auth, prefs, "direct_recovery")
         report["steps"].append({"name": "direct_recovery", "ok": True})
-
-        _seed_stale_session(prefs)
-        original_functions["credit_get_authorized_headers"] = credit_api.get_authorized_headers
-
-        def _raise_credit_auth(*_args, **_kwargs):
-            raise auth.AuthApiError(401, "refresh_token_revoked")
-
-        credit_api.get_authorized_headers = _raise_credit_auth
-        try:
-            credit_api._request_json("GET", "/me", timeout=1)  # noqa: SLF001
-            raise GateFailure("credit_api request unexpectedly succeeded")
-        except credit_api.CreditApiError as exc:
-            _assert(str(getattr(exc, "error", "") or "") == "account_not_connected", f"unexpected credit_api error: {exc}")
-        _assert_recovered(auth, prefs, "credit_api_request")
-        report["steps"].append({"name": "credit_api_request", "ok": True})
 
         _seed_stale_session(prefs)
         original_functions["earth_sync_account_profile"] = earth_lifecycle_helpers.sync_account_profile
@@ -155,8 +138,6 @@ def main() -> int:
         return 1
     finally:
         try:
-            if credit_api is not None and "credit_get_authorized_headers" in original_functions:
-                credit_api.get_authorized_headers = original_functions["credit_get_authorized_headers"]
             if earth_lifecycle_helpers is not None and "earth_sync_account_profile" in original_functions:
                 earth_lifecycle_helpers.sync_account_profile = original_functions["earth_sync_account_profile"]
             if earth_lifecycle_helpers is not None and "earth_get_cloud_connection_status" in original_functions:

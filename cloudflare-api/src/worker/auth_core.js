@@ -321,15 +321,12 @@ export function createAuthCore(deps) {
     return String(value || "").trim().slice(0, 128);
   }
 
-  async function issueTileSessionToken(env, auth, requestedQualityMode, requestedResolveId = "", options = {}) {
+  async function issueTileSessionToken(env, auth, requestedQualityMode, requestedResolveId = "") {
     const safeQualityMode = deps.normalizeQualityMode(requestedQualityMode);
     const safeStoredPlanCode = deps.normalizeRequestedPlan(auth && auth.planCode);
     const safeQualityAccessPlanCode = deps.normalizeRequestedPlan(
       auth && (auth.qualityAccessPlanCode || auth.planCode),
     );
-    const sessionId = String(
-      options && (options.sessionId || options.session_id) || "",
-    ).trim();
     const safeResolveId = normalizeResolveId(requestedResolveId) || crypto.randomUUID();
     const ttlSeconds = resolveTileSessionTokenTtlSeconds(env);
     const exp = Math.floor(Date.now() / 1000) + ttlSeconds;
@@ -342,9 +339,6 @@ export function createAuthCore(deps) {
       quality_access_plan_code: safeQualityAccessPlanCode,
       quality_mode: safeQualityMode,
       resolve_id: safeResolveId,
-      credit_protocol: String(options && options.creditProtocol || "").trim(),
-      credit_enforced: Boolean(options && options.creditEnforced),
-      session_id: sessionId,
       auth_method: String(auth && auth.authMethod || "").trim(),
       device_id: String(auth && auth.deviceId || "").trim(),
       exp,
@@ -406,7 +400,6 @@ export function createAuthCore(deps) {
     );
     const qualityMode = deps.normalizeQualityMode(payload && payload.quality_mode || "");
     const resolveId = normalizeResolveId(payload && payload.resolve_id || "");
-    const creditProtocol = String(payload && (payload.credit_protocol || payload.creditProtocol) || "").trim();
     const claims = {
       userId,
       userEmail: String(payload && payload.email || "").trim(),
@@ -415,9 +408,6 @@ export function createAuthCore(deps) {
       qualityAccessPlanCode: qualityAccessPlanCode || planCode,
       qualityMode,
       resolveId,
-      creditProtocol,
-      creditEnforced: Boolean(payload && (payload.credit_enforced || payload.creditEnforced)),
-      sessionId: String(payload && (payload.session_id || payload.sessionId) || "").trim(),
       authMethod: String(payload && payload.auth_method || "").trim(),
       deviceId: deps.normalizeDeviceId(payload && payload.device_id || ""),
     };

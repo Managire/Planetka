@@ -268,7 +268,6 @@ def prefetch_resolve_plan(
     nav_latitude_deg="",
     nav_longitude_deg="",
     nav_altitude_km="",
-    enforce_pricing_session=False,
     feature="",
 ):
     resolved_tiles = list(plan_payload.get("resolved_tiles", ())) if isinstance(plan_payload, dict) else []
@@ -291,25 +290,6 @@ def prefetch_resolve_plan(
         begin_resolve_download_capture()
     try:
         if use_remote:
-            session_file_entries = []
-            for req in requests:
-                if isinstance(req, dict):
-                    folder = str(req.get("folder", "") or "").strip().strip("/")
-                    file_name = str(req.get("file_name", "") or req.get("filename", "") or "").strip()
-                    if folder and file_name:
-                        session_file_entries.append(f"{folder}/{file_name}")
-                    continue
-                if isinstance(req, (tuple, list)) and len(req) == 4:
-                    folder, prefix, filename, extensions = req
-                    folder = str(folder or "").strip().strip("/")
-                    prefix = str(prefix or "").strip()
-                    filename = str(filename or "").strip()
-                    if not folder or not prefix or not filename:
-                        continue
-                    for ext in tuple(extensions or (".exr",)):
-                        ext_text = str(ext or "")
-                        session_file_entries.append(f"{folder}/{prefix}_{filename}{ext_text}")
-            session_files = tuple(dict.fromkeys(session_file_entries))
             with resolve_request_context(
                 normalized_resolve_id,
                 texture_quality_mode=normalized_quality_mode,
@@ -317,7 +297,6 @@ def prefetch_resolve_plan(
                 nav_latitude_deg=nav_latitude_deg,
                 nav_longitude_deg=nav_longitude_deg,
                 nav_altitude_km=nav_altitude_km,
-                pricing_tiles=session_files,
                 feature=feature,
             ):
                 try:
@@ -368,8 +347,8 @@ def prefetch_resolve_plan(
     # Resolve integrity:
     # - no post-prefetch fallback fetches here (shader fallback images handle EL/WT/PO misses)
     # - only missing S2 is fatal; missing EL/WT/PO proceeds with fallback images
-    # - texture quality only changes which S2 level is requested; it does not
-    #   change account permissions or entitlement checks.
+    # - texture quality only changes which S2 level is requested; account plan
+    #   access is decided by the active tile session.
     resolved_paths = _build_prefetched_paths(index, base_path, allow_fallback=not use_remote)
     unresolved_s2_required = sum(
         1
@@ -422,7 +401,6 @@ def prepare_resolve_streaming_for_visible_tiles(
     nav_latitude_deg="",
     nav_longitude_deg="",
     nav_altitude_km="",
-    enforce_pricing_session=False,
     feature="",
 ):
     plan_payload = build_resolve_download_requests_for_visible_tiles(
@@ -440,7 +418,6 @@ def prepare_resolve_streaming_for_visible_tiles(
         nav_latitude_deg=nav_latitude_deg,
         nav_longitude_deg=nav_longitude_deg,
         nav_altitude_km=nav_altitude_km,
-        enforce_pricing_session=bool(enforce_pricing_session),
         feature=feature,
     )
     result = dict(plan_payload)

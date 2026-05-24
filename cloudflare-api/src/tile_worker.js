@@ -13,9 +13,6 @@ import {
   handleResolveSummary,
   handleTileSessionStart,
 } from "./worker/tile_routes.js";
-import {
-  normalizeTileKeys,
-} from "./worker/tile_sessions.js";
 
 const encoder = new TextEncoder();
 const DEFAULT_TILE_SESSION_TOKEN_TTL_SECONDS = 1800;
@@ -224,7 +221,7 @@ function normalizeResolveId(value) {
   return String(value || "").trim().slice(0, 128);
 }
 
-async function issueTileSessionToken(env, auth, requestedQualityMode, requestedResolveId = "", options = {}) {
+async function issueTileSessionToken(env, auth, requestedQualityMode, requestedResolveId = "") {
   const qualityMode = normalizeQualityMode(requestedQualityMode);
   const planCode = normalizeRequestedPlan(auth && auth.planCode);
   const qualityAccessPlanCode = normalizeRequestedPlan(auth && (auth.qualityAccessPlanCode || auth.planCode));
@@ -240,9 +237,6 @@ async function issueTileSessionToken(env, auth, requestedQualityMode, requestedR
     quality_access_plan_code: qualityAccessPlanCode,
     quality_mode: qualityMode,
     resolve_id: resolveId,
-    credit_protocol: String(options && options.creditProtocol || "").trim(),
-    credit_enforced: Boolean(options && options.creditEnforced),
-    session_id: String(options && (options.sessionId || options.session_id) || "").trim(),
     auth_method: String(auth && auth.authMethod || "").trim(),
     device_id: String(auth && auth.deviceId || "").trim(),
     exp,
@@ -281,9 +275,6 @@ async function readTileSessionClaims(request, env) {
     qualityAccessPlanCode: normalizeRequestedPlan(payload.quality_access_plan_code || payload.qualityAccessPlanCode || payload.plan_code || ""),
     qualityMode: normalizeQualityMode(payload.quality_mode || ""),
     resolveId: normalizeResolveId(payload.resolve_id || ""),
-    creditProtocol: String(payload.credit_protocol || payload.creditProtocol || "").trim(),
-    creditEnforced: Boolean(payload.credit_enforced || payload.creditEnforced),
-    sessionId: String(payload.session_id || payload.sessionId || "").trim(),
     authMethod: String(payload.auth_method || "").trim(),
     deviceId: normalizeDeviceId(payload.device_id || ""),
   };
@@ -452,7 +443,6 @@ async function recordResolveSummaryEvent(db, payload = {}) {
 
 const TILE_DEPS = {
   clampNonNegativeInt,
-  createTileDownloadSession: null,
   isTileFileAllowedForPlan,
   issueTileSessionToken,
   json,
@@ -460,7 +450,6 @@ const TILE_DEPS = {
   normalizeQualityMode,
   normalizeRequestedPlan,
   normalizeResolveId,
-  normalizeTileKeys,
   nowIso,
   tileFileNotAllowedMessage,
   parseJson,

@@ -11,8 +11,6 @@ EARTH_ROLE_KEY = "planetka_role"
 EARTH_ROLE_VALUE = "earth_preview"
 FALLBACK_TEXTURE_BASE_PATH_KEY = "planetka_texture_base_path"
 FALLBACK_TEXTURE_SOURCE_MODE_KEY = "planetka_texture_source_mode"
-FALLBACK_LOCAL_TEXTURE_SOURCE_PATH_KEY = "planetka_local_texture_source_path"
-FALLBACK_AUTO_DOWNLOAD_UNLOCKED_TILES_KEY = "planetka_auto_download_unlocked_tiles"
 FALLBACK_SAVED_LOCATIONS_KEY = "planetka_saved_locations_json"
 FALLBACK_AUTH_EMAIL_KEY = "planetka_auth_email"
 FALLBACK_AUTH_API_KEY_KEY = "planetka_auth_api_key"
@@ -58,19 +56,6 @@ class PlanetkaExtensionPreferences(AddonPreferences):
             ("CLOUDFLARE", "Cloud", "Stream tiles from Planetka Cloud storage"),
         ),
         default=TEXTURE_SOURCE_MODE_DEFAULT,
-    )
-
-    local_texture_source_path: StringProperty(
-        name="Local Source",
-        subtype='DIR_PATH',
-        description="Optional local folder searched before Planetka Cloud for previously licenced tiles",
-        default="",
-    )
-
-    auto_download_unlocked_tiles: BoolProperty(
-        name="Download licenced tiles automatically",
-        description="Automatically keep a local copy of newly used licenced Full Quality tiles in Local Source",
-        default=False,
     )
 
     saved_locations_json: StringProperty(
@@ -199,34 +184,6 @@ def get_prefs():
                 safe = TEXTURE_SOURCE_MODE_DEFAULT
             try:
                 self._owner[FALLBACK_TEXTURE_SOURCE_MODE_KEY] = safe
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                pass
-
-        @property
-        def local_texture_source_path(self):
-            try:
-                return str(self._owner.get(FALLBACK_LOCAL_TEXTURE_SOURCE_PATH_KEY, "") or "")
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                return ""
-
-        @local_texture_source_path.setter
-        def local_texture_source_path(self, value):
-            try:
-                self._owner[FALLBACK_LOCAL_TEXTURE_SOURCE_PATH_KEY] = str(value or "")
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                pass
-
-        @property
-        def auto_download_unlocked_tiles(self):
-            try:
-                return bool(self._owner.get(FALLBACK_AUTO_DOWNLOAD_UNLOCKED_TILES_KEY, False))
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                return False
-
-        @auto_download_unlocked_tiles.setter
-        def auto_download_unlocked_tiles(self, value):
-            try:
-                self._owner[FALLBACK_AUTO_DOWNLOAD_UNLOCKED_TILES_KEY] = bool(value)
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 pass
 
