@@ -12,6 +12,7 @@ from ..auth import (
     check_scene_full_quality_purchase,
     clear_auth_session,
     connect_with_prefs_api_key,
+    create_pro_upgrade_checkout,
     create_scene_full_quality_checkout,
     describe_auth_error,
     get_account_tier,
@@ -322,6 +323,37 @@ class PLANETKA_OT_AccountContact(bpy.types.Operator):
         if not _open_account_url(contact_url):
             return fail(self, "Could not open Planetka contact page.", logger=logger)
         self.report({'INFO'}, "Planetka contact page opened in browser.")
+        return {'FINISHED'}
+
+
+class PLANETKA_OT_AccountUpgrade(bpy.types.Operator):
+    bl_idname = "planetka.account_upgrade"
+    bl_label = "Upgrade to Pro"
+    bl_description = "Open Planetka Pro checkout"
+
+    def execute(self, context):
+        _ = context
+        prefs = get_prefs()
+        if not prefs:
+            return fail(
+                self,
+                "Planetka preferences not available.",
+                code=ErrorCode.RESOLVE_PREFS_MISSING,
+                logger=logger,
+            )
+        try:
+            checkout = create_pro_upgrade_checkout(prefs)
+        except AuthApiError as exc:
+            return fail(self, describe_auth_error(exc), logger=logger, exc=exc)
+        if bool(checkout.get("already_pro")):
+            self.report({'INFO'}, "Planetka Pro is already active.")
+            return {'FINISHED'}
+        checkout_url = str(checkout.get("checkout_url", "") or "").strip()
+        if not checkout_url:
+            return fail(self, "Planetka checkout URL is not available.", logger=logger)
+        if not _open_account_url(checkout_url):
+            return fail(self, "Could not open Planetka checkout.", logger=logger)
+        self.report({'INFO'}, "Planetka checkout opened in browser.")
         return {'FINISHED'}
 
 

@@ -467,6 +467,8 @@ def clear_auth_session(prefs=None, state="logged_out", status_message=""):
     prefs.auth_stored_plan_name = ""
     prefs.auth_contact_url = ""
     prefs.auth_upgrade_url = ""
+    prefs.scene_licence_price_label = ""
+    prefs.scene_licence_price_cents = 0
     prefs.auth_login_state = str(state or "logged_out")
     prefs.auth_status_message = str(status_message or "")
     _save_user_prefs()
@@ -912,6 +914,13 @@ def _apply_auth_payload(prefs, payload, login_state="authenticated", status_mess
         payload.get("support_url"),
     )
     prefs.auth_upgrade_url = _first_non_empty(payload.get("upgrade_url"))
+    price_label = str(payload.get("scene_licence_price_label", "") or "").strip()
+    if price_label:
+        prefs.scene_licence_price_label = price_label
+    try:
+        prefs.scene_licence_price_cents = max(0, int(payload.get("scene_licence_price_cents", 0) or 0))
+    except (TypeError, ValueError, RuntimeError, AttributeError):
+        prefs.scene_licence_price_cents = 0
     prefs.auth_login_state = str(login_state or "authenticated")
     prefs.auth_status_message = str(status_message or "")
     _require_valid_authenticated_tier(prefs, context="auth_payload")
@@ -938,6 +947,13 @@ def _apply_account_profile_fields(prefs, payload):
     upgrade_url = _first_non_empty(payload.get("upgrade_url"))
     if upgrade_url:
         prefs.auth_upgrade_url = upgrade_url
+    price_label = str(payload.get("scene_licence_price_label", "") or "").strip()
+    if price_label:
+        prefs.scene_licence_price_label = price_label
+    try:
+        prefs.scene_licence_price_cents = max(0, int(payload.get("scene_licence_price_cents", 0) or 0))
+    except (TypeError, ValueError, RuntimeError, AttributeError):
+        prefs.scene_licence_price_cents = 0
     _require_valid_authenticated_tier(prefs, context="account_profile")
 
 

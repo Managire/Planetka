@@ -16,6 +16,7 @@ from .planetka_ops.account_ops import (
     PLANETKA_OT_AccountLogout,
     PLANETKA_OT_AccountOpenLogin,
     PLANETKA_OT_AccountRestorePro,
+    PLANETKA_OT_AccountUpgrade,
     PLANETKA_OT_CheckUpdates,
     PLANETKA_OT_SceneFullQualityPurchase,
     PLANETKA_OT_ScenePurchaseRestore,
@@ -379,6 +380,32 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
             )
 
         target_mode = _normalize_startup_texture_quality_mode(getattr(self, "texture_quality_mode", "PREVIEW"))
+        if target_mode == "FULL" and not is_authenticated(prefs):
+            try:
+                bpy.ops.planetka.scene_full_quality_purchase()
+                return {'FINISHED'}
+            except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
+                return fail(
+                    self,
+                    "Full Quality scene purchase could not be started. Please retry.",
+                    code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                    logger=logger,
+                    exc=exc,
+                )
+        if target_mode == "FULL":
+            try:
+                from .auth import is_pro_account
+                if not is_pro_account(prefs):
+                    result = bpy.ops.planetka.scene_full_quality_purchase()
+                    return {'FINISHED'} if "FINISHED" in result else {'CANCELLED'}
+            except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:
+                return fail(
+                    self,
+                    "Full Quality scene purchase could not be started. Please retry.",
+                    code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                    logger=logger,
+                    exc=exc,
+                )
         if not allows_texture_quality_for_context(prefs, target_mode):
             return fail(
                 self,

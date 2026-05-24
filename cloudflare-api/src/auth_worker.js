@@ -1000,6 +1000,7 @@ function getPreviewFairUsageHoldForUserFromRow(user) {
 
 async function buildAccountState(db, user, env) {
   const qualityAccess = await resolveUserQualityAccessState(db, user, env);
+  const sceneLicencePriceCents = await resolveSceneLicencePriceCents(db, env);
   const storedPlanCode = normalizeTierCodeStrict(qualityAccess.storedPlanCode);
   if (!storedPlanCode) {
     throw new Error("invalid_user_status");
@@ -1013,7 +1014,32 @@ async function buildAccountState(db, user, env) {
     upgradeUrl: String(env.UPGRADE_URL || DEFAULT_UPGRADE_URL).trim() || DEFAULT_UPGRADE_URL,
     contactUrl: normalizeContactUrl(env.PLANETKA_CONTACT_URL || DEFAULT_CONTACT_URL),
     previewFairUsageHold: getPreviewFairUsageHoldForUserFromRow(user),
+    sceneLicencePriceCents,
+    sceneLicencePriceLabel: formatEurPriceLabel(sceneLicencePriceCents),
   };
+}
+
+async function resolveSceneLicencePriceCents(db, env) {
+  const fallback = Number(env.PLANETKA_SCENE_FULL_QUALITY_PRICE_EUR || 15);
+  let rawValue = fallback;
+  try {
+    if (db) {
+      const row = await dbGet(db, `SELECT value FROM app_settings WHERE key = ? LIMIT 1`, ["custom_scene_licence_fee_eur"]);
+      if (row && row.value !== undefined && row.value !== null && String(row.value).trim() !== "") {
+        rawValue = row.value;
+      }
+    }
+  } catch (_error) {
+    rawValue = fallback;
+  }
+  const parsed = Number.parseFloat(String(rawValue));
+  const eur = Number.isFinite(parsed) ? Math.max(0, Math.min(10000, parsed)) : 15;
+  return Math.round(eur * 100);
+}
+
+function formatEurPriceLabel(cents) {
+  const safeCents = Math.max(0, Number.parseInt(cents, 10) || 0);
+  return `€${(safeCents / 100).toFixed(2)}`;
 }
 
 function serializeAccountState(state) {
@@ -1034,6 +1060,8 @@ function serializeAccountState(state) {
     contact_url: safeState.contactUrl,
     preview_fair_usage_hold: safeState.previewFairUsageHold || { held: false },
     previewFairUsageHold: safeState.previewFairUsageHold || { held: false },
+    scene_licence_price_cents: Math.max(0, Number.parseInt(safeState.sceneLicencePriceCents, 10) || 0),
+    scene_licence_price_label: String(safeState.sceneLicencePriceLabel || ""),
   };
 }
 

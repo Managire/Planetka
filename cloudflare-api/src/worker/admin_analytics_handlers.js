@@ -299,7 +299,7 @@ export async function handleAdminAnalyticsProductsPage(request, env, deps) {
     : 75;
   const sceneCustomLicenceFee = Number.isFinite(Number(settings.custom_scene_licence_fee_eur))
     ? Number(settings.custom_scene_licence_fee_eur).toFixed(2)
-    : "1.50";
+    : "15.00";
   const animationCustomLicenceMaxFee = Number.isFinite(Number(settings.custom_animation_licence_max_fee_eur))
     ? Number(settings.custom_animation_licence_max_fee_eur).toFixed(2)
     : "9.00";

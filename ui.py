@@ -746,6 +746,17 @@ def _quality_total_size_label(estimate_bytes):
         return "Calculating size"
 
 
+def _scene_licence_price_label(prefs):
+    label = str(getattr(prefs, "scene_licence_price_label", "") or "").strip() if prefs is not None else ""
+    if label:
+        return label
+    try:
+        cents = int(getattr(prefs, "scene_licence_price_cents", 0) or 0) if prefs is not None else 0
+    except (TypeError, ValueError, RuntimeError, AttributeError):
+        cents = 0
+    return f"€{(cents / 100):.2f}" if cents > 0 else ""
+
+
 def _earth_radius_bu_for_ui(scene):
     earth = get_earth_object()
     if earth is None:
@@ -1334,6 +1345,7 @@ def _draw_general_account_summary(layout):
     row.label(text="Account Type")
     row.label(text=account_type_label)
     if account_tier != "pro":
+        account_box.operator("planetka.account_upgrade", text="Upgrade to Pro", icon="KEY_HLT")
         restore_box = account_box.box()
         restore_box.label(text="Restore Pro", icon="KEY_HLT")
         if prefs is not None:
@@ -1506,8 +1518,13 @@ def _draw_live_telemetry(layout, scene):
             ("FULL", "Full"),
         )
         button_row = quality_box.row(align=True)
+        pro_account = is_pro_account(prefs)
+        scene_price_label = _scene_licence_price_label(prefs)
         for mode_key, label in qualities:
             quality_allowed = allows_texture_quality_for_context(prefs, mode_key)
+            button_label = label
+            if mode_key == "FULL" and not pro_account and scene_price_label:
+                button_label = f"Full ({scene_price_label})"
             mode_col = button_row.column(align=True)
             estimate_bytes = _estimate_bytes_for_quality(estimates, mode_key)
             operator_row = mode_col.row(align=True)
@@ -1515,7 +1532,7 @@ def _draw_live_telemetry(layout, scene):
             operator_row.alert = bool(resolve_failure_message and selected_auto_quality == mode_key)
             operator_row.operator(
                 "planetka.set_texture_quality_and_resolve",
-                text=(f"{label} (Pro only)" if not quality_allowed else label),
+                text=(f"{button_label} (Pro only)" if not quality_allowed else button_label),
                 depress=(selected_auto_quality == mode_key),
             ).texture_quality_mode = mode_key
             _draw_quality_meta_row(
@@ -1526,13 +1543,6 @@ def _draw_live_telemetry(layout, scene):
             error_row = quality_box.row(align=True)
             error_row.alert = True
             error_row.label(text=resolve_failure_message, icon="ERROR")
-        if not is_pro_account(prefs):
-            purchase_row = quality_box.row(align=True)
-            purchase_row.operator(
-                "planetka.scene_full_quality_purchase",
-                text="Purchase Full Quality + Commercial Licence for This Scene",
-                icon="KEY_HLT",
-            )
 
     throttle_message = str(get_status_message(prefs) or "").strip()
     if throttle_message and "throttl" in throttle_message.lower():
