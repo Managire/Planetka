@@ -1664,8 +1664,13 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         scene_licence_id = ""
         if _normalize_texture_quality_mode(texture_quality_mode) == "FULL":
             try:
-                scene_licence = scene_license_payload(scene=scene, props=props, full_quality_tiles=tiles)
-                scene_licence_id = str(scene_licence.get("scene_id", "") or "")
+                stored_scene_licence_id = str(scene.get("planetka_current_scene_licence_id", "") or "").strip()
+                has_tile_override = bool(str(getattr(self, "tiles_override_json", "") or "").strip())
+                if stored_scene_licence_id and has_tile_override:
+                    scene_licence_id = stored_scene_licence_id
+                else:
+                    scene_licence = scene_license_payload(scene=scene, props=props, full_quality_tiles=tiles)
+                    scene_licence_id = str(scene_licence.get("scene_id", "") or "")
                 if scene_licence_id:
                     scene["planetka_current_scene_licence_id"] = scene_licence_id
             except (TypeError, ValueError, RuntimeError, AttributeError):

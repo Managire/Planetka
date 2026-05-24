@@ -1365,7 +1365,8 @@ def _draw_general_account_summary(layout):
             if not isinstance(purchase, dict):
                 continue
             scene_id = str(purchase.get("scene_id", "") or "")
-            label = str(purchase.get("purchased_at", "") or scene_id)
+            camera_payload = purchase.get("camera", {}) if isinstance(purchase.get("camera", {}), dict) else {}
+            label = str(camera_payload.get("place_name", "") or purchase.get("purchased_at", "") or scene_id)
             row = history_box.row(align=True)
             row.label(text=label[:32])
             op = row.operator("planetka.scene_purchase_restore", text="Restore", icon="LOOP_BACK")
