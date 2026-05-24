@@ -76,6 +76,8 @@ LAST_PANORAMA_LIMIT_EXCEEDED_KEY = "planetka_last_panorama_limit_exceeded"
 LAST_PANORAMA_REQUIRED_TILES_KEY = "planetka_last_panorama_required_tiles"
 LAST_PANORAMA_REQUIRED_Z_KEY = "planetka_last_panorama_required_z"
 LAST_RESOLVE_TEXTURE_QUALITY_MODE_KEY = "planetka_last_resolve_texture_quality_mode"
+FULL_QUALITY_DOWNLOAD_SUCCESS_KEY = "planetka_full_quality_download_success"
+FULL_QUALITY_DOWNLOAD_SUCCESS_AT_KEY = "planetka_full_quality_download_success_at"
 RESOLVE_FAILURE_FLAG_KEY = "planetka_resolve_integrity_failed"
 RESOLVE_FAILURE_MESSAGE_KEY = "planetka_resolve_integrity_message"
 # Compatibility exports for UI/modules that read the last resolve summary keys
@@ -1932,11 +1934,20 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         _clear_resolve_failure_notice(scene)
         _clear_camera_inside_earth_warning(scene)
         try:
-            scene[LAST_RESOLVE_TEXTURE_QUALITY_MODE_KEY] = _normalize_texture_quality_mode(texture_quality_mode)
+            resolved_quality_mode = _normalize_texture_quality_mode(texture_quality_mode)
+            scene[LAST_RESOLVE_TEXTURE_QUALITY_MODE_KEY] = resolved_quality_mode
+            if resolved_quality_mode == "FULL":
+                scene[FULL_QUALITY_DOWNLOAD_SUCCESS_KEY] = True
+                scene[FULL_QUALITY_DOWNLOAD_SUCCESS_AT_KEY] = time.time()
+            else:
+                if FULL_QUALITY_DOWNLOAD_SUCCESS_KEY in scene:
+                    del scene[FULL_QUALITY_DOWNLOAD_SUCCESS_KEY]
+                if FULL_QUALITY_DOWNLOAD_SUCCESS_AT_KEY in scene:
+                    del scene[FULL_QUALITY_DOWNLOAD_SUCCESS_AT_KEY]
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed storing last resolved texture quality", exc_info=True)
+            logger.debug("Planetka: failed storing last resolved texture quality/success state", exc_info=True)
         except (RuntimeError, TypeError, ValueError):
-            logger.debug("Planetka: failed storing last resolved texture quality", exc_info=True)
+            logger.debug("Planetka: failed storing last resolved texture quality/success state", exc_info=True)
         mark_auto_resolve_clean_after_resolve(scene)
 
         self._flush_ui_reports(ui_reports)

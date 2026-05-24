@@ -54,6 +54,7 @@ RADIUS_SYNC_NOTICE_KEY = "planetka_status_radius_sync_notice"
 RESOLVE_FAILURE_FLAG_KEY = "planetka_resolve_integrity_failed"
 RESOLVE_FAILURE_MESSAGE_KEY = "planetka_resolve_integrity_message"
 LAST_RESOLVE_TEXTURE_QUALITY_MODE_KEY = "planetka_last_resolve_texture_quality_mode"
+FULL_QUALITY_DOWNLOAD_SUCCESS_KEY = "planetka_full_quality_download_success"
 EARTH_TRANSFORM_SECTION_OPEN_KEY = "planetka_ui_earth_transform_open"
 DATA_CONTROL_MORE_OPTIONS_SECTION_OPEN_KEY = "planetka_ui_data_more_options_open"
 EARTH_RADIUS_SAFE_MIN_BU = 0.2
@@ -950,6 +951,18 @@ def _resolve_failure_message_for_ui(scene=None):
         return ""
 
 
+def _full_quality_download_success_for_ui(scene=None):
+    target_scene = scene if scene is not None else getattr(getattr(bpy, "context", None), "scene", None)
+    if target_scene is None:
+        return False
+    try:
+        if not bool(target_scene.get(FULL_QUALITY_DOWNLOAD_SUCCESS_KEY, False)):
+            return False
+        return _normalize_texture_quality_for_ui(target_scene.get(LAST_RESOLVE_TEXTURE_QUALITY_MODE_KEY, "")) == "FULL"
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return False
+
+
 def _inside_earth_warning_for_ui(scene=None):
     return str(get_camera_inside_earth_warning(scene) or "").strip()
 
@@ -1531,6 +1544,9 @@ def _draw_live_telemetry(layout, scene):
             error_row = quality_box.row(align=True)
             error_row.alert = True
             error_row.label(text=resolve_failure_message, icon="ERROR")
+        elif _full_quality_download_success_for_ui(scene):
+            success_row = quality_box.row(align=True)
+            success_row.label(text="Full Quality download successful", icon="CHECKMARK")
 
     throttle_message = str(get_status_message(prefs) or "").strip()
     if throttle_message and "throttl" in throttle_message.lower():
