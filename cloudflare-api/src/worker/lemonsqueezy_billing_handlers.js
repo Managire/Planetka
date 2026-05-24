@@ -8,6 +8,7 @@ const LEMON_LICENSE_API_BASE = "https://api.lemonsqueezy.com/v1/licenses";
 const LEMON_WEBHOOK_EVENTS_TABLE = "lemon_webhook_events";
 const SCENE_PURCHASES_TABLE = "scene_full_quality_purchases";
 const SCENE_PURCHASE_PENDING_TABLE = "scene_full_quality_purchase_pending";
+const SCENE_PURCHASE_VERIFIED_EMAILS_TABLE = "scene_purchase_verified_emails";
 const DEFAULT_PRO_PRICE_LABEL = "€349";
 const DEFAULT_SCENE_PRICE_EUR = 15;
 
@@ -409,24 +410,82 @@ async function ensureScenePurchaseTables(db, deps) {
     db,
     `CREATE INDEX IF NOT EXISTS idx_scene_purchase_email ON ${SCENE_PURCHASES_TABLE}(lower(user_email), purchased_at DESC)`,
   );
+  await deps.dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS ${SCENE_PURCHASE_VERIFIED_EMAILS_TABLE} (
+        user_id TEXT NOT NULL,
+        email TEXT NOT NULL,
+        verified_at TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'email_link',
+        PRIMARY KEY (user_id, email)
+      )
+    `,
+  );
+  await deps.dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_scene_verified_email ON ${SCENE_PURCHASE_VERIFIED_EMAILS_TABLE}(email)`,
+  );
 }
 
-async function loadScenePurchase(db, userId, sceneId, deps) {
+async function scenePurchaseLookupEmails(db, user, deps) {
+  const emails = new Set();
+  const currentEmail = deps.normalizeEmail(user && user.email || "");
+  if (currentEmail && !(typeof deps.isSyntheticAnonymousEmail === "function" && deps.isSyntheticAnonymousEmail(currentEmail))) {
+    emails.add(currentEmail);
+  }
+  if (typeof deps.dbAll === "function") {
+    const rows = await deps.dbAll(
+      db,
+      `SELECT email FROM ${SCENE_PURCHASE_VERIFIED_EMAILS_TABLE} WHERE user_id = ?`,
+      [String(user && user.id || "")],
+    );
+    for (const row of Array.isArray(rows) ? rows : []) {
+      const email = deps.normalizeEmail(row && row.email || "");
+      if (email) {
+        emails.add(email);
+      }
+    }
+  }
+  return Array.from(emails).slice(0, 12);
+}
+
+function scenePurchaseWhereClause(user, emails, includeSceneId = false) {
+  const clauses = ["user_id = ?"];
+  const bindings = [String(user && user.id || "")];
+  if (Array.isArray(emails) && emails.length) {
+    clauses.push(`lower(user_email) IN (${emails.map(() => "?").join(", ")})`);
+    bindings.push(...emails);
+  }
+  if (includeSceneId) {
+    bindings.push(normalizeSceneId(includeSceneId));
+  }
+  return {
+    where: `(${clauses.join(" OR ")})${includeSceneId ? " AND scene_id = ?" : ""} AND status = 'paid'`,
+    bindings,
+  };
+}
+
+async function loadScenePurchase(db, user, sceneId, deps) {
   await ensureScenePurchaseTables(db, deps);
+  const emails = await scenePurchaseLookupEmails(db, user, deps);
+  const filter = scenePurchaseWhereClause(user, emails, sceneId);
   return await deps.dbGet(
     db,
     `
       SELECT *
       FROM ${SCENE_PURCHASES_TABLE}
-      WHERE user_id = ? AND scene_id = ? AND status = 'paid'
+      WHERE ${filter.where}
       LIMIT 1
     `,
-    [String(userId || ""), normalizeSceneId(sceneId)],
+    filter.bindings,
   );
 }
 
-async function listScenePurchases(db, userId, deps, limit = 50) {
+async function listScenePurchases(db, user, deps, limit = 50) {
   await ensureScenePurchaseTables(db, deps);
+  const emails = await scenePurchaseLookupEmails(db, user, deps);
+  const filter = scenePurchaseWhereClause(user, emails);
   const rows = typeof deps.dbAll === "function"
     ? await deps.dbAll(
       db,
@@ -434,11 +493,12 @@ async function listScenePurchases(db, userId, deps, limit = 50) {
         SELECT id, scene_id, user_id, user_email, purchase_type, amount_cents, currency,
                camera_json, tiles_json, tile_hash, purchased_at
         FROM ${SCENE_PURCHASES_TABLE}
-        WHERE user_id = ? AND status = 'paid'
+        WHERE ${filter.where}
+        GROUP BY scene_id
         ORDER BY purchased_at DESC
         LIMIT ?
       `,
-      [String(userId || ""), Math.max(1, Math.min(200, Number.parseInt(limit, 10) || 50))],
+      [...filter.bindings, Math.max(1, Math.min(200, Number.parseInt(limit, 10) || 50))],
     )
     : [];
   return (Array.isArray(rows) ? rows : []).map((row) => ({
@@ -608,7 +668,7 @@ export function createLemonSqueezyBillingHandlers(deps) {
       return deps.json({ ok: false, error: "missing_scene_purchase_details" }, 400, env);
     }
     await ensureScenePurchaseTables(db, deps);
-    const existing = await loadScenePurchase(db, user.id, sceneId, deps);
+    const existing = await loadScenePurchase(db, user, sceneId, deps);
     if (existing) {
       return deps.json({ ok: true, already_purchased: true, scene_id: sceneId, purchase_id: String(existing.id || "") }, 200, env);
     }
@@ -700,7 +760,7 @@ export function createLemonSqueezyBillingHandlers(deps) {
     }
     const url = new URL(request.url);
     const limit = Number.parseInt(url.searchParams.get("limit") || "50", 10) || 50;
-    const purchases = await listScenePurchases(auth.db, auth.user.id, deps, limit);
+    const purchases = await listScenePurchases(auth.db, auth.user, deps, limit);
     return deps.json({ ok: true, purchases }, 200, env);
   }
 
@@ -722,7 +782,7 @@ export function createLemonSqueezyBillingHandlers(deps) {
     if (!sceneId) {
       return deps.json({ ok: false, error: "missing_scene_id" }, 400, env);
     }
-    const purchase = await loadScenePurchase(auth.db, auth.user.id, sceneId, deps);
+    const purchase = await loadScenePurchase(auth.db, auth.user, sceneId, deps);
     return deps.json(
       {
         ok: true,

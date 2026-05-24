@@ -1048,6 +1048,28 @@ def list_scene_full_quality_purchases(prefs=None, limit=50):
     return list(response.get("purchases", []) or [])
 
 
+def request_scene_licence_restore_link(email, prefs=None):
+    prefs = prefs or get_prefs()
+    if prefs is None:
+        raise AuthApiError(0, "prefs_unavailable")
+    if not is_authenticated(prefs):
+        ensure_authenticated_session(prefs)
+    safe_email = str(email or "").strip()
+    if not safe_email or "@" not in safe_email:
+        raise AuthApiError(400, "invalid_email")
+    headers = get_authorized_headers(prefs=prefs, allow_refresh=True)
+    _status, response = _json_request(
+        "POST",
+        "/billing/scene-purchases/restore/request",
+        {"email": safe_email},
+        headers=headers,
+        timeout=30,
+    )
+    if not isinstance(response, dict) or not response.get("ok"):
+        raise AuthApiError(_status or 0, response.get("error") if isinstance(response, dict) else "scene_licence_restore_failed", payload=response)
+    return response
+
+
 def restore_pro_with_license_key(license_key, prefs=None):
     prefs = prefs or get_prefs()
     if prefs is None:

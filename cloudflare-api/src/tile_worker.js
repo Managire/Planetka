@@ -307,6 +307,11 @@ async function dbGet(db, sql, bindings = []) {
   return db.prepare(sql).bind(...bindings).first();
 }
 
+async function dbAll(db, sql, bindings = []) {
+  const result = await db.prepare(sql).bind(...bindings).all();
+  return Array.isArray(result && result.results) ? result.results : [];
+}
+
 function normalizeEmail(value) {
   return String(value || "").trim().toLowerCase();
 }
@@ -455,6 +460,7 @@ async function recordResolveSummaryEvent(db, payload = {}) {
 
 const TILE_DEPS = {
   clampNonNegativeInt,
+  dbAll,
   dbGet,
   dbRun,
   isTileFileAllowedForPlan,

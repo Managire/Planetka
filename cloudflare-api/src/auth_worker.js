@@ -1065,6 +1065,194 @@ function serializeAccountState(state) {
   };
 }
 
+async function ensureScenePurchaseRestoreTables(db) {
+  await dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS scene_purchase_email_restore_requests (
+        id TEXT PRIMARY KEY,
+        requester_user_id TEXT NOT NULL,
+        email TEXT NOT NULL,
+        token_hash TEXT NOT NULL UNIQUE,
+        expires_at TEXT NOT NULL,
+        used_at TEXT,
+        request_ip TEXT,
+        created_at TEXT NOT NULL
+      )
+    `,
+  );
+  await dbRun(db, `CREATE INDEX IF NOT EXISTS idx_scene_restore_token ON scene_purchase_email_restore_requests(token_hash)`);
+  await dbRun(db, `CREATE INDEX IF NOT EXISTS idx_scene_restore_user_email ON scene_purchase_email_restore_requests(requester_user_id, email, created_at DESC)`);
+  await dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS scene_purchase_verified_emails (
+        user_id TEXT NOT NULL,
+        email TEXT NOT NULL,
+        verified_at TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'email_link',
+        PRIMARY KEY (user_id, email)
+      )
+    `,
+  );
+  await dbRun(db, `CREATE INDEX IF NOT EXISTS idx_scene_verified_email ON scene_purchase_verified_emails(email)`);
+}
+
+async function sendSceneLicenceRestoreEmail(env, email, token) {
+  const apiKey = requireSecret(env, "EMAIL_API_KEY");
+  const from = String(env.EMAIL_FROM || "info@planetka.io").trim();
+  const apiBaseUrl = String(env.API_BASE_URL || "https://api.planetka.io").trim().replace(/\/+$/, "");
+  const activationUrl = `${apiBaseUrl}/billing/scene-purchases/restore/activate?token=${encodeURIComponent(token)}`;
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      from,
+      to: [email],
+      subject: "Restore your Planetka scene licences",
+      text: [
+        "Open this link to restore your Planetka scene licences in Blender:",
+        activationUrl,
+        "",
+        "The link expires in 30 minutes.",
+      ].join("\n"),
+      html: `
+        <div style="font-family: Arial, sans-serif; line-height: 1.5; color: #111827;">
+          <h2 style="margin-bottom: 16px;">Restore your Planetka scene licences</h2>
+          <p>Use the button below to allow your current Blender session to access scene licences purchased with this email address.</p>
+          <p style="margin: 24px 0;">
+            <a href="${activationUrl}" style="background:#111827;color:#ffffff;padding:12px 18px;text-decoration:none;border-radius:8px;display:inline-block;">
+              Restore Scene Licences
+            </a>
+          </p>
+          <p>If the button does not work, open this link:</p>
+          <p><a href="${activationUrl}">${activationUrl}</a></p>
+          <p>This link expires in 30 minutes.</p>
+        </div>
+      `,
+    }),
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`resend_error_${response.status}_${body}`);
+  }
+}
+
+async function handleSceneLicenceRestoreRequest(request, env) {
+  const auth = await requireAuthenticatedUserContext(request, env, { enforceApiKeyDevicePolicy: false });
+  if (auth.error) {
+    return auth.error;
+  }
+  const db = auth.db;
+  await ensureRateLimitsTable(db);
+  await ensureScenePurchaseRestoreTables(db);
+  const body = await parseJson(request);
+  const email = normalizeEmail(body.email || body.user_email || "");
+  if (!email || !email.includes("@")) {
+    return json({ ok: false, error: "invalid_email" }, 400, env);
+  }
+  const ipRate = await consumeRateLimitWindow(
+    db,
+    "scene_purchase_restore_ip",
+    requestClientIp(request),
+    parseRateLimitInteger(env.RATE_LIMIT_SCENE_RESTORE_IP_LIMIT, 20),
+    parseRateLimitInteger(env.RATE_LIMIT_SCENE_RESTORE_IP_WINDOW_SECONDS, 900),
+  );
+  if (!ipRate.allowed) {
+    return rateLimitedResponse(env, "scene_restore_ip_rate_limited", "Too many requests. Please try again later.", ipRate.retryAfterSeconds);
+  }
+  const emailRate = await consumeRateLimitWindow(
+    db,
+    "scene_purchase_restore_email",
+    email,
+    parseRateLimitInteger(env.RATE_LIMIT_SCENE_RESTORE_EMAIL_LIMIT, 6),
+    parseRateLimitInteger(env.RATE_LIMIT_SCENE_RESTORE_EMAIL_WINDOW_SECONDS, 3600),
+  );
+  if (!emailRate.allowed) {
+    return rateLimitedResponse(env, "scene_restore_email_rate_limited", "Too many requests for this email. Please try again later.", emailRate.retryAfterSeconds);
+  }
+  const token = randomToken(36);
+  const tokenHash = await sha256Hex(token);
+  await dbRun(
+    db,
+    `
+      INSERT INTO scene_purchase_email_restore_requests (
+        id, requester_user_id, email, token_hash, expires_at, request_ip, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `,
+    [
+      crypto.randomUUID(),
+      String(auth.user && auth.user.id || ""),
+      email,
+      tokenHash,
+      addMinutesIso(30),
+      requestClientIp(request),
+      nowIso(),
+    ],
+  );
+  await sendSceneLicenceRestoreEmail(env, email, token);
+  return json({ ok: true, message: "Scene licence restore link sent." }, 200, env);
+}
+
+async function handleSceneLicenceRestoreActivate(request, env) {
+  const db = requireDb(env);
+  await ensureScenePurchaseRestoreTables(db);
+  const url = new URL(request.url);
+  const token = String(url.searchParams.get("token") || "").trim();
+  if (!token) {
+    return json({ ok: false, error: "missing_token" }, 400, env);
+  }
+  const tokenHash = await sha256Hex(token);
+  const now = nowIso();
+  const row = await dbGet(
+    db,
+    `
+      SELECT id, requester_user_id, email, expires_at, used_at
+      FROM scene_purchase_email_restore_requests
+      WHERE token_hash = ?
+      LIMIT 1
+    `,
+    [tokenHash],
+  );
+  if (!row || row.used_at || Date.parse(row.expires_at) < Date.now()) {
+    return json({ ok: false, error: "invalid_or_expired_token" }, 400, env);
+  }
+  await dbRun(db, `UPDATE scene_purchase_email_restore_requests SET used_at = ? WHERE id = ?`, [now, row.id]);
+  await dbRun(
+    db,
+    `
+      INSERT INTO scene_purchase_verified_emails (user_id, email, verified_at, source)
+      VALUES (?, ?, ?, 'email_link')
+      ON CONFLICT(user_id, email) DO UPDATE SET verified_at = excluded.verified_at, source = excluded.source
+    `,
+    [String(row.requester_user_id || ""), normalizeEmail(row.email || ""), now],
+  );
+  const htmlBody = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Planetka Scene Licences Restored</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f3ed; color: #172033; margin: 0; padding: 40px 20px; }
+    main { max-width: 680px; margin: 0 auto; background: #fffaf1; border: 1px solid #d9c9a6; border-radius: 18px; padding: 32px; box-shadow: 0 20px 60px rgba(40, 29, 10, 0.12); }
+    h1 { margin: 0 0 14px; font-size: 30px; }
+    p { font-size: 17px; line-height: 1.5; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Scene licences restored.</h1>
+    <p>Return to Blender and click Refresh Scene Licences.</p>
+  </main>
+</body>
+</html>`;
+  return html(htmlBody, 200, env, { "Cache-Control": "no-store" });
+}
+
 async function sendApiKeyActivationEmail(env, email, token) {
   const apiKey = requireSecret(env, "EMAIL_API_KEY");
   const from = String(env.EMAIL_FROM || "info@planetka.io").trim();
@@ -1702,6 +1890,21 @@ async function dispatchAuthRequest(request, env) {
       return methodNotAllowed(env);
     }
     return lemonSqueezyBillingHandlers.handleCheckScenePurchase(request, env);
+  }
+  if (path === "/billing/scene-purchases/restore/request") {
+    if (request.method !== "POST") {
+      return methodNotAllowed(env);
+    }
+    return handleSceneLicenceRestoreRequest(request, env);
+  }
+  if (path === "/billing/scene-purchases/restore/activate") {
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      return methodNotAllowed(env);
+    }
+    if (request.method === "HEAD") {
+      return new Response(null, { status: 200, headers: corsHeaders(env) });
+    }
+    return handleSceneLicenceRestoreActivate(request, env);
   }
   if (path === "/billing/lemonsqueezy/webhook") {
     if (request.method !== "POST") {

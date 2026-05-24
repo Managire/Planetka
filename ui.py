@@ -1354,6 +1354,9 @@ def _draw_general_account_summary(layout):
 
     history_box = account_box.box()
     history_box.label(text="Scene Licences", icon="FILE_TICK")
+    if prefs is not None:
+        history_box.prop(prefs, "scene_licence_restore_email", text="Email")
+    history_box.operator("planetka.scene_licences_send_access_link", text="Send Access Link", icon="URL")
     history_box.operator("planetka.scene_purchases_refresh", text="Refresh Scene Licences", icon="LOOP_BACK")
     scene = getattr(getattr(bpy, "context", None), "scene", None)
     try:

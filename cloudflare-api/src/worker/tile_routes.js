@@ -73,23 +73,74 @@ async function ensureScenePurchaseTables(db, deps) {
     db,
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_scene_purchase_user_scene_paid ON scene_full_quality_purchases(user_id, scene_id)`,
   );
+  await deps.dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS scene_purchase_verified_emails (
+        user_id TEXT NOT NULL,
+        email TEXT NOT NULL,
+        verified_at TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'email_link',
+        PRIMARY KEY (user_id, email)
+      )
+    `,
+  );
+  await deps.dbRun(db, `CREATE INDEX IF NOT EXISTS idx_scene_verified_email ON scene_purchase_verified_emails(email)`);
 }
 
-async function loadPurchasedScene(db, userId, sceneId, deps) {
+function normalizeEmail(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function isSyntheticAnonymousEmail(value) {
+  return /^anonymous\+[a-f0-9]{32}@planetka\.local$/i.test(String(value || "").trim());
+}
+
+async function verifiedScenePurchaseEmails(db, userId, userEmail, deps) {
+  const emails = new Set();
+  const currentEmail = normalizeEmail(userEmail);
+  if (currentEmail && !isSyntheticAnonymousEmail(currentEmail)) {
+    emails.add(currentEmail);
+  }
+  if (typeof deps.dbAll === "function") {
+    const rows = await deps.dbAll(
+      db,
+      `SELECT email FROM scene_purchase_verified_emails WHERE user_id = ?`,
+      [String(userId || "")],
+    );
+    for (const row of Array.isArray(rows) ? rows : []) {
+      const email = normalizeEmail(row && row.email || "");
+      if (email) {
+        emails.add(email);
+      }
+    }
+  }
+  return Array.from(emails).slice(0, 12);
+}
+
+async function loadPurchasedScene(db, userId, userEmail, sceneId, deps) {
   const safeSceneId = normalizeSceneId(sceneId);
   if (!db || !safeSceneId || !userId || !deps || typeof deps.dbGet !== "function") {
     return null;
   }
   await ensureScenePurchaseTables(db, deps);
+  const emails = await verifiedScenePurchaseEmails(db, userId, userEmail, deps);
+  const clauses = ["user_id = ?"];
+  const bindings = [String(userId || "")];
+  if (emails.length) {
+    clauses.push(`lower(user_email) IN (${emails.map(() => "?").join(", ")})`);
+    bindings.push(...emails);
+  }
+  bindings.push(safeSceneId);
   return await deps.dbGet(
     db,
     `
       SELECT *
       FROM scene_full_quality_purchases
-      WHERE user_id = ? AND scene_id = ? AND status = 'paid'
+      WHERE (${clauses.join(" OR ")}) AND scene_id = ? AND status = 'paid'
       LIMIT 1
     `,
-    [String(userId || ""), safeSceneId],
+    bindings,
   );
 }
 
@@ -164,7 +215,13 @@ export async function handleTileSessionStart(request, env, deps) {
   let allowedTileFiles = [];
   if (planCode !== "pro") {
     if (qualityMode === "full") {
-      scenePurchase = await loadPurchasedScene(deps.requireDb(env), auth && auth.user && auth.user.id, requestedSceneId, deps);
+      scenePurchase = await loadPurchasedScene(
+        deps.requireDb(env),
+        auth && auth.user && auth.user.id,
+        auth && auth.user && auth.user.email,
+        requestedSceneId,
+        deps,
+      );
       allowedTileFiles = purchasedSceneTileFiles(scenePurchase);
       if (!scenePurchase || !allowedTileFiles.length) {
         return jsonResponse(

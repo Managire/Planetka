@@ -20,6 +20,7 @@ from ..auth import (
     get_api_key_request_url,
     list_scene_full_quality_purchases,
     logout_remote_session,
+    request_scene_licence_restore_link,
     restore_pro_with_license_key,
 )
 from ..scene_licensing import scene_license_payload
@@ -455,6 +456,32 @@ class PLANETKA_OT_ScenePurchasesRefresh(bpy.types.Operator):
         except (RuntimeError, TypeError, ValueError, AttributeError) as exc:
             return fail(self, "Could not store Planetka scene licence history.", logger=logger, exc=exc)
         self.report({'INFO'}, f"Scene licences refreshed ({len(purchases)}).")
+        return {'FINISHED'}
+
+
+class PLANETKA_OT_SceneLicencesSendAccessLink(bpy.types.Operator):
+    bl_idname = "planetka.scene_licences_send_access_link"
+    bl_label = "Send Access Link"
+    bl_description = "Send a Planetka scene licence access link to this email address"
+
+    def execute(self, context):
+        _ = context
+        prefs = get_prefs()
+        if not prefs:
+            return fail(
+                self,
+                "Planetka preferences not available.",
+                code=ErrorCode.RESOLVE_PREFS_MISSING,
+                logger=logger,
+            )
+        email = str(getattr(prefs, "scene_licence_restore_email", "") or "").strip()
+        if not email or "@" not in email:
+            return fail(self, "Enter the email address used for Planetka scene licence purchases.", logger=logger)
+        try:
+            request_scene_licence_restore_link(email, prefs=prefs)
+        except AuthApiError as exc:
+            return fail(self, describe_auth_error(exc), logger=logger, exc=exc)
+        self.report({'INFO'}, "Scene licence access link sent.")
         return {'FINISHED'}
 
 
