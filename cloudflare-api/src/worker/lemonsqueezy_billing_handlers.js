@@ -9,6 +9,8 @@ const LEMON_WEBHOOK_EVENTS_TABLE = "lemon_webhook_events";
 const SCENE_PURCHASES_TABLE = "scene_full_quality_purchases";
 const SCENE_PURCHASE_PENDING_TABLE = "scene_full_quality_purchase_pending";
 const SCENE_PURCHASE_VERIFIED_EMAILS_TABLE = "scene_purchase_verified_emails";
+const ANIMATION_PURCHASES_TABLE = "animation_render_purchases";
+const ANIMATION_PURCHASE_PENDING_TABLE = "animation_render_purchase_pending";
 const DEFAULT_PRO_PRICE_LABEL = "€349";
 const DEFAULT_SCENE_PRICE_EUR = 15;
 
@@ -107,7 +109,9 @@ async function createLemonCheckout({ env, deps, user, config, variantId, checkou
   const apiBaseUrl = String(env.API_BASE_URL || "https://api.planetka.io").trim().replace(/\/+$/, "");
   const envRedirectKey = successPath === "/billing/lemonsqueezy/scene-success"
     ? "LEMONSQUEEZY_SCENE_SUCCESS_URL"
-    : "LEMONSQUEEZY_SUCCESS_URL";
+    : successPath === "/billing/lemonsqueezy/animation-success"
+      ? "LEMONSQUEEZY_ANIMATION_SUCCESS_URL"
+      : "LEMONSQUEEZY_SUCCESS_URL";
   const redirectUrl = String(env[envRedirectKey] || `${apiBaseUrl}${successPath}`).trim();
   const userEmail = typeof deps.isSyntheticAnonymousEmail === "function" && deps.isSyntheticAnonymousEmail(user.email)
     ? ""
@@ -329,6 +333,15 @@ function normalizeSceneId(value) {
   return String(value || "").trim().toLowerCase().replace(/[^a-z0-9_.:-]/g, "").slice(0, 160);
 }
 
+function normalizeAnimationId(value) {
+  return String(value || "").trim().toLowerCase().replace(/[^a-z0-9_.:-]/g, "").slice(0, 160);
+}
+
+function animationPriceCents(frameCount) {
+  const frames = Math.max(1, Number.parseInt(frameCount, 10) || 1);
+  return Math.max(1, Math.ceil(frames / 300)) * 2900;
+}
+
 function normalizeTileList(value) {
   const source = Array.isArray(value) ? value : [];
   const seen = new Set();
@@ -426,6 +439,50 @@ async function ensureScenePurchaseTables(db, deps) {
     db,
     `CREATE INDEX IF NOT EXISTS idx_scene_verified_email ON ${SCENE_PURCHASE_VERIFIED_EMAILS_TABLE}(email)`,
   );
+  await deps.dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS ${ANIMATION_PURCHASE_PENDING_TABLE} (
+        id TEXT PRIMARY KEY,
+        animation_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        user_email TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        variant_id TEXT,
+        amount_cents INTEGER NOT NULL DEFAULT 0,
+        currency TEXT NOT NULL DEFAULT 'EUR',
+        frame_count INTEGER NOT NULL DEFAULT 0,
+        animation_json TEXT,
+        checkout_id TEXT,
+        checkout_url TEXT,
+        created_at TEXT NOT NULL,
+        completed_at TEXT
+      )
+    `,
+  );
+  await deps.dbRun(db, `CREATE INDEX IF NOT EXISTS idx_animation_pending_user_animation ON ${ANIMATION_PURCHASE_PENDING_TABLE}(user_id, animation_id)`);
+  await deps.dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS ${ANIMATION_PURCHASES_TABLE} (
+        id TEXT PRIMARY KEY,
+        animation_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        user_email TEXT,
+        purchase_type TEXT NOT NULL DEFAULT 'animation_render_license',
+        order_id TEXT,
+        variant_id TEXT,
+        amount_cents INTEGER NOT NULL DEFAULT 0,
+        currency TEXT NOT NULL DEFAULT 'EUR',
+        frame_count INTEGER NOT NULL DEFAULT 0,
+        animation_json TEXT,
+        status TEXT NOT NULL DEFAULT 'paid',
+        created_at TEXT NOT NULL,
+        purchased_at TEXT NOT NULL
+      )
+    `,
+  );
+  await deps.dbRun(db, `CREATE UNIQUE INDEX IF NOT EXISTS idx_animation_purchase_user_animation_paid ON ${ANIMATION_PURCHASES_TABLE}(user_id, animation_id)`);
 }
 
 async function scenePurchaseLookupEmails(db, user, deps) {
@@ -479,6 +536,20 @@ async function loadScenePurchase(db, user, sceneId, deps) {
       LIMIT 1
     `,
     filter.bindings,
+  );
+}
+
+async function loadAnimationPurchase(db, user, animationId, deps) {
+  await ensureScenePurchaseTables(db, deps);
+  return await deps.dbGet(
+    db,
+    `
+      SELECT *
+      FROM ${ANIMATION_PURCHASES_TABLE}
+      WHERE user_id = ? AND animation_id = ? AND status = 'paid'
+      LIMIT 1
+    `,
+    [String(user && user.id || ""), normalizeAnimationId(animationId)],
   );
 }
 
@@ -539,6 +610,7 @@ function extractWebhookDetails(payload, request) {
     product: String(custom.product || "").trim(),
     purchaseId: String(custom.purchase_id || custom.purchaseId || "").trim(),
     sceneId: normalizeSceneId(custom.scene_id || custom.sceneId || ""),
+    animationId: normalizeAnimationId(custom.animation_id || custom.animationId || ""),
     variantId,
     amountCents: Number.parseInt(attrs.total || attrs.subtotal || attrs.total_usd || 0, 10) || 0,
     currency: String(attrs.currency || "EUR").trim().toUpperCase() || "EUR",
@@ -749,6 +821,132 @@ export function createLemonSqueezyBillingHandlers(deps) {
     );
   }
 
+  async function handleCreateAnimationCheckout(request, env) {
+    const auth = await deps.requireAuthenticatedUserContext(
+      request,
+      env,
+      { enforceApiKeyDevicePolicy: true },
+    );
+    if (auth.error) {
+      return auth.error;
+    }
+    const { db, user } = auth;
+    const body = await deps.parseJson(request);
+    const animationId = normalizeAnimationId(body.animation_id || body.animationId || "");
+    const frameCount = Math.max(1, Number.parseInt(body.frame_count || body.frameCount || 0, 10) || 0);
+    if (!animationId || frameCount <= 0) {
+      return deps.json({ ok: false, error: "missing_animation_purchase_details" }, 400, env);
+    }
+    await ensureScenePurchaseTables(db, deps);
+    const existing = await loadAnimationPurchase(db, user, animationId, deps);
+    if (existing) {
+      return deps.json({ ok: true, already_purchased: true, animation_id: animationId, purchase_id: String(existing.id || "") }, 200, env);
+    }
+    let config;
+    try {
+      config = lemonEnv(env, deps);
+      requireLemonSceneIds(config);
+    } catch (error) {
+      console.error("lemonsqueezy.animation_checkout_config_error", String(error && error.message || error));
+      return deps.json({ ok: false, error: "animation_checkout_not_configured" }, 503, env);
+    }
+    const amountCents = animationPriceCents(frameCount);
+    const purchaseId = crypto.randomUUID();
+    const now = deps.nowIso();
+    const userEmail = typeof deps.isSyntheticAnonymousEmail === "function" && deps.isSyntheticAnonymousEmail(user.email)
+      ? ""
+      : deps.normalizeEmail(user.email || "");
+    await deps.dbRun(
+      db,
+      `
+        INSERT INTO ${ANIMATION_PURCHASE_PENDING_TABLE} (
+          id, animation_id, user_id, user_email, status, variant_id, amount_cents, currency,
+          frame_count, animation_json, created_at
+        ) VALUES (?, ?, ?, ?, 'pending', ?, ?, 'EUR', ?, ?, ?)
+      `,
+      [
+        purchaseId,
+        animationId,
+        String(user.id || ""),
+        userEmail,
+        String(config.sceneVariantId),
+        amountCents,
+        frameCount,
+        safeJsonString(body, 30000),
+        now,
+      ],
+    );
+    const checkout = await createLemonCheckout({
+      env,
+      deps,
+      user,
+      config,
+      variantId: config.sceneVariantId,
+      customPriceCents: amountCents,
+      successPath: "/billing/lemonsqueezy/animation-success",
+      checkoutData: {
+        custom: {
+          user_id: String(user.id || ""),
+          product: "animation_render_license",
+          purchase_id: purchaseId,
+          animation_id: animationId,
+        },
+      },
+    });
+    if (checkout.error) {
+      return deps.json({ ok: false, error: checkout.error }, checkout.status || 502, env);
+    }
+    await deps.dbRun(
+      db,
+      `UPDATE ${ANIMATION_PURCHASE_PENDING_TABLE} SET checkout_id = ?, checkout_url = ? WHERE id = ?`,
+      [String(checkout.checkoutId || ""), String(checkout.checkoutUrl || ""), purchaseId],
+    );
+    return deps.json(
+      {
+        ok: true,
+        checkout_url: checkout.checkoutUrl,
+        purchase_id: purchaseId,
+        animation_id: animationId,
+        amount_cents: amountCents,
+        currency: "EUR",
+        test_mode: Boolean(config.testMode),
+      },
+      200,
+      env,
+    );
+  }
+
+  async function handleCheckAnimationPurchase(request, env) {
+    const auth = await deps.requireAuthenticatedUserContext(
+      request,
+      env,
+      { enforceApiKeyDevicePolicy: true },
+    );
+    if (auth.error) {
+      return auth.error;
+    }
+    const url = new URL(request.url);
+    let animationId = normalizeAnimationId(url.searchParams.get("animation_id") || "");
+    if (!animationId && request.method === "POST") {
+      const body = await deps.parseJson(request);
+      animationId = normalizeAnimationId(body.animation_id || body.animationId || "");
+    }
+    if (!animationId) {
+      return deps.json({ ok: false, error: "missing_animation_id" }, 400, env);
+    }
+    const purchase = await loadAnimationPurchase(auth.db, auth.user, animationId, deps);
+    return deps.json(
+      {
+        ok: true,
+        purchased: Boolean(purchase),
+        animation_id: animationId,
+        purchase_id: purchase ? String(purchase.id || "") : "",
+      },
+      200,
+      env,
+    );
+  }
+
   async function handleListScenePurchases(request, env) {
     const auth = await deps.requireAuthenticatedUserContext(
       request,
@@ -833,6 +1031,61 @@ export function createLemonSqueezyBillingHandlers(deps) {
       if (details.eventName !== "order_created") {
         await markLemonWebhookEventProcessed(db, eventId, deps);
         return deps.json({ ok: true, ignored: true, event_name: details.eventName }, 200, env);
+      }
+      if (String(details.variantId) === String(config.sceneVariantId) && details.product === "animation_render_license") {
+        await ensureScenePurchaseTables(db, deps);
+        const pending = details.purchaseId
+          ? await deps.dbGet(db, `SELECT * FROM ${ANIMATION_PURCHASE_PENDING_TABLE} WHERE id = ? LIMIT 1`, [details.purchaseId])
+          : null;
+        const animationId = normalizeAnimationId((pending && pending.animation_id) || details.animationId || "");
+        const targetUserId = String((pending && pending.user_id) || details.userId || "").trim();
+        if (!animationId || !targetUserId) {
+          await markLemonWebhookEventFailed(db, eventId, "missing_animation_purchase_context", deps);
+          return deps.json({ ok: false, error: "missing_animation_purchase_context" }, 400, env);
+        }
+        const email = deps.normalizeEmail(details.email || pending && pending.user_email || "");
+        const purchaseId = String((pending && pending.id) || details.purchaseId || crypto.randomUUID());
+        const now = deps.nowIso();
+        await deps.dbRun(
+          db,
+          `
+            INSERT INTO ${ANIMATION_PURCHASES_TABLE} (
+              id, animation_id, user_id, user_email, purchase_type, order_id, variant_id,
+              amount_cents, currency, frame_count, animation_json, status, created_at, purchased_at
+            ) VALUES (?, ?, ?, ?, 'animation_render_license', ?, ?, ?, ?, ?, ?, 'paid', ?, ?)
+            ON CONFLICT(user_id, animation_id) DO UPDATE SET
+              user_email = excluded.user_email,
+              order_id = excluded.order_id,
+              variant_id = excluded.variant_id,
+              amount_cents = excluded.amount_cents,
+              currency = excluded.currency,
+              frame_count = excluded.frame_count,
+              animation_json = excluded.animation_json,
+              status = 'paid',
+              purchased_at = excluded.purchased_at
+          `,
+          [
+            purchaseId,
+            animationId,
+            targetUserId,
+            email,
+            details.orderId,
+            String(details.variantId || config.sceneVariantId),
+            Number.parseInt((pending && pending.amount_cents) || details.amountCents || 0, 10) || 0,
+            String(details.currency || "EUR"),
+            Number.parseInt(pending && pending.frame_count || 0, 10) || 0,
+            String(pending && pending.animation_json || "{}"),
+            String(pending && pending.created_at || now),
+            now,
+          ],
+        );
+        await deps.dbRun(
+          db,
+          `UPDATE ${ANIMATION_PURCHASE_PENDING_TABLE} SET status = 'paid', completed_at = ? WHERE id = ?`,
+          [now, purchaseId],
+        );
+        await markLemonWebhookEventProcessed(db, eventId, deps);
+        return deps.json({ ok: true, processed: true, purchase_type: "animation", animation_id: animationId }, 200, env);
       }
       if (String(details.variantId) === String(config.sceneVariantId)) {
         await ensureScenePurchaseTables(db, deps);
@@ -1036,14 +1289,41 @@ export function createLemonSqueezyBillingHandlers(deps) {
     return deps.html(htmlBody, 200, env, { "Cache-Control": "no-store" });
   }
 
+  async function handleAnimationSuccess(_request, env) {
+    const htmlBody = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Planetka Animation Render</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f3ed; color: #172033; margin: 0; padding: 40px 20px; }
+    main { max-width: 680px; margin: 0 auto; background: #fffaf1; border: 1px solid #d9c9a6; border-radius: 18px; padding: 32px; box-shadow: 0 20px 60px rgba(40, 29, 10, 0.12); }
+    h1 { margin: 0 0 14px; font-size: 30px; }
+    p { font-size: 17px; line-height: 1.5; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Thank you for purchasing Planetka Animation Render.</h1>
+    <p>Return to Blender and start Final Animation Render again.</p>
+  </main>
+</body>
+</html>`;
+    return deps.html(htmlBody, 200, env, { "Cache-Control": "no-store" });
+  }
+
   return {
     handleCreateCheckout,
     handleCreateSceneCheckout,
+    handleCreateAnimationCheckout,
     handleListScenePurchases,
     handleCheckScenePurchase,
+    handleCheckAnimationPurchase,
     handleWebhook,
     handleRestoreLicense,
     handleSuccess,
     handleSceneSuccess,
+    handleAnimationSuccess,
   };
 }

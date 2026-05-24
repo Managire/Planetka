@@ -32,6 +32,12 @@ def scene_camera_payload(scene=None, props=None):
                 payload[key] = round(float(getattr(props, key, 0.0)), 6)
             except (TypeError, ValueError, RuntimeError, AttributeError):
                 payload[key] = 0.0
+        try:
+            selected_place = str(getattr(props, "nav_city_selected_name", "") or "").strip()
+            search_place = str(getattr(props, "nav_city_search", "") or "").strip()
+            payload["place_name"] = selected_place or search_place
+        except (TypeError, ValueError, RuntimeError, AttributeError):
+            payload["place_name"] = ""
     camera = getattr(scene, "camera", None) if scene is not None else None
     if camera is not None:
         try:

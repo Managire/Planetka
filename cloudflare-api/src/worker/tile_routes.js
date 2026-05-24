@@ -86,10 +86,36 @@ async function ensureScenePurchaseTables(db, deps) {
     `,
   );
   await deps.dbRun(db, `CREATE INDEX IF NOT EXISTS idx_scene_verified_email ON scene_purchase_verified_emails(email)`);
+  await deps.dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS animation_render_purchases (
+        id TEXT PRIMARY KEY,
+        animation_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        user_email TEXT,
+        purchase_type TEXT NOT NULL DEFAULT 'animation_render_license',
+        order_id TEXT,
+        variant_id TEXT,
+        amount_cents INTEGER NOT NULL DEFAULT 0,
+        currency TEXT NOT NULL DEFAULT 'EUR',
+        frame_count INTEGER NOT NULL DEFAULT 0,
+        animation_json TEXT,
+        status TEXT NOT NULL DEFAULT 'paid',
+        created_at TEXT NOT NULL,
+        purchased_at TEXT NOT NULL
+      )
+    `,
+  );
+  await deps.dbRun(db, `CREATE UNIQUE INDEX IF NOT EXISTS idx_animation_purchase_user_animation_paid ON animation_render_purchases(user_id, animation_id)`);
 }
 
 function normalizeEmail(value) {
   return String(value || "").trim().toLowerCase();
+}
+
+function normalizeAnimationId(value) {
+  return String(value || "").trim().toLowerCase().replace(/[^a-z0-9_.:-]/g, "").slice(0, 160);
 }
 
 function isSyntheticAnonymousEmail(value) {
@@ -141,6 +167,24 @@ async function loadPurchasedScene(db, userId, userEmail, sceneId, deps) {
       LIMIT 1
     `,
     bindings,
+  );
+}
+
+async function loadPurchasedAnimation(db, userId, animationId, deps) {
+  const safeAnimationId = normalizeAnimationId(animationId);
+  if (!db || !safeAnimationId || !userId || !deps || typeof deps.dbGet !== "function") {
+    return null;
+  }
+  await ensureScenePurchaseTables(db, deps);
+  return await deps.dbGet(
+    db,
+    `
+      SELECT *
+      FROM animation_render_purchases
+      WHERE user_id = ? AND animation_id = ? AND status = 'paid'
+      LIMIT 1
+    `,
+    [String(userId || ""), safeAnimationId],
   );
 }
 
@@ -207,13 +251,36 @@ export async function handleTileSessionStart(request, env, deps) {
   const requestedSceneId = normalizeSceneId(
     body && (body.scene_id || body.sceneId) || request.headers.get("X-Planetka-Scene-Id") || "",
   );
+  const requestedAnimationId = normalizeAnimationId(
+    body && (body.animation_id || body.animationId) || request.headers.get("X-Planetka-Animation-Id") || "",
+  );
   const planCode = normalizeRequestedPlan(
     auth && (auth.qualityAccessPlanCode || auth.planCode || auth.user && auth.user.status),
   );
   const qualityMode = normalizeQualityMode(requestedQualityMode);
   let scenePurchase = null;
+  let animationPurchase = null;
   let allowedTileFiles = [];
-  if (planCode !== "pro") {
+  if (requestedResolveId.toLowerCase().startsWith("anim-") || requestedFeature === "final_animation_render") {
+    animationPurchase = await loadPurchasedAnimation(
+      deps.requireDb(env),
+      auth && auth.user && auth.user.id,
+      requestedAnimationId,
+      deps,
+    );
+    if (!animationPurchase) {
+      return jsonResponse(
+        {
+          ok: false,
+          error: "animation_render_purchase_required",
+          message: "Final Animation Render requires an animation render licence.",
+        },
+        403,
+        env,
+      );
+    }
+  }
+  if (planCode !== "pro" && !animationPurchase) {
     if (qualityMode === "full") {
       scenePurchase = await loadPurchasedScene(
         deps.requireDb(env),
@@ -235,24 +302,13 @@ export async function handleTileSessionStart(request, env, deps) {
         );
       }
     }
-    if (requestedResolveId.toLowerCase().startsWith("anim-") || requestedFeature === "final_animation_render") {
-      return jsonResponse(
-        { ok: false, error: "pro_feature_required", message: "Final Animation Render requires a Pro account." },
-        403,
-        env,
-      );
-    }
-    if (requestedFeature === "panorama") {
-      return jsonResponse(
-        { ok: false, error: "pro_feature_required", message: "Panoramic camera rendering requires a Pro account." },
-        403,
-        env,
-      );
-    }
   }
+  const tokenAuth = animationPurchase
+    ? { ...auth, qualityAccessPlanCode: "pro" }
+    : auth;
   const issued = await issueTileSessionToken(
     env,
-    auth,
+    tokenAuth,
     requestedQualityMode,
     requestedResolveId,
     {

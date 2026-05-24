@@ -11,6 +11,7 @@ routes = [
   { pattern = "api.planetka.io/billing/lemonsqueezy/*", zone_name = "planetka.io" },
   { pattern = "api.planetka.io/billing/scene-purchases", zone_name = "planetka.io" },
   { pattern = "api.planetka.io/billing/scene-purchases/*", zone_name = "planetka.io" },
+  { pattern = "api.planetka.io/billing/animation-purchases/*", zone_name = "planetka.io" },
   { pattern = "api.planetka.io/health", zone_name = "planetka.io" },
   { pattern = "api.planetka.io/addon/update-manifest", zone_name = "planetka.io" },
   { pattern = "api.planetka.io/addon/releases/*", zone_name = "planetka.io" },

@@ -4,7 +4,7 @@ import time
 import webbrowser
 
 import bpy
-from bpy.props import BoolProperty, StringProperty
+from bpy.props import BoolProperty, IntProperty, StringProperty
 
 from ..auth import (
     AuthApiError,
@@ -35,6 +35,42 @@ from ..updater import kickoff_background_update_check, kickoff_background_update
 _LOGOUT_RECOVERABLE_EXCEPTIONS = (AuthApiError,) + PLANETKA_RECOVERABLE_EXCEPTIONS
 _SCENE_PURCHASE_POLL_UNTIL = 0.0
 _SCENE_PURCHASE_POLL_ACTIVE = False
+
+
+def _scene_purchase_history(scene):
+    try:
+        purchases = json.loads(str(scene.get("planetka_scene_purchase_history_json", "[]") or "[]")) if scene is not None else []
+    except (RuntimeError, TypeError, ValueError, AttributeError, json.JSONDecodeError):
+        purchases = []
+    return purchases if isinstance(purchases, list) else []
+
+
+def _scene_purchase_camera_payload(purchase):
+    return purchase.get("camera", {}) if isinstance(purchase, dict) and isinstance(purchase.get("camera", {}), dict) else {}
+
+
+def _format_scene_purchase_date(value):
+    text = str(value or "").strip()
+    if not text:
+        return "Unknown date"
+    return text.replace("T", " ").replace("Z", "")[:19]
+
+
+def _format_scene_float(value, suffix="", precision=3, fallback="Unknown"):
+    try:
+        return f"{float(value):.{int(precision)}f}{suffix}"
+    except (TypeError, ValueError, RuntimeError):
+        return fallback
+
+
+def _scene_purchase_region(camera_payload):
+    place = str(camera_payload.get("place_name", "") or "").strip()
+    if not place:
+        return "Unknown region"
+    parts = [part.strip() for part in place.split(",") if part.strip()]
+    if len(parts) >= 2:
+        return parts[-1]
+    return place
 
 
 def _compute_current_scene_licence_payload(scene, props):
@@ -455,8 +491,80 @@ class PLANETKA_OT_ScenePurchasesRefresh(bpy.types.Operator):
             scene["planetka_scene_purchase_history_json"] = json.dumps(purchases, ensure_ascii=True)
         except (RuntimeError, TypeError, ValueError, AttributeError) as exc:
             return fail(self, "Could not store Planetka scene licence history.", logger=logger, exc=exc)
+        try:
+            bpy.ops.planetka.scene_licences_show('INVOKE_DEFAULT')
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed opening scene licence history popup", exc_info=True)
         self.report({'INFO'}, f"Scene licences refreshed ({len(purchases)}).")
         return {'FINISHED'}
+
+
+class PLANETKA_OT_SceneLicencesShow(bpy.types.Operator):
+    bl_idname = "planetka.scene_licences_show"
+    bl_label = "Scene Licences"
+    bl_description = "Show purchased Planetka scene licences"
+
+    page: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+
+    def invoke(self, context, event):
+        del event
+        wm = getattr(context, "window_manager", None)
+        if wm is None:
+            return self.execute(context)
+        return wm.invoke_props_dialog(self, width=760)
+
+    def execute(self, context):
+        del context
+        return {'FINISHED'}
+
+    def draw(self, context):
+        layout = self.layout
+        scene = getattr(context, "scene", None)
+        purchases = _scene_purchase_history(scene)
+        layout.label(text='"Restore" will download the Full Quality data for the scene.', icon="INFO")
+        if not purchases:
+            layout.label(text="No scene licences loaded. Click Refresh Scene Licences first.", icon="INFO")
+            return
+        page_size = 8
+        page_count = max(1, (len(purchases) + page_size - 1) // page_size)
+        page = max(0, min(int(getattr(self, "page", 0) or 0), page_count - 1))
+        start = page * page_size
+        end = min(len(purchases), start + page_size)
+        nav = layout.row(align=True)
+        nav.label(text=f"Showing {start + 1}-{end} of {len(purchases)}")
+        if page > 0:
+            nav.operator_context = 'INVOKE_DEFAULT'
+            prev_op = nav.operator("planetka.scene_licences_show", text="Previous", icon="TRIA_LEFT")
+            prev_op.page = page - 1
+        if page + 1 < page_count:
+            nav.operator_context = 'INVOKE_DEFAULT'
+            next_op = nav.operator("planetka.scene_licences_show", text="Next", icon="TRIA_RIGHT")
+            next_op.page = page + 1
+        for purchase in purchases[start:end]:
+            if not isinstance(purchase, dict):
+                continue
+            scene_id = str(purchase.get("scene_id", "") or "").strip()
+            camera_payload = _scene_purchase_camera_payload(purchase)
+            place = str(camera_payload.get("place_name", "") or "").strip()
+            title = place or scene_id or "Scene Licence"
+            box = layout.box()
+            header = box.row(align=True)
+            header.label(text=title[:64], icon="FILE_TICK")
+            if scene_id:
+                op = header.operator("planetka.scene_purchase_restore", text="Restore", icon="LOOP_BACK")
+                op.scene_id = scene_id
+            details = box.column(align=True)
+            details.label(text=f"Purchased: {_format_scene_purchase_date(purchase.get('purchased_at', ''))}")
+            details.label(text=f"Region: {_scene_purchase_region(camera_payload)}")
+            details.label(
+                text=(
+                    "Lat / Lon / Alt: "
+                    f"{_format_scene_float(camera_payload.get('nav_latitude_deg'), ' deg', 4)} / "
+                    f"{_format_scene_float(camera_payload.get('nav_longitude_deg'), ' deg', 4)} / "
+                    f"{_format_scene_float(camera_payload.get('nav_altitude_km'), ' km', 2)}"
+                )
+            )
+            details.label(text=f"Camera focal length: {_format_scene_float(camera_payload.get('camera_lens'), ' mm', 1)}")
 
 
 class PLANETKA_OT_SceneLicencesSendAccessLink(bpy.types.Operator):
@@ -498,10 +606,7 @@ class PLANETKA_OT_ScenePurchaseRestore(bpy.types.Operator):
         if scene is None or props is None:
             return fail(self, "Planetka scene is not available.", logger=logger)
         target_scene_id = str(getattr(self, "scene_id", "") or "").strip()
-        try:
-            purchases = json.loads(str(scene.get("planetka_scene_purchase_history_json", "[]") or "[]"))
-        except (RuntimeError, TypeError, ValueError, AttributeError, json.JSONDecodeError):
-            purchases = []
+        purchases = _scene_purchase_history(scene)
         purchase = next((item for item in purchases if str(item.get("scene_id", "") or "") == target_scene_id), None)
         if not isinstance(purchase, dict):
             return fail(self, "Scene licence was not found. Refresh scene licences and retry.", logger=logger)

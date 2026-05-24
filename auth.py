@@ -684,7 +684,7 @@ def allows_full_quality_for_context(prefs=None, source=None):
 
 def allows_animation_render_for_context(prefs=None, source=None, requested_mode=None):
     del source, requested_mode
-    return is_pro_account(prefs)
+    return True
 
 
 def get_upgrade_url(prefs=None):
@@ -1031,6 +1031,43 @@ def check_scene_full_quality_purchase(scene_id, prefs=None):
     _status, response = _json_request("GET", path, {}, headers=headers, timeout=15)
     if not isinstance(response, dict) or not response.get("ok"):
         raise AuthApiError(_status or 0, response.get("error") if isinstance(response, dict) else "scene_purchase_check_failed", payload=response)
+    return response
+
+
+def create_animation_render_checkout(animation_payload, prefs=None):
+    prefs = prefs or get_prefs()
+    if prefs is None:
+        raise AuthApiError(0, "prefs_unavailable")
+    if not is_authenticated(prefs):
+        ensure_authenticated_session(prefs)
+    payload = dict(animation_payload or {})
+    headers = get_authorized_headers(prefs=prefs, allow_refresh=True)
+    _status, response = _json_request(
+        "POST",
+        "/billing/lemonsqueezy/animation-checkout",
+        payload,
+        headers=headers,
+        timeout=30,
+    )
+    if not isinstance(response, dict) or not response.get("ok"):
+        raise AuthApiError(_status or 0, response.get("error") if isinstance(response, dict) else "animation_checkout_failed", payload=response)
+    return response
+
+
+def check_animation_render_purchase(animation_id, prefs=None):
+    prefs = prefs or get_prefs()
+    if prefs is None:
+        raise AuthApiError(0, "prefs_unavailable")
+    if not is_authenticated(prefs):
+        ensure_authenticated_session(prefs)
+    safe_animation_id = str(animation_id or "").strip()
+    if not safe_animation_id:
+        raise AuthApiError(400, "missing_animation_id")
+    headers = get_authorized_headers(prefs=prefs, allow_refresh=True)
+    path = "/billing/animation-purchases/check?animation_id=" + urllib.parse.quote(safe_animation_id, safe="")
+    _status, response = _json_request("GET", path, {}, headers=headers, timeout=15)
+    if not isinstance(response, dict) or not response.get("ok"):
+        raise AuthApiError(_status or 0, response.get("error") if isinstance(response, dict) else "animation_purchase_check_failed", payload=response)
     return response
 
 

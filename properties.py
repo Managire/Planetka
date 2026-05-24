@@ -192,19 +192,6 @@ def update_auto_resolve_mode(self, context):
     mode = str(getattr(self, "auto_resolve_mode", "CAMERA_VIEW") or "CAMERA_VIEW").strip().upper()
     if mode not in {"ALWAYS", "CAMERA_VIEW", "NEVER"}:
         mode = "CAMERA_VIEW"
-    if mode == "ALWAYS":
-        try:
-            auth_module = importlib.import_module(f"{__package__}.auth" if __package__ else "auth")
-            is_pro_fn = getattr(auth_module, "is_pro_account", None)
-            if callable(is_pro_fn) and not bool(is_pro_fn(get_prefs())):
-                mode = "CAMERA_VIEW"
-                self["auto_resolve_mode"] = mode
-        except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
-            mode = "CAMERA_VIEW"
-            try:
-                self["auto_resolve_mode"] = mode
-            except (RuntimeError, TypeError, ValueError, AttributeError):
-                pass
     if mode == "NEVER":
         _request_resolve_kill_switch()
         target_auto_resolve = False

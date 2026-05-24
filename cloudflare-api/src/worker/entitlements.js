@@ -104,7 +104,7 @@ export function qualityModeNotAllowedMessage(planCode, qualityMode) {
   const plan = normalizeRequestedPlan(planCode);
   const quality = normalizeQualityMode(qualityMode);
   if (plan === PLAN_CODE_FREE && quality === "full") {
-    return "Full texture quality requires a Pro account.";
+    return "Full Quality requires a scene licence or Planetka Pro.";
   }
   return "Selected texture quality is not available for this account.";
 }
@@ -130,7 +130,7 @@ export function tileFileNotAllowedMessage(planCode, fileName) {
   const tier = parseS2TextureTier(fileName);
   const plan = normalizeRequestedPlan(planCode);
   if (plan === PLAN_CODE_FREE && tier && tier.z === 1 && tier.d === 1) {
-    return "Full texture quality requires a Pro account.";
+    return "Full Quality requires a scene licence or Planetka Pro.";
   }
   return "This texture file is not available for this account.";
 }

@@ -1879,6 +1879,12 @@ async function dispatchAuthRequest(request, env) {
     }
     return lemonSqueezyBillingHandlers.handleCreateSceneCheckout(request, env);
   }
+  if (path === "/billing/lemonsqueezy/animation-checkout") {
+    if (request.method !== "POST") {
+      return methodNotAllowed(env);
+    }
+    return lemonSqueezyBillingHandlers.handleCreateAnimationCheckout(request, env);
+  }
   if (path === "/billing/scene-purchases" || path === "/billing/scene-purchases/list") {
     if (request.method !== "GET") {
       return methodNotAllowed(env);
@@ -1890,6 +1896,12 @@ async function dispatchAuthRequest(request, env) {
       return methodNotAllowed(env);
     }
     return lemonSqueezyBillingHandlers.handleCheckScenePurchase(request, env);
+  }
+  if (path === "/billing/animation-purchases/check") {
+    if (request.method !== "GET" && request.method !== "POST") {
+      return methodNotAllowed(env);
+    }
+    return lemonSqueezyBillingHandlers.handleCheckAnimationPurchase(request, env);
   }
   if (path === "/billing/scene-purchases/restore/request") {
     if (request.method !== "POST") {
@@ -1935,6 +1947,15 @@ async function dispatchAuthRequest(request, env) {
       return new Response(null, { status: 200, headers: corsHeaders(env) });
     }
     return lemonSqueezyBillingHandlers.handleSceneSuccess(request, env);
+  }
+  if (path === "/billing/lemonsqueezy/animation-success") {
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      return methodNotAllowed(env);
+    }
+    if (request.method === "HEAD") {
+      return new Response(null, { status: 200, headers: corsHeaders(env) });
+    }
+    return lemonSqueezyBillingHandlers.handleAnimationSuccess(request, env);
   }
   if (path === "/me") {
     if (request.method !== "GET" && request.method !== "HEAD") {

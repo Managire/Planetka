@@ -20,6 +20,7 @@ from .planetka_ops.account_ops import (
     PLANETKA_OT_CheckUpdates,
     PLANETKA_OT_SceneFullQualityPurchase,
     PLANETKA_OT_SceneLicencesSendAccessLink,
+    PLANETKA_OT_SceneLicencesShow,
     PLANETKA_OT_ScenePurchaseRestore,
     PLANETKA_OT_ScenePurchasesRefresh,
     PLANETKA_OT_UpdateNow,

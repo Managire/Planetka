@@ -23,7 +23,6 @@ from .auth import (
     allows_texture_quality_for_context,
     ensure_authenticated_session,
     is_authenticated,
-    is_pro_account,
     texture_quality_not_allowed_message,
 )
 from .asset_builder import (
@@ -755,6 +754,18 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         options={'HIDDEN', 'SKIP_SAVE'},
     )
 
+    streaming_feature: StringProperty(
+        name="Streaming Feature",
+        default="",
+        options={'HIDDEN', 'SKIP_SAVE'},
+    )
+
+    animation_id: StringProperty(
+        name="Animation ID",
+        default="",
+        options={'HIDDEN', 'SKIP_SAVE'},
+    )
+
     def _abort_resolve(self, message, code=ErrorCode.RESOLVE_REFRESH_FAILED, exc=None, log_message=None, cleanup_obj=None):
         if cleanup_obj is not None:
             try:
@@ -1175,6 +1186,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         capture_download_progress=True,
         feature="",
         scene_id="",
+        animation_id="",
     ):
         ui_reports = []
         phase_start = time.perf_counter()
@@ -1188,6 +1200,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 nav_altitude_km=nav_altitude_km,
                 feature=feature,
                 scene_id=scene_id,
+                animation_id=animation_id,
                 capture_download_progress=bool(capture_download_progress),
             )
             payload_data = self._parse_stream_payload(stream_payload)
@@ -1241,6 +1254,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         capture_download_progress=True,
         feature="",
         scene_id="",
+        animation_id="",
     ):
         stream_payload = consume_staged_prefetch_payload(
             tiles,
@@ -1258,6 +1272,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 nav_altitude_km=nav_altitude_km,
                 feature=feature,
                 scene_id=scene_id,
+                animation_id=animation_id,
             )
         if _normalize_texture_quality_mode(stream_payload.get("texture_quality_mode", "PREVIEW")) != texture_quality_mode:
             return prepare_resolve_streaming_for_visible_tiles(
@@ -1270,6 +1285,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 nav_altitude_km=nav_altitude_km,
                 feature=feature,
                 scene_id=scene_id,
+                animation_id=animation_id,
             )
         return stream_payload
 
@@ -1691,13 +1707,10 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             return early_result.response
 
         streaming_feature = "panorama" if _scene_uses_equirectangular_panorama(scene) else ""
-        if streaming_feature == "panorama" and not is_pro_account(get_prefs()):
-            return fail(
-                self,
-                "Panoramic camera rendering requires a Pro account.",
-                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-                logger=logger,
-            )
+        explicit_feature = str(getattr(self, "streaming_feature", "") or "").strip().lower()
+        if explicit_feature:
+            streaming_feature = explicit_feature
+        streaming_animation_id = str(getattr(self, "animation_id", "") or "").strip()
 
         stream_ctx = self._phase_prepare_streaming(
             scene,
@@ -1710,6 +1723,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             capture_download_progress=bool(getattr(self, "capture_download_progress", True)),
             feature=streaming_feature,
             scene_id=scene_licence_id,
+            animation_id=streaming_animation_id,
         )
         self._flush_ui_reports(getattr(stream_ctx, "ui_reports", ()))
         if getattr(stream_ctx, "response", None) is not None:

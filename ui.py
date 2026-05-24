@@ -1358,24 +1358,8 @@ def _draw_general_account_summary(layout):
         history_box.prop(prefs, "scene_licence_restore_email", text="Email")
     history_box.operator("planetka.scene_licences_send_access_link", text="Send Access Link", icon="URL")
     history_box.operator("planetka.scene_purchases_refresh", text="Refresh Scene Licences", icon="LOOP_BACK")
-    scene = getattr(getattr(bpy, "context", None), "scene", None)
-    try:
-        purchases = json.loads(str(scene.get("planetka_scene_purchase_history_json", "[]") or "[]")) if scene is not None else []
-    except (TypeError, ValueError, RuntimeError, AttributeError, json.JSONDecodeError):
-        purchases = []
-    if purchases:
-        for purchase in purchases[:8]:
-            if not isinstance(purchase, dict):
-                continue
-            scene_id = str(purchase.get("scene_id", "") or "")
-            camera_payload = purchase.get("camera", {}) if isinstance(purchase.get("camera", {}), dict) else {}
-            label = str(camera_payload.get("place_name", "") or purchase.get("purchased_at", "") or scene_id)
-            row = history_box.row(align=True)
-            row.label(text=label[:32])
-            op = row.operator("planetka.scene_purchase_restore", text="Restore", icon="LOOP_BACK")
-            op.scene_id = scene_id
-    else:
-        history_box.label(text="No scene licences loaded.", icon="INFO")
+    history_box.operator_context = 'INVOKE_DEFAULT'
+    history_box.operator("planetka.scene_licences_show", text="View Scene Licences", icon="FILE_TICK")
 
     if authenticated and checked and not connected:
         warning_box = layout.box()
@@ -1536,7 +1520,7 @@ def _draw_live_telemetry(layout, scene):
             operator_row.alert = bool(resolve_failure_message and selected_auto_quality == mode_key)
             operator_row.operator(
                 "planetka.set_texture_quality_and_resolve",
-                text=(f"{button_label} (Pro only)" if not quality_allowed else button_label),
+                text=(f"{button_label} (Unavailable)" if not quality_allowed else button_label),
                 depress=(selected_auto_quality == mode_key),
             ).texture_quality_mode = mode_key
             _draw_quality_meta_row(
@@ -2239,14 +2223,6 @@ def _draw_local_clouds(layout, context, props):
 
 
 def _draw_vdb_clouds(layout, context, props):
-    prefs = get_prefs()
-    if not is_pro_account(prefs):
-        box = layout.box()
-        box.enabled = False
-        box.label(text="VDB Clouds (Cycles only, Pro only)", icon="VOLUME_DATA")
-        box.prop(props, "enable_vdb_clouds", text="Enable VDB Clouds (Cycles only, Pro only)")
-        return
-
     try:
         from . import clouds_local as cloud_runtime
     except (ImportError, ModuleNotFoundError):
@@ -2532,15 +2508,7 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             auto_row.use_property_split = False
             auto_row.prop_enum(props, "auto_resolve_mode", "NEVER", text="Never")
             auto_row.prop_enum(props, "auto_resolve_mode", "CAMERA_VIEW", text="Camera only")
-            always_row = auto_row.row(align=True)
-            always_allowed = is_pro_account(get_prefs())
-            always_row.enabled = bool(always_allowed)
-            always_row.prop_enum(
-                props,
-                "auto_resolve_mode",
-                "ALWAYS",
-                text=("Always" if always_allowed else "Always (Pro only)"),
-            )
+            auto_row.prop_enum(props, "auto_resolve_mode", "ALWAYS", text="Always")
 
             scene_objects_box = layout.box()
             scene_objects_box.enabled = workflow_enabled and (not prepared)
@@ -2563,12 +2531,11 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             )
 
             standalone_box = layout.box()
-            standalone_allowed = is_pro_account(get_prefs())
-            standalone_box.label(text=("Standalone Export" if standalone_allowed else "Standalone Export (Pro only)"), icon="PACKAGE")
-            standalone_box.enabled = _has_earth() and standalone_allowed
+            standalone_box.label(text="Standalone Export", icon="PACKAGE")
+            standalone_box.enabled = _has_earth()
             standalone_box.operator(
                 "planetka.create_standalone_file",
-                text=("Create Standalone File" if standalone_allowed else "Create Standalone File (Pro only)"),
+                text="Create Standalone File",
                 icon="FILE_BLEND",
             )
 
@@ -3002,10 +2969,7 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         animation_render_running = _is_animation_render_running()
         final_render_box = layout.box()
         final_render_box.enabled = bool(earth_workflow_enabled) if animation_render_running else bool(controls_enabled)
-        final_render_box.label(
-            text=("Final Animation Render" if allows_animation_render_for_context(prefs=get_prefs()) else "Final Animation Render (Pro only)"),
-            icon="RENDER_ANIMATION",
-        )
+        final_render_box.label(text="Final Animation Render", icon="RENDER_ANIMATION")
         selected_final_quality = _normalize_texture_quality_for_ui(getattr(props, "texture_quality_mode", "PREVIEW"))
         final_render_allowed = allows_animation_render_for_context(
             prefs=get_prefs(),
@@ -3030,6 +2994,6 @@ class PLANETKA_PT_AnimationPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             render_button_row.enabled = bool(final_render_allowed) and bool(earth_workflow_enabled)
             render_button_row.operator(
                 "planetka.animation_render",
-                text=("Render Animation" if final_render_allowed else "Render Animation (Pro only)"),
+                text="Render Animation",
                 icon="RENDER_ANIMATION",
             )

@@ -18,7 +18,7 @@ from bpy.props import EnumProperty, FloatProperty, StringProperty
 from mathutils import Vector
 
 from .asset_builder import ensure_planetka_root
-from .auth import get_api_base_url, is_authenticated, is_pro_account
+from .auth import get_api_base_url, is_authenticated
 from .error_utils import PLANETKA_RECOVERABLE_EXCEPTIONS
 from .extension_prefs import get_earth_object, get_prefs
 from .r2_source import get_remote_cache_folder
@@ -1675,9 +1675,8 @@ def _ensure_cloud_collections(scene=None):
 def _sync_cloud_collection_visibility(scene, props):
     _ensure_cloud_collections(scene)
     enable_global = bool(getattr(props, "enable_global_clouds", False)) if props else False
-    pro_enabled = is_pro_account()
     enable_local = bool(getattr(props, "enable_local_clouds", False)) if props else False
-    enable_vdb = bool(getattr(props, "enable_vdb_clouds", False)) and pro_enabled if props else False
+    enable_vdb = bool(getattr(props, "enable_vdb_clouds", False)) if props else False
 
     _set_collection_enabled(scene, CLOUDS_ROOT_COLLECTION_NAME, enable_global or enable_local or enable_vdb)
     _set_collection_enabled(scene, GLOBAL_CLOUDS_COLLECTION_NAME, enable_global)
@@ -3224,12 +3223,6 @@ def update_enable_local_clouds(self, context):
 
 def update_enable_vdb_clouds(self, context):
     scene = getattr(context, "scene", None) if context else None
-    if bool(getattr(self, "enable_vdb_clouds", False)) and not is_pro_account():
-        try:
-            self.enable_vdb_clouds = False
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka clouds: failed disabling Pro-only VDB clouds", exc_info=True)
-        return
     _sync_scene_idprops(scene, ("enable_vdb_clouds", "vdb_cloud_source", "vdb_cloud_preset", "vdb_cloud_file"))
     _sync_cloud_collection_visibility(scene, self)
 
@@ -3675,9 +3668,6 @@ class PLANETKA_OT_AddVDBCloud(bpy.types.Operator):
         return selected
 
     def _create_vdb_cloud_from_path(self, context, source, vdb_path):
-        if not is_pro_account():
-            self.report({'ERROR'}, "VDB clouds require a Pro account.")
-            return {'CANCELLED'}
         scene, props = self._props(context)
         if props is None:
             self.report({'ERROR'}, "Planetka settings unavailable.")
@@ -3832,9 +3822,6 @@ class PLANETKA_OT_AddVDBCloud(bpy.types.Operator):
         return {'RUNNING_MODAL'}
 
     def invoke(self, context, event):
-        if not is_pro_account():
-            self.report({'ERROR'}, "VDB clouds require a Pro account.")
-            return {'CANCELLED'}
         scene, props = self._props(context)
         if props is None:
             self.report({'ERROR'}, "Planetka settings unavailable.")
@@ -3875,9 +3862,6 @@ class PLANETKA_OT_AddVDBCloud(bpy.types.Operator):
         return self._create_vdb_cloud_from_path(context, "CLOUD", self._download_path)
 
     def execute(self, context):
-        if not is_pro_account():
-            self.report({'ERROR'}, "VDB clouds require a Pro account.")
-            return {'CANCELLED'}
         scene, props = self._props(context)
         if props is None:
             self.report({'ERROR'}, "Planetka settings unavailable.")
