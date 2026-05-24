@@ -1691,7 +1691,7 @@ async function dispatchAuthRequest(request, env) {
     }
     return lemonSqueezyBillingHandlers.handleCreateSceneCheckout(request, env);
   }
-  if (path === "/billing/scene-purchases") {
+  if (path === "/billing/scene-purchases" || path === "/billing/scene-purchases/list") {
     if (request.method !== "GET") {
       return methodNotAllowed(env);
     }

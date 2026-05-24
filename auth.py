@@ -1042,7 +1042,7 @@ def list_scene_full_quality_purchases(prefs=None, limit=50):
         ensure_authenticated_session(prefs)
     safe_limit = max(1, min(200, int(limit or 50)))
     headers = get_authorized_headers(prefs=prefs, allow_refresh=True)
-    _status, response = _json_request("GET", f"/billing/scene-purchases?limit={safe_limit}", {}, headers=headers, timeout=20)
+    _status, response = _json_request("GET", f"/billing/scene-purchases/list?limit={safe_limit}", {}, headers=headers, timeout=20)
     if not isinstance(response, dict) or not response.get("ok"):
         raise AuthApiError(_status or 0, response.get("error") if isinstance(response, dict) else "scene_purchases_failed", payload=response)
     return list(response.get("purchases", []) or [])
