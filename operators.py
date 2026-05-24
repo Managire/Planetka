@@ -190,6 +190,44 @@ _FULL_QUALITY_HOLD_SIGNATURE_KEY = "planetka_full_quality_hold_signature"
 _SUPPRESS_TEXTURE_QUALITY_UPDATE_AUTO_RESOLVE_KEY = "planetka_suppress_texture_quality_update_auto_resolve"
 
 
+def _scene_purchase_history_contains(scene, scene_id):
+    safe_scene_id = str(scene_id or "").strip()
+    if scene is None or not safe_scene_id:
+        return False
+    try:
+        purchases = json.loads(str(scene.get("planetka_scene_purchase_history_json", "[]") or "[]"))
+    except (RuntimeError, TypeError, ValueError, AttributeError, json.JSONDecodeError):
+        purchases = []
+    if not isinstance(purchases, list):
+        return False
+    return any(str(item.get("scene_id", "") or "").strip() == safe_scene_id for item in purchases if isinstance(item, dict))
+
+
+def _current_full_quality_scene_licence_payload(scene, props):
+    try:
+        tile_utils = __import__(f"{__package__}.tile_utils", fromlist=["main"]) if __package__ else __import__("tile_utils")
+        scene_licensing = __import__(f"{__package__}.scene_licensing", fromlist=["scene_license_payload"]) if __package__ else __import__("scene_licensing")
+        full_tiles = tile_utils.main(scope_mode="CAMERA")
+        return scene_licensing.scene_license_payload(scene=scene, props=props, full_quality_tiles=full_tiles)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed computing current Full Quality scene licence payload", exc_info=True)
+    except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka: failed computing current Full Quality scene licence payload", exc_info=True)
+    return {}
+
+
+def _current_scene_has_purchased_full_quality(scene, props):
+    payload = _current_full_quality_scene_licence_payload(scene, props)
+    scene_id = str(payload.get("scene_id", "") or "").strip() if isinstance(payload, dict) else ""
+    if scene_id and _scene_purchase_history_contains(scene, scene_id):
+        try:
+            scene["planetka_current_scene_licence_id"] = scene_id
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed storing current purchased scene licence id", exc_info=True)
+        return True
+    return False
+
+
 def _signature_token(signature):
     try:
         import json
@@ -397,7 +435,7 @@ class PLANETKA_OT_SetTextureQualityAndResolve(bpy.types.Operator):
         if target_mode == "FULL":
             try:
                 from .auth import is_pro_account
-                if not is_pro_account(prefs):
+                if not is_pro_account(prefs) and not _current_scene_has_purchased_full_quality(scene, props):
                     result = bpy.ops.planetka.scene_full_quality_purchase()
                     return {'FINISHED'} if "FINISHED" in result else {'CANCELLED'}
             except PLANETKA_RECOVERABLE_EXCEPTIONS as exc:

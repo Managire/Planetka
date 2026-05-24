@@ -758,6 +758,31 @@ def _scene_licence_price_label(prefs):
     return f"€{(cents / 100):.2f}" if cents > 0 else ""
 
 
+def _scene_purchase_history_contains(scene, scene_id):
+    safe_scene_id = str(scene_id or "").strip()
+    if scene is None or not safe_scene_id:
+        return False
+    try:
+        purchases = json.loads(str(scene.get("planetka_scene_purchase_history_json", "[]") or "[]"))
+    except (RuntimeError, TypeError, ValueError, AttributeError, json.JSONDecodeError):
+        purchases = []
+    if not isinstance(purchases, list):
+        return False
+    return any(str(item.get("scene_id", "") or "").strip() == safe_scene_id for item in purchases if isinstance(item, dict))
+
+
+def _current_scene_full_quality_is_purchased(scene):
+    if scene is None:
+        return False
+    try:
+        scene_id = str(scene.get("planetka_current_scene_licence_id", "") or "").strip()
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        scene_id = ""
+    if scene_id and _scene_purchase_history_contains(scene, scene_id):
+        return True
+    return bool(_full_quality_download_success_for_ui(scene))
+
+
 def _earth_radius_bu_for_ui(scene):
     earth = get_earth_object()
     if earth is None:
@@ -1521,10 +1546,11 @@ def _draw_live_telemetry(layout, scene):
         button_row = quality_box.row(align=True)
         pro_account = is_pro_account(prefs)
         scene_price_label = _scene_licence_price_label(prefs)
+        current_scene_purchased = _current_scene_full_quality_is_purchased(scene)
         for mode_key, label in qualities:
             quality_allowed = allows_texture_quality_for_context(prefs, mode_key)
             button_label = label
-            if mode_key == "FULL" and not pro_account and scene_price_label:
+            if mode_key == "FULL" and not pro_account and scene_price_label and not current_scene_purchased:
                 button_label = f"Full ({scene_price_label})"
             mode_col = button_row.column(align=True)
             estimate_bytes = _estimate_bytes_for_quality(estimates, mode_key)
