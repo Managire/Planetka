@@ -2,6 +2,7 @@
 
 import bpy
 import datetime
+import json
 import os
 import time
 
@@ -16,6 +17,7 @@ from .auth import (
     get_account_tier,
     get_connected_email,
     get_status_message,
+    ensure_authenticated_session,
     is_authenticated,
     is_pro_account,
 )
@@ -1283,10 +1285,81 @@ def _draw_account_panel(layout):
     else:
         account_type_label = "-"
     layout.label(text=f"Account type: {account_type_label}", icon="COMMUNITY")
-    if authenticated and account_tier == "free":
-        upgrade_row = layout.row(align=True)
-        pro_op = upgrade_row.operator("planetka.account_upgrade", text="Upgrade to Pro (€280)", icon="URL")
-        pro_op.target_plan = "pro"
+
+def _draw_general_account_summary(layout):
+    from .extension_prefs import get_prefs
+
+    prefs = get_prefs()
+    if prefs is not None and not is_authenticated(prefs):
+        try:
+            ensure_authenticated_session(prefs)
+        except (AuthApiError, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: automatic anonymous session start failed", exc_info=True)
+    authenticated = bool(is_authenticated(prefs))
+    if authenticated:
+        _schedule_sidebar_account_refresh(force=False)
+    cloud_status = (
+        get_cached_cloud_connection_status()
+        if authenticated
+        else {"online": False, "message": "", "checked": False}
+    )
+    checked = bool(cloud_status.get("checked", False))
+    connected = bool(authenticated and checked and cloud_status.get("online", False))
+    cloud_message = str(cloud_status.get("message", "") or "").strip()
+    cloud_overloaded = bool(cloud_message == CLOUD_OVERLOADED_MESSAGE)
+    status_icon = "CHECKMARK" if connected else ("INFO" if authenticated and not checked else "ERROR")
+    if connected:
+        status_text = "Connected to Planetka Cloud"
+    elif authenticated and not checked:
+        status_text = "Checking Planetka Cloud"
+    elif authenticated and cloud_overloaded:
+        status_text = "Planetka Cloud overloaded"
+    elif authenticated:
+        status_text = "Not connected to Planetka Cloud"
+    else:
+        status_text = "Starting Planetka session"
+    try:
+        account_tier = str(get_account_tier(prefs) or "").strip().lower()
+    except (TypeError, ValueError, RuntimeError, AttributeError):
+        account_tier = ""
+    account_type_label = "Pro" if account_tier == "pro" else "Free"
+    status_message = get_status_message(prefs)
+
+    account_box = layout.box()
+    account_box.label(text="Planetka Cloud", icon="WORLD")
+    row = account_box.row()
+    row.label(text="Status")
+    row.label(text=status_text, icon=status_icon)
+    row = account_box.row()
+    row.label(text="Account Type")
+    row.label(text=account_type_label)
+    if account_tier != "pro":
+        restore_box = account_box.box()
+        restore_box.label(text="Restore Pro", icon="KEY_HLT")
+        if prefs is not None:
+            restore_box.prop(prefs, "pro_restore_license_key_input", text="Planetka Licence Key")
+        restore_box.operator("planetka.account_restore_pro", text="Restore Pro", icon="CHECKMARK")
+
+    history_box = account_box.box()
+    history_box.label(text="Scene Licences", icon="FILE_TICK")
+    history_box.operator("planetka.scene_purchases_refresh", text="Refresh Scene Licences", icon="LOOP_BACK")
+    scene = getattr(getattr(bpy, "context", None), "scene", None)
+    try:
+        purchases = json.loads(str(scene.get("planetka_scene_purchase_history_json", "[]") or "[]")) if scene is not None else []
+    except (TypeError, ValueError, RuntimeError, AttributeError, json.JSONDecodeError):
+        purchases = []
+    if purchases:
+        for purchase in purchases[:8]:
+            if not isinstance(purchase, dict):
+                continue
+            scene_id = str(purchase.get("scene_id", "") or "")
+            label = str(purchase.get("purchased_at", "") or scene_id)
+            row = history_box.row(align=True)
+            row.label(text=label[:32])
+            op = row.operator("planetka.scene_purchase_restore", text="Restore", icon="LOOP_BACK")
+            op.scene_id = scene_id
+    else:
+        history_box.label(text="No scene licences loaded.", icon="INFO")
 
     if authenticated and checked and not connected:
         warning_box = layout.box()
@@ -1453,6 +1526,13 @@ def _draw_live_telemetry(layout, scene):
             error_row = quality_box.row(align=True)
             error_row.alert = True
             error_row.label(text=resolve_failure_message, icon="ERROR")
+        if not is_pro_account(prefs):
+            purchase_row = quality_box.row(align=True)
+            purchase_row.operator(
+                "planetka.scene_full_quality_purchase",
+                text="Purchase Full Quality + Commercial Licence for This Scene",
+                icon="KEY_HLT",
+            )
 
     throttle_message = str(get_status_message(prefs) or "").strip()
     if throttle_message and "throttl" in throttle_message.lower():
@@ -2149,21 +2229,21 @@ def _draw_vdb_clouds(layout, context, props):
     if not is_pro_account(prefs):
         box = layout.box()
         box.enabled = False
-        box.label(text="VDB Clouds (Pro only)", icon="VOLUME_DATA")
-        box.prop(props, "enable_vdb_clouds", text="Enable VDB Clouds (Pro only)")
+        box.label(text="VDB Clouds (Cycles only, Pro only)", icon="VOLUME_DATA")
+        box.prop(props, "enable_vdb_clouds", text="Enable VDB Clouds (Cycles only, Pro only)")
         return
 
     try:
         from . import clouds_local as cloud_runtime
     except (ImportError, ModuleNotFoundError):
         box = layout.box()
-        box.label(text="VDB Clouds", icon="VOLUME_DATA")
+        box.label(text="VDB Clouds (Cycles only)", icon="VOLUME_DATA")
         box.label(text="VDB cloud runtime is unavailable.", icon="ERROR")
         return
 
     box = layout.box()
-    box.label(text="VDB Clouds", icon="VOLUME_DATA")
-    box.prop(props, "enable_vdb_clouds", text="Enable VDB Clouds")
+    box.label(text="VDB Clouds (Cycles only)", icon="VOLUME_DATA")
+    box.prop(props, "enable_vdb_clouds", text="Enable VDB Clouds (Cycles only)")
     if not bool(getattr(props, "enable_vdb_clouds", False)):
         return
 
@@ -2305,7 +2385,8 @@ class PLANETKA_PT_AccountPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        return not _account_panel_should_default_collapsed(context)
+        _ = context
+        return False
 
     def draw(self, context):
         _ = context
@@ -2321,7 +2402,8 @@ class PLANETKA_PT_AccountPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Pane
 
     @classmethod
     def poll(cls, context):
-        return _account_panel_should_default_collapsed(context)
+        _ = context
+        return False
 
     def draw(self, context):
         _ = context
@@ -2401,6 +2483,8 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
         workflow_enabled = _is_earth_workflow_enabled()
 
         if props:
+            _draw_general_account_summary(layout)
+
             addon_box = layout.box()
             addon_box.label(text="Add-on", icon="PREFERENCES")
             _draw_addon_update_controls(addon_box)
@@ -2535,7 +2619,7 @@ class PLANETKA_PT_LinksPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
     @classmethod
     def poll(cls, context):
         _ = context
-        return not _is_paid_connected_account()
+        return True
 
     def draw(self, context):
         _ = context
@@ -2563,7 +2647,7 @@ class PLANETKA_PT_LinksPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel)
     @classmethod
     def poll(cls, context):
         _ = context
-        return _is_paid_connected_account()
+        return False
 
     def draw(self, context):
         _ = context

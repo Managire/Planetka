@@ -37,6 +37,73 @@ function firstNonEmpty(...values) {
   return "";
 }
 
+function normalizeSceneId(value) {
+  return String(value || "").trim().toLowerCase().replace(/[^a-z0-9_.:-]/g, "").slice(0, 160);
+}
+
+function normalizeTileFileName(value) {
+  const text = String(value || "").trim();
+  return text && !text.includes("/") && !text.includes("..") ? text : "";
+}
+
+async function ensureScenePurchaseTables(db, deps) {
+  await deps.dbRun(
+    db,
+    `
+      CREATE TABLE IF NOT EXISTS scene_full_quality_purchases (
+        id TEXT PRIMARY KEY,
+        scene_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        user_email TEXT,
+        purchase_type TEXT NOT NULL DEFAULT 'scene_full_quality_commercial_license',
+        order_id TEXT,
+        variant_id TEXT,
+        amount_cents INTEGER NOT NULL DEFAULT 0,
+        currency TEXT NOT NULL DEFAULT 'EUR',
+        camera_json TEXT,
+        tiles_json TEXT,
+        tile_hash TEXT,
+        status TEXT NOT NULL DEFAULT 'paid',
+        created_at TEXT NOT NULL,
+        purchased_at TEXT NOT NULL
+      )
+    `,
+  );
+  await deps.dbRun(
+    db,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_scene_purchase_user_scene_paid ON scene_full_quality_purchases(user_id, scene_id)`,
+  );
+}
+
+async function loadPurchasedScene(db, userId, sceneId, deps) {
+  const safeSceneId = normalizeSceneId(sceneId);
+  if (!db || !safeSceneId || !userId || !deps || typeof deps.dbGet !== "function") {
+    return null;
+  }
+  await ensureScenePurchaseTables(db, deps);
+  return await deps.dbGet(
+    db,
+    `
+      SELECT *
+      FROM scene_full_quality_purchases
+      WHERE user_id = ? AND scene_id = ? AND status = 'paid'
+      LIMIT 1
+    `,
+    [String(userId || ""), safeSceneId],
+  );
+}
+
+function purchasedSceneTileFiles(row) {
+  try {
+    const tiles = JSON.parse(String(row && row.tiles_json || "[]"));
+    return Array.isArray(tiles)
+      ? tiles.map((tile) => `S2_${String(tile || "").trim()}.exr`).map(normalizeTileFileName).filter(Boolean)
+      : [];
+  } catch (_error) {
+    return [];
+  }
+}
+
 function isPublicCloudAssetFolder(folder) {
   const normalized = String(folder || "").trim().toLowerCase();
   return normalized === "clouds_global"
@@ -86,17 +153,30 @@ export async function handleTileSessionStart(request, env, deps) {
   const requestedFeature = String(
     body && (body.feature || body.feature_code || body.featureCode) || request.headers.get("X-Planetka-Feature") || "",
   ).trim().toLowerCase();
+  const requestedSceneId = normalizeSceneId(
+    body && (body.scene_id || body.sceneId) || request.headers.get("X-Planetka-Scene-Id") || "",
+  );
   const planCode = normalizeRequestedPlan(
     auth && (auth.qualityAccessPlanCode || auth.planCode || auth.user && auth.user.status),
   );
   const qualityMode = normalizeQualityMode(requestedQualityMode);
+  let scenePurchase = null;
+  let allowedTileFiles = [];
   if (planCode !== "pro") {
     if (qualityMode === "full") {
-      return jsonResponse(
-        { ok: false, error: "quality_mode_not_allowed", message: "Full texture quality requires a Pro account." },
-        403,
-        env,
-      );
+      scenePurchase = await loadPurchasedScene(deps.requireDb(env), auth && auth.user && auth.user.id, requestedSceneId, deps);
+      allowedTileFiles = purchasedSceneTileFiles(scenePurchase);
+      if (!scenePurchase || !allowedTileFiles.length) {
+        return jsonResponse(
+          {
+            ok: false,
+            error: "scene_full_quality_purchase_required",
+            message: "Full Quality for this scene requires a scene licence.",
+          },
+          403,
+          env,
+        );
+      }
     }
     if (requestedResolveId.toLowerCase().startsWith("anim-") || requestedFeature === "final_animation_render") {
       return jsonResponse(
@@ -118,7 +198,10 @@ export async function handleTileSessionStart(request, env, deps) {
     auth,
     requestedQualityMode,
     requestedResolveId,
-    {},
+    {
+      sceneId: scenePurchase ? requestedSceneId : "",
+      allowedTileFiles,
+    },
   );
   if (issued && issued.error) {
     return issued.error;
@@ -132,6 +215,7 @@ export async function handleTileSessionStart(request, env, deps) {
       expires_in_seconds: issued.expiresInSeconds,
       expires_at: issued.expiresAt,
       plan_code: planCode,
+      scene_id: scenePurchase ? requestedSceneId : "",
     },
     200,
     env,
@@ -258,10 +342,15 @@ export async function handleTileRequest(request, env, path, ctx, deps) {
         tileSessionAuth.claims.planCode,
         tileSessionAuth.claims.storedPlanCode,
       );
+      const allowedTileFiles = Array.isArray(tileSessionAuth.claims.allowedTileFiles)
+        ? tileSessionAuth.claims.allowedTileFiles
+        : [];
+      const sceneAllowsFile = allowedTileFiles.includes(fileName);
       if (
         !publicCloudAsset
         &&
         typeof isTileFileAllowedForPlan === "function"
+        && !sceneAllowsFile
         && !isTileFileAllowedForPlan(planCode, fileName)
       ) {
         return json(

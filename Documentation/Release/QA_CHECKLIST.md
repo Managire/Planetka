@@ -26,7 +26,7 @@
 - [ ] Analytics can manually switch any user between Free and Pro for tier testing.
 - [ ] Free account can stream worldwide in Preview and Balanced texture quality.
 - [ ] Free account is blocked from Full texture quality with clear wording.
-- [ ] Free account is blocked from Standalone file export, Final Animation Render, Panoramic camera rendering, Texture-Based Clouds, and VDB Clouds with clear Pro-only wording.
+- [ ] Free account is blocked from Standalone file export, Final Animation Render, Panoramic camera rendering, Texture-Based Clouds, and VDB Clouds (Cycles only) with clear Pro-only wording.
 - [ ] Pro account can stream worldwide in Preview, Balanced, and Full texture quality.
 - [ ] Account creation, access-key connection, logout, reconnect, and stale-auth recovery do not depend on commerce/product-map routes.
 

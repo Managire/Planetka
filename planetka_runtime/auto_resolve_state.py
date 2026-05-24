@@ -44,6 +44,7 @@ class AutoResolveDownloadJob:
     manual_request: bool = False
     base_path: str = ""
     texture_quality_mode: str = "PREVIEW"
+    scene_licence_id: str = ""
     nav_latitude_deg: float = 0.0
     nav_longitude_deg: float = 0.0
     nav_altitude_km: float = 0.0
@@ -86,6 +87,7 @@ def _build_auto_resolve_download_job(
     nav_latitude_deg,
     nav_longitude_deg,
     nav_altitude_km,
+    scene_licence_id="",
     ctx=None,
 ):
     ctx = _coerce_ctx(ctx)
@@ -99,6 +101,7 @@ def _build_auto_resolve_download_job(
         manual_request=bool(manual_request),
         base_path=str(base_path or ""),
         texture_quality_mode=ctx.deps.normalize_texture_quality_mode(texture_quality_mode),
+        scene_licence_id=str(scene_licence_id or "").strip(),
         nav_latitude_deg=float(nav_latitude_deg or 0.0),
         nav_longitude_deg=float(nav_longitude_deg or 0.0),
         nav_altitude_km=float(nav_altitude_km or 0.0),
@@ -327,7 +330,7 @@ def get_resolve_runtime_status(scene=None, ctx=None):
             preparing = False
         status.update({
             "code": "PREPARING" if preparing else "DOWNLOADING",
-            "text": "Preparing Download" if preparing else "Downloading Data",
+            "text": "Preparing Textures" if preparing else "Downloading Data",
             "running": True,
         })
         return status

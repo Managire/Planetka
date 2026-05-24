@@ -123,6 +123,7 @@ _REQUEST_CONTEXT_NAV_LAT = ""
 _REQUEST_CONTEXT_NAV_LON = ""
 _REQUEST_CONTEXT_NAV_ALT_KM = ""
 _REQUEST_CONTEXT_FEATURE = ""
+_REQUEST_CONTEXT_SCENE_ID = ""
 _REQUEST_CONTEXT_TILE_TOKEN = ""
 _REQUEST_CONTEXT_TILE_TOKEN_EXPIRES_AT = 0.0
 _TILE_FILE_RE = re.compile(
@@ -1148,6 +1149,7 @@ def set_resolve_request_context(
     nav_longitude_deg="",
     nav_altitude_km="",
     feature="",
+    scene_id="",
 ):
     global _REQUEST_CONTEXT_RESOLVE_ID
     global _REQUEST_CONTEXT_TEXTURE_MODE
@@ -1156,6 +1158,7 @@ def set_resolve_request_context(
     global _REQUEST_CONTEXT_NAV_LON
     global _REQUEST_CONTEXT_NAV_ALT_KM
     global _REQUEST_CONTEXT_FEATURE
+    global _REQUEST_CONTEXT_SCENE_ID
     global _REQUEST_CONTEXT_TILE_TOKEN
     global _REQUEST_CONTEXT_TILE_TOKEN_EXPIRES_AT
     with _REQUEST_CONTEXT_LOCK:
@@ -1179,6 +1182,7 @@ def set_resolve_request_context(
             _REQUEST_CONTEXT_NAV_ALT_KM = ""
         safe_feature = str(feature or "").strip().lower()
         _REQUEST_CONTEXT_FEATURE = safe_feature if safe_feature in {"panorama", "final_animation_render"} else ""
+        _REQUEST_CONTEXT_SCENE_ID = str(scene_id or "").strip()[:160]
         # Tile-session tokens carry the selected texture quality/tier for one
         # resolve. Reusing one after camera/quality changes can make backend
         # diagnostics and failures point at the wrong request.
@@ -1195,6 +1199,7 @@ def clear_resolve_request_context():
         nav_longitude_deg="",
         nav_altitude_km="",
         feature="",
+        scene_id="",
     )
 
 
@@ -1239,6 +1244,7 @@ def _request_tile_session_token(resolve_id, quality_mode, allow_refresh=True):
         nav_lon = str(_REQUEST_CONTEXT_NAV_LON or "").strip()
         nav_alt = str(_REQUEST_CONTEXT_NAV_ALT_KM or "").strip()
         feature = str(_REQUEST_CONTEXT_FEATURE or "").strip()
+        scene_id = str(_REQUEST_CONTEXT_SCENE_ID or "").strip()
     if nav_lat:
         payload["nav_latitude_deg"] = nav_lat
     if nav_lon:
@@ -1247,6 +1253,8 @@ def _request_tile_session_token(resolve_id, quality_mode, allow_refresh=True):
         payload["nav_altitude_km"] = nav_alt
     if feature:
         payload["feature"] = feature
+    if scene_id:
+        payload["scene_id"] = scene_id
     payload_bytes = json.dumps(payload, ensure_ascii=True).encode("utf-8")
 
     def _attempt(refresh_allowed):
@@ -1434,6 +1442,7 @@ def resolve_request_context(
     nav_longitude_deg="",
     nav_altitude_km="",
     feature="",
+    scene_id="",
 ):
     set_resolve_request_context(
         resolve_id,
@@ -1443,6 +1452,7 @@ def resolve_request_context(
         nav_longitude_deg=nav_longitude_deg,
         nav_altitude_km=nav_altitude_km,
         feature=feature,
+        scene_id=scene_id,
     )
     try:
         yield

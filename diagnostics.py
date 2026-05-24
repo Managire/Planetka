@@ -13,6 +13,9 @@ DIAG_KEY_RESOLVE_POST_MS = "planetka_diag_resolve_post_ms"
 DIAG_KEY_RESOLVE_POST_DELETE_MS = "planetka_diag_resolve_post_delete_ms"
 DIAG_KEY_RESOLVE_POST_MARK_MS = "planetka_diag_resolve_post_mark_ms"
 DIAG_KEY_RESOLVE_POST_PREVIEW_MS = "planetka_diag_resolve_post_preview_ms"
+DIAG_KEY_RESOLVE_CLOUD_OPTIMIZE_MS = "planetka_diag_resolve_cloud_optimize_ms"
+DIAG_KEY_RESOLVE_CLOUD_OPTIMIZE_OPTIMIZED = "planetka_diag_resolve_cloud_optimize_optimized"
+DIAG_KEY_RESOLVE_CLOUD_OPTIMIZE_FAILED = "planetka_diag_resolve_cloud_optimize_failed"
 DIAG_KEY_RESOLVE_UNACCOUNTED_MS = "planetka_diag_resolve_unaccounted_ms"
 DIAG_KEY_CAMERA_ALTITUDE_BU = "planetka_diag_camera_altitude_bu"
 DIAG_KEY_CAMERA_ALTITUDE_KM = "planetka_diag_camera_altitude_km"
@@ -127,6 +130,17 @@ def write_resolve_diagnostics(scene, tile_count, resolve_ms, fallback_count, bre
     _set_scene_value(scene, DIAG_KEY_RESOLVE_POST_DELETE_MS, float(max(0.0, breakdown.get("post_delete_ms", 0.0))))
     _set_scene_value(scene, DIAG_KEY_RESOLVE_POST_MARK_MS, float(max(0.0, breakdown.get("post_mark_ms", 0.0))))
     _set_scene_value(scene, DIAG_KEY_RESOLVE_POST_PREVIEW_MS, float(max(0.0, breakdown.get("post_preview_ms", 0.0))))
+    _set_scene_value(scene, DIAG_KEY_RESOLVE_CLOUD_OPTIMIZE_MS, float(max(0.0, breakdown.get("cloud_optimize_ms", 0.0))))
+    _set_scene_value(
+        scene,
+        DIAG_KEY_RESOLVE_CLOUD_OPTIMIZE_OPTIMIZED,
+        int(max(0, int(breakdown.get("cloud_optimize_optimized", 0) or 0))),
+    )
+    _set_scene_value(
+        scene,
+        DIAG_KEY_RESOLVE_CLOUD_OPTIMIZE_FAILED,
+        int(max(0, int(breakdown.get("cloud_optimize_failed", 0) or 0))),
+    )
     _set_scene_value(scene, DIAG_KEY_RESOLVE_UNACCOUNTED_MS, float(max(0.0, breakdown.get("unaccounted_ms", 0.0))))
     _set_scene_value(scene, DIAG_KEY_RESOLVE_REQUIRED_MPP_M, breakdown.get("required_mpp_m"))
     _set_scene_value(scene, DIAG_KEY_RESOLVE_SAFETY_STATE, breakdown.get("resolution_safety"))
@@ -151,6 +165,9 @@ def read_diagnostics(scene):
         "resolve_post_delete_ms": _get_scene_value(scene, DIAG_KEY_RESOLVE_POST_DELETE_MS),
         "resolve_post_mark_ms": _get_scene_value(scene, DIAG_KEY_RESOLVE_POST_MARK_MS),
         "resolve_post_preview_ms": _get_scene_value(scene, DIAG_KEY_RESOLVE_POST_PREVIEW_MS),
+        "resolve_cloud_optimize_ms": _get_scene_value(scene, DIAG_KEY_RESOLVE_CLOUD_OPTIMIZE_MS),
+        "resolve_cloud_optimize_optimized": _get_scene_value(scene, DIAG_KEY_RESOLVE_CLOUD_OPTIMIZE_OPTIMIZED),
+        "resolve_cloud_optimize_failed": _get_scene_value(scene, DIAG_KEY_RESOLVE_CLOUD_OPTIMIZE_FAILED),
         "resolve_unaccounted_ms": _get_scene_value(scene, DIAG_KEY_RESOLVE_UNACCOUNTED_MS),
         "camera_altitude_bu": _get_scene_value(scene, DIAG_KEY_CAMERA_ALTITUDE_BU),
         "camera_altitude_km": _get_scene_value(scene, DIAG_KEY_CAMERA_ALTITUDE_KM),

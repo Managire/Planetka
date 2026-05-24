@@ -1542,16 +1542,11 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
     last_seen: "last_seen_unix",
   };
   const orderSql = orderSqlByKey[sortBy] || orderSqlByKey.data_downloaded;
-  const emailFilter = buildAnalyticsExcludedEmailFilter("u.email", env, deps);
   const whereParts = [];
   const bindings = [];
-  if (emailFilter.condition) {
-    whereParts.push(emailFilter.condition);
-    bindings.push(...emailFilter.bindings);
-  }
   if (query) {
-    whereParts.push(`LOWER(COALESCE(u.email, '')) LIKE ?`);
-    bindings.push(`%${query}%`);
+    whereParts.push(`(LOWER(COALESCE(u.email, '')) LIKE ? OR LOWER(COALESCE(u.id, '')) LIKE ?)`);
+    bindings.push(`%${query}%`, `%${query}%`);
   }
   const whereSql = whereParts.length ? `WHERE ${whereParts.join(" AND ")}` : "";
   return deps.dbAll(
@@ -1575,7 +1570,10 @@ export async function listAnalyticsUsers(db, env, options = {}, deps) {
       )
       SELECT
         u.id AS user_id,
-        u.email AS user_email,
+        CASE
+          WHEN LOWER(COALESCE(u.email, '')) LIKE 'anonymous+%@planetka.local' THEN ''
+          ELSE u.email
+        END AS user_email,
         NULLIF(TRIM(LOWER(u.status)), '') AS user_status,
         COALESCE(rc.total_resolve_count, 0) AS total_resolve_count,
         COALESCE(du.data_downloaded_bytes, 0) AS data_downloaded_bytes,

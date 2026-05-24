@@ -1168,12 +1168,25 @@ def update_resolve_size_estimates(
     if scope_token not in {"CAMERA", "ACTIVE_VIEW", "AUTO"}:
         scope_token = "CAMERA"
 
-    def _compute_mode_tiles(mode, override_tiles=None):
-        normalized_mode = normalize_texture_quality_mode(mode)
-        if override_tiles is not None:
-            return canonical_tiles(override_tiles)
+    try:
+        full_source_tiles = canonical_tiles(full_tiles_override) if full_tiles_override is not None else None
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        full_source_tiles = None
+    if full_source_tiles is None:
         try:
-            full_source_tiles = tile_utils.main(scope_mode=scope_token)
+            full_source_tiles = canonical_tiles(tile_utils.main(scope_mode=scope_token))
+        except recoverable_exceptions:
+            logger.debug("Planetka: failed computing full source tiles for resolve-size estimate", exc_info=True)
+            clear_resolve_size_estimates(scene, runtime)
+            return False
+        except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka: failed computing full source tiles for resolve-size estimate", exc_info=True)
+            clear_resolve_size_estimates(scene, runtime)
+            return False
+
+    def _compute_mode_tiles(mode):
+        normalized_mode = normalize_texture_quality_mode(mode)
+        try:
             from ..render_prep import apply_texture_quality_to_full_tiles
             return canonical_tiles(apply_texture_quality_to_full_tiles(full_source_tiles, normalized_mode))
         except recoverable_exceptions:
@@ -1191,7 +1204,7 @@ def update_resolve_size_estimates(
             )
             return None
 
-    full_tiles = _compute_mode_tiles("FULL", override_tiles=full_tiles_override)
+    full_tiles = _compute_mode_tiles("FULL")
     balanced_tiles = _compute_mode_tiles("BALANCED")
     preview_tiles = _compute_mode_tiles("PREVIEW")
 

@@ -21,7 +21,7 @@ from bpy.props import BoolProperty, EnumProperty, StringProperty
 
 from .auth import (
     allows_texture_quality_for_context,
-    get_cloud_connection_status,
+    ensure_authenticated_session,
     is_authenticated,
     is_pro_account,
     texture_quality_not_allowed_message,
@@ -39,10 +39,9 @@ from .r2_source import (
     is_indexed_tile_asset,
     is_remote_source_configured,
     retain_recent_resolve_cache,
-    texture_file_exists,
-    verify_remote_stream_health,
 )
 from .sanity_utils import _normalize_texture_source_path, validate_known_good_texture_source
+from .scene_licensing import scene_license_payload
 from .streaming_utils import (
     consume_staged_prefetch_payload,
     prepare_resolve_streaming_for_visible_tiles,
@@ -122,6 +121,7 @@ class ResolvePrepareContextResult:
 class ResolveTileSelectionResult:
     response: object = None
     tiles: list = field(default_factory=list)
+    full_source_tiles: list = field(default_factory=list)
     texture_quality_mode: str = "PREVIEW"
     nav_latitude_deg: float = 0.0
     nav_longitude_deg: float = 0.0
@@ -317,18 +317,9 @@ def _validate_texture_source(base_path):
                 return "", str(message or "Unsupported local texture source is invalid.")
         return normalized, ""
 
-    # Validate against stable S2 sentinel tiles to confirm remote source health.
-    try:
-        has_s2 = texture_file_exists(normalized, "S2", "S2_x199_y150_z001_d004.exr") or texture_file_exists(
-            normalized,
-            "S2",
-            "S2_x200_y150_z001_d004.exr",
-        )
-    except RuntimeError as exc:
-        return "", str(exc)
-    if not has_s2:
-        return "", "Planetka Cloud source is reachable but required S2 sentinel tiles are missing."
-
+    # Remote resolves validate access while fetching the exact requested assets.
+    # A sentinel HEAD request here blocks every queued resolve and can refresh
+    # auth on the UI/operator path before the background worker even starts.
     return normalized, ""
 
 
@@ -854,38 +845,21 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             )
         if is_remote_source_configured(normalized):
             if not is_authenticated(prefs):
-                return ResolvePrepareContextResult(
-                    response=fail(
-                        self,
-                        "Connect your Planetka account before resolving remote Earth data.",
-                        code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-                        logger=logger,
-                    ),
-                    ui_reports=ui_reports,
-                )
-            cloud_status = get_cloud_connection_status(prefs=prefs, force=False, timeout=3.0)
-            if not bool(cloud_status.get("online", False)):
-                return ResolvePrepareContextResult(
-                    response=fail(
-                        self,
-                        str(cloud_status.get("message", "") or "").strip()
-                        or "Planetka Cloud is not reachable. Check your internet connection or try again later.",
-                        code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-                        logger=logger,
-                    ),
-                    ui_reports=ui_reports,
-                )
-            stream_ok, stream_issue = verify_remote_stream_health(force=False)
-            if not stream_ok:
-                return ResolvePrepareContextResult(
-                    response=fail(
-                        self,
-                        stream_issue or "Planetka remote tile stream check failed.",
-                        code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-                        logger=logger,
-                    ),
-                    ui_reports=ui_reports,
-                )
+                try:
+                    ensure_authenticated_session(prefs)
+                except (RuntimeError, TypeError, ValueError, AttributeError, OSError) as exc:
+                    return ResolvePrepareContextResult(
+                        response=fail(
+                            self,
+                            "Planetka session could not be started. Check your connection and try again.",
+                            code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                            logger=logger,
+                            exc=exc,
+                        ),
+                        ui_reports=ui_reports,
+                    )
+            # Keep the resolve hot path local. The background fetch of the
+            # requested assets is the authoritative remote health/access check.
         prefs.texture_base_path = normalized
 
         try:
@@ -1055,18 +1029,20 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         phase_start = time.perf_counter()
         if tiles_override is not None:
             tiles = [] if force_empty_once else list(tiles_override)
+            full_source_tiles = list(tiles or ())
         else:
             try:
-                computed_tiles = tile_utils.main(
+                full_source_tiles = tile_utils.main(
                     scope_mode=str(getattr(self, "scope_mode", "AUTO") or "AUTO"),
                 )
                 tiles = [] if force_empty_once else apply_texture_quality_to_full_tiles(
-                    computed_tiles,
+                    full_source_tiles,
                     texture_quality_mode,
                 )
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.exception("Planetka tile resolve failed; resolving to no visible tiles")
                 tiles = []
+                full_source_tiles = []
                 ui_reports.append(self._ui_report("WARNING", "Tile detection failed; resolving to no visible tiles."))
             except RuntimeError as exc:
                 try:
@@ -1082,11 +1058,13 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 )
                 logger.debug("Planetka tile resolve runtime failure: %s", exc, exc_info=True)
                 tiles = []
+                full_source_tiles = []
                 ui_reports.append(self._ui_report("WARNING", "No active camera/view found; resolving to no visible tiles."))
 
         return ResolveTileSelectionResult(
             response=None,
             tiles=list(tiles or ()),
+            full_source_tiles=list(full_source_tiles or ()),
             texture_quality_mode=texture_quality_mode,
             nav_latitude_deg=nav_latitude_deg,
             nav_longitude_deg=nav_longitude_deg,
@@ -1101,8 +1079,10 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         scene,
         props,
         tiles,
+        full_source_tiles,
         texture_quality_mode,
         normalized,
+        scene_licence_id="",
     ):
         ui_reports = []
         try:
@@ -1151,13 +1131,12 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                     )
                 )
                 return ResolveEarlyResult(response={'CANCELLED'}, ui_reports=ui_reports)
-            full_tiles_override = tuple(tiles or ()) if texture_quality_mode == "FULL" else None
             try:
                 update_resolve_size_estimates(
                     scene,
                     scope_mode=str(getattr(self, "scope_mode", "AUTO") or "AUTO"),
                     base_path=normalized,
-                    full_tiles_override=full_tiles_override,
+                    full_tiles_override=tuple(full_source_tiles or ()),
                 )
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
                 logger.debug("Planetka: failed updating resolve-size estimates before queued resolve", exc_info=True)
@@ -1166,6 +1145,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 [str(tile) for tile in (tiles or ()) if str(tile or "").strip()],
                 manual_request=True,
                 texture_quality_mode_override=texture_quality_mode,
+                scene_licence_id=scene_licence_id,
             )
             if not queued:
                 return ResolveEarlyResult(
@@ -1177,7 +1157,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                     ),
                     ui_reports=ui_reports,
                 )
-            ui_reports.append(self._ui_report("INFO", "Planetka resolve queued. Downloading data in background."))
+            ui_reports.append(self._ui_report("INFO", "Planetka resolve queued. Preparing textures in background."))
             return ResolveEarlyResult(response={'FINISHED'}, ui_reports=ui_reports)
 
         _ = props
@@ -1194,6 +1174,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         nav_altitude_km,
         capture_download_progress=True,
         feature="",
+        scene_id="",
     ):
         ui_reports = []
         phase_start = time.perf_counter()
@@ -1206,6 +1187,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 nav_longitude_deg=nav_longitude_deg,
                 nav_altitude_km=nav_altitude_km,
                 feature=feature,
+                scene_id=scene_id,
                 capture_download_progress=bool(capture_download_progress),
             )
             payload_data = self._parse_stream_payload(stream_payload)
@@ -1258,6 +1240,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         nav_altitude_km,
         capture_download_progress=True,
         feature="",
+        scene_id="",
     ):
         stream_payload = consume_staged_prefetch_payload(
             tiles,
@@ -1274,6 +1257,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 nav_longitude_deg=nav_longitude_deg,
                 nav_altitude_km=nav_altitude_km,
                 feature=feature,
+                scene_id=scene_id,
             )
         if _normalize_texture_quality_mode(stream_payload.get("texture_quality_mode", "PREVIEW")) != texture_quality_mode:
             return prepare_resolve_streaming_for_visible_tiles(
@@ -1285,6 +1269,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 nav_longitude_deg=nav_longitude_deg,
                 nav_altitude_km=nav_altitude_km,
                 feature=feature,
+                scene_id=scene_id,
             )
         return stream_payload
 
@@ -1579,22 +1564,11 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
                 ui_reports.append(self._ui_report("WARNING", "Planetka preview object refresh failed."))
             phase_post_preview_ms = (time.perf_counter() - phase_start) * 1000.0
 
-        cloud_sync_start = time.perf_counter()
-        try:
-            from .clouds_local import sync_cloud_system_scene
-            sync_cloud_system_scene(scene)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka: failed syncing clouds after resolve", exc_info=True)
-        except (ImportError, ModuleNotFoundError, RuntimeError, TypeError, ValueError, AttributeError):
-            logger.debug("Planetka: failed syncing clouds after resolve", exc_info=True)
-        phase_cloud_sync_ms = (time.perf_counter() - cloud_sync_start) * 1000.0
-
         cloud_optimized, cloud_failed, phase_cloud_optimize_ms = _optimize_enabled_clouds_for_resolve(
             scene,
             props,
             texture_quality_mode=texture_quality_mode,
         )
-        phase_cloud_optimize_ms += phase_cloud_sync_ms
         if int(cloud_failed) > 0:
             ui_reports.append(self._ui_report("WARNING", "One or more clouds could not be optimized for this camera view."))
 
@@ -1680,19 +1654,32 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
         if getattr(select_ctx, "response", None) is not None:
             return select_ctx.response
         tiles = list(select_ctx.tiles or ())
+        full_source_tiles = list(select_ctx.full_source_tiles or ())
         texture_quality_mode = str(select_ctx.texture_quality_mode or "PREVIEW")
         nav_latitude_deg = float(select_ctx.nav_latitude_deg or 0.0)
         nav_longitude_deg = float(select_ctx.nav_longitude_deg or 0.0)
         nav_altitude_km = float(select_ctx.nav_altitude_km or 0.0)
         phase_tile_select_ms = float(select_ctx.phase_tile_select_ms or 0.0)
 
+        scene_licence_id = ""
+        if _normalize_texture_quality_mode(texture_quality_mode) == "FULL":
+            try:
+                scene_licence = scene_license_payload(scene=scene, props=props, full_quality_tiles=tiles)
+                scene_licence_id = str(scene_licence.get("scene_id", "") or "")
+                if scene_licence_id:
+                    scene["planetka_current_scene_licence_id"] = scene_licence_id
+            except (TypeError, ValueError, RuntimeError, AttributeError):
+                logger.debug("Planetka: failed preparing scene licence id for Full Quality resolve", exc_info=True)
+
         early_result = self._phase_handle_panorama_or_defer(
             context,
             scene,
             props,
             tiles,
+            full_source_tiles,
             texture_quality_mode,
             normalized,
+            scene_licence_id=scene_licence_id,
         )
         self._flush_ui_reports(getattr(early_result, "ui_reports", ()))
         if getattr(early_result, "response", None) is not None:
@@ -1717,6 +1704,7 @@ class PLANETKA_OT_LoadTextures(bpy.types.Operator):
             nav_altitude_km,
             capture_download_progress=bool(getattr(self, "capture_download_progress", True)),
             feature=streaming_feature,
+            scene_id=scene_licence_id,
         )
         self._flush_ui_reports(getattr(stream_ctx, "ui_reports", ()))
         if getattr(stream_ctx, "response", None) is not None:

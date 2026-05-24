@@ -296,6 +296,27 @@ def _test_animation_stop_is_cooperative() -> dict:
     return {"checked": True}
 
 
+def _test_animation_restart_ignores_old_cancel_epoch() -> dict:
+    text = _source_text("animation_tools.py")
+    render_operator_start = text.find("class PLANETKA_OT_AnimationRender")
+    execute_start = text.find("def execute(self, context):", render_operator_start)
+    modal_start = text.find("def modal(self, context, event):", execute_start)
+    execute_text = text[execute_start:modal_start]
+    _assert(
+        "def _reset_segment_cancel_epoch_baseline(self):" in text,
+        "Final Animation Render must have an explicit helper to baseline the render-cancel epoch.",
+    )
+    _assert(
+        "self._reset_segment_cancel_epoch_baseline()" in execute_text,
+        "New Final Animation Render runs must baseline old render cancellations before the first segment launch.",
+    )
+    _assert(
+        "self._segment_cancel_epoch_before_launch = -1" not in execute_text,
+        "New Final Animation Render runs must not start from -1 because an old cancelled render would kill them immediately.",
+    )
+    return {"checked": True}
+
+
 def _test_full_quality_details_removed_from_data_control() -> dict:
     text = _source_text("ui.py")
     data_control_text = text[text.find("def _draw_live_telemetry"):text.find("def _draw_advanced_telemetry")]
@@ -339,6 +360,7 @@ def main() -> int:
             ("auto_resolve_has_no_forced_preview_jobs", _test_auto_resolve_has_no_forced_preview_jobs),
             ("stale_completed_resolve_cannot_override_newer_request", _test_stale_completed_resolve_cannot_override_newer_request),
             ("animation_stop_is_cooperative", _test_animation_stop_is_cooperative),
+            ("animation_restart_ignores_old_cancel_epoch", _test_animation_restart_ignores_old_cancel_epoch),
             ("full_quality_details_removed_from_data_control", _test_full_quality_details_removed_from_data_control),
             ("region_pack_offer_context_is_correct", _test_region_pack_offer_context_is_not_download_context),
         )

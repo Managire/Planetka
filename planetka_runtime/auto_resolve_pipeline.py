@@ -203,6 +203,7 @@ def _ctx_auto_resolve_download_job_signature(ctx, job):
         deps.job_field(job, "camera_signature"),
         deps.job_field(job, "output_signature"),
         deps.normalize_texture_quality_mode(deps.job_field(job, "texture_quality_mode", "PREVIEW")),
+        str(deps.job_field(job, "scene_licence_id", "") or ""),
     )
 
 
@@ -325,6 +326,7 @@ def _ctx_schedule_auto_resolve_download(
     output_signature,
     manual_request=False,
     texture_quality_mode_override=None,
+    scene_licence_id="",
 ):
     deps = ctx.deps
     state = ctx.state
@@ -365,6 +367,15 @@ def _ctx_schedule_auto_resolve_download(
         nav_altitude_km = 0.0
     except (RuntimeError, TypeError, ValueError, AttributeError):
         nav_altitude_km = 0.0
+    job_scene_licence_id = str(scene_licence_id or "").strip()
+    if texture_quality_mode == "FULL":
+        if not job_scene_licence_id:
+            try:
+                job_scene_licence_id = str(scene.get("planetka_current_scene_licence_id", "") or "").strip()
+            except deps.recoverable_exceptions:
+                job_scene_licence_id = ""
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                job_scene_licence_id = ""
 
     job_to_start = None
     should_arm_timer = False
@@ -385,6 +396,7 @@ def _ctx_schedule_auto_resolve_download(
             nav_latitude_deg=nav_latitude_deg,
             nav_longitude_deg=nav_longitude_deg,
             nav_altitude_km=nav_altitude_km,
+            scene_licence_id=job_scene_licence_id,
         )
 
         new_sig = _ctx_auto_resolve_download_job_signature(ctx, new_job)
@@ -448,6 +460,7 @@ def _schedule_auto_resolve_download(
     output_signature,
     manual_request=False,
     texture_quality_mode_override=None,
+    scene_licence_id="",
 ):
     return _ctx_schedule_auto_resolve_download(
         _require_download_ctx(),
@@ -457,10 +470,11 @@ def _schedule_auto_resolve_download(
         output_signature,
         manual_request=manual_request,
         texture_quality_mode_override=texture_quality_mode_override,
+        scene_licence_id=scene_licence_id,
     )
 
 
-def _ctx_queue_resolve_download(ctx, scene, target_tiles, manual_request=False, texture_quality_mode_override=None):
+def _ctx_queue_resolve_download(ctx, scene, target_tiles, manual_request=False, texture_quality_mode_override=None, scene_licence_id=""):
     deps = ctx.deps
     state = ctx.state
     if scene is None:
@@ -488,19 +502,21 @@ def _ctx_queue_resolve_download(ctx, scene, target_tiles, manual_request=False, 
         output_signature,
         manual_request=bool(manual_request),
         texture_quality_mode_override=texture_quality_mode_override,
+        scene_licence_id=scene_licence_id,
     )
     if queued:
         state.last_change_time[deps.scene_key(scene)] = time.monotonic()
     return bool(queued)
 
 
-def queue_resolve_download(scene, target_tiles, manual_request=False, texture_quality_mode_override=None):
+def queue_resolve_download(scene, target_tiles, manual_request=False, texture_quality_mode_override=None, scene_licence_id=""):
     return _ctx_queue_resolve_download(
         _require_download_ctx(),
         scene,
         target_tiles,
         manual_request=manual_request,
         texture_quality_mode_override=texture_quality_mode_override,
+        scene_licence_id=scene_licence_id,
     )
 
 
@@ -1404,6 +1420,7 @@ def _ctx_auto_resolve_download_worker(ctx, job):
             nav_latitude_deg=deps.job_field(job, "nav_latitude_deg", ""),
             nav_longitude_deg=deps.job_field(job, "nav_longitude_deg", ""),
             nav_altitude_km=deps.job_field(job, "nav_altitude_km", ""),
+            scene_id=deps.job_field(job, "scene_licence_id", ""),
         )
         cancelled = (
             bool(prepared_payload.get("cancelled", False))

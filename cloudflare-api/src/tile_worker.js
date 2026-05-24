@@ -221,7 +221,7 @@ function normalizeResolveId(value) {
   return String(value || "").trim().slice(0, 128);
 }
 
-async function issueTileSessionToken(env, auth, requestedQualityMode, requestedResolveId = "") {
+async function issueTileSessionToken(env, auth, requestedQualityMode, requestedResolveId = "", options = {}) {
   const qualityMode = normalizeQualityMode(requestedQualityMode);
   const planCode = normalizeRequestedPlan(auth && auth.planCode);
   const qualityAccessPlanCode = normalizeRequestedPlan(auth && (auth.qualityAccessPlanCode || auth.planCode));
@@ -239,6 +239,10 @@ async function issueTileSessionToken(env, auth, requestedQualityMode, requestedR
     resolve_id: resolveId,
     auth_method: String(auth && auth.authMethod || "").trim(),
     device_id: String(auth && auth.deviceId || "").trim(),
+    scene_id: String(options && options.sceneId || "").trim(),
+    allowed_tile_files: Array.isArray(options && options.allowedTileFiles)
+      ? options.allowedTileFiles.map((value) => String(value || "").trim()).filter(Boolean).slice(0, 128)
+      : [],
     exp,
   };
   const token = await signJwt(payload, requireSecret(env, "JWT_SIGNING_SECRET"));
@@ -277,6 +281,10 @@ async function readTileSessionClaims(request, env) {
     resolveId: normalizeResolveId(payload.resolve_id || ""),
     authMethod: String(payload.auth_method || "").trim(),
     deviceId: normalizeDeviceId(payload.device_id || ""),
+    sceneId: String(payload.scene_id || payload.sceneId || "").trim(),
+    allowedTileFiles: Array.isArray(payload.allowed_tile_files || payload.allowedTileFiles)
+      ? (payload.allowed_tile_files || payload.allowedTileFiles).map((value) => String(value || "").trim()).filter(Boolean).slice(0, 128)
+      : [],
   };
   authCacheSet(`tile:${rawToken}`, claims);
   return { claims };
@@ -293,6 +301,10 @@ function resolveTileCacheControl(env) {
 
 async function dbRun(db, sql, bindings = []) {
   return db.prepare(sql).bind(...bindings).run();
+}
+
+async function dbGet(db, sql, bindings = []) {
+  return db.prepare(sql).bind(...bindings).first();
 }
 
 function normalizeEmail(value) {
@@ -443,6 +455,8 @@ async function recordResolveSummaryEvent(db, payload = {}) {
 
 const TILE_DEPS = {
   clampNonNegativeInt,
+  dbGet,
+  dbRun,
   isTileFileAllowedForPlan,
   issueTileSessionToken,
   json,

@@ -44,6 +44,9 @@ import {
   createAuthSessionRouteHandlers,
 } from "./worker/auth_session_route_handlers.js";
 import {
+  createLemonSqueezyBillingHandlers,
+} from "./worker/lemonsqueezy_billing_handlers.js";
+import {
   handleAddonUpdateManifest,
   handleLegalDocumentRequest,
 } from "./worker/public_misc_handlers.js";
@@ -320,6 +323,10 @@ function normalizeDeviceId(value) {
     return "";
   }
   return raw.replace(/[^A-Za-z0-9._:-]/g, "").slice(0, 128);
+}
+
+function isSyntheticAnonymousEmail(value) {
+  return /^anonymous\+[a-f0-9]{32}@planetka\.local$/i.test(String(value || "").trim());
 }
 
 function normalizeTierCodeStrict(value) {
@@ -794,6 +801,57 @@ async function findUserById(db, userId) {
     `,
     [String(userId || "").trim()],
   );
+}
+
+async function upsertAnonymousUserByDeviceId(db, deviceId, env = {}) {
+  const safeDeviceId = normalizeDeviceId(deviceId);
+  if (!safeDeviceId) {
+    throw new Error("missing_device_id");
+  }
+  await ensureUserConsentColumns(db);
+  await ensureUserQualityAccessColumns(db);
+  await ensureRefreshSessionColumns(db);
+  const hashed = await sha256Hex(`planetka-anonymous:${safeDeviceId}`);
+  const anonymousId = `anon_${hashed.slice(0, 32)}`;
+  const syntheticEmail = `anonymous+${hashed.slice(0, 32)}@planetka.local`;
+  const now = nowIso();
+  let user = await findUserById(db, anonymousId);
+  if (user) {
+    if (isBlockedStatus(user.status)) {
+      return user;
+    }
+    const normalizedStatus = normalizeTierCodeStrict(user.status);
+    if (!normalizedStatus) {
+      throw new Error("invalid_user_status");
+    }
+    await dbRun(db, `UPDATE users SET last_login_at = ? WHERE id = ?`, [now, anonymousId]);
+    return findUserById(db, anonymousId);
+  }
+  user = await dbGet(db, `SELECT id, email, status FROM users WHERE lower(email) = ? LIMIT 1`, [syntheticEmail]);
+  if (user) {
+    await dbRun(db, `UPDATE users SET last_login_at = ? WHERE id = ?`, [now, user.id]);
+    return findUserById(db, user.id);
+  }
+  await dbRun(
+    db,
+    `
+      INSERT INTO users (id, email, status, created_at, last_login_at, terms_accepted_at, privacy_accepted_at, terms_version, privacy_version)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    [
+      anonymousId,
+      syntheticEmail,
+      PLAN_CODE_FREE,
+      now,
+      now,
+      now,
+      now,
+      DEFAULT_LEGAL_VERSION,
+      DEFAULT_LEGAL_VERSION,
+    ],
+  );
+  void env;
+  return findUserById(db, anonymousId);
 }
 
 async function sendNewUserLoginAlert(env, details = {}) {
@@ -1282,6 +1340,7 @@ const authApiKeyDeps = {
   sha256Hex,
   dbRun,
   dbGet,
+  dbAll,
   nowIso,
   addMinutesIso,
   addDaysIso,
@@ -1306,6 +1365,7 @@ const authSessionRouteDeps = {
   DEFAULT_RATE_LIMIT_AUTH_REFRESH_IP_LIMIT,
   DEFAULT_RATE_LIMIT_AUTH_REFRESH_IP_WINDOW_SECONDS,
   requireDb,
+  requireSecret,
   ensureRateLimitsTable,
   requestClientIp,
   requestCountry,
@@ -1317,6 +1377,7 @@ const authSessionRouteDeps = {
   sha256Hex,
   dbGet,
   dbRun,
+  dbAll,
   dbMetaChanges,
   isBlockedStatus,
   blockedAccountResponse,
@@ -1329,15 +1390,97 @@ const authSessionRouteDeps = {
   createRefreshSession: authCore.createRefreshSession,
   normalizeEmail,
   json,
+  html,
   serializeAccountState,
   ensureRefreshSessionColumns,
   ensureApiKeyTables,
   normalizeDeviceId,
   readBearerUser,
   requireAuthenticatedUserContext,
+  isSyntheticAnonymousEmail,
 };
 
 const authSessionRouteHandlers = createAuthSessionRouteHandlers(authSessionRouteDeps);
+const lemonSqueezyBillingHandlers = createLemonSqueezyBillingHandlers(authSessionRouteDeps);
+
+async function handleAnonymousAuth(request, env) {
+  const db = requireDb(env);
+  await ensureRateLimitsTable(db);
+  const body = await parseJson(request);
+  const deviceId = normalizeDeviceId(body.device_id || request.headers.get("X-Planetka-Device-Id") || "");
+  if (!deviceId) {
+    return json({ ok: false, error: "missing_device_id" }, 400, env);
+  }
+  const ipRate = await consumeRateLimitWindow(
+    db,
+    "auth_anonymous_ip",
+    requestClientIp(request),
+    parseRateLimitInteger(env.RATE_LIMIT_AUTH_ANONYMOUS_IP_LIMIT, 120),
+    parseRateLimitInteger(env.RATE_LIMIT_AUTH_ANONYMOUS_IP_WINDOW_SECONDS, 60),
+  );
+  if (!ipRate.allowed) {
+    return rateLimitedResponse(
+      env,
+      "auth_anonymous_ip_rate_limited",
+      "Too many session requests. Please try again shortly.",
+      ipRate.retryAfterSeconds,
+    );
+  }
+  const block = await findActiveHardBlock(db, {
+    device_id: deviceId,
+    ip: requestClientIp(request),
+  });
+  if (block) {
+    return blockedAccountResponse(env);
+  }
+  const user = await upsertAnonymousUserByDeviceId(db, deviceId, env);
+  if (!user || !user.id) {
+    return json({ ok: false, error: "anonymous_user_create_failed" }, 500, env);
+  }
+  if (isBlockedStatus(user.status)) {
+    return blockedAccountResponse(env);
+  }
+  const policyUser = await enforceUserPlanPolicy(db, user, env);
+  const accountState = await buildAccountState(db, policyUser, env);
+  const accessToken = await authCore.createAccessToken(
+    env,
+    policyUser,
+    {
+      plan_code: String(accountState.planCode || ""),
+      user_status: String(accountState.planCode || ""),
+      account_tier: String(accountState.accountTier || accountState.storedAccountTier || ""),
+      stored_plan_code: String(accountState.storedPlanCode || ""),
+      stored_account_tier: String(accountState.storedAccountTier || ""),
+      quality_access_plan_code: String(accountState.qualityAccessPlanCode || ""),
+      auth_method: "anonymous",
+      device_id: deviceId,
+    },
+  );
+  const refreshToken = await authCore.createRefreshSession(
+    db,
+    policyUser.id,
+    "",
+    {
+      auth_method: "anonymous",
+      device_id: deviceId,
+    },
+  );
+  const publicEmail = isSyntheticAnonymousEmail(policyUser.email) ? "" : String(policyUser.email || "");
+  return json(
+    {
+      ok: true,
+      anonymous: true,
+      planetka_user_id: String(policyUser.id || ""),
+      user_id: String(policyUser.id || ""),
+      email: publicEmail,
+      access_token: accessToken,
+      refresh_token: refreshToken,
+      ...serializeAccountState(accountState),
+    },
+    200,
+    env,
+  );
+}
 
 const apiKeyPageDeps = {
   PLAN_CODE_FREE,
@@ -1490,6 +1633,12 @@ async function dispatchAuthRequest(request, env) {
     }
     return authApiKeyHandlers.handleApiKeyExchange(request, env);
   }
+  if (path === "/auth/anonymous") {
+    if (request.method !== "POST") {
+      return methodNotAllowed(env);
+    }
+    return handleAnonymousAuth(request, env);
+  }
   if (path === "/auth/refresh") {
     if (request.method !== "POST") {
       return methodNotAllowed(env);
@@ -1501,6 +1650,60 @@ async function dispatchAuthRequest(request, env) {
       return methodNotAllowed(env);
     }
     return authSessionRouteHandlers.handleAuthLogout(request, env);
+  }
+  if (path === "/billing/lemonsqueezy/checkout") {
+    if (request.method !== "POST") {
+      return methodNotAllowed(env);
+    }
+    return lemonSqueezyBillingHandlers.handleCreateCheckout(request, env);
+  }
+  if (path === "/billing/lemonsqueezy/scene-checkout") {
+    if (request.method !== "POST") {
+      return methodNotAllowed(env);
+    }
+    return lemonSqueezyBillingHandlers.handleCreateSceneCheckout(request, env);
+  }
+  if (path === "/billing/scene-purchases") {
+    if (request.method !== "GET") {
+      return methodNotAllowed(env);
+    }
+    return lemonSqueezyBillingHandlers.handleListScenePurchases(request, env);
+  }
+  if (path === "/billing/scene-purchases/check") {
+    if (request.method !== "GET" && request.method !== "POST") {
+      return methodNotAllowed(env);
+    }
+    return lemonSqueezyBillingHandlers.handleCheckScenePurchase(request, env);
+  }
+  if (path === "/billing/lemonsqueezy/webhook") {
+    if (request.method !== "POST") {
+      return methodNotAllowed(env);
+    }
+    return lemonSqueezyBillingHandlers.handleWebhook(request, env);
+  }
+  if (path === "/billing/lemonsqueezy/restore") {
+    if (request.method !== "POST") {
+      return methodNotAllowed(env);
+    }
+    return lemonSqueezyBillingHandlers.handleRestoreLicense(request, env);
+  }
+  if (path === "/billing/lemonsqueezy/success") {
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      return methodNotAllowed(env);
+    }
+    if (request.method === "HEAD") {
+      return new Response(null, { status: 200, headers: corsHeaders(env) });
+    }
+    return lemonSqueezyBillingHandlers.handleSuccess(request, env);
+  }
+  if (path === "/billing/lemonsqueezy/scene-success") {
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      return methodNotAllowed(env);
+    }
+    if (request.method === "HEAD") {
+      return new Response(null, { status: 200, headers: corsHeaders(env) });
+    }
+    return lemonSqueezyBillingHandlers.handleSceneSuccess(request, env);
   }
   if (path === "/me") {
     if (request.method !== "GET" && request.method !== "HEAD") {

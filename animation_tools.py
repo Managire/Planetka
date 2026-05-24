@@ -3762,6 +3762,13 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             baseline_epoch = -1
         return bool(last_cancelled_epoch > baseline_epoch)
 
+    def _reset_segment_cancel_epoch_baseline(self):
+        heartbeat = self._read_render_heartbeat()
+        try:
+            self._segment_cancel_epoch_before_launch = int(heartbeat.get("last_cancelled_epoch", -1) or -1)
+        except (TypeError, ValueError, AttributeError):
+            self._segment_cancel_epoch_before_launch = -1
+
     def _is_render_handler_running(self):
         try:
             if callable(_is_render_handler_job_active):
@@ -4495,7 +4502,7 @@ class PLANETKA_OT_AnimationRender(bpy.types.Operator):
             self._segment_failures = []
             self._stop_requested = False
             self._stop_notice_sent = False
-            self._segment_cancel_epoch_before_launch = -1
+            self._reset_segment_cancel_epoch_baseline()
             self._animation_tiles = []
             self._animation_resolve_id = f"anim-{int(time.time() * 1000)}"
             self._texture_quality_mode = _normalize_animation_render_texture_quality_mode(selected_texture_quality_mode)

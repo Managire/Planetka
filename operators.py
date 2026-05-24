@@ -15,8 +15,11 @@ from .planetka_ops.account_ops import (
     PLANETKA_OT_AccountLogin,
     PLANETKA_OT_AccountLogout,
     PLANETKA_OT_AccountOpenLogin,
-    PLANETKA_OT_AccountUpgrade,
+    PLANETKA_OT_AccountRestorePro,
     PLANETKA_OT_CheckUpdates,
+    PLANETKA_OT_SceneFullQualityPurchase,
+    PLANETKA_OT_ScenePurchaseRestore,
+    PLANETKA_OT_ScenePurchasesRefresh,
     PLANETKA_OT_UpdateNow,
 )
 from .planetka_ops.location_ops import (

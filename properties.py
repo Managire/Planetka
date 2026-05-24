@@ -779,15 +779,15 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
     )
 
     enable_vdb_clouds: BoolProperty(
-        name="Enable VDB Clouds",
+        name="Enable VDB Clouds (Cycles only)",
         default=False,
         description="Show or hide VDB cloud objects in the viewport and render",
         update=update_enable_vdb_clouds,
     )
 
     vdb_cloud_source: EnumProperty(
-        name="VDB Clouds Source",
-        description="Choose whether VDB Clouds use Planetka Cloud presets or a local VDB file",
+        name="VDB Clouds (Cycles only) Source",
+        description="Choose whether VDB Clouds (Cycles only) use Planetka Cloud presets or a local VDB file",
         items=_VDB_CLOUD_SOURCE_ITEMS,
         default="CLOUD",
         update=update_enable_vdb_clouds,

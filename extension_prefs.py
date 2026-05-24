@@ -85,6 +85,12 @@ class PlanetkaExtensionPreferences(AddonPreferences):
     auth_upgrade_url: StringProperty(name="Auth Upgrade URL", default="", options={'HIDDEN'})
     auth_login_state: StringProperty(name="Auth Login State", default="logged_out", options={'HIDDEN'})
     auth_status_message: StringProperty(name="Auth Status Message", default="", options={'HIDDEN'})
+    pro_restore_license_key_input: StringProperty(
+        name="Planetka Licence Key",
+        description="Planetka licence key for restoring Planetka Pro",
+        default="",
+        options={'HIDDEN'},
+    )
     startup_setup_profile_json: StringProperty(
         name="Startup Setup Profile",
         default="",

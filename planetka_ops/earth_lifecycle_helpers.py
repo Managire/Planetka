@@ -6,6 +6,7 @@ from ..auth import (
     AuthApiError,
     describe_auth_error,
     get_cloud_connection_status,
+    ensure_authenticated_session,
     is_authenticated,
     recover_from_terminal_auth_error,
     sync_account_profile,
@@ -59,13 +60,26 @@ def _validate_create_earth_texture_source(base_path):
 
 def _require_authenticated_account(operator, prefs):
     if not is_authenticated(prefs):
-        fail(
-            operator,
-            "Connect your Planetka account before using remote Earth data.",
-            code=ErrorCode.RESOLVE_PRECHECK_FAILED,
-            logger=logger,
-        )
-        return False
+        try:
+            ensure_authenticated_session(prefs)
+        except AuthApiError as exc:
+            fail(
+                operator,
+                describe_auth_error(exc),
+                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                logger=logger,
+                exc=exc,
+            )
+            return False
+        except (RuntimeError, TypeError, ValueError, AttributeError, OSError) as exc:
+            fail(
+                operator,
+                "Planetka session could not be started. Check your connection and try again.",
+                code=ErrorCode.RESOLVE_PRECHECK_FAILED,
+                logger=logger,
+                exc=exc,
+            )
+            return False
     try:
         sync_account_profile(prefs)
     except AuthApiError as exc:

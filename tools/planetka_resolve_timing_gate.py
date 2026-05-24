@@ -108,6 +108,12 @@ def _read_diag(diag_module, scene):
         "resolve_mesh_ms": _round_ms(raw.get("resolve_mesh_ms")),
         "resolve_shader_ms": _round_ms(raw.get("resolve_shader_ms")),
         "resolve_post_ms": _round_ms(raw.get("resolve_post_ms")),
+        "resolve_post_delete_ms": _round_ms(raw.get("resolve_post_delete_ms")),
+        "resolve_post_mark_ms": _round_ms(raw.get("resolve_post_mark_ms")),
+        "resolve_post_preview_ms": _round_ms(raw.get("resolve_post_preview_ms")),
+        "resolve_cloud_optimize_ms": _round_ms(raw.get("resolve_cloud_optimize_ms")),
+        "resolve_cloud_optimize_optimized": int(_numeric(raw.get("resolve_cloud_optimize_optimized"), 0)),
+        "resolve_cloud_optimize_failed": int(_numeric(raw.get("resolve_cloud_optimize_failed"), 0)),
         "resolve_unaccounted_ms": _round_ms(raw.get("resolve_unaccounted_ms")),
         "resolve_downloaded_mb": round(_numeric(raw.get("resolve_downloaded_mb"), 0.0), 3),
         "resolve_textures_mb": round(_numeric(raw.get("resolve_textures_mb"), 0.0), 3),
@@ -117,6 +123,87 @@ def _read_diag(diag_module, scene):
         "view_longitude_deg": round(_numeric(raw.get("view_longitude_deg"), 0.0), 6),
         "view_altitude_km": round(_numeric(raw.get("view_altitude_km"), 0.0), 3),
     }
+
+
+def _wait_for_queued_resolve(state_module, scene, *, timeout_sec=90.0, sleep_sec=0.025):
+    runtime_fn = getattr(state_module, "get_resolve_runtime_status", None)
+    pump_fn = getattr(state_module, "_auto_resolve_download_pump_timer", None)
+    stop_fn = getattr(state_module, "stop_auto_resolve_download_pipeline", None)
+    if not callable(runtime_fn):
+        return {
+            "settled": False,
+            "error": "runtime status unavailable",
+            "status_durations_ms": {},
+            "status_sequence": [],
+            "final_status": {},
+        }
+
+    started = time.perf_counter()
+    last_tick = started
+    last_code = None
+    durations = {}
+    sequence = []
+    final_status = {}
+
+    try:
+        while True:
+            if callable(pump_fn):
+                pump_fn()
+
+            now = time.perf_counter()
+            try:
+                status = dict(runtime_fn(scene) or {})
+            except TOOL_RECOVERABLE_EXCEPTIONS:
+                status = {}
+            code = str(status.get("code", "") or "IDLE")
+            if last_code is not None:
+                durations[last_code] = durations.get(last_code, 0.0) + max(0.0, now - last_tick)
+            if code != last_code:
+                sequence.append({
+                    "code": code,
+                    "at_ms": _round_ms((now - started) * 1000.0),
+                    "text": str(status.get("text", "") or ""),
+                    "pending_count": int(_numeric(status.get("pending_count"), 0)),
+                    "running": bool(status.get("running", False)),
+                })
+            last_code = code
+            last_tick = now
+            final_status = status
+
+            running = bool(status.get("running", False))
+            pending_count = int(_numeric(status.get("pending_count"), 0))
+            if not running and pending_count <= 0 and code in {"", "IDLE", "MONITORING"}:
+                return {
+                    "settled": True,
+                    "elapsed_ms": _round_ms((now - started) * 1000.0),
+                    "status_durations_ms": {key: _round_ms(value * 1000.0) for key, value in durations.items()},
+                    "status_sequence": sequence,
+                    "final_status": final_status,
+                }
+            if (now - started) > float(timeout_sec):
+                if callable(stop_fn):
+                    try:
+                        stop_fn()
+                    except TOOL_RECOVERABLE_EXCEPTIONS:
+                        pass
+                return {
+                    "settled": False,
+                    "error": "timeout",
+                    "elapsed_ms": _round_ms((now - started) * 1000.0),
+                    "status_durations_ms": {key: _round_ms(value * 1000.0) for key, value in durations.items()},
+                    "status_sequence": sequence,
+                    "final_status": final_status,
+                }
+            time.sleep(float(max(0.005, sleep_sec)))
+    except TOOL_RECOVERABLE_EXCEPTIONS as exc:
+        return {
+            "settled": False,
+            "error": str(exc),
+            "elapsed_ms": _round_ms((time.perf_counter() - started) * 1000.0),
+            "status_durations_ms": {key: _round_ms(value * 1000.0) for key, value in durations.items()},
+            "status_sequence": sequence,
+            "final_status": final_status,
+        }
 
 
 def main():
@@ -186,15 +273,21 @@ def main():
             for iteration in range(ITERATIONS):
                 before = time.perf_counter()
                 result = bpy.ops.planetka.set_texture_quality_and_resolve(texture_quality_mode=mode)
-                wall_ms = (time.perf_counter() - before) * 1000.0
+                enqueue_wall_ms = (time.perf_counter() - before) * 1000.0
                 if "FINISHED" not in result:
                     raise E2EError(f"{mode} resolve failed: {result}")
-                runtime_status = state.get_resolve_runtime_status(scene)
+                queued = _wait_for_queued_resolve(state, scene)
+                if not bool(queued.get("settled", False)):
+                    raise E2EError(f"{mode} queued resolve did not settle: {queued}")
+                runtime_status = dict(queued.get("final_status", {}) or {})
                 diag = _read_diag(diagnostics, scene)
                 record = {
                     "iteration": iteration + 1,
                     "operator_result": list(result),
-                    "wall_ms": _round_ms(wall_ms),
+                    "wall_ms": _round_ms(float(queued.get("elapsed_ms", 0.0) or 0.0)),
+                    "enqueue_wall_ms": _round_ms(enqueue_wall_ms),
+                    "queued_status_durations_ms": dict(queued.get("status_durations_ms", {}) or {}),
+                    "queued_status_sequence": list(queued.get("status_sequence", ()) or ()),
                     "runtime_status": dict(runtime_status or {}),
                     **diag,
                 }
@@ -203,7 +296,8 @@ def main():
                     TAG,
                     (
                         f"{mode} {iteration + 1}/{ITERATIONS}: "
-                        f"wall={record['wall_ms']:.1f}ms "
+                        f"enqueue={record['enqueue_wall_ms']:.1f}ms "
+                        f"queued={record['wall_ms']:.1f}ms "
                         f"resolve={record['last_resolve_ms']:.1f}ms "
                         f"stream={record['resolve_stream_ms']:.1f}ms "
                         f"mesh={record['resolve_mesh_ms']:.1f}ms "

@@ -4106,7 +4106,7 @@ class PLANETKA_PT_LocalCloudsPanel(bpy.types.Panel):
 
 
 class PLANETKA_PT_VDBCloudsPanel(bpy.types.Panel):
-    bl_label = "VDB Clouds"
+    bl_label = "VDB Clouds (Cycles only)"
     bl_idname = "PLANETKA_PT_vdb_clouds"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
@@ -4134,7 +4134,7 @@ class PLANETKA_PT_VDBCloudsPanel(bpy.types.Panel):
         row.prop(
             props,
             "enable_vdb_clouds",
-            text="Disable VDB Clouds" if bool(getattr(props, "enable_vdb_clouds", False)) else "Enable VDB Clouds",
+            text="Disable VDB Clouds (Cycles only)" if bool(getattr(props, "enable_vdb_clouds", False)) else "Enable VDB Clouds (Cycles only)",
             toggle=True,
             invert_checkbox=True,
         )

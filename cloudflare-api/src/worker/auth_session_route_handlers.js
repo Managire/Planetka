@@ -189,7 +189,11 @@ export function createAuthSessionRouteHandlers(deps) {
         ok: true,
         access_token: accessToken,
         refresh_token: nextRefreshToken,
-        email: user.email,
+        planetka_user_id: String(user.id || ""),
+        user_id: String(user.id || ""),
+        email: typeof deps.isSyntheticAnonymousEmail === "function" && deps.isSyntheticAnonymousEmail(user.email)
+          ? ""
+          : user.email,
         ...deps.serializeAccountState(accountState),
       },
       200,
@@ -301,7 +305,11 @@ export function createAuthSessionRouteHandlers(deps) {
     return deps.json(
       {
         ok: true,
-        email: user.email,
+        planetka_user_id: String(user.id || ""),
+        user_id: String(user.id || ""),
+        email: typeof deps.isSyntheticAnonymousEmail === "function" && deps.isSyntheticAnonymousEmail(user.email)
+          ? ""
+          : user.email,
         user_status: String(accountState.planCode || ""),
         ...deps.serializeAccountState(accountState),
       },

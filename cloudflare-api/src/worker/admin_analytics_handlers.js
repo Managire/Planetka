@@ -53,7 +53,11 @@ function filterAnalyticsUsersRows(rows, query) {
   if (!needle) {
     return safeRows.slice();
   }
-  return safeRows.filter((row) => String(row && row.user_email || "").trim().toLowerCase().includes(needle));
+  return safeRows.filter((row) => {
+    const email = String(row && row.user_email || "").trim().toLowerCase();
+    const userId = String(row && row.user_id || "").trim().toLowerCase();
+    return email.includes(needle) || userId.includes(needle);
+  });
 }
 
 function analyticsUsersSortValue(row, sortBy) {
@@ -848,6 +852,7 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
     }
     return `<tr>
       <td>${userEmail}</td>
+      <td><code>${deps.escapeHtml(userIdRaw)}</code></td>
       <td><span class="plan-pill ${deps.escapeHtml(plan)}">${deps.escapeHtml(planLabel)}</span></td>
       <td>${fmtInt(row && (row.total_resolve_count ?? row.resolve_count))}</td>
       <td>${fmtMb(row && row.data_downloaded_bytes)} MB</td>
@@ -892,8 +897,8 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
     <a href="/admin/session/logout" style="color:#fca5a5; text-decoration:none;">Sign Out</a>
   </div>
   <form class="controls" method="GET" action="/admin/analytics/users">
-    <label for="q">Search user email:</label>
-    <input id="q" name="q" type="text" value="${deps.escapeHtml(query)}" placeholder="user@example.com" />
+    <label for="q">Search user:</label>
+    <input id="q" name="q" type="text" value="${deps.escapeHtml(query)}" placeholder="email or Planetka user id" />
     <input type="hidden" name="sort" value="${deps.escapeHtml(sortBy)}" />
     <input type="hidden" name="dir" value="${deps.escapeHtml(sortDir)}" />
     <button type="submit">Search</button>
@@ -904,6 +909,7 @@ export async function handleAdminAnalyticsUsersPage(request, env, deps) {
     <thead>
       <tr>
         <th>Email</th>
+        <th>Planetka User ID</th>
         <th>Account</th>
         <th><a href="${buildSortHref("total_resolves")}">Total Resolves${sortMarker("total_resolves")}</a></th>
         <th><a href="${buildSortHref("data_downloaded")}">Data Downloaded${sortMarker("data_downloaded")}</a></th>
