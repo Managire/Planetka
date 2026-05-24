@@ -1112,20 +1112,20 @@ async function sendSceneLicenceRestoreEmail(env, email, token) {
     body: JSON.stringify({
       from,
       to: [email],
-      subject: "Restore your Planetka scene licences",
+      subject: "Restore your Planetka licences",
       text: [
-        "Open this link to restore your Planetka scene licences in Blender:",
+        "Open this link to restore your Planetka scene and animation licences in Blender:",
         activationUrl,
         "",
         "The link expires in 30 minutes.",
       ].join("\n"),
       html: `
         <div style="font-family: Arial, sans-serif; line-height: 1.5; color: #111827;">
-          <h2 style="margin-bottom: 16px;">Restore your Planetka scene licences</h2>
-          <p>Use the button below to allow your current Blender session to access scene licences purchased with this email address.</p>
+          <h2 style="margin-bottom: 16px;">Restore your Planetka licences</h2>
+          <p>Use the button below to allow your current Blender session to access scene and animation licences purchased with this email address.</p>
           <p style="margin: 24px 0;">
             <a href="${activationUrl}" style="background:#111827;color:#ffffff;padding:12px 18px;text-decoration:none;border-radius:8px;display:inline-block;">
-              Restore Scene Licences
+              Restore Licences
             </a>
           </p>
           <p>If the button does not work, open this link:</p>
@@ -1245,8 +1245,8 @@ async function handleSceneLicenceRestoreActivate(request, env) {
 </head>
 <body>
   <main>
-    <h1>Scene licences restored.</h1>
-    <p>Return to Blender and click Refresh Scene Licences.</p>
+    <h1>Planetka licences restored.</h1>
+    <p>Return to Blender and click Refresh Licences.</p>
   </main>
 </body>
 </html>`;
@@ -1902,6 +1902,12 @@ async function dispatchAuthRequest(request, env) {
       return methodNotAllowed(env);
     }
     return lemonSqueezyBillingHandlers.handleCheckAnimationPurchase(request, env);
+  }
+  if (path === "/billing/animation-purchases" || path === "/billing/animation-purchases/list") {
+    if (request.method !== "GET") {
+      return methodNotAllowed(env);
+    }
+    return lemonSqueezyBillingHandlers.handleListAnimationPurchases(request, env);
   }
   if (path === "/billing/scene-purchases/restore/request") {
     if (request.method !== "POST") {

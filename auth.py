@@ -1085,6 +1085,20 @@ def list_scene_full_quality_purchases(prefs=None, limit=50):
     return list(response.get("purchases", []) or [])
 
 
+def list_animation_render_purchases(prefs=None, limit=50):
+    prefs = prefs or get_prefs()
+    if prefs is None:
+        raise AuthApiError(0, "prefs_unavailable")
+    if not is_authenticated(prefs):
+        ensure_authenticated_session(prefs)
+    safe_limit = max(1, min(200, int(limit or 50)))
+    headers = get_authorized_headers(prefs=prefs, allow_refresh=True)
+    _status, response = _json_request("GET", f"/billing/animation-purchases/list?limit={safe_limit}", {}, headers=headers, timeout=20)
+    if not isinstance(response, dict) or not response.get("ok"):
+        raise AuthApiError(_status or 0, response.get("error") if isinstance(response, dict) else "animation_purchases_failed", payload=response)
+    return list(response.get("purchases", []) or [])
+
+
 def request_scene_licence_restore_link(email, prefs=None):
     prefs = prefs or get_prefs()
     if prefs is None:

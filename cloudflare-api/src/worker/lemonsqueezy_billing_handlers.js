@@ -507,20 +507,30 @@ async function scenePurchaseLookupEmails(db, user, deps) {
   return Array.from(emails).slice(0, 12);
 }
 
-function scenePurchaseWhereClause(user, emails, includeSceneId = false) {
+function purchaseWhereClause(user, emails, idColumn = "", includeId = "", normalizeId = (value) => String(value || "").trim()) {
   const clauses = ["user_id = ?"];
   const bindings = [String(user && user.id || "")];
   if (Array.isArray(emails) && emails.length) {
     clauses.push(`lower(user_email) IN (${emails.map(() => "?").join(", ")})`);
     bindings.push(...emails);
   }
-  if (includeSceneId) {
-    bindings.push(normalizeSceneId(includeSceneId));
+  const safeIdColumn = String(idColumn || "").trim();
+  const normalizedId = includeId ? normalizeId(includeId) : "";
+  if (safeIdColumn && normalizedId) {
+    bindings.push(normalizedId);
   }
   return {
-    where: `(${clauses.join(" OR ")})${includeSceneId ? " AND scene_id = ?" : ""} AND status = 'paid'`,
+    where: `(${clauses.join(" OR ")})${safeIdColumn && normalizedId ? ` AND ${safeIdColumn} = ?` : ""} AND status = 'paid'`,
     bindings,
   };
+}
+
+function scenePurchaseWhereClause(user, emails, includeSceneId = false) {
+  return purchaseWhereClause(user, emails, "scene_id", includeSceneId, normalizeSceneId);
+}
+
+function animationPurchaseWhereClause(user, emails, includeAnimationId = false) {
+  return purchaseWhereClause(user, emails, "animation_id", includeAnimationId, normalizeAnimationId);
 }
 
 async function loadScenePurchase(db, user, sceneId, deps) {
@@ -541,15 +551,17 @@ async function loadScenePurchase(db, user, sceneId, deps) {
 
 async function loadAnimationPurchase(db, user, animationId, deps) {
   await ensureScenePurchaseTables(db, deps);
+  const emails = await scenePurchaseLookupEmails(db, user, deps);
+  const filter = animationPurchaseWhereClause(user, emails, animationId);
   return await deps.dbGet(
     db,
     `
       SELECT *
       FROM ${ANIMATION_PURCHASES_TABLE}
-      WHERE user_id = ? AND animation_id = ? AND status = 'paid'
+      WHERE ${filter.where}
       LIMIT 1
     `,
-    [String(user && user.id || ""), normalizeAnimationId(animationId)],
+    filter.bindings,
   );
 }
 
@@ -585,6 +597,39 @@ async function listScenePurchases(db, user, deps, limit = 50) {
       try { return JSON.parse(String(row && row.tiles_json || "[]")); } catch (_error) { return []; }
     })(),
     tile_hash: String(row && row.tile_hash || ""),
+    purchased_at: String(row && row.purchased_at || ""),
+  }));
+}
+
+async function listAnimationPurchases(db, user, deps, limit = 50) {
+  await ensureScenePurchaseTables(db, deps);
+  const emails = await scenePurchaseLookupEmails(db, user, deps);
+  const filter = animationPurchaseWhereClause(user, emails);
+  const rows = typeof deps.dbAll === "function"
+    ? await deps.dbAll(
+      db,
+      `
+        SELECT id, animation_id, user_id, user_email, purchase_type, order_id, variant_id,
+               amount_cents, currency, frame_count, animation_json, purchased_at
+        FROM ${ANIMATION_PURCHASES_TABLE}
+        WHERE ${filter.where}
+        GROUP BY animation_id
+        ORDER BY purchased_at DESC
+        LIMIT ?
+      `,
+      [...filter.bindings, Math.max(1, Math.min(200, Number.parseInt(limit, 10) || 50))],
+    )
+    : [];
+  return (Array.isArray(rows) ? rows : []).map((row) => ({
+    id: String(row && row.id || ""),
+    animation_id: String(row && row.animation_id || ""),
+    purchase_type: String(row && row.purchase_type || "animation_render_license"),
+    amount_cents: Number.parseInt(row && row.amount_cents || 0, 10) || 0,
+    currency: String(row && row.currency || "EUR"),
+    frame_count: Number.parseInt(row && row.frame_count || 0, 10) || 0,
+    animation: (() => {
+      try { return JSON.parse(String(row && row.animation_json || "{}")); } catch (_error) { return {}; }
+    })(),
     purchased_at: String(row && row.purchased_at || ""),
   }));
 }
@@ -962,6 +1007,21 @@ export function createLemonSqueezyBillingHandlers(deps) {
     return deps.json({ ok: true, purchases }, 200, env);
   }
 
+  async function handleListAnimationPurchases(request, env) {
+    const auth = await deps.requireAuthenticatedUserContext(
+      request,
+      env,
+      { enforceApiKeyDevicePolicy: true },
+    );
+    if (auth.error) {
+      return auth.error;
+    }
+    const url = new URL(request.url);
+    const limit = Number.parseInt(url.searchParams.get("limit") || "50", 10) || 50;
+    const purchases = await listAnimationPurchases(auth.db, auth.user, deps, limit);
+    return deps.json({ ok: true, purchases }, 200, env);
+  }
+
   async function handleCheckScenePurchase(request, env) {
     const auth = await deps.requireAuthenticatedUserContext(
       request,
@@ -1318,6 +1378,7 @@ export function createLemonSqueezyBillingHandlers(deps) {
     handleCreateSceneCheckout,
     handleCreateAnimationCheckout,
     handleListScenePurchases,
+    handleListAnimationPurchases,
     handleCheckScenePurchase,
     handleCheckAnimationPurchase,
     handleWebhook,

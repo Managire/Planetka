@@ -1353,13 +1353,13 @@ def _draw_general_account_summary(layout):
         restore_box.operator("planetka.account_restore_pro", text="Restore Pro", icon="CHECKMARK")
 
     history_box = account_box.box()
-    history_box.label(text="Scene Licences", icon="FILE_TICK")
+    history_box.label(text="Scene and Animation Licences", icon="FILE_TICK")
     if prefs is not None:
         history_box.prop(prefs, "scene_licence_restore_email", text="Email")
     history_box.operator("planetka.scene_licences_send_access_link", text="Send Access Link", icon="URL")
-    history_box.operator("planetka.scene_purchases_refresh", text="Refresh Scene Licences", icon="LOOP_BACK")
+    history_box.operator("planetka.scene_purchases_refresh", text="Refresh Licences", icon="LOOP_BACK")
     history_box.operator_context = 'INVOKE_DEFAULT'
-    history_box.operator("planetka.scene_licences_show", text="View Scene Licences", icon="FILE_TICK")
+    history_box.operator("planetka.scene_licences_show", text="View Licences", icon="FILE_TICK")
 
     if authenticated and checked and not connected:
         warning_box = layout.box()

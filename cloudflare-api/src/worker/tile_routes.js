@@ -170,21 +170,29 @@ async function loadPurchasedScene(db, userId, userEmail, sceneId, deps) {
   );
 }
 
-async function loadPurchasedAnimation(db, userId, animationId, deps) {
+async function loadPurchasedAnimation(db, userId, userEmail, animationId, deps) {
   const safeAnimationId = normalizeAnimationId(animationId);
   if (!db || !safeAnimationId || !userId || !deps || typeof deps.dbGet !== "function") {
     return null;
   }
   await ensureScenePurchaseTables(db, deps);
+  const emails = await verifiedScenePurchaseEmails(db, userId, userEmail, deps);
+  const clauses = ["user_id = ?"];
+  const bindings = [String(userId || "")];
+  if (emails.length) {
+    clauses.push(`lower(user_email) IN (${emails.map(() => "?").join(", ")})`);
+    bindings.push(...emails);
+  }
+  bindings.push(safeAnimationId);
   return await deps.dbGet(
     db,
     `
       SELECT *
       FROM animation_render_purchases
-      WHERE user_id = ? AND animation_id = ? AND status = 'paid'
+      WHERE (${clauses.join(" OR ")}) AND animation_id = ? AND status = 'paid'
       LIMIT 1
     `,
-    [String(userId || ""), safeAnimationId],
+    bindings,
   );
 }
 
@@ -265,6 +273,7 @@ export async function handleTileSessionStart(request, env, deps) {
     animationPurchase = await loadPurchasedAnimation(
       deps.requireDb(env),
       auth && auth.user && auth.user.id,
+      auth && auth.user && auth.user.email,
       requestedAnimationId,
       deps,
     );
