@@ -80,6 +80,7 @@ from .planetka_ops.navigation_ops import (
     PLANETKA_OT_SunlightPreset,
 )
 from .planetka_ops.scene_setup_ops import (
+    PLANETKA_OT_OptimizeRenderSettings,
     PLANETKA_OT_RemoveDefaultScene,
     PLANETKA_OT_SetBackgroundBlack,
 )

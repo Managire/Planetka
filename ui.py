@@ -1482,6 +1482,13 @@ def _draw_new_earth(layout):
     row.scale_y = ADD_EARTH_BUTTON_SCALE_Y
     row.alert = False
     row.enabled = (not has_earth) and connected
+    row.operator("planetka.optimize_render_settings", text="Optimize Render Settings", icon="RENDER_STILL")
+
+    row = layout.row()
+    row.scale_x = ADD_EARTH_BUTTON_SCALE_X
+    row.scale_y = ADD_EARTH_BUTTON_SCALE_Y
+    row.alert = False
+    row.enabled = (not has_earth) and connected
     row.operator("planetka.add_earth", text="Create Earth", icon="WORLD_DATA")
     rebuild_row = layout.row()
     rebuild_row.scale_x = ADD_EARTH_BUTTON_SCALE_X
@@ -2237,11 +2244,7 @@ def _draw_local_clouds(layout, context, props):
             toggle=True,
             icon="HIDE_OFF",
         )
-        texture_path = str(cloud_obj.get(cloud_runtime.LOCAL_CLOUD_OBJ_TEXTURE_PATH_PROP, "") or "").strip()
-        texture_name = str(getattr(cloud_obj, cloud_runtime.LOCAL_CLOUD_OBJ_TEXTURE_PROP, "") or "").strip()
-        if not texture_name or texture_name == "NONE":
-            texture_name = os.path.basename(texture_path) if texture_path else "No cloud mask assigned"
-        cloud_box.label(text=texture_name, icon="IMAGE_DATA")
+        cloud_box.label(text=f"File: {cloud_runtime._local_cloud_file_label(cloud_obj)}", icon="IMAGE_DATA")
 
         downscale_warning = str(cloud_obj.get(cloud_runtime.LOCAL_CLOUD_DOWNSCALE_WARNING_PROP, "") or "").strip()
         if downscale_warning:
@@ -2365,6 +2368,13 @@ def _draw_clouds(layout, context):
     if not props:
         layout.label(text="Planetka settings unavailable.", icon="ERROR")
         return
+
+    mode_box = layout.box()
+    mode_box.label(text="Cloud Display", icon="FORCE_TURBULENCE")
+    mode_row = mode_box.row(align=True)
+    mode_row.use_property_split = False
+    mode_row.prop_enum(props, "cloud_view_mode", "PREVIEW", text="Preview")
+    mode_row.prop_enum(props, "cloud_view_mode", "FINAL", text="Final Look")
 
     _draw_global_clouds(layout, scene, props)
     _draw_local_clouds(layout, context, props)
@@ -2551,6 +2561,15 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             auto_row.prop_enum(props, "auto_resolve_mode", "NEVER", text="Never")
             auto_row.prop_enum(props, "auto_resolve_mode", "CAMERA_VIEW", text="Camera only")
             auto_row.prop_enum(props, "auto_resolve_mode", "ALWAYS", text="Always")
+
+            atmosphere_box = layout.box()
+            atmosphere_box.label(text="Atmosphere", icon="WORLD")
+            atmosphere_box.prop(
+                props,
+                "auto_switch_atmosphere",
+                text="Auto-switch atmosphere",
+                toggle=True,
+            )
 
             scene_objects_box = layout.box()
             scene_objects_box.enabled = workflow_enabled and (not prepared)

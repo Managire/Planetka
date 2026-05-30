@@ -99,6 +99,8 @@ _SYNC_IDPROP_MAP = {
     "show_earth_preview": "planetka_show_earth_preview",
     "atmosphere_enabled": "planetka_atmosphere_enabled",
     "atmosphere_mode": "planetka_atmosphere_mode",
+    "auto_switch_atmosphere": "planetka_auto_switch_atmosphere",
+    "cloud_view_mode": "planetka_cloud_view_mode",
     "enable_global_clouds": "planetka_enable_global_clouds",
     "global_cloud_texture_source": "planetka_global_cloud_texture_source",
     "global_cloud_folder": "planetka_global_cloud_folder",
@@ -506,6 +508,12 @@ def _sync_props_from_idprops(scene):
         )
     finally:
         _IDPROP_SYNCING = False
+
+
+def update_auto_switch_atmosphere(self, context):
+    scene = getattr(context, "scene", None) if context else None
+    if scene is not None:
+        _sync_idprops_from_props(scene, ("auto_switch_atmosphere",))
 
 
 def set_planetka_logging(enabled):
@@ -1348,6 +1356,7 @@ def _build_handler_runtime_context():
         keyed_runtime_sun_prop_paths=_KEYED_RUNTIME_SUN_PROP_PATHS,
         is_render_job_active=_is_render_job_active,
         is_animation_playing=_is_animation_playing,
+        get_earth_object=get_earth_object,
         sync_navigation_controls_from_scene_camera=_sync_navigation_controls_from_scene_camera,
         can_auto_resolve_run=_can_auto_resolve_run,
         ensure_auto_resolve_service_running=ensure_auto_resolve_service_running,

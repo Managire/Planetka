@@ -35,6 +35,7 @@ class HandlerRuntimeDeps:
     keyed_runtime_sun_prop_paths: Any
     is_render_job_active: Any
     is_animation_playing: Any
+    get_earth_object: Any
     sync_navigation_controls_from_scene_camera: Any
     can_auto_resolve_run: Any
     ensure_auto_resolve_service_running: Any

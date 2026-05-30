@@ -446,14 +446,6 @@ def _ctx_auto_resolve_scope_mode(ctx, scene):
         mode = str(getattr(props, "auto_resolve_mode", "CAMERA_VIEW") or "CAMERA_VIEW").strip().upper()
     except (RuntimeError, TypeError, ValueError, AttributeError):
         mode = "CAMERA_VIEW"
-    if mode == "ALWAYS":
-        try:
-            prefs = ctx.deps.get_prefs()
-            tier = str(getattr(prefs, "auth_account_tier", "") or getattr(prefs, "auth_plan_code", "") or getattr(prefs, "auth_stored_plan_code", "") or "").strip().lower()
-        except (RuntimeError, TypeError, ValueError, AttributeError):
-            tier = ""
-        if tier != "pro":
-            mode = "CAMERA_VIEW"
     if mode == "NEVER":
         return "NONE"
     current_scope = _ctx_current_view_scope(ctx, scene)

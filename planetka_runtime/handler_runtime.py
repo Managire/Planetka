@@ -3,6 +3,7 @@ import time
 
 _HANDLER_RUNTIME_CTX = None
 ANIMATION_EEVEE_FORCE_BUMP_RUNTIME_KEY = "planetka_anim_render_eevee_force_bump"
+ATMOSPHERE_AUTO_SWITCH_ENGINE_KEY = "planetka_atmosphere_auto_switch_engine"
 
 
 def _require_ctx():
@@ -228,6 +229,78 @@ def _enforce_planetka_earth_surface_displacement_mode(scene, deps):
         )
 
 
+def _atmosphere_mode_for_render_engine(scene):
+    try:
+        engine = str(getattr(getattr(scene, "render", None), "engine", "") or "").strip().upper()
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        engine = ""
+    if engine == "CYCLES":
+        return engine, "VOLUMETRIC"
+    if engine.startswith("BLENDER_EEVEE"):
+        return engine, "EEVEE"
+    return engine, ""
+
+
+def _sync_atmosphere_mode_to_render_engine(scene, deps):
+    if scene is None:
+        return
+    props = getattr(scene, "planetka", None)
+    if props is None:
+        return
+    try:
+        enabled = bool(getattr(props, "auto_switch_atmosphere", True))
+    except deps.recoverable_exceptions:
+        enabled = True
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        enabled = True
+    if not enabled:
+        return
+
+    engine, desired_mode = _atmosphere_mode_for_render_engine(scene)
+    if not desired_mode:
+        return
+
+    try:
+        previous_engine = str(scene.get(ATMOSPHERE_AUTO_SWITCH_ENGINE_KEY, "") or "").strip().upper()
+    except deps.recoverable_exceptions:
+        previous_engine = ""
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        previous_engine = ""
+
+    try:
+        scene[ATMOSPHERE_AUTO_SWITCH_ENGINE_KEY] = engine
+    except deps.recoverable_exceptions:
+        deps.logger.debug("Planetka: failed storing atmosphere auto-switch engine", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        deps.logger.debug("Planetka: failed storing atmosphere auto-switch engine", exc_info=True)
+
+    try:
+        current_mode = str(getattr(props, "atmosphere_mode", "VOLUMETRIC") or "VOLUMETRIC").strip().upper()
+    except deps.recoverable_exceptions:
+        current_mode = "VOLUMETRIC"
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        current_mode = "VOLUMETRIC"
+    if previous_engine == engine and current_mode == desired_mode:
+        return
+    if current_mode == desired_mode:
+        return
+    try:
+        if deps.get_earth_object() is None:
+            return
+    except deps.recoverable_exceptions:
+        return
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return
+
+    try:
+        props.atmosphere_mode = desired_mode
+        deps.sync_idprops_from_props(scene, ("atmosphere_mode", "auto_switch_atmosphere"))
+    except deps.recoverable_exceptions:
+        deps.logger.debug("Planetka: failed auto-switching atmosphere for render engine", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        deps.logger.debug("Planetka: failed auto-switching atmosphere for render engine", exc_info=True)
+
+
 def depsgraph_update_post(_scene, _depsgraph, ctx=None):
     ctx = _coerce_ctx(ctx)
     deps = ctx.deps
@@ -239,6 +312,7 @@ def depsgraph_update_post(_scene, _depsgraph, ctx=None):
         return
 
     _enforce_planetka_earth_surface_displacement_mode(scene, deps)
+    _sync_atmosphere_mode_to_render_engine(scene, deps)
 
     if deps.is_navigation_user_edit_active(scene):
         return

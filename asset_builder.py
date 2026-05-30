@@ -22,6 +22,8 @@ PREVIEW_MATERIAL_NAME = "Planetka Preview Material"
 LEGACY_PREVIEW_MATERIAL_NAME = "Planetka Preview Shader"
 EARTH_MATERIAL_NAME = "Planetka Earth Material"
 SURFACE_GRADING_GROUP_NAME = "Planetka Surface Grading Group"
+EARTH_RADIUS_GROUP_NAME = "Planetka Earth Radius"
+EARTH_RADIUS_VALUE_NODE_NAME = "Blender Earth Radius"
 TEXTURE_LOADING_GROUP_NAME = "Planetka Textures Loading Group"
 PREVIEW_TEXTURE_LOADING_GROUP_NAME = "Planetka Preview Textures Loading Group"
 NIGHTDAY_GROUP_NAME = "Planetka NightDay Transition Group"
@@ -499,6 +501,114 @@ def sync_surface_elevation_scale_for_radius(earth_radius_bu):
             logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
 
     return float(scale_value), bool(changed)
+
+
+def _find_earth_radius_value_node():
+    for node_group in tuple(getattr(bpy.data, "node_groups", ())):
+        group_name = str(getattr(node_group, "name", "") or "")
+        if group_name != EARTH_RADIUS_GROUP_NAME and not group_name.startswith(f"{EARTH_RADIUS_GROUP_NAME}."):
+            continue
+        nodes = getattr(node_group, "nodes", None)
+        if nodes is None:
+            continue
+        node = nodes.get(EARTH_RADIUS_VALUE_NODE_NAME)
+        if node is not None:
+            yield node_group, node
+            continue
+        for candidate in tuple(nodes):
+            name = str(getattr(candidate, "name", "") or "")
+            label = str(getattr(candidate, "label", "") or "")
+            if name == EARTH_RADIUS_VALUE_NODE_NAME or label == EARTH_RADIUS_VALUE_NODE_NAME:
+                yield node_group, candidate
+                break
+
+
+def _ensure_earth_radius_value_driver(scene):
+    scene = scene or getattr(bpy.context, "scene", None)
+    if scene is None:
+        return False
+
+    changed = False
+    for _node_group, node in _find_earth_radius_value_node():
+        outputs = getattr(node, "outputs", None)
+        if outputs is None or len(outputs) == 0 or not hasattr(outputs[0], "default_value"):
+            continue
+        try:
+            socket = outputs[0]
+            fcurve = socket.driver_add("default_value")
+            driver = getattr(fcurve, "driver", None)
+            if driver is None:
+                continue
+
+            if str(getattr(driver, "type", "") or "") != "SCRIPTED":
+                driver.type = "SCRIPTED"
+                changed = True
+            if str(getattr(driver, "expression", "") or "") != "earth_radius":
+                driver.expression = "earth_radius"
+                changed = True
+
+            variables = list(getattr(driver, "variables", ()))
+            radius_var = None
+            for variable in variables:
+                if str(getattr(variable, "name", "") or "") == "earth_radius" and radius_var is None:
+                    radius_var = variable
+                    continue
+                driver.variables.remove(variable)
+                changed = True
+            if radius_var is None:
+                radius_var = driver.variables.new()
+                radius_var.name = "earth_radius"
+                changed = True
+            if str(getattr(radius_var, "type", "") or "") != "SINGLE_PROP":
+                radius_var.type = "SINGLE_PROP"
+                changed = True
+
+            targets = getattr(radius_var, "targets", ())
+            if not targets:
+                continue
+            target = targets[0]
+            if str(getattr(target, "id_type", "") or "") != "SCENE":
+                target.id_type = "SCENE"
+                changed = True
+            if getattr(target, "id", None) is not scene:
+                target.id = scene
+                changed = True
+            if str(getattr(target, "data_path", "") or "") != "planetka.earth_radius_bu":
+                target.data_path = "planetka.earth_radius_bu"
+                changed = True
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError, IndexError):
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+    return bool(changed)
+
+
+def sync_earth_radius_node_group_for_radius(scene=None, earth_radius_bu=None):
+    scene = scene or getattr(bpy.context, "scene", None)
+    try:
+        radius = max(1e-6, float(earth_radius_bu if earth_radius_bu is not None else _scene_earth_radius_bu(scene)))
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        radius = 2.0
+    except (RuntimeError, TypeError, ValueError):
+        radius = 2.0
+
+    changed = _ensure_earth_radius_value_driver(scene)
+    for _node_group, node in _find_earth_radius_value_node():
+        outputs = getattr(node, "outputs", None)
+        if outputs is None or len(outputs) == 0 or not hasattr(outputs[0], "default_value"):
+            continue
+        try:
+            current = float(outputs[0].default_value)
+            if abs(current - float(radius)) <= 1e-9:
+                continue
+            outputs[0].default_value = float(radius)
+            changed = True
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError, IndexError):
+            logger.debug("Planetka asset builder: suppressed recoverable exception", exc_info=True)
+    return bool(changed)
 
 
 def _ensure_surface_elevation_radius_driver(scene):
@@ -3475,6 +3585,7 @@ def _ensure_embedded_material_library(scene=None):
         logger.debug("Planetka asset builder: bound elevation-radius driver for surface displacement scale.")
     # Fallback in case driver binding is unavailable in current runtime context.
     sync_surface_elevation_scale_for_radius(_scene_earth_radius_bu(scene))
+    sync_earth_radius_node_group_for_radius(scene=scene)
     _hide_unconnected_group_input_sockets_everywhere()
     return preview_material, earth_material
 

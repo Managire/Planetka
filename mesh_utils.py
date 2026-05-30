@@ -31,6 +31,7 @@ SURFACE_COLLECTION_NAME = "Planetka - Earth Surface Collection"
 EARTH_SURFACE_DEFAULT_RADIUS = 2.0
 EARTH_SURFACE_DEFAULT_SCALE = (1.0, 1.0, 1.0)
 BASE_SPHERE_CACHE_MESH_NAME = "Planetka__BaseSphereMeshCache_v1"
+BASE_SPHERE_CACHE_BLEND_PATH = os.path.join("Resources", "planetka_base_sphere_mesh_cache.blend")
 BASE_SPHERE_CACHE_MIN_VERTS = 10000
 RESOLVED_MESH_CACHE_PREFIX = "Planetka__ResolvedMeshCache_v1__"
 RESOLVED_MESH_CACHE_MAX_ENTRIES = 0
@@ -339,6 +340,33 @@ def _build_base_sphere_mesh_cache():
     return cache_mesh
 
 
+def _load_bundled_base_sphere_mesh_cache():
+    blend_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), BASE_SPHERE_CACHE_BLEND_PATH)
+    if not os.path.isfile(blend_path):
+        return None
+
+    try:
+        with bpy.data.libraries.load(blend_path, link=False) as (data_from, data_to):
+            if BASE_SPHERE_CACHE_MESH_NAME not in set(data_from.meshes):
+                return None
+            data_to.meshes = [BASE_SPHERE_CACHE_MESH_NAME]
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka: failed loading bundled base sphere cache mesh", exc_info=True)
+        return None
+
+    cache_mesh = bpy.data.meshes.get(BASE_SPHERE_CACHE_MESH_NAME)
+    if not _is_valid_base_sphere_mesh(cache_mesh):
+        if cache_mesh is not None:
+            try:
+                bpy.data.meshes.remove(cache_mesh)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka: failed removing invalid bundled base sphere cache mesh", exc_info=True)
+        return None
+
+    cache_mesh.use_fake_user = True
+    return cache_mesh
+
+
 def ensure_base_sphere_mesh_cache():
     _cleanup_all_resolved_mesh_cache_datablocks_once()
     cache_mesh = bpy.data.meshes.get(BASE_SPHERE_CACHE_MESH_NAME)
@@ -350,6 +378,10 @@ def ensure_base_sphere_mesh_cache():
             bpy.data.meshes.remove(cache_mesh)
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka: failed removing invalid base sphere cache mesh", exc_info=True)
+
+    cache_mesh = _load_bundled_base_sphere_mesh_cache()
+    if _is_valid_base_sphere_mesh(cache_mesh):
+        return cache_mesh
 
     try:
         return _build_base_sphere_mesh_cache()

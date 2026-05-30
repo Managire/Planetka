@@ -124,7 +124,8 @@ LOCAL_CLOUD_MATERIAL_TEMPLATE_NAME = "Planetka Local Clouds Shader"
 VDB_CLOUD_TEMPLATE_OBJECT_NAME = "Planetka Cloud VDB"
 VDB_CLOUD_MATERIAL_TEMPLATE_NAME = "Planetka VDB Cloud Shader"
 
-LOCAL_CLOUD_SHADER_GROUP_NAME = "Planetka Local Clouds Shader Group"
+CLOUD_MATERIAL_GROUP_NAME = "Planetka Cloud Material"
+LEGACY_LOCAL_CLOUD_SHADER_GROUP_NAME = "Planetka Local Clouds Shader Group"
 GLOBAL_CLOUD_SHADER_GROUP_NAME = "Planetka Global Clouds Shader Group"
 CLOUD_PREVIEW_SWITCH_GROUP_NAME = "Cloud Preview Switch"
 LOCAL_CLOUD_PREVIEW_VALUE_NODE_NAME = "Preview_On_Off"
@@ -2001,6 +2002,136 @@ def _find_image_texture_node(material):
     return None
 
 
+def _find_material_output_node(material):
+    node_tree = getattr(material, "node_tree", None) if material is not None else None
+    if node_tree is None:
+        return None
+    node = node_tree.nodes.get("Material Output") or node_tree.nodes.get("Material Output.001")
+    if node is not None and str(getattr(node, "type", "")) == "OUTPUT_MATERIAL":
+        return node
+    for candidate in node_tree.nodes:
+        if str(getattr(candidate, "type", "")) == "OUTPUT_MATERIAL":
+            return candidate
+    return None
+
+
+def _ensure_planetka_cloud_material_group():
+    group = bpy.data.node_groups.get(CLOUD_MATERIAL_GROUP_NAME)
+    if group is not None:
+        return group
+    try:
+        _append_from_reference(
+            material_names=(GLOBAL_CLOUD_MATERIAL_NAME,),
+            blend_path=GLOBAL_CLOUD_REFERENCE_BLEND_PATH,
+        )
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka clouds: failed appending Planetka Cloud Material group", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka clouds: failed appending Planetka Cloud Material group", exc_info=True)
+    return bpy.data.node_groups.get(CLOUD_MATERIAL_GROUP_NAME)
+
+
+def _remove_socket_links(node_tree, socket):
+    if node_tree is None or socket is None:
+        return
+    try:
+        for link in list(getattr(socket, "links", ())):
+            node_tree.links.remove(link)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka clouds: failed removing socket links", exc_info=True)
+
+
+def _link_sockets(node_tree, from_socket, to_socket):
+    if node_tree is None or from_socket is None or to_socket is None:
+        return False
+    try:
+        _remove_socket_links(node_tree, to_socket)
+        node_tree.links.new(from_socket, to_socket)
+        return True
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka clouds: failed linking material sockets", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka clouds: failed linking material sockets", exc_info=True)
+    return False
+
+
+def _cleanup_unused_legacy_local_cloud_group():
+    legacy = bpy.data.node_groups.get(LEGACY_LOCAL_CLOUD_SHADER_GROUP_NAME)
+    if legacy is None:
+        return
+    try:
+        if int(getattr(legacy, "users", 0) or 0) == 0:
+            bpy.data.node_groups.remove(legacy)
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka clouds: failed removing unused legacy local cloud shader group", exc_info=True)
+
+
+def _ensure_local_cloud_material_uses_cloud_material(material):
+    node_tree = getattr(material, "node_tree", None) if material is not None else None
+    if node_tree is None:
+        return False
+    cloud_group = _ensure_planetka_cloud_material_group()
+    if cloud_group is None:
+        return False
+
+    nodes = node_tree.nodes
+    group_node = None
+    legacy_nodes = []
+    for node in tuple(nodes):
+        if str(getattr(node, "bl_idname", "")) != "ShaderNodeGroup":
+            continue
+        child_name = str(getattr(getattr(node, "node_tree", None), "name", "") or "")
+        if child_name == CLOUD_MATERIAL_GROUP_NAME and group_node is None:
+            group_node = node
+        elif child_name == LEGACY_LOCAL_CLOUD_SHADER_GROUP_NAME:
+            legacy_nodes.append(node)
+
+    if group_node is None and legacy_nodes:
+        group_node = legacy_nodes.pop(0)
+        try:
+            group_node.node_tree = cloud_group
+            group_node.name = CLOUD_MATERIAL_GROUP_NAME
+            group_node.label = CLOUD_MATERIAL_GROUP_NAME
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka clouds: failed replacing legacy local cloud shader group node", exc_info=True)
+            return False
+
+    if group_node is None:
+        try:
+            group_node = nodes.new("ShaderNodeGroup")
+            group_node.node_tree = cloud_group
+            group_node.name = CLOUD_MATERIAL_GROUP_NAME
+            group_node.label = CLOUD_MATERIAL_GROUP_NAME
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka clouds: failed creating Planetka Cloud Material group node", exc_info=True)
+            return False
+
+    for legacy_node in legacy_nodes:
+        try:
+            nodes.remove(legacy_node)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka clouds: failed removing duplicate legacy local cloud shader group node", exc_info=True)
+
+    image_node = _find_image_texture_node(material)
+    output_node = _find_material_output_node(material)
+    if image_node is None or output_node is None:
+        return False
+
+    source_input = group_node.inputs.get("Source Texture")
+    shader_output = group_node.outputs.get("Shader")
+    displacement_output = group_node.outputs.get("Displacement")
+    surface_input = output_node.inputs.get("Surface")
+    volume_input = output_node.inputs.get("Volume")
+    displacement_input = output_node.inputs.get("Displacement")
+
+    _link_sockets(node_tree, image_node.outputs.get("Color"), source_input)
+    _link_sockets(node_tree, shader_output, surface_input)
+    _remove_socket_links(node_tree, volume_input)
+    _link_sockets(node_tree, displacement_output, displacement_input)
+    _cleanup_unused_legacy_local_cloud_group()
+    return True
+
+
 def _resolve_object_material(obj):
     material = getattr(obj, "active_material", None)
     if material is not None:
@@ -2326,6 +2457,8 @@ def _ensure_local_cloud_subdivision_modifier(obj):
     try:
         modifier.levels = max(0, int(getattr(modifier, "levels", 1)))
         modifier.render_levels = max(1, int(getattr(modifier, "render_levels", 2)))
+        if hasattr(modifier, "use_adaptive_subdivision"):
+            modifier.use_adaptive_subdivision = True
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka clouds: failed configuring local cloud subdivision modifier", exc_info=True)
     return modifier
@@ -2442,11 +2575,52 @@ def _iter_cloud_subdivision_modifiers(cloud_obj):
     return out
 
 
+def _cloud_view_final_look_enabled(props):
+    try:
+        return str(getattr(props, "cloud_view_mode", "PREVIEW") or "PREVIEW").strip().upper() == "FINAL"
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return False
+
+
+def _set_cloud_subdivision_viewport_state(cloud_obj, final_look):
+    changed = 0
+    for mod in _iter_cloud_subdivision_modifiers(cloud_obj):
+        try:
+            mod.show_viewport = bool(final_look)
+            changed += 1
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka clouds: failed updating subdivision modifier state", exc_info=True)
+    return changed
+
+
+def apply_cloud_view_mode(scene=None, context=None):
+    scene = scene or (getattr(context, "scene", None) if context else getattr(bpy.context, "scene", None))
+    props = getattr(scene, "planetka", None) if scene else None
+    final_look = _cloud_view_final_look_enabled(props)
+
+    clouds_global = _get_clouds_global_module()
+    apply_global_fn = getattr(clouds_global, "apply_global_cloud_subdivision_viewport_state", None) if clouds_global else None
+    if callable(apply_global_fn):
+        try:
+            apply_global_fn(scene=scene, final_look=final_look)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka clouds: failed applying global cloud viewport subdivision state", exc_info=True)
+
+    for cloud_obj in list(_iter_local_cloud_objects()):
+        _set_cloud_subdivision_viewport_state(cloud_obj, final_look)
+
+    try:
+        view_layer = getattr(context, "view_layer", None) if context is not None else getattr(getattr(bpy, "context", None), "view_layer", None)
+        if view_layer is not None:
+            view_layer.update()
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka clouds: failed updating view layer after cloud view mode change", exc_info=True)
+
+
 def _set_universal_cloud_preview_value(preview_value):
     changed = False
     roots = (
         bpy.data.node_groups.get(CLOUD_PREVIEW_SWITCH_GROUP_NAME),
-        bpy.data.node_groups.get(LOCAL_CLOUD_SHADER_GROUP_NAME),
         bpy.data.node_groups.get(GLOBAL_CLOUD_SHADER_GROUP_NAME),
     )
     for root in roots:
@@ -2459,7 +2633,7 @@ def _set_universal_cloud_preview_value(preview_value):
 
 def _apply_universal_cloud_preview_state(props, context=None):
     quality_mode = _normalize_cloud_quality_mode(getattr(props, "texture_quality_mode", "PREVIEW") if props else "PREVIEW")
-    final_look = quality_mode != "PREVIEW"
+    final_look = _cloud_view_final_look_enabled(props)
     # Keep the diffuse preview surface visible in the viewport. The volumetric
     # branch can look invisible until render settings/view mode are configured,
     # so Final Look currently means higher cloud geometry, not hidden clouds.
@@ -2473,11 +2647,7 @@ def _apply_universal_cloud_preview_state(props, context=None):
             allow_prepare_missing=True,
             quality_mode=quality_mode,
         )
-        for mod in _iter_cloud_subdivision_modifiers(cloud_obj):
-            try:
-                mod.show_viewport = final_look
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                logger.debug("Planetka clouds: failed updating subdivision modifier state", exc_info=True)
+        _set_cloud_subdivision_viewport_state(cloud_obj, final_look)
 
     for cloud_obj in list(_iter_vdb_cloud_objects()):
         _apply_prepared_vdb_cloud_file(
@@ -2486,11 +2656,6 @@ def _apply_universal_cloud_preview_state(props, context=None):
             allow_prepare_missing=True,
             quality_mode=quality_mode,
         )
-        for mod in _iter_cloud_subdivision_modifiers(cloud_obj):
-            try:
-                mod.show_viewport = final_look
-            except PLANETKA_RECOVERABLE_EXCEPTIONS:
-                logger.debug("Planetka clouds: failed updating subdivision modifier state", exc_info=True)
 
     try:
         if context is not None and getattr(context, "view_layer", None):
@@ -2608,11 +2773,10 @@ def _apply_local_cloud_material_controls(obj, material, final_look=False):
     if node_tree is None:
         return
 
-    size = float(getattr(obj, LOCAL_CLOUD_PROP_SIZE_COEF, 1.0)) * float(LOCAL_CLOUD_SIZE_REMOTE_SCALE)
     rot = float(getattr(obj, LOCAL_CLOUD_PROP_ROTATION_DEG, 0.0))
-    thickness_m = max(0.0, float(getattr(obj, LOCAL_CLOUD_PROP_THICKNESS_M, 50.0)))
     density = max(0.0, float(getattr(obj, LOCAL_CLOUD_PROP_DENSITY, 10.0)))
     gamma = max(0.0, float(getattr(obj, LOCAL_CLOUD_PROP_DENSITY_GAMMA, 1.0)))
+    _ensure_local_cloud_material_uses_cloud_material(material)
     _configure_local_cloud_material_for_cap(material)
 
     rotate_node = node_tree.nodes.get("Local Cloud UV Rotate")
@@ -2625,13 +2789,9 @@ def _apply_local_cloud_material_controls(obj, material, final_look=False):
     preview_value = 1.0
     _set_named_value_nodes_recursive(node_tree, (LOCAL_CLOUD_PREVIEW_VALUE_NODE_NAME,), preview_value)
 
-    for shader_node in _iter_group_nodes_recursive(node_tree, LOCAL_CLOUD_SHADER_GROUP_NAME):
-        _set_group_input_if_present(shader_node, ("Local Cloud Size", "Local Cloud Size Coef", "Size Coefficient"), size)
-        if not _set_group_input_if_present(shader_node, ("Cloud Thickness (m)",), thickness_m):
-            _set_group_input_if_present(shader_node, ("Cloud Thickness (km)",), thickness_m / 1000.0)
-        _set_group_input_if_present(shader_node, ("Cloud Density",), density)
+    for shader_node in _iter_group_nodes_recursive(node_tree, CLOUD_MATERIAL_GROUP_NAME):
+        _set_group_input_if_present(shader_node, ("Density", "Cloud Density"), density)
         _set_group_input_if_present(shader_node, ("Density Gamma",), gamma)
-        _set_group_input_if_present(shader_node, LOCAL_CLOUD_PREVIEW_INPUT_NAMES, preview_value)
 
 
 def _apply_local_cloud_object(obj, scene=None):
@@ -2682,16 +2842,13 @@ def _apply_local_cloud_object(obj, scene=None):
         _end_cloud_update_suspend()
 
     quality_mode = _normalize_cloud_quality_mode(getattr(props, "texture_quality_mode", "PREVIEW") if props else "PREVIEW")
-    final_look = quality_mode != "PREVIEW"
+    material_final_look = quality_mode != "PREVIEW"
+    subdivision_final_look = _cloud_view_final_look_enabled(props)
 
-    for mod in _iter_cloud_subdivision_modifiers(obj):
-        try:
-            mod.show_viewport = final_look
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka clouds: failed setting local cloud subdivision visibility", exc_info=True)
+    _set_cloud_subdivision_viewport_state(obj, subdivision_final_look)
 
     material = _resolve_object_material(obj)
-    _apply_local_cloud_material_controls(obj, material, final_look=final_look)
+    _apply_local_cloud_material_controls(obj, material, final_look=material_final_look)
 
 
 def optimize_texture_based_clouds_for_camera(scene=None, quality_mode=None):
@@ -3221,6 +3378,12 @@ def update_enable_local_clouds(self, context):
         _apply_universal_cloud_preview_state(self, context=context)
 
 
+def update_cloud_view_mode(self, context):
+    scene = getattr(context, "scene", None) if context else None
+    _sync_scene_idprops(scene, ("cloud_view_mode",))
+    apply_cloud_view_mode(scene=scene, context=context)
+
+
 def update_enable_vdb_clouds(self, context):
     scene = getattr(context, "scene", None) if context else None
     _sync_scene_idprops(scene, ("enable_vdb_clouds", "vdb_cloud_source", "vdb_cloud_preset", "vdb_cloud_file"))
@@ -3312,6 +3475,37 @@ def _vdb_file_label(obj):
     return os.path.basename(bpy.path.abspath(path))
 
 
+def _local_cloud_file_label(obj):
+    path = str(obj.get(LOCAL_CLOUD_LOADED_TEXTURE_PROP, "") or "") if obj is not None else ""
+    if path:
+        path = bpy.path.abspath(path)
+    if not path:
+        material = _resolve_object_material(obj)
+        image_node = _find_image_texture_node(material)
+        image = getattr(image_node, "image", None) if image_node is not None else None
+        path = str(getattr(image, "filepath", "") or "")
+        if path:
+            path = bpy.path.abspath(path)
+    if not path:
+        path = str(obj.get(LOCAL_CLOUD_OBJ_TEXTURE_PATH_PROP, "") or "") if obj is not None else ""
+        if path:
+            path = bpy.path.abspath(path)
+    if not path:
+        return "No cloud mask assigned"
+    basename = os.path.basename(path)
+    if not basename:
+        return "No cloud mask assigned"
+    if re.search(r"_d\d{3}(?:\.|_)", basename, flags=re.IGNORECASE):
+        return basename
+    try:
+        d_level = int(obj.get(LOCAL_CLOUD_D_LEVEL_PROP, 0) or 0)
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        d_level = 0
+    if d_level > 0:
+        return f"{basename} (d{d_level:03d})"
+    return basename
+
+
 class PLANETKA_OT_AddLocalCloud(bpy.types.Operator):
     bl_idname = "planetka.add_local_cloud"
     bl_label = "Add Cloud"
@@ -3362,6 +3556,7 @@ class PLANETKA_OT_AddLocalCloud(bpy.types.Operator):
         if template_mat is None:
             self.report({'ERROR'}, f"Material '{LOCAL_CLOUD_MATERIAL_TEMPLATE_NAME}' not found.")
             return {'CANCELLED'}
+        _ensure_local_cloud_material_uses_cloud_material(template_mat)
 
         new_name = _next_local_cloud_name()
         mesh_name = f"{LOCAL_CLOUD_CAP_MESH_PREFIX} {new_name}"
@@ -3391,6 +3586,7 @@ class PLANETKA_OT_AddLocalCloud(bpy.types.Operator):
         new_mat.name = _local_cloud_material_name_for_object(new_obj.name)
         _clear_drivers_on_id_data(new_mat)
         _clear_drivers_on_node_tree(getattr(new_mat, "node_tree", None))
+        _ensure_local_cloud_material_uses_cloud_material(new_mat)
 
         mesh = getattr(new_obj, "data", None)
         if mesh is not None and hasattr(mesh, "materials"):
@@ -4063,11 +4259,7 @@ class PLANETKA_PT_LocalCloudsPanel(bpy.types.Panel):
                 icon="HIDE_OFF",
             )
 
-            texture_path = str(cloud_obj.get(LOCAL_CLOUD_OBJ_TEXTURE_PATH_PROP, "") or "").strip()
-            texture_name = str(getattr(cloud_obj, LOCAL_CLOUD_OBJ_TEXTURE_PROP, "") or "").strip()
-            if not texture_name or texture_name == "NONE":
-                texture_name = os.path.basename(texture_path) if texture_path else "No cloud mask assigned"
-            panel_body.label(text=texture_name, icon="IMAGE_DATA")
+            panel_body.label(text=f"File: {_local_cloud_file_label(cloud_obj)}", icon="IMAGE_DATA")
 
             panel_body.prop(cloud_obj, LOCAL_CLOUD_PROP_SIZE_COEF, text="Size Coefficient")
             panel_body.prop(cloud_obj, LOCAL_CLOUD_PROP_LATITUDE, text="Latitude")

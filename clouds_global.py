@@ -98,6 +98,91 @@ def _apply_global_cloud_texture(material, scene=None):
         logger.debug("Planetka clouds: failed assigning merged global cloud texture", exc_info=True)
 
 
+def _global_cloud_final_look_enabled(scene=None):
+    props = getattr(scene, "planetka", None) if scene else None
+    try:
+        return str(getattr(props, "cloud_view_mode", "PREVIEW") or "PREVIEW").strip().upper() == "FINAL"
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return False
+
+
+def _ensure_global_cloud_subdivision_modifier(obj):
+    if obj is None:
+        return None
+    modifier = None
+    for candidate in getattr(obj, "modifiers", ()):
+        if str(getattr(candidate, "type", "")) == "SUBSURF":
+            modifier = candidate
+            break
+    if modifier is None:
+        try:
+            modifier = obj.modifiers.new(name="Subdivision", type='SUBSURF')
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka clouds: failed creating global cloud subdivision modifier", exc_info=True)
+            return None
+    try:
+        modifier.levels = max(1, int(getattr(modifier, "levels", 1)))
+        modifier.render_levels = max(1, int(getattr(modifier, "render_levels", 1)))
+        modifier.show_render = True
+        if hasattr(modifier, "use_adaptive_subdivision"):
+            modifier.use_adaptive_subdivision = True
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka clouds: failed configuring global cloud subdivision modifier", exc_info=True)
+    return modifier
+
+
+def apply_global_cloud_subdivision_viewport_state(scene=None, final_look=None):
+    scene = scene or getattr(bpy.context, "scene", None)
+    if final_look is None:
+        final_look = _global_cloud_final_look_enabled(scene=scene)
+    final_look = bool(final_look)
+    changed = 0
+    for obj in tuple(bpy.data.objects):
+        if not _is_global_cloud_object(obj):
+            continue
+        modifier = _ensure_global_cloud_subdivision_modifier(obj)
+        if modifier is None:
+            continue
+        try:
+            modifier.show_viewport = final_look
+            changed += 1
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka clouds: failed setting global cloud subdivision viewport state", exc_info=True)
+    return changed
+
+
+def _refresh_global_cloud_displacement_material(material):
+    node_tree = getattr(material, "node_tree", None) if material is not None else None
+    if node_tree is None:
+        return False
+    changed = False
+    for node in tuple(getattr(node_tree, "nodes", ())):
+        if str(getattr(node, "bl_idname", "")) != "ShaderNodeGroup":
+            continue
+        group = getattr(node, "node_tree", None)
+        group_name = str(getattr(group, "name", "") or "")
+        if group_name != _local.CLOUD_MATERIAL_GROUP_NAME:
+            continue
+        for socket_name in ("Displacement (Bump) Scale Coefficient",):
+            socket = node.inputs.get(socket_name)
+            if socket is None or not hasattr(socket, "default_value"):
+                continue
+            try:
+                socket.default_value = socket.default_value
+                changed = True
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka clouds: failed refreshing global cloud displacement socket", exc_info=True)
+    try:
+        node_tree.update_tag()
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka clouds: failed tagging global cloud material node tree for update", exc_info=True)
+    try:
+        material.update_tag()
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka clouds: failed tagging global cloud material for update", exc_info=True)
+    return changed
+
+
 def apply_global_cloud_object(obj, scene=None):
     if not _is_global_cloud_object(obj):
         return
@@ -128,6 +213,18 @@ def apply_global_cloud_object(obj, scene=None):
 
     material = _local._resolve_object_material(obj)
     _apply_global_cloud_texture(material, scene=scene)
+    _refresh_global_cloud_displacement_material(material)
+    try:
+        obj.update_tag(refresh={'OBJECT', 'DATA'})
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka clouds: failed tagging global cloud object after radius update", exc_info=True)
+    try:
+        view_layer = getattr(getattr(bpy, "context", None), "view_layer", None)
+        if view_layer is not None:
+            view_layer.update()
+    except (PLANETKA_RECOVERABLE_EXCEPTIONS, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka clouds: failed updating view layer after global cloud radius update", exc_info=True)
+    apply_global_cloud_subdivision_viewport_state(scene=scene)
 
 
 def ensure_global_cloud_layer(scene=None):
@@ -156,6 +253,8 @@ def ensure_global_cloud_layer(scene=None):
     modifiers = getattr(source_obj, "modifiers", None)
     if modifiers:
         for modifier in list(modifiers):
+            if str(getattr(modifier, "type", "")) == "SUBSURF":
+                continue
             try:
                 modifiers.remove(modifier)
             except PLANETKA_RECOVERABLE_EXCEPTIONS:
@@ -253,6 +352,7 @@ class PLANETKA_PT_GlobalCloudsPanel(bpy.types.Panel):
 __all__ = [
     "PLANETKA_PT_GlobalCloudsPanel",
     "apply_global_cloud_object",
+    "apply_global_cloud_subdivision_viewport_state",
     "ensure_global_cloud_layer",
     "_resolve_global_cloud_texture_path",
     "update_enable_global_clouds",

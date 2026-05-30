@@ -102,6 +102,7 @@ Resources/Startup Textures/WT/WT_x000_y000_z180_d720.exr
 Resources/Startup Textures/WT/WT_x180_y000_z180_d720.exr
 Resources/Clouds Global/Clouds_16K.exr
 Resources/planetka_material_lib_45.blend
+Resources/planetka_base_sphere_mesh_cache.blend
 Resources/planetka_global_cloud_layer_min.blend
 Resources/planetka_local_cloud_material.blend
 Resources/planetka_vdb_cloud_template.blend

@@ -24,6 +24,7 @@ from .state import (
     suspend_navigation_camera_control_sync,
     suspend_navigation_shot_updates,
     update_atmosphere_enabled,
+    update_auto_switch_atmosphere,
     update_auto_resolve,
     update_debug_logging,
     update_navigation_shot,
@@ -36,6 +37,7 @@ try:
     from .clouds_local import (
         _local_cloud_texture_items,
         _vdb_cloud_preset_items,
+        update_cloud_view_mode,
         update_enable_local_clouds,
     )
     from .clouds_global import update_enable_global_clouds
@@ -65,6 +67,10 @@ except (ImportError, ModuleNotFoundError):
         return None
 
 
+    def update_cloud_view_mode(_self=None, _context=None):
+        return None
+
+
 _ATMOSPHERE_MODE_ITEMS = (
     ("VOLUMETRIC", "Cycles Optimized", "Use the volumetric Planetka atmosphere object optimized for Cycles"),
     ("EEVEE", "EEVEE Optimized", "Use the lightweight EEVEE supplement atmosphere object"),
@@ -83,6 +89,11 @@ _LOCAL_CLOUD_TEXTURE_SOURCE_ITEMS = (
 _VDB_CLOUD_SOURCE_ITEMS = (
     ("CLOUD", "Planetka Cloud", "Download a Planetka VDB preset from Planetka Cloud"),
     ("LOCAL", "Local VDB File", "Use a local VDB file"),
+)
+
+_CLOUD_VIEW_MODE_ITEMS = (
+    ("PREVIEW", "Preview", "Disable viewport subdivision for Global Clouds and Texture-Based Clouds"),
+    ("FINAL", "Final Look", "Enable viewport subdivision for Global Clouds and Texture-Based Clouds"),
 )
 
 
@@ -711,11 +722,32 @@ class PlanetkaProperties(bpy.types.PropertyGroup):
         update=update_atmosphere_enabled,
     )
 
+    auto_switch_atmosphere: BoolProperty(
+        name="Auto-switch atmosphere",
+        default=True,
+        description=(
+            "Automatically switch Planetka atmosphere type when Blender's render engine changes: "
+            "Cycles uses Cycles Optimized, EEVEE uses EEVEE Optimized"
+        ),
+        update=update_auto_switch_atmosphere,
+    )
+
     enable_global_clouds: BoolProperty(
         name="Enable Global Clouds",
         default=False,
         description="Show or hide global cloud coverage in the viewport and render",
         update=update_enable_global_clouds,
+    )
+
+    cloud_view_mode: EnumProperty(
+        name="Clouds View",
+        description=(
+            "Choose viewport cloud display detail. Preview disables viewport subdivision for Global Clouds "
+            "and Texture-Based Clouds; Final Look enables it. VDB Clouds are unchanged."
+        ),
+        items=_CLOUD_VIEW_MODE_ITEMS,
+        default="PREVIEW",
+        update=update_cloud_view_mode,
     )
 
     global_cloud_texture_source: EnumProperty(
