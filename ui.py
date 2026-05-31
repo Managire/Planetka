@@ -709,6 +709,98 @@ def _draw_resolve_download_indicator(layout, scene, runtime, runtime_code, runti
     )
 
 
+def _draw_data_control_progress_bar(layout, title, icon, factor, text, alert=False):
+    row = layout.row(align=True)
+    row.alert = bool(alert)
+    row.label(text=str(title or ""), icon=str(icon or "IMPORT"))
+    try:
+        layout.progress(
+            factor=max(0.0, min(1.0, float(factor or 0.0))),
+            type='BAR',
+            text=str(text or ""),
+        )
+    except (AttributeError, TypeError, RuntimeError):
+        fallback = layout.row(align=True)
+        fallback.alert = bool(alert)
+        fallback.label(text=str(text or ""), icon=str(icon or "IMPORT"))
+
+
+def _draw_cloud_data_control_progress(layout_factory, cloud_runtime, title, label_tokens):
+    progress = cloud_runtime.get_cloud_download_progress()
+    progress_label = str(progress.get("label", "") or "")
+    progress_label_upper = progress_label.upper()
+    tokens = tuple(str(token or "").upper() for token in label_tokens if str(token or "").strip())
+    if tokens and not any(token in progress_label_upper for token in tokens):
+        return False
+
+    progress_error = str(progress.get("error", "") or "").strip()
+    active = bool(progress.get("active", False))
+    if not active and not progress_error:
+        return False
+
+    layout = layout_factory()
+    downloaded = max(0, int(progress.get("downloaded_bytes", 0) or 0))
+    total = max(0, int(progress.get("total_bytes", 0) or 0))
+    if progress_error:
+        _draw_data_control_progress_bar(layout, title, "ERROR", 0.0, progress_error, alert=True)
+        return True
+    if total > 0:
+        text = f"Downloading: {_fmt_bytes(downloaded)} / {_fmt_bytes(total)}"
+        factor = downloaded / float(total)
+    else:
+        text = f"Downloading: {_fmt_bytes(downloaded)}"
+        factor = 0.0
+    _draw_data_control_progress_bar(layout, title, "IMPORT", factor, text)
+    return True
+
+
+def _draw_data_control_download_progress(layout, scene, runtime, runtime_code, runtime_text):
+    rows_box = None
+
+    def ensure_box():
+        nonlocal rows_box
+        if rows_box is None:
+            rows_box = layout.box()
+        return rows_box
+
+    surface_state = _resolve_download_indicator_state(scene, runtime, runtime_code, runtime_text)
+    surface_runtime_code = str(surface_state.get("runtime_code", "") or "").upper()
+    surface_active = bool(surface_state.get("download_active", False)) or surface_runtime_code in {
+        "QUEUED",
+        "PREPARING",
+        "DOWNLOADING",
+        "FINALIZING",
+        "FINALIZE_QUEUED",
+    }
+    if surface_active or bool(surface_state.get("alert", False)):
+        _draw_data_control_progress_bar(
+            ensure_box(),
+            "Surface Data",
+            str(surface_state.get("status_icon", "IMPORT") or "IMPORT"),
+            float(surface_state.get("factor", 0.0) or 0.0),
+            str(surface_state.get("progress_text", "") or "Waiting for data"),
+            alert=bool(surface_state.get("alert", False)),
+        )
+
+    try:
+        from . import clouds_local as cloud_runtime
+    except (ImportError, ModuleNotFoundError):
+        cloud_runtime = None
+    if cloud_runtime is not None:
+        _draw_cloud_data_control_progress(
+            ensure_box,
+            cloud_runtime,
+            "Texture-Based Cloud Data",
+            ("TEXTURE-BASED", "TEXTURE BASED"),
+        )
+        _draw_cloud_data_control_progress(
+            ensure_box,
+            cloud_runtime,
+            "VDB Cloud Data",
+            ("VDB",),
+        )
+
+
 def _estimate_bytes_for_quality(estimates, mode):
     mode_key = str(mode or "").upper()
     try:
@@ -1580,6 +1672,7 @@ def _draw_live_telemetry(layout, scene):
         elif _full_quality_download_success_for_ui(scene):
             success_row = quality_box.row(align=True)
             success_row.label(text="Full Quality download successful", icon="CHECKMARK")
+        _draw_data_control_download_progress(quality_box, scene, runtime, runtime_code, runtime_text)
 
     throttle_message = str(get_status_message(prefs) or "").strip()
     if throttle_message and "throttl" in throttle_message.lower():
@@ -1771,6 +1864,7 @@ _SURFACE_GRADING_SECTION_SOCKET_MAP = {
     "Global": {
         "surface brightness",
         "surface saturation",
+        "surface contrast",
     },
     "Water": {
         "roughness",
@@ -1829,6 +1923,8 @@ def _surface_grading_socket_label(socket_name):
         return "Brightness"
     if normalized == "surface saturation":
         return "Saturation"
+    if normalized == "surface contrast":
+        return "Contrast"
     if normalized == "night terminator shift":
         return "Terminator Shift"
     return str(socket_name or "Value")
@@ -2033,30 +2129,6 @@ def _draw_atmosphere_socket(container, socket, label=None):
         return
 
 
-def _draw_atmosphere_notice(layout, mode):
-    notice = layout.box()
-    if str(mode or "VOLUMETRIC").strip().upper() == "VOLUMETRIC":
-        for line in (
-            "Recommended Render Settings",
-            "In Volumes Section:",
-            "Biased: On",
-            "Step Rate Render: 1.00",
-            "Viewport: 1.00",
-            "Max Steps: 16 (+-8)",
-        ):
-            notice.label(text=line)
-    else:
-        for line in (
-            "Recommended Render Settings",
-            "In Volume section:",
-            "Resolution: 1:2 or 1:1",
-            "Steps: 32",
-            "Distribution: 1.000",
-            "Max Depth: 16",
-        ):
-            notice.label(text=line)
-
-
 def _draw_volumetric_atmosphere_node(layout, node):
     sockets = _socket_map(node)
     for socket_name in ("Height (km)", "Density Coefficient", "Falloff Exponent"):
@@ -2166,6 +2238,34 @@ def _draw_global_clouds(layout, scene, props):
             _draw_global_cloud_material_settings(cloud_box)
 
 
+def _draw_cloud_download_progress(layout, cloud_runtime, label_tokens):
+    progress = cloud_runtime.get_cloud_download_progress()
+    progress_label = str(progress.get("label", "") or "")
+    progress_label_upper = progress_label.upper()
+    tokens = tuple(str(token or "").upper() for token in label_tokens if str(token or "").strip())
+    if tokens and not any(token in progress_label_upper for token in tokens):
+        return
+
+    progress_error = str(progress.get("error", "") or "").strip()
+    if bool(progress.get("active", False)):
+        downloaded = max(0, int(progress.get("downloaded_bytes", 0) or 0))
+        total = max(0, int(progress.get("total_bytes", 0) or 0))
+        if total > 0:
+            text = f"Downloading: {_fmt_bytes(downloaded)} / {_fmt_bytes(total)}"
+            factor = min(1.0, max(0.0, downloaded / float(total)))
+        else:
+            text = f"Downloading: {_fmt_bytes(downloaded)}"
+            factor = 0.0
+        try:
+            layout.progress(factor=factor, type='BAR', text=text)
+        except (AttributeError, TypeError, RuntimeError):
+            layout.label(text=text, icon="IMPORT")
+    elif progress_error:
+        err_box = layout.box()
+        err_box.alert = True
+        err_box.label(text=progress_error, icon="ERROR")
+
+
 def _draw_local_clouds(layout, context, props):
     try:
         from . import clouds_local as cloud_runtime
@@ -2198,27 +2298,7 @@ def _draw_local_clouds(layout, context, props):
     add_row = picker_box.row(align=True)
     add_row.operator("planetka.add_local_cloud", text="Add Cloud", icon="ADD")
 
-    progress = cloud_runtime.get_cloud_download_progress()
-    progress_error = str(progress.get("error", "") or "").strip()
-    progress_label = str(progress.get("label", "") or "")
-    is_texture_based_download = "TEXTURE-BASED" in progress_label.upper()
-    if bool(progress.get("active", False)) and is_texture_based_download:
-        downloaded = max(0, int(progress.get("downloaded_bytes", 0) or 0))
-        total = max(0, int(progress.get("total_bytes", 0) or 0))
-        if total > 0:
-            text = f"Downloading: {_fmt_bytes(downloaded)} / {_fmt_bytes(total)}"
-            factor = min(1.0, max(0.0, downloaded / float(total)))
-        else:
-            text = f"Downloading: {_fmt_bytes(downloaded)}"
-            factor = 0.0
-        try:
-            picker_box.progress(factor=factor, type='BAR', text=text)
-        except (AttributeError, TypeError, RuntimeError):
-            picker_box.label(text=text, icon="IMPORT")
-    elif progress_error and is_texture_based_download:
-        err_box = picker_box.box()
-        err_box.alert = True
-        err_box.label(text=progress_error, icon="ERROR")
+    _draw_cloud_download_progress(picker_box, cloud_runtime, ("TEXTURE-BASED", "TEXTURE BASED"))
 
     clouds = cloud_runtime._sort_cloud_objects_by_suffix(list(cloud_runtime._iter_local_cloud_objects()))
     if not clouds:
@@ -2244,7 +2324,7 @@ def _draw_local_clouds(layout, context, props):
             toggle=True,
             icon="HIDE_OFF",
         )
-        cloud_box.label(text=f"File: {cloud_runtime._local_cloud_file_label(cloud_obj)}", icon="IMAGE_DATA")
+        cloud_box.label(text=cloud_runtime._local_cloud_file_label(cloud_obj), icon="IMAGE_DATA")
 
         downscale_warning = str(cloud_obj.get(cloud_runtime.LOCAL_CLOUD_DOWNSCALE_WARNING_PROP, "") or "").strip()
         if downscale_warning:
@@ -2256,9 +2336,16 @@ def _draw_local_clouds(layout, context, props):
         cloud_box.prop(cloud_obj, cloud_runtime.LOCAL_CLOUD_PROP_LONGITUDE, text="Longitude")
         cloud_box.prop(cloud_obj, cloud_runtime.LOCAL_CLOUD_PROP_ROTATION_DEG, text="Rotation")
         cloud_box.prop(cloud_obj, cloud_runtime.LOCAL_CLOUD_PROP_ALTITUDE_M, text="Altitude (m)")
-        cloud_box.prop(cloud_obj, cloud_runtime.LOCAL_CLOUD_PROP_THICKNESS_M, text="Thickness (m)")
+        cloud_box.prop(cloud_obj, cloud_runtime.LOCAL_CLOUD_PROP_CLOUD_COLOR, text="Cloud Color")
         cloud_box.prop(cloud_obj, cloud_runtime.LOCAL_CLOUD_PROP_DENSITY, text="Density")
         cloud_box.prop(cloud_obj, cloud_runtime.LOCAL_CLOUD_PROP_DENSITY_GAMMA, text="Density Gamma")
+        cloud_box.prop(cloud_obj, cloud_runtime.LOCAL_CLOUD_PROP_CONTRAST, text="Contrast")
+        cloud_box.prop(cloud_obj, cloud_runtime.LOCAL_CLOUD_PROP_HORIZON_TRANSPARENCY, text="Horizon Transparency")
+        cloud_box.prop(cloud_obj, cloud_runtime.LOCAL_CLOUD_PROP_SUBSURFACE_SCALE, text="Subsurface Scale")
+        cloud_box.prop(cloud_obj, cloud_runtime.LOCAL_CLOUD_PROP_IOR, text="IOR")
+        cloud_box.prop(cloud_obj, cloud_runtime.LOCAL_CLOUD_PROP_ROUGHNESS, text="Roughness")
+        cloud_box.prop(cloud_obj, cloud_runtime.LOCAL_CLOUD_PROP_ANISOTROPY, text="Anisotropy")
+        cloud_box.prop(cloud_obj, cloud_runtime.LOCAL_CLOUD_PROP_DISPLACEMENT_SCALE, text="Displacement Scale")
 
         row = cloud_box.row(align=True)
         op = row.operator("planetka.reset_local_cloud_to_camera_view", text="Reset to Camera", icon="TRACKING")
@@ -2299,26 +2386,7 @@ def _draw_vdb_clouds(layout, context, props):
     add_row = picker_box.row(align=True)
     add_row.operator("planetka.add_vdb_cloud", text="Add Cloud", icon="ADD")
 
-    progress = cloud_runtime.get_cloud_download_progress()
-    progress_error = str(progress.get("error", "") or "").strip()
-    progress_label = str(progress.get("label", "") or "")
-    if bool(progress.get("active", False)) and "VDB" in progress_label.upper():
-        downloaded = max(0, int(progress.get("downloaded_bytes", 0) or 0))
-        total = max(0, int(progress.get("total_bytes", 0) or 0))
-        if total > 0:
-            text = f"Downloading: {_fmt_bytes(downloaded)} / {_fmt_bytes(total)}"
-            factor = min(1.0, max(0.0, downloaded / float(total)))
-        else:
-            text = f"Downloading: {_fmt_bytes(downloaded)}"
-            factor = 0.0
-        try:
-            picker_box.progress(factor=factor, type='BAR', text=text)
-        except (AttributeError, TypeError, RuntimeError):
-            picker_box.label(text=text, icon="IMPORT")
-    elif progress_error and "VDB" in progress_label.upper():
-        err_box = picker_box.box()
-        err_box.alert = True
-        err_box.label(text=progress_error, icon="ERROR")
+    _draw_cloud_download_progress(picker_box, cloud_runtime, ("VDB",))
 
     clouds = cloud_runtime._sort_cloud_objects_by_suffix(list(cloud_runtime._iter_vdb_cloud_objects()))
     if not clouds:
@@ -2344,7 +2412,7 @@ def _draw_vdb_clouds(layout, context, props):
             toggle=True,
             icon="HIDE_OFF",
         )
-        cloud_box.label(text=f"File: {cloud_runtime._vdb_file_label(cloud_obj)}", icon="FILE")
+        cloud_box.label(text=cloud_runtime._vdb_file_label(cloud_obj), icon="FILE")
         cloud_box.prop(cloud_obj, cloud_runtime.VDB_CLOUD_PROP_SIZE_COEF, text="Size")
         cloud_box.prop(cloud_obj, cloud_runtime.VDB_CLOUD_PROP_LATITUDE, text="Latitude")
         cloud_box.prop(cloud_obj, cloud_runtime.VDB_CLOUD_PROP_LONGITUDE, text="Longitude")
@@ -2398,7 +2466,6 @@ def _draw_atmosphere(layout, context):
     mode_row.prop_enum(props, "atmosphere_mode", "EEVEE", text="EEVEE Optimized")
 
     mode = str(getattr(props, "atmosphere_mode", "VOLUMETRIC") or "VOLUMETRIC").strip().upper()
-    _draw_atmosphere_notice(layout, mode)
 
     nodes = _iter_atmosphere_nodes(mode)
     if not nodes:
@@ -2601,7 +2668,7 @@ class PLANETKA_PT_SettingsPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
             )
 
 class PLANETKA_PT_LiveTelemetryPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Quality Settings"
+    bl_label = "Data Control"
     bl_idname = "PLANETKA_PT_live_telemetry"
     bl_order = 9001
     bl_options = set()
@@ -2618,7 +2685,7 @@ class PLANETKA_PT_LiveTelemetryPanel(_PLANETKA_PT_BaseSection, bpy.types.Panel):
 
 
 class PLANETKA_PT_LiveTelemetryPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Quality Settings"
+    bl_label = "Data Control"
     bl_idname = "PLANETKA_PT_live_telemetry_collapsed"
     bl_order = 9001
     bl_options = {'DEFAULT_CLOSED'}
@@ -2636,7 +2703,7 @@ class PLANETKA_PT_LiveTelemetryPanelCollapsed(_PLANETKA_PT_BaseSection, bpy.type
 
 
 class PLANETKA_PT_LiveTelemetryPanelFailure(_PLANETKA_PT_BaseSection, bpy.types.Panel):
-    bl_label = "Quality Settings"
+    bl_label = "Data Control"
     bl_idname = "PLANETKA_PT_live_telemetry_failure"
     bl_order = 9001
     bl_options = set()

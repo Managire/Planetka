@@ -104,8 +104,9 @@ _STARTUP_PROFILE_FACTORY_PROP_VALUES = {
     "anim_ab_b_capture_timecode": "",
 }
 _SURFACE_GRADING_FACTORY_VALUES = {
-    "Surface Brightness": 2.0,
+    "Surface Brightness": 1.0,
     "Surface Saturation": 1.0,
+    "Surface Contrast": 1.0,
     "Roughness": 0.4,
     "IOR": 1.333,
     "Hue": 0.5,
@@ -126,6 +127,7 @@ _SURFACE_GRADING_SECTION_SOCKET_NAMES = {
     "GLOBAL": {
         "surface brightness",
         "surface saturation",
+        "surface contrast",
     },
     "WATER": {
         "roughness",

@@ -1,4 +1,3 @@
-import io
 import logging
 import math
 import os
@@ -78,7 +77,7 @@ _LEGACY_LIBRARY_GROUPS_TO_PURGE = (
 _SURFACE_DETAIL_VERSION_KEY = "planetka_surface_detail_v"
 _SURFACE_DETAIL_VERSION = 1
 _SURFACE_SHADER_UPDATE_VERSION_KEY = "planetka_surface_shader_update_v"
-_SURFACE_SHADER_UPDATE_VERSION = 3
+_SURFACE_SHADER_UPDATE_VERSION = 4
 
 _DETAIL_SOCKET_SCALE = "Procedural Detail Scale"
 _DETAIL_SOCKET_FOREST = "Forest Detail Strength"
@@ -87,8 +86,9 @@ _DETAIL_SOCKET_ROCK_COLOR = "Rock Color Variation"
 _DETAIL_SOCKET_MICRO_DISP = "Micro Displacement Strength"
 
 _SURFACE_DEFAULT_INPUT_SPECS = (
-    ("Surface Brightness", 5.0, 0.0, 10.0),
+    ("Surface Brightness", 1.0, 0.0, 10.0),
     ("Surface Saturation", 1.0, 0.0, 5.0),
+    ("Surface Contrast", 1.0, 0.0, 5.0),
     ("Roughness", 0.4, 0.0, 1.0),
     ("IOR", 1.333, 0.0, 3.0),
     ("Saturation", 1.0, 0.0, 2.0),
@@ -110,6 +110,7 @@ _SURFACE_PANEL_WAVES = "Waves"
 _SHADER_INPUT_DESCRIPTIONS = {
     "Surface Brightness": "Multiplier for land/base-color brightness before final shading.",
     "Surface Saturation": "Multiplier for land/base-color saturation.",
+    "Surface Contrast": "Multiplier for land/base-color contrast before final shading.",
     "Roughness": "Base surface roughness (0 = mirror-like, 1 = fully diffuse).",
     "IOR": "Index of refraction used by water/specular shading.",
     "Saturation": "Water color saturation adjustment.",
@@ -2145,25 +2146,10 @@ def _set_image_colorspace_safe(image, colorspace):
 
 def _get_embedded_material_library_payload():
     payload = get_material_library_bytes()
-    if payload.startswith(b"BLENDER"):
+    if payload.startswith(b"BLENDER") or payload.startswith(_ZSTD_MAGIC):
         return payload
 
-    if payload.startswith(_ZSTD_MAGIC):
-        try:
-            import zstandard as zstd
-        except (ImportError, ModuleNotFoundError) as exc:
-            raise RuntimeError(
-                "Planetka: embedded material library uses zstd compression but zstandard module is unavailable."
-            ) from exc
-        try:
-            with zstd.ZstdDecompressor().stream_reader(io.BytesIO(payload)) as reader:
-                payload = reader.read()
-        except (RuntimeError, TypeError, ValueError, OSError) as exc:
-            raise RuntimeError("Planetka: failed to decompress embedded material library payload.") from exc
-
-    if not payload.startswith(b"BLENDER"):
-        raise RuntimeError("Planetka: embedded material library payload is invalid.")
-    return payload
+    raise RuntimeError("Planetka: embedded material library payload is invalid.")
 
 
 def _legacy_material_library_path():
@@ -2193,11 +2179,49 @@ def _volumetric_atmosphere_library_candidates():
 
 
 def _append_material_library_from_blend(blend_path):
+    existing_object_pointers = {
+        int(obj.as_pointer())
+        for obj in getattr(bpy.data, "objects", ())
+    }
     with bpy.data.libraries.load(blend_path, link=False) as (data_from, data_to):
         available_materials = set(data_from.materials)
         available_groups = set(data_from.node_groups)
         data_to.materials = [name for name in MATERIAL_LIBRARY_MATERIALS if name in available_materials]
         data_to.node_groups = [name for name in MATERIAL_LIBRARY_NODE_GROUPS if name in available_groups]
+    _remove_unintended_material_library_cloud_objects(existing_object_pointers)
+
+
+def _remove_unintended_material_library_cloud_objects(existing_object_pointers):
+    sample_names = {
+        "Texture-Based Cloud No 001",
+        "VDB Cloud No 001",
+        "Planetka Cloud VDB",
+    }
+    sample_roles = {
+        "local_cloud",
+        "vdb_cloud",
+        "vdb_cloud_template",
+    }
+    for obj in tuple(getattr(bpy.data, "objects", ())):
+        try:
+            if int(obj.as_pointer()) in existing_object_pointers:
+                continue
+            name = str(getattr(obj, "name", "") or "")
+            role = str(obj.get("planetka_cloud_role", "") or "")
+            if name not in sample_names and role not in sample_roles:
+                continue
+            data = getattr(obj, "data", None)
+            bpy.data.objects.remove(obj, do_unlink=True)
+            if data is not None and int(getattr(data, "users", 0) or 0) == 0:
+                data_type = str(getattr(getattr(data, "bl_rna", None), "identifier", "") or "")
+                if data_type == "Volume":
+                    bpy.data.volumes.remove(data)
+                elif data_type == "Mesh":
+                    bpy.data.meshes.remove(data)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka asset builder: failed removing unintended cloud sample object", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka asset builder: failed removing unintended cloud sample object", exc_info=True)
 
 
 def _append_fake_atmosphere_assets_from_blend(blend_path):

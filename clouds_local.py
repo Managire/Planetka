@@ -14,7 +14,7 @@ import urllib.request
 
 import bpy
 import bpy.utils.previews
-from bpy.props import EnumProperty, FloatProperty, StringProperty
+from bpy.props import EnumProperty, FloatProperty, FloatVectorProperty, StringProperty
 from mathutils import Vector
 
 from .asset_builder import ensure_planetka_root
@@ -153,8 +153,16 @@ LOCAL_CLOUD_PROP_ALTITUDE_M = "planetka_local_cloud_altitude_m"
 LOCAL_CLOUD_PROP_SIZE_COEF = "planetka_local_cloud_size_coef"
 LOCAL_CLOUD_PROP_ROTATION_DEG = "planetka_local_cloud_rotation_deg"
 LOCAL_CLOUD_PROP_THICKNESS_M = "planetka_local_cloud_thickness_m"
+LOCAL_CLOUD_PROP_CLOUD_COLOR = "planetka_local_cloud_color"
 LOCAL_CLOUD_PROP_DENSITY = "planetka_local_cloud_density"
 LOCAL_CLOUD_PROP_DENSITY_GAMMA = "planetka_local_cloud_density_gamma"
+LOCAL_CLOUD_PROP_CONTRAST = "planetka_local_cloud_contrast"
+LOCAL_CLOUD_PROP_HORIZON_TRANSPARENCY = "planetka_local_cloud_horizon_transparency"
+LOCAL_CLOUD_PROP_SUBSURFACE_SCALE = "planetka_local_cloud_subsurface_scale"
+LOCAL_CLOUD_PROP_IOR = "planetka_local_cloud_ior"
+LOCAL_CLOUD_PROP_ROUGHNESS = "planetka_local_cloud_roughness"
+LOCAL_CLOUD_PROP_ANISOTROPY = "planetka_local_cloud_anisotropy"
+LOCAL_CLOUD_PROP_DISPLACEMENT_SCALE = "planetka_local_cloud_displacement_scale"
 LOCAL_CLOUD_PROP_BASE_SCALE = "planetka_local_cloud_base_scale"
 LOCAL_CLOUD_PROP_CAP_HALF_ANGLE_DEG = "planetka_local_cloud_cap_half_angle_deg"
 LOCAL_CLOUD_OBJ_TEXTURE_PROP = "planetka_local_cloud_texture"
@@ -183,18 +191,21 @@ VDB_CLOUD_PREVIEW_D_LEVEL_PROP = "planetka_vdb_cloud_preview_d_level"
 VDB_CLOUD_PROJECTED_PIXELS_PROP = "planetka_vdb_cloud_projected_pixels"
 VDB_CLOUD_DENSITY_NODE_NAME = "VDB Density"
 DEFAULT_CLOUD_ALTITUDE_M = 2000.0
-DEFAULT_VDB_CLOUD_DENSITY = 2.0
+DEFAULT_VDB_CLOUD_DENSITY = 1.0
 VDB_CLOUD_REFERENCE_EARTH_RADIUS_BU = 2.0
 VDB_CLOUD_DEFAULT_SCALE_FACTOR = 5e-6
 VDB_CLOUD_SCALE_CALIBRATED_PROP = "planetka_vdb_cloud_scale_calibrated"
 VDB_CLOUD_ADAPTIVE_D_LEVELS = (1, 2, 4, 8, 16, 32, 64, 128, 256, 360)
 VDB_CLOUD_ADAPTIVE_OVERSAMPLE = 1.15
+_VDB_CLOUD_FULL_LOD_LEVELS = tuple(level for level in VDB_CLOUD_ADAPTIVE_D_LEVELS if int(level) > 1)
 LOCAL_CLOUD_GPU_TEXTURE_MAX_SIZE_FALLBACK = 16384
 LOCAL_CLOUD_GPU_TEXTURE_MAX_SIZE_MIN = 1024
 LOCAL_CLOUD_BASE_HALF_ANGLE_DEG = 0.08
 LOCAL_CLOUD_SIZE_REMOTE_SCALE = 0.01
 LOCAL_CLOUD_ADAPTIVE_D_LEVELS = (1, 2, 4, 8, 16, 32, 64, 128, 256, 360)
 LOCAL_CLOUD_ADAPTIVE_OVERSAMPLE = 1.15
+LOCAL_CLOUD_ANISOTROPY_DEFAULT = 0.98
+LOCAL_CLOUD_DISPLACEMENT_SCALE_DEFAULT = 0.02
 LOCAL_CLOUD_D_LEVEL_PROP = "planetka_texture_based_cloud_d_level"
 LOCAL_CLOUD_PROJECTED_PIXELS_PROP = "planetka_texture_based_cloud_projected_pixels"
 LOCAL_CLOUD_LOADED_TEXTURE_PROP = "planetka_texture_based_cloud_loaded_texture"
@@ -353,7 +364,7 @@ def _download_public_cloud_asset(folder, file_name, progress_label=""):
     destination = os.path.join(cache_dir, safe_name)
     if os.path.isfile(destination) and os.path.getsize(destination) > 0:
         if progress_label:
-            _set_cloud_download_progress(active=False, error="", file_name=safe_name)
+            _set_cloud_download_progress(active=False, label=str(progress_label), error="", file_name=safe_name)
         return destination
 
     base_url = get_api_base_url().rstrip("/")
@@ -361,6 +372,17 @@ def _download_public_cloud_asset(folder, file_name, progress_label=""):
     temp_path = f"{destination}.part.{os.getpid()}"
     try:
         os.makedirs(cache_dir, exist_ok=True)
+        if progress_label:
+            _set_cloud_download_progress(
+                active=True,
+                label=str(progress_label),
+                file_name=safe_name,
+                downloaded_bytes=0,
+                total_bytes=0,
+                error="",
+                started_at=time.time(),
+                finished_at=0.0,
+            )
         request = urllib.request.Request(url, method="GET", headers={"User-Agent": "Planetka-Blender"})
         with urllib.request.urlopen(request, timeout=120) as response, open(temp_path, "wb") as handle:
             total_bytes = 0
@@ -400,7 +422,13 @@ def _download_public_cloud_asset(folder, file_name, progress_label=""):
     except (urllib.error.HTTPError, urllib.error.URLError, OSError, RuntimeError, ValueError):
         logger.debug("Planetka clouds: failed downloading public cloud asset", exc_info=True)
         if progress_label:
-            _set_cloud_download_progress(active=False, error=f"Failed downloading {safe_name}", finished_at=time.time())
+            _set_cloud_download_progress(
+                active=False,
+                label=str(progress_label),
+                file_name=safe_name,
+                error=f"Failed downloading {safe_name}",
+                finished_at=time.time(),
+            )
         try:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
@@ -408,6 +436,17 @@ def _download_public_cloud_asset(folder, file_name, progress_label=""):
             pass
         return ""
     return destination if os.path.isfile(destination) and os.path.getsize(destination) > 0 else ""
+
+
+def _clear_cloud_download_progress_error(progress_label="", file_name=""):
+    if progress_label:
+        _set_cloud_download_progress(
+            active=False,
+            label=str(progress_label),
+            file_name=os.path.basename(str(file_name or "")),
+            error="",
+            finished_at=time.time(),
+        )
 
 
 def _refresh_remote_local_cloud_assets(force=False):
@@ -1347,6 +1386,26 @@ def _is_known_remote_vdb_cloud_file(file_name):
     return bool(base_name in REMOTE_VDB_CLOUD_FILES)
 
 
+def _published_vdb_cloud_lod_levels(file_name):
+    base_name, _level = _split_vdb_lod_filename(file_name)
+    if base_name not in REMOTE_VDB_CLOUD_FILES:
+        return tuple()
+    return _VDB_CLOUD_FULL_LOD_LEVELS
+
+
+def _nearest_published_vdb_lod_levels(file_name, requested_level):
+    levels = _published_vdb_cloud_lod_levels(file_name)
+    if not levels:
+        return tuple()
+    try:
+        requested = max(1, int(requested_level))
+    except (TypeError, ValueError):
+        requested = 1
+    coarser_or_equal = [level for level in levels if level >= requested]
+    finer = [level for level in levels if level < requested]
+    return tuple(sorted(coarser_or_equal) + sorted(finer, reverse=True))
+
+
 def _candidate_local_vdb_lod_path(source_path, d_level):
     source = bpy.path.abspath(str(source_path or ""))
     if not source:
@@ -1368,14 +1427,14 @@ def _resolve_remote_vdb_cloud_asset(file_name, progress_label=""):
 
     requested_base, requested_level = _split_vdb_lod_filename(safe_name)
     candidate_names = []
-    for level in sorted(
-        {int(value) for value in VDB_CLOUD_ADAPTIVE_D_LEVELS if int(value) >= int(requested_level)}
-    ):
+    for level in _nearest_published_vdb_lod_levels(requested_base, requested_level):
         candidate = _vdb_lod_filename(requested_base, level)
         if candidate and candidate not in candidate_names:
             candidate_names.append(candidate)
-    if safe_name not in candidate_names:
+    if int(requested_level) <= 1 and safe_name not in candidate_names:
         candidate_names.insert(0, safe_name)
+    if not candidate_names:
+        return ""
 
     assets = _refresh_remote_vdb_cloud_assets(force=False)
     for candidate_name in candidate_names:
@@ -1850,8 +1909,20 @@ def _append_from_reference(object_names=(), material_names=(), blend_path=None):
         data_to.materials = material_targets
 
 
+def _unlink_object_from_all_collections(obj):
+    if obj is None:
+        return
+    for collection in tuple(getattr(obj, "users_collection", ()) or ()):
+        try:
+            collection.objects.unlink(obj)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka clouds: failed unlinking reference object from collection", exc_info=True)
+
+
 def _is_local_cloud_object(obj):
     if obj is None or str(getattr(obj, "type", "")) != "MESH":
+        return False
+    if not tuple(getattr(obj, "users_collection", ()) or ()):
         return False
     try:
         if str(obj.get(CLOUD_ROLE_KEY, "")) == LOCAL_CLOUD_ROLE:
@@ -1868,6 +1939,8 @@ def _is_local_cloud_object(obj):
 
 def _is_vdb_cloud_object(obj):
     if obj is None:
+        return False
+    if not tuple(getattr(obj, "users_collection", ()) or ()):
         return False
     try:
         if str(obj.get(CLOUD_ROLE_KEY, "")) == VDB_CLOUD_TEMPLATE_ROLE:
@@ -2015,10 +2088,80 @@ def _find_material_output_node(material):
     return None
 
 
+def _is_named_blender_id(name, base_name):
+    text = str(name or "")
+    base = str(base_name or "")
+    if not text or not base:
+        return False
+    return bool(re.fullmatch(re.escape(base) + r"\.\d{3}", text))
+
+
+def _is_suffixed_cloud_material_group_name(name):
+    return _is_named_blender_id(name, CLOUD_MATERIAL_GROUP_NAME)
+
+
+def _canonicalize_cloud_material_group(group):
+    if group is None:
+        return None
+    name = str(getattr(group, "name", "") or "")
+    if name == CLOUD_MATERIAL_GROUP_NAME:
+        return group
+    if not _is_suffixed_cloud_material_group_name(name):
+        return group
+    canonical = bpy.data.node_groups.get(CLOUD_MATERIAL_GROUP_NAME)
+    if canonical is not None and canonical != group:
+        return canonical
+    try:
+        group.name = CLOUD_MATERIAL_GROUP_NAME
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka clouds: failed canonicalizing Planetka Cloud Material group name", exc_info=True)
+    return bpy.data.node_groups.get(CLOUD_MATERIAL_GROUP_NAME) or group
+
+
+def _remove_unused_suffixed_cloud_material_groups():
+    for group in tuple(getattr(bpy.data, "node_groups", ())):
+        if not _is_suffixed_cloud_material_group_name(str(getattr(group, "name", "") or "")):
+            continue
+        try:
+            if int(getattr(group, "users", 0) or 0) == 0:
+                bpy.data.node_groups.remove(group)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka clouds: failed removing unused suffixed Planetka Cloud Material group", exc_info=True)
+
+
+def _socket_default_values(node):
+    values = {}
+    for socket in tuple(getattr(node, "inputs", ())):
+        name = str(getattr(socket, "name", "") or "")
+        if not name or not hasattr(socket, "default_value"):
+            continue
+        try:
+            values[name] = socket.default_value
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka clouds: failed reading cloud material socket default", exc_info=True)
+    return values
+
+
+def _restore_socket_default_values(node, values):
+    if node is None or not isinstance(values, dict):
+        return
+    for name, value in values.items():
+        socket = node.inputs.get(name)
+        if socket is None or not hasattr(socket, "default_value"):
+            continue
+        try:
+            socket.default_value = value
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka clouds: failed restoring cloud material socket default", exc_info=True)
+
+
 def _ensure_planetka_cloud_material_group():
     group = bpy.data.node_groups.get(CLOUD_MATERIAL_GROUP_NAME)
     if group is not None:
         return group
+    for candidate in tuple(getattr(bpy.data, "node_groups", ())):
+        if _is_suffixed_cloud_material_group_name(str(getattr(candidate, "name", "") or "")):
+            return _canonicalize_cloud_material_group(candidate)
     try:
         _append_from_reference(
             material_names=(GLOBAL_CLOUD_MATERIAL_NAME,),
@@ -2028,7 +2171,13 @@ def _ensure_planetka_cloud_material_group():
         logger.debug("Planetka clouds: failed appending Planetka Cloud Material group", exc_info=True)
     except (RuntimeError, TypeError, ValueError, AttributeError):
         logger.debug("Planetka clouds: failed appending Planetka Cloud Material group", exc_info=True)
-    return bpy.data.node_groups.get(CLOUD_MATERIAL_GROUP_NAME)
+    group = bpy.data.node_groups.get(CLOUD_MATERIAL_GROUP_NAME)
+    if group is not None:
+        return group
+    for candidate in tuple(getattr(bpy.data, "node_groups", ())):
+        if _is_suffixed_cloud_material_group_name(str(getattr(candidate, "name", "") or "")):
+            return _canonicalize_cloud_material_group(candidate)
+    return None
 
 
 def _remove_socket_links(node_tree, socket):
@@ -2076,6 +2225,7 @@ def _ensure_local_cloud_material_uses_cloud_material(material):
 
     nodes = node_tree.nodes
     group_node = None
+    duplicate_cloud_nodes = []
     legacy_nodes = []
     for node in tuple(nodes):
         if str(getattr(node, "bl_idname", "")) != "ShaderNodeGroup":
@@ -2083,6 +2233,21 @@ def _ensure_local_cloud_material_uses_cloud_material(material):
         child_name = str(getattr(getattr(node, "node_tree", None), "name", "") or "")
         if child_name == CLOUD_MATERIAL_GROUP_NAME and group_node is None:
             group_node = node
+        elif child_name == CLOUD_MATERIAL_GROUP_NAME:
+            duplicate_cloud_nodes.append(node)
+        elif _is_suffixed_cloud_material_group_name(child_name) and group_node is None:
+            group_node = node
+            values = _socket_default_values(group_node)
+            try:
+                group_node.node_tree = cloud_group
+                group_node.name = CLOUD_MATERIAL_GROUP_NAME
+                group_node.label = CLOUD_MATERIAL_GROUP_NAME
+                _restore_socket_default_values(group_node, values)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka clouds: failed canonicalizing suffixed local cloud shader group node", exc_info=True)
+                return False
+        elif _is_suffixed_cloud_material_group_name(child_name):
+            duplicate_cloud_nodes.append(node)
         elif child_name == LEGACY_LOCAL_CLOUD_SHADER_GROUP_NAME:
             legacy_nodes.append(node)
 
@@ -2111,6 +2276,11 @@ def _ensure_local_cloud_material_uses_cloud_material(material):
             nodes.remove(legacy_node)
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
             logger.debug("Planetka clouds: failed removing duplicate legacy local cloud shader group node", exc_info=True)
+    for duplicate_node in duplicate_cloud_nodes:
+        try:
+            nodes.remove(duplicate_node)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka clouds: failed removing duplicate Planetka Cloud Material group node", exc_info=True)
 
     image_node = _find_image_texture_node(material)
     output_node = _find_material_output_node(material)
@@ -2129,7 +2299,94 @@ def _ensure_local_cloud_material_uses_cloud_material(material):
     _remove_socket_links(node_tree, volume_input)
     _link_sockets(node_tree, displacement_output, displacement_input)
     _cleanup_unused_legacy_local_cloud_group()
+    _remove_unused_suffixed_cloud_material_groups()
     return True
+
+
+def _cloud_material_group_node(material):
+    node_tree = getattr(material, "node_tree", None) if material is not None else None
+    if node_tree is None:
+        return None
+    for node in tuple(getattr(node_tree, "nodes", ())):
+        if str(getattr(node, "bl_idname", "")) != "ShaderNodeGroup":
+            continue
+        if str(getattr(getattr(node, "node_tree", None), "name", "") or "") == CLOUD_MATERIAL_GROUP_NAME:
+            return node
+    return None
+
+
+def _ensure_global_cloud_material_template():
+    material = bpy.data.materials.get(GLOBAL_CLOUD_MATERIAL_NAME)
+    if material is not None:
+        return material
+    try:
+        _append_from_reference(
+            material_names=(GLOBAL_CLOUD_MATERIAL_NAME,),
+            blend_path=GLOBAL_CLOUD_REFERENCE_BLEND_PATH,
+        )
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka clouds: failed appending Global Clouds material template", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka clouds: failed appending Global Clouds material template", exc_info=True)
+    return bpy.data.materials.get(GLOBAL_CLOUD_MATERIAL_NAME)
+
+
+def _copy_global_cloud_material_input_defaults(material, source_material=None):
+    target_node = _cloud_material_group_node(material)
+    if target_node is None:
+        return False
+    source_material = source_material or _ensure_global_cloud_material_template()
+    source_node = _cloud_material_group_node(source_material)
+    if source_node is None or source_node == target_node:
+        return False
+
+    changed = False
+    for socket in tuple(getattr(source_node, "inputs", ())):
+        name = str(getattr(socket, "name", "") or "")
+        if not name or name == "Source Texture":
+            continue
+        target_socket = target_node.inputs.get(name)
+        if target_socket is None or not hasattr(target_socket, "default_value") or not hasattr(socket, "default_value"):
+            continue
+        try:
+            target_socket.default_value = socket.default_value
+            changed = True
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka clouds: failed copying Global Clouds material default", exc_info=True)
+        except (TypeError, ValueError, AttributeError):
+            logger.debug("Planetka clouds: failed copying Global Clouds material default", exc_info=True)
+    return changed
+
+
+def _global_cloud_material_input_default(socket_name, fallback):
+    return _cloud_material_input_default(_ensure_global_cloud_material_template(), socket_name, fallback)
+
+
+def _local_cloud_material_input_default(socket_name, fallback):
+    source_material = bpy.data.materials.get(LOCAL_CLOUD_MATERIAL_TEMPLATE_NAME)
+    if source_material is None:
+        try:
+            _append_from_reference(
+                material_names=(LOCAL_CLOUD_MATERIAL_TEMPLATE_NAME,),
+                blend_path=LOCAL_CLOUD_REFERENCE_BLEND_PATH,
+            )
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka clouds: failed appending Local Clouds material template", exc_info=True)
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            logger.debug("Planetka clouds: failed appending Local Clouds material template", exc_info=True)
+        source_material = bpy.data.materials.get(LOCAL_CLOUD_MATERIAL_TEMPLATE_NAME)
+    return _cloud_material_input_default(source_material, socket_name, fallback)
+
+
+def _cloud_material_input_default(source_material, socket_name, fallback):
+    source_node = _cloud_material_group_node(source_material)
+    socket = source_node.inputs.get(socket_name) if source_node is not None else None
+    if socket is None or not hasattr(socket, "default_value"):
+        return fallback
+    try:
+        return socket.default_value
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        return fallback
 
 
 def _resolve_object_material(obj):
@@ -2346,7 +2603,9 @@ def _iter_group_nodes_recursive(node_tree, group_name, visited=None):
         if child_tree is None:
             continue
         child_name = str(getattr(child_tree, "name", ""))
-        if str(getattr(node, "name", "")) == group_name or child_name == group_name:
+        node_name = str(getattr(node, "name", ""))
+        matches_group = node_name == group_name or child_name == group_name
+        if matches_group:
             found.append(node)
         found.extend(_iter_group_nodes_recursive(child_tree, group_name, visited=visited))
     return found
@@ -2359,9 +2618,16 @@ def _set_group_input_if_present(group_node, input_names, value):
         if input_name not in group_node.inputs:
             continue
         try:
-            group_node.inputs[input_name].default_value = float(value)
+            socket = group_node.inputs[input_name]
+            current = getattr(socket, "default_value", None)
+            if hasattr(current, "__len__") and not isinstance(current, str):
+                socket.default_value = value
+            else:
+                socket.default_value = float(value)
             return True
         except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka clouds: failed updating group input '%s'", input_name, exc_info=True)
+        except (TypeError, ValueError, AttributeError):
             logger.debug("Planetka clouds: failed updating group input '%s'", input_name, exc_info=True)
     return False
 
@@ -2736,10 +3002,13 @@ def _ensure_vdb_cloud_template(scene=None):
     _clear_cloud_drivers(source_obj)
     _remove_cloud_cull_modifiers(source_obj)
 
-    if scene is not None:
-        _clouds, _global_clouds, _local_clouds, vdb_clouds = _ensure_cloud_collections(scene)
-        _set_object_collections(source_obj, [vdb_clouds])
-        _ensure_cloud_parented_to_root(source_obj, scene=scene)
+    # Keep the template as data-only. Linking it into the scene makes it appear
+    # as an existing user cloud when the VDB Clouds collection is enabled.
+    _unlink_object_from_all_collections(source_obj)
+    try:
+        source_obj.parent = None
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka clouds: failed clearing VDB template parent", exc_info=True)
 
     try:
         source_obj[CLOUD_ROLE_KEY] = VDB_CLOUD_TEMPLATE_ROLE
@@ -2774,8 +3043,26 @@ def _apply_local_cloud_material_controls(obj, material, final_look=False):
         return
 
     rot = float(getattr(obj, LOCAL_CLOUD_PROP_ROTATION_DEG, 0.0))
-    density = max(0.0, float(getattr(obj, LOCAL_CLOUD_PROP_DENSITY, 10.0)))
-    gamma = max(0.0, float(getattr(obj, LOCAL_CLOUD_PROP_DENSITY_GAMMA, 1.0)))
+    density_default = float(_local_cloud_material_input_default("Density", 1.0))
+    gamma_default = float(_local_cloud_material_input_default("Density Gamma", 1.0))
+    contrast_default = float(_local_cloud_material_input_default("Contrast", 0.5))
+    horizon_default = float(_local_cloud_material_input_default("Clouds on Horizon Transparency", 1.0))
+    subsurface_default = float(_local_cloud_material_input_default("Subsurface Scattering Scale Coefficient", 1.0))
+    ior_default = float(_local_cloud_material_input_default("IOR", 1.33))
+    roughness_default = float(_local_cloud_material_input_default("Roughness", 0.8))
+    anisotropy_default = float(_local_cloud_material_input_default("Anisotropy", LOCAL_CLOUD_ANISOTROPY_DEFAULT))
+    displacement_default = float(_local_cloud_material_input_default("Displacement (Bump) Scale Coefficient", LOCAL_CLOUD_DISPLACEMENT_SCALE_DEFAULT))
+    color_default = _local_cloud_material_input_default("Cloud Color", (1.0, 1.0, 1.0, 1.0))
+    density = max(0.0, float(getattr(obj, LOCAL_CLOUD_PROP_DENSITY, density_default)))
+    gamma = max(0.0, float(getattr(obj, LOCAL_CLOUD_PROP_DENSITY_GAMMA, gamma_default)))
+    contrast = float(getattr(obj, LOCAL_CLOUD_PROP_CONTRAST, contrast_default))
+    horizon = float(getattr(obj, LOCAL_CLOUD_PROP_HORIZON_TRANSPARENCY, horizon_default))
+    subsurface = float(getattr(obj, LOCAL_CLOUD_PROP_SUBSURFACE_SCALE, subsurface_default))
+    ior = float(getattr(obj, LOCAL_CLOUD_PROP_IOR, ior_default))
+    roughness = float(getattr(obj, LOCAL_CLOUD_PROP_ROUGHNESS, roughness_default))
+    anisotropy = float(getattr(obj, LOCAL_CLOUD_PROP_ANISOTROPY, anisotropy_default))
+    displacement = float(getattr(obj, LOCAL_CLOUD_PROP_DISPLACEMENT_SCALE, displacement_default))
+    cloud_color = getattr(obj, LOCAL_CLOUD_PROP_CLOUD_COLOR, color_default)
     _ensure_local_cloud_material_uses_cloud_material(material)
     _configure_local_cloud_material_for_cap(material)
 
@@ -2790,8 +3077,16 @@ def _apply_local_cloud_material_controls(obj, material, final_look=False):
     _set_named_value_nodes_recursive(node_tree, (LOCAL_CLOUD_PREVIEW_VALUE_NODE_NAME,), preview_value)
 
     for shader_node in _iter_group_nodes_recursive(node_tree, CLOUD_MATERIAL_GROUP_NAME):
+        _set_group_input_if_present(shader_node, ("Cloud Color",), cloud_color)
         _set_group_input_if_present(shader_node, ("Density", "Cloud Density"), density)
         _set_group_input_if_present(shader_node, ("Density Gamma",), gamma)
+        _set_group_input_if_present(shader_node, ("Contrast",), contrast)
+        _set_group_input_if_present(shader_node, ("Clouds on Horizon Transparency",), horizon)
+        _set_group_input_if_present(shader_node, ("Subsurface Scattering Scale Coefficient",), subsurface)
+        _set_group_input_if_present(shader_node, ("IOR",), ior)
+        _set_group_input_if_present(shader_node, ("Roughness",), roughness)
+        _set_group_input_if_present(shader_node, ("Anisotropy",), anisotropy)
+        _set_group_input_if_present(shader_node, ("Displacement (Bump) Scale Coefficient",), displacement)
 
 
 def _apply_local_cloud_object(obj, scene=None):
@@ -2859,6 +3154,7 @@ def optimize_texture_based_clouds_for_camera(scene=None, quality_mode=None):
     quality_mode = _normalize_cloud_quality_mode(quality_mode)
     optimized = 0
     failed = 0
+    _update_cloud_lod_view_layer()
     for obj in list(_iter_local_cloud_objects()):
         if (
             _prepare_local_cloud_texture_variants(obj, scene=scene, allow_download=True)
@@ -2996,27 +3292,38 @@ def _resolve_vdb_lod_path(source_path, d_level, allow_download=True):
         requested_level = max(1, int(d_level))
     except (TypeError, ValueError):
         requested_level = 1
-    levels = sorted(
-        {int(level) for level in VDB_CLOUD_ADAPTIVE_D_LEVELS if 0 < int(level) <= requested_level},
-        reverse=True,
-    )
-    if requested_level not in levels:
-        levels.insert(0, requested_level)
+    is_known_remote_source = _is_known_remote_vdb_cloud_file(source_name)
+    if is_known_remote_source:
+        levels = list(_nearest_published_vdb_lod_levels(source_name, requested_level))
+    else:
+        levels = sorted(
+            {int(level) for level in VDB_CLOUD_ADAPTIVE_D_LEVELS if 0 < int(level) <= requested_level},
+            reverse=True,
+        )
+        if requested_level not in levels:
+            levels.insert(0, requested_level)
     for level in levels:
         desired_name = _vdb_lod_filename(source_name, level)
         if not desired_name:
             continue
         if desired_name == source_name and os.path.isfile(source):
+            _clear_cloud_download_progress_error("Downloading VDB Cloud", source_name)
             return os.path.abspath(source)
         local_candidate = _candidate_local_vdb_lod_path(source, level)
         if local_candidate:
+            _clear_cloud_download_progress_error("Downloading VDB Cloud", os.path.basename(local_candidate))
             return local_candidate
-        if allow_download and _is_known_remote_vdb_cloud_file(source_name):
+        if allow_download and is_known_remote_source:
             remote_path = _resolve_remote_vdb_cloud_asset(desired_name, progress_label="Downloading VDB Cloud")
             if remote_path and os.path.isfile(remote_path):
                 return os.path.abspath(remote_path)
 
-    return os.path.abspath(source) if os.path.isfile(source) else ""
+    if os.path.isfile(source):
+        if is_known_remote_source and requested_level > 1:
+            return ""
+        _clear_cloud_download_progress_error("Downloading VDB Cloud", source_name)
+        return os.path.abspath(source)
+    return ""
 
 
 def _vdb_cloud_quality_props(quality_mode):
@@ -3041,6 +3348,7 @@ def _prepare_vdb_cloud_variants(obj, scene=None, allow_download=True):
     if not source_path or not os.path.isfile(source_path):
         return False
 
+    is_known_remote_source = _is_known_remote_vdb_cloud_file(os.path.basename(source_path))
     final_d, projected_pixels = _select_vdb_cloud_adaptive_d_level(obj, scene, d_level_multiplier=1)
     balanced_d = _coarser_vdb_cloud_d_level(final_d, multiplier=2)
     preview_d = _coarser_vdb_cloud_d_level(final_d, multiplier=4)
@@ -3048,12 +3356,18 @@ def _prepare_vdb_cloud_variants(obj, scene=None, allow_download=True):
     balanced_path = _resolve_vdb_lod_path(source_path, balanced_d, allow_download=allow_download)
     preview_path = _resolve_vdb_lod_path(source_path, preview_d, allow_download=allow_download)
     if not final_path or not os.path.isfile(final_path):
+        if is_known_remote_source and int(final_d) > 1:
+            return False
         final_path = source_path
     _base_name, final_d = _split_vdb_lod_filename(os.path.basename(final_path))
     if not balanced_path or not os.path.isfile(balanced_path):
+        if is_known_remote_source and int(balanced_d) > 1:
+            return False
         balanced_path = final_path
     _base_name, balanced_d = _split_vdb_lod_filename(os.path.basename(balanced_path))
     if not preview_path or not os.path.isfile(preview_path):
+        if is_known_remote_source and int(preview_d) > 1:
+            return False
         preview_path = balanced_path
     _base_name, preview_d = _split_vdb_lod_filename(os.path.basename(preview_path))
     try:
@@ -3106,6 +3420,7 @@ def optimize_vdb_clouds_for_camera(scene=None, quality_mode=None):
     quality_mode = _normalize_cloud_quality_mode(quality_mode)
     optimized = 0
     failed = 0
+    _update_cloud_lod_view_layer()
     for obj in list(_iter_vdb_cloud_objects()):
         if (
             _prepare_vdb_cloud_variants(obj, scene=scene, allow_download=True)
@@ -3181,6 +3496,18 @@ def _apply_vdb_cloud_material_density(obj):
         return
     density = max(0.0, float(getattr(obj, VDB_CLOUD_PROP_DENSITY, DEFAULT_VDB_CLOUD_DENSITY)))
     _set_named_value_nodes_recursive(node_tree, (VDB_CLOUD_DENSITY_NODE_NAME,), density)
+    for node in tuple(getattr(node_tree, "nodes", ())):
+        if str(getattr(node, "bl_idname", "")) != "ShaderNodeGroup":
+            continue
+        socket = node.inputs.get("Density")
+        if socket is None or not hasattr(socket, "default_value"):
+            continue
+        try:
+            socket.default_value = float(density)
+        except PLANETKA_RECOVERABLE_EXCEPTIONS:
+            logger.debug("Planetka clouds: failed updating VDB material group Density", exc_info=True)
+        except (TypeError, ValueError, AttributeError):
+            logger.debug("Planetka clouds: failed updating VDB material group Density", exc_info=True)
 
 
 def _vdb_parent_scale(obj):
@@ -3410,12 +3737,28 @@ def update_local_cloud_object_prop(self, context):
     _request_cloud_lod_resolve(scene)
 
 
+def update_local_cloud_object_size(self, context):
+    if _is_cloud_updates_suspended() or not _is_local_cloud_object(self):
+        return
+    scene = getattr(context, "scene", None) if context else None
+    _apply_local_cloud_object(self, scene=scene)
+    _request_cloud_lod_resolve(scene, immediate=True)
+
+
 def update_vdb_cloud_object_prop(self, context):
     if _is_cloud_updates_suspended() or not _is_vdb_cloud_object(self):
         return
     scene = getattr(context, "scene", None) if context else None
     _apply_vdb_cloud_object(self, scene=scene)
     _request_cloud_lod_resolve(scene)
+
+
+def update_vdb_cloud_object_size(self, context):
+    if _is_cloud_updates_suspended() or not _is_vdb_cloud_object(self):
+        return
+    scene = getattr(context, "scene", None) if context else None
+    _apply_vdb_cloud_object(self, scene=scene)
+    _request_cloud_lod_resolve(scene, immediate=True)
 
 
 def sync_cloud_system_scene(scene):
@@ -3441,18 +3784,29 @@ def _is_workflow_enabled():
         return False
 
 
-def _request_cloud_lod_resolve(scene):
+def _request_cloud_lod_resolve(scene, immediate=False):
     if scene is None or _is_cloud_updates_suspended():
         return
     try:
         from . import state as planetka_state
         request_fn = getattr(planetka_state, "request_auto_resolve", None)
         if callable(request_fn):
-            request_fn(scene, immediate=False, mark_dirty=False)
+            request_fn(scene, immediate=bool(immediate), mark_dirty=True)
     except PLANETKA_RECOVERABLE_EXCEPTIONS:
         logger.debug("Planetka clouds: failed requesting cloud LOD resolve", exc_info=True)
     except (ImportError, ModuleNotFoundError, RuntimeError, TypeError, ValueError, AttributeError):
         logger.debug("Planetka clouds: failed requesting cloud LOD resolve", exc_info=True)
+
+
+def _update_cloud_lod_view_layer():
+    try:
+        view_layer = getattr(getattr(bpy, "context", None), "view_layer", None)
+        if view_layer is not None:
+            view_layer.update()
+    except PLANETKA_RECOVERABLE_EXCEPTIONS:
+        logger.debug("Planetka clouds: failed updating view layer before cloud LOD estimation", exc_info=True)
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        logger.debug("Planetka clouds: failed updating view layer before cloud LOD estimation", exc_info=True)
 
 
 def _cloud_title(name, fallback_index, prefix):
@@ -3476,14 +3830,15 @@ def _vdb_file_label(obj):
 
 
 def _local_cloud_file_label(obj):
-    path = str(obj.get(LOCAL_CLOUD_LOADED_TEXTURE_PROP, "") or "") if obj is not None else ""
+    path = ""
+    material = _resolve_object_material(obj)
+    image_node = _find_image_texture_node(material)
+    image = getattr(image_node, "image", None) if image_node is not None else None
+    path = str(getattr(image, "filepath", "") or "")
     if path:
         path = bpy.path.abspath(path)
     if not path:
-        material = _resolve_object_material(obj)
-        image_node = _find_image_texture_node(material)
-        image = getattr(image_node, "image", None) if image_node is not None else None
-        path = str(getattr(image, "filepath", "") or "")
+        path = str(obj.get(LOCAL_CLOUD_LOADED_TEXTURE_PROP, "") or "") if obj is not None else ""
         if path:
             path = bpy.path.abspath(path)
     if not path:
@@ -3587,6 +3942,7 @@ class PLANETKA_OT_AddLocalCloud(bpy.types.Operator):
         _clear_drivers_on_id_data(new_mat)
         _clear_drivers_on_node_tree(getattr(new_mat, "node_tree", None))
         _ensure_local_cloud_material_uses_cloud_material(new_mat)
+        _copy_global_cloud_material_input_defaults(new_mat, source_material=template_mat)
 
         mesh = getattr(new_obj, "data", None)
         if mesh is not None and hasattr(mesh, "materials"):
@@ -3615,8 +3971,16 @@ class PLANETKA_OT_AddLocalCloud(bpy.types.Operator):
             setattr(new_obj, LOCAL_CLOUD_PROP_SIZE_COEF, 1.0)
             setattr(new_obj, LOCAL_CLOUD_PROP_ROTATION_DEG, 0.0)
             setattr(new_obj, LOCAL_CLOUD_PROP_THICKNESS_M, 50.0)
-            setattr(new_obj, LOCAL_CLOUD_PROP_DENSITY, 10.0)
-            setattr(new_obj, LOCAL_CLOUD_PROP_DENSITY_GAMMA, 1.0)
+            setattr(new_obj, LOCAL_CLOUD_PROP_CLOUD_COLOR, tuple(_local_cloud_material_input_default("Cloud Color", (1.0, 1.0, 1.0, 1.0))))
+            setattr(new_obj, LOCAL_CLOUD_PROP_DENSITY, float(_local_cloud_material_input_default("Density", 1.0)))
+            setattr(new_obj, LOCAL_CLOUD_PROP_DENSITY_GAMMA, float(_local_cloud_material_input_default("Density Gamma", 1.0)))
+            setattr(new_obj, LOCAL_CLOUD_PROP_CONTRAST, float(_local_cloud_material_input_default("Contrast", 0.5)))
+            setattr(new_obj, LOCAL_CLOUD_PROP_HORIZON_TRANSPARENCY, float(_local_cloud_material_input_default("Clouds on Horizon Transparency", 1.0)))
+            setattr(new_obj, LOCAL_CLOUD_PROP_SUBSURFACE_SCALE, float(_local_cloud_material_input_default("Subsurface Scattering Scale Coefficient", 1.0)))
+            setattr(new_obj, LOCAL_CLOUD_PROP_IOR, float(_local_cloud_material_input_default("IOR", 1.33)))
+            setattr(new_obj, LOCAL_CLOUD_PROP_ROUGHNESS, float(_local_cloud_material_input_default("Roughness", 0.8)))
+            setattr(new_obj, LOCAL_CLOUD_PROP_ANISOTROPY, float(_local_cloud_material_input_default("Anisotropy", LOCAL_CLOUD_ANISOTROPY_DEFAULT)))
+            setattr(new_obj, LOCAL_CLOUD_PROP_DISPLACEMENT_SCALE, float(_local_cloud_material_input_default("Displacement (Bump) Scale Coefficient", LOCAL_CLOUD_DISPLACEMENT_SCALE_DEFAULT)))
             setattr(new_obj, LOCAL_CLOUD_PROP_BASE_SCALE, float(max(1e-6, _earth_radius_blender_units(get_earth_object()))))
             setattr(new_obj, LOCAL_CLOUD_PROP_CAP_HALF_ANGLE_DEG, -1.0)
             if source != "LOCAL":
@@ -4259,16 +4623,23 @@ class PLANETKA_PT_LocalCloudsPanel(bpy.types.Panel):
                 icon="HIDE_OFF",
             )
 
-            panel_body.label(text=f"File: {_local_cloud_file_label(cloud_obj)}", icon="IMAGE_DATA")
+            panel_body.label(text=_local_cloud_file_label(cloud_obj), icon="IMAGE_DATA")
 
             panel_body.prop(cloud_obj, LOCAL_CLOUD_PROP_SIZE_COEF, text="Size Coefficient")
             panel_body.prop(cloud_obj, LOCAL_CLOUD_PROP_LATITUDE, text="Latitude")
             panel_body.prop(cloud_obj, LOCAL_CLOUD_PROP_LONGITUDE, text="Longitude")
             panel_body.prop(cloud_obj, LOCAL_CLOUD_PROP_ROTATION_DEG, text="Rotation (deg)")
             panel_body.prop(cloud_obj, LOCAL_CLOUD_PROP_ALTITUDE_M, text="Altitude (m)")
-            panel_body.prop(cloud_obj, LOCAL_CLOUD_PROP_THICKNESS_M, text="Thickness (m)")
+            panel_body.prop(cloud_obj, LOCAL_CLOUD_PROP_CLOUD_COLOR, text="Cloud Color")
             panel_body.prop(cloud_obj, LOCAL_CLOUD_PROP_DENSITY, text="Density")
             panel_body.prop(cloud_obj, LOCAL_CLOUD_PROP_DENSITY_GAMMA, text="Density Gamma")
+            panel_body.prop(cloud_obj, LOCAL_CLOUD_PROP_CONTRAST, text="Contrast")
+            panel_body.prop(cloud_obj, LOCAL_CLOUD_PROP_HORIZON_TRANSPARENCY, text="Horizon Transparency")
+            panel_body.prop(cloud_obj, LOCAL_CLOUD_PROP_SUBSURFACE_SCALE, text="Subsurface Scale")
+            panel_body.prop(cloud_obj, LOCAL_CLOUD_PROP_IOR, text="IOR")
+            panel_body.prop(cloud_obj, LOCAL_CLOUD_PROP_ROUGHNESS, text="Roughness")
+            panel_body.prop(cloud_obj, LOCAL_CLOUD_PROP_ANISOTROPY, text="Anisotropy")
+            panel_body.prop(cloud_obj, LOCAL_CLOUD_PROP_DISPLACEMENT_SCALE, text="Displacement Scale")
 
             row = panel_body.row()
             row.use_property_split = False
@@ -4347,7 +4718,7 @@ class PLANETKA_PT_VDBCloudsPanel(bpy.types.Panel):
                 icon="HIDE_OFF",
             )
 
-            panel_body.label(text=f"File: {_vdb_file_label(cloud_obj)}", icon="FILE")
+            panel_body.label(text=_vdb_file_label(cloud_obj), icon="FILE")
             panel_body.prop(cloud_obj, VDB_CLOUD_PROP_SIZE_COEF, text="Size Coefficient")
             panel_body.prop(cloud_obj, VDB_CLOUD_PROP_LATITUDE, text="Latitude")
             panel_body.prop(cloud_obj, VDB_CLOUD_PROP_LONGITUDE, text="Longitude")
@@ -4381,14 +4752,30 @@ def register_object_properties():
             ),
         )
 
+    if not hasattr(object_props, LOCAL_CLOUD_PROP_CLOUD_COLOR):
+        setattr(
+            object_props,
+            LOCAL_CLOUD_PROP_CLOUD_COLOR,
+            FloatVectorProperty(
+                name="Texture-Based Cloud Color",
+                description="Cloud scattering color",
+                subtype='COLOR',
+                size=4,
+                min=0.0,
+                max=1.0,
+                default=(1.0, 1.0, 1.0, 1.0),
+                update=update_local_cloud_object_prop,
+            ),
+        )
+
     for name, kwargs in (
         (
             LOCAL_CLOUD_PROP_LONGITUDE,
-            dict(name="Texture-Based Cloud Longitude", default=0.0, min=-360.0, max=360.0, precision=3, step=1, update=update_local_cloud_object_prop),
+            dict(name="Texture-Based Cloud Longitude", default=0.0, min=-360.0, max=360.0, precision=3, step=0.1, update=update_local_cloud_object_prop),
         ),
         (
             LOCAL_CLOUD_PROP_LATITUDE,
-            dict(name="Texture-Based Cloud Latitude", default=0.0, min=-90.0, max=90.0, precision=3, step=1, update=update_local_cloud_object_prop),
+            dict(name="Texture-Based Cloud Latitude", default=0.0, min=-90.0, max=90.0, precision=3, step=0.1, update=update_local_cloud_object_prop),
         ),
         (
             LOCAL_CLOUD_PROP_ALTITUDE_M,
@@ -4396,7 +4783,7 @@ def register_object_properties():
         ),
         (
             LOCAL_CLOUD_PROP_SIZE_COEF,
-            dict(name="Texture-Based Cloud Size Coef", default=1.0, min=1e-6, precision=3, update=update_local_cloud_object_prop),
+            dict(name="Texture-Based Cloud Size Coef", default=1.0, min=1e-6, precision=3, update=update_local_cloud_object_size),
         ),
         (
             LOCAL_CLOUD_PROP_ROTATION_DEG,
@@ -4408,11 +4795,39 @@ def register_object_properties():
         ),
         (
             LOCAL_CLOUD_PROP_DENSITY,
-            dict(name="Texture-Based Cloud Density", default=10.0, min=0.0, max=1000.0, precision=3, update=update_local_cloud_object_prop),
+            dict(name="Texture-Based Cloud Density", default=1.2, min=0.0, max=1000.0, precision=3, update=update_local_cloud_object_prop),
         ),
         (
             LOCAL_CLOUD_PROP_DENSITY_GAMMA,
             dict(name="Texture-Based Cloud Density Gamma", default=1.0, min=0.0, max=1000.0, precision=3, update=update_local_cloud_object_prop),
+        ),
+        (
+            LOCAL_CLOUD_PROP_CONTRAST,
+            dict(name="Texture-Based Cloud Contrast", default=0.5, min=-100.0, max=100.0, precision=3, update=update_local_cloud_object_prop),
+        ),
+        (
+            LOCAL_CLOUD_PROP_HORIZON_TRANSPARENCY,
+            dict(name="Texture-Based Cloud Horizon Transparency", default=1.0, min=0.0, max=100.0, precision=3, update=update_local_cloud_object_prop),
+        ),
+        (
+            LOCAL_CLOUD_PROP_SUBSURFACE_SCALE,
+            dict(name="Texture-Based Cloud Subsurface Scale", default=1.0, min=0.0, max=1000.0, precision=3, update=update_local_cloud_object_prop),
+        ),
+        (
+            LOCAL_CLOUD_PROP_IOR,
+            dict(name="Texture-Based Cloud IOR", default=1.33, min=1.0, max=4.0, precision=3, update=update_local_cloud_object_prop),
+        ),
+        (
+            LOCAL_CLOUD_PROP_ROUGHNESS,
+            dict(name="Texture-Based Cloud Roughness", default=0.8, min=0.0, max=1.0, precision=3, update=update_local_cloud_object_prop),
+        ),
+        (
+            LOCAL_CLOUD_PROP_ANISOTROPY,
+            dict(name="Texture-Based Cloud Anisotropy", default=float(LOCAL_CLOUD_ANISOTROPY_DEFAULT), min=-1.0, max=1.0, precision=3, update=update_local_cloud_object_prop),
+        ),
+        (
+            LOCAL_CLOUD_PROP_DISPLACEMENT_SCALE,
+            dict(name="Texture-Based Cloud Displacement Scale", default=float(LOCAL_CLOUD_DISPLACEMENT_SCALE_DEFAULT), min=0.0, max=1000.0, precision=4, update=update_local_cloud_object_prop),
         ),
         (
             LOCAL_CLOUD_PROP_BASE_SCALE,
@@ -4436,7 +4851,7 @@ def register_object_properties():
         ),
         (
             VDB_CLOUD_PROP_SIZE_COEF,
-            dict(name="VDB Cloud Size Coef", default=1.0, min=1e-6, precision=3, update=update_vdb_cloud_object_prop),
+            dict(name="VDB Cloud Size Coef", default=1.0, min=1e-6, precision=3, update=update_vdb_cloud_object_size),
         ),
         (
             VDB_CLOUD_PROP_ROTATION_DEG,
@@ -4486,8 +4901,16 @@ def unregister_object_properties():
         LOCAL_CLOUD_PROP_SIZE_COEF,
         LOCAL_CLOUD_PROP_ROTATION_DEG,
         LOCAL_CLOUD_PROP_THICKNESS_M,
+        LOCAL_CLOUD_PROP_CLOUD_COLOR,
         LOCAL_CLOUD_PROP_DENSITY,
         LOCAL_CLOUD_PROP_DENSITY_GAMMA,
+        LOCAL_CLOUD_PROP_CONTRAST,
+        LOCAL_CLOUD_PROP_HORIZON_TRANSPARENCY,
+        LOCAL_CLOUD_PROP_SUBSURFACE_SCALE,
+        LOCAL_CLOUD_PROP_IOR,
+        LOCAL_CLOUD_PROP_ROUGHNESS,
+        LOCAL_CLOUD_PROP_ANISOTROPY,
+        LOCAL_CLOUD_PROP_DISPLACEMENT_SCALE,
         LOCAL_CLOUD_PROP_BASE_SCALE,
         LOCAL_CLOUD_PROP_CAP_HALF_ANGLE_DEG,
         VDB_CLOUD_PROP_LONGITUDE,
