@@ -1529,13 +1529,27 @@ def _resolve_remote_vdb_cloud_asset(file_name, progress_label=""):
             if progress_label:
                 _set_cloud_download_progress(active=False, error="", file_name=candidate_name)
             return cached
+        if cached and os.path.isfile(cached):
+            try:
+                os.remove(cached)
+            except OSError:
+                logger.debug("Planetka clouds: failed removing incompatible cached VDB LOD: %s", cached, exc_info=True)
 
     for candidate_name in candidate_names:
-        try:
-            resolved = _download_public_cloud_asset(REMOTE_VDB_CLOUDS_FOLDER, candidate_name, progress_label=progress_label)
-        except PLANETKA_RECOVERABLE_EXCEPTIONS:
-            logger.debug("Planetka clouds: failed resolving selected VDB cloud asset", exc_info=True)
-            resolved = ""
+        resolved = ""
+        for attempt in range(2):
+            try:
+                resolved = _download_public_cloud_asset(REMOTE_VDB_CLOUDS_FOLDER, candidate_name, progress_label=progress_label)
+            except PLANETKA_RECOVERABLE_EXCEPTIONS:
+                logger.debug("Planetka clouds: failed resolving selected VDB cloud asset", exc_info=True)
+                resolved = ""
+            if not resolved or _is_blender_readable_vdb_file(resolved):
+                break
+            try:
+                os.remove(resolved)
+            except OSError:
+                logger.debug("Planetka clouds: failed removing incompatible downloaded VDB LOD: %s", resolved, exc_info=True)
+                break
         if resolved and _is_blender_readable_vdb_file(resolved):
             _vdb_cloud_asset_paths[candidate_name] = resolved
             return resolved
